@@ -46,10 +46,17 @@ Options:
 Description:
   Validates PLAN.md or TASKS.md schema structure (stages, batches, threads).
   Both commands check for files shared across parallel threads in the same batch.
+  Draft plans with an empty Stages section are valid, but 'work validate plan'
+  emits a warning until stages are scaffolded.
   Note: Use 'work check plan' to check for open questions and missing input files.
 
 Examples:
   # Validate current workstream plan
+  work validate plan
+
+  # Validate a draft plan before stages exist yet
+  work create --name draft-feature
+  work current --set "000-draft-feature"
   work validate plan
 
   # Validate tasks structure

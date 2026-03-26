@@ -21,6 +21,7 @@ interface CheckResult {
     schemaValid: boolean
     schemaErrors: string[]
     schemaWarnings: string[]
+    draftPlan: boolean
     openQuestions: OpenQuestion[]
     missingInputFiles: string[]
 }
@@ -123,6 +124,10 @@ function formatCheckResult(result: CheckResult): string {
         lines.push(`⚠ Found ${issuesCount} issue${issuesCount !== 1 ? "s" : ""} in PLAN.md`)
     }
 
+    if (result.draftPlan) {
+        lines.push("Draft plan: no stages defined yet.")
+    }
+
     if (result.schemaErrors.length > 0) {
         lines.push("")
         lines.push("Schema Errors:")
@@ -223,6 +228,7 @@ export function main(argv: string[] = process.argv): void {
             schemaValid: consolidateResult.success,
             schemaErrors,
             schemaWarnings: consolidateResult.warnings,
+            draftPlan: consolidateResult.streamDocument?.stages.length === 0,
             openQuestions,
             missingInputFiles
         }

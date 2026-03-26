@@ -479,6 +479,37 @@ export async function handlePlanApproval(
   // Check for open questions
   const questionsResult = checkOpenQuestions(repoRoot, stream.id)
 
+  const planMdPath = join(getWorkDir(repoRoot), stream.id, "PLAN.md")
+  if (existsSync(planMdPath)) {
+    const planContent = readFileSync(planMdPath, "utf-8")
+    const parseErrors: { message: string }[] = []
+    const doc = parseStreamDocument(planContent, parseErrors)
+
+    if (doc && doc.stages.length === 0) {
+      if (cliArgs.json) {
+        console.log(
+          JSON.stringify(
+            {
+              action: "blocked",
+              target: "plan",
+              reason: "empty_plan",
+              streamId: stream.id,
+              streamName: stream.name,
+              message:
+                "Cannot approve a draft plan with no stages. Scaffold stages first with 'work plan create'.",
+            },
+            null,
+            2
+          )
+        )
+      } else {
+        console.error("Error: Cannot approve a draft plan with no stages.")
+        console.error("Scaffold stages first with 'work plan create', then approve again.")
+      }
+      process.exit(1)
+    }
+  }
+
   if (questionsResult.hasOpenQuestions && !cliArgs.force) {
     if (cliArgs.json) {
       console.log(

@@ -29,7 +29,7 @@ Usage:
   work approve [--stream <id>]  # Show status of all approvals
 
 Targets:
-  plan      Approve the PLAN.md structure (blocks if open questions exist)
+  plan      Approve the PLAN.md structure (requires stages; blocks on open questions)
   tasks     Approve tasks (requires TASKS.md with tasks)
   revision  Approve revised PLAN.md with new stages (generates TASKS.md)
 
@@ -46,10 +46,13 @@ Options:
 
 Description:
   Workstreams require 2 approvals before starting:
-  1. Plan approval - validates PLAN.md structure, no open questions
+  1. Plan approval - validates PLAN.md structure, requires at least one stage, no open questions
   2. Tasks approval - ensures tasks.json exists with tasks
 
   Run 'work start' after both approvals to create the GitHub branch and issues.
+
+  Draft plans created with 'work create' must be scaffolded with
+  'work plan create --stages <n>' before plan approval can succeed.
 
   Note: This command requires USER role to maintain human-in-the-loop control.
   Set WORKSTREAM_ROLE=USER environment variable to enable approval commands.

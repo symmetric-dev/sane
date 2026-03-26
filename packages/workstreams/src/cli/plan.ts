@@ -1,36 +1,45 @@
 /**
  * CLI: Planning Session Management
  *
- * Opens the planning opencode session for the current workstream.
+ * Opens the planning opencode session for the current workstream,
+ * or scaffolds plan stages for an existing draft workstream.
  * 
  * Usage:
- *   work plan                              - Resume planning session for current workstream
- *   work plan --stream "001-my-stream"     - Resume planning session for specific workstream
- *   work plan --set <sessionId>            - Set the planning session ID for current workstream
- *   work plan --stream <id> --set <sessionId> - Set planning session for specific workstream
+ *   work plan                                  - Resume planning session for current workstream
+ *   work plan --stream "001-my-stream"         - Resume planning session for specific workstream
+ *   work plan --set <sessionId>                - Set the planning session ID for current workstream
+ *   work plan --stream <id> --set <sessionId>  - Set planning session for specific workstream
+ *   work plan create --stages 3                - Scaffold plan stages for current workstream
  */
 
 import { spawn } from "child_process"
 import { getRepoRoot } from "../lib/repo.ts"
 import { loadIndex, resolveStreamId, getPlanningSessionId, setStreamPlanningSession } from "../lib/index.ts"
+import { scaffoldPlanStages } from "../lib/generate.ts"
 
 interface PlanCliArgs {
+  subcommand?: "create"
   repoRoot?: string
   stream?: string
   set?: string
+  stages?: number
   help: boolean
 }
 
 function printHelp(): void {
   console.log(`
-work plan - Manage planning sessions for workstreams
+work plan - Resume planning sessions or scaffold plan stages
 
 Usage:
   work plan [options]
+  work plan create [options] --stages <n>
 
 Description:
-  Resumes the planning session for a workstream. A planning session links an
-  opencode conversation to a workstream, allowing you to resume later.
+  Default behavior keeps planning-session management intact: resume a linked
+  opencode session or set the linked session ID for a workstream.
+
+  The 'create' subcommand scaffolds stage templates into an existing draft
+  PLAN.md after the workstream container has already been created.
 
   To link a session from within opencode, use the workstream_link_planning_session
   tool after creating a workstream.
@@ -38,18 +47,30 @@ Description:
 Options:
   --stream, -s <id>    Workstream ID or name (uses current if not specified)
   --set <sessionId>    Link a session ID to the workstream (used by tools)
+  --stages <n>         Number of stages to scaffold (required with 'create')
   --repo-root, -r      Repository root (auto-detected if omitted)
   --help, -h           Show this help message
 
 Workflow:
-  1. Open opencode and discuss the problem
-  2. Ask agent to create workstream with planning skill
-  3. Use the workstream_link_planning_session tool to link session
-  4. Later, resume with: work plan
+  Draft-first flow:
+    1. work create --name my-feature
+    2. work current --set "001-my-feature"
+    3. work plan create --stages 3
+    4. Edit PLAN.md and validate it
+    5. work validate plan   # empty drafts warn but still validate
+    6. work approve plan    # requires at least one stage
+
+  Planning-session flow:
+    1. Open opencode and discuss the problem
+    2. Ask agent to create workstream with planning skill
+    3. Use workstream_link_planning_session to link session
+    4. Later, resume with: work plan
 
 Examples:
   work plan                        # Resume planning session
   work plan --stream "001-feature" # Resume specific workstream
+  work plan create --stages 3
+  work plan create --stream "001-feature" --stages 3
 `)
 }
 
@@ -57,7 +78,13 @@ function parseCliArgs(argv: string[]): PlanCliArgs | null {
   const args = argv.slice(2)
   const parsed: PlanCliArgs = { help: false }
 
-  for (let i = 0; i < args.length; i++) {
+  let index = 0
+  if (args[0] === "create") {
+    parsed.subcommand = "create"
+    index = 1
+  }
+
+  for (let i = index; i < args.length; i++) {
     const arg = args[i]
     const next = args[i + 1]
 
@@ -91,6 +118,19 @@ function parseCliArgs(argv: string[]): PlanCliArgs | null {
         i++
         break
 
+      case "--stages":
+        if (!next) {
+          console.error("Error: --stages requires a number")
+          return null
+        }
+        parsed.stages = parseInt(next, 10)
+        if (isNaN(parsed.stages) || parsed.stages < 1 || parsed.stages > 20) {
+          console.error("Error: --stages must be a number between 1 and 20")
+          return null
+        }
+        i++
+        break
+
       case "--help":
       case "-h":
         parsed.help = true
@@ -101,10 +141,44 @@ function parseCliArgs(argv: string[]): PlanCliArgs | null {
           console.error(`Error: Unknown option "${arg}"`)
           return null
         }
+        if (!parsed.subcommand) {
+          console.error(`Error: Unknown subcommand "${arg}"`)
+          return null
+        }
+    }
+  }
+
+  if (parsed.subcommand === "create") {
+    if (!parsed.stages) {
+      console.error("Error: work plan create requires --stages")
+      return null
+    }
+    if (parsed.set) {
+      console.error("Error: --set cannot be used with 'work plan create'")
+      return null
     }
   }
 
   return parsed
+}
+
+function handleCreatePlan(
+  repoRoot: string,
+  streamId: string,
+  stages: number,
+): void {
+  try {
+    const result = scaffoldPlanStages(repoRoot, streamId, stages)
+    console.log(`Scaffolded ${result.stageCount} stage${result.stageCount === 1 ? "" : "s"} in workstream "${streamId}".`)
+    console.log(`  Updated: ${result.planPath}`)
+    console.log("")
+    console.log("Next steps:")
+    console.log("  1. Edit PLAN.md to name stages, batches, and threads")
+    console.log("  2. Run: work validate plan")
+  } catch (e) {
+    console.error(`Error: ${(e as Error).message}`)
+    process.exit(1)
+  }
 }
 
 /**
@@ -218,8 +292,9 @@ export function main(argv: string[] = process.argv): void {
     process.exit(1)
   }
 
-  // Handle flags
-  if (cliArgs.set) {
+  if (cliArgs.subcommand === "create") {
+    handleCreatePlan(repoRoot, resolvedStreamId, cliArgs.stages!)
+  } else if (cliArgs.set) {
     handleSetSession(repoRoot, resolvedStreamId, cliArgs.set)
   } else {
     // Default: resume session

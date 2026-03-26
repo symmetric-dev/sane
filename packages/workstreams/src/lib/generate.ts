@@ -29,7 +29,7 @@ function getVersionString(): string {
 export interface GenerateStreamArgs {
   name: string
   repoRoot: string
-  stages?: number // Number of stages to generate (default: 1)
+  stages?: number
 }
 
 export interface GenerateStreamResult {
@@ -40,7 +40,7 @@ export interface GenerateStreamResult {
 /**
  * Generate a single stage template
  */
-function generateStageTemplate(stageNum: number): string {
+export function generateStageTemplate(stageNum: number): string {
   const paddedNum = stageNum.toString().padStart(2, "0")
   return `### Stage ${paddedNum}: <!-- Stage Name -->
 
@@ -78,7 +78,7 @@ Describe how this stage operates: what it needs (inputs), how it's organized (st
 function generatePlanMd(
   streamId: string,
   streamName: string,
-  numStages: number = 1,
+  numStages?: number,
 ): string {
   const titleName = toTitleCase(streamName)
   const now = getDateString()
@@ -86,9 +86,13 @@ function generatePlanMd(
 
   // Generate stage templates
   const stages: string[] = []
-  for (let i = 1; i <= numStages; i++) {
-    stages.push(generateStageTemplate(i))
+  if (numStages) {
+    for (let i = 1; i <= numStages; i++) {
+      stages.push(generateStageTemplate(i))
+    }
   }
+
+  const stagesContent = stages.join("\n\n")
 
   return `# Plan: ${titleName}
 
@@ -106,12 +110,56 @@ function generatePlanMd(
 
 ## Stages
 
-${stages.join("\n\n")}
-
----
+${stagesContent}${stagesContent ? "\n\n" : ""}---
 
 *Last updated: ${now}*
 `
+}
+
+function replaceStagesSection(planContent: string, stageTemplates: string): string {
+  const sections = planContent.match(/(## Stages\s*\n)([\s\S]*?)(\n---\s*\n)/)
+
+  if (!sections) {
+    throw new Error('PLAN.md is missing a valid "## Stages" section')
+  }
+
+  const [, heading, , footer] = sections
+  const nextSection = `${heading}\n${stageTemplates}\n\n${footer}`
+
+  return planContent.replace(sections[0], nextSection)
+}
+
+export function scaffoldPlanStages(repoRoot: string, streamId: string, numStages: number): {
+  planPath: string
+  stageCount: number
+} {
+  const planPath = join(getWorkDir(repoRoot), streamId, "PLAN.md")
+
+  if (!existsSync(planPath)) {
+    throw new Error(`PLAN.md not found for workstream "${streamId}"`)
+  }
+
+  const planContent = readFileSync(planPath, "utf-8")
+  const errors: ConsolidateError[] = []
+  const planDoc = parseStreamDocument(planContent, errors)
+
+  if (planDoc?.stages.length) {
+    throw new Error(
+      `PLAN.md for workstream "${streamId}" already contains stages. Edit it manually instead of re-scaffolding.`,
+    )
+  }
+
+  const stageTemplates = Array.from({ length: numStages }, (_, index) =>
+    generateStageTemplate(index + 1),
+  ).join("\n\n")
+
+  const updatedPlan = replaceStagesSection(planContent, stageTemplates)
+  atomicWriteFile(planPath, updatedPlan)
+
+  return {
+    planPath,
+    stageCount: numStages,
+  }
 }
 
 /**
@@ -274,7 +322,7 @@ export function generateStream(args: GenerateStreamArgs): GenerateStreamResult {
   mkdirSync(docsDir, { recursive: true })
 
   // Generate PLAN.md
-  const planContent = generatePlanMd(streamId, args.name, args.stages ?? 1)
+  const planContent = generatePlanMd(streamId, args.name, args.stages)
   atomicWriteFile(join(streamDir, "PLAN.md"), planContent)
 
   // Generate empty tasks.json
@@ -333,4 +381,3 @@ export function createGenerateArgs(
     stages,
   }
 }
-

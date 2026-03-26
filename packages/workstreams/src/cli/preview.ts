@@ -201,6 +201,14 @@ function formatPreview(preview: StreamPreview, verbose: boolean, tasks: Task[]):
   lines.push("")
   lines.push("Stages:")
 
+  if (preview.stageCount === 0) {
+    lines.push("  Draft plan: no stages defined yet")
+    lines.push("  Use 'work plan create' to scaffold stages.")
+    lines.push("")
+    lines.push("Questions: none")
+    return lines.join("\n")
+  }
+
   for (let stageIdx = 0; stageIdx < preview.stages.length; stageIdx++) {
     const stage = preview.stages[stageIdx]!
     const stageProgress = computeTaskProgress(tasks, stage.number)

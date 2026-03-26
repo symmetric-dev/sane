@@ -16,6 +16,9 @@ import { parseStreamDocument } from "./stream-parser.ts"
 import { getWorkDir } from "./repo.ts"
 import { findSharedFilesInParallelThreads, formatSharedFileWarnings } from "./analysis.ts"
 
+export const DRAFT_PLAN_NO_STAGES_WARNING =
+  "Draft plan: no stages defined yet. Scaffold stages with 'work plan create'."
+
 /**
  * Get the path to PLAN.md for a workstream
  */
@@ -39,10 +42,7 @@ function validateStreamDocument(
 
   // Check stages
   if (doc.stages.length === 0) {
-    errors.push({
-      section: "Stages",
-      message: "No stages found. At least one stage is required.",
-    })
+    warnings.push(DRAFT_PLAN_NO_STAGES_WARNING)
     return
   }
 
@@ -159,6 +159,10 @@ export function formatConsolidateResult(result: ConsolidateResult, _dryRun: bool
     if (result.streamDocument) {
       lines.push(`Workstream: ${result.streamDocument.streamName}`)
       lines.push(`Stages: ${result.streamDocument.stages.length}`)
+
+      if (result.streamDocument.stages.length === 0) {
+        lines.push("Status: draft plan")
+      }
 
       const batchCount = result.streamDocument.stages.reduce(
         (sum, s) => sum + s.batches.length,

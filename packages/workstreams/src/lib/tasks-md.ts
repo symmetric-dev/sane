@@ -56,6 +56,12 @@ export function generateTasksMdFromPlan(
   streamName: string,
   doc: StreamDocument,
 ): string {
+  if (doc.stages.length === 0) {
+    throw new Error(
+      "Cannot generate TASKS.md from a draft plan with no stages. Scaffold stages first with 'work plan create'.",
+    )
+  }
+
   const lines: string[] = []
 
   lines.push(`# Tasks: ${streamName}`)

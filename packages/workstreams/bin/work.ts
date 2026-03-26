@@ -3,7 +3,7 @@
  * work - Unified CLI for workstream management
  *
  * Subcommands:
- *   create      - Create a new workstream
+ *   create      - Create a draft workstream container
  *   status      - Show workstream progress
  *   update      - Update a task's status
  *   complete    - Mark a workstream as complete
@@ -126,14 +126,14 @@ type Subcommand = keyof typeof SUBCOMMANDS
 /** Command descriptions for help output */
 const COMMAND_DESCRIPTIONS: Record<string, string> = {
   init: "Initialize work/ directory with default config files",
-  create: "Create a new workstream",
+  create: "Create a draft workstream container",
   current: "Get or set the current workstream",
   continue: "Continue execution (alias for 'work multi --continue')",
   context: "Show workstream context and resume information",
   "add-stage": "Append a fix stage to a workstream",
   approve: "Approve workstream plan/tasks/prompts (subcommands: plan, tasks, prompts)",
   start: "Start execution (requires all approvals, creates GitHub branch/issues)",
-  plan: "Open planning session for workstream (resume or set session ID)",
+  plan: "Manage planning sessions or scaffold a plan (subcommand: create)",
   agents: "Manage agent definitions (list, add, remove)",
   assign: "Assign agents to threads for batch execution",
   prompt: "Generate thread execution prompt for agents",
@@ -209,8 +209,10 @@ Current Workstream:
     work update --task "01.01.01.01" --status completed
 
 Examples:
-  work create --name my-feature --stages 2
+  work create --name my-feature
   work current --set "001-my-feature"
+  work plan create --stages 2
+  work validate plan
   work status
   work list --tasks
   work update --task "01.01.01.01" --status completed

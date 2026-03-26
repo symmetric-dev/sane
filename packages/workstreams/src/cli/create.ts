@@ -1,7 +1,7 @@
 /**
  * CLI: Create Workstream
  *
- * Creates a new workstream with PLAN.md template and empty tasks.json.
+ * Creates a new workstream container with PLAN.md template and empty tasks.json.
  */
 
 import { getRepoRoot } from "../lib/repo.ts"
@@ -11,30 +11,30 @@ import { validateStreamName } from "../lib/utils.ts"
 interface CreateStreamCliArgs {
   name: string
   repoRoot?: string
-  stages: number
+  stages?: number
 }
 
 function printHelp(): void {
   console.log(`
-work create - Create a new workstream
+work create - Create a draft workstream container
 
 Usage:
-  work create --name <name> --stages <n>
+  work create --name <name> [--stages <n>]
 
 Required:
   --name, -n       Workstream name in kebab-case (e.g., "migrate-sql-to-orm")
-  --stages         Number of stages to generate in PLAN.md (1-20)
 
 Optional:
+  --stages         Scaffold this many plan stages immediately (1-20)
   --repo-root, -r  Repository root (auto-detected if omitted)
   --help, -h       Show this help message
 
 Examples:
-  # Create a workstream with 3 stages
-  work create --name migrate-sql-to-orm --stages 3
+  # Create a draft workstream without stages yet
+  work create --name migrate-sql-to-orm
 
-  # Create with 5 stages
-  work create --name refactor-auth --stages 5
+  # Shortcut: create a workstream and scaffold 3 stages immediately
+  work create --name migrate-sql-to-orm --stages 3
 
 Workstream Structure:
   Creates a new workstream directory with:
@@ -44,11 +44,18 @@ Workstream Structure:
   - docs/       Optional directory for additional documentation
 
 Workflow:
-  1. Create workstream: work create --name my-feature --stages 3
-  2. Edit PLAN.md:      Fill in stage names, threads, and details
-  3. Validate:          work validate plan
-  4. Track progress:    work list --stream "001-my-feature" --tasks
-  5. Document results:  work report init && fill in REPORT.md
+  1. Create draft:      work create --name my-feature
+  2. Set current:       work current --set "001-my-feature"
+  3. Scaffold stages:   work plan create --stages 3
+  4. Edit PLAN.md:      Fill in stage names, threads, and details
+  5. Validate:          work validate plan
+                         (empty drafts warn but still succeed)
+  6. Approve:           work approve plan
+                         (requires at least one stage)
+  7. Track progress:    work list --stream "001-my-feature" --tasks
+
+Shortcut:
+  Skip step 2 with:     work create --name my-feature --stages 3
 `)
 }
 
@@ -127,11 +134,6 @@ function parseCliArgs(argv: string[]): CreateStreamCliArgs | null {
     return null
   }
 
-  if (!parsed.stages) {
-    console.error("Error: --stages is required")
-    return null
-  }
-
   return parsed as CreateStreamCliArgs
 }
 
@@ -164,13 +166,23 @@ export function main(argv: string[] = process.argv): void {
     console.log(`   Path: ${result.streamPath}`)
     console.log("")
     console.log("Next steps:")
-    console.log("  1. Edit PLAN.md to define stages, threads, and tasks")
-    console.log(`  2. Run: work validate plan`)
-    console.log(`  3. View: work list --stream "${result.streamId}" --tasks`)
+    if (cliArgs.stages) {
+      console.log("  1. Edit PLAN.md to define stages, threads, and tasks")
+      console.log(`  2. Run: work validate plan`)
+      console.log(`  3. View: work list --stream "${result.streamId}" --tasks`)
+    } else {
+      console.log(`  1. Scaffold plan stages: work plan create --stream "${result.streamId}" --stages 3`)
+      console.log("  2. Edit PLAN.md to define stages, threads, and tasks")
+      console.log(`  3. Run: work validate plan`)
+    }
     console.log("")
     console.log("Created files:")
-    console.log("  - PLAN.md     (edit to define workstream structure)")
-    console.log("  - tasks.json  (auto-populated by validation)")
+    console.log(
+      cliArgs.stages
+        ? "  - PLAN.md     (includes scaffolded stage templates)"
+        : "  - PLAN.md     (draft plan with an empty Stages section)",
+    )
+    console.log("  - tasks.json  (empty task tracker)")
     console.log("  - docs/       (optional additional documentation)")
   } catch (e) {
     console.error(`Error: ${(e as Error).message}`)

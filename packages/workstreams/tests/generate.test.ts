@@ -2,8 +2,8 @@ import { describe, test, expect, beforeEach, afterEach } from "bun:test"
 import { mkdtemp, rm, readFile } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
-import { existsSync, readdirSync } from "node:fs"
-import { generateStream, createGenerateArgs } from "../src/lib/generate"
+import { existsSync } from "node:fs"
+import { generateStream, createGenerateArgs, scaffoldPlanStages } from "../src/lib/generate"
 import { loadIndex } from "../src/lib/index"
 
 describe("createGenerateArgs", () => {
@@ -49,6 +49,7 @@ describe("generateStream", () => {
       expect(existsSync(streamDir)).toBe(true)
       expect(existsSync(join(streamDir, "PLAN.md"))).toBe(true)
       expect(existsSync(join(streamDir, "tasks.json"))).toBe(true)
+      expect(existsSync(join(streamDir, "docs"))).toBe(true)
     })
 
     test("does not create checklist or principle directories", async () => {
@@ -87,21 +88,8 @@ describe("generateStream", () => {
       expect(content).toContain("## References")
       expect(content).toContain("## Stages")
 
-      // Stage subsections
-      expect(content).toContain("### Stage 01:")
-      expect(content).toContain("#### Stage Definition")
-      expect(content).toContain("#### Stage Constitution")
-      expect(content).toContain("#### Stage Questions")
-      expect(content).toContain("#### Stage Batches")
-
-      // Constitution parts
-      expect(content).toContain("Describe how this stage operates")
-
-      // Batch/Thread structure (H5 for batch, H6 for thread)
-      expect(content).toContain("##### Batch 01:")
-      expect(content).toContain("###### Thread 01:")
-      expect(content).toContain("**Summary:**")
-      expect(content).toContain("**Details:**")
+      expect(content).toContain("## Stages\n\n---")
+      expect(content).not.toContain("### Stage 01:")
     })
 
     test("creates multiple stages when specified", async () => {
@@ -115,6 +103,28 @@ describe("generateStream", () => {
       expect(content).toContain("### Stage 02:")
       expect(content).toContain("### Stage 03:")
       expect(content).not.toContain("### Stage 04:")
+    })
+
+    test("scaffolds stage templates into an existing draft PLAN.md", async () => {
+      generateStream(createGenerateArgs("test-feature", tempDir))
+
+      const result = scaffoldPlanStages(tempDir, "000-test-feature", 2)
+      const content = await readFile(result.planPath, "utf-8")
+
+      expect(result.stageCount).toBe(2)
+      expect(content).toContain("### Stage 01:")
+      expect(content).toContain("### Stage 02:")
+      expect(content).toContain("#### Stage Definition")
+      expect(content).toContain("##### Batch 01:")
+      expect(content).toContain("###### Thread 01:")
+    })
+
+    test("fails to scaffold stages when PLAN.md already contains stages", async () => {
+      generateStream(createGenerateArgs("test-feature", tempDir, 1))
+
+      expect(() => scaffoldPlanStages(tempDir, "000-test-feature", 2)).toThrow(
+        'PLAN.md for workstream "000-test-feature" already contains stages',
+      )
     })
 
     test("includes version info", async () => {

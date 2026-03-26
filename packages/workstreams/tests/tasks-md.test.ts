@@ -54,6 +54,15 @@ describe("tasks-md", () => {
     expect(md).toContain("- [ ] Task 01.01.02.01: ")
   })
 
+  test("generateTasksMdFromPlan rejects draft plans with no stages", () => {
+    expect(() =>
+      generateTasksMdFromPlan("Test Stream", {
+        ...mockStreamDoc,
+        stages: [],
+      }),
+    ).toThrow("Cannot generate TASKS.md from a draft plan with no stages")
+  })
+
   test("parseTasksMd extracts tasks correctly", () => {
     const md = `
 # Tasks: Test Stream
