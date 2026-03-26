@@ -14,6 +14,7 @@ interface RevisionCliArgs {
   streamId?: string
   name: string
   description?: string
+  afterStage?: number
 }
 
 function printHelp(): void {
@@ -27,6 +28,8 @@ Required:
   --name           Name of the revision (e.g., "documentation-updates")
 
 Optional:
+  --after-stage    Insert the revision after this stage number from PLAN.md
+                   (e.g. 3 inserts after Stage 03). Defaults to append.
   --stream, -s     Workstream ID or name (uses current if not specified)
   --description    Description of the revision changes
   --repo-root, -r  Repository root (auto-detected if omitted)
@@ -34,6 +37,7 @@ Optional:
 
 Examples:
   work revision --name "documentation-updates"
+  work revision --name "post-stage-review" --after-stage 3
   work revision --name "code-review-feedback" --description "Address reviewer comments"
 `)
 }
@@ -87,6 +91,15 @@ function parseCliArgs(argv: string[]): RevisionCliArgs | null {
         i++
         break
 
+      case "--after-stage":
+        if (!next) {
+          console.error("Error: --after-stage requires a value")
+          return null
+        }
+        parsed.afterStage = parseInt(next, 10)
+        i++
+        break
+
       case "--help":
       case "-h":
         printHelp()
@@ -96,6 +109,10 @@ function parseCliArgs(argv: string[]): RevisionCliArgs | null {
 
   if (!parsed.name) {
     console.error("Error: --name is required")
+    return null
+  }
+  if (parsed.afterStage !== undefined && isNaN(parsed.afterStage)) {
+    console.error("Error: --after-stage must be a number")
     return null
   }
 
@@ -138,6 +155,7 @@ export function main(argv: string[] = process.argv): void {
     const result = appendRevisionStage(repoRoot, stream.id, {
       name: cliArgs.name,
       description: cliArgs.description,
+      afterStage: cliArgs.afterStage,
     })
 
     if (result.success) {
@@ -149,7 +167,7 @@ export function main(argv: string[] = process.argv): void {
         revokedTasks = true
       }
 
-      console.log(`Added Stage ${result.newStageNumber}: Revision - ${cliArgs.name} to PLAN.md`)
+      console.log(result.message)
       if (revokedTasks) {
         console.log(`  Tasks approval revoked for revision`)
       }

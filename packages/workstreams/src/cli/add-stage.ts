@@ -12,6 +12,7 @@ interface AddStageCliArgs {
   repoRoot?: string
   streamId?: string
   targetStage: number
+  afterStage?: number
   name: string
   description?: string
   isBatch?: boolean
@@ -19,17 +20,19 @@ interface AddStageCliArgs {
 
 function printHelp(): void {
   console.log(`
-work add stage - Append a fix stage or batch to a workstream
+work add stage - Add a fix stage or batch to a workstream
 
 Usage:
   work add stage --stage <n> --name <name> [options]
 
 Required:
-  --stage          The stage number being fixed (for reference)
+  --stage          The stage number being fixed (e.g. 1 or 01)
   --name           Name of the fix (e.g., "auth-race-condition")
 
 Optional:
   --batch          Create a fix batch within the stage instead of a new stage
+  --after-stage    Insert the new stage after this stage number from PLAN.md
+                   (e.g. 3 inserts after Stage 03). Defaults to append.
   --stream, -s     Workstream ID or name (uses current if not specified)
   --description    Description of the fix
   --repo-root, -r  Repository root (auto-detected if omitted)
@@ -37,6 +40,7 @@ Optional:
 
 Examples:
   work add stage --stage 01 --name "api-error-handling"
+  work add stage --stage 03 --after-stage 03 --name "post-review-fixes"
   work add stage --batch --stage 02 --name "validation-logic"
 `)
 }
@@ -81,6 +85,15 @@ function parseCliArgs(argv: string[]): AddStageCliArgs | null {
         i++
         break
 
+      case "--after-stage":
+        if (!next) {
+          console.error("Error: --after-stage requires a value")
+          return null
+        }
+        parsed.afterStage = parseInt(next, 10)
+        i++
+        break
+
       case "--name":
         if (!next) {
           console.error("Error: --name requires a value")
@@ -112,6 +125,10 @@ function parseCliArgs(argv: string[]): AddStageCliArgs | null {
 
   if (!parsed.targetStage || isNaN(parsed.targetStage)) {
     console.error("Error: --stage is required and must be a number")
+    return null
+  }
+  if (parsed.afterStage !== undefined && isNaN(parsed.afterStage)) {
+    console.error("Error: --after-stage must be a number")
     return null
   }
   if (!parsed.name) {
@@ -166,6 +183,7 @@ export function main(argv: string[] = process.argv): void {
     } else {
       result = appendFixStage(repoRoot, stream.id, {
         targetStage: cliArgs.targetStage,
+        afterStage: cliArgs.afterStage,
         name: cliArgs.name,
         description: cliArgs.description,
       })

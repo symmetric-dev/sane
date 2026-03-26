@@ -83,6 +83,61 @@ Summary
     expect(newContent).toContain("Batch 01: Fixes")
   })
 
+  test("inserts fix stage after a specific stage and renumbers later stages", async () => {
+    const planContent = `# Plan: Test Stream
+## Summary
+Summary text.
+
+## Stages
+
+### Stage 01: Initial
+
+#### Definition
+
+Stage one.
+
+#### Batches
+##### Batch 01: Setup
+###### Thread 01: Init
+
+### Stage 02: Follow Up
+
+#### Definition
+
+Stage two.
+
+#### Batches
+##### Batch 01: Review
+###### Thread 01: Check
+`
+    await writeFile(join(tempDir, "work", streamId, "PLAN.md"), planContent)
+
+    const result = appendFixStage(tempDir, streamId, {
+      targetStage: 1,
+      afterStage: 1,
+      name: "mid-stream-fix",
+      description: "Inserted after stage 01",
+    })
+
+    expect(result.success).toBe(true)
+    expect(result.newStageNumber).toBe(2)
+
+    const newContent = await readFile(
+      join(tempDir, "work", streamId, "PLAN.md"),
+      "utf-8",
+    )
+
+    expect(newContent).toContain("### Stage 02: Fix - mid-stream-fix")
+    expect(newContent).toContain("### Stage 03: Follow Up")
+
+    const insertedIndex = newContent.indexOf("### Stage 02: Fix - mid-stream-fix")
+    const shiftedIndex = newContent.indexOf("### Stage 03: Follow Up")
+
+    expect(insertedIndex).toBeGreaterThan(-1)
+    expect(shiftedIndex).toBeGreaterThan(-1)
+    expect(insertedIndex).toBeLessThan(shiftedIndex)
+  })
+
   test("appends fix batch to existing stage in PLAN.md", async () => {
     const planContent = `# Plan: Test Stream
 ## Summary

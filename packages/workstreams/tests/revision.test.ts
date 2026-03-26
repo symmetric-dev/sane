@@ -286,6 +286,19 @@ Thread details.
 `;
             writeFileSync(planPath, planContent);
 
+            const index = loadIndex(REPO_ROOT);
+            index.streams[0]!.approval = {
+                status: "approved",
+                tasks: { status: "approved", task_count: 1 },
+                stages: {
+                    1: {
+                        status: "approved",
+                        approved_at: new Date().toISOString(),
+                    },
+                },
+            };
+            saveIndex(REPO_ROOT, index);
+
             const result = appendRevisionStage(REPO_ROOT, "stream-rev", {
                 name: "Review Changes",
                 description: "Fixing bugs."
@@ -301,6 +314,313 @@ Thread details.
             expect(content).toContain("### Stage 02: Revision - Review Changes");
             expect(content).toContain("Fixing bugs.");
             expect(content).toContain("##### Batch 01: Review Changes");
+        });
+
+        test("should reject append when the current last stage is not approved", () => {
+            const planPath = join(REPO_ROOT, "work/stream-rev/PLAN.md");
+            const planContent = `# Plan: Revision Test Stream
+
+## Summary
+Stream summary.
+
+## Stages
+
+### Stage 01: Initial
+
+#### Definition
+Stage definition.
+
+#### Constitution
+Stage constitution.
+
+#### Questions
+- [x] Question 1
+
+#### Batches
+##### Batch 01: Initial Batch
+###### Thread 01: Initial Thread
+**Summary:**
+Thread summary.
+**Details:**
+Thread details.
+`;
+            writeFileSync(planPath, planContent);
+
+            const result = appendRevisionStage(REPO_ROOT, "stream-rev", {
+                name: "Blocked Append",
+                description: "Should fail without prior approval.",
+            });
+
+            expect(result.success).toBe(false);
+            expect(result.message).toContain("Stage 01 must be approved");
+
+            const unchangedPlan = readFileSync(planPath, "utf-8");
+            expect(unchangedPlan).not.toContain("Revision - Blocked Append");
+        });
+
+        test("should insert a revision after a specific stage and shift later metadata", () => {
+            const planPath = join(REPO_ROOT, "work/stream-rev/PLAN.md");
+            const streamDir = join(REPO_ROOT, "work/stream-rev");
+            const planContent = `# Plan: Revision Test Stream
+
+## Summary
+Stream summary.
+
+## Stages
+
+### Stage 01: Initial
+
+#### Definition
+Stage definition.
+
+#### Constitution
+Stage constitution.
+
+#### Questions
+- [x] Question 1
+
+#### Batches
+##### Batch 01: Initial Batch
+###### Thread 01: Initial Thread
+**Summary:**
+Thread summary.
+**Details:**
+Thread details.
+
+### Stage 02: Follow Up
+
+#### Definition
+Follow-up definition.
+
+#### Constitution
+Follow-up constitution.
+
+#### Questions
+- [x] Question 2
+
+#### Batches
+##### Batch 01: Follow Up Batch
+###### Thread 01: Follow Up Thread
+**Summary:**
+Follow-up summary.
+**Details:**
+Follow-up details.
+`;
+            writeFileSync(planPath, planContent);
+
+            writeFileSync(
+                join(streamDir, "tasks.json"),
+                JSON.stringify(
+                    {
+                        version: "1.0.0",
+                        stream_id: "stream-rev",
+                        last_updated: new Date().toISOString(),
+                        tasks: [
+                            {
+                                id: "01.01.01.01",
+                                name: "Initial task",
+                                stage_name: "Initial",
+                                batch_name: "Initial Batch",
+                                thread_name: "Initial Thread",
+                                status: "completed",
+                                created_at: "",
+                                updated_at: "",
+                            },
+                            {
+                                id: "02.01.01.01",
+                                name: "Follow-up task",
+                                stage_name: "Follow Up",
+                                batch_name: "Follow Up Batch",
+                                thread_name: "Follow Up Thread",
+                                status: "pending",
+                                created_at: "",
+                                updated_at: "",
+                            },
+                        ],
+                    },
+                    null,
+                    2,
+                ),
+            );
+
+            writeFileSync(
+                join(streamDir, "threads.json"),
+                JSON.stringify(
+                    {
+                        version: "1.0.0",
+                        stream_id: "stream-rev",
+                        last_updated: new Date().toISOString(),
+                        threads: [
+                            {
+                                threadId: "01.01.01",
+                                promptPath: "prompts/01-initial/01-initial-batch/initial-thread.md",
+                                sessions: [],
+                            },
+                            {
+                                threadId: "02.01.01",
+                                promptPath: "prompts/02-follow-up/01-follow-up-batch/follow-up-thread.md",
+                                sessions: [],
+                            },
+                        ],
+                    },
+                    null,
+                    2,
+                ),
+            );
+
+            mkdirSync(join(streamDir, "prompts", "01-initial", "01-initial-batch"), { recursive: true });
+            mkdirSync(join(streamDir, "prompts", "02-follow-up", "01-follow-up-batch"), { recursive: true });
+            writeFileSync(
+                join(streamDir, "prompts", "01-initial", "01-initial-batch", "initial-thread.md"),
+                "initial prompt",
+            );
+            writeFileSync(
+                join(streamDir, "prompts", "02-follow-up", "01-follow-up-batch", "follow-up-thread.md"),
+                "follow-up prompt",
+            );
+
+            writeFileSync(
+                join(streamDir, "github.json"),
+                JSON.stringify(
+                    {
+                        version: "1.0.0",
+                        stream_id: "stream-rev",
+                        last_updated: new Date().toISOString(),
+                        stages: {
+                            "01": {
+                                issue_number: 101,
+                                issue_url: "https://example.com/101",
+                                state: "open",
+                                created_at: new Date().toISOString(),
+                            },
+                            "02": {
+                                issue_number: 102,
+                                issue_url: "https://example.com/102",
+                                state: "open",
+                                created_at: new Date().toISOString(),
+                            },
+                        },
+                    },
+                    null,
+                    2,
+                ),
+            );
+
+            const index = loadIndex(REPO_ROOT);
+            index.streams[0]!.approval = {
+                status: "approved",
+                tasks: { status: "approved", task_count: 2 },
+                stages: {
+                    1: {
+                        status: "approved",
+                        approved_at: new Date().toISOString(),
+                    },
+                    2: {
+                        status: "approved",
+                        approved_at: new Date().toISOString(),
+                    },
+                },
+            };
+            saveIndex(REPO_ROOT, index);
+
+            const result = appendRevisionStage(REPO_ROOT, "stream-rev", {
+                name: "Review Changes",
+                description: "Inserted after stage 01.",
+                afterStage: 1,
+            });
+
+            expect(result.success).toBe(true);
+            expect(result.newStageNumber).toBe(2);
+
+            const updatedPlan = readFileSync(planPath, "utf-8");
+            expect(updatedPlan).toContain("### Stage 02: Revision - Review Changes");
+            expect(updatedPlan).toContain("### Stage 03: Follow Up");
+            expect(updatedPlan.indexOf("### Stage 02: Revision - Review Changes")).toBeLessThan(
+                updatedPlan.indexOf("### Stage 03: Follow Up"),
+            );
+
+            const tasksFile = JSON.parse(readFileSync(join(streamDir, "tasks.json"), "utf-8"));
+            expect(tasksFile.tasks.some((task: Task) => task.id === "02.01.01.01")).toBe(false);
+            expect(tasksFile.tasks.some((task: Task) => task.id === "03.01.01.01")).toBe(true);
+
+            const threadsFile = JSON.parse(readFileSync(join(streamDir, "threads.json"), "utf-8"));
+            expect(threadsFile.threads.some((thread: { threadId: string }) => thread.threadId === "02.01.01")).toBe(true);
+            expect(threadsFile.threads.some((thread: { threadId: string }) => thread.threadId === "03.01.01")).toBe(true);
+
+            const shiftedThread = threadsFile.threads.find((thread: { threadId: string }) => thread.threadId === "03.01.01");
+            expect(shiftedThread?.promptPath).toContain("prompts/03-follow-up/01-follow-up-batch/follow-up-thread.md");
+            expect(existsSync(join(streamDir, "prompts", "03-follow-up", "01-follow-up-batch", "follow-up-thread.md"))).toBe(true);
+
+            const updatedIndex = loadIndex(REPO_ROOT);
+            expect(updatedIndex.streams[0]!.approval?.stages?.[2]).toBeUndefined();
+            expect(updatedIndex.streams[0]!.approval?.stages?.[3]?.status).toBe("approved");
+
+            const githubData = JSON.parse(readFileSync(join(streamDir, "github.json"), "utf-8"));
+            expect(githubData.stages["02"]).toBeUndefined();
+            expect(githubData.stages["03"]?.issue_number).toBe(102);
+        });
+
+        test("should reject insertion after an unapproved stage", () => {
+            const planPath = join(REPO_ROOT, "work/stream-rev/PLAN.md");
+            const planContent = `# Plan: Revision Test Stream
+
+## Summary
+Stream summary.
+
+## Stages
+
+### Stage 01: Initial
+
+#### Definition
+Stage definition.
+
+#### Constitution
+Stage constitution.
+
+#### Questions
+- [x] Question 1
+
+#### Batches
+##### Batch 01: Initial Batch
+###### Thread 01: Initial Thread
+**Summary:**
+Thread summary.
+**Details:**
+Thread details.
+
+### Stage 02: Follow Up
+
+#### Definition
+Follow-up definition.
+
+#### Constitution
+Follow-up constitution.
+
+#### Questions
+- [x] Question 2
+
+#### Batches
+##### Batch 01: Follow Up Batch
+###### Thread 01: Follow Up Thread
+**Summary:**
+Follow-up summary.
+**Details:**
+Follow-up details.
+`;
+            writeFileSync(planPath, planContent);
+
+            const result = appendRevisionStage(REPO_ROOT, "stream-rev", {
+                name: "Blocked Insert",
+                description: "Should fail without approval.",
+                afterStage: 1,
+            });
+
+            expect(result.success).toBe(false);
+            expect(result.message).toContain("Stage 01 must be approved");
+
+            const unchangedPlan = readFileSync(planPath, "utf-8");
+            expect(unchangedPlan).not.toContain("Revision - Blocked Insert");
+            expect(unchangedPlan).toContain("### Stage 02: Follow Up");
         });
     });
 
@@ -336,6 +656,19 @@ Thread details.
 `;
             writeFileSync(planPath, planContent);
 
+            const index = loadIndex(REPO_ROOT);
+            index.streams[0]!.approval = {
+                status: "approved",
+                tasks: { status: "approved", task_count: 1 },
+                stages: {
+                    1: {
+                        status: "approved",
+                        approved_at: new Date().toISOString(),
+                    },
+                },
+            };
+            saveIndex(REPO_ROOT, index);
+
             // Import CLI
             const { main } = await import("../src/cli/revision.ts");
 
@@ -354,7 +687,100 @@ Thread details.
             expect(content).toContain("Revision - CLI Test");
             
             const output = logs.join("\n");
-            expect(output).toContain("Added Stage 2");
+            expect(output).toContain("Appended Stage 02 to PLAN.md");
+        });
+
+        test("should insert revision stage after a specific stage via CLI", async () => {
+            const planPath = join(REPO_ROOT, "work/stream-rev/PLAN.md");
+            const planContent = `# Plan: Revision Test Stream
+
+## Summary
+Stream summary.
+
+## Stages
+
+### Stage 01: Initial
+
+#### Definition
+Stage definition.
+
+#### Constitution
+Stage constitution.
+
+#### Questions
+- [x] Question 1
+
+#### Batches
+##### Batch 01: Initial Batch
+###### Thread 01: Initial Thread
+**Summary:**
+Thread summary.
+**Details:**
+Thread details.
+
+### Stage 02: Finalize
+
+#### Definition
+Finalize definition.
+
+#### Constitution
+Finalize constitution.
+
+#### Questions
+- [x] Question 2
+
+#### Batches
+##### Batch 01: Final Batch
+###### Thread 01: Final Thread
+**Summary:**
+Final summary.
+**Details:**
+Final details.
+`;
+            writeFileSync(planPath, planContent);
+
+            const index = loadIndex(REPO_ROOT);
+            index.streams[0]!.approval = {
+                status: "approved",
+                tasks: { status: "approved", task_count: 1 },
+                stages: {
+                    1: {
+                        status: "approved",
+                        approved_at: new Date().toISOString(),
+                    },
+                },
+            };
+            saveIndex(REPO_ROOT, index);
+
+            const { main } = await import("../src/cli/revision.ts");
+
+            const logs: string[] = [];
+            const originalLog = console.log;
+            console.log = (...args) => logs.push(args.join(" "));
+
+            try {
+                await main([
+                    "node",
+                    "revision",
+                    "--name",
+                    "CLI Insert",
+                    "--after-stage",
+                    "1",
+                    "--stream",
+                    "stream-rev",
+                    "--repo-root",
+                    REPO_ROOT,
+                ]);
+            } finally {
+                console.log = originalLog;
+            }
+
+            const content = readFileSync(planPath, "utf-8");
+            expect(content).toContain("### Stage 02: Revision - CLI Insert");
+            expect(content).toContain("### Stage 03: Finalize");
+
+            const output = logs.join("\n");
+            expect(output).toContain("Inserted Stage 02 after Stage 01");
         });
     });
 });

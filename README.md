@@ -56,8 +56,18 @@ Optional skill install:
 
 Typical flow is:
 
-1. Ask your agent to create and prepare the workstream (plan + tasks).
+1. Ask your agent to create a draft workstream, scaffold stages, and prepare the plan/tasks.
 2. As a human, run approvals and execution gates.
+
+Draft-first planning usually looks like:
+
+```bash
+work create --name my-feature
+work current --set "001-my-feature"
+work plan create --stages 2
+work validate plan
+work approve plan
+```
 
 Human-run commands:
 
