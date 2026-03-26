@@ -1,7 +1,8 @@
 /**
  * CLI: Create Workstream
  *
- * Creates a new workstream container with PLAN.md template and empty tasks.json.
+ * Creates a new workstream container with PLAN.md, REQUIREMENTS.md,
+ * resources/, and empty tasks.json.
  */
 
 import { getRepoRoot } from "../lib/repo.ts"
@@ -39,20 +40,23 @@ Examples:
 Workstream Structure:
   Creates a new workstream directory with:
   - PLAN.md     Structured markdown for workstream definition
+  - REQUIREMENTS.md  Requirements, dependencies, and resource references
   - tasks.json  Empty task tracker (populate with "work add-task")
-  - files/      Directory for task outputs
+  - resources/  Supporting files referenced from REQUIREMENTS.md
   - docs/       Optional directory for additional documentation
 
 Workflow:
   1. Create draft:      work create --name my-feature
   2. Set current:       work current --set "001-my-feature"
-  3. Scaffold stages:   work plan create --stages 3
-  4. Edit PLAN.md:      Fill in stage names, threads, and details
-  5. Validate:          work validate plan
+  3. Fill requirements: Edit REQUIREMENTS.md and add files under resources/
+  4. Validate:          work validate requirements
+  5. Scaffold stages:   work plan create --stages 3
+  6. Edit PLAN.md:      Fill in stage names, threads, and details
+  7. Validate:          work validate plan
                          (empty drafts warn but still succeed)
-  6. Approve:           work approve plan
+  8. Approve:           work approve plan
                          (requires at least one stage)
-  7. Track progress:    work list --stream "001-my-feature" --tasks
+  9. Track progress:    work list --stream "001-my-feature" --tasks
 
 Shortcut:
   Skip step 2 with:     work create --name my-feature --stages 3
@@ -167,13 +171,17 @@ export function main(argv: string[] = process.argv): void {
     console.log("")
     console.log("Next steps:")
     if (cliArgs.stages) {
-      console.log("  1. Edit PLAN.md to define stages, threads, and tasks")
-      console.log(`  2. Run: work validate plan`)
-      console.log(`  3. View: work list --stream "${result.streamId}" --tasks`)
-    } else {
-      console.log(`  1. Scaffold plan stages: work plan create --stream "${result.streamId}" --stages 3`)
+      console.log("  1. Fill REQUIREMENTS.md and add supporting files under resources/")
       console.log("  2. Edit PLAN.md to define stages, threads, and tasks")
-      console.log(`  3. Run: work validate plan`)
+      console.log(`  3. Run: work validate requirements`)
+      console.log(`  4. Run: work validate plan`)
+      console.log(`  5. View: work list --stream "${result.streamId}" --tasks`)
+    } else {
+      console.log("  1. Fill REQUIREMENTS.md and add supporting files under resources/")
+      console.log(`  2. Run: work validate requirements`)
+      console.log(`  3. Scaffold plan stages: work plan create --stream "${result.streamId}" --stages 3`)
+      console.log("  4. Edit PLAN.md to define stages, threads, and tasks")
+      console.log(`  5. Run: work validate plan`)
     }
     console.log("")
     console.log("Created files:")
@@ -182,7 +190,9 @@ export function main(argv: string[] = process.argv): void {
         ? "  - PLAN.md     (includes scaffolded stage templates)"
         : "  - PLAN.md     (draft plan with an empty Stages section)",
     )
+    console.log("  - REQUIREMENTS.md  (draft requirements, dependencies, and resources)")
     console.log("  - tasks.json  (empty task tracker)")
+    console.log("  - resources/  (supporting files referenced from REQUIREMENTS.md)")
     console.log("  - docs/       (optional additional documentation)")
   } catch (e) {
     console.error(`Error: ${(e as Error).message}`)

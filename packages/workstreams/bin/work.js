@@ -24555,10 +24555,10 @@ function getContinueContext(repoRoot, streamId, streamName) {
 // src/cli/context.ts
 function printHelp27() {
   console.log(`
-work context - Show workstream context and resume information
+work continue - Show workstream resume information
 
 Usage:
-  work context [options]
+  work continue [options]
 
 Optional:
   --stream, -s     Workstream ID or name (uses current if not specified)
@@ -24572,11 +24572,11 @@ Description:
   2. The last breadcrumb (if any)
   3. Context about the workstream status
 
-  Note: This command was previously named 'work continue'.
+  Note: Use the public 'work continue' command to resume execution.
 
 Examples:
-  work context
-  work context --stream "001-my-feature"
+  work continue
+  work continue --stream "001-my-feature"
 `);
 }
 function parseCliArgs26(argv) {

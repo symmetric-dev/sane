@@ -7,13 +7,18 @@ description: Review workstream plans for structure, risks, and readiness.
 
 ## Review Steps
 
-1. Inspect plan:
+1. Inspect requirements and plan:
+   - `work validate requirements`
    - `work review plan`
    - `work preview`
 2. Validate:
-   - `work validate plan`
-   - `work check plan`
+    - `work validate plan`
+    - `work check plan`
 3. Check quality:
+    - requirements summary is clear and complete
+    - deliverables are concrete and verifiable
+    - dependencies point to real repo files or directories
+    - resources point to real files under the workstream `resources/` directory
     - thread independence within each batch
     - clear scope per thread
     - explicit inputs/outputs

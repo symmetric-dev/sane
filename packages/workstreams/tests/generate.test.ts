@@ -48,8 +48,10 @@ describe("generateStream", () => {
       const streamDir = join(tempDir, "work", "000-test-feature")
       expect(existsSync(streamDir)).toBe(true)
       expect(existsSync(join(streamDir, "PLAN.md"))).toBe(true)
+      expect(existsSync(join(streamDir, "REQUIREMENTS.md"))).toBe(true)
       expect(existsSync(join(streamDir, "tasks.json"))).toBe(true)
       expect(existsSync(join(streamDir, "docs"))).toBe(true)
+      expect(existsSync(join(streamDir, "resources"))).toBe(true)
     })
 
     test("does not create checklist or principle directories", async () => {
@@ -145,6 +147,30 @@ describe("generateStream", () => {
       const content = await readFile(planMdPath, "utf-8")
 
       expect(content).toMatch(/\*Last updated: \d{4}-\d{2}-\d{2}\*/)
+    })
+  })
+
+  describe("REQUIREMENTS.md generation", () => {
+    test("creates REQUIREMENTS.md with required sections in order", async () => {
+      const args = createGenerateArgs("test-feature", tempDir)
+      generateStream(args)
+
+      const requirementsPath = join(tempDir, "work/000-test-feature/REQUIREMENTS.md")
+      const content = await readFile(requirementsPath, "utf-8")
+
+      const summaryIndex = content.indexOf("## Summary")
+      const deliverablesIndex = content.indexOf("## Deliverables")
+      const dependenciesIndex = content.indexOf("## Dependencies")
+      const resourcesIndex = content.indexOf("## Resources")
+
+      expect(content).toContain("# Requirements")
+      expect(summaryIndex).toBeGreaterThan(-1)
+      expect(deliverablesIndex).toBeGreaterThan(summaryIndex)
+      expect(dependenciesIndex).toBeGreaterThan(deliverablesIndex)
+      expect(resourcesIndex).toBeGreaterThan(dependenciesIndex)
+      expect(content).toContain("Keep this section as bullets")
+      expect(content).toContain("repo-relative code paths in backticks")
+      expect(content).toContain("Reference workstream resource files under `resources/`")
     })
   })
 

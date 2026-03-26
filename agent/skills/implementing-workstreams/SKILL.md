@@ -38,6 +38,7 @@ work list --tasks --thread "01.01.01"
 ## Recovery
 
 - If work is already done but status is stale, update status and add report.
-- If context is unclear, review:
+- If task intent is unclear, review:
+  - `work validate requirements`
   - `work review plan`
   - `work read --task "ID"`

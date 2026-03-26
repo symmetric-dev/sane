@@ -9,6 +9,7 @@ description: Evaluate completed workstream output and finalize REPORT.md.
 
 1. Check current state: `work status`
 2. Review delivered changes:
+   - `work validate requirements`
    - `work review commits`
    - `work review plan`
 3. Ensure report exists: `work report init` (if missing)

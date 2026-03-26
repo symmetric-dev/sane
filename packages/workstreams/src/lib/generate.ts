@@ -18,6 +18,7 @@ import {
 } from "./index.ts"
 import { toTitleCase, getDateString } from "./utils.ts"
 import { parseStreamDocument } from "./stream-parser.ts"
+import { generateRequirementsMd } from "./requirements.ts"
 
 /**
  * Generate the version string for templates
@@ -205,6 +206,13 @@ This directory is optional. If your workstream doesn't require additional docume
 }
 
 /**
+ * Generate REQUIREMENTS.md content
+ */
+function createRequirementsMd(): string {
+  return generateRequirementsMd()
+}
+
+/**
  * Generate REPORT.md template content directly from PLAN.md
  * This is used during stream creation before the stream is indexed
  * Falls back to simple template if PLAN.md can't be parsed (e.g., still a template)
@@ -321,9 +329,16 @@ export function generateStream(args: GenerateStreamArgs): GenerateStreamResult {
   const docsDir = join(streamDir, "docs")
   mkdirSync(docsDir, { recursive: true })
 
+  // Create resources directory
+  const resourcesDir = join(streamDir, "resources")
+  mkdirSync(resourcesDir, { recursive: true })
+
   // Generate PLAN.md
   const planContent = generatePlanMd(streamId, args.name, args.stages)
   atomicWriteFile(join(streamDir, "PLAN.md"), planContent)
+
+  // Generate REQUIREMENTS.md
+  atomicWriteFile(join(streamDir, "REQUIREMENTS.md"), createRequirementsMd())
 
   // Generate empty tasks.json
   atomicWriteFile(

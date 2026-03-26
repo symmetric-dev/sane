@@ -64,6 +64,20 @@ export {
   type GenerateStreamResult,
 } from "./lib/generate.ts"
 
+// REQUIREMENTS.md generation and validation
+export {
+  REQUIREMENTS_SECTION_ORDER,
+  getRequirementsMdPath,
+  generateRequirementsMd,
+  parseRequirementsDocument,
+  validateRequirementsDocument,
+  type RequirementsSectionName,
+  type RequirementsBulletEntry,
+  type RequirementsDocument,
+  type RequirementsValidationError,
+  type RequirementsValidationResult,
+} from "./lib/requirements.ts"
+
 // Status and progress
 export {
   getStreamProgress,

@@ -13,7 +13,7 @@
  *   add-task    - Add a task to a workstream
  *   delete      - Delete workstreams, stages, threads, or tasks
  *   review      - Review plan or tasks
- *   validate    - Validate PLAN.md structure
+ *   validate    - Validate plan/tasks/requirements
  *   check       - Find unchecked items in plan
  *   preview     - Show PLAN.md structure
  *   init        - Initialize work/ directory with default config files
@@ -42,7 +42,6 @@ import { main as changelogMain } from "../src/cli/changelog.ts"
 import { main as exportMain } from "../src/cli/export.ts"
 import { main as approveMain } from "../src/cli/approve/index.ts"
 import { main as continueMain } from "../src/cli/continue.ts"
-import { main as contextMain } from "../src/cli/context.ts"
 import { main as addStageMain } from "../src/cli/add-stage.ts"
 import { main as tasksMain } from "../src/cli/tasks.ts"
 import { main as agentsMain } from "../src/cli/agents.ts"
@@ -80,7 +79,6 @@ const SUBCOMMANDS = {
   create: createMain,
   current: currentMain,
   continue: continueMain,
-  context: contextMain,
   "add-stage": addStageMain,
   revision: revisionMain,
   approve: approveMain,
@@ -126,10 +124,9 @@ type Subcommand = keyof typeof SUBCOMMANDS
 /** Command descriptions for help output */
 const COMMAND_DESCRIPTIONS: Record<string, string> = {
   init: "Initialize work/ directory with default config files",
-  create: "Create a draft workstream container",
+  create: "Create a draft workstream container and initial files",
   current: "Get or set the current workstream",
   continue: "Continue execution (alias for 'work multi --continue')",
-  context: "Show workstream context and resume information",
   "add-stage": "Append a fix stage to a workstream",
   approve: "Approve workstream plan/tasks/prompts (subcommands: plan, tasks, prompts)",
   start: "Start execution (requires all approvals, creates GitHub branch/issues)",
@@ -154,7 +151,7 @@ const COMMAND_DESCRIPTIONS: Record<string, string> = {
   files: "List and index files in files/ directory",
   tasks: "Manage TASKS.md intermediate file (generate/serialize)",
   review: "Review plan, tasks, or commits (plan, tasks, commits)",
-  validate: "Validate plan structure and content",
+  validate: "Validate plan, tasks, or requirements",
   check: "Find unchecked items in plan",
   preview: "Show PLAN.md structure",
   report: "Generate progress report (includes metrics)",
@@ -212,6 +209,7 @@ Examples:
   work create --name my-feature
   work current --set "001-my-feature"
   work plan create --stages 2
+  work validate requirements
   work validate plan
   work status
   work list --tasks

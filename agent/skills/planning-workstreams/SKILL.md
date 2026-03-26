@@ -15,18 +15,22 @@ description: Create and prepare workstreams for execution. Planning only, no cod
 
 1. Create draft stream: `work create --name "feature-name"`
 2. Set current stream: `work current --set "NNN-feature-name"`
-3. Scaffold stages: `work plan create --stages N`
-4. Fill `PLAN.md` with stages, batches, threads, and stage questions.
-5. Validate before review:
+3. Fill `REQUIREMENTS.md` and add supporting files under `resources/`.
+4. Validate requirements: `work validate requirements`
+5. Scaffold stages: `work plan create --stages N`
+6. Fill `PLAN.md` with stages, batches, threads, and stage questions.
+7. Validate before review:
    - `work validate plan`
    - `work check plan`
    - `work preview`
-6. Ask user to approve plan: `!work approve plan`
-7. Fill generated `TASKS.md` with specific tasks and agent assignments.
-8. Ask user to approve tasks: `!work approve tasks`
-9. Link planning session using `workstream_link_planning_session`.
+8. Ask user to approve plan: `!work approve plan`
+9. Fill generated `TASKS.md` with specific tasks and agent assignments.
+10. Ask user to approve tasks: `!work approve tasks`
+11. Link planning session using `workstream_link_planning_session`.
 
 Notes:
+- `REQUIREMENTS.md` is the human-facing source of truth for summary, deliverables, dependencies, and resource inputs.
+- `work validate requirements` should pass before scaffolding or reviewing the execution plan.
 - `work create --name "feature-name" --stages N` is still a valid shortcut that scaffolds stages immediately.
 - `work validate plan` warns but succeeds for empty draft plans.
 - `work approve plan` requires at least one stage.
@@ -52,6 +56,7 @@ If planning changes after an existing stage is reviewed, you can add a revision 
 ```bash
 work create --name "feature-name"
 work current --set "001-feature-name"
+work validate requirements
 work plan create --stages 3
 work edit
 work preview

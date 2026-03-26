@@ -1,7 +1,7 @@
 /**
  * CLI: Workstream Validate
  *
- * Validate PLAN.md and TASKS.md structure and content.
+ * Validate PLAN.md, TASKS.md, and REQUIREMENTS.md structure and content.
  */
 
 import { existsSync, readFileSync } from "fs"
@@ -11,11 +11,15 @@ import { loadIndex, getResolvedStream } from "../lib/index.ts"
 import { getStreamPlanMdPath, consolidateStream } from "../lib/consolidate.ts"
 import { parseTasksMd } from "../lib/tasks-md.ts"
 import { findSharedFilesInTasksMd, formatSharedFileWarnings } from "../lib/analysis.ts"
+import {
+    getRequirementsMdPath,
+    validateRequirementsDocument,
+} from "../lib/requirements.ts"
 
 interface ValidateCliArgs {
     repoRoot?: string
     streamId?: string
-    subcommand?: "plan" | "tasks"
+    subcommand?: "plan" | "tasks" | "requirements"
     json: boolean
 }
 
@@ -27,15 +31,17 @@ interface ValidationResult {
 
 function printHelp(): void {
     console.log(`
-work validate - Validate workstream plan and tasks structure
+ work validate - Validate workstream plan, tasks, and requirements
 
 Usage:
   work validate plan [--stream <stream-id>]
   work validate tasks [--stream <stream-id>]
+  work validate requirements [--stream <stream-id>]
 
 Subcommands:
   plan     Validate PLAN.md structure and content
   tasks    Validate TASKS.md structure and content
+  requirements  Validate REQUIREMENTS.md structure and content
 
 Options:
   --repo-root, -r  Repository root (auto-detected if omitted)
@@ -44,10 +50,12 @@ Options:
   --help, -h       Show this help message
 
 Description:
-  Validates PLAN.md or TASKS.md schema structure (stages, batches, threads).
-  Both commands check for files shared across parallel threads in the same batch.
+  Validates PLAN.md, TASKS.md, or REQUIREMENTS.md structure and content.
+  Plan/tasks validation checks for files shared across parallel threads in the same batch.
   Draft plans with an empty Stages section are valid, but 'work validate plan'
   emits a warning until stages are scaffolded.
+  REQUIREMENTS.md validation checks required sections plus dependency/resource paths.
+  Use 'work validate requirements' after updating REQUIREMENTS.md or files in resources/.
   Note: Use 'work check plan' to check for open questions and missing input files.
 
 Examples:
@@ -57,10 +65,14 @@ Examples:
   # Validate a draft plan before stages exist yet
   work create --name draft-feature
   work current --set "000-draft-feature"
+  work validate requirements
   work validate plan
 
   # Validate tasks structure
   work validate tasks
+
+  # Validate requirements structure
+  work validate requirements
 
   # Validate specific workstream
   work validate plan --stream "001-my-stream"
@@ -79,8 +91,8 @@ function parseCliArgs(argv: string[]): ValidateCliArgs | null {
         const next = args[i + 1]
 
         // Handle subcommand
-        if ((arg === "plan" || arg === "tasks") && !parsed.subcommand) {
-            parsed.subcommand = arg as "plan" | "tasks"
+        if ((arg === "plan" || arg === "tasks" || arg === "requirements") && !parsed.subcommand) {
+            parsed.subcommand = arg as "plan" | "tasks" | "requirements"
             continue
         }
 
@@ -120,7 +132,7 @@ function parseCliArgs(argv: string[]): ValidateCliArgs | null {
     return parsed
 }
 
-function formatValidationResult(result: ValidationResult, fileType: "PLAN.md" | "TASKS.md"): string {
+function formatValidationResult(result: ValidationResult, fileType: "PLAN.md" | "TASKS.md" | "REQUIREMENTS.md"): string {
     const lines: string[] = []
 
     if (result.valid) {
@@ -157,7 +169,7 @@ export function main(argv: string[] = process.argv): void {
 
     // Validate subcommand
     if (!cliArgs.subcommand) {
-        console.error("Error: subcommand required (e.g., 'plan' or 'tasks')")
+        console.error("Error: subcommand required (e.g., 'plan', 'tasks', or 'requirements')")
         console.error("\nRun with --help for usage information.")
         process.exit(1)
     }
@@ -246,6 +258,42 @@ export function main(argv: string[] = process.argv): void {
         }
 
         // Exit with error if validation failed
+        if (!result.valid) {
+            process.exit(1)
+        }
+    }
+
+    if (cliArgs.subcommand === "requirements") {
+        const requirementsMdPath = getRequirementsMdPath(repoRoot, stream.id)
+        if (!existsSync(requirementsMdPath)) {
+            console.error(`Error: REQUIREMENTS.md not found at ${requirementsMdPath}`)
+            process.exit(1)
+        }
+
+        const content = readFileSync(requirementsMdPath, "utf-8")
+        const validation = validateRequirementsDocument({
+            content,
+            repoRoot,
+            streamId: stream.id,
+        })
+
+        const result: ValidationResult = {
+            valid: validation.valid,
+            errors: validation.errors.map((error) => {
+                const location = error.line !== undefined
+                    ? `[${error.section} line ${error.line}]`
+                    : `[${error.section}]`
+                return `${location} ${error.message}`
+            }),
+            warnings: validation.warnings,
+        }
+
+        if (cliArgs.json) {
+            console.log(JSON.stringify(result, null, 2))
+        } else {
+            console.log(formatValidationResult(result, "REQUIREMENTS.md"))
+        }
+
         if (!result.valid) {
             process.exit(1)
         }

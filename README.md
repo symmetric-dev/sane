@@ -56,7 +56,7 @@ Optional skill install:
 
 Typical flow is:
 
-1. Ask your agent to create a draft workstream, scaffold stages, and prepare the plan/tasks.
+1. Ask your agent to create a draft workstream, fill `REQUIREMENTS.md`, scaffold stages, and prepare the plan/tasks.
 2. As a human, run approvals and execution gates.
 
 Draft-first planning usually looks like:
@@ -64,6 +64,7 @@ Draft-first planning usually looks like:
 ```bash
 work create --name my-feature
 work current --set "001-my-feature"
+work validate requirements
 work plan create --stages 2
 work validate plan
 work approve plan
@@ -127,7 +128,7 @@ Example output from `work status`:
 
 AgEnv uses skill files under `agent/skills/*` to guide agent behavior through each phase.
 
-- `planning-workstreams`: used first to create the stream, shape `PLAN.md`, validate/check, and prepare tasks for approval.
+- `planning-workstreams`: used first to create the stream, fill `REQUIREMENTS.md`, shape `PLAN.md`, validate/check, and prepare tasks for approval.
 - `implementing-workstreams`: used by worker agents that execute thread tasks; these workers run in parallel by batch/thread.
 - `synthesizing-workstreams`: used after parallel execution to consolidate thread outcomes into a coherent status/update view.
 - `reviewing-workstreams`: used to review plan/task quality and readiness before or between execution phases.
@@ -135,7 +136,7 @@ AgEnv uses skill files under `agent/skills/*` to guide agent behavior through ea
 
 In practice:
 
-1. Planning agent uses planning skill to prepare plan/tasks.
+1. Planning agent uses planning skill to prepare requirements/plan/tasks.
 2. Human approves (`work approve plan`, `work approve tasks`) and starts (`work start`).
 3. Execution agents run threads in parallel with implementation skill.
 4. Synthesis/review/evaluation skills are used to summarize, validate, and close out the workstream.
