@@ -27,6 +27,7 @@ description: Review workstream plans for structure, risks, and readiness.
 ## Draft Plans
 
 - A warning from `work validate plan` about "no stages defined yet" means the workstream is still a draft, not that the file is broken.
+- A workstream is not planning-ready if `REQUIREMENTS.md` is missing or `work validate requirements` does not pass.
 - Draft plans are not approval-ready; recommend scaffolding stages with `work plan create --stages <n>` before `work approve plan`.
 
 ## Output

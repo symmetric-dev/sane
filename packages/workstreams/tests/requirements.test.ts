@@ -86,6 +86,39 @@ Implement requirements generation and parsing.
     expect(result.warnings).toEqual([])
   })
 
+  test("accepts https URLs in resources without local file checks", () => {
+    const content = `# Requirements
+
+## Summary
+
+Implement requirements generation and parsing.
+
+## Deliverables
+
+- REQUIREMENTS template generation
+
+## Dependencies
+
+- ` + "`packages/workstreams/src/lib/generate.ts`" + `
+
+## Resources
+
+- ` + "`https://baseballsavant.mlb.com/leaderboard/pitch-arsenal-stats?type=pitcher&year=2024`" + `
+`
+
+    const result = validateRequirementsDocument({
+      content,
+      repoRoot: tempDir,
+      streamId,
+    })
+
+    expect(result.valid).toBe(true)
+    expect(result.document.resources[0]?.path).toBe(
+      "https://baseballsavant.mlb.com/leaderboard/pitch-arsenal-stats?type=pitcher&year=2024",
+    )
+    expect(result.errors).toEqual([])
+  })
+
   test("reports required heading and empty summary errors", () => {
     const content = `# Requirements
 
@@ -216,6 +249,40 @@ Implement requirements generation and parsing.
     expect(result.errors.map((error) => error.message)).toContain(
       "Referenced resource file does not exist under the workstream resources directory: resources/missing.md",
     )
+  })
+
+  test("rejects malformed or unsupported resource references", () => {
+    const content = `# Requirements
+
+## Summary
+
+Implement requirements generation and parsing.
+
+## Deliverables
+
+- Add parser
+
+## Dependencies
+
+- ` + "`packages/workstreams/src/lib/generate.ts`" + `
+
+## Resources
+
+- ` + "`https:/broken.example.com/resource`" + `
+- ` + "`ftp://example.com/resource`" + `
+`
+
+    const result = validateRequirementsDocument({
+      content,
+      repoRoot: tempDir,
+      streamId,
+    })
+
+    expect(result.valid).toBe(false)
+    expect(result.errors.map((error) => error.message)).toEqual([
+      "Resource path entry is missing or invalid",
+      "Resource path entry is missing or invalid",
+    ])
   })
 
   test("detects invalid heading order", () => {

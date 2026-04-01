@@ -30,8 +30,10 @@ description: Create and prepare workstreams for execution. Planning only, no cod
 
 Notes:
 - `REQUIREMENTS.md` is the human-facing source of truth for summary, deliverables, dependencies, and resource inputs.
-- `work validate requirements` should pass before scaffolding or reviewing the execution plan.
-- `work create --name "feature-name" --stages N` is still a valid shortcut that scaffolds stages immediately.
+- `REQUIREMENTS.md` is required before planning starts.
+- `work validate requirements` must pass before scaffolding or reviewing the execution plan.
+- If requirements are missing or incomplete, stop and ask the user to provide them, or help the user draft `REQUIREMENTS.md` first.
+- Do not use `work create --name "feature-name" --stages N` in the planning workflow; requirements-first planning is the only supported workflow for agents.
 - `work validate plan` warns but succeeds for empty draft plans.
 - `work approve plan` requires at least one stage.
 
@@ -39,6 +41,12 @@ If planning changes after an existing stage is reviewed, you can add a revision 
 
 ## Planning Rules
 
+- No planning without validated requirements.
+- Do not scaffold or edit `PLAN.md` until `work validate requirements` passes.
+- Treat `PLAN.md` summary as the current planning-state/horizon note.
+- When the plan is intentionally partial, the summary should say: (1) what is planned now, (2) what is intentionally deferred, and (3) what finding or event unlocks more planning.
+- If you add, remove, or substantially change stages, update the `## Summary` text so it matches the current planning horizon and scope boundary.
+- If uncertainty materially affects downstream implementation, prefer a research/discovery-first stage and keep later stages out of the plan until findings are known.
 - Prefer independent threads in the same batch.
 - Keep tasks small and observable.
 - Use clear file paths and concrete outputs.

@@ -49,6 +49,8 @@ interface ParsedSection {
 
 const BACKTICK_PATH_RE = /`([^`]+)`/
 const HTML_COMMENT_RE = /<!--([\s\S]*?)-->/g
+const HTTP_URL_RE = /^https?:\/\//i
+const URI_SCHEME_RE = /^[a-z][a-z0-9+.-]*:/i
 
 export function getRequirementsMdPath(repoRoot: string, streamId: string): string {
   return join(repoRoot, "work", streamId, "REQUIREMENTS.md")
@@ -86,7 +88,7 @@ export function parseRequirementsDocument(content: string): RequirementsDocument
     summary: getSectionMarkdown(byHeading.get("Summary")),
     deliverables: parseBulletSection(byHeading.get("Deliverables")),
     dependencies: parseBulletSection(byHeading.get("Dependencies"), true),
-    resources: parseBulletSection(byHeading.get("Resources"), true),
+    resources: parseBulletSection(byHeading.get("Resources"), false, true),
     headings: sections.map((section) => section.heading),
   }
 }
@@ -179,6 +181,10 @@ export function validateRequirementsDocument(args: {
       continue
     }
 
+    if (isExternalResourceUrl(entry.path)) {
+      continue
+    }
+
     if (!entry.path.startsWith("resources/")) {
       errors.push({
         line: entry.line,
@@ -252,6 +258,7 @@ function getSectionMarkdown(section?: ParsedSection): string {
 function parseBulletSection(
   section: ParsedSection | undefined,
   extractBacktickPath: boolean = false,
+  extractResourceReference: boolean = false,
 ): RequirementsBulletEntry[] {
   if (!section) {
     return []
@@ -281,7 +288,9 @@ function parseBulletSection(
       line: section.startLine + index + 1,
     }
 
-    if (extractBacktickPath) {
+    if (extractResourceReference) {
+      entry.path = extractNormalizedResourceReference(raw)
+    } else if (extractBacktickPath) {
       entry.path = extractNormalizedBacktickPath(raw)
     }
 
@@ -299,6 +308,30 @@ function extractNormalizedBacktickPath(value: string): string | undefined {
   const match = value.match(BACKTICK_PATH_RE)
   const rawPath = match?.[1]?.trim()
 
+  return normalizeRelativeBacktickPath(rawPath)
+}
+
+function extractNormalizedResourceReference(value: string): string | undefined {
+  const match = value.match(BACKTICK_PATH_RE)
+  const rawReference = match?.[1]?.trim()
+
+  if (!rawReference) {
+    return undefined
+  }
+
+  if (HTTP_URL_RE.test(rawReference)) {
+    return isExternalResourceUrl(rawReference) ? rawReference : undefined
+  }
+
+  if (URI_SCHEME_RE.test(rawReference)) {
+    return undefined
+  }
+
+  return normalizeRelativeBacktickPath(rawReference)
+}
+
+function normalizeRelativeBacktickPath(rawPath: string | undefined): string | undefined {
+
   if (!rawPath || isAbsolute(rawPath)) {
     return undefined
   }
@@ -314,4 +347,17 @@ function extractNormalizedBacktickPath(value: string): string | undefined {
   }
 
   return normalizedPath
+}
+
+function isExternalResourceUrl(value: string): boolean {
+  if (!HTTP_URL_RE.test(value)) {
+    return false
+  }
+
+  try {
+    const url = new URL(value)
+    return url.protocol === "http:" || url.protocol === "https:"
+  } catch {
+    return false
+  }
 }
