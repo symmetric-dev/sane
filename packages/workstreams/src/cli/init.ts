@@ -10,11 +10,13 @@ import { getOrCreateIndex, saveIndex } from "../lib/index.ts"
 import { getAgentsYamlPath } from "../lib/agents-yaml.ts"
 import { getGitHubConfigPath } from "../lib/github/config.ts"
 import { getNotificationsConfigPath } from "../lib/notifications/config.ts"
+import { getSupervisorConfigPath } from "../lib/supervisor/config.ts"
 import { getSynthesisConfigPath } from "../lib/synthesis/config.ts"
 import {
   DEFAULT_AGENTS_YAML,
   DEFAULT_GITHUB_JSON,
   DEFAULT_NOTIFICATIONS_JSON,
+  DEFAULT_SUPERVISOR_JSON,
   DEFAULT_SYNTHESIS_JSON,
 } from "../defaults/index.ts"
 
@@ -183,7 +185,20 @@ export async function main(argv: string[]): Promise<void> {
       console.log("notifications.json already exists, skipping.")
     }
 
-    // 5. Initialize synthesis.json
+    // 5. Initialize supervisor.json
+    const supervisorPath = getSupervisorConfigPath(repoRoot)
+    if (!existsSync(supervisorPath) || force) {
+      console.log(
+        `${
+          force && existsSync(supervisorPath) ? "Overwriting" : "Initializing"
+        } supervisor.json...`,
+      )
+      writeFileSync(supervisorPath, DEFAULT_SUPERVISOR_JSON, "utf-8")
+    } else {
+      console.log("supervisor.json already exists, skipping.")
+    }
+
+    // 6. Initialize synthesis.json
     const synthesisPath = getSynthesisConfigPath(repoRoot)
     if (!existsSync(synthesisPath) || force) {
       console.log(

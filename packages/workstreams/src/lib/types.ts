@@ -631,6 +631,195 @@ export interface ThreadsJson {
 }
 
 // ============================================
+// SUPERVISOR RUNTIME STATE TYPES (supervisor-state.json)
+// ============================================
+
+/**
+ * Runtime status for a supervisor-controlled automation run.
+ */
+export type SupervisorRunStatus =
+  | "running"
+  | "paused"
+  | "completed"
+  | "failed"
+  | "stopped"
+  | "escalated"
+
+/**
+ * Outcome recorded when a supervisor reviews a batch.
+ */
+export type SupervisorReviewOutcome =
+  | "approved"
+  | "changes_requested"
+  | "escalated"
+  | "stopped"
+
+/**
+ * Lifecycle state for a summarized supervisor issue.
+ */
+export type SupervisorIssueStatus =
+  | "open"
+  | "in_progress"
+  | "resolved"
+  | "escalated"
+
+/**
+ * Result of a fix cycle for a reviewed thread.
+ */
+export type SupervisorFixCycleOutcome =
+  | "pending_review"
+  | "accepted"
+  | "rejected"
+  | "escalated"
+  | "stopped"
+
+/**
+ * Entity a supervisor escalation is targeting.
+ */
+export type SupervisorEscalationTarget =
+  | "thread"
+  | "batch"
+  | "stage"
+  | "operator"
+
+/**
+ * Resolution state for a supervisor escalation.
+ */
+export type SupervisorEscalationStatus =
+  | "pending"
+  | "acknowledged"
+  | "resolved"
+  | "deferred"
+  | "halted"
+
+/**
+ * Reason a supervisor stopped a stage or batch run.
+ */
+export type SupervisorStageStopReason =
+  | "completed"
+  | "review_limit_reached"
+  | "issues_escalated"
+  | "operator_handoff"
+  | "blocked"
+  | "failed"
+
+/**
+ * Metadata for a supervisor automation run.
+ * References batch/thread artifacts without storing thread session metadata.
+ */
+export interface SupervisorRunState {
+  runId: string
+  stageId: string
+  status: SupervisorRunStatus
+  startedAt: string
+  updatedAt: string
+  completedAt?: string
+  currentBatchId?: string
+  lastReviewedBatchId?: string
+  reviewPasses: number
+  issueSummaryIds: string[]
+  escalationIds: string[]
+  stageStopId?: string
+  stopReason?: SupervisorStageStopReason
+}
+
+/**
+ * Review checkpoint for a batch handled by the supervisor.
+ */
+export interface SupervisorReviewedBatch {
+  reviewId: string
+  runId: string
+  stageId: string
+  batchId: string
+  reviewPass: number
+  reviewedAt: string
+  outcome: SupervisorReviewOutcome
+  threadIds: string[]
+  issueSummaryIds: string[]
+  stopReason?: SupervisorStageStopReason
+  notes?: string
+}
+
+/**
+ * Structured summary of a supervisor-detected issue.
+ */
+export interface SupervisorIssueSummary {
+  summaryId: string
+  runId: string
+  stageId: string
+  batchId: string
+  threadId?: string
+  status: SupervisorIssueStatus
+  summary: string
+  severity?: string
+  firstObservedAt: string
+  lastObservedAt: string
+}
+
+/**
+ * Fix-cycle state for a specific thread within a reviewed batch.
+ */
+export interface SupervisorFixCycle {
+  cycleId: string
+  runId: string
+  stageId: string
+  batchId: string
+  threadId: string
+  attemptCount: number
+  lastAttemptAt: string
+  lastOutcome: SupervisorFixCycleOutcome
+  issueSummaryIds: string[]
+}
+
+/**
+ * Escalation record and current outcome.
+ */
+export interface SupervisorEscalationRecord {
+  escalationId: string
+  runId: string
+  stageId: string
+  batchId?: string
+  threadId?: string
+  target: SupervisorEscalationTarget
+  reason: string
+  status: SupervisorEscalationStatus
+  escalatedAt: string
+  resolvedAt?: string
+  notes?: string
+}
+
+/**
+ * Persisted reason for stopping work at a stage or batch boundary.
+ */
+export interface SupervisorStageStop {
+  stopId: string
+  runId: string
+  stageId: string
+  batchId?: string
+  reason: SupervisorStageStopReason
+  summary: string
+  stoppedAt: string
+  escalationId?: string
+}
+
+/**
+ * supervisor-state.json file structure.
+ * Keeps runtime supervisor control-plane state separate from threads.json.
+ */
+export interface SupervisorStateFile {
+  version: string
+  stream_id: string
+  last_updated: string
+  active_run_id?: string
+  runs: SupervisorRunState[]
+  reviewed_batches: SupervisorReviewedBatch[]
+  issue_summaries: SupervisorIssueSummary[]
+  fix_cycles: SupervisorFixCycle[]
+  escalations: SupervisorEscalationRecord[]
+  stage_stops: SupervisorStageStop[]
+}
+
+// ============================================
 // SESSION TRACKING TYPES
 // ============================================
 

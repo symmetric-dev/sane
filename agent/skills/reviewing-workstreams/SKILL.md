@@ -35,3 +35,36 @@ description: Review workstream plans for structure, risks, and readiness.
 - Provide concrete findings.
 - Call out blockers first.
 - Suggest exact edits, not general advice.
+
+## Structured Reviewer Output Contract (Machine-Consumable)
+
+When a review pass is expected to drive supervisor decisions, return **JSON only** (no prose outside JSON) using this contract:
+
+```json
+{
+  "schemaVersion": "1.0",
+  "alignment": {
+    "status": "aligned | partially_aligned | misaligned",
+    "rationale": "Brief alignment-to-plan judgment"
+  },
+  "missingOutputs": ["list of required outputs that are missing"],
+  "issues": [
+    {
+      "summary": "concise issue statement",
+      "severity": "high | medium | low",
+      "difficulty": "complex | regular | trivial",
+      "ownership": "product | engineering",
+      "effort": "tasks | revision | workstream",
+      "evidence": "optional evidence",
+      "suggestedAction": "optional action"
+    }
+  ],
+  "confidence": "high | medium | low",
+  "notes": ["optional reviewer notes"]
+}
+```
+
+Rules:
+- `issues` may be empty only when no problems were found.
+- Keep `synthesis` and `review` distinct: synthesis summarizes execution; reviewer output judges quality/alignment.
+- Do not invent enum values outside the allowed sets.

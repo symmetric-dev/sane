@@ -112,6 +112,23 @@ export {
   type WaitForBatchStatusOptions,
 } from "./lib/batch-monitor.ts"
 
+// Supervisor runtime state
+export {
+  SUPERVISOR_STATE_VERSION,
+  getSupervisorStateFilePath,
+  createEmptySupervisorState,
+  loadSupervisorState,
+  saveSupervisorState,
+  modifySupervisorState,
+  upsertSupervisorRunLocked,
+  setActiveSupervisorRunLocked,
+  upsertReviewedBatchLocked,
+  upsertIssueSummaryLocked,
+  upsertFixCycleLocked,
+  upsertEscalationOutcomeLocked,
+  recordStageStopLocked,
+} from "./lib/supervisor-state.ts"
+
 // Task updates
 export {
   parseTaskId,
@@ -181,6 +198,35 @@ export {
   aggregateMetrics,
 } from "./lib/metrics.ts"
 
+// Supervisor policy config
+export {
+  getDefaultSupervisorConfig,
+  getSupervisorConfigPath,
+  loadSupervisorConfig,
+  validateAndNormalizeSupervisorConfig,
+  SUPERVISOR_CONFIG_FILE,
+  SUPERVISOR_DIFFICULTY_VALUES,
+  SUPERVISOR_EFFORT_VALUES,
+  SUPERVISOR_OWNERSHIP_VALUES,
+  SUPERVISOR_SEVERITY_VALUES,
+  type SupervisorConfig,
+  type SupervisorConfigInput,
+  type SupervisorContactUserConditions,
+  type SupervisorContactUserConditionsInput,
+  type SupervisorDifficulty,
+  type SupervisorEffort,
+  type SupervisorEscalationConfig,
+  type SupervisorEscalationConfigInput,
+  type SupervisorEscalationThreshold,
+  type SupervisorEscalationThresholdInput,
+  type SupervisorIssueTaxonomy,
+  type SupervisorIssueTaxonomyInput,
+  type SupervisorOwnership,
+  type SupervisorReviewLimits,
+  type SupervisorSeverity,
+  type SupervisorStageCompletionConfig,
+} from "./lib/supervisor/index.ts"
+
 // Document generation and export
 export {
   generateReport,
@@ -207,6 +253,31 @@ export {
   type ThreadId,
   type GeneratePromptOptions,
 } from "./lib/prompts.ts"
+
+// Reviewer output contract
+export {
+  REVIEWER_ALIGNMENT_STATUSES,
+  REVIEWER_CONFIDENCE_LEVELS,
+  REVIEWER_DIFFICULTIES,
+  REVIEWER_EFFORTS,
+  REVIEWER_OWNERSHIPS,
+  REVIEWER_SEVERITIES,
+  normalizeReviewerResult,
+  parseReviewerResult,
+  type ReviewerAlignment,
+  type ReviewerAlignmentStatus,
+  type ReviewerConfidence,
+  type ReviewerDifficulty,
+  type ReviewerEffort,
+  type ReviewerIssue,
+  type ReviewerNormalizeFailure,
+  type ReviewerNormalizeResult,
+  type ReviewerNormalizeSuccess,
+  type ReviewerOwnership,
+  type ReviewerResult,
+  type ReviewerSeverity,
+  type ReviewerValidationError,
+} from "./lib/reviewer/index.js"
 
 // Role-based access control
 export {
