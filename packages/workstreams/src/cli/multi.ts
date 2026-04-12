@@ -669,17 +669,7 @@ export async function main(argv: string[] = process.argv): Promise<void> {
     setupKillSessionKeybind()
   }
 
-  // Create notification tracker with workstream-specific config
-  const notificationTracker = cliArgs.silent ? null : new NotificationTracker({ repoRoot })
-
-  // Start marker file polling for notifications
-  // Pass streamId to enable synthesis output in notifications
   const threadIds = threads.map((t) => t.threadId)
-  const { promise: pollingPromise, state: pollingState } = startMarkerPolling({
-    threadIds,
-    notificationTracker,
-    streamId: stream.id,
-  })
 
   if (cliArgs.headless) {
     console.log(`
@@ -697,6 +687,18 @@ Monitoring for completion without attaching.
       console.log(`Headless async mode: session "${sessionName}" is running detached.`)
       return
     }
+
+    // Create notification tracker with workstream-specific config.
+    // Async mode returns immediately after starting the detached monitor, so it
+    // must not start local marker polling that would keep the launcher alive.
+    const notificationTracker = cliArgs.silent ? null : new NotificationTracker({ repoRoot })
+
+    // Start marker file polling for local notifications in blocking modes only.
+    const { promise: pollingPromise, state: pollingState } = startMarkerPolling({
+      threadIds,
+      notificationTracker,
+      streamId: stream.id,
+    })
 
     await waitForAllPanesExit(sessionName)
     await handleSessionClose(
@@ -717,6 +719,16 @@ Monitoring for completion without attaching.
 Layout: ${threads.length <= 4 ? "2x2 Grid (all visible)" : `2x2 Grid with pagination (${threads.length} threads, use n/p to page)`}
 Press Ctrl+b X to kill the session when done.
 `)
+
+  // Create notification tracker with workstream-specific config.
+  const notificationTracker = cliArgs.silent ? null : new NotificationTracker({ repoRoot })
+
+  // Start marker file polling for local notifications in attached mode.
+  const { promise: pollingPromise, state: pollingState } = startMarkerPolling({
+    threadIds,
+    notificationTracker,
+    streamId: stream.id,
+  })
 
   console.log(`Attaching to session "${sessionName}"...`)
 

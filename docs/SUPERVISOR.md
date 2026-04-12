@@ -76,6 +76,26 @@ Timeout semantics in v1 are strict:
 - if `--timeout-ms` elapses first, the wait fails with the latest persisted non-terminal state left in `work/<stream-id>/batch-status/<batch-id>.json`
 - `work supervise` treats that timeout as a run failure and skips review/fix follow-up for the incomplete batch
 
+## Smoke-Test Follow-up Checklist (Post-Fix)
+
+After a supervised batch reports completion, verify this quick checklist to confirm the repaired completion fallback path behaved correctly:
+
+### Successful completion evidence
+
+- `work/<stream-id>/batch-status/<batch-id>.json`
+  - `status` is terminal (`completed` or `failed`) and no longer `running`/`queued`.
+  - For the repaired fallback case, terminal status can be canonicalized even when tmux artifacts are missing.
+- `work/<stream-id>/supervisor-state.json`
+  - `reviewed_batches` includes the batch id (proof review ran after terminalization).
+  - `stage_stops` or `escalations` reflect the actual stop decision (for example: stage boundary contact-user, no remaining batches, or escalation trigger).
+- Supervisor output includes both terminal and review signals (for example: `batch ... finished: completed` then `review ...`).
+
+### Timeout/failure evidence (not successful completion)
+
+- `work/<stream-id>/batch-status/<batch-id>.json` remains non-terminal when wait times out.
+- `work/<stream-id>/supervisor-state.json` does **not** gain a new reviewed entry for that incomplete batch and instead records the failed stop outcome.
+- Supervisor output shows wait/timeout failure and stops before review/fix follow-up.
+
 ## `work/supervisor.json` Config Shape
 
 Supervisor policy is loaded from repo-level config:
@@ -124,16 +144,55 @@ The default `contact_user_on` policy triggers escalation when **any configured t
 
 `severity.values` defaults to an empty list, so severity alone does not trigger contact-user until configured.
 
-## Operator Guidance: Resume After Escalation or Stage Completion
+## Operator Guidance: Inspect, Interpret, Resume
 
-When supervisor stops, first inspect:
+After every supervised batch run (especially when supervisor stops), run this quick inspection flow before resuming.
 
-- terminal summary from `work supervise`
-- `work/<stream-id>/batch-status/<batch-id>.json` (latest run status for the batch that just stopped)
-- `work/<stream-id>/supervisor-state.json` (`stage_stops`, `escalations`, `reviewed_batches`)
-- `work status` and `work list --tasks --batch "SS.BB"`
+### 1) Quick inspection commands
 
-Then choose a resume mode:
+```bash
+# 1) task/thread state snapshot for the batch that just ran
+work tree --batch "SS.BB"
+
+# 2) persisted batch execution result (terminal vs non-terminal)
+work batch-status --batch "SS.BB" --format json
+
+# 3) persisted supervisor decision history for this stream
+cat work/<stream-id>/supervisor-state.json
+```
+
+What each check tells you:
+
+- `work tree --batch "SS.BB"`: which tasks/threads are complete, failed, or still in progress.
+- `work batch-status --batch "SS.BB" --format json`: whether execution is terminal (`completed`/`failed`) or still non-terminal (for timeout/wait failures).
+- `work/<stream-id>/supervisor-state.json`: whether supervisor reviewed this batch and why it stopped (`reviewed_batches`, `escalations`, `stage_stops`).
+
+### 2) How to read terminal outcomes quickly
+
+Use this mental model to quickly separate success from operator follow-up:
+
+- **Terminal success (good stop or clean continue point):**
+  - `work batch-status` shows `status: "completed"`
+  - no failed threads in the batch summary
+  - `supervisor-state.json` includes this batch in `reviewed_batches`
+- **Timeout while still running (wait failure):**
+  - `work supervise` exits with timeout/wait failure
+  - `work batch-status` remains non-terminal at last persisted state
+  - `supervisor-state.json` records a failed stage stop (reason reflects timeout/wait failure)
+- **Escalation/contact-user stop (needs operator decision):**
+  - batch may still be terminal (`completed`)
+  - `supervisor-state.json` adds an `escalations` entry and corresponding `stage_stops` record
+  - supervisor waits for operator action before continuing
+- **Terminal failed run (batch finished as failed):**
+  - `work batch-status` shows `status: "failed"`
+  - `supervisor-state.json` records a failed stop; inspect failed thread summaries first
+
+If you're deciding whether it is safe to resume with `work supervise`, use this shortcut:
+
+- Resume normally when batch status is terminal and `reviewed_batches` contains the batch.
+- Inspect first (do not blindly resume) when batch status is non-terminal, an escalation was recorded, or batch status is `failed`.
+
+### 3) Resume modes
 
 1. **Continue default progression**
    - run `work supervise`
@@ -145,28 +204,6 @@ Then choose a resume mode:
    - run `work supervise` to proceed into next incomplete batch (often next stage)
 
 If you change escalation behavior, edit `work/supervisor.json` and re-run `work supervise`.
-
-### Quick stop/resume example
-
-```bash
-# 1) run a smoke-test batch
-work supervise --batch "05.01"
-
-# 2) if supervisor stops, inspect state
-ls work/000-super-agent-v1/batch-status
-work status
-
-# open in your editor:
-# - work/000-super-agent-v1/batch-status/05.01.json
-# - work/000-super-agent-v1/supervisor-state.json
-
-# 3) resume
-# continue default progression
-work supervise
-
-# or rerun this batch after manual fixes/policy updates
-work supervise --batch "05.01"
-```
 
 ## Practical Model for v1
 

@@ -90,10 +90,35 @@ If `--timeout-ms` is reached before the batch becomes terminal, the wait fails a
 
 Policy is loaded from `work/supervisor.json` (defaults are used if missing).
 
-After any stop, inspect state files before resuming:
+After any stop, inspect the batch and supervisor state before resuming:
+
+```bash
+# 1) task/thread snapshot for the batch that just ran
+work tree --batch "01.01"
+
+# 2) persisted execution state for that batch
+work batch-status --batch "01.01" --format json
+
+# 3) persisted supervisor decision history
+cat work/<stream-id>/supervisor-state.json
+```
+
+Interpretation quick-guide (what success looks like vs what to inspect):
+
+- **Terminal success / safe resume:** `work batch-status` is `completed` and `supervisor-state.json` includes the batch under `reviewed_batches`.
+- **Timeout/wait failure:** batch status remains non-terminal; inspect wait/timeout reason in `stage_stops` before rerunning.
+- **Escalation/stage stop:** inspect `escalations` and `stage_stops` to confirm what operator action is required.
+- **Terminal failed run:** `work batch-status` is `failed`; inspect failed thread summaries before retrying.
+
+Key persisted files:
 
 - `work/<stream-id>/batch-status/<batch-id>.json` (batch execution state)
 - `work/<stream-id>/supervisor-state.json` (review/fix/escalation/stage-stop history)
+
+Quick post-fix verification checklist:
+
+- **Successful completion path**: batch status is terminal and `supervisor-state.json` records both review evidence (`reviewed_batches`) and the resulting stop outcome for that batch (including repaired canonical completion fallback cases).
+- **Timeout/failure path**: batch status remains non-terminal at timeout; no new reviewed entry is recorded for the incomplete batch, and supervisor state reflects the failed wait/stop outcome.
 
 Resume examples:
 
