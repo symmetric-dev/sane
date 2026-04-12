@@ -85,6 +85,8 @@ Notes:
 - Use `!work ...` when invoking from chat-driven Opencode commands.
 - Agents handle most planning/execution details; humans control approvals and start/continue gates.
 
+For supervised headless automation with review/fix/escalation policy, see `docs/SUPERVISOR.md`.
+
 Example output from `work tree`:
 
 ```text
@@ -161,6 +163,7 @@ bun run test
 - `docs/INSTALL.md`
 - `docs/WORKSTREAM.md`
 - `docs/HOW_TO_USE_MULTI.md`
+- `docs/SUPERVISOR.md`
 - `docs/NOTIFICATIONS.md`
 - `docs/workstream-reports.md`
 - `docs/NPM_PUBLISHING.md`

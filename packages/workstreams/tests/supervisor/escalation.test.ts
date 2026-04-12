@@ -97,6 +97,32 @@ describe("supervisor escalation", () => {
     expect(decision.triggers).toEqual([])
   })
 
+  test("respects min_count thresholds for issue-based escalation", () => {
+    const config = getDefaultSupervisorConfig()
+    config.escalation.contact_user_on.severity = {
+      values: ["high"],
+      min_count: 2,
+    }
+
+    const continueDecision = evaluateSupervisorEscalation({
+      config,
+      issues: [issue({ severity: "high", summary: "single high issue" })],
+    })
+
+    expect(continueDecision.outcome).toBe("continue")
+
+    const contactDecision = evaluateSupervisorEscalation({
+      config,
+      issues: [
+        issue({ severity: "high", summary: "first high issue" }),
+        issue({ severity: "high", summary: "second high issue" }),
+      ],
+    })
+
+    expect(contactDecision.outcome).toBe("contact_user")
+    expect(contactDecision.triggers.map((trigger) => trigger.kind)).toEqual(["severity"])
+  })
+
   test("builds deterministic grouped findings across all reviewer dimensions", () => {
     const breakdown = buildSupervisorIssueBreakdown([
       issue({ summary: "Missing API edge case", severity: "high", difficulty: "complex" }),

@@ -270,6 +270,204 @@ describe("supervise", () => {
     expect(supervisorState?.runs[0]?.status).toBe("completed")
   })
 
+  test("dry-run shows the headless launch command and avoids interactive flow", async () => {
+    workspace = createTestWorkstream("001-supervise-dry-run")
+    writeIndex(workspace.repoRoot, workspace.streamId, "supervise-dry-run")
+    writeValidPlan(workspace.workDir)
+    writeTasks(workspace.workDir, workspace.streamId, "pending")
+
+    const { stdout } = await captureCliOutput(async () => {
+      await superviseMain([
+        "bun",
+        "work-supervise",
+        "--repo-root",
+        workspace!.repoRoot,
+        "--stream",
+        workspace!.streamId,
+        "--batch",
+        "01.01",
+        "--dry-run",
+      ])
+    })
+
+    const output = stdout.join("\n")
+    expect(output).toContain("[supervise] would launch batch 01.01 with work multi --headless --async")
+    expect(output).not.toContain("opencode --session")
+  })
+
+  test("default stage completion behavior stops and contacts user at stage boundary", async () => {
+    workspace = createTestWorkstream("001-supervise-stage-boundary")
+    writeIndex(workspace.repoRoot, workspace.streamId, "supervise-stage-boundary")
+    writeValidPlan(workspace.workDir)
+    writeTasks(workspace.workDir, workspace.streamId, "completed")
+
+    saveThreads(workspace.repoRoot, workspace.streamId, {
+      version: "1.0.0",
+      stream_id: workspace.streamId,
+      last_updated: new Date().toISOString(),
+      threads: [
+        {
+          threadId: "01.01.01",
+          sessions: [],
+          synthesis: {
+            sessionId: "syn-stage-stop",
+            output: "Stage batch completed cleanly.",
+            completedAt: new Date().toISOString(),
+          },
+        },
+      ],
+    })
+
+    const fakeRuntime = join(workspace.repoRoot, "fake-bun-stage-stop")
+    writeFileSync(
+      fakeRuntime,
+      `#!/bin/sh
+cat <<'JSON' > "${getRunResultPath(workspace.streamId, "01.01.01")}" 
+{"status":"completed","exitCode":0}
+JSON
+exit 0
+`,
+      { mode: 0o755 },
+    )
+    process.execPath = fakeRuntime
+
+    const { stdout } = await captureCliOutput(async () => {
+      await superviseMain([
+        "bun",
+        "work-supervise",
+        "--repo-root",
+        workspace!.repoRoot,
+        "--stream",
+        workspace!.streamId,
+        "--batch",
+        "01.01",
+        "--poll-interval-ms",
+        "1",
+      ])
+    })
+
+    const output = stdout.join("\n")
+    expect(output).toContain("[supervise] stop: user input required")
+    expect(output).toContain("Stage completed at batch 01.01")
+
+    const supervisorState = loadSupervisorState(workspace.repoRoot, workspace.streamId)
+    expect(supervisorState?.reviewed_batches).toHaveLength(1)
+    expect(supervisorState?.stage_stops).toHaveLength(1)
+    expect(supervisorState?.escalations).toHaveLength(1)
+    expect(supervisorState?.stage_stops[0]?.reason).toBe("completed")
+    expect(supervisorState?.escalations[0]?.target).toBe("stage")
+  })
+
+  test("timeout while waiting fails the supervisor run and skips review for incomplete batches", async () => {
+    workspace = createTestWorkstream("001-supervise-timeout")
+    writeIndex(workspace.repoRoot, workspace.streamId, "supervise-timeout")
+    writeValidPlan(workspace.workDir)
+    writeTasks(workspace.workDir, workspace.streamId, "pending")
+
+    const fakeRuntime = join(workspace.repoRoot, "fake-bun-timeout")
+    writeFileSync(fakeRuntime, "#!/bin/sh\nexit 0\n", { mode: 0o755 })
+    process.execPath = fakeRuntime
+
+    let thrown: Error | undefined
+    const { stdout } = await captureCliOutput(async () => {
+      try {
+        await superviseMain([
+          "bun",
+          "work-supervise",
+          "--repo-root",
+          workspace!.repoRoot,
+          "--stream",
+          workspace!.streamId,
+          "--batch",
+          "01.01",
+          "--poll-interval-ms",
+          "1",
+          "--timeout-ms",
+          "5",
+        ])
+      } catch (error) {
+        thrown = error as Error
+      }
+    })
+
+    expect(thrown).toBeDefined()
+    expect(thrown?.message).toContain("Timed out after 5ms waiting for batch 01.01")
+
+    const output = stdout.join("\n")
+    expect(output).toContain("[supervise] start batch 01.01")
+    expect(output).toContain("[supervise] waiting for batch-status 01.01")
+    expect(output).not.toContain("[supervise] review 01.01")
+
+    const supervisorState = loadSupervisorState(workspace.repoRoot, workspace.streamId)
+    expect(supervisorState?.runs).toHaveLength(1)
+    expect(supervisorState?.runs[0]?.status).toBe("failed")
+    expect(supervisorState?.reviewed_batches).toHaveLength(0)
+    expect(supervisorState?.stage_stops).toHaveLength(1)
+    expect(supervisorState?.stage_stops[0]?.reason).toBe("failed")
+    expect(supervisorState?.stage_stops[0]?.summary).toContain("Timed out after 5ms waiting for batch 01.01")
+  })
+
+  test("supervisor runs exactly one automatic fix cycle by default before escalation", async () => {
+    workspace = createTestWorkstream("001-supervise-one-fix-cycle")
+    writeIndex(workspace.repoRoot, workspace.streamId, "supervise-one-fix-cycle")
+    writeValidPlan(workspace.workDir)
+    writeTasks(workspace.workDir, workspace.streamId, "completed")
+
+    // Intentionally omit synthesis to keep deterministic review findings open across passes.
+    saveThreads(workspace.repoRoot, workspace.streamId, {
+      version: "1.0.0",
+      stream_id: workspace.streamId,
+      last_updated: new Date().toISOString(),
+      threads: [
+        {
+          threadId: "01.01.01",
+          sessions: [],
+        },
+      ],
+    })
+
+    const fakeRuntime = join(workspace.repoRoot, "fake-bun-fix-cycle")
+    writeFileSync(
+      fakeRuntime,
+      `#!/bin/sh
+cat <<'JSON' > "${getRunResultPath(workspace.streamId, "01.01.01")}" 
+{"status":"completed","exitCode":0}
+JSON
+exit 0
+`,
+      { mode: 0o755 },
+    )
+    process.execPath = fakeRuntime
+
+    const { stdout } = await captureCliOutput(async () => {
+      await superviseMain([
+        "bun",
+        "work-supervise",
+        "--repo-root",
+        workspace!.repoRoot,
+        "--stream",
+        workspace!.streamId,
+        "--batch",
+        "01.01",
+        "--poll-interval-ms",
+        "1",
+      ])
+    })
+
+    const output = stdout.join("\n")
+    expect(output).toContain("[supervise] fix: Batch 01.01 will run automatic fix cycle 1")
+    expect(output).toContain("[supervise] stop: user input required")
+    expect(output).toContain("Fix-cycle limit reached (1/1)")
+
+    const supervisorState = loadSupervisorState(workspace.repoRoot, workspace.streamId)
+    expect(supervisorState?.reviewed_batches).toHaveLength(2)
+    expect(supervisorState?.fix_cycles).toHaveLength(1)
+    expect(supervisorState?.fix_cycles[0]?.attemptCount).toBe(1)
+    expect(supervisorState?.fix_cycles[0]?.lastOutcome).toBe("escalated")
+    expect(supervisorState?.stage_stops[0]?.reason).toBe("review_limit_reached")
+    expect(supervisorState?.escalations[0]?.target).toBe("operator")
+  })
+
   test("main CLI help registers the supervise command", async () => {
     const originalExit = process.exit
     process.exit = ((code?: number) => {

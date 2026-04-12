@@ -56,6 +56,16 @@ export interface WaitForBatchStatusOptions extends SyncBatchStatusOptions {
 
 export interface DetachedBatchMonitorOptions extends WaitForBatchStatusOptions {}
 
+function formatBatchStatusSummary(status: BatchStatusFile): string {
+  return `${status.summary.completed}/${status.summary.total} completed, ${status.summary.failed} failed, ${status.summary.running} running, ${status.summary.pending} pending`
+}
+
+function createBatchStatusTimeoutError(status: BatchStatusFile, timeoutMs: number): Error {
+  return new Error(
+    `Timed out after ${timeoutMs}ms waiting for batch ${status.batchId} to reach a terminal state (last status: ${status.status}; ${formatBatchStatusSummary(status)})`,
+  )
+}
+
 function getBatchThreadSeeds(
   repoRoot: string,
   streamId: string,
@@ -470,7 +480,7 @@ export async function waitForBatchStatus(
     }
 
     if (timeoutMs > 0 && Date.now() - startedAt >= timeoutMs) {
-      return status
+      throw createBatchStatusTimeoutError(status, timeoutMs)
     }
 
     await Bun.sleep(pollIntervalMs)

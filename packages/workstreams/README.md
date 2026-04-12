@@ -66,3 +66,25 @@ work update --task "01.01.01.01" --status completed --report "Implemented X"
 work report metrics --blockers
 work export --format json
 ```
+
+## Supervisor Workflow (v1)
+
+Use `work supervise` to run headless batch execution with deterministic review/fix decisions:
+
+```bash
+work supervise
+work supervise --batch "01.01"
+work supervise --dry-run
+```
+
+The supervisor launches `work multi --headless --async`, reviews outputs, then either:
+
+- continues to the next batch,
+- runs one automatic fix cycle (default), or
+- stops for user input based on escalation/stage-boundary policy.
+
+If `--timeout-ms` is reached before the batch becomes terminal, the wait fails and supervisor exits without reviewing the incomplete batch.
+
+Policy is loaded from `work/supervisor.json` (defaults are used if missing).
+
+For full operator guidance and config details, see `../../docs/SUPERVISOR.md`.

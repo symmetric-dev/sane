@@ -347,6 +347,37 @@ describe("batch status", () => {
     expect(threadTwo?.opencodeSessionId).toBe("async-session-2")
   })
 
+  test("waitForBatchStatus throws on timeout and keeps the latest persisted non-terminal state", async () => {
+    startThreadSession(
+      repoRoot,
+      streamId,
+      "01.01.01",
+      "agent-one",
+      "model-one",
+      "session-timeout-1",
+    )
+
+    await expect(
+      waitForBatchStatus({
+        repoRoot,
+        streamId,
+        batchId: "01.01",
+        pollIntervalMs: 10,
+        timeoutMs: 25,
+      }),
+    ).rejects.toThrow(/Timed out after 25ms waiting for batch 01\.01 to reach a terminal state/)
+
+    const persisted = readBatchStatus(repoRoot, streamId, "01.01")
+    expect(persisted?.status).toBe("running")
+    expect(persisted?.summary).toEqual({
+      total: 2,
+      pending: 1,
+      running: 1,
+      completed: 0,
+      failed: 0,
+    })
+  })
+
   test("batch-status cli can wait for completion and emit json", async () => {
     startThreadSession(
       repoRoot,

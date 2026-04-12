@@ -158,4 +158,10 @@ describe("Supervisor Config", () => {
       }),
     ).toThrow(/issue_taxonomy\.severity must contain at least one value/)
   })
+
+  test("validateAndNormalizeSupervisorConfig requires a top-level object", () => {
+    expect(() => validateAndNormalizeSupervisorConfig(["not-an-object"])).toThrow(
+      /expected a JSON object at the top level/,
+    )
+  })
 })

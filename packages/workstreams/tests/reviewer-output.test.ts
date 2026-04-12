@@ -118,6 +118,36 @@ describe("Reviewer output contract", () => {
     expect(result.value.missingOutputs).toEqual(["tasks.json"])
   })
 
+  test("normalizes optional issue evidence and suggested action strings", () => {
+    const result = normalizeReviewerResult({
+      schemaVersion: "1.0",
+      alignment: {
+        status: "aligned",
+        rationale: "Payload includes optional issue fields.",
+      },
+      missingOutputs: [],
+      issues: [
+        {
+          summary: "Non-blocking note",
+          severity: "low",
+          difficulty: "trivial",
+          ownership: "engineering",
+          effort: "tasks",
+          evidence: "  logs/test-run.txt  ",
+          suggestedAction: "  monitor in next iteration  ",
+        },
+      ],
+      notes: ["  first note  "],
+    })
+
+    expect(result.success).toBe(true)
+    if (!result.success) return
+
+    expect(result.value.issues[0]?.evidence).toBe("logs/test-run.txt")
+    expect(result.value.issues[0]?.suggestedAction).toBe("monitor in next iteration")
+    expect(result.value.notes).toEqual(["first note"])
+  })
+
   test("rejects invalid JSON payload with parser error", () => {
     const result = parseReviewerResult("{ invalid-json }")
 
