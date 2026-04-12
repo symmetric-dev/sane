@@ -20,6 +20,8 @@ import {
     splitWindow,
     getPaneIndex,
     setGlobalOption,
+    markSessionHeadless,
+    isSessionHeadless,
     createGridLayout,
     respawnPane,
     waitForAllPanesExit,
@@ -216,14 +218,27 @@ describe("tmux lib", () => {
             expect(index).toBe(0)
        })
 
-       test("setGlobalOption sets option", () => {
-            const sessionName = getTestSessionName()
-            createSession(sessionName, "opt-test", "sleep 10")
-            setGlobalOption(sessionName, "remain-on-exit", "on")
+        test("setGlobalOption sets option", () => {
+             const sessionName = getTestSessionName()
+             createSession(sessionName, "opt-test", "sleep 10")
+             setGlobalOption(sessionName, "remain-on-exit", "on")
             
-            const output = execSync(`tmux show-options -t "${sessionName}" -v remain-on-exit`, {encoding: 'utf-8'})
-            expect(output.trim()).toBe("on")
-       })
+             const output = execSync(`tmux show-options -t "${sessionName}" -v remain-on-exit`, {encoding: 'utf-8'})
+             expect(output.trim()).toBe("on")
+        })
+
+        test("markSessionHeadless marks tmux session metadata", () => {
+             const sessionName = getTestSessionName()
+             createSession(sessionName, "headless-test", "sleep 10")
+
+             markSessionHeadless(sessionName)
+
+             expect(isSessionHeadless(sessionName)).toBe(true)
+             const option = execSync(`tmux show-options -t "${sessionName}" -v @workstream-headless`, { encoding: 'utf-8' })
+             const env = execSync(`tmux show-environment -t "${sessionName}" WORKSTREAM_HEADLESS`, { encoding: 'utf-8' })
+             expect(option.trim()).toBe("1")
+             expect(env.trim()).toBe("WORKSTREAM_HEADLESS=1")
+        })
 
        test("resizePane changes pane size", () => {
            const sessionName = getTestSessionName()

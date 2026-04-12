@@ -87,6 +87,31 @@ export {
   formatStreamStatusIcon,
 } from "./lib/status.ts"
 
+// Batch status monitoring
+export {
+  BATCH_STATUS_VERSION,
+  getBatchStatusDir,
+  getBatchStatusFilePath,
+  readBatchStatus,
+  writeBatchStatus,
+  createBatchStatusFile,
+  summarizeBatchThreads,
+  isTerminalBatchStatus,
+  type BatchStatusFile,
+  type BatchStatusSummary,
+  type BatchStatusThread,
+  type BatchStatusThreadSeed,
+  type BatchRunStatus,
+  type BatchThreadRunStatus,
+} from "./lib/batch-status.ts"
+export {
+  syncBatchStatus,
+  waitForBatchStatus,
+  batchStatusExists,
+  type SyncBatchStatusOptions,
+  type WaitForBatchStatusOptions,
+} from "./lib/batch-monitor.ts"
+
 // Task updates
 export {
   parseTaskId,

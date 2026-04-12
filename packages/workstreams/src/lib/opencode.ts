@@ -10,6 +10,12 @@ import { spawn, type ChildProcess } from "child_process"
 const DEFAULT_PORT = 4096
 const HEALTH_CHECK_INTERVAL_MS = 200
 const DEFAULT_TIMEOUT_MS = 30000
+export const WORKSTREAM_HEADLESS_ENV = "WORKSTREAM_HEADLESS"
+
+export interface RunCommandOptions {
+  headless?: boolean
+  streamId?: string
+}
 
 /**
  * Get the server URL for a given port
@@ -99,8 +105,8 @@ function truncateTitle(title: string, maxLen: number = 32): string {
  * @param threadId - Thread ID (e.g., "01.01.02")
  * @returns Path to the completion marker file
  */
-export function getCompletionMarkerPath(threadId: string): string {
-  return `/tmp/workstream-${threadId}-complete.txt`
+export function getCompletionMarkerPath(streamId: string, threadId: string): string {
+  return `/tmp/workstream-${streamId}-${threadId}-complete.txt`
 }
 
 /**
@@ -110,8 +116,16 @@ export function getCompletionMarkerPath(threadId: string): string {
  * @param threadId - Thread ID (e.g., "01.01.02")
  * @returns Path to the session ID file
  */
-export function getSessionFilePath(threadId: string): string {
-  return `/tmp/workstream-${threadId}-session.txt`
+export function getSessionFilePath(streamId: string, threadId: string): string {
+  return `/tmp/workstream-${streamId}-${threadId}-session.txt`
+}
+
+/**
+ * Get the result file path for storing a thread run's final status/exit code
+ * Used by finalization paths that cannot rely on a live tmux pane.
+ */
+export function getRunResultPath(streamId: string, threadId: string): string {
+  return `/tmp/workstream-${streamId}-${threadId}-result.json`
 }
 
 /**
@@ -164,6 +178,35 @@ function escapeForShell(str: string): string {
     .replace(/`/g, "\\`")
 }
 
+function buildCommandPrefix(options?: RunCommandOptions): string {
+  return options?.headless ? `${WORKSTREAM_HEADLESS_ENV}=1 ` : ""
+}
+
+function buildHeadlessCheck(): string {
+  return `[ "\${${WORKSTREAM_HEADLESS_ENV}:-0}" = "1" ]`
+}
+
+function buildResultWriteCommand(
+  streamId: string | undefined,
+  threadId: string | undefined,
+  exitVarName: string,
+): string {
+  if (!streamId || !threadId) {
+    return ""
+  }
+
+  const resultPath = getRunResultPath(streamId, threadId)
+  const shellExitVar = `$${exitVarName}`
+  const shellExitVarWithDefault = "${" + exitVarName + ":-1}"
+
+  return `
+RESULT_STATUS="failed"
+if [ ${shellExitVar} -eq 0 ] 2>/dev/null; then
+  RESULT_STATUS="completed"
+fi
+printf '{"status":"%s","exitCode":%s}\n' "$RESULT_STATUS" "${shellExitVarWithDefault}" > "${resultPath}"`
+}
+
 /**
  * Build the opencode run command with --title flag and session resume logic
  * Wrapped in sh -c to properly handle piped commands in tmux
@@ -185,6 +228,7 @@ export function buildRunCommand(
   threadTitle: string,
   variant?: string,
   threadId?: string,
+  options: RunCommandOptions = {},
 ): string {
   // Escape single quotes in paths by replacing ' with '\''
   const escapedPath = promptPath.replace(/'/g, "'\\''")
@@ -196,15 +240,33 @@ export function buildRunCommand(
   const variantFlag = variant ? ` --variant "${variant}"` : ""
 
   // Build completion marker path if threadId provided
-  const completionMarkerCmd = threadId
-    ? `\necho "done" > "${getCompletionMarkerPath(threadId)}"`
+  const completionMarkerCmd = threadId && options.streamId
+    ? `\necho "done" > "${getCompletionMarkerPath(options.streamId, threadId)}"`
     : ""
 
   // Build session file write command if threadId provided
-  const sessionFilePath = threadId ? getSessionFilePath(threadId) : ""
-  const writeSessionCmd = threadId
+  const sessionFilePath = threadId && options.streamId
+    ? getSessionFilePath(options.streamId, threadId)
+    : ""
+  const writeSessionCmd = threadId && options.streamId
     ? `\n    echo "$SESSION_ID" > "${sessionFilePath}"`
     : ""
+  const resultWriteCmd = buildResultWriteCommand(options.streamId, threadId, "RUN_EXIT")
+  const commandPrefix = buildCommandPrefix(options)
+  const postRunAction = options.headless
+    ? `echo "Headless mode detected - skipping session resume."\nexit $RUN_EXIT`
+    : `if ${buildHeadlessCheck()}; then
+  echo "Headless mode detected - skipping session resume."
+  exit $RUN_EXIT
+fi
+if [ -n "$SESSION_ID" ]; then
+  echo "Resuming session $SESSION_ID..."
+  opencode --session "$SESSION_ID"
+else
+  echo "Press Enter to close."
+  read
+fi
+exit $RUN_EXIT`
 
   // Build a shell script that:
   // 1. Generates a unique tracking ID (16 chars from nanosecond timestamp)
@@ -213,31 +275,33 @@ export function buildRunCommand(
   // 4. After completion, searches for the session by tracking ID using jq
   // 5. Writes the session ID to a temp file for workstream tracking (if threadId provided)
   // 6. Resumes the session with opencode TUI if found
-  return `sh -c '
+  return `${commandPrefix}sh -c '
 TRACK_ID=$(date +%s%N | head -c 16)
 TITLE="${escapedTitle}__id=$TRACK_ID"
+RUN_EXIT=0
 echo "════════════════════════════════════════"
 echo "Thread: ${escapedTitle}"
 echo "Model: ${model}${variant ? ` (${variant})` : ""}"
 echo "════════════════════════════════════════"
 echo ""
-cat "${escapedPath}" | opencode run --port ${port} --model "${model}"${variantFlag} --title "$TITLE"${completionMarkerCmd}
+cat "${escapedPath}" | opencode run --port ${port} --model "${model}"${variantFlag} --title "$TITLE"
+RUN_EXIT=$?
 echo ""
 echo "Thread finished. Looking for session to resume..."
+SESSION_ID=""
 if command -v jq >/dev/null 2>&1; then
   SESSION_ID=$(opencode session list --max-count 20 --format json 2>/dev/null | jq -r ".[] | select(.title | contains(\\"__id=$TRACK_ID\\")) | .id" | head -1)
   if [ -n "$SESSION_ID" ]; then${writeSessionCmd}
-    echo "Resuming session $SESSION_ID..."
-    opencode --session "$SESSION_ID"
+    echo "Session found: $SESSION_ID"
   else
-    echo "Session not found. Press Enter to close."
-    read
+    echo "Session not found."
   fi
 else
   echo "jq not found - install jq to enable session resume"
-  echo "Press Enter to close."
-  read
 fi
+${resultWriteCmd}
+${completionMarkerCmd}
+${postRunAction}
 '`
 }
 
@@ -263,6 +327,7 @@ export function buildRetryRunCommand(
   promptPath: string,
   threadTitle: string,
   threadId?: string,
+  options: RunCommandOptions = {},
 ): string {
   if (models.length === 0) {
     throw new Error("At least one model must be provided")
@@ -271,7 +336,7 @@ export function buildRetryRunCommand(
   // If only one model, use simple command without retry logic
   if (models.length === 1) {
     const m = models[0]!
-    return buildRunCommand(port, m.model, promptPath, threadTitle, m.variant, threadId)
+    return buildRunCommand(port, m.model, promptPath, threadTitle, m.variant, threadId, options)
   }
 
   // Escape single quotes in paths by replacing ' with '\''
@@ -334,43 +399,63 @@ export function buildRetryRunCommand(
   const modelList = models.map(m => m.variant ? `${m.model} (${m.variant})` : m.model).join(" -> ")
 
   // Build completion marker command if threadId provided
-  const completionMarkerCmd = threadId
-    ? `echo "done" > "${getCompletionMarkerPath(threadId)}"`
+  const completionMarkerCmd = threadId && options.streamId
+    ? `echo "done" > "${getCompletionMarkerPath(options.streamId, threadId)}"`
     : ""
 
   // Build session file write command if threadId provided
-  const sessionFilePath = threadId ? getSessionFilePath(threadId) : ""
-  const writeSessionCmd = threadId
+  const sessionFilePath = threadId && options.streamId
+    ? getSessionFilePath(options.streamId, threadId)
+    : ""
+  const writeSessionCmd = threadId && options.streamId
     ? `\n    echo "$SESSION_ID" > "${sessionFilePath}"`
     : ""
+  const resultWriteCmd = buildResultWriteCommand(options.streamId, threadId, "FINAL_EXIT")
+  const commandPrefix = buildCommandPrefix(options)
+  const postRunAction = options.headless
+    ? `echo "Headless mode detected - skipping session resume."\nexit $FINAL_EXIT`
+    : `if ${buildHeadlessCheck()}; then
+  echo "Headless mode detected - skipping session resume."
+  exit $FINAL_EXIT
+fi
+if [ -n "$SESSION_ID" ]; then
+  echo "Resuming session $SESSION_ID..."
+  opencode --session "$SESSION_ID"
+else
+  echo "Press Enter to close."
+  read
+fi
+exit $FINAL_EXIT`
 
-  return `sh -c '
+  return `${commandPrefix}sh -c '
 TRACK_ID=$(date +%s%N | head -c 16)
 TITLE="${escapedTitle}__id=$TRACK_ID"
 FINAL_EXIT=""
+SESSION_ID=""
 echo "════════════════════════════════════════"
 echo "Thread: ${escapedTitle}"
 echo "Models: ${modelList}"
 echo "════════════════════════════════════════"
 echo ""
 ${modelAttempts}
-${completionMarkerCmd}
+if [ -z "$FINAL_EXIT" ]; then
+  FINAL_EXIT=1
+fi
 echo ""
 echo "Thread finished. Looking for session to resume..."
 if command -v jq >/dev/null 2>&1; then
   SESSION_ID=$(opencode session list --max-count 20 --format json 2>/dev/null | jq -r ".[] | select(.title | contains(\\"__id=$TRACK_ID\\")) | .id" | head -1)
   if [ -n "$SESSION_ID" ]; then${writeSessionCmd}
-    echo "Resuming session $SESSION_ID..."
-    opencode --session "$SESSION_ID"
+    echo "Session found: $SESSION_ID"
   else
-    echo "Session not found. Press Enter to close."
-    read
+    echo "Session not found."
   fi
 else
   echo "jq not found - install jq to enable session resume"
-  echo "Press Enter to close."
-  read
 fi
+${resultWriteCmd}
+${completionMarkerCmd}
+${postRunAction}
 '`
 }
 
@@ -391,6 +476,7 @@ export interface SynthesisRunOptions {
   streamId: string
   /** Thread ID for file paths */
   threadId: string
+  headless?: boolean
 }
 
 /**
@@ -431,6 +517,7 @@ export function buildSynthesisRunCommand(options: SynthesisRunOptions): string {
     threadTitle,
     streamId,
     threadId,
+    headless = false,
   } = options
 
   if (synthesisModels.length === 0) {
@@ -448,8 +535,8 @@ export function buildSynthesisRunCommand(options: SynthesisRunOptions): string {
   // File paths for tracking
   const synthesisOutputPath = getSynthesisOutputPath(streamId, threadId)
   const workingSessionPath = getWorkingAgentSessionPath(streamId, threadId)
-  const completionMarkerPath = getCompletionMarkerPath(threadId)
-  const sessionFilePath = getSessionFilePath(threadId)
+  const completionMarkerPath = getCompletionMarkerPath(streamId, threadId)
+  const sessionFilePath = getSessionFilePath(streamId, threadId)
 
   // Build model lists for display
   const synthesisModelList = synthesisModels
@@ -476,13 +563,34 @@ export function buildSynthesisRunCommand(options: SynthesisRunOptions): string {
     workingSessionPath,
     synthesisOutputPath,
   )
+  const resultWriteCmd = buildResultWriteCommand(streamId, threadId, "FINAL_EXIT")
+  const commandPrefix = buildCommandPrefix({ headless })
+  const postRunAction = headless
+    ? `echo "Headless mode detected - skipping session resume."\nexit $FINAL_EXIT`
+    : `if ${buildHeadlessCheck()}; then
+  echo "Headless mode detected - skipping session resume."
+  exit $FINAL_EXIT
+fi
+if [ -n "$SESSION_ID" ]; then
+  echo "Resuming synthesis session $SESSION_ID..."
+  opencode --session "$SESSION_ID"
+elif [ -n "$WORK_SESSION_ID" ]; then
+  echo "Resuming working session $WORK_SESSION_ID..."
+  opencode --session "$WORK_SESSION_ID"
+else
+  echo "Press Enter to close."
+  read
+fi
+exit $FINAL_EXIT`
 
-  return `sh -c '
+  return `${commandPrefix}sh -c '
 SYNTH_TRACK_ID=$(date +%s%N | head -c 16)
 WORK_TRACK_ID=$(date +%s%N | tail -c 16 | head -c 16)
 SYNTH_TITLE="${escapedTitle}__synth_id=$SYNTH_TRACK_ID"
 WORK_TITLE="${escapedTitle}__work_id=$WORK_TRACK_ID"
 FINAL_EXIT=""
+SESSION_ID=""
+WORK_SESSION_ID=""
 echo "════════════════════════════════════════"
 echo "Thread: ${escapedTitle}"
 echo "Mode: Synthesis"
@@ -497,8 +605,9 @@ echo "" > "${workingSessionPath}"
 
 ${synthesisModelAttempts}
 
-# Write completion marker
-echo "done" > "${completionMarkerPath}"
+if [ -z "$FINAL_EXIT" ]; then
+  FINAL_EXIT=1
+fi
 
 echo ""
 echo "Synthesis complete. Looking for session to resume..."
@@ -507,25 +616,23 @@ if command -v jq >/dev/null 2>&1; then
   SESSION_ID=$(opencode session list --max-count 30 --format json 2>/dev/null | jq -r ".[] | select(.title | contains(\\"__synth_id=$SYNTH_TRACK_ID\\")) | .id" | head -1)
   if [ -n "$SESSION_ID" ]; then
     echo "$SESSION_ID" > "${sessionFilePath}"
-    echo "Resuming synthesis session $SESSION_ID..."
-    opencode --session "$SESSION_ID"
+    echo "Synthesis session found: $SESSION_ID"
   else
     # Fallback: try working agent session
     WORK_SESSION_ID=$(cat "${workingSessionPath}" 2>/dev/null | tr -d "\\n")
     if [ -n "$WORK_SESSION_ID" ]; then
       echo "$WORK_SESSION_ID" > "${sessionFilePath}"
-      echo "Resuming working session $WORK_SESSION_ID..."
-      opencode --session "$WORK_SESSION_ID"
+      echo "Working session found: $WORK_SESSION_ID"
     else
-      echo "No session found. Press Enter to close."
-      read
+      echo "No session found."
     fi
   fi
 else
   echo "jq not found - install jq to enable session resume"
-  echo "Press Enter to close."
-  read
 fi
+${resultWriteCmd}
+echo "done" > "${completionMarkerPath}"
+${postRunAction}
 '`
 }
 
@@ -725,6 +832,7 @@ export interface PostSynthesisOptions {
   streamId: string
   /** Thread ID for file paths */
   threadId: string
+  headless?: boolean
 }
 
 /**
@@ -766,6 +874,7 @@ export function buildPostSynthesisCommand(options: PostSynthesisOptions): string
     threadTitle,
     streamId,
     threadId,
+    headless = false,
   } = options
 
   if (workingModels.length === 0) {
@@ -781,8 +890,8 @@ export function buildPostSynthesisCommand(options: PostSynthesisOptions): string
   const escapedTitle = escapeForShell(truncated)
 
   // File paths for tracking
-  const completionMarkerPath = getCompletionMarkerPath(threadId)
-  const sessionFilePath = getSessionFilePath(threadId)
+  const completionMarkerPath = getCompletionMarkerPath(streamId, threadId)
+  const sessionFilePath = getSessionFilePath(streamId, threadId)
   const exportedSessionPath = `/tmp/workstream-${streamId}-${threadId}-exported-session.json`
   const extractedContextPath = `/tmp/workstream-${streamId}-${threadId}-context.txt`
   const synthesisJsonPath = `/tmp/workstream-${streamId}-${threadId}-synthesis.json`
@@ -815,12 +924,28 @@ export function buildPostSynthesisCommand(options: PostSynthesisOptions): string
   // Format: .messages[] | select(.info.role=="assistant") | .parts[] | select(.type=="text") | .text
   // Note: Use double quotes for the jq filter to avoid escaping issues inside sh -c '...'
   const jqExtractCommand = `jq -r ".messages[] | select(.info.role==\\"assistant\\") | .parts[] | select(.type==\\"text\\") | .text"`
+  const resultWriteCmd = buildResultWriteCommand(streamId, threadId, "THREAD_FINAL_EXIT")
+  const commandPrefix = buildCommandPrefix({ headless })
+  const postRunAction = headless
+    ? `echo "Headless mode detected - skipping session resume."\nexit $THREAD_FINAL_EXIT`
+    : `if ${buildHeadlessCheck()}; then
+  echo "Headless mode detected - skipping session resume."
+  exit $THREAD_FINAL_EXIT
+fi
+if [ -n "$WORK_SESSION_ID" ]; then
+  opencode --session "$WORK_SESSION_ID"
+else
+  echo "No working session available. Press Enter to close."
+  read
+fi
+exit $THREAD_FINAL_EXIT`
 
-  return `sh -c '
+  return `${commandPrefix}sh -c '
 WORK_TRACK_ID=$(date +%s%N | head -c 16)
 WORK_TITLE="${escapedTitle}__work_id=$WORK_TRACK_ID"
 WORK_FINAL_EXIT=""
 SYNTH_FINAL_EXIT=""
+THREAD_FINAL_EXIT=""
 echo "════════════════════════════════════════"
 echo "Thread: ${escapedTitle}"
 echo "Mode: Post-Session Synthesis"
@@ -875,10 +1000,6 @@ if [ -f "${synthesisJsonPath}" ]; then
   echo "Synthesis output size: $FILE_SIZE bytes" >> "${synthesisLogPath}"
 fi
 
-# Write completion marker AFTER synthesis completes
-# This ensures synthesis output is available when notification fires
-echo "done" > "${completionMarkerPath}"
-
 # Save working session ID for workstream tracking
 if [ -n "$WORK_SESSION_ID" ]; then
   echo "$WORK_SESSION_ID" > "${sessionFilePath}"
@@ -887,12 +1008,18 @@ fi
 # Resume WORKING agent session (not synthesis)
 echo ""
 echo "Opening working session for review..."
-if [ -n "$WORK_SESSION_ID" ]; then
-  opencode --session "$WORK_SESSION_ID"
-else
-  echo "No working session available. Press Enter to close."
-  read
+THREAD_FINAL_EXIT="$WORK_FINAL_EXIT"
+if [ -n "$SYNTH_FINAL_EXIT" ] && [ "$SYNTH_FINAL_EXIT" -ne 0 ]; then
+  THREAD_FINAL_EXIT="$SYNTH_FINAL_EXIT"
 fi
+if [ -z "$THREAD_FINAL_EXIT" ]; then
+  THREAD_FINAL_EXIT=1
+fi
+${resultWriteCmd}
+
+# Write completion marker only after canonical artifacts are stored.
+echo "done" > "${completionMarkerPath}"
+${postRunAction}
 '`
 }
 

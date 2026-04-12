@@ -6,7 +6,6 @@
  * connected to a shared opencode serve backend.
  */
 
-import { existsSync, readFileSync } from "fs"
 import { getRepoRoot } from "../lib/repo.ts"
 import { loadIndex, getResolvedStream } from "../lib/index.ts"
 import { loadAgentsConfig, getDefaultSynthesisAgent, getSynthesisAgent, getSynthesisAgentModels } from "../lib/agents-yaml.ts"
@@ -15,7 +14,6 @@ import {
   parseTaskId,
   generateSessionId,
   startMultipleSessionsLocked,
-  completeMultipleSessionsLocked,
   getBatchMetadata,
 } from "../lib/tasks.ts"
 import type { Task, ThreadInfo, ThreadSessionMap } from "../lib/types.ts"
@@ -28,41 +26,29 @@ import {
   buildCreateSessionCommand,
   buildAddWindowCommand,
   buildAttachCommand,
-  getSessionPaneStatuses,
+  waitForAllPanesExit,
 } from "../lib/tmux.ts"
 import { getStageApprovalStatus } from "../lib/approval.ts"
 import {
   isServerRunning,
   startServer,
   waitForServer,
-  buildRetryRunCommand,
   buildServeCommand,
-  getSessionFilePath,
-  getWorkingAgentSessionPath,
-  getSynthesisOutputPath,
-  getSynthesisLogPath,
 } from "../lib/opencode.ts"
 import { NotificationTracker } from "../lib/notifications.ts"
 import { isSynthesisEnabled, getSynthesisAgentOverride } from "../lib/synthesis/config.ts"
-import { updateThreadMetadataLocked, setSynthesisOutput } from "../lib/threads.ts"
-import { parseSynthesisOutputFile } from "../lib/synthesis/output.ts"
 import { parseBatchId } from "../lib/cli-utils.ts"
 import {
   collectThreadInfoFromTasks,
-  buildPaneTitle,
   buildThreadRunCommand,
   setupTmuxSession,
   setupGridController,
   setupKillSessionKeybind,
   validateThreadPrompts,
 } from "../lib/multi-orchestrator.ts"
-import {
-  startMarkerPolling,
-  stopPolling,
-  cleanupCompletionMarkers,
-  cleanupSessionFiles,
-  cleanupSynthesisFiles,
-} from "../lib/marker-polling.ts"
+import { startMarkerPolling } from "../lib/marker-polling.ts"
+import { finalizeMultiRun } from "../lib/multi-finalization.ts"
+import { resetBatchStatusRun, startDetachedBatchMonitor } from "../lib/batch-monitor.ts"
 
 const DEFAULT_PORT = 4096
 
@@ -84,6 +70,8 @@ Optional:
   --port, -p       OpenCode server port (default: 4096)
   --dry-run        Show commands without executing
   --no-server      Skip starting opencode serve (assume already running)
+  --headless       Request non-interactive batch execution
+  --async          Return after starting the batch (requires --headless)
   --silent         Disable notification sounds (audio only)
   --repo-root, -r  Repository root (auto-detected if omitted)
   --help, -h       Show this help message
@@ -95,15 +83,20 @@ Description:
   A shared opencode serve backend is started (unless --no-server) to
   eliminate MCP cold boot times and share model cache across threads.
 
+  Headless mode is intended for non-interactive callers. Async mode is a
+  headless-only variant that returns control immediately after startup.
+
 Examples:
   work multi --batch "01.01"
   work multi --continue
+  work multi --batch "01.01" --headless
+  work multi --batch "01.01" --headless --async
   work multi --batch "01.01" --dry-run
   work multi --continue --dry-run
 `)
 }
 
-function parseCliArgs(argv: string[]): MultiCliArgs | null {
+export function parseCliArgs(argv: string[]): MultiCliArgs | null {
   const args = argv.slice(2)
   const parsed: Partial<MultiCliArgs> = {}
 
@@ -169,6 +162,14 @@ function parseCliArgs(argv: string[]): MultiCliArgs | null {
         parsed.noServer = true
         break
 
+      case "--headless":
+        parsed.headless = true
+        break
+
+      case "--async":
+        parsed.async = true
+        break
+
       case "--silent":
         parsed.silent = true
         break
@@ -181,6 +182,14 @@ function parseCliArgs(argv: string[]): MultiCliArgs | null {
   }
 
   return parsed as MultiCliArgs
+}
+
+export function validateCliArgs(cliArgs: MultiCliArgs): string | null {
+  if (cliArgs.async && !cliArgs.headless) {
+    return "--async requires --headless"
+  }
+
+  return null
 }
 
 /**
@@ -241,6 +250,8 @@ function printDryRunOutput(
   repoRoot: string,
   synthesisConfigEnabled: boolean,
   synthesisAgentName: string | null,
+  headless: boolean,
+  asyncMode: boolean,
 ): void {
   // Check if synthesis mode is enabled based on config and agent availability
   const synthesisEnabled = synthesisConfigEnabled && threads.some(t => t.synthesisModels && t.synthesisModels.length > 0)
@@ -251,6 +262,9 @@ function printDryRunOutput(
   console.log(`Threads: ${threads.length}`)
   console.log(`Session: ${sessionName}`)
   console.log(`Port: ${port}`)
+  console.log(
+    `Execution: ${headless ? (asyncMode ? "headless async" : "headless") : "interactive"}`,
+  )
   console.log(`Synthesis config: work/synthesis.json`)
   if (synthesisConfigEnabled) {
     if (synthesisAgentName) {
@@ -274,7 +288,7 @@ function printDryRunOutput(
 
   console.log("# Create tmux session (Window 0: Dashboard)")
   const firstThread = threads[0]!
-  const firstCmd = buildThreadRunCommand(firstThread, port, stream.id)
+  const firstCmd = buildThreadRunCommand(firstThread, port, stream.id, { headless })
   console.log(buildCreateSessionCommand(sessionName, "Dashboard", firstCmd))
   console.log("")
 
@@ -282,22 +296,24 @@ function printDryRunOutput(
   if (threads.length > 1) {
     for (let i = 1; i < threads.length; i++) {
       const thread = threads[i]!
-      const cmd = buildThreadRunCommand(thread, port, stream.id)
+      const cmd = buildThreadRunCommand(thread, port, stream.id, { headless })
       console.log(buildAddWindowCommand(sessionName, thread.threadId, cmd))
     }
     console.log("")
   }
 
-  console.log("# Setup Dashboard Layout")
-  const navigatorCmd = `bun work multi-navigator --session "${sessionName}" --batch "${batchId}" --repo-root "${repoRoot}" --stream "${stream.id}"`
-  console.log(
-    `tmux split-window -t "${sessionName}:0" -h -b -l 25% "${navigatorCmd}"`,
-  )
-  console.log("")
+  if (!headless) {
+    console.log("# Setup Dashboard Layout")
+    const navigatorCmd = `bun work multi-navigator --session "${sessionName}" --batch "${batchId}" --repo-root "${repoRoot}" --stream "${stream.id}"`
+    console.log(
+      `tmux split-window -t "${sessionName}:0" -h -b -l 25% "${navigatorCmd}"`,
+    )
+    console.log("")
 
-  console.log("# Attach to session")
-  console.log(buildAttachCommand(sessionName))
-  console.log("")
+    console.log("# Attach to session")
+    console.log(buildAttachCommand(sessionName))
+    console.log("")
+  }
 
   console.log("=== Thread Details ===")
   for (const thread of threads) {
@@ -335,190 +351,28 @@ async function handleSessionClose(
   }
   console.log(`\nSession detached. Checking thread statuses...`)
 
-  const completions: Array<{
-    taskId: string
-    sessionId: string
-    status: "completed" | "failed" | "interrupted"
-    exitCode?: number
-  }> = []
+  const result = await finalizeMultiRun({
+    sessionName,
+    threadSessionMap,
+    threadIds,
+    notificationTracker,
+    repoRoot,
+    streamId,
+  })
 
-  if (threadSessionMap.length > 0) {
-    if (sessionExists(sessionName)) {
-      // Session still exists - check individual pane statuses
-      const paneStatuses = getSessionPaneStatuses(sessionName)
-
-      for (const mapping of threadSessionMap) {
-        const paneStatus = paneStatuses.find((p) => p.paneId === mapping.paneId)
-        if (paneStatus && paneStatus.paneDead) {
-          const exitCode = paneStatus.exitStatus ?? undefined
-          const status = exitCode === 0 ? "completed" : "failed"
-          completions.push({
-            taskId: mapping.taskId,
-            sessionId: mapping.sessionId,
-            status,
-            exitCode,
-          })
-          console.log(
-            `  Thread ${mapping.threadId}: ${status}${exitCode !== undefined ? ` (exit ${exitCode})` : ""}`,
-          )
-
-          if (status === "failed") {
-            notificationTracker?.playError(mapping.threadId)
-          }
-        } else if (paneStatus && !paneStatus.paneDead) {
-          console.log(`  Thread ${mapping.threadId}: still running`)
-        } else {
-          completions.push({
-            taskId: mapping.taskId,
-            sessionId: mapping.sessionId,
-            status: "interrupted",
-          })
-          console.log(
-            `  Thread ${mapping.threadId}: interrupted (pane not found)`,
-          )
-        }
-      }
-
-      console.log(`\nWindows remain in tmux session "${sessionName}".`)
-      console.log(`To reattach: tmux attach -t "${sessionName}"`)
-      console.log(`To kill: tmux kill-session -t "${sessionName}"`)
-    } else {
-      // Session was killed - mark all as completed
-      console.log("Session closed. Marking all threads as completed...")
-      for (const mapping of threadSessionMap) {
-        completions.push({
-          taskId: mapping.taskId,
-          sessionId: mapping.sessionId,
-          status: "completed",
-        })
-        console.log(`  Thread ${mapping.threadId}: completed`)
-      }
-      notificationTracker?.playBatchComplete()
-    }
-
-    if (completions.length > 0) {
-      console.log(
-        `\nUpdating ${completions.length} session statuses in tasks.json...`,
-      )
-      await completeMultipleSessionsLocked(repoRoot, streamId, completions)
-    }
-
-    // Capture opencode session IDs and synthesis output from temp files
-    // With post-session synthesis (modern flow):
-    // - sessionFilePath contains the WORKING agent session ID (this is the primary session)
-    // - synthesisOutputPath contains the synthesis agent's output (synthesis ran headless)
-    // - workingAgentSessionPath is not used in post-session mode (kept for backwards compatibility with legacy wrapper)
-    console.log(`\nCapturing opencode session IDs and synthesis output...`)
-    for (const mapping of threadSessionMap) {
-      const sessionFilePath = getSessionFilePath(mapping.threadId)
-      const workingAgentSessionPath = getWorkingAgentSessionPath(streamId, mapping.threadId)
-      const synthesisOutputPath = getSynthesisOutputPath(streamId, mapping.threadId)
-      
-      // Collect session IDs and synthesis output to update
-      const sessionUpdates: {
-        opencodeSessionId?: string
-        workingAgentSessionId?: string
-        synthesisOutput?: string | null
-      } = {}
-      
-      // Capture the working agent session ID (stored as primary session in post-session mode)
-      if (existsSync(sessionFilePath)) {
-        try {
-          const opencodeSessionId = readFileSync(sessionFilePath, "utf-8").trim()
-          if (opencodeSessionId) {
-            sessionUpdates.opencodeSessionId = opencodeSessionId
-          }
-        } catch (e) {
-          console.log(`  Thread ${mapping.threadId}: failed to read session file (${(e as Error).message})`)
-        }
-      }
-      
-      // Check legacy working agent session path (backwards compatibility)
-      // In post-session synthesis, this file won't exist; working session is in sessionFilePath
-      if (existsSync(workingAgentSessionPath)) {
-        try {
-          const workingAgentSessionId = readFileSync(workingAgentSessionPath, "utf-8").trim()
-          if (workingAgentSessionId) {
-            sessionUpdates.workingAgentSessionId = workingAgentSessionId
-          }
-        } catch (e) {
-          console.log(`  Thread ${mapping.threadId}: failed to read working agent session file (${(e as Error).message})`)
-        }
-      }
-      
-      // Capture synthesis output (only present when synthesis is enabled)
-      // In post-session synthesis, this file contains the headless synthesis agent's JSONL output
-      let synthesisOutputText: string | null = null
-      const synthesisJsonPath = `/tmp/workstream-${streamId}-${mapping.threadId}-synthesis.json`
-      if (existsSync(synthesisJsonPath)) {
-        try {
-          const logPath = getSynthesisLogPath(streamId, mapping.threadId)
-          const parseResult = parseSynthesisOutputFile(synthesisJsonPath, logPath)
-          
-          if (!parseResult.success) {
-            console.log(`  Thread ${mapping.threadId}: synthesis output parsing failed (see ${logPath})`)
-          }
-          
-          synthesisOutputText = parseResult.text.trim()
-          if (!synthesisOutputText) {
-            console.log(`  Thread ${mapping.threadId}: synthesis output is empty`)
-            synthesisOutputText = ""
-          }
-        } catch (e) {
-          console.log(`  Thread ${mapping.threadId}: failed to parse synthesis output file (${(e as Error).message})`)
-          synthesisOutputText = null
-        }
-      }
-      
-      // Update thread metadata with captured session IDs
-      if (sessionUpdates.opencodeSessionId || sessionUpdates.workingAgentSessionId) {
-        const updateData: {
-          opencodeSessionId?: string
-          workingAgentSessionId?: string
-        } = {}
-        if (sessionUpdates.opencodeSessionId) updateData.opencodeSessionId = sessionUpdates.opencodeSessionId
-        if (sessionUpdates.workingAgentSessionId) updateData.workingAgentSessionId = sessionUpdates.workingAgentSessionId
-        
-        await updateThreadMetadataLocked(repoRoot, streamId, mapping.threadId, updateData)
-      }
-      
-      // Store synthesis output using setSynthesisOutput() with structured data
-      // This stores sessionId, output text, and completedAt timestamp in threads.json
-      if (synthesisOutputText !== null) {
-        const completedAt = new Date().toISOString()
-        // Generate a unique sessionId for the synthesis run (synthesis runs headless, no persistent session)
-        const synthesisSessionId = `synthesis-${mapping.threadId}-${Date.now()}`
-        
-        await setSynthesisOutput(repoRoot, streamId, mapping.threadId, {
-          sessionId: synthesisSessionId,
-          output: synthesisOutputText,
-          completedAt,
-        })
-      }
-      
-      // Log what was captured (simplified for post-session synthesis)
-      const hasSynthOutput = synthesisOutputText !== null
-      if (sessionUpdates.opencodeSessionId) {
-        console.log(`  Thread ${mapping.threadId}: captured working session ${sessionUpdates.opencodeSessionId}${hasSynthOutput ? ', synthesis output' : ''}`)
-      } else if (hasSynthOutput) {
-        console.log(`  Thread ${mapping.threadId}: captured synthesis output`)
-      } else if (!sessionUpdates.opencodeSessionId && !sessionUpdates.workingAgentSessionId) {
-        console.log(`  Thread ${mapping.threadId}: no session file found`)
-      }
-    }
-
-    // Clean up marker files, session files, and synthesis files
-    cleanupCompletionMarkers(threadIds)
-    cleanupSessionFiles(threadIds)
-    cleanupSynthesisFiles(streamId, threadIds)
-  }
-
-  process.exit(code ?? 0)
+  process.exit(code ?? result.exitCode)
 }
 
 export async function main(argv: string[] = process.argv): Promise<void> {
   const cliArgs = parseCliArgs(argv)
   if (!cliArgs) {
+    console.error("\nRun with --help for usage information.")
+    process.exit(1)
+  }
+
+  const cliArgsError = validateCliArgs(cliArgs)
+  if (cliArgsError) {
+    console.error(`Error: ${cliArgsError}`)
     console.error("\nRun with --help for usage information.")
     process.exit(1)
   }
@@ -711,6 +565,8 @@ export async function main(argv: string[] = process.argv): Promise<void> {
       repoRoot,
       synthesisConfigEnabled,
       synthesisAgent?.name ?? null,
+      cliArgs.headless ?? false,
+      cliArgs.async ?? false,
     )
     return
   }
@@ -766,6 +622,23 @@ export async function main(argv: string[] = process.argv): Promise<void> {
     }
   }
 
+  if (cliArgs.headless) {
+    const batchStatus = resetBatchStatusRun({
+      repoRoot,
+      streamId: stream.id,
+      batchId,
+      stageName,
+      batchName,
+      threads: threads.map((thread) => ({
+        threadId: thread.threadId,
+        threadName: thread.threadName,
+        firstTaskId: thread.firstTaskId!,
+      })),
+    })
+
+    console.log(`Initialized batch status run ${batchStatus.runId} for ${batchId}.`)
+  }
+
   // Create tmux session with threads
   console.log(`Creating tmux session "${sessionName}"...`)
   const { threadSessionMap } = setupTmuxSession(
@@ -775,6 +648,7 @@ export async function main(argv: string[] = process.argv): Promise<void> {
     repoRoot,
     stream.id,
     batchId,
+    { headless: cliArgs.headless },
   )
 
   console.log(`  Tracking ${threadSessionMap.length} thread sessions`)
@@ -787,20 +661,13 @@ export async function main(argv: string[] = process.argv): Promise<void> {
     batchId,
     repoRoot,
     stream.id,
+    { headless: cliArgs.headless },
   )
 
   // Setup keybinding to kill session
-  setupKillSessionKeybind()
-
-  console.log(`
-Layout: ${threads.length <= 4 ? "2x2 Grid (all visible)" : `2x2 Grid with pagination (${threads.length} threads, use n/p to page)`}
-Press Ctrl+b X to kill the session when done.
-`)
-
-  console.log(`Attaching to session "${sessionName}"...`)
-
-  // Attach to session
-  const child = attachSession(sessionName)
+  if (!cliArgs.headless) {
+    setupKillSessionKeybind()
+  }
 
   // Create notification tracker with workstream-specific config
   const notificationTracker = cliArgs.silent ? null : new NotificationTracker({ repoRoot })
@@ -813,6 +680,48 @@ Press Ctrl+b X to kill the session when done.
     notificationTracker,
     streamId: stream.id,
   })
+
+  if (cliArgs.headless) {
+    console.log(`
+Layout: headless tmux session (${threads.length} thread${threads.length === 1 ? "" : "s"})
+Monitoring for completion without attaching.
+`)
+
+    if (cliArgs.async) {
+      startDetachedBatchMonitor({
+        repoRoot,
+        streamId: stream.id,
+        batchId,
+        pollIntervalMs: 1000,
+      })
+      console.log(`Headless async mode: session "${sessionName}" is running detached.`)
+      return
+    }
+
+    await waitForAllPanesExit(sessionName)
+    await handleSessionClose(
+      null,
+      sessionName,
+      threadSessionMap,
+      threadIds,
+      notificationTracker,
+      repoRoot,
+      stream.id,
+      pollingState,
+      pollingPromise,
+    )
+    return
+  }
+
+  console.log(`
+Layout: ${threads.length <= 4 ? "2x2 Grid (all visible)" : `2x2 Grid with pagination (${threads.length} threads, use n/p to page)`}
+Press Ctrl+b X to kill the session when done.
+`)
+
+  console.log(`Attaching to session "${sessionName}"...`)
+
+  // Attach to session
+  const child = attachSession(sessionName)
 
   child.on("close", async (code) => {
     await handleSessionClose(

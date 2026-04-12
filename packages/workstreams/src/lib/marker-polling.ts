@@ -6,7 +6,7 @@
  */
 
 import { existsSync, unlinkSync, readFileSync } from "fs"
-import { getCompletionMarkerPath, getSessionFilePath, getSynthesisOutputPath, getWorkingAgentSessionPath, getSynthesisLogPath } from "./opencode.ts"
+import { getCompletionMarkerPath, getSessionFilePath, getSynthesisOutputPath, getWorkingAgentSessionPath, getSynthesisLogPath, getRunResultPath } from "./opencode.ts"
 import type { NotificationTracker } from "./notifications.ts"
 import { parseSynthesisOutputFile } from "./synthesis/output.ts"
 
@@ -20,8 +20,8 @@ export interface MarkerPollingConfig {
   notificationTracker: NotificationTracker | null
   /** Polling interval in milliseconds (default: 500) */
   pollIntervalMs?: number
-  /** Stream ID for reading synthesis output files (optional, enables synthesis notifications) */
-  streamId?: string
+  /** Stream ID for namespaced temp artifacts and synthesis output files */
+  streamId: string
 }
 
 /**
@@ -38,34 +38,59 @@ export interface MarkerPollingState {
  * Clean up completion marker files for all threads
  * Called when batch completes to remove /tmp/workstream-*-complete.txt files
  */
-export function cleanupCompletionMarkers(threadIds: string[]): void {
+function cleanupFileIfExists(filePath: string): boolean {
+  try {
+    if (existsSync(filePath)) {
+      unlinkSync(filePath)
+      return true
+    }
+  } catch {
+    // Ignore cleanup errors - files may already be deleted
+  }
+
+  return false
+}
+
+export function cleanupCompletionMarkers(streamId: string, threadIds: string[]): number {
+  let removed = 0
   for (const threadId of threadIds) {
-    const markerPath = getCompletionMarkerPath(threadId)
-    try {
-      if (existsSync(markerPath)) {
-        unlinkSync(markerPath)
-      }
-    } catch {
-      // Ignore cleanup errors - files may already be deleted
+    const markerPath = getCompletionMarkerPath(streamId, threadId)
+    if (cleanupFileIfExists(markerPath)) {
+      removed++
     }
   }
+
+  return removed
 }
 
 /**
  * Clean up session ID files for all threads
  * Called when batch completes to remove /tmp/workstream-*-session.txt files
  */
-export function cleanupSessionFiles(threadIds: string[]): void {
+export function cleanupSessionFiles(streamId: string, threadIds: string[]): number {
+  let removed = 0
   for (const threadId of threadIds) {
-    const sessionPath = getSessionFilePath(threadId)
-    try {
-      if (existsSync(sessionPath)) {
-        unlinkSync(sessionPath)
-      }
-    } catch {
-      // Ignore cleanup errors - files may already be deleted
+    const sessionPath = getSessionFilePath(streamId, threadId)
+    if (cleanupFileIfExists(sessionPath)) {
+      removed++
     }
   }
+
+  return removed
+}
+
+/**
+ * Clean up thread result files for all threads
+ */
+export function cleanupResultFiles(streamId: string, threadIds: string[]): number {
+  let removed = 0
+  for (const threadId of threadIds) {
+    if (cleanupFileIfExists(getRunResultPath(streamId, threadId))) {
+      removed++
+    }
+  }
+
+  return removed
 }
 
 /**
@@ -78,68 +103,47 @@ export function cleanupSessionFiles(threadIds: string[]): void {
  * - /tmp/workstream-{streamId}-{threadId}-context.txt (extracted context)
  * - /tmp/workstream-{streamId}-{threadId}-working-session.txt (working agent session)
  */
-export function cleanupSynthesisFiles(streamId: string, threadIds: string[]): void {
+export function cleanupSynthesisFiles(streamId: string, threadIds: string[]): number {
+  let removed = 0
   for (const threadId of threadIds) {
     // Clean up legacy synthesis output file (.txt)
     const synthesisPath = getSynthesisOutputPath(streamId, threadId)
-    try {
-      if (existsSync(synthesisPath)) {
-        unlinkSync(synthesisPath)
-      }
-    } catch {
-      // Ignore cleanup errors - files may already be deleted
+    if (cleanupFileIfExists(synthesisPath)) {
+      removed++
     }
 
     // Clean up JSONL synthesis output file (.json)
     const synthesisJsonPath = `/tmp/workstream-${streamId}-${threadId}-synthesis.json`
-    try {
-      if (existsSync(synthesisJsonPath)) {
-        unlinkSync(synthesisJsonPath)
-      }
-    } catch {
-      // Ignore cleanup errors
+    if (cleanupFileIfExists(synthesisJsonPath)) {
+      removed++
     }
 
     // Clean up synthesis log file
     const synthesisLogPath = getSynthesisLogPath(streamId, threadId)
-    try {
-      if (existsSync(synthesisLogPath)) {
-        unlinkSync(synthesisLogPath)
-      }
-    } catch {
-      // Ignore cleanup errors
+    if (cleanupFileIfExists(synthesisLogPath)) {
+      removed++
     }
 
     // Clean up exported session file
     const exportedSessionPath = `/tmp/workstream-${streamId}-${threadId}-exported-session.json`
-    try {
-      if (existsSync(exportedSessionPath)) {
-        unlinkSync(exportedSessionPath)
-      }
-    } catch {
-      // Ignore cleanup errors
+    if (cleanupFileIfExists(exportedSessionPath)) {
+      removed++
     }
 
     // Clean up extracted context file
     const extractedContextPath = `/tmp/workstream-${streamId}-${threadId}-context.txt`
-    try {
-      if (existsSync(extractedContextPath)) {
-        unlinkSync(extractedContextPath)
-      }
-    } catch {
-      // Ignore cleanup errors
+    if (cleanupFileIfExists(extractedContextPath)) {
+      removed++
     }
 
     // Clean up working agent session file
     const workingSessionPath = getWorkingAgentSessionPath(streamId, threadId)
-    try {
-      if (existsSync(workingSessionPath)) {
-        unlinkSync(workingSessionPath)
-      }
-    } catch {
-      // Ignore cleanup errors - files may already be deleted
+    if (cleanupFileIfExists(workingSessionPath)) {
+      removed++
     }
   }
+
+  return removed
 }
 
 /**
@@ -173,7 +177,7 @@ export async function pollMarkerFiles(
     for (const threadId of threadIds) {
       if (state.completedThreadIds.has(threadId)) continue
 
-      const markerPath = getCompletionMarkerPath(threadId)
+      const markerPath = getCompletionMarkerPath(streamId, threadId)
       if (existsSync(markerPath)) {
         state.completedThreadIds.add(threadId)
         

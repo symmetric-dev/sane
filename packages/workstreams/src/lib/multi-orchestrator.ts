@@ -16,6 +16,7 @@ import {
   createSession,
   addWindow,
   setGlobalOption,
+  markSessionHeadless,
   createGridLayout,
   listPaneIds,
   THREAD_START_DELAY_MS,
@@ -193,6 +194,7 @@ export function buildThreadRunCommand(
   thread: ThreadInfo,
   port: number,
   streamId: string,
+  options: { headless?: boolean } = {},
 ): string {
   const paneTitle = buildPaneTitle(thread)
 
@@ -206,6 +208,7 @@ export function buildThreadRunCommand(
       threadTitle: paneTitle,
       streamId,
       threadId: thread.threadId,
+      headless: options.headless,
     })
   }
 
@@ -216,6 +219,7 @@ export function buildThreadRunCommand(
     thread.promptPath,
     paneTitle,
     thread.threadId,
+    { headless: options.headless, streamId },
   )
 }
 
@@ -237,11 +241,12 @@ export function setupTmuxSession(
   repoRoot: string,
   streamId: string,
   batchId: string,
+  options: { headless?: boolean } = {},
 ): SessionSetupResult {
   const threadSessionMap: ThreadSessionMap[] = []
 
   const firstThread = threads[0]!
-  const firstCmd = buildThreadRunCommand(firstThread, port, streamId)
+  const firstCmd = buildThreadRunCommand(firstThread, port, streamId, options)
 
   // Log thread with synthesis mode indicator
   const synthIndicator = firstThread.synthesisModels ? " [synthesis]" : ""
@@ -249,10 +254,13 @@ export function setupTmuxSession(
 
   // Create session with first thread in Window 0
   createSession(sessionName, "Grid", firstCmd)
+  if (options.headless) {
+    markSessionHeadless(sessionName)
+  }
   sleepWithCountdown(THREAD_START_DELAY_MS, "Stagger")
 
   // Keep windows open after exit for debugging
-  setGlobalOption(sessionName, "remain-on-exit", "on")
+  setGlobalOption(sessionName, "remain-on-exit", options.headless ? "off" : "on")
   // Enable mouse support for scrolling
   setGlobalOption(sessionName, "mouse", "on")
 
@@ -260,7 +268,7 @@ export function setupTmuxSession(
   const gridCommands = [firstCmd]
   for (let i = 1; i < Math.min(4, threads.length); i++) {
     const thread = threads[i]!
-    const cmd = buildThreadRunCommand(thread, port, streamId)
+    const cmd = buildThreadRunCommand(thread, port, streamId, options)
     gridCommands.push(cmd)
     const synthInd = thread.synthesisModels ? " [synthesis]" : ""
     console.log(`  Grid: Thread ${i + 1} - ${thread.threadName}${synthInd}`)
@@ -292,7 +300,7 @@ export function setupTmuxSession(
     console.log("  Creating hidden windows for pagination...")
     for (let i = 4; i < threads.length; i++) {
       const thread = threads[i]!
-      const cmd = buildThreadRunCommand(thread, port, streamId)
+      const cmd = buildThreadRunCommand(thread, port, streamId, options)
       const windowName = `T${i + 1}`
       console.log(`  Hidden: ${windowName} - ${thread.threadName}`)
       addWindow(sessionName, windowName, cmd)
@@ -325,8 +333,9 @@ export async function setupGridController(
   batchId: string,
   repoRoot: string,
   streamId: string,
+  options: { headless?: boolean } = {},
 ): Promise<void> {
-  if (threads.length <= 4) return
+  if (threads.length <= 4 || options.headless) return
 
   console.log("  Setting up grid controller for pagination...")
   const bunPath = process.execPath
@@ -338,7 +347,7 @@ export async function setupGridController(
   // Build thread command environment variables for respawn
   const threadCmdEnv = threads
     .map((t, i) => {
-      const cmd = buildThreadRunCommand(t, port, streamId)
+      const cmd = buildThreadRunCommand(t, port, streamId, options)
       return `THREAD_CMD_${i + 1}="${cmd}"`
     })
     .join(" ")

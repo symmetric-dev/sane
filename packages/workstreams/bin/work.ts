@@ -51,6 +51,7 @@ import { main as editMain } from "../src/cli/edit.ts"
 import { main as initMain } from "../src/cli/init.ts"
 import { main as executeMain } from "../src/cli/execute.ts"
 import { main as multiMain } from "../src/cli/multi.ts"
+import { main as batchStatusMain } from "../src/cli/batch-status.ts"
 import { main as multiNavigatorMain } from "../src/cli/multi-navigator.ts"
 import { main as multiGridMain } from "../src/cli/multi-grid.ts"
 import { main as treeMain } from "../src/cli/tree.ts"
@@ -110,6 +111,7 @@ const SUBCOMMANDS = {
   prompt: promptMain,
   execute: executeMain,
   multi: multiMain,
+  "batch-status": batchStatusMain,
   "multi-navigator": multiNavigatorMain,
   "multi-grid": multiGridMain,
   tree: treeMain,
@@ -136,6 +138,7 @@ const COMMAND_DESCRIPTIONS: Record<string, string> = {
   prompt: "Generate thread execution prompt for agents",
   execute: "Execute a thread prompt via opencode",
   multi: "Execute all threads in a batch in parallel via tmux",
+  "batch-status": "Show persisted batch execution status for supervisors",
   status: "Show workstream progress",
   "set-status": "Set workstream status (pending, in_progress, completed, on_hold)",
   update: "Update a task's status",

@@ -19,5 +19,7 @@ export interface MultiCliArgs {
   dryRun?: boolean
   noServer?: boolean
   continue?: boolean
+  headless?: boolean
+  async?: boolean
   silent?: boolean
 }

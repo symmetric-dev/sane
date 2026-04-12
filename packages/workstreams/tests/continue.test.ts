@@ -3,7 +3,8 @@ import { mkdtemp, rm, mkdir, writeFile } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { getContinueContext } from "../src/lib/continue"
-import type { TasksFile } from "../src/lib/types"
+import { buildHeadlessThreadStatuses, findIncompleteThreadsInBatch, parseCliArgs as parseContinueCliArgs, resolveHeadlessContinueAction } from "../src/cli/continue"
+import type { TasksFile, Task, ThreadMetadata } from "../src/lib/types"
 
 describe("getContinueContext", () => {
   let tempDir: string
@@ -143,5 +144,120 @@ describe("getContinueContext", () => {
     expect(ctx.activeTask).toBeUndefined()
     expect(ctx.nextTask).toBeUndefined()
     expect(ctx.lastCompletedTask?.id).toBe("1.1.1")
+  })
+})
+
+describe("continue cli helpers", () => {
+  const baseTask: Task = {
+    id: "01.01.01.01",
+    name: "Test task",
+    thread_name: "Thread 1",
+    batch_name: "Batch 1",
+    stage_name: "Stage 1",
+    created_at: new Date().toISOString(),
+    updated_at: new Date().toISOString(),
+    status: "pending",
+  }
+
+  test("parses headless and async flags", () => {
+    const cliArgs = parseContinueCliArgs([
+      "bun",
+      "work",
+      "--headless",
+      "--async",
+      "--stream",
+      "001-test-stream",
+    ])
+
+    expect(cliArgs).toMatchObject({
+      headless: true,
+      async: true,
+      streamId: "001-test-stream",
+    })
+  })
+
+  test("finds incomplete threads from threads.json metadata", () => {
+    const tasks: Task[] = [
+      { ...baseTask, id: "01.01.01.01", status: "in_progress" },
+      { ...baseTask, id: "01.01.02.01", thread_name: "Thread 2", status: "pending" },
+      { ...baseTask, id: "01.02.01.01", batch_name: "Batch 2", status: "pending" },
+    ]
+    const threadMetadata: ThreadMetadata[] = [
+      {
+        threadId: "01.01.01",
+        sessions: [
+          {
+            sessionId: "ses-1",
+            agentName: "systems-engineer",
+            model: "anthropic/claude-sonnet-4",
+            startedAt: new Date().toISOString(),
+            status: "failed",
+          },
+        ],
+      },
+      {
+        threadId: "01.01.02",
+        sessions: [],
+      },
+    ]
+
+    expect(findIncompleteThreadsInBatch(tasks, "01.01", threadMetadata)).toEqual([
+      "01.01.01",
+    ])
+  })
+
+  test("builds thread statuses from thread metadata", () => {
+    const tasks: Task[] = [
+      { ...baseTask, id: "01.01.01.01", status: "in_progress" },
+      { ...baseTask, id: "01.01.02.01", thread_name: "Thread 2", status: "pending" },
+    ]
+    const threadMetadata: ThreadMetadata[] = [
+      {
+        threadId: "01.01.01",
+        sessions: [
+          {
+            sessionId: "ses-1",
+            agentName: "systems-engineer",
+            model: "anthropic/claude-sonnet-4",
+            startedAt: new Date().toISOString(),
+            status: "failed",
+          },
+        ],
+      },
+      {
+        threadId: "01.01.02",
+        sessions: [
+          {
+            sessionId: "ses-2",
+            agentName: "default",
+            model: "google/gemini-2.5-pro",
+            startedAt: new Date().toISOString(),
+            status: "running",
+          },
+        ],
+      },
+    ]
+
+    expect(buildHeadlessThreadStatuses(tasks, ["01.01.01", "01.01.02"], threadMetadata)).toEqual([
+      {
+        threadId: "01.01.01",
+        threadName: "Thread 1",
+        status: "failed",
+        sessionsCount: 1,
+        lastAgent: "systems-engineer",
+      },
+      {
+        threadId: "01.01.02",
+        threadName: "Thread 2",
+        status: "incomplete",
+        sessionsCount: 1,
+        lastAgent: "default",
+      },
+    ])
+  })
+
+  test("headless mode resolves unresolved history by aborting", () => {
+    expect(resolveHeadlessContinueAction(["01.01.01"])).toBe("abort")
+    expect(resolveHeadlessContinueAction([])).toBe("continue")
   })
 })

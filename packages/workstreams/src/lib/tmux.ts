@@ -6,9 +6,11 @@
  */
 
 import { execSync, spawn, type ChildProcess } from "child_process"
+import { WORKSTREAM_HEADLESS_ENV } from "./opencode.ts"
 
 /** Delay between starting threads to avoid bun install race conditions */
 export const THREAD_START_DELAY_MS = 3000
+export const HEADLESS_SESSION_OPTION = "@workstream-headless"
 
 /**
  * Sleep with countdown logging to console
@@ -310,6 +312,46 @@ export function setGlobalOption(sessionName: string, option: string, value: stri
 }
 
 /**
+ * Set a tmux session environment variable
+ */
+export function setSessionEnvironment(sessionName: string, name: string, value: string): void {
+    const result = Bun.spawnSync([
+        "tmux",
+        "set-environment",
+        "-t", sessionName,
+        name,
+        value,
+    ])
+    if (result.exitCode !== 0) {
+        console.warn(`Warning: Failed to set tmux environment ${name}: ${result.stderr.toString()}`)
+    }
+}
+
+/**
+ * Mark a tmux session as headless for unattended execution.
+ */
+export function markSessionHeadless(sessionName: string): void {
+    setGlobalOption(sessionName, HEADLESS_SESSION_OPTION, "1")
+    setGlobalOption(sessionName, "remain-on-exit", "off")
+    setSessionEnvironment(sessionName, WORKSTREAM_HEADLESS_ENV, "1")
+}
+
+/**
+ * Check whether a tmux session has been marked headless.
+ */
+export function isSessionHeadless(sessionName: string): boolean {
+    try {
+        const output = execSync(
+            `tmux show-options -t "${sessionName}" -v ${HEADLESS_SESSION_OPTION}`,
+            { stdio: "pipe", encoding: "utf-8" }
+        )
+        return output.trim() === "1"
+    } catch {
+        return false
+    }
+}
+
+/**
  * Create a 2x2 grid layout in a window
  * Returns the 4 pane IDs in order: [TL, TR, BL, BR]
  *
@@ -601,4 +643,3 @@ export async function waitForAllPanesExit(
 export function setPaneTitle(target: string, title: string): void {
     Bun.spawnSync(["tmux", "select-pane", "-t", target, "-T", title])
 }
-
