@@ -2,6 +2,7 @@ import { existsSync, mkdirSync, readFileSync } from "fs"
 import { dirname, join } from "path"
 import * as lockfile from "proper-lockfile"
 import type {
+  RootAgentBranchSession,
   SupervisorEscalationRecord,
   SupervisorFixCycle,
   SupervisorIssueSummary,
@@ -32,6 +33,7 @@ export function createEmptySupervisorState(streamId: string): SupervisorStateFil
     stream_id: streamId,
     last_updated: new Date().toISOString(),
     runs: [],
+    branch_sessions: [],
     reviewed_batches: [],
     issue_summaries: [],
     fix_cycles: [],
@@ -56,7 +58,19 @@ export function loadSupervisorState(
     return null
   }
 
-  return JSON.parse(readFileSync(filePath, "utf-8")) as SupervisorStateFile
+  const parsed = JSON.parse(readFileSync(filePath, "utf-8")) as Partial<SupervisorStateFile>
+
+  return {
+    ...createEmptySupervisorState(streamId),
+    ...parsed,
+    runs: parsed.runs ?? [],
+    branch_sessions: parsed.branch_sessions ?? [],
+    reviewed_batches: parsed.reviewed_batches ?? [],
+    issue_summaries: parsed.issue_summaries ?? [],
+    fix_cycles: parsed.fix_cycles ?? [],
+    escalations: parsed.escalations ?? [],
+    stage_stops: parsed.stage_stops ?? [],
+  }
 }
 
 /**
@@ -85,6 +99,7 @@ export function saveSupervisorState(
       ? { active_run_id: supervisorState.active_run_id }
       : {}),
     runs: supervisorState.runs,
+    branch_sessions: supervisorState.branch_sessions,
     reviewed_batches: supervisorState.reviewed_batches,
     issue_summaries: supervisorState.issue_summaries,
     fix_cycles: supervisorState.fix_cycles,
@@ -216,6 +231,34 @@ export async function upsertSupervisorRunLocked(
 }
 
 /**
+ * Upsert a root-agent branch session record.
+ */
+export async function upsertBranchSessionLocked(
+  repoRoot: string,
+  streamId: string,
+  branchSession: RootAgentBranchSession,
+): Promise<RootAgentBranchSession> {
+  return modifySupervisorState(repoRoot, streamId, (supervisorState) => {
+    const existing = supervisorState.branch_sessions.find(
+      (value) => value.branchSessionId === branchSession.branchSessionId,
+    )
+
+    const normalized: RootAgentBranchSession = {
+      ...existing,
+      ...branchSession,
+      updatedAt: branchSession.updatedAt,
+      completedAt: branchSession.completedAt ?? existing?.completedAt,
+    }
+
+    return upsertItem(
+      supervisorState.branch_sessions,
+      normalized,
+      (value) => value.branchSessionId,
+    )
+  })
+}
+
+/**
  * Set or clear the currently active supervisor run.
  */
 export async function setActiveSupervisorRunLocked(
@@ -236,6 +279,43 @@ export async function setActiveSupervisorRunLocked(
 
     supervisorState.active_run_id = runId
     run.status = "running"
+  })
+}
+
+/**
+ * Pause a supervisor run after batch execution reaches a deterministic handoff
+ * point. This clears active ownership without implying review/fix/escalation
+ * policy has been decided.
+ */
+export async function pauseSupervisorRunLocked(
+  repoRoot: string,
+  streamId: string,
+  args: {
+    runId: string
+    updatedAt: string
+    currentBatchId?: string
+  },
+): Promise<SupervisorRunState | undefined> {
+  return modifySupervisorState(repoRoot, streamId, (supervisorState) => {
+    const run = getRun(supervisorState, args.runId)
+    if (!run) {
+      return undefined
+    }
+
+    run.status = "paused"
+    run.updatedAt = args.updatedAt
+    if (args.currentBatchId) {
+      run.currentBatchId = args.currentBatchId
+    }
+    delete run.completedAt
+    delete run.stageStopId
+    delete run.stopReason
+
+    if (supervisorState.active_run_id === run.runId) {
+      delete supervisorState.active_run_id
+    }
+
+    return run
   })
 }
 

@@ -19,6 +19,7 @@ import {
 import type { Task, ThreadInfo, ThreadSessionMap } from "../lib/types.ts"
 import { MAX_THREADS_PER_BATCH } from "../lib/types.ts"
 import type { MultiCliArgs } from "../lib/multi-types.ts"
+import { buildRootAgentLineage } from "../lib/root-agent-branch.ts"
 import {
   sessionExists,
   attachSession,
@@ -72,6 +73,10 @@ Optional:
   --headless       Request non-interactive batch execution
   --async          Return after starting the batch (requires --headless)
   --silent         Disable notification sounds (audio only)
+  --root-session-id        Root Agent session ID for lineage metadata
+  --parent-session-id      Parent native session ID when launched from a branch
+  --parent-branch-session-id  Parent repo-local branch session ID
+  --branch-role            Branch role for spawned thread sessions (supervision|fix)
   --repo-root, -r  Repository root (auto-detected if omitted)
   --help, -h       Show this help message
 
@@ -173,6 +178,42 @@ export function parseCliArgs(argv: string[]): MultiCliArgs | null {
         parsed.silent = true
         break
 
+      case "--root-session-id":
+        if (!next) {
+          console.error("Error: --root-session-id requires a value")
+          return null
+        }
+        parsed.rootSessionId = next
+        i++
+        break
+
+      case "--parent-session-id":
+        if (!next) {
+          console.error("Error: --parent-session-id requires a value")
+          return null
+        }
+        parsed.parentSessionId = next
+        i++
+        break
+
+      case "--parent-branch-session-id":
+        if (!next) {
+          console.error("Error: --parent-branch-session-id requires a value")
+          return null
+        }
+        parsed.parentBranchSessionId = next
+        i++
+        break
+
+      case "--branch-role":
+        if (!next || (next !== "supervision" && next !== "fix")) {
+          console.error("Error: --branch-role must be supervision or fix")
+          return null
+        }
+        parsed.branchRole = next
+        i++
+        break
+
       case "--help":
       case "-h":
         printHelp()
@@ -189,6 +230,33 @@ export function validateCliArgs(cliArgs: MultiCliArgs): string | null {
   }
 
   return null
+}
+
+export function buildRootAgentThreadSessionLineage(
+  cliArgs: MultiCliArgs,
+  sessionId: string,
+) {
+  if (!cliArgs.rootSessionId) {
+    return undefined
+  }
+
+  return buildRootAgentLineage({
+    context: {
+      rootSessionId: cliArgs.rootSessionId,
+      branchSessionId: sessionId,
+      ...(cliArgs.parentBranchSessionId
+        ? { parentBranchSessionId: cliArgs.parentBranchSessionId }
+        : {}),
+      ...(cliArgs.parentSessionId ? { parentSessionId: cliArgs.parentSessionId } : {}),
+    },
+    branchRole: cliArgs.branchRole ?? "supervision",
+    source:
+      cliArgs.parentBranchSessionId &&
+      cliArgs.parentSessionId &&
+      cliArgs.parentSessionId !== cliArgs.rootSessionId
+        ? "native_fork"
+        : "repo_local_fallback",
+  })
 }
 
 /**
@@ -541,6 +609,9 @@ export async function main(argv: string[] = process.argv): Promise<void> {
       agentName: t.agentName,
       model: t.models[0]?.model || "unknown",
       sessionId: t.sessionId!,
+      ...(buildRootAgentThreadSessionLineage(cliArgs, t.sessionId!)
+        ? { lineage: buildRootAgentThreadSessionLineage(cliArgs, t.sessionId!) }
+        : {}),
     }))
 
   if (sessionsToStart.length > 0) {

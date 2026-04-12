@@ -2,7 +2,12 @@ import { describe, expect, test, mock, beforeEach, afterEach, spyOn } from "bun:
 import { mkdtempSync, writeFileSync, rmSync, existsSync } from "fs"
 import { join } from "path"
 import { tmpdir } from "os"
-import { findNextIncompleteBatch, parseCliArgs as parseMultiCliArgs, validateCliArgs as validateMultiCliArgs } from "../src/cli/multi"
+import {
+    buildRootAgentThreadSessionLineage,
+    findNextIncompleteBatch,
+    parseCliArgs as parseMultiCliArgs,
+    validateCliArgs as validateMultiCliArgs,
+} from "../src/cli/multi"
 import { getCompletionMarkerPath, getSessionFilePath, buildRunCommand, buildRetryRunCommand } from "../src/lib/opencode"
 import type { Task, NormalizedModelSpec } from "../src/lib/types"
 import * as notifications from "../src/lib/notifications"
@@ -101,6 +106,23 @@ describe("multi cli", () => {
         test("rejects async mode without headless mode", () => {
             expect(validateMultiCliArgs({ async: true })).toBe("--async requires --headless")
             expect(validateMultiCliArgs({ headless: true, async: true })).toBeNull()
+        })
+
+        test("buildRootAgentThreadSessionLineage preserves native supervision ancestry", () => {
+            expect(buildRootAgentThreadSessionLineage({
+                rootSessionId: "root-session-1",
+                parentSessionId: "ses_supervision_1",
+                parentBranchSessionId: "branch-supervision-1",
+                branchRole: "supervision",
+            }, "thread-session-1")).toEqual({
+                owner: "root_agent",
+                rootSessionId: "root-session-1",
+                branchSessionId: "thread-session-1",
+                branchRole: "supervision",
+                parentBranchSessionId: "branch-supervision-1",
+                parentSessionId: "ses_supervision_1",
+                source: "native_fork",
+            })
         })
     })
 

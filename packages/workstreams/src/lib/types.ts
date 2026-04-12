@@ -630,6 +630,36 @@ export interface ThreadsJson {
   threads: ThreadMetadata[]
 }
 
+export type RootAgentBranchRole = "supervision" | "review" | "fix"
+
+export type RootAgentBranchSource = "native_fork" | "repo_local_fallback"
+
+export type RootAgentBranchStatus = "pending" | "running" | "completed" | "stopped" | "failed"
+
+export interface RootAgentLineage {
+  owner: "root_agent"
+  rootSessionId: string
+  branchSessionId: string
+  branchRole: RootAgentBranchRole
+  parentBranchSessionId?: string
+  parentSessionId?: string
+  nativeSessionId?: string
+  source: RootAgentBranchSource
+}
+
+export interface RootAgentBranchSession extends RootAgentLineage {
+  status: RootAgentBranchStatus
+  startedAt: string
+  updatedAt: string
+  completedAt?: string
+  runId?: string
+  batchId?: string
+  threadId?: string
+  reviewId?: string
+  fixCycleId?: string
+  notes?: string
+}
+
 // ============================================
 // SUPERVISOR RUNTIME STATE TYPES (supervisor-state.json)
 // ============================================
@@ -724,6 +754,8 @@ export interface SupervisorRunState {
   reviewPasses: number
   issueSummaryIds: string[]
   escalationIds: string[]
+  rootSessionId?: string
+  branchSessionId?: string
   stageStopId?: string
   stopReason?: SupervisorStageStopReason
 }
@@ -744,6 +776,8 @@ export interface SupervisorReviewedBatch {
   outcome: SupervisorReviewOutcome
   threadIds: string[]
   issueSummaryIds: string[]
+  rootSessionId?: string
+  branchSessionId?: string
   stopReason?: SupervisorStageStopReason
   notes?: string
 }
@@ -780,6 +814,8 @@ export interface SupervisorFixCycle {
   lastAttemptAt: string
   lastOutcome: SupervisorFixCycleOutcome
   issueSummaryIds: string[]
+  rootSessionId?: string
+  branchSessionId?: string
 }
 
 /**
@@ -796,6 +832,8 @@ export interface SupervisorEscalationRecord {
   status: SupervisorEscalationStatus
   escalatedAt: string
   resolvedAt?: string
+  rootSessionId?: string
+  branchSessionId?: string
   notes?: string
 }
 
@@ -810,6 +848,8 @@ export interface SupervisorStageStop {
   reason: SupervisorStageStopReason
   summary: string
   stoppedAt: string
+  rootSessionId?: string
+  branchSessionId?: string
   escalationId?: string
 }
 
@@ -823,6 +863,7 @@ export interface SupervisorStateFile {
   last_updated: string
   active_run_id?: string
   runs: SupervisorRunState[]
+  branch_sessions: RootAgentBranchSession[]
   reviewed_batches: SupervisorReviewedBatch[]
   issue_summaries: SupervisorIssueSummary[]
   fix_cycles: SupervisorFixCycle[]
@@ -851,6 +892,7 @@ export interface SessionRecord {
   completedAt?: string // ISO timestamp when session ended (optional for running sessions)
   status: SessionStatus // Current status of the session
   exitCode?: number // Exit code if process completed (0 = success)
+  lineage?: RootAgentLineage
 }
 
 // ============================================

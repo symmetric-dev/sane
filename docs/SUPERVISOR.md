@@ -1,12 +1,12 @@
-# Supervisor Automation (`work supervise`)
+# Root Agent Branch Supervision (`work supervise`)
 
-This document covers the v1 supervisor workflow for headless batch execution, automated review/fix decisions, and operator handoff.
+This document covers the v1 Root Agent supervision workflow for headless batch execution, deterministic review input collection, and Root Agent-owned fix/escalation decisions.
 
-> v1 scope: supervisor automation **wraps existing `work` + Opencode CLI flows**. It does **not** implement live agent-to-agent messaging.
+> v1 scope: `work supervise` is an execution/recovery primitive over existing `work` + Opencode CLI flows. Branch policy decisions are owned by the Root Agent.
 
 ## Intended Flow
 
-The supervisor runs one batch at a time and loops through this sequence:
+The Root Agent runs one batch at a time and loops through this sequence:
 
 1. Pick a starting batch:
    - explicit: `work supervise --batch "SS.BB"`
@@ -14,13 +14,15 @@ The supervisor runs one batch at a time and loops through this sequence:
 2. Launch headless execution using:
    - `work multi --headless --async ...`
 3. Wait for persisted batch status (`work/<stream-id>/batch-status/<batch-id>.json`) to reach a terminal state.
-4. Run deterministic review only after the batch finishes, using canonical workstream state (task status/report fields, thread/session metadata, batch status, and persisted artifacts when present).
-5. Decide next action:
+4. Consume deterministic review outputs after the batch finishes, using canonical workstream state (task status/report fields, thread/session metadata, batch status, and persisted artifacts when present).
+5. Root Agent decides next action:
    - approve batch and continue,
    - run one automatic fix cycle and re-review,
-   - or stop and escalate to user.
-6. Record all run/review/fix/escalation/stage-stop metadata in:
+   - or escalate to the user.
+6. Persist all run/review/fix/escalation/stage-stop metadata in:
    - `work/<stream-id>/supervisor-state.json`
+
+Escalation policy: branch runs escalate to the Root Agent; the Root Agent escalates to the user.
 
 ## Command Usage
 
@@ -43,9 +45,9 @@ Common flags:
 - `--timeout-ms`: stop waiting if batch status does not complete in time; supervisor exits without reviewing the incomplete batch, and the interrupted run remains resumable on rerun
 - `--poll-interval-ms`: polling interval while waiting for batch status
 
-### Long-running operator usage (recommended)
+### Long-running Root Agent usage (recommended)
 
-For real supervisor runs, prefer an intentionally long wait budget so the caller can stay attached while headless work and deterministic review complete:
+For real Root Agent runs, prefer an intentionally long wait budget so the caller can stay attached while headless work and deterministic review complete:
 
 ```bash
 # Recommended for production-style runs
@@ -56,19 +58,19 @@ work supervise --batch "SS.BB" --poll-interval-ms 1000 --timeout-ms 1200000
 - Use this as the default when validating end-to-end supervisor behavior under normal load.
 - Keep short timeouts for targeted failure/recovery drills, not for primary runs.
 
-## Review/Fix Behavior and Default Stop Conditions
+## Root Agent Review/Fix Behavior and Default Stop Conditions
 
-Default v1 behavior is conservative:
+Default v1 behavior remains conservative:
 
 - `review_limits.max_fix_cycles_per_batch = 1`
   - one automatic fix cycle is allowed per batch
-  - if issues remain after that limit, supervisor stops and escalates
+  - if issues remain after that limit, Root Agent escalates to user
 - `stage_completion.stop = true`
 - `stage_completion.contact_user = true`
-  - when a stage boundary is reached, supervisor stops and requests user input
+  - when a stage boundary is reached, Root Agent stops and requests user input
   - no automatic stage-level fix cycle is attempted
 
-Supervisor continues automatically only when all of the following are true:
+Root Agent continues automatically only when all of the following are true:
 
 - the batch reached a terminal status,
 - review passed (or the one allowed auto-fix cycle succeeded),
@@ -76,7 +78,7 @@ Supervisor continues automatically only when all of the following are true:
 - no stage-boundary stop trigger fired,
 - and another incomplete batch exists.
 
-Supervisor stops when any of the following happens:
+Root Agent stops when any of the following happens:
 
 - escalation requires user input,
 - stage boundary stop/contact-user condition is hit,
@@ -87,7 +89,7 @@ Timeout semantics in v1 are strict but interruption-safe:
 
 - `waitForBatchStatus()` only returns when the batch reaches a terminal state (`completed` or `failed`)
 - if `--timeout-ms` elapses first, the wait fails with the latest persisted non-terminal state left in `work/<stream-id>/batch-status/<batch-id>.json`
-- `work supervise` skips review/fix follow-up for that incomplete batch, leaves the supervisor run resumable, and prefers that interrupted batch again on the next `work supervise` rerun
+- `work supervise` skips review/fix follow-up for that incomplete batch, leaves the run resumable, and prefers that interrupted batch again on the next `work supervise` rerun
 
 ## Smoke-Test Follow-up Checklist (Post-Fix)
 
@@ -158,9 +160,9 @@ The default `contact_user_on` policy triggers escalation when **any configured t
 
 `severity.values` defaults to an empty list, so severity alone does not trigger contact-user until configured.
 
-## Operator Guidance: Inspect, Interpret, Resume
+## Root Agent Guidance: Inspect, Interpret, Resume
 
-After every supervised batch run (especially when supervisor stops), run this quick inspection flow before resuming.
+After every supervised batch run (especially when orchestration stops), run this quick inspection flow before resuming.
 
 ### 1) Quick inspection commands
 
@@ -179,11 +181,11 @@ What each check tells you:
 
 - `work tree --batch "SS.BB"`: which tasks/threads are complete, failed, or still in progress.
 - `work batch-status --batch "SS.BB" --format json`: whether execution is terminal (`completed`/`failed`) or still non-terminal (for timeout/wait failures).
-- `work/<stream-id>/supervisor-state.json`: whether supervisor reviewed this batch and why it stopped (`reviewed_batches`, `escalations`, `stage_stops`).
+- `work/<stream-id>/supervisor-state.json`: whether the Root Agent reviewed this batch and why it stopped (`reviewed_batches`, `escalations`, `stage_stops`).
 
 ### 2) How to read terminal outcomes quickly
 
-Use this mental model to quickly separate success from operator follow-up:
+Use this mental model to quickly separate success from required Root Agent follow-up:
 
 - **Terminal success (good stop or clean continue point):**
   - `work batch-status` shows `status: "completed"`
@@ -193,10 +195,10 @@ Use this mental model to quickly separate success from operator follow-up:
   - `work supervise` exits with timeout/wait failure
   - `work batch-status` remains non-terminal at last persisted state
   - `supervisor-state.json` keeps the interrupted run resumable on its current batch so a later `work supervise` rerun resumes it before moving on
-- **Escalation/contact-user stop (needs operator decision):**
+- **Escalation/contact-user stop (needs Root Agent + user decision):**
   - batch may still be terminal (`completed`)
   - `supervisor-state.json` adds an `escalations` entry and corresponding `stage_stops` record
-  - supervisor waits for operator action before continuing
+  - Root Agent waits for user action before continuing
 - **Terminal failed run (batch finished as failed):**
   - `work batch-status` shows `status: "failed"`
   - `supervisor-state.json` records a failed stop; inspect failed thread summaries first
@@ -231,7 +233,7 @@ Use this quick drill to verify interruption-safe recovery without forcing `--bat
    - `cat work/<stream-id>/supervisor-state.json`
 3. Resume using plain progression:
    - `work supervise`
-   - Expected behavior: supervisor resumes interrupted `SS.BB` first instead of skipping to a later incomplete batch.
+   - Expected behavior: Root Agent orchestration resumes interrupted `SS.BB` first instead of skipping to a later incomplete batch.
 4. Distinguish evidence clearly:
    - **Resumed review/finalization success:** `SS.BB` reaches terminal `completed`, `reviewed_batches` includes `SS.BB`, and persisted finalization evidence appears in `supervisor-state.json` (for example completed run state and/or the expected `stage_stops` entry for that resumed batch decision).
    - **Non-terminal interruption (still needs action):** batch status remains non-terminal, no new `reviewed_batches` entry for `SS.BB`, and you should keep waiting or investigate worker/escalation state.
@@ -241,9 +243,37 @@ Persisted-state note for same-batch resume verification:
 - Do not rely only on resumed console output.
 - Confirm the resumed batch by checking that the next persisted `supervisor-state.json` update still references `SS.BB` before any later incomplete batch appears in `reviewed_batches`, `stage_stops`, or other run/finalization metadata.
 
-## Recommended test strategy for recovery + timeout behavior
+## Validation Strategy: Root Agent Ownership and Drift Reduction
 
-Run validation in this order:
+Use this validation flow to confirm Root Agent-owned branch orchestration reduces drift vs the previous self-contained `work supervise` policy model.
+
+### A) Policy ownership checks (manual)
+
+For each supervised batch decision, verify the decision source is Root Agent-visible persisted state:
+
+1. `work batch-status --batch "SS.BB" --format json`
+2. `cat work/<stream-id>/supervisor-state.json`
+3. Confirm Root Agent decisions map directly to:
+   - terminal/non-terminal status,
+   - `reviewed_batches` outcomes,
+   - `fix_cycles` attempt counts,
+   - `escalations`/`stage_stops` triggers.
+
+Drift signal to avoid: decisions made from transient console output alone without matching persisted evidence.
+
+### B) Automated regression checks (tests)
+
+From `packages/workstreams`:
+
+```bash
+bun run test tests/supervise.test.ts tests/supervisor-state.test.ts
+```
+
+These tests validate deterministic review inputs, fix/escalation metadata persistence, and resumable state behavior used by Root Agent orchestration.
+
+### C) Recovery drill (behavioral)
+
+Run this drill in order:
 
 1. **20-minute real run first**
    - `work supervise --batch "SS.BB" --timeout-ms 1200000`
@@ -252,27 +282,27 @@ Run validation in this order:
    - Force an interruption on the target batch:
      - `work supervise --batch "SS.BB" --timeout-ms 100`
    - This should produce a timeout/wait failure while leaving the interrupted run resumable.
-3. **Recovery rerun (plain supervisor)**
+3. **Recovery rerun (plain supervision primitive)**
    - Resume with plain progression (no `--batch`):
      - `work supervise`
-   - Expected behavior: supervisor resumes the same interrupted batch first, then completes its review/finalization path before considering later incomplete batches.
+   - Expected behavior: the same interrupted batch is resumed first, then reviewed/finalized before considering later incomplete batches.
 
 Expected evidence after step (3):
 
 - `supervisor-state.json` shows the interrupted `SS.BB` run being resumed/reviewed/finalized first (same batch, not a new launch of a later batch), with completed run state and/or matching `stage_stops` evidence when the run stops.
 - terminal batch status for `SS.BB` is preserved/canonicalized and reaches reviewed/finalized outcome.
-- supervisor output/log flow shows resume messaging for `SS.BB` before any mention of later incomplete batches.
+- output/log flow shows resume messaging for `SS.BB` before any mention of later incomplete batches.
 
 ## Practical Model for v1
 
-Think of supervisor as an orchestration + policy layer over existing primitives:
+Think of `work supervise` as an execution/recovery layer that feeds Root Agent orchestration decisions:
 
 - execution primitive: `work multi --headless --async`
 - review primitive: deterministic reviewer normalization
-- decision primitive: escalation + fix-limit + stage-boundary rules
+- decision primitive (Root Agent-owned): escalation + fix-limit + stage-boundary rules
 - persistence primitive: `supervisor-state.json`
 
-It is intentionally simple in v1 so operators can inspect, tune policy, and iterate safely over time.
+It is intentionally simple in v1 so the Root Agent can inspect, tune policy, and iterate safely over time.
 
 ### Reporting model and known v1 limits
 
@@ -284,4 +314,4 @@ Current supervisor evidence is centered on:
 - persisted supervisor decisions in `supervisor-state.json`
 
 This model is sufficient for v1 because it supports deterministic pass/fail/fix/escalation decisions without a separate synthesis artifact.
-Remaining gap: reports are still mostly free-form text, so future revisions may introduce richer structured reporting if operators need finer-grained machine interpretation, stronger schema validation, or cross-batch analytics.
+Remaining gap: reports are still mostly free-form text, so future revisions may introduce richer structured reporting if Root Agent workflows need finer-grained machine interpretation, stronger schema validation, or cross-batch analytics.

@@ -7,7 +7,14 @@
 
 import { existsSync, readFileSync, copyFileSync } from "fs"
 import { join } from "path"
-import type { Task, TasksFile, TaskStatus, SessionRecord, SessionStatus } from "./types.ts"
+import type {
+  RootAgentLineage,
+  Task,
+  TasksFile,
+  TaskStatus,
+  SessionRecord,
+  SessionStatus,
+} from "./types.ts"
 import { atomicWriteFile } from "./index.ts"
 import { getWorkDir } from "./repo.ts"
 import {
@@ -453,6 +460,7 @@ export async function startTaskSessionLocked(
   agentName: string,
   model: string,
   sessionId: string,
+  lineage?: RootAgentLineage,
 ): Promise<SessionRecord | null> {
   const filePath = getTasksFilePath(repoRoot, streamId)
   
@@ -468,7 +476,7 @@ export async function startTaskSessionLocked(
   // Extract thread ID from task ID and delegate to threads.ts
   const threadId = extractThreadIdFromTaskId(taskId)
   
-  return startThreadSessionLocked(repoRoot, streamId, threadId, agentName, model, sessionId)
+  return startThreadSessionLocked(repoRoot, streamId, threadId, agentName, model, sessionId, lineage)
 }
 
 /**
@@ -519,6 +527,7 @@ export async function startMultipleSessionsLocked(
     agentName: string
     model: string
     sessionId: string
+    lineage?: RootAgentLineage
   }>,
 ): Promise<SessionRecord[]> {
   const filePath = getTasksFilePath(repoRoot, streamId)
@@ -534,6 +543,7 @@ export async function startMultipleSessionsLocked(
     agentName: string
     model: string
     sessionId: string
+    lineage?: RootAgentLineage
   }> = []
 
   for (const sessionInfo of sessions) {
@@ -546,6 +556,7 @@ export async function startMultipleSessionsLocked(
       agentName: sessionInfo.agentName,
       model: sessionInfo.model,
       sessionId: sessionInfo.sessionId,
+      lineage: sessionInfo.lineage,
     })
   }
 

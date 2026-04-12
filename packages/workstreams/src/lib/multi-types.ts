@@ -6,7 +6,7 @@
  */
 
 // Re-export core types from types.ts
-export type { ThreadInfo, ThreadSessionMap } from "./types.ts"
+export type { RootAgentBranchRole, ThreadInfo, ThreadSessionMap } from "./types.ts"
 
 /**
  * CLI arguments for the multi command
@@ -22,4 +22,8 @@ export interface MultiCliArgs {
   headless?: boolean
   async?: boolean
   silent?: boolean
+  rootSessionId?: string
+  parentSessionId?: string
+  parentBranchSessionId?: string
+  branchRole?: import("./types.ts").RootAgentBranchRole
 }

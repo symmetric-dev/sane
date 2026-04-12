@@ -38,7 +38,7 @@ description: Review workstream plans for structure, risks, and readiness.
 
 ## Structured Reviewer Output Contract (Machine-Consumable)
 
-When a review pass is expected to drive supervisor decisions, return **JSON only** (no prose outside JSON) using this contract:
+When a review pass is expected to drive Root Agent branch-orchestration decisions, return **JSON only** (no prose outside JSON) using this contract:
 
 ```json
 {

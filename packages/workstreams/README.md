@@ -67,9 +67,9 @@ work report metrics --blockers
 work export --format json
 ```
 
-## Supervisor Workflow (v1)
+## Root Agent Supervision Workflow (v1)
 
-Use `work supervise` to run headless batch execution with deterministic review/fix decisions:
+Use `work supervise` as the branch execution/recovery primitive for Root Agent orchestration:
 
 ```bash
 work supervise
@@ -77,20 +77,20 @@ work supervise --batch "01.01"
 work supervise --dry-run
 ```
 
-The supervisor launches `work multi --headless --async`, waits for the batch to become terminal, and reviews canonical execution state (task status/report fields, thread/session metadata, and persisted batch status) before deciding whether to continue, fix, or stop.
+`work supervise` launches `work multi --headless --async`, waits for the batch to become terminal, and produces deterministic review evidence from canonical execution state (task status/report fields, thread/session metadata, and persisted batch status).
 
-It then either:
+The Root Agent then either:
 
 - continues automatically to the next incomplete batch,
 - runs one automatic fix cycle (default), or
-- stops and asks for user input based on escalation/stage-boundary policy.
+- escalates to the user based on escalation/stage-boundary policy.
 
-In practice, it **continues automatically only when** the batch review is approved and no stop policy is triggered.
+In practice, Root Agent orchestration **continues automatically only when** the batch review is approved and no stop policy is triggered.
 It **stops** when escalation requires user input, a stage boundary stop is reached, there is no next batch, or execution/wait fails.
 
-If `--timeout-ms` is reached before the batch becomes terminal, the wait fails and supervisor exits without reviewing the incomplete batch. That interrupted run remains resumable and is preferred on the next `work supervise` rerun.
+If `--timeout-ms` is reached before the batch becomes terminal, the wait fails and `work supervise` exits without reviewing the incomplete batch. That interrupted run remains resumable and is preferred on the next `work supervise` rerun.
 
-Policy is loaded from `work/supervisor.json` (defaults are used if missing).
+Policy is loaded from `work/supervisor.json` (defaults are used if missing) and interpreted at the Root Agent layer.
 
 After any stop, inspect the batch and supervisor state before resuming:
 
@@ -123,6 +123,8 @@ Timeout resume smoke checklist (short drill):
 
 Persisted-state note: prefer `supervisor-state.json` ordering/evidence to verify same-batch resume, rather than relying only on transient console logs.
 
+Escalation policy: branch runs escalate to the Root Agent; the Root Agent escalates to the user.
+
 Key persisted files:
 
 - `work/<stream-id>/batch-status/<batch-id>.json` (batch execution state)
@@ -151,6 +153,20 @@ work supervise
 work supervise --batch "01.01"
 ```
 
-For the timeout/resume drill, verify recovery by confirming `01.01` reaches reviewed/finalized persisted state before supervisor progresses to any later incomplete batch.
+For the timeout/resume drill, verify recovery by confirming `01.01` reaches reviewed/finalized persisted state before Root Agent orchestration progresses to any later incomplete batch.
+
+### Validation checks for Root Agent ownership (drift reduction)
+
+To confirm reduced drift vs the previous self-contained `work supervise` model:
+
+1. Verify each fix/escalate decision is grounded in persisted state (`batch-status/*.json` + `supervisor-state.json`), not transient logs alone.
+2. Confirm `reviewed_batches`, `fix_cycles`, and `escalations` entries match the Root Agent decision taken for that batch.
+3. Run regression tests from `packages/workstreams`:
+
+```bash
+bun run test tests/supervise.test.ts tests/supervisor-state.test.ts
+```
+
+These tests validate deterministic review evidence, escalation/fix-cycle persistence, and interruption-safe resume behavior relied on by Root Agent orchestration.
 
 For full operator guidance and config details, see `../../docs/SUPERVISOR.md`.

@@ -229,6 +229,38 @@ describe("threads", () => {
       expect(thread!.currentSessionId).toBe(sessionId)
     })
 
+    test("startThreadSession stores Root Agent lineage when provided", () => {
+      const sessionId = generateSessionId()
+      startThreadSession(
+        repoRoot,
+        streamId,
+        "01.01.01",
+        "test-agent",
+        "anthropic/claude-sonnet-4",
+        sessionId,
+        {
+          owner: "root_agent",
+          rootSessionId: "root-session-1",
+          branchSessionId: sessionId,
+          branchRole: "fix",
+          parentBranchSessionId: "branch-supervision-1",
+          parentSessionId: "ses_parent_supervision",
+          source: "repo_local_fallback",
+        },
+      )
+
+      const thread = getThreadMetadata(repoRoot, streamId, "01.01.01")
+      expect(thread!.sessions[0]!.lineage).toEqual({
+        owner: "root_agent",
+        rootSessionId: "root-session-1",
+        branchSessionId: sessionId,
+        branchRole: "fix",
+        parentBranchSessionId: "branch-supervision-1",
+        parentSessionId: "ses_parent_supervision",
+        source: "repo_local_fallback",
+      })
+    })
+
     test("completeThreadSession updates status and clears currentSessionId", () => {
       const sessionId = generateSessionId()
       startThreadSession(
@@ -301,6 +333,48 @@ describe("threads", () => {
 
       expect(session.sessionId).toBe(sessionId)
       expect(session.status).toBe("running")
+    })
+
+    test("startMultipleThreadSessionsLocked stores lineage metadata per thread session", async () => {
+      const session1Id = generateSessionId()
+      const session2Id = generateSessionId()
+
+      const sessions = await startMultipleThreadSessionsLocked(repoRoot, streamId, [
+        {
+          threadId: "01.01.01",
+          agentName: "agent-1",
+          model: "model-1",
+          sessionId: session1Id,
+          lineage: {
+            owner: "root_agent",
+            rootSessionId: "root-session-1",
+            branchSessionId: session1Id,
+            branchRole: "supervision",
+            parentBranchSessionId: "branch-supervision-1",
+            source: "repo_local_fallback",
+          },
+        },
+        {
+          threadId: "01.01.02",
+          agentName: "agent-2",
+          model: "model-2",
+          sessionId: session2Id,
+          lineage: {
+            owner: "root_agent",
+            rootSessionId: "root-session-1",
+            branchSessionId: session2Id,
+            branchRole: "fix",
+            parentBranchSessionId: "branch-fix-1",
+            source: "repo_local_fallback",
+          },
+        },
+      ])
+
+      expect(sessions[0]!.lineage?.branchRole).toBe("supervision")
+      expect(sessions[1]!.lineage?.branchRole).toBe("fix")
+      expect(getThreadMetadata(repoRoot, streamId, "01.01.02")?.sessions[0]?.lineage?.parentBranchSessionId).toBe(
+        "branch-fix-1",
+      )
     })
 
     test("completeThreadSessionLocked updates session", async () => {

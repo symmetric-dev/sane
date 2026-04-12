@@ -9,7 +9,13 @@
 import { existsSync, readFileSync } from "fs"
 import { join } from "path"
 import * as lockfile from "proper-lockfile"
-import type { ThreadMetadata, ThreadsJson, SessionRecord, TasksFile } from "./types.ts"
+import type {
+  RootAgentLineage,
+  ThreadMetadata,
+  ThreadsJson,
+  SessionRecord,
+  TasksFile,
+} from "./types.ts"
 import type { ThreadSynthesis } from "./synthesis/types.ts"
 import { atomicWriteFile } from "./index.ts"
 import { getWorkDir } from "./repo.ts"
@@ -245,6 +251,7 @@ export function startThreadSession(
   agentName: string,
   model: string,
   sessionId: string,
+  lineage?: RootAgentLineage,
 ): SessionRecord {
   const session: SessionRecord = {
     sessionId,
@@ -252,6 +259,7 @@ export function startThreadSession(
     model,
     startedAt: new Date().toISOString(),
     status: "running",
+    ...(lineage ? { lineage } : {}),
   }
 
   let threadsFile = loadThreads(repoRoot, streamId)
@@ -324,11 +332,12 @@ export async function startThreadSessionLocked(
   agentName: string,
   model: string,
   sessionId: string,
+  lineage?: RootAgentLineage,
 ): Promise<SessionRecord> {
   const filePath = getThreadsFilePath(repoRoot, streamId)
 
   return withThreadsLock(filePath, () => {
-    return startThreadSession(repoRoot, streamId, threadId, agentName, model, sessionId)
+    return startThreadSession(repoRoot, streamId, threadId, agentName, model, sessionId, lineage)
   })
 }
 
@@ -361,6 +370,7 @@ export async function startMultipleThreadSessionsLocked(
     agentName: string
     model: string
     sessionId: string
+    lineage?: RootAgentLineage
   }>,
 ): Promise<SessionRecord[]> {
   const filePath = getThreadsFilePath(repoRoot, streamId)
@@ -381,6 +391,7 @@ export async function startMultipleThreadSessionsLocked(
         model: sessionInfo.model,
         startedAt: now,
         status: "running",
+        ...(sessionInfo.lineage ? { lineage: sessionInfo.lineage } : {}),
       }
 
       const threadIndex = threadsFile.threads.findIndex(

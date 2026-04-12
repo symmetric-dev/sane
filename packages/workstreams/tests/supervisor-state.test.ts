@@ -7,10 +7,12 @@ import {
   getSupervisorStateFilePath,
   loadSupervisorState,
   modifySupervisorState,
+  pauseSupervisorRunLocked,
   reconcileSupervisorRunsLocked,
   recordStageStopLocked,
   saveSupervisorState,
   setActiveSupervisorRunLocked,
+  upsertBranchSessionLocked,
   upsertEscalationOutcomeLocked,
   upsertFixCycleLocked,
   upsertIssueSummaryLocked,
@@ -36,6 +38,7 @@ describe("supervisor-state", () => {
 
     expect(empty.stream_id).toBe(workspace.streamId)
     expect(empty.runs).toHaveLength(0)
+    expect(empty.branch_sessions).toHaveLength(0)
     expect(empty.reviewed_batches).toHaveLength(0)
     expect(empty.issue_summaries).toHaveLength(0)
     expect(empty.fix_cycles).toHaveLength(0)
@@ -50,6 +53,7 @@ describe("supervisor-state", () => {
       stream_id: workspace.streamId,
       last_updated: new Date().toISOString(),
       runs: [],
+      branch_sessions: [],
       reviewed_batches: [],
       issue_summaries: [],
       fix_cycles: [],
@@ -183,6 +187,41 @@ describe("supervisor-state", () => {
     expect(existsSync(join(workspace.workDir, "threads.json"))).toBe(false)
   })
 
+  test("upsertBranchSessionLocked persists root-agent branch lineage metadata", async () => {
+    const startedAt = new Date().toISOString()
+
+    await upsertBranchSessionLocked(workspace.repoRoot, workspace.streamId, {
+      owner: "root_agent",
+      rootSessionId: "root-session-1",
+      branchSessionId: "branch-supervision-1",
+      branchRole: "supervision",
+      parentSessionId: "root-session-1",
+      nativeSessionId: "ses_supervision_1",
+      source: "native_fork",
+      status: "completed",
+      startedAt,
+      updatedAt: startedAt,
+      completedAt: startedAt,
+      runId: "sup-run-1",
+      batchId: "01.01",
+      notes: "Returned terminal batch state to the Root Agent.",
+    })
+
+    const stored = loadSupervisorState(workspace.repoRoot, workspace.streamId)
+    expect(stored?.branch_sessions).toHaveLength(1)
+    expect(stored?.branch_sessions[0]).toMatchObject({
+      owner: "root_agent",
+      rootSessionId: "root-session-1",
+      branchSessionId: "branch-supervision-1",
+      branchRole: "supervision",
+      parentSessionId: "root-session-1",
+      nativeSessionId: "ses_supervision_1",
+      source: "native_fork",
+      runId: "sup-run-1",
+      batchId: "01.01",
+    })
+  })
+
   test("modifySupervisorState is the safe mutation path for follow-up runs", async () => {
     const runStartedAt = new Date().toISOString()
 
@@ -213,6 +252,39 @@ describe("supervisor-state", () => {
     const stored = loadSupervisorState(workspace.repoRoot, workspace.streamId)
     expect(stored!.runs).toHaveLength(1)
     expect(stored!.runs[0]!.lastReviewedBatchId).toBe("02.01")
+  })
+
+  test("pauseSupervisorRunLocked clears active ownership without preserving terminal stop metadata", async () => {
+    const startedAt = new Date().toISOString()
+
+    await upsertSupervisorRunLocked(workspace.repoRoot, workspace.streamId, {
+      runId: "sup-run-pause",
+      stageId: "01",
+      status: "running",
+      startedAt,
+      updatedAt: startedAt,
+      completedAt: startedAt,
+      currentBatchId: "01.01",
+      reviewPasses: 0,
+      issueSummaryIds: [],
+      escalationIds: [],
+      stageStopId: "legacy-stop",
+      stopReason: "failed",
+    })
+
+    await pauseSupervisorRunLocked(workspace.repoRoot, workspace.streamId, {
+      runId: "sup-run-pause",
+      currentBatchId: "01.01",
+      updatedAt: startedAt,
+    })
+
+    const stored = loadSupervisorState(workspace.repoRoot, workspace.streamId)
+    expect(stored?.active_run_id).toBeUndefined()
+    expect(stored?.runs[0]?.status).toBe("paused")
+    expect(stored?.runs[0]?.currentBatchId).toBe("01.01")
+    expect(stored?.runs[0]?.stageStopId).toBeUndefined()
+    expect(stored?.runs[0]?.stopReason).toBeUndefined()
+    expect(stored?.runs[0]?.completedAt).toBeUndefined()
   })
 
   test("reconcileSupervisorRunsLocked pauses stale running runs once their batch becomes terminal", async () => {

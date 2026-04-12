@@ -133,7 +133,7 @@ const COMMAND_DESCRIPTIONS: Record<string, string> = {
   approve: "Approve workstream plan/tasks/prompts (subcommands: plan, tasks, prompts)",
   start: "Start execution (requires all approvals, creates GitHub branch/issues)",
   plan: "Manage planning sessions or scaffold a plan (subcommand: create)",
-  supervise: "Run headless batch supervision from reports and canonical state",
+  supervise: "Run headless batch execution/recovery helper",
   agents: "Manage agent definitions (list, add, remove)",
   assign: "Assign agents to threads for batch execution",
   prompt: "Generate thread execution prompt for agents",
