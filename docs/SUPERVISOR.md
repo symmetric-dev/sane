@@ -40,8 +40,21 @@ Common flags:
 - `--port`: pass OpenCode server port to the headless `work multi` launch
 - `--no-server`: do not start `opencode serve` as part of execution
 - `--silent`: disable batch notification sounds
-- `--timeout-ms`: fail waiting if batch status does not complete in time; supervisor stops immediately and does not review an incomplete batch
+- `--timeout-ms`: stop waiting if batch status does not complete in time; supervisor exits without reviewing the incomplete batch, and the interrupted run remains resumable on rerun
 - `--poll-interval-ms`: polling interval while waiting for batch status
+
+### Long-running operator usage (recommended)
+
+For real supervisor runs, prefer an intentionally long wait budget so the caller can stay attached while headless work and deterministic review complete:
+
+```bash
+# Recommended for production-style runs
+work supervise --batch "SS.BB" --poll-interval-ms 1000 --timeout-ms 1200000
+```
+
+- `1200000` ms = **20 minutes**.
+- Use this as the default when validating end-to-end supervisor behavior under normal load.
+- Keep short timeouts for targeted failure/recovery drills, not for primary runs.
 
 ## Review/Fix Behavior and Default Stop Conditions
 
@@ -68,13 +81,13 @@ Supervisor stops when any of the following happens:
 - escalation requires user input,
 - stage boundary stop/contact-user condition is hit,
 - there is no next batch to run,
-- or an execution/wait error occurs (including timeout while still non-terminal, recorded as failed stop).
+- or an execution/wait error occurs.
 
-Timeout semantics in v1 are strict:
+Timeout semantics in v1 are strict but interruption-safe:
 
 - `waitForBatchStatus()` only returns when the batch reaches a terminal state (`completed` or `failed`)
 - if `--timeout-ms` elapses first, the wait fails with the latest persisted non-terminal state left in `work/<stream-id>/batch-status/<batch-id>.json`
-- `work supervise` treats that timeout as a run failure and skips review/fix follow-up for the incomplete batch
+- `work supervise` skips review/fix follow-up for that incomplete batch, leaves the supervisor run resumable, and prefers that interrupted batch again on the next `work supervise` rerun
 
 ## Smoke-Test Follow-up Checklist (Post-Fix)
 
@@ -93,7 +106,7 @@ After a supervised batch reports completion, verify this quick checklist to conf
 ### Timeout/failure evidence (not successful completion)
 
 - `work/<stream-id>/batch-status/<batch-id>.json` remains non-terminal when wait times out.
-- `work/<stream-id>/supervisor-state.json` does **not** gain a new reviewed entry for that incomplete batch and instead records the failed stop outcome.
+- `work/<stream-id>/supervisor-state.json` does **not** gain a new reviewed entry for that incomplete batch; the interrupted run remains resumable until the batch reaches a terminal state and review can continue.
 - Supervisor output shows wait/timeout failure and stops before review/fix follow-up.
 
 ## `work/supervisor.json` Config Shape
@@ -178,7 +191,7 @@ Use this mental model to quickly separate success from operator follow-up:
 - **Timeout while still running (wait failure):**
   - `work supervise` exits with timeout/wait failure
   - `work batch-status` remains non-terminal at last persisted state
-  - `supervisor-state.json` records a failed stage stop (reason reflects timeout/wait failure)
+  - `supervisor-state.json` keeps the interrupted run resumable on its current batch so a later `work supervise` rerun resumes it before moving on
 - **Escalation/contact-user stop (needs operator decision):**
   - batch may still be terminal (`completed`)
   - `supervisor-state.json` adds an `escalations` entry and corresponding `stage_stops` record
@@ -190,13 +203,13 @@ Use this mental model to quickly separate success from operator follow-up:
 If you're deciding whether it is safe to resume with `work supervise`, use this shortcut:
 
 - Resume normally when batch status is terminal and `reviewed_batches` contains the batch.
-- Inspect first (do not blindly resume) when batch status is non-terminal, an escalation was recorded, or batch status is `failed`.
+- Inspect first when batch status is non-terminal, an escalation was recorded, or batch status is `failed`; after inspection, rerunning `work supervise` will prefer the interrupted/resumable batch before any later incomplete batch.
 
 ### 3) Resume modes
 
 1. **Continue default progression**
    - run `work supervise`
-   - starts from next incomplete batch
+   - resumes any interrupted/resumable batch first; otherwise starts from the next incomplete batch
 2. **Re-run a specific batch after manual fixes/policy adjustments**
    - run `work supervise --batch "SS.BB"`
 3. **After stage-boundary stop**
@@ -204,6 +217,35 @@ If you're deciding whether it is safe to resume with `work supervise`, use this 
    - run `work supervise` to proceed into next incomplete batch (often next stage)
 
 If you change escalation behavior, edit `work/supervisor.json` and re-run `work supervise`.
+
+### 4) Interruption-safe resume checklist (no duplicate work)
+
+If your shell, SSH session, or caller process exits while `work supervise` was waiting:
+
+1. Inspect persisted state first (never blindly relaunch):
+   - `work batch-status --batch "SS.BB" --format json`
+   - `cat work/<stream-id>/supervisor-state.json`
+2. If batch status is already terminal (`completed`/`failed`), rerun `work supervise` (or `work supervise --batch "SS.BB"` if you want to be explicit).
+   - Supervisor should recover from persisted state and continue review/finalization instead of duplicating headless work.
+3. If batch status is still non-terminal, decide whether to wait longer or manually investigate worker state before rerunning.
+
+## Recommended test strategy for recovery + timeout behavior
+
+Run validation in this order:
+
+1. **20-minute real run first**
+   - `work supervise --batch "SS.BB" --timeout-ms 1200000`
+   - Confirms baseline behavior in the intended long-running mode.
+2. **Short-timeout interruption drill**
+   - Run with a very small timeout (for example, `--timeout-ms 5` or `--timeout-ms 100`) to force a wait failure while work may continue in background.
+3. **Recovery rerun**
+   - Rerun `work supervise --batch "SS.BB"` with a normal timeout to verify reconciliation and deterministic review resume.
+
+Expected evidence after step (3):
+
+- `supervisor-state.json` records recovery progression without duplicate fix/review artifacts for already-finalized outcomes.
+- terminal batch status is preserved/canonicalized.
+- supervisor output shows recovery/resume messaging before review continuation.
 
 ## Practical Model for v1
 

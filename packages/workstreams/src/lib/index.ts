@@ -2,8 +2,9 @@
  * Index operations for workstream management
  */
 
-import { existsSync, readFileSync, writeFileSync, renameSync, rmSync } from "fs"
-import { join } from "path"
+import { randomUUID } from "crypto"
+import { existsSync, mkdirSync, readFileSync, writeFileSync, renameSync, rmSync } from "fs"
+import { basename, dirname, join } from "path"
 import * as lockfile from "proper-lockfile"
 import type { WorkIndex, StreamMetadata, StreamStatus } from "./types.ts"
 import { getIndexPath, getWorkDir } from "./repo.ts"
@@ -12,18 +13,56 @@ import { getIndexPath, getWorkDir } from "./repo.ts"
  * Atomic write: write to temp file, then rename (atomic on POSIX)
  */
 function atomicWriteJSON(path: string, data: object): void {
-  const tempPath = `${path}.tmp`
-  writeFileSync(tempPath, JSON.stringify(data, null, 2))
-  renameSync(tempPath, path)
+  atomicWriteFile(path, JSON.stringify(data, null, 2))
 }
 
 /**
  * Atomic write for any file content
  */
 export function atomicWriteFile(path: string, content: string): void {
-  const tempPath = `${path}.tmp`
-  writeFileSync(tempPath, content)
-  renameSync(tempPath, path)
+  const directory = dirname(path)
+  const fileName = basename(path)
+  let lastError: Error | undefined
+
+  for (let attempt = 0; attempt < 2; attempt++) {
+    const tempPath = join(
+      directory,
+      `.${fileName}.${process.pid}.${Date.now()}-${randomUUID().slice(0, 8)}.tmp`,
+    )
+
+    try {
+      mkdirSync(directory, { recursive: true })
+      writeFileSync(tempPath, content)
+
+      try {
+        renameSync(tempPath, path)
+        return
+      } catch (error) {
+        const isEnoent = error instanceof Error && "code" in error && error.code === "ENOENT"
+        if (!isEnoent) {
+          throw error
+        }
+
+        mkdirSync(directory, { recursive: true })
+        if (!existsSync(tempPath)) {
+          writeFileSync(tempPath, content)
+        }
+
+        renameSync(tempPath, path)
+        return
+      }
+    } catch (error) {
+      lastError = error as Error
+      const isEnoent = error instanceof Error && "code" in error && error.code === "ENOENT"
+      if (!isEnoent || attempt === 1) {
+        throw error
+      }
+    } finally {
+      rmSync(tempPath, { force: true })
+    }
+  }
+
+  throw lastError ?? new Error(`Failed to atomically write ${path}`)
 }
 
 /**

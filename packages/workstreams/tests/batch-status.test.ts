@@ -443,6 +443,46 @@ describe("batch status", () => {
     expect(status.summary.running).toBe(1)
   })
 
+  test("concurrent batch-status writes keep a valid persisted file", async () => {
+    const baseStatus = createBatchStatusFile({
+      streamId,
+      batchId: "01.01",
+      stageName: "Headless Runtime",
+      batchName: "Batch Status",
+      threads: [
+        { threadId: "01.01.01", threadName: "Thread 1", firstTaskId: "01.01.01.01" },
+        { threadId: "01.01.02", threadName: "Thread 2", firstTaskId: "01.01.02.01" },
+      ],
+    })
+
+    await Promise.all(
+      Array.from({ length: 25 }, (_, index) =>
+        Promise.resolve().then(() => {
+          const updatedAt = new Date(Date.now() + index).toISOString()
+          writeBatchStatus(repoRoot, streamId, {
+            ...baseStatus,
+            updatedAt,
+            summary: { total: 2, pending: 0, running: 0, completed: 2, failed: 0 },
+            status: "completed",
+            completedAt: updatedAt,
+            threads: baseStatus.threads.map((thread) => ({
+              ...thread,
+              status: "completed",
+              updatedAt,
+              completedAt: updatedAt,
+            })),
+          })
+        }),
+      ),
+    )
+
+    const persisted = readBatchStatus(repoRoot, streamId, "01.01")
+    expect(persisted?.status).toBe("completed")
+    expect(persisted?.summary.completed).toBe(2)
+    expect(persisted?.threads).toHaveLength(2)
+    expect(persisted?.threads.every((thread) => thread.status === "completed")).toBe(true)
+  })
+
   test("detached async monitor finalizes canonical state while batch-status wait observes completion", async () => {
     startThreadSession(
       repoRoot,

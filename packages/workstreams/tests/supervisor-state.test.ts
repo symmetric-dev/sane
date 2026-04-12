@@ -1,11 +1,13 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test"
 import { existsSync } from "fs"
 import { join } from "path"
+import { createBatchStatusFile, writeBatchStatus } from "../src/lib/batch-status"
 import {
   createEmptySupervisorState,
   getSupervisorStateFilePath,
   loadSupervisorState,
   modifySupervisorState,
+  reconcileSupervisorRunsLocked,
   recordStageStopLocked,
   saveSupervisorState,
   setActiveSupervisorRunLocked,
@@ -211,6 +213,129 @@ describe("supervisor-state", () => {
     const stored = loadSupervisorState(workspace.repoRoot, workspace.streamId)
     expect(stored!.runs).toHaveLength(1)
     expect(stored!.runs[0]!.lastReviewedBatchId).toBe("02.01")
+  })
+
+  test("reconcileSupervisorRunsLocked pauses stale running runs once their batch becomes terminal", async () => {
+    const startedAt = new Date().toISOString()
+
+    await upsertSupervisorRunLocked(workspace.repoRoot, workspace.streamId, {
+      runId: "sup-run-stale",
+      stageId: "01",
+      status: "running",
+      startedAt,
+      updatedAt: startedAt,
+      currentBatchId: "01.01",
+      reviewPasses: 0,
+      issueSummaryIds: [],
+      escalationIds: [],
+    })
+    await setActiveSupervisorRunLocked(workspace.repoRoot, workspace.streamId, "sup-run-stale")
+
+    writeBatchStatus(
+      workspace.repoRoot,
+      workspace.streamId,
+      {
+        ...createBatchStatusFile({
+          streamId: workspace.streamId,
+          batchId: "01.01",
+          threads: [{ threadId: "01.01.01", threadName: "Thread 1", firstTaskId: "01.01.01.01" }],
+          startedAt,
+          runId: "batch-run-stale",
+        }),
+        status: "completed",
+        updatedAt: startedAt,
+        completedAt: startedAt,
+        summary: { total: 1, pending: 0, running: 0, completed: 1, failed: 0 },
+        threads: [
+          {
+            threadId: "01.01.01",
+            threadName: "Thread 1",
+            firstTaskId: "01.01.01.01",
+            status: "completed",
+            updatedAt: startedAt,
+            completedAt: startedAt,
+          },
+        ],
+      },
+    )
+
+    const reconciled = await reconcileSupervisorRunsLocked(workspace.repoRoot, workspace.streamId)
+
+    expect(reconciled).toEqual(["sup-run-stale"])
+
+    const stored = loadSupervisorState(workspace.repoRoot, workspace.streamId)
+    expect(stored?.active_run_id).toBeUndefined()
+    expect(stored?.runs[0]?.status).toBe("paused")
+    expect(stored?.runs[0]?.currentBatchId).toBe("01.01")
+  })
+
+  test("reconcileSupervisorRunsLocked reopens interrupted failed runs once their batch is terminal", async () => {
+    const startedAt = new Date().toISOString()
+
+    await upsertSupervisorRunLocked(workspace.repoRoot, workspace.streamId, {
+      runId: "sup-run-failed-recover",
+      stageId: "01",
+      status: "failed",
+      startedAt,
+      updatedAt: startedAt,
+      currentBatchId: "01.01",
+      reviewPasses: 0,
+      issueSummaryIds: [],
+      escalationIds: [],
+      stageStopId: "sup-run-failed-recover-error-stop",
+      stopReason: "failed",
+      completedAt: startedAt,
+    })
+
+    await recordStageStopLocked(workspace.repoRoot, workspace.streamId, {
+      stopId: "sup-run-failed-recover-error-stop",
+      runId: "sup-run-failed-recover",
+      stageId: "01",
+      batchId: "01.01",
+      reason: "failed",
+      summary: "Caller crashed after the batch completed.",
+      stoppedAt: startedAt,
+    })
+
+    writeBatchStatus(
+      workspace.repoRoot,
+      workspace.streamId,
+      {
+        ...createBatchStatusFile({
+          streamId: workspace.streamId,
+          batchId: "01.01",
+          threads: [{ threadId: "01.01.01", threadName: "Thread 1", firstTaskId: "01.01.01.01" }],
+          startedAt,
+          runId: "batch-run-recover",
+        }),
+        status: "completed",
+        updatedAt: startedAt,
+        completedAt: startedAt,
+        summary: { total: 1, pending: 0, running: 0, completed: 1, failed: 0 },
+        threads: [
+          {
+            threadId: "01.01.01",
+            threadName: "Thread 1",
+            firstTaskId: "01.01.01.01",
+            status: "completed",
+            updatedAt: startedAt,
+            completedAt: startedAt,
+          },
+        ],
+      },
+    )
+
+    const reconciled = await reconcileSupervisorRunsLocked(workspace.repoRoot, workspace.streamId)
+
+    expect(reconciled).toEqual(["sup-run-failed-recover"])
+
+    const stored = loadSupervisorState(workspace.repoRoot, workspace.streamId)
+    const run = stored?.runs.find((value) => value.runId === "sup-run-failed-recover")
+    expect(run?.status).toBe("paused")
+    expect(run?.stageStopId).toBeUndefined()
+    expect(run?.stopReason).toBeUndefined()
+    expect(run?.completedAt).toBeUndefined()
+    expect(stored?.stage_stops).toHaveLength(0)
   })
 
   test("supervisor state persists retry and re-review links for a batch fix cycle", async () => {

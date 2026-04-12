@@ -5,7 +5,7 @@ import { fileURLToPath } from "url"
 import { getRepoRoot } from "../lib/repo.ts"
 import { getResolvedStream, loadIndex } from "../lib/index.ts"
 import { getStreamPlanMdPath } from "../lib/consolidate.ts"
-import { waitForBatchStatus } from "../lib/batch-monitor.ts"
+import { syncBatchStatus, waitForBatchStatus } from "../lib/batch-monitor.ts"
 import { readTasksFile } from "../lib/tasks.ts"
 import { parseStreamDocument } from "../lib/stream-parser.ts"
 import {
@@ -18,8 +18,10 @@ import {
   runDeterministicSupervisorReview,
 } from "../lib/supervisor/index.ts"
 import {
+  clearSupervisorRunFailureStopLocked,
   createEmptySupervisorState,
   loadSupervisorState,
+  reconcileSupervisorRunsLocked,
   recordStageStopLocked,
   upsertEscalationOutcomeLocked,
   upsertFixCycleLocked,
@@ -30,7 +32,13 @@ import {
 import type {
   ReviewerResult,
 } from "../lib/reviewer/types.ts"
-import type { StreamDocument, SupervisorFixCycle, SupervisorStateFile } from "../lib/types.ts"
+import type {
+  StreamDocument,
+  SupervisorFixCycle,
+  SupervisorReviewedBatch,
+  SupervisorRunState,
+  SupervisorStateFile,
+} from "../lib/types.ts"
 
 interface SuperviseCliArgs {
   repoRoot?: string
@@ -49,6 +57,18 @@ interface ResolvedSupervisorContext {
   stream: { id: string; name: string }
   tasksFile: NonNullable<ReturnType<typeof readTasksFile>>
   streamDocument: StreamDocument
+}
+
+type InitialSupervisorAction = "launch" | "wait" | "review" | "stop"
+
+interface SupervisorStartPlan {
+  runId: string
+  runStartedAt: string
+  stageId: string
+  initialBatchId: string
+  action: InitialSupervisorAction
+  message?: string
+  reusingExistingRun: boolean
 }
 
 function printHelp(): void {
@@ -300,6 +320,439 @@ function getSupervisorStateSnapshot(repoRoot: string, streamId: string): Supervi
   return loadSupervisorState(repoRoot, streamId) ?? createEmptySupervisorState(streamId)
 }
 
+function getPersistedRunMetadata(
+  repoRoot: string,
+  streamId: string,
+  runId: string,
+): Pick<SupervisorRunState, "reviewPasses" | "issueSummaryIds" | "escalationIds"> {
+  const existingRun = getSupervisorStateSnapshot(repoRoot, streamId).runs.find(
+    (run) => run.runId === runId,
+  )
+
+  return {
+    reviewPasses: existingRun?.reviewPasses ?? 0,
+    issueSummaryIds: existingRun?.issueSummaryIds ?? [],
+    escalationIds: existingRun?.escalationIds ?? [],
+  }
+}
+
+function getRunById(
+  supervisorState: SupervisorStateFile,
+  runId: string | undefined,
+): SupervisorRunState | undefined {
+  if (!runId) return undefined
+  return supervisorState.runs.find((run) => run.runId === runId)
+}
+
+function getLatestRunForBatch(
+  supervisorState: SupervisorStateFile,
+  batchId: string,
+): SupervisorRunState | undefined {
+  const relatedRunIds = new Set<string>()
+
+  for (const run of supervisorState.runs) {
+    if (run.currentBatchId === batchId || run.lastReviewedBatchId === batchId) {
+      relatedRunIds.add(run.runId)
+    }
+  }
+
+  for (const review of supervisorState.reviewed_batches) {
+    if (review.batchId === batchId) {
+      relatedRunIds.add(review.runId)
+    }
+  }
+
+  for (const stop of supervisorState.stage_stops) {
+    if (stop.batchId === batchId) {
+      relatedRunIds.add(stop.runId)
+    }
+  }
+
+  return [...supervisorState.runs]
+    .filter((run) => relatedRunIds.has(run.runId))
+    .sort((left, right) =>
+      new Date(right.updatedAt).getTime() - new Date(left.updatedAt).getTime(),
+    )[0]
+}
+
+function getRecoveredRunForBatch(
+  supervisorState: SupervisorStateFile,
+  requestedBatchId: string,
+): SupervisorRunState | undefined {
+  const activeRun = getRunById(supervisorState, supervisorState.active_run_id)
+  if (activeRun?.currentBatchId === requestedBatchId) {
+    return activeRun
+  }
+
+  return getLatestRunForBatch(supervisorState, requestedBatchId) ?? activeRun
+}
+
+function getLatestResumableBatchId(supervisorState: SupervisorStateFile): string | undefined {
+  const activeRun = getRunById(supervisorState, supervisorState.active_run_id)
+  if (activeRun?.status === "running" && activeRun.currentBatchId) {
+    return activeRun.currentBatchId
+  }
+
+  return [...supervisorState.runs]
+    .filter((run) => (run.status === "running" || run.status === "paused") && run.currentBatchId)
+    .sort((left, right) =>
+      new Date(right.updatedAt).getTime() - new Date(left.updatedAt).getTime(),
+    )[0]?.currentBatchId
+}
+
+function getLatestReviewedBatch(
+  supervisorState: SupervisorStateFile,
+  runId: string,
+  batchId: string,
+): SupervisorReviewedBatch | undefined {
+  return [...supervisorState.reviewed_batches]
+    .filter((review) => review.runId === runId && review.batchId === batchId)
+    .sort((left, right) => right.reviewPass - left.reviewPass)[0]
+}
+
+function getRunStageStop(
+  supervisorState: SupervisorStateFile,
+  runId: string,
+  batchId?: string,
+) {
+  return [...supervisorState.stage_stops]
+    .filter((stop) => stop.runId === runId && (batchId ? stop.batchId === batchId : true))
+    .sort((left, right) =>
+      new Date(right.stoppedAt).getTime() - new Date(left.stoppedAt).getTime(),
+    )[0]
+}
+
+function isInterruptedFailureStop(stageStop: ReturnType<typeof getRunStageStop>): boolean {
+  return stageStop?.reason === "failed"
+}
+
+function formatRecoveredStopMessage(args: {
+  batchId: string
+  run: SupervisorRunState
+  review?: SupervisorReviewedBatch
+  summary?: string
+}): string {
+  if (args.summary) {
+    return `[supervise] stop: batch ${args.batchId} already has a persisted supervisor outcome from run ${args.run.runId}. ${args.summary}`
+  }
+
+  if (args.review?.notes) {
+    return `[supervise] stop: batch ${args.batchId} already has a persisted supervisor outcome from run ${args.run.runId}. ${args.review.notes}`
+  }
+
+  return `[supervise] stop: batch ${args.batchId} already has a persisted supervisor outcome from run ${args.run.runId} (${args.run.status}).`
+}
+
+function isBatchWaitTimeoutError(error: unknown): error is Error {
+  return error instanceof Error && /Timed out after \d+ms waiting for batch /.test(error.message)
+}
+
+async function recoverTerminalReviewOutcome(args: {
+  repoRoot: string
+  streamId: string
+  tasksFile: NonNullable<ReturnType<typeof readTasksFile>>
+  streamDocument: StreamDocument
+  config: ReturnType<typeof loadSupervisorConfig>
+  supervisorState: SupervisorStateFile
+  run: SupervisorRunState
+  review: SupervisorReviewedBatch
+}): Promise<SupervisorStartPlan> {
+  const { repoRoot, streamId, tasksFile, streamDocument, config, supervisorState, run, review } = args
+  const cycleState = getSupervisorBatchCycleState({
+    config,
+    supervisorState,
+    runId: run.runId,
+    batchId: review.batchId,
+  })
+
+  if (review.outcome === "approved") {
+    const stageBoundary = decideSupervisorStageBoundary({
+      config,
+      streamDocument,
+      batchId: review.batchId,
+      issues: [],
+      fixCyclesUsed: cycleState.fixCyclesUsed,
+    })
+
+    if (stageBoundary.action !== "continue") {
+      let escalationId: string | undefined
+      if (stageBoundary.shouldContactUser) {
+        escalationId = `${review.reviewId}-stage-escalation`
+        await upsertEscalationOutcomeLocked(repoRoot, streamId, {
+          escalationId,
+          runId: run.runId,
+          stageId: run.stageId,
+          batchId: review.batchId,
+          target: "stage",
+          reason: stageBoundary.summary,
+          status: "pending",
+          escalatedAt: review.reviewedAt,
+        })
+      }
+
+      await recordStageStopLocked(repoRoot, streamId, {
+        stopId: `${review.reviewId}-stage-stop`,
+        runId: run.runId,
+        stageId: run.stageId,
+        batchId: review.batchId,
+        reason: stageBoundary.stopReason ?? "completed",
+        summary: stageBoundary.summary,
+        stoppedAt: review.reviewedAt,
+        escalationId,
+      })
+
+      return {
+        runId: run.runId,
+        runStartedAt: run.startedAt,
+        stageId: run.stageId,
+        initialBatchId: review.batchId,
+        action: "stop",
+        message: formatRecoveredStopMessage({
+          batchId: review.batchId,
+          run,
+          review,
+          summary: stageBoundary.summary,
+        }),
+        reusingExistingRun: true,
+      }
+    }
+
+    const nextBatchId = findNextBatchId(tasksFile.tasks, review.batchId)
+    if (!nextBatchId) {
+      await recordStageStopLocked(repoRoot, streamId, {
+        stopId: `${review.reviewId}-final-stop`,
+        runId: run.runId,
+        stageId: run.stageId,
+        batchId: review.batchId,
+        reason: "completed",
+        summary: `Supervisor completed the last known batch ${review.batchId}.`,
+        stoppedAt: review.reviewedAt,
+      })
+
+      return {
+        runId: run.runId,
+        runStartedAt: run.startedAt,
+        stageId: run.stageId,
+        initialBatchId: review.batchId,
+        action: "stop",
+        message: formatRecoveredStopMessage({
+          batchId: review.batchId,
+          run,
+          review,
+          summary: `Supervisor completed the last known batch ${review.batchId}.`,
+        }),
+        reusingExistingRun: true,
+      }
+    }
+
+    await upsertSupervisorRunLocked(repoRoot, streamId, {
+      runId: run.runId,
+      stageId: run.stageId,
+      status: "running",
+      startedAt: run.startedAt,
+      updatedAt: new Date().toISOString(),
+      currentBatchId: nextBatchId,
+      reviewPasses: review.reviewPass,
+      issueSummaryIds: run.issueSummaryIds,
+      escalationIds: run.escalationIds,
+    })
+
+    const nextBatchStatus = await syncBatchStatus({
+      repoRoot,
+      streamId,
+      batchId: nextBatchId,
+    })
+
+    return {
+      runId: run.runId,
+      runStartedAt: run.startedAt,
+      stageId: run.stageId,
+      initialBatchId: nextBatchId,
+      action: nextBatchStatus.status === "running"
+        ? "wait"
+        : nextBatchStatus.status === "completed" || nextBatchStatus.status === "failed"
+          ? "review"
+          : "launch",
+      message: `[supervise] resume: continuing persisted supervisor run ${run.runId} at batch ${nextBatchId}.`,
+      reusingExistingRun: true,
+    }
+  }
+
+  if (review.outcome === "changes_requested") {
+    return {
+      runId: run.runId,
+      runStartedAt: run.startedAt,
+      stageId: run.stageId,
+      initialBatchId: review.batchId,
+      action: cycleState.hasPendingReReview ? "launch" : "review",
+      message: cycleState.hasPendingReReview
+        ? `[supervise] resume: rerunning batch ${review.batchId} for pending fix-cycle review in run ${run.runId}.`
+        : `[supervise] resume: batch ${review.batchId} already has persisted review output for run ${run.runId}.`,
+      reusingExistingRun: true,
+    }
+  }
+
+  const escalationId = `${review.reviewId}-escalation`
+  await upsertEscalationOutcomeLocked(repoRoot, streamId, {
+    escalationId,
+    runId: run.runId,
+    stageId: run.stageId,
+    batchId: review.batchId,
+    target: "operator",
+    reason: review.notes ?? `Supervisor stopped after reviewing batch ${review.batchId}.`,
+    status: "pending",
+    escalatedAt: review.reviewedAt,
+  })
+  await recordStageStopLocked(repoRoot, streamId, {
+    stopId: `${review.reviewId}-stop`,
+    runId: run.runId,
+    stageId: run.stageId,
+    batchId: review.batchId,
+    reason: review.stopReason ?? "operator_handoff",
+    summary: review.notes ?? `Supervisor stopped after reviewing batch ${review.batchId}.`,
+    stoppedAt: review.reviewedAt,
+    escalationId,
+  })
+
+  return {
+    runId: run.runId,
+    runStartedAt: run.startedAt,
+    stageId: run.stageId,
+    initialBatchId: review.batchId,
+    action: "stop",
+    message: formatRecoveredStopMessage({
+      batchId: review.batchId,
+      run,
+      review,
+    }),
+    reusingExistingRun: true,
+  }
+}
+
+async function buildSupervisorStartPlan(args: {
+  repoRoot: string
+  streamId: string
+  tasksFile: NonNullable<ReturnType<typeof readTasksFile>>
+  streamDocument: StreamDocument
+  config: ReturnType<typeof loadSupervisorConfig>
+  requestedBatchId: string
+}): Promise<SupervisorStartPlan> {
+  const { repoRoot, streamId, tasksFile, streamDocument, config, requestedBatchId } = args
+  const supervisorState = getSupervisorStateSnapshot(repoRoot, streamId)
+  const recoveredRun = getRecoveredRunForBatch(supervisorState, requestedBatchId)
+
+  if (!recoveredRun || (recoveredRun.currentBatchId && recoveredRun.currentBatchId !== requestedBatchId)) {
+    const [stageId] = requestedBatchId.split(".")
+    if (!stageId) {
+      throw new Error(`Error: Invalid batch ID \"${requestedBatchId}\"`)
+    }
+
+    const batchStatus = await syncBatchStatus({
+      repoRoot,
+      streamId,
+      batchId: requestedBatchId,
+    })
+
+    return {
+      runId: createSupervisorRunId(stageId),
+      runStartedAt: new Date().toISOString(),
+      stageId,
+      initialBatchId: requestedBatchId,
+      action: batchStatus.status === "running"
+        ? "wait"
+        : batchStatus.status === "completed" || batchStatus.status === "failed"
+          ? "review"
+          : "launch",
+      message:
+        batchStatus.status === "running"
+          ? `[supervise] resume: waiting for in-progress batch ${requestedBatchId}.`
+          : batchStatus.status === "completed" || batchStatus.status === "failed"
+            ? `[supervise] resume: batch ${requestedBatchId} already reached ${batchStatus.status}; reviewing persisted results.`
+            : undefined,
+      reusingExistingRun: false,
+    }
+  }
+
+  const currentBatchId = recoveredRun.currentBatchId ?? requestedBatchId
+  const batchStatus = await syncBatchStatus({
+    repoRoot,
+    streamId,
+    batchId: currentBatchId,
+  })
+  const latestReview = getLatestReviewedBatch(supervisorState, recoveredRun.runId, currentBatchId)
+  const stageStop = getRunStageStop(supervisorState, recoveredRun.runId, currentBatchId)
+  const interruptedFailureStop = isInterruptedFailureStop(stageStop)
+
+  if (
+    recoveredRun.status !== "running" &&
+    recoveredRun.status !== "paused" &&
+    !(interruptedFailureStop && (batchStatus.status === "completed" || batchStatus.status === "failed"))
+  ) {
+    return {
+      runId: recoveredRun.runId,
+      runStartedAt: recoveredRun.startedAt,
+      stageId: recoveredRun.stageId,
+      initialBatchId: requestedBatchId,
+      action: "stop",
+      message: formatRecoveredStopMessage({
+        batchId: requestedBatchId,
+        run: recoveredRun,
+        summary: stageStop?.summary,
+      }),
+      reusingExistingRun: true,
+    }
+  }
+
+  if (stageStop && !interruptedFailureStop) {
+    return {
+      runId: recoveredRun.runId,
+      runStartedAt: recoveredRun.startedAt,
+      stageId: recoveredRun.stageId,
+      initialBatchId: currentBatchId,
+      action: "stop",
+      message: formatRecoveredStopMessage({
+        batchId: currentBatchId,
+        run: recoveredRun,
+        review: latestReview,
+        summary: stageStop.summary,
+      }),
+      reusingExistingRun: true,
+    }
+  }
+
+  if (latestReview) {
+    return recoverTerminalReviewOutcome({
+      repoRoot,
+      streamId,
+      tasksFile,
+      streamDocument,
+      config,
+      supervisorState,
+      run: recoveredRun,
+      review: latestReview,
+    })
+  }
+
+  return {
+    runId: recoveredRun.runId,
+    runStartedAt: recoveredRun.startedAt,
+    stageId: recoveredRun.stageId,
+    initialBatchId: currentBatchId,
+    action: batchStatus.status === "running"
+      ? "wait"
+      : batchStatus.status === "completed" || batchStatus.status === "failed"
+        ? "review"
+        : "launch",
+    message:
+      batchStatus.status === "running"
+        ? `[supervise] resume: waiting for in-progress batch ${currentBatchId} from run ${recoveredRun.runId}.`
+        : batchStatus.status === "completed" || batchStatus.status === "failed"
+          ? `[supervise] resume: batch ${currentBatchId} already reached ${batchStatus.status}; reviewing persisted results from run ${recoveredRun.runId}.`
+          : `[supervise] resume: relaunching persisted supervisor run ${recoveredRun.runId} at batch ${currentBatchId}.`,
+    reusingExistingRun: true,
+  }
+}
+
 async function markPendingFixCycles(args: {
   repoRoot: string
   streamId: string
@@ -396,66 +849,133 @@ export async function main(argv: string[] = process.argv): Promise<void> {
 
   const { repoRoot, stream, tasksFile, streamDocument } = context
   const config = loadSupervisorConfig(repoRoot)
-  const initialBatchId = cliArgs.batch ?? findNextIncompleteBatch(tasksFile.tasks)
+  const reconciledRunIds = await reconcileSupervisorRunsLocked(repoRoot, stream.id)
+  const reconciledSupervisorState = getSupervisorStateSnapshot(repoRoot, stream.id)
+  const requestedBatchId =
+    cliArgs.batch ??
+    getLatestResumableBatchId(reconciledSupervisorState) ??
+    findNextIncompleteBatch(tasksFile.tasks)
 
-  if (!initialBatchId) {
+  if (!requestedBatchId) {
     console.log(`[supervise] No incomplete batches remain for ${stream.id}.`)
     return
   }
 
-  const [stageId] = initialBatchId.split(".")
-  if (!stageId) {
-    console.error(`Error: Invalid batch ID \"${initialBatchId}\"`)
-    process.exit(1)
+  const startPlan = await buildSupervisorStartPlan({
+    repoRoot,
+    streamId: stream.id,
+    tasksFile,
+    streamDocument,
+    config,
+    requestedBatchId,
+  })
+
+  if (startPlan.action === "stop") {
+    console.log(startPlan.message ?? `[supervise] stop: batch ${startPlan.initialBatchId} is already terminal.`)
+    return
   }
 
-  const runId = createSupervisorRunId(stageId)
-  const runStartedAt = new Date().toISOString()
+  if (reconciledRunIds.length > 0) {
+    console.log(
+      `[supervise] reconciled interrupted supervisor run${reconciledRunIds.length === 1 ? "" : "s"}: ${reconciledRunIds.join(", ")}`,
+    )
+  }
 
   if (cliArgs.dryRun) {
     console.log(`[supervise] dry run for stream ${stream.id}`)
-    console.log(`[supervise] would start supervisor run ${runId}`)
-    console.log(`[supervise] would launch batch ${initialBatchId} with work multi --headless --async`)
+    console.log(
+      `[supervise] would ${startPlan.reusingExistingRun ? "resume" : "start"} supervisor run ${startPlan.runId}`,
+    )
+    if (startPlan.action === "launch") {
+      console.log(
+        `[supervise] would launch batch ${startPlan.initialBatchId} with work multi --headless --async`,
+      )
+    } else {
+      console.log(
+        `[supervise] would ${startPlan.action} existing batch ${startPlan.initialBatchId} from persisted state`,
+      )
+    }
     console.log("[supervise] would wait for batch-status, review outputs, and continue, fix, or stop.")
     return
   }
 
-  await upsertSupervisorRunLocked(repoRoot, stream.id, {
-    runId,
-    stageId,
-    status: "running",
-    startedAt: runStartedAt,
-    updatedAt: runStartedAt,
-    currentBatchId: initialBatchId,
-    reviewPasses: 0,
-    issueSummaryIds: [],
-    escalationIds: [],
-  })
+  const runId = startPlan.runId
+  const runStartedAt = startPlan.runStartedAt
+  const stageId = startPlan.stageId
+  const persistedRunMetadata = getPersistedRunMetadata(repoRoot, stream.id, runId)
 
-  console.log(`[supervise] starting run ${runId} for ${stream.id}`)
+  if (!startPlan.reusingExistingRun) {
+    await upsertSupervisorRunLocked(repoRoot, stream.id, {
+      runId,
+      stageId,
+      status: "running",
+      startedAt: runStartedAt,
+      updatedAt: runStartedAt,
+      currentBatchId: startPlan.initialBatchId,
+      reviewPasses: 0,
+      issueSummaryIds: [],
+      escalationIds: [],
+    })
 
-  let currentBatchId: string | null = initialBatchId
+    console.log(`[supervise] starting run ${runId} for ${stream.id}`)
+  } else {
+    await clearSupervisorRunFailureStopLocked(
+      repoRoot,
+      stream.id,
+      runId,
+      startPlan.initialBatchId,
+    )
+    await upsertSupervisorRunLocked(repoRoot, stream.id, {
+      runId,
+      stageId,
+      status: "running",
+      startedAt: runStartedAt,
+      updatedAt: new Date().toISOString(),
+      currentBatchId: startPlan.initialBatchId,
+      reviewPasses: persistedRunMetadata.reviewPasses,
+      issueSummaryIds: persistedRunMetadata.issueSummaryIds,
+      escalationIds: persistedRunMetadata.escalationIds,
+    })
+    console.log(startPlan.message ?? `[supervise] resume: continuing run ${runId}.`)
+  }
+
+  let currentBatchId: string | null = startPlan.initialBatchId
+  let nextAction: Exclude<InitialSupervisorAction, "stop"> = startPlan.action
+  let reuseExistingReview = startPlan.reusingExistingRun && startPlan.action === "review"
 
   try {
     while (currentBatchId) {
-      console.log(`[supervise] start batch ${currentBatchId}`)
-      await runWorkMultiHeadless({
-        repoRoot,
-        streamId: stream.id,
-        batchId: currentBatchId,
-        port: cliArgs.port,
-        noServer: cliArgs.noServer,
-        silent: cliArgs.silent,
-      })
+      let batchStatus: Awaited<ReturnType<typeof waitForBatchStatus>>
 
-      console.log(`[supervise] waiting for batch-status ${currentBatchId}`)
-      const batchStatus = await waitForBatchStatus({
-        repoRoot,
-        streamId: stream.id,
-        batchId: currentBatchId,
-        timeoutMs: cliArgs.timeoutMs,
-        pollIntervalMs: cliArgs.pollIntervalMs,
-      })
+      if (nextAction === "launch") {
+        console.log(`[supervise] start batch ${currentBatchId}`)
+        await runWorkMultiHeadless({
+          repoRoot,
+          streamId: stream.id,
+          batchId: currentBatchId,
+          port: cliArgs.port,
+          noServer: cliArgs.noServer,
+          silent: cliArgs.silent,
+        })
+      }
+
+      if (nextAction === "launch" || nextAction === "wait") {
+        console.log(`[supervise] waiting for batch-status ${currentBatchId}`)
+        batchStatus = await waitForBatchStatus({
+          repoRoot,
+          streamId: stream.id,
+          batchId: currentBatchId,
+          timeoutMs: cliArgs.timeoutMs,
+          pollIntervalMs: cliArgs.pollIntervalMs,
+        })
+      } else {
+        console.log(`[supervise] recovering terminal batch-status ${currentBatchId}`)
+        batchStatus = await syncBatchStatus({
+          repoRoot,
+          streamId: stream.id,
+          batchId: currentBatchId,
+        })
+      }
 
       console.log(`[supervise] batch ${currentBatchId} finished: ${batchStatus.status}`)
       console.log(`  ${summarizeBatchStatus(batchStatus)}`)
@@ -465,58 +985,86 @@ export async function main(argv: string[] = process.argv): Promise<void> {
       printReviewSummary(currentBatchId, reviewer)
 
       const supervisorState = getSupervisorStateSnapshot(repoRoot, stream.id)
+      const persistedRun = getRunById(supervisorState, runId)
       const cycleState = getSupervisorBatchCycleState({
         config,
         supervisorState,
         runId,
         batchId: currentBatchId,
       })
-      const reviewId = `${runId}-${currentBatchId}-review-${String(cycleState.currentReviewPass).padStart(2, "0")}`
-      const issueSummaryIds: string[] = []
+      const existingReview = reuseExistingReview
+        ? getLatestReviewedBatch(supervisorState, runId, currentBatchId)
+        : undefined
+      const reviewId = existingReview?.reviewId ?? `${runId}-${currentBatchId}-review-${String(cycleState.currentReviewPass).padStart(2, "0")}`
       const now = new Date().toISOString()
+      const issueSummaryIds = existingReview?.issueSummaryIds ?? []
 
-      for (const [index, issue] of reviewer.issues.entries()) {
-        const summaryId = `${reviewId}-issue-${String(index + 1).padStart(2, "0")}`
-        issueSummaryIds.push(summaryId)
-        await upsertIssueSummaryLocked(repoRoot, stream.id, {
-          summaryId,
+      if (!existingReview) {
+        for (const [index, issue] of reviewer.issues.entries()) {
+          const summaryId = `${reviewId}-issue-${String(index + 1).padStart(2, "0")}`
+          issueSummaryIds.push(summaryId)
+          await upsertIssueSummaryLocked(repoRoot, stream.id, {
+            summaryId,
+            runId,
+            stageId,
+            batchId: currentBatchId,
+            status: "open",
+            summary: issue.summary,
+            severity: issue.severity,
+            firstObservedAt: now,
+            lastObservedAt: now,
+          })
+        }
+      } else {
+        console.log(
+          `[supervise] resume review ${currentBatchId}: using persisted review ${existingReview.reviewId} (${existingReview.outcome})`,
+        )
+      }
+
+      const followUp = existingReview
+        ? undefined
+        : decideSupervisorBatchFollowUp({
+          config,
+          supervisorState,
+          runId,
+          batchId: currentBatchId,
+          issues: reviewer.issues,
+        })
+
+      if (followUp) {
+        await upsertReviewedBatchLocked(repoRoot, stream.id, {
+          reviewId,
           runId,
           stageId,
           batchId: currentBatchId,
-          status: "open",
-          summary: issue.summary,
-          severity: issue.severity,
-          firstObservedAt: now,
-          lastObservedAt: now,
+          reviewPass: cycleState.currentReviewPass,
+          reviewedAt: now,
+          outcome: followUp.reviewOutcome,
+          threadIds: batchStatus.threads.map((thread) => thread.threadId),
+          issueSummaryIds,
+          stopReason: followUp.stopReason,
+          notes: followUp.summary,
         })
       }
 
-      const followUp = decideSupervisorBatchFollowUp({
-        config,
-        supervisorState,
-        runId,
-        batchId: currentBatchId,
-        issues: reviewer.issues,
-      })
-
-      await upsertReviewedBatchLocked(repoRoot, stream.id, {
+      const resolvedReview = existingReview ?? {
         reviewId,
         runId,
         stageId,
         batchId: currentBatchId,
         reviewPass: cycleState.currentReviewPass,
         reviewedAt: now,
-        outcome: followUp.reviewOutcome,
+        outcome: followUp!.reviewOutcome,
         threadIds: batchStatus.threads.map((thread) => thread.threadId),
         issueSummaryIds,
-        stopReason: followUp.stopReason,
-        notes: followUp.summary,
-      })
+        stopReason: followUp?.stopReason,
+        notes: followUp?.summary,
+      }
 
       if (cycleState.hasPendingReReview) {
-        const lastOutcome = followUp.action === "approve_batch"
+        const lastOutcome = resolvedReview.outcome === "approved"
           ? "accepted"
-          : followUp.action === "contact_user"
+          : resolvedReview.outcome === "escalated"
             ? "escalated"
             : "pending_review"
 
@@ -527,28 +1075,39 @@ export async function main(argv: string[] = process.argv): Promise<void> {
             runId,
             supervisorState,
             batchId: currentBatchId,
-            reviewId,
+            reviewId: resolvedReview.reviewId,
             issueSummaryIds,
             outcome: lastOutcome,
           })
         }
       }
 
-      if (followUp.action === "run_fix_cycle") {
+      if (resolvedReview.outcome === "changes_requested") {
         const affectedThreadIds = getReviewAffectedThreadIds(reviewInput)
-        await markPendingFixCycles({
-          repoRoot,
-          streamId: stream.id,
-          runId,
-          stageId,
-          batchId: currentBatchId,
-          reviewId,
-          issueSummaryIds,
-          threadIds: affectedThreadIds.length > 0 ? affectedThreadIds : batchStatus.threads.map((thread) => thread.threadId),
-          attempt: followUp.nextFixCycleAttempt ?? cycleState.fixCyclesUsed + 1,
-        })
+        const hasTriggeredFixCycles = supervisorState.fix_cycles.some(
+          (fixCycle) =>
+            fixCycle.runId === runId &&
+            fixCycle.batchId === currentBatchId &&
+            fixCycle.triggeredByReviewId === resolvedReview.reviewId,
+        )
 
-        console.log(`[supervise] fix: ${followUp.summary}`)
+        if (!hasTriggeredFixCycles) {
+          await markPendingFixCycles({
+            repoRoot,
+            streamId: stream.id,
+            runId,
+            stageId,
+            batchId: currentBatchId,
+            reviewId: resolvedReview.reviewId,
+            issueSummaryIds,
+            threadIds: affectedThreadIds.length > 0 ? affectedThreadIds : resolvedReview.threadIds,
+            attempt: cycleState.fixCyclesUsed + 1,
+          })
+        }
+
+        console.log(
+          `[supervise] fix: ${resolvedReview.notes ?? `Batch ${currentBatchId} will run automatic fix cycle ${cycleState.fixCyclesUsed + 1}.`}`,
+        )
         await upsertSupervisorRunLocked(repoRoot, stream.id, {
           runId,
           stageId,
@@ -556,37 +1115,41 @@ export async function main(argv: string[] = process.argv): Promise<void> {
           startedAt: runStartedAt,
           updatedAt: new Date().toISOString(),
           currentBatchId,
-          reviewPasses: followUp.nextReviewPass ?? cycleState.currentReviewPass,
+          reviewPasses: followUp?.nextReviewPass ?? Math.max(cycleState.currentReviewPass, resolvedReview.reviewPass + 1),
           issueSummaryIds,
-          escalationIds: [],
+          escalationIds: persistedRun?.escalationIds ?? [],
         })
+        nextAction = "launch"
+        reuseExistingReview = false
         continue
       }
 
-      if (followUp.action === "contact_user") {
-        const escalationId = `${reviewId}-escalation`
+      if (resolvedReview.outcome === "escalated") {
+        const escalationId = `${resolvedReview.reviewId}-escalation`
         await upsertEscalationOutcomeLocked(repoRoot, stream.id, {
           escalationId,
           runId,
           stageId,
           batchId: currentBatchId,
           target: "operator",
-          reason: followUp.summary,
+          reason: resolvedReview.notes ?? `Supervisor stopped after reviewing batch ${currentBatchId}.`,
           status: "pending",
-          escalatedAt: now,
-          notes: followUp.escalation.chatSummary,
+          escalatedAt: resolvedReview.reviewedAt,
+          notes: resolvedReview.notes,
         })
         await recordStageStopLocked(repoRoot, stream.id, {
-          stopId: `${reviewId}-stop`,
+          stopId: `${resolvedReview.reviewId}-stop`,
           runId,
           stageId,
           batchId: currentBatchId,
-          reason: followUp.stopReason ?? "operator_handoff",
-          summary: followUp.summary,
-          stoppedAt: now,
+          reason: resolvedReview.stopReason ?? "operator_handoff",
+          summary: resolvedReview.notes ?? `Supervisor stopped after reviewing batch ${currentBatchId}.`,
+          stoppedAt: resolvedReview.reviewedAt,
           escalationId,
         })
-        console.log(`[supervise] stop: user input required. ${followUp.summary}`)
+        console.log(
+          `[supervise] stop: user input required. ${resolvedReview.notes ?? `Supervisor stopped after reviewing batch ${currentBatchId}.`}`,
+        )
         break
       }
 
@@ -594,15 +1157,15 @@ export async function main(argv: string[] = process.argv): Promise<void> {
         config,
         streamDocument,
         batchId: currentBatchId,
-        issues: reviewer.issues,
-        fixCyclesUsed: followUp.cycleState.fixCyclesUsed,
+        issues: resolvedReview.outcome === "approved" ? [] : reviewer.issues,
+        fixCyclesUsed: followUp?.cycleState.fixCyclesUsed ?? cycleState.fixCyclesUsed,
       })
 
       if (stageBoundary.action !== "continue") {
         let escalationId: string | undefined
 
         if (stageBoundary.shouldContactUser) {
-          escalationId = `${reviewId}-stage-escalation`
+          escalationId = `${resolvedReview.reviewId}-stage-escalation`
           await upsertEscalationOutcomeLocked(repoRoot, stream.id, {
             escalationId,
             runId,
@@ -611,19 +1174,19 @@ export async function main(argv: string[] = process.argv): Promise<void> {
             target: "stage",
             reason: stageBoundary.summary,
             status: "pending",
-            escalatedAt: now,
+            escalatedAt: resolvedReview.reviewedAt,
             notes: stageBoundary.escalation?.chatSummary,
           })
         }
 
         await recordStageStopLocked(repoRoot, stream.id, {
-          stopId: `${reviewId}-stage-stop`,
+          stopId: `${resolvedReview.reviewId}-stage-stop`,
           runId,
           stageId,
           batchId: currentBatchId,
           reason: stageBoundary.stopReason ?? "completed",
           summary: stageBoundary.summary,
-          stoppedAt: now,
+          stoppedAt: resolvedReview.reviewedAt,
           escalationId,
         })
         console.log(
@@ -635,13 +1198,13 @@ export async function main(argv: string[] = process.argv): Promise<void> {
       const nextBatchId = findNextBatchId(tasksFile.tasks, currentBatchId)
       if (!nextBatchId) {
         await recordStageStopLocked(repoRoot, stream.id, {
-          stopId: `${reviewId}-final-stop`,
+          stopId: `${resolvedReview.reviewId}-final-stop`,
           runId,
           stageId,
           batchId: currentBatchId,
           reason: "completed",
           summary: `Supervisor completed the last known batch ${currentBatchId}.`,
-          stoppedAt: now,
+          stoppedAt: resolvedReview.reviewedAt,
         })
         console.log(`[supervise] stop: no remaining batches after ${currentBatchId}.`)
         break
@@ -649,6 +1212,8 @@ export async function main(argv: string[] = process.argv): Promise<void> {
 
       console.log(`[supervise] continue: ${currentBatchId} approved; moving to ${nextBatchId}.`)
       currentBatchId = nextBatchId
+      nextAction = "launch"
+      reuseExistingReview = false
       await upsertSupervisorRunLocked(repoRoot, stream.id, {
         runId,
         stageId,
@@ -656,12 +1221,30 @@ export async function main(argv: string[] = process.argv): Promise<void> {
         startedAt: runStartedAt,
         updatedAt: new Date().toISOString(),
         currentBatchId,
-        reviewPasses: cycleState.currentReviewPass,
+        reviewPasses: resolvedReview.reviewPass,
         issueSummaryIds,
-        escalationIds: [],
+        escalationIds: persistedRun?.escalationIds ?? [],
       })
     }
   } catch (error) {
+    if (isBatchWaitTimeoutError(error)) {
+      await upsertSupervisorRunLocked(repoRoot, stream.id, {
+        runId,
+        stageId,
+        status: "running",
+        startedAt: runStartedAt,
+        updatedAt: new Date().toISOString(),
+        currentBatchId: currentBatchId ?? undefined,
+        reviewPasses: persistedRunMetadata.reviewPasses,
+        issueSummaryIds: persistedRunMetadata.issueSummaryIds,
+        escalationIds: persistedRunMetadata.escalationIds,
+      })
+      console.log(
+        `[supervise] timeout: ${error.message} The batch may still be running; rerun work supervise to resume deterministically.`,
+      )
+      throw error
+    }
+
     await recordStageStopLocked(repoRoot, stream.id, {
       stopId: `${runId}-error-stop`,
       runId,

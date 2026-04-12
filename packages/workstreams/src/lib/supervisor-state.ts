@@ -10,6 +10,7 @@ import type {
   SupervisorStageStop,
   SupervisorStateFile,
 } from "./types.ts"
+import { isTerminalBatchStatus, readBatchStatus } from "./batch-status.ts"
 import { atomicWriteFile } from "./index.ts"
 import { getWorkDir } from "./repo.ts"
 
@@ -168,6 +169,16 @@ function getRunStatusForStageStop(stageStop: SupervisorStageStop): SupervisorRun
   return stageStop.escalationId ? "escalated" : "stopped"
 }
 
+function getRunStageStops(
+  supervisorState: SupervisorStateFile,
+  runId: string,
+  batchId?: string,
+): SupervisorStageStop[] {
+  return supervisorState.stage_stops.filter(
+    (stop) => stop.runId === runId && (batchId ? stop.batchId === batchId : true),
+  )
+}
+
 /**
  * Upsert a supervisor run record and maintain the active run pointer.
  */
@@ -225,6 +236,110 @@ export async function setActiveSupervisorRunLocked(
 
     supervisorState.active_run_id = runId
     run.status = "running"
+  })
+}
+
+/**
+ * Reconcile interrupted supervisor runs whose persisted batch has already
+ * reached a terminal state. These runs are no longer actively executing work,
+ * so they become resumable and the stale active run pointer is cleared.
+ */
+export async function reconcileSupervisorRunsLocked(
+  repoRoot: string,
+  streamId: string,
+): Promise<string[]> {
+  return modifySupervisorState(repoRoot, streamId, (supervisorState) => {
+    const reconciledRunIds: string[] = []
+
+    if (supervisorState.active_run_id) {
+      const activeRun = getRun(supervisorState, supervisorState.active_run_id)
+      if (!activeRun || activeRun.status !== "running") {
+        delete supervisorState.active_run_id
+      }
+    }
+
+    for (const run of supervisorState.runs) {
+      if ((run.status !== "running" && run.status !== "failed") || !run.currentBatchId) {
+        continue
+      }
+
+      const batchStatus = readBatchStatus(repoRoot, streamId, run.currentBatchId)
+      if (!batchStatus || !isTerminalBatchStatus(batchStatus.status)) {
+        continue
+      }
+
+      const staleFailedStops = getRunStageStops(
+        supervisorState,
+        run.runId,
+        run.currentBatchId,
+      ).filter((stop) => stop.reason === "failed")
+
+      if (staleFailedStops.length > 0) {
+        const staleStopIds = new Set(staleFailedStops.map((stop) => stop.stopId))
+        supervisorState.stage_stops = supervisorState.stage_stops.filter(
+          (stop) => !staleStopIds.has(stop.stopId),
+        )
+
+        if (run.stageStopId && staleStopIds.has(run.stageStopId)) {
+          delete run.stageStopId
+          delete run.stopReason
+          delete run.completedAt
+        }
+      }
+
+      run.status = "paused"
+      run.updatedAt = batchStatus.completedAt ?? batchStatus.updatedAt
+      if (supervisorState.active_run_id === run.runId) {
+        delete supervisorState.active_run_id
+      }
+
+      reconciledRunIds.push(run.runId)
+    }
+
+    return reconciledRunIds
+  })
+}
+
+/**
+ * Remove stale failed stop artifacts from an interrupted run so it can resume
+ * deterministic review/finalization from the persisted batch state.
+ */
+export async function clearSupervisorRunFailureStopLocked(
+  repoRoot: string,
+  streamId: string,
+  runId: string,
+  batchId?: string,
+): Promise<string[]> {
+  return modifySupervisorState(repoRoot, streamId, (supervisorState) => {
+    const run = getRun(supervisorState, runId)
+    if (!run) {
+      return []
+    }
+
+    const failedStops = getRunStageStops(supervisorState, runId, batchId).filter(
+      (stop) => stop.reason === "failed",
+    )
+    if (failedStops.length === 0) {
+      return []
+    }
+
+    const failedStopIds = new Set(failedStops.map((stop) => stop.stopId))
+    supervisorState.stage_stops = supervisorState.stage_stops.filter(
+      (stop) => !failedStopIds.has(stop.stopId),
+    )
+
+    if (run.stageStopId && failedStopIds.has(run.stageStopId)) {
+      delete run.stageStopId
+      delete run.stopReason
+      delete run.completedAt
+    }
+
+    if (run.status === "failed") {
+      run.status = "paused"
+      run.updatedAt = new Date().toISOString()
+    }
+
+    return failedStops.map((stop) => stop.stopId)
   })
 }
 

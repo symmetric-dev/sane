@@ -88,7 +88,7 @@ It then either:
 In practice, it **continues automatically only when** the batch review is approved and no stop policy is triggered.
 It **stops** when escalation requires user input, a stage boundary stop is reached, there is no next batch, or execution/wait fails.
 
-If `--timeout-ms` is reached before the batch becomes terminal, the wait fails and supervisor exits without reviewing the incomplete batch.
+If `--timeout-ms` is reached before the batch becomes terminal, the wait fails and supervisor exits without reviewing the incomplete batch. That interrupted run remains resumable and is preferred on the next `work supervise` rerun.
 
 Policy is loaded from `work/supervisor.json` (defaults are used if missing).
 
@@ -108,7 +108,7 @@ cat work/<stream-id>/supervisor-state.json
 Interpretation quick-guide (what success looks like vs what to inspect):
 
 - **Terminal success / safe resume:** `work batch-status` is `completed` and `supervisor-state.json` includes the batch under `reviewed_batches`.
-- **Timeout/wait failure:** batch status remains non-terminal; inspect wait/timeout reason in `stage_stops` before rerunning.
+- **Timeout/wait failure:** batch status remains non-terminal; inspect the batch plus `supervisor-state.json`, then rerun `work supervise` to resume that interrupted batch before later incomplete batches.
 - **Escalation/stage stop:** inspect `escalations` and `stage_stops` to confirm what operator action is required.
 - **Terminal failed run:** `work batch-status` is `failed`; inspect failed thread summaries before retrying.
 
@@ -125,12 +125,12 @@ This is sufficient for current automated follow-up decisions, but reporting may 
 Quick post-fix verification checklist:
 
 - **Successful completion path**: batch status is terminal and `supervisor-state.json` records both review evidence (`reviewed_batches`) and the resulting stop outcome for that batch (including repaired canonical completion fallback cases).
-- **Timeout/failure path**: batch status remains non-terminal at timeout; no new reviewed entry is recorded for the incomplete batch, and supervisor state reflects the failed wait/stop outcome.
+- **Timeout/failure path**: batch status remains non-terminal at timeout; no new reviewed entry is recorded for the incomplete batch, and supervisor state keeps the interrupted run resumable until review can continue.
 
 Resume examples:
 
 ```bash
-# continue from next incomplete batch
+# resume interrupted work first, otherwise continue from next incomplete batch
 work supervise
 
 # rerun a specific batch after manual fixes or policy edits
