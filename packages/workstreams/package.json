@@ -17,6 +17,10 @@
       "types": "./dist/index.d.ts",
       "import": "./dist/index.js"
     },
+    "./tool-runtime": {
+      "types": "./dist/src/tool-runtime.d.ts",
+      "import": "./dist/src/tool-runtime.js"
+    },
     "./types": {
       "types": "./dist/lib/types.d.ts",
       "import": "./dist/lib/types.js"

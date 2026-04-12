@@ -646,13 +646,30 @@ function listTools(): void {
   const entries = readdirSync(AGENV_TOOLS)
   for (const entry of entries) {
     const toolPath = join(AGENV_TOOLS, entry)
-    const isDir = statSync(toolPath).isDirectory()
-    const ext = entry.split(".").pop()
-
-    if (isDir || ext === "ts" || ext === "js" || ext === "md") {
+    if (isInstallableToolEntry(entry, toolPath)) {
       console.log(`  ${entry}`)
     }
   }
+}
+
+function isToolArtifactFile(entry: string): boolean {
+  return /\.(test|spec)\.(ts|js|md)$/i.test(entry)
+}
+
+function isInstallableToolEntry(entry: string, toolPath: string): boolean {
+  const isDir = statSync(toolPath).isDirectory()
+  if (isDir) return true
+
+  const ext = entry.split(".").pop()
+  if (ext !== "ts" && ext !== "js" && ext !== "md") {
+    return false
+  }
+
+  return !isToolArtifactFile(entry)
+}
+
+function shouldRemoveToolEntry(entry: string, toolPath: string): boolean {
+  return isInstallableToolEntry(entry, toolPath) || isToolArtifactFile(entry)
 }
 
 function cleanToolsTarget(targetDir: string, dryRun: boolean): number {
@@ -663,10 +680,8 @@ function cleanToolsTarget(targetDir: string, dryRun: boolean): number {
 
   for (const entry of entries) {
     const toolPath = join(targetDir, entry)
-    const isDir = statSync(toolPath).isDirectory()
-    const ext = entry.split(".").pop()
 
-    if (isDir || ext === "ts" || ext === "js" || ext === "md") {
+    if (shouldRemoveToolEntry(entry, toolPath)) {
       if (dryRun) {
         console.log(`  [REMOVE] ${entry}`)
       } else {
@@ -698,9 +713,7 @@ function installToolsTo(
 
   const entries = readdirSync(AGENV_TOOLS).filter((e) => {
     const toolPath = join(AGENV_TOOLS, e)
-    const isDir = statSync(toolPath).isDirectory()
-    const ext = e.split(".").pop()
-    return isDir || ext === "ts" || ext === "js" || ext === "md"
+    return isInstallableToolEntry(e, toolPath)
   })
 
   if (entries.length === 0) {

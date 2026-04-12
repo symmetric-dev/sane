@@ -1,115 +1,19 @@
 // @ts-nocheck
 import { tool } from "@opencode-ai/plugin"
-import { spawn, spawnSync } from "child_process"
-import { existsSync, readFileSync, realpathSync } from "fs"
-import { dirname, join } from "path"
-import { pathToFileURL } from "url"
-
-interface WorkstreamsToolRuntime {
-  getResolvedStream: (index: any, streamId?: string) => { id: string }
-  loadIndex: (repoRoot: string) => any
-  buildRootAgentBranchSession: (args: any) => any
-  createRootAgentBranchSessionId: (role: string) => string
-  loadSupervisorState: (repoRoot: string, streamId: string) => any
-  upsertBranchSessionLocked: (repoRoot: string, streamId: string, branchSession: any) => Promise<any>
-  parseSynthesisJsonl: (content: string) => { text: string; logs: string[]; success: boolean }
-}
-
-interface WorkstreamsRuntimeResolutionOptions {
-  resolveWorkCommandPath?: () => string
-}
-
-interface WorkstreamsRuntimeLoadOptions extends WorkstreamsRuntimeResolutionOptions {
-  cache?: boolean
-}
-
-function resolveWorkCommandPath(): string {
-  const result = spawnSync("which", ["work"], {
-    encoding: "utf-8",
-  })
-
-  const resolvedPath = result.stdout?.trim()
-  if (!resolvedPath) {
-    throw new Error("Could not resolve active 'work' binary from PATH")
-  }
-
-  return resolvedPath
-}
-
-function findWorkstreamsPackageRoot(binaryPath: string): string {
-  let currentDir = dirname(realpathSync(binaryPath))
-
-  while (true) {
-    const packageJsonPath = join(currentDir, "package.json")
-    if (existsSync(packageJsonPath)) {
-      try {
-        const packageJson = JSON.parse(readFileSync(packageJsonPath, "utf-8")) as {
-          name?: string
-        }
-        if (packageJson.name === "@agenv/workstreams") {
-          return currentDir
-        }
-      } catch {
-        // Ignore unreadable package metadata while walking upward.
-      }
-    }
-
-    const parentDir = dirname(currentDir)
-    if (parentDir === currentDir) {
-      break
-    }
-    currentDir = parentDir
-  }
-
-  throw new Error(`Could not find @agenv/workstreams package root from active work binary: ${binaryPath}`)
-}
-
-export function resolveWorkstreamsRuntimeModulePath(
-  options: WorkstreamsRuntimeResolutionOptions = {},
-): string {
-  const workCommandPath = (options.resolveWorkCommandPath ?? resolveWorkCommandPath)()
-  const resolvedBinaryPath = realpathSync(workCommandPath)
-  const packageRoot = findWorkstreamsPackageRoot(resolvedBinaryPath)
-  const preferDistRuntime = resolvedBinaryPath.includes(`${join("dist", "bin")}`)
-
-  const candidates = preferDistRuntime
-    ? [
-        join(packageRoot, "dist", "src", "tool-runtime.js"),
-        join(packageRoot, "src", "tool-runtime.ts"),
-      ]
-    : [
-        join(packageRoot, "src", "tool-runtime.ts"),
-        join(packageRoot, "dist", "src", "tool-runtime.js"),
-      ]
-
-  for (const candidate of candidates) {
-    if (existsSync(candidate)) {
-      return candidate
-    }
-  }
-
-  throw new Error(
-    `Could not locate workstream tool runtime next to active work binary. Checked: ${candidates.join(", ")}`,
-  )
-}
-
-let cachedWorkstreamsToolRuntimePromise: Promise<WorkstreamsToolRuntime> | undefined
-
-export async function loadWorkstreamsToolRuntime(
-  options: WorkstreamsRuntimeLoadOptions = {},
-): Promise<WorkstreamsToolRuntime> {
-  const loadRuntime = async () => {
-    const modulePath = resolveWorkstreamsRuntimeModulePath(options)
-    return (await import(pathToFileURL(modulePath).href)) as WorkstreamsToolRuntime
-  }
-
-  if (options.cache === false) {
-    return loadRuntime()
-  }
-
-  cachedWorkstreamsToolRuntimePromise ??= loadRuntime()
-  return cachedWorkstreamsToolRuntimePromise
-}
+import { spawn } from "child_process"
+import {
+  getResolvedStream,
+  loadIndex,
+} from "../../packages/workstreams/src/lib/index.ts"
+import {
+  buildRootAgentBranchSession,
+  createRootAgentBranchSessionId,
+} from "../../packages/workstreams/src/lib/root-agent-branch.ts"
+import {
+  loadSupervisorState,
+  upsertBranchSessionLocked,
+} from "../../packages/workstreams/src/lib/supervisor-state.ts"
+import { parseSynthesisJsonl } from "../../packages/workstreams/src/lib/synthesis/output.ts"
 
 function runCommand(
   command: string,
@@ -160,11 +64,10 @@ async function findNativeSessionIdByTitle(repoRoot: string, title: string): Prom
 
 export interface LaunchSupervisionBranchDeps {
   getRepoRoot: () => string
-  getResolvedStreamId: (repoRoot: string, streamId?: string) => string | Promise<string>
-  createBranchSessionId: () => string | Promise<string>
-  buildBranchSession: (args: any) => any | Promise<any>
-  persistBranchSession: (repoRoot: string, streamId: string, branchSession: any) => any | Promise<any>
-  loadStoredBranchSession: (repoRoot: string, streamId: string, branchSessionId: string) => any | Promise<any>
+  getResolvedStreamId: (repoRoot: string, streamId?: string) => string
+  createBranchSessionId: () => string
+  persistBranchSession: typeof upsertBranchSessionLocked
+  loadStoredBranchSession: (repoRoot: string, streamId: string, branchSessionId: string) => any
   runForkedBranch: (args: {
     rootSessionId: string
     repoRoot: string
@@ -174,37 +77,20 @@ export interface LaunchSupervisionBranchDeps {
   }) => Promise<{ code: number; stdout: string; stderr: string; nativeSessionId?: string }>
   runCommand: typeof runCommand
   findNativeSessionIdByTitle: typeof findNativeSessionIdByTitle
-  parseOutput: (content: string) => { text: string; logs: string[]; success: boolean } | Promise<{ text: string; logs: string[]; success: boolean }>
+  parseOutput: typeof parseSynthesisJsonl
   now: () => string
 }
 
 function getDefaultLaunchSupervisionBranchDeps(): LaunchSupervisionBranchDeps {
-  const runtime = loadWorkstreamsToolRuntime()
-
   return {
     getRepoRoot: () => process.cwd(),
-    getResolvedStreamId: async (repoRoot, streamId) => {
-      const resolvedRuntime = await runtime
-      return resolvedRuntime.getResolvedStream(resolvedRuntime.loadIndex(repoRoot), streamId).id
-    },
-    createBranchSessionId: async () => {
-      const resolvedRuntime = await runtime
-      return resolvedRuntime.createRootAgentBranchSessionId("supervision")
-    },
-    buildBranchSession: async (args) => {
-      const resolvedRuntime = await runtime
-      return resolvedRuntime.buildRootAgentBranchSession(args)
-    },
-    persistBranchSession: async (repoRoot, streamId, branchSession) => {
-      const resolvedRuntime = await runtime
-      return resolvedRuntime.upsertBranchSessionLocked(repoRoot, streamId, branchSession)
-    },
-    loadStoredBranchSession: async (repoRoot, streamId, branchSessionId) => {
-      const resolvedRuntime = await runtime
-      return resolvedRuntime.loadSupervisorState(repoRoot, streamId)?.branch_sessions.find(
+    getResolvedStreamId: (repoRoot, streamId) => getResolvedStream(loadIndex(repoRoot), streamId).id,
+    createBranchSessionId: () => createRootAgentBranchSessionId("supervision"),
+    persistBranchSession: upsertBranchSessionLocked,
+    loadStoredBranchSession: (repoRoot, streamId, branchSessionId) =>
+      loadSupervisorState(repoRoot, streamId)?.branch_sessions.find(
         (branch) => branch.branchSessionId === branchSessionId,
-      )
-    },
+      ),
     runForkedBranch: async ({ rootSessionId, repoRoot, title, prompt, onNativeSessionId }) => {
       const child = spawn(
         "opencode",
@@ -286,10 +172,7 @@ function getDefaultLaunchSupervisionBranchDeps(): LaunchSupervisionBranchDeps {
     },
     runCommand,
     findNativeSessionIdByTitle,
-    parseOutput: async (content) => {
-      const resolvedRuntime = await runtime
-      return resolvedRuntime.parseSynthesisJsonl(content)
-    },
+    parseOutput: parseSynthesisJsonl,
     now: () => new Date().toISOString(),
   }
 }
@@ -320,7 +203,7 @@ async function persistSupervisionBranchState(args: {
   await args.deps.persistBranchSession(
     args.repoRoot,
     args.streamId,
-    await args.deps.buildBranchSession({
+    buildRootAgentBranchSession({
       context: {
         rootSessionId: args.rootSessionId,
         branchSessionId: args.branchSessionId,
@@ -359,8 +242,8 @@ export async function executeLaunchSupervisionBranch(
   }
 
   const repoRoot = deps.getRepoRoot()
-  const streamId = await deps.getResolvedStreamId(repoRoot, args.streamId)
-  const branchSessionId = await deps.createBranchSessionId()
+  const streamId = deps.getResolvedStreamId(repoRoot, args.streamId)
+  const branchSessionId = deps.createBranchSessionId()
   const title = `root-supervision-${streamId}-${branchSessionId}`
   const startedAt = deps.now()
 
@@ -398,11 +281,11 @@ export async function executeLaunchSupervisionBranch(
       repoRoot,
       title,
       prompt: promptLines.join("\n"),
-        onNativeSessionId: async (nativeSessionId) => {
-          const updatedAt = deps.now()
-          const storedBranch = await deps.loadStoredBranchSession(repoRoot, streamId, branchSessionId)
+      onNativeSessionId: async (nativeSessionId) => {
+        const updatedAt = deps.now()
+        const storedBranch = deps.loadStoredBranchSession(repoRoot, streamId, branchSessionId)
 
-          await persistSupervisionBranchState({
+        await persistSupervisionBranchState({
           deps,
           repoRoot,
           streamId,
@@ -423,10 +306,10 @@ export async function executeLaunchSupervisionBranch(
 
     const nativeSessionId = runResult.nativeSessionId
 
-    const parsed = await deps.parseOutput(runResult.stdout)
+    const parsed = deps.parseOutput(runResult.stdout)
     const summary =
       parsed.text.trim() || runResult.stderr.trim() || "(branch session produced no summary)"
-    const storedBranch = await deps.loadStoredBranchSession(repoRoot, streamId, branchSessionId)
+    const storedBranch = deps.loadStoredBranchSession(repoRoot, streamId, branchSessionId)
     const completedAt = deps.now()
     const status = getTerminalBranchStatus(storedBranch?.status, runResult.code)
 
