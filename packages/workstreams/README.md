@@ -77,14 +77,32 @@ work supervise --batch "01.01"
 work supervise --dry-run
 ```
 
-The supervisor launches `work multi --headless --async`, reviews outputs, then either:
+The supervisor launches `work multi --headless --async`, waits for the batch to become terminal, reviews outputs, then either:
 
-- continues to the next batch,
+- continues automatically to the next incomplete batch,
 - runs one automatic fix cycle (default), or
-- stops for user input based on escalation/stage-boundary policy.
+- stops and asks for user input based on escalation/stage-boundary policy.
+
+In practice, it **continues automatically only when** the batch review is approved and no stop policy is triggered.
+It **stops** when escalation requires user input, a stage boundary stop is reached, there is no next batch, or execution/wait fails.
 
 If `--timeout-ms` is reached before the batch becomes terminal, the wait fails and supervisor exits without reviewing the incomplete batch.
 
 Policy is loaded from `work/supervisor.json` (defaults are used if missing).
+
+After any stop, inspect state files before resuming:
+
+- `work/<stream-id>/batch-status/<batch-id>.json` (batch execution state)
+- `work/<stream-id>/supervisor-state.json` (review/fix/escalation/stage-stop history)
+
+Resume examples:
+
+```bash
+# continue from next incomplete batch
+work supervise
+
+# rerun a specific batch after manual fixes or policy edits
+work supervise --batch "01.01"
+```
 
 For full operator guidance and config details, see `../../docs/SUPERVISOR.md`.

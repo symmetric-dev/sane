@@ -14,7 +14,7 @@ import {
 } from "../src/lib/supervisor/index.ts"
 import { saveThreads } from "../src/lib/threads.ts"
 import { loadSupervisorState } from "../src/lib/supervisor-state.ts"
-import { getRunResultPath } from "../src/lib/opencode.ts"
+import { getRunResultPath, getSessionFilePath } from "../src/lib/opencode.ts"
 import { main as superviseMain } from "../src/cli/supervise.ts"
 import { main as workMain } from "../bin/work.ts"
 
@@ -131,6 +131,7 @@ describe("supervise", () => {
     process.execPath = originalExecPath
     if (workspace) {
       rmSync(getRunResultPath(workspace.streamId, "01.01.01"), { force: true })
+      rmSync(getSessionFilePath(workspace.streamId, "01.01.01"), { force: true })
       cleanupTestWorkstream(workspace)
       workspace = undefined
     }
@@ -268,6 +269,72 @@ describe("supervise", () => {
     expect(supervisorState?.reviewed_batches).toHaveLength(1)
     expect(supervisorState?.stage_stops).toHaveLength(1)
     expect(supervisorState?.runs[0]?.status).toBe("completed")
+  })
+
+  test("CLI supervises a canonically completed batch when tmux artifacts are missing", async () => {
+    workspace = createTestWorkstream("001-supervise-canonical-fallback")
+    writeIndex(workspace.repoRoot, workspace.streamId, "supervise-canonical-fallback")
+    writeValidPlan(workspace.workDir)
+    writeTasks(workspace.workDir, workspace.streamId, "completed")
+
+    saveThreads(workspace.repoRoot, workspace.streamId, {
+      version: "1.0.0",
+      stream_id: workspace.streamId,
+      last_updated: new Date().toISOString(),
+      threads: [
+        {
+          threadId: "01.01.01",
+          currentSessionId: "session-canonical-fallback-1",
+          sessions: [
+            {
+              sessionId: "session-canonical-fallback-1",
+              agentName: "code-reviewer",
+              model: "openai/gpt-5.3-codex",
+              startedAt: new Date().toISOString(),
+              status: "running",
+            },
+          ],
+          synthesis: {
+            sessionId: "syn-fallback-1",
+            output: "Thread completed successfully despite missing markers.",
+            completedAt: new Date().toISOString(),
+          },
+        },
+      ],
+    })
+
+    writeFileSync(getSessionFilePath(workspace.streamId, "01.01.01"), "canonical-opencode-session\n")
+
+    const fakeRuntime = join(workspace.repoRoot, "fake-bun-canonical-fallback")
+    writeFileSync(fakeRuntime, "#!/bin/sh\nexit 0\n", { mode: 0o755 })
+    process.execPath = fakeRuntime
+
+    const { stdout } = await captureCliOutput(async () => {
+      await superviseMain([
+        "bun",
+        "work-supervise",
+        "--repo-root",
+        workspace!.repoRoot,
+        "--stream",
+        workspace!.streamId,
+        "--batch",
+        "01.01",
+        "--poll-interval-ms",
+        "1",
+        "--timeout-ms",
+        "100",
+      ])
+    })
+
+    const output = stdout.join("\n")
+    expect(output).toContain("[supervise] start batch 01.01")
+    expect(output).toContain("[supervise] batch 01.01 finished: completed")
+    expect(output).toContain("[supervise] review 01.01: aligned")
+
+    const supervisorState = loadSupervisorState(workspace.repoRoot, workspace.streamId)
+    expect(supervisorState?.runs[0]?.status).toBe("completed")
+    expect(supervisorState?.reviewed_batches).toHaveLength(1)
+    expect(supervisorState?.stage_stops).toHaveLength(1)
   })
 
   test("dry-run shows the headless launch command and avoids interactive flow", async () => {

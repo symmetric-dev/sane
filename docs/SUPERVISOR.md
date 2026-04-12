@@ -13,7 +13,7 @@ The supervisor runs one batch at a time and loops through this sequence:
    - default: next incomplete batch in the current stream
 2. Launch headless execution using:
    - `work multi --headless --async ...`
-3. Wait for persisted batch status (`batch-status.json`) to reach a terminal state.
+3. Wait for persisted batch status (`work/<stream-id>/batch-status/<batch-id>.json`) to reach a terminal state.
 4. Run deterministic review over thread outputs only after the batch finishes.
 5. Decide next action:
    - approve batch and continue,
@@ -55,6 +55,14 @@ Default v1 behavior is conservative:
   - when a stage boundary is reached, supervisor stops and requests user input
   - no automatic stage-level fix cycle is attempted
 
+Supervisor continues automatically only when all of the following are true:
+
+- the batch reached a terminal status,
+- review passed (or the one allowed auto-fix cycle succeeded),
+- no escalation/contact-user trigger fired,
+- no stage-boundary stop trigger fired,
+- and another incomplete batch exists.
+
 Supervisor stops when any of the following happens:
 
 - escalation requires user input,
@@ -65,7 +73,7 @@ Supervisor stops when any of the following happens:
 Timeout semantics in v1 are strict:
 
 - `waitForBatchStatus()` only returns when the batch reaches a terminal state (`completed` or `failed`)
-- if `--timeout-ms` elapses first, the wait fails with the latest persisted non-terminal state left in `batch-status.json`
+- if `--timeout-ms` elapses first, the wait fails with the latest persisted non-terminal state left in `work/<stream-id>/batch-status/<batch-id>.json`
 - `work supervise` treats that timeout as a run failure and skips review/fix follow-up for the incomplete batch
 
 ## `work/supervisor.json` Config Shape
@@ -121,6 +129,7 @@ The default `contact_user_on` policy triggers escalation when **any configured t
 When supervisor stops, first inspect:
 
 - terminal summary from `work supervise`
+- `work/<stream-id>/batch-status/<batch-id>.json` (latest run status for the batch that just stopped)
 - `work/<stream-id>/supervisor-state.json` (`stage_stops`, `escalations`, `reviewed_batches`)
 - `work status` and `work list --tasks --batch "SS.BB"`
 
@@ -136,6 +145,28 @@ Then choose a resume mode:
    - run `work supervise` to proceed into next incomplete batch (often next stage)
 
 If you change escalation behavior, edit `work/supervisor.json` and re-run `work supervise`.
+
+### Quick stop/resume example
+
+```bash
+# 1) run a smoke-test batch
+work supervise --batch "05.01"
+
+# 2) if supervisor stops, inspect state
+ls work/000-super-agent-v1/batch-status
+work status
+
+# open in your editor:
+# - work/000-super-agent-v1/batch-status/05.01.json
+# - work/000-super-agent-v1/supervisor-state.json
+
+# 3) resume
+# continue default progression
+work supervise
+
+# or rerun this batch after manual fixes/policy updates
+work supervise --batch "05.01"
+```
 
 ## Practical Model for v1
 

@@ -36,6 +36,8 @@ import {
 } from "./threads.ts"
 import { applyFinalizationCompletions, type FinalizationCompletion } from "./multi-finalization.ts"
 import { parseSynthesisOutputFile } from "./synthesis/output.ts"
+import { getWorkSessionName, sessionExists } from "./tmux.ts"
+import type { TasksFile, TaskStatus } from "./types.ts"
 
 interface BatchThreadSeed {
   threadId: string
@@ -186,6 +188,9 @@ interface StoredRunResult {
   exitCode?: number
 }
 
+const CANONICAL_COMPLETED_TASK_STATUSES = new Set<TaskStatus>(["completed", "cancelled"])
+const CANONICAL_RUN_START_TOLERANCE_MS = 60_000
+
 function readStoredRunResult(streamId: string, threadId: string): StoredRunResult | null {
   const resultPath = getRunResultPath(streamId, threadId)
   if (!existsSync(resultPath)) {
@@ -202,6 +207,61 @@ function readStoredRunResult(streamId: string, threadId: string): StoredRunResul
   }
 
   return null
+}
+
+function getThreadTasks(tasksFile: TasksFile, threadId: string) {
+  return tasksFile.tasks.filter((task) => task.id.startsWith(`${threadId}.`))
+}
+
+function areThreadTasksCanonicallyCompleted(tasksFile: TasksFile, threadId: string): boolean {
+  const tasks = getThreadTasks(tasksFile, threadId)
+  return (
+    tasks.length > 0 &&
+    tasks.every((task) => CANONICAL_COMPLETED_TASK_STATUSES.has(task.status))
+  )
+}
+
+function startedAtOrAfterRunStart(startedAt: string | undefined, runStartedAt: string | undefined): boolean {
+  if (!startedAt || !runStartedAt) {
+    return true
+  }
+
+  return (
+    new Date(startedAt).getTime() >=
+    new Date(runStartedAt).getTime() - CANONICAL_RUN_START_TOLERANCE_MS
+  )
+}
+
+function shouldFinalizeThreadFromCanonicalState(args: {
+  tasksFile: TasksFile
+  threadId: string
+  markerExists: boolean
+  storedResult?: StoredRunResult | null
+  workSessionStillExists: boolean
+  latestSessionStatus?: string
+  latestSessionStartedAt?: string
+  currentSessionId?: string
+  runStartedAt?: string
+}): boolean {
+  if (args.markerExists || args.storedResult) {
+    return false
+  }
+
+  if (args.workSessionStillExists) {
+    return false
+  }
+
+  if (args.latestSessionStatus !== "running" && !args.currentSessionId) {
+    return false
+  }
+
+  if (
+    !startedAtOrAfterRunStart(args.latestSessionStartedAt, args.runStartedAt)
+  ) {
+    return false
+  }
+
+  return areThreadTasksCanonicallyCompleted(args.tasksFile, args.threadId)
 }
 
 function deriveThreadStatus(args: {
@@ -232,15 +292,15 @@ async function finalizeCanonicalThreadState(
   repoRoot: string,
   streamId: string,
   threadSeeds: BatchThreadSeed[],
+  tasksFile: TasksFile,
+  runStartedAt?: string,
 ): Promise<void> {
   const completions: FinalizationCompletion[] = []
+  const workSessionStillExists = sessionExists(getWorkSessionName(streamId))
 
   for (const seed of threadSeeds) {
     const markerExists = existsSync(getCompletionMarkerPath(streamId, seed.threadId))
     const storedResult = readStoredRunResult(streamId, seed.threadId)
-    if (!markerExists && !storedResult) {
-      continue
-    }
 
     const threadMeta = getThreadMetadata(repoRoot, streamId, seed.threadId)
     const latestSession = getLastSessionForThread(repoRoot, streamId, seed.threadId)
@@ -248,17 +308,33 @@ async function finalizeCanonicalThreadState(
       threadMeta?.currentSessionId ??
       (latestSession?.status === "running" ? latestSession.sessionId : undefined)
 
+    const finalizeFromCanonicalState = shouldFinalizeThreadFromCanonicalState({
+      tasksFile,
+      threadId: seed.threadId,
+      markerExists,
+      storedResult,
+      workSessionStillExists,
+      latestSessionStatus: latestSession?.status,
+      latestSessionStartedAt: latestSession?.startedAt,
+      currentSessionId: threadMeta?.currentSessionId,
+      runStartedAt,
+    })
+
+    if (!markerExists && !storedResult && !finalizeFromCanonicalState) {
+      continue
+    }
+
     if (!sessionId) {
       continue
     }
 
-    completions.push({
-      taskId: seed.firstTaskId,
-      threadId: seed.threadId,
-      sessionId,
-      status: storedResult?.status ?? "completed",
-      exitCode: storedResult?.exitCode,
-    })
+      completions.push({
+        taskId: seed.firstTaskId,
+        threadId: seed.threadId,
+        sessionId,
+        status: storedResult?.status ?? "completed",
+        exitCode: storedResult?.exitCode,
+      })
   }
 
   if (completions.length > 0) {
@@ -358,6 +434,11 @@ export async function syncBatchStatus(
     throw new Error(`No tasks found for batch ${batchId} in stream ${streamId}`)
   }
 
+  const tasksFile = readTasksFile(repoRoot, streamId)
+  if (!tasksFile) {
+    throw new Error(`No tasks found for stream ${streamId}`)
+  }
+
   const batchMeta = getBatchMetadata(
     repoRoot,
     streamId,
@@ -365,9 +446,15 @@ export async function syncBatchStatus(
     batchParsed.batch,
   )
 
-  const now = new Date().toISOString()
-  await finalizeCanonicalThreadState(repoRoot, streamId, threadSeeds)
   const existing = readBatchStatus(repoRoot, streamId, batchId)
+  const now = new Date().toISOString()
+  await finalizeCanonicalThreadState(
+    repoRoot,
+    streamId,
+    threadSeeds,
+    tasksFile,
+    existing?.startedAt,
+  )
   const existingThreads = new Map(
     (existing?.threads ?? []).map((thread) => [thread.threadId, thread]),
   )
@@ -405,7 +492,9 @@ export async function syncBatchStatus(
       updatedAt: now,
       completedAt: latestSession?.completedAt ?? previous?.completedAt,
       markerDetectedAt: previous?.markerDetectedAt,
-      currentSessionId: threadMeta?.currentSessionId ?? previous?.currentSessionId,
+      currentSessionId:
+        threadMeta?.currentSessionId ??
+        (latestSession?.status === "running" ? previous?.currentSessionId : undefined),
       opencodeSessionId: threadMeta?.opencodeSessionId ?? previous?.opencodeSessionId,
       workingAgentSessionId:
         threadMeta?.workingAgentSessionId ?? previous?.workingAgentSessionId,

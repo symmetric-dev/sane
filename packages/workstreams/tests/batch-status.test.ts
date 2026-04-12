@@ -234,6 +234,178 @@ describe("batch status", () => {
     )
   })
 
+  test("syncBatchStatus reconciles completed threads from canonical task state when tmux is gone and artifacts are incomplete", async () => {
+    const run = resetBatchStatusRun({
+      repoRoot,
+      streamId,
+      batchId: "01.01",
+      stageName: "Headless Runtime",
+      batchName: "Batch Status",
+      threads: [
+        { threadId: "01.01.01", threadName: "Thread 1", firstTaskId: "01.01.01.01" },
+        { threadId: "01.01.02", threadName: "Thread 2", firstTaskId: "01.01.02.01" },
+      ],
+    })
+
+    startThreadSession(
+      repoRoot,
+      streamId,
+      "01.01.01",
+      "agent-one",
+      "model-one",
+      "session-canonical-1",
+    )
+    startThreadSession(
+      repoRoot,
+      streamId,
+      "01.01.02",
+      "agent-two",
+      "model-two",
+      "session-canonical-2",
+    )
+
+    writeFileSync(getSessionFilePath(streamId, "01.01.01"), "recovered-session-1\n")
+
+    writeFileSync(
+      join(repoRoot, "work", streamId, "tasks.json"),
+      JSON.stringify(
+        {
+          version: "1.0.0",
+          stream_id: streamId,
+          last_updated: new Date().toISOString(),
+          tasks: [
+            {
+              id: "01.01.01.01",
+              name: "Thread 1 task",
+              thread_name: "Thread 1",
+              batch_name: "Batch Status",
+              stage_name: "Headless Runtime",
+              status: "completed",
+              created_at: new Date().toISOString(),
+              updated_at: new Date().toISOString(),
+            },
+            {
+              id: "01.01.02.01",
+              name: "Thread 2 task",
+              thread_name: "Thread 2",
+              batch_name: "Batch Status",
+              stage_name: "Headless Runtime",
+              status: "completed",
+              created_at: new Date().toISOString(),
+              updated_at: new Date().toISOString(),
+            },
+          ],
+        },
+        null,
+        2,
+      ),
+    )
+
+    const status = await syncBatchStatus({
+      repoRoot,
+      streamId,
+      batchId: "01.01",
+    })
+
+    expect(status.runId).toBe(run.runId)
+    expect(status.status).toBe("completed")
+    expect(status.summary.completed).toBe(2)
+    expect(status.summary.running).toBe(0)
+
+    const threadOne = getThreadMetadata(repoRoot, streamId, "01.01.01")
+    const threadTwo = getThreadMetadata(repoRoot, streamId, "01.01.02")
+    expect(threadOne?.currentSessionId).toBeUndefined()
+    expect(threadTwo?.currentSessionId).toBeUndefined()
+    expect(threadOne?.sessions.at(-1)?.status).toBe("completed")
+    expect(threadTwo?.sessions.at(-1)?.status).toBe("completed")
+    expect(threadOne?.opencodeSessionId).toBe("recovered-session-1")
+  })
+
+  test("waitForBatchStatus does not false-positive completed while canonical tasks remain incomplete", async () => {
+    resetBatchStatusRun({
+      repoRoot,
+      streamId,
+      batchId: "01.01",
+      stageName: "Headless Runtime",
+      batchName: "Batch Status",
+      threads: [
+        { threadId: "01.01.01", threadName: "Thread 1", firstTaskId: "01.01.01.01" },
+        { threadId: "01.01.02", threadName: "Thread 2", firstTaskId: "01.01.02.01" },
+      ],
+    })
+
+    startThreadSession(
+      repoRoot,
+      streamId,
+      "01.01.01",
+      "agent-one",
+      "model-one",
+      "session-still-running-1",
+    )
+    startThreadSession(
+      repoRoot,
+      streamId,
+      "01.01.02",
+      "agent-two",
+      "model-two",
+      "session-still-running-2",
+    )
+
+    writeFileSync(
+      join(repoRoot, "work", streamId, "tasks.json"),
+      JSON.stringify(
+        {
+          version: "1.0.0",
+          stream_id: streamId,
+          last_updated: new Date().toISOString(),
+          tasks: [
+            {
+              id: "01.01.01.01",
+              name: "Thread 1 task",
+              thread_name: "Thread 1",
+              batch_name: "Batch Status",
+              stage_name: "Headless Runtime",
+              status: "completed",
+              created_at: new Date().toISOString(),
+              updated_at: new Date().toISOString(),
+            },
+            {
+              id: "01.01.02.01",
+              name: "Thread 2 task",
+              thread_name: "Thread 2",
+              batch_name: "Batch Status",
+              stage_name: "Headless Runtime",
+              status: "pending",
+              created_at: new Date().toISOString(),
+              updated_at: new Date().toISOString(),
+            },
+          ],
+        },
+        null,
+        2,
+      ),
+    )
+
+    await expect(
+      waitForBatchStatus({
+        repoRoot,
+        streamId,
+        batchId: "01.01",
+        pollIntervalMs: 10,
+        timeoutMs: 25,
+      }),
+    ).rejects.toThrow(/Timed out after 25ms waiting for batch 01\.01/)
+
+    const persisted = readBatchStatus(repoRoot, streamId, "01.01")
+    expect(persisted?.status).toBe("running")
+    expect(persisted?.summary.completed).toBe(1)
+    expect(persisted?.summary.running).toBe(1)
+    expect(getThreadMetadata(repoRoot, streamId, "01.01.01")?.currentSessionId).toBeUndefined()
+    expect(getThreadMetadata(repoRoot, streamId, "01.01.02")?.currentSessionId).toBe(
+      "session-still-running-2",
+    )
+  })
+
   test("new headless run resets batch status with a fresh runId", async () => {
     const firstRun = resetBatchStatusRun({
       repoRoot,
