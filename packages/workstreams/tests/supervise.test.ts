@@ -96,7 +96,12 @@ Single thread.
   )
 }
 
-function writeTasks(workDir: string, streamId: string, taskStatus: "pending" | "completed"): void {
+function writeTasks(
+  workDir: string,
+  streamId: string,
+  taskStatus: "pending" | "completed",
+  report?: string,
+): void {
   writeFileSync(
     join(workDir, "tasks.json"),
     JSON.stringify(
@@ -114,6 +119,7 @@ function writeTasks(workDir: string, streamId: string, taskStatus: "pending" | "
             status: taskStatus,
             created_at: new Date().toISOString(),
             updated_at: new Date().toISOString(),
+            ...(report ? { report } : {}),
           },
         ],
       },
@@ -137,11 +143,11 @@ describe("supervise", () => {
     }
   })
 
-  test("deterministic review flags missing synthesis output and affected threads", () => {
+  test("deterministic review accepts completed threads based on canonical task/session state", () => {
     workspace = createTestWorkstream("001-supervise-review")
     writeIndex(workspace.repoRoot, workspace.streamId, "supervise-review")
     writeValidPlan(workspace.workDir)
-    writeTasks(workspace.workDir, workspace.streamId, "completed")
+    writeTasks(workspace.workDir, workspace.streamId, "completed", "Implemented the requested change.")
 
     saveThreads(workspace.repoRoot, workspace.streamId, {
       version: "1.0.0",
@@ -150,7 +156,19 @@ describe("supervise", () => {
       threads: [
         {
           threadId: "01.01.01",
-          sessions: [],
+          currentSessionId: "thread-current-1",
+          opencodeSessionId: "outer-session-1",
+          sessions: [
+            {
+              sessionId: "outer-session-1",
+              agentName: "default",
+              model: "openai/gpt-5.4",
+              startedAt: new Date().toISOString(),
+              completedAt: new Date().toISOString(),
+              status: "completed",
+              exitCode: 0,
+            },
+          ],
         },
       ],
     })
@@ -180,6 +198,8 @@ describe("supervise", () => {
           threadName: "Thread 1",
           firstTaskId: "01.01.01.01",
           status: "completed",
+          currentSessionId: "batch-current-1",
+          opencodeSessionId: "batch-session-1",
           updatedAt: new Date().toISOString(),
         },
       ],
@@ -187,11 +207,23 @@ describe("supervise", () => {
 
     const reviewer = runDeterministicSupervisorReview(reviewInput)
 
-    expect(reviewer.alignment.status).toBe("partially_aligned")
-    expect(reviewer.missingOutputs).toHaveLength(1)
-    expect(reviewer.issues).toHaveLength(1)
-    expect(reviewer.issues[0]?.summary).toContain("Synthesis output")
-    expect(getReviewAffectedThreadIds(reviewInput)).toEqual(["01.01.01"])
+    expect(reviewInput.threads[0]).toMatchObject({
+      currentSessionId: "batch-current-1",
+      opencodeSessionId: "batch-session-1",
+      sessionCount: 1,
+      completedSessionCount: 1,
+      taskStatuses: [
+        {
+          taskId: "01.01.01.01",
+          status: "completed",
+          report: "Implemented the requested change.",
+        },
+      ],
+    })
+    expect(reviewer.alignment.status).toBe("aligned")
+    expect(reviewer.missingOutputs).toHaveLength(0)
+    expect(reviewer.issues).toHaveLength(0)
+    expect(getReviewAffectedThreadIds(reviewInput)).toEqual([])
   })
 
   test("CLI supervises a completed batch and records a readable stop", async () => {
@@ -226,11 +258,6 @@ describe("supervise", () => {
         {
           threadId: "01.01.01",
           sessions: [],
-          synthesis: {
-            sessionId: "syn-1",
-            output: "Thread completed successfully.",
-            completedAt: new Date().toISOString(),
-          },
         },
       ],
     })
@@ -294,11 +321,6 @@ describe("supervise", () => {
               status: "running",
             },
           ],
-          synthesis: {
-            sessionId: "syn-fallback-1",
-            output: "Thread completed successfully despite missing markers.",
-            completedAt: new Date().toISOString(),
-          },
         },
       ],
     })
@@ -376,11 +398,6 @@ describe("supervise", () => {
         {
           threadId: "01.01.01",
           sessions: [],
-          synthesis: {
-            sessionId: "syn-stage-stop",
-            output: "Stage batch completed cleanly.",
-            completedAt: new Date().toISOString(),
-          },
         },
       ],
     })
@@ -480,7 +497,7 @@ exit 0
     writeValidPlan(workspace.workDir)
     writeTasks(workspace.workDir, workspace.streamId, "completed")
 
-    // Intentionally omit synthesis to keep deterministic review findings open across passes.
+    // Keep task reports empty so deterministic review findings stay open across passes.
     saveThreads(workspace.repoRoot, workspace.streamId, {
       version: "1.0.0",
       stream_id: workspace.streamId,
@@ -498,7 +515,7 @@ exit 0
       fakeRuntime,
       `#!/bin/sh
 cat <<'JSON' > "${getRunResultPath(workspace.streamId, "01.01.01")}" 
-{"status":"completed","exitCode":0}
+{"status":"failed","exitCode":1}
 JSON
 exit 0
 `,
@@ -553,7 +570,7 @@ exit 0
       })
 
       expect(stderr).toHaveLength(0)
-      expect(stdout.join("\n")).toMatch(/^\s+supervise\s+Run headless batch supervision with review and follow-up decisions$/m)
+      expect(stdout.join("\n")).toMatch(/^\s+supervise\s+Run headless batch supervision from reports and canonical state$/m)
     } finally {
       process.exit = originalExit
     }

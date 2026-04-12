@@ -6,7 +6,6 @@ import {
   cleanupCompletionMarkers,
   cleanupResultFiles,
   cleanupSessionFiles,
-  cleanupSynthesisFiles,
 } from "./marker-polling.ts"
 import {
   initializeBatchStatusRun,
@@ -25,17 +24,13 @@ import {
   getCompletionMarkerPath,
   getRunResultPath,
   getSessionFilePath,
-  getSynthesisLogPath,
-  getWorkingAgentSessionPath,
 } from "./opencode.ts"
 import {
   getLastSessionForThread,
   getThreadMetadata,
-  setSynthesisOutput,
   updateThreadMetadataLocked,
 } from "./threads.ts"
 import { applyFinalizationCompletions, type FinalizationCompletion } from "./multi-finalization.ts"
-import { parseSynthesisOutputFile } from "./synthesis/output.ts"
 import { getWorkSessionName, sessionExists } from "./tmux.ts"
 import type { TasksFile, TaskStatus } from "./types.ts"
 
@@ -125,37 +120,6 @@ async function finalizeCompletedThreadArtifacts(
     }
   }
 
-  const workingAgentSessionPath = getWorkingAgentSessionPath(streamId, threadId)
-  if (existsSync(workingAgentSessionPath)) {
-    const workingAgentSessionId = readFileSync(
-      workingAgentSessionPath,
-      "utf-8",
-    ).trim()
-    if (workingAgentSessionId) {
-      updates.workingAgentSessionId = workingAgentSessionId
-      await updateThreadMetadataLocked(repoRoot, streamId, threadId, {
-        workingAgentSessionId,
-      })
-    }
-  }
-
-  const synthesisJsonPath = `/tmp/workstream-${streamId}-${threadId}-synthesis.json`
-  if (existsSync(synthesisJsonPath)) {
-    const parseResult = parseSynthesisOutputFile(
-      synthesisJsonPath,
-      getSynthesisLogPath(streamId, threadId),
-    )
-
-    if (parseResult.text) {
-      await setSynthesisOutput(repoRoot, streamId, threadId, {
-        sessionId: `synthesis-${threadId}-${Date.now()}`,
-        output: parseResult.text.trim(),
-        completedAt: markerDetectedAt,
-      })
-      updates.synthesisUpdatedAt = markerDetectedAt
-    }
-  }
-
   return updates
 }
 
@@ -173,13 +137,9 @@ function shouldRefreshCompletedThreadArtifacts(args: {
     return true
   }
 
-  const synthesisJsonPath = `/tmp/workstream-${args.streamId}-${args.threadId}-synthesis.json`
-
   return (
-    (!args.thread.opencodeSessionId && existsSync(getSessionFilePath(args.streamId, args.threadId))) ||
-    (!args.thread.workingAgentSessionId &&
-      existsSync(getWorkingAgentSessionPath(args.streamId, args.threadId))) ||
-    (!args.thread.synthesisUpdatedAt && existsSync(synthesisJsonPath))
+    !args.thread.opencodeSessionId &&
+    existsSync(getSessionFilePath(args.streamId, args.threadId))
   )
 }
 
@@ -359,7 +319,6 @@ export function resetBatchStatusRun(options: {
   cleanupCompletionMarkers(options.streamId, threadIds)
   cleanupResultFiles(options.streamId, threadIds)
   cleanupSessionFiles(options.streamId, threadIds)
-  cleanupSynthesisFiles(options.streamId, threadIds)
 
   return initializeBatchStatusRun({
     repoRoot: options.repoRoot,
@@ -496,10 +455,6 @@ export async function syncBatchStatus(
         threadMeta?.currentSessionId ??
         (latestSession?.status === "running" ? previous?.currentSessionId : undefined),
       opencodeSessionId: threadMeta?.opencodeSessionId ?? previous?.opencodeSessionId,
-      workingAgentSessionId:
-        threadMeta?.workingAgentSessionId ?? previous?.workingAgentSessionId,
-      synthesisUpdatedAt:
-        threadMeta?.synthesis?.completedAt ?? previous?.synthesisUpdatedAt,
     }
 
     if (thread.status === "completed" && !thread.startedAt) {
@@ -549,7 +504,6 @@ export async function syncBatchStatus(
     cleanupCompletionMarkers(streamId, threadIds)
     cleanupResultFiles(streamId, threadIds)
     cleanupSessionFiles(streamId, threadIds)
-    cleanupSynthesisFiles(streamId, threadIds)
   }
 
   return batchStatus

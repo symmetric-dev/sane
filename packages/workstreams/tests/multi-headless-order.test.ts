@@ -67,11 +67,6 @@ describe("multi headless initialization order", () => {
       },
     }))
 
-    mock.module(src("lib/synthesis/config.ts"), () => ({
-      isSynthesisEnabled: () => false,
-      getSynthesisAgentOverride: () => null,
-    }))
-
     mock.module(src("lib/cli-utils.ts"), () => ({
       parseBatchId: () => ({ stage: 1, batch: 1 }),
     }))
@@ -193,11 +188,6 @@ describe("multi headless initialization order", () => {
       },
     }))
 
-    mock.module(src("lib/synthesis/config.ts"), () => ({
-      isSynthesisEnabled: () => false,
-      getSynthesisAgentOverride: () => null,
-    }))
-
     mock.module(src("lib/cli-utils.ts"), () => ({
       parseBatchId: () => ({ stage: 1, batch: 1 }),
     }))
@@ -312,11 +302,6 @@ describe("multi headless initialization order", () => {
           callOrder.push("NotificationTracker")
         }
       },
-    }))
-
-    mock.module(src("lib/synthesis/config.ts"), () => ({
-      isSynthesisEnabled: () => false,
-      getSynthesisAgentOverride: () => null,
     }))
 
     mock.module(src("lib/cli-utils.ts"), () => ({

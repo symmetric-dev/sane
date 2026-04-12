@@ -60,7 +60,6 @@ import { main as startMain } from "../src/cli/start.ts"
 import { main as sessionMain } from "../src/cli/session.ts"
 import { main as revisionMain } from "../src/cli/revision.ts"
 import { main as notificationsMain } from "../src/cli/notifications.ts"
-import { main as synthesisMain } from "../src/cli/synthesis.ts"
 import { main as planMain } from "../src/cli/plan.ts"
 import { main as superviseMain } from "../src/cli/supervise.ts"
 
@@ -120,7 +119,6 @@ const SUBCOMMANDS = {
   github: githubMain,
   session: sessionMain,
   notifications: notificationsMain,
-  synthesis: synthesisMain,
 } as const
 
 type Subcommand = keyof typeof SUBCOMMANDS
@@ -135,7 +133,7 @@ const COMMAND_DESCRIPTIONS: Record<string, string> = {
   approve: "Approve workstream plan/tasks/prompts (subcommands: plan, tasks, prompts)",
   start: "Start execution (requires all approvals, creates GitHub branch/issues)",
   plan: "Manage planning sessions or scaffold a plan (subcommand: create)",
-  supervise: "Run headless batch supervision with review and follow-up decisions",
+  supervise: "Run headless batch supervision from reports and canonical state",
   agents: "Manage agent definitions (list, add, remove)",
   assign: "Assign agents to threads for batch execution",
   prompt: "Generate thread execution prompt for agents",
@@ -170,7 +168,6 @@ const COMMAND_DESCRIPTIONS: Record<string, string> = {
   "multi-navigator": "Multi-session navigator mode",
   "multi-grid": "Multi-session grid layout",
   notifications: "Show notification configuration",
-  synthesis: "Show synthesis configuration",
 }
 
 function printHelp(showAllCommands: boolean = false): void {

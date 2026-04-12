@@ -73,9 +73,10 @@ Options:
 
 Description:
   Resolves the next batch to supervise, launches headless batch execution,
-  waits for persisted batch status, gathers review inputs, records a
-  normalized review result in supervisor-state.json, and then either
-  continues, starts one fix-cycle re-run, or stops with a clear handoff.
+  waits for persisted batch status, gathers review inputs from task reports
+  plus canonical workstream state, records a normalized review result in
+  supervisor-state.json, and then either continues, starts one fix-cycle
+  re-run, or stops with a clear handoff.
 
 Examples:
   work supervise

@@ -45,9 +45,3 @@ agents:
         anthropic/claude-sonnet-4-5,
         { model: google/gemini-3-pro-preview, variant: low },
       ]
-
-synthesis_agents:
-  - name: batch-synthesizer
-    description: Summarizes working agent outputs after thread completion.
-    best_for: Generating concise summaries of completed work for notifications.
-    models: [anthropic/claude-haiku-4-5]

@@ -66,5 +66,5 @@ When a review pass is expected to drive supervisor decisions, return **JSON only
 
 Rules:
 - `issues` may be empty only when no problems were found.
-- Keep `synthesis` and `review` distinct: synthesis summarizes execution; reviewer output judges quality/alignment.
+- Base review findings on canonical workstream state (task status, task reports, runtime metadata, and real artifacts/files when available), not on a separate synthesis artifact.
 - Do not invent enum values outside the allowed sets.

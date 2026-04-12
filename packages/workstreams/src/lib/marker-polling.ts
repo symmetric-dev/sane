@@ -5,10 +5,9 @@
  * Used by the multi command to track thread completion and trigger notifications.
  */
 
-import { existsSync, unlinkSync, readFileSync } from "fs"
-import { getCompletionMarkerPath, getSessionFilePath, getSynthesisOutputPath, getWorkingAgentSessionPath, getSynthesisLogPath, getRunResultPath } from "./opencode.ts"
+import { existsSync, unlinkSync } from "fs"
+import { getCompletionMarkerPath, getSessionFilePath, getRunResultPath } from "./opencode.ts"
 import type { NotificationTracker } from "./notifications.ts"
-import { parseSynthesisOutputFile } from "./synthesis/output.ts"
 
 /**
  * Configuration for marker file polling
@@ -94,59 +93,6 @@ export function cleanupResultFiles(streamId: string, threadIds: string[]): numbe
 }
 
 /**
- * Clean up synthesis-related temp files for all threads
- * Called when batch completes to remove:
- * - /tmp/workstream-{streamId}-{threadId}-synthesis.txt (legacy synthesis output)
- * - /tmp/workstream-{streamId}-{threadId}-synthesis.json (JSONL synthesis output)
- * - /tmp/workstream-{streamId}-{threadId}-synthesis.log (synthesis debug logs)
- * - /tmp/workstream-{streamId}-{threadId}-exported-session.json (exported session)
- * - /tmp/workstream-{streamId}-{threadId}-context.txt (extracted context)
- * - /tmp/workstream-{streamId}-{threadId}-working-session.txt (working agent session)
- */
-export function cleanupSynthesisFiles(streamId: string, threadIds: string[]): number {
-  let removed = 0
-  for (const threadId of threadIds) {
-    // Clean up legacy synthesis output file (.txt)
-    const synthesisPath = getSynthesisOutputPath(streamId, threadId)
-    if (cleanupFileIfExists(synthesisPath)) {
-      removed++
-    }
-
-    // Clean up JSONL synthesis output file (.json)
-    const synthesisJsonPath = `/tmp/workstream-${streamId}-${threadId}-synthesis.json`
-    if (cleanupFileIfExists(synthesisJsonPath)) {
-      removed++
-    }
-
-    // Clean up synthesis log file
-    const synthesisLogPath = getSynthesisLogPath(streamId, threadId)
-    if (cleanupFileIfExists(synthesisLogPath)) {
-      removed++
-    }
-
-    // Clean up exported session file
-    const exportedSessionPath = `/tmp/workstream-${streamId}-${threadId}-exported-session.json`
-    if (cleanupFileIfExists(exportedSessionPath)) {
-      removed++
-    }
-
-    // Clean up extracted context file
-    const extractedContextPath = `/tmp/workstream-${streamId}-${threadId}-context.txt`
-    if (cleanupFileIfExists(extractedContextPath)) {
-      removed++
-    }
-
-    // Clean up working agent session file
-    const workingSessionPath = getWorkingAgentSessionPath(streamId, threadId)
-    if (cleanupFileIfExists(workingSessionPath)) {
-      removed++
-    }
-  }
-
-  return removed
-}
-
-/**
  * Create a new polling state
  */
 export function createPollingState(): MarkerPollingState {
@@ -160,8 +106,6 @@ export function createPollingState(): MarkerPollingState {
  * Poll for marker files to detect thread completion
  *
  * Watches for completion marker files created by opencode when a thread finishes.
- * With post-session synthesis, the marker is written AFTER synthesis completes,
- * so synthesis output is available when notifications fire.
  *
  * @param config Polling configuration
  * @param state Polling state (can be modified externally to stop polling)
@@ -180,34 +124,7 @@ export async function pollMarkerFiles(
       const markerPath = getCompletionMarkerPath(streamId, threadId)
       if (existsSync(markerPath)) {
         state.completedThreadIds.add(threadId)
-        
-        // Check for synthesis output (only if streamId provided)
-        let synthesisOutput: string | undefined
-        if (streamId) {
-          // Build path to .json file (instead of .txt)
-          const synthesisJsonPath = `/tmp/workstream-${streamId}-${threadId}-synthesis.json`
-          const synthesisLogPath = getSynthesisLogPath(streamId, threadId)
-          
-          if (existsSync(synthesisJsonPath)) {
-            try {
-              // Parse the JSONL output file
-              const result = parseSynthesisOutputFile(synthesisJsonPath, synthesisLogPath)
-              if (result.success && result.text) {
-                synthesisOutput = result.text.trim()
-              }
-            } catch {
-              // Ignore parse errors, synthesisOutput stays undefined
-            }
-          }
-        }
-        
-        // If synthesis output exists, play synthesis notification with output
-        // Otherwise, play regular thread_complete notification
-        if (synthesisOutput) {
-          notificationTracker?.playSynthesisComplete(threadId, synthesisOutput)
-        } else {
-          notificationTracker?.playThreadComplete(threadId)
-        }
+        notificationTracker?.playThreadComplete(threadId)
       }
     }
 

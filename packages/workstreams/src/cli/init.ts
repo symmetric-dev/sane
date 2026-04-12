@@ -11,13 +11,11 @@ import { getAgentsYamlPath } from "../lib/agents-yaml.ts"
 import { getGitHubConfigPath } from "../lib/github/config.ts"
 import { getNotificationsConfigPath } from "../lib/notifications/config.ts"
 import { getSupervisorConfigPath } from "../lib/supervisor/config.ts"
-import { getSynthesisConfigPath } from "../lib/synthesis/config.ts"
 import {
   DEFAULT_AGENTS_YAML,
   DEFAULT_GITHUB_JSON,
   DEFAULT_NOTIFICATIONS_JSON,
   DEFAULT_SUPERVISOR_JSON,
-  DEFAULT_SYNTHESIS_JSON,
 } from "../defaults/index.ts"
 
 const WORKSTREAM_ROLE_EXPORT = 'export WORKSTREAM_ROLE="USER"'
@@ -196,19 +194,6 @@ export async function main(argv: string[]): Promise<void> {
       writeFileSync(supervisorPath, DEFAULT_SUPERVISOR_JSON, "utf-8")
     } else {
       console.log("supervisor.json already exists, skipping.")
-    }
-
-    // 6. Initialize synthesis.json
-    const synthesisPath = getSynthesisConfigPath(repoRoot)
-    if (!existsSync(synthesisPath) || force) {
-      console.log(
-        `${
-          force && existsSync(synthesisPath) ? "Overwriting" : "Initializing"
-        } synthesis.json...`,
-      )
-      writeFileSync(synthesisPath, DEFAULT_SYNTHESIS_JSON, "utf-8")
-    } else {
-      console.log("synthesis.json already exists, skipping.")
     }
 
     console.log("\nInitialization complete.")

@@ -4,13 +4,11 @@ import { finalizeMultiRun } from "../src/lib/multi-finalization"
 import {
   getRunResultPath,
   getSessionFilePath,
-  getSynthesisOutputPath,
 } from "../src/lib/opencode"
 import { startMultipleSessionsLocked, writeTasksFile } from "../src/lib/tasks"
 import {
   getLastSessionForThread,
   getOpencodeSessionId,
-  getSynthesisOutput,
 } from "../src/lib/threads"
 import type { TasksFile, ThreadSessionMap } from "../src/lib/types"
 import { createTestWorkstream, cleanupTestWorkstream, type TestWorkspace } from "./helpers"
@@ -46,9 +44,6 @@ describe("multi finalization", () => {
     for (const path of [
       getRunResultPath(workspace.streamId, "01.01.01"),
       getSessionFilePath(workspace.streamId, "01.01.01"),
-      getSynthesisOutputPath(workspace.streamId, "01.01.01"),
-      `/tmp/workstream-${workspace.streamId}-01.01.01-synthesis.json`,
-      `/tmp/workstream-${workspace.streamId}-01.01.01-synthesis.log`,
     ]) {
       try {
         if (existsSync(path)) {
@@ -80,10 +75,6 @@ describe("multi finalization", () => {
       getSessionFilePath(workspace.streamId, "01.01.01"),
       "opencode-session-123\n",
     )
-    writeFileSync(
-      `/tmp/workstream-${workspace.streamId}-01.01.01-synthesis.json`,
-      `${JSON.stringify({ type: "text", part: { text: "Headless summary" } })}\n`,
-    )
 
     const threadSessionMap: ThreadSessionMap[] = [
       {
@@ -110,11 +101,9 @@ describe("multi finalization", () => {
 
     expect(getLastSessionForThread(workspace.repoRoot, workspace.streamId, "01.01.01")?.status).toBe("completed")
     expect(getOpencodeSessionId(workspace.repoRoot, workspace.streamId, "01.01.01")).toBe("opencode-session-123")
-    expect(getSynthesisOutput(workspace.repoRoot, workspace.streamId, "01.01.01")?.output).toBe("Headless summary")
 
     expect(existsSync(getRunResultPath(workspace.streamId, "01.01.01"))).toBe(false)
     expect(existsSync(getSessionFilePath(workspace.streamId, "01.01.01"))).toBe(false)
-    expect(existsSync(`/tmp/workstream-${workspace.streamId}-01.01.01-synthesis.json`)).toBe(false)
 
     expect(result.cleanup.resultFiles).toBe(1)
     expect(result.cleanup.sessionFiles).toBe(1)

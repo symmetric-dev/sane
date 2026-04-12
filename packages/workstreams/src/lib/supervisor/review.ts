@@ -8,11 +8,20 @@ export interface SupervisorThreadReviewInput {
   threadId: string
   threadName: string
   status: BatchStatusFile["threads"][number]["status"]
-  synthesisOutput?: string
+  startedAt?: string
+  updatedAt: string
+  completedAt?: string
+  currentSessionId?: string
+  opencodeSessionId?: string
+  workingAgentSessionId?: string
+  promptPath?: string
+  sessionCount: number
+  completedSessionCount: number
   taskStatuses: Array<{
     taskId: string
     status: string
     name: string
+    report?: string
   }>
 }
 
@@ -58,11 +67,20 @@ export function collectSupervisorReviewInput(
       threadId: thread.threadId,
       threadName: thread.threadName,
       status: thread.status,
-      synthesisOutput: threadMeta?.synthesis?.output?.trim() || undefined,
+      startedAt: thread.startedAt,
+      updatedAt: thread.updatedAt,
+      completedAt: thread.completedAt,
+      currentSessionId: thread.currentSessionId ?? threadMeta?.currentSessionId,
+      opencodeSessionId: thread.opencodeSessionId ?? threadMeta?.opencodeSessionId,
+      workingAgentSessionId: thread.workingAgentSessionId ?? threadMeta?.workingAgentSessionId,
+      promptPath: threadMeta?.promptPath,
+      sessionCount: threadMeta?.sessions.length ?? 0,
+      completedSessionCount: threadMeta?.sessions.filter((session) => session.completedAt).length ?? 0,
       taskStatuses: tasks.map((task) => ({
         taskId: task.id,
         status: task.status,
         name: task.name,
+        report: task.report?.trim() || undefined,
       })),
     }
   })
@@ -86,9 +104,8 @@ export function getReviewAffectedThreadIds(input: SupervisorBatchReviewInput): s
     const hasIncompleteTask = thread.taskStatuses.some(
       (task) => task.status !== "completed" && task.status !== "cancelled",
     )
-    const missingSynthesis = thread.status === "completed" && !thread.synthesisOutput
 
-    if (thread.status === "failed" || hasIncompleteTask || missingSynthesis) {
+    if (thread.status === "failed" || hasIncompleteTask) {
       impacted.add(thread.threadId)
     }
   }
@@ -107,6 +124,13 @@ export function runDeterministicSupervisorReview(
   ]
 
   for (const thread of input.threads) {
+    const completedTasks = thread.taskStatuses.filter((task) => task.status === "completed")
+    const reportedTasks = completedTasks.filter((task) => task.report)
+
+    notes.push(
+      `${thread.threadId}: ${thread.status}, ${reportedTasks.length}/${completedTasks.length} completed task report(s), ${thread.sessionCount} recorded session(s)`,
+    )
+
     if (thread.status === "failed") {
       issues.push({
         summary: `${thread.threadId} (${thread.threadName}) failed during headless execution.`,
@@ -114,22 +138,16 @@ export function runDeterministicSupervisorReview(
         difficulty: "regular",
         ownership: "engineering",
         effort: "tasks",
-        evidence: `Batch status marked thread ${thread.threadId} as failed.`,
+        evidence: [
+          `Batch status marked thread ${thread.threadId} as failed.`,
+          thread.opencodeSessionId ? `opencodeSessionId=${thread.opencodeSessionId}` : null,
+          thread.workingAgentSessionId ? `workingAgentSessionId=${thread.workingAgentSessionId}` : null,
+          thread.currentSessionId ? `currentSessionId=${thread.currentSessionId}` : null,
+          reportedTasks.length > 0
+            ? `task reports: ${reportedTasks.map((task) => `${task.taskId}: ${task.report}`).join(" | ")}`
+            : null,
+        ].filter(Boolean).join(" "),
         suggestedAction: "Inspect the failed thread session and resolve the blocking implementation issue.",
-      })
-    }
-
-    if (thread.status === "completed" && !thread.synthesisOutput) {
-      const summary = `Synthesis output for ${thread.threadId} (${thread.threadName}) is missing.`
-      missingOutputs.push(summary)
-      issues.push({
-        summary,
-        severity: "low",
-        difficulty: "regular",
-        ownership: "engineering",
-        effort: "tasks",
-        evidence: `No synthesis output was stored in threads.json for ${thread.threadId}.`,
-        suggestedAction: "Re-run the thread or regenerate its summary before continuing automatically.",
       })
     }
 
@@ -143,14 +161,13 @@ export function runDeterministicSupervisorReview(
         difficulty: "regular",
         ownership: "engineering",
         effort: "tasks",
-        evidence: incompleteTasks.map((task) => `${task.taskId}=${task.status}`).join(", "),
+        evidence: incompleteTasks.map((task) => {
+          const reportSuffix = task.report ? ` (${task.report})` : ""
+          return `${task.taskId}=${task.status}${reportSuffix}`
+        }).join(", "),
         suggestedAction: "Review the remaining tasks and rerun or follow up before continuing automatically.",
       })
     }
-  }
-
-  if (missingOutputs.length > 0) {
-    notes.push(`Missing outputs: ${missingOutputs.length}`)
   }
 
   const normalized = normalizeReviewerResult({

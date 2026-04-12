@@ -8,7 +8,7 @@
 
 import { getRepoRoot } from "../lib/repo.ts"
 import { loadIndex, getResolvedStream } from "../lib/index.ts"
-import { loadAgentsConfig, getDefaultSynthesisAgent, getSynthesisAgent, getSynthesisAgentModels } from "../lib/agents-yaml.ts"
+import { loadAgentsConfig } from "../lib/agents-yaml.ts"
 import {
   readTasksFile,
   parseTaskId,
@@ -36,7 +36,6 @@ import {
   buildServeCommand,
 } from "../lib/opencode.ts"
 import { NotificationTracker } from "../lib/notifications.ts"
-import { isSynthesisEnabled, getSynthesisAgentOverride } from "../lib/synthesis/config.ts"
 import { parseBatchId } from "../lib/cli-utils.ts"
 import {
   collectThreadInfoFromTasks,
@@ -248,14 +247,9 @@ function printDryRunOutput(
   port: number,
   noServer: boolean,
   repoRoot: string,
-  synthesisConfigEnabled: boolean,
-  synthesisAgentName: string | null,
   headless: boolean,
   asyncMode: boolean,
 ): void {
-  // Check if synthesis mode is enabled based on config and agent availability
-  const synthesisEnabled = synthesisConfigEnabled && threads.some(t => t.synthesisModels && t.synthesisModels.length > 0)
-  
   console.log("=== DRY RUN ===\n")
   console.log(`Stream: ${stream.id}`)
   console.log(`Batch: ${batchId} (${stageName} -> ${batchName})`)
@@ -265,19 +259,6 @@ function printDryRunOutput(
   console.log(
     `Execution: ${headless ? (asyncMode ? "headless async" : "headless") : "interactive"}`,
   )
-  console.log(`Synthesis config: work/synthesis.json`)
-  if (synthesisConfigEnabled) {
-    if (synthesisAgentName) {
-      console.log(`Synthesis: enabled (${synthesisAgentName})`)
-      if (synthesisEnabled) {
-        console.log(`Mode: Post-Session Synthesis (working agent runs first with TUI, synthesis runs after)`)
-      }
-    } else {
-      console.log(`Synthesis: enabled but no agent configured`)
-    }
-  } else {
-    console.log(`Synthesis: disabled`)
-  }
   console.log("")
 
   if (!noServer) {
@@ -317,13 +298,9 @@ function printDryRunOutput(
 
   console.log("=== Thread Details ===")
   for (const thread of threads) {
-    const synthIndicator = thread.synthesisModels ? " [synthesis]" : ""
-    console.log(`\n${thread.threadId}: ${thread.threadName}${synthIndicator}`)
+    console.log(`\n${thread.threadId}: ${thread.threadName}`)
     console.log(`  Agent: ${thread.agentName}`)
     console.log(`  Working Models: ${thread.models.map((m) => m.model).join(" → ")}`)
-    if (thread.synthesisModels) {
-      console.log(`  Synthesis Models: ${thread.synthesisModels.map((m) => m.model).join(" → ")}`)
-    }
     console.log(`  Prompt: ${thread.promptPath}`)
   }
 }
@@ -468,35 +445,6 @@ export async function main(argv: string[] = process.argv): Promise<void> {
     process.exit(1)
   }
 
-  // Check if synthesis is enabled via synthesis.json config before loading synthesis agent
-  const synthesisConfigEnabled = isSynthesisEnabled(repoRoot)
-  
-  // Load synthesis agent config only if synthesis is enabled in config
-  // If synthesis is disabled in config, set synthesisAgent to null regardless of agents.yaml
-  let synthesisAgent = null
-  if (synthesisConfigEnabled) {
-    // Check for agent override in synthesis.json, otherwise use default from agents.yaml
-    const agentOverride = getSynthesisAgentOverride(repoRoot)
-    if (agentOverride) {
-      synthesisAgent = getSynthesisAgent(agentsConfig, agentOverride)
-      if (!synthesisAgent) {
-        console.log(`Synthesis agent override "${agentOverride}" not found in agents.yaml, using default`)
-        synthesisAgent = getDefaultSynthesisAgent(agentsConfig)
-      }
-    } else {
-      synthesisAgent = getDefaultSynthesisAgent(agentsConfig)
-    }
-    
-    if (synthesisAgent) {
-      const synthModels = getSynthesisAgentModels(agentsConfig, synthesisAgent.name)
-      console.log(`Synthesis enabled: ${synthesisAgent.name} (${synthModels.length} model(s))`)
-    } else {
-      console.log(`Synthesis enabled but no synthesis agent configured in agents.yaml`)
-    }
-  } else {
-    console.log(`Synthesis: disabled (work/synthesis.json)`)
-  }
-
   // Discover threads from tasks.json
   const threads = collectThreadInfoFromTasks(
     repoRoot,
@@ -504,7 +452,6 @@ export async function main(argv: string[] = process.argv): Promise<void> {
     batchParsed.stage,
     batchParsed.batch,
     agentsConfig,
-    synthesisAgent,
   )
 
   if (threads.length === 0) {
@@ -563,8 +510,6 @@ export async function main(argv: string[] = process.argv): Promise<void> {
       port,
       cliArgs.noServer ?? false,
       repoRoot,
-      synthesisConfigEnabled,
-      synthesisAgent?.name ?? null,
       cliArgs.headless ?? false,
       cliArgs.async ?? false,
     )

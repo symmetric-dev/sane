@@ -1,9 +1,9 @@
 /**
  * Structured reviewer output contract.
  *
- * Reviewer output is intentionally separate from synthesis output:
- * - Synthesis summarizes what happened.
- * - Reviewer judges quality/alignment and identifies actionable issues.
+ * Reviewer output is intentionally separate from execution state:
+ * - Canonical workstream state captures task status, task reports, and runtime metadata.
+ * - Reviewer output judges quality/alignment and identifies actionable issues.
  */
 
 export const REVIEWER_SEVERITIES = ["high", "medium", "low"] as const

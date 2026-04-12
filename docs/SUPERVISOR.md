@@ -14,7 +14,7 @@ The supervisor runs one batch at a time and loops through this sequence:
 2. Launch headless execution using:
    - `work multi --headless --async ...`
 3. Wait for persisted batch status (`work/<stream-id>/batch-status/<batch-id>.json`) to reach a terminal state.
-4. Run deterministic review over thread outputs only after the batch finishes.
+4. Run deterministic review only after the batch finishes, using canonical workstream state (task status/report fields, thread/session metadata, batch status, and persisted artifacts when present).
 5. Decide next action:
    - approve batch and continue,
    - run one automatic fix cycle and re-review,
@@ -215,3 +215,15 @@ Think of supervisor as an orchestration + policy layer over existing primitives:
 - persistence primitive: `supervisor-state.json`
 
 It is intentionally simple in v1 so operators can inspect, tune policy, and iterate safely over time.
+
+### Reporting model and known v1 limits
+
+Current supervisor evidence is centered on:
+
+- task status + task `report`
+- thread/session runtime metadata in `threads.json`
+- canonical batch state in `batch-status/*.json`
+- persisted supervisor decisions in `supervisor-state.json`
+
+This model is sufficient for v1 because it supports deterministic pass/fail/fix/escalation decisions without a separate synthesis artifact.
+Remaining gap: reports are still mostly free-form text, so future revisions may introduce richer structured reporting if operators need finer-grained machine interpretation, stronger schema validation, or cross-batch analytics.

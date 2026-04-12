@@ -9,7 +9,6 @@ Workstreams uses repository-scoped notification config at:
 - `thread_complete`
 - `batch_complete`
 - `error`
-- `synthesis_complete`
 
 ## Providers
 

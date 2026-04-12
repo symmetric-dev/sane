@@ -4,19 +4,14 @@ import {
   cleanupCompletionMarkers,
   cleanupResultFiles,
   cleanupSessionFiles,
-  cleanupSynthesisFiles,
 } from "./marker-polling.ts"
 import {
   getRunResultPath,
   getSessionFilePath,
-  getSynthesisLogPath,
-  getSynthesisOutputPath,
   getCompletionMarkerPath,
-  getWorkingAgentSessionPath,
 } from "./opencode.ts"
-import { parseSynthesisOutputFile } from "./synthesis/output.ts"
 import { completeMultipleSessionsLocked } from "./tasks.ts"
-import { setSynthesisOutput, updateThreadMetadataLocked } from "./threads.ts"
+import { updateThreadMetadataLocked } from "./threads.ts"
 import { getSessionPaneStatuses, sessionExists } from "./tmux.ts"
 import type { ThreadSessionMap } from "./types.ts"
 
@@ -179,18 +174,14 @@ async function captureArtifacts(
   }
 
   if (verbose) {
-    console.log("\nCapturing opencode session IDs and synthesis output...")
+    console.log("\nCapturing opencode session IDs...")
   }
 
   for (const mapping of completedMappings) {
     const sessionFilePath = getSessionFilePath(streamId, mapping.threadId)
-    const workingAgentSessionPath = getWorkingAgentSessionPath(streamId, mapping.threadId)
-    const synthesisOutputPath = getSynthesisOutputPath(streamId, mapping.threadId)
-    const synthesisJsonPath = `/tmp/workstream-${streamId}-${mapping.threadId}-synthesis.json`
 
     const updateData: {
       opencodeSessionId?: string
-      workingAgentSessionId?: string
     } = {}
 
     if (existsSync(sessionFilePath)) {
@@ -206,68 +197,13 @@ async function captureArtifacts(
       }
     }
 
-    if (existsSync(workingAgentSessionPath)) {
-      try {
-        const workingAgentSessionId = readFileSync(workingAgentSessionPath, "utf-8").trim()
-        if (workingAgentSessionId) {
-          updateData.workingAgentSessionId = workingAgentSessionId
-        }
-      } catch (error) {
-        if (verbose) {
-          console.log(`  Thread ${mapping.threadId}: failed to read working agent session file (${(error as Error).message})`)
-        }
-      }
-    }
-
-    if (updateData.opencodeSessionId || updateData.workingAgentSessionId) {
+    if (updateData.opencodeSessionId) {
       await updateThreadMetadataLocked(repoRoot, streamId, mapping.threadId, updateData)
-    }
-
-    let synthesisOutputText: string | null = null
-    if (existsSync(synthesisJsonPath)) {
-      try {
-        const logPath = getSynthesisLogPath(streamId, mapping.threadId)
-        const parseResult = parseSynthesisOutputFile(synthesisJsonPath, logPath)
-        if (!parseResult.success) {
-          if (verbose) {
-            console.log(`  Thread ${mapping.threadId}: synthesis output parsing failed (see ${logPath})`)
-          }
-        }
-        synthesisOutputText = parseResult.text.trim()
-      } catch (error) {
-        if (verbose) {
-          console.log(`  Thread ${mapping.threadId}: failed to parse synthesis output file (${(error as Error).message})`)
-        }
-        synthesisOutputText = null
-      }
-    } else if (existsSync(synthesisOutputPath)) {
-      try {
-        synthesisOutputText = readFileSync(synthesisOutputPath, "utf-8").trim()
-      } catch (error) {
-        if (verbose) {
-          console.log(`  Thread ${mapping.threadId}: failed to read synthesis output file (${(error as Error).message})`)
-        }
-        synthesisOutputText = null
-      }
-    }
-
-    if (synthesisOutputText !== null) {
-      await setSynthesisOutput(repoRoot, streamId, mapping.threadId, {
-        sessionId: `synthesis-${mapping.threadId}-${Date.now()}`,
-        output: synthesisOutputText,
-        completedAt: new Date().toISOString(),
-      })
     }
 
     if (updateData.opencodeSessionId) {
       if (verbose) {
-        console.log(
-          `  Thread ${mapping.threadId}: captured working session ${updateData.opencodeSessionId}${synthesisOutputText !== null ? ", synthesis output" : ""}`,
-        )
-      }
-    } else if (synthesisOutputText !== null) {
-      if (verbose) {
-        console.log(`  Thread ${mapping.threadId}: captured synthesis output`)
+        console.log(`  Thread ${mapping.threadId}: captured working session ${updateData.opencodeSessionId}`)
       }
     } else {
       if (verbose) {
@@ -337,7 +273,7 @@ export async function applyFinalizationCompletions(options: {
       completionMarkers: cleanupCompletionMarkers(streamId, completedThreadIds),
       sessionFiles: cleanupSessionFiles(streamId, completedThreadIds),
       resultFiles: cleanupResultFiles(streamId, completedThreadIds),
-      synthesisFiles: cleanupSynthesisFiles(streamId, completedThreadIds),
+      synthesisFiles: 0,
     },
   }
 }

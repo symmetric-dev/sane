@@ -28,8 +28,6 @@ describe("batch status", () => {
     rmSync(getCompletionMarkerPath(streamId, "01.01.02"), { force: true })
     rmSync(getSessionFilePath(streamId, "01.01.01"), { force: true })
     rmSync(getSessionFilePath(streamId, "01.01.02"), { force: true })
-    rmSync(`/tmp/workstream-${streamId}-01.01.01-synthesis.json`, { force: true })
-    rmSync(`/tmp/workstream-${streamId}-01.01.01-synthesis.log`, { force: true })
     mkdirSync(join(repoRoot, ".git"), { recursive: true })
     mkdirSync(join(repoRoot, "work", streamId), { recursive: true })
 
@@ -106,8 +104,6 @@ describe("batch status", () => {
     rmSync(getCompletionMarkerPath(streamId, "01.01.02"), { force: true })
     rmSync(getSessionFilePath(streamId, "01.01.01"), { force: true })
     rmSync(getSessionFilePath(streamId, "01.01.02"), { force: true })
-    rmSync(`/tmp/workstream-${streamId}-01.01.01-synthesis.json`, { force: true })
-    rmSync(`/tmp/workstream-${streamId}-01.01.01-synthesis.log`, { force: true })
   })
 
   test("syncBatchStatus persists running and pending thread counts", async () => {
@@ -151,10 +147,6 @@ describe("batch status", () => {
     )
 
     writeFileSync(getSessionFilePath(streamId, "01.01.01"), "opencode-session-123\n")
-    writeFileSync(
-      `/tmp/workstream-${streamId}-01.01.01-synthesis.json`,
-      '{"type":"text","part":{"text":"done summary"}}\n',
-    )
     writeFileSync(getCompletionMarkerPath(streamId, "01.01.01"), "done\n")
     writeFileSync(getCompletionMarkerPath(streamId, "01.01.02"), "done\n")
 
@@ -171,7 +163,6 @@ describe("batch status", () => {
     expect(thread?.currentSessionId).toBeUndefined()
     expect(thread?.sessions.at(-1)?.status).toBe("completed")
     expect(thread?.opencodeSessionId).toBe("opencode-session-123")
-    expect(thread?.synthesis?.output).toBe("done summary")
   })
 
   test("syncBatchStatus retries canonical artifact capture while marker remains", async () => {

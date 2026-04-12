@@ -77,7 +77,9 @@ work supervise --batch "01.01"
 work supervise --dry-run
 ```
 
-The supervisor launches `work multi --headless --async`, waits for the batch to become terminal, reviews outputs, then either:
+The supervisor launches `work multi --headless --async`, waits for the batch to become terminal, and reviews canonical execution state (task status/report fields, thread/session metadata, and persisted batch status) before deciding whether to continue, fix, or stop.
+
+It then either:
 
 - continues automatically to the next incomplete batch,
 - runs one automatic fix cycle (default), or
@@ -114,6 +116,11 @@ Key persisted files:
 
 - `work/<stream-id>/batch-status/<batch-id>.json` (batch execution state)
 - `work/<stream-id>/supervisor-state.json` (review/fix/escalation/stage-stop history)
+
+### Reporting model (v1)
+
+For v1 supervision, task-level `report` text plus canonical workstream state are the primary review inputs.
+This is sufficient for current automated follow-up decisions, but reporting may evolve in a later revision toward a richer structured format if operator workflows require more granular machine-readable evidence.
 
 Quick post-fix verification checklist:
 
