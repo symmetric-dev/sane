@@ -107,10 +107,21 @@ cat work/<stream-id>/supervisor-state.json
 
 Interpretation quick-guide (what success looks like vs what to inspect):
 
-- **Terminal success / safe resume:** `work batch-status` is `completed` and `supervisor-state.json` includes the batch under `reviewed_batches`.
-- **Timeout/wait failure:** batch status remains non-terminal; inspect the batch plus `supervisor-state.json`, then rerun `work supervise` to resume that interrupted batch before later incomplete batches.
+- **Terminal success / safe resume:** `work batch-status` is `completed` and `supervisor-state.json` includes the batch under `reviewed_batches` plus persisted finalization evidence for the run decision (for example completed run state and/or matching `stage_stops` when the supervisor stopped on that batch).
+- **Timeout/wait failure:** batch status remains non-terminal; inspect the batch plus `supervisor-state.json`, then rerun plain `work supervise` to resume that same interrupted batch before later incomplete batches.
 - **Escalation/stage stop:** inspect `escalations` and `stage_stops` to confirm what operator action is required.
 - **Terminal failed run:** `work batch-status` is `failed`; inspect failed thread summaries before retrying.
+
+Timeout resume smoke checklist (short drill):
+
+1. Force interruption: `work supervise --batch "01.01" --timeout-ms 100`
+2. Inspect persisted state: `work batch-status --batch "01.01" --format json` and `cat work/<stream-id>/supervisor-state.json`
+3. Resume normally: run plain `work supervise` and confirm it resumes `01.01` first (does not skip to later incomplete batches)
+4. Verify outcome class:
+   - **Resumed success:** batch becomes terminal `completed`, `reviewed_batches` contains `01.01`, and persisted finalization evidence for that same batch appears in `supervisor-state.json` (for example completed run state and/or `stage_stops`)
+   - **Still interrupted/non-terminal:** batch remains non-terminal and no new `reviewed_batches` entry exists yet (wait/investigate before treating as complete)
+
+Persisted-state note: prefer `supervisor-state.json` ordering/evidence to verify same-batch resume, rather than relying only on transient console logs.
 
 Key persisted files:
 
@@ -124,17 +135,22 @@ This is sufficient for current automated follow-up decisions, but reporting may 
 
 Quick post-fix verification checklist:
 
-- **Successful completion path**: batch status is terminal and `supervisor-state.json` records both review evidence (`reviewed_batches`) and the resulting stop outcome for that batch (including repaired canonical completion fallback cases).
+- **Successful completion path**: batch status is terminal and `supervisor-state.json` records both review evidence (`reviewed_batches`) and persisted finalization evidence for that batch/run (including completed run state and/or the resulting `stage_stops` outcome for repaired canonical completion fallback cases).
 - **Timeout/failure path**: batch status remains non-terminal at timeout; no new reviewed entry is recorded for the incomplete batch, and supervisor state keeps the interrupted run resumable until review can continue.
 
 Resume examples:
 
 ```bash
-# resume interrupted work first, otherwise continue from next incomplete batch
+# timeout/resume drill: force interruption on a known batch
+work supervise --batch "01.01" --timeout-ms 100
+
+# resume interrupted work first (same batch), otherwise continue from next incomplete batch
 work supervise
 
 # rerun a specific batch after manual fixes or policy edits
 work supervise --batch "01.01"
 ```
+
+For the timeout/resume drill, verify recovery by confirming `01.01` reaches reviewed/finalized persisted state before supervisor progresses to any later incomplete batch.
 
 For full operator guidance and config details, see `../../docs/SUPERVISOR.md`.
