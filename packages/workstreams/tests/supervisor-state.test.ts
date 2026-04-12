@@ -213,6 +213,95 @@ describe("supervisor-state", () => {
     expect(stored!.runs[0]!.lastReviewedBatchId).toBe("02.01")
   })
 
+  test("supervisor state persists retry and re-review links for a batch fix cycle", async () => {
+    const reviewedAt = new Date().toISOString()
+
+    await upsertSupervisorRunLocked(workspace.repoRoot, workspace.streamId, {
+      runId: "sup-run-rereview",
+      stageId: "03",
+      status: "running",
+      startedAt: reviewedAt,
+      updatedAt: reviewedAt,
+      currentBatchId: "03.01",
+      reviewPasses: 0,
+      issueSummaryIds: [],
+      escalationIds: [],
+    })
+
+    await upsertReviewedBatchLocked(workspace.repoRoot, workspace.streamId, {
+      reviewId: "review-1",
+      runId: "sup-run-rereview",
+      stageId: "03",
+      batchId: "03.01",
+      reviewPass: 1,
+      reviewKind: "initial",
+      reviewedAt,
+      outcome: "changes_requested",
+      threadIds: ["03.01.01"],
+      issueSummaryIds: ["issue-1"],
+    })
+
+    await upsertFixCycleLocked(workspace.repoRoot, workspace.streamId, {
+      cycleId: "cycle-1",
+      runId: "sup-run-rereview",
+      stageId: "03",
+      batchId: "03.01",
+      threadId: "03.01.01",
+      attemptCount: 1,
+      batchAttempt: 1,
+      triggeredByReviewId: "review-1",
+      lastAttemptAt: reviewedAt,
+      lastOutcome: "pending_review",
+      issueSummaryIds: ["issue-1"],
+    })
+
+    await upsertReviewedBatchLocked(workspace.repoRoot, workspace.streamId, {
+      reviewId: "review-2",
+      runId: "sup-run-rereview",
+      stageId: "03",
+      batchId: "03.01",
+      reviewPass: 2,
+      reviewKind: "re_review",
+      previousReviewId: "review-1",
+      fixCycleId: "cycle-1",
+      reviewedAt,
+      outcome: "approved",
+      threadIds: ["03.01.01"],
+      issueSummaryIds: [],
+    })
+
+    await upsertFixCycleLocked(workspace.repoRoot, workspace.streamId, {
+      cycleId: "cycle-1",
+      runId: "sup-run-rereview",
+      stageId: "03",
+      batchId: "03.01",
+      threadId: "03.01.01",
+      attemptCount: 1,
+      batchAttempt: 1,
+      triggeredByReviewId: "review-1",
+      reReviewId: "review-2",
+      lastAttemptAt: reviewedAt,
+      lastOutcome: "accepted",
+      issueSummaryIds: ["issue-1"],
+    })
+
+    const stored = loadSupervisorState(workspace.repoRoot, workspace.streamId)
+    expect(stored).not.toBeNull()
+
+    const initialReview = stored!.reviewed_batches.find((review) => review.reviewId === "review-1")
+    const reReview = stored!.reviewed_batches.find((review) => review.reviewId === "review-2")
+    const fixCycle = stored!.fix_cycles.find((cycle) => cycle.cycleId === "cycle-1")
+
+    expect(initialReview?.reviewKind).toBe("initial")
+    expect(reReview?.reviewKind).toBe("re_review")
+    expect(reReview?.previousReviewId).toBe("review-1")
+    expect(reReview?.fixCycleId).toBe("cycle-1")
+    expect(fixCycle?.batchAttempt).toBe(1)
+    expect(fixCycle?.triggeredByReviewId).toBe("review-1")
+    expect(fixCycle?.reReviewId).toBe("review-2")
+    expect(fixCycle?.lastOutcome).toBe("accepted")
+  })
+
   test("recordStageStopLocked preserves completed and failed terminal run statuses", async () => {
     const stoppedAt = new Date().toISOString()
 

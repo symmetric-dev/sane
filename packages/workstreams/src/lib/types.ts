@@ -655,6 +655,11 @@ export type SupervisorReviewOutcome =
   | "stopped"
 
 /**
+ * Whether a batch review is the initial pass or a follow-up re-review.
+ */
+export type SupervisorReviewKind = "initial" | "re_review"
+
+/**
  * Lifecycle state for a summarized supervisor issue.
  */
 export type SupervisorIssueStatus =
@@ -732,6 +737,9 @@ export interface SupervisorReviewedBatch {
   stageId: string
   batchId: string
   reviewPass: number
+  reviewKind?: SupervisorReviewKind
+  previousReviewId?: string
+  fixCycleId?: string
   reviewedAt: string
   outcome: SupervisorReviewOutcome
   threadIds: string[]
@@ -766,6 +774,9 @@ export interface SupervisorFixCycle {
   batchId: string
   threadId: string
   attemptCount: number
+  batchAttempt?: number
+  triggeredByReviewId?: string
+  reReviewId?: string
   lastAttemptAt: string
   lastOutcome: SupervisorFixCycleOutcome
   issueSummaryIds: string[]

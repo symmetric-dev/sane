@@ -10,11 +10,17 @@ import {
   REVIEWER_EFFORTS,
   REVIEWER_OWNERSHIPS,
   REVIEWER_SEVERITIES,
+  type ReviewerIssue,
   type ReviewerDifficulty,
   type ReviewerEffort,
   type ReviewerOwnership,
   type ReviewerSeverity,
 } from "../reviewer/types.js"
+import type {
+  StreamDocument,
+  SupervisorReviewOutcome,
+  SupervisorStageStopReason,
+} from "../types.js"
 
 export const SUPERVISOR_CONFIG_FILE = "work/supervisor.json"
 
@@ -104,4 +110,125 @@ export interface SupervisorConfigInput {
   review_limits?: Partial<SupervisorReviewLimits>
   stage_completion?: Partial<SupervisorStageCompletionConfig>
   escalation?: SupervisorEscalationConfigInput
+}
+
+export type SupervisorIssueDimension = keyof SupervisorIssueTaxonomy
+
+export type SupervisorDecisionOutcome = "continue" | "contact_user"
+
+export type SupervisorDecisionTriggerKind =
+  | SupervisorIssueDimension
+  | "review_fix_limit_reached"
+  | "stage_completion"
+
+export interface SupervisorIssueGroup<TValue extends string = string> {
+  value: TValue
+  count: number
+  summaries: string[]
+}
+
+export interface SupervisorIssueBreakdown {
+  totalIssues: number
+  severity: SupervisorIssueGroup<SupervisorSeverity>[]
+  difficulty: SupervisorIssueGroup<SupervisorDifficulty>[]
+  ownership: SupervisorIssueGroup<SupervisorOwnership>[]
+  effort: SupervisorIssueGroup<SupervisorEffort>[]
+}
+
+export interface SupervisorDecisionTrigger {
+  kind: SupervisorDecisionTriggerKind
+  summary: string
+  count?: number
+  matchedValues?: string[]
+}
+
+export interface SupervisorEscalationEvaluationInput {
+  issues: Array<{
+    summary: string
+    severity: SupervisorSeverity
+    difficulty: SupervisorDifficulty
+    ownership: SupervisorOwnership
+    effort: SupervisorEffort
+  }>
+  config: SupervisorConfig
+  stageCompleted?: boolean
+  fixCyclesUsed?: number
+}
+
+export interface SupervisorEscalationDecision {
+  outcome: SupervisorDecisionOutcome
+  shouldContactUser: boolean
+  shouldContinue: boolean
+  triggers: SupervisorDecisionTrigger[]
+  issueBreakdown: SupervisorIssueBreakdown
+  chatSummary: string
+  recordSummary: string
+}
+
+export interface SupervisorBatchCycleState {
+  completedReviewPasses: number
+  currentReviewPass: number
+  fixCyclesUsed: number
+  fixCyclesRemaining: number
+  hasPendingReReview: boolean
+  lastReviewId?: string
+  lastFixCycleId?: string
+}
+
+export type SupervisorBatchFollowUpAction =
+  | "approve_batch"
+  | "run_fix_cycle"
+  | "contact_user"
+
+export interface SupervisorBatchFollowUpInput {
+  config: SupervisorConfig
+  supervisorState: {
+    reviewed_batches: Array<{ runId: string; batchId: string; reviewId: string; reviewPass: number }>
+    fix_cycles: Array<{
+      runId: string
+      batchId: string
+      cycleId: string
+      attemptCount: number
+      batchAttempt?: number
+      lastOutcome: "pending_review" | "accepted" | "rejected" | "escalated" | "stopped"
+    }>
+  }
+  runId: string
+  batchId: string
+  issues: ReviewerIssue[]
+}
+
+export interface SupervisorBatchFollowUpDecision {
+  action: SupervisorBatchFollowUpAction
+  reviewOutcome: SupervisorReviewOutcome
+  cycleState: SupervisorBatchCycleState
+  escalation: SupervisorEscalationDecision
+  shouldContactUser: boolean
+  shouldContinue: boolean
+  requiresReReview: boolean
+  nextFixCycleAttempt?: number
+  nextReviewPass?: number
+  stopReason?: SupervisorStageStopReason
+  summary: string
+}
+
+export type SupervisorStageBoundaryAction = "continue" | "stop" | "contact_user"
+
+export interface SupervisorStageBoundaryInput {
+  config: SupervisorConfig
+  streamDocument: Pick<StreamDocument, "stages">
+  batchId: string
+  issues?: ReviewerIssue[]
+  fixCyclesUsed?: number
+}
+
+export interface SupervisorStageBoundaryDecision {
+  stageCompleted: boolean
+  action: SupervisorStageBoundaryAction
+  shouldStop: boolean
+  shouldContactUser: boolean
+  shouldRunStageFixCycle: false
+  stopReason?: SupervisorStageStopReason
+  escalation?: SupervisorEscalationDecision
+  summary: string
 }
