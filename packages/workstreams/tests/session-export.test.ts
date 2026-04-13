@@ -6,6 +6,7 @@ import {
   findLastCompletedAssistantMessage,
   isTextPart,
   isToolPart,
+  parseSessionExportOutput,
   type SessionExport,
   type TextPart,
   type ToolPart,
@@ -422,6 +423,35 @@ describe("extractMessageText", () => {
         parts: undefined as unknown as MessagePart[],
       }),
     ).toBe("")
+  })
+})
+
+describe("parseSessionExportOutput", () => {
+  test("parses clean export JSON", () => {
+    const session = createSessionExport([createAssistantMessage([{ type: "text", text: "hello" }])])
+
+    expect(parseSessionExportOutput(JSON.stringify(session))).toEqual(session)
+  })
+
+  test("recovers JSON from mixed stdout output", () => {
+    const session = createSessionExport([createAssistantMessage([{ type: "text", text: "hello" }])])
+    const stdout = `info: exporting session\n${JSON.stringify(session)}\nfinished\n`
+
+    expect(parseSessionExportOutput(stdout)).toEqual(session)
+  })
+
+  test("reports truncated stdout clearly", () => {
+    expect(() =>
+      parseSessionExportOutput('{"info":{"id":"s1","title":"Test","summary":{"additions":0,"deletions":0,"files":0}},"messages":[{"info":{"id":"m1","role":"assistant"},"parts":[{"type":"text","text":"unterminated"}]')
+    ).toThrow(/stdout appears truncated\/incomplete/)
+  })
+
+  test("includes stderr contamination details when parsing fails", () => {
+    expect(() =>
+      parseSessionExportOutput("warning: export failed before JSON was emitted", {
+        stderr: "Error: background logger wrote to stderr",
+      })
+    ).toThrow(/stderr was not empty/)
   })
 })
 

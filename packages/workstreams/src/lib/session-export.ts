@@ -5,10 +5,13 @@
  * for synthesis context.
  */
 
-import { exec } from "child_process"
+import { execFile } from "node:child_process"
 import { promisify } from "util"
 
-const execAsync = promisify(exec)
+const execFileAsync = promisify(execFile)
+
+const SESSION_EXPORT_BUFFER_SIZE = 50 * 1024 * 1024
+const DIAGNOSTIC_SNIPPET_LENGTH = 240
 
 // ============================================================================
 // Types - MessagePart Discriminated Union
@@ -121,6 +124,18 @@ export interface SessionExport {
   messages: ExportedMessage[]
 }
 
+interface JsonEnvelopeScanComplete {
+  kind: "complete"
+  endIndex: number
+}
+
+interface JsonEnvelopeScanIncomplete {
+  kind: "incomplete"
+  reason: "unterminated_string" | "unbalanced_delimiter"
+}
+
+type JsonEnvelopeScanResult = JsonEnvelopeScanComplete | JsonEnvelopeScanIncomplete
+
 // ============================================================================
 // Type Guards
 // ============================================================================
@@ -174,26 +189,277 @@ export async function exportSession(sessionId: string): Promise<SessionExport> {
   }
 
   try {
-    const { stdout } = await execAsync(`opencode export "${sanitizedId}"`, {
-      maxBuffer: 50 * 1024 * 1024, // 50MB buffer for large sessions
+    const { stdout, stderr } = await execFileAsync("opencode", ["export", sanitizedId], {
+      maxBuffer: SESSION_EXPORT_BUFFER_SIZE,
     })
 
-    const exportData = JSON.parse(stdout) as SessionExport
-
-    // Validate basic structure
-    if (!exportData.info || !Array.isArray(exportData.messages)) {
-      throw new Error("Invalid export format: missing info or messages")
-    }
-
-    return exportData
+    return parseSessionExportOutput(stdout, { stderr })
   } catch (error) {
-    if (error instanceof SyntaxError) {
-      throw new Error(`Failed to parse session export JSON: ${error.message}`)
-    }
     if (error instanceof Error) {
+      const commandError = error as Error & {
+        code?: number | string
+        signal?: NodeJS.Signals
+        stdout?: string | Buffer
+        stderr?: string | Buffer
+      }
+
+      if (
+        Object.prototype.hasOwnProperty.call(commandError, "stdout") ||
+        Object.prototype.hasOwnProperty.call(commandError, "stderr")
+      ) {
+        throw new Error(
+          formatSessionExportCommandFailure({
+            error: commandError,
+            sessionId: sanitizedId,
+          }),
+        )
+      }
+
       throw new Error(`Failed to export session: ${error.message}`)
     }
     throw new Error("Failed to export session: unknown error")
+  }
+}
+
+export function formatSessionExportCommandFailure(args: {
+  error: Error & {
+    code?: number | string
+    signal?: NodeJS.Signals
+    stdout?: string | Buffer
+    stderr?: string | Buffer
+  }
+  sessionId: string
+}): string {
+  const stdout = stringifyCommandStream(args.error.stdout)
+  const stderr = stringifyCommandStream(args.error.stderr)
+  const code = args.error.code !== undefined ? `exit code ${String(args.error.code)}` : "non-zero exit"
+  const signal = args.error.signal ? `, signal ${args.error.signal}` : ""
+  const stdoutSnippet = stdout ? `; stdout preview: ${createDiagnosticSnippet(stdout)}` : ""
+  const stderrSnippet = stderr ? `; stderr preview: ${createDiagnosticSnippet(stderr)}` : ""
+
+  return `Failed to export session: opencode export ${args.sessionId} failed with ${code}${signal}: ${args.error.message}${stdoutSnippet}${stderrSnippet}`
+}
+
+function stringifyCommandStream(stream: string | Buffer | undefined): string {
+  if (typeof stream === "string") {
+    return stream
+  }
+
+  if (stream instanceof Buffer) {
+    return stream.toString("utf8")
+  }
+
+  return ""
+}
+
+function createDiagnosticSnippet(text: string, maxLength = DIAGNOSTIC_SNIPPET_LENGTH): string {
+  const normalized = text.replace(/\s+/g, " ").trim()
+  if (!normalized) {
+    return "<empty>"
+  }
+
+  if (normalized.length <= maxLength) {
+    return JSON.stringify(normalized)
+  }
+
+  return `${JSON.stringify(normalized.slice(0, maxLength))}…`
+}
+
+function validateSessionExportShape(exportData: unknown): SessionExport {
+  if (!exportData || typeof exportData !== "object") {
+    throw new Error("Invalid export format: expected top-level JSON object")
+  }
+
+  const candidate = exportData as SessionExport
+  if (!candidate.info || !Array.isArray(candidate.messages)) {
+    throw new Error("Invalid export format: missing info or messages")
+  }
+
+  return candidate
+}
+
+function scanJsonEnvelope(stdout: string, startIndex: number): JsonEnvelopeScanResult {
+  let depth = 0
+  let inString = false
+  let escaped = false
+
+  for (let index = startIndex; index < stdout.length; index++) {
+    const char = stdout[index]
+
+    if (inString) {
+      if (escaped) {
+        escaped = false
+        continue
+      }
+
+      if (char === "\\") {
+        escaped = true
+        continue
+      }
+
+      if (char === '"') {
+        inString = false
+      }
+
+      continue
+    }
+
+    if (char === '"') {
+      inString = true
+      continue
+    }
+
+    if (char === "{" || char === "[") {
+      depth += 1
+      continue
+    }
+
+    if (char === "}" || char === "]") {
+      depth -= 1
+      if (depth === 0) {
+        return { kind: "complete", endIndex: index }
+      }
+    }
+  }
+
+  if (inString) {
+    return { kind: "incomplete", reason: "unterminated_string" }
+  }
+
+  return { kind: "incomplete", reason: "unbalanced_delimiter" }
+}
+
+function findJsonPayload(stdout: string):
+  | {
+      kind: "success"
+      payload: string
+      prefix: string
+      suffix: string
+    }
+  | {
+      kind: "incomplete"
+      reason: "unterminated_string" | "unbalanced_delimiter"
+      preview: string
+    }
+  | {
+      kind: "missing"
+      preview: string
+    } {
+  let incompleteCandidate:
+    | {
+        reason: "unterminated_string" | "unbalanced_delimiter"
+        preview: string
+      }
+    | undefined
+
+  const firstNonWhitespaceIndex = stdout.search(/\S/)
+  if (firstNonWhitespaceIndex >= 0) {
+    const firstNonWhitespaceChar = stdout[firstNonWhitespaceIndex]
+    if (firstNonWhitespaceChar === "{" || firstNonWhitespaceChar === "[") {
+      const scan = scanJsonEnvelope(stdout, firstNonWhitespaceIndex)
+      if (scan.kind === "incomplete") {
+        return {
+          kind: "incomplete",
+          reason: scan.reason,
+          preview: createDiagnosticSnippet(stdout.slice(firstNonWhitespaceIndex)),
+        }
+      }
+
+      const payload = stdout.slice(firstNonWhitespaceIndex, scan.endIndex + 1)
+      try {
+        JSON.parse(payload)
+        return {
+          kind: "success",
+          payload,
+          prefix: stdout.slice(0, firstNonWhitespaceIndex),
+          suffix: stdout.slice(scan.endIndex + 1),
+        }
+      } catch {
+        // Fall through to the broader mixed-output scan below.
+      }
+    }
+  }
+
+  for (let index = 0; index < stdout.length; index++) {
+    const char = stdout[index]
+    if (char !== "{" && char !== "[") {
+      continue
+    }
+
+    const scan = scanJsonEnvelope(stdout, index)
+    if (scan.kind === "incomplete") {
+      incompleteCandidate ??= {
+        reason: scan.reason,
+        preview: createDiagnosticSnippet(stdout.slice(index)),
+      }
+      continue
+    }
+
+    const payload = stdout.slice(index, scan.endIndex + 1)
+    try {
+      JSON.parse(payload)
+      return {
+        kind: "success",
+        payload,
+        prefix: stdout.slice(0, index),
+        suffix: stdout.slice(scan.endIndex + 1),
+      }
+    } catch {
+      continue
+    }
+  }
+
+  if (incompleteCandidate) {
+    return {
+      kind: "incomplete",
+      reason: incompleteCandidate.reason,
+      preview: incompleteCandidate.preview,
+    }
+  }
+
+  return {
+    kind: "missing",
+    preview: createDiagnosticSnippet(stdout),
+  }
+}
+
+export function parseSessionExportOutput(
+  stdout: string,
+  options: { stderr?: string } = {},
+): SessionExport {
+  const trimmedStdout = stdout.trim()
+  const trimmedStderr = options.stderr?.trim() ?? ""
+  const stderrNote = trimmedStderr
+    ? `; stderr was not empty: ${createDiagnosticSnippet(trimmedStderr)}`
+    : ""
+
+  if (!trimmedStdout) {
+    throw new Error(`Failed to parse session export JSON: stdout was empty${stderrNote}`)
+  }
+
+  try {
+    return validateSessionExportShape(JSON.parse(trimmedStdout))
+  } catch (error) {
+    const payload = findJsonPayload(stdout)
+    if (payload.kind === "success") {
+      const exportData = validateSessionExportShape(JSON.parse(payload.payload))
+      return exportData
+    }
+
+    if (payload.kind === "incomplete") {
+      const detail =
+        payload.reason === "unterminated_string"
+          ? "stdout appears truncated/incomplete (unterminated JSON string)"
+          : "stdout appears truncated/incomplete (unbalanced JSON delimiters)"
+      throw new Error(
+        `Failed to parse session export JSON: ${detail}; stdout preview: ${payload.preview}${stderrNote}`,
+      )
+    }
+
+    const parseMessage = error instanceof Error ? error.message : "Unknown JSON parse failure"
+    throw new Error(
+      `Failed to parse session export JSON: ${parseMessage}; stdout preview: ${payload.preview}${stderrNote}`,
+    )
   }
 }
 
