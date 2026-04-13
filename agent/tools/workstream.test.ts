@@ -47,19 +47,55 @@ function createDeps(
       loadSupervisorState(root, stream)?.branch_sessions.find(
         (branch) => branch.branchSessionId === branchSessionId,
       ),
-    runForkedBranch: async () => ({
-      code: 0,
-      stdout: '{"type":"text","part":{"text":"- execution result\\n- persisted state\\n- next action"}}\n',
-      stderr: "",
-      nativeSessionId: "ses_supervision_1",
-    }),
+    findBranchSessionByNativeSessionId: (root, stream, nativeSessionId) =>
+      loadSupervisorState(root, stream)?.branch_sessions.find(
+        (branch) => branch.nativeSessionId === nativeSessionId,
+      ),
+    waitForBranchNativeSessionId: async () => "ses_supervision_1",
+    waitForTerminalBranchSession: async (args) =>
+      loadSupervisorState(args.repoRoot, args.streamId)?.branch_sessions.find(
+        (branch) => branch.branchSessionId === args.branchSessionId,
+      ),
+    runForkedSession: async ({ title }) =>
+      title.startsWith("root-checkpoint-")
+        ? {
+            code: 0,
+            stdout: '{"type":"text","part":{"text":"CHECKPOINT READY"}}\n',
+            stderr: "",
+            nativeSessionId: "ses_checkpoint_1",
+          }
+        : {
+            code: 0,
+            stdout: '{"type":"text","part":{"text":"## Accomplished\\n- execution result\\n## Issues Found\\n- None.\\n## Fixes Applied\\n- None.\\n## Next For The User\\n- next action"}}\n',
+            stderr: "",
+            nativeSessionId: "ses_supervision_1",
+          },
     runCommand: async () => ({ code: 0, stdout: "", stderr: "" }),
     findNativeSessionIdByTitle: async () => "ses_supervision_1",
     parseOutput: () => ({
-      text: "- execution result\n- persisted state\n- next action",
+      text: "## Accomplished\n- execution result\n## Issues Found\n- None.\n## Fixes Applied\n- None.\n## Next For The User\n- next action",
       logs: [],
       success: true,
     }),
+    exportSessionTranscript: async () => ({
+      info: {
+        id: "ses_supervision_1",
+        title: "Supervision branch",
+        summary: { additions: 0, deletions: 0, files: 0 },
+      },
+      messages: [
+        {
+          info: {
+            id: "msg-final",
+            role: "assistant",
+            time: { created: 1, completed: 2 },
+          },
+          parts: [{ type: "text", text: "## Accomplished\n- execution result\n## Issues Found\n- None.\n## Fixes Applied\n- None.\n## Next For The User\n- next action" }],
+        },
+      ],
+    }),
+    extractFinalBranchReport: (sessionExport) =>
+      sessionExport.messages.at(-1)?.parts?.[0]?.text ?? "",
     now: () => "2026-04-12T00:00:00.000Z",
     ...overrides,
   }
@@ -157,18 +193,169 @@ describe("launch_supervision_branch", () => {
         createDeps(workspace.repoRoot, workspace.streamId),
       )
 
-      expect(result).toContain("Supervision branch branch-supervision-1 (native session ses_supervision_1) completed")
+      expect(result).toContain("Supervision branch branch-supervision-1 (native session ses_supervision_1) completed from checkpoint ses_checkpoint_1")
+      expect(result).toContain("Extracted final branch report:")
 
       const stored = loadSupervisorState(workspace.repoRoot, workspace.streamId)
       expect(stored?.branch_sessions).toHaveLength(1)
       expect(stored?.branch_sessions[0]).toMatchObject({
         rootSessionId: "root-session-1",
         branchSessionId: "branch-supervision-1",
+        checkpointSessionId: "ses_checkpoint_1",
         nativeSessionId: "ses_supervision_1",
         source: "native_fork",
         status: "completed",
         batchId: "10.01",
+        parentSessionId: "ses_checkpoint_1",
       })
+    } finally {
+      cleanupTestWorkstream(workspace)
+    }
+  })
+
+  test("waits for terminal branch state and surfaces the final extracted report", async () => {
+    const workspace = createTestWorkstream("001-agent-tool-stopped")
+
+    try {
+      const result = await executeLaunchSupervisionBranch(
+        { batch: "10.01" },
+        { sessionID: "root-session-1" },
+        createDeps(workspace.repoRoot, workspace.streamId, {
+          runForkedSession: async ({ title, onNativeSessionId }) => {
+            if (title.startsWith("root-checkpoint-")) {
+              return {
+                code: 0,
+                stdout: '{"type":"text","part":{"text":"CHECKPOINT READY"}}\n',
+                stderr: "",
+                nativeSessionId: "ses_checkpoint_1",
+              }
+            }
+
+            await onNativeSessionId?.("ses_supervision_1")
+            return {
+              code: 0,
+              stdout: '{"type":"text","part":{"text":"- execution result\\n- persisted state\\n- next action"}}\n',
+              stderr: "",
+            }
+          },
+          waitForTerminalBranchSession: async () => ({
+            rootSessionId: "root-session-1",
+            branchSessionId: "branch-supervision-1",
+            nativeSessionId: "ses_supervision_1",
+            status: "stopped",
+            startedAt: "2026-04-12T00:00:00.000Z",
+            updatedAt: "2026-04-12T00:00:00.000Z",
+            completedAt: "2026-04-12T00:00:00.000Z",
+            batchId: "10.01",
+          }),
+          exportSessionTranscript: async () => ({
+            info: {
+              id: "ses_supervision_1",
+              title: "Supervision branch",
+              summary: { additions: 0, deletions: 0, files: 0 },
+            },
+            messages: [
+              {
+                info: {
+                  id: "msg-earlier",
+                  role: "assistant",
+                  time: { created: 1, completed: 2 },
+                },
+                parts: [{ type: "text", text: "Earlier status" }],
+              },
+              {
+                info: {
+                  id: "msg-final",
+                  role: "assistant",
+                  time: { created: 3, completed: 4 },
+                },
+                parts: [
+                  {
+                    type: "text",
+                    text: [
+                      "Accomplished work: monitored the child branch parent-side.",
+                      "Issues found: none.",
+                      "Fixes applied: transcript/report extraction.",
+                      "Reason for yielding: batch paused for Root Agent review.",
+                    ].join("\n"),
+                  },
+                ],
+              },
+            ],
+          }),
+          extractFinalBranchReport: (sessionExport) =>
+            sessionExport.messages[1]?.parts?.[0]?.text ?? "",
+        }),
+      )
+
+      expect(result).toContain("Supervision branch branch-supervision-1 (native session ses_supervision_1) stopped from checkpoint ses_checkpoint_1")
+      expect(result).toContain("Persisted branch status: stopped.")
+      expect(result).toContain("Extracted final branch report:")
+      expect(result).toContain("Reason for yielding: batch paused for Root Agent review.")
+
+      const stored = loadSupervisorState(workspace.repoRoot, workspace.streamId)
+      expect(stored?.branch_sessions[0]).toMatchObject({
+        status: "stopped",
+        notes: expect.stringContaining("Reason for yielding: batch paused for Root Agent review."),
+      })
+    } finally {
+      cleanupTestWorkstream(workspace)
+    }
+  })
+
+  test("resolves the native child session after branch completion before exporting the transcript", async () => {
+    const workspace = createTestWorkstream("001-agent-tool-native-resolution")
+
+    try {
+      const exportSessionTranscript = mock(async (sessionId: string) => ({
+        info: {
+          id: sessionId,
+          title: "Supervision branch",
+          summary: { additions: 0, deletions: 0, files: 0 },
+        },
+        messages: [
+          {
+            info: {
+              id: "msg-final",
+              role: "assistant",
+              time: { created: 1, completed: 2 },
+            },
+            parts: [{ type: "text", text: "Recovered via parent-side session lookup." }],
+          },
+        ],
+      }))
+
+      const result = await executeLaunchSupervisionBranch(
+        { batch: "10.01" },
+        { sessionID: "root-session-1" },
+        createDeps(workspace.repoRoot, workspace.streamId, {
+          runForkedSession: async ({ title }) =>
+            title.startsWith("root-checkpoint-")
+              ? {
+                  code: 0,
+                  stdout: '{"type":"text","part":{"text":"CHECKPOINT READY"}}\n',
+                  stderr: "",
+                  nativeSessionId: "ses_checkpoint_1",
+                }
+              : {
+                  code: 0,
+                  stdout: '{"type":"text","part":{"text":"- execution result\\n- persisted state\\n- next action"}}\n',
+                  stderr: "",
+                },
+          waitForBranchNativeSessionId: async () => "ses_resolved_after_completion",
+          exportSessionTranscript,
+          extractFinalBranchReport: (sessionExport) =>
+            sessionExport.messages[0]?.parts?.[0]?.text ?? "",
+        }),
+      )
+
+      expect(exportSessionTranscript).toHaveBeenCalledWith("ses_resolved_after_completion")
+      expect(result).toContain("native session ses_resolved_after_completion")
+      expect(result).toContain("from checkpoint ses_checkpoint_1")
+      expect(result).toContain("Recovered via parent-side session lookup.")
+
+      const stored = loadSupervisorState(workspace.repoRoot, workspace.streamId)
+      expect(stored?.branch_sessions[0]?.nativeSessionId).toBe("ses_resolved_after_completion")
     } finally {
       cleanupTestWorkstream(workspace)
     }
@@ -182,7 +369,16 @@ describe("launch_supervision_branch", () => {
         { batch: "10.01" },
         { sessionID: "root-session-1" },
         createDeps(workspace.repoRoot, workspace.streamId, {
-          runForkedBranch: async ({ onNativeSessionId }) => {
+          runForkedSession: async ({ title, onNativeSessionId }) => {
+            if (title.startsWith("root-checkpoint-")) {
+              return {
+                code: 0,
+                stdout: '{"type":"text","part":{"text":"CHECKPOINT READY"}}\n',
+                stderr: "",
+                nativeSessionId: "ses_checkpoint_1",
+              }
+            }
+
             await onNativeSessionId?.("ses_supervision_1")
             throw new Error("spawn failed")
           },
@@ -231,6 +427,131 @@ describe("launch_supervision_branch", () => {
 
       const stored = loadSupervisorState(workspace.repoRoot, workspace.streamId)
       expect(stored?.branch_sessions[0]?.status).toBe("completed")
+      expect(stored?.branch_sessions[0]?.checkpointSessionId).toBe("ses_checkpoint_1")
+    } finally {
+      cleanupTestWorkstream(workspace)
+    }
+  })
+
+  test("launches from a checkpoint with a fake-user supervision prompt", async () => {
+    const workspace = createTestWorkstream("001-agent-tool-prompt")
+    const calls: Array<{ sessionId: string; title: string; prompt: string }> = []
+
+    try {
+      await executeLaunchSupervisionBranch(
+        {
+          batch: "10.01",
+          timeoutMs: 1200000,
+          pollIntervalMs: 1000,
+          noServer: true,
+          silent: true,
+        },
+        { sessionID: "root-session-1" },
+        createDeps(workspace.repoRoot, workspace.streamId, {
+          runForkedSession: async ({ sessionId, title, prompt }) => {
+            calls.push({ sessionId, title, prompt })
+
+            return title.startsWith("root-checkpoint-")
+              ? {
+                  code: 0,
+                  stdout: '{"type":"text","part":{"text":"CHECKPOINT READY"}}\n',
+                  stderr: "",
+                  nativeSessionId: "ses_checkpoint_1",
+                }
+              : {
+                  code: 0,
+                  stdout: '{"type":"text","part":{"text":"## Accomplished\\n- done"}}\n',
+                  stderr: "",
+                  nativeSessionId: "ses_supervision_1",
+                }
+          },
+          parseOutput: () => ({
+            text: "## Accomplished\n- done",
+            logs: [],
+            success: true,
+          }),
+          exportSessionTranscript: async () => ({
+            info: {
+              id: "ses_supervision_1",
+              title: "Supervision branch",
+              summary: { additions: 0, deletions: 0, files: 0 },
+            },
+            messages: [
+              {
+                info: {
+                  id: "msg-final",
+                  role: "assistant",
+                  time: { created: 1, completed: 2 },
+                },
+                parts: [{ type: "text", text: "## Accomplished\n- done" }],
+              },
+            ],
+          }),
+          extractFinalBranchReport: (sessionExport) =>
+            sessionExport.messages[0]?.parts?.[0]?.text ?? "",
+        }),
+      )
+
+      expect(calls).toHaveLength(2)
+      expect(calls[0]).toMatchObject({ sessionId: "root-session-1" })
+      expect(calls[0]?.title.startsWith("root-checkpoint-")).toBe(true)
+      expect(calls[0]?.prompt).toContain("Please hold the current repo and workstream context")
+      expect(calls[0]?.prompt).not.toContain("You are a Root Agent supervision branch")
+
+      expect(calls[1]).toMatchObject({ sessionId: "ses_checkpoint_1" })
+      expect(calls[1]?.title).toBe(`root-supervision-${workspace.streamId}-branch-supervision-1`)
+      expect(calls[1]?.prompt).toContain("Please supervise batch 10.01 for this workstream.")
+      expect(calls[1]?.prompt).toContain(
+        `work supervise --repo-root \"${workspace.repoRoot}\" --stream \"${workspace.streamId}\" --batch \"10.01\" --timeout-ms 1200000 --poll-interval-ms 1000 --no-server --silent --root-session-id \"root-session-1\" --branch-session-id \"branch-supervision-1\" --parent-session-id \"ses_checkpoint_1\"`,
+      )
+      expect(calls[1]?.prompt).toContain("launch review subagents")
+      expect(calls[1]?.prompt).toContain("launch fix subagents")
+      expect(calls[1]?.prompt).toContain("## Accomplished")
+      expect(calls[1]?.prompt).toContain("## Next For The User")
+      expect(calls[1]?.prompt).not.toContain("You are a Root Agent supervision branch")
+    } finally {
+      cleanupTestWorkstream(workspace)
+    }
+  })
+
+  test("blocks nested supervision launches from an existing branch session", async () => {
+    const workspace = createTestWorkstream("001-agent-tool-nested-branch")
+
+    try {
+      await upsertBranchSessionLocked(
+        workspace.repoRoot,
+        workspace.streamId,
+        buildRootAgentBranchSession({
+          context: {
+            rootSessionId: "root-session-1",
+            branchSessionId: "branch-supervision-1",
+            parentSessionId: "root-session-1",
+            nativeSessionId: "ses_supervision_1",
+          },
+          branchRole: "supervision",
+          status: "running",
+          startedAt: "2026-04-12T00:00:00.000Z",
+          updatedAt: "2026-04-12T00:00:00.000Z",
+          batchId: "10.01",
+        }),
+      )
+
+      const result = await executeLaunchSupervisionBranch(
+        { batch: "10.02" },
+        { sessionID: "ses_supervision_1" },
+        createDeps(workspace.repoRoot, workspace.streamId, {
+          runForkedSession: async () => {
+            throw new Error("nested branch launch should not run")
+          },
+        }),
+      )
+
+      expect(result).toContain("cannot launch additional supervision branches")
+      expect(result).toContain("branch branch-supervision-1")
+
+      const stored = loadSupervisorState(workspace.repoRoot, workspace.streamId)
+      expect(stored?.branch_sessions).toHaveLength(1)
+      expect(stored?.branch_sessions[0]?.batchId).toBe("10.01")
     } finally {
       cleanupTestWorkstream(workspace)
     }

@@ -641,6 +641,8 @@ export interface RootAgentLineage {
   rootSessionId: string
   branchSessionId: string
   branchRole: RootAgentBranchRole
+  checkpointSessionId?: string
+  checkpointCreatedAt?: string
   parentBranchSessionId?: string
   parentSessionId?: string
   nativeSessionId?: string

@@ -12,6 +12,8 @@ import type {
 export interface RootAgentBranchContext {
   rootSessionId: string
   branchSessionId: string
+  checkpointSessionId?: string
+  checkpointCreatedAt?: string
   parentSessionId?: string
   parentBranchSessionId?: string
   nativeSessionId?: string
@@ -27,6 +29,32 @@ export function getRootAgentBranchSource(
   fallback: RootAgentBranchSource = "repo_local_fallback",
 ): RootAgentBranchSource {
   return nativeSessionId ? "native_fork" : fallback
+}
+
+export function findRootAgentBranchSessionByBranchSessionId(args: {
+  repoRoot: string
+  streamId: string
+  branchSessionId: string
+}): RootAgentBranchSession | undefined {
+  return loadSupervisorState(args.repoRoot, args.streamId)?.branch_sessions.find(
+    (branch) => branch.branchSessionId === args.branchSessionId,
+  )
+}
+
+export function findRootAgentBranchSessionByNativeSessionId(args: {
+  repoRoot: string
+  streamId: string
+  nativeSessionId: string
+}): RootAgentBranchSession | undefined {
+  return loadSupervisorState(args.repoRoot, args.streamId)?.branch_sessions.find(
+    (branch) => branch.nativeSessionId === args.nativeSessionId,
+  )
+}
+
+export function isTerminalRootAgentBranchStatus(
+  status: RootAgentBranchStatus | undefined,
+): status is Extract<RootAgentBranchStatus, "completed" | "stopped" | "failed"> {
+  return status === "completed" || status === "stopped" || status === "failed"
 }
 
 export async function waitForRootAgentBranchNativeSessionId(args: {
@@ -57,6 +85,32 @@ export async function waitForRootAgentBranchNativeSessionId(args: {
   }
 }
 
+export async function waitForRootAgentBranchTerminalSession(args: {
+  repoRoot: string
+  streamId: string
+  branchSessionId: string
+  timeoutMs?: number
+  pollIntervalMs?: number
+}): Promise<RootAgentBranchSession | undefined> {
+  const timeoutMs = Math.max(0, args.timeoutMs ?? 3000)
+  const pollIntervalMs = Math.max(1, args.pollIntervalMs ?? 100)
+  const deadline = Date.now() + timeoutMs
+
+  while (true) {
+    const branch = findRootAgentBranchSessionByBranchSessionId(args)
+
+    if (branch && isTerminalRootAgentBranchStatus(branch.status)) {
+      return branch
+    }
+
+    if (Date.now() >= deadline) {
+      return branch
+    }
+
+    await new Promise((resolve) => setTimeout(resolve, pollIntervalMs))
+  }
+}
+
 export function buildRootAgentLineage(args: {
   context: RootAgentBranchContext
   branchRole: RootAgentBranchRole
@@ -68,6 +122,12 @@ export function buildRootAgentLineage(args: {
     rootSessionId: args.context.rootSessionId,
     branchSessionId: args.branchSessionId ?? args.context.branchSessionId,
     branchRole: args.branchRole,
+    ...(args.context.checkpointSessionId
+      ? { checkpointSessionId: args.context.checkpointSessionId }
+      : {}),
+    ...(args.context.checkpointCreatedAt
+      ? { checkpointCreatedAt: args.context.checkpointCreatedAt }
+      : {}),
     ...(args.context.parentBranchSessionId
       ? { parentBranchSessionId: args.context.parentBranchSessionId }
       : {}),

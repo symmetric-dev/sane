@@ -243,6 +243,77 @@ Persisted-state note for same-batch resume verification:
 - Do not rely only on resumed console output.
 - Confirm the resumed batch by checking that the next persisted `supervisor-state.json` update still references `SS.BB` before any later incomplete batch appears in `reviewed_batches`, `stage_stops`, or other run/finalization metadata.
 
+## Prompt-First Live Test Guidance (One-Level Experiment)
+
+This revision intentionally validates a **prompt-first** branch handoff before promoting the behavior into a dedicated supervising skill.
+
+### Scope guardrail
+
+- Only the real Root Agent may launch a supervision branch.
+- If a branch session tries to call `launch_supervision_branch`, the launch path must fail immediately with a clear guardrail error.
+- Treat that failure as correct behavior for this experiment: the branch should **yield back** to the Root Agent instead of building a deeper branch tree.
+
+### What makes a checkpoint branch-safe
+
+Use a checkpoint only when all of the following are true:
+
+- the workstream plan, current revision, and task ownership are already settled
+- the branch needs execution context, not the Root Agent's orchestration debate
+- later Root Agent reasoning about policy, escalation, or future branching has not yet polluted the transcript
+- the Root Agent would still trust the checkpointed context if the branch started from it again right now
+
+If any of those assumptions changed, refresh the checkpoint before the next live run.
+
+### Expected fake-user prompt behavior
+
+The child branch prompt should act like a simulated user handing one bounded job to the branch:
+
+- tell the branch to run the exact `work supervise ... --root-session-id ... --branch-session-id ...` command
+- keep the branch focused on supervision execution/recovery only
+- allow review/fix subagents only when `work supervise` requires them
+- end with a short yield report back to the Root Agent, not a new branch launch or direct user escalation
+
+### Live-run inspection flow for the real Root Agent
+
+After launching the branch, inspect these artifacts in order:
+
+1. **Checkpoint + lineage evidence**
+   - confirm the branch started from the intended checkpoint/fork point
+   - inspect `work/<stream-id>/supervisor-state.json` → `branch_sessions[]`
+   - verify `rootSessionId`, `branchSessionId`, `parentSessionId`, optional `parentBranchSessionId`, and `nativeSessionId`
+2. **Terminal branch status**
+   - confirm the branch session reached `completed`, `stopped`, or `failed`
+   - use `branch_sessions[].status`, `batchId`, `runId`, `updatedAt`, and `notes`
+3. **Extracted final report**
+   - export the child transcript from its native session id: `opencode export "<native-session-id>"`
+   - treat the **last completed assistant message** as the branch's final report source
+   - verify it states: accomplished work, issues/fixes, and why the branch yielded back
+
+### Evidence of correct yield-back vs drift
+
+**Correct yield-back evidence**
+
+- the branch runs `work supervise` instead of discussing higher-level orchestration
+- the final assistant message reads like a short handoff/report to the Root Agent
+- the reported stop reason matches persisted state such as terminal batch status, escalation, timeout, or stage stop
+- any nested branch attempt is blocked by the one-level guardrail and reported back upward
+
+**Drift evidence**
+
+- the branch talks as if it owns the whole workstream or is the real Root Agent
+- it proposes launching another supervision branch instead of yielding
+- its final message lacks a concrete yield reason grounded in persisted state
+- transcript claims do not match `branch_sessions[]`, `batch-status/*.json`, or `supervisor-state.json`
+
+### Why the branch yielded back
+
+For this experiment, every acceptable yield reason should be explainable from persisted evidence. Typical reasons:
+
+- batch reached a terminal state and is ready for Root Agent inspection
+- timeout/non-terminal wait requires Root Agent follow-up
+- escalation or stage boundary requires Root Agent review before user contact
+- one-level guardrail blocked a nested branch launch
+
 ## Validation Strategy: Root Agent Ownership and Drift Reduction
 
 Use this validation flow to confirm Root Agent-owned branch orchestration reduces drift vs the previous self-contained `work supervise` policy model.

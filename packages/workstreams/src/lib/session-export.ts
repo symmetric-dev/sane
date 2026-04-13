@@ -78,6 +78,11 @@ export type MessagePart =
 export interface MessageInfo {
   id: string
   role: "user" | "assistant"
+  time?: {
+    created?: number
+    completed?: number
+  }
+  finish?: string
   [key: string]: unknown
 }
 
@@ -132,6 +137,14 @@ export function isTextPart(part: MessagePart): part is TextPart {
  */
 export function isToolPart(part: MessagePart): part is ToolPart {
   return part.type === "tool"
+}
+
+function isAssistantMessage(message: ExportedMessage | null | undefined): boolean {
+  return message?.info?.role === "assistant"
+}
+
+function hasCompletedTimestamp(message: ExportedMessage | null | undefined): boolean {
+  return typeof message?.info?.time?.completed === "number"
 }
 
 // ============================================================================
@@ -238,6 +251,69 @@ export function extractTextMessages(exportData: SessionExport): string {
 
   // Join messages with double newlines for separation
   return textParts.join("\n\n")
+}
+
+/**
+ * Extract text content from a single exported message.
+ *
+ * Returns only non-empty text parts joined by newlines.
+ */
+export function extractMessageText(message: ExportedMessage | null | undefined): string {
+  if (!message?.parts || !Array.isArray(message.parts)) {
+    return ""
+  }
+
+  return message.parts
+    .filter((part): part is TextPart => isTextPart(part))
+    .map((part) => part.text)
+    .filter((text) => text && typeof text === "string" && text.trim() !== "")
+    .join("\n")
+}
+
+/**
+ * Find the last completed assistant message in a session export.
+ *
+ * If no assistant message has a completion timestamp, this falls back to the
+ * last assistant message that still has extractable text so older exports do
+ * not lose the final report.
+ */
+export function findLastCompletedAssistantMessage(
+  exportData: SessionExport,
+): ExportedMessage | null {
+  if (!exportData?.messages || !Array.isArray(exportData.messages)) {
+    return null
+  }
+
+  for (let i = exportData.messages.length - 1; i >= 0; i--) {
+    const message = exportData.messages[i]
+    if (!message) {
+      continue
+    }
+
+    if (isAssistantMessage(message) && hasCompletedTimestamp(message) && extractMessageText(message)) {
+      return message
+    }
+  }
+
+  for (let i = exportData.messages.length - 1; i >= 0; i--) {
+    const message = exportData.messages[i]
+    if (!message) {
+      continue
+    }
+
+    if (isAssistantMessage(message) && extractMessageText(message)) {
+      return message
+    }
+  }
+
+  return null
+}
+
+/**
+ * Extract the text from the last completed assistant message.
+ */
+export function extractLastCompletedAssistantText(exportData: SessionExport): string {
+  return extractMessageText(findLastCompletedAssistantMessage(exportData))
 }
 
 /**

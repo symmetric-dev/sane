@@ -195,6 +195,8 @@ describe("supervisor-state", () => {
       rootSessionId: "root-session-1",
       branchSessionId: "branch-supervision-1",
       branchRole: "supervision",
+      checkpointSessionId: "ses_checkpoint_1",
+      checkpointCreatedAt: startedAt,
       parentSessionId: "root-session-1",
       nativeSessionId: "ses_supervision_1",
       source: "native_fork",
@@ -209,15 +211,17 @@ describe("supervisor-state", () => {
 
     const stored = loadSupervisorState(workspace.repoRoot, workspace.streamId)
     expect(stored?.branch_sessions).toHaveLength(1)
-    expect(stored?.branch_sessions[0]).toMatchObject({
-      owner: "root_agent",
-      rootSessionId: "root-session-1",
-      branchSessionId: "branch-supervision-1",
-      branchRole: "supervision",
-      parentSessionId: "root-session-1",
-      nativeSessionId: "ses_supervision_1",
-      source: "native_fork",
-      runId: "sup-run-1",
+      expect(stored?.branch_sessions[0]).toMatchObject({
+        owner: "root_agent",
+        rootSessionId: "root-session-1",
+        branchSessionId: "branch-supervision-1",
+        branchRole: "supervision",
+        checkpointSessionId: "ses_checkpoint_1",
+        checkpointCreatedAt: startedAt,
+        parentSessionId: "root-session-1",
+        nativeSessionId: "ses_supervision_1",
+        source: "native_fork",
+        runId: "sup-run-1",
       batchId: "01.01",
     })
   })

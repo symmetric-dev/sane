@@ -1,6 +1,9 @@
 import { describe, expect, test, mock, beforeEach } from "bun:test"
 import {
+  extractLastCompletedAssistantText,
+  extractMessageText,
   extractTextMessages,
+  findLastCompletedAssistantMessage,
   isTextPart,
   isToolPart,
   type SessionExport,
@@ -395,5 +398,93 @@ describe("extractTextMessages", () => {
       expect(result).not.toContain("Please fix the parser")
       expect(result).not.toContain("Great, fix it")
     })
+  })
+})
+
+describe("extractMessageText", () => {
+  test("joins text parts from a single message", () => {
+    expect(
+      extractMessageText(
+        createAssistantMessage([
+          { type: "text", text: "Accomplished work" },
+          { type: "tool", tool: "bash", state: { input: {}, output: "ignored" } },
+          { type: "text", text: "Reason for yield" },
+        ]),
+      ),
+    ).toBe("Accomplished work\nReason for yield")
+  })
+
+  test("returns empty string for malformed messages", () => {
+    expect(extractMessageText(null as unknown as ExportedMessage)).toBe("")
+    expect(
+      extractMessageText({
+        info: { id: "msg-1", role: "assistant" },
+        parts: undefined as unknown as MessagePart[],
+      }),
+    ).toBe("")
+  })
+})
+
+describe("findLastCompletedAssistantMessage", () => {
+  test("prefers the last assistant message with a completion timestamp", () => {
+    const earlierCompleted = createAssistantMessage([{ type: "text", text: "Earlier report" }])
+    earlierCompleted.info.id = "msg-earlier"
+    earlierCompleted.info.time = { created: 1, completed: 2 }
+
+    const finalCompleted = createAssistantMessage([{ type: "text", text: "Final report" }])
+    finalCompleted.info.id = "msg-final"
+    finalCompleted.info.time = { created: 3, completed: 4 }
+
+    const incompleteLater = createAssistantMessage([{ type: "text", text: "Streaming draft" }])
+    incompleteLater.info.id = "msg-draft"
+    incompleteLater.info.time = { created: 5 }
+
+    const session = createSessionExport([
+      earlierCompleted,
+      createUserMessage([{ type: "text", text: "Thanks" }]),
+      finalCompleted,
+      incompleteLater,
+    ])
+
+    expect(findLastCompletedAssistantMessage(session)?.info.id).toBe("msg-final")
+  })
+
+  test("falls back to the last assistant message with text when completion metadata is missing", () => {
+    const first = createAssistantMessage([{ type: "text", text: "First" }])
+    first.info.id = "msg-first"
+
+    const last = createAssistantMessage([{ type: "text", text: "Last without completed" }])
+    last.info.id = "msg-last"
+
+    const session = createSessionExport([first, last])
+
+    expect(findLastCompletedAssistantMessage(session)?.info.id).toBe("msg-last")
+  })
+
+  test("returns null when there is no assistant text to extract", () => {
+    const session = createSessionExport([
+      createUserMessage([{ type: "text", text: "Only user content" }]),
+    ])
+
+    expect(findLastCompletedAssistantMessage(session)).toBeNull()
+  })
+})
+
+describe("extractLastCompletedAssistantText", () => {
+  test("extracts the final completed assistant report text", () => {
+    const earlier = createAssistantMessage([{ type: "text", text: "Earlier report" }])
+    earlier.info.time = { created: 1, completed: 2 }
+
+    const final = createAssistantMessage([
+      { type: "text", text: "Accomplished work: updated parent monitor." },
+      { type: "text", text: "Reason for yielding: batch paused for Root Agent review." },
+    ])
+    final.info.time = { created: 3, completed: 4 }
+
+    const session = createSessionExport([earlier, final])
+
+    expect(extractLastCompletedAssistantText(session)).toBe(
+      "Accomplished work: updated parent monitor.\nReason for yielding: batch paused for Root Agent review.",
+    )
   })
 })

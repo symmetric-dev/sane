@@ -169,4 +169,14 @@ bun run test tests/supervise.test.ts tests/supervisor-state.test.ts
 
 These tests validate deterministic review evidence, escalation/fix-cycle persistence, and interruption-safe resume behavior relied on by Root Agent orchestration.
 
+### Prompt-first branch handoff live validation
+
+For the current one-level prompt-first experiment:
+
+- treat supervision branches as single-hop children of the Root Agent only
+- if a branch tries to launch another supervision branch, the launch must fail with a guardrail error and the branch should yield back upward
+- validate lineage and branch status from `work/<stream-id>/supervisor-state.json` → `branch_sessions[]`
+- validate the final branch report by exporting the child native session transcript and reading the last completed assistant message
+- classify drift when the branch acts like the Root Agent or proposes deeper branching instead of reporting its `work supervise` outcome
+
 For full operator guidance and config details, see `../../docs/SUPERVISOR.md`.
