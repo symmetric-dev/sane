@@ -1,12 +1,14 @@
 import { randomUUID } from "crypto"
 import { loadSupervisorState } from "./supervisor-state.ts"
 import type {
+  RootAgentBranchScope,
   RootAgentBreakpointSelection,
   RootAgentBranchRole,
   RootAgentBranchSession,
   RootAgentBranchSource,
   RootAgentBranchStatus,
   RootAgentLineage,
+  RootAgentSupervisionProgress,
   SupervisorReviewOutcome,
 } from "./types.ts"
 
@@ -22,6 +24,98 @@ export interface RootAgentBranchContext {
   parentBranchSessionId?: string
   nativeSessionId?: string
   source?: RootAgentBranchSource
+  scope?: RootAgentBranchScope
+}
+
+function inferStageIdFromBatchId(batchId?: string): string | undefined {
+  if (!batchId) {
+    return undefined
+  }
+
+  const [stageId] = batchId.split(".")
+  return stageId && stageId.length > 0 ? stageId : undefined
+}
+
+export function normalizeRootAgentBranchScope(args: {
+  scope?: RootAgentBranchScope
+  batchId?: string
+  fallbackScope?: RootAgentBranchScope
+}): RootAgentBranchScope | undefined {
+  const scope = args.scope ?? args.fallbackScope
+  const fallbackBatchId =
+    args.fallbackScope?.level === "batch" ? args.fallbackScope.batchId : undefined
+  const scopeBatchId = scope?.level === "batch" ? scope.batchId : undefined
+  const effectiveBatchId = args.batchId ?? scopeBatchId ?? fallbackBatchId
+
+  if (scope?.level === "stage") {
+    return {
+      level: "stage",
+      stageId: scope.stageId,
+    }
+  }
+
+  if (scope?.level === "batch") {
+    const stageId = scope.stageId ?? inferStageIdFromBatchId(effectiveBatchId)
+    const batchId = effectiveBatchId ?? scope.batchId
+
+    if (!stageId || !batchId) {
+      return undefined
+    }
+
+    return {
+      level: "batch",
+      stageId,
+      batchId,
+    }
+  }
+
+  const inferredStageId = inferStageIdFromBatchId(effectiveBatchId)
+  if (!effectiveBatchId || !inferredStageId) {
+    return undefined
+  }
+
+  return {
+    level: "batch",
+    stageId: inferredStageId,
+    batchId: effectiveBatchId,
+  }
+}
+
+export function normalizeRootAgentSupervisionProgress(args: {
+  branchRole?: RootAgentBranchRole
+  scope?: RootAgentBranchScope
+  batchId?: string
+  progress?: Partial<RootAgentSupervisionProgress>
+  fallbackProgress?: Partial<RootAgentSupervisionProgress>
+}): RootAgentSupervisionProgress | undefined {
+  const progress = args.progress ?? args.fallbackProgress
+
+  if (args.branchRole && args.branchRole !== "supervision" && !progress) {
+    return undefined
+  }
+
+  const executionMode =
+    args.scope?.level === "stage"
+      ? "stage_batch_loop"
+      : progress?.executionMode ??
+        (args.scope?.level === "batch" || args.batchId ? "single_batch_run" : undefined)
+
+  const currentBatchId =
+    args.batchId ??
+    progress?.currentBatchId ??
+    (args.scope?.level === "batch" ? args.scope.batchId : undefined)
+
+  const lastReviewedBatchId = progress?.lastReviewedBatchId
+
+  if (!executionMode && !currentBatchId && !lastReviewedBatchId) {
+    return undefined
+  }
+
+  return {
+    executionMode: executionMode ?? "single_batch_run",
+    ...(currentBatchId ? { currentBatchId } : {}),
+    ...(lastReviewedBatchId ? { lastReviewedBatchId } : {}),
+  }
 }
 
 export function createRootAgentBranchSessionId(role: RootAgentBranchRole): string {
@@ -150,7 +244,13 @@ export function buildRootAgentLineage(args: {
   branchRole: RootAgentBranchRole
   branchSessionId?: string
   source?: RootAgentBranchSource
+  batchId?: string
 }): RootAgentLineage {
+  const normalizedScope = normalizeRootAgentBranchScope({
+    scope: args.context.scope,
+    batchId: args.batchId,
+  })
+
   return {
     owner: "root_agent",
     rootSessionId: args.context.rootSessionId,
@@ -180,6 +280,7 @@ export function buildRootAgentLineage(args: {
       args.context.nativeSessionId,
       args.source ?? args.context.source ?? "repo_local_fallback",
     ),
+    ...(normalizedScope ? { scope: normalizedScope } : {}),
   }
 }
 
@@ -194,6 +295,7 @@ export function buildRootAgentBranchSession(args: {
   completedAt?: string
   runId?: string
   batchId?: string
+  supervisionProgress?: RootAgentSupervisionProgress
   threadId?: string
   reviewId?: string
   fixCycleId?: string
@@ -205,6 +307,19 @@ export function buildRootAgentBranchSession(args: {
     branchRole: args.branchRole,
     branchSessionId: args.branchSessionId,
     source: args.source,
+    batchId: args.batchId,
+  })
+  const progressBatchId =
+    args.batchId ?? (lineage.scope?.level === "batch" ? lineage.scope.batchId : undefined)
+  const persistedBatchId =
+    lineage.scope?.level === "stage"
+      ? undefined
+      : args.batchId ?? (lineage.scope?.level === "batch" ? lineage.scope.batchId : undefined)
+  const supervisionProgress = normalizeRootAgentSupervisionProgress({
+    branchRole: args.branchRole,
+    scope: lineage.scope,
+    batchId: progressBatchId,
+    progress: args.supervisionProgress,
   })
 
   return {
@@ -214,7 +329,8 @@ export function buildRootAgentBranchSession(args: {
     updatedAt,
     ...(args.completedAt ? { completedAt: args.completedAt } : {}),
     ...(args.runId ? { runId: args.runId } : {}),
-    ...(args.batchId ? { batchId: args.batchId } : {}),
+    ...(persistedBatchId ? { batchId: persistedBatchId } : {}),
+    ...(supervisionProgress ? { supervisionProgress } : {}),
     ...(args.threadId ? { threadId: args.threadId } : {}),
     ...(args.reviewId ? { reviewId: args.reviewId } : {}),
     ...(args.fixCycleId ? { fixCycleId: args.fixCycleId } : {}),

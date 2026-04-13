@@ -2,8 +2,10 @@ import { existsSync, mkdirSync, readFileSync } from "fs"
 import { dirname, join } from "path"
 import * as lockfile from "proper-lockfile"
 import type {
+  RootAgentBranchScope,
   RootAgentCheckpointPointer,
   RootAgentBranchSession,
+  RootAgentSupervisionProgress,
   SupervisorEscalationRecord,
   SupervisorFixCycle,
   SupervisorIssueSummary,
@@ -15,6 +17,79 @@ import type {
 import { isTerminalBatchStatus, readBatchStatus } from "./batch-status.ts"
 import { atomicWriteFile } from "./index.ts"
 import { getWorkDir } from "./repo.ts"
+
+function inferStageIdFromBatchId(batchId?: string): string | undefined {
+  if (!batchId) {
+    return undefined
+  }
+
+  const [stageId] = batchId.split(".")
+  return stageId && stageId.length > 0 ? stageId : undefined
+}
+
+function normalizeBranchScope(scope?: RootAgentBranchScope, batchId?: string): RootAgentBranchScope | undefined {
+  const effectiveBatchId = batchId ?? (scope?.level === "batch" ? scope.batchId : undefined)
+
+  if (scope?.level === "stage") {
+    return {
+      level: "stage",
+      stageId: scope.stageId,
+    }
+  }
+
+  if (scope?.level === "batch") {
+    return {
+      level: "batch",
+      stageId: scope.stageId,
+      batchId: effectiveBatchId ?? scope.batchId,
+    }
+  }
+
+  const inferredStageId = inferStageIdFromBatchId(effectiveBatchId)
+  if (!effectiveBatchId || !inferredStageId) {
+    return undefined
+  }
+
+  return {
+    level: "batch",
+    stageId: inferredStageId,
+    batchId: effectiveBatchId,
+  }
+}
+
+function normalizeSupervisionProgress(args: {
+  branchRole?: RootAgentBranchSession["branchRole"]
+  scope?: RootAgentBranchScope
+  batchId?: string
+  progress?: Partial<RootAgentSupervisionProgress>
+}): RootAgentSupervisionProgress | undefined {
+  if (args.branchRole && args.branchRole !== "supervision" && !args.progress) {
+    return undefined
+  }
+
+  const executionMode =
+    args.scope?.level === "stage"
+      ? "stage_batch_loop"
+      : args.progress?.executionMode ??
+        (args.scope?.level === "batch" || args.batchId ? "single_batch_run" : undefined)
+
+  const currentBatchId =
+    args.batchId ??
+    args.progress?.currentBatchId ??
+    (args.scope?.level === "batch" ? args.scope.batchId : undefined)
+
+  const lastReviewedBatchId = args.progress?.lastReviewedBatchId
+
+  if (!executionMode && !currentBatchId && !lastReviewedBatchId) {
+    return undefined
+  }
+
+  return {
+    executionMode: executionMode ?? "single_batch_run",
+    ...(currentBatchId ? { currentBatchId } : {}),
+    ...(lastReviewedBatchId ? { lastReviewedBatchId } : {}),
+  }
+}
 
 export const SUPERVISOR_STATE_VERSION = "1.0.0"
 
@@ -67,7 +142,45 @@ export function loadSupervisorState(
     ...parsed,
     runs: parsed.runs ?? [],
     checkpoint_pointers: parsed.checkpoint_pointers ?? [],
-    branch_sessions: parsed.branch_sessions ?? [],
+    branch_sessions:
+      parsed.branch_sessions?.map((branchSession) => {
+        const normalizedScope = normalizeBranchScope(branchSession.scope, branchSession.batchId)
+        const normalizedBatchId =
+          normalizedScope?.level === "stage"
+            ? undefined
+            : branchSession.batchId ??
+              (normalizedScope?.level === "batch" ? normalizedScope.batchId : undefined)
+        const progressBatchId =
+          branchSession.batchId ??
+          (normalizedScope?.level === "batch" ? normalizedScope.batchId : undefined)
+        const supervisionProgress = normalizeSupervisionProgress({
+          branchRole: branchSession.branchRole,
+          scope: normalizedScope,
+          batchId: progressBatchId,
+          progress: branchSession.supervisionProgress,
+        })
+
+        const normalizedBranchSession: RootAgentBranchSession = {
+          ...branchSession,
+          ...(normalizedBatchId ? { batchId: normalizedBatchId } : {}),
+          ...(normalizedScope ? { scope: normalizedScope } : {}),
+          ...(supervisionProgress ? { supervisionProgress } : {}),
+        }
+
+        if (!normalizedScope) {
+          delete normalizedBranchSession.scope
+        }
+
+        if (!normalizedBatchId) {
+          delete normalizedBranchSession.batchId
+        }
+
+        if (!supervisionProgress) {
+          delete normalizedBranchSession.supervisionProgress
+        }
+
+        return normalizedBranchSession
+      }) ?? [],
     reviewed_batches: parsed.reviewed_batches ?? [],
     issue_summaries: parsed.issue_summaries ?? [],
     fix_cycles: parsed.fix_cycles ?? [],
@@ -268,11 +381,52 @@ export async function upsertBranchSessionLocked(
       (value) => value.branchSessionId === branchSession.branchSessionId,
     )
 
+    const requestedScope =
+      existing?.scope?.level === "stage" && branchSession.scope?.level === "batch"
+        ? existing.scope
+        : branchSession.scope ?? existing?.scope
+
+    const normalizedScope = normalizeBranchScope(requestedScope, branchSession.batchId ?? existing?.batchId)
+    const normalizedBatchId =
+      normalizedScope?.level === "stage"
+        ? undefined
+        : branchSession.batchId ??
+          existing?.batchId ??
+          (normalizedScope?.level === "batch" ? normalizedScope.batchId : undefined)
+    const progressBatchId =
+      branchSession.batchId ??
+      existing?.batchId ??
+      (normalizedScope?.level === "batch" ? normalizedScope.batchId : undefined)
+    const normalizedProgress = normalizeSupervisionProgress({
+      branchRole: branchSession.branchRole ?? existing?.branchRole,
+      scope: normalizedScope,
+      batchId: progressBatchId,
+      progress: {
+        ...existing?.supervisionProgress,
+        ...branchSession.supervisionProgress,
+      },
+    })
+
     const normalized: RootAgentBranchSession = {
       ...existing,
       ...branchSession,
       updatedAt: branchSession.updatedAt,
       completedAt: branchSession.completedAt ?? existing?.completedAt,
+      ...(normalizedBatchId ? { batchId: normalizedBatchId } : {}),
+      ...(normalizedScope ? { scope: normalizedScope } : {}),
+      ...(normalizedProgress ? { supervisionProgress: normalizedProgress } : {}),
+    }
+
+    if (!normalizedScope) {
+      delete normalized.scope
+    }
+
+    if (!normalizedBatchId) {
+      delete normalized.batchId
+    }
+
+    if (!normalizedProgress) {
+      delete normalized.supervisionProgress
     }
 
     return upsertItem(

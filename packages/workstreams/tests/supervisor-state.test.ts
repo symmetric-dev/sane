@@ -278,6 +278,148 @@ describe("supervisor-state", () => {
       source: "native_fork",
       runId: "sup-run-1",
       batchId: "01.01",
+      scope: {
+        level: "batch",
+        stageId: "01",
+        batchId: "01.01",
+      },
+      supervisionProgress: {
+        executionMode: "single_batch_run",
+        currentBatchId: "01.01",
+      },
+    })
+  })
+
+  test("loadSupervisorState normalizes legacy batch-only branch records into batch scope", async () => {
+    const startedAt = new Date().toISOString()
+
+    saveSupervisorState(workspace.repoRoot, workspace.streamId, {
+      version: "1.0.0",
+      stream_id: workspace.streamId,
+      last_updated: startedAt,
+      runs: [],
+      checkpoint_pointers: [],
+      branch_sessions: [
+        {
+          owner: "root_agent",
+          rootSessionId: "root-session-1",
+          branchSessionId: "branch-supervision-legacy",
+          branchRole: "supervision",
+          parentSessionId: "root-session-1",
+          source: "repo_local_fallback",
+          status: "completed",
+          startedAt,
+          updatedAt: startedAt,
+          batchId: "15.01",
+        },
+      ],
+      reviewed_batches: [],
+      issue_summaries: [],
+      fix_cycles: [],
+      escalations: [],
+      stage_stops: [],
+    })
+
+    const stored = loadSupervisorState(workspace.repoRoot, workspace.streamId)
+    expect(stored?.branch_sessions[0]?.scope).toEqual({
+      level: "batch",
+      stageId: "15",
+      batchId: "15.01",
+    })
+    expect(stored?.branch_sessions[0]?.supervisionProgress).toEqual({
+      executionMode: "single_batch_run",
+      currentBatchId: "15.01",
+    })
+  })
+
+  test("upsertBranchSessionLocked preserves stage scope while updating current batch", async () => {
+    const startedAt = new Date().toISOString()
+
+    await upsertBranchSessionLocked(workspace.repoRoot, workspace.streamId, {
+      owner: "root_agent",
+      rootSessionId: "root-session-1",
+      branchSessionId: "branch-supervision-stage",
+      branchRole: "supervision",
+      parentSessionId: "root-session-1",
+      source: "native_fork",
+      status: "running",
+      startedAt,
+      updatedAt: startedAt,
+      batchId: "15.01",
+      scope: {
+        level: "stage",
+        stageId: "15",
+      },
+    })
+
+    await upsertBranchSessionLocked(workspace.repoRoot, workspace.streamId, {
+      owner: "root_agent",
+      rootSessionId: "root-session-1",
+      branchSessionId: "branch-supervision-stage",
+      branchRole: "supervision",
+      parentSessionId: "root-session-1",
+      source: "native_fork",
+      status: "running",
+      startedAt,
+      updatedAt: new Date().toISOString(),
+      batchId: "15.02",
+    })
+
+    const stored = loadSupervisorState(workspace.repoRoot, workspace.streamId)
+    expect(stored?.branch_sessions[0]?.batchId).toBeUndefined()
+    expect(stored?.branch_sessions[0]?.scope).toEqual({
+      level: "stage",
+      stageId: "15",
+    })
+    expect(stored?.branch_sessions[0]?.supervisionProgress).toEqual({
+      executionMode: "stage_batch_loop",
+      currentBatchId: "15.02",
+    })
+  })
+
+  test("loadSupervisorState migrates legacy stage batch targets into supervision progress only", () => {
+    const startedAt = new Date().toISOString()
+
+    saveSupervisorState(workspace.repoRoot, workspace.streamId, {
+      version: "1.0.0",
+      stream_id: workspace.streamId,
+      last_updated: startedAt,
+      runs: [],
+      checkpoint_pointers: [],
+      branch_sessions: [
+        {
+          owner: "root_agent",
+          rootSessionId: "root-session-1",
+          branchSessionId: "branch-supervision-stage-legacy",
+          branchRole: "supervision",
+          parentSessionId: "root-session-1",
+          source: "repo_local_fallback",
+          status: "running",
+          startedAt,
+          updatedAt: startedAt,
+          batchId: "15.02",
+          scope: {
+            level: "stage",
+            stageId: "15",
+          },
+        },
+      ],
+      reviewed_batches: [],
+      issue_summaries: [],
+      fix_cycles: [],
+      escalations: [],
+      stage_stops: [],
+    })
+
+    const stored = loadSupervisorState(workspace.repoRoot, workspace.streamId)
+    expect(stored?.branch_sessions[0]?.batchId).toBeUndefined()
+    expect(stored?.branch_sessions[0]?.scope).toEqual({
+      level: "stage",
+      stageId: "15",
+    })
+    expect(stored?.branch_sessions[0]?.supervisionProgress).toEqual({
+      executionMode: "stage_batch_loop",
+      currentBatchId: "15.02",
     })
   })
 

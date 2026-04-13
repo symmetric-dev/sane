@@ -5,6 +5,8 @@ import {
   findRootAgentBranchSessionForLaunchSessionId,
   findRootAgentBranchSessionByNativeSessionId,
   getRootAgentBranchSource,
+  normalizeRootAgentBranchScope,
+  normalizeRootAgentSupervisionProgress,
   waitForRootAgentBranchTerminalSession,
   waitForRootAgentBranchNativeSessionId,
 } from "../src/lib/root-agent-branch.ts"
@@ -75,6 +77,63 @@ describe("root-agent-branch", () => {
     ).toMatchObject({
       checkpointMessageIndex: 42,
       checkpointCreatedAt: "2026-04-12T00:00:00.000Z",
+    })
+  })
+
+  test("normalizeRootAgentBranchScope infers legacy batch scope from batchId", () => {
+    expect(
+      normalizeRootAgentBranchScope({
+        batchId: "15.01",
+      }),
+    ).toEqual({
+      level: "batch",
+      stageId: "15",
+      batchId: "15.01",
+    })
+  })
+
+  test("buildRootAgentBranchSession persists explicit stage scope metadata", () => {
+    const session = buildRootAgentBranchSession({
+      context: {
+        rootSessionId: "root-session-1",
+        branchSessionId: "branch-supervision-1",
+        parentSessionId: "root-session-1",
+        scope: {
+          level: "stage",
+          stageId: "15",
+        },
+      },
+      branchRole: "supervision",
+      status: "running",
+      batchId: "15.01",
+      startedAt: "2026-04-13T00:00:00.000Z",
+      updatedAt: "2026-04-13T00:00:00.000Z",
+    })
+
+    expect(session.scope).toEqual({
+      level: "stage",
+      stageId: "15",
+    })
+    expect(session.batchId).toBeUndefined()
+    expect(session.supervisionProgress).toEqual({
+      executionMode: "stage_batch_loop",
+      currentBatchId: "15.01",
+    })
+  })
+
+  test("normalizeRootAgentSupervisionProgress separates stage scope from batch progress", () => {
+    expect(
+      normalizeRootAgentSupervisionProgress({
+        branchRole: "supervision",
+        scope: {
+          level: "stage",
+          stageId: "15",
+        },
+        batchId: "15.02",
+      }),
+    ).toEqual({
+      executionMode: "stage_batch_loop",
+      currentBatchId: "15.02",
     })
   })
 

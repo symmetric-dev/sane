@@ -321,11 +321,47 @@ New launches should write pointer metadata above.
 - **Stage 14:** launch path uses that selected boundary to control native branch inheritance while still persisting the same lineage metadata.
 - **Operator impact:** for new launches, treat pointer fields as both lineage evidence and the actual inheritance boundary source. Legacy checkpoint session IDs remain historical-only context.
 
+## Scope-Aware Branch Tracking (Stage 15)
+
+Branch supervision scope and `work supervise` execution scope are intentionally different:
+
+- `launch_supervision_branch` can track either **batch scope** or **stage scope** in persisted branch metadata.
+- `work supervise` itself remains a **single-batch execution/recovery primitive**.
+
+So a stage-scoped branch does **not** make `work supervise` stage-aware. It runs repeated single-batch `work supervise` calls and uses persisted workstream state to keep advancing inside that stage.
+
+### Operator mental model
+
+- **Batch-scoped branch:** supervise one bounded batch target and yield.
+- **Stage-scoped branch:** supervise one batch at a time, repeatedly, until the target stage has no remaining incomplete batches, then yield.
+
+### Stage-scope loop shape
+
+```bash
+# 1) launch stage-scoped tracking
+launch_supervision_branch({ scope: "stage", stage: "15" })
+
+# 2) branch inspects persisted stage state and runs one supervise pass
+work supervise ...
+
+# 3) branch continues with repeated single-batch supervise calls
+#    while re-checking that the derived batch still belongs to stage 15
+work supervise ...
+work supervise ...
+
+# 4) branch yields a stage-level report back to Root Agent
+```
+
+Persisted `supervisor-state.json` `branch_sessions[]` records should include `scope` metadata so operators can distinguish stage-level tracking from a one-batch launch. Older branch records that only contain `batchId` remain valid and are interpreted as batch scope.
+
 ### Expected fake-user prompt behavior
+
+For stale-tool debugging, call `workstream_tool_runtime_info` from the current session to inspect the loaded tool version, resolved runtime module path, active `work` command path, package version, and branch-work capability flags.
 
 The child branch prompt should act like a simulated user handing one bounded job to the branch:
 
 - tell the branch to run the exact `work supervise ... --root-session-id ... --branch-session-id ...` command
+- for **stage scope**, tell the branch to inspect persisted stage state and let `work supervise` derive the next incomplete or resumable batch inside that stage
 - keep the branch focused on supervision execution/recovery only
 - allow review/fix subagents only when `work supervise` requires them
 - end with a short yield report back to the Root Agent, not a new branch launch or direct user escalation

@@ -1,155 +1,207 @@
 // @ts-nocheck
-import { tool } from "@opencode-ai/plugin"
-import { spawn, spawnSync } from "child_process"
-import { existsSync, readFileSync, realpathSync } from "fs"
-import { dirname, join } from "path"
-import { pathToFileURL } from "url"
+import { tool } from "@opencode-ai/plugin";
+import { spawn, spawnSync } from "child_process";
+import { existsSync, readFileSync, realpathSync } from "fs";
+import { dirname, join } from "path";
+import { fileURLToPath, pathToFileURL } from "url";
+
+const WORKSTREAM_TOOL_VERSION = "2026-04-13-runtime-diagnostics-v1";
 
 interface WorkstreamsToolRuntime {
-  getResolvedStream: (index: any, streamId?: string) => { id: string }
-  loadIndex: (repoRoot: string) => any
-  buildRootAgentBranchSession: (args: any) => any
-  createRootAgentBranchSessionId: (role: string) => string
+  getResolvedStream: (index: any, streamId?: string) => { id: string };
+  loadIndex: (repoRoot: string) => any;
+  buildRootAgentBranchSession: (args: any) => any;
+  createRootAgentBranchSessionId: (role: string) => string;
   findRootAgentBranchSessionForLaunchSessionId: (args: {
-    repoRoot: string
-    streamId: string
-    sessionId: string
-  }) => any
+    repoRoot: string;
+    streamId: string;
+    sessionId: string;
+  }) => any;
   waitForRootAgentBranchNativeSessionId: (args: {
-    repoRoot: string
-    streamId: string
-    branchSessionId: string
-    timeoutMs?: number
-    pollIntervalMs?: number
-  }) => Promise<string | undefined>
+    repoRoot: string;
+    streamId: string;
+    branchSessionId: string;
+    timeoutMs?: number;
+    pollIntervalMs?: number;
+  }) => Promise<string | undefined>;
   waitForRootAgentBranchTerminalSession: (args: {
-    repoRoot: string
-    streamId: string
-    branchSessionId: string
-    timeoutMs?: number
-    pollIntervalMs?: number
-  }) => Promise<any>
-  loadSupervisorState: (repoRoot: string, streamId: string) => any
-  upsertBranchSessionLocked: (repoRoot: string, streamId: string, branchSession: any) => Promise<any>
-  refreshRootAgentCheckpointPointer: (args: any) => Promise<any>
+    repoRoot: string;
+    streamId: string;
+    branchSessionId: string;
+    timeoutMs?: number;
+    pollIntervalMs?: number;
+  }) => Promise<any>;
+  loadSupervisorState: (repoRoot: string, streamId: string) => any;
+  upsertBranchSessionLocked: (
+    repoRoot: string,
+    streamId: string,
+    branchSession: any,
+  ) => Promise<any>;
+  refreshRootAgentCheckpointPointer: (args: any) => Promise<any>;
   getRootAgentCheckpointSessionForkEligibility: (args: any) => {
-    valid: boolean
-    canForkCurrentSession: boolean
-    reason?: string
-    resolvedMessageId?: string
-    resolvedMessageIndex?: number
-    latestMessageIndex?: number
-  }
-  parseSynthesisJsonl: (content: string) => { text: string; logs: string[]; success: boolean }
-  exportSession: (sessionId: string) => Promise<any>
-  extractLastCompletedAssistantText: (sessionExport: any) => string
+    valid: boolean;
+    canForkCurrentSession: boolean;
+    reason?: string;
+    resolvedMessageId?: string;
+    resolvedMessageIndex?: number;
+    latestMessageIndex?: number;
+  };
+  parseSynthesisJsonl: (content: string) => {
+    text: string;
+    logs: string[];
+    success: boolean;
+  };
+  exportSession: (sessionId: string) => Promise<any>;
+  extractLastCompletedAssistantText: (sessionExport: any) => string;
 }
 
 interface WorkstreamsRuntimeResolutionOptions {
-  resolveWorkCommandPath?: () => string
+  resolveWorkCommandPath?: () => string;
 }
 
 interface WorkstreamsRuntimeLoadOptions extends WorkstreamsRuntimeResolutionOptions {
-  cache?: boolean
+  cache?: boolean;
+}
+
+export interface WorkstreamsToolRuntimeInfo {
+  toolVersion: string;
+  toolFilePath?: string;
+  workCommandPath?: string;
+  resolvedWorkCommandPath?: string;
+  resolvedRuntimeModulePath?: string;
+  workstreamsPackageRoot?: string;
+  workstreamsPackageVersion?: string;
+  capabilities: {
+    fakeUserPrompt: boolean;
+    metadataOnlyCheckpoints: boolean;
+    messageBoundaryFork: boolean;
+    breakpointTags: boolean;
+  };
+  errors?: {
+    workCommandPath?: string;
+    resolvedRuntimeModulePath?: string;
+    workstreamsPackageVersion?: string;
+  };
 }
 
 interface ForkedSessionArgs {
-  sessionId: string
-  repoRoot: string
-  title: string
-  prompt: string
-  checkpointMessageId?: string
-  forkMode?: "message" | "latest_session_fork"
-  onNativeSessionId?: (nativeSessionId: string) => Promise<void> | void
+  sessionId: string;
+  repoRoot: string;
+  title: string;
+  prompt: string;
+  checkpointMessageId?: string;
+  forkMode?: "message" | "latest_session_fork";
+  onNativeSessionId?: (nativeSessionId: string) => Promise<void> | void;
 }
 
 interface RootCheckpointPointer {
-  rootSessionId?: string
-  checkpointMessageId?: string
-  checkpointMessageIndex?: number
-  checkpointCreatedAt: string
+  rootSessionId?: string;
+  checkpointMessageId?: string;
+  checkpointMessageIndex?: number;
+  checkpointCreatedAt: string;
   breakpointSelection?: {
-    strategy: "explicit_tag" | "previous_user_before_launch"
-    configuredTags: string[]
-    matchedTag?: string
-    launchMessageId?: string
-    launchMessageIndex?: number
-    rationale: string
-  }
+    strategy: "explicit_tag" | "previous_user_before_launch";
+    configuredTags: string[];
+    matchedTag?: string;
+    launchMessageId?: string;
+    launchMessageIndex?: number;
+    rationale: string;
+  };
 }
 
+type BranchScopeLevel = "batch" | "stage";
+
+type BranchLaunchScope =
+  | {
+      level: "batch";
+      stageId: string;
+      batchId: string;
+    }
+  | {
+      level: "stage";
+      stageId: string;
+    };
+
 interface ForkedSessionResult {
-  code: number
-  stdout: string
-  stderr: string
-  nativeSessionId?: string
+  code: number;
+  stdout: string;
+  stderr: string;
+  nativeSessionId?: string;
 }
 
 interface CheckpointSessionForkEligibility {
-  valid: boolean
-  canForkCurrentSession: boolean
-  reason?: string
-  resolvedMessageId?: string
-  resolvedMessageIndex?: number
-  latestMessageIndex?: number
+  valid: boolean;
+  canForkCurrentSession: boolean;
+  reason?: string;
+  resolvedMessageId?: string;
+  resolvedMessageIndex?: number;
+  latestMessageIndex?: number;
 }
 
 export interface MessageBoundaryForkTransport {
-  startServer: typeof startOpencodeServer
-  requestJson: typeof requestOpencodeJson
+  startServer: typeof startOpencodeServer;
+  requestJson: typeof requestOpencodeJson;
 }
 
 function parseBreakpointTagsArg(rawValue?: string): string[] | undefined {
   if (typeof rawValue !== "string") {
-    return undefined
+    return undefined;
   }
 
-  const normalized = new Set<string>()
+  const normalized = new Set<string>();
 
   for (const candidate of rawValue.split(/[\n,]/)) {
-    const trimmed = candidate.trim()
+    const trimmed = candidate.trim();
     if (trimmed.length > 0) {
-      normalized.add(trimmed)
+      normalized.add(trimmed);
     }
   }
 
-  return normalized.size > 0 ? [...normalized] : undefined
+  return normalized.size > 0 ? [...normalized] : undefined;
 }
 
 function buildWorkSuperviseCommand(args: {
-  repoRoot: string
-  streamId: string
-  batch?: string
-  timeoutMs?: number
-  pollIntervalMs?: number
-  noServer?: boolean
-  silent?: boolean
-  rootSessionId: string
-  branchSessionId: string
-  parentSessionId: string
-  checkpointMessageId?: string
-  checkpointMessageIndex?: number
-  checkpointCreatedAt?: string
+  repoRoot: string;
+  streamId: string;
+  batch?: string;
+  timeoutMs?: number;
+  pollIntervalMs?: number;
+  noServer?: boolean;
+  silent?: boolean;
+  rootSessionId: string;
+  branchSessionId: string;
+  parentSessionId: string;
+  checkpointMessageId?: string;
+  checkpointMessageIndex?: number;
+  checkpointCreatedAt?: string;
 }): string {
-  return `work supervise --repo-root "${args.repoRoot}" --stream "${args.streamId}"${args.batch ? ` --batch "${args.batch}"` : ""}${args.timeoutMs !== undefined ? ` --timeout-ms ${args.timeoutMs}` : ""}${args.pollIntervalMs !== undefined ? ` --poll-interval-ms ${args.pollIntervalMs}` : ""}${args.noServer ? " --no-server" : ""}${args.silent ? " --silent" : ""} --root-session-id "${args.rootSessionId}" --branch-session-id "${args.branchSessionId}" --parent-session-id "${args.parentSessionId}"${args.checkpointMessageId ? ` --checkpoint-message-id "${args.checkpointMessageId}"` : ""}${typeof args.checkpointMessageIndex === "number" ? ` --checkpoint-message-index ${args.checkpointMessageIndex}` : ""}${args.checkpointCreatedAt ? ` --checkpoint-created-at "${args.checkpointCreatedAt}"` : ""}`
+  return `work supervise --repo-root "${args.repoRoot}" --stream "${args.streamId}"${args.batch ? ` --batch "${args.batch}"` : ""}${args.timeoutMs !== undefined ? ` --timeout-ms ${args.timeoutMs}` : ""}${args.pollIntervalMs !== undefined ? ` --poll-interval-ms ${args.pollIntervalMs}` : ""}${args.noServer ? " --no-server" : ""}${args.silent ? " --silent" : ""} --root-session-id "${args.rootSessionId}" --branch-session-id "${args.branchSessionId}" --parent-session-id "${args.parentSessionId}"${args.checkpointMessageId ? ` --checkpoint-message-id "${args.checkpointMessageId}"` : ""}${typeof args.checkpointMessageIndex === "number" ? ` --checkpoint-message-index ${args.checkpointMessageIndex}` : ""}${args.checkpointCreatedAt ? ` --checkpoint-created-at "${args.checkpointCreatedAt}"` : ""}`;
 }
 
 function buildSupervisionPrompt(args: {
-  batch?: string
-  command: string
+  scope?: BranchLaunchScope;
+  batch?: string;
+  command: string;
 }): string {
-  const batchTarget = args.batch ? `batch ${args.batch}` : "the next resumable batch"
+  const batchTarget = args.batch
+    ? `batch ${args.batch}`
+    : "the next resumable batch";
+  const scopeLabel = describeScopeLabel(args.scope, args.batch);
+  const scopeInstructions = buildScopeInstructionBlock(args.scope, args.batch);
 
   return [
-    `Please supervise ${batchTarget} for this workstream.`,
+    args.scope?.level === "stage"
+      ? `Please supervise ${scopeLabel} for this workstream, one batch at a time until the stage is done or you must yield by policy.`
+      : `Please supervise ${batchTarget} for this workstream.`,
     "Use the implementing-workstreams skill.",
+    ...scopeInstructions,
     "",
     "Start with this exact command:",
     args.command,
     "",
     "Then continue the supervision loop yourself:",
     "- inspect persisted batch and supervisor state after each supervise run",
-    "- if the run times out or remains resumable, resume with plain work supervise so the interrupted batch continues deterministically",
+    "- if the run times out or remains resumable, rerun work supervise without an explicit new --batch target so the interrupted batch continues deterministically",
     "- launch review subagents to inspect the completed work",
     "- evaluate the fix-cycle versus escalation policy from persisted evidence",
     "- launch fix subagents when review finds issues and a fix cycle is still appropriate",
@@ -161,8 +213,92 @@ function buildSupervisionPrompt(args: {
     "## Fixes Applied",
     "## Next For The User",
     "",
-    `In \"Next For The User\", explicitly say whether ${batchTarget} is done, why it is done or not done, and what the user should do next. If a section has nothing to report, write \"None.\"`,
-  ].join("\n")
+    `In \"Next For The User\", explicitly say whether ${scopeLabel} is done, why it is done or not done, and what the user should do next. If a section has nothing to report, write \"None.\"`,
+  ].join("\n");
+}
+
+function describeScopeLabel(scope: BranchLaunchScope | undefined, batch?: string): string {
+  return scope?.level === "stage"
+    ? `stage ${scope.stageId}`
+    : `batch ${scope?.batchId ?? batch ?? "(next resumable batch)"}`;
+}
+
+function buildScopeInstructionBlock(
+  scope: BranchLaunchScope | undefined,
+  batch?: string,
+): string[] {
+  const scopeLabel = describeScopeLabel(scope, batch);
+
+  if (scope?.level === "stage") {
+    return [
+      `Branch scope: ${scopeLabel}.`,
+      "Important: work supervise itself is still a single-batch primitive.",
+      `Stay inside ${scopeLabel}; do not drift into later stages even if the broader workstream has more incomplete batches.`,
+      `Before each supervise pass, inspect the persisted state of ${scopeLabel} and identify the next incomplete or resumable batch within that stage.`,
+      `Launch and rerun work supervise without an explicit --batch target for stage scope so the helper derives the current batch from persisted stage progress.`,
+      `After each review/fix cycle, inspect persisted workstream and supervisor state again to decide whether the same batch must resume, another batch in ${scopeLabel} remains, or ${scopeLabel} is complete.`,
+      `Do not combine stage scope with an explicit batch launch target; stage-scoped branches must derive the active batch from persisted stage state.`,
+    ];
+  }
+
+  return [
+    `Branch scope: ${scopeLabel}.`,
+    "Keep this branch focused on one bounded batch supervision pass.",
+  ];
+}
+
+function inferStageIdFromBatchId(batchId?: string): string | undefined {
+  if (!batchId) {
+    return undefined;
+  }
+
+  const [stageId] = batchId.split(".");
+  return stageId && stageId.length > 0 ? stageId : undefined;
+}
+
+function resolveLaunchScope(args: {
+  scope?: string;
+  stage?: string;
+  batch?: string;
+}): BranchLaunchScope | undefined {
+  const requestedScope = args.scope === "stage" ? "stage" : "batch";
+
+  if (requestedScope === "stage" || args.stage) {
+    const stageId = args.stage;
+    if (!stageId) {
+      throw new Error(
+        "Stage scope requires --stage so the branch can report stage-level progress.",
+      );
+    }
+
+    if (args.batch) {
+      throw new Error(
+        `Stage scope for stage ${stageId} does not accept an explicit batch target; launch with --stage only and derive the next resumable batch from persisted stage state.`,
+      );
+    }
+
+    return {
+      level: "stage",
+      stageId,
+    };
+  }
+
+  const stageId = inferStageIdFromBatchId(args.batch);
+  if (args.batch && !stageId) {
+    throw new Error(
+      `Batch scope requires a stage-qualified batch id (received \"${args.batch}\").`,
+    );
+  }
+
+  if (!args.batch || !stageId) {
+    return undefined;
+  }
+
+  return {
+    level: "batch",
+    stageId,
+    batchId: args.batch,
+  };
 }
 
 function extractTextParts(parts: any): string {
@@ -170,16 +306,16 @@ function extractTextParts(parts: any): string {
     .filter((part) => part?.type === "text" && typeof part.text === "string")
     .map((part) => part.text)
     .join("\n")
-    .trim()
+    .trim();
 }
 
 function formatPromptAsJsonl(text: string): string {
-  return `${JSON.stringify({ type: "text", part: { text } })}\n`
+  return `${JSON.stringify({ type: "text", part: { text } })}\n`;
 }
 
 async function startOpencodeServer(repoRoot: string): Promise<{
-  url: string
-  close: () => void
+  url: string;
+  close: () => void;
 }> {
   const child = spawn(
     "opencode",
@@ -189,56 +325,70 @@ async function startOpencodeServer(repoRoot: string): Promise<{
       env: process.env,
       stdio: ["ignore", "pipe", "pipe"],
     },
-  )
+  );
 
-  let output = ""
+  let output = "";
 
   const url = await new Promise<string>((resolve, reject) => {
     const timeout = setTimeout(() => {
-      child.kill()
-      reject(new Error(`Timeout waiting for opencode server to start.\n${output}`.trim()))
-    }, 5000)
+      child.kill();
+      reject(
+        new Error(
+          `Timeout waiting for opencode server to start.\n${output}`.trim(),
+        ),
+      );
+    }, 5000);
 
     const finalizeError = (message: string) => {
-      clearTimeout(timeout)
-      reject(new Error(output.trim() ? `${message}\n${output}` : message))
-    }
+      clearTimeout(timeout);
+      reject(new Error(output.trim() ? `${message}\n${output}` : message));
+    };
 
     const onChunk = (chunk: Buffer | string) => {
-      output += chunk.toString()
-      const lines = output.split("\n")
+      output += chunk.toString();
+      const lines = output.split("\n");
 
       for (const line of lines) {
-        const match = line.match(/opencode server listening on\s+(https?:\/\/[^\s]+)/)
+        const match = line.match(
+          /opencode server listening on\s+(https?:\/\/[^\s]+)/,
+        );
         if (!match) {
-          continue
+          continue;
         }
 
-        clearTimeout(timeout)
-        resolve(match[1])
-        return
+        clearTimeout(timeout);
+        resolve(match[1]);
+        return;
       }
-    }
+    };
 
-    child.stdout?.on("data", onChunk)
-    child.stderr?.on("data", onChunk)
-    child.on("error", (error) => finalizeError(`Failed to start opencode server: ${error?.message || error}`))
-    child.on("exit", (code) => finalizeError(`Opencode server exited before becoming ready (code ${code ?? 1}).`))
-  })
+    child.stdout?.on("data", onChunk);
+    child.stderr?.on("data", onChunk);
+    child.on("error", (error) =>
+      finalizeError(
+        `Failed to start opencode server: ${error?.message || error}`,
+      ),
+    );
+    child.on("exit", (code) =>
+      finalizeError(
+        `Opencode server exited before becoming ready (code ${code ?? 1}).`,
+      ),
+    );
+  });
 
   return {
     url,
     close: () => {
-      child.kill()
+      child.kill();
     },
-  }
+  };
 }
 
 async function requestOpencodeJson(args: {
-  url: string
-  method: "POST" | "PATCH"
-  path: string
-  body?: any
+  url: string;
+  method: "POST" | "PATCH";
+  path: string;
+  body?: any;
 }): Promise<any> {
   const response = await fetch(`${args.url}${args.path}`, {
     method: args.method,
@@ -246,36 +396,40 @@ async function requestOpencodeJson(args: {
       "Content-Type": "application/json",
     },
     ...(args.body !== undefined ? { body: JSON.stringify(args.body) } : {}),
-  })
+  });
 
-  const text = await response.text()
-  const data = text ? (() => {
-    try {
-      return JSON.parse(text)
-    } catch {
-      return text
-    }
-  })() : undefined
+  const text = await response.text();
+  const data = text
+    ? (() => {
+        try {
+          return JSON.parse(text);
+        } catch {
+          return text;
+        }
+      })()
+    : undefined;
 
   if (!response.ok) {
     const message =
       typeof data === "string"
         ? data
-        : data?.message || data?.error || JSON.stringify(data)
-    throw new Error(`${args.method} ${args.path} failed (${response.status}): ${message}`)
+        : data?.message || data?.error || JSON.stringify(data);
+    throw new Error(
+      `${args.method} ${args.path} failed (${response.status}): ${message}`,
+    );
   }
 
-  return data
+  return data;
 }
 
-export async function runMessageBoundaryForkLaunch(
+async function runMessageBoundaryForkLaunch(
   args: Omit<ForkedSessionArgs, "forkMode"> & { checkpointMessageId: string },
   transport: MessageBoundaryForkTransport = {
     startServer: startOpencodeServer,
     requestJson: requestOpencodeJson,
   },
 ): Promise<ForkedSessionResult> {
-  const server = await transport.startServer(args.repoRoot)
+  const server = await transport.startServer(args.repoRoot);
 
   try {
     const forkedSession = await transport.requestJson({
@@ -283,11 +437,14 @@ export async function runMessageBoundaryForkLaunch(
       method: "POST",
       path: `/session/${encodeURIComponent(args.sessionId)}/fork?directory=${encodeURIComponent(args.repoRoot)}`,
       body: { messageID: args.checkpointMessageId },
-    })
+    });
 
-    const nativeSessionId = forkedSession?.id
-    if (typeof nativeSessionId !== "string" || nativeSessionId.trim().length === 0) {
-      throw new Error("Fork response did not include a child session ID.")
+    const nativeSessionId = forkedSession?.id;
+    if (
+      typeof nativeSessionId !== "string" ||
+      nativeSessionId.trim().length === 0
+    ) {
+      throw new Error("Fork response did not include a child session ID.");
     }
 
     await transport.requestJson({
@@ -295,10 +452,10 @@ export async function runMessageBoundaryForkLaunch(
       method: "PATCH",
       path: `/session/${encodeURIComponent(nativeSessionId)}?directory=${encodeURIComponent(args.repoRoot)}`,
       body: { title: args.title },
-    })
+    });
 
     if (args.onNativeSessionId) {
-      await args.onNativeSessionId(nativeSessionId)
+      await args.onNativeSessionId(nativeSessionId);
     }
 
     const promptResponse = await transport.requestJson({
@@ -308,67 +465,102 @@ export async function runMessageBoundaryForkLaunch(
       body: {
         parts: [{ type: "text", text: args.prompt }],
       },
-    })
+    });
 
     return {
       code: 0,
       stdout: formatPromptAsJsonl(extractTextParts(promptResponse?.parts)),
       stderr: "",
       nativeSessionId,
-    }
+    };
   } finally {
-    server.close()
+    server.close();
   }
 }
 
 function resolveWorkCommandPath(): string {
   const result = spawnSync("which", ["work"], {
     encoding: "utf-8",
-  })
+  });
 
-  const resolvedPath = result.stdout?.trim()
+  const resolvedPath = result.stdout?.trim();
   if (!resolvedPath) {
-    throw new Error("Could not resolve active 'work' binary from PATH")
+    throw new Error("Could not resolve active 'work' binary from PATH");
   }
 
-  return resolvedPath
+  return resolvedPath;
+}
+
+function getToolFilePath(): string | undefined {
+  try {
+    return fileURLToPath(import.meta.url);
+  } catch {
+    return undefined;
+  }
 }
 
 function findWorkstreamsPackageRoot(binaryPath: string): string {
-  let currentDir = dirname(realpathSync(binaryPath))
+  let currentDir = dirname(realpathSync(binaryPath));
 
   while (true) {
-    const packageJsonPath = join(currentDir, "package.json")
+    const packageJsonPath = join(currentDir, "package.json");
     if (existsSync(packageJsonPath)) {
       try {
-        const packageJson = JSON.parse(readFileSync(packageJsonPath, "utf-8")) as {
-          name?: string
-        }
+        const packageJson = JSON.parse(
+          readFileSync(packageJsonPath, "utf-8"),
+        ) as {
+          name?: string;
+        };
         if (packageJson.name === "@agenv/workstreams") {
-          return currentDir
+          return currentDir;
         }
       } catch {
         // Ignore unreadable package metadata while walking upward.
       }
     }
 
-    const parentDir = dirname(currentDir)
+    const parentDir = dirname(currentDir);
     if (parentDir === currentDir) {
-      break
+      break;
     }
-    currentDir = parentDir
+    currentDir = parentDir;
   }
 
-  throw new Error(`Could not find @agenv/workstreams package root from active work binary: ${binaryPath}`)
+  throw new Error(
+    `Could not find @agenv/workstreams package root from active work binary: ${binaryPath}`,
+  );
 }
 
-export function resolveWorkstreamsRuntimeModulePath(
+function readWorkstreamsPackageVersion(
+  packageRoot: string,
+): string | undefined {
+  const packageJsonPath = join(packageRoot, "package.json");
+
+  if (!existsSync(packageJsonPath)) {
+    return undefined;
+  }
+
+  const packageJson = JSON.parse(readFileSync(packageJsonPath, "utf-8")) as {
+    version?: string;
+  };
+
+  return typeof packageJson.version === "string" &&
+    packageJson.version.trim().length > 0
+    ? packageJson.version
+    : undefined;
+}
+
+function resolveWorkstreamsRuntimeModulePath(
   options: WorkstreamsRuntimeResolutionOptions = {},
 ): string {
-  const workCommandPath = (options.resolveWorkCommandPath ?? resolveWorkCommandPath)()
-  const resolvedBinaryPath = realpathSync(workCommandPath)
-  const packageRoot = findWorkstreamsPackageRoot(resolvedBinaryPath)
-  const preferDistRuntime = resolvedBinaryPath.includes(`${join("dist", "bin")}`)
+  const workCommandPath = (
+    options.resolveWorkCommandPath ?? resolveWorkCommandPath
+  )();
+  const resolvedBinaryPath = realpathSync(workCommandPath);
+  const packageRoot = findWorkstreamsPackageRoot(resolvedBinaryPath);
+  const preferDistRuntime = resolvedBinaryPath.includes(
+    `${join("dist", "bin")}`,
+  );
 
   const candidates = preferDistRuntime
     ? [
@@ -378,35 +570,99 @@ export function resolveWorkstreamsRuntimeModulePath(
     : [
         join(packageRoot, "src", "tool-runtime.ts"),
         join(packageRoot, "dist", "src", "tool-runtime.js"),
-      ]
+      ];
 
   for (const candidate of candidates) {
     if (existsSync(candidate)) {
-      return candidate
+      return candidate;
     }
   }
 
   throw new Error(
     `Could not locate workstream tool runtime next to active work binary. Checked: ${candidates.join(", ")}`,
-  )
+  );
 }
 
-let cachedWorkstreamsToolRuntimePromise: Promise<WorkstreamsToolRuntime> | undefined
+let cachedWorkstreamsToolRuntimePromise:
+  | Promise<WorkstreamsToolRuntime>
+  | undefined;
 
-export async function loadWorkstreamsToolRuntime(
+async function loadWorkstreamsToolRuntime(
   options: WorkstreamsRuntimeLoadOptions = {},
 ): Promise<WorkstreamsToolRuntime> {
   const loadRuntime = async () => {
-    const modulePath = resolveWorkstreamsRuntimeModulePath(options)
-    return (await import(pathToFileURL(modulePath).href)) as WorkstreamsToolRuntime
-  }
+    const modulePath = resolveWorkstreamsRuntimeModulePath(options);
+    return (await import(
+      pathToFileURL(modulePath).href
+    )) as WorkstreamsToolRuntime;
+  };
 
   if (options.cache === false) {
-    return loadRuntime()
+    return loadRuntime();
   }
 
-  cachedWorkstreamsToolRuntimePromise ??= loadRuntime()
-  return cachedWorkstreamsToolRuntimePromise
+  cachedWorkstreamsToolRuntimePromise ??= loadRuntime();
+  return cachedWorkstreamsToolRuntimePromise;
+}
+
+function getWorkstreamsToolRuntimeInfo(
+  options: WorkstreamsRuntimeResolutionOptions = {},
+): WorkstreamsToolRuntimeInfo {
+  const info: WorkstreamsToolRuntimeInfo = {
+    toolVersion: WORKSTREAM_TOOL_VERSION,
+    toolFilePath: getToolFilePath(),
+    capabilities: {
+      fakeUserPrompt: true,
+      metadataOnlyCheckpoints: true,
+      messageBoundaryFork: true,
+      breakpointTags: true,
+    },
+  };
+
+  try {
+    info.workCommandPath = (
+      options.resolveWorkCommandPath ?? resolveWorkCommandPath
+    )();
+    info.resolvedWorkCommandPath = realpathSync(info.workCommandPath);
+    info.workstreamsPackageRoot = findWorkstreamsPackageRoot(
+      info.resolvedWorkCommandPath,
+    );
+
+    try {
+      info.workstreamsPackageVersion = readWorkstreamsPackageVersion(
+        info.workstreamsPackageRoot,
+      );
+    } catch (error: any) {
+      info.errors = {
+        ...info.errors,
+        workstreamsPackageVersion: error?.message || String(error),
+      };
+    }
+
+    try {
+      info.resolvedRuntimeModulePath = resolveWorkstreamsRuntimeModulePath({
+        resolveWorkCommandPath: () => info.workCommandPath!,
+      });
+    } catch (error: any) {
+      info.errors = {
+        ...info.errors,
+        resolvedRuntimeModulePath: error?.message || String(error),
+      };
+    }
+  } catch (error: any) {
+    info.errors = {
+      ...info.errors,
+      workCommandPath: error?.message || String(error),
+    };
+  }
+
+  return info;
+}
+
+function formatWorkstreamsToolRuntimeInfo(
+  info: WorkstreamsToolRuntimeInfo,
+): string {
+  return JSON.stringify(info, null, 2);
 }
 
 function runCommand(
@@ -418,149 +674,209 @@ function runCommand(
     const child = spawn(command, args, {
       cwd,
       stdio: ["ignore", "pipe", "pipe"],
-    })
+    });
 
-    let stdout = ""
-    let stderr = ""
+    let stdout = "";
+    let stderr = "";
 
     child.stdout?.on("data", (chunk) => {
-      stdout += chunk.toString()
-    })
+      stdout += chunk.toString();
+    });
     child.stderr?.on("data", (chunk) => {
-      stderr += chunk.toString()
-    })
+      stderr += chunk.toString();
+    });
 
-    child.on("error", reject)
+    child.on("error", reject);
     child.on("close", (code) => {
-      resolve({ code: code ?? 1, stdout, stderr })
-    })
-  })
+      resolve({ code: code ?? 1, stdout, stderr });
+    });
+  });
 }
 
-async function findNativeSessionIdByTitle(repoRoot: string, title: string): Promise<string | undefined> {
+async function findNativeSessionIdByTitle(
+  repoRoot: string,
+  title: string,
+): Promise<string | undefined> {
   const result = await runCommand(
     "opencode",
     ["session", "list", "--max-count", "50", "--format", "json"],
     repoRoot,
-  )
+  );
 
   if (result.code !== 0) {
-    return undefined
+    return undefined;
   }
 
   try {
-    const sessions = JSON.parse(result.stdout) as Array<{ id: string; title: string }>
-    return sessions.find((session) => session.title === title)?.id
+    const sessions = JSON.parse(result.stdout) as Array<{
+      id: string;
+      title: string;
+    }>;
+    return sessions.find((session) => session.title === title)?.id;
   } catch {
-    return undefined
+    return undefined;
   }
 }
 
 export interface LaunchSupervisionBranchDeps {
-  getRepoRoot: () => string
-  getResolvedStreamId: (repoRoot: string, streamId?: string) => string | Promise<string>
-  findBranchSessionForLaunchSessionId: (repoRoot: string, streamId: string, sessionId: string) => any | Promise<any>
-  findBranchSessionByNativeSessionId: (repoRoot: string, streamId: string, nativeSessionId: string) => any | Promise<any>
-  createBranchSessionId: () => string | Promise<string>
-  buildBranchSession: (args: any) => any | Promise<any>
-  persistBranchSession: (repoRoot: string, streamId: string, branchSession: any) => any | Promise<any>
-  loadStoredBranchSession: (repoRoot: string, streamId: string, branchSessionId: string) => any | Promise<any>
+  getRepoRoot: () => string;
+  getResolvedStreamId: (
+    repoRoot: string,
+    streamId?: string,
+  ) => string | Promise<string>;
+  findBranchSessionForLaunchSessionId: (
+    repoRoot: string,
+    streamId: string,
+    sessionId: string,
+  ) => any | Promise<any>;
+  findBranchSessionByNativeSessionId: (
+    repoRoot: string,
+    streamId: string,
+    nativeSessionId: string,
+  ) => any | Promise<any>;
+  createBranchSessionId: () => string | Promise<string>;
+  buildBranchSession: (args: any) => any | Promise<any>;
+  persistBranchSession: (
+    repoRoot: string,
+    streamId: string,
+    branchSession: any,
+  ) => any | Promise<any>;
+  loadStoredBranchSession: (
+    repoRoot: string,
+    streamId: string,
+    branchSessionId: string,
+  ) => any | Promise<any>;
   waitForBranchNativeSessionId: (args: {
-    repoRoot: string
-    streamId: string
-    branchSessionId: string
-    timeoutMs?: number
-    pollIntervalMs?: number
-  }) => Promise<string | undefined>
+    repoRoot: string;
+    streamId: string;
+    branchSessionId: string;
+    timeoutMs?: number;
+    pollIntervalMs?: number;
+  }) => Promise<string | undefined>;
   waitForTerminalBranchSession: (args: {
-    repoRoot: string
-    streamId: string
-    branchSessionId: string
-    timeoutMs?: number
-    pollIntervalMs?: number
-  }) => Promise<any>
-  runForkedSession: (args: ForkedSessionArgs) => Promise<ForkedSessionResult>
-  runCommand: typeof runCommand
-  findNativeSessionIdByTitle: typeof findNativeSessionIdByTitle
-  parseOutput: (content: string) => { text: string; logs: string[]; success: boolean } | Promise<{ text: string; logs: string[]; success: boolean }>
-  exportSessionTranscript: (sessionId: string) => Promise<any>
+    repoRoot: string;
+    streamId: string;
+    branchSessionId: string;
+    timeoutMs?: number;
+    pollIntervalMs?: number;
+  }) => Promise<any>;
+  runForkedSession: (args: ForkedSessionArgs) => Promise<ForkedSessionResult>;
+  runCommand: typeof runCommand;
+  findNativeSessionIdByTitle: typeof findNativeSessionIdByTitle;
+  parseOutput: (
+    content: string,
+  ) =>
+    | { text: string; logs: string[]; success: boolean }
+    | Promise<{ text: string; logs: string[]; success: boolean }>;
+  exportSessionTranscript: (sessionId: string) => Promise<any>;
   refreshCheckpointPointer: (args: {
-    repoRoot: string
-    streamId: string
-    rootSessionId: string
-    sessionExport: any
-    checkpointCreatedAt: string
-    breakpointTags?: readonly string[]
-  }) => Promise<RootCheckpointPointer>
+    repoRoot: string;
+    streamId: string;
+    rootSessionId: string;
+    sessionExport: any;
+    checkpointCreatedAt: string;
+    breakpointTags?: readonly string[];
+  }) => Promise<RootCheckpointPointer>;
   getCheckpointSessionForkEligibility: (args: {
-    pointer: RootCheckpointPointer
-    sessionExport: any
-  }) => CheckpointSessionForkEligibility | Promise<CheckpointSessionForkEligibility>
-  extractFinalBranchReport: (sessionExport: any) => string | Promise<string>
-  now: () => string
+    pointer: RootCheckpointPointer;
+    sessionExport: any;
+  }) =>
+    | CheckpointSessionForkEligibility
+    | Promise<CheckpointSessionForkEligibility>;
+  extractFinalBranchReport: (sessionExport: any) => string | Promise<string>;
+  now: () => string;
 }
 
 function getDefaultLaunchSupervisionBranchDeps(): LaunchSupervisionBranchDeps {
-  const runtime = loadWorkstreamsToolRuntime()
+  const runtime = loadWorkstreamsToolRuntime();
 
   return {
     getRepoRoot: () => process.cwd(),
     getResolvedStreamId: async (repoRoot, streamId) => {
-      const resolvedRuntime = await runtime
-      return resolvedRuntime.getResolvedStream(resolvedRuntime.loadIndex(repoRoot), streamId).id
+      const resolvedRuntime = await runtime;
+      return resolvedRuntime.getResolvedStream(
+        resolvedRuntime.loadIndex(repoRoot),
+        streamId,
+      ).id;
     },
-    findBranchSessionForLaunchSessionId: async (repoRoot, streamId, sessionId) => {
-      const resolvedRuntime = await runtime
+    findBranchSessionForLaunchSessionId: async (
+      repoRoot,
+      streamId,
+      sessionId,
+    ) => {
+      const resolvedRuntime = await runtime;
       return resolvedRuntime.findRootAgentBranchSessionForLaunchSessionId({
         repoRoot,
         streamId,
         sessionId,
-      })
+      });
     },
-    findBranchSessionByNativeSessionId: async (repoRoot, streamId, nativeSessionId) => {
-      const resolvedRuntime = await runtime
-      return resolvedRuntime.loadSupervisorState(repoRoot, streamId)?.branch_sessions.find(
-        (branch: any) => branch.nativeSessionId === nativeSessionId,
-      )
+    findBranchSessionByNativeSessionId: async (
+      repoRoot,
+      streamId,
+      nativeSessionId,
+    ) => {
+      const resolvedRuntime = await runtime;
+      return resolvedRuntime
+        .loadSupervisorState(repoRoot, streamId)
+        ?.branch_sessions.find(
+          (branch: any) => branch.nativeSessionId === nativeSessionId,
+        );
     },
     createBranchSessionId: async () => {
-      const resolvedRuntime = await runtime
-      return resolvedRuntime.createRootAgentBranchSessionId("supervision")
+      const resolvedRuntime = await runtime;
+      return resolvedRuntime.createRootAgentBranchSessionId("supervision");
     },
     buildBranchSession: async (args) => {
-      const resolvedRuntime = await runtime
-      return resolvedRuntime.buildRootAgentBranchSession(args)
+      const resolvedRuntime = await runtime;
+      return resolvedRuntime.buildRootAgentBranchSession(args);
     },
     persistBranchSession: async (repoRoot, streamId, branchSession) => {
-      const resolvedRuntime = await runtime
-      return resolvedRuntime.upsertBranchSessionLocked(repoRoot, streamId, branchSession)
+      const resolvedRuntime = await runtime;
+      return resolvedRuntime.upsertBranchSessionLocked(
+        repoRoot,
+        streamId,
+        branchSession,
+      );
     },
     refreshCheckpointPointer: async (args) => {
-      const resolvedRuntime = await runtime
-      return resolvedRuntime.refreshRootAgentCheckpointPointer(args)
+      const resolvedRuntime = await runtime;
+      return resolvedRuntime.refreshRootAgentCheckpointPointer(args);
     },
     getCheckpointSessionForkEligibility: async (args) => {
-      const resolvedRuntime = await runtime
-      return resolvedRuntime.getRootAgentCheckpointSessionForkEligibility(args)
+      const resolvedRuntime = await runtime;
+      return resolvedRuntime.getRootAgentCheckpointSessionForkEligibility(args);
     },
     loadStoredBranchSession: async (repoRoot, streamId, branchSessionId) => {
-      const resolvedRuntime = await runtime
-      return resolvedRuntime.loadSupervisorState(repoRoot, streamId)?.branch_sessions.find(
-        (branch) => branch.branchSessionId === branchSessionId,
-      )
+      const resolvedRuntime = await runtime;
+      return resolvedRuntime
+        .loadSupervisorState(repoRoot, streamId)
+        ?.branch_sessions.find(
+          (branch) => branch.branchSessionId === branchSessionId,
+        );
     },
     waitForBranchNativeSessionId: async (args) => {
-      const resolvedRuntime = await runtime
-      return resolvedRuntime.waitForRootAgentBranchNativeSessionId(args)
+      const resolvedRuntime = await runtime;
+      return resolvedRuntime.waitForRootAgentBranchNativeSessionId(args);
     },
     waitForTerminalBranchSession: async (args) => {
-      const resolvedRuntime = await runtime
-      return resolvedRuntime.waitForRootAgentBranchTerminalSession(args)
+      const resolvedRuntime = await runtime;
+      return resolvedRuntime.waitForRootAgentBranchTerminalSession(args);
     },
-    runForkedSession: async ({ sessionId, repoRoot, title, prompt, checkpointMessageId, forkMode, onNativeSessionId }) => {
+    runForkedSession: async ({
+      sessionId,
+      repoRoot,
+      title,
+      prompt,
+      checkpointMessageId,
+      forkMode,
+      onNativeSessionId,
+    }) => {
       if (forkMode === "message") {
         if (!checkpointMessageId) {
-          throw new Error("Message-boundary fork requires checkpointMessageId.")
+          throw new Error(
+            "Message-boundary fork requires checkpointMessageId.",
+          );
         }
 
         return runMessageBoundaryForkLaunch({
@@ -570,7 +886,7 @@ function getDefaultLaunchSupervisionBranchDeps(): LaunchSupervisionBranchDeps {
           prompt,
           checkpointMessageId,
           onNativeSessionId,
-        })
+        });
       }
 
       const child = spawn(
@@ -592,93 +908,100 @@ function getDefaultLaunchSupervisionBranchDeps(): LaunchSupervisionBranchDeps {
           cwd: repoRoot,
           stdio: ["ignore", "pipe", "pipe"],
         },
-      )
+      );
 
-      let stdout = ""
-      let stderr = ""
-      let nativeSessionId: string | undefined
-      let stopped = false
-      let pollError: unknown
-      let pollPromise: Promise<void> | undefined
+      let stdout = "";
+      let stderr = "";
+      let nativeSessionId: string | undefined;
+      let stopped = false;
+      let pollError: unknown;
+      let pollPromise: Promise<void> | undefined;
 
       child.stdout?.on("data", (chunk) => {
-        stdout += chunk.toString()
-      })
+        stdout += chunk.toString();
+      });
       child.stderr?.on("data", (chunk) => {
-        stderr += chunk.toString()
-      })
+        stderr += chunk.toString();
+      });
 
       if (onNativeSessionId) {
         pollPromise = (async () => {
           while (!stopped && !nativeSessionId) {
             try {
-              const foundSessionId = await findNativeSessionIdByTitle(repoRoot, title)
+              const foundSessionId = await findNativeSessionIdByTitle(
+                repoRoot,
+                title,
+              );
               if (foundSessionId) {
-                nativeSessionId = foundSessionId
-                await onNativeSessionId(foundSessionId)
-                return
+                nativeSessionId = foundSessionId;
+                await onNativeSessionId(foundSessionId);
+                return;
               }
             } catch (error) {
-              pollError = error
-              return
+              pollError = error;
+              return;
             }
 
-            await new Promise((resolve) => setTimeout(resolve, 100))
+            await new Promise((resolve) => setTimeout(resolve, 100));
           }
-        })()
+        })();
       }
 
-      const result = await new Promise<{ code: number; stdout: string; stderr: string }>((resolve, reject) => {
-        child.on("error", reject)
+      const result = await new Promise<{
+        code: number;
+        stdout: string;
+        stderr: string;
+      }>((resolve, reject) => {
+        child.on("error", reject);
         child.on("close", (code) => {
-          stopped = true
-          resolve({ code: code ?? 1, stdout, stderr })
-        })
-      })
+          stopped = true;
+          resolve({ code: code ?? 1, stdout, stderr });
+        });
+      });
 
-      await pollPromise
+      await pollPromise;
 
       if (pollError) {
-        throw pollError
+        throw pollError;
       }
 
       if (!nativeSessionId) {
-        nativeSessionId = await findNativeSessionIdByTitle(repoRoot, title)
+        nativeSessionId = await findNativeSessionIdByTitle(repoRoot, title);
       }
 
       return {
         ...result,
         ...(nativeSessionId ? { nativeSessionId } : {}),
-      }
+      };
     },
     runCommand,
     findNativeSessionIdByTitle,
     parseOutput: async (content) => {
-      const resolvedRuntime = await runtime
-      return resolvedRuntime.parseSynthesisJsonl(content)
+      const resolvedRuntime = await runtime;
+      return resolvedRuntime.parseSynthesisJsonl(content);
     },
     exportSessionTranscript: async (sessionId) => {
-      const resolvedRuntime = await runtime
-      return resolvedRuntime.exportSession(sessionId)
+      const resolvedRuntime = await runtime;
+      return resolvedRuntime.exportSession(sessionId);
     },
     extractFinalBranchReport: async (sessionExport) => {
-      const resolvedRuntime = await runtime
-      return resolvedRuntime.extractLastCompletedAssistantText(sessionExport)
+      const resolvedRuntime = await runtime;
+      return resolvedRuntime.extractLastCompletedAssistantText(sessionExport);
     },
     now: () => new Date().toISOString(),
-  }
+  };
 }
 
 async function resolveCompletedBranchNativeSessionId(args: {
-  deps: LaunchSupervisionBranchDeps
-  repoRoot: string
-  streamId: string
-  branchSessionId: string
-  title: string
-  nativeSessionId?: string
+  deps: LaunchSupervisionBranchDeps;
+  repoRoot: string;
+  streamId: string;
+  branchSessionId: string;
+  title: string;
+  nativeSessionId?: string;
 }): Promise<string | undefined> {
   if (args.nativeSessionId) {
-    return args.nativeSessionId
+    return args.nativeSessionId;
   }
 
   const storedNativeSessionId = await args.deps.waitForBranchNativeSessionId({
@@ -687,136 +1010,157 @@ async function resolveCompletedBranchNativeSessionId(args: {
     branchSessionId: args.branchSessionId,
     timeoutMs: 5000,
     pollIntervalMs: 100,
-  })
+  });
 
   if (storedNativeSessionId) {
-    return storedNativeSessionId
+    return storedNativeSessionId;
   }
 
-  return args.deps.findNativeSessionIdByTitle(args.repoRoot, args.title)
+  return args.deps.findNativeSessionIdByTitle(args.repoRoot, args.title);
 }
 
 async function collectCompletedBranchArtifacts(args: {
-  deps: LaunchSupervisionBranchDeps
-  repoRoot: string
-  streamId: string
-  branchSessionId: string
-  title: string
-  nativeSessionId?: string
+  deps: LaunchSupervisionBranchDeps;
+  repoRoot: string;
+  streamId: string;
+  branchSessionId: string;
+  title: string;
+  nativeSessionId?: string;
 }): Promise<{
-  nativeSessionId?: string
-  terminalBranch?: any
-  transcript?: any
-  reportText: string
-  transcriptError?: string
+  nativeSessionId?: string;
+  terminalBranch?: any;
+  transcript?: any;
+  reportText: string;
+  transcriptError?: string;
 }> {
-  const nativeSessionId = await resolveCompletedBranchNativeSessionId(args)
+  const nativeSessionId = await resolveCompletedBranchNativeSessionId(args);
   const terminalBranch = await args.deps.waitForTerminalBranchSession({
     repoRoot: args.repoRoot,
     streamId: args.streamId,
     branchSessionId: args.branchSessionId,
     timeoutMs: 5000,
     pollIntervalMs: 100,
-  })
+  });
 
   if (!nativeSessionId) {
     return {
       terminalBranch,
       reportText: "",
-    }
+    };
   }
 
   try {
-    const transcript = await args.deps.exportSessionTranscript(nativeSessionId)
+    const transcript = await args.deps.exportSessionTranscript(nativeSessionId);
     return {
       nativeSessionId,
       terminalBranch,
       transcript,
       reportText: (await args.deps.extractFinalBranchReport(transcript)).trim(),
-    }
+    };
   } catch (error: any) {
     return {
       nativeSessionId,
       terminalBranch,
       reportText: "",
       transcriptError: error?.message || String(error),
-    }
+    };
   }
 }
 
 function formatCheckpointPointer(pointer: RootCheckpointPointer): string {
   if (pointer.checkpointMessageId) {
-    return `message ${pointer.checkpointMessageId}`
+    return `message ${pointer.checkpointMessageId}`;
   }
 
   if (typeof pointer.checkpointMessageIndex === "number") {
-    return `message-index ${pointer.checkpointMessageIndex}`
+    return `message-index ${pointer.checkpointMessageIndex}`;
   }
 
-  return "unknown-pointer"
+  return "unknown-pointer";
 }
 
-function formatBreakpointSelection(selection: RootCheckpointPointer["breakpointSelection"]): string | undefined {
+function formatBreakpointSelection(
+  selection: RootCheckpointPointer["breakpointSelection"],
+): string | undefined {
   if (!selection) {
-    return undefined
+    return undefined;
   }
 
-  if (typeof selection.rationale === "string" && selection.rationale.trim().length > 0) {
-    return selection.rationale.trim()
+  if (
+    typeof selection.rationale === "string" &&
+    selection.rationale.trim().length > 0
+  ) {
+    return selection.rationale.trim();
   }
 
   if (selection.strategy === "explicit_tag") {
     return selection.matchedTag
       ? `Selected the tagged user message because it matched configured breakpoint tag "${selection.matchedTag}".`
-      : "Selected the tagged user message because it matched a configured breakpoint tag."
+      : "Selected the tagged user message because it matched a configured breakpoint tag.";
   }
 
-  return "Selected the previous user message before branch launch because no configured breakpoint tag was found."
+  return "Selected the previous user message before branch launch because no configured breakpoint tag was found.";
 }
 
-function buildCheckpointCaptureNotes(pointer: RootCheckpointPointer, batch?: string): string {
-  const selectionText = formatBreakpointSelection(pointer.breakpointSelection)
+function buildCheckpointCaptureNotes(
+  pointer: RootCheckpointPointer,
+  scope: BranchLaunchScope,
+  batch?: string,
+): string {
+  const selectionText = formatBreakpointSelection(pointer.breakpointSelection);
+  const scopeLabel = describeScopeLabel(scope, batch);
 
   return [
-    `Checkpoint pointer ${formatCheckpointPointer(pointer)} captured; launching Root Agent supervision branch for ${batch ?? "next resumable batch"}.`,
+    `Checkpoint pointer ${formatCheckpointPointer(pointer)} captured; launching Root Agent supervision branch for ${scopeLabel}.`,
     ...(selectionText ? [`Breakpoint selection: ${selectionText}`] : []),
-  ].join("\n")
+  ].join("\n");
 }
 
-function getCheckpointPointerFromBranchSession(branch: any): RootCheckpointPointer | undefined {
+function getCheckpointPointerFromBranchSession(
+  branch: any,
+): RootCheckpointPointer | undefined {
   if (!branch || !branch.checkpointCreatedAt) {
-    return undefined
+    return undefined;
   }
 
-  if (typeof branch.checkpointMessageId === "string" && branch.checkpointMessageId.trim().length > 0) {
+  if (
+    typeof branch.checkpointMessageId === "string" &&
+    branch.checkpointMessageId.trim().length > 0
+  ) {
     return {
       checkpointMessageId: branch.checkpointMessageId,
       ...(typeof branch.checkpointMessageIndex === "number"
         ? { checkpointMessageIndex: branch.checkpointMessageIndex }
         : {}),
       checkpointCreatedAt: branch.checkpointCreatedAt,
-      ...(branch.breakpointSelection ? { breakpointSelection: branch.breakpointSelection } : {}),
-    }
+      ...(branch.breakpointSelection
+        ? { breakpointSelection: branch.breakpointSelection }
+        : {}),
+    };
   }
 
   if (typeof branch.checkpointMessageIndex === "number") {
     return {
       checkpointMessageIndex: branch.checkpointMessageIndex,
       checkpointCreatedAt: branch.checkpointCreatedAt,
-      ...(branch.breakpointSelection ? { breakpointSelection: branch.breakpointSelection } : {}),
-    }
+      ...(branch.breakpointSelection
+        ? { breakpointSelection: branch.breakpointSelection }
+        : {}),
+    };
   }
 
-  return undefined
+  return undefined;
 }
 
 function formatCheckpointLaunchFallbackError(args: {
-  checkpointPointer: RootCheckpointPointer
-  eligibility: CheckpointSessionForkEligibility
-  cause?: unknown
+  checkpointPointer: RootCheckpointPointer;
+  eligibility: CheckpointSessionForkEligibility;
+  cause?: unknown;
 }): Error {
-  const pointerLabel = formatCheckpointPointer(args.checkpointPointer)
-  const detail = args.cause ? ` Native fork error: ${args.cause instanceof Error ? args.cause.message : String(args.cause)}` : ""
+  const pointerLabel = formatCheckpointPointer(args.checkpointPointer);
+  const detail = args.cause
+    ? ` Native fork error: ${args.cause instanceof Error ? args.cause.message : String(args.cause)}`
+    : "";
 
   if (!args.checkpointPointer.checkpointMessageId) {
     return new Error(
@@ -825,7 +1169,7 @@ function formatCheckpointLaunchFallbackError(args: {
           ? ""
           : ` Plain session --fork would start from the live session tip (message-index ${args.eligibility.latestMessageIndex ?? "unknown"}) instead of the selected boundary (message-index ${args.eligibility.resolvedMessageIndex ?? args.checkpointPointer.checkpointMessageIndex ?? "unknown"}).`
       }${detail}`,
-    )
+    );
   }
 
   return new Error(
@@ -834,80 +1178,93 @@ function formatCheckpointLaunchFallbackError(args: {
         ? " Falling back to plain session --fork is only safe when the selected boundary is already the live session tip."
         : ` Plain session --fork would inherit the live session tip (message-index ${args.eligibility.latestMessageIndex ?? "unknown"}) instead of the selected boundary (message-index ${args.eligibility.resolvedMessageIndex ?? args.checkpointPointer.checkpointMessageIndex ?? "unknown"}).`
     }${detail}`,
-  )
+  );
 }
 
 function formatBranchCompletionMessage(args: {
-  branchSessionId: string
-  checkpointPointer?: RootCheckpointPointer
-  nativeSessionId?: string
-  observedPersistedStatus?: string
-  status: "completed" | "stopped" | "failed"
-  summary: string
-  reportText: string
-  transcript?: any
-  transcriptError?: string
+  branchSessionId: string;
+  checkpointPointer?: RootCheckpointPointer;
+  nativeSessionId?: string;
+  observedPersistedStatus?: string;
+  status: "completed" | "stopped" | "failed";
+  summary: string;
+  reportText: string;
+  transcript?: any;
+  transcriptError?: string;
 }): string {
   const transcriptLabel = args.transcript
     ? `Transcript export captured (${Array.isArray(args.transcript.messages) ? args.transcript.messages.length : 0} messages).`
     : args.nativeSessionId
       ? `Transcript export unavailable: ${args.transcriptError ?? "unknown export error"}`
-      : "Transcript export unavailable: native branch session ID was not resolved."
+      : "Transcript export unavailable: native branch session ID was not resolved.";
 
   const sections = [
     `Supervision branch ${args.branchSessionId}${args.nativeSessionId ? ` (native session ${args.nativeSessionId})` : ""} ${args.status}${args.checkpointPointer ? ` from checkpoint pointer ${formatCheckpointPointer(args.checkpointPointer)}` : ""}.`,
     ...(args.checkpointPointer?.breakpointSelection
-      ? [`Breakpoint selection: ${formatBreakpointSelection(args.checkpointPointer.breakpointSelection)}`]
+      ? [
+          `Breakpoint selection: ${formatBreakpointSelection(args.checkpointPointer.breakpointSelection)}`,
+        ]
       : []),
     `Persisted branch status: ${args.status}.`,
     transcriptLabel,
-  ]
+  ];
 
-  if (args.observedPersistedStatus && args.observedPersistedStatus !== args.status) {
+  if (
+    args.observedPersistedStatus &&
+    args.observedPersistedStatus !== args.status
+  ) {
     sections.push(
       `Pre-final persisted branch status: ${args.observedPersistedStatus} (for example, supervise-pass handoff recorded before parent-side finalization).`,
-    )
+    );
   }
 
   if (args.reportText) {
-    sections.push(`Extracted final branch report:\n${args.reportText}`)
+    sections.push(`Extracted final branch report:\n${args.reportText}`);
   }
 
   if (args.summary && args.summary !== args.reportText) {
-    sections.push(`Branch run summary:\n${args.summary}`)
+    sections.push(`Branch run summary:\n${args.summary}`);
   }
 
-  return sections.join("\n\n")
+  return sections.join("\n\n");
 }
 
-function getTerminalBranchStatus(storedStatus: string | undefined, runCode: number): "completed" | "stopped" | "failed" {
-  if (storedStatus === "completed" || storedStatus === "stopped" || storedStatus === "failed") {
-    return storedStatus
+function getTerminalBranchStatus(
+  storedStatus: string | undefined,
+  runCode: number,
+): "completed" | "stopped" | "failed" {
+  if (
+    storedStatus === "completed" ||
+    storedStatus === "stopped" ||
+    storedStatus === "failed"
+  ) {
+    return storedStatus;
   }
 
-  return runCode === 0 ? "completed" : "failed"
+  return runCode === 0 ? "completed" : "failed";
 }
 
 async function persistSupervisionBranchState(args: {
-  deps: LaunchSupervisionBranchDeps
-  repoRoot: string
-  streamId: string
-  rootSessionId: string
-  branchSessionId: string
-  parentSessionId?: string
-  checkpointMessageId?: string
-  checkpointMessageIndex?: number
-  checkpointCreatedAt?: string
-  breakpointSelection?: RootCheckpointPointer["breakpointSelection"]
-  checkpointSessionId?: string
-  nativeSessionId?: string
-  status: "pending" | "running" | "completed" | "stopped" | "failed"
-  startedAt: string
-  updatedAt: string
-  completedAt?: string
-  batchId?: string
-  runId?: string
-  notes: string
+  deps: LaunchSupervisionBranchDeps;
+  repoRoot: string;
+  streamId: string;
+  rootSessionId: string;
+  branchSessionId: string;
+  parentSessionId?: string;
+  checkpointMessageId?: string;
+  checkpointMessageIndex?: number;
+  checkpointCreatedAt?: string;
+  breakpointSelection?: RootCheckpointPointer["breakpointSelection"];
+  checkpointSessionId?: string;
+  nativeSessionId?: string;
+  status: "pending" | "running" | "completed" | "stopped" | "failed";
+  startedAt: string;
+  updatedAt: string;
+  completedAt?: string;
+  batchId?: string;
+  runId?: string;
+  notes: string;
+  scope?: BranchLaunchScope;
 }): Promise<void> {
   await args.deps.persistBranchSession(
     args.repoRoot,
@@ -916,16 +1273,27 @@ async function persistSupervisionBranchState(args: {
       context: {
         rootSessionId: args.rootSessionId,
         branchSessionId: args.branchSessionId,
-        ...(args.checkpointMessageId ? { checkpointMessageId: args.checkpointMessageId } : {}),
+        ...(args.checkpointMessageId
+          ? { checkpointMessageId: args.checkpointMessageId }
+          : {}),
         ...(typeof args.checkpointMessageIndex === "number"
           ? { checkpointMessageIndex: args.checkpointMessageIndex }
           : {}),
-        ...(args.checkpointCreatedAt ? { checkpointCreatedAt: args.checkpointCreatedAt } : {}),
-        ...(args.breakpointSelection ? { breakpointSelection: args.breakpointSelection } : {}),
-        ...(args.checkpointSessionId ? { checkpointSessionId: args.checkpointSessionId } : {}),
+        ...(args.checkpointCreatedAt
+          ? { checkpointCreatedAt: args.checkpointCreatedAt }
+          : {}),
+        ...(args.breakpointSelection
+          ? { breakpointSelection: args.breakpointSelection }
+          : {}),
+        ...(args.checkpointSessionId
+          ? { checkpointSessionId: args.checkpointSessionId }
+          : {}),
         parentSessionId: args.parentSessionId ?? args.rootSessionId,
-        ...(args.nativeSessionId ? { nativeSessionId: args.nativeSessionId } : {}),
+        ...(args.nativeSessionId
+          ? { nativeSessionId: args.nativeSessionId }
+          : {}),
         source: args.nativeSessionId ? "native_fork" : "repo_local_fallback",
+        ...(args.scope ? { scope: args.scope } : {}),
       },
       branchRole: "supervision",
       status: args.status,
@@ -936,51 +1304,58 @@ async function persistSupervisionBranchState(args: {
       batchId: args.batchId,
       notes: args.notes,
     }),
-  )
+  );
 }
 
-export async function executeLaunchSupervisionBranch(
+async function executeLaunchSupervisionBranch(
   args: {
-    streamId?: string
-    batch?: string
-    breakpointTags?: string
-    timeoutMs?: number
-    pollIntervalMs?: number
-    noServer?: boolean
-    silent?: boolean
+    streamId?: string;
+    scope?: string;
+    stage?: string;
+    batch?: string;
+    breakpointTags?: string;
+    timeoutMs?: number;
+    pollIntervalMs?: number;
+    noServer?: boolean;
+    silent?: boolean;
   },
   context: { sessionID?: string },
   deps: LaunchSupervisionBranchDeps = getDefaultLaunchSupervisionBranchDeps(),
 ): Promise<string> {
-  const rootSessionId = context.sessionID
+  const rootSessionId = context.sessionID;
 
   if (!rootSessionId) {
-    return "Error: Could not determine current Root Agent session ID"
+    return "Error: Could not determine current Root Agent session ID";
   }
 
-  const repoRoot = deps.getRepoRoot()
-  const streamId = await deps.getResolvedStreamId(repoRoot, args.streamId)
-  const breakpointTags = parseBreakpointTagsArg(args.breakpointTags)
+  const repoRoot = deps.getRepoRoot();
+  const streamId = await deps.getResolvedStreamId(repoRoot, args.streamId);
+  const breakpointTags = parseBreakpointTagsArg(args.breakpointTags);
+  const launchScope = resolveLaunchScope({
+    scope: args.scope,
+    stage: args.stage,
+    batch: args.batch,
+  });
 
   const parentBranch = await deps.findBranchSessionForLaunchSessionId(
     repoRoot,
     streamId,
     rootSessionId,
-  )
+  );
 
   if (parentBranch) {
-    const parentBranchLabel = parentBranch.branchSessionId ?? rootSessionId
+    const parentBranchLabel = parentBranch.branchSessionId ?? rootSessionId;
     return [
       "Error: Supervision branches cannot launch additional supervision branches.",
       `Current session is already branch ${parentBranchLabel}.`,
       "Current guard is intentionally one-level only and triggers when the current native session is already recorded as a branch session.",
       "Yield back to the Root Agent so it can inspect persisted branch state and decide the next action.",
-    ].join("\n")
+    ].join("\n");
   }
 
-  const branchSessionId = await deps.createBranchSessionId()
-  const title = `root-supervision-${streamId}-${branchSessionId}`
-  const startedAt = deps.now()
+  const branchSessionId = await deps.createBranchSessionId();
+  const title = `root-supervision-${streamId}-${branchSessionId}`;
+  const startedAt = deps.now();
 
   await persistSupervisionBranchState({
     deps,
@@ -992,14 +1367,15 @@ export async function executeLaunchSupervisionBranch(
     startedAt,
     updatedAt: startedAt,
     batchId: args.batch,
-    notes: `Capturing checkpoint pointer metadata for ${args.batch ?? "next resumable batch"}; branch is not active yet.`,
-  })
+    scope: launchScope,
+    notes: `Capturing checkpoint pointer metadata for ${describeScopeLabel(launchScope, args.batch)}; branch is not active yet.`,
+  });
 
-  let checkpointPointer: RootCheckpointPointer | undefined
+  let checkpointPointer: RootCheckpointPointer | undefined;
 
   try {
-    const checkpointCreatedAt = deps.now()
-    const rootSessionExport = await deps.exportSessionTranscript(rootSessionId)
+    const checkpointCreatedAt = deps.now();
+    const rootSessionExport = await deps.exportSessionTranscript(rootSessionId);
     checkpointPointer = await deps.refreshCheckpointPointer({
       repoRoot,
       streamId,
@@ -1007,7 +1383,7 @@ export async function executeLaunchSupervisionBranch(
       sessionExport: rootSessionExport,
       checkpointCreatedAt,
       ...(breakpointTags ? { breakpointTags } : {}),
-    })
+    });
 
     await persistSupervisionBranchState({
       deps,
@@ -1024,18 +1400,20 @@ export async function executeLaunchSupervisionBranch(
       startedAt,
       updatedAt: deps.now(),
       batchId: args.batch,
-      notes: buildCheckpointCaptureNotes(checkpointPointer, args.batch),
-    })
+      scope: launchScope,
+      notes: buildCheckpointCaptureNotes(checkpointPointer, launchScope, args.batch),
+    });
 
-    const checkpointForkEligibility = await deps.getCheckpointSessionForkEligibility({
-      pointer: checkpointPointer,
-      sessionExport: rootSessionExport,
-    })
+    const checkpointForkEligibility =
+      await deps.getCheckpointSessionForkEligibility({
+        pointer: checkpointPointer,
+        sessionExport: rootSessionExport,
+      });
 
     if (!checkpointForkEligibility.valid) {
       throw new Error(
         `Checkpoint pointer ${formatCheckpointPointer(checkpointPointer)} no longer resolves against the current root transcript (${checkpointForkEligibility.reason ?? "unknown validation failure"}).`,
-      )
+      );
     }
 
     const workSuperviseCommand = buildWorkSuperviseCommand({
@@ -1052,15 +1430,20 @@ export async function executeLaunchSupervisionBranch(
       checkpointMessageId: checkpointPointer.checkpointMessageId,
       checkpointMessageIndex: checkpointPointer.checkpointMessageIndex,
       checkpointCreatedAt: checkpointPointer.checkpointCreatedAt,
-    })
+    });
 
     const supervisionPrompt = buildSupervisionPrompt({
+      scope: launchScope,
       batch: args.batch,
       command: workSuperviseCommand,
-    })
+    });
     const persistNativeSessionId = async (nativeSessionId: string) => {
-      const updatedAt = deps.now()
-      const storedBranch = await deps.loadStoredBranchSession(repoRoot, streamId, branchSessionId)
+      const updatedAt = deps.now();
+      const storedBranch = await deps.loadStoredBranchSession(
+        repoRoot,
+        streamId,
+        branchSessionId,
+      );
 
       await persistSupervisionBranchState({
         deps,
@@ -1070,33 +1453,38 @@ export async function executeLaunchSupervisionBranch(
         branchSessionId,
         parentSessionId: storedBranch?.parentSessionId ?? rootSessionId,
         checkpointMessageId:
-          storedBranch?.checkpointMessageId ?? checkpointPointer.checkpointMessageId,
+          storedBranch?.checkpointMessageId ??
+          checkpointPointer.checkpointMessageId,
         checkpointMessageIndex:
-          storedBranch?.checkpointMessageIndex ?? checkpointPointer.checkpointMessageIndex,
+          storedBranch?.checkpointMessageIndex ??
+          checkpointPointer.checkpointMessageIndex,
         checkpointCreatedAt:
-          storedBranch?.checkpointCreatedAt ?? checkpointPointer.checkpointCreatedAt,
+          storedBranch?.checkpointCreatedAt ??
+          checkpointPointer.checkpointCreatedAt,
         breakpointSelection:
-          storedBranch?.breakpointSelection ?? checkpointPointer.breakpointSelection,
+          storedBranch?.breakpointSelection ??
+          checkpointPointer.breakpointSelection,
         nativeSessionId,
         status: storedBranch?.status === "running" ? "running" : "pending",
         startedAt: storedBranch?.startedAt ?? startedAt,
         updatedAt,
         runId: storedBranch?.runId,
         batchId: storedBranch?.batchId ?? args.batch,
+        scope: storedBranch?.scope ?? launchScope,
         notes:
           storedBranch?.notes ??
-          buildCheckpointCaptureNotes(checkpointPointer, args.batch),
-      })
-    }
+          buildCheckpointCaptureNotes(checkpointPointer, launchScope, args.batch),
+      });
+    };
 
-    let runResult: ForkedSessionResult
+    let runResult: ForkedSessionResult;
 
     if (!checkpointPointer.checkpointMessageId) {
       if (!checkpointForkEligibility.canForkCurrentSession) {
         throw formatCheckpointLaunchFallbackError({
           checkpointPointer,
           eligibility: checkpointForkEligibility,
-        })
+        });
       }
 
       runResult = await deps.runForkedSession({
@@ -1106,7 +1494,7 @@ export async function executeLaunchSupervisionBranch(
         prompt: supervisionPrompt,
         forkMode: "latest_session_fork",
         onNativeSessionId: persistNativeSessionId,
-      })
+      });
     } else {
       try {
         runResult = await deps.runForkedSession({
@@ -1117,14 +1505,14 @@ export async function executeLaunchSupervisionBranch(
           checkpointMessageId: checkpointPointer.checkpointMessageId,
           forkMode: "message",
           onNativeSessionId: persistNativeSessionId,
-        })
+        });
       } catch (error) {
         if (!checkpointForkEligibility.canForkCurrentSession) {
           throw formatCheckpointLaunchFallbackError({
             checkpointPointer,
             eligibility: checkpointForkEligibility,
             cause: error,
-          })
+          });
         }
 
         runResult = await deps.runForkedSession({
@@ -1134,27 +1522,40 @@ export async function executeLaunchSupervisionBranch(
           prompt: supervisionPrompt,
           forkMode: "latest_session_fork",
           onNativeSessionId: persistNativeSessionId,
-        })
+        });
       }
     }
 
-    const parsed = await deps.parseOutput(runResult.stdout)
+    const parsed = await deps.parseOutput(runResult.stdout);
     const fallbackSummary =
-      parsed.text.trim() || runResult.stderr.trim() || "(branch session produced no summary)"
-    const { nativeSessionId, terminalBranch, transcript, reportText, transcriptError } =
-      await collectCompletedBranchArtifacts({
-        deps,
-        repoRoot,
-        streamId,
-        branchSessionId,
-        title,
-        nativeSessionId: runResult.nativeSessionId,
-      })
-    const storedBranch = terminalBranch ?? await deps.loadStoredBranchSession(repoRoot, streamId, branchSessionId)
-    const completedAt = deps.now()
-    const status = getTerminalBranchStatus(storedBranch?.status, runResult.code)
-    const summary = reportText || fallbackSummary
-    const storedCheckpointPointer = getCheckpointPointerFromBranchSession(storedBranch)
+      parsed.text.trim() ||
+      runResult.stderr.trim() ||
+      "(branch session produced no summary)";
+    const {
+      nativeSessionId,
+      terminalBranch,
+      transcript,
+      reportText,
+      transcriptError,
+    } = await collectCompletedBranchArtifacts({
+      deps,
+      repoRoot,
+      streamId,
+      branchSessionId,
+      title,
+      nativeSessionId: runResult.nativeSessionId,
+    });
+    const storedBranch =
+      terminalBranch ??
+      (await deps.loadStoredBranchSession(repoRoot, streamId, branchSessionId));
+    const completedAt = deps.now();
+    const status = getTerminalBranchStatus(
+      storedBranch?.status,
+      runResult.code,
+    );
+    const summary = reportText || fallbackSummary;
+    const storedCheckpointPointer =
+      getCheckpointPointerFromBranchSession(storedBranch);
 
     await persistSupervisionBranchState({
       deps,
@@ -1164,13 +1565,19 @@ export async function executeLaunchSupervisionBranch(
       branchSessionId,
       parentSessionId: storedBranch?.parentSessionId ?? rootSessionId,
       checkpointMessageId:
-        storedBranch?.checkpointMessageId ?? checkpointPointer.checkpointMessageId,
+        storedBranch?.checkpointMessageId ??
+        checkpointPointer.checkpointMessageId,
       checkpointMessageIndex:
-        storedBranch?.checkpointMessageIndex ?? checkpointPointer.checkpointMessageIndex,
+        storedBranch?.checkpointMessageIndex ??
+        checkpointPointer.checkpointMessageIndex,
       checkpointCreatedAt:
-        storedBranch?.checkpointCreatedAt ?? storedCheckpointPointer?.checkpointCreatedAt ?? checkpointPointer.checkpointCreatedAt,
+        storedBranch?.checkpointCreatedAt ??
+        storedCheckpointPointer?.checkpointCreatedAt ??
+        checkpointPointer.checkpointCreatedAt,
       breakpointSelection:
-        storedBranch?.breakpointSelection ?? storedCheckpointPointer?.breakpointSelection ?? checkpointPointer.breakpointSelection,
+        storedBranch?.breakpointSelection ??
+        storedCheckpointPointer?.breakpointSelection ??
+        checkpointPointer.breakpointSelection,
       nativeSessionId,
       status,
       startedAt: storedBranch?.startedAt ?? startedAt,
@@ -1178,11 +1585,12 @@ export async function executeLaunchSupervisionBranch(
       completedAt,
       runId: storedBranch?.runId,
       batchId: storedBranch?.batchId ?? args.batch,
+      scope: storedBranch?.scope ?? launchScope,
       notes:
         storedBranch?.status === "running"
           ? `Parent/root finalized branch after supervise-pass handoff.\n\n${summary}`
           : summary,
-    })
+    });
 
     return formatBranchCompletionMessage({
       branchSessionId,
@@ -1194,9 +1602,9 @@ export async function executeLaunchSupervisionBranch(
       reportText,
       transcript,
       transcriptError,
-    })
+    });
   } catch (error: any) {
-    const failedAt = deps.now()
+    const failedAt = deps.now();
 
     await persistSupervisionBranchState({
       deps,
@@ -1214,74 +1622,153 @@ export async function executeLaunchSupervisionBranch(
       updatedAt: failedAt,
       completedAt: failedAt,
       batchId: args.batch,
+      scope: launchScope,
       notes: `Failed to launch Root Agent supervision branch: ${error?.message || error}`,
-    })
+    });
 
-    return `Supervision branch ${branchSessionId} failed to launch.\n\n${error?.message || error}`
+    return `Supervision branch ${branchSessionId} failed to launch.\n\n${error?.message || error}`;
   }
 }
 
 /**
  * Link the current session to a workstream as its planning session.
- * 
+ *
  * Usage: After creating a workstream with `work create`, use this tool
  * to link the current opencode session as the planning session.
  */
 export const link_planning_session = tool({
-  description: "Link the current opencode session to a workstream as its planning session. Use this after creating a workstream to enable resuming this conversation later with 'work plan'.",
+  description:
+    "Link the current opencode session to a workstream as its planning session. Use this after creating a workstream to enable resuming this conversation later with 'work plan'.",
   args: {
-    streamId: tool.schema.string().describe("The workstream ID or name (e.g., '012-my-feature' or 'my-feature'). If omitted, uses the current workstream.").optional(),
+    streamId: tool.schema
+      .string()
+      .describe(
+        "The workstream ID or name (e.g., '012-my-feature' or 'my-feature'). If omitted, uses the current workstream.",
+      )
+      .optional(),
   },
   async execute(args, context) {
-    const sessionId = context.sessionID
-    
+    const sessionId = context.sessionID;
+
     if (!sessionId) {
-      return "Error: Could not determine current session ID"
+      return "Error: Could not determine current session ID";
     }
 
     // Build the command
-    const cmdArgs = ["plan", "--set", sessionId]
+    const cmdArgs = ["plan", "--set", sessionId];
     if (args.streamId) {
-      cmdArgs.push("--stream", args.streamId)
+      cmdArgs.push("--stream", args.streamId);
     }
 
     try {
-      const result = await Bun.$`work ${cmdArgs}`.text()
-      return result.trim()
+      const result = await Bun.$`work ${cmdArgs}`.text();
+      return result.trim();
     } catch (error: any) {
-      return `Error linking session: ${error.message || error}`
+      return `Error linking session: ${error.message || error}`;
     }
   },
-})
+});
 
 /**
  * Get information about the current workstream.
  */
 export const current_workstream = tool({
-  description: "Get information about the current workstream, including its ID, name, and planning session status.",
+  description:
+    "Get information about the current workstream, including its ID, name, and planning session status.",
   args: {},
   async execute() {
     try {
-      const result = await Bun.$`work current`.text()
-      return result.trim()
+      const result = await Bun.$`work current`.text();
+      return result.trim();
     } catch (error: any) {
-      return `Error getting current workstream: ${error.message || error}`
+      return `Error getting current workstream: ${error.message || error}`;
     }
   },
-})
+});
 
-export const launch_supervision_branch = tool({
-  description: "Fork the current Root Agent session into a supervision child session, record durable workstream lineage metadata, and return the branch handoff summary.",
-  args: {
-    streamId: tool.schema.string().describe("The workstream ID or name. If omitted, uses the current workstream.").optional(),
-    batch: tool.schema.string().describe("Optional batch ID to supervise (e.g. 10.01). If omitted, the helper resumes the next resumable batch.").optional(),
-    breakpointTags: tool.schema.string().describe("Optional comma-separated breakpoint tags to search for before launch (for example: 'SESSION_BREAKPOINT,ROOT_BRANCH_BOUNDARY').").optional(),
-    timeoutMs: tool.schema.number().describe("Optional wait timeout in milliseconds for work supervise.").optional(),
-    pollIntervalMs: tool.schema.number().describe("Optional poll interval in milliseconds for work supervise.").optional(),
-    noServer: tool.schema.boolean().describe("Skip starting opencode serve for the headless batch launch.").optional(),
-    silent: tool.schema.boolean().describe("Disable notification sounds during batch execution.").optional(),
+/**
+ * Get diagnostic information about the loaded workstream tool/runtime.
+ */
+export const tool_runtime_info = Object.assign(
+  tool({
+    description:
+      "Report the loaded workstream tool version, runtime resolution paths, and branch-work capability flags for debugging stale tool loads.",
+    args: {},
+    async execute() {
+      return formatWorkstreamsToolRuntimeInfo(getWorkstreamsToolRuntimeInfo());
+    },
+  }),
+  {
+    __test: {
+      WORKSTREAM_TOOL_VERSION,
+      getWorkstreamsToolRuntimeInfo,
+      formatWorkstreamsToolRuntimeInfo,
+      loadWorkstreamsToolRuntime,
+      resolveWorkstreamsRuntimeModulePath,
+    },
   },
-  async execute(args, context) {
-    return executeLaunchSupervisionBranch(args, context)
+);
+
+export const launch_supervision_branch = Object.assign(
+  tool({
+    description:
+      "Fork the current Root Agent session into a supervision child session, record durable workstream lineage metadata, and return the branch handoff summary.",
+    args: {
+      streamId: tool.schema
+        .string()
+        .describe(
+          "The workstream ID or name. If omitted, uses the current workstream.",
+        )
+        .optional(),
+      scope: tool.schema
+        .string()
+        .describe(
+          "Optional branch scope level: 'batch' (default) or 'stage'. Stage scope still runs work supervise one batch at a time, but derives the current batch from persisted stage state.",
+        )
+        .optional(),
+      stage: tool.schema
+        .string()
+        .describe(
+          "Optional stage ID for stage-scoped launches (for example: 10).",
+        )
+        .optional(),
+      batch: tool.schema
+        .string()
+        .describe(
+          "Optional batch ID to supervise (e.g. 10.01). Use this only for batch-scoped launches; stage-scoped launches must omit it so the helper can derive the current batch from persisted stage state.",
+        )
+        .optional(),
+      breakpointTags: tool.schema
+        .string()
+        .describe(
+          "Optional comma-separated breakpoint tags to search for before launch (for example: 'SESSION_BREAKPOINT,ROOT_BRANCH_BOUNDARY').",
+        )
+        .optional(),
+      timeoutMs: tool.schema
+        .number()
+        .describe("Optional wait timeout in milliseconds for work supervise.")
+        .optional(),
+      pollIntervalMs: tool.schema
+        .number()
+        .describe("Optional poll interval in milliseconds for work supervise.")
+        .optional(),
+      noServer: tool.schema
+        .boolean()
+        .describe("Skip starting opencode serve for the headless batch launch.")
+        .optional(),
+      silent: tool.schema
+        .boolean()
+        .describe("Disable notification sounds during batch execution.")
+        .optional(),
+    },
+    async execute(args, context) {
+      return executeLaunchSupervisionBranch(args, context);
+    },
+  }),
+  {
+    __test: {
+      executeLaunchSupervisionBranch,
+      runMessageBoundaryForkLaunch,
+    },
   },
-})
+);

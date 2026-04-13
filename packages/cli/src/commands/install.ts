@@ -672,6 +672,53 @@ function shouldRemoveToolEntry(entry: string, toolPath: string): boolean {
   return isInstallableToolEntry(entry, toolPath) || isToolArtifactFile(entry)
 }
 
+function resolveInstalledToolMetadata(sourcePath: string, destinationPath: string): {
+  toolVersion: string
+  workstreamsPackageVersion: string
+  sourcePath: string
+  destinationPath: string
+} {
+  let toolVersion = "unresolved (no tool version marker found)"
+
+  if (statSync(sourcePath).isFile()) {
+    try {
+      const source = readFileSync(sourcePath, "utf-8")
+      const match = source.match(
+        /(?:export\s+)?const\s+[A-Z0-9_]*TOOL_VERSION\s*=\s*["'`]([^"'`]+)["'`]/,
+      )
+      if (match?.[1]) {
+        toolVersion = match[1]
+      }
+    } catch (error) {
+      toolVersion = `unresolved (${error instanceof Error ? error.message : String(error)})`
+    }
+  }
+
+  let workstreamsPackageVersion = "unresolved (packages/workstreams/package.json not found)"
+  const workstreamsPackageJson = join(AGENV_HOME, "packages/workstreams/package.json")
+  if (existsSync(workstreamsPackageJson)) {
+    try {
+      const pkg = JSON.parse(readFileSync(workstreamsPackageJson, "utf-8")) as {
+        version?: string
+      }
+      workstreamsPackageVersion =
+        typeof pkg.version === "string" && pkg.version.trim().length > 0
+          ? pkg.version
+          : "unresolved (version missing in packages/workstreams/package.json)"
+    } catch (error) {
+      workstreamsPackageVersion =
+        `unresolved (${error instanceof Error ? error.message : String(error)})`
+    }
+  }
+
+  return {
+    toolVersion,
+    workstreamsPackageVersion,
+    sourcePath,
+    destinationPath,
+  }
+}
+
 function cleanToolsTarget(targetDir: string, dryRun: boolean): number {
   if (!existsSync(targetDir)) return 0
 
@@ -762,6 +809,14 @@ function installToolsTo(
       }
       cpSync(toolPath, targetTool, { recursive: true })
       console.log(`  ${GREEN}✓${NC} ${entry}`)
+
+      const metadata = resolveInstalledToolMetadata(toolPath, targetTool)
+      console.log(`      tool version: ${metadata.toolVersion}`)
+      console.log(
+        `      workstreams package version: ${metadata.workstreamsPackageVersion}`,
+      )
+      console.log(`      source: ${metadata.sourcePath}`)
+      console.log(`      destination: ${metadata.destinationPath}`)
     }
   }
 

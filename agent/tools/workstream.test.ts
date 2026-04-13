@@ -23,19 +23,31 @@ mock.module("@opencode-ai/plugin", () => ({
   ),
 }))
 
-let executeLaunchSupervisionBranch: typeof import("./workstream.ts").executeLaunchSupervisionBranch
-let loadWorkstreamsToolRuntime: typeof import("./workstream.ts").loadWorkstreamsToolRuntime
-let runMessageBoundaryForkLaunch: typeof import("./workstream.ts").runMessageBoundaryForkLaunch
-let resolveWorkstreamsRuntimeModulePath: typeof import("./workstream.ts").resolveWorkstreamsRuntimeModulePath
+let toolRuntimeInfoTool: typeof import("./workstream.ts").tool_runtime_info
+let launchSupervisionBranchTool: typeof import("./workstream.ts").launch_supervision_branch
+let executeLaunchSupervisionBranch: any
+let getWorkstreamsToolRuntimeInfo: any
+let loadWorkstreamsToolRuntime: any
+let runMessageBoundaryForkLaunch: any
+let resolveWorkstreamsRuntimeModulePath: any
+let workstreamToolVersion: string
 type LaunchSupervisionBranchDeps = import("./workstream.ts").LaunchSupervisionBranchDeps
 
 beforeAll(async () => {
+  const workstreamModule = await import("./workstream.ts")
+
+  toolRuntimeInfoTool = workstreamModule.tool_runtime_info
+  launchSupervisionBranchTool = workstreamModule.launch_supervision_branch
+  ;({
+    WORKSTREAM_TOOL_VERSION: workstreamToolVersion,
+    getWorkstreamsToolRuntimeInfo,
+    loadWorkstreamsToolRuntime,
+    resolveWorkstreamsRuntimeModulePath,
+  } = (toolRuntimeInfoTool as any).__test)
   ;({
     executeLaunchSupervisionBranch,
-    loadWorkstreamsToolRuntime,
     runMessageBoundaryForkLaunch,
-    resolveWorkstreamsRuntimeModulePath,
-  } = await import("./workstream.ts"))
+  } = (launchSupervisionBranchTool as any).__test)
 })
 
 function createDeps(
@@ -150,7 +162,7 @@ async function createRuntimeFixture(layout: "dev" | "dist") {
   await mkdir(packageRoot, { recursive: true })
   await writeFile(
     join(packageRoot, "package.json"),
-    JSON.stringify({ name: "@agenv/workstreams" }),
+    JSON.stringify({ name: "@agenv/workstreams", version: "9.9.9-test" }),
   )
 
   if (layout === "dev") {
@@ -219,6 +231,73 @@ describe("workstream runtime resolution", () => {
     } finally {
       await fixture.cleanup()
     }
+  })
+
+  test("reports tool/runtime diagnostics for the active work binary", async () => {
+    const fixture = await createRuntimeFixture("dist")
+
+    try {
+      const info = getWorkstreamsToolRuntimeInfo({
+        resolveWorkCommandPath: () => fixture.workLinkPath,
+      })
+
+      expect(info.toolVersion).toBe(workstreamToolVersion)
+      expect(typeof info.toolFilePath).toBe("string")
+      expect(info.workCommandPath).toBe(fixture.workLinkPath)
+      expect(info.resolvedWorkCommandPath?.endsWith(join("node_modules", "@agenv", "workstreams", "dist", "bin", "work.js"))).toBe(true)
+      expect(info.resolvedRuntimeModulePath?.endsWith(join("node_modules", "@agenv", "workstreams", "dist", "src", "tool-runtime.js"))).toBe(true)
+      expect(info.workstreamsPackageVersion).toBe("9.9.9-test")
+      expect(info.capabilities).toEqual({
+        fakeUserPrompt: true,
+        metadataOnlyCheckpoints: true,
+        messageBoundaryFork: true,
+        breakpointTags: true,
+      })
+      expect(info.errors).toBeUndefined()
+    } finally {
+      await fixture.cleanup()
+    }
+  })
+
+  test("diagnostic tool execute returns runtime info", async () => {
+    const rawInfo = await toolRuntimeInfoTool.execute({}, {})
+    const info = JSON.parse(rawInfo)
+
+    expect(typeof rawInfo).toBe("string")
+    expect(info.toolVersion).toBe(workstreamToolVersion)
+    expect(typeof info.toolFilePath).toBe("string")
+    expect(typeof info.capabilities).toBe("object")
+    expect(info.capabilities.messageBoundaryFork).toBe(true)
+
+    if (info.workCommandPath) {
+      expect(typeof info.resolvedRuntimeModulePath).toBe("string")
+    } else {
+      expect(typeof info.errors?.workCommandPath).toBe("string")
+    }
+  })
+
+  test("module only exposes tool exports at runtime", async () => {
+    const workstreamModule = await import("./workstream.ts")
+
+    expect(Object.keys(workstreamModule).sort()).toEqual([
+      "current_workstream",
+      "launch_supervision_branch",
+      "link_planning_session",
+      "tool_runtime_info",
+    ])
+  })
+
+  test("captures resolution errors when the work binary is unavailable", () => {
+    const info = getWorkstreamsToolRuntimeInfo({
+      resolveWorkCommandPath: () => {
+        throw new Error("missing work binary")
+      },
+    })
+
+    expect(info.toolVersion).toBe(workstreamToolVersion)
+    expect(info.workCommandPath).toBeUndefined()
+    expect(info.errors?.workCommandPath).toContain("missing work binary")
+    expect(info.resolvedRuntimeModulePath).toBeUndefined()
   })
 })
 
@@ -717,6 +796,7 @@ describe("launch_supervision_branch", () => {
       })
       expect(calls[0]?.title).toBe(`root-supervision-${workspace.streamId}-branch-supervision-1`)
       expect(calls[0]?.prompt).toContain("Please supervise batch 10.01 for this workstream.")
+      expect(calls[0]?.prompt).toContain("Branch scope: batch 10.01.")
       expect(calls[0]?.prompt).toContain(
         `work supervise --repo-root \"${workspace.repoRoot}\" --stream \"${workspace.streamId}\" --batch \"10.01\" --timeout-ms 1200000 --poll-interval-ms 1000 --no-server --silent --root-session-id \"root-session-1\" --branch-session-id \"branch-supervision-1\" --parent-session-id \"root-session-1\" --checkpoint-message-id \"msg-root-checkpoint\" --checkpoint-message-index 0 --checkpoint-created-at \"2026-04-12T00:00:00.000Z\"`,
       )
@@ -725,6 +805,134 @@ describe("launch_supervision_branch", () => {
       expect(calls[0]?.prompt).toContain("## Accomplished")
       expect(calls[0]?.prompt).toContain("## Next For The User")
       expect(calls[0]?.prompt).not.toContain("You are a Root Agent supervision branch")
+
+      const stored = loadSupervisorState(workspace.repoRoot, workspace.streamId)
+      expect(stored?.branch_sessions[0]?.scope).toEqual({
+        level: "batch",
+        stageId: "10",
+        batchId: "10.01",
+      })
+      expect(stored?.branch_sessions[0]?.supervisionProgress).toEqual({
+        executionMode: "single_batch_run",
+        currentBatchId: "10.01",
+      })
+    } finally {
+      cleanupTestWorkstream(workspace)
+    }
+  })
+
+  test("composes stage-scope prompt/report guidance while deriving batch targets from persisted stage state", async () => {
+    const workspace = createTestWorkstream("001-agent-tool-stage-scope-prompt")
+    const calls: Array<{ prompt: string }> = []
+
+    try {
+      const result = await executeLaunchSupervisionBranch(
+        {
+          scope: "stage",
+          stage: "10",
+        },
+        { sessionID: "root-session-1" },
+        createDeps(workspace.repoRoot, workspace.streamId, {
+          runForkedSession: async ({ prompt }) => {
+            calls.push({ prompt })
+
+            return {
+              code: 0,
+              stdout: '{"type":"text","part":{"text":"## Next For The User\\n- Stage 10 complete."}}\n',
+              stderr: "",
+              nativeSessionId: "ses_supervision_1",
+            }
+          },
+          exportSessionTranscript: async (sessionId) =>
+            sessionId === "root-session-1"
+              ? {
+                  info: {
+                    id: "root-session-1",
+                    title: "Root session",
+                    summary: { additions: 0, deletions: 0, files: 0 },
+                  },
+                  messages: [
+                    {
+                      info: { id: "msg-root-checkpoint", role: "user" },
+                      parts: [{ type: "text", text: "Checkpoint user message SESSION_BREAKPOINT" }],
+                    },
+                  ],
+                }
+              : {
+                  info: {
+                    id: "ses_supervision_1",
+                    title: "Supervision branch",
+                    summary: { additions: 0, deletions: 0, files: 0 },
+                  },
+                  messages: [
+                    {
+                      info: {
+                        id: "msg-final",
+                        role: "assistant",
+                        time: { created: 1, completed: 2 },
+                      },
+                      parts: [{ type: "text", text: "## Next For The User\n- Stage 10 complete." }],
+                    },
+                  ],
+                },
+        }),
+      )
+
+      expect(calls).toHaveLength(1)
+      expect(calls[0]?.prompt).toContain("Branch scope: stage 10.")
+      expect(calls[0]?.prompt).toContain(
+        "Please supervise stage 10 for this workstream, one batch at a time until the stage is done or you must yield by policy.",
+      )
+      expect(calls[0]?.prompt).toContain(
+        "work supervise itself is still a single-batch primitive",
+      )
+      expect(calls[0]?.prompt).toContain(
+        "Before each supervise pass, inspect the persisted state of stage 10 and identify the next incomplete or resumable batch within that stage.",
+      )
+      expect(calls[0]?.prompt).toContain(
+        "Launch and rerun work supervise without an explicit --batch target for stage scope so the helper derives the current batch from persisted stage progress.",
+      )
+      expect(calls[0]?.prompt).toContain(
+        "Do not combine stage scope with an explicit batch launch target; stage-scoped branches must derive the active batch from persisted stage state.",
+      )
+      expect(calls[0]?.prompt).toContain('In "Next For The User", explicitly say whether stage 10 is done')
+      expect(calls[0]?.prompt).toContain(
+        `work supervise --repo-root "${workspace.repoRoot}" --stream "${workspace.streamId}" --root-session-id "root-session-1" --branch-session-id "branch-supervision-1" --parent-session-id "root-session-1" --checkpoint-message-id "msg-root-checkpoint" --checkpoint-message-index 0 --checkpoint-created-at "2026-04-12T00:00:00.000Z"`,
+      )
+      expect(calls[0]?.prompt).not.toContain('--batch "10.01"')
+      expect(result).toContain("## Next For The User\n- Stage 10 complete.")
+
+      const stored = loadSupervisorState(workspace.repoRoot, workspace.streamId)
+      expect(stored?.branch_sessions[0]?.scope).toEqual({
+        level: "stage",
+        stageId: "10",
+      })
+      expect(stored?.branch_sessions[0]?.batchId).toBeUndefined()
+      expect(stored?.branch_sessions[0]?.supervisionProgress).toEqual({
+        executionMode: "stage_batch_loop",
+      })
+    } finally {
+      cleanupTestWorkstream(workspace)
+    }
+  })
+
+  test("rejects explicit batch targets for stage-scoped launches", async () => {
+    const workspace = createTestWorkstream("001-agent-tool-stage-scope-reject-batch")
+
+    try {
+      await expect(
+        executeLaunchSupervisionBranch(
+          {
+            scope: "stage",
+            stage: "10",
+            batch: "10.01",
+          },
+          { sessionID: "root-session-1" },
+          createDeps(workspace.repoRoot, workspace.streamId),
+        ),
+      ).rejects.toThrow(
+        "Stage scope for stage 10 does not accept an explicit batch target; launch with --stage only and derive the next resumable batch from persisted stage state.",
+      )
     } finally {
       cleanupTestWorkstream(workspace)
     }
@@ -1016,7 +1224,7 @@ describe("launch_supervision_branch", () => {
         title: "root-supervision-000-branch-supervision-1",
         prompt: "Please supervise batch 10.01 for this workstream.",
         checkpointMessageId: "msg-checkpoint-1",
-        onNativeSessionId: async (nativeSessionId) => {
+        onNativeSessionId: async (nativeSessionId: string) => {
           events.push(`native:${nativeSessionId}`)
         },
       },
@@ -1027,7 +1235,15 @@ describe("launch_supervision_branch", () => {
             events.push("close")
           },
         }),
-        requestJson: async ({ method, path, body }) => {
+        requestJson: async ({
+          method,
+          path,
+          body,
+        }: {
+          method: string
+          path: string
+          body: any
+        }) => {
           calls.push({ method, path, body })
 
           if (path.includes("/fork?")) {

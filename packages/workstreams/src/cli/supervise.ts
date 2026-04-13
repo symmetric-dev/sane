@@ -12,6 +12,7 @@ import {
 import {
   buildRootAgentBranchSession,
   createRootAgentBranchSessionId,
+  findRootAgentBranchSessionByBranchSessionId,
   getRootAgentBranchSource,
   type RootAgentBranchContext,
   waitForRootAgentBranchNativeSessionId,
@@ -214,8 +215,16 @@ export async function resolveRootAgentBranchContext(
   }
 
   const branchSessionId = cliArgs.branchSessionId ?? createRootAgentBranchSessionId("supervision")
+  const storedBranch = cliArgs.branchSessionId
+    ? findRootAgentBranchSessionByBranchSessionId({
+        repoRoot,
+        streamId,
+        branchSessionId: cliArgs.branchSessionId,
+      })
+    : undefined
   const nativeSessionId =
     cliArgs.nativeBranchSessionId ??
+    storedBranch?.nativeSessionId ??
     (cliArgs.branchSessionId
       ? await waitForRootAgentBranchNativeSessionId({
           repoRoot,
@@ -236,12 +245,19 @@ export async function resolveRootAgentBranchContext(
     ...(cliArgs.checkpointCreatedAt
       ? { checkpointCreatedAt: cliArgs.checkpointCreatedAt }
       : {}),
-    ...(cliArgs.parentSessionId ? { parentSessionId: cliArgs.parentSessionId } : {}),
+    ...(cliArgs.parentSessionId
+      ? { parentSessionId: cliArgs.parentSessionId }
+      : storedBranch?.parentSessionId
+        ? { parentSessionId: storedBranch.parentSessionId }
+        : {}),
     ...(cliArgs.parentBranchSessionId
       ? { parentBranchSessionId: cliArgs.parentBranchSessionId }
-      : {}),
+      : storedBranch?.parentBranchSessionId
+        ? { parentBranchSessionId: storedBranch.parentBranchSessionId }
+        : {}),
     ...(nativeSessionId ? { nativeSessionId } : {}),
-    source: getRootAgentBranchSource(nativeSessionId),
+    ...(storedBranch?.scope ? { scope: storedBranch.scope } : {}),
+    source: getRootAgentBranchSource(nativeSessionId, storedBranch?.source),
   }
 }
 
@@ -252,6 +268,7 @@ async function recordSupervisionBranchSession(args: {
   status: "running" | "completed" | "stopped" | "failed"
   runId: string
   batchId: string
+  lastReviewedBatchId?: string
   startedAt: string
   updatedAt?: string
   completedAt?: string
@@ -274,6 +291,16 @@ async function recordSupervisionBranchSession(args: {
       completedAt: args.completedAt,
       runId: args.runId,
       batchId: args.batchId,
+      supervisionProgress: {
+        executionMode:
+          args.branchContext.scope?.level === "stage"
+            ? "stage_batch_loop"
+            : "single_batch_run",
+        currentBatchId: args.batchId,
+        ...(args.lastReviewedBatchId
+          ? { lastReviewedBatchId: args.lastReviewedBatchId }
+          : {}),
+      },
       notes: args.notes,
     }),
   )
@@ -426,6 +453,7 @@ export async function main(argv: string[] = process.argv): Promise<void> {
     status: "running",
     runId: startPlan.runId,
     batchId: startPlan.batchId,
+    lastReviewedBatchId: persistedRun?.lastReviewedBatchId,
     startedAt: startPlan.runStartedAt,
     updatedAt: new Date().toISOString(),
     notes: startPlan.message
@@ -487,6 +515,7 @@ export async function main(argv: string[] = process.argv): Promise<void> {
       status: "running",
       runId: startPlan.runId,
       batchId: startPlan.batchId,
+      lastReviewedBatchId: getRunById(getSupervisorStateSnapshot(repoRoot, stream.id), startPlan.runId)?.lastReviewedBatchId,
       startedAt: startPlan.runStartedAt,
       updatedAt: batchStatus.completedAt ?? batchStatus.updatedAt,
       completedAt: undefined,
@@ -521,6 +550,7 @@ export async function main(argv: string[] = process.argv): Promise<void> {
         status: "stopped",
         runId: startPlan.runId,
         batchId: startPlan.batchId,
+        lastReviewedBatchId: getRunById(getSupervisorStateSnapshot(repoRoot, stream.id), startPlan.runId)?.lastReviewedBatchId,
         startedAt: startPlan.runStartedAt,
         updatedAt: new Date().toISOString(),
         completedAt: new Date().toISOString(),
@@ -555,6 +585,7 @@ export async function main(argv: string[] = process.argv): Promise<void> {
       status: "failed",
       runId: startPlan.runId,
       batchId: startPlan.batchId,
+      lastReviewedBatchId: getRunById(getSupervisorStateSnapshot(repoRoot, stream.id), startPlan.runId)?.lastReviewedBatchId,
       startedAt: startPlan.runStartedAt,
       updatedAt: new Date().toISOString(),
       completedAt: new Date().toISOString(),

@@ -535,6 +535,103 @@ describe("supervise", () => {
     })
   })
 
+  test("CLI preserve stage-scoped supervision progress when recording follow-up branch state", async () => {
+    workspace = createTestWorkstream("001-supervise-stage-scope")
+    writeIndex(workspace.repoRoot, workspace.streamId, "supervise-stage-scope")
+    writeTwoBatchPlan(workspace.workDir)
+    writeTasksList(workspace.workDir, workspace.streamId, [
+      {
+        id: "01.01.01.01",
+        status: "completed",
+        threadName: "Thread 1",
+        batchName: "Batch 1",
+        stageName: "Stage 1",
+        report: "Completed first batch before supervise handoff.",
+      },
+      {
+        id: "01.02.01.01",
+        status: "pending",
+        threadName: "Thread 1",
+        batchName: "Batch 2",
+        stageName: "Stage 1",
+      },
+    ])
+
+    saveThreads(workspace.repoRoot, workspace.streamId, {
+      version: "1.0.0",
+      stream_id: workspace.streamId,
+      last_updated: new Date().toISOString(),
+      threads: [{ threadId: "01.01.01", sessions: [] }],
+    })
+
+    writeFileSync(
+      getRunResultPath(workspace.streamId, "01.01.01"),
+      JSON.stringify({ status: "completed", exitCode: 0 }),
+    )
+
+    const startedAt = new Date().toISOString()
+    await upsertBranchSessionLocked(
+      workspace.repoRoot,
+      workspace.streamId,
+      buildRootAgentBranchSession({
+        context: {
+          rootSessionId: "root-session-stage-1",
+          branchSessionId: "branch-supervision-stage-1",
+          checkpointMessageId: "msg-root-checkpoint-stage",
+          checkpointCreatedAt: "2026-04-12T00:00:00.000Z",
+          parentSessionId: "root-session-stage-1",
+          nativeSessionId: "ses_supervision_stage_1",
+          scope: {
+            level: "stage",
+            stageId: "01",
+          },
+        },
+        branchRole: "supervision",
+        status: "pending",
+        startedAt,
+        updatedAt: startedAt,
+        batchId: "01.01",
+      }),
+    )
+
+    const fakeRuntime = join(workspace.repoRoot, "fake-bun-stage-scope")
+    writeFileSync(fakeRuntime, "#!/bin/sh\nexit 0\n", { mode: 0o755 })
+    process.execPath = fakeRuntime
+
+    await captureCliOutput(async () => {
+      await superviseMain([
+        "bun",
+        "work-supervise",
+        "--repo-root",
+        workspace!.repoRoot,
+        "--stream",
+        workspace!.streamId,
+        "--batch",
+        "01.01",
+        "--poll-interval-ms",
+        "1",
+        "--root-session-id",
+        "root-session-stage-1",
+        "--branch-session-id",
+        "branch-supervision-stage-1",
+      ])
+    })
+
+    const supervisorState = loadSupervisorState(workspace.repoRoot, workspace.streamId)
+    expect(supervisorState?.branch_sessions[0]).toMatchObject({
+      branchSessionId: "branch-supervision-stage-1",
+      scope: {
+        level: "stage",
+        stageId: "01",
+      },
+      supervisionProgress: {
+        executionMode: "stage_batch_loop",
+        currentBatchId: "01.01",
+      },
+    })
+    expect(supervisorState?.branch_sessions[0]?.batchId).toBeUndefined()
+  })
+
   test("supervise resolves native branch ancestry and multi persists it into thread lineage", async () => {
     workspace = createTestWorkstream("001-supervise-thread-lineage")
     writeIndex(workspace.repoRoot, workspace.streamId, "supervise-thread-lineage")

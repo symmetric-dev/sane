@@ -636,6 +636,27 @@ export type RootAgentBranchSource = "native_fork" | "repo_local_fallback"
 
 export type RootAgentBranchStatus = "pending" | "running" | "completed" | "stopped" | "failed"
 
+export interface RootAgentBatchBranchScope {
+  level: "batch"
+  stageId: string
+  batchId: string
+}
+
+export interface RootAgentStageBranchScope {
+  level: "stage"
+  stageId: string
+}
+
+export type RootAgentBranchScope = RootAgentBatchBranchScope | RootAgentStageBranchScope
+
+export type RootAgentSupervisionExecutionMode = "single_batch_run" | "stage_batch_loop"
+
+export interface RootAgentSupervisionProgress {
+  executionMode: RootAgentSupervisionExecutionMode
+  currentBatchId?: string
+  lastReviewedBatchId?: string
+}
+
 export type RootAgentBreakpointSelectionStrategy =
   | "explicit_tag"
   | "previous_user_before_launch"
@@ -662,6 +683,7 @@ export interface RootAgentLineage {
   rootSessionId: string
   branchSessionId: string
   branchRole: RootAgentBranchRole
+  scope?: RootAgentBranchScope
   /**
    * Stage 13+ metadata-only checkpoint pointer fields.
    * These identify the Root Agent transcript boundary used for branch launch.
@@ -688,6 +710,7 @@ export interface RootAgentBranchSession extends RootAgentLineage {
   completedAt?: string
   runId?: string
   batchId?: string
+  supervisionProgress?: RootAgentSupervisionProgress
   threadId?: string
   reviewId?: string
   fixCycleId?: string
