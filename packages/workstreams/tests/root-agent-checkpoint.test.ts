@@ -2,7 +2,9 @@ import { describe, expect, test } from "bun:test"
 import type { ExportedMessage, SessionExport } from "../src/lib/session-export.ts"
 import {
   createRootAgentCheckpointPointer,
+  DEFAULT_ROOT_AGENT_BREAKPOINT_TAGS,
   findLatestRootAgentCheckpointBoundary,
+  formatRootAgentBreakpointSelection,
   formatRootAgentCheckpointPointer,
   loadRootAgentCheckpointPointer,
   refreshRootAgentCheckpointPointer,
@@ -40,37 +42,76 @@ function createMessage(args: {
 }
 
 describe("root-agent-checkpoint", () => {
-  test("findLatestRootAgentCheckpointBoundary prefers the latest transcript-safe boundary", () => {
+  test("findLatestRootAgentCheckpointBoundary prefers the latest tagged user breakpoint before launch", () => {
     const sessionExport = createSessionExport([
-      createMessage({ id: "msg-assistant-1", role: "assistant", text: "Earlier", completedAt: 10 }),
-      createMessage({ id: "msg-user-1", role: "user", text: "Launch the branch" }),
-      createMessage({ id: "msg-assistant-draft", role: "assistant", text: "Draft response" }),
+      createMessage({ id: "msg-tagged", role: "user", text: `Pause here\n${DEFAULT_ROOT_AGENT_BREAKPOINT_TAGS[0]}` }),
+      createMessage({ id: "msg-user-2", role: "user", text: "Launch the branch from the most recent request" }),
+      createMessage({ id: "msg-launch", role: "assistant", text: "launch_supervision_branch" }),
     ])
 
     expect(findLatestRootAgentCheckpointBoundary(sessionExport)).toMatchObject({
-      checkpointMessageIndex: 1,
+      checkpointMessageIndex: 0,
       message: {
-        info: { id: "msg-user-1", role: "user" },
+        info: { id: "msg-tagged", role: "user" },
+      },
+      breakpointSelection: {
+        strategy: "explicit_tag",
+        matchedTag: DEFAULT_ROOT_AGENT_BREAKPOINT_TAGS[0],
+        launchMessageId: "msg-launch",
       },
     })
   })
 
-  test("createRootAgentCheckpointPointer stores message id and index when both are available", () => {
+  test("findLatestRootAgentCheckpointBoundary supports custom breakpoint tags", () => {
+    const sessionExport = createSessionExport([
+      createMessage({ id: "msg-custom", role: "user", text: "Use CUSTOM_BREAKPOINT here" }),
+      createMessage({ id: "msg-launch", role: "assistant", text: "launch_supervision_branch" }),
+    ])
+
+    expect(
+      findLatestRootAgentCheckpointBoundary(sessionExport, {
+        breakpointTags: ["CUSTOM_BREAKPOINT"],
+      }),
+    ).toMatchObject({
+      checkpointMessageIndex: 0,
+      message: {
+        info: { id: "msg-custom", role: "user" },
+      },
+      breakpointSelection: {
+        strategy: "explicit_tag",
+        matchedTag: "CUSTOM_BREAKPOINT",
+      },
+    })
+  })
+
+  test("createRootAgentCheckpointPointer stores user-message id and selection rationale", () => {
     const pointer = createRootAgentCheckpointPointer({
       rootSessionId: "root-session-1",
       checkpointCreatedAt: "2026-04-12T00:00:00.000Z",
       sessionExport: createSessionExport([
-        createMessage({ id: "msg-assistant-1", role: "assistant", text: "Done", completedAt: 10 }),
+        createMessage({ id: "msg-user-1", role: "user", text: "Launch the branch" }),
+        createMessage({ id: "msg-launch", role: "assistant", text: "launch_supervision_branch" }),
       ]),
     })
 
     expect(pointer).toEqual({
       rootSessionId: "root-session-1",
-      checkpointMessageId: "msg-assistant-1",
+      checkpointMessageId: "msg-user-1",
       checkpointMessageIndex: 0,
       checkpointCreatedAt: "2026-04-12T00:00:00.000Z",
+      breakpointSelection: {
+        strategy: "previous_user_before_launch",
+        configuredTags: [...DEFAULT_ROOT_AGENT_BREAKPOINT_TAGS],
+        launchMessageId: "msg-launch",
+        launchMessageIndex: 1,
+        rationale:
+          "Selected the previous user message before launch message msg-launch because no configured breakpoint tag was found.",
+      },
     })
-    expect(formatRootAgentCheckpointPointer(pointer)).toBe("message msg-assistant-1")
+    expect(formatRootAgentCheckpointPointer(pointer)).toBe("message msg-user-1")
+    expect(formatRootAgentBreakpointSelection(pointer.breakpointSelection!)).toBe(
+      "Selected the previous user message before launch message msg-launch because no configured breakpoint tag was found.",
+    )
   })
 
   test("createRootAgentCheckpointPointer falls back to message index when ids are unavailable", () => {
@@ -78,7 +119,8 @@ describe("root-agent-checkpoint", () => {
       rootSessionId: "root-session-1",
       checkpointCreatedAt: "2026-04-12T00:00:00.000Z",
       sessionExport: createSessionExport([
-        createMessage({ role: "assistant", text: "Done", completedAt: 10 }),
+        createMessage({ role: "user", text: "Launch the branch" }),
+        createMessage({ id: "msg-launch", role: "assistant", text: "launch_supervision_branch" }),
       ]),
     })
 
@@ -86,15 +128,23 @@ describe("root-agent-checkpoint", () => {
       rootSessionId: "root-session-1",
       checkpointMessageIndex: 0,
       checkpointCreatedAt: "2026-04-12T00:00:00.000Z",
+      breakpointSelection: {
+        strategy: "previous_user_before_launch",
+        configuredTags: [...DEFAULT_ROOT_AGENT_BREAKPOINT_TAGS],
+        launchMessageId: "msg-launch",
+        launchMessageIndex: 1,
+        rationale:
+          "Selected the previous user message before launch message msg-launch because no configured breakpoint tag was found.",
+      },
     })
     expect(formatRootAgentCheckpointPointer(pointer)).toBe("message-index 0")
   })
 
   test("validateRootAgentCheckpointPointer prefers checkpointMessageId over a stale index", () => {
     const sessionExport = createSessionExport([
-      createMessage({ id: "msg-0", role: "assistant", text: "Earlier", completedAt: 10 }),
+      createMessage({ id: "msg-0", role: "user", text: "Earlier" }),
       createMessage({ id: "msg-1", role: "assistant", text: "Middle", completedAt: 20 }),
-      createMessage({ id: "msg-2", role: "assistant", text: "Latest", completedAt: 30 }),
+      createMessage({ id: "msg-2", role: "user", text: "Latest" }),
     ])
 
     expect(
@@ -126,6 +176,7 @@ describe("root-agent-checkpoint", () => {
         sessionExport: createSessionExport([
           createMessage({ id: "msg-old", role: "assistant", text: "Earlier", completedAt: 10 }),
           createMessage({ id: "msg-new", role: "user", text: "Launch the branch" }),
+          createMessage({ id: "msg-launch", role: "assistant", text: "launch_supervision_branch" }),
         ]),
       })
 
@@ -134,6 +185,14 @@ describe("root-agent-checkpoint", () => {
         checkpointMessageId: "msg-new",
         checkpointMessageIndex: 1,
         checkpointCreatedAt: "2026-04-12T00:00:00.000Z",
+        breakpointSelection: {
+          strategy: "previous_user_before_launch",
+          configuredTags: [...DEFAULT_ROOT_AGENT_BREAKPOINT_TAGS],
+          launchMessageId: "msg-launch",
+          launchMessageIndex: 2,
+          rationale:
+            "Selected the previous user message before launch message msg-launch because no configured breakpoint tag was found.",
+        },
       })
 
       expect(
@@ -146,5 +205,19 @@ describe("root-agent-checkpoint", () => {
     } finally {
       cleanupTestWorkstream(workspace)
     }
+  })
+
+  test("createRootAgentCheckpointPointer throws when no tagged or previous user message exists", () => {
+    expect(() =>
+      createRootAgentCheckpointPointer({
+        rootSessionId: "root-session-1",
+        checkpointCreatedAt: "2026-04-12T00:00:00.000Z",
+        sessionExport: createSessionExport([
+          createMessage({ id: "msg-assistant-1", role: "assistant", text: "Only assistant history", completedAt: 10 }),
+        ]),
+      }),
+    ).toThrow(
+      "Failed to capture checkpoint pointer metadata: no tagged user message matched configured breakpoint tags (SESSION_BREAKPOINT) and no previous user message was found before branch launch.",
+    )
   })
 })

@@ -26,6 +26,15 @@ describe("root-agent-branch", () => {
           branchSessionId: "branch-supervision-1",
           checkpointMessageId: "msg_checkpoint_1",
           checkpointCreatedAt: "2026-04-12T00:00:00.000Z",
+          breakpointSelection: {
+            strategy: "explicit_tag",
+            configuredTags: ["SESSION_BREAKPOINT"],
+            matchedTag: "SESSION_BREAKPOINT",
+            launchMessageId: "msg-launch",
+            launchMessageIndex: 2,
+            rationale:
+              'Selected the tagged user message because it matched configured breakpoint tag "SESSION_BREAKPOINT" before launch message msg-launch.',
+          },
           parentSessionId: "root-session-1",
           nativeSessionId: "ses_supervision_1",
         },
@@ -36,6 +45,15 @@ describe("root-agent-branch", () => {
       branchSessionId: "branch-supervision-1",
       checkpointMessageId: "msg_checkpoint_1",
       checkpointCreatedAt: "2026-04-12T00:00:00.000Z",
+      breakpointSelection: {
+        strategy: "explicit_tag",
+        configuredTags: ["SESSION_BREAKPOINT"],
+        matchedTag: "SESSION_BREAKPOINT",
+        launchMessageId: "msg-launch",
+        launchMessageIndex: 2,
+        rationale:
+          'Selected the tagged user message because it matched configured breakpoint tag "SESSION_BREAKPOINT" before launch message msg-launch.',
+      },
       parentSessionId: "root-session-1",
       nativeSessionId: "ses_supervision_1",
       source: "native_fork",

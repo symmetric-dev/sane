@@ -3,7 +3,10 @@ import { mkdtemp, mkdir, rm, symlink, writeFile } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { loadSupervisorState, upsertBranchSessionLocked } from "../../packages/workstreams/src/lib/supervisor-state.ts"
-import { refreshRootAgentCheckpointPointer } from "../../packages/workstreams/src/lib/root-agent-checkpoint.ts"
+import {
+  getRootAgentCheckpointSessionForkEligibility,
+  refreshRootAgentCheckpointPointer,
+} from "../../packages/workstreams/src/lib/root-agent-checkpoint.ts"
 import { buildRootAgentBranchSession } from "../../packages/workstreams/src/lib/root-agent-branch.ts"
 import { cleanupTestWorkstream, createTestWorkstream } from "../../packages/workstreams/tests/helpers/test-workspace.ts"
 
@@ -22,6 +25,7 @@ mock.module("@opencode-ai/plugin", () => ({
 
 let executeLaunchSupervisionBranch: typeof import("./workstream.ts").executeLaunchSupervisionBranch
 let loadWorkstreamsToolRuntime: typeof import("./workstream.ts").loadWorkstreamsToolRuntime
+let runMessageBoundaryForkLaunch: typeof import("./workstream.ts").runMessageBoundaryForkLaunch
 let resolveWorkstreamsRuntimeModulePath: typeof import("./workstream.ts").resolveWorkstreamsRuntimeModulePath
 type LaunchSupervisionBranchDeps = import("./workstream.ts").LaunchSupervisionBranchDeps
 
@@ -29,6 +33,7 @@ beforeAll(async () => {
   ;({
     executeLaunchSupervisionBranch,
     loadWorkstreamsToolRuntime,
+    runMessageBoundaryForkLaunch,
     resolveWorkstreamsRuntimeModulePath,
   } = await import("./workstream.ts"))
 })
@@ -52,6 +57,15 @@ function createDeps(
     buildBranchSession: buildRootAgentBranchSession,
     persistBranchSession: upsertBranchSessionLocked,
     refreshCheckpointPointer: (args) => refreshRootAgentCheckpointPointer(args),
+    getCheckpointSessionForkEligibility: (args) =>
+      getRootAgentCheckpointSessionForkEligibility({
+        ...args,
+        pointer: {
+          rootSessionId: args.pointer.rootSessionId ?? "root-session-1",
+          checkpointMessageIndex: args.pointer.checkpointMessageIndex ?? 0,
+          ...args.pointer,
+        },
+      }),
     loadStoredBranchSession: (root, stream, branchSessionId) =>
       loadSupervisorState(root, stream)?.branch_sessions.find(
         (branch) => branch.branchSessionId === branchSessionId,
@@ -90,10 +104,16 @@ function createDeps(
               {
                 info: {
                   id: "msg-root-checkpoint",
-                  role: "assistant",
-                  time: { created: 1, completed: 2 },
+                  role: "user",
                 },
                 parts: [{ type: "text", text: "Root checkpoint boundary" }],
+              },
+              {
+                info: {
+                  id: "msg-root-launch",
+                  role: "assistant",
+                },
+                parts: [{ type: "text", text: "launch_supervision_branch" }],
               },
             ],
           }
@@ -214,6 +234,9 @@ describe("launch_supervision_branch", () => {
       )
 
       expect(result).toContain("Supervision branch branch-supervision-1 (native session ses_supervision_1) completed from checkpoint pointer message msg-root-checkpoint")
+      expect(result).toContain(
+        "Breakpoint selection: Selected the previous user message before launch message msg-root-launch because no configured breakpoint tag was found.",
+      )
       expect(result).toContain("Extracted final branch report:")
 
       const stored = loadSupervisorState(workspace.repoRoot, workspace.streamId)
@@ -222,11 +245,162 @@ describe("launch_supervision_branch", () => {
         rootSessionId: "root-session-1",
         branchSessionId: "branch-supervision-1",
         checkpointMessageId: "msg-root-checkpoint",
+        breakpointSelection: {
+          strategy: "previous_user_before_launch",
+          configuredTags: ["SESSION_BREAKPOINT"],
+          launchMessageId: "msg-root-launch",
+          launchMessageIndex: 1,
+          rationale:
+            "Selected the previous user message before launch message msg-root-launch because no configured breakpoint tag was found.",
+        },
         nativeSessionId: "ses_supervision_1",
         source: "native_fork",
         status: "completed",
         batchId: "10.01",
         parentSessionId: "root-session-1",
+      })
+    } finally {
+      cleanupTestWorkstream(workspace)
+    }
+  })
+
+  test("surfaces explicit tagged breakpoint selection in branch lineage and output", async () => {
+    const workspace = createTestWorkstream("001-agent-tool-explicit-breakpoint")
+
+    try {
+      const result = await executeLaunchSupervisionBranch(
+        { batch: "10.01", breakpointTags: "ROOT_BRANCH_BOUNDARY, ALT_BOUNDARY, ROOT_BRANCH_BOUNDARY" },
+        { sessionID: "root-session-1" },
+        createDeps(workspace.repoRoot, workspace.streamId, {
+          exportSessionTranscript: async (sessionId) =>
+            sessionId === "root-session-1"
+              ? {
+                  info: {
+                    id: "root-session-1",
+                    title: "Root session",
+                    summary: { additions: 0, deletions: 0, files: 0 },
+                  },
+                  messages: [
+                    {
+                      info: { id: "msg-tagged", role: "user" },
+                      parts: [{ type: "text", text: "Pause here\nROOT_BRANCH_BOUNDARY" }],
+                    },
+                    {
+                      info: { id: "msg-latest-user", role: "user" },
+                      parts: [{ type: "text", text: "A later user message without a tag" }],
+                    },
+                    {
+                      info: { id: "msg-root-launch", role: "assistant" },
+                      parts: [{ type: "text", text: "launch_supervision_branch" }],
+                    },
+                  ],
+                }
+              : {
+                  info: {
+                    id: "ses_supervision_1",
+                    title: "Supervision branch",
+                    summary: { additions: 0, deletions: 0, files: 0 },
+                  },
+                  messages: [
+                    {
+                      info: {
+                        id: "msg-final",
+                        role: "assistant",
+                        time: { created: 1, completed: 2 },
+                      },
+                      parts: [{ type: "text", text: "## Accomplished\n- execution result\n## Issues Found\n- None.\n## Fixes Applied\n- None.\n## Next For The User\n- next action" }],
+                    },
+                  ],
+                },
+        }),
+      )
+
+      expect(result).toContain("from checkpoint pointer message msg-tagged")
+      expect(result).toContain(
+        'Breakpoint selection: Selected the tagged user message because it matched configured breakpoint tag "ROOT_BRANCH_BOUNDARY" before launch message msg-root-launch.',
+      )
+
+      const stored = loadSupervisorState(workspace.repoRoot, workspace.streamId)
+      expect(stored?.branch_sessions[0]).toMatchObject({
+        checkpointMessageId: "msg-tagged",
+        breakpointSelection: {
+          strategy: "explicit_tag",
+          configuredTags: ["ROOT_BRANCH_BOUNDARY", "ALT_BOUNDARY"],
+          matchedTag: "ROOT_BRANCH_BOUNDARY",
+          launchMessageId: "msg-root-launch",
+          launchMessageIndex: 2,
+          rationale:
+            'Selected the tagged user message because it matched configured breakpoint tag "ROOT_BRANCH_BOUNDARY" before launch message msg-root-launch.',
+        },
+      })
+    } finally {
+      cleanupTestWorkstream(workspace)
+    }
+  })
+
+  test("passes configured breakpoint tags through the real launch path before checkpoint selection", async () => {
+    const workspace = createTestWorkstream("001-agent-tool-configurable-breakpoint-tags")
+
+    try {
+      const result = await executeLaunchSupervisionBranch(
+        { batch: "10.01", breakpointTags: "CUSTOM_BREAKPOINT" },
+        { sessionID: "root-session-1" },
+        createDeps(workspace.repoRoot, workspace.streamId, {
+          exportSessionTranscript: async (sessionId) =>
+            sessionId === "root-session-1"
+              ? {
+                  info: {
+                    id: "root-session-1",
+                    title: "Root session",
+                    summary: { additions: 0, deletions: 0, files: 0 },
+                  },
+                  messages: [
+                    {
+                      info: { id: "msg-default-tag", role: "user" },
+                      parts: [{ type: "text", text: "Earlier SESSION_BREAKPOINT marker" }],
+                    },
+                    {
+                      info: { id: "msg-custom-tag", role: "user" },
+                      parts: [{ type: "text", text: "Use CUSTOM_BREAKPOINT instead" }],
+                    },
+                    {
+                      info: { id: "msg-root-launch", role: "assistant" },
+                      parts: [{ type: "text", text: "launch_supervision_branch" }],
+                    },
+                  ],
+                }
+              : {
+                  info: {
+                    id: "ses_supervision_1",
+                    title: "Supervision branch",
+                    summary: { additions: 0, deletions: 0, files: 0 },
+                  },
+                  messages: [
+                    {
+                      info: {
+                        id: "msg-final",
+                        role: "assistant",
+                        time: { created: 1, completed: 2 },
+                      },
+                      parts: [{ type: "text", text: "## Next For The User\n- next action" }],
+                    },
+                  ],
+                },
+        }),
+      )
+
+      expect(result).toContain("from checkpoint pointer message msg-custom-tag")
+      expect(result).toContain('configured breakpoint tag "CUSTOM_BREAKPOINT"')
+      expect(result).not.toContain('configured breakpoint tag "SESSION_BREAKPOINT"')
+
+      const stored = loadSupervisorState(workspace.repoRoot, workspace.streamId)
+      expect(stored?.branch_sessions[0]).toMatchObject({
+        checkpointMessageId: "msg-custom-tag",
+        breakpointSelection: {
+          strategy: "explicit_tag",
+          configuredTags: ["CUSTOM_BREAKPOINT"],
+          matchedTag: "CUSTOM_BREAKPOINT",
+        },
       })
     } finally {
       cleanupTestWorkstream(workspace)
@@ -259,47 +433,62 @@ describe("launch_supervision_branch", () => {
             completedAt: "2026-04-12T00:00:00.000Z",
             batchId: "10.01",
           }),
-          exportSessionTranscript: async () => ({
-            info: {
-              id: "ses_supervision_1",
-              title: "Supervision branch",
-              summary: { additions: 0, deletions: 0, files: 0 },
-            },
-            messages: [
-              {
-                info: {
-                  id: "msg-earlier",
-                  role: "assistant",
-                  time: { created: 1, completed: 2 },
-                },
-                parts: [{ type: "text", text: "Earlier status" }],
-              },
-              {
-                info: {
-                  id: "msg-final",
-                  role: "assistant",
-                  time: { created: 3, completed: 4 },
-                },
-                parts: [
-                  {
-                    type: "text",
-                    text: [
-                      "Accomplished work: monitored the child branch parent-side.",
-                      "Issues found: none.",
-                      "Fixes applied: transcript/report extraction.",
-                      "Reason for yielding: batch paused for Root Agent review.",
-                    ].join("\n"),
+          exportSessionTranscript: async (sessionId) =>
+            sessionId === "root-session-1"
+              ? {
+                  info: {
+                    id: "root-session-1",
+                    title: "Root session",
+                    summary: { additions: 0, deletions: 0, files: 0 },
                   },
-                ],
-              },
-            ],
-          }),
+                  messages: [
+                    {
+                      info: { id: "msg-root-checkpoint", role: "user" },
+                      parts: [{ type: "text", text: "Checkpoint user message SESSION_BREAKPOINT" }],
+                    },
+                  ],
+                }
+              : {
+                  info: {
+                    id: "ses_supervision_1",
+                    title: "Supervision branch",
+                    summary: { additions: 0, deletions: 0, files: 0 },
+                  },
+                  messages: [
+                    {
+                      info: {
+                        id: "msg-earlier",
+                        role: "assistant",
+                        time: { created: 1, completed: 2 },
+                      },
+                      parts: [{ type: "text", text: "Earlier status" }],
+                    },
+                    {
+                      info: {
+                        id: "msg-final",
+                        role: "assistant",
+                        time: { created: 3, completed: 4 },
+                      },
+                      parts: [
+                        {
+                          type: "text",
+                          text: [
+                            "Accomplished work: monitored the child branch parent-side.",
+                            "Issues found: none.",
+                            "Fixes applied: transcript/report extraction.",
+                            "Reason for yielding: batch paused for Root Agent review.",
+                          ].join("\n"),
+                        },
+                      ],
+                    },
+                  ],
+                },
           extractFinalBranchReport: (sessionExport) =>
             sessionExport.messages[1]?.parts?.[0]?.text ?? "",
         }),
       )
 
-      expect(result).toContain("Supervision branch branch-supervision-1 (native session ses_supervision_1) stopped from checkpoint pointer message msg-final")
+      expect(result).toContain("Supervision branch branch-supervision-1 (native session ses_supervision_1) stopped from checkpoint pointer message msg-root-checkpoint")
       expect(result).toContain("Persisted branch status: stopped.")
       expect(result).toContain("Extracted final branch report:")
       expect(result).toContain("Reason for yielding: batch paused for Root Agent review.")
@@ -318,23 +507,39 @@ describe("launch_supervision_branch", () => {
     const workspace = createTestWorkstream("001-agent-tool-native-resolution")
 
     try {
-      const exportSessionTranscript = mock(async (sessionId: string) => ({
-        info: {
-          id: sessionId,
-          title: "Supervision branch",
-          summary: { additions: 0, deletions: 0, files: 0 },
-        },
-        messages: [
-          {
-            info: {
-              id: "msg-final",
-              role: "assistant",
-              time: { created: 1, completed: 2 },
+      const exportSessionTranscript = mock(async (sessionId: string) =>
+        sessionId === "root-session-1"
+          ? {
+              info: {
+                id: "root-session-1",
+                title: "Root session",
+                summary: { additions: 0, deletions: 0, files: 0 },
+              },
+              messages: [
+                {
+                  info: { id: "msg-root-checkpoint", role: "user" },
+                  parts: [{ type: "text", text: "Checkpoint user message SESSION_BREAKPOINT" }],
+                },
+              ],
+            }
+          : {
+              info: {
+                id: sessionId,
+                title: "Supervision branch",
+                summary: { additions: 0, deletions: 0, files: 0 },
+              },
+              messages: [
+                {
+                  info: {
+                    id: "msg-final",
+                    role: "assistant",
+                    time: { created: 1, completed: 2 },
+                  },
+                  parts: [{ type: "text", text: "Recovered via parent-side session lookup." }],
+                },
+              ],
             },
-            parts: [{ type: "text", text: "Recovered via parent-side session lookup." }],
-          },
-        ],
-      }))
+      )
 
       const result = await executeLaunchSupervisionBranch(
         { batch: "10.01" },
@@ -354,7 +559,7 @@ describe("launch_supervision_branch", () => {
 
       expect(exportSessionTranscript).toHaveBeenCalledWith("ses_resolved_after_completion")
       expect(result).toContain("native session ses_resolved_after_completion")
-      expect(result).toContain("from checkpoint pointer message msg-final")
+      expect(result).toContain("from checkpoint pointer message msg-root-checkpoint")
       expect(result).toContain("Recovered via parent-side session lookup.")
 
       const stored = loadSupervisorState(workspace.repoRoot, workspace.streamId)
@@ -429,7 +634,13 @@ describe("launch_supervision_branch", () => {
 
   test("launches from checkpoint-boundary metadata with a fake-user supervision prompt", async () => {
     const workspace = createTestWorkstream("001-agent-tool-prompt")
-    const calls: Array<{ sessionId: string; title: string; prompt: string }> = []
+    const calls: Array<{
+      sessionId: string
+      title: string
+      prompt: string
+      forkMode?: "message" | "latest_session_fork"
+      checkpointMessageId?: string
+    }> = []
 
     try {
       await executeLaunchSupervisionBranch(
@@ -442,8 +653,8 @@ describe("launch_supervision_branch", () => {
         },
         { sessionID: "root-session-1" },
         createDeps(workspace.repoRoot, workspace.streamId, {
-          runForkedSession: async ({ sessionId, title, prompt }) => {
-            calls.push({ sessionId, title, prompt })
+          runForkedSession: async ({ sessionId, title, prompt, forkMode, checkpointMessageId }) => {
+            calls.push({ sessionId, title, prompt, forkMode, checkpointMessageId })
 
             return {
               code: 0,
@@ -457,34 +668,57 @@ describe("launch_supervision_branch", () => {
             logs: [],
             success: true,
           }),
-          exportSessionTranscript: async () => ({
-            info: {
-              id: "ses_supervision_1",
-              title: "Supervision branch",
-              summary: { additions: 0, deletions: 0, files: 0 },
-            },
-            messages: [
-              {
-                info: {
-                  id: "msg-final",
-                  role: "assistant",
-                  time: { created: 1, completed: 2 },
+          exportSessionTranscript: async (sessionId) =>
+            sessionId === "root-session-1"
+              ? {
+                  info: {
+                    id: "root-session-1",
+                    title: "Root session",
+                    summary: { additions: 0, deletions: 0, files: 0 },
+                  },
+                  messages: [
+                    {
+                      info: { id: "msg-root-checkpoint", role: "user" },
+                      parts: [{ type: "text", text: "Checkpoint user message SESSION_BREAKPOINT" }],
+                    },
+                    {
+                      info: { id: "msg-root-launch", role: "assistant" },
+                      parts: [{ type: "text", text: "launch_supervision_branch" }],
+                    },
+                  ],
+                }
+              : {
+                  info: {
+                    id: "ses_supervision_1",
+                    title: "Supervision branch",
+                    summary: { additions: 0, deletions: 0, files: 0 },
+                  },
+                  messages: [
+                    {
+                      info: {
+                        id: "msg-branch-final",
+                        role: "assistant",
+                        time: { created: 1, completed: 2 },
+                      },
+                      parts: [{ type: "text", text: "## Accomplished\n- done" }],
+                    },
+                  ],
                 },
-                parts: [{ type: "text", text: "## Accomplished\n- done" }],
-              },
-            ],
-          }),
           extractFinalBranchReport: (sessionExport) =>
             sessionExport.messages[0]?.parts?.[0]?.text ?? "",
         }),
       )
 
       expect(calls).toHaveLength(1)
-      expect(calls[0]).toMatchObject({ sessionId: "root-session-1" })
+      expect(calls[0]).toMatchObject({
+        sessionId: "root-session-1",
+        forkMode: "message",
+        checkpointMessageId: "msg-root-checkpoint",
+      })
       expect(calls[0]?.title).toBe(`root-supervision-${workspace.streamId}-branch-supervision-1`)
       expect(calls[0]?.prompt).toContain("Please supervise batch 10.01 for this workstream.")
       expect(calls[0]?.prompt).toContain(
-        `work supervise --repo-root \"${workspace.repoRoot}\" --stream \"${workspace.streamId}\" --batch \"10.01\" --timeout-ms 1200000 --poll-interval-ms 1000 --no-server --silent --root-session-id \"root-session-1\" --branch-session-id \"branch-supervision-1\" --parent-session-id \"root-session-1\" --checkpoint-message-id \"msg-final\" --checkpoint-message-index 0 --checkpoint-created-at \"2026-04-12T00:00:00.000Z\"`,
+        `work supervise --repo-root \"${workspace.repoRoot}\" --stream \"${workspace.streamId}\" --batch \"10.01\" --timeout-ms 1200000 --poll-interval-ms 1000 --no-server --silent --root-session-id \"root-session-1\" --branch-session-id \"branch-supervision-1\" --parent-session-id \"root-session-1\" --checkpoint-message-id \"msg-root-checkpoint\" --checkpoint-message-index 0 --checkpoint-created-at \"2026-04-12T00:00:00.000Z\"`,
       )
       expect(calls[0]?.prompt).toContain("launch review subagents")
       expect(calls[0]?.prompt).toContain("launch fix subagents")
@@ -498,33 +732,61 @@ describe("launch_supervision_branch", () => {
 
   test("falls back to checkpointMessageIndex when checkpoint message IDs are unavailable", async () => {
     const workspace = createTestWorkstream("001-agent-tool-checkpoint-index-fallback")
+    const forkModes: Array<string | undefined> = []
 
     try {
       const result = await executeLaunchSupervisionBranch(
         { batch: "10.01" },
         { sessionID: "root-session-1" },
         createDeps(workspace.repoRoot, workspace.streamId, {
-          exportSessionTranscript: async () => ({
-            info: {
-              id: "ses_export_without_ids",
-              title: "Session without message IDs",
-              summary: { additions: 0, deletions: 0, files: 0 },
-            },
-            messages: [
-              {
-                info: {
-                  role: "assistant",
-                  time: { created: 1, completed: 2 },
+          runForkedSession: async ({ forkMode }) => {
+            forkModes.push(forkMode)
+            return {
+              code: 0,
+              stdout: '{"type":"text","part":{"text":"Message without a stable ID"}}\n',
+              stderr: "",
+              nativeSessionId: "ses_supervision_1",
+            }
+          },
+          exportSessionTranscript: async (sessionId) =>
+            sessionId === "root-session-1"
+              ? {
+                  info: {
+                    id: "root-session-1",
+                    title: "Session without message IDs",
+                    summary: { additions: 0, deletions: 0, files: 0 },
+                  },
+                  messages: [
+                    {
+                      info: {
+                        role: "user",
+                      },
+                      parts: [{ type: "text", text: "Message without a stable ID SESSION_BREAKPOINT" }],
+                    },
+                  ],
+                }
+              : {
+                  info: {
+                    id: "ses_supervision_1",
+                    title: "Supervision branch",
+                    summary: { additions: 0, deletions: 0, files: 0 },
+                  },
+                  messages: [
+                    {
+                      info: {
+                        role: "assistant",
+                        time: { created: 1, completed: 2 },
+                      },
+                      parts: [{ type: "text", text: "Message without a stable ID" }],
+                    },
+                  ],
                 },
-                parts: [{ type: "text", text: "Message without a stable ID" }],
-              },
-            ],
-          }),
           extractFinalBranchReport: () => "Message without a stable ID",
         }),
       )
 
       expect(result).toContain("checkpoint pointer message-index 0")
+      expect(forkModes).toEqual(["latest_session_fork"])
 
       const stored = loadSupervisorState(workspace.repoRoot, workspace.streamId)
       expect(stored?.branch_sessions[0]).toMatchObject({
@@ -535,6 +797,307 @@ describe("launch_supervision_branch", () => {
     } finally {
       cleanupTestWorkstream(workspace)
     }
+  })
+
+  test("uses the selected checkpoint message boundary for fork inheritance and still extracts the prompt-first final report", async () => {
+    const workspace = createTestWorkstream("001-agent-tool-boundary-fork")
+    const forkCalls: Array<{
+      checkpointMessageId?: string
+      forkMode?: "message" | "latest_session_fork"
+      prompt: string
+    }> = []
+
+    try {
+      const result = await executeLaunchSupervisionBranch(
+        { batch: "10.01" },
+        { sessionID: "root-session-1" },
+        createDeps(workspace.repoRoot, workspace.streamId, {
+          runForkedSession: async ({ checkpointMessageId, forkMode, prompt }) => {
+            forkCalls.push({ checkpointMessageId, forkMode, prompt })
+            return {
+              code: 0,
+              stdout: '{"type":"text","part":{"text":"fallback stdout summary"}}\n',
+              stderr: "",
+              nativeSessionId: "ses_supervision_1",
+            }
+          },
+          parseOutput: () => ({
+            text: "fallback parsed summary",
+            logs: [],
+            success: true,
+          }),
+          exportSessionTranscript: async (sessionId) =>
+            sessionId === "root-session-1"
+              ? {
+                  info: {
+                    id: "root-session-1",
+                    title: "Root session",
+                    summary: { additions: 0, deletions: 0, files: 0 },
+                  },
+                  messages: [
+                    {
+                      info: { id: "msg-user-1", role: "user" },
+                      parts: [{ type: "text", text: "Initial request" }],
+                    },
+                    {
+                      info: { id: "msg-user-breakpoint", role: "user" },
+                      parts: [{ type: "text", text: "Freeze here SESSION_BREAKPOINT before branching." }],
+                    },
+                    {
+                      info: { id: "msg-user-latest", role: "user" },
+                      parts: [{ type: "text", text: "Later untagged user message" }],
+                    },
+                    {
+                      info: { id: "msg-assistant-draft", role: "assistant" },
+                      parts: [{ type: "text", text: "Draft assistant reply" }],
+                    },
+                  ],
+                }
+              : {
+                  info: {
+                    id: "ses_supervision_1",
+                    title: "Supervision branch",
+                    summary: { additions: 0, deletions: 0, files: 0 },
+                  },
+                  messages: [
+                    {
+                      info: {
+                        id: "msg-final",
+                        role: "assistant",
+                        time: { created: 1, completed: 2 },
+                      },
+                      parts: [{ type: "text", text: "## Next For The User\n- Batch 10.01 is done." }],
+                    },
+                  ],
+                },
+          extractFinalBranchReport: (sessionExport) =>
+            sessionExport.messages.at(-1)?.parts?.[0]?.text ?? "",
+        }),
+      )
+
+      expect(forkCalls).toHaveLength(1)
+      expect(forkCalls[0]).toMatchObject({
+        checkpointMessageId: "msg-user-breakpoint",
+        forkMode: "message",
+      })
+      expect(forkCalls[0]?.prompt).toContain("Please supervise batch 10.01 for this workstream.")
+      expect(result).toContain("from checkpoint pointer message msg-user-breakpoint")
+      expect(result).toContain("Extracted final branch report:")
+      expect(result).toContain("## Next For The User\n- Batch 10.01 is done.")
+      expect(result).not.toContain("fallback parsed summary")
+    } finally {
+      cleanupTestWorkstream(workspace)
+    }
+  })
+
+  test("falls back to plain session fork when native message-boundary launch is unavailable at the live tip", async () => {
+    const workspace = createTestWorkstream("001-agent-tool-message-fork-fallback")
+    const forkModes: Array<string | undefined> = []
+
+    try {
+      const result = await executeLaunchSupervisionBranch(
+        { batch: "10.01" },
+        { sessionID: "root-session-1" },
+        createDeps(workspace.repoRoot, workspace.streamId, {
+          runForkedSession: async ({ forkMode }) => {
+            forkModes.push(forkMode)
+
+            if (forkMode === "message") {
+              throw new Error("native message-boundary fork unavailable")
+            }
+
+            return {
+              code: 0,
+              stdout: '{"type":"text","part":{"text":"## Next For The User\\n- Batch 10.01 is done."}}\n',
+              stderr: "",
+              nativeSessionId: "ses_supervision_1",
+            }
+          },
+          exportSessionTranscript: async (sessionId) =>
+            sessionId === "root-session-1"
+              ? {
+                  info: {
+                    id: "root-session-1",
+                    title: "Root session",
+                    summary: { additions: 0, deletions: 0, files: 0 },
+                  },
+                  messages: [
+                    {
+                      info: { id: "msg-root-checkpoint", role: "user" },
+                      parts: [{ type: "text", text: "Checkpoint user message SESSION_BREAKPOINT" }],
+                    },
+                  ],
+                }
+              : {
+                  info: {
+                    id: "ses_supervision_1",
+                    title: "Supervision branch",
+                    summary: { additions: 0, deletions: 0, files: 0 },
+                  },
+                  messages: [
+                    {
+                      info: {
+                        id: "msg-final",
+                        role: "assistant",
+                        time: { created: 1, completed: 2 },
+                      },
+                      parts: [{ type: "text", text: "## Next For The User\n- Batch 10.01 is done." }],
+                    },
+                  ],
+                },
+        }),
+      )
+
+      expect(forkModes).toEqual(["message", "latest_session_fork"])
+      expect(result).toContain("checkpoint pointer message msg-root-checkpoint")
+      expect(result).toContain("native session ses_supervision_1")
+    } finally {
+      cleanupTestWorkstream(workspace)
+    }
+  })
+
+  test("fails deterministically when native message-boundary launch is unavailable away from the live tip", async () => {
+    const workspace = createTestWorkstream("001-agent-tool-message-fork-error")
+    const forkModes: Array<string | undefined> = []
+
+    try {
+      const result = await executeLaunchSupervisionBranch(
+        { batch: "10.01" },
+        { sessionID: "root-session-1" },
+        createDeps(workspace.repoRoot, workspace.streamId, {
+          runForkedSession: async ({ forkMode }) => {
+            forkModes.push(forkMode)
+            throw new Error("native message-boundary fork unavailable")
+          },
+          exportSessionTranscript: async () => ({
+            info: {
+              id: "root-session-1",
+              title: "Root session",
+              summary: { additions: 0, deletions: 0, files: 0 },
+            },
+            messages: [
+              {
+                info: { id: "msg-user-breakpoint", role: "user" },
+                parts: [{ type: "text", text: "Stop here SESSION_BREAKPOINT before branching." }],
+              },
+              {
+                info: { id: "msg-assistant-draft", role: "assistant" },
+                parts: [{ type: "text", text: "Live draft assistant reply" }],
+              },
+            ],
+          }),
+        }),
+      )
+
+      expect(forkModes).toEqual(["message"])
+      expect(result).toContain("failed to launch")
+      expect(result).toContain("checkpoint pointer message msg-user-breakpoint")
+      expect(result).toContain("live session tip")
+
+      const stored = loadSupervisorState(workspace.repoRoot, workspace.streamId)
+      expect(stored?.branch_sessions[0]).toMatchObject({
+        status: "failed",
+        checkpointMessageId: "msg-user-breakpoint",
+        checkpointMessageIndex: 0,
+      })
+    } finally {
+      cleanupTestWorkstream(workspace)
+    }
+  })
+
+  test("runMessageBoundaryForkLaunch issues the expected HTTP fork, title, and prompt requests", async () => {
+    const calls: Array<{ method: string; path: string; body: any }> = []
+    const events: string[] = []
+
+    const result = await runMessageBoundaryForkLaunch(
+      {
+        sessionId: "root-session-1",
+        repoRoot: "/repo/root",
+        title: "root-supervision-000-branch-supervision-1",
+        prompt: "Please supervise batch 10.01 for this workstream.",
+        checkpointMessageId: "msg-checkpoint-1",
+        onNativeSessionId: async (nativeSessionId) => {
+          events.push(`native:${nativeSessionId}`)
+        },
+      },
+      {
+        startServer: async () => ({
+          url: "http://127.0.0.1:4312",
+          close: () => {
+            events.push("close")
+          },
+        }),
+        requestJson: async ({ method, path, body }) => {
+          calls.push({ method, path, body })
+
+          if (path.includes("/fork?")) {
+            return { id: "ses_child_123" }
+          }
+
+          if (path.includes("/message?")) {
+            return {
+              parts: [{ type: "text", text: "## Next For The User\n- done" }],
+            }
+          }
+
+          return { ok: true }
+        },
+      },
+    )
+
+    expect(result).toEqual({
+      code: 0,
+      stdout: '{"type":"text","part":{"text":"## Next For The User\\n- done"}}\n',
+      stderr: "",
+      nativeSessionId: "ses_child_123",
+    })
+    expect(calls).toEqual([
+      {
+        method: "POST",
+        path: "/session/root-session-1/fork?directory=%2Frepo%2Froot",
+        body: { messageID: "msg-checkpoint-1" },
+      },
+      {
+        method: "PATCH",
+        path: "/session/ses_child_123?directory=%2Frepo%2Froot",
+        body: { title: "root-supervision-000-branch-supervision-1" },
+      },
+      {
+        method: "POST",
+        path: "/session/ses_child_123/message?directory=%2Frepo%2Froot",
+        body: {
+          parts: [{ type: "text", text: "Please supervise batch 10.01 for this workstream." }],
+        },
+      },
+    ])
+    expect(events).toEqual(["native:ses_child_123", "close"])
+  })
+
+  test("runMessageBoundaryForkLaunch closes the server when the fork response is missing a child session id", async () => {
+    const events: string[] = []
+
+    await expect(
+      runMessageBoundaryForkLaunch(
+        {
+          sessionId: "root-session-1",
+          repoRoot: "/repo/root",
+          title: "root-supervision-000-branch-supervision-1",
+          prompt: "prompt",
+          checkpointMessageId: "msg-checkpoint-1",
+        },
+        {
+          startServer: async () => ({
+            url: "http://127.0.0.1:4312",
+            close: () => {
+              events.push("close")
+            },
+          }),
+          requestJson: async () => ({}),
+        },
+      ),
+    ).rejects.toThrow("Fork response did not include a child session ID.")
+
+    expect(events).toEqual(["close"])
   })
 
   test("blocks nested supervision launches from an existing branch session", async () => {

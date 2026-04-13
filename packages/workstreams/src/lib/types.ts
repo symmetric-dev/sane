@@ -636,11 +636,25 @@ export type RootAgentBranchSource = "native_fork" | "repo_local_fallback"
 
 export type RootAgentBranchStatus = "pending" | "running" | "completed" | "stopped" | "failed"
 
+export type RootAgentBreakpointSelectionStrategy =
+  | "explicit_tag"
+  | "previous_user_before_launch"
+
+export interface RootAgentBreakpointSelection {
+  strategy: RootAgentBreakpointSelectionStrategy
+  configuredTags: string[]
+  matchedTag?: string
+  launchMessageId?: string
+  launchMessageIndex?: number
+  rationale: string
+}
+
 export interface RootAgentCheckpointPointer {
   rootSessionId: string
   checkpointMessageIndex: number
   checkpointCreatedAt: string
   checkpointMessageId?: string
+  breakpointSelection?: RootAgentBreakpointSelection
 }
 
 export interface RootAgentLineage {
@@ -655,6 +669,7 @@ export interface RootAgentLineage {
   checkpointMessageId?: string
   checkpointMessageIndex?: number
   checkpointCreatedAt?: string
+  breakpointSelection?: RootAgentBreakpointSelection
   /**
    * Stage 12 conversational-checkpoint fields retained for migration reads.
    * New writes should prefer metadata-only pointer fields above.

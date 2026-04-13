@@ -12,7 +12,9 @@ export {
 } from "./lib/root-agent-branch.ts"
 export {
   createRootAgentCheckpointPointer,
+  formatRootAgentBreakpointSelection,
   formatRootAgentCheckpointPointer,
+  getRootAgentCheckpointSessionForkEligibility,
   loadRootAgentCheckpointPointer,
   refreshRootAgentCheckpointPointer,
   validateRootAgentCheckpointPointer,

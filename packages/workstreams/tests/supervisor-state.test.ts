@@ -198,6 +198,15 @@ describe("supervisor-state", () => {
       checkpointMessageId: "msg_checkpoint_1",
       checkpointMessageIndex: 3,
       checkpointCreatedAt: startedAt,
+      breakpointSelection: {
+        strategy: "explicit_tag",
+        configuredTags: ["SESSION_BREAKPOINT"],
+        matchedTag: "SESSION_BREAKPOINT",
+        launchMessageId: "msg-launch",
+        launchMessageIndex: 4,
+        rationale:
+          'Selected the tagged user message because it matched configured breakpoint tag "SESSION_BREAKPOINT" before launch message msg-launch.',
+      },
     })
 
     await upsertBranchSessionLocked(workspace.repoRoot, workspace.streamId, {
@@ -208,6 +217,15 @@ describe("supervisor-state", () => {
       checkpointMessageId: "msg_checkpoint_1",
       checkpointMessageIndex: 3,
       checkpointCreatedAt: startedAt,
+      breakpointSelection: {
+        strategy: "explicit_tag",
+        configuredTags: ["SESSION_BREAKPOINT"],
+        matchedTag: "SESSION_BREAKPOINT",
+        launchMessageId: "msg-launch",
+        launchMessageIndex: 4,
+        rationale:
+          'Selected the tagged user message because it matched configured breakpoint tag "SESSION_BREAKPOINT" before launch message msg-launch.',
+      },
       parentSessionId: "root-session-1",
       nativeSessionId: "ses_supervision_1",
       source: "native_fork",
@@ -228,6 +246,15 @@ describe("supervisor-state", () => {
       checkpointMessageId: "msg_checkpoint_1",
       checkpointMessageIndex: 3,
       checkpointCreatedAt: startedAt,
+      breakpointSelection: {
+        strategy: "explicit_tag",
+        configuredTags: ["SESSION_BREAKPOINT"],
+        matchedTag: "SESSION_BREAKPOINT",
+        launchMessageId: "msg-launch",
+        launchMessageIndex: 4,
+        rationale:
+          'Selected the tagged user message because it matched configured breakpoint tag "SESSION_BREAKPOINT" before launch message msg-launch.',
+      },
     })
     expect(stored?.branch_sessions[0]).toMatchObject({
       owner: "root_agent",
@@ -237,6 +264,15 @@ describe("supervisor-state", () => {
       checkpointMessageId: "msg_checkpoint_1",
       checkpointMessageIndex: 3,
       checkpointCreatedAt: startedAt,
+      breakpointSelection: {
+        strategy: "explicit_tag",
+        configuredTags: ["SESSION_BREAKPOINT"],
+        matchedTag: "SESSION_BREAKPOINT",
+        launchMessageId: "msg-launch",
+        launchMessageIndex: 4,
+        rationale:
+          'Selected the tagged user message because it matched configured breakpoint tag "SESSION_BREAKPOINT" before launch message msg-launch.',
+      },
       parentSessionId: "root-session-1",
       nativeSessionId: "ses_supervision_1",
       source: "native_fork",

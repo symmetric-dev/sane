@@ -32,6 +32,14 @@ interface WorkstreamsToolRuntime {
   loadSupervisorState: (repoRoot: string, streamId: string) => any
   upsertBranchSessionLocked: (repoRoot: string, streamId: string, branchSession: any) => Promise<any>
   refreshRootAgentCheckpointPointer: (args: any) => Promise<any>
+  getRootAgentCheckpointSessionForkEligibility: (args: any) => {
+    valid: boolean
+    canForkCurrentSession: boolean
+    reason?: string
+    resolvedMessageId?: string
+    resolvedMessageIndex?: number
+    latestMessageIndex?: number
+  }
   parseSynthesisJsonl: (content: string) => { text: string; logs: string[]; success: boolean }
   exportSession: (sessionId: string) => Promise<any>
   extractLastCompletedAssistantText: (sessionExport: any) => string
@@ -50,13 +58,24 @@ interface ForkedSessionArgs {
   repoRoot: string
   title: string
   prompt: string
+  checkpointMessageId?: string
+  forkMode?: "message" | "latest_session_fork"
   onNativeSessionId?: (nativeSessionId: string) => Promise<void> | void
 }
 
 interface RootCheckpointPointer {
+  rootSessionId?: string
   checkpointMessageId?: string
   checkpointMessageIndex?: number
   checkpointCreatedAt: string
+  breakpointSelection?: {
+    strategy: "explicit_tag" | "previous_user_before_launch"
+    configuredTags: string[]
+    matchedTag?: string
+    launchMessageId?: string
+    launchMessageIndex?: number
+    rationale: string
+  }
 }
 
 interface ForkedSessionResult {
@@ -64,6 +83,37 @@ interface ForkedSessionResult {
   stdout: string
   stderr: string
   nativeSessionId?: string
+}
+
+interface CheckpointSessionForkEligibility {
+  valid: boolean
+  canForkCurrentSession: boolean
+  reason?: string
+  resolvedMessageId?: string
+  resolvedMessageIndex?: number
+  latestMessageIndex?: number
+}
+
+export interface MessageBoundaryForkTransport {
+  startServer: typeof startOpencodeServer
+  requestJson: typeof requestOpencodeJson
+}
+
+function parseBreakpointTagsArg(rawValue?: string): string[] | undefined {
+  if (typeof rawValue !== "string") {
+    return undefined
+  }
+
+  const normalized = new Set<string>()
+
+  for (const candidate of rawValue.split(/[\n,]/)) {
+    const trimmed = candidate.trim()
+    if (trimmed.length > 0) {
+      normalized.add(trimmed)
+    }
+  }
+
+  return normalized.size > 0 ? [...normalized] : undefined
 }
 
 function buildWorkSuperviseCommand(args: {
@@ -113,6 +163,162 @@ function buildSupervisionPrompt(args: {
     "",
     `In \"Next For The User\", explicitly say whether ${batchTarget} is done, why it is done or not done, and what the user should do next. If a section has nothing to report, write \"None.\"`,
   ].join("\n")
+}
+
+function extractTextParts(parts: any): string {
+  return (Array.isArray(parts) ? parts : [])
+    .filter((part) => part?.type === "text" && typeof part.text === "string")
+    .map((part) => part.text)
+    .join("\n")
+    .trim()
+}
+
+function formatPromptAsJsonl(text: string): string {
+  return `${JSON.stringify({ type: "text", part: { text } })}\n`
+}
+
+async function startOpencodeServer(repoRoot: string): Promise<{
+  url: string
+  close: () => void
+}> {
+  const child = spawn(
+    "opencode",
+    ["serve", "--hostname=127.0.0.1", "--port=0"],
+    {
+      cwd: repoRoot,
+      env: process.env,
+      stdio: ["ignore", "pipe", "pipe"],
+    },
+  )
+
+  let output = ""
+
+  const url = await new Promise<string>((resolve, reject) => {
+    const timeout = setTimeout(() => {
+      child.kill()
+      reject(new Error(`Timeout waiting for opencode server to start.\n${output}`.trim()))
+    }, 5000)
+
+    const finalizeError = (message: string) => {
+      clearTimeout(timeout)
+      reject(new Error(output.trim() ? `${message}\n${output}` : message))
+    }
+
+    const onChunk = (chunk: Buffer | string) => {
+      output += chunk.toString()
+      const lines = output.split("\n")
+
+      for (const line of lines) {
+        const match = line.match(/opencode server listening on\s+(https?:\/\/[^\s]+)/)
+        if (!match) {
+          continue
+        }
+
+        clearTimeout(timeout)
+        resolve(match[1])
+        return
+      }
+    }
+
+    child.stdout?.on("data", onChunk)
+    child.stderr?.on("data", onChunk)
+    child.on("error", (error) => finalizeError(`Failed to start opencode server: ${error?.message || error}`))
+    child.on("exit", (code) => finalizeError(`Opencode server exited before becoming ready (code ${code ?? 1}).`))
+  })
+
+  return {
+    url,
+    close: () => {
+      child.kill()
+    },
+  }
+}
+
+async function requestOpencodeJson(args: {
+  url: string
+  method: "POST" | "PATCH"
+  path: string
+  body?: any
+}): Promise<any> {
+  const response = await fetch(`${args.url}${args.path}`, {
+    method: args.method,
+    headers: {
+      "Content-Type": "application/json",
+    },
+    ...(args.body !== undefined ? { body: JSON.stringify(args.body) } : {}),
+  })
+
+  const text = await response.text()
+  const data = text ? (() => {
+    try {
+      return JSON.parse(text)
+    } catch {
+      return text
+    }
+  })() : undefined
+
+  if (!response.ok) {
+    const message =
+      typeof data === "string"
+        ? data
+        : data?.message || data?.error || JSON.stringify(data)
+    throw new Error(`${args.method} ${args.path} failed (${response.status}): ${message}`)
+  }
+
+  return data
+}
+
+export async function runMessageBoundaryForkLaunch(
+  args: Omit<ForkedSessionArgs, "forkMode"> & { checkpointMessageId: string },
+  transport: MessageBoundaryForkTransport = {
+    startServer: startOpencodeServer,
+    requestJson: requestOpencodeJson,
+  },
+): Promise<ForkedSessionResult> {
+  const server = await transport.startServer(args.repoRoot)
+
+  try {
+    const forkedSession = await transport.requestJson({
+      url: server.url,
+      method: "POST",
+      path: `/session/${encodeURIComponent(args.sessionId)}/fork?directory=${encodeURIComponent(args.repoRoot)}`,
+      body: { messageID: args.checkpointMessageId },
+    })
+
+    const nativeSessionId = forkedSession?.id
+    if (typeof nativeSessionId !== "string" || nativeSessionId.trim().length === 0) {
+      throw new Error("Fork response did not include a child session ID.")
+    }
+
+    await transport.requestJson({
+      url: server.url,
+      method: "PATCH",
+      path: `/session/${encodeURIComponent(nativeSessionId)}?directory=${encodeURIComponent(args.repoRoot)}`,
+      body: { title: args.title },
+    })
+
+    if (args.onNativeSessionId) {
+      await args.onNativeSessionId(nativeSessionId)
+    }
+
+    const promptResponse = await transport.requestJson({
+      url: server.url,
+      method: "POST",
+      path: `/session/${encodeURIComponent(nativeSessionId)}/message?directory=${encodeURIComponent(args.repoRoot)}`,
+      body: {
+        parts: [{ type: "text", text: args.prompt }],
+      },
+    })
+
+    return {
+      code: 0,
+      stdout: formatPromptAsJsonl(extractTextParts(promptResponse?.parts)),
+      stderr: "",
+      nativeSessionId,
+    }
+  } finally {
+    server.close()
+  }
 }
 
 function resolveWorkCommandPath(): string {
@@ -284,7 +490,12 @@ export interface LaunchSupervisionBranchDeps {
     rootSessionId: string
     sessionExport: any
     checkpointCreatedAt: string
+    breakpointTags?: readonly string[]
   }) => Promise<RootCheckpointPointer>
+  getCheckpointSessionForkEligibility: (args: {
+    pointer: RootCheckpointPointer
+    sessionExport: any
+  }) => CheckpointSessionForkEligibility | Promise<CheckpointSessionForkEligibility>
   extractFinalBranchReport: (sessionExport: any) => string | Promise<string>
   now: () => string
 }
@@ -328,6 +539,10 @@ function getDefaultLaunchSupervisionBranchDeps(): LaunchSupervisionBranchDeps {
       const resolvedRuntime = await runtime
       return resolvedRuntime.refreshRootAgentCheckpointPointer(args)
     },
+    getCheckpointSessionForkEligibility: async (args) => {
+      const resolvedRuntime = await runtime
+      return resolvedRuntime.getRootAgentCheckpointSessionForkEligibility(args)
+    },
     loadStoredBranchSession: async (repoRoot, streamId, branchSessionId) => {
       const resolvedRuntime = await runtime
       return resolvedRuntime.loadSupervisorState(repoRoot, streamId)?.branch_sessions.find(
@@ -342,7 +557,22 @@ function getDefaultLaunchSupervisionBranchDeps(): LaunchSupervisionBranchDeps {
       const resolvedRuntime = await runtime
       return resolvedRuntime.waitForRootAgentBranchTerminalSession(args)
     },
-    runForkedSession: async ({ sessionId, repoRoot, title, prompt, onNativeSessionId }) => {
+    runForkedSession: async ({ sessionId, repoRoot, title, prompt, checkpointMessageId, forkMode, onNativeSessionId }) => {
+      if (forkMode === "message") {
+        if (!checkpointMessageId) {
+          throw new Error("Message-boundary fork requires checkpointMessageId.")
+        }
+
+        return runMessageBoundaryForkLaunch({
+          sessionId,
+          repoRoot,
+          title,
+          prompt,
+          checkpointMessageId,
+          onNativeSessionId,
+        })
+      }
+
       const child = spawn(
         "opencode",
         [
@@ -514,68 +744,6 @@ async function collectCompletedBranchArtifacts(args: {
   }
 }
 
-function resolveCheckpointPointerFromSessionExport(
-  sessionExport: any,
-  checkpointCreatedAt: string,
-): RootCheckpointPointer {
-  const messages = Array.isArray(sessionExport?.messages) ? sessionExport.messages : []
-  let legacyAssistantFallback:
-    | {
-        message: any
-        checkpointMessageIndex: number
-      }
-    | undefined
-
-  const buildCheckpointPointer = (message: any, checkpointMessageIndex: number): RootCheckpointPointer => ({
-    ...(typeof message?.info?.id === "string" && message.info.id.trim().length > 0
-      ? { checkpointMessageId: message.info.id }
-      : {}),
-    checkpointMessageIndex,
-    checkpointCreatedAt,
-  })
-
-  const extractMessageText = (message: any): string =>
-    (Array.isArray(message?.parts) ? message.parts : [])
-      .filter((part: any) => part?.type === "text" && typeof part.text === "string")
-      .map((part: any) => part.text)
-      .join("\n")
-      .trim()
-
-  for (let index = messages.length - 1; index >= 0; index -= 1) {
-    const message = messages[index]
-    if (!message?.info) {
-      continue
-    }
-
-    if (message.info.role !== "assistant") {
-      return buildCheckpointPointer(message, index)
-    }
-
-    if (typeof message.info.time?.completed === "number") {
-      return buildCheckpointPointer(message, index)
-    }
-
-    if (!legacyAssistantFallback && extractMessageText(message).length > 0) {
-      legacyAssistantFallback = { message, checkpointMessageIndex: index }
-    }
-  }
-
-  if (legacyAssistantFallback) {
-    return buildCheckpointPointer(
-      legacyAssistantFallback.message,
-      legacyAssistantFallback.checkpointMessageIndex,
-    )
-  }
-
-  if (messages.length === 0) {
-    throw new Error(
-      "Failed to capture checkpoint pointer metadata: root session transcript had no messages to anchor.",
-    )
-  }
-
-  return buildCheckpointPointer(messages[messages.length - 1], messages.length - 1)
-}
-
 function formatCheckpointPointer(pointer: RootCheckpointPointer): string {
   if (pointer.checkpointMessageId) {
     return `message ${pointer.checkpointMessageId}`
@@ -586,6 +754,33 @@ function formatCheckpointPointer(pointer: RootCheckpointPointer): string {
   }
 
   return "unknown-pointer"
+}
+
+function formatBreakpointSelection(selection: RootCheckpointPointer["breakpointSelection"]): string | undefined {
+  if (!selection) {
+    return undefined
+  }
+
+  if (typeof selection.rationale === "string" && selection.rationale.trim().length > 0) {
+    return selection.rationale.trim()
+  }
+
+  if (selection.strategy === "explicit_tag") {
+    return selection.matchedTag
+      ? `Selected the tagged user message because it matched configured breakpoint tag "${selection.matchedTag}".`
+      : "Selected the tagged user message because it matched a configured breakpoint tag."
+  }
+
+  return "Selected the previous user message before branch launch because no configured breakpoint tag was found."
+}
+
+function buildCheckpointCaptureNotes(pointer: RootCheckpointPointer, batch?: string): string {
+  const selectionText = formatBreakpointSelection(pointer.breakpointSelection)
+
+  return [
+    `Checkpoint pointer ${formatCheckpointPointer(pointer)} captured; launching Root Agent supervision branch for ${batch ?? "next resumable batch"}.`,
+    ...(selectionText ? [`Breakpoint selection: ${selectionText}`] : []),
+  ].join("\n")
 }
 
 function getCheckpointPointerFromBranchSession(branch: any): RootCheckpointPointer | undefined {
@@ -600,6 +795,7 @@ function getCheckpointPointerFromBranchSession(branch: any): RootCheckpointPoint
         ? { checkpointMessageIndex: branch.checkpointMessageIndex }
         : {}),
       checkpointCreatedAt: branch.checkpointCreatedAt,
+      ...(branch.breakpointSelection ? { breakpointSelection: branch.breakpointSelection } : {}),
     }
   }
 
@@ -607,10 +803,38 @@ function getCheckpointPointerFromBranchSession(branch: any): RootCheckpointPoint
     return {
       checkpointMessageIndex: branch.checkpointMessageIndex,
       checkpointCreatedAt: branch.checkpointCreatedAt,
+      ...(branch.breakpointSelection ? { breakpointSelection: branch.breakpointSelection } : {}),
     }
   }
 
   return undefined
+}
+
+function formatCheckpointLaunchFallbackError(args: {
+  checkpointPointer: RootCheckpointPointer
+  eligibility: CheckpointSessionForkEligibility
+  cause?: unknown
+}): Error {
+  const pointerLabel = formatCheckpointPointer(args.checkpointPointer)
+  const detail = args.cause ? ` Native fork error: ${args.cause instanceof Error ? args.cause.message : String(args.cause)}` : ""
+
+  if (!args.checkpointPointer.checkpointMessageId) {
+    return new Error(
+      `Cannot launch supervision branch from checkpoint pointer ${pointerLabel}: the selected boundary has no stable message ID, so native fork-from-message is unavailable.${
+        args.eligibility.canForkCurrentSession
+          ? ""
+          : ` Plain session --fork would start from the live session tip (message-index ${args.eligibility.latestMessageIndex ?? "unknown"}) instead of the selected boundary (message-index ${args.eligibility.resolvedMessageIndex ?? args.checkpointPointer.checkpointMessageIndex ?? "unknown"}).`
+      }${detail}`,
+    )
+  }
+
+  return new Error(
+    `Native fork-from-message could not launch from checkpoint pointer ${pointerLabel}.${
+      args.eligibility.canForkCurrentSession
+        ? " Falling back to plain session --fork is only safe when the selected boundary is already the live session tip."
+        : ` Plain session --fork would inherit the live session tip (message-index ${args.eligibility.latestMessageIndex ?? "unknown"}) instead of the selected boundary (message-index ${args.eligibility.resolvedMessageIndex ?? args.checkpointPointer.checkpointMessageIndex ?? "unknown"}).`
+    }${detail}`,
+  )
 }
 
 function formatBranchCompletionMessage(args: {
@@ -632,6 +856,9 @@ function formatBranchCompletionMessage(args: {
 
   const sections = [
     `Supervision branch ${args.branchSessionId}${args.nativeSessionId ? ` (native session ${args.nativeSessionId})` : ""} ${args.status}${args.checkpointPointer ? ` from checkpoint pointer ${formatCheckpointPointer(args.checkpointPointer)}` : ""}.`,
+    ...(args.checkpointPointer?.breakpointSelection
+      ? [`Breakpoint selection: ${formatBreakpointSelection(args.checkpointPointer.breakpointSelection)}`]
+      : []),
     `Persisted branch status: ${args.status}.`,
     transcriptLabel,
   ]
@@ -671,6 +898,7 @@ async function persistSupervisionBranchState(args: {
   checkpointMessageId?: string
   checkpointMessageIndex?: number
   checkpointCreatedAt?: string
+  breakpointSelection?: RootCheckpointPointer["breakpointSelection"]
   checkpointSessionId?: string
   nativeSessionId?: string
   status: "pending" | "running" | "completed" | "stopped" | "failed"
@@ -693,6 +921,7 @@ async function persistSupervisionBranchState(args: {
           ? { checkpointMessageIndex: args.checkpointMessageIndex }
           : {}),
         ...(args.checkpointCreatedAt ? { checkpointCreatedAt: args.checkpointCreatedAt } : {}),
+        ...(args.breakpointSelection ? { breakpointSelection: args.breakpointSelection } : {}),
         ...(args.checkpointSessionId ? { checkpointSessionId: args.checkpointSessionId } : {}),
         parentSessionId: args.parentSessionId ?? args.rootSessionId,
         ...(args.nativeSessionId ? { nativeSessionId: args.nativeSessionId } : {}),
@@ -714,6 +943,7 @@ export async function executeLaunchSupervisionBranch(
   args: {
     streamId?: string
     batch?: string
+    breakpointTags?: string
     timeoutMs?: number
     pollIntervalMs?: number
     noServer?: boolean
@@ -730,6 +960,7 @@ export async function executeLaunchSupervisionBranch(
 
   const repoRoot = deps.getRepoRoot()
   const streamId = await deps.getResolvedStreamId(repoRoot, args.streamId)
+  const breakpointTags = parseBreakpointTagsArg(args.breakpointTags)
 
   const parentBranch = await deps.findBranchSessionForLaunchSessionId(
     repoRoot,
@@ -775,6 +1006,7 @@ export async function executeLaunchSupervisionBranch(
       rootSessionId,
       sessionExport: rootSessionExport,
       checkpointCreatedAt,
+      ...(breakpointTags ? { breakpointTags } : {}),
     })
 
     await persistSupervisionBranchState({
@@ -787,12 +1019,24 @@ export async function executeLaunchSupervisionBranch(
       checkpointMessageId: checkpointPointer.checkpointMessageId,
       checkpointMessageIndex: checkpointPointer.checkpointMessageIndex,
       checkpointCreatedAt,
+      breakpointSelection: checkpointPointer.breakpointSelection,
       status: "pending",
       startedAt,
       updatedAt: deps.now(),
       batchId: args.batch,
-      notes: `Checkpoint pointer ${formatCheckpointPointer(checkpointPointer)} captured; launching Root Agent supervision branch for ${args.batch ?? "next resumable batch"}.`,
+      notes: buildCheckpointCaptureNotes(checkpointPointer, args.batch),
     })
+
+    const checkpointForkEligibility = await deps.getCheckpointSessionForkEligibility({
+      pointer: checkpointPointer,
+      sessionExport: rootSessionExport,
+    })
+
+    if (!checkpointForkEligibility.valid) {
+      throw new Error(
+        `Checkpoint pointer ${formatCheckpointPointer(checkpointPointer)} no longer resolves against the current root transcript (${checkpointForkEligibility.reason ?? "unknown validation failure"}).`,
+      )
+    }
 
     const workSuperviseCommand = buildWorkSuperviseCommand({
       repoRoot,
@@ -810,43 +1054,89 @@ export async function executeLaunchSupervisionBranch(
       checkpointCreatedAt: checkpointPointer.checkpointCreatedAt,
     })
 
-    const runResult = await deps.runForkedSession({
-      sessionId: rootSessionId,
-      repoRoot,
-      title,
-      prompt: buildSupervisionPrompt({
-        batch: args.batch,
-        command: workSuperviseCommand,
-      }),
-      onNativeSessionId: async (nativeSessionId) => {
-        const updatedAt = deps.now()
-        const storedBranch = await deps.loadStoredBranchSession(repoRoot, streamId, branchSessionId)
-
-        await persistSupervisionBranchState({
-          deps,
-          repoRoot,
-          streamId,
-          rootSessionId,
-          branchSessionId,
-          parentSessionId: storedBranch?.parentSessionId ?? rootSessionId,
-          checkpointMessageId:
-            storedBranch?.checkpointMessageId ?? checkpointPointer.checkpointMessageId,
-          checkpointMessageIndex:
-            storedBranch?.checkpointMessageIndex ?? checkpointPointer.checkpointMessageIndex,
-          checkpointCreatedAt:
-            storedBranch?.checkpointCreatedAt ?? checkpointPointer.checkpointCreatedAt,
-          nativeSessionId,
-          status: storedBranch?.status === "running" ? "running" : "pending",
-          startedAt: storedBranch?.startedAt ?? startedAt,
-          updatedAt,
-          runId: storedBranch?.runId,
-          batchId: storedBranch?.batchId ?? args.batch,
-          notes:
-            storedBranch?.notes ??
-            `Checkpoint pointer ${formatCheckpointPointer(checkpointPointer)} captured; launching Root Agent supervision branch for ${args.batch ?? "next resumable batch"}.`,
-        })
-      },
+    const supervisionPrompt = buildSupervisionPrompt({
+      batch: args.batch,
+      command: workSuperviseCommand,
     })
+    const persistNativeSessionId = async (nativeSessionId: string) => {
+      const updatedAt = deps.now()
+      const storedBranch = await deps.loadStoredBranchSession(repoRoot, streamId, branchSessionId)
+
+      await persistSupervisionBranchState({
+        deps,
+        repoRoot,
+        streamId,
+        rootSessionId,
+        branchSessionId,
+        parentSessionId: storedBranch?.parentSessionId ?? rootSessionId,
+        checkpointMessageId:
+          storedBranch?.checkpointMessageId ?? checkpointPointer.checkpointMessageId,
+        checkpointMessageIndex:
+          storedBranch?.checkpointMessageIndex ?? checkpointPointer.checkpointMessageIndex,
+        checkpointCreatedAt:
+          storedBranch?.checkpointCreatedAt ?? checkpointPointer.checkpointCreatedAt,
+        breakpointSelection:
+          storedBranch?.breakpointSelection ?? checkpointPointer.breakpointSelection,
+        nativeSessionId,
+        status: storedBranch?.status === "running" ? "running" : "pending",
+        startedAt: storedBranch?.startedAt ?? startedAt,
+        updatedAt,
+        runId: storedBranch?.runId,
+        batchId: storedBranch?.batchId ?? args.batch,
+        notes:
+          storedBranch?.notes ??
+          buildCheckpointCaptureNotes(checkpointPointer, args.batch),
+      })
+    }
+
+    let runResult: ForkedSessionResult
+
+    if (!checkpointPointer.checkpointMessageId) {
+      if (!checkpointForkEligibility.canForkCurrentSession) {
+        throw formatCheckpointLaunchFallbackError({
+          checkpointPointer,
+          eligibility: checkpointForkEligibility,
+        })
+      }
+
+      runResult = await deps.runForkedSession({
+        sessionId: rootSessionId,
+        repoRoot,
+        title,
+        prompt: supervisionPrompt,
+        forkMode: "latest_session_fork",
+        onNativeSessionId: persistNativeSessionId,
+      })
+    } else {
+      try {
+        runResult = await deps.runForkedSession({
+          sessionId: rootSessionId,
+          repoRoot,
+          title,
+          prompt: supervisionPrompt,
+          checkpointMessageId: checkpointPointer.checkpointMessageId,
+          forkMode: "message",
+          onNativeSessionId: persistNativeSessionId,
+        })
+      } catch (error) {
+        if (!checkpointForkEligibility.canForkCurrentSession) {
+          throw formatCheckpointLaunchFallbackError({
+            checkpointPointer,
+            eligibility: checkpointForkEligibility,
+            cause: error,
+          })
+        }
+
+        runResult = await deps.runForkedSession({
+          sessionId: rootSessionId,
+          repoRoot,
+          title,
+          prompt: supervisionPrompt,
+          forkMode: "latest_session_fork",
+          onNativeSessionId: persistNativeSessionId,
+        })
+      }
+    }
 
     const parsed = await deps.parseOutput(runResult.stdout)
     const fallbackSummary =
@@ -879,6 +1169,8 @@ export async function executeLaunchSupervisionBranch(
         storedBranch?.checkpointMessageIndex ?? checkpointPointer.checkpointMessageIndex,
       checkpointCreatedAt:
         storedBranch?.checkpointCreatedAt ?? storedCheckpointPointer?.checkpointCreatedAt ?? checkpointPointer.checkpointCreatedAt,
+      breakpointSelection:
+        storedBranch?.breakpointSelection ?? storedCheckpointPointer?.breakpointSelection ?? checkpointPointer.breakpointSelection,
       nativeSessionId,
       status,
       startedAt: storedBranch?.startedAt ?? startedAt,
@@ -916,6 +1208,7 @@ export async function executeLaunchSupervisionBranch(
       checkpointMessageId: checkpointPointer?.checkpointMessageId,
       checkpointMessageIndex: checkpointPointer?.checkpointMessageIndex,
       checkpointCreatedAt: checkpointPointer?.checkpointCreatedAt,
+      breakpointSelection: checkpointPointer?.breakpointSelection,
       status: "failed",
       startedAt,
       updatedAt: failedAt,
@@ -982,6 +1275,7 @@ export const launch_supervision_branch = tool({
   args: {
     streamId: tool.schema.string().describe("The workstream ID or name. If omitted, uses the current workstream.").optional(),
     batch: tool.schema.string().describe("Optional batch ID to supervise (e.g. 10.01). If omitted, the helper resumes the next resumable batch.").optional(),
+    breakpointTags: tool.schema.string().describe("Optional comma-separated breakpoint tags to search for before launch (for example: 'SESSION_BREAKPOINT,ROOT_BRANCH_BOUNDARY').").optional(),
     timeoutMs: tool.schema.number().describe("Optional wait timeout in milliseconds for work supervise.").optional(),
     pollIntervalMs: tool.schema.number().describe("Optional poll interval in milliseconds for work supervise.").optional(),
     noServer: tool.schema.boolean().describe("Skip starting opencode serve for the headless batch launch.").optional(),

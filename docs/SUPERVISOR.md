@@ -243,10 +243,14 @@ Persisted-state note for same-batch resume verification:
 - Do not rely only on resumed console output.
 - Confirm the resumed batch by checking that the next persisted `supervisor-state.json` update still references `SS.BB` before any later incomplete batch appears in `reviewed_batches`, `stage_stops`, or other run/finalization metadata.
 
-## Metadata-Only Checkpoint Pointer Guidance (Stage 13)
+## Checkpoint Boundary Guidance (Stage 14)
 
-Stage 13 replaces the Stage 12 conversational-checkpoint experiment with tooling-owned checkpoint pointers.
-Checkpoints are now metadata, not child-session transcript content.
+Stage 14 keeps Stage 13 checkpoint pointers, but changes how they are used:
+
+- **Stage 13:** pointers were captured/persisted metadata while branch inheritance still behaved like a plain fork.
+- **Stage 14:** the selected pointer boundary (`checkpointMessageId` when available) now drives the native fork boundary itself, so inheritance starts from the chosen transcript breakpoint.
+
+This closes the remaining Stage 13 gap: pointer fields are no longer just observational metadata; they now control branch inheritance.
 
 ### Scope guardrail
 
@@ -254,7 +258,38 @@ Checkpoints are now metadata, not child-session transcript content.
 - If a branch session tries to call `launch_supervision_branch`, the launch path must fail immediately with a clear guardrail error.
 - Treat that failure as correct behavior: the branch should **yield back** to the Root Agent instead of building a deeper branch tree.
 
-### What makes a checkpoint pointer branch-safe
+### Breakpoint decision model
+
+When `launch_supervision_branch` captures the Root Agent transcript boundary, selection is deterministic:
+
+1. **Explicit tagged user breakpoint wins**
+   - the selector scans backward for a user message containing `SESSION_BREAKPOINT`
+   - if found, that message becomes the checkpoint boundary even if later untagged user messages exist
+2. **Default fallback when no tag exists**
+   - use the previous user message before launch-time assistant drafting
+3. **Legacy/fallback safety behavior**
+   - if no suitable user boundary exists, use the existing deterministic fallback logic (`checkpointMessageIndex`)
+
+`launch_supervision_branch` now accepts an optional `breakpointTags` argument (comma-separated) so the launch-time selector is configurable end-to-end instead of being fixed to `SESSION_BREAKPOINT`.
+
+### How to intentionally place a breakpoint tag
+
+Before launching a supervision branch, place the tag you intend to match in the exact user turn you want as the inheritance boundary.
+
+Operator pattern:
+
+- write one user message that captures the context you want inherited
+- include the literal token you want matched in that message
+- invoke `launch_supervision_branch` afterward
+
+Examples:
+
+- default behavior: include `SESSION_BREAKPOINT`
+- custom behavior: call `launch_supervision_branch({ breakpointTags: "ROOT_BRANCH_BOUNDARY,ALT_BOUNDARY" })` and include one of those tags in the target user message
+
+If you omit `breakpointTags`, the launcher uses the default tag list (`SESSION_BREAKPOINT`) before falling back to the latest prior user turn.
+
+### What makes a selected boundary branch-safe
 
 Use a checkpoint pointer only when all of the following are true:
 
@@ -263,7 +298,7 @@ Use a checkpoint pointer only when all of the following are true:
 - later Root Agent reasoning about policy, escalation, or future branching has not yet polluted the transcript
 - the Root Agent would still trust that transcript boundary if the branch started from it again right now
 
-If any of those assumptions changed, refresh the checkpoint pointer before the next live run.
+If any of those assumptions changed, refresh and relaunch so a new boundary is selected.
 
 ### Persisted pointer semantics
 
@@ -271,7 +306,7 @@ If any of those assumptions changed, refresh the checkpoint pointer before the n
 
 - `checkpointMessageId` (preferred)
 - `checkpointMessageIndex` (deterministic fallback when message IDs are unavailable)
-- `checkpointCapturedAt`
+- `checkpointCreatedAt`
 
 These fields identify where the branch-safe boundary was captured in the Root Agent session transcript.
 They are tooling-owned metadata and should not be generated as conversational "checkpoint" prompts.
@@ -282,8 +317,9 @@ New launches should write pointer metadata above.
 ### Migration notes from Stage 12 conversational checkpoints
 
 - **Before (Stage 12):** launch path created a conversational checkpoint child session and then branched from that child session.
-- **Now (Stage 13):** launch path captures a Root Agent transcript boundary as metadata and launches supervision from the Root Agent session with pointer-backed lineage.
-- **Operator impact:** if you inspect historical and new records together, use pointer fields as the canonical Stage 13 checkpoint source and interpret checkpoint session IDs as historical-only context.
+- **Stage 13:** launch path captured a Root Agent transcript boundary as metadata and launched supervision from the Root Agent session with pointer-backed lineage records.
+- **Stage 14:** launch path uses that selected boundary to control native branch inheritance while still persisting the same lineage metadata.
+- **Operator impact:** for new launches, treat pointer fields as both lineage evidence and the actual inheritance boundary source. Legacy checkpoint session IDs remain historical-only context.
 
 ### Expected fake-user prompt behavior
 

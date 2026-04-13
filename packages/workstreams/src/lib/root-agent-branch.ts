@@ -1,6 +1,7 @@
 import { randomUUID } from "crypto"
 import { loadSupervisorState } from "./supervisor-state.ts"
 import type {
+  RootAgentBreakpointSelection,
   RootAgentBranchRole,
   RootAgentBranchSession,
   RootAgentBranchSource,
@@ -15,6 +16,7 @@ export interface RootAgentBranchContext {
   checkpointMessageId?: string
   checkpointMessageIndex?: number
   checkpointCreatedAt?: string
+  breakpointSelection?: RootAgentBreakpointSelection
   checkpointSessionId?: string
   parentSessionId?: string
   parentBranchSessionId?: string
@@ -162,6 +164,9 @@ export function buildRootAgentLineage(args: {
       : {}),
     ...(args.context.checkpointCreatedAt
       ? { checkpointCreatedAt: args.context.checkpointCreatedAt }
+      : {}),
+    ...(args.context.breakpointSelection
+      ? { breakpointSelection: args.context.breakpointSelection }
       : {}),
     ...(args.context.checkpointSessionId
       ? { checkpointSessionId: args.context.checkpointSessionId }
