@@ -1,5 +1,7 @@
 # AgENV
 
+ALWAYS SPEAK ENGLISH.
+
 This is a CLI tool for managing workstreams. It is a monorepo with packages under ./packages.
 
 ## Dependencies
