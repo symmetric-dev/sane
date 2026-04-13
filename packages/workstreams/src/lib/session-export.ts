@@ -147,6 +147,10 @@ function hasCompletedTimestamp(message: ExportedMessage | null | undefined): boo
   return typeof message?.info?.time?.completed === "number"
 }
 
+function getCompletedTimestamp(message: ExportedMessage | null | undefined): number | undefined {
+  return hasCompletedTimestamp(message) ? message!.info.time!.completed : undefined
+}
+
 // ============================================================================
 // Export Functions
 // ============================================================================
@@ -284,15 +288,28 @@ export function findLastCompletedAssistantMessage(
     return null
   }
 
-  for (let i = exportData.messages.length - 1; i >= 0; i--) {
-    const message = exportData.messages[i]
+  let lastCompletedAssistantMessage: ExportedMessage | null = null
+  let lastCompletedTimestamp = Number.NEGATIVE_INFINITY
+
+  for (const message of exportData.messages) {
     if (!message) {
       continue
     }
 
-    if (isAssistantMessage(message) && hasCompletedTimestamp(message) && extractMessageText(message)) {
-      return message
+    const messageText = extractMessageText(message)
+    const completedTimestamp = getCompletedTimestamp(message)
+    if (!isAssistantMessage(message) || !messageText || completedTimestamp === undefined) {
+      continue
     }
+
+    if (completedTimestamp >= lastCompletedTimestamp) {
+      lastCompletedAssistantMessage = message
+      lastCompletedTimestamp = completedTimestamp
+    }
+  }
+
+  if (lastCompletedAssistantMessage) {
+    return lastCompletedAssistantMessage
   }
 
   for (let i = exportData.messages.length - 1; i >= 0; i--) {

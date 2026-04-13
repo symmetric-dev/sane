@@ -41,6 +41,9 @@ interface SuperviseCliArgs {
   branchSessionId?: string
   parentSessionId?: string
   parentBranchSessionId?: string
+  checkpointMessageId?: string
+  checkpointMessageIndex?: number
+  checkpointCreatedAt?: string
   nativeBranchSessionId?: string
 }
 
@@ -71,6 +74,9 @@ Options:
   --branch-session-id    Repo-local branch session ID for this supervision branch
   --parent-session-id    Parent native session ID when this branch was forked
   --parent-branch-session-id  Parent repo-local branch session ID for nested flows
+  --checkpoint-message-id     Root-session checkpoint message ID for this branch launch
+  --checkpoint-message-index  Deterministic checkpoint message index fallback
+  --checkpoint-created-at     ISO timestamp when checkpoint metadata was created
   --native-branch-session-id  Native opencode session ID for this branch (optional)
   --dry-run              Show the planned helper actions without executing them
   --help, -h             Show this help message
@@ -154,6 +160,22 @@ function parseCliArgs(argv: string[]): SuperviseCliArgs | null {
         parsed.parentBranchSessionId = next
         i++
         break
+      case "--checkpoint-message-id":
+        if (!next) return null
+        parsed.checkpointMessageId = next
+        i++
+        break
+      case "--checkpoint-message-index":
+        if (!next) return null
+        parsed.checkpointMessageIndex = Number(next)
+        if (Number.isNaN(parsed.checkpointMessageIndex)) return null
+        i++
+        break
+      case "--checkpoint-created-at":
+        if (!next) return null
+        parsed.checkpointCreatedAt = next
+        i++
+        break
       case "--native-branch-session-id":
         if (!next) return null
         parsed.nativeBranchSessionId = next
@@ -207,6 +229,13 @@ export async function resolveRootAgentBranchContext(
   return {
     rootSessionId: cliArgs.rootSessionId,
     branchSessionId,
+    ...(cliArgs.checkpointMessageId ? { checkpointMessageId: cliArgs.checkpointMessageId } : {}),
+    ...(typeof cliArgs.checkpointMessageIndex === "number"
+      ? { checkpointMessageIndex: cliArgs.checkpointMessageIndex }
+      : {}),
+    ...(cliArgs.checkpointCreatedAt
+      ? { checkpointCreatedAt: cliArgs.checkpointCreatedAt }
+      : {}),
     ...(cliArgs.parentSessionId ? { parentSessionId: cliArgs.parentSessionId } : {}),
     ...(cliArgs.parentBranchSessionId
       ? { parentBranchSessionId: cliArgs.parentBranchSessionId }
@@ -336,7 +365,7 @@ export async function main(argv: string[] = process.argv): Promise<void> {
     }
     console.log(getDryRunActionMessage(startPlan.action, startPlan.batchId))
     console.log(
-      `[supervise] would hand terminal batch state for ${startPlan.batchId} back to the Root Agent or caller for review decisions.`,
+      `[supervise] would record a supervise-pass handoff for ${startPlan.batchId} and yield batch state back to the Root Agent or caller for review decisions.`,
     )
     return
   }
@@ -399,7 +428,9 @@ export async function main(argv: string[] = process.argv): Promise<void> {
     batchId: startPlan.batchId,
     startedAt: startPlan.runStartedAt,
     updatedAt: new Date().toISOString(),
-    notes: startPlan.message,
+    notes: startPlan.message
+      ? `${startPlan.message} Branch session remains active until the parent/root records the final supervision outcome.`
+      : "Supervision helper started; branch session remains active until parent/root finalization.",
   })
 
   try {
@@ -453,17 +484,17 @@ export async function main(argv: string[] = process.argv): Promise<void> {
       repoRoot,
       streamId: stream.id,
       branchContext,
-      status: "completed",
+      status: "running",
       runId: startPlan.runId,
       batchId: startPlan.batchId,
       startedAt: startPlan.runStartedAt,
       updatedAt: batchStatus.completedAt ?? batchStatus.updatedAt,
-      completedAt: batchStatus.completedAt ?? batchStatus.updatedAt,
-      notes: `Handed ${startPlan.batchId} (${batchStatus.status}) back to the Root Agent for review/fix/escalation decisions.`,
+      completedAt: undefined,
+      notes: `Recorded supervise-pass handoff for ${startPlan.batchId} (${batchStatus.status}); waiting for parent/root review, fix, or escalation finalization.`,
     })
 
     console.log(
-      `[supervise] handoff: batch ${startPlan.batchId} is ${batchStatus.status}. Root Agent should review outputs and decide next steps.`,
+      `[supervise] handoff: batch ${startPlan.batchId} reached ${batchStatus.status}. Root Agent should review outputs and decide next steps; branch finalization happens parent-side.`,
     )
   } catch (error) {
     if (isBatchWaitTimeoutError(error)) {
@@ -493,7 +524,7 @@ export async function main(argv: string[] = process.argv): Promise<void> {
         startedAt: startPlan.runStartedAt,
         updatedAt: new Date().toISOString(),
         completedAt: new Date().toISOString(),
-        notes: `Timed out while waiting for ${startPlan.batchId}; Root Agent should resume or inspect persisted state.`,
+        notes: `Supervision helper stopped before handoff while waiting for ${startPlan.batchId}; Root Agent should resume or inspect persisted state.`,
       })
       console.log(
         `[supervise] timeout: ${error.message} The batch may still be running; rerun work supervise to resume deterministically.`,
@@ -527,7 +558,7 @@ export async function main(argv: string[] = process.argv): Promise<void> {
       startedAt: startPlan.runStartedAt,
       updatedAt: new Date().toISOString(),
       completedAt: new Date().toISOString(),
-      notes: `Supervision helper failed: ${(error as Error).message}`,
+      notes: `Supervision helper failed before parent/root finalization: ${(error as Error).message}`,
     })
     throw error
   }

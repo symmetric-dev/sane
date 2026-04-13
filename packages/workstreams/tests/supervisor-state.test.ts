@@ -13,6 +13,7 @@ import {
   saveSupervisorState,
   setActiveSupervisorRunLocked,
   upsertBranchSessionLocked,
+  upsertCheckpointPointerLocked,
   upsertEscalationOutcomeLocked,
   upsertFixCycleLocked,
   upsertIssueSummaryLocked,
@@ -38,6 +39,7 @@ describe("supervisor-state", () => {
 
     expect(empty.stream_id).toBe(workspace.streamId)
     expect(empty.runs).toHaveLength(0)
+    expect(empty.checkpoint_pointers).toHaveLength(0)
     expect(empty.branch_sessions).toHaveLength(0)
     expect(empty.reviewed_batches).toHaveLength(0)
     expect(empty.issue_summaries).toHaveLength(0)
@@ -53,6 +55,7 @@ describe("supervisor-state", () => {
       stream_id: workspace.streamId,
       last_updated: new Date().toISOString(),
       runs: [],
+      checkpoint_pointers: [],
       branch_sessions: [],
       reviewed_batches: [],
       issue_summaries: [],
@@ -190,12 +193,20 @@ describe("supervisor-state", () => {
   test("upsertBranchSessionLocked persists root-agent branch lineage metadata", async () => {
     const startedAt = new Date().toISOString()
 
+    await upsertCheckpointPointerLocked(workspace.repoRoot, workspace.streamId, {
+      rootSessionId: "root-session-1",
+      checkpointMessageId: "msg_checkpoint_1",
+      checkpointMessageIndex: 3,
+      checkpointCreatedAt: startedAt,
+    })
+
     await upsertBranchSessionLocked(workspace.repoRoot, workspace.streamId, {
       owner: "root_agent",
       rootSessionId: "root-session-1",
       branchSessionId: "branch-supervision-1",
       branchRole: "supervision",
-      checkpointSessionId: "ses_checkpoint_1",
+      checkpointMessageId: "msg_checkpoint_1",
+      checkpointMessageIndex: 3,
       checkpointCreatedAt: startedAt,
       parentSessionId: "root-session-1",
       nativeSessionId: "ses_supervision_1",
@@ -210,18 +221,26 @@ describe("supervisor-state", () => {
     })
 
     const stored = loadSupervisorState(workspace.repoRoot, workspace.streamId)
+    expect(stored?.checkpoint_pointers).toHaveLength(1)
     expect(stored?.branch_sessions).toHaveLength(1)
-      expect(stored?.branch_sessions[0]).toMatchObject({
-        owner: "root_agent",
-        rootSessionId: "root-session-1",
-        branchSessionId: "branch-supervision-1",
-        branchRole: "supervision",
-        checkpointSessionId: "ses_checkpoint_1",
-        checkpointCreatedAt: startedAt,
-        parentSessionId: "root-session-1",
-        nativeSessionId: "ses_supervision_1",
-        source: "native_fork",
-        runId: "sup-run-1",
+    expect(stored?.checkpoint_pointers[0]).toMatchObject({
+      rootSessionId: "root-session-1",
+      checkpointMessageId: "msg_checkpoint_1",
+      checkpointMessageIndex: 3,
+      checkpointCreatedAt: startedAt,
+    })
+    expect(stored?.branch_sessions[0]).toMatchObject({
+      owner: "root_agent",
+      rootSessionId: "root-session-1",
+      branchSessionId: "branch-supervision-1",
+      branchRole: "supervision",
+      checkpointMessageId: "msg_checkpoint_1",
+      checkpointMessageIndex: 3,
+      checkpointCreatedAt: startedAt,
+      parentSessionId: "root-session-1",
+      nativeSessionId: "ses_supervision_1",
+      source: "native_fork",
+      runId: "sup-run-1",
       batchId: "01.01",
     })
   })

@@ -2,6 +2,7 @@ import { existsSync, mkdirSync, readFileSync } from "fs"
 import { dirname, join } from "path"
 import * as lockfile from "proper-lockfile"
 import type {
+  RootAgentCheckpointPointer,
   RootAgentBranchSession,
   SupervisorEscalationRecord,
   SupervisorFixCycle,
@@ -33,6 +34,7 @@ export function createEmptySupervisorState(streamId: string): SupervisorStateFil
     stream_id: streamId,
     last_updated: new Date().toISOString(),
     runs: [],
+    checkpoint_pointers: [],
     branch_sessions: [],
     reviewed_batches: [],
     issue_summaries: [],
@@ -64,6 +66,7 @@ export function loadSupervisorState(
     ...createEmptySupervisorState(streamId),
     ...parsed,
     runs: parsed.runs ?? [],
+    checkpoint_pointers: parsed.checkpoint_pointers ?? [],
     branch_sessions: parsed.branch_sessions ?? [],
     reviewed_batches: parsed.reviewed_batches ?? [],
     issue_summaries: parsed.issue_summaries ?? [],
@@ -99,6 +102,7 @@ export function saveSupervisorState(
       ? { active_run_id: supervisorState.active_run_id }
       : {}),
     runs: supervisorState.runs,
+    checkpoint_pointers: supervisorState.checkpoint_pointers,
     branch_sessions: supervisorState.branch_sessions,
     reviewed_batches: supervisorState.reviewed_batches,
     issue_summaries: supervisorState.issue_summaries,
@@ -227,6 +231,27 @@ export async function upsertSupervisorRunLocked(
     }
 
     return stored
+  })
+}
+
+/**
+ * Upsert a root-agent checkpoint pointer record.
+ */
+export async function upsertCheckpointPointerLocked(
+  repoRoot: string,
+  streamId: string,
+  checkpointPointer: RootAgentCheckpointPointer,
+): Promise<RootAgentCheckpointPointer> {
+  return modifySupervisorState(repoRoot, streamId, (supervisorState) => {
+    const normalized: RootAgentCheckpointPointer = {
+      ...checkpointPointer,
+    }
+
+    return upsertItem(
+      supervisorState.checkpoint_pointers,
+      normalized,
+      (value) => value.rootSessionId,
+    )
   })
 }
 

@@ -361,7 +361,7 @@ describe("supervise", () => {
     const output = stdout.join("\n")
     expect(output).toContain("[supervise] recovering terminal batch-status 01.01")
     expect(output).toContain("[supervise] batch 01.01 finished: completed")
-    expect(output).toContain("[supervise] handoff: batch 01.01 is completed")
+    expect(output).toContain("[supervise] handoff: batch 01.01 reached completed")
     expect(output).not.toContain("[supervise] review 01.01")
     expect(output).not.toContain("[supervise] continue:")
     expect(output).not.toContain("[supervise] fix:")
@@ -429,7 +429,7 @@ describe("supervise", () => {
     const output = stdout.join("\n")
     expect(output).toContain("[supervise] recovering terminal batch-status 01.01")
     expect(output).toContain("[supervise] batch 01.01 finished: completed")
-    expect(output).toContain("[supervise] handoff: batch 01.01 is completed")
+    expect(output).toContain("[supervise] handoff: batch 01.01 reached completed")
     expect(output).not.toContain("[supervise] review 01.01")
 
     const supervisorState = loadSupervisorState(workspace.repoRoot, workspace.streamId)
@@ -460,7 +460,7 @@ describe("supervise", () => {
 
     const output = stdout.join("\n")
     expect(output).toContain("[supervise] would launch batch 01.01")
-    expect(output).toContain("[supervise] would hand terminal batch state for 01.01 back to the Root Agent")
+    expect(output).toContain("[supervise] would record a supervise-pass handoff for 01.01")
     expect(output).not.toContain("opencode --session")
   })
 
@@ -504,6 +504,10 @@ describe("supervise", () => {
         "branch-supervision-1",
         "--parent-session-id",
         "root-session-1",
+        "--checkpoint-message-id",
+        "msg-root-checkpoint",
+        "--checkpoint-created-at",
+        "2026-04-12T00:00:00.000Z",
         "--native-branch-session-id",
         "ses_supervision_1",
       ])
@@ -520,11 +524,14 @@ describe("supervise", () => {
       rootSessionId: "root-session-1",
       branchSessionId: "branch-supervision-1",
       branchRole: "supervision",
+      checkpointMessageId: "msg-root-checkpoint",
+      checkpointCreatedAt: "2026-04-12T00:00:00.000Z",
       parentSessionId: "root-session-1",
       nativeSessionId: "ses_supervision_1",
       source: "native_fork",
-      status: "completed",
+      status: "running",
       batchId: "01.01",
+      notes: expect.stringContaining("Recorded supervise-pass handoff"),
     })
   })
 
@@ -548,6 +555,8 @@ describe("supervise", () => {
         context: {
           rootSessionId: "root-session-1",
           branchSessionId: "branch-supervision-1",
+          checkpointMessageId: "msg-root-checkpoint",
+          checkpointCreatedAt: "2026-04-12T00:00:00.000Z",
           parentSessionId: "root-session-1",
         },
         branchRole: "supervision",
@@ -566,6 +575,8 @@ describe("supervise", () => {
           context: {
             rootSessionId: "root-session-1",
             branchSessionId: "branch-supervision-1",
+            checkpointMessageId: "msg-root-checkpoint",
+            checkpointCreatedAt: "2026-04-12T00:00:00.000Z",
             parentSessionId: "root-session-1",
             nativeSessionId: "ses_supervision_1",
           },
@@ -582,6 +593,8 @@ describe("supervise", () => {
       {
         rootSessionId: "root-session-1",
         branchSessionId: "branch-supervision-1",
+        checkpointMessageId: "msg-root-checkpoint",
+        checkpointCreatedAt: "2026-04-12T00:00:00.000Z",
         parentSessionId: "root-session-1",
       },
       workspace.repoRoot,
@@ -591,6 +604,8 @@ describe("supervise", () => {
     expect(branchContext).toMatchObject({
       rootSessionId: "root-session-1",
       branchSessionId: "branch-supervision-1",
+      checkpointMessageId: "msg-root-checkpoint",
+      checkpointCreatedAt: "2026-04-12T00:00:00.000Z",
       parentSessionId: "root-session-1",
       nativeSessionId: "ses_supervision_1",
       source: "native_fork",
@@ -725,7 +740,7 @@ describe("supervise", () => {
     const resumedOutput = resumedStdout.join("\n")
     expect(resumedOutput).toContain("[supervise] resume: batch 01.01 already reached completed; recovering persisted results from run")
     expect(resumedOutput).toContain("[supervise] recovering terminal batch-status 01.01")
-    expect(resumedOutput).toContain("[supervise] handoff: batch 01.01 is completed")
+    expect(resumedOutput).toContain("[supervise] handoff: batch 01.01 reached completed")
     expect(resumedOutput).not.toContain("[supervise] review 01.01")
 
     supervisorState = loadSupervisorState(workspace.repoRoot, workspace.streamId)
@@ -848,7 +863,7 @@ describe("supervise", () => {
     const output = stdout.join("\n")
     expect(output).toContain("[supervise] resume: batch 01.01 already reached completed; recovering persisted results from run")
     expect(output).toContain("[supervise] recovering terminal batch-status 01.01")
-    expect(output).toContain("[supervise] handoff: batch 01.01 is completed")
+    expect(output).toContain("[supervise] handoff: batch 01.01 reached completed")
     expect(output).not.toContain("[supervise] waiting for batch-status 01.02")
 
     const supervisorState = loadSupervisorState(workspace.repoRoot, workspace.streamId)
@@ -914,7 +929,7 @@ describe("supervise", () => {
 
     const output = stdout.join("\n")
     expect(output).toContain("[supervise] recovering terminal batch-status 01.01")
-    expect(output).toContain("[supervise] handoff: batch 01.01 is completed")
+    expect(output).toContain("[supervise] handoff: batch 01.01 reached completed")
     expect(output).not.toContain("[supervise] start batch 01.01")
     expect(output).not.toContain("already has a persisted supervisor outcome")
   })
@@ -1062,7 +1077,7 @@ describe("supervise", () => {
     expect(output).toContain("[supervise] reconciled interrupted supervisor run: sup-01-failed")
     expect(output).toContain("[supervise] resume: batch 01.01 already reached completed; recovering persisted results from run sup-01-failed.")
     expect(output).toContain("[supervise] recovering terminal batch-status 01.01")
-    expect(output).toContain("[supervise] handoff: batch 01.01 is completed")
+    expect(output).toContain("[supervise] handoff: batch 01.01 reached completed")
     expect(output).not.toContain("[supervise] start batch 01.01")
     expect(output).not.toContain("[supervise] review 01.01")
 

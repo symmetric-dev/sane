@@ -636,13 +636,30 @@ export type RootAgentBranchSource = "native_fork" | "repo_local_fallback"
 
 export type RootAgentBranchStatus = "pending" | "running" | "completed" | "stopped" | "failed"
 
+export interface RootAgentCheckpointPointer {
+  rootSessionId: string
+  checkpointMessageIndex: number
+  checkpointCreatedAt: string
+  checkpointMessageId?: string
+}
+
 export interface RootAgentLineage {
   owner: "root_agent"
   rootSessionId: string
   branchSessionId: string
   branchRole: RootAgentBranchRole
-  checkpointSessionId?: string
+  /**
+   * Stage 13+ metadata-only checkpoint pointer fields.
+   * These identify the Root Agent transcript boundary used for branch launch.
+   */
+  checkpointMessageId?: string
+  checkpointMessageIndex?: number
   checkpointCreatedAt?: string
+  /**
+   * Stage 12 conversational-checkpoint fields retained for migration reads.
+   * New writes should prefer metadata-only pointer fields above.
+   */
+  checkpointSessionId?: string
   parentBranchSessionId?: string
   parentSessionId?: string
   nativeSessionId?: string
@@ -865,6 +882,7 @@ export interface SupervisorStateFile {
   last_updated: string
   active_run_id?: string
   runs: SupervisorRunState[]
+  checkpoint_pointers: RootAgentCheckpointPointer[]
   branch_sessions: RootAgentBranchSession[]
   reviewed_batches: SupervisorReviewedBatch[]
   issue_summaries: SupervisorIssueSummary[]

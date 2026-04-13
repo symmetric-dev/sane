@@ -2,6 +2,7 @@ import { describe, expect, test } from "bun:test"
 import {
   buildRootAgentBranchSession,
   buildRootAgentLineage,
+  findRootAgentBranchSessionForLaunchSessionId,
   findRootAgentBranchSessionByNativeSessionId,
   getRootAgentBranchSource,
   waitForRootAgentBranchTerminalSession,
@@ -23,7 +24,7 @@ describe("root-agent-branch", () => {
         context: {
           rootSessionId: "root-session-1",
           branchSessionId: "branch-supervision-1",
-          checkpointSessionId: "ses_checkpoint_1",
+          checkpointMessageId: "msg_checkpoint_1",
           checkpointCreatedAt: "2026-04-12T00:00:00.000Z",
           parentSessionId: "root-session-1",
           nativeSessionId: "ses_supervision_1",
@@ -33,11 +34,29 @@ describe("root-agent-branch", () => {
     ).toMatchObject({
       rootSessionId: "root-session-1",
       branchSessionId: "branch-supervision-1",
-      checkpointSessionId: "ses_checkpoint_1",
+      checkpointMessageId: "msg_checkpoint_1",
       checkpointCreatedAt: "2026-04-12T00:00:00.000Z",
       parentSessionId: "root-session-1",
       nativeSessionId: "ses_supervision_1",
       source: "native_fork",
+    })
+  })
+
+  test("buildRootAgentLineage preserves checkpointMessageIndex fallback metadata", () => {
+    expect(
+      buildRootAgentLineage({
+        context: {
+          rootSessionId: "root-session-1",
+          branchSessionId: "branch-supervision-1",
+          checkpointMessageIndex: 42,
+          checkpointCreatedAt: "2026-04-12T00:00:00.000Z",
+          parentSessionId: "root-session-1",
+        },
+        branchRole: "supervision",
+      }),
+    ).toMatchObject({
+      checkpointMessageIndex: 42,
+      checkpointCreatedAt: "2026-04-12T00:00:00.000Z",
     })
   })
 
@@ -128,6 +147,44 @@ describe("root-agent-branch", () => {
       ).toMatchObject({
         branchSessionId: "branch-supervision-1",
         nativeSessionId: "ses_supervision_1",
+      })
+    } finally {
+      cleanupTestWorkstream(workspace)
+    }
+  })
+
+  test("findRootAgentBranchSessionForLaunchSessionId blocks legacy checkpoint child sessions", async () => {
+    const workspace = createTestWorkstream("001-root-agent-branch-launch-guard")
+
+    try {
+      const startedAt = new Date().toISOString()
+      await upsertBranchSessionLocked(
+        workspace.repoRoot,
+        workspace.streamId,
+        buildRootAgentBranchSession({
+          context: {
+            rootSessionId: "root-session-1",
+            branchSessionId: "branch-supervision-1",
+            parentSessionId: "ses_checkpoint_1",
+            checkpointSessionId: "ses_checkpoint_1",
+            nativeSessionId: "ses_supervision_1",
+          },
+          branchRole: "supervision",
+          status: "running",
+          startedAt,
+          updatedAt: startedAt,
+        }),
+      )
+
+      expect(
+        findRootAgentBranchSessionForLaunchSessionId({
+          repoRoot: workspace.repoRoot,
+          streamId: workspace.streamId,
+          sessionId: "ses_checkpoint_1",
+        }),
+      ).toMatchObject({
+        branchSessionId: "branch-supervision-1",
+        checkpointSessionId: "ses_checkpoint_1",
       })
     } finally {
       cleanupTestWorkstream(workspace)

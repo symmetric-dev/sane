@@ -461,6 +461,45 @@ describe("findLastCompletedAssistantMessage", () => {
     expect(findLastCompletedAssistantMessage(session)?.info.id).toBe("msg-last")
   })
 
+  test("ignores later completed assistant noise and prefers the latest completed assistant text report", () => {
+    const completedReport = createAssistantMessage([{ type: "text", text: "Final branch report" }])
+    completedReport.info.id = "msg-report"
+    completedReport.info.time = { created: 3, completed: 30 }
+
+    const emptyCompleted = createAssistantMessage([{ type: "text", text: "   " }])
+    emptyCompleted.info.id = "msg-empty"
+    emptyCompleted.info.time = { created: 4, completed: 40 }
+
+    const toolOnlyCompleted = createAssistantMessage([
+      { type: "tool", tool: "bash", state: { input: {}, output: "ignored" } },
+    ])
+    toolOnlyCompleted.info.id = "msg-tool"
+    toolOnlyCompleted.info.time = { created: 5, completed: 50 }
+
+    const session = createSessionExport([
+      createUserMessage([{ type: "text", text: "noise" }]),
+      completedReport,
+      emptyCompleted,
+      toolOnlyCompleted,
+    ])
+
+    expect(findLastCompletedAssistantMessage(session)?.info.id).toBe("msg-report")
+  })
+
+  test("prefers the highest completed timestamp even if message order is noisy", () => {
+    const newestCompleted = createAssistantMessage([{ type: "text", text: "Newest completed report" }])
+    newestCompleted.info.id = "msg-newest"
+    newestCompleted.info.time = { created: 10, completed: 200 }
+
+    const olderCompleted = createAssistantMessage([{ type: "text", text: "Older completed report" }])
+    olderCompleted.info.id = "msg-older"
+    olderCompleted.info.time = { created: 20, completed: 100 }
+
+    const session = createSessionExport([newestCompleted, olderCompleted])
+
+    expect(findLastCompletedAssistantMessage(session)?.info.id).toBe("msg-newest")
+  })
+
   test("returns null when there is no assistant text to extract", () => {
     const session = createSessionExport([
       createUserMessage([{ type: "text", text: "Only user content" }]),
@@ -486,5 +525,17 @@ describe("extractLastCompletedAssistantText", () => {
     expect(extractLastCompletedAssistantText(session)).toBe(
       "Accomplished work: updated parent monitor.\nReason for yielding: batch paused for Root Agent review.",
     )
+  })
+
+  test("ignores later empty assistant completions when extracting the final report", () => {
+    const report = createAssistantMessage([{ type: "text", text: "Parent-facing final report" }])
+    report.info.time = { created: 1, completed: 2 }
+
+    const emptyLater = createAssistantMessage([{ type: "text", text: "" }])
+    emptyLater.info.time = { created: 3, completed: 4 }
+
+    const session = createSessionExport([report, emptyLater])
+
+    expect(extractLastCompletedAssistantText(session)).toBe("Parent-facing final report")
   })
 })

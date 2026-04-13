@@ -243,26 +243,47 @@ Persisted-state note for same-batch resume verification:
 - Do not rely only on resumed console output.
 - Confirm the resumed batch by checking that the next persisted `supervisor-state.json` update still references `SS.BB` before any later incomplete batch appears in `reviewed_batches`, `stage_stops`, or other run/finalization metadata.
 
-## Prompt-First Live Test Guidance (One-Level Experiment)
+## Metadata-Only Checkpoint Pointer Guidance (Stage 13)
 
-This revision intentionally validates a **prompt-first** branch handoff before promoting the behavior into a dedicated supervising skill.
+Stage 13 replaces the Stage 12 conversational-checkpoint experiment with tooling-owned checkpoint pointers.
+Checkpoints are now metadata, not child-session transcript content.
 
 ### Scope guardrail
 
 - Only the real Root Agent may launch a supervision branch.
 - If a branch session tries to call `launch_supervision_branch`, the launch path must fail immediately with a clear guardrail error.
-- Treat that failure as correct behavior for this experiment: the branch should **yield back** to the Root Agent instead of building a deeper branch tree.
+- Treat that failure as correct behavior: the branch should **yield back** to the Root Agent instead of building a deeper branch tree.
 
-### What makes a checkpoint branch-safe
+### What makes a checkpoint pointer branch-safe
 
-Use a checkpoint only when all of the following are true:
+Use a checkpoint pointer only when all of the following are true:
 
 - the workstream plan, current revision, and task ownership are already settled
 - the branch needs execution context, not the Root Agent's orchestration debate
 - later Root Agent reasoning about policy, escalation, or future branching has not yet polluted the transcript
-- the Root Agent would still trust the checkpointed context if the branch started from it again right now
+- the Root Agent would still trust that transcript boundary if the branch started from it again right now
 
-If any of those assumptions changed, refresh the checkpoint before the next live run.
+If any of those assumptions changed, refresh the checkpoint pointer before the next live run.
+
+### Persisted pointer semantics
+
+`supervisor-state.json` `branch_sessions[]` now records checkpoint boundaries with:
+
+- `checkpointMessageId` (preferred)
+- `checkpointMessageIndex` (deterministic fallback when message IDs are unavailable)
+- `checkpointCapturedAt`
+
+These fields identify where the branch-safe boundary was captured in the Root Agent session transcript.
+They are tooling-owned metadata and should not be generated as conversational "checkpoint" prompts.
+
+Stage 12 legacy fields (`checkpointSessionId`, `checkpointCreatedAt`) may still appear in older records and should be treated as migration artifacts.
+New launches should write pointer metadata above.
+
+### Migration notes from Stage 12 conversational checkpoints
+
+- **Before (Stage 12):** launch path created a conversational checkpoint child session and then branched from that child session.
+- **Now (Stage 13):** launch path captures a Root Agent transcript boundary as metadata and launches supervision from the Root Agent session with pointer-backed lineage.
+- **Operator impact:** if you inspect historical and new records together, use pointer fields as the canonical Stage 13 checkpoint source and interpret checkpoint session IDs as historical-only context.
 
 ### Expected fake-user prompt behavior
 
@@ -277,10 +298,10 @@ The child branch prompt should act like a simulated user handing one bounded job
 
 After launching the branch, inspect these artifacts in order:
 
-1. **Checkpoint + lineage evidence**
-   - confirm the branch started from the intended checkpoint/fork point
+1. **Checkpoint pointer + lineage evidence**
+   - confirm the branch launch references the intended Root Agent boundary pointer
    - inspect `work/<stream-id>/supervisor-state.json` → `branch_sessions[]`
-   - verify `rootSessionId`, `branchSessionId`, `parentSessionId`, optional `parentBranchSessionId`, and `nativeSessionId`
+   - verify `rootSessionId`, `branchSessionId`, `parentSessionId`, pointer fields (`checkpointMessageId` or `checkpointMessageIndex`), optional `parentBranchSessionId`, and `nativeSessionId`
 2. **Terminal branch status**
    - confirm the branch session reached `completed`, `stopped`, or `failed`
    - use `branch_sessions[].status`, `batchId`, `runId`, `updatedAt`, and `notes`

@@ -12,8 +12,10 @@ import type {
 export interface RootAgentBranchContext {
   rootSessionId: string
   branchSessionId: string
-  checkpointSessionId?: string
+  checkpointMessageId?: string
+  checkpointMessageIndex?: number
   checkpointCreatedAt?: string
+  checkpointSessionId?: string
   parentSessionId?: string
   parentBranchSessionId?: string
   nativeSessionId?: string
@@ -49,6 +51,36 @@ export function findRootAgentBranchSessionByNativeSessionId(args: {
   return loadSupervisorState(args.repoRoot, args.streamId)?.branch_sessions.find(
     (branch) => branch.nativeSessionId === args.nativeSessionId,
   )
+}
+
+export function findRootAgentBranchSessionForLaunchSessionId(args: {
+  repoRoot: string
+  streamId: string
+  sessionId: string
+}): RootAgentBranchSession | undefined {
+  const branches = loadSupervisorState(args.repoRoot, args.streamId)?.branch_sessions ?? []
+
+  for (let index = branches.length - 1; index >= 0; index -= 1) {
+    const branch = branches[index]
+
+    if (!branch) {
+      continue
+    }
+
+    if (branch.nativeSessionId === args.sessionId) {
+      return branch
+    }
+
+    if (branch.checkpointSessionId === args.sessionId) {
+      return branch
+    }
+
+    if (branch.parentSessionId === args.sessionId && branch.rootSessionId !== args.sessionId) {
+      return branch
+    }
+  }
+
+  return undefined
 }
 
 export function isTerminalRootAgentBranchStatus(
@@ -122,11 +154,17 @@ export function buildRootAgentLineage(args: {
     rootSessionId: args.context.rootSessionId,
     branchSessionId: args.branchSessionId ?? args.context.branchSessionId,
     branchRole: args.branchRole,
-    ...(args.context.checkpointSessionId
-      ? { checkpointSessionId: args.context.checkpointSessionId }
+    ...(args.context.checkpointMessageId
+      ? { checkpointMessageId: args.context.checkpointMessageId }
+      : {}),
+    ...(typeof args.context.checkpointMessageIndex === "number"
+      ? { checkpointMessageIndex: args.context.checkpointMessageIndex }
       : {}),
     ...(args.context.checkpointCreatedAt
       ? { checkpointCreatedAt: args.context.checkpointCreatedAt }
+      : {}),
+    ...(args.context.checkpointSessionId
+      ? { checkpointSessionId: args.context.checkpointSessionId }
       : {}),
     ...(args.context.parentBranchSessionId
       ? { parentBranchSessionId: args.context.parentBranchSessionId }

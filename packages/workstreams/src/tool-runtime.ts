@@ -5,12 +5,21 @@ export {
 export {
   buildRootAgentBranchSession,
   createRootAgentBranchSessionId,
+  findRootAgentBranchSessionForLaunchSessionId,
   findRootAgentBranchSessionByNativeSessionId,
   waitForRootAgentBranchNativeSessionId,
   waitForRootAgentBranchTerminalSession,
 } from "./lib/root-agent-branch.ts"
 export {
+  createRootAgentCheckpointPointer,
+  formatRootAgentCheckpointPointer,
+  loadRootAgentCheckpointPointer,
+  refreshRootAgentCheckpointPointer,
+  validateRootAgentCheckpointPointer,
+} from "./lib/root-agent-checkpoint.ts"
+export {
   loadSupervisorState,
+  upsertCheckpointPointerLocked,
   upsertBranchSessionLocked,
 } from "./lib/supervisor-state.ts"
 export { parseSynthesisJsonl } from "./lib/synthesis/output.ts"
