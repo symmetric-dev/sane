@@ -2,6 +2,12 @@
 
 All notable changes to `@agenv/workstreams` are documented in this file.
 
+## 0.4.1 - 2026-04-14
+
+- Simplified supervision timeout handling so the latest branch and Root-Agent live-test paths behave more predictably under the new headless child-session execution model.
+- Simplified default configuration and runtime defaults around branch supervision launch behavior, including cleaner breakpoint-mode handling and less prompt-visible execution plumbing.
+- Refined Root Agent / branch supervision prompting and skills so branch execution stays more user-like while preserving durable runtime-owned context resolution.
+
 ## 0.4.0 - 2026-04-14
 
 - Added the Root Agent supervision architecture for `work supervise`, including headless batch execution, durable supervisor state, and recovery-oriented supervision primitives.
