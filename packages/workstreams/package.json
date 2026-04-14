@@ -32,7 +32,7 @@
   },
   "scripts": {
     "build": "rm -rf dist && bun build.ts",
-    "test": "bun test",
+    "test": "bun test --path-ignore-patterns 'tests/multi-headless-order.test.ts' && bun test tests/multi-headless-order.test.ts",
     "typecheck": "tsc --noEmit",
     "prepublishOnly": "bun run build"
   },

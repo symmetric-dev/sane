@@ -1,6 +1,9 @@
 import { afterEach, describe, expect, mock, test } from "bun:test"
 
 const src = (path: string) => new URL(`../src/${path}`, import.meta.url).href
+const actualRepo = await import("../src/lib/repo.ts")
+const actualIndex = await import("../src/lib/index.ts")
+const actualTasks = await import("../src/lib/tasks.ts")
 
 describe("multi headless initialization order", () => {
   afterEach(() => {
@@ -11,10 +14,12 @@ describe("multi headless initialization order", () => {
     const callOrder: string[] = []
 
     mock.module(src("lib/repo.ts"), () => ({
+      ...actualRepo,
       getRepoRoot: () => "/tmp/test-repo",
     }))
 
     mock.module(src("lib/index.ts"), () => ({
+      ...actualIndex,
       loadIndex: () => ({ current_stream: "001-test-stream" }),
       getResolvedStream: () => ({ id: "001-test-stream" }),
     }))
@@ -27,8 +32,8 @@ describe("multi headless initialization order", () => {
     }))
 
     mock.module(src("lib/tasks.ts"), () => ({
+      ...actualTasks,
       readTasksFile: () => ({ tasks: [] }),
-      parseTaskId: () => null,
       generateSessionId: () => "generated-session-id",
       startMultipleSessionsLocked: async () => {},
       getBatchMetadata: () => ({ stageName: "Stage 1", batchName: "Batch 1" }),
@@ -130,10 +135,12 @@ describe("multi headless initialization order", () => {
     const callOrder: string[] = []
 
     mock.module(src("lib/repo.ts"), () => ({
+      ...actualRepo,
       getRepoRoot: () => "/tmp/test-repo",
     }))
 
     mock.module(src("lib/index.ts"), () => ({
+      ...actualIndex,
       loadIndex: () => ({ current_stream: "001-test-stream" }),
       getResolvedStream: () => ({ id: "001-test-stream" }),
     }))
@@ -146,8 +153,8 @@ describe("multi headless initialization order", () => {
     }))
 
     mock.module(src("lib/tasks.ts"), () => ({
+      ...actualTasks,
       readTasksFile: () => ({ tasks: [] }),
-      parseTaskId: () => null,
       generateSessionId: () => "generated-session-id",
       startMultipleSessionsLocked: async () => {},
       getBatchMetadata: () => ({ stageName: "Stage 1", batchName: "Batch 1" }),
@@ -244,10 +251,12 @@ describe("multi headless initialization order", () => {
     const callOrder: string[] = []
 
     mock.module(src("lib/repo.ts"), () => ({
+      ...actualRepo,
       getRepoRoot: () => "/tmp/test-repo",
     }))
 
     mock.module(src("lib/index.ts"), () => ({
+      ...actualIndex,
       loadIndex: () => ({ current_stream: "001-test-stream" }),
       getResolvedStream: () => ({ id: "001-test-stream" }),
     }))
@@ -260,8 +269,8 @@ describe("multi headless initialization order", () => {
     }))
 
     mock.module(src("lib/tasks.ts"), () => ({
+      ...actualTasks,
       readTasksFile: () => ({ tasks: [] }),
-      parseTaskId: () => null,
       generateSessionId: () => "generated-session-id",
       startMultipleSessionsLocked: async () => {},
       getBatchMetadata: () => ({ stageName: "Stage 1", batchName: "Batch 1" }),
