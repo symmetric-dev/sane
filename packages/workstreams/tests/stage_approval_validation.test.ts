@@ -71,6 +71,35 @@ describe("Stage Approval Validation", () => {
                 }
             ]
         }, null, 2));
+
+        writeFileSync(join(REPO_ROOT, "work/stream-001/PLAN.md"), `# Plan: Approval Automation
+
+## Summary
+Validate approval flows.
+
+## Stages
+
+### Stage 1: Shared Auto-Commit Infrastructure
+
+#### Stage Definition
+Build shared approval commit helpers.
+
+#### Stage Constitution
+Keep approval naming consistent.
+
+#### Stage Questions
+- [x] None
+
+#### Stage Batches
+
+##### Batch 01: Message Builders and Name Resolution
+
+###### Thread 01: Plan-Derived Naming Helpers
+
+**Summary:** Resolve plan-derived names.
+
+**Details:** Use parsed stage names in approval commit messages.
+`);
     });
 
     afterEach(() => {
@@ -250,11 +279,11 @@ describe("Stage Approval Validation", () => {
             stdio: ["pipe", "pipe", "pipe"],
         }).trim();
 
-        expect(subject).toBe("Stage 1 approved: Stage 1");
+        expect(subject).toBe("Stage 1 approved: Shared Auto-Commit Infrastructure");
         expect(body).toContain("Approved stage 1 of workstream stream-001.");
         expect(body).toContain("Stream-Id: stream-001");
-        expect(body).toContain("Stream-Name: test-stream");
+        expect(body).toContain("Stream-Name: Approval Automation");
         expect(body).toContain("Stage: 1");
-        expect(body).toContain("Stage-Name: Stage 1");
+        expect(body).toContain("Stage-Name: Shared Auto-Commit Infrastructure");
     });
 });

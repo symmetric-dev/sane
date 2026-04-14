@@ -294,13 +294,7 @@ export async function handlePlanApproval(
         | undefined
       const githubConfig = await loadGitHubConfig(repoRoot)
       if (githubConfig.auto_commit_on_approval) {
-        const stageName = `Stage ${stageNum}` // Use generic name; could be enhanced to parse from PLAN.md
-        commitResult = createStageApprovalCommit(
-          repoRoot,
-          updatedStream,
-          stageNum,
-          stageName
-        )
+        commitResult = createStageApprovalCommit(repoRoot, updatedStream, stageNum)
       }
 
       // Automatically close GitHub issue for this stage if GitHub integration is enabled

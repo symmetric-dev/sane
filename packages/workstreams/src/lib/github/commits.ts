@@ -7,6 +7,7 @@
 
 import { execSync } from "node:child_process"
 import type { StreamMetadata } from "../types.ts"
+import { resolveStageApprovalNames } from "../approval.ts"
 
 /**
  * Result of a commit operation
@@ -93,8 +94,7 @@ export function hasUncommittedChanges(repoRoot: string): boolean {
 export function createStageApprovalCommit(
   repoRoot: string,
   stream: StreamMetadata,
-  stageNum: number,
-  stageName: string
+  stageNum: number
 ): StageCommitResult {
   try {
     // Stage all changes
@@ -113,7 +113,17 @@ export function createStageApprovalCommit(
     }
 
     // Format the commit message
-    const { title, body } = formatStageCommitMessage(stream.id, stream.name, stageNum, stageName)
+    const { streamName, stageName } = resolveStageApprovalNames(
+      repoRoot,
+      stream,
+      stageNum
+    )
+    const { title, body } = formatStageCommitMessage(
+      stream.id,
+      streamName,
+      stageNum,
+      stageName
+    )
 
     // Create the commit
     // Escape double quotes in body for shell

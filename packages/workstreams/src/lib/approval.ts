@@ -24,6 +24,68 @@ export function getPlanMdPath(repoRoot: string, streamId: string): string {
   return join(workDir, streamId, "PLAN.md")
 }
 
+export interface ResolvedPlanNames {
+  streamName: string
+  stageNames: Record<number, string>
+}
+
+/**
+ * Resolve workstream and stage names from PLAN.md when available.
+ * Falls back to stream metadata and generic stage labels if PLAN.md
+ * is missing or cannot be parsed.
+ */
+export function resolvePlanNames(
+  repoRoot: string,
+  stream: StreamMetadata
+): ResolvedPlanNames {
+  const fallback: ResolvedPlanNames = {
+    streamName: stream.name,
+    stageNames: {},
+  }
+
+  const planPath = getPlanMdPath(repoRoot, stream.id)
+  if (!existsSync(planPath)) {
+    return fallback
+  }
+
+  try {
+    const content = readFileSync(planPath, "utf-8")
+    const errors: ConsolidateError[] = []
+    const doc = parseStreamDocument(content, errors)
+
+    if (!doc) {
+      return fallback
+    }
+
+    return {
+      streamName: doc.streamName.trim() || stream.name,
+      stageNames: Object.fromEntries(
+        doc.stages
+          .filter((stage) => stage.name.trim())
+          .map((stage) => [stage.id, stage.name.trim()])
+      ),
+    }
+  } catch {
+    return fallback
+  }
+}
+
+/**
+ * Resolve a stage approval display name with safe fallbacks.
+ */
+export function resolveStageApprovalNames(
+  repoRoot: string,
+  stream: StreamMetadata,
+  stageNumber: number
+): { streamName: string; stageName: string } {
+  const names = resolvePlanNames(repoRoot, stream)
+
+  return {
+    streamName: names.streamName,
+    stageName: names.stageNames[stageNumber] ?? `Stage ${stageNumber}`,
+  }
+}
+
 /**
  * Compute SHA-256 hash of PLAN.md content for modification detection
  */
