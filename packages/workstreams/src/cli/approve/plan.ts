@@ -282,7 +282,8 @@ export async function handlePlanApproval(
     try {
       const updatedStream = approveStage(repoRoot, stream.id, stageNum, "user")
 
-      // Auto-commit on stage approval if enabled
+      // Auto-commit on stage approval if configured.
+      // This uses plain git and does not require GitHub integration to be enabled.
       let commitResult:
         | {
             success: boolean
@@ -292,7 +293,7 @@ export async function handlePlanApproval(
           }
         | undefined
       const githubConfig = await loadGitHubConfig(repoRoot)
-      if (githubConfig.enabled && githubConfig.auto_commit_on_approval) {
+      if (githubConfig.auto_commit_on_approval) {
         const stageName = `Stage ${stageNum}` // Use generic name; could be enhanced to parse from PLAN.md
         commitResult = createStageApprovalCommit(
           repoRoot,

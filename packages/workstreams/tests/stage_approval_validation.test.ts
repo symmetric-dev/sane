@@ -2,6 +2,7 @@
 import { describe, test, expect, beforeEach, afterEach, jest, mock } from "bun:test";
 import { join } from "path";
 import { existsSync, writeFileSync, mkdirSync, rmSync } from "fs";
+import { execSync } from "child_process";
 import { saveIndex, loadIndex } from "../src/lib/index.ts";
 import type { WorkIndex } from "../src/lib/types.ts";
 
@@ -193,5 +194,67 @@ describe("Stage Approval Validation", () => {
         const index = loadIndex(REPO_ROOT);
         const stream = index.streams[0]!;
         expect(stream.approval?.stages?.[1]?.status).toBe("approved");
+    });
+
+    test("should auto-commit stage approval even when GitHub integration is disabled", async () => {
+        const tasksJsonPath = join(REPO_ROOT, "work/stream-001/tasks.json");
+        writeFileSync(tasksJsonPath, JSON.stringify({
+            version: "1.0.0",
+            stream_id: "stream-001",
+            last_updated: new Date().toISOString(),
+            tasks: [
+                {
+                    id: "01.01.01.01",
+                    name: "Task 1",
+                    thread_name: "Thread 1",
+                    batch_name: "Batch 1",
+                    stage_name: "Stage 1",
+                    status: "completed",
+                    created_at: new Date().toISOString(),
+                    updated_at: new Date().toISOString()
+                }
+            ]
+        }, null, 2));
+
+        execSync("git init", { cwd: REPO_ROOT, stdio: "pipe" });
+        execSync("git config user.name \"Test User\"", { cwd: REPO_ROOT, stdio: "pipe" });
+        execSync("git config user.email \"test@example.com\"", { cwd: REPO_ROOT, stdio: "pipe" });
+
+        const { main } = await import("../src/cli/approve/index.ts");
+
+        const logs: string[] = [];
+        const originalError = console.error;
+        const originalLog = console.log;
+        console.error = (...args) => logs.push(args.join(" "));
+        console.log = (...args) => logs.push(args.join(" "));
+
+        try {
+            await main(["node", "approve", "stage", "1", "--stream", "stream-001", "--repo-root", REPO_ROOT]);
+        } finally {
+            console.error = originalError;
+            console.log = originalLog;
+        }
+
+        const output = logs.join("\n");
+        expect(output).toContain("Approved Stage 1");
+        expect(output).toContain("Committed:");
+
+        const subject = execSync("git log -1 --pretty=%s", {
+            cwd: REPO_ROOT,
+            encoding: "utf-8",
+            stdio: ["pipe", "pipe", "pipe"],
+        }).trim();
+        const body = execSync("git log -1 --pretty=%b", {
+            cwd: REPO_ROOT,
+            encoding: "utf-8",
+            stdio: ["pipe", "pipe", "pipe"],
+        }).trim();
+
+        expect(subject).toBe("Stage 1 approved: Stage 1");
+        expect(body).toContain("Approved stage 1 of workstream stream-001.");
+        expect(body).toContain("Stream-Id: stream-001");
+        expect(body).toContain("Stream-Name: test-stream");
+        expect(body).toContain("Stage: 1");
+        expect(body).toContain("Stage-Name: Stage 1");
     });
 });

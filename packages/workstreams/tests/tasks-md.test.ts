@@ -228,6 +228,24 @@ describe("tasks-md", () => {
       })
     })
 
+    test("parseTasksMd extracts agent assignment when @agent: has a space after the colon", () => {
+      const md = `
+# Tasks: Test Stream
+
+## Stage 01: Stage One
+
+### Batch 01: Setup
+
+#### Thread 01: Router @agent: default
+- [ ] Task 01.01.01.01: Create route definitions
+`
+      const { tasks, errors } = parseTasksMd(md, "stream-id")
+
+      expect(errors).toHaveLength(0)
+      expect(tasks).toHaveLength(1)
+      expect(tasks[0]?.assigned_agent).toBe("default")
+    })
+
     test("parseTasksMd handles thread without agent assignment", () => {
       const md = `
 # Tasks: Test Stream
@@ -397,6 +415,35 @@ describe("tasks-md", () => {
 
       expect(updatedTasks[0]?.assigned_agent).toBe("backend-expert")
       expect(updatedTasks[1]?.assigned_agent).toBeUndefined()
+    })
+
+    test("serializeTasksMd applies agent assignment when @agent: has a space after the colon", () => {
+      const md = `
+# Tasks: Test Stream
+
+## Stage 01: Stage One
+
+### Batch 01: Setup
+
+#### Thread 01: Router @agent: default
+- [ ] Task 01.01.01.01: Create route definitions
+`
+      const tasks: Task[] = [
+        {
+          id: "01.01.01.01",
+          name: "Create route definitions",
+          status: "pending",
+          stage_name: "Stage One",
+          batch_name: "Setup",
+          thread_name: "Router",
+          created_at: "",
+          updated_at: "",
+        },
+      ]
+
+      const updatedTasks = serializeTasksMd(md, tasks)
+
+      expect(updatedTasks[0]?.assigned_agent).toBe("default")
     })
 
     test("round trip preserves agent assignments", () => {

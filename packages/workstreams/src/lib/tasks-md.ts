@@ -43,10 +43,11 @@ export function detectNewStages(
 /**
  * Regex pattern to extract agent assignment from thread headers
  * Matches: "Thread 01: Router @agent:backend-expert"
+ * Also matches: "Thread 01: Router @agent: backend-expert"
  * Also matches: "Thread 01: Router @agent:" (empty placeholder)
  * Captures: thread id, thread name, agent name (optional)
  */
-const THREAD_HEADER_REGEX = /^Thread\s+(\d+):\s*([^@]*?)(?:\s+@agent:([a-zA-Z0-9_-]*))?\s*$/i
+const THREAD_HEADER_REGEX = /^Thread\s+(\d+):\s*([^@]*?)(?:\s+@agent:\s*([a-zA-Z0-9_-]*))?\s*$/i
 
 /**
  * Generate TASKS.md content from a StreamDocument (PLAN.md structure)
