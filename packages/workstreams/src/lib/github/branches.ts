@@ -9,6 +9,7 @@ import { loadGitHubConfig } from "./config";
 import { ensureGitHubAuth } from "./auth";
 import { createGitHubClient } from "./client";
 import { loadIndex, saveIndex, getStream } from "../index";
+import { buildWorkstreamStartCommitMessage } from "../git/auto-commit-message.ts";
 
 export interface CreateBranchResult {
   branchName: string;
@@ -122,7 +123,7 @@ export async function createWorkstreamBranch(
   await storeWorkstreamBranchMeta(repoRoot, streamId, branchName);
 
   // Step 2: Commit all pending changes (including workstream files and updated index.json)
-  commitPendingChanges(repoRoot);
+  commitPendingChanges(repoRoot, streamId);
 
   // Step 3: Delete local and remote branches if they exist (from previous failed attempts)
   // This ensures we create a fresh branch from current HEAD
@@ -228,7 +229,7 @@ async function getDefaultBranch(repoRoot: string): Promise<string> {
  * @param repoRoot The root directory of the repository
  * @returns True if changes were committed, false if working tree was clean
  */
-function commitPendingChanges(repoRoot: string): boolean {
+function commitPendingChanges(repoRoot: string, streamId: string): boolean {
   // Stage all changes first
   execSync("git add -A", {
     cwd: repoRoot,
@@ -247,8 +248,15 @@ function commitPendingChanges(repoRoot: string): boolean {
     return false; // Nothing staged to commit
   }
 
+  const index = loadIndex(repoRoot);
+  const stream = getStream(index, streamId);
+  const { title, body } = buildWorkstreamStartCommitMessage({
+    streamId: stream.id,
+    streamName: stream.name,
+  });
+
   // Commit with workstream start message
-  execSync('git commit -m "workstream start"', {
+  execSync(`git commit -m "${title}" -m "${body.replace(/"/g, '\\"')}"`, {
     cwd: repoRoot,
     encoding: "utf-8",
     stdio: ["pipe", "pipe", "pipe"],

@@ -19,3 +19,12 @@ export {
   getCurrentBranch,
   getDefaultBranch,
 } from "./log.ts"
+
+export {
+  type AutoCommitMessage,
+  buildPlanApprovalCommitMessage,
+  buildStageApprovalCommitMessage,
+  buildTasksApprovalCommitMessage,
+  buildWorkstreamCompletionCommitMessage,
+  buildWorkstreamStartCommitMessage,
+} from "./auto-commit-message.ts"

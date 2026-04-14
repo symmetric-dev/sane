@@ -26,6 +26,7 @@ import { getGitHubAuth } from "../lib/github/auth.ts"
 import type { StreamMetadata } from "../lib/types.ts"
 import { canExecuteCommand, getRoleDenialMessage } from "../lib/roles.ts"
 import { validateReport } from "../lib/report-template.ts"
+import { buildWorkstreamCompletionCommitMessage } from "../lib/git/auto-commit-message.ts"
 
 interface CompleteStreamCliArgs {
   repoRoot?: string
@@ -259,13 +260,14 @@ function performGitOperations(
       // There are unpushed commits, skip commit but continue to push
     } else {
       // 2. Create commit with message
-      const commitMessage = `Completed workstream: ${streamName}`
-      const commitBody = summary
-        ? `\nStream ID: ${streamId}\n\n${summary}`
-        : `\nStream ID: ${streamId}`
+      const { title, body } = buildWorkstreamCompletionCommitMessage({
+        streamId,
+        streamName,
+        summary,
+      })
 
       execSync(
-        `git commit -m "${commitMessage}" -m "${commitBody.replace(/"/g, '\\"')}"`,
+        `git commit -m "${title}" -m "${body.replace(/"/g, '\\"')}"`,
         {
           cwd: repoRoot,
           encoding: "utf-8",

@@ -8,6 +8,7 @@
 import { execSync } from "node:child_process"
 import type { StreamMetadata } from "../types.ts"
 import { resolveStageApprovalNames } from "../approval.ts"
+import { buildStageApprovalCommitMessage } from "../git/auto-commit-message.ts"
 
 /**
  * Result of a commit operation
@@ -41,17 +42,12 @@ export function formatStageCommitMessage(
   stageNum: number,
   stageName: string
 ): { title: string; body: string } {
-  const title = `Stage ${stageNum} approved: ${stageName}`
-  const body = [
-    `Approved stage ${stageNum} of workstream ${streamId}.`,
-    "",
-    `Stream-Id: ${streamId}`,
-    `Stream-Name: ${streamName}`,
-    `Stage: ${stageNum}`,
-    `Stage-Name: ${stageName}`,
-  ].join("\n")
-
-  return { title, body }
+  return buildStageApprovalCommitMessage({
+    streamId,
+    streamName,
+    stageNumber: stageNum,
+    stageName,
+  })
 }
 
 /**
