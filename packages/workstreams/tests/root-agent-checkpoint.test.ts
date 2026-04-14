@@ -84,6 +84,50 @@ describe("root-agent-checkpoint", () => {
     })
   })
 
+  test("findLatestRootAgentCheckpointBoundary supports explicit previous_user mode", () => {
+    const sessionExport = createSessionExport([
+      createMessage({ id: "msg-tagged", role: "user", text: `Pause here\n${DEFAULT_ROOT_AGENT_BREAKPOINT_TAGS[0]}` }),
+      createMessage({ id: "msg-latest-user", role: "user", text: "Use the latest user request instead" }),
+      createMessage({ id: "msg-launch", role: "assistant", text: "launch_supervision_branch" }),
+    ])
+
+    expect(
+      findLatestRootAgentCheckpointBoundary(sessionExport, {
+        breakpointMode: "previous_user",
+      }),
+    ).toMatchObject({
+      checkpointMessageIndex: 1,
+      message: {
+        info: { id: "msg-latest-user", role: "user" },
+      },
+      breakpointSelection: {
+        strategy: "previous_user_before_launch",
+        launchMessageId: "msg-launch",
+        rationale:
+          "Selected the previous user message before launch message msg-launch because breakpoint mode was set to previous_user.",
+      },
+    })
+  })
+
+  test("createRootAgentCheckpointPointer supports explicit prefer_tagged mode", () => {
+    const pointer = createRootAgentCheckpointPointer({
+      rootSessionId: "root-session-1",
+      checkpointCreatedAt: "2026-04-12T00:00:00.000Z",
+      breakpointMode: "prefer_tagged",
+      sessionExport: createSessionExport([
+        createMessage({ id: "msg-tagged", role: "user", text: `Pause here\n${DEFAULT_ROOT_AGENT_BREAKPOINT_TAGS[0]}` }),
+        createMessage({ id: "msg-latest-user", role: "user", text: "Launch the branch from the most recent request" }),
+        createMessage({ id: "msg-launch", role: "assistant", text: "launch_supervision_branch" }),
+      ]),
+    })
+
+    expect(pointer.checkpointMessageId).toBe("msg-tagged")
+    expect(pointer.breakpointSelection).toMatchObject({
+      strategy: "explicit_tag",
+      matchedTag: DEFAULT_ROOT_AGENT_BREAKPOINT_TAGS[0],
+    })
+  })
+
   test("createRootAgentCheckpointPointer stores user-message id and selection rationale", () => {
     const pointer = createRootAgentCheckpointPointer({
       rootSessionId: "root-session-1",
@@ -138,6 +182,34 @@ describe("root-agent-checkpoint", () => {
       },
     })
     expect(formatRootAgentCheckpointPointer(pointer)).toBe("message-index 0")
+  })
+
+  test("createRootAgentCheckpointPointer uses previous_user mode even when an older tag exists", () => {
+    const pointer = createRootAgentCheckpointPointer({
+      rootSessionId: "root-session-1",
+      checkpointCreatedAt: "2026-04-12T00:00:00.000Z",
+      breakpointMode: "previous_user",
+      sessionExport: createSessionExport([
+        createMessage({ id: "msg-tagged", role: "user", text: `Pause here\n${DEFAULT_ROOT_AGENT_BREAKPOINT_TAGS[0]}` }),
+        createMessage({ id: "msg-user-2", role: "user", text: "Launch the branch from the latest user request" }),
+        createMessage({ id: "msg-launch", role: "assistant", text: "launch_supervision_branch" }),
+      ]),
+    })
+
+    expect(pointer).toEqual({
+      rootSessionId: "root-session-1",
+      checkpointMessageId: "msg-user-2",
+      checkpointMessageIndex: 1,
+      checkpointCreatedAt: "2026-04-12T00:00:00.000Z",
+      breakpointSelection: {
+        strategy: "previous_user_before_launch",
+        configuredTags: [...DEFAULT_ROOT_AGENT_BREAKPOINT_TAGS],
+        launchMessageId: "msg-launch",
+        launchMessageIndex: 2,
+        rationale:
+          "Selected the previous user message before launch message msg-launch because breakpoint mode was set to previous_user.",
+      },
+    })
   })
 
   test("validateRootAgentCheckpointPointer prefers checkpointMessageId over a stale index", () => {

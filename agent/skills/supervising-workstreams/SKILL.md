@@ -86,11 +86,11 @@ When you yield back, the **final assistant message** must use exactly these head
 ## Accomplished
 ## Issues Found
 ## Fixes Applied
-## Next For The User
+## What is Next
 ```
 
 Rules:
 
-- In `## Next For The User`, explain whether the current scope is done, why you are yielding now, and what the user should do next.
+- In `## What is Next`, tell the user what they need to do to test, verify, or review the implementation, or call out any alignment issues or design decisions to consider before the next implementation batch or stage.
 - If a section has nothing to report, write `None.`
 - Stop after that final report and wait for input.

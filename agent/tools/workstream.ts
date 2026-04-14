@@ -142,6 +142,7 @@ interface CheckpointSessionForkEligibility {
 export interface MessageBoundaryForkTransport {
   startServer: typeof startOpencodeServer;
   requestJson: typeof requestOpencodeJson;
+  runCommand: typeof runCommand;
 }
 
 function parseBreakpointTagsArg(rawValue?: string): string[] | undefined {
@@ -176,6 +177,10 @@ function buildSupervisionPrompt(args: {
       : args.scope?.level === "batch" || args.batch
         ? `Start by running \`work supervise --batch "${args.scope?.batchId ?? args.batch}"\`.`
         : "Start by running `work supervise`.";
+  const nextStepsInstruction =
+    args.scope?.level === "stage"
+      ? "In What is Next, please let me know what I need to do to test, verify or review the implementation, or if there are any alignment issues or design decisions to consider before starting the next implementation stage."
+      : "In What is Next, please let me know what I need to do to test, verify or review the implementation, or if there are any alignment issues or design decisions to consider before starting the next implementation batch.";
 
   return [
     args.scope?.level === "stage"
@@ -192,10 +197,26 @@ function buildSupervisionPrompt(args: {
     "## Accomplished",
     "## Issues Found",
     "## Fixes Applied",
-    "## Next For The User",
+    "## What is Next",
     "",
-    `In \"Next For The User\", explicitly say whether ${scopeLabel} is done, why it is done or not done, and what the user should do next. If a section has nothing to report, write \"None.\"`,
+    `${nextStepsInstruction} If a section has nothing to report, write "None."`,
   ].join("\n");
+}
+
+function parseBreakpointModeArg(
+  rawValue?: string,
+): "prefer_tagged" | "previous_user" | undefined {
+  if (!rawValue) {
+    return undefined;
+  }
+
+  if (rawValue === "prefer_tagged" || rawValue === "previous_user") {
+    return rawValue;
+  }
+
+  throw new Error(
+    `Invalid breakpointMode \"${rawValue}\". Expected \"prefer_tagged\" or \"previous_user\".`,
+  );
 }
 
 function describeScopeLabel(scope: BranchLaunchScope | undefined, batch?: string): string {
@@ -278,18 +299,6 @@ function resolveLaunchScope(args: {
     stageId,
     batchId: args.batch,
   };
-}
-
-function extractTextParts(parts: any): string {
-  return (Array.isArray(parts) ? parts : [])
-    .filter((part) => part?.type === "text" && typeof part.text === "string")
-    .map((part) => part.text)
-    .join("\n")
-    .trim();
-}
-
-function formatPromptAsJsonl(text: string): string {
-  return `${JSON.stringify({ type: "text", part: { text } })}\n`;
 }
 
 async function startOpencodeServer(repoRoot: string): Promise<{
@@ -406,6 +415,7 @@ async function runMessageBoundaryForkLaunch(
   transport: MessageBoundaryForkTransport = {
     startServer: startOpencodeServer,
     requestJson: requestOpencodeJson,
+    runCommand,
   },
 ): Promise<ForkedSessionResult> {
   const server = await transport.startServer(args.repoRoot);
@@ -437,19 +447,23 @@ async function runMessageBoundaryForkLaunch(
       await args.onNativeSessionId(nativeSessionId);
     }
 
-    const promptResponse = await transport.requestJson({
-      url: server.url,
-      method: "POST",
-      path: `/session/${encodeURIComponent(nativeSessionId)}/message?directory=${encodeURIComponent(args.repoRoot)}`,
-      body: {
-        parts: [{ type: "text", text: args.prompt }],
-      },
-    });
+    const runResult = await transport.runCommand(
+      "opencode",
+      [
+        "run",
+        "--session",
+        nativeSessionId,
+        "--dir",
+        args.repoRoot,
+        "--format",
+        "json",
+        args.prompt,
+      ],
+      args.repoRoot,
+    );
 
     return {
-      code: 0,
-      stdout: formatPromptAsJsonl(extractTextParts(promptResponse?.parts)),
-      stderr: "",
+      ...runResult,
       nativeSessionId,
     };
   } finally {
@@ -595,6 +609,7 @@ function getWorkstreamsToolRuntimeInfo(
       metadataOnlyCheckpoints: true,
       messageBoundaryFork: true,
       breakpointTags: true,
+      breakpointModes: true,
       autoResolvedBranchSupervisionContext: true,
     },
   };
@@ -756,6 +771,7 @@ export interface LaunchSupervisionBranchDeps {
     sessionExport: any;
     checkpointCreatedAt: string;
     breakpointTags?: readonly string[];
+    breakpointMode?: "prefer_tagged" | "previous_user";
   }) => Promise<RootCheckpointPointer>;
   getCheckpointSessionForkEligibility: (args: {
     pointer: RootCheckpointPointer;
@@ -1294,6 +1310,7 @@ async function executeLaunchSupervisionBranch(
     stage?: string;
     batch?: string;
     breakpointTags?: string;
+    breakpointMode?: string;
     timeoutMs?: number;
     pollIntervalMs?: number;
     noServer?: boolean;
@@ -1311,6 +1328,7 @@ async function executeLaunchSupervisionBranch(
   const repoRoot = deps.getRepoRoot();
   const streamId = await deps.getResolvedStreamId(repoRoot, args.streamId);
   const breakpointTags = parseBreakpointTagsArg(args.breakpointTags);
+  const breakpointMode = parseBreakpointModeArg(args.breakpointMode);
   const launchScope = resolveLaunchScope({
     scope: args.scope,
     stage: args.stage,
@@ -1363,6 +1381,7 @@ async function executeLaunchSupervisionBranch(
       sessionExport: rootSessionExport,
       checkpointCreatedAt,
       ...(breakpointTags ? { breakpointTags } : {}),
+      ...(breakpointMode ? { breakpointMode } : {}),
     });
 
     await persistSupervisionBranchState({
@@ -1705,6 +1724,12 @@ export const launch_supervision_branch = Object.assign(
         .string()
         .describe(
           "Optional comma-separated breakpoint tags to search for before launch (for example: 'SESSION_BREAKPOINT,ROOT_BRANCH_BOUNDARY').",
+        )
+        .optional(),
+      breakpointMode: tool.schema
+        .string()
+        .describe(
+          "Optional breakpoint selection mode: 'prefer_tagged' (default) prefers tagged user messages before launch, while 'previous_user' always uses the previous user message before launch and ignores older tags.",
         )
         .optional(),
       timeoutMs: tool.schema

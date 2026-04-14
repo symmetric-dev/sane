@@ -93,14 +93,14 @@ function createDeps(
       ),
     runForkedSession: async () => ({
       code: 0,
-      stdout: '{"type":"text","part":{"text":"## Accomplished\\n- execution result\\n## Issues Found\\n- None.\\n## Fixes Applied\\n- None.\\n## Next For The User\\n- next action"}}\n',
+      stdout: '{"type":"text","part":{"text":"## Accomplished\\n- execution result\\n## Issues Found\\n- None.\\n## Fixes Applied\\n- None.\\n## What is Next\\n- next action"}}\n',
       stderr: "",
       nativeSessionId: "ses_supervision_1",
     }),
     runCommand: async () => ({ code: 0, stdout: "", stderr: "" }),
     findNativeSessionIdByTitle: async () => "ses_supervision_1",
     parseOutput: () => ({
-      text: "## Accomplished\n- execution result\n## Issues Found\n- None.\n## Fixes Applied\n- None.\n## Next For The User\n- next action",
+      text: "## Accomplished\n- execution result\n## Issues Found\n- None.\n## Fixes Applied\n- None.\n## What is Next\n- next action",
       logs: [],
       success: true,
     }),
@@ -142,7 +142,7 @@ function createDeps(
                   role: "assistant",
                   time: { created: 1, completed: 2 },
                 },
-                parts: [{ type: "text", text: "## Accomplished\n- execution result\n## Issues Found\n- None.\n## Fixes Applied\n- None.\n## Next For The User\n- next action" }],
+                parts: [{ type: "text", text: "## Accomplished\n- execution result\n## Issues Found\n- None.\n## Fixes Applied\n- None.\n## What is Next\n- next action" }],
               },
             ],
           },
@@ -252,6 +252,7 @@ describe("workstream runtime resolution", () => {
         metadataOnlyCheckpoints: true,
         messageBoundaryFork: true,
         breakpointTags: true,
+        breakpointModes: true,
         autoResolvedBranchSupervisionContext: true,
       })
       expect(info.errors).toBeUndefined()
@@ -344,12 +345,16 @@ describe("launch_supervision_branch", () => {
     }
   })
 
-  test("surfaces explicit tagged breakpoint selection in branch lineage and output", async () => {
+  test("uses explicit prefer_tagged breakpoint mode in the real launch path", async () => {
     const workspace = createTestWorkstream("001-agent-tool-explicit-breakpoint")
 
     try {
       const result = await executeLaunchSupervisionBranch(
-        { batch: "10.01", breakpointTags: "ROOT_BRANCH_BOUNDARY, ALT_BOUNDARY, ROOT_BRANCH_BOUNDARY" },
+        {
+          batch: "10.01",
+          breakpointTags: "ROOT_BRANCH_BOUNDARY, ALT_BOUNDARY, ROOT_BRANCH_BOUNDARY",
+          breakpointMode: "prefer_tagged",
+        },
         { sessionID: "root-session-1" },
         createDeps(workspace.repoRoot, workspace.streamId, {
           exportSessionTranscript: async (sessionId) =>
@@ -388,7 +393,7 @@ describe("launch_supervision_branch", () => {
                         role: "assistant",
                         time: { created: 1, completed: 2 },
                       },
-                      parts: [{ type: "text", text: "## Accomplished\n- execution result\n## Issues Found\n- None.\n## Fixes Applied\n- None.\n## Next For The User\n- next action" }],
+                      parts: [{ type: "text", text: "## Accomplished\n- execution result\n## Issues Found\n- None.\n## Fixes Applied\n- None.\n## What is Next\n- next action" }],
                     },
                   ],
                 },
@@ -411,6 +416,83 @@ describe("launch_supervision_branch", () => {
           launchMessageIndex: 2,
           rationale:
             'Selected the tagged user message because it matched configured breakpoint tag "ROOT_BRANCH_BOUNDARY" before launch message msg-root-launch.',
+        },
+      })
+    } finally {
+      cleanupTestWorkstream(workspace)
+    }
+  })
+
+  test("uses explicit previous_user breakpoint mode and ignores older tags", async () => {
+    const workspace = createTestWorkstream("001-agent-tool-previous-user-breakpoint-mode")
+
+    try {
+      const result = await executeLaunchSupervisionBranch(
+        {
+          batch: "10.01",
+          breakpointMode: "previous_user",
+        },
+        { sessionID: "root-session-1" },
+        createDeps(workspace.repoRoot, workspace.streamId, {
+          exportSessionTranscript: async (sessionId) =>
+            sessionId === "root-session-1"
+              ? {
+                  info: {
+                    id: "root-session-1",
+                    title: "Root session",
+                    summary: { additions: 0, deletions: 0, files: 0 },
+                  },
+                  messages: [
+                    {
+                      info: { id: "msg-tagged", role: "user" },
+                      parts: [{ type: "text", text: "Pause here\nSESSION_BREAKPOINT" }],
+                    },
+                    {
+                      info: { id: "msg-latest-user", role: "user" },
+                      parts: [{ type: "text", text: "Use this latest untagged user request" }],
+                    },
+                    {
+                      info: { id: "msg-root-launch", role: "assistant" },
+                      parts: [{ type: "text", text: "launch_supervision_branch" }],
+                    },
+                  ],
+                }
+              : {
+                  info: {
+                    id: "ses_supervision_1",
+                    title: "Supervision branch",
+                    summary: { additions: 0, deletions: 0, files: 0 },
+                  },
+                  messages: [
+                    {
+                      info: {
+                        id: "msg-final",
+                        role: "assistant",
+                        time: { created: 1, completed: 2 },
+                      },
+                      parts: [{ type: "text", text: "## What is Next\n- next action" }],
+                    },
+                  ],
+                },
+        }),
+      )
+
+      expect(result).toContain("from checkpoint pointer message msg-latest-user")
+      expect(result).toContain(
+        "Breakpoint selection: Selected the previous user message before launch message msg-root-launch because breakpoint mode was set to previous_user.",
+      )
+      expect(result).not.toContain('configured breakpoint tag "SESSION_BREAKPOINT"')
+
+      const stored = loadSupervisorState(workspace.repoRoot, workspace.streamId)
+      expect(stored?.branch_sessions[0]).toMatchObject({
+        checkpointMessageId: "msg-latest-user",
+        breakpointSelection: {
+          strategy: "previous_user_before_launch",
+          configuredTags: ["SESSION_BREAKPOINT"],
+          launchMessageId: "msg-root-launch",
+          launchMessageIndex: 2,
+          rationale:
+            "Selected the previous user message before launch message msg-root-launch because breakpoint mode was set to previous_user.",
         },
       })
     } finally {
@@ -462,7 +544,7 @@ describe("launch_supervision_branch", () => {
                         role: "assistant",
                         time: { created: 1, completed: 2 },
                       },
-                      parts: [{ type: "text", text: "## Next For The User\n- next action" }],
+                      parts: [{ type: "text", text: "## What is Next\n- next action" }],
                     },
                   ],
                 },
@@ -649,6 +731,62 @@ describe("launch_supervision_branch", () => {
     }
   })
 
+  test("finalizes branch state even when child transcript export is unavailable", async () => {
+    const workspace = createTestWorkstream("001-agent-tool-transcript-unavailable")
+
+    try {
+      const result = await executeLaunchSupervisionBranch(
+        { batch: "10.01" },
+        { sessionID: "root-session-1" },
+        createDeps(workspace.repoRoot, workspace.streamId, {
+          runForkedSession: async () => ({
+            code: 0,
+            stdout: '{"type":"text","part":{"text":"stdout fallback summary"}}\n',
+            stderr: "",
+          }),
+          waitForBranchNativeSessionId: async () => "ses_supervision_export_missing",
+          exportSessionTranscript: async (sessionId) => {
+            if (sessionId === "root-session-1") {
+              return {
+                info: {
+                  id: "root-session-1",
+                  title: "Root session",
+                  summary: { additions: 0, deletions: 0, files: 0 },
+                },
+                messages: [
+                  {
+                    info: { id: "msg-root-checkpoint", role: "user" },
+                    parts: [{ type: "text", text: "Checkpoint user message SESSION_BREAKPOINT" }],
+                  },
+                ],
+              }
+            }
+
+            throw new Error("session export unavailable")
+          },
+          parseOutput: () => ({
+            text: "stdout fallback summary",
+            logs: [],
+            success: true,
+          }),
+        }),
+      )
+
+      expect(result).toContain("native session ses_supervision_export_missing")
+      expect(result).toContain("Transcript export unavailable: session export unavailable")
+      expect(result).toContain("Branch run summary:\nstdout fallback summary")
+
+      const stored = loadSupervisorState(workspace.repoRoot, workspace.streamId)
+      expect(stored?.branch_sessions[0]).toMatchObject({
+        status: "completed",
+        nativeSessionId: "ses_supervision_export_missing",
+      })
+      expect(stored?.branch_sessions[0]?.notes).toContain("stdout fallback summary")
+    } finally {
+      cleanupTestWorkstream(workspace)
+    }
+  })
+
   test("marks branch failed when fork launch rejects instead of leaving pending state", async () => {
     const workspace = createTestWorkstream("001-agent-tool-failure")
 
@@ -801,7 +939,10 @@ describe("launch_supervision_branch", () => {
       expect(calls[0]?.prompt).toContain("Start by running `work supervise --batch \"10.01\"`.")
       expect(calls[0]?.prompt).toContain("Keep this branch focused on one bounded batch supervision pass.")
       expect(calls[0]?.prompt).toContain("## Accomplished")
-      expect(calls[0]?.prompt).toContain("## Next For The User")
+      expect(calls[0]?.prompt).toContain("## What is Next")
+      expect(calls[0]?.prompt).toContain(
+        "In What is Next, please let me know what I need to do to test, verify or review the implementation, or if there are any alignment issues or design decisions to consider before starting the next implementation batch.",
+      )
       expect(calls[0]?.prompt).not.toContain("You are a Root Agent supervision branch")
       expect(calls[0]?.prompt).not.toContain("Branch scope:")
       expect(calls[0]?.prompt).not.toContain("--root-session-id")
@@ -839,7 +980,7 @@ describe("launch_supervision_branch", () => {
 
             return {
               code: 0,
-              stdout: '{"type":"text","part":{"text":"## Next For The User\\n- Stage 10 complete."}}\n',
+              stdout: '{"type":"text","part":{"text":"## What is Next\\n- Stage 10 complete."}}\n',
               stderr: "",
               nativeSessionId: "ses_supervision_1",
             }
@@ -872,7 +1013,7 @@ describe("launch_supervision_branch", () => {
                         role: "assistant",
                         time: { created: 1, completed: 2 },
                       },
-                      parts: [{ type: "text", text: "## Next For The User\n- Stage 10 complete." }],
+                      parts: [{ type: "text", text: "## What is Next\n- Stage 10 complete." }],
                     },
                   ],
                 },
@@ -893,11 +1034,11 @@ describe("launch_supervision_branch", () => {
       expect(calls[0]?.prompt).toContain(
         "Start by inspecting persisted stage state and running `work supervise --batch \"<next batch in this stage>\"` for the next incomplete or resumable batch in that stage.",
       )
-      expect(calls[0]?.prompt).toContain('In "Next For The User", explicitly say whether stage 10 is done')
+      expect(calls[0]?.prompt).toContain('In What is Next, please let me know what I need to do to test, verify or review the implementation, or if there are any alignment issues or design decisions to consider before starting the next implementation stage.')
       expect(calls[0]?.prompt).not.toContain("Branch scope:")
       expect(calls[0]?.prompt).not.toContain("--root-session-id")
       expect(calls[0]?.prompt).not.toContain("--checkpoint-message-id")
-      expect(result).toContain("## Next For The User\n- Stage 10 complete.")
+      expect(result).toContain("## What is Next\n- Stage 10 complete.")
 
       const stored = loadSupervisorState(workspace.repoRoot, workspace.streamId)
       expect(stored?.branch_sessions[0]?.scope).toEqual({
@@ -927,7 +1068,7 @@ describe("launch_supervision_branch", () => {
 
             return {
               code: 0,
-              stdout: '{"type":"text","part":{"text":"## Next For The User\\n- Continue."}}\n',
+              stdout: '{"type":"text","part":{"text":"## What is Next\\n- Continue."}}\n',
               stderr: "",
               nativeSessionId: "ses_supervision_1",
             }
@@ -1102,7 +1243,7 @@ describe("launch_supervision_branch", () => {
                         role: "assistant",
                         time: { created: 1, completed: 2 },
                       },
-                      parts: [{ type: "text", text: "## Next For The User\n- Batch 10.01 is done." }],
+                      parts: [{ type: "text", text: "## What is Next\n- Batch 10.01 is done." }],
                     },
                   ],
                 },
@@ -1119,7 +1260,7 @@ describe("launch_supervision_branch", () => {
       expect(forkCalls[0]?.prompt).toContain("Please supervise batch 10.01 for this workstream.")
       expect(result).toContain("from checkpoint pointer message msg-user-breakpoint")
       expect(result).toContain("Extracted final branch report:")
-      expect(result).toContain("## Next For The User\n- Batch 10.01 is done.")
+      expect(result).toContain("## What is Next\n- Batch 10.01 is done.")
       expect(result).not.toContain("fallback parsed summary")
     } finally {
       cleanupTestWorkstream(workspace)
@@ -1144,7 +1285,7 @@ describe("launch_supervision_branch", () => {
 
             return {
               code: 0,
-              stdout: '{"type":"text","part":{"text":"## Next For The User\\n- Batch 10.01 is done."}}\n',
+              stdout: '{"type":"text","part":{"text":"## What is Next\\n- Batch 10.01 is done."}}\n',
               stderr: "",
               nativeSessionId: "ses_supervision_1",
             }
@@ -1177,7 +1318,7 @@ describe("launch_supervision_branch", () => {
                         role: "assistant",
                         time: { created: 1, completed: 2 },
                       },
-                      parts: [{ type: "text", text: "## Next For The User\n- Batch 10.01 is done." }],
+                      parts: [{ type: "text", text: "## What is Next\n- Batch 10.01 is done." }],
                     },
                   ],
                 },
@@ -1241,8 +1382,9 @@ describe("launch_supervision_branch", () => {
     }
   })
 
-  test("runMessageBoundaryForkLaunch issues the expected HTTP fork, title, and prompt requests", async () => {
+  test("runMessageBoundaryForkLaunch issues the expected HTTP fork/title requests and runs the child session headlessly", async () => {
     const calls: Array<{ method: string; path: string; body: any }> = []
+    const commandCalls: Array<{ command: string; args: string[]; cwd: string }> = []
     const events: string[] = []
 
     const result = await runMessageBoundaryForkLaunch(
@@ -1263,6 +1405,15 @@ describe("launch_supervision_branch", () => {
             events.push("close")
           },
         }),
+        runCommand: async (command: string, args: string[], cwd: string) => {
+          commandCalls.push({ command, args, cwd })
+          events.push(`run:${args[2]}`)
+          return {
+            code: 0,
+            stdout: '{"type":"text","part":{"text":"## What is Next\\n- done"}}\n',
+            stderr: "",
+          }
+        },
         requestJson: async ({
           method,
           path,
@@ -1278,12 +1429,6 @@ describe("launch_supervision_branch", () => {
             return { id: "ses_child_123" }
           }
 
-          if (path.includes("/message?")) {
-            return {
-              parts: [{ type: "text", text: "## Next For The User\n- done" }],
-            }
-          }
-
           return { ok: true }
         },
       },
@@ -1291,7 +1436,7 @@ describe("launch_supervision_branch", () => {
 
     expect(result).toEqual({
       code: 0,
-      stdout: '{"type":"text","part":{"text":"## Next For The User\\n- done"}}\n',
+      stdout: '{"type":"text","part":{"text":"## What is Next\\n- done"}}\n',
       stderr: "",
       nativeSessionId: "ses_child_123",
     })
@@ -1306,15 +1451,24 @@ describe("launch_supervision_branch", () => {
         path: "/session/ses_child_123?directory=%2Frepo%2Froot",
         body: { title: "root-supervision-000-branch-supervision-1" },
       },
+    ])
+    expect(commandCalls).toEqual([
       {
-        method: "POST",
-        path: "/session/ses_child_123/message?directory=%2Frepo%2Froot",
-        body: {
-          parts: [{ type: "text", text: "Please supervise batch 10.01 for this workstream." }],
-        },
+        command: "opencode",
+        args: [
+          "run",
+          "--session",
+          "ses_child_123",
+          "--dir",
+          "/repo/root",
+          "--format",
+          "json",
+          "Please supervise batch 10.01 for this workstream.",
+        ],
+        cwd: "/repo/root",
       },
     ])
-    expect(events).toEqual(["native:ses_child_123", "close"])
+    expect(events).toEqual(["native:ses_child_123", "run:ses_child_123", "close"])
   })
 
   test("runMessageBoundaryForkLaunch closes the server when the fork response is missing a child session id", async () => {
@@ -1336,6 +1490,9 @@ describe("launch_supervision_branch", () => {
               events.push("close")
             },
           }),
+          runCommand: async () => {
+            throw new Error("runCommand should not be called")
+          },
           requestJson: async () => ({}),
         },
       ),

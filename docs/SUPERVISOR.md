@@ -458,6 +458,241 @@ For this experiment, every acceptable yield reason should be explainable from pe
 - escalation or stage boundary requires Root Agent review before user contact
 - one-level guardrail blocked a nested branch launch
 
+## Stage 17 Branch Execution Contract (Headless Child Session)
+
+Stage 17 treats branch supervision as a **headless child-session execution contract**, not an interactive child chat loop.
+
+### Contract summary
+
+1. Root Agent chooses the checkpoint boundary and launches the branch.
+2. Branch executes supervision work headlessly (batch-scope or stage-scope behavior).
+3. Parent/Root Agent finalizes branch state from persisted evidence.
+4. Final branch report is extracted from the child transcript (last completed assistant message).
+
+### What changed vs older interactive forked-session flow
+
+- **Older model:** branch behavior relied more on interactive session-message turn-taking and prompt-visible branch metadata.
+- **Stage 17 model:** launch/finalization is parent-owned and evidence-driven (`branch_sessions[]`, batch status files, transcript export), while the child prompt stays user-like and execution-focused.
+
+### Why this is closer to working-agent behavior
+
+- Working agents already run bounded tasks headlessly and report back after completion.
+- This contract matches that shape: run bounded scope, then return a final report, without turning branch sessions into long interactive orchestration chats.
+- It reduces identity drift and hidden state assumptions caused by conversational branch control.
+
+### Smoke-test focus rule
+
+For later smoke tests, validate **this headless branch contract** first:
+
+- checkpoint boundary correctness
+- durable child/native session identity in persisted metadata
+- transcript-backed report extraction
+- parent-side branch finalization
+
+Do **not** treat legacy interactive child-session message flows as the primary validation target.
+
+## Stage 17 Live Smoke-Test Runbook (Branch Scope)
+
+Use this runbook to validate both dedicated Stage 17 targets:
+
+- **batch-scope target:** one bounded batch run, then yield
+- **stage-scope target:** repeated single-batch runs inside one stage, then yield at stage completion (or policy stop)
+
+### 1) Place the breakpoint boundary intentionally
+
+In the Root Agent session, write one user message that includes the literal token `SESSION_BREAKPOINT` and the exact launch intent for the run.
+
+Recommended pattern:
+
+```text
+SESSION_BREAKPOINT
+Launch a <batch|stage>-scoped supervision smoke test for <target-id>.
+Keep execution bounded and return a final yield report.
+```
+
+Launch the branch **after** this message so the launcher can select it as the checkpoint boundary.
+
+### 2) Launch each scope
+
+Batch scope launch:
+
+```ts
+launch_supervision_branch({
+  scope: "batch",
+  batch: "<batch-scope-target-batch-id>",
+  breakpointTags: "SESSION_BREAKPOINT"
+})
+```
+
+Stage scope launch:
+
+```ts
+launch_supervision_branch({
+  scope: "stage",
+  stage: "<stage-scope-target-stage-id>",
+  breakpointTags: "SESSION_BREAKPOINT"
+})
+```
+
+Inside branch execution:
+
+- batch scope: start with `work supervise --batch "<batch-id>"`
+- stage scope: start with `work supervise --batch "<first-incomplete-in-stage>"`, then loop with plain `work supervise` for same resumable batch and explicit `--batch` only when advancing to the next in-stage batch
+
+### 3) Inspect persisted evidence after each run
+
+1. `work/<stream-id>/supervisor-state.json`
+   - `branch_sessions[]` has expected `scope`
+   - expected boundary pointer (`checkpointMessageId` preferred; otherwise `checkpointMessageIndex`)
+   - expected session lineage (`rootSessionId`, `branchSessionId`, `nativeSessionId`, `parentSessionId`)
+2. `work/<stream-id>/batch-status/<batch-id>.json`
+   - terminal/non-terminal status matches transcript claims
+3. Branch transcript export:
+   - `opencode export "<native-session-id>"`
+   - last completed assistant message is present and usable as final report extraction source
+
+### 4) Pass/fail expectations
+
+**Pass (batch scope)**
+
+- Launch used the tagged boundary message.
+- Branch prompt is user-like (no prompt-visible lineage/checkpoint flags).
+- Branch supervises only the target batch and yields.
+- Final report extraction succeeds from the last completed assistant message.
+
+**Pass (stage scope)**
+
+- Launch used the tagged boundary message.
+- Branch scope is `stage` in persisted state.
+- Branch progresses batch-by-batch within the target stage only.
+- Yield happens at stage completion or valid policy stop.
+- Final report extraction succeeds.
+
+**Fail (either scope)**
+
+- boundary pointer does not map to the intended `SESSION_BREAKPOINT` turn
+- branch prompt framing contains explicit branch/session/checkpoint CLI metadata instead of user-like instructions
+- batch-scoped branch advances into other batches/stages
+- stage-scoped branch skips the next incomplete/resumable in-stage batch or exits early without stage/policy reason
+- transcript has no extractable final completed assistant report
+
+### 5) Troubleshooting checklist for earlier live issues
+
+1. **Suspected stale tool/runtime**
+   - run `workstream_tool_runtime_info`
+   - verify tool version/path and branch-work capability flags match expected runtime
+2. **Wrong breakpoint selected**
+   - confirm the tagged user message exists before launch
+   - confirm `breakpointTags` included `SESSION_BREAKPOINT`
+   - inspect `checkpointMessageId` / `checkpointMessageIndex` in `supervisor-state.json`
+3. **Prompt framing drift**
+   - export the branch transcript and inspect the initial fake-user instruction
+   - expected: user-like instruction to run `work supervise`; unexpected: explicit lineage/checkpoint argument scripting
+4. **Wrong scope behavior**
+   - compare `branch_sessions[].scope` with observed command pattern
+   - batch scope should stop after one target batch; stage scope should continue across in-stage batches
+5. **Missing final report extraction**
+   - use `nativeSessionId` from `branch_sessions[]`
+   - run `opencode export "<native-session-id>"`
+   - extract the last completed assistant message; if absent, treat as fail and rerun after runtime/branch integrity checks
+
+## Root-Agent Live Smoke Test Runbook (Stage 17)
+
+Use this runbook to validate the core `work supervise` loop directly from the Root Agent session, before depending on branch launch/yield behavior.
+
+### 1) Exact invocation to run (Root Agent session)
+
+Use the dedicated smoke-test batch:
+
+```bash
+work supervise --batch "17.01" --poll-interval-ms 1000 --timeout-ms 1200000
+```
+
+### 2) What to inspect before, during, and after
+
+**Before run**
+
+1. Confirm target tasks are still pending/in-progress:
+   - `work list --tasks --batch "17.01"`
+2. Snapshot current persisted state:
+   - `work batch-status --batch "17.01" --format json`
+   - `cat work/000-super-agent-v1/supervisor-state.json`
+
+**During run**
+
+1. Watch CLI milestones in this order:
+   - batch launch/start
+   - waiting for terminal batch status
+   - review decision
+   - fix-cycle rerun (if requested)
+   - final continue/stop summary
+2. Re-check persisted state while running (optional but useful for hangs):
+   - `work batch-status --batch "17.01" --format json`
+   - `cat work/000-super-agent-v1/supervisor-state.json`
+
+**After run**
+
+1. Verify final batch evidence:
+   - `work batch-status --batch "17.01" --format json`
+2. Verify supervisor decision evidence:
+   - `cat work/000-super-agent-v1/supervisor-state.json`
+   - inspect `reviewed_batches`, `fix_cycles`, `escalations`, and `stage_stops` entries for `17.01`
+3. Verify human-readable outcome:
+   - final CLI output should clearly state whether run continued, stopped, or needs escalation.
+
+### 3) Pass/fail expectations for the Root-Agent smoke test
+
+**Pass**
+
+- `work supervise --batch "17.01"` completes without hanging.
+- Batch reaches terminal status and has matching persisted evidence in `batch-status/17.01.json`.
+- Review output is reflected in `supervisor-state.json` for `17.01`.
+- If review requested fixes, at least one fix-cycle attempt is recorded and outcome is explicit (approved/escalated/stopped).
+- Final output is present and consistent with persisted state.
+
+**Fail**
+
+- Command hangs with no progress and no meaningful persisted-state movement.
+- Batch status remains non-terminal without timeout/interruption handling.
+- Missing or contradictory report evidence between CLI output and persisted state.
+- Review requested fixes but no `fix_cycles` record exists (or state never advances to a terminal decision).
+
+### 4) Distinguishing core supervise issues vs branch-only orchestration issues
+
+Use this isolation rule:
+
+- If the Root-Agent smoke run above fails, treat it as a **core `work supervise` / review / persistence issue** first.
+- If the Root-Agent smoke run passes, but branch runs still freeze/miss reports, treat it as a **branch orchestration/reporting issue** (launch boundary, branch prompt framing, yield/extraction handling).
+
+Quick triage matrix:
+
+- **Root run fails + branch run fails:** core supervise path likely broken.
+- **Root run passes + branch run fails:** branch-only orchestration/reporting defect.
+- **Root run passes + branch run passes:** expected behavior.
+
+### 5) Troubleshooting notes (hangs, missing reports, fix-cycle gaps, resumability)
+
+1. **Hang / no progress**
+   - Check whether `batch-status/17.01.json` is changing.
+   - If status and supervisor state are both static, suspect core supervise wait/transition logic.
+   - If core root-run passes but branch hangs later, suspect branch yield/report orchestration.
+
+2. **Missing final report**
+   - If Root-Agent run has complete persisted state but branch has no final yield text, classify as branch reporting/extraction issue.
+   - If persisted state is also incomplete/missing, classify as core supervise completion issue.
+
+3. **Incomplete or missing fix-cycle evidence**
+   - Review requested changes but `fix_cycles` lacks `17.01` attempt records → core supervise/fix accounting issue.
+   - Fix cycle recorded but branch summary omitted it → branch reporting issue.
+
+4. **Interrupted run must be resumable**
+   - Simulate interruption: `work supervise --batch "17.01" --timeout-ms 100`
+   - Resume: plain `work supervise`
+   - Pass condition: resumed run prefers the interrupted `17.01` batch first and reaches reviewed/finalized evidence before moving on.
+
+5. **When unsure, trust persisted state over chat text**
+   - `batch-status/*.json` and `supervisor-state.json` are the source of truth for pass/fail diagnosis.
+
 ## Validation Strategy: Root Agent Ownership and Drift Reduction
 
 Use this validation flow to confirm Root Agent-owned branch orchestration reduces drift vs the previous self-contained `work supervise` policy model.

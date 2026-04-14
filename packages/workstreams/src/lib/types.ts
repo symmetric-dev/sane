@@ -661,6 +661,8 @@ export type RootAgentBreakpointSelectionStrategy =
   | "explicit_tag"
   | "previous_user_before_launch"
 
+export type RootAgentBreakpointMode = "prefer_tagged" | "previous_user"
+
 export interface RootAgentBreakpointSelection {
   strategy: RootAgentBreakpointSelectionStrategy
   configuredTags: string[]

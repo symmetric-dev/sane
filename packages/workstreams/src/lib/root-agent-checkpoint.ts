@@ -2,6 +2,7 @@ import type { ExportedMessage, SessionExport } from "./session-export.ts"
 import { extractMessageText } from "./session-export.ts"
 import { loadSupervisorState, upsertCheckpointPointerLocked } from "./supervisor-state.ts"
 import type {
+  RootAgentBreakpointMode,
   RootAgentBreakpointSelection,
   RootAgentCheckpointPointer,
 } from "./types.ts"
@@ -84,7 +85,10 @@ function getLaunchMessageContext(sessionExport: SessionExport): RootAgentLaunchM
   return {}
 }
 
-function buildSelectionRationale(selection: Omit<RootAgentBreakpointSelection, "rationale">): string {
+function buildSelectionRationale(
+  selection: Omit<RootAgentBreakpointSelection, "rationale">,
+  breakpointMode: RootAgentBreakpointMode,
+): string {
   const launchLabel = selection.launchMessageId
     ? `launch message ${selection.launchMessageId}`
     : typeof selection.launchMessageIndex === "number"
@@ -101,6 +105,12 @@ function buildSelectionRationale(selection: Omit<RootAgentBreakpointSelection, "
       : `Selected the tagged user message because it matched ${tagLabel}.`
   }
 
+  if (breakpointMode === "previous_user") {
+    return launchLabel
+      ? `Selected the previous user message before ${launchLabel} because breakpoint mode was set to previous_user.`
+      : "Selected the latest user message because breakpoint mode was set to previous_user and the launch assistant message was not present in the exported transcript."
+  }
+
   return launchLabel
     ? `Selected the previous user message before ${launchLabel} because no configured breakpoint tag was found.`
     : "Selected the latest user message because no configured breakpoint tag was found and the launch assistant message was not present in the exported transcript."
@@ -108,6 +118,7 @@ function buildSelectionRationale(selection: Omit<RootAgentBreakpointSelection, "
 
 function buildBreakpointSelection(args: {
   strategy: RootAgentBreakpointSelection["strategy"]
+  breakpointMode: RootAgentBreakpointMode
   configuredTags: string[]
   matchedTag?: string
   launchContext: RootAgentLaunchMessageContext
@@ -125,7 +136,7 @@ function buildBreakpointSelection(args: {
 
   return {
     ...selectionWithoutRationale,
-    rationale: buildSelectionRationale(selectionWithoutRationale),
+    rationale: buildSelectionRationale(selectionWithoutRationale, args.breakpointMode),
   }
 }
 
@@ -161,6 +172,7 @@ function findLatestTaggedUserBreakpointBoundary(args: {
       checkpointMessageIndex: index,
       breakpointSelection: buildBreakpointSelection({
         strategy: "explicit_tag",
+        breakpointMode: "prefer_tagged",
         configuredTags: args.configuredTags,
         matchedTag,
         launchContext: args.launchContext,
@@ -175,6 +187,7 @@ export function findLatestRootAgentCheckpointBoundary(
   sessionExport: SessionExport,
   options: {
     breakpointTags?: readonly string[]
+    breakpointMode?: RootAgentBreakpointMode
   } = {},
 ): RootAgentCheckpointBoundary | null {
   if (!Array.isArray(sessionExport?.messages) || sessionExport.messages.length === 0) {
@@ -182,15 +195,18 @@ export function findLatestRootAgentCheckpointBoundary(
   }
 
   const configuredTags = normalizeBreakpointTags(options.breakpointTags)
+  const breakpointMode = options.breakpointMode ?? "prefer_tagged"
   const launchContext = getLaunchMessageContext(sessionExport)
-  const taggedBoundary = findLatestTaggedUserBreakpointBoundary({
-    sessionExport,
-    configuredTags,
-    launchContext,
-  })
+  if (breakpointMode === "prefer_tagged") {
+    const taggedBoundary = findLatestTaggedUserBreakpointBoundary({
+      sessionExport,
+      configuredTags,
+      launchContext,
+    })
 
-  if (taggedBoundary) {
-    return taggedBoundary
+    if (taggedBoundary) {
+      return taggedBoundary
+    }
   }
 
   const upperBoundExclusive =
@@ -206,6 +222,7 @@ export function findLatestRootAgentCheckpointBoundary(
         checkpointMessageIndex: index,
         breakpointSelection: buildBreakpointSelection({
           strategy: "previous_user_before_launch",
+          breakpointMode,
           configuredTags,
           launchContext,
         }),
@@ -221,15 +238,20 @@ export function createRootAgentCheckpointPointer(args: {
   sessionExport: SessionExport
   checkpointCreatedAt: string
   breakpointTags?: readonly string[]
+  breakpointMode?: RootAgentBreakpointMode
 }): RootAgentCheckpointPointer {
   const configuredTags = normalizeBreakpointTags(args.breakpointTags)
+  const breakpointMode = args.breakpointMode ?? "prefer_tagged"
   const boundary = findLatestRootAgentCheckpointBoundary(args.sessionExport, {
     breakpointTags: configuredTags,
+    breakpointMode,
   })
 
   if (!boundary) {
     throw new Error(
-      configuredTags.length > 0
+      breakpointMode === "previous_user"
+        ? "Failed to capture checkpoint pointer metadata: no previous user message was found before branch launch."
+        : configuredTags.length > 0
         ? `Failed to capture checkpoint pointer metadata: no tagged user message matched configured breakpoint tags (${configuredTags.join(", ")}) and no previous user message was found before branch launch.`
         : "Failed to capture checkpoint pointer metadata: no previous user message was found before branch launch.",
     )
@@ -327,6 +349,7 @@ export async function refreshRootAgentCheckpointPointer(args: {
   sessionExport: SessionExport
   checkpointCreatedAt: string
   breakpointTags?: readonly string[]
+  breakpointMode?: RootAgentBreakpointMode
 }): Promise<RootAgentCheckpointPointer> {
   const existing = loadRootAgentCheckpointPointer(args)
   const latest = createRootAgentCheckpointPointer(args)
