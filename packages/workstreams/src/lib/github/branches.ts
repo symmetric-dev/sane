@@ -10,6 +10,7 @@ import { ensureGitHubAuth } from "./auth";
 import { createGitHubClient } from "./client";
 import { loadIndex, saveIndex, getStream } from "../index";
 import { buildWorkstreamStartCommitMessage } from "../git/auto-commit-message.ts";
+import { executeGitAutoCommit } from "../git/auto-commit-executor.ts";
 
 export interface CreateBranchResult {
   branchName: string;
@@ -230,39 +231,18 @@ async function getDefaultBranch(repoRoot: string): Promise<string> {
  * @returns True if changes were committed, false if working tree was clean
  */
 function commitPendingChanges(repoRoot: string, streamId: string): boolean {
-  // Stage all changes first
-  execSync("git add -A", {
-    cwd: repoRoot,
-    encoding: "utf-8",
-    stdio: ["pipe", "pipe", "pipe"],
-  });
-
-  // Check if there are any staged changes to commit
-  const stagedFiles = execSync("git diff --cached --name-only", {
-    cwd: repoRoot,
-    encoding: "utf-8",
-    stdio: ["pipe", "pipe", "pipe"],
-  }).trim();
-
-  if (!stagedFiles) {
-    return false; // Nothing staged to commit
-  }
-
   const index = loadIndex(repoRoot);
   const stream = getStream(index, streamId);
-  const { title, body } = buildWorkstreamStartCommitMessage({
+  const commitResult = executeGitAutoCommit(repoRoot, buildWorkstreamStartCommitMessage({
     streamId: stream.id,
     streamName: stream.name,
-  });
+  }));
 
-  // Commit with workstream start message
-  execSync(`git commit -m "${title}" -m "${body.replace(/"/g, '\\"')}"`, {
-    cwd: repoRoot,
-    encoding: "utf-8",
-    stdio: ["pipe", "pipe", "pipe"],
-  });
+  if (!commitResult.success) {
+    throw new Error(commitResult.error || "Failed to create workstream start commit.");
+  }
 
-  return true;
+  return commitResult.created;
 }
 
 /**

@@ -21,6 +21,13 @@ export {
 } from "./log.ts"
 
 export {
+  type GitAutoCommitResult,
+  executeGitAutoCommit,
+  getHeadCommitSha,
+  hasStagedChangesToCommit,
+} from "./auto-commit-executor.ts"
+
+export {
   type AutoCommitMessage,
   buildPlanApprovalCommitMessage,
   buildStageApprovalCommitMessage,

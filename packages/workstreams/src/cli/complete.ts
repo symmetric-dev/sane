@@ -27,6 +27,10 @@ import type { StreamMetadata } from "../lib/types.ts"
 import { canExecuteCommand, getRoleDenialMessage } from "../lib/roles.ts"
 import { validateReport } from "../lib/report-template.ts"
 import { buildWorkstreamCompletionCommitMessage } from "../lib/git/auto-commit-message.ts"
+import {
+  executeGitAutoCommit,
+  getHeadCommitSha,
+} from "../lib/git/auto-commit-executor.ts"
 
 interface CompleteStreamCliArgs {
   repoRoot?: string
@@ -234,51 +238,36 @@ function performGitOperations(
   }
 
   try {
-    // 1. Stage all changes
-    execSync("git add -A", {
-      cwd: repoRoot,
-      encoding: "utf-8",
-      stdio: ["pipe", "pipe", "pipe"],
-    })
-    result.staged = true
-
-    // Check if there are changes to commit
-    const statusOutput = execSync("git status --porcelain", {
-      cwd: repoRoot,
-      encoding: "utf-8",
-      stdio: ["pipe", "pipe", "pipe"],
-    }).trim()
-
-    if (!statusOutput) {
-      // No changes to commit - check if we need to push existing commits
-      const unpushed = checkForUnpushedCommits(repoRoot, branchName)
-      if (!unpushed) {
-        result.alreadyPushed = true
-        result.commitSha = getCurrentCommitSha(repoRoot)
-        return result
-      }
-      // There are unpushed commits, skip commit but continue to push
-    } else {
-      // 2. Create commit with message
-      const { title, body } = buildWorkstreamCompletionCommitMessage({
+    const commitResult = executeGitAutoCommit(
+      repoRoot,
+      buildWorkstreamCompletionCommitMessage({
         streamId,
         streamName,
         summary,
       })
+    )
+    result.staged = commitResult.staged
 
-      execSync(
-        `git commit -m "${title}" -m "${body.replace(/"/g, '\\"')}"`,
-        {
-          cwd: repoRoot,
-          encoding: "utf-8",
-          stdio: ["pipe", "pipe", "pipe"],
-        },
-      )
+    if (!commitResult.success) {
+      result.error = commitResult.error
+      return result
+    }
+
+    if (commitResult.skipped) {
+      // No changes to commit - check if we need to push existing commits
+      const unpushed = checkForUnpushedCommits(repoRoot, branchName)
+      if (!unpushed) {
+        result.alreadyPushed = true
+        result.commitSha = getHeadCommitSha(repoRoot)
+        return result
+      }
+      // There are unpushed commits, skip commit but continue to push
+    } else {
       result.committed = true
     }
 
     // Get the commit SHA before pushing
-    result.commitSha = getCurrentCommitSha(repoRoot)
+    result.commitSha = commitResult.commitSha ?? getHeadCommitSha(repoRoot)
 
     // 3. Push to origin
     try {
@@ -325,17 +314,6 @@ function checkForUnpushedCommits(
     // If the remote branch doesn't exist, we have unpushed commits
     return true
   }
-}
-
-/**
- * Get the current HEAD commit SHA
- */
-function getCurrentCommitSha(repoRoot: string): string {
-  return execSync("git rev-parse HEAD", {
-    cwd: repoRoot,
-    encoding: "utf-8",
-    stdio: ["pipe", "pipe", "pipe"],
-  }).trim()
 }
 
 /**
