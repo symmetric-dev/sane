@@ -21,7 +21,14 @@ bun install
 ./install.sh
 ```
 
-This sets up `ag` and `work` in `~/agenv/bin` and adds it to your shell `PATH`.
+This sets up `ag` and `work` in the repo's `bin/` directory and adds that directory to your shell `PATH`.
+
+If you want to use the commands immediately in the current shell after install, run:
+
+```bash
+source ~/.zshrc
+rehash
+```
 
 ## Optional Skill Install
 

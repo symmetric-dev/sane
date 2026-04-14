@@ -24,8 +24,9 @@
 
 set -e
 
-AGENV_HOME="${HOME}/agenv"
-AGENV_BIN="${AGENV_HOME}/bin"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" && pwd)"
+AGENV_HOME="${AGENV_HOME:-$SCRIPT_DIR}"
+AGENV_BIN="${AGENV_BIN:-$AGENV_HOME/bin}"
 
 # Parse arguments
 INSTALL_SKILLS="false"
@@ -101,10 +102,10 @@ detect_shell_config() {
 }
 
 SHELL_CONFIG=$(detect_shell_config)
-EXPORT_LINE='export PATH="$HOME/agenv/bin:$PATH"'
+EXPORT_LINE="export PATH=\"$AGENV_BIN:\$PATH\""
 
 # Check if PATH is already configured
-if grep -q 'agenv/bin' "$SHELL_CONFIG" 2>/dev/null; then
+if grep -Fq "$AGENV_BIN" "$SHELL_CONFIG" 2>/dev/null || grep -q 'agenv/bin' "$SHELL_CONFIG" 2>/dev/null; then
     echo "PATH already configured in $SHELL_CONFIG"
 else
     echo "" >> "$SHELL_CONFIG"
@@ -113,30 +114,18 @@ else
     echo "Added PATH to $SHELL_CONFIG"
 fi
 
-# Setup Claude agent environment (for work command access in Claude Code)
-CLAUDE_ENV_FILE="$AGENV_HOME/env-setup.sh"
-CLAUDE_ENV_EXPORT="export CLAUDE_ENV_FILE=\"$CLAUDE_ENV_FILE\""
-
-# Create env-setup.sh if it doesn't exist
-if [ ! -f "$CLAUDE_ENV_FILE" ]; then
-    echo "Creating Claude agent environment setup..."
-    cat > "$CLAUDE_ENV_FILE" << 'EOF'
-#!/bin/bash
-# Environment setup for Claude agents
-# This file is sourced before each Bash command when CLAUDE_ENV_FILE points to it
-
-# Add agenv bin to PATH for work CLI
-export PATH="$HOME/agenv/bin:$PATH"
-EOF
-    chmod +x "$CLAUDE_ENV_FILE"
+# Remove legacy CLAUDE_ENV_FILE shell config and helper script if present
+if grep -q 'CLAUDE_ENV_FILE' "$SHELL_CONFIG" 2>/dev/null; then
+    TEMP_CONFIG="$(mktemp)"
+    grep -v 'CLAUDE_ENV_FILE' "$SHELL_CONFIG" > "$TEMP_CONFIG" || true
+    mv "$TEMP_CONFIG" "$SHELL_CONFIG"
+    echo "Removed legacy CLAUDE_ENV_FILE config from $SHELL_CONFIG"
 fi
 
-# Add CLAUDE_ENV_FILE to shell config if not present
-if grep -q 'CLAUDE_ENV_FILE' "$SHELL_CONFIG" 2>/dev/null; then
-    echo "CLAUDE_ENV_FILE already configured in $SHELL_CONFIG"
-else
-    echo "$CLAUDE_ENV_EXPORT" >> "$SHELL_CONFIG"
-    echo "Added CLAUDE_ENV_FILE to $SHELL_CONFIG"
+LEGACY_ENV_FILE="$AGENV_HOME/env-setup.sh"
+if [ -f "$LEGACY_ENV_FILE" ]; then
+    rm -f "$LEGACY_ENV_FILE"
+    echo "Removed legacy $LEGACY_ENV_FILE"
 fi
 
 # Install bun dependencies if needed
@@ -166,8 +155,13 @@ if [ "$INSTALL_SKILLS" = "true" ]; then
 fi
 
 echo ""
-echo "To use now, run:"
+echo "To use now in this shell, run:"
+echo "  export PATH=\"$AGENV_BIN:\$PATH\""
+echo "  rehash 2>/dev/null || hash -r 2>/dev/null || true"
+echo ""
+echo "Or load your shell config:"
 echo "  source $SHELL_CONFIG"
+echo "  rehash 2>/dev/null || hash -r 2>/dev/null || true"
 echo ""
 echo "Or restart your terminal."
 echo ""

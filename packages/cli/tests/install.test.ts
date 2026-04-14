@@ -57,6 +57,7 @@ describe("install.sh", () => {
       env: {
         ...process.env,
         HOME: mockHome,
+        AGENV_HOME: mockAgenvHome,
         SHELL: "/bin/zsh",
         ...env,
       },
@@ -189,6 +190,14 @@ describe("install.sh", () => {
       expect(stdout).toContain("Creating ag command symlink")
       expect(stdout).toContain("Creating work command symlink")
     })
+
+    test("shows immediate shell usage instructions", async () => {
+      const { stdout } = await runInstallScript()
+
+      expect(stdout).toContain("To use now in this shell")
+      expect(stdout).toContain("rehash 2>/dev/null || hash -r 2>/dev/null || true")
+      expect(stdout).toContain(`${mockAgenvHome}/bin`)
+    })
   })
 
   describe("--skills-only flag", () => {
@@ -242,6 +251,7 @@ describe("shell config detect_shell_config function", () => {
         env: {
           ...process.env,
           HOME: mockHome,
+          AGENV_HOME: mockAgenvHome,
           SHELL: shell,
         },
         stdout: "pipe",

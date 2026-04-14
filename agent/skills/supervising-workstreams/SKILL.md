@@ -1,11 +1,11 @@
 ---
 name: supervising-workstreams
-description: Run `work supervise`, drive review/fix cycles, and yield back with a Root-Agent-facing supervision report.
+description: Run `work supervise`, drive review/fix cycles, and report back to user.
 ---
 
 # Supervising Workstreams
 
-Use this skill when you are supervising an existing workstream on behalf of the Root Agent.
+Use this skill when you are supervising workstream work.
 
 ## Goal
 
@@ -13,22 +13,19 @@ Run `work supervise` to execute the next batch, then enter the fix cycle:
 
 1. launch a review subagent to assess quality and alignment to the plan
 2. read the reviewer output and persisted workstream state
-3. decide whether to run a fix subagent or yield back to the user/Root Agent
+3. decide whether to run a fix subagent or report back to the user
 4. if you run a fix subagent, re-enter the fix cycle and review again
 5. stop only when the current scope is complete or escalation policy says to yield
 
-Once branch context is active, do **not** add root/branch/checkpoint lineage flags to `work supervise`; tooling resolves that context automatically.
-
 ## Command usage
 
-- For a bounded batch run:
+- For running a batch
 
 ```bash
 work supervise --batch "SS.BB"
 ```
 
 - For a resumed/interrupted batch, plain `work supervise` is the normal rerun path.
-- For stage scope, keep `work supervise` batch-bounded: inspect persisted stage state, choose the next incomplete or resumable batch inside that stage, and pass `--batch` only when you need to select a new bounded batch.
 
 ## Fix cycle
 
@@ -47,13 +44,13 @@ work tree --batch "SS.BB"
    - launch a fix subagent and then re-review, or
    - yield back with a final report.
 
-## Escalation policy (v1, conservative)
+## Escalation policy
 
 Treat persisted `work/supervisor.json` policy and canonical workstream state as the source of truth. In the default v1 behavior:
 
 - at most **one automatic fix cycle per batch** is allowed
 - a branch should **yield** instead of continuing when review results require user input
-- stage completion is a valid yield/stop reason for stage-scoped supervision
+- stage completion is a valid stop reason for stage-scoped supervision
 
 Use the reviewer issue categories to decide whether to yield or fix:
 
@@ -88,9 +85,3 @@ When you yield back, the **final assistant message** must use exactly these head
 ## Fixes Applied
 ## What is Next
 ```
-
-Rules:
-
-- In `## What is Next`, tell the user what they need to do to test, verify, or review the implementation, or call out any alignment issues or design decisions to consider before the next implementation batch or stage.
-- If a section has nothing to report, write `None.`
-- Stop after that final report and wait for input.
