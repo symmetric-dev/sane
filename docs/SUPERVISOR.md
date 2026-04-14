@@ -42,8 +42,8 @@ Common flags:
 - `--port`: pass OpenCode server port to the headless `work multi` launch
 - `--no-server`: do not start `opencode serve` as part of execution
 - `--silent`: disable batch notification sounds
-- `--timeout-ms`: stop waiting if batch status does not complete in time; supervisor exits without reviewing the incomplete batch, and the interrupted run remains resumable on rerun
-- `--poll-interval-ms`: polling interval while waiting for batch status
+- `--timeout-ms`: stop waiting if batch status does not complete in time; supervisor exits without reviewing the incomplete batch, and the interrupted run remains resumable on rerun (default: `1200000` / 20 minutes)
+- `--poll-interval-ms`: polling interval while waiting for batch status (default: `1000` ms)
 
 ### Long-running Root Agent usage (recommended)
 
@@ -51,7 +51,7 @@ For real Root Agent runs, prefer an intentionally long wait budget so the caller
 
 ```bash
 # Recommended for production-style runs
-work supervise --batch "SS.BB" --poll-interval-ms 1000 --timeout-ms 1200000
+work supervise --batch "SS.BB"
 ```
 
 - `1200000` ms = **20 minutes**.
@@ -621,7 +621,7 @@ Current repo-state note:
 Use the incomplete batch you intentionally prepared for the smoke run:
 
 ```bash
-work supervise --batch "<batch-id>" --poll-interval-ms 1000 --timeout-ms 1200000
+work supervise --batch "<batch-id>"
 ```
 
 ### 2) What to inspect before, during, and after
@@ -742,7 +742,7 @@ These tests validate deterministic review inputs, fix/escalation metadata persis
 Run this drill in order:
 
 1. **20-minute real run first**
-   - `work supervise --batch "SS.BB" --timeout-ms 1200000`
+   - `work supervise --batch "SS.BB"`
    - Confirms baseline behavior in the intended long-running mode.
 2. **Short-timeout interruption drill**
    - Force an interruption on the target batch:

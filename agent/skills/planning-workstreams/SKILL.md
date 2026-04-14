@@ -28,6 +28,15 @@ description: Create and prepare workstreams for execution. Planning only, no cod
 10. Ask user to approve tasks: `!work approve tasks`
 11. Link planning session using `workstream_link_planning_session`.
 
+## Supervision Branch
+
+After tasks are approved by the user, the planner can start execution by calling `workstream_launch_supervision_branch`.
+
+- Use the tool from the Root Agent/planner session to launch a supervision branch agent.
+- Prefer stage scope unless you intentionally want batch-bounded supervision.
+- The branch agent handles the automated supervision workflow.
+- You inspect the branch output, review the persisted evidence if needed, and report the result back to the user.
+
 Notes:
 - `REQUIREMENTS.md` is the human-facing source of truth for summary, deliverables, dependencies, and resource inputs.
 - `REQUIREMENTS.md` is required before planning starts.

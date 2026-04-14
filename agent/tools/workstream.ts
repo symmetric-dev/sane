@@ -5,7 +5,11 @@ import { existsSync, readFileSync, realpathSync } from "fs";
 import { dirname, join } from "path";
 import { fileURLToPath, pathToFileURL } from "url";
 
-const WORKSTREAM_TOOL_VERSION = "2026-04-13-runtime-diagnostics-v1";
+const WORKSTREAM_TOOL_VERSION = "2026-04-14-timeout-defaults-v1";
+const DEFAULT_BRANCH_TOOL_TIMEOUT_MS = 60 * 60 * 1000;
+const DEFAULT_BRANCH_TOOL_POLL_INTERVAL_MS = 1000;
+const DEFAULT_OPENCODE_SERVER_START_TIMEOUT_MS = 5000;
+const DEFAULT_OPENCODE_COMMAND_TIMEOUT_MS = 5000;
 
 interface WorkstreamsToolRuntime {
   getResolvedStream: (index: any, streamId?: string) => { id: string };
@@ -325,7 +329,7 @@ async function startOpencodeServer(repoRoot: string): Promise<{
           `Timeout waiting for opencode server to start.\n${output}`.trim(),
         ),
       );
-    }, 5000);
+    }, DEFAULT_OPENCODE_SERVER_START_TIMEOUT_MS);
 
     const finalizeError = (message: string) => {
       clearTimeout(timeout);
@@ -460,6 +464,7 @@ async function runMessageBoundaryForkLaunch(
         args.prompt,
       ],
       args.repoRoot,
+      DEFAULT_BRANCH_TOOL_TIMEOUT_MS,
     );
 
     return {
@@ -664,6 +669,7 @@ function runCommand(
   command: string,
   args: string[],
   cwd: string,
+  timeoutMs: number = DEFAULT_OPENCODE_COMMAND_TIMEOUT_MS,
 ): Promise<{ code: number; stdout: string; stderr: string }> {
   return new Promise((resolve, reject) => {
     const child = spawn(command, args, {
@@ -673,6 +679,40 @@ function runCommand(
 
     let stdout = "";
     let stderr = "";
+    let settled = false;
+
+    const finalizeResolve = (value: {
+      code: number;
+      stdout: string;
+      stderr: string;
+    }) => {
+      if (settled) {
+        return;
+      }
+
+      settled = true;
+      clearTimeout(timeoutHandle);
+      resolve(value);
+    };
+
+    const finalizeReject = (error: Error) => {
+      if (settled) {
+        return;
+      }
+
+      settled = true;
+      clearTimeout(timeoutHandle);
+      reject(error);
+    };
+
+    const timeoutHandle = setTimeout(() => {
+      child.kill();
+      finalizeReject(
+        new Error(
+          `Timed out after ${timeoutMs}ms waiting for command "${command}" to finish.`,
+        ),
+      );
+    }, timeoutMs);
 
     child.stdout?.on("data", (chunk) => {
       stdout += chunk.toString();
@@ -681,9 +721,11 @@ function runCommand(
       stderr += chunk.toString();
     });
 
-    child.on("error", reject);
+    child.on("error", (error) =>
+      finalizeReject(error instanceof Error ? error : new Error(String(error))),
+    );
     child.on("close", (code) => {
-      resolve({ code: code ?? 1, stdout, stderr });
+      finalizeResolve({ code: code ?? 1, stdout, stderr });
     });
   });
 }
@@ -696,6 +738,7 @@ async function findNativeSessionIdByTitle(
     "opencode",
     ["session", "list", "--max-count", "50", "--format", "json"],
     repoRoot,
+    DEFAULT_OPENCODE_COMMAND_TIMEOUT_MS,
   );
 
   if (result.code !== 0) {
@@ -912,6 +955,7 @@ function getDefaultLaunchSupervisionBranchDeps(): LaunchSupervisionBranchDeps {
       let stopped = false;
       let pollError: unknown;
       let pollPromise: Promise<void> | undefined;
+      let settled = false;
 
       child.stdout?.on("data", (chunk) => {
         stdout += chunk.toString();
@@ -938,7 +982,9 @@ function getDefaultLaunchSupervisionBranchDeps(): LaunchSupervisionBranchDeps {
               return;
             }
 
-            await new Promise((resolve) => setTimeout(resolve, 100));
+            await new Promise((resolve) =>
+              setTimeout(resolve, DEFAULT_BRANCH_TOOL_POLL_INTERVAL_MS),
+            );
           }
         })();
       }
@@ -948,10 +994,46 @@ function getDefaultLaunchSupervisionBranchDeps(): LaunchSupervisionBranchDeps {
         stdout: string;
         stderr: string;
       }>((resolve, reject) => {
-        child.on("error", reject);
+        const finalizeResolve = (value: {
+          code: number;
+          stdout: string;
+          stderr: string;
+        }) => {
+          if (settled) {
+            return;
+          }
+
+          settled = true;
+          clearTimeout(timeoutHandle);
+          resolve(value);
+        };
+
+        const finalizeReject = (error: Error) => {
+          if (settled) {
+            return;
+          }
+
+          settled = true;
+          clearTimeout(timeoutHandle);
+          reject(error);
+        };
+
+        const timeoutHandle = setTimeout(() => {
+          stopped = true;
+          child.kill();
+          finalizeReject(
+            new Error(
+              `Timed out after ${DEFAULT_BRANCH_TOOL_TIMEOUT_MS}ms waiting for supervision branch session "${title}" to finish.`,
+            ),
+          );
+        }, DEFAULT_BRANCH_TOOL_TIMEOUT_MS);
+
+        child.on("error", (error) =>
+          finalizeReject(error instanceof Error ? error : new Error(String(error))),
+        );
         child.on("close", (code) => {
           stopped = true;
-          resolve({ code: code ?? 1, stdout, stderr });
+          finalizeResolve({ code: code ?? 1, stdout, stderr });
         });
       });
 
@@ -1004,8 +1086,8 @@ async function resolveCompletedBranchNativeSessionId(args: {
     repoRoot: args.repoRoot,
     streamId: args.streamId,
     branchSessionId: args.branchSessionId,
-    timeoutMs: 5000,
-    pollIntervalMs: 100,
+    timeoutMs: DEFAULT_BRANCH_TOOL_TIMEOUT_MS,
+    pollIntervalMs: DEFAULT_BRANCH_TOOL_POLL_INTERVAL_MS,
   });
 
   if (storedNativeSessionId) {
@@ -1034,8 +1116,8 @@ async function collectCompletedBranchArtifacts(args: {
     repoRoot: args.repoRoot,
     streamId: args.streamId,
     branchSessionId: args.branchSessionId,
-    timeoutMs: 5000,
-    pollIntervalMs: 100,
+    timeoutMs: DEFAULT_BRANCH_TOOL_TIMEOUT_MS,
+    pollIntervalMs: DEFAULT_BRANCH_TOOL_POLL_INTERVAL_MS,
   });
 
   if (!nativeSessionId) {
@@ -1311,8 +1393,6 @@ async function executeLaunchSupervisionBranch(
     batch?: string;
     breakpointTags?: string;
     breakpointMode?: string;
-    timeoutMs?: number;
-    pollIntervalMs?: number;
     noServer?: boolean;
     silent?: boolean;
   },
@@ -1731,14 +1811,6 @@ export const launch_supervision_branch = Object.assign(
         .describe(
           "Optional breakpoint selection mode: 'prefer_tagged' (default) prefers tagged user messages before launch, while 'previous_user' always uses the previous user message before launch and ignores older tags.",
         )
-        .optional(),
-      timeoutMs: tool.schema
-        .number()
-        .describe("Optional wait timeout in milliseconds for work supervise.")
-        .optional(),
-      pollIntervalMs: tool.schema
-        .number()
-        .describe("Optional poll interval in milliseconds for work supervise.")
         .optional(),
       noServer: tool.schema
         .boolean()

@@ -864,8 +864,6 @@ describe("launch_supervision_branch", () => {
       await executeLaunchSupervisionBranch(
         {
           batch: "10.01",
-          timeoutMs: 1200000,
-          pollIntervalMs: 1000,
           noServer: true,
           silent: true,
         },
@@ -938,6 +936,8 @@ describe("launch_supervision_branch", () => {
       expect(calls[0]?.prompt).toContain("Use the supervising-workstreams skill.")
       expect(calls[0]?.prompt).toContain("Start by running `work supervise --batch \"10.01\"`.")
       expect(calls[0]?.prompt).toContain("Keep this branch focused on one bounded batch supervision pass.")
+      expect(calls[0]?.prompt).not.toContain("--timeout-ms")
+      expect(calls[0]?.prompt).not.toContain("--poll-interval-ms")
       expect(calls[0]?.prompt).toContain("## Accomplished")
       expect(calls[0]?.prompt).toContain("## What is Next")
       expect(calls[0]?.prompt).toContain(
