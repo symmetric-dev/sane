@@ -1,8 +1,5 @@
 # AgEnv
 
-<p align="center">
-  <img src=".github/assets/logo.png" alt="AgEnv logo" width="220" />
-</p>
 
 AgEnv is a developer toolkit for planning, running, and reviewing agent-driven work efficiently. It provides structured workstreams for breaking work into stages/batches/threads, plus CLI workflows that integrate with Opencode so humans and agents can collaborate with clear progress and handoffs.
 
