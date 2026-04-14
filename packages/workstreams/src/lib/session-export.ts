@@ -5,13 +5,13 @@
  * for synthesis context.
  */
 
-import { execFile } from "node:child_process"
-import { promisify } from "util"
+import { spawn } from "node:child_process"
+import { mkdtemp, open, readFile, rm } from "node:fs/promises"
+import { tmpdir } from "node:os"
+import { join } from "node:path"
 
-const execFileAsync = promisify(execFile)
-
-const SESSION_EXPORT_BUFFER_SIZE = 50 * 1024 * 1024
 const DIAGNOSTIC_SNIPPET_LENGTH = 240
+const SESSION_EXPORT_TEMP_PREFIX = "agenv-session-export-"
 
 // ============================================================================
 // Types - MessagePart Discriminated Union
@@ -189,10 +189,7 @@ export async function exportSession(sessionId: string): Promise<SessionExport> {
   }
 
   try {
-    const { stdout, stderr } = await execFileAsync("opencode", ["export", sanitizedId], {
-      maxBuffer: SESSION_EXPORT_BUFFER_SIZE,
-    })
-
+    const { stdout, stderr } = await exportSessionToTempFile(sanitizedId)
     return parseSessionExportOutput(stdout, { stderr })
   } catch (error) {
     if (error instanceof Error) {
@@ -218,6 +215,71 @@ export async function exportSession(sessionId: string): Promise<SessionExport> {
       throw new Error(`Failed to export session: ${error.message}`)
     }
     throw new Error("Failed to export session: unknown error")
+  }
+}
+
+export function createSessionExportChildStdio(stdoutFileDescriptor: number): ["ignore", number, "pipe"] {
+  return ["ignore", stdoutFileDescriptor, "pipe"]
+}
+
+async function exportSessionToTempFile(sessionId: string): Promise<{ stdout: string; stderr: string }> {
+  const tempDir = await mkdtemp(join(tmpdir(), SESSION_EXPORT_TEMP_PREFIX))
+  const tempFile = join(tempDir, `${sessionId}.json`)
+
+  let stderr = ""
+  let stdoutHandle: Awaited<ReturnType<typeof open>> | undefined
+
+  try {
+    stdoutHandle = await open(tempFile, "w")
+    const child = spawn("opencode", ["export", sessionId], {
+      stdio: createSessionExportChildStdio(stdoutHandle.fd),
+    })
+
+    if (!child.stderr) {
+      throw new Error("Failed to capture stderr from opencode export")
+    }
+
+    child.stderr.setEncoding("utf8")
+    child.stderr.on("data", (chunk: string) => {
+      stderr += chunk
+    })
+
+    const result = await new Promise<{ code: number | null; signal: NodeJS.Signals | null }>(
+      (resolve, reject) => {
+        child.once("error", reject)
+        child.once("close", (code, signal) => {
+          resolve({ code, signal })
+        })
+      },
+    )
+
+    await stdoutHandle.close()
+    stdoutHandle = undefined
+
+    const stdout = await readFile(tempFile, "utf8")
+
+    if (result.code !== null && result.code !== 0) {
+      throw Object.assign(new Error(`Process exited with code ${String(result.code)}`), {
+        code: result.code ?? undefined,
+        signal: result.signal ?? undefined,
+        stdout,
+        stderr,
+      })
+    }
+
+    if (result.signal) {
+      throw Object.assign(new Error(`Process exited with signal ${result.signal}`), {
+        code: result.code ?? undefined,
+        signal: result.signal,
+        stdout,
+        stderr,
+      })
+    }
+
+    return { stdout, stderr }
+  } finally {
+    await stdoutHandle?.close().catch(() => undefined)
+    await rm(tempDir, { recursive: true, force: true })
   }
 }
 

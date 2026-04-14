@@ -717,6 +717,13 @@ export interface RootAgentBranchSession extends RootAgentLineage {
   notes?: string
 }
 
+export interface CurrentBranchSupervisionContext extends RootAgentLineage {
+  branchRole: "supervision"
+  nativeSessionId: string
+  updatedAt: string
+  supervisionProgress?: RootAgentSupervisionProgress
+}
+
 // ============================================
 // SUPERVISOR RUNTIME STATE TYPES (supervisor-state.json)
 // ============================================
@@ -919,6 +926,7 @@ export interface SupervisorStateFile {
   stream_id: string
   last_updated: string
   active_run_id?: string
+  current_branch_supervision?: CurrentBranchSupervisionContext
   runs: SupervisorRunState[]
   checkpoint_pointers: RootAgentCheckpointPointer[]
   branch_sessions: RootAgentBranchSession[]

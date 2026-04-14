@@ -341,13 +341,13 @@ So a stage-scoped branch does **not** make `work supervise` stage-aware. It runs
 # 1) launch stage-scoped tracking
 launch_supervision_branch({ scope: "stage", stage: "15" })
 
-# 2) branch inspects persisted stage state and runs one supervise pass
-work supervise ...
+# 2) branch inspects persisted stage state and runs one bounded supervise pass
+work supervise --batch "15.01"
 
-# 3) branch continues with repeated single-batch supervise calls
-#    while re-checking that the derived batch still belongs to stage 15
-work supervise ...
-work supervise ...
+# 3) branch either resumes the same batch with plain work supervise,
+#    or derives the next in-stage batch and launches that bounded pass
+work supervise
+work supervise --batch "15.02"
 
 # 4) branch yields a stage-level report back to Root Agent
 ```
@@ -360,11 +360,62 @@ For stale-tool debugging, call `workstream_tool_runtime_info` from the current s
 
 The child branch prompt should act like a simulated user handing one bounded job to the branch:
 
-- tell the branch to run the exact `work supervise ... --root-session-id ... --branch-session-id ...` command
-- for **stage scope**, tell the branch to inspect persisted stage state and let `work supervise` derive the next incomplete or resumable batch inside that stage
+- tell the branch to use the `supervising-workstreams` skill
+- keep the prompt user-like and avoid branch-internal metadata such as session IDs or checkpoint arguments
+- for **batch scope**, tell the branch to start with `work supervise --batch "SS.BB"`
+- for **stage scope**, tell the branch to inspect persisted stage state and run `work supervise --batch "<next batch in stage>"` for the next incomplete or resumable batch inside that stage
+- once branch context is active, let reruns use plain `work supervise` for the same resumable batch and only add `--batch` when selecting a new bounded batch inside scope
 - keep the branch focused on supervision execution/recovery only
-- allow review/fix subagents only when `work supervise` requires them
 - end with a short yield report back to the Root Agent, not a new branch launch or direct user escalation
+
+### Migration (Stage 16): prompt-visible lineage → tooling-owned context
+
+The old launch style embedded branch lineage details directly in the fake-user prompt (for example explicit `--root-session-id`, `--branch-session-id`, and checkpoint flags).
+
+Stage 16 replaces that with tooling-owned context resolution:
+
+- `launch_supervision_branch` persists branch lineage/scope/checkpoint metadata in `work/<stream-id>/supervisor-state.json`
+- branch prompts stay user-like and only instruct the branch to run `work supervise` (batch-scoped) or `work supervise --batch "<next batch in stage>"` (stage-scoped)
+- `work supervise` resolves branch lineage from runtime session + persisted state; explicit lineage/checkpoint CLI flags remain available as override/debug paths
+
+Operator takeaway:
+
+- **normal flow:** launch branch, then branch runs plain `work supervise` commands according to scope
+- **debug/override flow:** pass explicit lineage/checkpoint flags only when validating fallback behavior or diagnosing incorrect context resolution
+
+### Live debug: inspect resolved branch supervision context
+
+When a branch run behaves unexpectedly, inspect resolved context first before reviewing fix-cycle policy.
+
+1. **Check current persisted branch session metadata**
+
+```bash
+cat work/<stream-id>/supervisor-state.json
+```
+
+Confirm the relevant `branch_sessions[]` record includes expected `rootSessionId`, `branchSessionId`, `nativeSessionId`, `scope`, and checkpoint pointer fields.
+
+2. **Run a dry-run to print resolved context**
+
+```bash
+work supervise --dry-run --batch "SS.BB"
+```
+
+Look for:
+
+- `[supervise] resolved branch context: root=... branch=... source=... scope=... native=... parent=... checkpoint=...`
+
+If this line is missing during a branch run, the branch context was not resolved (usually stale runtime session linkage or missing branch metadata).
+
+3. **If needed, force explicit override for diagnosis**
+
+Use explicit lineage/checkpoint flags only to compare behavior and isolate context-resolution issues:
+
+```bash
+work supervise --batch "SS.BB" --root-session-id "<root>" --branch-session-id "<branch>" --parent-session-id "<parent>"
+```
+
+If explicit overrides work but auto-resolution does not, treat it as a context-resolution defect and repair persisted branch/runtime linkage before resuming normal runs.
 
 ### Live-run inspection flow for the real Root Agent
 

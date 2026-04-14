@@ -2,7 +2,9 @@ import { existsSync, mkdirSync, readFileSync } from "fs"
 import { dirname, join } from "path"
 import * as lockfile from "proper-lockfile"
 import type {
+  CurrentBranchSupervisionContext,
   RootAgentBranchScope,
+  RootAgentBranchStatus,
   RootAgentCheckpointPointer,
   RootAgentBranchSession,
   RootAgentSupervisionProgress,
@@ -91,6 +93,85 @@ function normalizeSupervisionProgress(args: {
   }
 }
 
+function shouldPersistCurrentBranchSupervision(
+  branchRole?: RootAgentBranchSession["branchRole"],
+  status?: RootAgentBranchStatus,
+): boolean {
+  return (
+    branchRole === "supervision" &&
+    (status === "pending" || status === "running" || status === "stopped")
+  )
+}
+
+function buildCurrentBranchSupervisionContext(
+  branchSession?: RootAgentBranchSession,
+): CurrentBranchSupervisionContext | undefined {
+  if (
+    !branchSession ||
+    !shouldPersistCurrentBranchSupervision(branchSession.branchRole, branchSession.status) ||
+    typeof branchSession.nativeSessionId !== "string" ||
+    branchSession.nativeSessionId.trim().length === 0
+  ) {
+    return undefined
+  }
+
+  const normalizedScope = normalizeBranchScope(branchSession.scope, branchSession.batchId)
+  const progressBatchId =
+    branchSession.batchId ?? (normalizedScope?.level === "batch" ? normalizedScope.batchId : undefined)
+  const normalizedProgress = normalizeSupervisionProgress({
+    branchRole: branchSession.branchRole,
+    scope: normalizedScope,
+    batchId: progressBatchId,
+    progress: branchSession.supervisionProgress,
+  })
+
+  return {
+    owner: "root_agent",
+    rootSessionId: branchSession.rootSessionId,
+    branchSessionId: branchSession.branchSessionId,
+    branchRole: "supervision",
+    ...(normalizedScope ? { scope: normalizedScope } : {}),
+    ...(branchSession.checkpointMessageId
+      ? { checkpointMessageId: branchSession.checkpointMessageId }
+      : {}),
+    ...(typeof branchSession.checkpointMessageIndex === "number"
+      ? { checkpointMessageIndex: branchSession.checkpointMessageIndex }
+      : {}),
+    ...(branchSession.checkpointCreatedAt
+      ? { checkpointCreatedAt: branchSession.checkpointCreatedAt }
+      : {}),
+    ...(branchSession.breakpointSelection
+      ? { breakpointSelection: branchSession.breakpointSelection }
+      : {}),
+    ...(branchSession.checkpointSessionId
+      ? { checkpointSessionId: branchSession.checkpointSessionId }
+      : {}),
+    ...(branchSession.parentBranchSessionId
+      ? { parentBranchSessionId: branchSession.parentBranchSessionId }
+      : {}),
+    ...(branchSession.parentSessionId ? { parentSessionId: branchSession.parentSessionId } : {}),
+    nativeSessionId: branchSession.nativeSessionId,
+    source: branchSession.source,
+    ...(normalizedProgress ? { supervisionProgress: normalizedProgress } : {}),
+    updatedAt: branchSession.updatedAt,
+  }
+}
+
+function normalizeCurrentBranchSupervision(
+  currentBranchSupervision: Partial<CurrentBranchSupervisionContext> | undefined,
+  branchSessions: RootAgentBranchSession[],
+): CurrentBranchSupervisionContext | undefined {
+  const matchingBranch = currentBranchSupervision?.branchSessionId
+    ? branchSessions.find(
+        (branchSession) =>
+          branchSession.branchSessionId === currentBranchSupervision.branchSessionId,
+      )
+    : undefined
+
+  const normalizedFromBranch = buildCurrentBranchSupervisionContext(matchingBranch)
+  return normalizedFromBranch
+}
+
 export const SUPERVISOR_STATE_VERSION = "1.0.0"
 
 /**
@@ -136,51 +217,55 @@ export function loadSupervisorState(
   }
 
   const parsed = JSON.parse(readFileSync(filePath, "utf-8")) as Partial<SupervisorStateFile>
+  const normalizedBranchSessions =
+    parsed.branch_sessions?.map((branchSession) => {
+      const normalizedScope = normalizeBranchScope(branchSession.scope, branchSession.batchId)
+      const normalizedBatchId =
+        normalizedScope?.level === "stage"
+          ? undefined
+          : branchSession.batchId ??
+            (normalizedScope?.level === "batch" ? normalizedScope.batchId : undefined)
+      const progressBatchId =
+        branchSession.batchId ?? (normalizedScope?.level === "batch" ? normalizedScope.batchId : undefined)
+      const supervisionProgress = normalizeSupervisionProgress({
+        branchRole: branchSession.branchRole,
+        scope: normalizedScope,
+        batchId: progressBatchId,
+        progress: branchSession.supervisionProgress,
+      })
+
+      const normalizedBranchSession: RootAgentBranchSession = {
+        ...branchSession,
+        ...(normalizedBatchId ? { batchId: normalizedBatchId } : {}),
+        ...(normalizedScope ? { scope: normalizedScope } : {}),
+        ...(supervisionProgress ? { supervisionProgress } : {}),
+      }
+
+      if (!normalizedScope) {
+        delete normalizedBranchSession.scope
+      }
+
+      if (!normalizedBatchId) {
+        delete normalizedBranchSession.batchId
+      }
+
+      if (!supervisionProgress) {
+        delete normalizedBranchSession.supervisionProgress
+      }
+
+      return normalizedBranchSession
+    }) ?? []
 
   return {
     ...createEmptySupervisorState(streamId),
     ...parsed,
     runs: parsed.runs ?? [],
     checkpoint_pointers: parsed.checkpoint_pointers ?? [],
-    branch_sessions:
-      parsed.branch_sessions?.map((branchSession) => {
-        const normalizedScope = normalizeBranchScope(branchSession.scope, branchSession.batchId)
-        const normalizedBatchId =
-          normalizedScope?.level === "stage"
-            ? undefined
-            : branchSession.batchId ??
-              (normalizedScope?.level === "batch" ? normalizedScope.batchId : undefined)
-        const progressBatchId =
-          branchSession.batchId ??
-          (normalizedScope?.level === "batch" ? normalizedScope.batchId : undefined)
-        const supervisionProgress = normalizeSupervisionProgress({
-          branchRole: branchSession.branchRole,
-          scope: normalizedScope,
-          batchId: progressBatchId,
-          progress: branchSession.supervisionProgress,
-        })
-
-        const normalizedBranchSession: RootAgentBranchSession = {
-          ...branchSession,
-          ...(normalizedBatchId ? { batchId: normalizedBatchId } : {}),
-          ...(normalizedScope ? { scope: normalizedScope } : {}),
-          ...(supervisionProgress ? { supervisionProgress } : {}),
-        }
-
-        if (!normalizedScope) {
-          delete normalizedBranchSession.scope
-        }
-
-        if (!normalizedBatchId) {
-          delete normalizedBranchSession.batchId
-        }
-
-        if (!supervisionProgress) {
-          delete normalizedBranchSession.supervisionProgress
-        }
-
-        return normalizedBranchSession
-      }) ?? [],
+    branch_sessions: normalizedBranchSessions,
+    current_branch_supervision: normalizeCurrentBranchSupervision(
+      parsed.current_branch_supervision,
+      normalizedBranchSessions,
+    ),
     reviewed_batches: parsed.reviewed_batches ?? [],
     issue_summaries: parsed.issue_summaries ?? [],
     fix_cycles: parsed.fix_cycles ?? [],
@@ -213,6 +298,9 @@ export function saveSupervisorState(
     last_updated: lastUpdated,
     ...(supervisorState.active_run_id
       ? { active_run_id: supervisorState.active_run_id }
+      : {}),
+    ...(supervisorState.current_branch_supervision
+      ? { current_branch_supervision: supervisorState.current_branch_supervision }
       : {}),
     runs: supervisorState.runs,
     checkpoint_pointers: supervisorState.checkpoint_pointers,
@@ -427,6 +515,15 @@ export async function upsertBranchSessionLocked(
 
     if (!normalizedProgress) {
       delete normalized.supervisionProgress
+    }
+
+    const currentBranchSupervision = buildCurrentBranchSupervisionContext(normalized)
+    if (currentBranchSupervision) {
+      supervisorState.current_branch_supervision = currentBranchSupervision
+    } else if (
+      supervisorState.current_branch_supervision?.branchSessionId === normalized.branchSessionId
+    ) {
+      delete supervisorState.current_branch_supervision
     }
 
     return upsertItem(

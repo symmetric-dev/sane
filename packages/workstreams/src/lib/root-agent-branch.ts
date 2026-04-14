@@ -1,6 +1,8 @@
 import { randomUUID } from "crypto"
+import { getResolvedStream, loadIndex } from "./index.ts"
 import { loadSupervisorState } from "./supervisor-state.ts"
 import type {
+  CurrentBranchSupervisionContext,
   RootAgentBranchScope,
   RootAgentBreakpointSelection,
   RootAgentBranchRole,
@@ -25,6 +27,13 @@ export interface RootAgentBranchContext {
   nativeSessionId?: string
   source?: RootAgentBranchSource
   scope?: RootAgentBranchScope
+}
+
+export interface ResolvedCurrentBranchSupervisionContext {
+  streamId: string
+  sessionId: string
+  source: "current_branch_supervision" | "branch_session_fallback"
+  current: CurrentBranchSupervisionContext
 }
 
 function inferStageIdFromBatchId(batchId?: string): string | undefined {
@@ -127,6 +136,246 @@ export function getRootAgentBranchSource(
   fallback: RootAgentBranchSource = "repo_local_fallback",
 ): RootAgentBranchSource {
   return nativeSessionId ? "native_fork" : fallback
+}
+
+export function getCurrentRootAgentNativeSessionId(
+  env: Record<string, string | undefined> = process.env,
+): string | undefined {
+  for (const key of ["OPENCODE_SESSION_ID", "SESSION_ID"]) {
+    const value = env[key]?.trim()
+    if (value) {
+      return value
+    }
+  }
+
+  return undefined
+}
+
+function isAutoResolvableCurrentBranchStatus(status: RootAgentBranchStatus | undefined): boolean {
+  return status === "pending" || status === "running" || status === "stopped"
+}
+
+function normalizeCurrentBranchSupervisionContext(args: {
+  current: Partial<CurrentBranchSupervisionContext>
+  fallbackBranch?: RootAgentBranchSession
+}): CurrentBranchSupervisionContext | undefined {
+  const fallbackBranch = args.fallbackBranch
+  const current = args.current
+  const branchRole = current.branchRole ?? fallbackBranch?.branchRole
+  const rootSessionId = current.rootSessionId ?? fallbackBranch?.rootSessionId
+  const branchSessionId = current.branchSessionId ?? fallbackBranch?.branchSessionId
+  const nativeSessionId = current.nativeSessionId ?? fallbackBranch?.nativeSessionId
+  const updatedAt = current.updatedAt ?? fallbackBranch?.updatedAt
+
+  if (
+    branchRole !== "supervision" ||
+    typeof rootSessionId !== "string" ||
+    rootSessionId.trim().length === 0 ||
+    typeof branchSessionId !== "string" ||
+    branchSessionId.trim().length === 0 ||
+    typeof nativeSessionId !== "string" ||
+    nativeSessionId.trim().length === 0 ||
+    typeof updatedAt !== "string" ||
+    updatedAt.trim().length === 0
+  ) {
+    return undefined
+  }
+
+  const normalizedScope = normalizeRootAgentBranchScope({
+    scope: current.scope,
+    batchId:
+      current.supervisionProgress?.currentBatchId ??
+      (fallbackBranch?.scope?.level === "batch" ? fallbackBranch.scope.batchId : undefined),
+    fallbackScope: fallbackBranch?.scope,
+  })
+  const normalizedProgress = normalizeRootAgentSupervisionProgress({
+    branchRole: "supervision",
+    scope: normalizedScope,
+    batchId:
+      current.supervisionProgress?.currentBatchId ??
+      fallbackBranch?.supervisionProgress?.currentBatchId ??
+      (normalizedScope?.level === "batch" ? normalizedScope.batchId : undefined),
+    progress: current.supervisionProgress,
+    fallbackProgress: fallbackBranch?.supervisionProgress,
+  })
+
+  return {
+    owner: "root_agent",
+    rootSessionId,
+    branchSessionId,
+    branchRole: "supervision",
+    ...(normalizedScope ? { scope: normalizedScope } : {}),
+    ...(current.checkpointMessageId ?? fallbackBranch?.checkpointMessageId
+      ? { checkpointMessageId: current.checkpointMessageId ?? fallbackBranch?.checkpointMessageId }
+      : {}),
+    ...(typeof current.checkpointMessageIndex === "number"
+      ? { checkpointMessageIndex: current.checkpointMessageIndex }
+      : typeof fallbackBranch?.checkpointMessageIndex === "number"
+        ? { checkpointMessageIndex: fallbackBranch.checkpointMessageIndex }
+        : {}),
+    ...(current.checkpointCreatedAt ?? fallbackBranch?.checkpointCreatedAt
+      ? { checkpointCreatedAt: current.checkpointCreatedAt ?? fallbackBranch?.checkpointCreatedAt }
+      : {}),
+    ...(current.breakpointSelection ?? fallbackBranch?.breakpointSelection
+      ? { breakpointSelection: current.breakpointSelection ?? fallbackBranch?.breakpointSelection }
+      : {}),
+    ...(current.checkpointSessionId ?? fallbackBranch?.checkpointSessionId
+      ? { checkpointSessionId: current.checkpointSessionId ?? fallbackBranch?.checkpointSessionId }
+      : {}),
+    ...(current.parentBranchSessionId ?? fallbackBranch?.parentBranchSessionId
+      ? { parentBranchSessionId: current.parentBranchSessionId ?? fallbackBranch?.parentBranchSessionId }
+      : {}),
+    ...(current.parentSessionId ?? fallbackBranch?.parentSessionId
+      ? { parentSessionId: current.parentSessionId ?? fallbackBranch?.parentSessionId }
+      : {}),
+    nativeSessionId,
+    source: current.source ?? fallbackBranch?.source ?? getRootAgentBranchSource(nativeSessionId),
+    ...(normalizedProgress ? { supervisionProgress: normalizedProgress } : {}),
+    updatedAt,
+  }
+}
+
+function resolveValidatedCurrentBranchBackingSession(args: {
+  branchSessions: RootAgentBranchSession[]
+  sessionId: string
+  current?: Partial<CurrentBranchSupervisionContext>
+}): RootAgentBranchSession | undefined {
+  return args.branchSessions.find(
+    (branch) =>
+      branch.branchRole === "supervision" &&
+      branch.nativeSessionId === args.sessionId &&
+      isAutoResolvableCurrentBranchStatus(branch.status) &&
+      (!args.current?.branchSessionId || branch.branchSessionId === args.current.branchSessionId),
+  )
+}
+
+function resolveCurrentBranchSupervisionForStream(args: {
+  repoRoot: string
+  streamId: string
+  sessionId: string
+}): ResolvedCurrentBranchSupervisionContext | undefined {
+  const supervisorState = loadSupervisorState(args.repoRoot, args.streamId)
+  if (!supervisorState) {
+    return undefined
+  }
+
+  const currentBranchSupervision = supervisorState.current_branch_supervision
+  const matchingBranch = resolveValidatedCurrentBranchBackingSession({
+    branchSessions: supervisorState.branch_sessions,
+    sessionId: args.sessionId,
+    current: currentBranchSupervision,
+  })
+
+  if (currentBranchSupervision?.nativeSessionId === args.sessionId) {
+    if (!matchingBranch) {
+      return undefined
+    }
+
+    const normalizedCurrent = normalizeCurrentBranchSupervisionContext({
+      current: currentBranchSupervision,
+      fallbackBranch: matchingBranch,
+    })
+
+    if (normalizedCurrent) {
+      return {
+        streamId: args.streamId,
+        sessionId: args.sessionId,
+        source: "current_branch_supervision",
+        current: normalizedCurrent,
+      }
+    }
+  }
+
+  const fallbackBranch = resolveValidatedCurrentBranchBackingSession({
+    branchSessions: supervisorState.branch_sessions,
+    sessionId: args.sessionId,
+  })
+
+  if (!fallbackBranch) {
+    return undefined
+  }
+
+  const normalizedCurrent = normalizeCurrentBranchSupervisionContext({
+    current: {
+      owner: "root_agent",
+      rootSessionId: fallbackBranch.rootSessionId,
+      branchSessionId: fallbackBranch.branchSessionId,
+      branchRole: "supervision",
+      ...(fallbackBranch.scope ? { scope: fallbackBranch.scope } : {}),
+      ...(fallbackBranch.checkpointMessageId
+        ? { checkpointMessageId: fallbackBranch.checkpointMessageId }
+        : {}),
+      ...(typeof fallbackBranch.checkpointMessageIndex === "number"
+        ? { checkpointMessageIndex: fallbackBranch.checkpointMessageIndex }
+        : {}),
+      ...(fallbackBranch.checkpointCreatedAt
+        ? { checkpointCreatedAt: fallbackBranch.checkpointCreatedAt }
+        : {}),
+      ...(fallbackBranch.breakpointSelection
+        ? { breakpointSelection: fallbackBranch.breakpointSelection }
+        : {}),
+      ...(fallbackBranch.checkpointSessionId
+        ? { checkpointSessionId: fallbackBranch.checkpointSessionId }
+        : {}),
+      ...(fallbackBranch.parentBranchSessionId
+        ? { parentBranchSessionId: fallbackBranch.parentBranchSessionId }
+        : {}),
+      ...(fallbackBranch.parentSessionId ? { parentSessionId: fallbackBranch.parentSessionId } : {}),
+      nativeSessionId: fallbackBranch.nativeSessionId!,
+      source: fallbackBranch.source,
+      ...(fallbackBranch.supervisionProgress
+        ? { supervisionProgress: fallbackBranch.supervisionProgress }
+        : {}),
+      updatedAt: fallbackBranch.updatedAt,
+    },
+    fallbackBranch,
+  })
+
+  if (!normalizedCurrent) {
+    return undefined
+  }
+
+  return {
+    streamId: args.streamId,
+    sessionId: args.sessionId,
+    source: "branch_session_fallback",
+    current: normalizedCurrent,
+  }
+}
+
+export function resolveCurrentBranchSupervisionContext(args: {
+  repoRoot: string
+  streamId?: string
+  sessionId?: string
+  env?: Record<string, string | undefined>
+}): ResolvedCurrentBranchSupervisionContext | undefined {
+  const sessionId = args.sessionId ?? getCurrentRootAgentNativeSessionId(args.env)
+  if (!sessionId) {
+    return undefined
+  }
+
+  const index = loadIndex(args.repoRoot)
+  const candidateStreamIds = args.streamId
+    ? [getResolvedStream(index, args.streamId).id]
+    : Array.from(
+        new Set([
+          ...(index.current_stream ? [index.current_stream] : []),
+          ...index.streams.map((stream) => stream.id),
+        ]),
+      )
+
+  for (const streamId of candidateStreamIds) {
+    const resolved = resolveCurrentBranchSupervisionForStream({
+      repoRoot: args.repoRoot,
+      streamId,
+      sessionId,
+    })
+    if (resolved) {
+      return resolved
+    }
+  }
+
+  return undefined
 }
 
 export function findRootAgentBranchSessionByBranchSessionId(args: {

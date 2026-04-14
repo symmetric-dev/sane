@@ -1,17 +1,55 @@
 import { describe, expect, test } from "bun:test"
+import { mkdirSync, writeFileSync } from "fs"
+import { join } from "path"
 import {
   buildRootAgentBranchSession,
   buildRootAgentLineage,
   findRootAgentBranchSessionForLaunchSessionId,
   findRootAgentBranchSessionByNativeSessionId,
+  getCurrentRootAgentNativeSessionId,
   getRootAgentBranchSource,
   normalizeRootAgentBranchScope,
   normalizeRootAgentSupervisionProgress,
+  resolveCurrentBranchSupervisionContext,
   waitForRootAgentBranchTerminalSession,
   waitForRootAgentBranchNativeSessionId,
 } from "../src/lib/root-agent-branch.ts"
-import { upsertBranchSessionLocked } from "../src/lib/supervisor-state.ts"
+import { saveSupervisorState, upsertBranchSessionLocked } from "../src/lib/supervisor-state.ts"
 import { cleanupTestWorkstream, createTestWorkstream } from "./helpers/test-workspace.ts"
+
+function writeIndex(repoRoot: string, streamId: string, name: string): void {
+  mkdirSync(join(repoRoot, "work"), { recursive: true })
+  writeFileSync(
+    join(repoRoot, "work", "index.json"),
+    JSON.stringify(
+      {
+        version: "1.0.0",
+        last_updated: new Date().toISOString(),
+        current_stream: streamId,
+        streams: [
+          {
+            id: streamId,
+            name,
+            order: 1,
+            size: "short",
+            session_estimated: {
+              length: 1,
+              unit: "session",
+              session_minutes: [30, 45],
+              session_iterations: [4, 8],
+            },
+            created_at: new Date().toISOString(),
+            updated_at: new Date().toISOString(),
+            path: `work/${streamId}`,
+            generated_by: { workstreams: "test" },
+          },
+        ],
+      },
+      null,
+      2,
+    ),
+  )
+}
 
 describe("root-agent-branch", () => {
   test("getRootAgentBranchSource prefers native ancestry when present", () => {
@@ -225,6 +263,213 @@ describe("root-agent-branch", () => {
         branchSessionId: "branch-supervision-1",
         nativeSessionId: "ses_supervision_1",
       })
+    } finally {
+      cleanupTestWorkstream(workspace)
+    }
+  })
+
+  test("getCurrentRootAgentNativeSessionId prefers explicit opencode env markers", () => {
+    expect(
+      getCurrentRootAgentNativeSessionId({
+        OPENCODE_SESSION_ID: "ses_opencode_1",
+        SESSION_ID: "ses_fallback_1",
+      }),
+    ).toBe("ses_opencode_1")
+    expect(getCurrentRootAgentNativeSessionId({ SESSION_ID: "ses_fallback_1" })).toBe(
+      "ses_fallback_1",
+    )
+    expect(getCurrentRootAgentNativeSessionId({})).toBeUndefined()
+  })
+
+  test("resolveCurrentBranchSupervisionContext auto-resolves stream and lineage from current branch session", async () => {
+    const workspace = createTestWorkstream("001-root-agent-current-branch-context")
+
+    try {
+      writeIndex(workspace.repoRoot, workspace.streamId, "root-agent-current-branch-context")
+      const startedAt = new Date().toISOString()
+      await upsertBranchSessionLocked(
+        workspace.repoRoot,
+        workspace.streamId,
+        buildRootAgentBranchSession({
+          context: {
+            rootSessionId: "root-session-1",
+            branchSessionId: "branch-supervision-1",
+            checkpointMessageId: "msg-root-checkpoint",
+            checkpointCreatedAt: "2026-04-12T00:00:00.000Z",
+            parentSessionId: "root-session-1",
+            nativeSessionId: "ses_supervision_1",
+            scope: {
+              level: "stage",
+              stageId: "01",
+            },
+          },
+          branchRole: "supervision",
+          status: "running",
+          startedAt,
+          updatedAt: startedAt,
+          batchId: "01.01",
+        }),
+      )
+
+      const resolved = resolveCurrentBranchSupervisionContext({
+        repoRoot: workspace.repoRoot,
+        env: { SESSION_ID: "ses_supervision_1" },
+      })
+
+      expect(resolved).toEqual({
+        streamId: workspace.streamId,
+        sessionId: "ses_supervision_1",
+        source: "current_branch_supervision",
+        current: {
+          owner: "root_agent",
+          rootSessionId: "root-session-1",
+          branchSessionId: "branch-supervision-1",
+          branchRole: "supervision",
+          checkpointMessageId: "msg-root-checkpoint",
+          checkpointCreatedAt: "2026-04-12T00:00:00.000Z",
+          parentSessionId: "root-session-1",
+          nativeSessionId: "ses_supervision_1",
+          source: "native_fork",
+          scope: {
+            level: "stage",
+            stageId: "01",
+          },
+          supervisionProgress: {
+            executionMode: "stage_batch_loop",
+            currentBatchId: "01.01",
+          },
+          updatedAt: startedAt,
+        },
+      })
+    } finally {
+      cleanupTestWorkstream(workspace)
+    }
+  })
+
+  test("resolveCurrentBranchSupervisionContext ignores completed branch sessions", async () => {
+    const workspace = createTestWorkstream("001-root-agent-current-branch-terminal")
+
+    try {
+      writeIndex(workspace.repoRoot, workspace.streamId, "root-agent-current-branch-terminal")
+      const startedAt = new Date().toISOString()
+      await upsertBranchSessionLocked(
+        workspace.repoRoot,
+        workspace.streamId,
+        buildRootAgentBranchSession({
+          context: {
+            rootSessionId: "root-session-1",
+            branchSessionId: "branch-supervision-1",
+            parentSessionId: "root-session-1",
+            nativeSessionId: "ses_supervision_1",
+          },
+          branchRole: "supervision",
+          status: "completed",
+          startedAt,
+          updatedAt: startedAt,
+          completedAt: startedAt,
+          batchId: "01.01",
+        }),
+      )
+
+      expect(
+        resolveCurrentBranchSupervisionContext({
+          repoRoot: workspace.repoRoot,
+          env: { SESSION_ID: "ses_supervision_1" },
+        }),
+      ).toBeUndefined()
+    } finally {
+      cleanupTestWorkstream(workspace)
+    }
+  })
+
+  test("resolveCurrentBranchSupervisionContext ignores stale current branch supervision for terminal backing sessions", () => {
+    const workspace = createTestWorkstream("001-root-agent-current-branch-stale-terminal")
+
+    try {
+      writeIndex(workspace.repoRoot, workspace.streamId, "root-agent-current-branch-stale-terminal")
+      const startedAt = new Date().toISOString()
+      saveSupervisorState(workspace.repoRoot, workspace.streamId, {
+        version: "1.0.0",
+        stream_id: workspace.streamId,
+        last_updated: startedAt,
+        current_branch_supervision: {
+          owner: "root_agent",
+          rootSessionId: "root-session-1",
+          branchSessionId: "branch-supervision-1",
+          branchRole: "supervision",
+          nativeSessionId: "ses_supervision_1",
+          updatedAt: startedAt,
+        },
+        runs: [],
+        checkpoint_pointers: [],
+        branch_sessions: [
+          {
+            owner: "root_agent",
+            rootSessionId: "root-session-1",
+            branchSessionId: "branch-supervision-1",
+            branchRole: "supervision",
+            parentSessionId: "root-session-1",
+            nativeSessionId: "ses_supervision_1",
+            source: "native_fork",
+            status: "completed",
+            startedAt,
+            updatedAt: startedAt,
+            completedAt: startedAt,
+            batchId: "01.01",
+          },
+        ],
+        reviewed_batches: [],
+        issue_summaries: [],
+        fix_cycles: [],
+        escalations: [],
+        stage_stops: [],
+      })
+
+      expect(
+        resolveCurrentBranchSupervisionContext({
+          repoRoot: workspace.repoRoot,
+          env: { SESSION_ID: "ses_supervision_1" },
+        }),
+      ).toBeUndefined()
+    } finally {
+      cleanupTestWorkstream(workspace)
+    }
+  })
+
+  test("resolveCurrentBranchSupervisionContext ignores stale current branch supervision for missing backing sessions", () => {
+    const workspace = createTestWorkstream("001-root-agent-current-branch-stale-missing")
+
+    try {
+      writeIndex(workspace.repoRoot, workspace.streamId, "root-agent-current-branch-stale-missing")
+      const startedAt = new Date().toISOString()
+      saveSupervisorState(workspace.repoRoot, workspace.streamId, {
+        version: "1.0.0",
+        stream_id: workspace.streamId,
+        last_updated: startedAt,
+        current_branch_supervision: {
+          owner: "root_agent",
+          rootSessionId: "root-session-1",
+          branchSessionId: "branch-supervision-missing",
+          branchRole: "supervision",
+          nativeSessionId: "ses_supervision_1",
+          updatedAt: startedAt,
+        },
+        runs: [],
+        checkpoint_pointers: [],
+        branch_sessions: [],
+        reviewed_batches: [],
+        issue_summaries: [],
+        fix_cycles: [],
+        escalations: [],
+        stage_stops: [],
+      })
+
+      expect(
+        resolveCurrentBranchSupervisionContext({
+          repoRoot: workspace.repoRoot,
+          env: { SESSION_ID: "ses_supervision_1" },
+        }),
+      ).toBeUndefined()
     } finally {
       cleanupTestWorkstream(workspace)
     }

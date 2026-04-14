@@ -252,6 +252,7 @@ describe("workstream runtime resolution", () => {
         metadataOnlyCheckpoints: true,
         messageBoundaryFork: true,
         breakpointTags: true,
+        autoResolvedBranchSupervisionContext: true,
       })
       expect(info.errors).toBeUndefined()
     } finally {
@@ -796,15 +797,15 @@ describe("launch_supervision_branch", () => {
       })
       expect(calls[0]?.title).toBe(`root-supervision-${workspace.streamId}-branch-supervision-1`)
       expect(calls[0]?.prompt).toContain("Please supervise batch 10.01 for this workstream.")
-      expect(calls[0]?.prompt).toContain("Branch scope: batch 10.01.")
-      expect(calls[0]?.prompt).toContain(
-        `work supervise --repo-root \"${workspace.repoRoot}\" --stream \"${workspace.streamId}\" --batch \"10.01\" --timeout-ms 1200000 --poll-interval-ms 1000 --no-server --silent --root-session-id \"root-session-1\" --branch-session-id \"branch-supervision-1\" --parent-session-id \"root-session-1\" --checkpoint-message-id \"msg-root-checkpoint\" --checkpoint-message-index 0 --checkpoint-created-at \"2026-04-12T00:00:00.000Z\"`,
-      )
-      expect(calls[0]?.prompt).toContain("launch review subagents")
-      expect(calls[0]?.prompt).toContain("launch fix subagents")
+      expect(calls[0]?.prompt).toContain("Use the supervising-workstreams skill.")
+      expect(calls[0]?.prompt).toContain("Start by running `work supervise --batch \"10.01\"`.")
+      expect(calls[0]?.prompt).toContain("Keep this branch focused on one bounded batch supervision pass.")
       expect(calls[0]?.prompt).toContain("## Accomplished")
       expect(calls[0]?.prompt).toContain("## Next For The User")
       expect(calls[0]?.prompt).not.toContain("You are a Root Agent supervision branch")
+      expect(calls[0]?.prompt).not.toContain("Branch scope:")
+      expect(calls[0]?.prompt).not.toContain("--root-session-id")
+      expect(calls[0]?.prompt).not.toContain("--checkpoint-message-id")
 
       const stored = loadSupervisorState(workspace.repoRoot, workspace.streamId)
       expect(stored?.branch_sessions[0]?.scope).toEqual({
@@ -879,10 +880,10 @@ describe("launch_supervision_branch", () => {
       )
 
       expect(calls).toHaveLength(1)
-      expect(calls[0]?.prompt).toContain("Branch scope: stage 10.")
       expect(calls[0]?.prompt).toContain(
         "Please supervise stage 10 for this workstream, one batch at a time until the stage is done or you must yield by policy.",
       )
+      expect(calls[0]?.prompt).toContain("Use the supervising-workstreams skill.")
       expect(calls[0]?.prompt).toContain(
         "work supervise itself is still a single-batch primitive",
       )
@@ -890,16 +891,12 @@ describe("launch_supervision_branch", () => {
         "Before each supervise pass, inspect the persisted state of stage 10 and identify the next incomplete or resumable batch within that stage.",
       )
       expect(calls[0]?.prompt).toContain(
-        "Launch and rerun work supervise without an explicit --batch target for stage scope so the helper derives the current batch from persisted stage progress.",
-      )
-      expect(calls[0]?.prompt).toContain(
-        "Do not combine stage scope with an explicit batch launch target; stage-scoped branches must derive the active batch from persisted stage state.",
+        "Start by inspecting persisted stage state and running `work supervise --batch \"<next batch in this stage>\"` for the next incomplete or resumable batch in that stage.",
       )
       expect(calls[0]?.prompt).toContain('In "Next For The User", explicitly say whether stage 10 is done')
-      expect(calls[0]?.prompt).toContain(
-        `work supervise --repo-root "${workspace.repoRoot}" --stream "${workspace.streamId}" --root-session-id "root-session-1" --branch-session-id "branch-supervision-1" --parent-session-id "root-session-1" --checkpoint-message-id "msg-root-checkpoint" --checkpoint-message-index 0 --checkpoint-created-at "2026-04-12T00:00:00.000Z"`,
-      )
-      expect(calls[0]?.prompt).not.toContain('--batch "10.01"')
+      expect(calls[0]?.prompt).not.toContain("Branch scope:")
+      expect(calls[0]?.prompt).not.toContain("--root-session-id")
+      expect(calls[0]?.prompt).not.toContain("--checkpoint-message-id")
       expect(result).toContain("## Next For The User\n- Stage 10 complete.")
 
       const stored = loadSupervisorState(workspace.repoRoot, workspace.streamId)
@@ -911,6 +908,37 @@ describe("launch_supervision_branch", () => {
       expect(stored?.branch_sessions[0]?.supervisionProgress).toEqual({
         executionMode: "stage_batch_loop",
       })
+    } finally {
+      cleanupTestWorkstream(workspace)
+    }
+  })
+
+  test("uses plain work supervise when batch scope is auto-resolved", async () => {
+    const workspace = createTestWorkstream("001-agent-tool-auto-batch-prompt")
+    const calls: Array<{ prompt: string }> = []
+
+    try {
+      await executeLaunchSupervisionBranch(
+        {},
+        { sessionID: "root-session-1" },
+        createDeps(workspace.repoRoot, workspace.streamId, {
+          runForkedSession: async ({ prompt }) => {
+            calls.push({ prompt })
+
+            return {
+              code: 0,
+              stdout: '{"type":"text","part":{"text":"## Next For The User\\n- Continue."}}\n',
+              stderr: "",
+              nativeSessionId: "ses_supervision_1",
+            }
+          },
+        }),
+      )
+
+      expect(calls).toHaveLength(1)
+      expect(calls[0]?.prompt).toContain("Please supervise the next resumable batch for this workstream.")
+      expect(calls[0]?.prompt).toContain("Start by running `work supervise`.")
+      expect(calls[0]?.prompt).not.toContain('work supervise --batch "undefined"')
     } finally {
       cleanupTestWorkstream(workspace)
     }

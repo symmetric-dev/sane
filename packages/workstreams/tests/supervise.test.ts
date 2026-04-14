@@ -227,9 +227,21 @@ function writeTasksList(
 describe("supervise", () => {
   let workspace: TestWorkspace | undefined
   const originalExecPath = process.execPath
+  const originalSessionId = process.env.SESSION_ID
+  const originalOpencodeSessionId = process.env.OPENCODE_SESSION_ID
 
   afterEach(() => {
     process.execPath = originalExecPath
+    if (originalSessionId === undefined) {
+      delete process.env.SESSION_ID
+    } else {
+      process.env.SESSION_ID = originalSessionId
+    }
+    if (originalOpencodeSessionId === undefined) {
+      delete process.env.OPENCODE_SESSION_ID
+    } else {
+      process.env.OPENCODE_SESSION_ID = originalOpencodeSessionId
+    }
     if (workspace) {
       rmSync(getRunResultPath(workspace.streamId, "01.01.01"), { force: true })
       rmSync(getSessionFilePath(workspace.streamId, "01.01.01"), { force: true })
@@ -535,6 +547,207 @@ describe("supervise", () => {
     })
   })
 
+  test("resolveRootAgentBranchContext auto-resolves context from current branch native session", async () => {
+    workspace = createTestWorkstream("001-supervise-auto-context")
+    writeIndex(workspace.repoRoot, workspace.streamId, "supervise-auto-context")
+    writeValidPlan(workspace.workDir)
+    writeTasks(workspace.workDir, workspace.streamId, "pending")
+
+    const startedAt = new Date().toISOString()
+    await upsertBranchSessionLocked(
+      workspace.repoRoot,
+      workspace.streamId,
+      buildRootAgentBranchSession({
+        context: {
+          rootSessionId: "root-session-auto",
+          branchSessionId: "branch-supervision-auto",
+          checkpointMessageId: "msg-root-auto",
+          checkpointCreatedAt: "2026-04-13T00:00:00.000Z",
+          parentSessionId: "root-session-auto",
+          nativeSessionId: "ses_supervision_auto",
+        },
+        branchRole: "supervision",
+        status: "running",
+        startedAt,
+        updatedAt: startedAt,
+        batchId: "01.01",
+      }),
+    )
+
+    const previousSessionId = process.env.SESSION_ID
+    const previousOpencodeSessionId = process.env.OPENCODE_SESSION_ID
+    process.env.SESSION_ID = "ses_supervision_auto"
+    delete process.env.OPENCODE_SESSION_ID
+
+    try {
+      const resolved = await resolveRootAgentBranchContext({}, workspace.repoRoot, workspace.streamId)
+
+      expect(resolved).toMatchObject({
+        streamId: workspace.streamId,
+        branchContext: {
+          rootSessionId: "root-session-auto",
+          branchSessionId: "branch-supervision-auto",
+          checkpointMessageId: "msg-root-auto",
+          checkpointCreatedAt: "2026-04-13T00:00:00.000Z",
+          parentSessionId: "root-session-auto",
+          nativeSessionId: "ses_supervision_auto",
+          source: "native_fork",
+        },
+      })
+    } finally {
+      if (previousSessionId === undefined) {
+        delete process.env.SESSION_ID
+      } else {
+        process.env.SESSION_ID = previousSessionId
+      }
+
+      if (previousOpencodeSessionId === undefined) {
+        delete process.env.OPENCODE_SESSION_ID
+      } else {
+        process.env.OPENCODE_SESSION_ID = previousOpencodeSessionId
+      }
+    }
+  })
+
+  test("resolveRootAgentBranchContext keeps explicit overrides over auto-resolved branch context", async () => {
+    workspace = createTestWorkstream("001-supervise-context-overrides")
+    writeIndex(workspace.repoRoot, workspace.streamId, "supervise-context-overrides")
+    writeValidPlan(workspace.workDir)
+    writeTasks(workspace.workDir, workspace.streamId, "pending")
+
+    const startedAt = new Date().toISOString()
+    await upsertBranchSessionLocked(
+      workspace.repoRoot,
+      workspace.streamId,
+      buildRootAgentBranchSession({
+        context: {
+          rootSessionId: "root-session-auto",
+          branchSessionId: "branch-supervision-auto",
+          checkpointMessageId: "msg-root-auto",
+          checkpointCreatedAt: "2026-04-13T00:00:00.000Z",
+          parentSessionId: "root-session-auto",
+          nativeSessionId: "ses_supervision_auto",
+        },
+        branchRole: "supervision",
+        status: "running",
+        startedAt,
+        updatedAt: startedAt,
+        batchId: "01.01",
+      }),
+    )
+
+    const previousSessionId = process.env.SESSION_ID
+    process.env.SESSION_ID = "ses_supervision_auto"
+
+    try {
+      const resolved = await resolveRootAgentBranchContext(
+        {
+          rootSessionId: "root-session-override",
+          branchSessionId: "branch-supervision-override",
+          parentSessionId: "root-session-override",
+          checkpointMessageId: "msg-override",
+          checkpointCreatedAt: "2026-04-14T00:00:00.000Z",
+        },
+        workspace.repoRoot,
+        workspace.streamId,
+      )
+
+      expect(resolved).toMatchObject({
+        streamId: workspace.streamId,
+        branchContext: {
+          rootSessionId: "root-session-override",
+          branchSessionId: "branch-supervision-override",
+          parentSessionId: "root-session-override",
+          checkpointMessageId: "msg-override",
+          checkpointCreatedAt: "2026-04-14T00:00:00.000Z",
+          nativeSessionId: "ses_supervision_auto",
+          source: "native_fork",
+        },
+      })
+    } finally {
+      if (previousSessionId === undefined) {
+        delete process.env.SESSION_ID
+      } else {
+        process.env.SESSION_ID = previousSessionId
+      }
+    }
+  })
+
+  test("CLI auto-resolves the active stream for branch-supervision dry runs", async () => {
+    workspace = createTestWorkstream("001-supervise-auto-stream")
+    mkdirSync(join(workspace.repoRoot, "work"), { recursive: true })
+    writeFileSync(
+      join(workspace.repoRoot, "work", "index.json"),
+      JSON.stringify(
+        {
+          version: "1.0.0",
+          last_updated: new Date().toISOString(),
+          streams: [
+            {
+              id: workspace.streamId,
+              name: "supervise-auto-stream",
+              order: 1,
+              size: "short",
+              session_estimated: {
+                length: 1,
+                unit: "session",
+                session_minutes: [30, 45],
+                session_iterations: [4, 8],
+              },
+              created_at: new Date().toISOString(),
+              updated_at: new Date().toISOString(),
+              path: `work/${workspace.streamId}`,
+              generated_by: { workstreams: "test" },
+            },
+          ],
+        },
+        null,
+        2,
+      ),
+    )
+    writeValidPlan(workspace.workDir)
+    writeTasks(workspace.workDir, workspace.streamId, "pending")
+
+    const startedAt = new Date().toISOString()
+    await upsertBranchSessionLocked(
+      workspace.repoRoot,
+      workspace.streamId,
+      buildRootAgentBranchSession({
+        context: {
+          rootSessionId: "root-session-auto-stream",
+          branchSessionId: "branch-supervision-auto-stream",
+          checkpointMessageId: "msg-root-auto-stream",
+          checkpointCreatedAt: "2026-04-13T00:00:00.000Z",
+          parentSessionId: "root-session-auto-stream",
+          nativeSessionId: "ses_supervision_auto_stream",
+        },
+        branchRole: "supervision",
+        status: "running",
+        startedAt,
+        updatedAt: startedAt,
+        batchId: "01.01",
+      }),
+    )
+
+    process.env.SESSION_ID = "ses_supervision_auto_stream"
+    delete process.env.OPENCODE_SESSION_ID
+
+    const { stdout } = await captureCliOutput(async () => {
+      await superviseMain([
+        "bun",
+        "work-supervise",
+        "--repo-root",
+        workspace!.repoRoot,
+        "--dry-run",
+      ])
+    })
+
+    const output = stdout.join("\n")
+    expect(output).toContain("[supervise] resolved branch context: root=root-session-auto-stream")
+    expect(output).toContain("[supervise] dry run for stream")
+    expect(output).toContain("[supervise] would launch batch 01.01")
+  })
+
   test("CLI preserve stage-scoped supervision progress when recording follow-up branch state", async () => {
     workspace = createTestWorkstream("001-supervise-stage-scope")
     writeIndex(workspace.repoRoot, workspace.streamId, "supervise-stage-scope")
@@ -598,24 +811,31 @@ describe("supervise", () => {
     writeFileSync(fakeRuntime, "#!/bin/sh\nexit 0\n", { mode: 0o755 })
     process.execPath = fakeRuntime
 
-    await captureCliOutput(async () => {
-      await superviseMain([
-        "bun",
-        "work-supervise",
-        "--repo-root",
-        workspace!.repoRoot,
-        "--stream",
-        workspace!.streamId,
-        "--batch",
-        "01.01",
-        "--poll-interval-ms",
-        "1",
-        "--root-session-id",
-        "root-session-stage-1",
-        "--branch-session-id",
-        "branch-supervision-stage-1",
-      ])
-    })
+    const previousOpencodeSessionId = process.env.OPENCODE_SESSION_ID
+    process.env.OPENCODE_SESSION_ID = "ses_supervision_stage_1"
+
+    try {
+      await captureCliOutput(async () => {
+        await superviseMain([
+          "bun",
+          "work-supervise",
+          "--repo-root",
+          workspace!.repoRoot,
+          "--stream",
+          workspace!.streamId,
+          "--batch",
+          "01.01",
+          "--poll-interval-ms",
+          "1",
+        ])
+      })
+    } finally {
+      if (previousOpencodeSessionId === undefined) {
+        delete process.env.OPENCODE_SESSION_ID
+      } else {
+        process.env.OPENCODE_SESSION_ID = previousOpencodeSessionId
+      }
+    }
 
     const supervisorState = loadSupervisorState(workspace.repoRoot, workspace.streamId)
     expect(supervisorState?.branch_sessions[0]).toMatchObject({
@@ -630,6 +850,90 @@ describe("supervise", () => {
       },
     })
     expect(supervisorState?.branch_sessions[0]?.batchId).toBeUndefined()
+  })
+
+  test("stage-scoped plain work supervise stays bounded to the active stage", async () => {
+    workspace = createTestWorkstream("001-supervise-stage-bounded-rerun")
+    writeIndex(workspace.repoRoot, workspace.streamId, "supervise-stage-bounded-rerun")
+    writeValidPlan(workspace.workDir)
+    writeTasksList(workspace.workDir, workspace.streamId, [
+      {
+        id: "01.01.01.01",
+        status: "completed",
+        threadName: "Thread 1",
+        batchName: "Batch 1",
+        stageName: "Stage 1",
+        report: "Completed stage batch 01.01.",
+      },
+      {
+        id: "01.02.01.01",
+        status: "completed",
+        threadName: "Thread 1",
+        batchName: "Batch 2",
+        stageName: "Stage 1",
+        report: "Completed stage batch 01.02.",
+      },
+      {
+        id: "02.01.01.01",
+        status: "pending",
+        threadName: "Thread 1",
+        batchName: "Batch 1",
+        stageName: "Stage 2",
+      },
+    ])
+
+    const startedAt = new Date().toISOString()
+    await upsertBranchSessionLocked(
+      workspace.repoRoot,
+      workspace.streamId,
+      buildRootAgentBranchSession({
+        context: {
+          rootSessionId: "root-session-stage-bounded",
+          branchSessionId: "branch-supervision-stage-bounded",
+          checkpointMessageId: "msg-root-stage-bounded",
+          checkpointCreatedAt: "2026-04-13T00:00:00.000Z",
+          parentSessionId: "root-session-stage-bounded",
+          nativeSessionId: "ses_supervision_stage_bounded",
+          scope: {
+            level: "stage",
+            stageId: "01",
+          },
+        },
+        branchRole: "supervision",
+        status: "running",
+        startedAt,
+        updatedAt: startedAt,
+      }),
+    )
+
+    const previousOpencodeSessionId = process.env.OPENCODE_SESSION_ID
+    process.env.OPENCODE_SESSION_ID = "ses_supervision_stage_bounded"
+
+    try {
+      const { stdout } = await captureCliOutput(async () => {
+        await superviseMain([
+          "bun",
+          "work-supervise",
+          "--repo-root",
+          workspace!.repoRoot,
+          "--stream",
+          workspace!.streamId,
+        ])
+      })
+
+      const output = stdout.join("\n")
+      expect(output).toContain("[supervise] resolved branch context:")
+      expect(output).toContain(
+        `[supervise] No incomplete batches remain within stage 01 for ${workspace.streamId}.`,
+      )
+      expect(output).not.toContain("02.01")
+    } finally {
+      if (previousOpencodeSessionId === undefined) {
+        delete process.env.OPENCODE_SESSION_ID
+      } else {
+        process.env.OPENCODE_SESSION_ID = previousOpencodeSessionId
+      }
+    }
   })
 
   test("supervise resolves native branch ancestry and multi persists it into thread lineage", async () => {
@@ -686,7 +990,7 @@ describe("supervise", () => {
       )
     }, 25)
 
-    const branchContext = await resolveRootAgentBranchContext(
+    const resolved = await resolveRootAgentBranchContext(
       {
         rootSessionId: "root-session-1",
         branchSessionId: "branch-supervision-1",
@@ -698,15 +1002,21 @@ describe("supervise", () => {
       workspace.streamId,
     )
 
-    expect(branchContext).toMatchObject({
-      rootSessionId: "root-session-1",
-      branchSessionId: "branch-supervision-1",
-      checkpointMessageId: "msg-root-checkpoint",
-      checkpointCreatedAt: "2026-04-12T00:00:00.000Z",
-      parentSessionId: "root-session-1",
-      nativeSessionId: "ses_supervision_1",
-      source: "native_fork",
+    expect(resolved).toMatchObject({
+      streamId: workspace.streamId,
+      branchContext: {
+        rootSessionId: "root-session-1",
+        branchSessionId: "branch-supervision-1",
+        checkpointMessageId: "msg-root-checkpoint",
+        checkpointCreatedAt: "2026-04-12T00:00:00.000Z",
+        parentSessionId: "root-session-1",
+        nativeSessionId: "ses_supervision_1",
+        source: "native_fork",
+      },
     })
+
+    const branchContext = resolved.branchContext
+    expect(branchContext).toBeTruthy()
 
     const lineage = buildRootAgentThreadSessionLineage(
       {
@@ -1207,7 +1517,9 @@ describe("supervise", () => {
       })
 
       expect(stderr).toHaveLength(0)
-      expect(stdout.join("\n")).toMatch(/^[\s]+supervise\s+Run headless batch execution\/recovery helper$/m)
+      expect(stdout.join("\n")).toMatch(
+        /^[\s]+supervise\s+Run batch-bounded supervision execution\/recovery helper$/m,
+      )
     } finally {
       process.exit = originalExit
     }

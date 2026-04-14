@@ -241,6 +241,7 @@ describe("supervisor-state", () => {
     const stored = loadSupervisorState(workspace.repoRoot, workspace.streamId)
     expect(stored?.checkpoint_pointers).toHaveLength(1)
     expect(stored?.branch_sessions).toHaveLength(1)
+    expect(stored?.current_branch_supervision).toBeUndefined()
     expect(stored?.checkpoint_pointers[0]).toMatchObject({
       rootSessionId: "root-session-1",
       checkpointMessageId: "msg_checkpoint_1",
@@ -290,6 +291,42 @@ describe("supervisor-state", () => {
     })
   })
 
+  test("upsertBranchSessionLocked clears current branch supervision for terminal branch completion", async () => {
+    const startedAt = new Date().toISOString()
+
+    await upsertBranchSessionLocked(workspace.repoRoot, workspace.streamId, {
+      owner: "root_agent",
+      rootSessionId: "root-session-1",
+      branchSessionId: "branch-supervision-1",
+      branchRole: "supervision",
+      parentSessionId: "root-session-1",
+      nativeSessionId: "ses_supervision_1",
+      source: "native_fork",
+      status: "running",
+      startedAt,
+      updatedAt: startedAt,
+      batchId: "01.01",
+    })
+
+    await upsertBranchSessionLocked(workspace.repoRoot, workspace.streamId, {
+      owner: "root_agent",
+      rootSessionId: "root-session-1",
+      branchSessionId: "branch-supervision-1",
+      branchRole: "supervision",
+      parentSessionId: "root-session-1",
+      nativeSessionId: "ses_supervision_1",
+      source: "native_fork",
+      status: "completed",
+      startedAt,
+      updatedAt: new Date().toISOString(),
+      completedAt: new Date().toISOString(),
+      batchId: "01.01",
+    })
+
+    const stored = loadSupervisorState(workspace.repoRoot, workspace.streamId)
+    expect(stored?.current_branch_supervision).toBeUndefined()
+  })
+
   test("loadSupervisorState normalizes legacy batch-only branch records into batch scope", async () => {
     const startedAt = new Date().toISOString()
 
@@ -330,6 +367,50 @@ describe("supervisor-state", () => {
       executionMode: "single_batch_run",
       currentBatchId: "15.01",
     })
+  })
+
+  test("loadSupervisorState ignores stale current branch supervision without an active backing branch session", () => {
+    const startedAt = new Date().toISOString()
+
+    saveSupervisorState(workspace.repoRoot, workspace.streamId, {
+      version: "1.0.0",
+      stream_id: workspace.streamId,
+      last_updated: startedAt,
+      current_branch_supervision: {
+        owner: "root_agent",
+        rootSessionId: "root-session-1",
+        branchSessionId: "branch-supervision-stale",
+        branchRole: "supervision",
+        nativeSessionId: "ses_supervision_1",
+        updatedAt: startedAt,
+      },
+      runs: [],
+      checkpoint_pointers: [],
+      branch_sessions: [
+        {
+          owner: "root_agent",
+          rootSessionId: "root-session-1",
+          branchSessionId: "branch-supervision-stale",
+          branchRole: "supervision",
+          parentSessionId: "root-session-1",
+          nativeSessionId: "ses_supervision_1",
+          source: "native_fork",
+          status: "completed",
+          startedAt,
+          updatedAt: startedAt,
+          completedAt: startedAt,
+          batchId: "01.01",
+        },
+      ],
+      reviewed_batches: [],
+      issue_summaries: [],
+      fix_cycles: [],
+      escalations: [],
+      stage_stops: [],
+    })
+
+    const stored = loadSupervisorState(workspace.repoRoot, workspace.streamId)
+    expect(stored?.current_branch_supervision).toBeUndefined()
   })
 
   test("upsertBranchSessionLocked preserves stage scope while updating current batch", async () => {

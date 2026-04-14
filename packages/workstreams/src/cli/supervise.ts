@@ -15,6 +15,7 @@ import {
   findRootAgentBranchSessionByBranchSessionId,
   getRootAgentBranchSource,
   type RootAgentBranchContext,
+  resolveCurrentBranchSupervisionContext,
   waitForRootAgentBranchNativeSessionId,
 } from "../lib/root-agent-branch.ts"
 import {
@@ -52,11 +53,17 @@ interface ResolvedSupervisorContext {
   repoRoot: string
   stream: { id: string; name: string }
   tasksFile: NonNullable<ReturnType<typeof readTasksFile>>
+  branchContext: RootAgentBranchContext | null
+}
+
+interface ResolvedRootAgentBranchContextResult {
+  streamId?: string
+  branchContext: RootAgentBranchContext | null
 }
 
 function printHelp(): void {
   console.log(`
-work supervise - Run a thin headless batch execution helper
+work supervise - Run a batch-bounded supervision helper
 
 Usage:
   work supervise [options]
@@ -71,22 +78,25 @@ Options:
   --silent               Disable notification sounds during batch execution
   --timeout-ms           Stop waiting for batch completion after this many milliseconds
   --poll-interval-ms     Poll interval while waiting for batch status (default: 1000)
-  --root-session-id      Root Agent session ID for lineage metadata
-  --branch-session-id    Repo-local branch session ID for this supervision branch
-  --parent-session-id    Parent native session ID when this branch was forked
+  --dry-run              Show the planned helper actions without executing them
+  --help, -h             Show this help message
+
+  Advanced lineage/debug overrides (normally auto-resolved for branch runs):
+  --root-session-id           Root Agent session ID for lineage metadata
+  --branch-session-id         Repo-local branch session ID for this supervision branch
+  --parent-session-id         Parent native session ID when this branch was forked
   --parent-branch-session-id  Parent repo-local branch session ID for nested flows
   --checkpoint-message-id     Root-session checkpoint message ID for this branch launch
   --checkpoint-message-index  Deterministic checkpoint message index fallback
   --checkpoint-created-at     ISO timestamp when checkpoint metadata was created
   --native-branch-session-id  Native opencode session ID for this branch (optional)
-  --dry-run              Show the planned helper actions without executing them
-  --help, -h             Show this help message
 
 Description:
-  Resolves the next batch to execute or recover, launches headless batch
-  execution when needed, waits for or recovers persisted batch-status,
-  reconciles stale runs, and then hands terminal batch results back to the
-  caller so Root Agent review/fix/escalation policy stays outside the CLI.
+  Resolves the next batch to execute or recover, auto-resolves active branch
+  lineage when available, launches headless batch execution when needed,
+  waits for or recovers persisted batch-status, reconciles stale runs, and
+  then hands terminal batch results back to the caller so Root Agent review,
+  fix, and escalation policy stays outside the CLI.
 
 Examples:
   work supervise
@@ -205,30 +215,68 @@ function isBatchWaitTimeoutError(error: unknown): error is Error {
   return error instanceof Error && /Timed out after \d+ms waiting for batch /.test(error.message)
 }
 
+function formatResolvedBranchContext(context: RootAgentBranchContext): string {
+  const scopeLabel = context.scope
+    ? context.scope.level === "stage"
+      ? `stage:${context.scope.stageId}`
+      : `batch:${context.scope.batchId}`
+    : "none"
+
+  return [
+    `root=${context.rootSessionId}`,
+    `branch=${context.branchSessionId}`,
+    `source=${context.source ?? "repo_local_fallback"}`,
+    `scope=${scopeLabel}`,
+    context.nativeSessionId ? `native=${context.nativeSessionId}` : "native=none",
+    context.parentSessionId ? `parent=${context.parentSessionId}` : "parent=none",
+    context.checkpointMessageId ? `checkpoint=${context.checkpointMessageId}` : "checkpoint=none",
+  ].join(" ")
+}
+
 export async function resolveRootAgentBranchContext(
   cliArgs: SuperviseCliArgs,
   repoRoot: string,
-  streamId: string,
-): Promise<RootAgentBranchContext | null> {
-  if (!cliArgs.rootSessionId) {
-    return null
+  streamId?: string,
+): Promise<ResolvedRootAgentBranchContextResult> {
+  const autoResolved = resolveCurrentBranchSupervisionContext({
+    repoRoot,
+    streamId: cliArgs.streamId ?? streamId,
+    sessionId: cliArgs.nativeBranchSessionId,
+    env: process.env,
+  })
+  const resolvedStreamId = autoResolved?.streamId ?? streamId
+
+  const storedBranch =
+    resolvedStreamId && (cliArgs.branchSessionId ?? autoResolved?.current.branchSessionId)
+      ? findRootAgentBranchSessionByBranchSessionId({
+          repoRoot,
+          streamId: resolvedStreamId,
+          branchSessionId: cliArgs.branchSessionId ?? autoResolved!.current.branchSessionId,
+        })
+      : undefined
+  const rootSessionId =
+    cliArgs.rootSessionId ?? autoResolved?.current.rootSessionId ?? storedBranch?.rootSessionId
+
+  if (!rootSessionId) {
+    return {
+      ...(resolvedStreamId ? { streamId: resolvedStreamId } : {}),
+      branchContext: null,
+    }
   }
 
-  const branchSessionId = cliArgs.branchSessionId ?? createRootAgentBranchSessionId("supervision")
-  const storedBranch = cliArgs.branchSessionId
-    ? findRootAgentBranchSessionByBranchSessionId({
-        repoRoot,
-        streamId,
-        branchSessionId: cliArgs.branchSessionId,
-      })
-    : undefined
+  const branchSessionId =
+    cliArgs.branchSessionId ??
+    autoResolved?.current.branchSessionId ??
+    storedBranch?.branchSessionId ??
+    createRootAgentBranchSessionId("supervision")
   const nativeSessionId =
     cliArgs.nativeBranchSessionId ??
+    autoResolved?.current.nativeSessionId ??
     storedBranch?.nativeSessionId ??
-    (cliArgs.branchSessionId
+    (resolvedStreamId
       ? await waitForRootAgentBranchNativeSessionId({
           repoRoot,
-          streamId,
+          streamId: resolvedStreamId,
           branchSessionId,
           timeoutMs: 5000,
           pollIntervalMs: 100,
@@ -236,28 +284,66 @@ export async function resolveRootAgentBranchContext(
       : undefined)
 
   return {
-    rootSessionId: cliArgs.rootSessionId,
-    branchSessionId,
-    ...(cliArgs.checkpointMessageId ? { checkpointMessageId: cliArgs.checkpointMessageId } : {}),
-    ...(typeof cliArgs.checkpointMessageIndex === "number"
-      ? { checkpointMessageIndex: cliArgs.checkpointMessageIndex }
-      : {}),
-    ...(cliArgs.checkpointCreatedAt
-      ? { checkpointCreatedAt: cliArgs.checkpointCreatedAt }
-      : {}),
-    ...(cliArgs.parentSessionId
-      ? { parentSessionId: cliArgs.parentSessionId }
-      : storedBranch?.parentSessionId
-        ? { parentSessionId: storedBranch.parentSessionId }
-        : {}),
-    ...(cliArgs.parentBranchSessionId
-      ? { parentBranchSessionId: cliArgs.parentBranchSessionId }
-      : storedBranch?.parentBranchSessionId
-        ? { parentBranchSessionId: storedBranch.parentBranchSessionId }
-        : {}),
-    ...(nativeSessionId ? { nativeSessionId } : {}),
-    ...(storedBranch?.scope ? { scope: storedBranch.scope } : {}),
-    source: getRootAgentBranchSource(nativeSessionId, storedBranch?.source),
+    ...(resolvedStreamId ? { streamId: resolvedStreamId } : {}),
+    branchContext: {
+      rootSessionId,
+      branchSessionId,
+      ...(cliArgs.checkpointMessageId
+        ? { checkpointMessageId: cliArgs.checkpointMessageId }
+        : autoResolved?.current.checkpointMessageId
+          ? { checkpointMessageId: autoResolved.current.checkpointMessageId }
+          : storedBranch?.checkpointMessageId
+            ? { checkpointMessageId: storedBranch.checkpointMessageId }
+            : {}),
+      ...(typeof cliArgs.checkpointMessageIndex === "number"
+        ? { checkpointMessageIndex: cliArgs.checkpointMessageIndex }
+        : typeof autoResolved?.current.checkpointMessageIndex === "number"
+          ? { checkpointMessageIndex: autoResolved.current.checkpointMessageIndex }
+          : typeof storedBranch?.checkpointMessageIndex === "number"
+            ? { checkpointMessageIndex: storedBranch.checkpointMessageIndex }
+            : {}),
+      ...(cliArgs.checkpointCreatedAt
+        ? { checkpointCreatedAt: cliArgs.checkpointCreatedAt }
+        : autoResolved?.current.checkpointCreatedAt
+          ? { checkpointCreatedAt: autoResolved.current.checkpointCreatedAt }
+          : storedBranch?.checkpointCreatedAt
+            ? { checkpointCreatedAt: storedBranch.checkpointCreatedAt }
+            : {}),
+      ...(autoResolved?.current.breakpointSelection
+        ? { breakpointSelection: autoResolved.current.breakpointSelection }
+        : storedBranch?.breakpointSelection
+          ? { breakpointSelection: storedBranch.breakpointSelection }
+          : {}),
+      ...(autoResolved?.current.checkpointSessionId
+        ? { checkpointSessionId: autoResolved.current.checkpointSessionId }
+        : storedBranch?.checkpointSessionId
+          ? { checkpointSessionId: storedBranch.checkpointSessionId }
+          : {}),
+      ...(cliArgs.parentSessionId
+        ? { parentSessionId: cliArgs.parentSessionId }
+        : autoResolved?.current.parentSessionId
+          ? { parentSessionId: autoResolved.current.parentSessionId }
+          : storedBranch?.parentSessionId
+            ? { parentSessionId: storedBranch.parentSessionId }
+            : {}),
+      ...(cliArgs.parentBranchSessionId
+        ? { parentBranchSessionId: cliArgs.parentBranchSessionId }
+        : autoResolved?.current.parentBranchSessionId
+          ? { parentBranchSessionId: autoResolved.current.parentBranchSessionId }
+          : storedBranch?.parentBranchSessionId
+            ? { parentBranchSessionId: storedBranch.parentBranchSessionId }
+            : {}),
+      ...(nativeSessionId ? { nativeSessionId } : {}),
+      ...(autoResolved?.current.scope
+        ? { scope: autoResolved.current.scope }
+        : storedBranch?.scope
+          ? { scope: storedBranch.scope }
+          : {}),
+      source: getRootAgentBranchSource(
+        nativeSessionId,
+        autoResolved?.current.source ?? storedBranch?.source,
+      ),
+    },
   }
 }
 
@@ -319,8 +405,9 @@ function getDryRunActionMessage(action: Exclude<SupervisionExecutionAction, "sto
 
 async function resolveContext(cliArgs: SuperviseCliArgs): Promise<ResolvedSupervisorContext> {
   const repoRoot = cliArgs.repoRoot ?? getRepoRoot()
+  const branchResolution = await resolveRootAgentBranchContext(cliArgs, repoRoot)
   const index = loadIndex(repoRoot)
-  const stream = getResolvedStream(index, cliArgs.streamId)
+  const stream = getResolvedStream(index, branchResolution.streamId ?? cliArgs.streamId)
   const tasksFile = readTasksFile(repoRoot, stream.id)
   if (!tasksFile) {
     throw new Error(`No tasks found for stream ${stream.id}`)
@@ -330,7 +417,40 @@ async function resolveContext(cliArgs: SuperviseCliArgs): Promise<ResolvedSuperv
     repoRoot,
     stream,
     tasksFile,
+    branchContext: branchResolution.branchContext,
   }
+}
+
+function resolveRequestedBatchId(args: {
+  cliArgs: SuperviseCliArgs
+  tasks: NonNullable<ReturnType<typeof readTasksFile>>["tasks"]
+  supervisorState: ReturnType<typeof getSupervisorStateSnapshot>
+  branchContext: RootAgentBranchContext | null
+}): string | null {
+  if (args.cliArgs.batch) {
+    return args.cliArgs.batch
+  }
+
+  if (args.branchContext?.scope?.level === "batch") {
+    return (
+      getLatestResumableBatchId(args.supervisorState, {
+        batchId: args.branchContext.scope.batchId,
+      }) ?? args.branchContext.scope.batchId
+    )
+  }
+
+  if (args.branchContext?.scope?.level === "stage") {
+    return (
+      getLatestResumableBatchId(args.supervisorState, {
+        stageId: args.branchContext.scope.stageId,
+      }) ??
+      findNextIncompleteBatch(args.tasks, {
+        stageId: args.branchContext.scope.stageId,
+      })
+    )
+  }
+
+  return getLatestResumableBatchId(args.supervisorState) ?? findNextIncompleteBatch(args.tasks)
 }
 
 export async function main(argv: string[] = process.argv): Promise<void> {
@@ -349,17 +469,26 @@ export async function main(argv: string[] = process.argv): Promise<void> {
     process.exit(1)
   }
 
-  const { repoRoot, stream, tasksFile } = context
-  const branchContext = await resolveRootAgentBranchContext(cliArgs, repoRoot, stream.id)
+  const { repoRoot, stream, tasksFile, branchContext } = context
+  if (branchContext) {
+    console.log(`[supervise] resolved branch context: ${formatResolvedBranchContext(branchContext)}`)
+  }
   const reconciledRunIds = await reconcileSupervisorRunsLocked(repoRoot, stream.id)
   const reconciledSupervisorState = getSupervisorStateSnapshot(repoRoot, stream.id)
-  const requestedBatchId =
-    cliArgs.batch ??
-    getLatestResumableBatchId(reconciledSupervisorState) ??
-    findNextIncompleteBatch(tasksFile.tasks)
+  const requestedBatchId = resolveRequestedBatchId({
+    cliArgs,
+    tasks: tasksFile.tasks,
+    supervisorState: reconciledSupervisorState,
+    branchContext,
+  })
 
   if (!requestedBatchId) {
-    console.log(`[supervise] No incomplete batches remain for ${stream.id}.`)
+    const scopeSuffix = branchContext?.scope
+      ? branchContext.scope.level === "stage"
+        ? ` within stage ${branchContext.scope.stageId}`
+        : ` within batch ${branchContext.scope.batchId}`
+      : ""
+    console.log(`[supervise] No incomplete batches remain${scopeSuffix} for ${stream.id}.`)
     return
   }
 
@@ -387,7 +516,7 @@ export async function main(argv: string[] = process.argv): Promise<void> {
     )
     if (branchContext) {
       console.log(
-        `[supervise] would record supervision branch ${branchContext.branchSessionId} under root session ${branchContext.rootSessionId}`,
+        `[supervise] would use supervision branch ${branchContext.branchSessionId} under root session ${branchContext.rootSessionId}`,
       )
     }
     console.log(getDryRunActionMessage(startPlan.action, startPlan.batchId))

@@ -43,7 +43,31 @@ export interface BuildSupervisionExecutionPlanArgs {
   requestedBatchId: string
 }
 
-export function findNextIncompleteBatch(tasks: Array<{ id: string; status: string }>): string | null {
+interface BatchSelectionScope {
+  stageId?: string
+  batchId?: string
+}
+
+function matchesBatchSelectionScope(batchId: string, scope?: BatchSelectionScope): boolean {
+  if (!scope) {
+    return true
+  }
+
+  if (scope.batchId) {
+    return batchId === scope.batchId
+  }
+
+  if (scope.stageId) {
+    return batchId.startsWith(`${scope.stageId}.`)
+  }
+
+  return true
+}
+
+export function findNextIncompleteBatch(
+  tasks: Array<{ id: string; status: string }>,
+  scope?: BatchSelectionScope,
+): string | null {
   const batchMap = new Map<string, Array<{ id: string; status: string }>>()
 
   for (const task of tasks) {
@@ -57,6 +81,10 @@ export function findNextIncompleteBatch(tasks: Array<{ id: string; status: strin
   }
 
   for (const batchId of Array.from(batchMap.keys()).sort()) {
+    if (!matchesBatchSelectionScope(batchId, scope)) {
+      continue
+    }
+
     const batchTasks = batchMap.get(batchId) ?? []
     const allDone = batchTasks.every(
       (task) => task.status === "completed" || task.status === "cancelled",
@@ -247,18 +275,25 @@ function getExecutionActionForBatchStatus(
 
 export function getLatestResumableBatchId(
   supervisorState: SupervisorStateFile,
+  scope?: BatchSelectionScope,
 ): string | undefined {
   const activeRun = getRunById(supervisorState, supervisorState.active_run_id)
   if (
     activeRun &&
     (activeRun.status === "running" || activeRun.status === "paused") &&
-    activeRun.currentBatchId
+    activeRun.currentBatchId &&
+    matchesBatchSelectionScope(activeRun.currentBatchId, scope)
   ) {
     return activeRun.currentBatchId
   }
 
   return [...supervisorState.runs]
-    .filter((run) => (run.status === "running" || run.status === "paused") && run.currentBatchId)
+    .filter(
+      (run) =>
+        (run.status === "running" || run.status === "paused") &&
+        run.currentBatchId &&
+        matchesBatchSelectionScope(run.currentBatchId, scope),
+    )
     .sort((left, right) =>
       new Date(right.updatedAt).getTime() - new Date(left.updatedAt).getTime(),
     )[0]?.currentBatchId

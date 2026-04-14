@@ -76,6 +76,7 @@ export interface WorkstreamsToolRuntimeInfo {
     metadataOnlyCheckpoints: boolean;
     messageBoundaryFork: boolean;
     breakpointTags: boolean;
+    autoResolvedBranchSupervisionContext: boolean;
   };
   errors?: {
     workCommandPath?: string;
@@ -160,52 +161,32 @@ function parseBreakpointTagsArg(rawValue?: string): string[] | undefined {
   return normalized.size > 0 ? [...normalized] : undefined;
 }
 
-function buildWorkSuperviseCommand(args: {
-  repoRoot: string;
-  streamId: string;
-  batch?: string;
-  timeoutMs?: number;
-  pollIntervalMs?: number;
-  noServer?: boolean;
-  silent?: boolean;
-  rootSessionId: string;
-  branchSessionId: string;
-  parentSessionId: string;
-  checkpointMessageId?: string;
-  checkpointMessageIndex?: number;
-  checkpointCreatedAt?: string;
-}): string {
-  return `work supervise --repo-root "${args.repoRoot}" --stream "${args.streamId}"${args.batch ? ` --batch "${args.batch}"` : ""}${args.timeoutMs !== undefined ? ` --timeout-ms ${args.timeoutMs}` : ""}${args.pollIntervalMs !== undefined ? ` --poll-interval-ms ${args.pollIntervalMs}` : ""}${args.noServer ? " --no-server" : ""}${args.silent ? " --silent" : ""} --root-session-id "${args.rootSessionId}" --branch-session-id "${args.branchSessionId}" --parent-session-id "${args.parentSessionId}"${args.checkpointMessageId ? ` --checkpoint-message-id "${args.checkpointMessageId}"` : ""}${typeof args.checkpointMessageIndex === "number" ? ` --checkpoint-message-index ${args.checkpointMessageIndex}` : ""}${args.checkpointCreatedAt ? ` --checkpoint-created-at "${args.checkpointCreatedAt}"` : ""}`;
-}
-
 function buildSupervisionPrompt(args: {
   scope?: BranchLaunchScope;
   batch?: string;
-  command: string;
 }): string {
   const batchTarget = args.batch
     ? `batch ${args.batch}`
     : "the next resumable batch";
   const scopeLabel = describeScopeLabel(args.scope, args.batch);
   const scopeInstructions = buildScopeInstructionBlock(args.scope, args.batch);
+  const initialSuperviseCommand =
+    args.scope?.level === "stage"
+      ? "Start by inspecting persisted stage state and running `work supervise --batch \"<next batch in this stage>\"` for the next incomplete or resumable batch in that stage."
+      : args.scope?.level === "batch" || args.batch
+        ? `Start by running \`work supervise --batch "${args.scope?.batchId ?? args.batch}"\`.`
+        : "Start by running `work supervise`.";
 
   return [
     args.scope?.level === "stage"
       ? `Please supervise ${scopeLabel} for this workstream, one batch at a time until the stage is done or you must yield by policy.`
       : `Please supervise ${batchTarget} for this workstream.`,
-    "Use the implementing-workstreams skill.",
+    "Use the supervising-workstreams skill.",
     ...scopeInstructions,
     "",
-    "Start with this exact command:",
-    args.command,
-    "",
-    "Then continue the supervision loop yourself:",
-    "- inspect persisted batch and supervisor state after each supervise run",
-    "- if the run times out or remains resumable, rerun work supervise without an explicit new --batch target so the interrupted batch continues deterministically",
-    "- launch review subagents to inspect the completed work",
-    "- evaluate the fix-cycle versus escalation policy from persisted evidence",
-    "- launch fix subagents when review finds issues and a fix cycle is still appropriate",
-    "- re-review after fixes until the batch is done or a real escalation is required",
+    initialSuperviseCommand,
+    "Reuse plain `work supervise` when the current batch is already resumable; only add `--batch` when you need to pick the next bounded batch inside your scope.",
+    "Then follow the supervising-workstreams skill, using persisted workstream state to decide whether to rerun the current batch, continue within the same scope, run a fix subagent, or yield by policy.",
     "",
     "When you yield back, return a semi-structured final report with these headings exactly:",
     "## Accomplished",
@@ -231,19 +212,17 @@ function buildScopeInstructionBlock(
 
   if (scope?.level === "stage") {
     return [
-      `Branch scope: ${scopeLabel}.`,
-      "Important: work supervise itself is still a single-batch primitive.",
       `Stay inside ${scopeLabel}; do not drift into later stages even if the broader workstream has more incomplete batches.`,
       `Before each supervise pass, inspect the persisted state of ${scopeLabel} and identify the next incomplete or resumable batch within that stage.`,
-      `Launch and rerun work supervise without an explicit --batch target for stage scope so the helper derives the current batch from persisted stage progress.`,
+      "work supervise itself is still a single-batch primitive.",
       `After each review/fix cycle, inspect persisted workstream and supervisor state again to decide whether the same batch must resume, another batch in ${scopeLabel} remains, or ${scopeLabel} is complete.`,
-      `Do not combine stage scope with an explicit batch launch target; stage-scoped branches must derive the active batch from persisted stage state.`,
+      `Yield as soon as ${scopeLabel} is complete or policy says to stop.`,
     ];
   }
 
   return [
-    `Branch scope: ${scopeLabel}.`,
     "Keep this branch focused on one bounded batch supervision pass.",
+    `Yield as soon as ${scopeLabel} is done or policy says to stop.`,
   ];
 }
 
@@ -616,6 +595,7 @@ function getWorkstreamsToolRuntimeInfo(
       metadataOnlyCheckpoints: true,
       messageBoundaryFork: true,
       breakpointTags: true,
+      autoResolvedBranchSupervisionContext: true,
     },
   };
 
@@ -1416,26 +1396,9 @@ async function executeLaunchSupervisionBranch(
       );
     }
 
-    const workSuperviseCommand = buildWorkSuperviseCommand({
-      repoRoot,
-      streamId,
-      batch: args.batch,
-      timeoutMs: args.timeoutMs,
-      pollIntervalMs: args.pollIntervalMs,
-      noServer: args.noServer,
-      silent: args.silent,
-      rootSessionId,
-      branchSessionId,
-      parentSessionId: rootSessionId,
-      checkpointMessageId: checkpointPointer.checkpointMessageId,
-      checkpointMessageIndex: checkpointPointer.checkpointMessageIndex,
-      checkpointCreatedAt: checkpointPointer.checkpointCreatedAt,
-    });
-
     const supervisionPrompt = buildSupervisionPrompt({
       scope: launchScope,
       batch: args.batch,
-      command: workSuperviseCommand,
     });
     const persistNativeSessionId = async (nativeSessionId: string) => {
       const updatedAt = deps.now();

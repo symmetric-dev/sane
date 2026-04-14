@@ -5,8 +5,10 @@ export {
 export {
   buildRootAgentBranchSession,
   createRootAgentBranchSessionId,
+  getCurrentRootAgentNativeSessionId,
   findRootAgentBranchSessionForLaunchSessionId,
   findRootAgentBranchSessionByNativeSessionId,
+  resolveCurrentBranchSupervisionContext,
   waitForRootAgentBranchNativeSessionId,
   waitForRootAgentBranchTerminalSession,
 } from "./lib/root-agent-branch.ts"
