@@ -3,25 +3,21 @@
  * Test GitHub sync functionality
  * Usage: bun run ./scripts/check-github-sync.ts
  *
- * Tests the sync functions directly without using the CLI
+ * Tests stage-level sync functions directly without using the CLI
  */
 
 import { getGitHubAuth } from "../packages/workstreams/src/lib/github/auth.ts"
 import { loadGitHubConfig, isGitHubEnabled } from "../packages/workstreams/src/lib/github/config.ts"
-import {
-  isThreadComplete,
-  checkAndCloseThreadIssue,
-  syncIssueStates,
-  createIssuesForWorkstream,
-} from "../packages/workstreams/src/lib/github/sync.ts"
+import { syncStageIssues, isStageComplete } from "../packages/workstreams/src/lib/github/sync.ts"
 import { loadIndex } from "../packages/workstreams/src/lib/index.ts"
-import { readTasksFile, parseTaskId } from "../packages/workstreams/src/lib/tasks.ts"
+import { readTasksFile } from "../packages/workstreams/src/lib/tasks.ts"
+import { loadWorkstreamGitHub } from "../packages/workstreams/src/lib/github/workstream-github.ts"
 
 const repoRoot = process.cwd()
 
 interface ThreadSummary {
-  threadKey: string
-  threadName: string
+  stageNumber: string
+  stageName: string
   taskCount: number
   completedCount: number
   isComplete: boolean
@@ -30,48 +26,45 @@ interface ThreadSummary {
   issueState?: string
 }
 
-function getThreadSummaries(repoRoot: string, streamId: string): ThreadSummary[] {
+async function getStageSummaries(repoRoot: string, streamId: string): Promise<ThreadSummary[]> {
   const tasksFile = readTasksFile(repoRoot, streamId)
   if (!tasksFile) return []
 
-  const threads = new Map<string, ThreadSummary>()
+  const githubData = await loadWorkstreamGitHub(repoRoot, streamId)
+  const stages = new Map<string, ThreadSummary>()
 
   for (const task of tasksFile.tasks) {
-    const { stage, batch, thread } = parseTaskId(task.id)
-    const stageId = stage.toString().padStart(2, "0")
-    const batchId = batch.toString().padStart(2, "0")
-    const threadId = thread.toString().padStart(2, "0")
-    const threadKey = `${stageId}.${batchId}.${threadId}`
+    const stageNumber = task.id.split(".")[0]
+    if (!stageNumber) {
+      continue
+    }
 
-    if (!threads.has(threadKey)) {
-      threads.set(threadKey, {
-        threadKey,
-        threadName: task.thread_name,
+    if (!stages.has(stageNumber)) {
+      const stageIssue = githubData?.stages[stageNumber]
+      stages.set(stageNumber, {
+        stageNumber,
+        stageName: task.stage_name,
         taskCount: 0,
         completedCount: 0,
         isComplete: false,
-        hasIssue: false,
+        hasIssue: Boolean(stageIssue),
+        issueNumber: stageIssue?.issue_number,
+        issueState: stageIssue?.state,
       })
     }
 
-    const summary = threads.get(threadKey)!
+    const summary = stages.get(stageNumber)!
     summary.taskCount++
     if (task.status === "completed" || task.status === "cancelled") {
       summary.completedCount++
     }
-    if (task.github_issue) {
-      summary.hasIssue = true
-      summary.issueNumber = task.github_issue.number
-      summary.issueState = task.github_issue.state
-    }
   }
 
-  // Calculate isComplete
-  for (const summary of threads.values()) {
-    summary.isComplete = summary.completedCount === summary.taskCount
+  for (const [stageNumber, summary] of stages.entries()) {
+    summary.isComplete = isStageComplete(repoRoot, streamId, parseInt(stageNumber, 10))
   }
 
-  return Array.from(threads.values()).sort((a, b) => a.threadKey.localeCompare(b.threadKey))
+  return Array.from(stages.values()).sort((a, b) => a.stageNumber.localeCompare(b.stageNumber))
 }
 
 async function main() {
@@ -113,64 +106,64 @@ async function main() {
 
   console.log(`\n--- Workstream: ${stream.id} ---`)
 
-  // Get thread summaries
-  const summaries = getThreadSummaries(repoRoot, stream.id)
+  // Get stage summaries
+  const summaries = await getStageSummaries(repoRoot, stream.id)
   if (summaries.length === 0) {
     console.log("No tasks found")
     process.exit(0)
   }
 
-  // Display thread status
-  console.log("\n--- Thread Status ---")
-  console.log("Key       | Complete | Issue     | State")
-  console.log("----------|----------|-----------|-------")
+  // Display stage status
+  console.log("\n--- Stage Status ---")
+  console.log("Stage | Complete | Issue     | State")
+  console.log("------|----------|-----------|-------")
 
-  let threadsWithIssues = 0
+  let stagesWithIssues = 0
   let completedWithOpenIssues = 0
 
   for (const s of summaries) {
     const complete = s.isComplete ? "✅" : "❌"
     const issue = s.hasIssue ? `#${s.issueNumber?.toString().padStart(3)}` : "  -  "
     const state = s.issueState || "-"
-    console.log(`${s.threadKey}  | ${complete} ${s.completedCount}/${s.taskCount}    | ${issue}     | ${state}`)
+    console.log(`${s.stageNumber}    | ${complete} ${s.completedCount}/${s.taskCount}    | ${issue}     | ${state}`)
 
-    if (s.hasIssue) threadsWithIssues++
+    if (s.hasIssue) stagesWithIssues++
     if (s.isComplete && s.hasIssue && s.issueState === "open") {
       completedWithOpenIssues++
     }
   }
 
   console.log("")
-  console.log(`Total threads: ${summaries.length}`)
-  console.log(`Threads with issues: ${threadsWithIssues}`)
+  console.log(`Total stages: ${summaries.length}`)
+  console.log(`Stages with issues: ${stagesWithIssues}`)
   console.log(`Completed with open issues: ${completedWithOpenIssues}`)
 
   // Parse command
   const arg = process.argv[2]
 
-  if (arg === "--check-thread") {
-    const threadKey = process.argv[3]
-    if (!threadKey) {
-      console.log("\n❌ Please provide thread key: --check-thread <stageId.batchId.threadId>")
+  if (arg === "--check-stage") {
+    const stageArg = process.argv[3]
+    if (!stageArg) {
+      console.log("\n❌ Please provide stage number: --check-stage <stage-number>")
       process.exit(1)
     }
 
-    const [stageId, batchId, threadId] = threadKey.split(".")
-    if (!stageId || !batchId || !threadId) {
-      console.log("\n❌ Invalid thread key format. Use: 01.01.01")
+    const stageNumber = parseInt(stageArg, 10)
+    if (Number.isNaN(stageNumber)) {
+      console.log("\n❌ Invalid stage number")
       process.exit(1)
     }
 
-    console.log(`\n--- Checking Thread ${threadKey} ---`)
-    const complete = isThreadComplete(repoRoot, stream.id, stageId, batchId, threadId)
-    console.log(`Thread complete: ${complete ? "Yes" : "No"}`)
+    console.log(`\n--- Checking Stage ${stageArg.padStart(2, "0")} ---`)
+    const complete = isStageComplete(repoRoot, stream.id, stageNumber)
+    console.log(`Stage complete: ${complete ? "Yes" : "No"}`)
   } else if (arg === "--dry-run") {
     console.log("\n--- Sync Dry Run ---")
     console.log("Would sync the following:")
 
     for (const s of summaries) {
       if (s.isComplete && s.hasIssue && s.issueState === "open") {
-        console.log(`  Close #${s.issueNumber}: [${s.threadKey}] ${s.threadName}`)
+        console.log(`  Close #${s.issueNumber}: [${s.stageNumber}] ${s.stageName}`)
       }
     }
 
@@ -191,7 +184,7 @@ async function main() {
     await new Promise(resolve => setTimeout(resolve, 5000))
 
     try {
-      const result = await syncIssueStates(repoRoot, stream.id)
+      const result = await syncStageIssues(repoRoot, stream.id)
       console.log("\n✅ Sync completed!")
       console.log(`   Closed: ${result.closed.length}`)
       console.log(`   Unchanged: ${result.unchanged.length}`)
@@ -200,7 +193,7 @@ async function main() {
       if (result.closed.length > 0) {
         console.log("\nClosed issues:")
         for (const item of result.closed) {
-          console.log(`   #${item.issueNumber}: [${item.threadKey}] ${item.threadName}`)
+          console.log(`   #${item.issueNumber}: [${item.stageNumber}] ${item.stageName}`)
         }
       }
 
@@ -213,38 +206,13 @@ async function main() {
     } catch (e) {
       console.log("\n❌ Sync failed:", (e as Error).message)
     }
-  } else if (arg === "--create-all") {
-    console.log("\n--- Create Issues for All Threads ---")
-    console.log("\n⚠️  This will create real GitHub issues!")
-    console.log("   Press Ctrl+C within 5 seconds to cancel...")
-
-    await new Promise(resolve => setTimeout(resolve, 5000))
-
-    try {
-      const result = await createIssuesForWorkstream(repoRoot, stream.id)
-      console.log("\n✅ Issue creation completed!")
-      console.log(`   Created: ${result.created.length}`)
-      console.log(`   Skipped: ${result.skipped.length}`)
-      console.log(`   Errors: ${result.errors.length}`)
-
-      if (result.created.length > 0) {
-        console.log("\nCreated issues:")
-        for (const item of result.created) {
-          console.log(`   #${item.issueNumber}: [${item.threadId}] ${item.threadName}`)
-          console.log(`      ${item.issueUrl}`)
-        }
-      }
-    } catch (e) {
-      console.log("\n❌ Failed:", (e as Error).message)
-    }
   } else {
     console.log("\n--- Commands ---")
-    console.log("  --check-thread <key>  Check if a thread is complete (e.g., 01.01.01)")
-    console.log("  --dry-run             Show what sync would do without executing")
-    console.log("  --sync                Sync issue states (closes completed threads' issues)")
-    console.log("  --create-all          Create issues for all threads without issues")
+    console.log("  --check-stage <num>  Check if a stage is complete (e.g., 01)")
+    console.log("  --dry-run            Show what stage sync would do without executing")
+    console.log("  --sync               Sync stage issue states (closes completed stages)")
     console.log("")
-    console.log("Note: --sync and --create-all have a 5-second delay before execution")
+    console.log("Note: --sync has a 5-second delay before execution")
   }
 }
 

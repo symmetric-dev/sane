@@ -2,6 +2,12 @@
 
 All notable changes to `@agenv/workstreams` are documented in this file.
 
+## 0.4.0 - 2026-04-14
+
+- Added the Root Agent supervision architecture for `work supervise`, including headless batch execution, durable supervisor state, and recovery-oriented supervision primitives.
+- Added Root-Agent-owned branch supervision with metadata-only checkpoints, message-boundary branch launching, scope-aware branch tracking, auto-resolved branch context, and parent-side final report extraction.
+- Expanded supervision documentation, smoke-test fixtures, and runtime diagnostics, and cleaned up related typecheck and docs drift ahead of release.
+
 ## 0.3.1 - 2026-02-23
 
 - Fixed built CLI runtime import paths so dynamic imports are rewritten from `.ts` to `.js`, resolving module load failures such as `Cannot find module '../lib/repo.ts'` when running commands like `work prompt --stage 6` from the published package.

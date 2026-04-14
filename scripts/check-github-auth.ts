@@ -11,6 +11,10 @@ import {
   validateAuth,
 } from "../packages/workstreams/src/lib/github/auth.ts"
 
+interface GitHubUserResponse {
+  login?: string
+}
+
 async function main() {
   console.log("=== GitHub Authentication Test ===\n")
 
@@ -47,8 +51,8 @@ async function main() {
         "User-Agent": "workstreams-test",
       },
     })
-    const user = await response.json()
-    console.log(`   Authenticated as: ${user.login}`)
+    const user = (await response.json()) as GitHubUserResponse
+    console.log(`   Authenticated as: ${user.login ?? "unknown"}`)
   } else {
     console.log("❌ Token is invalid or expired!")
     process.exit(1)

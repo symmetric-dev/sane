@@ -491,9 +491,19 @@ For later smoke tests, validate **this headless branch contract** first:
 
 Do **not** treat legacy interactive child-session message flows as the primary validation target.
 
-## Stage 17 Live Smoke-Test Runbook (Branch Scope)
+## Stage 19 Live Smoke-Test Runbook (Branch Scope)
 
-Use this runbook to validate both dedicated Stage 17 targets:
+Use this runbook to validate the branch-scope smoke-test flow documented in Stage 19 (`branch-scope-live-smoke-test`).
+
+Current repo-state note:
+
+- Stage 19 is fully completed in this workstream.
+- The docs under `work/000-super-agent-v1/docs/live-smoke-targets/` are now a mix of **reference fixtures, reusable templates, and acceptance criteria**, not still-pending runnable batches in this completed workstream.
+- The preserved stage-scope reference fixture reflects Stage 19 batches `19.02` and `19.03`.
+
+When re-running a live branch smoke test, prepare a fresh incomplete target in the stream you want to validate before launching supervision.
+
+This runbook still covers both branch validation shapes:
 
 - **batch-scope target:** one bounded batch run, then yield
 - **stage-scope target:** repeated single-batch runs inside one stage, then yield at stage completion (or policy stop)
@@ -596,16 +606,22 @@ Inside branch execution:
    - run `opencode export "<native-session-id>"`
    - extract the last completed assistant message; if absent, treat as fail and rerun after runtime/branch integrity checks
 
-## Root-Agent Live Smoke Test Runbook (Stage 17)
+## Root-Agent Live Smoke Test Runbook (Stage 18)
 
 Use this runbook to validate the core `work supervise` loop directly from the Root Agent session, before depending on branch launch/yield behavior.
 
+Current repo-state note:
+
+- Stage 18 (`root-agent-supervise-live-smoke-test`) is completed.
+- The workstream no longer contains a still-pending dedicated smoke-test batch such as `17.01`.
+- Treat the Stage 18 docs as the validation procedure and acceptance criteria; pick a fresh incomplete batch in the stream you are testing when you execute the checklist.
+
 ### 1) Exact invocation to run (Root Agent session)
 
-Use the dedicated smoke-test batch:
+Use the incomplete batch you intentionally prepared for the smoke run:
 
 ```bash
-work supervise --batch "17.01" --poll-interval-ms 1000 --timeout-ms 1200000
+work supervise --batch "<batch-id>" --poll-interval-ms 1000 --timeout-ms 1200000
 ```
 
 ### 2) What to inspect before, during, and after
@@ -613,9 +629,9 @@ work supervise --batch "17.01" --poll-interval-ms 1000 --timeout-ms 1200000
 **Before run**
 
 1. Confirm target tasks are still pending/in-progress:
-   - `work list --tasks --batch "17.01"`
+   - `work list --tasks --batch "<batch-id>"`
 2. Snapshot current persisted state:
-   - `work batch-status --batch "17.01" --format json`
+   - `work batch-status --batch "<batch-id>" --format json`
    - `cat work/000-super-agent-v1/supervisor-state.json`
 
 **During run**
@@ -627,16 +643,16 @@ work supervise --batch "17.01" --poll-interval-ms 1000 --timeout-ms 1200000
    - fix-cycle rerun (if requested)
    - final continue/stop summary
 2. Re-check persisted state while running (optional but useful for hangs):
-   - `work batch-status --batch "17.01" --format json`
+   - `work batch-status --batch "<batch-id>" --format json`
    - `cat work/000-super-agent-v1/supervisor-state.json`
 
 **After run**
 
 1. Verify final batch evidence:
-   - `work batch-status --batch "17.01" --format json`
+   - `work batch-status --batch "<batch-id>" --format json`
 2. Verify supervisor decision evidence:
    - `cat work/000-super-agent-v1/supervisor-state.json`
-   - inspect `reviewed_batches`, `fix_cycles`, `escalations`, and `stage_stops` entries for `17.01`
+   - inspect `reviewed_batches`, `fix_cycles`, `escalations`, and `stage_stops` entries for `<batch-id>`
 3. Verify human-readable outcome:
    - final CLI output should clearly state whether run continued, stopped, or needs escalation.
 
@@ -644,9 +660,9 @@ work supervise --batch "17.01" --poll-interval-ms 1000 --timeout-ms 1200000
 
 **Pass**
 
-- `work supervise --batch "17.01"` completes without hanging.
-- Batch reaches terminal status and has matching persisted evidence in `batch-status/17.01.json`.
-- Review output is reflected in `supervisor-state.json` for `17.01`.
+- `work supervise --batch "<batch-id>"` completes without hanging.
+- Batch reaches terminal status and has matching persisted evidence in `batch-status/<batch-id>.json`.
+- Review output is reflected in `supervisor-state.json` for `<batch-id>`.
 - If review requested fixes, at least one fix-cycle attempt is recorded and outcome is explicit (approved/escalated/stopped).
 - Final output is present and consistent with persisted state.
 
@@ -673,7 +689,7 @@ Quick triage matrix:
 ### 5) Troubleshooting notes (hangs, missing reports, fix-cycle gaps, resumability)
 
 1. **Hang / no progress**
-   - Check whether `batch-status/17.01.json` is changing.
+   - Check whether `batch-status/<batch-id>.json` is changing.
    - If status and supervisor state are both static, suspect core supervise wait/transition logic.
    - If core root-run passes but branch hangs later, suspect branch yield/report orchestration.
 
@@ -682,13 +698,13 @@ Quick triage matrix:
    - If persisted state is also incomplete/missing, classify as core supervise completion issue.
 
 3. **Incomplete or missing fix-cycle evidence**
-   - Review requested changes but `fix_cycles` lacks `17.01` attempt records → core supervise/fix accounting issue.
+   - Review requested changes but `fix_cycles` lacks `<batch-id>` attempt records → core supervise/fix accounting issue.
    - Fix cycle recorded but branch summary omitted it → branch reporting issue.
 
 4. **Interrupted run must be resumable**
-   - Simulate interruption: `work supervise --batch "17.01" --timeout-ms 100`
+   - Simulate interruption: `work supervise --batch "<batch-id>" --timeout-ms 100`
    - Resume: plain `work supervise`
-   - Pass condition: resumed run prefers the interrupted `17.01` batch first and reaches reviewed/finalized evidence before moving on.
+   - Pass condition: resumed run prefers the interrupted `<batch-id>` batch first and reaches reviewed/finalized evidence before moving on.
 
 5. **When unsure, trust persisted state over chat text**
    - `batch-status/*.json` and `supervisor-state.json` are the source of truth for pass/fail diagnosis.

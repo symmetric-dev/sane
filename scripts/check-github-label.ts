@@ -10,6 +10,11 @@ import { GitHubClient } from "../packages/workstreams/src/lib/github/client.ts"
 
 const repoRoot = process.cwd()
 
+interface GitHubLabelResponse {
+  name: string
+  color: string
+}
+
 async function main() {
   console.log("=== GitHub Label Test ===\n")
 
@@ -45,12 +50,15 @@ async function main() {
         },
       }
     )
-    const labels = await response.json()
-    const workstreamLabels = labels.filter((l: any) =>
-      l.name.startsWith("workstream:") ||
-      l.name.startsWith("stage:") ||
-      l.name.startsWith("batch:")
-    )
+    const labels = (await response.json()) as unknown
+    const workstreamLabels = Array.isArray(labels)
+      ? (labels as GitHubLabelResponse[]).filter(
+          (label) =>
+            label.name.startsWith("workstream:") ||
+            label.name.startsWith("stage:") ||
+            label.name.startsWith("batch:"),
+        )
+      : []
 
     if (workstreamLabels.length === 0) {
       console.log("No workstream labels found")

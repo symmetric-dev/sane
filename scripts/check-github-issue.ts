@@ -10,6 +10,13 @@ import { GitHubClient } from "../packages/workstreams/src/lib/github/client.ts"
 
 const repoRoot = process.cwd()
 
+interface GitHubIssueSummary {
+  number: number
+  title: string
+  state: string
+  html_url: string
+}
+
 async function main() {
   console.log("=== GitHub Issue Test ===\n")
 
@@ -45,12 +52,12 @@ async function main() {
         },
       }
     )
-    const issues = await response.json()
+    const issues = (await response.json()) as unknown
 
     if (!Array.isArray(issues) || issues.length === 0) {
       console.log("No workstream:test issues found")
     } else {
-      for (const issue of issues) {
+      for (const issue of issues as GitHubIssueSummary[]) {
         const state = issue.state === "open" ? "🟢" : "🔴"
         console.log(`  ${state} #${issue.number}: ${issue.title}`)
         console.log(`     ${issue.html_url}`)
@@ -103,7 +110,13 @@ This is a test issue created by the GitHub integration test script.
       console.log("❌ Failed:", (e as Error).message)
     }
   } else if (arg === "--close") {
-    const issueNumber = parseInt(process.argv[3], 10)
+    const rawIssueNumber = process.argv[3]
+    if (!rawIssueNumber) {
+      console.log("❌ Please provide issue number: --close <number>")
+      process.exit(1)
+    }
+
+    const issueNumber = parseInt(rawIssueNumber, 10)
     if (!issueNumber) {
       console.log("❌ Please provide issue number: --close <number>")
       process.exit(1)
@@ -118,7 +131,13 @@ This is a test issue created by the GitHub integration test script.
       console.log("❌ Failed:", (e as Error).message)
     }
   } else if (arg === "--get") {
-    const issueNumber = parseInt(process.argv[3], 10)
+    const rawIssueNumber = process.argv[3]
+    if (!rawIssueNumber) {
+      console.log("❌ Please provide issue number: --get <number>")
+      process.exit(1)
+    }
+
+    const issueNumber = parseInt(rawIssueNumber, 10)
     if (!issueNumber) {
       console.log("❌ Please provide issue number: --get <number>")
       process.exit(1)

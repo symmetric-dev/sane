@@ -17,6 +17,13 @@ import {
 import { loadIndex } from "../packages/workstreams/src/lib/index.ts"
 import { execSync } from "node:child_process"
 
+interface GitHubBranchResponse {
+  name: string
+  commit: {
+    sha: string
+  }
+}
+
 const repoRoot = process.cwd()
 
 function getCurrentBranch(): string {
@@ -170,9 +177,11 @@ async function main() {
           },
         }
       )
-      const branches = await response.json()
+      const branches = (await response.json()) as unknown
       const prefix = config.branch_prefix || "workstream/"
-      const workstreamBranches = branches.filter((b: any) => b.name.startsWith(prefix))
+      const workstreamBranches = Array.isArray(branches)
+        ? (branches as GitHubBranchResponse[]).filter((branch) => branch.name.startsWith(prefix))
+        : []
 
       if (workstreamBranches.length === 0) {
         console.log(`  No branches starting with "${prefix}" found`)

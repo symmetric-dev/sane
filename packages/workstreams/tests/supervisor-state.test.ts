@@ -382,6 +382,7 @@ describe("supervisor-state", () => {
         branchSessionId: "branch-supervision-stale",
         branchRole: "supervision",
         nativeSessionId: "ses_supervision_1",
+        source: "native_fork",
         updatedAt: startedAt,
       },
       runs: [],
