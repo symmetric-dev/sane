@@ -37,6 +37,20 @@ tmux attach -t e2e-tool-mnzjh1xz
 - That tmux session can run a real `opencode run ...` process
 - The resulting native session can be found, exported, and parsed successfully
 
+## Related runtime diagnostics
+
+If you are debugging a live supervision launch rather than just the E2E test, also inspect:
+
+```text
+/tmp/agenv-workstream-tool.log
+```
+
+And remember that a stale ended session can now be recovered with:
+
+```text
+reconcile_workstream_supervision({ streamId: "001-your-stream" })
+```
+
 ## Notes
 
 - The E2E test is opt-in because it depends on a real model/provider setup.
@@ -45,3 +59,5 @@ tmux attach -t e2e-tool-mnzjh1xz
 ```bash
 bun test agent/tools/workstream.test.ts
 ```
+
+- Even when launch/transport works perfectly, semantic supervision success is still a separate prompt/model-compliance question.

@@ -33,9 +33,14 @@ interface ReviewCliArgs {
 }
 
 export function isApprovalCommitSubject(subject: string): boolean {
-    // Compatibility: classify both legacy "approve" and current "approved"
-    // subjects as approval commits in review output.
-    return /\bapprove(?:d)?\b/i.test(subject)
+    // Match only known automated approval commit subject shapes.
+    return [
+        /^Plan approved: .+/i,
+        /^Tasks approved: .+/i,
+        /^Stage \d+ approved: .+/i,
+        /^Approve stage \d+: .+/i,
+        /^approve plan for \S+$/i,
+    ].some((pattern) => pattern.test(subject))
 }
 
 function printHelp(): void {

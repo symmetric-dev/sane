@@ -186,6 +186,37 @@ Instead of depending primarily on the interactive child-session message loop, th
 
 This is the key fix for making branches behave more like bounded workers while still preserving transcript continuity and branch lineage.
 
+### 9. Added observable supervision tmux sessions and recovery tooling
+
+Recent work completed the missing operational pieces around branch supervision runs:
+
+- top-level supervision branches now launch in their own `001-supervision-*` tmux session
+- implementation work launched by `work supervise` / `work continue` remains in separate `001-implementation-*` tmux sessions
+- branch launch now validates tmux startup early enough to fail fast when the session never really starts
+- duplicate launch protection is scope-aware and now distinguishes truly live sessions from reconciled terminal ones
+- parent/runtime state records process-end evidence such as:
+  - `processEndedAt`
+  - `processExitCode`
+  - `finalizationSource`
+  - `finalizationReason`
+- a dedicated recovery/debugging tool now exists:
+  - `reconcile_workstream_supervision`
+
+This means the system can now recover a supervision run that already ended even when the original parent launch call did not stay alive long enough to reconcile terminal state itself.
+
+### 10. Added durable diagnostics and realistic tmux/tool E2E coverage
+
+To make branch failures easier to debug and less dependent on guesswork, the system now also has:
+
+- file-based debug logging for major workstream tool/runtime phases
+  - default log: `/tmp/agenv-workstream-tool.log`
+- deterministic tmux integration coverage for the branch-launch path
+- an opt-in real Opencode E2E test that proves:
+  - an Opencode session can call a tool
+  - that tool can launch tmux
+  - the tmux session can run a real `opencode run ...`
+  - the resulting session can be found, exported, and parsed
+
 ## What we verified
 
 Across the revisions we verified that:
@@ -200,6 +231,10 @@ Across the revisions we verified that:
   - `## Issues Found`
   - `## Fixes Applied`
   - `## What is Next`
+- supervision branch tmux sessions are observable separately from implementation tmux sessions
+- stale ended-but-nonterminal branch sessions can be reconciled safely after the fact using `reconcile_workstream_supervision`
+- process-end evidence can be persisted even when explicit finalization is missing
+- a reconciled terminal `stopped` session no longer blocks a fresh launch for the same scope
 
 ## Remaining caveats
 
@@ -208,6 +243,13 @@ Even with the new model, some risks remain external to AgEnv:
 - Opencode UI/session state may still appear stuck even when the backend has progressed
 - manual session entry may refresh stale UI state
 - follow-up user messages may recover from orphaned message/tool states in some Opencode failure modes
+
+And some remaining product/runtime caveats are now clearer:
+
+- prompt compliance is still separate from runtime correctness
+  - a branch session can launch, run, and exit cleanly while still doing the wrong thing semantically
+- parent-side reconciliation after process end is good, but fully automatic launch-time recovery is still a future improvement
+- the recovery tool is intentionally conservative and may prefer `stopped` / `failed` over an optimistic success classification when evidence is ambiguous
 
 Because of that, AgEnv should continue to treat persisted state and transcript export as the source of truth, not the TUI spinner state.
 
@@ -220,6 +262,23 @@ Because of that, AgEnv should continue to treat persisted state and transcript e
 5. **Prefer worker-like branch execution over interactive child-session loops.**
 6. **Use persisted branch/session artifacts as truth over UI state.**
 7. **Preserve transcript exportability so parent-side finalization remains inspectable and debuggable.**
+8. **Separate process-end detection from semantic supervision success.**
+9. **Keep a manual recovery path (`reconcile_workstream_supervision`) even if automatic reconciliation is added later.**
+
+## Future considerations
+
+1. Add automatic launch-time recovery so `workstream_launch_supervision_branch` can reconcile stale ended sessions before deciding whether to relaunch.
+2. Continue tightening branch prompts and/or prompt scaffolding so child sessions execute supervision immediately instead of commenting on instructions.
+3. Consider exposing a more explicit status split between:
+   - process ended
+   - terminal supervision state persisted
+   - semantic supervision outcome accepted
+4. Keep expanding realistic E2E coverage whenever new branch/session transport logic is introduced.
+5. Treat debugging ergonomics as a first-class feature:
+   - stable logs
+   - stable tmux naming
+   - clear recovery commands
+   - clear state-file error messages
 
 ## Related references
 

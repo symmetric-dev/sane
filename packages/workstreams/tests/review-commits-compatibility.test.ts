@@ -17,5 +17,7 @@ describe("review commit approval subject compatibility", () => {
   test("does not classify non-approval wording", () => {
     expect(isApprovalCommitSubject("Implement stage 1 parser")).toBe(false)
     expect(isApprovalCommitSubject("Refactor task prompt generation")).toBe(false)
+    expect(isApprovalCommitSubject("Add tests for approve command")).toBe(false)
+    expect(isApprovalCommitSubject("Update approved reviewer output docs")).toBe(false)
   })
 })

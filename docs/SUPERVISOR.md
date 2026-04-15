@@ -258,6 +258,92 @@ This closes the remaining Stage 13 gap: pointer fields are no longer just observ
 - If a branch session tries to call `launch_supervision_branch`, the launch path must fail immediately with a clear guardrail error.
 - Treat that failure as correct behavior: the branch should **yield back** to the Root Agent instead of building a deeper branch tree.
 
+## Branch Supervision Tmux Sessions and Recovery Tools
+
+When Root-Agent-owned supervision is launched through the workstream tooling, there are now two distinct execution layers to keep in mind:
+
+1. **Supervision branch tmux session**
+   - top-level Opencode supervision branch
+   - naming pattern like `001-supervision-ffabbc`
+2. **Implementation tmux session(s)**
+   - work launched by `work supervise` / `work continue`
+   - naming pattern like `001-implementation-ab12cd`
+
+This separation is intentional:
+
+- supervision tmux is for observing the branch/root-agent timeline itself
+- implementation tmux is for observing the worker execution primitives
+
+### Manual recovery/debugging commands
+
+If a supervision branch session has already ended but persisted state is still nonterminal, use:
+
+```text
+reconcile_workstream_supervision({ streamId: "001-my-stream" })
+```
+
+Optional narrowing:
+
+```text
+reconcile_workstream_supervision({
+  streamId: "001-my-stream",
+  branchSessionId: "branch-supervision-..."
+})
+```
+
+This debugging/recovery tool can:
+
+- inspect ended-but-nonterminal supervision sessions
+- check tmux/process evidence
+- recover transcript/final assistant report when possible
+- persist a terminal state such as `stopped` / `failed`
+
+### Process-end evidence
+
+Branch supervision persistence may now include fields like:
+
+- `processEndedAt`
+- `processExitCode`
+- `finalizationSource`
+- `finalizationReason`
+
+These fields help distinguish:
+
+- the branch process ended
+- the branch was explicitly finalized
+- the branch was only later reconciled by the parent/debug tooling
+
+### Debug log
+
+Major workstream tool/runtime steps now log to:
+
+```text
+/tmp/agenv-workstream-tool.log
+```
+
+Override with:
+
+```bash
+WORKSTREAM_TOOL_LOG_PATH=/path/to/log.jsonl
+```
+
+This is especially useful for differentiating:
+
+- tool entrypoint/runtime loading failures
+- branch launch/tmux failures
+- transcript export/recovery failures
+- stale state reconciliation behavior
+
+### Current practical limitation
+
+Runtime detection is now good enough to determine that a tmux-hosted `opencode run` process ended, but semantic supervision success still depends on the model actually doing the work.
+
+So treat these as separate checks:
+
+1. **Did the session launch and end?**
+2. **Was terminal state persisted or later reconciled?**
+3. **Did the branch actually supervise the requested scope correctly?**
+
 ### Breakpoint decision model
 
 When `launch_supervision_branch` captures the Root Agent transcript boundary, selection is deterministic:
