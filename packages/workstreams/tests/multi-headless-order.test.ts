@@ -49,6 +49,7 @@ describe("multi headless initialization order", () => {
         throw new Error("attachSession should not run in headless async mode")
       },
       getWorkSessionName: () => "work-001-test-stream",
+      createUniqueWorkSessionName: () => "001-implementation-abcdef",
       buildCreateSessionCommand: () => "",
       buildAddWindowCommand: () => "",
       buildAttachCommand: () => "",
