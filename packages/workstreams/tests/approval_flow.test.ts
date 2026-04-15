@@ -436,6 +436,48 @@ describe("Plan Approval with TASKS.md Auto-Generation", () => {
         expect(files).toContain("work/index.json");
         expect(files).not.toContain("work/stream-autogen/TASKS.md");
     });
+
+    test("should approve plan without creating an auto-commit when disabled", async () => {
+        const planContent = readFileSync(join(import.meta.dir, "fixtures/plans/basic-plan.md"), "utf-8");
+        writeFileSync(join(AUTOGEN_REPO_ROOT, "work/stream-autogen/PLAN.md"), planContent);
+
+        await saveGitHubConfig(AUTOGEN_REPO_ROOT, {
+            ...DEFAULT_GITHUB_CONFIG,
+            enabled: false,
+            auto_commit_on_approval: false,
+        });
+
+        execSync("git init", { cwd: AUTOGEN_REPO_ROOT, stdio: "pipe" });
+        execSync('git config user.name "Test User"', { cwd: AUTOGEN_REPO_ROOT, stdio: "pipe" });
+        execSync('git config user.email "test@example.com"', { cwd: AUTOGEN_REPO_ROOT, stdio: "pipe" });
+        execSync("git add -A && git commit -m \"baseline\"", {
+            cwd: AUTOGEN_REPO_ROOT,
+            stdio: "pipe",
+        });
+        const beforeSha = execSync("git rev-parse HEAD", {
+            cwd: AUTOGEN_REPO_ROOT,
+            encoding: "utf-8",
+            stdio: ["pipe", "pipe", "pipe"],
+        }).trim();
+
+        const { main } = await import("../src/cli/approve/index.ts");
+        const { stdout } = await captureCliOutput(async () => {
+            await main(["node", "approve", "plan", "--stream", "stream-autogen", "--repo-root", AUTOGEN_REPO_ROOT]);
+        });
+
+        const outputJoined = stdout.join("\n");
+        expect(outputJoined).toContain("Approved plan");
+        expect(outputJoined).toContain("TASKS.md generated");
+        expect(outputJoined).not.toContain("Committed:");
+        expect(outputJoined).not.toContain("No changes to commit");
+
+        const afterSha = execSync("git rev-parse HEAD", {
+            cwd: AUTOGEN_REPO_ROOT,
+            encoding: "utf-8",
+            stdio: ["pipe", "pipe", "pipe"],
+        }).trim();
+        expect(afterSha).toBe(beforeSha);
+    });
 });
 
 // Separate test suite for tasks approval with auto-generation of tasks.json and prompts
@@ -584,6 +626,60 @@ describe("Tasks Approval with Auto-Generation", () => {
         expect(stream?.approval?.tasks?.status).toBe("approved");
         expect(outputJoined).toContain("Tasks approved");
         expect(outputJoined).toContain("Commit skipped:");
+    });
+
+    test("should approve tasks without creating an auto-commit when disabled", async () => {
+        const tasksMdContent = `# Tasks: Tasks Test Stream
+
+## Stage 01: Implementation
+
+### Batch 01: Core Features
+
+#### Thread 01: Feature A @agent:coder
+
+- [ ] Task 01.01.01.01: Implement feature A
+`;
+        writeFileSync(join(TASKS_APPROVAL_REPO_ROOT, "work/stream-tasks/TASKS.md"), tasksMdContent);
+
+        await saveGitHubConfig(TASKS_APPROVAL_REPO_ROOT, {
+            ...DEFAULT_GITHUB_CONFIG,
+            enabled: false,
+            auto_commit_on_approval: false,
+        });
+
+        execSync("git init", { cwd: TASKS_APPROVAL_REPO_ROOT, stdio: "pipe" });
+        execSync('git config user.name "Test User"', { cwd: TASKS_APPROVAL_REPO_ROOT, stdio: "pipe" });
+        execSync('git config user.email "test@example.com"', { cwd: TASKS_APPROVAL_REPO_ROOT, stdio: "pipe" });
+        execSync("git add -A && git commit -m \"baseline\"", {
+            cwd: TASKS_APPROVAL_REPO_ROOT,
+            stdio: "pipe",
+        });
+        const beforeSha = execSync("git rev-parse HEAD", {
+            cwd: TASKS_APPROVAL_REPO_ROOT,
+            encoding: "utf-8",
+            stdio: ["pipe", "pipe", "pipe"],
+        }).trim();
+
+        const { main } = await import("../src/cli/approve/index.ts");
+        const { stdout } = await captureCliOutput(async () => {
+            await main(["node", "approve", "tasks", "--stream", "stream-tasks", "--repo-root", TASKS_APPROVAL_REPO_ROOT]);
+        });
+
+        const outputJoined = stdout.join("\n");
+        expect(outputJoined).toContain("Tasks approved");
+        expect(outputJoined).not.toContain("Committed:");
+        expect(outputJoined).not.toContain("Commit skipped:");
+
+        const index = loadIndex(TASKS_APPROVAL_REPO_ROOT);
+        const stream = index.streams[0];
+        expect(stream?.approval?.tasks?.status).toBe("approved");
+
+        const afterSha = execSync("git rev-parse HEAD", {
+            cwd: TASKS_APPROVAL_REPO_ROOT,
+            encoding: "utf-8",
+            stdio: ["pipe", "pipe", "pipe"],
+        }).trim();
+        expect(afterSha).toBe(beforeSha);
     });
 
     test("should serialize TASKS.md to tasks.json directly", () => {

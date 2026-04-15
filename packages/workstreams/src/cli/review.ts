@@ -32,6 +32,12 @@ interface ReviewCliArgs {
     files: boolean
 }
 
+export function isApprovalCommitSubject(subject: string): boolean {
+    // Compatibility: classify both legacy "approve" and current "approved"
+    // subjects as approval commits in review output.
+    return /\bapprove(?:d)?\b/i.test(subject)
+}
+
 function printHelp(): void {
     console.log(`
 work review - Review workstream artifacts
@@ -191,10 +197,10 @@ function formatCommitOutput(
 
         // Separate stage approval commits from implementation commits
         const approvalCommits = stage.commits.filter((c) =>
-            c.subject.toLowerCase().includes("approved")
+            isApprovalCommitSubject(c.subject)
         )
         const implementationCommits = stage.commits.filter(
-            (c) => !c.subject.toLowerCase().includes("approved")
+            (c) => !isApprovalCommitSubject(c.subject)
         )
 
         // Show stage approval commit(s)

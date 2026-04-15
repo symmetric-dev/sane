@@ -9,6 +9,7 @@ import {
   getHeadCommitSha,
 } from "../src/lib/git/auto-commit-executor.ts"
 import {
+  createPlanApprovalCommit,
   createStageApprovalCommit,
   createTasksApprovalCommit,
 } from "../src/lib/github/commits.ts"
@@ -135,6 +136,107 @@ describe("git auto commit executor", () => {
       expect(result.success).toBe(false)
       expect(result.outcome).toBe("failed")
       expect(result.error).toBeTruthy()
+    } finally {
+      cleanupRepo(repoRoot)
+    }
+  })
+
+  test("creates plan approval commits using resolved plan names", () => {
+    const repoRoot = createGitRepo()
+    const stream: StreamMetadata = {
+      id: "stream-001",
+      name: "Approval Automation",
+      order: 1,
+      size: "short",
+      session_estimated: {
+        length: 1,
+        unit: "session",
+        session_minutes: [30, 45],
+        session_iterations: [4, 8],
+      },
+      created_at: new Date().toISOString(),
+      updated_at: new Date().toISOString(),
+      path: "work/stream-001",
+      generated_by: {
+        workstreams: "test",
+      },
+      approval: {
+        status: "approved",
+      },
+    }
+
+    try {
+      mkdirSync(join(repoRoot, "work", "stream-001"), { recursive: true })
+      writeFileSync(join(repoRoot, "work", "stream-001", "PLAN.md"), [
+        "# Plan: Resolved Plan Name",
+        "",
+        "## Summary",
+        "Testing resolved names.",
+      ].join("\n"))
+
+      const result = createPlanApprovalCommit(repoRoot, stream)
+
+      expect(result).toMatchObject({
+        success: true,
+        created: true,
+        skipped: false,
+        outcome: "committed",
+      })
+
+      const subject = execSync("git log -1 --pretty=%s", {
+        cwd: repoRoot,
+        encoding: "utf-8",
+        stdio: ["pipe", "pipe", "pipe"],
+      }).trim()
+      const body = execSync("git log -1 --pretty=%b", {
+        cwd: repoRoot,
+        encoding: "utf-8",
+        stdio: ["pipe", "pipe", "pipe"],
+      }).trim()
+
+      expect(subject).toBe("Plan approved: Resolved Plan Name")
+      expect(body).toContain("Approved plan for workstream stream-001.")
+      expect(body).toContain("Stream-Name: Resolved Plan Name")
+    } finally {
+      cleanupRepo(repoRoot)
+    }
+  })
+
+  test("skips plan approval commits when no changes exist", () => {
+    const repoRoot = createGitRepo()
+    const stream: StreamMetadata = {
+      id: "stream-001",
+      name: "Approval Automation",
+      order: 1,
+      size: "short",
+      session_estimated: {
+        length: 1,
+        unit: "session",
+        session_minutes: [30, 45],
+        session_iterations: [4, 8],
+      },
+      created_at: new Date().toISOString(),
+      updated_at: new Date().toISOString(),
+      path: "work/stream-001",
+      generated_by: {
+        workstreams: "test",
+      },
+      approval: {
+        status: "approved",
+      },
+    }
+
+    try {
+      const beforeSha = getHeadCommitSha(repoRoot)
+      const result = createPlanApprovalCommit(repoRoot, stream)
+
+      expect(result).toMatchObject({
+        success: true,
+        created: false,
+        skipped: true,
+        outcome: "skipped",
+      })
+      expect(getHeadCommitSha(repoRoot)).toBe(beforeSha)
     } finally {
       cleanupRepo(repoRoot)
     }
