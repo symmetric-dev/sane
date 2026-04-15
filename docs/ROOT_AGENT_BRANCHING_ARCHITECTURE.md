@@ -158,7 +158,7 @@ We improved parent-side finalization so the Root Agent can rely on persisted evi
 
 Important elements include:
 
-- durable `branch_sessions[]` state in `supervisor-state.json`
+- durable `branch_sessions[]` state in `tasks.json` under `runtime_state.supervision`
 - transcript export from the child native session
 - extracting the last completed assistant message as the branch report
 - keeping branch finalization parent-owned

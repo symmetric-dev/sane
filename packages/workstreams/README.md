@@ -178,4 +178,4 @@ For the current one-level prompt-first experiment:
 - validate the final branch report by exporting the child native session transcript and reading the last completed assistant message
 - classify drift when the branch acts like the Root Agent or proposes deeper branching instead of reporting its `work supervise` outcome
 
-For full operator guidance and config details, see `../../docs/SUPERVISOR.md`.
+For full operator guidance, verification drills, and branching background, see `../../docs/SUPERVISOR.md`, `../../docs/supervision-manual-verification-checklist.md`, and `../../docs/ROOT_AGENT_BRANCHING_ARCHITECTURE.md`.

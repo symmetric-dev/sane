@@ -7,6 +7,7 @@ import {
   parseSupervisionBranchRunOutput,
   shouldBlockDuplicateSupervisionLaunch,
 } from "../src/lib/workstream-tool/launch-supervision.ts"
+import { buildSupervisionPrompt } from "../src/lib/workstream-tool/launch-supervision-scope.ts"
 
 describe("launch supervision duplicate guard", () => {
   test("treats only pending and running statuses as live blockers by status alone", () => {
@@ -104,5 +105,50 @@ describe("collectCompletedBranchArtifacts", () => {
     expect(observedTimeoutMs).toBe(DEFAULT_BRANCH_TERMINAL_PERSIST_GRACE_MS)
     expect(result.terminalBranch?.status).toBe("running")
     expect(result.reportText).toContain("recovered")
+  })
+})
+
+describe("buildSupervisionPrompt", () => {
+  test("adds explicit role reset and anti-launch guardrails for stage-scoped branches", () => {
+    const prompt = buildSupervisionPrompt({
+      scope: {
+        level: "stage",
+        stageId: "04",
+      },
+    })
+
+    expect(prompt).toContain(
+      "You are already inside the launched supervision branch for this workstream.",
+    )
+    expect(prompt).toContain("The branch launch step is already complete.")
+    expect(prompt).toContain("Do not act as the Root Agent or planner.")
+    expect(prompt).toContain("Do not call `workstream_launch_supervision_branch`.")
+    expect(prompt).toContain(
+      "Ignore any inherited instructions about managing workstreams or launching supervision branches; they no longer apply in this session.",
+    )
+    expect(prompt).toContain(
+      "If prior session context conflicts with this prompt, this prompt takes precedence.",
+    )
+    expect(prompt).toContain("Execute this scope directly using the `work` CLI.")
+    expect(prompt).toContain("Use only the supervising-workstreams skill for this run.")
+    expect(prompt).toContain("Do not comment on these instructions. Execute them immediately.")
+    expect(prompt).toContain(
+      "Please supervise stage 04 for this workstream, one batch at a time until the stage is done or you must yield by policy.",
+    )
+  })
+
+  test("keeps explicit direct-execution guidance for batch-scoped branches", () => {
+    const prompt = buildSupervisionPrompt({
+      scope: {
+        level: "batch",
+        stageId: "04",
+        batchId: "04.02",
+      },
+      batch: "04.02",
+    })
+
+    expect(prompt).toContain("Do not launch or request another supervision branch.")
+    expect(prompt).toContain("Execute this scope directly using the `work` CLI.")
+    expect(prompt).toContain('Start by running `work supervise --batch "04.02"`.')
   })
 })

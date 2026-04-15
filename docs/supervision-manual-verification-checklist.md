@@ -35,3 +35,20 @@ Use this checklist for a quick operator validation pass. For background and trou
   - `## Fixes Applied`
   - `## What is Next`
 - If transcript output and persisted state disagree, treat persisted state as the source of truth and log report extraction as a follow-up issue.
+
+## 6) Optional tmux/tool E2E smoke test
+
+- From the repo root, run `RUN_OPENCODE_TOOL_E2E=1 OPENCODE_E2E_MODEL=openai/gpt-5.4-mini bun test agent/tools/workstream-opencode.e2e.test.ts`.
+- In a second terminal, run `tmux list-sessions` and optionally `tmux attach -t <e2e-tool-session>` while the test is running.
+- Confirm the run proves the full transport path: an Opencode session calls the tool, the tool launches tmux, tmux runs a real `opencode run ...`, and the resulting native session can be exported successfully.
+- If the launch path looks inconsistent, inspect `/tmp/agenv-workstream-tool.log` before treating the result as a semantic supervision failure.
+
+## Notes
+
+- Legacy-reference cleanup check:
+  - Run `grep -R "supervision-tmux-e2e""-testing" README.md docs agent/skills packages/workstreams/README.md`.
+  - Expect no matches in live docs, skills, or user-facing guidance; any remaining mentions under `work/` are historical workstream audit records.
+  - Confirm the canonical supervision doc set is `docs/SUPERVISOR.md`, `docs/ROOT_AGENT_BRANCHING_ARCHITECTURE.md`, and this checklist.
+
+- This E2E test is opt-in because it depends on a real model/provider setup.
+- The deterministic companion coverage remains `bun test agent/tools/workstream.test.ts`.

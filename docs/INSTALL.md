@@ -181,4 +181,4 @@ work --help
 - For branch/supervision debugging, also see:
   - `docs/SUPERVISOR.md`
   - `docs/ROOT_AGENT_BRANCHING_ARCHITECTURE.md`
-  - `docs/supervision-tmux-e2e-testing.md`
+  - `docs/supervision-manual-verification-checklist.md`

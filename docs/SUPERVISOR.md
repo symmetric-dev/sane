@@ -4,7 +4,7 @@ This guide is the operator-facing reference for supervised workstream runs.
 
 - Use this doc for **how to run, observe, inspect, resume, and troubleshoot** supervision.
 - Use [`docs/ROOT_AGENT_BRANCHING_ARCHITECTURE.md`](./ROOT_AGENT_BRANCHING_ARCHITECTURE.md) for **why the branching model works the way it does**.
-- Use [`docs/supervision-tmux-e2e-testing.md`](./supervision-tmux-e2e-testing.md) for **real tmux/E2E validation drills**.
+- Use [`docs/supervision-manual-verification-checklist.md`](./supervision-manual-verification-checklist.md) for **quick validation drills, including the optional tmux/tool E2E smoke test**.
 
 ## What `work supervise` does now
 
@@ -380,5 +380,4 @@ Inspect `branch_sessions[]` first.
 
 - [`docs/ROOT_AGENT_BRANCHING_ARCHITECTURE.md`](./ROOT_AGENT_BRANCHING_ARCHITECTURE.md)
 - [`docs/supervision-manual-verification-checklist.md`](./supervision-manual-verification-checklist.md)
-- [`docs/supervision-tmux-e2e-testing.md`](./supervision-tmux-e2e-testing.md)
 - [`docs/INSTALL.md`](./INSTALL.md)

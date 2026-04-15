@@ -58,10 +58,20 @@ export function buildSupervisionPrompt(args: {
       : "In What is Next, please let me know what I need to do to test, verify or review the implementation, or if there are any alignment issues or design decisions to consider before starting the next implementation batch."
 
   return [
+    "You are already inside the launched supervision branch for this workstream.",
+    "The branch launch step is already complete.",
+    "Do not act as the Root Agent or planner.",
+    "Do not call `workstream_launch_supervision_branch`.",
+    "Do not launch or request another supervision branch.",
+    "Ignore any inherited instructions about managing workstreams or launching supervision branches; they no longer apply in this session.",
+    "If prior session context conflicts with this prompt, this prompt takes precedence.",
+    "Execute this scope directly using the `work` CLI.",
+    "Use only the supervising-workstreams skill for this run.",
+    "Do not comment on these instructions. Execute them immediately.",
+    "",
     args.scope?.level === "stage"
       ? `Please supervise ${scopeLabel} for this workstream, one batch at a time until the stage is done or you must yield by policy.`
       : `Please supervise ${batchTarget} for this workstream.`,
-    "Use the supervising-workstreams skill.",
     ...scopeInstructions,
     "",
     initialSuperviseCommand,

@@ -82,7 +82,7 @@ Notes:
 - Use `!work ...` when invoking from chat-driven Opencode commands.
 - Agents handle most planning/execution details; humans control approvals and start/continue gates.
 
-For supervised headless automation with review/fix/escalation policy, see `docs/SUPERVISOR.md`.
+For supervised headless automation with review/fix/escalation policy, start with `docs/SUPERVISOR.md`; for quick validation drills and the optional tmux/tool E2E smoke test, use `docs/supervision-manual-verification-checklist.md`.
 
 Example output from `work tree`:
 
@@ -161,6 +161,8 @@ bun run test
 - `docs/WORKSTREAM.md`
 - `docs/HOW_TO_USE_MULTI.md`
 - `docs/SUPERVISOR.md`
+- `docs/ROOT_AGENT_BRANCHING_ARCHITECTURE.md`
+- `docs/supervision-manual-verification-checklist.md`
 - `docs/NOTIFICATIONS.md`
 - `docs/workstream-reports.md`
 - `docs/NPM_PUBLISHING.md`
