@@ -62,6 +62,7 @@ import { main as revisionMain } from "../src/cli/revision.ts"
 import { main as notificationsMain } from "../src/cli/notifications.ts"
 import { main as planMain } from "../src/cli/plan.ts"
 import { main as superviseMain } from "../src/cli/supervise.ts"
+import { main as resetBatchStateMain } from "../src/cli/reset-batch-state.ts"
 
 // Role and help utilities
 import {
@@ -86,6 +87,7 @@ const SUBCOMMANDS = {
   start: startMain,
   plan: planMain,
   supervise: superviseMain,
+  "reset-batch-state": resetBatchStateMain,
   status: statusMain,
   "set-status": setStatusMain,
   update: updateTaskMain,
@@ -134,6 +136,7 @@ const COMMAND_DESCRIPTIONS: Record<string, string> = {
   start: "Start execution (requires all approvals, creates GitHub branch/issues)",
   plan: "Manage planning sessions or scaffold a plan (subcommand: create)",
   supervise: "Run batch-bounded supervision execution/recovery helper",
+  "reset-batch-state": "Reset one batch for a clean rerun",
   agents: "Manage agent definitions (list, add, remove)",
   assign: "Assign agents to threads for batch execution",
   prompt: "Generate thread execution prompt for agents",
@@ -175,13 +178,14 @@ function printHelp(showAllCommands: boolean = false): void {
   const availableCommands = showAllCommands
     ? allCommands
     : filterCommandsForRole(allCommands)
+  const commandWidth = Math.max(...availableCommands.map((cmd) => cmd.length), 0) + 2
 
   // Build command list with role indicators
   const commandLines = availableCommands.map((cmd) => {
     const description = COMMAND_DESCRIPTIONS[cmd] || ""
     const roleIndicator = isUserOnlyCommand(cmd) ? " [USER]" : ""
     // Format: "  cmd          description [USER]" with proper padding
-    const paddedCmd = cmd.padEnd(16)
+    const paddedCmd = cmd.padEnd(commandWidth)
     return `  ${paddedCmd}${description}${roleIndicator}`
   })
 

@@ -5,7 +5,7 @@
  * task tracking information in JSON format.
  */
 
-import { existsSync, mkdirSync, readFileSync } from "fs"
+import { existsSync, mkdirSync, readdirSync, readFileSync, rmSync } from "fs"
 import { join } from "path"
 import * as lockfile from "proper-lockfile"
 import type {
@@ -82,6 +82,439 @@ export function createEmptyRuntimeState(streamId: string): WorkstreamUnifiedRunt
       stage_stops: [],
     },
   }
+}
+
+function getLegacyThreadsFilePath(repoRoot: string, streamId: string): string {
+  return join(getWorkDir(repoRoot), streamId, "threads.json")
+}
+
+function getLegacySupervisorStateFilePath(repoRoot: string, streamId: string): string {
+  return join(getWorkDir(repoRoot), streamId, "supervisor-state.json")
+}
+
+function getLegacyBatchStatusDirPath(repoRoot: string, streamId: string): string {
+  return join(getWorkDir(repoRoot), streamId, "batch-status")
+}
+
+function readJsonFileIfExists<T>(filePath: string): T | null {
+  if (!existsSync(filePath)) {
+    return null
+  }
+
+  return JSON.parse(readFileSync(filePath, "utf-8")) as T
+}
+
+function mergeThreadMetadata(
+  canonical: ThreadMetadata | undefined,
+  legacy: ThreadMetadata,
+): ThreadMetadata {
+  const canonicalSessionIds = new Set(canonical?.sessions.map((session) => session.sessionId) ?? [])
+  const mergedSessions = [...(canonical?.sessions ?? [])]
+
+  for (const session of legacy.sessions ?? []) {
+    if (!canonicalSessionIds.has(session.sessionId)) {
+      mergedSessions.push(session)
+      canonicalSessionIds.add(session.sessionId)
+    }
+  }
+
+  return {
+    ...legacy,
+    ...canonical,
+    threadId: canonical?.threadId ?? legacy.threadId,
+    sessions: mergedSessions,
+    ...(canonical?.currentSessionId ?? legacy.currentSessionId
+      ? { currentSessionId: canonical?.currentSessionId ?? legacy.currentSessionId }
+      : {}),
+    ...(canonical?.promptPath ?? legacy.promptPath
+      ? { promptPath: canonical?.promptPath ?? legacy.promptPath }
+      : {}),
+    ...(canonical?.opencodeSessionId ?? legacy.opencodeSessionId
+      ? { opencodeSessionId: canonical?.opencodeSessionId ?? legacy.opencodeSessionId }
+      : {}),
+    ...(canonical?.synthesis ?? legacy.synthesis
+      ? { synthesis: canonical?.synthesis ?? legacy.synthesis }
+      : {}),
+  }
+}
+
+function mergeRuntimeThreads(
+  streamId: string,
+  runtimeState: WorkstreamUnifiedRuntimeState,
+  legacyThreads?: ThreadsJson | null,
+): boolean {
+  if (!legacyThreads?.threads?.length) {
+    return false
+  }
+
+  const threadMap = new Map<string, ThreadMetadata>()
+  for (const thread of runtimeState.threads) {
+    threadMap.set(thread.threadId, {
+      ...thread,
+      sessions: [...thread.sessions],
+    })
+  }
+
+  let changed = false
+  for (const legacyThread of legacyThreads.threads) {
+    const merged = mergeThreadMetadata(threadMap.get(legacyThread.threadId), legacyThread)
+    const previous = threadMap.get(legacyThread.threadId)
+    if (JSON.stringify(previous) !== JSON.stringify(merged)) {
+      changed = true
+    }
+    threadMap.set(legacyThread.threadId, merged)
+  }
+
+  if (!changed) {
+    return false
+  }
+
+  runtimeState.threads = Array.from(threadMap.values()).sort((a, b) =>
+    a.threadId.localeCompare(b.threadId, undefined, { numeric: true }),
+  )
+  runtimeState.last_updated = new Date().toISOString()
+  return true
+}
+
+function upsertByKey<T>(items: T[], incoming: T, getKey: (value: T) => string): boolean {
+  const key = getKey(incoming)
+  const index = items.findIndex((value) => getKey(value) === key)
+  if (index !== -1) {
+    return false
+  }
+
+  items.push(incoming)
+  return true
+}
+
+function mergeSupervisorStateFromLegacy(
+  streamId: string,
+  runtimeState: WorkstreamUnifiedRuntimeState,
+  legacySupervisorState?: Partial<SupervisorStateFile> | null,
+): boolean {
+  if (!legacySupervisorState) {
+    return false
+  }
+
+  const canonical = normalizeSupervisorState(streamId, runtimeState.supervision)
+  const legacy = normalizeSupervisorState(streamId, legacySupervisorState)
+  let changed = false
+
+  if (!canonical.active_run_id && legacy.active_run_id) {
+    canonical.active_run_id = legacy.active_run_id
+    changed = true
+  }
+
+  if (!canonical.current_branch_supervision && legacy.current_branch_supervision) {
+    canonical.current_branch_supervision = legacy.current_branch_supervision
+    changed = true
+  }
+
+  for (const run of legacy.runs) {
+    changed = upsertByKey(canonical.runs, run, (value) => value.runId) || changed
+  }
+  for (const pointer of legacy.checkpoint_pointers) {
+    changed =
+      upsertByKey(
+        canonical.checkpoint_pointers,
+        pointer,
+        (value) => `${value.rootSessionId}:${value.checkpointMessageIndex}`,
+      ) || changed
+  }
+  for (const branchSession of legacy.branch_sessions) {
+    changed =
+      upsertByKey(canonical.branch_sessions, branchSession, (value) => value.branchSessionId) ||
+      changed
+  }
+  for (const reviewedBatch of legacy.reviewed_batches) {
+    changed =
+      upsertByKey(canonical.reviewed_batches, reviewedBatch, (value) => value.reviewId) || changed
+  }
+  for (const issueSummary of legacy.issue_summaries) {
+    changed =
+      upsertByKey(canonical.issue_summaries, issueSummary, (value) => value.summaryId) || changed
+  }
+  for (const fixCycle of legacy.fix_cycles) {
+    changed = upsertByKey(canonical.fix_cycles, fixCycle, (value) => value.cycleId) || changed
+  }
+  for (const escalation of legacy.escalations) {
+    changed =
+      upsertByKey(canonical.escalations, escalation, (value) => value.escalationId) || changed
+  }
+  for (const stageStop of legacy.stage_stops) {
+    changed = upsertByKey(canonical.stage_stops, stageStop, (value) => value.stopId) || changed
+  }
+
+  if (!changed) {
+    return false
+  }
+
+  canonical.last_updated = new Date().toISOString()
+  runtimeState.supervision = canonical
+  runtimeState.last_updated = canonical.last_updated
+  return true
+}
+
+function mergeBatchStatusesFromLegacy(
+  runtimeState: WorkstreamUnifiedRuntimeState,
+  legacyBatchStatuses: PersistedBatchStatusFile[],
+): boolean {
+  if (legacyBatchStatuses.length === 0) {
+    return false
+  }
+
+  let changed = false
+  for (const batchStatus of legacyBatchStatuses) {
+    if (!runtimeState.batches[batchStatus.batchId]) {
+      runtimeState.batches[batchStatus.batchId] = batchStatus
+      changed = true
+    }
+  }
+
+  if (changed) {
+    runtimeState.last_updated = new Date().toISOString()
+  }
+
+  return changed
+}
+
+function importTaskLocalSessionsIntoRuntimeState(tasksFile: TasksFile): boolean {
+  if (!hasSessionsInTasksJson(tasksFile)) {
+    return false
+  }
+
+  tasksFile.runtime_state = normalizeRuntimeState(tasksFile.stream_id, tasksFile.runtime_state)
+  const threadMap = new Map<string, ThreadMetadata>()
+
+  for (const thread of tasksFile.runtime_state.threads) {
+    threadMap.set(thread.threadId, {
+      ...thread,
+      sessions: [...thread.sessions],
+    })
+  }
+
+  for (const task of tasksFile.tasks) {
+    const threadId = extractThreadIdFromTaskId(task.id)
+    let thread = threadMap.get(threadId)
+    if (!thread) {
+      thread = { threadId, sessions: [] }
+      threadMap.set(threadId, thread)
+    }
+
+    if (task.sessions) {
+      const existingSessionIds = new Set(thread.sessions.map((session) => session.sessionId))
+      for (const session of task.sessions) {
+        if (!existingSessionIds.has(session.sessionId)) {
+          thread.sessions.push(session)
+          existingSessionIds.add(session.sessionId)
+        }
+      }
+    }
+
+    if (!thread.currentSessionId && task.currentSessionId) {
+      thread.currentSessionId = task.currentSessionId
+    }
+  }
+
+  tasksFile.runtime_state.threads = Array.from(threadMap.values()).sort((a, b) =>
+    a.threadId.localeCompare(b.threadId, undefined, { numeric: true }),
+  )
+  tasksFile.runtime_state.last_updated = new Date().toISOString()
+  tasksFile.tasks = clearSessionsFromTasks(tasksFile).tasks
+  return true
+}
+
+function sleepSync(ms: number): void {
+  Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms)
+}
+
+function getTasksRuntimeLockPath(repoRoot: string, streamId: string): string {
+  return `${getTasksFilePath(repoRoot, streamId)}.runtime.lock`
+}
+
+function acquireTasksRuntimeLockSync(repoRoot: string, streamId: string): () => void {
+  const lockPath = getTasksRuntimeLockPath(repoRoot, streamId)
+  let lastError: unknown
+
+  for (let attempt = 0; attempt < 200; attempt += 1) {
+    try {
+      mkdirSync(lockPath)
+      return () => {
+        try {
+          rmSync(lockPath, { recursive: true, force: true })
+        } catch {
+          // Best effort cleanup.
+        }
+      }
+    } catch (error) {
+      lastError = error
+      sleepSync(25)
+    }
+  }
+
+  throw new Error(
+    `Timed out acquiring tasks.json runtime lock for stream ${streamId}: ${lastError instanceof Error ? lastError.message : String(lastError)}`,
+  )
+}
+
+function withTasksRuntimeLockSync<T>(
+  repoRoot: string,
+  streamId: string,
+  fn: () => T,
+): T {
+  mkdirSync(join(getWorkDir(repoRoot), streamId), { recursive: true })
+  const release = acquireTasksRuntimeLockSync(repoRoot, streamId)
+
+  try {
+    return fn()
+  } finally {
+    release()
+  }
+}
+
+async function acquireTasksRuntimeLock(repoRoot: string, streamId: string): Promise<() => void> {
+  const lockPath = getTasksRuntimeLockPath(repoRoot, streamId)
+  let lastError: unknown
+
+  for (let attempt = 0; attempt < 200; attempt += 1) {
+    try {
+      mkdirSync(lockPath)
+      return () => {
+        try {
+          rmSync(lockPath, { recursive: true, force: true })
+        } catch {
+          // Best effort cleanup.
+        }
+      }
+    } catch (error) {
+      lastError = error
+      await Bun.sleep(25)
+    }
+  }
+
+  throw new Error(
+    `Timed out acquiring tasks.json runtime lock for stream ${streamId}: ${lastError instanceof Error ? lastError.message : String(lastError)}`,
+  )
+}
+
+async function withTasksRuntimeLock<T>(
+  repoRoot: string,
+  streamId: string,
+  fn: () => T | Promise<T>,
+): Promise<T> {
+  mkdirSync(join(getWorkDir(repoRoot), streamId), { recursive: true })
+  const release = await acquireTasksRuntimeLock(repoRoot, streamId)
+
+  try {
+    return await fn()
+  } finally {
+    release()
+  }
+}
+
+function readTasksFileSnapshot(
+  repoRoot: string,
+  streamId: string,
+): TasksFile | null {
+  const filePath = getTasksFilePath(repoRoot, streamId)
+
+  if (!existsSync(filePath)) {
+    return null
+  }
+
+  const content = readFileSync(filePath, "utf-8")
+  const tasksFile = JSON.parse(content) as TasksFile
+
+  return {
+    version: tasksFile.version ?? TASKS_FILE_VERSION,
+    stream_id: tasksFile.stream_id ?? streamId,
+    last_updated: tasksFile.last_updated ?? new Date().toISOString(),
+    runtime_state: normalizeRuntimeState(streamId, tasksFile.runtime_state),
+    ...(tasksFile.runtime_summary ? { runtime_summary: tasksFile.runtime_summary } : {}),
+    tasks: Array.isArray(tasksFile.tasks) ? tasksFile.tasks : [],
+  }
+}
+
+function listLegacyBatchStatusFiles(repoRoot: string, streamId: string): string[] {
+  const batchStatusDir = getLegacyBatchStatusDirPath(repoRoot, streamId)
+  if (!existsSync(batchStatusDir)) {
+    return []
+  }
+
+  return readdirSync(batchStatusDir)
+    .filter((entry) => entry.endsWith(".json"))
+    .map((entry) => join(batchStatusDir, entry))
+}
+
+function importLegacyRuntimeStateUnlocked(repoRoot: string, streamId: string, tasksFile: TasksFile): boolean {
+  tasksFile.runtime_state = normalizeRuntimeState(streamId, tasksFile.runtime_state)
+
+  let changed = importTaskLocalSessionsIntoRuntimeState(tasksFile)
+
+  const legacyThreads = readJsonFileIfExists<ThreadsJson>(getLegacyThreadsFilePath(repoRoot, streamId))
+  changed = mergeRuntimeThreads(streamId, tasksFile.runtime_state, legacyThreads) || changed
+
+  const legacySupervisorState = readJsonFileIfExists<SupervisorStateFile>(
+    getLegacySupervisorStateFilePath(repoRoot, streamId),
+  )
+  changed =
+    mergeSupervisorStateFromLegacy(streamId, tasksFile.runtime_state, legacySupervisorState) || changed
+
+  const legacyBatchStatuses = listLegacyBatchStatusFiles(repoRoot, streamId)
+    .map((filePath) => readJsonFileIfExists<PersistedBatchStatusFile>(filePath))
+    .filter((batchStatus): batchStatus is PersistedBatchStatusFile => batchStatus !== null)
+  changed = mergeBatchStatusesFromLegacy(tasksFile.runtime_state, legacyBatchStatuses) || changed
+
+  return changed
+}
+
+export function importLegacyRuntimeState(
+  repoRoot: string,
+  streamId: string,
+): { migrated: boolean; tasksFile: TasksFile } {
+  return withTasksRuntimeLockSync(repoRoot, streamId, () => {
+    const tasksFile = readTasksFileSnapshot(repoRoot, streamId) ?? createEmptyTasksFile(streamId)
+    const migrated = importLegacyRuntimeStateUnlocked(repoRoot, streamId, tasksFile)
+
+    if (migrated) {
+      delete tasksFile.runtime_summary
+      writeTasksFile(repoRoot, streamId, tasksFile)
+    }
+
+    return { migrated, tasksFile }
+  })
+}
+
+export function mutateRuntimeState<T>(
+  repoRoot: string,
+  streamId: string,
+  fn: (runtimeState: WorkstreamUnifiedRuntimeState, tasksFile: TasksFile) => T,
+): T {
+  return withTasksRuntimeLockSync(repoRoot, streamId, () => {
+    const tasksFile = readTasksFileSnapshot(repoRoot, streamId) ?? createEmptyTasksFile(streamId)
+    importLegacyRuntimeStateUnlocked(repoRoot, streamId, tasksFile)
+    tasksFile.runtime_state = normalizeRuntimeState(streamId, tasksFile.runtime_state)
+    const result = fn(tasksFile.runtime_state, tasksFile)
+    delete tasksFile.runtime_summary
+    writeTasksFile(repoRoot, streamId, tasksFile)
+    return result
+  })
+}
+
+export async function modifyRuntimeState<T>(
+  repoRoot: string,
+  streamId: string,
+  fn: (runtimeState: WorkstreamUnifiedRuntimeState, tasksFile: TasksFile) => T | Promise<T>,
+): Promise<T> {
+  return withTasksRuntimeLock(repoRoot, streamId, async () => {
+    const tasksFile = readTasksFileSnapshot(repoRoot, streamId) ?? createEmptyTasksFile(streamId)
+    importLegacyRuntimeStateUnlocked(repoRoot, streamId, tasksFile)
+    tasksFile.runtime_state = normalizeRuntimeState(streamId, tasksFile.runtime_state)
+    const result = await fn(tasksFile.runtime_state, tasksFile)
+    delete tasksFile.runtime_summary
+    writeTasksFile(repoRoot, streamId, tasksFile)
+    return result
+  })
 }
 
 export function runtimeStateToThreadsJson(
@@ -527,48 +960,18 @@ export function migrateSessionsToThreads(
   tasksFile: TasksFile,
 ): { migrated: boolean; error?: string } {
   try {
-    if (!hasSessionsInTasksJson(tasksFile)) {
+    const clonedTasksFile: TasksFile = {
+      ...tasksFile,
+      runtime_state: normalizeRuntimeState(streamId, tasksFile.runtime_state),
+      tasks: tasksFile.tasks.map((task) => ({ ...task })),
+    }
+    const migrated = importTaskLocalSessionsIntoRuntimeState(clonedTasksFile)
+
+    if (!migrated) {
       return { migrated: false }
     }
 
-    const cleanedTasksFile = clearSessionsFromTasks(tasksFile)
-    cleanedTasksFile.runtime_state = normalizeRuntimeState(streamId, cleanedTasksFile.runtime_state)
-    const threadMap = new Map<string, ThreadMetadata>()
-
-    for (const existingThread of cleanedTasksFile.runtime_state.threads) {
-      threadMap.set(existingThread.threadId, {
-        ...existingThread,
-        sessions: [...existingThread.sessions],
-      })
-    }
-
-    for (const task of tasksFile.tasks) {
-      const threadId = extractThreadIdFromTaskId(task.id)
-      let thread = threadMap.get(threadId)
-      if (!thread) {
-        thread = { threadId, sessions: [] }
-        threadMap.set(threadId, thread)
-      }
-
-      if (task.sessions) {
-        const existingSessionIds = new Set(thread.sessions.map((session) => session.sessionId))
-        for (const session of task.sessions) {
-          if (!existingSessionIds.has(session.sessionId)) {
-            thread.sessions.push(session)
-          }
-        }
-      }
-
-      if (!thread.currentSessionId && task.currentSessionId) {
-        thread.currentSessionId = task.currentSessionId
-      }
-    }
-
-    cleanedTasksFile.runtime_state.threads = Array.from(threadMap.values()).sort((a, b) =>
-      a.threadId.localeCompare(b.threadId, undefined, { numeric: true }),
-    )
-    writeTasksFile(repoRoot, streamId, cleanedTasksFile)
-
+    writeTasksFile(repoRoot, streamId, clonedTasksFile)
     return { migrated: true }
   } catch (err) {
     return { 
@@ -864,39 +1267,10 @@ export function readTasksFile(
   repoRoot: string,
   streamId: string,
 ): TasksFile | null {
-  const filePath = getTasksFilePath(repoRoot, streamId)
-
-  if (!existsSync(filePath)) {
+  importLegacyRuntimeState(repoRoot, streamId)
+  const tasksFile = readTasksFileSnapshot(repoRoot, streamId)
+  if (!tasksFile) {
     return null
-  }
-
-  const content = readFileSync(filePath, "utf-8")
-  let tasksFile = JSON.parse(content) as TasksFile
-
-  tasksFile = {
-    version: tasksFile.version ?? TASKS_FILE_VERSION,
-    stream_id: tasksFile.stream_id ?? streamId,
-    last_updated: tasksFile.last_updated ?? new Date().toISOString(),
-    runtime_state: normalizeRuntimeState(streamId, tasksFile.runtime_state),
-    ...(tasksFile.runtime_summary ? { runtime_summary: tasksFile.runtime_summary } : {}),
-    tasks: Array.isArray(tasksFile.tasks) ? tasksFile.tasks : [],
-  }
-
-   // Check for sessions in legacy task fields and migrate to unified runtime state.
-  if (hasSessionsInTasksJson(tasksFile)) {
-    console.warn(
-      `\x1b[33mWarning: Deprecated session data found in tasks.json for stream ${streamId}.\x1b[0m`,
-    )
-    console.warn(
-      `\x1b[33mAuto-migrating sessions into runtime_state.threads and clearing task-local fields...\x1b[0m`,
-    )
-
-    const migrationResult = migrateSessionsToThreads(repoRoot, streamId, tasksFile)
-    if (migrationResult.migrated) {
-      const cleanedContent = readFileSync(filePath, "utf-8")
-      tasksFile = JSON.parse(cleanedContent) as TasksFile
-      tasksFile.runtime_state = normalizeRuntimeState(streamId, tasksFile.runtime_state)
-    }
   }
 
   if (!tasksFile.runtime_summary) {
@@ -951,22 +1325,7 @@ async function withTasksFileLock<T>(
   streamId: string,
   fn: () => T | Promise<T>,
 ): Promise<T> {
-  const filePath = getTasksFilePath(repoRoot, streamId)
-  mkdirSync(join(getWorkDir(repoRoot), streamId), { recursive: true })
-
-  if (!existsSync(filePath)) {
-    writeTasksFile(repoRoot, streamId, createEmptyTasksFile(streamId))
-  }
-
-  const release = await lockfile.lock(filePath, {
-    retries: { retries: 10, minTimeout: 50, maxTimeout: 500 },
-  })
-
-  try {
-    return await fn()
-  } finally {
-    await release()
-  }
+  return withTasksRuntimeLock(repoRoot, streamId, fn)
 }
 
 export async function modifyTasksFile<T>(
@@ -975,7 +1334,8 @@ export async function modifyTasksFile<T>(
   fn: (tasksFile: TasksFile) => T | Promise<T>,
 ): Promise<T> {
   return withTasksFileLock(repoRoot, streamId, async () => {
-    const tasksFile = readTasksFile(repoRoot, streamId) ?? createEmptyTasksFile(streamId)
+    const tasksFile = readTasksFileSnapshot(repoRoot, streamId) ?? createEmptyTasksFile(streamId)
+    importLegacyRuntimeStateUnlocked(repoRoot, streamId, tasksFile)
     const result = await fn(tasksFile)
     writeTasksFile(repoRoot, streamId, tasksFile)
     return result

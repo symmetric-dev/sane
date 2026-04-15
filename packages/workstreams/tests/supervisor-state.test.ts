@@ -50,7 +50,7 @@ describe("supervisor-state", () => {
     expect(empty.last_updated).toBeDefined()
   })
 
-  test("saveSupervisorState persists supervisor-state.json separately from threads.json", () => {
+  test("saveSupervisorState persists unified supervisor state in tasks.json", () => {
     const supervisorState: SupervisorStateFile = {
       version: "1.0.0",
       stream_id: workspace.streamId,
@@ -68,7 +68,7 @@ describe("supervisor-state", () => {
     saveSupervisorState(workspace.repoRoot, workspace.streamId, supervisorState)
 
     const supervisorStatePath = getSupervisorStateFilePath(workspace.repoRoot, workspace.streamId)
-    expect(supervisorStatePath).toEndWith("supervisor-state.json")
+    expect(supervisorStatePath).toEndWith("tasks.json")
     expect(existsSync(supervisorStatePath)).toBe(true)
     expect(existsSync(join(workspace.workDir, "threads.json"))).toBe(false)
 
@@ -154,12 +154,12 @@ describe("supervisor-state", () => {
     })
   })
 
-  test("loadSupervisorState reports the file path when supervisor-state.json is malformed", () => {
+  test("loadSupervisorState reports the tasks.json path when unified state is malformed", () => {
     const supervisorStatePath = getSupervisorStateFilePath(workspace.repoRoot, workspace.streamId)
     writeFileSync(supervisorStatePath, '{"runs": [}', "utf-8")
 
     expect(() => loadSupervisorState(workspace.repoRoot, workspace.streamId)).toThrow(
-      `Failed to parse supervisor-state.json at ${supervisorStatePath}:`,
+      `Failed to parse unified supervisor state in tasks.json at ${supervisorStatePath}:`,
     )
   })
 

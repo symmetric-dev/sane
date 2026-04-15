@@ -624,7 +624,7 @@ describe("getStreamProgress", () => {
     expect(result.stages).toHaveLength(0)
   })
 
-  test("projects runtime summary for older tasks.json without persisted projection", async () => {
+  test("derives runtime summary from unified runtime_state when runtime_summary is absent", async () => {
     const tasksFile: TasksFile = {
       version: "1.0.0",
       stream_id: "001-test-stream",
@@ -647,11 +647,12 @@ describe("getStreamProgress", () => {
       join(tempDir, "work/001-test-stream/tasks.json"),
       JSON.stringify(tasksFile, null, 2),
     )
-    await mkdir(join(tempDir, "work/001-test-stream/batch-status"), { recursive: true })
-    await writeFile(
-      join(tempDir, "work/001-test-stream/batch-status/01.01.json"),
-      JSON.stringify(
-        {
+    tasksFile.runtime_state = {
+      version: "1.0.0",
+      last_updated: new Date().toISOString(),
+      threads: [],
+      batches: {
+        "01.01": {
           version: "1.0.0",
           streamId: "001-test-stream",
           batchId: "01.01",
@@ -669,9 +670,25 @@ describe("getStreamProgress", () => {
           },
           threads: [],
         },
-        null,
-        2,
-      ),
+      },
+      supervision: {
+        version: "1.0.0",
+        stream_id: "001-test-stream",
+        last_updated: new Date().toISOString(),
+        runs: [],
+        checkpoint_pointers: [],
+        branch_sessions: [],
+        reviewed_batches: [],
+        issue_summaries: [],
+        fix_cycles: [],
+        escalations: [],
+        stage_stops: [],
+      },
+    }
+    delete tasksFile.runtime_summary
+    await writeFile(
+      join(tempDir, "work/001-test-stream/tasks.json"),
+      JSON.stringify(tasksFile, null, 2),
     )
 
     const result = getStreamProgress(tempDir, baseStream)

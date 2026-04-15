@@ -87,7 +87,7 @@ describe("threads", () => {
       const path = getThreadsFilePath(repoRoot, streamId)
       expect(path).toContain("work")
       expect(path).toContain(streamId)
-      expect(path).toEndWith("threads.json")
+      expect(path).toEndWith("tasks.json")
     })
   })
 

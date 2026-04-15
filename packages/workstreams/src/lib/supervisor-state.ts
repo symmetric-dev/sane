@@ -1,5 +1,4 @@
 import { existsSync } from "fs"
-import * as lockfile from "proper-lockfile"
 import type {
   CurrentBranchSupervisionContext,
   RootAgentBranchScope,
@@ -17,11 +16,12 @@ import type {
 } from "./types.ts"
 import { isTerminalBatchStatus, readBatchStatus } from "./batch-status.ts"
 import {
-  createEmptyTasksFile,
   getTasksFilePath,
+  modifyRuntimeState,
+  mutateRuntimeState,
+  normalizeSupervisorState,
   normalizeRuntimeState,
   readTasksFile,
-  writeTasksFile,
 } from "./tasks.ts"
 
 function inferStageIdFromBatchId(batchId?: string): string | undefined {
@@ -221,9 +221,10 @@ export function loadSupervisorState(
     return null
   }
 
-  const tasksFile = readTasksFile(repoRoot, streamId)
+  let tasksFile
   let parsed: Partial<SupervisorStateFile>
   try {
+    tasksFile = readTasksFile(repoRoot, streamId)
     parsed = tasksFile?.runtime_state?.supervision ?? createEmptySupervisorState(streamId)
   } catch (error) {
     throw new Error(
@@ -322,34 +323,10 @@ export function saveSupervisorState(
     stage_stops: supervisorState.stage_stops,
   }
 
-  const tasksFile = readTasksFile(repoRoot, streamId) ?? createEmptyTasksFile(streamId)
-  tasksFile.runtime_state = normalizeRuntimeState(streamId, tasksFile.runtime_state)
-  tasksFile.runtime_state.last_updated = lastUpdated
-  tasksFile.runtime_state.supervision = ordered
-  delete tasksFile.runtime_summary
-  writeTasksFile(repoRoot, streamId, tasksFile)
-}
-
-async function withSupervisorStateLock<T>(
-  repoRoot: string,
-  streamId: string,
-  fn: () => T | Promise<T>,
-): Promise<T> {
-  const filePath = getSupervisorStateFilePath(repoRoot, streamId)
-
-  if (!existsSync(filePath)) {
-    writeTasksFile(repoRoot, streamId, createEmptyTasksFile(streamId))
-  }
-
-  const release = await lockfile.lock(filePath, {
-    retries: { retries: 10, minTimeout: 50, maxTimeout: 500 },
+  mutateRuntimeState(repoRoot, streamId, (runtimeState) => {
+    runtimeState.last_updated = lastUpdated
+    runtimeState.supervision = ordered
   })
-
-  try {
-    return await fn()
-  } finally {
-    await release()
-  }
 }
 
 /**
@@ -360,12 +337,11 @@ export async function modifySupervisorState<T>(
   streamId: string,
   fn: (supervisorState: SupervisorStateFile) => T | Promise<T>,
 ): Promise<T> {
-  return withSupervisorStateLock(repoRoot, streamId, async () => {
-    const supervisorState =
-      loadSupervisorState(repoRoot, streamId) ?? createEmptySupervisorState(streamId)
-
+  return modifyRuntimeState(repoRoot, streamId, async (runtimeState) => {
+    const supervisorState = normalizeSupervisorState(streamId, runtimeState.supervision)
     const result = await fn(supervisorState)
-    saveSupervisorState(repoRoot, streamId, supervisorState)
+    runtimeState.last_updated = new Date().toISOString()
+    runtimeState.supervision = supervisorState
     return result
   })
 }
@@ -618,7 +594,8 @@ export async function reconcileSupervisorRunsLocked(
   repoRoot: string,
   streamId: string,
 ): Promise<string[]> {
-  return modifySupervisorState(repoRoot, streamId, (supervisorState) => {
+  return modifyRuntimeState(repoRoot, streamId, (runtimeState) => {
+    const supervisorState = normalizeSupervisorState(streamId, runtimeState.supervision)
     const reconciledRunIds: string[] = []
 
     if (supervisorState.active_run_id) {
@@ -633,7 +610,7 @@ export async function reconcileSupervisorRunsLocked(
         continue
       }
 
-      const batchStatus = readBatchStatus(repoRoot, streamId, run.currentBatchId)
+      const batchStatus = runtimeState.batches[run.currentBatchId] ?? null
       if (!batchStatus || !isTerminalBatchStatus(batchStatus.status)) {
         continue
       }
@@ -666,6 +643,8 @@ export async function reconcileSupervisorRunsLocked(
       reconciledRunIds.push(run.runId)
     }
 
+    runtimeState.last_updated = new Date().toISOString()
+    runtimeState.supervision = supervisorState
     return reconciledRunIds
   })
 }

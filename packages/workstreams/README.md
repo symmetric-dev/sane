@@ -92,7 +92,7 @@ If `--timeout-ms` is reached before the batch becomes terminal, the wait fails a
 
 Policy is loaded from `work/supervisor.json` (defaults are used if missing) and interpreted at the Root Agent layer.
 
-After any stop, inspect the batch and supervisor state before resuming:
+After any stop, inspect the unified persisted state before resuming:
 
 ```bash
 # 1) task/thread snapshot for the batch that just ran
@@ -101,34 +101,33 @@ work tree --batch "01.01"
 # 2) persisted execution state for that batch
 work batch-status --batch "01.01" --format json
 
-# 3) persisted supervisor decision history
-cat work/<stream-id>/supervisor-state.json
+# 3) canonical tasks.json (includes runtime_state.supervision)
+cat work/<stream-id>/tasks.json
 ```
 
 Interpretation quick-guide (what success looks like vs what to inspect):
 
-- **Terminal success / safe resume:** `work batch-status` is `completed` and `supervisor-state.json` includes the batch under `reviewed_batches` plus persisted finalization evidence for the run decision (for example completed run state and/or matching `stage_stops` when the supervisor stopped on that batch).
-- **Timeout/wait failure:** batch status remains non-terminal; inspect the batch plus `supervisor-state.json`, then rerun plain `work supervise` to resume that same interrupted batch before later incomplete batches.
+- **Terminal success / safe resume:** `work batch-status` is `completed` and `tasks.json` → `runtime_state.supervision` includes the batch under `reviewed_batches` plus persisted finalization evidence for the run decision.
+- **Timeout/wait failure:** batch status remains non-terminal; inspect the batch plus `tasks.json` → `runtime_state.supervision`, then rerun plain `work supervise` to resume that same interrupted batch before later incomplete batches.
 - **Escalation/stage stop:** inspect `escalations` and `stage_stops` to confirm what operator action is required.
 - **Terminal failed run:** `work batch-status` is `failed`; inspect failed thread summaries before retrying.
 
 Timeout resume smoke checklist (short drill):
 
 1. Force interruption: `work supervise --batch "01.01" --timeout-ms 100`
-2. Inspect persisted state: `work batch-status --batch "01.01" --format json` and `cat work/<stream-id>/supervisor-state.json`
+2. Inspect persisted state: `work batch-status --batch "01.01" --format json` and `cat work/<stream-id>/tasks.json`
 3. Resume normally: run plain `work supervise` and confirm it resumes `01.01` first (does not skip to later incomplete batches)
 4. Verify outcome class:
-   - **Resumed success:** batch becomes terminal `completed`, `reviewed_batches` contains `01.01`, and persisted finalization evidence for that same batch appears in `supervisor-state.json` (for example completed run state and/or `stage_stops`)
+   - **Resumed success:** batch becomes terminal `completed`, `reviewed_batches` contains `01.01`, and persisted finalization evidence for that same batch appears in `tasks.json` → `runtime_state.supervision`
    - **Still interrupted/non-terminal:** batch remains non-terminal and no new `reviewed_batches` entry exists yet (wait/investigate before treating as complete)
 
-Persisted-state note: prefer `supervisor-state.json` ordering/evidence to verify same-batch resume, rather than relying only on transient console logs.
+Persisted-state note: prefer `tasks.json` runtime ordering/evidence to verify same-batch resume, rather than relying only on transient console logs.
 
 Escalation policy: branch runs escalate to the Root Agent; the Root Agent escalates to the user.
 
-Key persisted files:
+Key persisted file:
 
-- `work/<stream-id>/batch-status/<batch-id>.json` (batch execution state)
-- `work/<stream-id>/supervisor-state.json` (review/fix/escalation/stage-stop history)
+- `work/<stream-id>/tasks.json` (`tasks[]` plus `runtime_state.{threads,batches,supervision}`)
 
 ### Reporting model (v1)
 
@@ -137,7 +136,7 @@ This is sufficient for current automated follow-up decisions, but reporting may 
 
 Quick post-fix verification checklist:
 
-- **Successful completion path**: batch status is terminal and `supervisor-state.json` records both review evidence (`reviewed_batches`) and persisted finalization evidence for that batch/run (including completed run state and/or the resulting `stage_stops` outcome for repaired canonical completion fallback cases).
+- **Successful completion path**: batch status is terminal and `tasks.json` → `runtime_state.supervision` records both review evidence (`reviewed_batches`) and persisted finalization evidence for that batch/run.
 - **Timeout/failure path**: batch status remains non-terminal at timeout; no new reviewed entry is recorded for the incomplete batch, and supervisor state keeps the interrupted run resumable until review can continue.
 
 Resume examples:
@@ -159,7 +158,7 @@ For the timeout/resume drill, verify recovery by confirming `01.01` reaches revi
 
 To confirm reduced drift vs the previous self-contained `work supervise` model:
 
-1. Verify each fix/escalate decision is grounded in persisted state (`batch-status/*.json` + `supervisor-state.json`), not transient logs alone.
+1. Verify each fix/escalate decision is grounded in persisted state inside `tasks.json` (`runtime_state.batches` + `runtime_state.supervision`), not transient logs alone.
 2. Confirm `reviewed_batches`, `fix_cycles`, and `escalations` entries match the Root Agent decision taken for that batch.
 3. Run regression tests from `packages/workstreams`:
 
@@ -175,7 +174,7 @@ For the current one-level prompt-first experiment:
 
 - treat supervision branches as single-hop children of the Root Agent only
 - if a branch tries to launch another supervision branch, the launch must fail with a guardrail error and the branch should yield back upward
-- validate lineage and branch status from `work/<stream-id>/supervisor-state.json` → `branch_sessions[]`
+- validate lineage and branch status from `work/<stream-id>/tasks.json` → `runtime_state.supervision.branch_sessions[]`
 - validate the final branch report by exporting the child native session transcript and reading the last completed assistant message
 - classify drift when the branch acts like the Root Agent or proposes deeper branching instead of reporting its `work supervise` outcome
 

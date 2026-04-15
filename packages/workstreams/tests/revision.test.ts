@@ -543,11 +543,11 @@ Follow-up details.
             expect(tasksFile.tasks.some((task: Task) => task.id === "02.01.01.01")).toBe(false);
             expect(tasksFile.tasks.some((task: Task) => task.id === "03.01.01.01")).toBe(true);
 
-            const threadsFile = JSON.parse(readFileSync(join(streamDir, "threads.json"), "utf-8"));
-            expect(threadsFile.threads.some((thread: { threadId: string }) => thread.threadId === "02.01.01")).toBe(true);
-            expect(threadsFile.threads.some((thread: { threadId: string }) => thread.threadId === "03.01.01")).toBe(true);
+            const persistedTasksFile = JSON.parse(readFileSync(join(streamDir, "tasks.json"), "utf-8"));
+            expect(persistedTasksFile.runtime_state.threads.some((thread: { threadId: string }) => thread.threadId === "02.01.01")).toBe(true);
+            expect(persistedTasksFile.runtime_state.threads.some((thread: { threadId: string }) => thread.threadId === "03.01.01")).toBe(true);
 
-            const shiftedThread = threadsFile.threads.find((thread: { threadId: string }) => thread.threadId === "03.01.01");
+            const shiftedThread = persistedTasksFile.runtime_state.threads.find((thread: { threadId: string }) => thread.threadId === "03.01.01");
             expect(shiftedThread?.promptPath).toContain("prompts/03-follow-up/01-follow-up-batch/follow-up-thread.md");
             expect(existsSync(join(streamDir, "prompts", "03-follow-up", "01-follow-up-batch", "follow-up-thread.md"))).toBe(true);
 

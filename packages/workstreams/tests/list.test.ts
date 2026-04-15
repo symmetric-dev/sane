@@ -283,39 +283,10 @@ describe("CLI: List Tasks with Filtering", () => {
     }
   })
 
-  test("falls back to projected runtime summary for older tasks.json", async () => {
+  test("derives runtime desync output from unified runtime_state when runtime_summary is absent", async () => {
     const workspace = setupWorkspace()
 
     try {
-      mkdirSync(join(workspace.workDir, STREAM_ID, "batch-status"), { recursive: true })
-      writeFileSync(
-        join(workspace.workDir, STREAM_ID, "batch-status", "01.01.json"),
-        JSON.stringify(
-          {
-            version: "1.0.0",
-            streamId: STREAM_ID,
-            batchId: "01.01",
-            runId: "run-1",
-            mode: "headless",
-            status: "running",
-            stageName: "Stage 1",
-            batchName: "Batch 1",
-            startedAt: new Date().toISOString(),
-            updatedAt: new Date().toISOString(),
-            summary: {
-              total: 2,
-              pending: 1,
-              running: 1,
-              completed: 0,
-              failed: 0,
-            },
-            threads: [],
-          },
-          null,
-          2,
-        ),
-      )
-
       const tasks: Task[] = [
         {
           id: "01.01.01.01",
@@ -341,6 +312,47 @@ describe("CLI: List Tasks with Filtering", () => {
 
       const tasksFile = createEmptyTasksFile(STREAM_ID)
       tasksFile.tasks = tasks
+      tasksFile.runtime_state = {
+        version: "1.0.0",
+        last_updated: new Date().toISOString(),
+        threads: [],
+        batches: {
+          "01.01": {
+            version: "1.0.0",
+            streamId: STREAM_ID,
+            batchId: "01.01",
+            runId: "run-1",
+            mode: "headless",
+            status: "running",
+            stageName: "Stage 1",
+            batchName: "Batch 1",
+            startedAt: new Date().toISOString(),
+            updatedAt: new Date().toISOString(),
+            summary: {
+              total: 2,
+              pending: 1,
+              running: 1,
+              completed: 0,
+              failed: 0,
+            },
+            threads: [],
+          },
+        },
+        supervision: {
+          version: "1.0.0",
+          stream_id: STREAM_ID,
+          last_updated: new Date().toISOString(),
+          runs: [],
+          checkpoint_pointers: [],
+          branch_sessions: [],
+          reviewed_batches: [],
+          issue_summaries: [],
+          fix_cycles: [],
+          escalations: [],
+          stage_stops: [],
+        },
+      }
+      delete tasksFile.runtime_summary
       writeTasksFile(workspace.repoRoot, STREAM_ID, tasksFile)
 
       const result = await runCliCommand(

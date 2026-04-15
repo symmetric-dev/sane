@@ -4,7 +4,7 @@ import type {
   PersistedBatchStatusSummary,
   PersistedBatchStatusThread,
 } from "./types.ts"
-import { getTasksFilePath, readTasksFile, normalizeRuntimeState, writeTasksFile } from "./tasks.ts"
+import { getTasksFilePath, modifyRuntimeState, mutateRuntimeState, readTasksFile } from "./tasks.ts"
 
 export const BATCH_STATUS_VERSION = "1.0.0"
 
@@ -119,6 +119,22 @@ export function initializeBatchStatusRun(
   return batchStatus
 }
 
+export async function initializeBatchStatusRunLocked(
+  args: InitializeBatchStatusRunArgs,
+): Promise<BatchStatusFile> {
+  const batchStatus = createBatchStatusFile({
+    streamId: args.streamId,
+    batchId: args.batchId,
+    tmuxSessionName: args.tmuxSessionName,
+    stageName: args.stageName,
+    batchName: args.batchName,
+    threads: args.threads,
+  })
+
+  await writeBatchStatusLocked(args.repoRoot, args.streamId, batchStatus)
+  return batchStatus
+}
+
 export function readBatchStatus(
   repoRoot: string,
   streamId: string,
@@ -150,12 +166,36 @@ export function writeBatchStatus(
     threads: batchStatus.threads,
   }
 
-  const tasksFile = readTasksFile(repoRoot, streamId)
-  if (!tasksFile) {
-    throw new Error(`Cannot write batch status before tasks.json exists for stream ${streamId}`)
+  mutateRuntimeState(repoRoot, streamId, (runtimeState) => {
+    runtimeState.batches[batchStatus.batchId] = ordered
+    runtimeState.last_updated = new Date().toISOString()
+  })
+}
+
+export async function writeBatchStatusLocked(
+  repoRoot: string,
+  streamId: string,
+  batchStatus: BatchStatusFile,
+): Promise<void> {
+  const ordered: BatchStatusFile = {
+    version: batchStatus.version,
+    streamId: batchStatus.streamId,
+    batchId: batchStatus.batchId,
+    runId: batchStatus.runId,
+    ...(batchStatus.tmuxSessionName ? { tmuxSessionName: batchStatus.tmuxSessionName } : {}),
+    mode: batchStatus.mode,
+    status: batchStatus.status,
+    ...(batchStatus.stageName ? { stageName: batchStatus.stageName } : {}),
+    ...(batchStatus.batchName ? { batchName: batchStatus.batchName } : {}),
+    startedAt: batchStatus.startedAt,
+    updatedAt: batchStatus.updatedAt,
+    ...(batchStatus.completedAt ? { completedAt: batchStatus.completedAt } : {}),
+    summary: batchStatus.summary,
+    threads: batchStatus.threads,
   }
-  tasksFile.runtime_state = normalizeRuntimeState(streamId, tasksFile.runtime_state)
-  tasksFile.runtime_state.batches[batchStatus.batchId] = ordered
-  delete tasksFile.runtime_summary
-  writeTasksFile(repoRoot, streamId, tasksFile)
+
+  await modifyRuntimeState(repoRoot, streamId, (runtimeState) => {
+    runtimeState.batches[batchStatus.batchId] = ordered
+    runtimeState.last_updated = new Date().toISOString()
+  })
 }

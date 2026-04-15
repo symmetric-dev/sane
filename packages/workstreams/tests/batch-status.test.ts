@@ -10,8 +10,13 @@ import {
   syncBatchStatus,
   waitForBatchStatus,
 } from "../src/lib/batch-monitor"
-import { createBatchStatusFile, readBatchStatus, writeBatchStatus } from "../src/lib/batch-status"
-import { readTasksFile } from "../src/lib/tasks"
+import {
+  createBatchStatusFile,
+  readBatchStatus,
+  writeBatchStatus,
+  writeBatchStatusLocked,
+} from "../src/lib/batch-status"
+import { readTasksFile, writeTasksFile } from "../src/lib/tasks"
 import {
   getCompletionMarkerPath,
   getSessionFilePath,
@@ -149,8 +154,8 @@ describe("batch status", () => {
     })
   })
 
-  test("resetBatchStatusRun persists generated tmux session name", () => {
-    const run = resetBatchStatusRun({
+  test("resetBatchStatusRun persists generated tmux session name", async () => {
+    const run = await resetBatchStatusRun({
       repoRoot,
       streamId,
       batchId: "01.01",
@@ -259,7 +264,7 @@ describe("batch status", () => {
   })
 
   test("syncBatchStatus reconciles completed threads from canonical task state when tmux is gone and artifacts are incomplete", async () => {
-    const run = resetBatchStatusRun({
+    const run = await resetBatchStatusRun({
       repoRoot,
       streamId,
       batchId: "01.01",
@@ -290,40 +295,15 @@ describe("batch status", () => {
 
     writeFileSync(getSessionFilePath(streamId, "01.01.01"), "recovered-session-1\n")
 
-    writeFileSync(
-      join(repoRoot, "work", streamId, "tasks.json"),
-      JSON.stringify(
-        {
-          version: "1.0.0",
-          stream_id: streamId,
-          last_updated: new Date().toISOString(),
-          tasks: [
-            {
-              id: "01.01.01.01",
-              name: "Thread 1 task",
-              thread_name: "Thread 1",
-              batch_name: "Batch Status",
-              stage_name: "Headless Runtime",
-              status: "completed",
-              created_at: new Date().toISOString(),
-              updated_at: new Date().toISOString(),
-            },
-            {
-              id: "01.01.02.01",
-              name: "Thread 2 task",
-              thread_name: "Thread 2",
-              batch_name: "Batch Status",
-              stage_name: "Headless Runtime",
-              status: "completed",
-              created_at: new Date().toISOString(),
-              updated_at: new Date().toISOString(),
-            },
-          ],
-        },
-        null,
-        2,
-      ),
-    )
+    const canonicallyCompleted = readTasksFile(repoRoot, streamId)!
+    canonicallyCompleted.tasks = canonicallyCompleted.tasks.map((task) => ({
+      ...task,
+      status: "completed",
+      updated_at: new Date().toISOString(),
+    }))
+    writeBatchStatus(repoRoot, streamId, run)
+    writeFileSync(getSessionFilePath(streamId, "01.01.01"), "recovered-session-1\n")
+    writeTasksFile(repoRoot, streamId, canonicallyCompleted)
 
     const status = await syncBatchStatus({
       repoRoot,
@@ -346,7 +326,7 @@ describe("batch status", () => {
   })
 
   test("waitForBatchStatus does not false-positive completed while canonical tasks remain incomplete", async () => {
-    resetBatchStatusRun({
+    await resetBatchStatusRun({
       repoRoot,
       streamId,
       batchId: "01.01",
@@ -375,40 +355,13 @@ describe("batch status", () => {
       "session-still-running-2",
     )
 
-    writeFileSync(
-      join(repoRoot, "work", streamId, "tasks.json"),
-      JSON.stringify(
-        {
-          version: "1.0.0",
-          stream_id: streamId,
-          last_updated: new Date().toISOString(),
-          tasks: [
-            {
-              id: "01.01.01.01",
-              name: "Thread 1 task",
-              thread_name: "Thread 1",
-              batch_name: "Batch Status",
-              stage_name: "Headless Runtime",
-              status: "completed",
-              created_at: new Date().toISOString(),
-              updated_at: new Date().toISOString(),
-            },
-            {
-              id: "01.01.02.01",
-              name: "Thread 2 task",
-              thread_name: "Thread 2",
-              batch_name: "Batch Status",
-              stage_name: "Headless Runtime",
-              status: "pending",
-              created_at: new Date().toISOString(),
-              updated_at: new Date().toISOString(),
-            },
-          ],
-        },
-        null,
-        2,
-      ),
-    )
+    const partiallyCompleted = readTasksFile(repoRoot, streamId)!
+    partiallyCompleted.tasks = partiallyCompleted.tasks.map((task) => ({
+      ...task,
+      status: task.id === "01.01.01.01" ? "completed" : "pending",
+      updated_at: new Date().toISOString(),
+    }))
+    writeTasksFile(repoRoot, streamId, partiallyCompleted)
 
     await expect(
       waitForBatchStatus({
@@ -431,7 +384,7 @@ describe("batch status", () => {
   })
 
   test("syncBatchStatus reconciles ghost running batches to a terminal failed state when tmux is gone", async () => {
-    resetBatchStatusRun({
+    await resetBatchStatusRun({
       repoRoot,
       streamId,
       batchId: "01.01",
@@ -499,7 +452,7 @@ describe("batch status", () => {
   })
 
   test("prepareHeadlessBatchStatusRun terminalizes a stale ghost run before creating a fresh run", async () => {
-    const original = resetBatchStatusRun({
+    const original = await resetBatchStatusRun({
       repoRoot,
       streamId,
       batchId: "01.01",
@@ -568,7 +521,7 @@ describe("batch status", () => {
   })
 
   test("new headless run resets batch status with a fresh runId", async () => {
-    const firstRun = resetBatchStatusRun({
+    const firstRun = await resetBatchStatusRun({
       repoRoot,
       streamId,
       batchId: "01.01",
@@ -593,7 +546,7 @@ describe("batch status", () => {
       "session-rerun",
     )
 
-    const rerun = resetBatchStatusRun({
+    const rerun = await resetBatchStatusRun({
       repoRoot,
       streamId,
       batchId: "01.01",
@@ -629,7 +582,7 @@ describe("batch status", () => {
       Array.from({ length: 25 }, (_, index) =>
         Promise.resolve().then(() => {
           const updatedAt = new Date(Date.now() + index).toISOString()
-          writeBatchStatus(repoRoot, streamId, {
+          return writeBatchStatusLocked(repoRoot, streamId, {
             ...baseStatus,
             updatedAt,
             summary: { total: 2, pending: 0, running: 0, completed: 2, failed: 0 },
@@ -671,7 +624,7 @@ describe("batch status", () => {
       "session-async-2",
     )
 
-    const run = resetBatchStatusRun({
+    const run = await resetBatchStatusRun({
       repoRoot,
       streamId,
       batchId: "01.01",

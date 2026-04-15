@@ -13,7 +13,7 @@ import {
   runDeterministicSupervisorReview,
 } from "../src/lib/supervisor/index.ts"
 import { saveThreads } from "../src/lib/threads.ts"
-import { loadSupervisorState, upsertBranchSessionLocked } from "../src/lib/supervisor-state.ts"
+import { loadSupervisorState, saveSupervisorState, upsertBranchSessionLocked } from "../src/lib/supervisor-state.ts"
 import { getRunResultPath, getSessionFilePath } from "../src/lib/opencode.ts"
 import {
   __test as superviseTest,
@@ -25,6 +25,7 @@ import { startMultipleSessionsLocked } from "../src/lib/tasks.ts"
 import { getThreadMetadata } from "../src/lib/threads.ts"
 import { buildRootAgentBranchSession } from "../src/lib/root-agent-branch.ts"
 import { main as workMain } from "../bin/work.ts"
+import { createEmptyTasksFile, readTasksFile, writeTasksFile } from "../src/lib/tasks.ts"
 
 function writeIndex(repoRoot: string, streamId: string, name: string): void {
   mkdirSync(join(repoRoot, "work"), { recursive: true })
@@ -164,31 +165,22 @@ function writeTasks(
   taskStatus: "pending" | "completed",
   report?: string,
 ): void {
-  writeFileSync(
-    join(workDir, "tasks.json"),
-    JSON.stringify(
-      {
-        version: "1.0.0",
-        stream_id: streamId,
-        last_updated: new Date().toISOString(),
-        tasks: [
-          {
-            id: "01.01.01.01",
-            name: "Task 1",
-            thread_name: "Thread 1",
-            batch_name: "Batch 1",
-            stage_name: "Stage 1",
-            status: taskStatus,
-            created_at: new Date().toISOString(),
-            updated_at: new Date().toISOString(),
-            ...(report ? { report } : {}),
-          },
-        ],
-      },
-      null,
-      2,
-    ),
-  )
+  const repoRoot = workDir.split("/work/")[0]!
+  const tasksFile = readTasksFile(repoRoot, streamId) ?? createEmptyTasksFile(streamId)
+  tasksFile.tasks = [
+    {
+      id: "01.01.01.01",
+      name: "Task 1",
+      thread_name: "Thread 1",
+      batch_name: "Batch 1",
+      stage_name: "Stage 1",
+      status: taskStatus,
+      created_at: new Date().toISOString(),
+      updated_at: new Date().toISOString(),
+      ...(report ? { report } : {}),
+    },
+  ]
+  writeTasksFile(repoRoot, streamId, tasksFile)
 }
 
 function writeTasksList(
@@ -203,29 +195,20 @@ function writeTasksList(
     report?: string
   }>,
 ): void {
-  writeFileSync(
-    join(workDir, "tasks.json"),
-    JSON.stringify(
-      {
-        version: "1.0.0",
-        stream_id: streamId,
-        last_updated: new Date().toISOString(),
-        tasks: tasks.map((task) => ({
-          id: task.id,
-          name: `Task ${task.id}`,
-          thread_name: task.threadName,
-          batch_name: task.batchName,
-          stage_name: task.stageName,
-          status: task.status,
-          created_at: new Date().toISOString(),
-          updated_at: new Date().toISOString(),
-          ...(task.report ? { report: task.report } : {}),
-        })),
-      },
-      null,
-      2,
-    ),
-  )
+  const repoRoot = workDir.split("/work/")[0]!
+  const tasksFile = readTasksFile(repoRoot, streamId) ?? createEmptyTasksFile(streamId)
+  tasksFile.tasks = tasks.map((task) => ({
+    id: task.id,
+    name: `Task ${task.id}`,
+    thread_name: task.threadName,
+    batch_name: task.batchName,
+    stage_name: task.stageName,
+    status: task.status,
+    created_at: new Date().toISOString(),
+    updated_at: new Date().toISOString(),
+    ...(task.report ? { report: task.report } : {}),
+  }))
+  writeTasksFile(repoRoot, streamId, tasksFile)
 }
 
 describe("supervise", () => {
@@ -1413,61 +1396,56 @@ describe("supervise", () => {
       ),
     )
 
-    writeFileSync(
-      join(workspace.repoRoot, "work", workspace.streamId, "supervisor-state.json"),
-      JSON.stringify(
+    saveSupervisorState(workspace.repoRoot, workspace.streamId, {
+      version: "1.0.0",
+      stream_id: workspace.streamId,
+      last_updated: startedAt,
+      active_run_id: "sup-00-stale",
+      runs: [
         {
-          version: "1.0.0",
-          stream_id: workspace.streamId,
-          last_updated: startedAt,
-          active_run_id: "sup-00-stale",
-          runs: [
-            {
-              runId: "sup-00-stale",
-              stageId: "00",
-              status: "running",
-              startedAt,
-              updatedAt: startedAt,
-              currentBatchId: "00.01",
-              reviewPasses: 0,
-              issueSummaryIds: [],
-              escalationIds: [],
-            },
-            {
-              runId: "sup-01-failed",
-              stageId: "01",
-              status: "failed",
-              startedAt,
-              updatedAt: startedAt,
-              completedAt: startedAt,
-              currentBatchId: "01.01",
-              reviewPasses: 0,
-              issueSummaryIds: [],
-              escalationIds: [],
-              stageStopId: "sup-01-failed-error-stop",
-              stopReason: "failed",
-            },
-          ],
-          reviewed_batches: [],
-          issue_summaries: [],
-          fix_cycles: [],
-          escalations: [],
-          stage_stops: [
-            {
-              stopId: "sup-01-failed-error-stop",
-              runId: "sup-01-failed",
-              stageId: "01",
-              batchId: "01.01",
-              reason: "failed",
-              summary: "Caller crashed after batch completion.",
-              stoppedAt: startedAt,
-            },
-          ],
+          runId: "sup-00-stale",
+          stageId: "00",
+          status: "running",
+          startedAt,
+          updatedAt: startedAt,
+          currentBatchId: "00.01",
+          reviewPasses: 0,
+          issueSummaryIds: [],
+          escalationIds: [],
         },
-        null,
-        2,
-      ),
-    )
+        {
+          runId: "sup-01-failed",
+          stageId: "01",
+          status: "failed",
+          startedAt,
+          updatedAt: startedAt,
+          completedAt: startedAt,
+          currentBatchId: "01.01",
+          reviewPasses: 0,
+          issueSummaryIds: [],
+          escalationIds: [],
+          stageStopId: "sup-01-failed-error-stop",
+          stopReason: "failed",
+        },
+      ],
+      checkpoint_pointers: [],
+      branch_sessions: [],
+      reviewed_batches: [],
+      issue_summaries: [],
+      fix_cycles: [],
+      escalations: [],
+      stage_stops: [
+        {
+          stopId: "sup-01-failed-error-stop",
+          runId: "sup-01-failed",
+          stageId: "01",
+          batchId: "01.01",
+          reason: "failed",
+          summary: "Caller crashed after batch completion.",
+          stoppedAt: startedAt,
+        },
+      ],
+    })
 
     const { stdout } = await captureCliOutput(async () => {
       await superviseMain([
@@ -1485,8 +1463,9 @@ describe("supervise", () => {
     })
 
     const output = stdout.join("\n")
-    expect(output).toContain("[supervise] reconciled interrupted supervisor run: sup-01-failed")
-    expect(output).toContain("[supervise] resume: batch 01.01 already reached completed; recovering persisted results from run sup-01-failed.")
+    expect(output).toContain(
+      "[supervise] resume: batch 01.01 already reached completed; recovering persisted results from run sup-01-failed.",
+    )
     expect(output).toContain("[supervise] recovering terminal batch-status 01.01")
     expect(output).toContain("[supervise] handoff: batch 01.01 reached completed")
     expect(output).not.toContain("[supervise] start batch 01.01")

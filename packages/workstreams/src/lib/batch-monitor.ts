@@ -8,8 +8,8 @@ import {
   cleanupSessionFiles,
 } from "./marker-polling.ts"
 import {
-  initializeBatchStatusRun,
   createBatchStatusFile,
+  initializeBatchStatusRunLocked,
   type BatchStatusFile,
   type BatchStatusThread,
   type BatchThreadRunStatus,
@@ -17,7 +17,7 @@ import {
   isTerminalBatchStatus,
   readBatchStatus,
   summarizeBatchThreads,
-  writeBatchStatus,
+  writeBatchStatusLocked,
 } from "./batch-status.ts"
 import { parseBatchId } from "./cli-utils.ts"
 import {
@@ -442,7 +442,7 @@ async function reconcileGhostBatchRun(args: {
     threads: nextThreads,
   }
 
-  writeBatchStatus(args.repoRoot, args.streamId, batchStatus)
+  await writeBatchStatusLocked(args.repoRoot, args.streamId, batchStatus)
   cleanupCompletionMarkers(
     args.streamId,
     args.threadSeeds.map((thread) => thread.threadId),
@@ -588,7 +588,7 @@ async function finalizeCanonicalThreadState(
   }
 }
 
-export function resetBatchStatusRun(options: {
+export async function resetBatchStatusRun(options: {
   repoRoot: string
   streamId: string
   batchId: string
@@ -596,13 +596,13 @@ export function resetBatchStatusRun(options: {
   stageName?: string
   batchName?: string
   threads: BatchThreadSeed[]
-}): BatchStatusFile {
+}): Promise<BatchStatusFile> {
   const threadIds = options.threads.map((thread) => thread.threadId)
   cleanupCompletionMarkers(options.streamId, threadIds)
   cleanupResultFiles(options.streamId, threadIds)
   cleanupSessionFiles(options.streamId, threadIds)
 
-  return initializeBatchStatusRun({
+  return initializeBatchStatusRunLocked({
     repoRoot: options.repoRoot,
     streamId: options.streamId,
     batchId: options.batchId,
@@ -790,7 +790,7 @@ export async function syncBatchStatus(
     delete batchStatus.completedAt
   }
 
-  writeBatchStatus(repoRoot, streamId, batchStatus)
+  await writeBatchStatusLocked(repoRoot, streamId, batchStatus)
 
   if (isTerminalBatchStatus(batchStatus.status)) {
     const threadIds = threadSeeds.map((thread) => thread.threadId)

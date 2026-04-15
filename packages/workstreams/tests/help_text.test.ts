@@ -74,6 +74,7 @@ describe("draft-first help text", () => {
     const output = stdout.join("\n")
     expect(stderr).toHaveLength(0)
     expect(output).toMatch(/^\s+validate\s+Validate plan, tasks, or requirements$/m)
+    expect(output).toMatch(/^\s+reset-batch-state\s+Reset one batch for a clean rerun$/m)
     expect(output).toContain("work validate requirements")
     expect(output).not.toMatch(/^\s+context\s+/m)
   })
