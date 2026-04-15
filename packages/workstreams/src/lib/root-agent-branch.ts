@@ -542,6 +542,7 @@ export function buildRootAgentBranchSession(args: {
   startedAt?: string
   updatedAt?: string
   completedAt?: string
+  tmuxSessionName?: string
   runId?: string
   batchId?: string
   supervisionProgress?: RootAgentSupervisionProgress
@@ -577,6 +578,7 @@ export function buildRootAgentBranchSession(args: {
     startedAt: args.startedAt ?? updatedAt,
     updatedAt,
     ...(args.completedAt ? { completedAt: args.completedAt } : {}),
+    ...(args.tmuxSessionName ? { tmuxSessionName: args.tmuxSessionName } : {}),
     ...(args.runId ? { runId: args.runId } : {}),
     ...(persistedBatchId ? { batchId: persistedBatchId } : {}),
     ...(supervisionProgress ? { supervisionProgress } : {}),

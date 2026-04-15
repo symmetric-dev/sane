@@ -143,6 +143,7 @@ describe("root-agent-branch", () => {
       },
       branchRole: "supervision",
       status: "running",
+      tmuxSessionName: "015-supervision-abc123",
       batchId: "15.01",
       startedAt: "2026-04-13T00:00:00.000Z",
       updatedAt: "2026-04-13T00:00:00.000Z",
@@ -153,6 +154,7 @@ describe("root-agent-branch", () => {
       stageId: "15",
     })
     expect(session.batchId).toBeUndefined()
+    expect(session.tmuxSessionName).toBe("015-supervision-abc123")
     expect(session.supervisionProgress).toEqual({
       executionMode: "stage_batch_loop",
       currentBatchId: "15.01",

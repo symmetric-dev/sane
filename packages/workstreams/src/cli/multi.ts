@@ -23,7 +23,7 @@ import { buildRootAgentLineage } from "../lib/root-agent-branch.ts"
 import {
   sessionExists,
   attachSession,
-  getWorkSessionName,
+  createUniqueWorkSessionName,
   buildCreateSessionCommand,
   buildAddWindowCommand,
   buildAttachCommand,
@@ -155,6 +155,15 @@ export function parseCliArgs(argv: string[]): MultiCliArgs | null {
           console.error("Error: --port must be a number")
           return null
         }
+        i++
+        break
+
+      case "--tmux-session-name":
+        if (!next) {
+          console.error("Error: --tmux-session-name requires a value")
+          return null
+        }
+        parsed.tmuxSessionName = next
         i++
         break
 
@@ -564,7 +573,13 @@ export async function main(argv: string[] = process.argv): Promise<void> {
   }
 
   const port = cliArgs.port ?? DEFAULT_PORT
-  const sessionName = getWorkSessionName(stream.id)
+  const sessionName =
+    cliArgs.tmuxSessionName ??
+    createUniqueWorkSessionName({
+      streamId: stream.id,
+      streamOrder: "order" in stream && typeof stream.order === "number" ? stream.order : undefined,
+      source: "implementation",
+    })
 
   // === DRY RUN MODE ===
   if (cliArgs.dryRun) {
@@ -643,6 +658,7 @@ export async function main(argv: string[] = process.argv): Promise<void> {
       repoRoot,
       streamId: stream.id,
       batchId,
+      tmuxSessionName: sessionName,
       stageName,
       batchName,
       threads: threads.map((thread) => ({

@@ -5,7 +5,7 @@ import { existsSync, readFileSync, realpathSync } from "fs";
 import { dirname, join } from "path";
 import { fileURLToPath, pathToFileURL } from "url";
 
-const WORKSTREAM_TOOL_VERSION = "2026-04-14-timeout-defaults-v1";
+const WORKSTREAM_TOOL_VERSION = "2026-04-14-supervision-finalize-v1";
 const DEFAULT_BRANCH_TOOL_TIMEOUT_MS = 60 * 60 * 1000;
 const DEFAULT_BRANCH_TOOL_POLL_INTERVAL_MS = 1000;
 const DEFAULT_OPENCODE_SERVER_START_TIMEOUT_MS = 5000;
@@ -16,6 +16,11 @@ interface WorkstreamsToolRuntime {
   loadIndex: (repoRoot: string) => any;
   buildRootAgentBranchSession: (args: any) => any;
   createRootAgentBranchSessionId: (role: string) => string;
+  resolveCurrentBranchSupervisionContext: (args: {
+    repoRoot: string;
+    streamId?: string;
+    sessionId?: string;
+  }) => any;
   findRootAgentBranchSessionForLaunchSessionId: (args: {
     repoRoot: string;
     streamId: string;
@@ -133,6 +138,8 @@ interface ForkedSessionResult {
   stderr: string;
   nativeSessionId?: string;
 }
+
+type SupervisionTerminalStatus = "completed" | "stopped" | "failed";
 
 interface CheckpointSessionForkEligibility {
   valid: boolean;
@@ -826,6 +833,43 @@ export interface LaunchSupervisionBranchDeps {
   now: () => string;
 }
 
+interface FinalizeWorkstreamSupervisionResolution {
+  streamId: string;
+  current: {
+    rootSessionId: string;
+    branchSessionId: string;
+    nativeSessionId?: string;
+    checkpointMessageId?: string;
+    checkpointMessageIndex?: number;
+    checkpointCreatedAt?: string;
+    breakpointSelection?: RootCheckpointPointer["breakpointSelection"];
+    checkpointSessionId?: string;
+    parentSessionId?: string;
+    scope?: BranchLaunchScope;
+    supervisionProgress?: {
+      currentBatchId?: string;
+    };
+  };
+  branchSession: any;
+  resolutionSource: "current_supervision_context" | "persisted_session_fallback";
+}
+
+export interface FinalizeWorkstreamSupervisionDeps {
+  getRepoRoot: () => string;
+  resolveFinalizableSupervision: (args: {
+    repoRoot: string;
+    sessionId: string;
+    streamId?: string;
+  }) => Promise<FinalizeWorkstreamSupervisionResolution | undefined>;
+  buildBranchSession: (args: any) => any | Promise<any>;
+  persistBranchSession: (
+    repoRoot: string,
+    streamId: string,
+    branchSession: any,
+  ) => any | Promise<any>;
+  now: () => string;
+}
+
 function getDefaultLaunchSupervisionBranchDeps(): LaunchSupervisionBranchDeps {
   const runtime = loadWorkstreamsToolRuntime();
 
@@ -1068,6 +1112,295 @@ function getDefaultLaunchSupervisionBranchDeps(): LaunchSupervisionBranchDeps {
     },
     now: () => new Date().toISOString(),
   };
+}
+
+function listCandidateStreamIds(
+  runtime: WorkstreamsToolRuntime,
+  repoRoot: string,
+  streamId?: string,
+): string[] {
+  if (streamId) {
+    return [runtime.getResolvedStream(runtime.loadIndex(repoRoot), streamId).id];
+  }
+
+  const index = runtime.loadIndex(repoRoot);
+  return Array.from(
+    new Set([
+      ...(index.current_stream ? [index.current_stream] : []),
+      ...index.streams.map((stream: { id: string }) => stream.id),
+    ]),
+  );
+}
+
+function buildPersistedSupervisionFallback(args: {
+  streamId: string;
+  branchSession: any;
+}): FinalizeWorkstreamSupervisionResolution | undefined {
+  const branchSession = args.branchSession;
+  if (
+    !branchSession ||
+    branchSession.branchRole !== "supervision" ||
+    typeof branchSession.rootSessionId !== "string" ||
+    typeof branchSession.branchSessionId !== "string"
+  ) {
+    return undefined;
+  }
+
+  return {
+    streamId: args.streamId,
+    current: {
+      rootSessionId: branchSession.rootSessionId,
+      branchSessionId: branchSession.branchSessionId,
+      ...(branchSession.nativeSessionId
+        ? { nativeSessionId: branchSession.nativeSessionId }
+        : {}),
+      ...(branchSession.checkpointMessageId
+        ? { checkpointMessageId: branchSession.checkpointMessageId }
+        : {}),
+      ...(typeof branchSession.checkpointMessageIndex === "number"
+        ? { checkpointMessageIndex: branchSession.checkpointMessageIndex }
+        : {}),
+      ...(branchSession.checkpointCreatedAt
+        ? { checkpointCreatedAt: branchSession.checkpointCreatedAt }
+        : {}),
+      ...(branchSession.breakpointSelection
+        ? { breakpointSelection: branchSession.breakpointSelection }
+        : {}),
+      ...(branchSession.checkpointSessionId
+        ? { checkpointSessionId: branchSession.checkpointSessionId }
+        : {}),
+      ...(branchSession.parentSessionId
+        ? { parentSessionId: branchSession.parentSessionId }
+        : {}),
+      ...(branchSession.scope ? { scope: branchSession.scope } : {}),
+      ...(branchSession.supervisionProgress
+        ? { supervisionProgress: branchSession.supervisionProgress }
+        : {}),
+    },
+    branchSession,
+    resolutionSource: "persisted_session_fallback",
+  };
+}
+
+function getDefaultFinalizeWorkstreamSupervisionDeps(): FinalizeWorkstreamSupervisionDeps {
+  const runtime = loadWorkstreamsToolRuntime();
+
+  return {
+    getRepoRoot: () => process.cwd(),
+    resolveFinalizableSupervision: async ({ repoRoot, sessionId, streamId }) => {
+      const resolvedRuntime = await runtime;
+      const resolvedCurrent =
+        resolvedRuntime.resolveCurrentBranchSupervisionContext?.({
+          repoRoot,
+          streamId,
+          sessionId,
+        });
+
+      if (resolvedCurrent?.current?.branchSessionId && resolvedCurrent?.streamId) {
+        const branchSession = resolvedRuntime
+          .loadSupervisorState(repoRoot, resolvedCurrent.streamId)
+          ?.branch_sessions.find(
+            (branch: any) =>
+              branch.branchSessionId === resolvedCurrent.current.branchSessionId,
+          );
+
+        if (branchSession) {
+          return {
+            streamId: resolvedCurrent.streamId,
+            current: resolvedCurrent.current,
+            branchSession,
+            resolutionSource: "current_supervision_context",
+          } satisfies FinalizeWorkstreamSupervisionResolution;
+        }
+      }
+
+      for (const candidateStreamId of listCandidateStreamIds(
+        resolvedRuntime,
+        repoRoot,
+        streamId,
+      )) {
+        const branchSession = resolvedRuntime
+          .loadSupervisorState(repoRoot, candidateStreamId)
+          ?.branch_sessions.find(
+            (branch: any) =>
+              branch.branchRole === "supervision" &&
+              branch.nativeSessionId === sessionId,
+          );
+        const fallback = buildPersistedSupervisionFallback({
+          streamId: candidateStreamId,
+          branchSession,
+        });
+
+        if (fallback) {
+          return fallback;
+        }
+      }
+
+      return undefined;
+    },
+    buildBranchSession: async (args) => {
+      const resolvedRuntime = await runtime;
+      return resolvedRuntime.buildRootAgentBranchSession(args);
+    },
+    persistBranchSession: async (repoRoot, streamId, branchSession) => {
+      const resolvedRuntime = await runtime;
+      return resolvedRuntime.upsertBranchSessionLocked(
+        repoRoot,
+        streamId,
+        branchSession,
+      );
+    },
+    now: () => new Date().toISOString(),
+  };
+}
+
+function isTerminalSupervisionStatus(
+  status: string | undefined,
+): status is SupervisionTerminalStatus {
+  return status === "completed" || status === "stopped" || status === "failed";
+}
+
+function buildFinalizationNotes(args: {
+  existingNotes?: string;
+  notes?: string;
+  summary?: string;
+  reportText?: string;
+}): string | undefined {
+  const incomingSections = [
+    args.notes?.trim(),
+    args.summary?.trim() ? `Summary:\n${args.summary.trim()}` : undefined,
+    args.reportText?.trim() ? `Final report:\n${args.reportText.trim()}` : undefined,
+  ].filter((value): value is string => Boolean(value && value.trim().length > 0));
+
+  const incomingText = incomingSections.join("\n\n").trim();
+  const existingNotes = args.existingNotes?.trim();
+
+  if (!incomingText) {
+    return existingNotes || undefined;
+  }
+
+  if (!existingNotes) {
+    return incomingText;
+  }
+
+  if (existingNotes.includes(incomingText)) {
+    return existingNotes;
+  }
+
+  if (incomingText.includes(existingNotes)) {
+    return incomingText;
+  }
+
+  return `${existingNotes}\n\n${incomingText}`;
+}
+
+async function executeFinalizeWorkstreamSupervision(
+  args: {
+    status: SupervisionTerminalStatus;
+    streamId?: string;
+    notes?: string;
+    summary?: string;
+    reportText?: string;
+  },
+  context: { sessionID?: string },
+  deps: FinalizeWorkstreamSupervisionDeps =
+    getDefaultFinalizeWorkstreamSupervisionDeps(),
+): Promise<string> {
+  const sessionId = context.sessionID;
+  if (!sessionId) {
+    return "Error: Could not determine current supervision session ID";
+  }
+
+  const repoRoot = deps.getRepoRoot();
+  const resolved = await deps.resolveFinalizableSupervision({
+    repoRoot,
+    sessionId,
+    streamId: args.streamId,
+  });
+
+  if (!resolved) {
+    return "Error: Could not find persisted workstream supervision state for the current session.";
+  }
+
+  const existing = resolved.branchSession;
+  const requestedStatus = args.status;
+  const status = isTerminalSupervisionStatus(existing?.status)
+    ? existing.status
+    : requestedStatus;
+  const updatedAt = deps.now();
+  const completedAt = existing?.completedAt ?? updatedAt;
+  const notes = buildFinalizationNotes({
+    existingNotes: existing?.notes,
+    notes: args.notes,
+    summary: args.summary,
+    reportText: args.reportText,
+  });
+  const batchId =
+    existing?.batchId ?? resolved.current?.supervisionProgress?.currentBatchId;
+
+  await deps.persistBranchSession(
+    repoRoot,
+    resolved.streamId,
+    await deps.buildBranchSession({
+      context: {
+        rootSessionId: resolved.current.rootSessionId,
+        branchSessionId: resolved.current.branchSessionId,
+        ...(resolved.current.checkpointMessageId
+          ? { checkpointMessageId: resolved.current.checkpointMessageId }
+          : {}),
+        ...(typeof resolved.current.checkpointMessageIndex === "number"
+          ? { checkpointMessageIndex: resolved.current.checkpointMessageIndex }
+          : {}),
+        ...(resolved.current.checkpointCreatedAt
+          ? { checkpointCreatedAt: resolved.current.checkpointCreatedAt }
+          : {}),
+        ...(resolved.current.breakpointSelection
+          ? { breakpointSelection: resolved.current.breakpointSelection }
+          : {}),
+        ...(resolved.current.checkpointSessionId
+          ? { checkpointSessionId: resolved.current.checkpointSessionId }
+          : {}),
+        ...(resolved.current.parentSessionId
+          ? { parentSessionId: resolved.current.parentSessionId }
+          : {}),
+        ...(resolved.current.nativeSessionId
+          ? { nativeSessionId: resolved.current.nativeSessionId }
+          : {}),
+        ...(existing?.source ? { source: existing.source } : {}),
+        ...(existing?.scope ?? resolved.current.scope
+          ? { scope: existing?.scope ?? resolved.current.scope }
+          : {}),
+      },
+      branchRole: "supervision",
+      status,
+      startedAt: existing?.startedAt ?? updatedAt,
+      updatedAt,
+      completedAt,
+      runId: existing?.runId,
+      ...(batchId ? { batchId } : {}),
+      ...(existing?.supervisionProgress
+        ? { supervisionProgress: existing.supervisionProgress }
+        : resolved.current.supervisionProgress
+          ? { supervisionProgress: resolved.current.supervisionProgress }
+          : {}),
+      ...(notes ? { notes } : {}),
+    }),
+  );
+
+  const alreadyFinalized =
+    isTerminalSupervisionStatus(existing?.status) && existing?.status === status;
+  const resolutionDetail =
+    resolved.resolutionSource === "persisted_session_fallback"
+      ? " Persisted session fallback was used."
+      : "";
+  const unchangedStatusDetail =
+    isTerminalSupervisionStatus(existing?.status) && existing?.status !== requestedStatus
+      ? ` Existing terminal status ${existing.status} was preserved.`
+      : "";
+
+  return alreadyFinalized
+    ? `Workstream supervision was already finalized as ${status} for ${resolved.streamId}.${unchangedStatusDetail}${resolutionDetail}`
+    : `Marked workstream supervision as ${status} for ${resolved.streamId}.${unchangedStatusDetail}${resolutionDetail}`;
 }
 
 async function resolveCompletedBranchNativeSessionId(args: {
@@ -1747,6 +2080,56 @@ export const current_workstream = tool({
     }
   },
 });
+
+export const finalize_workstream_supervision = Object.assign(
+  tool({
+    description:
+      "Mark the current workstream supervision session as completed, stopped, or failed and persist optional notes before the final report.",
+    args: {
+      status: tool.schema
+        .string()
+        .describe(
+          "Terminal supervision status: 'completed', 'stopped', or 'failed'.",
+        ),
+      streamId: tool.schema
+        .string()
+        .describe(
+          "Optional workstream ID or name. Usually omitted because the current supervision context is inferred automatically.",
+        )
+        .optional(),
+      notes: tool.schema
+        .string()
+        .describe("Optional supervision notes to persist.")
+        .optional(),
+      summary: tool.schema
+        .string()
+        .describe("Optional short supervision summary to persist.")
+        .optional(),
+      reportText: tool.schema
+        .string()
+        .describe("Optional final report text to persist before sending it to the user.")
+        .optional(),
+    },
+    async execute(args, context) {
+      return executeFinalizeWorkstreamSupervision(
+        args as {
+          status: SupervisionTerminalStatus;
+          streamId?: string;
+          notes?: string;
+          summary?: string;
+          reportText?: string;
+        },
+        context,
+      );
+    },
+  }),
+  {
+    __test: {
+      executeFinalizeWorkstreamSupervision,
+      buildFinalizationNotes,
+    },
+  },
+);
 
 /**
  * Get diagnostic information about the loaded workstream tool/runtime.

@@ -24,7 +24,10 @@ mock.module("@opencode-ai/plugin", () => ({
 }))
 
 let toolRuntimeInfoTool: typeof import("./workstream.ts").tool_runtime_info
+let finalizeWorkstreamSupervisionTool: typeof import("./workstream.ts").finalize_workstream_supervision
 let launchSupervisionBranchTool: typeof import("./workstream.ts").launch_supervision_branch
+let executeFinalizeWorkstreamSupervision: any
+let buildFinalizationNotes: any
 let executeLaunchSupervisionBranch: any
 let getWorkstreamsToolRuntimeInfo: any
 let loadWorkstreamsToolRuntime: any
@@ -37,7 +40,10 @@ beforeAll(async () => {
   const workstreamModule = await import("./workstream.ts")
 
   toolRuntimeInfoTool = workstreamModule.tool_runtime_info
+  finalizeWorkstreamSupervisionTool = workstreamModule.finalize_workstream_supervision
   launchSupervisionBranchTool = workstreamModule.launch_supervision_branch
+  ;({ executeFinalizeWorkstreamSupervision, buildFinalizationNotes } =
+    (finalizeWorkstreamSupervisionTool as any).__test)
   ;({
     WORKSTREAM_TOOL_VERSION: workstreamToolVersion,
     getWorkstreamsToolRuntimeInfo,
@@ -283,6 +289,7 @@ describe("workstream runtime resolution", () => {
 
     expect(Object.keys(workstreamModule).sort()).toEqual([
       "current_workstream",
+      "finalize_workstream_supervision",
       "launch_supervision_branch",
       "link_planning_session",
       "tool_runtime_info",
@@ -300,6 +307,158 @@ describe("workstream runtime resolution", () => {
     expect(info.workCommandPath).toBeUndefined()
     expect(info.errors?.workCommandPath).toContain("missing work binary")
     expect(info.resolvedRuntimeModulePath).toBeUndefined()
+  })
+})
+
+describe("finalize_workstream_supervision", () => {
+  test("marks the current supervision session terminal and persists report details", async () => {
+    const workspace = createTestWorkstream("001-agent-tool-finalize")
+    const startedAt = "2026-04-12T00:00:00.000Z"
+
+    try {
+      await upsertBranchSessionLocked(
+        workspace.repoRoot,
+        workspace.streamId,
+        buildRootAgentBranchSession({
+          context: {
+            rootSessionId: "root-session-1",
+            branchSessionId: "branch-supervision-1",
+            parentSessionId: "root-session-1",
+            nativeSessionId: "ses_supervision_1",
+            scope: { level: "batch", stageId: "10", batchId: "10.01" },
+          },
+          branchRole: "supervision",
+          status: "running",
+          startedAt,
+          updatedAt: startedAt,
+          batchId: "10.01",
+          notes: "Execution complete.",
+        }),
+      )
+
+      const result = await executeFinalizeWorkstreamSupervision(
+        {
+          status: "completed",
+          summary: "Paused for user review.",
+          reportText: "## Accomplished\n- Implemented the requested change.\n## Issues Found\n- None.\n## Fixes Applied\n- None.\n## What is Next\n- Review the patch.",
+        },
+        { sessionID: "ses_supervision_1" },
+        {
+          getRepoRoot: () => workspace.repoRoot,
+          resolveFinalizableSupervision: async () => {
+            const branchSession = loadSupervisorState(workspace.repoRoot, workspace.streamId)?.branch_sessions[0]
+            return {
+              streamId: workspace.streamId,
+              current: {
+                rootSessionId: "root-session-1",
+                branchSessionId: "branch-supervision-1",
+                nativeSessionId: "ses_supervision_1",
+                parentSessionId: "root-session-1",
+                scope: { level: "batch", stageId: "10", batchId: "10.01" },
+                supervisionProgress: { currentBatchId: "10.01" },
+              },
+              branchSession,
+              resolutionSource: "current_supervision_context",
+            }
+          },
+          buildBranchSession: buildRootAgentBranchSession,
+          persistBranchSession: upsertBranchSessionLocked,
+          now: () => "2026-04-12T01:00:00.000Z",
+        },
+      )
+
+      expect(result).toContain(`Marked workstream supervision as completed for ${workspace.streamId}.`)
+
+      const stored = loadSupervisorState(workspace.repoRoot, workspace.streamId)
+      expect(stored?.current_branch_supervision).toBeUndefined()
+      expect(stored?.branch_sessions[0]).toMatchObject({
+        status: "completed",
+        completedAt: "2026-04-12T01:00:00.000Z",
+        updatedAt: "2026-04-12T01:00:00.000Z",
+        nativeSessionId: "ses_supervision_1",
+      })
+      expect(stored?.branch_sessions[0]?.notes).toContain("Execution complete.")
+      expect(stored?.branch_sessions[0]?.notes).toContain("Summary:\nPaused for user review.")
+      expect(stored?.branch_sessions[0]?.notes).toContain("Final report:\n## Accomplished")
+    } finally {
+      cleanupTestWorkstream(workspace)
+    }
+  })
+
+  test("is idempotent and preserves an existing terminal status", async () => {
+    const workspace = createTestWorkstream("001-agent-tool-finalize-idempotent")
+    const completedAt = "2026-04-12T01:00:00.000Z"
+
+    try {
+      await upsertBranchSessionLocked(
+        workspace.repoRoot,
+        workspace.streamId,
+        buildRootAgentBranchSession({
+          context: {
+            rootSessionId: "root-session-1",
+            branchSessionId: "branch-supervision-1",
+            parentSessionId: "root-session-1",
+            nativeSessionId: "ses_supervision_1",
+          },
+          branchRole: "supervision",
+          status: "completed",
+          startedAt: "2026-04-12T00:00:00.000Z",
+          updatedAt: completedAt,
+          completedAt,
+          notes: "Summary:\nAlready finalized.",
+        }),
+      )
+
+      const result = await executeFinalizeWorkstreamSupervision(
+        {
+          status: "failed",
+          summary: "Already finalized.",
+        },
+        { sessionID: "ses_supervision_1" },
+        {
+          getRepoRoot: () => workspace.repoRoot,
+          resolveFinalizableSupervision: async () => {
+            const branchSession = loadSupervisorState(workspace.repoRoot, workspace.streamId)?.branch_sessions[0]
+            return {
+              streamId: workspace.streamId,
+              current: {
+                rootSessionId: "root-session-1",
+                branchSessionId: "branch-supervision-1",
+                nativeSessionId: "ses_supervision_1",
+              },
+              branchSession,
+              resolutionSource: "persisted_session_fallback",
+            }
+          },
+          buildBranchSession: buildRootAgentBranchSession,
+          persistBranchSession: upsertBranchSessionLocked,
+          now: () => "2026-04-12T02:00:00.000Z",
+        },
+      )
+
+      expect(result).toContain(`Workstream supervision was already finalized as completed for ${workspace.streamId}.`)
+      expect(result).toContain("Existing terminal status completed was preserved.")
+      expect(result).toContain("Persisted session fallback was used.")
+
+      const stored = loadSupervisorState(workspace.repoRoot, workspace.streamId)
+      expect(stored?.branch_sessions[0]).toMatchObject({
+        status: "completed",
+        completedAt,
+        updatedAt: "2026-04-12T02:00:00.000Z",
+      })
+      expect(stored?.branch_sessions[0]?.notes?.match(/Summary:\nAlready finalized\./g)?.length).toBe(1)
+    } finally {
+      cleanupTestWorkstream(workspace)
+    }
+  })
+
+  test("deduplicates repeated finalization note content", () => {
+    expect(
+      buildFinalizationNotes({
+        existingNotes: "Summary:\nAlready finalized.",
+        summary: "Already finalized.",
+      }),
+    ).toBe("Summary:\nAlready finalized.")
   })
 })
 

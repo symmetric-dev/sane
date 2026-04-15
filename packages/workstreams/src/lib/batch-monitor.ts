@@ -31,7 +31,7 @@ import {
   updateThreadMetadataLocked,
 } from "./threads.ts"
 import { applyFinalizationCompletions, type FinalizationCompletion } from "./multi-finalization.ts"
-import { getWorkSessionName, sessionExists } from "./tmux.ts"
+import { sessionExists } from "./tmux.ts"
 import type { TasksFile, TaskStatus } from "./types.ts"
 
 interface BatchThreadSeed {
@@ -253,10 +253,13 @@ async function finalizeCanonicalThreadState(
   streamId: string,
   threadSeeds: BatchThreadSeed[],
   tasksFile: TasksFile,
+  workTmuxSessionName?: string,
   runStartedAt?: string,
 ): Promise<void> {
   const completions: FinalizationCompletion[] = []
-  const workSessionStillExists = sessionExists(getWorkSessionName(streamId))
+  const workSessionStillExists = workTmuxSessionName
+    ? sessionExists(workTmuxSessionName)
+    : false
 
   for (const seed of threadSeeds) {
     const markerExists = existsSync(getCompletionMarkerPath(streamId, seed.threadId))
@@ -311,6 +314,7 @@ export function resetBatchStatusRun(options: {
   repoRoot: string
   streamId: string
   batchId: string
+  tmuxSessionName?: string
   stageName?: string
   batchName?: string
   threads: BatchThreadSeed[]
@@ -324,6 +328,7 @@ export function resetBatchStatusRun(options: {
     repoRoot: options.repoRoot,
     streamId: options.streamId,
     batchId: options.batchId,
+    tmuxSessionName: options.tmuxSessionName,
     stageName: options.stageName,
     batchName: options.batchName,
     threads: options.threads,
@@ -412,6 +417,7 @@ export async function syncBatchStatus(
     streamId,
     threadSeeds,
     tasksFile,
+    existing?.tmuxSessionName,
     existing?.startedAt,
   )
   const existingThreads = new Map(

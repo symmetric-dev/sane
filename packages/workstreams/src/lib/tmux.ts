@@ -6,6 +6,7 @@
  */
 
 import { execSync, spawn, type ChildProcess } from "child_process"
+import { randomBytes } from "crypto"
 import { WORKSTREAM_HEADLESS_ENV } from "./opencode.ts"
 
 /** Delay between starting threads to avoid bun install race conditions */
@@ -258,11 +259,53 @@ export function getSessionInfo(sessionName: string): {
 /**
  * Generate the session name for a workstream
  */
-export function getWorkSessionName(streamId: string): string {
-    // Truncate if too long for tmux
-    const maxLen = 20
-    const truncated = streamId.length > maxLen ? streamId.slice(0, maxLen) : streamId
-    return `work-${truncated}`
+export type WorkTmuxSessionSource = "implementation" | "supervision"
+
+function formatWorkstreamTmuxPrefix(streamId: string, streamOrder?: number): string {
+    if (typeof streamOrder === "number" && Number.isFinite(streamOrder) && streamOrder >= 0) {
+        return Math.trunc(streamOrder).toString().padStart(3, "0")
+    }
+
+    const match = streamId.match(/^(\d{1,})/)
+    if (match?.[1]) {
+        return match[1].padStart(3, "0")
+    }
+
+    return "000"
+}
+
+function generateTmuxSuffix(length: number = 6): string {
+    return randomBytes(Math.max(3, Math.ceil(length / 2))).toString("hex").slice(0, length)
+}
+
+export function getWorkSessionName(args: {
+    streamId: string
+    source: WorkTmuxSessionSource
+    streamOrder?: number
+    suffixLength?: number
+}): string {
+    const prefix = formatWorkstreamTmuxPrefix(args.streamId, args.streamOrder)
+    const suffix = generateTmuxSuffix(args.suffixLength)
+    return `${prefix}-${args.source}-${suffix}`
+}
+
+export function createUniqueWorkSessionName(args: {
+    streamId: string
+    source: WorkTmuxSessionSource
+    streamOrder?: number
+    suffixLength?: number
+    maxAttempts?: number
+}): string {
+    const maxAttempts = args.maxAttempts ?? 10
+
+    for (let attempt = 0; attempt < maxAttempts; attempt++) {
+        const sessionName = getWorkSessionName(args)
+        if (!sessionExists(sessionName)) {
+            return sessionName
+        }
+    }
+
+    throw new Error(`Failed to allocate a unique tmux session name for ${args.source}`)
 }
 
 /**

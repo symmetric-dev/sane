@@ -136,6 +136,26 @@ describe("batch status", () => {
     expect(saved?.threads[1]?.status).toBe("pending")
   })
 
+  test("resetBatchStatusRun persists generated tmux session name", () => {
+    const run = resetBatchStatusRun({
+      repoRoot,
+      streamId,
+      batchId: "01.01",
+      tmuxSessionName: "001-implementation-abc123",
+      stageName: "Headless Runtime",
+      batchName: "Batch Status",
+      threads: [
+        { threadId: "01.01.01", threadName: "Thread 1", firstTaskId: "01.01.01.01" },
+        { threadId: "01.01.02", threadName: "Thread 2", firstTaskId: "01.01.02.01" },
+      ],
+    })
+
+    expect(run.tmuxSessionName).toBe("001-implementation-abc123")
+    expect(readBatchStatus(repoRoot, streamId, "01.01")?.tmuxSessionName).toBe(
+      "001-implementation-abc123",
+    )
+  })
+
   test("syncBatchStatus finalizes completed markers into thread metadata", async () => {
     startThreadSession(
       repoRoot,

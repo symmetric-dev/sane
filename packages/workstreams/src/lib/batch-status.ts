@@ -41,6 +41,7 @@ export interface BatchStatusFile {
   streamId: string
   batchId: string
   runId: string
+  tmuxSessionName?: string
   mode: "headless"
   status: BatchRunStatus
   stageName?: string
@@ -62,6 +63,7 @@ export interface InitializeBatchStatusRunArgs {
   repoRoot: string
   streamId: string
   batchId: string
+  tmuxSessionName?: string
   stageName?: string
   batchName?: string
   threads: BatchStatusThreadSeed[]
@@ -104,6 +106,7 @@ export function isTerminalBatchStatus(status: BatchRunStatus): boolean {
 export function createBatchStatusFile(args: {
   streamId: string
   batchId: string
+  tmuxSessionName?: string
   stageName?: string
   batchName?: string
   threads: BatchStatusThreadSeed[]
@@ -122,6 +125,7 @@ export function createBatchStatusFile(args: {
     streamId: args.streamId,
     batchId: args.batchId,
     runId: args.runId ?? createRunId(args.batchId),
+    ...(args.tmuxSessionName ? { tmuxSessionName: args.tmuxSessionName } : {}),
     mode: "headless",
     status: "pending",
     ...(args.stageName ? { stageName: args.stageName } : {}),
@@ -137,11 +141,12 @@ export function initializeBatchStatusRun(
   args: InitializeBatchStatusRunArgs,
 ): BatchStatusFile {
   const batchStatus = createBatchStatusFile({
-    streamId: args.streamId,
-    batchId: args.batchId,
-    stageName: args.stageName,
-    batchName: args.batchName,
-    threads: args.threads,
+      streamId: args.streamId,
+      batchId: args.batchId,
+      tmuxSessionName: args.tmuxSessionName,
+      stageName: args.stageName,
+      batchName: args.batchName,
+      threads: args.threads,
   })
 
   writeBatchStatus(args.repoRoot, args.streamId, batchStatus)
@@ -174,6 +179,7 @@ export function writeBatchStatus(
     streamId: batchStatus.streamId,
     batchId: batchStatus.batchId,
     runId: batchStatus.runId,
+    ...(batchStatus.tmuxSessionName ? { tmuxSessionName: batchStatus.tmuxSessionName } : {}),
     mode: batchStatus.mode,
     status: batchStatus.status,
     ...(batchStatus.stageName ? { stageName: batchStatus.stageName } : {}),

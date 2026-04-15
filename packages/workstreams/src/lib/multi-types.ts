@@ -15,6 +15,7 @@ export interface MultiCliArgs {
   repoRoot?: string
   streamId?: string
   batch?: string
+  tmuxSessionName?: string
   port?: number
   dryRun?: boolean
   noServer?: boolean

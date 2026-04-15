@@ -261,16 +261,21 @@ describe("tmux lib", () => {
     })
 
     describe("getWorkSessionName", () => {
-        test("truncates long names", () => {
-            const longId = "001-very-long-stream-name-that-is-too-long"
-            const name = getWorkSessionName(longId)
-            expect(name).toBe("work-001-very-long-stream")
-            expect(name.length).toBeLessThanOrEqual(25) // work- prefix + 20 chars
+        test("formats implementation sessions with prefixed random suffix", () => {
+            const name = getWorkSessionName({
+                streamId: "001-very-long-stream-name-that-is-too-long",
+                streamOrder: 1,
+                source: "implementation",
+            })
+            expect(name).toMatch(/^001-implementation-[a-f0-9]{6}$/)
         })
 
-        test("keeps short names", () => {
-            const shortId = "001-test"
-            expect(getWorkSessionName(shortId)).toBe("work-001-test")
+        test("formats supervision sessions from stream prefix fallback", () => {
+            const name = getWorkSessionName({
+                streamId: "012-test",
+                source: "supervision",
+            })
+            expect(name).toMatch(/^012-supervision-[a-f0-9]{6}$/)
         })
     })
 

@@ -28,11 +28,20 @@ import {
   summarizeBatchStatus,
   type SupervisionExecutionAction,
 } from "../lib/supervision-helper.ts"
+import {
+  buildAttachCommand,
+  createSession,
+  createUniqueWorkSessionName,
+  sessionExists,
+  setGlobalOption,
+  waitForAllPanesExit,
+} from "../lib/tmux.ts"
 
 interface SuperviseCliArgs {
   repoRoot?: string
   streamId?: string
   batch?: string
+  tmuxSessionName?: string
   port?: number
   noServer?: boolean
   dryRun?: boolean
@@ -51,7 +60,7 @@ interface SuperviseCliArgs {
 
 interface ResolvedSupervisorContext {
   repoRoot: string
-  stream: { id: string; name: string }
+  stream: { id: string; name: string; order?: number }
   tasksFile: NonNullable<ReturnType<typeof readTasksFile>>
   branchContext: RootAgentBranchContext | null
 }
@@ -63,6 +72,7 @@ interface ResolvedRootAgentBranchContextResult {
 
 const DEFAULT_SUPERVISE_TIMEOUT_MS = 20 * 60 * 1000
 const DEFAULT_SUPERVISE_POLL_INTERVAL_MS = 1000
+const WORKSTREAM_SUPERVISION_TMUX_ENV = "WORKSTREAM_SUPERVISION_TMUX"
 
 function printHelp(): void {
   console.log(`
@@ -140,6 +150,11 @@ function parseCliArgs(argv: string[]): SuperviseCliArgs | null {
         if (!next) return null
         parsed.port = Number(next)
         if (Number.isNaN(parsed.port)) return null
+        i++
+        break
+      case "--tmux-session-name":
+        if (!next) return null
+        parsed.tmuxSessionName = next
         i++
         break
       case "--timeout-ms":
@@ -355,6 +370,7 @@ async function recordSupervisionBranchSession(args: {
   streamId: string
   branchContext: RootAgentBranchContext | null
   status: "running" | "completed" | "stopped" | "failed"
+  tmuxSessionName?: string
   runId: string
   batchId: string
   lastReviewedBatchId?: string
@@ -378,6 +394,7 @@ async function recordSupervisionBranchSession(args: {
       startedAt: args.startedAt,
       updatedAt: timestamp,
       completedAt: args.completedAt,
+      tmuxSessionName: args.tmuxSessionName,
       runId: args.runId,
       batchId: args.batchId,
       supervisionProgress: {
@@ -456,6 +473,52 @@ function resolveRequestedBatchId(args: {
   return getLatestResumableBatchId(args.supervisorState) ?? findNextIncompleteBatch(args.tasks)
 }
 
+function shellQuote(value: string): string {
+  return `'${value.replace(/'/g, `'\\''`)}'`
+}
+
+function buildSupervisionTmuxCommand(argv: string[], sessionName: string): string {
+  const forwardedArgs = [...argv, "--tmux-session-name", sessionName]
+  return `${WORKSTREAM_SUPERVISION_TMUX_ENV}=1 ${forwardedArgs.map(shellQuote).join(" ")}`
+}
+
+async function runInsideDedicatedSupervisionTmux(args: {
+  argv: string[]
+  streamId: string
+  streamOrder?: number
+  timeoutMs: number
+}): Promise<void> {
+  const sessionName = createUniqueWorkSessionName({
+    streamId: args.streamId,
+    streamOrder: args.streamOrder,
+    source: "supervision",
+  })
+
+  if (sessionExists(sessionName)) {
+    throw new Error(`Supervision tmux session "${sessionName}" already exists.`)
+  }
+
+  createSession(sessionName, "supervision", buildSupervisionTmuxCommand(args.argv, sessionName))
+  setGlobalOption(sessionName, "remain-on-exit", "on")
+
+  console.log(`[supervise] created supervision tmux session "${sessionName}"`)
+  console.log(`[supervise] attach for observability: ${buildAttachCommand(sessionName)}`)
+
+  const statuses = await waitForAllPanesExit(sessionName, 1000, args.timeoutMs)
+  if (!statuses) {
+    throw new Error(
+      `Timed out waiting for supervision tmux session "${sessionName}" to finish. Attach with ${buildAttachCommand(sessionName)} to inspect it.`,
+    )
+  }
+
+  const failedPane = statuses.find((status) => (status.exitStatus ?? 0) !== 0)
+  if (failedPane) {
+    throw new Error(
+      `Supervision tmux session "${sessionName}" exited with status ${failedPane.exitStatus ?? 1}. Attach with ${buildAttachCommand(sessionName)} to inspect it.`,
+    )
+  }
+}
+
 export async function main(argv: string[] = process.argv): Promise<void> {
   const cliArgs = parseCliArgs(argv)
   if (!cliArgs) {
@@ -517,6 +580,14 @@ export async function main(argv: string[] = process.argv): Promise<void> {
     console.log(
       `[supervise] would ${startPlan.reusingExistingRun ? "resume" : "start"} supervisor run ${startPlan.runId}`,
     )
+    const supervisionSessionName =
+      cliArgs.tmuxSessionName ??
+      createUniqueWorkSessionName({
+        streamId: stream.id,
+        streamOrder: "order" in stream && typeof stream.order === "number" ? stream.order : undefined,
+        source: "supervision",
+      })
+    console.log(`[supervise] would use supervision tmux session ${supervisionSessionName}`)
     if (branchContext) {
       console.log(
         `[supervise] would use supervision branch ${branchContext.branchSessionId} under root session ${branchContext.rootSessionId}`,
@@ -526,6 +597,16 @@ export async function main(argv: string[] = process.argv): Promise<void> {
     console.log(
       `[supervise] would record a supervise-pass handoff for ${startPlan.batchId} and yield batch state back to the Root Agent or caller for review decisions.`,
     )
+    return
+  }
+
+  if (import.meta.main && !process.env[WORKSTREAM_SUPERVISION_TMUX_ENV] && !cliArgs.tmuxSessionName) {
+    await runInsideDedicatedSupervisionTmux({
+      argv,
+      streamId: stream.id,
+      streamOrder: "order" in stream && typeof stream.order === "number" ? stream.order : undefined,
+      timeoutMs: cliArgs.timeoutMs ?? DEFAULT_SUPERVISE_TIMEOUT_MS,
+    })
     return
   }
 
@@ -583,6 +664,7 @@ export async function main(argv: string[] = process.argv): Promise<void> {
     streamId: stream.id,
     branchContext,
     status: "running",
+    tmuxSessionName: cliArgs.tmuxSessionName,
     runId: startPlan.runId,
     batchId: startPlan.batchId,
     lastReviewedBatchId: persistedRun?.lastReviewedBatchId,
@@ -645,6 +727,7 @@ export async function main(argv: string[] = process.argv): Promise<void> {
       streamId: stream.id,
       branchContext,
       status: "running",
+      tmuxSessionName: cliArgs.tmuxSessionName,
       runId: startPlan.runId,
       batchId: startPlan.batchId,
       lastReviewedBatchId: getRunById(getSupervisorStateSnapshot(repoRoot, stream.id), startPlan.runId)?.lastReviewedBatchId,
@@ -680,6 +763,7 @@ export async function main(argv: string[] = process.argv): Promise<void> {
         streamId: stream.id,
         branchContext,
         status: "stopped",
+        tmuxSessionName: cliArgs.tmuxSessionName,
         runId: startPlan.runId,
         batchId: startPlan.batchId,
         lastReviewedBatchId: getRunById(getSupervisorStateSnapshot(repoRoot, stream.id), startPlan.runId)?.lastReviewedBatchId,
@@ -715,6 +799,7 @@ export async function main(argv: string[] = process.argv): Promise<void> {
       streamId: stream.id,
       branchContext,
       status: "failed",
+      tmuxSessionName: cliArgs.tmuxSessionName,
       runId: startPlan.runId,
       batchId: startPlan.batchId,
       lastReviewedBatchId: getRunById(getSupervisorStateSnapshot(repoRoot, stream.id), startPlan.runId)?.lastReviewedBatchId,

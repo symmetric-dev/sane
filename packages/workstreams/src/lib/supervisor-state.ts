@@ -151,6 +151,7 @@ function buildCurrentBranchSupervisionContext(
       : {}),
     ...(branchSession.parentSessionId ? { parentSessionId: branchSession.parentSessionId } : {}),
     nativeSessionId: branchSession.nativeSessionId,
+    ...(branchSession.tmuxSessionName ? { tmuxSessionName: branchSession.tmuxSessionName } : {}),
     source: branchSession.source,
     ...(normalizedProgress ? { supervisionProgress: normalizedProgress } : {}),
     updatedAt: branchSession.updatedAt,

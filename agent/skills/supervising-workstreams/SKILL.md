@@ -15,7 +15,7 @@ Run `work supervise` to execute the next batch, then enter the fix cycle:
 2. read the reviewer output and persisted workstream state
 3. decide whether to run a fix subagent or report back to the user
 4. if you run a fix subagent, re-enter the fix cycle and review again
-5. stop only when the current scope is complete or escalation policy says to yield
+5. stop only when the current scope is complete or escalation policy says to yield / report back
 
 ## Command usage
 
@@ -42,24 +42,24 @@ work tree --batch "SS.BB"
 3. Judge the review against the escalation policy.
 4. Either:
    - launch a fix subagent and then re-review, or
-   - yield back with a final report.
+   - finalize supervision and then report back with a final report.
 
 ## Escalation policy
 
 Treat persisted `work/supervisor.json` policy and canonical workstream state as the source of truth. In the default v1 behavior:
 
 - at most **one automatic fix cycle per batch** is allowed
-- a branch should **yield** instead of continuing when review results require user input
+- **Report back** instead of continuing when review results require user input
 - stage completion is a valid stop reason for stage-scoped supervision
 
-Use the reviewer issue categories to decide whether to yield or fix:
+Use the reviewer issue categories to decide whether to report back to user or fix:
 
 - **severity**
 - **difficulty**
 - **ownership**
 - **effort**
 
-Yield back instead of fixing when the persisted evidence indicates any of the following:
+Report back instead of fixing when the persisted evidence indicates any of the following:
 
 - user contact/escalation is required
 - the automatic fix-cycle limit has been reached
@@ -77,7 +77,9 @@ If none of those conditions hold and a fix cycle is still allowed, run a fix sub
 
 ## Final report format
 
-When you yield back, the **final assistant message** must use exactly these headings:
+Immediately before your final assistant report, call `finalize_workstream_supervision` with the terminal supervision status (`completed`, `stopped`, or `failed`) and include any useful notes / summary / report text you want persisted.
+
+When you report back, the **final assistant message** must use exactly these headings:
 
 ```md
 ## Accomplished

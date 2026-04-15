@@ -710,6 +710,7 @@ export interface RootAgentBranchSession extends RootAgentLineage {
   startedAt: string
   updatedAt: string
   completedAt?: string
+  tmuxSessionName?: string
   runId?: string
   batchId?: string
   supervisionProgress?: RootAgentSupervisionProgress
@@ -722,6 +723,7 @@ export interface RootAgentBranchSession extends RootAgentLineage {
 export interface CurrentBranchSupervisionContext extends RootAgentLineage {
   branchRole: "supervision"
   nativeSessionId: string
+  tmuxSessionName?: string
   updatedAt: string
   supervisionProgress?: RootAgentSupervisionProgress
 }
