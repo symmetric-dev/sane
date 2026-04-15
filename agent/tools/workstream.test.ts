@@ -97,6 +97,8 @@ function createDeps(
       loadSupervisorState(args.repoRoot, args.streamId)?.branch_sessions.find(
         (branch) => branch.branchSessionId === args.branchSessionId,
       ),
+    createSupervisionTmuxSessionName: () => "001-supervision-test01",
+    tmuxSessionExists: () => false,
     runForkedSession: async () => ({
       code: 0,
       stdout: '{"type":"text","part":{"text":"## Accomplished\\n- execution result\\n## Issues Found\\n- None.\\n## Fixes Applied\\n- None.\\n## What is Next\\n- next action"}}\n',
@@ -484,6 +486,7 @@ describe("launch_supervision_branch", () => {
       expect(stored?.branch_sessions[0]).toMatchObject({
         rootSessionId: "root-session-1",
         branchSessionId: "branch-supervision-1",
+        tmuxSessionName: "001-supervision-test01",
         checkpointMessageId: "msg-root-checkpoint",
         breakpointSelection: {
           strategy: "previous_user_before_launch",
@@ -499,6 +502,61 @@ describe("launch_supervision_branch", () => {
         batchId: "10.01",
         parentSessionId: "root-session-1",
       })
+    } finally {
+      cleanupTestWorkstream(workspace)
+    }
+  })
+
+  test("passes the dedicated supervision tmux session through launch and persistence", async () => {
+    const workspace = createTestWorkstream("001-agent-tool-tmux-persist")
+    const calls: Array<{ tmuxSessionName?: string }> = []
+
+    try {
+      await executeLaunchSupervisionBranch(
+        { batch: "10.01" },
+        { sessionID: "root-session-1" },
+        createDeps(workspace.repoRoot, workspace.streamId, {
+          createSupervisionTmuxSessionName: () => "001-supervision-observe1",
+          runForkedSession: async ({ tmuxSessionName }) => {
+            calls.push({ tmuxSessionName })
+            return {
+              code: 0,
+              stdout: '{"type":"text","part":{"text":"## What is Next\\n- done"}}\n',
+              stderr: "",
+              nativeSessionId: "ses_supervision_1",
+              tmuxSessionName,
+            }
+          },
+        }),
+      )
+
+      expect(calls).toEqual([{ tmuxSessionName: "001-supervision-observe1" }])
+      expect(loadSupervisorState(workspace.repoRoot, workspace.streamId)?.branch_sessions[0])
+        .toMatchObject({ tmuxSessionName: "001-supervision-observe1" })
+    } finally {
+      cleanupTestWorkstream(workspace)
+    }
+  })
+
+  test("refuses duplicate supervision launches when the dedicated tmux session already exists", async () => {
+    const workspace = createTestWorkstream("001-agent-tool-duplicate-supervision")
+
+    try {
+      const result = await executeLaunchSupervisionBranch(
+        { batch: "10.01" },
+        { sessionID: "root-session-1" },
+        createDeps(workspace.repoRoot, workspace.streamId, {
+          createSupervisionTmuxSessionName: () => "001-supervision-dup001",
+          tmuxSessionExists: () => true,
+          runForkedSession: async () => {
+            throw new Error("should not launch duplicate supervision session")
+          },
+        }),
+      )
+
+      expect(result).toContain("Supervision session 001-supervision-dup001 is already running")
+      expect(result).toContain("tmux attach -t 001-supervision-dup001")
+      expect(loadSupervisorState(workspace.repoRoot, workspace.streamId)).toBeNull()
     } finally {
       cleanupTestWorkstream(workspace)
     }
@@ -1627,7 +1685,7 @@ describe("launch_supervision_branch", () => {
         cwd: "/repo/root",
       },
     ])
-    expect(events).toEqual(["native:ses_child_123", "run:ses_child_123", "close"])
+    expect(events).toEqual(["native:ses_child_123", "close", "run:ses_child_123"])
   })
 
   test("runMessageBoundaryForkLaunch closes the server when the fork response is missing a child session id", async () => {

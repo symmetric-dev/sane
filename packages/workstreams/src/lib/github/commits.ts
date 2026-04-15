@@ -1,16 +1,46 @@
 /**
- * Git commit helpers for stage approval auto-commits
+ * Git commit helpers for approval auto-commits.
  */
 
 import type { StreamMetadata } from "../types.ts"
-import { resolveStageApprovalNames } from "../approval.ts"
-import { buildStageApprovalCommitMessage } from "../git/auto-commit-message.ts"
+import { resolvePlanNames, resolveStageApprovalNames } from "../approval.ts"
+import {
+  buildPlanApprovalCommitMessage,
+  buildStageApprovalCommitMessage,
+} from "../git/auto-commit-message.ts"
 import {
   executeGitAutoCommit,
   type GitAutoCommitResult,
 } from "../git/auto-commit-executor.ts"
 
 export type StageCommitResult = GitAutoCommitResult
+export type PlanCommitResult = GitAutoCommitResult
+
+/**
+ * Format a commit message for plan approval.
+ */
+export function formatPlanCommitMessage(
+  streamId: string,
+  streamName: string
+): { title: string; body: string } {
+  return buildPlanApprovalCommitMessage({
+    streamId,
+    streamName,
+  })
+}
+
+/**
+ * Create a commit for plan approval.
+ */
+export function createPlanApprovalCommit(
+  repoRoot: string,
+  stream: StreamMetadata
+): PlanCommitResult {
+  const { streamName } = resolvePlanNames(repoRoot, stream)
+  const message = formatPlanCommitMessage(stream.id, streamName)
+
+  return executeGitAutoCommit(repoRoot, message)
+}
 
 /**
  * Format a commit message for stage approval

@@ -2,6 +2,7 @@
 import { describe, test, expect, beforeAll, afterAll, beforeEach, afterEach } from "bun:test";
 import { join } from "path";
 import { existsSync, writeFileSync, mkdirSync, rmSync, readFileSync } from "fs";
+import { execSync } from "child_process";
 import { createTestWorkstream, cleanupTestWorkstream, type TestWorkspace } from "./helpers/test-workspace.ts";
 import { captureCliOutput } from "./helpers/cli-runner.ts";
 import {
@@ -13,6 +14,8 @@ import {
 } from "../src/lib/approval.ts";
 import { loadIndex, saveIndex } from "../src/lib/index.ts";
 import type { WorkIndex } from "../src/lib/types.ts";
+import { saveGitHubConfig } from "../src/lib/github/config.ts";
+import { DEFAULT_GITHUB_CONFIG } from "../src/lib/github/types.ts";
 
 describe("Approval Flow", () => {
     let workspace: TestWorkspace;
@@ -318,6 +321,120 @@ describe("Plan Approval with TASKS.md Auto-Generation", () => {
         expect(jsonOutput.tasksMd).toBeDefined();
         expect(jsonOutput.tasksMd.generated).toBe(true);
         expect(jsonOutput.tasksMd.path).toContain("TASKS.md");
+    });
+
+    test("should auto-commit plan approval without GitHub integration enabled", async () => {
+        const planContent = readFileSync(join(import.meta.dir, "fixtures/plans/basic-plan.md"), "utf-8");
+        writeFileSync(join(AUTOGEN_REPO_ROOT, "work/stream-autogen/PLAN.md"), planContent);
+
+        await saveGitHubConfig(AUTOGEN_REPO_ROOT, {
+            ...DEFAULT_GITHUB_CONFIG,
+            enabled: false,
+            auto_commit_on_approval: true,
+        });
+
+        execSync("git init", { cwd: AUTOGEN_REPO_ROOT, stdio: "pipe" });
+        execSync('git config user.name "Test User"', { cwd: AUTOGEN_REPO_ROOT, stdio: "pipe" });
+        execSync('git config user.email "test@example.com"', { cwd: AUTOGEN_REPO_ROOT, stdio: "pipe" });
+        execSync("git add -A && git commit -m \"baseline\"", {
+            cwd: AUTOGEN_REPO_ROOT,
+            stdio: "pipe",
+        });
+
+        const { main } = await import("../src/cli/approve/index.ts");
+        const { stdout } = await captureCliOutput(async () => {
+            await main(["node", "approve", "plan", "--stream", "stream-autogen", "--repo-root", AUTOGEN_REPO_ROOT]);
+        });
+
+        const outputJoined = stdout.join("\n");
+        expect(outputJoined).toContain("Approved plan");
+        expect(outputJoined).toContain("TASKS.md generated");
+        expect(outputJoined).toContain("Committed:");
+
+        const subject = execSync("git log -1 --pretty=%s", {
+            cwd: AUTOGEN_REPO_ROOT,
+            encoding: "utf-8",
+            stdio: ["pipe", "pipe", "pipe"],
+        }).trim();
+        const body = execSync("git log -1 --pretty=%b", {
+            cwd: AUTOGEN_REPO_ROOT,
+            encoding: "utf-8",
+            stdio: ["pipe", "pipe", "pipe"],
+        }).trim();
+        const files = execSync("git show --pretty= --name-only HEAD", {
+            cwd: AUTOGEN_REPO_ROOT,
+            encoding: "utf-8",
+            stdio: ["pipe", "pipe", "pipe"],
+        }).trim().split("\n").filter(Boolean);
+
+        expect(subject).toBe("Plan approved: Basic Plan");
+        expect(body).toContain("Approved plan for workstream stream-autogen.");
+        expect(body).toContain("Stream-Id: stream-autogen");
+        expect(body).toContain("Stream-Name: Basic Plan");
+        expect(files).toContain("work/index.json");
+        expect(files).toContain("work/stream-autogen/TASKS.md");
+    });
+
+    test("should still auto-commit plan approval when TASKS.md generation fails", async () => {
+        writeFileSync(
+            join(AUTOGEN_REPO_ROOT, "work/stream-autogen/PLAN.md"),
+            [
+                "# Invalid Plan Header",
+                "",
+                "## Summary",
+                "Still enough content for approval to proceed.",
+                "",
+                "## Stages",
+                "",
+                "### Stage 1: Broken Stage",
+            ].join("\n")
+        );
+
+        await saveGitHubConfig(AUTOGEN_REPO_ROOT, {
+            ...DEFAULT_GITHUB_CONFIG,
+            enabled: false,
+            auto_commit_on_approval: true,
+        });
+
+        execSync("git init", { cwd: AUTOGEN_REPO_ROOT, stdio: "pipe" });
+        execSync('git config user.name "Test User"', { cwd: AUTOGEN_REPO_ROOT, stdio: "pipe" });
+        execSync('git config user.email "test@example.com"', { cwd: AUTOGEN_REPO_ROOT, stdio: "pipe" });
+        execSync("git add -A && git commit -m \"baseline\"", {
+            cwd: AUTOGEN_REPO_ROOT,
+            stdio: "pipe",
+        });
+
+        const { main } = await import("../src/cli/approve/index.ts");
+        const { stdout } = await captureCliOutput(async () => {
+            await main(["node", "approve", "plan", "--stream", "stream-autogen", "--repo-root", AUTOGEN_REPO_ROOT]);
+        });
+
+        const tasksMdPath = join(AUTOGEN_REPO_ROOT, "work/stream-autogen/TASKS.md");
+        const outputJoined = stdout.join("\n");
+
+        const index = loadIndex(AUTOGEN_REPO_ROOT);
+        const stream = index.streams[0];
+        expect(stream?.approval?.status).toBe("approved");
+        expect(existsSync(tasksMdPath)).toBe(false);
+
+        expect(outputJoined).toContain("Approved plan");
+        expect(outputJoined).toContain("Warning: Failed to generate TASKS.md");
+        expect(outputJoined).toContain("Committed:");
+
+        const subject = execSync("git log -1 --pretty=%s", {
+            cwd: AUTOGEN_REPO_ROOT,
+            encoding: "utf-8",
+            stdio: ["pipe", "pipe", "pipe"],
+        }).trim();
+        const files = execSync("git show --pretty= --name-only HEAD", {
+            cwd: AUTOGEN_REPO_ROOT,
+            encoding: "utf-8",
+            stdio: ["pipe", "pipe", "pipe"],
+        }).trim().split("\n").filter(Boolean);
+
+        expect(subject).toBe("Plan approved: Auto-Gen Test Stream");
+        expect(files).toContain("work/index.json");
+        expect(files).not.toContain("work/stream-autogen/TASKS.md");
     });
 });
 

@@ -15,7 +15,11 @@ import {
 import { saveThreads } from "../src/lib/threads.ts"
 import { loadSupervisorState, upsertBranchSessionLocked } from "../src/lib/supervisor-state.ts"
 import { getRunResultPath, getSessionFilePath } from "../src/lib/opencode.ts"
-import { main as superviseMain, resolveRootAgentBranchContext } from "../src/cli/supervise.ts"
+import {
+  __test as superviseTest,
+  main as superviseMain,
+  resolveRootAgentBranchContext,
+} from "../src/cli/supervise.ts"
 import { buildRootAgentThreadSessionLineage } from "../src/cli/multi.ts"
 import { startMultipleSessionsLocked } from "../src/lib/tasks.ts"
 import { getThreadMetadata } from "../src/lib/threads.ts"

@@ -28,15 +28,6 @@ import {
   summarizeBatchStatus,
   type SupervisionExecutionAction,
 } from "../lib/supervision-helper.ts"
-import {
-  buildAttachCommand,
-  createSession,
-  createUniqueWorkSessionName,
-  sessionExists,
-  setGlobalOption,
-  waitForAllPanesExit,
-} from "../lib/tmux.ts"
-
 interface SuperviseCliArgs {
   repoRoot?: string
   streamId?: string
@@ -72,8 +63,6 @@ interface ResolvedRootAgentBranchContextResult {
 
 const DEFAULT_SUPERVISE_TIMEOUT_MS = 20 * 60 * 1000
 const DEFAULT_SUPERVISE_POLL_INTERVAL_MS = 1000
-const WORKSTREAM_SUPERVISION_TMUX_ENV = "WORKSTREAM_SUPERVISION_TMUX"
-
 function printHelp(): void {
   console.log(`
 work supervise - Run a batch-bounded supervision helper
@@ -473,50 +462,20 @@ function resolveRequestedBatchId(args: {
   return getLatestResumableBatchId(args.supervisorState) ?? findNextIncompleteBatch(args.tasks)
 }
 
-function shellQuote(value: string): string {
-  return `'${value.replace(/'/g, `'\\''`)}'`
-}
-
-function buildSupervisionTmuxCommand(argv: string[], sessionName: string): string {
-  const forwardedArgs = [...argv, "--tmux-session-name", sessionName]
-  return `${WORKSTREAM_SUPERVISION_TMUX_ENV}=1 ${forwardedArgs.map(shellQuote).join(" ")}`
-}
-
-async function runInsideDedicatedSupervisionTmux(args: {
-  argv: string[]
+function getStoredSupervisionBranchSession(args: {
+  repoRoot: string
   streamId: string
-  streamOrder?: number
-  timeoutMs: number
-}): Promise<void> {
-  const sessionName = createUniqueWorkSessionName({
+  branchContext: RootAgentBranchContext | null
+}) {
+  if (!args.branchContext) {
+    return undefined
+  }
+
+  return findRootAgentBranchSessionByBranchSessionId({
+    repoRoot: args.repoRoot,
     streamId: args.streamId,
-    streamOrder: args.streamOrder,
-    source: "supervision",
+    branchSessionId: args.branchContext.branchSessionId,
   })
-
-  if (sessionExists(sessionName)) {
-    throw new Error(`Supervision tmux session "${sessionName}" already exists.`)
-  }
-
-  createSession(sessionName, "supervision", buildSupervisionTmuxCommand(args.argv, sessionName))
-  setGlobalOption(sessionName, "remain-on-exit", "on")
-
-  console.log(`[supervise] created supervision tmux session "${sessionName}"`)
-  console.log(`[supervise] attach for observability: ${buildAttachCommand(sessionName)}`)
-
-  const statuses = await waitForAllPanesExit(sessionName, 1000, args.timeoutMs)
-  if (!statuses) {
-    throw new Error(
-      `Timed out waiting for supervision tmux session "${sessionName}" to finish. Attach with ${buildAttachCommand(sessionName)} to inspect it.`,
-    )
-  }
-
-  const failedPane = statuses.find((status) => (status.exitStatus ?? 0) !== 0)
-  if (failedPane) {
-    throw new Error(
-      `Supervision tmux session "${sessionName}" exited with status ${failedPane.exitStatus ?? 1}. Attach with ${buildAttachCommand(sessionName)} to inspect it.`,
-    )
-  }
 }
 
 export async function main(argv: string[] = process.argv): Promise<void> {
@@ -580,14 +539,6 @@ export async function main(argv: string[] = process.argv): Promise<void> {
     console.log(
       `[supervise] would ${startPlan.reusingExistingRun ? "resume" : "start"} supervisor run ${startPlan.runId}`,
     )
-    const supervisionSessionName =
-      cliArgs.tmuxSessionName ??
-      createUniqueWorkSessionName({
-        streamId: stream.id,
-        streamOrder: "order" in stream && typeof stream.order === "number" ? stream.order : undefined,
-        source: "supervision",
-      })
-    console.log(`[supervise] would use supervision tmux session ${supervisionSessionName}`)
     if (branchContext) {
       console.log(
         `[supervise] would use supervision branch ${branchContext.branchSessionId} under root session ${branchContext.rootSessionId}`,
@@ -597,16 +548,6 @@ export async function main(argv: string[] = process.argv): Promise<void> {
     console.log(
       `[supervise] would record a supervise-pass handoff for ${startPlan.batchId} and yield batch state back to the Root Agent or caller for review decisions.`,
     )
-    return
-  }
-
-  if (import.meta.main && !process.env[WORKSTREAM_SUPERVISION_TMUX_ENV] && !cliArgs.tmuxSessionName) {
-    await runInsideDedicatedSupervisionTmux({
-      argv,
-      streamId: stream.id,
-      streamOrder: "order" in stream && typeof stream.order === "number" ? stream.order : undefined,
-      timeoutMs: cliArgs.timeoutMs ?? DEFAULT_SUPERVISE_TIMEOUT_MS,
-    })
     return
   }
 
@@ -814,4 +755,8 @@ export async function main(argv: string[] = process.argv): Promise<void> {
 
 if (import.meta.main) {
   await main()
+}
+
+export const __test = {
+  getStoredSupervisionBranchSession,
 }

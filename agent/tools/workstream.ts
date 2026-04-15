@@ -1,15 +1,18 @@
 // @ts-nocheck
 import { tool } from "@opencode-ai/plugin";
+import { randomBytes } from "crypto";
 import { spawn, spawnSync } from "child_process";
-import { existsSync, readFileSync, realpathSync } from "fs";
+import { existsSync, mkdtempSync, readFileSync, realpathSync, rmSync } from "fs";
+import { tmpdir } from "os";
 import { dirname, join } from "path";
 import { fileURLToPath, pathToFileURL } from "url";
 
-const WORKSTREAM_TOOL_VERSION = "2026-04-14-supervision-finalize-v1";
+const WORKSTREAM_TOOL_VERSION = "2026-04-14-supervision-tmux-fix-v1";
 const DEFAULT_BRANCH_TOOL_TIMEOUT_MS = 60 * 60 * 1000;
 const DEFAULT_BRANCH_TOOL_POLL_INTERVAL_MS = 1000;
 const DEFAULT_OPENCODE_SERVER_START_TIMEOUT_MS = 5000;
 const DEFAULT_OPENCODE_COMMAND_TIMEOUT_MS = 5000;
+const DEFAULT_TMUX_SESSION_SUFFIX_LENGTH = 6;
 
 interface WorkstreamsToolRuntime {
   getResolvedStream: (index: any, streamId?: string) => { id: string };
@@ -101,6 +104,7 @@ interface ForkedSessionArgs {
   prompt: string;
   checkpointMessageId?: string;
   forkMode?: "message" | "latest_session_fork";
+  tmuxSessionName?: string;
   onNativeSessionId?: (nativeSessionId: string) => Promise<void> | void;
 }
 
@@ -137,6 +141,7 @@ interface ForkedSessionResult {
   stdout: string;
   stderr: string;
   nativeSessionId?: string;
+  tmuxSessionName?: string;
 }
 
 type SupervisionTerminalStatus = "completed" | "stopped" | "failed";
@@ -154,6 +159,81 @@ export interface MessageBoundaryForkTransport {
   startServer: typeof startOpencodeServer;
   requestJson: typeof requestOpencodeJson;
   runCommand: typeof runCommand;
+}
+
+function shellQuote(value: string): string {
+  return `'${value.replace(/'/g, `'\\''`)}'`;
+}
+
+function formatWorkstreamTmuxPrefix(streamId: string): string {
+  const match = streamId.match(/^(\d{1,})/);
+  if (match?.[1]) {
+    return match[1].padStart(3, "0");
+  }
+
+  return "000";
+}
+
+function createSupervisionTmuxSessionName(streamId: string): string {
+  return `${formatWorkstreamTmuxPrefix(streamId)}-supervision-${randomBytes(
+    Math.max(3, Math.ceil(DEFAULT_TMUX_SESSION_SUFFIX_LENGTH / 2)),
+  )
+    .toString("hex")
+    .slice(0, DEFAULT_TMUX_SESSION_SUFFIX_LENGTH)}`;
+}
+
+function tmuxSessionExists(sessionName: string): boolean {
+  const result = spawnSync("tmux", ["has-session", "-t", sessionName], {
+    stdio: "ignore",
+  });
+  return result.status === 0;
+}
+
+function getTmuxSinglePaneExitStatus(sessionName: string): number | undefined {
+  const result = spawnSync(
+    "tmux",
+    ["list-panes", "-t", sessionName, "-F", "#{pane_dead}:#{pane_exit_status}"],
+    { encoding: "utf-8" },
+  );
+
+  if (result.status !== 0) {
+    return undefined;
+  }
+
+  const [paneLine] = (result.stdout ?? "").trim().split("\n");
+  if (!paneLine) {
+    return undefined;
+  }
+
+  const [dead, exitStatus] = paneLine.split(":");
+  if (dead !== "1") {
+    return undefined;
+  }
+
+  const parsed = Number(exitStatus);
+  return Number.isFinite(parsed) ? parsed : 1;
+}
+
+async function waitForTmuxSessionExit(
+  sessionName: string,
+  timeoutMs: number,
+): Promise<number> {
+  const startedAt = Date.now();
+
+  while (Date.now() - startedAt < timeoutMs) {
+    const exitStatus = getTmuxSinglePaneExitStatus(sessionName);
+    if (typeof exitStatus === "number") {
+      return exitStatus;
+    }
+
+    await new Promise((resolve) =>
+      setTimeout(resolve, DEFAULT_BRANCH_TOOL_POLL_INTERVAL_MS),
+    );
+  }
+
+  throw new Error(
+    `Timed out after ${timeoutMs}ms waiting for supervision session "${sessionName}" to finish. Attach with \`tmux attach -t ${sessionName}\` to inspect it.`,
+  );
 }
 
 function parseBreakpointTagsArg(rawValue?: string): string[] | undefined {
@@ -421,14 +501,18 @@ async function requestOpencodeJson(args: {
   return data;
 }
 
-async function runMessageBoundaryForkLaunch(
-  args: Omit<ForkedSessionArgs, "forkMode"> & { checkpointMessageId: string },
-  transport: MessageBoundaryForkTransport = {
+async function prepareMessageBoundaryForkLaunch(
+  args: Omit<ForkedSessionArgs, "forkMode" | "tmuxSessionName"> & {
+    checkpointMessageId: string;
+  },
+  transport: Pick<
+    MessageBoundaryForkTransport,
+    "startServer" | "requestJson"
+  > = {
     startServer: startOpencodeServer,
     requestJson: requestOpencodeJson,
-    runCommand,
   },
-): Promise<ForkedSessionResult> {
+): Promise<{ nativeSessionId: string; commandArgs: string[] }> {
   const server = await transport.startServer(args.repoRoot);
 
   try {
@@ -458,9 +542,9 @@ async function runMessageBoundaryForkLaunch(
       await args.onNativeSessionId(nativeSessionId);
     }
 
-    const runResult = await transport.runCommand(
-      "opencode",
-      [
+    return {
+      nativeSessionId,
+      commandArgs: [
         "run",
         "--session",
         nativeSessionId,
@@ -470,17 +554,172 @@ async function runMessageBoundaryForkLaunch(
         "json",
         args.prompt,
       ],
+    };
+  } finally {
+    server.close();
+  }
+}
+
+async function runForkedSessionInTmux(
+  args: Omit<ForkedSessionArgs, "forkMode"> & {
+    forkMode?: "message" | "latest_session_fork";
+    tmuxSessionName: string;
+  },
+  helpers: {
+    findNativeSessionIdByTitle: typeof findNativeSessionIdByTitle;
+  } = {
+    findNativeSessionIdByTitle,
+  },
+): Promise<ForkedSessionResult> {
+  const preparedLaunch = args.checkpointMessageId
+    ? await prepareMessageBoundaryForkLaunch({
+        sessionId: args.sessionId,
+        repoRoot: args.repoRoot,
+        title: args.title,
+        prompt: args.prompt,
+        checkpointMessageId: args.checkpointMessageId,
+        onNativeSessionId: args.onNativeSessionId,
+      })
+    : {
+        commandArgs: [
+          "run",
+          "--session",
+          args.sessionId,
+          "--fork",
+          "--dir",
+          args.repoRoot,
+          "--title",
+          args.title,
+          "--format",
+          "json",
+          args.prompt,
+        ],
+      };
+
+  const tempDir = mkdtempSync(join(tmpdir(), "workstream-supervision-"));
+  const stdoutPath = join(tempDir, "stdout.log");
+  const stderrPath = join(tempDir, "stderr.log");
+  const exitPath = join(tempDir, "exit.code");
+  const command = [
+    "opencode",
+    ...preparedLaunch.commandArgs,
+  ]
+    .map(shellQuote)
+    .join(" ");
+  const wrappedCommand = `${command} > ${shellQuote(stdoutPath)} 2> ${shellQuote(stderrPath)}; printf %s $? > ${shellQuote(exitPath)}`;
+
+  const createResult = spawnSync(
+    "tmux",
+    [
+      "new-session",
+      "-d",
+      "-s",
+      args.tmuxSessionName,
+      "-n",
+      "supervision",
+      wrappedCommand,
+    ],
+    {
+      cwd: args.repoRoot,
+      env: process.env,
+      encoding: "utf-8",
+    },
+  );
+
+  if (createResult.status !== 0) {
+    rmSync(tempDir, { recursive: true, force: true });
+    throw new Error(
+      (createResult.stderr || createResult.stdout || "Failed to create supervision tmux session.").trim(),
+    );
+  }
+
+  spawnSync("tmux", ["set-option", "-t", args.tmuxSessionName, "remain-on-exit", "on"], {
+    encoding: "utf-8",
+  });
+
+  let nativeSessionId = preparedLaunch.nativeSessionId;
+  let pollError: unknown;
+  let stopped = false;
+  let pollPromise: Promise<void> | undefined;
+
+  if (!nativeSessionId && args.onNativeSessionId) {
+    pollPromise = (async () => {
+      while (!stopped && !nativeSessionId) {
+        try {
+          const foundSessionId = await helpers.findNativeSessionIdByTitle(
+            args.repoRoot,
+            args.title,
+          );
+          if (foundSessionId) {
+            nativeSessionId = foundSessionId;
+            await args.onNativeSessionId(foundSessionId);
+            return;
+          }
+        } catch (error) {
+          pollError = error;
+          return;
+        }
+
+        await new Promise((resolve) =>
+          setTimeout(resolve, DEFAULT_BRANCH_TOOL_POLL_INTERVAL_MS),
+        );
+      }
+    })();
+  }
+
+  try {
+    const code = await waitForTmuxSessionExit(
+      args.tmuxSessionName,
+      DEFAULT_BRANCH_TOOL_TIMEOUT_MS,
+    );
+    stopped = true;
+    await pollPromise;
+
+    if (pollError) {
+      throw pollError;
+    }
+
+    if (!nativeSessionId) {
+      nativeSessionId = await helpers.findNativeSessionIdByTitle(
+        args.repoRoot,
+        args.title,
+      );
+    }
+
+    return {
+      code,
+      stdout: existsSync(stdoutPath) ? readFileSync(stdoutPath, "utf-8") : "",
+      stderr: existsSync(stderrPath) ? readFileSync(stderrPath, "utf-8") : "",
+      ...(nativeSessionId ? { nativeSessionId } : {}),
+      tmuxSessionName: args.tmuxSessionName,
+    };
+  } finally {
+    stopped = true;
+    rmSync(tempDir, { recursive: true, force: true });
+  }
+}
+
+async function runMessageBoundaryForkLaunch(
+  args: Omit<ForkedSessionArgs, "forkMode"> & { checkpointMessageId: string },
+  transport: MessageBoundaryForkTransport = {
+    startServer: startOpencodeServer,
+    requestJson: requestOpencodeJson,
+    runCommand,
+  },
+): Promise<ForkedSessionResult> {
+  const preparedLaunch = await prepareMessageBoundaryForkLaunch(args, transport);
+
+    const runResult = await transport.runCommand(
+      "opencode",
+      preparedLaunch.commandArgs,
       args.repoRoot,
       DEFAULT_BRANCH_TOOL_TIMEOUT_MS,
     );
 
     return {
       ...runResult,
-      nativeSessionId,
+      nativeSessionId: preparedLaunch.nativeSessionId,
     };
-  } finally {
-    server.close();
-  }
 }
 
 function resolveWorkCommandPath(): string {
@@ -805,6 +1044,10 @@ export interface LaunchSupervisionBranchDeps {
     timeoutMs?: number;
     pollIntervalMs?: number;
   }) => Promise<any>;
+  createSupervisionTmuxSessionName: (
+    streamId: string,
+  ) => string | Promise<string>;
+  tmuxSessionExists: (sessionName: string) => boolean | Promise<boolean>;
   runForkedSession: (args: ForkedSessionArgs) => Promise<ForkedSessionResult>;
   runCommand: typeof runCommand;
   findNativeSessionIdByTitle: typeof findNativeSessionIdByTitle;
@@ -946,6 +1189,8 @@ function getDefaultLaunchSupervisionBranchDeps(): LaunchSupervisionBranchDeps {
       const resolvedRuntime = await runtime;
       return resolvedRuntime.waitForRootAgentBranchTerminalSession(args);
     },
+    createSupervisionTmuxSessionName,
+    tmuxSessionExists,
     runForkedSession: async ({
       sessionId,
       repoRoot,
@@ -953,8 +1198,22 @@ function getDefaultLaunchSupervisionBranchDeps(): LaunchSupervisionBranchDeps {
       prompt,
       checkpointMessageId,
       forkMode,
+      tmuxSessionName,
       onNativeSessionId,
     }) => {
+      if (tmuxSessionName) {
+        return runForkedSessionInTmux({
+          sessionId,
+          repoRoot,
+          title,
+          prompt,
+          checkpointMessageId,
+          forkMode,
+          tmuxSessionName,
+          onNativeSessionId,
+        });
+      }
+
       if (forkMode === "message") {
         if (!checkpointMessageId) {
           throw new Error(
@@ -1668,6 +1927,7 @@ async function persistSupervisionBranchState(args: {
   breakpointSelection?: RootCheckpointPointer["breakpointSelection"];
   checkpointSessionId?: string;
   nativeSessionId?: string;
+  tmuxSessionName?: string;
   status: "pending" | "running" | "completed" | "stopped" | "failed";
   startedAt: string;
   updatedAt: string;
@@ -1711,6 +1971,7 @@ async function persistSupervisionBranchState(args: {
       startedAt: args.startedAt,
       updatedAt: args.updatedAt,
       completedAt: args.completedAt,
+      tmuxSessionName: args.tmuxSessionName,
       runId: args.runId,
       batchId: args.batchId,
       notes: args.notes,
@@ -1767,6 +2028,22 @@ async function executeLaunchSupervisionBranch(
   const branchSessionId = await deps.createBranchSessionId();
   const title = `root-supervision-${streamId}-${branchSessionId}`;
   const startedAt = deps.now();
+  const existingBranch = await deps.loadStoredBranchSession(
+    repoRoot,
+    streamId,
+    branchSessionId,
+  );
+  const tmuxSessionName =
+    existingBranch?.tmuxSessionName ??
+    (await deps.createSupervisionTmuxSessionName(streamId));
+
+  if (await deps.tmuxSessionExists(tmuxSessionName)) {
+    return [
+      `Supervision session ${tmuxSessionName} is already running for ${streamId}.`,
+      `Attach with \`tmux attach -t ${tmuxSessionName}\` to observe it.`,
+      "Refusing to launch another supervision session for the same branch metadata.",
+    ].join("\n");
+  }
 
   await persistSupervisionBranchState({
     deps,
@@ -1777,6 +2054,7 @@ async function executeLaunchSupervisionBranch(
     status: "pending",
     startedAt,
     updatedAt: startedAt,
+    tmuxSessionName,
     batchId: args.batch,
     scope: launchScope,
     notes: `Capturing checkpoint pointer metadata for ${describeScopeLabel(launchScope, args.batch)}; branch is not active yet.`,
@@ -1811,6 +2089,7 @@ async function executeLaunchSupervisionBranch(
       status: "pending",
       startedAt,
       updatedAt: deps.now(),
+      tmuxSessionName,
       batchId: args.batch,
       scope: launchScope,
       notes: buildCheckpointCaptureNotes(checkpointPointer, launchScope, args.batch),
@@ -1863,6 +2142,7 @@ async function executeLaunchSupervisionBranch(
         status: storedBranch?.status === "running" ? "running" : "pending",
         startedAt: storedBranch?.startedAt ?? startedAt,
         updatedAt,
+        tmuxSessionName: storedBranch?.tmuxSessionName ?? tmuxSessionName,
         runId: storedBranch?.runId,
         batchId: storedBranch?.batchId ?? args.batch,
         scope: storedBranch?.scope ?? launchScope,
@@ -1888,6 +2168,7 @@ async function executeLaunchSupervisionBranch(
         title,
         prompt: supervisionPrompt,
         forkMode: "latest_session_fork",
+        tmuxSessionName,
         onNativeSessionId: persistNativeSessionId,
       });
     } else {
@@ -1899,6 +2180,7 @@ async function executeLaunchSupervisionBranch(
           prompt: supervisionPrompt,
           checkpointMessageId: checkpointPointer.checkpointMessageId,
           forkMode: "message",
+          tmuxSessionName,
           onNativeSessionId: persistNativeSessionId,
         });
       } catch (error) {
@@ -1916,6 +2198,7 @@ async function executeLaunchSupervisionBranch(
           title,
           prompt: supervisionPrompt,
           forkMode: "latest_session_fork",
+          tmuxSessionName,
           onNativeSessionId: persistNativeSessionId,
         });
       }
@@ -1978,6 +2261,7 @@ async function executeLaunchSupervisionBranch(
       startedAt: storedBranch?.startedAt ?? startedAt,
       updatedAt: completedAt,
       completedAt,
+      tmuxSessionName: storedBranch?.tmuxSessionName ?? runResult.tmuxSessionName ?? tmuxSessionName,
       runId: storedBranch?.runId,
       batchId: storedBranch?.batchId ?? args.batch,
       scope: storedBranch?.scope ?? launchScope,
@@ -2016,6 +2300,7 @@ async function executeLaunchSupervisionBranch(
       startedAt,
       updatedAt: failedAt,
       completedAt: failedAt,
+      tmuxSessionName,
       batchId: args.batch,
       scope: launchScope,
       notes: `Failed to launch Root Agent supervision branch: ${error?.message || error}`,

@@ -20,6 +20,7 @@ import {
 import {
   loadGitHubConfig,
   isGitHubEnabled,
+  createPlanApprovalCommit,
   createStageApprovalCommit,
   loadWorkstreamGitHub,
   saveWorkstreamGitHub,
@@ -554,6 +555,21 @@ export async function handlePlanApproval(
       updatedStream.name
     )
 
+    // Auto-commit on plan approval if configured.
+    // This uses plain git and does not require GitHub integration to be enabled.
+    let commitResult:
+      | {
+          success: boolean
+          commitSha?: string
+          skipped?: boolean
+          error?: string
+        }
+      | undefined
+    const githubConfig = await loadGitHubConfig(repoRoot)
+    if (githubConfig.auto_commit_on_approval) {
+      commitResult = createPlanApprovalCommit(repoRoot, updatedStream)
+    }
+
     if (cliArgs.json) {
       console.log(
         JSON.stringify(
@@ -573,6 +589,14 @@ export async function handlePlanApproval(
               overwritten: tasksMdResult.overwritten,
               error: tasksMdResult.error,
             },
+            commit: commitResult
+              ? {
+                  created: commitResult.success && !commitResult.skipped,
+                  sha: commitResult.commitSha,
+                  skipped: commitResult.skipped,
+                  error: commitResult.error,
+                }
+              : undefined,
           },
           null,
           2
@@ -594,6 +618,14 @@ export async function handlePlanApproval(
         console.log(
           `  Warning: Failed to generate TASKS.md: ${tasksMdResult.error}`
         )
+      }
+
+      if (commitResult?.success && commitResult.commitSha) {
+        console.log(`  Committed: ${commitResult.commitSha.substring(0, 7)}`)
+      } else if (commitResult?.skipped) {
+        console.log(`  No changes to commit`)
+      } else if (commitResult?.error) {
+        console.log(`  Commit skipped: ${commitResult.error}`)
       }
     }
   } catch (e) {
