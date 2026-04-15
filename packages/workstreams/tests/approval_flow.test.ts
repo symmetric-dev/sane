@@ -543,7 +543,7 @@ describe("Tasks Approval with Auto-Generation", () => {
             stdio: ["pipe", "pipe", "pipe"],
         }).trim().split("\n").filter(Boolean);
 
-        expect(subject).toBe("Tasks approved: Revision Workflow Test");
+        expect(subject).toBe("Tasks approved: Revision Plan");
         expect(body).toContain("Approved 3 tasks for workstream stream-tasks.");
         expect(body).toContain("Task-Count: 3");
         expect(files).toContain("work/index.json");

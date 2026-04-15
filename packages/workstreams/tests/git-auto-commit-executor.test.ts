@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test"
 import { execSync } from "node:child_process"
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs"
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs"
 import { join } from "node:path"
 import { tmpdir } from "node:os"
 
@@ -165,7 +165,8 @@ describe("git auto commit executor", () => {
     }
 
     try {
-      writeFileSync(join(repoRoot, "PLAN.md"), [
+      mkdirSync(join(repoRoot, "work", "stream-001"), { recursive: true })
+      writeFileSync(join(repoRoot, "work", "stream-001", "PLAN.md"), [
         "# Plan: Resolved Stream Name",
         "",
         "## Summary",
@@ -177,7 +178,7 @@ describe("git auto commit executor", () => {
         "",
         "Test stage.",
       ].join("\n"))
-      writeFileSync(join(repoRoot, "tasks.json"), '{"tasks":[]}\n')
+      writeFileSync(join(repoRoot, "work", "stream-001", "tasks.json"), '{"tasks":[]}\n')
 
       const result = createTasksApprovalCommit(repoRoot, stream, 3)
 
