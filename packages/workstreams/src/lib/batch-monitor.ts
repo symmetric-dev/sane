@@ -466,11 +466,11 @@ export async function reconcileBatchStatusRunIfNeeded(
     return existing
   }
 
-  if (existing.status !== "running") {
+  if (existing.status !== "running" || !existing.tmuxSessionName) {
     return existing
   }
 
-  if (existing.tmuxSessionName && sessionExists(existing.tmuxSessionName)) {
+  if (sessionExists(existing.tmuxSessionName)) {
     return existing
   }
 
@@ -504,8 +504,13 @@ export async function prepareHeadlessBatchStatusRun(options: {
   threads: BatchThreadSeed[]
 }): Promise<BatchStatusFile> {
   const existing = readBatchStatus(options.repoRoot, options.streamId, options.batchId)
-  if (existing && !isTerminalBatchStatus(existing.status) && existing.status === "running") {
-    if (existing.tmuxSessionName && sessionExists(existing.tmuxSessionName)) {
+  if (
+    existing &&
+    !isTerminalBatchStatus(existing.status) &&
+    existing.status === "running" &&
+    existing.tmuxSessionName
+  ) {
+    if (sessionExists(existing.tmuxSessionName)) {
       throw new Error(
         `Batch ${options.batchId} already has an active headless run in tmux session \"${existing.tmuxSessionName}\".`,
       )
