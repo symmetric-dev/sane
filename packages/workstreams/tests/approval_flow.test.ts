@@ -526,6 +526,7 @@ describe("Tasks Approval with Auto-Generation", () => {
         const outputJoined = stdout.join("\n");
         expect(outputJoined).toContain("Tasks approved");
         expect(outputJoined).toContain("Committed:");
+        expect(existsSync(tasksMdPath)).toBe(false);
 
         const subject = execSync("git log -1 --pretty=%s", {
             cwd: TASKS_APPROVAL_REPO_ROOT,
@@ -547,9 +548,9 @@ describe("Tasks Approval with Auto-Generation", () => {
         expect(body).toContain("Approved 3 tasks for workstream stream-tasks.");
         expect(body).toContain("Task-Count: 3");
         expect(files).toContain("work/index.json");
+        expect(files).toContain("work/stream-tasks/TASKS.md");
         expect(files).toContain("work/stream-tasks/tasks.json");
-        expect(files).toContain("work/stream-tasks/prompts/01.01.01.md");
-        expect(files).not.toContain("work/stream-tasks/TASKS.md");
+        expect(files).toContain("work/stream-tasks/prompts/01-implementation/01-dev/code.md");
     });
 
     test("should keep tasks approval successful when auto-commit fails", async () => {
