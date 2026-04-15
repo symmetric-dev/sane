@@ -2711,8 +2711,6 @@ describe("launch_supervision_branch", () => {
           "ses_child_123",
           "--dir",
           "/repo/root",
-          "--format",
-          "json",
           "Please supervise batch 10.01 for this workstream.",
         ],
         cwd: "/repo/root",

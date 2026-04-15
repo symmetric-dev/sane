@@ -2,6 +2,7 @@ import { describe, expect, test } from "bun:test"
 import {
   isActiveSupervisionBranchStatus,
   isTerminalStoppedSupervisionBranch,
+  parseSupervisionBranchRunOutput,
   shouldBlockDuplicateSupervisionLaunch,
 } from "../src/lib/workstream-tool/launch-supervision.ts"
 
@@ -33,5 +34,26 @@ describe("launch supervision duplicate guard", () => {
 
     expect(isTerminalStoppedSupervisionBranch(branch)).toBe(false)
     expect(shouldBlockDuplicateSupervisionLaunch(branch)).toBe(true)
+  })
+})
+
+describe("parseSupervisionBranchRunOutput", () => {
+  test("preserves parsed JSONL text when structured output is present", async () => {
+    const result = await parseSupervisionBranchRunOutput(
+      '{"type":"text","part":{"text":"hello"}}\n',
+      (content) => ({ text: content.includes("hello") ? "hello" : "", logs: [], success: true }),
+    )
+
+    expect(result.text).toBe("hello")
+  })
+
+  test("falls back to plain text when JSONL parsing yields no text", async () => {
+    const result = await parseSupervisionBranchRunOutput(
+      "Plain text supervision output",
+      () => ({ text: "", logs: ["no jsonl text"], success: false }),
+    )
+
+    expect(result.text).toBe("Plain text supervision output")
+    expect(result.logs).toContain("Fell back to plain-text branch run output.")
   })
 })

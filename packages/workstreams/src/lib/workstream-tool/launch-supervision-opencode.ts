@@ -402,8 +402,6 @@ export async function prepareMessageBoundaryForkLaunch(
         nativeSessionId,
         "--dir",
         args.repoRoot,
-        "--format",
-        "json",
         args.prompt,
       ],
     }
@@ -487,8 +485,6 @@ export async function runForkedSession(
       args.repoRoot,
       "--title",
       args.title,
-      "--format",
-      "json",
       args.prompt,
     ],
     {

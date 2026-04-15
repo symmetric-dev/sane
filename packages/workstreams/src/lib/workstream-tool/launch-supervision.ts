@@ -344,6 +344,37 @@ export function formatSupervisionProcessExitEvidence(exitCode: number): string {
   return `Authoritative process-end evidence: tmux pane exited with status ${exitCode}.`
 }
 
+export function parseSupervisionBranchRunOutput(
+  content: string,
+  parseJsonl: LaunchSupervisionBranchDeps["parseOutput"],
+): ReturnType<LaunchSupervisionBranchDeps["parseOutput"]> {
+  const parsed = parseJsonl(content)
+
+  if (parsed instanceof Promise) {
+    return parsed.then((result) => {
+      if (result.text.trim().length > 0 || content.trim().length === 0) {
+        return result
+      }
+
+      return {
+        text: content.trim(),
+        logs: [...result.logs, "Fell back to plain-text branch run output."],
+        success: result.success,
+      }
+    }) as ReturnType<LaunchSupervisionBranchDeps["parseOutput"]>
+  }
+
+  if (parsed.text.trim().length > 0 || content.trim().length === 0) {
+    return parsed
+  }
+
+  return {
+    text: content.trim(),
+    logs: [...parsed.logs, "Fell back to plain-text branch run output."],
+    success: parsed.success,
+  } as ReturnType<LaunchSupervisionBranchDeps["parseOutput"]>
+}
+
 export function joinBranchNotes(...sections: Array<string | undefined>): string {
   const normalized = sections
     .map((value) => value?.trim())
@@ -1173,7 +1204,7 @@ export function createDefaultLaunchSupervisionBranchDeps(
     findNativeSessionIdByTitle: (...args) =>
       (runtime.getDefaultLaunchSupervisionBranchHelpers?.().findNativeSessionIdByTitle ??
         findNativeSessionIdByTitle)(...args),
-    parseOutput: (content) => runtime.parseSynthesisJsonl(content),
+    parseOutput: (content) => parseSupervisionBranchRunOutput(content, runtime.parseSynthesisJsonl),
     exportSessionTranscript: (sessionId) => runtime.exportSession(sessionId),
     refreshCheckpointPointer: (args) => runtime.refreshRootAgentCheckpointPointer(args),
     getCheckpointSessionForkEligibility: (args) =>
