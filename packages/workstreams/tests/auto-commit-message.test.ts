@@ -29,6 +29,7 @@ describe("auto commit message builders", () => {
     const tasks = buildTasksApprovalCommitMessage({
       streamId: "001-test-stream",
       streamName: "Test Stream",
+      taskCount: 7,
     })
 
     expect(plan.title).toBe("Plan approved: Test Stream")
@@ -36,8 +37,9 @@ describe("auto commit message builders", () => {
     expect(plan.body).toContain("Stream-Id: 001-test-stream")
 
     expect(tasks.title).toBe("Tasks approved: Test Stream")
-    expect(tasks.body).toContain("Approved tasks for workstream 001-test-stream.")
+    expect(tasks.body).toContain("Approved 7 tasks for workstream 001-test-stream.")
     expect(tasks.body).toContain("Stream-Name: Test Stream")
+    expect(tasks.body).toContain("Task-Count: 7")
   })
 
   test("builds stage approval messages with stage trailers", () => {

@@ -7,6 +7,7 @@ import { resolvePlanNames, resolveStageApprovalNames } from "../approval.ts"
 import {
   buildPlanApprovalCommitMessage,
   buildStageApprovalCommitMessage,
+  buildTasksApprovalCommitMessage,
 } from "../git/auto-commit-message.ts"
 import {
   executeGitAutoCommit,
@@ -15,6 +16,7 @@ import {
 
 export type StageCommitResult = GitAutoCommitResult
 export type PlanCommitResult = GitAutoCommitResult
+export type TasksCommitResult = GitAutoCommitResult
 
 /**
  * Format a commit message for plan approval.
@@ -38,6 +40,35 @@ export function createPlanApprovalCommit(
 ): PlanCommitResult {
   const { streamName } = resolvePlanNames(repoRoot, stream)
   const message = formatPlanCommitMessage(stream.id, streamName)
+
+  return executeGitAutoCommit(repoRoot, message)
+}
+
+/**
+ * Format a commit message for tasks approval.
+ */
+export function formatTasksCommitMessage(
+  streamId: string,
+  streamName: string,
+  taskCount: number
+): { title: string; body: string } {
+  return buildTasksApprovalCommitMessage({
+    streamId,
+    streamName,
+    taskCount,
+  })
+}
+
+/**
+ * Create a commit for tasks approval.
+ */
+export function createTasksApprovalCommit(
+  repoRoot: string,
+  stream: StreamMetadata,
+  taskCount: number
+): TasksCommitResult {
+  const { streamName } = resolvePlanNames(repoRoot, stream)
+  const message = formatTasksCommitMessage(stream.id, streamName, taskCount)
 
   return executeGitAutoCommit(repoRoot, message)
 }

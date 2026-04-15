@@ -18,6 +18,10 @@ import { getWorkDir } from "../../lib/repo.ts"
 import { getResolvedStream, atomicWriteFile } from "../../lib/index.ts"
 import { addTasks, getTasks } from "../../lib/tasks.ts"
 import { generateAllPrompts } from "../../lib/prompts.ts"
+import {
+  loadGitHubConfig,
+  createTasksApprovalCommit,
+} from "../../lib/github/index.ts"
 
 import type { ApproveCliArgs } from "./utils.ts"
 
@@ -122,11 +126,11 @@ export function deleteTasksMd(repoRoot: string, streamId: string): boolean {
  * Validates TASKS.md, serializes to tasks.json, generates prompts,
  * and marks tasks as approved.
  */
-export function handleTasksApproval(
+export async function handleTasksApproval(
   repoRoot: string,
   stream: ReturnType<typeof getResolvedStream>,
   cliArgs: ApproveCliArgs
-): void {
+): Promise<void> {
   const currentStatus = getTasksApprovalStatus(stream)
 
   // Handle revoke
@@ -289,6 +293,25 @@ export function handleTasksApproval(
     // Step 4: Delete TASKS.md AFTER approval succeeds
     const tasksMdDeleted = deleteTasksMd(repoRoot, stream.id)
 
+    // Step 5: Auto-commit on tasks approval if configured.
+    // This is non-critical - if it fails, approval still succeeds.
+    let commitResult:
+      | {
+          success: boolean
+          commitSha?: string
+          skipped?: boolean
+          error?: string
+        }
+      | undefined
+    const githubConfig = await loadGitHubConfig(repoRoot)
+    if (githubConfig.auto_commit_on_approval) {
+      commitResult = createTasksApprovalCommit(
+        repoRoot,
+        updatedStream,
+        serializeResult.taskCount
+      )
+    }
+
     if (cliArgs.json) {
       console.log(
         JSON.stringify(
@@ -307,6 +330,14 @@ export function handleTasksApproval(
               },
               tasksMdDeleted,
             },
+            commit: commitResult
+              ? {
+                  created: commitResult.success && !commitResult.skipped,
+                  sha: commitResult.commitSha,
+                  skipped: commitResult.skipped,
+                  error: commitResult.error,
+                }
+              : undefined,
           },
           null,
           2
@@ -332,6 +363,14 @@ export function handleTasksApproval(
             `    ... and ${promptsResult.errors.length - 3} more errors`
           )
         }
+      }
+
+      if (commitResult?.success && commitResult.commitSha) {
+        console.log(`  Committed: ${commitResult.commitSha.substring(0, 7)}`)
+      } else if (commitResult?.skipped) {
+        console.log(`  No changes to commit`)
+      } else if (commitResult?.error) {
+        console.log(`  Commit skipped: ${commitResult.error}`)
       }
     }
   } catch (e) {

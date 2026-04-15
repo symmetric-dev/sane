@@ -259,7 +259,7 @@ export async function main(argv: string[] = process.argv): Promise<void> {
       await handlePlanApproval(repoRoot, stream, cliArgs)
       break
     case "tasks":
-      handleTasksApproval(repoRoot, stream, cliArgs)
+      await handleTasksApproval(repoRoot, stream, cliArgs)
       break
     case "revision":
       handleRevisionApproval(repoRoot, stream, cliArgs)

@@ -8,7 +8,10 @@ import {
   executeGitAutoCommit,
   getHeadCommitSha,
 } from "../src/lib/git/auto-commit-executor.ts"
-import { createStageApprovalCommit } from "../src/lib/github/commits.ts"
+import {
+  createStageApprovalCommit,
+  createTasksApprovalCommit,
+} from "../src/lib/github/commits.ts"
 import type { StreamMetadata } from "../src/lib/types.ts"
 
 function createGitRepo(): string {
@@ -132,6 +135,74 @@ describe("git auto commit executor", () => {
       expect(result.success).toBe(false)
       expect(result.outcome).toBe("failed")
       expect(result.error).toBeTruthy()
+    } finally {
+      cleanupRepo(repoRoot)
+    }
+  })
+
+  test("creates tasks approval commits with task count trailers", () => {
+    const repoRoot = createGitRepo()
+    const stream: StreamMetadata = {
+      id: "stream-001",
+      name: "Approval Automation",
+      order: 1,
+      size: "short",
+      session_estimated: {
+        length: 1,
+        unit: "session",
+        session_minutes: [30, 45],
+        session_iterations: [4, 8],
+      },
+      created_at: new Date().toISOString(),
+      updated_at: new Date().toISOString(),
+      path: "work/stream-001",
+      generated_by: {
+        workstreams: "test",
+      },
+      approval: {
+        status: "approved",
+      },
+    }
+
+    try {
+      writeFileSync(join(repoRoot, "PLAN.md"), [
+        "# Plan: Resolved Stream Name",
+        "",
+        "## Summary",
+        "Testing resolved names.",
+        "",
+        "## Stages",
+        "",
+        "### Stage 1: Stage One",
+        "",
+        "Test stage.",
+      ].join("\n"))
+      writeFileSync(join(repoRoot, "tasks.json"), '{"tasks":[]}\n')
+
+      const result = createTasksApprovalCommit(repoRoot, stream, 3)
+
+      expect(result).toMatchObject({
+        success: true,
+        created: true,
+        skipped: false,
+        outcome: "committed",
+      })
+
+      const subject = execSync("git log -1 --pretty=%s", {
+        cwd: repoRoot,
+        encoding: "utf-8",
+        stdio: ["pipe", "pipe", "pipe"],
+      }).trim()
+      const body = execSync("git log -1 --pretty=%b", {
+        cwd: repoRoot,
+        encoding: "utf-8",
+        stdio: ["pipe", "pipe", "pipe"],
+      }).trim()
+
+      expect(subject).toBe("Tasks approved: Resolved Stream Name")
+      expect(body).toContain("Approved 3 tasks for workstream stream-001.")
+      expect(body).toContain("Stream-Name: Resolved Stream Name")
+      expect(body).toContain("Task-Count: 3")
     } finally {
       cleanupRepo(repoRoot)
     }

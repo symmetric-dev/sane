@@ -485,6 +485,106 @@ describe("Tasks Approval with Auto-Generation", () => {
         delete process.env.WORKSTREAM_ROLE;
     });
 
+    test("should auto-commit tasks approval after cleanup with task count in message", async () => {
+        const tasksMdContent = `# Tasks: Tasks Test Stream
+
+## Stage 01: Implementation
+
+### Batch 01: Core Features
+
+#### Thread 01: Feature A @agent:coder
+
+- [ ] Task 01.01.01.01: Implement feature A base
+- [ ] Task 01.01.01.02: Add feature A tests
+
+#### Thread 02: Feature B @agent:coder
+
+- [ ] Task 01.01.02.01: Implement feature B base
+`;
+        const tasksMdPath = join(TASKS_APPROVAL_REPO_ROOT, "work/stream-tasks/TASKS.md");
+        writeFileSync(tasksMdPath, tasksMdContent);
+
+        await saveGitHubConfig(TASKS_APPROVAL_REPO_ROOT, {
+            ...DEFAULT_GITHUB_CONFIG,
+            enabled: false,
+            auto_commit_on_approval: true,
+        });
+
+        execSync("git init", { cwd: TASKS_APPROVAL_REPO_ROOT, stdio: "pipe" });
+        execSync('git config user.name "Test User"', { cwd: TASKS_APPROVAL_REPO_ROOT, stdio: "pipe" });
+        execSync('git config user.email "test@example.com"', { cwd: TASKS_APPROVAL_REPO_ROOT, stdio: "pipe" });
+        execSync("git add -A && git commit -m \"baseline\"", {
+            cwd: TASKS_APPROVAL_REPO_ROOT,
+            stdio: "pipe",
+        });
+
+        const { main } = await import("../src/cli/approve/index.ts");
+        const { stdout } = await captureCliOutput(async () => {
+            await main(["node", "approve", "tasks", "--stream", "stream-tasks", "--repo-root", TASKS_APPROVAL_REPO_ROOT]);
+        });
+
+        const outputJoined = stdout.join("\n");
+        expect(outputJoined).toContain("Tasks approved");
+        expect(outputJoined).toContain("Committed:");
+
+        const subject = execSync("git log -1 --pretty=%s", {
+            cwd: TASKS_APPROVAL_REPO_ROOT,
+            encoding: "utf-8",
+            stdio: ["pipe", "pipe", "pipe"],
+        }).trim();
+        const body = execSync("git log -1 --pretty=%b", {
+            cwd: TASKS_APPROVAL_REPO_ROOT,
+            encoding: "utf-8",
+            stdio: ["pipe", "pipe", "pipe"],
+        }).trim();
+        const files = execSync("git show --pretty= --name-only HEAD", {
+            cwd: TASKS_APPROVAL_REPO_ROOT,
+            encoding: "utf-8",
+            stdio: ["pipe", "pipe", "pipe"],
+        }).trim().split("\n").filter(Boolean);
+
+        expect(subject).toBe("Tasks approved: Revision Workflow Test");
+        expect(body).toContain("Approved 3 tasks for workstream stream-tasks.");
+        expect(body).toContain("Task-Count: 3");
+        expect(files).toContain("work/index.json");
+        expect(files).toContain("work/stream-tasks/tasks.json");
+        expect(files).toContain("work/stream-tasks/prompts/01.01.01.md");
+        expect(files).not.toContain("work/stream-tasks/TASKS.md");
+    });
+
+    test("should keep tasks approval successful when auto-commit fails", async () => {
+        const tasksMdContent = `# Tasks: Tasks Test Stream
+
+## Stage 01: Implementation
+
+### Batch 01: Core Features
+
+#### Thread 01: Feature A @agent:coder
+
+- [ ] Task 01.01.01.01: Implement feature A
+`;
+        writeFileSync(join(TASKS_APPROVAL_REPO_ROOT, "work/stream-tasks/TASKS.md"), tasksMdContent);
+
+        await saveGitHubConfig(TASKS_APPROVAL_REPO_ROOT, {
+            ...DEFAULT_GITHUB_CONFIG,
+            enabled: false,
+            auto_commit_on_approval: true,
+        });
+
+        const { main } = await import("../src/cli/approve/index.ts");
+        const { stdout } = await captureCliOutput(async () => {
+            await main(["node", "approve", "tasks", "--stream", "stream-tasks", "--repo-root", TASKS_APPROVAL_REPO_ROOT]);
+        });
+
+        const index = loadIndex(TASKS_APPROVAL_REPO_ROOT);
+        const stream = index.streams[0];
+        const outputJoined = stdout.join("\n");
+
+        expect(stream?.approval?.tasks?.status).toBe("approved");
+        expect(outputJoined).toContain("Tasks approved");
+        expect(outputJoined).toContain("Commit skipped:");
+    });
+
     test("should serialize TASKS.md to tasks.json directly", () => {
         // Create valid TASKS.md 
         const tasksMdContent = `# Tasks: Tasks Test Stream
