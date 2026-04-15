@@ -4,6 +4,7 @@ import { join } from "path"
 import { tmpdir } from "os"
 import { captureCliOutput } from "./helpers/cli-runner"
 import {
+  prepareHeadlessBatchStatusRun,
   resetBatchStatusRun,
   startDetachedBatchMonitor,
   syncBatchStatus,
@@ -415,6 +416,107 @@ describe("batch status", () => {
     expect(getThreadMetadata(repoRoot, streamId, "01.01.02")?.currentSessionId).toBe(
       "session-still-running-2",
     )
+  })
+
+  test("syncBatchStatus reconciles ghost running batches to a terminal failed state when tmux is gone", async () => {
+    resetBatchStatusRun({
+      repoRoot,
+      streamId,
+      batchId: "01.01",
+      tmuxSessionName: "missing-ghost-session",
+      stageName: "Headless Runtime",
+      batchName: "Batch Status",
+      threads: [
+        { threadId: "01.01.01", threadName: "Thread 1", firstTaskId: "01.01.01.01" },
+        { threadId: "01.01.02", threadName: "Thread 2", firstTaskId: "01.01.02.01" },
+      ],
+    })
+
+    startThreadSession(
+      repoRoot,
+      streamId,
+      "01.01.01",
+      "agent-one",
+      "model-one",
+      "session-ghost-1",
+    )
+
+    const status = await syncBatchStatus({
+      repoRoot,
+      streamId,
+      batchId: "01.01",
+    })
+
+    expect(status.status).toBe("failed")
+    expect(status.summary).toEqual({
+      total: 2,
+      pending: 0,
+      running: 0,
+      completed: 0,
+      failed: 2,
+    })
+    expect(status.threads.every((thread) => thread.status === "failed")).toBe(true)
+    expect(status.threads[0]?.recoveryNote).toContain("tmux session \"missing-ghost-session\" disappeared")
+    expect(status.threads[1]?.recoveryNote).toContain("tmux session \"missing-ghost-session\" disappeared")
+
+    const threadOne = getThreadMetadata(repoRoot, streamId, "01.01.01")
+    expect(threadOne?.currentSessionId).toBeUndefined()
+    expect(threadOne?.sessions.at(-1)?.status).toBe("interrupted")
+
+    const persisted = readBatchStatus(repoRoot, streamId, "01.01")
+    expect(persisted?.status).toBe("failed")
+    expect(persisted?.completedAt).toBeTruthy()
+  })
+
+  test("prepareHeadlessBatchStatusRun terminalizes a stale ghost run before creating a fresh run", async () => {
+    const original = resetBatchStatusRun({
+      repoRoot,
+      streamId,
+      batchId: "01.01",
+      tmuxSessionName: "missing-ghost-session",
+      stageName: "Headless Runtime",
+      batchName: "Batch Status",
+      threads: [
+        { threadId: "01.01.01", threadName: "Thread 1", firstTaskId: "01.01.01.01" },
+        { threadId: "01.01.02", threadName: "Thread 2", firstTaskId: "01.01.02.01" },
+      ],
+    })
+
+    startThreadSession(
+      repoRoot,
+      streamId,
+      "01.01.01",
+      "agent-one",
+      "model-one",
+      "session-ghost-relaunch-1",
+    )
+
+    const nextRun = await prepareHeadlessBatchStatusRun({
+      repoRoot,
+      streamId,
+      batchId: "01.01",
+      tmuxSessionName: "fresh-session",
+      stageName: "Headless Runtime",
+      batchName: "Batch Status",
+      threads: [
+        { threadId: "01.01.01", threadName: "Thread 1", firstTaskId: "01.01.01.01" },
+        { threadId: "01.01.02", threadName: "Thread 2", firstTaskId: "01.01.02.01" },
+      ],
+    })
+
+    expect(nextRun.runId).not.toBe(original.runId)
+    expect(nextRun.tmuxSessionName).toBe("fresh-session")
+    expect(nextRun.status).toBe("pending")
+    expect(nextRun.summary.failed).toBe(0)
+    expect(nextRun.summary.pending).toBe(2)
+
+    const persisted = readBatchStatus(repoRoot, streamId, "01.01")
+    expect(persisted?.runId).toBe(nextRun.runId)
+    expect(persisted?.status).toBe("pending")
+
+    const threadOne = getThreadMetadata(repoRoot, streamId, "01.01.01")
+    expect(threadOne?.currentSessionId).toBeUndefined()
+    expect(threadOne?.sessions.at(-1)?.status).toBe("interrupted")
   })
 
   test("new headless run resets batch status with a fresh runId", async () => {

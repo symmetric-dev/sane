@@ -26,6 +26,7 @@ export interface BatchStatusThread {
   opencodeSessionId?: string
   workingAgentSessionId?: string
   synthesisUpdatedAt?: string
+  recoveryNote?: string
 }
 
 export interface BatchStatusSummary {

@@ -48,7 +48,10 @@ import {
 } from "../lib/multi-orchestrator.ts"
 import { startMarkerPolling } from "../lib/marker-polling.ts"
 import { finalizeMultiRun } from "../lib/multi-finalization.ts"
-import { resetBatchStatusRun, startDetachedBatchMonitor } from "../lib/batch-monitor.ts"
+import {
+  prepareHeadlessBatchStatusRun,
+  startDetachedBatchMonitor,
+} from "../lib/batch-monitor.ts"
 
 const DEFAULT_PORT = 4096
 
@@ -654,7 +657,7 @@ export async function main(argv: string[] = process.argv): Promise<void> {
   }
 
   if (cliArgs.headless) {
-    const batchStatus = resetBatchStatusRun({
+    const batchStatus = await prepareHeadlessBatchStatusRun({
       repoRoot,
       streamId: stream.id,
       batchId,

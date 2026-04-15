@@ -148,6 +148,16 @@ interface StoredRunResult {
   exitCode?: number
 }
 
+type RecoverySessionStatus = "completed" | "failed" | "interrupted"
+
+interface GhostBatchThreadRecovery {
+  threadId: string
+  status: Exclude<BatchThreadRunStatus, "pending" | "running">
+  completedAt: string
+  markerDetectedAt?: string
+  recoveryNote: string
+}
+
 const CANONICAL_COMPLETED_TASK_STATUSES = new Set<TaskStatus>(["completed", "cancelled"])
 const CANONICAL_RUN_START_TOLERANCE_MS = 60_000
 
@@ -246,6 +256,265 @@ function deriveThreadStatus(args: {
   }
 
   return "pending"
+}
+
+function getTrackedThreadSessionId(args: {
+  previous?: BatchStatusThread
+  latestSessionId?: string
+  latestSessionStatus?: string
+  currentSessionId?: string
+}): string | undefined {
+  return (
+    args.currentSessionId ??
+    (args.latestSessionStatus === "running" ? args.latestSessionId : undefined) ??
+    args.previous?.currentSessionId
+  )
+}
+
+function formatGhostRecoveryNote(args: {
+  tmuxSessionName?: string
+  source: "completion marker" | "stored result" | "canonical task state" | "missing tmux session"
+  status: GhostBatchThreadRecovery["status"]
+  exitCode?: number
+}): string {
+  const tmuxLabel = args.tmuxSessionName
+    ? `tmux session \"${args.tmuxSessionName}\"`
+    : "the recorded tmux session"
+  const suffix =
+    typeof args.exitCode === "number" ? ` (exit ${args.exitCode})` : ""
+  return `${args.status}: recovered after ${tmuxLabel} disappeared using ${args.source}${suffix}.`
+}
+
+async function reconcileGhostBatchRun(args: {
+  repoRoot: string
+  streamId: string
+  batchId: string
+  existing: BatchStatusFile
+  threadSeeds: BatchThreadSeed[]
+  tasksFile: TasksFile
+}): Promise<BatchStatusFile> {
+  const now = new Date().toISOString()
+  const previousThreads = new Map(
+    args.existing.threads.map((thread) => [thread.threadId, thread]),
+  )
+  const completions: FinalizationCompletion[] = []
+  const recoveries = new Map<string, GhostBatchThreadRecovery>()
+
+  for (const seed of args.threadSeeds) {
+    const previous = previousThreads.get(seed.threadId)
+    const threadMeta = getThreadMetadata(args.repoRoot, args.streamId, seed.threadId)
+    const latestSession = getLastSessionForThread(args.repoRoot, args.streamId, seed.threadId)
+    const markerExists = existsSync(getCompletionMarkerPath(args.streamId, seed.threadId))
+    const storedResult = readStoredRunResult(args.streamId, seed.threadId)
+    const sessionId = getTrackedThreadSessionId({
+      previous,
+      latestSessionId: latestSession?.sessionId,
+      latestSessionStatus: latestSession?.status,
+      currentSessionId: threadMeta?.currentSessionId,
+    })
+    const canonicalCompletion = shouldFinalizeThreadFromCanonicalState({
+      tasksFile: args.tasksFile,
+      threadId: seed.threadId,
+      markerExists,
+      storedResult,
+      workSessionStillExists: false,
+      latestSessionStatus: latestSession?.status,
+      latestSessionStartedAt: latestSession?.startedAt ?? previous?.startedAt,
+      currentSessionId: threadMeta?.currentSessionId ?? previous?.currentSessionId,
+      runStartedAt: args.existing.startedAt,
+    })
+
+    let status: GhostBatchThreadRecovery["status"]
+    let completionStatus: RecoverySessionStatus | undefined
+    let recoveryNote: string
+    let markerDetectedAt = previous?.markerDetectedAt
+    let exitCode: number | undefined
+
+    if (storedResult?.status === "completed") {
+      status = "completed"
+      completionStatus = "completed"
+      exitCode = storedResult.exitCode
+      recoveryNote = formatGhostRecoveryNote({
+        tmuxSessionName: args.existing.tmuxSessionName,
+        source: "stored result",
+        status,
+        exitCode,
+      })
+    } else if (storedResult?.status === "failed") {
+      status = "failed"
+      completionStatus = "failed"
+      exitCode = storedResult.exitCode
+      recoveryNote = formatGhostRecoveryNote({
+        tmuxSessionName: args.existing.tmuxSessionName,
+        source: "stored result",
+        status,
+        exitCode,
+      })
+    } else if (markerExists) {
+      status = "completed"
+      completionStatus = "completed"
+      markerDetectedAt = markerDetectedAt ?? now
+      recoveryNote = formatGhostRecoveryNote({
+        tmuxSessionName: args.existing.tmuxSessionName,
+        source: "completion marker",
+        status,
+      })
+    } else if (canonicalCompletion) {
+      status = "completed"
+      completionStatus = "completed"
+      recoveryNote = formatGhostRecoveryNote({
+        tmuxSessionName: args.existing.tmuxSessionName,
+        source: "canonical task state",
+        status,
+      })
+    } else {
+      status = "failed"
+      completionStatus = sessionId ? "interrupted" : undefined
+      recoveryNote = formatGhostRecoveryNote({
+        tmuxSessionName: args.existing.tmuxSessionName,
+        source: "missing tmux session",
+        status,
+      })
+    }
+
+    if (sessionId && completionStatus) {
+      completions.push({
+        taskId: seed.firstTaskId,
+        threadId: seed.threadId,
+        sessionId,
+        status: completionStatus,
+        exitCode,
+      })
+    }
+
+    recoveries.set(seed.threadId, {
+      threadId: seed.threadId,
+      status,
+      completedAt: now,
+      markerDetectedAt,
+      recoveryNote,
+    })
+  }
+
+  if (completions.length > 0) {
+    await applyFinalizationCompletions({
+      repoRoot: args.repoRoot,
+      streamId: args.streamId,
+      completions,
+      verbose: false,
+    })
+  }
+
+  const nextThreads: BatchStatusThread[] = args.threadSeeds.map((seed) => {
+    const previous = previousThreads.get(seed.threadId)
+    const recovery = recoveries.get(seed.threadId)
+    const threadMeta = getThreadMetadata(args.repoRoot, args.streamId, seed.threadId)
+    const latestSession = getLastSessionForThread(args.repoRoot, args.streamId, seed.threadId)
+
+    return {
+      threadId: seed.threadId,
+      threadName: seed.threadName,
+      firstTaskId: seed.firstTaskId,
+      status: recovery?.status ?? "failed",
+      startedAt: latestSession?.startedAt ?? previous?.startedAt ?? args.existing.startedAt,
+      updatedAt: now,
+      completedAt: recovery?.completedAt ?? latestSession?.completedAt ?? previous?.completedAt ?? now,
+      ...(recovery?.markerDetectedAt
+        ? { markerDetectedAt: recovery.markerDetectedAt }
+        : previous?.markerDetectedAt
+          ? { markerDetectedAt: previous.markerDetectedAt }
+          : {}),
+      opencodeSessionId: threadMeta?.opencodeSessionId ?? previous?.opencodeSessionId,
+      ...(recovery?.recoveryNote
+        ? { recoveryNote: recovery.recoveryNote }
+        : previous?.recoveryNote
+          ? { recoveryNote: previous.recoveryNote }
+          : {}),
+    }
+  })
+
+  const batchStatus: BatchStatusFile = {
+    ...args.existing,
+    updatedAt: now,
+    completedAt: now,
+    status: deriveBatchStatus(nextThreads),
+    summary: summarizeBatchThreads(nextThreads),
+    threads: nextThreads,
+  }
+
+  writeBatchStatus(args.repoRoot, args.streamId, batchStatus)
+  cleanupCompletionMarkers(
+    args.streamId,
+    args.threadSeeds.map((thread) => thread.threadId),
+  )
+  cleanupResultFiles(
+    args.streamId,
+    args.threadSeeds.map((thread) => thread.threadId),
+  )
+  cleanupSessionFiles(
+    args.streamId,
+    args.threadSeeds.map((thread) => thread.threadId),
+  )
+  return batchStatus
+}
+
+export async function reconcileBatchStatusRunIfNeeded(
+  options: SyncBatchStatusOptions,
+): Promise<BatchStatusFile | null> {
+  const existing = readBatchStatus(options.repoRoot, options.streamId, options.batchId)
+  if (!existing || isTerminalBatchStatus(existing.status)) {
+    return existing
+  }
+
+  if (existing.tmuxSessionName && sessionExists(existing.tmuxSessionName)) {
+    return existing
+  }
+
+  const threadSeeds = getBatchThreadSeeds(
+    options.repoRoot,
+    options.streamId,
+    options.batchId,
+  )
+  const tasksFile = readTasksFile(options.repoRoot, options.streamId)
+  if (!tasksFile) {
+    throw new Error(`No tasks found for stream ${options.streamId}`)
+  }
+
+  return reconcileGhostBatchRun({
+    repoRoot: options.repoRoot,
+    streamId: options.streamId,
+    batchId: options.batchId,
+    existing,
+    threadSeeds,
+    tasksFile,
+  })
+}
+
+export async function prepareHeadlessBatchStatusRun(options: {
+  repoRoot: string
+  streamId: string
+  batchId: string
+  tmuxSessionName?: string
+  stageName?: string
+  batchName?: string
+  threads: BatchThreadSeed[]
+}): Promise<BatchStatusFile> {
+  const existing = readBatchStatus(options.repoRoot, options.streamId, options.batchId)
+  if (existing && !isTerminalBatchStatus(existing.status)) {
+    if (existing.tmuxSessionName && sessionExists(existing.tmuxSessionName)) {
+      throw new Error(
+        `Batch ${options.batchId} already has an active headless run in tmux session \"${existing.tmuxSessionName}\".`,
+      )
+    }
+
+    await reconcileBatchStatusRunIfNeeded({
+      repoRoot: options.repoRoot,
+      streamId: options.streamId,
+      batchId: options.batchId,
+    })
+  }
+
+  return resetBatchStatusRun(options)
 }
 
 async function finalizeCanonicalThreadState(
@@ -410,7 +679,12 @@ export async function syncBatchStatus(
     batchParsed.batch,
   )
 
-  const existing = readBatchStatus(repoRoot, streamId, batchId)
+  const reconciledExisting = await reconcileBatchStatusRunIfNeeded({
+    repoRoot,
+    streamId,
+    batchId,
+  })
+  const existing = reconciledExisting ?? readBatchStatus(repoRoot, streamId, batchId)
   const now = new Date().toISOString()
   await finalizeCanonicalThreadState(
     repoRoot,
@@ -461,6 +735,7 @@ export async function syncBatchStatus(
         threadMeta?.currentSessionId ??
         (latestSession?.status === "running" ? previous?.currentSessionId : undefined),
       opencodeSessionId: threadMeta?.opencodeSessionId ?? previous?.opencodeSessionId,
+      recoveryNote: previous?.recoveryNote,
     }
 
     if (thread.status === "completed" && !thread.startedAt) {
