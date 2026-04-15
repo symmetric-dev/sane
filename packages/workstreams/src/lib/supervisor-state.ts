@@ -1,5 +1,4 @@
-import { existsSync, mkdirSync, readFileSync } from "fs"
-import { dirname, join } from "path"
+import { existsSync } from "fs"
 import * as lockfile from "proper-lockfile"
 import type {
   CurrentBranchSupervisionContext,
@@ -17,8 +16,13 @@ import type {
   SupervisorStateFile,
 } from "./types.ts"
 import { isTerminalBatchStatus, readBatchStatus } from "./batch-status.ts"
-import { atomicWriteFile } from "./index.ts"
-import { getWorkDir } from "./repo.ts"
+import {
+  createEmptyTasksFile,
+  getTasksFilePath,
+  normalizeRuntimeState,
+  readTasksFile,
+  writeTasksFile,
+} from "./tasks.ts"
 
 function inferStageIdFromBatchId(batchId?: string): string | undefined {
   if (!batchId) {
@@ -179,7 +183,7 @@ export const SUPERVISOR_STATE_VERSION = "1.0.0"
  * Get the path to supervisor-state.json for a workstream.
  */
 export function getSupervisorStateFilePath(repoRoot: string, streamId: string): string {
-  return join(getWorkDir(repoRoot), streamId, "supervisor-state.json")
+  return getTasksFilePath(repoRoot, streamId)
 }
 
 /**
@@ -212,18 +216,18 @@ export function loadSupervisorState(
   repoRoot: string,
   streamId: string,
 ): SupervisorStateFile | null {
-  const filePath = getSupervisorStateFilePath(repoRoot, streamId)
-  if (!existsSync(filePath)) {
+  const tasksPath = getSupervisorStateFilePath(repoRoot, streamId)
+  if (!existsSync(tasksPath)) {
     return null
   }
 
-  const content = readFileSync(filePath, "utf-8")
+  const tasksFile = readTasksFile(repoRoot, streamId)
   let parsed: Partial<SupervisorStateFile>
   try {
-    parsed = JSON.parse(content) as Partial<SupervisorStateFile>
+    parsed = tasksFile?.runtime_state?.supervision ?? createEmptySupervisorState(streamId)
   } catch (error) {
     throw new Error(
-      `Failed to parse supervisor-state.json at ${filePath}: ${error instanceof Error ? error.message : String(error)}`,
+      `Failed to parse unified supervisor state in tasks.json at ${tasksPath}: ${error instanceof Error ? error.message : String(error)}`,
     )
   }
   const normalizedBranchSessions =
@@ -295,9 +299,6 @@ export function saveSupervisorState(
   streamId: string,
   supervisorState: SupervisorStateFile,
 ): void {
-  const filePath = getSupervisorStateFilePath(repoRoot, streamId)
-  mkdirSync(dirname(filePath), { recursive: true })
-
   const lastUpdated = new Date().toISOString()
   supervisorState.last_updated = lastUpdated
 
@@ -321,7 +322,12 @@ export function saveSupervisorState(
     stage_stops: supervisorState.stage_stops,
   }
 
-  atomicWriteFile(filePath, JSON.stringify(ordered, null, 2))
+  const tasksFile = readTasksFile(repoRoot, streamId) ?? createEmptyTasksFile(streamId)
+  tasksFile.runtime_state = normalizeRuntimeState(streamId, tasksFile.runtime_state)
+  tasksFile.runtime_state.last_updated = lastUpdated
+  tasksFile.runtime_state.supervision = ordered
+  delete tasksFile.runtime_summary
+  writeTasksFile(repoRoot, streamId, tasksFile)
 }
 
 async function withSupervisorStateLock<T>(
@@ -330,10 +336,9 @@ async function withSupervisorStateLock<T>(
   fn: () => T | Promise<T>,
 ): Promise<T> {
   const filePath = getSupervisorStateFilePath(repoRoot, streamId)
-  mkdirSync(dirname(filePath), { recursive: true })
 
   if (!existsSync(filePath)) {
-    atomicWriteFile(filePath, JSON.stringify(createEmptySupervisorState(streamId), null, 2))
+    writeTasksFile(repoRoot, streamId, createEmptyTasksFile(streamId))
   }
 
   const release = await lockfile.lock(filePath, {

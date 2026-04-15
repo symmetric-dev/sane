@@ -275,6 +275,7 @@ export interface StreamProgress {
   blockedTasks: number
   pendingTasks: number
   percentComplete: number
+  runtimeSummary?: WorkstreamRuntimeSummary
 }
 
 // Update task command options
@@ -395,7 +396,135 @@ export interface TasksFile {
   version: string // Schema version, e.g., "1.0.0"
   stream_id: string // Reference to the workstream ID
   last_updated: string // ISO date
+  runtime_state?: WorkstreamUnifiedRuntimeState
+  runtime_summary?: WorkstreamRuntimeSummary
   tasks: Task[]
+}
+
+export type RuntimeBatchStatus = "pending" | "running" | "completed" | "failed"
+
+export type RuntimeSupervisorStatus =
+  | "running"
+  | "paused"
+  | "completed"
+  | "failed"
+  | "stopped"
+  | "escalated"
+
+export type RuntimeBranchSupervisionStatus = "pending" | "running" | "stopped"
+
+export interface WorkstreamRuntimeBatchSummary {
+  batch_id: string
+  run_id: string
+  status: RuntimeBatchStatus
+  updated_at: string
+  started_at: string
+  completed_at?: string
+  stage_name?: string
+  batch_name?: string
+  thread_summary: {
+    total: number
+    pending: number
+    running: number
+    completed: number
+    failed: number
+  }
+}
+
+export interface WorkstreamRuntimeSupervisorRunSummary {
+  run_id: string
+  stage_id: string
+  status: RuntimeSupervisorStatus
+  updated_at: string
+  started_at: string
+  completed_at?: string
+  current_batch_id?: string
+  last_reviewed_batch_id?: string
+  review_passes: number
+  stop_reason?: SupervisorStageStopReason
+  branch_session_id?: string
+  root_session_id?: string
+}
+
+export interface WorkstreamRuntimeBranchSupervisionSummary {
+  branch_session_id: string
+  root_session_id: string
+  status: RuntimeBranchSupervisionStatus
+  updated_at: string
+  scope_level?: "batch" | "stage"
+  stage_id?: string
+  batch_id?: string
+  execution_mode?: RootAgentSupervisionExecutionMode
+  current_batch_id?: string
+  last_reviewed_batch_id?: string
+}
+
+export interface WorkstreamRuntimeSupervisionSummary {
+  updated_at: string
+  active_run_id?: string
+  active_run?: WorkstreamRuntimeSupervisorRunSummary
+  latest_run?: WorkstreamRuntimeSupervisorRunSummary
+  current_branch?: WorkstreamRuntimeBranchSupervisionSummary
+}
+
+export interface WorkstreamRuntimeSummary {
+  updated_at: string
+  batches: Record<string, WorkstreamRuntimeBatchSummary>
+  supervision?: WorkstreamRuntimeSupervisionSummary
+}
+
+export interface PersistedBatchStatusThread {
+  threadId: string
+  threadName: string
+  firstTaskId: string
+  status: RuntimeBatchStatus
+  startedAt?: string
+  updatedAt: string
+  completedAt?: string
+  markerDetectedAt?: string
+  currentSessionId?: string
+  opencodeSessionId?: string
+  workingAgentSessionId?: string
+  synthesisUpdatedAt?: string
+  recoveryNote?: string
+}
+
+export interface PersistedBatchStatusSummary {
+  total: number
+  pending: number
+  running: number
+  completed: number
+  failed: number
+}
+
+export interface PersistedBatchStatusFile {
+  version: string
+  streamId: string
+  batchId: string
+  runId: string
+  tmuxSessionName?: string
+  mode: "headless"
+  status: RuntimeBatchStatus
+  stageName?: string
+  batchName?: string
+  startedAt: string
+  updatedAt: string
+  completedAt?: string
+  summary: PersistedBatchStatusSummary
+  threads: PersistedBatchStatusThread[]
+}
+
+/**
+ * Canonical persisted runtime state stored inside tasks.json.
+ * This unifies thread/session metadata, batch execution state, and
+ * supervision control-plane state under one persisted document.
+ */
+export interface WorkstreamUnifiedRuntimeState {
+  version: string
+  last_updated: string
+  threads: ThreadMetadata[]
+  batches: Record<string, PersistedBatchStatusFile>
+  supervision: SupervisorStateFile
 }
 
 /**

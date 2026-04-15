@@ -12,8 +12,10 @@ import type {
   StageStatus,
   ParsedTask,
   ApprovalStatus,
+  TaskStatus,
+  WorkstreamRuntimeBatchSummary,
 } from "./types.ts"
-import { getTasks, getTaskCounts } from "./tasks.ts"
+import { getEffectiveRuntimeSummary, getTasks, getTaskCounts, readTasksFile } from "./tasks.ts"
 import { getStageApprovalStatus } from "./approval.ts"
 
 // Re-export ParsedStage for backwards compatibility during migration
@@ -97,8 +99,10 @@ export function getStreamProgress(
   repoRoot: string,
   stream: StreamMetadata
 ): StreamProgress {
-  const tasks = getTasks(repoRoot, stream.id)
+  const tasksFile = readTasksFile(repoRoot, stream.id)
+  const tasks = tasksFile?.tasks ?? []
   const counts = getTaskCounts(repoRoot, stream.id)
+  const runtimeSummary = getEffectiveRuntimeSummary(repoRoot, stream.id, tasksFile)
 
   // Build stage info from tasks
   const stages: ParsedStage[] = []
@@ -167,7 +171,90 @@ export function getStreamProgress(
     pendingTasks: counts.pending,
     percentComplete:
       counts.total > 0 ? Math.round(((counts.completed + counts.cancelled) / counts.total) * 100) : 0,
+    ...(runtimeSummary ? { runtimeSummary } : {}),
   }
+}
+
+function aggregateTaskStatus(tasks: Array<{ status: TaskStatus }>): TaskStatus {
+  if (tasks.length === 0) return "pending"
+  if (tasks.some((task) => task.status === "blocked")) return "blocked"
+  if (tasks.some((task) => task.status === "in_progress")) return "in_progress"
+  if (tasks.some((task) => task.status === "pending")) return "pending"
+  return "completed"
+}
+
+function formatRuntimeTaskStatus(status: TaskStatus): string {
+  return status.replace("_", " ")
+}
+
+function formatBatchRuntimeLine(
+  batchId: string,
+  batch: WorkstreamRuntimeBatchSummary,
+  taskStatus: TaskStatus,
+): string {
+  const detail = batch.thread_summary.failed > 0
+    ? `${batch.thread_summary.failed} failed`
+    : batch.thread_summary.running > 0
+      ? `${batch.thread_summary.running} running`
+      : `${batch.thread_summary.completed} completed`
+  const prefix = batch.status !== taskStatus ? "desync" : "runtime"
+  return `${prefix} ${batchId}: tasks ${formatRuntimeTaskStatus(taskStatus)}, runtime ${batch.status} (${detail})`
+}
+
+function getRuntimeSummaryLines(progress: StreamProgress): string[] {
+  const runtimeSummary = progress.runtimeSummary
+  if (!runtimeSummary) {
+    return []
+  }
+
+  const lines: string[] = []
+  const stageTaskStatus = new Map<string, TaskStatus>()
+  const batchTaskStatus = new Map<string, TaskStatus>()
+
+  for (const stage of progress.stages) {
+    const stageId = stage.number.toString().padStart(2, "0")
+    stageTaskStatus.set(stageId, aggregateTaskStatus(stage.tasks))
+
+    const stageBatches = new Map<string, ParsedTask[]>()
+    for (const task of stage.tasks) {
+      const parts = task.id.split(".")
+      if (parts.length < 2) continue
+      const batchId = `${parts[0]}.${parts[1]}`
+      if (!stageBatches.has(batchId)) {
+        stageBatches.set(batchId, [])
+      }
+      stageBatches.get(batchId)!.push(task)
+    }
+
+    for (const [batchId, tasks] of stageBatches) {
+      batchTaskStatus.set(batchId, aggregateTaskStatus(tasks))
+    }
+  }
+
+  for (const batchId of Object.keys(runtimeSummary.batches).sort()) {
+    const batch = runtimeSummary.batches[batchId]!
+    const taskStatus = batchTaskStatus.get(batchId)
+    const isRuntimeActive = ["running", "failed"].includes(batch.status)
+    if (!taskStatus) continue
+    if (batch.status !== taskStatus || isRuntimeActive) {
+      lines.push(formatBatchRuntimeLine(batchId, batch, taskStatus))
+    }
+  }
+
+  const activeRun = runtimeSummary.supervision?.active_run
+  if (activeRun) {
+    const stageTask = stageTaskStatus.get(activeRun.stage_id)
+    const target = activeRun.current_batch_id ?? `stage ${activeRun.stage_id}`
+    const mismatch = stageTask && activeRun.status !== "running" && stageTask !== "completed"
+      ? `, tasks ${formatRuntimeTaskStatus(stageTask)}`
+      : ""
+    lines.push(`supervision: ${activeRun.status} on ${target}${mismatch}`)
+  } else if (runtimeSummary.supervision?.current_branch) {
+    const branch = runtimeSummary.supervision.current_branch
+    lines.push(`supervision branch: ${branch.status} on ${branch.current_batch_id ?? branch.batch_id ?? `stage ${branch.stage_id}`}`)
+  }
+
+  return lines
 }
 
 /**
@@ -422,6 +509,14 @@ export function formatProgress(
   )
 
   lines.push(`+${bar}+`)
+
+  const runtimeLines = getRuntimeSummaryLines(progress)
+  for (const runtimeLine of runtimeLines) {
+    lines.push(`| Runtime: ${runtimeLine}`.padEnd(51) + "|")
+  }
+  if (runtimeLines.length > 0) {
+    lines.push(`+${bar}+`)
+  }
 
   // Stage details with thread-level session info
   for (const stage of progress.stages) {

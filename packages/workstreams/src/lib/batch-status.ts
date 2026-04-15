@@ -1,8 +1,10 @@
-import { existsSync, mkdirSync, readFileSync } from "fs"
-import { join } from "path"
 import { randomUUID } from "crypto"
-import { atomicWriteFile } from "./index.ts"
-import { getWorkDir } from "./repo.ts"
+import type {
+  PersistedBatchStatusFile,
+  PersistedBatchStatusSummary,
+  PersistedBatchStatusThread,
+} from "./types.ts"
+import { getTasksFilePath, readTasksFile, normalizeRuntimeState, writeTasksFile } from "./tasks.ts"
 
 export const BATCH_STATUS_VERSION = "1.0.0"
 
@@ -13,46 +15,9 @@ function createRunId(batchId: string): string {
 export type BatchThreadRunStatus = "pending" | "running" | "completed" | "failed"
 export type BatchRunStatus = BatchThreadRunStatus
 
-export interface BatchStatusThread {
-  threadId: string
-  threadName: string
-  firstTaskId: string
-  status: BatchThreadRunStatus
-  startedAt?: string
-  updatedAt: string
-  completedAt?: string
-  markerDetectedAt?: string
-  currentSessionId?: string
-  opencodeSessionId?: string
-  workingAgentSessionId?: string
-  synthesisUpdatedAt?: string
-  recoveryNote?: string
-}
-
-export interface BatchStatusSummary {
-  total: number
-  pending: number
-  running: number
-  completed: number
-  failed: number
-}
-
-export interface BatchStatusFile {
-  version: string
-  streamId: string
-  batchId: string
-  runId: string
-  tmuxSessionName?: string
-  mode: "headless"
-  status: BatchRunStatus
-  stageName?: string
-  batchName?: string
-  startedAt: string
-  updatedAt: string
-  completedAt?: string
-  summary: BatchStatusSummary
-  threads: BatchStatusThread[]
-}
+export type BatchStatusThread = PersistedBatchStatusThread
+export type BatchStatusSummary = PersistedBatchStatusSummary
+export type BatchStatusFile = PersistedBatchStatusFile
 
 export interface BatchStatusThreadSeed {
   threadId: string
@@ -71,15 +36,15 @@ export interface InitializeBatchStatusRunArgs {
 }
 
 export function getBatchStatusDir(repoRoot: string, streamId: string): string {
-  return join(getWorkDir(repoRoot), streamId, "batch-status")
+  return getTasksFilePath(repoRoot, streamId)
 }
 
 export function getBatchStatusFilePath(
   repoRoot: string,
   streamId: string,
-  batchId: string,
+  _batchId: string,
 ): string {
-  return join(getBatchStatusDir(repoRoot, streamId), `${batchId}.json`)
+  return getTasksFilePath(repoRoot, streamId)
 }
 
 export function summarizeBatchThreads(
@@ -159,12 +124,8 @@ export function readBatchStatus(
   streamId: string,
   batchId: string,
 ): BatchStatusFile | null {
-  const filePath = getBatchStatusFilePath(repoRoot, streamId, batchId)
-  if (!existsSync(filePath)) {
-    return null
-  }
-
-  return JSON.parse(readFileSync(filePath, "utf-8")) as BatchStatusFile
+  const tasksFile = readTasksFile(repoRoot, streamId)
+  return tasksFile?.runtime_state?.batches[batchId] ?? null
 }
 
 export function writeBatchStatus(
@@ -172,9 +133,6 @@ export function writeBatchStatus(
   streamId: string,
   batchStatus: BatchStatusFile,
 ): void {
-  const dir = getBatchStatusDir(repoRoot, streamId)
-  mkdirSync(dir, { recursive: true })
-
   const ordered: BatchStatusFile = {
     version: batchStatus.version,
     streamId: batchStatus.streamId,
@@ -192,8 +150,12 @@ export function writeBatchStatus(
     threads: batchStatus.threads,
   }
 
-  atomicWriteFile(
-    getBatchStatusFilePath(repoRoot, streamId, batchStatus.batchId),
-    JSON.stringify(ordered, null, 2),
-  )
+  const tasksFile = readTasksFile(repoRoot, streamId)
+  if (!tasksFile) {
+    throw new Error(`Cannot write batch status before tasks.json exists for stream ${streamId}`)
+  }
+  tasksFile.runtime_state = normalizeRuntimeState(streamId, tasksFile.runtime_state)
+  tasksFile.runtime_state.batches[batchStatus.batchId] = ordered
+  delete tasksFile.runtime_summary
+  writeTasksFile(repoRoot, streamId, tasksFile)
 }

@@ -1,5 +1,7 @@
 import { describe, expect, test } from "bun:test"
 import {
+  DEFAULT_BRANCH_TERMINAL_PERSIST_GRACE_MS,
+  collectCompletedBranchArtifacts,
   isActiveSupervisionBranchStatus,
   isTerminalStoppedSupervisionBranch,
   parseSupervisionBranchRunOutput,
@@ -55,5 +57,52 @@ describe("parseSupervisionBranchRunOutput", () => {
 
     expect(result.text).toBe("Plain text supervision output")
     expect(result.logs).toContain("Fell back to plain-text branch run output.")
+  })
+})
+
+describe("collectCompletedBranchArtifacts", () => {
+  test("uses a short terminal-state grace before launch-side recovery", async () => {
+    let observedTimeoutMs: number | undefined
+
+    const result = await collectCompletedBranchArtifacts({
+      deps: {
+        waitForBranchNativeSessionId: async () => "ses_supervision_1",
+        waitForTerminalBranchSession: async (args: { timeoutMs?: number }) => {
+          observedTimeoutMs = args.timeoutMs
+          return {
+            rootSessionId: "root-session-1",
+            branchSessionId: "branch-supervision-1",
+            status: "running",
+            startedAt: "2026-04-12T00:00:00.000Z",
+            updatedAt: "2026-04-12T00:00:00.000Z",
+          } as any
+        },
+        findNativeSessionIdByTitle: async () => "ses_supervision_1",
+        exportSessionTranscript: async () => ({
+          info: {
+            id: "ses_supervision_1",
+            title: "Supervision branch",
+            summary: { additions: 0, deletions: 0, files: 0 },
+          },
+          messages: [
+            {
+              info: { id: "msg-final", role: "assistant" },
+              parts: [{ type: "text", text: "## What is Next\n- recovered" }],
+            },
+          ],
+        }),
+        extractFinalBranchReport: async (sessionExport: any) =>
+          sessionExport.messages[0]?.parts?.[0]?.text ?? "",
+      } as any,
+      repoRoot: "/tmp/repo",
+      streamId: "001-test",
+      branchSessionId: "branch-supervision-1",
+      title: "root-supervision-001-test-branch-supervision-1",
+      nativeSessionId: "ses_supervision_1",
+    })
+
+    expect(observedTimeoutMs).toBe(DEFAULT_BRANCH_TERMINAL_PERSIST_GRACE_MS)
+    expect(result.terminalBranch?.status).toBe("running")
+    expect(result.reportText).toContain("recovered")
   })
 })

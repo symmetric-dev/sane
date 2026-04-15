@@ -17,6 +17,7 @@ import {
 } from "../../packages/workstreams/src/lib/workstream-tool/finalize-supervision.ts"
 import { executeReconcileWorkstreamSupervision } from "../../packages/workstreams/src/lib/workstream-tool/reconcile-supervision.ts"
 import {
+  DEFAULT_BRANCH_TERMINAL_PERSIST_GRACE_MS,
   executeLaunchSupervisionBranch,
   shouldBlockDuplicateSupervisionLaunch,
   type LaunchSupervisionBranchDeps,
@@ -913,13 +914,13 @@ describe("launch_supervision_branch", () => {
         createDeps(workspace.repoRoot, workspace.streamId),
       )
 
-      expect(result).toContain("Supervision branch branch-supervision-1 (native session ses_supervision_1) completed from checkpoint pointer message msg-root-checkpoint")
+      expect(result).toContain("Supervision session branch-supervision-1 (native session ses_supervision_1) completed from checkpoint pointer message msg-root-checkpoint")
       expect(result).toContain(
         "Breakpoint selection: Selected the previous user message before launch message msg-root-launch because no configured breakpoint tag was found.",
       )
-      expect(result).toContain("Extracted final branch report:")
+      expect(result).toContain("Extracted final supervision report:")
       expect(result).toContain(
-        "Finalization handling: Parent-side reconciliation finalized the branch after process end because no explicit finalize_workstream_supervision call was persisted.",
+        "Finalization handling: Parent-side reconciliation finalized the supervision session after process end because no explicit finalize_workstream_supervision call was persisted.",
       )
 
       const stored = loadSupervisorState(workspace.repoRoot, workspace.streamId)
@@ -948,7 +949,7 @@ describe("launch_supervision_branch", () => {
       })
       expect(stored?.branch_sessions[0]?.processEndedAt).toBe("2026-04-12T00:00:00.000Z")
       expect(stored?.branch_sessions[0]?.notes).toContain(
-        "Parent reconciled branch state after process end because no explicit finalize_workstream_supervision call was persisted, but transcript/report evidence was available.",
+        "Parent reconciled supervision state after process end because no explicit finalize_workstream_supervision call was persisted, but transcript/report evidence was available.",
       )
     } finally {
       cleanupTestWorkstream(workspace)
@@ -1045,14 +1046,14 @@ describe("launch_supervision_branch", () => {
       )
 
       expect(result).toContain(
-        "Supervision branch branch-supervision-1 (native session ses_supervision_explicit_zero) completed",
+        "Supervision session branch-supervision-1 (native session ses_supervision_explicit_zero) completed",
       )
       expect(result).toContain("Process end evidence: tmux pane exited with status 0.")
       expect(result).toContain(
         "Finalization handling: Explicit supervision finalization was already persisted before parent-side reconciliation.",
       )
       expect(result).toContain(
-        "Extracted final branch report:\n## What is Next\n- explicit finalize completed before process exit",
+        "Extracted final supervision report:\n## What is Next\n- explicit finalize completed before process exit",
       )
 
       const stored = loadSupervisorState(workspace.repoRoot, workspace.streamId)
@@ -1693,15 +1694,131 @@ describe("launch_supervision_branch", () => {
         }),
       )
 
-      expect(result).toContain("Supervision branch branch-supervision-1 (native session ses_supervision_1) stopped from checkpoint pointer message msg-root-checkpoint")
-      expect(result).toContain("Persisted branch status: stopped.")
-      expect(result).toContain("Extracted final branch report:")
+      expect(result).toContain("Supervision session branch-supervision-1 (native session ses_supervision_1) stopped from checkpoint pointer message msg-root-checkpoint")
+      expect(result).toContain("Persisted supervision status: stopped.")
+      expect(result).toContain("Extracted final supervision report:")
       expect(result).toContain("Reason for yielding: batch paused for Root Agent review.")
 
       const stored = loadSupervisorState(workspace.repoRoot, workspace.streamId)
       expect(stored?.branch_sessions[0]).toMatchObject({
         status: "stopped",
         notes: expect.stringContaining("Reason for yielding: batch paused for Root Agent review."),
+      })
+    } finally {
+      cleanupTestWorkstream(workspace)
+    }
+  })
+
+  test("auto-reconciles after a short launch wait when process end is known but no terminal state was persisted", async () => {
+    const workspace = createTestWorkstream("001-agent-tool-auto-reconcile-grace")
+    const waitTimeouts: number[] = []
+
+    try {
+      const result = await executeLaunchSupervisionBranch(
+        { batch: "10.01" },
+        { sessionID: "root-session-1" },
+        createDeps(workspace.repoRoot, workspace.streamId, {
+          runForkedSession: async ({ onNativeSessionId, tmuxSessionName }) => {
+            await onNativeSessionId?.("ses_supervision_grace")
+
+            await upsertBranchSessionLocked(
+              workspace.repoRoot,
+              workspace.streamId,
+              buildRootAgentBranchSession({
+                context: {
+                  rootSessionId: "root-session-1",
+                  branchSessionId: "branch-supervision-1",
+                  parentSessionId: "root-session-1",
+                  checkpointMessageId: "msg-root-checkpoint",
+                  checkpointMessageIndex: 0,
+                  checkpointCreatedAt: "2026-04-12T00:00:00.000Z",
+                  nativeSessionId: "ses_supervision_grace",
+                  scope: { level: "batch", stageId: "10", batchId: "10.01" },
+                },
+                branchRole: "supervision",
+                status: "running",
+                startedAt: "2026-04-12T00:00:00.000Z",
+                updatedAt: "2026-04-12T00:00:00.000Z",
+                tmuxSessionName: tmuxSessionName ?? "001-supervision-test01",
+                batchId: "10.01",
+                notes: "child run ended without explicit finalization",
+              }),
+            )
+
+            return {
+              code: 0,
+              stdout: '{"type":"text","part":{"text":"## What is Next\\n- recovered after launch wait"}}\n',
+              stderr: "",
+              nativeSessionId: "ses_supervision_grace",
+              tmuxSessionName,
+            }
+          },
+          waitForTerminalBranchSession: async (args) => {
+            waitTimeouts.push(args.timeoutMs ?? -1)
+
+            if ((args.timeoutMs ?? 0) > DEFAULT_BRANCH_TERMINAL_PERSIST_GRACE_MS) {
+              throw new Error(`launch waited too long for terminal persistence: ${args.timeoutMs}`)
+            }
+
+            await new Promise((resolve) => setTimeout(resolve, 10))
+
+            return loadSupervisorState(args.repoRoot, args.streamId)?.branch_sessions.find(
+              (branch) => branch.branchSessionId === args.branchSessionId,
+            )
+          },
+          exportSessionTranscript: async (sessionId) =>
+            sessionId === "root-session-1"
+              ? {
+                  info: {
+                    id: "root-session-1",
+                    title: "Root session",
+                    summary: { additions: 0, deletions: 0, files: 0 },
+                  },
+                  messages: [
+                    {
+                      info: { id: "msg-root-checkpoint", role: "user" },
+                      parts: [{ type: "text", text: "Checkpoint user message SESSION_BREAKPOINT" }],
+                    },
+                  ],
+                }
+              : {
+                  info: {
+                    id: "ses_supervision_grace",
+                    title: "Supervision branch",
+                    summary: { additions: 0, deletions: 0, files: 0 },
+                  },
+                  messages: [
+                    {
+                      info: { id: "msg-final", role: "assistant" },
+                      parts: [
+                        {
+                          type: "text",
+                          text: "## What is Next\n- recovered after launch wait",
+                        },
+                      ],
+                    },
+                  ],
+                },
+          extractFinalBranchReport: (sessionExport) =>
+            sessionExport.messages.at(-1)?.parts?.[0]?.text ?? "",
+        }),
+      )
+
+      expect(waitTimeouts).toEqual([DEFAULT_BRANCH_TERMINAL_PERSIST_GRACE_MS])
+      expect(result).toContain(
+        "Finalization handling: Parent-side reconciliation finalized the supervision session after process end because no explicit finalize_workstream_supervision call was persisted.",
+      )
+      expect(result).toContain(
+        "Extracted final supervision report:\n## What is Next\n- recovered after launch wait",
+      )
+
+      const stored = loadSupervisorState(workspace.repoRoot, workspace.streamId)
+      expect(stored?.branch_sessions[0]).toMatchObject({
+        status: "completed",
+        nativeSessionId: "ses_supervision_grace",
+        processExitCode: 0,
+        finalizationSource: "parent_process_exit_reconciliation",
+        finalizationReason: "ended_without_explicit_finalize",
       })
     } finally {
       cleanupTestWorkstream(workspace)
@@ -1819,9 +1936,9 @@ describe("launch_supervision_branch", () => {
       expect(result).toContain("Transcript export unavailable: session export unavailable")
       expect(result).toContain("Process end evidence: tmux pane exited with status 0.")
       expect(result).toContain(
-        "Finalization handling: Parent-side reconciliation finalized the branch after process end with exit code 0, but no usable finalization/report was persisted.",
+        "Finalization handling: Parent-side reconciliation finalized the supervision session after process end with exit code 0, but no usable finalization/report was persisted.",
       )
-      expect(result).toContain("Branch run summary:\nstdout fallback summary")
+      expect(result).toContain("Supervision run summary:\nstdout fallback summary")
 
       const stored = loadSupervisorState(workspace.repoRoot, workspace.streamId)
       expect(stored?.branch_sessions[0]).toMatchObject({
@@ -1878,11 +1995,11 @@ describe("launch_supervision_branch", () => {
       )
 
       expect(result).toContain(
-        "Supervision branch branch-supervision-1 (native session ses_supervision_nonzero) failed",
+        "Supervision session branch-supervision-1 (native session ses_supervision_nonzero) failed",
       )
       expect(result).toContain("Process end evidence: tmux pane exited with status 17.")
       expect(result).toContain(
-        "Finalization handling: Parent-side reconciliation marked the branch failed after observing a nonzero tmux process exit.",
+        "Finalization handling: Parent-side reconciliation marked the supervision session failed after observing a nonzero tmux process exit.",
       )
 
       const stored = loadSupervisorState(workspace.repoRoot, workspace.streamId)
@@ -1988,14 +2105,14 @@ describe("launch_supervision_branch", () => {
       )
 
       expect(result).toContain(
-        "Supervision branch branch-supervision-1 (native session ses_supervision_explicit) completed",
+        "Supervision session branch-supervision-1 (native session ses_supervision_explicit) completed",
       )
       expect(result).toContain("Process end evidence: tmux pane exited with status 17.")
       expect(result).toContain(
         "Finalization handling: Explicit supervision finalization was already persisted before parent-side reconciliation.",
       )
       expect(result).toContain(
-        "Extracted final branch report:\n## What is Next\n- explicit finalize already persisted",
+        "Extracted final supervision report:\n## What is Next\n- explicit finalize already persisted",
       )
 
       const stored = loadSupervisorState(workspace.repoRoot, workspace.streamId)
@@ -2166,7 +2283,7 @@ describe("launch_supervision_branch", () => {
       expect(calls[0]?.prompt).toContain("Please supervise batch 10.01 for this workstream.")
       expect(calls[0]?.prompt).toContain("Use the supervising-workstreams skill.")
       expect(calls[0]?.prompt).toContain("Start by running `work supervise --batch \"10.01\"`.")
-      expect(calls[0]?.prompt).toContain("Keep this branch focused on one bounded batch supervision pass.")
+      expect(calls[0]?.prompt).toContain("Keep this supervision session focused on one bounded batch supervision pass.")
       expect(calls[0]?.prompt).not.toContain("--timeout-ms")
       expect(calls[0]?.prompt).not.toContain("--poll-interval-ms")
       expect(calls[0]?.prompt).toContain("## Accomplished")
@@ -2509,7 +2626,7 @@ describe("launch_supervision_branch", () => {
       })
       expect(forkCalls[0]?.prompt).toContain("Please supervise batch 10.01 for this workstream.")
       expect(result).toContain("from checkpoint pointer message msg-user-breakpoint")
-      expect(result).toContain("Extracted final branch report:")
+      expect(result).toContain("Extracted final supervision report:")
       expect(result).toContain("## What is Next\n- Batch 10.01 is done.")
       expect(result).not.toContain("fallback parsed summary")
     } finally {

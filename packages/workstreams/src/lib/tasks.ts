@@ -5,8 +5,9 @@
  * task tracking information in JSON format.
  */
 
-import { existsSync, readFileSync, copyFileSync } from "fs"
+import { existsSync, mkdirSync, readFileSync } from "fs"
 import { join } from "path"
+import * as lockfile from "proper-lockfile"
 import type {
   RootAgentLineage,
   Task,
@@ -14,6 +15,16 @@ import type {
   TaskStatus,
   SessionRecord,
   SessionStatus,
+  WorkstreamRuntimeSummary,
+  WorkstreamRuntimeBatchSummary,
+  WorkstreamRuntimeSupervisorRunSummary,
+  WorkstreamRuntimeSupervisionSummary,
+  WorkstreamRuntimeBranchSupervisionSummary,
+  WorkstreamUnifiedRuntimeState,
+  SupervisorStateFile,
+  ThreadsJson,
+  ThreadMetadata,
+  PersistedBatchStatusFile,
 } from "./types.ts"
 import { atomicWriteFile } from "./index.ts"
 import { getWorkDir } from "./repo.ts"
@@ -25,11 +36,10 @@ import {
   startMultipleThreadSessionsLocked,
   completeMultipleThreadSessionsLocked,
   getThreadMetadata,
-  loadThreads,
-  migrateFromTasksJson,
 } from "./threads.ts"
 
-const TASKS_FILE_VERSION = "1.0.0"
+const TASKS_FILE_VERSION = "2.0.0"
+const RUNTIME_STATE_VERSION = "1.0.0"
 
 /**
  * Get the path to tasks.json for a workstream
@@ -47,8 +57,246 @@ export function createEmptyTasksFile(streamId: string): TasksFile {
     version: TASKS_FILE_VERSION,
     stream_id: streamId,
     last_updated: new Date().toISOString(),
+    runtime_state: createEmptyRuntimeState(streamId),
     tasks: [],
   }
+}
+
+export function createEmptyRuntimeState(streamId: string): WorkstreamUnifiedRuntimeState {
+  return {
+    version: RUNTIME_STATE_VERSION,
+    last_updated: new Date().toISOString(),
+    threads: [],
+    batches: {},
+    supervision: {
+      version: "1.0.0",
+      stream_id: streamId,
+      last_updated: new Date().toISOString(),
+      runs: [],
+      checkpoint_pointers: [],
+      branch_sessions: [],
+      reviewed_batches: [],
+      issue_summaries: [],
+      fix_cycles: [],
+      escalations: [],
+      stage_stops: [],
+    },
+  }
+}
+
+export function runtimeStateToThreadsJson(
+  streamId: string,
+  runtimeState?: WorkstreamUnifiedRuntimeState,
+): ThreadsJson {
+  return {
+    version: runtimeState?.version ?? RUNTIME_STATE_VERSION,
+    stream_id: streamId,
+    last_updated: runtimeState?.last_updated ?? new Date().toISOString(),
+    threads: runtimeState?.threads ?? [],
+  }
+}
+
+export function normalizeSupervisorState(
+  streamId: string,
+  supervisorState?: Partial<SupervisorStateFile> | null,
+): SupervisorStateFile {
+  return {
+    version: supervisorState?.version ?? "1.0.0",
+    stream_id: supervisorState?.stream_id ?? streamId,
+    last_updated: supervisorState?.last_updated ?? new Date().toISOString(),
+    ...(supervisorState?.active_run_id ? { active_run_id: supervisorState.active_run_id } : {}),
+    ...(supervisorState?.current_branch_supervision
+      ? { current_branch_supervision: supervisorState.current_branch_supervision }
+      : {}),
+    runs: supervisorState?.runs ?? [],
+    checkpoint_pointers: supervisorState?.checkpoint_pointers ?? [],
+    branch_sessions: supervisorState?.branch_sessions ?? [],
+    reviewed_batches: supervisorState?.reviewed_batches ?? [],
+    issue_summaries: supervisorState?.issue_summaries ?? [],
+    fix_cycles: supervisorState?.fix_cycles ?? [],
+    escalations: supervisorState?.escalations ?? [],
+    stage_stops: supervisorState?.stage_stops ?? [],
+  }
+}
+
+export function normalizeRuntimeState(
+  streamId: string,
+  runtimeState?: Partial<WorkstreamUnifiedRuntimeState> | null,
+): WorkstreamUnifiedRuntimeState {
+  const empty = createEmptyRuntimeState(streamId)
+  return {
+    version: runtimeState?.version ?? empty.version,
+    last_updated: runtimeState?.last_updated ?? empty.last_updated,
+    threads: Array.isArray(runtimeState?.threads) ? runtimeState.threads : [],
+    batches: runtimeState?.batches ?? {},
+    supervision: normalizeSupervisorState(streamId, runtimeState?.supervision),
+  }
+}
+
+function toRuntimeBatchSummary(batchStatus: PersistedBatchStatusFile): WorkstreamRuntimeBatchSummary {
+  return {
+    batch_id: batchStatus.batchId,
+    run_id: batchStatus.runId,
+    status: batchStatus.status,
+    started_at: batchStatus.startedAt,
+    updated_at: batchStatus.updatedAt,
+    ...(batchStatus.completedAt ? { completed_at: batchStatus.completedAt } : {}),
+    ...(batchStatus.stageName ? { stage_name: batchStatus.stageName } : {}),
+    ...(batchStatus.batchName ? { batch_name: batchStatus.batchName } : {}),
+    thread_summary: batchStatus.summary,
+  }
+}
+
+function toRuntimeSupervisorRunSummary(
+  run: SupervisorStateFile["runs"][number],
+): WorkstreamRuntimeSupervisorRunSummary {
+  return {
+    run_id: run.runId,
+    stage_id: run.stageId,
+    status: run.status,
+    updated_at: run.updatedAt,
+    started_at: run.startedAt,
+    ...(run.completedAt ? { completed_at: run.completedAt } : {}),
+    ...(run.currentBatchId ? { current_batch_id: run.currentBatchId } : {}),
+    ...(run.lastReviewedBatchId ? { last_reviewed_batch_id: run.lastReviewedBatchId } : {}),
+    review_passes: run.reviewPasses,
+    ...(run.stopReason ? { stop_reason: run.stopReason } : {}),
+    ...(run.branchSessionId ? { branch_session_id: run.branchSessionId } : {}),
+    ...(run.rootSessionId ? { root_session_id: run.rootSessionId } : {}),
+  }
+}
+
+function toRuntimeBranchSupervisionSummary(
+  branch: NonNullable<SupervisorStateFile["current_branch_supervision"]>,
+  matchingBranchSession?: SupervisorStateFile["branch_sessions"][number],
+): WorkstreamRuntimeBranchSupervisionSummary {
+  const status =
+    matchingBranchSession?.status === "pending" ||
+    matchingBranchSession?.status === "running" ||
+    matchingBranchSession?.status === "stopped"
+      ? matchingBranchSession.status
+      : "running"
+
+  return {
+    branch_session_id: branch.branchSessionId,
+    root_session_id: branch.rootSessionId,
+    status,
+    updated_at: branch.updatedAt,
+    ...(branch.scope ? { scope_level: branch.scope.level, stage_id: branch.scope.stageId } : {}),
+    ...(branch.scope?.level === "batch" ? { batch_id: branch.scope.batchId } : {}),
+    ...(branch.supervisionProgress?.executionMode
+      ? { execution_mode: branch.supervisionProgress.executionMode }
+      : {}),
+    ...(branch.supervisionProgress?.currentBatchId
+      ? { current_batch_id: branch.supervisionProgress.currentBatchId }
+      : {}),
+    ...(branch.supervisionProgress?.lastReviewedBatchId
+      ? { last_reviewed_batch_id: branch.supervisionProgress.lastReviewedBatchId }
+      : {}),
+  }
+}
+
+function summarizeSupervisionRuntime(
+  supervisorState: SupervisorStateFile,
+): WorkstreamRuntimeSupervisionSummary | undefined {
+  if (!supervisorState) {
+    return undefined
+  }
+
+  const activeRun = supervisorState.active_run_id
+    ? supervisorState.runs.find((run) => run.runId === supervisorState.active_run_id)
+    : undefined
+  const latestRun = [...(supervisorState.runs ?? [])].sort((a, b) =>
+    (b.updatedAt || "").localeCompare(a.updatedAt || ""),
+  )[0]
+  const currentBranch = supervisorState.current_branch_supervision
+  const matchingBranchSession = currentBranch?.branchSessionId
+    ? supervisorState.branch_sessions?.find(
+        (branchSession) => branchSession.branchSessionId === currentBranch.branchSessionId,
+      )
+    : undefined
+
+  if (!activeRun && !latestRun && !currentBranch) {
+    return undefined
+  }
+
+  const updatedAt = [
+    supervisorState.last_updated,
+    activeRun?.updatedAt,
+    latestRun?.updatedAt,
+    currentBranch?.updatedAt,
+  ]
+    .filter((value): value is string => typeof value === "string" && value.length > 0)
+    .sort((a, b) => b.localeCompare(a))[0] ?? new Date().toISOString()
+
+  return {
+    updated_at: updatedAt,
+    ...(supervisorState.active_run_id ? { active_run_id: supervisorState.active_run_id } : {}),
+    ...(activeRun ? { active_run: toRuntimeSupervisorRunSummary(activeRun) } : {}),
+    ...(latestRun ? { latest_run: toRuntimeSupervisorRunSummary(latestRun) } : {}),
+    ...(currentBranch
+      ? { current_branch: toRuntimeBranchSupervisionSummary(currentBranch, matchingBranchSession) }
+      : {}),
+  }
+}
+
+export function projectRuntimeSummary(
+  repoRoot: string,
+  streamId: string,
+  tasksFile?: TasksFile | null,
+): WorkstreamRuntimeSummary | undefined {
+  const resolvedTasksFile = tasksFile ?? readTasksFile(repoRoot, streamId)
+  const runtimeState = normalizeRuntimeState(streamId, resolvedTasksFile?.runtime_state)
+  const batches = Object.fromEntries(
+    Object.entries(runtimeState.batches).map(([batchId, batchStatus]) => [
+      batchId,
+      toRuntimeBatchSummary(batchStatus),
+    ]),
+  )
+  const supervision = summarizeSupervisionRuntime(runtimeState.supervision)
+
+  if (Object.keys(batches).length === 0 && !supervision) {
+    return undefined
+  }
+
+  return {
+    updated_at: new Date().toISOString(),
+    batches,
+    ...(supervision ? { supervision } : {}),
+  }
+}
+
+export function getEffectiveRuntimeSummary(
+  repoRoot: string,
+  streamId: string,
+  tasksFile?: TasksFile | null,
+): WorkstreamRuntimeSummary | undefined {
+  if (tasksFile?.runtime_summary) {
+    return tasksFile.runtime_summary
+  }
+
+  return projectRuntimeSummary(repoRoot, streamId, tasksFile)
+}
+
+export function persistProjectedRuntimeSummary(repoRoot: string, streamId: string): TasksFile | null {
+  const latest = readTasksFile(repoRoot, streamId)
+  if (!latest) {
+    return null
+  }
+
+  const runtimeSummary = projectRuntimeSummary(repoRoot, streamId, latest)
+
+  const nextTasksFile: TasksFile = {
+    version: latest.version ?? TASKS_FILE_VERSION,
+    stream_id: latest.stream_id ?? streamId,
+    last_updated: latest.last_updated ?? new Date().toISOString(),
+    runtime_state: normalizeRuntimeState(streamId, latest.runtime_state),
+    ...(runtimeSummary ? { runtime_summary: runtimeSummary } : {}),
+    tasks: Array.isArray(latest.tasks) ? latest.tasks : [],
+  }
+
+  writeTasksFile(repoRoot, streamId, nextTasksFile)
+  return nextTasksFile
 }
 
 // ============================================
@@ -241,7 +489,7 @@ export function validateTasksFileSessions(tasksFile: TasksFile): SessionValidati
 
 
 // ============================================
-// SESSION DATA MIGRATION TO THREADS.JSON
+// SESSION DATA MIGRATION TO UNIFIED RUNTIME STATE
 // ============================================
 
 /**
@@ -255,19 +503,7 @@ export function hasSessionsInTasksJson(tasksFile: TasksFile): boolean {
 }
 
 /**
- * Create a backup of tasks.json before migration
- * Returns the backup file path
- */
-export function createTasksJsonBackup(repoRoot: string, streamId: string): string {
-  const filePath = getTasksFilePath(repoRoot, streamId)
-  const timestamp = new Date().toISOString().replace(/[:.]/g, "-")
-  const backupPath = filePath.replace(".json", `.backup-${timestamp}.json`)
-  copyFileSync(filePath, backupPath)
-  return backupPath
-}
-
-/**
- * Clear session data from tasks after migration to threads.json
+ * Clear legacy task-local session data after migration into runtime_state.threads.
  * Returns the updated TasksFile
  */
 export function clearSessionsFromTasks(tasksFile: TasksFile): TasksFile {
@@ -282,40 +518,58 @@ export function clearSessionsFromTasks(tasksFile: TasksFile): TasksFile {
 }
 
 /**
- * Migrate session data from tasks.json to threads.json
- * Creates a backup of tasks.json before migration
+ * Migrate legacy task-local session data from tasks[] into runtime_state.threads.
  * Returns the migration result
  */
 export function migrateSessionsToThreads(
   repoRoot: string,
   streamId: string,
   tasksFile: TasksFile,
-): { migrated: boolean; backupPath?: string; error?: string } {
+): { migrated: boolean; error?: string } {
   try {
-    // Check if migration is needed
     if (!hasSessionsInTasksJson(tasksFile)) {
       return { migrated: false }
     }
 
-    // Create backup before migration
-    const backupPath = createTasksJsonBackup(repoRoot, streamId)
+    const cleanedTasksFile = clearSessionsFromTasks(tasksFile)
+    cleanedTasksFile.runtime_state = normalizeRuntimeState(streamId, cleanedTasksFile.runtime_state)
+    const threadMap = new Map<string, ThreadMetadata>()
 
-    // Migrate sessions to threads.json using the migration utility
-    const result = migrateFromTasksJson(repoRoot, streamId, tasksFile)
+    for (const existingThread of cleanedTasksFile.runtime_state.threads) {
+      threadMap.set(existingThread.threadId, {
+        ...existingThread,
+        sessions: [...existingThread.sessions],
+      })
+    }
 
-    if (result.errors.length > 0) {
-      return { 
-        migrated: false, 
-        backupPath, 
-        error: `Migration errors: ${result.errors.join(", ")}` 
+    for (const task of tasksFile.tasks) {
+      const threadId = extractThreadIdFromTaskId(task.id)
+      let thread = threadMap.get(threadId)
+      if (!thread) {
+        thread = { threadId, sessions: [] }
+        threadMap.set(threadId, thread)
+      }
+
+      if (task.sessions) {
+        const existingSessionIds = new Set(thread.sessions.map((session) => session.sessionId))
+        for (const session of task.sessions) {
+          if (!existingSessionIds.has(session.sessionId)) {
+            thread.sessions.push(session)
+          }
+        }
+      }
+
+      if (!thread.currentSessionId && task.currentSessionId) {
+        thread.currentSessionId = task.currentSessionId
       }
     }
 
-    // Clear session data from tasks.json
-    const cleanedTasksFile = clearSessionsFromTasks(tasksFile)
+    cleanedTasksFile.runtime_state.threads = Array.from(threadMap.values()).sort((a, b) =>
+      a.threadId.localeCompare(b.threadId, undefined, { numeric: true }),
+    )
     writeTasksFile(repoRoot, streamId, cleanedTasksFile)
 
-    return { migrated: true, backupPath }
+    return { migrated: true }
   } catch (err) {
     return { 
       migrated: false, 
@@ -603,7 +857,7 @@ export async function completeMultipleSessionsLocked(
 
 /**
  * Read tasks.json from a workstream directory
- * Automatically migrates session data to threads.json if sessions exist in tasks.json
+ * Automatically migrates legacy task-local session data into runtime_state.threads
  * Returns null if file doesn't exist
  */
 export function readTasksFile(
@@ -619,22 +873,37 @@ export function readTasksFile(
   const content = readFileSync(filePath, "utf-8")
   let tasksFile = JSON.parse(content) as TasksFile
 
-  // Check for sessions in tasks.json and migrate to threads.json
+  tasksFile = {
+    version: tasksFile.version ?? TASKS_FILE_VERSION,
+    stream_id: tasksFile.stream_id ?? streamId,
+    last_updated: tasksFile.last_updated ?? new Date().toISOString(),
+    runtime_state: normalizeRuntimeState(streamId, tasksFile.runtime_state),
+    ...(tasksFile.runtime_summary ? { runtime_summary: tasksFile.runtime_summary } : {}),
+    tasks: Array.isArray(tasksFile.tasks) ? tasksFile.tasks : [],
+  }
+
+   // Check for sessions in legacy task fields and migrate to unified runtime state.
   if (hasSessionsInTasksJson(tasksFile)) {
     console.warn(
       `\x1b[33mWarning: Deprecated session data found in tasks.json for stream ${streamId}.\x1b[0m`,
     )
     console.warn(
-      `\x1b[33mAuto-migrating sessions to threads.json and clearing from tasks.json...\x1b[0m`,
+      `\x1b[33mAuto-migrating sessions into runtime_state.threads and clearing task-local fields...\x1b[0m`,
     )
 
     const migrationResult = migrateSessionsToThreads(repoRoot, streamId, tasksFile)
     if (migrationResult.migrated) {
-      // Re-read the cleaned tasks file
       const cleanedContent = readFileSync(filePath, "utf-8")
       tasksFile = JSON.parse(cleanedContent) as TasksFile
+      tasksFile.runtime_state = normalizeRuntimeState(streamId, tasksFile.runtime_state)
     }
-    // If migration failed, continue with the original data (sessions will still work via threads.ts fallback)
+  }
+
+  if (!tasksFile.runtime_summary) {
+    const runtimeSummary = projectRuntimeSummary(repoRoot, streamId, tasksFile)
+    if (runtimeSummary) {
+      tasksFile.runtime_summary = runtimeSummary
+    }
   }
 
   return tasksFile
@@ -649,8 +918,76 @@ export function writeTasksFile(
   tasksFile: TasksFile,
 ): void {
   const filePath = getTasksFilePath(repoRoot, streamId)
-  tasksFile.last_updated = new Date().toISOString()
-  atomicWriteFile(filePath, JSON.stringify(tasksFile, null, 2))
+  const lastUpdated = new Date().toISOString()
+  const runtimeState = normalizeRuntimeState(streamId, tasksFile.runtime_state)
+  runtimeState.last_updated = lastUpdated
+  runtimeState.supervision.last_updated =
+    runtimeState.supervision.last_updated || lastUpdated
+  const ordered: TasksFile = {
+    version: tasksFile.version ?? TASKS_FILE_VERSION,
+    stream_id: tasksFile.stream_id ?? streamId,
+    last_updated: lastUpdated,
+    runtime_state: runtimeState,
+    ...(tasksFile.runtime_summary
+      ? { runtime_summary: tasksFile.runtime_summary }
+      : projectRuntimeSummary(repoRoot, streamId, {
+          ...tasksFile,
+          runtime_state: runtimeState,
+        })
+        ? {
+            runtime_summary: projectRuntimeSummary(repoRoot, streamId, {
+              ...tasksFile,
+              runtime_state: runtimeState,
+            }),
+          }
+        : {}),
+    tasks: Array.isArray(tasksFile.tasks) ? tasksFile.tasks : [],
+  }
+  atomicWriteFile(filePath, JSON.stringify(ordered, null, 2))
+}
+
+async function withTasksFileLock<T>(
+  repoRoot: string,
+  streamId: string,
+  fn: () => T | Promise<T>,
+): Promise<T> {
+  const filePath = getTasksFilePath(repoRoot, streamId)
+  mkdirSync(join(getWorkDir(repoRoot), streamId), { recursive: true })
+
+  if (!existsSync(filePath)) {
+    writeTasksFile(repoRoot, streamId, createEmptyTasksFile(streamId))
+  }
+
+  const release = await lockfile.lock(filePath, {
+    retries: { retries: 10, minTimeout: 50, maxTimeout: 500 },
+  })
+
+  try {
+    return await fn()
+  } finally {
+    await release()
+  }
+}
+
+export async function modifyTasksFile<T>(
+  repoRoot: string,
+  streamId: string,
+  fn: (tasksFile: TasksFile) => T | Promise<T>,
+): Promise<T> {
+  return withTasksFileLock(repoRoot, streamId, async () => {
+    const tasksFile = readTasksFile(repoRoot, streamId) ?? createEmptyTasksFile(streamId)
+    const result = await fn(tasksFile)
+    writeTasksFile(repoRoot, streamId, tasksFile)
+    return result
+  })
+}
+
+export function getThreadRuntimeMetadata(
+  tasksFile: TasksFile | null | undefined,
+  threadId: string,
+): ThreadMetadata | null {
+  if (!tasksFile?.runtime_state) return null
+  return tasksFile.runtime_state.threads.find((thread) => thread.threadId === threadId) ?? null
 }
 
 /**

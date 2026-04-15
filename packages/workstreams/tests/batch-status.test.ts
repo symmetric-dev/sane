@@ -11,6 +11,7 @@ import {
   waitForBatchStatus,
 } from "../src/lib/batch-monitor"
 import { createBatchStatusFile, readBatchStatus, writeBatchStatus } from "../src/lib/batch-status"
+import { readTasksFile } from "../src/lib/tasks"
 import {
   getCompletionMarkerPath,
   getSessionFilePath,
@@ -135,6 +136,17 @@ describe("batch status", () => {
     const saved = readBatchStatus(repoRoot, streamId, "01.01")
     expect(saved?.threads[0]?.status).toBe("running")
     expect(saved?.threads[1]?.status).toBe("pending")
+    expect(readTasksFile(repoRoot, streamId)?.runtime_summary?.batches["01.01"]).toMatchObject({
+      batch_id: "01.01",
+      status: "running",
+      thread_summary: {
+        total: 2,
+        pending: 1,
+        running: 1,
+        completed: 0,
+        failed: 0,
+      },
+    })
   })
 
   test("resetBatchStatusRun persists generated tmux session name", () => {

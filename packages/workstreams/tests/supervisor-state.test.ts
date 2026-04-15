@@ -20,6 +20,7 @@ import {
   upsertReviewedBatchLocked,
   upsertSupervisorRunLocked,
 } from "../src/lib/supervisor-state"
+import { readTasksFile } from "../src/lib/tasks"
 import type { SupervisorRunState, SupervisorStateFile } from "../src/lib/types"
 import { cleanupTestWorkstream, createTestWorkstream, type TestWorkspace } from "./helpers"
 
@@ -74,6 +75,83 @@ describe("supervisor-state", () => {
     const loaded = loadSupervisorState(workspace.repoRoot, workspace.streamId)
     expect(loaded).not.toBeNull()
     expect(loaded!.stream_id).toBe(workspace.streamId)
+    expect(readTasksFile(workspace.repoRoot, workspace.streamId)?.runtime_summary).toBeUndefined()
+  })
+
+  test("saveSupervisorState projects latest supervision summary into tasks.json", () => {
+    const startedAt = new Date().toISOString()
+    const supervisorState: SupervisorStateFile = {
+      version: "1.0.0",
+      stream_id: workspace.streamId,
+      last_updated: startedAt,
+      active_run_id: "sup-run-1",
+      current_branch_supervision: {
+        owner: "root_agent",
+        rootSessionId: "root-session-1",
+        branchSessionId: "branch-supervision-1",
+        branchRole: "supervision",
+        nativeSessionId: "ses-1",
+        source: "native_fork",
+        updatedAt: startedAt,
+        scope: { level: "batch", stageId: "01", batchId: "01.01" },
+        supervisionProgress: {
+          executionMode: "single_batch_run",
+          currentBatchId: "01.01",
+        },
+      },
+      runs: [
+        {
+          runId: "sup-run-1",
+          stageId: "01",
+          status: "failed",
+          startedAt,
+          updatedAt: startedAt,
+          currentBatchId: "01.01",
+          reviewPasses: 2,
+          issueSummaryIds: [],
+          escalationIds: [],
+        },
+      ],
+      checkpoint_pointers: [],
+      branch_sessions: [
+        {
+          owner: "root_agent",
+          rootSessionId: "root-session-1",
+          branchSessionId: "branch-supervision-1",
+          branchRole: "supervision",
+          nativeSessionId: "ses-1",
+          source: "native_fork",
+          status: "running",
+          startedAt,
+          updatedAt: startedAt,
+          batchId: "01.01",
+          scope: { level: "batch", stageId: "01", batchId: "01.01" },
+        },
+      ],
+      reviewed_batches: [],
+      issue_summaries: [],
+      fix_cycles: [],
+      escalations: [],
+      stage_stops: [],
+    }
+
+    saveSupervisorState(workspace.repoRoot, workspace.streamId, supervisorState)
+
+    expect(readTasksFile(workspace.repoRoot, workspace.streamId)?.runtime_summary?.supervision).toMatchObject({
+      active_run_id: "sup-run-1",
+      active_run: {
+        run_id: "sup-run-1",
+        status: "failed",
+        current_batch_id: "01.01",
+        review_passes: 2,
+      },
+      current_branch: {
+        branch_session_id: "branch-supervision-1",
+        status: "running",
+        batch_id: "01.01",
+        current_batch_id: "01.01",
+      },
+    })
   })
 
   test("loadSupervisorState reports the file path when supervisor-state.json is malformed", () => {

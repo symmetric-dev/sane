@@ -34,7 +34,7 @@ export function buildScopeInstructionBlock(
   }
 
   return [
-    "Keep this branch focused on one bounded batch supervision pass.",
+    "Keep this supervision session focused on one bounded batch supervision pass.",
     `Yield as soon as ${scopeLabel} is done or policy says to stop.`,
   ]
 }

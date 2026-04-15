@@ -6,8 +6,7 @@
  * This data is separated from tasks.json to keep task definitions clean.
  */
 
-import { existsSync, readFileSync } from "fs"
-import { join } from "path"
+import { existsSync } from "fs"
 import * as lockfile from "proper-lockfile"
 import type {
   RootAgentLineage,
@@ -17,8 +16,14 @@ import type {
   TasksFile,
 } from "./types.ts"
 import type { ThreadSynthesis } from "./synthesis/types.ts"
-import { atomicWriteFile } from "./index.ts"
-import { getWorkDir } from "./repo.ts"
+import {
+  createEmptyTasksFile,
+  getTasksFilePath,
+  modifyTasksFile,
+  normalizeRuntimeState,
+  readTasksFile,
+  writeTasksFile,
+} from "./tasks.ts"
 
 const THREADS_FILE_VERSION = "1.0.0"
 
@@ -26,8 +31,7 @@ const THREADS_FILE_VERSION = "1.0.0"
  * Get the path to threads.json for a workstream
  */
 export function getThreadsFilePath(repoRoot: string, streamId: string): string {
-  const workDir = getWorkDir(repoRoot)
-  return join(workDir, streamId, "threads.json")
+  return getTasksFilePath(repoRoot, streamId)
 }
 
 /**
@@ -54,14 +58,18 @@ export function loadThreads(
   repoRoot: string,
   streamId: string,
 ): ThreadsJson | null {
-  const filePath = getThreadsFilePath(repoRoot, streamId)
-
-  if (!existsSync(filePath)) {
+  const tasksFile = readTasksFile(repoRoot, streamId)
+  if (!tasksFile) {
     return null
   }
 
-  const content = readFileSync(filePath, "utf-8")
-  return JSON.parse(content) as ThreadsJson
+  const runtimeState = normalizeRuntimeState(streamId, tasksFile.runtime_state)
+  return {
+    version: THREADS_FILE_VERSION,
+    stream_id: streamId,
+    last_updated: runtimeState.last_updated,
+    threads: runtimeState.threads,
+  }
 }
 
 /**
@@ -72,9 +80,12 @@ export function saveThreads(
   streamId: string,
   threadsFile: ThreadsJson,
 ): void {
-  const filePath = getThreadsFilePath(repoRoot, streamId)
-  threadsFile.last_updated = new Date().toISOString()
-  atomicWriteFile(filePath, JSON.stringify(threadsFile, null, 2))
+  const tasksFile = readTasksFile(repoRoot, streamId) ?? createEmptyTasksFile(streamId)
+  tasksFile.runtime_state = normalizeRuntimeState(streamId, tasksFile.runtime_state)
+  tasksFile.runtime_state.last_updated = new Date().toISOString()
+  tasksFile.runtime_state.threads = threadsFile.threads
+  delete tasksFile.runtime_summary
+  writeTasksFile(repoRoot, streamId, tasksFile)
 }
 
 // ============================================
@@ -184,9 +195,12 @@ async function withThreadsLock<T>(
   threadsPath: string,
   fn: () => T
 ): Promise<T> {
-  // Create empty file if it doesn't exist (lockfile requires file to exist)
   if (!existsSync(threadsPath)) {
-    atomicWriteFile(threadsPath, JSON.stringify(createEmptyThreadsFile(""), null, 2))
+    const streamId = threadsPath.split("/").at(-2)
+    const repoRoot = threadsPath.slice(0, threadsPath.indexOf("/work/"))
+    if (streamId && repoRoot) {
+      writeTasksFile(repoRoot, streamId, createEmptyTasksFile(streamId))
+    }
   }
 
   const release = await lockfile.lock(threadsPath, {
@@ -208,11 +222,7 @@ export async function updateThreadMetadataLocked(
   threadId: string,
   data: Partial<Omit<ThreadMetadata, "threadId">>,
 ): Promise<ThreadMetadata> {
-  const filePath = getThreadsFilePath(repoRoot, streamId)
-
-  return withThreadsLock(filePath, () => {
-    return updateThreadMetadata(repoRoot, streamId, threadId, data)
-  })
+  return modifyTasksFile(repoRoot, streamId, () => updateThreadMetadata(repoRoot, streamId, threadId, data))
 }
 
 /**
@@ -223,9 +233,7 @@ export async function modifyThreads<T>(
   streamId: string,
   fn: (threadsFile: ThreadsJson) => T
 ): Promise<T> {
-  const filePath = getThreadsFilePath(repoRoot, streamId)
-
-  return withThreadsLock(filePath, () => {
+  return modifyTasksFile(repoRoot, streamId, () => {
     let threadsFile = loadThreads(repoRoot, streamId)
     if (!threadsFile) {
       threadsFile = createEmptyThreadsFile(streamId)

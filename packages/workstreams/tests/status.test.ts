@@ -623,6 +623,60 @@ describe("getStreamProgress", () => {
     expect(result.totalTasks).toBe(0)
     expect(result.stages).toHaveLength(0)
   })
+
+  test("projects runtime summary for older tasks.json without persisted projection", async () => {
+    const tasksFile: TasksFile = {
+      version: "1.0.0",
+      stream_id: "001-test-stream",
+      last_updated: new Date().toISOString(),
+      tasks: [
+        {
+          id: "01.01.01.01",
+          name: "Task 1",
+          thread_name: "Thread 01",
+          batch_name: "B01",
+          stage_name: "Stage 01",
+          created_at: "",
+          updated_at: "",
+          status: "pending",
+        },
+      ],
+    }
+
+    await writeFile(
+      join(tempDir, "work/001-test-stream/tasks.json"),
+      JSON.stringify(tasksFile, null, 2),
+    )
+    await mkdir(join(tempDir, "work/001-test-stream/batch-status"), { recursive: true })
+    await writeFile(
+      join(tempDir, "work/001-test-stream/batch-status/01.01.json"),
+      JSON.stringify(
+        {
+          version: "1.0.0",
+          streamId: "001-test-stream",
+          batchId: "01.01",
+          runId: "run-1",
+          mode: "headless",
+          status: "failed",
+          startedAt: new Date().toISOString(),
+          updatedAt: new Date().toISOString(),
+          summary: {
+            total: 1,
+            pending: 0,
+            running: 0,
+            completed: 0,
+            failed: 1,
+          },
+          threads: [],
+        },
+        null,
+        2,
+      ),
+    )
+
+    const result = getStreamProgress(tempDir, baseStream)
+    expect(result.runtimeSummary?.batches["01.01"]?.status).toBe("failed")
+  })
 })
 
 describe("formatProgress", () => {
@@ -783,5 +837,58 @@ describe("formatProgress", () => {
     const output = formatProgress(progress)
 
     expect(output).toContain("Stage 01")
+  })
+
+  test("shows supervision branch runtime context", () => {
+    const progress: StreamProgress = {
+      streamId: "001-stream",
+      streamName: "stream",
+      size: "medium",
+      stages: [
+        {
+          number: 1,
+          title: "Setup",
+          status: "pending",
+          tasks: [
+            {
+              id: "01.01.01.01",
+              description: "Task",
+              status: "pending",
+              stageNumber: 1,
+              taskGroupNumber: 1,
+              subtaskNumber: 1,
+              lineNumber: 0,
+            },
+          ],
+          file: "tasks.json",
+        },
+      ],
+      totalTasks: 1,
+      completedTasks: 0,
+      inProgressTasks: 0,
+      blockedTasks: 0,
+      pendingTasks: 1,
+      percentComplete: 0,
+      runtimeSummary: {
+        updated_at: new Date().toISOString(),
+        batches: {},
+        supervision: {
+          updated_at: new Date().toISOString(),
+          current_branch: {
+            stage_id: "01",
+            batch_id: "01.01",
+            current_batch_id: "01.01",
+            status: "running",
+            branch_session_id: "branch-session-1",
+            root_session_id: "root-session-1",
+            updated_at: new Date().toISOString(),
+          },
+        },
+      },
+    }
+
+    const output = formatProgress(progress)
+
+    expect(output).toContain("Runtime: supervision branch: running on 01.01")
   })
 })

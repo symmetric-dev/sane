@@ -694,6 +694,9 @@ export async function syncBatchStatus(
     batchId,
   })
   const existing = reconciledExisting ?? readBatchStatus(repoRoot, streamId, batchId)
+  if (existing && isTerminalBatchStatus(existing.status)) {
+    return existing
+  }
   const now = new Date().toISOString()
   await finalizeCanonicalThreadState(
     repoRoot,
@@ -825,5 +828,5 @@ export function batchStatusExists(
   streamId: string,
   batchId: string,
 ): boolean {
-  return existsSync(getBatchStatusFilePath(repoRoot, streamId, batchId))
+  return readBatchStatus(repoRoot, streamId, batchId) !== null
 }

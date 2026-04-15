@@ -6,7 +6,7 @@
 
 import { getRepoRoot } from "../lib/repo.ts"
 import { loadIndex, getResolvedStream } from "../lib/index.ts"
-import { getTasks, getTaskCounts, groupTasks } from "../lib/tasks.ts"
+import { getEffectiveRuntimeSummary, getTasks, groupTasks, readTasksFile } from "../lib/tasks.ts"
 import type { Task, TaskStatus } from "../lib/types.ts"
 
 interface ListCliArgs {
@@ -250,6 +250,57 @@ function formatTaskList(streamId: string, tasks: Task[]): string {
   return lines.join("\n").trimEnd()
 }
 
+function aggregateStatus(tasks: Task[]): TaskStatus {
+  if (tasks.length === 0) return "pending"
+  if (tasks.some((task) => task.status === "blocked")) return "blocked"
+  if (tasks.some((task) => task.status === "in_progress")) return "in_progress"
+  if (tasks.some((task) => task.status === "pending")) return "pending"
+  return "completed"
+}
+
+export function formatRuntimeSummary(streamId: string, tasks: Task[], repoRoot: string): string[] {
+  const tasksFile = readTasksFile(repoRoot, streamId)
+  const runtimeSummary = getEffectiveRuntimeSummary(repoRoot, streamId, tasksFile)
+  if (!runtimeSummary) {
+    return []
+  }
+
+  const batchTaskStatus = new Map<string, TaskStatus>()
+  for (const task of tasks) {
+    const parts = task.id.split(".")
+    if (parts.length < 2) continue
+    const batchId = `${parts[0]}.${parts[1]}`
+    if (!batchTaskStatus.has(batchId)) {
+      batchTaskStatus.set(batchId, aggregateStatus(tasks.filter((candidate) => candidate.id.startsWith(`${batchId}.`))))
+    }
+  }
+
+  const lines: string[] = []
+  for (const batchId of Object.keys(runtimeSummary.batches).sort()) {
+    const batch = runtimeSummary.batches[batchId]!
+    const taskStatus = batchTaskStatus.get(batchId)
+    const isRuntimeActive = ["running", "failed"].includes(batch.status)
+    if (!taskStatus) continue
+    if (batch.status !== taskStatus || isRuntimeActive) {
+      lines.push(
+        `Runtime: ${batchId} tasks ${taskStatus.replace("_", " ")} vs runtime ${batch.status}`,
+      )
+    }
+  }
+
+  const activeRun = runtimeSummary.supervision?.active_run
+  if (activeRun) {
+    lines.push(`Runtime: supervision ${activeRun.status} on ${activeRun.current_batch_id ?? `stage ${activeRun.stage_id}`}`)
+  } else if (runtimeSummary.supervision?.current_branch) {
+    const branch = runtimeSummary.supervision.current_branch
+    lines.push(
+      `Runtime: supervision branch ${branch.status} on ${branch.current_batch_id ?? branch.batch_id ?? `stage ${branch.stage_id}`}`,
+    )
+  }
+
+  return lines
+}
+
 // Helper to get first task from nested maps structure for sorting
 function getFirstTaskFromStage(batchMap: Map<string, Map<string, Task[]>>): Task | undefined {
   const firstBatch = batchMap.values().next().value
@@ -327,7 +378,10 @@ export function main(argv: string[] = process.argv): void {
   if (cliArgs.json) {
     console.log(JSON.stringify(tasks, null, 2))
   } else {
-    console.log(formatTaskList(stream.id, tasks))
+    const output = [formatTaskList(stream.id, tasks), ...formatRuntimeSummary(stream.id, tasks, repoRoot)]
+      .filter(Boolean)
+      .join("\n")
+    console.log(output)
   }
 }
 

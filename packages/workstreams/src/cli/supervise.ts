@@ -97,7 +97,7 @@ Description:
   Resolves the next batch to execute or recover, auto-resolves active branch
   lineage when available, launches headless batch execution when needed,
   waits for or recovers persisted batch-status, reconciles stale runs, and
-  then hands terminal batch results back to the caller so Root Agent review,
+  then hands terminal batch results back to the caller so user review,
   fix, and escalation policy stays outside the CLI.
 
 Examples:
@@ -541,12 +541,12 @@ export async function main(argv: string[] = process.argv): Promise<void> {
     )
     if (branchContext) {
       console.log(
-        `[supervise] would use supervision branch ${branchContext.branchSessionId} under root session ${branchContext.rootSessionId}`,
+        `[supervise] would use supervision session ${branchContext.branchSessionId} under session ${branchContext.rootSessionId}`,
       )
     }
     console.log(getDryRunActionMessage(startPlan.action, startPlan.batchId))
     console.log(
-      `[supervise] would record a supervise-pass handoff for ${startPlan.batchId} and yield batch state back to the Root Agent or caller for review decisions.`,
+      `[supervise] would record a supervise-pass handoff for ${startPlan.batchId} and yield batch state back to the user or caller for review decisions.`,
     )
     return
   }
@@ -612,8 +612,8 @@ export async function main(argv: string[] = process.argv): Promise<void> {
     startedAt: startPlan.runStartedAt,
     updatedAt: new Date().toISOString(),
     notes: startPlan.message
-      ? `${startPlan.message} Branch session remains active until the parent/root records the final supervision outcome.`
-      : "Supervision helper started; branch session remains active until parent/root finalization.",
+        ? `${startPlan.message} Supervision session remains active until parent-side finalization records the final supervision outcome.`
+        : "Supervision helper started; supervision session remains active until parent-side finalization.",
   })
 
   try {
@@ -679,7 +679,7 @@ export async function main(argv: string[] = process.argv): Promise<void> {
     })
 
     console.log(
-      `[supervise] handoff: batch ${startPlan.batchId} reached ${batchStatus.status}. Root Agent should review outputs and decide next steps; branch finalization happens parent-side.`,
+      `[supervise] handoff: batch ${startPlan.batchId} reached ${batchStatus.status}. The user should review outputs and decide next steps; supervision finalization happens parent-side.`,
     )
   } catch (error) {
     if (isBatchWaitTimeoutError(error)) {
@@ -711,7 +711,7 @@ export async function main(argv: string[] = process.argv): Promise<void> {
         startedAt: startPlan.runStartedAt,
         updatedAt: new Date().toISOString(),
         completedAt: new Date().toISOString(),
-        notes: `Supervision helper stopped before handoff while waiting for ${startPlan.batchId}; Root Agent should resume or inspect persisted state.`,
+        notes: `Supervision helper stopped before handoff while waiting for ${startPlan.batchId}; the user should resume or inspect persisted state.`,
       })
       console.log(
         `[supervise] timeout: ${error.message} The batch may still be running; rerun work supervise to resume deterministically.`,

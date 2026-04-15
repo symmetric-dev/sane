@@ -6,8 +6,8 @@
 
 import { getRepoRoot } from "../lib/repo.ts"
 import { loadIndex, getResolvedStream } from "../lib/index.ts"
-import { getTasks, groupTasks } from "../lib/tasks.ts"
-import type { Task, TaskStatus } from "../lib/types.ts"
+import { getEffectiveRuntimeSummary, groupTasks, readTasksFile } from "../lib/tasks.ts"
+import type { Task, TaskStatus, WorkstreamRuntimeBatchSummary } from "../lib/types.ts"
 
 interface TreeCliArgs {
     repoRoot?: string
@@ -119,6 +119,71 @@ function statusToIcon(status: TaskStatus): string {
     }
 }
 
+function toBatchId(task?: Task): string | undefined {
+    const parts = task?.id.split(".")
+    if (!parts || parts.length < 2) return undefined
+    return `${parts[0]}.${parts[1]}`
+}
+
+function formatBatchRuntime(batchStatus: WorkstreamRuntimeBatchSummary, taskStatus: TaskStatus): string {
+    const failedCount = batchStatus.thread_summary.failed
+    const runningCount = batchStatus.thread_summary.running
+    const isRuntimeActive = ["running", "failed"].includes(batchStatus.status)
+    const details = failedCount > 0
+        ? `${failedCount} failed`
+        : runningCount > 0
+            ? `${runningCount} running`
+            : `${batchStatus.thread_summary.completed} completed`
+
+    if (batchStatus.status !== taskStatus) {
+        return ` [desync: tasks ${taskStatus.replace("_", " ")}, runtime ${batchStatus.status} (${details})]`
+    }
+
+    if (isRuntimeActive) {
+        return ` [runtime: ${batchStatus.status} (${details})]`
+    }
+
+    return ""
+}
+
+function formatWorkstreamRuntimeNotice(notice: string | undefined): void {
+    if (notice) {
+        console.log(`    Runtime: ${notice}`)
+    }
+}
+
+function getWorkstreamRuntimeNotice(
+    runtimeSummary: ReturnType<typeof getEffectiveRuntimeSummary>,
+): string | undefined {
+    if (!runtimeSummary) {
+        return undefined
+    }
+
+    const failedBatch = Object.values(runtimeSummary.batches)
+        .filter((batch) => batch.status === "failed")
+        .sort((a, b) => a.batch_id.localeCompare(b.batch_id))[0]
+    if (failedBatch) {
+        return `batch ${failedBatch.batch_id} failed (${failedBatch.thread_summary.failed} failed thread${failedBatch.thread_summary.failed === 1 ? "" : "s"})`
+    }
+
+    const runningBatch = Object.values(runtimeSummary.batches).find((batch) => batch.status === "running")
+    if (runningBatch) {
+        return `batch ${runningBatch.batch_id} running (${runningBatch.thread_summary.running} active thread${runningBatch.thread_summary.running === 1 ? "" : "s"})`
+    }
+
+    const activeRun = runtimeSummary.supervision?.active_run
+    if (activeRun) {
+        return `supervision ${activeRun.status} on ${activeRun.current_batch_id ?? `stage ${activeRun.stage_id}`}`
+    }
+
+    const currentBranch = runtimeSummary.supervision?.current_branch
+    if (currentBranch) {
+        return `supervision branch ${currentBranch.status} on ${currentBranch.current_batch_id ?? currentBranch.batch_id ?? `stage ${currentBranch.stage_id}`}`
+    }
+
+    return undefined
+}
+
 export function main(argv: string[] = process.argv): void {
     const cliArgs = parseCliArgs(argv)
     if (!cliArgs) {
@@ -153,11 +218,13 @@ export function main(argv: string[] = process.argv): void {
     }
 
     // Get tasks and group them
-    let tasks = getTasks(repoRoot, stream.id)
+    const tasksFile = readTasksFile(repoRoot, stream.id)
+    let tasks = tasksFile?.tasks ?? []
     if (tasks.length === 0) {
         console.log(`Workstream: ${stream.id} (Empty)`)
         return
     }
+    const runtimeSummary = getEffectiveRuntimeSummary(repoRoot, stream.id, tasksFile)
 
     // Filter by batch if --batch is specified
     if (cliArgs.batchId) {
@@ -180,6 +247,7 @@ export function main(argv: string[] = process.argv): void {
     // Calculate overall status
     const streamStatus = aggregateStatus(tasks)
     console.log(`${statusToIcon(streamStatus)} Workstream: ${stream.id} (${tasks.length})`)
+    formatWorkstreamRuntimeNotice(getWorkstreamRuntimeNotice(runtimeSummary))
 
     // Iterate Stages
     // Sort stages by numeric prefix (Map iteration order is insertion order, but better to be safe)
@@ -249,8 +317,12 @@ export function main(argv: string[] = process.argv): void {
             // Extract batch number
             const firstBatchTask = batchTasks[0]
             const batchNum = firstBatchTask ? firstBatchTask.id.split('.')[1] : "?"
+            const batchId = toBatchId(firstBatchTask)
+            const runtimeSuffix = batchId && runtimeSummary?.batches[batchId]
+                ? formatBatchRuntime(runtimeSummary.batches[batchId]!, batchStatus)
+                : ""
 
-            console.log(`${stageChildPrefix}${batchPrefix}${statusToIcon(batchStatus)} Batch ${batchNum}: ${batchName} (${batchTasks.length})`)
+            console.log(`${stageChildPrefix}${batchPrefix}${statusToIcon(batchStatus)} Batch ${batchNum}: ${batchName} (${batchTasks.length})${runtimeSuffix}`)
 
             const sortedThreads = Array.from(threadMap.entries()).sort((a, b) => {
                 const taskA = a[1][0];

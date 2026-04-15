@@ -42,6 +42,7 @@ import { logWorkstreamToolEvent } from "./debug-log.ts"
 export type SupervisionTerminalStatus = "completed" | "stopped" | "failed"
 
 const LIVE_SUPERVISION_BRANCH_STATUSES = new Set(["pending", "running"])
+export const DEFAULT_BRANCH_TERMINAL_PERSIST_GRACE_MS = 3000
 
 export interface CheckpointSessionForkEligibility {
   valid: boolean
@@ -247,18 +248,18 @@ export function formatExistingSupervisionLaunchMessage(args: {
   batch?: string
 }): string {
   const scopeLabel = describeScopeLabel(args.scope, args.batch)
-  const branchLabel = args.branch.branchSessionId ?? "(unknown branch session)"
+  const branchLabel = args.branch.branchSessionId ?? "(unknown supervision session)"
   const statusLabel = args.branch.status ?? "unknown"
 
   return [
     `Refusing duplicate supervision launch for ${scopeLabel} in ${args.streamId}.`,
-    `Active nonterminal supervision branch already exists: ${branchLabel} (${statusLabel}).`,
+    `Active nonterminal supervision session already exists: ${branchLabel} (${statusLabel}).`,
     ...(args.branch.tmuxSessionName
       ? [
           `Attach with \`tmux attach -t ${args.branch.tmuxSessionName}\` to inspect the existing supervision session.`,
         ]
       : ["Existing supervision session has no persisted tmux attach instructions."]),
-    "Preserving the existing active supervision scope is safer than launching a second overlapping branch.",
+    "Preserving the existing active supervision scope is safer than launching a second overlapping supervision session.",
   ].join("\n")
 }
 
@@ -273,7 +274,7 @@ function buildCheckpointCaptureNotes(
 ): string {
   const scopeLabel = describeScopeLabel(scope, batch)
   return [
-    `Checkpoint pointer ${formatRootAgentCheckpointPointer(pointer)} captured; launching Root Agent supervision branch for ${scopeLabel}.`,
+    `Checkpoint pointer ${formatRootAgentCheckpointPointer(pointer)} captured; launching a supervision session for ${scopeLabel}.`,
     ...(pointer.breakpointSelection
       ? [`Breakpoint selection: ${formatRootAgentBreakpointSelection(pointer.breakpointSelection)}`]
       : []),
@@ -312,7 +313,7 @@ function formatCheckpointLaunchFallbackError(args: {
 
   if (!args.checkpointPointer.checkpointMessageId) {
     return new Error(
-      `Cannot launch supervision branch from checkpoint pointer ${pointerLabel}: the selected boundary has no stable message ID, so native fork-from-message is unavailable.${
+      `Cannot launch the supervision session from checkpoint pointer ${pointerLabel}: the selected boundary has no stable message ID, so native fork-from-message is unavailable.${
         args.eligibility.canForkCurrentSession
           ? ""
           : ` Plain session --fork would start from the live session tip (message-index ${args.eligibility.latestMessageIndex ?? "unknown"}) instead of the selected boundary (message-index ${args.eligibility.resolvedMessageIndex ?? args.checkpointPointer.checkpointMessageIndex}).`
@@ -393,17 +394,17 @@ function describeBranchFinalizationHandling(args: {
 
   switch (args.finalizationReason) {
     case "ended_without_explicit_finalize":
-      return "Parent-side reconciliation finalized the branch after process end because no explicit finalize_workstream_supervision call was persisted."
+      return "Parent-side reconciliation finalized the supervision session after process end because no explicit finalize_workstream_supervision call was persisted."
     case "exit_zero_without_usable_finalization":
-      return "Parent-side reconciliation finalized the branch after process end with exit code 0, but no usable finalization/report was persisted."
+      return "Parent-side reconciliation finalized the supervision session after process end with exit code 0, but no usable finalization/report was persisted."
     case "nonzero_exit":
-      return "Parent-side reconciliation marked the branch failed after observing a nonzero tmux process exit."
+      return "Parent-side reconciliation marked the supervision session failed after observing a nonzero tmux process exit."
     case "persisted_terminal_status":
       return "Persisted terminal supervision state was already available when the parent reconciled process end."
     case "session_missing_with_recovered_report":
-      return "Recovery reconciliation found that the tmux session had already disappeared, but transcript/report evidence was still recoverable, so the branch was safely marked stopped instead of completed."
+      return "Recovery reconciliation found that the tmux session had already disappeared, but transcript/report evidence was still recoverable, so the supervision session was safely marked stopped instead of completed."
     case "session_missing_without_usable_finalization":
-      return "Recovery reconciliation found that the tmux session had already disappeared and no usable finalization/report was recoverable, so the branch was marked failed rather than inventing success."
+      return "Recovery reconciliation found that the tmux session had already disappeared and no usable finalization/report was recoverable, so the supervision session was marked failed rather than inventing success."
     default:
       return undefined
   }
@@ -436,7 +437,7 @@ export function reconcileCompletedBranchState(args: {
       finalizationSource: storedSource ?? "explicit_finalize",
       finalizationReason: args.storedBranch?.finalizationReason ?? "persisted_terminal_status",
       handlingNote: explicitFinalizeConflictsWithNonzeroExit
-        ? `Persisted explicit supervision finalization takes precedence over the later observed nonzero tmux process exit (${args.runCode}); parent-side reconciliation records process-end metadata without changing the terminal branch status.`
+        ? `Persisted explicit supervision finalization takes precedence over the later observed nonzero tmux process exit (${args.runCode}); parent-side reconciliation records process-end metadata without changing the terminal supervision status.`
         : storedSource === "parent_process_exit_reconciliation"
           ? "Persisted terminal supervision state already reflected parent-side process-end reconciliation."
           : "Persisted terminal supervision state was already finalized before parent-side process-end reconciliation.",
@@ -448,7 +449,7 @@ export function reconcileCompletedBranchState(args: {
       status: getTerminalBranchStatus(args.storedBranch?.status, args.runCode),
       finalizationSource: "parent_process_exit_reconciliation",
       finalizationReason: "nonzero_exit",
-      handlingNote: `Parent reconciled branch state after process end because the tmux-hosted opencode run exited nonzero (${args.runCode}).`,
+      handlingNote: `Parent reconciled supervision state after process end because the tmux-hosted opencode run exited nonzero (${args.runCode}).`,
     }
   }
 
@@ -458,7 +459,7 @@ export function reconcileCompletedBranchState(args: {
       finalizationSource: "parent_process_exit_reconciliation",
       finalizationReason: "ended_without_explicit_finalize",
       handlingNote:
-        "Parent reconciled branch state after process end because no explicit finalize_workstream_supervision call was persisted, but transcript/report evidence was available.",
+        "Parent reconciled supervision state after process end because no explicit finalize_workstream_supervision call was persisted, but transcript/report evidence was available.",
     }
   }
 
@@ -467,7 +468,7 @@ export function reconcileCompletedBranchState(args: {
     finalizationSource: "parent_process_exit_reconciliation",
     finalizationReason: "exit_zero_without_usable_finalization",
     handlingNote:
-      "Parent reconciled branch state after process end with exit code 0, but no usable finalization/report was persisted.",
+      "Parent reconciled supervision state after process end with exit code 0, but no usable finalization/report was persisted.",
   }
 }
 
@@ -490,14 +491,14 @@ function formatBranchCompletionMessage(args: {
     ? `Transcript export captured (${Array.isArray(args.transcript.messages) ? args.transcript.messages.length : 0} messages).`
     : args.nativeSessionId
       ? `Transcript export unavailable: ${args.transcriptError ?? "unknown export error"}`
-      : "Transcript export unavailable: native branch session ID was not resolved."
+      : "Transcript export unavailable: native supervision session ID was not resolved."
 
   const sections = [
-    `Supervision branch ${args.branchSessionId}${args.nativeSessionId ? ` (native session ${args.nativeSessionId})` : ""} ${args.status}${args.checkpointPointer ? ` from checkpoint pointer ${formatRootAgentCheckpointPointer(args.checkpointPointer)}` : ""}.`,
+    `Supervision session ${args.branchSessionId}${args.nativeSessionId ? ` (native session ${args.nativeSessionId})` : ""} ${args.status}${args.checkpointPointer ? ` from checkpoint pointer ${formatRootAgentCheckpointPointer(args.checkpointPointer)}` : ""}.`,
     ...(args.checkpointPointer?.breakpointSelection
       ? [`Breakpoint selection: ${formatRootAgentBreakpointSelection(args.checkpointPointer.breakpointSelection)}`]
       : []),
-    `Persisted branch status: ${args.status}.`,
+    `Persisted supervision status: ${args.status}.`,
     ...(args.tmuxSessionName
       ? [
           `Tmux session: ${args.tmuxSessionName}. Attach with \`tmux attach -t ${args.tmuxSessionName}\` to inspect it.`,
@@ -520,16 +521,16 @@ function formatBranchCompletionMessage(args: {
 
   if (args.observedPersistedStatus && args.observedPersistedStatus !== args.status) {
     sections.push(
-      `Pre-final persisted branch status: ${args.observedPersistedStatus} (for example, supervise-pass handoff recorded before parent-side finalization).`,
+      `Pre-final persisted supervision status: ${args.observedPersistedStatus} (for example, a supervise-pass handoff recorded before parent-side finalization).`,
     )
   }
 
   if (args.reportText) {
-    sections.push(`Extracted final branch report:\n${args.reportText}`)
+    sections.push(`Extracted final supervision report:\n${args.reportText}`)
   }
 
   if (args.summary && args.summary !== args.reportText) {
-    sections.push(`Branch run summary:\n${args.summary}`)
+    sections.push(`Supervision run summary:\n${args.summary}`)
   }
 
   return sections.join("\n\n")
@@ -660,7 +661,7 @@ export async function collectCompletedBranchArtifacts(args: {
     repoRoot: args.repoRoot,
     streamId: args.streamId,
     branchSessionId: args.branchSessionId,
-    timeoutMs: DEFAULT_BRANCH_TOOL_TIMEOUT_MS,
+    timeoutMs: DEFAULT_BRANCH_TERMINAL_PERSIST_GRACE_MS,
     pollIntervalMs: DEFAULT_BRANCH_TOOL_POLL_INTERVAL_MS,
   })
 
@@ -727,7 +728,7 @@ export async function executeLaunchSupervisionBranch(
 
   if (!rootSessionId) {
     logWorkstreamToolEvent("workstream.launch", "executeLaunchSupervisionBranch:missing-session")
-    return "Error: Could not determine current Root Agent session ID"
+    return "Error: Could not determine the current session ID"
   }
 
   const repoRoot = deps.getRepoRoot()
@@ -759,7 +760,7 @@ export async function executeLaunchSupervisionBranch(
       "Error: Supervision branches cannot launch additional supervision branches.",
       `Current session is already branch ${parentBranchLabel}.`,
       "Current guard is intentionally one-level only and triggers when the current native session is already recorded as a branch session.",
-      "Yield back to the Root Agent so it can inspect persisted branch state and decide the next action.",
+      "Yield back to the user so they can inspect persisted supervision state and decide the next action.",
     ].join("\n")
   }
 
@@ -798,7 +799,7 @@ export async function executeLaunchSupervisionBranch(
     return [
       `Supervision session ${tmuxSessionName} is already running for ${streamId}.`,
       `Attach with \`tmux attach -t ${tmuxSessionName}\` to observe it.`,
-      "Refusing to launch another supervision session for the same branch metadata.",
+      "Refusing to launch another supervision session for the same persisted supervision metadata.",
     ].join("\n")
   }
 
@@ -1101,10 +1102,10 @@ export async function executeLaunchSupervisionBranch(
       tmuxSessionName,
       batchId: resolvedBatchTarget,
       scope: launchScope,
-      notes: `Failed to launch Root Agent supervision branch: ${error?.message || error}`,
+      notes: `Failed to launch supervision session: ${error?.message || error}`,
     })
 
-    return `Supervision branch ${branchSessionId} failed to launch.\n\n${error?.message || error}`
+    return `Supervision session ${branchSessionId} failed to launch.\n\n${error?.message || error}`
   }
 }
 
