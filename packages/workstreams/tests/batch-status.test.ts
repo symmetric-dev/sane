@@ -441,6 +441,24 @@ describe("batch status", () => {
       "session-ghost-1",
     )
 
+    const seededRunning = readBatchStatus(repoRoot, streamId, "01.01")!
+    seededRunning.status = "running"
+    seededRunning.summary = {
+      total: 2,
+      pending: 1,
+      running: 1,
+      completed: 0,
+      failed: 0,
+    }
+    seededRunning.threads[0] = {
+      ...seededRunning.threads[0]!,
+      status: "running",
+      startedAt: new Date().toISOString(),
+      currentSessionId: "session-ghost-1",
+      updatedAt: new Date().toISOString(),
+    }
+    writeBatchStatus(repoRoot, streamId, seededRunning)
+
     const status = await syncBatchStatus({
       repoRoot,
       streamId,
@@ -490,6 +508,24 @@ describe("batch status", () => {
       "model-one",
       "session-ghost-relaunch-1",
     )
+
+    const seededRunning = readBatchStatus(repoRoot, streamId, "01.01")!
+    seededRunning.status = "running"
+    seededRunning.summary = {
+      total: 2,
+      pending: 1,
+      running: 1,
+      completed: 0,
+      failed: 0,
+    }
+    seededRunning.threads[0] = {
+      ...seededRunning.threads[0]!,
+      status: "running",
+      startedAt: new Date().toISOString(),
+      currentSessionId: "session-ghost-relaunch-1",
+      updatedAt: new Date().toISOString(),
+    }
+    writeBatchStatus(repoRoot, streamId, seededRunning)
 
     const nextRun = await prepareHeadlessBatchStatusRun({
       repoRoot,
