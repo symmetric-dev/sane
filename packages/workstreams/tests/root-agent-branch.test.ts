@@ -161,6 +161,33 @@ describe("root-agent-branch", () => {
     })
   })
 
+  test("buildRootAgentBranchSession persists process-end reconciliation metadata", () => {
+    const session = buildRootAgentBranchSession({
+      context: {
+        rootSessionId: "root-session-1",
+        branchSessionId: "branch-supervision-1",
+        parentSessionId: "root-session-1",
+        nativeSessionId: "ses_supervision_1",
+      },
+      branchRole: "supervision",
+      status: "failed",
+      startedAt: "2026-04-13T00:00:00.000Z",
+      updatedAt: "2026-04-13T00:05:00.000Z",
+      completedAt: "2026-04-13T00:03:00.000Z",
+      processEndedAt: "2026-04-13T00:05:00.000Z",
+      processExitCode: 17,
+      finalizationSource: "parent_process_exit_reconciliation",
+      finalizationReason: "nonzero_exit",
+      notes: "Authoritative process-end evidence: tmux pane exited with status 17.",
+    })
+
+    expect(session.completedAt).toBe("2026-04-13T00:03:00.000Z")
+    expect(session.processEndedAt).toBe("2026-04-13T00:05:00.000Z")
+    expect(session.processExitCode).toBe(17)
+    expect(session.finalizationSource).toBe("parent_process_exit_reconciliation")
+    expect(session.finalizationReason).toBe("nonzero_exit")
+  })
+
   test("normalizeRootAgentSupervisionProgress separates stage scope from batch progress", () => {
     expect(
       normalizeRootAgentSupervisionProgress({

@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test"
-import { existsSync } from "fs"
+import { existsSync, writeFileSync } from "fs"
 import { join } from "path"
 import { createBatchStatusFile, writeBatchStatus } from "../src/lib/batch-status"
 import {
@@ -74,6 +74,15 @@ describe("supervisor-state", () => {
     const loaded = loadSupervisorState(workspace.repoRoot, workspace.streamId)
     expect(loaded).not.toBeNull()
     expect(loaded!.stream_id).toBe(workspace.streamId)
+  })
+
+  test("loadSupervisorState reports the file path when supervisor-state.json is malformed", () => {
+    const supervisorStatePath = getSupervisorStateFilePath(workspace.repoRoot, workspace.streamId)
+    writeFileSync(supervisorStatePath, '{"runs": [}', "utf-8")
+
+    expect(() => loadSupervisorState(workspace.repoRoot, workspace.streamId)).toThrow(
+      `Failed to parse supervisor-state.json at ${supervisorStatePath}:`,
+    )
   })
 
   test("locked helpers create, update, and keep explicit batch/thread references", async () => {

@@ -217,7 +217,15 @@ export function loadSupervisorState(
     return null
   }
 
-  const parsed = JSON.parse(readFileSync(filePath, "utf-8")) as Partial<SupervisorStateFile>
+  const content = readFileSync(filePath, "utf-8")
+  let parsed: Partial<SupervisorStateFile>
+  try {
+    parsed = JSON.parse(content) as Partial<SupervisorStateFile>
+  } catch (error) {
+    throw new Error(
+      `Failed to parse supervisor-state.json at ${filePath}: ${error instanceof Error ? error.message : String(error)}`,
+    )
+  }
   const normalizedBranchSessions =
     parsed.branch_sessions?.map((branchSession) => {
       const normalizedScope = normalizeBranchScope(branchSession.scope, branchSession.batchId)
@@ -500,7 +508,7 @@ export async function upsertBranchSessionLocked(
       ...existing,
       ...branchSession,
       updatedAt: branchSession.updatedAt,
-      completedAt: branchSession.completedAt ?? existing?.completedAt,
+      completedAt: existing?.completedAt ?? branchSession.completedAt,
       ...(normalizedBatchId ? { batchId: normalizedBatchId } : {}),
       ...(normalizedScope ? { scope: normalizedScope } : {}),
       ...(normalizedProgress ? { supervisionProgress: normalizedProgress } : {}),

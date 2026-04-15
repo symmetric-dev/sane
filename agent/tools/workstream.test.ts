@@ -1,14 +1,31 @@
+// @ts-nocheck
 import { beforeAll, describe, expect, mock, test } from "bun:test"
 import { existsSync, readFileSync } from "node:fs"
 import { chmod, mkdtemp, mkdir, rm, symlink, writeFile } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
+import { spawnSync as nodeSpawnSync } from "node:child_process"
 import { loadSupervisorState, upsertBranchSessionLocked } from "../../packages/workstreams/src/lib/supervisor-state.ts"
 import {
   getRootAgentCheckpointSessionForkEligibility,
   refreshRootAgentCheckpointPointer,
 } from "../../packages/workstreams/src/lib/root-agent-checkpoint.ts"
 import { buildRootAgentBranchSession } from "../../packages/workstreams/src/lib/root-agent-branch.ts"
+import {
+  buildFinalizationNotes,
+  executeFinalizeWorkstreamSupervision,
+} from "../../packages/workstreams/src/lib/workstream-tool/finalize-supervision.ts"
+import { executeReconcileWorkstreamSupervision } from "../../packages/workstreams/src/lib/workstream-tool/reconcile-supervision.ts"
+import {
+  executeLaunchSupervisionBranch,
+  shouldBlockDuplicateSupervisionLaunch,
+  type LaunchSupervisionBranchDeps,
+} from "../../packages/workstreams/src/lib/workstream-tool/launch-supervision.ts"
+import { runMessageBoundaryForkLaunch } from "../../packages/workstreams/src/lib/workstream-tool/launch-supervision-opencode.ts"
+import {
+  runForkedSessionInTmux,
+  waitForTmuxSessionExit,
+} from "../../packages/workstreams/src/lib/workstream-tool/launch-supervision-tmux.ts"
 import { cleanupTestWorkstream, createTestWorkstream } from "../../packages/workstreams/tests/helpers/test-workspace.ts"
 
 mock.module("@opencode-ai/plugin", () => ({
@@ -26,37 +43,37 @@ mock.module("@opencode-ai/plugin", () => ({
 
 let toolRuntimeInfoTool: typeof import("./workstream.ts").tool_runtime_info
 let finalizeWorkstreamSupervisionTool: typeof import("./workstream.ts").finalize_workstream_supervision
+let reconcileWorkstreamSupervisionTool: typeof import("./workstream.ts").reconcile_workstream_supervision
 let launchSupervisionBranchTool: typeof import("./workstream.ts").launch_supervision_branch
-let executeFinalizeWorkstreamSupervision: any
-let buildFinalizationNotes: any
-let executeLaunchSupervisionBranch: any
+let executeFinalizeToolDelegate: any
+let executeReconcileToolDelegate: any
+let executeLaunchToolDelegate: any
 let getWorkstreamsToolRuntimeInfo: any
 let loadWorkstreamsToolRuntime: any
-let runMessageBoundaryForkLaunch: any
-let runForkedSessionInTmux: any
+let resetWorkstreamsToolRuntimeCache: () => void
 let resolveWorkstreamsRuntimeModulePath: any
 let workstreamToolVersion: string
-type LaunchSupervisionBranchDeps = import("./workstream.ts").LaunchSupervisionBranchDeps
 
 beforeAll(async () => {
   const workstreamModule = await import("./workstream.ts")
 
   toolRuntimeInfoTool = workstreamModule.tool_runtime_info
   finalizeWorkstreamSupervisionTool = workstreamModule.finalize_workstream_supervision
+  reconcileWorkstreamSupervisionTool = workstreamModule.reconcile_workstream_supervision
   launchSupervisionBranchTool = workstreamModule.launch_supervision_branch
-  ;({ executeFinalizeWorkstreamSupervision, buildFinalizationNotes } =
+  ;({ executeFinalizeWorkstreamSupervision: executeFinalizeToolDelegate } =
     (finalizeWorkstreamSupervisionTool as any).__test)
+  ;({ executeReconcileWorkstreamSupervision: executeReconcileToolDelegate } =
+    (reconcileWorkstreamSupervisionTool as any).__test)
+  ;({ executeLaunchSupervisionBranch: executeLaunchToolDelegate } =
+    (launchSupervisionBranchTool as any).__test)
   ;({
     WORKSTREAM_TOOL_VERSION: workstreamToolVersion,
     getWorkstreamsToolRuntimeInfo,
     loadWorkstreamsToolRuntime,
+    resetWorkstreamsToolRuntimeCache,
     resolveWorkstreamsRuntimeModulePath,
   } = (toolRuntimeInfoTool as any).__test)
-  ;({
-    executeLaunchSupervisionBranch,
-    runMessageBoundaryForkLaunch,
-    runForkedSessionInTmux,
-  } = (launchSupervisionBranchTool as any).__test)
 })
 
 function createDeps(
@@ -96,7 +113,7 @@ function createDeps(
         (branch) =>
           branch.branchRole === "supervision" &&
           branch.rootSessionId === rootSessionId &&
-          ["pending", "running", "stopped"].includes(branch.status) &&
+          shouldBlockDuplicateSupervisionLaunch(branch) &&
           (!!branch.nativeSessionId || !!branch.tmuxSessionName) &&
           ((branch.scope?.level ?? undefined) === (scope?.level ?? undefined)) &&
           (branch.scope?.level === "stage"
@@ -179,7 +196,57 @@ function createDeps(
   }
 }
 
-async function createRuntimeFixture(layout: "dev" | "dist") {
+function createReconcileDeps(
+  repoRoot: string,
+  streamId: string,
+  overrides: Record<string, any> = {},
+) {
+  return {
+    getRepoRoot: () => repoRoot,
+    loadCandidateBranches: ({ streamId: requestedStreamId, branchSessionId, rootSessionId }) => {
+      const resolvedStreamId = requestedStreamId ?? streamId
+      return (loadSupervisorState(repoRoot, resolvedStreamId)?.branch_sessions ?? [])
+        .filter(
+          (branch) =>
+            branch.branchRole === "supervision" &&
+            !["completed", "stopped", "failed"].includes(branch.status) &&
+            (!branchSessionId || branch.branchSessionId === branchSessionId) &&
+            (!rootSessionId || branch.rootSessionId === rootSessionId),
+        )
+        .map((branch) => ({ streamId: resolvedStreamId, branch }))
+    },
+    buildBranchSession: buildRootAgentBranchSession,
+    persistBranchSession: upsertBranchSessionLocked,
+    inspectTmuxSession: async () => ({
+      exists: true,
+      paneDead: true,
+      exitStatus: 0,
+      paneOutput: "branch pane output",
+    }),
+    findNativeSessionIdByTitle: async () => "ses_supervision_1",
+    exportSessionTranscript: async () => ({
+      info: {
+        id: "ses_supervision_1",
+        title: "Supervision branch",
+        summary: { additions: 0, deletions: 0, files: 0 },
+      },
+      messages: [
+        {
+          info: { id: "msg-final", role: "assistant" },
+          parts: [{ type: "text", text: "## What is Next\n- recovered report" }],
+        },
+      ],
+    }),
+    extractFinalBranchReport: (sessionExport) => sessionExport.messages[0]?.parts?.[0]?.text ?? "",
+    now: () => "2026-04-12T03:00:00.000Z",
+    ...overrides,
+  }
+}
+
+async function createRuntimeFixture(
+  layout: "dev" | "dist",
+  runtimeSource?: string,
+) {
   const tempRoot = await mkdtemp(join(tmpdir(), `workstream-runtime-${layout}-`))
   const packageRoot = join(tempRoot, "node_modules", "@agenv", "workstreams")
   const workLinkPath = join(tempRoot, "bin", "work")
@@ -195,18 +262,102 @@ async function createRuntimeFixture(layout: "dev" | "dist") {
     await mkdir(join(packageRoot, "bin"), { recursive: true })
     await mkdir(join(packageRoot, "src"), { recursive: true })
     await writeFile(join(packageRoot, "bin", "work.ts"), "export {}\n")
+    await chmod(join(packageRoot, "bin", "work.ts"), 0o755)
     await writeFile(
       join(packageRoot, "src", "tool-runtime.ts"),
-      "export const runtimeMarker = 'dev-runtime'\n",
+      runtimeSource ?? "export const runtimeMarker = 'dev-runtime'\n",
+    )
+    await writeFile(
+      join(packageRoot, "src", "tool-runtime-loader.ts"),
+      [
+        'import { fileURLToPath, pathToFileURL } from "url"',
+        "",
+        "let cachedRuntimePromise",
+        "",
+        "export function resolveWorkstreamsRuntimeModulePath() {",
+        '  return fileURLToPath(new URL("./tool-runtime.ts", import.meta.url))',
+        "}",
+        "",
+        "export async function loadWorkstreamsToolRuntime(options = {}) {",
+        "  const loadRuntime = async () => import(pathToFileURL(resolveWorkstreamsRuntimeModulePath()).href)",
+        "  if (options.cache === false) {",
+        "    return loadRuntime()",
+        "  }",
+        "  cachedRuntimePromise ??= loadRuntime()",
+        "  return cachedRuntimePromise",
+        "}",
+        "",
+        "export function createResolvedWorkstreamsToolRuntimeInfo(args) {",
+        "  return {",
+        "    toolVersion: args.toolVersion,",
+        "    ...(args.toolFilePath ? { toolFilePath: args.toolFilePath } : {}),",
+        "    workCommandPath: args.workCommandPath,",
+        "    resolvedWorkCommandPath: args.resolvedWorkCommandPath,",
+        "    workstreamsPackageRoot: args.packageRoot,",
+        '    workstreamsPackageVersion: "9.9.9-test",',
+        "    resolvedRuntimeModulePath: resolveWorkstreamsRuntimeModulePath(),",
+        "    capabilities: {",
+        "      fakeUserPrompt: true,",
+        "      metadataOnlyCheckpoints: true,",
+        "      messageBoundaryFork: true,",
+        "      breakpointTags: true,",
+        "      breakpointModes: true,",
+        "      autoResolvedBranchSupervisionContext: true,",
+        "    },",
+        "  }",
+        "}",
+      ].join("\n"),
     )
     await symlink(join(packageRoot, "bin", "work.ts"), workLinkPath)
   } else {
     await mkdir(join(packageRoot, "dist", "bin"), { recursive: true })
     await mkdir(join(packageRoot, "dist", "src"), { recursive: true })
     await writeFile(join(packageRoot, "dist", "bin", "work.js"), "export {}\n")
+    await chmod(join(packageRoot, "dist", "bin", "work.js"), 0o755)
     await writeFile(
       join(packageRoot, "dist", "src", "tool-runtime.js"),
-      "export const runtimeMarker = 'dist-runtime'\n",
+      runtimeSource ?? "export const runtimeMarker = 'dist-runtime'\n",
+    )
+    await writeFile(
+      join(packageRoot, "dist", "src", "tool-runtime-loader.js"),
+      [
+        'import { fileURLToPath, pathToFileURL } from "url"',
+        "",
+        "let cachedRuntimePromise",
+        "",
+        "export function resolveWorkstreamsRuntimeModulePath() {",
+        '  return fileURLToPath(new URL("./tool-runtime.js", import.meta.url))',
+        "}",
+        "",
+        "export async function loadWorkstreamsToolRuntime(options = {}) {",
+        "  const loadRuntime = async () => import(pathToFileURL(resolveWorkstreamsRuntimeModulePath()).href)",
+        "  if (options.cache === false) {",
+        "    return loadRuntime()",
+        "  }",
+        "  cachedRuntimePromise ??= loadRuntime()",
+        "  return cachedRuntimePromise",
+        "}",
+        "",
+        "export function createResolvedWorkstreamsToolRuntimeInfo(args) {",
+        "  return {",
+        "    toolVersion: args.toolVersion,",
+        "    ...(args.toolFilePath ? { toolFilePath: args.toolFilePath } : {}),",
+        "    workCommandPath: args.workCommandPath,",
+        "    resolvedWorkCommandPath: args.resolvedWorkCommandPath,",
+        "    workstreamsPackageRoot: args.packageRoot,",
+        '    workstreamsPackageVersion: "9.9.9-test",',
+        "    resolvedRuntimeModulePath: resolveWorkstreamsRuntimeModulePath(),",
+        "    capabilities: {",
+        "      fakeUserPrompt: true,",
+        "      metadataOnlyCheckpoints: true,",
+        "      messageBoundaryFork: true,",
+        "      breakpointTags: true,",
+        "      breakpointModes: true,",
+        "      autoResolvedBranchSupervisionContext: true,",
+        "    },",
+        "  }",
+        "}",
+      ].join("\n"),
     )
     await symlink(join(packageRoot, "dist", "bin", "work.js"), workLinkPath)
   }
@@ -225,7 +376,7 @@ describe("workstream runtime resolution", () => {
     const fixture = await createRuntimeFixture("dev")
 
     try {
-      const modulePath = resolveWorkstreamsRuntimeModulePath({
+      const modulePath = await resolveWorkstreamsRuntimeModulePath({
         resolveWorkCommandPath: () => fixture.workLinkPath,
       })
       const runtime = await loadWorkstreamsToolRuntime({
@@ -244,7 +395,7 @@ describe("workstream runtime resolution", () => {
     const fixture = await createRuntimeFixture("dist")
 
     try {
-      const modulePath = resolveWorkstreamsRuntimeModulePath({
+      const modulePath = await resolveWorkstreamsRuntimeModulePath({
         resolveWorkCommandPath: () => fixture.workLinkPath,
       })
       const runtime = await loadWorkstreamsToolRuntime({
@@ -263,7 +414,7 @@ describe("workstream runtime resolution", () => {
     const fixture = await createRuntimeFixture("dist")
 
     try {
-      const info = getWorkstreamsToolRuntimeInfo({
+      const info = await getWorkstreamsToolRuntimeInfo({
         resolveWorkCommandPath: () => fixture.workLinkPath,
       })
 
@@ -312,12 +463,13 @@ describe("workstream runtime resolution", () => {
       "finalize_workstream_supervision",
       "launch_supervision_branch",
       "link_planning_session",
+      "reconcile_workstream_supervision",
       "tool_runtime_info",
     ])
   })
 
-  test("captures resolution errors when the work binary is unavailable", () => {
-    const info = getWorkstreamsToolRuntimeInfo({
+  test("captures resolution errors when the work binary is unavailable", async () => {
+    const info = await getWorkstreamsToolRuntimeInfo({
       resolveWorkCommandPath: () => {
         throw new Error("missing work binary")
       },
@@ -327,6 +479,111 @@ describe("workstream runtime resolution", () => {
     expect(info.workCommandPath).toBeUndefined()
     expect(info.errors?.workCommandPath).toContain("missing work binary")
     expect(info.resolvedRuntimeModulePath).toBeUndefined()
+  })
+
+  test("delegates finalize tool execution to the package runtime", async () => {
+    const fixture = await createRuntimeFixture(
+      "dist",
+      [
+        "export function createDefaultFinalizeWorkstreamSupervisionDeps(_runtime, options = {}) {",
+        "  return { marker: 'finalize', repoRoot: options.getRepoRoot?.() }",
+        "}",
+        "export async function executeFinalizeWorkstreamSupervision(args, context, deps) {",
+        "  return JSON.stringify({ args, context, deps })",
+        "}",
+      ].join("\n"),
+    )
+    try {
+      resetWorkstreamsToolRuntimeCache()
+      const result = await executeFinalizeToolDelegate(
+        { status: "completed", summary: "done" },
+        { sessionID: "ses_test_1" },
+        {
+          resolveWorkCommandPath: () => fixture.workLinkPath,
+          cache: false,
+        },
+      )
+      const parsed = JSON.parse(result)
+
+      expect(parsed.args).toEqual({ status: "completed", summary: "done" })
+      expect(parsed.context).toEqual({ sessionID: "ses_test_1" })
+      expect(parsed.deps.marker).toBe("finalize")
+      expect(parsed.deps.repoRoot).toBe("/Users/beto/agenv")
+    } finally {
+      resetWorkstreamsToolRuntimeCache()
+      await fixture.cleanup()
+    }
+  })
+
+  test("delegates launch tool execution to the package runtime", async () => {
+    const fixture = await createRuntimeFixture(
+      "dist",
+      [
+        "export function createDefaultLaunchSupervisionBranchDeps(_runtime, options = {}) {",
+        "  return { marker: 'launch', repoRoot: options.getRepoRoot?.() }",
+        "}",
+        "export async function executeLaunchSupervisionBranch(args, context, deps) {",
+        "  return JSON.stringify({ args, context, deps })",
+        "}",
+      ].join("\n"),
+    )
+    try {
+      resetWorkstreamsToolRuntimeCache()
+      const result = await executeLaunchToolDelegate(
+        { scope: "batch", target: "10.01", silent: true },
+        { sessionID: "root-session-1" },
+        {
+          resolveWorkCommandPath: () => fixture.workLinkPath,
+          cache: false,
+        },
+      )
+      const parsed = JSON.parse(result)
+
+      expect(parsed.args).toEqual({ scope: "batch", target: "10.01", silent: true })
+      expect(parsed.context).toEqual({ sessionID: "root-session-1" })
+      expect(parsed.deps.marker).toBe("launch")
+      expect(parsed.deps.repoRoot).toBe("/Users/beto/agenv")
+    } finally {
+      resetWorkstreamsToolRuntimeCache()
+      await fixture.cleanup()
+    }
+  })
+
+  test("delegates reconcile tool execution to the package runtime", async () => {
+    const fixture = await createRuntimeFixture(
+      "dist",
+      [
+        "export function createDefaultReconcileWorkstreamSupervisionDeps(_runtime, options = {}) {",
+        "  return { marker: 'reconcile', repoRoot: options.getRepoRoot?.() }",
+        "}",
+        "export async function executeReconcileWorkstreamSupervision(args, context, deps) {",
+        "  return JSON.stringify({ args, context, deps })",
+        "}",
+      ].join("\n"),
+    )
+    try {
+      resetWorkstreamsToolRuntimeCache()
+      const result = await executeReconcileToolDelegate(
+        { streamId: "001-test", branchSessionId: "branch-supervision-1" },
+        { sessionID: "root-session-1" },
+        {
+          resolveWorkCommandPath: () => fixture.workLinkPath,
+          cache: false,
+        },
+      )
+      const parsed = JSON.parse(result)
+
+      expect(parsed.args).toEqual({
+        streamId: "001-test",
+        branchSessionId: "branch-supervision-1",
+      })
+      expect(parsed.context).toEqual({ sessionID: "root-session-1" })
+      expect(parsed.deps.marker).toBe("reconcile")
+      expect(parsed.deps.repoRoot).toBe("/Users/beto/agenv")
+    } finally {
+      resetWorkstreamsToolRuntimeCache()
+      await fixture.cleanup()
+    }
   })
 })
 
@@ -396,6 +653,8 @@ describe("finalize_workstream_supervision", () => {
         completedAt: "2026-04-12T01:00:00.000Z",
         updatedAt: "2026-04-12T01:00:00.000Z",
         nativeSessionId: "ses_supervision_1",
+        finalizationSource: "explicit_finalize",
+        finalizationReason: "persisted_terminal_status",
       })
       expect(stored?.branch_sessions[0]?.notes).toContain("Execution complete.")
       expect(stored?.branch_sessions[0]?.notes).toContain("Summary:\nPaused for user review.")
@@ -482,6 +741,157 @@ describe("finalize_workstream_supervision", () => {
   })
 })
 
+describe("reconcile_workstream_supervision", () => {
+  test("exposes the public recovery tool args", () => {
+    expect(Object.keys((reconcileWorkstreamSupervisionTool as any).args).sort()).toEqual([
+      "branchSessionId",
+      "streamId",
+    ])
+  })
+
+  test("reconciles a dead tmux-backed supervision branch using authoritative exit evidence", async () => {
+    const workspace = createTestWorkstream("001-agent-tool-reconcile-dead-pane")
+
+    try {
+      await upsertBranchSessionLocked(
+        workspace.repoRoot,
+        workspace.streamId,
+        buildRootAgentBranchSession({
+          context: {
+            rootSessionId: "root-session-1",
+            branchSessionId: "branch-supervision-1",
+            parentSessionId: "root-session-1",
+          },
+          branchRole: "supervision",
+          status: "running",
+          startedAt: "2026-04-12T00:00:00.000Z",
+          updatedAt: "2026-04-12T00:00:00.000Z",
+          tmuxSessionName: "001-supervision-reconcile1",
+          notes: "Awaiting parent reconciliation.",
+        }),
+      )
+
+      const result = await executeReconcileWorkstreamSupervision(
+        {},
+        { sessionID: "root-session-1" },
+        createReconcileDeps(workspace.repoRoot, workspace.streamId, {
+          inspectTmuxSession: async () => ({
+            exists: true,
+            paneDead: true,
+            exitStatus: 0,
+            paneOutput: "finished cleanly",
+          }),
+        }),
+      )
+
+      expect(result).toContain("Reconciled 1 supervision session")
+      expect(result).toContain(`${workspace.streamId}:branch-supervision-1 -> completed`)
+      expect(result).toContain("reason: ended_without_explicit_finalize")
+
+      const stored = loadSupervisorState(workspace.repoRoot, workspace.streamId)
+      expect(stored?.branch_sessions[0]).toMatchObject({
+        status: "completed",
+        processExitCode: 0,
+        processEndedAt: "2026-04-12T03:00:00.000Z",
+        finalizationSource: "parent_process_exit_reconciliation",
+        finalizationReason: "ended_without_explicit_finalize",
+      })
+      expect(stored?.branch_sessions[0]?.notes).toContain(
+        "Authoritative process-end evidence: tmux pane exited with status 0.",
+      )
+      expect(stored?.branch_sessions[0]?.notes).toContain("Recovered final branch report:")
+    } finally {
+      cleanupTestWorkstream(workspace)
+    }
+  })
+
+  test("marks a missing tmux session as stopped when report evidence is recoverable", async () => {
+    const workspace = createTestWorkstream("001-agent-tool-reconcile-missing-session")
+
+    try {
+      await upsertBranchSessionLocked(
+        workspace.repoRoot,
+        workspace.streamId,
+        buildRootAgentBranchSession({
+          context: {
+            rootSessionId: "root-session-1",
+            branchSessionId: "branch-supervision-1",
+            parentSessionId: "root-session-1",
+            nativeSessionId: "ses_supervision_1",
+            scope: { level: "batch", stageId: "10", batchId: "10.01" },
+          },
+          branchRole: "supervision",
+          status: "pending",
+          startedAt: "2026-04-12T00:00:00.000Z",
+          updatedAt: "2026-04-12T00:00:00.000Z",
+          tmuxSessionName: "001-supervision-reconcile2",
+        }),
+      )
+
+      const result = await executeReconcileWorkstreamSupervision(
+        {},
+        { sessionID: "root-session-1" },
+        createReconcileDeps(workspace.repoRoot, workspace.streamId, {
+          inspectTmuxSession: async () => ({ exists: false, paneDead: false }),
+        }),
+      )
+
+      expect(result).toContain(`${workspace.streamId}:branch-supervision-1 -> stopped`)
+      expect(result).toContain("reason: session_missing_with_recovered_report")
+
+      const stored = loadSupervisorState(workspace.repoRoot, workspace.streamId)
+      expect(stored?.branch_sessions[0]).toMatchObject({
+        status: "stopped",
+        processEndedAt: "2026-04-12T03:00:00.000Z",
+        finalizationSource: "parent_process_exit_reconciliation",
+        finalizationReason: "session_missing_with_recovered_report",
+      })
+      expect(stored?.branch_sessions[0]?.notes).toContain("tmux session 001-supervision-reconcile2 no longer exists")
+    } finally {
+      cleanupTestWorkstream(workspace)
+    }
+  })
+
+  test("reports when nothing needs reconciliation", async () => {
+    const workspace = createTestWorkstream("001-agent-tool-reconcile-noop")
+
+    try {
+      await upsertBranchSessionLocked(
+        workspace.repoRoot,
+        workspace.streamId,
+        buildRootAgentBranchSession({
+          context: {
+            rootSessionId: "root-session-1",
+            branchSessionId: "branch-supervision-1",
+            parentSessionId: "root-session-1",
+          },
+          branchRole: "supervision",
+          status: "running",
+          startedAt: "2026-04-12T00:00:00.000Z",
+          updatedAt: "2026-04-12T00:00:00.000Z",
+          tmuxSessionName: "001-supervision-live1",
+        }),
+      )
+
+      const result = await executeReconcileWorkstreamSupervision(
+        {},
+        { sessionID: "root-session-1" },
+        createReconcileDeps(workspace.repoRoot, workspace.streamId, {
+          inspectTmuxSession: async () => ({ exists: true, paneDead: false }),
+        }),
+      )
+
+      expect(result).toContain("No supervision sessions needed reconciliation.")
+      expect(result).toContain("still live")
+      expect(loadSupervisorState(workspace.repoRoot, workspace.streamId)?.branch_sessions[0]?.status).toBe(
+        "running",
+      )
+    } finally {
+      cleanupTestWorkstream(workspace)
+    }
+  })
+})
+
 describe("launch_supervision_branch", () => {
   test("exposes the target-based public tool args", () => {
     expect(Object.keys((launchSupervisionBranchTool as any).args).sort()).toEqual([
@@ -508,6 +918,9 @@ describe("launch_supervision_branch", () => {
         "Breakpoint selection: Selected the previous user message before launch message msg-root-launch because no configured breakpoint tag was found.",
       )
       expect(result).toContain("Extracted final branch report:")
+      expect(result).toContain(
+        "Finalization handling: Parent-side reconciliation finalized the branch after process end because no explicit finalize_workstream_supervision call was persisted.",
+      )
 
       const stored = loadSupervisorState(workspace.repoRoot, workspace.streamId)
       expect(stored?.branch_sessions).toHaveLength(1)
@@ -529,7 +942,132 @@ describe("launch_supervision_branch", () => {
         status: "completed",
         batchId: "10.01",
         parentSessionId: "root-session-1",
+        processExitCode: 0,
+        finalizationSource: "parent_process_exit_reconciliation",
+        finalizationReason: "ended_without_explicit_finalize",
       })
+      expect(stored?.branch_sessions[0]?.processEndedAt).toBe("2026-04-12T00:00:00.000Z")
+      expect(stored?.branch_sessions[0]?.notes).toContain(
+        "Parent reconciled branch state after process end because no explicit finalize_workstream_supervision call was persisted, but transcript/report evidence was available.",
+      )
+    } finally {
+      cleanupTestWorkstream(workspace)
+    }
+  })
+
+  test("preserves explicit completedAt when explicit finalization lands before a later zero-exit reconciliation", async () => {
+    const workspace = createTestWorkstream("001-agent-tool-explicit-finalize-zero-exit")
+
+    try {
+      const explicitCompletedAt = "2026-04-12T00:30:00.000Z"
+      const reconciledAt = "2026-04-12T02:00:00.000Z"
+
+      const result = await executeLaunchSupervisionBranch(
+        { batch: "10.01" },
+        { sessionID: "root-session-1" },
+        createDeps(workspace.repoRoot, workspace.streamId, {
+          now: () => reconciledAt,
+          runForkedSession: async ({ onNativeSessionId, tmuxSessionName }) => {
+            await onNativeSessionId?.("ses_supervision_explicit_zero")
+            await upsertBranchSessionLocked(
+              workspace.repoRoot,
+              workspace.streamId,
+              buildRootAgentBranchSession({
+                context: {
+                  rootSessionId: "root-session-1",
+                  branchSessionId: "branch-supervision-1",
+                  parentSessionId: "root-session-1",
+                  checkpointMessageId: "msg-root-checkpoint",
+                  checkpointMessageIndex: 0,
+                  checkpointCreatedAt: "2026-04-12T00:00:00.000Z",
+                  nativeSessionId: "ses_supervision_explicit_zero",
+                  scope: { level: "batch", stageId: "10", batchId: "10.01" },
+                },
+                branchRole: "supervision",
+                status: "completed",
+                startedAt: "2026-04-12T00:00:00.000Z",
+                updatedAt: explicitCompletedAt,
+                completedAt: explicitCompletedAt,
+                tmuxSessionName: tmuxSessionName ?? "001-supervision-test01",
+                batchId: "10.01",
+                finalizationSource: "explicit_finalize",
+                finalizationReason: "persisted_terminal_status",
+                notes: "Summary:\nExplicit finalize completed before process exit.",
+              }),
+            )
+
+            return {
+              code: 0,
+              stdout: "",
+              stderr: "",
+              nativeSessionId: "ses_supervision_explicit_zero",
+              tmuxSessionName,
+            }
+          },
+          waitForTerminalBranchSession: async () =>
+            loadSupervisorState(workspace.repoRoot, workspace.streamId)?.branch_sessions.find(
+              (branch) => branch.branchSessionId === "branch-supervision-1",
+            ),
+          exportSessionTranscript: async (sessionId) =>
+            sessionId === "root-session-1"
+              ? {
+                  info: {
+                    id: "root-session-1",
+                    title: "Root session",
+                    summary: { additions: 0, deletions: 0, files: 0 },
+                  },
+                  messages: [
+                    {
+                      info: { id: "msg-root-checkpoint", role: "user" },
+                      parts: [{ type: "text", text: "Checkpoint user message SESSION_BREAKPOINT" }],
+                    },
+                  ],
+                }
+              : {
+                  info: {
+                    id: "ses_supervision_explicit_zero",
+                    title: "Supervision branch",
+                    summary: { additions: 0, deletions: 0, files: 0 },
+                  },
+                  messages: [
+                    {
+                      info: { id: "msg-final", role: "assistant" },
+                      parts: [
+                        {
+                          type: "text",
+                          text: "## What is Next\n- explicit finalize completed before process exit",
+                        },
+                      ],
+                    },
+                  ],
+                },
+        }),
+      )
+
+      expect(result).toContain(
+        "Supervision branch branch-supervision-1 (native session ses_supervision_explicit_zero) completed",
+      )
+      expect(result).toContain("Process end evidence: tmux pane exited with status 0.")
+      expect(result).toContain(
+        "Finalization handling: Explicit supervision finalization was already persisted before parent-side reconciliation.",
+      )
+      expect(result).toContain(
+        "Extracted final branch report:\n## What is Next\n- explicit finalize completed before process exit",
+      )
+
+      const stored = loadSupervisorState(workspace.repoRoot, workspace.streamId)
+      expect(stored?.branch_sessions[0]?.completedAt).toBe(explicitCompletedAt)
+      expect(stored?.branch_sessions[0]?.updatedAt).toBe(reconciledAt)
+      expect(stored?.branch_sessions[0]?.processEndedAt).toBe(reconciledAt)
+      expect(stored?.branch_sessions[0]?.processExitCode).toBe(0)
+      expect(stored?.branch_sessions[0]?.finalizationSource).toBe("explicit_finalize")
+      expect(stored?.branch_sessions[0]?.finalizationReason).toBe("persisted_terminal_status")
+      expect(stored?.branch_sessions[0]?.notes).toContain(
+        "Persisted terminal supervision state was already finalized before parent-side process-end reconciliation.",
+      )
+      expect(stored?.branch_sessions[0]?.notes).toContain(
+        "Authoritative process-end evidence: tmux pane exited with status 0.",
+      )
     } finally {
       cleanupTestWorkstream(workspace)
     }
@@ -624,6 +1162,150 @@ describe("launch_supervision_branch", () => {
       expect(result).toContain("branch-supervision-existing")
       expect(result).toContain("tmux attach -t 001-supervision-dup001")
       expect(loadSupervisorState(workspace.repoRoot, workspace.streamId)?.branch_sessions).toHaveLength(1)
+    } finally {
+      cleanupTestWorkstream(workspace)
+    }
+  })
+
+  test("refuses duplicate supervision launches when an equivalent pending or running branch is still live", async () => {
+    for (const status of ["pending", "running"] as const) {
+      const workspace = createTestWorkstream(`001-agent-tool-duplicate-${status}`)
+
+      try {
+        await upsertBranchSessionLocked(
+          workspace.repoRoot,
+          workspace.streamId,
+          buildRootAgentBranchSession({
+            context: {
+              rootSessionId: "root-session-1",
+              branchSessionId: `branch-supervision-${status}`,
+              parentSessionId: "root-session-1",
+              nativeSessionId: `ses_supervision_${status}`,
+              scope: {
+                level: "batch",
+                stageId: "10",
+                batchId: "10.01",
+              },
+            },
+            branchRole: "supervision",
+            status,
+            startedAt: "2026-04-12T00:00:00.000Z",
+            updatedAt: "2026-04-12T00:00:00.000Z",
+            tmuxSessionName: `001-supervision-${status}`,
+            batchId: "10.01",
+            notes: `existing ${status} supervision branch`,
+          }),
+        )
+
+        const result = await executeLaunchSupervisionBranch(
+          { batch: "10.01" },
+          { sessionID: "root-session-1" },
+          createDeps(workspace.repoRoot, workspace.streamId, {
+            runForkedSession: async () => {
+              throw new Error("should not launch duplicate supervision session")
+            },
+          }),
+        )
+
+        expect(result).toContain("Refusing duplicate supervision launch for batch 10.01")
+        expect(result).toContain(`branch-supervision-${status}`)
+      } finally {
+        cleanupTestWorkstream(workspace)
+      }
+    }
+  })
+
+  test("allows relaunch after reconcile marks the prior stopped branch terminal", async () => {
+    const workspace = createTestWorkstream("001-agent-tool-reconciled-stopped-relaunch")
+
+    try {
+      await upsertBranchSessionLocked(
+        workspace.repoRoot,
+        workspace.streamId,
+        buildRootAgentBranchSession({
+          context: {
+            rootSessionId: "root-session-1",
+            branchSessionId: "branch-supervision-reconciled",
+            parentSessionId: "root-session-1",
+            nativeSessionId: "ses_supervision_reconciled",
+            scope: {
+              level: "batch",
+              stageId: "10",
+              batchId: "10.01",
+            },
+          },
+          branchRole: "supervision",
+          status: "stopped",
+          startedAt: "2026-04-12T00:00:00.000Z",
+          updatedAt: "2026-04-12T01:00:00.000Z",
+          completedAt: "2026-04-12T01:00:00.000Z",
+          processEndedAt: "2026-04-12T01:00:00.000Z",
+          finalizationSource: "parent_process_exit_reconciliation",
+          finalizationReason: "session_missing_with_recovered_report",
+          tmuxSessionName: "001-supervision-reconciled",
+          batchId: "10.01",
+          notes: "reconciled stopped supervision branch",
+        }),
+      )
+
+      const result = await executeLaunchSupervisionBranch(
+        { batch: "10.01" },
+        { sessionID: "root-session-1" },
+        createDeps(workspace.repoRoot, workspace.streamId, {
+          createBranchSessionId: () => "branch-supervision-2",
+          createSupervisionTmuxSessionName: () => "001-supervision-relaunch",
+        }),
+      )
+
+      expect(result).toContain("branch-supervision-2")
+      expect(result).not.toContain("Refusing duplicate supervision launch")
+      expect(loadSupervisorState(workspace.repoRoot, workspace.streamId)?.branch_sessions).toHaveLength(2)
+    } finally {
+      cleanupTestWorkstream(workspace)
+    }
+  })
+
+  test("still protects against legacy stopped branches that lack terminal reconciliation evidence", async () => {
+    const workspace = createTestWorkstream("001-agent-tool-stopped-without-terminal-evidence")
+
+    try {
+      await upsertBranchSessionLocked(
+        workspace.repoRoot,
+        workspace.streamId,
+        buildRootAgentBranchSession({
+          context: {
+            rootSessionId: "root-session-1",
+            branchSessionId: "branch-supervision-stopped-legacy",
+            parentSessionId: "root-session-1",
+            nativeSessionId: "ses_supervision_stopped_legacy",
+            scope: {
+              level: "batch",
+              stageId: "10",
+              batchId: "10.01",
+            },
+          },
+          branchRole: "supervision",
+          status: "stopped",
+          startedAt: "2026-04-12T00:00:00.000Z",
+          updatedAt: "2026-04-12T00:30:00.000Z",
+          tmuxSessionName: "001-supervision-stopped-legacy",
+          batchId: "10.01",
+          notes: "stopped branch without persisted terminal metadata",
+        }),
+      )
+
+      const result = await executeLaunchSupervisionBranch(
+        { batch: "10.01" },
+        { sessionID: "root-session-1" },
+        createDeps(workspace.repoRoot, workspace.streamId, {
+          runForkedSession: async () => {
+            throw new Error("should not launch duplicate supervision session")
+          },
+        }),
+      )
+
+      expect(result).toContain("Refusing duplicate supervision launch for batch 10.01")
+      expect(result).toContain("branch-supervision-stopped-legacy")
     } finally {
       cleanupTestWorkstream(workspace)
     }
@@ -1135,14 +1817,202 @@ describe("launch_supervision_branch", () => {
 
       expect(result).toContain("native session ses_supervision_export_missing")
       expect(result).toContain("Transcript export unavailable: session export unavailable")
+      expect(result).toContain("Process end evidence: tmux pane exited with status 0.")
+      expect(result).toContain(
+        "Finalization handling: Parent-side reconciliation finalized the branch after process end with exit code 0, but no usable finalization/report was persisted.",
+      )
       expect(result).toContain("Branch run summary:\nstdout fallback summary")
 
       const stored = loadSupervisorState(workspace.repoRoot, workspace.streamId)
       expect(stored?.branch_sessions[0]).toMatchObject({
         status: "completed",
         nativeSessionId: "ses_supervision_export_missing",
+        processExitCode: 0,
+        finalizationSource: "parent_process_exit_reconciliation",
+        finalizationReason: "exit_zero_without_usable_finalization",
       })
       expect(stored?.branch_sessions[0]?.notes).toContain("stdout fallback summary")
+    } finally {
+      cleanupTestWorkstream(workspace)
+    }
+  })
+
+  test("marks the branch failed when the tmux-hosted run ends nonzero without explicit finalization", async () => {
+    const workspace = createTestWorkstream("001-agent-tool-nonzero-exit")
+
+    try {
+      const result = await executeLaunchSupervisionBranch(
+        { batch: "10.01" },
+        { sessionID: "root-session-1" },
+        createDeps(workspace.repoRoot, workspace.streamId, {
+          runForkedSession: async () => ({
+            code: 17,
+            stdout: "",
+            stderr: "branch process exited with code 17",
+            nativeSessionId: "ses_supervision_nonzero",
+          }),
+          exportSessionTranscript: async (sessionId) =>
+            sessionId === "root-session-1"
+              ? {
+                  info: {
+                    id: "root-session-1",
+                    title: "Root session",
+                    summary: { additions: 0, deletions: 0, files: 0 },
+                  },
+                  messages: [
+                    {
+                      info: { id: "msg-root-checkpoint", role: "user" },
+                      parts: [{ type: "text", text: "Checkpoint user message SESSION_BREAKPOINT" }],
+                    },
+                  ],
+                }
+              : {
+                  info: {
+                    id: "ses_supervision_nonzero",
+                    title: "Supervision branch",
+                    summary: { additions: 0, deletions: 0, files: 0 },
+                  },
+                  messages: [],
+                },
+        }),
+      )
+
+      expect(result).toContain(
+        "Supervision branch branch-supervision-1 (native session ses_supervision_nonzero) failed",
+      )
+      expect(result).toContain("Process end evidence: tmux pane exited with status 17.")
+      expect(result).toContain(
+        "Finalization handling: Parent-side reconciliation marked the branch failed after observing a nonzero tmux process exit.",
+      )
+
+      const stored = loadSupervisorState(workspace.repoRoot, workspace.streamId)
+      expect(stored?.branch_sessions[0]).toMatchObject({
+        status: "failed",
+        nativeSessionId: "ses_supervision_nonzero",
+        processExitCode: 17,
+        finalizationSource: "parent_process_exit_reconciliation",
+        finalizationReason: "nonzero_exit",
+      })
+      expect(stored?.branch_sessions[0]?.notes).toContain(
+        "Authoritative process-end evidence: tmux pane exited with status 17.",
+      )
+    } finally {
+      cleanupTestWorkstream(workspace)
+    }
+  })
+
+  test("preserves explicit finalization status and completedAt when a later tmux exit is nonzero", async () => {
+    const workspace = createTestWorkstream("001-agent-tool-explicit-finalize-precedence")
+
+    try {
+      const explicitCompletedAt = "2026-04-12T00:30:00.000Z"
+      const reconciledAt = "2026-04-12T02:00:00.000Z"
+
+      const result = await executeLaunchSupervisionBranch(
+        { batch: "10.01" },
+        { sessionID: "root-session-1" },
+        createDeps(workspace.repoRoot, workspace.streamId, {
+          now: () => reconciledAt,
+          runForkedSession: async ({ onNativeSessionId, tmuxSessionName }) => {
+            await onNativeSessionId?.("ses_supervision_explicit")
+            await upsertBranchSessionLocked(
+              workspace.repoRoot,
+              workspace.streamId,
+              buildRootAgentBranchSession({
+                context: {
+                  rootSessionId: "root-session-1",
+                  branchSessionId: "branch-supervision-1",
+                  parentSessionId: "root-session-1",
+                  checkpointMessageId: "msg-root-checkpoint",
+                  checkpointMessageIndex: 0,
+                  checkpointCreatedAt: "2026-04-12T00:00:00.000Z",
+                  nativeSessionId: "ses_supervision_explicit",
+                  scope: { level: "batch", stageId: "10", batchId: "10.01" },
+                },
+                branchRole: "supervision",
+                status: "completed",
+                startedAt: "2026-04-12T00:00:00.000Z",
+                updatedAt: explicitCompletedAt,
+                completedAt: explicitCompletedAt,
+                tmuxSessionName: tmuxSessionName ?? "001-supervision-test01",
+                batchId: "10.01",
+                finalizationSource: "explicit_finalize",
+                finalizationReason: "persisted_terminal_status",
+                notes: "Summary:\nExplicit finalize won the race.",
+              }),
+            )
+
+            return {
+              code: 17,
+              stdout: "",
+              stderr: "",
+              nativeSessionId: "ses_supervision_explicit",
+              tmuxSessionName,
+            }
+          },
+          waitForTerminalBranchSession: async () =>
+            loadSupervisorState(workspace.repoRoot, workspace.streamId)?.branch_sessions.find(
+              (branch) => branch.branchSessionId === "branch-supervision-1",
+            ),
+          exportSessionTranscript: async (sessionId) =>
+            sessionId === "root-session-1"
+              ? {
+                  info: {
+                    id: "root-session-1",
+                    title: "Root session",
+                    summary: { additions: 0, deletions: 0, files: 0 },
+                  },
+                  messages: [
+                    {
+                      info: { id: "msg-root-checkpoint", role: "user" },
+                      parts: [{ type: "text", text: "Checkpoint user message SESSION_BREAKPOINT" }],
+                    },
+                  ],
+                }
+              : {
+                  info: {
+                    id: "ses_supervision_explicit",
+                    title: "Supervision branch",
+                    summary: { additions: 0, deletions: 0, files: 0 },
+                  },
+                  messages: [
+                    {
+                      info: { id: "msg-final", role: "assistant" },
+                      parts: [
+                        { type: "text", text: "## What is Next\n- explicit finalize already persisted" },
+                      ],
+                    },
+                  ],
+                },
+        }),
+      )
+
+      expect(result).toContain(
+        "Supervision branch branch-supervision-1 (native session ses_supervision_explicit) completed",
+      )
+      expect(result).toContain("Process end evidence: tmux pane exited with status 17.")
+      expect(result).toContain(
+        "Finalization handling: Explicit supervision finalization was already persisted before parent-side reconciliation.",
+      )
+      expect(result).toContain(
+        "Extracted final branch report:\n## What is Next\n- explicit finalize already persisted",
+      )
+
+      const stored = loadSupervisorState(workspace.repoRoot, workspace.streamId)
+      expect(stored?.branch_sessions[0]?.status).toBe("completed")
+      expect(stored?.branch_sessions[0]?.nativeSessionId).toBe("ses_supervision_explicit")
+      expect(stored?.branch_sessions[0]?.completedAt).toBe(explicitCompletedAt)
+      expect(stored?.branch_sessions[0]?.updatedAt).toBe(reconciledAt)
+      expect(stored?.branch_sessions[0]?.processEndedAt).toBe(reconciledAt)
+      expect(stored?.branch_sessions[0]?.processExitCode).toBe(17)
+      expect(stored?.branch_sessions[0]?.finalizationSource).toBe("explicit_finalize")
+      expect(stored?.branch_sessions[0]?.finalizationReason).toBe("persisted_terminal_status")
+      expect(stored?.branch_sessions[0]?.notes).toContain(
+        "Persisted explicit supervision finalization takes precedence over the later observed nonzero tmux process exit (17)",
+      )
+      expect(stored?.branch_sessions[0]?.notes).toContain(
+        "Authoritative process-end evidence: tmux pane exited with status 17.",
+      )
     } finally {
       cleanupTestWorkstream(workspace)
     }
@@ -2070,13 +2940,110 @@ describe("runForkedSessionInTmux", () => {
       expect(result.tmuxMetadata?.attachCommand).toBe(`tmux attach -t ${sessionName}`)
       expect(existsSync(result.tmuxMetadata!.readyMarkerPath)).toBe(true)
       expect(readFileSync(result.tmuxMetadata!.commandPath, "utf-8")).toContain(
-        "'opencode' 'run' '--session' 'root-session-1' '--fork'",
+        'exec opencode "$@"',
+      )
+      expect(readFileSync(result.tmuxMetadata!.wrapperPath, "utf-8")).toContain(
+        "'run' '--session' 'root-session-1' '--fork'",
       )
       expect(result.stdout).toContain("tmux ok")
     } finally {
       process.env.PATH = originalPath
       Bun.spawnSync(["tmux", "kill-session", "-t", sessionName])
       await fixture.cleanup()
+    }
+  })
+
+  test.if(hasTmux)("creates a live tmux session before the mocked opencode run exits", async () => {
+    const fixture = await createFakeOpencodeFixture([
+      'if [ "$1" = "run" ]; then',
+      '  printf \'{"type":"text","part":{"text":"## What is Next\\n- tmux live"}}\\n\'',
+      '  sleep 2',
+      '  exit 0',
+      'fi',
+      'echo "unexpected args: $*" >&2',
+      'exit 1',
+    ].join("\n"))
+    const sessionName = `test-supervision-live-${Date.now().toString(36)}`
+    const originalPath = process.env.PATH
+
+    try {
+      process.env.PATH = `${join(fixture.tempRoot, "bin")}:${originalPath ?? ""}`
+
+      const launchPromise = runForkedSessionInTmux(
+        {
+          sessionId: "root-session-1",
+          repoRoot: fixture.repoRoot,
+          title: "root-supervision-001-branch-supervision-live",
+          prompt: "Please supervise batch 10.01",
+          tmuxSessionName: sessionName,
+        },
+        {
+          findNativeSessionIdByTitle: async () => "ses_tmux_test_live_1",
+        },
+      )
+
+      let sawLiveSession = false
+      const startedAt = Date.now()
+      while (Date.now() - startedAt < 5000) {
+        const hasSession = nodeSpawnSync("tmux", ["has-session", "-t", sessionName], {
+          stdio: "ignore",
+        }).status === 0
+
+        if (hasSession) {
+          const paneState = nodeSpawnSync(
+            "tmux",
+            ["list-panes", "-t", sessionName, "-F", "#{pane_dead}:#{pane_current_command}"],
+            { encoding: "utf-8" },
+          )
+          const [paneLine] = (paneState.stdout ?? "").trim().split("\n")
+          if (paneLine?.startsWith("0:")) {
+            sawLiveSession = true
+            break
+          }
+        }
+
+        await new Promise((resolve) => setTimeout(resolve, 100))
+      }
+
+      expect(sawLiveSession).toBe(true)
+
+      const result = await launchPromise
+      expect(result.code).toBe(0)
+      expect(result.stdout).toContain("tmux live")
+    } finally {
+      process.env.PATH = originalPath
+      Bun.spawnSync(["tmux", "kill-session", "-t", sessionName])
+      await fixture.cleanup()
+    }
+  })
+
+  test.if(hasTmux)("treats a vanished tmux session as an error instead of implicit success", async () => {
+    const sessionName = `test-supervision-vanish-${Date.now().toString(36)}`
+
+    try {
+      const createResult = nodeSpawnSync(
+        "tmux",
+        ["new-session", "-d", "-s", sessionName, "-n", "supervision", "sleep", "5"],
+        { encoding: "utf-8" },
+      )
+      expect(createResult.status).toBe(0)
+
+      const waitPromise = waitForTmuxSessionExit(sessionName, 2000)
+      await new Promise((resolve) => setTimeout(resolve, 100))
+
+      const killResult = nodeSpawnSync("tmux", ["kill-session", "-t", sessionName], {
+        encoding: "utf-8",
+      })
+      expect(killResult.status).toBe(0)
+
+      await expect(waitPromise).rejects.toThrow(
+        `Supervision tmux session "${sessionName}" vanished before an exit status could be observed.`,
+      )
+      await expect(waitPromise).rejects.toThrow(
+        "This is not treated as implicit success; inspect tmux/server lifecycle and supervision logs for the missing process-end evidence.",
+      )
+    } finally {
+      Bun.spawnSync(["tmux", "kill-session", "-t", sessionName])
     }
   })
 })

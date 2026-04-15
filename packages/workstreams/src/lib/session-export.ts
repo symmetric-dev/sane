@@ -9,6 +9,7 @@ import { spawn } from "node:child_process"
 import { mkdtemp, open, readFile, rm } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
+import { logWorkstreamToolEvent } from "./workstream-tool/debug-log.ts"
 
 const DIAGNOSTIC_SNIPPET_LENGTH = 240
 const SESSION_EXPORT_TEMP_PREFIX = "agenv-session-export-"
@@ -178,6 +179,7 @@ function getCompletedTimestamp(message: ExportedMessage | null | undefined): num
  * @throws Error if the command fails or returns invalid JSON
  */
 export async function exportSession(sessionId: string): Promise<SessionExport> {
+  logWorkstreamToolEvent("workstream.session-export", "exportSession:before", { sessionId })
   if (!sessionId || typeof sessionId !== "string") {
     throw new Error("Invalid session ID: must be a non-empty string")
   }
@@ -190,8 +192,17 @@ export async function exportSession(sessionId: string): Promise<SessionExport> {
 
   try {
     const { stdout, stderr } = await exportSessionToTempFile(sanitizedId)
-    return parseSessionExportOutput(stdout, { stderr })
+    const parsed = parseSessionExportOutput(stdout, { stderr })
+    logWorkstreamToolEvent("workstream.session-export", "exportSession:after", {
+      sessionId: sanitizedId,
+      messageCount: Array.isArray(parsed.messages) ? parsed.messages.length : undefined,
+    })
+    return parsed
   } catch (error) {
+    logWorkstreamToolEvent("workstream.session-export", "exportSession:error", {
+      sessionId: sanitizedId,
+      error,
+    })
     if (error instanceof Error) {
       const commandError = error as Error & {
         code?: number | string
@@ -223,6 +234,7 @@ export function createSessionExportChildStdio(stdoutFileDescriptor: number): ["i
 }
 
 async function exportSessionToTempFile(sessionId: string): Promise<{ stdout: string; stderr: string }> {
+  logWorkstreamToolEvent("workstream.session-export", "exportSessionToTempFile:before", { sessionId })
   const tempDir = await mkdtemp(join(tmpdir(), SESSION_EXPORT_TEMP_PREFIX))
   const tempFile = join(tempDir, `${sessionId}.json`)
 
@@ -276,6 +288,11 @@ async function exportSessionToTempFile(sessionId: string): Promise<{ stdout: str
       })
     }
 
+    logWorkstreamToolEvent("workstream.session-export", "exportSessionToTempFile:after", {
+      sessionId,
+      stdoutLength: stdout.length,
+      stderrLength: stderr.length,
+    })
     return { stdout, stderr }
   } finally {
     await stdoutHandle?.close().catch(() => undefined)

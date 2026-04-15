@@ -636,6 +636,18 @@ export type RootAgentBranchSource = "native_fork" | "repo_local_fallback"
 
 export type RootAgentBranchStatus = "pending" | "running" | "completed" | "stopped" | "failed"
 
+export type RootAgentBranchFinalizationSource =
+  | "explicit_finalize"
+  | "parent_process_exit_reconciliation"
+
+export type RootAgentBranchFinalizationReason =
+  | "persisted_terminal_status"
+  | "ended_without_explicit_finalize"
+  | "exit_zero_without_usable_finalization"
+  | "nonzero_exit"
+  | "session_missing_with_recovered_report"
+  | "session_missing_without_usable_finalization"
+
 export interface RootAgentBatchBranchScope {
   level: "batch"
   stageId: string
@@ -710,6 +722,10 @@ export interface RootAgentBranchSession extends RootAgentLineage {
   startedAt: string
   updatedAt: string
   completedAt?: string
+   processEndedAt?: string
+   processExitCode?: number
+   finalizationSource?: RootAgentBranchFinalizationSource
+   finalizationReason?: RootAgentBranchFinalizationReason
   tmuxSessionName?: string
   runId?: string
   batchId?: string

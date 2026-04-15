@@ -4,6 +4,8 @@ import { loadSupervisorState } from "./supervisor-state.ts"
 import type {
   CurrentBranchSupervisionContext,
   RootAgentBranchScope,
+  RootAgentBranchFinalizationReason,
+  RootAgentBranchFinalizationSource,
   RootAgentBreakpointSelection,
   RootAgentBranchRole,
   RootAgentBranchSession,
@@ -542,6 +544,10 @@ export function buildRootAgentBranchSession(args: {
   startedAt?: string
   updatedAt?: string
   completedAt?: string
+  processEndedAt?: string
+  processExitCode?: number
+  finalizationSource?: RootAgentBranchFinalizationSource
+  finalizationReason?: RootAgentBranchFinalizationReason
   tmuxSessionName?: string
   runId?: string
   batchId?: string
@@ -578,6 +584,10 @@ export function buildRootAgentBranchSession(args: {
     startedAt: args.startedAt ?? updatedAt,
     updatedAt,
     ...(args.completedAt ? { completedAt: args.completedAt } : {}),
+    ...(args.processEndedAt ? { processEndedAt: args.processEndedAt } : {}),
+    ...(typeof args.processExitCode === "number" ? { processExitCode: args.processExitCode } : {}),
+    ...(args.finalizationSource ? { finalizationSource: args.finalizationSource } : {}),
+    ...(args.finalizationReason ? { finalizationReason: args.finalizationReason } : {}),
     ...(args.tmuxSessionName ? { tmuxSessionName: args.tmuxSessionName } : {}),
     ...(args.runId ? { runId: args.runId } : {}),
     ...(persistedBatchId ? { batchId: persistedBatchId } : {}),
