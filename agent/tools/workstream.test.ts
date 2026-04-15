@@ -1,5 +1,6 @@
 import { beforeAll, describe, expect, mock, test } from "bun:test"
-import { mkdtemp, mkdir, rm, symlink, writeFile } from "node:fs/promises"
+import { existsSync, readFileSync } from "node:fs"
+import { chmod, mkdtemp, mkdir, rm, symlink, writeFile } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { loadSupervisorState, upsertBranchSessionLocked } from "../../packages/workstreams/src/lib/supervisor-state.ts"
@@ -32,6 +33,7 @@ let executeLaunchSupervisionBranch: any
 let getWorkstreamsToolRuntimeInfo: any
 let loadWorkstreamsToolRuntime: any
 let runMessageBoundaryForkLaunch: any
+let runForkedSessionInTmux: any
 let resolveWorkstreamsRuntimeModulePath: any
 let workstreamToolVersion: string
 type LaunchSupervisionBranchDeps = import("./workstream.ts").LaunchSupervisionBranchDeps
@@ -53,6 +55,7 @@ beforeAll(async () => {
   ;({
     executeLaunchSupervisionBranch,
     runMessageBoundaryForkLaunch,
+    runForkedSessionInTmux,
   } = (launchSupervisionBranchTool as any).__test)
 })
 
@@ -87,6 +90,21 @@ function createDeps(
     loadStoredBranchSession: (root, stream, branchSessionId) =>
       loadSupervisorState(root, stream)?.branch_sessions.find(
         (branch) => branch.branchSessionId === branchSessionId,
+      ),
+    findActiveMatchingSupervisionBranch: ({ rootSessionId, repoRoot: root, streamId: stream, scope }) =>
+      loadSupervisorState(root, stream)?.branch_sessions.find(
+        (branch) =>
+          branch.branchRole === "supervision" &&
+          branch.rootSessionId === rootSessionId &&
+          ["pending", "running", "stopped"].includes(branch.status) &&
+          (!!branch.nativeSessionId || !!branch.tmuxSessionName) &&
+          ((branch.scope?.level ?? undefined) === (scope?.level ?? undefined)) &&
+          (branch.scope?.level === "stage"
+            ? branch.scope?.stageId === scope?.stageId
+            : branch.scope?.level === "batch"
+              ? branch.scope?.stageId === scope?.stageId &&
+                branch.scope?.batchId === (scope?.level === "batch" ? scope.batchId : undefined)
+              : !branch.scope && !scope),
       ),
     findBranchSessionByNativeSessionId: (root, stream, nativeSessionId) =>
       loadSupervisorState(root, stream)?.branch_sessions.find(
@@ -465,12 +483,22 @@ describe("finalize_workstream_supervision", () => {
 })
 
 describe("launch_supervision_branch", () => {
+  test("exposes the target-based public tool args", () => {
+    expect(Object.keys((launchSupervisionBranchTool as any).args).sort()).toEqual([
+      "noServer",
+      "scope",
+      "silent",
+      "streamId",
+      "target",
+    ])
+  })
+
   test("persists successful supervision branch lineage and summary", async () => {
     const workspace = createTestWorkstream("001-agent-tool-success")
 
     try {
       const result = await executeLaunchSupervisionBranch(
-        { batch: "10.01" },
+        { scope: "batch", target: "10.01" },
         { sessionID: "root-session-1" },
         createDeps(workspace.repoRoot, workspace.streamId),
       )
@@ -512,7 +540,7 @@ describe("launch_supervision_branch", () => {
     const calls: Array<{ tmuxSessionName?: string }> = []
 
     try {
-      await executeLaunchSupervisionBranch(
+      const result = await executeLaunchSupervisionBranch(
         { batch: "10.01" },
         { sessionID: "root-session-1" },
         createDeps(workspace.repoRoot, workspace.streamId, {
@@ -525,38 +553,154 @@ describe("launch_supervision_branch", () => {
               stderr: "",
               nativeSessionId: "ses_supervision_1",
               tmuxSessionName,
+              tmuxMetadata: {
+                sessionName: tmuxSessionName!,
+                attachCommand: `tmux attach -t ${tmuxSessionName}`,
+                launchDirectory: "/tmp/workstream-supervision-observe1",
+                wrapperPath: "/tmp/workstream-supervision-observe1/launch-supervision.sh",
+                readyMarkerPath: "/tmp/workstream-supervision-observe1/launch.ready",
+                commandPath: "/tmp/workstream-supervision-observe1/opencode-command.sh",
+                metadataPath: "/tmp/workstream-supervision-observe1/launch-metadata.json",
+              },
             }
           },
         }),
       )
 
       expect(calls).toEqual([{ tmuxSessionName: "001-supervision-observe1" }])
+      expect(result).toContain("Tmux session: 001-supervision-observe1")
+      expect(result).toContain("tmux attach -t 001-supervision-observe1")
       expect(loadSupervisorState(workspace.repoRoot, workspace.streamId)?.branch_sessions[0])
         .toMatchObject({ tmuxSessionName: "001-supervision-observe1" })
+      expect(loadSupervisorState(workspace.repoRoot, workspace.streamId)?.branch_sessions[0]?.notes)
+        .toContain("Tmux observability:")
+      expect(loadSupervisorState(workspace.repoRoot, workspace.streamId)?.branch_sessions[0]?.notes)
+        .toContain("/tmp/workstream-supervision-observe1/launch.ready")
     } finally {
       cleanupTestWorkstream(workspace)
     }
   })
 
-  test("refuses duplicate supervision launches when the dedicated tmux session already exists", async () => {
+  test("refuses duplicate supervision launches for the same active batch scope", async () => {
     const workspace = createTestWorkstream("001-agent-tool-duplicate-supervision")
 
     try {
+      await upsertBranchSessionLocked(
+        workspace.repoRoot,
+        workspace.streamId,
+        buildRootAgentBranchSession({
+          context: {
+            rootSessionId: "root-session-1",
+            branchSessionId: "branch-supervision-existing",
+            parentSessionId: "root-session-1",
+            nativeSessionId: "ses_supervision_existing",
+            scope: {
+              level: "batch",
+              stageId: "10",
+              batchId: "10.01",
+            },
+          },
+          branchRole: "supervision",
+          status: "running",
+          startedAt: "2026-04-12T00:00:00.000Z",
+          updatedAt: "2026-04-12T00:00:00.000Z",
+          tmuxSessionName: "001-supervision-dup001",
+          batchId: "10.01",
+          notes: "existing supervision branch",
+        }),
+      )
+
       const result = await executeLaunchSupervisionBranch(
         { batch: "10.01" },
         { sessionID: "root-session-1" },
         createDeps(workspace.repoRoot, workspace.streamId, {
-          createSupervisionTmuxSessionName: () => "001-supervision-dup001",
-          tmuxSessionExists: () => true,
           runForkedSession: async () => {
             throw new Error("should not launch duplicate supervision session")
           },
         }),
       )
 
-      expect(result).toContain("Supervision session 001-supervision-dup001 is already running")
+      expect(result).toContain("Refusing duplicate supervision launch for batch 10.01")
+      expect(result).toContain("branch-supervision-existing")
       expect(result).toContain("tmux attach -t 001-supervision-dup001")
-      expect(loadSupervisorState(workspace.repoRoot, workspace.streamId)).toBeNull()
+      expect(loadSupervisorState(workspace.repoRoot, workspace.streamId)?.branch_sessions).toHaveLength(1)
+    } finally {
+      cleanupTestWorkstream(workspace)
+    }
+  })
+
+  test("allows a different scope to launch even when another supervision branch is still active", async () => {
+    const workspace = createTestWorkstream("001-agent-tool-distinct-scope-launch")
+
+    try {
+      await upsertBranchSessionLocked(
+        workspace.repoRoot,
+        workspace.streamId,
+        buildRootAgentBranchSession({
+          context: {
+            rootSessionId: "root-session-1",
+            branchSessionId: "branch-supervision-stage-10",
+            parentSessionId: "root-session-1",
+            nativeSessionId: "ses_supervision_stage_10",
+            scope: {
+              level: "stage",
+              stageId: "10",
+            },
+          },
+          branchRole: "supervision",
+          status: "running",
+          startedAt: "2026-04-12T00:00:00.000Z",
+          updatedAt: "2026-04-12T00:00:00.000Z",
+          tmuxSessionName: "001-supervision-stage10",
+          notes: "existing stage supervision branch",
+        }),
+      )
+
+      const result = await executeLaunchSupervisionBranch(
+        { batch: "11.01" },
+        { sessionID: "root-session-1" },
+        createDeps(workspace.repoRoot, workspace.streamId, {
+          createBranchSessionId: () => "branch-supervision-2",
+          createSupervisionTmuxSessionName: () => "001-supervision-batch1101",
+        }),
+      )
+
+      expect(result).toContain("branch-supervision-2")
+      expect(result).not.toContain("Refusing duplicate supervision launch")
+      expect(loadSupervisorState(workspace.repoRoot, workspace.streamId)?.branch_sessions).toHaveLength(2)
+    } finally {
+      cleanupTestWorkstream(workspace)
+    }
+  })
+
+  test("persists failed supervision launch state when tmux validation fails fast", async () => {
+    const workspace = createTestWorkstream("001-agent-tool-launch-validation-fail")
+
+    try {
+      const result = await executeLaunchSupervisionBranch(
+        { batch: "10.01" },
+        { sessionID: "root-session-1" },
+        createDeps(workspace.repoRoot, workspace.streamId, {
+          createSupervisionTmuxSessionName: () => "001-supervision-failfast",
+          runForkedSession: async () => {
+            throw new Error(
+              "Supervision tmux launch validation failed for 001-supervision-failfast within 3000ms.\nAttach with `tmux attach -t 001-supervision-failfast` to inspect it.",
+            )
+          },
+        }),
+      )
+
+      expect(result).toContain("failed to launch")
+      expect(result).toContain("launch validation failed")
+      expect(result).toContain("tmux attach -t 001-supervision-failfast")
+
+      expect(loadSupervisorState(workspace.repoRoot, workspace.streamId)?.branch_sessions[0])
+        .toMatchObject({
+          status: "failed",
+          tmuxSessionName: "001-supervision-failfast",
+        })
+      expect(loadSupervisorState(workspace.repoRoot, workspace.streamId)?.branch_sessions[0]?.notes)
+        .toContain("launch validation failed")
     } finally {
       cleanupTestWorkstream(workspace)
     }
@@ -1188,7 +1332,7 @@ describe("launch_supervision_branch", () => {
       const result = await executeLaunchSupervisionBranch(
         {
           scope: "stage",
-          stage: "10",
+          target: "10",
         },
         { sessionID: "root-session-1" },
         createDeps(workspace.repoRoot, workspace.streamId, {
@@ -1302,22 +1446,41 @@ describe("launch_supervision_branch", () => {
     }
   })
 
-  test("rejects explicit batch targets for stage-scoped launches", async () => {
-    const workspace = createTestWorkstream("001-agent-tool-stage-scope-reject-batch")
+  test("requires a stage target for stage-scoped launches", async () => {
+    const workspace = createTestWorkstream("001-agent-tool-stage-scope-requires-target")
 
     try {
       await expect(
         executeLaunchSupervisionBranch(
           {
             scope: "stage",
-            stage: "10",
-            batch: "10.01",
           },
           { sessionID: "root-session-1" },
           createDeps(workspace.repoRoot, workspace.streamId),
         ),
       ).rejects.toThrow(
-        "Stage scope for stage 10 does not accept an explicit batch target; launch with --stage only and derive the next resumable batch from persisted stage state.",
+        "Stage scope requires --target with a stage id (for example: 10).",
+      )
+    } finally {
+      cleanupTestWorkstream(workspace)
+    }
+  })
+
+  test("rejects non stage-qualified batch targets in the new contract", async () => {
+    const workspace = createTestWorkstream("001-agent-tool-batch-scope-invalid-target")
+
+    try {
+      await expect(
+        executeLaunchSupervisionBranch(
+          {
+            scope: "batch",
+            target: "10",
+          },
+          { sessionID: "root-session-1" },
+          createDeps(workspace.repoRoot, workspace.streamId),
+        ),
+      ).rejects.toThrow(
+        'Batch scope requires a stage-qualified batch id (received "10").',
       )
     } finally {
       cleanupTestWorkstream(workspace)
@@ -1844,6 +2007,76 @@ describe("launch_supervision_branch", () => {
       ])
     } finally {
       cleanupTestWorkstream(workspace)
+    }
+  })
+})
+
+describe("runForkedSessionInTmux", () => {
+  const hasTmux = Bun.spawnSync(["tmux", "-V"]).exitCode === 0
+
+  async function createFakeOpencodeFixture(scriptBody: string) {
+    const tempRoot = await mkdtemp(join(tmpdir(), "workstream-fake-opencode-"))
+    const fakeBin = join(tempRoot, "bin")
+    const repoRoot = join(tempRoot, "repo")
+    const opencodePath = join(fakeBin, "opencode")
+
+    await mkdir(fakeBin, { recursive: true })
+    await mkdir(repoRoot, { recursive: true })
+    await writeFile(opencodePath, `#!/bin/sh\n${scriptBody}\n`)
+    await chmod(opencodePath, 0o755)
+
+    return {
+      repoRoot,
+      tempRoot,
+      cleanup: async () => {
+        await rm(tempRoot, { recursive: true, force: true })
+      },
+    }
+  }
+
+  test.if(hasTmux)("records launch metadata and validates wrapper readiness", async () => {
+    const fixture = await createFakeOpencodeFixture([
+      'if [ "$1" = "run" ]; then',
+      '  printf \'{"type":"text","part":{"text":"## What is Next\\n- tmux ok"}}\\n\'',
+      '  sleep 1',
+      '  exit 0',
+      'fi',
+      'echo "unexpected args: $*" >&2',
+      'exit 1',
+    ].join("\n"))
+    const sessionName = `test-supervision-${Date.now().toString(36)}`
+    const originalPath = process.env.PATH
+
+    try {
+      process.env.PATH = `${join(fixture.tempRoot, "bin")}:${originalPath ?? ""}`
+
+      const result = await runForkedSessionInTmux(
+        {
+          sessionId: "root-session-1",
+          repoRoot: fixture.repoRoot,
+          title: "root-supervision-001-branch-supervision-1",
+          prompt: "Please supervise batch 10.01",
+          tmuxSessionName: sessionName,
+        },
+        {
+          findNativeSessionIdByTitle: async () => "ses_tmux_test_1",
+        },
+      )
+
+      expect(result.code).toBe(0)
+      expect(result.nativeSessionId).toBe("ses_tmux_test_1")
+      expect(result.tmuxSessionName).toBe(sessionName)
+      expect(result.tmuxMetadata?.sessionName).toBe(sessionName)
+      expect(result.tmuxMetadata?.attachCommand).toBe(`tmux attach -t ${sessionName}`)
+      expect(existsSync(result.tmuxMetadata!.readyMarkerPath)).toBe(true)
+      expect(readFileSync(result.tmuxMetadata!.commandPath, "utf-8")).toContain(
+        "'opencode' 'run' '--session' 'root-session-1' '--fork'",
+      )
+      expect(result.stdout).toContain("tmux ok")
+    } finally {
+      process.env.PATH = originalPath
+      Bun.spawnSync(["tmux", "kill-session", "-t", sessionName])
+      await fixture.cleanup()
     }
   })
 })
