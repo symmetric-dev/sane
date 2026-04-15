@@ -4,6 +4,11 @@ This document records the major branching architecture challenges we encountered
 
 It is intended as a durable architectural reference for future work, not just a test log.
 
+For operator-facing runbooks and validation steps, use:
+
+- [`docs/SUPERVISOR.md`](./SUPERVISOR.md) for supervision operations and troubleshooting
+- [`docs/supervision-manual-verification-checklist.md`](./supervision-manual-verification-checklist.md) for concise manual verification drills
+
 ## Why this work mattered
 
 AgEnv's supervision model is built around a **Root Agent**:
@@ -235,6 +240,7 @@ Across the revisions we verified that:
 - stale ended-but-nonterminal branch sessions can be reconciled safely after the fact using `reconcile_workstream_supervision`
 - process-end evidence can be persisted even when explicit finalization is missing
 - a reconciled terminal `stopped` session no longer blocks a fresh launch for the same scope
+- operator verification should prefer the `work batch-status` CLI plus canonical `tasks.json` runtime state over assuming a specific persisted batch-status file path or treating a single pointer field as sufficient truth
 
 ## Remaining caveats
 
@@ -284,6 +290,7 @@ Because of that, AgEnv should continue to treat persisted state and transcript e
 
 - `ROOT_AGENT_BRANCHING.md`
 - `docs/SUPERVISOR.md`
+- `docs/supervision-manual-verification-checklist.md`
 - `agent/skills/supervising-workstreams/SKILL.md`
 - `work/000-super-agent-v1/PLAN.md`
-- `work/000-super-agent-v1/supervisor-state.json`
+- `work/000-super-agent-v1/tasks.json`
