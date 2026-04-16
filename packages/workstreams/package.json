@@ -17,6 +17,10 @@
       "types": "./dist/index.d.ts",
       "import": "./dist/index.js"
     },
+    "./internal/dashboard-contracts": {
+      "types": "./dist/src/internal/dashboard-contracts.d.ts",
+      "import": "./dist/src/internal/dashboard-contracts.js"
+    },
     "./internal/server": {
       "types": "./dist/src/internal/server.d.ts",
       "import": "./dist/src/internal/server.js"
