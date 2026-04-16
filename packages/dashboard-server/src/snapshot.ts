@@ -5,6 +5,7 @@ import type {
   DashboardCanonicalStatusSnapshot,
   DashboardObservabilityIssue,
   DashboardTerminalObservabilitySnapshot,
+  DashboardTmuxObservabilitySnapshot,
 } from "../../workstreams/src/internal/dashboard-contracts.ts"
 import {
   CURRENT_WORKSTREAM_DASHBOARD_SNAPSHOT_SCHEMA_VERSION,
@@ -24,6 +25,7 @@ import {
 import type {
   TerminalObservabilityCapability,
   TerminalObservabilityProvider,
+  TerminalObservabilityView,
 } from "./observability/terminal.ts"
 
 export interface CurrentWorkstreamDashboardReadModel {
@@ -61,32 +63,46 @@ function createUnavailableTerminalCapability(
   }
 }
 
-function buildTerminalObservabilitySnapshot(args: {
+export function buildDashboardTerminalObservabilitySnapshot(args: {
   capability: TerminalObservabilityCapability
   checkedAt: string
+  tmux: DashboardTmuxObservabilitySnapshot
+  views: TerminalObservabilityView[]
 }): DashboardTerminalObservabilitySnapshot {
-  if (args.capability.enabled) {
-    return {
-      checked_at: args.checkedAt,
-      availability: "ready",
-      transport: "ttyd",
-      issues: [],
-      views: [],
+  const issues: DashboardObservabilityIssue[] = []
+
+  if (!args.capability.enabled) {
+    issues.push({
+      code: "ttyd_unavailable",
+      severity: "warn",
+      message: args.capability.message,
+    })
+  }
+
+  for (const view of args.views) {
+    if (view.status === "available") {
+      continue
     }
+
+    issues.push({
+      code: "terminal_view_unavailable",
+      severity: view.status === "degraded" ? "info" : "warn",
+      message:
+        view.notes && view.notes.length > 0
+          ? view.notes
+          : view.status === "degraded"
+            ? `Read-only ttyd view "${view.label}" is degraded.`
+            : `Read-only ttyd view "${view.label}" is unavailable.`,
+      related_ids: [view.terminal_view_id],
+    })
   }
 
   return {
     checked_at: args.checkedAt,
-    availability: "unavailable",
+    availability: issues.length === 0 ? "ready" : args.capability.enabled ? "degraded" : "unavailable",
     transport: "ttyd",
-    issues: [
-      {
-        code: "ttyd_unavailable",
-        severity: "warn",
-        message: args.capability.message,
-      },
-    ],
-    views: [],
+    issues,
+    views: args.views,
   }
 }
 
@@ -100,6 +116,7 @@ async function buildObservabilitySnapshot(args: {
   ).tmux
 
   let capability: TerminalObservabilityCapability
+  let views: TerminalObservabilityView[] = []
   try {
     capability = await args.terminalProvider.getCapability()
   } catch (error) {
@@ -110,9 +127,25 @@ async function buildObservabilitySnapshot(args: {
     )
   }
 
-  const terminalViews = buildTerminalObservabilitySnapshot({
+  try {
+    views = await args.terminalProvider.listViews({
+      checkedAt: args.checkedAt,
+      tmux,
+    })
+  } catch (error) {
+    capability = createUnavailableTerminalCapability(
+      error instanceof Error
+        ? `Terminal observability provider failed while listing views: ${error.message}`
+        : "Terminal observability provider failed while listing views.",
+    )
+    views = []
+  }
+
+  const terminalViews = buildDashboardTerminalObservabilitySnapshot({
     capability,
     checkedAt: args.checkedAt,
+    tmux,
+    views,
   })
   const issues: DashboardObservabilityIssue[] = [...tmux.issues, ...terminalViews.issues]
 

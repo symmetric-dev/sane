@@ -1,3 +1,8 @@
+import type {
+  DashboardTerminalViewMetadata,
+  DashboardTmuxObservabilitySnapshot,
+} from "../../../workstreams/src/internal/dashboard-contracts.ts"
+
 export type TerminalObservabilityMode = "placeholder" | "ttyd"
 
 export interface TerminalObservabilityCapability {
@@ -6,16 +11,29 @@ export interface TerminalObservabilityCapability {
   mode: TerminalObservabilityMode
 }
 
-export interface TerminalObservabilityView {
-  id: string
-  label: string
+export interface TerminalObservabilityView extends DashboardTerminalViewMetadata {
   notes?: string
-  status: "pending" | "ready" | "unavailable"
+}
+
+export interface TerminalObservabilityListViewsOptions {
+  checkedAt: string
+  tmux: DashboardTmuxObservabilitySnapshot
+}
+
+export interface TerminalObservabilityResolvedTarget {
+  terminalViewId: string
+  sessionName: string
+  upstreamOrigin: string
+  upstreamPath: string
+  port: number
+  pid: number
 }
 
 export interface TerminalObservabilityProvider {
   getCapability(): Promise<TerminalObservabilityCapability>
-  listViews(): Promise<TerminalObservabilityView[]>
+  listViews(options: TerminalObservabilityListViewsOptions): Promise<TerminalObservabilityView[]>
+  resolveViewTarget(terminalViewId: string): Promise<TerminalObservabilityResolvedTarget | null>
+  close(): void
 }
 
 export function createNoopTerminalObservabilityProvider(): TerminalObservabilityProvider {
@@ -30,5 +48,9 @@ export function createNoopTerminalObservabilityProvider(): TerminalObservability
     async listViews(): Promise<TerminalObservabilityView[]> {
       return []
     },
+    async resolveViewTarget(): Promise<TerminalObservabilityResolvedTarget | null> {
+      return null
+    },
+    close(): void {},
   }
 }

@@ -7,7 +7,10 @@ import {
   CURRENT_WORKSTREAM_DASHBOARD_SNAPSHOT_SCHEMA_VERSION,
   CURRENT_WORKSTREAM_LIVE_UPDATES_ROUTE,
   CURRENT_WORKSTREAM_SUPERVISION_ROUTE,
+  DASHBOARD_TERMINAL_VIEW_ROUTE_PATH_TEMPLATE,
+  DASHBOARD_TERMINAL_VIEW_TTYD_PROXY_ROUTE_PATH_TEMPLATE,
   DASHBOARD_PAGE_ROUTE,
+  buildDashboardTerminalViewId,
   buildDashboardTerminalViewRoutes,
   type CurrentWorkstreamDashboardSnapshot,
   type DashboardTerminalViewMetadata,
@@ -151,7 +154,27 @@ describe("dashboard contracts", () => {
   })
 
   test("builds stable terminal-view routes for read-only ttyd embeddings", () => {
-    const routes = buildDashboardTerminalViewRoutes("thread/01.02.03")
+    const terminalViewId = buildDashboardTerminalViewId({
+      session_name: "ws-002-01.02-thread-03",
+      role: "implementation_thread",
+      batch_id: "01.02",
+      thread_id: "01.02.03",
+      correlation: {
+        status: "matched",
+        target_kind: "implementation_thread",
+        target_id: "01.02.03",
+        stage_id: "01",
+        batch_id: "01.02",
+        thread_id: "01.02.03",
+      },
+    })
+    const routes = buildDashboardTerminalViewRoutes(terminalViewId)
+
+    expect(terminalViewId).toBe("thread/01.02.03")
+    expect(DASHBOARD_TERMINAL_VIEW_ROUTE_PATH_TEMPLATE).toBe("/terminal-views/:terminalViewId")
+    expect(DASHBOARD_TERMINAL_VIEW_TTYD_PROXY_ROUTE_PATH_TEMPLATE).toBe(
+      "/terminal-views/:terminalViewId/ttyd",
+    )
 
     expect(routes).toEqual({
       view_path: "/terminal-views/thread%2F01.02.03",
@@ -184,6 +207,32 @@ describe("dashboard contracts", () => {
 
     expect(view.read_only).toBe(true)
     expect(view.routes.ttyd_proxy_path.endsWith("/ttyd")).toBe(true)
+  })
+
+  test("falls back to session-scoped terminal view ids when no stable runtime target exists", () => {
+    expect(
+      buildDashboardTerminalViewId({
+        session_name: "002-implementation-stale-session",
+        role: "implementation_thread",
+        correlation: {
+          status: "stale",
+          target_kind: "implementation_thread",
+          target_id: "002-implementation-stale-session",
+        },
+      }),
+    ).toBe("session/002-implementation-stale-session")
+
+    expect(
+      buildDashboardTerminalViewId({
+        session_name: "002-supervision-ef3456",
+        role: "supervision_branch",
+        correlation: {
+          status: "matched",
+          target_kind: "supervision_branch",
+          target_id: "branch-1",
+        },
+      }),
+    ).toBe("branch/branch-1")
   })
 
   test("publishes dashboard contracts as a package export", async () => {

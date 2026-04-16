@@ -1,0 +1,252 @@
+import { Hono } from "hono"
+import {
+  DASHBOARD_TERMINAL_VIEW_ID_PARAM,
+  DASHBOARD_TERMINAL_VIEW_ROUTE_PATH_TEMPLATE,
+  DASHBOARD_TERMINAL_VIEW_TTYD_PROXY_ROUTE_PATH_TEMPLATE,
+  type DashboardTerminalViewMetadata,
+} from "../../../workstreams/src/internal/dashboard-contracts.ts"
+
+import type { DashboardServerConfig } from "../config.ts"
+import type { TerminalObservabilityProvider } from "../observability/terminal.ts"
+import {
+  readCurrentWorkstreamDashboardSnapshot,
+  type CurrentWorkstreamDashboardReadModel,
+} from "../snapshot.ts"
+
+export interface DashboardTerminalViewRoutesDependencies {
+  config: DashboardServerConfig
+  terminalProvider: TerminalObservabilityProvider
+  readSnapshot?: () => Promise<CurrentWorkstreamDashboardReadModel>
+}
+
+function escapeHtml(value: string): string {
+  return value
+    .replaceAll("&", "&amp;")
+    .replaceAll("<", "&lt;")
+    .replaceAll(">", "&gt;")
+    .replaceAll('"', "&quot;")
+    .replaceAll("'", "&#39;")
+}
+
+function getTerminalViewId(rawValue: string): string {
+  try {
+    return decodeURIComponent(rawValue)
+  } catch {
+    return rawValue
+  }
+}
+
+function findTerminalView(
+  snapshot: CurrentWorkstreamDashboardReadModel,
+  terminalViewId: string,
+): DashboardTerminalViewMetadata | undefined {
+  return snapshot.observability.terminal_views.views.find(
+    (view) => view.terminal_view_id === terminalViewId,
+  )
+}
+
+function isLoopbackHostname(hostname: string): boolean {
+  return hostname === "127.0.0.1" || hostname === "localhost" || hostname === "::1"
+}
+
+function isSafeLocalTtydUrl(value: string): boolean {
+  try {
+    const url = new URL(value)
+    return (url.protocol === "http:" || url.protocol === "https:") && isLoopbackHostname(url.hostname)
+  } catch {
+    return false
+  }
+}
+
+function renderTerminalViewPage(args: {
+  terminalView: DashboardTerminalViewMetadata
+}): string {
+  const terminalView = args.terminalView
+  const title = escapeHtml(terminalView.label)
+  const sessionName = escapeHtml(terminalView.session_name)
+  const status = escapeHtml(terminalView.status)
+  const ttydProxyPath = escapeHtml(terminalView.routes.ttyd_proxy_path)
+  const scope = [terminalView.stage_id, terminalView.batch_id, terminalView.thread_id, terminalView.role]
+    .filter((value): value is string => Boolean(value && value.length > 0))
+    .join(" · ")
+
+  return `<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>${title}</title>
+    <style>
+      :root {
+        color-scheme: dark;
+        font-family: Inter, ui-sans-serif, system-ui, sans-serif;
+      }
+
+      body {
+        background: #111;
+        color: #f5f5f5;
+        margin: 0;
+        min-height: 100vh;
+      }
+
+      main {
+        display: grid;
+        gap: 1rem;
+        margin: 0 auto;
+        max-width: 96rem;
+        padding: 1.5rem;
+      }
+
+      a {
+        color: #8ec5ff;
+      }
+
+      .badge {
+        border: 1px solid #2f4f69;
+        border-radius: 999px;
+        color: #9ed0ff;
+        display: inline-block;
+        font-size: 0.85rem;
+        padding: 0.2rem 0.6rem;
+      }
+
+      .muted {
+        color: #b8b8b8;
+      }
+
+      .frame {
+        background: #000;
+        border: 1px solid #2a2a2a;
+        border-radius: 0.75rem;
+        min-height: 70vh;
+        overflow: hidden;
+      }
+
+      iframe {
+        border: 0;
+        display: block;
+        height: 70vh;
+        width: 100%;
+      }
+    </style>
+  </head>
+  <body>
+    <main>
+      <header>
+        <p><a href="/">← Back to dashboard</a></p>
+        <h1>${title}</h1>
+        <p class="badge">Read-only ttyd observability</p>
+        <p class="muted">Session <code>${sessionName}</code>${
+          scope.length > 0 ? ` · ${escapeHtml(scope)}` : ""
+        }</p>
+      </header>
+
+      <section>
+        <p class="muted">Status: <strong>${status}</strong></p>
+        <p class="muted">This view is scoped to locally managed, read-only observability in v1.</p>
+      </section>
+
+      <section class="frame">
+        ${
+          terminalView.status === "available"
+            ? `<iframe src="${ttydProxyPath}" title="${title}"></iframe>`
+            : `<div style="padding: 1.5rem;"><p>This terminal view is not currently available.</p><p class="muted">Return to the dashboard to pick another observable session.</p></div>`
+        }
+      </section>
+
+      <section>
+        <p><a href="${ttydProxyPath}" target="_blank" rel="noreferrer">Open ttyd target in a new tab</a></p>
+      </section>
+    </main>
+  </body>
+</html>`
+}
+
+export function createTerminalViewRoutes(
+  dependencies: DashboardTerminalViewRoutesDependencies,
+): Hono {
+  const app = new Hono()
+  const readSnapshot =
+    dependencies.readSnapshot ??
+    (() =>
+      readCurrentWorkstreamDashboardSnapshot({
+        repoRoot: dependencies.config.repoRoot,
+        terminalProvider: dependencies.terminalProvider,
+      }))
+
+  app.get(DASHBOARD_TERMINAL_VIEW_ROUTE_PATH_TEMPLATE, async (context) => {
+    const terminalViewId = getTerminalViewId(context.req.param(DASHBOARD_TERMINAL_VIEW_ID_PARAM))
+    const snapshot = await readSnapshot()
+    const terminalView = findTerminalView(snapshot, terminalViewId)
+
+    if (!terminalView) {
+      return context.json(
+        {
+          ok: false,
+          error: `Terminal view "${terminalViewId}" was not found in the current dashboard snapshot.`,
+        },
+        404,
+      )
+    }
+
+    return new Response(renderTerminalViewPage({ terminalView }), {
+      headers: {
+        "content-type": "text/html; charset=utf-8",
+      },
+    })
+  })
+
+  app.get(DASHBOARD_TERMINAL_VIEW_TTYD_PROXY_ROUTE_PATH_TEMPLATE, async (context) => {
+    const terminalViewId = getTerminalViewId(context.req.param(DASHBOARD_TERMINAL_VIEW_ID_PARAM))
+    const snapshot = await readSnapshot()
+    const terminalView = findTerminalView(snapshot, terminalViewId)
+
+    if (!terminalView) {
+      return context.json(
+        {
+          ok: false,
+          error: `Terminal view "${terminalViewId}" was not found in the current dashboard snapshot.`,
+        },
+        404,
+      )
+    }
+
+    if (terminalView.status !== "available") {
+      return context.json(
+        {
+          ok: false,
+          error: `Terminal view "${terminalViewId}" is not currently available.`,
+        },
+        503,
+      )
+    }
+
+    const providerView = (await dependencies.terminalProvider.listViews()).find(
+      (view) => view.id === terminalViewId,
+    )
+
+    if (!providerView || providerView.readOnly !== true || providerView.status !== "ready" || !providerView.ttydUrl) {
+      return context.json(
+        {
+          ok: false,
+          error: `Terminal view "${terminalViewId}" does not have a ready read-only ttyd target.`,
+        },
+        503,
+      )
+    }
+
+    if (!isSafeLocalTtydUrl(providerView.ttydUrl)) {
+      return context.json(
+        {
+          ok: false,
+          error: "Terminal observability routes only allow local ttyd targets.",
+        },
+        403,
+      )
+    }
+
+    return context.redirect(providerView.ttydUrl, 307)
+  })
+
+  return app
+}

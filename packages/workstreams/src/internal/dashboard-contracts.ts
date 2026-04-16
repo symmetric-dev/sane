@@ -81,6 +81,12 @@ export interface DashboardTerminalViewRouteMetadata {
   ttyd_proxy_path: string
 }
 
+export const DASHBOARD_TERMINAL_VIEW_ID_PARAM = "terminalViewId" as const
+export const DASHBOARD_TERMINAL_VIEW_ROUTE_PATH_TEMPLATE =
+  `${DASHBOARD_TERMINAL_VIEW_PATH_PREFIX}/:${DASHBOARD_TERMINAL_VIEW_ID_PARAM}` as const
+export const DASHBOARD_TERMINAL_VIEW_TTYD_PROXY_ROUTE_PATH_TEMPLATE =
+  `${DASHBOARD_TERMINAL_VIEW_ROUTE_PATH_TEMPLATE}/ttyd` as const
+
 export interface DashboardTerminalViewMetadata {
   terminal_view_id: string
   label: string
@@ -298,6 +304,58 @@ export const CURRENT_WORKSTREAM_DASHBOARD_ROUTE_CONTRACTS: readonly CurrentWorks
   CURRENT_WORKSTREAM_OBSERVABILITY_ROUTE,
   CURRENT_WORKSTREAM_LIVE_UPDATES_ROUTE,
 ] as const
+
+export function buildDashboardTerminalViewId(
+  session: Pick<
+    DashboardTmuxSessionMetadata,
+    "session_name" | "role" | "batch_id" | "thread_id" | "run_id" | "correlation"
+  >,
+): string {
+  switch (session.role) {
+    case "implementation_thread": {
+      const threadId = session.thread_id ?? session.correlation.thread_id
+      if (threadId && threadId.length > 0) {
+        return `thread/${threadId}`
+      }
+
+      const batchId = session.batch_id ?? session.correlation.batch_id
+      if (batchId && batchId.length > 0) {
+        return `batch/${batchId}`
+      }
+
+      break
+    }
+
+    case "supervision_run": {
+      const runId = session.run_id
+      if (runId && runId.length > 0) {
+        return `run/${runId}`
+      }
+
+      if (
+        session.correlation.target_kind === "supervision_run" &&
+        session.correlation.target_id !== session.session_name
+      ) {
+        return `run/${session.correlation.target_id}`
+      }
+
+      break
+    }
+
+    case "supervision_branch": {
+      if (
+        session.correlation.target_kind === "supervision_branch" &&
+        session.correlation.target_id !== session.session_name
+      ) {
+        return `branch/${session.correlation.target_id}`
+      }
+
+      break
+    }
+  }
+
+  return `session/${session.session_name}`
+}
 
 export function buildDashboardTerminalViewRoutes(terminalViewId: string): DashboardTerminalViewRouteMetadata {
   const encodedTerminalViewId = encodeURIComponent(terminalViewId)

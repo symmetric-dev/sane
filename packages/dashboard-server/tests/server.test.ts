@@ -17,6 +17,7 @@ import { getResolvedCurrentWorkstreamDashboardObservabilitySnapshot } from "../.
 
 import {
   LOCAL_ONLY_HOSTNAME,
+  createNoopTerminalObservabilityProvider,
   normalizeDashboardServerConfig,
   startDashboardServer,
 } from "../src/index.ts"
@@ -259,6 +260,7 @@ describe("dashboard server", () => {
     const server = await startDashboardServer({
       port: 0,
       repoRoot,
+      terminalProvider: createNoopTerminalObservabilityProvider(),
     })
 
     servers.push(server)
@@ -413,6 +415,7 @@ describe("dashboard server", () => {
     const server = await startDashboardServer({
       port: 0,
       repoRoot,
+      terminalProvider: createNoopTerminalObservabilityProvider(),
     })
 
     servers.push(server)

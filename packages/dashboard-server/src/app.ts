@@ -6,6 +6,7 @@ import type { TerminalObservabilityProvider } from "./observability/terminal.ts"
 import { createCurrentWorkstreamRoutes } from "./routes/current-workstream.ts"
 import { createLiveRoutes } from "./routes/live.ts"
 import { createSystemRoutes } from "./routes/system.ts"
+import { createTerminalViewRoutes } from "./routes/terminal-views.ts"
 import { createUiRoutes } from "./routes/ui.ts"
 
 export interface DashboardAppDependencies {
@@ -23,6 +24,7 @@ export function createDashboardApp(dependencies: DashboardAppDependencies): Hono
   })
 
   app.route("/", createUiRoutes(dependencies.config))
+  app.route("/", createTerminalViewRoutes(dependencies))
   app.route("/", createCurrentWorkstreamRoutes(dependencies))
   app.route("/", createSystemRoutes(dependencies))
   app.route("/", createLiveRoutes(dependencies.liveRefresh))

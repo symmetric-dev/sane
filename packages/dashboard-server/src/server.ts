@@ -9,9 +9,9 @@ import {
   type LiveRefreshHub,
 } from "./live-refresh.ts"
 import {
-  createNoopTerminalObservabilityProvider,
   type TerminalObservabilityProvider,
 } from "./observability/terminal.ts"
+import { createTtydTerminalObservabilityProvider } from "./observability/ttyd.ts"
 import { createDashboardApp } from "./app.ts"
 
 export interface DashboardServerStartOptions extends DashboardServerConfigInput {
@@ -35,7 +35,7 @@ export async function startDashboardServer(
   const config = normalizeDashboardServerConfig(options)
   const liveRefresh = options.liveRefresh ?? createLiveRefreshHub()
   const terminalProvider =
-    options.terminalProvider ?? createNoopTerminalObservabilityProvider()
+    options.terminalProvider ?? createTtydTerminalObservabilityProvider()
   const app = createDashboardApp({
     config,
     liveRefresh,
@@ -59,6 +59,7 @@ export async function startDashboardServer(
     liveRefresh,
     server,
     stop() {
+      terminalProvider.close()
       liveRefresh.close()
       server.stop(true)
     },

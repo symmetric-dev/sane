@@ -17,10 +17,18 @@ export {
 export {
   createNoopTerminalObservabilityProvider,
   type TerminalObservabilityCapability,
+  type TerminalObservabilityListViewsOptions,
   type TerminalObservabilityMode,
   type TerminalObservabilityProvider,
+  type TerminalObservabilityResolvedTarget,
   type TerminalObservabilityView,
 } from "./observability/terminal.ts"
+export {
+  createTtydTerminalObservabilityProvider,
+  type SpawnedTtydInstance,
+  type TtydProcessLauncher,
+  type TtydTerminalObservabilityProviderOptions,
+} from "./observability/ttyd.ts"
 export {
   startDashboardServer,
   type DashboardServerStartOptions,
