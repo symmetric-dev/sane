@@ -153,7 +153,7 @@ describe("workstream tree read model", () => {
     )
   })
 
-  test("renders active runtime overlays when task and runtime states align", () => {
+  test("renders desync overlay for in_progress tasks against running runtime status", () => {
     const tasks: Task[] = [
       {
         id: "01.01.01.01",
@@ -197,10 +197,10 @@ describe("workstream tree read model", () => {
       batchId: "01.01",
     })
     expect(snapshot.stages[0]?.batches[0]?.runtimeOverlay).toMatchObject({
-      kind: "runtime",
+      kind: "desync",
       taskStatus: "in_progress",
       runtimeStatus: "running",
-      text: "runtime: running (1 running)",
+      text: "desync: tasks in progress, runtime running (1 running)",
     })
   })
 
