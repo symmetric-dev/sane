@@ -294,10 +294,13 @@ describe("dashboard server", () => {
     expect(pageResponse.status).toBe(200)
 
     const pageHtml = await pageResponse.text()
-    expect(pageHtml).toContain("Workstream Dashboard")
+    expect(pageHtml).toContain("Current workstream dashboard")
+    expect(pageHtml).toContain("Status overview")
+    expect(pageHtml).toContain("Work tree")
+    expect(pageHtml).toContain("Observability notes")
     expect(pageHtml).toContain(CURRENT_WORKSTREAM_LIVE_UPDATES_ROUTE.path)
     expect(pageHtml).toContain("/api/current-workstream/snapshot")
-    expect(pageHtml).toContain("status, tree, runtime, supervision, and observability routes")
+    expect(pageHtml).toContain("Loading canonical snapshot")
 
     const snapshotResponse = await fetch(
       new URL(CURRENT_WORKSTREAM_DASHBOARD_SNAPSHOT_ROUTE.path, server.url),

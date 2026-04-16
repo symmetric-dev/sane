@@ -1,4 +1,4 @@
-import { Hono } from "hono"
+import { Hono, type Context } from "hono"
 import {
   DASHBOARD_TERMINAL_VIEW_ID_PARAM,
   DASHBOARD_TERMINAL_VIEW_ROUTE_PATH_TEMPLATE,
@@ -155,11 +155,34 @@ function renderTerminalViewPage(args: {
       </section>
 
       <section>
-        <p><a href="${ttydProxyPath}" target="_blank" rel="noreferrer">Open ttyd target in a new tab</a></p>
+        ${
+          terminalView.status === "available"
+            ? `<p><a href="${ttydProxyPath}" target="_blank" rel="noreferrer">Open ttyd target in a new tab</a></p>`
+            : `<p class="muted">The ttyd target will appear here automatically once this read-only view becomes available again.</p>`
+        }
       </section>
     </main>
   </body>
 </html>`
+}
+
+function createTerminalUnavailableResponse(args: {
+  context: Context
+  terminalViewId: string
+  cause?: unknown
+}): Response {
+  const detail =
+    args.cause instanceof Error && args.cause.message.length > 0
+      ? ` ${args.cause.message}`
+      : ""
+
+  return args.context.json(
+    {
+      ok: false,
+      error: `Terminal view "${args.terminalViewId}" is temporarily unavailable.${detail}`,
+    },
+    503,
+  )
 }
 
 export function createTerminalViewRoutes(
@@ -212,30 +235,30 @@ export function createTerminalViewRoutes(
     }
 
     if (terminalView.status !== "available") {
-      return context.json(
-        {
-          ok: false,
-          error: `Terminal view "${terminalViewId}" is not currently available.`,
-        },
-        503,
-      )
+      return context.redirect(terminalView.routes.view_path, 307)
     }
 
-    const providerView = (await dependencies.terminalProvider.listViews()).find(
-      (view) => view.id === terminalViewId,
-    )
-
-    if (!providerView || providerView.readOnly !== true || providerView.status !== "ready" || !providerView.ttydUrl) {
-      return context.json(
-        {
-          ok: false,
-          error: `Terminal view "${terminalViewId}" does not have a ready read-only ttyd target.`,
-        },
-        503,
-      )
+    let resolvedTarget
+    try {
+      resolvedTarget = await dependencies.terminalProvider.resolveViewTarget(terminalViewId)
+    } catch (error) {
+      return createTerminalUnavailableResponse({
+        context,
+        terminalViewId,
+        cause: error,
+      })
     }
 
-    if (!isSafeLocalTtydUrl(providerView.ttydUrl)) {
+    if (!resolvedTarget) {
+      return createTerminalUnavailableResponse({
+        context,
+        terminalViewId,
+      })
+    }
+
+    const ttydUrl = new URL(resolvedTarget.upstreamPath, resolvedTarget.upstreamOrigin).toString()
+
+    if (!isSafeLocalTtydUrl(ttydUrl)) {
       return context.json(
         {
           ok: false,
@@ -245,7 +268,7 @@ export function createTerminalViewRoutes(
       )
     }
 
-    return context.redirect(providerView.ttydUrl, 307)
+    return context.redirect(ttydUrl, 307)
   })
 
   return app

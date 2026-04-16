@@ -269,6 +269,58 @@ const baseReadModel: CurrentWorkstreamDashboardReadModel = {
   },
 }
 
+function createDegradedOnlyReadModel(): CurrentWorkstreamDashboardReadModel {
+  const degradedReadModel = structuredClone(baseReadModel)
+  const degradedView = {
+    terminal_view_id: "branch/branch-1",
+    label: "Supervision terminal",
+    status: "degraded" as const,
+    transport: "ttyd" as const,
+    read_only: true as const,
+    session_id: "$2",
+    session_name: "002-supervision-ef3456",
+    role: "supervision_branch" as const,
+    observed_at: "2026-04-16T12:00:00.000Z",
+    stage_id: "03",
+    batch_id: "03.02",
+    routes: {
+      view_path: "/terminal-views/branch%2Fbranch-1",
+      ttyd_proxy_path: "/terminal-views/branch%2Fbranch-1/ttyd",
+    },
+    correlation: {
+      status: "matched" as const,
+      target_kind: "supervision_branch" as const,
+      target_id: "branch-1",
+      stage_id: "03",
+      batch_id: "03.02",
+    },
+    notes: "Waiting for the read-only ttyd bridge to recover.",
+  }
+
+  degradedReadModel.observability.availability = "degraded"
+  degradedReadModel.observability.terminal_views = {
+    checked_at: "2026-04-16T12:00:00.000Z",
+    availability: "degraded",
+    transport: "ttyd",
+    issues: [
+      {
+        code: "terminal_view_unavailable",
+        severity: "warn",
+        message: "Waiting for the read-only ttyd bridge to recover.",
+        related_ids: ["branch/branch-1"],
+      },
+    ],
+    views: [degradedView],
+  }
+
+  degradedReadModel.snapshot.observability.availability = "degraded"
+  degradedReadModel.snapshot.observability.terminal_views = structuredClone(
+    degradedReadModel.observability.terminal_views,
+  )
+
+  return degradedReadModel
+}
+
 describe("terminal view routes", () => {
   test("renders embedded terminal pages for dashboard-visible read-only views", async () => {
     const app = createTerminalViewRoutes({
@@ -285,18 +337,20 @@ describe("terminal view routes", () => {
             mode: "ttyd" as const,
           }
         },
-        async listViews() {
-          return [
-            {
-              id: "thread/03.01.02",
-              label: "Thread 03.01.02 terminal",
-              sessionName: "002-implementation-abcd12",
-              readOnly: true,
-              status: "ready" as const,
-              ttydUrl: "http://127.0.0.1:7681/",
-            },
-          ]
+        async listViews(_options) {
+          return []
         },
+        async resolveViewTarget() {
+          return {
+            terminalViewId: "thread/03.01.02",
+            sessionName: "002-implementation-abcd12",
+            upstreamOrigin: "http://127.0.0.1:7681",
+            upstreamPath: "/",
+            port: 7681,
+            pid: 1234,
+          }
+        },
+        close() {},
       },
       readSnapshot: async () => baseReadModel,
     })
@@ -327,18 +381,20 @@ describe("terminal view routes", () => {
             mode: "ttyd" as const,
           }
         },
-        async listViews() {
-          return [
-            {
-              id: "thread/03.01.02",
-              label: "Thread 03.01.02 terminal",
-              sessionName: "002-implementation-abcd12",
-              readOnly: true,
-              status: "ready" as const,
-              ttydUrl: "http://127.0.0.1:7681/",
-            },
-          ]
+        async listViews(_options) {
+          return []
         },
+        async resolveViewTarget() {
+          return {
+            terminalViewId: "thread/03.01.02",
+            sessionName: "002-implementation-abcd12",
+            upstreamOrigin: "http://127.0.0.1:7681",
+            upstreamPath: "/",
+            port: 7681,
+            pid: 1234,
+          }
+        },
+        close() {},
       },
       readSnapshot: async () => baseReadModel,
     })
@@ -349,6 +405,76 @@ describe("terminal view routes", () => {
 
     expect(response.status).toBe(307)
     expect(response.headers.get("location")).toBe("http://127.0.0.1:7681/")
+  })
+
+  test("renders a degraded placeholder when the snapshot only exposes degraded terminal views", async () => {
+    const app = createTerminalViewRoutes({
+      config: {
+        hostname: "127.0.0.1",
+        port: 3000,
+        repoRoot: "/tmp/repo",
+      },
+      terminalProvider: {
+        async getCapability() {
+          return {
+            enabled: true,
+            message: "ttyd ready",
+            mode: "ttyd" as const,
+          }
+        },
+        async listViews(_options) {
+          return []
+        },
+        async resolveViewTarget() {
+          throw new Error("should not resolve degraded ttyd targets")
+        },
+        close() {},
+      },
+      readSnapshot: async () => createDegradedOnlyReadModel(),
+    })
+
+    const response = await app.request("/terminal-views/branch%2Fbranch-1")
+
+    expect(response.status).toBe(200)
+
+    const html = await response.text()
+    expect(html).toContain("This terminal view is not currently available.")
+    expect(html).toContain("The ttyd target will appear here automatically")
+    expect(html).not.toContain('<iframe src="/terminal-views/branch%2Fbranch-1/ttyd"')
+  })
+
+  test("redirects degraded ttyd proxy requests back to the terminal placeholder page", async () => {
+    const app = createTerminalViewRoutes({
+      config: {
+        hostname: "127.0.0.1",
+        port: 3000,
+        repoRoot: "/tmp/repo",
+      },
+      terminalProvider: {
+        async getCapability() {
+          return {
+            enabled: true,
+            message: "ttyd ready",
+            mode: "ttyd" as const,
+          }
+        },
+        async listViews(_options) {
+          return []
+        },
+        async resolveViewTarget() {
+          throw new Error("should not resolve degraded ttyd targets")
+        },
+        close() {},
+      },
+      readSnapshot: async () => createDegradedOnlyReadModel(),
+    })
+
+    const response = await app.request("/terminal-views/branch%2Fbranch-1/ttyd", {
+      redirect: "manual",
+    })
+
+    expect(response.status).toBe(307)
+    expect(response.headers.get("location")).toBe("/terminal-views/branch%2Fbranch-1")
   })
 
   test("rejects non-local ttyd targets to preserve observability-only scope", async () => {
@@ -366,18 +492,20 @@ describe("terminal view routes", () => {
             mode: "ttyd" as const,
           }
         },
-        async listViews() {
-          return [
-            {
-              id: "thread/03.01.02",
-              label: "Thread 03.01.02 terminal",
-              sessionName: "002-implementation-abcd12",
-              readOnly: true,
-              status: "ready" as const,
-              ttydUrl: "https://example.com/not-local",
-            },
-          ]
+        async listViews(_options) {
+          return []
         },
+        async resolveViewTarget() {
+          return {
+            terminalViewId: "thread/03.01.02",
+            sessionName: "002-implementation-abcd12",
+            upstreamOrigin: "https://example.com",
+            upstreamPath: "/not-local",
+            port: 443,
+            pid: 1234,
+          }
+        },
+        close() {},
       },
       readSnapshot: async () => baseReadModel,
     })
@@ -387,6 +515,42 @@ describe("terminal view routes", () => {
     expect(await response.json()).toMatchObject({
       ok: false,
       error: "Terminal observability routes only allow local ttyd targets.",
+    })
+  })
+
+  test("returns a terminal-unavailable 503 when lazy ttyd launch fails", async () => {
+    const app = createTerminalViewRoutes({
+      config: {
+        hostname: "127.0.0.1",
+        port: 3000,
+        repoRoot: "/tmp/repo",
+      },
+      terminalProvider: {
+        async getCapability() {
+          return {
+            enabled: true,
+            message: "ttyd ready",
+            mode: "ttyd" as const,
+          }
+        },
+        async listViews(_options) {
+          return []
+        },
+        async resolveViewTarget() {
+          throw new Error("ttyd failed to start for 002-implementation-abcd12")
+        },
+        close() {},
+      },
+      readSnapshot: async () => baseReadModel,
+    })
+
+    const response = await app.request("/terminal-views/thread%2F03.01.02/ttyd")
+
+    expect(response.status).toBe(503)
+    expect(await response.json()).toMatchObject({
+      ok: false,
+      error:
+        'Terminal view "thread/03.01.02" is temporarily unavailable. ttyd failed to start for 002-implementation-abcd12',
     })
   })
 })

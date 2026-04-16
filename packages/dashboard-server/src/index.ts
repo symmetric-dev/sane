@@ -24,7 +24,9 @@ export {
   type TerminalObservabilityView,
 } from "./observability/terminal.ts"
 export {
+  buildTtydLaunchArgs,
   createTtydTerminalObservabilityProvider,
+  type BuildTtydLaunchArgsOptions,
   type SpawnedTtydInstance,
   type TtydProcessLauncher,
   type TtydTerminalObservabilityProviderOptions,
