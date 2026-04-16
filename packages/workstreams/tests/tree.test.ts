@@ -336,4 +336,92 @@ describe("work tree", () => {
         expect(output).toContain("desync: tasks in progress, runtime running (1 running)")
         expect(output).not.toContain("01.02 failed")
     })
+
+    test("supports unpadded batch ids for runtime filtering", () => {
+        const mockTasks: Task[] = [
+            {
+                id: "01.01.01.01",
+                name: "Task 1",
+                stage_name: "Planning",
+                batch_name: "Setup",
+                thread_name: "Init",
+                status: "in_progress",
+                created_at: "",
+                updated_at: ""
+            },
+            {
+                id: "01.02.01.01",
+                name: "Task 2",
+                stage_name: "Planning",
+                batch_name: "Build",
+                thread_name: "Work",
+                status: "pending",
+                created_at: "",
+                updated_at: ""
+            }
+        ]
+
+        const runtimeSummary: WorkstreamRuntimeSummary = {
+            updated_at: new Date().toISOString(),
+            batches: {
+                "01.01": {
+                    batch_id: "01.01",
+                    run_id: "run-1",
+                    status: "running",
+                    updated_at: new Date().toISOString(),
+                    started_at: new Date().toISOString(),
+                    thread_summary: {
+                        total: 1,
+                        pending: 0,
+                        running: 1,
+                        completed: 0,
+                        failed: 0,
+                    },
+                },
+                "01.02": {
+                    batch_id: "01.02",
+                    run_id: "run-2",
+                    status: "failed",
+                    updated_at: new Date().toISOString(),
+                    started_at: new Date().toISOString(),
+                    thread_summary: {
+                        total: 1,
+                        pending: 0,
+                        running: 0,
+                        completed: 0,
+                        failed: 1,
+                    },
+                },
+            },
+            supervision: {
+                updated_at: new Date().toISOString(),
+                current_branch: {
+                    branch_session_id: "branch-1",
+                    root_session_id: "root-1",
+                    status: "running",
+                    updated_at: new Date().toISOString(),
+                    stage_id: "01",
+                    batch_id: "01.01",
+                    current_batch_id: "01.01",
+                },
+            },
+        }
+
+        readTasksFileSpy = spyOn(tasks, "readTasksFile").mockReturnValue({
+            version: "1.0.0",
+            stream_id: "001-test",
+            last_updated: new Date().toISOString(),
+            runtime_summary: runtimeSummary,
+            tasks: mockTasks,
+        } satisfies TasksFile)
+        spyOn(tasks, "getEffectiveRuntimeSummary").mockReturnValue(runtimeSummary)
+
+        main(["node", "work-tree", "--stream", "001-test", "--batch", "1.1"])
+
+        const output = consoleSpy.mock.calls.map((c: any[]) => c[0]).join("\n")
+        expect(output).toContain("Runtime: batch 01.01 running")
+        expect(output).toContain("desync: tasks in progress, runtime running (1 running)")
+        expect(output).not.toContain("01.02 failed")
+        expect(output).not.toContain("supervision branch")
+    })
 })

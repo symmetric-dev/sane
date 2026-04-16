@@ -261,4 +261,68 @@ describe("workstream tree read model", () => {
     expect(renderWorkstreamTree(snapshot).join("\n")).not.toContain("01.02 failed")
     expect(renderWorkstreamTree(snapshot).join("\n")).not.toContain("supervision branch")
   })
+
+  test("normalizes unpadded batch ids for runtime filtering", () => {
+    const tasks: Task[] = [
+      {
+        id: "01.01.01.01",
+        name: "Task 1",
+        stage_name: "Planning",
+        batch_name: "Setup",
+        thread_name: "Init",
+        status: "in_progress",
+        created_at: "",
+        updated_at: "",
+      },
+    ]
+    const runtimeSummary: WorkstreamRuntimeSummary = {
+      updated_at: new Date().toISOString(),
+      batches: {
+        "01.01": {
+          batch_id: "01.01",
+          run_id: "run-1",
+          status: "running",
+          updated_at: new Date().toISOString(),
+          started_at: new Date().toISOString(),
+          thread_summary: {
+            total: 1,
+            pending: 0,
+            running: 1,
+            completed: 0,
+            failed: 0,
+          },
+        },
+      },
+      supervision: {
+        updated_at: new Date().toISOString(),
+        current_branch: {
+          branch_session_id: "branch-1",
+          root_session_id: "root-1",
+          status: "running",
+          updated_at: new Date().toISOString(),
+          stage_id: "01",
+          batch_id: "01.01",
+          current_batch_id: "01.01",
+        },
+      },
+    }
+
+    const snapshot = buildWorkstreamTreeSnapshot({
+      streamId: "001-test",
+      tasks,
+      runtimeSummary,
+      batchId: "1.1",
+    })
+
+    expect(snapshot.runtimeNotice).toMatchObject({
+      kind: "running_batch",
+      batchId: "01.01",
+      text: "batch 01.01 running (1 active thread)",
+    })
+    expect(snapshot.stages[0]?.batches[0]?.runtimeOverlay).toMatchObject({
+      kind: "desync",
+      runtimeStatus: "running",
+      text: "desync: tasks in progress, runtime running (1 running)",
+    })
+  })
 })

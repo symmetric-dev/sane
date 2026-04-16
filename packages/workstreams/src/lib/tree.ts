@@ -164,6 +164,15 @@ function padNumber(value: number): string {
   return value.toString().padStart(2, "0")
 }
 
+function normalizeBatchId(batchId: string): string | null {
+  const parsedBatchId = parseBatchId(batchId)
+  if (!parsedBatchId) {
+    return null
+  }
+
+  return `${padNumber(parsedBatchId.stage)}.${padNumber(parsedBatchId.batch)}`
+}
+
 function formatTaskStatus(status: TaskStatus): string {
   return status.replace("_", " ")
 }
@@ -311,12 +320,11 @@ function createTaskNode(streamId: string, task: Task): WorkstreamTreeTaskNode {
 }
 
 export function filterTasksForBatch(tasks: Task[], batchId: string): Task[] | null {
-  const parsedBatchId = parseBatchId(batchId)
-  if (!parsedBatchId) {
+  const normalizedBatchId = normalizeBatchId(batchId)
+  if (!normalizedBatchId) {
     return null
   }
 
-  const normalizedBatchId = `${padNumber(parsedBatchId.stage)}.${padNumber(parsedBatchId.batch)}`
   return tasks.filter((task) => task.id.startsWith(`${normalizedBatchId}.`))
 }
 
@@ -328,12 +336,18 @@ function filterRuntimeSummaryForBatch(
     return undefined
   }
 
-  const matchingBatch = runtimeSummary.batches[batchId]
+  const normalizedBatchId = normalizeBatchId(batchId)
+  if (!normalizedBatchId) {
+    return undefined
+  }
+
+  const matchingBatch = runtimeSummary.batches[normalizedBatchId]
   const activeRun = runtimeSummary.supervision?.active_run
   const currentBranch = runtimeSummary.supervision?.current_branch
-  const filteredActiveRun = activeRun?.current_batch_id === batchId ? activeRun : undefined
+  const filteredActiveRun = activeRun?.current_batch_id === normalizedBatchId ? activeRun : undefined
   const filteredCurrentBranch =
-    currentBranch && (currentBranch.current_batch_id === batchId || currentBranch.batch_id === batchId)
+    currentBranch &&
+    (currentBranch.current_batch_id === normalizedBatchId || currentBranch.batch_id === normalizedBatchId)
       ? currentBranch
       : undefined
 
@@ -343,7 +357,7 @@ function filterRuntimeSummaryForBatch(
 
   return {
     updated_at: runtimeSummary.updated_at,
-    batches: matchingBatch ? { [batchId]: matchingBatch } : {},
+    batches: matchingBatch ? { [normalizedBatchId]: matchingBatch } : {},
     ...(filteredActiveRun || filteredCurrentBranch
       ? {
           supervision: {
