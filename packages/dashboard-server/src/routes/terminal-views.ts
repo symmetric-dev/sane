@@ -2,6 +2,7 @@ import { Hono, type Context } from "hono"
 import {
   DASHBOARD_TERMINAL_VIEW_ID_PARAM,
   DASHBOARD_TERMINAL_VIEW_ROUTE_PATH_TEMPLATE,
+  DASHBOARD_TERMINAL_VIEW_SCROLLBACK_ROUTE_PATH_TEMPLATE,
   DASHBOARD_TERMINAL_VIEW_TTYD_PROXY_ROUTE_PATH_TEMPLATE,
   type DashboardTerminalViewMetadata,
 } from "../../../workstreams/src/internal/dashboard-contracts.ts"
@@ -15,6 +16,7 @@ import {
 
 export interface DashboardTerminalViewRoutesDependencies {
   config: DashboardServerConfig
+  now?: () => Date
   terminalProvider: TerminalObservabilityProvider
   readSnapshot?: () => Promise<CurrentWorkstreamDashboardReadModel>
 }
@@ -43,6 +45,19 @@ function findTerminalView(
   return snapshot.observability.terminal_views.views.find(
     (view) => view.terminal_view_id === terminalViewId,
   )
+}
+
+function parsePositiveInt(value: string | undefined, fallback: number): number {
+  if (!value) {
+    return fallback
+  }
+
+  const parsed = Number.parseInt(value, 10)
+  if (!Number.isFinite(parsed) || parsed <= 0) {
+    return fallback
+  }
+
+  return parsed
 }
 
 function isLoopbackHostname(hostname: string): boolean {
@@ -148,7 +163,7 @@ function renderTerminalViewPage(args: {
 
       <section class="frame">
         ${
-          terminalView.status === "available"
+          terminalView.status !== "unavailable"
             ? `<iframe src="${ttydProxyPath}" title="${title}"></iframe>`
             : `<div style="padding: 1.5rem;"><p>This terminal view is not currently available.</p><p class="muted">Return to the dashboard to pick another observable session.</p></div>`
         }
@@ -156,7 +171,7 @@ function renderTerminalViewPage(args: {
 
       <section>
         ${
-          terminalView.status === "available"
+          terminalView.status !== "unavailable"
             ? `<p><a href="${ttydProxyPath}" target="_blank" rel="noreferrer">Open ttyd target in a new tab</a></p>`
             : `<p class="muted">The ttyd target will appear here automatically once this read-only view becomes available again.</p>`
         }
@@ -193,6 +208,7 @@ export function createTerminalViewRoutes(
     dependencies.readSnapshot ??
     (() =>
       readCurrentWorkstreamDashboardSnapshot({
+        now: dependencies.now,
         repoRoot: dependencies.config.repoRoot,
         terminalProvider: dependencies.terminalProvider,
       }))
@@ -219,6 +235,58 @@ export function createTerminalViewRoutes(
     })
   })
 
+  app.get(DASHBOARD_TERMINAL_VIEW_SCROLLBACK_ROUTE_PATH_TEMPLATE, async (context) => {
+    const terminalViewId = getTerminalViewId(context.req.param(DASHBOARD_TERMINAL_VIEW_ID_PARAM))
+    const snapshot = await readSnapshot()
+    const terminalView = findTerminalView(snapshot, terminalViewId)
+
+    if (!terminalView) {
+      return context.json(
+        {
+          ok: false,
+          error: `Terminal view "${terminalViewId}" was not found in the current dashboard snapshot.`,
+        },
+        404,
+      )
+    }
+
+    const limit = parsePositiveInt(context.req.query("limit"), 1200)
+    const offsetQuery = context.req.query("offset")
+    const offset = offsetQuery ? parsePositiveInt(offsetQuery, 0) : undefined
+    const capturedAt = dependencies.now?.().toISOString() ?? new Date().toISOString()
+    const scrollback = dependencies.terminalProvider.readScrollback
+      ? await dependencies.terminalProvider.readScrollback({
+          capturedAt,
+          limit,
+          ...(typeof offset === "number" ? { offset } : {}),
+          terminalViewId,
+        })
+      : null
+
+    if (!scrollback) {
+      return context.json(
+        {
+          terminal_view_id: terminalView.terminal_view_id,
+          session_name: terminalView.session_name,
+          captured_at: capturedAt,
+          read_only: true,
+          status: "unavailable",
+          total_lines: 0,
+          offset: 0,
+          limit,
+          end_offset: 0,
+          is_at_top: true,
+          is_at_bottom: true,
+          lines: [],
+          notes: "No tmux scrollback is currently available for this terminal view.",
+        },
+        503,
+      )
+    }
+
+    return context.json(scrollback)
+  })
+
   app.get(DASHBOARD_TERMINAL_VIEW_TTYD_PROXY_ROUTE_PATH_TEMPLATE, async (context) => {
     const terminalViewId = getTerminalViewId(context.req.param(DASHBOARD_TERMINAL_VIEW_ID_PARAM))
     const snapshot = await readSnapshot()
@@ -234,7 +302,7 @@ export function createTerminalViewRoutes(
       )
     }
 
-    if (terminalView.status !== "available") {
+    if (terminalView.status === "unavailable") {
       return context.redirect(terminalView.routes.view_path, 307)
     }
 

@@ -1,4 +1,5 @@
 import type {
+  DashboardTerminalScrollbackSnapshot,
   DashboardTerminalViewMetadata,
   DashboardTmuxObservabilitySnapshot,
 } from "../../../workstreams/src/internal/dashboard-contracts.ts"
@@ -29,9 +30,19 @@ export interface TerminalObservabilityResolvedTarget {
   pid: number
 }
 
+export interface TerminalObservabilityReadScrollbackOptions {
+  capturedAt: string
+  limit: number
+  offset?: number
+  terminalViewId: string
+}
+
 export interface TerminalObservabilityProvider {
   getCapability(): Promise<TerminalObservabilityCapability>
   listViews(options: TerminalObservabilityListViewsOptions): Promise<TerminalObservabilityView[]>
+  readScrollback?(
+    options: TerminalObservabilityReadScrollbackOptions,
+  ): Promise<DashboardTerminalScrollbackSnapshot | null>
   resolveViewTarget(terminalViewId: string): Promise<TerminalObservabilityResolvedTarget | null>
   close(): void
 }
@@ -47,6 +58,9 @@ export function createNoopTerminalObservabilityProvider(): TerminalObservability
     },
     async listViews(): Promise<TerminalObservabilityView[]> {
       return []
+    },
+    async readScrollback(): Promise<DashboardTerminalScrollbackSnapshot | null> {
+      return null
     },
     async resolveViewTarget(): Promise<TerminalObservabilityResolvedTarget | null> {
       return null

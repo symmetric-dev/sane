@@ -16,10 +16,39 @@ describe("dashboard ui route", () => {
     expect(response.status).toBe(200)
     expect(html).toContain("Current workstream dashboard")
     expect(html).toContain("canonical source: tasks.json")
+    expect(html).toContain('role="tablist"')
+    expect(html).toContain("Status Overview")
+    expect(html).toContain("Work tree")
+    expect(html).toContain("Observability Notes")
     expect(html).toContain("Tmux session metadata")
     expect(html).toContain("Read-only terminal views")
     expect(html).toContain("canonical status remains primary")
-    expect(html).toContain("Select an available terminal view to embed")
-    expect(html).toContain("No available ttyd terminal is ready to embed. Visible views are degraded or unavailable.")
+    expect(html).toContain("terminal-view-select")
+    expect(html).toContain("terminal-view-status")
+    expect(html).toContain("Open standalone view")
+    expect(html).toContain("Page up")
+    expect(html).toContain("Page down")
+    expect(html).toContain("Bottom")
+    expect(html).toContain("terminal-scrollback-meta")
+    expect(html).toContain("Choose a read-only tmux session to inspect from the dashboard.")
+    expect(html).toContain("Select an observable terminal view to embed the read-only ttyd session.")
+    expect(html).toContain("Select a terminal view to inspect tmux scrollback.")
+    expect(html).toContain("terminal-scrollback-editor")
+  })
+
+  test("includes reconnecting and snapshot-unavailable live refresh states", async () => {
+    const app = createUiRoutes({
+      hostname: "127.0.0.1",
+      port: 43119,
+      repoRoot: "/tmp/repo",
+    })
+
+    const response = await app.request("/")
+    const html = await response.text()
+
+    expect(html).toContain("Live updates reconnecting…")
+    expect(html).toContain("Snapshot unavailable")
+    expect(html).toContain("The last successful canonical snapshot remains visible while the backend recovers.")
+    expect(html).toContain("state[data-kind=\"warning\"]")
   })
 })

@@ -12,6 +12,7 @@ import { createUiRoutes } from "./routes/ui.ts"
 export interface DashboardAppDependencies {
   config: DashboardServerConfig
   liveRefresh: LiveRefreshHub
+  now?: () => Date
   terminalProvider: TerminalObservabilityProvider
 }
 
@@ -21,6 +22,11 @@ export function createDashboardApp(dependencies: DashboardAppDependencies): Hono
   app.use("*", async (context, next) => {
     context.header("cache-control", "no-store")
     await next()
+  })
+
+  app.get("/favicon.ico", (context) => {
+    context.header("cache-control", "public, max-age=86400")
+    return context.body(null, 204)
   })
 
   app.route("/", createUiRoutes(dependencies.config))

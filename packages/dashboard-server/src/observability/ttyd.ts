@@ -2,6 +2,7 @@ import { spawn, spawnSync } from "node:child_process"
 import { createServer } from "node:net"
 
 import {
+  type DashboardTerminalScrollbackSnapshot,
   buildDashboardTerminalViewId,
   buildDashboardTerminalViewRoutes,
   type DashboardTerminalViewMetadata,
@@ -13,6 +14,7 @@ import type {
   TerminalObservabilityCapability,
   TerminalObservabilityListViewsOptions,
   TerminalObservabilityProvider,
+  TerminalObservabilityReadScrollbackOptions,
   TerminalObservabilityResolvedTarget,
   TerminalObservabilityView,
 } from "./terminal.ts"
@@ -61,6 +63,12 @@ interface TerminalViewRegistryEntry {
   sessionName: string
 }
 
+interface ObservedPaneSummary {
+  active: boolean
+  paneId: string
+  title?: string
+}
+
 function buildImplementationThreadLabel(session: DashboardTmuxSessionMetadata): string {
   return session.thread_id
     ? `Thread ${session.thread_id} terminal`
@@ -102,13 +110,6 @@ function getManageability(args: {
     return {
       manageable: false,
       reason: "Session state is unknown, so ttyd launch was skipped conservatively.",
-    }
-  }
-
-  if (args.session.state === "exited") {
-    return {
-      manageable: false,
-      reason: "The tmux session has already exited, so no live terminal is available.",
     }
   }
 
@@ -168,6 +169,112 @@ function createBaseView(args: {
     ...(args.session.thread_id ? { thread_id: args.session.thread_id } : {}),
     routes: buildDashboardTerminalViewRoutes(terminalViewId),
     correlation: args.session.correlation,
+  }
+}
+
+function runTmuxCommand(args: string[]): { ok: boolean; stdout: string } {
+  const result = spawnSync("tmux", args, {
+    encoding: "utf8",
+    stdio: ["ignore", "pipe", "ignore"],
+  })
+
+  if (result.error || result.status !== 0) {
+    return { ok: false, stdout: "" }
+  }
+
+  return {
+    ok: true,
+    stdout: result.stdout ?? "",
+  }
+}
+
+function listSessionPanes(sessionName: string): ObservedPaneSummary[] {
+  const result = runTmuxCommand([
+    "list-panes",
+    "-s",
+    "-t",
+    sessionName,
+    "-F",
+    "#{pane_id}\t#{pane_active}\t#{pane_title}",
+  ])
+
+  if (!result.ok) {
+    return []
+  }
+
+  return result.stdout
+    .split("\n")
+    .map((line) => line.trim())
+    .filter((line) => line.length > 0)
+    .map((line) => {
+      const [paneId, active, ...titleParts] = line.split("\t")
+      const title = titleParts.join("\t")
+
+      return {
+        active: active === "1",
+        paneId: paneId ?? "",
+        ...(title.length > 0 ? { title } : {}),
+      }
+    })
+    .filter((pane) => pane.paneId.length > 0)
+}
+
+function readSessionScrollback(
+  sessionName: string,
+  options: Pick<TerminalObservabilityReadScrollbackOptions, "capturedAt" | "limit" | "offset" | "terminalViewId">,
+): DashboardTerminalScrollbackSnapshot | null {
+  const panes = listSessionPanes(sessionName)
+  const pane = panes.find((candidate) => candidate.active) ?? panes[0]
+  if (!pane) {
+    return null
+  }
+
+  const capture = runTmuxCommand([
+    "capture-pane",
+    "-p",
+    "-t",
+    pane.paneId,
+    "-S",
+    "-",
+    "-E",
+    "-",
+  ])
+
+  if (!capture.ok) {
+    return null
+  }
+
+  const lines = capture.stdout.split("\n")
+  if (lines.at(-1) === "") {
+    lines.pop()
+  }
+
+  const totalLines = lines.length
+  const limit = Math.max(1, Math.trunc(options.limit))
+  const requestedOffset =
+    typeof options.offset === "number" && Number.isFinite(options.offset)
+      ? Math.max(0, Math.trunc(options.offset))
+      : Math.max(0, totalLines - limit)
+  const maxOffset = Math.max(0, totalLines - limit)
+  const offset = Math.min(requestedOffset, maxOffset)
+  const endOffset = Math.min(totalLines, offset + limit)
+
+  return {
+    terminal_view_id: options.terminalViewId,
+    session_name: sessionName,
+    captured_at: options.capturedAt,
+    read_only: true,
+    status: "available",
+    pane_id: pane.paneId,
+    ...(pane.title ? { pane_title: pane.title } : {}),
+    total_lines: totalLines,
+    offset,
+    limit,
+    end_offset: endOffset,
+    is_at_top: offset === 0,
+    is_at_bottom: endOffset >= totalLines,
+    lines: lines.slice(offset, endOffset),
+    notes: "Captured from the tmux active pane for read-only monitoring.",
   }
 }
 
@@ -520,6 +627,16 @@ export function createTtydTerminalObservabilityProvider(
       }
 
       return views
+    },
+    async readScrollback(
+      options: TerminalObservabilityReadScrollbackOptions,
+    ): Promise<DashboardTerminalScrollbackSnapshot | null> {
+      const entry = entries.get(options.terminalViewId)
+      if (!entry) {
+        return null
+      }
+
+      return readSessionScrollback(entry.sessionName, options)
     },
     async resolveViewTarget(terminalViewId: string): Promise<TerminalObservabilityResolvedTarget | null> {
       const entry = entries.get(terminalViewId)

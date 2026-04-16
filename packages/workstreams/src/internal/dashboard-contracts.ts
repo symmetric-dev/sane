@@ -1,4 +1,5 @@
 import type {
+  WorkstreamRuntimeSupervisionSummary,
   WorkstreamStatusRuntimeSummaryProjection,
   WorkstreamStatusSnapshot,
 } from "../lib/types.ts"
@@ -86,6 +87,8 @@ export const DASHBOARD_TERMINAL_VIEW_ROUTE_PATH_TEMPLATE =
   `${DASHBOARD_TERMINAL_VIEW_PATH_PREFIX}/:${DASHBOARD_TERMINAL_VIEW_ID_PARAM}` as const
 export const DASHBOARD_TERMINAL_VIEW_TTYD_PROXY_ROUTE_PATH_TEMPLATE =
   `${DASHBOARD_TERMINAL_VIEW_ROUTE_PATH_TEMPLATE}/ttyd` as const
+export const DASHBOARD_TERMINAL_VIEW_SCROLLBACK_ROUTE_PATH_TEMPLATE =
+  `/api${DASHBOARD_TERMINAL_VIEW_ROUTE_PATH_TEMPLATE}/scrollback` as const
 
 export interface DashboardTerminalViewMetadata {
   terminal_view_id: string
@@ -104,6 +107,24 @@ export interface DashboardTerminalViewMetadata {
   correlation: DashboardObservabilityCorrelation
 }
 
+export interface DashboardTerminalScrollbackSnapshot {
+  terminal_view_id: string
+  session_name: string
+  captured_at: string
+  read_only: true
+  status: "available" | "unavailable"
+  pane_id?: string
+  pane_title?: string
+  total_lines: number
+  offset: number
+  limit: number
+  end_offset: number
+  is_at_top: boolean
+  is_at_bottom: boolean
+  lines: string[]
+  notes?: string
+}
+
 export interface DashboardTerminalObservabilitySnapshot {
   checked_at: string
   availability: DashboardObservabilityAvailability
@@ -116,6 +137,7 @@ export interface CurrentWorkstreamDashboardCanonicalState {
   source_of_truth: DashboardCanonicalStateSource
   status: DashboardCanonicalStatusSnapshot
   tree: WorkstreamTreeSnapshot
+  supervision: WorkstreamRuntimeSupervisionSummary | null
   runtime?: WorkstreamStatusRuntimeSummaryProjection
 }
 

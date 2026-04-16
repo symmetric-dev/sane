@@ -15,6 +15,7 @@ import { readCurrentWorkstreamDashboardSnapshot } from "../snapshot.ts"
 
 export interface DashboardCurrentWorkstreamRoutesDependencies {
   config: DashboardServerConfig
+  now?: () => Date
   terminalProvider: TerminalObservabilityProvider
 }
 
@@ -24,6 +25,7 @@ export function createCurrentWorkstreamRoutes(
   const app = new Hono()
   const readSnapshot = () =>
     readCurrentWorkstreamDashboardSnapshot({
+      now: dependencies.now,
       repoRoot: dependencies.config.repoRoot,
       terminalProvider: dependencies.terminalProvider,
     })
@@ -42,11 +44,28 @@ export function createCurrentWorkstreamRoutes(
     const batchId = context.req.query("batch_id")
 
     if (batchId) {
-      return context.json(
-        getResolvedWorkstreamTreeSnapshot(dependencies.config.repoRoot, {
-          batchId,
-        }),
-      )
+      try {
+        return context.json(
+          getResolvedWorkstreamTreeSnapshot(dependencies.config.repoRoot, {
+            batchId,
+          }),
+        )
+      } catch (error) {
+        if (
+          error instanceof Error &&
+          error.message.startsWith("Invalid batch ID format:")
+        ) {
+          return context.json(
+            {
+              ok: false,
+              error: error.message,
+            },
+            400,
+          )
+        }
+
+        throw error
+      }
     }
 
     const snapshot = await readSnapshot()

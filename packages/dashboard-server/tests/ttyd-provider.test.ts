@@ -262,7 +262,7 @@ describe("ttyd terminal observability provider", () => {
     expect(launches).toBe(0)
   })
 
-  test("surfaces unmanageable tmux states without launching ttyd", async () => {
+  test("still launches read-only ttyd for observed exited tmux sessions while keeping missing targets unavailable", async () => {
     let launches = 0
     const provider = createTtydTerminalObservabilityProvider({
       launcher: {
@@ -339,15 +339,18 @@ describe("ttyd terminal observability provider", () => {
       }),
       expect.objectContaining({
         terminal_view_id: "branch/branch-1",
-        status: "unavailable",
-        notes: "The tmux session has already exited, so no live terminal is available.",
+        status: "available",
       }),
     ])
 
     expect(await provider.resolveViewTarget("thread/03.01.01")).toBeNull()
     expect(await provider.resolveViewTarget("thread/03.01.02")).toBeNull()
-    expect(await provider.resolveViewTarget("branch/branch-1")).toBeNull()
-    expect(launches).toBe(0)
+    await expect(provider.resolveViewTarget("branch/branch-1")).resolves.toMatchObject({
+      terminalViewId: "branch/branch-1",
+      sessionName: "002-supervision-exited",
+      port: 43123,
+    })
+    expect(launches).toBe(1)
   })
 
   test("restarts ttyd when a terminal view remaps sessions", async () => {

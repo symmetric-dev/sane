@@ -113,6 +113,8 @@ async function buildObservabilitySnapshot(args: {
 }): Promise<CurrentWorkstreamDashboardObservabilitySnapshot> {
   const tmux = getResolvedCurrentWorkstreamDashboardObservabilitySnapshot(
     args.repoRoot,
+    undefined,
+    { checkedAt: args.checkedAt },
   ).tmux
 
   let capability: TerminalObservabilityCapability
@@ -178,6 +180,7 @@ export async function readCurrentWorkstreamDashboardSnapshot(
     source_of_truth: "tasks.json",
     status,
     tree,
+    supervision,
     ...(runtime ? { runtime } : {}),
   }
   const observability = await buildObservabilitySnapshot({
@@ -200,7 +203,7 @@ export async function readCurrentWorkstreamDashboardSnapshot(
     snapshot,
     status,
     streamId: target.stream.id,
-    supervision,
+    supervision: canonicalState.supervision,
     tree,
   }
 }

@@ -59,6 +59,7 @@ const baseReadModel: CurrentWorkstreamDashboardReadModel = {
       },
       stages: [],
     },
+    supervision: null,
   },
   currentStreamId: "002-web-workstream-dashboard",
   observability: {
@@ -165,6 +166,7 @@ const baseReadModel: CurrentWorkstreamDashboardReadModel = {
         },
         stages: [],
       },
+      supervision: null,
     },
     observability: {
       checked_at: "2026-04-16T12:00:00.000Z",
@@ -321,6 +323,42 @@ function createDegradedOnlyReadModel(): CurrentWorkstreamDashboardReadModel {
   return degradedReadModel
 }
 
+function createUnavailableOnlyReadModel(): CurrentWorkstreamDashboardReadModel {
+  const unavailableReadModel = createDegradedOnlyReadModel()
+  const unavailableView = unavailableReadModel.observability.terminal_views.views[0] as
+    | (typeof unavailableReadModel.observability.terminal_views.views)[number] & { notes?: string }
+    | undefined
+  const snapshotUnavailableView = unavailableReadModel.snapshot.observability.terminal_views.views[0] as
+    | (typeof unavailableReadModel.snapshot.observability.terminal_views.views)[number] & {
+        notes?: string
+      }
+    | undefined
+
+  if (unavailableView) {
+    unavailableView.status = "unavailable"
+    unavailableView.notes = "The tmux session could not be observed for read-only routing."
+  }
+
+  if (snapshotUnavailableView) {
+    snapshotUnavailableView.status = "unavailable"
+    snapshotUnavailableView.notes = "The tmux session could not be observed for read-only routing."
+  }
+
+  unavailableReadModel.observability.terminal_views.issues = [
+    {
+      code: "terminal_view_unavailable",
+      severity: "warn",
+      message: "The tmux session could not be observed for read-only routing.",
+      related_ids: ["branch/branch-1"],
+    },
+  ]
+  unavailableReadModel.snapshot.observability.terminal_views.issues = structuredClone(
+    unavailableReadModel.observability.terminal_views.issues,
+  )
+
+  return unavailableReadModel
+}
+
 describe("terminal view routes", () => {
   test("renders embedded terminal pages for dashboard-visible read-only views", async () => {
     const app = createTerminalViewRoutes({
@@ -366,6 +404,68 @@ describe("terminal view routes", () => {
     expect(html).toContain('iframe src="/terminal-views/thread%2F03.01.02/ttyd"')
   })
 
+  test("serves same-origin tmux scrollback for observable terminal views", async () => {
+    const app = createTerminalViewRoutes({
+      config: {
+        hostname: "127.0.0.1",
+        port: 3000,
+        repoRoot: "/tmp/repo",
+      },
+      terminalProvider: {
+        async getCapability() {
+          return {
+            enabled: true,
+            message: "ttyd ready",
+            mode: "ttyd" as const,
+          }
+        },
+        async listViews(_options) {
+          return []
+        },
+        async readScrollback(options) {
+          return {
+            terminal_view_id: options.terminalViewId,
+            session_name: "002-implementation-abcd12",
+            captured_at: options.capturedAt,
+            read_only: true,
+            status: "available" as const,
+            pane_id: "%1",
+            pane_title: "main",
+            total_lines: 120,
+            offset: 80,
+            limit: options.limit,
+            end_offset: 120,
+            is_at_top: false,
+            is_at_bottom: true,
+            lines: ["line 81", "line 82"],
+            notes: "Captured from tmux.",
+          }
+        },
+        async resolveViewTarget() {
+          return null
+        },
+        close() {},
+      },
+      readSnapshot: async () => baseReadModel,
+    })
+
+    const response = await app.request(
+      "/api/terminal-views/thread%2F03.01.02/scrollback?limit=40",
+    )
+
+    expect(response.status).toBe(200)
+    expect(await response.json()).toMatchObject({
+      terminal_view_id: "thread/03.01.02",
+      session_name: "002-implementation-abcd12",
+      read_only: true,
+      status: "available",
+      offset: 80,
+      limit: 40,
+      end_offset: 120,
+      lines: ["line 81", "line 82"],
+    })
+  })
+
   test("redirects ttyd proxy routes only to local read-only ttyd targets", async () => {
     const app = createTerminalViewRoutes({
       config: {
@@ -407,7 +507,7 @@ describe("terminal view routes", () => {
     expect(response.headers.get("location")).toBe("http://127.0.0.1:7681/")
   })
 
-  test("renders a degraded placeholder when the snapshot only exposes degraded terminal views", async () => {
+  test("renders embedded terminal pages for degraded-but-observable terminal views", async () => {
     const app = createTerminalViewRoutes({
       config: {
         hostname: "127.0.0.1",
@@ -426,7 +526,14 @@ describe("terminal view routes", () => {
           return []
         },
         async resolveViewTarget() {
-          throw new Error("should not resolve degraded ttyd targets")
+          return {
+            terminalViewId: "branch/branch-1",
+            sessionName: "002-supervision-ef3456",
+            upstreamOrigin: "http://127.0.0.1:7682",
+            upstreamPath: "/",
+            port: 7682,
+            pid: 2234,
+          }
         },
         close() {},
       },
@@ -438,12 +545,11 @@ describe("terminal view routes", () => {
     expect(response.status).toBe(200)
 
     const html = await response.text()
-    expect(html).toContain("This terminal view is not currently available.")
-    expect(html).toContain("The ttyd target will appear here automatically")
-    expect(html).not.toContain('<iframe src="/terminal-views/branch%2Fbranch-1/ttyd"')
+    expect(html).toContain("Read-only ttyd observability")
+    expect(html).toContain('iframe src="/terminal-views/branch%2Fbranch-1/ttyd"')
   })
 
-  test("redirects degraded ttyd proxy requests back to the terminal placeholder page", async () => {
+  test("resolves degraded ttyd proxy requests for still-observable tmux sessions", async () => {
     const app = createTerminalViewRoutes({
       config: {
         hostname: "127.0.0.1",
@@ -462,11 +568,52 @@ describe("terminal view routes", () => {
           return []
         },
         async resolveViewTarget() {
-          throw new Error("should not resolve degraded ttyd targets")
+          return {
+            terminalViewId: "branch/branch-1",
+            sessionName: "002-supervision-ef3456",
+            upstreamOrigin: "http://127.0.0.1:7682",
+            upstreamPath: "/",
+            port: 7682,
+            pid: 2234,
+          }
         },
         close() {},
       },
       readSnapshot: async () => createDegradedOnlyReadModel(),
+    })
+
+    const response = await app.request("/terminal-views/branch%2Fbranch-1/ttyd", {
+      redirect: "manual",
+    })
+
+    expect(response.status).toBe(307)
+    expect(response.headers.get("location")).toBe("http://127.0.0.1:7682/")
+  })
+
+  test("keeps truly unavailable ttyd proxy requests on the placeholder page", async () => {
+    const app = createTerminalViewRoutes({
+      config: {
+        hostname: "127.0.0.1",
+        port: 3000,
+        repoRoot: "/tmp/repo",
+      },
+      terminalProvider: {
+        async getCapability() {
+          return {
+            enabled: true,
+            message: "ttyd ready",
+            mode: "ttyd" as const,
+          }
+        },
+        async listViews(_options) {
+          return []
+        },
+        async resolveViewTarget() {
+          throw new Error("should not resolve unavailable ttyd targets")
+        },
+        close() {},
+      },
+      readSnapshot: async () => createUnavailableOnlyReadModel(),
     })
 
     const response = await app.request("/terminal-views/branch%2Fbranch-1/ttyd", {

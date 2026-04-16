@@ -18,6 +18,7 @@ const DASHBOARD_SERVER_IDLE_TIMEOUT_SECONDS = 30
 
 export interface DashboardServerStartOptions extends DashboardServerConfigInput {
   liveRefresh?: LiveRefreshHub
+  now?: () => Date
   terminalProvider?: TerminalObservabilityProvider
 }
 
@@ -35,12 +36,13 @@ export async function startDashboardServer(
   options: DashboardServerStartOptions = {},
 ): Promise<StartedDashboardServer> {
   const config = normalizeDashboardServerConfig(options)
-  const liveRefresh = options.liveRefresh ?? createLiveRefreshHub()
+  const liveRefresh = options.liveRefresh ?? createLiveRefreshHub({ now: options.now })
   const terminalProvider =
     options.terminalProvider ?? createTtydTerminalObservabilityProvider()
   const app = createDashboardApp({
     config,
     liveRefresh,
+    now: options.now,
     terminalProvider,
   })
 

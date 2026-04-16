@@ -34,7 +34,7 @@ export function createSystemRoutes(
       observability: capability,
       status: {
         canonicalState: "ready",
-        terminalViews: "pending-integration",
+        terminalViews: "ready",
       },
     })
   })

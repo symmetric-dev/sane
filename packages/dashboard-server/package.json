@@ -12,8 +12,8 @@
     ".": "./src/index.ts"
   },
   "scripts": {
-    "dev": "bun run ./bin/dashboard-server.ts",
-    "start": "bun run ./bin/dashboard-server.ts",
+    "dev": "bun --hot ./bin/dashboard-server.ts --repo-root ../..",
+    "start": "bun ./bin/dashboard-server.ts --repo-root ../..",
     "test": "bun test",
     "typecheck": "tsc --noEmit"
   },

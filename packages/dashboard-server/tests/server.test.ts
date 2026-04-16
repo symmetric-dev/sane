@@ -203,7 +203,6 @@ function normalizeObservabilityTmux(snapshot: CurrentWorkstreamDashboardSnapshot
     sessions: snapshot.sessions.map((session) => ({
       session_name: session.session_name,
       role: session.role,
-      state: session.state,
       batch_id: session.batch_id,
       stage_id: session.stage_id,
       thread_id: session.thread_id,
@@ -291,6 +290,7 @@ describe("dashboard server", () => {
       },
       status: {
         canonicalState: "ready",
+        terminalViews: "ready",
       },
     })
 
@@ -302,9 +302,16 @@ describe("dashboard server", () => {
     expect(pageHtml).toContain("Status overview")
     expect(pageHtml).toContain("Work tree")
     expect(pageHtml).toContain("Observability notes")
+    expect(pageHtml).toContain("Page up")
+    expect(pageHtml).toContain("Bottom")
+    expect(pageHtml).toContain("terminal-view-status")
+    expect(pageHtml).toContain("terminal-scrollback-editor")
     expect(pageHtml).toContain(CURRENT_WORKSTREAM_LIVE_UPDATES_ROUTE.path)
     expect(pageHtml).toContain("/api/current-workstream/snapshot")
     expect(pageHtml).toContain("Loading canonical snapshot")
+
+    const faviconResponse = await fetch(new URL("/favicon.ico", server.url))
+    expect(faviconResponse.status).toBe(204)
 
     const snapshotResponse = await fetch(
       new URL(CURRENT_WORKSTREAM_DASHBOARD_SNAPSHOT_ROUTE.path, server.url),
@@ -327,6 +334,9 @@ describe("dashboard server", () => {
         },
         tree: {
           streamId: "002-web-workstream-dashboard",
+        },
+        supervision: {
+          active_run_id: "supervision-run-1",
         },
         runtime: {
           summary: {
@@ -378,10 +388,7 @@ describe("dashboard server", () => {
       new URL(CURRENT_WORKSTREAM_SUPERVISION_ROUTE.path, server.url),
     )
     expect(supervisionResponse.status).toBe(200)
-    expect(snapshotPayload.canonical_state.runtime).toBeDefined()
-    expect(await supervisionResponse.json()).toEqual(
-      snapshotPayload.canonical_state.runtime!.summary.supervision,
-    )
+    expect(await supervisionResponse.json()).toEqual(snapshotPayload.canonical_state.supervision)
 
     const observabilityResponse = await fetch(
       new URL(CURRENT_WORKSTREAM_OBSERVABILITY_ROUTE.path, server.url),
@@ -431,7 +438,7 @@ describe("dashboard server", () => {
       new URL(`${CURRENT_WORKSTREAM_TREE_ROUTE.path}?batch_id=bad-batch`, server.url),
     )
 
-    expect(response.status).toBe(500)
+    expect(response.status).toBe(400)
     expect(await response.json()).toEqual({
       ok: false,
       error: 'Invalid batch ID format: "bad-batch"',
@@ -491,6 +498,7 @@ describe("dashboard server", () => {
   test("mirrors the real current-workstream tmux observability helper", async () => {
     const repoRoot = await createDashboardFixtureRepo({ includeRuntimeState: true })
     const server = await startDashboardServer({
+      now: () => new Date("2026-04-15T12:00:00.000Z"),
       port: 0,
       repoRoot,
       terminalProvider: createNoopTerminalObservabilityProvider(),
@@ -515,6 +523,7 @@ describe("dashboard server", () => {
     )
     expect(observabilityResponse.status).toBe(200)
     const observabilityPayload = (await observabilityResponse.json()) as CurrentWorkstreamDashboardSnapshot["observability"]
+    expect(observabilityPayload).toEqual(snapshotPayload.observability)
     expect(normalizeObservabilityTmux(observabilityPayload.tmux)).toEqual(
       normalizeObservabilityTmux(expectedTmux),
     )

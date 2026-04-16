@@ -141,6 +141,9 @@ export function getResolvedWorkstreamTreeSnapshot(
 export function getResolvedDashboardTmuxObservabilitySnapshot(
   repoRoot: string,
   streamIdOrName?: string,
+  options: {
+    checkedAt?: string
+  } = {},
 ): DashboardTmuxObservabilitySnapshot {
   const { stream } = resolveWorkstreamReadTarget(repoRoot, streamIdOrName)
   const tasksFile = readTasksFile(repoRoot, stream.id)
@@ -148,12 +151,16 @@ export function getResolvedDashboardTmuxObservabilitySnapshot(
   return createDashboardTmuxObservabilitySnapshot({
     stream,
     tasksFile,
+    checkedAt: options.checkedAt,
   })
 }
 
 export function getResolvedCurrentWorkstreamDashboardObservabilitySnapshot(
   repoRoot: string,
   streamIdOrName?: string,
+  options: {
+    checkedAt?: string
+  } = {},
 ): CurrentWorkstreamDashboardObservabilitySnapshot {
   const { stream } = resolveWorkstreamReadTarget(repoRoot, streamIdOrName)
   const tasksFile = readTasksFile(repoRoot, stream.id)
@@ -161,6 +168,7 @@ export function getResolvedCurrentWorkstreamDashboardObservabilitySnapshot(
   return createCurrentWorkstreamDashboardObservabilitySnapshot({
     stream,
     tasksFile,
+    checkedAt: options.checkedAt,
   })
 }
 

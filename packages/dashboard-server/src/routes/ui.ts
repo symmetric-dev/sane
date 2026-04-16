@@ -1,5 +1,8 @@
 import { Hono } from "hono"
-import { CURRENT_WORKSTREAM_DASHBOARD_SNAPSHOT_ROUTE } from "../../../workstreams/src/internal/dashboard-contracts.ts"
+import {
+  CURRENT_WORKSTREAM_DASHBOARD_SNAPSHOT_ROUTE,
+  DASHBOARD_TERMINAL_VIEW_SCROLLBACK_ROUTE_PATH_TEMPLATE,
+} from "../../../workstreams/src/internal/dashboard-contracts.ts"
 
 import type { DashboardServerConfig } from "../config.ts"
 import { DASHBOARD_LIVE_PATH } from "./live.ts"
@@ -15,9 +18,10 @@ function escapeHtml(value: string): string {
     .replaceAll("'", "&#39;")
 }
 
-function renderDashboardClientScript(repoRoot: string): string {
+export function renderDashboardClientScript(repoRoot: string): string {
   return [
     `const repoRoot = ${JSON.stringify(repoRoot)}`,
+    `const tabIds = ['status-overview', 'work-tree', 'observability-notes', 'tmux-session-metadata', 'terminal-views']`,
     `const snapshotPath = ${JSON.stringify(CURRENT_WORKSTREAM_DASHBOARD_SNAPSHOT_ROUTE.path)}`,
     `const source = new EventSource(${JSON.stringify(DASHBOARD_LIVE_PATH)})`,
     `const stateBanner = document.getElementById("state-banner")`,
@@ -35,10 +39,29 @@ function renderDashboardClientScript(repoRoot: string): string {
     `const tmuxSummary = document.getElementById("tmux-summary")`,
     `const tmuxList = document.getElementById("tmux-list")`,
     `const terminalViewSummary = document.getElementById("terminal-view-summary")`,
-    `const terminalViewList = document.getElementById("terminal-view-list")`,
+    `const terminalViewSelect = document.getElementById("terminal-view-select")`,
+    `const terminalViewStatus = document.getElementById("terminal-view-status")`,
+    `const terminalViewDetails = document.getElementById("terminal-view-details")`,
+    `const terminalViewOpenLink = document.getElementById("terminal-view-open-link")`,
+    `const scrollbackMeta = document.getElementById("terminal-scrollback-meta")`,
+    `const scrollbackFrame = document.getElementById("terminal-scrollback-frame")`,
+    `const scrollbackEditorMount = document.getElementById("terminal-scrollback-editor")`,
+    `const scrollbackFallback = document.getElementById("terminal-scrollback-fallback")`,
+    `const scrollbackEmpty = document.getElementById("terminal-scrollback-empty")`,
+    `const scrollbackControls = document.getElementById("terminal-scrollback-controls")`,
     `const terminalViewFrame = document.getElementById("terminal-view-frame")`,
     `const observabilityIssues = document.getElementById("observability-issues")`,
-    "const state = { selectedTerminalViewId: null, snapshot: null }",
+    "const tabButtons = tabIds.map((tabId) => document.getElementById('tab-' + tabId)).filter(Boolean)",
+    `const terminalScrollbackPathTemplate = ${JSON.stringify(DASHBOARD_TERMINAL_VIEW_SCROLLBACK_ROUTE_PATH_TEMPLATE)}`,
+    "const monacoLoaderUrl = 'https://cdn.jsdelivr.net/npm/monaco-editor@0.52.2/min/vs/loader.js'",
+    "const monacoVsPath = 'https://cdn.jsdelivr.net/npm/monaco-editor@0.52.2/min/vs'",
+    "const scrollbackEditorFallbackHeightPx = 560",
+    "const terminalFrameHeightPx = 336",
+    "const state = { activeTabId: tabIds[0], selectedTerminalViewId: null, snapshot: null, liveConnectionState: 'connecting', snapshotAvailability: 'loading', scrollback: null, scrollbackLoading: false, scrollbackRenderToken: 0, pendingScrollIntent: null }",
+    "let monacoEditor = null",
+    "let monacoLoaderPromise = null",
+    "const scrollbackPageSize = 1200",
+    "const scrollbackLineStepPx = 120",
     "function escapeHtml(value) {",
     "  return String(value)",
     "    .replaceAll('&', '&amp;')",
@@ -51,14 +74,179 @@ function renderDashboardClientScript(repoRoot: string): string {
     "  if (!stateBanner) return",
     "  stateBanner.hidden = false",
     "  stateBanner.dataset.kind = kind",
-    "  stateBanner.innerHTML = '<div>' + escapeHtml(message) + '</div>' + (details ? '<div class=\"state-actions muted\">' + escapeHtml(details) + '</div>' : '') + (kind === 'error' ? '<div class=\"state-actions\"><button id=\"retry-button\" type=\"button\">Retry</button></div>' : '')",
+    "  stateBanner.innerHTML = '<div>' + escapeHtml(message) + '</div>' + (details ? '<div class=\"state-actions muted\">' + escapeHtml(details) + '</div>' : '') + ((kind === 'error' || kind === 'warning') ? '<div class=\"state-actions\"><button id=\"retry-button\" type=\"button\">Retry</button></div>' : '')",
     "  const retryButton = document.getElementById('retry-button')",
     "  if (retryButton) retryButton.addEventListener('click', () => { void refreshSnapshot('manual retry') })",
     "}",
     "function hideState() { if (stateBanner) stateBanner.hidden = true }",
     "function setConnectionStatus(message) { if (connectionStatus) connectionStatus.textContent = message }",
+    "function updateConnectionStatus() {",
+    "  if (state.snapshotAvailability === 'unavailable') { setConnectionStatus('Snapshot unavailable'); return }",
+    "  if (state.liveConnectionState === 'reconnecting') { setConnectionStatus('Live updates reconnecting…'); return }",
+    "  if (state.liveConnectionState === 'connected') { setConnectionStatus('Live updates connected'); return }",
+    "  setConnectionStatus('Connecting to live updates…')",
+    "}",
+    "function setLiveConnectionState(nextState) { state.liveConnectionState = nextState; updateConnectionStatus() }",
+    "function setSnapshotAvailability(nextState) { state.snapshotAvailability = nextState; updateConnectionStatus() }",
     "function setBadge(element, status, label) { if (!element) return; element.dataset.status = status; element.textContent = label }",
     "function labelStatus(status) { return String(status).replaceAll('_', ' ') }",
+    "function getHashValue() { return typeof location !== 'undefined' && typeof location.hash === 'string' ? location.hash.slice(1) : '' }",
+    "function setHashValue(tabId) { if (typeof history !== 'undefined' && history && typeof history.replaceState === 'function' && typeof location !== 'undefined') history.replaceState(null, '', '#' + tabId); else if (typeof location !== 'undefined') location.hash = tabId }",
+    "function setActiveTab(tabId, options) {",
+    "  const nextTabId = tabIds.includes(tabId) ? tabId : tabIds[0]",
+    "  state.activeTabId = nextTabId",
+    "  for (const currentTabId of tabIds) {",
+    "    const button = document.getElementById('tab-' + currentTabId)",
+    "    const panel = document.getElementById('panel-' + currentTabId)",
+    "    const isActive = currentTabId === nextTabId",
+    "    if (button) { button.setAttribute('aria-selected', isActive ? 'true' : 'false'); button.setAttribute('tabindex', isActive ? '0' : '-1'); button.dataset.active = isActive ? 'true' : 'false' }",
+    "    if (panel) panel.hidden = !isActive",
+    "  }",
+    "  if (!options || options.updateHash !== false) setHashValue(nextTabId)",
+    "}",
+    "function syncTabFromHash() { const hashTabId = getHashValue(); setActiveTab(hashTabId || state.activeTabId, { updateHash: hashTabId === '' }) }",
+    "if (tabButtons.length > 0) {",
+    "  for (const button of tabButtons) {",
+    "    button.addEventListener('click', () => { const tabId = button.getAttribute('data-tab-id'); if (tabId) setActiveTab(tabId) })",
+    "    button.addEventListener('keydown', (event) => {",
+    "      const currentIndex = tabIds.indexOf(button.getAttribute('data-tab-id') || '')",
+    "      if (currentIndex < 0) return",
+    "      if (!(event instanceof KeyboardEvent)) return",
+    "      if (event.key !== 'ArrowLeft' && event.key !== 'ArrowRight' && event.key !== 'Home' && event.key !== 'End') return",
+    "      event.preventDefault()",
+    "      const nextIndex = event.key === 'Home' ? 0 : event.key === 'End' ? tabIds.length - 1 : event.key === 'ArrowLeft' ? (currentIndex - 1 + tabIds.length) % tabIds.length : (currentIndex + 1) % tabIds.length",
+    "      const nextButton = document.getElementById('tab-' + tabIds[nextIndex])",
+    "      const nextTabId = tabIds[nextIndex]",
+    "      setActiveTab(nextTabId)",
+    "      if (nextButton && typeof nextButton.focus === 'function') nextButton.focus()",
+    "    })",
+    "  }",
+    "  if (typeof addEventListener === 'function') addEventListener('hashchange', () => { syncTabFromHash() })",
+    "  syncTabFromHash()",
+    "}",
+    "function buildTerminalScrollbackPath(terminalViewId, params) {",
+    "  const encodedId = encodeURIComponent(terminalViewId)",
+    "  const path = terminalScrollbackPathTemplate.replace(':' + 'terminalViewId', encodedId)",
+    "  const search = []",
+    "  if (params && typeof params.limit === 'number') search.push('limit=' + encodeURIComponent(String(params.limit)))",
+    "  if (params && typeof params.offset === 'number') search.push('offset=' + encodeURIComponent(String(params.offset)))",
+    "  return search.length > 0 ? path + '?' + search.join('&') : path",
+    "}",
+    "function getScrollbackViewportHeightPx() {",
+    "  const viewportHeight = typeof window !== 'undefined' && typeof window.innerHeight === 'number' ? Math.round(window.innerHeight * 0.75) : 0",
+    "  return Math.max(scrollbackEditorFallbackHeightPx, viewportHeight)",
+    "}",
+    "function applyTerminalHeights() {",
+    "  const scrollbackHeight = getScrollbackViewportHeightPx()",
+    "  if (scrollbackFrame && scrollbackFrame.style) scrollbackFrame.style.height = scrollbackHeight + 'px'",
+    "  if (scrollbackEditorMount && scrollbackEditorMount.style) scrollbackEditorMount.style.height = scrollbackHeight + 'px'",
+    "  if (scrollbackFallback && scrollbackFallback.style) scrollbackFallback.style.height = scrollbackHeight + 'px'",
+    "  if (scrollbackEmpty && scrollbackEmpty.style) scrollbackEmpty.style.height = scrollbackHeight + 'px'",
+    "  if (terminalViewFrame && terminalViewFrame.style) terminalViewFrame.style.minHeight = terminalFrameHeightPx + 'px'",
+    "  const iframe = terminalViewFrame && typeof terminalViewFrame.querySelector === 'function' ? terminalViewFrame.querySelector('iframe') : null",
+    "  if (iframe && iframe.style) iframe.style.height = terminalFrameHeightPx + 'px'",
+    "  if (monacoEditor && typeof monacoEditor.layout === 'function' && scrollbackEditorMount) monacoEditor.layout({ width: scrollbackEditorMount.clientWidth || 0, height: scrollbackHeight })",
+    "}",
+    "function setScrollbackControlsDisabled(disabled) {",
+    "  if (!scrollbackControls) return",
+    "  const buttons = Array.from(scrollbackControls.querySelectorAll('button'))",
+    "  for (const button of buttons) button.disabled = disabled",
+    "}",
+    "function ensureMonacoEditor() {",
+    "  if (monacoEditor || !scrollbackEditorMount) return Promise.resolve(monacoEditor)",
+    "  if (typeof document === 'undefined' || typeof document.createElement !== 'function') return Promise.resolve(null)",
+    "  const createEditor = () => {",
+    "    if (monacoEditor || !scrollbackEditorMount || !globalThis.monaco || !globalThis.monaco.editor) return monacoEditor",
+    "    try {",
+    "      monacoEditor = globalThis.monaco.editor.create(scrollbackEditorMount, {",
+    "        value: '',",
+    "        language: 'shell',",
+    "        readOnly: true,",
+    "        automaticLayout: false,",
+    "        minimap: { enabled: false },",
+    "        lineNumbers: 'off',",
+    "        wordWrap: 'on',",
+    "        scrollBeyondLastLine: false,",
+    "        renderLineHighlight: 'none',",
+    "        overviewRulerLanes: 0,",
+    "        glyphMargin: false,",
+    "        folding: false,",
+    "        fontSize: 12,",
+    "        theme: 'vs-dark',",
+    "      })",
+    "      applyTerminalHeights()",
+    "      return monacoEditor",
+    "    } catch {",
+    "      return null",
+    "    }",
+    "  }",
+    "  if (globalThis.monaco && globalThis.monaco.editor) return Promise.resolve(createEditor())",
+    "  if (monacoLoaderPromise) return monacoLoaderPromise",
+    "  monacoLoaderPromise = new Promise((resolve) => {",
+    "    const finish = () => {",
+    "      const amdRequire = globalThis.require",
+    "      if (!amdRequire || typeof amdRequire.config !== 'function') { resolve(null); return }",
+    "      amdRequire.config({ paths: { vs: monacoVsPath } })",
+    "      amdRequire(['vs/editor/editor.main'], () => resolve(createEditor()), () => resolve(null))",
+    "    }",
+    "    const existing = typeof document.querySelector === 'function' ? document.querySelector('script[data-dashboard-monaco-loader=\"true\"]') : null",
+    "    if (existing) {",
+    "      if (globalThis.monaco && globalThis.monaco.editor) { resolve(createEditor()); return }",
+    "      existing.addEventListener('load', finish, { once: true })",
+    "      existing.addEventListener('error', () => resolve(null), { once: true })",
+    "      return",
+    "    }",
+    "    const script = document.createElement('script')",
+    "    script.src = monacoLoaderUrl",
+    "    script.async = true",
+    "    script.dataset.dashboardMonacoLoader = 'true'",
+    "    script.addEventListener('load', finish, { once: true })",
+    "    script.addEventListener('error', () => resolve(null), { once: true })",
+    "    if (document.head && typeof document.head.appendChild === 'function') document.head.appendChild(script)",
+    "    else resolve(null)",
+    "  })",
+    "  return monacoLoaderPromise",
+    "}",
+    "function renderScrollbackText(text, token) {",
+    "  const commit = (editor) => {",
+    "    if (token !== state.scrollbackRenderToken) return",
+    "    if (editor && scrollbackEditorMount && scrollbackFallback && scrollbackEmpty) {",
+      "      scrollbackEditorMount.hidden = false",
+      "      scrollbackFallback.hidden = true",
+      "      scrollbackEmpty.hidden = true",
+      "      if (typeof editor.getValue === 'function' && editor.getValue() !== text && typeof editor.setValue === 'function') editor.setValue(text)",
+      "      applyTerminalHeights()",
+      "      applyPendingScrollIntent(state.scrollback)",
+      "      return",
+      "    }",
+    "    if (scrollbackEditorMount) scrollbackEditorMount.hidden = true",
+    "    if (scrollbackFallback) { scrollbackFallback.hidden = false; scrollbackFallback.textContent = text }",
+    "    if (scrollbackEmpty) scrollbackEmpty.hidden = true",
+    "    applyPendingScrollIntent(state.scrollback)",
+    "  }",
+    "  ensureMonacoEditor().then((editor) => commit(editor)).catch(() => commit(null))",
+    "}",
+    "function setFallbackScrollTop(nextTop) { if (scrollbackFallback) scrollbackFallback.scrollTop = Math.max(0, nextTop) }",
+    "function scrollScrollbackViewport(direction) {",
+    "  if (monacoEditor && typeof monacoEditor.getScrollTop === 'function' && typeof monacoEditor.setScrollTop === 'function') {",
+    "    const nextTop = direction === 'up' ? monacoEditor.getScrollTop() - scrollbackLineStepPx : monacoEditor.getScrollTop() + scrollbackLineStepPx",
+    "    monacoEditor.setScrollTop(Math.max(0, nextTop))",
+    "    return",
+    "  }",
+    "  if (scrollbackFallback) setFallbackScrollTop((scrollbackFallback.scrollTop || 0) + (direction === 'up' ? -scrollbackLineStepPx : scrollbackLineStepPx))",
+    "}",
+    "function applyPendingScrollIntent(scrollback) {",
+    "  const intent = state.pendingScrollIntent",
+    "  state.pendingScrollIntent = null",
+    "  if (!intent || !scrollback || scrollback.status !== 'available') return",
+    "  if (intent === 'bottom') {",
+    "    if (monacoEditor && typeof monacoEditor.getScrollHeight === 'function' && typeof monacoEditor.setScrollTop === 'function') monacoEditor.setScrollTop(monacoEditor.getScrollHeight())",
+    "    else if (scrollbackFallback) setFallbackScrollTop(scrollbackFallback.scrollHeight || 0)",
+    "  } else if (intent === 'top') {",
+    "    if (monacoEditor && typeof monacoEditor.setScrollTop === 'function') monacoEditor.setScrollTop(0)",
+    "    else if (scrollbackFallback) setFallbackScrollTop(0)",
+    "  }",
+    "}",
     "function renderMetricCard(title, value, note) {",
     "  return '<div class=\"summary-card\"><div class=\"muted\">' + escapeHtml(title) + '</div><div class=\"summary-value\">' + escapeHtml(value) + '</div>' + (note ? '<div class=\"meta\">' + escapeHtml(note) + '</div>' : '') + '</div>'",
     "}",
@@ -117,32 +305,94 @@ function renderDashboardClientScript(repoRoot: string): string {
     "  const terminalViews = observability && observability.terminal_views",
     "  const views = terminalViews && terminalViews.views ? terminalViews.views : []",
     "  const requestedView = views.find((view) => view.terminal_view_id === state.selectedTerminalViewId) || null",
-    "  const availableView = views.find((view) => view.status === 'available') || null",
-    "  const selectedView = requestedView || availableView",
-    "  const embeddableView = requestedView ? (requestedView.status === 'available' ? requestedView : null) : availableView",
+    "  const embeddableFallbackView = views.find((view) => view.status !== 'unavailable') || null",
+    "  const selectedView = requestedView || embeddableFallbackView || views[0] || null",
+    "  const embeddableView = selectedView && selectedView.status !== 'unavailable' ? selectedView : null",
     "  state.selectedTerminalViewId = selectedView ? selectedView.terminal_view_id : null",
-    "  if (terminalViewSummary) terminalViewSummary.textContent = terminalViews && terminalViews.availability === 'ready' ? 'Select a ttyd-backed session to embed its read-only terminal.' : terminalViews && terminalViews.availability === 'degraded' ? 'Read-only terminal observability is degraded, but canonical status remains primary.' : 'Read-only terminal observability is unavailable; canonical status remains primary.'",
-    "  if (terminalViewList) {",
-    "    if (views.length === 0) { terminalViewList.innerHTML = '<li class=\"empty\">No read-only ttyd views are currently available.</li>' } else {",
-    "      terminalViewList.innerHTML = views.map((view) => {",
-    "        const selected = view.terminal_view_id === state.selectedTerminalViewId",
-    "        const notes = view.notes ? '<div class=\"terminal-note\">' + escapeHtml(view.notes) + '</div>' : ''",
-    "        return '<li class=\"terminal-card\"><div class=\"terminal-row\"><button type=\"button\" class=\"terminal-button' + (selected ? ' selected' : '') + '\" data-terminal-view-id=\"' + escapeHtml(view.terminal_view_id) + '\"><strong>' + escapeHtml(view.label) + '</strong><div class=\"terminal-note\">' + escapeHtml(view.session_name) + ' · ' + escapeHtml(view.status) + ' · read-only</div></button><a href=\"' + escapeHtml(view.routes.view_path) + '\">open view</a></div><div class=\"terminal-note\">Proxy: <code>' + escapeHtml(view.routes.ttyd_proxy_path) + '</code></div>' + notes + '</li>'",
-    "      }).join('')",
-    "    }",
+    "  if (terminalViewSummary) terminalViewSummary.textContent = terminalViews && terminalViews.availability === 'ready' ? 'Choose a read-only tmux session to inspect from the dashboard.' : terminalViews && terminalViews.availability === 'degraded' ? 'Read-only terminal observability is degraded, but canonical status remains primary.' : 'Read-only terminal observability is unavailable; canonical status remains primary.'",
+    "  if (terminalViewSelect) {",
+    "    terminalViewSelect.disabled = views.length === 0",
+    "    terminalViewSelect.innerHTML = views.length === 0 ? '<option value=\"\">No observable terminal views</option>' : views.map((view) => '<option value=\"' + escapeHtml(view.terminal_view_id) + '\"' + (view.terminal_view_id === state.selectedTerminalViewId ? ' selected' : '') + '>' + escapeHtml(view.label) + ' · ' + escapeHtml(view.session_name) + '</option>').join('')",
+    "    if (state.selectedTerminalViewId) terminalViewSelect.value = state.selectedTerminalViewId",
+    "  }",
+    "  if (terminalViewStatus) {",
+    "    if (!selectedView) { terminalViewStatus.hidden = true; terminalViewStatus.textContent = '' }",
+    "    else { terminalViewStatus.hidden = false; terminalViewStatus.dataset.status = selectedView.status; terminalViewStatus.textContent = selectedView.status }",
+    "  }",
+    "  if (terminalViewDetails) {",
+    "    if (!selectedView) terminalViewDetails.innerHTML = ''",
+    "    else terminalViewDetails.innerHTML = '<div class=\"terminal-note\">' + escapeHtml(selectedView.role) + ' · ' + escapeHtml(selectedView.session_name) + ' · read-only</div>' + (selectedView.notes ? '<div class=\"terminal-note\">' + escapeHtml(selectedView.notes) + '</div>' : '')",
+    "  }",
+    "  if (terminalViewOpenLink) {",
+    "    if (!selectedView) { terminalViewOpenLink.hidden = true; terminalViewOpenLink.removeAttribute('href') }",
+    "    else { terminalViewOpenLink.hidden = false; terminalViewOpenLink.setAttribute('href', selectedView.routes.view_path) }",
     "  }",
     "  if (terminalViewFrame) {",
-    "    if (!embeddableView) { terminalViewFrame.innerHTML = views.length === 0 ? '<div style=\"padding: 1rem;\" class=\"empty\">No read-only ttyd views are currently available.</div>' : '<div style=\"padding: 1rem;\" class=\"empty\">No available ttyd terminal is ready to embed. Visible views are degraded or unavailable.</div>' } else { terminalViewFrame.innerHTML = '<iframe src=\"' + escapeHtml(embeddableView.routes.ttyd_proxy_path) + '\" title=\"' + escapeHtml(embeddableView.label) + '\"></iframe>' }",
+    "    if (!embeddableView) { terminalViewFrame.innerHTML = views.length === 0 ? '<div style=\"padding: 1rem;\" class=\"empty\">No read-only ttyd views are currently available.</div>' : '<div style=\"padding: 1rem;\" class=\"empty\">The selected tmux session cannot currently be embedded, but its details and scrollback remain available above.</div>' } else { terminalViewFrame.innerHTML = '<iframe src=\"' + escapeHtml(embeddableView.routes.ttyd_proxy_path) + '\" title=\"' + escapeHtml(embeddableView.label) + '\"></iframe>' }",
+    "  }",
+    "  applyTerminalHeights()",
+    "}",
+    "function renderScrollback(scrollback) {",
+    "  state.scrollback = scrollback || null",
+    "  state.scrollbackRenderToken += 1",
+    "  const renderToken = state.scrollbackRenderToken",
+    "  setScrollbackControlsDisabled(state.scrollbackLoading || !state.selectedTerminalViewId)",
+    "  if (scrollbackMeta) {",
+    "    if (!state.selectedTerminalViewId) scrollbackMeta.textContent = ''",
+    "    else if (scrollback && scrollback.status === 'available') scrollbackMeta.textContent = 'Lines ' + (scrollback.offset + 1) + '–' + scrollback.end_offset + ' of ' + scrollback.total_lines + (scrollback.pane_title ? ' · pane ' + scrollback.pane_title : '') + (state.scrollbackLoading ? ' · updating…' : '')",
+    "    else if (state.scrollbackLoading) scrollbackMeta.textContent = 'Loading scrollback…'",
+    "    else scrollbackMeta.textContent = scrollback && scrollback.notes ? scrollback.notes : ''",
+    "  }",
+    "  if (scrollbackFrame) scrollbackFrame.setAttribute('aria-busy', state.scrollbackLoading ? 'true' : 'false')",
+    "  if (!scrollbackEditorMount || !scrollbackFallback || !scrollbackEmpty) return",
+    "  if (!state.selectedTerminalViewId) { scrollbackEditorMount.hidden = true; scrollbackFallback.hidden = true; scrollbackEmpty.hidden = false; scrollbackEmpty.textContent = 'Select a terminal view to inspect tmux scrollback.'; return }",
+    "  if (state.scrollbackLoading && state.scrollback && state.scrollback.status === 'available') return",
+    "  if (!scrollback || scrollback.status !== 'available') { scrollbackEditorMount.hidden = true; scrollbackFallback.hidden = true; scrollbackEmpty.hidden = false; scrollbackEmpty.textContent = scrollback && scrollback.notes ? scrollback.notes : 'No tmux history is currently available for this view.'; return }",
+    "  renderScrollbackText(scrollback.lines.join('\\n'), renderToken)",
+    "}",
+    "async function refreshScrollback(reason, options) {",
+    "  if (!state.selectedTerminalViewId) { renderScrollback(null); return }",
+    "  state.scrollbackLoading = true",
+    "  renderScrollback(state.scrollback)",
+    "  try {",
+    "    const response = await fetch(buildTerminalScrollbackPath(state.selectedTerminalViewId, { limit: scrollbackPageSize, ...(options && typeof options.offset === 'number' ? { offset: options.offset } : {}) }), { headers: { accept: 'application/json' } })",
+    "    const scrollback = await response.json()",
+    "    state.scrollbackLoading = false",
+    "    renderScrollback(scrollback)",
+    "  } catch (error) {",
+    "    state.scrollbackLoading = false",
+    "    renderScrollback({ terminal_view_id: state.selectedTerminalViewId, session_name: '', captured_at: new Date().toISOString(), read_only: true, status: 'unavailable', total_lines: 0, offset: 0, limit: scrollbackPageSize, end_offset: 0, is_at_top: true, is_at_bottom: true, lines: [], notes: error instanceof Error ? error.message : 'Failed to load tmux scrollback.' })",
     "  }",
     "}",
-    "if (terminalViewList) {",
-    "  terminalViewList.addEventListener('click', (event) => {",
-    "    const button = event.target instanceof Element ? event.target.closest('button[data-terminal-view-id]') : null",
-    "    if (!button) return",
-    "    const terminalViewId = button.getAttribute('data-terminal-view-id')",
-    "    if (!terminalViewId) return",
-    "    state.selectedTerminalViewId = terminalViewId",
+    "function getNextScrollbackOffset(action) {",
+    "  const scrollback = state.scrollback",
+    "  if (!scrollback || scrollback.status !== 'available') return undefined",
+    "  const maxOffset = Math.max(0, scrollback.total_lines - scrollback.limit)",
+    "  if (action === 'page-up') return Math.max(0, scrollback.offset - scrollback.limit)",
+    "  if (action === 'page-down') return Math.min(maxOffset, scrollback.offset + scrollback.limit)",
+    "  if (action === 'bottom') return maxOffset",
+    "  return undefined",
+    "}",
+    "if (terminalViewSelect) {",
+    "  terminalViewSelect.addEventListener('change', () => {",
+    "    const terminalViewId = terminalViewSelect.value || ''",
+    "    state.selectedTerminalViewId = terminalViewId.length > 0 ? terminalViewId : null",
     "    if (state.snapshot) renderTerminalViews(state.snapshot.observability)",
+    "    state.pendingScrollIntent = 'bottom'",
+    "    void refreshScrollback('selection change')",
+    "  })",
+    "}",
+    "if (scrollbackControls) {",
+    "  scrollbackControls.addEventListener('click', (event) => {",
+    "    const button = event.target instanceof Element ? event.target.closest('button[data-scroll-action]') : null",
+    "    if (!button) return",
+    "    const action = button.getAttribute('data-scroll-action')",
+    "    if (!action) return",
+    "    if (action === 'up' || action === 'down') { scrollScrollbackViewport(action); return }",
+    "    const nextOffset = getNextScrollbackOffset(action)",
+    "    if (typeof nextOffset !== 'number') return",
+    "    state.pendingScrollIntent = action === 'page-up' ? 'top' : 'bottom'",
+    "    void refreshScrollback(action, { offset: nextOffset })",
     "  })",
     "}",
     "function renderSnapshot(snapshot, reason) {",
@@ -152,6 +402,7 @@ function renderDashboardClientScript(repoRoot: string): string {
     "  const runtime = snapshot && snapshot.canonical_state && snapshot.canonical_state.runtime",
     "  if (!status || !tree) throw new Error('Snapshot payload is missing canonical workstream data.')",
     "  state.snapshot = snapshot",
+    "  setSnapshotAvailability('ready')",
     "  hideState()",
     "  if (dashboard) dashboard.hidden = false",
     "  if (workstreamTitle) workstreamTitle.textContent = status.stream.id + ' · ' + status.stream.name",
@@ -166,6 +417,8 @@ function renderDashboardClientScript(repoRoot: string): string {
     "  if (observabilityIssues) observabilityIssues.innerHTML = renderObservabilityIssues(observability)",
     "  renderTmuxSessions(observability)",
     "  renderTerminalViews(observability)",
+    "  if (!state.scrollback) state.pendingScrollIntent = 'bottom'",
+    "  void refreshScrollback(reason)",
     "}",
     "async function refreshSnapshot(reason) {",
     "  setConnectionStatus(reason ? 'Refreshing snapshot (' + reason + ')…' : 'Refreshing snapshot…')",
@@ -175,19 +428,32 @@ function renderDashboardClientScript(repoRoot: string): string {
     "    if (!response.ok) throw new Error('Snapshot request failed with ' + response.status)",
     "    const snapshot = await response.json()",
     "    renderSnapshot(snapshot, reason)",
-    "    setConnectionStatus('Canonical snapshot loaded')",
+    "    updateConnectionStatus()",
     "  } catch (error) {",
     "    const message = error instanceof Error ? error.message : 'Failed to load the canonical snapshot.'",
-    "    showState('error', message, 'The dashboard can reconnect once the backend snapshot is available.')",
-    "    setConnectionStatus('Snapshot unavailable')",
-    "    if (dashboard) dashboard.hidden = true",
+    "    const hasSnapshot = Boolean(state.snapshot)",
+    "    setSnapshotAvailability('unavailable')",
+    "    showState(hasSnapshot ? 'warning' : 'error', message, hasSnapshot ? 'The last successful canonical snapshot remains visible while the backend recovers.' : 'The dashboard can reconnect once the backend snapshot is available.')",
+    "    if (!hasSnapshot && dashboard) dashboard.hidden = true",
     "  }",
     "}",
-    "source.onopen = () => { setConnectionStatus('Live updates connected') }",
+    "source.onopen = () => { setLiveConnectionState('connected') }",
     "source.addEventListener('snapshot', () => { void refreshSnapshot('live snapshot event') })",
     "source.addEventListener('observability', () => { void refreshSnapshot('live observability event') })",
-    "source.addEventListener('heartbeat', () => { setConnectionStatus('Live updates connected') })",
-    "source.onerror = () => { setConnectionStatus('Live updates reconnecting…') }",
+    "source.addEventListener('heartbeat', () => { setLiveConnectionState('connected') })",
+    "source.addEventListener('error', (event) => {",
+    "  if (!(event instanceof MessageEvent)) return",
+    "  let payload = null",
+    "  try { payload = JSON.parse(event.data) } catch { payload = null }",
+    "  const message = payload && typeof payload.message === 'string' ? payload.message : 'Snapshot unavailable from the backend.'",
+    "  const details = payload && payload.retryable === false ? 'The dashboard will keep retrying for a fresh canonical snapshot.' : 'The dashboard will keep retrying and reconnect when the snapshot returns.'",
+    "  setSnapshotAvailability('unavailable')",
+    "  showState(state.snapshot ? 'warning' : 'error', message, details)",
+    "  if (!state.snapshot && dashboard) dashboard.hidden = true",
+    "})",
+    "source.onerror = () => { if (state.snapshotAvailability !== 'unavailable') setLiveConnectionState('reconnecting') }",
+    "if (typeof addEventListener === 'function') addEventListener('resize', () => { applyTerminalHeights() })",
+    "applyTerminalHeights()",
     "void refreshSnapshot('initial load')",
   ].join("\n")
 }
@@ -219,6 +485,11 @@ function renderDashboardShell(config: DashboardServerConfig): string {
       @media (min-width: 1100px) { .layout-grid { grid-template-columns: minmax(0, 1fr) minmax(0, 1.15fr); align-items: start; } }
       .panel-head { display: flex; align-items: baseline; justify-content: space-between; gap: 1rem; margin-bottom: 0.9rem; }
       .summary-grid { display: grid; gap: 0.75rem; grid-template-columns: repeat(auto-fit, minmax(12rem, 1fr)); }
+      .tabs { display: grid; gap: 0.75rem; }
+      .tab-list { display: flex; flex-wrap: wrap; gap: 0.6rem; border-bottom: 1px solid #232323; padding-bottom: 0.75rem; }
+      .tab-button { border-radius: 999px; background: #121212; color: #cfcfcf; }
+      .tab-button[data-active="true"], .tab-button[aria-selected="true"] { border-color: #3f6d99; background: #16202a; color: #8ec5ff; }
+      .tab-panel { display: grid; gap: 1rem; }
       .summary-card, .status-row, .tree-node, .runtime-entry, .issue { border: 1px solid #232323; background: #0d0d0d; }
       .summary-card { display: grid; gap: 0.25rem; padding: 0.75rem; }
       .summary-value { font-size: 1.05rem; font-weight: 600; }
@@ -240,18 +511,28 @@ function renderDashboardShell(config: DashboardServerConfig): string {
       .tree-children[data-depth="3"] { padding-left: 0.65rem; }
       .tree-meta, .tree-note, .status-note, .runtime-note, .issue-note, .terminal-note { color: #a7a7a7; font-size: 0.86rem; }
       .state { padding: 1rem; }
+      .state[data-kind="warning"] { color: #fff0c7; border-color: #5a4a23; }
       .state[data-kind="error"] { color: #ffd3d3; border-color: #4a2323; }
       .state-actions { margin-top: 0.8rem; }
       button { appearance: none; border: 1px solid #2c2c2c; background: #161616; color: #f4f4f4; padding: 0.42rem 0.75rem; border-radius: 0.45rem; font: inherit; }
       button:hover { background: #1d1d1d; }
       .subgrid { display: grid; gap: 0.75rem; }
-      .terminal-list, .tmux-list { display: grid; gap: 0.6rem; list-style: none; padding: 0; margin: 0; }
-      .terminal-card, .tmux-card { display: grid; gap: 0.45rem; border: 1px solid #232323; background: #0d0d0d; padding: 0.7rem; }
-      .terminal-row, .tmux-row { display: flex; flex-wrap: wrap; justify-content: space-between; gap: 0.6rem; align-items: baseline; }
-      .terminal-frame { border: 1px solid #232323; background: #050505; min-height: 28rem; overflow: hidden; }
-      .terminal-frame iframe { border: 0; display: block; width: 100%; height: 28rem; }
-      .terminal-button { display: inline-flex; align-items: center; gap: 0.4rem; text-align: left; }
-      .terminal-button.selected { border-color: #3f6d99; color: #8ec5ff; }
+      .tmux-list { display: grid; gap: 0.6rem; list-style: none; padding: 0; margin: 0; }
+      .tmux-card { display: grid; gap: 0.45rem; border: 1px solid #232323; background: #0d0d0d; padding: 0.7rem; }
+      .tmux-row { display: flex; flex-wrap: wrap; justify-content: space-between; gap: 0.6rem; align-items: baseline; }
+      .terminal-selector-card { display: grid; gap: 0.6rem; padding: 0; }
+      .terminal-selector-row, .selector-details-head { display: flex; flex-wrap: wrap; justify-content: space-between; gap: 0.6rem; align-items: center; }
+      .terminal-selector-actions { display: flex; flex-wrap: wrap; gap: 0.5rem; align-items: center; }
+      .terminal-select { width: min(100%, 34rem); border: 1px solid #2c2c2c; background: #161616; color: #f4f4f4; padding: 0.55rem 0.75rem; border-radius: 0.45rem; font: inherit; }
+      .terminal-link { color: #8ec5ff; text-decoration: none; }
+      .terminal-link:hover { text-decoration: underline; }
+      .terminal-frame, .terminal-scrollback-frame { border: 1px solid #232323; background: #050505; min-height: 21rem; overflow: hidden; }
+      .terminal-frame iframe { border: 0; display: block; width: 100%; height: 21rem; }
+      .terminal-scrollback-frame { position: relative; overflow: hidden; }
+      .terminal-scrollback-editor { width: 100%; height: 560px; }
+      .terminal-scrollback-pre, .terminal-scrollback-empty { margin: 0; min-height: 560px; height: 560px; padding: 1rem; white-space: pre-wrap; word-break: break-word; overflow: auto; }
+      .terminal-scrollback-empty { display: flex; align-items: center; }
+      .terminal-controls { display: flex; flex-wrap: wrap; gap: 0.5rem; }
       [hidden] { display: none !important; }
     </style>
   </head>
@@ -266,8 +547,18 @@ function renderDashboardShell(config: DashboardServerConfig): string {
 
       <section id="state-banner" class="state" data-kind="loading">Loading canonical snapshot…</section>
 
-      <div id="dashboard" class="layout" hidden>
-        <div class="layout-grid">
+      <div id="dashboard" class="layout tabs" hidden>
+        <nav class="panel" aria-label="Dashboard sections">
+          <div class="tab-list" role="tablist" aria-label="Dashboard sections">
+            <button id="tab-status-overview" class="tab-button" type="button" role="tab" aria-controls="panel-status-overview" aria-selected="true" aria-label="Status Overview" data-active="true" data-tab-id="status-overview">Status Overview</button>
+            <button id="tab-work-tree" class="tab-button" type="button" role="tab" aria-controls="panel-work-tree" aria-selected="false" tabindex="-1" data-active="false" data-tab-id="work-tree">Work tree</button>
+            <button id="tab-observability-notes" class="tab-button" type="button" role="tab" aria-controls="panel-observability-notes" aria-selected="false" tabindex="-1" data-active="false" data-tab-id="observability-notes">Observability Notes</button>
+            <button id="tab-tmux-session-metadata" class="tab-button" type="button" role="tab" aria-controls="panel-tmux-session-metadata" aria-selected="false" tabindex="-1" data-active="false" data-tab-id="tmux-session-metadata">Tmux Session Metadata</button>
+            <button id="tab-terminal-views" class="tab-button" type="button" role="tab" aria-controls="panel-terminal-views" aria-selected="false" tabindex="-1" data-active="false" data-tab-id="terminal-views">Read-only Terminal Views</button>
+          </div>
+        </nav>
+
+        <section id="panel-status-overview" class="tab-panel" role="tabpanel" aria-labelledby="tab-status-overview">
           <section class="panel" aria-labelledby="status-heading">
             <div class="panel-head">
               <h2 id="status-heading">Status overview</h2>
@@ -277,7 +568,9 @@ function renderDashboardShell(config: DashboardServerConfig): string {
             <div id="runtime-summary" class="stack" style="margin-top: 1rem;"></div>
             <div id="status-stages" class="status-stages" style="margin-top: 1rem;"></div>
           </section>
+        </section>
 
+        <section id="panel-work-tree" class="tab-panel" role="tabpanel" aria-labelledby="tab-work-tree" hidden>
           <section class="panel" aria-labelledby="tree-heading">
             <div class="panel-head">
               <h2 id="tree-heading">Work tree</h2>
@@ -285,39 +578,73 @@ function renderDashboardShell(config: DashboardServerConfig): string {
             </div>
             <div id="tree-body" class="tree-root"></div>
           </section>
-        </div>
-
-        <section class="panel" aria-labelledby="observability-heading">
-          <div class="panel-head">
-            <h2 id="observability-heading">Observability notes</h2>
-            <span id="observability-badge" class="badge" data-status="degraded">loading</span>
-          </div>
-          <div id="observability-issues" class="issue-list"></div>
         </section>
 
-        <section class="panel" aria-labelledby="tmux-heading">
-          <div class="panel-head">
-            <h2 id="tmux-heading">Tmux session metadata</h2>
-            <span class="muted">session identity and state</span>
-          </div>
-          <p id="tmux-summary" class="muted">Loading tmux sessions…</p>
-          <ul id="tmux-list" class="tmux-list" style="margin-top: 1rem;">
-            <li class="empty">Waiting for snapshot data…</li>
-          </ul>
+        <section id="panel-observability-notes" class="tab-panel" role="tabpanel" aria-labelledby="tab-observability-notes" hidden>
+          <section class="panel" aria-labelledby="observability-heading">
+            <div class="panel-head">
+              <h2 id="observability-heading">Observability notes</h2>
+              <span id="observability-badge" class="badge" data-status="degraded">loading</span>
+            </div>
+            <div id="observability-issues" class="issue-list"></div>
+          </section>
         </section>
 
-        <section class="panel" aria-labelledby="terminal-heading">
-          <div class="panel-head">
-            <h2 id="terminal-heading">Read-only terminal views</h2>
-            <span class="muted">ttyd-backed embeds</span>
-          </div>
-          <p id="terminal-view-summary" class="muted">Loading terminal views…</p>
-          <ul id="terminal-view-list" class="terminal-list" style="margin-top: 1rem;">
-            <li class="empty">Waiting for snapshot data…</li>
-          </ul>
-          <div id="terminal-view-frame" class="terminal-frame" style="margin-top: 1rem;">
-            <div style="padding: 1rem;" class="empty">Select an available terminal view to embed the read-only ttyd session.</div>
-          </div>
+        <section id="panel-tmux-session-metadata" class="tab-panel" role="tabpanel" aria-labelledby="tab-tmux-session-metadata" hidden>
+          <section class="panel" aria-labelledby="tmux-heading">
+            <div class="panel-head">
+              <h2 id="tmux-heading">Tmux session metadata</h2>
+              <span class="muted">session identity and state</span>
+            </div>
+            <p id="tmux-summary" class="muted">Loading tmux sessions…</p>
+            <ul id="tmux-list" class="tmux-list" style="margin-top: 1rem;">
+              <li class="empty">Waiting for snapshot data…</li>
+            </ul>
+          </section>
+        </section>
+
+        <section id="panel-terminal-views" class="tab-panel" role="tabpanel" aria-labelledby="tab-terminal-views" hidden>
+          <section class="panel" aria-labelledby="terminal-heading">
+            <div class="panel-head">
+              <h2 id="terminal-heading">Read-only terminal views</h2>
+              <span class="muted">ttyd-backed embeds</span>
+            </div>
+            <p id="terminal-view-summary" class="muted">Loading terminal views…</p>
+            <div class="terminal-selector-card" style="margin-top: 1rem;">
+              <div class="terminal-selector-row">
+                <select id="terminal-view-select" class="terminal-select" aria-label="Select a terminal view">
+                  <option>Waiting for snapshot data…</option>
+                </select>
+                <div class="terminal-selector-actions">
+                  <span id="terminal-view-status" class="badge" data-status="pending" hidden>pending</span>
+                  <a id="terminal-view-open-link" class="terminal-link" href="#" hidden>Open standalone view</a>
+                </div>
+              </div>
+              <div id="terminal-view-details" class="stack">
+                <div class="empty">Select a terminal view to inspect its status and actions.</div>
+              </div>
+            </div>
+            <div style="margin-top: 1rem;" class="subgrid">
+              <div class="terminal-selector-row">
+                <div id="terminal-scrollback-controls" class="terminal-controls">
+                  <button type="button" data-scroll-action="up">Up</button>
+                  <button type="button" data-scroll-action="down">Down</button>
+                  <button type="button" data-scroll-action="page-up">Page up</button>
+                  <button type="button" data-scroll-action="page-down">Page down</button>
+                  <button type="button" data-scroll-action="bottom">Bottom</button>
+                </div>
+                <span id="terminal-scrollback-meta" class="muted"></span>
+              </div>
+              <div id="terminal-scrollback-frame" class="terminal-scrollback-frame">
+                <div id="terminal-scrollback-editor" class="terminal-scrollback-editor" hidden></div>
+                <pre id="terminal-scrollback-fallback" class="terminal-scrollback-pre" hidden></pre>
+                <div id="terminal-scrollback-empty" class="terminal-scrollback-empty empty">Select a terminal view to inspect tmux scrollback.</div>
+              </div>
+            </div>
+            <div id="terminal-view-frame" class="terminal-frame" style="margin-top: 1rem;">
+              <div style="padding: 1rem;" class="empty">Select an observable terminal view to embed the read-only ttyd session.</div>
+            </div>
+          </section>
         </section>
       </div>
     </main>

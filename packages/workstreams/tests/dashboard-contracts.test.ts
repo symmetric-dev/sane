@@ -76,6 +76,7 @@ describe("dashboard contracts", () => {
           },
           stages: [],
         },
+        supervision: null,
         runtime: {
           summary: {
             updated_at: "2026-04-15T12:00:00.000Z",
@@ -118,6 +119,7 @@ describe("dashboard contracts", () => {
 
     expect(snapshot.canonical_state.source_of_truth).toBe("tasks.json")
     expect("observability" in snapshot).toBe(true)
+    expect(snapshot.canonical_state.supervision).toBeNull()
     expect("runtime" in snapshot.canonical_state.status).toBe(false)
   })
 

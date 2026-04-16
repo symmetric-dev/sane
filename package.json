@@ -8,6 +8,7 @@
   ],
   "private": true,
   "scripts": {
+    "dashboard:dev": "bun --hot ./packages/dashboard-server/bin/dashboard-server.ts --repo-root .",
     "test": "bun test",
     "typecheck": "tsc --noEmit",
     "test:watch": "bun test --watch",

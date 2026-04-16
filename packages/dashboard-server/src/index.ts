@@ -20,6 +20,7 @@ export {
   type TerminalObservabilityListViewsOptions,
   type TerminalObservabilityMode,
   type TerminalObservabilityProvider,
+  type TerminalObservabilityReadScrollbackOptions,
   type TerminalObservabilityResolvedTarget,
   type TerminalObservabilityView,
 } from "./observability/terminal.ts"
