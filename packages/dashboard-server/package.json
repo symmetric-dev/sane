@@ -1,6 +1,6 @@
 {
   "name": "@agenv/workstream-dashboard",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "Local Bun dashboard for AgENV workstreams and tmux observability",
   "main": "./dist/src/index.js",
   "module": "./dist/src/index.js",
