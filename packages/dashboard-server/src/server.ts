@@ -14,6 +14,8 @@ import {
 import { createTtydTerminalObservabilityProvider } from "./observability/ttyd.ts"
 import { createDashboardApp } from "./app.ts"
 
+const DASHBOARD_SERVER_IDLE_TIMEOUT_SECONDS = 30
+
 export interface DashboardServerStartOptions extends DashboardServerConfigInput {
   liveRefresh?: LiveRefreshHub
   terminalProvider?: TerminalObservabilityProvider
@@ -45,6 +47,7 @@ export async function startDashboardServer(
   const server = Bun.serve({
     fetch: app.fetch,
     hostname: config.hostname,
+    idleTimeout: DASHBOARD_SERVER_IDLE_TIMEOUT_SECONDS,
     port: config.port,
   })
 

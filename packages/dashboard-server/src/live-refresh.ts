@@ -9,7 +9,7 @@ export type LiveRefreshEvent = CurrentWorkstreamDashboardLiveUpdateEvent
 export type LiveRefreshEventType = LiveRefreshEvent["event"]
 
 export interface LiveRefreshHub {
-  createResponse(): Response
+  createResponse(signal?: AbortSignal): Response
   getSubscriberCount(): number
   publishSnapshot(snapshot: CurrentWorkstreamDashboardSnapshot): void
   publishObservability(
@@ -60,11 +60,14 @@ export function createLiveRefreshHub(
   }
 
   return {
-    createResponse(): Response {
+    createResponse(signal?: AbortSignal): Response {
+      let subscriber: LiveRefreshSubscriber | undefined
+
       const stream = new ReadableStream<Uint8Array>({
         start(controller) {
           let connectionClosed = false
           let heartbeatTimer: ReturnType<typeof setInterval> | undefined
+          let removeAbortListener: (() => void) | undefined
 
           const cleanup = () => {
             if (heartbeatTimer) {
@@ -72,7 +75,12 @@ export function createLiveRefreshHub(
               heartbeatTimer = undefined
             }
 
-            subscribers.delete(subscriber)
+            removeAbortListener?.()
+            removeAbortListener = undefined
+
+            if (subscriber) {
+              subscribers.delete(subscriber)
+            }
           }
 
           const closeConnection = () => {
@@ -90,26 +98,46 @@ export function createLiveRefreshHub(
             }
           }
 
-          const subscriber: LiveRefreshSubscriber = {
+          subscriber = {
             close: closeConnection,
             emit(event) {
               if (connectionClosed || closed) {
                 return
               }
 
-              controller.enqueue(encoder.encode(toSseChunk(event)))
+              try {
+                controller.enqueue(encoder.encode(toSseChunk(event)))
+              } catch {
+                closeConnection()
+              }
             },
+          }
+
+          if (signal) {
+            if (signal.aborted) {
+              closeConnection()
+              return
+            }
+
+            const onAbort = () => {
+              closeConnection()
+            }
+
+            signal.addEventListener("abort", onAbort, { once: true })
+            removeAbortListener = () => {
+              signal.removeEventListener("abort", onAbort)
+            }
           }
 
           subscribers.add(subscriber)
           subscriber.emit(createHeartbeatEvent())
 
           heartbeatTimer = setInterval(() => {
-            subscriber.emit(createHeartbeatEvent())
+            subscriber?.emit(createHeartbeatEvent())
           }, heartbeatIntervalMs)
         },
         cancel() {
-          // The response stream owns subscriber cleanup inside the subscriber.close path.
+          subscriber?.close()
         },
       })
 

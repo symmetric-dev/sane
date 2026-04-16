@@ -48,4 +48,34 @@ describe("live refresh hub", () => {
     await reader!.cancel()
     hub.close()
   })
+
+  test("removes disconnected subscribers and ignores later emits", async () => {
+    const abortController = new AbortController()
+    const hub = createLiveRefreshHub({
+      heartbeatIntervalMs: 60_000,
+      now: () => new Date("2026-04-15T12:00:00.000Z"),
+    })
+    const response = hub.createResponse(abortController.signal)
+    const reader = response.body?.getReader()
+
+    expect(reader).toBeDefined()
+    expect(hub.getSubscriberCount()).toBe(1)
+
+    await reader!.read()
+    abortController.abort()
+    await Promise.resolve()
+
+    expect(hub.getSubscriberCount()).toBe(0)
+
+    expect(() => {
+      hub.publishError({
+        code: "after_disconnect",
+        message: "safe after disconnect",
+        retryable: false,
+      })
+    }).not.toThrow()
+
+    await reader!.cancel()
+    hub.close()
+  })
 })
