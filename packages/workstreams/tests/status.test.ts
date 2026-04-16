@@ -3,6 +3,7 @@ import { mkdtemp, rm, mkdir, writeFile } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import {
+  createWorkstreamStatusSnapshot,
   formatProgress,
   getRuntimeSummaryEntries,
   getStreamProgress,
@@ -550,6 +551,172 @@ describe("getStreamProgress", () => {
       is_mismatched_with_tasks: false,
     })
     expect(getRuntimeSummaryEntries(snapshot.stages, snapshot.runtime?.summary)).toEqual(entries)
+  })
+
+  test("treats persisted runtime_summary as canonical when runtime_state diverges", async () => {
+    const now = new Date().toISOString()
+    const tasksFile: TasksFile = {
+      version: "1.0.0",
+      stream_id: "001-test-stream",
+      last_updated: now,
+      runtime_summary: {
+        updated_at: now,
+        batches: {
+          "01.01": {
+            batch_id: "01.01",
+            run_id: "summary-run",
+            status: "running",
+            updated_at: now,
+            started_at: now,
+            thread_summary: {
+              total: 1,
+              pending: 0,
+              running: 1,
+              completed: 0,
+              failed: 0,
+            },
+          },
+        },
+      },
+      runtime_state: {
+        version: "1.0.0",
+        last_updated: now,
+        threads: [],
+        batches: {
+          "01.01": {
+            version: "1.0.0",
+            streamId: "001-test-stream",
+            batchId: "01.01",
+            runId: "state-run",
+            mode: "headless",
+            status: "failed",
+            startedAt: now,
+            updatedAt: now,
+            summary: {
+              total: 1,
+              pending: 0,
+              running: 0,
+              completed: 0,
+              failed: 1,
+            },
+            threads: [],
+          },
+        },
+        supervision: {
+          version: "1.0.0",
+          stream_id: "001-test-stream",
+          last_updated: now,
+          runs: [],
+          checkpoint_pointers: [],
+          branch_sessions: [],
+          reviewed_batches: [],
+          issue_summaries: [],
+          fix_cycles: [],
+          escalations: [],
+          stage_stops: [],
+        },
+      },
+      tasks: [
+        {
+          id: "01.01.01.01",
+          name: "Pending task",
+          thread_name: "Thread 01",
+          batch_name: "Batch 01",
+          stage_name: "Stage 01",
+          created_at: "",
+          updated_at: "",
+          status: "pending",
+        },
+      ],
+    }
+
+    await writeFile(
+      join(tempDir, "work/001-test-stream/tasks.json"),
+      JSON.stringify(tasksFile, null, 2),
+    )
+
+    const snapshot = getWorkstreamStatusSnapshot(tempDir, baseStream)
+    const batchEntry = snapshot.runtime?.entries.find((entry) => entry.kind === "batch")
+
+    expect(snapshot.runtime?.summary.batches["01.01"]?.run_id).toBe("summary-run")
+    expect(batchEntry).toMatchObject({
+      kind: "batch",
+      runtime_status: "running",
+      entry_status: "desync",
+    })
+  })
+
+  test("marks supervision branch entries as mismatched for non-running states", () => {
+    const now = new Date().toISOString()
+    const snapshot = createWorkstreamStatusSnapshot({
+      stream: baseStream,
+      currentStreamId: "001-test-stream",
+      tasks: [
+        {
+          id: "01.01.01.01",
+          name: "Pending task",
+          thread_name: "Thread 01",
+          batch_name: "Batch 01",
+          stage_name: "Stage 01",
+          created_at: "",
+          updated_at: "",
+          status: "pending",
+        },
+      ],
+      runtimeSummary: {
+        updated_at: now,
+        batches: {},
+        supervision: {
+          updated_at: now,
+          current_branch: {
+            branch_session_id: "branch-1",
+            root_session_id: "root-1",
+            status: "stopped",
+            updated_at: now,
+            stage_id: "01",
+            batch_id: "01.01",
+            current_batch_id: "01.01",
+          },
+        },
+      },
+    })
+
+    expect(snapshot.runtime?.entries).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          kind: "supervision_branch",
+          task_status: "pending",
+          is_mismatched_with_tasks: true,
+        }),
+      ]),
+    )
+  })
+
+  test("handles empty or partial runtime summaries without synthetic entries", () => {
+    const snapshot = createWorkstreamStatusSnapshot({
+      stream: baseStream,
+      tasks: [
+        {
+          id: "01.01.01.01",
+          name: "Pending task",
+          thread_name: "Thread 01",
+          batch_name: "Batch 01",
+          stage_name: "Stage 01",
+          created_at: "",
+          updated_at: "",
+          status: "pending",
+        },
+      ],
+      runtimeSummary: {
+        updated_at: new Date().toISOString(),
+        batches: {},
+        supervision: {
+          updated_at: new Date().toISOString(),
+        },
+      },
+    })
+
+    expect(snapshot.runtime?.entries).toEqual([])
   })
 
   test("calculates progress from tasks.json", async () => {

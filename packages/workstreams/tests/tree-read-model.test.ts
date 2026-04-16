@@ -153,6 +153,129 @@ describe("workstream tree read model", () => {
     )
   })
 
+  test("renders active runtime overlays when task and runtime states align", () => {
+    const tasks: Task[] = [
+      {
+        id: "01.01.01.01",
+        name: "Task 1",
+        stage_name: "Planning",
+        batch_name: "Setup",
+        thread_name: "Init",
+        status: "in_progress",
+        created_at: "",
+        updated_at: "",
+      },
+    ]
+    const runtimeSummary: WorkstreamRuntimeSummary = {
+      updated_at: new Date().toISOString(),
+      batches: {
+        "01.01": {
+          batch_id: "01.01",
+          run_id: "run-1",
+          status: "running",
+          updated_at: new Date().toISOString(),
+          started_at: new Date().toISOString(),
+          thread_summary: {
+            total: 1,
+            pending: 0,
+            running: 1,
+            completed: 0,
+            failed: 0,
+          },
+        },
+      },
+    }
+
+    const snapshot = buildWorkstreamTreeSnapshot({
+      streamId: "001-test",
+      tasks,
+      runtimeSummary,
+    })
+
+    expect(snapshot.runtimeNotice).toMatchObject({
+      kind: "running_batch",
+      batchId: "01.01",
+    })
+    expect(snapshot.stages[0]?.batches[0]?.runtimeOverlay).toMatchObject({
+      kind: "runtime",
+      taskStatus: "in_progress",
+      runtimeStatus: "running",
+      text: "runtime: running (1 running)",
+    })
+  })
+
+  test("supports partial runtime summaries without notices or overlays", () => {
+    const tasks: Task[] = [
+      {
+        id: "01.01.01.01",
+        name: "Task 1",
+        stage_name: "Planning",
+        batch_name: "Setup",
+        thread_name: "Init",
+        status: "pending",
+        created_at: "",
+        updated_at: "",
+      },
+    ]
+
+    const snapshot = buildWorkstreamTreeSnapshot({
+      streamId: "001-test",
+      tasks,
+      runtimeSummary: {
+        updated_at: new Date().toISOString(),
+        batches: {},
+        supervision: {
+          updated_at: new Date().toISOString(),
+        },
+      },
+    })
+
+    expect(snapshot.runtimeNotice).toBeUndefined()
+    expect(snapshot.stages[0]?.batches[0]?.runtimeOverlay).toBeUndefined()
+  })
+
+  test("uses supervision branch notice when batches are absent", () => {
+    const tasks: Task[] = [
+      {
+        id: "01.01.01.01",
+        name: "Task 1",
+        stage_name: "Planning",
+        batch_name: "Setup",
+        thread_name: "Init",
+        status: "pending",
+        created_at: "",
+        updated_at: "",
+      },
+    ]
+
+    const snapshot = buildWorkstreamTreeSnapshot({
+      streamId: "001-test",
+      tasks,
+      runtimeSummary: {
+        updated_at: new Date().toISOString(),
+        batches: {},
+        supervision: {
+          updated_at: new Date().toISOString(),
+          current_branch: {
+            branch_session_id: "branch-1",
+            root_session_id: "root-1",
+            status: "running",
+            updated_at: new Date().toISOString(),
+            stage_id: "01",
+            batch_id: "01.01",
+            current_batch_id: "01.01",
+          },
+        },
+      },
+    })
+
+    expect(snapshot.runtimeNotice).toMatchObject({
+      kind: "supervision_branch",
+      batchId: "01.01",
+      status: "running",
+    })
+  })
+
   test("filters tasks for a normalized batch id", () => {
     const tasks: Task[] = [
       {
