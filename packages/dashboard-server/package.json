@@ -43,7 +43,7 @@
     "build": "rm -rf dist && bun ./build.ts",
     "dev": "bun --hot ./bin/dashboard-server.ts --repo-root ../..",
     "start": "bun ./dist/bin/dashboard-server.js",
-    "test": "bun test",
+    "test": "bun test tests",
     "typecheck": "tsc --noEmit",
     "prepublishOnly": "bun run build && bun run test && bun run typecheck"
   },
