@@ -112,6 +112,10 @@ describe("multi headless initialization order", () => {
     }))
 
     mock.module(src("lib/batch-monitor.ts"), () => ({
+      prepareHeadlessBatchStatusRun: async () => {
+        callOrder.push("resetBatchStatusRun")
+        return { runId: "run-1" }
+      },
       resetBatchStatusRun: () => {
         callOrder.push("resetBatchStatusRun")
         return { runId: "run-1" }
@@ -235,6 +239,7 @@ describe("multi headless initialization order", () => {
     }))
 
     mock.module(src("lib/batch-monitor.ts"), () => ({
+      prepareHeadlessBatchStatusRun: async () => ({ runId: "run-1" }),
       resetBatchStatusRun: () => ({ runId: "run-1" }),
       startDetachedBatchMonitor: () => {
         callOrder.push("startDetachedBatchMonitor")
@@ -356,6 +361,7 @@ describe("multi headless initialization order", () => {
     }))
 
     mock.module(src("lib/batch-monitor.ts"), () => ({
+      prepareHeadlessBatchStatusRun: async () => ({ runId: "run-1" }),
       resetBatchStatusRun: () => {
         return { runId: "run-1" }
       },
