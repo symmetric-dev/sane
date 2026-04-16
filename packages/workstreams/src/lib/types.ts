@@ -278,6 +278,101 @@ export interface StreamProgress {
   runtimeSummary?: WorkstreamRuntimeSummary
 }
 
+export interface TaskStatusCounts {
+  total: number
+  pending: number
+  in_progress: number
+  completed: number
+  blocked: number
+  cancelled: number
+  done: number
+}
+
+export interface WorkstreamStatusCompletionMetrics {
+  total_tasks: number
+  completed_tasks: number
+  cancelled_tasks: number
+  done_tasks: number
+  remaining_tasks: number
+  percent_complete: number
+  percent_done: number
+}
+
+export interface WorkstreamStatusStageSummary {
+  number: number
+  stage_id: string
+  title: string
+  status: StageStatus
+  counts: TaskStatusCounts
+  completion: WorkstreamStatusCompletionMetrics
+  tasks: ParsedTask[]
+}
+
+export interface WorkstreamStatusRuntimeBatchEntry {
+  kind: "batch"
+  batch_id: string
+  task_status: TaskStatus
+  runtime_status: RuntimeBatchStatus
+  entry_status: "runtime" | "desync"
+  summary: WorkstreamRuntimeBatchSummary
+}
+
+export interface WorkstreamStatusRuntimeSupervisionEntry {
+  kind: "supervision"
+  target: string
+  stage_id: string
+  batch_id?: string
+  task_status?: TaskStatus
+  is_mismatched_with_tasks: boolean
+  summary: WorkstreamRuntimeSupervisorRunSummary
+}
+
+export interface WorkstreamStatusRuntimeBranchEntry {
+  kind: "supervision_branch"
+  target: string
+  stage_id?: string
+  batch_id?: string
+  task_status?: TaskStatus
+  is_mismatched_with_tasks: boolean
+  summary: WorkstreamRuntimeBranchSupervisionSummary
+}
+
+export type WorkstreamStatusRuntimeEntry =
+  | WorkstreamStatusRuntimeBatchEntry
+  | WorkstreamStatusRuntimeSupervisionEntry
+  | WorkstreamStatusRuntimeBranchEntry
+
+export interface WorkstreamStatusRuntimeSummaryProjection {
+  summary: WorkstreamRuntimeSummary
+  entries: WorkstreamStatusRuntimeEntry[]
+}
+
+export interface WorkstreamStatusStreamMetadata {
+  id: string
+  name: string
+  order: number
+  size: StreamSize
+  path: string
+  created_at: string
+  updated_at: string
+  generated_by: GeneratedBy
+  manual_status?: StreamStatus
+  current_batch?: string
+  is_current: boolean
+  files?: string[]
+  planning_session?: PlanningSession
+  github?: StreamMetadata["github"]
+}
+
+export interface WorkstreamStatusSnapshot {
+  stream: WorkstreamStatusStreamMetadata
+  aggregate_status: StreamStatus
+  counts: TaskStatusCounts
+  completion: WorkstreamStatusCompletionMetrics
+  stages: WorkstreamStatusStageSummary[]
+  runtime?: WorkstreamStatusRuntimeSummaryProjection
+}
+
 // Update task command options
 export interface UpdateTaskOptions {
   streamId: string

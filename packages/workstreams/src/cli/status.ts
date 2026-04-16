@@ -6,7 +6,12 @@
 
 import { getRepoRoot } from "../lib/repo.ts"
 import { loadIndex, resolveStreamId } from "../lib/index.ts"
-import { getStreamProgress, formatProgress, getStreamStatus, formatSessionHistory } from "../lib/status.ts"
+import {
+  formatSessionHistory,
+  formatStatusSnapshot,
+  getWorkstreamStatusSnapshot,
+  statusSnapshotToStreamProgress,
+} from "../lib/status.ts"
 
 interface StatusCliArgs {
   repoRoot?: string
@@ -137,21 +142,25 @@ export function main(argv: string[] = process.argv): void {
     process.exit(1)
   }
 
-  const progressList = streamsToShow.map((s) => {
-    const progress = getStreamProgress(repoRoot, s)
-    const status = getStreamStatus(repoRoot, s)
-    return { stream: s, progress, status }
+  const snapshotList = streamsToShow.map((stream) => {
+    const snapshot = getWorkstreamStatusSnapshot(repoRoot, stream, index.current_stream)
+    return {
+      stream,
+      snapshot,
+      progress: statusSnapshotToStreamProgress(snapshot),
+    }
   })
 
   if (cliArgs.json) {
-    const jsonOutput = progressList.map(({ progress, status }) => ({
+    const jsonOutput = snapshotList.map(({ snapshot, progress }) => ({
       ...progress,
-      status,
+      ...snapshot,
+      status: snapshot.aggregate_status,
     }))
     console.log(JSON.stringify(jsonOutput, null, 2))
   } else {
-    for (const { stream, progress, status } of progressList) {
-      console.log(formatProgress(progress, status, stream, repoRoot))
+    for (const { stream, snapshot, progress } of snapshotList) {
+      console.log(formatStatusSnapshot(snapshot, stream, repoRoot))
       
       // Show detailed session history if --sessions flag is set
       if (cliArgs.sessions) {

@@ -2,7 +2,12 @@ import { describe, test, expect, beforeEach, afterEach } from "bun:test"
 import { mkdtemp, rm, mkdir, writeFile } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
-import { getStreamProgress, formatProgress } from "../src/lib/status"
+import {
+  formatProgress,
+  getRuntimeSummaryEntries,
+  getStreamProgress,
+  getWorkstreamStatusSnapshot,
+} from "../src/lib/status"
 import {
   addTasks,
   getTasks,
@@ -371,6 +376,181 @@ describe("getStreamProgress", () => {
     path: "work/001-test-stream",
     generated_by: { workstreams: "0.1.0" },
   }
+
+  test("builds a structured status snapshot for dashboard use", async () => {
+    const tasksFile: TasksFile = {
+      version: "1.0.0",
+      stream_id: "001-test-stream",
+      last_updated: new Date().toISOString(),
+      tasks: [
+        {
+          id: "01.01.01.01",
+          name: "Done task",
+          thread_name: "Thread 01",
+          batch_name: "Batch 01",
+          stage_name: "Stage 01",
+          created_at: "",
+          updated_at: "",
+          status: "completed",
+        },
+        {
+          id: "01.01.01.02",
+          name: "Cancelled task",
+          thread_name: "Thread 01",
+          batch_name: "Batch 01",
+          stage_name: "Stage 01",
+          created_at: "",
+          updated_at: "",
+          status: "cancelled",
+        },
+        {
+          id: "02.01.01.01",
+          name: "Active task",
+          thread_name: "Thread 01",
+          batch_name: "Batch 01",
+          stage_name: "Stage 02",
+          created_at: "",
+          updated_at: "",
+          status: "in_progress",
+        },
+        {
+          id: "02.01.01.02",
+          name: "Blocked task",
+          thread_name: "Thread 01",
+          batch_name: "Batch 01",
+          stage_name: "Stage 02",
+          created_at: "",
+          updated_at: "",
+          status: "blocked",
+        },
+        {
+          id: "02.01.02.01",
+          name: "Pending task",
+          thread_name: "Thread 02",
+          batch_name: "Batch 01",
+          stage_name: "Stage 02",
+          created_at: "",
+          updated_at: "",
+          status: "pending",
+        },
+      ],
+    }
+
+    await writeFile(
+      join(tempDir, "work/001-test-stream/tasks.json"),
+      JSON.stringify(tasksFile, null, 2),
+    )
+
+    const snapshot = getWorkstreamStatusSnapshot(tempDir, baseStream, baseStream.id)
+
+    expect(snapshot.stream.id).toBe("001-test-stream")
+    expect(snapshot.stream.is_current).toBe(true)
+    expect(snapshot.aggregate_status).toBe("in_progress")
+    expect(snapshot.counts).toMatchObject({
+      total: 5,
+      completed: 1,
+      cancelled: 1,
+      done: 2,
+      in_progress: 1,
+      blocked: 1,
+      pending: 1,
+    })
+    expect(snapshot.completion).toMatchObject({
+      total_tasks: 5,
+      completed_tasks: 1,
+      cancelled_tasks: 1,
+      done_tasks: 2,
+      remaining_tasks: 3,
+      percent_complete: 20,
+      percent_done: 40,
+    })
+    expect(snapshot.stages).toHaveLength(2)
+    expect(snapshot.stages[0]).toMatchObject({
+      stage_id: "01",
+      status: "complete",
+    })
+    expect(snapshot.stages[0]?.counts.done).toBe(2)
+    expect(snapshot.stages[1]).toMatchObject({
+      stage_id: "02",
+      status: "in_progress",
+    })
+    expect(snapshot.stages[1]?.counts.blocked).toBe(1)
+  })
+
+  test("returns structured runtime entries without CLI formatting", async () => {
+    const now = new Date().toISOString()
+    const tasksFile: TasksFile = {
+      version: "1.0.0",
+      stream_id: "001-test-stream",
+      last_updated: now,
+      runtime_summary: {
+        updated_at: now,
+        batches: {
+          "01.01": {
+            batch_id: "01.01",
+            run_id: "run-1",
+            status: "failed",
+            updated_at: now,
+            started_at: now,
+            thread_summary: {
+              total: 1,
+              pending: 0,
+              running: 0,
+              completed: 0,
+              failed: 1,
+            },
+          },
+        },
+        supervision: {
+          updated_at: now,
+          current_branch: {
+            branch_session_id: "branch-1",
+            root_session_id: "root-1",
+            status: "running",
+            updated_at: now,
+            stage_id: "01",
+            batch_id: "01.01",
+            current_batch_id: "01.01",
+          },
+        },
+      },
+      tasks: [
+        {
+          id: "01.01.01.01",
+          name: "Pending task",
+          thread_name: "Thread 01",
+          batch_name: "Batch 01",
+          stage_name: "Stage 01",
+          created_at: "",
+          updated_at: "",
+          status: "pending",
+        },
+      ],
+    }
+
+    await writeFile(
+      join(tempDir, "work/001-test-stream/tasks.json"),
+      JSON.stringify(tasksFile, null, 2),
+    )
+
+    const snapshot = getWorkstreamStatusSnapshot(tempDir, baseStream)
+    const entries = snapshot.runtime?.entries ?? []
+
+    expect(entries).toHaveLength(2)
+    expect(entries[0]).toMatchObject({
+      kind: "batch",
+      batch_id: "01.01",
+      task_status: "pending",
+      runtime_status: "failed",
+      entry_status: "desync",
+    })
+    expect(entries[1]).toMatchObject({
+      kind: "supervision_branch",
+      target: "01.01",
+      is_mismatched_with_tasks: false,
+    })
+    expect(getRuntimeSummaryEntries(snapshot.stages, snapshot.runtime?.summary)).toEqual(entries)
+  })
 
   test("calculates progress from tasks.json", async () => {
     const tasksFile: TasksFile = {

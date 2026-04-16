@@ -81,10 +81,20 @@ export {
 // Status and progress
 export {
   getStreamProgress,
+  getWorkstreamStatusSnapshot,
+  createWorkstreamStatusSnapshot,
+  statusSnapshotToStreamProgress,
   formatProgress,
+  formatStatusSnapshot,
   computeStreamStatus,
+  computeStreamStatusFromCounts,
   getStreamStatus,
   formatStreamStatusIcon,
+  buildStageStatusSummaries,
+  calculateStageStatus,
+  aggregateTaskStatus,
+  getRuntimeSummaryEntries,
+  getRuntimeSummaryProjection,
 } from "./lib/status.ts"
 
 // Batch status monitoring

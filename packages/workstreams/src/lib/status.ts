@@ -13,7 +13,13 @@ import type {
   ParsedTask,
   ApprovalStatus,
   TaskStatus,
-  WorkstreamRuntimeBatchSummary,
+  WorkstreamRuntimeSummary,
+  TaskStatusCounts,
+  WorkstreamStatusCompletionMetrics,
+  WorkstreamStatusRuntimeEntry,
+  WorkstreamStatusRuntimeSummaryProjection,
+  WorkstreamStatusSnapshot,
+  WorkstreamStatusStageSummary,
 } from "./types.ts"
 import { getEffectiveRuntimeSummary, getTasks, getTaskCounts, readTasksFile } from "./tasks.ts"
 import { getStageApprovalStatus } from "./approval.ts"
@@ -27,6 +33,65 @@ export interface ParsedStage {
   completedCount: number
 }
 
+function getTaskStatusCountsForTasks(tasks: Array<{ status: TaskStatus }>): TaskStatusCounts {
+  const counts: TaskStatusCounts = {
+    total: tasks.length,
+    pending: 0,
+    in_progress: 0,
+    completed: 0,
+    blocked: 0,
+    cancelled: 0,
+    done: 0,
+  }
+
+  for (const task of tasks) {
+    counts[task.status] += 1
+  }
+
+  counts.done = counts.completed + counts.cancelled
+  return counts
+}
+
+function createCompletionMetrics(counts: TaskStatusCounts): WorkstreamStatusCompletionMetrics {
+  return {
+    total_tasks: counts.total,
+    completed_tasks: counts.completed,
+    cancelled_tasks: counts.cancelled,
+    done_tasks: counts.done,
+    remaining_tasks: counts.total - counts.done,
+    percent_complete: counts.total > 0 ? Math.round((counts.completed / counts.total) * 100) : 0,
+    percent_done: counts.total > 0 ? Math.round((counts.done / counts.total) * 100) : 0,
+  }
+}
+
+export function computeStreamStatusFromCounts(
+  stream: Pick<StreamMetadata, "status">,
+  counts: Pick<TaskStatusCounts, "total" | "completed" | "cancelled" | "in_progress">,
+): StreamStatus {
+  if (stream.status === "on_hold") {
+    return "on_hold"
+  }
+
+  if (counts.total === 0) {
+    return "pending"
+  }
+
+  const doneCount = counts.completed + counts.cancelled
+  if (doneCount === counts.total) {
+    return "completed"
+  }
+
+  if (counts.in_progress > 0) {
+    return "in_progress"
+  }
+
+  if (counts.completed > 0) {
+    return "in_progress"
+  }
+
+  return "pending"
+}
+
 /**
  * Compute the stream status based on task states
  * - If stream has manually set status `on_hold`, use that
@@ -38,35 +103,7 @@ export function computeStreamStatus(
   repoRoot: string,
   stream: StreamMetadata
 ): StreamStatus {
-  // Manual status takes precedence (on_hold)
-  if (stream.status === "on_hold") {
-    return "on_hold"
-  }
-
-  const counts = getTaskCounts(repoRoot, stream.id)
-
-  // No tasks means pending
-  if (counts.total === 0) {
-    return "pending"
-  }
-
-  // All tasks completed or cancelled
-  const doneCount = counts.completed + counts.cancelled
-  if (doneCount === counts.total) {
-    return "completed"
-  }
-
-  // Any task in progress
-  if (counts.in_progress > 0) {
-    return "in_progress"
-  }
-
-  // Has completed tasks but not all done
-  if (counts.completed > 0) {
-    return "in_progress"
-  }
-
-  return "pending"
+  return computeStreamStatusFromCounts(stream, getTaskCounts(repoRoot, stream.id))
 }
 
 /**
@@ -79,7 +116,7 @@ export function getStreamStatus(repoRoot: string, stream: StreamMetadata): Strea
 /**
  * Calculate stage status from task statuses
  */
-function calculateStageStatus(tasks: Task[]): StageStatus {
+export function calculateStageStatus(tasks: Array<{ status: TaskStatus }>): StageStatus {
   if (tasks.length === 0) return "pending"
 
   const done = tasks.filter((t) => t.status === "completed" || t.status === "cancelled").length
@@ -92,90 +129,81 @@ function calculateStageStatus(tasks: Task[]): StageStatus {
   return "pending"
 }
 
-/**
- * Get progress for a single workstream
- */
-export function getStreamProgress(
-  repoRoot: string,
-  stream: StreamMetadata
-): StreamProgress {
-  const tasksFile = readTasksFile(repoRoot, stream.id)
-  const tasks = tasksFile?.tasks ?? []
-  const counts = getTaskCounts(repoRoot, stream.id)
-  const runtimeSummary = getEffectiveRuntimeSummary(repoRoot, stream.id, tasksFile)
-
-  // Build stage info from tasks
-  const stages: ParsedStage[] = []
-  const stageNumbers = new Set<number>()
-
-  // Extract stage numbers from task IDs
-  for (const task of tasks) {
-    const stageNum = parseInt(task.id.split(".")[0]!, 10)
-    if (!isNaN(stageNum)) {
-      stageNumbers.add(stageNum)
-    }
-  }
-
-  // Build stage summaries
-  for (const stageNum of Array.from(stageNumbers).sort((a, b) => a - b)) {
-    const stagePrefix = `${stageNum.toString().padStart(2, "0")}.`
-    const stageTasks = tasks.filter((t) => t.id.startsWith(stagePrefix))
-    const stageName = stageTasks[0]?.stage_name || `Stage ${stageNum}`
-
-    stages.push({
-      number: stageNum,
-      title: stageName,
-      status: calculateStageStatus(stageTasks),
-      taskCount: stageTasks.length,
-      completedCount: stageTasks.filter((t) => t.status === "completed" || t.status === "cancelled").length,
-    })
-  }
-
-  // Map tasks to ParsedTask format for each stage
-  const stageTasksMap = new Map<number, ParsedTask[]>()
-  for (const task of tasks) {
-    const parts = task.id.split(".")
-    const stageNum = parseInt(parts[0]!, 10)
-    const threadNum = parseInt(parts[1] || "1", 10)
-    const taskNum = parseInt(parts[2] || "1", 10)
-
-    if (!stageTasksMap.has(stageNum)) {
-      stageTasksMap.set(stageNum, [])
-    }
-    stageTasksMap.get(stageNum)!.push({
-      id: task.id,
-      description: task.name,
-      status: task.status,
-      stageNumber: stageNum,
-      taskGroupNumber: threadNum,
-      subtaskNumber: taskNum,
-      lineNumber: 0, // Not applicable for JSON-based tasks
-    })
+function parseTaskIdParts(taskId: string): {
+  stageNumber: number
+  stageId: string
+  batchId?: string
+  threadNumber: number
+  taskNumber: number
+} | null {
+  const parts = taskId.split(".")
+  const stageNumber = parseInt(parts[0]!, 10)
+  if (isNaN(stageNumber)) {
+    return null
   }
 
   return {
-    streamId: stream.id,
-    streamName: stream.name,
-    size: stream.size, // Deprecated but kept for compatibility
-    stages: stages.map((s) => ({
-      number: s.number,
-      title: s.title,
-      status: s.status,
-      tasks: stageTasksMap.get(s.number) || [],
-      file: "tasks.json",
-    })),
-    totalTasks: counts.total,
-    completedTasks: counts.completed + counts.cancelled,
-    inProgressTasks: counts.in_progress,
-    blockedTasks: counts.blocked,
-    pendingTasks: counts.pending,
-    percentComplete:
-      counts.total > 0 ? Math.round(((counts.completed + counts.cancelled) / counts.total) * 100) : 0,
-    ...(runtimeSummary ? { runtimeSummary } : {}),
+    stageNumber,
+    stageId: stageNumber.toString().padStart(2, "0"),
+    ...(parts.length >= 2 ? { batchId: `${parts[0]}.${parts[1]}` } : {}),
+    threadNumber: parseInt(parts[1] || "1", 10),
+    taskNumber: parseInt(parts[2] || "1", 10),
   }
 }
 
-function aggregateTaskStatus(tasks: Array<{ status: TaskStatus }>): TaskStatus {
+function toParsedTask(task: Task): ParsedTask | null {
+  const parts = parseTaskIdParts(task.id)
+  if (!parts) {
+    return null
+  }
+
+  return {
+    id: task.id,
+    description: task.name,
+    status: task.status,
+    stageNumber: parts.stageNumber,
+    taskGroupNumber: parts.threadNumber,
+    subtaskNumber: parts.taskNumber,
+    lineNumber: 0,
+  }
+}
+
+export function buildStageStatusSummaries(tasks: Task[]): WorkstreamStatusStageSummary[] {
+  const stageTasks = new Map<number, Task[]>()
+
+  for (const task of tasks) {
+    const parts = parseTaskIdParts(task.id)
+    if (!parts) {
+      continue
+    }
+
+    if (!stageTasks.has(parts.stageNumber)) {
+      stageTasks.set(parts.stageNumber, [])
+    }
+    stageTasks.get(parts.stageNumber)!.push(task)
+  }
+
+  return Array.from(stageTasks.entries())
+    .sort(([a], [b]) => a - b)
+    .map(([stageNumber, stageTaskList]) => {
+      const counts = getTaskStatusCountsForTasks(stageTaskList)
+      const parsedTasks = stageTaskList
+        .map((task) => toParsedTask(task))
+        .filter((task): task is ParsedTask => task !== null)
+
+      return {
+        number: stageNumber,
+        stage_id: stageNumber.toString().padStart(2, "0"),
+        title: stageTaskList[0]?.stage_name || `Stage ${stageNumber}`,
+        status: calculateStageStatus(stageTaskList),
+        counts,
+        completion: createCompletionMetrics(counts),
+        tasks: parsedTasks,
+      }
+    })
+}
+
+export function aggregateTaskStatus(tasks: Array<{ status: TaskStatus }>): TaskStatus {
   if (tasks.length === 0) return "pending"
   if (tasks.some((task) => task.status === "blocked")) return "blocked"
   if (tasks.some((task) => task.status === "in_progress")) return "in_progress"
@@ -183,35 +211,19 @@ function aggregateTaskStatus(tasks: Array<{ status: TaskStatus }>): TaskStatus {
   return "completed"
 }
 
-function formatRuntimeTaskStatus(status: TaskStatus): string {
-  return status.replace("_", " ")
-}
-
-function formatBatchRuntimeLine(
-  batchId: string,
-  batch: WorkstreamRuntimeBatchSummary,
-  taskStatus: TaskStatus,
-): string {
-  const detail = batch.thread_summary.failed > 0
-    ? `${batch.thread_summary.failed} failed`
-    : batch.thread_summary.running > 0
-      ? `${batch.thread_summary.running} running`
-      : `${batch.thread_summary.completed} completed`
-  const prefix = batch.status !== taskStatus ? "desync" : "runtime"
-  return `${prefix} ${batchId}: tasks ${formatRuntimeTaskStatus(taskStatus)}, runtime ${batch.status} (${detail})`
-}
-
-function getRuntimeSummaryLines(progress: StreamProgress): string[] {
-  const runtimeSummary = progress.runtimeSummary
+export function getRuntimeSummaryEntries(
+  stages: Array<{ number: number; tasks: ParsedTask[] }>,
+  runtimeSummary?: WorkstreamRuntimeSummary,
+): WorkstreamStatusRuntimeEntry[] {
   if (!runtimeSummary) {
     return []
   }
 
-  const lines: string[] = []
+  const entries: WorkstreamStatusRuntimeEntry[] = []
   const stageTaskStatus = new Map<string, TaskStatus>()
   const batchTaskStatus = new Map<string, TaskStatus>()
 
-  for (const stage of progress.stages) {
+  for (const stage of stages) {
     const stageId = stage.number.toString().padStart(2, "0")
     stageTaskStatus.set(stageId, aggregateTaskStatus(stage.tasks))
 
@@ -226,8 +238,8 @@ function getRuntimeSummaryLines(progress: StreamProgress): string[] {
       stageBatches.get(batchId)!.push(task)
     }
 
-    for (const [batchId, tasks] of stageBatches) {
-      batchTaskStatus.set(batchId, aggregateTaskStatus(tasks))
+    for (const [batchId, tasksForBatch] of stageBatches) {
+      batchTaskStatus.set(batchId, aggregateTaskStatus(tasksForBatch))
     }
   }
 
@@ -237,24 +249,173 @@ function getRuntimeSummaryLines(progress: StreamProgress): string[] {
     const isRuntimeActive = ["running", "failed"].includes(batch.status)
     if (!taskStatus) continue
     if (batch.status !== taskStatus || isRuntimeActive) {
-      lines.push(formatBatchRuntimeLine(batchId, batch, taskStatus))
+      entries.push({
+        kind: "batch",
+        batch_id: batchId,
+        task_status: taskStatus,
+        runtime_status: batch.status,
+        entry_status: batch.status !== taskStatus ? "desync" : "runtime",
+        summary: batch,
+      })
     }
   }
 
   const activeRun = runtimeSummary.supervision?.active_run
   if (activeRun) {
-    const stageTask = stageTaskStatus.get(activeRun.stage_id)
-    const target = activeRun.current_batch_id ?? `stage ${activeRun.stage_id}`
-    const mismatch = stageTask && activeRun.status !== "running" && stageTask !== "completed"
-      ? `, tasks ${formatRuntimeTaskStatus(stageTask)}`
-      : ""
-    lines.push(`supervision: ${activeRun.status} on ${target}${mismatch}`)
+    const taskStatus = stageTaskStatus.get(activeRun.stage_id)
+    entries.push({
+      kind: "supervision",
+      target: activeRun.current_batch_id ?? `stage ${activeRun.stage_id}`,
+      stage_id: activeRun.stage_id,
+      ...(activeRun.current_batch_id ? { batch_id: activeRun.current_batch_id } : {}),
+      ...(taskStatus ? { task_status: taskStatus } : {}),
+      is_mismatched_with_tasks:
+        taskStatus !== undefined && activeRun.status !== "running" && taskStatus !== "completed",
+      summary: activeRun,
+    })
   } else if (runtimeSummary.supervision?.current_branch) {
     const branch = runtimeSummary.supervision.current_branch
-    lines.push(`supervision branch: ${branch.status} on ${branch.current_batch_id ?? branch.batch_id ?? `stage ${branch.stage_id}`}`)
+    const taskStatus = branch.stage_id ? stageTaskStatus.get(branch.stage_id) : undefined
+    entries.push({
+      kind: "supervision_branch",
+      target: branch.current_batch_id ?? branch.batch_id ?? `stage ${branch.stage_id}`,
+      ...(branch.stage_id ? { stage_id: branch.stage_id } : {}),
+      ...(branch.current_batch_id ? { batch_id: branch.current_batch_id } : {}),
+      ...(taskStatus ? { task_status: taskStatus } : {}),
+      is_mismatched_with_tasks:
+        taskStatus !== undefined && branch.status !== "running" && taskStatus !== "completed",
+      summary: branch,
+    })
   }
 
-  return lines
+  return entries
+}
+
+export function getRuntimeSummaryProjection(
+  stages: Array<{ number: number; tasks: ParsedTask[] }>,
+  runtimeSummary?: WorkstreamRuntimeSummary,
+): WorkstreamStatusRuntimeSummaryProjection | undefined {
+  if (!runtimeSummary) {
+    return undefined
+  }
+
+  return {
+    summary: runtimeSummary,
+    entries: getRuntimeSummaryEntries(stages, runtimeSummary),
+  }
+}
+
+export function createWorkstreamStatusSnapshot(args: {
+  stream: StreamMetadata
+  tasks: Task[]
+  runtimeSummary?: WorkstreamRuntimeSummary
+  currentStreamId?: string
+}): WorkstreamStatusSnapshot {
+  const counts = getTaskStatusCountsForTasks(args.tasks)
+  const stages = buildStageStatusSummaries(args.tasks)
+
+  return {
+    stream: {
+      id: args.stream.id,
+      name: args.stream.name,
+      order: args.stream.order,
+      size: args.stream.size,
+      path: args.stream.path,
+      created_at: args.stream.created_at,
+      updated_at: args.stream.updated_at,
+      generated_by: args.stream.generated_by,
+      ...(args.stream.status ? { manual_status: args.stream.status } : {}),
+      ...(args.stream.current_batch ? { current_batch: args.stream.current_batch } : {}),
+      ...(args.stream.files ? { files: args.stream.files } : {}),
+      ...(args.stream.planningSession ? { planning_session: args.stream.planningSession } : {}),
+      ...(args.stream.github ? { github: args.stream.github } : {}),
+      is_current: args.currentStreamId === args.stream.id,
+    },
+    aggregate_status: computeStreamStatusFromCounts(args.stream, counts),
+    counts,
+    completion: createCompletionMetrics(counts),
+    stages,
+    ...(args.runtimeSummary
+      ? { runtime: getRuntimeSummaryProjection(stages, args.runtimeSummary) }
+      : {}),
+  }
+}
+
+export function getWorkstreamStatusSnapshot(
+  repoRoot: string,
+  stream: StreamMetadata,
+  currentStreamId?: string,
+): WorkstreamStatusSnapshot {
+  const tasksFile = readTasksFile(repoRoot, stream.id)
+  return createWorkstreamStatusSnapshot({
+    stream,
+    tasks: tasksFile?.tasks ?? [],
+    runtimeSummary: getEffectiveRuntimeSummary(repoRoot, stream.id, tasksFile),
+    currentStreamId,
+  })
+}
+
+export function statusSnapshotToStreamProgress(snapshot: WorkstreamStatusSnapshot): StreamProgress {
+  return {
+    streamId: snapshot.stream.id,
+    streamName: snapshot.stream.name,
+    size: snapshot.stream.size,
+    stages: snapshot.stages.map((stage) => ({
+      number: stage.number,
+      title: stage.title,
+      status: stage.status,
+      tasks: stage.tasks,
+      file: "tasks.json",
+    })),
+    totalTasks: snapshot.counts.total,
+    completedTasks: snapshot.counts.done,
+    inProgressTasks: snapshot.counts.in_progress,
+    blockedTasks: snapshot.counts.blocked,
+    pendingTasks: snapshot.counts.pending,
+    percentComplete: snapshot.completion.percent_done,
+    ...(snapshot.runtime ? { runtimeSummary: snapshot.runtime.summary } : {}),
+  }
+}
+
+/**
+ * Get progress for a single workstream
+ */
+export function getStreamProgress(
+  repoRoot: string,
+  stream: StreamMetadata
+): StreamProgress {
+  return statusSnapshotToStreamProgress(getWorkstreamStatusSnapshot(repoRoot, stream))
+}
+
+function formatRuntimeTaskStatus(status: TaskStatus): string {
+  return status.replace("_", " ")
+}
+
+function formatBatchRuntimeLine(entry: Extract<WorkstreamStatusRuntimeEntry, { kind: "batch" }>): string {
+  const batch = entry.summary
+  const detail = batch.thread_summary.failed > 0
+    ? `${batch.thread_summary.failed} failed`
+    : batch.thread_summary.running > 0
+      ? `${batch.thread_summary.running} running`
+      : `${batch.thread_summary.completed} completed`
+  return `${entry.entry_status} ${entry.batch_id}: tasks ${formatRuntimeTaskStatus(entry.task_status)}, runtime ${entry.runtime_status} (${detail})`
+}
+
+function getRuntimeSummaryLines(progress: StreamProgress): string[] {
+  return getRuntimeSummaryEntries(progress.stages, progress.runtimeSummary).map((entry) => {
+    switch (entry.kind) {
+      case "batch":
+        return formatBatchRuntimeLine(entry)
+      case "supervision": {
+        const mismatch = entry.is_mismatched_with_tasks && entry.task_status
+          ? `, tasks ${formatRuntimeTaskStatus(entry.task_status)}`
+          : ""
+        return `supervision: ${entry.summary.status} on ${entry.target}${mismatch}`
+      }
+      case "supervision_branch":
+        return `supervision branch: ${entry.summary.status} on ${entry.target}`
+    }
+  })
 }
 
 /**
@@ -468,6 +629,19 @@ export function getThreadInfoWithSessions(repoRoot: string, streamId: string, st
   }
   
   return threadsMap
+}
+
+export function formatStatusSnapshot(
+  snapshot: WorkstreamStatusSnapshot,
+  stream?: StreamMetadata,
+  repoRoot?: string,
+): string {
+  return formatProgress(
+    statusSnapshotToStreamProgress(snapshot),
+    snapshot.aggregate_status,
+    stream,
+    repoRoot,
+  )
 }
 
 /**
