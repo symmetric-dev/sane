@@ -79,9 +79,10 @@ function renderDashboardShell(config: DashboardServerConfig): string {
       </section>
 
       <section>
-        <h2>Next implementation steps</h2>
+        <h2>Current-workstream API routes</h2>
         <ul>
-          <li>Wire canonical current-workstream snapshot assembly.</li>
+          <li>Inspect the canonical snapshot at <code>/api/current-workstream/snapshot</code>.</li>
+          <li>Use the status, tree, runtime, supervision, and observability routes for focused reads.</li>
           <li>Layer tmux observability data without making it authoritative.</li>
           <li>Attach read-only terminal view metadata for future ttyd integration.</li>
         </ul>

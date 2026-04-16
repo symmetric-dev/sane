@@ -26,9 +26,15 @@ import {
   projectRuntimeSummary,
   readTasksFile,
 } from "../lib/tasks.ts"
+import {
+  createCurrentWorkstreamDashboardObservabilitySnapshot,
+  createDashboardTmuxObservabilitySnapshot,
+  type DashboardTmuxSessionInspector,
+} from "./dashboard-observability.ts"
 import type {
   StreamMetadata,
   Task,
+  TasksFile,
   WorkIndex,
   WorkstreamRuntimeSummary,
   WorkstreamStatusRuntimeEntry,
@@ -45,6 +51,10 @@ import type {
   WorkstreamTreeTaskNode,
   WorkstreamTreeThreadNode,
 } from "../lib/tree.ts"
+import type {
+  CurrentWorkstreamDashboardObservabilitySnapshot,
+  DashboardTmuxObservabilitySnapshot,
+} from "./dashboard-contracts.ts"
 
 export interface ResolvedWorkstreamReadTarget {
   index: WorkIndex
@@ -128,7 +138,35 @@ export function getResolvedWorkstreamTreeSnapshot(
   })
 }
 
+export function getResolvedDashboardTmuxObservabilitySnapshot(
+  repoRoot: string,
+  streamIdOrName?: string,
+): DashboardTmuxObservabilitySnapshot {
+  const { stream } = resolveWorkstreamReadTarget(repoRoot, streamIdOrName)
+  const tasksFile = readTasksFile(repoRoot, stream.id)
+
+  return createDashboardTmuxObservabilitySnapshot({
+    stream,
+    tasksFile,
+  })
+}
+
+export function getResolvedCurrentWorkstreamDashboardObservabilitySnapshot(
+  repoRoot: string,
+  streamIdOrName?: string,
+): CurrentWorkstreamDashboardObservabilitySnapshot {
+  const { stream } = resolveWorkstreamReadTarget(repoRoot, streamIdOrName)
+  const tasksFile = readTasksFile(repoRoot, stream.id)
+
+  return createCurrentWorkstreamDashboardObservabilitySnapshot({
+    stream,
+    tasksFile,
+  })
+}
+
 export {
+  createCurrentWorkstreamDashboardObservabilitySnapshot,
+  createDashboardTmuxObservabilitySnapshot,
   buildWorkstreamTreeSnapshot,
   createWorkstreamStatusSnapshot,
   getEffectiveRuntimeSummary,
@@ -139,8 +177,12 @@ export {
 }
 
 export type {
+  CurrentWorkstreamDashboardObservabilitySnapshot,
+  DashboardTmuxObservabilitySnapshot,
+  DashboardTmuxSessionInspector,
   StreamMetadata,
   Task,
+  TasksFile,
   WorkIndex,
   WorkstreamRuntimeSummary,
   WorkstreamStatusRuntimeEntry,

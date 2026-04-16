@@ -13,6 +13,7 @@ import {
   CURRENT_WORKSTREAM_TREE_ROUTE,
   type CurrentWorkstreamDashboardSnapshot,
 } from "../../workstreams/src/internal/dashboard-contracts.ts"
+import { getResolvedCurrentWorkstreamDashboardObservabilitySnapshot } from "../../workstreams/src/internal/server.ts"
 
 import {
   LOCAL_ONLY_HOSTNAME,
@@ -23,7 +24,9 @@ import {
 const servers: Array<{ stop(): void }> = []
 const tempDirs: string[] = []
 
-async function createDashboardFixtureRepo(): Promise<string> {
+async function createDashboardFixtureRepo(args: {
+  includeRuntimeState?: boolean
+} = {}): Promise<string> {
   const tempDir = await mkdtemp(join(tmpdir(), "agenv-dashboard-server-"))
   const streamId = "002-web-workstream-dashboard"
 
@@ -101,6 +104,57 @@ async function createDashboardFixtureRepo(): Promise<string> {
             },
           },
         },
+        ...(args.includeRuntimeState
+          ? {
+              runtime_state: {
+                version: "1.0.0",
+                last_updated: "2026-04-15T12:00:00.000Z",
+                threads: [],
+                batches: {
+                  "02.02": {
+                    version: "1.0.0",
+                    streamId,
+                    batchId: "02.02",
+                    runId: "batch-run-1",
+                    tmuxSessionName: "002-implementation-real-session",
+                    mode: "headless",
+                    status: "running",
+                    startedAt: "2026-04-15T11:30:00.000Z",
+                    updatedAt: "2026-04-15T12:00:00.000Z",
+                    summary: {
+                      total: 1,
+                      pending: 0,
+                      running: 1,
+                      completed: 0,
+                      failed: 0,
+                    },
+                    threads: [
+                      {
+                        threadId: "02.02.02",
+                        threadName: "tmux discovery and correlation",
+                        firstTaskId: "02.02.02.01",
+                        status: "running",
+                        updatedAt: "2026-04-15T12:00:00.000Z",
+                      },
+                    ],
+                  },
+                },
+                supervision: {
+                  version: "1.0.0",
+                  stream_id: streamId,
+                  last_updated: "2026-04-15T12:00:00.000Z",
+                  runs: [],
+                  checkpoint_pointers: [],
+                  branch_sessions: [],
+                  reviewed_batches: [],
+                  issue_summaries: [],
+                  fix_cycles: [],
+                  escalations: [],
+                  stage_stops: [],
+                },
+              },
+            }
+          : {}),
         tasks: [
           {
             id: "02.02.01.01",
@@ -130,6 +184,39 @@ async function createDashboardFixtureRepo(): Promise<string> {
   )
 
   return tempDir
+}
+
+function normalizeObservabilityTmux(snapshot: CurrentWorkstreamDashboardSnapshot["observability"]["tmux"]) {
+  return {
+    availability: snapshot.availability,
+    issues: snapshot.issues.map((issue) => ({
+      code: issue.code,
+      severity: issue.severity,
+      message: issue.message,
+      related_ids: issue.related_ids ?? [],
+    })),
+    sessions: snapshot.sessions.map((session) => ({
+      session_name: session.session_name,
+      role: session.role,
+      state: session.state,
+      batch_id: session.batch_id,
+      stage_id: session.stage_id,
+      thread_id: session.thread_id,
+      run_id: session.run_id,
+      window_name: session.window_name,
+      pane_count: session.pane_count,
+      panes: (session.panes ?? []).map((pane) => ({
+        pane_id: pane.pane_id,
+        pane_index: pane.pane_index,
+        active: pane.active,
+        title: pane.title,
+        tty: pane.tty,
+        current_command: pane.current_command,
+        current_path: pane.current_path,
+      })),
+      correlation: session.correlation,
+    })),
+  }
 }
 
 afterEach(() => {
@@ -197,7 +284,7 @@ describe("dashboard server", () => {
         repoRoot,
       },
       status: {
-        canonicalState: "pending-snapshot-contracts",
+        canonicalState: "ready",
       },
     })
 
@@ -207,7 +294,8 @@ describe("dashboard server", () => {
     const pageHtml = await pageResponse.text()
     expect(pageHtml).toContain("Workstream Dashboard")
     expect(pageHtml).toContain(CURRENT_WORKSTREAM_LIVE_UPDATES_ROUTE.path)
-    expect(pageHtml).toContain("Wire canonical current-workstream snapshot assembly.")
+    expect(pageHtml).toContain("/api/current-workstream/snapshot")
+    expect(pageHtml).toContain("status, tree, runtime, supervision, and observability routes")
 
     const snapshotResponse = await fetch(
       new URL(CURRENT_WORKSTREAM_DASHBOARD_SNAPSHOT_ROUTE.path, server.url),
@@ -216,6 +304,7 @@ describe("dashboard server", () => {
 
     const snapshotPayload =
       (await snapshotResponse.json()) as CurrentWorkstreamDashboardSnapshot
+    const expectedTmux = getResolvedCurrentWorkstreamDashboardObservabilitySnapshot(repoRoot).tmux
     expect(snapshotPayload).toMatchObject({
       schema_version: "1.0.0",
       canonical_state: {
@@ -239,11 +328,6 @@ describe("dashboard server", () => {
         },
       },
       observability: {
-        availability: "degraded",
-        tmux: {
-          availability: "ready",
-          sessions: [],
-        },
         terminal_views: {
           availability: "unavailable",
           transport: "ttyd",
@@ -251,6 +335,9 @@ describe("dashboard server", () => {
         },
       },
     })
+    expect(normalizeObservabilityTmux(snapshotPayload.observability.tmux)).toEqual(
+      normalizeObservabilityTmux(expectedTmux),
+    )
 
     const statusResponse = await fetch(
       new URL(CURRENT_WORKSTREAM_STATUS_ROUTE.path, server.url),
@@ -291,8 +378,18 @@ describe("dashboard server", () => {
       new URL(CURRENT_WORKSTREAM_OBSERVABILITY_ROUTE.path, server.url),
     )
     expect(observabilityResponse.status).toBe(200)
-    expect(await observabilityResponse.json()).toEqual(snapshotPayload.observability)
-
+    const observabilityPayload =
+      (await observabilityResponse.json()) as CurrentWorkstreamDashboardSnapshot["observability"]
+    expect(normalizeObservabilityTmux(observabilityPayload.tmux)).toEqual(
+      normalizeObservabilityTmux(expectedTmux),
+    )
+    expect(observabilityPayload.terminal_views).toMatchObject({
+      availability: snapshotPayload.observability.terminal_views.availability,
+      transport: snapshotPayload.observability.terminal_views.transport,
+      issues: snapshotPayload.observability.terminal_views.issues,
+      views: snapshotPayload.observability.terminal_views.views,
+    })
+  
     const liveResponse = await fetch(
       new URL(CURRENT_WORKSTREAM_LIVE_UPDATES_ROUTE.path, server.url),
     )
@@ -309,5 +406,37 @@ describe("dashboard server", () => {
     expect(firstText).toContain("event: heartbeat")
 
     await reader!.cancel()
+  })
+
+  test("mirrors the real current-workstream tmux observability helper", async () => {
+    const repoRoot = await createDashboardFixtureRepo({ includeRuntimeState: true })
+    const server = await startDashboardServer({
+      port: 0,
+      repoRoot,
+    })
+
+    servers.push(server)
+
+    const snapshotResponse = await fetch(
+      new URL(CURRENT_WORKSTREAM_DASHBOARD_SNAPSHOT_ROUTE.path, server.url),
+    )
+    expect(snapshotResponse.status).toBe(200)
+
+    const snapshotPayload =
+      (await snapshotResponse.json()) as CurrentWorkstreamDashboardSnapshot
+    const expectedTmux = getResolvedCurrentWorkstreamDashboardObservabilitySnapshot(repoRoot).tmux
+    expect(normalizeObservabilityTmux(snapshotPayload.observability.tmux)).toEqual(
+      normalizeObservabilityTmux(expectedTmux),
+    )
+
+    const observabilityResponse = await fetch(
+      new URL(CURRENT_WORKSTREAM_OBSERVABILITY_ROUTE.path, server.url),
+    )
+    expect(observabilityResponse.status).toBe(200)
+    const observabilityPayload = (await observabilityResponse.json()) as CurrentWorkstreamDashboardSnapshot["observability"]
+    expect(normalizeObservabilityTmux(observabilityPayload.tmux)).toEqual(
+      normalizeObservabilityTmux(expectedTmux),
+    )
+    expect(observabilityPayload.terminal_views.availability).toBe("unavailable")
   })
 })

@@ -33,7 +33,7 @@ export function createSystemRoutes(
       },
       observability: capability,
       status: {
-        canonicalState: "pending-snapshot-contracts",
+        canonicalState: "ready",
         terminalViews: "pending-integration",
       },
     })

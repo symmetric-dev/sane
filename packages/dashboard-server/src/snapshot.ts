@@ -5,7 +5,6 @@ import type {
   DashboardCanonicalStatusSnapshot,
   DashboardObservabilityIssue,
   DashboardTerminalObservabilitySnapshot,
-  DashboardTmuxObservabilitySnapshot,
 } from "../../workstreams/src/internal/dashboard-contracts.ts"
 import {
   CURRENT_WORKSTREAM_DASHBOARD_SNAPSHOT_SCHEMA_VERSION,
@@ -16,6 +15,7 @@ import type {
 } from "../../workstreams/src/lib/types.ts"
 import type { WorkstreamTreeSnapshot } from "../../workstreams/src/internal/server.ts"
 import {
+  getResolvedCurrentWorkstreamDashboardObservabilitySnapshot,
   getResolvedWorkstreamStatusSnapshot,
   getResolvedWorkstreamTreeSnapshot,
   resolveWorkstreamReadTarget,
@@ -49,17 +49,6 @@ function toCanonicalStatusSnapshot(
 ): DashboardCanonicalStatusSnapshot {
   const { runtime: _runtime, ...status } = snapshot
   return status
-}
-
-function buildEmptyTmuxObservabilitySnapshot(
-  checkedAt: string,
-): DashboardTmuxObservabilitySnapshot {
-  return {
-    checked_at: checkedAt,
-    availability: "ready",
-    issues: [],
-    sessions: [],
-  }
 }
 
 function createUnavailableTerminalCapability(
@@ -102,10 +91,13 @@ function buildTerminalObservabilitySnapshot(args: {
 }
 
 async function buildObservabilitySnapshot(args: {
+  repoRoot: string
   checkedAt: string
   terminalProvider: TerminalObservabilityProvider
 }): Promise<CurrentWorkstreamDashboardObservabilitySnapshot> {
-  const tmux = buildEmptyTmuxObservabilitySnapshot(args.checkedAt)
+  const tmux = getResolvedCurrentWorkstreamDashboardObservabilitySnapshot(
+    args.repoRoot,
+  ).tmux
 
   let capability: TerminalObservabilityCapability
   try {
@@ -156,6 +148,7 @@ export async function readCurrentWorkstreamDashboardSnapshot(
     ...(runtime ? { runtime } : {}),
   }
   const observability = await buildObservabilitySnapshot({
+    repoRoot: options.repoRoot,
     checkedAt: generatedAt,
     terminalProvider: options.terminalProvider,
   })
