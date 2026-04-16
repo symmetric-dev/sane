@@ -261,4 +261,76 @@ describe("work tree", () => {
         expect(output).toContain("Workstream: 001-test")
         expect(output).not.toContain("Runtime:")
     })
+
+    test("filters runtime metadata to the selected batch", () => {
+        const mockTasks: Task[] = [
+            {
+                id: "01.01.01.01",
+                name: "Task 1",
+                stage_name: "Planning",
+                batch_name: "Setup",
+                thread_name: "Init",
+                status: "in_progress",
+                created_at: "",
+                updated_at: ""
+            },
+            {
+                id: "01.02.01.01",
+                name: "Task 2",
+                stage_name: "Planning",
+                batch_name: "Build",
+                thread_name: "Work",
+                status: "pending",
+                created_at: "",
+                updated_at: ""
+            }
+        ]
+
+        readTasksFileSpy = spyOn(tasks, "readTasksFile").mockReturnValue({
+            version: "1.0.0",
+            stream_id: "001-test",
+            last_updated: new Date().toISOString(),
+            runtime_summary: {
+                updated_at: new Date().toISOString(),
+                batches: {
+                    "01.01": {
+                        batch_id: "01.01",
+                        run_id: "run-1",
+                        status: "running",
+                        updated_at: new Date().toISOString(),
+                        started_at: new Date().toISOString(),
+                        thread_summary: {
+                            total: 1,
+                            pending: 0,
+                            running: 1,
+                            completed: 0,
+                            failed: 0,
+                        },
+                    },
+                    "01.02": {
+                        batch_id: "01.02",
+                        run_id: "run-2",
+                        status: "failed",
+                        updated_at: new Date().toISOString(),
+                        started_at: new Date().toISOString(),
+                        thread_summary: {
+                            total: 1,
+                            pending: 0,
+                            running: 0,
+                            completed: 0,
+                            failed: 1,
+                        },
+                    },
+                },
+            },
+            tasks: mockTasks,
+        } satisfies TasksFile)
+
+        main(["node", "work-tree", "--stream", "001-test", "--batch", "01.01"])
+
+        const output = consoleSpy.mock.calls.map((c: any[]) => c[0]).join("\n")
+        expect(output).toContain("Runtime: batch 01.01 running")
+        expect(output).toContain("runtime: running (1 running)")
+        expect(output).not.toContain("01.02 failed")
+    })
 })

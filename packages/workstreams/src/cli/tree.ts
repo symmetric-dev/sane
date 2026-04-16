@@ -142,6 +142,7 @@ export function main(argv: string[] = process.argv): void {
     streamId: stream.id,
     tasks,
     runtimeSummary,
+    ...(cliArgs.batchId ? { batchId: cliArgs.batchId } : {}),
   })
 
   for (const line of renderWorkstreamTree(snapshot)) {

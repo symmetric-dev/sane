@@ -114,6 +114,7 @@ interface BuildWorkstreamTreeSnapshotOptions {
   streamId: string
   tasks: Task[]
   runtimeSummary?: WorkstreamRuntimeSummary
+  batchId?: string
 }
 
 interface MutableWorkstreamTreeTaskNode extends WorkstreamTreeTaskNode {}
@@ -319,12 +320,51 @@ export function filterTasksForBatch(tasks: Task[], batchId: string): Task[] | nu
   return tasks.filter((task) => task.id.startsWith(`${normalizedBatchId}.`))
 }
 
+function filterRuntimeSummaryForBatch(
+  runtimeSummary: WorkstreamRuntimeSummary | undefined,
+  batchId: string,
+): WorkstreamRuntimeSummary | undefined {
+  if (!runtimeSummary) {
+    return undefined
+  }
+
+  const matchingBatch = runtimeSummary.batches[batchId]
+  const activeRun = runtimeSummary.supervision?.active_run
+  const currentBranch = runtimeSummary.supervision?.current_branch
+  const filteredActiveRun = activeRun?.current_batch_id === batchId ? activeRun : undefined
+  const filteredCurrentBranch =
+    currentBranch && (currentBranch.current_batch_id === batchId || currentBranch.batch_id === batchId)
+      ? currentBranch
+      : undefined
+
+  if (!matchingBatch && !filteredActiveRun && !filteredCurrentBranch) {
+    return undefined
+  }
+
+  return {
+    updated_at: runtimeSummary.updated_at,
+    batches: matchingBatch ? { [batchId]: matchingBatch } : {},
+    ...(filteredActiveRun || filteredCurrentBranch
+      ? {
+          supervision: {
+            updated_at: runtimeSummary.supervision?.updated_at ?? runtimeSummary.updated_at,
+            ...(filteredActiveRun ? { active_run_id: filteredActiveRun.run_id, active_run: filteredActiveRun } : {}),
+            ...(filteredCurrentBranch ? { current_branch: filteredCurrentBranch } : {}),
+          },
+        }
+      : {}),
+  }
+}
+
 export function buildWorkstreamTreeSnapshot({
   streamId,
   tasks,
   runtimeSummary,
+  batchId,
 }: BuildWorkstreamTreeSnapshotOptions): WorkstreamTreeSnapshot {
+  const scopedRuntimeSummary = batchId ? filterRuntimeSummaryForBatch(runtimeSummary, batchId) : runtimeSummary
   const sortedTasks = [...tasks].sort((left, right) => left.id.localeCompare(right.id, undefined, { numeric: true }))
+  const runtimeNotice = getWorkstreamTreeRuntimeNotice(scopedRuntimeSummary)
 
   const snapshot: MutableWorkstreamTreeSnapshot = {
     kind: "workstream",
@@ -336,7 +376,7 @@ export function buildWorkstreamTreeSnapshot({
     status: "pending",
     taskCount: 0,
     taskCounts: createEmptyTaskCounts(),
-    ...(getWorkstreamTreeRuntimeNotice(runtimeSummary) ? { runtimeNotice: getWorkstreamTreeRuntimeNotice(runtimeSummary) } : {}),
+    ...(runtimeNotice ? { runtimeNotice } : {}),
     stages: [],
   }
 
@@ -439,7 +479,7 @@ export function buildWorkstreamTreeSnapshot({
     snapshot.status = aggregateTreeStatus(snapshot.taskCounts)
   }
 
-  snapshot.runtimeNotice = getWorkstreamTreeRuntimeNotice(runtimeSummary)
+  snapshot.runtimeNotice = runtimeNotice
 
   for (const stageNode of snapshot.stages) {
     stageNode.batches.sort((left, right) => left.id.localeCompare(right.id, undefined, { numeric: true }))
@@ -447,9 +487,9 @@ export function buildWorkstreamTreeSnapshot({
     for (const batchNode of stageNode.batches) {
       batchNode.threads.sort((left, right) => left.id.localeCompare(right.id, undefined, { numeric: true }))
 
-      if (runtimeSummary?.batches[batchNode.batchId]) {
+      if (scopedRuntimeSummary?.batches[batchNode.batchId]) {
         batchNode.runtimeOverlay = getBatchRuntimeOverlay(
-          runtimeSummary.batches[batchNode.batchId]!,
+          scopedRuntimeSummary.batches[batchNode.batchId]!,
           batchNode.status,
         )
       }
