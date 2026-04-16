@@ -333,7 +333,7 @@ describe("work tree", () => {
 
         const output = consoleSpy.mock.calls.map((c: any[]) => c[0]).join("\n")
         expect(output).toContain("Runtime: batch 01.01 running")
-        expect(output).toContain("desync: tasks in progress, runtime running (1 running)")
+        expect(output).toContain("runtime: running (1 running)")
         expect(output).not.toContain("01.02 failed")
     })
 
@@ -420,7 +420,7 @@ describe("work tree", () => {
 
         const output = consoleSpy.mock.calls.map((c: any[]) => c[0]).join("\n")
         expect(output).toContain("Runtime: batch 01.01 running")
-        expect(output).toContain("desync: tasks in progress, runtime running (1 running)")
+        expect(output).toContain("runtime: running (1 running)")
         expect(output).not.toContain("01.02 failed")
         expect(output).not.toContain("supervision branch")
     })

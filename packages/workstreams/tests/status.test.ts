@@ -646,6 +646,55 @@ describe("getStreamProgress", () => {
     })
   })
 
+  test("treats running runtime batches and in-progress tasks as aligned active state", () => {
+    const now = new Date().toISOString()
+    const snapshot = createWorkstreamStatusSnapshot({
+      stream: baseStream,
+      currentStreamId: "001-test-stream",
+      tasks: [
+        {
+          id: "01.01.01.01",
+          name: "Active task",
+          thread_name: "Thread 01",
+          batch_name: "Batch 01",
+          stage_name: "Stage 01",
+          created_at: "",
+          updated_at: "",
+          status: "in_progress",
+        },
+      ],
+      runtimeSummary: {
+        updated_at: now,
+        batches: {
+          "01.01": {
+            batch_id: "01.01",
+            run_id: "run-1",
+            status: "running",
+            updated_at: now,
+            started_at: now,
+            thread_summary: {
+              total: 1,
+              pending: 0,
+              running: 1,
+              completed: 0,
+              failed: 0,
+            },
+          },
+        },
+      },
+    })
+
+    expect(snapshot.runtime?.entries).toContainEqual(
+      expect.objectContaining({
+        kind: "batch",
+        batch_id: "01.01",
+        task_status: "in_progress",
+        runtime_status: "running",
+        entry_status: "runtime",
+      }),
+    )
+  })
+
   test("marks supervision branch entries as mismatched for non-running states", () => {
     const now = new Date().toISOString()
     const snapshot = createWorkstreamStatusSnapshot({

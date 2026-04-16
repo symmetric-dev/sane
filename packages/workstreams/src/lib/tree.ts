@@ -189,14 +189,19 @@ function getBatchRuntimeDetail(batchStatus: WorkstreamRuntimeBatchSummary): stri
   return `${batchStatus.thread_summary.completed} completed`
 }
 
+function isBatchRuntimeStatusAligned(taskStatus: TaskStatus, runtimeStatus: WorkstreamRuntimeBatchSummary["status"]): boolean {
+  return (taskStatus === "in_progress" && runtimeStatus === "running") || taskStatus === runtimeStatus
+}
+
 export function getBatchRuntimeOverlay(
   batchStatus: WorkstreamRuntimeBatchSummary,
   taskStatus: TaskStatus,
 ): WorkstreamTreeBatchRuntimeOverlay | undefined {
   const detail = getBatchRuntimeDetail(batchStatus)
   const isRuntimeActive = ["running", "failed"].includes(batchStatus.status)
+  const isAlignedWithTasks = isBatchRuntimeStatusAligned(taskStatus, batchStatus.status)
 
-  if (batchStatus.status !== taskStatus) {
+  if (!isAlignedWithTasks) {
     return {
       kind: "desync",
       text: `desync: tasks ${formatTaskStatus(taskStatus)}, runtime ${batchStatus.status} (${detail})`,

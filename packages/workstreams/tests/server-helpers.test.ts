@@ -15,9 +15,9 @@ import type { StreamMetadata, WorkIndex } from "../src/lib/types.ts"
 
 describe("internal server helpers", () => {
   const stream: StreamMetadata = {
-    id: "002-web-workstream-dashboard",
-    name: "web-workstream-dashboard",
-    order: 2,
+    id: "999-server-helper-fixture",
+    name: "server-helper-fixture",
+    order: 999,
     size: "medium",
     session_estimated: {
       length: 4,
@@ -27,7 +27,7 @@ describe("internal server helpers", () => {
     },
     created_at: "2026-04-15T00:00:00.000Z",
     updated_at: "2026-04-15T00:00:00.000Z",
-    path: "work/002-web-workstream-dashboard",
+    path: "work/999-server-helper-fixture",
     generated_by: { workstreams: "0.5.1" },
   }
 
@@ -108,9 +108,50 @@ describe("internal server helpers", () => {
   })
 
   test("reads structured status, tree, and runtime projections", () => {
-    const statusSnapshot = getResolvedWorkstreamStatusSnapshot(tempDir)
-    const treeSnapshot = getResolvedWorkstreamTreeSnapshot(tempDir, { batchId: "1.2" })
-    const runtimeSummary = getResolvedRuntimeSummary(tempDir)
+    const tasks = [
+      {
+        id: "01.02.01.01",
+        name: "Export helpers",
+        stage_name: "Extract reusable workstream read models",
+        batch_name: "Stabilize server-facing helper surface",
+        thread_name: "Export server-safe workstream helpers",
+        status: "in_progress" as const,
+        created_at: "2026-04-15T11:00:00.000Z",
+        updated_at: "2026-04-15T12:00:00.000Z",
+      },
+    ]
+    const runtimeSummary = {
+      updated_at: "2026-04-15T12:00:00.000Z",
+      batches: {
+        "01.02": {
+          batch_id: "01.02",
+          run_id: "run-01",
+          status: "running" as const,
+          updated_at: "2026-04-15T12:00:00.000Z",
+          started_at: "2026-04-15T11:30:00.000Z",
+          thread_summary: {
+            total: 1,
+            pending: 0,
+            running: 1,
+            completed: 0,
+            failed: 0,
+          },
+        },
+      },
+    }
+    const statusSnapshot = serverHelpers.createWorkstreamStatusSnapshot({
+      stream,
+      tasks,
+      runtimeSummary,
+      currentStreamId: stream.id,
+    })
+    const treeSnapshot = serverHelpers.buildWorkstreamTreeSnapshot({
+      streamId: stream.id,
+      tasks,
+      runtimeSummary,
+      batchId: "1.2",
+    })
+    const runtimeProjection = serverHelpers.getRuntimeSummaryProjection(statusSnapshot.stages, runtimeSummary)
 
     expect(statusSnapshot.stream.is_current).toBe(true)
     expect(statusSnapshot.aggregate_status).toBe("in_progress")
@@ -118,15 +159,20 @@ describe("internal server helpers", () => {
       kind: "batch",
       batch_id: "01.02",
       runtime_status: "running",
+      entry_status: "runtime",
     })
 
     expect(treeSnapshot.streamId).toBe(stream.id)
     expect(treeSnapshot.stages[0]?.batches[0]?.runtimeOverlay).toMatchObject({
-      kind: "desync",
+      kind: "runtime",
       runtimeStatus: "running",
     })
 
-    expect(runtimeSummary?.batches["01.02"]?.status).toBe("running")
+    expect(runtimeProjection?.entries[0]).toMatchObject({
+      kind: "batch",
+      batch_id: "01.02",
+      entry_status: "runtime",
+    })
   })
 
   test("rejects invalid batch ids with server-safe errors", () => {

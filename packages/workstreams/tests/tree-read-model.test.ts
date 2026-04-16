@@ -153,7 +153,7 @@ describe("workstream tree read model", () => {
     )
   })
 
-  test("renders desync overlay for in_progress tasks against running runtime status", () => {
+  test("renders runtime overlay for aligned in_progress tasks against running runtime status", () => {
     const tasks: Task[] = [
       {
         id: "01.01.01.01",
@@ -197,10 +197,10 @@ describe("workstream tree read model", () => {
       batchId: "01.01",
     })
     expect(snapshot.stages[0]?.batches[0]?.runtimeOverlay).toMatchObject({
-      kind: "desync",
+      kind: "runtime",
       taskStatus: "in_progress",
       runtimeStatus: "running",
-      text: "desync: tasks in progress, runtime running (1 running)",
+      text: "runtime: running (1 running)",
     })
   })
 
@@ -377,9 +377,9 @@ describe("workstream tree read model", () => {
     })
     expect(snapshot.runtimeNotice?.batchId).not.toBe("01.02")
     expect(snapshot.stages[0]?.batches[0]?.runtimeOverlay).toMatchObject({
-      kind: "desync",
+      kind: "runtime",
       runtimeStatus: "running",
-      text: "desync: tasks in progress, runtime running (1 running)",
+      text: "runtime: running (1 running)",
     })
     expect(renderWorkstreamTree(snapshot).join("\n")).not.toContain("01.02 failed")
     expect(renderWorkstreamTree(snapshot).join("\n")).not.toContain("supervision branch")
@@ -443,9 +443,9 @@ describe("workstream tree read model", () => {
       text: "batch 01.01 running (1 active thread)",
     })
     expect(snapshot.stages[0]?.batches[0]?.runtimeOverlay).toMatchObject({
-      kind: "desync",
+      kind: "runtime",
       runtimeStatus: "running",
-      text: "desync: tasks in progress, runtime running (1 running)",
+      text: "runtime: running (1 running)",
     })
   })
 })

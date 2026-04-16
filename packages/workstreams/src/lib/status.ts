@@ -20,6 +20,7 @@ import type {
   WorkstreamStatusRuntimeSummaryProjection,
   WorkstreamStatusSnapshot,
   WorkstreamStatusStageSummary,
+  WorkstreamRuntimeBatchSummary,
 } from "./types.ts"
 import { getEffectiveRuntimeSummary, getTasks, getTaskCounts, readTasksFile } from "./tasks.ts"
 import { getStageApprovalStatus } from "./approval.ts"
@@ -247,14 +248,15 @@ export function getRuntimeSummaryEntries(
     const batch = runtimeSummary.batches[batchId]!
     const taskStatus = batchTaskStatus.get(batchId)
     const isRuntimeActive = ["running", "failed"].includes(batch.status)
+    const isAlignedWithTasks = taskStatus ? isBatchRuntimeStatusAligned(taskStatus, batch.status) : false
     if (!taskStatus) continue
-    if (batch.status !== taskStatus || isRuntimeActive) {
+    if (!isAlignedWithTasks || isRuntimeActive) {
       entries.push({
         kind: "batch",
         batch_id: batchId,
         task_status: taskStatus,
         runtime_status: batch.status,
-        entry_status: batch.status !== taskStatus ? "desync" : "runtime",
+        entry_status: isAlignedWithTasks ? "runtime" : "desync",
         summary: batch,
       })
     }
@@ -289,6 +291,10 @@ export function getRuntimeSummaryEntries(
   }
 
   return entries
+}
+
+function isBatchRuntimeStatusAligned(taskStatus: TaskStatus, runtimeStatus: WorkstreamRuntimeBatchSummary["status"]): boolean {
+  return (taskStatus === "in_progress" && runtimeStatus === "running") || taskStatus === runtimeStatus
 }
 
 export function getRuntimeSummaryProjection(
