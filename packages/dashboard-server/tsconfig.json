@@ -1,0 +1,18 @@
+{
+  "extends": "../../tsconfig.json",
+  "compilerOptions": {
+    "baseUrl": ".",
+    "paths": {
+      "@agenv/workstreams": ["../workstreams/src/index.ts"],
+      "@agenv/workstreams/internal/dashboard-contracts": [
+        "../workstreams/src/internal/dashboard-contracts.ts"
+      ],
+      "@agenv/workstreams/internal/server": [
+        "../workstreams/src/internal/server.ts"
+      ],
+      "@agenv/workstreams/types": ["../workstreams/src/lib/types.ts"]
+    }
+  },
+  "include": ["src/**/*", "bin/**/*", "tests/**/*"],
+  "exclude": ["dist", "node_modules"]
+}

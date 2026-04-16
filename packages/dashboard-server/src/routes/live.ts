@@ -1,5 +1,5 @@
 import { Hono } from "hono"
-import { CURRENT_WORKSTREAM_LIVE_UPDATES_ROUTE } from "../../../workstreams/src/internal/dashboard-contracts.ts"
+import { CURRENT_WORKSTREAM_LIVE_UPDATES_ROUTE } from "@agenv/workstreams/internal/dashboard-contracts"
 
 import type { LiveRefreshHub } from "../live-refresh.ts"
 

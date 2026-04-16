@@ -1,24 +1,54 @@
 {
-  "name": "@agenv/dashboard-server",
+  "name": "@agenv/workstream-dashboard",
   "version": "0.1.0",
-  "description": "Internal Bun server for the local workstream dashboard",
-  "module": "src/index.ts",
+  "description": "Local Bun dashboard for AgENV workstreams and tmux observability",
+  "main": "./dist/src/index.js",
+  "module": "./dist/src/index.js",
   "type": "module",
-  "private": true,
   "bin": {
-    "workstream-dashboard": "./bin/dashboard-server.ts"
+    "workstream-dashboard": "./dist/bin/dashboard-server.js"
   },
+  "files": [
+    "dist/",
+    "README.md",
+    "LICENSE"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/AlbertoV5/agenv.git",
+    "directory": "packages/dashboard-server"
+  },
+  "homepage": "https://github.com/AlbertoV5/agenv/tree/main/packages/dashboard-server#readme",
+  "bugs": {
+    "url": "https://github.com/AlbertoV5/agenv/issues"
+  },
+  "license": "MIT",
+  "keywords": [
+    "agenv",
+    "workstream",
+    "dashboard",
+    "bun",
+    "tmux",
+    "ttyd"
+  ],
   "exports": {
-    ".": "./src/index.ts"
+    ".": {
+      "import": "./dist/src/index.js"
+    }
+  },
+  "publishConfig": {
+    "access": "public"
   },
   "scripts": {
+    "build": "rm -rf dist && bun ./build.ts",
     "dev": "bun --hot ./bin/dashboard-server.ts --repo-root ../..",
-    "start": "bun ./bin/dashboard-server.ts --repo-root ../..",
+    "start": "bun ./dist/bin/dashboard-server.js",
     "test": "bun test",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "prepublishOnly": "bun run build && bun run test && bun run typecheck"
   },
   "dependencies": {
-    "@agenv/workstreams": "workspace:*",
+    "@agenv/workstreams": "^0.5.1",
     "hono": "^4.11.4"
   },
   "devDependencies": {
@@ -26,5 +56,8 @@
   },
   "peerDependencies": {
     "typescript": "^5"
+  },
+  "engines": {
+    "bun": ">=1.3.0"
   }
 }

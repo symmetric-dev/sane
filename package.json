@@ -12,6 +12,8 @@
     "test": "bun test",
     "typecheck": "tsc --noEmit",
     "test:watch": "bun test --watch",
+    "release:workstream-dashboard:patch": "./bin/release-workstream-dashboard-patch.sh",
+    "release:workstream-dashboard:minor": "./bin/release-workstream-dashboard-minor.sh",
     "release:workstreams:patch": "./bin/release-workstreams-patch.sh",
     "release:workstreams:minor": "./bin/release-workstreams-minor.sh"
   },

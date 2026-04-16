@@ -1,6 +1,19 @@
-# @agenv/dashboard-server
+# @agenv/workstream-dashboard
 
-Local-only Bun server for the current-workstream dashboard.
+Local-only Bun dashboard for AgENV workstreams.
+
+## Install
+
+This package is Bun-only.
+
+Install Bun first, then install the package:
+
+```bash
+# install Bun: https://bun.sh
+npm install -g @agenv/workstream-dashboard
+```
+
+The dashboard reads an existing AgENV repository on disk, so you still need a checked-out repo with `work/` state and the `@agenv/workstreams` data model available through the repo contents.
 
 ## What it shows
 
@@ -38,16 +51,16 @@ Dependency roles:
 
 ## Start the server
 
-From the repo root:
+From an AgENV repo root:
 
 ```bash
-bun run packages/dashboard-server/bin/dashboard-server.ts --repo-root "$(pwd)"
+workstream-dashboard --repo-root "$(pwd)"
 ```
 
-Or from the package:
+Or with an explicit path:
 
 ```bash
-bun run start -- --repo-root /absolute/path/to/repo
+workstream-dashboard --repo-root /absolute/path/to/repo
 ```
 
 Optional flags:

@@ -2,7 +2,7 @@ import { Hono } from "hono"
 import {
   CURRENT_WORKSTREAM_DASHBOARD_SNAPSHOT_ROUTE,
   DASHBOARD_TERMINAL_VIEW_SCROLLBACK_ROUTE_PATH_TEMPLATE,
-} from "../../../workstreams/src/internal/dashboard-contracts.ts"
+} from "@agenv/workstreams/internal/dashboard-contracts"
 
 import type { DashboardServerConfig } from "../config.ts"
 import { DASHBOARD_LIVE_PATH } from "./live.ts"

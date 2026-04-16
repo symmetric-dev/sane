@@ -6,21 +6,21 @@ import type {
   DashboardObservabilityIssue,
   DashboardTerminalObservabilitySnapshot,
   DashboardTmuxObservabilitySnapshot,
-} from "../../workstreams/src/internal/dashboard-contracts.ts"
+} from "@agenv/workstreams/internal/dashboard-contracts"
 import {
   CURRENT_WORKSTREAM_DASHBOARD_SNAPSHOT_SCHEMA_VERSION,
-} from "../../workstreams/src/internal/dashboard-contracts.ts"
+} from "@agenv/workstreams/internal/dashboard-contracts"
 import type {
   WorkstreamRuntimeSupervisionSummary,
   WorkstreamStatusRuntimeSummaryProjection,
-} from "../../workstreams/src/lib/types.ts"
-import type { WorkstreamTreeSnapshot } from "../../workstreams/src/internal/server.ts"
+} from "@agenv/workstreams/types"
+import type { WorkstreamTreeSnapshot } from "@agenv/workstreams/internal/server"
 import {
   getResolvedCurrentWorkstreamDashboardObservabilitySnapshot,
   getResolvedWorkstreamStatusSnapshot,
   getResolvedWorkstreamTreeSnapshot,
   resolveWorkstreamReadTarget,
-} from "../../workstreams/src/internal/server.ts"
+} from "@agenv/workstreams/internal/server"
 
 import type {
   TerminalObservabilityCapability,

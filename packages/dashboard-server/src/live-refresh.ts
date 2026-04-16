@@ -3,7 +3,7 @@ import type {
   CurrentWorkstreamDashboardObservabilitySnapshot,
   CurrentWorkstreamDashboardSnapshot,
   DashboardLiveErrorEvent,
-} from "../../workstreams/src/internal/dashboard-contracts.ts"
+} from "@agenv/workstreams/internal/dashboard-contracts"
 
 export type LiveRefreshEvent = CurrentWorkstreamDashboardLiveUpdateEvent
 export type LiveRefreshEventType = LiveRefreshEvent["event"]

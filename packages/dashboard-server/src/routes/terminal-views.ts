@@ -5,7 +5,7 @@ import {
   DASHBOARD_TERMINAL_VIEW_SCROLLBACK_ROUTE_PATH_TEMPLATE,
   DASHBOARD_TERMINAL_VIEW_TTYD_PROXY_ROUTE_PATH_TEMPLATE,
   type DashboardTerminalViewMetadata,
-} from "../../../workstreams/src/internal/dashboard-contracts.ts"
+} from "@agenv/workstreams/internal/dashboard-contracts"
 
 import type { DashboardServerConfig } from "../config.ts"
 import type { TerminalObservabilityProvider } from "../observability/terminal.ts"

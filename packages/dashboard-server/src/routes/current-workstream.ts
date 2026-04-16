@@ -6,8 +6,8 @@ import {
   CURRENT_WORKSTREAM_STATUS_ROUTE,
   CURRENT_WORKSTREAM_SUPERVISION_ROUTE,
   CURRENT_WORKSTREAM_TREE_ROUTE,
-} from "../../../workstreams/src/internal/dashboard-contracts.ts"
-import { getResolvedWorkstreamTreeSnapshot } from "../../../workstreams/src/internal/server.ts"
+} from "@agenv/workstreams/internal/dashboard-contracts"
+import { getResolvedWorkstreamTreeSnapshot } from "@agenv/workstreams/internal/server"
 
 import type { DashboardServerConfig } from "../config.ts"
 import type { TerminalObservabilityProvider } from "../observability/terminal.ts"

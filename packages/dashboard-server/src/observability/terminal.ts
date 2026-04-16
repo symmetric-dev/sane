@@ -2,7 +2,7 @@ import type {
   DashboardTerminalScrollbackSnapshot,
   DashboardTerminalViewMetadata,
   DashboardTmuxObservabilitySnapshot,
-} from "../../../workstreams/src/internal/dashboard-contracts.ts"
+} from "@agenv/workstreams/internal/dashboard-contracts"
 
 export type TerminalObservabilityMode = "placeholder" | "ttyd"
 

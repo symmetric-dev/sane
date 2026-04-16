@@ -7,7 +7,7 @@ import {
   buildDashboardTerminalViewRoutes,
   type DashboardTerminalViewMetadata,
   type DashboardTmuxSessionMetadata,
-} from "../../../workstreams/src/internal/dashboard-contracts.ts"
+} from "@agenv/workstreams/internal/dashboard-contracts"
 
 import { LOCAL_ONLY_HOSTNAME } from "../config.ts"
 import type {
