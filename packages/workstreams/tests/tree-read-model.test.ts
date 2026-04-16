@@ -254,9 +254,9 @@ describe("workstream tree read model", () => {
     })
     expect(snapshot.runtimeNotice?.batchId).not.toBe("01.02")
     expect(snapshot.stages[0]?.batches[0]?.runtimeOverlay).toMatchObject({
-      kind: "runtime",
+      kind: "desync",
       runtimeStatus: "running",
-      text: "runtime: running (1 running)",
+      text: "desync: tasks in progress, runtime running (1 running)",
     })
     expect(renderWorkstreamTree(snapshot).join("\n")).not.toContain("01.02 failed")
     expect(renderWorkstreamTree(snapshot).join("\n")).not.toContain("supervision branch")
