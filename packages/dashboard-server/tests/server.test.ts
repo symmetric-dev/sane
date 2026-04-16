@@ -13,7 +13,11 @@ import {
   CURRENT_WORKSTREAM_TREE_ROUTE,
   type CurrentWorkstreamDashboardSnapshot,
 } from "../../workstreams/src/internal/dashboard-contracts.ts"
-import { getResolvedCurrentWorkstreamDashboardObservabilitySnapshot } from "../../workstreams/src/internal/server.ts"
+import {
+  getResolvedCurrentWorkstreamDashboardObservabilitySnapshot,
+  getResolvedWorkstreamStatusSnapshot,
+  getResolvedWorkstreamTreeSnapshot,
+} from "../../workstreams/src/internal/server.ts"
 
 import {
   LOCAL_ONLY_HOSTNAME,
@@ -413,6 +417,77 @@ describe("dashboard server", () => {
     await reader!.cancel()
   })
 
+  test("returns structured route errors for invalid batch filters", async () => {
+    const repoRoot = await createDashboardFixtureRepo()
+    const server = await startDashboardServer({
+      port: 0,
+      repoRoot,
+      terminalProvider: createNoopTerminalObservabilityProvider(),
+    })
+
+    servers.push(server)
+
+    const response = await fetch(
+      new URL(`${CURRENT_WORKSTREAM_TREE_ROUTE.path}?batch_id=bad-batch`, server.url),
+    )
+
+    expect(response.status).toBe(500)
+    expect(await response.json()).toEqual({
+      ok: false,
+      error: 'Invalid batch ID format: "bad-batch"',
+    })
+  })
+
+  test("keeps canonical snapshot routes available when terminal listing fails", async () => {
+    const repoRoot = await createDashboardFixtureRepo()
+    const server = await startDashboardServer({
+      port: 0,
+      repoRoot,
+      terminalProvider: {
+        async getCapability() {
+          return {
+            enabled: true,
+            message: "ttyd ready",
+            mode: "ttyd" as const,
+          }
+        },
+        async listViews() {
+          throw new Error("simulated ttyd provider list failure")
+        },
+        async resolveViewTarget() {
+          return null
+        },
+        close() {},
+      },
+    })
+
+    servers.push(server)
+
+    const snapshotResponse = await fetch(
+      new URL(CURRENT_WORKSTREAM_DASHBOARD_SNAPSHOT_ROUTE.path, server.url),
+    )
+    expect(snapshotResponse.status).toBe(200)
+
+    const snapshotPayload =
+      (await snapshotResponse.json()) as CurrentWorkstreamDashboardSnapshot
+
+    expect(snapshotPayload.canonical_state.status.stream.id).toBe(
+      "002-web-workstream-dashboard",
+    )
+    expect(snapshotPayload.observability.terminal_views).toMatchObject({
+      availability: "unavailable",
+      transport: "ttyd",
+      views: [],
+    })
+    expect(snapshotPayload.observability.issues).toContainEqual(
+      expect.objectContaining({
+        code: "ttyd_unavailable",
+        message:
+          "Terminal observability provider failed while listing views: simulated ttyd provider list failure",
+      }),
+    )
+  })
+
   test("mirrors the real current-workstream tmux observability helper", async () => {
     const repoRoot = await createDashboardFixtureRepo({ includeRuntimeState: true })
     const server = await startDashboardServer({
@@ -444,5 +519,57 @@ describe("dashboard server", () => {
       normalizeObservabilityTmux(expectedTmux),
     )
     expect(observabilityPayload.terminal_views.availability).toBe("unavailable")
+  })
+
+  test("keeps canonical status and tree stable when observability is degraded", async () => {
+    const repoRoot = await createDashboardFixtureRepo({ includeRuntimeState: true })
+    const server = await startDashboardServer({
+      port: 0,
+      repoRoot,
+      terminalProvider: createNoopTerminalObservabilityProvider(),
+    })
+
+    servers.push(server)
+
+    const snapshotResponse = await fetch(
+      new URL(CURRENT_WORKSTREAM_DASHBOARD_SNAPSHOT_ROUTE.path, server.url),
+    )
+    expect(snapshotResponse.status).toBe(200)
+    const snapshotPayload =
+      (await snapshotResponse.json()) as CurrentWorkstreamDashboardSnapshot
+
+    const expectedStatus = getResolvedWorkstreamStatusSnapshot(repoRoot)
+    const { runtime: _runtime, ...expectedCanonicalStatus } = expectedStatus
+    const expectedTree = getResolvedWorkstreamTreeSnapshot(repoRoot)
+
+    expect(snapshotPayload.canonical_state.status).toEqual(expectedCanonicalStatus)
+    expect(snapshotPayload.canonical_state.tree).toEqual(expectedTree)
+
+    const tmuxIssueCodes = snapshotPayload.observability.tmux.issues.map((issue) => issue.code)
+    expect(tmuxIssueCodes.some((code) => code === "tmux_unavailable" || code === "tmux_missing_match")).toBe(
+      true,
+    )
+
+    expect(snapshotPayload.observability.terminal_views).toMatchObject({
+      availability: "unavailable",
+      issues: [
+        expect.objectContaining({
+          code: "ttyd_unavailable",
+          message: "Terminal observability is scaffolded but not connected yet.",
+        }),
+      ],
+    })
+
+    const statusResponse = await fetch(
+      new URL(CURRENT_WORKSTREAM_STATUS_ROUTE.path, server.url),
+    )
+    expect(statusResponse.status).toBe(200)
+    expect(await statusResponse.json()).toEqual(expectedCanonicalStatus)
+
+    const treeResponse = await fetch(
+      new URL(CURRENT_WORKSTREAM_TREE_ROUTE.path, server.url),
+    )
+    expect(treeResponse.status).toBe(200)
+    expect(await treeResponse.json()).toEqual(expectedTree)
   })
 })

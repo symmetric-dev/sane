@@ -18,6 +18,7 @@ Feature-dependent:
 
 - `opencode` CLI: required for `work execute`, `work multi`, and agent-run execution flows
 - `tmux`: required for `work multi` session orchestration
+- `ttyd`: required for local browser-embedded dashboard terminal views
 - GitHub CLI (`gh`): required for GitHub integration flows (`work github`, issue/branch sync)
 - macOS notification tools (`terminal-notifier`, `say`): optional, used by notification providers
 
@@ -25,6 +26,7 @@ Feature-dependent:
 
 - `@agenv/workstreams`: workstream library + `work` CLI
 - `@agenv/cli`: `ag` CLI wrapper
+- `@agenv/dashboard-server`: local-only current-workstream dashboard server
 
 ## Repo Layout
 
@@ -162,6 +164,7 @@ bun run test
 - `docs/HOW_TO_USE_MULTI.md`
 - `docs/SUPERVISOR.md`
 - `docs/ROOT_AGENT_BRANCHING_ARCHITECTURE.md`
+- `packages/dashboard-server/README.md`
 - `docs/supervision-manual-verification-checklist.md`
 - `docs/NOTIFICATIONS.md`
 - `docs/workstream-reports.md`

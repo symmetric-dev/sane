@@ -261,4 +261,151 @@ describe("ttyd terminal observability provider", () => {
     expect(await provider.resolveViewTarget("thread/03.01.01")).toBeNull()
     expect(launches).toBe(0)
   })
+
+  test("surfaces unmanageable tmux states without launching ttyd", async () => {
+    let launches = 0
+    const provider = createTtydTerminalObservabilityProvider({
+      launcher: {
+        async getCapability() {
+          return {
+            enabled: true,
+            message: "ttyd is available.",
+            mode: "ttyd" as const,
+          }
+        },
+        async launch() {
+          launches += 1
+          return createFakeInstance(43123)
+        },
+      },
+    })
+
+    const views = await provider.listViews({
+      checkedAt: "2026-04-16T12:00:00.000Z",
+      tmux: createTmuxSnapshot([
+        createSession({
+          session_id: "missing:002-implementation-missing",
+          session_name: "002-implementation-missing",
+          state: "unknown",
+          correlation: {
+            status: "missing",
+            target_kind: "implementation_thread",
+            target_id: "03.01.01",
+            stage_id: "03",
+            batch_id: "03.01",
+            thread_id: "03.01.01",
+          },
+        }),
+        createSession({
+          session_id: "$2",
+          session_name: "002-implementation-unknown",
+          state: "unknown",
+          thread_id: "03.01.02",
+          correlation: {
+            status: "matched",
+            target_kind: "implementation_thread",
+            target_id: "03.01.02",
+            stage_id: "03",
+            batch_id: "03.01",
+            thread_id: "03.01.02",
+          },
+        }),
+        createSession({
+          session_id: "$3",
+          session_name: "002-supervision-exited",
+          role: "supervision_branch",
+          state: "exited",
+          correlation: {
+            status: "matched",
+            target_kind: "supervision_branch",
+            target_id: "branch-1",
+            stage_id: "03",
+            batch_id: "03.01",
+          },
+        }),
+      ]),
+    })
+
+    expect(views).toEqual([
+      expect.objectContaining({
+        terminal_view_id: "thread/03.01.01",
+        status: "unavailable",
+        notes: "tmux did not observe the referenced session, so no terminal can be launched.",
+      }),
+      expect.objectContaining({
+        terminal_view_id: "thread/03.01.02",
+        status: "unavailable",
+        notes: "Session state is unknown, so ttyd launch was skipped conservatively.",
+      }),
+      expect.objectContaining({
+        terminal_view_id: "branch/branch-1",
+        status: "unavailable",
+        notes: "The tmux session has already exited, so no live terminal is available.",
+      }),
+    ])
+
+    expect(await provider.resolveViewTarget("thread/03.01.01")).toBeNull()
+    expect(await provider.resolveViewTarget("thread/03.01.02")).toBeNull()
+    expect(await provider.resolveViewTarget("branch/branch-1")).toBeNull()
+    expect(launches).toBe(0)
+  })
+
+  test("restarts ttyd when a terminal view remaps sessions", async () => {
+    const launchedForSessions: string[] = []
+    const instances: Array<SpawnedTtydInstance & { stopped: boolean }> = []
+    const provider = createTtydTerminalObservabilityProvider({
+      launcher: {
+        async getCapability() {
+          return {
+            enabled: true,
+            message: "ttyd is available.",
+            mode: "ttyd" as const,
+          }
+        },
+        async launch(request) {
+          launchedForSessions.push(request.sessionName)
+          const instance = createFakeInstance(43124 + instances.length)
+          instances.push(instance)
+          return instance
+        },
+      },
+    })
+
+    await provider.listViews({
+      checkedAt: "2026-04-16T12:00:00.000Z",
+      tmux: createTmuxSnapshot([createSession()]),
+    })
+    const firstTarget = await provider.resolveViewTarget("thread/03.01.01")
+    expect(firstTarget).toMatchObject({
+      sessionName: "002-implementation-thread-a",
+      port: 43124,
+    })
+    expect(instances[0]?.stopped).toBe(false)
+
+    await provider.listViews({
+      checkedAt: "2026-04-16T12:05:00.000Z",
+      tmux: createTmuxSnapshot([
+        createSession({
+          session_id: "$2",
+          session_name: "002-implementation-thread-b",
+        }),
+      ]),
+    })
+
+    expect(instances[0]?.stopped).toBe(true)
+
+    const secondTarget = await provider.resolveViewTarget("thread/03.01.01")
+    expect(secondTarget).toMatchObject({
+      sessionName: "002-implementation-thread-b",
+      port: 43125,
+    })
+
+    expect(launchedForSessions).toEqual([
+      "002-implementation-thread-a",
+      "002-implementation-thread-b",
+    ])
+
+    provider.close()
+    expect(instances[1]?.stopped).toBe(true)
+  })
 })

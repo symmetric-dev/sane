@@ -42,7 +42,8 @@ So:
 ## External Tools
 
 - `opencode` CLI (required for execution commands like `work execute`, `work multi`, and branch supervision flows)
-- `tmux` (required for `work multi` and supervision observability)
+- `tmux` (required for `work multi`, supervision observability, and dashboard session discovery)
+- `ttyd` (required for browser-embedded dashboard terminal views; canonical dashboard status still works without it)
 - `gh` GitHub CLI (required for `work github` flows)
 - `terminal-notifier` and `say` on macOS (optional; for notifications)
 
@@ -156,6 +157,7 @@ For a fresh machine where you want everything needed for the branching/supervisi
    - Git
    - `opencode`
    - `tmux`
+   - `ttyd` if you want embedded dashboard terminal views
    - optionally `gh`
 2. Clone this repo
 3. Run:
