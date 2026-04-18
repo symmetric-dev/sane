@@ -155,6 +155,16 @@ In practice:
 5. Implementation agents use the implementation skill to work assigned threads and update task state.
 6. Human approves each completed stage, and evaluation/reporting happens at the end.
 
+## Custom Workstream Tools
+
+Opencode custom tools support parts of the workstream workflow that need access to live session context.
+
+- `workstream_link_planning_session`: links the current opencode session to a workstream as its planning session.
+- `workstream_launch_supervision_branch`: launches the supervision branch from the Root Agent session.
+- `finalize_workstream_supervision`: persists the terminal supervision result before reporting back.
+- `reconcile_workstream_supervision`: reconciles stale ended-but-nonterminal supervision sessions.
+- `link_thread_session`: used by implementation agents to link the current opencode session to their assigned thread before substantive implementation work begins.
+
 ## Test and Typecheck
 
 ```bash
