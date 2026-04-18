@@ -61,7 +61,7 @@ interface ResolvedRootAgentBranchContextResult {
   branchContext: RootAgentBranchContext | null
 }
 
-const DEFAULT_SUPERVISE_TIMEOUT_MS = 20 * 60 * 1000
+const DEFAULT_SUPERVISE_TIMEOUT_MS = 30 * 60 * 1000
 const DEFAULT_SUPERVISE_POLL_INTERVAL_MS = 1000
 function printHelp(): void {
   console.log(`
@@ -78,7 +78,7 @@ Options:
   --port, -p             OpenCode server port for the headless batch run
   --no-server            Skip starting opencode serve during the batch launch
   --silent               Disable notification sounds during batch execution
-  --timeout-ms           Stop waiting for batch completion after this many milliseconds (default: 1200000 / 20 minutes)
+  --timeout-ms           Stop waiting for batch completion after this many milliseconds (default: 1800000 / 30 minutes)
   --poll-interval-ms     Poll interval while waiting for batch status (default: 1000)
   --dry-run              Show the planned helper actions without executing them
   --help, -h             Show this help message

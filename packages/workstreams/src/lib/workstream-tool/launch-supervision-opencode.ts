@@ -3,7 +3,7 @@ import { logWorkstreamToolEvent } from "./debug-log.ts"
 
 export const DEFAULT_OPENCODE_SERVER_START_TIMEOUT_MS = 5000
 export const DEFAULT_OPENCODE_COMMAND_TIMEOUT_MS = 5000
-export const DEFAULT_BRANCH_TOOL_TIMEOUT_MS = 60 * 60 * 1000
+export const DEFAULT_BRANCH_TOOL_TIMEOUT_MS = 2 * 60 * 60 * 1000
 export const DEFAULT_BRANCH_TOOL_POLL_INTERVAL_MS = 1000
 
 type JsonEnvelopeScanResult =
