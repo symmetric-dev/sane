@@ -1012,7 +1012,8 @@ export function generateSessionId(): string {
  * Creates a SessionRecord with 'running' status and sets it as currentSessionId
  * Returns the created session record, or null if task not found
  * 
- * NOTE: Session data is stored in threads.json, not tasks.json.
+ * NOTE: Session data is persisted in tasks.json under runtime_state.threads.
+ * Legacy threads.json imports are handled during migration/compatibility reads.
  * The task must exist in tasks.json for validation.
  */
 export function startTaskSession(
@@ -1040,7 +1041,7 @@ export function startTaskSession(
  * Updates the session status and exit code, clears currentSessionId
  * Returns the updated session record, or null if not found
  * 
- * NOTE: Session data is stored in threads.json, not tasks.json.
+ * NOTE: Session data is persisted in tasks.json under runtime_state.threads.
  */
 export function completeTaskSession(
   repoRoot: string,
@@ -1060,7 +1061,7 @@ export function completeTaskSession(
  * Get the current session for a task
  * Returns the session record if there's an active session, null otherwise
  * 
- * NOTE: Session data is stored in threads.json, not tasks.json.
+ * NOTE: Session data is persisted in tasks.json under runtime_state.threads.
  */
 export function getCurrentTaskSession(
   repoRoot: string,
@@ -1078,7 +1079,7 @@ export function getCurrentTaskSession(
  * Get all sessions for a task
  * Returns empty array if task not found or has no sessions
  * 
- * NOTE: Session data is stored in threads.json, not tasks.json.
+ * NOTE: Session data is persisted in tasks.json under runtime_state.threads.
  */
 export function getTaskSessions(
   repoRoot: string,
@@ -1097,9 +1098,10 @@ export function getTaskSessions(
 
 /**
  * Start a session for a task with file locking (safe for concurrent access)
- * Use this when multiple threads may write to threads.json simultaneously
+ * Use this when multiple threads may update runtime_state.threads simultaneously
  * 
- * NOTE: Session data is stored in threads.json, not tasks.json.
+ * NOTE: Session data is persisted in tasks.json under runtime_state.threads.
+ * Legacy threads.json imports are handled during migration/compatibility reads.
  * The task must exist in tasks.json for validation.
  * 
  * @param repoRoot - Repository root path
@@ -1138,9 +1140,9 @@ export async function startTaskSessionLocked(
 
 /**
  * Complete a session for a task with file locking (safe for concurrent access)
- * Use this when multiple threads may write to threads.json simultaneously
+ * Use this when multiple threads may update runtime_state.threads simultaneously
  * 
- * NOTE: Session data is stored in threads.json, not tasks.json.
+ * NOTE: Session data is persisted in tasks.json under runtime_state.threads.
  * 
  * @param repoRoot - Repository root path
  * @param streamId - Workstream ID
@@ -1168,7 +1170,7 @@ export async function completeTaskSessionLocked(
  * Start sessions for multiple tasks atomically with file locking
  * Use this when spawning parallel threads to record all sessions in one write
  * 
- * NOTE: Session data is stored in threads.json, not tasks.json.
+ * NOTE: Session data is persisted in tasks.json under runtime_state.threads.
  * Tasks must exist in tasks.json for validation.
  * 
  * @param repoRoot - Repository root path
@@ -1227,7 +1229,7 @@ export async function startMultipleSessionsLocked(
  * Complete sessions for multiple tasks atomically with file locking
  * Use this on batch completion to update all session statuses in one write
  * 
- * NOTE: Session data is stored in threads.json, not tasks.json.
+ * NOTE: Session data is persisted in tasks.json under runtime_state.threads.
  * 
  * @param repoRoot - Repository root path
  * @param streamId - Workstream ID

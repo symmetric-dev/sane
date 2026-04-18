@@ -180,14 +180,14 @@ function normalizeCurrentBranchSupervision(
 export const SUPERVISOR_STATE_VERSION = "1.0.0"
 
 /**
- * Get the path to supervisor-state.json for a workstream.
+ * Get the canonical tasks.json path used by supervisor-state compatibility helpers.
  */
 export function getSupervisorStateFilePath(repoRoot: string, streamId: string): string {
   return getTasksFilePath(repoRoot, streamId)
 }
 
 /**
- * Create an empty supervisor-state.json structure.
+ * Create an empty supervisor runtime-state compatibility view.
  */
 export function createEmptySupervisorState(streamId: string): SupervisorStateFile {
   return {
@@ -206,7 +206,7 @@ export function createEmptySupervisorState(streamId: string): SupervisorStateFil
 }
 
 /**
- * Read supervisor-state.json from a workstream directory.
+ * Read supervisor runtime state from a workstream directory.
  * Returns null if the file does not exist.
  *
  * This is an unlocked snapshot read. For mutations, prefer
@@ -289,7 +289,7 @@ export function loadSupervisorState(
 }
 
 /**
- * Write supervisor-state.json to a workstream directory.
+ * Write supervisor runtime state to the canonical runtime_state store.
  *
  * This is a low-level write helper. Callers that need to mutate existing
  * state should prefer modifySupervisorState() to avoid unsafe read-modify-write
@@ -330,7 +330,7 @@ export function saveSupervisorState(
 }
 
 /**
- * Atomic read-modify-write operation on supervisor-state.json.
+ * Atomic read-modify-write operation on canonical supervisor runtime state.
  */
 export async function modifySupervisorState<T>(
   repoRoot: string,

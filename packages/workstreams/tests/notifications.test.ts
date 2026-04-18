@@ -22,8 +22,8 @@ import { createSpawnMock, createChildProcessMock } from "./helpers/mocks"
 
 describe("NotificationEvent types", () => {
   test("has expected event types", () => {
-    const events: NotificationEvent[] = ["thread_complete", "batch_complete", "error", "thread_synthesis_complete"]
-    expect(events).toHaveLength(4)
+    const events: NotificationEvent[] = ["thread_complete", "batch_complete", "error"]
+    expect(events).toHaveLength(3)
   })
 })
 
@@ -32,7 +32,6 @@ describe("DEFAULT_SOUNDS", () => {
     expect(DEFAULT_SOUNDS.thread_complete).toBe("/System/Library/Sounds/Glass.aiff")
     expect(DEFAULT_SOUNDS.batch_complete).toBe("/System/Library/Sounds/Hero.aiff")
     expect(DEFAULT_SOUNDS.error).toBe("/System/Library/Sounds/Basso.aiff")
-    expect(DEFAULT_SOUNDS.thread_synthesis_complete).toBe("/System/Library/Sounds/Purr.aiff")
   })
 })
 
@@ -248,49 +247,17 @@ describe("MacOSNotificationCenterProvider", () => {
     expect(script).toContain("Thread 01.01.01")
   })
 
-  test("includes synthesis output in message when provided", () => {
-    if (process.platform !== "darwin") return
-
-    const provider = new MacOSNotificationCenterProvider()
-    provider.playNotification("thread_synthesis_complete", {
-      synthesisOutput: "All tasks completed successfully"
-    })
-
-    const call = spawnMock.mock.calls[0]
-    const script = call[1][1]
-    expect(script).toContain("All tasks completed successfully")
-  })
-
-  test("truncates long synthesis output to 200 chars", () => {
-    if (process.platform !== "darwin") return
-
-    const provider = new MacOSNotificationCenterProvider()
-    const longOutput = "A".repeat(250) // 250 characters
-    provider.playNotification("thread_synthesis_complete", {
-      synthesisOutput: longOutput
-    })
-
-    const call = spawnMock.mock.calls[0]
-    const script = call[1][1]
-    // Should be truncated to 197 chars + "..."
-    expect(script).toContain("A".repeat(197) + "...")
-    expect(script).not.toContain("A".repeat(200))
-  })
-
   test("escapes special characters for AppleScript", () => {
     if (process.platform !== "darwin") return
 
     const provider = new MacOSNotificationCenterProvider()
     provider.playNotification("thread_complete", {
-      synthesisOutput: 'Message with "quotes" and \\ backslash'
+      threadId: '01"\\'
     })
 
     const call = spawnMock.mock.calls[0]
     const script = call[1][1]
-    // Double quotes should be escaped
-    expect(script).toContain('\\"quotes\\"')
-    // Backslashes should be escaped
-    expect(script).toContain('\\\\')
+    expect(script).toContain('01\\"\\\\')
   })
 
   test("handles all event types", () => {
@@ -301,14 +268,13 @@ describe("MacOSNotificationCenterProvider", () => {
       "thread_complete",
       "batch_complete",
       "error",
-      "thread_synthesis_complete"
     ]
 
     for (const event of events) {
       provider.playNotification(event)
     }
 
-    expect(spawnMock).toHaveBeenCalledTimes(4)
+    expect(spawnMock).toHaveBeenCalledTimes(3)
   })
 
   test("does not spawn when not available (non-macOS)", () => {

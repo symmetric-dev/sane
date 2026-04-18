@@ -109,7 +109,6 @@ function formatOutput(config: NotificationsConfig, path: string): void {
   const events = config.events
   console.log(`- Thread Complete:    ${events.thread_complete ? "On" : "Off"}`)
   console.log(`- Batch Complete:     ${events.batch_complete ? "On" : "Off"}`)
-  console.log(`- Synthesis Complete: ${events.synthesis_complete ? "On" : "Off"}`)
   console.log(`- Error:              ${events.error ? "On" : "Off"}`)
 }
 

@@ -19,7 +19,7 @@ export interface MarkerPollingConfig {
   notificationTracker: NotificationTracker | null
   /** Polling interval in milliseconds (default: 500) */
   pollIntervalMs?: number
-  /** Stream ID for namespaced temp artifacts and synthesis output files */
+  /** Stream ID for namespaced temp artifacts */
   streamId: string
 }
 

@@ -70,11 +70,7 @@ export interface NotificationEventsConfig {
   thread_complete?: boolean
   batch_complete?: boolean
   error?: boolean
-  synthesis_complete?: boolean
 }
-
-// SynthesisConfig is imported from ../synthesis/types.js
-export type { SynthesisConfig } from "../synthesis/types.js"
 
 /**
  * Workstream notifications configuration
@@ -114,15 +110,11 @@ export type NotificationEvent =
   | "thread_complete"
   | "batch_complete"
   | "error"
-  | "thread_synthesis_complete"
 
 /**
- * Optional metadata that can be passed with notifications
- * Used to provide additional context (e.g., synthesis output for TTS)
+ * Optional metadata that can be passed with notifications.
  */
 export interface NotificationMetadata {
-  /** Synthesis output text for TTS providers */
-  synthesisOutput?: string
   /** Thread identifier */
   threadId?: string
   /** Additional custom data */
@@ -141,7 +133,7 @@ export interface NotificationProvider {
    * Play a notification for the given event
    * Should be non-blocking - spawn process and don't await
    * @param event The notification event type
-   * @param metadata Optional metadata (e.g., synthesis output for future TTS)
+   * @param metadata Optional metadata
    */
   playNotification(event: NotificationEvent, metadata?: NotificationMetadata): void
 
@@ -162,7 +154,6 @@ export interface SoundMappings {
   thread_complete?: string
   batch_complete?: string
   error?: string
-  thread_synthesis_complete?: string
 }
 
 /**
@@ -220,7 +211,6 @@ export const DEFAULT_SOUNDS: Record<NotificationEvent, string> = {
   thread_complete: "/System/Library/Sounds/Glass.aiff",
   batch_complete: "/System/Library/Sounds/Hero.aiff",
   error: "/System/Library/Sounds/Basso.aiff",
-  thread_synthesis_complete: "/System/Library/Sounds/Purr.aiff",
 }
 
 /**
@@ -230,8 +220,6 @@ export interface WebhookPayload {
   event: NotificationEvent
   timestamp: string
   metadata?: Record<string, unknown>
-  /** Synthesis output text for TTS providers or external consumers */
-  synthesisOutput?: string
   /** Thread identifier associated with this notification */
   threadId?: string
 }

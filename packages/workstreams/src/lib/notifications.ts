@@ -35,7 +35,6 @@ export {
   type NotificationProvidersConfig,
   type NotificationEventsConfig,
   type NotificationsConfig,
-  type SynthesisConfig,
   // Workstream notifications config loader
   getNotificationsConfigPath,
   getDefaultNotificationsConfig,

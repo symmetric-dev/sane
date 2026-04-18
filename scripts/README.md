@@ -2,7 +2,7 @@
 
 Manual testing scripts for tmux-based workstream execution features.
 
-These scripts allow you to test multi-threaded execution, grid layouts, and fix command flows without setting up a full workstream environment. They use small, fast models and mock prompts for quick feedback.
+These scripts allow you to test multi-threaded execution and grid layouts without setting up a full workstream environment. They use small, fast models and mock prompts for quick feedback.
 
 ## Available Scripts
 
@@ -94,76 +94,6 @@ bun run scripts/preview-grid.ts
 
 ---
 
-### 3. preview-fix.ts
-
-**Purpose:** Test fix command retry flow with mock failed thread
-
-**What it tests:**
-- Fix command with `--retry` flag
-- Session tracking across retry attempts
-- Mock workstream creation and cleanup
-- Failed session handling
-
-**Usage:**
-```bash
-# Create mock workstream with failed thread
-bun run scripts/preview-fix.ts
-
-# Clean up mock data when done
-bun run scripts/preview-fix.ts --cleanup
-```
-
-**Options:**
-- `--cleanup` - Remove mock workstream data and exit
-- `--help, -h` - Show help message
-
-**Test flow:**
-
-1. **Setup:** Run the script to create a mock workstream
-   ```bash
-   bun run scripts/preview-fix.ts
-   ```
-
-2. **View failed thread:**
-   ```bash
-   work list --stream preview-fix-test --tasks
-   ```
-
-3. **Try interactive fix:**
-   ```bash
-   work fix --stream preview-fix-test
-   ```
-
-4. **Or retry directly:**
-   ```bash
-   work fix --stream preview-fix-test --thread 01.01.01 --retry
-   ```
-
-5. **Check updated status:**
-   ```bash
-   work list --stream preview-fix-test --tasks
-   ```
-
-6. **Clean up:**
-   ```bash
-   bun run scripts/preview-fix.ts --cleanup
-   ```
-
-**What to verify:**
-- Mock workstream is created with failed session
-- Fix command detects the incomplete thread
-- Retry creates a new session with tracking
-- Session history is preserved in tasks.json
-- Cleanup removes all mock data
-
-**Mock workstream details:**
-- Stream ID: `preview-fix-test`
-- Thread: `01.01.01` (Test Thread)
-- Task: `01.01.01.01` (Simple task)
-- Initial status: `in_progress` with failed session (exit code 1)
-
----
-
 ## General Tips
 
 ### Prerequisites
@@ -192,13 +122,11 @@ All scripts create tmux sessions that can be managed with standard tmux commands
 
 - `preview-multi` - Multi-thread execution script
 - `preview-grid` - Grid layout tester
-- No session for `preview-fix` (it creates a mock workstream instead)
 
 ### Cleanup
 
 - **preview-multi.ts:** Temp directory is auto-cleaned on exit
 - **preview-grid.ts:** No cleanup needed (just kill session)
-- **preview-fix.ts:** Use `--cleanup` flag to remove mock workstream
 
 ### Model Selection
 
@@ -252,9 +180,9 @@ Use `preview-grid.ts` to visually debug the layout.
 ### Session tracking not working
 
 Check:
-- `tasks.json` has session records
-- `threads.json` (new session storage)
-- Session IDs match between files
+- `tasks.json` → `runtime_state.threads` has session records
+- `threads.json` only if validating legacy migration/compatibility behavior
+- Session IDs match if both canonical and legacy files are being compared
 
 ---
 
@@ -274,13 +202,7 @@ When developing tmux features:
    ```
    Start with 4 threads, then test pagination with 6+.
 
-3. **Test fix/retry flow:**
-   ```bash
-   bun run scripts/preview-fix.ts
-   ```
-   Verify session tracking across retry attempts.
-
-4. **Iterate:** Make changes to tmux.ts and re-run preview scripts to verify fixes.
+3. **Iterate:** Make changes to tmux.ts and re-run preview scripts to verify behavior.
 
 ---
 
@@ -301,5 +223,4 @@ When adding new preview scripts:
 
 - `packages/workstreams/src/lib/tmux.ts` - tmux session management
 - `packages/workstreams/src/cli/multi.ts` - multi-thread execution
-- `packages/workstreams/src/cli/fix.ts` - fix command implementation
 - `packages/workstreams/src/lib/opencode.ts` - opencode server management

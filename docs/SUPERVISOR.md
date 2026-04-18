@@ -6,6 +6,21 @@ This guide is the operator-facing reference for supervised workstream runs.
 - Use [`docs/ROOT_AGENT_BRANCHING_ARCHITECTURE.md`](./ROOT_AGENT_BRANCHING_ARCHITECTURE.md) for **why the branching model works the way it does**.
 - Use [`docs/supervision-manual-verification-checklist.md`](./supervision-manual-verification-checklist.md) for **quick validation drills, including the optional tmux/tool E2E smoke test**.
 
+## Where supervision fits in the full workflow
+
+Supervision is the execution layer inside the broader workstream lifecycle:
+
+1. A planning agent uses `planning-workstreams` to prepare the workstream.
+2. The user approves the plan and tasks.
+3. The Root Agent uses `managing-workstreams` to launch a supervision branch.
+4. The supervision branch uses `supervising-workstreams` and runs `work supervise`.
+5. Implementation agents inside that supervised batch use `implementing-workstreams` to inspect task scope, execute their assigned work, and keep task state accurate.
+6. The Root Agent reports back to the user.
+7. The user approves the completed stage with `work approve stage N`.
+8. The loop repeats until all stages are complete, then `REPORT.md` is finalized with `evaluating-workstreams`.
+
+So this document is specifically about steps 3-5 above: running, observing, resuming, and interpreting supervised execution.
+
 ## What `work supervise` does now
 
 `work supervise` is a **single-batch execution and recovery helper**.
@@ -58,12 +73,28 @@ The default 20-minute wait budget is the normal mode. Use short timeouts only fo
 ### 1) Pick the right starting point
 
 ```bash
+work status
 work list --tasks --batch "SS.BB"
 work tree --batch "SS.BB"
 work supervise --batch "SS.BB"
 ```
 
 Use `work supervise` without `--batch` only when you want the tool to prefer the currently resumable batch automatically.
+
+During or after a supervise pass, implementation agents commonly inspect their scope with:
+
+```bash
+work status
+work tree --batch "SS.BB"
+work list --tasks --thread "SS.BB.TT"
+```
+
+They are expected to keep task state current while they work:
+
+```bash
+work update --task "SS.BB.TT.NN" --status in_progress
+work update --task "SS.BB.TT.NN" --status completed --report "1-2 sentence summary"
+```
 
 ### 2) Watch the CLI for the expected milestones
 

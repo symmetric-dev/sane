@@ -182,7 +182,7 @@ function resolveThreadByName(
 
 /**
  * Build the prompt file path for a thread
- * First checks threads.json for stored path, falls back to PLAN.md reconstruction
+ * First checks tasks.json -> runtime_state.threads for a stored path, then falls back to PLAN.md reconstruction
  */
 function getPromptFilePath(
     repoRoot: string,
@@ -191,7 +191,7 @@ function getPromptFilePath(
 ): string | null {
     const workDir = getWorkDir(repoRoot)
     
-    // First, try to get the path from threads.json (authoritative source)
+    // First, try canonical runtime_state.threads metadata
     const threadMeta = getThreadMetadata(repoRoot, streamId, threadId)
     if (threadMeta?.promptPath) {
         return join(workDir, threadMeta.promptPath)

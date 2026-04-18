@@ -23,7 +23,6 @@ export interface NotificationTrackerOptions {
  * - Each thread only plays thread_complete once
  * - batch_complete only plays once per batch execution
  * - Error notifications are tracked per thread
- * - Synthesis notifications are tracked per thread
  *
  * Used by multi.ts to prevent duplicate sounds when:
  * - Thread completes normally
@@ -38,9 +37,6 @@ export class NotificationTracker {
 
   /** Set of threadIds that have already played error notification */
   private errorNotifiedThreadIds: Set<string> = new Set()
-
-  /** Set of threadIds that have already played thread_synthesis_complete */
-  private synthesisNotifiedThreadIds: Set<string> = new Set()
 
   /** Whether batch_complete has already been played */
   private batchCompleteNotified: boolean = false
@@ -98,20 +94,6 @@ export class NotificationTracker {
   }
 
   /**
-   * Check if a thread has already been notified for synthesis complete
-   */
-  hasSynthesisCompleteNotified(threadId: string): boolean {
-    return this.synthesisNotifiedThreadIds.has(threadId)
-  }
-
-  /**
-   * Mark a thread as having played thread_synthesis_complete notification
-   */
-  markSynthesisCompleteNotified(threadId: string): void {
-    this.synthesisNotifiedThreadIds.add(threadId)
-  }
-
-  /**
    * Check if batch_complete has already been played
    */
   hasBatchCompleteNotified(): boolean {
@@ -165,31 +147,11 @@ export class NotificationTracker {
   }
 
   /**
-   * Play thread_synthesis_complete notification if not already played for this thread.
-   * Passes through synthesis output data to providers for future TTS integration.
-   * Returns true if notification was played, false if already notified.
-   * @param threadId The thread identifier
-   * @param synthesisOutput The synthesis output text to pass to providers
-   */
-  playSynthesisComplete(threadId: string, synthesisOutput?: string): boolean {
-    if (this.hasSynthesisCompleteNotified(threadId)) {
-      return false
-    }
-    this.markSynthesisCompleteNotified(threadId)
-    this.play("thread_synthesis_complete", {
-      threadId,
-      synthesisOutput,
-    })
-    return true
-  }
-
-  /**
    * Reset the tracker state (useful for testing)
    */
   reset(): void {
     this.notifiedThreadIds.clear()
     this.errorNotifiedThreadIds.clear()
-    this.synthesisNotifiedThreadIds.clear()
     this.batchCompleteNotified = false
   }
 
@@ -207,10 +169,4 @@ export class NotificationTracker {
     return this.errorNotifiedThreadIds.size
   }
 
-  /**
-   * Get the count of threads that have been notified for synthesis complete
-   */
-  getSynthesisNotifiedThreadCount(): number {
-    return this.synthesisNotifiedThreadIds.size
-  }
 }

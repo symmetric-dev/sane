@@ -26,7 +26,7 @@ Feature-dependent:
 
 - `@agenv/workstreams`: workstream library + `work` CLI
 - `@agenv/cli`: `ag` CLI wrapper
-- `@agenv/dashboard-server`: local-only current-workstream dashboard server
+- `@agenv/workstream-dashboard`: local-only current-workstream dashboard server
 
 ## Repo Layout
 
@@ -53,12 +53,20 @@ Optional skill install:
 
 ## Human Workflow (With Agent)
 
-Typical flow is:
+The day-to-day workflow is:
 
-1. Ask your agent to create a draft workstream, fill `REQUIREMENTS.md`, scaffold stages, and prepare the plan/tasks.
-2. As a human, run approvals and execution gates.
+1. Discuss the feature and let the agent research the repo.
+2. The agent uses `planning-workstreams` to create the workstream and prepare `REQUIREMENTS.md`, `PLAN.md`, and draft tasks.
+3. You approve the plan first, then approve tasks after the plan/task back-and-forth is complete.
+4. The Root Agent uses `managing-workstreams` to launch a supervision branch.
+5. The supervision branch uses `supervising-workstreams` to run `work supervise`, inspect persisted state, and drive the review/fix/escalation loop.
+6. Implementation agents spawned within that loop use `implementing-workstreams` to inspect batch/task scope and update task state while they work.
+7. The Root Agent reports back; you approve the completed stage with `work approve stage N`.
+8. Repeat the supervision loop for the next stage.
+9. If more work is needed after the original stages, use the revision flow.
+10. When the workstream is done, use `evaluating-workstreams` to finalize `REPORT.md` and validate the report.
 
-Draft-first planning usually looks like:
+Draft-first planning usually starts like:
 
 ```bash
 work create --name my-feature
@@ -69,20 +77,23 @@ work validate plan
 work approve plan
 ```
 
-Human-run commands:
+Human approval / inspection commands typically look like:
 
 ```bash
 work tree
+work status
 work approve plan
 work approve tasks
-work start
-work continue
+work approve stage 1
+work report validate
 ```
 
 Notes:
 
 - Use `!work ...` when invoking from chat-driven Opencode commands.
-- Agents handle most planning/execution details; humans control approvals and start/continue gates.
+- Agents handle most planning and execution details; humans control approvals, stage gates, and final evaluation.
+- `work supervise` is the normal execution primitive; `work start` is no longer the main workflow entrypoint.
+- The implementation agents running inside supervision commonly inspect scope with `work status`, `work tree --batch`, and `work list --tasks --thread` before updating task state.
 
 For supervised headless automation with review/fix/escalation policy, start with `docs/SUPERVISOR.md`; for quick validation drills and the optional tmux/tool E2E smoke test, use `docs/supervision-manual-verification-checklist.md`.
 
@@ -130,17 +141,19 @@ Example output from `work status`:
 AgEnv uses skill files under `agent/skills/*` to guide agent behavior through each phase.
 
 - `planning-workstreams`: used first to create the stream, fill `REQUIREMENTS.md`, shape `PLAN.md`, validate/check, and prepare tasks for approval.
-- `implementing-workstreams`: used by worker agents that execute thread tasks; these workers run in parallel by batch/thread.
-- `synthesizing-workstreams`: used after parallel execution to consolidate thread outcomes into a coherent status/update view.
-- `reviewing-workstreams`: used to review plan/task quality and readiness before or between execution phases.
+- `managing-workstreams`: used by the Root Agent after task approval to launch and monitor a supervision branch.
+- `supervising-workstreams`: used by the supervision branch to run `work supervise`, inspect persisted state, and drive the review/fix/escalation loop.
+- `implementing-workstreams`: used by worker agents that execute thread tasks within supervised batches; these workers inspect their scope and keep task state current.
 - `evaluating-workstreams`: used near completion to assess delivered work and finalize report quality (`REPORT.md`).
 
 In practice:
 
 1. Planning agent uses planning skill to prepare requirements/plan/tasks.
-2. Human approves (`work approve plan`, `work approve tasks`) and starts (`work start`).
-3. Execution agents run threads in parallel with implementation skill.
-4. Synthesis/review/evaluation skills are used to summarize, validate, and close out the workstream.
+2. Human approves (`work approve plan`, `work approve tasks`).
+3. Root Agent uses the managing skill to launch a supervision branch.
+4. Supervision branch uses the supervising skill to run `work supervise` and make review/fix/escalation decisions.
+5. Implementation agents use the implementation skill to work assigned threads and update task state.
+6. Human approves each completed stage, and evaluation/reporting happens at the end.
 
 ## Test and Typecheck
 

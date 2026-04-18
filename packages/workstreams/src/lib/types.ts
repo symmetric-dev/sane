@@ -24,8 +24,6 @@
  * Multiple agents can work on different threads simultaneously.
  */
 
-import type { ThreadSynthesis } from "./synthesis/types.js"
-
 // Stream size categories
 export type StreamSize = "short" | "medium" | "long"
 
@@ -471,14 +469,14 @@ export interface Task {
   report?: string // Completion summary (for COMPLETION.md aggregation)
   assigned_agent?: string // Agent assigned to this task
   /**
-   * @deprecated Session data is now stored in threads.json.
-   * Use ThreadsStore functions (getThreadMetadata, etc.) to access session data.
+   * @deprecated Session data now lives in tasks.json under runtime_state.threads.
+   * This task-local field is retained only for legacy migration reads.
    * This field will be automatically migrated and cleared on first read.
    */
   sessions?: SessionRecord[]
   /**
-   * @deprecated Session data is now stored in threads.json.
-   * Use ThreadsStore functions (getThreadMetadata, etc.) to access session data.
+   * @deprecated Session data now lives in tasks.json under runtime_state.threads.
+   * This task-local field is retained only for legacy migration reads.
    * This field will be automatically migrated and cleared on first read.
    */
   currentSessionId?: string
@@ -800,12 +798,12 @@ export interface AgentsConfig {
 }
 
 // ============================================
-// THREAD METADATA STORE TYPES (threads.json)
+// THREAD METADATA RUNTIME TYPES (tasks.json runtime_state.threads)
 // ============================================
 
 /**
- * Thread metadata stored in threads.json
- * Contains session history and github issue links, migrated from tasks.json
+ * Thread metadata stored in tasks.json under runtime_state.threads.
+ * The legacy threads.json artifact may still be imported for migration/compatibility.
  */
 export interface ThreadMetadata {
   threadId: string // Format: "SS.BB.TT" (e.g., "01.01.02")
@@ -844,14 +842,20 @@ export interface ThreadMetadata {
 }
 
 /**
- * threads.json file structure
- * Stores thread-level metadata separate from task definitions
+ * Thread metadata file shape exposed by compatibility helpers.
+ * Canonical persistence lives in tasks.json under runtime_state.threads.
  */
 export interface ThreadsJson {
   version: string // Schema version, e.g., "1.0.0"
   stream_id: string // Reference to the workstream ID
   last_updated: string // ISO date
   threads: ThreadMetadata[]
+}
+
+export interface ThreadSynthesis {
+  sessionId: string
+  output: string
+  completedAt: string
 }
 
 export type RootAgentBranchRole = "supervision" | "review" | "fix"
@@ -969,7 +973,7 @@ export interface CurrentBranchSupervisionContext extends RootAgentLineage {
 }
 
 // ============================================
-// SUPERVISOR RUNTIME STATE TYPES (supervisor-state.json)
+// SUPERVISOR RUNTIME STATE TYPES (tasks.json runtime_state.supervision)
 // ============================================
 
 /**
@@ -1162,8 +1166,8 @@ export interface SupervisorStageStop {
 }
 
 /**
- * supervisor-state.json file structure.
- * Keeps runtime supervisor control-plane state separate from threads.json.
+ * Supervisor state shape exposed by compatibility helpers.
+ * Canonical persistence lives in tasks.json under runtime_state.supervision.
  */
 export interface SupervisorStateFile {
   version: string
@@ -1238,25 +1242,10 @@ export interface AgentDefinitionYaml {
 }
 
 /**
- * Synthesis agent definition in agents.yaml format
- * Synthesis agents wrap working agents to provide:
- * - Pre-work context preparation
- * - Post-work output summarization
- * - Session continuity management
- */
-export interface SynthesisAgentDefinitionYaml {
-  name: string
-  description: string
-  best_for: string
-  models: ModelSpec[] // List of models to try in order on failure
-}
-
-/**
  * Root structure of agents.yaml
  */
 export interface AgentsConfigYaml {
   agents: AgentDefinitionYaml[]
-  synthesis_agents?: SynthesisAgentDefinitionYaml[]
 }
 
 // ============================================
@@ -1278,9 +1267,6 @@ export interface ThreadInfo {
   // Session tracking (populated before spawn)
   sessionId?: string
   firstTaskId?: string // First task in thread (for session tracking)
-  // Synthesis agent fields (optional - if present, post-session synthesis mode is enabled)
-  synthesisAgentName?: string
-  synthesisModels?: NormalizedModelSpec[] // List of synthesis models to try
 }
 
 /**

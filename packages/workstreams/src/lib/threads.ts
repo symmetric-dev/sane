@@ -1,9 +1,9 @@
 /**
- * threads.json read/write operations
+ * Thread runtime metadata helpers
  *
- * This module handles all operations on the threads.json file which stores
- * thread-level metadata including session history and GitHub issue links.
- * This data is separated from tasks.json to keep task definitions clean.
+ * This module exposes thread-level metadata helpers backed by
+ * tasks.json -> runtime_state.threads.
+ * Legacy threads.json terminology remains here for compatibility-facing APIs.
  */
 
 import type {
@@ -13,7 +13,6 @@ import type {
   SessionRecord,
   TasksFile,
 } from "./types.ts"
-import type { ThreadSynthesis } from "./synthesis/types.ts"
 import {
   getTasksFilePath,
   modifyRuntimeState,
@@ -25,14 +24,14 @@ import {
 const THREADS_FILE_VERSION = "1.0.0"
 
 /**
- * Get the path to threads.json for a workstream
+ * Get the canonical tasks.json path used by the legacy threads-store helpers.
  */
 export function getThreadsFilePath(repoRoot: string, streamId: string): string {
   return getTasksFilePath(repoRoot, streamId)
 }
 
 /**
- * Create an empty threads.json structure
+ * Create an empty thread-metadata compatibility view.
  */
 export function createEmptyThreadsFile(streamId: string): ThreadsJson {
   return {
@@ -48,7 +47,7 @@ export function createEmptyThreadsFile(streamId: string): ThreadsJson {
 // ============================================
 
 /**
- * Read threads.json from a workstream directory
+ * Read thread metadata from a workstream directory.
  * Returns null if file doesn't exist
  */
 export function loadThreads(
@@ -70,7 +69,7 @@ export function loadThreads(
 }
 
 /**
- * Write threads.json to a workstream directory
+ * Write thread metadata to the canonical runtime_state store.
  */
 export function saveThreads(
   repoRoot: string,
@@ -233,7 +232,7 @@ export async function updateThreadMetadataLocked(
 }
 
 /**
- * Atomic read-modify-write operation on threads.json with file locking
+ * Atomic read-modify-write operation on canonical thread runtime metadata
  */
 export async function modifyThreads<T>(
   repoRoot: string,
@@ -519,65 +518,6 @@ export function getThreadGitHubIssue(
 ): null {
   // No-op: GitHub issues are now stored in github.json per-stage
   return null
-}
-
-// ============================================
-// SYNTHESIS OUTPUT MANAGEMENT
-// ============================================
-
-/**
- * Set synthesis output for a thread
- * 
- * Stores the synthesis result from a synthesis agent run.
- * Uses file locking for safe concurrent access.
- * 
- * @param repoRoot - Repository root path
- * @param streamId - Workstream ID
- * @param threadId - Thread ID (e.g., "01.02.03")
- * @param synthesis - The synthesis output to store
- * @returns Promise that resolves when the synthesis is saved
- */
-export async function setSynthesisOutput(
-  repoRoot: string,
-  streamId: string,
-  threadId: string,
-  synthesis: ThreadSynthesis,
-): Promise<void> {
-  await modifyThreads(repoRoot, streamId, (threadsFile) => {
-    const threadIndex = threadsFile.threads.findIndex((t) => t.threadId === threadId)
-
-    if (threadIndex === -1) {
-      console.warn(`[threads] setSynthesisOutput: Thread ${threadId} not found in stream ${streamId}`)
-      return
-    }
-
-    threadsFile.threads[threadIndex]!.synthesis = synthesis
-  })
-}
-
-/**
- * Get synthesis output for a thread
- * 
- * Retrieves the synthesis result if it exists for the thread.
- * 
- * @param repoRoot - Repository root path
- * @param streamId - Workstream ID
- * @param threadId - Thread ID (e.g., "01.02.03")
- * @returns The synthesis output if found, null otherwise
- */
-export function getSynthesisOutput(
-  repoRoot: string,
-  streamId: string,
-  threadId: string,
-): ThreadSynthesis | null {
-  const thread = getThreadMetadata(repoRoot, streamId, threadId)
-  
-  if (!thread) {
-    console.warn(`[threads] getSynthesisOutput: Thread ${threadId} not found in stream ${streamId}`)
-    return null
-  }
-
-  return thread.synthesis || null
 }
 
 // ============================================

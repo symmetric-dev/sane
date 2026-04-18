@@ -46,7 +46,6 @@ export {
   type NotificationProvidersConfig,
   type NotificationEventsConfig,
   type NotificationsConfig,
-  type SynthesisConfig,
 } from "./types"
 
 // Workstream notifications config loader (work/notifications.json)

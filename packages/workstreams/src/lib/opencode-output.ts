@@ -1,22 +1,15 @@
 /**
- * JSONL output parsing for synthesis sessions
+ * JSONL output parsing for opencode runs.
  *
- * Parses JSONL output from `opencode run --format json` to extract
- * synthesis text results.
+ * Parses `opencode run --format json` output and extracts assistant text.
  */
 
-import { readFileSync, appendFileSync, existsSync } from "node:fs"
+import { appendFileSync, existsSync, readFileSync } from "node:fs"
 
-/**
- * Base JSONL event structure
- */
 interface JsonlEvent {
   type: string
 }
 
-/**
- * Text event with content
- */
 export interface JsonlTextEvent extends JsonlEvent {
   type: "text"
   part: {
@@ -24,33 +17,18 @@ export interface JsonlTextEvent extends JsonlEvent {
   }
 }
 
-/**
- * Step start event
- */
 export interface JsonlStepEvent extends JsonlEvent {
   type: "step_start" | "step_finish"
   [key: string]: unknown
 }
 
-/**
- * Result of parsing synthesis JSONL output
- */
-export interface SynthesisParseResult {
-  /** Concatenated text from all text events */
+export interface OpencodeJsonlParseResult {
   text: string
-  /** Debug logs collected during parsing */
   logs: string[]
-  /** Whether parsing succeeded */
   success: boolean
 }
 
-/**
- * Parse JSONL content and extract text events
- *
- * @param content - JSONL string content
- * @returns Parse result with extracted text
- */
-export function parseSynthesisJsonl(content: string): SynthesisParseResult {
+export function parseOpencodeJsonlText(content: string): OpencodeJsonlParseResult {
   const logs: string[] = []
   const textParts: string[] = []
   let success = true
@@ -63,6 +41,7 @@ export function parseSynthesisJsonl(content: string): SynthesisParseResult {
   for (let i = 0; i < lines.length; i++) {
     const line = lines[i]
     if (!line) continue
+
     try {
       const event = JSON.parse(line) as JsonlEvent
 
@@ -70,9 +49,7 @@ export function parseSynthesisJsonl(content: string): SynthesisParseResult {
         const textEvent = event as JsonlTextEvent
         if (textEvent.part?.text) {
           textParts.push(textEvent.part.text)
-          logs.push(
-            `Line ${i + 1}: Extracted text (${textEvent.part.text.length} chars)`
-          )
+          logs.push(`Line ${i + 1}: Extracted text (${textEvent.part.text.length} chars)`)
         } else {
           logs.push(`Line ${i + 1}: Text event missing part.text field`)
         }
@@ -81,7 +58,7 @@ export function parseSynthesisJsonl(content: string): SynthesisParseResult {
       }
     } catch (error) {
       logs.push(
-        `Line ${i + 1}: JSON parse error - ${error instanceof Error ? error.message : String(error)}`
+        `Line ${i + 1}: JSON parse error - ${error instanceof Error ? error.message : String(error)}`,
       )
       success = false
     }
@@ -90,56 +67,35 @@ export function parseSynthesisJsonl(content: string): SynthesisParseResult {
   const text = textParts.join("")
   logs.push(`Parsing complete: ${textParts.length} text parts, ${text.length} total chars`)
 
-  return {
-    text,
-    logs,
-    success,
-  }
+  return { text, logs, success }
 }
 
-/**
- * Read and parse synthesis output file
- *
- * @param filePath - Path to JSONL output file
- * @param logPath - Optional path to write debug logs
- * @returns Parse result with extracted text
- */
-export function parseSynthesisOutputFile(
+export function parseOpencodeJsonlFile(
   filePath: string,
-  logPath?: string
-): SynthesisParseResult {
+  logPath?: string,
+): OpencodeJsonlParseResult {
   const logs: string[] = []
 
   try {
-    // Check if file exists
     if (!existsSync(filePath)) {
       logs.push(`ERROR: File not found: ${filePath}`)
-      return {
-        text: "",
-        logs,
-        success: false,
-      }
+      return { text: "", logs, success: false }
     }
 
     logs.push(`Reading file: ${filePath}`)
     const content = readFileSync(filePath, "utf-8")
     logs.push(`Read ${content.length} bytes`)
 
-    // Parse the content
-    const result = parseSynthesisJsonl(content)
-
-    // Merge logs
+    const result = parseOpencodeJsonlText(content)
     const allLogs = [...logs, ...result.logs]
 
-    // Write logs if path provided
     if (logPath) {
       try {
-        const logContent = allLogs.join("\n") + "\n"
-        appendFileSync(logPath, logContent)
+        appendFileSync(logPath, `${allLogs.join("\n")}\n`)
         allLogs.push(`Debug logs written to: ${logPath}`)
       } catch (error) {
         allLogs.push(
-          `WARNING: Failed to write logs to ${logPath}: ${error instanceof Error ? error.message : String(error)}`
+          `WARNING: Failed to write logs to ${logPath}: ${error instanceof Error ? error.message : String(error)}`,
         )
       }
     }
@@ -151,12 +107,8 @@ export function parseSynthesisOutputFile(
     }
   } catch (error) {
     logs.push(
-      `ERROR: Failed to read file: ${error instanceof Error ? error.message : String(error)}`
+      `ERROR: Failed to read file: ${error instanceof Error ? error.message : String(error)}`,
     )
-    return {
-      text: "",
-      logs,
-      success: false,
-    }
+    return { text: "", logs, success: false }
   }
 }

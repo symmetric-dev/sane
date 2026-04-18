@@ -160,7 +160,7 @@ export class NotificationManager {
    * 
    * Checks both master enabled flag and per-event configuration
    * @param event The notification event type
-   * @param metadata Optional metadata to pass to providers (e.g., synthesis output)
+   * @param metadata Optional metadata to pass to providers
    */
   playNotification(event: NotificationEvent, metadata?: NotificationMetadata): void {
     // Check master enabled flag
@@ -204,29 +204,9 @@ export class NotificationManager {
         return events.batch_complete !== false
       case "error":
         return events.error !== false
-      case "thread_synthesis_complete":
-        return events.synthesis_complete !== false
       default:
         return true
     }
-  }
-
-  /**
-   * Helper method to play thread_synthesis_complete notification with synthesis output.
-   * Convenience wrapper that sets up the correct event type and metadata structure.
-   * This sets up the interface for a future TTSProvider to receive summaries.
-   *
-   * @param threadId The thread identifier
-   * @param synthesisOutput The synthesis output text for TTS providers
-   *
-   * @example
-   * manager.playSynthesisComplete('01.01.01', 'Thread completed: implemented feature X')
-   */
-  playSynthesisComplete(threadId: string, synthesisOutput: string): void {
-    this.playNotification("thread_synthesis_complete", {
-      threadId,
-      synthesisOutput,
-    })
   }
 }
 
@@ -259,7 +239,7 @@ export function resetNotificationManager(): void {
  * Uses the default notification manager
  *
  * @param event The notification event type
- * @param metadata Optional metadata to pass to providers (e.g., synthesis output)
+ * @param metadata Optional metadata to pass to providers
  *
  * @example
  * // Play thread completion sound
@@ -268,8 +248,6 @@ export function resetNotificationManager(): void {
  * // Play error sound
  * playNotification('error')
  *
- * // Play synthesis complete with output for TTS
- * playNotification('thread_synthesis_complete', { synthesisOutput: 'Thread completed successfully' })
  */
 export function playNotification(event: NotificationEvent, metadata?: NotificationMetadata): void {
   getNotificationManager().playNotification(event, metadata)

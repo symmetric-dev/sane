@@ -68,7 +68,7 @@ export function resolvePromptPathFromMetadata(
 /**
  * Resolve prompt file path for a thread
  *
- * First checks threads.json for stored path (authoritative source),
+ * First checks tasks.json -> runtime_state.threads for a stored path,
  * then falls back to parsing PLAN.md to reconstruct the path.
  *
  * @param repoRoot - Repository root path
@@ -83,7 +83,7 @@ export function resolvePromptPath(
 ): string | null {
   const workDir = getWorkDir(repoRoot)
   
-  // First, try to get the path from threads.json (authoritative source)
+  // First, try canonical runtime_state.threads metadata
   const threadMeta = getThreadMetadata(repoRoot, streamId, threadId)
   if (threadMeta?.promptPath) {
     return join(workDir, threadMeta.promptPath)

@@ -64,8 +64,7 @@ describe("work notifications", () => {
       events: {
         thread_complete: false,
         batch_complete: true,
-        error: true,
-        synthesis_complete: false
+        error: true
       }
     }
     writeFileSync(join(workDir, "notifications.json"), JSON.stringify(config))

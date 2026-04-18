@@ -108,7 +108,7 @@ export async function main(argv: string[] = process.argv): Promise<void> {
       `Supervision: ${result.supervision.runsTouched} runs updated, ${result.supervision.branchSessionsRemoved} branch sessions removed, ${result.supervision.reviewedBatchesRemoved} reviews removed, ${result.supervision.stageStopsRemoved} stage stops removed, active run ${result.supervision.activeRunCleared ? "cleared" : "unchanged"}, current branch ${result.supervision.currentBranchCleared ? "cleared" : "unchanged"}.`,
     )
     console.log(
-      `Artifacts: ${result.artifacts.completionMarkersRemoved} markers, ${result.artifacts.sessionFilesRemoved} session files, ${result.artifacts.resultFilesRemoved} result files, ${result.artifacts.workingSessionFilesRemoved} working-session files, ${result.artifacts.synthesisOutputsRemoved} synthesis outputs, ${result.artifacts.synthesisLogsRemoved} synthesis logs removed.`,
+      `Artifacts: ${result.artifacts.completionMarkersRemoved} markers, ${result.artifacts.sessionFilesRemoved} session files, ${result.artifacts.resultFilesRemoved} result files, ${result.artifacts.workingSessionFilesRemoved} working-session files, ${result.artifacts.synthesisOutputsRemoved} legacy synthesis outputs, ${result.artifacts.synthesisLogsRemoved} legacy synthesis logs removed.`,
     )
   } catch (error) {
     console.error((error as Error).message)

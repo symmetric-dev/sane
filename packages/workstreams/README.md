@@ -29,7 +29,7 @@ work approve plan
 2. Fill `REQUIREMENTS.md` and add extra inputs under `resources/`
 3. Set the current workstream (or pass `--stream`): `work current --set "001-my-feature"`
 4. Validate requirements: `work validate requirements`
-5. Scaffold plan stages later: `work plan create --stages 2`
+5. Scaffold plan stages: `work plan create --stages 2`
 6. Edit `PLAN.md`
 7. Validate/check the plan:
    - `work validate plan` warns but succeeds for an empty draft plan
@@ -37,11 +37,17 @@ work approve plan
 8. Approve plan: `work approve plan` (user role, requires at least one stage)
 9. Fill `TASKS.md`
 10. Approve tasks: `work approve tasks` (user role)
-11. Execute batches: `work multi --batch "01.01"`
-12. Complete tasks with reports via `work update --status completed --report "..."`
-13. Finalize report and complete stream:
+11. Launch supervised execution from the Root Agent using the `managing-workstreams` skill
+12. The supervision branch uses `work supervise`, `work status`, `work tree`, and `work batch-status` to drive the next batch and review loop
+13. Implementation agents use `implementing-workstreams` to inspect assigned scope and update task state with `work update`
+14. The Root Agent reports back; the user approves the completed stage with `work approve stage <n>`
+15. Repeat the supervision loop for the next stage
+16. If new stages are needed after the original plan, use the revision flow:
+   - `work revision --name "follow-up" [--after-stage N]`
+   - `work approve revision`
+   - `work approve tasks`
+17. Finalize the report with the `evaluating-workstreams` skill:
    - `work report validate`
-   - `work complete`
 
 Shortcut:
 
@@ -60,7 +66,10 @@ Generated files on `work create`:
 ```bash
 work status
 work tree
+work tree --batch "01.01"
+work batch-status --batch "01.01" --format json
 work list --tasks
+work list --tasks --thread "01.01.01"
 work update --task "01.01.01.01" --status in_progress
 work update --task "01.01.01.01" --status completed --report "Implemented X"
 work report metrics --blockers
@@ -77,13 +86,28 @@ work supervise --batch "01.01"
 work supervise --dry-run
 ```
 
-`work supervise` launches `work multi --headless --async`, waits for the batch to become terminal, and produces deterministic review evidence from canonical execution state (task status/report fields, thread/session metadata, and persisted batch status).
+`work supervise` launches `work multi --headless --async`, waits for the batch to become terminal, and produces deterministic review evidence from canonical execution state (task status/report fields, runtime thread metadata, and persisted batch status).
 
 The Root Agent then either:
 
 - continues automatically to the next incomplete batch,
 - runs one automatic fix cycle (default), or
 - escalates to the user based on escalation/stage-boundary policy.
+
+Within that supervised batch execution, implementation agents commonly inspect scope with:
+
+```bash
+work status
+work tree --batch "01.01"
+work list --tasks --thread "01.01.01"
+```
+
+They are expected to keep task state accurate while they work:
+
+```bash
+work update --task "01.01.01.01" --status in_progress
+work update --task "01.01.01.01" --status completed --report "1-2 sentence summary"
+```
 
 In practice, Root Agent orchestration **continues automatically only when** the batch review is approved and no stop policy is triggered.
 It **stops** when escalation requires user input, a stage boundary stop is reached, there is no next batch, or execution/wait fails.

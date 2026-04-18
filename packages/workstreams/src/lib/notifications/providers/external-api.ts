@@ -68,14 +68,13 @@ export class ExternalApiProvider implements NotificationProvider {
   /**
    * Build webhook payload for an event
    * @param event The notification event type
-   * @param metadata Optional metadata including synthesis output
+   * @param metadata Optional metadata
    */
   buildPayload(event: NotificationEvent, metadata?: NotificationMetadata): WebhookPayload {
     return {
       event,
       timestamp: new Date().toISOString(),
       metadata,
-      synthesisOutput: metadata?.synthesisOutput,
       threadId: metadata?.threadId,
     }
   }

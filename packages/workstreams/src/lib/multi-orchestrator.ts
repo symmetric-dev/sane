@@ -89,13 +89,13 @@ export function collectThreadInfoFromTasks(
   const threads: ThreadInfo[] = []
 
   for (const discovered of discoveredThreads) {
-    // Get prompt path from threads.json (authoritative source)
+    // Get prompt path from canonical runtime_state thread metadata
     // Fall back to reconstructing from metadata if not stored
     const threadMeta = getThreadMetadata(repoRoot, streamId, discovered.threadId)
     let promptPath: string
     
     if (threadMeta?.promptPath) {
-      // Use stored path from threads.json (relative path, need to make absolute)
+      // Use stored path from runtime_state.threads (relative path, need absolute)
       const workDir = getWorkDir(repoRoot)
       promptPath = join(workDir, threadMeta.promptPath)
     } else {

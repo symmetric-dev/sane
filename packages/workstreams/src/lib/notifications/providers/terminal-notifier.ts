@@ -22,7 +22,6 @@ const EVENT_TITLES: Record<NotificationEvent, string> = {
   thread_complete: "Thread Complete",
   batch_complete: "Batch Complete",
   error: "Error",
-  thread_synthesis_complete: "Synthesis Complete",
 }
 
 /**
@@ -32,7 +31,6 @@ const EVENT_MESSAGES: Record<NotificationEvent, string> = {
   thread_complete: "A thread has completed successfully",
   batch_complete: "Batch processing complete",
   error: "An error occurred during processing",
-  thread_synthesis_complete: "Thread synthesis has completed",
 }
 
 /**
@@ -89,7 +87,7 @@ export class TerminalNotifierProvider implements NotificationProvider {
   /**
    * Play notification using terminal-notifier
    * @param event The notification event type
-   * @param metadata Optional metadata (e.g., synthesis output for message body)
+   * @param metadata Optional metadata
    */
   playNotification(event: NotificationEvent, metadata?: NotificationMetadata): void {
     if (!this.config.enabled) {
@@ -107,16 +105,6 @@ export class TerminalNotifierProvider implements NotificationProvider {
     // Include thread ID if available
     if (metadata?.threadId) {
       message = `Thread ${metadata.threadId}: ${message}`
-    }
-
-    // Include synthesis output if available and not too long
-    if (metadata?.synthesisOutput) {
-      const synthesis = metadata.synthesisOutput
-      if (synthesis.length <= 200) {
-        message = synthesis
-      } else {
-        message = synthesis.substring(0, 197) + "..."
-      }
     }
 
     // Build command arguments

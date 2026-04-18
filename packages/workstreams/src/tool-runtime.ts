@@ -26,7 +26,7 @@ export {
   upsertCheckpointPointerLocked,
   upsertBranchSessionLocked,
 } from "./lib/supervisor-state.ts"
-export { parseSynthesisJsonl } from "./lib/synthesis/output.ts"
+export { parseOpencodeJsonlText } from "./lib/opencode-output.ts"
 export {
   exportSession,
   extractLastCompletedAssistantText,

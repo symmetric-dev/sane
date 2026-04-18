@@ -446,7 +446,7 @@ export function generateAllPrompts(
 
           if (savedPath) {
             result.generatedFiles.push(savedPath)
-            // Store prompt path in threads.json for reliable lookup
+            // Store prompt path in runtime_state.threads for reliable lookup
             updateThreadMetadata(repoRoot, streamId, threadIdStr, {
               promptPath: savedPath,
             })

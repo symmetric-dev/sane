@@ -19,7 +19,6 @@
   "events": {
     "thread_complete": true,
     "batch_complete": true,
-    "error": true,
-    "synthesis_complete": true
+    "error": true
   }
 }

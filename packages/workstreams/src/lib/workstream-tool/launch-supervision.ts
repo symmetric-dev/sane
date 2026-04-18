@@ -148,7 +148,7 @@ export interface LaunchSupervisionRuntimeDeps {
   getRootAgentCheckpointSessionForkEligibility: LaunchSupervisionBranchDeps["getCheckpointSessionForkEligibility"]
   waitForRootAgentBranchNativeSessionId: LaunchSupervisionBranchDeps["waitForBranchNativeSessionId"]
   waitForRootAgentBranchTerminalSession: LaunchSupervisionBranchDeps["waitForTerminalBranchSession"]
-  parseSynthesisJsonl: LaunchSupervisionBranchDeps["parseOutput"]
+  parseOpencodeJsonlText: LaunchSupervisionBranchDeps["parseOutput"]
   exportSession: LaunchSupervisionBranchDeps["exportSessionTranscript"]
   extractLastCompletedAssistantText: LaunchSupervisionBranchDeps["extractFinalBranchReport"]
   getDefaultLaunchSupervisionBranchHelpers?: () => ReturnType<
@@ -1205,7 +1205,7 @@ export function createDefaultLaunchSupervisionBranchDeps(
     findNativeSessionIdByTitle: (...args) =>
       (runtime.getDefaultLaunchSupervisionBranchHelpers?.().findNativeSessionIdByTitle ??
         findNativeSessionIdByTitle)(...args),
-    parseOutput: (content) => parseSupervisionBranchRunOutput(content, runtime.parseSynthesisJsonl),
+    parseOutput: (content) => parseSupervisionBranchRunOutput(content, runtime.parseOpencodeJsonlText),
     exportSessionTranscript: (sessionId) => runtime.exportSession(sessionId),
     refreshCheckpointPointer: (args) => runtime.refreshRootAgentCheckpointPointer(args),
     getCheckpointSessionForkEligibility: (args) =>

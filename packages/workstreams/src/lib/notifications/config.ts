@@ -48,7 +48,6 @@ export function getDefaultNotificationsConfig(): NotificationsConfig {
       thread_complete: true,
       batch_complete: true,
       error: true,
-      synthesis_complete: true,
     },
   }
 }
@@ -102,7 +101,6 @@ export function loadNotificationsConfig(repoRoot: string): NotificationsConfig {
         thread_complete: loaded.events?.thread_complete ?? defaults.events.thread_complete,
         batch_complete: loaded.events?.batch_complete ?? defaults.events.batch_complete,
         error: loaded.events?.error ?? defaults.events.error,
-        synthesis_complete: loaded.events?.synthesis_complete ?? defaults.events.synthesis_complete,
       },
     }
   } catch {
