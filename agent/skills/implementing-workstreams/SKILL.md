@@ -13,13 +13,20 @@ work tree --batch "01.01"
 work list --tasks --thread "01.01.01"
 ```
 
+Before substantive implementation work, link the current opencode session to your assigned thread using the custom tool:
+
+- `link_thread_session` with your assigned `threadId`
+
+Do this after confirming your workstream/thread/task scope and before marking tasks in progress.
+
 ## Execution Rules
 
 1. Work only on your assigned thread.
-2. Mark task start: `work update --task "ID" --status in_progress`
-3. Mark completion with report:
+2. Link the current opencode session to your assigned thread with `link_thread_session` before implementation work begins.
+3. Mark task start: `work update --task "ID" --status in_progress`
+4. Mark completion with report:
    `work update --task "ID" --status completed --report "1-2 sentence summary"`
-4. If blocked:
+5. If blocked:
    `work update --task "ID" --status blocked --report "reason and dependency"`
 
 ## Questions

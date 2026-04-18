@@ -16,6 +16,9 @@ import type {
   SupervisionTerminalStatus,
   WorkstreamsToolRuntimeInfo,
 } from "../../packages/workstreams/src/tool-runtime.ts"
+import { loadIndex, getResolvedStream } from "../../packages/workstreams/src/lib/index.ts"
+import { parseThreadId, getTasksByThread } from "../../packages/workstreams/src/lib/tasks.ts"
+import { updateThreadMetadataLocked } from "../../packages/workstreams/src/lib/threads.ts"
 
 import type {
   WorkstreamsToolRuntimeLoadOptions as PackageWorkstreamsToolRuntimeLoadOptions,
@@ -514,6 +517,47 @@ export const link_planning_session = tool({
       return result.trim()
     } catch (error) {
       return `Error linking session: ${error instanceof Error ? error.message : String(error)}`
+    }
+  },
+})
+
+export const link_thread_session = tool({
+  description:
+    "Link the current opencode session to a workstream thread. Use this from inside the implementing session after confirming thread scope and before substantive implementation work.",
+  args: {
+    threadId: tool.schema
+      .string()
+      .describe('The thread ID to link the current session to (e.g., "01.01.01").'),
+    streamId: tool.schema
+      .string()
+      .describe(
+        "The workstream ID or name (e.g., '012-my-feature' or 'my-feature'). If omitted, uses the current workstream.",
+      )
+      .optional(),
+  },
+  async execute(args: { threadId: string; streamId?: string }, context: { sessionID?: string }) {
+    const sessionId = context.sessionID
+    if (!sessionId) {
+      return "Error: Could not determine current session ID"
+    }
+
+    try {
+      const repoRoot = process.cwd()
+      const stream = getResolvedStream(loadIndex(repoRoot), args.streamId)
+      const { stage, batch, thread } = parseThreadId(args.threadId)
+      const tasks = getTasksByThread(repoRoot, stream.id, stage, batch, thread)
+
+      if (tasks.length === 0) {
+        return `Error linking thread session: Thread "${args.threadId}" not found in workstream "${stream.id}"`
+      }
+
+      await updateThreadMetadataLocked(repoRoot, stream.id, args.threadId, {
+        opencodeSessionId: sessionId,
+      })
+
+      return `Linked current session ${sessionId} to thread ${args.threadId} in ${stream.id}.`
+    } catch (error) {
+      return `Error linking thread session: ${error instanceof Error ? error.message : String(error)}`
     }
   },
 })

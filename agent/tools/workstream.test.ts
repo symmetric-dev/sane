@@ -1,6 +1,6 @@
 // @ts-nocheck
 import { beforeAll, describe, expect, mock, test } from "bun:test"
-import { existsSync, readFileSync } from "node:fs"
+import { existsSync, readFileSync, writeFileSync } from "node:fs"
 import { chmod, mkdtemp, mkdir, rm, symlink, writeFile } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
@@ -28,6 +28,8 @@ import {
   waitForTmuxSessionExit,
 } from "../../packages/workstreams/src/lib/workstream-tool/launch-supervision-tmux.ts"
 import { cleanupTestWorkstream, createTestWorkstream } from "../../packages/workstreams/tests/helpers/test-workspace.ts"
+import { createEmptyTasksFile, writeTasksFile } from "../../packages/workstreams/src/lib/tasks.ts"
+import { getThreadMetadata } from "../../packages/workstreams/src/lib/threads.ts"
 
 mock.module("@opencode-ai/plugin", () => ({
   tool: Object.assign(
@@ -43,6 +45,7 @@ mock.module("@opencode-ai/plugin", () => ({
 }))
 
 let toolRuntimeInfoTool: typeof import("./workstream.ts").tool_runtime_info
+let linkThreadSessionTool: typeof import("./workstream.ts").link_thread_session
 let finalizeWorkstreamSupervisionTool: typeof import("./workstream.ts").finalize_workstream_supervision
 let reconcileWorkstreamSupervisionTool: typeof import("./workstream.ts").reconcile_workstream_supervision
 let launchSupervisionBranchTool: typeof import("./workstream.ts").launch_supervision_branch
@@ -59,6 +62,7 @@ beforeAll(async () => {
   const workstreamModule = await import("./workstream.ts")
 
   toolRuntimeInfoTool = workstreamModule.tool_runtime_info
+  linkThreadSessionTool = workstreamModule.link_thread_session
   finalizeWorkstreamSupervisionTool = workstreamModule.finalize_workstream_supervision
   reconcileWorkstreamSupervisionTool = workstreamModule.reconcile_workstream_supervision
   launchSupervisionBranchTool = workstreamModule.launch_supervision_branch
@@ -195,6 +199,39 @@ function createDeps(
     now: () => "2026-04-12T00:00:00.000Z",
     ...overrides,
   }
+}
+
+function writeIndex(repoRoot: string, streamId: string, name: string): void {
+  writeFileSync(
+    join(repoRoot, "work", "index.json"),
+    JSON.stringify(
+      {
+        version: "1.0.0",
+        last_updated: new Date().toISOString(),
+        current_stream: streamId,
+        streams: [
+          {
+            id: streamId,
+            name,
+            order: 1,
+            size: "short",
+            session_estimated: {
+              length: 1,
+              unit: "session",
+              session_minutes: [30, 45],
+              session_iterations: [4, 8],
+            },
+            created_at: new Date().toISOString(),
+            updated_at: new Date().toISOString(),
+            path: `work/${streamId}`,
+            generated_by: { workstreams: "test" },
+          },
+        ],
+      },
+      null,
+      2,
+    ),
+  )
 }
 
 function createReconcileDeps(
@@ -464,9 +501,78 @@ describe("workstream runtime resolution", () => {
       "finalize_workstream_supervision",
       "launch_supervision_branch",
       "link_planning_session",
+      "link_thread_session",
       "reconcile_workstream_supervision",
       "tool_runtime_info",
     ])
+  })
+
+  test("links the current session to a thread in the current workstream", async () => {
+    const workspace = createTestWorkstream("001-agent-tool-link-thread")
+    const originalCwd = process.cwd()
+    try {
+      writeIndex(workspace.repoRoot, workspace.streamId, "agent-tool-link-thread")
+      const tasksFile = createEmptyTasksFile(workspace.streamId)
+      const now = new Date().toISOString()
+      tasksFile.tasks = [
+        {
+          id: "01.01.01.01",
+          name: "Implement linked thread session",
+          thread_name: "Thread 1",
+          batch_name: "Batch 1",
+          stage_name: "Stage 1",
+          created_at: now,
+          updated_at: now,
+          status: "pending",
+        },
+      ]
+      writeTasksFile(workspace.repoRoot, workspace.streamId, tasksFile)
+
+      process.chdir(workspace.repoRoot)
+      const result = await linkThreadSessionTool.execute(
+        { threadId: "01.01.01" },
+        { sessionID: "ses_thread_1" },
+      )
+
+      expect(result).toBe(
+        `Linked current session ses_thread_1 to thread 01.01.01 in ${workspace.streamId}.`,
+      )
+      expect(getThreadMetadata(workspace.repoRoot, workspace.streamId, "01.01.01")).toMatchObject({
+        threadId: "01.01.01",
+        opencodeSessionId: "ses_thread_1",
+      })
+    } finally {
+      process.chdir(originalCwd)
+      cleanupTestWorkstream(workspace)
+    }
+  })
+
+  test("returns an error when the current session ID is unavailable", async () => {
+    const result = await linkThreadSessionTool.execute({ threadId: "01.01.01" }, {})
+
+    expect(result).toBe("Error: Could not determine current session ID")
+  })
+
+  test("returns an error when the target thread does not exist", async () => {
+    const workspace = createTestWorkstream("001-agent-tool-missing-thread")
+    const originalCwd = process.cwd()
+    try {
+      writeIndex(workspace.repoRoot, workspace.streamId, "agent-tool-missing-thread")
+      writeTasksFile(workspace.repoRoot, workspace.streamId, createEmptyTasksFile(workspace.streamId))
+
+      process.chdir(workspace.repoRoot)
+      const result = await linkThreadSessionTool.execute(
+        { threadId: "01.01.99" },
+        { sessionID: "ses_thread_missing" },
+      )
+
+      expect(result).toBe(
+        `Error linking thread session: Thread "01.01.99" not found in workstream "${workspace.streamId}"`,
+      )
+    } finally {
+      process.chdir(originalCwd)
+      cleanupTestWorkstream(workspace)
+    }
   })
 
   test("captures resolution errors when the work binary is unavailable", async () => {
