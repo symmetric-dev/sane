@@ -2,6 +2,42 @@
 
 All notable changes to `@agenv/workstreams` are documented in this file.
 
+## 0.6.1 - 2026-04-18
+
+- Removed automatic implementation-thread opencode session title tagging from thread execution commands while preserving plain thread titles for operator visibility.
+- Removed automatic post-run title-based opencode session discovery/linking for implementation threads, leaving the existing runtime session-link fields in place for a future explicit linking flow.
+- Added regression coverage around multi-run/finalization behavior to keep core execution, supervision, and batch monitoring stable after the session-tagging cleanup.
+
+## 0.6.0 - 2026-04-18
+
+- Removed obsolete user-facing workstream surfaces including `work fix` remnants and the `work synthesis` command/module stack.
+- Standardized runtime-state guidance around `tasks.json.runtime_state`, reducing stale references to legacy `threads.json` and `supervisor-state.json` files.
+- Refreshed workstream workflow documentation to reflect the current planning → supervision → stage approval → evaluation lifecycle.
+
+## 0.5.3 - 2026-04-17
+
+- Extended supervision timeout handling so longer-running branch and batch execution paths recover more predictably without spurious interruptions.
+- Improved reset/resume behavior around batch state and supervisor state persistence to make reruns and recovery safer.
+- Continued runtime-state cleanup for threads, tasks, and supervision metadata used by the modern `work supervise` workflow.
+
+## 0.5.2 - 2026-04-17
+
+- Added reusable workstream read models for status/tree/list-style views backed by canonical runtime state.
+- Added Bun dashboard/server support modules, dashboard-facing internal contracts, and backend observability/snapshot helpers.
+- Improved runtime-state migration and dashboard/server test coverage around status projections, tree views, reset-batch-state, and server helpers.
+
+## 0.5.1 - 2026-04-15
+
+- Stabilized the first Root Agent supervision/runtime-tooling release with follow-up fixes to approvals, supervision prompts, and persisted execution state handling.
+- Continued cleanup of legacy docs/runtime behavior around the newer branch-supervision flow.
+- Expanded test coverage around approval resolution, review compatibility, and supervision state persistence.
+
+## 0.5.0 - 2026-04-15
+
+- Added the workstreams tool runtime plus Root Agent custom-tool integration for launching, finalizing, reconciling, and inspecting supervision sessions.
+- Added durable Root Agent / branch supervision state management, scoped branch prompts, tmux/opencode launch helpers, and session export utilities.
+- Expanded approval, review, multi-run, and supervision flows to support the newer branch-based orchestration model.
+
 ## 0.4.1 - 2026-04-14
 
 - Simplified supervision timeout handling so the latest branch and Root-Agent live-test paths behave more predictably under the new headless child-session execution model.
