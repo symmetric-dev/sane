@@ -100,7 +100,7 @@ function truncateTitle(title: string, maxLen: number = 32): string {
 
 /**
  * Get the marker file path for a thread's first command completion
- * Used to signal when opencode run finishes (before session resume)
+ * Used to signal when opencode run finishes.
  * 
  * @param threadId - Thread ID (e.g., "01.01.02")
  * @returns Path to the completion marker file
@@ -181,10 +181,6 @@ function buildCommandPrefix(options?: RunCommandOptions): string {
   return options?.headless ? `${WORKSTREAM_HEADLESS_ENV}=1 ` : ""
 }
 
-function buildHeadlessCheck(): string {
-  return `[ "\${${WORKSTREAM_HEADLESS_ENV}:-0}" = "1" ]`
-}
-
 function buildResultWriteCommand(
   streamId: string | undefined,
   threadId: string | undefined,
@@ -207,7 +203,7 @@ printf '{"status":"%s","exitCode":%s}\n' "$RESULT_STATUS" "${shellExitVarWithDef
 }
 
 /**
- * Build the opencode run command with --title flag and session resume logic
+ * Build the opencode run command with --title flag and session capture logic
  * Wrapped in sh -c to properly handle piped commands in tmux
  *
  * The command:
@@ -216,7 +212,6 @@ printf '{"status":"%s","exitCode":%s}\n' "$RESULT_STATUS" "${shellExitVarWithDef
  * 3. Writes a completion marker file to signal first command done (for notification timing)
  * 4. After completion, searches for the session by tracking ID
  * 5. Writes the session ID to a temp file for workstream tracking (if threadId provided)
- * 6. Resumes the session with opencode TUI if found
  * 
  * @param threadId - Optional thread ID for completion marker (e.g., "01.01.02")
  */
@@ -252,20 +247,6 @@ export function buildRunCommand(
     : ""
   const resultWriteCmd = buildResultWriteCommand(options.streamId, threadId, "RUN_EXIT")
   const commandPrefix = buildCommandPrefix(options)
-  const postRunAction = options.headless
-    ? `echo "Headless mode detected - skipping session resume."\nexit $RUN_EXIT`
-    : `if ${buildHeadlessCheck()}; then
-  echo "Headless mode detected - skipping session resume."
-  exit $RUN_EXIT
-fi
-if [ -n "$SESSION_ID" ]; then
-  echo "Resuming session $SESSION_ID..."
-  opencode --session "$SESSION_ID"
-else
-  echo "Press Enter to close."
-  read
-fi
-exit $RUN_EXIT`
 
   // Build a shell script that:
   // 1. Generates a unique tracking ID (16 chars from nanosecond timestamp)
@@ -273,7 +254,6 @@ exit $RUN_EXIT`
   // 3. Writes completion marker file (if threadId provided)
   // 4. After completion, searches for the session by tracking ID using jq
   // 5. Writes the session ID to a temp file for workstream tracking (if threadId provided)
-  // 6. Resumes the session with opencode TUI if found
   return `${commandPrefix}sh -c '
 TRACK_ID=$(date +%s%N | head -c 16)
 TITLE="${escapedTitle}__id=$TRACK_ID"
@@ -286,7 +266,7 @@ echo ""
 cat "${escapedPath}" | opencode run --port ${port} --model "${model}"${variantFlag} --title "$TITLE"
 RUN_EXIT=$?
 echo ""
-echo "Thread finished. Looking for session to resume..."
+echo "Thread finished. Looking for session to capture..."
 SESSION_ID=""
 if command -v jq >/dev/null 2>&1; then
   SESSION_ID=$(opencode session list --max-count 20 --format json 2>/dev/null | jq -r ".[] | select(.title | contains(\\"__id=$TRACK_ID\\")) | .id" | head -1)
@@ -296,11 +276,11 @@ if command -v jq >/dev/null 2>&1; then
     echo "Session not found."
   fi
 else
-  echo "jq not found - install jq to enable session resume"
+  echo "jq not found - install jq to capture opencode session IDs"
 fi
 ${resultWriteCmd}
 ${completionMarkerCmd}
-${postRunAction}
+exit $RUN_EXIT
 '`
 }
 
@@ -315,7 +295,7 @@ const EARLY_FAILURE_THRESHOLD_SECONDS = 10
  * Retry logic:
  * - Only retries if opencode exits within EARLY_FAILURE_THRESHOLD_SECONDS (early failure)
  * - Tries each model in order until one succeeds or runs past the threshold
- * - Session resume logic is NOT wrapped in retry (user Ctrl+C exits normally)
+ * - Session capture logic is NOT wrapped in retry
  * - Writes completion marker file after first command finishes (if threadId provided)
  *
  * @param threadId - Optional thread ID for completion marker (e.g., "01.01.02")
@@ -411,20 +391,6 @@ export function buildRetryRunCommand(
     : ""
   const resultWriteCmd = buildResultWriteCommand(options.streamId, threadId, "FINAL_EXIT")
   const commandPrefix = buildCommandPrefix(options)
-  const postRunAction = options.headless
-    ? `echo "Headless mode detected - skipping session resume."\nexit $FINAL_EXIT`
-    : `if ${buildHeadlessCheck()}; then
-  echo "Headless mode detected - skipping session resume."
-  exit $FINAL_EXIT
-fi
-if [ -n "$SESSION_ID" ]; then
-  echo "Resuming session $SESSION_ID..."
-  opencode --session "$SESSION_ID"
-else
-  echo "Press Enter to close."
-  read
-fi
-exit $FINAL_EXIT`
 
   return `${commandPrefix}sh -c '
 TRACK_ID=$(date +%s%N | head -c 16)
@@ -441,7 +407,7 @@ if [ -z "$FINAL_EXIT" ]; then
   FINAL_EXIT=1
 fi
 echo ""
-echo "Thread finished. Looking for session to resume..."
+echo "Thread finished. Looking for session to capture..."
 if command -v jq >/dev/null 2>&1; then
   SESSION_ID=$(opencode session list --max-count 20 --format json 2>/dev/null | jq -r ".[] | select(.title | contains(\\"__id=$TRACK_ID\\")) | .id" | head -1)
   if [ -n "$SESSION_ID" ]; then${writeSessionCmd}
@@ -450,11 +416,11 @@ if command -v jq >/dev/null 2>&1; then
     echo "Session not found."
   fi
 else
-  echo "jq not found - install jq to enable session resume"
+  echo "jq not found - install jq to capture opencode session IDs"
 fi
 ${resultWriteCmd}
 ${completionMarkerCmd}
-${postRunAction}
+exit $FINAL_EXIT
 '`
 }
 

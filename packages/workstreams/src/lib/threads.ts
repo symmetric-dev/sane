@@ -557,7 +557,7 @@ export function getLastSessionForThread(
  * Get the opencode session ID for a thread
  *
  * This is the session ID captured from opencode after a multi run,
- * which can be used to resume the session in opencode TUI.
+ * which can be used for review/debug evidence or external inspection.
  *
  * @param repoRoot - Repository root path
  * @param streamId - Workstream ID

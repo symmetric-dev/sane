@@ -213,7 +213,16 @@ describe("multi cli", () => {
                 expect(cmd).not.toContain("-session.txt")
             })
 
-            test("headless mode skips session resume and read prompt", () => {
+            test("does not reopen opencode session after run", () => {
+                const defaultCmd = buildRunCommand(
+                    4096,
+                    "anthropic/claude-sonnet-4",
+                    "/path/to/prompt.md",
+                    "Test Thread",
+                    undefined,
+                    "01.01.01",
+                    { streamId }
+                )
                 const cmd = buildRunCommand(
                     4096,
                     "anthropic/claude-sonnet-4",
@@ -224,6 +233,9 @@ describe("multi cli", () => {
                     { headless: true, streamId }
                 )
 
+                expect(defaultCmd).not.toContain("opencode --session")
+                expect(defaultCmd).not.toContain("Press Enter to close")
+                expect(defaultCmd).not.toContain("\n  read")
                 expect(cmd).toContain("WORKSTREAM_HEADLESS=1")
                 expect(cmd).not.toContain("opencode --session")
                 expect(cmd).not.toContain("Press Enter to close")
@@ -340,11 +352,20 @@ describe("multi cli", () => {
                 expect(cmd).not.toContain("-session.txt")
             })
 
-            test("headless mode skips session resume and read prompt", () => {
+            test("retry command does not reopen opencode session after run", () => {
                 const models: NormalizedModelSpec[] = [
                     { model: "anthropic/claude-sonnet-4" },
                     { model: "google/gemini-pro" }
                 ]
+
+                const defaultCmd = buildRetryRunCommand(
+                    4096,
+                    models,
+                    "/path/to/prompt.md",
+                    "Test Thread",
+                    "02.01.01",
+                    { streamId }
+                )
 
                 const cmd = buildRetryRunCommand(
                     4096,
@@ -355,6 +376,9 @@ describe("multi cli", () => {
                     { headless: true, streamId }
                 )
 
+                expect(defaultCmd).not.toContain("opencode --session")
+                expect(defaultCmd).not.toContain("Press Enter to close")
+                expect(defaultCmd).not.toContain("\n  read")
                 expect(cmd).toContain("WORKSTREAM_HEADLESS=1")
                 expect(cmd).not.toContain("opencode --session")
                 expect(cmd).not.toContain("Press Enter to close")
