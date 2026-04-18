@@ -173,7 +173,7 @@ describe("multi cli", () => {
                 expect(cmd).toContain('echo "done"')
             })
 
-            test("includes session file write when threadId provided", () => {
+            test("does not include legacy thread session-discovery commands when threadId provided", () => {
                 const cmd = buildRunCommand(
                     4096,
                     "anthropic/claude-sonnet-4",
@@ -184,9 +184,11 @@ describe("multi cli", () => {
                     { streamId }
                 )
                 
-                // Should contain session file write command
-                expect(cmd).toContain("/tmp/workstream-001-test-stream-01.01.01-session.txt")
-                expect(cmd).toContain('$SESSION_ID')
+                expect(cmd).not.toContain("-session.txt")
+                expect(cmd).not.toContain('$SESSION_ID')
+                expect(cmd).not.toContain("__id=")
+                expect(cmd).not.toContain("opencode session list")
+                expect(cmd).toContain('--title "Test Thread"')
             })
 
             test("does not include marker write when threadId not provided", () => {
@@ -262,7 +264,7 @@ describe("multi cli", () => {
                 expect(cmd).toContain("/tmp/workstream-001-test-stream-01.02.03-complete.txt")
             })
 
-            test("includes session file write when threadId provided (single model)", () => {
+            test("does not include legacy thread session-discovery commands when threadId provided (single model)", () => {
                 const models: NormalizedModelSpec[] = [
                     { model: "anthropic/claude-sonnet-4" }
                 ]
@@ -276,8 +278,11 @@ describe("multi cli", () => {
                     { streamId }
                 )
                 
-                // With single model, delegates to buildRunCommand which includes session file
-                expect(cmd).toContain("/tmp/workstream-001-test-stream-01.02.03-session.txt")
+                expect(cmd).not.toContain("-session.txt")
+                expect(cmd).not.toContain('$SESSION_ID')
+                expect(cmd).not.toContain("__id=")
+                expect(cmd).not.toContain("opencode session list")
+                expect(cmd).toContain('--title "Test Thread"')
             })
 
             test("includes completion marker write when threadId provided (multiple models)", () => {
@@ -299,7 +304,7 @@ describe("multi cli", () => {
                 expect(cmd).toContain("/tmp/workstream-001-test-stream-02.01.01-complete.txt")
             })
 
-            test("includes session file write when threadId provided (multiple models)", () => {
+            test("does not include legacy thread session-discovery commands when threadId provided (multiple models)", () => {
                 const models: NormalizedModelSpec[] = [
                     { model: "anthropic/claude-sonnet-4" },
                     { model: "google/gemini-pro" }
@@ -314,8 +319,11 @@ describe("multi cli", () => {
                     { streamId }
                 )
                 
-                // With multiple models, should include session file write
-                expect(cmd).toContain("/tmp/workstream-001-test-stream-02.01.01-session.txt")
+                expect(cmd).not.toContain("-session.txt")
+                expect(cmd).not.toContain('$SESSION_ID')
+                expect(cmd).not.toContain("__id=")
+                expect(cmd).not.toContain("opencode session list")
+                expect(cmd).toContain('TITLE="Test Thread"')
             })
 
             test("does not include marker write when threadId not provided", () => {

@@ -402,8 +402,6 @@ describe("supervise", () => {
       ],
     })
 
-    writeFileSync(getSessionFilePath(workspace.streamId, "01.01.01"), "canonical-opencode-session\n")
-
     const fakeRuntime = join(workspace.repoRoot, "fake-bun-canonical-fallback")
     writeFileSync(fakeRuntime, "#!/bin/sh\nexit 0\n", { mode: 0o755 })
     process.execPath = fakeRuntime
@@ -1112,8 +1110,6 @@ describe("supervise", () => {
       "completed",
       "Completed after the original caller stopped waiting.",
     )
-    writeFileSync(getSessionFilePath(workspace.streamId, "01.01.01"), "timeout-opencode-session\n")
-
     const { stdout: resumedStdout } = await captureCliOutput(async () => {
       await superviseMain([
         "bun",
@@ -1358,8 +1354,6 @@ describe("supervise", () => {
         },
       ],
     })
-    writeFileSync(getSessionFilePath(workspace.streamId, "01.01.01"), "interrupted-opencode-session\n")
-
     const startedAt = new Date().toISOString()
     mkdirSync(join(workspace.repoRoot, "work", workspace.streamId, "batch-status"), {
       recursive: true,

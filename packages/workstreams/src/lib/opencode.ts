@@ -110,11 +110,11 @@ export function getCompletionMarkerPath(streamId: string, threadId: string): str
 }
 
 /**
- * Get the session file path for storing the opencode session ID
- * Used to capture the actual opencode session ID for workstream tracking
+ * Get the legacy session file path for a thread.
+ * Retained so reset/finalization flows can clean up obsolete temp artifacts safely.
  * 
  * @param threadId - Thread ID (e.g., "01.01.02")
- * @returns Path to the session ID file
+ * @returns Path to the legacy session ID file
  */
 export function getSessionFilePath(streamId: string, threadId: string): string {
   return `/tmp/workstream-${streamId}-${threadId}-session.txt`
@@ -203,15 +203,13 @@ printf '{"status":"%s","exitCode":%s}\n' "$RESULT_STATUS" "${shellExitVarWithDef
 }
 
 /**
- * Build the opencode run command with --title flag and session capture logic
- * Wrapped in sh -c to properly handle piped commands in tmux
+ * Build the opencode run command for a workstream thread.
+ * Wrapped in sh -c to properly handle piped commands in tmux.
  *
  * The command:
- * 1. Generates a unique tracking ID
- * 2. Runs opencode with a title containing the tracking ID
- * 3. Writes a completion marker file to signal first command done (for notification timing)
- * 4. After completion, searches for the session by tracking ID
- * 5. Writes the session ID to a temp file for workstream tracking (if threadId provided)
+ * 1. Runs opencode with the provided title
+ * 2. Writes result metadata (if threadId provided)
+ * 3. Writes a completion marker file (if threadId provided)
  * 
  * @param threadId - Optional thread ID for completion marker (e.g., "01.01.02")
  */
@@ -238,46 +236,22 @@ export function buildRunCommand(
     ? `\necho "done" > "${getCompletionMarkerPath(options.streamId, threadId)}"`
     : ""
 
-  // Build session file write command if threadId provided
-  const sessionFilePath = threadId && options.streamId
-    ? getSessionFilePath(options.streamId, threadId)
-    : ""
-  const writeSessionCmd = threadId && options.streamId
-    ? `\n    echo "$SESSION_ID" > "${sessionFilePath}"`
-    : ""
   const resultWriteCmd = buildResultWriteCommand(options.streamId, threadId, "RUN_EXIT")
   const commandPrefix = buildCommandPrefix(options)
 
   // Build a shell script that:
-  // 1. Generates a unique tracking ID (16 chars from nanosecond timestamp)
-  // 2. Runs opencode run with the title containing the tracking ID
+  // 1. Runs opencode with the provided title
+  // 2. Writes result metadata (if threadId provided)
   // 3. Writes completion marker file (if threadId provided)
-  // 4. After completion, searches for the session by tracking ID using jq
-  // 5. Writes the session ID to a temp file for workstream tracking (if threadId provided)
   return `${commandPrefix}sh -c '
-TRACK_ID=$(date +%s%N | head -c 16)
-TITLE="${escapedTitle}__id=$TRACK_ID"
 RUN_EXIT=0
 echo "════════════════════════════════════════"
 echo "Thread: ${escapedTitle}"
 echo "Model: ${model}${variant ? ` (${variant})` : ""}"
 echo "════════════════════════════════════════"
 echo ""
-cat "${escapedPath}" | opencode run --port ${port} --model "${model}"${variantFlag} --title "$TITLE"
+cat "${escapedPath}" | opencode run --port ${port} --model "${model}"${variantFlag} --title "${escapedTitle}"
 RUN_EXIT=$?
-echo ""
-echo "Thread finished. Looking for session to capture..."
-SESSION_ID=""
-if command -v jq >/dev/null 2>&1; then
-  SESSION_ID=$(opencode session list --max-count 20 --format json 2>/dev/null | jq -r ".[] | select(.title | contains(\\"__id=$TRACK_ID\\")) | .id" | head -1)
-  if [ -n "$SESSION_ID" ]; then${writeSessionCmd}
-    echo "Session found: $SESSION_ID"
-  else
-    echo "Session not found."
-  fi
-else
-  echo "jq not found - install jq to capture opencode session IDs"
-fi
 ${resultWriteCmd}
 ${completionMarkerCmd}
 exit $RUN_EXIT
@@ -295,7 +269,6 @@ const EARLY_FAILURE_THRESHOLD_SECONDS = 10
  * Retry logic:
  * - Only retries if opencode exits within EARLY_FAILURE_THRESHOLD_SECONDS (early failure)
  * - Tries each model in order until one succeeds or runs past the threshold
- * - Session capture logic is NOT wrapped in retry
  * - Writes completion marker file after first command finishes (if threadId provided)
  *
  * @param threadId - Optional thread ID for completion marker (e.g., "01.01.02")
@@ -382,21 +355,12 @@ export function buildRetryRunCommand(
     ? `echo "done" > "${getCompletionMarkerPath(options.streamId, threadId)}"`
     : ""
 
-  // Build session file write command if threadId provided
-  const sessionFilePath = threadId && options.streamId
-    ? getSessionFilePath(options.streamId, threadId)
-    : ""
-  const writeSessionCmd = threadId && options.streamId
-    ? `\n    echo "$SESSION_ID" > "${sessionFilePath}"`
-    : ""
   const resultWriteCmd = buildResultWriteCommand(options.streamId, threadId, "FINAL_EXIT")
   const commandPrefix = buildCommandPrefix(options)
 
   return `${commandPrefix}sh -c '
-TRACK_ID=$(date +%s%N | head -c 16)
-TITLE="${escapedTitle}__id=$TRACK_ID"
 FINAL_EXIT=""
-SESSION_ID=""
+TITLE="${escapedTitle}"
 echo "════════════════════════════════════════"
 echo "Thread: ${escapedTitle}"
 echo "Models: ${modelList}"
@@ -405,18 +369,6 @@ echo ""
 ${modelAttempts}
 if [ -z "$FINAL_EXIT" ]; then
   FINAL_EXIT=1
-fi
-echo ""
-echo "Thread finished. Looking for session to capture..."
-if command -v jq >/dev/null 2>&1; then
-  SESSION_ID=$(opencode session list --max-count 20 --format json 2>/dev/null | jq -r ".[] | select(.title | contains(\\"__id=$TRACK_ID\\")) | .id" | head -1)
-  if [ -n "$SESSION_ID" ]; then${writeSessionCmd}
-    echo "Session found: $SESSION_ID"
-  else
-    echo "Session not found."
-  fi
-else
-  echo "jq not found - install jq to capture opencode session IDs"
 fi
 ${resultWriteCmd}
 ${completionMarkerCmd}

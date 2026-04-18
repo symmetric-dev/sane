@@ -1,7 +1,7 @@
 /**
  * Marker Polling
  *
- * Handles polling for completion marker files and cleanup of session files.
+ * Handles polling for completion marker files and cleanup of legacy temp artifacts.
  * Used by the multi command to track thread completion and trigger notifications.
  */
 
@@ -63,8 +63,8 @@ export function cleanupCompletionMarkers(streamId: string, threadIds: string[]):
 }
 
 /**
- * Clean up session ID files for all threads
- * Called when batch completes to remove /tmp/workstream-*-session.txt files
+ * Clean up legacy session ID files for all threads.
+ * Called when batch completes to remove obsolete /tmp/workstream-*-session.txt files.
  */
 export function cleanupSessionFiles(streamId: string, threadIds: string[]): number {
   let removed = 0

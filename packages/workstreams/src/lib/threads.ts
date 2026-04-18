@@ -556,7 +556,7 @@ export function getLastSessionForThread(
 /**
  * Get the opencode session ID for a thread
  *
- * This is the session ID captured from opencode after a multi run,
+ * This is persisted runtime metadata for the thread's outermost opencode session,
  * which can be used for review/debug evidence or external inspection.
  *
  * @param repoRoot - Repository root path

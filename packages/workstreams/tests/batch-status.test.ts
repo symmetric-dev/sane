@@ -184,7 +184,6 @@ describe("batch status", () => {
       "session-1",
     )
 
-    writeFileSync(getSessionFilePath(streamId, "01.01.01"), "opencode-session-123\n")
     writeFileSync(getCompletionMarkerPath(streamId, "01.01.01"), "done\n")
     writeFileSync(getCompletionMarkerPath(streamId, "01.01.02"), "done\n")
 
@@ -200,10 +199,9 @@ describe("batch status", () => {
     const thread = getThreadMetadata(repoRoot, streamId, "01.01.01")
     expect(thread?.currentSessionId).toBeUndefined()
     expect(thread?.sessions.at(-1)?.status).toBe("completed")
-    expect(thread?.opencodeSessionId).toBe("opencode-session-123")
   })
 
-  test("syncBatchStatus retries canonical artifact capture while marker remains", async () => {
+  test("syncBatchStatus preserves completion timestamps without legacy session recapture", async () => {
     startThreadSession(
       repoRoot,
       streamId,
@@ -248,8 +246,6 @@ describe("batch status", () => {
     }
     writeBatchStatus(repoRoot, streamId, seeded)
 
-    writeFileSync(getSessionFilePath(streamId, "01.01.01"), "late-session-123\n")
-
     const secondPass = await syncBatchStatus({
       repoRoot,
       streamId,
@@ -257,13 +253,12 @@ describe("batch status", () => {
     })
 
     expect(secondPass.status).toBe("running")
-    expect(secondPass.threads[0]?.opencodeSessionId).toBe("late-session-123")
-    expect(getThreadMetadata(repoRoot, streamId, "01.01.01")?.opencodeSessionId).toBe(
-      "late-session-123",
-    )
+    expect(secondPass.threads[0]?.markerDetectedAt).toBeTruthy()
+    expect(secondPass.threads[0]?.completedAt).toBeTruthy()
+    expect(getThreadMetadata(repoRoot, streamId, "01.01.01")?.opencodeSessionId).toBeUndefined()
   })
 
-  test("syncBatchStatus reconciles completed threads from canonical task state when tmux is gone and artifacts are incomplete", async () => {
+  test("syncBatchStatus reconciles completed threads from canonical task state when tmux is gone and legacy artifacts are incomplete", async () => {
     const run = await resetBatchStatusRun({
       repoRoot,
       streamId,
@@ -293,8 +288,6 @@ describe("batch status", () => {
       "session-canonical-2",
     )
 
-    writeFileSync(getSessionFilePath(streamId, "01.01.01"), "recovered-session-1\n")
-
     const canonicallyCompleted = readTasksFile(repoRoot, streamId)!
     canonicallyCompleted.tasks = canonicallyCompleted.tasks.map((task) => ({
       ...task,
@@ -302,7 +295,6 @@ describe("batch status", () => {
       updated_at: new Date().toISOString(),
     }))
     writeBatchStatus(repoRoot, streamId, run)
-    writeFileSync(getSessionFilePath(streamId, "01.01.01"), "recovered-session-1\n")
     writeTasksFile(repoRoot, streamId, canonicallyCompleted)
 
     const status = await syncBatchStatus({
@@ -322,7 +314,7 @@ describe("batch status", () => {
     expect(threadTwo?.currentSessionId).toBeUndefined()
     expect(threadOne?.sessions.at(-1)?.status).toBe("completed")
     expect(threadTwo?.sessions.at(-1)?.status).toBe("completed")
-    expect(threadOne?.opencodeSessionId).toBe("recovered-session-1")
+    expect(threadOne?.opencodeSessionId).toBeUndefined()
   })
 
   test("waitForBatchStatus does not false-positive completed while canonical tasks remain incomplete", async () => {
@@ -645,8 +637,6 @@ describe("batch status", () => {
     })
 
     setTimeout(() => {
-      writeFileSync(getSessionFilePath(streamId, "01.01.01"), "async-session-1\n")
-      writeFileSync(getSessionFilePath(streamId, "01.01.02"), "async-session-2\n")
       writeFileSync(getCompletionMarkerPath(streamId, "01.01.01"), "done\n")
       writeFileSync(getCompletionMarkerPath(streamId, "01.01.02"), "done\n")
     }, 100)
@@ -669,8 +659,8 @@ describe("batch status", () => {
     expect(threadTwo?.currentSessionId).toBeUndefined()
     expect(threadOne?.sessions.at(-1)?.status).toBe("completed")
     expect(threadTwo?.sessions.at(-1)?.status).toBe("completed")
-    expect(threadOne?.opencodeSessionId).toBe("async-session-1")
-    expect(threadTwo?.opencodeSessionId).toBe("async-session-2")
+    expect(threadOne?.opencodeSessionId).toBeUndefined()
+    expect(threadTwo?.opencodeSessionId).toBeUndefined()
   })
 
   test("waitForBatchStatus throws on timeout and keeps the latest persisted non-terminal state", async () => {
@@ -723,8 +713,6 @@ describe("batch status", () => {
     )
 
     setTimeout(() => {
-      writeFileSync(getSessionFilePath(streamId, "01.01.01"), "cli-session-1\n")
-      writeFileSync(getSessionFilePath(streamId, "01.01.02"), "cli-session-2\n")
       writeFileSync(getCompletionMarkerPath(streamId, "01.01.01"), "done\n")
       writeFileSync(getCompletionMarkerPath(streamId, "01.01.02"), "done\n")
     }, 25)

@@ -7,11 +7,9 @@ import {
 } from "./marker-polling.ts"
 import {
   getRunResultPath,
-  getSessionFilePath,
   getCompletionMarkerPath,
 } from "./opencode.ts"
 import { completeMultipleSessionsLocked } from "./tasks.ts"
-import { updateThreadMetadataLocked } from "./threads.ts"
 import { getSessionPaneStatuses, sessionExists } from "./tmux.ts"
 import type { ThreadSessionMap } from "./types.ts"
 
@@ -163,56 +161,6 @@ function collectCompletions(
   return { completions, runningThreadIds, sessionStillExists }
 }
 
-async function captureArtifacts(
-  repoRoot: string,
-  streamId: string,
-  completedMappings: ThreadSessionMap[],
-  verbose: boolean,
-): Promise<void> {
-  if (completedMappings.length === 0) {
-    return
-  }
-
-  if (verbose) {
-    console.log("\nCapturing opencode session IDs...")
-  }
-
-  for (const mapping of completedMappings) {
-    const sessionFilePath = getSessionFilePath(streamId, mapping.threadId)
-
-    const updateData: {
-      opencodeSessionId?: string
-    } = {}
-
-    if (existsSync(sessionFilePath)) {
-      try {
-        const opencodeSessionId = readFileSync(sessionFilePath, "utf-8").trim()
-        if (opencodeSessionId) {
-          updateData.opencodeSessionId = opencodeSessionId
-        }
-      } catch (error) {
-        if (verbose) {
-          console.log(`  Thread ${mapping.threadId}: failed to read session file (${(error as Error).message})`)
-        }
-      }
-    }
-
-    if (updateData.opencodeSessionId) {
-      await updateThreadMetadataLocked(repoRoot, streamId, mapping.threadId, updateData)
-    }
-
-    if (updateData.opencodeSessionId) {
-      if (verbose) {
-        console.log(`  Thread ${mapping.threadId}: captured working session ${updateData.opencodeSessionId}`)
-      }
-    } else {
-      if (verbose) {
-        console.log(`  Thread ${mapping.threadId}: no session file found`)
-      }
-    }
-  }
-}
-
 export async function applyFinalizationCompletions(options: {
   repoRoot: string
   streamId: string
@@ -257,16 +205,6 @@ export async function applyFinalizationCompletions(options: {
   const completedThreadIds = Array.from(
     new Set(completions.map((completion) => completion.threadId)),
   )
-  const completedMappings = completions.map(({ taskId, threadId, sessionId }) => ({
-    taskId,
-    threadId,
-    sessionId,
-    paneId: "",
-    windowIndex: -1,
-  }))
-
-  await captureArtifacts(repoRoot, streamId, completedMappings, verbose)
-
   return {
     completedThreadIds,
     cleanup: {

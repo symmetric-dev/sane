@@ -8,7 +8,6 @@ import {
 import { startMultipleSessionsLocked, writeTasksFile } from "../src/lib/tasks"
 import {
   getLastSessionForThread,
-  getOpencodeSessionId,
 } from "../src/lib/threads"
 import type { TasksFile, ThreadSessionMap } from "../src/lib/types"
 import { createTestWorkstream, cleanupTestWorkstream, type TestWorkspace } from "./helpers"
@@ -57,7 +56,7 @@ describe("multi finalization", () => {
     cleanupTestWorkstream(workspace)
   })
 
-  test("finalizes completed headless threads from result files", async () => {
+  test("finalizes completed headless threads from result files without recapturing legacy session artifacts", async () => {
     await startMultipleSessionsLocked(workspace.repoRoot, workspace.streamId, [
       {
         taskId: "01.01.01.01",
@@ -71,10 +70,7 @@ describe("multi finalization", () => {
       getRunResultPath(workspace.streamId, "01.01.01"),
       JSON.stringify({ status: "completed", exitCode: 0 }),
     )
-    writeFileSync(
-      getSessionFilePath(workspace.streamId, "01.01.01"),
-      "opencode-session-123\n",
-    )
+    writeFileSync(getSessionFilePath(workspace.streamId, "01.01.01"), "legacy-session-artifact\n")
 
     const threadSessionMap: ThreadSessionMap[] = [
       {
@@ -100,7 +96,6 @@ describe("multi finalization", () => {
     expect(result.exitCode).toBe(0)
 
     expect(getLastSessionForThread(workspace.repoRoot, workspace.streamId, "01.01.01")?.status).toBe("completed")
-    expect(getOpencodeSessionId(workspace.repoRoot, workspace.streamId, "01.01.01")).toBe("opencode-session-123")
 
     expect(existsSync(getRunResultPath(workspace.streamId, "01.01.01"))).toBe(false)
     expect(existsSync(getSessionFilePath(workspace.streamId, "01.01.01"))).toBe(false)

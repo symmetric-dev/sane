@@ -23,12 +23,10 @@ import { parseBatchId } from "./cli-utils.ts"
 import {
   getCompletionMarkerPath,
   getRunResultPath,
-  getSessionFilePath,
 } from "./opencode.ts"
 import {
   getLastSessionForThread,
   getThreadMetadata,
-  updateThreadMetadataLocked,
 } from "./threads.ts"
 import { applyFinalizationCompletions, type FinalizationCompletion } from "./multi-finalization.ts"
 import { sessionExists } from "./tmux.ts"
@@ -98,49 +96,26 @@ function getBatchThreadSeeds(
   )
 }
 
-async function finalizeCompletedThreadArtifacts(
-  repoRoot: string,
-  streamId: string,
-  threadId: string,
-  markerDetectedAt: string,
-): Promise<Partial<BatchStatusThread>> {
-  const updates: Partial<BatchStatusThread> = {
+function finalizeCompletedThreadArtifacts(markerDetectedAt: string): Partial<BatchStatusThread> {
+  return {
     markerDetectedAt,
     completedAt: markerDetectedAt,
   }
-
-  const sessionFilePath = getSessionFilePath(streamId, threadId)
-  if (existsSync(sessionFilePath)) {
-    const opencodeSessionId = readFileSync(sessionFilePath, "utf-8").trim()
-    if (opencodeSessionId) {
-      updates.opencodeSessionId = opencodeSessionId
-      await updateThreadMetadataLocked(repoRoot, streamId, threadId, {
-        opencodeSessionId,
-      })
-    }
-  }
-
-  return updates
 }
 
 function shouldRefreshCompletedThreadArtifacts(args: {
-  streamId: string
-  threadId: string
-  thread: BatchStatusThread
   markerExists: boolean
+  markerDetectedAt?: string
 }): boolean {
   if (!args.markerExists) {
     return false
   }
 
-  if (!args.thread.markerDetectedAt) {
+  if (!args.markerDetectedAt) {
     return true
   }
 
-  return (
-    !args.thread.opencodeSessionId &&
-    existsSync(getSessionFilePath(args.streamId, args.threadId))
-  )
+  return false
 }
 
 interface StoredRunResult {
@@ -756,19 +731,12 @@ export async function syncBatchStatus(
 
     if (
       shouldRefreshCompletedThreadArtifacts({
-        streamId,
-        threadId: seed.threadId,
-        thread,
         markerExists,
+        markerDetectedAt: thread.markerDetectedAt,
       })
     ) {
       const markerDetectedAt = thread.markerDetectedAt ?? now
-      const artifactUpdates = await finalizeCompletedThreadArtifacts(
-        repoRoot,
-        streamId,
-        seed.threadId,
-        markerDetectedAt,
-      )
+      const artifactUpdates = finalizeCompletedThreadArtifacts(markerDetectedAt)
       thread = {
         ...thread,
         ...artifactUpdates,
