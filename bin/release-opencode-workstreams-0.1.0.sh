@@ -30,8 +30,11 @@ fi
 
 echo "🔎 Verifying package before tagging..."
 bun install
-bun run typecheck --cwd "$PACKAGE_DIR"
-bun run build --cwd "$PACKAGE_DIR"
+(
+  cd "$PACKAGE_DIR"
+  bun run typecheck
+  bun run build
+)
 
 git tag "$TAG"
 echo "✅ Created tag: $TAG"
