@@ -26,6 +26,10 @@ jobs:
         run: bun run build
         working-directory: packages/workstreams
 
+      - name: Typecheck
+        run: bun run typecheck
+        working-directory: packages/workstreams
+
       # Trusted publishing requires npm 11.5.1+
       # Node 24 ships with npm 11.x
       - uses: actions/setup-node@v4

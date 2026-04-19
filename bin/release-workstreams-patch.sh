@@ -1,28 +1,48 @@
 #!/bin/bash
-# Release a patch version of @agenv/workstreams
-# Usage: ./scripts/release-workstreams-patch.sh
 
-set -e
+set -euo pipefail
 
-cd "$(dirname "$0")/../packages/workstreams"
+ROOT_DIR="$(dirname "$0")/.."
+PACKAGE_DIR="$ROOT_DIR/packages/workstreams"
+
+cd "$ROOT_DIR"
 
 echo "📦 Releasing @agenv/workstreams patch version..."
 
-# Bump version and create git tag
+if ! git diff --quiet || ! git diff --cached --quiet; then
+  echo "❌ Working tree is not clean. Commit or stash changes before releasing."
+  exit 1
+fi
+
+echo "🔎 Verifying package before version bump..."
+(
+  cd "$PACKAGE_DIR"
+  bun run build
+  bun run typecheck
+)
+
+cd "$PACKAGE_DIR"
 VERSION=$(bun pm version patch --no-git-tag-version | tail -1)
 VERSION=${VERSION#v}
+TAG="workstreams-v$VERSION"
+
+if git rev-parse "$TAG" >/dev/null 2>&1; then
+  echo "❌ Tag already exists: $TAG"
+  exit 1
+fi
+
 echo "✅ Bumped to version: $VERSION"
 
-# Commit the version change
 git add package.json
-git commit -m "chore(workstreams): release v$VERSION"
+if ! git diff --cached --quiet; then
+  git commit -m "chore(workstreams): release v$VERSION"
+else
+  echo "ℹ️ No package.json changes to commit."
+fi
 
-# Create and push tag
-TAG="workstreams-v$VERSION"
 git tag "$TAG"
 echo "✅ Created tag: $TAG"
 
-# Push commit and tag
 git push origin main
 git push origin "$TAG"
 
