@@ -1,0 +1,61 @@
+{
+  "name": "@agenv/opencode-workstreams",
+  "version": "0.1.0",
+  "description": "OpenCode plugin for AgENV workstream tools",
+  "main": "./dist/src/index.js",
+  "module": "./dist/src/index.js",
+  "types": "./dist/src/index.d.ts",
+  "type": "module",
+  "files": [
+    "dist/",
+    "README.md"
+  ],
+  "exports": {
+    ".": {
+      "types": "./dist/src/index.d.ts",
+      "import": "./dist/src/index.js"
+    },
+    "./tools/workstream": {
+      "types": "./dist/src/tools/workstream.d.ts",
+      "import": "./dist/src/tools/workstream.js"
+    }
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/AlbertoV5/agenv.git",
+    "directory": "packages/opencode-workstreams"
+  },
+  "homepage": "https://github.com/AlbertoV5/agenv/tree/main/packages/opencode-workstreams#readme",
+  "bugs": {
+    "url": "https://github.com/AlbertoV5/agenv/issues"
+  },
+  "license": "MIT",
+  "keywords": [
+    "agenv",
+    "opencode",
+    "plugin",
+    "workstream",
+    "tools"
+  ],
+  "publishConfig": {
+    "access": "public"
+  },
+  "scripts": {
+    "build": "rm -rf dist && bun ./build.ts",
+    "typecheck": "tsc --noEmit",
+    "prepublishOnly": "bun run build && bun run typecheck"
+  },
+  "dependencies": {
+    "@agenv/workstreams": "^0.6.1",
+    "@opencode-ai/plugin": "^1.2.27"
+  },
+  "devDependencies": {
+    "@types/bun": "^1.3.6"
+  },
+  "peerDependencies": {
+    "typescript": "^5"
+  },
+  "engines": {
+    "bun": ">=1.3.0"
+  }
+}

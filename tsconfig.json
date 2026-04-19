@@ -1,5 +1,15 @@
 {
   "compilerOptions": {
+    "baseUrl": ".",
+    "paths": {
+      "@agenv/workstreams": ["packages/workstreams/src/index.ts"],
+      "@agenv/workstreams/tool-runtime": ["packages/workstreams/src/tool-runtime.ts"],
+      "@agenv/workstreams/types": ["packages/workstreams/src/lib/types.ts"],
+      "@agenv/workstreams/internal/dashboard-contracts": [
+        "packages/workstreams/src/internal/dashboard-contracts.ts"
+      ],
+      "@agenv/workstreams/internal/server": ["packages/workstreams/src/internal/server.ts"]
+    },
     // Environment setup & latest features
     "lib": ["ESNext"],
     "target": "ESNext",

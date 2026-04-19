@@ -1,0 +1,41 @@
+name: Publish @agenv/opencode-workstreams
+
+on:
+  push:
+    tags:
+      - 'opencode-workstreams-v*'
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
+
+      - name: Install dependencies
+        run: bun install
+
+      - name: Typecheck package
+        run: bun run typecheck
+        working-directory: packages/opencode-workstreams
+
+      - name: Build package
+        run: bun run build
+        working-directory: packages/opencode-workstreams
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+          registry-url: 'https://registry.npmjs.org'
+
+      - name: Publish to npm
+        run: npm publish --access public
+        working-directory: packages/opencode-workstreams
+        env:
+          NPM_CONFIG_PROVENANCE: false

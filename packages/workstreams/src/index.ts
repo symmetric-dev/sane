@@ -170,6 +170,7 @@ export {
   writeTasksFile,
   getTaskById,
   getTasks,
+  getTasksByThread,
   updateTaskStatus,
   addTasks,
   getTaskCounts,
@@ -182,6 +183,12 @@ export {
   type GroupedByStageThread,
   type GroupedByStageBatchThread,
 } from "./lib/tasks.ts"
+
+// Thread runtime metadata
+export {
+  getThreadMetadata,
+  updateThreadMetadataLocked,
+} from "./lib/threads.ts"
 
 // PLAN.md parsing
 export {

@@ -603,7 +603,7 @@ export const finalize_workstream_supervision = Object.assign(
         .describe("Optional final report text to persist before sending it to the user.")
         .optional(),
     },
-  async execute(
+    async execute(
       args: {
         status: SupervisionTerminalStatus
         streamId?: string
@@ -709,7 +709,7 @@ export const launch_supervision_branch = Object.assign(
         .describe("Disable notification sounds during batch execution.")
         .optional(),
     },
-  async execute(
+    async execute(
       args: {
         streamId?: string
         scope?: string
@@ -728,6 +728,16 @@ export const launch_supervision_branch = Object.assign(
     },
   },
 )
+
+export const workstreamTools = {
+  link_planning_session,
+  link_thread_session,
+  current_workstream,
+  finalize_workstream_supervision,
+  reconcile_workstream_supervision,
+  tool_runtime_info,
+  launch_supervision_branch,
+}
 
 export type { LaunchSupervisionBranchDeps }
 export type { SupervisionTerminalStatus }

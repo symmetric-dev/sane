@@ -1,0 +1,12 @@
+{
+  "extends": "../../tsconfig.json",
+  "compilerOptions": {
+    "baseUrl": ".",
+    "paths": {
+      "@agenv/workstreams": ["../workstreams/src/index.ts"],
+      "@agenv/workstreams/tool-runtime": ["../workstreams/src/tool-runtime.ts"]
+    }
+  },
+  "include": ["src/**/*", "types/**/*.d.ts"],
+  "exclude": ["dist", "node_modules"]
+}
