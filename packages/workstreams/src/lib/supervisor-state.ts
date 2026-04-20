@@ -14,13 +14,13 @@ import type {
   SupervisorStageStop,
   SupervisorStateFile,
 } from "./types.ts"
-import { isTerminalBatchStatus, readBatchStatus } from "./batch-status.ts"
+import { isTerminalBatchStatus } from "./batch-status.ts"
+import { getStructuredStorageAdapter } from "./storage-adapter.ts"
+import { replaceStructuredSupervisionState } from "./structured-storage.ts"
 import {
   getTasksFilePath,
-  modifyRuntimeState,
   mutateRuntimeState,
   normalizeSupervisorState,
-  normalizeRuntimeState,
   readTasksFile,
 } from "./tasks.ts"
 
@@ -179,6 +179,31 @@ function normalizeCurrentBranchSupervision(
 
 export const SUPERVISOR_STATE_VERSION = "1.0.0"
 
+function orderSupervisorState(
+  supervisorState: SupervisorStateFile,
+  lastUpdated: string,
+): SupervisorStateFile {
+  return {
+    version: supervisorState.version,
+    stream_id: supervisorState.stream_id,
+    last_updated: lastUpdated,
+    ...(supervisorState.active_run_id
+      ? { active_run_id: supervisorState.active_run_id }
+      : {}),
+    ...(supervisorState.current_branch_supervision
+      ? { current_branch_supervision: supervisorState.current_branch_supervision }
+      : {}),
+    runs: supervisorState.runs,
+    checkpoint_pointers: supervisorState.checkpoint_pointers,
+    branch_sessions: supervisorState.branch_sessions,
+    reviewed_batches: supervisorState.reviewed_batches,
+    issue_summaries: supervisorState.issue_summaries,
+    fix_cycles: supervisorState.fix_cycles,
+    escalations: supervisorState.escalations,
+    stage_stops: supervisorState.stage_stops,
+  }
+}
+
 /**
  * Get the canonical tasks.json path used by supervisor-state compatibility helpers.
  */
@@ -302,26 +327,7 @@ export function saveSupervisorState(
 ): void {
   const lastUpdated = new Date().toISOString()
   supervisorState.last_updated = lastUpdated
-
-  const ordered: SupervisorStateFile = {
-    version: supervisorState.version,
-    stream_id: supervisorState.stream_id,
-    last_updated: lastUpdated,
-    ...(supervisorState.active_run_id
-      ? { active_run_id: supervisorState.active_run_id }
-      : {}),
-    ...(supervisorState.current_branch_supervision
-      ? { current_branch_supervision: supervisorState.current_branch_supervision }
-      : {}),
-    runs: supervisorState.runs,
-    checkpoint_pointers: supervisorState.checkpoint_pointers,
-    branch_sessions: supervisorState.branch_sessions,
-    reviewed_batches: supervisorState.reviewed_batches,
-    issue_summaries: supervisorState.issue_summaries,
-    fix_cycles: supervisorState.fix_cycles,
-    escalations: supervisorState.escalations,
-    stage_stops: supervisorState.stage_stops,
-  }
+  const ordered = orderSupervisorState(supervisorState, lastUpdated)
 
   mutateRuntimeState(repoRoot, streamId, (runtimeState) => {
     runtimeState.last_updated = lastUpdated
@@ -337,11 +343,10 @@ export async function modifySupervisorState<T>(
   streamId: string,
   fn: (supervisorState: SupervisorStateFile) => T | Promise<T>,
 ): Promise<T> {
-  return modifyRuntimeState(repoRoot, streamId, async (runtimeState) => {
-    const supervisorState = normalizeSupervisorState(streamId, runtimeState.supervision)
+  return getStructuredStorageAdapter().modifyWorkstreamState(repoRoot, streamId, async (workstreamState) => {
+    const supervisorState = normalizeSupervisorState(streamId, workstreamState.supervision)
     const result = await fn(supervisorState)
-    runtimeState.last_updated = new Date().toISOString()
-    runtimeState.supervision = supervisorState
+    replaceStructuredSupervisionState(workstreamState, supervisorState)
     return result
   })
 }
@@ -594,8 +599,11 @@ export async function reconcileSupervisorRunsLocked(
   repoRoot: string,
   streamId: string,
 ): Promise<string[]> {
-  return modifyRuntimeState(repoRoot, streamId, (runtimeState) => {
-    const supervisorState = normalizeSupervisorState(streamId, runtimeState.supervision)
+  return getStructuredStorageAdapter().modifyWorkstreamState(repoRoot, streamId, (workstreamState) => {
+    const supervisorState = normalizeSupervisorState(streamId, workstreamState.supervision)
+    const batchStatuses = new Map(
+      workstreamState.batchRuns.map((batchStatus) => [batchStatus.batchId, batchStatus] as const),
+    )
     const reconciledRunIds: string[] = []
 
     if (supervisorState.active_run_id) {
@@ -610,7 +618,7 @@ export async function reconcileSupervisorRunsLocked(
         continue
       }
 
-      const batchStatus = runtimeState.batches[run.currentBatchId] ?? null
+      const batchStatus = batchStatuses.get(run.currentBatchId) ?? null
       if (!batchStatus || !isTerminalBatchStatus(batchStatus.status)) {
         continue
       }
@@ -643,8 +651,7 @@ export async function reconcileSupervisorRunsLocked(
       reconciledRunIds.push(run.runId)
     }
 
-    runtimeState.last_updated = new Date().toISOString()
-    runtimeState.supervision = supervisorState
+    replaceStructuredSupervisionState(workstreamState, supervisorState)
     return reconciledRunIds
   })
 }

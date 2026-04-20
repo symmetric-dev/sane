@@ -11,10 +11,25 @@ import { createHash } from "crypto"
 import { existsSync, readFileSync } from "fs"
 import { join } from "path"
 import type { ApprovalStatus, ApprovalMetadata, StreamMetadata, WorkIndex, ConsolidateError } from "./types.ts"
-import { loadIndex, saveIndex, getStream } from "./index.ts"
+import { loadIndex } from "./index.ts"
 import { getWorkDir } from "./repo.ts"
 import { parseStreamDocument } from "./stream-parser.ts"
+import { modifyStructuredWorkstreamStateSync } from "./storage-adapter.ts"
+import {
+  approvalMetadataToStructuredApprovalRecords,
+  replaceStructuredApprovals,
+  structuredApprovalRecordsToApprovalMetadata,
+} from "./structured-storage.ts"
 import { parseTasksMd } from "./tasks-md.ts"
+
+function getIndexedStream(index: WorkIndex, streamIdOrName: string): StreamMetadata {
+  const stream = index.streams.find((s) => s.id === streamIdOrName || s.name === streamIdOrName)
+  if (!stream) {
+    throw new Error(`Workstream "${streamIdOrName}" not found`)
+  }
+
+  return stream
+}
 
 /**
  * Get the path to PLAN.md for a workstream
@@ -171,34 +186,37 @@ export function approveStream(
   approvedBy?: string
 ): StreamMetadata {
   const index = loadIndex(repoRoot)
-  const streamIndex = index.streams.findIndex(
-    (s) => s.id === streamIdOrName || s.name === streamIdOrName
-  )
-
-  if (streamIndex === -1) {
-    throw new Error(`Workstream "${streamIdOrName}" not found`)
-  }
-
-  const stream = index.streams[streamIndex]!
+  const stream = getIndexedStream(index, streamIdOrName)
   const planHash = computePlanHash(repoRoot, stream.id)
 
   if (!planHash) {
     throw new Error(`PLAN.md not found for workstream "${stream.id}"`)
   }
 
-  // Set approval metadata, preserving existing stages and tasks approvals
-  stream.approval = {
-    ...stream.approval,
-    status: "approved",
-    approved_at: new Date().toISOString(),
-    approved_by: approvedBy,
-    plan_hash: planHash,
-  }
+  modifyStructuredWorkstreamStateSync(
+    {
+      repoRoot,
+      streamId: stream.id,
+      touchStreamUpdatedAt: true,
+      writeTasksFileIfMissing: false,
+    },
+    (workstreamState) => {
+      const nextApproval: ApprovalMetadata = {
+        ...stream.approval,
+        ...structuredApprovalRecordsToApprovalMetadata(workstreamState.approvals),
+        status: "approved",
+        approved_at: new Date().toISOString(),
+        approved_by: approvedBy,
+        plan_hash: planHash,
+      }
+      replaceStructuredApprovals(
+        workstreamState,
+        approvalMetadataToStructuredApprovalRecords(stream.id, nextApproval),
+      )
+    },
+  )
 
-  stream.updated_at = new Date().toISOString()
-  saveIndex(repoRoot, index)
-
-  return stream
+  return getIndexedStream(loadIndex(repoRoot), stream.id)
 }
 
 /**
@@ -210,28 +228,31 @@ export function revokeApproval(
   reason?: string
 ): StreamMetadata {
   const index = loadIndex(repoRoot)
-  const streamIndex = index.streams.findIndex(
-    (s) => s.id === streamIdOrName || s.name === streamIdOrName
+  const stream = getIndexedStream(index, streamIdOrName)
+
+  modifyStructuredWorkstreamStateSync(
+    {
+      repoRoot,
+      streamId: stream.id,
+      touchStreamUpdatedAt: true,
+      writeTasksFileIfMissing: false,
+    },
+    (workstreamState) => {
+      const nextApproval: ApprovalMetadata = {
+        ...stream.approval,
+        ...structuredApprovalRecordsToApprovalMetadata(workstreamState.approvals),
+        status: "revoked",
+        revoked_at: new Date().toISOString(),
+        revoked_reason: reason,
+      }
+      replaceStructuredApprovals(
+        workstreamState,
+        approvalMetadataToStructuredApprovalRecords(stream.id, nextApproval),
+      )
+    },
   )
 
-  if (streamIndex === -1) {
-    throw new Error(`Workstream "${streamIdOrName}" not found`)
-  }
-
-  const stream = index.streams[streamIndex]!
-
-  // Preserve existing approval info but update status
-  stream.approval = {
-    ...stream.approval,
-    status: "revoked",
-    revoked_at: new Date().toISOString(),
-    revoked_reason: reason,
-  }
-
-  stream.updated_at = new Date().toISOString()
-  saveIndex(repoRoot, index)
-
-  return stream
+  return getIndexedStream(loadIndex(repoRoot), stream.id)
 }
 
 /**
@@ -389,39 +410,33 @@ export function approveStage(
   approvedBy?: string
 ): StreamMetadata {
   const index = loadIndex(repoRoot)
-  const streamIndex = index.streams.findIndex(
-    (s) => s.id === streamIdOrName || s.name === streamIdOrName
+  const stream = getIndexedStream(index, streamIdOrName)
+
+  modifyStructuredWorkstreamStateSync(
+    {
+      repoRoot,
+      streamId: stream.id,
+      touchStreamUpdatedAt: true,
+      writeTasksFileIfMissing: false,
+    },
+    (workstreamState) => {
+      const nextApproval = structuredApprovalRecordsToApprovalMetadata(workstreamState.approvals) ?? {
+        status: "draft",
+      }
+      nextApproval.stages = { ...(nextApproval.stages ?? {}) }
+      nextApproval.stages[stageNumber] = {
+        status: "approved",
+        approved_at: new Date().toISOString(),
+        approved_by: approvedBy,
+      }
+      replaceStructuredApprovals(
+        workstreamState,
+        approvalMetadataToStructuredApprovalRecords(stream.id, nextApproval),
+      )
+    },
   )
 
-  if (streamIndex === -1) {
-    throw new Error(`Workstream "${streamIdOrName}" not found`)
-  }
-
-  const stream = index.streams[streamIndex]!
-
-  // Initialize approval object if it doesn't exist
-  if (!stream.approval) {
-    stream.approval = {
-      status: "draft"
-    }
-  }
-
-  // Initialize stages map if it doesn't exist
-  if (!stream.approval.stages) {
-    stream.approval.stages = {}
-  }
-
-  // Set stage approval
-  stream.approval.stages[stageNumber] = {
-    status: "approved",
-    approved_at: new Date().toISOString(),
-    approved_by: approvedBy,
-  }
-
-  stream.updated_at = new Date().toISOString()
-  saveIndex(repoRoot, index)
-
-  return stream
+  return getIndexedStream(loadIndex(repoRoot), stream.id)
 }
 
 /**
@@ -434,32 +449,38 @@ export function revokeStageApproval(
   reason?: string
 ): StreamMetadata {
   const index = loadIndex(repoRoot)
-  const streamIndex = index.streams.findIndex(
-    (s) => s.id === streamIdOrName || s.name === streamIdOrName
-  )
-
-  if (streamIndex === -1) {
-    throw new Error(`Workstream "${streamIdOrName}" not found`)
-  }
-
-  const stream = index.streams[streamIndex]!
+  const stream = getIndexedStream(index, streamIdOrName)
 
   if (!stream.approval?.stages?.[stageNumber]) {
     throw new Error(`Stage ${stageNumber} is not approved, nothing to revoke`)
   }
 
-  // Update status to revoked
-  stream.approval.stages[stageNumber] = {
-    ...stream.approval.stages[stageNumber],
-    status: "revoked",
-    revoked_at: new Date().toISOString(),
-    revoked_reason: reason,
-  }
+  modifyStructuredWorkstreamStateSync(
+    {
+      repoRoot,
+      streamId: stream.id,
+      touchStreamUpdatedAt: true,
+      writeTasksFileIfMissing: false,
+    },
+    (workstreamState) => {
+      const nextApproval = structuredApprovalRecordsToApprovalMetadata(workstreamState.approvals) ?? {
+        status: "draft",
+      }
+      nextApproval.stages = { ...(nextApproval.stages ?? {}) }
+      nextApproval.stages[stageNumber] = {
+        ...nextApproval.stages[stageNumber],
+        status: "revoked",
+        revoked_at: new Date().toISOString(),
+        revoked_reason: reason,
+      }
+      replaceStructuredApprovals(
+        workstreamState,
+        approvalMetadataToStructuredApprovalRecords(stream.id, nextApproval),
+      )
+    },
+  )
 
-  stream.updated_at = new Date().toISOString()
-  saveIndex(repoRoot, index)
-
-  return stream
+  return getIndexedStream(loadIndex(repoRoot), stream.id)
 }
 
 /**
@@ -473,27 +494,36 @@ export function storeStageCommitSha(
   commitSha: string
 ): StreamMetadata {
   const index = loadIndex(repoRoot)
-  const streamIndex = index.streams.findIndex(
-    (s) => s.id === streamIdOrName || s.name === streamIdOrName
-  )
-
-  if (streamIndex === -1) {
-    throw new Error(`Workstream "${streamIdOrName}" not found`)
-  }
-
-  const stream = index.streams[streamIndex]!
+  const stream = getIndexedStream(index, streamIdOrName)
 
   if (!stream.approval?.stages?.[stageNumber]) {
     throw new Error(`Stage ${stageNumber} is not approved`)
   }
 
-  // Store the commit SHA
-  stream.approval.stages[stageNumber].commit_sha = commitSha
+  modifyStructuredWorkstreamStateSync(
+    {
+      repoRoot,
+      streamId: stream.id,
+      touchStreamUpdatedAt: true,
+      writeTasksFileIfMissing: false,
+    },
+    (workstreamState) => {
+      const nextApproval = structuredApprovalRecordsToApprovalMetadata(workstreamState.approvals) ?? {
+        status: "draft",
+      }
+      nextApproval.stages = { ...(nextApproval.stages ?? {}) }
+      nextApproval.stages[stageNumber] = {
+        ...nextApproval.stages[stageNumber],
+        commit_sha: commitSha,
+      }
+      replaceStructuredApprovals(
+        workstreamState,
+        approvalMetadataToStructuredApprovalRecords(stream.id, nextApproval),
+      )
+    },
+  )
 
-  stream.updated_at = new Date().toISOString()
-  saveIndex(repoRoot, index)
-
-  return stream
+  return getIndexedStream(loadIndex(repoRoot), stream.id)
 }
 
 // ============================================
@@ -567,15 +597,7 @@ export function approveTasks(
   streamIdOrName: string
 ): StreamMetadata {
   const index = loadIndex(repoRoot)
-  const streamIndex = index.streams.findIndex(
-    (s) => s.id === streamIdOrName || s.name === streamIdOrName
-  )
-
-  if (streamIndex === -1) {
-    throw new Error(`Workstream "${streamIdOrName}" not found`)
-  }
-
-  const stream = index.streams[streamIndex]!
+  const stream = getIndexedStream(index, streamIdOrName)
 
   // Check readiness
   const readyCheck = checkTasksApprovalReady(repoRoot, stream.id)
@@ -583,22 +605,30 @@ export function approveTasks(
     throw new Error(readyCheck.reason!)
   }
 
-  // Initialize approval if needed
-  if (!stream.approval) {
-    stream.approval = { status: "draft" }
-  }
+  modifyStructuredWorkstreamStateSync(
+    {
+      repoRoot,
+      streamId: stream.id,
+      touchStreamUpdatedAt: true,
+      writeTasksFileIfMissing: false,
+    },
+    (workstreamState) => {
+      const nextApproval = structuredApprovalRecordsToApprovalMetadata(workstreamState.approvals) ?? {
+        status: "draft",
+      }
+      nextApproval.tasks = {
+        status: "approved",
+        approved_at: new Date().toISOString(),
+        task_count: readyCheck.taskCount,
+      }
+      replaceStructuredApprovals(
+        workstreamState,
+        approvalMetadataToStructuredApprovalRecords(stream.id, nextApproval),
+      )
+    },
+  )
 
-  // Set tasks approval
-  stream.approval.tasks = {
-    status: "approved",
-    approved_at: new Date().toISOString(),
-    task_count: readyCheck.taskCount,
-  }
-
-  stream.updated_at = new Date().toISOString()
-  saveIndex(repoRoot, index)
-
-  return stream
+  return getIndexedStream(loadIndex(repoRoot), stream.id)
 }
 
 /**
@@ -610,32 +640,32 @@ export function revokeTasksApproval(
   reason?: string
 ): StreamMetadata {
   const index = loadIndex(repoRoot)
-  const streamIndex = index.streams.findIndex(
-    (s) => s.id === streamIdOrName || s.name === streamIdOrName
+  const stream = getIndexedStream(index, streamIdOrName)
+
+  modifyStructuredWorkstreamStateSync(
+    {
+      repoRoot,
+      streamId: stream.id,
+      touchStreamUpdatedAt: true,
+      writeTasksFileIfMissing: false,
+    },
+    (workstreamState) => {
+      const nextApproval = structuredApprovalRecordsToApprovalMetadata(workstreamState.approvals) ?? {
+        status: "draft",
+      }
+      nextApproval.tasks = {
+        status: "revoked",
+        revoked_at: new Date().toISOString(),
+        revoked_reason: reason,
+      }
+      replaceStructuredApprovals(
+        workstreamState,
+        approvalMetadataToStructuredApprovalRecords(stream.id, nextApproval),
+      )
+    },
   )
 
-  if (streamIndex === -1) {
-    throw new Error(`Workstream "${streamIdOrName}" not found`)
-  }
-
-  const stream = index.streams[streamIndex]!
-
-  // Initialize approval if needed
-  if (!stream.approval) {
-    stream.approval = { status: "draft" }
-  }
-
-  // Set tasks approval to revoked
-  stream.approval.tasks = {
-    status: "revoked",
-    revoked_at: new Date().toISOString(),
-    revoked_reason: reason,
-  }
-
-  stream.updated_at = new Date().toISOString()
-  saveIndex(repoRoot, index)
-
-  return stream
+  return getIndexedStream(loadIndex(repoRoot), stream.id)
 }
 
 

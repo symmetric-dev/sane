@@ -6,12 +6,13 @@
 
 
 import type { TaskStatus, StreamMetadata, Task } from "./types.ts"
+import { updateStructuredTaskSync, modifyStructuredWorkstreamStateSync } from "./storage-adapter.ts"
+import { updateStructuredTask } from "./structured-storage.ts"
 import {
-  updateTaskStatus,
   getTaskById,
+  getTasksByThread,
   parseTaskId,
   parseThreadId,
-  updateTasksByThread,
 } from "./tasks.ts"
 
 export interface UpdateTaskArgs {
@@ -54,20 +55,16 @@ export async function updateTask(args: UpdateTaskArgs): Promise<UpdateTaskResult
       `Run "work add-task" to add tasks, or "work validate plan" to check the plan.`,
     )
   }
-  const previousStatus = existingTask.status
-
   // Update the task
-  const updatedTask = updateTaskStatus(
-    args.repoRoot,
-    args.stream.id,
-    args.taskId,
-    {
-      status: args.status,
-      breadcrumb: args.breadcrumb,
-      report: args.report,
-      assigned_agent: args.assigned_agent,
-    },
-  )
+  updateStructuredTaskSync(args.repoRoot, args.stream.id, {
+    taskId: args.taskId,
+    status: args.status,
+    breadcrumb: args.breadcrumb,
+    report: args.report,
+    assignedAgent: args.assigned_agent,
+  })
+
+  const updatedTask = getTaskById(args.repoRoot, args.stream.id, args.taskId)
 
   if (!updatedTask) {
     throw new Error(`Failed to update task "${args.taskId}"`)
@@ -118,25 +115,49 @@ export async function updateThreadTasks(args: UpdateThreadTasksArgs): Promise<Up
   }
 
   // Update all tasks in the thread
-  const updatedTasks = updateTasksByThread(
+  const existingTasks = getTasksByThread(
     args.repoRoot,
     args.stream.id,
     parsed.stage,
     parsed.batch,
     parsed.thread,
-    {
-      status: args.status,
-      breadcrumb: args.breadcrumb,
-      report: args.report,
-      assigned_agent: args.assigned_agent,
-    },
   )
 
-  if (updatedTasks.length === 0) {
+  if (existingTasks.length === 0) {
     throw new Error(
       `No tasks found in thread "${args.threadId}" in workstream "${args.stream.id}".`,
     )
   }
+
+  const updatedAt = new Date().toISOString()
+  modifyStructuredWorkstreamStateSync(
+    { repoRoot: args.repoRoot, streamId: args.stream.id },
+    (workstreamState) => {
+      for (const task of workstreamState.hierarchy.tasks) {
+        if (task.threadId !== args.threadId) {
+          continue
+        }
+
+        updateStructuredTask(workstreamState, {
+          taskId: task.id,
+          status: args.status,
+          breadcrumb: args.breadcrumb,
+          report: args.report,
+          assignedAgent: args.assigned_agent,
+          updatedAt,
+        })
+      }
+    },
+  )
+
+  const updatedTasks = getTasksByThread(
+    args.repoRoot,
+    args.stream.id,
+    parsed.stage,
+    parsed.batch,
+    parsed.thread,
+  )
+
 
   return {
     updated: true,
@@ -150,4 +171,3 @@ export async function updateThreadTasks(args: UpdateThreadTasksArgs): Promise<Up
 
 // Re-export parseTaskId for backwards compatibility
 export { parseTaskId } from "./tasks.ts"
-

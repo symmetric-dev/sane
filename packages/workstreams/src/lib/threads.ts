@@ -13,10 +13,10 @@ import type {
   SessionRecord,
   TasksFile,
 } from "./types.ts"
+import { modifyStructuredWorkstreamStateSync } from "./storage-adapter.ts"
+import { upsertStructuredThreadRuntime } from "./structured-storage.ts"
 import {
   getTasksFilePath,
-  modifyRuntimeState,
-  mutateRuntimeState,
   normalizeRuntimeState,
   readTasksFile,
 } from "./tasks.ts"
@@ -76,9 +76,9 @@ export function saveThreads(
   streamId: string,
   threadsFile: ThreadsJson,
 ): void {
-  mutateRuntimeState(repoRoot, streamId, (runtimeState) => {
-    runtimeState.last_updated = new Date().toISOString()
-    runtimeState.threads = threadsFile.threads
+  mutateThreads(repoRoot, streamId, (mutableThreadsFile) => {
+    mutableThreadsFile.last_updated = new Date().toISOString()
+    mutableThreadsFile.threads = threadsFile.threads
   })
 }
 
@@ -87,16 +87,54 @@ function mutateThreads<T>(
   streamId: string,
   fn: (threadsFile: ThreadsJson) => T,
 ): T {
-  return mutateRuntimeState(repoRoot, streamId, (runtimeState) => {
+  return modifyStructuredWorkstreamStateSync({ repoRoot, streamId }, (workstreamState) => {
     const threadsFile: ThreadsJson = {
       version: THREADS_FILE_VERSION,
       stream_id: streamId,
-      last_updated: runtimeState.last_updated,
-      threads: runtimeState.threads,
+      last_updated: new Date().toISOString(),
+      threads: workstreamState.threadRuntime.map((threadRuntime) => ({
+        threadId: threadRuntime.threadId,
+        sessions: threadRuntime.sessions,
+        ...(workstreamState.hierarchy.threads.find((thread) => thread.id === threadRuntime.threadId)?.promptPath
+          ? {
+              promptPath: workstreamState.hierarchy.threads.find(
+                (thread) => thread.id === threadRuntime.threadId,
+              )?.promptPath,
+            }
+          : {}),
+        ...(threadRuntime.currentSessionId ? { currentSessionId: threadRuntime.currentSessionId } : {}),
+        ...(threadRuntime.opencodeSessionId ? { opencodeSessionId: threadRuntime.opencodeSessionId } : {}),
+        ...(threadRuntime.workingAgentSessionId
+          ? { workingAgentSessionId: threadRuntime.workingAgentSessionId }
+          : {}),
+        ...(threadRuntime.synthesisOutput ? { synthesisOutput: threadRuntime.synthesisOutput } : {}),
+        ...(threadRuntime.synthesis ? { synthesis: threadRuntime.synthesis } : {}),
+      })),
     }
     const result = fn(threadsFile)
-    runtimeState.last_updated = new Date().toISOString()
-    runtimeState.threads = threadsFile.threads
+
+    for (const thread of workstreamState.hierarchy.threads) {
+      const metadata = threadsFile.threads.find((entry) => entry.threadId === thread.id)
+      if (metadata?.promptPath !== undefined) {
+        thread.promptPath = metadata.promptPath
+      }
+    }
+
+    workstreamState.threadRuntime = []
+    for (const thread of threadsFile.threads) {
+      upsertStructuredThreadRuntime(workstreamState, {
+        threadId: thread.threadId,
+        sessions: thread.sessions,
+        ...(thread.currentSessionId ? { currentSessionId: thread.currentSessionId } : {}),
+        ...(thread.opencodeSessionId ? { opencodeSessionId: thread.opencodeSessionId } : {}),
+        ...(thread.workingAgentSessionId
+          ? { workingAgentSessionId: thread.workingAgentSessionId }
+          : {}),
+        ...(thread.synthesisOutput ? { synthesisOutput: thread.synthesisOutput } : {}),
+        ...(thread.synthesis ? { synthesis: thread.synthesis } : {}),
+      })
+    }
+
     return result
   })
 }
@@ -198,37 +236,7 @@ export async function updateThreadMetadataLocked(
   threadId: string,
   data: Partial<Omit<ThreadMetadata, "threadId">>,
 ): Promise<ThreadMetadata> {
-  return modifyRuntimeState(repoRoot, streamId, (runtimeState) => {
-    const threadsFile: ThreadsJson = {
-      version: THREADS_FILE_VERSION,
-      stream_id: streamId,
-      last_updated: runtimeState.last_updated,
-      threads: runtimeState.threads,
-    }
-    const threadIndex = threadsFile.threads.findIndex((t) => t.threadId === threadId)
-    if (threadIndex === -1) {
-      const newThread: ThreadMetadata = {
-        threadId,
-        sessions: data.sessions || [],
-        ...(data.promptPath && { promptPath: data.promptPath }),
-        ...(data.currentSessionId && { currentSessionId: data.currentSessionId }),
-        ...(data.opencodeSessionId && { opencodeSessionId: data.opencodeSessionId }),
-      }
-      threadsFile.threads.push(newThread)
-      runtimeState.last_updated = new Date().toISOString()
-      runtimeState.threads = threadsFile.threads
-      return newThread
-    }
-
-    const thread = threadsFile.threads[threadIndex]!
-    if (data.promptPath !== undefined) thread.promptPath = data.promptPath
-    if (data.sessions !== undefined) thread.sessions = data.sessions
-    if (data.currentSessionId !== undefined) thread.currentSessionId = data.currentSessionId
-    if (data.opencodeSessionId !== undefined) thread.opencodeSessionId = data.opencodeSessionId
-    runtimeState.last_updated = new Date().toISOString()
-    runtimeState.threads = threadsFile.threads
-    return thread
-  })
+  return Promise.resolve(updateThreadMetadata(repoRoot, streamId, threadId, data))
 }
 
 /**
@@ -239,18 +247,7 @@ export async function modifyThreads<T>(
   streamId: string,
   fn: (threadsFile: ThreadsJson) => T
 ): Promise<T> {
-  return modifyRuntimeState(repoRoot, streamId, (runtimeState) => {
-    const threadsFile: ThreadsJson = {
-      version: THREADS_FILE_VERSION,
-      stream_id: streamId,
-      last_updated: runtimeState.last_updated,
-      threads: runtimeState.threads,
-    }
-    const result = fn(threadsFile)
-    runtimeState.last_updated = new Date().toISOString()
-    runtimeState.threads = threadsFile.threads
-    return result
-  })
+  return Promise.resolve(mutateThreads(repoRoot, streamId, fn))
 }
 
 // ============================================

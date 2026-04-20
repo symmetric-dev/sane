@@ -21,7 +21,6 @@ export {
   createFilesystemStructuredStorageAdapter,
   filesystemStructuredStorageAdapter,
   getStructuredStorageAdapter,
-  type StructuredStorageAdapter,
 } from "./lib/storage-adapter.ts"
 
 // Index operations
@@ -146,6 +145,36 @@ export {
   upsertEscalationOutcomeLocked,
   recordStageStopLocked,
 } from "./lib/supervisor-state.ts"
+
+// Structured storage adapter contracts
+export {
+  approvalMetadataToStructuredApprovalRecords,
+  createEmptyStructuredStorageWorkspaceState,
+  createEmptyStructuredStorageWorkstreamState,
+  createStreamMetadataFromStructuredStorageRecord,
+  createStructuredStorageParitySnapshot,
+  createStructuredStorageWorkstreamRecord,
+  replaceStructuredApprovals,
+  replaceStructuredSupervisionState,
+  structuredApprovalRecordsToApprovalMetadata,
+  updateStructuredTask,
+  upsertStructuredBatchRun,
+  upsertStructuredThreadRuntime,
+  type StructuredApprovalRecord,
+  type StructuredApprovalScope,
+  type StructuredBatchRecord,
+  type StructuredStageRecord,
+  type StructuredStorageParitySnapshot,
+  type StructuredStorageStateAdapter,
+  type StructuredStorageWorkspaceState,
+  type StructuredStorageWorkstreamRecord,
+  type StructuredStorageWorkstreamState,
+  type StructuredTaskMutation,
+  type StructuredTaskRecord,
+  type StructuredThreadRecord,
+  type StructuredThreadRuntimeRecord,
+  type StructuredWorkstreamHierarchy,
+} from "./lib/structured-storage.ts"
 
 // Task updates
 export {

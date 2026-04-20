@@ -12,10 +12,15 @@ import {
   getWorkingAgentSessionPath,
 } from "./opencode.ts"
 import { getWorkDir } from "./repo.ts"
-import { modifyTasksFile, normalizeRuntimeState, normalizeSupervisorState } from "./tasks.ts"
+import type {
+  StructuredTaskRecord,
+  StructuredThreadRecord,
+  StructuredThreadRuntimeRecord,
+} from "./structured-storage.ts"
+import { getStructuredStorageAdapter } from "./storage-adapter.ts"
+import { normalizeSupervisorState } from "./tasks.ts"
 import type {
   CurrentBranchSupervisionContext,
-  PersistedBatchStatusFile,
   RootAgentBranchSession,
   SupervisorEscalationRecord,
   SupervisorFixCycle,
@@ -23,8 +28,6 @@ import type {
   SupervisorStateFile,
   SupervisorReviewedBatch,
   SupervisorStageStop,
-  Task,
-  ThreadMetadata,
   ThreadsJson,
 } from "./types.ts"
 
@@ -58,19 +61,15 @@ export interface ResetBatchStateResult {
   }
 }
 
-function isTaskInBatch(task: Task, batchId: string): boolean {
-  return task.id.startsWith(`${batchId}.`)
+function isTaskInBatch(taskId: string, batchId: string): boolean {
+  return taskId.startsWith(`${batchId}.`)
 }
 
-function isThreadInBatch(threadId: string, batchId: string): boolean {
-  return threadId.startsWith(`${batchId}.`)
-}
-
-function collectBatchThreadIds(tasks: Task[], batchId: string): string[] {
+function collectBatchThreadIds(tasks: Array<Pick<StructuredTaskRecord, "id">>, batchId: string): string[] {
   const threadIds = new Set<string>()
 
   for (const task of tasks) {
-    if (!isTaskInBatch(task, batchId)) continue
+    if (!isTaskInBatch(task.id, batchId)) continue
     const parts = task.id.split(".")
     if (parts.length !== 4) continue
     threadIds.add(`${parts[0]}.${parts[1]}.${parts[2]}`)
@@ -79,38 +78,36 @@ function collectBatchThreadIds(tasks: Task[], batchId: string): string[] {
   return [...threadIds].sort((left, right) => left.localeCompare(right, undefined, { numeric: true }))
 }
 
-function clearBatchThreadRuntimeMetadata(thread: ThreadMetadata): {
-  next: ThreadMetadata | null
+function clearBatchThreadRuntimeMetadata(
+  thread: StructuredThreadRuntimeRecord,
+  batchThread?: StructuredThreadRecord,
+): {
+  next: StructuredThreadRuntimeRecord | null
   changed: boolean
 } {
-  const next: ThreadMetadata = {
-    ...thread,
+  const next: StructuredThreadRuntimeRecord = {
+    threadId: thread.threadId,
     sessions: [],
   }
   let changed = thread.sessions.length > 0
 
-  if (next.currentSessionId) {
-    delete next.currentSessionId
+  if (thread.currentSessionId) {
     changed = true
   }
-  if (next.opencodeSessionId) {
-    delete next.opencodeSessionId
+  if (thread.opencodeSessionId) {
     changed = true
   }
-  if (next.workingAgentSessionId) {
-    delete next.workingAgentSessionId
+  if (thread.workingAgentSessionId) {
     changed = true
   }
-  if (next.synthesisOutput) {
-    delete next.synthesisOutput
+  if (thread.synthesisOutput) {
     changed = true
   }
-  if (next.synthesis) {
-    delete next.synthesis
+  if (thread.synthesis) {
     changed = true
   }
 
-  const retainEntry = Boolean(next.promptPath)
+  const retainEntry = Boolean(batchThread?.promptPath)
   return { next: retainEntry ? next : null, changed }
 }
 
@@ -224,6 +221,44 @@ function readJsonFileIfExists<T>(filePath: string): T | null {
 
 function writeJsonFile(filePath: string, value: unknown): void {
   atomicWriteFile(filePath, JSON.stringify(value, null, 2))
+}
+
+function resetLegacyCompatibilityState(args: {
+  repoRoot: string
+  streamId: string
+  batchId: string
+  threadIdSet: Set<string>
+  now: string
+}): void {
+  const { repoRoot, streamId, batchId, threadIdSet, now } = args
+
+  const legacyThreadsPath = getLegacyThreadsFilePath(repoRoot, streamId)
+  const legacyThreads = readJsonFileIfExists<ThreadsJson>(legacyThreadsPath)
+  if (legacyThreads) {
+    const nextThreads = legacyThreads.threads.filter((thread) => !threadIdSet.has(thread.threadId))
+    if (nextThreads.length !== legacyThreads.threads.length) {
+      writeJsonFile(legacyThreadsPath, {
+        ...legacyThreads,
+        stream_id: legacyThreads.stream_id ?? streamId,
+        last_updated: now,
+        threads: nextThreads,
+      })
+    }
+  }
+
+  const legacySupervisorPath = getLegacySupervisorStateFilePath(repoRoot, streamId)
+  const legacySupervisor = readJsonFileIfExists<Partial<SupervisorStateFile>>(legacySupervisorPath)
+  if (legacySupervisor) {
+    writeJsonFile(
+      legacySupervisorPath,
+      pruneBatchSupervisorState(streamId, legacySupervisor, batchId, threadIdSet, now).supervision,
+    )
+  }
+
+  const legacyBatchStatusPath = getLegacyBatchStatusFilePath(repoRoot, streamId, batchId)
+  if (existsSync(legacyBatchStatusPath)) {
+    cleanupExtraArtifact(legacyBatchStatusPath)
+  }
 }
 
 interface PrunedSupervisorStateResult {
@@ -392,133 +427,112 @@ export async function resetBatchState(
   streamId: string,
   batchId: string,
 ): Promise<ResetBatchStateResult> {
-  const result = await modifyTasksFile(repoRoot, streamId, async (tasksFile) => {
-    const batchTasks = tasksFile.tasks.filter((task) => isTaskInBatch(task, batchId))
-    if (batchTasks.length === 0) {
-      throw new Error(`No tasks found for batch ${batchId} in stream ${streamId}`)
-    }
-
-    const now = new Date().toISOString()
-    const threadIds = collectBatchThreadIds(tasksFile.tasks, batchId)
-    const threadIdSet = new Set(threadIds)
-    const runtimeState = normalizeRuntimeState(streamId, tasksFile.runtime_state)
-    const supervision = normalizeSupervisorState(streamId, runtimeState.supervision)
-
-    let tasksReset = 0
-    let taskReportsCleared = 0
-    let taskBreadcrumbsCleared = 0
-    for (const task of batchTasks) {
-      if (task.status !== "pending") {
-        tasksReset++
-      }
-      task.status = "pending"
-      if (task.report !== undefined) {
-        delete task.report
-        taskReportsCleared++
-      }
-      if (task.breadcrumb !== undefined) {
-        delete task.breadcrumb
-        taskBreadcrumbsCleared++
-      }
-      if (task.sessions !== undefined) {
-        delete task.sessions
-      }
-      if (task.currentSessionId !== undefined) {
-        delete task.currentSessionId
-      }
-      task.updated_at = now
-    }
-
-    const taskRuntimeBatchCleared = batchId in runtimeState.batches
-    delete runtimeState.batches[batchId]
-
-    let threadRuntimeEntriesTouched = 0
-    runtimeState.threads = runtimeState.threads.flatMap((thread) => {
-      if (!threadIdSet.has(thread.threadId)) {
-        return [thread]
+  const result: ResetBatchStateResult & { now: string } =
+    await getStructuredStorageAdapter().modifyWorkstreamState(repoRoot, streamId, (workstreamState) => {
+      const batchTasks = workstreamState.hierarchy.tasks.filter((task) => isTaskInBatch(task.id, batchId))
+      if (batchTasks.length === 0) {
+        throw new Error(`No tasks found for batch ${batchId} in stream ${streamId}`)
       }
 
-      const { next, changed } = clearBatchThreadRuntimeMetadata(thread)
-      if (changed) {
-        threadRuntimeEntriesTouched++
+      const now = new Date().toISOString()
+      const threadIds = collectBatchThreadIds(workstreamState.hierarchy.tasks, batchId)
+      const threadIdSet = new Set(threadIds)
+      const batchThreads = new Map(
+        workstreamState.hierarchy.threads.map((thread) => [thread.id, thread] as const),
+      )
+
+      let tasksReset = 0
+      let taskReportsCleared = 0
+      let taskBreadcrumbsCleared = 0
+      for (const task of batchTasks) {
+        if (task.status !== "pending") {
+          tasksReset++
+        }
+        task.status = "pending"
+        if (task.report !== undefined) {
+          delete task.report
+          taskReportsCleared++
+        }
+        if (task.breadcrumb !== undefined) {
+          delete task.breadcrumb
+          taskBreadcrumbsCleared++
+        }
+        task.updatedAt = now
       }
 
-      return next ? [next] : []
+      const taskRuntimeBatchCleared = workstreamState.batchRuns.some((run) => run.batchId === batchId)
+      workstreamState.batchRuns = workstreamState.batchRuns.filter((run) => run.batchId !== batchId)
+
+      let threadRuntimeEntriesTouched = 0
+      workstreamState.threadRuntime = workstreamState.threadRuntime.flatMap((thread) => {
+        if (!threadIdSet.has(thread.threadId)) {
+          return [thread]
+        }
+
+        const { next, changed } = clearBatchThreadRuntimeMetadata(
+          thread,
+          batchThreads.get(thread.threadId),
+        )
+        if (changed) {
+          threadRuntimeEntriesTouched++
+        }
+
+        return next ? [next] : []
+      })
+
+      const prunedSupervision = pruneBatchSupervisorState(
+        streamId,
+        workstreamState.supervision,
+        batchId,
+        threadIdSet,
+        now,
+      )
+      workstreamState.supervision = prunedSupervision.supervision
+
+      return {
+        batchId,
+        threadIds,
+        taskCount: batchTasks.length,
+        tasksReset,
+        taskReportsCleared,
+        taskBreadcrumbsCleared,
+        taskRuntimeBatchCleared,
+        threadRuntimeEntriesTouched,
+        supervision: {
+          runsTouched: prunedSupervision.runsTouched,
+          branchSessionsRemoved: prunedSupervision.branchSessionsRemoved,
+          reviewedBatchesRemoved: prunedSupervision.reviewedBatchesRemoved,
+          issueSummariesRemoved: prunedSupervision.issueSummariesRemoved,
+          fixCyclesRemoved: prunedSupervision.fixCyclesRemoved,
+          escalationsRemoved: prunedSupervision.escalationsRemoved,
+          stageStopsRemoved: prunedSupervision.stageStopsRemoved,
+          activeRunCleared: prunedSupervision.activeRunCleared,
+          currentBranchCleared: prunedSupervision.currentBranchCleared,
+        },
+        now,
+      }
     })
 
-    const prunedSupervision = pruneBatchSupervisorState(
-      streamId,
-      supervision,
-      batchId,
-      threadIdSet,
-      now,
-    )
-    runtimeState.supervision = prunedSupervision.supervision
-    runtimeState.last_updated = now
-    tasksFile.runtime_state = runtimeState
-    delete tasksFile.runtime_summary
+  const { now, ...summary } = result
 
-    const legacyThreadsPath = getLegacyThreadsFilePath(repoRoot, streamId)
-    const legacyThreads = readJsonFileIfExists<ThreadsJson>(legacyThreadsPath)
-    if (legacyThreads) {
-      const nextThreads = legacyThreads.threads.filter((thread) => !threadIdSet.has(thread.threadId))
-      if (nextThreads.length !== legacyThreads.threads.length) {
-        writeJsonFile(legacyThreadsPath, {
-          ...legacyThreads,
-          stream_id: legacyThreads.stream_id ?? streamId,
-          last_updated: now,
-          threads: nextThreads,
-        })
-      }
-    }
-
-    const legacySupervisorPath = getLegacySupervisorStateFilePath(repoRoot, streamId)
-    const legacySupervisor = readJsonFileIfExists<Partial<SupervisorStateFile>>(legacySupervisorPath)
-    if (legacySupervisor) {
-      writeJsonFile(
-        legacySupervisorPath,
-        pruneBatchSupervisorState(streamId, legacySupervisor, batchId, threadIdSet, now).supervision,
-      )
-    }
-
-    const legacyBatchStatusPath = getLegacyBatchStatusFilePath(repoRoot, streamId, batchId)
-    if (existsSync(legacyBatchStatusPath)) {
-      cleanupExtraArtifact(legacyBatchStatusPath)
-    }
-
-    return {
-      batchId,
-      threadIds,
-      taskCount: batchTasks.length,
-      tasksReset,
-      taskReportsCleared,
-      taskBreadcrumbsCleared,
-      taskRuntimeBatchCleared,
-      threadRuntimeEntriesTouched,
-      supervision: {
-        runsTouched: prunedSupervision.runsTouched,
-        branchSessionsRemoved: prunedSupervision.branchSessionsRemoved,
-        reviewedBatchesRemoved: prunedSupervision.reviewedBatchesRemoved,
-        issueSummariesRemoved: prunedSupervision.issueSummariesRemoved,
-        fixCyclesRemoved: prunedSupervision.fixCyclesRemoved,
-        escalationsRemoved: prunedSupervision.escalationsRemoved,
-        stageStopsRemoved: prunedSupervision.stageStopsRemoved,
-        activeRunCleared: prunedSupervision.activeRunCleared,
-        currentBranchCleared: prunedSupervision.currentBranchCleared,
-      },
-    }
+  resetLegacyCompatibilityState({
+    repoRoot,
+    streamId,
+    batchId,
+    threadIdSet: new Set(summary.threadIds),
+    now,
   })
 
   const artifacts = {
-    completionMarkersRemoved: cleanupCompletionMarkers(streamId, result.threadIds),
-    sessionFilesRemoved: cleanupSessionFiles(streamId, result.threadIds),
-    resultFilesRemoved: cleanupResultFiles(streamId, result.threadIds),
+    completionMarkersRemoved: cleanupCompletionMarkers(streamId, summary.threadIds),
+    sessionFilesRemoved: cleanupSessionFiles(streamId, summary.threadIds),
+    resultFilesRemoved: cleanupResultFiles(streamId, summary.threadIds),
     workingSessionFilesRemoved: 0,
     synthesisOutputsRemoved: 0,
     synthesisLogsRemoved: 0,
   }
 
-  for (const threadId of result.threadIds) {
+  for (const threadId of summary.threadIds) {
     if (cleanupExtraArtifact(getWorkingAgentSessionPath(streamId, threadId))) {
       artifacts.workingSessionFilesRemoved += 1
     }
@@ -531,7 +545,7 @@ export async function resetBatchState(
   }
 
   return {
-    ...result,
+    ...summary,
     artifacts,
   }
 }

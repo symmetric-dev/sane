@@ -1,32 +1,22 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test"
-import { join } from "path"
-import { writeFileSync } from "fs"
 
 import {
-  addTasks,
+  approvalMetadataToStructuredApprovalRecords,
+  createEmptyStructuredStorageWorkstreamState,
+  createStructuredStorageWorkstreamRecord,
   filesystemStructuredStorageAdapter,
-  getResolvedStream,
   getTaskById,
-  getTaskCounts,
-  getTasks,
   getWorkstreamStatusSnapshot,
-  resolveStreamId,
-  setCurrentStream,
 } from "../src"
-import { approveStage, approveStream, approveTasks, getStageApprovalStatus, getTasksApprovalStatus } from "../src/lib/approval"
-import { syncBatchStatus } from "../src/lib/batch-monitor"
+import type {
+  PersistedBatchStatusFile,
+  StreamMetadata,
+  StructuredStorageWorkstreamState,
+  SupervisorStateFile,
+  Task,
+} from "../src"
 import { parseTasksMd } from "../src/lib/tasks-md"
-import { completeTaskSession, startTaskSession } from "../src/lib/tasks"
-import { buildWorkstreamTreeSnapshot } from "../src/lib/tree"
-import type { StreamMetadata, SupervisorStateFile, Task, TasksFile, WorkIndex } from "../src/lib/types"
-import { updateTask } from "../src/lib/update"
 import { cleanupTestWorkstream, createTestWorkstream, type TestWorkspace } from "./helpers"
-
-interface WorkflowPersistenceContractHarness {
-  readonly name: string
-  createWorkspace: () => TestWorkspace
-  cleanupWorkspace: (workspace: TestWorkspace) => void
-}
 
 function buildStreamMetadata(args: {
   id: string
@@ -39,6 +29,26 @@ function buildStreamMetadata(args: {
     id: args.id,
     name: args.name,
     order: args.order,
+    status: "in_progress",
+    approval: {
+      status: "approved",
+      approved_at: now,
+      approved_by: "reviewer",
+      plan_hash: "plan-hash",
+      tasks: {
+        status: "approved",
+        approved_at: now,
+        task_count: 4,
+      },
+      stages: {
+        1: {
+          status: "approved",
+          approved_at: now,
+          approved_by: "stage-reviewer",
+          commit_sha: "abc123",
+        },
+      },
+    },
     size: "short",
     session_estimated: {
       length: 1,
@@ -50,43 +60,8 @@ function buildStreamMetadata(args: {
     updated_at: now,
     path: args.streamPath ?? `work/${args.id}`,
     generated_by: { workstreams: "test" },
+    current_batch: "01.01",
   }
-}
-
-function baseTasksFile(streamId: string): TasksFile {
-  return {
-    version: "1.0.0",
-    stream_id: streamId,
-    last_updated: new Date().toISOString(),
-    tasks: [
-      {
-        id: "01.01.01.01",
-        name: "Thread one task",
-        thread_name: "Thread One",
-        batch_name: "Batch One",
-        stage_name: "Stage One",
-        status: "pending",
-        created_at: new Date().toISOString(),
-        updated_at: new Date().toISOString(),
-      },
-      {
-        id: "01.01.02.01",
-        name: "Thread two task",
-        thread_name: "Thread Two",
-        batch_name: "Batch One",
-        stage_name: "Stage One",
-        status: "pending",
-        created_at: new Date().toISOString(),
-        updated_at: new Date().toISOString(),
-      },
-    ],
-  }
-}
-
-function parseContractTasksOrThrow(markdown: string, streamId: string): Task[] {
-  const result = parseTasksMd(markdown, streamId)
-  expect(result.errors).toHaveLength(0)
-  return result.tasks
 }
 
 function workflowTasksMarkdown(): string {
@@ -116,359 +91,317 @@ function workflowTasksMarkdown(): string {
 `.trim()
 }
 
-const filesystemHarness: WorkflowPersistenceContractHarness = {
-  name: "filesystem-backed tasks/index persistence",
-  createWorkspace: () =>
-    createTestWorkstream(`001-contract-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`),
-  cleanupWorkspace: cleanupTestWorkstream,
+function parseContractTasksOrThrow(markdown: string, streamId: string): Task[] {
+  const result = parseTasksMd(markdown, streamId)
+  expect(result.errors).toHaveLength(0)
+  return result.tasks
 }
 
-const storage = filesystemStructuredStorageAdapter
+function buildBatchRun(streamId: string, batchId: string): PersistedBatchStatusFile {
+  return {
+    version: "1.0.0",
+    streamId,
+    batchId,
+    runId: `run-${batchId}`,
+    mode: "headless",
+    status: batchId === "01.01" ? "running" : "pending",
+    startedAt: "2026-04-19T02:00:00.000Z",
+    updatedAt: "2026-04-19T02:05:00.000Z",
+    summary: {
+      total: batchId === "01.01" ? 2 : 1,
+      pending: batchId === "01.01" ? 1 : 1,
+      running: batchId === "01.01" ? 1 : 0,
+      completed: 0,
+      failed: 0,
+    },
+    threads: [
+      {
+        threadId: batchId === "01.01" ? "01.01.01" : "01.02.02",
+        threadName: batchId === "01.01" ? "Importer" : "Status snapshot",
+        firstTaskId: batchId === "01.01" ? "01.01.01.01" : "01.02.02.01",
+        status: batchId === "01.01" ? "running" : "pending",
+        updatedAt: "2026-04-19T02:05:00.000Z",
+      },
+    ],
+  }
+}
 
-function runWorkflowPersistenceContract(harness: WorkflowPersistenceContractHarness): void {
-  describe(harness.name, () => {
-    let workspace: TestWorkspace
+function buildSupervisionState(streamId: string): SupervisorStateFile {
+  return {
+    version: "1.0.0",
+    stream_id: streamId,
+    last_updated: "2026-04-19T03:00:00.000Z",
+    active_run_id: "sup-run-contract",
+    current_branch_supervision: {
+      owner: "root_agent",
+      rootSessionId: "root-session-contract",
+      branchSessionId: "branch-session-contract",
+      branchRole: "supervision",
+      source: "native_fork",
+      nativeSessionId: "native-session-contract",
+      updatedAt: "2026-04-19T03:00:00.000Z",
+      scope: { level: "batch", stageId: "01", batchId: "01.01" },
+      supervisionProgress: {
+        executionMode: "single_batch_run",
+        currentBatchId: "01.01",
+      },
+    },
+    runs: [
+      {
+        runId: "sup-run-contract",
+        stageId: "01",
+        status: "running",
+        startedAt: "2026-04-19T03:00:00.000Z",
+        updatedAt: "2026-04-19T03:05:00.000Z",
+        currentBatchId: "01.01",
+        reviewPasses: 1,
+        issueSummaryIds: [],
+        escalationIds: [],
+      },
+    ],
+    checkpoint_pointers: [],
+    branch_sessions: [],
+    reviewed_batches: [],
+    issue_summaries: [],
+    fix_cycles: [],
+    escalations: [],
+    stage_stops: [],
+  }
+}
 
-    beforeEach(() => {
-      workspace = harness.createWorkspace()
+function buildStructuredWorkstreamState(streamId: string, tasks: Task[]): StructuredStorageWorkstreamState {
+  const state = createEmptyStructuredStorageWorkstreamState(streamId)
+  const stageMap = new Map<string, { id: string; number: number; name: string }>()
+  const batchMap = new Map<string, { id: string; stageId: string; number: number; name: string }>()
+  const threadMap = new Map<string, { id: string; stageId: string; batchId: string; number: number; name: string; promptPath?: string }>()
+
+  for (const task of tasks) {
+    const [stageId, batchNumber, threadNumber, taskNumber] = task.id.split(".")
+    const batchId = `${stageId}.${batchNumber}`
+    const threadId = `${batchId}.${threadNumber}`
+
+    stageMap.set(stageId!, {
+      id: stageId!,
+      number: Number.parseInt(stageId!, 10),
+      name: task.stage_name,
+    })
+    batchMap.set(batchId, {
+      id: batchId,
+      stageId: stageId!,
+      number: Number.parseInt(batchNumber!, 10),
+      name: task.batch_name,
+    })
+    threadMap.set(threadId, {
+      id: threadId,
+      stageId: stageId!,
+      batchId,
+      number: Number.parseInt(threadNumber!, 10),
+      name: task.thread_name,
+      promptPath: `prompts/${threadId}.md`,
     })
 
-    afterEach(() => {
-      harness.cleanupWorkspace(workspace)
+    state.hierarchy.tasks.push({
+      id: task.id,
+      stageId: stageId!,
+      batchId,
+      threadId,
+      number: Number.parseInt(taskNumber!, 10),
+      name: task.name,
+      status: task.status,
+      createdAt: task.created_at,
+      updatedAt: task.updated_at,
+      ...(task.assigned_agent ? { assignedAgent: task.assigned_agent } : {}),
     })
+  }
 
-    test("resolves persisted current stream identity through adapter-facing read models", () => {
-      const primary = buildStreamMetadata({
-        id: workspace.streamId,
-        name: "primary-stream",
-        order: 1,
-      })
-      const secondary = buildStreamMetadata({
-        id: "002-secondary-stream",
-        name: "secondary-stream",
-        order: 2,
-      })
-
-      const index: WorkIndex = {
-        version: "1.0.0",
-        last_updated: new Date().toISOString(),
-        streams: [primary, secondary],
-      }
-
-      storage.index.save(workspace.repoRoot, index)
-      setCurrentStream(workspace.repoRoot, secondary.id)
-
-      const persisted = storage.index.load(workspace.repoRoot)
-      const currentStreamId = resolveStreamId(persisted, "current")
-
-      expect(resolveStreamId(persisted, undefined)).toBe(secondary.id)
-      expect(currentStreamId).toBe(secondary.id)
-      expect(getResolvedStream(persisted, "secondary-stream").id).toBe(secondary.id)
-
-      const primarySnapshot = getWorkstreamStatusSnapshot(workspace.repoRoot, primary, currentStreamId)
-      const secondarySnapshot = getWorkstreamStatusSnapshot(workspace.repoRoot, secondary, currentStreamId)
-
-      expect(primarySnapshot.stream.is_current).toBe(false)
-      expect(secondarySnapshot.stream.is_current).toBe(true)
-    })
-
-    test("persists imported hierarchy by stable ids and preserves workflow state on re-import", async () => {
-      const stream = buildStreamMetadata({
-        id: workspace.streamId,
-        name: "contract-stream",
-        order: 1,
-      })
-
-      storage.index.save(workspace.repoRoot, {
-        version: "1.0.0",
-        last_updated: new Date().toISOString(),
-        streams: [stream],
-      })
-
-      const importedTasks = parseContractTasksOrThrow(workflowTasksMarkdown(), workspace.streamId)
-      addTasks(workspace.repoRoot, workspace.streamId, importedTasks)
-
-      const initialSnapshot = buildWorkstreamTreeSnapshot({
-        streamId: workspace.streamId,
-        tasks: getTasks(workspace.repoRoot, workspace.streamId),
-      })
-
-      expect(initialSnapshot.stages.map((stage) => stage.id)).toEqual(["01", "02"])
-      expect(initialSnapshot.stages[0]?.batches.map((batch) => batch.id)).toEqual(["01.01", "01.02"])
-      expect(initialSnapshot.stages[0]?.batches[0]?.threads[0]).toMatchObject({
-        id: "01.01.01",
-        assignedAgent: "data-migrator",
-      })
-      expect(initialSnapshot.stages[0]?.batches[0]?.threads[0]?.tasks.map((task) => task.id)).toEqual([
-        "01.01.01.01",
-        "01.01.01.02",
-      ])
-
-      await updateTask({
-        repoRoot: workspace.repoRoot,
-        stream,
-        taskId: "01.01.01.01",
-        status: "completed",
-        report: "Hierarchy import validated.",
-      })
-
-      const reimportedTasks = parseContractTasksOrThrow(
-        workflowTasksMarkdown().replace("Persist hierarchy rows", "Persist hierarchy rows from TASKS.md"),
-        workspace.streamId,
-      )
-      addTasks(workspace.repoRoot, workspace.streamId, reimportedTasks)
-
-      expect(getTaskById(workspace.repoRoot, workspace.streamId, "01.01.01.01")).toMatchObject({
-        id: "01.01.01.01",
-        name: "Persist hierarchy rows from TASKS.md",
-        status: "completed",
-      })
-      expect(getTaskCounts(workspace.repoRoot, workspace.streamId).total).toBe(5)
-
-      const reimportedSnapshot = buildWorkstreamTreeSnapshot({
-        streamId: workspace.streamId,
-        tasks: getTasks(workspace.repoRoot, workspace.streamId),
-      })
-
-      expect(reimportedSnapshot.stages[1]?.batches[0]?.threads[0]).toMatchObject({
-        id: "02.01.01",
-        assignedAgent: "qa-reviewer",
-      })
-      expect(reimportedSnapshot.stages[1]?.batches[0]?.threads[0]?.tasks.map((task) => task.id)).toEqual([
-        "02.01.01.01",
-        "02.01.01.02",
-      ])
-    })
-
-    test("persists approval state independently across plan, tasks, and stage scopes", () => {
-      const stream = buildStreamMetadata({
-        id: workspace.streamId,
-        name: "contract-stream",
-        order: 1,
-      })
-
-      storage.index.save(workspace.repoRoot, {
-        version: "1.0.0",
-        last_updated: new Date().toISOString(),
-        streams: [stream],
-      })
-
-      writeFileSync(join(workspace.workDir, "TASKS.md"), workflowTasksMarkdown())
-      addTasks(
-        workspace.repoRoot,
-        workspace.streamId,
-        parseContractTasksOrThrow(workflowTasksMarkdown(), workspace.streamId),
-      )
-
-      approveStage(workspace.repoRoot, workspace.streamId, 2, "stage-reviewer")
-      approveTasks(workspace.repoRoot, workspace.streamId)
-      approveStream(workspace.repoRoot, workspace.streamId, "plan-reviewer")
-
-      const approvedStream = storage.index.load(workspace.repoRoot).streams[0]!
-
-      expect(approvedStream.approval?.status).toBe("approved")
-      expect(getTasksApprovalStatus(approvedStream)).toBe("approved")
-      expect(approvedStream.approval?.tasks?.task_count).toBe(5)
-      expect(getStageApprovalStatus(approvedStream, 1)).toBe("draft")
-      expect(getStageApprovalStatus(approvedStream, 2)).toBe("approved")
-
-      approveStage(workspace.repoRoot, workspace.streamId, 1, "stage-reviewer")
-      const stageScopedApproval = storage.index.load(workspace.repoRoot).streams[0]!
-      expect(getStageApprovalStatus(stageScopedApproval, 1)).toBe("approved")
-      expect(getStageApprovalStatus(stageScopedApproval, 2)).toBe("approved")
-      expect(stageScopedApproval.approval?.tasks?.task_count).toBe(5)
-    })
-
-    test("persists task outcome semantics by task identity", async () => {
-      const stream = buildStreamMetadata({
-        id: workspace.streamId,
-        name: "contract-stream",
-        order: 1,
-      })
-
-      const seededTasks = baseTasksFile(workspace.streamId)
-      seededTasks.tasks[0]!.created_at = "2024-01-01T00:00:00.000Z"
-      seededTasks.tasks[0]!.updated_at = "2024-01-01T00:00:00.000Z"
-      const originalCreatedAt = seededTasks.tasks[0]!.created_at
-      storage.tasks.write(workspace.repoRoot, workspace.streamId, seededTasks)
-
-      const update = await updateTask({
-        repoRoot: workspace.repoRoot,
-        stream,
-        taskId: "01.01.01.01",
-        status: "completed",
-        report: "Task finished with persisted report details.",
-      })
-
-      expect(update.updated).toBe(true)
-      expect(update.task?.status).toBe("completed")
-      expect(update.task?.report).toBe("Task finished with persisted report details.")
-
-      const completedTask = getTaskById(workspace.repoRoot, workspace.streamId, "01.01.01.01")
-      const untouchedTask = getTaskById(workspace.repoRoot, workspace.streamId, "01.01.02.01")
-      expect(completedTask?.status).toBe("completed")
-      expect(completedTask?.report).toBe("Task finished with persisted report details.")
-      expect(completedTask?.created_at).toBe(originalCreatedAt)
-      expect(completedTask?.updated_at).not.toBe(originalCreatedAt)
-      expect(untouchedTask?.status).toBe("pending")
-    })
-
-    test("persists thread session linkage semantics across start and completion", () => {
-      storage.tasks.write(workspace.repoRoot, workspace.streamId, baseTasksFile(workspace.streamId))
-
-      const session = startTaskSession(
-        workspace.repoRoot,
-        workspace.streamId,
-        "01.01.01.01",
-        "contract-agent",
-        "contract-model",
-      )
-
-      expect(session).not.toBeNull()
-      expect(session?.status).toBe("running")
-
-      const completed = completeTaskSession(
-        workspace.repoRoot,
-        workspace.streamId,
-        "01.01.01.01",
-        session!.sessionId,
-        "completed",
-        0,
-      )
-      expect(completed?.status).toBe("completed")
-
-      const thread = storage.threads.load(workspace.repoRoot, workspace.streamId)?.threads.find(
-        (entry) => entry.threadId === "01.01.01",
-      )
-      expect(thread?.currentSessionId).toBeUndefined()
-      expect(thread?.sessions.at(-1)?.sessionId).toBe(session!.sessionId)
-      expect(thread?.sessions.at(-1)?.status).toBe("completed")
-    })
-
-    test("persists batch workflow state and exposes it through runtime read models", async () => {
-      const stream = buildStreamMetadata({
-        id: workspace.streamId,
-        name: "contract-stream",
-        order: 1,
-      })
-
-      storage.tasks.write(workspace.repoRoot, workspace.streamId, baseTasksFile(workspace.streamId))
-
-      startTaskSession(
-        workspace.repoRoot,
-        workspace.streamId,
-        "01.01.01.01",
-        "agent-one",
-        "model-one",
-      )
-
-      const status = await syncBatchStatus({
-        repoRoot: workspace.repoRoot,
-        streamId: workspace.streamId,
-        batchId: "01.01",
-      })
-
-      const persistedBatch = storage.batchRuns.read(workspace.repoRoot, workspace.streamId, "01.01")
-
-      expect(status.status).toBe("running")
-      expect(persistedBatch?.batchId).toBe("01.01")
-      expect(status.summary).toMatchObject({
-        total: 2,
-        pending: 1,
-        running: 1,
-        completed: 0,
-        failed: 0,
-      })
-      expect(status.threads).toEqual(
-        expect.arrayContaining([
-          expect.objectContaining({ threadId: "01.01.01", status: "running" }),
-          expect.objectContaining({ threadId: "01.01.02", status: "pending" }),
-        ]),
-      )
-
-      const snapshot = getWorkstreamStatusSnapshot(workspace.repoRoot, stream)
-      expect(snapshot.runtime?.entries).toContainEqual(
-        expect.objectContaining({
-          kind: "batch",
-          batch_id: "01.01",
-          task_status: "pending",
-          runtime_status: "running",
-          entry_status: "desync",
-        }),
-      )
-    })
-
-    test("persists supervision state canonically and re-projects workflow runtime views", () => {
-      const stream = buildStreamMetadata({
-        id: workspace.streamId,
-        name: "contract-stream",
-        order: 1,
-      })
-
-      storage.tasks.write(workspace.repoRoot, workspace.streamId, baseTasksFile(workspace.streamId))
-      const startedAt = new Date().toISOString()
-
-      const supervisorState: SupervisorStateFile = {
-        version: "1.0.0",
-        stream_id: workspace.streamId,
-        last_updated: startedAt,
-        active_run_id: "sup-run-contract",
-        current_branch_supervision: {
-          owner: "root_agent",
-          rootSessionId: "root-session-contract",
-          branchSessionId: "branch-session-contract",
-          branchRole: "supervision",
-          source: "native_fork",
-          nativeSessionId: "native-session-contract",
-          updatedAt: startedAt,
-          scope: { level: "batch", stageId: "01", batchId: "01.01" },
-          supervisionProgress: {
-            executionMode: "single_batch_run",
-            currentBatchId: "01.01",
-          },
-        },
-        runs: [
+  state.hierarchy.stages = [...stageMap.values()].sort((left, right) => left.id.localeCompare(right.id))
+  state.hierarchy.batches = [...batchMap.values()].sort((left, right) => left.id.localeCompare(right.id))
+  state.hierarchy.threads = [...threadMap.values()].sort((left, right) => left.id.localeCompare(right.id))
+  state.threadRuntime = state.hierarchy.threads.map((thread) => ({
+    threadId: thread.id,
+    promptPath: thread.promptPath,
+    sessions: thread.id === "01.01.01"
+      ? [
           {
-            runId: "sup-run-contract",
-            stageId: "01",
+            sessionId: "session-importer",
+            agentName: "data-migrator",
+            model: "model-a",
+            startedAt: "2026-04-19T02:00:00.000Z",
             status: "running",
-            startedAt,
-            updatedAt: startedAt,
-            currentBatchId: "01.01",
-            reviewPasses: 1,
-            issueSummaryIds: [],
-            escalationIds: [],
           },
-        ],
-        checkpoint_pointers: [],
-        branch_sessions: [],
-        reviewed_batches: [],
-        issue_summaries: [],
-        fix_cycles: [],
-        escalations: [],
-        stage_stops: [],
-      }
+        ]
+      : [],
+    ...(thread.id === "01.01.01" ? { currentSessionId: "session-importer" } : {}),
+    ...(thread.id === "01.01.01" ? { opencodeSessionId: "opencode-importer" } : {}),
+  }))
+  state.batchRuns = [buildBatchRun(streamId, "01.01"), buildBatchRun(streamId, "01.02")]
+  state.supervision = buildSupervisionState(streamId)
 
-      storage.supervision.save(workspace.repoRoot, workspace.streamId, supervisorState)
-
-      const persisted = storage.supervision.load(workspace.repoRoot, workspace.streamId)
-      expect(persisted?.active_run_id).toBe("sup-run-contract")
-      expect(persisted?.runs).toHaveLength(1)
-
-      const snapshot = getWorkstreamStatusSnapshot(workspace.repoRoot, stream)
-      expect(snapshot.runtime?.summary.supervision?.active_run_id).toBe("sup-run-contract")
-      expect(snapshot.runtime?.entries).toContainEqual(
-        expect.objectContaining({
-          kind: "supervision",
-          target: "01.01",
-          stage_id: "01",
-          batch_id: "01.01",
-        }),
-      )
-    })
-  })
+  return state
 }
 
 describe("workflow persistence semantics contract", () => {
-  runWorkflowPersistenceContract(filesystemHarness)
+  const storage = filesystemStructuredStorageAdapter
+  let workspace: TestWorkspace
+
+  beforeEach(() => {
+    workspace = createTestWorkstream(`001-contract-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`)
+  })
+
+  afterEach(() => {
+    cleanupTestWorkstream(workspace)
+  })
+
+  test("loads, replaces, and modifies workspace state through the unified contract", async () => {
+    const primary = buildStreamMetadata({ id: workspace.streamId, name: "primary-stream", order: 1 })
+    const secondary = buildStreamMetadata({ id: "002-secondary-stream", name: "secondary-stream", order: 2 })
+
+    await storage.replaceWorkspaceState(workspace.repoRoot, {
+      currentStreamId: secondary.id,
+      workstreams: [
+        createStructuredStorageWorkstreamRecord(primary),
+        createStructuredStorageWorkstreamRecord(secondary),
+      ],
+    })
+
+    const initialWorkspaceState = await storage.loadWorkspaceState(workspace.repoRoot)
+    expect(initialWorkspaceState.currentStreamId).toBe(secondary.id)
+    expect(initialWorkspaceState.workstreams.map((stream) => stream.id)).toEqual([
+      workspace.streamId,
+      secondary.id,
+    ])
+
+    await storage.modifyWorkspaceState(workspace.repoRoot, (state) => {
+      state.currentStreamId = workspace.streamId
+      state.workstreams[0]!.currentBatch = "02.01"
+      state.workstreams[0]!.manualStatus = "on_hold"
+    })
+
+    const modifiedWorkspaceState = await storage.loadWorkspaceState(workspace.repoRoot)
+    expect(modifiedWorkspaceState.currentStreamId).toBe(workspace.streamId)
+    expect(modifiedWorkspaceState.workstreams[0]).toMatchObject({
+      id: workspace.streamId,
+      currentBatch: "02.01",
+      manualStatus: "on_hold",
+    })
+  })
+
+  test("replaces and loads workstream state through the unified contract", async () => {
+    const stream = buildStreamMetadata({ id: workspace.streamId, name: "contract-stream", order: 1 })
+    const tasks = parseContractTasksOrThrow(workflowTasksMarkdown(), workspace.streamId)
+    const state = buildStructuredWorkstreamState(workspace.streamId, tasks)
+    state.approvals = approvalMetadataToStructuredApprovalRecords(workspace.streamId, stream.approval)
+
+    await storage.replaceWorkspaceState(workspace.repoRoot, {
+      currentStreamId: workspace.streamId,
+      workstreams: [createStructuredStorageWorkstreamRecord(stream)],
+    })
+    await storage.replaceWorkstreamState(workspace.repoRoot, state)
+
+    const persisted = await storage.loadWorkstreamState(workspace.repoRoot, workspace.streamId)
+    expect(persisted).not.toBeNull()
+    expect(persisted?.hierarchy.stages.map((stage) => stage.id)).toEqual(["01", "02"])
+    expect(persisted?.hierarchy.batches.map((batch) => batch.id)).toEqual(["01.01", "01.02", "02.01"])
+    expect(persisted?.hierarchy.threads.find((thread) => thread.id === "01.01.01")).toMatchObject({
+      name: "Importer",
+      promptPath: "prompts/01.01.01.md",
+    })
+    expect(persisted?.hierarchy.tasks.map((task) => task.id)).toEqual([
+      "01.01.01.01",
+      "01.01.01.02",
+      "01.02.02.01",
+      "02.01.01.01",
+      "02.01.01.02",
+    ])
+    expect(persisted?.approvals.map((approval) => `${approval.scope}:${approval.stageId ?? ""}`)).toEqual([
+      "plan:",
+      "tasks:",
+      "stage:01",
+    ])
+    expect(persisted?.batchRuns.map((batchRun) => batchRun.batchId)).toEqual(["01.01", "01.02"])
+    expect(persisted?.supervision.active_run_id).toBe("sup-run-contract")
+
+    const persistedTask = getTaskById(workspace.repoRoot, workspace.streamId, "01.01.01.01")
+    expect(persistedTask).toMatchObject({
+      id: "01.01.01.01",
+      name: "Persist hierarchy rows",
+      assigned_agent: "data-migrator",
+    })
+
+    const snapshot = getWorkstreamStatusSnapshot(workspace.repoRoot, stream)
+    expect(snapshot.runtime?.summary.supervision?.active_run_id).toBe("sup-run-contract")
+    expect(snapshot.runtime?.entries).toContainEqual(
+      expect.objectContaining({
+        kind: "batch",
+        batch_id: "01.01",
+        runtime_status: "running",
+      }),
+    )
+  })
+
+  test("modifies workstream state through the unified contract while preserving semantics", async () => {
+    const stream = buildStreamMetadata({ id: workspace.streamId, name: "contract-stream", order: 1 })
+    const tasks = parseContractTasksOrThrow(workflowTasksMarkdown(), workspace.streamId)
+    const state = buildStructuredWorkstreamState(workspace.streamId, tasks)
+    state.approvals = approvalMetadataToStructuredApprovalRecords(workspace.streamId, stream.approval)
+
+    await storage.replaceWorkspaceState(workspace.repoRoot, {
+      currentStreamId: workspace.streamId,
+      workstreams: [createStructuredStorageWorkstreamRecord(stream)],
+    })
+    await storage.replaceWorkstreamState(workspace.repoRoot, state)
+
+    await storage.modifyWorkstreamState(workspace.repoRoot, workspace.streamId, (draft) => {
+      const task = draft.hierarchy.tasks.find((entry) => entry.id === "01.01.01.01")
+      expect(task).toBeDefined()
+      task!.status = "completed"
+      task!.report = "Hierarchy import validated."
+      task!.updatedAt = "2026-04-19T04:00:00.000Z"
+
+      const tasksApproval = draft.approvals.find((entry) => entry.scope === "tasks")
+      expect(tasksApproval).toBeDefined()
+      tasksApproval!.taskCount = draft.hierarchy.tasks.length
+
+      const threadRuntime = draft.threadRuntime.find((entry) => entry.threadId === "01.01.01")
+      expect(threadRuntime).toBeDefined()
+      threadRuntime!.currentSessionId = undefined
+      threadRuntime!.sessions[0]!.status = "completed"
+      threadRuntime!.sessions[0]!.completedAt = "2026-04-19T04:00:00.000Z"
+
+      draft.supervision.runs[0]!.updatedAt = "2026-04-19T04:00:00.000Z"
+      draft.supervision.runs[0]!.reviewPasses = 2
+      draft.batchRuns[0]!.summary.completed = 1
+      draft.batchRuns[0]!.summary.running = 0
+      draft.batchRuns[0]!.threads[0]!.status = "completed"
+      draft.batchRuns[0]!.threads[0]!.completedAt = "2026-04-19T04:00:00.000Z"
+    })
+
+    const persisted = await storage.loadWorkstreamState(workspace.repoRoot, workspace.streamId)
+    expect(persisted?.hierarchy.tasks.find((task) => task.id === "01.01.01.01")).toMatchObject({
+      status: "completed",
+      report: "Hierarchy import validated.",
+    })
+    const persistedThreadRuntime = persisted?.threadRuntime.find((thread) => thread.threadId === "01.01.01")
+    expect(persistedThreadRuntime?.currentSessionId).toBeUndefined()
+    expect(persistedThreadRuntime?.sessions[0]).toMatchObject({ status: "completed" })
+    expect(persisted?.approvals.find((approval) => approval.scope === "tasks")?.taskCount).toBe(5)
+    expect(persisted?.supervision.runs[0]?.reviewPasses).toBe(2)
+    expect(persisted?.batchRuns[0]?.threads[0]?.status).toBe("completed")
+
+    const persistedTask = getTaskById(workspace.repoRoot, workspace.streamId, "01.01.01.01")
+    expect(persistedTask).toMatchObject({
+      status: "completed",
+      report: "Hierarchy import validated.",
+    })
+
+    const snapshot = getWorkstreamStatusSnapshot(workspace.repoRoot, stream)
+    expect(snapshot.runtime?.summary.supervision?.active_run_id).toBe("sup-run-contract")
+    expect(snapshot.runtime?.entries).toContainEqual(
+      expect.objectContaining({
+        kind: "batch",
+        batch_id: "01.01",
+        runtime_status: "running",
+      }),
+    )
+  })
 })

@@ -4,7 +4,9 @@ import type {
   PersistedBatchStatusSummary,
   PersistedBatchStatusThread,
 } from "./types.ts"
-import { getTasksFilePath, modifyRuntimeState, mutateRuntimeState, readTasksFile } from "./tasks.ts"
+import { upsertStructuredBatchRun } from "./structured-storage.ts"
+import { getStructuredStorageAdapter } from "./storage-adapter.ts"
+import { getTasksFilePath, mutateRuntimeState, readTasksFile } from "./tasks.ts"
 
 export const BATCH_STATUS_VERSION = "1.0.0"
 
@@ -103,6 +105,25 @@ export function createBatchStatusFile(args: {
   }
 }
 
+function orderBatchStatus(batchStatus: BatchStatusFile): BatchStatusFile {
+  return {
+    version: batchStatus.version,
+    streamId: batchStatus.streamId,
+    batchId: batchStatus.batchId,
+    runId: batchStatus.runId,
+    ...(batchStatus.tmuxSessionName ? { tmuxSessionName: batchStatus.tmuxSessionName } : {}),
+    mode: batchStatus.mode,
+    status: batchStatus.status,
+    ...(batchStatus.stageName ? { stageName: batchStatus.stageName } : {}),
+    ...(batchStatus.batchName ? { batchName: batchStatus.batchName } : {}),
+    startedAt: batchStatus.startedAt,
+    updatedAt: batchStatus.updatedAt,
+    ...(batchStatus.completedAt ? { completedAt: batchStatus.completedAt } : {}),
+    summary: batchStatus.summary,
+    threads: batchStatus.threads,
+  }
+}
+
 export function initializeBatchStatusRun(
   args: InitializeBatchStatusRunArgs,
 ): BatchStatusFile {
@@ -149,22 +170,7 @@ export function writeBatchStatus(
   streamId: string,
   batchStatus: BatchStatusFile,
 ): void {
-  const ordered: BatchStatusFile = {
-    version: batchStatus.version,
-    streamId: batchStatus.streamId,
-    batchId: batchStatus.batchId,
-    runId: batchStatus.runId,
-    ...(batchStatus.tmuxSessionName ? { tmuxSessionName: batchStatus.tmuxSessionName } : {}),
-    mode: batchStatus.mode,
-    status: batchStatus.status,
-    ...(batchStatus.stageName ? { stageName: batchStatus.stageName } : {}),
-    ...(batchStatus.batchName ? { batchName: batchStatus.batchName } : {}),
-    startedAt: batchStatus.startedAt,
-    updatedAt: batchStatus.updatedAt,
-    ...(batchStatus.completedAt ? { completedAt: batchStatus.completedAt } : {}),
-    summary: batchStatus.summary,
-    threads: batchStatus.threads,
-  }
+  const ordered = orderBatchStatus(batchStatus)
 
   mutateRuntimeState(repoRoot, streamId, (runtimeState) => {
     runtimeState.batches[batchStatus.batchId] = ordered
@@ -177,25 +183,9 @@ export async function writeBatchStatusLocked(
   streamId: string,
   batchStatus: BatchStatusFile,
 ): Promise<void> {
-  const ordered: BatchStatusFile = {
-    version: batchStatus.version,
-    streamId: batchStatus.streamId,
-    batchId: batchStatus.batchId,
-    runId: batchStatus.runId,
-    ...(batchStatus.tmuxSessionName ? { tmuxSessionName: batchStatus.tmuxSessionName } : {}),
-    mode: batchStatus.mode,
-    status: batchStatus.status,
-    ...(batchStatus.stageName ? { stageName: batchStatus.stageName } : {}),
-    ...(batchStatus.batchName ? { batchName: batchStatus.batchName } : {}),
-    startedAt: batchStatus.startedAt,
-    updatedAt: batchStatus.updatedAt,
-    ...(batchStatus.completedAt ? { completedAt: batchStatus.completedAt } : {}),
-    summary: batchStatus.summary,
-    threads: batchStatus.threads,
-  }
+  const ordered = orderBatchStatus(batchStatus)
 
-  await modifyRuntimeState(repoRoot, streamId, (runtimeState) => {
-    runtimeState.batches[batchStatus.batchId] = ordered
-    runtimeState.last_updated = new Date().toISOString()
+  await getStructuredStorageAdapter().modifyWorkstreamState(repoRoot, streamId, (workstreamState) => {
+    upsertStructuredBatchRun(workstreamState, ordered)
   })
 }
