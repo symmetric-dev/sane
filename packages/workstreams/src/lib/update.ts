@@ -6,7 +6,11 @@
 
 
 import type { TaskStatus, StreamMetadata, Task } from "./types.ts"
-import { updateStructuredTaskSync, modifyStructuredWorkstreamStateSync } from "./storage-adapter.ts"
+import {
+  loadStructuredWorkstreamStateSync,
+  replaceStructuredWorkstreamStateSync,
+  updateStructuredTaskSync,
+} from "./storage-adapter.ts"
 import { updateStructuredTask } from "./structured-storage.ts"
 import {
   getTaskById,
@@ -130,25 +134,30 @@ export async function updateThreadTasks(args: UpdateThreadTasksArgs): Promise<Up
   }
 
   const updatedAt = new Date().toISOString()
-  modifyStructuredWorkstreamStateSync(
-    { repoRoot: args.repoRoot, streamId: args.stream.id },
-    (workstreamState) => {
-      for (const task of workstreamState.hierarchy.tasks) {
-        if (task.threadId !== args.threadId) {
-          continue
-        }
+  const workstreamState = loadStructuredWorkstreamStateSync(args.repoRoot, args.stream.id)
+  if (!workstreamState) {
+    throw new Error(`Workstream state for "${args.stream.id}" not found`)
+  }
 
-        updateStructuredTask(workstreamState, {
-          taskId: task.id,
-          status: args.status,
-          breadcrumb: args.breadcrumb,
-          report: args.report,
-          assignedAgent: args.assigned_agent,
-          updatedAt,
-        })
-      }
-    },
-  )
+  for (const task of workstreamState.hierarchy.tasks) {
+    if (task.threadId !== args.threadId) {
+      continue
+    }
+
+    updateStructuredTask(workstreamState, {
+      taskId: task.id,
+      status: args.status,
+      breadcrumb: args.breadcrumb,
+      report: args.report,
+      assignedAgent: args.assigned_agent,
+      updatedAt,
+    })
+  }
+
+  replaceStructuredWorkstreamStateSync({
+    repoRoot: args.repoRoot,
+    workstreamState,
+  })
 
   const updatedTasks = getTasksByThread(
     args.repoRoot,

@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test"
-import { mkdirSync, rmSync, writeFileSync, mkdtempSync } from "fs"
+import { existsSync, mkdirSync, rmSync, writeFileSync, mkdtempSync } from "fs"
 import { join } from "path"
 import { tmpdir } from "os"
 import { captureCliOutput } from "./helpers/cli-runner"
@@ -172,6 +172,28 @@ describe("batch status", () => {
     expect(readBatchStatus(repoRoot, streamId, "01.01")?.tmuxSessionName).toBe(
       "001-implementation-abc123",
     )
+  })
+
+  test("writeBatchStatus recreates tasks.json through structured storage helpers", () => {
+    rmSync(join(repoRoot, "work", streamId, "tasks.json"), { force: true })
+    expect(existsSync(join(repoRoot, "work", streamId, "tasks.json"))).toBe(false)
+
+    writeBatchStatus(
+      repoRoot,
+      streamId,
+      createBatchStatusFile({
+        streamId,
+        batchId: "01.01",
+        stageName: "Headless Runtime",
+        batchName: "Batch Status",
+        threads: [
+          { threadId: "01.01.01", threadName: "Thread 1", firstTaskId: "01.01.01.01" },
+        ],
+      }),
+    )
+
+    expect(readBatchStatus(repoRoot, streamId, "01.01")?.batchId).toBe("01.01")
+    expect(readTasksFile(repoRoot, streamId)?.runtime_state?.batches["01.01"]).toBeDefined()
   })
 
   test("syncBatchStatus finalizes completed markers into thread metadata", async () => {

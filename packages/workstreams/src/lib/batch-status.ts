@@ -5,8 +5,12 @@ import type {
   PersistedBatchStatusThread,
 } from "./types.ts"
 import { upsertStructuredBatchRun } from "./structured-storage.ts"
-import { getStructuredStorageAdapter } from "./storage-adapter.ts"
-import { getTasksFilePath, mutateRuntimeState, readTasksFile } from "./tasks.ts"
+import {
+  getStructuredStorageAdapter,
+  readStructuredBatchRunSync,
+  writeStructuredBatchRunSync,
+} from "./storage-adapter.ts"
+import { getTasksFilePath } from "./tasks.ts"
 
 export const BATCH_STATUS_VERSION = "1.0.0"
 
@@ -161,8 +165,7 @@ export function readBatchStatus(
   streamId: string,
   batchId: string,
 ): BatchStatusFile | null {
-  const tasksFile = readTasksFile(repoRoot, streamId)
-  return tasksFile?.runtime_state?.batches[batchId] ?? null
+  return readStructuredBatchRunSync(repoRoot, streamId, batchId)
 }
 
 export function writeBatchStatus(
@@ -170,12 +173,7 @@ export function writeBatchStatus(
   streamId: string,
   batchStatus: BatchStatusFile,
 ): void {
-  const ordered = orderBatchStatus(batchStatus)
-
-  mutateRuntimeState(repoRoot, streamId, (runtimeState) => {
-    runtimeState.batches[batchStatus.batchId] = ordered
-    runtimeState.last_updated = new Date().toISOString()
-  })
+  writeStructuredBatchRunSync(repoRoot, streamId, orderBatchStatus(batchStatus))
 }
 
 export async function writeBatchStatusLocked(

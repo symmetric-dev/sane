@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test"
-import { existsSync, writeFileSync } from "fs"
+import { existsSync, rmSync, writeFileSync } from "fs"
 import { join } from "path"
 import { createBatchStatusFile, writeBatchStatus } from "../src/lib/batch-status"
 import {
@@ -76,6 +76,15 @@ describe("supervisor-state", () => {
     expect(loaded).not.toBeNull()
     expect(loaded!.stream_id).toBe(workspace.streamId)
     expect(readTasksFile(workspace.repoRoot, workspace.streamId)?.runtime_summary).toBeUndefined()
+  })
+
+  test("saveSupervisorState recreates tasks.json through structured storage helpers", () => {
+    rmSync(getSupervisorStateFilePath(workspace.repoRoot, workspace.streamId), { force: true })
+
+    saveSupervisorState(workspace.repoRoot, workspace.streamId, createEmptySupervisorState(workspace.streamId))
+
+    expect(loadSupervisorState(workspace.repoRoot, workspace.streamId)).not.toBeNull()
+    expect(readTasksFile(workspace.repoRoot, workspace.streamId)?.runtime_state?.supervision).toBeDefined()
   })
 
   test("saveSupervisorState projects latest supervision summary into tasks.json", () => {

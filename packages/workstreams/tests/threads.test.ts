@@ -74,6 +74,23 @@ describe("threads", () => {
       expect(loaded!.threads[0]!.threadId).toBe("01.01.01")
     })
 
+    test("saveThreads recreates tasks.json through structured storage helpers", () => {
+      rmSync(getThreadsFilePath(repoRoot, streamId), { force: true })
+      expect(existsSync(getThreadsFilePath(repoRoot, streamId))).toBe(false)
+
+      saveThreads(repoRoot, streamId, {
+        version: "1.0.0",
+        stream_id: streamId,
+        last_updated: new Date().toISOString(),
+        threads: [{ threadId: "01.01.01", sessions: [], currentSessionId: "session-1" }],
+      })
+
+      expect(loadThreads(repoRoot, streamId)?.threads[0]).toMatchObject({
+        threadId: "01.01.01",
+        currentSessionId: "session-1",
+      })
+    })
+
     test("createEmptyThreadsFile creates valid structure", () => {
       const empty = createEmptyThreadsFile(streamId)
 

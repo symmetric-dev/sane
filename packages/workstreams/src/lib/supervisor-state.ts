@@ -15,14 +15,13 @@ import type {
   SupervisorStateFile,
 } from "./types.ts"
 import { isTerminalBatchStatus } from "./batch-status.ts"
-import { getStructuredStorageAdapter } from "./storage-adapter.ts"
-import { replaceStructuredSupervisionState } from "./structured-storage.ts"
 import {
-  getTasksFilePath,
-  mutateRuntimeState,
-  normalizeSupervisorState,
-  readTasksFile,
-} from "./tasks.ts"
+  getStructuredStorageAdapter,
+  loadStructuredSupervisorStateSync,
+  replaceStructuredSupervisorStateSync,
+} from "./storage-adapter.ts"
+import { replaceStructuredSupervisionState } from "./structured-storage.ts"
+import { getTasksFilePath, normalizeSupervisorState } from "./tasks.ts"
 
 function inferStageIdFromBatchId(batchId?: string): string | undefined {
   if (!batchId) {
@@ -246,11 +245,9 @@ export function loadSupervisorState(
     return null
   }
 
-  let tasksFile
   let parsed: Partial<SupervisorStateFile>
   try {
-    tasksFile = readTasksFile(repoRoot, streamId)
-    parsed = tasksFile?.runtime_state?.supervision ?? createEmptySupervisorState(streamId)
+    parsed = loadStructuredSupervisorStateSync(repoRoot, streamId) ?? createEmptySupervisorState(streamId)
   } catch (error) {
     throw new Error(
       `Failed to parse unified supervisor state in tasks.json at ${tasksPath}: ${error instanceof Error ? error.message : String(error)}`,
@@ -329,9 +326,10 @@ export function saveSupervisorState(
   supervisorState.last_updated = lastUpdated
   const ordered = orderSupervisorState(supervisorState, lastUpdated)
 
-  mutateRuntimeState(repoRoot, streamId, (runtimeState) => {
-    runtimeState.last_updated = lastUpdated
-    runtimeState.supervision = ordered
+  replaceStructuredSupervisorStateSync({
+    repoRoot,
+    streamId,
+    supervisorState: ordered,
   })
 }
 

@@ -7,7 +7,7 @@
 
 import { describe, test, expect, beforeEach, afterEach } from "bun:test"
 import { join } from "path"
-import { writeFileSync } from "fs"
+import { existsSync, rmSync, writeFileSync } from "fs"
 import { createTestWorkstream, cleanupTestWorkstream, type TestWorkspace } from "./helpers/test-workspace.ts"
 import { saveIndex, loadIndex } from "../src/lib/index.ts"
 import { approveStage, approveStream, getStageApprovalStatus } from "../src/lib/approval.ts"
@@ -131,5 +131,20 @@ describe("approveStream should preserve stage approvals", () => {
     // BUG: Tasks approval should NOT be wiped out!
     expect(stream.approval?.tasks?.status).toBe("approved")
     expect(stream.approval?.tasks?.task_count).toBe(5)
+  })
+
+  test("approval updates do not recreate tasks.json when only index approval changes", () => {
+    const tasksPath = join(repoRoot, "work/stream-001/tasks.json")
+    rmSync(tasksPath, { force: true })
+    expect(existsSync(tasksPath)).toBe(false)
+
+    approveStage(repoRoot, "stream-001", 1, "tester")
+    approveStream(repoRoot, "stream-001", "admin")
+
+    expect(existsSync(tasksPath)).toBe(false)
+
+    const stream = loadIndex(repoRoot).streams[0]!
+    expect(stream.approval?.status).toBe("approved")
+    expect(stream.approval?.stages?.[1]?.status).toBe("approved")
   })
 })

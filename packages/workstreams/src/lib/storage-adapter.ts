@@ -4,6 +4,7 @@ import {
   createEmptyStructuredStorageWorkstreamState,
   createStreamMetadataFromStructuredStorageRecord,
   createStructuredStorageWorkstreamRecord,
+  replaceStructuredApprovals,
   structuredApprovalRecordsToApprovalMetadata,
   type StructuredBatchRecord,
   type StructuredStageRecord,
@@ -14,6 +15,8 @@ import {
   type StructuredTaskRecord,
   type StructuredThreadRecord,
   type StructuredThreadRuntimeRecord,
+  upsertStructuredBatchRun,
+  upsertStructuredThreadRuntime,
 } from "./structured-storage.ts"
 import {
   createEmptyTasksFile,
@@ -23,7 +26,16 @@ import {
   readTasksFile,
   writeTasksFile,
 } from "./tasks.ts"
-import type { Task, TasksFile, ThreadMetadata, WorkIndex } from "./types.ts"
+import type {
+  ApprovalMetadata,
+  PersistedBatchStatusFile,
+  SupervisorStateFile,
+  Task,
+  TasksFile,
+  ThreadMetadata,
+  ThreadsJson,
+  WorkIndex,
+} from "./types.ts"
 
 function compareIds(left: string, right: string): number {
   return left.localeCompare(right, undefined, { numeric: true })
@@ -251,6 +263,32 @@ function tasksFileFromWorkstreamState(
   }
 }
 
+function threadsFileFromWorkstreamState(
+  state: StructuredStorageWorkstreamState,
+): ThreadsJson {
+  const threadById = new Map(state.hierarchy.threads.map((thread) => [thread.id, thread] as const))
+
+  return {
+    version: "1.0.0",
+    stream_id: state.streamId,
+    last_updated: new Date().toISOString(),
+    threads: state.threadRuntime.map((threadRuntime) => ({
+      threadId: threadRuntime.threadId,
+      sessions: threadRuntime.sessions,
+      ...(threadById.get(threadRuntime.threadId)?.promptPath
+        ? { promptPath: threadById.get(threadRuntime.threadId)?.promptPath }
+        : {}),
+      ...(threadRuntime.currentSessionId ? { currentSessionId: threadRuntime.currentSessionId } : {}),
+      ...(threadRuntime.opencodeSessionId ? { opencodeSessionId: threadRuntime.opencodeSessionId } : {}),
+      ...(threadRuntime.workingAgentSessionId
+        ? { workingAgentSessionId: threadRuntime.workingAgentSessionId }
+        : {}),
+      ...(threadRuntime.synthesisOutput ? { synthesisOutput: threadRuntime.synthesisOutput } : {}),
+      ...(threadRuntime.synthesis ? { synthesis: threadRuntime.synthesis } : {}),
+    })),
+  }
+}
+
 function workstreamStateFromSnapshot(
   index: WorkIndex,
   streamId: string,
@@ -394,28 +432,52 @@ export function modifyStructuredWorkstreamStateSync<T>(
   },
   fn: (workstreamState: StructuredStorageWorkstreamState) => T,
 ): T {
-  const existingIndex = getOrCreateIndex(args.repoRoot)
-  const existingTasksFile = readTasksFile(args.repoRoot, args.streamId)
-  const currentState = workstreamStateFromSnapshot(existingIndex, args.streamId, existingTasksFile)
   const mutableState = cloneWorkstreamState(
-    currentState ?? createEmptyStructuredStorageWorkstreamState(args.streamId),
+    loadStructuredWorkstreamStateSync(args.repoRoot, args.streamId) ??
+      createEmptyStructuredStorageWorkstreamState(args.streamId),
   )
   const result = fn(mutableState)
+  replaceStructuredWorkstreamStateSync({
+    repoRoot: args.repoRoot,
+    workstreamState: mutableState,
+    touchStreamUpdatedAt: args.touchStreamUpdatedAt,
+    writeTasksFileIfMissing: args.writeTasksFileIfMissing,
+  })
+
+  return result
+}
+
+export function loadStructuredWorkstreamStateSync(
+  repoRoot: string,
+  streamId: string,
+): StructuredStorageWorkstreamState | null {
+  return workstreamStateFromSnapshot(getOrCreateIndex(repoRoot), streamId, readTasksFile(repoRoot, streamId))
+}
+
+export function replaceStructuredWorkstreamStateSync(args: {
+  repoRoot: string
+  workstreamState: StructuredStorageWorkstreamState
+  touchStreamUpdatedAt?: boolean
+  writeTasksFileIfMissing?: boolean
+}): void {
+  const existingIndex = getOrCreateIndex(args.repoRoot)
+  const existingTasksFile = readTasksFile(args.repoRoot, args.workstreamState.streamId)
+  const nextState = cloneWorkstreamState(args.workstreamState)
 
   if (existingTasksFile || args.writeTasksFileIfMissing !== false) {
     writeTasksFile(
       args.repoRoot,
-      args.streamId,
-      tasksFileFromWorkstreamState(mutableState, existingTasksFile),
+      args.workstreamState.streamId,
+      tasksFileFromWorkstreamState(nextState, existingTasksFile),
     )
   }
 
-  const stream = existingIndex.streams.find((entry) => entry.id === args.streamId)
+  const stream = existingIndex.streams.find((entry) => entry.id === args.workstreamState.streamId)
   if (!stream) {
-    return result
+    return
   }
 
-  const nextApproval = structuredApprovalRecordsToApprovalMetadata(mutableState.approvals)
+  const nextApproval = structuredApprovalRecordsToApprovalMetadata(nextState.approvals)
   const approvalChanged = JSON.stringify(stream.approval ?? null) !== JSON.stringify(nextApproval ?? null)
 
   if (nextApproval) {
@@ -431,8 +493,110 @@ export function modifyStructuredWorkstreamStateSync<T>(
   if (approvalChanged || args.touchStreamUpdatedAt) {
     saveIndex(args.repoRoot, existingIndex)
   }
+}
 
-  return result
+export function loadThreadMetadataViewSync(repoRoot: string, streamId: string): ThreadsJson | null {
+  const workstreamState = loadStructuredWorkstreamStateSync(repoRoot, streamId)
+  return workstreamState ? threadsFileFromWorkstreamState(workstreamState) : null
+}
+
+export function replaceThreadMetadataViewSync(args: {
+  repoRoot: string
+  streamId: string
+  threadsFile: ThreadsJson
+}): void {
+  const workstreamState =
+    loadStructuredWorkstreamStateSync(args.repoRoot, args.streamId) ??
+    createEmptyStructuredStorageWorkstreamState(args.streamId)
+
+  for (const thread of workstreamState.hierarchy.threads) {
+    const metadata = args.threadsFile.threads.find((entry) => entry.threadId === thread.id)
+    if (metadata?.promptPath !== undefined) {
+      thread.promptPath = metadata.promptPath
+    }
+  }
+
+  workstreamState.threadRuntime = []
+  for (const thread of args.threadsFile.threads) {
+    upsertStructuredThreadRuntime(workstreamState, {
+      threadId: thread.threadId,
+      sessions: thread.sessions,
+      ...(thread.currentSessionId ? { currentSessionId: thread.currentSessionId } : {}),
+      ...(thread.opencodeSessionId ? { opencodeSessionId: thread.opencodeSessionId } : {}),
+      ...(thread.workingAgentSessionId ? { workingAgentSessionId: thread.workingAgentSessionId } : {}),
+      ...(thread.synthesisOutput ? { synthesisOutput: thread.synthesisOutput } : {}),
+      ...(thread.synthesis ? { synthesis: thread.synthesis } : {}),
+    })
+  }
+
+  replaceStructuredWorkstreamStateSync({
+    repoRoot: args.repoRoot,
+    workstreamState,
+  })
+}
+
+export function readStructuredBatchRunSync(
+  repoRoot: string,
+  streamId: string,
+  batchId: string,
+): PersistedBatchStatusFile | null {
+  return loadStructuredWorkstreamStateSync(repoRoot, streamId)?.batchRuns.find((batch) => batch.batchId === batchId) ?? null
+}
+
+export function writeStructuredBatchRunSync(
+  repoRoot: string,
+  streamId: string,
+  batchStatus: PersistedBatchStatusFile,
+): void {
+  const workstreamState =
+    loadStructuredWorkstreamStateSync(repoRoot, streamId) ??
+    createEmptyStructuredStorageWorkstreamState(streamId)
+  upsertStructuredBatchRun(workstreamState, batchStatus)
+  replaceStructuredWorkstreamStateSync({ repoRoot, workstreamState })
+}
+
+export function loadStructuredSupervisorStateSync(
+  repoRoot: string,
+  streamId: string,
+): SupervisorStateFile | null {
+  const workstreamState = loadStructuredWorkstreamStateSync(repoRoot, streamId)
+  return workstreamState ? normalizeSupervisorState(streamId, workstreamState.supervision) : null
+}
+
+export function replaceStructuredSupervisorStateSync(args: {
+  repoRoot: string
+  streamId: string
+  supervisorState: SupervisorStateFile
+}): void {
+  const workstreamState =
+    loadStructuredWorkstreamStateSync(args.repoRoot, args.streamId) ??
+    createEmptyStructuredStorageWorkstreamState(args.streamId)
+  workstreamState.supervision = normalizeSupervisorState(args.streamId, args.supervisorState)
+  replaceStructuredWorkstreamStateSync({ repoRoot: args.repoRoot, workstreamState })
+}
+
+export function updateStructuredApprovalsSync(args: {
+  repoRoot: string
+  streamId: string
+  touchStreamUpdatedAt?: boolean
+  writeTasksFileIfMissing?: boolean
+  update: (approval: ApprovalMetadata | undefined) => ApprovalMetadata | undefined
+}): ApprovalMetadata | undefined {
+  const workstreamState =
+    loadStructuredWorkstreamStateSync(args.repoRoot, args.streamId) ??
+    createEmptyStructuredStorageWorkstreamState(args.streamId)
+  const nextApproval = args.update(structuredApprovalRecordsToApprovalMetadata(workstreamState.approvals))
+  replaceStructuredApprovals(
+    workstreamState,
+    approvalMetadataToStructuredApprovalRecords(args.streamId, nextApproval),
+  )
+  replaceStructuredWorkstreamStateSync({
+    repoRoot: args.repoRoot,
+    workstreamState,
+    touchStreamUpdatedAt: args.touchStreamUpdatedAt,
+    writeTasksFileIfMissing: args.writeTasksFileIfMissing,
+  })
+  return nextApproval
 }
 
 export function updateStructuredTaskSync(

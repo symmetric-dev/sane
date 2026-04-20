@@ -2,8 +2,8 @@ import { describe, test, expect, beforeEach, afterEach } from "bun:test"
 import { mkdtemp, rm, mkdir, writeFile, readFile } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
-import { updateTask } from "../src/lib/update"
-import { addTasks, getTasks } from "../src/lib/tasks"
+import { updateTask, updateThreadTasks } from "../src/lib/update"
+import { addTasks, getTasks, readTasksFile } from "../src/lib/tasks"
 import type { StreamMetadata, Task, TasksFile } from "../src/lib/types"
 
 describe("updateTask", () => {
@@ -537,6 +537,87 @@ describe("updateTask", () => {
       expect(result.status).toBe("completed")
       expect(result.task).not.toBeNull()
       expect(result.task?.name).toBe("First task")
+    })
+  })
+
+  describe("thread updates", () => {
+    test("updateThreadTasks preserves runtime state while updating thread tasks", async () => {
+      const tasksFile: TasksFile = {
+        version: "1.0.0",
+        stream_id: "001-test-stream",
+        last_updated: new Date().toISOString(),
+        runtime_state: {
+          version: "1.0.0",
+          last_updated: new Date().toISOString(),
+          threads: [
+            {
+              threadId: "01.01.01",
+              sessions: [],
+              currentSessionId: "session-1",
+              opencodeSessionId: "opencode-1",
+            },
+          ],
+          batches: {},
+          supervision: {
+            version: "1.0.0",
+            stream_id: "001-test-stream",
+            last_updated: new Date().toISOString(),
+            runs: [],
+            checkpoint_pointers: [],
+            branch_sessions: [],
+            reviewed_batches: [],
+            issue_summaries: [],
+            fix_cycles: [],
+            escalations: [],
+            stage_stops: [],
+          },
+        },
+        tasks: [
+          {
+            id: "01.01.01.01",
+            name: "First task",
+            thread_name: "T1",
+            batch_name: "B01",
+            stage_name: "S1",
+            created_at: "",
+            updated_at: "",
+            status: "pending",
+          },
+          {
+            id: "01.01.01.02",
+            name: "Second task",
+            thread_name: "T1",
+            batch_name: "B01",
+            stage_name: "S1",
+            created_at: "",
+            updated_at: "",
+            status: "pending",
+          },
+        ],
+      }
+
+      await writeFile(
+        join(tempDir, "work/001-test-stream/tasks.json"),
+        JSON.stringify(tasksFile, null, 2),
+      )
+
+      const result = await updateThreadTasks({
+        repoRoot: tempDir,
+        stream: baseStream,
+        threadId: "01.01.01",
+        status: "completed",
+        report: "done",
+      })
+
+      expect(result.updated).toBe(true)
+      expect(result.count).toBe(2)
+      expect(result.tasks.every((task) => task.status === "completed")).toBe(true)
+
+      expect(readTasksFile(tempDir, "001-test-stream")?.runtime_state?.threads[0]).toMatchObject({
+        threadId: "01.01.01",
+        currentSessionId: "session-1",
+        opencodeSessionId: "opencode-1",
+      })
     })
   })
 })
