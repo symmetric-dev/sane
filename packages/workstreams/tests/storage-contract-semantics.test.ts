@@ -4,26 +4,19 @@ import { writeFileSync } from "fs"
 
 import {
   addTasks,
+  filesystemStructuredStorageAdapter,
   getResolvedStream,
   getTaskById,
   getTaskCounts,
   getTasks,
   getWorkstreamStatusSnapshot,
-  loadIndex,
   resolveStreamId,
-  saveIndex,
   setCurrentStream,
 } from "../src"
 import { approveStage, approveStream, approveTasks, getStageApprovalStatus, getTasksApprovalStatus } from "../src/lib/approval"
 import { syncBatchStatus } from "../src/lib/batch-monitor"
-import { loadSupervisorState, saveSupervisorState } from "../src/lib/supervisor-state"
 import { parseTasksMd } from "../src/lib/tasks-md"
-import {
-  completeTaskSession,
-  startTaskSession,
-  writeTasksFile,
-} from "../src/lib/tasks"
-import { getThreadMetadata } from "../src/lib/threads"
+import { completeTaskSession, startTaskSession } from "../src/lib/tasks"
 import { buildWorkstreamTreeSnapshot } from "../src/lib/tree"
 import type { StreamMetadata, SupervisorStateFile, Task, TasksFile, WorkIndex } from "../src/lib/types"
 import { updateTask } from "../src/lib/update"
@@ -46,7 +39,7 @@ function buildStreamMetadata(args: {
     id: args.id,
     name: args.name,
     order: args.order,
-    size: "small",
+    size: "short",
     session_estimated: {
       length: 1,
       unit: "session",
@@ -130,6 +123,8 @@ const filesystemHarness: WorkflowPersistenceContractHarness = {
   cleanupWorkspace: cleanupTestWorkstream,
 }
 
+const storage = filesystemStructuredStorageAdapter
+
 function runWorkflowPersistenceContract(harness: WorkflowPersistenceContractHarness): void {
   describe(harness.name, () => {
     let workspace: TestWorkspace
@@ -160,10 +155,10 @@ function runWorkflowPersistenceContract(harness: WorkflowPersistenceContractHarn
         streams: [primary, secondary],
       }
 
-      saveIndex(workspace.repoRoot, index)
+      storage.index.save(workspace.repoRoot, index)
       setCurrentStream(workspace.repoRoot, secondary.id)
 
-      const persisted = loadIndex(workspace.repoRoot)
+      const persisted = storage.index.load(workspace.repoRoot)
       const currentStreamId = resolveStreamId(persisted, "current")
 
       expect(resolveStreamId(persisted, undefined)).toBe(secondary.id)
@@ -184,7 +179,7 @@ function runWorkflowPersistenceContract(harness: WorkflowPersistenceContractHarn
         order: 1,
       })
 
-      saveIndex(workspace.repoRoot, {
+      storage.index.save(workspace.repoRoot, {
         version: "1.0.0",
         last_updated: new Date().toISOString(),
         streams: [stream],
@@ -252,7 +247,7 @@ function runWorkflowPersistenceContract(harness: WorkflowPersistenceContractHarn
         order: 1,
       })
 
-      saveIndex(workspace.repoRoot, {
+      storage.index.save(workspace.repoRoot, {
         version: "1.0.0",
         last_updated: new Date().toISOString(),
         streams: [stream],
@@ -269,7 +264,7 @@ function runWorkflowPersistenceContract(harness: WorkflowPersistenceContractHarn
       approveTasks(workspace.repoRoot, workspace.streamId)
       approveStream(workspace.repoRoot, workspace.streamId, "plan-reviewer")
 
-      const approvedStream = loadIndex(workspace.repoRoot).streams[0]!
+      const approvedStream = storage.index.load(workspace.repoRoot).streams[0]!
 
       expect(approvedStream.approval?.status).toBe("approved")
       expect(getTasksApprovalStatus(approvedStream)).toBe("approved")
@@ -278,7 +273,7 @@ function runWorkflowPersistenceContract(harness: WorkflowPersistenceContractHarn
       expect(getStageApprovalStatus(approvedStream, 2)).toBe("approved")
 
       approveStage(workspace.repoRoot, workspace.streamId, 1, "stage-reviewer")
-      const stageScopedApproval = loadIndex(workspace.repoRoot).streams[0]!
+      const stageScopedApproval = storage.index.load(workspace.repoRoot).streams[0]!
       expect(getStageApprovalStatus(stageScopedApproval, 1)).toBe("approved")
       expect(getStageApprovalStatus(stageScopedApproval, 2)).toBe("approved")
       expect(stageScopedApproval.approval?.tasks?.task_count).toBe(5)
@@ -295,7 +290,7 @@ function runWorkflowPersistenceContract(harness: WorkflowPersistenceContractHarn
       seededTasks.tasks[0]!.created_at = "2024-01-01T00:00:00.000Z"
       seededTasks.tasks[0]!.updated_at = "2024-01-01T00:00:00.000Z"
       const originalCreatedAt = seededTasks.tasks[0]!.created_at
-      writeTasksFile(workspace.repoRoot, workspace.streamId, seededTasks)
+      storage.tasks.write(workspace.repoRoot, workspace.streamId, seededTasks)
 
       const update = await updateTask({
         repoRoot: workspace.repoRoot,
@@ -319,7 +314,7 @@ function runWorkflowPersistenceContract(harness: WorkflowPersistenceContractHarn
     })
 
     test("persists thread session linkage semantics across start and completion", () => {
-      writeTasksFile(workspace.repoRoot, workspace.streamId, baseTasksFile(workspace.streamId))
+      storage.tasks.write(workspace.repoRoot, workspace.streamId, baseTasksFile(workspace.streamId))
 
       const session = startTaskSession(
         workspace.repoRoot,
@@ -342,7 +337,9 @@ function runWorkflowPersistenceContract(harness: WorkflowPersistenceContractHarn
       )
       expect(completed?.status).toBe("completed")
 
-      const thread = getThreadMetadata(workspace.repoRoot, workspace.streamId, "01.01.01")
+      const thread = storage.threads.load(workspace.repoRoot, workspace.streamId)?.threads.find(
+        (entry) => entry.threadId === "01.01.01",
+      )
       expect(thread?.currentSessionId).toBeUndefined()
       expect(thread?.sessions.at(-1)?.sessionId).toBe(session!.sessionId)
       expect(thread?.sessions.at(-1)?.status).toBe("completed")
@@ -355,7 +352,7 @@ function runWorkflowPersistenceContract(harness: WorkflowPersistenceContractHarn
         order: 1,
       })
 
-      writeTasksFile(workspace.repoRoot, workspace.streamId, baseTasksFile(workspace.streamId))
+      storage.tasks.write(workspace.repoRoot, workspace.streamId, baseTasksFile(workspace.streamId))
 
       startTaskSession(
         workspace.repoRoot,
@@ -371,7 +368,10 @@ function runWorkflowPersistenceContract(harness: WorkflowPersistenceContractHarn
         batchId: "01.01",
       })
 
+      const persistedBatch = storage.batchRuns.read(workspace.repoRoot, workspace.streamId, "01.01")
+
       expect(status.status).toBe("running")
+      expect(persistedBatch?.batchId).toBe("01.01")
       expect(status.summary).toMatchObject({
         total: 2,
         pending: 1,
@@ -405,7 +405,7 @@ function runWorkflowPersistenceContract(harness: WorkflowPersistenceContractHarn
         order: 1,
       })
 
-      writeTasksFile(workspace.repoRoot, workspace.streamId, baseTasksFile(workspace.streamId))
+      storage.tasks.write(workspace.repoRoot, workspace.streamId, baseTasksFile(workspace.streamId))
       const startedAt = new Date().toISOString()
 
       const supervisorState: SupervisorStateFile = {
@@ -420,10 +420,7 @@ function runWorkflowPersistenceContract(harness: WorkflowPersistenceContractHarn
           branchRole: "supervision",
           source: "native_fork",
           nativeSessionId: "native-session-contract",
-          status: "running",
-          startedAt,
           updatedAt: startedAt,
-          batchId: "01.01",
           scope: { level: "batch", stageId: "01", batchId: "01.01" },
           supervisionProgress: {
             executionMode: "single_batch_run",
@@ -452,9 +449,9 @@ function runWorkflowPersistenceContract(harness: WorkflowPersistenceContractHarn
         stage_stops: [],
       }
 
-      saveSupervisorState(workspace.repoRoot, workspace.streamId, supervisorState)
+      storage.supervision.save(workspace.repoRoot, workspace.streamId, supervisorState)
 
-      const persisted = loadSupervisorState(workspace.repoRoot, workspace.streamId)
+      const persisted = storage.supervision.load(workspace.repoRoot, workspace.streamId)
       expect(persisted?.active_run_id).toBe("sup-run-contract")
       expect(persisted?.runs).toHaveLength(1)
 

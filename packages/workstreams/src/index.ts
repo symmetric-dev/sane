@@ -16,6 +16,14 @@ export {
   getIndexPath,
 } from "./lib/repo.ts"
 
+// Structured storage adapters
+export {
+  createFilesystemStructuredStorageAdapter,
+  filesystemStructuredStorageAdapter,
+  getStructuredStorageAdapter,
+  type StructuredStorageAdapter,
+} from "./lib/storage-adapter.ts"
+
 // Index operations
 export {
   getOrCreateIndex,
