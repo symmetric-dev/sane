@@ -37,6 +37,113 @@ export function getPlanMdPath(repoRoot: string, streamId: string): string {
 export interface ResolvedPlanNames {
   streamName: string
   stageNames: Record<number, string>
+  streamSource: "plan" | "fallback"
+  stageSources: Record<number, "plan">
+}
+
+export type ApprovalCommitNamingSkipReason =
+  | "unsafe_fallback_stream_name"
+  | "unsafe_generic_stream_name"
+  | "unsafe_fallback_stage_name"
+  | "unsafe_generic_stage_name"
+
+export interface ApprovalCommitNamingStatus {
+  trustworthy: boolean
+  reason?: ApprovalCommitNamingSkipReason
+}
+
+function isPlaceholderName(name: string): boolean {
+  const trimmed = name.trim()
+
+  return (
+    trimmed.length === 0 ||
+    trimmed.includes("<!--") ||
+    /^(?:tbd|todo|placeholder|unnamed|untitled|name)$/i.test(trimmed)
+  )
+}
+
+function isUnsafeStreamApprovalName(stream: StreamMetadata, streamName: string): boolean {
+  const trimmed = streamName.trim()
+
+  if (isPlaceholderName(trimmed)) {
+    return true
+  }
+
+  return (
+    trimmed.toLowerCase() === stream.id.toLowerCase() ||
+    /^(?:stream|workstream|plan)(?:\s+name)?$/i.test(trimmed)
+  )
+}
+
+function isUnsafeStageApprovalName(stageNumber: number, stageName: string): boolean {
+  const trimmed = stageName.trim()
+
+  if (isPlaceholderName(trimmed)) {
+    return true
+  }
+
+  return new RegExp(`^stage\\s*0*${stageNumber}\\s*$`, "i").test(trimmed)
+}
+
+export function getPlanApprovalCommitNamingStatus(
+  repoRoot: string,
+  stream: StreamMetadata
+): ApprovalCommitNamingStatus {
+  const names = resolvePlanNames(repoRoot, stream)
+
+  if (names.streamSource !== "plan") {
+    return {
+      trustworthy: false,
+      reason: "unsafe_fallback_stream_name",
+    }
+  }
+
+  if (isUnsafeStreamApprovalName(stream, names.streamName)) {
+    return {
+      trustworthy: false,
+      reason: "unsafe_generic_stream_name",
+    }
+  }
+
+  return { trustworthy: true }
+}
+
+export function getStageApprovalCommitNamingStatus(
+  repoRoot: string,
+  stream: StreamMetadata,
+  stageNumber: number
+): ApprovalCommitNamingStatus {
+  const names = resolveStageApprovalNames(repoRoot, stream, stageNumber)
+
+  if (names.streamSource !== "plan") {
+    return {
+      trustworthy: false,
+      reason: "unsafe_fallback_stream_name",
+    }
+  }
+
+  if (isUnsafeStreamApprovalName(stream, names.streamName)) {
+    return {
+      trustworthy: false,
+      reason: "unsafe_generic_stream_name",
+    }
+  }
+
+  if (names.stageSource !== "plan") {
+    return {
+      trustworthy: false,
+      reason: "unsafe_fallback_stage_name",
+    }
+  }
+
+  if (isUnsafeStageApprovalName(stageNumber, names.stageName)) {
+    return {
+      trustworthy: false,
+      reason: "unsafe_generic_stage_name",
+    }
+  }
+
+  return { trustworthy: true }
 }
 
 /**
@@ -51,6 +158,8 @@ export function resolvePlanNames(
   const fallback: ResolvedPlanNames = {
     streamName: stream.name,
     stageNames: {},
+    streamSource: "fallback",
+    stageSources: {},
   }
 
   const planPath = getPlanMdPath(repoRoot, stream.id)
@@ -74,6 +183,12 @@ export function resolvePlanNames(
           .filter((stage) => stage.name.trim())
           .map((stage) => [stage.id, stage.name.trim()])
       ),
+      streamSource: doc.streamName.trim() ? "plan" : "fallback",
+      stageSources: Object.fromEntries(
+        doc.stages
+          .filter((stage) => stage.name.trim())
+          .map((stage) => [stage.id, "plan"])
+      ),
     }
   } catch {
     return fallback
@@ -87,12 +202,19 @@ export function resolveStageApprovalNames(
   repoRoot: string,
   stream: StreamMetadata,
   stageNumber: number
-): { streamName: string; stageName: string } {
+): {
+  streamName: string
+  stageName: string
+  streamSource: "plan" | "fallback"
+  stageSource: "plan" | "fallback"
+} {
   const names = resolvePlanNames(repoRoot, stream)
 
   return {
     streamName: names.streamName,
     stageName: names.stageNames[stageNumber] ?? `Stage ${stageNumber}`,
+    streamSource: names.streamSource,
+    stageSource: names.stageSources[stageNumber] ?? "fallback",
   }
 }
 

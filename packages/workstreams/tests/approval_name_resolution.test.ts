@@ -2,7 +2,12 @@ import { describe, expect, test, beforeEach, afterEach } from "bun:test"
 import { existsSync, mkdirSync, rmSync, writeFileSync } from "fs"
 import { join } from "path"
 
-import { resolvePlanNames, resolveStageApprovalNames } from "../src/lib/approval.ts"
+import {
+  getPlanApprovalCommitNamingStatus,
+  getStageApprovalCommitNamingStatus,
+  resolvePlanNames,
+  resolveStageApprovalNames,
+} from "../src/lib/approval.ts"
 import type { StreamMetadata } from "../src/lib/types.ts"
 
 const TEST_DIR = join(import.meta.dir, "temp_approval_name_resolution_test")
@@ -77,11 +82,17 @@ Reuse naming helpers across approvals.
       stageNames: {
         1: "Shared Auto-Commit Infrastructure",
       },
+      streamSource: "plan",
+      stageSources: {
+        1: "plan",
+      },
     })
 
     expect(resolveStageApprovalNames(TEST_DIR, stream, 1)).toEqual({
       streamName: "Approval Auto Commit Centralization",
       stageName: "Shared Auto-Commit Infrastructure",
+      streamSource: "plan",
+      stageSource: "plan",
     })
   })
 
@@ -89,6 +100,8 @@ Reuse naming helpers across approvals.
     expect(resolveStageApprovalNames(TEST_DIR, stream, 2)).toEqual({
       streamName: "fallback-stream-name",
       stageName: "Stage 2",
+      streamSource: "fallback",
+      stageSource: "fallback",
     })
 
     writeFileSync(join(TEST_DIR, "work", "stream-001", "PLAN.md"), "# Invalid Plan")
@@ -96,6 +109,52 @@ Reuse naming helpers across approvals.
     expect(resolveStageApprovalNames(TEST_DIR, stream, 3)).toEqual({
       streamName: "fallback-stream-name",
       stageName: "Stage 3",
+      streamSource: "fallback",
+      stageSource: "fallback",
+    })
+  })
+
+  test("flags generic stream approval names as unsafe", () => {
+    writeFileSync(
+      join(TEST_DIR, "work", "stream-001", "PLAN.md"),
+      `# Plan: stream-001
+
+## Summary
+Keep approval naming trustworthy.
+
+## Stages
+
+### Stage 1: Real Stage Name
+`
+    )
+
+    expect(getPlanApprovalCommitNamingStatus(TEST_DIR, stream)).toEqual({
+      trustworthy: false,
+      reason: "unsafe_generic_stream_name",
+    })
+    expect(getStageApprovalCommitNamingStatus(TEST_DIR, stream, 1)).toEqual({
+      trustworthy: false,
+      reason: "unsafe_generic_stream_name",
+    })
+  })
+
+  test("flags generic stage approval names as unsafe", () => {
+    writeFileSync(
+      join(TEST_DIR, "work", "stream-001", "PLAN.md"),
+      `# Plan: Approval Auto Commit Centralization
+
+## Summary
+Keep approval naming trustworthy.
+
+## Stages
+
+### Stage 1: Stage 1
+`
+    )
+
+    expect(getStageApprovalCommitNamingStatus(TEST_DIR, stream, 1)).toEqual({
+      trustworthy: false,
+      reason: "unsafe_generic_stage_name",
     })
   })
 })

@@ -131,6 +131,18 @@ describe("git auto commit executor", () => {
     }
 
     try {
+      mkdirSync(join(repoRoot, "work", "stream-001"), { recursive: true })
+      writeFileSync(join(repoRoot, "work", "stream-001", "PLAN.md"), [
+        "# Plan: Approval Automation",
+        "",
+        "## Summary",
+        "Trusted naming should still surface git failures.",
+        "",
+        "## Stages",
+        "",
+        "### Stage 1: Shared Auto-Commit Infrastructure",
+      ].join("\n"))
+
       const result = createStageApprovalCommit(repoRoot, stream, 1)
 
       expect(result.success).toBe(false)
@@ -306,6 +318,285 @@ describe("git auto commit executor", () => {
       expect(body).toContain("Approved 3 tasks for workstream stream-001.")
       expect(body).toContain("Stream-Name: Resolved Stream Name")
       expect(body).toContain("Task-Count: 3")
+    } finally {
+      cleanupRepo(repoRoot)
+    }
+  })
+
+  test("skips plan approval commits when stream naming falls back from PLAN.md", () => {
+    const repoRoot = createGitRepo()
+    const stream: StreamMetadata = {
+      id: "stream-001",
+      name: "Synthetic Stream Name",
+      order: 1,
+      size: "short",
+      session_estimated: {
+        length: 1,
+        unit: "session",
+        session_minutes: [30, 45],
+        session_iterations: [4, 8],
+      },
+      created_at: new Date().toISOString(),
+      updated_at: new Date().toISOString(),
+      path: "work/stream-001",
+      generated_by: {
+        workstreams: "test",
+      },
+      approval: {
+        status: "approved",
+      },
+    }
+
+    try {
+      mkdirSync(join(repoRoot, "work", "stream-001"), { recursive: true })
+      writeFileSync(join(repoRoot, "work", "index.json"), '{"approval":true}\n')
+      writeFileSync(join(repoRoot, "work", "stream-001", "PLAN.md"), [
+        "# Invalid Plan Header",
+        "",
+        "## Summary",
+        "Fallback stream naming should not auto-commit.",
+      ].join("\n"))
+
+      const beforeSha = getHeadCommitSha(repoRoot)
+      const result = createPlanApprovalCommit(repoRoot, stream)
+
+      expect(result).toMatchObject({
+        success: true,
+        created: false,
+        skipped: true,
+        outcome: "skipped",
+        reason: "unsafe_fallback_stream_name",
+      })
+      expect(getHeadCommitSha(repoRoot)).toBe(beforeSha)
+    } finally {
+      cleanupRepo(repoRoot)
+    }
+  })
+
+  test("skips tasks approval commits when stream naming falls back from PLAN.md", () => {
+    const repoRoot = createGitRepo()
+    const stream: StreamMetadata = {
+      id: "stream-001",
+      name: "Synthetic Stream Name",
+      order: 1,
+      size: "short",
+      session_estimated: {
+        length: 1,
+        unit: "session",
+        session_minutes: [30, 45],
+        session_iterations: [4, 8],
+      },
+      created_at: new Date().toISOString(),
+      updated_at: new Date().toISOString(),
+      path: "work/stream-001",
+      generated_by: {
+        workstreams: "test",
+      },
+      approval: {
+        status: "approved",
+      },
+    }
+
+    try {
+      mkdirSync(join(repoRoot, "work", "stream-001"), { recursive: true })
+      writeFileSync(join(repoRoot, "work", "index.json"), '{"approval":true}\n')
+      writeFileSync(join(repoRoot, "work", "stream-001", "tasks.json"), '{"tasks":[]}\n')
+      writeFileSync(join(repoRoot, "work", "stream-001", "PLAN.md"), [
+        "# Invalid Plan Header",
+        "",
+        "## Summary",
+        "Fallback stream naming should not auto-commit.",
+      ].join("\n"))
+
+      const beforeSha = getHeadCommitSha(repoRoot)
+      const result = createTasksApprovalCommit(repoRoot, stream, 1)
+
+      expect(result).toMatchObject({
+        success: true,
+        created: false,
+        skipped: true,
+        outcome: "skipped",
+        reason: "unsafe_fallback_stream_name",
+      })
+      expect(getHeadCommitSha(repoRoot)).toBe(beforeSha)
+    } finally {
+      cleanupRepo(repoRoot)
+    }
+  })
+
+  test("skips stage approval auto-commit when unrelated tracked files are already dirty", () => {
+    const repoRoot = createGitRepo()
+    const stream: StreamMetadata = {
+      id: "stream-001",
+      name: "Approval Automation",
+      order: 1,
+      size: "short",
+      session_estimated: {
+        length: 1,
+        unit: "session",
+        session_minutes: [30, 45],
+        session_iterations: [4, 8],
+      },
+      created_at: new Date().toISOString(),
+      updated_at: new Date().toISOString(),
+      path: "work/stream-001",
+      generated_by: {
+        workstreams: "test",
+      },
+      approval: {
+        status: "approved",
+        stages: {
+          1: {
+            status: "approved",
+            approved_at: new Date().toISOString(),
+            approved_by: "user",
+          },
+        },
+      },
+    }
+
+    try {
+      const beforeSha = getHeadCommitSha(repoRoot)
+      mkdirSync(join(repoRoot, "work", "stream-001"), { recursive: true })
+      writeFileSync(join(repoRoot, "work", "index.json"), '{"approval":true}\n')
+      writeFileSync(join(repoRoot, "work", "stream-001", "PLAN.md"), [
+        "# Plan: Approval Automation",
+        "",
+        "## Summary",
+        "Trusted naming should still enforce dirty-file safety.",
+        "",
+        "## Stages",
+        "",
+        "### Stage 1: Shared Auto-Commit Infrastructure",
+      ].join("\n"))
+      writeFileSync(join(repoRoot, "README.md"), "# Dirty tracked change\n")
+
+      const result = createStageApprovalCommit(repoRoot, stream, 1, {
+        trackedDirtyBeforeApproval: ["README.md"],
+      })
+
+      expect(result).toMatchObject({
+        success: true,
+        created: false,
+        skipped: true,
+        outcome: "skipped",
+        reason: "unsafe_unrelated_tracked_changes",
+        files: ["README.md"],
+      })
+      expect(getHeadCommitSha(repoRoot)).toBe(beforeSha)
+    } finally {
+      cleanupRepo(repoRoot)
+    }
+  })
+
+  test("skips stage approval commits when stage naming falls back to default resolution", () => {
+    const repoRoot = createGitRepo()
+    const stream: StreamMetadata = {
+      id: "stream-001",
+      name: "Approval Automation",
+      order: 1,
+      size: "short",
+      session_estimated: {
+        length: 1,
+        unit: "session",
+        session_minutes: [30, 45],
+        session_iterations: [4, 8],
+      },
+      created_at: new Date().toISOString(),
+      updated_at: new Date().toISOString(),
+      path: "work/stream-001",
+      generated_by: {
+        workstreams: "test",
+      },
+      approval: {
+        status: "approved",
+        stages: {
+          1: {
+            status: "approved",
+            approved_at: new Date().toISOString(),
+            approved_by: "user",
+          },
+        },
+      },
+    }
+
+    try {
+      mkdirSync(join(repoRoot, "work", "stream-001"), { recursive: true })
+      writeFileSync(join(repoRoot, "work", "index.json"), '{"approval":true}\n')
+      writeFileSync(join(repoRoot, "work", "stream-001", "PLAN.md"), [
+        "# Plan: Approval Automation",
+        "",
+        "## Summary",
+        "Missing stage name should block auto-commit naming.",
+        "",
+        "## Stages",
+        "",
+        "### Stage 1:",
+      ].join("\n"))
+
+      const beforeSha = getHeadCommitSha(repoRoot)
+      const result = createStageApprovalCommit(repoRoot, stream, 1)
+
+      expect(result).toMatchObject({
+        success: true,
+        created: false,
+        skipped: true,
+        outcome: "skipped",
+        reason: "unsafe_fallback_stage_name",
+      })
+      expect(getHeadCommitSha(repoRoot)).toBe(beforeSha)
+    } finally {
+      cleanupRepo(repoRoot)
+    }
+  })
+
+  test("skips plan approval auto-commit when approval only changes ignored metadata", () => {
+    const repoRoot = createGitRepo()
+    const stream: StreamMetadata = {
+      id: "stream-001",
+      name: "Approval Automation",
+      order: 1,
+      size: "short",
+      session_estimated: {
+        length: 1,
+        unit: "session",
+        session_minutes: [30, 45],
+        session_iterations: [4, 8],
+      },
+      created_at: new Date().toISOString(),
+      updated_at: new Date().toISOString(),
+      path: "work/stream-001",
+      generated_by: {
+        workstreams: "test",
+      },
+      approval: {
+        status: "approved",
+      },
+    }
+
+    try {
+      writeFileSync(join(repoRoot, ".gitignore"), "work/\n")
+      execSync("git add .gitignore && git commit -m \"ignore work\"", {
+        cwd: repoRoot,
+        stdio: "pipe",
+      })
+      const beforeSha = getHeadCommitSha(repoRoot)
+
+      mkdirSync(join(repoRoot, "work", "stream-001"), { recursive: true })
+      writeFileSync(join(repoRoot, "work", "index.json"), '{"approval":true}\n')
+      writeFileSync(join(repoRoot, "work", "stream-001", "PLAN.md"), "# Plan: Ignored\n")
+      writeFileSync(join(repoRoot, "work", "stream-001", "TASKS.md"), "# Tasks\n")
+
+      const result = createPlanApprovalCommit(repoRoot, stream)
+
+      expect(result).toMatchObject({
+        success: true,
+        created: false,
+        skipped: true,
+        outcome: "skipped",
+        reason: "no_tracked_approval_changes",
+      })
+      expect(getHeadCommitSha(repoRoot)).toBe(beforeSha)
     } finally {
       cleanupRepo(repoRoot)
     }

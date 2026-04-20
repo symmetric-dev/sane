@@ -16,6 +16,7 @@ import {
   approveStage,
   revokeStageApproval,
   getStageApprovalStatus,
+  storeStageCommitSha,
 } from "../../lib/approval.ts"
 import {
   loadGitHubConfig,
@@ -30,10 +31,38 @@ import { closeStageIssue } from "../../lib/github/issues.ts"
 import { generateTasksMdFromPlan } from "../../lib/tasks-md.ts"
 import { parseStreamDocument } from "../../lib/stream-parser.ts"
 import { getWorkDir } from "../../lib/repo.ts"
+import {
+  listTrackedDirtyFiles,
+  type GitAutoCommitResult,
+} from "../../lib/git/index.ts"
 import { atomicWriteFile, getResolvedStream } from "../../lib/index.ts"
 import { getTasks, parseTaskId } from "../../lib/tasks.ts"
 
 import type { ApproveCliArgs } from "./utils.ts"
+
+function formatApprovalAutoCommitSkip(result: GitAutoCommitResult): string {
+  if (result.reason === "unsafe_unrelated_tracked_changes") {
+    const files = result.files?.length
+      ? ` (${result.files.join(", ")})`
+      : ""
+    return `unsafe_unrelated_tracked_changes${files}`
+  }
+
+  if (result.reason === "no_tracked_approval_changes") {
+    return "no_tracked_approval_changes"
+  }
+
+  if (
+    result.reason === "unsafe_fallback_stream_name" ||
+    result.reason === "unsafe_generic_stream_name" ||
+    result.reason === "unsafe_fallback_stage_name" ||
+    result.reason === "unsafe_generic_stage_name"
+  ) {
+    return result.reason
+  }
+
+  return result.error ?? "unknown"
+}
 
 /**
  * Result of TASKS.md generation attempt
@@ -281,21 +310,26 @@ export async function handlePlanApproval(
     }
 
     try {
-      const updatedStream = approveStage(repoRoot, stream.id, stageNum, "user")
+      const trackedDirtyBeforeApproval = listTrackedDirtyFiles(repoRoot)
+      let updatedStream = approveStage(repoRoot, stream.id, stageNum, "user")
 
       // Auto-commit on stage approval if configured.
       // This uses plain git and does not require GitHub integration to be enabled.
-      let commitResult:
-        | {
-            success: boolean
-            commitSha?: string
-            skipped?: boolean
-            error?: string
-          }
-        | undefined
+      let commitResult: GitAutoCommitResult | undefined
       const githubConfig = await loadGitHubConfig(repoRoot)
       if (githubConfig.auto_commit_on_approval) {
-        commitResult = createStageApprovalCommit(repoRoot, updatedStream, stageNum)
+        commitResult = createStageApprovalCommit(repoRoot, updatedStream, stageNum, {
+          trackedDirtyBeforeApproval,
+        })
+
+        if (commitResult.success && commitResult.commitSha) {
+          updatedStream = storeStageCommitSha(
+            repoRoot,
+            updatedStream.id,
+            stageNum,
+            commitResult.commitSha
+          )
+        }
       }
 
       // Automatically close GitHub issue for this stage if GitHub integration is enabled
@@ -362,7 +396,10 @@ export async function handlePlanApproval(
                 ? {
                     created: commitResult.success && !commitResult.skipped,
                     sha: commitResult.commitSha,
+                    outcome: commitResult.outcome,
                     skipped: commitResult.skipped,
+                    reason: commitResult.reason,
+                    files: commitResult.files,
                     error: commitResult.error,
                   }
                 : undefined,
@@ -386,7 +423,7 @@ export async function handlePlanApproval(
         if (commitResult?.success && commitResult.commitSha) {
           console.log(`  Committed: ${commitResult.commitSha.substring(0, 7)}`)
         } else if (commitResult?.skipped) {
-          console.log(`  No changes to commit`)
+          console.log(`  Commit skipped: ${formatApprovalAutoCommitSkip(commitResult)}`)
         } else if (commitResult?.error) {
           console.log(`  Commit skipped: ${commitResult.error}`)
         }
@@ -546,6 +583,7 @@ export async function handlePlanApproval(
   }
 
   try {
+    const trackedDirtyBeforeApproval = listTrackedDirtyFiles(repoRoot)
     const updatedStream = approveStream(repoRoot, stream.id, "user")
 
     // Auto-generate TASKS.md after successful plan approval
@@ -557,17 +595,12 @@ export async function handlePlanApproval(
 
     // Auto-commit on plan approval if configured.
     // This uses plain git and does not require GitHub integration to be enabled.
-    let commitResult:
-      | {
-          success: boolean
-          commitSha?: string
-          skipped?: boolean
-          error?: string
-        }
-      | undefined
+    let commitResult: GitAutoCommitResult | undefined
     const githubConfig = await loadGitHubConfig(repoRoot)
     if (githubConfig.auto_commit_on_approval) {
-      commitResult = createPlanApprovalCommit(repoRoot, updatedStream)
+      commitResult = createPlanApprovalCommit(repoRoot, updatedStream, {
+        trackedDirtyBeforeApproval,
+      })
     }
 
     if (cliArgs.json) {
@@ -593,7 +626,10 @@ export async function handlePlanApproval(
               ? {
                   created: commitResult.success && !commitResult.skipped,
                   sha: commitResult.commitSha,
+                  outcome: commitResult.outcome,
                   skipped: commitResult.skipped,
+                  reason: commitResult.reason,
+                  files: commitResult.files,
                   error: commitResult.error,
                 }
               : undefined,
@@ -623,7 +659,7 @@ export async function handlePlanApproval(
       if (commitResult?.success && commitResult.commitSha) {
         console.log(`  Committed: ${commitResult.commitSha.substring(0, 7)}`)
       } else if (commitResult?.skipped) {
-        console.log(`  No changes to commit`)
+        console.log(`  Commit skipped: ${formatApprovalAutoCommitSkip(commitResult)}`)
       } else if (commitResult?.error) {
         console.log(`  Commit skipped: ${commitResult.error}`)
       }

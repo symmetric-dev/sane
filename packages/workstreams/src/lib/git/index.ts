@@ -22,9 +22,11 @@ export {
 
 export {
   type GitAutoCommitResult,
+  type GitAutoCommitSkipReason,
   executeGitAutoCommit,
   getHeadCommitSha,
   hasStagedChangesToCommit,
+  listTrackedDirtyFiles,
 } from "./auto-commit-executor.ts"
 
 export {

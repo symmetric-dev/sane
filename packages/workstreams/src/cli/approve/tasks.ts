@@ -15,6 +15,10 @@ import {
 } from "../../lib/approval.ts"
 import { parseTasksMd, generateTasksMdFromTasks } from "../../lib/tasks-md.ts"
 import { getWorkDir } from "../../lib/repo.ts"
+import {
+  listTrackedDirtyFiles,
+  type GitAutoCommitResult,
+} from "../../lib/git/index.ts"
 import { getResolvedStream, atomicWriteFile } from "../../lib/index.ts"
 import { addTasks, getTasks } from "../../lib/tasks.ts"
 import { generateAllPrompts } from "../../lib/prompts.ts"
@@ -24,6 +28,30 @@ import {
 } from "../../lib/github/index.ts"
 
 import type { ApproveCliArgs } from "./utils.ts"
+
+function formatApprovalAutoCommitSkip(result: GitAutoCommitResult): string {
+  if (result.reason === "unsafe_unrelated_tracked_changes") {
+    const files = result.files?.length
+      ? ` (${result.files.join(", ")})`
+      : ""
+    return `unsafe_unrelated_tracked_changes${files}`
+  }
+
+  if (result.reason === "no_tracked_approval_changes") {
+    return "no_tracked_approval_changes"
+  }
+
+  if (
+    result.reason === "unsafe_fallback_stream_name" ||
+    result.reason === "unsafe_generic_stream_name" ||
+    result.reason === "unsafe_fallback_stage_name" ||
+    result.reason === "unsafe_generic_stage_name"
+  ) {
+    return result.reason
+  }
+
+  return result.error ?? "unknown"
+}
 
 /**
  * Result of serializing TASKS.md to tasks.json
@@ -255,6 +283,8 @@ export async function handleTasksApproval(
     process.exit(1)
   }
 
+  const trackedDirtyBeforeApproval = listTrackedDirtyFiles(repoRoot)
+
   // Step 1: Serialize TASKS.md to tasks.json
   // This is the critical step - if it fails, we don't approve
   const serializeResult = serializeTasksMdToJson(repoRoot, stream.id)
@@ -295,20 +325,16 @@ export async function handleTasksApproval(
 
     // Step 5: Auto-commit on tasks approval if configured.
     // This is non-critical - if it fails, approval still succeeds.
-    let commitResult:
-      | {
-          success: boolean
-          commitSha?: string
-          skipped?: boolean
-          error?: string
-        }
-      | undefined
+    let commitResult: GitAutoCommitResult | undefined
     const githubConfig = await loadGitHubConfig(repoRoot)
     if (githubConfig.auto_commit_on_approval) {
       commitResult = createTasksApprovalCommit(
         repoRoot,
         updatedStream,
-        serializeResult.taskCount
+        serializeResult.taskCount,
+        {
+          trackedDirtyBeforeApproval,
+        }
       )
     }
 
@@ -334,7 +360,10 @@ export async function handleTasksApproval(
               ? {
                   created: commitResult.success && !commitResult.skipped,
                   sha: commitResult.commitSha,
+                  outcome: commitResult.outcome,
                   skipped: commitResult.skipped,
+                  reason: commitResult.reason,
+                  files: commitResult.files,
                   error: commitResult.error,
                 }
               : undefined,
@@ -368,7 +397,7 @@ export async function handleTasksApproval(
       if (commitResult?.success && commitResult.commitSha) {
         console.log(`  Committed: ${commitResult.commitSha.substring(0, 7)}`)
       } else if (commitResult?.skipped) {
-        console.log(`  No changes to commit`)
+        console.log(`  Commit skipped: ${formatApprovalAutoCommitSkip(commitResult)}`)
       } else if (commitResult?.error) {
         console.log(`  Commit skipped: ${commitResult.error}`)
       }

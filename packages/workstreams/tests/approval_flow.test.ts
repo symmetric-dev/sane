@@ -391,7 +391,7 @@ describe("Plan Approval with TASKS.md Auto-Generation", () => {
         expect(files).toContain("work/stream-autogen/TASKS.md");
     });
 
-    test("should still auto-commit plan approval when TASKS.md generation fails", async () => {
+    test("should still approve plan when TASKS.md generation fails and commit naming falls back", async () => {
         writeFileSync(
             join(AUTOGEN_REPO_ROOT, "work/stream-autogen/PLAN.md"),
             [
@@ -435,22 +435,21 @@ describe("Plan Approval with TASKS.md Auto-Generation", () => {
 
         expect(outputJoined).toContain("Approved plan");
         expect(outputJoined).toContain("Warning: Failed to generate TASKS.md");
-        expect(outputJoined).toContain("Committed:");
+        expect(outputJoined).toContain("Commit skipped: unsafe_fallback_stream_name");
 
-        const subject = execSync("git log -1 --pretty=%s", {
+        const sha = execSync("git rev-parse HEAD", {
             cwd: AUTOGEN_REPO_ROOT,
             encoding: "utf-8",
             stdio: ["pipe", "pipe", "pipe"],
         }).trim();
-        const files = execSync("git show --pretty= --name-only HEAD", {
+        const logCount = execSync("git rev-list --count HEAD", {
             cwd: AUTOGEN_REPO_ROOT,
             encoding: "utf-8",
             stdio: ["pipe", "pipe", "pipe"],
-        }).trim().split("\n").filter(Boolean);
+        }).trim();
 
-        expect(subject).toBe("Plan approved: Auto-Gen Test Stream");
-        expect(files).toContain("work/index.json");
-        expect(files).not.toContain("work/stream-autogen/TASKS.md");
+        expect(sha).toBeTruthy();
+        expect(logCount).toBe("1");
     });
 
     test("should approve plan without creating an auto-commit when disabled", async () => {
@@ -486,6 +485,51 @@ describe("Plan Approval with TASKS.md Auto-Generation", () => {
         expect(outputJoined).toContain("TASKS.md generated");
         expect(outputJoined).not.toContain("Committed:");
         expect(outputJoined).not.toContain("No changes to commit");
+
+        const afterSha = execSync("git rev-parse HEAD", {
+            cwd: AUTOGEN_REPO_ROOT,
+            encoding: "utf-8",
+            stdio: ["pipe", "pipe", "pipe"],
+        }).trim();
+        expect(afterSha).toBe(beforeSha);
+    });
+
+    test("should approve plan but skip auto-commit when approval only changes ignored work metadata", async () => {
+        const planContent = readFileSync(join(import.meta.dir, "fixtures/plans/basic-plan.md"), "utf-8");
+        writeFileSync(join(AUTOGEN_REPO_ROOT, "work/stream-autogen/PLAN.md"), planContent);
+        writeFileSync(join(AUTOGEN_REPO_ROOT, ".gitignore"), "work/\n");
+
+        await saveGitHubConfig(AUTOGEN_REPO_ROOT, {
+            ...DEFAULT_GITHUB_CONFIG,
+            enabled: false,
+            auto_commit_on_approval: true,
+        });
+
+        execSync("git init", { cwd: AUTOGEN_REPO_ROOT, stdio: "pipe" });
+        execSync('git config user.name "Test User"', { cwd: AUTOGEN_REPO_ROOT, stdio: "pipe" });
+        execSync('git config user.email "test@example.com"', { cwd: AUTOGEN_REPO_ROOT, stdio: "pipe" });
+        execSync("git add .gitignore && git commit -m \"baseline\"", {
+            cwd: AUTOGEN_REPO_ROOT,
+            stdio: "pipe",
+        });
+        const beforeSha = execSync("git rev-parse HEAD", {
+            cwd: AUTOGEN_REPO_ROOT,
+            encoding: "utf-8",
+            stdio: ["pipe", "pipe", "pipe"],
+        }).trim();
+
+        const { main } = await import("../src/cli/approve/index.ts");
+        const { stdout } = await captureCliOutput(async () => {
+            await main(["node", "approve", "plan", "--stream", "stream-autogen", "--repo-root", AUTOGEN_REPO_ROOT]);
+        });
+
+        const outputJoined = stdout.join("\n");
+        expect(outputJoined).toContain("Approved plan");
+        expect(outputJoined).toContain("Commit skipped: no_tracked_approval_changes");
+
+        const index = loadIndex(AUTOGEN_REPO_ROOT);
+        const stream = index.streams[0];
+        expect(stream?.approval?.status).toBe("approved");
 
         const afterSha = execSync("git rev-parse HEAD", {
             cwd: AUTOGEN_REPO_ROOT,
@@ -685,6 +729,61 @@ describe("Tasks Approval with Auto-Generation", () => {
         expect(outputJoined).toContain("Tasks approved");
         expect(outputJoined).not.toContain("Committed:");
         expect(outputJoined).not.toContain("Commit skipped:");
+
+        const index = loadIndex(TASKS_APPROVAL_REPO_ROOT);
+        const stream = index.streams[0];
+        expect(stream?.approval?.tasks?.status).toBe("approved");
+
+        const afterSha = execSync("git rev-parse HEAD", {
+            cwd: TASKS_APPROVAL_REPO_ROOT,
+            encoding: "utf-8",
+            stdio: ["pipe", "pipe", "pipe"],
+        }).trim();
+        expect(afterSha).toBe(beforeSha);
+    });
+
+    test("should approve tasks but skip auto-commit when unrelated tracked files are already dirty", async () => {
+        const tasksMdContent = `# Tasks: Tasks Test Stream
+
+## Stage 01: Implementation
+
+### Batch 01: Core Features
+
+#### Thread 01: Feature A @agent:coder
+
+- [ ] Task 01.01.01.01: Implement feature A
+`;
+        writeFileSync(join(TASKS_APPROVAL_REPO_ROOT, "work/stream-tasks/TASKS.md"), tasksMdContent);
+        writeFileSync(join(TASKS_APPROVAL_REPO_ROOT, "README.md"), "baseline\n");
+
+        await saveGitHubConfig(TASKS_APPROVAL_REPO_ROOT, {
+            ...DEFAULT_GITHUB_CONFIG,
+            enabled: false,
+            auto_commit_on_approval: true,
+        });
+
+        execSync("git init", { cwd: TASKS_APPROVAL_REPO_ROOT, stdio: "pipe" });
+        execSync('git config user.name "Test User"', { cwd: TASKS_APPROVAL_REPO_ROOT, stdio: "pipe" });
+        execSync('git config user.email "test@example.com"', { cwd: TASKS_APPROVAL_REPO_ROOT, stdio: "pipe" });
+        execSync("git add -A && git commit -m \"baseline\"", {
+            cwd: TASKS_APPROVAL_REPO_ROOT,
+            stdio: "pipe",
+        });
+        writeFileSync(join(TASKS_APPROVAL_REPO_ROOT, "README.md"), "dirty tracked change\n");
+        const beforeSha = execSync("git rev-parse HEAD", {
+            cwd: TASKS_APPROVAL_REPO_ROOT,
+            encoding: "utf-8",
+            stdio: ["pipe", "pipe", "pipe"],
+        }).trim();
+
+        const { main } = await import("../src/cli/approve/index.ts");
+        const { stdout } = await captureCliOutput(async () => {
+            await main(["node", "approve", "tasks", "--stream", "stream-tasks", "--repo-root", TASKS_APPROVAL_REPO_ROOT]);
+        });
+
+        const outputJoined = stdout.join("\n");
+        expect(outputJoined).toContain("Tasks approved");
+        expect(outputJoined).toContain("Commit skipped: unsafe_unrelated_tracked_changes (README.md)");
 
         const index = loadIndex(TASKS_APPROVAL_REPO_ROOT);
         const stream = index.streams[0];

@@ -12,6 +12,43 @@ const TEST_DIR = join(import.meta.dir, "temp_stage_validation_test");
 const REPO_ROOT = TEST_DIR;
 const testAutoCommitApproval = process.env.CI ? test.skip : test;
 
+function writeStageTasksJson(status: "pending" | "completed") {
+    const tasksJsonPath = join(REPO_ROOT, "work/stream-001/tasks.json");
+    writeFileSync(tasksJsonPath, JSON.stringify({
+        version: "1.0.0",
+        stream_id: "stream-001",
+        last_updated: new Date().toISOString(),
+        tasks: [
+            {
+                id: "01.01.01.01",
+                name: "Task 1",
+                thread_name: "Thread 1",
+                batch_name: "Batch 1",
+                stage_name: "Stage 1",
+                status,
+                created_at: new Date().toISOString(),
+                updated_at: new Date().toISOString()
+            },
+            {
+                id: "02.01.01.01",
+                name: "Task 2 (Stage 2)",
+                thread_name: "Thread 1",
+                batch_name: "Batch 1",
+                stage_name: "Stage 2",
+                status: "pending",
+                created_at: new Date().toISOString(),
+                updated_at: new Date().toISOString()
+            }
+        ]
+    }, null, 2));
+}
+
+function initGitRepo() {
+    execSync("git init", { cwd: REPO_ROOT, stdio: "pipe" });
+    execSync("git config user.name \"Test User\"", { cwd: REPO_ROOT, stdio: "pipe" });
+    execSync("git config user.email \"test@example.com\"", { cwd: REPO_ROOT, stdio: "pipe" });
+}
+
 describe("Stage Approval Validation", () => {
     beforeEach(() => {
         // Set USER role for approval tests
@@ -149,35 +186,7 @@ Keep approval naming consistent.
     });
 
     test("should allow stage approval if tasks are completed", async () => {
-        // Update tasks.json to completed
-        const tasksJsonPath = join(REPO_ROOT, "work/stream-001/tasks.json");
-        writeFileSync(tasksJsonPath, JSON.stringify({
-            version: "1.0.0",
-            stream_id: "stream-001",
-            last_updated: new Date().toISOString(),
-            tasks: [
-                {
-                    id: "01.01.01.01",
-                    name: "Task 1",
-                    thread_name: "Thread 1",
-                    batch_name: "Batch 1",
-                    stage_name: "Stage 1",
-                    status: "completed",
-                    created_at: new Date().toISOString(),
-                    updated_at: new Date().toISOString()
-                },
-                {
-                    id: "02.01.01.01",
-                    name: "Task 2 (Stage 2)",
-                    thread_name: "Thread 1",
-                    batch_name: "Batch 1",
-                    stage_name: "Stage 2",
-                    status: "pending", // Stage 2 still pending, shouldn't affect Stage 1
-                    created_at: new Date().toISOString(),
-                    updated_at: new Date().toISOString()
-                }
-            ]
-        }, null, 2));
+        writeStageTasksJson("completed");
 
         const { main } = await import("../src/cli/approve/index.ts");
 
@@ -229,22 +238,7 @@ Keep approval naming consistent.
     });
 
     test("should return already-approved without metadata churn on repeated stage approval", async () => {
-        const tasksJsonPath = join(REPO_ROOT, "work/stream-001/tasks.json");
-        writeFileSync(tasksJsonPath, JSON.stringify({
-            version: "1.0.0",
-            stream_id: "stream-001",
-            last_updated: new Date().toISOString(),
-            tasks: [{
-                id: "01.01.01.01",
-                name: "Task 1",
-                thread_name: "Thread 1",
-                batch_name: "Batch 1",
-                stage_name: "Stage 1",
-                status: "completed",
-                created_at: new Date().toISOString(),
-                updated_at: new Date().toISOString()
-            }]
-        }, null, 2));
+        writeStageTasksJson("completed");
 
         const { main } = await import("../src/cli/approve/index.ts");
 
@@ -274,22 +268,7 @@ Keep approval naming consistent.
     });
 
     test("should not let --force bypass already-approved stage protection", async () => {
-        const tasksJsonPath = join(REPO_ROOT, "work/stream-001/tasks.json");
-        writeFileSync(tasksJsonPath, JSON.stringify({
-            version: "1.0.0",
-            stream_id: "stream-001",
-            last_updated: new Date().toISOString(),
-            tasks: [{
-                id: "01.01.01.01",
-                name: "Task 1",
-                thread_name: "Thread 1",
-                batch_name: "Batch 1",
-                stage_name: "Stage 1",
-                status: "completed",
-                created_at: new Date().toISOString(),
-                updated_at: new Date().toISOString()
-            }]
-        }, null, 2));
+        writeStageTasksJson("completed");
 
         const { main } = await import("../src/cli/approve/index.ts");
 
@@ -320,28 +299,8 @@ Keep approval naming consistent.
     });
 
     testAutoCommitApproval("should auto-commit stage approval even when GitHub integration is disabled", async () => {
-        const tasksJsonPath = join(REPO_ROOT, "work/stream-001/tasks.json");
-        writeFileSync(tasksJsonPath, JSON.stringify({
-            version: "1.0.0",
-            stream_id: "stream-001",
-            last_updated: new Date().toISOString(),
-            tasks: [
-                {
-                    id: "01.01.01.01",
-                    name: "Task 1",
-                    thread_name: "Thread 1",
-                    batch_name: "Batch 1",
-                    stage_name: "Stage 1",
-                    status: "completed",
-                    created_at: new Date().toISOString(),
-                    updated_at: new Date().toISOString()
-                }
-            ]
-        }, null, 2));
-
-        execSync("git init", { cwd: REPO_ROOT, stdio: "pipe" });
-        execSync("git config user.name \"Test User\"", { cwd: REPO_ROOT, stdio: "pipe" });
-        execSync("git config user.email \"test@example.com\"", { cwd: REPO_ROOT, stdio: "pipe" });
+        writeStageTasksJson("completed");
+        initGitRepo();
 
         const { main } = await import("../src/cli/approve/index.ts");
 
@@ -379,27 +338,19 @@ Keep approval naming consistent.
         expect(body).toContain("Stream-Name: Approval Automation");
         expect(body).toContain("Stage: 1");
         expect(body).toContain("Stage-Name: Shared Auto-Commit Infrastructure");
+
+        const storedStream = loadIndex(REPO_ROOT).streams[0]!;
+        const headSha = execSync("git rev-parse HEAD", {
+            cwd: REPO_ROOT,
+            encoding: "utf-8",
+            stdio: ["pipe", "pipe", "pipe"],
+        }).trim();
+
+        expect(storedStream.approval?.stages?.[1]?.commit_sha).toBe(headSha);
     });
 
     testAutoCommitApproval("should not auto-commit stage approval when auto-commit is disabled", async () => {
-        const tasksJsonPath = join(REPO_ROOT, "work/stream-001/tasks.json");
-        writeFileSync(tasksJsonPath, JSON.stringify({
-            version: "1.0.0",
-            stream_id: "stream-001",
-            last_updated: new Date().toISOString(),
-            tasks: [
-                {
-                    id: "01.01.01.01",
-                    name: "Task 1",
-                    thread_name: "Thread 1",
-                    batch_name: "Batch 1",
-                    stage_name: "Stage 1",
-                    status: "completed",
-                    created_at: new Date().toISOString(),
-                    updated_at: new Date().toISOString()
-                }
-            ]
-        }, null, 2));
+        writeStageTasksJson("completed");
 
         await saveGitHubConfig(REPO_ROOT, {
             ...DEFAULT_GITHUB_CONFIG,
@@ -407,9 +358,7 @@ Keep approval naming consistent.
             auto_commit_on_approval: false,
         });
 
-        execSync("git init", { cwd: REPO_ROOT, stdio: "pipe" });
-        execSync("git config user.name \"Test User\"", { cwd: REPO_ROOT, stdio: "pipe" });
-        execSync("git config user.email \"test@example.com\"", { cwd: REPO_ROOT, stdio: "pipe" });
+        initGitRepo();
         execSync("git add -A && git commit -m \"baseline\"", {
             cwd: REPO_ROOT,
             stdio: "pipe",
@@ -439,6 +388,174 @@ Keep approval naming consistent.
         expect(output).toContain("Approved Stage 1");
         expect(output).not.toContain("Committed:");
         expect(output).not.toContain("No changes to commit");
+
+        const storedStream = loadIndex(REPO_ROOT).streams[0]!;
+        expect(storedStream.approval?.stages?.[1]?.commit_sha).toBeUndefined();
+
+        const afterSha = execSync("git rev-parse HEAD", {
+            cwd: REPO_ROOT,
+            encoding: "utf-8",
+            stdio: ["pipe", "pipe", "pipe"],
+        }).trim();
+        expect(afterSha).toBe(beforeSha);
+    });
+
+    testAutoCommitApproval("should keep stage approval successful when auto-commit skips for unrelated tracked files", async () => {
+        writeStageTasksJson("completed");
+        writeFileSync(join(REPO_ROOT, "README.md"), "baseline\n");
+
+        await saveGitHubConfig(REPO_ROOT, {
+            ...DEFAULT_GITHUB_CONFIG,
+            enabled: false,
+            auto_commit_on_approval: true,
+        });
+
+        initGitRepo();
+        execSync("git add -A && git commit -m \"baseline\"", {
+            cwd: REPO_ROOT,
+            stdio: "pipe",
+        });
+        writeFileSync(join(REPO_ROOT, "README.md"), "dirty tracked change\n");
+        const beforeSha = execSync("git rev-parse HEAD", {
+            cwd: REPO_ROOT,
+            encoding: "utf-8",
+            stdio: ["pipe", "pipe", "pipe"],
+        }).trim();
+
+        const { main } = await import("../src/cli/approve/index.ts");
+
+        const logs: string[] = [];
+        const originalError = console.error;
+        const originalLog = console.log;
+        console.error = (...args) => logs.push(args.join(" "));
+        console.log = (...args) => logs.push(args.join(" "));
+
+        try {
+            await main(["node", "approve", "stage", "1", "--stream", "stream-001", "--repo-root", REPO_ROOT]);
+        } finally {
+            console.error = originalError;
+            console.log = originalLog;
+        }
+
+        const output = logs.join("\n");
+        expect(output).toContain("Approved Stage 1");
+        expect(output).toContain("Commit skipped: unsafe_unrelated_tracked_changes (README.md)");
+
+        const storedStream = loadIndex(REPO_ROOT).streams[0]!;
+        expect(storedStream.approval?.stages?.[1]?.status).toBe("approved");
+        expect(storedStream.approval?.stages?.[1]?.commit_sha).toBeUndefined();
+
+        const afterSha = execSync("git rev-parse HEAD", {
+            cwd: REPO_ROOT,
+            encoding: "utf-8",
+            stdio: ["pipe", "pipe", "pipe"],
+        }).trim();
+        expect(afterSha).toBe(beforeSha);
+    });
+
+    testAutoCommitApproval("should keep stage approval successful when auto-commit skips without tracked approval changes", async () => {
+        writeStageTasksJson("completed");
+        writeFileSync(join(REPO_ROOT, ".gitignore"), "work/\n");
+
+        await saveGitHubConfig(REPO_ROOT, {
+            ...DEFAULT_GITHUB_CONFIG,
+            enabled: false,
+            auto_commit_on_approval: true,
+        });
+
+        initGitRepo();
+        execSync("git add .gitignore && git commit -m \"baseline\"", {
+            cwd: REPO_ROOT,
+            stdio: "pipe",
+        });
+        const beforeSha = execSync("git rev-parse HEAD", {
+            cwd: REPO_ROOT,
+            encoding: "utf-8",
+            stdio: ["pipe", "pipe", "pipe"],
+        }).trim();
+
+        const { main } = await import("../src/cli/approve/index.ts");
+
+        const logs: string[] = [];
+        const originalError = console.error;
+        const originalLog = console.log;
+        console.error = (...args) => logs.push(args.join(" "));
+        console.log = (...args) => logs.push(args.join(" "));
+
+        try {
+            await main(["node", "approve", "stage", "1", "--stream", "stream-001", "--repo-root", REPO_ROOT]);
+        } finally {
+            console.error = originalError;
+            console.log = originalLog;
+        }
+
+        const output = logs.join("\n");
+        expect(output).toContain("Approved Stage 1");
+        expect(output).toContain("Commit skipped: no_tracked_approval_changes");
+
+        const storedStream = loadIndex(REPO_ROOT).streams[0]!;
+        expect(storedStream.approval?.stages?.[1]?.status).toBe("approved");
+        expect(storedStream.approval?.stages?.[1]?.commit_sha).toBeUndefined();
+
+        const afterSha = execSync("git rev-parse HEAD", {
+            cwd: REPO_ROOT,
+            encoding: "utf-8",
+            stdio: ["pipe", "pipe", "pipe"],
+        }).trim();
+        expect(afterSha).toBe(beforeSha);
+    });
+
+    testAutoCommitApproval("should skip stage auto-commit on generic stage naming while preserving approval success", async () => {
+        writeStageTasksJson("completed");
+        writeFileSync(join(REPO_ROOT, "work/stream-001/PLAN.md"), `# Plan: Approval Automation
+
+## Summary
+Validate approval flows.
+
+## Stages
+
+### Stage 1: Stage 1
+`);
+
+        await saveGitHubConfig(REPO_ROOT, {
+            ...DEFAULT_GITHUB_CONFIG,
+            enabled: false,
+            auto_commit_on_approval: true,
+        });
+
+        initGitRepo();
+        execSync("git add -A && git commit -m \"baseline\"", {
+            cwd: REPO_ROOT,
+            stdio: "pipe",
+        });
+        const beforeSha = execSync("git rev-parse HEAD", {
+            cwd: REPO_ROOT,
+            encoding: "utf-8",
+            stdio: ["pipe", "pipe", "pipe"],
+        }).trim();
+
+        const { main } = await import("../src/cli/approve/index.ts");
+
+        const logs: string[] = [];
+        const originalError = console.error;
+        const originalLog = console.log;
+        console.error = (...args) => logs.push(args.join(" "));
+        console.log = (...args) => logs.push(args.join(" "));
+
+        try {
+            await main(["node", "approve", "stage", "1", "--stream", "stream-001", "--repo-root", REPO_ROOT]);
+        } finally {
+            console.error = originalError;
+            console.log = originalLog;
+        }
+
+        const output = logs.join("\n");
+        expect(output).toContain("Approved Stage 1");
+        expect(output).toContain("Commit skipped: unsafe_generic_stage_name");
+
+        const storedStream = loadIndex(REPO_ROOT).streams[0]!;
+        expect(storedStream.approval?.stages?.[1]?.status).toBe("approved");
+        expect(storedStream.approval?.stages?.[1]?.commit_sha).toBeUndefined();
 
         const afterSha = execSync("git rev-parse HEAD", {
             cwd: REPO_ROOT,
