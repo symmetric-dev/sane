@@ -24,6 +24,7 @@ export {
   filesystemAuthoritativeSqliteStructuredStorageAdapter,
   getStructuredStorageAdapter,
 } from "./lib/storage-adapter.ts"
+export { getStructuredStorageSqlitePath } from "./lib/sqlite-storage.ts"
 
 // Index operations
 export {

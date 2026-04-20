@@ -2,6 +2,24 @@ import { mkdirSync } from "fs"
 import { dirname, join } from "path"
 
 import { Database } from "bun:sqlite"
+import type {
+  StructuredStorageWorkspaceState,
+  StructuredStorageWorkstreamState,
+  StructuredApprovalRecord,
+  StructuredBatchRecord,
+  StructuredStageRecord,
+  StructuredTaskRecord,
+  StructuredThreadRecord,
+  StructuredThreadRuntimeRecord,
+} from "./structured-storage.ts"
+import type {
+  PersistedBatchStatusFile,
+  PersistedBatchStatusThread,
+  RootAgentBranchSession,
+  SessionRecord,
+  SupervisorRunState,
+  SupervisorStateFile,
+} from "./types.ts"
 
 export const SQLITE_STRUCTURED_STORAGE_SCHEMA_VERSION = 1
 
@@ -282,6 +300,8 @@ export function getSqliteStructuredStoragePath(repoRoot: string): string {
   return join(repoRoot, "work", "db.sqlite")
 }
 
+export const getStructuredStorageSqlitePath = getSqliteStructuredStoragePath
+
 export function openSqliteStructuredStorageDatabase(repoRoot: string): Database {
   const databasePath = getSqliteStructuredStoragePath(repoRoot)
   mkdirSync(dirname(databasePath), { recursive: true })
@@ -339,5 +359,832 @@ function initializeSqliteStructuredStorageSchema(database: Database, databasePat
   } catch (error) {
     database.exec("ROLLBACK")
     throw error
+  }
+}
+
+function jsonStringify(value: unknown): string {
+  return JSON.stringify(value)
+}
+
+function nullableJsonStringify(value: unknown): string | null {
+  return value === undefined ? null : JSON.stringify(value)
+}
+
+function approvalKey(record: StructuredApprovalRecord): string {
+  return `${record.scope}:${record.stageId ?? ""}`
+}
+
+function deleteRemovedWorkstreams(database: Database, streamIds: string[]): void {
+  if (streamIds.length === 0) {
+    database.run("DELETE FROM workstreams")
+    return
+  }
+
+  const placeholders = streamIds.map(() => "?").join(", ")
+  database.run(`DELETE FROM workstreams WHERE stream_id NOT IN (${placeholders})`, streamIds)
+}
+
+function compareIds(left: string, right: string): number {
+  return left.localeCompare(right, undefined, { numeric: true })
+}
+
+function parseBatchId(batchId: string): { stageId: string; batchNumber: number } {
+  const [stageId = "00", batchNumber = "0"] = batchId.split(".")
+  return {
+    stageId,
+    batchNumber: Number.parseInt(batchNumber, 10) || 0,
+  }
+}
+
+function parseThreadId(threadId: string): { stageId: string; batchId: string; threadNumber: number } {
+  const [stageId = "00", batchNumber = "0", threadNumber = "0"] = threadId.split(".")
+  return {
+    stageId,
+    batchId: `${stageId}.${batchNumber}`,
+    threadNumber: Number.parseInt(threadNumber, 10) || 0,
+  }
+}
+
+function parseTaskId(taskId: string): {
+  stageId: string
+  batchId: string
+  threadId: string
+  taskNumber: number
+} {
+  const [stageId = "00", batchNumber = "0", threadNumber = "0", taskNumber = "0"] = taskId.split(".")
+  return {
+    stageId,
+    batchId: `${stageId}.${batchNumber}`,
+    threadId: `${stageId}.${batchNumber}.${threadNumber}`,
+    taskNumber: Number.parseInt(taskNumber, 10) || 0,
+  }
+}
+
+function ensureWorkstreamCatalogRow(database: Database, streamId: string): void {
+  const existing = database.query("SELECT stream_id FROM workstreams WHERE stream_id = ? LIMIT 1").get(streamId)
+  if (existing) {
+    return
+  }
+
+  const now = new Date().toISOString()
+  database.run(
+    `INSERT INTO workstreams (
+       stream_id,
+       name,
+       order_index,
+       size,
+       created_at,
+       updated_at,
+       storage_root,
+       manual_status,
+       current_batch_id,
+       generated_by_json,
+       session_estimated_json,
+       files_json,
+       planning_session_json,
+       github_json,
+       metadata_json
+     ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    [
+      streamId,
+      streamId,
+      0,
+      "short",
+      now,
+      now,
+      `work/${streamId}`,
+      null,
+      null,
+      "{}",
+      "{}",
+      null,
+      null,
+      null,
+      jsonStringify({ inferred: true, streamId }),
+    ],
+  )
+}
+
+function inferHierarchy(workstreamState: StructuredStorageWorkstreamState): {
+  stages: StructuredStageRecord[]
+  batches: StructuredBatchRecord[]
+  threads: StructuredThreadRecord[]
+  tasks: StructuredTaskRecord[]
+} {
+  const stages = new Map(workstreamState.hierarchy.stages.map((stage) => [stage.id, { ...stage }] as const))
+  const batches = new Map(workstreamState.hierarchy.batches.map((batch) => [batch.id, { ...batch }] as const))
+  const threads = new Map(workstreamState.hierarchy.threads.map((thread) => [thread.id, { ...thread }] as const))
+  const tasks = new Map(workstreamState.hierarchy.tasks.map((task) => [task.id, { ...task }] as const))
+
+  const ensureStage = (stageId: string, fallbackName?: string): void => {
+    if (stages.has(stageId)) return
+    stages.set(stageId, {
+      id: stageId,
+      number: Number.parseInt(stageId, 10) || 0,
+      name: fallbackName ?? `Stage ${stageId}`,
+    })
+  }
+
+  const ensureBatch = (batchId: string, fallbackName?: string): void => {
+    if (batches.has(batchId)) return
+    const { stageId, batchNumber } = parseBatchId(batchId)
+    ensureStage(stageId)
+    batches.set(batchId, {
+      id: batchId,
+      stageId,
+      number: batchNumber,
+      name: fallbackName ?? `Batch ${batchId}`,
+    })
+  }
+
+  const ensureThread = (threadId: string, fallbackName?: string): void => {
+    if (threads.has(threadId)) return
+    const { stageId, batchId, threadNumber } = parseThreadId(threadId)
+    ensureBatch(batchId)
+    threads.set(threadId, {
+      id: threadId,
+      stageId,
+      batchId,
+      number: threadNumber,
+      name: fallbackName ?? `Thread ${threadId}`,
+    })
+  }
+
+  const ensureTask = (taskId: string, updatedAt?: string): void => {
+    if (tasks.has(taskId)) return
+    const { stageId, batchId, threadId, taskNumber } = parseTaskId(taskId)
+    ensureThread(threadId)
+    const timestamp = updatedAt ?? new Date().toISOString()
+    tasks.set(taskId, {
+      id: taskId,
+      stageId,
+      batchId,
+      threadId,
+      number: taskNumber,
+      name: `Task ${taskId}`,
+      status: "pending",
+      createdAt: timestamp,
+      updatedAt: timestamp,
+    })
+  }
+
+  for (const batch of workstreamState.hierarchy.batches) {
+    ensureStage(batch.stageId)
+  }
+  for (const thread of workstreamState.hierarchy.threads) {
+    ensureBatch(thread.batchId)
+  }
+  for (const task of workstreamState.hierarchy.tasks) {
+    ensureThread(task.threadId)
+  }
+
+  for (const runtime of workstreamState.threadRuntime) {
+    ensureThread(runtime.threadId)
+  }
+
+  for (const batchRun of workstreamState.batchRuns) {
+    ensureBatch(batchRun.batchId, batchRun.batchName)
+    for (const thread of batchRun.threads) {
+      ensureThread(thread.threadId, thread.threadName)
+      ensureTask(thread.firstTaskId, thread.updatedAt)
+    }
+  }
+
+  for (const approval of workstreamState.approvals) {
+    if (approval.stageId) {
+      ensureStage(approval.stageId)
+    }
+  }
+
+  for (const run of workstreamState.supervision.runs) {
+    ensureStage(run.stageId)
+    if (run.currentBatchId) {
+      ensureBatch(run.currentBatchId)
+    }
+    if (run.lastReviewedBatchId) {
+      ensureBatch(run.lastReviewedBatchId)
+    }
+  }
+
+  const branchBatchIds = [
+    ...workstreamState.supervision.branch_sessions
+      .map((session) => session.batchId)
+      .filter((batchId): batchId is string => typeof batchId === "string"),
+    ...workstreamState.supervision.branch_sessions
+      .map((session) => (session.scope?.level === "batch" ? session.scope.batchId : undefined))
+      .filter((batchId): batchId is string => typeof batchId === "string"),
+  ]
+  for (const batchId of branchBatchIds) {
+    ensureBatch(batchId)
+  }
+
+  const branchThreadIds = workstreamState.supervision.branch_sessions
+    .map((session) => session.threadId)
+    .filter((threadId): threadId is string => typeof threadId === "string")
+  for (const threadId of branchThreadIds) {
+    ensureThread(threadId)
+  }
+
+  const scopeStageIds = workstreamState.supervision.branch_sessions
+    .map((session) => session.scope?.stageId)
+    .filter((stageId): stageId is string => typeof stageId === "string")
+  for (const stageId of scopeStageIds) {
+    ensureStage(stageId)
+  }
+
+  return {
+    stages: [...stages.values()].sort((left, right) => compareIds(left.id, right.id)),
+    batches: [...batches.values()].sort((left, right) => compareIds(left.id, right.id)),
+    threads: [...threads.values()].sort((left, right) => compareIds(left.id, right.id)),
+    tasks: [...tasks.values()].sort((left, right) => compareIds(left.id, right.id)),
+  }
+}
+
+function syncWorkspaceRows(database: Database, workspaceState: StructuredStorageWorkspaceState): void {
+  database.run(
+    `INSERT INTO workspace_state (singleton_id, current_stream_id, metadata_json)
+     VALUES (1, ?, '{}')
+     ON CONFLICT(singleton_id) DO UPDATE SET current_stream_id = excluded.current_stream_id`,
+    [workspaceState.currentStreamId ?? null],
+  )
+
+  const upsertWorkstream = database.query(
+    `INSERT INTO workstreams (
+       stream_id,
+       name,
+       order_index,
+       size,
+       created_at,
+       updated_at,
+       storage_root,
+       manual_status,
+       current_batch_id,
+       generated_by_json,
+       session_estimated_json,
+       files_json,
+       planning_session_json,
+       github_json,
+       metadata_json
+     ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+     ON CONFLICT(stream_id) DO UPDATE SET
+       name = excluded.name,
+       order_index = excluded.order_index,
+       size = excluded.size,
+       created_at = excluded.created_at,
+       updated_at = excluded.updated_at,
+       storage_root = excluded.storage_root,
+       manual_status = excluded.manual_status,
+       current_batch_id = excluded.current_batch_id,
+       generated_by_json = excluded.generated_by_json,
+       session_estimated_json = excluded.session_estimated_json,
+       files_json = excluded.files_json,
+       planning_session_json = excluded.planning_session_json,
+       github_json = excluded.github_json,
+       metadata_json = excluded.metadata_json`,
+  )
+
+  for (const workstream of workspaceState.workstreams) {
+    upsertWorkstream.run(
+      workstream.id,
+      workstream.name,
+      workstream.order,
+      workstream.size,
+      workstream.createdAt,
+      workstream.updatedAt,
+      workstream.storageRoot,
+      workstream.manualStatus ?? null,
+      workstream.currentBatch ?? null,
+      jsonStringify(workstream.generatedBy),
+      jsonStringify(workstream.sessionEstimated),
+      nullableJsonStringify(workstream.files),
+      nullableJsonStringify(workstream.planningSession),
+      nullableJsonStringify(workstream.github),
+      jsonStringify(workstream),
+    )
+  }
+
+  deleteRemovedWorkstreams(
+    database,
+    workspaceState.workstreams.map((workstream) => workstream.id),
+  )
+}
+
+function clearWorkstreamRows(database: Database, streamId: string): void {
+  database.run("DELETE FROM supervision_sessions WHERE stream_id = ?", [streamId])
+  database.run("DELETE FROM batch_run_threads WHERE stream_id = ?", [streamId])
+  database.run("DELETE FROM thread_sessions WHERE stream_id = ?", [streamId])
+  database.run("DELETE FROM supervision_runs WHERE stream_id = ?", [streamId])
+  database.run("DELETE FROM supervision_state WHERE stream_id = ?", [streamId])
+  database.run("DELETE FROM batch_runs WHERE stream_id = ?", [streamId])
+  database.run("DELETE FROM approvals WHERE stream_id = ?", [streamId])
+  database.run("DELETE FROM tasks WHERE stream_id = ?", [streamId])
+  database.run("DELETE FROM threads WHERE stream_id = ?", [streamId])
+  database.run("DELETE FROM batches WHERE stream_id = ?", [streamId])
+  database.run("DELETE FROM stages WHERE stream_id = ?", [streamId])
+}
+
+function insertStages(database: Database, streamId: string, stages: StructuredStageRecord[]): void {
+  const insertStage = database.query(
+    `INSERT INTO stages (stream_id, stage_id, stage_number, name, metadata_json)
+     VALUES (?, ?, ?, ?, ?)`,
+  )
+
+  for (const stage of stages) {
+    insertStage.run(streamId, stage.id, stage.number, stage.name, jsonStringify(stage))
+  }
+}
+
+function insertBatches(database: Database, streamId: string, batches: StructuredBatchRecord[]): void {
+  const insertBatch = database.query(
+    `INSERT INTO batches (stream_id, batch_id, stage_id, batch_number, name, metadata_json)
+     VALUES (?, ?, ?, ?, ?, ?)`,
+  )
+
+  for (const batch of batches) {
+    insertBatch.run(streamId, batch.id, batch.stageId, batch.number, batch.name, jsonStringify(batch))
+  }
+}
+
+function insertThreads(
+  database: Database,
+  streamId: string,
+  threads: StructuredThreadRecord[],
+  runtimeByThreadId: Map<string, StructuredThreadRuntimeRecord>,
+): void {
+  const insertThread = database.query(
+    `INSERT INTO threads (
+       stream_id,
+       thread_id,
+       stage_id,
+       batch_id,
+       thread_number,
+       name,
+       prompt_path,
+       current_session_id,
+       opencode_session_id,
+       working_agent_session_id,
+       synthesis_output,
+       synthesis_json,
+       metadata_json
+     ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+  )
+
+  for (const thread of threads) {
+    const runtime = runtimeByThreadId.get(thread.id)
+    insertThread.run(
+      streamId,
+      thread.id,
+      thread.stageId,
+      thread.batchId,
+      thread.number,
+      thread.name,
+      thread.promptPath ?? null,
+      runtime?.currentSessionId ?? null,
+      runtime?.opencodeSessionId ?? null,
+      runtime?.workingAgentSessionId ?? null,
+      runtime?.synthesisOutput ?? null,
+      nullableJsonStringify(runtime?.synthesis),
+      jsonStringify({
+        ...thread,
+        ...(runtime
+          ? {
+              currentSessionId: runtime.currentSessionId,
+              opencodeSessionId: runtime.opencodeSessionId,
+              workingAgentSessionId: runtime.workingAgentSessionId,
+              synthesisOutput: runtime.synthesisOutput,
+              synthesis: runtime.synthesis,
+            }
+          : {}),
+      }),
+    )
+  }
+}
+
+function insertTasks(database: Database, streamId: string, tasks: StructuredTaskRecord[]): void {
+  const insertTask = database.query(
+    `INSERT INTO tasks (
+       stream_id,
+       task_id,
+       stage_id,
+       batch_id,
+       thread_id,
+       task_number,
+       name,
+       status,
+       created_at,
+       updated_at,
+       breadcrumb,
+       report,
+       assigned_agent,
+       metadata_json
+     ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+  )
+
+  for (const task of tasks) {
+    insertTask.run(
+      streamId,
+      task.id,
+      task.stageId,
+      task.batchId,
+      task.threadId,
+      task.number,
+      task.name,
+      task.status,
+      task.createdAt,
+      task.updatedAt,
+      task.breadcrumb ?? null,
+      task.report ?? null,
+      task.assignedAgent ?? null,
+      jsonStringify(task),
+    )
+  }
+}
+
+function insertApprovals(database: Database, streamId: string, approvals: StructuredApprovalRecord[]): void {
+  const insertApproval = database.query(
+    `INSERT INTO approvals (
+       stream_id,
+       approval_key,
+       scope,
+       stage_id,
+       status,
+       approved_at,
+       approved_by,
+       revoked_at,
+       revoked_reason,
+       plan_hash,
+       task_count,
+       commit_sha,
+       metadata_json
+     ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+  )
+
+  for (const approval of approvals) {
+    insertApproval.run(
+      streamId,
+      approvalKey(approval),
+      approval.scope,
+      approval.stageId ?? null,
+      approval.status,
+      approval.approvedAt ?? null,
+      approval.approvedBy ?? null,
+      approval.revokedAt ?? null,
+      approval.revokedReason ?? null,
+      approval.planHash ?? null,
+      approval.taskCount ?? null,
+      approval.commitSha ?? null,
+      jsonStringify(approval),
+    )
+  }
+}
+
+function insertThreadSessions(
+  database: Database,
+  streamId: string,
+  threadId: string,
+  sessions: SessionRecord[],
+): void {
+  const insertSession = database.query(
+    `INSERT INTO thread_sessions (
+       stream_id,
+       thread_id,
+       session_id,
+       agent_name,
+       model,
+       started_at,
+       completed_at,
+       status,
+       exit_code,
+       lineage_json,
+       metadata_json
+     ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+  )
+
+  for (const session of sessions) {
+    insertSession.run(
+      streamId,
+      threadId,
+      session.sessionId,
+      session.agentName,
+      session.model,
+      session.startedAt ?? new Date().toISOString(),
+      session.completedAt ?? null,
+      session.status,
+      session.exitCode ?? null,
+      nullableJsonStringify(session.lineage),
+      jsonStringify(session),
+    )
+  }
+}
+
+function insertThreadRuntime(
+  database: Database,
+  streamId: string,
+  threadRuntime: StructuredThreadRuntimeRecord[],
+): void {
+  for (const runtime of threadRuntime) {
+    insertThreadSessions(database, streamId, runtime.threadId, runtime.sessions)
+  }
+}
+
+function insertBatchRunThreads(
+  database: Database,
+  streamId: string,
+  runId: string,
+  threads: PersistedBatchStatusThread[],
+): void {
+  const insertThread = database.query(
+    `INSERT INTO batch_run_threads (
+       stream_id,
+       run_id,
+       thread_id,
+       first_task_id,
+       thread_name,
+       status,
+       started_at,
+       updated_at,
+       completed_at,
+       marker_detected_at,
+       current_session_id,
+       opencode_session_id,
+       working_agent_session_id,
+       synthesis_updated_at,
+       recovery_note,
+       metadata_json
+     ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+  )
+
+  for (const thread of threads) {
+    insertThread.run(
+      streamId,
+      runId,
+      thread.threadId,
+      thread.firstTaskId,
+      thread.threadName,
+      thread.status,
+      thread.startedAt ?? null,
+      thread.updatedAt,
+      thread.completedAt ?? null,
+      thread.markerDetectedAt ?? null,
+      thread.currentSessionId ?? null,
+      thread.opencodeSessionId ?? null,
+      thread.workingAgentSessionId ?? null,
+      thread.synthesisUpdatedAt ?? null,
+      thread.recoveryNote ?? null,
+      jsonStringify(thread),
+    )
+  }
+}
+
+function insertBatchRuns(database: Database, streamId: string, batchRuns: PersistedBatchStatusFile[]): void {
+  const insertBatchRun = database.query(
+    `INSERT INTO batch_runs (
+       stream_id,
+       run_id,
+       batch_id,
+       tmux_session_name,
+       mode,
+       status,
+       stage_name,
+       batch_name,
+       started_at,
+       updated_at,
+       completed_at,
+       summary_json,
+       metadata_json
+     ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+  )
+
+  for (const batchRun of batchRuns) {
+    insertBatchRun.run(
+      streamId,
+      batchRun.runId,
+      batchRun.batchId,
+      batchRun.tmuxSessionName ?? null,
+      batchRun.mode,
+      batchRun.status,
+      batchRun.stageName ?? null,
+      batchRun.batchName ?? null,
+      batchRun.startedAt,
+      batchRun.updatedAt,
+      batchRun.completedAt ?? null,
+      jsonStringify(batchRun.summary),
+      jsonStringify(batchRun),
+    )
+    insertBatchRunThreads(database, streamId, batchRun.runId, batchRun.threads)
+  }
+}
+
+function insertSupervisionRuns(
+  database: Database,
+  streamId: string,
+  runs: SupervisorRunState[],
+): void {
+  const insertRun = database.query(
+    `INSERT INTO supervision_runs (
+       stream_id,
+       run_id,
+       stage_id,
+       status,
+       started_at,
+       updated_at,
+       completed_at,
+       current_batch_id,
+       last_reviewed_batch_id,
+       review_passes,
+       issue_summary_ids_json,
+       escalation_ids_json,
+       root_session_id,
+       branch_session_id,
+       stage_stop_id,
+       stop_reason,
+       metadata_json
+     ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+  )
+
+  for (const run of runs) {
+    insertRun.run(
+      streamId,
+      run.runId,
+      run.stageId,
+      run.status,
+      run.startedAt,
+      run.updatedAt,
+      run.completedAt ?? null,
+      run.currentBatchId ?? null,
+      run.lastReviewedBatchId ?? null,
+      run.reviewPasses,
+      jsonStringify(run.issueSummaryIds),
+      jsonStringify(run.escalationIds),
+      run.rootSessionId ?? null,
+      run.branchSessionId ?? null,
+      run.stageStopId ?? null,
+      run.stopReason ?? null,
+      jsonStringify(run),
+    )
+  }
+}
+
+function insertSupervisionSessions(
+  database: Database,
+  streamId: string,
+  sessions: RootAgentBranchSession[],
+  availableRunIds: Set<string>,
+  availableBatchIds: Set<string>,
+  availableThreadIds: Set<string>,
+): void {
+  const insertSession = database.query(
+    `INSERT INTO supervision_sessions (
+       stream_id,
+       branch_session_id,
+       owner,
+       root_session_id,
+       branch_role,
+       source,
+       status,
+       started_at,
+       updated_at,
+       completed_at,
+       process_ended_at,
+       process_exit_code,
+       finalization_source,
+       finalization_reason,
+       native_session_id,
+       tmux_session_name,
+       run_id,
+       batch_id,
+       thread_id,
+       review_id,
+       fix_cycle_id,
+       scope_json,
+       breakpoint_selection_json,
+       supervision_progress_json,
+       notes,
+       metadata_json
+     ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+  )
+
+  for (const session of sessions) {
+    const runId = session.runId && availableRunIds.has(session.runId) ? session.runId : null
+    const batchId = session.batchId && availableBatchIds.has(session.batchId) ? session.batchId : null
+    const threadId = session.threadId && availableThreadIds.has(session.threadId) ? session.threadId : null
+
+    insertSession.run(
+      streamId,
+      session.branchSessionId,
+      session.owner,
+      session.rootSessionId,
+      session.branchRole,
+      session.source,
+      session.status,
+      session.startedAt,
+      session.updatedAt,
+      session.completedAt ?? null,
+      session.processEndedAt ?? null,
+      session.processExitCode ?? null,
+      session.finalizationSource ?? null,
+      session.finalizationReason ?? null,
+      session.nativeSessionId ?? null,
+      session.tmuxSessionName ?? null,
+      runId,
+      batchId,
+      threadId,
+      session.reviewId ?? null,
+      session.fixCycleId ?? null,
+      nullableJsonStringify(session.scope),
+      nullableJsonStringify(session.breakpointSelection),
+      nullableJsonStringify(session.supervisionProgress),
+      session.notes ?? null,
+      jsonStringify(session),
+    )
+  }
+}
+
+function syncWorkstreamRows(
+  database: Database,
+  workstreamState: StructuredStorageWorkstreamState,
+): void {
+  ensureWorkstreamCatalogRow(database, workstreamState.streamId)
+  const inferredHierarchy = inferHierarchy(workstreamState)
+  clearWorkstreamRows(database, workstreamState.streamId)
+  insertStages(database, workstreamState.streamId, inferredHierarchy.stages)
+  insertBatches(database, workstreamState.streamId, inferredHierarchy.batches)
+  insertThreads(
+    database,
+    workstreamState.streamId,
+    inferredHierarchy.threads,
+    new Map(workstreamState.threadRuntime.map((record) => [record.threadId, record] as const)),
+  )
+  insertTasks(database, workstreamState.streamId, inferredHierarchy.tasks)
+  insertApprovals(database, workstreamState.streamId, workstreamState.approvals)
+  insertThreadRuntime(database, workstreamState.streamId, workstreamState.threadRuntime)
+  insertBatchRuns(database, workstreamState.streamId, workstreamState.batchRuns)
+
+  database.run(
+    `INSERT INTO supervision_state (
+       stream_id,
+       active_run_id,
+       current_branch_supervision_json,
+       checkpoint_pointers_json,
+       reviewed_batches_json,
+       issue_summaries_json,
+       fix_cycles_json,
+       escalations_json,
+       stage_stops_json,
+       metadata_json
+     ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    [
+      workstreamState.streamId,
+      workstreamState.supervision.active_run_id ?? null,
+      nullableJsonStringify(workstreamState.supervision.current_branch_supervision),
+      jsonStringify(workstreamState.supervision.checkpoint_pointers),
+      jsonStringify(workstreamState.supervision.reviewed_batches),
+      jsonStringify(workstreamState.supervision.issue_summaries),
+      jsonStringify(workstreamState.supervision.fix_cycles),
+      jsonStringify(workstreamState.supervision.escalations),
+      jsonStringify(workstreamState.supervision.stage_stops),
+      jsonStringify(workstreamState.supervision),
+    ],
+  )
+  insertSupervisionRuns(database, workstreamState.streamId, workstreamState.supervision.runs)
+  insertSupervisionSessions(
+    database,
+    workstreamState.streamId,
+    workstreamState.supervision.branch_sessions,
+    new Set(workstreamState.supervision.runs.map((run) => run.runId)),
+    new Set(inferredHierarchy.batches.map((batch) => batch.id)),
+    new Set(inferredHierarchy.threads.map((thread) => thread.id)),
+  )
+}
+
+export function syncStructuredStorageWorkspaceStateToSqlite(
+  repoRoot: string,
+  workspaceState: StructuredStorageWorkspaceState,
+): void {
+  const database = openSqliteStructuredStorageDatabase(repoRoot)
+
+  try {
+    const transaction = database.transaction((state: StructuredStorageWorkspaceState) => {
+      syncWorkspaceRows(database, state)
+    })
+    transaction(workspaceState)
+  } finally {
+    database.close()
+  }
+}
+
+export function syncStructuredStorageWorkstreamStateToSqlite(
+  repoRoot: string,
+  workstreamState: StructuredStorageWorkstreamState,
+): void {
+  const database = openSqliteStructuredStorageDatabase(repoRoot)
+
+  try {
+    const transaction = database.transaction((state: StructuredStorageWorkstreamState) => {
+      syncWorkstreamRows(database, state)
+    })
+    transaction(workstreamState)
+  } finally {
+    database.close()
   }
 }

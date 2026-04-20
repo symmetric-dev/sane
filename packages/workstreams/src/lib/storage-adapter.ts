@@ -23,7 +23,7 @@ import {
 import {
   syncStructuredStorageWorkspaceStateToSqlite,
   syncStructuredStorageWorkstreamStateToSqlite,
-} from "./sqlite-structured-storage.ts"
+} from "./sqlite-storage.ts"
 import {
   createEmptyTasksFile,
   modifyTasksFile,
@@ -412,8 +412,8 @@ export function createFilesystemStructuredStorageAdapter(): StructuredStorageSta
         tasksFileFromWorkstreamState(nextState, existingTasksFile),
       )
       await persistWorkstreamApprovals(repoRoot, workstreamState.streamId, nextState)
-      syncWorkstreamStateMirror(repoRoot, nextState)
       syncWorkspaceStateMirror(repoRoot)
+      syncWorkstreamStateMirror(repoRoot, nextState)
     },
 
     async modifyWorkstreamState<T>(
@@ -442,9 +442,11 @@ export function createFilesystemStructuredStorageAdapter(): StructuredStorageSta
       })
 
       if (mirroredState) {
+        syncWorkspaceStateMirror(repoRoot)
         syncWorkstreamStateMirror(repoRoot, mirroredState)
+      } else {
+        syncWorkspaceStateMirror(repoRoot)
       }
-      syncWorkspaceStateMirror(repoRoot)
 
       return result
     },
@@ -522,8 +524,8 @@ export function replaceStructuredWorkstreamStateSync(args: {
     saveIndex(args.repoRoot, existingIndex)
   }
 
-  syncWorkstreamStateMirror(args.repoRoot, nextState)
   syncWorkspaceStateMirror(args.repoRoot)
+  syncWorkstreamStateMirror(args.repoRoot, nextState)
 }
 
 export function loadThreadMetadataViewSync(repoRoot: string, streamId: string): ThreadsJson | null {
