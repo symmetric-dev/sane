@@ -427,7 +427,7 @@ export async function resetBatchState(
   streamId: string,
   batchId: string,
 ): Promise<ResetBatchStateResult> {
-  const result: ResetBatchStateResult & { now: string } =
+  const result: Omit<ResetBatchStateResult, "artifacts"> & { now: string } =
     await getStructuredStorageAdapter().modifyWorkstreamState(repoRoot, streamId, (workstreamState) => {
       const batchTasks = workstreamState.hierarchy.tasks.filter((task) => isTaskInBatch(task.id, batchId))
       if (batchTasks.length === 0) {

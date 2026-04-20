@@ -514,6 +514,7 @@ export function storeStageCommitSha(
       nextApproval.stages = { ...(nextApproval.stages ?? {}) }
       nextApproval.stages[stageNumber] = {
         ...nextApproval.stages[stageNumber],
+        status: nextApproval.stages[stageNumber]?.status ?? "approved",
         commit_sha: commitSha,
       }
       replaceStructuredApprovals(
