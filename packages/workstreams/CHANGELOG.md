@@ -2,6 +2,12 @@
 
 All notable changes to `@agenv/workstreams` are documented in this file.
 
+## 0.7.0 - 2026-04-20
+
+- Added a local-first sqlite structured-storage path at `work/db.sqlite` with filesystem-authoritative dual-write, adapter-backed persistence, and parity-oriented validation for core workstream state.
+- Documented the storage migration architecture and package-boundary direction, including the structured-vs-file storage split and deferred follow-up gates before any DB-canonical cutover.
+- Hardened approval auto-commit behavior by preventing duplicate stage re-approval commits and rejecting unsafe fallback/generic approval naming in commit messages.
+
 ## 0.6.1 - 2026-04-18
 
 - Removed automatic implementation-thread opencode session title tagging from thread execution commands while preserving plain thread titles for operator visibility.
