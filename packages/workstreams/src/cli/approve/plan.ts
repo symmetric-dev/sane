@@ -170,7 +170,7 @@ export async function handlePlanApproval(
 
     // Handle Stage Approve
     const stageStatus = getStageApprovalStatus(stream, stageNum)
-    if (stageStatus === "approved" && !cliArgs.force) {
+    if (stageStatus === "approved") {
       if (cliArgs.json) {
         console.log(
           JSON.stringify(

@@ -391,6 +391,10 @@ export function approveStage(
   const index = loadIndex(repoRoot)
   const stream = getIndexedStream(index, streamIdOrName)
 
+  if (getStageApprovalStatus(stream, stageNumber) === "approved") {
+    return stream
+  }
+
   updateStructuredApprovalsSync({
     repoRoot,
     streamId: stream.id,

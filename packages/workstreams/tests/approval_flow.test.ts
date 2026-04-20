@@ -92,6 +92,22 @@ describe("Approval Flow", () => {
         expect(getStageApprovalStatus(stream, 1)).toBe("approved");
     });
 
+    test("should not rewrite metadata when approving an already approved stage", () => {
+        const before = loadIndex(REPO_ROOT).streams[0];
+        if (!before) throw new Error("Stream not found");
+
+        const beforeStageApproval = before.approval?.stages?.[1];
+        expect(beforeStageApproval?.status).toBe("approved");
+
+        const stream = approveStage(REPO_ROOT, "stream-001", 1, "different-user");
+        const after = loadIndex(REPO_ROOT).streams[0];
+        if (!after) throw new Error("Stream not found");
+
+        expect(stream.approval?.stages?.[1]).toEqual(beforeStageApproval);
+        expect(after.approval?.stages?.[1]).toEqual(beforeStageApproval);
+        expect(after.updated_at).toBe(before.updated_at);
+    });
+
     test("should handle stage 2 unrelated to stage 1", () => {
         const index = loadIndex(REPO_ROOT);
         const stream = index.streams[0];

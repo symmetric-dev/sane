@@ -228,6 +228,97 @@ Keep approval naming consistent.
         expect(stream.approval?.stages?.[1]?.status).toBe("approved");
     });
 
+    test("should return already-approved without metadata churn on repeated stage approval", async () => {
+        const tasksJsonPath = join(REPO_ROOT, "work/stream-001/tasks.json");
+        writeFileSync(tasksJsonPath, JSON.stringify({
+            version: "1.0.0",
+            stream_id: "stream-001",
+            last_updated: new Date().toISOString(),
+            tasks: [{
+                id: "01.01.01.01",
+                name: "Task 1",
+                thread_name: "Thread 1",
+                batch_name: "Batch 1",
+                stage_name: "Stage 1",
+                status: "completed",
+                created_at: new Date().toISOString(),
+                updated_at: new Date().toISOString()
+            }]
+        }, null, 2));
+
+        const { main } = await import("../src/cli/approve/index.ts");
+
+        await main(["node", "approve", "stage", "1", "--stream", "stream-001", "--repo-root", REPO_ROOT]);
+
+        const before = loadIndex(REPO_ROOT).streams[0]!;
+        const beforeStageApproval = before.approval?.stages?.[1];
+        expect(beforeStageApproval?.status).toBe("approved");
+
+        const logs: string[] = [];
+        const originalError = console.error;
+        const originalLog = console.log;
+        console.error = (...args) => logs.push(args.join(" "));
+        console.log = (...args) => logs.push(args.join(" "));
+
+        try {
+            await main(["node", "approve", "stage", "1", "--stream", "stream-001", "--repo-root", REPO_ROOT]);
+        } finally {
+            console.error = originalError;
+            console.log = originalLog;
+        }
+
+        const after = loadIndex(REPO_ROOT).streams[0]!;
+        expect(logs.join("\n")).toContain("already approved");
+        expect(after.approval?.stages?.[1]).toEqual(beforeStageApproval);
+        expect(after.updated_at).toBe(before.updated_at);
+    });
+
+    test("should not let --force bypass already-approved stage protection", async () => {
+        const tasksJsonPath = join(REPO_ROOT, "work/stream-001/tasks.json");
+        writeFileSync(tasksJsonPath, JSON.stringify({
+            version: "1.0.0",
+            stream_id: "stream-001",
+            last_updated: new Date().toISOString(),
+            tasks: [{
+                id: "01.01.01.01",
+                name: "Task 1",
+                thread_name: "Thread 1",
+                batch_name: "Batch 1",
+                stage_name: "Stage 1",
+                status: "completed",
+                created_at: new Date().toISOString(),
+                updated_at: new Date().toISOString()
+            }]
+        }, null, 2));
+
+        const { main } = await import("../src/cli/approve/index.ts");
+
+        await main(["node", "approve", "stage", "1", "--stream", "stream-001", "--repo-root", REPO_ROOT]);
+
+        const before = loadIndex(REPO_ROOT).streams[0]!;
+        const beforeStageApproval = before.approval?.stages?.[1];
+
+        const logs: string[] = [];
+        const originalError = console.error;
+        const originalLog = console.log;
+        console.error = (...args) => logs.push(args.join(" "));
+        console.log = (...args) => logs.push(args.join(" "));
+
+        try {
+            await main(["node", "approve", "stage", "1", "--force", "--stream", "stream-001", "--repo-root", REPO_ROOT]);
+        } finally {
+            console.error = originalError;
+            console.log = originalLog;
+        }
+
+        const after = loadIndex(REPO_ROOT).streams[0]!;
+        const output = logs.join("\n");
+        expect(output).toContain("already approved");
+        expect(output).not.toContain("Approved Stage 1");
+        expect(after.approval?.stages?.[1]).toEqual(beforeStageApproval);
+        expect(after.updated_at).toBe(before.updated_at);
+    });
+
     testAutoCommitApproval("should auto-commit stage approval even when GitHub integration is disabled", async () => {
         const tasksJsonPath = join(REPO_ROOT, "work/stream-001/tasks.json");
         writeFileSync(tasksJsonPath, JSON.stringify({
