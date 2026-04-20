@@ -20,7 +20,7 @@ import {
   parseThreadId,
   writeTasksFile,
 } from "./tasks.ts"
-import type { ConsolidateError } from "./types.ts"
+import type { ConsolidateError, TasksFile } from "./types.ts"
 
 export interface FixStageOptions {
   targetStage: number
@@ -229,7 +229,7 @@ function renamePromptStageDirectories(
   }
 }
 
-function readRawTasksFile(repoRoot: string, streamId: string) {
+function readRawTasksFile(repoRoot: string, streamId: string): TasksFile | null {
   const tasksPath = getTasksFilePath(repoRoot, streamId)
   if (!existsSync(tasksPath)) {
     return null
@@ -240,16 +240,14 @@ function readRawTasksFile(repoRoot: string, streamId: string) {
     stream_id?: string
     last_updated?: string
     runtime_state?: unknown
-    runtime_summary?: unknown
     tasks?: unknown
   }
 
   return {
-    version: tasksFile.version,
+    version: tasksFile.version ?? "2.0.0",
     stream_id: tasksFile.stream_id ?? streamId,
-    last_updated: tasksFile.last_updated,
+    last_updated: tasksFile.last_updated ?? new Date().toISOString(),
     runtime_state: normalizeRuntimeState(streamId, tasksFile.runtime_state as never),
-    ...(tasksFile.runtime_summary ? { runtime_summary: tasksFile.runtime_summary } : {}),
     tasks: Array.isArray(tasksFile.tasks) ? tasksFile.tasks : [],
   }
 }
@@ -303,26 +301,25 @@ function shiftRuntimeStateArtifacts(
     })
     .sort((a, b) => a.threadId.localeCompare(b.threadId, undefined, { numeric: true }))
 
-  tasksFile.runtime_state.batches = Object.fromEntries(
-    Object.entries(tasksFile.runtime_state.batches)
-      .map(([batchId, batch]) => {
-        const shiftedBatchId = shiftHierarchicalIdentifier(batchId, afterStage, 2) ?? batchId
-        return [
-          shiftedBatchId,
-          {
-            ...batch,
-            batchId: shiftHierarchicalIdentifier(batch.batchId, afterStage, 2) ?? batch.batchId,
-            threads: batch.threads.map((thread) => ({
-              ...thread,
-              threadId: shiftHierarchicalIdentifier(thread.threadId, afterStage, 3) ?? thread.threadId,
-              firstTaskId:
-                shiftHierarchicalIdentifier(thread.firstTaskId, afterStage, 4) ?? thread.firstTaskId,
-            })),
-          },
-        ]
-      })
-      .sort(([left], [right]) => left.localeCompare(right, undefined, { numeric: true })),
-  )
+  const shiftedBatches = Object.entries(tasksFile.runtime_state.batches).map(([batchId, batch]) => {
+    const shiftedBatchId = shiftHierarchicalIdentifier(batchId, afterStage, 2) ?? batchId
+    return [
+      shiftedBatchId,
+      {
+        ...batch,
+        batchId: shiftHierarchicalIdentifier(batch.batchId, afterStage, 2) ?? batch.batchId,
+        threads: batch.threads.map((thread) => ({
+          ...thread,
+          threadId: shiftHierarchicalIdentifier(thread.threadId, afterStage, 3) ?? thread.threadId,
+          firstTaskId:
+            shiftHierarchicalIdentifier(thread.firstTaskId, afterStage, 4) ?? thread.firstTaskId,
+        })),
+      },
+    ] as const
+  })
+
+  shiftedBatches.sort(([left], [right]) => left.localeCompare(right, undefined, { numeric: true }))
+  tasksFile.runtime_state.batches = Object.fromEntries(shiftedBatches)
 
   const supervision = tasksFile.runtime_state.supervision
   tasksFile.runtime_state.supervision = {
@@ -532,7 +529,7 @@ function shiftLegacySupervisorArtifacts(repoRoot: string, streamId: string, afte
             : {}),
           ...(typeof review === "object" && review !== null && "threadIds" in review && Array.isArray(review.threadIds)
             ? {
-                threadIds: review.threadIds.map((threadId) =>
+                threadIds: review.threadIds.map((threadId: unknown) =>
                   shiftHierarchicalIdentifier(String(threadId), afterStage, 3),
                 ),
               }
