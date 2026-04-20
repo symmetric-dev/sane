@@ -1,4 +1,6 @@
 import { getOrCreateIndex, modifyIndex, saveIndex } from "./index.ts"
+export { createFilesystemAuthoritativeSqliteStructuredStorageAdapter } from "./sqlite-storage-adapter.ts"
+import { createFilesystemAuthoritativeSqliteStructuredStorageAdapter } from "./sqlite-storage-adapter.ts"
 import {
   approvalMetadataToStructuredApprovalRecords,
   createEmptyStructuredStorageWorkstreamState,
@@ -18,6 +20,10 @@ import {
   upsertStructuredBatchRun,
   upsertStructuredThreadRuntime,
 } from "./structured-storage.ts"
+import {
+  syncStructuredStorageWorkspaceStateToSqlite,
+  syncStructuredStorageWorkstreamStateToSqlite,
+} from "./sqlite-structured-storage.ts"
 import {
   createEmptyTasksFile,
   modifyTasksFile,
@@ -348,6 +354,17 @@ async function persistWorkstreamApprovals(
   })
 }
 
+function syncWorkspaceStateMirror(repoRoot: string): void {
+  syncStructuredStorageWorkspaceStateToSqlite(repoRoot, workspaceStateFromIndex(getOrCreateIndex(repoRoot)))
+}
+
+function syncWorkstreamStateMirror(
+  repoRoot: string,
+  workstreamState: StructuredStorageWorkstreamState,
+): void {
+  syncStructuredStorageWorkstreamStateToSqlite(repoRoot, cloneWorkstreamState(workstreamState))
+}
+
 export function createFilesystemStructuredStorageAdapter(): StructuredStorageStateAdapter {
   return {
     kind: "filesystem",
@@ -361,6 +378,7 @@ export function createFilesystemStructuredStorageAdapter(): StructuredStorageSta
     ): Promise<void> {
       const previousIndex = getOrCreateIndex(repoRoot)
       saveIndex(repoRoot, indexFromWorkspaceState(workspaceState, previousIndex))
+      syncStructuredStorageWorkspaceStateToSqlite(repoRoot, workspaceState)
     },
 
     async modifyWorkspaceState<T>(
@@ -371,6 +389,7 @@ export function createFilesystemStructuredStorageAdapter(): StructuredStorageSta
       const result = await fn(workspaceState)
       const previousIndex = getOrCreateIndex(repoRoot)
       saveIndex(repoRoot, indexFromWorkspaceState(workspaceState, previousIndex))
+      syncStructuredStorageWorkspaceStateToSqlite(repoRoot, workspaceState)
       return result
     },
 
@@ -393,6 +412,8 @@ export function createFilesystemStructuredStorageAdapter(): StructuredStorageSta
         tasksFileFromWorkstreamState(nextState, existingTasksFile),
       )
       await persistWorkstreamApprovals(repoRoot, workstreamState.streamId, nextState)
+      syncWorkstreamStateMirror(repoRoot, nextState)
+      syncWorkspaceStateMirror(repoRoot)
     },
 
     async modifyWorkstreamState<T>(
@@ -400,6 +421,7 @@ export function createFilesystemStructuredStorageAdapter(): StructuredStorageSta
       streamId: string,
       fn: (workstreamState: StructuredStorageWorkstreamState) => T | Promise<T>,
     ): Promise<T> {
+      let mirroredState: StructuredStorageWorkstreamState | null = null
       const result = await modifyTasksFile(repoRoot, streamId, async (tasksFile) => {
         const index = getOrCreateIndex(repoRoot)
         const currentState = workstreamStateFromSnapshot(index, streamId, tasksFile)
@@ -415,8 +437,14 @@ export function createFilesystemStructuredStorageAdapter(): StructuredStorageSta
         delete tasksFile.runtime_summary
         tasksFile.tasks = nextTasksFile.tasks
         await persistWorkstreamApprovals(repoRoot, streamId, mutableState)
+        mirroredState = cloneWorkstreamState(mutableState)
         return callbackResult
       })
+
+      if (mirroredState) {
+        syncWorkstreamStateMirror(repoRoot, mirroredState)
+      }
+      syncWorkspaceStateMirror(repoRoot)
 
       return result
     },
@@ -493,6 +521,9 @@ export function replaceStructuredWorkstreamStateSync(args: {
   if (approvalChanged || args.touchStreamUpdatedAt) {
     saveIndex(args.repoRoot, existingIndex)
   }
+
+  syncWorkstreamStateMirror(args.repoRoot, nextState)
+  syncWorkspaceStateMirror(args.repoRoot)
 }
 
 export function loadThreadMetadataViewSync(repoRoot: string, streamId: string): ThreadsJson | null {
@@ -611,6 +642,9 @@ export function updateStructuredTaskSync(
 
 export const filesystemStructuredStorageAdapter = createFilesystemStructuredStorageAdapter()
 
+export const filesystemAuthoritativeSqliteStructuredStorageAdapter =
+  createFilesystemAuthoritativeSqliteStructuredStorageAdapter(filesystemStructuredStorageAdapter)
+
 export function getStructuredStorageAdapter(): StructuredStorageStateAdapter {
-  return filesystemStructuredStorageAdapter
+  return filesystemAuthoritativeSqliteStructuredStorageAdapter
 }

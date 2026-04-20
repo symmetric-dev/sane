@@ -20,6 +20,8 @@ export {
 export {
   createFilesystemStructuredStorageAdapter,
   filesystemStructuredStorageAdapter,
+  createFilesystemAuthoritativeSqliteStructuredStorageAdapter,
+  filesystemAuthoritativeSqliteStructuredStorageAdapter,
   getStructuredStorageAdapter,
 } from "./lib/storage-adapter.ts"
 
