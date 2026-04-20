@@ -73,3 +73,17 @@ work report validate
 - `tasks.json -> runtime_state.batches` stores persisted batch execution summaries.
 - `tasks.json -> runtime_state.supervision` stores supervision runs, reviewed batches, fix cycles, escalations, stage stops, and branch supervision metadata.
 - Legacy `threads.json` and `supervisor-state.json` files may still exist for migration/compatibility, but they are not the primary runtime store.
+
+## Local-First Structured Storage Migration
+
+- The current adapter model is **filesystem-authoritative dual-write**.
+- `work/index.json` and `work/<stream-id>/tasks.json` remain canonical during the migration.
+- `work/db.sqlite` is a repo-local sqlite mirror for structured workflow state only.
+- Core markdown documents (`REQUIREMENTS.md`, `PLAN.md`, `TASKS.md`, `REPORT.md`) plus `resources/` and artifact-like outputs remain filesystem-based.
+- Sqlite bootstrap or mirror failures must not block canonical filesystem writes.
+- `work/db.sqlite` is local runtime state and is expected to stay out of version control; this repo currently ignores `work/` entirely.
+
+See also:
+
+- [`LOCAL_FIRST_SQLITE_ARCHITECTURE.md`](./LOCAL_FIRST_SQLITE_ARCHITECTURE.md) for the detailed local-first architecture writeup.
+- [`STORAGE_PACKAGE_BOUNDARIES.md`](./STORAGE_PACKAGE_BOUNDARIES.md) for the package/refactor recommendation that builds on that architecture.

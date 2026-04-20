@@ -76,6 +76,11 @@ work report metrics --blockers
 work export --format json
 ```
 
+## Storage architecture notes
+
+- Local-first sqlite architecture: [`../../docs/LOCAL_FIRST_SQLITE_ARCHITECTURE.md`](../../docs/LOCAL_FIRST_SQLITE_ARCHITECTURE.md)
+- Storage adapter package/refactor recommendation: [`../../docs/STORAGE_PACKAGE_BOUNDARIES.md`](../../docs/STORAGE_PACKAGE_BOUNDARIES.md)
+
 ## Root Agent Supervision Workflow (v1)
 
 Use `work supervise` as the branch execution/recovery primitive for Root Agent orchestration:
