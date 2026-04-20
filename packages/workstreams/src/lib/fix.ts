@@ -2,7 +2,7 @@
  * Fix stage generation logic
  */
 
-import { existsSync, readFileSync, renameSync, writeFileSync } from "fs"
+import { existsSync, readFileSync, readdirSync, renameSync, writeFileSync } from "fs"
 import { join } from "path"
 import { getStreamPlanMdPath } from "./consolidate.ts"
 import { getStageApprovalStatus } from "./approval.ts"
@@ -14,12 +14,12 @@ import { parseStreamDocument } from "./stream-parser.ts"
 import {
   formatTaskId,
   formatThreadId,
+  getTasksFilePath,
+  normalizeRuntimeState,
   parseTaskId,
   parseThreadId,
-  readTasksFile,
   writeTasksFile,
 } from "./tasks.ts"
-import { loadThreads, saveThreads } from "./threads.ts"
 import type { ConsolidateError } from "./types.ts"
 
 export interface FixStageOptions {
@@ -45,6 +45,106 @@ function sanitizePathSegment(value: string): string {
 
 function getPromptStageDirName(stageNumber: number, stageName: string): string {
   return `${stageNumber.toString().padStart(2, "0")}-${sanitizePathSegment(stageName)}`
+}
+
+function shiftStageIdentifier(stageId: string | undefined, afterStage: number): string | undefined {
+  if (!stageId) {
+    return stageId
+  }
+
+  const stageNumber = parseInt(stageId, 10)
+  if (isNaN(stageNumber) || stageNumber <= afterStage) {
+    return stageId
+  }
+
+  return (stageNumber + 1).toString().padStart(Math.max(stageId.length, 2), "0")
+}
+
+function shiftHierarchicalIdentifier(
+  value: string | undefined,
+  afterStage: number,
+  minimumSegments: number,
+): string | undefined {
+  if (!value) {
+    return value
+  }
+
+  const parts = value.split(".")
+  if (parts.length < minimumSegments || !parts[0]) {
+    return value
+  }
+
+  const shiftedStageId = shiftStageIdentifier(parts[0], afterStage)
+  if (!shiftedStageId || shiftedStageId === parts[0]) {
+    return value
+  }
+
+  parts[0] = shiftedStageId
+  return parts.join(".")
+}
+
+function shiftPromptPath(
+  promptPath: string | undefined,
+  promptStageDirNames: Map<number, { oldDir: string; newDir: string }>,
+  stageNumber: number,
+): string | undefined {
+  if (!promptPath) {
+    return promptPath
+  }
+
+  const promptDirs = promptStageDirNames.get(stageNumber)
+  if (!promptDirs) {
+    return promptPath
+  }
+
+  const oldPrefix = `prompts/${promptDirs.oldDir}/`
+  const newPrefix = `prompts/${promptDirs.newDir}/`
+  if (!promptPath.startsWith(oldPrefix)) {
+    return promptPath
+  }
+
+  return `${newPrefix}${promptPath.slice(oldPrefix.length)}`
+}
+
+function shiftSupervisionProgressIdentifiers<T extends {
+  currentBatchId?: string
+  lastReviewedBatchId?: string
+}>(progress: T | undefined, afterStage: number): T | undefined {
+  if (!progress) {
+    return progress
+  }
+
+  return {
+    ...progress,
+    ...(progress.currentBatchId
+      ? {
+          currentBatchId: shiftHierarchicalIdentifier(progress.currentBatchId, afterStage, 2),
+        }
+      : {}),
+    ...(progress.lastReviewedBatchId
+      ? {
+          lastReviewedBatchId: shiftHierarchicalIdentifier(progress.lastReviewedBatchId, afterStage, 2),
+        }
+      : {}),
+  }
+}
+
+function shiftBranchScopeIdentifiers<T extends {
+  level: "batch" | "stage"
+  stageId: string
+  batchId?: string
+}>(scope: T | undefined, afterStage: number): T | undefined {
+  if (!scope) {
+    return scope
+  }
+
+  return {
+    ...scope,
+    stageId: shiftStageIdentifier(scope.stageId, afterStage) ?? scope.stageId,
+    ...(scope.level === "batch" && scope.batchId
+      ? { batchId: shiftHierarchicalIdentifier(scope.batchId, afterStage, 2) }
+      : {}),
+  }
 }
 
 function shiftStageHeadingNumbers(content: string, afterStage: number): string {
@@ -129,8 +229,33 @@ function renamePromptStageDirectories(
   }
 }
 
+function readRawTasksFile(repoRoot: string, streamId: string) {
+  const tasksPath = getTasksFilePath(repoRoot, streamId)
+  if (!existsSync(tasksPath)) {
+    return null
+  }
+
+  const tasksFile = JSON.parse(readFileSync(tasksPath, "utf-8")) as {
+    version?: string
+    stream_id?: string
+    last_updated?: string
+    runtime_state?: unknown
+    runtime_summary?: unknown
+    tasks?: unknown
+  }
+
+  return {
+    version: tasksFile.version,
+    stream_id: tasksFile.stream_id ?? streamId,
+    last_updated: tasksFile.last_updated,
+    runtime_state: normalizeRuntimeState(streamId, tasksFile.runtime_state as never),
+    ...(tasksFile.runtime_summary ? { runtime_summary: tasksFile.runtime_summary } : {}),
+    tasks: Array.isArray(tasksFile.tasks) ? tasksFile.tasks : [],
+  }
+}
+
 function shiftTaskStages(repoRoot: string, streamId: string, afterStage: number): void {
-  const tasksFile = readTasksFile(repoRoot, streamId)
+  const tasksFile = readRawTasksFile(repoRoot, streamId)
   if (!tasksFile) {
     return
   }
@@ -152,14 +277,379 @@ function shiftTaskStages(repoRoot: string, streamId: string, afterStage: number)
   writeTasksFile(repoRoot, streamId, tasksFile)
 }
 
-function shiftThreadStages(
+function shiftRuntimeStateArtifacts(
   repoRoot: string,
   streamId: string,
   afterStage: number,
   promptStageDirNames: Map<number, { oldDir: string; newDir: string }>,
 ): void {
-  const threadsFile = loadThreads(repoRoot, streamId)
-  if (!threadsFile) {
+  const tasksFile = readRawTasksFile(repoRoot, streamId)
+  if (!tasksFile?.runtime_state) {
+    return
+  }
+
+  tasksFile.runtime_state.threads = tasksFile.runtime_state.threads
+    .map((thread) => {
+      const shiftedThreadId = shiftHierarchicalIdentifier(thread.threadId, afterStage, 3)
+      const stageNumber = parseInt(thread.threadId.split(".")[0] ?? "", 10)
+
+      return {
+        ...thread,
+        threadId: shiftedThreadId ?? thread.threadId,
+        ...(thread.promptPath && !isNaN(stageNumber)
+          ? { promptPath: shiftPromptPath(thread.promptPath, promptStageDirNames, stageNumber) }
+          : {}),
+      }
+    })
+    .sort((a, b) => a.threadId.localeCompare(b.threadId, undefined, { numeric: true }))
+
+  tasksFile.runtime_state.batches = Object.fromEntries(
+    Object.entries(tasksFile.runtime_state.batches)
+      .map(([batchId, batch]) => {
+        const shiftedBatchId = shiftHierarchicalIdentifier(batchId, afterStage, 2) ?? batchId
+        return [
+          shiftedBatchId,
+          {
+            ...batch,
+            batchId: shiftHierarchicalIdentifier(batch.batchId, afterStage, 2) ?? batch.batchId,
+            threads: batch.threads.map((thread) => ({
+              ...thread,
+              threadId: shiftHierarchicalIdentifier(thread.threadId, afterStage, 3) ?? thread.threadId,
+              firstTaskId:
+                shiftHierarchicalIdentifier(thread.firstTaskId, afterStage, 4) ?? thread.firstTaskId,
+            })),
+          },
+        ]
+      })
+      .sort(([left], [right]) => left.localeCompare(right, undefined, { numeric: true })),
+  )
+
+  const supervision = tasksFile.runtime_state.supervision
+  tasksFile.runtime_state.supervision = {
+    ...supervision,
+    ...(supervision.current_branch_supervision
+      ? {
+          current_branch_supervision: {
+            ...supervision.current_branch_supervision,
+            ...(supervision.current_branch_supervision.scope
+              ? {
+                  scope: shiftBranchScopeIdentifiers(
+                    supervision.current_branch_supervision.scope,
+                    afterStage,
+                  ),
+                }
+              : {}),
+            ...(supervision.current_branch_supervision.supervisionProgress
+              ? {
+                  supervisionProgress: shiftSupervisionProgressIdentifiers(
+                    supervision.current_branch_supervision.supervisionProgress,
+                    afterStage,
+                  ),
+                }
+              : {}),
+          },
+        }
+      : {}),
+    runs: supervision.runs.map((run) => ({
+      ...run,
+      stageId: shiftStageIdentifier(run.stageId, afterStage) ?? run.stageId,
+      ...(run.currentBatchId
+        ? { currentBatchId: shiftHierarchicalIdentifier(run.currentBatchId, afterStage, 2) }
+        : {}),
+      ...(run.lastReviewedBatchId
+        ? { lastReviewedBatchId: shiftHierarchicalIdentifier(run.lastReviewedBatchId, afterStage, 2) }
+        : {}),
+    })),
+    branch_sessions: supervision.branch_sessions.map((session) => ({
+      ...session,
+      ...(session.batchId
+        ? { batchId: shiftHierarchicalIdentifier(session.batchId, afterStage, 2) }
+        : {}),
+      ...(session.threadId
+        ? { threadId: shiftHierarchicalIdentifier(session.threadId, afterStage, 3) }
+        : {}),
+      ...(session.scope ? { scope: shiftBranchScopeIdentifiers(session.scope, afterStage) } : {}),
+      ...(session.supervisionProgress
+        ? {
+            supervisionProgress: shiftSupervisionProgressIdentifiers(
+              session.supervisionProgress,
+              afterStage,
+            ),
+          }
+        : {}),
+    })),
+    reviewed_batches: supervision.reviewed_batches.map((review) => ({
+      ...review,
+      stageId: shiftStageIdentifier(review.stageId, afterStage) ?? review.stageId,
+      batchId: shiftHierarchicalIdentifier(review.batchId, afterStage, 2) ?? review.batchId,
+      threadIds: review.threadIds.map((threadId) =>
+        shiftHierarchicalIdentifier(threadId, afterStage, 3) ?? threadId,
+      ),
+    })),
+    issue_summaries: supervision.issue_summaries.map((issue) => ({
+      ...issue,
+      stageId: shiftStageIdentifier(issue.stageId, afterStage) ?? issue.stageId,
+      batchId: shiftHierarchicalIdentifier(issue.batchId, afterStage, 2) ?? issue.batchId,
+      ...(issue.threadId
+        ? { threadId: shiftHierarchicalIdentifier(issue.threadId, afterStage, 3) }
+        : {}),
+    })),
+    fix_cycles: supervision.fix_cycles.map((cycle) => ({
+      ...cycle,
+      stageId: shiftStageIdentifier(cycle.stageId, afterStage) ?? cycle.stageId,
+      batchId: shiftHierarchicalIdentifier(cycle.batchId, afterStage, 2) ?? cycle.batchId,
+      threadId: shiftHierarchicalIdentifier(cycle.threadId, afterStage, 3) ?? cycle.threadId,
+    })),
+    escalations: supervision.escalations.map((escalation) => ({
+      ...escalation,
+      stageId: shiftStageIdentifier(escalation.stageId, afterStage) ?? escalation.stageId,
+      ...(escalation.batchId
+        ? { batchId: shiftHierarchicalIdentifier(escalation.batchId, afterStage, 2) }
+        : {}),
+      ...(escalation.threadId
+        ? { threadId: shiftHierarchicalIdentifier(escalation.threadId, afterStage, 3) }
+        : {}),
+    })),
+    stage_stops: supervision.stage_stops.map((stageStop) => ({
+      ...stageStop,
+      stageId: shiftStageIdentifier(stageStop.stageId, afterStage) ?? stageStop.stageId,
+      ...(stageStop.batchId
+        ? { batchId: shiftHierarchicalIdentifier(stageStop.batchId, afterStage, 2) }
+        : {}),
+    })),
+  }
+
+  delete tasksFile.runtime_summary
+  writeTasksFile(repoRoot, streamId, tasksFile)
+}
+
+function shiftLegacySupervisorArtifacts(repoRoot: string, streamId: string, afterStage: number): void {
+  const supervisorStatePath = join(getWorkDir(repoRoot), streamId, "supervisor-state.json")
+  if (!existsSync(supervisorStatePath)) {
+    return
+  }
+
+  const supervisorState = JSON.parse(readFileSync(supervisorStatePath, "utf-8")) as Record<string, unknown>
+  const currentBranchSupervision =
+    supervisorState.current_branch_supervision as
+      | {
+          scope?: { level: "batch" | "stage"; stageId: string; batchId?: string }
+          supervisionProgress?: { currentBatchId?: string; lastReviewedBatchId?: string }
+        }
+      | undefined
+  const runs = Array.isArray(supervisorState.runs) ? supervisorState.runs : []
+  const branchSessions = Array.isArray(supervisorState.branch_sessions)
+    ? supervisorState.branch_sessions
+    : []
+  const reviewedBatches = Array.isArray(supervisorState.reviewed_batches)
+    ? supervisorState.reviewed_batches
+    : []
+  const issueSummaries = Array.isArray(supervisorState.issue_summaries)
+    ? supervisorState.issue_summaries
+    : []
+  const fixCycles = Array.isArray(supervisorState.fix_cycles) ? supervisorState.fix_cycles : []
+  const escalations = Array.isArray(supervisorState.escalations) ? supervisorState.escalations : []
+  const stageStops = Array.isArray(supervisorState.stage_stops) ? supervisorState.stage_stops : []
+
+  writeFileSync(
+    supervisorStatePath,
+    JSON.stringify(
+      {
+        ...supervisorState,
+        ...(currentBranchSupervision
+          ? {
+              current_branch_supervision: {
+                ...currentBranchSupervision,
+                ...(currentBranchSupervision.scope
+                  ? {
+                      scope: shiftBranchScopeIdentifiers(currentBranchSupervision.scope, afterStage),
+                    }
+                  : {}),
+                ...(currentBranchSupervision.supervisionProgress
+                  ? {
+                      supervisionProgress: shiftSupervisionProgressIdentifiers(
+                        currentBranchSupervision.supervisionProgress,
+                        afterStage,
+                      ),
+                    }
+                  : {}),
+              },
+            }
+          : {}),
+        runs: runs.map((run) => ({
+          ...run,
+          ...(typeof run === "object" && run !== null && "stageId" in run
+            ? { stageId: shiftStageIdentifier(String(run.stageId), afterStage) }
+            : {}),
+          ...(typeof run === "object" && run !== null && "currentBatchId" in run && run.currentBatchId
+            ? { currentBatchId: shiftHierarchicalIdentifier(String(run.currentBatchId), afterStage, 2) }
+            : {}),
+          ...(typeof run === "object" && run !== null && "lastReviewedBatchId" in run && run.lastReviewedBatchId
+            ? {
+                lastReviewedBatchId: shiftHierarchicalIdentifier(
+                  String(run.lastReviewedBatchId),
+                  afterStage,
+                  2,
+                ),
+              }
+            : {}),
+        })),
+        branch_sessions: branchSessions.map((session) => ({
+          ...session,
+          ...(typeof session === "object" && session !== null && "batchId" in session && session.batchId
+            ? { batchId: shiftHierarchicalIdentifier(String(session.batchId), afterStage, 2) }
+            : {}),
+          ...(typeof session === "object" && session !== null && "threadId" in session && session.threadId
+            ? { threadId: shiftHierarchicalIdentifier(String(session.threadId), afterStage, 3) }
+            : {}),
+          ...(typeof session === "object" && session !== null && "scope" in session && session.scope
+            ? {
+                scope: shiftBranchScopeIdentifiers(
+                  session.scope as { level: "batch" | "stage"; stageId: string; batchId?: string },
+                  afterStage,
+                ),
+              }
+            : {}),
+          ...(typeof session === "object" && session !== null && "supervisionProgress" in session && session.supervisionProgress
+            ? {
+                supervisionProgress: shiftSupervisionProgressIdentifiers(
+                  session.supervisionProgress as {
+                    currentBatchId?: string
+                    lastReviewedBatchId?: string
+                  },
+                  afterStage,
+                ),
+              }
+            : {}),
+        })),
+        reviewed_batches: reviewedBatches.map((review) => ({
+          ...review,
+          ...(typeof review === "object" && review !== null && "stageId" in review
+            ? { stageId: shiftStageIdentifier(String(review.stageId), afterStage) }
+            : {}),
+          ...(typeof review === "object" && review !== null && "batchId" in review
+            ? { batchId: shiftHierarchicalIdentifier(String(review.batchId), afterStage, 2) }
+            : {}),
+          ...(typeof review === "object" && review !== null && "threadIds" in review && Array.isArray(review.threadIds)
+            ? {
+                threadIds: review.threadIds.map((threadId) =>
+                  shiftHierarchicalIdentifier(String(threadId), afterStage, 3),
+                ),
+              }
+            : {}),
+        })),
+        issue_summaries: issueSummaries.map((issue) => ({
+          ...issue,
+          ...(typeof issue === "object" && issue !== null && "stageId" in issue
+            ? { stageId: shiftStageIdentifier(String(issue.stageId), afterStage) }
+            : {}),
+          ...(typeof issue === "object" && issue !== null && "batchId" in issue
+            ? { batchId: shiftHierarchicalIdentifier(String(issue.batchId), afterStage, 2) }
+            : {}),
+          ...(typeof issue === "object" && issue !== null && "threadId" in issue && issue.threadId
+            ? { threadId: shiftHierarchicalIdentifier(String(issue.threadId), afterStage, 3) }
+            : {}),
+        })),
+        fix_cycles: fixCycles.map((cycle) => ({
+          ...cycle,
+          ...(typeof cycle === "object" && cycle !== null && "stageId" in cycle
+            ? { stageId: shiftStageIdentifier(String(cycle.stageId), afterStage) }
+            : {}),
+          ...(typeof cycle === "object" && cycle !== null && "batchId" in cycle
+            ? { batchId: shiftHierarchicalIdentifier(String(cycle.batchId), afterStage, 2) }
+            : {}),
+          ...(typeof cycle === "object" && cycle !== null && "threadId" in cycle
+            ? { threadId: shiftHierarchicalIdentifier(String(cycle.threadId), afterStage, 3) }
+            : {}),
+        })),
+        escalations: escalations.map((escalation) => ({
+          ...escalation,
+          ...(typeof escalation === "object" && escalation !== null && "stageId" in escalation
+            ? { stageId: shiftStageIdentifier(String(escalation.stageId), afterStage) }
+            : {}),
+          ...(typeof escalation === "object" && escalation !== null && "batchId" in escalation && escalation.batchId
+            ? { batchId: shiftHierarchicalIdentifier(String(escalation.batchId), afterStage, 2) }
+            : {}),
+          ...(typeof escalation === "object" && escalation !== null && "threadId" in escalation && escalation.threadId
+            ? { threadId: shiftHierarchicalIdentifier(String(escalation.threadId), afterStage, 3) }
+            : {}),
+        })),
+        stage_stops: stageStops.map((stageStop) => ({
+          ...stageStop,
+          ...(typeof stageStop === "object" && stageStop !== null && "stageId" in stageStop
+            ? { stageId: shiftStageIdentifier(String(stageStop.stageId), afterStage) }
+            : {}),
+          ...(typeof stageStop === "object" && stageStop !== null && "batchId" in stageStop && stageStop.batchId
+            ? { batchId: shiftHierarchicalIdentifier(String(stageStop.batchId), afterStage, 2) }
+            : {}),
+        })),
+      },
+      null,
+      2,
+    ),
+  )
+}
+
+function shiftLegacyBatchStatusArtifacts(repoRoot: string, streamId: string, afterStage: number): void {
+  const batchStatusDir = join(getWorkDir(repoRoot), streamId, "batch-status")
+  if (!existsSync(batchStatusDir)) {
+    return
+  }
+
+  for (const entry of readdirSync(batchStatusDir)) {
+    if (!entry.endsWith(".json")) {
+      continue
+    }
+
+    const filePath = join(batchStatusDir, entry)
+    const batchStatus = JSON.parse(readFileSync(filePath, "utf-8")) as {
+      batchId?: string
+      threads?: Array<{ threadId: string; firstTaskId: string }>
+    }
+
+    writeFileSync(
+      filePath,
+      JSON.stringify(
+        {
+          ...batchStatus,
+          ...(batchStatus.batchId
+            ? { batchId: shiftHierarchicalIdentifier(batchStatus.batchId, afterStage, 2) }
+            : {}),
+          threads: Array.isArray(batchStatus.threads)
+            ? batchStatus.threads.map((thread) => ({
+                ...thread,
+                threadId: shiftHierarchicalIdentifier(thread.threadId, afterStage, 3) ?? thread.threadId,
+                firstTaskId:
+                  shiftHierarchicalIdentifier(thread.firstTaskId, afterStage, 4) ?? thread.firstTaskId,
+              }))
+            : [],
+        },
+        null,
+        2,
+      ),
+    )
+  }
+}
+
+function shiftLegacyThreadArtifacts(
+  repoRoot: string,
+  streamId: string,
+  afterStage: number,
+  promptStageDirNames: Map<number, { oldDir: string; newDir: string }>,
+): void {
+  const threadsPath = join(getWorkDir(repoRoot), streamId, "threads.json")
+  if (!existsSync(threadsPath)) {
+    return
+  }
+
+  const threadsFile = JSON.parse(readFileSync(threadsPath, "utf-8")) as {
+    version?: string
+    stream_id?: string
+    last_updated?: string
+    threads?: Array<{ threadId: string; promptPath?: string } & Record<string, unknown>>
+  }
+
+  if (!Array.isArray(threadsFile.threads)) {
     return
   }
 
@@ -190,7 +680,17 @@ function shiftThreadStages(
     })
     .sort((a, b) => a.threadId.localeCompare(b.threadId, undefined, { numeric: true }))
 
-  saveThreads(repoRoot, streamId, threadsFile)
+  writeFileSync(
+    threadsPath,
+    JSON.stringify(
+      {
+        ...threadsFile,
+        last_updated: new Date().toISOString(),
+      },
+      null,
+      2,
+    ),
+  )
 }
 
 function shiftStageApprovals(repoRoot: string, streamId: string, afterStage: number): void {
@@ -272,7 +772,10 @@ function shiftStageArtifacts(
 
   shiftTaskStages(repoRoot, streamId, afterStage)
   renamePromptStageDirectories(repoRoot, streamId, promptStageDirNames)
-  shiftThreadStages(repoRoot, streamId, afterStage, promptStageDirNames)
+  shiftLegacyThreadArtifacts(repoRoot, streamId, afterStage, promptStageDirNames)
+  shiftRuntimeStateArtifacts(repoRoot, streamId, afterStage, promptStageDirNames)
+  shiftLegacySupervisorArtifacts(repoRoot, streamId, afterStage)
+  shiftLegacyBatchStatusArtifacts(repoRoot, streamId, afterStage)
   shiftStageApprovals(repoRoot, streamId, afterStage)
   shiftGitHubStageMetadata(repoRoot, streamId, afterStage)
 

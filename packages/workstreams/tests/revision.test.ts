@@ -415,6 +415,176 @@ Follow-up details.
                         version: "1.0.0",
                         stream_id: "stream-rev",
                         last_updated: new Date().toISOString(),
+                        runtime_state: {
+                            version: "1.0.0",
+                            last_updated: new Date().toISOString(),
+                            threads: [
+                                {
+                                    threadId: "02.01.01",
+                                    promptPath: "prompts/02-follow-up/01-follow-up-batch/follow-up-thread.md",
+                                    sessions: [],
+                                },
+                            ],
+                            batches: {
+                                "02.01": {
+                                    version: "1.0.0",
+                                    streamId: "stream-rev",
+                                    batchId: "02.01",
+                                    runId: "02.01-run",
+                                    mode: "headless",
+                                    status: "running",
+                                    stageName: "Follow Up",
+                                    batchName: "Follow Up Batch",
+                                    startedAt: new Date().toISOString(),
+                                    updatedAt: new Date().toISOString(),
+                                    summary: {
+                                        total: 1,
+                                        pending: 0,
+                                        running: 1,
+                                        completed: 0,
+                                        failed: 0,
+                                    },
+                                    threads: [
+                                        {
+                                            threadId: "02.01.01",
+                                            threadName: "Follow Up Thread",
+                                            firstTaskId: "02.01.01.01",
+                                            status: "running",
+                                            updatedAt: new Date().toISOString(),
+                                        },
+                                    ],
+                                },
+                            },
+                            supervision: {
+                                version: "1.0.0",
+                                stream_id: "stream-rev",
+                                last_updated: new Date().toISOString(),
+                                active_run_id: "run-1",
+                                current_branch_supervision: {
+                                    owner: "root_agent",
+                                    rootSessionId: "root-1",
+                                    branchSessionId: "branch-1",
+                                    branchRole: "supervision",
+                                    scope: {
+                                        level: "batch",
+                                        stageId: "02",
+                                        batchId: "02.01",
+                                    },
+                                    source: "native_fork",
+                                    nativeSessionId: "native-1",
+                                    supervisionProgress: {
+                                        executionMode: "single_batch_run",
+                                        currentBatchId: "02.01",
+                                        lastReviewedBatchId: "02.01",
+                                    },
+                                    updatedAt: new Date().toISOString(),
+                                },
+                                runs: [
+                                    {
+                                        runId: "run-1",
+                                        stageId: "02",
+                                        status: "running",
+                                        startedAt: new Date().toISOString(),
+                                        updatedAt: new Date().toISOString(),
+                                        currentBatchId: "02.01",
+                                        lastReviewedBatchId: "02.01",
+                                        reviewPasses: 1,
+                                        issueSummaryIds: ["issue-1"],
+                                        escalationIds: ["esc-1"],
+                                        stageStopId: "stop-1",
+                                    },
+                                ],
+                                checkpoint_pointers: [],
+                                branch_sessions: [
+                                    {
+                                        owner: "root_agent",
+                                        rootSessionId: "root-1",
+                                        branchSessionId: "branch-1",
+                                        branchRole: "supervision",
+                                        source: "native_fork",
+                                        status: "running",
+                                        startedAt: new Date().toISOString(),
+                                        updatedAt: new Date().toISOString(),
+                                        runId: "run-1",
+                                        batchId: "02.01",
+                                        threadId: "02.01.01",
+                                        scope: {
+                                            level: "batch",
+                                            stageId: "02",
+                                            batchId: "02.01",
+                                        },
+                                        supervisionProgress: {
+                                            executionMode: "single_batch_run",
+                                            currentBatchId: "02.01",
+                                            lastReviewedBatchId: "02.01",
+                                        },
+                                    },
+                                ],
+                                reviewed_batches: [
+                                    {
+                                        reviewId: "review-1",
+                                        runId: "run-1",
+                                        stageId: "02",
+                                        batchId: "02.01",
+                                        reviewPass: 1,
+                                        reviewedAt: new Date().toISOString(),
+                                        outcome: "changes_requested",
+                                        threadIds: ["02.01.01"],
+                                        issueSummaryIds: ["issue-1"],
+                                    },
+                                ],
+                                issue_summaries: [
+                                    {
+                                        summaryId: "issue-1",
+                                        runId: "run-1",
+                                        stageId: "02",
+                                        batchId: "02.01",
+                                        threadId: "02.01.01",
+                                        status: "open",
+                                        summary: "Needs follow-up",
+                                        firstObservedAt: new Date().toISOString(),
+                                        lastObservedAt: new Date().toISOString(),
+                                    },
+                                ],
+                                fix_cycles: [
+                                    {
+                                        cycleId: "cycle-1",
+                                        runId: "run-1",
+                                        stageId: "02",
+                                        batchId: "02.01",
+                                        threadId: "02.01.01",
+                                        attemptCount: 1,
+                                        lastAttemptAt: new Date().toISOString(),
+                                        lastOutcome: "pending_review",
+                                        issueSummaryIds: ["issue-1"],
+                                    },
+                                ],
+                                escalations: [
+                                    {
+                                        escalationId: "esc-1",
+                                        runId: "run-1",
+                                        stageId: "02",
+                                        batchId: "02.01",
+                                        threadId: "02.01.01",
+                                        target: "thread",
+                                        reason: "Needs help",
+                                        status: "pending",
+                                        escalatedAt: new Date().toISOString(),
+                                    },
+                                ],
+                                stage_stops: [
+                                    {
+                                        stopId: "stop-1",
+                                        runId: "run-1",
+                                        stageId: "02",
+                                        batchId: "02.01",
+                                        reason: "blocked",
+                                        summary: "Paused",
+                                        stoppedAt: new Date().toISOString(),
+                                    },
+                                ],
+                            },
+                        },
                         tasks: [
                             {
                                 id: "01.01.01.01",
@@ -437,6 +607,118 @@ Follow-up details.
                                 updated_at: "",
                             },
                         ],
+                    },
+                    null,
+                    2,
+                ),
+            );
+
+            mkdirSync(join(streamDir, "batch-status"), { recursive: true });
+            writeFileSync(
+                join(streamDir, "batch-status", "02.01.json"),
+                JSON.stringify(
+                    {
+                        version: "1.0.0",
+                        streamId: "stream-rev",
+                        batchId: "02.01",
+                        runId: "02.01-run",
+                        mode: "headless",
+                        status: "running",
+                        startedAt: new Date().toISOString(),
+                        updatedAt: new Date().toISOString(),
+                        summary: {
+                            total: 1,
+                            pending: 0,
+                            running: 1,
+                            completed: 0,
+                            failed: 0,
+                        },
+                        threads: [
+                            {
+                                threadId: "02.01.01",
+                                threadName: "Follow Up Thread",
+                                firstTaskId: "02.01.01.01",
+                                status: "running",
+                                updatedAt: new Date().toISOString(),
+                            },
+                        ],
+                    },
+                    null,
+                    2,
+                ),
+            );
+
+            writeFileSync(
+                join(streamDir, "supervisor-state.json"),
+                JSON.stringify(
+                    {
+                        version: "1.0.0",
+                        stream_id: "stream-rev",
+                        last_updated: new Date().toISOString(),
+                        active_run_id: "run-1",
+                        current_branch_supervision: {
+                            owner: "root_agent",
+                            rootSessionId: "root-1",
+                            branchSessionId: "branch-1",
+                            branchRole: "supervision",
+                            source: "native_fork",
+                            nativeSessionId: "native-1",
+                            scope: {
+                                level: "batch",
+                                stageId: "02",
+                                batchId: "02.01",
+                            },
+                            supervisionProgress: {
+                                executionMode: "single_batch_run",
+                                currentBatchId: "02.01",
+                                lastReviewedBatchId: "02.01",
+                            },
+                            updatedAt: new Date().toISOString(),
+                        },
+                        runs: [
+                            {
+                                runId: "run-1",
+                                stageId: "02",
+                                status: "running",
+                                startedAt: new Date().toISOString(),
+                                updatedAt: new Date().toISOString(),
+                                currentBatchId: "02.01",
+                                lastReviewedBatchId: "02.01",
+                                reviewPasses: 1,
+                                issueSummaryIds: [],
+                                escalationIds: [],
+                            },
+                        ],
+                        checkpoint_pointers: [],
+                        branch_sessions: [
+                            {
+                                owner: "root_agent",
+                                rootSessionId: "root-1",
+                                branchSessionId: "branch-1",
+                                branchRole: "supervision",
+                                source: "native_fork",
+                                status: "running",
+                                startedAt: new Date().toISOString(),
+                                updatedAt: new Date().toISOString(),
+                                batchId: "02.01",
+                                threadId: "02.01.01",
+                                scope: {
+                                    level: "batch",
+                                    stageId: "02",
+                                    batchId: "02.01",
+                                },
+                                supervisionProgress: {
+                                    executionMode: "single_batch_run",
+                                    currentBatchId: "02.01",
+                                    lastReviewedBatchId: "02.01",
+                                },
+                            },
+                        ],
+                        reviewed_batches: [],
+                        issue_summaries: [],
+                        fix_cycles: [],
+                        escalations: [],
+                        stage_stops: [],
                     },
                     null,
                     2,
@@ -544,12 +826,28 @@ Follow-up details.
             expect(tasksFile.tasks.some((task: Task) => task.id === "03.01.01.01")).toBe(true);
 
             const persistedTasksFile = JSON.parse(readFileSync(join(streamDir, "tasks.json"), "utf-8"));
-            expect(persistedTasksFile.runtime_state.threads.some((thread: { threadId: string }) => thread.threadId === "02.01.01")).toBe(true);
             expect(persistedTasksFile.runtime_state.threads.some((thread: { threadId: string }) => thread.threadId === "03.01.01")).toBe(true);
 
             const shiftedThread = persistedTasksFile.runtime_state.threads.find((thread: { threadId: string }) => thread.threadId === "03.01.01");
             expect(shiftedThread?.promptPath).toContain("prompts/03-follow-up/01-follow-up-batch/follow-up-thread.md");
             expect(existsSync(join(streamDir, "prompts", "03-follow-up", "01-follow-up-batch", "follow-up-thread.md"))).toBe(true);
+
+            expect(persistedTasksFile.runtime_state.batches["02.01"]).toBeUndefined();
+            expect(persistedTasksFile.runtime_state.batches["03.01"]?.batchId).toBe("03.01");
+            expect(persistedTasksFile.runtime_state.batches["03.01"]?.threads[0]?.threadId).toBe("03.01.01");
+            expect(persistedTasksFile.runtime_state.batches["03.01"]?.threads[0]?.firstTaskId).toBe("03.01.01.01");
+
+            expect(persistedTasksFile.runtime_state.supervision.current_branch_supervision?.scope?.stageId).toBe("03");
+            expect(persistedTasksFile.runtime_state.supervision.current_branch_supervision?.scope?.batchId).toBe("03.01");
+            expect(persistedTasksFile.runtime_state.supervision.current_branch_supervision?.supervisionProgress?.currentBatchId).toBe("03.01");
+            expect(persistedTasksFile.runtime_state.supervision.runs[0]?.stageId).toBe("03");
+            expect(persistedTasksFile.runtime_state.supervision.runs[0]?.currentBatchId).toBe("03.01");
+            expect(persistedTasksFile.runtime_state.supervision.branch_sessions[0]?.threadId).toBe("03.01.01");
+            expect(persistedTasksFile.runtime_state.supervision.reviewed_batches[0]?.batchId).toBe("03.01");
+            expect(persistedTasksFile.runtime_state.supervision.issue_summaries[0]?.threadId).toBe("03.01.01");
+            expect(persistedTasksFile.runtime_state.supervision.fix_cycles[0]?.threadId).toBe("03.01.01");
+            expect(persistedTasksFile.runtime_state.supervision.escalations[0]?.batchId).toBe("03.01");
+            expect(persistedTasksFile.runtime_state.supervision.stage_stops[0]?.stageId).toBe("03");
 
             const updatedIndex = loadIndex(REPO_ROOT);
             expect(updatedIndex.streams[0]!.approval?.stages?.[2]).toBeUndefined();
@@ -558,6 +856,18 @@ Follow-up details.
             const githubData = JSON.parse(readFileSync(join(streamDir, "github.json"), "utf-8"));
             expect(githubData.stages["02"]).toBeUndefined();
             expect(githubData.stages["03"]?.issue_number).toBe(102);
+
+            const legacyBatchStatus = JSON.parse(readFileSync(join(streamDir, "batch-status", "02.01.json"), "utf-8"));
+            expect(legacyBatchStatus.batchId).toBe("03.01");
+            expect(legacyBatchStatus.threads[0]?.threadId).toBe("03.01.01");
+            expect(legacyBatchStatus.threads[0]?.firstTaskId).toBe("03.01.01.01");
+
+            const legacySupervisorState = JSON.parse(readFileSync(join(streamDir, "supervisor-state.json"), "utf-8"));
+            expect(legacySupervisorState.current_branch_supervision?.scope?.stageId).toBe("03");
+            expect(legacySupervisorState.current_branch_supervision?.scope?.batchId).toBe("03.01");
+            expect(legacySupervisorState.runs[0]?.stageId).toBe("03");
+            expect(legacySupervisorState.runs[0]?.currentBatchId).toBe("03.01");
+            expect(legacySupervisorState.branch_sessions[0]?.threadId).toBe("03.01.01");
         });
 
         test("should reject insertion after an unapproved stage", () => {
