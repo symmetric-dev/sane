@@ -9,13 +9,10 @@ import { getRepoRoot, getWorkDir, getIndexPath } from "../lib/repo.ts"
 import { getOrCreateIndex, saveIndex } from "../lib/index.ts"
 import { getAgentsYamlPath } from "../lib/agents-yaml.ts"
 import { getGitHubConfigPath } from "../lib/github/config.ts"
-import { getNotificationsConfigPath } from "../lib/notifications/config.ts"
-import { getSupervisorConfigPath } from "../lib/supervisor/config.ts"
+import { bootstrapSqliteStructuredStorage } from "../lib/sqlite-storage.ts"
 import {
   DEFAULT_AGENTS_YAML,
   DEFAULT_GITHUB_JSON,
-  DEFAULT_NOTIFICATIONS_JSON,
-  DEFAULT_SUPERVISOR_JSON,
 } from "../defaults/index.ts"
 
 const WORKSTREAM_ROLE_EXPORT = 'export WORKSTREAM_ROLE="USER"'
@@ -84,6 +81,7 @@ user environment for workstream commands.
 
 Options:
   --user        Only set up user environment (add WORKSTREAM_ROLE to shell config)
+  --sqlite      Bootstrap local sqlite structured storage at work/db.sqlite
   --force       Overwrite existing configuration files
   --help, -h    Show this help message
 
@@ -98,6 +96,7 @@ export async function main(argv: string[]): Promise<void> {
   const args = argv.slice(2)
   const force = args.includes("--force")
   const userOnly = args.includes("--user")
+  const bootstrapSqlite = args.includes("--sqlite")
 
   const repoRootIdx = args.indexOf("--repo-root")
   let repoRootArg: string | undefined
@@ -168,32 +167,9 @@ export async function main(argv: string[]): Promise<void> {
       console.log("agents.yaml already exists, skipping.")
     }
 
-    // 4. Initialize notifications.json
-    const notificationsPath = getNotificationsConfigPath(repoRoot)
-    if (!existsSync(notificationsPath) || force) {
-      console.log(
-        `${
-          force && existsSync(notificationsPath)
-            ? "Overwriting"
-            : "Initializing"
-        } notifications.json...`,
-      )
-      writeFileSync(notificationsPath, DEFAULT_NOTIFICATIONS_JSON, "utf-8")
-    } else {
-      console.log("notifications.json already exists, skipping.")
-    }
-
-    // 5. Initialize supervisor.json
-    const supervisorPath = getSupervisorConfigPath(repoRoot)
-    if (!existsSync(supervisorPath) || force) {
-      console.log(
-        `${
-          force && existsSync(supervisorPath) ? "Overwriting" : "Initializing"
-        } supervisor.json...`,
-      )
-      writeFileSync(supervisorPath, DEFAULT_SUPERVISOR_JSON, "utf-8")
-    } else {
-      console.log("supervisor.json already exists, skipping.")
+    if (bootstrapSqlite) {
+      const result = bootstrapSqliteStructuredStorage(repoRoot)
+      console.log(`Bootstrapped sqlite structured storage at ${result.databasePath}`)
     }
 
     console.log("\nInitialization complete.")
