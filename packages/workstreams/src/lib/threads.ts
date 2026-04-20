@@ -11,6 +11,7 @@ import type {
   ThreadMetadata,
   ThreadsJson,
   SessionRecord,
+  TasksFile,
 } from "./types.ts"
 import {
   loadThreadMetadataViewSync,
