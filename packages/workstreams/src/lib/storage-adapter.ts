@@ -1,8 +1,12 @@
 import { getOrCreateIndex, modifyIndex, saveIndex } from "./index.ts"
-export { createFilesystemAuthoritativeSqliteStructuredStorageAdapter } from "./sqlite-storage-adapter.ts"
+export {
+  createFilesystemAuthoritativeSqliteStructuredStorageAdapter,
+  type FilesystemAuthoritativeSqliteStructuredStorageAdapterOptions,
+} from "./sqlite-storage-adapter.ts"
 import { createFilesystemAuthoritativeSqliteStructuredStorageAdapter } from "./sqlite-storage-adapter.ts"
 import {
   approvalMetadataToStructuredApprovalRecords,
+  createStructuredStorageParitySnapshot,
   createEmptyStructuredStorageWorkstreamState,
   createStreamMetadataFromStructuredStorageRecord,
   createStructuredStorageWorkstreamRecord,
@@ -21,8 +25,12 @@ import {
   upsertStructuredThreadRuntime,
 } from "./structured-storage.ts"
 import {
+  loadSqliteCriticalWorkflowParityProjection,
+  recordSqliteStructuredStorageMirrorState,
   syncStructuredStorageWorkspaceStateToSqlite,
   syncStructuredStorageWorkstreamStateToSqlite,
+  type CriticalWorkflowParityProjection,
+  type CriticalWorkflowThreadParityRecord,
 } from "./sqlite-storage.ts"
 import {
   createEmptyTasksFile,
@@ -45,6 +53,113 @@ import type {
 
 function compareIds(left: string, right: string): number {
   return left.localeCompare(right, undefined, { numeric: true })
+}
+
+export interface CriticalWorkflowFilesystemCompatibilityData {
+  threadMetadataViewEnvelope?: {
+    version: string
+    lastUpdated: string
+  }
+}
+
+export interface CriticalWorkflowDualWriteParityInspection {
+  streamId: string
+  filesystem: CriticalWorkflowParityProjection
+  sqlite: CriticalWorkflowParityProjection | null
+  parity: {
+    tasks: boolean
+    threads: boolean
+    approvals: boolean
+    batchRuns: boolean
+    supervisionRuns: boolean
+    all: boolean
+  }
+  intentionalMismatches: Array<{
+    entity: string
+    path: string
+    reason: string
+  }>
+  filesystemCompatibilityOnlyData: CriticalWorkflowFilesystemCompatibilityData
+}
+
+function normalizeThreadSessionsForParity(sessions: ThreadMetadata["sessions"]): ThreadMetadata["sessions"] {
+  return sessions
+    .map((session) => ({
+      ...session,
+      ...(session.lineage ? { lineage: { ...session.lineage } } : {}),
+    }))
+    .sort((left, right) => {
+      const startedAtOrder = (left.startedAt ?? "").localeCompare(right.startedAt ?? "")
+      if (startedAtOrder !== 0) return startedAtOrder
+      return compareIds(left.sessionId, right.sessionId)
+    })
+}
+
+function threadRecordsForParity(
+  state: StructuredStorageWorkstreamState,
+): CriticalWorkflowThreadParityRecord[] {
+  const runtimeByThreadId = new Map(state.threadRuntime.map((record) => [record.threadId, record] as const))
+
+  return [...state.hierarchy.threads]
+    .sort((left, right) => compareIds(left.id, right.id))
+    .map((thread) => {
+      const runtime = runtimeByThreadId.get(thread.id)
+      return {
+        threadId: thread.id,
+        stageId: thread.stageId,
+        batchId: thread.batchId,
+        number: thread.number,
+        name: thread.name,
+        ...(thread.promptPath ? { promptPath: thread.promptPath } : {}),
+        ...(runtime?.currentSessionId ? { currentSessionId: runtime.currentSessionId } : {}),
+        ...(runtime?.opencodeSessionId ? { opencodeSessionId: runtime.opencodeSessionId } : {}),
+        ...(runtime?.workingAgentSessionId
+          ? { workingAgentSessionId: runtime.workingAgentSessionId }
+          : {}),
+        ...(runtime?.synthesisOutput ? { synthesisOutput: runtime.synthesisOutput } : {}),
+        ...(runtime?.synthesis ? { synthesis: { ...runtime.synthesis } } : {}),
+        sessions: runtime ? normalizeThreadSessionsForParity(runtime.sessions) : [],
+      }
+    })
+}
+
+function buildCriticalWorkflowParityProjection(
+  state: StructuredStorageWorkstreamState,
+): CriticalWorkflowParityProjection {
+  const paritySnapshot = createStructuredStorageParitySnapshot({
+    workspace: { workstreams: [] },
+    workstream: state,
+  }).workstream
+
+  if (!paritySnapshot) {
+    return {
+      tasks: [],
+      threads: [],
+      approvals: [],
+      batchRuns: [],
+      supervisionRuns: [],
+    }
+  }
+
+  return {
+    tasks: paritySnapshot.hierarchy.tasks.map((task) => ({ ...task })),
+    threads: threadRecordsForParity(paritySnapshot),
+    approvals: paritySnapshot.approvals.map((approval) => ({ ...approval })),
+    batchRuns: paritySnapshot.batchRuns.map((run) => ({
+      ...run,
+      summary: { ...run.summary },
+      threads: run.threads.map((thread) => ({ ...thread })),
+    })),
+    supervisionRuns: paritySnapshot.supervision.runs.map((run) => ({
+      ...run,
+      issueSummaryIds: [...run.issueSummaryIds],
+      escalationIds: [...run.escalationIds],
+    })),
+  }
+}
+
+function parityEqual<T>(left: T, right: T): boolean {
+  return JSON.stringify(left) === JSON.stringify(right)
 }
 
 function parseHierarchicalId(id: string): [string, string, string, string] {
@@ -354,15 +469,58 @@ async function persistWorkstreamApprovals(
   })
 }
 
-function syncWorkspaceStateMirror(repoRoot: string): void {
-  syncStructuredStorageWorkspaceStateToSqlite(repoRoot, workspaceStateFromIndex(getOrCreateIndex(repoRoot)))
+function syncWorkspaceStateMirror(args: { repoRoot: string; operation: string; streamId?: string }): void {
+  try {
+    syncStructuredStorageWorkspaceStateToSqlite(
+      args.repoRoot,
+      workspaceStateFromIndex(getOrCreateIndex(args.repoRoot)),
+    )
+    recordSqliteStructuredStorageMirrorState({
+      repoRoot: args.repoRoot,
+      operation: args.operation,
+      phase: "workspace",
+      result: "success",
+      ...(args.streamId ? { streamId: args.streamId } : {}),
+    })
+  } catch (error) {
+    recordSqliteStructuredStorageMirrorState({
+      repoRoot: args.repoRoot,
+      operation: args.operation,
+      phase: "workspace",
+      result: "error",
+      ...(args.streamId ? { streamId: args.streamId } : {}),
+      error,
+    })
+  }
 }
 
-function syncWorkstreamStateMirror(
-  repoRoot: string,
-  workstreamState: StructuredStorageWorkstreamState,
-): void {
-  syncStructuredStorageWorkstreamStateToSqlite(repoRoot, cloneWorkstreamState(workstreamState))
+function syncWorkstreamStateMirror(args: {
+  repoRoot: string
+  operation: string
+  workstreamState: StructuredStorageWorkstreamState
+}): void {
+  try {
+    syncStructuredStorageWorkstreamStateToSqlite(
+      args.repoRoot,
+      cloneWorkstreamState(args.workstreamState),
+    )
+    recordSqliteStructuredStorageMirrorState({
+      repoRoot: args.repoRoot,
+      operation: args.operation,
+      phase: "workstream",
+      result: "success",
+      streamId: args.workstreamState.streamId,
+    })
+  } catch (error) {
+    recordSqliteStructuredStorageMirrorState({
+      repoRoot: args.repoRoot,
+      operation: args.operation,
+      phase: "workstream",
+      result: "error",
+      streamId: args.workstreamState.streamId,
+      error,
+    })
+  }
 }
 
 export function createFilesystemStructuredStorageAdapter(): StructuredStorageStateAdapter {
@@ -378,7 +536,6 @@ export function createFilesystemStructuredStorageAdapter(): StructuredStorageSta
     ): Promise<void> {
       const previousIndex = getOrCreateIndex(repoRoot)
       saveIndex(repoRoot, indexFromWorkspaceState(workspaceState, previousIndex))
-      syncStructuredStorageWorkspaceStateToSqlite(repoRoot, workspaceState)
     },
 
     async modifyWorkspaceState<T>(
@@ -389,7 +546,6 @@ export function createFilesystemStructuredStorageAdapter(): StructuredStorageSta
       const result = await fn(workspaceState)
       const previousIndex = getOrCreateIndex(repoRoot)
       saveIndex(repoRoot, indexFromWorkspaceState(workspaceState, previousIndex))
-      syncStructuredStorageWorkspaceStateToSqlite(repoRoot, workspaceState)
       return result
     },
 
@@ -412,8 +568,6 @@ export function createFilesystemStructuredStorageAdapter(): StructuredStorageSta
         tasksFileFromWorkstreamState(nextState, existingTasksFile),
       )
       await persistWorkstreamApprovals(repoRoot, workstreamState.streamId, nextState)
-      syncWorkspaceStateMirror(repoRoot)
-      syncWorkstreamStateMirror(repoRoot, nextState)
     },
 
     async modifyWorkstreamState<T>(
@@ -421,7 +575,6 @@ export function createFilesystemStructuredStorageAdapter(): StructuredStorageSta
       streamId: string,
       fn: (workstreamState: StructuredStorageWorkstreamState) => T | Promise<T>,
     ): Promise<T> {
-      let mirroredState: StructuredStorageWorkstreamState | null = null
       const result = await modifyTasksFile(repoRoot, streamId, async (tasksFile) => {
         const index = getOrCreateIndex(repoRoot)
         const currentState = workstreamStateFromSnapshot(index, streamId, tasksFile)
@@ -437,16 +590,8 @@ export function createFilesystemStructuredStorageAdapter(): StructuredStorageSta
         delete tasksFile.runtime_summary
         tasksFile.tasks = nextTasksFile.tasks
         await persistWorkstreamApprovals(repoRoot, streamId, mutableState)
-        mirroredState = cloneWorkstreamState(mutableState)
         return callbackResult
       })
-
-      if (mirroredState) {
-        syncWorkspaceStateMirror(repoRoot)
-        syncWorkstreamStateMirror(repoRoot, mirroredState)
-      } else {
-        syncWorkspaceStateMirror(repoRoot)
-      }
 
       return result
     },
@@ -524,8 +669,16 @@ export function replaceStructuredWorkstreamStateSync(args: {
     saveIndex(args.repoRoot, existingIndex)
   }
 
-  syncWorkspaceStateMirror(args.repoRoot)
-  syncWorkstreamStateMirror(args.repoRoot, nextState)
+  syncWorkspaceStateMirror({
+    repoRoot: args.repoRoot,
+    operation: "replaceStructuredWorkstreamStateSync",
+    streamId: args.workstreamState.streamId,
+  })
+  syncWorkstreamStateMirror({
+    repoRoot: args.repoRoot,
+    operation: "replaceStructuredWorkstreamStateSync",
+    workstreamState: nextState,
+  })
 }
 
 export function loadThreadMetadataViewSync(repoRoot: string, streamId: string): ThreadsJson | null {
@@ -640,6 +793,59 @@ export function updateStructuredTaskSync(
   return modifyStructuredWorkstreamStateSync({ repoRoot, streamId }, (workstreamState) =>
     updateStructuredTask(workstreamState, mutation),
   )
+}
+
+/**
+ * Developer-facing parity inspection for filesystem-vs-sqlite dual-write checks.
+ */
+export function inspectCriticalWorkflowDualWriteParitySync(
+  repoRoot: string,
+  streamId: string,
+): CriticalWorkflowDualWriteParityInspection | null {
+  const filesystemState = loadStructuredWorkstreamStateSync(repoRoot, streamId)
+  if (!filesystemState) {
+    return null
+  }
+
+  const filesystem = buildCriticalWorkflowParityProjection(filesystemState)
+  const sqlite = loadSqliteCriticalWorkflowParityProjection(repoRoot, streamId)
+  const parity = {
+    tasks: sqlite ? parityEqual(filesystem.tasks, sqlite.tasks) : false,
+    threads: sqlite ? parityEqual(filesystem.threads, sqlite.threads) : false,
+    approvals: sqlite ? parityEqual(filesystem.approvals, sqlite.approvals) : false,
+    batchRuns: sqlite ? parityEqual(filesystem.batchRuns, sqlite.batchRuns) : false,
+    supervisionRuns: sqlite ? parityEqual(filesystem.supervisionRuns, sqlite.supervisionRuns) : false,
+    all: false,
+  }
+  parity.all = parity.tasks && parity.threads && parity.approvals && parity.batchRuns && parity.supervisionRuns
+
+  const threadMetadataView = loadThreadMetadataViewSync(repoRoot, streamId)
+  const filesystemCompatibilityOnlyData: CriticalWorkflowFilesystemCompatibilityData = {
+    ...(threadMetadataView
+      ? {
+          threadMetadataViewEnvelope: {
+            version: threadMetadataView.version,
+            lastUpdated: threadMetadataView.last_updated,
+          },
+        }
+      : {}),
+  }
+
+  return {
+    streamId,
+    filesystem,
+    sqlite,
+    parity,
+    intentionalMismatches: [
+      {
+        entity: "threads",
+        path: "threads.json compatibility envelope (version, last_updated)",
+        reason:
+          "Legacy compatibility wrapper metadata remains filesystem-only; sqlite parity projections compare canonical thread rows and session records instead.",
+      },
+    ],
+    filesystemCompatibilityOnlyData,
+  }
 }
 
 export const filesystemStructuredStorageAdapter = createFilesystemStructuredStorageAdapter()

@@ -19,58 +19,11 @@ import {
   type GitAutoCommitResult,
 } from "../git/auto-commit-executor.ts"
 
-interface ApprovalAutoCommitOptions {
-  trackedDirtyBeforeApproval?: string[]
-}
-
-function hasPathWithinScope(gitPath: string, scopePath: string): boolean {
-  return gitPath === scopePath || gitPath.startsWith(`${scopePath}/`)
-}
-
-function findUnrelatedTrackedDirtyFiles(
-  trackedDirtyBeforeApproval: string[] | undefined,
-  allowedTrackedDirtyPaths: string[]
-): string[] {
-  if (!trackedDirtyBeforeApproval || trackedDirtyBeforeApproval.length === 0) {
-    return []
-  }
-
-  return trackedDirtyBeforeApproval.filter(
-    (gitPath) =>
-      !allowedTrackedDirtyPaths.some((allowedPath) =>
-        hasPathWithinScope(gitPath, allowedPath)
-      )
-  )
-}
-
 function createApprovalAutoCommit(
   repoRoot: string,
-  message: { title: string; body: string },
-  options: {
-    stagePaths: string[]
-    allowedTrackedDirtyPaths: string[]
-    trackedDirtyBeforeApproval?: string[]
-  }
+  message: { title: string; body: string }
 ): GitAutoCommitResult {
-  const unrelatedTrackedDirtyFiles = findUnrelatedTrackedDirtyFiles(
-    options.trackedDirtyBeforeApproval,
-    options.allowedTrackedDirtyPaths
-  )
-
-  if (unrelatedTrackedDirtyFiles.length > 0) {
-    return {
-      success: true,
-      staged: false,
-      created: false,
-      skipped: true,
-      outcome: "skipped",
-      reason: "unsafe_unrelated_tracked_changes",
-      files: unrelatedTrackedDirtyFiles,
-    }
-  }
-
   return executeGitAutoCommit(repoRoot, message, {
-    stagePaths: options.stagePaths,
     skipReason: "no_tracked_approval_changes",
   })
 }
@@ -97,8 +50,7 @@ export function formatPlanCommitMessage(
  */
 export function createPlanApprovalCommit(
   repoRoot: string,
-  stream: StreamMetadata,
-  options: ApprovalAutoCommitOptions = {}
+  stream: StreamMetadata
 ): PlanCommitResult {
   const namingStatus = getPlanApprovalCommitNamingStatus(repoRoot, stream)
   if (!namingStatus.trustworthy) {
@@ -115,18 +67,7 @@ export function createPlanApprovalCommit(
   const { streamName } = resolvePlanNames(repoRoot, stream)
   const message = formatPlanCommitMessage(stream.id, streamName)
 
-  return createApprovalAutoCommit(repoRoot, message, {
-    stagePaths: [
-      "work/index.json",
-      `work/${stream.id}/PLAN.md`,
-      `work/${stream.id}/TASKS.md`,
-    ],
-    allowedTrackedDirtyPaths: [
-      `work/${stream.id}/PLAN.md`,
-      `work/${stream.id}/TASKS.md`,
-    ],
-    trackedDirtyBeforeApproval: options.trackedDirtyBeforeApproval,
-  })
+  return createApprovalAutoCommit(repoRoot, message)
 }
 
 /**
@@ -150,8 +91,7 @@ export function formatTasksCommitMessage(
 export function createTasksApprovalCommit(
   repoRoot: string,
   stream: StreamMetadata,
-  taskCount: number,
-  options: ApprovalAutoCommitOptions = {}
+  taskCount: number
 ): TasksCommitResult {
   const namingStatus = getPlanApprovalCommitNamingStatus(repoRoot, stream)
   if (!namingStatus.trustworthy) {
@@ -168,16 +108,7 @@ export function createTasksApprovalCommit(
   const { streamName } = resolvePlanNames(repoRoot, stream)
   const message = formatTasksCommitMessage(stream.id, streamName, taskCount)
 
-  return createApprovalAutoCommit(repoRoot, message, {
-    stagePaths: [
-      "work/index.json",
-      `work/${stream.id}/TASKS.md`,
-      `work/${stream.id}/tasks.json`,
-      `work/${stream.id}/prompts`,
-    ],
-    allowedTrackedDirtyPaths: [`work/${stream.id}/TASKS.md`],
-    trackedDirtyBeforeApproval: options.trackedDirtyBeforeApproval,
-  })
+  return createApprovalAutoCommit(repoRoot, message)
 }
 
 /**
@@ -229,8 +160,7 @@ export function formatStageCommitMessage(
 export function createStageApprovalCommit(
   repoRoot: string,
   stream: StreamMetadata,
-  stageNum: number,
-  options: ApprovalAutoCommitOptions = {}
+  stageNum: number
 ): StageCommitResult {
   const namingStatus = getStageApprovalCommitNamingStatus(
     repoRoot,
@@ -260,9 +190,5 @@ export function createStageApprovalCommit(
     stageName
   )
 
-  return createApprovalAutoCommit(repoRoot, message, {
-    stagePaths: ["work/index.json"],
-    allowedTrackedDirtyPaths: [],
-    trackedDirtyBeforeApproval: options.trackedDirtyBeforeApproval,
-  })
+  return createApprovalAutoCommit(repoRoot, message)
 }

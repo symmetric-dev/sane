@@ -23,8 +23,16 @@ export {
   createFilesystemAuthoritativeSqliteStructuredStorageAdapter,
   filesystemAuthoritativeSqliteStructuredStorageAdapter,
   getStructuredStorageAdapter,
+  inspectCriticalWorkflowDualWriteParitySync,
+  type FilesystemAuthoritativeSqliteStructuredStorageAdapterOptions,
+  type CriticalWorkflowDualWriteParityInspection,
+  type CriticalWorkflowFilesystemCompatibilityData,
 } from "./lib/storage-adapter.ts"
-export { getStructuredStorageSqlitePath } from "./lib/sqlite-storage.ts"
+export {
+  getStructuredStorageSqlitePath,
+  getSqliteStructuredStorageMirrorState,
+  type SqliteStructuredStorageMirrorState,
+} from "./lib/sqlite-storage.ts"
 
 // Index operations
 export {

@@ -1,4 +1,4 @@
-import { mkdirSync } from "fs"
+import { existsSync, mkdirSync } from "fs"
 import { dirname, join } from "path"
 
 import { Database } from "bun:sqlite"
@@ -44,6 +44,49 @@ export interface SqliteStructuredStorageBootstrapResult {
   databasePath: string
   schemaVersion: number
   tables: readonly string[]
+}
+
+export type SqliteStructuredStorageMirrorPhase = "bootstrap" | "workspace" | "workstream"
+
+export interface SqliteStructuredStorageMirrorState {
+  repoRoot: string
+  databasePath: string
+  lastAttemptedAt?: string
+  lastSucceededAt?: string
+  lastFailedAt?: string
+  lastResult?: "success" | "error"
+  lastOperation?: string
+  lastPhase?: SqliteStructuredStorageMirrorPhase
+  lastStreamId?: string
+  lastError?: {
+    name: string
+    message: string
+  }
+}
+
+const sqliteStructuredStorageMirrorStateByRepoRoot = new Map<string, SqliteStructuredStorageMirrorState>()
+
+export interface CriticalWorkflowThreadParityRecord {
+  threadId: string
+  stageId: string
+  batchId: string
+  number: number
+  name: string
+  promptPath?: string
+  currentSessionId?: string
+  opencodeSessionId?: string
+  workingAgentSessionId?: string
+  synthesisOutput?: string
+  synthesis?: StructuredThreadRuntimeRecord["synthesis"]
+  sessions: SessionRecord[]
+}
+
+export interface CriticalWorkflowParityProjection {
+  tasks: StructuredTaskRecord[]
+  threads: CriticalWorkflowThreadParityRecord[]
+  approvals: StructuredApprovalRecord[]
+  batchRuns: PersistedBatchStatusFile[]
+  supervisionRuns: SupervisorRunState[]
 }
 
 const SCHEMA_STATEMENTS = [
@@ -302,6 +345,73 @@ export function getSqliteStructuredStoragePath(repoRoot: string): string {
 
 export const getStructuredStorageSqlitePath = getSqliteStructuredStoragePath
 
+function isSqliteStructuredStorageDebugEnabled(): boolean {
+  const value = process.env.WORKSTREAM_SQLITE_DUAL_WRITE_DEBUG?.trim().toLowerCase()
+  return value === "1" || value === "true"
+}
+
+function toSqliteStructuredStorageMirrorError(error: unknown): { name: string; message: string } {
+  if (error instanceof Error) {
+    return {
+      name: error.name,
+      message: error.message,
+    }
+  }
+
+  return {
+    name: "Error",
+    message: String(error),
+  }
+}
+
+export function getSqliteStructuredStorageMirrorState(
+  repoRoot: string,
+): SqliteStructuredStorageMirrorState | null {
+  const state = sqliteStructuredStorageMirrorStateByRepoRoot.get(repoRoot)
+  return state ? structuredClone(state) : null
+}
+
+export function recordSqliteStructuredStorageMirrorState(args: {
+  repoRoot: string
+  operation: string
+  phase: SqliteStructuredStorageMirrorPhase
+  result: "success" | "error"
+  streamId?: string
+  error?: unknown
+}): SqliteStructuredStorageMirrorState {
+  const occurredAt = new Date().toISOString()
+  const previous = sqliteStructuredStorageMirrorStateByRepoRoot.get(args.repoRoot)
+  const next: SqliteStructuredStorageMirrorState = {
+    repoRoot: args.repoRoot,
+    databasePath: getSqliteStructuredStoragePath(args.repoRoot),
+    lastAttemptedAt: occurredAt,
+    ...(previous?.lastSucceededAt ? { lastSucceededAt: previous.lastSucceededAt } : {}),
+    ...(previous?.lastFailedAt ? { lastFailedAt: previous.lastFailedAt } : {}),
+    lastResult: args.result,
+    lastOperation: args.operation,
+    lastPhase: args.phase,
+    ...(args.streamId ? { lastStreamId: args.streamId } : {}),
+    ...(previous?.lastError ? { lastError: { ...previous.lastError } } : {}),
+  }
+
+  if (args.result === "success") {
+    next.lastSucceededAt = occurredAt
+    delete next.lastError
+  } else {
+    next.lastFailedAt = occurredAt
+    next.lastError = toSqliteStructuredStorageMirrorError(args.error)
+
+    if (isSqliteStructuredStorageDebugEnabled()) {
+      console.warn(
+        `Warning: sqlite dual-write ${args.phase} failed during ${args.operation}: ${next.lastError.message}`,
+      )
+    }
+  }
+
+  sqliteStructuredStorageMirrorStateByRepoRoot.set(args.repoRoot, next)
+  return structuredClone(next)
+}
+
 export function openSqliteStructuredStorageDatabase(repoRoot: string): Database {
   const databasePath = getSqliteStructuredStoragePath(repoRoot)
   mkdirSync(dirname(databasePath), { recursive: true })
@@ -386,6 +496,55 @@ function deleteRemovedWorkstreams(database: Database, streamIds: string[]): void
 
 function compareIds(left: string, right: string): number {
   return left.localeCompare(right, undefined, { numeric: true })
+}
+
+function compareOptionalIds(left?: string, right?: string): number {
+  if (left === right) return 0
+  if (!left) return -1
+  if (!right) return 1
+  return compareIds(left, right)
+}
+
+function parseMetadataJson<T>(raw: string, context: string): T {
+  try {
+    return JSON.parse(raw) as T
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error)
+    throw new Error(`Invalid sqlite metadata_json for ${context}: ${message}`)
+  }
+}
+
+function normalizeSessionRecord(session: SessionRecord): SessionRecord {
+  return {
+    sessionId: session.sessionId,
+    agentName: session.agentName,
+    model: session.model,
+    startedAt: session.startedAt,
+    completedAt: session.completedAt,
+    status: session.status,
+    exitCode: session.exitCode,
+    ...(session.lineage ? { lineage: { ...session.lineage } } : {}),
+  }
+}
+
+type SqliteThreadMetadataJson = {
+  id: string
+  stageId: string
+  batchId: string
+  number: number
+  name: string
+  promptPath?: string
+  currentSessionId?: string
+  opencodeSessionId?: string
+  workingAgentSessionId?: string
+  synthesisOutput?: string
+  synthesis?: StructuredThreadRuntimeRecord["synthesis"]
+}
+
+const APPROVAL_SCOPE_ORDER: Record<StructuredApprovalRecord["scope"], number> = {
+  plan: 0,
+  tasks: 1,
+  stage: 2,
 }
 
 function parseBatchId(batchId: string): { stageId: string; batchNumber: number } {
@@ -1184,6 +1343,150 @@ export function syncStructuredStorageWorkstreamStateToSqlite(
       syncWorkstreamRows(database, state)
     })
     transaction(workstreamState)
+  } finally {
+    database.close()
+  }
+}
+
+/**
+ * Developer-facing read model for dual-write parity checks on critical workflow entities.
+ *
+ * This intentionally excludes compatibility wrappers that only exist in filesystem views,
+ * such as ThreadsJson envelope fields (version/last_updated).
+ */
+export function loadSqliteCriticalWorkflowParityProjection(
+  repoRoot: string,
+  streamId: string,
+): CriticalWorkflowParityProjection | null {
+  const databasePath = getSqliteStructuredStoragePath(repoRoot)
+  if (!existsSync(databasePath)) {
+    return null
+  }
+
+  const database = new Database(databasePath, { readonly: true })
+
+  try {
+    const taskRows = database
+      .query<{ metadata_json: string }, [string]>(
+        "SELECT metadata_json FROM tasks WHERE stream_id = ? ORDER BY task_id",
+      )
+      .all(streamId)
+    const tasks = taskRows
+      .map((row) => parseMetadataJson<StructuredTaskRecord>(row.metadata_json, "tasks"))
+      .sort((left, right) => compareIds(left.id, right.id))
+
+    const approvalRows = database
+      .query<{ metadata_json: string }, [string]>(
+        "SELECT metadata_json FROM approvals WHERE stream_id = ? ORDER BY scope, stage_id",
+      )
+      .all(streamId)
+    const approvals = approvalRows
+      .map((row) => parseMetadataJson<StructuredApprovalRecord>(row.metadata_json, "approvals"))
+      .sort((left, right) => {
+        const scopeOrder = APPROVAL_SCOPE_ORDER[left.scope] - APPROVAL_SCOPE_ORDER[right.scope]
+        if (scopeOrder !== 0) return scopeOrder
+        return compareOptionalIds(left.stageId, right.stageId)
+      })
+
+    const batchRunRows = database
+      .query<{ metadata_json: string }, [string]>(
+        "SELECT metadata_json FROM batch_runs WHERE stream_id = ? ORDER BY batch_id, run_id",
+      )
+      .all(streamId)
+    const batchRuns = batchRunRows
+      .map((row) => parseMetadataJson<PersistedBatchStatusFile>(row.metadata_json, "batch_runs"))
+      .sort((left, right) => {
+        const batchOrder = compareIds(left.batchId, right.batchId)
+        if (batchOrder !== 0) return batchOrder
+        return compareIds(left.runId, right.runId)
+      })
+      .map((batchRun) => ({
+        ...batchRun,
+        summary: { ...batchRun.summary },
+        threads: [...batchRun.threads].sort((left, right) => compareIds(left.threadId, right.threadId)),
+      }))
+
+    const supervisionRunRows = database
+      .query<{ metadata_json: string }, [string]>(
+        "SELECT metadata_json FROM supervision_runs WHERE stream_id = ? ORDER BY run_id",
+      )
+      .all(streamId)
+    const supervisionRuns = supervisionRunRows
+      .map((row) => parseMetadataJson<SupervisorRunState>(row.metadata_json, "supervision_runs"))
+      .sort((left, right) => compareIds(left.runId, right.runId))
+      .map((run) => ({
+        ...run,
+        issueSummaryIds: [...run.issueSummaryIds].sort(compareIds),
+        escalationIds: [...run.escalationIds].sort(compareIds),
+      }))
+
+    const threadRows = database
+      .query<{ thread_id: string; metadata_json: string }, [string]>(
+        "SELECT thread_id, metadata_json FROM threads WHERE stream_id = ? ORDER BY thread_id",
+      )
+      .all(streamId)
+    const sessionRows = database
+      .query<{ thread_id: string; metadata_json: string }, [string]>(
+        "SELECT thread_id, metadata_json FROM thread_sessions WHERE stream_id = ? ORDER BY thread_id, started_at, session_id",
+      )
+      .all(streamId)
+
+    const sessionsByThreadId = new Map<string, SessionRecord[]>()
+    for (const row of sessionRows) {
+      const session = normalizeSessionRecord(
+        parseMetadataJson<SessionRecord>(
+          row.metadata_json,
+          `thread_sessions(thread=${row.thread_id})`,
+        ),
+      )
+      const sessions = sessionsByThreadId.get(row.thread_id)
+      if (sessions) {
+        sessions.push(session)
+      } else {
+        sessionsByThreadId.set(row.thread_id, [session])
+      }
+    }
+
+    const threads = threadRows
+      .map((row) => {
+        const metadata = parseMetadataJson<SqliteThreadMetadataJson>(
+          row.metadata_json,
+          `threads(thread=${row.thread_id})`,
+        )
+        const sessions = (sessionsByThreadId.get(row.thread_id) ?? [])
+          .map(normalizeSessionRecord)
+          .sort((left, right) => {
+            const startedAtOrder = compareOptionalIds(left.startedAt, right.startedAt)
+            if (startedAtOrder !== 0) return startedAtOrder
+            return compareIds(left.sessionId, right.sessionId)
+          })
+
+        return {
+          threadId: metadata.id,
+          stageId: metadata.stageId,
+          batchId: metadata.batchId,
+          number: metadata.number,
+          name: metadata.name,
+          ...(metadata.promptPath ? { promptPath: metadata.promptPath } : {}),
+          ...(metadata.currentSessionId ? { currentSessionId: metadata.currentSessionId } : {}),
+          ...(metadata.opencodeSessionId ? { opencodeSessionId: metadata.opencodeSessionId } : {}),
+          ...(metadata.workingAgentSessionId
+            ? { workingAgentSessionId: metadata.workingAgentSessionId }
+            : {}),
+          ...(metadata.synthesisOutput ? { synthesisOutput: metadata.synthesisOutput } : {}),
+          ...(metadata.synthesis ? { synthesis: { ...metadata.synthesis } } : {}),
+          sessions,
+        } satisfies CriticalWorkflowThreadParityRecord
+      })
+      .sort((left, right) => compareIds(left.threadId, right.threadId))
+
+    return {
+      tasks,
+      threads,
+      approvals,
+      batchRuns,
+      supervisionRuns,
+    }
   } finally {
     database.close()
   }

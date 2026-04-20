@@ -31,23 +31,13 @@ import { closeStageIssue } from "../../lib/github/issues.ts"
 import { generateTasksMdFromPlan } from "../../lib/tasks-md.ts"
 import { parseStreamDocument } from "../../lib/stream-parser.ts"
 import { getWorkDir } from "../../lib/repo.ts"
-import {
-  listTrackedDirtyFiles,
-  type GitAutoCommitResult,
-} from "../../lib/git/index.ts"
+import { type GitAutoCommitResult } from "../../lib/git/index.ts"
 import { atomicWriteFile, getResolvedStream } from "../../lib/index.ts"
 import { getTasks, parseTaskId } from "../../lib/tasks.ts"
 
 import type { ApproveCliArgs } from "./utils.ts"
 
 function formatApprovalAutoCommitSkip(result: GitAutoCommitResult): string {
-  if (result.reason === "unsafe_unrelated_tracked_changes") {
-    const files = result.files?.length
-      ? ` (${result.files.join(", ")})`
-      : ""
-    return `unsafe_unrelated_tracked_changes${files}`
-  }
-
   if (result.reason === "no_tracked_approval_changes") {
     return "no_tracked_approval_changes"
   }
@@ -310,7 +300,6 @@ export async function handlePlanApproval(
     }
 
     try {
-      const trackedDirtyBeforeApproval = listTrackedDirtyFiles(repoRoot)
       let updatedStream = approveStage(repoRoot, stream.id, stageNum, "user")
 
       // Auto-commit on stage approval if configured.
@@ -318,9 +307,7 @@ export async function handlePlanApproval(
       let commitResult: GitAutoCommitResult | undefined
       const githubConfig = await loadGitHubConfig(repoRoot)
       if (githubConfig.auto_commit_on_approval) {
-        commitResult = createStageApprovalCommit(repoRoot, updatedStream, stageNum, {
-          trackedDirtyBeforeApproval,
-        })
+        commitResult = createStageApprovalCommit(repoRoot, updatedStream, stageNum)
 
         if (commitResult.success && commitResult.commitSha) {
           updatedStream = storeStageCommitSha(
@@ -583,7 +570,6 @@ export async function handlePlanApproval(
   }
 
   try {
-    const trackedDirtyBeforeApproval = listTrackedDirtyFiles(repoRoot)
     const updatedStream = approveStream(repoRoot, stream.id, "user")
 
     // Auto-generate TASKS.md after successful plan approval
@@ -598,9 +584,7 @@ export async function handlePlanApproval(
     let commitResult: GitAutoCommitResult | undefined
     const githubConfig = await loadGitHubConfig(repoRoot)
     if (githubConfig.auto_commit_on_approval) {
-      commitResult = createPlanApprovalCommit(repoRoot, updatedStream, {
-        trackedDirtyBeforeApproval,
-      })
+      commitResult = createPlanApprovalCommit(repoRoot, updatedStream)
     }
 
     if (cliArgs.json) {

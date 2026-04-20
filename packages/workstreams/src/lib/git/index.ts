@@ -26,7 +26,6 @@ export {
   executeGitAutoCommit,
   getHeadCommitSha,
   hasStagedChangesToCommit,
-  listTrackedDirtyFiles,
 } from "./auto-commit-executor.ts"
 
 export {

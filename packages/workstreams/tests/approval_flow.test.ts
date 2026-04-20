@@ -742,7 +742,7 @@ describe("Tasks Approval with Auto-Generation", () => {
         expect(afterSha).toBe(beforeSha);
     });
 
-    test("should approve tasks but skip auto-commit when unrelated tracked files are already dirty", async () => {
+    test("should approve tasks and include tracked changes in the auto-commit", async () => {
         const tasksMdContent = `# Tasks: Tasks Test Stream
 
 ## Stage 01: Implementation
@@ -783,7 +783,7 @@ describe("Tasks Approval with Auto-Generation", () => {
 
         const outputJoined = stdout.join("\n");
         expect(outputJoined).toContain("Tasks approved");
-        expect(outputJoined).toContain("Commit skipped: unsafe_unrelated_tracked_changes (README.md)");
+        expect(outputJoined).toContain("Committed:");
 
         const index = loadIndex(TASKS_APPROVAL_REPO_ROOT);
         const stream = index.streams[0];
@@ -794,7 +794,14 @@ describe("Tasks Approval with Auto-Generation", () => {
             encoding: "utf-8",
             stdio: ["pipe", "pipe", "pipe"],
         }).trim();
-        expect(afterSha).toBe(beforeSha);
+        expect(afterSha).not.toBe(beforeSha);
+
+        const files = execSync("git show --pretty= --name-only HEAD", {
+            cwd: TASKS_APPROVAL_REPO_ROOT,
+            encoding: "utf-8",
+            stdio: ["pipe", "pipe", "pipe"],
+        }).trim().split("\n").filter(Boolean);
+        expect(files).toContain("README.md");
     });
 
     test("should serialize TASKS.md to tasks.json directly", () => {

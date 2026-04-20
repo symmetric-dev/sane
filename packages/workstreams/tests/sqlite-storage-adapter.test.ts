@@ -1,18 +1,24 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test"
 import { Database } from "bun:sqlite"
+import { existsSync, mkdirSync } from "fs"
 
 import {
+  createFilesystemAuthoritativeSqliteStructuredStorageAdapter,
   createEmptyStructuredStorageWorkstreamState,
+  filesystemStructuredStorageAdapter,
   createEmptySupervisorState,
   createStructuredStorageWorkstreamRecord,
   getStructuredStorageAdapter,
+  getSqliteStructuredStorageMirrorState,
   getStructuredStorageSqlitePath,
+  inspectCriticalWorkflowDualWriteParitySync,
   saveSupervisorState,
   updateTask,
   writeBatchStatus,
 } from "../src"
 import type {
   PersistedBatchStatusFile,
+  SqliteStructuredStorageMirrorState,
   StreamMetadata,
   StructuredStorageWorkstreamState,
   SupervisorStateFile,
@@ -277,6 +283,20 @@ describe("sqlite structured storage dual-write", () => {
     }
   })
 
+  test("keeps sqlite writes scoped to the dual-write adapter", async () => {
+    const timestamp = "2026-04-19T12:00:00.000Z"
+    const stream = buildStream(workspace.streamId, timestamp)
+    const state = buildWorkstreamState(workspace.streamId, timestamp)
+
+    await filesystemStructuredStorageAdapter.replaceWorkspaceState(workspace.repoRoot, {
+      currentStreamId: workspace.streamId,
+      workstreams: [createStructuredStorageWorkstreamRecord(stream)],
+    })
+    await filesystemStructuredStorageAdapter.replaceWorkstreamState(workspace.repoRoot, state)
+
+    expect(existsSync(getStructuredStorageSqlitePath(workspace.repoRoot))).toBeFalse()
+  })
+
   test("mirrors compatibility helper updates into sqlite", async () => {
     const timestamp = "2026-04-19T12:00:00.000Z"
     const completedAt = "2026-04-19T13:00:00.000Z"
@@ -375,5 +395,246 @@ describe("sqlite structured storage dual-write", () => {
     } finally {
       database.close()
     }
+  })
+
+  test("keeps filesystem writes authoritative when sqlite bootstrap fails", async () => {
+    const timestamp = "2026-04-19T12:00:00.000Z"
+    const stream = buildStream(workspace.streamId, timestamp)
+    const state = buildWorkstreamState(workspace.streamId, timestamp)
+    const sqlitePath = getStructuredStorageSqlitePath(workspace.repoRoot)
+    const mirrorStates: SqliteStructuredStorageMirrorState[] = []
+    const adapter = createFilesystemAuthoritativeSqliteStructuredStorageAdapter(
+      filesystemStructuredStorageAdapter,
+      {
+        onSqliteMirrorStateChange: (mirrorState) => {
+          mirrorStates.push(mirrorState)
+        },
+      },
+    )
+
+    mkdirSync(sqlitePath, { recursive: true })
+
+    await adapter.replaceWorkspaceState(workspace.repoRoot, {
+      currentStreamId: workspace.streamId,
+      workstreams: [createStructuredStorageWorkstreamRecord(stream)],
+    })
+    await adapter.replaceWorkstreamState(workspace.repoRoot, state)
+
+    expect(await filesystemStructuredStorageAdapter.loadWorkspaceState(workspace.repoRoot)).toMatchObject({
+      currentStreamId: workspace.streamId,
+    })
+    expect(
+      await filesystemStructuredStorageAdapter.loadWorkstreamState(workspace.repoRoot, workspace.streamId),
+    ).not.toBeNull()
+
+    expect(mirrorStates.some((mirrorState) => mirrorState.lastResult === "error")).toBeTrue()
+    expect(getSqliteStructuredStorageMirrorState(workspace.repoRoot)).toMatchObject({
+      repoRoot: workspace.repoRoot,
+      databasePath: sqlitePath,
+      lastOperation: "replaceWorkstreamState",
+      lastPhase: "bootstrap",
+      lastResult: "error",
+      lastStreamId: workspace.streamId,
+      lastError: {
+        name: "SQLiteError",
+        message: "unable to open database file",
+      },
+    })
+  })
+
+  test("keeps compatibility helper writes authoritative when sqlite mirror fails", async () => {
+    const timestamp = "2026-04-19T12:00:00.000Z"
+    const stream = buildStream(workspace.streamId, timestamp)
+    const state = buildWorkstreamState(workspace.streamId, timestamp)
+    const sqlitePath = getStructuredStorageSqlitePath(workspace.repoRoot)
+
+    mkdirSync(sqlitePath, { recursive: true })
+
+    await filesystemStructuredStorageAdapter.replaceWorkspaceState(workspace.repoRoot, {
+      currentStreamId: workspace.streamId,
+      workstreams: [createStructuredStorageWorkstreamRecord(stream)],
+    })
+    await filesystemStructuredStorageAdapter.replaceWorkstreamState(workspace.repoRoot, state)
+
+    await expect(
+      updateTask({
+        repoRoot: workspace.repoRoot,
+        stream,
+        taskId: "03.01.02.01",
+        status: "completed",
+        report: "Filesystem write stayed canonical.",
+        assigned_agent: "systems-engineer",
+      }),
+    ).resolves.toMatchObject({
+      updated: true,
+      status: "completed",
+    })
+
+    const updatedState = await filesystemStructuredStorageAdapter.loadWorkstreamState(
+      workspace.repoRoot,
+      workspace.streamId,
+    )
+    expect(updatedState?.hierarchy.tasks.find((task) => task.id === "03.01.02.01")).toMatchObject({
+      status: "completed",
+      report: "Filesystem write stayed canonical.",
+      assignedAgent: "systems-engineer",
+    })
+    expect(getSqliteStructuredStorageMirrorState(workspace.repoRoot)).toMatchObject({
+      repoRoot: workspace.repoRoot,
+      databasePath: sqlitePath,
+      lastOperation: "replaceStructuredWorkstreamStateSync",
+      lastPhase: "workstream",
+      lastResult: "error",
+      lastStreamId: workspace.streamId,
+      lastError: {
+        name: "SQLiteError",
+        message: "unable to open database file",
+      },
+    })
+  })
+
+  test("keeps structured reads working when sqlite initialization fails", async () => {
+    const timestamp = "2026-04-19T12:00:00.000Z"
+    const stream = buildStream(workspace.streamId, timestamp)
+    const state = buildWorkstreamState(workspace.streamId, timestamp)
+    const sqlitePath = getStructuredStorageSqlitePath(workspace.repoRoot)
+
+    await filesystemStructuredStorageAdapter.replaceWorkspaceState(workspace.repoRoot, {
+      currentStreamId: workspace.streamId,
+      workstreams: [createStructuredStorageWorkstreamRecord(stream)],
+    })
+    await filesystemStructuredStorageAdapter.replaceWorkstreamState(workspace.repoRoot, state)
+
+    mkdirSync(sqlitePath, { recursive: true })
+
+    const adapter = createFilesystemAuthoritativeSqliteStructuredStorageAdapter(
+      filesystemStructuredStorageAdapter,
+    )
+    const workspaceState = await adapter.loadWorkspaceState(workspace.repoRoot)
+    const workstreamState = await adapter.loadWorkstreamState(workspace.repoRoot, workspace.streamId)
+
+    expect(workspaceState.currentStreamId).toBe(workspace.streamId)
+    expect(workstreamState?.hierarchy.tasks.map((task) => task.id)).toEqual(["03.01.02.01"])
+    expect(getSqliteStructuredStorageMirrorState(workspace.repoRoot)).toMatchObject({
+      repoRoot: workspace.repoRoot,
+      databasePath: sqlitePath,
+      lastOperation: "loadWorkstreamState",
+      lastPhase: "bootstrap",
+      lastResult: "error",
+      lastStreamId: workspace.streamId,
+      lastError: {
+        name: "SQLiteError",
+        message: "unable to open database file",
+      },
+    })
+  })
+
+  test("exposes deterministic critical-workflow parity inspection during dual-write", async () => {
+    const timestamp = "2026-04-19T12:00:00.000Z"
+    const stream = buildStream(workspace.streamId, timestamp)
+    const state = buildWorkstreamState(workspace.streamId, timestamp)
+    const adapter = getStructuredStorageAdapter()
+
+    state.hierarchy.threads.push({
+      id: "03.01.01",
+      stageId: "03",
+      batchId: "03.01",
+      number: 1,
+      name: "Schema bootstrapping",
+      promptPath: "prompts/03.01.01.md",
+    })
+    state.hierarchy.tasks.push({
+      id: "03.01.01.01",
+      stageId: "03",
+      batchId: "03.01",
+      threadId: "03.01.01",
+      number: 1,
+      name: "Bootstrap sqlite schema mirror",
+      status: "completed",
+      createdAt: timestamp,
+      updatedAt: timestamp,
+      report: "Schema mirror verified.",
+      assignedAgent: "systems-engineer",
+    })
+    state.threadRuntime.push({
+      threadId: "03.01.01",
+      sessions: [
+        {
+          sessionId: "ses-thread-0",
+          agentName: "systems-engineer",
+          model: "gpt-5.4",
+          startedAt: timestamp,
+          completedAt: "2026-04-19T12:30:00.000Z",
+          status: "completed",
+        },
+      ],
+      opencodeSessionId: "opencode-0",
+    })
+    state.approvals.push({
+      streamId: workspace.streamId,
+      scope: "stage",
+      stageId: "03",
+      status: "approved",
+      approvedAt: timestamp,
+      approvedBy: "reviewer",
+      commitSha: "abc123",
+    })
+    state.supervision.runs.push({
+      runId: "sup-run-0",
+      stageId: "03",
+      status: "completed",
+      startedAt: "2026-04-19T10:00:00.000Z",
+      updatedAt: "2026-04-19T11:00:00.000Z",
+      completedAt: "2026-04-19T11:00:00.000Z",
+      reviewPasses: 1,
+      issueSummaryIds: [],
+      escalationIds: [],
+    })
+
+    await adapter.replaceWorkspaceState(workspace.repoRoot, {
+      currentStreamId: workspace.streamId,
+      workstreams: [createStructuredStorageWorkstreamRecord(stream)],
+    })
+    await adapter.replaceWorkstreamState(workspace.repoRoot, state)
+
+    const inspection = inspectCriticalWorkflowDualWriteParitySync(workspace.repoRoot, workspace.streamId)
+    expect(inspection).not.toBeNull()
+    expect(inspection?.parity).toEqual({
+      tasks: true,
+      threads: true,
+      approvals: true,
+      batchRuns: true,
+      supervisionRuns: true,
+      all: true,
+    })
+
+    expect(inspection?.filesystem.tasks.map((task) => task.id)).toEqual(["03.01.01.01", "03.01.02.01"])
+    expect(inspection?.filesystem.threads.map((thread) => thread.threadId)).toEqual([
+      "03.01.01",
+      "03.01.02",
+    ])
+    expect(inspection?.filesystem.approvals.map((approval) => `${approval.scope}:${approval.stageId ?? ""}`)).toEqual([
+      "plan:",
+      "tasks:",
+      "stage:03",
+    ])
+    expect(inspection?.filesystem.batchRuns.map((run) => run.runId)).toEqual(["run-03.01"])
+    expect(inspection?.filesystem.supervisionRuns.map((run) => run.runId)).toEqual([
+      "sup-run-0",
+      "sup-run-1",
+    ])
+
+    expect(inspection?.intentionalMismatches).toContainEqual({
+      entity: "threads",
+      path: "threads.json compatibility envelope (version, last_updated)",
+      reason:
+        "Legacy compatibility wrapper metadata remains filesystem-only; sqlite parity projections compare canonical thread rows and session records instead.",
+    })
+    expect(inspection?.filesystemCompatibilityOnlyData.threadMetadataViewEnvelope).toMatchObject({
+      version: "1.0.0",
+    })
+    expect(typeof inspection?.filesystemCompatibilityOnlyData.threadMetadataViewEnvelope?.lastUpdated).toBe(
+      "string",
+    )
   })
 })

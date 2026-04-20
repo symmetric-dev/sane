@@ -400,7 +400,7 @@ Keep approval naming consistent.
         expect(afterSha).toBe(beforeSha);
     });
 
-    testAutoCommitApproval("should keep stage approval successful when auto-commit skips for unrelated tracked files", async () => {
+    testAutoCommitApproval("should allow stage approval auto-commit to include tracked stage changes", async () => {
         writeStageTasksJson("completed");
         writeFileSync(join(REPO_ROOT, "README.md"), "baseline\n");
 
@@ -439,18 +439,18 @@ Keep approval naming consistent.
 
         const output = logs.join("\n");
         expect(output).toContain("Approved Stage 1");
-        expect(output).toContain("Commit skipped: unsafe_unrelated_tracked_changes (README.md)");
+        expect(output).toContain("Committed:");
 
         const storedStream = loadIndex(REPO_ROOT).streams[0]!;
         expect(storedStream.approval?.stages?.[1]?.status).toBe("approved");
-        expect(storedStream.approval?.stages?.[1]?.commit_sha).toBeUndefined();
+        expect(storedStream.approval?.stages?.[1]?.commit_sha).toBeTruthy();
 
         const afterSha = execSync("git rev-parse HEAD", {
             cwd: REPO_ROOT,
             encoding: "utf-8",
             stdio: ["pipe", "pipe", "pipe"],
         }).trim();
-        expect(afterSha).toBe(beforeSha);
+        expect(afterSha).not.toBe(beforeSha);
     });
 
     testAutoCommitApproval("should keep stage approval successful when auto-commit skips without tracked approval changes", async () => {

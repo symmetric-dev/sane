@@ -15,10 +15,7 @@ import {
 } from "../../lib/approval.ts"
 import { parseTasksMd, generateTasksMdFromTasks } from "../../lib/tasks-md.ts"
 import { getWorkDir } from "../../lib/repo.ts"
-import {
-  listTrackedDirtyFiles,
-  type GitAutoCommitResult,
-} from "../../lib/git/index.ts"
+import { type GitAutoCommitResult } from "../../lib/git/index.ts"
 import { getResolvedStream, atomicWriteFile } from "../../lib/index.ts"
 import { addTasks, getTasks } from "../../lib/tasks.ts"
 import { generateAllPrompts } from "../../lib/prompts.ts"
@@ -30,13 +27,6 @@ import {
 import type { ApproveCliArgs } from "./utils.ts"
 
 function formatApprovalAutoCommitSkip(result: GitAutoCommitResult): string {
-  if (result.reason === "unsafe_unrelated_tracked_changes") {
-    const files = result.files?.length
-      ? ` (${result.files.join(", ")})`
-      : ""
-    return `unsafe_unrelated_tracked_changes${files}`
-  }
-
   if (result.reason === "no_tracked_approval_changes") {
     return "no_tracked_approval_changes"
   }
@@ -283,8 +273,6 @@ export async function handleTasksApproval(
     process.exit(1)
   }
 
-  const trackedDirtyBeforeApproval = listTrackedDirtyFiles(repoRoot)
-
   // Step 1: Serialize TASKS.md to tasks.json
   // This is the critical step - if it fails, we don't approve
   const serializeResult = serializeTasksMdToJson(repoRoot, stream.id)
@@ -328,14 +316,7 @@ export async function handleTasksApproval(
     let commitResult: GitAutoCommitResult | undefined
     const githubConfig = await loadGitHubConfig(repoRoot)
     if (githubConfig.auto_commit_on_approval) {
-      commitResult = createTasksApprovalCommit(
-        repoRoot,
-        updatedStream,
-        serializeResult.taskCount,
-        {
-          trackedDirtyBeforeApproval,
-        }
-      )
+      commitResult = createTasksApprovalCommit(repoRoot, updatedStream, serializeResult.taskCount)
     }
 
     if (cliArgs.json) {

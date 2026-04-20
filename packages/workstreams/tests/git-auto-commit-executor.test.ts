@@ -471,19 +471,15 @@ describe("git auto commit executor", () => {
       ].join("\n"))
       writeFileSync(join(repoRoot, "README.md"), "# Dirty tracked change\n")
 
-      const result = createStageApprovalCommit(repoRoot, stream, 1, {
-        trackedDirtyBeforeApproval: ["README.md"],
-      })
+      const result = createStageApprovalCommit(repoRoot, stream, 1)
 
       expect(result).toMatchObject({
         success: true,
-        created: false,
-        skipped: true,
-        outcome: "skipped",
-        reason: "unsafe_unrelated_tracked_changes",
-        files: ["README.md"],
+        created: true,
+        skipped: false,
+        outcome: "committed",
       })
-      expect(getHeadCommitSha(repoRoot)).toBe(beforeSha)
+      expect(getHeadCommitSha(repoRoot)).not.toBe(beforeSha)
     } finally {
       cleanupRepo(repoRoot)
     }
