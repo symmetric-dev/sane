@@ -675,35 +675,16 @@ export function loadStructuredWorkstreamStateSync(
   repoRoot: string,
   streamId: string,
 ): StructuredStorageWorkstreamState | null {
-  const index = getOrCreateIndex(repoRoot)
-  const tasksFile = readTasksFile(repoRoot, streamId)
-  const compatibilityState = workstreamStateFromSnapshot(index, streamId, tasksFile)
-
   try {
     const sqliteState = loadSqliteStructuredStorageWorkstreamState(repoRoot, streamId)
     if (sqliteState) {
-      if (compatibilityState) {
-        const sqliteSnapshot = createStructuredStorageParitySnapshot({
-          workspace: { workstreams: [] },
-          workstream: sqliteState,
-        })
-        const compatibilitySnapshot = createStructuredStorageParitySnapshot({
-          workspace: { workstreams: [] },
-          workstream: compatibilityState,
-        })
-
-        if (JSON.stringify(sqliteSnapshot.workstream) !== JSON.stringify(compatibilitySnapshot.workstream)) {
-          return compatibilityState
-        }
-      }
-
       return sqliteState
     }
   } catch {
     // Fall back to compatibility projections while sqlite is busy.
   }
 
-  return compatibilityState
+  return loadFilesystemStructuredWorkstreamStateSync(repoRoot, streamId)
 }
 
 export function loadStructuredWorkspaceStateSync(
@@ -866,24 +847,19 @@ export function loadThreadMetadataViewSync(repoRoot: string, streamId: string): 
   return workstreamState ? threadsFileFromWorkstreamState(workstreamState) : null
 }
 
-export function replaceThreadMetadataViewSync(args: {
-  repoRoot: string
-  streamId: string
-  threadsFile: ThreadsJson
-}): void {
-  const workstreamState =
-    loadRuntimeCanonicalMutationSeedSync(args.repoRoot, args.streamId) ??
-    createEmptyStructuredStorageWorkstreamState(args.streamId)
-
+function applyThreadMetadataViewToWorkstreamState(
+  workstreamState: StructuredStorageWorkstreamState,
+  threadsFile: ThreadsJson,
+): void {
   for (const thread of workstreamState.hierarchy.threads) {
-    const metadata = args.threadsFile.threads.find((entry) => entry.threadId === thread.id)
+    const metadata = threadsFile.threads.find((entry) => entry.threadId === thread.id)
     if (metadata?.promptPath !== undefined) {
       thread.promptPath = metadata.promptPath
     }
   }
 
   workstreamState.threadRuntime = []
-  for (const thread of args.threadsFile.threads) {
+  for (const thread of threadsFile.threads) {
     upsertStructuredThreadRuntime(workstreamState, {
       threadId: thread.threadId,
       sessions: thread.sessions,
@@ -935,6 +911,34 @@ export function replaceThreadMetadataViewSync(args: {
   workstreamState.hierarchy.stages = workstreamState.hierarchy.stages.filter((stage) =>
     referencedStageIds.has(stage.id)
   )
+}
+
+export function modifyThreadMetadataViewSync<T>(args: {
+  repoRoot: string
+  streamId: string
+  fn: (threadsFile: ThreadsJson) => T
+}): T {
+  return modifySqliteCanonicalRuntimeWorkstreamStateSync({
+    repoRoot: args.repoRoot,
+    streamId: args.streamId,
+    fn: (workstreamState) => {
+      const threadsFile = threadsFileFromWorkstreamState(workstreamState)
+      const result = args.fn(threadsFile)
+      applyThreadMetadataViewToWorkstreamState(workstreamState, threadsFile)
+      return result
+    },
+  })
+}
+
+export function replaceThreadMetadataViewSync(args: {
+  repoRoot: string
+  streamId: string
+  threadsFile: ThreadsJson
+}): void {
+  const workstreamState =
+    loadRuntimeCanonicalMutationSeedSync(args.repoRoot, args.streamId) ??
+    createEmptyStructuredStorageWorkstreamState(args.streamId)
+  applyThreadMetadataViewToWorkstreamState(workstreamState, args.threadsFile)
 
   replaceStructuredWorkstreamStateSync({
     repoRoot: args.repoRoot,
@@ -947,7 +951,7 @@ export function readStructuredBatchRunSync(
   streamId: string,
   batchId: string,
 ): PersistedBatchStatusFile | null {
-  return loadStructuredWorkstreamStateSync(repoRoot, streamId)?.batchRuns.find((batch) => batch.batchId === batchId) ?? null
+  return loadRuntimeCanonicalMutationSeedSync(repoRoot, streamId)?.batchRuns.find((batch) => batch.batchId === batchId) ?? null
 }
 
 export function writeStructuredBatchRunSync(
@@ -956,7 +960,7 @@ export function writeStructuredBatchRunSync(
   batchStatus: PersistedBatchStatusFile,
 ): void {
   const workstreamState =
-    loadStructuredWorkstreamStateSync(repoRoot, streamId) ??
+    loadRuntimeCanonicalMutationSeedSync(repoRoot, streamId) ??
     createEmptyStructuredStorageWorkstreamState(streamId)
   upsertStructuredBatchRun(workstreamState, batchStatus)
   replaceStructuredWorkstreamStateSync({ repoRoot, workstreamState })
@@ -966,7 +970,7 @@ export function loadStructuredSupervisorStateSync(
   repoRoot: string,
   streamId: string,
 ): SupervisorStateFile | null {
-  const workstreamState = loadStructuredWorkstreamStateSync(repoRoot, streamId)
+  const workstreamState = loadRuntimeCanonicalMutationSeedSync(repoRoot, streamId)
   return workstreamState ? normalizeSupervisorState(streamId, workstreamState.supervision) : null
 }
 

@@ -23,6 +23,8 @@ import type {
   StructuredStorageWorkstreamState,
   SupervisorStateFile,
 } from "../src"
+import { upsertSupervisorRunLocked } from "../src/lib/supervisor-state.ts"
+import { readTasksFile, writeTasksFile } from "../src/lib/tasks.ts"
 import { completeThreadSessionLocked } from "../src/lib/threads.ts"
 import { cleanupTestWorkstream, createTestWorkstream, type TestWorkspace } from "./helpers"
 
@@ -395,6 +397,48 @@ describe("sqlite structured storage dual-write", () => {
     } finally {
       database.close()
     }
+  })
+
+  test("keeps filesystem-canonical task updates when runtime mutations become sqlite-canonical", async () => {
+    const timestamp = "2026-04-19T12:00:00.000Z"
+    const stream = buildStream(workspace.streamId, timestamp)
+    const state = buildWorkstreamState(workspace.streamId, timestamp)
+    const adapter = getStructuredStorageAdapter()
+
+    await adapter.replaceWorkspaceState(workspace.repoRoot, {
+      currentStreamId: workspace.streamId,
+      workstreams: [createStructuredStorageWorkstreamRecord(stream)],
+    })
+    await adapter.replaceWorkstreamState(workspace.repoRoot, state)
+
+    const tasksFile = readTasksFile(workspace.repoRoot, workspace.streamId)
+    expect(tasksFile).not.toBeNull()
+    tasksFile!.tasks[0] = {
+      ...tasksFile!.tasks[0]!,
+      status: "completed",
+      updated_at: "2026-04-19T12:30:00.000Z",
+      report: "Filesystem task update should survive runtime projection.",
+    }
+    writeTasksFile(workspace.repoRoot, workspace.streamId, tasksFile!)
+
+    await upsertSupervisorRunLocked(workspace.repoRoot, workspace.streamId, {
+      runId: "sup-run-1",
+      stageId: "03",
+      status: "running",
+      startedAt: timestamp,
+      updatedAt: "2026-04-19T12:35:00.000Z",
+      currentBatchId: "03.01",
+      reviewPasses: 2,
+      issueSummaryIds: ["issue-1"],
+      escalationIds: [],
+      rootSessionId: "root-1",
+      branchSessionId: "branch-1",
+    })
+
+    expect(readTasksFile(workspace.repoRoot, workspace.streamId)?.tasks[0]).toMatchObject({
+      status: "completed",
+      report: "Filesystem task update should survive runtime projection.",
+    })
   })
 
   test("keeps filesystem writes authoritative when sqlite bootstrap fails", async () => {

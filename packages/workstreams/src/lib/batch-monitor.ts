@@ -746,6 +746,17 @@ export async function syncBatchStatus(
     nextThreads.push(thread)
   }
 
+  if (nextThreads.some((thread) => thread.status === "completed" || thread.status === "failed")) {
+    await finalizeCanonicalThreadState(
+      repoRoot,
+      streamId,
+      threadSeeds,
+      tasksFile,
+      existing?.tmuxSessionName,
+      existing?.startedAt,
+    )
+  }
+
   batchStatus.threads = nextThreads
   batchStatus.summary = summarizeBatchThreads(nextThreads)
   batchStatus.status = deriveBatchStatus(nextThreads)
