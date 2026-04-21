@@ -536,7 +536,7 @@ export function approveStage(
   const index = loadIndex(repoRoot)
   const stream = getIndexedStream(index, streamIdOrName)
 
-  if (getStageApprovalStatus(stream, stageNumber) === "approved") {
+  if (queryStageApprovalStatus(repoRoot, stream.id, stageNumber, stream) === "approved") {
     return stream
   }
 
@@ -572,7 +572,7 @@ export function revokeStageApproval(
   const index = loadIndex(repoRoot)
   const stream = getIndexedStream(index, streamIdOrName)
 
-  if (!stream.approval?.stages?.[stageNumber]) {
+  if (queryStageApprovalStatus(repoRoot, stream.id, stageNumber, stream) === "draft") {
     throw new Error(`Stage ${stageNumber} is not approved, nothing to revoke`)
   }
 
@@ -610,7 +610,7 @@ export function storeStageCommitSha(
   const index = loadIndex(repoRoot)
   const stream = getIndexedStream(index, streamIdOrName)
 
-  if (!stream.approval?.stages?.[stageNumber]) {
+  if (queryStageApprovalStatus(repoRoot, stream.id, stageNumber, stream) === "draft") {
     throw new Error(`Stage ${stageNumber} is not approved`)
   }
 

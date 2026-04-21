@@ -1396,15 +1396,14 @@ export function loadSqliteStructuredStorageWorkstreamState(
     return null
   }
 
-  const database = new Database(databasePath, { readonly: true })
+  let database: Database
+  try {
+    database = new Database(databasePath, { readonly: true })
+  } catch {
+    return null
+  }
 
   try {
-    const workstreamRow = database
-      .query<{ stream_id: string }, [string]>(
-        "SELECT stream_id FROM workstreams WHERE stream_id = ? LIMIT 1",
-      )
-      .get(streamId)
-
     const stages = database
       .query<{ metadata_json: string }, [string]>(
         "SELECT metadata_json FROM stages WHERE stream_id = ? ORDER BY stage_number, stage_id",
@@ -1534,7 +1533,6 @@ export function loadSqliteStructuredStorageWorkstreamState(
       : createEmptySupervisorState(streamId)
 
     if (
-      !workstreamRow &&
       stages.length === 0 &&
       batches.length === 0 &&
       threads.length === 0 &&

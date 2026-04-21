@@ -16,6 +16,11 @@ import {
   parseTaskId,
   formatTaskId,
 } from "../src/lib/tasks"
+import {
+  bootstrapSqliteStructuredStorage,
+  syncStructuredStorageWorkstreamStateToSqlite,
+} from "../src/lib/sqlite-storage.ts"
+import { createEmptyStructuredStorageWorkstreamState } from "../src/lib/structured-storage.ts"
 import type {
   StreamMetadata,
   Task,
@@ -476,6 +481,42 @@ describe("getStreamProgress", () => {
       status: "in_progress",
     })
     expect(snapshot.stages[1]?.counts.blocked).toBe(1)
+  })
+
+  test("keeps sqlite-only stages visible in status snapshots", async () => {
+    const state = createEmptyStructuredStorageWorkstreamState(baseStream.id)
+    state.hierarchy.stages = [
+      { id: "01", number: 1, name: "Implemented stage" },
+      { id: "02", number: 2, name: "Revision stage" },
+    ]
+    state.hierarchy.batches = [{ id: "01.01", stageId: "01", number: 1, name: "Batch 01" }]
+    state.hierarchy.threads = [{ id: "01.01.01", stageId: "01", batchId: "01.01", number: 1, name: "Thread 01" }]
+    state.hierarchy.tasks = [
+      {
+        id: "01.01.01.01",
+        stageId: "01",
+        batchId: "01.01",
+        threadId: "01.01.01",
+        number: 1,
+        name: "Completed sqlite task",
+        status: "completed",
+        createdAt: "2026-04-20T00:00:00.000Z",
+        updatedAt: "2026-04-20T00:00:00.000Z",
+      },
+    ]
+
+    bootstrapSqliteStructuredStorage(tempDir)
+    syncStructuredStorageWorkstreamStateToSqlite(tempDir, state)
+
+    const snapshot = getWorkstreamStatusSnapshot(tempDir, baseStream)
+
+    expect(snapshot.stages.map((stage) => stage.stage_id)).toEqual(["01", "02"])
+    expect(snapshot.stages[1]).toMatchObject({
+      stage_id: "02",
+      title: "Revision stage",
+      status: "pending",
+    })
+    expect(snapshot.stages[1]?.counts.total).toBe(0)
   })
 
   test("returns structured runtime entries without CLI formatting", async () => {

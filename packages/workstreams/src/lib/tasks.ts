@@ -9,7 +9,6 @@ import { existsSync, mkdirSync, readdirSync, readFileSync, rmSync } from "fs"
 import { join } from "path"
 import * as lockfile from "proper-lockfile"
 import { loadSqliteStructuredStorageWorkstreamState } from "./sqlite-storage.ts"
-import { queryTaskByIdForWorkstream, queryTasksForWorkstream } from "./hierarchy-query.ts"
 import type {
   RootAgentLineage,
   Task,
@@ -1394,7 +1393,7 @@ export function getTaskById(
   streamId: string,
   taskId: string,
 ): Task | null {
-  return queryTaskByIdForWorkstream(repoRoot, streamId, taskId)
+  return getTasks(repoRoot, streamId).find((task) => task.id === taskId) ?? null
 }
 
 /**
@@ -1405,7 +1404,35 @@ export function getTasks(
   streamId: string,
   status?: TaskStatus,
 ): Task[] {
-  return queryTasksForWorkstream(repoRoot, streamId, status)
+  const sqliteState = loadSqliteStructuredStorageWorkstreamState(repoRoot, streamId)
+  if (sqliteState) {
+    const stageById = new Map(sqliteState.hierarchy.stages.map((stage) => [stage.id, stage] as const))
+    const batchById = new Map(sqliteState.hierarchy.batches.map((batch) => [batch.id, batch] as const))
+    const threadById = new Map(sqliteState.hierarchy.threads.map((thread) => [thread.id, thread] as const))
+    const tasks = sqliteState.hierarchy.tasks.map((task) => ({
+      id: task.id,
+      name: task.name,
+      stage_name: stageById.get(task.stageId)?.name ?? `Stage ${task.stageId}`,
+      batch_name: batchById.get(task.batchId)?.name ?? `Batch ${task.batchId}`,
+      thread_name: threadById.get(task.threadId)?.name ?? `Thread ${task.threadId}`,
+      created_at: task.createdAt,
+      updated_at: task.updatedAt,
+      status: task.status,
+      ...(task.breadcrumb ? { breadcrumb: task.breadcrumb } : {}),
+      ...(task.report ? { report: task.report } : {}),
+      ...(task.assignedAgent ? { assigned_agent: task.assignedAgent } : {}),
+    }))
+
+    return status ? tasks.filter((task) => task.status === status) : tasks
+  }
+
+  const tasksFile = readTasksFile(repoRoot, streamId)
+  if (!tasksFile) return []
+
+  if (status) {
+    return tasksFile.tasks.filter((t) => t.status === status)
+  }
+  return tasksFile.tasks
 }
 
 export interface TaskUpdateOptions {

@@ -170,10 +170,14 @@ function loadSqliteHierarchy(repoRoot: string, streamId: string): WorkstreamHier
 }
 
 function resolveStreamIdForQuery(repoRoot: string, streamIdOrName: string): string | null {
-  const workspaceState = loadCanonicalWorkspaceState(repoRoot)
-  const record = resolveWorkspaceStateStreamRecord(workspaceState, streamIdOrName)
-  if (record) {
-    return record.id
+  try {
+    const workspaceState = loadCanonicalWorkspaceState(repoRoot)
+    const record = resolveWorkspaceStateStreamRecord(workspaceState, streamIdOrName)
+    if (record) {
+      return record.id
+    }
+  } catch {
+    // Fall through to legacy compatibility lookup.
   }
 
   try {
@@ -190,10 +194,15 @@ function loadCompatibilityApprovals(
   repoRoot: string,
   streamIdOrName: string,
 ): WorkstreamApprovalQueryResult {
-  const index = loadIndex(repoRoot)
-  const stream = index.streams.find(
-    (candidate) => candidate.id === streamIdOrName || candidate.name === streamIdOrName,
-  )
+  let stream
+  try {
+    const index = loadIndex(repoRoot)
+    stream = index.streams.find(
+      (candidate) => candidate.id === streamIdOrName || candidate.name === streamIdOrName,
+    )
+  } catch {
+    stream = undefined
+  }
   const approvals = stream
     ? approvalMetadataToStructuredApprovalRecords(stream.id, stream.approval)
     : []

@@ -739,7 +739,7 @@ export function formatProgress(
     // Get stage approval status if stream is available
     // Stage approval is independent - it's for approving completed work before moving to next stage
     let approvalDisplay = ""
-    if (stream) {
+    if (stream && repoRoot) {
       const stageApproval = queryStageApprovalStatus(repoRoot, stream.id, stage.number, stream)
       approvalDisplay = ` ${formatApprovalIcon(stageApproval)}`
     }
