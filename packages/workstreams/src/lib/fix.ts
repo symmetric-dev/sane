@@ -5,7 +5,7 @@
 import { existsSync, readFileSync, readdirSync, renameSync, writeFileSync } from "fs"
 import { join } from "path"
 import { getStreamPlanMdPath } from "./consolidate.ts"
-import { getStageApprovalStatus } from "./approval.ts"
+import { queryStageApprovalStatus } from "./approval.ts"
 import { getWorkstreamGitHubPath } from "./github/workstream-github.ts"
 import { loadIndex, saveIndex } from "./index.ts"
 import { generateAllPrompts } from "./prompts.ts"
@@ -809,7 +809,7 @@ function ensureStageApprovedForRevisionInsertion(
     }
   }
 
-  if (getStageApprovalStatus(stream, previousStageNumber) !== "approved") {
+  if (queryStageApprovalStatus(repoRoot, stream.id, previousStageNumber, stream) !== "approved") {
     return {
       success: false,
       message: `${formatStageLabel(previousStageNumber)} must be approved before adding a revision after it`,

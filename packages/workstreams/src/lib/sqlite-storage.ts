@@ -20,6 +20,8 @@ import type {
   SupervisorRunState,
   SupervisorStateFile,
 } from "./types.ts"
+import { createEmptySupervisorState } from "./supervisor-state.ts"
+import { createEmptyStructuredStorageWorkstreamState as createEmptyWorkstreamState } from "./structured-storage.ts"
 
 export const SQLITE_STRUCTURED_STORAGE_SCHEMA_VERSION = 1
 
@@ -1380,6 +1382,181 @@ export function syncStructuredStorageWorkstreamStateToSqlite(
       syncWorkstreamRows(database, state)
     })
     transaction(workstreamState)
+  } finally {
+    database.close()
+  }
+}
+
+export function loadSqliteStructuredStorageWorkstreamState(
+  repoRoot: string,
+  streamId: string,
+): StructuredStorageWorkstreamState | null {
+  const databasePath = getSqliteStructuredStoragePath(repoRoot)
+  if (!existsSync(databasePath)) {
+    return null
+  }
+
+  const database = new Database(databasePath, { readonly: true })
+
+  try {
+    const workstreamRow = database
+      .query<{ stream_id: string }, [string]>(
+        "SELECT stream_id FROM workstreams WHERE stream_id = ? LIMIT 1",
+      )
+      .get(streamId)
+
+    const stages = database
+      .query<{ metadata_json: string }, [string]>(
+        "SELECT metadata_json FROM stages WHERE stream_id = ? ORDER BY stage_number, stage_id",
+      )
+      .all(streamId)
+      .map((row) => parseMetadataJson<StructuredStageRecord>(row.metadata_json, "stages"))
+
+    const batches = database
+      .query<{ metadata_json: string }, [string]>(
+        "SELECT metadata_json FROM batches WHERE stream_id = ? ORDER BY stage_id, batch_number, batch_id",
+      )
+      .all(streamId)
+      .map((row) => parseMetadataJson<StructuredBatchRecord>(row.metadata_json, "batches"))
+
+    const taskRows = database
+      .query<{ metadata_json: string }, [string]>(
+        "SELECT metadata_json FROM tasks WHERE stream_id = ? ORDER BY task_id",
+      )
+      .all(streamId)
+    const tasks = taskRows
+      .map((row) => parseMetadataJson<StructuredTaskRecord>(row.metadata_json, "tasks"))
+      .sort((left, right) => compareIds(left.id, right.id))
+
+    const approvalRows = database
+      .query<{ metadata_json: string }, [string]>(
+        "SELECT metadata_json FROM approvals WHERE stream_id = ? ORDER BY scope, stage_id",
+      )
+      .all(streamId)
+    const approvals = approvalRows
+      .map((row) => parseMetadataJson<StructuredApprovalRecord>(row.metadata_json, "approvals"))
+      .sort((left, right) => {
+        const scopeOrder = APPROVAL_SCOPE_ORDER[left.scope] - APPROVAL_SCOPE_ORDER[right.scope]
+        if (scopeOrder !== 0) return scopeOrder
+        return compareOptionalIds(left.stageId, right.stageId)
+      })
+
+    const threadRows = database
+      .query<{ thread_id: string; metadata_json: string }, [string]>(
+        "SELECT thread_id, metadata_json FROM threads WHERE stream_id = ? ORDER BY thread_id",
+      )
+      .all(streamId)
+    const sessionRows = database
+      .query<{ thread_id: string; metadata_json: string }, [string]>(
+        "SELECT thread_id, metadata_json FROM thread_sessions WHERE stream_id = ? ORDER BY thread_id, started_at, session_id",
+      )
+      .all(streamId)
+
+    const sessionsByThreadId = new Map<string, SessionRecord[]>()
+    for (const row of sessionRows) {
+      const session = normalizeSessionRecord(
+        parseMetadataJson<SessionRecord>(
+          row.metadata_json,
+          `thread_sessions(thread=${row.thread_id})`,
+        ),
+      )
+      const sessions = sessionsByThreadId.get(row.thread_id)
+      if (sessions) {
+        sessions.push(session)
+      } else {
+        sessionsByThreadId.set(row.thread_id, [session])
+      }
+    }
+
+    const threads = threadRows
+      .map((row) => {
+        const metadata = parseMetadataJson<StructuredThreadRecord>(
+          row.metadata_json,
+          `threads(thread=${row.thread_id})`,
+        )
+        return metadata
+      })
+      .sort((left, right) => compareIds(left.id, right.id))
+
+    const threadRuntime = threadRows
+      .map((row) => {
+        const metadata = parseMetadataJson<SqliteThreadMetadataJson>(
+          row.metadata_json,
+          `threads(thread=${row.thread_id})`,
+        )
+        const sessions = (sessionsByThreadId.get(row.thread_id) ?? [])
+          .map(normalizeSessionRecord)
+          .sort((left, right) => {
+            const startedAtOrder = compareOptionalIds(left.startedAt, right.startedAt)
+            if (startedAtOrder !== 0) return startedAtOrder
+            return compareIds(left.sessionId, right.sessionId)
+          })
+
+        return {
+          threadId: metadata.id,
+          sessions,
+          ...(metadata.currentSessionId ? { currentSessionId: metadata.currentSessionId } : {}),
+          ...(metadata.opencodeSessionId ? { opencodeSessionId: metadata.opencodeSessionId } : {}),
+          ...(metadata.workingAgentSessionId
+            ? { workingAgentSessionId: metadata.workingAgentSessionId }
+            : {}),
+          ...(metadata.synthesisOutput ? { synthesisOutput: metadata.synthesisOutput } : {}),
+          ...(metadata.synthesis ? { synthesis: { ...metadata.synthesis } } : {}),
+        } satisfies StructuredThreadRuntimeRecord
+      })
+      .sort((left, right) => compareIds(left.threadId, right.threadId))
+
+    const batchRunRows = database
+      .query<{ metadata_json: string }, [string]>(
+        "SELECT metadata_json FROM batch_runs WHERE stream_id = ? ORDER BY batch_id, run_id",
+      )
+      .all(streamId)
+    const batchRuns = batchRunRows
+      .map((row) => parseMetadataJson<PersistedBatchStatusFile>(row.metadata_json, "batch_runs"))
+      .sort((left, right) => {
+        const batchOrder = compareIds(left.batchId, right.batchId)
+        if (batchOrder !== 0) return batchOrder
+        return compareIds(left.runId, right.runId)
+      })
+      .map((batchRun) => ({
+        ...batchRun,
+        summary: { ...batchRun.summary },
+        threads: [...batchRun.threads].sort((left, right) => compareIds(left.threadId, right.threadId)),
+      }))
+
+    const supervisionStateRow = database
+      .query<{ metadata_json: string }, [string]>(
+        "SELECT metadata_json FROM supervision_state WHERE stream_id = ? LIMIT 1",
+      )
+      .get(streamId)
+    const supervision = supervisionStateRow
+      ? parseMetadataJson<SupervisorStateFile>(supervisionStateRow.metadata_json, "supervision_state")
+      : createEmptySupervisorState(streamId)
+
+    if (
+      !workstreamRow &&
+      stages.length === 0 &&
+      batches.length === 0 &&
+      threads.length === 0 &&
+      tasks.length === 0 &&
+      approvals.length === 0 &&
+      threadRuntime.length === 0 &&
+      batchRuns.length === 0 &&
+      supervision.runs.length === 0 &&
+      supervision.branch_sessions.length === 0 &&
+      !supervision.active_run_id &&
+      !supervision.current_branch_supervision
+    ) {
+      return null
+    }
+
+    const workstreamState = createEmptyWorkstreamState(streamId)
+    workstreamState.hierarchy = { stages, batches, threads, tasks }
+    workstreamState.approvals = approvals
+    workstreamState.threadRuntime = threadRuntime
+    workstreamState.batchRuns = batchRuns
+    workstreamState.supervision = supervision
+    return workstreamState
   } finally {
     database.close()
   }

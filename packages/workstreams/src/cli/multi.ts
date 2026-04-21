@@ -29,7 +29,7 @@ import {
   buildAttachCommand,
   waitForAllPanesExit,
 } from "../lib/tmux.ts"
-import { getStageApprovalStatus } from "../lib/approval.ts"
+import { queryStageApprovalStatus } from "../lib/approval.ts"
 import {
   isServerRunning,
   startServer,
@@ -504,7 +504,7 @@ export async function main(argv: string[] = process.argv): Promise<void> {
   // Check Previous Stage Approval
   if (batchParsed.stage > 1) {
     const prevStageNum = batchParsed.stage - 1
-    const approvalStatus = getStageApprovalStatus(stream, prevStageNum)
+    const approvalStatus = queryStageApprovalStatus(repoRoot, stream.id, prevStageNum, stream)
 
     if (approvalStatus !== "approved") {
       console.error(

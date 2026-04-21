@@ -26,6 +26,7 @@ import {
 } from "./structured-storage.ts"
 import {
   loadSqliteCriticalWorkflowParityProjection,
+  loadSqliteStructuredStorageWorkstreamState,
   recordSqliteStructuredStorageMirrorState,
   syncStructuredStorageWorkspaceStateToSqlite,
   syncStructuredStorageWorkstreamStateToSqlite,
@@ -626,6 +627,11 @@ export function loadStructuredWorkstreamStateSync(
   repoRoot: string,
   streamId: string,
 ): StructuredStorageWorkstreamState | null {
+  const sqliteState = loadSqliteStructuredStorageWorkstreamState(repoRoot, streamId)
+  if (sqliteState) {
+    return sqliteState
+  }
+
   return workstreamStateFromSnapshot(getOrCreateIndex(repoRoot), streamId, readTasksFile(repoRoot, streamId))
 }
 

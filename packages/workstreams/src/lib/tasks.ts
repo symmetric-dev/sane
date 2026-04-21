@@ -8,6 +8,8 @@
 import { existsSync, mkdirSync, readdirSync, readFileSync, rmSync } from "fs"
 import { join } from "path"
 import * as lockfile from "proper-lockfile"
+import { loadSqliteStructuredStorageWorkstreamState } from "./sqlite-storage.ts"
+import { queryTaskByIdForWorkstream, queryTasksForWorkstream } from "./hierarchy-query.ts"
 import type {
   RootAgentLineage,
   Task,
@@ -673,11 +675,38 @@ function summarizeSupervisionRuntime(
   }
 }
 
+function projectRuntimeSummaryFromStructuredState(
+  workstreamState: {
+    batchRuns: PersistedBatchStatusFile[]
+    supervision: SupervisorStateFile
+  },
+): WorkstreamRuntimeSummary | undefined {
+  const batches = Object.fromEntries(
+    workstreamState.batchRuns.map((batchStatus) => [batchStatus.batchId, toRuntimeBatchSummary(batchStatus)]),
+  )
+  const supervision = summarizeSupervisionRuntime(workstreamState.supervision)
+
+  if (Object.keys(batches).length === 0 && !supervision) {
+    return undefined
+  }
+
+  return {
+    updated_at: new Date().toISOString(),
+    batches,
+    ...(supervision ? { supervision } : {}),
+  }
+}
+
 export function projectRuntimeSummary(
   repoRoot: string,
   streamId: string,
   tasksFile?: TasksFile | null,
 ): WorkstreamRuntimeSummary | undefined {
+  const sqliteState = loadSqliteStructuredStorageWorkstreamState(repoRoot, streamId)
+  if (sqliteState) {
+    return projectRuntimeSummaryFromStructuredState(sqliteState)
+  }
+
   const resolvedTasksFile = tasksFile ?? readTasksFile(repoRoot, streamId)
   const runtimeState = normalizeRuntimeState(streamId, resolvedTasksFile?.runtime_state)
   const batches = Object.fromEntries(
@@ -704,6 +733,10 @@ export function getEffectiveRuntimeSummary(
   streamId: string,
   tasksFile?: TasksFile | null,
 ): WorkstreamRuntimeSummary | undefined {
+  if (loadSqliteStructuredStorageWorkstreamState(repoRoot, streamId)) {
+    return projectRuntimeSummary(repoRoot, streamId, tasksFile)
+  }
+
   if (tasksFile?.runtime_summary) {
     return tasksFile.runtime_summary
   }
@@ -1361,10 +1394,7 @@ export function getTaskById(
   streamId: string,
   taskId: string,
 ): Task | null {
-  const tasksFile = readTasksFile(repoRoot, streamId)
-  if (!tasksFile) return null
-
-  return tasksFile.tasks.find((t) => t.id === taskId) || null
+  return queryTaskByIdForWorkstream(repoRoot, streamId, taskId)
 }
 
 /**
@@ -1375,13 +1405,7 @@ export function getTasks(
   streamId: string,
   status?: TaskStatus,
 ): Task[] {
-  const tasksFile = readTasksFile(repoRoot, streamId)
-  if (!tasksFile) return []
-
-  if (status) {
-    return tasksFile.tasks.filter((t) => t.status === status)
-  }
-  return tasksFile.tasks
+  return queryTasksForWorkstream(repoRoot, streamId, status)
 }
 
 export interface TaskUpdateOptions {

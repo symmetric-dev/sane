@@ -22,9 +22,10 @@ import type {
   WorkstreamStatusStageSummary,
   WorkstreamRuntimeBatchSummary,
 } from "./types.ts"
-import { queryTasksForWorkstream } from "./hierarchy-query.ts"
+import type { StructuredStageRecord } from "./structured-storage.ts"
+import { loadWorkstreamHierarchyQueryResult, queryTasksForWorkstream } from "./hierarchy-query.ts"
 import { getEffectiveRuntimeSummary, getTasks, readTasksFile } from "./tasks.ts"
-import { getStageApprovalStatus } from "./approval.ts"
+import { queryStageApprovalStatus } from "./approval.ts"
 
 // Re-export ParsedStage for backwards compatibility during migration
 export interface ParsedStage {
@@ -170,7 +171,10 @@ function toParsedTask(task: Task): ParsedTask | null {
   }
 }
 
-export function buildStageStatusSummaries(tasks: Task[]): WorkstreamStatusStageSummary[] {
+export function buildStageStatusSummaries(
+  tasks: Task[],
+  hierarchyStages: StructuredStageRecord[] = [],
+): WorkstreamStatusStageSummary[] {
   const stageTasks = new Map<number, Task[]>()
 
   for (const task of tasks) {
@@ -185,18 +189,30 @@ export function buildStageStatusSummaries(tasks: Task[]): WorkstreamStatusStageS
     stageTasks.get(parts.stageNumber)!.push(task)
   }
 
-  return Array.from(stageTasks.entries())
-    .sort(([a], [b]) => a - b)
-    .map(([stageNumber, stageTaskList]) => {
+  const stageMetadata = new Map<number, StructuredStageRecord>()
+  for (const stage of hierarchyStages) {
+    stageMetadata.set(stage.number, stage)
+  }
+
+  const visibleStageNumbers = new Set<number>([
+    ...stageMetadata.keys(),
+    ...stageTasks.keys(),
+  ])
+
+  return [...visibleStageNumbers]
+    .sort((left, right) => left - right)
+    .map((stageNumber) => {
+      const stageTaskList = stageTasks.get(stageNumber) ?? []
       const counts = getTaskStatusCountsForTasks(stageTaskList)
       const parsedTasks = stageTaskList
         .map((task) => toParsedTask(task))
         .filter((task): task is ParsedTask => task !== null)
+      const stage = stageMetadata.get(stageNumber)
 
       return {
         number: stageNumber,
-        stage_id: stageNumber.toString().padStart(2, "0"),
-        title: stageTaskList[0]?.stage_name || `Stage ${stageNumber}`,
+        stage_id: stage?.id ?? stageNumber.toString().padStart(2, "0"),
+        title: stage?.name ?? stageTaskList[0]?.stage_name ?? `Stage ${stageNumber}`,
         status: calculateStageStatus(stageTaskList),
         counts,
         completion: createCompletionMetrics(counts),
@@ -315,11 +331,12 @@ export function getRuntimeSummaryProjection(
 export function createWorkstreamStatusSnapshot(args: {
   stream: StreamMetadata
   tasks: Task[]
+  hierarchyStages?: StructuredStageRecord[]
   runtimeSummary?: WorkstreamRuntimeSummary
   currentStreamId?: string
 }): WorkstreamStatusSnapshot {
   const counts = getTaskStatusCountsForTasks(args.tasks)
-  const stages = buildStageStatusSummaries(args.tasks)
+  const stages = buildStageStatusSummaries(args.tasks, args.hierarchyStages)
 
   return {
     stream: {
@@ -354,9 +371,11 @@ export function getWorkstreamStatusSnapshot(
   currentStreamId?: string,
 ): WorkstreamStatusSnapshot {
   const tasksFile = readTasksFile(repoRoot, stream.id)
+  const hierarchy = loadWorkstreamHierarchyQueryResult(repoRoot, stream.id)
   return createWorkstreamStatusSnapshot({
     stream,
     tasks: queryTasksForWorkstream(repoRoot, stream.id),
+    hierarchyStages: hierarchy.stages,
     runtimeSummary: getEffectiveRuntimeSummary(repoRoot, stream.id, tasksFile),
     currentStreamId,
   })
@@ -721,7 +740,7 @@ export function formatProgress(
     // Stage approval is independent - it's for approving completed work before moving to next stage
     let approvalDisplay = ""
     if (stream) {
-      const stageApproval = getStageApprovalStatus(stream, stage.number)
+      const stageApproval = queryStageApprovalStatus(repoRoot, stream.id, stage.number, stream)
       approvalDisplay = ` ${formatApprovalIcon(stageApproval)}`
     }
 

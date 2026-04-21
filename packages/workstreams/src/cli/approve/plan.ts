@@ -10,12 +10,12 @@ import { join } from "path"
 import {
   approveStream,
   revokeApproval,
-  getApprovalStatus,
+  queryApprovalStatus,
   formatApprovalStatus,
   checkOpenQuestions,
   approveStage,
   revokeStageApproval,
-  getStageApprovalStatus,
+  queryStageApprovalStatus,
   storeStageCommitSha,
 } from "../../lib/approval.ts"
 import {
@@ -142,7 +142,7 @@ export async function handlePlanApproval(
     if (cliArgs.revoke) {
       try {
         // Check if stage is approved
-        const stageStatus = getStageApprovalStatus(stream, stageNum)
+        const stageStatus = queryStageApprovalStatus(repoRoot, stream.id, stageNum, stream)
         if (stageStatus !== "approved") {
           console.error(
             `Error: Stage ${stageNum} is not approved, nothing to revoke`
@@ -188,7 +188,7 @@ export async function handlePlanApproval(
     }
 
     // Handle Stage Approve
-    const stageStatus = getStageApprovalStatus(stream, stageNum)
+    const stageStatus = queryStageApprovalStatus(repoRoot, stream.id, stageNum, stream)
     if (stageStatus === "approved") {
       if (cliArgs.json) {
         console.log(
@@ -432,7 +432,7 @@ export async function handlePlanApproval(
 
   // Handle revoke
   if (cliArgs.revoke) {
-    const currentStatus = getApprovalStatus(stream)
+    const currentStatus = queryApprovalStatus(repoRoot, stream.id, stream)
     if (currentStatus === "draft") {
       console.error("Error: Plan is not approved, nothing to revoke")
       process.exit(1)
@@ -473,7 +473,7 @@ export async function handlePlanApproval(
   }
 
   // Handle approve
-  const currentStatus = getApprovalStatus(stream)
+  const currentStatus = queryApprovalStatus(repoRoot, stream.id, stream)
   if (currentStatus === "approved") {
     if (cliArgs.json) {
       console.log(

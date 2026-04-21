@@ -10,7 +10,7 @@ import { join } from "path"
 import {
   approveTasks,
   revokeTasksApproval,
-  getTasksApprovalStatus,
+  queryTasksApprovalStatus,
   checkTasksApprovalReady,
 } from "../../lib/approval.ts"
 import { parseTasksMd, generateTasksMdFromTasks } from "../../lib/tasks-md.ts"
@@ -149,7 +149,7 @@ export async function handleTasksApproval(
   stream: ReturnType<typeof getResolvedStream>,
   cliArgs: ApproveCliArgs
 ): Promise<void> {
-  const currentStatus = getTasksApprovalStatus(stream)
+  const currentStatus = queryTasksApprovalStatus(repoRoot, stream.id, stream)
 
   // Handle revoke
   if (cliArgs.revoke) {

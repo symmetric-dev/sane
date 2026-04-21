@@ -2,14 +2,21 @@ import { existsSync } from "fs"
 
 import { loadStructuredWorkstreamStateSync } from "./storage-adapter.ts"
 import { getSqliteStructuredStoragePath } from "./sqlite-storage.ts"
+import {
+  approvalMetadataToStructuredApprovalRecords,
+  structuredApprovalRecordsToApprovalMetadata,
+} from "./structured-storage.ts"
 import type {
+  StructuredApprovalRecord,
   StructuredBatchRecord,
   StructuredStageRecord,
   StructuredTaskRecord,
   StructuredThreadRecord,
 } from "./structured-storage.ts"
-import type { Task, TaskStatus } from "./types.ts"
+import type { ApprovalMetadata, Task, TaskStatus } from "./types.ts"
 import { Database } from "bun:sqlite"
+import { loadCanonicalWorkspaceState, resolveWorkspaceStateStreamRecord } from "./workspace-read-model.ts"
+import { loadIndex } from "./index.ts"
 
 export interface HierarchyTaskQueryRecord extends StructuredTaskRecord {
   stageName: string
@@ -24,6 +31,13 @@ export interface WorkstreamHierarchyQueryResult {
   batches: StructuredBatchRecord[]
   threads: StructuredThreadRecord[]
   tasks: HierarchyTaskQueryRecord[]
+}
+
+export interface WorkstreamApprovalQueryResult {
+  source: "sqlite" | "compatibility"
+  streamId: string
+  approvals: StructuredApprovalRecord[]
+  approval?: ApprovalMetadata
 }
 
 function compareIds(left: string, right: string): number {
@@ -155,6 +169,85 @@ function loadSqliteHierarchy(repoRoot: string, streamId: string): WorkstreamHier
   }
 }
 
+function resolveStreamIdForQuery(repoRoot: string, streamIdOrName: string): string | null {
+  const workspaceState = loadCanonicalWorkspaceState(repoRoot)
+  const record = resolveWorkspaceStateStreamRecord(workspaceState, streamIdOrName)
+  if (record) {
+    return record.id
+  }
+
+  try {
+    const stream = loadIndex(repoRoot).streams.find(
+      (candidate) => candidate.id === streamIdOrName || candidate.name === streamIdOrName,
+    )
+    return stream?.id ?? null
+  } catch {
+    return null
+  }
+}
+
+function loadCompatibilityApprovals(
+  repoRoot: string,
+  streamIdOrName: string,
+): WorkstreamApprovalQueryResult {
+  const index = loadIndex(repoRoot)
+  const stream = index.streams.find(
+    (candidate) => candidate.id === streamIdOrName || candidate.name === streamIdOrName,
+  )
+  const approvals = stream
+    ? approvalMetadataToStructuredApprovalRecords(stream.id, stream.approval)
+    : []
+
+  return {
+    source: "compatibility",
+    streamId: stream?.id ?? streamIdOrName,
+    approvals,
+    approval: stream?.approval,
+  }
+}
+
+function loadSqliteApprovals(repoRoot: string, streamId: string): WorkstreamApprovalQueryResult {
+  const database = new Database(getSqliteStructuredStoragePath(repoRoot), { readonly: true })
+
+  try {
+    const approvals = database
+      .query<StructuredApprovalRecord, [string]>(
+        `SELECT
+           stream_id as streamId,
+           scope,
+           stage_id as stageId,
+           status,
+           approved_at as approvedAt,
+           approved_by as approvedBy,
+           revoked_at as revokedAt,
+           revoked_reason as revokedReason,
+           plan_hash as planHash,
+           task_count as taskCount,
+           commit_sha as commitSha
+         FROM approvals
+         WHERE stream_id = ?
+         ORDER BY
+           CASE scope
+             WHEN 'plan' THEN 0
+             WHEN 'tasks' THEN 1
+             WHEN 'stage' THEN 2
+             ELSE 99
+           END,
+           stage_id`,
+      )
+      .all(streamId)
+
+    return {
+      source: "sqlite",
+      streamId,
+      approvals,
+      approval: structuredApprovalRecordsToApprovalMetadata(approvals),
+    }
+  } finally {
+    database.close()
+  }
+}
+
 export function loadWorkstreamHierarchyQueryResult(
   repoRoot: string,
   streamId: string,
@@ -177,6 +270,23 @@ export function loadWorkstreamHierarchyQueryResult(
   return loadCompatibilityHierarchy(repoRoot, streamId)
 }
 
+export function loadWorkstreamApprovalQueryResult(
+  repoRoot: string,
+  streamIdOrName: string,
+): WorkstreamApprovalQueryResult {
+  const streamId = resolveStreamIdForQuery(repoRoot, streamIdOrName)
+  const sqlitePath = getSqliteStructuredStoragePath(repoRoot)
+
+  if (streamId && existsSync(sqlitePath)) {
+    const sqliteResult = loadSqliteApprovals(repoRoot, streamId)
+    if (sqliteResult.approvals.length > 0) {
+      return sqliteResult
+    }
+  }
+
+  return loadCompatibilityApprovals(repoRoot, streamIdOrName)
+}
+
 export function queryTasksForWorkstream(
   repoRoot: string,
   streamId: string,
@@ -188,4 +298,12 @@ export function queryTasksForWorkstream(
   }
 
   return tasks.filter((task) => task.status === status)
+}
+
+export function queryTaskByIdForWorkstream(
+  repoRoot: string,
+  streamId: string,
+  taskId: string,
+): Task | null {
+  return queryTasksForWorkstream(repoRoot, streamId).find((task) => task.id === taskId) ?? null
 }

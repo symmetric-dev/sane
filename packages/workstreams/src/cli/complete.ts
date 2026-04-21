@@ -14,7 +14,7 @@ import { loadIndex, getResolvedStream, saveIndex } from "../lib/index.ts"
 import { completeStream } from "../lib/complete.ts"
 import { consolidateStream } from "../lib/consolidate.ts"
 import { getTasks } from "../lib/tasks.ts"
-import { getStageApprovalStatus, isApproved } from "../lib/approval.ts"
+import { queryStageApprovalStatus, isApproved } from "../lib/approval.ts"
 import { isGitHubEnabled, loadGitHubConfig } from "../lib/github/config.ts"
 import {
   workstreamBranchExists,
@@ -355,7 +355,7 @@ function checkAllStagesApproved(
   const unapprovedStages: number[] = []
 
   for (const stageNum of stageNumbers) {
-    const stageStatus = getStageApprovalStatus(stream, stageNum)
+    const stageStatus = queryStageApprovalStatus(repoRoot, stream.id, stageNum, stream)
     if (stageStatus !== "approved") {
       unapprovedStages.push(stageNum)
     }

@@ -16,6 +16,7 @@ import { getWorkDir } from "./repo.ts"
 import { parseStreamDocument } from "./stream-parser.ts"
 import { updateStructuredApprovalsSync } from "./storage-adapter.ts"
 import { parseTasksMd } from "./tasks-md.ts"
+import { loadWorkstreamApprovalQueryResult } from "./hierarchy-query.ts"
 
 function getIndexedStream(index: WorkIndex, streamIdOrName: string): StreamMetadata {
   const stream = index.streams.find((s) => s.id === streamIdOrName || s.name === streamIdOrName)
@@ -237,6 +238,14 @@ export function computePlanHash(repoRoot: string, streamId: string): string | nu
  */
 export function getApprovalStatus(stream: StreamMetadata): ApprovalStatus {
   return stream.approval?.status ?? "draft"
+}
+
+export function queryApprovalStatus(
+  repoRoot: string,
+  streamIdOrName: string,
+  stream?: StreamMetadata,
+): ApprovalStatus {
+  return loadWorkstreamApprovalQueryResult(repoRoot, streamIdOrName).approval?.status ?? stream?.approval?.status ?? "draft"
 }
 
 /**
@@ -501,6 +510,20 @@ export function getStageApprovalStatus(
   return stream.approval.stages[stageNumber]?.status ?? "draft"
 }
 
+export function queryStageApprovalStatus(
+  repoRoot: string,
+  streamIdOrName: string,
+  stageNumber: number,
+  stream?: StreamMetadata,
+): ApprovalStatus {
+  const approval = loadWorkstreamApprovalQueryResult(repoRoot, streamIdOrName).approval
+  if (approval?.stages) {
+    return approval.stages[stageNumber]?.status ?? "draft"
+  }
+
+  return stream ? getStageApprovalStatus(stream, stageNumber) : "draft"
+}
+
 /**
  * Approve a specific stage
  */
@@ -672,6 +695,19 @@ export function checkTasksApprovalReady(
  */
 export function getTasksApprovalStatus(stream: StreamMetadata): ApprovalStatus {
   return stream.approval?.tasks?.status ?? "draft"
+}
+
+export function queryTasksApprovalStatus(
+  repoRoot: string,
+  streamIdOrName: string,
+  stream?: StreamMetadata,
+): ApprovalStatus {
+  const approval = loadWorkstreamApprovalQueryResult(repoRoot, streamIdOrName).approval
+  if (approval?.tasks) {
+    return approval.tasks.status
+  }
+
+  return stream ? getTasksApprovalStatus(stream) : "draft"
 }
 
 /**
