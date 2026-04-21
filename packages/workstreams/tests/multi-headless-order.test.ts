@@ -58,6 +58,7 @@ describe("multi headless initialization order", () => {
 
     mock.module(src("lib/approval.ts"), () => ({
       getStageApprovalStatus: () => "approved",
+      queryStageApprovalStatus: () => "approved",
     }))
 
     mock.module(src("lib/opencode.ts"), () => ({
@@ -183,6 +184,7 @@ describe("multi headless initialization order", () => {
 
     mock.module(src("lib/approval.ts"), () => ({
       getStageApprovalStatus: () => "approved",
+      queryStageApprovalStatus: () => "approved",
     }))
 
     mock.module(src("lib/opencode.ts"), () => ({
@@ -302,6 +304,7 @@ describe("multi headless initialization order", () => {
 
     mock.module(src("lib/approval.ts"), () => ({
       getStageApprovalStatus: () => "approved",
+      queryStageApprovalStatus: () => "approved",
     }))
 
     mock.module(src("lib/opencode.ts"), () => ({
