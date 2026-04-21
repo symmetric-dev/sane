@@ -2,40 +2,39 @@
 
 ## Decision
 
-The current storage design is **local-first, filesystem-authoritative dual-write**:
+The current storage design is **local-first, sqlite-authoritative with compatibility projections**:
 
-- filesystem state stays canonical during the migration
-- sqlite at `work/db.sqlite` mirrors structured workflow state for parity checks and future cutover work
+- sqlite at `work/db.sqlite` is the source of truth for structured workflow state
+- `work/index.json`, `work/<stream-id>/tasks.json`, and older runtime JSON files remain compatibility projections or migration inputs
 - markdown documents, resources, and artifact-like outputs stay file-oriented
 
-This lets the CLI keep today's repo-local workflow while moving workflow-critical state behind adapter boundaries that can later support server-backed storage.
+This keeps the repo-local workflow and human-authored files intact while moving queryable workflow state behind an adapter boundary that can later support other structured backends.
 
 ## What is canonical right now
 
-### Filesystem-canonical state during the transition
+### Sqlite-canonical structured state
 
-The adapter writes filesystem state first and treats a successful filesystem write as the source of truth.
+`work/db.sqlite` is now authoritative for the structured state that maps cleanly to relational records:
 
-- `work/index.json` remains the canonical workspace catalog and current-stream pointer
-- `work/<stream-id>/tasks.json` remains the canonical structured workstream store
-- `tasks.json.runtime_state.threads` remains the canonical thread/session store
-- `tasks.json.runtime_state.batches` remains the canonical batch-run store
-- `tasks.json.runtime_state.supervision` remains the canonical supervision store
-
-If sqlite bootstrap or mirroring fails, the filesystem write still succeeds and the workflow continues. Tests cover this failure mode so sqlite cannot make normal task/thread/supervision updates unsafe.
-
-### Sqlite-mirrored state during the transition
-
-`work/db.sqlite` mirrors the structured state that already maps cleanly to relational records:
-
-- workstreams and workspace selection metadata
+- workspace selection and workstream catalog metadata
 - stages, batches, threads, and tasks
-- approvals
+- approval records
+- task status/report/assignment updates
 - thread sessions
 - batch runs
 - supervision runs and related structured supervision records
 
-In this phase, sqlite is a **shadow structured store**, not the primary authority.
+Canonical reads should prefer sqlite-backed storage/query interfaces. When older helpers still need JSON, they should treat the files as projections of this state rather than an independent authority.
+
+### Compatibility projections on disk
+
+The filesystem still carries compatibility JSON for legacy callers, rollback-safe inspection, and rebuild workflows:
+
+- `work/index.json` projects workspace/workstream metadata from sqlite
+- `work/<stream-id>/tasks.json` projects task hierarchy plus `runtime_state` / `runtime_summary`
+- legacy artifacts such as `threads.json`, `supervisor-state.json`, and `batch-status/*.json` are compatibility outputs or migration inputs, not the canonical runtime model
+
+These files are intentionally derivative. If they drift, the fix is to rebuild them from sqlite, not to treat the drifted file as new truth.
 
 ## Structured vs file-oriented storage split
 
@@ -61,16 +60,29 @@ Keep human-authored and artifact-like content in the workstream directory:
 - `resources/`
 - generated prompts, reports, logs, screenshots, transcripts, and similar outputs
 
-Sqlite should only store the minimum path metadata needed to locate those files, starting with the workstream `storage_root` and a small number of explicit relative-path fields where workflow logic needs them.
+Sqlite should store only the minimum path metadata needed to locate those files, starting with the workstream `storage_root` and a small number of explicit relative-path fields where workflow logic needs them.
+
+## Compatibility projection boundary
+
+The compatibility boundary is intentionally narrow:
+
+- JSON projections exist so older helpers, inspection flows, and published compatibility surfaces continue to work during the cutover
+- projections may expose convenience summaries such as `runtime_summary`, `active_run_id`, or `current_branch_supervision`, but those values should be derived from canonical sqlite records
+- `work rebuild-compat` is the recovery/reprojection entry point when compatibility files need to be regenerated from sqlite
+- new features should prefer canonical storage/query APIs instead of adding more business logic to `index.json` or `tasks.json`
+
+In other words: keep compatibility JSON readable, but keep decisions and invariants anchored in sqlite.
 
 ## `work/db.sqlite` behavior
 
 - location: repo-local database at `work/db.sqlite`
-- bootstrap: created on first structured-storage access that uses the dual-write adapter
-- role: normalized mirror for structured workflow state
-- failure model: bootstrap/mirror failures are recorded as sqlite mirror state, but do not replace filesystem truth
+- bootstrap: created on first sqlite-backed structured-storage access or via `work init --sqlite`
+- role: canonical structured store for workspace/workstream state
+- write model: canonical writes must succeed in sqlite before compatibility projections are updated
+- rebuild model: compatibility JSON can be regenerated from sqlite when inspection or rollback workflows need it
+- read model: canonical readers use sqlite first; some compatibility helpers still fall back to projections while migration cleanup remains in progress
 
-This makes sqlite useful immediately for schema validation, parity inspection, and migration rehearsals without forcing an early read-path cutover.
+This makes sqlite the operational source of truth while preserving deterministic compatibility outputs for the remaining file-shaped surfaces.
 
 ## Version-control expectations
 
@@ -78,45 +90,45 @@ This makes sqlite useful immediately for schema validation, parity inspection, a
 - this repository already ignores `work/`, so the sqlite file is not expected to be committed
 - if ignore rules become more selective later, `work/db.sqlite` should still remain ignored by default
 
-The durable, reviewable artifacts remain the markdown documents plus the canonical filesystem state that current workflows already inspect.
+The durable, reviewable artifacts remain the markdown documents and other user-authored files under each workstream directory.
 
 ## Why this helps the future server-backed path
 
-The migration path is:
+The migration path is now:
 
-1. keep the filesystem workflow stable
-2. mirror structured state into sqlite through adapter-backed writes
-3. validate parity on the structured subset
-4. tighten the structured-storage contract
-5. later swap sqlite for a different structured backend, or promote the structured backend to canonical reads, without moving markdown/resources into the database
+1. keep the repo-local file/document workflow stable
+2. make sqlite canonical for structured workflow state
+3. preserve compatibility JSON as projections for remaining callers and rollback-safe inspection
+4. tighten the structured storage/query contract around the sqlite-backed model
+5. later swap sqlite for another structured backend without moving markdown/resources into the database
 
 That means future server-backed storage work can focus on the structured adapter surface and synchronization strategy, while the file-oriented workstream directory remains the authoring and artifact boundary unless a separate document/object-storage migration is intentionally designed.
 
 ## Deferred follow-up map
 
-The dual-write migration is intentionally incomplete. The next storage/server workstream should treat the following items as the remaining cutover backlog.
+The sqlite cutover is intentionally incomplete. The remaining backlog is about cleaning up compatibility surfaces and preparing a broader backend contract.
 
-### 1. Gates before DB-canonical reads
+### 1. Gates before removing compatibility-first fallback behavior
 
-Do not flip canonical reads from filesystem state to sqlite until all of the following are true:
+Do not remove compatibility projections or remaining fallback reads until all of the following are true:
 
 - CLI, dashboard, and server read paths stop depending on direct filesystem helpers such as `loadIndex`, `readTasksFile`, `getTasks`, `getTaskCounts`, and `getEffectiveRuntimeSummary`, and instead read through stable storage/query interfaces.
-- parity coverage proves that hierarchy reads, approvals, task updates, thread-session lifecycle, batch-run lifecycle, supervision lifecycle, reset/recovery flows, and revision/fix flows produce the same persisted outcomes from both sides of the adapter boundary.
-- sqlite divergence handling is explicit: bootstrap/migration failures, stale mirrors, and repair/rebuild flows must be detectable and testable before sqlite becomes the source of truth.
+- parity/rebuild coverage proves that hierarchy reads, approvals, task updates, thread-session lifecycle, batch-run lifecycle, supervision lifecycle, reset/recovery flows, and revision/fix flows produce the expected persisted outcomes from canonical sqlite state.
+- sqlite divergence handling is explicit: bootstrap failures, stale projections, and repair/rebuild flows must be detectable and testable.
 - convenience projections such as `runtime_summary`, `active_run_id`, and `current_branch_supervision` are either rebuilt from canonical structured records or removed as independent read dependencies.
 
-### 2. Remaining `tasks.json` cleanup
+### 2. Remaining compatibility JSON cleanup
 
-The current codebase still carries filesystem-shaped mutation logic that must move behind storage-level APIs before a canonical-read cutover:
+The current codebase still carries file-shaped logic that should keep shrinking even though sqlite is canonical:
 
-- replace raw `tasks.json` surgery in `packages/workstreams/src/lib/fix.ts` and related recovery/reset paths with storage mutations over canonical task, approval, batch-run, and supervision records.
-- remove compatibility path aliases like `getThreadsFilePath`, `getBatchStatusFilePath`, and `getSupervisorStateFilePath` once callers stop treating `tasks.json` as multiple pseudo-files.
+- replace raw compatibility-file surgery in `packages/workstreams/src/lib/fix.ts` and related recovery/reset paths with storage mutations over canonical task, approval, batch-run, and supervision records.
+- remove compatibility path aliases like `getThreadsFilePath`, `getBatchStatusFilePath`, and `getSupervisorStateFilePath` once callers stop treating projections as multiple pseudo-files.
 - finish migrating read-model consumers that still import `index.ts` / `tasks.ts` helpers directly, especially CLI status/list/tree/supervise flows, batch monitors, and server snapshot helpers.
-- demote legacy compatibility artifacts (`threads.json`, `supervisor-state.json`, `batch-status/*.json`) to one-time migration inputs only, then remove fallback rewrites once no runtime path depends on them.
+- decide when `threads.json`, `supervisor-state.json`, and `batch-status/*.json` stop being runtime compatibility outputs and become migration-only inputs or are removed entirely.
 
 ### 3. Supervision and runtime-state normalization still deferred
 
-Sqlite currently mirrors some supervision structures through JSON blobs or convenience pointers that should become cleaner relational state before broader backend work:
+Sqlite still carries some supervision structures through JSON blobs or convenience pointers that should become cleaner relational state before broader backend work:
 
 - normalize `reviewed_batches`, `issue_summaries`, `fix_cycles`, `escalations`, `stage_stops`, `branch_sessions`, and `checkpoint_pointers` as first-class records for both sqlite-authoritative and service-backed implementations.
 - convert relationship arrays such as `reviewed_batches.threadIds`, `reviewed_batches.issueSummaryIds`, and `fix_cycles.issueSummaryIds` into explicit join tables/relations.
@@ -125,9 +137,17 @@ Sqlite currently mirrors some supervision structures through JSON blobs or conve
 
 ### 4. Service-backed architecture follow-up
 
-Once the cleanup above is done, the next architecture step is not “use sqlite everywhere,” but “stabilize the contract that any structured backend can implement”:
+Once the cleanup above is done, the next architecture step is not “replace files with sqlite everywhere,” but “stabilize the contract that any structured backend can implement”:
 
 - extract stable storage-core mutation/query contracts from `packages/workstreams` only after the remaining direct helper dependencies are gone.
 - keep filesystem/document artifacts as file- or object-backed resources, with structured backends storing only `storage_root` and the minimal path metadata needed to locate them.
 - design explicit multi-writer semantics for a future daemon/server path: concurrency control, revision/version checks, sync/rebuild flows, and auth boundaries are new requirements that the local-first embedded sqlite phase does not solve.
 - make the dashboard/server read models consume storage/query interfaces rather than repo-local file helpers so the same read contract works for embedded sqlite and remote service-backed storage.
+
+### 5. Permanent legacy-file removal remains deferred
+
+This workstream does **not** remove every legacy file surface forever.
+
+- keep `index.json` and `tasks.json` available as compatibility projections until external scripts, tests, and operator flows no longer rely on them
+- treat permanent deletion of legacy runtime JSON and any broader on-disk cleanup as a separate follow-up with an explicit rollout plan
+- remote storage or daemon-backed operation is also deferred; the sqlite-authoritative model only defines the local-first structured contract that follow-up work can build on

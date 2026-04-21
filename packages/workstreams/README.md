@@ -13,7 +13,7 @@ bun install -g @agenv/workstreams
 ## Quick Start
 
 ```bash
-work init
+work init --sqlite
 work create --name "my-feature"
 work current --set "001-my-feature"
 work validate requirements
@@ -58,7 +58,7 @@ Generated files on `work create`:
 - `REQUIREMENTS.md` for the human-authored summary, deliverables, dependencies, and resources
 - `resources/` for supplemental inputs referenced from `REQUIREMENTS.md`
 - `PLAN.md` for staged execution planning
-- `tasks.json` for machine state
+- `tasks.json` compatibility JSON for projected machine state
 - `docs/` for extra workstream notes
 
 ## Useful Commands
@@ -76,8 +76,87 @@ work report metrics --blockers
 work export --format json
 ```
 
+## Sqlite-authoritative bootstrap and migration
+
+For new repositories, prefer sqlite-authoritative initialization:
+
+```bash
+work init --sqlite
+```
+
+That bootstraps `work/db.sqlite` as the canonical structured store. `agents.yaml` and `github.json` are still created on disk, and markdown documents plus `resources/` remain filesystem content.
+
+For an existing repository that already has `work/index.json`, `work/<stream-id>/tasks.json`, or legacy runtime artifacts, run the same command:
+
+```bash
+work init --sqlite
+```
+
+During initialization the CLI hydrates legacy filesystem state into sqlite, keeps the current-stream pointer, imports approval/runtime history, and rewrites compatibility projections when legacy data is present.
+
+After cutover, normal operator commands read canonical sqlite state first:
+
+```bash
+work status
+work tree --batch "01.01"
+work list --tasks --thread "01.01.01"
+work batch-status --batch "01.01" --format json
+```
+
+Rebuild compatibility JSON from sqlite whenever you need fresh `index.json` / `tasks.json` rollback or old-tooling projections:
+
+```bash
+work rebuild-compat
+work rebuild-compat --stream current
+work rebuild-compat --output-root /tmp/sqlite-compat-snapshot
+```
+
+- default rebuild writes `work/index.json` plus projected `work/<stream-id>/tasks.json` files back into the repo
+- `--stream` only refreshes that workstream's `tasks.json`
+- `--output-root` writes a rollback-safe snapshot for `index.json` / `tasks.json` somewhere else so you can inspect the projection before replacing live compatibility files
+- `work rebuild-compat` does not currently rebuild legacy runtime compatibility artifacts like `threads.json`, `supervisor-state.json`, or `batch-status/*.json`
+
+For a direct sqlite-vs-compatibility parity check on one workstream:
+
+```bash
+STREAM_ID=001-my-feature bun --eval '
+import { inspectCriticalWorkflowDualWriteParitySync } from "@agenv/workstreams"
+
+const inspection = inspectCriticalWorkflowDualWriteParitySync(process.cwd(), process.env.STREAM_ID)
+console.log(JSON.stringify({
+  parity: inspection?.parity,
+  summary: inspection?.divergences.summary,
+  intentionalMismatches: inspection?.intentionalMismatches,
+}, null, 2))
+'
+```
+
+Rollback-safe inspection flow:
+
+1. Inspect the live sqlite-backed view with `work status`, `work tree`, `work list`, or `work batch-status`.
+2. Run `work rebuild-compat --output-root /tmp/sqlite-compat-snapshot`.
+3. Inspect `/tmp/sqlite-compat-snapshot/work/index.json` and `/tmp/sqlite-compat-snapshot/work/<stream-id>/tasks.json` without mutating the live repo.
+4. Treat that snapshot as an `index.json` / `tasks.json` compatibility snapshot only; it does not currently include `threads.json`, `supervisor-state.json`, or `batch-status/*.json`.
+5. If you need to hand legacy JSON back to older tooling, rerun `work rebuild-compat` without `--output-root` after you are satisfied with the snapshot.
+
+When legacy files still matter:
+
+- during one-time hydration of pre-sqlite repositories
+- when you need compatibility JSON for rollback drills, audits, or older tooling that still reads `index.json` / `tasks.json`
+- when inspecting a rollback-safe snapshot produced by `work rebuild-compat --output-root ...`
+
+When they do **not** matter:
+
+- for normal sqlite-authoritative command execution after `work init --sqlite` has completed successfully
+- as the source of truth for structured workstream state while `work/db.sqlite` is present and healthy
+- for legacy runtime wrappers like `threads.json` and `supervisor-state.json`, except as migration inputs or explicit compatibility artifacts
+
 ## Storage architecture notes
 
+- `work/db.sqlite` is the canonical structured source of truth in sqlite-authoritative repos.
+- `work/index.json` and `work/<stream-id>/tasks.json` are compatibility projections rebuilt from sqlite for legacy tooling and inspection workflows.
+- Markdown workstream docs, `resources/`, and artifact-like outputs remain filesystem-based.
+- Use `work rebuild-compat` when you need to regenerate compatibility JSON from canonical sqlite state.
 - Local-first sqlite architecture: [`../../docs/LOCAL_FIRST_SQLITE_ARCHITECTURE.md`](../../docs/LOCAL_FIRST_SQLITE_ARCHITECTURE.md)
 - Storage adapter package/refactor recommendation: [`../../docs/STORAGE_PACKAGE_BOUNDARIES.md`](../../docs/STORAGE_PACKAGE_BOUNDARIES.md)
 
@@ -130,7 +209,7 @@ work tree --batch "01.01"
 # 2) persisted execution state for that batch
 work batch-status --batch "01.01" --format json
 
-# 3) canonical tasks.json (includes runtime_state.supervision)
+# 3) projected tasks.json compatibility view (includes runtime_state.supervision)
 cat work/<stream-id>/tasks.json
 ```
 
@@ -154,7 +233,7 @@ Persisted-state note: prefer `tasks.json` runtime ordering/evidence to verify sa
 
 Escalation policy: branch runs escalate to the Root Agent; the Root Agent escalates to the user.
 
-Key persisted file:
+Key projected inspection file:
 
 - `work/<stream-id>/tasks.json` (`tasks[]` plus `runtime_state.{threads,batches,supervision}`)
 

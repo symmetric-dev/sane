@@ -16,15 +16,16 @@ Each stream lives at `work/{stream-id}/`.
 - `REQUIREMENTS.md`: human-authored goals, deliverables, dependencies, and resources
 - `PLAN.md`: structure and intent
 - `TASKS.md`: intermediate task editing file
-- `tasks.json`: machine state, including canonical `runtime_state` for threads, batches, and supervision
-- `threads.json`: legacy migrated thread metadata artifact if present
-- `supervisor-state.json`: legacy migrated supervision artifact if present
+- `tasks.json`: compatibility projection of structured workstream state when projected from sqlite; also a legacy hydration input for pre-sqlite repos
+- `threads.json`: legacy thread metadata artifact if present; kept only for migration/compatibility workflows
+- `supervisor-state.json`: legacy supervision artifact if present; kept only for migration/compatibility workflows
 - `REPORT.md`: completion report input
 - `resources/`: supporting pre-work inputs referenced by `REQUIREMENTS.md`
 
 ## Minimal Lifecycle
 
 ```bash
+work init --sqlite
 work create --name "feature"
 work current --set "001-feature"
 work validate requirements
@@ -68,20 +69,27 @@ work report validate
 
 ## Runtime State
 
-- `tasks.json` is the canonical persisted machine state.
-- `tasks.json -> runtime_state.threads` stores runtime thread/session metadata.
-- `tasks.json -> runtime_state.batches` stores persisted batch execution summaries.
-- `tasks.json -> runtime_state.supervision` stores supervision runs, reviewed batches, fix cycles, escalations, stage stops, and branch supervision metadata.
+- In sqlite-authoritative repos, `work/db.sqlite` is the canonical structured machine state.
+- When `tasks.json` exists, `tasks.json -> runtime_state.threads`, `tasks.json -> runtime_state.batches`, and `tasks.json -> runtime_state.supervision` are compatibility projections rebuilt from sqlite.
 - Legacy `threads.json` and `supervisor-state.json` files may still exist for migration/compatibility, but they are not the primary runtime store.
 
-## Local-First Structured Storage Migration
+## Sqlite-Authoritative Structured Storage
 
-- The current adapter model is **filesystem-authoritative dual-write**.
-- `work/index.json` and `work/<stream-id>/tasks.json` remain canonical during the migration.
-- `work/db.sqlite` is a repo-local sqlite mirror for structured workflow state only.
+- Recommended bootstrap for new and existing repos: `work init --sqlite`.
+- `work/db.sqlite` is the repo-local canonical store for structured workflow state.
+- Running `work init --sqlite` in an existing repo hydrates legacy `index.json`, `tasks.json`, and compatible runtime artifacts into sqlite.
+- `work/index.json` and `work/<stream-id>/tasks.json` become rebuildable compatibility projections instead of the source of truth.
 - Core markdown documents (`REQUIREMENTS.md`, `PLAN.md`, `TASKS.md`, `REPORT.md`) plus `resources/` and artifact-like outputs remain filesystem-based.
-- Sqlite bootstrap or mirror failures must not block canonical filesystem writes.
+- permanent removal of compatibility JSON and any remote/service-backed storage model remain deferred follow-up work.
 - `work/db.sqlite` is local runtime state and is expected to stay out of version control; this repo currently ignores `work/` entirely.
+
+Operator guidance:
+
+- inspect live state with `work status`, `work tree`, `work list --tasks`, and `work batch-status`
+- rebuild `work/index.json` / `work/<stream-id>/tasks.json` compatibility files with `work rebuild-compat` or `work rebuild-compat --stream current`
+- use `work rebuild-compat --output-root /tmp/sqlite-compat-snapshot` for rollback-safe inspection of projected `index.json` / `tasks.json` files before replacing live compatibility files
+- do not expect `work rebuild-compat` snapshots to include legacy runtime compatibility artifacts like `threads.json`, `supervisor-state.json`, or `batch-status/*.json`
+- treat legacy `threads.json` / `supervisor-state.json` as migration inputs or compatibility artifacts only, not as normal runtime authority
 
 See also:
 
