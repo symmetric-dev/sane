@@ -5,7 +5,10 @@ import { join } from "path"
 import { readBatchStatus } from "../src/lib/batch-status.ts"
 import { getWorkstreamStatusSnapshot } from "../src/lib/status.ts"
 import { resolveCurrentBranchSupervisionContext } from "../src/lib/root-agent-branch.ts"
-import { syncStructuredStorageWorkstreamStateToSqlite } from "../src/lib/sqlite-storage.ts"
+import {
+  loadSqliteStructuredStorageWorkstreamState,
+  syncStructuredStorageWorkstreamStateToSqlite,
+} from "../src/lib/sqlite-storage.ts"
 import { createEmptyStructuredStorageWorkstreamState } from "../src/lib/structured-storage.ts"
 import { loadSupervisorState } from "../src/lib/supervisor-state.ts"
 import type { StreamMetadata, TasksFile } from "../src/lib/types.ts"
@@ -243,6 +246,94 @@ function syncCanonicalSqliteState(repoRoot: string, streamId: string): void {
 }
 
 describe("runtime sqlite-backed read model", () => {
+  test("normalizes malformed supervision scope stage ids before sqlite stage inference", () => {
+    const workspace = createTestWorkstream("001-runtime-sqlite-stage-scope-normalization")
+
+    try {
+      writeIndex(workspace.repoRoot, workspace.streamId, workspace.streamId)
+
+      const now = "2026-04-20T01:00:00.000Z"
+      const malformedStageLabel =
+        "Stage 01: Lock the canonical bet_identity contract and cutover boundary"
+      const state = createEmptyStructuredStorageWorkstreamState(workspace.streamId)
+      state.hierarchy = {
+        stages: [{ id: "01", number: 1, name: "Lock the canonical bet_identity contract and cutover boundary" }],
+        batches: [{ id: "01.01", stageId: "01", number: 1, name: "Batch 01" }],
+        threads: [{ id: "01.01.01", stageId: "01", batchId: "01.01", number: 1, name: "Thread 01" }],
+        tasks: [
+          {
+            id: "01.01.01.01",
+            stageId: "01",
+            batchId: "01.01",
+            threadId: "01.01.01",
+            number: 1,
+            name: "Runtime-backed task",
+            status: "pending",
+            createdAt: now,
+            updatedAt: now,
+          },
+        ],
+      }
+      state.supervision = {
+        version: "1.0.0",
+        stream_id: workspace.streamId,
+        last_updated: now,
+        current_branch_supervision: {
+          owner: "root_agent",
+          rootSessionId: "root-session-1",
+          branchSessionId: "branch-supervision-1",
+          branchRole: "supervision",
+          nativeSessionId: "ses_supervision_1",
+          source: "native_fork",
+          scope: { level: "stage", stageId: malformedStageLabel },
+          updatedAt: now,
+        },
+        runs: [],
+        checkpoint_pointers: [],
+        branch_sessions: [
+          {
+            owner: "root_agent",
+            rootSessionId: "root-session-1",
+            branchSessionId: "branch-supervision-1",
+            branchRole: "supervision",
+            source: "native_fork",
+            status: "running",
+            startedAt: now,
+            updatedAt: now,
+            nativeSessionId: "ses_supervision_1",
+            batchId: "01.01",
+            scope: { level: "stage", stageId: malformedStageLabel },
+          },
+        ],
+        reviewed_batches: [],
+        issue_summaries: [],
+        fix_cycles: [],
+        escalations: [],
+        stage_stops: [],
+      }
+
+      syncStructuredStorageWorkstreamStateToSqlite(workspace.repoRoot, state)
+
+      const sqliteState = loadSqliteStructuredStorageWorkstreamState(
+        workspace.repoRoot,
+        workspace.streamId,
+      )
+      expect(sqliteState?.hierarchy.stages.map((stage) => stage.id)).toEqual(["01"])
+      expect(loadSupervisorState(workspace.repoRoot, workspace.streamId)).toMatchObject({
+        current_branch_supervision: {
+          scope: { level: "stage", stageId: "01" },
+        },
+        branch_sessions: [
+          {
+            scope: { level: "stage", stageId: "01" },
+          },
+        ],
+      })
+    } finally {
+      cleanupTestWorkstream(workspace)
+    }
+  })
+
   test("batch-status and supervisor snapshots read sqlite-backed canonical state", () => {
     const workspace = createTestWorkstream("001-runtime-sqlite-snapshots")
 

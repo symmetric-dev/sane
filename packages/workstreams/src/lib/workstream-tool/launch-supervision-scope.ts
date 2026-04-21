@@ -1,4 +1,5 @@
 import type { RootAgentBranchScope } from "../types.ts"
+import { normalizeCanonicalStageId } from "../stage-id.ts"
 
 export type BranchLaunchScope = RootAgentBranchScope
 
@@ -95,7 +96,7 @@ export function inferStageIdFromBatchId(batchId?: string): string | undefined {
 
   const [stageId, batchSuffix] = batchId.split(".")
   return stageId && batchSuffix && stageId.length > 0 && batchSuffix.length > 0
-    ? stageId
+    ? normalizeCanonicalStageId(stageId)
     : undefined
 }
 
@@ -126,10 +127,10 @@ export function resolveLaunchScope(args: {
   const target = normalizeOptionalLaunchString(args.target)
 
   if (requestedScope === "stage") {
-    const stageId = target
+    const stageId = normalizeCanonicalStageId(target)
     if (!stageId) {
       throw new Error(
-        "Stage scope requires --target with a stage id (for example: 10).",
+        "Stage scope requires --target with a canonical stage id or stage label (for example: 10 or 'Stage 10: Name').",
       )
     }
 

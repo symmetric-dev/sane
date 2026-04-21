@@ -7,7 +7,10 @@ import {
   parseSupervisionBranchRunOutput,
   shouldBlockDuplicateSupervisionLaunch,
 } from "../src/lib/workstream-tool/launch-supervision.ts"
-import { buildSupervisionPrompt } from "../src/lib/workstream-tool/launch-supervision-scope.ts"
+import {
+  buildSupervisionPrompt,
+  resolveLaunchScope,
+} from "../src/lib/workstream-tool/launch-supervision-scope.ts"
 
 describe("launch supervision duplicate guard", () => {
   test("treats only pending and running statuses as live blockers by status alone", () => {
@@ -109,6 +112,18 @@ describe("collectCompletedBranchArtifacts", () => {
 })
 
 describe("buildSupervisionPrompt", () => {
+  test("canonicalizes labeled stage targets before persistence", () => {
+    expect(
+      resolveLaunchScope({
+        scope: "stage",
+        target: "Stage 01: Lock the canonical bet_identity contract and cutover boundary",
+      }),
+    ).toEqual({
+      level: "stage",
+      stageId: "01",
+    })
+  })
+
   test("adds explicit role reset and anti-launch guardrails for stage-scoped branches", () => {
     const prompt = buildSupervisionPrompt({
       scope: {

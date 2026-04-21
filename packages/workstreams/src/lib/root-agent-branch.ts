@@ -1,5 +1,6 @@
 import { randomUUID } from "crypto"
 import { getResolvedStream, loadIndex } from "./index.ts"
+import { normalizeCanonicalStageId } from "./stage-id.ts"
 import { loadSupervisorState } from "./supervisor-state.ts"
 import type {
   CurrentBranchSupervisionContext,
@@ -44,7 +45,7 @@ function inferStageIdFromBatchId(batchId?: string): string | undefined {
   }
 
   const [stageId] = batchId.split(".")
-  return stageId && stageId.length > 0 ? stageId : undefined
+  return stageId && stageId.length > 0 ? normalizeCanonicalStageId(stageId) : undefined
 }
 
 export function normalizeRootAgentBranchScope(args: {
@@ -59,14 +60,19 @@ export function normalizeRootAgentBranchScope(args: {
   const effectiveBatchId = args.batchId ?? scopeBatchId ?? fallbackBatchId
 
   if (scope?.level === "stage") {
+    const stageId = normalizeCanonicalStageId(scope.stageId)
+    if (!stageId) {
+      return undefined
+    }
+
     return {
       level: "stage",
-      stageId: scope.stageId,
+      stageId,
     }
   }
 
   if (scope?.level === "batch") {
-    const stageId = scope.stageId ?? inferStageIdFromBatchId(effectiveBatchId)
+    const stageId = normalizeCanonicalStageId(scope.stageId) ?? inferStageIdFromBatchId(effectiveBatchId)
     const batchId = effectiveBatchId ?? scope.batchId
 
     if (!stageId || !batchId) {

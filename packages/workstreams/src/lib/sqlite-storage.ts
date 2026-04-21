@@ -2,6 +2,7 @@ import { existsSync, mkdirSync } from "fs"
 import { dirname, join } from "path"
 
 import { Database } from "bun:sqlite"
+import { normalizeCanonicalStageIdOrFallback } from "./stage-id.ts"
 import type {
   StructuredStorageWorkspaceState,
   StructuredStorageWorkstreamState,
@@ -713,11 +714,12 @@ function inferHierarchy(workstreamState: StructuredStorageWorkstreamState): {
   const tasks = new Map(workstreamState.hierarchy.tasks.map((task) => [task.id, { ...task }] as const))
 
   const ensureStage = (stageId: string, fallbackName?: string): void => {
-    if (stages.has(stageId)) return
-    stages.set(stageId, {
-      id: stageId,
-      number: Number.parseInt(stageId, 10) || 0,
-      name: fallbackName ?? `Stage ${stageId}`,
+    const canonicalStageId = normalizeCanonicalStageIdOrFallback(stageId)
+    if (!canonicalStageId || stages.has(canonicalStageId)) return
+    stages.set(canonicalStageId, {
+      id: canonicalStageId,
+      number: Number.parseInt(canonicalStageId, 10) || 0,
+      name: fallbackName ?? `Stage ${canonicalStageId}`,
     })
   }
 

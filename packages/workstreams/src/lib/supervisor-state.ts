@@ -21,6 +21,7 @@ import {
   projectLegacyRuntimeCompatibilityArtifactsSync,
   replaceStructuredSupervisorStateSync,
 } from "./storage-adapter.ts"
+import { normalizeCanonicalStageId } from "./stage-id.ts"
 import { replaceStructuredSupervisionState } from "./structured-storage.ts"
 import { getTasksFilePath, normalizeSupervisorState } from "./tasks.ts"
 
@@ -30,24 +31,35 @@ function inferStageIdFromBatchId(batchId?: string): string | undefined {
   }
 
   const [stageId] = batchId.split(".")
-  return stageId && stageId.length > 0 ? stageId : undefined
+  return stageId && stageId.length > 0 ? normalizeCanonicalStageId(stageId) : undefined
 }
 
 function normalizeBranchScope(scope?: RootAgentBranchScope, batchId?: string): RootAgentBranchScope | undefined {
   const effectiveBatchId = batchId ?? (scope?.level === "batch" ? scope.batchId : undefined)
 
   if (scope?.level === "stage") {
+    const stageId = normalizeCanonicalStageId(scope.stageId)
+    if (!stageId) {
+      return undefined
+    }
+
     return {
       level: "stage",
-      stageId: scope.stageId,
+      stageId,
     }
   }
 
   if (scope?.level === "batch") {
+    const stageId = normalizeCanonicalStageId(scope.stageId) ?? inferStageIdFromBatchId(effectiveBatchId)
+    const normalizedBatchId = effectiveBatchId ?? scope.batchId
+    if (!stageId || !normalizedBatchId) {
+      return undefined
+    }
+
     return {
       level: "batch",
-      stageId: scope.stageId,
-      batchId: effectiveBatchId ?? scope.batchId,
+      stageId,
+      batchId: normalizedBatchId,
     }
   }
 
