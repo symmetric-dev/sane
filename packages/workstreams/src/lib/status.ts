@@ -22,7 +22,8 @@ import type {
   WorkstreamStatusStageSummary,
   WorkstreamRuntimeBatchSummary,
 } from "./types.ts"
-import { getEffectiveRuntimeSummary, getTasks, getTaskCounts, readTasksFile } from "./tasks.ts"
+import { queryTasksForWorkstream } from "./hierarchy-query.ts"
+import { getEffectiveRuntimeSummary, getTasks, readTasksFile } from "./tasks.ts"
 import { getStageApprovalStatus } from "./approval.ts"
 
 // Re-export ParsedStage for backwards compatibility during migration
@@ -104,7 +105,7 @@ export function computeStreamStatus(
   repoRoot: string,
   stream: StreamMetadata
 ): StreamStatus {
-  return computeStreamStatusFromCounts(stream, getTaskCounts(repoRoot, stream.id))
+  return computeStreamStatusFromCounts(stream, getTaskStatusCountsForTasks(queryTasksForWorkstream(repoRoot, stream.id)))
 }
 
 /**
@@ -355,7 +356,7 @@ export function getWorkstreamStatusSnapshot(
   const tasksFile = readTasksFile(repoRoot, stream.id)
   return createWorkstreamStatusSnapshot({
     stream,
-    tasks: tasksFile?.tasks ?? [],
+    tasks: queryTasksForWorkstream(repoRoot, stream.id),
     runtimeSummary: getEffectiveRuntimeSummary(repoRoot, stream.id, tasksFile),
     currentStreamId,
   })

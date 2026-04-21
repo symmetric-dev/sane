@@ -6,7 +6,8 @@
 
 import { getRepoRoot } from "../lib/repo.ts"
 import { loadIndex, getResolvedStream } from "../lib/index.ts"
-import { getEffectiveRuntimeSummary, getTasks, groupTasks, readTasksFile } from "../lib/tasks.ts"
+import { queryTasksForWorkstream } from "../lib/hierarchy-query.ts"
+import { getEffectiveRuntimeSummary, groupTasks, readTasksFile } from "../lib/tasks.ts"
 import type { Task, TaskStatus } from "../lib/types.ts"
 
 interface ListCliArgs {
@@ -347,7 +348,7 @@ export function main(argv: string[] = process.argv): void {
   }
 
   // Get tasks
-  let tasks = getTasks(repoRoot, stream.id, cliArgs.status)
+  let tasks = queryTasksForWorkstream(repoRoot, stream.id, cliArgs.status)
 
   // Apply filters
   if (cliArgs.stage !== undefined) {

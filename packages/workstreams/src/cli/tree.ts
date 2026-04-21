@@ -6,6 +6,7 @@
 
 import { getRepoRoot } from "../lib/repo.ts"
 import { loadIndex, getResolvedStream } from "../lib/index.ts"
+import { queryTasksForWorkstream } from "../lib/hierarchy-query.ts"
 import { getEffectiveRuntimeSummary, readTasksFile } from "../lib/tasks.ts"
 import { buildWorkstreamTreeSnapshot, filterTasksForBatch, renderWorkstreamTree } from "../lib/tree.ts"
 
@@ -116,7 +117,7 @@ export function main(argv: string[] = process.argv): void {
   }
 
   const tasksFile = readTasksFile(repoRoot, stream.id)
-  const allTasks = tasksFile?.tasks ?? []
+  const allTasks = queryTasksForWorkstream(repoRoot, stream.id)
   if (allTasks.length === 0) {
     console.log(`Workstream: ${stream.id} (Empty)`)
     return

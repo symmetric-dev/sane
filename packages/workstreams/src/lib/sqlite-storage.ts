@@ -514,6 +514,43 @@ function parseMetadataJson<T>(raw: string, context: string): T {
   }
 }
 
+export function loadSqliteStructuredStorageWorkspaceState(
+  repoRoot: string,
+): StructuredStorageWorkspaceState | null {
+  const databasePath = getSqliteStructuredStoragePath(repoRoot)
+  if (!existsSync(databasePath)) {
+    return null
+  }
+
+  const database = new Database(databasePath, { readonly: true })
+
+  try {
+    const workspaceRow = database
+      .query<{ current_stream_id: string | null }, []>(
+        "SELECT current_stream_id FROM workspace_state WHERE singleton_id = 1 LIMIT 1",
+      )
+      .get()
+    const workstreams = database
+      .query<{ metadata_json: string }, []>(
+        "SELECT metadata_json FROM workstreams ORDER BY order_index, stream_id",
+      )
+      .all()
+      .map((row) =>
+        parseMetadataJson<StructuredStorageWorkspaceState["workstreams"][number]>(
+          row.metadata_json,
+          "workstreams",
+        )
+      )
+
+    return {
+      ...(workspaceRow?.current_stream_id ? { currentStreamId: workspaceRow.current_stream_id } : {}),
+      workstreams,
+    }
+  } finally {
+    database.close()
+  }
+}
+
 function normalizeSessionRecord(session: SessionRecord): SessionRecord {
   return {
     sessionId: session.sessionId,

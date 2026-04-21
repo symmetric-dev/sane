@@ -8,9 +8,14 @@
 import {
   findStream,
   getCurrentStreamId,
-  loadIndex,
   resolveStreamId,
 } from "../lib/index.ts"
+import {
+  createCompatibilityIndexFromWorkspaceState,
+  createStreamMetadataFromWorkspaceStateRecord,
+  loadCanonicalWorkspaceState,
+  resolveWorkspaceStateStreamRecord,
+} from "../lib/workspace-read-model.ts"
 import {
   createWorkstreamStatusSnapshot,
   getRuntimeSummaryEntries,
@@ -41,6 +46,7 @@ import type {
   WorkstreamStatusRuntimeSummaryProjection,
   WorkstreamStatusSnapshot,
 } from "../lib/types.ts"
+import type { StructuredStorageWorkspaceState } from "../lib/structured-storage.ts"
 import type {
   WorkstreamTreeBatchNode,
   WorkstreamTreeBatchRuntimeOverlay,
@@ -58,6 +64,7 @@ import type {
 
 export interface ResolvedWorkstreamReadTarget {
   index: WorkIndex
+  workspaceState: StructuredStorageWorkspaceState
   currentStreamId?: string
   stream: StreamMetadata
 }
@@ -85,6 +92,25 @@ export function resolveWorkstreamReadTargetFromIndex(
 
   return {
     index,
+    workspaceState: {
+      ...(currentStreamId ? { currentStreamId } : {}),
+      workstreams: index.streams.map((stream) => ({
+        id: stream.id,
+        name: stream.name,
+        order: stream.order,
+        size: stream.size,
+        createdAt: stream.created_at,
+        updatedAt: stream.updated_at,
+        storageRoot: stream.path,
+        ...(stream.status ? { manualStatus: stream.status } : {}),
+        ...(stream.current_batch ? { currentBatch: stream.current_batch } : {}),
+        generatedBy: stream.generated_by,
+        sessionEstimated: stream.session_estimated,
+        ...(stream.files ? { files: [...stream.files] } : {}),
+        ...(stream.planningSession ? { planningSession: { ...stream.planningSession } } : {}),
+        ...(stream.github ? { github: { ...stream.github } } : {}),
+      })),
+    },
     ...(currentStreamId ? { currentStreamId } : {}),
     stream,
   }
@@ -94,7 +120,27 @@ export function resolveWorkstreamReadTarget(
   repoRoot: string,
   streamIdOrName?: string,
 ): ResolvedWorkstreamReadTarget {
-  return resolveWorkstreamReadTargetFromIndex(loadIndex(repoRoot), streamIdOrName)
+  const workspaceState = loadCanonicalWorkspaceState(repoRoot)
+  const currentStreamId = workspaceState.currentStreamId
+  const resolvedStreamIdOrName = streamIdOrName === "current"
+    ? currentStreamId
+    : streamIdOrName ?? currentStreamId
+
+  if (!resolvedStreamIdOrName) {
+    throw new Error("No current workstream is set")
+  }
+
+  const streamRecord = resolveWorkspaceStateStreamRecord(workspaceState, resolvedStreamIdOrName)
+  if (!streamRecord) {
+    throw new Error(`Workstream "${resolvedStreamIdOrName}" not found`)
+  }
+
+  return {
+    index: createCompatibilityIndexFromWorkspaceState(workspaceState),
+    workspaceState,
+    ...(currentStreamId ? { currentStreamId } : {}),
+    stream: createStreamMetadataFromWorkspaceStateRecord(streamRecord),
+  }
 }
 
 export function getResolvedRuntimeSummary(

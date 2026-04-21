@@ -5,13 +5,16 @@
  */
 
 import { getRepoRoot } from "../lib/repo.ts"
-import { loadIndex, resolveStreamId } from "../lib/index.ts"
 import {
   formatSessionHistory,
   formatStatusSnapshot,
   getWorkstreamStatusSnapshot,
   statusSnapshotToStreamProgress,
 } from "../lib/status.ts"
+import {
+  createStreamMetadataFromWorkspaceStateRecord,
+  loadCanonicalWorkspaceState,
+} from "../lib/workspace-read-model.ts"
 
 interface StatusCliArgs {
   repoRoot?: string
@@ -115,35 +118,38 @@ export function main(argv: string[] = process.argv): void {
     process.exit(1)
   }
 
-  let index
+  let workspaceState
   try {
-    index = loadIndex(repoRoot)
+    workspaceState = loadCanonicalWorkspaceState(repoRoot)
   } catch (e) {
     console.error((e as Error).message)
     process.exit(1)
   }
 
-  if (index.streams.length === 0) {
+  if (workspaceState.workstreams.length === 0) {
     console.log("No workstreams found.")
     return
   }
 
   // Resolve stream ID: explicit > current > all
-  const resolvedStreamId = resolveStreamId(index, cliArgs.streamId)
+  const resolvedStreamIdOrName = cliArgs.streamId === "current"
+    ? workspaceState.currentStreamId
+    : cliArgs.streamId ?? workspaceState.currentStreamId
 
-  const streamsToShow = resolvedStreamId
-    ? index.streams.filter(
-      (s) => s.id === resolvedStreamId || s.name === resolvedStreamId
+  const streamRecordsToShow = resolvedStreamIdOrName
+    ? workspaceState.workstreams.filter(
+      (record) => record.id === resolvedStreamIdOrName || record.name === resolvedStreamIdOrName,
     )
-    : index.streams
+    : workspaceState.workstreams
 
-  if (streamsToShow.length === 0) {
-    console.error(`Error: Workstream "${resolvedStreamId}" not found`)
+  if (streamRecordsToShow.length === 0) {
+    console.error(`Error: Workstream "${resolvedStreamIdOrName}" not found`)
     process.exit(1)
   }
 
-  const snapshotList = streamsToShow.map((stream) => {
-    const snapshot = getWorkstreamStatusSnapshot(repoRoot, stream, index.current_stream)
+  const snapshotList = streamRecordsToShow.map((streamRecord) => {
+    const stream = createStreamMetadataFromWorkspaceStateRecord(streamRecord)
+    const snapshot = getWorkstreamStatusSnapshot(repoRoot, stream, workspaceState.currentStreamId)
     return {
       stream,
       snapshot,

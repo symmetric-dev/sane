@@ -11,6 +11,8 @@ import {
   resolveWorkstreamReadTargetFromIndex,
 } from "../src/internal/server.ts"
 import * as serverHelpers from "../src/internal/server.ts"
+import { syncStructuredStorageWorkspaceStateToSqlite } from "../src/lib/sqlite-storage.ts"
+import { createStructuredStorageWorkstreamRecord } from "../src/lib/structured-storage.ts"
 import type { StreamMetadata, WorkIndex } from "../src/lib/types.ts"
 
 describe("internal server helpers", () => {
@@ -105,6 +107,18 @@ describe("internal server helpers", () => {
 
     const fromIndex = resolveWorkstreamReadTargetFromIndex(resolved.index)
     expect(fromIndex.stream.name).toBe(stream.name)
+  })
+
+  test("resolves the current workstream from sqlite when index.json is absent", async () => {
+    await rm(join(tempDir, "work", "index.json"))
+    syncStructuredStorageWorkspaceStateToSqlite(tempDir, {
+      currentStreamId: stream.id,
+      workstreams: [createStructuredStorageWorkstreamRecord(stream)],
+    })
+
+    const resolved = resolveWorkstreamReadTarget(tempDir)
+    expect(resolved.currentStreamId).toBe(stream.id)
+    expect(resolved.stream.name).toBe(stream.name)
   })
 
   test("reads structured status, tree, and runtime projections", () => {

@@ -6,12 +6,14 @@
 
 import { getRepoRoot } from "../lib/repo.ts"
 import {
-  loadIndex,
-  getCurrentStreamId,
   setCurrentStream,
   clearCurrentStream,
-  getStream,
 } from "../lib/index.ts"
+import {
+  createStreamMetadataFromWorkspaceStateRecord,
+  loadCanonicalWorkspaceState,
+  resolveWorkspaceStateStreamRecord,
+} from "../lib/workspace-read-model.ts"
 
 interface CurrentCliArgs {
   repoRoot?: string
@@ -123,8 +125,8 @@ export function main(argv: string[] = process.argv): void {
     }
 
     // Show current workstream
-    const index = loadIndex(repoRoot)
-    const currentId = getCurrentStreamId(index)
+    const workspaceState = loadCanonicalWorkspaceState(repoRoot)
+    const currentId = workspaceState.currentStreamId
 
     if (!currentId) {
       console.log("No current workstream set")
@@ -132,7 +134,12 @@ export function main(argv: string[] = process.argv): void {
       return
     }
 
-    const stream = getStream(index, currentId)
+    const streamRecord = resolveWorkspaceStateStreamRecord(workspaceState, currentId)
+    if (!streamRecord) {
+      throw new Error(`Workstream "${currentId}" not found`)
+    }
+
+    const stream = createStreamMetadataFromWorkspaceStateRecord(streamRecord)
     console.log(`Current workstream: ${stream.id}`)
     console.log(`   Name: ${stream.name}`)
     console.log(`   Path: ${stream.path}`)
