@@ -1,13 +1,17 @@
 import { describe, expect, test } from "bun:test"
 
 import { Database } from "bun:sqlite"
+import { existsSync } from "fs"
+import { join } from "path"
 
 import { filesystemAuthoritativeSqliteStructuredStorageAdapter } from "../src"
+import { createEmptyStructuredStorageWorkstreamState } from "../src/lib/structured-storage"
 import {
   bootstrapSqliteStructuredStorage,
   getSqliteStructuredStoragePath,
   SQLITE_STRUCTURED_STORAGE_SCHEMA_VERSION,
   SQLITE_STRUCTURED_STORAGE_TABLES,
+  syncStructuredStorageWorkstreamStateToSqlite,
 } from "../src/lib/sqlite-storage"
 import { cleanupTestWorkstream, createTestWorkstream, withTestWorkstream } from "./helpers"
 
@@ -76,5 +80,67 @@ describe("sqlite structured storage bootstrap", () => {
         database.close()
       }
     }, `001-sqlite-adapter-${Date.now()}`)
+  })
+
+  test("waits for transient writer locks instead of failing immediately", async () => {
+    const workspace = createTestWorkstream(`001-sqlite-busy-timeout-${Date.now()}`)
+
+    try {
+      const result = bootstrapSqliteStructuredStorage(workspace.repoRoot)
+      const readyPath = join(workspace.repoRoot, "work", ".sqlite-lock-ready")
+      const holdMs = 350
+      const locker = Bun.spawn(
+        [
+          process.execPath,
+          "-e",
+          [
+            'import { writeFileSync } from "fs"',
+            'import { Database } from "bun:sqlite"',
+            'const db = new Database(process.env.DB_PATH!)',
+            'db.exec("PRAGMA journal_mode = WAL")',
+            'db.exec("BEGIN IMMEDIATE")',
+            'writeFileSync(process.env.READY_PATH!, "ready")',
+            'Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, Number(process.env.HOLD_MS ?? "0"))',
+            'db.exec("COMMIT")',
+            'db.close()',
+          ].join(";"),
+        ],
+        {
+          env: {
+            ...process.env,
+            DB_PATH: result.databasePath,
+            READY_PATH: readyPath,
+            HOLD_MS: String(holdMs),
+          },
+          stdout: "pipe",
+          stderr: "pipe",
+        },
+      )
+
+      try {
+        const timeoutAt = Date.now() + 2_000
+        while (!existsSync(readyPath) && Date.now() < timeoutAt) {
+          await Bun.sleep(10)
+        }
+
+        expect(existsSync(readyPath)).toBeTrue()
+
+        const startedAt = Date.now()
+        syncStructuredStorageWorkstreamStateToSqlite(
+          workspace.repoRoot,
+          createEmptyStructuredStorageWorkstreamState(workspace.streamId),
+        )
+        const elapsedMs = Date.now() - startedAt
+
+        expect(elapsedMs).toBeGreaterThanOrEqual(150)
+      } finally {
+        const exitCode = await locker.exited
+        const stderr = await new Response(locker.stderr).text()
+        const stdout = await new Response(locker.stdout).text()
+        expect({ exitCode, stderr, stdout }).toMatchObject({ exitCode: 0 })
+      }
+    } finally {
+      cleanupTestWorkstream(workspace)
+    }
   })
 })

@@ -3,6 +3,10 @@ import { describe, test, expect, beforeAll, afterAll, beforeEach, afterEach } fr
 import { join } from "path";
 import { existsSync, writeFileSync, mkdirSync, rmSync, readFileSync } from "fs";
 import { loadIndex, saveIndex } from "../src/lib/index.ts";
+import {
+    loadSqliteStructuredStorageWorkstreamState,
+    syncStructuredStorageWorkstreamStateToSqlite,
+} from "../src/lib/sqlite-storage.ts";
 import type { WorkIndex, Task, StreamDocument } from "../src/lib/types.ts";
 import { detectNewStages, generateTasksMdForRevision } from "../src/lib/tasks-md.ts";
 import { appendRevisionStage } from "../src/lib/fix.ts";
@@ -803,6 +807,7 @@ Follow-up details.
                     },
                 },
             };
+            index.streams[0]!.current_batch = "02.01";
             saveIndex(REPO_ROOT, index);
 
             const result = appendRevisionStage(REPO_ROOT, "stream-rev", {
@@ -852,12 +857,14 @@ Follow-up details.
             const updatedIndex = loadIndex(REPO_ROOT);
             expect(updatedIndex.streams[0]!.approval?.stages?.[2]).toBeUndefined();
             expect(updatedIndex.streams[0]!.approval?.stages?.[3]?.status).toBe("approved");
+            expect(updatedIndex.streams[0]!.current_batch).toBe("03.01");
 
             const githubData = JSON.parse(readFileSync(join(streamDir, "github.json"), "utf-8"));
             expect(githubData.stages["02"]).toBeUndefined();
             expect(githubData.stages["03"]?.issue_number).toBe(102);
 
-            const legacyBatchStatus = JSON.parse(readFileSync(join(streamDir, "batch-status", "02.01.json"), "utf-8"));
+            expect(existsSync(join(streamDir, "batch-status", "02.01.json"))).toBe(false);
+            const legacyBatchStatus = JSON.parse(readFileSync(join(streamDir, "batch-status", "03.01.json"), "utf-8"));
             expect(legacyBatchStatus.batchId).toBe("03.01");
             expect(legacyBatchStatus.threads[0]?.threadId).toBe("03.01.01");
             expect(legacyBatchStatus.threads[0]?.firstTaskId).toBe("03.01.01.01");
@@ -868,6 +875,306 @@ Follow-up details.
             expect(legacySupervisorState.runs[0]?.stageId).toBe("03");
             expect(legacySupervisorState.runs[0]?.currentBatchId).toBe("03.01");
             expect(legacySupervisorState.branch_sessions[0]?.threadId).toBe("03.01.01");
+        });
+
+        test("should shift sqlite-canonical revision state and regenerate tasks.json from sqlite", () => {
+            const planPath = join(REPO_ROOT, "work/stream-rev/PLAN.md");
+            const streamDir = join(REPO_ROOT, "work/stream-rev");
+            const now = new Date().toISOString();
+
+            writeFileSync(planPath, `# Plan: Revision Test Stream
+
+## Summary
+Stream summary.
+
+## Stages
+
+### Stage 01: Initial
+
+#### Definition
+Stage definition.
+
+#### Constitution
+Stage constitution.
+
+#### Questions
+- [x] Question 1
+
+#### Batches
+##### Batch 01: Initial Batch
+###### Thread 01: Initial Thread
+**Summary:**
+Thread summary.
+**Details:**
+Thread details.
+
+### Stage 02: Follow Up
+
+#### Definition
+Follow-up definition.
+
+#### Constitution
+Follow-up constitution.
+
+#### Questions
+- [x] Question 2
+
+#### Batches
+##### Batch 01: Follow Up Batch
+###### Thread 01: Follow Up Thread
+**Summary:**
+Follow-up summary.
+**Details:**
+Follow-up details.
+`);
+
+            writeFileSync(
+                join(streamDir, "tasks.json"),
+                JSON.stringify(
+                    {
+                        version: "2.0.0",
+                        stream_id: "stream-rev",
+                        last_updated: now,
+                        runtime_state: {
+                            version: "1.0.0",
+                            last_updated: now,
+                            threads: [],
+                            batches: {},
+                            supervision: {
+                                version: "1.0.0",
+                                stream_id: "stream-rev",
+                                last_updated: now,
+                                runs: [],
+                                checkpoint_pointers: [],
+                                branch_sessions: [],
+                                reviewed_batches: [],
+                                issue_summaries: [],
+                                fix_cycles: [],
+                                escalations: [],
+                                stage_stops: [],
+                            },
+                        },
+                        tasks: [
+                            {
+                                id: "99.99.99.99",
+                                name: "stale task",
+                                stage_name: "stale stage",
+                                batch_name: "stale batch",
+                                thread_name: "stale thread",
+                                status: "pending",
+                                created_at: now,
+                                updated_at: now,
+                            },
+                        ],
+                    },
+                    null,
+                    2,
+                ),
+            );
+
+            syncStructuredStorageWorkstreamStateToSqlite(REPO_ROOT, {
+                streamId: "stream-rev",
+                hierarchy: {
+                    stages: [
+                        { id: "01", number: 1, name: "Initial" },
+                        { id: "02", number: 2, name: "Follow Up" },
+                    ],
+                    batches: [
+                        { id: "01.01", stageId: "01", number: 1, name: "Initial Batch" },
+                        { id: "02.01", stageId: "02", number: 1, name: "Follow Up Batch" },
+                    ],
+                    threads: [
+                        { id: "01.01.01", stageId: "01", batchId: "01.01", number: 1, name: "Initial Thread" },
+                        {
+                            id: "02.01.01",
+                            stageId: "02",
+                            batchId: "02.01",
+                            number: 1,
+                            name: "Follow Up Thread",
+                            promptPath: "prompts/02-follow-up/01-follow-up-batch/follow-up-thread.md",
+                        },
+                    ],
+                    tasks: [
+                        {
+                            id: "01.01.01.01",
+                            stageId: "01",
+                            batchId: "01.01",
+                            threadId: "01.01.01",
+                            number: 1,
+                            name: "Initial task",
+                            status: "completed",
+                            createdAt: now,
+                            updatedAt: now,
+                        },
+                        {
+                            id: "02.01.01.01",
+                            stageId: "02",
+                            batchId: "02.01",
+                            threadId: "02.01.01",
+                            number: 1,
+                            name: "Follow-up task",
+                            status: "pending",
+                            createdAt: now,
+                            updatedAt: now,
+                        },
+                    ],
+                },
+                approvals: [
+                    { streamId: "stream-rev", scope: "plan", status: "approved", approvedAt: now },
+                    { streamId: "stream-rev", scope: "tasks", status: "approved", approvedAt: now, taskCount: 2 },
+                    { streamId: "stream-rev", scope: "stage", stageId: "01", status: "approved", approvedAt: now },
+                    { streamId: "stream-rev", scope: "stage", stageId: "02", status: "approved", approvedAt: now },
+                ],
+                threadRuntime: [
+                    {
+                        threadId: "02.01.01",
+                        currentSessionId: "session-1",
+                        sessions: [
+                            {
+                                sessionId: "session-1",
+                                agentName: "default",
+                                model: "gpt-5.4",
+                                startedAt: now,
+                                status: "running",
+                                lineage: {
+                                    owner: "root_agent",
+                                    rootSessionId: "root-1",
+                                    branchSessionId: "branch-1",
+                                    branchRole: "supervision",
+                                    source: "native_fork",
+                                    scope: { level: "batch", stageId: "02", batchId: "02.01" },
+                                },
+                            },
+                        ],
+                    },
+                ],
+                batchRuns: [
+                    {
+                        version: "1.0.0",
+                        streamId: "stream-rev",
+                        batchId: "02.01",
+                        runId: "02.01-run",
+                        mode: "headless",
+                        status: "running",
+                        startedAt: now,
+                        updatedAt: now,
+                        summary: { total: 1, pending: 0, running: 1, completed: 0, failed: 0 },
+                        threads: [
+                            {
+                                threadId: "02.01.01",
+                                threadName: "Follow Up Thread",
+                                firstTaskId: "02.01.01.01",
+                                status: "running",
+                                updatedAt: now,
+                                currentSessionId: "session-1",
+                            },
+                        ],
+                    },
+                ],
+                supervision: {
+                    version: "1.0.0",
+                    stream_id: "stream-rev",
+                    last_updated: now,
+                    active_run_id: "run-1",
+                    current_branch_supervision: {
+                        owner: "root_agent",
+                        rootSessionId: "root-1",
+                        branchSessionId: "branch-1",
+                        branchRole: "supervision",
+                        source: "native_fork",
+                        nativeSessionId: "native-1",
+                        updatedAt: now,
+                        scope: { level: "batch", stageId: "02", batchId: "02.01" },
+                        supervisionProgress: {
+                            executionMode: "single_batch_run",
+                            currentBatchId: "02.01",
+                        },
+                    },
+                    runs: [
+                        {
+                            runId: "run-1",
+                            stageId: "02",
+                            status: "running",
+                            startedAt: now,
+                            updatedAt: now,
+                            currentBatchId: "02.01",
+                            lastReviewedBatchId: "02.01",
+                            reviewPasses: 1,
+                            issueSummaryIds: [],
+                            escalationIds: [],
+                        },
+                    ],
+                    checkpoint_pointers: [],
+                    branch_sessions: [
+                        {
+                            owner: "root_agent",
+                            rootSessionId: "root-1",
+                            branchSessionId: "branch-1",
+                            branchRole: "supervision",
+                            source: "native_fork",
+                            status: "running",
+                            startedAt: now,
+                            updatedAt: now,
+                            batchId: "02.01",
+                            threadId: "02.01.01",
+                            supervisionProgress: {
+                                executionMode: "single_batch_run",
+                                currentBatchId: "02.01",
+                            },
+                            scope: { level: "batch", stageId: "02", batchId: "02.01" },
+                        },
+                    ],
+                    reviewed_batches: [],
+                    issue_summaries: [],
+                    fix_cycles: [],
+                    escalations: [],
+                    stage_stops: [],
+                },
+            });
+
+            const index = loadIndex(REPO_ROOT);
+            index.streams[0]!.approval = {
+                status: "approved",
+                tasks: { status: "approved", task_count: 2 },
+                stages: {
+                    1: { status: "approved", approved_at: now },
+                    2: { status: "approved", approved_at: now },
+                },
+            };
+            index.streams[0]!.current_batch = "02.01";
+            saveIndex(REPO_ROOT, index);
+
+            const result = appendRevisionStage(REPO_ROOT, "stream-rev", {
+                name: "SQLite Revision",
+                description: "Shift canonical sqlite state.",
+                afterStage: 1,
+            });
+
+            expect(result.success).toBe(true);
+
+            const sqliteState = loadSqliteStructuredStorageWorkstreamState(REPO_ROOT, "stream-rev");
+            expect(sqliteState?.hierarchy.tasks.map((task) => task.id)).toEqual([
+                "01.01.01.01",
+                "03.01.01.01",
+            ]);
+            expect(sqliteState?.batchRuns[0]?.batchId).toBe("03.01");
+            expect(sqliteState?.batchRuns[0]?.threads[0]?.threadId).toBe("03.01.01");
+            expect(sqliteState?.threadRuntime[0]?.threadId).toBe("03.01.01");
+            expect(sqliteState?.threadRuntime[0]?.sessions[0]?.lineage?.scope).toEqual({
+                level: "batch",
+                stageId: "03",
+                batchId: "03.01",
+            });
+            expect(sqliteState?.approvals.find((approval) => approval.scope === "stage" && approval.stageId === "03")?.status).toBe("approved");
+
+            const regeneratedTasksFile = JSON.parse(readFileSync(join(streamDir, "tasks.json"), "utf-8"));
+            expect(regeneratedTasksFile.tasks.some((task: Task) => task.id === "99.99.99.99")).toBe(false);
+            expect(regeneratedTasksFile.tasks.some((task: Task) => task.id === "03.01.01.01")).toBe(true);
+            expect(regeneratedTasksFile.runtime_state.batches["03.01"]?.batchId).toBe("03.01");
+
+            const updatedIndex = loadIndex(REPO_ROOT);
+            expect(updatedIndex.streams[0]!.current_batch).toBe("03.01");
+            expect(updatedIndex.streams[0]!.approval?.stages?.[3]?.status).toBe("approved");
         });
 
         test("should reject insertion after an unapproved stage", () => {

@@ -1,6 +1,4 @@
-import { existsSync, readFileSync, unlinkSync } from "fs"
-import { join } from "path"
-import { atomicWriteFile } from "./index.ts"
+import { existsSync, unlinkSync } from "fs"
 import {
   cleanupCompletionMarkers,
   cleanupResultFiles,
@@ -11,13 +9,15 @@ import {
   getSynthesisOutputPath,
   getWorkingAgentSessionPath,
 } from "./opencode.ts"
-import { getWorkDir } from "./repo.ts"
 import type {
   StructuredTaskRecord,
   StructuredThreadRecord,
   StructuredThreadRuntimeRecord,
 } from "./structured-storage.ts"
-import { modifySqliteCanonicalRuntimeWorkstreamStateSync } from "./storage-adapter.ts"
+import {
+  modifySqliteCanonicalRuntimeWorkstreamStateSync,
+  projectLegacyRuntimeCompatibilityArtifactsSync,
+} from "./storage-adapter.ts"
 import { normalizeSupervisorState } from "./tasks.ts"
 import type {
   CurrentBranchSupervisionContext,
@@ -28,7 +28,6 @@ import type {
   SupervisorStateFile,
   SupervisorReviewedBatch,
   SupervisorStageStop,
-  ThreadsJson,
 } from "./types.ts"
 
 export interface ResetBatchStateResult {
@@ -196,68 +195,6 @@ function cleanupExtraArtifact(filePath: string): boolean {
     return true
   } catch {
     return false
-  }
-}
-
-function getLegacyThreadsFilePath(repoRoot: string, streamId: string): string {
-  return join(getWorkDir(repoRoot), streamId, "threads.json")
-}
-
-function getLegacySupervisorStateFilePath(repoRoot: string, streamId: string): string {
-  return join(getWorkDir(repoRoot), streamId, "supervisor-state.json")
-}
-
-function getLegacyBatchStatusFilePath(repoRoot: string, streamId: string, batchId: string): string {
-  return join(getWorkDir(repoRoot), streamId, "batch-status", `${batchId}.json`)
-}
-
-function readJsonFileIfExists<T>(filePath: string): T | null {
-  if (!existsSync(filePath)) {
-    return null
-  }
-
-  return JSON.parse(readFileSync(filePath, "utf-8")) as T
-}
-
-function writeJsonFile(filePath: string, value: unknown): void {
-  atomicWriteFile(filePath, JSON.stringify(value, null, 2))
-}
-
-function resetLegacyCompatibilityState(args: {
-  repoRoot: string
-  streamId: string
-  batchId: string
-  threadIdSet: Set<string>
-  now: string
-}): void {
-  const { repoRoot, streamId, batchId, threadIdSet, now } = args
-
-  const legacyThreadsPath = getLegacyThreadsFilePath(repoRoot, streamId)
-  const legacyThreads = readJsonFileIfExists<ThreadsJson>(legacyThreadsPath)
-  if (legacyThreads) {
-    const nextThreads = legacyThreads.threads.filter((thread) => !threadIdSet.has(thread.threadId))
-    if (nextThreads.length !== legacyThreads.threads.length) {
-      writeJsonFile(legacyThreadsPath, {
-        ...legacyThreads,
-        stream_id: legacyThreads.stream_id ?? streamId,
-        last_updated: now,
-        threads: nextThreads,
-      })
-    }
-  }
-
-  const legacySupervisorPath = getLegacySupervisorStateFilePath(repoRoot, streamId)
-  const legacySupervisor = readJsonFileIfExists<Partial<SupervisorStateFile>>(legacySupervisorPath)
-  if (legacySupervisor) {
-    writeJsonFile(
-      legacySupervisorPath,
-      pruneBatchSupervisorState(streamId, legacySupervisor, batchId, threadIdSet, now).supervision,
-    )
-  }
-
-  const legacyBatchStatusPath = getLegacyBatchStatusFilePath(repoRoot, streamId, batchId)
-  if (existsSync(legacyBatchStatusPath)) {
-    cleanupExtraArtifact(legacyBatchStatusPath)
   }
 }
 
@@ -513,15 +450,7 @@ export async function resetBatchState(
       }
     } })
 
-  const { now, ...summary } = result
-
-  resetLegacyCompatibilityState({
-    repoRoot,
-    streamId,
-    batchId,
-    threadIdSet: new Set(summary.threadIds),
-    now,
-  })
+  const { now: _now, ...summary } = result
 
   const artifacts = {
     completionMarkersRemoved: cleanupCompletionMarkers(streamId, summary.threadIds),
@@ -543,6 +472,8 @@ export async function resetBatchState(
       artifacts.synthesisLogsRemoved += 1
     }
   }
+
+  projectLegacyRuntimeCompatibilityArtifactsSync({ repoRoot, streamId })
 
   return {
     ...summary,

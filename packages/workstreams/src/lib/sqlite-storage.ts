@@ -24,6 +24,7 @@ import { createEmptySupervisorState } from "./supervisor-state.ts"
 import { createEmptyStructuredStorageWorkstreamState as createEmptyWorkstreamState } from "./structured-storage.ts"
 
 export const SQLITE_STRUCTURED_STORAGE_SCHEMA_VERSION = 1
+const SQLITE_BUSY_TIMEOUT_MS = 5000
 
 export const SQLITE_STRUCTURED_STORAGE_TABLES = [
   "structured_storage_metadata",
@@ -333,12 +334,48 @@ const SCHEMA_STATEMENTS = [
   "CREATE INDEX IF NOT EXISTS idx_supervision_sessions_stream_run_updated ON supervision_sessions(stream_id, run_id, updated_at)",
 ] as const
 
-function getMetadataUpsertStatement(database: Database) {
+function getMetadataInsertIfMissingStatement(database: Database) {
   return database.query(
     `INSERT INTO structured_storage_metadata (key, value, updated_at)
      VALUES (?1, ?2, ?3)
-     ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at`,
+     ON CONFLICT(key) DO NOTHING`,
   )
+}
+
+function configureSqliteStructuredStorageConnection(
+  database: Database,
+  options?: { readonly?: boolean },
+): void {
+  database.exec("PRAGMA foreign_keys = ON")
+  database.exec(`PRAGMA busy_timeout = ${SQLITE_BUSY_TIMEOUT_MS}`)
+
+  if (!options?.readonly) {
+    database.exec("PRAGMA journal_mode = WAL")
+    database.exec("PRAGMA synchronous = NORMAL")
+  }
+}
+
+function hasCurrentSqliteStructuredStorageSchema(database: Database): boolean {
+  const metadataTable = database
+    .query<{ name: string }, []>(
+      `SELECT name
+       FROM sqlite_master
+       WHERE type = 'table' AND name = 'structured_storage_metadata'
+       LIMIT 1`,
+    )
+    .get()
+
+  if (!metadataTable) {
+    return false
+  }
+
+  const schemaVersion = database
+    .query<{ value: string }, [string]>(
+      "SELECT value FROM structured_storage_metadata WHERE key = ?1 LIMIT 1",
+    )
+    .get("schema_version")
+
+  return schemaVersion?.value === String(SQLITE_STRUCTURED_STORAGE_SCHEMA_VERSION)
 }
 
 export function getSqliteStructuredStoragePath(repoRoot: string): string {
@@ -421,7 +458,10 @@ export function openSqliteStructuredStorageDatabase(repoRoot: string): Database 
   const database = new Database(databasePath, { create: true })
 
   try {
-    initializeSqliteStructuredStorageSchema(database, databasePath)
+    configureSqliteStructuredStorageConnection(database)
+    if (!hasCurrentSqliteStructuredStorageSchema(database)) {
+      initializeSqliteStructuredStorageSchema(database, databasePath)
+    }
     return database
   } catch (error) {
     database.close()
@@ -444,11 +484,7 @@ export function bootstrapSqliteStructuredStorage(
 }
 
 function initializeSqliteStructuredStorageSchema(database: Database, databasePath: string): void {
-  database.exec("PRAGMA foreign_keys = ON")
-  database.exec("PRAGMA journal_mode = WAL")
-  database.exec("PRAGMA synchronous = NORMAL")
-
-  database.exec("BEGIN")
+  database.exec("BEGIN IMMEDIATE")
 
   try {
     for (const statement of SCHEMA_STATEMENTS) {
@@ -461,11 +497,11 @@ function initializeSqliteStructuredStorageSchema(database: Database, databasePat
        ON CONFLICT(singleton_id) DO NOTHING`,
     )
 
-    const upsertMetadata = getMetadataUpsertStatement(database)
+    const insertMetadataIfMissing = getMetadataInsertIfMissingStatement(database)
     const now = new Date().toISOString()
 
-    upsertMetadata.run("schema_version", String(SQLITE_STRUCTURED_STORAGE_SCHEMA_VERSION), now)
-    upsertMetadata.run("database_path", databasePath, now)
+    insertMetadataIfMissing.run("schema_version", String(SQLITE_STRUCTURED_STORAGE_SCHEMA_VERSION), now)
+    insertMetadataIfMissing.run("database_path", databasePath, now)
 
     database.exec("COMMIT")
   } catch (error) {
@@ -525,6 +561,7 @@ export function loadSqliteStructuredStorageWorkspaceState(
   }
 
   const database = new Database(databasePath, { readonly: true })
+  configureSqliteStructuredStorageConnection(database, { readonly: true })
 
   try {
     const workspaceRow = database
@@ -1372,7 +1409,7 @@ export function syncStructuredStorageWorkspaceStateToSqlite(
     const transaction = database.transaction((state: StructuredStorageWorkspaceState) => {
       syncWorkspaceRows(database, state)
     })
-    transaction(workspaceState)
+    transaction.immediate(workspaceState)
   } finally {
     database.close()
   }
@@ -1388,7 +1425,7 @@ export function syncStructuredStorageWorkstreamStateToSqlite(
     const transaction = database.transaction((state: StructuredStorageWorkstreamState) => {
       syncWorkstreamRows(database, state)
     })
-    transaction(workstreamState)
+    transaction.immediate(workstreamState)
   } finally {
     database.close()
   }
@@ -1597,7 +1634,7 @@ export function modifySqliteStructuredStorageWorkstreamState<T>(args: {
       }
     })
 
-    return transaction()
+    return transaction.immediate()
   } finally {
     database.close()
   }
@@ -1615,6 +1652,7 @@ export function loadSqliteStructuredStorageWorkstreamState(
   let database: Database
   try {
     database = new Database(databasePath, { readonly: true })
+    configureSqliteStructuredStorageConnection(database, { readonly: true })
   } catch {
     return null
   }
@@ -1642,6 +1680,7 @@ export function loadSqliteCriticalWorkflowParityProjection(
   }
 
   const database = new Database(databasePath, { readonly: true })
+  configureSqliteStructuredStorageConnection(database, { readonly: true })
 
   try {
     const taskRows = database

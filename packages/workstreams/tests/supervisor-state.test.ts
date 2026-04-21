@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test"
-import { existsSync, rmSync, writeFileSync } from "fs"
+import { existsSync, readFileSync, rmSync, writeFileSync } from "fs"
 import { join } from "path"
 import { createBatchStatusFile, writeBatchStatus } from "../src/lib/batch-status"
 import {
@@ -787,6 +787,98 @@ describe("supervisor-state", () => {
     expect(run?.stopReason).toBeUndefined()
     expect(run?.completedAt).toBeUndefined()
     expect(stored?.stage_stops).toHaveLength(0)
+  })
+
+  test("reconcileSupervisorRunsLocked refreshes legacy supervisor compatibility state", async () => {
+    const startedAt = new Date().toISOString()
+
+    await upsertSupervisorRunLocked(workspace.repoRoot, workspace.streamId, {
+      runId: "sup-run-legacy-reconcile",
+      stageId: "01",
+      status: "running",
+      startedAt,
+      updatedAt: startedAt,
+      currentBatchId: "01.01",
+      reviewPasses: 0,
+      issueSummaryIds: [],
+      escalationIds: [],
+    })
+    await setActiveSupervisorRunLocked(workspace.repoRoot, workspace.streamId, "sup-run-legacy-reconcile")
+
+    writeBatchStatus(
+      workspace.repoRoot,
+      workspace.streamId,
+      {
+        ...createBatchStatusFile({
+          streamId: workspace.streamId,
+          batchId: "01.01",
+          threads: [{ threadId: "01.01.01", threadName: "Thread 1", firstTaskId: "01.01.01.01" }],
+          startedAt,
+          runId: "batch-run-legacy-reconcile",
+        }),
+        status: "completed",
+        updatedAt: startedAt,
+        completedAt: startedAt,
+        summary: { total: 1, pending: 0, running: 0, completed: 1, failed: 0 },
+        threads: [
+          {
+            threadId: "01.01.01",
+            threadName: "Thread 1",
+            firstTaskId: "01.01.01.01",
+            status: "completed",
+            updatedAt: startedAt,
+            completedAt: startedAt,
+          },
+        ],
+      },
+    )
+
+    writeFileSync(
+      join(workspace.workDir, "supervisor-state.json"),
+      JSON.stringify(
+        {
+          version: "1.0.0",
+          stream_id: workspace.streamId,
+          last_updated: startedAt,
+          active_run_id: "sup-run-legacy-reconcile",
+          runs: [
+            {
+              runId: "sup-run-legacy-reconcile",
+              stageId: "01",
+              status: "running",
+              startedAt,
+              updatedAt: startedAt,
+              currentBatchId: "01.01",
+              reviewPasses: 0,
+              issueSummaryIds: [],
+              escalationIds: [],
+            },
+          ],
+          checkpoint_pointers: [],
+          branch_sessions: [],
+          reviewed_batches: [],
+          issue_summaries: [],
+          fix_cycles: [],
+          escalations: [],
+          stage_stops: [],
+        },
+        null,
+        2,
+      ),
+    )
+
+    await reconcileSupervisorRunsLocked(workspace.repoRoot, workspace.streamId)
+
+    const legacySupervisor = JSON.parse(
+      readFileSync(join(workspace.workDir, "supervisor-state.json"), "utf-8"),
+    ) as {
+      active_run_id?: string
+      runs: Array<{ runId: string; status: string }>
+    }
+    expect(legacySupervisor.active_run_id).toBeUndefined()
+    expect(legacySupervisor.runs.find((run) => run.runId === "sup-run-legacy-reconcile")?.status).toBe(
+      "paused",
+    )
   })
 
   test("supervisor state persists retry and re-review links for a batch fix cycle", async () => {

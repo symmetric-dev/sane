@@ -2,15 +2,22 @@
  * Fix stage generation logic
  */
 
-import { existsSync, readFileSync, readdirSync, renameSync, writeFileSync } from "fs"
+import { existsSync, mkdirSync, readFileSync, readdirSync, renameSync, rmSync, writeFileSync } from "fs"
 import { join } from "path"
 import { getStreamPlanMdPath } from "./consolidate.ts"
 import { queryStageApprovalStatus } from "./approval.ts"
 import { getWorkstreamGitHubPath } from "./github/workstream-github.ts"
-import { loadIndex, saveIndex } from "./index.ts"
+import { atomicWriteFile, loadIndex, saveIndex } from "./index.ts"
 import { generateAllPrompts } from "./prompts.ts"
 import { getWorkDir } from "./repo.ts"
+import {
+  loadStructuredWorkspaceStateSync,
+  loadStructuredWorkstreamStateSync,
+  replaceStructuredWorkspaceStateSync,
+  replaceStructuredWorkstreamStateSync,
+} from "./storage-adapter.ts"
 import { parseStreamDocument } from "./stream-parser.ts"
+import { createEmptyStructuredStorageWorkstreamState } from "./structured-storage.ts"
 import {
   formatTaskId,
   formatThreadId,
@@ -18,9 +25,11 @@ import {
   normalizeRuntimeState,
   parseTaskId,
   parseThreadId,
+  readTasksFile,
   writeTasksFile,
 } from "./tasks.ts"
-import type { ConsolidateError, TasksFile } from "./types.ts"
+import type { ConsolidateError, RootAgentLineage, TasksFile, ThreadsJson } from "./types.ts"
+import type { StructuredStorageWorkstreamState } from "./structured-storage.ts"
 
 export interface FixStageOptions {
   targetStage: number
@@ -226,6 +235,272 @@ function renamePromptStageDirectories(
     }
 
     renameSync(oldPath, newPath)
+  }
+}
+
+function shiftRootAgentLineage(
+  lineage: RootAgentLineage | undefined,
+  afterStage: number,
+): RootAgentLineage | undefined {
+  if (!lineage) {
+    return lineage
+  }
+
+  return {
+    ...lineage,
+    ...(lineage.scope ? { scope: shiftBranchScopeIdentifiers(lineage.scope, afterStage) } : {}),
+  }
+}
+
+function shiftStructuredWorkstreamStateIdentifiers(
+  workstreamState: StructuredStorageWorkstreamState,
+  afterStage: number,
+  promptStageDirNames: Map<number, { oldDir: string; newDir: string }>,
+): void {
+  workstreamState.hierarchy.stages = workstreamState.hierarchy.stages
+    .map((stage) => ({
+      ...stage,
+      id: shiftStageIdentifier(stage.id, afterStage) ?? stage.id,
+      number: stage.number > afterStage ? stage.number + 1 : stage.number,
+    }))
+    .sort((a, b) => a.id.localeCompare(b.id, undefined, { numeric: true }))
+
+  workstreamState.hierarchy.batches = workstreamState.hierarchy.batches
+    .map((batch) => ({
+      ...batch,
+      id: shiftHierarchicalIdentifier(batch.id, afterStage, 2) ?? batch.id,
+      stageId: shiftStageIdentifier(batch.stageId, afterStage) ?? batch.stageId,
+    }))
+    .sort((a, b) => a.id.localeCompare(b.id, undefined, { numeric: true }))
+
+  workstreamState.hierarchy.threads = workstreamState.hierarchy.threads
+    .map((thread) => {
+      const stageNumber = parseInt(thread.stageId, 10)
+      return {
+        ...thread,
+        id: shiftHierarchicalIdentifier(thread.id, afterStage, 3) ?? thread.id,
+        stageId: shiftStageIdentifier(thread.stageId, afterStage) ?? thread.stageId,
+        batchId: shiftHierarchicalIdentifier(thread.batchId, afterStage, 2) ?? thread.batchId,
+        ...(thread.promptPath && !isNaN(stageNumber)
+          ? { promptPath: shiftPromptPath(thread.promptPath, promptStageDirNames, stageNumber) }
+          : {}),
+      }
+    })
+    .sort((a, b) => a.id.localeCompare(b.id, undefined, { numeric: true }))
+
+  workstreamState.hierarchy.tasks = workstreamState.hierarchy.tasks
+    .map((task) => ({
+      ...task,
+      id: shiftHierarchicalIdentifier(task.id, afterStage, 4) ?? task.id,
+      stageId: shiftStageIdentifier(task.stageId, afterStage) ?? task.stageId,
+      batchId: shiftHierarchicalIdentifier(task.batchId, afterStage, 2) ?? task.batchId,
+      threadId: shiftHierarchicalIdentifier(task.threadId, afterStage, 3) ?? task.threadId,
+    }))
+    .sort((a, b) => a.id.localeCompare(b.id, undefined, { numeric: true }))
+
+  workstreamState.approvals = workstreamState.approvals
+    .map((approval) => ({
+      ...approval,
+      ...(approval.stageId
+        ? { stageId: shiftStageIdentifier(approval.stageId, afterStage) ?? approval.stageId }
+        : {}),
+    }))
+    .sort((a, b) => {
+      const scopeOrder = a.scope.localeCompare(b.scope)
+      if (scopeOrder !== 0) return scopeOrder
+      return (a.stageId ?? "").localeCompare(b.stageId ?? "", undefined, { numeric: true })
+    })
+
+  workstreamState.threadRuntime = workstreamState.threadRuntime
+    .map((thread) => ({
+      ...thread,
+      threadId: shiftHierarchicalIdentifier(thread.threadId, afterStage, 3) ?? thread.threadId,
+      sessions: thread.sessions.map((session) => ({
+        ...session,
+        ...(session.lineage ? { lineage: shiftRootAgentLineage(session.lineage, afterStage) } : {}),
+      })),
+    }))
+    .sort((a, b) => a.threadId.localeCompare(b.threadId, undefined, { numeric: true }))
+
+  workstreamState.batchRuns = workstreamState.batchRuns
+    .map((batchRun) => ({
+      ...batchRun,
+      batchId: shiftHierarchicalIdentifier(batchRun.batchId, afterStage, 2) ?? batchRun.batchId,
+      threads: batchRun.threads.map((thread) => ({
+        ...thread,
+        threadId: shiftHierarchicalIdentifier(thread.threadId, afterStage, 3) ?? thread.threadId,
+        firstTaskId:
+          shiftHierarchicalIdentifier(thread.firstTaskId, afterStage, 4) ?? thread.firstTaskId,
+      })),
+    }))
+    .sort((a, b) => a.batchId.localeCompare(b.batchId, undefined, { numeric: true }))
+
+  const supervision = workstreamState.supervision
+  workstreamState.supervision = {
+    ...supervision,
+    ...(supervision.current_branch_supervision
+      ? {
+          current_branch_supervision: {
+            ...supervision.current_branch_supervision,
+            ...(supervision.current_branch_supervision.scope
+              ? {
+                  scope: shiftBranchScopeIdentifiers(
+                    supervision.current_branch_supervision.scope,
+                    afterStage,
+                  ),
+                }
+              : {}),
+            ...(supervision.current_branch_supervision.supervisionProgress
+              ? {
+                  supervisionProgress: shiftSupervisionProgressIdentifiers(
+                    supervision.current_branch_supervision.supervisionProgress,
+                    afterStage,
+                  ),
+                }
+              : {}),
+          },
+        }
+      : {}),
+    runs: supervision.runs.map((run) => ({
+      ...run,
+      stageId: shiftStageIdentifier(run.stageId, afterStage) ?? run.stageId,
+      ...(run.currentBatchId
+        ? { currentBatchId: shiftHierarchicalIdentifier(run.currentBatchId, afterStage, 2) }
+        : {}),
+      ...(run.lastReviewedBatchId
+        ? { lastReviewedBatchId: shiftHierarchicalIdentifier(run.lastReviewedBatchId, afterStage, 2) }
+        : {}),
+    })),
+    branch_sessions: supervision.branch_sessions.map((session) => ({
+      ...session,
+      ...(session.batchId
+        ? { batchId: shiftHierarchicalIdentifier(session.batchId, afterStage, 2) }
+        : {}),
+      ...(session.threadId
+        ? { threadId: shiftHierarchicalIdentifier(session.threadId, afterStage, 3) }
+        : {}),
+      ...(session.scope ? { scope: shiftBranchScopeIdentifiers(session.scope, afterStage) } : {}),
+      ...(session.supervisionProgress
+        ? {
+            supervisionProgress: shiftSupervisionProgressIdentifiers(
+              session.supervisionProgress,
+              afterStage,
+            ),
+          }
+        : {}),
+    })),
+    reviewed_batches: supervision.reviewed_batches.map((review) => ({
+      ...review,
+      stageId: shiftStageIdentifier(review.stageId, afterStage) ?? review.stageId,
+      batchId: shiftHierarchicalIdentifier(review.batchId, afterStage, 2) ?? review.batchId,
+      threadIds: review.threadIds.map((threadId) =>
+        shiftHierarchicalIdentifier(threadId, afterStage, 3) ?? threadId,
+      ),
+    })),
+    issue_summaries: supervision.issue_summaries.map((issue) => ({
+      ...issue,
+      stageId: shiftStageIdentifier(issue.stageId, afterStage) ?? issue.stageId,
+      batchId: shiftHierarchicalIdentifier(issue.batchId, afterStage, 2) ?? issue.batchId,
+      ...(issue.threadId
+        ? { threadId: shiftHierarchicalIdentifier(issue.threadId, afterStage, 3) }
+        : {}),
+    })),
+    fix_cycles: supervision.fix_cycles.map((cycle) => ({
+      ...cycle,
+      stageId: shiftStageIdentifier(cycle.stageId, afterStage) ?? cycle.stageId,
+      batchId: shiftHierarchicalIdentifier(cycle.batchId, afterStage, 2) ?? cycle.batchId,
+      threadId: shiftHierarchicalIdentifier(cycle.threadId, afterStage, 3) ?? cycle.threadId,
+    })),
+    escalations: supervision.escalations.map((escalation) => ({
+      ...escalation,
+      stageId: shiftStageIdentifier(escalation.stageId, afterStage) ?? escalation.stageId,
+      ...(escalation.batchId
+        ? { batchId: shiftHierarchicalIdentifier(escalation.batchId, afterStage, 2) }
+        : {}),
+      ...(escalation.threadId
+        ? { threadId: shiftHierarchicalIdentifier(escalation.threadId, afterStage, 3) }
+        : {}),
+    })),
+    stage_stops: supervision.stage_stops.map((stageStop) => ({
+      ...stageStop,
+      stageId: shiftStageIdentifier(stageStop.stageId, afterStage) ?? stageStop.stageId,
+      ...(stageStop.batchId
+        ? { batchId: shiftHierarchicalIdentifier(stageStop.batchId, afterStage, 2) }
+        : {}),
+    })),
+  }
+}
+
+function shiftWorkspaceCurrentBatch(repoRoot: string, streamId: string, afterStage: number): void {
+  const workspaceState = loadStructuredWorkspaceStateSync(repoRoot)
+  const workstreamRecord = workspaceState.workstreams.find((record) => record.id === streamId)
+  if (!workstreamRecord?.currentBatch) {
+    return
+  }
+
+  const nextCurrentBatch = shiftHierarchicalIdentifier(workstreamRecord.currentBatch, afterStage, 2)
+  if (!nextCurrentBatch || nextCurrentBatch === workstreamRecord.currentBatch) {
+    return
+  }
+
+  workstreamRecord.currentBatch = nextCurrentBatch
+  workstreamRecord.updatedAt = new Date().toISOString()
+  replaceStructuredWorkspaceStateSync({ repoRoot, workspaceState })
+}
+
+function regenerateLegacyRuntimeCompatibilityFiles(args: {
+  repoRoot: string
+  streamId: string
+  writeThreadsFile: boolean
+  writeSupervisorStateFile: boolean
+  writeBatchStatusFiles: boolean
+}): void {
+  const tasksFile = readRawTasksFile(args.repoRoot, args.streamId)
+  if (!tasksFile?.runtime_state) {
+    return
+  }
+
+  const streamDir = join(getWorkDir(args.repoRoot), args.streamId)
+  const now = new Date().toISOString()
+
+  if (args.writeThreadsFile) {
+    const threadsProjection: ThreadsJson = {
+      version: "1.0.0",
+      stream_id: args.streamId,
+      last_updated: now,
+      threads: tasksFile.runtime_state.threads,
+    }
+    atomicWriteFile(join(streamDir, "threads.json"), JSON.stringify(threadsProjection, null, 2))
+  }
+
+  if (args.writeSupervisorStateFile) {
+    atomicWriteFile(
+      join(streamDir, "supervisor-state.json"),
+      JSON.stringify(
+        {
+          ...tasksFile.runtime_state.supervision,
+          stream_id: args.streamId,
+          last_updated: now,
+        },
+        null,
+        2,
+      ),
+    )
+  }
+
+  if (args.writeBatchStatusFiles) {
+    const batchStatusDir = join(streamDir, "batch-status")
+    mkdirSync(batchStatusDir, { recursive: true })
+
+    for (const entry of readdirSync(batchStatusDir)) {
+      if (entry.endsWith(".json")) {
+        rmSync(join(batchStatusDir, entry), { force: true })
+      }
+    }
+
+    for (const [batchId, batchStatus] of Object.entries(tasksFile.runtime_state.batches)) {
+      atomicWriteFile(join(batchStatusDir, `${batchId}.json`), JSON.stringify(batchStatus, null, 2))
+    }
   }
 }
 
@@ -755,6 +1030,11 @@ function shiftStageArtifacts(
   doc: NonNullable<ReturnType<typeof parseStreamDocument>>,
   afterStage: number,
 ): void {
+  const streamDir = join(getWorkDir(repoRoot), streamId)
+  const hadLegacyThreadsFile = existsSync(join(streamDir, "threads.json"))
+  const hadLegacySupervisorStateFile = existsSync(join(streamDir, "supervisor-state.json"))
+  const hadLegacyBatchStatusDir = existsSync(join(streamDir, "batch-status"))
+
   const promptStageDirNames = new Map<number, { oldDir: string; newDir: string }>()
   for (const stage of doc.stages) {
     if (stage.id <= afterStage) {
@@ -767,19 +1047,37 @@ function shiftStageArtifacts(
     })
   }
 
-  shiftTaskStages(repoRoot, streamId, afterStage)
   renamePromptStageDirectories(repoRoot, streamId, promptStageDirNames)
-  shiftLegacyThreadArtifacts(repoRoot, streamId, afterStage, promptStageDirNames)
-  shiftRuntimeStateArtifacts(repoRoot, streamId, afterStage, promptStageDirNames)
-  shiftLegacySupervisorArtifacts(repoRoot, streamId, afterStage)
-  shiftLegacyBatchStatusArtifacts(repoRoot, streamId, afterStage)
-  shiftStageApprovals(repoRoot, streamId, afterStage)
+
+  const tasksFileExists = existsSync(getTasksFilePath(repoRoot, streamId))
+  const workstreamState =
+    loadStructuredWorkstreamStateSync(repoRoot, streamId) ??
+    createEmptyStructuredStorageWorkstreamState(streamId)
+  shiftStructuredWorkstreamStateIdentifiers(workstreamState, afterStage, promptStageDirNames)
+  replaceStructuredWorkstreamStateSync({
+    repoRoot,
+    workstreamState,
+    touchStreamUpdatedAt: true,
+    writeTasksFileIfMissing:
+      tasksFileExists ||
+      hadLegacyThreadsFile ||
+      hadLegacySupervisorStateFile ||
+      hadLegacyBatchStatusDir ||
+      workstreamState.hierarchy.tasks.length > 0 ||
+      workstreamState.threadRuntime.length > 0 ||
+      workstreamState.batchRuns.length > 0,
+  })
+
+  shiftWorkspaceCurrentBatch(repoRoot, streamId, afterStage)
   shiftGitHubStageMetadata(repoRoot, streamId, afterStage)
 
-  const promptsDir = join(getWorkDir(repoRoot), streamId, "prompts")
-  if (existsSync(promptsDir)) {
-    generateAllPrompts(repoRoot, streamId)
-  }
+  regenerateLegacyRuntimeCompatibilityFiles({
+    repoRoot,
+    streamId,
+    writeThreadsFile: hadLegacyThreadsFile,
+    writeSupervisorStateFile: hadLegacySupervisorStateFile,
+    writeBatchStatusFiles: hadLegacyBatchStatusDir,
+  })
 }
 
 function ensureStageApprovedForRevisionInsertion(

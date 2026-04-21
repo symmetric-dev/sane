@@ -668,7 +668,10 @@ describe("reset-batch-state", () => {
     const legacyThreadsOnDisk = JSON.parse(readFileSync(join(workspace.workDir, "threads.json"), "utf-8")) as {
       threads: Array<{ threadId: string }>
     }
-    expect(legacyThreadsOnDisk.threads.map((thread) => thread.threadId)).toEqual(["03.02.01"])
+    expect(legacyThreadsOnDisk.threads.map((thread) => thread.threadId)).toEqual([
+      "03.01.01",
+      "03.02.01",
+    ])
 
     const legacySupervisorOnDisk = JSON.parse(
       readFileSync(join(workspace.workDir, "supervisor-state.json"), "utf-8"),

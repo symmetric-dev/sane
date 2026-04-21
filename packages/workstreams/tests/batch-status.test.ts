@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test"
-import { existsSync, mkdirSync, rmSync, writeFileSync, mkdtempSync } from "fs"
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "fs"
 import { join } from "path"
 import { tmpdir } from "os"
 import { captureCliOutput } from "./helpers/cli-runner"
@@ -463,6 +463,139 @@ describe("batch status", () => {
     const persisted = readBatchStatus(repoRoot, streamId, "01.01")
     expect(persisted?.status).toBe("failed")
     expect(persisted?.completedAt).toBeTruthy()
+  })
+
+  test("syncBatchStatus regenerates legacy compatibility projections after ghost recovery", async () => {
+    const startedAt = new Date().toISOString()
+
+    await resetBatchStatusRun({
+      repoRoot,
+      streamId,
+      batchId: "01.01",
+      tmuxSessionName: "missing-ghost-session",
+      stageName: "Headless Runtime",
+      batchName: "Batch Status",
+      threads: [
+        { threadId: "01.01.01", threadName: "Thread 1", firstTaskId: "01.01.01.01" },
+        { threadId: "01.01.02", threadName: "Thread 2", firstTaskId: "01.01.02.01" },
+      ],
+    })
+
+    startThreadSession(
+      repoRoot,
+      streamId,
+      "01.01.01",
+      "agent-one",
+      "model-one",
+      "session-ghost-legacy-1",
+    )
+
+    writeFileSync(
+      join(repoRoot, "work", streamId, "threads.json"),
+      JSON.stringify(
+        {
+          version: "1.0.0",
+          stream_id: streamId,
+          last_updated: startedAt,
+          threads: [
+            {
+              threadId: "01.01.01",
+              currentSessionId: "legacy-current-session",
+              sessions: [
+                {
+                  sessionId: "legacy-current-session",
+                  agentName: "default",
+                  model: "openai/gpt-5.4",
+                  startedAt,
+                  status: "running",
+                },
+              ],
+            },
+          ],
+        },
+        null,
+        2,
+      ),
+    )
+
+    mkdirSync(join(repoRoot, "work", streamId, "batch-status"), { recursive: true })
+    writeFileSync(
+      join(repoRoot, "work", streamId, "batch-status", "01.01.json"),
+      JSON.stringify(
+        {
+          version: "1.0.0",
+          streamId,
+          batchId: "01.01",
+          runId: "legacy-run",
+          mode: "headless",
+          status: "running",
+          startedAt,
+          updatedAt: startedAt,
+          summary: { total: 2, pending: 1, running: 1, completed: 0, failed: 0 },
+          threads: [
+            {
+              threadId: "01.01.01",
+              threadName: "Thread 1",
+              firstTaskId: "01.01.01.01",
+              status: "running",
+              updatedAt: startedAt,
+              currentSessionId: "legacy-current-session",
+            },
+            {
+              threadId: "01.01.02",
+              threadName: "Thread 2",
+              firstTaskId: "01.01.02.01",
+              status: "pending",
+              updatedAt: startedAt,
+            },
+          ],
+        },
+        null,
+        2,
+      ),
+    )
+
+    const seededRunning = readBatchStatus(repoRoot, streamId, "01.01")!
+    seededRunning.status = "running"
+    seededRunning.summary = {
+      total: 2,
+      pending: 1,
+      running: 1,
+      completed: 0,
+      failed: 0,
+    }
+    seededRunning.threads[0] = {
+      ...seededRunning.threads[0]!,
+      status: "running",
+      startedAt,
+      currentSessionId: "session-ghost-legacy-1",
+      updatedAt: startedAt,
+    }
+    writeBatchStatus(repoRoot, streamId, seededRunning)
+
+    const status = await syncBatchStatus({
+      repoRoot,
+      streamId,
+      batchId: "01.01",
+    })
+
+    expect(status.status).toBe("failed")
+
+    const legacyThreads = JSON.parse(
+      readFileSync(join(repoRoot, "work", streamId, "threads.json"), "utf-8"),
+    ) as {
+      threads: Array<{ threadId: string; currentSessionId?: string; sessions: Array<{ status: string }> }>
+    }
+    expect(legacyThreads.threads.find((thread) => thread.threadId === "01.01.01")?.currentSessionId).toBeUndefined()
+    expect(legacyThreads.threads.find((thread) => thread.threadId === "01.01.01")?.sessions.at(-1)?.status).toBe(
+      "interrupted",
+    )
+
+    const legacyBatchStatus = JSON.parse(
+      readFileSync(join(repoRoot, "work", streamId, "batch-status", "01.01.json"), "utf-8"),
+    ) as { status: string; summary: { failed: number } }
+    expect(legacyBatchStatus.status).toBe("failed")
+    expect(legacyBatchStatus.summary.failed).toBe(2)
   })
 
   test("prepareHeadlessBatchStatusRun terminalizes a stale ghost run before creating a fresh run", async () => {

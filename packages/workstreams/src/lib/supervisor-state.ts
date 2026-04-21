@@ -18,6 +18,7 @@ import { isTerminalBatchStatus } from "./batch-status.ts"
 import {
   loadStructuredSupervisorStateSync,
   modifySqliteCanonicalRuntimeWorkstreamStateSync,
+  projectLegacyRuntimeCompatibilityArtifactsSync,
   replaceStructuredSupervisorStateSync,
 } from "./storage-adapter.ts"
 import { replaceStructuredSupervisionState } from "./structured-storage.ts"
@@ -597,7 +598,7 @@ export async function reconcileSupervisorRunsLocked(
   repoRoot: string,
   streamId: string,
 ): Promise<string[]> {
-  return Promise.resolve(modifySqliteCanonicalRuntimeWorkstreamStateSync({ repoRoot, streamId, fn: (workstreamState) => {
+  const reconciledRunIds = modifySqliteCanonicalRuntimeWorkstreamStateSync({ repoRoot, streamId, fn: (workstreamState) => {
     const supervisorState = normalizeSupervisorState(streamId, workstreamState.supervision)
     const batchStatuses = new Map(
       workstreamState.batchRuns.map((batchStatus) => [batchStatus.batchId, batchStatus] as const),
@@ -651,7 +652,10 @@ export async function reconcileSupervisorRunsLocked(
 
     replaceStructuredSupervisionState(workstreamState, supervisorState)
     return reconciledRunIds
-  } }))
+  } })
+
+  projectLegacyRuntimeCompatibilityArtifactsSync({ repoRoot, streamId })
+  return Promise.resolve(reconciledRunIds)
 }
 
 /**

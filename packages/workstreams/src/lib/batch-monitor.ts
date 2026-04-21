@@ -29,6 +29,7 @@ import {
   getThreadMetadata,
 } from "./threads.ts"
 import { applyFinalizationCompletions, type FinalizationCompletion } from "./multi-finalization.ts"
+import { projectLegacyRuntimeCompatibilityArtifactsSync } from "./storage-adapter.ts"
 import { sessionExists } from "./tmux.ts"
 import type { TasksFile, TaskStatus } from "./types.ts"
 
@@ -430,6 +431,10 @@ async function reconcileGhostBatchRun(args: {
     args.streamId,
     args.threadSeeds.map((thread) => thread.threadId),
   )
+  projectLegacyRuntimeCompatibilityArtifactsSync({
+    repoRoot: args.repoRoot,
+    streamId: args.streamId,
+  })
   return batchStatus
 }
 
@@ -777,6 +782,8 @@ export async function syncBatchStatus(
     cleanupResultFiles(streamId, threadIds)
     cleanupSessionFiles(streamId, threadIds)
   }
+
+  projectLegacyRuntimeCompatibilityArtifactsSync({ repoRoot, streamId })
 
   return batchStatus
 }

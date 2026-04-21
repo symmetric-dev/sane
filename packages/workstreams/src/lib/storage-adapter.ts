@@ -1,5 +1,6 @@
-import { existsSync } from "fs"
-import { getOrCreateIndex, modifyIndex, saveIndex } from "./index.ts"
+import { existsSync, mkdirSync, readdirSync, rmSync } from "fs"
+import { join } from "path"
+import { atomicWriteFile, getOrCreateIndex, modifyIndex, saveIndex } from "./index.ts"
 export {
   createFilesystemAuthoritativeSqliteStructuredStorageAdapter,
   type FilesystemAuthoritativeSqliteStructuredStorageAdapterOptions,
@@ -45,6 +46,7 @@ import {
   readTasksFile,
   writeTasksFile,
 } from "./tasks.ts"
+import { getWorkDir } from "./repo.ts"
 import type {
   ApprovalMetadata,
   PersistedBatchStatusFile,
@@ -412,6 +414,61 @@ function threadsFileFromWorkstreamState(
       ...(threadRuntime.synthesisOutput ? { synthesisOutput: threadRuntime.synthesisOutput } : {}),
       ...(threadRuntime.synthesis ? { synthesis: threadRuntime.synthesis } : {}),
     })),
+  }
+}
+
+function getLegacyThreadsFilePath(repoRoot: string, streamId: string): string {
+  return join(getWorkDir(repoRoot), streamId, "threads.json")
+}
+
+function getLegacySupervisorStateFilePath(repoRoot: string, streamId: string): string {
+  return join(getWorkDir(repoRoot), streamId, "supervisor-state.json")
+}
+
+function getLegacyBatchStatusDirPath(repoRoot: string, streamId: string): string {
+  return join(getWorkDir(repoRoot), streamId, "batch-status")
+}
+
+function writeCompatibilityJsonFile(filePath: string, value: unknown): void {
+  atomicWriteFile(filePath, JSON.stringify(value, null, 2))
+}
+
+export function projectLegacyRuntimeCompatibilityArtifactsSync(args: {
+  repoRoot: string
+  streamId: string
+  workstreamState?: StructuredStorageWorkstreamState | null
+}): void {
+  const workstreamState =
+    args.workstreamState ?? loadSqliteStructuredStorageWorkstreamState(args.repoRoot, args.streamId)
+  if (!workstreamState) {
+    return
+  }
+
+  writeCompatibilityJsonFile(
+    getLegacyThreadsFilePath(args.repoRoot, args.streamId),
+    threadsFileFromWorkstreamState(workstreamState),
+  )
+  writeCompatibilityJsonFile(
+    getLegacySupervisorStateFilePath(args.repoRoot, args.streamId),
+    normalizeSupervisorState(args.streamId, workstreamState.supervision),
+  )
+
+  const batchStatusDir = getLegacyBatchStatusDirPath(args.repoRoot, args.streamId)
+  mkdirSync(batchStatusDir, { recursive: true })
+
+  const expectedBatchFiles = new Set<string>()
+  for (const batchRun of workstreamState.batchRuns) {
+    const fileName = `${batchRun.batchId}.json`
+    expectedBatchFiles.add(fileName)
+    writeCompatibilityJsonFile(join(batchStatusDir, fileName), batchRun)
+  }
+
+  for (const entry of readdirSync(batchStatusDir)) {
+    if (!entry.endsWith(".json") || expectedBatchFiles.has(entry)) {
+      continue
+    }
+
+    rmSync(join(batchStatusDir, entry), { force: true })
   }
 }
 
