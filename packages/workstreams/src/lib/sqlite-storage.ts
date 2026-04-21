@@ -1575,17 +1575,19 @@ function loadSqliteStructuredStorageWorkstreamStateFromDatabase(
 export function modifySqliteStructuredStorageWorkstreamState<T>(args: {
   repoRoot: string
   streamId: string
-  fallbackState?: StructuredStorageWorkstreamState
+  baseState?: StructuredStorageWorkstreamState
+  preferBaseState?: boolean
   fn: (workstreamState: StructuredStorageWorkstreamState) => T
 }): { result: T; workstreamState: StructuredStorageWorkstreamState } {
   const database = openSqliteStructuredStorageDatabase(args.repoRoot)
 
   try {
     const transaction = database.transaction(() => {
+      const persistedState = loadSqliteStructuredStorageWorkstreamStateFromDatabase(database, args.streamId)
       const currentState =
-        loadSqliteStructuredStorageWorkstreamStateFromDatabase(database, args.streamId) ??
-        args.fallbackState ??
-        createEmptyWorkstreamState(args.streamId)
+        (args.preferBaseState
+          ? args.baseState ?? persistedState
+          : persistedState ?? args.baseState) ?? createEmptyWorkstreamState(args.streamId)
       const mutableState = structuredClone(currentState) as StructuredStorageWorkstreamState
       const result = args.fn(mutableState)
       syncWorkstreamRows(database, mutableState)

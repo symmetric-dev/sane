@@ -33,15 +33,23 @@ export function projectWorkspaceCompatibilityStateToSqlite(
   }
 
   const workspaceState = createWorkspaceStateFromIndex(loadIndex(repoRoot))
-  syncStructuredStorageWorkspaceStateToSqlite(repoRoot, workspaceState)
+  try {
+    syncStructuredStorageWorkspaceStateToSqlite(repoRoot, workspaceState)
+  } catch {
+    // Best-effort compatibility projection only.
+  }
   return workspaceState
 }
 
 export function loadCanonicalWorkspaceState(repoRoot: string): StructuredStorageWorkspaceState {
-  const sqliteState = loadSqliteStructuredStorageWorkspaceState(repoRoot)
+  try {
+    const sqliteState = loadSqliteStructuredStorageWorkspaceState(repoRoot)
 
-  if (sqliteState) {
-    return sqliteState
+    if (sqliteState) {
+      return sqliteState
+    }
+  } catch {
+    // Fall back to compatibility projections while sqlite is busy.
   }
 
   const projectedState = projectWorkspaceCompatibilityStateToSqlite(repoRoot)

@@ -675,20 +675,47 @@ export function loadStructuredWorkstreamStateSync(
   repoRoot: string,
   streamId: string,
 ): StructuredStorageWorkstreamState | null {
-  const sqliteState = loadSqliteStructuredStorageWorkstreamState(repoRoot, streamId)
-  if (sqliteState) {
-    return sqliteState
+  const index = getOrCreateIndex(repoRoot)
+  const tasksFile = readTasksFile(repoRoot, streamId)
+  const compatibilityState = workstreamStateFromSnapshot(index, streamId, tasksFile)
+
+  try {
+    const sqliteState = loadSqliteStructuredStorageWorkstreamState(repoRoot, streamId)
+    if (sqliteState) {
+      if (compatibilityState) {
+        const sqliteSnapshot = createStructuredStorageParitySnapshot({
+          workspace: { workstreams: [] },
+          workstream: sqliteState,
+        })
+        const compatibilitySnapshot = createStructuredStorageParitySnapshot({
+          workspace: { workstreams: [] },
+          workstream: compatibilityState,
+        })
+
+        if (JSON.stringify(sqliteSnapshot.workstream) !== JSON.stringify(compatibilitySnapshot.workstream)) {
+          return compatibilityState
+        }
+      }
+
+      return sqliteState
+    }
+  } catch {
+    // Fall back to compatibility projections while sqlite is busy.
   }
 
-  return workstreamStateFromSnapshot(getOrCreateIndex(repoRoot), streamId, readTasksFile(repoRoot, streamId))
+  return compatibilityState
 }
 
 export function loadStructuredWorkspaceStateSync(
   repoRoot: string,
 ): StructuredStorageWorkspaceState {
-  const sqliteState = loadSqliteStructuredStorageWorkspaceState(repoRoot)
-  if (sqliteState) {
-    return sqliteState
+  try {
+    const sqliteState = loadSqliteStructuredStorageWorkspaceState(repoRoot)
+    if (sqliteState) {
+      return sqliteState
+    }
+  } catch {
+    // Fall back to compatibility projections while sqlite is busy.
   }
 
   return workspaceStateFromIndex(getOrCreateIndex(repoRoot))
@@ -820,7 +847,8 @@ export function modifySqliteCanonicalRuntimeWorkstreamStateSync<T>(args: {
   const { result, workstreamState } = modifySqliteStructuredStorageWorkstreamState({
     repoRoot: args.repoRoot,
     streamId: args.streamId,
-    fallbackState,
+    baseState: fallbackState,
+    preferBaseState: true,
     fn: args.fn,
   })
 
@@ -834,7 +862,7 @@ export function modifySqliteCanonicalRuntimeWorkstreamStateSync<T>(args: {
 }
 
 export function loadThreadMetadataViewSync(repoRoot: string, streamId: string): ThreadsJson | null {
-  const workstreamState = loadStructuredWorkstreamStateSync(repoRoot, streamId)
+  const workstreamState = loadRuntimeCanonicalMutationSeedSync(repoRoot, streamId)
   return workstreamState ? threadsFileFromWorkstreamState(workstreamState) : null
 }
 
@@ -844,7 +872,7 @@ export function replaceThreadMetadataViewSync(args: {
   threadsFile: ThreadsJson
 }): void {
   const workstreamState =
-    loadStructuredWorkstreamStateSync(args.repoRoot, args.streamId) ??
+    loadRuntimeCanonicalMutationSeedSync(args.repoRoot, args.streamId) ??
     createEmptyStructuredStorageWorkstreamState(args.streamId)
 
   for (const thread of workstreamState.hierarchy.threads) {
