@@ -11,6 +11,7 @@ import { join } from "path"
 import { tmpdir } from "os"
 import { main as initMain } from "../src/cli/init.ts"
 import { getStructuredStorageSqlitePath } from "../src/index.ts"
+import { loadIndex } from "../src/lib/index.ts"
 
 describe("work init", () => {
   let tempDir: string
@@ -80,6 +81,10 @@ describe("work init", () => {
     await initMain(["bun", "work", "init", "--repo-root", tempDir, "--sqlite"])
 
     expect(existsSync(getStructuredStorageSqlitePath(tempDir))).toBe(true)
+    expect(existsSync(join(workDir, "index.json"))).toBe(false)
+
+    const projectedIndex = loadIndex(tempDir)
+    expect(projectedIndex.streams).toEqual([])
   })
 
   it("should bootstrap sqlite storage for an existing work directory without --force", async () => {

@@ -144,16 +144,19 @@ export async function main(argv: string[]): Promise<void> {
       console.log("github.json already exists, skipping.")
     }
 
-    // 2. Initialize index.json
+    // 2. Initialize index.json compatibility projection when needed
     const indexPath = getIndexPath(repoRoot)
-    if (!existsSync(indexPath) || force) {
+    const shouldInitializeCompatibilityIndex = !bootstrapSqlite || existsSync(indexPath) || force
+    if (shouldInitializeCompatibilityIndex && (!existsSync(indexPath) || force)) {
       console.log(
         `${force && existsSync(indexPath) ? "Overwriting" : "Initializing"} index.json...`,
       )
       const index = getOrCreateIndex(repoRoot)
       saveIndex(repoRoot, index)
-    } else {
+    } else if (existsSync(indexPath)) {
       console.log("index.json already exists, skipping.")
+    } else if (bootstrapSqlite) {
+      console.log("Skipping index.json compatibility projection; sqlite will be canonical.")
     }
 
     // 3. Initialize agents.yaml

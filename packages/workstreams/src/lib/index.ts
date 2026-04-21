@@ -6,8 +6,30 @@ import { randomUUID } from "crypto"
 import { existsSync, mkdirSync, readFileSync, writeFileSync, renameSync, rmSync } from "fs"
 import { basename, dirname, join } from "path"
 import * as lockfile from "proper-lockfile"
-import type { WorkIndex, StreamMetadata, StreamStatus } from "./types.ts"
+import type {
+  WorkIndex,
+  StreamMetadata,
+  StreamStatus,
+} from "./types.ts"
 import { getIndexPath, getWorkDir } from "./repo.ts"
+import { loadSqliteStructuredStorageWorkspaceState } from "./sqlite-storage.ts"
+import {
+  createStreamMetadataFromStructuredStorageRecord,
+  type StructuredStorageWorkspaceState,
+} from "./structured-storage.ts"
+
+function createCompatibilityIndexFromWorkspaceState(
+  workspaceState: StructuredStorageWorkspaceState,
+): WorkIndex {
+  return {
+    version: "1.0.0",
+    last_updated: new Date().toISOString(),
+    ...(workspaceState.currentStreamId ? { current_stream: workspaceState.currentStreamId } : {}),
+    streams: workspaceState.workstreams.map((record) =>
+      createStreamMetadataFromStructuredStorageRecord({ record })
+    ),
+  }
+}
 
 /**
  * Atomic write: write to temp file, then rename (atomic on POSIX)
@@ -107,6 +129,11 @@ export function loadIndex(repoRoot: string): WorkIndex {
   const indexPath = getIndexPath(repoRoot)
 
   if (!existsSync(indexPath)) {
+    const sqliteWorkspaceState = loadSqliteStructuredStorageWorkspaceState(repoRoot)
+    if (sqliteWorkspaceState) {
+      return createCompatibilityIndexFromWorkspaceState(sqliteWorkspaceState)
+    }
+
     throw new Error(`No workstreams index found at ${indexPath}`)
   }
 
