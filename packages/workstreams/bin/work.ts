@@ -63,6 +63,7 @@ import { main as notificationsMain } from "../src/cli/notifications.ts"
 import { main as planMain } from "../src/cli/plan.ts"
 import { main as superviseMain } from "../src/cli/supervise.ts"
 import { main as resetBatchStateMain } from "../src/cli/reset-batch-state.ts"
+import { main as rebuildCompatMain } from "../src/cli/rebuild-compat.ts"
 
 // Role and help utilities
 import {
@@ -88,6 +89,7 @@ const SUBCOMMANDS = {
   plan: planMain,
   supervise: superviseMain,
   "reset-batch-state": resetBatchStateMain,
+  "rebuild-compat": rebuildCompatMain,
   status: statusMain,
   "set-status": setStatusMain,
   update: updateTaskMain,
@@ -137,6 +139,7 @@ const COMMAND_DESCRIPTIONS: Record<string, string> = {
   plan: "Manage planning sessions or scaffold a plan (subcommand: create)",
   supervise: "Run batch-bounded supervision execution/recovery helper",
   "reset-batch-state": "Reset one batch for a clean rerun",
+  "rebuild-compat": "Regenerate compatibility JSON from sqlite state",
   agents: "Manage agent definitions (list, add, remove)",
   assign: "Assign agents to threads for batch execution",
   prompt: "Generate thread execution prompt for agents",

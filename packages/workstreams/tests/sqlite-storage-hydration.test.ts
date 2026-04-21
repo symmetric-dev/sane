@@ -315,6 +315,24 @@ describe("sqlite legacy hydration", () => {
     const workspace = createTestWorkstream(`001-orphan-hydration-${Date.now()}`)
 
     try {
+      writeJson(join(workspace.workDir, "tasks.json"), {
+        version: "2.0.0",
+        stream_id: workspace.streamId,
+        last_updated: new Date().toISOString(),
+        tasks: [
+          {
+            id: "01.01.01.01",
+            name: "Hydrate orphaned tasks",
+            thread_name: "Hydration thread",
+            batch_name: "Hydration batch",
+            stage_name: "Hydration stage",
+            status: "pending",
+            created_at: "2026-03-01T00:00:00.000Z",
+            updated_at: "2026-03-01T00:00:00.000Z",
+          },
+        ],
+      })
+
       const hydration = hydrateLegacyFilesystemStateToSqliteSync({
         repoRoot: workspace.repoRoot,
       })
@@ -332,7 +350,7 @@ describe("sqlite legacy hydration", () => {
       expect(sqliteWorkspace?.workstreams.map((stream) => stream.id)).toEqual([workspace.streamId])
 
       const sqliteState = loadSqliteStructuredStorageWorkstreamState(workspace.repoRoot, workspace.streamId)
-      expect(sqliteState?.hierarchy.tasks.map((task) => task.id)).toEqual([])
+      expect(sqliteState?.hierarchy.tasks.map((task) => task.id)).toEqual(["01.01.01.01"])
       expect(existsSync(join(workspace.workDir, "threads.json"))).toBeTrue()
       expect(existsSync(join(workspace.workDir, "supervisor-state.json"))).toBeTrue()
     } finally {

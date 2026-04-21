@@ -17,6 +17,7 @@ import {
   type StructuredBatchRecord,
   type StructuredStageRecord,
   type StructuredStorageStateAdapter,
+  type StructuredStorageWorkstreamRecord,
   type StructuredStorageWorkspaceState,
   type StructuredStorageWorkstreamState,
   updateStructuredTask,
@@ -89,6 +90,47 @@ export interface CriticalWorkflowDualWriteParityInspection {
     reason: string
   }>
   filesystemCompatibilityOnlyData: CriticalWorkflowFilesystemCompatibilityData
+  divergences: CriticalWorkflowParityDivergenceReport
+}
+
+export type CriticalWorkflowParityEntity =
+  | "tasks"
+  | "threads"
+  | "approvals"
+  | "batchRuns"
+  | "supervisionRuns"
+
+export type CriticalWorkflowParityDivergenceKind =
+  | "missing-from-compatibility"
+  | "missing-from-sqlite"
+  | "stale-compatibility"
+  | "runtime-divergence"
+
+export interface CriticalWorkflowParityDivergence {
+  entity: CriticalWorkflowParityEntity
+  key: string
+  kind: CriticalWorkflowParityDivergenceKind
+  message: string
+  compatibilityValue?: unknown
+  sqliteValue?: unknown
+}
+
+export interface CriticalWorkflowParityDivergenceSummary {
+  total: number
+  missingFromCompatibility: number
+  missingFromSqlite: number
+  staleCompatibility: number
+  runtimeDivergence: number
+}
+
+export interface CriticalWorkflowParityDivergenceReport {
+  tasks: CriticalWorkflowParityDivergence[]
+  threads: CriticalWorkflowParityDivergence[]
+  approvals: CriticalWorkflowParityDivergence[]
+  batchRuns: CriticalWorkflowParityDivergence[]
+  supervisionRuns: CriticalWorkflowParityDivergence[]
+  all: CriticalWorkflowParityDivergence[]
+  summary: CriticalWorkflowParityDivergenceSummary
 }
 
 export interface LegacyFilesystemSqliteHydrationDiagnostic {
@@ -378,6 +420,212 @@ function parityEqual<T>(left: T, right: T): boolean {
   return JSON.stringify(left) === JSON.stringify(right)
 }
 
+function collectEntityParityDivergences<T>(args: {
+  entity: CriticalWorkflowParityEntity
+  compatibilityRows: T[]
+  sqliteRows: T[]
+  keyOf: (row: T) => string
+  runtimeEntity: boolean
+}): CriticalWorkflowParityDivergence[] {
+  const compatibilityByKey = new Map<string, T>()
+  for (const row of args.compatibilityRows) {
+    compatibilityByKey.set(args.keyOf(row), row)
+  }
+
+  const sqliteByKey = new Map<string, T>()
+  for (const row of args.sqliteRows) {
+    sqliteByKey.set(args.keyOf(row), row)
+  }
+
+  const divergences: CriticalWorkflowParityDivergence[] = []
+
+  for (const key of [...sqliteByKey.keys()].sort(compareIds)) {
+    if (!compatibilityByKey.has(key)) {
+      divergences.push({
+        entity: args.entity,
+        key,
+        kind: "missing-from-compatibility",
+        message: `Compatibility projection is missing ${args.entity} row ${key} that exists in sqlite canonical state.`,
+        sqliteValue: sqliteByKey.get(key),
+      })
+    }
+  }
+
+  for (const key of [...compatibilityByKey.keys()].sort(compareIds)) {
+    if (!sqliteByKey.has(key)) {
+      divergences.push({
+        entity: args.entity,
+        key,
+        kind: "missing-from-sqlite",
+        message: `Compatibility projection includes ${args.entity} row ${key} that is missing from sqlite canonical state.`,
+        compatibilityValue: compatibilityByKey.get(key),
+      })
+    }
+  }
+
+  for (const key of [...sqliteByKey.keys()].sort(compareIds)) {
+    const sqliteRow = sqliteByKey.get(key)
+    const compatibilityRow = compatibilityByKey.get(key)
+    if (!sqliteRow || !compatibilityRow) {
+      continue
+    }
+
+    if (parityEqual(compatibilityRow, sqliteRow)) {
+      continue
+    }
+
+    divergences.push({
+      entity: args.entity,
+      key,
+      kind: args.runtimeEntity ? "runtime-divergence" : "stale-compatibility",
+      message: args.runtimeEntity
+        ? `Compatibility runtime state for ${args.entity} row ${key} diverges from sqlite canonical state.`
+        : `Compatibility projection for ${args.entity} row ${key} is stale relative to sqlite canonical state.`,
+      compatibilityValue: compatibilityRow,
+      sqliteValue: sqliteRow,
+    })
+  }
+
+  return divergences
+}
+
+function summarizeParityDivergences(
+  divergences: CriticalWorkflowParityDivergence[],
+): CriticalWorkflowParityDivergenceSummary {
+  const summary: CriticalWorkflowParityDivergenceSummary = {
+    total: divergences.length,
+    missingFromCompatibility: 0,
+    missingFromSqlite: 0,
+    staleCompatibility: 0,
+    runtimeDivergence: 0,
+  }
+
+  for (const divergence of divergences) {
+    if (divergence.kind === "missing-from-compatibility") {
+      summary.missingFromCompatibility += 1
+      continue
+    }
+    if (divergence.kind === "missing-from-sqlite") {
+      summary.missingFromSqlite += 1
+      continue
+    }
+    if (divergence.kind === "stale-compatibility") {
+      summary.staleCompatibility += 1
+      continue
+    }
+    summary.runtimeDivergence += 1
+  }
+
+  return summary
+}
+
+function parityProjectionHasRows(projection: CriticalWorkflowParityProjection): boolean {
+  return (
+    projection.tasks.length > 0 ||
+    projection.threads.length > 0 ||
+    projection.approvals.length > 0 ||
+    projection.batchRuns.length > 0 ||
+    projection.supervisionRuns.length > 0
+  )
+}
+
+function collectCriticalWorkflowParityDivergenceReport(args: {
+  compatibility: CriticalWorkflowParityProjection
+  sqlite: CriticalWorkflowParityProjection
+}): CriticalWorkflowParityDivergenceReport {
+  const tasks = collectEntityParityDivergences({
+    entity: "tasks",
+    compatibilityRows: args.compatibility.tasks,
+    sqliteRows: args.sqlite.tasks,
+    keyOf: (task) => task.id,
+    runtimeEntity: false,
+  })
+  const threads = collectEntityParityDivergences({
+    entity: "threads",
+    compatibilityRows: args.compatibility.threads,
+    sqliteRows: args.sqlite.threads,
+    keyOf: (thread) => thread.threadId,
+    runtimeEntity: true,
+  })
+  const approvals = collectEntityParityDivergences({
+    entity: "approvals",
+    compatibilityRows: args.compatibility.approvals,
+    sqliteRows: args.sqlite.approvals,
+    keyOf: (approval) => `${approval.scope}:${approval.stageId ?? ""}`,
+    runtimeEntity: false,
+  })
+  const batchRuns = collectEntityParityDivergences({
+    entity: "batchRuns",
+    compatibilityRows: args.compatibility.batchRuns,
+    sqliteRows: args.sqlite.batchRuns,
+    keyOf: (batchRun) => `${batchRun.batchId}:${batchRun.runId}`,
+    runtimeEntity: true,
+  })
+  const supervisionRuns = collectEntityParityDivergences({
+    entity: "supervisionRuns",
+    compatibilityRows: args.compatibility.supervisionRuns,
+    sqliteRows: args.sqlite.supervisionRuns,
+    keyOf: (run) => run.runId,
+    runtimeEntity: true,
+  })
+
+  const all = [...tasks, ...threads, ...approvals, ...batchRuns, ...supervisionRuns]
+
+  return {
+    tasks,
+    threads,
+    approvals,
+    batchRuns,
+    supervisionRuns,
+    all,
+    summary: summarizeParityDivergences(all),
+  }
+}
+
+function parityDivergencesToHydrationDiagnostics(args: {
+  streamId: string
+  phase: "pre-hydration" | "post-hydration"
+  report: CriticalWorkflowParityDivergenceReport
+}): LegacyFilesystemSqliteHydrationDiagnostic[] {
+  if (args.report.all.length === 0) {
+    return []
+  }
+
+  const diagnostics = args.report.all.map((divergence) => {
+    const code =
+      divergence.kind === "missing-from-compatibility"
+        ? "parity-missing-compatibility-row"
+        : divergence.kind === "missing-from-sqlite"
+          ? "parity-missing-sqlite-row"
+          : divergence.kind === "stale-compatibility"
+            ? "parity-stale-compatibility"
+            : "parity-runtime-divergence"
+
+    return {
+      severity: "warning" as const,
+      code,
+      streamId: args.streamId,
+      message:
+        args.phase === "pre-hydration"
+          ? `[pre-hydration] ${divergence.message}`
+          : `[post-hydration] ${divergence.message}`,
+    }
+  })
+
+  diagnostics.push({
+    severity: "warning",
+    code: "parity-divergence-summary",
+    streamId: args.streamId,
+    message:
+      `${args.phase === "pre-hydration" ? "Pre-hydration" : "Post-hydration"} parity divergence summary for ${args.streamId}: ` +
+      `${args.report.summary.total} total (${args.report.summary.missingFromCompatibility} missing-from-compatibility, ` +
+      `${args.report.summary.missingFromSqlite} missing-from-sqlite, ${args.report.summary.staleCompatibility} stale-compatibility, ` +
+      `${args.report.summary.runtimeDivergence} runtime-divergence).`,
+  })
+
+  return diagnostics
+}
+
 function parseHierarchicalId(id: string): [string, string, string, string] {
   const parts = id.split(".")
   if (parts.length !== 4) {
@@ -431,7 +679,12 @@ function parseLegacyWorkstreamOrder(streamId: string): number | null {
     return null
   }
 
-  const parsed = Number.parseInt(match[1], 10)
+  const prefix = match[1]
+  if (typeof prefix !== "string") {
+    return null
+  }
+
+  const parsed = Number.parseInt(prefix, 10)
   return Number.isFinite(parsed) ? parsed : null
 }
 
@@ -863,6 +1116,20 @@ export function hydrateLegacyFilesystemStateToSqliteSync(args: {
       continue
     }
 
+    const existingSqliteParity = loadSqliteCriticalWorkflowParityProjection(args.repoRoot, streamId)
+    if (existingSqliteParity && parityProjectionHasRows(existingSqliteParity)) {
+      diagnostics.push(
+        ...parityDivergencesToHydrationDiagnostics({
+          streamId,
+          phase: "pre-hydration",
+          report: collectCriticalWorkflowParityDivergenceReport({
+            compatibility: buildCriticalWorkflowParityProjection(filesystemState),
+            sqlite: existingSqliteParity,
+          }),
+        }),
+      )
+    }
+
     diagnostics.push(
         ...collectWorkstreamHydrationDiagnostics({
           streamId,
@@ -880,6 +1147,17 @@ export function hydrateLegacyFilesystemStateToSqliteSync(args: {
       streamId,
       workstreamState: hydratedState,
     })
+
+    const projectedParity = inspectCriticalWorkflowDualWriteParitySync(args.repoRoot, streamId)
+    if (projectedParity?.sqlite) {
+      diagnostics.push(
+        ...parityDivergencesToHydrationDiagnostics({
+          streamId,
+          phase: "post-hydration",
+          report: projectedParity.divergences,
+        }),
+      )
+    }
 
     workstreamStates.push(hydratedState)
     hydratedStreamIds.push(streamId)
@@ -1512,19 +1790,36 @@ export function inspectCriticalWorkflowDualWriteParitySync(
   repoRoot: string,
   streamId: string,
 ): CriticalWorkflowDualWriteParityInspection | null {
-  const filesystemState = loadStructuredWorkstreamStateSync(repoRoot, streamId)
+  const filesystemState = loadFilesystemStructuredWorkstreamStateSync(repoRoot, streamId)
   if (!filesystemState) {
     return null
   }
 
   const filesystem = buildCriticalWorkflowParityProjection(filesystemState)
   const sqlite = loadSqliteCriticalWorkflowParityProjection(repoRoot, streamId)
+  const divergences = sqlite
+    ? collectCriticalWorkflowParityDivergenceReport({ compatibility: filesystem, sqlite })
+    : {
+        tasks: [],
+        threads: [],
+        approvals: [],
+        batchRuns: [],
+        supervisionRuns: [],
+        all: [],
+        summary: {
+          total: 0,
+          missingFromCompatibility: 0,
+          missingFromSqlite: 0,
+          staleCompatibility: 0,
+          runtimeDivergence: 0,
+        },
+      }
   const parity = {
-    tasks: sqlite ? parityEqual(filesystem.tasks, sqlite.tasks) : false,
-    threads: sqlite ? parityEqual(filesystem.threads, sqlite.threads) : false,
-    approvals: sqlite ? parityEqual(filesystem.approvals, sqlite.approvals) : false,
-    batchRuns: sqlite ? parityEqual(filesystem.batchRuns, sqlite.batchRuns) : false,
-    supervisionRuns: sqlite ? parityEqual(filesystem.supervisionRuns, sqlite.supervisionRuns) : false,
+    tasks: sqlite ? divergences.tasks.length === 0 : false,
+    threads: sqlite ? divergences.threads.length === 0 : false,
+    approvals: sqlite ? divergences.approvals.length === 0 : false,
+    batchRuns: sqlite ? divergences.batchRuns.length === 0 : false,
+    supervisionRuns: sqlite ? divergences.supervisionRuns.length === 0 : false,
     all: false,
   }
   parity.all = parity.tasks && parity.threads && parity.approvals && parity.batchRuns && parity.supervisionRuns
@@ -1555,6 +1850,7 @@ export function inspectCriticalWorkflowDualWriteParitySync(
       },
     ],
     filesystemCompatibilityOnlyData,
+    divergences,
   }
 }
 

@@ -646,6 +646,13 @@ describe("sqlite structured storage dual-write", () => {
       supervisionRuns: true,
       all: true,
     })
+    expect(inspection?.divergences.summary).toEqual({
+      total: 0,
+      missingFromCompatibility: 0,
+      missingFromSqlite: 0,
+      staleCompatibility: 0,
+      runtimeDivergence: 0,
+    })
 
     expect(inspection?.filesystem.tasks.map((task) => task.id)).toEqual(["03.01.01.01", "03.01.02.01"])
     expect(inspection?.filesystem.threads.map((thread) => thread.threadId)).toEqual([
@@ -675,5 +682,93 @@ describe("sqlite structured storage dual-write", () => {
     expect(typeof inspection?.filesystemCompatibilityOnlyData.threadMetadataViewEnvelope?.lastUpdated).toBe(
       "string",
     )
+  })
+
+  test("reports missing, stale, and runtime-divergent rows in parity diagnostics", async () => {
+    const timestamp = "2026-04-19T12:00:00.000Z"
+    const stream = buildStream(workspace.streamId, timestamp)
+    const state = buildWorkstreamState(workspace.streamId, timestamp)
+    const adapter = getStructuredStorageAdapter()
+
+    state.hierarchy.tasks.push({
+      id: "03.01.02.02",
+      stageId: "03",
+      batchId: "03.01",
+      threadId: "03.01.02",
+      number: 2,
+      name: "Verify projection parity",
+      status: "completed",
+      createdAt: timestamp,
+      updatedAt: timestamp,
+      assignedAgent: "systems-engineer",
+    })
+
+    await adapter.replaceWorkspaceState(workspace.repoRoot, {
+      currentStreamId: workspace.streamId,
+      workstreams: [createStructuredStorageWorkstreamRecord(stream)],
+    })
+    await adapter.replaceWorkstreamState(workspace.repoRoot, state)
+
+    const tasksFile = readTasksFile(workspace.repoRoot, workspace.streamId)
+    expect(tasksFile).not.toBeNull()
+    if (!tasksFile) {
+      return
+    }
+    if (!tasksFile.runtime_state) {
+      throw new Error("expected runtime_state compatibility projection to exist")
+    }
+
+    tasksFile.tasks = tasksFile.tasks
+      .filter((task) => task.id !== "03.01.02.02")
+      .map((task) =>
+        task.id === "03.01.02.01"
+          ? {
+              ...task,
+              status: "completed",
+            }
+          : task,
+      )
+    tasksFile.runtime_state.threads = tasksFile.runtime_state.threads.map((thread) =>
+      thread.threadId === "03.01.02"
+        ? {
+            ...thread,
+            currentSessionId: "ses-thread-stale",
+            sessions: thread.sessions.map((session, index) =>
+              index === 0
+                ? {
+                    ...session,
+                    sessionId: "ses-thread-stale",
+                  }
+                : session,
+            ),
+          }
+        : thread,
+    )
+    writeTasksFile(workspace.repoRoot, workspace.streamId, tasksFile)
+
+    const inspection = inspectCriticalWorkflowDualWriteParitySync(workspace.repoRoot, workspace.streamId)
+    expect(inspection).not.toBeNull()
+    expect(inspection?.parity).toEqual({
+      tasks: false,
+      threads: false,
+      approvals: true,
+      batchRuns: true,
+      supervisionRuns: true,
+      all: false,
+    })
+    expect(inspection?.divergences.summary).toEqual({
+      total: 3,
+      missingFromCompatibility: 1,
+      missingFromSqlite: 0,
+      staleCompatibility: 1,
+      runtimeDivergence: 1,
+    })
+    expect(inspection?.divergences.tasks.map((divergence) => divergence.kind)).toEqual(
+      expect.arrayContaining(["missing-from-compatibility", "stale-compatibility"]),
+    )
+    expect(inspection?.divergences.threads[0]).toMatchObject({
+      kind: "runtime-divergence",
+      key: "03.01.02",
+    })
   })
 })

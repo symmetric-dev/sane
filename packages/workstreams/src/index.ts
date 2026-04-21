@@ -27,7 +27,17 @@ export {
   type FilesystemAuthoritativeSqliteStructuredStorageAdapterOptions,
   type CriticalWorkflowDualWriteParityInspection,
   type CriticalWorkflowFilesystemCompatibilityData,
+  type CriticalWorkflowParityDivergence,
+  type CriticalWorkflowParityDivergenceKind,
+  type CriticalWorkflowParityDivergenceReport,
+  type CriticalWorkflowParityDivergenceSummary,
 } from "./lib/storage-adapter.ts"
+export {
+  createCompatibilityIndexProjection,
+  createCompatibilityTasksProjection,
+  rebuildCompatibilityProjectionFromSqlite,
+  type RebuildCompatibilityProjectionResult,
+} from "./lib/compatibility-projection.ts"
 export {
   getStructuredStorageSqlitePath,
   getSqliteStructuredStorageMirrorState,
