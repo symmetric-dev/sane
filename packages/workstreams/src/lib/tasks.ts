@@ -38,6 +38,18 @@ import {
   completeMultipleThreadSessionsLocked,
   getThreadMetadata,
 } from "./threads.ts"
+import {
+  normalizePersistedBatchStatus,
+  normalizePersistedBranchSession,
+  normalizePersistedCurrentBranchSupervisionContext,
+  normalizePersistedSupervisorEscalation,
+  normalizePersistedSupervisorFixCycle,
+  normalizePersistedSupervisorIssueSummary,
+  normalizePersistedSupervisorReviewedBatch,
+  normalizePersistedSupervisorRunState,
+  normalizePersistedSupervisorStageStop,
+  normalizePersistedThreadMetadata,
+} from "./stage-id.ts"
 
 const TASKS_FILE_VERSION = "2.0.0"
 const RUNTIME_STATE_VERSION = "1.0.0"
@@ -198,7 +210,7 @@ function mergeSupervisorStateFromLegacy(
   }
 
   const canonical = normalizeSupervisorState(streamId, runtimeState.supervision)
-  const legacy = normalizeSupervisorState(streamId, legacySupervisorState)
+  const legacy = normalizeLoadedSupervisorState(streamId, legacySupervisorState)
   let changed = false
 
   if (!canonical.active_run_id && legacy.active_run_id) {
@@ -540,16 +552,52 @@ export function normalizeSupervisorState(
     last_updated: supervisorState?.last_updated ?? new Date().toISOString(),
     ...(supervisorState?.active_run_id ? { active_run_id: supervisorState.active_run_id } : {}),
     ...(supervisorState?.current_branch_supervision
-      ? { current_branch_supervision: supervisorState.current_branch_supervision }
+      ? {
+          current_branch_supervision: { ...supervisorState.current_branch_supervision },
+        }
       : {}),
-    runs: supervisorState?.runs ?? [],
-    checkpoint_pointers: supervisorState?.checkpoint_pointers ?? [],
-    branch_sessions: supervisorState?.branch_sessions ?? [],
-    reviewed_batches: supervisorState?.reviewed_batches ?? [],
-    issue_summaries: supervisorState?.issue_summaries ?? [],
-    fix_cycles: supervisorState?.fix_cycles ?? [],
-    escalations: supervisorState?.escalations ?? [],
-    stage_stops: supervisorState?.stage_stops ?? [],
+    runs: (supervisorState?.runs ?? []).map((run) => ({ ...run })),
+    checkpoint_pointers: (supervisorState?.checkpoint_pointers ?? []).map((pointer) => ({ ...pointer })),
+    branch_sessions: (supervisorState?.branch_sessions ?? []).map((branchSession) => ({
+      ...branchSession,
+      ...(branchSession.scope ? { scope: { ...branchSession.scope } } : {}),
+      ...(branchSession.supervisionProgress
+        ? { supervisionProgress: { ...branchSession.supervisionProgress } }
+        : {}),
+    })),
+    reviewed_batches: (supervisorState?.reviewed_batches ?? []).map((reviewedBatch) => ({
+      ...reviewedBatch,
+      threadIds: [...(reviewedBatch.threadIds ?? [])],
+    })),
+    issue_summaries: (supervisorState?.issue_summaries ?? []).map((issueSummary) => ({ ...issueSummary })),
+    fix_cycles: (supervisorState?.fix_cycles ?? []).map((fixCycle) => ({ ...fixCycle })),
+    escalations: (supervisorState?.escalations ?? []).map((escalation) => ({ ...escalation })),
+    stage_stops: (supervisorState?.stage_stops ?? []).map((stageStop) => ({ ...stageStop })),
+  }
+}
+
+export function normalizeLoadedSupervisorState(
+  streamId: string,
+  supervisorState?: Partial<SupervisorStateFile> | null,
+): SupervisorStateFile {
+  const normalized = normalizeSupervisorState(streamId, supervisorState)
+
+  return {
+    ...normalized,
+    ...(normalized.current_branch_supervision
+      ? {
+          current_branch_supervision: normalizePersistedCurrentBranchSupervisionContext(
+            normalized.current_branch_supervision,
+          ),
+        }
+      : {}),
+    runs: normalized.runs.map(normalizePersistedSupervisorRunState),
+    branch_sessions: normalized.branch_sessions.map(normalizePersistedBranchSession),
+    reviewed_batches: normalized.reviewed_batches.map(normalizePersistedSupervisorReviewedBatch),
+    issue_summaries: normalized.issue_summaries.map(normalizePersistedSupervisorIssueSummary),
+    fix_cycles: normalized.fix_cycles.map(normalizePersistedSupervisorFixCycle),
+    escalations: normalized.escalations.map(normalizePersistedSupervisorEscalation),
+    stage_stops: normalized.stage_stops.map(normalizePersistedSupervisorStageStop),
   }
 }
 
@@ -558,12 +606,56 @@ export function normalizeRuntimeState(
   runtimeState?: Partial<WorkstreamUnifiedRuntimeState> | null,
 ): WorkstreamUnifiedRuntimeState {
   const empty = createEmptyRuntimeState(streamId)
+
+  const normalizedThreads = Array.isArray(runtimeState?.threads)
+    ? runtimeState.threads.map((thread) => ({
+        ...thread,
+        sessions: (thread.sessions ?? []).map((session) => ({
+          ...session,
+          ...(session.lineage ? { lineage: { ...session.lineage } } : {}),
+        })),
+        ...(thread.synthesis ? { synthesis: { ...thread.synthesis } } : {}),
+      }))
+    : []
+
+  const normalizedBatches = Object.fromEntries(
+    Object.entries(runtimeState?.batches ?? {}).map(([batchId, batchStatus]) => {
+      return [
+        batchId,
+        {
+          ...batchStatus,
+          summary: { ...batchStatus.summary },
+          threads: (batchStatus.threads ?? []).map((thread) => ({ ...thread })),
+        },
+      ]
+    }),
+  )
+
   return {
     version: runtimeState?.version ?? empty.version,
     last_updated: runtimeState?.last_updated ?? empty.last_updated,
-    threads: Array.isArray(runtimeState?.threads) ? runtimeState.threads : [],
-    batches: runtimeState?.batches ?? {},
+    threads: normalizedThreads,
+    batches: normalizedBatches,
     supervision: normalizeSupervisorState(streamId, runtimeState?.supervision),
+  }
+}
+
+export function normalizeLoadedRuntimeState(
+  streamId: string,
+  runtimeState?: Partial<WorkstreamUnifiedRuntimeState> | null,
+): WorkstreamUnifiedRuntimeState {
+  const normalized = normalizeRuntimeState(streamId, runtimeState)
+
+  return {
+    ...normalized,
+    threads: normalized.threads.map(normalizePersistedThreadMetadata),
+    batches: Object.fromEntries(
+      Object.entries(normalized.batches).map(([batchId, batchStatus]) => {
+        const normalizedBatchStatus = normalizePersistedBatchStatus(batchStatus, batchId)
+        return [normalizedBatchStatus.batchId, normalizedBatchStatus]
+      }),
+    ),
+    supervision: normalizeLoadedSupervisorState(streamId, normalized.supervision),
   }
 }
 
@@ -707,7 +799,7 @@ export function projectRuntimeSummary(
   }
 
   const resolvedTasksFile = tasksFile ?? readTasksFile(repoRoot, streamId)
-  const runtimeState = normalizeRuntimeState(streamId, resolvedTasksFile?.runtime_state)
+  const runtimeState = normalizeLoadedRuntimeState(streamId, resolvedTasksFile?.runtime_state)
   const batches = Object.fromEntries(
     Object.entries(runtimeState.batches).map(([batchId, batchStatus]) => [
       batchId,
@@ -1300,11 +1392,16 @@ export async function completeMultipleSessionsLocked(
 export function readTasksFile(
   repoRoot: string,
   streamId: string,
+  options?: { normalizeIds?: boolean },
 ): TasksFile | null {
   importLegacyRuntimeState(repoRoot, streamId)
   const tasksFile = readTasksFileSnapshot(repoRoot, streamId)
   if (!tasksFile) {
     return null
+  }
+
+  if (options?.normalizeIds !== false) {
+    tasksFile.runtime_state = normalizeLoadedRuntimeState(streamId, tasksFile.runtime_state)
   }
 
   if (!tasksFile.runtime_summary) {
@@ -1327,7 +1424,7 @@ export function writeTasksFile(
 ): void {
   const filePath = getTasksFilePath(repoRoot, streamId)
   const lastUpdated = new Date().toISOString()
-  const runtimeState = normalizeRuntimeState(streamId, tasksFile.runtime_state)
+  const runtimeState = normalizeLoadedRuntimeState(streamId, tasksFile.runtime_state)
   runtimeState.last_updated = lastUpdated
   runtimeState.supervision.last_updated =
     runtimeState.supervision.last_updated || lastUpdated

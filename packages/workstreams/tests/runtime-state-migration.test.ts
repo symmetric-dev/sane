@@ -8,7 +8,7 @@ import {
   writeBatchStatusLocked,
 } from "../src/lib/batch-status"
 import { loadSupervisorState, upsertSupervisorRunLocked } from "../src/lib/supervisor-state"
-import { readTasksFile } from "../src/lib/tasks"
+import { readTasksFile, writeTasksFile } from "../src/lib/tasks"
 import { loadThreads, startThreadSessionLocked } from "../src/lib/threads"
 import type { TasksFile } from "../src/lib/types"
 import { cleanupTestWorkstream, createTestWorkstream, type TestWorkspace } from "./helpers"
@@ -243,5 +243,44 @@ describe("runtime-state migration", () => {
     ) as TasksFile
     expect(onDisk.runtime_state?.threads[0]?.sessions).toHaveLength(5)
     expect(Object.keys(onDisk.runtime_state?.batches ?? {})).toHaveLength(5)
+  })
+
+  test("writeTasksFile canonicalizes unambiguous runtime IDs before persistence", () => {
+    writeTasksFile(workspace.repoRoot, workspace.streamId, {
+      version: "2.0.0",
+      stream_id: workspace.streamId,
+      last_updated: new Date().toISOString(),
+      runtime_state: {
+        version: "1.0.0",
+        last_updated: new Date().toISOString(),
+        threads: [
+          {
+            threadId: "1.1.1",
+            sessions: [],
+          },
+        ],
+        batches: {},
+        supervision: {
+          version: "1.0.0",
+          stream_id: workspace.streamId,
+          last_updated: new Date().toISOString(),
+          runs: [],
+          checkpoint_pointers: [],
+          branch_sessions: [],
+          reviewed_batches: [],
+          issue_summaries: [],
+          fix_cycles: [],
+          escalations: [],
+          stage_stops: [],
+        },
+      },
+      tasks: [],
+    })
+
+    const onDisk = JSON.parse(readFileSync(join(workspace.workDir, "tasks.json"), "utf-8")) as TasksFile
+    expect(onDisk.runtime_state?.threads[0]?.threadId).toBe("01.01.01")
+
+    const loaded = readTasksFile(workspace.repoRoot, workspace.streamId)
+    expect(loaded?.runtime_state?.threads[0]?.threadId).toBe("01.01.01")
   })
 })

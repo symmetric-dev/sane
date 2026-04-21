@@ -334,6 +334,124 @@ describe("runtime sqlite-backed read model", () => {
     }
   })
 
+  test("preserves raw runtime ids on sqlite raw load while normalizing default reads", () => {
+    const workspace = createTestWorkstream("001-runtime-sqlite-raw-load")
+
+    try {
+      writeIndex(workspace.repoRoot, workspace.streamId, workspace.streamId)
+
+      const now = "2026-04-20T02:00:00.000Z"
+      const malformedStageLabel = "Stage 1: Runtime hardening"
+      const state = createEmptyStructuredStorageWorkstreamState(workspace.streamId)
+      state.hierarchy = {
+        stages: [{ id: "1", number: 1, name: "Runtime hardening" }],
+        batches: [{ id: "1.1", stageId: "1", number: 1, name: "Batch 1" }],
+        threads: [{ id: "1.1.1", stageId: "1", batchId: "1.1", number: 1, name: "Thread 1" }],
+        tasks: [
+          {
+            id: "1.1.1.1",
+            stageId: "1",
+            batchId: "1.1",
+            threadId: "1.1.1",
+            number: 1,
+            name: "Preserve runtime ids",
+            status: "pending",
+            createdAt: now,
+            updatedAt: now,
+          },
+        ],
+      }
+      state.threadRuntime = [
+        {
+          threadId: "1.1.1",
+          currentSessionId: "session-1",
+          sessions: [
+            {
+              sessionId: "session-1",
+              agentName: "systems-engineer",
+              model: "gpt-5.4",
+              startedAt: now,
+              status: "running",
+              lineage: {
+                owner: "root_agent",
+                rootSessionId: "root-session-1",
+                branchSessionId: "branch-supervision-1",
+                branchRole: "supervision",
+                source: "native_fork",
+                scope: { level: "stage", stageId: malformedStageLabel },
+              },
+            },
+          ],
+        },
+      ]
+      state.batchRuns = [
+        {
+          version: "1.0.0",
+          streamId: workspace.streamId,
+          batchId: "1.1",
+          runId: "run-1",
+          mode: "headless",
+          status: "running",
+          startedAt: now,
+          updatedAt: now,
+          summary: {
+            total: 1,
+            pending: 0,
+            running: 1,
+            completed: 0,
+            failed: 0,
+          },
+          threads: [
+            {
+              threadId: "1.1.1",
+              threadName: "Thread 1",
+              firstTaskId: "1.1.1.1",
+              status: "running",
+              startedAt: now,
+              updatedAt: now,
+            },
+          ],
+        },
+      ]
+
+      syncStructuredStorageWorkstreamStateToSqlite(workspace.repoRoot, state)
+
+      const normalized = loadSqliteStructuredStorageWorkstreamState(workspace.repoRoot, workspace.streamId)
+      expect(normalized?.hierarchy.threads[0]).toMatchObject({
+        id: "01.01.01",
+        stageId: "01",
+        batchId: "01.01",
+      })
+      expect(normalized?.threadRuntime[0]?.threadId).toBe("01.01.01")
+      expect(normalized?.threadRuntime[0]?.sessions[0]?.lineage?.scope).toEqual({
+        level: "stage",
+        stageId: "01",
+      })
+      expect(normalized?.batchRuns[0]?.batchId).toBe("01.01")
+      expect(normalized?.batchRuns[0]?.threads[0]).toMatchObject({
+        threadId: "01.01.01",
+        firstTaskId: "01.01.01.01",
+      })
+
+      const raw = loadSqliteStructuredStorageWorkstreamState(workspace.repoRoot, workspace.streamId, {
+        normalizeIds: false,
+      })
+      expect(raw?.hierarchy.threads[0]?.id).toBe("1.1.1")
+      expect(raw?.threadRuntime[0]?.threadId).toBe("1.1.1")
+      expect(raw?.threadRuntime[0]?.sessions[0]?.lineage?.scope).toEqual({
+        level: "stage",
+        stageId: malformedStageLabel,
+      })
+      expect(raw?.batchRuns[0]?.batchId).toBe("1.1")
+      expect(raw?.batchRuns[0]?.threads[0]).toMatchObject({
+        threadId: "1.1.1",
+        firstTaskId: "1.1.1.1",
+      })
+    } finally {
+      cleanupTestWorkstream(workspace)
+    }
+  })
+
   test("batch-status and supervisor snapshots read sqlite-backed canonical state", () => {
     const workspace = createTestWorkstream("001-runtime-sqlite-snapshots")
 

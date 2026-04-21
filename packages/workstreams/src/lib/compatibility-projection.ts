@@ -454,7 +454,9 @@ export function rebuildCompatibilityProjectionFromSqlite(args: {
 
   const workstreamStatesById = new Map<string, StructuredStorageWorkstreamState>()
   for (const stream of workspaceSnapshot.workstreams) {
-    const workstreamState = loadSqliteStructuredStorageWorkstreamState(args.repoRoot, stream.id)
+    const workstreamState = loadSqliteStructuredStorageWorkstreamState(args.repoRoot, stream.id, {
+      normalizeIds: false,
+    })
     if (workstreamState) {
       workstreamStatesById.set(stream.id, workstreamState)
     }

@@ -44,6 +44,8 @@ import {
   getTasksFilePath,
   importLegacyRuntimeState,
   modifyTasksFile,
+  normalizeLoadedRuntimeState,
+  normalizeLoadedSupervisorState,
   normalizeRuntimeState,
   normalizeSupervisorState,
   readTasksFile,
@@ -1046,7 +1048,8 @@ export function projectLegacyRuntimeCompatibilityArtifactsSync(args: {
   workstreamState?: StructuredStorageWorkstreamState | null
 }): void {
   const workstreamState =
-    args.workstreamState ?? loadSqliteStructuredStorageWorkstreamState(args.repoRoot, args.streamId)
+    args.workstreamState ??
+    loadSqliteStructuredStorageWorkstreamState(args.repoRoot, args.streamId, { normalizeIds: false })
   if (!workstreamState) {
     return
   }
@@ -1185,7 +1188,7 @@ function workstreamStateFromSnapshot(
   }
 
   const state = createEmptyStructuredStorageWorkstreamState(streamId)
-  const runtimeState = normalizeRuntimeState(streamId, tasksFile?.runtime_state)
+  const runtimeState = normalizeLoadedRuntimeState(streamId, tasksFile?.runtime_state)
   const hierarchy = buildHierarchyFromTasks(tasksFile?.tasks ?? [])
 
   state.hierarchy = hierarchy
@@ -1209,18 +1212,25 @@ function workstreamStateFromSnapshot(
 function loadFilesystemStructuredWorkstreamStateSync(
   repoRoot: string,
   streamId: string,
+  options?: { normalizeIds?: boolean },
 ): StructuredStorageWorkstreamState | null {
-  return workstreamStateFromSnapshot(getOrCreateIndex(repoRoot), streamId, readTasksFile(repoRoot, streamId))
+  return workstreamStateFromSnapshot(
+    getOrCreateIndex(repoRoot),
+    streamId,
+    readTasksFile(repoRoot, streamId, options),
+  )
 }
 
 function loadRuntimeCanonicalMutationSeedSync(
   repoRoot: string,
   streamId: string,
 ): StructuredStorageWorkstreamState | null {
-  const filesystemState = loadFilesystemStructuredWorkstreamStateSync(repoRoot, streamId)
+  const filesystemState = loadFilesystemStructuredWorkstreamStateSync(repoRoot, streamId, {
+    normalizeIds: false,
+  })
   let sqliteState: StructuredStorageWorkstreamState | null = null
   try {
-    sqliteState = loadSqliteStructuredStorageWorkstreamState(repoRoot, streamId)
+    sqliteState = loadSqliteStructuredStorageWorkstreamState(repoRoot, streamId, { normalizeIds: false })
   } catch {
     sqliteState = null
   }
@@ -1501,7 +1511,9 @@ export function replaceStructuredWorkstreamStateSync(args: {
   writeTasksFileIfMissing?: boolean
 }): void {
   const existingIndex = getOrCreateIndex(args.repoRoot)
-  const existingTasksFile = readTasksFile(args.repoRoot, args.workstreamState.streamId)
+  const existingTasksFile = readTasksFile(args.repoRoot, args.workstreamState.streamId, {
+    normalizeIds: false,
+  })
   const nextState = cloneWorkstreamState(args.workstreamState)
 
   try {
@@ -1734,7 +1746,7 @@ export function loadStructuredSupervisorStateSync(
   streamId: string,
 ): SupervisorStateFile | null {
   const workstreamState = loadRuntimeCanonicalMutationSeedSync(repoRoot, streamId)
-  return workstreamState ? normalizeSupervisorState(streamId, workstreamState.supervision) : null
+  return workstreamState ? normalizeLoadedSupervisorState(streamId, workstreamState.supervision) : null
 }
 
 export function replaceStructuredSupervisorStateSync(args: {

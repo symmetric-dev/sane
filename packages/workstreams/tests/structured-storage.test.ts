@@ -355,6 +355,42 @@ describe("structured storage adapter contract helpers", () => {
     expect(rebuilt).toEqual(stream.approval)
   })
 
+  test("normalizes stage approval ids and current batch pointers before persistence-facing conversion", () => {
+    const stream = buildStreamMetadata()
+    const record = createStructuredStorageWorkstreamRecord({
+      ...stream,
+      current_batch: "2.1",
+    })
+
+    expect(record.currentBatch).toBe("02.01")
+    expect(
+      createStreamMetadataFromStructuredStorageRecord({
+        record: {
+          ...record,
+          currentBatch: "2.1",
+        },
+      }).current_batch,
+    ).toBe("02.01")
+
+    const state = createEmptyStructuredStorageWorkstreamState(stream.id)
+    replaceStructuredApprovals(state, [
+      {
+        streamId: stream.id,
+        scope: "stage",
+        stageId: "Stage 2: Runtime hardening",
+        status: "approved",
+        approvedAt: "2026-04-19T00:20:00.000Z",
+      },
+    ])
+
+    expect(state.approvals).toEqual([
+      expect.objectContaining({
+        scope: "stage",
+        stageId: "02",
+      }),
+    ])
+  })
+
   test("applies targeted task, thread-runtime, batch-run, and approval mutations", () => {
     const state = buildWorkstreamState()
 
@@ -408,6 +444,58 @@ describe("structured storage adapter contract helpers", () => {
     ])
     expect(state.batchRuns.map((run) => run.batchId)).toEqual(["01.01", "02.01"])
     expect(state.approvals.map((record) => record.scope)).toEqual(["plan", "tasks", "stage"])
+  })
+
+  test("normalizes unambiguous thread runtime ids before upsert replacement", () => {
+    const state = buildWorkstreamState()
+
+    upsertStructuredThreadRuntime(state, {
+      threadId: "01.01.01",
+      sessions: [],
+      currentSessionId: "canonical-session",
+    })
+
+    upsertStructuredThreadRuntime(state, {
+      threadId: "1.1.1",
+      sessions: [],
+      currentSessionId: "raw-session",
+    })
+
+    expect(state.threadRuntime).toHaveLength(1)
+    expect(state.threadRuntime[0]).toMatchObject({
+      threadId: "01.01.01",
+      currentSessionId: "raw-session",
+    })
+  })
+
+  test("normalizes unambiguous batch runtime ids before upsert replacement", () => {
+    const state = buildWorkstreamState()
+
+    upsertStructuredBatchRun(state, buildBatchRun("01.01", "run-01"))
+    upsertStructuredBatchRun(state, {
+      ...buildBatchRun("1.1", "run-01"),
+      threads: [
+        {
+          threadId: "1.1.1",
+          threadName: "Thread 1",
+          firstTaskId: "1.1.1.1",
+          status: "running",
+          updatedAt: "2026-04-19T02:05:00.000Z",
+        },
+      ],
+    })
+
+    expect(state.batchRuns).toHaveLength(1)
+    expect(state.batchRuns[0]).toMatchObject({
+      batchId: "01.01",
+      runId: "run-01",
+      threads: [
+        expect.objectContaining({
+          threadId: "01.01.01",
+          firstTaskId: "01.01.01.01",
+        }),
+      ],
+    })
   })
 
   test("builds deterministically ordered parity snapshots", () => {

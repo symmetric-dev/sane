@@ -2,7 +2,22 @@ import { existsSync, mkdirSync } from "fs"
 import { dirname, join } from "path"
 
 import { Database } from "bun:sqlite"
-import { normalizeCanonicalStageIdOrFallback } from "./stage-id.ts"
+import {
+  normalizeCanonicalBatchIdOrFallback,
+  normalizeCanonicalStageIdOrFallback,
+  normalizeCanonicalThreadIdOrFallback,
+  normalizePersistedBatchStatus,
+  normalizePersistedBranchSession,
+  normalizePersistedCurrentBranchSupervisionContext,
+  normalizePersistedSessionRecord,
+  normalizePersistedSupervisorEscalation,
+  normalizePersistedSupervisorFixCycle,
+  normalizePersistedSupervisorIssueSummary,
+  normalizePersistedSupervisorReviewedBatch,
+  normalizePersistedSupervisorRunState,
+  normalizePersistedSupervisorStageStop,
+  normalizePersistedThreadMetadata,
+} from "./stage-id.ts"
 import type {
   StructuredStorageWorkspaceState,
   StructuredStorageWorkstreamState,
@@ -23,6 +38,7 @@ import type {
 } from "./types.ts"
 import { createEmptySupervisorState } from "./supervisor-state.ts"
 import { createEmptyStructuredStorageWorkstreamState as createEmptyWorkstreamState } from "./structured-storage.ts"
+import { normalizeLoadedSupervisorState } from "./tasks.ts"
 
 export const SQLITE_STRUCTURED_STORAGE_SCHEMA_VERSION = 1
 const SQLITE_BUSY_TIMEOUT_MS = 5000
@@ -520,7 +536,7 @@ function nullableJsonStringify(value: unknown): string | null {
 }
 
 function approvalKey(record: StructuredApprovalRecord): string {
-  return `${record.scope}:${record.stageId ?? ""}`
+  return `${record.scope}:${normalizeCanonicalStageIdOrFallback(record.stageId) ?? record.stageId ?? ""}`
 }
 
 function deleteRemovedWorkstreams(database: Database, streamIds: string[]): void {
@@ -592,16 +608,7 @@ export function loadSqliteStructuredStorageWorkspaceState(
 }
 
 function normalizeSessionRecord(session: SessionRecord): SessionRecord {
-  return {
-    sessionId: session.sessionId,
-    agentName: session.agentName,
-    model: session.model,
-    startedAt: session.startedAt,
-    completedAt: session.completedAt,
-    status: session.status,
-    exitCode: session.exitCode,
-    ...(session.lineage ? { lineage: { ...session.lineage } } : {}),
-  }
+  return normalizePersistedSessionRecord(session)
 }
 
 type SqliteThreadMetadataJson = {
@@ -882,6 +889,13 @@ function syncWorkspaceRows(database: Database, workspaceState: StructuredStorage
   )
 
   for (const workstream of workspaceState.workstreams) {
+    const normalizedCurrentBatchId =
+      normalizeCanonicalBatchIdOrFallback(workstream.currentBatch) ?? workstream.currentBatch ?? null
+    const normalizedWorkstream = {
+      ...workstream,
+      ...(normalizedCurrentBatchId ? { currentBatch: normalizedCurrentBatchId } : {}),
+    }
+
     upsertWorkstream.run(
       workstream.id,
       workstream.name,
@@ -891,13 +905,13 @@ function syncWorkspaceRows(database: Database, workspaceState: StructuredStorage
       workstream.updatedAt,
       workstream.storageRoot,
       workstream.manualStatus ?? null,
-      workstream.currentBatch ?? null,
+      normalizedCurrentBatchId,
       jsonStringify(workstream.generatedBy),
       jsonStringify(workstream.sessionEstimated),
       nullableJsonStringify(workstream.files),
       nullableJsonStringify(workstream.planningSession),
       nullableJsonStringify(workstream.github),
-      jsonStringify(workstream),
+      jsonStringify(normalizedWorkstream),
     )
   }
 
@@ -1064,11 +1078,14 @@ function insertApprovals(database: Database, streamId: string, approvals: Struct
   )
 
   for (const approval of approvals) {
+    const normalizedStageId =
+      normalizeCanonicalStageIdOrFallback(approval.stageId) ?? approval.stageId ?? null
+
     insertApproval.run(
       streamId,
       approvalKey(approval),
       approval.scope,
-      approval.stageId ?? null,
+      normalizedStageId,
       approval.status,
       approval.approvedAt ?? null,
       approval.approvedBy ?? null,
@@ -1077,7 +1094,7 @@ function insertApprovals(database: Database, streamId: string, approvals: Struct
       approval.planHash ?? null,
       approval.taskCount ?? null,
       approval.commitSha ?? null,
-      jsonStringify(approval),
+      jsonStringify({ ...approval, ...(normalizedStageId ? { stageId: normalizedStageId } : {}) }),
     )
   }
 }
@@ -1436,7 +1453,9 @@ export function syncStructuredStorageWorkstreamStateToSqlite(
 function loadSqliteStructuredStorageWorkstreamStateFromDatabase(
   database: Database,
   streamId: string,
+  options?: { normalizeIds?: boolean },
 ): StructuredStorageWorkstreamState | null {
+  const shouldNormalizeIds = options?.normalizeIds !== false
   const stages = database
     .query<{ metadata_json: string }, [string]>(
       "SELECT metadata_json FROM stages WHERE stream_id = ? ORDER BY stage_number, stage_id",
@@ -1486,11 +1505,9 @@ function loadSqliteStructuredStorageWorkstreamStateFromDatabase(
 
   const sessionsByThreadId = new Map<string, SessionRecord[]>()
   for (const row of sessionRows) {
-    const session = normalizeSessionRecord(
-      parseMetadataJson<SessionRecord>(
-        row.metadata_json,
-        `thread_sessions(thread=${row.thread_id})`,
-      ),
+    const session = parseMetadataJson<SessionRecord>(
+      row.metadata_json,
+      `thread_sessions(thread=${row.thread_id})`,
     )
     const sessions = sessionsByThreadId.get(row.thread_id)
     if (sessions) {
@@ -1507,9 +1524,11 @@ function loadSqliteStructuredStorageWorkstreamStateFromDatabase(
         `threads(thread=${row.thread_id})`,
       )
       return {
-        id: metadata.id,
-        stageId: metadata.stageId,
-        batchId: metadata.batchId,
+        id: shouldNormalizeIds
+          ? normalizeCanonicalThreadIdOrFallback(metadata.id) ?? metadata.id
+          : metadata.id,
+        stageId: normalizeCanonicalStageIdOrFallback(metadata.stageId) ?? metadata.stageId,
+        batchId: normalizeCanonicalBatchIdOrFallback(metadata.batchId) ?? metadata.batchId,
         number: metadata.number,
         name: metadata.name,
         ...(metadata.promptPath ? { promptPath: metadata.promptPath } : {}),
@@ -1524,7 +1543,7 @@ function loadSqliteStructuredStorageWorkstreamStateFromDatabase(
           `threads(thread=${row.thread_id})`,
         )
         const sessions = (sessionsByThreadId.get(row.thread_id) ?? [])
-        .map(normalizeSessionRecord)
+        .map((session) => (shouldNormalizeIds ? normalizeSessionRecord(session) : session))
         .sort((left, right) => {
           const startedAtOrder = compareOptionalIds(left.startedAt, right.startedAt)
           if (startedAtOrder !== 0) return startedAtOrder
@@ -1544,17 +1563,23 @@ function loadSqliteStructuredStorageWorkstreamStateFromDatabase(
           return null
         }
 
-        return {
-          threadId: metadata.id,
+        const runtimeRecord = {
+          threadId: shouldNormalizeIds
+            ? normalizeCanonicalThreadIdOrFallback(metadata.id) ?? metadata.id
+            : metadata.id,
           sessions,
           ...(metadata.currentSessionId ? { currentSessionId: metadata.currentSessionId } : {}),
           ...(metadata.opencodeSessionId ? { opencodeSessionId: metadata.opencodeSessionId } : {}),
           ...(metadata.workingAgentSessionId
-          ? { workingAgentSessionId: metadata.workingAgentSessionId }
-          : {}),
-        ...(metadata.synthesisOutput ? { synthesisOutput: metadata.synthesisOutput } : {}),
-        ...(metadata.synthesis ? { synthesis: { ...metadata.synthesis } } : {}),
+            ? { workingAgentSessionId: metadata.workingAgentSessionId }
+            : {}),
+          ...(metadata.synthesisOutput ? { synthesisOutput: metadata.synthesisOutput } : {}),
+          ...(metadata.synthesis ? { synthesis: { ...metadata.synthesis } } : {}),
         } satisfies StructuredThreadRuntimeRecord
+
+        return shouldNormalizeIds
+          ? normalizePersistedThreadMetadata(runtimeRecord)
+          : runtimeRecord
       })
       .filter((record): record is StructuredThreadRuntimeRecord => record !== null)
       .sort((left, right) => compareIds(left.threadId, right.threadId))
@@ -1565,7 +1590,10 @@ function loadSqliteStructuredStorageWorkstreamStateFromDatabase(
     )
     .all(streamId)
   const batchRuns = batchRunRows
-    .map((row) => parseMetadataJson<PersistedBatchStatusFile>(row.metadata_json, "batch_runs"))
+    .map((row) => {
+      const batchRun = parseMetadataJson<PersistedBatchStatusFile>(row.metadata_json, "batch_runs")
+      return shouldNormalizeIds ? normalizePersistedBatchStatus(batchRun) : batchRun
+    })
     .sort((left, right) => {
       const batchOrder = compareIds(left.batchId, right.batchId)
       if (batchOrder !== 0) return batchOrder
@@ -1582,9 +1610,39 @@ function loadSqliteStructuredStorageWorkstreamStateFromDatabase(
       "SELECT metadata_json FROM supervision_state WHERE stream_id = ? LIMIT 1",
     )
     .get(streamId)
-  const supervision = supervisionStateRow
-    ? parseMetadataJson<SupervisorStateFile>(supervisionStateRow.metadata_json, "supervision_state")
-    : createEmptySupervisorState(streamId)
+  const supervision = (() => {
+    if (!supervisionStateRow) {
+      return createEmptySupervisorState(streamId)
+    }
+
+    const parsed = parseMetadataJson<SupervisorStateFile>(
+      supervisionStateRow.metadata_json,
+      "supervision_state",
+    )
+    const normalized =
+      options?.normalizeIds === false
+        ? {
+            ...createEmptySupervisorState(streamId),
+            ...parsed,
+            runs: parsed.runs ?? [],
+            checkpoint_pointers: parsed.checkpoint_pointers ?? [],
+            branch_sessions: parsed.branch_sessions ?? [],
+            ...(parsed.current_branch_supervision
+              ? { current_branch_supervision: parsed.current_branch_supervision }
+              : {}),
+            reviewed_batches: parsed.reviewed_batches ?? [],
+            issue_summaries: parsed.issue_summaries ?? [],
+            fix_cycles: parsed.fix_cycles ?? [],
+            escalations: parsed.escalations ?? [],
+            stage_stops: parsed.stage_stops ?? [],
+          }
+        : normalizeLoadedSupervisorState(streamId, parsed)
+
+    return {
+      ...createEmptySupervisorState(streamId),
+      ...normalized,
+    }
+  })()
 
   if (
     stages.length === 0 &&
@@ -1645,6 +1703,7 @@ export function modifySqliteStructuredStorageWorkstreamState<T>(args: {
 export function loadSqliteStructuredStorageWorkstreamState(
   repoRoot: string,
   streamId: string,
+  options?: { normalizeIds?: boolean },
 ): StructuredStorageWorkstreamState | null {
   const databasePath = getSqliteStructuredStoragePath(repoRoot)
   if (!existsSync(databasePath)) {
@@ -1660,7 +1719,7 @@ export function loadSqliteStructuredStorageWorkstreamState(
   }
 
   try {
-    return loadSqliteStructuredStorageWorkstreamStateFromDatabase(database, streamId)
+    return loadSqliteStructuredStorageWorkstreamStateFromDatabase(database, streamId, options)
   } finally {
     database.close()
   }

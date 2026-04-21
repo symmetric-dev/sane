@@ -20,7 +20,8 @@ import {
   upsertReviewedBatchLocked,
   upsertSupervisorRunLocked,
 } from "../src/lib/supervisor-state"
-import { readTasksFile } from "../src/lib/tasks"
+import { readTasksFile, writeTasksFile } from "../src/lib/tasks"
+import { loadSqliteStructuredStorageWorkstreamState } from "../src/lib/sqlite-storage"
 import type { SupervisorRunState, SupervisorStateFile } from "../src/lib/types"
 import { cleanupTestWorkstream, createTestWorkstream, type TestWorkspace } from "./helpers"
 
@@ -170,6 +171,285 @@ describe("supervisor-state", () => {
     expect(() => loadSupervisorState(workspace.repoRoot, workspace.streamId)).toThrow(
       `Failed to parse unified supervisor state in tasks.json at ${supervisorStatePath}:`,
     )
+  })
+
+  test("read/load normalization canonicalizes persisted runtime ids conservatively", () => {
+    const now = new Date().toISOString()
+    const tasksPath = getSupervisorStateFilePath(workspace.repoRoot, workspace.streamId)
+
+    writeFileSync(
+      tasksPath,
+      JSON.stringify(
+        {
+          version: "2.0.0",
+          stream_id: workspace.streamId,
+          last_updated: now,
+          runtime_state: {
+            version: "1.0.0",
+            last_updated: now,
+            threads: [
+              {
+                threadId: "1.1.1",
+                sessions: [
+                  {
+                    sessionId: "session-1",
+                    agentName: "worker",
+                    model: "openai/gpt-5.4",
+                    startedAt: now,
+                    status: "running",
+                    lineage: {
+                      owner: "root_agent",
+                      rootSessionId: "root-1",
+                      branchSessionId: "branch-review-1",
+                      branchRole: "review",
+                      source: "native_fork",
+                      scope: {
+                        level: "batch",
+                        stageId: "Stage 01: Runtime hardening",
+                        batchId: "1.1",
+                      },
+                    },
+                  },
+                ],
+              },
+            ],
+            batches: {
+              "1.1": {
+                version: "1.0.0",
+                streamId: workspace.streamId,
+                batchId: "1.1",
+                runId: "batch-run-1",
+                mode: "headless",
+                status: "running",
+                startedAt: now,
+                updatedAt: now,
+                summary: { total: 1, pending: 0, running: 1, completed: 0, failed: 0 },
+                threads: [
+                  {
+                    threadId: "1.1.1",
+                    threadName: "Normalized thread",
+                    firstTaskId: "1.1.1.1",
+                    status: "running",
+                    updatedAt: now,
+                  },
+                ],
+              },
+              "batch-one": {
+                version: "1.0.0",
+                streamId: workspace.streamId,
+                batchId: "batch-one",
+                runId: "batch-run-ambiguous",
+                mode: "headless",
+                status: "running",
+                startedAt: now,
+                updatedAt: now,
+                summary: { total: 1, pending: 0, running: 1, completed: 0, failed: 0 },
+                threads: [
+                  {
+                    threadId: "thread-one",
+                    threadName: "Ambiguous thread",
+                    firstTaskId: "task-one",
+                    status: "running",
+                    updatedAt: now,
+                  },
+                ],
+              },
+            },
+            supervision: {
+              version: "1.0.0",
+              stream_id: workspace.streamId,
+              last_updated: now,
+              active_run_id: "sup-run-1",
+              current_branch_supervision: {
+                owner: "root_agent",
+                rootSessionId: "root-1",
+                branchSessionId: "branch-supervision-1",
+                branchRole: "supervision",
+                nativeSessionId: "ses-1",
+                source: "native_fork",
+                updatedAt: now,
+                scope: {
+                  level: "batch",
+                  stageId: "Stage 01: Runtime hardening",
+                  batchId: "1.1",
+                },
+                supervisionProgress: {
+                  executionMode: "single_batch_run",
+                  currentBatchId: "1.1",
+                  lastReviewedBatchId: "1.2",
+                },
+              },
+              runs: [
+                {
+                  runId: "sup-run-1",
+                  stageId: "Stage 01: Runtime hardening",
+                  status: "running",
+                  startedAt: now,
+                  updatedAt: now,
+                  currentBatchId: "1.1",
+                  lastReviewedBatchId: "1.2",
+                  reviewPasses: 0,
+                  issueSummaryIds: [],
+                  escalationIds: [],
+                },
+              ],
+              checkpoint_pointers: [],
+              branch_sessions: [
+                {
+                  owner: "root_agent",
+                  rootSessionId: "root-1",
+                  branchSessionId: "branch-supervision-1",
+                  branchRole: "supervision",
+                  source: "native_fork",
+                  status: "running",
+                  startedAt: now,
+                  updatedAt: now,
+                  nativeSessionId: "ses-1",
+                  batchId: "1.1",
+                  threadId: "1.1.1",
+                  scope: {
+                    level: "batch",
+                    stageId: "Stage 01: Runtime hardening",
+                    batchId: "1.1",
+                  },
+                  supervisionProgress: {
+                    executionMode: "single_batch_run",
+                    currentBatchId: "1.1",
+                  },
+                },
+              ],
+              reviewed_batches: [
+                {
+                  reviewId: "review-1",
+                  runId: "sup-run-1",
+                  stageId: "Stage 01: Runtime hardening",
+                  batchId: "1.1",
+                  reviewPass: 1,
+                  reviewedAt: now,
+                  outcome: "changes_requested",
+                  threadIds: ["1.1.1"],
+                  issueSummaryIds: [],
+                },
+              ],
+              issue_summaries: [
+                {
+                  summaryId: "issue-1",
+                  runId: "sup-run-1",
+                  stageId: "Stage 01: Runtime hardening",
+                  batchId: "1.1",
+                  threadId: "1.1.1",
+                  status: "open",
+                  summary: "Normalize persisted runtime ids.",
+                  firstObservedAt: now,
+                  lastObservedAt: now,
+                },
+              ],
+              fix_cycles: [
+                {
+                  cycleId: "cycle-1",
+                  runId: "sup-run-1",
+                  stageId: "Stage 01: Runtime hardening",
+                  batchId: "1.1",
+                  threadId: "1.1.1",
+                  attemptCount: 1,
+                  lastAttemptAt: now,
+                  lastOutcome: "pending_review",
+                  issueSummaryIds: [],
+                },
+              ],
+              escalations: [
+                {
+                  escalationId: "esc-1",
+                  runId: "sup-run-1",
+                  stageId: "Stage 01: Runtime hardening",
+                  batchId: "1.1",
+                  threadId: "1.1.1",
+                  target: "thread",
+                  reason: "Needs review",
+                  status: "pending",
+                  escalatedAt: now,
+                },
+              ],
+              stage_stops: [
+                {
+                  stopId: "stop-1",
+                  runId: "sup-run-1",
+                  stageId: "Stage 01: Runtime hardening",
+                  batchId: "1.1",
+                  reason: "blocked",
+                  summary: "Waiting on review",
+                  stoppedAt: now,
+                },
+              ],
+            },
+          },
+          tasks: [
+            {
+              id: "01.01.01.01",
+              name: "Normalize ids",
+              stage_name: "Stage 01",
+              batch_name: "Batch 01",
+              thread_name: "Thread 01",
+              status: "pending",
+              created_at: now,
+              updated_at: now,
+            },
+          ],
+        },
+        null,
+        2,
+      ),
+      "utf-8",
+    )
+
+    const tasksFile = readTasksFile(workspace.repoRoot, workspace.streamId)
+    expect(tasksFile?.runtime_state?.threads[0]).toMatchObject({
+      threadId: "01.01.01",
+      sessions: [
+        {
+          lineage: {
+            scope: {
+              level: "batch",
+              stageId: "01",
+              batchId: "01.01",
+            },
+          },
+        },
+      ],
+    })
+    expect(Object.keys(tasksFile?.runtime_state?.batches ?? {})).toEqual(["01.01", "batch-one"])
+    expect(tasksFile?.runtime_state?.batches["01.01"]).toMatchObject({
+      batchId: "01.01",
+      threads: [{ threadId: "01.01.01", firstTaskId: "01.01.01.01" }],
+    })
+    expect(tasksFile?.runtime_state?.batches["batch-one"]).toMatchObject({
+      batchId: "batch-one",
+      threads: [{ threadId: "thread-one", firstTaskId: "task-one" }],
+    })
+
+    const supervisorState = loadSupervisorState(workspace.repoRoot, workspace.streamId)
+    expect(supervisorState).toMatchObject({
+      current_branch_supervision: {
+        scope: { level: "batch", stageId: "01", batchId: "01.01" },
+        supervisionProgress: {
+          currentBatchId: "01.01",
+        },
+      },
+      runs: [{ stageId: "01", currentBatchId: "01.01", lastReviewedBatchId: "01.02" }],
+      branch_sessions: [
+        {
+          batchId: "01.01",
+          threadId: "01.01.01",
+          scope: { level: "batch", stageId: "01", batchId: "01.01" },
+          supervisionProgress: { currentBatchId: "01.01" },
+        },
+      ],
+      reviewed_batches: [{ stageId: "01", batchId: "01.01", threadIds: ["01.01.01"] }],
+      issue_summaries: [{ stageId: "01", batchId: "01.01", threadId: "01.01.01" }],
+      fix_cycles: [{ stageId: "01", batchId: "01.01", threadId: "01.01.01" }],
+      escalations: [{ stageId: "01", batchId: "01.01", threadId: "01.01.01" }],
+      stage_stops: [{ stageId: "01", batchId: "01.01" }],
+    })
   })
 
   test("locked helpers create, update, and keep explicit batch/thread references", async () => {
@@ -462,6 +742,208 @@ describe("supervisor-state", () => {
     expect(stored?.branch_sessions[0]?.supervisionProgress).toEqual({
       executionMode: "single_batch_run",
       currentBatchId: "15.01",
+    })
+  })
+
+  test("write-side supervisor persistence canonicalizes unambiguous IDs before storage", () => {
+    const startedAt = new Date().toISOString()
+    const malformedStageLabel = "Stage 01: Runtime hardening"
+
+    writeTasksFile(workspace.repoRoot, workspace.streamId, {
+      version: "2.0.0",
+      stream_id: workspace.streamId,
+      last_updated: startedAt,
+      runtime_state: {
+        version: "1.0.0",
+        last_updated: startedAt,
+        threads: [],
+        batches: {},
+        supervision: {
+          version: "1.0.0",
+          stream_id: workspace.streamId,
+          last_updated: startedAt,
+          runs: [
+            {
+              runId: "sup-run-1",
+              stageId: malformedStageLabel,
+              status: "running",
+              startedAt,
+              updatedAt: startedAt,
+              reviewPasses: 0,
+              issueSummaryIds: [],
+              escalationIds: [],
+            },
+          ],
+          checkpoint_pointers: [],
+          branch_sessions: [],
+          reviewed_batches: [],
+          issue_summaries: [],
+          fix_cycles: [],
+          escalations: [],
+          stage_stops: [],
+        },
+      },
+      tasks: [],
+    })
+
+    const rawTasksFile = JSON.parse(readFileSync(join(workspace.workDir, "tasks.json"), "utf-8"))
+    expect(rawTasksFile.runtime_state?.supervision?.runs[0]?.stageId).toBe("01")
+
+    const loaded = loadSupervisorState(workspace.repoRoot, workspace.streamId)
+    expect(loaded?.runs[0]?.stageId).toBe("01")
+  })
+
+  test("locked supervisor upserts persist canonicalized runtime IDs to sqlite", async () => {
+    const startedAt = new Date().toISOString()
+
+    await upsertSupervisorRunLocked(workspace.repoRoot, workspace.streamId, {
+      runId: "sup-run-1",
+      stageId: "Stage 02: Runtime hardening",
+      status: "running",
+      startedAt,
+      updatedAt: startedAt,
+      currentBatchId: "2.1",
+      reviewPasses: 0,
+      issueSummaryIds: [],
+      escalationIds: [],
+    })
+
+    await upsertBranchSessionLocked(workspace.repoRoot, workspace.streamId, {
+      owner: "root_agent",
+      rootSessionId: "root-1",
+      branchSessionId: "branch-supervision-1",
+      branchRole: "supervision",
+      source: "native_fork",
+      status: "running",
+      startedAt,
+      updatedAt: startedAt,
+      nativeSessionId: "ses-1",
+      batchId: "2.1",
+      threadId: "2.1.3",
+      scope: {
+        level: "batch",
+        stageId: "Stage 02: Runtime hardening",
+        batchId: "2.1",
+      },
+      supervisionProgress: {
+        executionMode: "single_batch_run",
+        currentBatchId: "2.1",
+        lastReviewedBatchId: "2.2",
+      },
+    })
+
+    await upsertReviewedBatchLocked(workspace.repoRoot, workspace.streamId, {
+      reviewId: "review-1",
+      runId: "sup-run-1",
+      stageId: "Stage 02: Runtime hardening",
+      batchId: "2.1",
+      reviewPass: 1,
+      reviewedAt: startedAt,
+      outcome: "changes_requested",
+      threadIds: ["2.1.3"],
+      issueSummaryIds: [],
+    })
+
+    await upsertIssueSummaryLocked(workspace.repoRoot, workspace.streamId, {
+      summaryId: "issue-1",
+      runId: "sup-run-1",
+      stageId: "Stage 02: Runtime hardening",
+      batchId: "2.1",
+      threadId: "2.1.3",
+      status: "open",
+      summary: "Normalize persisted ids.",
+      firstObservedAt: startedAt,
+      lastObservedAt: startedAt,
+    })
+
+    await upsertFixCycleLocked(workspace.repoRoot, workspace.streamId, {
+      cycleId: "cycle-1",
+      runId: "sup-run-1",
+      stageId: "Stage 02: Runtime hardening",
+      batchId: "2.1",
+      threadId: "2.1.3",
+      attemptCount: 1,
+      lastAttemptAt: startedAt,
+      lastOutcome: "pending_review",
+      issueSummaryIds: ["issue-1"],
+    })
+
+    await upsertEscalationOutcomeLocked(workspace.repoRoot, workspace.streamId, {
+      escalationId: "esc-1",
+      runId: "sup-run-1",
+      stageId: "Stage 02: Runtime hardening",
+      batchId: "2.1",
+      threadId: "2.1.3",
+      target: "thread",
+      reason: "Needs review",
+      status: "pending",
+      escalatedAt: startedAt,
+    })
+
+    await recordStageStopLocked(workspace.repoRoot, workspace.streamId, {
+      stopId: "stop-1",
+      runId: "sup-run-1",
+      stageId: "Stage 02: Runtime hardening",
+      batchId: "2.1",
+      reason: "blocked",
+      summary: "Waiting on review",
+      stoppedAt: startedAt,
+    })
+
+    await pauseSupervisorRunLocked(workspace.repoRoot, workspace.streamId, {
+      runId: "sup-run-1",
+      updatedAt: startedAt,
+      currentBatchId: "2.1",
+    })
+
+    const raw = loadSqliteStructuredStorageWorkstreamState(workspace.repoRoot, workspace.streamId, {
+      normalizeIds: false,
+    })
+
+    expect(raw?.supervision.runs[0]).toMatchObject({
+      stageId: "02",
+      currentBatchId: "02.01",
+      lastReviewedBatchId: "02.01",
+    })
+    expect(raw?.supervision.current_branch_supervision).toMatchObject({
+      scope: { level: "batch", stageId: "02", batchId: "02.01" },
+      supervisionProgress: {
+        currentBatchId: "02.01",
+        lastReviewedBatchId: "02.02",
+      },
+    })
+    expect(raw?.supervision.branch_sessions[0]).toMatchObject({
+      batchId: "02.01",
+      threadId: "02.01.03",
+      scope: { level: "batch", stageId: "02", batchId: "02.01" },
+      supervisionProgress: {
+        currentBatchId: "02.01",
+        lastReviewedBatchId: "02.02",
+      },
+    })
+    expect(raw?.supervision.reviewed_batches[0]).toMatchObject({
+      stageId: "02",
+      batchId: "02.01",
+      threadIds: ["02.01.03"],
+    })
+    expect(raw?.supervision.issue_summaries[0]).toMatchObject({
+      stageId: "02",
+      batchId: "02.01",
+      threadId: "02.01.03",
+    })
+    expect(raw?.supervision.fix_cycles[0]).toMatchObject({
+      stageId: "02",
+      batchId: "02.01",
+      threadId: "02.01.03",
+    })
+    expect(raw?.supervision.escalations[0]).toMatchObject({
+      stageId: "02",
+      batchId: "02.01",
+      threadId: "02.01.03",
+    })
+    expect(raw?.supervision.stage_stops[0]).toMatchObject({
+      stageId: "02",
+      batchId: "02.01",
     })
   })
 

@@ -21,58 +21,29 @@ import {
   projectLegacyRuntimeCompatibilityArtifactsSync,
   replaceStructuredSupervisorStateSync,
 } from "./storage-adapter.ts"
-import { normalizeCanonicalStageId } from "./stage-id.ts"
+import {
+  inferCanonicalStageIdFromBatchId,
+  normalizeCanonicalBatchIdOrFallback,
+  normalizePersistedBranchScope,
+  normalizePersistedBranchSession,
+  normalizePersistedCurrentBranchSupervisionContext,
+  normalizePersistedSupervisorEscalation,
+  normalizePersistedSupervisorFixCycle,
+  normalizePersistedSupervisorIssueSummary,
+  normalizePersistedSupervisorReviewedBatch,
+  normalizePersistedSupervisorRunState,
+  normalizePersistedSupervisorStageStop,
+  normalizePersistedSupervisionProgress,
+} from "./stage-id.ts"
 import { replaceStructuredSupervisionState } from "./structured-storage.ts"
-import { getTasksFilePath, normalizeSupervisorState } from "./tasks.ts"
+import { getTasksFilePath, normalizeLoadedSupervisorState, normalizeSupervisorState } from "./tasks.ts"
 
 function inferStageIdFromBatchId(batchId?: string): string | undefined {
-  if (!batchId) {
-    return undefined
-  }
-
-  const [stageId] = batchId.split(".")
-  return stageId && stageId.length > 0 ? normalizeCanonicalStageId(stageId) : undefined
+  return inferCanonicalStageIdFromBatchId(batchId)
 }
 
 function normalizeBranchScope(scope?: RootAgentBranchScope, batchId?: string): RootAgentBranchScope | undefined {
-  const effectiveBatchId = batchId ?? (scope?.level === "batch" ? scope.batchId : undefined)
-
-  if (scope?.level === "stage") {
-    const stageId = normalizeCanonicalStageId(scope.stageId)
-    if (!stageId) {
-      return undefined
-    }
-
-    return {
-      level: "stage",
-      stageId,
-    }
-  }
-
-  if (scope?.level === "batch") {
-    const stageId = normalizeCanonicalStageId(scope.stageId) ?? inferStageIdFromBatchId(effectiveBatchId)
-    const normalizedBatchId = effectiveBatchId ?? scope.batchId
-    if (!stageId || !normalizedBatchId) {
-      return undefined
-    }
-
-    return {
-      level: "batch",
-      stageId,
-      batchId: normalizedBatchId,
-    }
-  }
-
-  const inferredStageId = inferStageIdFromBatchId(effectiveBatchId)
-  if (!effectiveBatchId || !inferredStageId) {
-    return undefined
-  }
-
-  return {
-    level: "batch",
-    stageId: inferredStageId,
-    batchId: effectiveBatchId,
-  }
+  return normalizePersistedBranchScope(scope, batchId)
 }
 
 function normalizeSupervisionProgress(args: {
@@ -81,32 +52,7 @@ function normalizeSupervisionProgress(args: {
   batchId?: string
   progress?: Partial<RootAgentSupervisionProgress>
 }): RootAgentSupervisionProgress | undefined {
-  if (args.branchRole && args.branchRole !== "supervision" && !args.progress) {
-    return undefined
-  }
-
-  const executionMode =
-    args.scope?.level === "stage"
-      ? "stage_batch_loop"
-      : args.progress?.executionMode ??
-        (args.scope?.level === "batch" || args.batchId ? "single_batch_run" : undefined)
-
-  const currentBatchId =
-    args.batchId ??
-    args.progress?.currentBatchId ??
-    (args.scope?.level === "batch" ? args.scope.batchId : undefined)
-
-  const lastReviewedBatchId = args.progress?.lastReviewedBatchId
-
-  if (!executionMode && !currentBatchId && !lastReviewedBatchId) {
-    return undefined
-  }
-
-  return {
-    executionMode: executionMode ?? "single_batch_run",
-    ...(currentBatchId ? { currentBatchId } : {}),
-    ...(lastReviewedBatchId ? { lastReviewedBatchId } : {}),
-  }
+  return normalizePersistedSupervisionProgress(args)
 }
 
 function shouldPersistCurrentBranchSupervision(
@@ -187,6 +133,8 @@ function normalizeCurrentBranchSupervision(
 
   const normalizedFromBranch = buildCurrentBranchSupervisionContext(matchingBranch)
   return normalizedFromBranch
+    ? normalizePersistedCurrentBranchSupervisionContext(normalizedFromBranch)
+    : undefined
 }
 
 export const SUPERVISOR_STATE_VERSION = "1.0.0"
@@ -266,60 +214,24 @@ export function loadSupervisorState(
       `Failed to parse unified supervisor state in tasks.json at ${tasksPath}: ${error instanceof Error ? error.message : String(error)}`,
     )
   }
-  const normalizedBranchSessions =
-    parsed.branch_sessions?.map((branchSession) => {
-      const normalizedScope = normalizeBranchScope(branchSession.scope, branchSession.batchId)
-      const normalizedBatchId =
-        normalizedScope?.level === "stage"
-          ? undefined
-          : branchSession.batchId ??
-            (normalizedScope?.level === "batch" ? normalizedScope.batchId : undefined)
-      const progressBatchId =
-        branchSession.batchId ?? (normalizedScope?.level === "batch" ? normalizedScope.batchId : undefined)
-      const supervisionProgress = normalizeSupervisionProgress({
-        branchRole: branchSession.branchRole,
-        scope: normalizedScope,
-        batchId: progressBatchId,
-        progress: branchSession.supervisionProgress,
-      })
-
-      const normalizedBranchSession: RootAgentBranchSession = {
-        ...branchSession,
-        ...(normalizedBatchId ? { batchId: normalizedBatchId } : {}),
-        ...(normalizedScope ? { scope: normalizedScope } : {}),
-        ...(supervisionProgress ? { supervisionProgress } : {}),
-      }
-
-      if (!normalizedScope) {
-        delete normalizedBranchSession.scope
-      }
-
-      if (!normalizedBatchId) {
-        delete normalizedBranchSession.batchId
-      }
-
-      if (!supervisionProgress) {
-        delete normalizedBranchSession.supervisionProgress
-      }
-
-      return normalizedBranchSession
-    }) ?? []
+  const normalized = normalizeLoadedSupervisorState(streamId, parsed)
+  const normalizedBranchSessions = normalized.branch_sessions
 
   return {
     ...createEmptySupervisorState(streamId),
-    ...parsed,
-    runs: parsed.runs ?? [],
-    checkpoint_pointers: parsed.checkpoint_pointers ?? [],
+    ...normalized,
+    runs: normalized.runs,
+    checkpoint_pointers: normalized.checkpoint_pointers,
     branch_sessions: normalizedBranchSessions,
     current_branch_supervision: normalizeCurrentBranchSupervision(
-      parsed.current_branch_supervision,
+      normalized.current_branch_supervision,
       normalizedBranchSessions,
     ),
-    reviewed_batches: parsed.reviewed_batches ?? [],
-    issue_summaries: parsed.issue_summaries ?? [],
-    fix_cycles: parsed.fix_cycles ?? [],
-    escalations: parsed.escalations ?? [],
-    stage_stops: parsed.stage_stops ?? [],
+    reviewed_batches: normalized.reviewed_batches,
+    issue_summaries: normalized.issue_summaries,
+    fix_cycles: normalized.fix_cycles,
+    escalations: normalized.escalations,
+    stage_stops: normalized.stage_stops,
   }
 }
 
@@ -336,8 +248,9 @@ export function saveSupervisorState(
   supervisorState: SupervisorStateFile,
 ): void {
   const lastUpdated = new Date().toISOString()
-  supervisorState.last_updated = lastUpdated
-  const ordered = orderSupervisorState(supervisorState, lastUpdated)
+  const normalized = normalizeLoadedSupervisorState(streamId, supervisorState)
+  normalized.last_updated = lastUpdated
+  const ordered = orderSupervisorState(normalized, lastUpdated)
 
   replaceStructuredSupervisorStateSync({
     repoRoot,
@@ -357,7 +270,10 @@ export async function modifySupervisorState<T>(
   return Promise.resolve(modifySqliteCanonicalRuntimeWorkstreamStateSync({ repoRoot, streamId, fn: (workstreamState) => {
     const supervisorState = normalizeSupervisorState(streamId, workstreamState.supervision)
     const result = fn(supervisorState)
-    replaceStructuredSupervisionState(workstreamState, supervisorState)
+    replaceStructuredSupervisionState(
+      workstreamState,
+      normalizeLoadedSupervisorState(streamId, supervisorState),
+    )
     return result
   } }))
 }
@@ -428,8 +344,9 @@ export async function upsertSupervisorRunLocked(
         ...run.escalationIds,
       ]),
     }
+    const persisted = normalizePersistedSupervisorRunState(normalized)
 
-    const stored = upsertItem(supervisorState.runs, normalized, (value) => value.runId)
+    const stored = upsertItem(supervisorState.runs, persisted, (value) => value.runId)
 
     if (stored.status === "running") {
       supervisorState.active_run_id = stored.runId
@@ -523,18 +440,22 @@ export async function upsertBranchSessionLocked(
       delete normalized.supervisionProgress
     }
 
-    const currentBranchSupervision = buildCurrentBranchSupervisionContext(normalized)
+    const persisted = normalizePersistedBranchSession(normalized)
+
+    const currentBranchSupervision = buildCurrentBranchSupervisionContext(persisted)
     if (currentBranchSupervision) {
-      supervisorState.current_branch_supervision = currentBranchSupervision
+      supervisorState.current_branch_supervision = normalizePersistedCurrentBranchSupervisionContext(
+        currentBranchSupervision,
+      )
     } else if (
-      supervisorState.current_branch_supervision?.branchSessionId === normalized.branchSessionId
+      supervisorState.current_branch_supervision?.branchSessionId === persisted.branchSessionId
     ) {
       delete supervisorState.current_branch_supervision
     }
 
     return upsertItem(
       supervisorState.branch_sessions,
-      normalized,
+      persisted,
       (value) => value.branchSessionId,
     )
   })
@@ -587,7 +508,7 @@ export async function pauseSupervisorRunLocked(
     run.status = "paused"
     run.updatedAt = args.updatedAt
     if (args.currentBatchId) {
-      run.currentBatchId = args.currentBatchId
+      run.currentBatchId = normalizeCanonicalBatchIdOrFallback(args.currentBatchId) ?? args.currentBatchId
     }
     delete run.completedAt
     delete run.stageStopId
@@ -737,10 +658,11 @@ export async function upsertReviewedBatchLocked(
         ...reviewedBatch.issueSummaryIds,
       ]),
     }
+    const persisted = normalizePersistedSupervisorReviewedBatch(normalized)
 
     const stored = upsertItem(
       supervisorState.reviewed_batches,
-      normalized,
+      persisted,
       (value) => value.reviewId,
     )
 
@@ -772,10 +694,11 @@ export async function upsertIssueSummaryLocked(
       ...issueSummary,
       firstObservedAt: existing?.firstObservedAt ?? issueSummary.firstObservedAt,
     }
+    const persisted = normalizePersistedSupervisorIssueSummary(normalized)
 
     const stored = upsertItem(
       supervisorState.issue_summaries,
-      normalized,
+      persisted,
       (value) => value.summaryId,
     )
 
@@ -811,7 +734,9 @@ export async function upsertFixCycleLocked(
       ]),
     }
 
-    return upsertItem(supervisorState.fix_cycles, normalized, (value) => value.cycleId)
+    const persisted = normalizePersistedSupervisorFixCycle(normalized)
+
+    return upsertItem(supervisorState.fix_cycles, persisted, (value) => value.cycleId)
   })
 }
 
@@ -831,10 +756,11 @@ export async function upsertEscalationOutcomeLocked(
       ...existing,
       ...escalation,
     }
+    const persisted = normalizePersistedSupervisorEscalation(normalized)
 
     const stored = upsertItem(
       supervisorState.escalations,
-      normalized,
+      persisted,
       (value) => value.escalationId,
     )
 
@@ -857,9 +783,10 @@ export async function recordStageStopLocked(
   stageStop: SupervisorStageStop,
 ): Promise<SupervisorStageStop> {
   return modifySupervisorState(repoRoot, streamId, (supervisorState) => {
+    const persisted = normalizePersistedSupervisorStageStop(stageStop)
     const stored = upsertItem(
       supervisorState.stage_stops,
-      stageStop,
+      persisted,
       (value) => value.stopId,
     )
 

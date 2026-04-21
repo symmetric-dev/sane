@@ -1,4 +1,10 @@
 import { createEmptySupervisorState } from "./supervisor-state.ts"
+import {
+  normalizeCanonicalBatchIdOrFallback,
+  normalizeCanonicalStageIdOrFallback,
+  normalizePersistedBatchStatus,
+  normalizePersistedThreadMetadata,
+} from "./stage-id.ts"
 import type {
   ApprovalMetadata,
   ApprovalStatus,
@@ -306,7 +312,16 @@ function cloneSupervisorState(supervision: SupervisorStateFile): SupervisorState
 }
 
 function cloneApprovalRecord(record: StructuredApprovalRecord): StructuredApprovalRecord {
-  return { ...record }
+  if (record.scope !== "stage") {
+    return { ...record }
+  }
+
+  return {
+    ...record,
+    ...(record.stageId
+      ? { stageId: normalizeCanonicalStageIdOrFallback(record.stageId) ?? record.stageId }
+      : {}),
+  }
 }
 
 function sortApprovalRecords(records: StructuredApprovalRecord[]): StructuredApprovalRecord[] {
@@ -353,7 +368,9 @@ export function createStructuredStorageWorkstreamRecord(
     updatedAt: stream.updated_at,
     storageRoot: stream.path,
     ...(stream.status ? { manualStatus: stream.status } : {}),
-    ...(stream.current_batch ? { currentBatch: stream.current_batch } : {}),
+    ...(stream.current_batch
+      ? { currentBatch: normalizeCanonicalBatchIdOrFallback(stream.current_batch) ?? stream.current_batch }
+      : {}),
     generatedBy: stream.generated_by,
     sessionEstimated: stream.session_estimated,
     ...(stream.files ? { files: [...stream.files] } : {}),
@@ -367,6 +384,8 @@ export function createStreamMetadataFromStructuredStorageRecord(args: {
   approval?: ApprovalMetadata
 }): StreamMetadata {
   const { record, approval } = args
+  const normalizedCurrentBatch =
+    normalizeCanonicalBatchIdOrFallback(record.currentBatch) ?? record.currentBatch
 
   return {
     id: record.id,
@@ -381,7 +400,7 @@ export function createStreamMetadataFromStructuredStorageRecord(args: {
     path: record.storageRoot,
     generated_by: record.generatedBy,
     ...(record.files ? { files: [...record.files] } : {}),
-    ...(record.currentBatch ? { current_batch: record.currentBatch } : {}),
+    ...(normalizedCurrentBatch ? { current_batch: normalizedCurrentBatch } : {}),
     ...(record.planningSession ? { planningSession: { ...record.planningSession } } : {}),
     ...(record.github ? { github: { ...record.github } } : {}),
   }
@@ -525,9 +544,10 @@ export function upsertStructuredThreadRuntime(
   state: StructuredStorageWorkstreamState,
   record: StructuredThreadRuntimeRecord,
 ): StructuredThreadRuntimeRecord {
-  const next = cloneStructuredThreadRuntimeRecord(record)
+  const next = cloneStructuredThreadRuntimeRecord(normalizePersistedThreadMetadata(record))
   const existingIndex = state.threadRuntime.findIndex(
-    (candidate) => candidate.threadId === record.threadId,
+    (candidate) =>
+      (normalizePersistedThreadMetadata(candidate).threadId ?? candidate.threadId) === next.threadId,
   )
 
   if (existingIndex === -1) {
@@ -552,9 +572,10 @@ export function upsertStructuredBatchRun(
   state: StructuredStorageWorkstreamState,
   batchRun: PersistedBatchStatusFile,
 ): PersistedBatchStatusFile {
-  const next = cloneBatchRun(batchRun)
+  const next = cloneBatchRun(normalizePersistedBatchStatus(batchRun))
   const existingIndex = state.batchRuns.findIndex(
-    (candidate) => candidate.batchId === batchRun.batchId,
+    (candidate) =>
+      (normalizePersistedBatchStatus(candidate).batchId ?? candidate.batchId) === next.batchId,
   )
 
   if (existingIndex === -1) {
