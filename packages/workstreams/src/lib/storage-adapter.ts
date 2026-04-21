@@ -448,6 +448,50 @@ function workstreamStateFromSnapshot(
   return state
 }
 
+function loadFilesystemStructuredWorkstreamStateSync(
+  repoRoot: string,
+  streamId: string,
+): StructuredStorageWorkstreamState | null {
+  return workstreamStateFromSnapshot(getOrCreateIndex(repoRoot), streamId, readTasksFile(repoRoot, streamId))
+}
+
+function loadRuntimeCanonicalMutationSeedSync(
+  repoRoot: string,
+  streamId: string,
+): StructuredStorageWorkstreamState | null {
+  const filesystemState = loadFilesystemStructuredWorkstreamStateSync(repoRoot, streamId)
+  const sqliteState = loadSqliteStructuredStorageWorkstreamState(repoRoot, streamId)
+
+  if (filesystemState && sqliteState) {
+    return {
+      streamId,
+      hierarchy: {
+        stages: filesystemState.hierarchy.stages.map((stage) => ({ ...stage })),
+        batches: filesystemState.hierarchy.batches.map((batch) => ({ ...batch })),
+        threads: filesystemState.hierarchy.threads.map((thread) => ({ ...thread })),
+        tasks: filesystemState.hierarchy.tasks.map((task) => ({ ...task })),
+      },
+      approvals: filesystemState.approvals.map((approval) => ({ ...approval })),
+      threadRuntime: sqliteState.threadRuntime.map((record) => ({
+        ...record,
+        sessions: record.sessions.map((session) => ({
+          ...session,
+          ...(session.lineage ? { lineage: { ...session.lineage } } : {}),
+        })),
+        ...(record.synthesis ? { synthesis: { ...record.synthesis } } : {}),
+      })),
+      batchRuns: sqliteState.batchRuns.map((batchRun) => ({
+        ...batchRun,
+        summary: { ...batchRun.summary },
+        threads: batchRun.threads.map((thread) => ({ ...thread })),
+      })),
+      supervision: normalizeSupervisorState(streamId, sqliteState.supervision),
+    }
+  }
+
+  return sqliteState ?? filesystemState
+}
+
 async function persistWorkstreamApprovals(
   repoRoot: string,
   streamId: string,
@@ -771,7 +815,7 @@ export function modifySqliteCanonicalRuntimeWorkstreamStateSync<T>(args: {
   fn: (workstreamState: StructuredStorageWorkstreamState) => T
 }): T {
   const fallbackState =
-    loadStructuredWorkstreamStateSync(args.repoRoot, args.streamId) ??
+    loadRuntimeCanonicalMutationSeedSync(args.repoRoot, args.streamId) ??
     createEmptyStructuredStorageWorkstreamState(args.streamId)
   const { result, workstreamState } = modifySqliteStructuredStorageWorkstreamState({
     repoRoot: args.repoRoot,
@@ -822,6 +866,47 @@ export function replaceThreadMetadataViewSync(args: {
       ...(thread.synthesis ? { synthesis: thread.synthesis } : {}),
     })
   }
+
+  const referencedThreadIds = new Set<string>([
+    ...workstreamState.hierarchy.tasks.map((task) => task.threadId),
+    ...workstreamState.threadRuntime.map((thread) => thread.threadId),
+    ...workstreamState.batchRuns.flatMap((batchRun) => batchRun.threads.map((thread) => thread.threadId)),
+    ...workstreamState.supervision.branch_sessions
+      .map((session) => session.threadId)
+      .filter((threadId): threadId is string => typeof threadId === "string"),
+  ])
+  workstreamState.hierarchy.threads = workstreamState.hierarchy.threads.filter((thread) =>
+    referencedThreadIds.has(thread.id)
+  )
+
+  const referencedBatchIds = new Set<string>([
+    ...workstreamState.hierarchy.tasks.map((task) => task.batchId),
+    ...workstreamState.hierarchy.threads.map((thread) => thread.batchId),
+    ...workstreamState.batchRuns.map((batchRun) => batchRun.batchId),
+    ...workstreamState.supervision.runs.flatMap((run) => [run.currentBatchId, run.lastReviewedBatchId]),
+    ...workstreamState.supervision.branch_sessions.flatMap((session) => [
+      session.batchId,
+      session.scope?.level === "batch" ? session.scope.batchId : undefined,
+    ]),
+  ].filter((batchId): batchId is string => typeof batchId === "string"))
+  workstreamState.hierarchy.batches = workstreamState.hierarchy.batches.filter((batch) =>
+    referencedBatchIds.has(batch.id)
+  )
+
+  const referencedStageIds = new Set<string>([
+    ...workstreamState.hierarchy.tasks.map((task) => task.stageId),
+    ...workstreamState.hierarchy.batches.map((batch) => batch.stageId),
+    ...workstreamState.approvals
+      .map((approval) => approval.stageId)
+      .filter((stageId): stageId is string => typeof stageId === "string"),
+    ...workstreamState.supervision.runs.map((run) => run.stageId),
+    ...workstreamState.supervision.branch_sessions
+      .map((session) => session.scope?.stageId)
+      .filter((stageId): stageId is string => typeof stageId === "string"),
+  ])
+  workstreamState.hierarchy.stages = workstreamState.hierarchy.stages.filter((stage) =>
+    referencedStageIds.has(stage.id)
+  )
 
   replaceStructuredWorkstreamStateSync({
     repoRoot: args.repoRoot,

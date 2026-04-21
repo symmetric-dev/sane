@@ -943,10 +943,15 @@ function insertThreads(
       runtime?.workingAgentSessionId ?? null,
       runtime?.synthesisOutput ?? null,
       nullableJsonStringify(runtime?.synthesis),
-        jsonStringify({
-          ...thread,
-          ...(runtime
-            ? {
+      jsonStringify({
+        id: thread.id,
+        stageId: thread.stageId,
+        batchId: thread.batchId,
+        number: thread.number,
+        name: thread.name,
+        ...(thread.promptPath ? { promptPath: thread.promptPath } : {}),
+        ...(runtime
+          ? {
               hasRuntimeMetadata: true,
               currentSessionId: runtime.currentSessionId,
               opencodeSessionId: runtime.opencodeSessionId,
@@ -1458,11 +1463,18 @@ function loadSqliteStructuredStorageWorkstreamStateFromDatabase(
 
   const threads = threadRows
     .map((row) => {
-      const metadata = parseMetadataJson<StructuredThreadRecord>(
+      const metadata = parseMetadataJson<SqliteThreadMetadataJson>(
         row.metadata_json,
         `threads(thread=${row.thread_id})`,
       )
-      return metadata
+      return {
+        id: metadata.id,
+        stageId: metadata.stageId,
+        batchId: metadata.batchId,
+        number: metadata.number,
+        name: metadata.name,
+        ...(metadata.promptPath ? { promptPath: metadata.promptPath } : {}),
+      } satisfies StructuredThreadRecord
     })
     .sort((left, right) => compareIds(left.id, right.id))
 
