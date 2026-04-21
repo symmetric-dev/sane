@@ -193,12 +193,10 @@ work update --task "01.01.01.01" --status in_progress
 work update --task "01.01.01.01" --status completed --report "1-2 sentence summary"
 ```
 
-In practice, Root Agent orchestration **continues automatically only when** the batch review is approved and no stop policy is triggered.
-It **stops** when escalation requires user input, a stage boundary stop is reached, there is no next batch, or execution/wait fails.
+In practice, Root Agent orchestration continues only when the supervising branch decides the batch is safe to continue.
+It stops when the supervising branch decides user input is needed, a stage boundary is reached, there is no next batch, or execution/wait fails.
 
 If `--timeout-ms` is reached before the batch becomes terminal, the wait fails and `work supervise` exits without reviewing the incomplete batch. That interrupted run remains resumable and is preferred on the next `work supervise` rerun.
-
-Policy is loaded from `work/supervisor.json` (defaults are used if missing) and interpreted at the Root Agent layer.
 
 After any stop, inspect the unified persisted state before resuming:
 

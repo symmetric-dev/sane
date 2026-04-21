@@ -46,7 +46,7 @@ work tree --batch "SS.BB"
 
 ## Escalation policy
 
-Treat persisted `work/supervisor.json` policy and canonical workstream state as the source of truth. In the default v1 behavior:
+Treat canonical workstream state, actual review findings, and these supervision rules as the source of truth. In the default v1 behavior:
 
 - at most **one automatic fix cycle per batch** is allowed
 - **Report back** instead of continuing when review results require user input
