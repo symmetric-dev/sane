@@ -1,10 +1,14 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test"
-import { writeFileSync } from "fs"
+import { Database } from "bun:sqlite"
+import { readFileSync, writeFileSync } from "fs"
 import { join } from "path"
 
 import { main as currentMain } from "../src/cli/current.ts"
 import { main as statusMain } from "../src/cli/status.ts"
-import { syncStructuredStorageWorkspaceStateToSqlite } from "../src/lib/sqlite-storage.ts"
+import {
+  getStructuredStorageSqlitePath,
+  syncStructuredStorageWorkspaceStateToSqlite,
+} from "../src/lib/sqlite-storage.ts"
 import { createStructuredStorageWorkstreamRecord } from "../src/lib/structured-storage.ts"
 import type { StreamMetadata } from "../src/lib/types.ts"
 import { cleanupTestWorkstream, createTestWorkstream, type TestWorkspace } from "./helpers"
@@ -76,6 +80,37 @@ describe("current/status sqlite-backed read model", () => {
       `   Name: ${stream.name}`,
       `   Path: ${stream.path}`,
     ])
+  })
+
+  test("work current --set writes sqlite canonically and updates index.json as a projection", () => {
+    const stream = buildStream(workspace.streamId)
+    writeFileSync(
+      join(workspace.repoRoot, "work", "index.json"),
+      JSON.stringify({
+        version: "1.0.0",
+        last_updated: "2026-04-20T00:00:00.000Z",
+        streams: [stream],
+      }, null, 2),
+    )
+
+    currentMain(["bun", "work", "current", "--repo-root", workspace.repoRoot, "--set", stream.id])
+
+    expect(errors).toEqual([])
+    expect(logs).toEqual([`Current workstream set to: ${stream.id}`])
+    expect(JSON.parse(readFileSync(join(workspace.repoRoot, "work", "index.json"), "utf-8"))).toMatchObject({
+      current_stream: stream.id,
+    })
+
+    const database = new Database(getStructuredStorageSqlitePath(workspace.repoRoot), { readonly: true })
+    try {
+      expect(
+        database.query<{ current_stream_id: string | null }, []>(
+          "SELECT current_stream_id FROM workspace_state WHERE singleton_id = 1 LIMIT 1",
+        ).get(),
+      ).toEqual({ current_stream_id: stream.id })
+    } finally {
+      database.close()
+    }
   })
 
   test("work status resolves workstream identity from sqlite without index.json", () => {

@@ -14,10 +14,16 @@ import type {
   TasksFile,
 } from "./types.ts"
 import {
+  modifySqliteCanonicalRuntimeWorkstreamStateSync,
   loadThreadMetadataViewSync,
   replaceThreadMetadataViewSync,
 } from "./storage-adapter.ts"
 import { getTasksFilePath } from "./tasks.ts"
+import type {
+  StructuredStorageWorkstreamState,
+  StructuredThreadRuntimeRecord,
+} from "./structured-storage.ts"
+import { upsertStructuredThreadRuntime } from "./structured-storage.ts"
 
 const THREADS_FILE_VERSION = "1.0.0"
 
@@ -74,11 +80,75 @@ function mutateThreads<T>(
   streamId: string,
   fn: (threadsFile: ThreadsJson) => T,
 ): T {
-  const threadsFile = loadThreadMetadataViewSync(repoRoot, streamId) ?? createEmptyThreadsFile(streamId)
-  threadsFile.last_updated = new Date().toISOString()
-  const result = fn(threadsFile)
-  replaceThreadMetadataViewSync({ repoRoot, streamId, threadsFile })
-  return result
+  return modifySqliteCanonicalRuntimeWorkstreamStateSync({
+    repoRoot,
+    streamId,
+    fn: (workstreamState) => {
+      const threadsFile = createThreadMetadataViewFromWorkstreamState(streamId, workstreamState)
+      threadsFile.last_updated = new Date().toISOString()
+      const result = fn(threadsFile)
+      applyThreadMetadataViewToWorkstreamState(workstreamState, threadsFile)
+      return result
+    },
+  })
+}
+
+function createThreadMetadataViewFromWorkstreamState(
+  streamId: string,
+  workstreamState: StructuredStorageWorkstreamState,
+): ThreadsJson {
+  const threadById = new Map(workstreamState.hierarchy.threads.map((thread) => [thread.id, thread] as const))
+
+  return {
+    version: THREADS_FILE_VERSION,
+    stream_id: streamId,
+    last_updated: new Date().toISOString(),
+    threads: workstreamState.threadRuntime.map((threadRuntime) => ({
+      threadId: threadRuntime.threadId,
+      sessions: threadRuntime.sessions.map((session) => ({
+        ...session,
+        ...(session.lineage ? { lineage: { ...session.lineage } } : {}),
+      })),
+      ...(threadById.get(threadRuntime.threadId)?.promptPath
+        ? { promptPath: threadById.get(threadRuntime.threadId)?.promptPath }
+        : {}),
+      ...(threadRuntime.currentSessionId ? { currentSessionId: threadRuntime.currentSessionId } : {}),
+      ...(threadRuntime.opencodeSessionId ? { opencodeSessionId: threadRuntime.opencodeSessionId } : {}),
+      ...(threadRuntime.workingAgentSessionId
+        ? { workingAgentSessionId: threadRuntime.workingAgentSessionId }
+        : {}),
+      ...(threadRuntime.synthesisOutput ? { synthesisOutput: threadRuntime.synthesisOutput } : {}),
+      ...(threadRuntime.synthesis ? { synthesis: { ...threadRuntime.synthesis } } : {}),
+    })),
+  }
+}
+
+function applyThreadMetadataViewToWorkstreamState(
+  workstreamState: StructuredStorageWorkstreamState,
+  threadsFile: ThreadsJson,
+): void {
+  for (const thread of workstreamState.hierarchy.threads) {
+    const metadata = threadsFile.threads.find((entry) => entry.threadId === thread.id)
+    if (metadata?.promptPath !== undefined) {
+      thread.promptPath = metadata.promptPath
+    }
+  }
+
+  workstreamState.threadRuntime = []
+  for (const thread of threadsFile.threads) {
+    upsertStructuredThreadRuntime(workstreamState, {
+      threadId: thread.threadId,
+      sessions: thread.sessions.map((session) => ({
+        ...session,
+        ...(session.lineage ? { lineage: { ...session.lineage } } : {}),
+      })),
+      ...(thread.currentSessionId ? { currentSessionId: thread.currentSessionId } : {}),
+      ...(thread.opencodeSessionId ? { opencodeSessionId: thread.opencodeSessionId } : {}),
+      ...(thread.workingAgentSessionId ? { workingAgentSessionId: thread.workingAgentSessionId } : {}),
+      ...(thread.synthesisOutput ? { synthesisOutput: thread.synthesisOutput } : {}),
+      ...(thread.synthesis ? { synthesis: { ...thread.synthesis } } : {}),
+    } satisfies StructuredThreadRuntimeRecord)
+  }
 }
 
 // ============================================

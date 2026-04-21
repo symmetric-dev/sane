@@ -16,8 +16,8 @@ import type {
 } from "./types.ts"
 import { isTerminalBatchStatus } from "./batch-status.ts"
 import {
-  getStructuredStorageAdapter,
   loadStructuredSupervisorStateSync,
+  modifySqliteCanonicalRuntimeWorkstreamStateSync,
   replaceStructuredSupervisorStateSync,
 } from "./storage-adapter.ts"
 import { replaceStructuredSupervisionState } from "./structured-storage.ts"
@@ -339,14 +339,14 @@ export function saveSupervisorState(
 export async function modifySupervisorState<T>(
   repoRoot: string,
   streamId: string,
-  fn: (supervisorState: SupervisorStateFile) => T | Promise<T>,
+  fn: (supervisorState: SupervisorStateFile) => T,
 ): Promise<T> {
-  return getStructuredStorageAdapter().modifyWorkstreamState(repoRoot, streamId, async (workstreamState) => {
+  return Promise.resolve(modifySqliteCanonicalRuntimeWorkstreamStateSync({ repoRoot, streamId, fn: (workstreamState) => {
     const supervisorState = normalizeSupervisorState(streamId, workstreamState.supervision)
-    const result = await fn(supervisorState)
+    const result = fn(supervisorState)
     replaceStructuredSupervisionState(workstreamState, supervisorState)
     return result
-  })
+  } }))
 }
 
 function uniqueStrings(values: string[]): string[] {
@@ -597,7 +597,7 @@ export async function reconcileSupervisorRunsLocked(
   repoRoot: string,
   streamId: string,
 ): Promise<string[]> {
-  return getStructuredStorageAdapter().modifyWorkstreamState(repoRoot, streamId, (workstreamState) => {
+  return Promise.resolve(modifySqliteCanonicalRuntimeWorkstreamStateSync({ repoRoot, streamId, fn: (workstreamState) => {
     const supervisorState = normalizeSupervisorState(streamId, workstreamState.supervision)
     const batchStatuses = new Map(
       workstreamState.batchRuns.map((batchStatus) => [batchStatus.batchId, batchStatus] as const),
@@ -651,7 +651,7 @@ export async function reconcileSupervisorRunsLocked(
 
     replaceStructuredSupervisionState(workstreamState, supervisorState)
     return reconciledRunIds
-  })
+  } }))
 }
 
 /**

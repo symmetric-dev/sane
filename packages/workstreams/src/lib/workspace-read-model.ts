@@ -9,6 +9,10 @@ import {
   type StructuredStorageWorkstreamRecord,
 } from "./structured-storage.ts"
 import {
+  loadStructuredWorkspaceStateSync,
+  replaceStructuredWorkspaceStateSync,
+} from "./storage-adapter.ts"
+import {
   loadSqliteStructuredStorageWorkspaceState,
   syncStructuredStorageWorkspaceStateToSqlite,
 } from "./sqlite-storage.ts"
@@ -34,12 +38,13 @@ export function projectWorkspaceCompatibilityStateToSqlite(
 }
 
 export function loadCanonicalWorkspaceState(repoRoot: string): StructuredStorageWorkspaceState {
-  const projectedState = projectWorkspaceCompatibilityStateToSqlite(repoRoot)
   const sqliteState = loadSqliteStructuredStorageWorkspaceState(repoRoot)
 
   if (sqliteState) {
     return sqliteState
   }
+
+  const projectedState = projectWorkspaceCompatibilityStateToSqlite(repoRoot)
 
   if (projectedState) {
     return projectedState
@@ -82,4 +87,26 @@ export function createStreamMetadataFromWorkspaceStateRecord(
   record: StructuredStorageWorkstreamRecord,
 ): StreamMetadata {
   return createStreamMetadataFromStructuredStorageRecord({ record })
+}
+
+export function setCanonicalCurrentStream(
+  repoRoot: string,
+  streamIdOrName: string,
+): StreamMetadata {
+  const workspaceState = loadStructuredWorkspaceStateSync(repoRoot)
+  const record = resolveWorkspaceStateStreamRecord(workspaceState, streamIdOrName)
+
+  if (!record) {
+    throw new Error(`Workstream not found: ${streamIdOrName}`)
+  }
+
+  workspaceState.currentStreamId = record.id
+  replaceStructuredWorkspaceStateSync({ repoRoot, workspaceState })
+  return createStreamMetadataFromWorkspaceStateRecord(record)
+}
+
+export function clearCanonicalCurrentStream(repoRoot: string): void {
+  const workspaceState = loadStructuredWorkspaceStateSync(repoRoot)
+  delete workspaceState.currentStreamId
+  replaceStructuredWorkspaceStateSync({ repoRoot, workspaceState })
 }

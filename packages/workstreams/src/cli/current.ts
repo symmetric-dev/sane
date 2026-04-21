@@ -6,13 +6,11 @@
 
 import { getRepoRoot } from "../lib/repo.ts"
 import {
-  setCurrentStream,
-  clearCurrentStream,
-} from "../lib/index.ts"
-import {
+  clearCanonicalCurrentStream,
   createStreamMetadataFromWorkspaceStateRecord,
   loadCanonicalWorkspaceState,
   resolveWorkspaceStateStreamRecord,
+  setCanonicalCurrentStream,
 } from "../lib/workspace-read-model.ts"
 
 interface CurrentCliArgs {
@@ -112,14 +110,14 @@ export function main(argv: string[] = process.argv): void {
   try {
     // Clear current workstream
     if (cliArgs.clear) {
-      clearCurrentStream(repoRoot)
+      clearCanonicalCurrentStream(repoRoot)
       console.log("Cleared current workstream")
       return
     }
 
     // Set current workstream
     if (cliArgs.set) {
-      const stream = setCurrentStream(repoRoot, cliArgs.set)
+      const stream = setCanonicalCurrentStream(repoRoot, cliArgs.set)
       console.log(`Current workstream set to: ${stream.id}`)
       return
     }

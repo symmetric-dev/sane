@@ -7,6 +7,7 @@ import type {
 import { upsertStructuredBatchRun } from "./structured-storage.ts"
 import {
   getStructuredStorageAdapter,
+  modifySqliteCanonicalRuntimeWorkstreamStateSync,
   readStructuredBatchRunSync,
   writeStructuredBatchRunSync,
 } from "./storage-adapter.ts"
@@ -183,7 +184,7 @@ export async function writeBatchStatusLocked(
 ): Promise<void> {
   const ordered = orderBatchStatus(batchStatus)
 
-  await getStructuredStorageAdapter().modifyWorkstreamState(repoRoot, streamId, (workstreamState) => {
+  modifySqliteCanonicalRuntimeWorkstreamStateSync({ repoRoot, streamId, fn: (workstreamState) => {
     upsertStructuredBatchRun(workstreamState, ordered)
-  })
+  } })
 }

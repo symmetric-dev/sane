@@ -17,7 +17,7 @@ import type {
   StructuredThreadRecord,
   StructuredThreadRuntimeRecord,
 } from "./structured-storage.ts"
-import { getStructuredStorageAdapter } from "./storage-adapter.ts"
+import { modifySqliteCanonicalRuntimeWorkstreamStateSync } from "./storage-adapter.ts"
 import { normalizeSupervisorState } from "./tasks.ts"
 import type {
   CurrentBranchSupervisionContext,
@@ -428,7 +428,7 @@ export async function resetBatchState(
   batchId: string,
 ): Promise<ResetBatchStateResult> {
   const result: Omit<ResetBatchStateResult, "artifacts"> & { now: string } =
-    await getStructuredStorageAdapter().modifyWorkstreamState(repoRoot, streamId, (workstreamState) => {
+    modifySqliteCanonicalRuntimeWorkstreamStateSync({ repoRoot, streamId, fn: (workstreamState) => {
       const batchTasks = workstreamState.hierarchy.tasks.filter((task) => isTaskInBatch(task.id, batchId))
       if (batchTasks.length === 0) {
         throw new Error(`No tasks found for batch ${batchId} in stream ${streamId}`)
@@ -511,7 +511,7 @@ export async function resetBatchState(
         },
         now,
       }
-    })
+    } })
 
   const { now, ...summary } = result
 

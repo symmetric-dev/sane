@@ -442,7 +442,7 @@ describe("sqlite structured storage dual-write", () => {
     })
   })
 
-  test("keeps compatibility helper writes authoritative when sqlite mirror fails", async () => {
+  test("fails compatibility helper writes when canonical sqlite persistence fails", async () => {
     const timestamp = "2026-04-19T12:00:00.000Z"
     const stream = buildStream(workspace.streamId, timestamp)
     const state = buildWorkstreamState(workspace.streamId, timestamp)
@@ -462,22 +462,17 @@ describe("sqlite structured storage dual-write", () => {
         stream,
         taskId: "03.01.02.01",
         status: "completed",
-        report: "Filesystem write stayed canonical.",
+        report: "Canonical sqlite write failed.",
         assigned_agent: "systems-engineer",
       }),
-    ).resolves.toMatchObject({
-      updated: true,
-      status: "completed",
-    })
+    ).rejects.toThrow("unable to open database file")
 
     const updatedState = await filesystemStructuredStorageAdapter.loadWorkstreamState(
       workspace.repoRoot,
       workspace.streamId,
     )
     expect(updatedState?.hierarchy.tasks.find((task) => task.id === "03.01.02.01")).toMatchObject({
-      status: "completed",
-      report: "Filesystem write stayed canonical.",
-      assignedAgent: "systems-engineer",
+      status: "pending",
     })
     expect(getSqliteStructuredStorageMirrorState(workspace.repoRoot)).toMatchObject({
       repoRoot: workspace.repoRoot,

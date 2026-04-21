@@ -1,3 +1,4 @@
+import { existsSync } from "fs"
 import { getOrCreateIndex, modifyIndex, saveIndex } from "./index.ts"
 export {
   createFilesystemAuthoritativeSqliteStructuredStorageAdapter,
@@ -26,6 +27,8 @@ import {
 } from "./structured-storage.ts"
 import {
   loadSqliteCriticalWorkflowParityProjection,
+  modifySqliteStructuredStorageWorkstreamState,
+  loadSqliteStructuredStorageWorkspaceState,
   loadSqliteStructuredStorageWorkstreamState,
   recordSqliteStructuredStorageMirrorState,
   syncStructuredStorageWorkspaceStateToSqlite,
@@ -35,6 +38,7 @@ import {
 } from "./sqlite-storage.ts"
 import {
   createEmptyTasksFile,
+  getTasksFilePath,
   modifyTasksFile,
   normalizeRuntimeState,
   normalizeSupervisorState,
@@ -635,6 +639,46 @@ export function loadStructuredWorkstreamStateSync(
   return workstreamStateFromSnapshot(getOrCreateIndex(repoRoot), streamId, readTasksFile(repoRoot, streamId))
 }
 
+export function loadStructuredWorkspaceStateSync(
+  repoRoot: string,
+): StructuredStorageWorkspaceState {
+  const sqliteState = loadSqliteStructuredStorageWorkspaceState(repoRoot)
+  if (sqliteState) {
+    return sqliteState
+  }
+
+  return workspaceStateFromIndex(getOrCreateIndex(repoRoot))
+}
+
+export function replaceStructuredWorkspaceStateSync(args: {
+  repoRoot: string
+  workspaceState: StructuredStorageWorkspaceState
+}): void {
+  const previousIndex = getOrCreateIndex(args.repoRoot)
+  const nextWorkspaceState = structuredClone(args.workspaceState)
+
+  try {
+    syncStructuredStorageWorkspaceStateToSqlite(args.repoRoot, nextWorkspaceState)
+    recordSqliteStructuredStorageMirrorState({
+      repoRoot: args.repoRoot,
+      operation: "replaceStructuredWorkspaceStateSync",
+      phase: "workspace",
+      result: "success",
+    })
+  } catch (error) {
+    recordSqliteStructuredStorageMirrorState({
+      repoRoot: args.repoRoot,
+      operation: "replaceStructuredWorkspaceStateSync",
+      phase: "workspace",
+      result: "error",
+      error,
+    })
+    throw error
+  }
+
+  saveIndex(args.repoRoot, indexFromWorkspaceState(nextWorkspaceState, previousIndex))
+}
+
 export function replaceStructuredWorkstreamStateSync(args: {
   repoRoot: string
   workstreamState: StructuredStorageWorkstreamState
@@ -644,6 +688,27 @@ export function replaceStructuredWorkstreamStateSync(args: {
   const existingIndex = getOrCreateIndex(args.repoRoot)
   const existingTasksFile = readTasksFile(args.repoRoot, args.workstreamState.streamId)
   const nextState = cloneWorkstreamState(args.workstreamState)
+
+  try {
+    syncStructuredStorageWorkstreamStateToSqlite(args.repoRoot, nextState)
+    recordSqliteStructuredStorageMirrorState({
+      repoRoot: args.repoRoot,
+      operation: "replaceStructuredWorkstreamStateSync",
+      phase: "workstream",
+      result: "success",
+      streamId: args.workstreamState.streamId,
+    })
+  } catch (error) {
+    recordSqliteStructuredStorageMirrorState({
+      repoRoot: args.repoRoot,
+      operation: "replaceStructuredWorkstreamStateSync",
+      phase: "workstream",
+      result: "error",
+      streamId: args.workstreamState.streamId,
+      error,
+    })
+    throw error
+  }
 
   if (existingTasksFile || args.writeTasksFileIfMissing !== false) {
     writeTasksFile(
@@ -680,11 +745,48 @@ export function replaceStructuredWorkstreamStateSync(args: {
     operation: "replaceStructuredWorkstreamStateSync",
     streamId: args.workstreamState.streamId,
   })
-  syncWorkstreamStateMirror({
+}
+
+function projectStructuredWorkstreamStateToCompatibilityFilesSync(args: {
+  repoRoot: string
+  workstreamState: StructuredStorageWorkstreamState
+  writeTasksFileIfMissing?: boolean
+}): void {
+  const tasksFilePath = getTasksFilePath(args.repoRoot, args.workstreamState.streamId)
+  if (!existsSync(tasksFilePath) && args.writeTasksFileIfMissing === false) {
+    return
+  }
+
+  writeTasksFile(
+    args.repoRoot,
+    args.workstreamState.streamId,
+    tasksFileFromWorkstreamState(args.workstreamState),
+  )
+}
+
+export function modifySqliteCanonicalRuntimeWorkstreamStateSync<T>(args: {
+  repoRoot: string
+  streamId: string
+  writeTasksFileIfMissing?: boolean
+  fn: (workstreamState: StructuredStorageWorkstreamState) => T
+}): T {
+  const fallbackState =
+    loadStructuredWorkstreamStateSync(args.repoRoot, args.streamId) ??
+    createEmptyStructuredStorageWorkstreamState(args.streamId)
+  const { result, workstreamState } = modifySqliteStructuredStorageWorkstreamState({
     repoRoot: args.repoRoot,
-    operation: "replaceStructuredWorkstreamStateSync",
-    workstreamState: nextState,
+    streamId: args.streamId,
+    fallbackState,
+    fn: args.fn,
   })
+
+  projectStructuredWorkstreamStateToCompatibilityFilesSync({
+    repoRoot: args.repoRoot,
+    workstreamState,
+    writeTasksFileIfMissing: args.writeTasksFileIfMissing,
+  })
+
+  return result
 }
 
 export function loadThreadMetadataViewSync(repoRoot: string, streamId: string): ThreadsJson | null {
