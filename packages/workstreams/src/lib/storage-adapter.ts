@@ -40,6 +40,7 @@ import {
 import {
   createEmptyTasksFile,
   getTasksFilePath,
+  importLegacyRuntimeState,
   modifyTasksFile,
   normalizeRuntimeState,
   normalizeSupervisorState,
@@ -87,6 +88,213 @@ export interface CriticalWorkflowDualWriteParityInspection {
     reason: string
   }>
   filesystemCompatibilityOnlyData: CriticalWorkflowFilesystemCompatibilityData
+}
+
+export interface LegacyFilesystemSqliteHydrationDiagnostic {
+  severity: "warning" | "error"
+  code: string
+  streamId?: string
+  message: string
+}
+
+export interface LegacyFilesystemSqliteHydrationResult {
+  workspaceState: StructuredStorageWorkspaceState
+  workstreamStates: StructuredStorageWorkstreamState[]
+  hydratedStreamIds: string[]
+  projectedStreamIds: string[]
+  diagnostics: LegacyFilesystemSqliteHydrationDiagnostic[]
+}
+
+interface FilesystemHydrationTasksSnapshot {
+  tasksFile: TasksFile | null
+  hadTasksFile: boolean
+  hadLegacyRuntimeArtifacts: boolean
+  createdTasksFile: boolean
+  migratedLegacyRuntime: boolean
+}
+
+function formatDiagnosticIdList(ids: string[]): string {
+  if (ids.length <= 4) {
+    return ids.join(", ")
+  }
+
+  return `${ids.slice(0, 4).join(", ")}, +${ids.length - 4} more`
+}
+
+function uniqueSortedIds(ids: Iterable<string>): string[] {
+  return [...new Set([...ids].filter((id) => id.length > 0))].sort(compareIds)
+}
+
+function collectWorkspaceHydrationDiagnostics(
+  workspaceState: StructuredStorageWorkspaceState,
+): LegacyFilesystemSqliteHydrationDiagnostic[] {
+  if (!workspaceState.currentStreamId) {
+    return []
+  }
+
+  if (workspaceState.workstreams.some((stream) => stream.id === workspaceState.currentStreamId)) {
+    return []
+  }
+
+  return [
+    {
+      severity: "warning",
+      code: "workspace-current-stream-missing",
+      message:
+        `Legacy workspace current_stream ${workspaceState.currentStreamId} is not present in index.json streams; sqlite hydration kept the selection, but follow-up cleanup is recommended.`,
+    },
+  ]
+}
+
+function collectWorkstreamHydrationDiagnostics(args: {
+  streamId: string
+  workspaceState: StructuredStorageWorkspaceState
+  workstreamState: StructuredStorageWorkstreamState
+  tasksSnapshot: FilesystemHydrationTasksSnapshot
+}): LegacyFilesystemSqliteHydrationDiagnostic[] {
+  const diagnostics: LegacyFilesystemSqliteHydrationDiagnostic[] = []
+  const streamRecord = args.workspaceState.workstreams.find((stream) => stream.id === args.streamId)
+
+  if (!streamRecord) {
+    diagnostics.push({
+      severity: "warning",
+      code: "workstream-missing-from-index",
+      streamId: args.streamId,
+      message:
+        `Legacy workstream ${args.streamId} is not registered in index.json; sqlite hydration inferred a catalog row from filesystem state.`,
+    })
+  }
+
+  if (!args.tasksSnapshot.hadTasksFile && !args.tasksSnapshot.hadLegacyRuntimeArtifacts) {
+    diagnostics.push({
+      severity: "warning",
+      code: "workstream-missing-tasks-file",
+      streamId: args.streamId,
+      message:
+        `Legacy workstream ${args.streamId} has no tasks.json or runtime compatibility artifacts; sqlite hydration imported workspace metadata and approvals only.`,
+    })
+  }
+
+  if (!args.tasksSnapshot.hadTasksFile && args.tasksSnapshot.createdTasksFile) {
+    diagnostics.push({
+      severity: "warning",
+      code: "runtime-artifacts-without-tasks-file",
+      streamId: args.streamId,
+      message:
+        `Legacy workstream ${args.streamId} had runtime compatibility artifacts without tasks.json; hydration created tasks.json first so runtime history could be imported into sqlite canonically.`,
+    })
+  }
+
+  if (args.tasksSnapshot.migratedLegacyRuntime) {
+    diagnostics.push({
+      severity: "warning",
+      code: "legacy-runtime-merged",
+      streamId: args.streamId,
+      message:
+        `Legacy runtime compatibility files for ${args.streamId} were merged into canonical runtime state during sqlite hydration.`,
+    })
+  }
+
+  const stageIds = new Set(args.workstreamState.hierarchy.stages.map((stage) => stage.id))
+  const batchIds = new Set(args.workstreamState.hierarchy.batches.map((batch) => batch.id))
+  const threadIds = new Set(args.workstreamState.hierarchy.threads.map((thread) => thread.id))
+  const taskIds = new Set(args.workstreamState.hierarchy.tasks.map((task) => task.id))
+
+  const missingStageIds = uniqueSortedIds([
+    ...args.workstreamState.approvals
+      .map((approval) => approval.stageId)
+      .filter((stageId): stageId is string => typeof stageId === "string" && !stageIds.has(stageId)),
+    ...args.workstreamState.supervision.runs
+      .map((run) => run.stageId)
+      .filter((stageId) => !stageIds.has(stageId)),
+    ...args.workstreamState.supervision.branch_sessions
+      .map((session) => session.scope?.stageId)
+      .filter((stageId): stageId is string => typeof stageId === "string" && !stageIds.has(stageId)),
+  ])
+
+  if (missingStageIds.length > 0) {
+    diagnostics.push({
+      severity: "warning",
+      code: "missing-stage-hierarchy",
+      streamId: args.streamId,
+      message:
+        `Legacy workstream ${args.streamId} references stages outside the declared task hierarchy (${formatDiagnosticIdList(missingStageIds)}); sqlite hydration inferred placeholder stage rows to preserve runtime history.`,
+    })
+  }
+
+  const missingBatchIds = uniqueSortedIds([
+    ...args.workstreamState.batchRuns
+      .map((batchRun) => batchRun.batchId)
+      .filter((batchId) => !batchIds.has(batchId)),
+    ...args.workstreamState.supervision.runs
+      .flatMap((run) => [run.currentBatchId, run.lastReviewedBatchId])
+      .filter((batchId): batchId is string => typeof batchId === "string" && !batchIds.has(batchId)),
+    ...args.workstreamState.supervision.branch_sessions
+      .flatMap((session) => [session.batchId, session.scope?.level === "batch" ? session.scope.batchId : undefined])
+      .filter((batchId): batchId is string => typeof batchId === "string" && !batchIds.has(batchId)),
+  ])
+
+  if (missingBatchIds.length > 0) {
+    diagnostics.push({
+      severity: "warning",
+      code: "missing-batch-hierarchy",
+      streamId: args.streamId,
+      message:
+        `Legacy workstream ${args.streamId} references batches outside the declared task hierarchy (${formatDiagnosticIdList(missingBatchIds)}); sqlite hydration inferred placeholder batch rows to preserve runtime history.`,
+    })
+  }
+
+  const missingThreadIds = uniqueSortedIds([
+    ...args.workstreamState.threadRuntime
+      .map((runtime) => runtime.threadId)
+      .filter((threadId) => !threadIds.has(threadId)),
+    ...args.workstreamState.batchRuns
+      .flatMap((batchRun) => batchRun.threads.map((thread) => thread.threadId))
+      .filter((threadId) => !threadIds.has(threadId)),
+    ...args.workstreamState.supervision.branch_sessions
+      .map((session) => session.threadId)
+      .filter((threadId): threadId is string => typeof threadId === "string" && !threadIds.has(threadId)),
+  ])
+
+  if (missingThreadIds.length > 0) {
+    diagnostics.push({
+      severity: "warning",
+      code: "missing-thread-hierarchy",
+      streamId: args.streamId,
+      message:
+        `Legacy workstream ${args.streamId} references threads outside the declared task hierarchy (${formatDiagnosticIdList(missingThreadIds)}); sqlite hydration inferred placeholder thread rows to preserve runtime history.`,
+    })
+  }
+
+  const missingTaskIds = uniqueSortedIds(
+    args.workstreamState.batchRuns
+      .flatMap((batchRun) => batchRun.threads.map((thread) => thread.firstTaskId))
+      .filter((taskId) => !taskIds.has(taskId)),
+  )
+
+  if (missingTaskIds.length > 0) {
+    diagnostics.push({
+      severity: "warning",
+      code: "missing-task-hierarchy",
+      streamId: args.streamId,
+      message:
+        `Legacy workstream ${args.streamId} references batch entry tasks outside tasks.json (${formatDiagnosticIdList(missingTaskIds)}); sqlite hydration inferred placeholder task rows to preserve batch runtime continuity.`,
+    })
+  }
+
+  return diagnostics
+}
+
+export function emitLegacyFilesystemSqliteHydrationDiagnostics(
+  diagnostics: LegacyFilesystemSqliteHydrationDiagnostic[],
+): void {
+  for (const diagnostic of diagnostics) {
+    const prefix = diagnostic.streamId
+      ? `[sqlite-hydration:${diagnostic.streamId}]`
+      : "[sqlite-hydration]"
+    const writer = diagnostic.severity === "error" ? console.error : console.warn
+    writer(`${prefix} ${diagnostic.message}`)
+  }
 }
 
 function normalizeThreadSessionsForParity(sessions: ThreadMetadata["sessions"]): ThreadMetadata["sessions"] {
@@ -429,6 +637,47 @@ function getLegacyBatchStatusDirPath(repoRoot: string, streamId: string): string
   return join(getWorkDir(repoRoot), streamId, "batch-status")
 }
 
+function hasLegacyBatchStatusFiles(repoRoot: string, streamId: string): boolean {
+  const batchStatusDir = getLegacyBatchStatusDirPath(repoRoot, streamId)
+  if (!existsSync(batchStatusDir)) {
+    return false
+  }
+
+  return readdirSync(batchStatusDir).some((entry) => entry.endsWith(".json"))
+}
+
+function loadFilesystemHydrationTasksSnapshotSync(
+  repoRoot: string,
+  streamId: string,
+): FilesystemHydrationTasksSnapshot {
+  const tasksFilePath = getTasksFilePath(repoRoot, streamId)
+  const hadTasksFile = existsSync(tasksFilePath)
+  const hadLegacyRuntimeArtifacts =
+    existsSync(getLegacyThreadsFilePath(repoRoot, streamId)) ||
+    existsSync(getLegacySupervisorStateFilePath(repoRoot, streamId)) ||
+    hasLegacyBatchStatusFiles(repoRoot, streamId)
+
+  if (!hadTasksFile && !hadLegacyRuntimeArtifacts) {
+    return {
+      tasksFile: null,
+      hadTasksFile,
+      hadLegacyRuntimeArtifacts,
+      createdTasksFile: false,
+      migratedLegacyRuntime: false,
+    }
+  }
+
+  const { migrated, tasksFile } = importLegacyRuntimeState(repoRoot, streamId)
+
+  return {
+    tasksFile,
+    hadTasksFile,
+    hadLegacyRuntimeArtifacts,
+    createdTasksFile: !hadTasksFile && existsSync(tasksFilePath),
+    migratedLegacyRuntime: migrated,
+  }
+}
+
 function writeCompatibilityJsonFile(filePath: string, value: unknown): void {
   atomicWriteFile(filePath, JSON.stringify(value, null, 2))
 }
@@ -469,6 +718,69 @@ export function projectLegacyRuntimeCompatibilityArtifactsSync(args: {
     }
 
     rmSync(join(batchStatusDir, entry), { force: true })
+  }
+}
+
+export function hydrateLegacyFilesystemStateToSqliteSync(args: {
+  repoRoot: string
+  streamId?: string
+}): LegacyFilesystemSqliteHydrationResult {
+  const index = getOrCreateIndex(args.repoRoot)
+  const workspaceState = workspaceStateFromIndex(index)
+  const diagnostics = collectWorkspaceHydrationDiagnostics(workspaceState)
+
+  syncStructuredStorageWorkspaceStateToSqlite(args.repoRoot, workspaceState)
+
+  const requestedStreamIds = args.streamId
+    ? [args.streamId]
+    : workspaceState.workstreams.map((workstream) => workstream.id)
+  const workstreamStates: StructuredStorageWorkstreamState[] = []
+  const hydratedStreamIds: string[] = []
+  const projectedStreamIds: string[] = []
+
+  for (const streamId of requestedStreamIds) {
+    const tasksSnapshot = loadFilesystemHydrationTasksSnapshotSync(args.repoRoot, streamId)
+    const filesystemState = workstreamStateFromSnapshot(index, streamId, tasksSnapshot.tasksFile)
+
+    if (!filesystemState) {
+      diagnostics.push({
+        severity: "warning",
+        code: "workstream-missing-filesystem-state",
+        streamId,
+        message:
+          `No legacy filesystem state was found for workstream ${streamId}; sqlite hydration skipped this stream.`,
+      })
+      continue
+    }
+
+    diagnostics.push(
+      ...collectWorkstreamHydrationDiagnostics({
+        streamId,
+        workspaceState,
+        workstreamState: filesystemState,
+        tasksSnapshot,
+      }),
+    )
+
+    syncStructuredStorageWorkstreamStateToSqlite(args.repoRoot, cloneWorkstreamState(filesystemState))
+    const hydratedState = loadSqliteStructuredStorageWorkstreamState(args.repoRoot, streamId) ?? filesystemState
+    projectLegacyRuntimeCompatibilityArtifactsSync({
+      repoRoot: args.repoRoot,
+      streamId,
+      workstreamState: hydratedState,
+    })
+
+    workstreamStates.push(hydratedState)
+    hydratedStreamIds.push(streamId)
+    projectedStreamIds.push(streamId)
+  }
+
+  return {
+    workspaceState,
+    workstreamStates,
+    hydratedStreamIds,
+    projectedStreamIds,
+    diagnostics,
   }
 }
 

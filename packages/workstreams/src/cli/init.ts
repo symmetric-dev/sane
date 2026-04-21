@@ -11,6 +11,10 @@ import { getAgentsYamlPath } from "../lib/agents-yaml.ts"
 import { getGitHubConfigPath } from "../lib/github/config.ts"
 import { bootstrapSqliteStructuredStorage } from "../lib/sqlite-storage.ts"
 import {
+  emitLegacyFilesystemSqliteHydrationDiagnostics,
+  hydrateLegacyFilesystemStateToSqliteSync,
+} from "../lib/storage-adapter.ts"
+import {
   DEFAULT_AGENTS_YAML,
   DEFAULT_GITHUB_JSON,
 } from "../defaults/index.ts"
@@ -173,6 +177,16 @@ export async function main(argv: string[]): Promise<void> {
     if (bootstrapSqlite) {
       const result = bootstrapSqliteStructuredStorage(repoRoot)
       console.log(`Bootstrapped sqlite structured storage at ${result.databasePath}`)
+
+      const hydration = hydrateLegacyFilesystemStateToSqliteSync({ repoRoot })
+      if (hydration.hydratedStreamIds.length > 0) {
+        console.log(
+          `Hydrated ${hydration.hydratedStreamIds.length} legacy workstream${hydration.hydratedStreamIds.length === 1 ? "" : "s"} into sqlite and projected compatibility files.`,
+        )
+      }
+      if (hydration.diagnostics.length > 0) {
+        emitLegacyFilesystemSqliteHydrationDiagnostics(hydration.diagnostics)
+      }
     }
 
     console.log("\nInitialization complete.")
