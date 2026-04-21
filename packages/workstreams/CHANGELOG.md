@@ -2,6 +2,12 @@
 
 All notable changes to `@agenv/workstreams` are documented in this file.
 
+## 0.7.1 - 2026-04-21
+
+- Completed the sqlite-authoritative cutover for core workflow state, including canonical sqlite reads and writes for approvals, task/runtime updates, revision/fix flows, bootstrap, hydration, and compatibility rebuild tooling.
+- Improved existing-repo migration behavior by supporting orphan legacy workstream discovery during sqlite hydration and keeping fresh `work init --sqlite --force` bootstraps free of unnecessary compatibility index creation.
+- Hardened sqlite runtime behavior and persisted identifier handling with better lock tolerance, scoped compatibility rebuild behavior, and canonical normalization for stage/batch/thread/task IDs across supervision and runtime state.
+
 ## 0.7.0 - 2026-04-20
 
 - Made `work/db.sqlite` the local-first canonical structured store, with `work/index.json` and `work/<stream-id>/tasks.json` retained as compatibility projections for inspection and older file-shaped consumers.
