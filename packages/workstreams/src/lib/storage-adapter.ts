@@ -460,7 +460,12 @@ function loadRuntimeCanonicalMutationSeedSync(
   streamId: string,
 ): StructuredStorageWorkstreamState | null {
   const filesystemState = loadFilesystemStructuredWorkstreamStateSync(repoRoot, streamId)
-  const sqliteState = loadSqliteStructuredStorageWorkstreamState(repoRoot, streamId)
+  let sqliteState: StructuredStorageWorkstreamState | null = null
+  try {
+    sqliteState = loadSqliteStructuredStorageWorkstreamState(repoRoot, streamId)
+  } catch {
+    sqliteState = null
+  }
 
   if (filesystemState && sqliteState) {
     return {
