@@ -310,4 +310,33 @@ describe("sqlite legacy hydration", () => {
       cleanupTestWorkstream(workspace)
     }
   })
+
+  test("hydrates orphan legacy workstream directories that are missing from index.json", () => {
+    const workspace = createTestWorkstream(`001-orphan-hydration-${Date.now()}`)
+
+    try {
+      const hydration = hydrateLegacyFilesystemStateToSqliteSync({
+        repoRoot: workspace.repoRoot,
+      })
+
+      expect(hydration.workspaceState.workstreams.map((stream) => stream.id)).toEqual([
+        workspace.streamId,
+      ])
+      expect(hydration.hydratedStreamIds).toEqual([workspace.streamId])
+      expect(hydration.projectedStreamIds).toEqual([workspace.streamId])
+      expect(hydration.diagnostics.map((diagnostic) => diagnostic.code)).toContain(
+        "workstream-missing-from-index",
+      )
+
+      const sqliteWorkspace = loadSqliteStructuredStorageWorkspaceState(workspace.repoRoot)
+      expect(sqliteWorkspace?.workstreams.map((stream) => stream.id)).toEqual([workspace.streamId])
+
+      const sqliteState = loadSqliteStructuredStorageWorkstreamState(workspace.repoRoot, workspace.streamId)
+      expect(sqliteState?.hierarchy.tasks.map((task) => task.id)).toEqual([])
+      expect(existsSync(join(workspace.workDir, "threads.json"))).toBeTrue()
+      expect(existsSync(join(workspace.workDir, "supervisor-state.json"))).toBeTrue()
+    } finally {
+      cleanupTestWorkstream(workspace)
+    }
+  })
 })

@@ -150,7 +150,7 @@ export async function main(argv: string[]): Promise<void> {
 
     // 2. Initialize index.json compatibility projection when needed
     const indexPath = getIndexPath(repoRoot)
-    const shouldInitializeCompatibilityIndex = !bootstrapSqlite || existsSync(indexPath) || force
+    const shouldInitializeCompatibilityIndex = !bootstrapSqlite || existsSync(indexPath)
     if (shouldInitializeCompatibilityIndex && (!existsSync(indexPath) || force)) {
       console.log(
         `${force && existsSync(indexPath) ? "Overwriting" : "Initializing"} index.json...`,

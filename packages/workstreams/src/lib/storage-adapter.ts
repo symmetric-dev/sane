@@ -1,4 +1,4 @@
-import { existsSync, mkdirSync, readdirSync, rmSync } from "fs"
+import { existsSync, mkdirSync, readdirSync, rmSync, statSync } from "fs"
 import { join } from "path"
 import { atomicWriteFile, getOrCreateIndex, modifyIndex, saveIndex } from "./index.ts"
 export {
@@ -26,6 +26,7 @@ import {
   upsertStructuredBatchRun,
   upsertStructuredThreadRuntime,
 } from "./structured-storage.ts"
+import { VERSION as WORKSTREAMS_VERSION } from "../version.ts"
 import {
   loadSqliteCriticalWorkflowParityProjection,
   modifySqliteStructuredStorageWorkstreamState,
@@ -148,14 +149,14 @@ function collectWorkspaceHydrationDiagnostics(
 
 function collectWorkstreamHydrationDiagnostics(args: {
   streamId: string
+  indexedStreamIds: Set<string>
   workspaceState: StructuredStorageWorkspaceState
   workstreamState: StructuredStorageWorkstreamState
   tasksSnapshot: FilesystemHydrationTasksSnapshot
 }): LegacyFilesystemSqliteHydrationDiagnostic[] {
   const diagnostics: LegacyFilesystemSqliteHydrationDiagnostic[] = []
-  const streamRecord = args.workspaceState.workstreams.find((stream) => stream.id === args.streamId)
 
-  if (!streamRecord) {
+  if (!args.indexedStreamIds.has(args.streamId)) {
     diagnostics.push({
       severity: "warning",
       code: "workstream-missing-from-index",
@@ -422,6 +423,110 @@ function workspaceStateFromIndex(index: WorkIndex): StructuredStorageWorkspaceSt
     ...(index.current_stream ? { currentStreamId: index.current_stream } : {}),
     workstreams: index.streams.map(createStructuredStorageWorkstreamRecord),
   }
+}
+
+function parseLegacyWorkstreamOrder(streamId: string): number | null {
+  const match = /^(\d+)/.exec(streamId)
+  if (!match) {
+    return null
+  }
+
+  const parsed = Number.parseInt(match[1], 10)
+  return Number.isFinite(parsed) ? parsed : null
+}
+
+function hasLegacyFilesystemWorkstreamMarkers(repoRoot: string, streamId: string): boolean {
+  const streamDir = join(getWorkDir(repoRoot), streamId)
+
+  return [
+    "PLAN.md",
+    "REQUIREMENTS.md",
+    "REPORT.md",
+    "tasks.json",
+    "threads.json",
+    "supervisor-state.json",
+    "batch-status",
+    "docs",
+    "files",
+  ].some((entry) => existsSync(join(streamDir, entry)))
+}
+
+function createDiscoveredLegacyFilesystemWorkstreamRecord(args: {
+  repoRoot: string
+  streamId: string
+  fallbackOrder: number
+}): StructuredStorageWorkstreamRecord {
+  const streamDir = join(getWorkDir(args.repoRoot), args.streamId)
+  const stats = statSync(streamDir)
+  const discoveredAt = stats.birthtime.toISOString()
+  const updatedAt = stats.mtime.toISOString()
+
+  return {
+    id: args.streamId,
+    name: args.streamId.replace(/^\d+-/, "") || args.streamId,
+    order: parseLegacyWorkstreamOrder(args.streamId) ?? args.fallbackOrder,
+    size: "medium",
+    createdAt: discoveredAt,
+    updatedAt,
+    storageRoot: `work/${args.streamId}`,
+    generatedBy: {
+      workstreams: `${WORKSTREAMS_VERSION}-legacy-filesystem-import`,
+    },
+    sessionEstimated: {
+      length: 4,
+      unit: "session",
+      session_minutes: [30, 45],
+      session_iterations: [4, 8],
+    },
+  }
+}
+
+function collectHydrationWorkspaceState(args: {
+  repoRoot: string
+  index: WorkIndex
+}): StructuredStorageWorkspaceState {
+  const workspaceState = workspaceStateFromIndex(args.index)
+  const workDir = getWorkDir(args.repoRoot)
+  if (!existsSync(workDir)) {
+    return workspaceState
+  }
+
+  const discoveredStreamIds = new Set(workspaceState.workstreams.map((stream) => stream.id))
+  let nextFallbackOrder = workspaceState.workstreams.reduce(
+    (maxOrder, stream) => Math.max(maxOrder, stream.order),
+    -1,
+  ) + 1
+
+  for (const entry of readdirSync(workDir, { withFileTypes: true })) {
+    if (!entry.isDirectory()) {
+      continue
+    }
+
+    const streamId = entry.name
+    if (discoveredStreamIds.has(streamId) || !hasLegacyFilesystemWorkstreamMarkers(args.repoRoot, streamId)) {
+      continue
+    }
+
+    workspaceState.workstreams.push(
+      createDiscoveredLegacyFilesystemWorkstreamRecord({
+        repoRoot: args.repoRoot,
+        streamId,
+        fallbackOrder: nextFallbackOrder++,
+      }),
+    )
+    discoveredStreamIds.add(streamId)
+  }
+
+  workspaceState.workstreams.sort((left, right) => {
+    const orderComparison = left.order - right.order
+    if (orderComparison !== 0) {
+      return orderComparison
+    }
+
+    return compareIds(left.id, right.id)
+  })
+
+  return workspaceState
 }
 
 function indexFromWorkspaceState(
@@ -726,7 +831,12 @@ export function hydrateLegacyFilesystemStateToSqliteSync(args: {
   streamId?: string
 }): LegacyFilesystemSqliteHydrationResult {
   const index = getOrCreateIndex(args.repoRoot)
-  const workspaceState = workspaceStateFromIndex(index)
+  const workspaceState = collectHydrationWorkspaceState({
+    repoRoot: args.repoRoot,
+    index,
+  })
+  const hydrationIndex = indexFromWorkspaceState(workspaceState, index)
+  const indexedStreamIds = new Set(index.streams.map((stream) => stream.id))
   const diagnostics = collectWorkspaceHydrationDiagnostics(workspaceState)
 
   syncStructuredStorageWorkspaceStateToSqlite(args.repoRoot, workspaceState)
@@ -740,7 +850,7 @@ export function hydrateLegacyFilesystemStateToSqliteSync(args: {
 
   for (const streamId of requestedStreamIds) {
     const tasksSnapshot = loadFilesystemHydrationTasksSnapshotSync(args.repoRoot, streamId)
-    const filesystemState = workstreamStateFromSnapshot(index, streamId, tasksSnapshot.tasksFile)
+    const filesystemState = workstreamStateFromSnapshot(hydrationIndex, streamId, tasksSnapshot.tasksFile)
 
     if (!filesystemState) {
       diagnostics.push({
@@ -754,11 +864,12 @@ export function hydrateLegacyFilesystemStateToSqliteSync(args: {
     }
 
     diagnostics.push(
-      ...collectWorkstreamHydrationDiagnostics({
-        streamId,
-        workspaceState,
-        workstreamState: filesystemState,
-        tasksSnapshot,
+        ...collectWorkstreamHydrationDiagnostics({
+          streamId,
+          indexedStreamIds,
+          workspaceState,
+          workstreamState: filesystemState,
+          tasksSnapshot,
       }),
     )
 

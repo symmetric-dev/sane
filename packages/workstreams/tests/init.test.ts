@@ -87,6 +87,53 @@ describe("work init", () => {
     expect(projectedIndex.streams).toEqual([])
   })
 
+  it("should not create index.json for fresh sqlite bootstrap even with --force", async () => {
+    await initMain(["bun", "work", "init", "--repo-root", tempDir, "--sqlite", "--force"])
+
+    expect(existsSync(getStructuredStorageSqlitePath(tempDir))).toBe(true)
+    expect(existsSync(join(workDir, "index.json"))).toBe(false)
+  })
+
+  it("should hydrate orphan legacy workstream directories into sqlite during init without creating index.json", async () => {
+    const streamId = "001-orphan-legacy-stream"
+    const orphanWorkDir = join(workDir, streamId)
+    mkdirSync(orphanWorkDir, { recursive: true })
+    writeFileSync(join(orphanWorkDir, "PLAN.md"), "# Legacy plan\n")
+    writeFileSync(
+      join(orphanWorkDir, "tasks.json"),
+      JSON.stringify(
+        {
+          version: "2.0.0",
+          stream_id: streamId,
+          last_updated: new Date().toISOString(),
+          tasks: [
+            {
+              id: "01.01.01.01",
+              name: "Import orphaned stream",
+              thread_name: "Hydration thread",
+              batch_name: "Hydration batch",
+              stage_name: "Hydration stage",
+              status: "pending",
+              created_at: "2026-01-01T00:00:00.000Z",
+              updated_at: "2026-01-01T00:00:00.000Z",
+            },
+          ],
+        },
+        null,
+        2,
+      ),
+    )
+
+    await initMain(["bun", "work", "init", "--repo-root", tempDir, "--sqlite"])
+
+    expect(existsSync(getStructuredStorageSqlitePath(tempDir))).toBe(true)
+    expect(existsSync(join(workDir, "index.json"))).toBe(false)
+
+    const projectedIndex = loadIndex(tempDir)
+    expect(projectedIndex.streams.map((stream) => stream.id)).toEqual([streamId])
+    expect(projectedIndex.streams[0]?.name).toBe("orphan-legacy-stream")
+  })
+
   it("should bootstrap sqlite storage for an existing work directory without --force", async () => {
     mkdirSync(workDir, { recursive: true })
     writeFileSync(join(workDir, "index.json"), JSON.stringify({
