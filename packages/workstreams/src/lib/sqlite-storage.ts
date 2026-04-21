@@ -573,6 +573,7 @@ type SqliteThreadMetadataJson = {
   number: number
   name: string
   promptPath?: string
+  hasRuntimeMetadata?: boolean
   currentSessionId?: string
   opencodeSessionId?: string
   workingAgentSessionId?: string
@@ -942,10 +943,11 @@ function insertThreads(
       runtime?.workingAgentSessionId ?? null,
       runtime?.synthesisOutput ?? null,
       nullableJsonStringify(runtime?.synthesis),
-      jsonStringify({
-        ...thread,
-        ...(runtime
-          ? {
+        jsonStringify({
+          ...thread,
+          ...(runtime
+            ? {
+              hasRuntimeMetadata: true,
               currentSessionId: runtime.currentSessionId,
               opencodeSessionId: runtime.opencodeSessionId,
               workingAgentSessionId: runtime.workingAgentSessionId,
@@ -1464,13 +1466,13 @@ function loadSqliteStructuredStorageWorkstreamStateFromDatabase(
     })
     .sort((left, right) => compareIds(left.id, right.id))
 
-  const threadRuntime = threadRows
-    .map((row) => {
-      const metadata = parseMetadataJson<SqliteThreadMetadataJson>(
-        row.metadata_json,
-        `threads(thread=${row.thread_id})`,
-      )
-      const sessions = (sessionsByThreadId.get(row.thread_id) ?? [])
+    const threadRuntime = threadRows
+      .map((row) => {
+        const metadata = parseMetadataJson<SqliteThreadMetadataJson>(
+          row.metadata_json,
+          `threads(thread=${row.thread_id})`,
+        )
+        const sessions = (sessionsByThreadId.get(row.thread_id) ?? [])
         .map(normalizeSessionRecord)
         .sort((left, right) => {
           const startedAtOrder = compareOptionalIds(left.startedAt, right.startedAt)
@@ -1478,19 +1480,33 @@ function loadSqliteStructuredStorageWorkstreamStateFromDatabase(
           return compareIds(left.sessionId, right.sessionId)
         })
 
-      return {
-        threadId: metadata.id,
-        sessions,
-        ...(metadata.currentSessionId ? { currentSessionId: metadata.currentSessionId } : {}),
-        ...(metadata.opencodeSessionId ? { opencodeSessionId: metadata.opencodeSessionId } : {}),
-        ...(metadata.workingAgentSessionId
+        if (
+          sessions.length === 0 &&
+          !metadata.currentSessionId &&
+          !metadata.opencodeSessionId &&
+          !metadata.workingAgentSessionId &&
+          !metadata.synthesisOutput &&
+          !metadata.synthesis &&
+          !metadata.promptPath &&
+          !metadata.hasRuntimeMetadata
+        ) {
+          return null
+        }
+
+        return {
+          threadId: metadata.id,
+          sessions,
+          ...(metadata.currentSessionId ? { currentSessionId: metadata.currentSessionId } : {}),
+          ...(metadata.opencodeSessionId ? { opencodeSessionId: metadata.opencodeSessionId } : {}),
+          ...(metadata.workingAgentSessionId
           ? { workingAgentSessionId: metadata.workingAgentSessionId }
           : {}),
         ...(metadata.synthesisOutput ? { synthesisOutput: metadata.synthesisOutput } : {}),
         ...(metadata.synthesis ? { synthesis: { ...metadata.synthesis } } : {}),
-      } satisfies StructuredThreadRuntimeRecord
-    })
-    .sort((left, right) => compareIds(left.threadId, right.threadId))
+        } satisfies StructuredThreadRuntimeRecord
+      })
+      .filter((record): record is StructuredThreadRuntimeRecord => record !== null)
+      .sort((left, right) => compareIds(left.threadId, right.threadId))
 
   const batchRunRows = database
     .query<{ metadata_json: string }, [string]>(
