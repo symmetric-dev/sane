@@ -18,6 +18,7 @@ import {
   queryStageApprovalStatus,
   storeStageCommitSha,
 } from "../../lib/approval.ts"
+import { loadWorkstreamHierarchyQueryResult } from "../../lib/hierarchy-query.ts"
 import {
   loadGitHubConfig,
   isGitHubEnabled,
@@ -139,6 +140,10 @@ export async function handlePlanApproval(
   if (cliArgs.stage !== undefined) {
     const stageNum = cliArgs.stage
 
+    const stageExists = loadWorkstreamHierarchyQueryResult(repoRoot, stream.id).stages.some(
+      (stage) => stage.id === stageNum.toString().padStart(2, "0") || stage.number === stageNum,
+    )
+
     if (cliArgs.revoke) {
       try {
         // Check if stage is approved
@@ -188,6 +193,11 @@ export async function handlePlanApproval(
     }
 
     // Handle Stage Approve
+    if (!stageExists) {
+      console.error(`Error: Stage ${stageNum} does not exist in the workstream hierarchy`)
+      process.exit(1)
+    }
+
     const stageStatus = queryStageApprovalStatus(repoRoot, stream.id, stageNum, stream)
     if (stageStatus === "approved") {
       if (cliArgs.json) {

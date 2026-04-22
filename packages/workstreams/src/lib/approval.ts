@@ -16,7 +16,7 @@ import { getWorkDir } from "./repo.ts"
 import { parseStreamDocument } from "./stream-parser.ts"
 import { updateStructuredApprovalsSync } from "./storage-adapter.ts"
 import { parseTasksMd } from "./tasks-md.ts"
-import { loadWorkstreamApprovalQueryResult } from "./hierarchy-query.ts"
+import { loadWorkstreamApprovalQueryResult, loadWorkstreamHierarchyQueryResult } from "./hierarchy-query.ts"
 
 function getIndexedStream(index: WorkIndex, streamIdOrName: string): StreamMetadata {
   const stream = index.streams.find((s) => s.id === streamIdOrName || s.name === streamIdOrName)
@@ -524,6 +524,14 @@ export function queryStageApprovalStatus(
   return stream ? getStageApprovalStatus(stream, stageNumber) : "draft"
 }
 
+function stageExistsInHierarchy(repoRoot: string, streamId: string, stageNumber: number): boolean {
+  const normalizedStageId = stageNumber.toString().padStart(2, "0")
+
+  return loadWorkstreamHierarchyQueryResult(repoRoot, streamId).stages.some(
+    (stage) => stage.id === normalizedStageId || stage.number === stageNumber,
+  )
+}
+
 /**
  * Approve a specific stage
  */
@@ -535,6 +543,10 @@ export function approveStage(
 ): StreamMetadata {
   const index = loadIndex(repoRoot)
   const stream = getIndexedStream(index, streamIdOrName)
+
+  if (!stageExistsInHierarchy(repoRoot, stream.id, stageNumber)) {
+    throw new Error(`Stage ${stageNumber} does not exist in the workstream hierarchy`)
+  }
 
   if (queryStageApprovalStatus(repoRoot, stream.id, stageNumber, stream) === "approved") {
     return stream

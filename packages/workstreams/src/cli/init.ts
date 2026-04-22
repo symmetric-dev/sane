@@ -178,10 +178,13 @@ export async function main(argv: string[]): Promise<void> {
       const result = bootstrapSqliteStructuredStorage(repoRoot)
       console.log(`Bootstrapped sqlite structured storage at ${result.databasePath}`)
 
-      const hydration = hydrateLegacyFilesystemStateToSqliteSync({ repoRoot })
+      const hydration = hydrateLegacyFilesystemStateToSqliteSync({
+        repoRoot,
+        projectLegacyRuntimeCompatibilityArtifacts: false,
+      })
       if (hydration.hydratedStreamIds.length > 0) {
         console.log(
-          `Hydrated ${hydration.hydratedStreamIds.length} legacy workstream${hydration.hydratedStreamIds.length === 1 ? "" : "s"} into sqlite and projected compatibility files.`,
+          `Hydrated ${hydration.hydratedStreamIds.length} legacy workstream${hydration.hydratedStreamIds.length === 1 ? "" : "s"} into sqlite.`,
         )
       }
       if (hydration.diagnostics.length > 0) {

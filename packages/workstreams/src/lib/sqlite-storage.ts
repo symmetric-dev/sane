@@ -795,12 +795,6 @@ function inferHierarchy(workstreamState: StructuredStorageWorkstreamState): {
     }
   }
 
-  for (const approval of workstreamState.approvals) {
-    if (approval.stageId) {
-      ensureStage(approval.stageId)
-    }
-  }
-
   for (const run of workstreamState.supervision.runs) {
     ensureStage(run.stageId)
     if (run.currentBatchId) {
@@ -1099,6 +1093,22 @@ function insertApprovals(database: Database, streamId: string, approvals: Struct
   }
 }
 
+function filterApprovalsForPersistedHierarchy(
+  approvals: StructuredApprovalRecord[],
+  stages: StructuredStageRecord[],
+): StructuredApprovalRecord[] {
+  const validStageIds = new Set(stages.map((stage) => stage.id))
+
+  return approvals.filter((approval) => {
+    if (!approval.stageId) {
+      return true
+    }
+
+    const normalizedStageId = normalizeCanonicalStageIdOrFallback(approval.stageId) ?? approval.stageId
+    return validStageIds.has(normalizedStageId)
+  })
+}
+
 function insertThreadSessions(
   database: Database,
   streamId: string,
@@ -1367,6 +1377,10 @@ function syncWorkstreamRows(
 ): void {
   ensureWorkstreamCatalogRow(database, workstreamState.streamId)
   const inferredHierarchy = inferHierarchy(workstreamState)
+  const persistedApprovals = filterApprovalsForPersistedHierarchy(
+    workstreamState.approvals,
+    inferredHierarchy.stages,
+  )
   clearWorkstreamRows(database, workstreamState.streamId)
   insertStages(database, workstreamState.streamId, inferredHierarchy.stages)
   insertBatches(database, workstreamState.streamId, inferredHierarchy.batches)
@@ -1377,7 +1391,7 @@ function syncWorkstreamRows(
     new Map(workstreamState.threadRuntime.map((record) => [record.threadId, record] as const)),
   )
   insertTasks(database, workstreamState.streamId, inferredHierarchy.tasks)
-  insertApprovals(database, workstreamState.streamId, workstreamState.approvals)
+  insertApprovals(database, workstreamState.streamId, persistedApprovals)
   insertThreadRuntime(database, workstreamState.streamId, workstreamState.threadRuntime)
   insertBatchRuns(database, workstreamState.streamId, workstreamState.batchRuns)
 

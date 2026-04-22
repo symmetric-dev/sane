@@ -357,4 +357,47 @@ describe("sqlite legacy hydration", () => {
       cleanupTestWorkstream(workspace)
     }
   })
+
+  test("can hydrate into sqlite without projecting legacy runtime compatibility artifacts", () => {
+    const workspace = createTestWorkstream(`001-no-legacy-runtime-projection-${Date.now()}`)
+
+    try {
+      saveLegacyIndex(workspace.repoRoot, workspace.streamId, workspace.streamId)
+
+      writeJson(join(workspace.workDir, "tasks.json"), {
+        version: "2.0.0",
+        stream_id: workspace.streamId,
+        last_updated: new Date().toISOString(),
+        tasks: [
+          {
+            id: "01.01.01.01",
+            name: "Hydrate sqlite without projections",
+            thread_name: "Hydration thread",
+            batch_name: "Hydration batch",
+            stage_name: "Hydration stage",
+            status: "pending",
+            created_at: "2026-03-02T00:00:00.000Z",
+            updated_at: "2026-03-02T00:00:00.000Z",
+          },
+        ],
+      })
+
+      const hydration = hydrateLegacyFilesystemStateToSqliteSync({
+        repoRoot: workspace.repoRoot,
+        projectLegacyRuntimeCompatibilityArtifacts: false,
+      })
+
+      expect(hydration.hydratedStreamIds).toEqual([workspace.streamId])
+      expect(hydration.projectedStreamIds).toEqual([])
+
+      const sqliteState = loadSqliteStructuredStorageWorkstreamState(workspace.repoRoot, workspace.streamId)
+      expect(sqliteState?.hierarchy.tasks.map((task) => task.id)).toEqual(["01.01.01.01"])
+      expect(existsSync(join(workspace.workDir, "threads.json"))).toBeFalse()
+      expect(existsSync(join(workspace.workDir, "supervisor-state.json"))).toBeFalse()
+      expect(existsSync(join(workspace.workDir, "batch-status"))).toBeFalse()
+      expect(existsSync(join(workspace.workDir, "tasks.json"))).toBeTrue()
+    } finally {
+      cleanupTestWorkstream(workspace)
+    }
+  })
 })

@@ -19,6 +19,9 @@ import {
 import { toTitleCase, getDateString } from "./utils.ts"
 import { parseStreamDocument } from "./stream-parser.ts"
 import { generateRequirementsMd } from "./requirements.ts"
+import { createStructuredStorageWorkstreamRecord } from "./structured-storage.ts"
+import { loadStructuredWorkspaceStateSync, replaceStructuredWorkspaceStateSync } from "./storage-adapter.ts"
+import { loadSqliteStructuredStorageWorkspaceState } from "./sqlite-storage.ts"
 
 /**
  * Generate the version string for templates
@@ -372,9 +375,19 @@ export function generateStream(args: GenerateStreamArgs): GenerateStreamResult {
     generated_by: generatedBy,
   }
 
-  // Update index
-  index.streams.push(streamMetadata)
-  saveIndex(args.repoRoot, index)
+  const sqliteWorkspaceState = loadSqliteStructuredStorageWorkspaceState(args.repoRoot)
+
+  if (sqliteWorkspaceState) {
+    const workspaceState = loadStructuredWorkspaceStateSync(args.repoRoot)
+    workspaceState.workstreams.push(createStructuredStorageWorkstreamRecord(streamMetadata))
+    replaceStructuredWorkspaceStateSync({
+      repoRoot: args.repoRoot,
+      workspaceState,
+    })
+  } else {
+    index.streams.push(streamMetadata)
+    saveIndex(args.repoRoot, index)
+  }
 
   return {
     streamId,

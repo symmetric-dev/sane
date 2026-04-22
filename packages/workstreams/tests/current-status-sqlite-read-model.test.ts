@@ -3,14 +3,17 @@ import { Database } from "bun:sqlite"
 import { readFileSync, writeFileSync } from "fs"
 import { join } from "path"
 
+import { main as createMain } from "../src/cli/create.ts"
 import { main as currentMain } from "../src/cli/current.ts"
 import { main as statusMain } from "../src/cli/status.ts"
 import {
+  bootstrapSqliteStructuredStorage,
   getStructuredStorageSqlitePath,
   syncStructuredStorageWorkspaceStateToSqlite,
 } from "../src/lib/sqlite-storage.ts"
 import { createStructuredStorageWorkstreamRecord } from "../src/lib/structured-storage.ts"
 import type { StreamMetadata } from "../src/lib/types.ts"
+import { loadCanonicalWorkspaceState } from "../src/lib/workspace-read-model.ts"
 import { cleanupTestWorkstream, createTestWorkstream, type TestWorkspace } from "./helpers"
 
 function buildStream(streamId: string): StreamMetadata {
@@ -111,6 +114,34 @@ describe("current/status sqlite-backed read model", () => {
     } finally {
       database.close()
     }
+  })
+
+  test("work create registers new streams in canonical sqlite state so current --set succeeds", () => {
+    bootstrapSqliteStructuredStorage(workspace.repoRoot)
+
+    createMain(["bun", "work", "create", "--repo-root", workspace.repoRoot, "--name", "sqlite-created-stream"])
+
+    const workspaceState = loadCanonicalWorkspaceState(workspace.repoRoot)
+    expect(workspaceState.workstreams.some((record) => record.id === "000-sqlite-created-stream")).toBeTrue()
+
+    logs = []
+    errors = []
+    currentMain([
+      "bun",
+      "work",
+      "current",
+      "--repo-root",
+      workspace.repoRoot,
+      "--set",
+      "000-sqlite-created-stream",
+    ])
+
+    expect(errors).toEqual([])
+    expect(logs).toContain("Current workstream set to: 000-sqlite-created-stream")
+    expect(JSON.parse(readFileSync(join(workspace.repoRoot, "work", "index.json"), "utf-8"))).toMatchObject({
+      current_stream: "000-sqlite-created-stream",
+      streams: [expect.objectContaining({ id: "000-sqlite-created-stream" })],
+    })
   })
 
   test("work status resolves workstream identity from sqlite without index.json", () => {

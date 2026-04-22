@@ -5,6 +5,8 @@ import { join } from "node:path"
 import { existsSync } from "node:fs"
 import { generateStream, createGenerateArgs, scaffoldPlanStages } from "../src/lib/generate"
 import { loadIndex } from "../src/lib/index"
+import { bootstrapSqliteStructuredStorage } from "../src/lib/sqlite-storage"
+import { loadCanonicalWorkspaceState } from "../src/lib/workspace-read-model"
 
 describe("createGenerateArgs", () => {
   test("creates args with name and repoRoot", () => {
@@ -210,6 +212,24 @@ describe("generateStream", () => {
 
       const index = loadIndex(tempDir)
       expect(index.streams[0]?.generated_by.workstreams).toBeDefined()
+    })
+
+    test("syncs canonical workspace state when sqlite storage is enabled", async () => {
+      bootstrapSqliteStructuredStorage(tempDir)
+
+      const args = createGenerateArgs("test-feature", tempDir)
+      generateStream(args)
+
+      const workspaceState = loadCanonicalWorkspaceState(tempDir)
+      expect(workspaceState.workstreams).toHaveLength(1)
+      expect(workspaceState.workstreams[0]).toMatchObject({
+        id: "000-test-feature",
+        name: "test-feature",
+        storageRoot: "work/000-test-feature",
+      })
+
+      const index = loadIndex(tempDir)
+      expect(index.streams[0]?.id).toBe("000-test-feature")
     })
   })
 

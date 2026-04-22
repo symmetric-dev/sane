@@ -12,6 +12,9 @@ import { tmpdir } from "os"
 import { main as initMain } from "../src/cli/init.ts"
 import { getStructuredStorageSqlitePath } from "../src/index.ts"
 import { loadIndex } from "../src/lib/index.ts"
+import { loadSqliteStructuredStorageWorkstreamState } from "../src/lib/sqlite-storage.ts"
+import { createEmptySupervisorState } from "../src/lib/supervisor-state.ts"
+import { createBatchStatusFile } from "../src/lib/batch-status.ts"
 
 describe("work init", () => {
   let tempDir: string
@@ -132,6 +135,105 @@ describe("work init", () => {
     const projectedIndex = loadIndex(tempDir)
     expect(projectedIndex.streams.map((stream) => stream.id)).toEqual([streamId])
     expect(projectedIndex.streams[0]?.name).toBe("orphan-legacy-stream")
+  })
+
+  it("should hydrate legacy runtime into sqlite without projecting legacy runtime compatibility artifacts", async () => {
+    const streamId = "001-sqlite-hydration-no-legacy-projection"
+    const streamDir = join(workDir, streamId)
+    mkdirSync(streamDir, { recursive: true })
+    writeFileSync(join(streamDir, "PLAN.md"), "# Legacy sqlite hydration\n")
+    writeFileSync(
+      join(streamDir, "tasks.json"),
+      JSON.stringify(
+        {
+          version: "2.0.0",
+          stream_id: streamId,
+          last_updated: "2026-01-01T00:10:00.000Z",
+          runtime_state: {
+            version: "1.0.0",
+            last_updated: "2026-01-01T00:10:00.000Z",
+            threads: [
+              {
+                threadId: "01.01.01",
+                currentSessionId: "session-1",
+                sessions: [
+                  {
+                    sessionId: "session-1",
+                    agentName: "systems-engineer",
+                    model: "gpt-test",
+                    startedAt: "2026-01-01T00:01:00.000Z",
+                    completedAt: "2026-01-01T00:09:00.000Z",
+                    status: "completed",
+                  },
+                ],
+              },
+            ],
+            batches: {
+              "01.01": {
+                ...createBatchStatusFile({
+                  streamId,
+                  batchId: "01.01",
+                  stageName: "Bootstrap",
+                  batchName: "Hydration",
+                  threads: [
+                    {
+                      threadId: "01.01.01",
+                      threadName: "Hydration thread",
+                      firstTaskId: "01.01.01.01",
+                    },
+                  ],
+                }),
+                status: "running",
+              },
+            },
+            supervision: {
+              ...createEmptySupervisorState(streamId),
+              active_run_id: "sup-1",
+              runs: [
+                {
+                  runId: "sup-1",
+                  stageId: "01",
+                  status: "running",
+                  startedAt: "2026-01-01T00:00:00.000Z",
+                  updatedAt: "2026-01-01T00:10:00.000Z",
+                  reviewPasses: 0,
+                  issueSummaryIds: [],
+                  escalationIds: [],
+                  currentBatchId: "01.01",
+                },
+              ],
+            },
+          },
+          tasks: [
+            {
+              id: "01.01.01.01",
+              name: "Hydrate canonical sqlite state",
+              thread_name: "Hydration thread",
+              batch_name: "Hydration",
+              stage_name: "Bootstrap",
+              status: "pending",
+              created_at: "2026-01-01T00:00:00.000Z",
+              updated_at: "2026-01-01T00:10:00.000Z",
+            },
+          ],
+        },
+        null,
+        2,
+      ),
+    )
+
+    await initMain(["bun", "work", "init", "--repo-root", tempDir, "--sqlite"])
+
+    expect(existsSync(getStructuredStorageSqlitePath(tempDir))).toBe(true)
+    expect(existsSync(join(streamDir, "threads.json"))).toBe(false)
+    expect(existsSync(join(streamDir, "supervisor-state.json"))).toBe(false)
+    expect(existsSync(join(streamDir, "batch-status"))).toBe(false)
+
+    const sqliteState = loadSqliteStructuredStorageWorkstreamState(tempDir, streamId)
+    expect(sqliteState?.threadRuntime[0]?.threadId).toBe("01.01.01")
+    expect(sqliteState?.threadRuntime[0]?.sessions[0]?.sessionId).toBe("session-1")
+    expect(sqliteState?.batchRuns[0]?.batchId).toBe("01.01")
+    expect(sqliteState?.supervision.active_run_id).toBe("sup-1")
   })
 
   it("should bootstrap sqlite storage for an existing work directory without --force", async () => {

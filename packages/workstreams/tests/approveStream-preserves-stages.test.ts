@@ -7,7 +7,7 @@
 
 import { describe, test, expect, beforeEach, afterEach } from "bun:test"
 import { join } from "path"
-import { existsSync, rmSync, writeFileSync } from "fs"
+import { existsSync, readFileSync, writeFileSync } from "fs"
 import { createTestWorkstream, cleanupTestWorkstream, type TestWorkspace } from "./helpers/test-workspace.ts"
 import { saveIndex, loadIndex } from "../src/lib/index.ts"
 import { approveStage, approveStream, getStageApprovalStatus } from "../src/lib/approval.ts"
@@ -52,6 +52,41 @@ describe("approveStream should preserve stage approvals", () => {
     writeFileSync(
       join(repoRoot, "work/stream-001/PLAN.md"),
       "# Test Plan\n\nSome content"
+    )
+
+    writeFileSync(
+      join(repoRoot, "work/stream-001/tasks.json"),
+      JSON.stringify(
+        {
+          version: "1.0.0",
+          stream_id: "stream-001",
+          last_updated: "2026-04-22T00:00:00.000Z",
+          tasks: [
+            {
+              id: "01.01.01.01",
+              name: "Stage 1 task",
+              stage_name: "Stage 01",
+              batch_name: "Batch 01",
+              thread_name: "Thread 01",
+              status: "completed",
+              created_at: "2026-04-22T00:00:00.000Z",
+              updated_at: "2026-04-22T00:00:00.000Z",
+            },
+            {
+              id: "02.01.01.01",
+              name: "Stage 2 task",
+              stage_name: "Stage 02",
+              batch_name: "Batch 01",
+              thread_name: "Thread 01",
+              status: "completed",
+              created_at: "2026-04-22T00:00:00.000Z",
+              updated_at: "2026-04-22T00:00:00.000Z",
+            },
+          ],
+        },
+        null,
+        2,
+      ),
     )
   })
 
@@ -133,18 +168,39 @@ describe("approveStream should preserve stage approvals", () => {
     expect(stream.approval?.tasks?.task_count).toBe(5)
   })
 
-  test("approval updates do not recreate tasks.json when only index approval changes", () => {
+  test("approval updates preserve the existing tasks hierarchy", () => {
     const tasksPath = join(repoRoot, "work/stream-001/tasks.json")
-    rmSync(tasksPath, { force: true })
-    expect(existsSync(tasksPath)).toBe(false)
+    const beforeTasks = JSON.parse(readFileSync(tasksPath, "utf-8")) as {
+      tasks: Array<{ id: string }>
+    }
+
+    expect(existsSync(tasksPath)).toBe(true)
 
     approveStage(repoRoot, "stream-001", 1, "tester")
     approveStream(repoRoot, "stream-001", "admin")
 
-    expect(existsSync(tasksPath)).toBe(false)
+    expect(existsSync(tasksPath)).toBe(true)
+    expect(
+      (JSON.parse(readFileSync(tasksPath, "utf-8")) as { tasks: Array<{ id: string }> }).tasks.map(
+        (task) => task.id,
+      ),
+    ).toEqual(beforeTasks.tasks.map((task) => task.id))
 
     const stream = loadIndex(repoRoot).streams[0]!
     expect(stream.approval?.status).toBe("approved")
     expect(stream.approval?.stages?.[1]?.status).toBe("approved")
+  })
+
+  test("approveStage rejects nonexistent stages without mutating state", () => {
+    const tasksPath = join(repoRoot, "work/stream-001/tasks.json")
+    const beforeIndex = loadIndex(repoRoot)
+    const beforeTasks = readFileSync(tasksPath, "utf-8")
+
+    expect(() => approveStage(repoRoot, "stream-001", 99, "tester")).toThrow(
+      "Stage 99 does not exist in the workstream hierarchy",
+    )
+
+    expect(loadIndex(repoRoot)).toEqual(beforeIndex)
+    expect(readFileSync(tasksPath, "utf-8")).toBe(beforeTasks)
   })
 })

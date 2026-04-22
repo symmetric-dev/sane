@@ -1085,6 +1085,7 @@ export function projectLegacyRuntimeCompatibilityArtifactsSync(args: {
 export function hydrateLegacyFilesystemStateToSqliteSync(args: {
   repoRoot: string
   streamId?: string
+  projectLegacyRuntimeCompatibilityArtifacts?: boolean
 }): LegacyFilesystemSqliteHydrationResult {
   const index = getOrCreateIndex(args.repoRoot)
   const workspaceState = collectHydrationWorkspaceState({
@@ -1103,6 +1104,8 @@ export function hydrateLegacyFilesystemStateToSqliteSync(args: {
   const workstreamStates: StructuredStorageWorkstreamState[] = []
   const hydratedStreamIds: string[] = []
   const projectedStreamIds: string[] = []
+  const shouldProjectLegacyRuntimeCompatibilityArtifacts =
+    args.projectLegacyRuntimeCompatibilityArtifacts ?? true
 
   for (const streamId of requestedStreamIds) {
     const tasksSnapshot = loadFilesystemHydrationTasksSnapshotSync(args.repoRoot, streamId)
@@ -1145,11 +1148,13 @@ export function hydrateLegacyFilesystemStateToSqliteSync(args: {
 
     syncStructuredStorageWorkstreamStateToSqlite(args.repoRoot, cloneWorkstreamState(filesystemState))
     const hydratedState = loadSqliteStructuredStorageWorkstreamState(args.repoRoot, streamId) ?? filesystemState
-    projectLegacyRuntimeCompatibilityArtifactsSync({
-      repoRoot: args.repoRoot,
-      streamId,
-      workstreamState: hydratedState,
-    })
+    if (shouldProjectLegacyRuntimeCompatibilityArtifacts) {
+      projectLegacyRuntimeCompatibilityArtifactsSync({
+        repoRoot: args.repoRoot,
+        streamId,
+        workstreamState: hydratedState,
+      })
+    }
 
     const projectedParity = inspectCriticalWorkflowDualWriteParitySync(args.repoRoot, streamId)
     if (projectedParity?.sqlite) {
@@ -1164,7 +1169,9 @@ export function hydrateLegacyFilesystemStateToSqliteSync(args: {
 
     workstreamStates.push(hydratedState)
     hydratedStreamIds.push(streamId)
-    projectedStreamIds.push(streamId)
+    if (shouldProjectLegacyRuntimeCompatibilityArtifacts) {
+      projectedStreamIds.push(streamId)
+    }
   }
 
   return {

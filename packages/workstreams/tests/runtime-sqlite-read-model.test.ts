@@ -3,13 +3,16 @@ import { mkdirSync, writeFileSync } from "fs"
 import { join } from "path"
 
 import { readBatchStatus } from "../src/lib/batch-status.ts"
-import { getWorkstreamStatusSnapshot } from "../src/lib/status.ts"
+import { formatStatusSnapshot, getWorkstreamStatusSnapshot } from "../src/lib/status.ts"
 import { resolveCurrentBranchSupervisionContext } from "../src/lib/root-agent-branch.ts"
 import {
   loadSqliteStructuredStorageWorkstreamState,
   syncStructuredStorageWorkstreamStateToSqlite,
 } from "../src/lib/sqlite-storage.ts"
-import { createEmptyStructuredStorageWorkstreamState } from "../src/lib/structured-storage.ts"
+import {
+  approvalMetadataToStructuredApprovalRecords,
+  createEmptyStructuredStorageWorkstreamState,
+} from "../src/lib/structured-storage.ts"
 import { loadSupervisorState } from "../src/lib/supervisor-state.ts"
 import type { StreamMetadata, TasksFile } from "../src/lib/types.ts"
 import { cleanupTestWorkstream, createTestWorkstream } from "./helpers/test-workspace.ts"
@@ -246,6 +249,57 @@ function syncCanonicalSqliteState(repoRoot: string, streamId: string): void {
 }
 
 describe("runtime sqlite-backed read model", () => {
+  test("status output ignores bogus stage approvals that do not exist in sqlite hierarchy", () => {
+    const workspace = createTestWorkstream("001-runtime-sqlite-bogus-stage-approval")
+
+    try {
+      writeIndex(workspace.repoRoot, workspace.streamId, workspace.streamId)
+
+      const stream = buildBaseStream(workspace.streamId)
+      const state = createEmptyStructuredStorageWorkstreamState(workspace.streamId)
+      state.hierarchy = {
+        stages: [{ id: "01", number: 1, name: "Real stage" }],
+        batches: [{ id: "01.01", stageId: "01", number: 1, name: "Real batch" }],
+        threads: [{ id: "01.01.01", stageId: "01", batchId: "01.01", number: 1, name: "Real thread" }],
+        tasks: [
+          {
+            id: "01.01.01.01",
+            stageId: "01",
+            batchId: "01.01",
+            threadId: "01.01.01",
+            number: 1,
+            name: "Real task",
+            status: "completed",
+            createdAt: "2026-04-20T01:00:00.000Z",
+            updatedAt: "2026-04-20T01:00:00.000Z",
+          },
+        ],
+      }
+      state.approvals = approvalMetadataToStructuredApprovalRecords(workspace.streamId, {
+        status: "approved",
+        stages: {
+          3: {
+            status: "approved",
+            approved_at: "2026-04-20T01:00:00.000Z",
+            approved_by: "tester",
+          },
+        },
+      })
+
+      syncStructuredStorageWorkstreamStateToSqlite(workspace.repoRoot, state)
+
+      const snapshot = getWorkstreamStatusSnapshot(workspace.repoRoot, stream)
+      const output = formatStatusSnapshot(snapshot, stream, workspace.repoRoot)
+
+      expect(snapshot.stages.map((stage) => stage.stage_id)).toEqual(["01"])
+      expect(output).toContain("Stage 01: Real stage (1/1)")
+      expect(output).not.toContain("Stage 03")
+      expect(output).not.toContain("(0/0) ✓")
+    } finally {
+      cleanupTestWorkstream(workspace)
+    }
+  })
+
   test("normalizes malformed supervision scope stage ids before sqlite stage inference", () => {
     const workspace = createTestWorkstream("001-runtime-sqlite-stage-scope-normalization")
 
