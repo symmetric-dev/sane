@@ -21,7 +21,7 @@ function escapeHtml(value: string): string {
 export function renderDashboardClientScript(repoRoot: string): string {
   return [
     `const repoRoot = ${JSON.stringify(repoRoot)}`,
-    `const tabIds = ['status-overview', 'work-tree', 'observability-notes', 'tmux-session-metadata', 'terminal-views']`,
+    `const tabIds = ['status-overview', 'work-tree', 'terminal-views']`,
     `const snapshotPath = ${JSON.stringify(CURRENT_WORKSTREAM_DASHBOARD_SNAPSHOT_ROUTE.path)}`,
     `const source = new EventSource(${JSON.stringify(DASHBOARD_LIVE_PATH)})`,
     `const stateBanner = document.getElementById("state-banner")`,
@@ -30,14 +30,14 @@ export function renderDashboardClientScript(repoRoot: string): string {
     `const workstreamMeta = document.getElementById("workstream-meta")`,
     `const connectionStatus = document.getElementById("connection-status")`,
     `const statusBadge = document.getElementById("status-badge")`,
-    `const observabilityBadge = document.getElementById("observability-badge")`,
     `const statusSummary = document.getElementById("status-summary")`,
     `const runtimeSummary = document.getElementById("runtime-summary")`,
     `const statusStages = document.getElementById("status-stages")`,
     `const treeBody = document.getElementById("tree-body")`,
     `const treeCount = document.getElementById("tree-count")`,
-    `const tmuxSummary = document.getElementById("tmux-summary")`,
-    `const tmuxList = document.getElementById("tmux-list")`,
+    `const treeLevelControls = document.getElementById("tree-level-controls")`,
+    `const terminalSessionSummary = document.getElementById("terminal-session-summary")`,
+    `const terminalSessionList = document.getElementById("terminal-session-list")`,
     `const terminalViewSummary = document.getElementById("terminal-view-summary")`,
     `const terminalViewSelect = document.getElementById("terminal-view-select")`,
     `const terminalViewStatus = document.getElementById("terminal-view-status")`,
@@ -50,14 +50,13 @@ export function renderDashboardClientScript(repoRoot: string): string {
     `const scrollbackEmpty = document.getElementById("terminal-scrollback-empty")`,
     `const scrollbackControls = document.getElementById("terminal-scrollback-controls")`,
     `const terminalViewFrame = document.getElementById("terminal-view-frame")`,
-    `const observabilityIssues = document.getElementById("observability-issues")`,
     "const tabButtons = tabIds.map((tabId) => document.getElementById('tab-' + tabId)).filter(Boolean)",
     `const terminalScrollbackPathTemplate = ${JSON.stringify(DASHBOARD_TERMINAL_VIEW_SCROLLBACK_ROUTE_PATH_TEMPLATE)}`,
     "const monacoLoaderUrl = 'https://cdn.jsdelivr.net/npm/monaco-editor@0.52.2/min/vs/loader.js'",
     "const monacoVsPath = 'https://cdn.jsdelivr.net/npm/monaco-editor@0.52.2/min/vs'",
     "const scrollbackEditorFallbackHeightPx = 560",
     "const terminalFrameHeightPx = 336",
-    "const state = { activeTabId: tabIds[0], selectedTerminalViewId: null, snapshot: null, liveConnectionState: 'connecting', snapshotAvailability: 'loading', scrollback: null, scrollbackLoading: false, scrollbackRenderToken: 0, pendingScrollIntent: null }",
+    "const state = { activeTabId: tabIds[0], selectedTerminalViewId: null, snapshot: null, liveConnectionState: 'connecting', snapshotAvailability: 'loading', scrollback: null, scrollbackLoading: false, scrollbackRenderToken: 0, pendingScrollIntent: null, treeLevels: { stage: true, batch: true, thread: true, task: true } }",
     "let monacoEditor = null",
     "let monacoLoaderPromise = null",
     "const scrollbackPageSize = 1200",
@@ -90,6 +89,23 @@ export function renderDashboardClientScript(repoRoot: string): string {
     "function setSnapshotAvailability(nextState) { state.snapshotAvailability = nextState; updateConnectionStatus() }",
     "function setBadge(element, status, label) { if (!element) return; element.dataset.status = status; element.textContent = label }",
     "function labelStatus(status) { return String(status).replaceAll('_', ' ') }",
+    "function titleCaseWorkstreamName(value) {",
+    "  const words = String(value || '').replace(/^\\d+[-_ ]+/, '').split(/[-_\\s]+/).filter(Boolean)",
+    "  if (words.length === 0) return 'Current Workstream'",
+    "  return words.map((word) => word.charAt(0).toUpperCase() + word.slice(1).toLowerCase()).join(' ')",
+    "}",
+    "function formatWorkstreamTitle(stream) {",
+    "  const id = stream && stream.id ? String(stream.id) : ''",
+    "  const name = stream && stream.name ? String(stream.name) : id",
+    "  const numberMatch = id.match(/^(\\d+)(?:[-_ ].*)?$/)",
+    "  const title = titleCaseWorkstreamName(name || id)",
+    "  return numberMatch ? title + ' (' + numberMatch[1] + ')' : title",
+    "}",
+    "function formatDateTime(value) {",
+    "  try { return new Date(value).toLocaleString(undefined, { dateStyle: 'medium', timeStyle: 'short' }) } catch { return String(value) }",
+    "}",
+    "function formatTerminalScope(prefix, stageId, batchId) { const scope = [stageId, batchId].filter(Boolean).join(' '); return scope ? prefix + ' ' + scope : prefix + ' terminal' }",
+    "function formatTerminalSessionLabel(session) { return formatTerminalScope(session && session.role === 'implementation_thread' ? 'Implementation' : 'Supervision', session && (session.stage_id || (session.correlation && session.correlation.stage_id)), session && (session.batch_id || (session.correlation && session.correlation.batch_id))) }",
     "function getHashValue() { return typeof location !== 'undefined' && typeof location.hash === 'string' ? location.hash.slice(1) : '' }",
     "function setHashValue(tabId) { if (typeof history !== 'undefined' && history && typeof history.replaceState === 'function' && typeof location !== 'undefined') history.replaceState(null, '', '#' + tabId); else if (typeof location !== 'undefined') location.hash = tabId }",
     "function setActiveTab(tabId, options) {",
@@ -268,37 +284,36 @@ export function renderDashboardClientScript(repoRoot: string): string {
     "  if (!runtime.entries || runtime.entries.length === 0) return '<div class=\"empty\">Runtime exists but no batch or supervision entries are currently active.</div>'",
     "  return runtime.entries.map((entry) => renderRuntimeEntry(entry)).join('')",
     "}",
-    "function renderTreeNode(node, depth) {",
+    "function renderTreeRow(node, depth) {",
     "  const countLabel = node.taskCount + ' task' + (node.taskCount === 1 ? '' : 's')",
-    "  const parts = ['<div class=\"tree-node-head\"><span class=\"badge\" data-status=\"' + escapeHtml(node.status) + '\">' + escapeHtml(node.status) + '</span><strong>' + escapeHtml(node.displayLabel) + '</strong></div>', '<div class=\"tree-meta\">' + escapeHtml(countLabel) + (node.assignedAgent ? ' · @' + escapeHtml(node.assignedAgent) : '') + '</div>']",
-    "  if (node.kind === 'batch' && node.runtimeOverlay) parts.push('<div class=\"tree-note\">' + escapeHtml(node.runtimeOverlay.text) + '</div>')",
-    "  if (node.kind === 'workstream' && node.runtimeNotice) parts.push('<div class=\"tree-note\">Runtime: ' + escapeHtml(node.runtimeNotice.text) + '</div>')",
-    "  const children = []",
-    "  if (node.kind === 'workstream') { for (const stage of node.stages) children.push(renderTreeNode(stage, depth + 1)) }",
-    "  else if (node.kind === 'stage') { for (const batch of node.batches) children.push(renderTreeNode(batch, depth + 1)) }",
-    "  else if (node.kind === 'batch') { for (const thread of node.threads) children.push(renderTreeNode(thread, depth + 1)) }",
-    "  else if (node.kind === 'thread') { for (const task of node.tasks) children.push(renderTreeNode(task, depth + 1)) }",
-    "  return '<li><div class=\"tree-node\">' + parts.join('') + '</div>' + (children.length > 0 ? '<ul class=\"tree-children\" data-depth=\"' + depth + '\">' + children.join('') + '</ul>' : '') + '</li>'",
+    "  const note = node.kind === 'batch' && node.runtimeOverlay ? node.runtimeOverlay.text : ''",
+    "  const assignee = node.assignedAgent ? ' · @' + node.assignedAgent : ''",
+    "  return '<li class=\"tree-row\" data-kind=\"' + escapeHtml(node.kind) + '\" style=\"--tree-depth:' + escapeHtml(String(depth)) + '\"><span class=\"tree-kind\">' + escapeHtml(node.kind) + '</span><span class=\"badge\" data-status=\"' + escapeHtml(node.status) + '\">' + escapeHtml(labelStatus(node.status)) + '</span><strong>' + escapeHtml(node.displayLabel) + '</strong><span class=\"tree-meta\">' + escapeHtml(countLabel + assignee) + '</span>' + (note ? '<span class=\"tree-note\">' + escapeHtml(note) + '</span>' : '') + '</li>'",
+    "}",
+    "function collectTreeRows(node, depth, rows) {",
+    "  if (node.kind !== 'workstream' && state.treeLevels[node.kind]) rows.push(renderTreeRow(node, depth))",
+    "  if (node.kind === 'workstream') { if (node.runtimeNotice) rows.push('<li class=\"tree-row tree-row-notice\"><span class=\"tree-kind\">runtime</span><span class=\"tree-note\">' + escapeHtml(node.runtimeNotice.text) + '</span></li>'); for (const stage of node.stages) collectTreeRows(stage, 0, rows) }",
+    "  else if (node.kind === 'stage') { for (const batch of node.batches) collectTreeRows(batch, 1, rows) }",
+    "  else if (node.kind === 'batch') { for (const thread of node.threads) collectTreeRows(thread, 2, rows) }",
+    "  else if (node.kind === 'thread') { for (const task of node.tasks) collectTreeRows(task, 3, rows) }",
     "}",
     "function renderTree(tree) {",
     "  if (!tree || tree.taskCount === 0) return '<div class=\"empty\">No tasks were found in the canonical snapshot.</div>'",
-    "  return '<ul class=\"tree-list\">' + renderTreeNode(tree, 1) + '</ul>'",
-    "}",
-    "function renderObservabilityIssues(observability) {",
-    "  const issues = (observability && observability.issues) ? observability.issues : []",
-    "  if (issues.length === 0) return '<div class=\"empty\">Observability is ready; no degradation markers were reported.</div>'",
-    "  return issues.map((issue) => '<div class=\"issue\"><div class=\"issue-head\"><span class=\"badge\" data-status=\"' + escapeHtml(issue.severity) + '\">' + escapeHtml(issue.code) + '</span><strong>' + escapeHtml(issue.message) + '</strong></div>' + (issue.related_ids && issue.related_ids.length > 0 ? '<div class=\"issue-note\">' + escapeHtml(issue.related_ids.join(', ')) + '</div>' : '') + '</div>').join('')",
+    "  const rows = []",
+    "  collectTreeRows(tree, 0, rows)",
+    "  if (rows.length === 0) return '<div class=\"empty\">No selected work tree levels are visible. Enable a level above to show matching rows.</div>'",
+    "  return '<ul class=\"tree-list\">' + rows.join('') + '</ul>'",
     "}",
     "function renderTmuxSessions(observability) {",
     "  const tmux = observability && observability.tmux",
     "  const sessions = tmux && tmux.sessions ? tmux.sessions : []",
-    "  if (tmuxSummary) tmuxSummary.textContent = tmux && tmux.availability === 'ready' ? 'tmux observability is ready for the current workstream.' : tmux && tmux.availability === 'degraded' ? 'tmux observability is degraded, but canonical status remains primary.' : 'tmux observability is unavailable; canonical status remains primary.'",
-    "  if (!tmuxList) return",
-    "  if (sessions.length === 0) { tmuxList.innerHTML = '<li class=\"empty\">No tmux sessions matched this workstream snapshot.</li>'; return }",
-    "  tmuxList.innerHTML = sessions.map((session) => {",
+    "  if (terminalSessionSummary) terminalSessionSummary.textContent = tmux && tmux.availability === 'ready' ? 'Matched terminal sessions for this workstream.' : tmux && tmux.availability === 'degraded' ? 'Some terminal session details are degraded.' : 'No matched terminal session details are available.'",
+    "  if (!terminalSessionList) return",
+    "  if (sessions.length === 0) { terminalSessionList.innerHTML = '<li class=\"empty\">No matched terminal sessions.</li>'; return }",
+    "  terminalSessionList.innerHTML = sessions.map((session) => {",
     "    const scope = [session.stage_id, session.batch_id, session.thread_id, session.run_id].filter(Boolean).join(' · ')",
     "    const details = [session.session_id, session.state, session.correlation.status, session.pane_count + ' pane' + (session.pane_count === 1 ? '' : 's'), session.window_name || null].filter(Boolean).map(escapeHtml).join(' · ')",
-    "    return '<li class=\"tmux-card\"><div class=\"tmux-row\"><div><strong>' + escapeHtml(session.session_name) + '</strong><div class=\"terminal-note\">' + details + '</div>' + (scope ? '<div class=\"terminal-note\">' + escapeHtml(scope) + '</div>' : '') + '</div><span class=\"badge\" data-status=\"' + escapeHtml(session.state) + '\">' + escapeHtml(session.role) + '</span></div></li>'",
+    "    return '<li class=\"terminal-session-row\"><div><strong>' + escapeHtml(formatTerminalSessionLabel(session)) + '</strong><div class=\"terminal-note\">session ' + escapeHtml(session.session_name) + '</div><div class=\"terminal-note\">' + details + '</div>' + (scope ? '<div class=\"terminal-note\">' + escapeHtml(scope) + '</div>' : '') + '</div><span class=\"badge\" data-status=\"' + escapeHtml(session.state) + '\">' + escapeHtml(session.role) + '</span></li>'",
     "  }).join('')",
     "}",
     "function renderTerminalViews(observability) {",
@@ -312,7 +327,7 @@ export function renderDashboardClientScript(repoRoot: string): string {
     "  if (terminalViewSummary) terminalViewSummary.textContent = terminalViews && terminalViews.availability === 'ready' ? 'Choose a read-only tmux session to inspect from the dashboard.' : terminalViews && terminalViews.availability === 'degraded' ? 'Read-only terminal observability is degraded, but canonical status remains primary.' : 'Read-only terminal observability is unavailable; canonical status remains primary.'",
     "  if (terminalViewSelect) {",
     "    terminalViewSelect.disabled = views.length === 0",
-    "    terminalViewSelect.innerHTML = views.length === 0 ? '<option value=\"\">No observable terminal views</option>' : views.map((view) => '<option value=\"' + escapeHtml(view.terminal_view_id) + '\"' + (view.terminal_view_id === state.selectedTerminalViewId ? ' selected' : '') + '>' + escapeHtml(view.label) + ' · ' + escapeHtml(view.session_name) + '</option>').join('')",
+    "    terminalViewSelect.innerHTML = views.length === 0 ? '<option value=\"\">No observable terminal views</option>' : views.map((view) => '<option value=\"' + escapeHtml(view.terminal_view_id) + '\"' + (view.terminal_view_id === state.selectedTerminalViewId ? ' selected' : '') + '>' + escapeHtml(view.label) + '</option>').join('')",
     "    if (state.selectedTerminalViewId) terminalViewSelect.value = state.selectedTerminalViewId",
     "  }",
     "  if (terminalViewStatus) {",
@@ -321,7 +336,7 @@ export function renderDashboardClientScript(repoRoot: string): string {
     "  }",
     "  if (terminalViewDetails) {",
     "    if (!selectedView) terminalViewDetails.innerHTML = ''",
-    "    else terminalViewDetails.innerHTML = '<div class=\"terminal-note\">' + escapeHtml(selectedView.role) + ' · ' + escapeHtml(selectedView.session_name) + ' · read-only</div>' + (selectedView.notes ? '<div class=\"terminal-note\">' + escapeHtml(selectedView.notes) + '</div>' : '')",
+    "    else terminalViewDetails.innerHTML = '<div><strong>' + escapeHtml(selectedView.label) + '</strong></div><div class=\"terminal-note\">' + escapeHtml(selectedView.role) + ' · session ' + escapeHtml(selectedView.session_name) + ' · read-only</div>' + (selectedView.notes ? '<div class=\"terminal-note\">' + escapeHtml(selectedView.notes) + '</div>' : '')",
     "  }",
     "  if (terminalViewOpenLink) {",
     "    if (!selectedView) { terminalViewOpenLink.hidden = true; terminalViewOpenLink.removeAttribute('href') }",
@@ -373,6 +388,17 @@ export function renderDashboardClientScript(repoRoot: string): string {
     "  if (action === 'bottom') return maxOffset",
     "  return undefined",
     "}",
+    "if (treeLevelControls) {",
+    "  treeLevelControls.addEventListener('change', (event) => {",
+    "    const input = event.target instanceof Element ? event.target.closest('input[data-tree-level]') : null",
+    "    if (!input) return",
+    "    const level = input.getAttribute('data-tree-level')",
+    "    if (!level || !(level in state.treeLevels)) return",
+    "    state.treeLevels[level] = Boolean(input.checked)",
+    "    const tree = state.snapshot && state.snapshot.canonical_state && state.snapshot.canonical_state.tree",
+    "    if (treeBody && tree) treeBody.innerHTML = renderTree(tree)",
+    "  })",
+    "}",
     "if (terminalViewSelect) {",
     "  terminalViewSelect.addEventListener('change', () => {",
     "    const terminalViewId = terminalViewSelect.value || ''",
@@ -405,16 +431,14 @@ export function renderDashboardClientScript(repoRoot: string): string {
     "  setSnapshotAvailability('ready')",
     "  hideState()",
     "  if (dashboard) dashboard.hidden = false",
-    "  if (workstreamTitle) workstreamTitle.textContent = status.stream.id + ' · ' + status.stream.name",
-    "  if (workstreamMeta) workstreamMeta.textContent = 'Repo root: ' + repoRoot + ' · canonical source: tasks.json · generated ' + snapshot.generated_at",
+    "  if (workstreamTitle) workstreamTitle.textContent = formatWorkstreamTitle(status.stream)",
+    "  if (workstreamMeta) workstreamMeta.textContent = 'tasks.json · generated ' + formatDateTime(snapshot.generated_at)",
     "  setBadge(statusBadge, status.aggregate_status, labelStatus(status.aggregate_status))",
-    "  setBadge(observabilityBadge, (observability && observability.availability) ? observability.availability : 'degraded', (observability && observability.availability) ? observability.availability : 'degraded')",
-    "  if (statusSummary) statusSummary.innerHTML = [renderMetricCard('Tasks', String(status.counts.total), status.counts.done + ' done · ' + status.counts.in_progress + ' active'), renderMetricCard('Completion', status.completion.percent_done + '%', status.completion.done_tasks + ' done · ' + status.completion.remaining_tasks + ' remaining'), renderMetricCard('Current stream', status.stream.id, status.stream.is_current ? 'marked current' : 'not current'), renderMetricCard('Generated', snapshot.generated_at, reason ? 'last refresh: ' + reason : 'canonical backend snapshot')].join('')",
+    "  if (statusSummary) statusSummary.innerHTML = [renderMetricCard('Tasks', String(status.counts.total), status.counts.done + ' done · ' + status.counts.in_progress + ' active'), renderMetricCard('Completion', status.completion.percent_done + '%', status.completion.done_tasks + ' done · ' + status.completion.remaining_tasks + ' remaining'), renderMetricCard('Workstream', formatWorkstreamTitle(status.stream), status.stream.is_current ? 'current' : 'not current'), renderMetricCard('Generated', formatDateTime(snapshot.generated_at), reason ? 'last refresh: ' + reason : 'canonical snapshot')].join('')",
     "  if (runtimeSummary) runtimeSummary.innerHTML = renderRuntimeSummary(runtime)",
     "  if (statusStages) statusStages.innerHTML = status.stages.length > 0 ? status.stages.map((stage) => renderStageRow(stage)).join('') : '<div class=\"empty\">No stages were found in the canonical snapshot.</div>'",
     "  if (treeCount) treeCount.textContent = tree.taskCount + ' task' + (tree.taskCount === 1 ? '' : 's')",
     "  if (treeBody) treeBody.innerHTML = renderTree(tree)",
-    "  if (observabilityIssues) observabilityIssues.innerHTML = renderObservabilityIssues(observability)",
     "  renderTmuxSessions(observability)",
     "  renderTerminalViews(observability)",
     "  if (!state.scrollback) state.pendingScrollIntent = 'bottom'",
@@ -472,7 +496,8 @@ function renderDashboardShell(config: DashboardServerConfig): string {
       * { box-sizing: border-box; }
       body { margin: 0; min-height: 100vh; background: #0b0b0b; color: #f4f4f4; }
       main { display: grid; gap: 1rem; margin: 0 auto; max-width: 88rem; padding: 1.5rem; }
-      .masthead, .panel, .state { border: 1px solid #242424; background: #111; }
+      .masthead, .panel, .state { background: #111; }
+      .panel, .state { border: 1px solid #242424; }
       .masthead, .panel { padding: 1rem; }
       .masthead { display: grid; gap: 0.35rem; }
       .eyebrow, .muted, .meta, .empty, .state { color: #a7a7a7; }
@@ -490,7 +515,7 @@ function renderDashboardShell(config: DashboardServerConfig): string {
       .tab-button { border-radius: 999px; background: #121212; color: #cfcfcf; }
       .tab-button[data-active="true"], .tab-button[aria-selected="true"] { border-color: #3f6d99; background: #16202a; color: #8ec5ff; }
       .tab-panel { display: grid; gap: 1rem; }
-      .summary-card, .status-row, .tree-node, .runtime-entry, .issue { border: 1px solid #232323; background: #0d0d0d; }
+      .summary-card, .status-row, .runtime-entry, .issue { border: 1px solid #232323; background: #0d0d0d; }
       .summary-card { display: grid; gap: 0.25rem; padding: 0.75rem; }
       .summary-value { font-size: 1.05rem; font-weight: 600; }
       .badge { display: inline-flex; align-items: center; gap: 0.35rem; border: 1px solid #2a2a2a; border-radius: 999px; padding: 0.18rem 0.55rem; font-size: 0.78rem; line-height: 1.1; white-space: nowrap; }
@@ -500,16 +525,19 @@ function renderDashboardShell(config: DashboardServerConfig): string {
       .badge[data-status="pending"], .badge[data-status="degraded"], .badge[data-status="stopped"] { color: #ddd; }
       .stack { display: grid; gap: 0.5rem; }
       .status-row { display: grid; gap: 0.4rem; padding: 0.7rem; }
-      .status-row-head, .tree-node-head, .issue-head, .runtime-entry-head { display: flex; flex-wrap: wrap; align-items: baseline; gap: 0.6rem; }
+      .status-row-head, .issue-head, .runtime-entry-head { display: flex; flex-wrap: wrap; align-items: baseline; gap: 0.6rem; }
       .status-stages, .tree-list, .runtime-list, .issue-list { display: grid; gap: 0.5rem; }
       .runtime-entry, .issue { padding: 0.7rem; }
       .tree-root { display: grid; gap: 0.6rem; }
-      .tree-list { padding-left: 0; margin: 0; list-style: none; }
-      .tree-node { display: grid; gap: 0.5rem; padding: 0.65rem; }
-      .tree-children { display: grid; gap: 0.5rem; padding-left: 1rem; margin: 0; list-style: none; }
-      .tree-children[data-depth="1"], .tree-children[data-depth="2"] { padding-left: 0.85rem; }
-      .tree-children[data-depth="3"] { padding-left: 0.65rem; }
+      .tree-list { padding-left: 0; margin: 0; list-style: none; gap: 0; border-top: 1px solid #232323; }
+      .tree-row { display: grid; grid-template-columns: 4.4rem max-content minmax(12rem, 1fr) max-content; align-items: baseline; gap: 0.55rem; padding: 0.55rem 0; padding-left: calc(var(--tree-depth, 0) * 1.35rem); border-bottom: 1px solid #1b1b1b; }
+      .tree-row-notice { grid-template-columns: 4.4rem 1fr; padding-left: 0; }
+      .tree-kind { color: #777; font-size: 0.74rem; text-transform: uppercase; letter-spacing: 0.11em; }
+      .tree-level-controls { display: flex; flex-wrap: wrap; gap: 0.45rem; }
+      .tree-level-controls label { display: inline-flex; align-items: center; gap: 0.35rem; color: #d7d7d7; border: 1px solid #252525; border-radius: 999px; padding: 0.25rem 0.6rem; background: #101010; }
+      .tree-level-controls input { accent-color: #8ec5ff; }
       .tree-meta, .tree-note, .status-note, .runtime-note, .issue-note, .terminal-note { color: #a7a7a7; font-size: 0.86rem; }
+      @media (max-width: 800px) { .tree-row { grid-template-columns: 1fr; padding-left: 0; } }
       .state { padding: 1rem; }
       .state[data-kind="warning"] { color: #fff0c7; border-color: #5a4a23; }
       .state[data-kind="error"] { color: #ffd3d3; border-color: #4a2323; }
@@ -517,9 +545,8 @@ function renderDashboardShell(config: DashboardServerConfig): string {
       button { appearance: none; border: 1px solid #2c2c2c; background: #161616; color: #f4f4f4; padding: 0.42rem 0.75rem; border-radius: 0.45rem; font: inherit; }
       button:hover { background: #1d1d1d; }
       .subgrid { display: grid; gap: 0.75rem; }
-      .tmux-list { display: grid; gap: 0.6rem; list-style: none; padding: 0; margin: 0; }
-      .tmux-card { display: grid; gap: 0.45rem; border: 1px solid #232323; background: #0d0d0d; padding: 0.7rem; }
-      .tmux-row { display: flex; flex-wrap: wrap; justify-content: space-between; gap: 0.6rem; align-items: baseline; }
+      .terminal-session-list { display: grid; gap: 0; list-style: none; padding: 0; margin: 0; border-top: 1px solid #232323; }
+      .terminal-session-row { display: flex; flex-wrap: wrap; justify-content: space-between; gap: 0.6rem; align-items: baseline; padding: 0.55rem 0; border-bottom: 1px solid #1b1b1b; }
       .terminal-selector-card { display: grid; gap: 0.6rem; padding: 0; }
       .terminal-selector-row, .selector-details-head { display: flex; flex-wrap: wrap; justify-content: space-between; gap: 0.6rem; align-items: center; }
       .terminal-selector-actions { display: flex; flex-wrap: wrap; gap: 0.5rem; align-items: center; }
@@ -539,9 +566,9 @@ function renderDashboardShell(config: DashboardServerConfig): string {
   <body>
     <main>
       <header class="masthead">
-        <p class="eyebrow">Current workstream dashboard</p>
+        <p class="eyebrow">Current workstream</p>
         <h1 id="workstream-title">Loading current workstream…</h1>
-        <p id="workstream-meta" class="muted">Canonical source: tasks.json</p>
+        <p id="workstream-meta" class="muted">tasks.json</p>
         <p id="connection-status" class="muted">Connecting to live updates…</p>
       </header>
 
@@ -552,8 +579,6 @@ function renderDashboardShell(config: DashboardServerConfig): string {
           <div class="tab-list" role="tablist" aria-label="Dashboard sections">
             <button id="tab-status-overview" class="tab-button" type="button" role="tab" aria-controls="panel-status-overview" aria-selected="true" aria-label="Status Overview" data-active="true" data-tab-id="status-overview">Status Overview</button>
             <button id="tab-work-tree" class="tab-button" type="button" role="tab" aria-controls="panel-work-tree" aria-selected="false" tabindex="-1" data-active="false" data-tab-id="work-tree">Work tree</button>
-            <button id="tab-observability-notes" class="tab-button" type="button" role="tab" aria-controls="panel-observability-notes" aria-selected="false" tabindex="-1" data-active="false" data-tab-id="observability-notes">Observability Notes</button>
-            <button id="tab-tmux-session-metadata" class="tab-button" type="button" role="tab" aria-controls="panel-tmux-session-metadata" aria-selected="false" tabindex="-1" data-active="false" data-tab-id="tmux-session-metadata">Tmux Session Metadata</button>
             <button id="tab-terminal-views" class="tab-button" type="button" role="tab" aria-controls="panel-terminal-views" aria-selected="false" tabindex="-1" data-active="false" data-tab-id="terminal-views">Read-only Terminal Views</button>
           </div>
         </nav>
@@ -576,30 +601,13 @@ function renderDashboardShell(config: DashboardServerConfig): string {
               <h2 id="tree-heading">Work tree</h2>
               <span id="tree-count" class="muted"></span>
             </div>
+            <div id="tree-level-controls" class="tree-level-controls" aria-label="Work tree visible levels">
+              <label><input type="checkbox" data-tree-level="stage" checked /> Stage level</label>
+              <label><input type="checkbox" data-tree-level="batch" checked /> Batch level</label>
+              <label><input type="checkbox" data-tree-level="thread" checked /> Thread level</label>
+              <label><input type="checkbox" data-tree-level="task" checked /> Task level</label>
+            </div>
             <div id="tree-body" class="tree-root"></div>
-          </section>
-        </section>
-
-        <section id="panel-observability-notes" class="tab-panel" role="tabpanel" aria-labelledby="tab-observability-notes" hidden>
-          <section class="panel" aria-labelledby="observability-heading">
-            <div class="panel-head">
-              <h2 id="observability-heading">Observability notes</h2>
-              <span id="observability-badge" class="badge" data-status="degraded">loading</span>
-            </div>
-            <div id="observability-issues" class="issue-list"></div>
-          </section>
-        </section>
-
-        <section id="panel-tmux-session-metadata" class="tab-panel" role="tabpanel" aria-labelledby="tab-tmux-session-metadata" hidden>
-          <section class="panel" aria-labelledby="tmux-heading">
-            <div class="panel-head">
-              <h2 id="tmux-heading">Tmux session metadata</h2>
-              <span class="muted">session identity and state</span>
-            </div>
-            <p id="tmux-summary" class="muted">Loading tmux sessions…</p>
-            <ul id="tmux-list" class="tmux-list" style="margin-top: 1rem;">
-              <li class="empty">Waiting for snapshot data…</li>
-            </ul>
           </section>
         </section>
 
@@ -624,6 +632,13 @@ function renderDashboardShell(config: DashboardServerConfig): string {
                 <div class="empty">Select a terminal view to inspect its status and actions.</div>
               </div>
             </div>
+            <details style="margin-top: 1rem;">
+              <summary>Matched terminal sessions</summary>
+              <p id="terminal-session-summary" class="muted" style="margin-top: 0.75rem;">Loading session details…</p>
+              <ul id="terminal-session-list" class="terminal-session-list" style="margin-top: 0.75rem;">
+                <li class="empty">Waiting for snapshot data…</li>
+              </ul>
+            </details>
             <div style="margin-top: 1rem;" class="subgrid">
               <div class="terminal-selector-row">
                 <div id="terminal-scrollback-controls" class="terminal-controls">

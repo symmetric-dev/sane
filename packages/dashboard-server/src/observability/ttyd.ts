@@ -69,10 +69,36 @@ interface ObservedPaneSummary {
   title?: string
 }
 
+function getTerminalViewStageId(session: DashboardTmuxSessionMetadata): string | undefined {
+  const batchId = session.batch_id ?? session.correlation.batch_id
+  const threadId = session.thread_id ?? session.correlation.thread_id
+
+  return session.stage_id ?? session.correlation.stage_id ?? batchId?.split(".")[0] ?? threadId?.split(".")[0]
+}
+
+function getTerminalViewBatchId(session: DashboardTmuxSessionMetadata): string | undefined {
+  const threadId = session.thread_id ?? session.correlation.thread_id
+  const threadParts = threadId?.split(".")
+
+  return session.batch_id ?? session.correlation.batch_id ?? (threadParts && threadParts.length >= 2
+    ? threadParts.slice(0, 2).join(".")
+    : undefined)
+}
+
+function getTerminalViewThreadId(session: DashboardTmuxSessionMetadata): string | undefined {
+  return session.thread_id ?? session.correlation.thread_id
+}
+
+function buildScopedTerminalViewLabel(prefix: string, session: DashboardTmuxSessionMetadata): string {
+  const scope = [getTerminalViewStageId(session), getTerminalViewBatchId(session)]
+    .filter((value): value is string => Boolean(value && value.length > 0))
+    .join(" ")
+
+  return scope.length > 0 ? `${prefix} ${scope}` : `${prefix} terminal`
+}
+
 function buildImplementationThreadLabel(session: DashboardTmuxSessionMetadata): string {
-  return session.thread_id
-    ? `Thread ${session.thread_id} terminal`
-    : `Implementation session ${session.session_name}`
+  return buildScopedTerminalViewLabel("Implementation", session)
 }
 
 function buildTerminalViewLabel(session: DashboardTmuxSessionMetadata): string {
@@ -81,12 +107,10 @@ function buildTerminalViewLabel(session: DashboardTmuxSessionMetadata): string {
   }
 
   if (session.role === "supervision_run") {
-    return session.run_id
-      ? `Supervision run ${session.run_id} terminal`
-      : `Supervision session ${session.session_name}`
+    return buildScopedTerminalViewLabel("Supervision", session)
   }
 
-  return `Supervision branch ${session.correlation.target_id} terminal`
+  return buildScopedTerminalViewLabel("Supervision", session)
 }
 
 function getManageability(args: {
@@ -153,6 +177,9 @@ function createBaseView(args: {
   session: DashboardTmuxSessionMetadata
 }): DashboardTerminalViewMetadata {
   const terminalViewId = buildDashboardTerminalViewId(args.session)
+  const stageId = getTerminalViewStageId(args.session)
+  const batchId = getTerminalViewBatchId(args.session)
+  const threadId = getTerminalViewThreadId(args.session)
 
   return {
     terminal_view_id: terminalViewId,
@@ -164,9 +191,9 @@ function createBaseView(args: {
     session_name: args.session.session_name,
     role: args.session.role,
     observed_at: args.checkedAt,
-    ...(args.session.stage_id ? { stage_id: args.session.stage_id } : {}),
-    ...(args.session.batch_id ? { batch_id: args.session.batch_id } : {}),
-    ...(args.session.thread_id ? { thread_id: args.session.thread_id } : {}),
+    ...(stageId ? { stage_id: stageId } : {}),
+    ...(batchId ? { batch_id: batchId } : {}),
+    ...(threadId ? { thread_id: threadId } : {}),
     routes: buildDashboardTerminalViewRoutes(terminalViewId),
     correlation: args.session.correlation,
   }

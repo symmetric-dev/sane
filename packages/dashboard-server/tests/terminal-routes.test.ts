@@ -80,7 +80,7 @@ const baseReadModel: CurrentWorkstreamDashboardReadModel = {
       views: [
         {
           terminal_view_id: "thread/03.01.02",
-          label: "Thread 03.01.02 terminal",
+          label: "Implementation 03 03.01",
           status: "available",
           transport: "ttyd",
           read_only: true,
@@ -186,7 +186,7 @@ const baseReadModel: CurrentWorkstreamDashboardReadModel = {
         views: [
           {
             terminal_view_id: "thread/03.01.02",
-            label: "Thread 03.01.02 terminal",
+            label: "Implementation 03 03.01",
             status: "available",
             transport: "ttyd",
             read_only: true,
@@ -275,7 +275,7 @@ function createDegradedOnlyReadModel(): CurrentWorkstreamDashboardReadModel {
   const degradedReadModel = structuredClone(baseReadModel)
   const degradedView = {
     terminal_view_id: "branch/branch-1",
-    label: "Supervision terminal",
+    label: "Supervision 03 03.02",
     status: "degraded" as const,
     transport: "ttyd" as const,
     read_only: true as const,

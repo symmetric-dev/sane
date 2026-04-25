@@ -70,7 +70,7 @@ function createFakeInstance(port: number): SpawnedTtydInstance & { stopped: bool
 describe("ttyd terminal observability provider", () => {
   test("builds read-only ttyd launch arguments for tmux-backed sessions", () => {
     const args = buildTtydLaunchArgs({
-      label: "Thread 03.01.01 terminal",
+      label: "Implementation 03 03.01",
       port: 43001,
       sessionName: "002-implementation-thread-a",
     })
@@ -92,7 +92,7 @@ describe("ttyd terminal observability provider", () => {
       "-t",
       "disableResizeOverlay=true",
       "-t",
-      "titleFixed=Thread 03.01.01 terminal",
+      "titleFixed=Implementation 03 03.01",
       "tmux",
       "attach-session",
       "-r",
@@ -131,6 +131,7 @@ describe("ttyd terminal observability provider", () => {
     expect(views[0]).toMatchObject({
       terminal_view_id: "thread/03.01.01",
       session_name: "002-implementation-thread-a",
+      label: "Implementation 03 03.01",
       status: "available",
       transport: "ttyd",
       read_only: true,
@@ -147,7 +148,7 @@ describe("ttyd terminal observability provider", () => {
     })
     expect(launches).toEqual([
       {
-        label: "Thread 03.01.01 terminal",
+        label: "Implementation 03 03.01",
         sessionName: "002-implementation-thread-a",
         terminalViewId: "thread/03.01.01",
       },
@@ -339,6 +340,7 @@ describe("ttyd terminal observability provider", () => {
       }),
       expect.objectContaining({
         terminal_view_id: "branch/branch-1",
+        label: "Supervision 03 03.01",
         status: "available",
       }),
     ])

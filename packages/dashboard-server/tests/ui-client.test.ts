@@ -9,6 +9,7 @@ class FakeElement {
   textContent = ""
   value = ""
   disabled = false
+  checked = false
   style: Record<string, string> = {}
   private html = ""
   private readonly listeners = new Map<string, Array<(event?: unknown) => void>>()
@@ -77,6 +78,10 @@ class FakeElement {
       return this
     }
 
+    if (selector === "input[data-tree-level]" && this.dataset.treeLevel) {
+      return this
+    }
+
     return null
   }
 
@@ -87,6 +92,10 @@ class FakeElement {
 
     if (name === "data-terminal-view-id") {
       return this.dataset.terminalViewId ?? null
+    }
+
+    if (name === "data-tree-level") {
+      return this.dataset.treeLevel ?? null
     }
 
     return this.attributes.get(name) ?? null
@@ -104,14 +113,14 @@ class FakeDocument {
       "workstream-meta",
       "connection-status",
       "status-badge",
-      "observability-badge",
       "status-summary",
       "runtime-summary",
       "status-stages",
       "tree-body",
       "tree-count",
-      "tmux-summary",
-      "tmux-list",
+      "tree-level-controls",
+      "terminal-session-summary",
+      "terminal-session-list",
       "terminal-view-summary",
       "terminal-view-select",
       "terminal-view-status",
@@ -124,16 +133,11 @@ class FakeDocument {
       "terminal-scrollback-empty",
       "terminal-scrollback-controls",
       "terminal-view-frame",
-      "observability-issues",
       "tab-status-overview",
       "tab-work-tree",
-      "tab-observability-notes",
-      "tab-tmux-session-metadata",
       "tab-terminal-views",
       "panel-status-overview",
       "panel-work-tree",
-      "panel-observability-notes",
-      "panel-tmux-session-metadata",
       "panel-terminal-views",
     ]) {
       this.ensureElement(id)
@@ -141,15 +145,11 @@ class FakeDocument {
 
     this.getElementById("tab-status-overview")!.dataset.tabId = "status-overview"
     this.getElementById("tab-work-tree")!.dataset.tabId = "work-tree"
-    this.getElementById("tab-observability-notes")!.dataset.tabId = "observability-notes"
-    this.getElementById("tab-tmux-session-metadata")!.dataset.tabId = "tmux-session-metadata"
     this.getElementById("tab-terminal-views")!.dataset.tabId = "terminal-views"
     this.getElementById("state-banner")!.dataset.kind = "loading"
     this.getElementById("dashboard")!.hidden = true
     this.getElementById("terminal-view-select")!.value = ""
     this.getElementById("panel-work-tree")!.hidden = true
-    this.getElementById("panel-observability-notes")!.hidden = true
-    this.getElementById("panel-tmux-session-metadata")!.hidden = true
     this.getElementById("panel-terminal-views")!.hidden = true
   }
 
@@ -255,7 +255,7 @@ function createSnapshot() {
         views: [
           {
             terminal_view_id: "branch/branch-1",
-            label: "Supervision branch branch-1 terminal",
+            label: "Supervision 03 03.01",
             status: "degraded",
             session_name: "002-supervision-branch-1",
             role: "supervision_branch",
@@ -352,6 +352,9 @@ describe("dashboard ui live refresh client", () => {
 
     await flushPromises()
 
+    expect(document.getElementById("workstream-title")?.textContent).toBe(
+      "Web Workstream Dashboard (002)",
+    )
     expect(document.getElementById("panel-status-overview")?.hidden).toBe(false)
     expect(document.getElementById("panel-work-tree")?.hidden).toBe(true)
 
@@ -371,11 +374,15 @@ describe("dashboard ui live refresh client", () => {
     await flushPromises()
 
     const select = document.getElementById("terminal-view-select")
-    expect(select?.innerHTML).toContain("Supervision branch branch-1 terminal")
+    expect(select?.innerHTML).toContain("Supervision 03 03.01")
+    expect(select?.innerHTML).not.toContain("002-supervision-branch-1")
     expect(select?.value).toBe("branch/branch-1")
     expect(document.getElementById("terminal-view-status")?.textContent).toBe("degraded")
     expect(document.getElementById("terminal-view-details")?.innerHTML).toContain(
       "002-supervision-branch-1",
+    )
+    expect(document.getElementById("terminal-session-list")?.innerHTML).toContain(
+      "No matched terminal sessions.",
     )
     expect(document.getElementById("terminal-view-open-link")?.hidden).toBe(false)
 

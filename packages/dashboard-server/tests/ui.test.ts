@@ -3,7 +3,7 @@ import { describe, expect, test } from "bun:test"
 import { createUiRoutes } from "../src/routes/ui.ts"
 
 describe("dashboard ui route", () => {
-  test("renders canonical-first observability scaffolding", async () => {
+  test("renders canonical-first dashboard scaffolding", async () => {
     const app = createUiRoutes({
       hostname: "127.0.0.1",
       port: 43119,
@@ -14,14 +14,18 @@ describe("dashboard ui route", () => {
     const html = await response.text()
 
     expect(response.status).toBe(200)
-    expect(html).toContain("Current workstream dashboard")
-    expect(html).toContain("canonical source: tasks.json")
+    expect(html).toContain("Current workstream")
+    expect(html).toContain("tasks.json")
     expect(html).toContain('role="tablist"')
     expect(html).toContain("Status Overview")
     expect(html).toContain("Work tree")
-    expect(html).toContain("Observability Notes")
-    expect(html).toContain("Tmux session metadata")
     expect(html).toContain("Read-only terminal views")
+    expect(html).toContain("Stage level")
+    expect(html).toContain("Batch level")
+    expect(html).toContain("Thread level")
+    expect(html).toContain("Task level")
+    expect(html).not.toContain("Observability Notes")
+    expect(html).not.toContain("Tmux session metadata")
     expect(html).toContain("canonical status remains primary")
     expect(html).toContain("terminal-view-select")
     expect(html).toContain("terminal-view-status")
@@ -31,6 +35,7 @@ describe("dashboard ui route", () => {
     expect(html).toContain("Bottom")
     expect(html).toContain("terminal-scrollback-meta")
     expect(html).toContain("Choose a read-only tmux session to inspect from the dashboard.")
+    expect(html).toContain("Matched terminal sessions")
     expect(html).toContain("Select an observable terminal view to embed the read-only ttyd session.")
     expect(html).toContain("Select a terminal view to inspect tmux scrollback.")
     expect(html).toContain("terminal-scrollback-editor")
