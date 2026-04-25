@@ -1,4 +1,4 @@
-# Root Agent Supervision Operator Guide
+# Supervision Operator Guide
 
 This guide is the operator-facing reference for supervised workstream runs.
 
@@ -12,14 +12,14 @@ Supervision is the execution layer inside the broader workstream lifecycle:
 
 1. A planning agent uses `planning-workstreams` to prepare the workstream.
 2. The user approves the plan and tasks.
-3. The Root Agent uses `managing-workstreams` to launch a supervision branch.
+3. The user manually `/fork`s the session and asks the forked session to supervise the approved work.
 4. The supervision branch uses `supervising-workstreams` and runs `work supervise`.
 5. Implementation agents inside that supervised batch use `implementing-workstreams` to inspect task scope, execute their assigned work, and keep task state accurate.
-6. The Root Agent reports back to the user.
+6. The supervisor fork reports back to the user.
 7. The user approves the completed stage with `work approve stage N`.
 8. The loop repeats until all stages are complete, then `REPORT.md` is finalized with `evaluating-workstreams`.
 
-So this document is specifically about steps 3-5 above: running, observing, resuming, and interpreting supervised execution.
+So this document is specifically about steps 3-5 above: manually handing work to a supervisor fork, running, observing, resuming, and interpreting supervised execution. The older Root Agent management-launch flow remains available through the managed installation profile, but it is not the default.
 
 ## What `work supervise` does now
 
@@ -37,7 +37,7 @@ It does **not** approve, reject, escalate, or run fix cycles by itself. Those de
 That distinction is the most important operator mental model:
 
 - `work supervise` gets a batch to a trustworthy handoff point.
-- the Root Agent (or a supervision branch acting on its behalf) decides what to do next.
+- the supervisor fork and user decide what to do next.
 
 ## Primary commands
 

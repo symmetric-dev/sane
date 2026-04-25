@@ -269,3 +269,98 @@ describe("shell config detect_shell_config function", () => {
     }
   })
 })
+
+describe("ag install profiles", () => {
+  async function createMockAgenv(home: string): Promise<string> {
+    const agenvHome = join(home, "agenv")
+
+    await mkdir(join(agenvHome, "agent", "skills", "planning-workstreams"), { recursive: true })
+    await mkdir(join(agenvHome, "agent", "skills", "managing-workstreams"), { recursive: true })
+    await mkdir(join(agenvHome, "agent", "tools"), { recursive: true })
+
+    await writeFile(
+      join(agenvHome, "agent", "skills", "planning-workstreams", "SKILL.md"),
+      "---\nname: planning-workstreams\n---\n",
+    )
+    await writeFile(
+      join(agenvHome, "agent", "skills", "managing-workstreams", "SKILL.md"),
+      "---\nname: managing-workstreams\n---\n",
+    )
+    await writeFile(
+      join(agenvHome, "agent", "tools", "workstream.ts"),
+      [
+        "export const link_planning_session = {}",
+        "export const launch_supervision_branch = {}",
+        "export const current_workstream = {}",
+      ].join("\n"),
+    )
+
+    return agenvHome
+  }
+
+  async function runAgInstall(
+    home: string,
+    args: string[],
+  ): Promise<{ exitCode: number; stdout: string; stderr: string }> {
+    const agCli = join(AGENV_ROOT, "packages", "cli", "bin", "ag.ts")
+    const proc = Bun.spawn(["bun", agCli, "install", ...args], {
+      cwd: AGENV_ROOT,
+      env: {
+        ...process.env,
+        HOME: home,
+      },
+      stdout: "pipe",
+      stderr: "pipe",
+    })
+
+    const stdout = await new Response(proc.stdout).text()
+    const stderr = await new Response(proc.stderr).text()
+    const exitCode = await proc.exited
+
+    return { exitCode, stdout, stderr }
+  }
+
+  test("manual profile is the default and excludes management resources", async () => {
+    const tempDir = await mkdtemp(join(tmpdir(), "agenv-install-profile-test-"))
+    try {
+      await createMockAgenv(tempDir)
+
+      const skillsResult = await runAgInstall(tempDir, ["skills", "--opencode"])
+      expect(skillsResult.exitCode).toBe(0)
+      expect(existsSync(join(tempDir, ".config", "opencode", "skills", "planning-workstreams"))).toBe(true)
+      expect(existsSync(join(tempDir, ".config", "opencode", "skills", "managing-workstreams"))).toBe(false)
+
+      const toolsResult = await runAgInstall(tempDir, ["tools", "--opencode"])
+      expect(toolsResult.exitCode).toBe(0)
+      const installedTool = await readFile(
+        join(tempDir, ".config", "opencode", "tools", "workstream.ts"),
+        "utf-8",
+      )
+      expect(installedTool).not.toContain("export const launch_supervision_branch")
+      expect(installedTool).toContain("const launch_supervision_branch")
+    } finally {
+      await rm(tempDir, { recursive: true, force: true })
+    }
+  })
+
+  test("managed profile includes management resources", async () => {
+    const tempDir = await mkdtemp(join(tmpdir(), "agenv-install-managed-profile-test-"))
+    try {
+      await createMockAgenv(tempDir)
+
+      const skillsResult = await runAgInstall(tempDir, ["skills", "--opencode", "--profile", "managed"])
+      expect(skillsResult.exitCode).toBe(0)
+      expect(existsSync(join(tempDir, ".config", "opencode", "skills", "managing-workstreams"))).toBe(true)
+
+      const toolsResult = await runAgInstall(tempDir, ["tools", "--opencode", "--profile", "managed"])
+      expect(toolsResult.exitCode).toBe(0)
+      const installedTool = await readFile(
+        join(tempDir, ".config", "opencode", "tools", "workstream.ts"),
+        "utf-8",
+      )
+      expect(installedTool).toContain("export const launch_supervision_branch")
+    } finally {
+      await rm(tempDir, { recursive: true, force: true })
+    }
+  })
+})

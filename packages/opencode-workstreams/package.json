@@ -1,6 +1,6 @@
 {
   "name": "@agenv/opencode-workstreams",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "OpenCode plugin for AgENV workstream tools",
   "main": "./dist/src/index.js",
   "module": "./dist/src/index.js",
@@ -8,7 +8,8 @@
   "type": "module",
   "files": [
     "dist/",
-    "README.md"
+    "README.md",
+    "CHANGELOG.md"
   ],
   "exports": {
     ".": {

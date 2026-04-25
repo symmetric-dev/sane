@@ -16,7 +16,8 @@
     "release:workstream-dashboard:minor": "./bin/release-workstream-dashboard-minor.sh",
     "release:workstreams:patch": "./bin/release-workstreams-patch.sh",
     "release:workstreams:minor": "./bin/release-workstreams-minor.sh",
-    "release:opencode-workstreams:0.1.0": "./bin/release-opencode-workstreams-0.1.0.sh"
+    "release:opencode-workstreams:0.1.0": "./bin/release-opencode-workstreams-0.1.0.sh",
+    "release:opencode-workstreams:patch": "./bin/release-opencode-workstreams-patch.sh"
   },
   "devDependencies": {
     "@types/bun": "^1.3.6"

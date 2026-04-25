@@ -37,10 +37,10 @@ work approve plan
 8. Approve plan: `work approve plan` (user role, requires at least one stage)
 9. Fill `TASKS.md`
 10. Approve tasks: `work approve tasks` (user role)
-11. Launch supervised execution from the Root Agent using the `managing-workstreams` skill
+11. Manually `/fork` the session and ask the forked session to supervise the approved work
 12. The supervision branch uses `work supervise`, `work status`, `work tree`, and `work batch-status` to drive the next batch and review loop
 13. Implementation agents use `implementing-workstreams` to inspect assigned scope and update task state with `work update`
-14. The Root Agent reports back; the user approves the completed stage with `work approve stage <n>`
+14. The supervisor reports back; the user approves the completed stage with `work approve stage <n>`
 15. Repeat the supervision loop for the next stage
 16. If new stages are needed after the original plan, use the revision flow:
    - `work revision --name "follow-up" [--after-stage N]`
@@ -48,6 +48,8 @@ work approve plan
    - `work approve tasks`
 17. Finalize the report with the `evaluating-workstreams` skill:
    - `work report validate`
+
+The optional managed install profile preserves the older Root Agent management-launch workflow. The default manual profile omits the management skill and launch tool so the user controls the `/fork` handoff.
 
 Shortcut:
 
@@ -160,9 +162,9 @@ When they do **not** matter:
 - Local-first sqlite architecture: [`../../docs/LOCAL_FIRST_SQLITE_ARCHITECTURE.md`](../../docs/LOCAL_FIRST_SQLITE_ARCHITECTURE.md)
 - Storage adapter package/refactor recommendation: [`../../docs/STORAGE_PACKAGE_BOUNDARIES.md`](../../docs/STORAGE_PACKAGE_BOUNDARIES.md)
 
-## Root Agent Supervision Workflow (v1)
+## Supervision Workflow (manual default; managed profile optional)
 
-Use `work supervise` as the branch execution/recovery primitive for Root Agent orchestration:
+Use `work supervise` as the branch execution/recovery primitive. In the default manual profile, the user creates that branch with `/fork`; in the optional managed profile, the Root Agent can launch it with the management tool:
 
 ```bash
 work supervise
@@ -172,7 +174,7 @@ work supervise --dry-run
 
 `work supervise` launches `work multi --headless --async`, waits for the batch to become terminal, and produces deterministic review evidence from canonical execution state (task status/report fields, runtime thread metadata, and persisted batch status).
 
-The Root Agent then either:
+The supervisor branch then either:
 
 - continues automatically to the next incomplete batch,
 - runs one automatic fix cycle (default), or
@@ -193,7 +195,7 @@ work update --task "01.01.01.01" --status in_progress
 work update --task "01.01.01.01" --status completed --report "1-2 sentence summary"
 ```
 
-In practice, Root Agent orchestration continues only when the supervising branch decides the batch is safe to continue.
+In practice, orchestration continues only when the supervising branch decides the batch is safe to continue.
 It stops when the supervising branch decides user input is needed, a stage boundary is reached, there is no next batch, or execution/wait fails.
 
 If `--timeout-ms` is reached before the batch becomes terminal, the wait fails and `work supervise` exits without reviewing the incomplete batch. That interrupted run remains resumable and is preferred on the next `work supervise` rerun.

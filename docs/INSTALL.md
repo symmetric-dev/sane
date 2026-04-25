@@ -3,9 +3,9 @@
 This page covers two different installation modes:
 
 1. **Published `work` CLI only**
-2. **Full AgEnv Root-Agent / Opencode workflow**
+2. **Full AgEnv Opencode workflow**
 
-If you want the full branching, supervision, tools, and skills workflow documented in this repo, use the **full repo install**.
+If you want the full branching, supervision, tools, and skills workflow documented in this repo, use the **full repo install**. The default install profile is `manual`, where the user manually `/fork`s a supervision branch. The optional `managed` profile keeps the older Root Agent launch tool and management skill.
 
 ## Do I need to clone the repo?
 
@@ -31,7 +31,7 @@ But the full workflow in this repo also depends on repo-managed assets such as:
 So:
 
 - **published package only** = enough for plain `work` usage
-- **repo clone** = needed for the full Root Agent / supervision / Opencode tooling workflow
+- **repo clone** = needed for the full supervision / Opencode tooling workflow
 
 ## Prerequisites
 
@@ -78,7 +78,7 @@ Use this if you want:
 - `ag`
 - Opencode tool installs
 - skill installs
-- Root Agent branching/supervision workflow
+- Manual `/fork` branching/supervision workflow
 - local tests/docs/debugging
 
 ### 1. Clone the repo
@@ -106,13 +106,22 @@ rehash
 
 ### 3. Install Opencode tools and skills
 
-For the Root Agent / supervision workflow, install the repo-managed tools and skills into Opencode.
+For the default manual `/fork` supervision workflow, install the repo-managed tools and skills into Opencode.
 
 Recommended:
 
 ```bash
 ag install tools --opencode
 ag install skills --opencode
+```
+
+Those commands use the `manual` profile by default. This profile does not expose the `managing-workstreams` skill or `launch_supervision_branch` tool to the agent.
+
+To opt into the older Root Agent management-launch workflow, install the `managed` profile instead:
+
+```bash
+ag install tools --opencode --profile managed
+ag install skills --opencode --profile managed
 ```
 
 If you want to inspect available install modes:
@@ -143,14 +152,16 @@ Examples:
 ./install.sh --with-skills
 ./install.sh --skills-all
 ./install.sh --skills-only
+./install.sh --skills-all --profile managed
 
 ag install skills --all
+ag install skills --all --profile managed
 ag install tools --list
 ```
 
 ## Recommended new-environment setup for the full workflow
 
-For a fresh machine where you want everything needed for the branching/supervision workflow:
+For a fresh machine where you want everything needed for the manual `/fork` branching/supervision workflow:
 
 1. Install:
    - Bun

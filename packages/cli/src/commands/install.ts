@@ -17,6 +17,7 @@ import {
   cpSync,
   mkdirSync,
   readFileSync,
+  writeFileSync,
 } from "fs"
 import { join } from "path"
 
@@ -26,6 +27,44 @@ const AGENV_HOOKS = join(AGENV_HOME, "agent/hooks")
 const AGENV_PLUGINS = join(AGENV_HOME, "agent/plugins")
 const AGENV_TOOLS = join(AGENV_HOME, "agent/tools")
 const AGENV_COMMANDS = join(AGENV_HOME, "agent/commands")
+
+type InstallProfile = "manual" | "managed"
+
+const DEFAULT_INSTALL_PROFILE: InstallProfile = "manual"
+const MANAGEMENT_SKILLS = new Set(["managing-workstreams"])
+
+function parseInstallProfile(value: string | undefined): InstallProfile {
+  const normalized = (value ?? DEFAULT_INSTALL_PROFILE).trim().toLowerCase()
+
+  if (["", "manual", "manual-fork", "default"].includes(normalized)) {
+    return "manual"
+  }
+
+  if (["managed", "management", "full", "legacy", "root-agent"].includes(normalized)) {
+    return "managed"
+  }
+
+  console.error(
+    `${RED}Error: Unknown install profile: ${value}. Expected "manual" or "managed".${NC}`,
+  )
+  process.exit(1)
+}
+
+function installProfileDescription(profile: InstallProfile): string {
+  return profile === "managed"
+    ? "managed (includes Root Agent management skill and supervision launch tool)"
+    : "manual (default; user manually /forks supervision sessions, management launch omitted)"
+}
+
+function shouldInstallSkillForProfile(entry: string, profile: InstallProfile): boolean {
+  return profile === "managed" || !MANAGEMENT_SKILLS.has(entry)
+}
+
+function disableManagementToolExports(source: string): string {
+  return source
+    .replace(/export\s+const\s+launch_supervision_branch\s*=/, "const launch_supervision_branch =")
+    .replace(/^\s*launch_supervision_branch,\s*$/gm, "")
+}
 
 // Target directories for different agents
 const TARGETS: Record<string, string> = {
@@ -73,6 +112,7 @@ Options:
   --gemini       Install to ~/.gemini/skills
   --all          Install to all supported agent directories
   --target PATH  Install to a custom directory
+  --profile NAME Install profile: manual (default) or managed
   --clean        Remove ALL existing skills in target before installing
   --list         List available skills without installing
   --dry-run      Show what would be installed without making changes
@@ -80,6 +120,8 @@ Options:
 
 Examples:
   ag install skills --claude
+  ag install skills --opencode --profile manual
+  ag install skills --opencode --profile managed
   ag install skills --all
   ag install skills --clean --claude
   ag install skills --target ~/my-agent/skills
@@ -153,6 +195,7 @@ function installSkillsTo(
   targetDir: string,
   dryRun: boolean,
   clean: boolean,
+  profile: InstallProfile,
 ): void {
   if (!existsSync(AGENV_SKILLS)) {
     console.error(
@@ -161,19 +204,23 @@ function installSkillsTo(
     process.exit(1)
   }
 
-  const entries = readdirSync(AGENV_SKILLS).filter((e) =>
+  const allEntries = readdirSync(AGENV_SKILLS).filter((e) =>
     statSync(join(AGENV_SKILLS, e)).isDirectory(),
   )
+  const entries = allEntries.filter((entry) => shouldInstallSkillForProfile(entry, profile))
+  const excludedEntries = allEntries.filter((entry) => !shouldInstallSkillForProfile(entry, profile))
 
-  if (entries.length === 0) {
+  if (allEntries.length === 0) {
     console.log(`${YELLOW}No skills found in ${AGENV_SKILLS}${NC}`)
     return
   }
 
   if (dryRun) {
     console.log(`${YELLOW}[DRY RUN]${NC} Would install to: ${targetDir}`)
+    console.log(`Profile: ${installProfileDescription(profile)}`)
   } else {
     console.log(`Installing skills to: ${targetDir}`)
+    console.log(`Profile: ${installProfileDescription(profile)}`)
     mkdirSync(targetDir, { recursive: true })
   }
 
@@ -186,6 +233,31 @@ function installSkillsTo(
     }
     cleanTarget(targetDir, dryRun)
     console.log("")
+  }
+
+  if (excludedEntries.length > 0) {
+    const existingExcludedEntries = excludedEntries.filter((entry) =>
+      existsSync(join(targetDir, entry)),
+    )
+
+    if (existingExcludedEntries.length > 0 || dryRun) {
+      if (dryRun) {
+        console.log(`${YELLOW}[DRY RUN]${NC} Profile excludes:`)
+      } else {
+        console.log("Removing profile-excluded skills...")
+      }
+
+      for (const entry of dryRun ? excludedEntries : existingExcludedEntries) {
+        const targetSkill = join(targetDir, entry)
+        if (dryRun) {
+          console.log(`  [PROFILE-EXCLUDED] ${entry}`)
+        } else {
+          rmSync(targetSkill, { recursive: true, force: true })
+          console.log(`  ${RED}✗${NC} ${entry} (profile-excluded)`)
+        }
+      }
+      console.log("")
+    }
   }
 
   if (dryRun) {
@@ -621,6 +693,7 @@ Usage:
 Options:
   --opencode     Install to ~/.config/opencode/tools (default)
   --target PATH  Install to a custom directory
+  --profile NAME Install profile: manual (default) or managed
   --clean        Remove ALL existing tools in target before installing
   --list         List available tools without installing
   --dry-run      Show what would be installed without making changes
@@ -628,6 +701,8 @@ Options:
 
 Examples:
   ag install tools --opencode
+  ag install tools --opencode --profile manual
+  ag install tools --opencode --profile managed
   ag install tools --clean --opencode
   ag install tools --target ~/my-project/.opencode/tools
   ag install tools --list
@@ -750,6 +825,7 @@ function installToolsTo(
   targetDir: string,
   dryRun: boolean,
   clean: boolean,
+  profile: InstallProfile,
 ): void {
   if (!existsSync(AGENV_TOOLS)) {
     console.error(
@@ -770,8 +846,10 @@ function installToolsTo(
 
   if (dryRun) {
     console.log(`${YELLOW}[DRY RUN]${NC} Would install to: ${targetDir}`)
+    console.log(`Profile: ${installProfileDescription(profile)}`)
   } else {
     console.log(`Installing tools to: ${targetDir}`)
+    console.log(`Profile: ${installProfileDescription(profile)}`)
     mkdirSync(targetDir, { recursive: true })
   }
 
@@ -807,7 +885,12 @@ function installToolsTo(
       if (existsSync(targetTool)) {
         rmSync(targetTool, { recursive: true, force: true })
       }
-      cpSync(toolPath, targetTool, { recursive: true })
+      if (profile === "manual" && entry === "workstream.ts" && statSync(toolPath).isFile()) {
+        const source = readFileSync(toolPath, "utf-8")
+        writeFileSync(targetTool, disableManagementToolExports(source))
+      } else {
+        cpSync(toolPath, targetTool, { recursive: true })
+      }
       console.log(`  ${GREEN}✓${NC} ${entry}`)
 
       const metadata = resolveInstalledToolMetadata(toolPath, targetTool)
@@ -832,6 +915,7 @@ function toolsCommand(args: string[]): void {
   let dryRun = false
   let listOnly = false
   let clean = false
+  let profile = DEFAULT_INSTALL_PROFILE
 
   let i = 0
   while (i < args.length) {
@@ -847,6 +931,14 @@ function toolsCommand(args: string[]): void {
           process.exit(1)
         }
         targets.push(args[i])
+        break
+      case "--profile":
+        i++
+        if (!args[i]) {
+          console.error(`${RED}Error: --profile requires a value${NC}`)
+          process.exit(1)
+        }
+        profile = parseInstallProfile(args[i])
         break
       case "--clean":
         clean = true
@@ -883,7 +975,7 @@ function toolsCommand(args: string[]): void {
   // Install to each target
   for (const target of targets) {
     if (!target) continue
-    installToolsTo(target, dryRun, clean)
+    installToolsTo(target, dryRun, clean, profile)
     console.log("")
   }
 }
@@ -1106,6 +1198,7 @@ function skillsCommand(args: string[]): void {
   let dryRun = false
   let listOnly = false
   let clean = false
+  let profile = DEFAULT_INSTALL_PROFILE
 
   let i = 0
   while (i < args.length) {
@@ -1143,6 +1236,14 @@ function skillsCommand(args: string[]): void {
         }
         targets.push(args[i])
         break
+      case "--profile":
+        i++
+        if (!args[i]) {
+          console.error(`${RED}Error: --profile requires a value${NC}`)
+          process.exit(1)
+        }
+        profile = parseInstallProfile(args[i])
+        break
       case "--clean":
         clean = true
         break
@@ -1178,7 +1279,7 @@ function skillsCommand(args: string[]): void {
   // Install to each target
   for (const target of targets) {
     if (!target) continue
-    installSkillsTo(target, dryRun, clean)
+    installSkillsTo(target, dryRun, clean, profile)
     console.log("")
   }
 }

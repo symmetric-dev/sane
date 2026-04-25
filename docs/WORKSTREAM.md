@@ -45,16 +45,18 @@ work report validate
 1. The planning agent uses `planning-workstreams` to create the workstream and prepare `REQUIREMENTS.md`, `PLAN.md`, and task drafts.
 2. The user approves the plan with `work approve plan`.
 3. After task editing/serialization is complete, the user approves tasks with `work approve tasks`.
-4. The Root Agent uses `managing-workstreams` to launch a supervision branch.
+4. The user manually `/fork`s the session and asks the forked session to supervise the approved work.
 5. The supervision branch uses `supervising-workstreams` to run `work supervise`, inspect persisted state, and drive the review/fix/escalation loop.
 6. Implementation agents inside that supervised batch use `implementing-workstreams` to inspect scope and keep task state current with commands like `work status`, `work tree --batch`, `work list --tasks --thread`, and `work update`.
-7. The Root Agent reports back to the user, and the user approves each completed stage with `work approve stage N`.
+7. The supervisor fork reports back to the user, and the user approves each completed stage with `work approve stage N`.
 8. Repeat the supervise → review → stage approval loop until all stages are done.
 9. If more work is needed after the original stages, use the revision flow:
    - `work revision --name "follow-up" [--after-stage N]`
    - `work approve revision`
    - `work approve tasks`
 10. At the end, use `evaluating-workstreams` to finalize `REPORT.md` and run `work report validate`.
+
+The older Root Agent management-launch flow is still available through the managed installation profile, but the default profile omits the `managing-workstreams` skill and supervision launch tool so the user controls the `/fork` handoff explicitly.
 
 ## Draft-First Planning Notes
 

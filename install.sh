@@ -21,6 +21,7 @@
 #   --with-skills     Also install skills to ~/.claude/skills
 #   --skills-all      Install skills to all agent directories
 #   --skills-only     Only install skills, skip CLI setup
+#   --profile NAME    Skill install profile: manual (default) or managed
 
 set -e
 
@@ -32,6 +33,7 @@ AGENV_BIN="${AGENV_BIN:-$AGENV_HOME/bin}"
 INSTALL_SKILLS="false"
 SKILLS_ALL="false"
 SKILLS_ONLY="false"
+SKILLS_PROFILE="manual"
 
 while [[ $# -gt 0 ]]; do
     case $1 in
@@ -48,6 +50,10 @@ while [[ $# -gt 0 ]]; do
             SKILLS_ONLY="true"
             shift
             ;;
+        --profile)
+            SKILLS_PROFILE="$2"
+            shift 2
+            ;;
         *)
             shift
             ;;
@@ -57,7 +63,7 @@ done
 # Skip CLI setup if --skills-only
 if [ "$SKILLS_ONLY" = "true" ]; then
     cd "$AGENV_HOME" && bun install --silent
-    bun run "$AGENV_HOME/packages/cli/bin/ag.ts" install skills --all
+    bun run "$AGENV_HOME/packages/cli/bin/ag.ts" install skills --all --profile "$SKILLS_PROFILE"
     exit 0
 fi
 
@@ -148,9 +154,9 @@ echo "  work                 - Standalone workstream CLI"
 if [ "$INSTALL_SKILLS" = "true" ]; then
     echo ""
     if [ "$SKILLS_ALL" = "true" ]; then
-        bun run "$AGENV_HOME/packages/cli/bin/ag.ts" install skills --all
+        bun run "$AGENV_HOME/packages/cli/bin/ag.ts" install skills --all --profile "$SKILLS_PROFILE"
     else
-        bun run "$AGENV_HOME/packages/cli/bin/ag.ts" install skills --claude
+        bun run "$AGENV_HOME/packages/cli/bin/ag.ts" install skills --claude --profile "$SKILLS_PROFILE"
     fi
 fi
 

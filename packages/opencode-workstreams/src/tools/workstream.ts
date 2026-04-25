@@ -736,6 +736,10 @@ export const workstreamTools = {
   finalize_workstream_supervision,
   reconcile_workstream_supervision,
   tool_runtime_info,
+}
+
+export const workstreamToolsWithManagement = {
+  ...workstreamTools,
   launch_supervision_branch,
 }
 

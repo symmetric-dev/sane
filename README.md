@@ -48,6 +48,8 @@ Optional skill install:
 ```bash
 ./install.sh --with-skills
 ./install.sh --skills-all
+# Optional managed profile for Root Agent auto-launch tools/skill:
+./install.sh --skills-all --profile managed
 ```
 
 ## Human Workflow (With Agent)
@@ -57,10 +59,10 @@ The day-to-day workflow is:
 1. Discuss the feature and let the agent research the repo.
 2. The agent uses `planning-workstreams` to create the workstream and prepare `REQUIREMENTS.md`, `PLAN.md`, and draft tasks.
 3. You approve the plan first, then approve tasks after the plan/task back-and-forth is complete.
-4. The Root Agent uses `managing-workstreams` to launch a supervision branch.
+4. You manually `/fork` the session and ask the forked session to supervise the approved work.
 5. The supervision branch uses `supervising-workstreams` to run `work supervise`, inspect persisted state, and drive the review/fix/escalation loop.
 6. Implementation agents spawned within that loop use `implementing-workstreams` to inspect batch/task scope and update task state while they work.
-7. The Root Agent reports back; you approve the completed stage with `work approve stage N`.
+7. The supervisor fork reports back; you approve the completed stage with `work approve stage N`.
 8. Repeat the supervision loop for the next stage.
 9. If more work is needed after the original stages, use the revision flow.
 10. When the workstream is done, use `evaluating-workstreams` to finalize `REPORT.md` and validate the report.
@@ -91,6 +93,7 @@ Notes:
 
 - Use `!work ...` when invoking from chat-driven Opencode commands.
 - Agents handle most planning and execution details; humans control approvals, stage gates, and final evaluation.
+- Manual `/fork` supervision is the default handoff model. The older Root Agent management launch flow remains available through the managed install profile.
 - `work supervise` is the normal execution primitive; `work start` is no longer the main workflow entrypoint.
 - The implementation agents running inside supervision commonly inspect scope with `work status`, `work tree --batch`, and `work list --tasks --thread` before updating task state.
 
@@ -140,7 +143,7 @@ Example output from `work status`:
 AgEnv uses skill files under `agent/skills/*` to guide agent behavior through each phase.
 
 - `planning-workstreams`: used first to create the stream, fill `REQUIREMENTS.md`, shape `PLAN.md`, validate/check, and prepare tasks for approval.
-- `managing-workstreams`: used by the Root Agent after task approval to launch and monitor a supervision branch.
+- `managing-workstreams`: optional managed-profile skill used by the Root Agent after task approval to launch and monitor a supervision branch automatically.
 - `supervising-workstreams`: used by the supervision branch to run `work supervise`, inspect persisted state, and drive the review/fix/escalation loop.
 - `implementing-workstreams`: used by worker agents that execute thread tasks within supervised batches; these workers inspect their scope and keep task state current.
 - `evaluating-workstreams`: used near completion to assess delivered work and finalize report quality (`REPORT.md`).
@@ -149,7 +152,7 @@ In practice:
 
 1. Planning agent uses planning skill to prepare requirements/plan/tasks.
 2. Human approves (`work approve plan`, `work approve tasks`).
-3. Root Agent uses the managing skill to launch a supervision branch.
+3. Human manually `/fork`s the session and asks the forked session to supervise the work.
 4. Supervision branch uses the supervising skill to run `work supervise` and make review/fix/escalation decisions.
 5. Implementation agents use the implementation skill to work assigned threads and update task state.
 6. Human approves each completed stage, and evaluation/reporting happens at the end.
@@ -159,7 +162,7 @@ In practice:
 Opencode custom tools support parts of the workstream workflow that need access to live session context.
 
 - `workstream_link_planning_session`: links the current opencode session to a workstream as its planning session.
-- `workstream_launch_supervision_branch`: launches the supervision branch from the Root Agent session.
+- `workstream_launch_supervision_branch`: optional managed-profile tool that launches the supervision branch from the Root Agent session.
 - `finalize_workstream_supervision`: persists the terminal supervision result before reporting back.
 - `reconcile_workstream_supervision`: reconciles stale ended-but-nonterminal supervision sessions.
 - `link_thread_session`: used by implementation agents to link the current opencode session to their assigned thread before substantive implementation work begins.
