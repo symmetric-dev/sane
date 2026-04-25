@@ -61,7 +61,7 @@
     },
     "packages/workstreams": {
       "name": "@agenv/workstreams",
-      "version": "0.6.1",
+      "version": "0.7.1",
       "bin": {
         "work": "dist/bin/work.js",
       },
@@ -177,8 +177,12 @@
 
     "zod": ["zod@4.1.8", "", {}, "sha512-5R1P+WwQqmmMIEACyzSvo4JXHY5WiAFHRMg+zBZKgKS+Q1viRa0C1hmUKtHltoIFKtIdki3pRxkmpP74jnNYHQ=="],
 
+    "@agenv/opencode-workstreams/@agenv/workstreams": ["@agenv/workstreams@0.6.2", "", { "dependencies": { "marked": "^17.0.1", "proper-lockfile": "^4.1.2", "yaml": "^2.7.0" }, "peerDependencies": { "typescript": "^5" }, "bin": { "work": "dist/bin/work.js" } }, "sha512-xV2bmTZnjO+k76yX2fzxTjflWDgsdm40VVQcfElhlsPc5yvPyBd29CfXjqA7I4dry+KJob59Ny4vp/aLLPaD3Q=="],
+
     "@agenv/workstream-dashboard/@agenv/workstreams": ["@agenv/workstreams@0.5.3", "", { "dependencies": { "marked": "^17.0.1", "proper-lockfile": "^4.1.2", "yaml": "^2.7.0" }, "peerDependencies": { "typescript": "^5" }, "bin": { "work": "dist/bin/work.js" } }, "sha512-XtAVSZ41CjTmhzNxwOkKgPbcTD8rfRR7FMyieokRTo2eV07qSet4SWcplyVkL34U48opURMXqm+23C4nXJTCLg=="],
 
     "effect/yaml": ["yaml@2.8.3", "", { "bin": { "yaml": "bin.mjs" } }, "sha512-AvbaCLOO2Otw/lW5bmh9d/WEdcDFdQp2Z2ZUH3pX9U2ihyUY0nvLv7J6TrWowklRGPYbB/IuIMfYgxaCPg5Bpg=="],
+
+    "@agenv/opencode-workstreams/@agenv/workstreams/yaml": ["yaml@2.8.3", "", { "bin": { "yaml": "bin.mjs" } }, "sha512-AvbaCLOO2Otw/lW5bmh9d/WEdcDFdQp2Z2ZUH3pX9U2ihyUY0nvLv7J6TrWowklRGPYbB/IuIMfYgxaCPg5Bpg=="],
   }
 }
