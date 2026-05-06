@@ -1,5 +1,5 @@
 import { describe, test, expect, beforeEach, afterEach } from "bun:test"
-import { writeFileSync, readFileSync } from "fs"
+import { existsSync, writeFileSync, readFileSync } from "fs"
 import { join } from "path"
 import {
   generateSessionId,
@@ -127,6 +127,22 @@ describe("session-tracking", () => {
       if (task.sessions) {
         expect(task.sessions.find((s) => s.sessionId === session!.sessionId)).toBeUndefined()
       }
+    })
+
+    test("does not project a legacy threads.json file for sqlite-native session writes", () => {
+      const { repoRoot, streamId } = workspace
+
+      const session = startTaskSession(
+        repoRoot,
+        streamId,
+        "01.01.01.01",
+        "test-agent",
+        "anthropic/claude-sonnet-4"
+      )
+
+      expect(session).not.toBeNull()
+      expect(loadThreads(repoRoot, streamId)?.threads.find((thread) => thread.threadId === "01.01.01")).toBeDefined()
+      expect(existsSync(join(repoRoot, "work", streamId, "threads.json"))).toBe(false)
     })
 
     test("returns null for non-existent task", () => {

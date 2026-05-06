@@ -66,7 +66,7 @@ function saveLegacyIndex(repoRoot: string, streamId: string, currentStreamId: st
 }
 
 describe("sqlite legacy hydration", () => {
-  test("hydrates legacy filesystem state into sqlite idempotently and projects compatibility files", () => {
+  test("hydrates legacy filesystem state into sqlite idempotently without re-projecting batch-status compatibility files", () => {
     const workspace = createTestWorkstream(`001-legacy-hydration-${Date.now()}`)
 
     try {
@@ -182,13 +182,11 @@ describe("sqlite legacy hydration", () => {
       expect(sqliteState?.batchRuns[0]?.batchId).toBe("02.01")
       expect(sqliteState?.supervision.active_run_id).toBe("sup-1")
 
-      const projectedThreads = JSON.parse(
-        readFileSync(join(workspace.workDir, "threads.json"), "utf-8"),
-      ) as {
+      const legacyThreads = JSON.parse(readFileSync(join(workspace.workDir, "threads.json"), "utf-8")) as {
         threads: Array<{ threadId: string; sessions: Array<{ sessionId: string }> }>
       }
-      expect(projectedThreads.threads[0]?.threadId).toBe("01.01.01")
-      expect(projectedThreads.threads[0]?.sessions[0]?.sessionId).toBe("session-1")
+      expect(legacyThreads.threads[0]?.threadId).toBe("01.01.01")
+      expect(legacyThreads.threads[0]?.sessions[0]?.sessionId).toBe("session-1")
       expect(existsSync(join(workspace.workDir, "supervisor-state.json"))).toBeTrue()
       expect(existsSync(join(workspace.workDir, "batch-status", "02.01.json"))).toBeTrue()
 
@@ -202,6 +200,14 @@ describe("sqlite legacy hydration", () => {
         workspace.streamId,
       )
       expect(sqliteStateAfterSecondHydration).toEqual(sqliteState)
+      expect(JSON.parse(readFileSync(join(workspace.workDir, "threads.json"), "utf-8"))).toMatchObject({
+        threads: [{ threadId: "01.01.01", sessions: [{ sessionId: "session-1" }] }],
+      })
+
+      expect(JSON.parse(readFileSync(join(workspace.workDir, "batch-status", "02.01.json"), "utf-8"))).toMatchObject({
+        status: "running",
+        runId: batchStatus.runId,
+      })
     } finally {
       cleanupTestWorkstream(workspace)
     }
@@ -351,7 +357,7 @@ describe("sqlite legacy hydration", () => {
 
       const sqliteState = loadSqliteStructuredStorageWorkstreamState(workspace.repoRoot, workspace.streamId)
       expect(sqliteState?.hierarchy.tasks.map((task) => task.id)).toEqual(["01.01.01.01"])
-      expect(existsSync(join(workspace.workDir, "threads.json"))).toBeTrue()
+      expect(existsSync(join(workspace.workDir, "threads.json"))).toBeFalse()
       expect(existsSync(join(workspace.workDir, "supervisor-state.json"))).toBeTrue()
     } finally {
       cleanupTestWorkstream(workspace)

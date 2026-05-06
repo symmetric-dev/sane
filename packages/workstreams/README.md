@@ -151,12 +151,20 @@ When they do **not** matter:
 
 - for normal sqlite-authoritative command execution after `work init --sqlite` has completed successfully
 - as the source of truth for structured workstream state while `work/db.sqlite` is present and healthy
-- for legacy runtime wrappers like `threads.json` and `supervisor-state.json`, except as migration inputs or explicit compatibility artifacts
+- for legacy runtime wrappers like `threads.json`, `supervisor-state.json`, and `batch-status/*.json`, except as migration inputs or explicit compatibility artifacts
+
+Current sqlite-native runtime note:
+
+- `work batch-status` is authoritative and sqlite-backed; do not treat `work/<stream-id>/batch-status/*.json` as a required live runtime surface.
+- sqlite-native/new workstreams no longer normally project `threads.json` or `batch-status/*.json`.
+- `supervisor-state.json` may still appear as a compatibility/runtime artifact during the current transition period.
 
 ## Storage architecture notes
 
 - `work/db.sqlite` is the canonical structured source of truth in sqlite-authoritative repos.
 - `work/index.json` and `work/<stream-id>/tasks.json` are compatibility projections rebuilt from sqlite for legacy tooling and inspection workflows.
+- `threads.json` and `batch-status/*.json` are no longer normal projected runtime artifacts for sqlite-native workstreams.
+- `supervisor-state.json` remains transitional compatibility/runtime output where current supervision flows still expect it.
 - Markdown workstream docs, `resources/`, and artifact-like outputs remain filesystem-based.
 - Use `work rebuild-compat` when you need to regenerate compatibility JSON from canonical sqlite state.
 - Local-first sqlite architecture: [`../../docs/LOCAL_FIRST_SQLITE_ARCHITECTURE.md`](../../docs/LOCAL_FIRST_SQLITE_ARCHITECTURE.md)

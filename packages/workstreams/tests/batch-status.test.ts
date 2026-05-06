@@ -339,6 +339,74 @@ describe("batch status", () => {
     expect(threadOne?.opencodeSessionId).toBeUndefined()
   })
 
+  test("syncBatchStatus heals stale terminal failed runtime when all batch tasks are completed", async () => {
+    const run = await resetBatchStatusRun({
+      repoRoot,
+      streamId,
+      batchId: "01.01",
+      tmuxSessionName: "missing-terminal-session",
+      stageName: "Headless Runtime",
+      batchName: "Batch Status",
+      threads: [
+        { threadId: "01.01.01", threadName: "Thread 1", firstTaskId: "01.01.01.01" },
+        { threadId: "01.01.02", threadName: "Thread 2", firstTaskId: "01.01.02.01" },
+      ],
+    })
+
+    const failedTerminal = {
+      ...run,
+      status: "failed" as const,
+      completedAt: new Date().toISOString(),
+      summary: { total: 2, pending: 0, running: 0, completed: 1, failed: 1 },
+      threads: run.threads.map((thread) =>
+        thread.threadId === "01.01.02"
+          ? {
+              ...thread,
+              status: "failed" as const,
+              completedAt: new Date().toISOString(),
+              recoveryNote:
+                "failed: recovered after tmux session \"missing-terminal-session\" disappeared using missing tmux session.",
+            }
+          : {
+              ...thread,
+              status: "completed" as const,
+              completedAt: new Date().toISOString(),
+            },
+      ),
+    }
+    writeBatchStatus(repoRoot, streamId, failedTerminal)
+
+    const canonicallyCompleted = readTasksFile(repoRoot, streamId)!
+    canonicallyCompleted.tasks = canonicallyCompleted.tasks.map((task) => ({
+      ...task,
+      status: "completed",
+      report: `Completed ${task.id}`,
+      updated_at: new Date().toISOString(),
+    }))
+    writeTasksFile(repoRoot, streamId, canonicallyCompleted)
+
+    const status = await syncBatchStatus({
+      repoRoot,
+      streamId,
+      batchId: "01.01",
+    })
+
+    expect(status.status).toBe("completed")
+    expect(status.summary).toEqual({
+      total: 2,
+      pending: 0,
+      running: 0,
+      completed: 2,
+      failed: 0,
+    })
+    expect(status.threads.every((thread) => thread.status === "completed")).toBe(true)
+    expect(status.threads[1]?.recoveryNote).toContain("restored from canonical task state")
+
+    const persisted = readBatchStatus(repoRoot, streamId, "01.01")
+    expect(persisted?.status).toBe("completed")
+    expect(persisted?.summary.failed).toBe(0)
+  })
+
   test("waitForBatchStatus does not false-positive completed while canonical tasks remain incomplete", async () => {
     await resetBatchStatusRun({
       repoRoot,
@@ -465,7 +533,7 @@ describe("batch status", () => {
     expect(persisted?.completedAt).toBeTruthy()
   })
 
-  test("syncBatchStatus regenerates legacy compatibility projections after ghost recovery", async () => {
+  test("syncBatchStatus keeps legacy batch-status compatibility files untouched after ghost recovery", async () => {
     const startedAt = new Date().toISOString()
 
     await resetBatchStatusRun({
@@ -586,16 +654,18 @@ describe("batch status", () => {
     ) as {
       threads: Array<{ threadId: string; currentSessionId?: string; sessions: Array<{ status: string }> }>
     }
-    expect(legacyThreads.threads.find((thread) => thread.threadId === "01.01.01")?.currentSessionId).toBeUndefined()
+    expect(legacyThreads.threads.find((thread) => thread.threadId === "01.01.01")?.currentSessionId).toBe(
+      "legacy-current-session",
+    )
     expect(legacyThreads.threads.find((thread) => thread.threadId === "01.01.01")?.sessions.at(-1)?.status).toBe(
-      "interrupted",
+      "running",
     )
 
     const legacyBatchStatus = JSON.parse(
       readFileSync(join(repoRoot, "work", streamId, "batch-status", "01.01.json"), "utf-8"),
     ) as { status: string; summary: { failed: number } }
-    expect(legacyBatchStatus.status).toBe("failed")
-    expect(legacyBatchStatus.summary.failed).toBe(2)
+    expect(legacyBatchStatus.status).toBe("running")
+    expect(legacyBatchStatus.summary.failed).toBe(0)
   })
 
   test("prepareHeadlessBatchStatusRun terminalizes a stale ghost run before creating a fresh run", async () => {

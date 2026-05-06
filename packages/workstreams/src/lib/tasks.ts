@@ -459,13 +459,23 @@ function listLegacyBatchStatusFiles(repoRoot: string, streamId: string): string[
     .map((entry) => join(batchStatusDir, entry))
 }
 
+function shouldImportLegacyBatchStatuses(repoRoot: string, streamId: string): boolean {
+  return loadSqliteStructuredStorageWorkstreamState(repoRoot, streamId, { normalizeIds: false }) === null
+}
+
+function shouldImportLegacyThreads(repoRoot: string, streamId: string): boolean {
+  return loadSqliteStructuredStorageWorkstreamState(repoRoot, streamId, { normalizeIds: false }) === null
+}
+
 function importLegacyRuntimeStateUnlocked(repoRoot: string, streamId: string, tasksFile: TasksFile): boolean {
   tasksFile.runtime_state = normalizeRuntimeState(streamId, tasksFile.runtime_state)
 
   let changed = importTaskLocalSessionsIntoRuntimeState(tasksFile)
 
-  const legacyThreads = readJsonFileIfExists<ThreadsJson>(getLegacyThreadsFilePath(repoRoot, streamId))
-  changed = mergeRuntimeThreads(streamId, tasksFile.runtime_state, legacyThreads) || changed
+  if (shouldImportLegacyThreads(repoRoot, streamId)) {
+    const legacyThreads = readJsonFileIfExists<ThreadsJson>(getLegacyThreadsFilePath(repoRoot, streamId))
+    changed = mergeRuntimeThreads(streamId, tasksFile.runtime_state, legacyThreads) || changed
+  }
 
   const legacySupervisorState = readJsonFileIfExists<SupervisorStateFile>(
     getLegacySupervisorStateFilePath(repoRoot, streamId),
@@ -473,10 +483,12 @@ function importLegacyRuntimeStateUnlocked(repoRoot: string, streamId: string, ta
   changed =
     mergeSupervisorStateFromLegacy(streamId, tasksFile.runtime_state, legacySupervisorState) || changed
 
-  const legacyBatchStatuses = listLegacyBatchStatusFiles(repoRoot, streamId)
-    .map((filePath) => readJsonFileIfExists<PersistedBatchStatusFile>(filePath))
-    .filter((batchStatus): batchStatus is PersistedBatchStatusFile => batchStatus !== null)
-  changed = mergeBatchStatusesFromLegacy(tasksFile.runtime_state, legacyBatchStatuses) || changed
+  if (shouldImportLegacyBatchStatuses(repoRoot, streamId)) {
+    const legacyBatchStatuses = listLegacyBatchStatusFiles(repoRoot, streamId)
+      .map((filePath) => readJsonFileIfExists<PersistedBatchStatusFile>(filePath))
+      .filter((batchStatus): batchStatus is PersistedBatchStatusFile => batchStatus !== null)
+    changed = mergeBatchStatusesFromLegacy(tasksFile.runtime_state, legacyBatchStatuses) || changed
+  }
 
   return changed
 }

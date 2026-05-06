@@ -438,6 +438,72 @@ async function reconcileGhostBatchRun(args: {
   return batchStatus
 }
 
+async function reconcileTerminalFailedBatchFromCanonicalState(args: {
+  repoRoot: string
+  streamId: string
+  existing: BatchStatusFile
+  threadSeeds: BatchThreadSeed[]
+  tasksFile: TasksFile
+}): Promise<BatchStatusFile> {
+  if (args.existing.status !== "failed") {
+    return args.existing
+  }
+
+  const allThreadsCanonicallyCompleted = args.threadSeeds.every((seed) =>
+    areThreadTasksCanonicallyCompleted(args.tasksFile, seed.threadId),
+  )
+  if (!allThreadsCanonicallyCompleted) {
+    return args.existing
+  }
+
+  const now = new Date().toISOString()
+  const previousThreads = new Map(
+    args.existing.threads.map((thread) => [thread.threadId, thread]),
+  )
+  const nextThreads: BatchStatusThread[] = args.threadSeeds.map((seed) => {
+    const previous = previousThreads.get(seed.threadId)
+    const latestSession = getLastSessionForThread(args.repoRoot, args.streamId, seed.threadId)
+    const threadMeta = getThreadMetadata(args.repoRoot, args.streamId, seed.threadId)
+    const recoveredFromFailure = previous?.status === "failed"
+
+    return {
+      threadId: seed.threadId,
+      threadName: seed.threadName,
+      firstTaskId: seed.firstTaskId,
+      status: "completed",
+      startedAt: latestSession?.startedAt ?? previous?.startedAt ?? args.existing.startedAt,
+      updatedAt: now,
+      completedAt: latestSession?.completedAt ?? previous?.completedAt ?? now,
+      ...(previous?.markerDetectedAt ? { markerDetectedAt: previous.markerDetectedAt } : {}),
+      opencodeSessionId: threadMeta?.opencodeSessionId ?? previous?.opencodeSessionId,
+      ...(recoveredFromFailure
+        ? {
+            recoveryNote:
+              "completed: restored from canonical task state after terminal runtime failure; all thread tasks are completed.",
+          }
+        : previous?.recoveryNote
+          ? { recoveryNote: previous.recoveryNote }
+          : {}),
+    }
+  })
+
+  const batchStatus: BatchStatusFile = {
+    ...args.existing,
+    status: "completed",
+    updatedAt: now,
+    completedAt: args.existing.completedAt ?? now,
+    summary: summarizeBatchThreads(nextThreads),
+    threads: nextThreads,
+  }
+
+  await writeBatchStatusLocked(args.repoRoot, args.streamId, batchStatus)
+  projectLegacyRuntimeCompatibilityArtifactsSync({
+    repoRoot: args.repoRoot,
+    streamId: args.streamId,
+  })
+  return batchStatus
+}
+
 export async function reconcileBatchStatusRunIfNeeded(
   options: SyncBatchStatusOptions,
 ): Promise<BatchStatusFile | null> {
@@ -675,7 +741,13 @@ export async function syncBatchStatus(
   })
   const existing = reconciledExisting ?? readBatchStatus(repoRoot, streamId, batchId)
   if (existing && isTerminalBatchStatus(existing.status)) {
-    return existing
+    return reconcileTerminalFailedBatchFromCanonicalState({
+      repoRoot,
+      streamId,
+      existing,
+      threadSeeds,
+      tasksFile,
+    })
   }
   const now = new Date().toISOString()
   await finalizeCanonicalThreadState(

@@ -1055,31 +1055,9 @@ export function projectLegacyRuntimeCompatibilityArtifactsSync(args: {
   }
 
   writeCompatibilityJsonFile(
-    getLegacyThreadsFilePath(args.repoRoot, args.streamId),
-    threadsFileFromWorkstreamState(workstreamState),
-  )
-  writeCompatibilityJsonFile(
     getLegacySupervisorStateFilePath(args.repoRoot, args.streamId),
     normalizeSupervisorState(args.streamId, workstreamState.supervision),
   )
-
-  const batchStatusDir = getLegacyBatchStatusDirPath(args.repoRoot, args.streamId)
-  mkdirSync(batchStatusDir, { recursive: true })
-
-  const expectedBatchFiles = new Set<string>()
-  for (const batchRun of workstreamState.batchRuns) {
-    const fileName = `${batchRun.batchId}.json`
-    expectedBatchFiles.add(fileName)
-    writeCompatibilityJsonFile(join(batchStatusDir, fileName), batchRun)
-  }
-
-  for (const entry of readdirSync(batchStatusDir)) {
-    if (!entry.endsWith(".json") || expectedBatchFiles.has(entry)) {
-      continue
-    }
-
-    rmSync(join(batchStatusDir, entry), { force: true })
-  }
 }
 
 export function hydrateLegacyFilesystemStateToSqliteSync(args: {

@@ -15,6 +15,7 @@ import {
 } from "../src/lib/opencode.ts"
 import { buildSupervisionExecutionPlan } from "../src/lib/supervision-helper.ts"
 import { loadSupervisorState } from "../src/lib/supervisor-state.ts"
+import { loadSqliteStructuredStorageWorkstreamState } from "../src/lib/sqlite-storage.ts"
 import { createEmptyTasksFile, readTasksFile, writeTasksFile } from "../src/lib/tasks.ts"
 import { loadThreads } from "../src/lib/threads.ts"
 import { captureCliOutput } from "./helpers/cli-runner.ts"
@@ -612,7 +613,9 @@ describe("reset-batch-state", () => {
     expect(stdout.join("\n")).toContain("Artifacts:")
 
     const persisted = readTasksFile(workspace.repoRoot, workspace.streamId)
+    const canonicalState = loadSqliteStructuredStorageWorkstreamState(workspace.repoRoot, workspace.streamId)
     expect(persisted).not.toBeNull()
+    expect(canonicalState).not.toBeNull()
 
     const targetTask = persisted!.tasks.find((task) => task.id === "03.01.01.01")
     expect(targetTask?.status).toBe("pending")
@@ -623,15 +626,13 @@ describe("reset-batch-state", () => {
     expect(unrelatedTask?.status).toBe("completed")
     expect(unrelatedTask?.report).toBe("keep me")
 
-    expect(persisted!.runtime_state?.batches["03.01"]).toBeUndefined()
-    expect(persisted!.runtime_state?.batches["03.02"]?.status).toBe("completed")
-    expect(persisted!.runtime_summary?.batches["03.01"]).toBeUndefined()
+    expect(canonicalState!.batchRuns.find((batchRun) => batchRun.batchId === "03.01")).toBeUndefined()
+    expect(canonicalState!.batchRuns.find((batchRun) => batchRun.batchId === "03.02")?.status).toBe("completed")
     expect(persisted!.runtime_summary?.batches["03.02"]?.status).toBe("completed")
 
-    const resetThread = persisted!.runtime_state?.threads.find((thread) => thread.threadId === "03.01.01")
+    const resetThread = canonicalState!.threadRuntime.find((thread) => thread.threadId === "03.01.01")
     expect(resetThread).toMatchObject({
       threadId: "03.01.01",
-      promptPath: "prompts/03-stage/01-batch/thread-01.md",
       sessions: [],
     })
     expect(resetThread?.currentSessionId).toBeUndefined()
@@ -639,22 +640,22 @@ describe("reset-batch-state", () => {
     expect(resetThread?.workingAgentSessionId).toBeUndefined()
     expect(resetThread?.synthesis).toBeUndefined()
 
-    const unrelatedThread = persisted!.runtime_state?.threads.find((thread) => thread.threadId === "03.02.01")
+    const unrelatedThread = canonicalState!.threadRuntime.find((thread) => thread.threadId === "03.02.01")
     expect(unrelatedThread?.currentSessionId).toBe("keep-current-03-02")
     expect(unrelatedThread?.sessions).toHaveLength(1)
 
-    expect(persisted!.runtime_state?.supervision.active_run_id).toBeUndefined()
-    expect(persisted!.runtime_state?.supervision.current_branch_supervision).toBeUndefined()
-    expect(persisted!.runtime_state?.supervision.branch_sessions.map((branch) => branch.branchSessionId)).toEqual([
+    expect(canonicalState!.supervision.active_run_id).toBeUndefined()
+    expect(canonicalState!.supervision.current_branch_supervision).toBeUndefined()
+    expect(canonicalState!.supervision.branch_sessions.map((branch) => branch.branchSessionId)).toEqual([
       "branch-03-02",
     ])
-    expect(persisted!.runtime_state?.supervision.reviewed_batches.map((review) => review.reviewId)).toEqual([
+    expect(canonicalState!.supervision.reviewed_batches.map((review) => review.reviewId)).toEqual([
       "review-03-02",
     ])
-    expect(persisted!.runtime_state?.supervision.issue_summaries).toHaveLength(0)
-    expect(persisted!.runtime_state?.supervision.fix_cycles).toHaveLength(0)
-    expect(persisted!.runtime_state?.supervision.escalations).toHaveLength(0)
-    expect(persisted!.runtime_state?.supervision.stage_stops).toHaveLength(0)
+    expect(canonicalState!.supervision.issue_summaries).toHaveLength(0)
+    expect(canonicalState!.supervision.fix_cycles).toHaveLength(0)
+    expect(canonicalState!.supervision.escalations).toHaveLength(0)
+    expect(canonicalState!.supervision.stage_stops).toHaveLength(0)
 
     expect(existsSync(getCompletionMarkerPath(workspace.streamId, "03.01.01"))).toBe(false)
     expect(existsSync(getSessionFilePath(workspace.streamId, "03.01.01"))).toBe(false)
@@ -662,16 +663,20 @@ describe("reset-batch-state", () => {
     expect(existsSync(getWorkingAgentSessionPath(workspace.streamId, "03.01.01"))).toBe(false)
     expect(existsSync(getSynthesisOutputPath(workspace.streamId, "03.01.01"))).toBe(false)
     expect(existsSync(getSynthesisLogPath(workspace.streamId, "03.01.01"))).toBe(false)
-    expect(existsSync(join(workspace.workDir, "batch-status", "03.01.json"))).toBe(false)
+    expect(existsSync(join(workspace.workDir, "batch-status", "03.01.json"))).toBe(true)
     expect(existsSync(join(workspace.workDir, "batch-status", "03.02.json"))).toBe(true)
 
     const legacyThreadsOnDisk = JSON.parse(readFileSync(join(workspace.workDir, "threads.json"), "utf-8")) as {
-      threads: Array<{ threadId: string }>
+      threads: Array<{ threadId: string; currentSessionId?: string; sessions: Array<{ sessionId: string }> }>
     }
     expect(legacyThreadsOnDisk.threads.map((thread) => thread.threadId)).toEqual([
       "03.01.01",
       "03.02.01",
     ])
+    expect(legacyThreadsOnDisk.threads.find((thread) => thread.threadId === "03.01.01")).toMatchObject({
+      currentSessionId: "legacy-current-03-01",
+      sessions: [{ sessionId: "legacy-session-03-01" }],
+    })
 
     const legacySupervisorOnDisk = JSON.parse(
       readFileSync(join(workspace.workDir, "supervisor-state.json"), "utf-8"),
@@ -699,12 +704,12 @@ describe("reset-batch-state", () => {
     expect(legacySupervisorOnDisk.stage_stops).toHaveLength(0)
 
     const reloaded = readTasksFile(workspace.repoRoot, workspace.streamId)
-    expect(reloaded?.runtime_state?.batches["03.01"]).toBeUndefined()
-    expect(reloaded?.runtime_summary?.batches["03.01"]).toBeUndefined()
+    const reloadedCanonicalState = loadSqliteStructuredStorageWorkstreamState(workspace.repoRoot, workspace.streamId)
+    expect(reloadedCanonicalState?.batchRuns.find((batchRun) => batchRun.batchId === "03.01")).toBeUndefined()
     expect(reloaded?.runtime_state?.threads.find((thread) => thread.threadId === "03.01.01")?.sessions).toEqual(
       [],
     )
-    expect(reloaded?.runtime_state?.supervision.active_run_id).toBeUndefined()
+    expect(reloadedCanonicalState?.supervision.active_run_id).toBeUndefined()
 
     const treeOutput = await captureCliOutput(() => {
       treeMain([

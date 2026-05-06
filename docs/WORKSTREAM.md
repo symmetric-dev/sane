@@ -17,8 +17,8 @@ Each stream lives at `work/{stream-id}/`.
 - `PLAN.md`: structure and intent
 - `TASKS.md`: intermediate task editing file
 - `tasks.json`: compatibility projection of structured workstream state when projected from sqlite; also a legacy hydration input for pre-sqlite repos
-- `threads.json`: legacy thread metadata artifact if present; kept only for migration/compatibility workflows
-- `supervisor-state.json`: legacy supervision artifact if present; kept only for migration/compatibility workflows
+- `threads.json`: legacy thread metadata artifact if present; sqlite-native workstreams no longer need it projected for normal runtime behavior
+- `supervisor-state.json`: legacy supervision artifact if present; still transitional compatibility/runtime output in the current sqlite-native phase
 - `REPORT.md`: completion report input
 - `resources/`: supporting pre-work inputs referenced by `REQUIREMENTS.md`
 
@@ -74,6 +74,7 @@ The older Root Agent management-launch flow is still available through the manag
 - In sqlite-authoritative repos, `work/db.sqlite` is the canonical structured machine state.
 - When `tasks.json` exists, `tasks.json -> runtime_state.threads`, `tasks.json -> runtime_state.batches`, and `tasks.json -> runtime_state.supervision` are compatibility projections rebuilt from sqlite.
 - Legacy `threads.json` and `supervisor-state.json` files may still exist for migration/compatibility, but they are not the primary runtime store.
+- `batch-status/*.json` is not a required live runtime surface for sqlite-native workstreams; use `work batch-status` instead.
 
 ## Sqlite-Authoritative Structured Storage
 
@@ -92,6 +93,7 @@ Operator guidance:
 - use `work rebuild-compat --output-root /tmp/sqlite-compat-snapshot` for rollback-safe inspection of projected `index.json` / `tasks.json` files before replacing live compatibility files
 - do not expect `work rebuild-compat` snapshots to include legacy runtime compatibility artifacts like `threads.json`, `supervisor-state.json`, or `batch-status/*.json`
 - treat legacy `threads.json` / `supervisor-state.json` as migration inputs or compatibility artifacts only, not as normal runtime authority
+- treat on-disk `batch-status/*.json` as legacy/stale if present; `work batch-status` is the authoritative operator interface
 
 See also:
 

@@ -394,6 +394,7 @@ describe("sqlite structured storage dual-write", () => {
       expect(
         database.query("select status, review_passes from supervision_runs where run_id = ?").get("sup-run-1"),
       ).toEqual({ status: "completed", review_passes: 2 })
+      expect(existsSync(`${workspace.workDir}/batch-status`)).toBeFalse()
     } finally {
       database.close()
     }

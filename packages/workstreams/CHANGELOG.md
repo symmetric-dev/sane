@@ -2,6 +2,12 @@
 
 All notable changes to `@agenv/workstreams` are documented in this file.
 
+## 0.8.0 - 2026-05-06
+
+- Stopped projecting legacy `batch-status/*.json` and `threads.json` runtime artifacts for sqlite-native workstreams while keeping sqlite-backed batch/thread runtime behavior authoritative.
+- Prevented stale legacy `batch-status` and `threads` compatibility files from being re-imported into sqlite-backed runtime views once canonical sqlite state exists.
+- Hardened supervision/runtime identifier handling by normalizing stage/batch/thread/task IDs across read/load paths and key persistence paths, preventing malformed persisted IDs from creating fake placeholder hierarchy rows or sqlite foreign-key failures.
+
 ## 0.7.1 - 2026-04-21
 
 - Completed the sqlite-authoritative cutover for core workflow state, including canonical sqlite reads and writes for approvals, task/runtime updates, revision/fix flows, bootstrap, hydration, and compatibility rebuild tooling.
