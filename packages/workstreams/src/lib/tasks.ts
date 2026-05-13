@@ -1636,6 +1636,47 @@ export function addTasks(
 }
 
 /**
+ * Replace tasks in tasks.json with a new canonical set.
+ * Preserves status/runtime-linked metadata for task IDs that still exist,
+ * and removes tasks omitted from the replacement list.
+ */
+export function replaceTasks(
+  repoRoot: string,
+  streamId: string,
+  newTasks: Task[],
+): TasksFile {
+  let tasksFile = readTasksFile(repoRoot, streamId)
+
+  if (!tasksFile) {
+    tasksFile = createEmptyTasksFile(streamId)
+  }
+
+  const existingTasksMap = new Map(tasksFile.tasks.map((task) => [task.id, task]))
+
+  tasksFile.tasks = newTasks
+    .map((newTask) => {
+      const existing = existingTasksMap.get(newTask.id)
+      if (!existing) {
+        return newTask
+      }
+
+      return {
+        ...newTask,
+        status: existing.status,
+        created_at: existing.created_at,
+        updated_at: existing.updated_at,
+        sessions: existing.sessions,
+        currentSessionId: existing.currentSessionId,
+      }
+    })
+    .sort((a, b) => a.id.localeCompare(b.id, undefined, { numeric: true }))
+
+  writeTasksFile(repoRoot, streamId, tasksFile)
+
+  return tasksFile
+}
+
+/**
  * Get task counts by status
  */
 export function getTaskCounts(

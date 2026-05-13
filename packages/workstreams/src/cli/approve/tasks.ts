@@ -17,8 +17,9 @@ import { parseTasksMd, generateTasksMdFromTasks } from "../../lib/tasks-md.ts"
 import { getWorkDir } from "../../lib/repo.ts"
 import { type GitAutoCommitResult } from "../../lib/git/index.ts"
 import { getResolvedStream, atomicWriteFile } from "../../lib/index.ts"
-import { addTasks, getTasks } from "../../lib/tasks.ts"
+import { getTasks, replaceTasks } from "../../lib/tasks.ts"
 import { generateAllPrompts } from "../../lib/prompts.ts"
+import { hydrateLegacyFilesystemStateToSqliteSync } from "../../lib/storage-adapter.ts"
 import {
   loadGitHubConfig,
   createTasksApprovalCommit,
@@ -99,8 +100,14 @@ export function serializeTasksMdToJson(
       }
     }
 
-    // Write tasks to tasks.json
-    addTasks(repoRoot, streamId, tasks)
+    // Replace tasks.json with the edited TASKS.md hierarchy, preserving
+    // status/runtime-linked metadata only for task IDs that still exist.
+    replaceTasks(repoRoot, streamId, tasks)
+    hydrateLegacyFilesystemStateToSqliteSync({
+      repoRoot,
+      streamId,
+      projectLegacyRuntimeCompatibilityArtifacts: true,
+    })
 
     return {
       success: true,

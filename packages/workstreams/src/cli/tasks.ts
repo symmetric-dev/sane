@@ -15,9 +15,9 @@ import { loadIndex, getCurrentStreamId, getStream, atomicWriteFile } from "../li
 import { getStreamPlanMdPath } from "../lib/consolidate.ts"
 import { parseStreamDocument } from "../lib/stream-parser.ts"
 import { generateTasksMdFromPlan, generateTasksMdFromTasks, parseTasksMd } from "../lib/tasks-md.ts"
-import { getTasks } from "../lib/tasks.ts"
+import { getTasks, readTasksFile, replaceTasks } from "../lib/tasks.ts"
 import { generateAllPrompts } from "../lib/prompts.ts"
-import type { TasksFile } from "../lib/types.ts"
+import { hydrateLegacyFilesystemStateToSqliteSync } from "../lib/storage-adapter.ts"
 
 interface TasksCliArgs {
   command: "generate" | "serialize"
@@ -199,7 +199,7 @@ export function main(argv: string[] = process.argv): void {
       // The strategy is to overwrite tasks.json with what's in TASKS.md, 
       // but preserving created_at/updated_at if IDs match?
 
-      const existingTasks = getTasks(repoRoot, stream.id)
+      const existingTasks = readTasksFile(repoRoot, stream.id)?.tasks ?? []
       const existingMap = new Map(existingTasks.map(t => [t.id, t]))
 
       const mergedTasks = newTasks.map(newTask => {
@@ -223,14 +223,12 @@ export function main(argv: string[] = process.argv): void {
         return newTask
       })
 
-      const tasksFile: TasksFile = {
-        version: "1.0.0",
-        stream_id: stream.id,
-        last_updated: new Date().toISOString(),
-        tasks: mergedTasks
-      }
-
-      atomicWriteFile(tasksJsonPath, JSON.stringify(tasksFile, null, 2))
+      replaceTasks(repoRoot, stream.id, mergedTasks)
+      hydrateLegacyFilesystemStateToSqliteSync({
+        repoRoot,
+        streamId: stream.id,
+        projectLegacyRuntimeCompatibilityArtifacts: true,
+      })
       console.log(`Updated: ${tasksJsonPath}`)
 
       const promptsResult = generateAllPrompts(repoRoot, stream.id)
