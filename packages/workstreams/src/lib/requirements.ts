@@ -50,6 +50,11 @@ export interface LoadedRequirementsDocuments {
   warnings: string[]
 }
 
+export type LoadWorkstreamRequirementsResult =
+  | { status: "loaded"; documents: LoadedRequirementsDocuments }
+  | { status: "no-stages" }
+  | { status: "missing" }
+
 interface ParsedSection {
   heading: string
   content: string
@@ -72,22 +77,31 @@ export function getStageRequirementsMdPaths(repoRoot: string, streamId: string):
     .filter((requirementsPath) => existsSync(requirementsPath))
 }
 
-export function loadWorkstreamRequirements(repoRoot: string, streamId: string): LoadedRequirementsDocuments | null {
+export function loadWorkstreamRequirements(repoRoot: string, streamId: string): LoadWorkstreamRequirementsResult {
   const rootRequirementsPath = getRequirementsMdPath(repoRoot, streamId)
   if (existsSync(rootRequirementsPath)) {
     return {
-      displayPath: rootRequirementsPath,
-      source: "root",
-      documentPaths: [rootRequirementsPath],
-      skippedStageRequirementPaths: [],
-      warnings: [],
+      status: "loaded",
+      documents: {
+        displayPath: rootRequirementsPath,
+        source: "root",
+        documentPaths: [rootRequirementsPath],
+        skippedStageRequirementPaths: [],
+        warnings: [],
+      },
     }
   }
 
   const streamDir = join(repoRoot, "work", streamId)
+  const stagesDir = join(streamDir, "stages")
+  const stageDirectories = listOrderedStageDirectories(stagesDir)
+  if (stageDirectories.length === 0) {
+    return { status: "no-stages" }
+  }
+
   const stageRequirementPaths = getStageRequirementsMdPaths(repoRoot, streamId)
   if (stageRequirementPaths.length === 0) {
-    return null
+    return { status: "missing" }
   }
 
   const documentPaths: string[] = []
@@ -106,15 +120,18 @@ export function loadWorkstreamRequirements(repoRoot: string, streamId: string): 
   }
 
   if (documentPaths.length === 0) {
-    return null
+    return { status: "missing" }
   }
 
   return {
-    displayPath: `${join(streamDir, "stages")}/*/REQUIREMENTS.md`,
-    source: "stages",
-    documentPaths,
-    skippedStageRequirementPaths,
-    warnings,
+    status: "loaded",
+    documents: {
+      displayPath: `${join(streamDir, "stages")}/*/REQUIREMENTS.md`,
+      source: "stages",
+      documentPaths,
+      skippedStageRequirementPaths,
+      warnings,
+    },
   }
 }
 

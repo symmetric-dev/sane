@@ -231,11 +231,20 @@ export function main(argv: string[] = process.argv): void {
     }
 
     if (cliArgs.subcommand === "requirements") {
-        const loadedRequirements = loadWorkstreamRequirements(repoRoot, stream.id)
-        if (!loadedRequirements) {
+        const loadedRequirementsResult = loadWorkstreamRequirements(repoRoot, stream.id)
+        if (loadedRequirementsResult.status === "no-stages") {
+            console.error(
+                `Error: no stages have been created yet for workstream "${stream.id}". Run 'work plan create --stream "${stream.id}" --stages <count>' first.`,
+            )
+            process.exit(1)
+        }
+
+        if (loadedRequirementsResult.status === "missing") {
             console.error(`Error: no root or stage-local REQUIREMENTS.md found for workstream "${stream.id}"`)
             process.exit(1)
         }
+
+        const loadedRequirements = loadedRequirementsResult.documents
 
         const result: ValidationResult = {
             valid: true,

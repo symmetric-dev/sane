@@ -191,4 +191,48 @@ Implement stage-local requirements validation.
     expect(output).toContain("Ignored unfilled stage scaffold at")
     expect(output).toContain("stages/02/REQUIREMENTS.md")
   })
+
+  test("shows a helpful message for rootless workstreams before plan creation", async () => {
+    process.exit = ((code?: number) => {
+      throw new Error(`Process exited with code ${code ?? 0}`)
+    }) as typeof process.exit
+
+    const { stdout, stderr } = await captureCliOutput(() => {
+      try {
+        validateMain(["bun", "work-validate", "requirements", "--repo-root", tempDir])
+      } catch (error) {
+        if (!(error instanceof Error) || error.message !== "Process exited with code 1") {
+          throw error
+        }
+      }
+    })
+
+    expect(stdout).toEqual([])
+    expect(stderr).toEqual([
+      "Error: no stages have been created yet for workstream \"001-test-stream\". Run 'work plan create --stream \"001-test-stream\" --stages <count>' first.",
+    ])
+  })
+
+  test("preserves the missing requirements error once stage directories exist", async () => {
+    await mkdir(join(tempDir, "work", "001-test-stream", "stages", "01"), { recursive: true })
+
+    process.exit = ((code?: number) => {
+      throw new Error(`Process exited with code ${code ?? 0}`)
+    }) as typeof process.exit
+
+    const { stdout, stderr } = await captureCliOutput(() => {
+      try {
+        validateMain(["bun", "work-validate", "requirements", "--repo-root", tempDir])
+      } catch (error) {
+        if (!(error instanceof Error) || error.message !== "Process exited with code 1") {
+          throw error
+        }
+      }
+    })
+
+    expect(stdout).toEqual([])
+    expect(stderr).toEqual([
+      'Error: no root or stage-local REQUIREMENTS.md found for workstream "001-test-stream"',
+    ])
+  })
 })
