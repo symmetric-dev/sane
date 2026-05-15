@@ -42,7 +42,7 @@ Thread A.
 
 **Details:**
 
-- Task A
+- Item A
 
 ##### Batch 02: Batch Two
 
@@ -54,4 +54,4 @@ Thread B.
 
 **Details:**
 
-- Task B
+- Item B

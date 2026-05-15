@@ -7,7 +7,7 @@
 
 import { getRepoRoot } from "../lib/repo.ts"
 import { loadIndex, resolveStreamId, getStream } from "../lib/index.ts"
-import { readTasksFile, parseTaskId } from "../lib/tasks.ts"
+import { listThreadExecutionItems } from "../lib/thread-execution.ts"
 import {
   loadGitHubConfig,
   enableGitHub,
@@ -23,7 +23,7 @@ import {
   type CreateStageIssueInput,
   type StageBatch,
   type StageThread,
-  type StageTask,
+  type StageItem,
 } from "../lib/github/issues.ts"
 import { ensureWorkstreamLabels } from "../lib/github/labels.ts"
 import { syncStageIssues, type SyncStageIssuesResult } from "../lib/github/sync.ts"
@@ -35,7 +35,7 @@ import {
   setStageIssue,
   type StageIssue,
 } from "../lib/github/workstream-github.ts"
-import type { Task } from "../lib/types.ts"
+import type { ExecutionItem } from "../lib/types.ts"
 
 type Subcommand = "enable" | "disable" | "status" | "create-branch" | "create-issues" | "sync"
 
@@ -54,7 +54,7 @@ Subcommands:
   status        Show config and auth status
   create-branch Create workstream branch on GitHub
   create-issues Create issues for stages
-  sync          Sync issue states with local task status
+  sync          Sync issue states with local item status
 
 Run 'work github <subcommand> --help' for more information on a subcommand.
 `)
@@ -138,7 +138,7 @@ Options:
 
 Description:
   Creates GitHub issues for workstream stages. Each stage gets one issue
-  that tracks all batches, threads, and tasks within that stage.
+  that tracks all batches, threads, and items within that stage.
 
   Issue title format: [{stream-id}] Stage {N}: {Stage Name}
 
@@ -183,7 +183,7 @@ Examples:
 
 function printSyncHelp(): void {
   console.log(`
-work github sync - Sync stage issue states with local task status
+work github sync - Sync stage issue states with local item status
 
 Usage:
   work github sync [options]
@@ -194,8 +194,8 @@ Options:
   --help, -h     Show this help message
 
 Description:
-  Synchronizes GitHub stage issue states with local task status. For stages
-  where all tasks are completed/cancelled, this command closes the stage
+  Synchronizes GitHub stage issue states with local item status. For stages
+  where all items are completed/cancelled, this command closes the stage
   issue and updates the state in github.json.
 
   Reports: "Closed N stage issues, M unchanged"
@@ -232,28 +232,26 @@ interface BatchInfo {
 interface ThreadInfo {
   threadId: string
   threadName: string
-  tasks: Task[]
+  items: ExecutionItem[]
 }
 
 /**
  * Group tasks by stage, batch, and thread
  * Returns a Map of stages with nested batches and threads
  */
-function groupTasksByStage(tasks: Task[]): Map<number, StageInfo> {
+function groupTasksByStage(tasks: ExecutionItem[]): Map<number, StageInfo> {
   const stages = new Map<number, StageInfo>()
 
   for (const task of tasks) {
-    const { stage, batch, thread } = parseTaskId(task.id)
-    const stageId = stage.toString().padStart(2, "0")
-    const batchId = batch.toString().padStart(2, "0")
-    const threadId = thread.toString().padStart(2, "0")
+    const [stageId = "00", batchId = "00", threadId = "00"] = task.id.split(".")
+    const stage = Number.parseInt(stageId, 10) || 0
 
     // Get or create stage
     if (!stages.has(stage)) {
       stages.set(stage, {
         stageNumber: stage,
         stageId,
-        stageName: task.stage_name,
+        stageName: task.stageName,
         batches: new Map(),
       })
     }
@@ -264,7 +262,7 @@ function groupTasksByStage(tasks: Task[]): Map<number, StageInfo> {
     if (!stageInfo.batches.has(batchKey)) {
       stageInfo.batches.set(batchKey, {
         batchId: batchKey,
-        batchName: task.batch_name,
+        batchName: task.batchName,
         threads: new Map(),
       })
     }
@@ -275,11 +273,11 @@ function groupTasksByStage(tasks: Task[]): Map<number, StageInfo> {
     if (!batchInfo.threads.has(threadKey)) {
       batchInfo.threads.set(threadKey, {
         threadId: threadKey,
-        threadName: task.thread_name,
-        tasks: [],
+          threadName: task.threadName,
+        items: [],
       })
     }
-    batchInfo.threads.get(threadKey)!.tasks.push(task)
+    batchInfo.threads.get(threadKey)!.items.push(task)
   }
 
   return stages
@@ -308,20 +306,20 @@ function stageInfoToInput(
 
     for (const [, threadInfo] of sortedThreads) {
       // Sort tasks by ID
-      const sortedTasks = threadInfo.tasks.sort((a, b) =>
+      const sortedItems = threadInfo.items.sort((a, b) =>
         a.id.localeCompare(b.id, undefined, { numeric: true })
       )
 
-      const tasks: StageTask[] = sortedTasks.map((t) => ({
-        taskId: t.id,
-        taskName: t.name,
+      const items: StageItem[] = sortedItems.map((t) => ({
+        itemId: t.id,
+        itemName: t.name,
         status: t.status,
       }))
 
       threads.push({
         threadId: threadInfo.threadId,
         threadName: threadInfo.threadName,
-        tasks,
+        items,
       })
     }
 
@@ -342,13 +340,13 @@ function stageInfoToInput(
 }
 
 /**
- * Check if all tasks in a stage are completed or cancelled
+ * Check if all execution items in a stage are completed or cancelled
  */
 function isStageComplete(stageInfo: StageInfo): boolean {
   for (const batch of stageInfo.batches.values()) {
     for (const thread of batch.threads.values()) {
-      for (const task of thread.tasks) {
-        if (task.status !== "completed" && task.status !== "cancelled") {
+      for (const item of thread.items) {
+        if (item.status !== "completed" && item.status !== "cancelled") {
           return false
         }
       }
@@ -804,14 +802,14 @@ async function createIssuesCommand(argv: string[]): Promise<void> {
   const stream = getStream(index, resolvedStreamId)
 
   // Load tasks
-  const tasksFile = readTasksFile(repoRoot, stream.id)
-  if (!tasksFile || tasksFile.tasks.length === 0) {
+  const executionItems = listThreadExecutionItems(repoRoot, stream.id)
+  if (executionItems.length === 0) {
     console.error("Error: No tasks found for workstream")
     process.exit(1)
   }
 
   // Group tasks by stage
-  const stages = groupTasksByStage(tasksFile.tasks)
+  const stages = groupTasksByStage(executionItems)
 
   // Validate stage filter if provided
   if (cliArgs.stage !== undefined && !stages.has(cliArgs.stage)) {
@@ -1299,13 +1297,13 @@ export async function createStageIssuesForWorkstream(
   streamName: string
 ): Promise<CreateStageIssuesForWorkstreamResult> {
   // Load tasks
-  const tasksFile = readTasksFile(repoRoot, streamId)
-  if (!tasksFile || tasksFile.tasks.length === 0) {
+  const executionItems = listThreadExecutionItems(repoRoot, streamId)
+  if (executionItems.length === 0) {
     return { created: [], skipped: [], reopened: [], failed: [] }
   }
 
   // Group tasks by stage
-  const stages = groupTasksByStage(tasksFile.tasks)
+  const stages = groupTasksByStage(executionItems)
 
   // Create issues for all stages
   return createIssuesForStages(repoRoot, streamId, streamName, stages)

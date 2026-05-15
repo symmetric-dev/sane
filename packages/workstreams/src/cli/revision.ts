@@ -7,7 +7,7 @@
 import { getRepoRoot } from "../lib/repo.ts"
 import { loadIndex, getResolvedStream } from "../lib/index.ts"
 import { appendRevisionStage } from "../lib/fix.ts"
-import { queryTasksApprovalStatus, revokeTasksApproval } from "../lib/approval.ts"
+import { getApprovalStatus, revokeApproval } from "../lib/approval.ts"
 
 interface RevisionCliArgs {
   repoRoot?: string
@@ -159,17 +159,16 @@ export function main(argv: string[] = process.argv): void {
     })
 
     if (result.success) {
-      // Auto-revoke execution-state approval if currently approved
-      const tasksStatus = queryTasksApprovalStatus(repoRoot, stream.id, stream)
-      let revokedTasks = false
-      if (tasksStatus === "approved") {
-        revokeTasksApproval(repoRoot, stream.id, `revision: ${cliArgs.name}`)
-        revokedTasks = true
+      // Revisions invalidate plan approval until the revised plan is approved again.
+      let revokedPlan = false
+      if (getApprovalStatus(stream) === "approved") {
+        revokeApproval(repoRoot, stream.id, `revision: ${cliArgs.name}`)
+        revokedPlan = true
       }
 
       console.log(result.message)
-      if (revokedTasks) {
-        console.log(`  Execution-state approval revoked for revision`)
+      if (revokedPlan) {
+        console.log(`  Plan approval revoked for revision`)
       }
       console.log(`\nEdit the revised stage planning details, then run 'work approve revision'`)
     } else {

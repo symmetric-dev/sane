@@ -14,7 +14,7 @@ Supervision is the execution layer inside the broader workstream lifecycle:
 2. The user approves the plan.
 3. The user manually `/fork`s the session and asks the forked session to supervise the approved work.
 4. The supervision branch uses `supervising-workstreams` and runs `work supervise`.
-5. Implementation agents inside that supervised batch use `implementing-workstreams` to inspect task scope, execute their assigned work, and keep task state accurate.
+5. Implementation agents inside that supervised batch use `implementing-workstreams` to inspect thread scope, execute their assigned work, and keep thread state accurate.
 6. The supervisor fork reports back to the user.
 7. The user approves the completed stage with `work approve stage N`.
 8. The loop repeats until all stages are complete, then `REPORT.md` is finalized with `evaluating-workstreams`.
@@ -32,7 +32,7 @@ It does four things:
 3. waits for persisted `batch-status` to become terminal,
 4. records a **handoff** back to the Root Agent or calling branch.
 
-It does **not** approve, reject, escalate, or run fix cycles by itself. Those decisions remain parent-side and are persisted later in `tasks.json` → `runtime_state.supervision`.
+It does **not** approve, reject, escalate, or run fix cycles by itself. Those decisions remain parent-side and are persisted in canonical supervision runtime state.
 
 That distinction is the most important operator mental model:
 
@@ -87,14 +87,14 @@ During or after a supervise pass, implementation agents commonly inspect their s
 work status
 work tree --batch "SS.BB"
 work list --thread "SS.BB.TT"
-work list --tasks --thread "SS.BB.TT"   # compatibility task view
+work read --thread "SS.BB.TT"
 ```
 
-They are expected to keep task state current while they work:
+They are expected to keep thread state current while they work:
 
 ```bash
-work update --task "SS.BB.TT.NN" --status in_progress
-work update --task "SS.BB.TT.NN" --status completed --report "1-2 sentence summary"
+work update --thread "SS.BB.TT" --status in_progress
+work update --thread "SS.BB.TT" --status completed --report "1-2 sentence summary"
 ```
 
 ### 2) Watch the CLI for the expected milestones
@@ -142,18 +142,15 @@ For any supervised run, inspect these in this order:
 # 1) canonical batch execution view
 work batch-status --batch "SS.BB" --format json
 
-# 2) human-friendly task/runtime projection
+# 2) human-friendly thread/runtime projection
 work tree --batch "SS.BB"
 
-# 3) canonical supervisor runtime state
-cat work/<stream-id>/tasks.json
 ```
 
 Important operator rule:
 
 - prefer the `work batch-status` CLI as the public batch-status interface
 - do **not** rely on a literal `work/<stream>/batch-status/<batch>.json` path in scripts or runbooks
-- use `tasks.json` → `runtime_state.supervision` as the canonical persisted supervision state
 - treat tmux state and transcript export as supporting evidence, not primary truth
 
 ### `work batch-status`
@@ -170,11 +167,7 @@ Key fields to inspect:
 - `completedAt` when terminal
 - `tmuxSessionName` when the launch recorded one
 
-### `tasks.json` → `runtime_state.supervision`
-
-Use this to answer: **what did supervision decide, and what is resumable?**
-
-Some code paths and historical discussion still use the label `supervisor-state`, but the canonical persisted runtime now lives under `tasks.json` in `runtime_state.supervision`.
+Some code paths and historical discussion still use the label `supervisor-state`; today the canonical persisted runtime lives in sqlite-backed supervision state.
 
 Key areas:
 
@@ -256,7 +249,7 @@ Meaning:
 
 `work supervise` itself does not create the final policy decision, but parent-side supervision does.
 
-Evidence in `tasks.json` → `runtime_state.supervision`:
+Evidence in canonical supervision runtime state:
 
 - `escalations[]` entry for the batch or stage,
 - `stage_stops[]` entry with the stop reason,
@@ -321,7 +314,7 @@ When the run was launched through Root Agent branch supervision, final report ev
 
 Check:
 
-1. `branch_sessions[]` terminal state in `tasks.json` → `runtime_state.supervision`
+1. `branch_sessions[]` terminal state in canonical supervision runtime state
 2. `nativeSessionId` from the matching branch record
 3. `opencode export "<native-session-id>"`
 
@@ -360,7 +353,7 @@ If the tool reports an active nonterminal supervision session already exists:
 
 If the tmux session is gone:
 
-1. inspect `work batch-status --batch "SS.BB" --format json` and `tasks.json` → `runtime_state.supervision`
+1. inspect `work batch-status --batch "SS.BB" --format json`
 2. if state is already terminal, proceed from persisted evidence
 3. if branch supervision is stuck nonterminal, reconcile it
 
@@ -384,9 +377,8 @@ reconcile_workstream_supervision({
 Use this order:
 
 1. `work batch-status --batch "SS.BB" --format json`
-2. `cat work/<stream-id>/tasks.json`
-3. `tmux list-sessions`
-4. inspect the workstream tool log
+2. `tmux list-sessions`
+3. inspect the workstream tool log
 
 Default log path:
 

@@ -26,20 +26,20 @@ export interface StageBatch {
 }
 
 /**
- * A thread within a batch, containing tasks
+ * A thread within a batch, containing execution items
  */
 export interface StageThread {
   threadId: string
   threadName: string
-  tasks: StageTask[]
+  items: StageItem[]
 }
 
 /**
- * A task within a thread (simplified for issue body)
+ * An execution item within a thread (simplified for issue body)
  */
-export interface StageTask {
-  taskId: string
-  taskName: string
+export interface StageItem {
+  itemId: string
+  itemName: string
   status: string
 }
 
@@ -63,7 +63,7 @@ export function formatStageIssueTitle(
 
 /**
  * Format the body for a stage-level GitHub issue.
- * Lists all batches, threads, and tasks in the stage.
+ * Lists all batches, threads, and execution items in the stage.
  *
  * @param input - Stage issue input data
  * @returns Formatted markdown body
@@ -84,10 +84,10 @@ export function formatStageIssueBody(input: CreateStageIssueInput): string {
     for (const thread of batch.threads) {
       body += `#### Thread ${thread.threadId}: ${thread.threadName}\n\n`;
 
-      for (const task of thread.tasks) {
-        const checkbox = task.status === "completed" || task.status === "cancelled" ? "[x]" : "[ ]";
-        const suffix = task.status === "cancelled" ? " *(cancelled)*" : "";
-        body += `- ${checkbox} \`${task.taskId}\` ${task.taskName}${suffix}\n`;
+      for (const item of thread.items) {
+        const checkbox = item.status === "completed" || item.status === "cancelled" ? "[x]" : "[ ]";
+        const suffix = item.status === "cancelled" ? " *(cancelled)*" : "";
+        body += `- ${checkbox} \`${item.itemId}\` ${item.itemName}${suffix}\n`;
       }
 
       body += "\n";
@@ -118,7 +118,7 @@ function getStageLabels(
  * Create a GitHub issue for a stage.
  *
  * Creates an issue with title format: [{stream-id}] Stage {N}: {Stage Name}
- * Body contains all batches, threads, and tasks in the stage.
+ * Body contains all batches, threads, and execution items in the stage.
  *
  * @param repoRoot - Repository root path
  * @param input - Stage issue input data

@@ -105,7 +105,7 @@ describe("Reviewer output contract", () => {
     "status": "misaligned",
     "rationale": "Work omitted required deliverables from the plan."
   },
-  "missingOutputs": ["tasks.json"],
+  "missingOutputs": ["workstream-state.json"],
   "issues": []
 }
 \`\`\``
@@ -115,7 +115,7 @@ describe("Reviewer output contract", () => {
     if (!result.success) return
 
     expect(result.value.alignment.status).toBe("misaligned")
-    expect(result.value.missingOutputs).toEqual(["tasks.json"])
+    expect(result.value.missingOutputs).toEqual(["workstream-state.json"])
   })
 
   test("normalizes optional issue evidence and suggested action strings", () => {
@@ -132,7 +132,7 @@ describe("Reviewer output contract", () => {
           severity: "low",
           difficulty: "trivial",
           ownership: "engineering",
-          effort: "tasks",
+          effort: "items",
           evidence: "  logs/test-run.txt  ",
           suggestedAction: "  monitor in next iteration  ",
         },

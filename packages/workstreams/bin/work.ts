@@ -5,14 +5,13 @@
  * Subcommands:
  *   create      - Create a draft workstream container
  *   status      - Show workstream progress
- *   update      - Update a thread or compatibility task status
+ *   update      - Update a thread status
  *   complete    - Mark a workstream as complete
  *   index       - Update workstream metadata fields
- *   read        - Read thread or compatibility task details
+ *   read        - Read thread details
  *   list        - List threads in a workstream
- *   add-task    - Add a task to a workstream
- *   delete      - Delete workstreams, stages, threads, or tasks
- *   review      - Review plan or tasks
+ *   delete      - Delete workstreams, stages, batches, or threads
+ *   review      - Review plan or commits
  *   validate    - Validate plan/requirements
  *   check       - Find unchecked items in plan
  *   preview     - Show PLAN.md structure
@@ -21,12 +20,11 @@
 
 import { main as createMain } from "../src/cli/create.ts"
 import { main as statusMain } from "../src/cli/status.ts"
-import { main as updateTaskMain } from "../src/cli/update-task.ts"
+import { main as updateMain } from "../src/cli/update.ts"
 import { main as completeMain } from "../src/cli/complete.ts"
 import { main as updateIndexMain } from "../src/cli/update-index.ts"
 import { main as readMain } from "../src/cli/read.ts"
 import { main as listMain } from "../src/cli/list.ts"
-import { main as addTaskMain } from "../src/cli/add-task.ts"
 import { main as addBatchMain } from "../src/cli/add-batch.ts"
 import { main as addThreadMain } from "../src/cli/add-thread.ts"
 import { main as reviewMain } from "../src/cli/review.ts"
@@ -43,7 +41,6 @@ import { main as exportMain } from "../src/cli/export.ts"
 import { main as approveMain } from "../src/cli/approve/index.ts"
 import { main as continueMain } from "../src/cli/continue.ts"
 import { main as addStageMain } from "../src/cli/add-stage.ts"
-import { main as tasksMain } from "../src/cli/tasks.ts"
 import { main as agentsMain } from "../src/cli/agents.ts"
 import { main as assignMain } from "../src/cli/assign.ts"
 import { main as promptMain } from "../src/cli/prompt.ts"
@@ -63,7 +60,6 @@ import { main as notificationsMain } from "../src/cli/notifications.ts"
 import { main as planMain } from "../src/cli/plan.ts"
 import { main as superviseMain } from "../src/cli/supervise.ts"
 import { main as resetBatchStateMain } from "../src/cli/reset-batch-state.ts"
-import { main as rebuildCompatMain } from "../src/cli/rebuild-compat.ts"
 
 // Role and help utilities
 import {
@@ -89,15 +85,13 @@ const SUBCOMMANDS = {
   plan: planMain,
   supervise: superviseMain,
   "reset-batch-state": resetBatchStateMain,
-  "rebuild-compat": rebuildCompatMain,
   status: statusMain,
   "set-status": setStatusMain,
-  update: updateTaskMain,
+  update: updateMain,
   complete: completeMain,
   index: updateIndexMain,
   read: readMain,
   list: listMain,
-  "add-task": addTaskMain,
   "add-batch": addBatchMain,
   "add-thread": addThreadMain,
   edit: editMain,
@@ -110,7 +104,6 @@ const SUBCOMMANDS = {
   report: reportMain,
   changelog: changelogMain,
   export: exportMain,
-  tasks: tasksMain,
   agents: agentsMain,
   assign: assignMain,
   prompt: promptMain,
@@ -134,12 +127,11 @@ const COMMAND_DESCRIPTIONS: Record<string, string> = {
   current: "Get or set the current workstream",
   continue: "Continue execution (alias for 'work multi --continue')",
   "add-stage": "Append a fix stage to a workstream",
-  approve: "Approve workstream plans and revisions [plan seeds execution state]",
+  approve: "Approve workstream plans and revisions [plan seeds execution hierarchy]",
   start: "Start execution (requires all approvals, creates GitHub branch/issues)",
   plan: "Manage planning sessions or scaffold a plan (subcommand: create)",
   supervise: "Run batch-bounded supervision execution/recovery helper",
   "reset-batch-state": "Reset one batch for a clean rerun",
-  "rebuild-compat": "Regenerate compatibility JSON from sqlite state",
   agents: "Manage agent definitions (list, add, remove)",
   assign: "Assign agents to threads for batch execution",
   prompt: "Generate thread execution prompt for agents",
@@ -148,24 +140,22 @@ const COMMAND_DESCRIPTIONS: Record<string, string> = {
   "batch-status": "Show persisted batch execution status for supervisors",
   status: "Show workstream progress",
   "set-status": "Set workstream status (pending, in_progress, completed, on_hold)",
-  update: "Update a thread or compatibility task status",
+  update: "Update a thread status",
   complete: "Mark a workstream as complete",
   index: "Update workstream metadata fields",
-  read: "Read thread or compatibility task details",
+  read: "Read thread details",
   list: "List threads in a workstream [default]",
-  "add-task": "Add a task to a workstream (interactive if no flags)",
   "add-batch": "Add a batch to a stage",
   "add-thread": "Add a thread to a batch",
   edit: "Open PLAN.md in editor",
-  delete: "Delete workstreams, stages, threads, or tasks",
+  delete: "Delete workstreams, stages, batches, or threads",
   files: "List and index files in files/ directory",
-  tasks: "Removed legacy TASKS.md workflow",
-  review: "Review plan, tasks, or commits (plan, tasks, commits)",
+  review: "Review plan or commits (plan, commits)",
   validate: "Validate plan or requirements",
   check: "Find unchecked items in plan",
   preview: "Show PLAN.md structure",
   report: "Generate progress report (includes metrics)",
-  changelog: "Generate changelog from completed tasks",
+  changelog: "Generate changelog from completed threads",
   export: "Export workstream data (md, csv, json)",
   tree: "Show workstream structure tree",
   github: "Manage GitHub integration (enable, create-branch, etc.)",
@@ -178,10 +168,9 @@ const COMMAND_DESCRIPTIONS: Record<string, string> = {
 
 function printHelp(showAllCommands: boolean = false): void {
   const allCommands = Object.keys(SUBCOMMANDS)
-  const visibleCommands = allCommands.filter((cmd) => cmd !== "tasks")
   const availableCommands = showAllCommands
-    ? visibleCommands
-    : filterCommandsForRole(visibleCommands)
+    ? allCommands
+    : filterCommandsForRole(allCommands)
   const commandWidth = Math.max(...availableCommands.map((cmd) => cmd.length), 0) + 2
 
   // Build command list with role indicators
@@ -214,7 +203,7 @@ Current Workstream:
   Then run commands without --stream:
     work status
     work list
-    work update --task "01.01.01.01" --status completed
+    work update --thread "01.01.01" --status completed
 
 Examples:
   work create --name my-feature
@@ -224,8 +213,7 @@ Examples:
   work validate plan
   work status
   work list
-  work update --task "01.01.01.01" --status completed
-  work add-task --stage 01 --batch 01 --thread 01 --name "Task description"
+  work update --thread "01.01.01" --status completed
   work files --save
   work report metrics --blockers
   work report --output report.md

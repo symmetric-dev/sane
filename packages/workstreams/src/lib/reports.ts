@@ -1,15 +1,15 @@
 /**
  * Stage report generation
  *
- * Generates stage completion reports from task data.
- * Reports aggregate task reports by batch/thread for stage-gate review.
+ * Generates stage completion reports from execution item data.
+ * Reports aggregate execution item reports by batch/thread for stage-gate review.
  */
 
 import { join } from "path"
 import { mkdirSync, readFileSync, writeFileSync } from "fs"
-import type { Task, TaskStatus, StageDefinition, ConsolidateError } from "./types.ts"
+import type { ExecutionItem, ExecutionStatus, StageDefinition, ConsolidateError } from "./types.ts"
 import { loadIndex, findStream } from "./index.ts"
-import { getTasks, parseTaskId } from "./tasks.ts"
+import { listThreadExecutionItems } from "./thread-execution.ts"
 import { getWorkDir } from "./repo.ts"
 import { resolveByNameOrIndex } from "./utils.ts"
 import { parseStreamDocument } from "./stream-parser.ts"
@@ -35,18 +35,18 @@ export interface BatchReportData {
 export interface ThreadReportData {
     threadNumber: number
     threadName: string
-    tasks: TaskReportData[]
+    items: ItemReportData[]
 }
 
-export interface TaskReportData {
+export interface ItemReportData {
     id: string
     name: string
-    status: TaskStatus
+    status: ExecutionStatus
     report?: string
 }
 
 export interface StageMetrics {
-    totalTasks: number
+    totalItems: number
     completed: number
     inProgress: number
     pending: number
@@ -86,11 +86,11 @@ export function generateStageReport(
     const stageNumber = stageDef.id
     const stagePrefix = stageNumber.toString().padStart(2, "0")
 
-    // Get all tasks for this stage
-    const allTasks = getTasks(repoRoot, stream.id)
+    // Get all items for this stage
+    const allTasks = listThreadExecutionItems(repoRoot, stream.id)
     const stageTasks = allTasks.filter((t) => {
-        const parsed = parseTaskId(t.id)
-        return parsed.stage === stageNumber
+        const [stageId = "00"] = t.id.split(".")
+        return (Number.parseInt(stageId, 10) || 0) === stageNumber
     })
 
     // Calculate metrics
@@ -116,18 +116,18 @@ export function generateStageReport(
 }
 
 /**
- * Calculate metrics for a set of tasks
+ * Calculate metrics for a set of items
  */
-function calculateStageMetrics(tasks: Task[]): StageMetrics {
-    const total = tasks.length
-    const completed = tasks.filter((t) => t.status === "completed").length
-    const inProgress = tasks.filter((t) => t.status === "in_progress").length
-    const pending = tasks.filter((t) => t.status === "pending").length
-    const blocked = tasks.filter((t) => t.status === "blocked").length
-    const cancelled = tasks.filter((t) => t.status === "cancelled").length
+function calculateStageMetrics(items: ExecutionItem[]): StageMetrics {
+    const total = items.length
+    const completed = items.filter((item) => item.status === "completed").length
+    const inProgress = items.filter((item) => item.status === "in_progress").length
+    const pending = items.filter((item) => item.status === "pending").length
+    const blocked = items.filter((item) => item.status === "blocked").length
+    const cancelled = items.filter((item) => item.status === "cancelled").length
 
     return {
-        totalTasks: total,
+        totalItems: total,
         completed,
         inProgress,
         pending,
@@ -138,15 +138,15 @@ function calculateStageMetrics(tasks: Task[]): StageMetrics {
 }
 
 /**
- * Determine overall stage status from task statuses
+ * Determine overall stage status from item statuses
  */
 function determineStageStatus(
-    tasks: Task[],
+    items: ExecutionItem[],
     metrics: StageMetrics,
 ): "complete" | "in_progress" | "pending" | "blocked" {
-    if (tasks.length === 0) return "pending"
+    if (items.length === 0) return "pending"
     if (metrics.blocked > 0) return "blocked"
-    if (metrics.completed === metrics.totalTasks) return "complete"
+    if (metrics.completed === metrics.totalItems) return "complete"
     if (metrics.inProgress > 0 || metrics.completed > 0) return "in_progress"
     return "pending"
 }
@@ -155,7 +155,7 @@ function determineStageStatus(
  * Group tasks into batches and threads
  */
 function groupTasksIntoBatches(
-    tasks: Task[],
+    tasks: ExecutionItem[],
     batchDefs: { id: number; name: string; threads: { id: number; name: string }[] }[],
 ): BatchReportData[] {
     const batches: BatchReportData[] = []
@@ -170,10 +170,14 @@ function groupTasksIntoBatches(
         batchMap.set(batch.id, { name: batch.name, threads: threadMap })
     }
 
-    // Group tasks by batch and thread
-    const grouped = new Map<number, Map<number, Task[]>>()
+    // Group items by batch and thread
+    const grouped = new Map<number, Map<number, ExecutionItem[]>>()
     for (const task of tasks) {
-        const parsed = parseTaskId(task.id)
+        const [, batchId = "00", threadId = "00"] = task.id.split(".")
+        const parsed = {
+            batch: Number.parseInt(batchId, 10) || 0,
+            thread: Number.parseInt(threadId, 10) || 0,
+        }
         if (!grouped.has(parsed.batch)) {
             grouped.set(parsed.batch, new Map())
         }
@@ -205,7 +209,7 @@ function groupTasksIntoBatches(
             threads.push({
                 threadNumber: threadNum,
                 threadName,
-                tasks: threadTasks.map((t) => ({
+                items: threadTasks.map((t) => ({
                     id: t.id,
                     name: t.name,
                     status: t.status,
@@ -233,7 +237,7 @@ export function formatStageReportMarkdown(report: StageReportData): string {
     lines.push(`# Stage Report: ${report.stageName} (Stage ${report.stagePrefix})`)
     lines.push("")
     lines.push(`> **Generated:** ${report.generatedAt}  `)
-    lines.push(`> **Status:** ${formatStatus(report.status)} (${report.metrics.completed}/${report.metrics.totalTasks} tasks)`)
+    lines.push(`> **Status:** ${formatStatus(report.status)} (${report.metrics.completed}/${report.metrics.totalItems} items)`)
     lines.push("")
 
     lines.push("## Summary")
@@ -249,14 +253,14 @@ export function formatStageReportMarkdown(report: StageReportData): string {
         lines.push("")
 
         for (const thread of batch.threads) {
-            const completedCount = thread.tasks.filter((t) => t.status === "completed").length
-            lines.push(`**Thread: ${thread.threadName}** (${completedCount}/${thread.tasks.length} tasks)`)
+            const completedCount = thread.items.filter((item) => item.status === "completed").length
+            lines.push(`**Thread: ${thread.threadName}** (${completedCount}/${thread.items.length} items)`)
 
-            for (const task of thread.tasks) {
-                const statusIcon = getStatusIcon(task.status)
-                lines.push(`- ${statusIcon} ${task.name}`)
-                if (task.report) {
-                    lines.push(`  > ${task.report}`)
+            for (const item of thread.items) {
+                const statusIcon = getStatusIcon(item.status)
+                lines.push(`- ${statusIcon} ${item.name}`)
+                if (item.report) {
+                    lines.push(`  > ${item.report}`)
                 }
             }
             lines.push("")
@@ -264,22 +268,22 @@ export function formatStageReportMarkdown(report: StageReportData): string {
     }
 
     // Issues section
-    const blockedTasks = report.batches
+    const blockedItems = report.batches
         .flatMap((b) => b.threads)
-        .flatMap((t) => t.tasks)
-        .filter((t) => t.status === "blocked")
+        .flatMap((t) => t.items)
+        .filter((item) => item.status === "blocked")
 
     lines.push("## Issues & Blockers")
     lines.push("")
-    if (blockedTasks.length > 0) {
-        for (const task of blockedTasks) {
-            lines.push(`- **${task.id}:** ${task.name}`)
-            if (task.report) {
-                lines.push(`  > ${task.report}`)
+    if (blockedItems.length > 0) {
+        for (const item of blockedItems) {
+            lines.push(`- **${item.id}:** ${item.name}`)
+            if (item.report) {
+                lines.push(`  > ${item.report}`)
             }
         }
     } else {
-        lines.push("No blocked tasks in this stage.")
+        lines.push("No blocked items in this stage.")
     }
     lines.push("")
 
@@ -288,7 +292,7 @@ export function formatStageReportMarkdown(report: StageReportData): string {
     lines.push("")
     lines.push("| Metric | Value |")
     lines.push("|--------|-------|")
-    lines.push(`| Tasks | ${report.metrics.completed}/${report.metrics.totalTasks} complete |`)
+    lines.push(`| Items | ${report.metrics.completed}/${report.metrics.totalItems} complete |`)
     lines.push(`| Completion Rate | ${report.metrics.completionRate.toFixed(1)}% |`)
     lines.push(`| Batches | ${report.batches.length} |`)
     lines.push(`| Threads | ${report.batches.reduce((acc, b) => acc + b.threads.length, 0)} |`)
@@ -313,7 +317,7 @@ function formatStatus(status: string): string {
     }
 }
 
-function getStatusIcon(status: TaskStatus): string {
+function getStatusIcon(status: ExecutionStatus): string {
     switch (status) {
         case "completed":
             return "✓"

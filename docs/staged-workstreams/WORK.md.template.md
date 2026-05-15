@@ -1,6 +1,6 @@
 # WORK.md template
 
-Use this as a stage-level or thread-level execution document when the work needs more nuance than short task items can safely carry.
+Use this as a stage-level or thread-level execution document when the work needs more nuance than short execution items can safely carry.
 
 ---
 

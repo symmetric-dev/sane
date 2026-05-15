@@ -103,12 +103,12 @@ export function normalizeCanonicalThreadIdOrFallback(threadId?: string): string 
   return normalizeCanonicalThreadId(threadId) ?? trimNonEmpty(threadId)
 }
 
-export function normalizeCanonicalTaskId(taskId?: string): string | undefined {
-  return normalizeCompositeId(taskId, 4, normalizeCanonicalStageId)
+export function normalizeCanonicalExecutionItemId(itemId?: string): string | undefined {
+  return normalizeCompositeId(itemId, 4, normalizeCanonicalStageId)
 }
 
-export function normalizeCanonicalTaskIdOrFallback(taskId?: string): string | undefined {
-  return normalizeCanonicalTaskId(taskId) ?? trimNonEmpty(taskId)
+export function normalizeCanonicalExecutionItemIdOrFallback(itemId?: string): string | undefined {
+  return normalizeCanonicalExecutionItemId(itemId) ?? trimNonEmpty(itemId)
 }
 
 export function inferCanonicalStageIdFromBatchId(batchId?: string): string | undefined {
@@ -119,8 +119,8 @@ export function inferCanonicalStageIdFromThreadId(threadId?: string): string | u
   return normalizeCanonicalThreadId(threadId)?.split(".")[0]
 }
 
-export function inferCanonicalStageIdFromTaskId(taskId?: string): string | undefined {
-  return normalizeCanonicalTaskId(taskId)?.split(".")[0]
+export function inferCanonicalStageIdFromExecutionItemId(itemId?: string): string | undefined {
+  return normalizeCanonicalExecutionItemId(itemId)?.split(".")[0]
 }
 
 export function inferCanonicalBatchIdFromThreadId(threadId?: string): string | undefined {
@@ -132,35 +132,35 @@ export function inferCanonicalBatchIdFromThreadId(threadId?: string): string | u
   return normalizedThreadId.split(".").slice(0, 2).join(".")
 }
 
-export function inferCanonicalBatchIdFromTaskId(taskId?: string): string | undefined {
-  const normalizedTaskId = normalizeCanonicalTaskId(taskId)
-  if (!normalizedTaskId) {
+export function inferCanonicalBatchIdFromExecutionItemId(itemId?: string): string | undefined {
+  const normalizedItemId = normalizeCanonicalExecutionItemId(itemId)
+  if (!normalizedItemId) {
     return undefined
   }
 
-  return normalizedTaskId.split(".").slice(0, 2).join(".")
+  return normalizedItemId.split(".").slice(0, 2).join(".")
 }
 
-export function inferCanonicalThreadIdFromTaskId(taskId?: string): string | undefined {
-  const normalizedTaskId = normalizeCanonicalTaskId(taskId)
-  if (!normalizedTaskId) {
+export function inferCanonicalThreadIdFromExecutionItemId(itemId?: string): string | undefined {
+  const normalizedItemId = normalizeCanonicalExecutionItemId(itemId)
+  if (!normalizedItemId) {
     return undefined
   }
 
-  return normalizedTaskId.split(".").slice(0, 3).join(".")
+  return normalizedItemId.split(".").slice(0, 3).join(".")
 }
 
 function normalizeBranchScopeStageId(args: {
   stageId?: string
   batchId?: string
   threadId?: string
-  taskId?: string
+  itemId?: string
 }): string | undefined {
   return (
     normalizeCanonicalStageId(args.stageId) ??
     inferCanonicalStageIdFromBatchId(args.batchId) ??
     inferCanonicalStageIdFromThreadId(args.threadId) ??
-    inferCanonicalStageIdFromTaskId(args.taskId) ??
+    inferCanonicalStageIdFromExecutionItemId(args.itemId) ??
     trimNonEmpty(args.stageId)
   )
 }
@@ -273,22 +273,24 @@ export function normalizePersistedThreadMetadata(thread: ThreadMetadata): Thread
     ...thread,
     threadId: normalizeCanonicalThreadIdOrFallback(thread.threadId) ?? thread.threadId,
     sessions: (thread.sessions ?? []).map(normalizePersistedSessionRecord),
+    ...(thread.status ? { status: thread.status } : {}),
+    ...(thread.createdAt ? { createdAt: thread.createdAt } : {}),
+    ...(thread.updatedAt ? { updatedAt: thread.updatedAt } : {}),
+    ...(thread.itemName ? { itemName: thread.itemName } : {}),
+    ...(thread.breadcrumb ? { breadcrumb: thread.breadcrumb } : {}),
+    ...(thread.report ? { report: thread.report } : {}),
+    ...(thread.assigned_agent ? { assigned_agent: thread.assigned_agent } : {}),
   }
 }
 
 export function normalizePersistedBatchStatusThread(
   thread: PersistedBatchStatusThread,
 ): PersistedBatchStatusThread {
-  const normalizedTaskId = normalizeCanonicalTaskIdOrFallback(thread.firstTaskId)
-  const normalizedThreadId =
-    normalizeCanonicalThreadId(thread.threadId) ??
-    inferCanonicalThreadIdFromTaskId(normalizedTaskId) ??
-    trimNonEmpty(thread.threadId)
+  const normalizedThreadId = normalizeCanonicalThreadId(thread.threadId) ?? trimNonEmpty(thread.threadId)
 
   return {
     ...thread,
     ...(normalizedThreadId ? { threadId: normalizedThreadId } : {}),
-    ...(normalizedTaskId ? { firstTaskId: normalizedTaskId } : {}),
   }
 }
 

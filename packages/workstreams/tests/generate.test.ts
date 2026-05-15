@@ -55,7 +55,7 @@ describe("generateStream", () => {
       expect(existsSync(join(streamDir, "stages"))).toBe(true)
       expect(existsSync(join(streamDir, "PLAN.md"))).toBe(false)
       expect(existsSync(join(streamDir, "REQUIREMENTS.md"))).toBe(false)
-      expect(existsSync(join(streamDir, "tasks.json"))).toBe(false)
+      expect(existsSync(join(streamDir, "workstream-state.json"))).toBe(false)
     })
 
     test("does not create checklist or principle directories", async () => {
@@ -82,7 +82,7 @@ describe("generateStream", () => {
       expect(content).toContain("`stages/`")
       expect(content).toContain("## Summary")
       expect(content).toContain("## Deliverables")
-      expect(content).toContain("There is no root `REQUIREMENTS.md`, `PLAN.md`, or `TASKS.md`")
+      expect(content).toContain("There is no root `REQUIREMENTS.md` or `PLAN.md`")
       expect(content).toContain("work plan create --stream \"000-test-feature\" --stages <n>")
     })
   })
@@ -151,12 +151,12 @@ describe("generateStream", () => {
   })
 
   describe("deferred planning artifacts", () => {
-    test("does not create REQUIREMENTS.md or tasks.json during workstream creation", () => {
+    test("does not create deferred runtime state during workstream creation", () => {
       generateStream(createGenerateArgs("test-feature", tempDir))
 
       const streamDir = join(tempDir, "work", "000-test-feature")
       expect(existsSync(join(streamDir, "REQUIREMENTS.md"))).toBe(false)
-      expect(existsSync(join(streamDir, "tasks.json"))).toBe(false)
+      expect(existsSync(join(streamDir, "workstream-state.json"))).toBe(false)
     })
   })
 

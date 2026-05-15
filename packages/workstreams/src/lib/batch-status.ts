@@ -7,11 +7,11 @@ import type {
 import { upsertStructuredBatchRun } from "./structured-storage.ts"
 import {
   getStructuredStorageAdapter,
+  getFilesystemWorkstreamStatePath,
   modifySqliteCanonicalRuntimeWorkstreamStateSync,
   readStructuredBatchRunSync,
   writeStructuredBatchRunSync,
 } from "./storage-adapter.ts"
-import { getTasksFilePath } from "./tasks.ts"
 
 export const BATCH_STATUS_VERSION = "1.0.0"
 
@@ -29,7 +29,6 @@ export type BatchStatusFile = PersistedBatchStatusFile
 export interface BatchStatusThreadSeed {
   threadId: string
   threadName: string
-  firstTaskId: string
 }
 
 export interface InitializeBatchStatusRunArgs {
@@ -43,7 +42,7 @@ export interface InitializeBatchStatusRunArgs {
 }
 
 export function getBatchStatusDir(repoRoot: string, streamId: string): string {
-  return getTasksFilePath(repoRoot, streamId)
+  return getFilesystemWorkstreamStatePath(repoRoot, streamId)
 }
 
 export function getBatchStatusFilePath(
@@ -51,7 +50,7 @@ export function getBatchStatusFilePath(
   streamId: string,
   _batchId: string,
 ): string {
-  return getTasksFilePath(repoRoot, streamId)
+  return getFilesystemWorkstreamStatePath(repoRoot, streamId)
 }
 
 export function summarizeBatchThreads(

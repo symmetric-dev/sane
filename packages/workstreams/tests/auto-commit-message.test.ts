@@ -1,9 +1,9 @@
 import { describe, expect, test } from "bun:test"
 
 import {
+  buildExecutionApprovalCommitMessage,
   buildPlanApprovalCommitMessage,
   buildStageApprovalCommitMessage,
-  buildTasksApprovalCommitMessage,
   buildWorkstreamCompletionCommitMessage,
   buildWorkstreamStartCommitMessage,
 } from "../src/lib/git/auto-commit-message.ts"
@@ -26,20 +26,20 @@ describe("auto commit message builders", () => {
       streamId: "001-test-stream",
       streamName: "Test Stream",
     })
-    const tasks = buildTasksApprovalCommitMessage({
+    const execution = buildExecutionApprovalCommitMessage({
       streamId: "001-test-stream",
       streamName: "Test Stream",
-      taskCount: 7,
+      itemCount: 7,
     })
 
     expect(plan.title).toBe("Plan approved: Test Stream")
     expect(plan.body).toContain("Approved plan for workstream 001-test-stream.")
     expect(plan.body).toContain("Stream-Id: 001-test-stream")
 
-    expect(tasks.title).toBe("Tasks approved: Test Stream")
-    expect(tasks.body).toContain("Approved 7 tasks for workstream 001-test-stream.")
-    expect(tasks.body).toContain("Stream-Name: Test Stream")
-    expect(tasks.body).toContain("Task-Count: 7")
+    expect(execution.title).toBe("Execution approved: Test Stream")
+    expect(execution.body).toContain("Approved 7 execution items for workstream 001-test-stream.")
+    expect(execution.body).toContain("Stream-Name: Test Stream")
+    expect(execution.body).toContain("Item-Count: 7")
   })
 
   test("builds stage approval messages with stage trailers", () => {

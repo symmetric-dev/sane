@@ -25,7 +25,6 @@ export interface FinalizationCompletion {
   sessionId: string
   status: FinalStatus
   exitCode?: number
-  taskId?: string
 }
 
 export interface FinalizeMultiRunOptions {
@@ -87,7 +86,6 @@ function collectCompletions(
     const storedResult = readStoredRunResult(streamId, mapping.threadId)
     if (storedResult) {
       completions.push({
-        taskId: mapping.taskId,
         threadId: mapping.threadId,
         sessionId: mapping.sessionId,
         status: storedResult.status,
@@ -115,7 +113,6 @@ function collectCompletions(
       const exitCode = paneStatus.exitStatus ?? undefined
       const status: FinalStatus = exitCode === 0 ? "completed" : "failed"
       completions.push({
-        taskId: mapping.taskId,
         threadId: mapping.threadId,
         sessionId: mapping.sessionId,
         status,
@@ -135,7 +132,6 @@ function collectCompletions(
     if (!sessionStillExists) {
       if (existsSync(getCompletionMarkerPath(streamId, mapping.threadId))) {
         completions.push({
-          taskId: mapping.taskId,
           threadId: mapping.threadId,
           sessionId: mapping.sessionId,
           status: "completed",
@@ -145,7 +141,6 @@ function collectCompletions(
       }
 
       completions.push({
-        taskId: mapping.taskId,
         threadId: mapping.threadId,
         sessionId: mapping.sessionId,
         status: "interrupted",
@@ -189,7 +184,7 @@ export async function applyFinalizationCompletions(options: {
   }
 
   if (verbose) {
-    console.log(`\nUpdating ${completions.length} session statuses in tasks.json...`)
+    console.log(`\nUpdating ${completions.length} thread session status record(s)...`)
   }
   await completeMultipleThreadSessionsLocked(
     repoRoot,

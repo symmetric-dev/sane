@@ -1,24 +1,21 @@
 /**
  * CLI: Delete
  *
- * Delete workstreams, stages, threads, or individual tasks.
+ * Delete workstreams, stages, batches, or threads.
  */
 
 import { getRepoRoot } from "../lib/repo.ts"
 import { loadIndex, getResolvedStream, deleteStream } from "../lib/index.ts"
 import {
-  deleteTask,
-  deleteTasksByStage,
-  deleteTasksByBatch,
-  deleteTasksByThread,
-  parseTaskId,
-} from "../lib/tasks.ts"
+  deleteThreadExecutionItemsByStage,
+  deleteThreadExecutionItemsByBatch,
+  deleteThreadExecutionItemsByThread,
+} from "../lib/thread-execution.ts"
 
 interface DeleteCliArgs {
   repoRoot?: string
   streamId?: string
   // Delete targets (mutually exclusive)
-  task?: string // e.g., "01.01.02.03"
   stage?: number // e.g., 01
   batch?: string // e.g., "01.00" (stage.batch)
   thread?: string // e.g., "01.01.02" (stage.batch.thread)
@@ -28,16 +25,15 @@ interface DeleteCliArgs {
 
 function printHelp(): void {
   console.log(`
-work delete - Delete workstreams, stages, threads, or tasks
+work delete - Delete workstreams, stages, batches, or threads
 
 Usage:
   work delete [--stream <id>] [target] [options]
 
 Targets (mutually exclusive):
-  --task, -t <id>     Delete a single task (e.g., "01.01.02.03")
-  --stage <num>       Delete all tasks in a stage (e.g., 01)
-  --batch <id>        Delete all tasks in a batch (e.g., "01.00")
-  --thread <id>       Delete all tasks in a thread (e.g., "01.01.02")
+  --stage <num>       Delete all execution entries in a stage (e.g., 01)
+  --batch <id>        Delete all execution entries in a batch (e.g., "01.00")
+  --thread <id>       Delete all execution entries in a thread (e.g., "01.01.02")
   (no target)         Delete the entire workstream
 
 Options:
@@ -47,16 +43,13 @@ Options:
   --help, -h          Show this help message
 
 Examples:
-  # Delete a single task (uses current workstream)
-  work delete --task "01.01.02.03"
-
-  # Delete all tasks in stage 02
+  # Delete all execution entries in stage 02
   work delete --stage 02
 
-  # Delete all tasks in batch 01.00
+  # Delete all execution entries in batch 01.00
   work delete --batch "01.00"
 
-  # Delete all tasks in thread 01.01.02
+  # Delete all execution entries in thread 01.01.02
   work delete --thread "01.01.02"
 
   # Delete specific workstream (with confirmation)
@@ -94,16 +87,6 @@ function parseCliArgs(argv: string[]): DeleteCliArgs | null {
           return null
         }
         parsed.streamId = next
-        i++
-        break
-
-      case "--task":
-      case "-t":
-        if (!next) {
-          console.error("Error: --task requires a value")
-          return null
-        }
-        parsed.task = next
         i++
         break
 
@@ -175,15 +158,14 @@ function parseCliArgs(argv: string[]): DeleteCliArgs | null {
   }
 
   // Check for mutually exclusive targets
-  const targets = [
-    parsed.task,
+    const targets = [
     parsed.stage,
     parsed.batch,
     parsed.thread,
   ].filter((t) => t !== undefined)
   if (targets.length > 1) {
     console.error(
-      "Error: --task, --stage, --batch, and --thread are mutually exclusive",
+      "Error: --stage, --batch, and --thread are mutually exclusive",
     )
     return null
   }
@@ -229,65 +211,43 @@ export async function main(argv: string[] = process.argv): Promise<void> {
   }
 
   try {
-    // Delete single task
-    if (cliArgs.task) {
-      // Validate task ID format
-      try {
-        parseTaskId(cliArgs.task)
-      } catch (e) {
-        console.error(`Error: ${(e as Error).message}`)
-        process.exit(1)
-      }
-
-      const deleted = deleteTask(repoRoot, stream.id, cliArgs.task)
-      if (deleted) {
-        console.log(`Deleted task ${cliArgs.task}: ${deleted.name}`)
-      } else {
-        console.error(
-          `Task "${cliArgs.task}" not found in workstream "${stream.id}"`,
-        )
-        process.exit(1)
-      }
-      return
-    }
-
-    // Delete all tasks in a stage
+    // Delete all execution entries in a stage
     if (cliArgs.stage !== undefined) {
-      const deleted = deleteTasksByStage(repoRoot, stream.id, cliArgs.stage)
+      const deleted = deleteThreadExecutionItemsByStage(repoRoot, stream.id, cliArgs.stage)
       if (deleted.length > 0) {
         console.log(
-          `Deleted ${deleted.length} task(s) from stage ${cliArgs.stage}`,
+          `Deleted ${deleted.length} checkpoint(s) from stage ${cliArgs.stage}`,
         )
         for (const task of deleted) {
           console.log(`  - ${task.id}: ${task.name}`)
         }
       } else {
-        console.log(`No tasks found in stage ${cliArgs.stage}`)
+        console.log(`No execution entries found in stage ${cliArgs.stage}`)
       }
       return
     }
 
-    // Delete all tasks in a batch
+    // Delete all execution entries in a batch
     if (cliArgs.batch) {
       const [stage, batch] = cliArgs.batch.split(".").map(Number)
-      const deleted = deleteTasksByBatch(repoRoot, stream.id, stage!, batch!)
+      const deleted = deleteThreadExecutionItemsByBatch(repoRoot, stream.id, stage!, batch!)
       if (deleted.length > 0) {
         console.log(
-          `Deleted ${deleted.length} task(s) from batch ${cliArgs.batch}`,
+          `Deleted ${deleted.length} checkpoint(s) from batch ${cliArgs.batch}`,
         )
         for (const task of deleted) {
           console.log(`  - ${task.id}: ${task.name}`)
         }
       } else {
-        console.log(`No tasks found in batch ${cliArgs.batch}`)
+        console.log(`No execution entries found in batch ${cliArgs.batch}`)
       }
       return
     }
 
-    // Delete all tasks in a thread
+    // Delete all execution entries in a thread
     if (cliArgs.thread) {
       const [stage, batch, thread] = cliArgs.thread.split(".").map(Number)
-      const deleted = deleteTasksByThread(
+      const deleted = deleteThreadExecutionItemsByThread(
         repoRoot,
         stream.id,
         stage!,
@@ -296,13 +256,13 @@ export async function main(argv: string[] = process.argv): Promise<void> {
       )
       if (deleted.length > 0) {
         console.log(
-          `Deleted ${deleted.length} task(s) from thread ${cliArgs.thread}`,
+          `Deleted ${deleted.length} checkpoint(s) from thread ${cliArgs.thread}`,
         )
         for (const task of deleted) {
           console.log(`  - ${task.id}: ${task.name}`)
         }
       } else {
-        console.log(`No tasks found in thread ${cliArgs.thread}`)
+        console.log(`No execution entries found in thread ${cliArgs.thread}`)
       }
       return
     }

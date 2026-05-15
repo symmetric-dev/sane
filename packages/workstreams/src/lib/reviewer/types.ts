@@ -2,14 +2,14 @@
  * Structured reviewer output contract.
  *
  * Reviewer output is intentionally separate from execution state:
- * - Canonical workstream state captures task status, task reports, and runtime metadata.
+ * - Canonical workstream state captures thread/item status, reports, and runtime metadata.
  * - Reviewer output judges quality/alignment and identifies actionable issues.
  */
 
 export const REVIEWER_SEVERITIES = ["high", "medium", "low"] as const
 export const REVIEWER_DIFFICULTIES = ["complex", "regular", "trivial"] as const
 export const REVIEWER_OWNERSHIPS = ["product", "engineering"] as const
-export const REVIEWER_EFFORTS = ["tasks", "revision", "workstream"] as const
+export const REVIEWER_EFFORTS = ["items", "revision", "workstream"] as const
 export const REVIEWER_ALIGNMENT_STATUSES = [
   "aligned",
   "partially_aligned",

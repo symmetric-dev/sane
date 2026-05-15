@@ -6,9 +6,8 @@
 
 import { getRepoRoot } from "../lib/repo.ts"
 import { loadIndex, getResolvedStream } from "../lib/index.ts"
-import { queryTasksForWorkstream } from "../lib/hierarchy-query.ts"
-import { getEffectiveRuntimeSummary, readTasksFile } from "../lib/tasks.ts"
-import { buildWorkstreamTreeSnapshot, filterTasksForBatch, renderWorkstreamTree } from "../lib/tree.ts"
+import { queryRuntimeSummaryForWorkstream, queryThreadsForWorkstream } from "../lib/hierarchy-query.ts"
+import { buildWorkstreamTreeSnapshotFromThreads, filterThreadsForBatch, renderWorkstreamTree } from "../lib/tree.ts"
 
 interface TreeCliArgs {
   repoRoot?: string
@@ -116,32 +115,31 @@ export function main(argv: string[] = process.argv): void {
     process.exit(1)
   }
 
-  const tasksFile = readTasksFile(repoRoot, stream.id)
-  const allTasks = queryTasksForWorkstream(repoRoot, stream.id)
-  if (allTasks.length === 0) {
+  const allThreads = queryThreadsForWorkstream(repoRoot, stream.id)
+  if (allThreads.length === 0) {
     console.log(`Workstream: ${stream.id} (Empty)`)
     return
   }
 
-  const runtimeSummary = getEffectiveRuntimeSummary(repoRoot, stream.id, tasksFile)
-  const filteredTasks = cliArgs.batchId
-    ? filterTasksForBatch(allTasks, cliArgs.batchId)
-    : allTasks
+  const runtimeSummary = queryRuntimeSummaryForWorkstream(repoRoot, stream.id)
+  const filteredThreads = cliArgs.batchId
+    ? filterThreadsForBatch(allThreads, cliArgs.batchId)
+    : allThreads
 
-  if (cliArgs.batchId && filteredTasks === null) {
+  if (cliArgs.batchId && filteredThreads === null) {
     console.error(`Error: Invalid batch ID format "${cliArgs.batchId}". Expected format: "01.01"`)
     process.exit(1)
   }
 
-  const tasks = filteredTasks ?? allTasks
-  if (tasks.length === 0) {
-    console.log(`Batch ${cliArgs.batchId}: No tasks found`)
+  const threads = filteredThreads ?? allThreads
+  if (threads.length === 0) {
+    console.log(`Batch ${cliArgs.batchId}: No threads found`)
     return
   }
 
-  const snapshot = buildWorkstreamTreeSnapshot({
+  const snapshot = buildWorkstreamTreeSnapshotFromThreads({
     streamId: stream.id,
-    tasks,
+    threads,
     runtimeSummary,
     ...(cliArgs.batchId ? { batchId: cliArgs.batchId } : {}),
   })

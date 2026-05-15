@@ -17,7 +17,7 @@ export interface WorkstreamTrailers {
   stageName?: string // Stage-Name trailer
   batch?: string     // Batch trailer (e.g., "01.01")
   thread?: string    // Thread trailer (e.g., "01.01.01")
-  task?: string      // Task trailer (e.g., "01.01.01.01")
+  item?: string      // Item trailer (e.g., "01.01.01" or a legacy 4-part id)
 }
 
 /**
@@ -309,7 +309,7 @@ function parseCommitBlock(block: string): ParsedCommit {
  *   - Stage-Name: {stageName}
  *   - Batch: {batchId}
  *   - Thread: {threadId}
- *   - Task: {taskId}
+ *   - Item: {itemId}
  *
  * @param commitMessage Full commit message (or just body)
  * @returns Extracted workstream trailers
@@ -370,12 +370,13 @@ export function extractWorkstreamTrailers(commitMessage: string): WorkstreamTrai
       continue
     }
 
-    // Task trailer (e.g., "01.01.01.01")
-    const taskMatch = trimmed.match(/^Task:\s*(\d+\.\d+\.\d+\.\d+)$/i)
-    if (taskMatch) {
-      trailers.task = taskMatch[1]!.trim()
+    // Item trailer (preferred)
+    const itemMatch = trimmed.match(/^Item:\s*(\d+(?:\.\d+)+)$/i)
+    if (itemMatch) {
+      trailers.item = itemMatch[1]!.trim()
       continue
     }
+
   }
 
   return trailers
@@ -390,7 +391,7 @@ export function hasWorkstreamTrailers(trailers: WorkstreamTrailers): boolean {
     trailers.stage !== undefined ||
     trailers.batch ||
     trailers.thread ||
-    trailers.task
+    trailers.item
   )
 }
 

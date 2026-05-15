@@ -1,7 +1,6 @@
 import { getRepoRoot } from "../lib/repo.ts"
 import { getResolvedStream, loadIndex } from "../lib/index.ts"
 import { syncBatchStatus, waitForBatchStatus } from "../lib/batch-monitor.ts"
-import { readTasksFile } from "../lib/tasks.ts"
 import {
   clearSupervisorRunFailureStopLocked,
   pauseSupervisorRunLocked,
@@ -20,7 +19,7 @@ import {
 } from "../lib/root-agent-branch.ts"
 import {
   buildSupervisionExecutionPlan,
-  findNextIncompleteBatch,
+  findNextIncompleteBatchFromHierarchy,
   getLatestResumableBatchId,
   getRunById,
   getSupervisorStateSnapshot,
@@ -28,6 +27,7 @@ import {
   summarizeBatchStatus,
   type SupervisionExecutionAction,
 } from "../lib/supervision-helper.ts"
+import { queryThreadsForWorkstream, type HierarchyThreadQueryRecord } from "../lib/hierarchy-query.ts"
 interface SuperviseCliArgs {
   repoRoot?: string
   streamId?: string
@@ -52,7 +52,7 @@ interface SuperviseCliArgs {
 interface ResolvedSupervisorContext {
   repoRoot: string
   stream: { id: string; name: string; order?: number }
-  tasksFile: NonNullable<ReturnType<typeof readTasksFile>>
+  threadViews: HierarchyThreadQueryRecord[]
   branchContext: RootAgentBranchContext | null
 }
 
@@ -417,22 +417,22 @@ async function resolveContext(cliArgs: SuperviseCliArgs): Promise<ResolvedSuperv
   const branchResolution = await resolveRootAgentBranchContext(cliArgs, repoRoot)
   const index = loadIndex(repoRoot)
   const stream = getResolvedStream(index, branchResolution.streamId ?? cliArgs.streamId)
-  const tasksFile = readTasksFile(repoRoot, stream.id)
-  if (!tasksFile) {
-    throw new Error(`No tasks found for stream ${stream.id}`)
+  const threadViews = queryThreadsForWorkstream(repoRoot, stream.id)
+  if (threadViews.length === 0) {
+    throw new Error(`No canonical execution hierarchy found for stream ${stream.id}`)
   }
 
   return {
     repoRoot,
     stream,
-    tasksFile,
+    threadViews,
     branchContext: branchResolution.branchContext,
   }
 }
 
 function resolveRequestedBatchId(args: {
   cliArgs: SuperviseCliArgs
-  tasks: NonNullable<ReturnType<typeof readTasksFile>>["tasks"]
+  threadViews: HierarchyThreadQueryRecord[]
   supervisorState: ReturnType<typeof getSupervisorStateSnapshot>
   branchContext: RootAgentBranchContext | null
 }): string | null {
@@ -453,13 +453,16 @@ function resolveRequestedBatchId(args: {
       getLatestResumableBatchId(args.supervisorState, {
         stageId: args.branchContext.scope.stageId,
       }) ??
-      findNextIncompleteBatch(args.tasks, {
+      findNextIncompleteBatchFromHierarchy(args.threadViews, {
         stageId: args.branchContext.scope.stageId,
       })
     )
   }
 
-  return getLatestResumableBatchId(args.supervisorState) ?? findNextIncompleteBatch(args.tasks)
+  return (
+    getLatestResumableBatchId(args.supervisorState) ??
+    findNextIncompleteBatchFromHierarchy(args.threadViews)
+  )
 }
 
 function getStoredSupervisionBranchSession(args: {
@@ -494,7 +497,7 @@ export async function main(argv: string[] = process.argv): Promise<void> {
     process.exit(1)
   }
 
-  const { repoRoot, stream, tasksFile, branchContext } = context
+  const { repoRoot, stream, threadViews, branchContext } = context
   if (branchContext) {
     console.log(`[supervise] resolved branch context: ${formatResolvedBranchContext(branchContext)}`)
   }
@@ -502,7 +505,7 @@ export async function main(argv: string[] = process.argv): Promise<void> {
   const reconciledSupervisorState = getSupervisorStateSnapshot(repoRoot, stream.id)
   const requestedBatchId = resolveRequestedBatchId({
     cliArgs,
-    tasks: tasksFile.tasks,
+    threadViews,
     supervisorState: reconciledSupervisorState,
     branchContext,
   })

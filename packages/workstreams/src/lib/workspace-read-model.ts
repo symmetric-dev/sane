@@ -13,6 +13,7 @@ import {
   replaceStructuredWorkspaceStateSync,
 } from "./storage-adapter.ts"
 import {
+  getSqliteStructuredStoragePath,
   loadSqliteStructuredStorageWorkspaceState,
   syncStructuredStorageWorkspaceStateToSqlite,
 } from "./sqlite-storage.ts"
@@ -42,23 +43,18 @@ export function projectWorkspaceCompatibilityStateToSqlite(
 }
 
 export function loadCanonicalWorkspaceState(repoRoot: string): StructuredStorageWorkspaceState {
-  try {
+  if (existsSync(getSqliteStructuredStoragePath(repoRoot))) {
     const sqliteState = loadSqliteStructuredStorageWorkspaceState(repoRoot)
-
     if (sqliteState) {
       return sqliteState
     }
-  } catch {
-    // Fall back to compatibility projections while sqlite is busy.
   }
 
-  const projectedState = projectWorkspaceCompatibilityStateToSqlite(repoRoot)
-
-  if (projectedState) {
-    return projectedState
+  if (existsSync(getIndexPath(repoRoot))) {
+    return createWorkspaceStateFromIndex(loadIndex(repoRoot))
   }
 
-  return createWorkspaceStateFromIndex(loadIndex(repoRoot))
+  return { workstreams: [] }
 }
 
 export function createCompatibilityIndexFromWorkspaceState(

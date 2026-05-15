@@ -42,7 +42,7 @@ Thread 1.
 
 **Details:**
 
-- Task 1
+- Item 1
 
 ### Stage 02: Stage Two
 
@@ -80,4 +80,4 @@ Thread 2.
 
 **Details:**
 
-- Task 2
+- Item 2

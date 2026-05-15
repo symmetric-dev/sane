@@ -22,7 +22,7 @@ describe("dashboard contracts", () => {
       schema_version: CURRENT_WORKSTREAM_DASHBOARD_SNAPSHOT_SCHEMA_VERSION,
       generated_at: "2026-04-15T12:00:00.000Z",
       canonical_state: {
-        source_of_truth: "tasks.json",
+        source_of_truth: "structured_runtime",
         status: {
           stream: {
             id: "002-web-workstream-dashboard",
@@ -46,11 +46,11 @@ describe("dashboard contracts", () => {
             done: 1,
           },
           completion: {
-            total_tasks: 3,
-            completed_tasks: 1,
-            cancelled_tasks: 0,
-            done_tasks: 1,
-            remaining_tasks: 2,
+            total_items: 3,
+            completed_items: 1,
+            cancelled_items: 0,
+            done_items: 1,
+            remaining_items: 2,
             percent_complete: 33,
             percent_done: 33,
           },
@@ -64,8 +64,8 @@ describe("dashboard contracts", () => {
           displayLabel: "Workstream: 002-web-workstream-dashboard",
           name: "002-web-workstream-dashboard",
           status: "in_progress",
-          taskCount: 3,
-          taskCounts: {
+          itemCount: 3,
+          itemCounts: {
             total: 3,
             pending: 1,
             in_progress: 1,
@@ -117,7 +117,7 @@ describe("dashboard contracts", () => {
       },
     } satisfies CurrentWorkstreamDashboardSnapshot
 
-    expect(snapshot.canonical_state.source_of_truth).toBe("tasks.json")
+    expect(snapshot.canonical_state.source_of_truth).toBe("structured_runtime")
     expect("observability" in snapshot).toBe(true)
     expect(snapshot.canonical_state.supervision).toBeNull()
     expect("runtime" in snapshot.canonical_state.status).toBe(false)

@@ -4,11 +4,11 @@
 
 import { join } from "path"
 import { writeFileSync } from "fs"
-import type { StreamMetadata, Task, TaskStatus } from "./types.ts"
+import type { ExecutionItem, StreamMetadata, ExecutionStatus } from "./types.ts"
 import { loadIndex, saveIndex, findStream } from "./index.ts"
 import { setNestedField, getNestedField, parseValue } from "./utils.ts"
 import { getWorkDir } from "./repo.ts"
-import { getTasks } from "./tasks.ts"
+import { listThreadExecutionItems } from "./thread-execution.ts"
 import { evaluateStream } from "./metrics.ts"
 
 // ============================================
@@ -19,12 +19,12 @@ import { evaluateStream } from "./metrics.ts"
  * Calculate the duration of a task in milliseconds
  * Returns null if timestamps are missing or invalid
  */
-function calculateTaskDuration(task: Task): number | null {
-  if (!task.created_at || !task.updated_at) {
+function calculateTaskDuration(task: ExecutionItem): number | null {
+  if (!task.createdAt || !task.updatedAt) {
     return null
   }
-  const created = new Date(task.created_at).getTime()
-  const updated = new Date(task.updated_at).getTime()
+  const created = new Date(task.createdAt).getTime()
+  const updated = new Date(task.updatedAt).getTime()
   if (isNaN(created) || isNaN(updated)) {
     return null
   }
@@ -75,7 +75,7 @@ interface StageMetrics {
  * Calculate timing metrics grouped by stage
  * Only includes completed tasks in calculations
  */
-function calculateStageMetrics(tasks: Task[]): StageMetrics[] {
+function calculateStageMetrics(tasks: ExecutionItem[]): StageMetrics[] {
   const stageMap = new Map<string, { durations: number[] }>()
 
   for (const task of tasks) {
@@ -83,7 +83,7 @@ function calculateStageMetrics(tasks: Task[]): StageMetrics[] {
     const duration = calculateTaskDuration(task)
     if (duration === null) continue
 
-    const stageName = task.stage_name || "Unknown Stage"
+    const stageName = task.stageName || "Unknown Stage"
     if (!stageMap.has(stageName)) {
       stageMap.set(stageName, { durations: [] })
     }
@@ -120,7 +120,7 @@ interface AgentMetrics {
  * Calculate timing metrics grouped by assigned agent
  * Only includes completed tasks in calculations
  */
-function calculateAgentMetrics(tasks: Task[]): AgentMetrics[] {
+function calculateAgentMetrics(tasks: ExecutionItem[]): AgentMetrics[] {
   const agentMap = new Map<string, { durations: number[] }>()
 
   for (const task of tasks) {
@@ -128,7 +128,7 @@ function calculateAgentMetrics(tasks: Task[]): AgentMetrics[] {
     const duration = calculateTaskDuration(task)
     if (duration === null) continue
 
-    const agentName = task.assigned_agent || "default"
+    const agentName = task.assignedAgent || "default"
     if (!agentMap.has(agentName)) {
       agentMap.set(agentName, { durations: [] })
     }
@@ -165,7 +165,7 @@ interface OverallTimingMetrics {
 /**
  * Calculate overall timing metrics from all tasks
  */
-function calculateOverallTimingMetrics(tasks: Task[]): OverallTimingMetrics {
+function calculateOverallTimingMetrics(tasks: ExecutionItem[]): OverallTimingMetrics {
   const completedTasks = tasks.filter((t) => t.status === "completed")
 
   // Get all valid timestamps for total duration
@@ -174,14 +174,14 @@ function calculateOverallTimingMetrics(tasks: Task[]): OverallTimingMetrics {
   const durations: number[] = []
 
   for (const task of completedTasks) {
-    if (task.created_at) {
-      const created = new Date(task.created_at).getTime()
+    if (task.createdAt) {
+      const created = new Date(task.createdAt).getTime()
       if (!isNaN(created)) {
         createdTimestamps.push(created)
       }
     }
-    if (task.updated_at) {
-      const updated = new Date(task.updated_at).getTime()
+    if (task.updatedAt) {
+      const updated = new Date(task.updatedAt).getTime()
       if (!isNaN(updated)) {
         updatedTimestamps.push(updated)
       }
@@ -281,7 +281,7 @@ export function generateCompletionMd(args: {
 
   const workDir = getWorkDir(args.repoRoot)
   const streamDir = join(workDir, stream.id)
-  const tasks = getTasks(args.repoRoot, stream.id)
+  const tasks = listThreadExecutionItems(args.repoRoot, stream.id)
   const metrics = evaluateStream(args.repoRoot, stream.id)
 
   // Count unique stages, batches, threads
@@ -312,7 +312,7 @@ export function generateCompletionMd(args: {
   lines.push("")
   lines.push(`| Metric | Value |`)
   lines.push(`|--------|-------|`)
-  lines.push(`| Tasks | ${metrics.statusCounts.completed}/${metrics.totalTasks} |`)
+  lines.push(`| Items | ${metrics.statusCounts.completed}/${metrics.totalItems} |`)
   lines.push(`| Completion Rate | ${metrics.completionRate.toFixed(1)}% |`)
   lines.push(`| Stages | ${stageCount} |`)
   lines.push(`| Batches | ${batchCount} |`)
@@ -321,10 +321,10 @@ export function generateCompletionMd(args: {
     `| Total Duration | ${overallTiming.totalDurationMs !== null ? formatDuration(overallTiming.totalDurationMs) : "-"} |`
   )
   lines.push(
-    `| Fastest Task | ${overallTiming.fastestTaskMs !== null ? formatDuration(overallTiming.fastestTaskMs) : "-"} |`
+    `| Fastest Item | ${overallTiming.fastestTaskMs !== null ? formatDuration(overallTiming.fastestTaskMs) : "-"} |`
   )
   lines.push(
-    `| Slowest Task | ${overallTiming.slowestTaskMs !== null ? formatDuration(overallTiming.slowestTaskMs) : "-"} |`
+    `| Slowest Item | ${overallTiming.slowestTaskMs !== null ? formatDuration(overallTiming.slowestTaskMs) : "-"} |`
   )
   lines.push("")
   lines.push("## Status Breakdown")
@@ -350,7 +350,7 @@ export function generateCompletionMd(args: {
       )
     }
   } else {
-    lines.push("No completed tasks with timing data.")
+    lines.push("No completed items with timing data.")
   }
   lines.push("")
 
@@ -358,7 +358,7 @@ export function generateCompletionMd(args: {
   lines.push("## Agent Performance")
   lines.push("")
   if (agentMetrics.length > 0) {
-    lines.push(`| Agent | Tasks | Avg Time |`)
+    lines.push(`| Agent | Items | Avg Time |`)
     lines.push(`|-------|-------|----------|`)
     for (const agent of agentMetrics) {
       lines.push(
@@ -366,7 +366,7 @@ export function generateCompletionMd(args: {
       )
     }
   } else {
-    lines.push("No completed tasks with timing data.")
+    lines.push("No completed items with timing data.")
   }
   lines.push("")
 
@@ -381,14 +381,14 @@ export function generateCompletionMd(args: {
  * Group tasks by stage name, batch name, thread name
  */
 function groupTasksByHierarchy(
-  tasks: Task[],
-): Map<string, Map<string, Map<string, Task[]>>> {
-  const grouped = new Map<string, Map<string, Map<string, Task[]>>>()
+  tasks: ExecutionItem[],
+): Map<string, Map<string, Map<string, ExecutionItem[]>>> {
+  const grouped = new Map<string, Map<string, Map<string, ExecutionItem[]>>>()
 
   for (const task of tasks) {
-    const stageName = task.stage_name || "Stage 01"
-    const batchName = task.batch_name || "Batch 01"
-    const threadName = task.thread_name || "Thread 01"
+    const stageName = task.stageName || "Stage 01"
+    const batchName = task.batchName || "Batch 01"
+    const threadName = task.threadName || "Thread 01"
 
     if (!grouped.has(stageName)) {
       grouped.set(stageName, new Map())

@@ -9,8 +9,8 @@
  * |----------|-----------|------------------------------------------------|
  * | Stages   | ❌ No     | Must complete in order (Stage N blocks N+1)    |
  * | Batches  | ❌ No     | Within a stage, batches are sequential         |
- * | Threads  | ✅ Yes    | Within a batch, threads can run in parallel    |
- * | Tasks    | ❌ No     | Within a thread, tasks are sequential          |
+ * | Threads  | ✅ Yes    | Within a batch, threads can run in parallel     |
+ * | Steps    | ❌ No     | Within a thread, execution steps are sequential |
  *
  * This model allows parallelization of independent work (threads) while
  * maintaining clear dependencies between phases (stages and batches).
@@ -92,7 +92,7 @@ export interface StreamMetadata {
   id: string // e.g., "001-migrate-sql-to-orm"
   name: string // e.g., "migrate-sql-to-orm"
   order: number // e.g., 1
-  status?: StreamStatus // computed from tasks or manually set (default: pending)
+  status?: StreamStatus // computed from execution state or manually set (default: pending)
   approval?: ApprovalMetadata // HITL approval gate status (default: draft)
   size: StreamSize
   session_estimated: SessionEstimate
@@ -119,18 +119,18 @@ export interface WorkIndex {
 }
 
 // Checklist data structures
-export interface SubTask {
+export interface SubItem {
   id: string
   description: string
   status: "pending" | "in_progress" | "completed" | "blocked"
   notes?: string
 }
 
-export interface SuperTask {
+export interface SuperItem {
   id: string
   title: string
   description: string
-  subtasks: SubTask[]
+  subitems: SubItem[]
 }
 
 export interface Stage {
@@ -138,7 +138,7 @@ export interface Stage {
   number: number
   title: string
   description: string
-  supertasks: SuperTask[]
+  superitems: SuperItem[]
 }
 
 // Template input for checklist generation
@@ -166,19 +166,19 @@ export interface TemplatePlaceholders {
   STAGE_DESCRIPTION?: string
 }
 
-// Task status during implementation
-export type TaskStatus =
+// Execution status used by runtime state and checklist-derived items.
+export type ExecutionStatus =
   | "pending"
   | "in_progress"
   | "completed"
   | "blocked"
   | "cancelled"
 
-// Stream status - computed from tasks or manually set
+// Stream status - computed from execution state or manually set
 export type StreamStatus =
-  | "pending" // No tasks started (default)
-  | "in_progress" // Has tasks in progress
-  | "completed" // All tasks completed
+  | "pending" // No items started (default)
+  | "in_progress" // Has items in progress
+  | "completed" // All items completed
   | "on_hold" // Manually paused, won't work on for now
 
 // Approval status for HITL gate
@@ -188,7 +188,7 @@ export type ApprovalStatus = "draft" | "approved" | "revoked"
  * Approval metadata for human-in-the-loop gate
  * Workstreams require 2 approvals before starting:
  * 1. Plan approval (PLAN.md structure is correct)
- * 2. Execution approval (canonical hierarchy exists; compatibility task snapshots remain persisted)
+ * 2. Execution approval (canonical thread/stage/batch hierarchy exists)
  */
 export interface ApprovalMetadata {
   status: ApprovalStatus
@@ -208,32 +208,25 @@ export interface ApprovalMetadata {
       commit_sha?: string // SHA of the auto-commit created on stage approval
     }
   >
-  // Tasks approval gate
-  tasks?: {
-    status: ApprovalStatus
-    approved_at?: string
-    task_count?: number // legacy/informational snapshot captured at approval time
-    revoked_at?: string
-    revoked_reason?: string
-  }
 }
 
 // Stage status summary
 export type StageStatus = "pending" | "in_progress" | "complete" | "blocked"
 
-// Parsed task from checklist markdown
-export interface ParsedTask {
-  id: string // e.g., "1.2" for stage 1, task group 1, subtask 2
+// Parsed execution item from canonical status data
+export interface ParsedExecutionItem {
+  id: string // e.g., "01.02.03.04" for stage 1, batch 2, thread 3, item 4
   description: string
-  status: TaskStatus
+  status: ExecutionStatus
   stageNumber?: number
-  taskGroupNumber: number
-  subtaskNumber: number
+  batchNumber?: number
+  threadNumber: number
+  itemNumber: number
   lineNumber: number // for editing
 }
 
 /**
- * Parsed thread from TASKS.md
+ * Parsed thread from stream planning markdown
  * Captures thread metadata including optional agent assignment
  */
 export interface ParsedThread {
@@ -243,11 +236,11 @@ export interface ParsedThread {
 }
 
 /**
- * Result of parsing TASKS.md
- * Includes tasks, thread-level agent assignments, and any parse errors
+ * Result of parsing stream planning markdown
+ * Includes execution items, thread-level agent assignments, and any parse errors
  */
-export interface TasksMdParseResult {
-  tasks: Task[]
+export interface StreamPlanParseResult {
+  items: ExecutionItem[]
   threads: ParsedThread[] // Thread metadata with agent assignments
   errors: string[]
 }
@@ -257,7 +250,7 @@ export interface ParsedStage {
   number: number
   title: string
   status: StageStatus
-  tasks: ParsedTask[]
+  items: ParsedExecutionItem[]
   file: string // which file contains this stage
 }
 
@@ -267,16 +260,16 @@ export interface StreamProgress {
   streamName: string
   size: StreamSize
   stages: ParsedStage[]
-  totalTasks: number
-  completedTasks: number
-  inProgressTasks: number
-  blockedTasks: number
-  pendingTasks: number
+  totalItems: number
+  completedItems: number
+  inProgressItems: number
+  blockedItems: number
+  pendingItems: number
   percentComplete: number
   runtimeSummary?: WorkstreamRuntimeSummary
 }
 
-export interface TaskStatusCounts {
+export interface ExecutionStatusCounts {
   total: number
   pending: number
   in_progress: number
@@ -287,11 +280,11 @@ export interface TaskStatusCounts {
 }
 
 export interface WorkstreamStatusCompletionMetrics {
-  total_tasks: number
-  completed_tasks: number
-  cancelled_tasks: number
-  done_tasks: number
-  remaining_tasks: number
+  total_items: number
+  completed_items: number
+  cancelled_items: number
+  done_items: number
+  remaining_items: number
   percent_complete: number
   percent_done: number
 }
@@ -301,15 +294,15 @@ export interface WorkstreamStatusStageSummary {
   stage_id: string
   title: string
   status: StageStatus
-  counts: TaskStatusCounts
+  counts: ExecutionStatusCounts
   completion: WorkstreamStatusCompletionMetrics
-  tasks: ParsedTask[]
+  items: ParsedExecutionItem[]
 }
 
 export interface WorkstreamStatusRuntimeBatchEntry {
   kind: "batch"
   batch_id: string
-  task_status: TaskStatus
+  execution_status: ExecutionStatus
   runtime_status: RuntimeBatchStatus
   entry_status: "runtime" | "desync"
   summary: WorkstreamRuntimeBatchSummary
@@ -320,8 +313,8 @@ export interface WorkstreamStatusRuntimeSupervisionEntry {
   target: string
   stage_id: string
   batch_id?: string
-  task_status?: TaskStatus
-  is_mismatched_with_tasks: boolean
+  execution_status?: ExecutionStatus
+  is_mismatched_with_execution: boolean
   summary: WorkstreamRuntimeSupervisorRunSummary
 }
 
@@ -330,8 +323,8 @@ export interface WorkstreamStatusRuntimeBranchEntry {
   target: string
   stage_id?: string
   batch_id?: string
-  task_status?: TaskStatus
-  is_mismatched_with_tasks: boolean
+  execution_status?: ExecutionStatus
+  is_mismatched_with_execution: boolean
   summary: WorkstreamRuntimeBranchSupervisionSummary
 }
 
@@ -365,19 +358,10 @@ export interface WorkstreamStatusStreamMetadata {
 export interface WorkstreamStatusSnapshot {
   stream: WorkstreamStatusStreamMetadata
   aggregate_status: StreamStatus
-  counts: TaskStatusCounts
+  counts: ExecutionStatusCounts
   completion: WorkstreamStatusCompletionMetrics
   stages: WorkstreamStatusStageSummary[]
   runtime?: WorkstreamStatusRuntimeSummaryProjection
-}
-
-// Update task command options
-export interface UpdateTaskOptions {
-  streamId: string
-  taskId: string // e.g., "01.01.02.03" (stage.batch.thread.task)
-  status: TaskStatus
-  note?: string
-  breadcrumb?: string
 }
 
 // Complete workstream command options
@@ -386,7 +370,7 @@ export interface CompleteStreamOptions {
 }
 
 // ============================================
-// NEW TYPES FOR PLAN.md + tasks.json STRUCTURE
+// Execution hierarchy and runtime envelope types
 // ============================================
 
 /**
@@ -406,8 +390,8 @@ export interface StageQuestion {
 }
 
 /**
- * Thread definition - a parallelizable work unit within a batch
- * Each thread contains multiple tasks
+ * Thread definition - a parallelizable work unit within a batch.
+ * Each thread can contain multiple execution items.
  */
 export interface ThreadDefinition {
   id: number // Thread number within batch (1, 2, 3...)
@@ -452,46 +436,26 @@ export interface StreamDocument {
 }
 
 /**
- * Task in tasks.json - generated from consolidation
- * ID format: "{stage}.{batch}.{thread}.{task}" (e.g., "01.01.02.03")
- * All components are zero-padded to 2 digits for consistent sorting
+ * Canonical execution item.
+ * Execution now operates directly on thread records, so the canonical ID
+ * matches the thread ID: "{stage}.{batch}.{thread}" (e.g., "01.01.02").
  */
-export interface Task {
-  id: string // e.g., "01.01.02.03" = stage 1, batch 1, thread 2, task 3
-  name: string // Task description from PLAN.md
-  thread_name: string // Parent thread name for context
-  batch_name: string // Parent batch name for context
-  stage_name: string // Parent stage name for context
-  created_at: string // ISO date
-  updated_at: string // ISO date
-  status: TaskStatus
-  breadcrumb?: string // Last action/status for recovery
-  report?: string // Completion summary (for COMPLETION.md aggregation)
-  assigned_agent?: string // Agent assigned to this task
-  /**
-   * @deprecated Session data now lives in tasks.json under runtime_state.threads.
-   * This task-local field is retained only for legacy migration reads.
-   * This field will be automatically migrated and cleared on first read.
-   */
-  sessions?: SessionRecord[]
-  /**
-   * @deprecated Session data now lives in tasks.json under runtime_state.threads.
-   * This task-local field is retained only for legacy migration reads.
-   * This field will be automatically migrated and cleared on first read.
-   */
-  currentSessionId?: string
-}
-
-/**
- * tasks.json file structure
- */
-export interface TasksFile {
-  version: string // Schema version, e.g., "1.0.0"
-  stream_id: string // Reference to the workstream ID
-  last_updated: string // ISO date
-  runtime_state?: WorkstreamUnifiedRuntimeState
-  runtime_summary?: WorkstreamRuntimeSummary
-  tasks: Task[]
+export interface ExecutionItem {
+  id: string // e.g., "01.01.02" = stage 1, batch 1, thread 2
+  threadId: string
+  stageId: string
+  batchId: string
+  number: number
+  name: string
+  threadName: string
+  batchName: string
+  stageName: string
+  createdAt: string
+  updatedAt: string
+  status: ExecutionStatus
+  breadcrumb?: string
+  report?: string
+  assignedAgent?: string
 }
 
 export type RuntimeBatchStatus = "pending" | "running" | "completed" | "failed"
@@ -569,7 +533,6 @@ export interface WorkstreamRuntimeSummary {
 export interface PersistedBatchStatusThread {
   threadId: string
   threadName: string
-  firstTaskId: string // compatibility anchor; threadId remains the canonical runtime identity
   status: RuntimeBatchStatus
   startedAt?: string
   updatedAt: string
@@ -608,7 +571,7 @@ export interface PersistedBatchStatusFile {
 }
 
 /**
- * Canonical persisted runtime state stored inside tasks.json.
+ * Canonical persisted runtime state.
  * This unifies thread/session metadata, batch execution state, and
  * supervision control-plane state under one persisted document.
  */
@@ -635,7 +598,7 @@ export interface ConsolidateError {
 export interface ConsolidateResult {
   success: boolean
   streamDocument: StreamDocument | null
-  tasksGenerated: Task[]
+  tasksGenerated: ExecutionItem[]
   errors: ConsolidateError[]
   warnings: string[]
 }
@@ -650,8 +613,8 @@ export interface ConsolidateResult {
 export interface EvaluationMetrics {
   streamId: string
   streamName: string
-  totalTasks: number
-  statusCounts: Record<TaskStatus, number>
+  totalItems: number
+  statusCounts: Record<ExecutionStatus, number>
   completionRate: number
   blockedRate: number
   cancelledRate: number
@@ -662,19 +625,19 @@ export interface EvaluationMetrics {
  * Blocker analysis result
  */
 export interface BlockerAnalysis {
-  blockedTasks: Task[]
-  blockersByStage: Record<number, Task[]>
-  blockersByBatch: Record<string, Task[]> // key is "stage.batch" e.g., "1.00"
+  blockedItems: ExecutionItem[]
+  blockersByStage: Record<number, ExecutionItem[]>
+  blockersByBatch: Record<string, ExecutionItem[]> // key is "stage.batch" e.g., "1.00"
   blockedPercentage: number
 }
 
 /**
- * Task filter result
+ * Execution-item filter result
  */
 export interface FilterResult {
-  matchingTasks: Task[]
+  matchingItems: ExecutionItem[]
   matchCount: number
-  totalTasks: number
+  totalItems: number
 }
 
 // ============================================
@@ -689,7 +652,7 @@ export interface StageReport {
   stageName: string
   batchCount: number
   threadCount: number
-  taskCount: number
+  itemCount: number
   completedCount: number
   blockedCount: number
   inProgressCount: number
@@ -708,11 +671,11 @@ export interface ProgressReport {
 }
 
 /**
- * Changelog entry for completed tasks
+ * Changelog entry for completed execution items
  */
 export interface ChangelogEntry {
-  taskId: string
-  taskName: string
+  itemId: string
+  itemName: string
   stageName: string
   threadName: string
   completedAt: string
@@ -791,24 +754,30 @@ export interface AgentDefinition {
 
 /**
  * Full agents configuration from AGENTS.md
- * Agent-to-task assignments are stored in tasks.json (Task.assigned_agent)
+ * Agent assignments are stored in canonical thread runtime state.
  */
 export interface AgentsConfig {
   agents: AgentDefinition[]
 }
 
 // ============================================
-// THREAD METADATA RUNTIME TYPES (tasks.json runtime_state.threads)
+// THREAD METADATA RUNTIME TYPES
 // ============================================
 
 /**
- * Thread metadata stored in tasks.json under runtime_state.threads.
- * The legacy threads.json artifact may still be imported for migration/compatibility.
+ * Thread metadata stored in canonical runtime state.
  */
 export interface ThreadMetadata {
   threadId: string // Format: "SS.BB.TT" (e.g., "01.01.02")
   promptPath?: string // Relative path to prompt file (e.g., "prompts/01-stage/01-batch/thread.md")
   sessions: SessionRecord[] // Session history for this thread
+  status?: ExecutionStatus
+  createdAt?: string
+  updatedAt?: string
+  itemName?: string
+  breadcrumb?: string
+  report?: string
+  assigned_agent?: string
   /**
    * Internal session tracking ID for the thread.
    * Used for internal state management and resume functionality.
@@ -842,8 +811,8 @@ export interface ThreadMetadata {
 }
 
 /**
- * Thread metadata file shape exposed by compatibility helpers.
- * Canonical persistence lives in tasks.json under runtime_state.threads.
+ * Legacy thread metadata artifact shape accepted during migration reads.
+ * Canonical persistence lives in structured workstream runtime state.
  */
 export interface ThreadsJson {
   version: string // Schema version, e.g., "1.0.0"
@@ -973,7 +942,7 @@ export interface CurrentBranchSupervisionContext extends RootAgentLineage {
 }
 
 // ============================================
-// SUPERVISOR RUNTIME STATE TYPES (tasks.json runtime_state.supervision)
+// SUPERVISOR RUNTIME STATE TYPES
 // ============================================
 
 /**
@@ -1166,8 +1135,8 @@ export interface SupervisorStageStop {
 }
 
 /**
- * Supervisor state shape exposed by compatibility helpers.
- * Canonical persistence lives in tasks.json under runtime_state.supervision.
+ * Legacy supervisor state artifact shape accepted during migration reads.
+ * Canonical persistence lives in structured workstream runtime state.
  */
 export interface SupervisorStateFile {
   version: string
@@ -1190,12 +1159,12 @@ export interface SupervisorStateFile {
 // ============================================
 
 /**
- * Status of an agent session working on a task
+ * Status of an agent session working on a thread/item scope
  */
 export type SessionStatus = "running" | "completed" | "failed" | "interrupted"
 
 /**
- * Record of a single agent session working on a task
+ * Record of a single agent session working on a thread/item scope
  * Tracks execution details for debugging, retry logic, and metrics
  */
 export interface SessionRecord {
@@ -1266,7 +1235,6 @@ export interface ThreadInfo {
   agentName: string
   // Session tracking (populated before spawn)
   sessionId?: string
-  firstTaskId?: string // Compatibility anchor for legacy task-addressed session tracking
 }
 
 /**
@@ -1276,7 +1244,6 @@ export interface ThreadInfo {
 export interface ThreadSessionMap {
   threadId: string
   sessionId: string
-  taskId?: string // Compatibility anchor for legacy callers; runtime control is thread-native
   paneId: string
   windowIndex: number
 }

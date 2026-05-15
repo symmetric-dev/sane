@@ -1,7 +1,7 @@
 import { type GitHubConfig } from "./types";
 import { loadGitHubConfig, isGitHubEnabled } from "./config";
 import { loadIndex, getStream } from "../index";
-import { readTasksFile, parseTaskId } from "../tasks";
+import { listThreadExecutionItems } from "../thread-execution";
 import { createGitHubClient } from "./client";
 import { ensureGitHubAuth } from "./auth";
 
@@ -65,29 +65,19 @@ export async function ensureWorkstreamLabels(repoRoot: string, streamId: string)
   });
   
   // 2. Load Tasks to find Stages and Batches
-  const tasksFile = readTasksFile(repoRoot, streamId);
-  if (tasksFile) {
+  const executionItems = listThreadExecutionItems(repoRoot, streamId);
+  if (executionItems.length > 0) {
     const stages = new Map<string, {id: string, name: string}>();
     const batches = new Map<string, {id: string, name: string}>();
     
-    for (const task of tasksFile.tasks) {
-      try {
-        const { stage, batch } = parseTaskId(task.id);
-        const stageId = stage.toString().padStart(2, '0');
-        const batchId = `${stageId}.${batch.toString().padStart(2, '0')}`;
-        
-        // Stage
-        if (!stages.has(stageId)) {
-          stages.set(stageId, { id: stageId, name: task.stage_name });
-        }
-        
-        // Batch
-        if (!batches.has(batchId)) {
-          batches.set(batchId, { id: batchId, name: task.batch_name });
-        }
-      } catch (e) {
-        // Ignore invalid task IDs
-        continue;
+    for (const item of executionItems) {
+      const stageId = item.stageId;
+      const batchId = item.batchId;
+      if (!stages.has(stageId)) {
+        stages.set(stageId, { id: stageId, name: item.stageName });
+      }
+      if (!batches.has(batchId)) {
+        batches.set(batchId, { id: batchId, name: item.batchName });
       }
     }
     

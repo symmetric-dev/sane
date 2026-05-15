@@ -2,27 +2,27 @@
  * Prompt generation for workstream threads
  *
  * Generates execution prompts for agents with full thread context,
- * including tasks, stage definition, parallel threads, and test requirements.
+ * including thread, stage, and batch context for execution.
  */
 
 import { mkdirSync, writeFileSync } from "fs"
 import { join, dirname } from "path"
 import { getWorkDir } from "./repo.ts"
+import { listOrderedStageDirectories } from "./stage-directories.ts"
 import {
-  queryTasksForWorkstream,
+  queryExecutionItemsForWorkstream,
   queryThreadByIdForWorkstream,
 } from "./hierarchy-query.ts"
 import { parseStreamDocument } from "./stream-parser.ts"
-import { getTasks, parseTaskId } from "./tasks.ts"
 import { getThreadMetadata, updateThreadMetadata } from "./threads.ts"
 import { loadWorkstreamPlan } from "./consolidate.ts"
 import type {
-  Task,
   StageDefinition,
   BatchDefinition,
   ThreadDefinition,
   ConsolidateError,
 } from "./types.ts"
+import type { ExecutionItemQueryRecord } from "./hierarchy-query.ts"
 
 // ============================================
 // TYPES
@@ -49,8 +49,14 @@ export interface PromptContext {
   thread: ThreadDefinition
   stage: StageDefinition
   batch: BatchDefinition
-  tasks: Task[]
+  executionItems: ExecutionItemQueryRecord[]
   parallelThreads: ThreadDefinition[]
+  references: {
+    readmePath: string
+    requirementsPath: string
+    planPath: string
+    workPath: string
+  }
   agentName?: string
 }
 
@@ -70,6 +76,17 @@ export interface GeneratePromptsResult {
   generatedFiles: string[] // Relative paths of generated prompt files
   errors: string[] // Error messages for failed generations
   totalThreads: number // Total number of threads found
+}
+
+function resolveStageDirectoryName(
+  repoRoot: string,
+  streamId: string,
+  syntheticStageId: number,
+): string {
+  const stagesDir = join(getWorkDir(repoRoot), streamId, "stages")
+  const stageDirectories = listOrderedStageDirectories(stagesDir)
+  const directoryName = stageDirectories[syntheticStageId - 1]?.name
+  return directoryName ?? syntheticStageId.toString().padStart(2, "0")
 }
 
 // ============================================
@@ -124,7 +141,7 @@ export function formatThreadId(
  * Gathers:
  * - Thread definition from PLAN.md
  * - Stage and batch context
- * - Tasks from tasks.json filtered to this thread
+ * - Thread execution items synthesized from canonical thread runtime state
  * - Parallel threads in the same batch
  * - Agent assignment (if any)
  *
@@ -200,21 +217,16 @@ export function getPromptContext(
   // Get parallel threads (other threads in the same batch)
   const parallelThreads = batch.threads.filter((t) => t.id !== threadId.thread)
 
-  // Load tasks filtered to this thread, preferring canonical thread/query views
+  // Load canonical execution items filtered to this thread
   const threadPrefix = `${threadId.stage.toString().padStart(2, "0")}.${threadId.batch.toString().padStart(2, "0")}.${threadId.thread.toString().padStart(2, "0")}.`
-  let queriedTasks: Task[] = []
-  try {
-    queriedTasks = queryTasksForWorkstream(repoRoot, streamId).filter((t) =>
-      t.id.startsWith(threadPrefix),
-    )
-  } catch {
-    queriedTasks = []
-  }
-  const tasks = queriedTasks.length > 0 ? queriedTasks : getTasks(repoRoot, streamId).filter((t) => t.id.startsWith(threadPrefix))
+  const executionItems = queryExecutionItemsForWorkstream(repoRoot, streamId)
+    .filter((item) => item.id.startsWith(threadPrefix))
 
-  // Get agent assignment from canonical thread state first, then compatibility tasks.
-  const assignedAgent = threadView?.assignedAgent ?? tasks.find((t) => t.assigned_agent)?.assigned_agent
+  const assignedAgent = threadView?.assignedAgent ?? executionItems.find((item) => item.assignedAgent)?.assignedAgent
   const agentName = assignedAgent
+  const stageDirectoryName = resolveStageDirectoryName(repoRoot, streamId, stage.id)
+  const workstreamRoot = join("work", streamId)
+  const stageRoot = join(workstreamRoot, "stages", stageDirectoryName)
 
   return {
     threadId,
@@ -224,8 +236,14 @@ export function getPromptContext(
     thread,
     stage,
     batch,
-    tasks,
+    executionItems,
     parallelThreads,
+    references: {
+      readmePath: join(workstreamRoot, "README.md"),
+      requirementsPath: join(stageRoot, "REQUIREMENTS.md"),
+      planPath: join(stageRoot, "PLAN.md"),
+      workPath: join(stageRoot, "WORK.md"),
+    },
     agentName,
   }
 }
@@ -239,63 +257,39 @@ export function getPromptContext(
  */
 export function generateThreadPrompt(
   context: PromptContext,
-  options?: GeneratePromptOptions,
+  _options?: GeneratePromptOptions,
 ): string {
-  const opts = {
-    includeTests: true,
-    includeParallel: true,
-    ...options,
-  }
-
   const lines: string[] = []
 
-  // Greeting
-  lines.push(`Hello Agent!`)
+  lines.push(`You are working on "${context.streamName}".`)
   lines.push("")
-
-  // Context
-  lines.push(
-    `You are working on the "${context.batch.name}" batch at the "${context.stage.name}" stage of the "${context.streamName}" workstream.`,
-  )
-  lines.push("")
-
-  lines.push("This is your thread:")
-  lines.push("")
-  // Thread title and id
-  lines.push(`"${context.thread.name}" (${context.thread.id})`)
-  lines.push("")
-
-  // Thread summary
-  lines.push("## Thread Summary")
-  lines.push(context.thread.summary || "(No summary provided)")
-  lines.push("")
-
-  // Thread details
-  lines.push("## Thread Details")
-  lines.push(context.thread.details || "(No details provided)")
-  lines.push("")
-
-  // Tasks section
-  lines.push("Your tasks are:")
-  if (context.tasks.length > 0) {
-    for (const task of context.tasks) {
-      lines.push(`- [ ] ${task.id} ${task.name}`)
-    }
-  } else {
-    lines.push("(No tasks found for this thread)")
-  }
-  lines.push("")
-
-  // Format batch ID for command suggestion
-  const batchId = `${context.stage.id.toString().padStart(2, "0")}.${context.batch.id.toString().padStart(2, "0")}`
-
-  // Skill instruction
-  lines.push(
-    `When listing threads, use \`work list --batch "${batchId}"\`. Add \`--tasks\` to inspect compatibility tasks.`,
-  )
+  lines.push(`Thread: ${context.threadIdString} — ${context.thread.name}`)
+  lines.push(`Stage: ${context.stage.id.toString().padStart(2, "0")} — ${context.stage.name}`)
   lines.push("")
   lines.push("Use the `implementing-workstreams` skill.")
   lines.push("")
+  lines.push("Read these files before making changes:")
+  lines.push(`- \`${context.references.readmePath}\``)
+  lines.push(`- \`${context.references.requirementsPath}\``)
+  lines.push(`- \`${context.references.planPath}\``)
+  lines.push(`- \`${context.references.workPath}\``)
+  lines.push("")
+  lines.push("Your thread objective:")
+  lines.push(context.thread.summary || "(No summary provided)")
+  lines.push("")
+
+  if (context.thread.details.trim().length > 0) {
+    lines.push("Additional thread details:")
+    lines.push(context.thread.details)
+    lines.push("")
+  }
+
+  lines.push(
+    `Keep execution state current with \`work update --thread "${context.threadIdString}" --status <status>\`.`,
+  )
+  lines.push(
+    `When the thread is completed or blocked, include a short \`--report\` explaining the outcome.`,
+  )
 
   return lines.join("\n")
 }
@@ -330,11 +324,17 @@ export function generateThreadPromptJson(context: PromptContext): object {
       summary: context.thread.summary,
       details: context.thread.details,
     },
-    tasks: context.tasks.map((t) => ({
-      id: t.id,
-      name: t.name,
-      status: t.status,
-      breadcrumb: t.breadcrumb,
+    references: {
+      readmePath: context.references.readmePath,
+      requirementsPath: context.references.requirementsPath,
+      planPath: context.references.planPath,
+      workPath: context.references.workPath,
+    },
+    executionItems: context.executionItems.map((item) => ({
+      id: item.id,
+      name: item.name,
+      status: item.status,
+      breadcrumb: item.breadcrumb,
     })),
     stageContext: {
       definition: context.stage.definition,

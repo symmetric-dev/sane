@@ -5,19 +5,20 @@ All notable changes to `@agenv/workstreams` are documented in this file.
 ## 0.8.0 - 2026-05-06
 
 - Stopped projecting legacy `batch-status/*.json` and `threads.json` runtime artifacts for sqlite-native workstreams while keeping sqlite-backed batch/thread runtime behavior authoritative.
-- Prevented stale legacy `batch-status` and `threads` compatibility files from being re-imported into sqlite-backed runtime views once canonical sqlite state exists.
+- Prevented stale legacy `batch-status` and `threads` files from being re-imported into sqlite-backed runtime views once canonical sqlite state exists.
 - Hardened supervision/runtime identifier handling by normalizing stage/batch/thread/task IDs across read/load paths and key persistence paths, preventing malformed persisted IDs from creating fake placeholder hierarchy rows or sqlite foreign-key failures.
+- Removed the last live legacy projection pieces, including `supervisor-state.json` projection/writes, rebuild exports, and artifact rewrites during fix flows.
 
 ## 0.7.1 - 2026-04-21
 
-- Completed the sqlite-authoritative cutover for core workflow state, including canonical sqlite reads and writes for approvals, task/runtime updates, revision/fix flows, bootstrap, hydration, and compatibility rebuild tooling.
-- Improved existing-repo migration behavior by supporting orphan legacy workstream discovery during sqlite hydration and keeping fresh `work init --sqlite --force` bootstraps free of unnecessary compatibility index creation.
-- Hardened sqlite runtime behavior and persisted identifier handling with better lock tolerance, scoped compatibility rebuild behavior, and canonical normalization for stage/batch/thread/task IDs across supervision and runtime state.
+- Completed the sqlite-authoritative cutover for core workflow state, including canonical sqlite reads and writes for approvals, task/runtime updates, revision/fix flows, bootstrap, hydration, and rebuild tooling.
+- Improved existing-repo hydration by supporting orphan legacy workstream discovery during sqlite hydration and keeping fresh `work init --sqlite --force` bootstraps free of unnecessary index creation.
+- Hardened sqlite runtime behavior and persisted identifier handling with better lock tolerance, scoped rebuild behavior, and canonical normalization for stage/batch/thread/task IDs across supervision and runtime state.
 
 ## 0.7.0 - 2026-04-20
 
-- Made `work/db.sqlite` the local-first canonical structured store, with `work/index.json` and `work/<stream-id>/tasks.json` retained as compatibility projections for inspection and older file-shaped consumers.
-- Documented the sqlite source-of-truth model, compatibility projection boundaries, package-boundary direction, and deferred follow-up work such as permanent legacy-file removal and future remote/service-backed storage.
+- Made `work/db.sqlite` the local-first canonical structured store, with `work/index.json` and `work/<stream-id>/workstream-state.json` serving as the remaining local filesystem surfaces.
+- Documented the sqlite source-of-truth model, package-boundary direction, and deferred follow-up work such as permanent legacy-file removal and future remote/service-backed storage.
 - Hardened approval auto-commit behavior by preventing duplicate stage re-approval commits and rejecting unsafe fallback/generic approval naming in commit messages.
 
 ## 0.6.1 - 2026-04-18
@@ -29,7 +30,7 @@ All notable changes to `@agenv/workstreams` are documented in this file.
 ## 0.6.0 - 2026-04-18
 
 - Removed obsolete user-facing workstream surfaces including `work fix` remnants and the `work synthesis` command/module stack.
-- Standardized runtime-state guidance around `tasks.json.runtime_state`, reducing stale references to legacy `threads.json` and `supervisor-state.json` files.
+- Standardized runtime-state guidance around canonical workstream runtime state.
 - Refreshed workstream workflow documentation to reflect the current planning → supervision → stage approval → evaluation lifecycle.
 
 ## 0.5.3 - 2026-04-17
@@ -48,7 +49,7 @@ All notable changes to `@agenv/workstreams` are documented in this file.
 
 - Stabilized the first Root Agent supervision/runtime-tooling release with follow-up fixes to approvals, supervision prompts, and persisted execution state handling.
 - Continued cleanup of legacy docs/runtime behavior around the newer branch-supervision flow.
-- Expanded test coverage around approval resolution, review compatibility, and supervision state persistence.
+- Expanded test coverage around approval resolution, review flows, and supervision state persistence.
 
 ## 0.5.0 - 2026-04-15
 
@@ -73,5 +74,5 @@ All notable changes to `@agenv/workstreams` are documented in this file.
 - Fixed built CLI runtime import paths so dynamic imports are rewritten from `.ts` to `.js`, resolving module load failures such as `Cannot find module '../lib/repo.ts'` when running commands like `work prompt --stage 6` from the published package.
 - Updated prompt and multi-navigator CLI modules to use static imports in key paths, avoiding dist/runtime extension mismatch for dynamically loaded local modules.
 - Updated multi-orchestrator grid controller to prefer `dist/bin/work.js` and fall back to `bin/work.ts` only when needed, improving reliability in packaged builds.
-- Enhanced `work tasks serialize` to auto-generate prompts after writing `tasks.json`, so prompts are produced in manual serialize flows even when approvals are already in an approved state.
-- Added prompt generation result reporting to `work tasks serialize`, including warning output when partial prompt generation failures occur.
+- Enhanced manual execution-state serialization flows to auto-generate prompts after writing canonical execution state, so prompts are produced even when approvals are already in an approved state.
+- Added prompt generation result reporting to manual execution-state serialization flows, including warning output when partial prompt generation failures occur.

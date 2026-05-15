@@ -17,7 +17,7 @@ Use this checklist for a quick operator validation pass. For background and trou
 ## 3) Persisted-state inspection
 
 - Run `work batch-status --batch "SS.BB" --format json` and confirm the batch status matches the observed phase.
-- Inspect `work/<stream-id>/tasks.json` and verify `runtime_state.supervision.runs[]`, review records, and any branch-session evidence match the same batch/run.
+- Use canonical supervision/runtime queries first (`work status`, `work batch-status`, sqlite-backed runtime views) and verify `runs[]`, review records, and branch-session evidence match the same batch/run.
 - If `active_run_id` is present, confirm it matches the relevant `runs[]` entry; do not treat the field alone as authoritative.
 
 ## 4) Interruption and recovery
@@ -28,7 +28,7 @@ Use this checklist for a quick operator validation pass. For background and trou
 
 ## 5) Final report review
 
-- For branch supervision, inspect the matching `branch_sessions[]` entry in `tasks.json` runtime state.
+- For branch supervision, inspect the matching canonical `branch_sessions[]` runtime entry.
 - Export the matching native session when needed and confirm the final assistant report includes:
   - `## Accomplished`
   - `## Issues Found`

@@ -31,18 +31,18 @@ Arguments:
 
 Options:
   --stream, -s     Workstream ID or name (uses current if not specified)
-  --clear, -c      Clear manual status (let it be computed from tasks)
+  --clear, -c      Clear manual status (let it be computed from items)
   --repo-root      Repository root (auto-detected)
   --help, -h       Show this help message
 
 Workstream Statuses:
-  pending       No tasks started (default)
-  in_progress   Has tasks in progress or completed
-  completed     All tasks completed
+  pending       No items started (default)
+  in_progress   Has items in progress or completed
+  completed     All items completed
   on_hold       Manually paused, won't work on for now
 
 Notes:
-  - Most statuses are computed automatically from task states
+  - Most statuses are computed automatically from item states
   - Use 'on_hold' to mark a workstream as paused without deleting it
   - Use --clear to reset to computed status
 

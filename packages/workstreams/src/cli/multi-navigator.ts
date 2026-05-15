@@ -10,10 +10,10 @@ import { readFileSync } from "fs"
 import readline from "readline"
 import { getRepoRoot, getWorkDir } from "../lib/repo.ts"
 import { loadIndex, getResolvedStream } from "../lib/index.ts"
-import { readTasksFile, parseTaskId } from "../lib/tasks.ts"
+import { queryThreadsForWorkstream } from "../lib/hierarchy-query.ts"
 import { loadAgentsConfig, getAgentYaml } from "../lib/agents-yaml.ts"
 import { parseStreamDocument } from "../lib/stream-parser.ts"
-import type { StreamDocument, BatchDefinition, StageDefinition, Task } from "../lib/types.ts"
+import type { StreamDocument, BatchDefinition, StageDefinition } from "../lib/types.ts"
 import {
     joinPane,
     breakPane,
@@ -72,21 +72,10 @@ function parseArgs(argv: string[]): NavigatorArgs | null {
     return parsed as NavigatorArgs
 }
 
-function getThreadStatus(tasks: Task[], threadId: string): 'pending' | 'running' | 'completed' | 'failed' {
-    // A thread is "running" if any task is in_progress
-    // A thread is "failed" if any task is failed
-    // A thread is "completed" if ALL tasks are completed
-    // Otherwise "pending"
-
-    // Group tasks by thread
-    const threadTasks = tasks.filter(t => t.id.startsWith(threadId))
-
-    if (threadTasks.length === 0) return 'pending'
-
-    if (threadTasks.some(t => t.status === 'blocked')) return 'failed'
-    if (threadTasks.some(t => t.status === 'in_progress')) return 'running'
-    if (threadTasks.every(t => t.status === 'completed')) return 'completed'
-
+function getThreadStatus(status: string | undefined): 'pending' | 'running' | 'completed' | 'failed' {
+    if (status === 'blocked') return 'failed'
+    if (status === 'in_progress') return 'running'
+    if (status === 'completed') return 'completed'
     return 'pending'
 }
 
@@ -163,12 +152,11 @@ class Navigator {
 
     private updateStatus() {
         try {
-            const tasksFile = readTasksFile(this.repoRoot, this.streamId)
-            if (!tasksFile) return
+            const threads = queryThreadsForWorkstream(this.repoRoot, this.streamId)
 
             let changed = false
             for (const thread of this.threads) {
-                const newStatus = getThreadStatus(tasksFile.tasks, thread.id)
+                const newStatus = getThreadStatus(threads.find(candidate => candidate.threadId === thread.id)?.aggregateStatus)
                 if (newStatus !== thread.status) {
                     thread.status = newStatus
                     changed = true
@@ -309,50 +297,6 @@ export async function main(argv: string[] = process.argv) {
     // Simplified: we only need ID and Name to list them.
 
     // ...
-    // For MVP, assume we can get simple list or just scan tasks.
-    // But wait, we need the EXACT window names to join them.
-    // Window names are "SS.BB.TT".
-
-    // Let's implement minimal plan parsing here just to get the names.
-    // ...
-
-    // Actually, can we just assume standard naming scheme?
-    // "SS.BB.01", "SS.BB.02", etc.
-    // Yes, if we have the batch ID "SS.BB", threads are likely "SS.BB.01", etc.
-    // But we need the human readable names too.
-
-    // For now, let's look at tasks.json?
-    // Tasks are flattened.
-    // Let's assume we can read tasks.json and filter by ID starting with Batch ID.
-    // Then group by thread.
-
-    const tasksFile = readTasksFile(repoRoot, streamId)
-    if (!tasksFile) {
-        console.error("No tasks found")
-        process.exit(1)
-    }
-
-    // Extract threads from tasks
-    const batchPrefix = args.batch
-    const threadMap = new Map<string, string>() // id -> name
-
-    tasksFile.tasks.forEach(t => {
-        const parsed = parseTaskId(t.id)
-        if (!parsed) return
-        const tId = `${parsed.stage.toString().padStart(2, '0')}.${parsed.batch.toString().padStart(2, '0')}.${parsed.thread.toString().padStart(2, '0')}`
-
-        if (tId.startsWith(batchPrefix!)) {
-            // We try to guess thread name from task name maybe? 
-            // No, task name != thread name.
-            // We really need PLAN.md for thread names.
-            // Or we pass them as args? "id:name,id:name"
-            threadMap.set(tId, "Thread " + parsed.thread)
-        }
-    })
-
-    // Parsing PLAN.md is safer for names
-    // ...
-
     // Let's stick with PLAN.md loading for correctness
     const idx = loadIndex(repoRoot)
     const stream = getResolvedStream(idx, streamId)

@@ -96,12 +96,6 @@ export const COMMON_ARGS: Record<string, ArgDefinition> = {
     takesValue: true,
     valueType: "string",
   },
-  task: {
-    long: "--task",
-    description: 'Task ID (format: "SS.BB.TT.NN", e.g., "01.01.02.03")',
-    takesValue: true,
-    valueType: "string",
-  },
   agent: {
     long: "--agent",
     short: "-a",

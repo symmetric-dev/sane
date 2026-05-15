@@ -272,12 +272,12 @@ export function renderDashboardClientScript(repoRoot: string): string {
     "}",
     "function renderRuntimeEntry(entry) {",
     "  if (entry.kind === 'batch') {",
-    "    return '<div class=\"runtime-entry\"><div class=\"runtime-entry-head\"><span class=\"badge\" data-status=\"' + escapeHtml(entry.entry_status) + '\">' + escapeHtml(entry.entry_status) + '</span><strong>Batch ' + escapeHtml(entry.batch_id) + '</strong></div><div class=\"runtime-note\">tasks ' + escapeHtml(labelStatus(entry.task_status)) + ' · runtime ' + escapeHtml(entry.runtime_status) + ' · ' + escapeHtml(entry.summary.thread_summary.running) + ' running / ' + escapeHtml(entry.summary.thread_summary.failed) + ' failed</div></div>'",
+    "    return '<div class=\"runtime-entry\"><div class=\"runtime-entry-head\"><span class=\"badge\" data-status=\"' + escapeHtml(entry.entry_status) + '\">' + escapeHtml(entry.entry_status) + '</span><strong>Batch ' + escapeHtml(entry.batch_id) + '</strong></div><div class=\"runtime-note\">items ' + escapeHtml(labelStatus(entry.execution_status)) + ' · runtime ' + escapeHtml(entry.runtime_status) + ' · ' + escapeHtml(entry.summary.thread_summary.running) + ' running / ' + escapeHtml(entry.summary.thread_summary.failed) + ' failed</div></div>'",
     "  }",
     "  if (entry.kind === 'supervision') {",
-    "    return '<div class=\"runtime-entry\"><div class=\"runtime-entry-head\"><span class=\"badge\" data-status=\"' + escapeHtml(entry.summary.status) + '\">' + escapeHtml(entry.summary.status) + '</span><strong>Supervision · ' + escapeHtml(entry.target) + '</strong></div><div class=\"runtime-note\">stage ' + escapeHtml(entry.stage_id) + (entry.batch_id ? ' · batch ' + escapeHtml(entry.batch_id) : '') + (entry.task_status ? ' · tasks ' + escapeHtml(labelStatus(entry.task_status)) : '') + '</div></div>'",
+    "    return '<div class=\"runtime-entry\"><div class=\"runtime-entry-head\"><span class=\"badge\" data-status=\"' + escapeHtml(entry.summary.status) + '\">' + escapeHtml(entry.summary.status) + '</span><strong>Supervision · ' + escapeHtml(entry.target) + '</strong></div><div class=\"runtime-note\">stage ' + escapeHtml(entry.stage_id) + (entry.batch_id ? ' · batch ' + escapeHtml(entry.batch_id) : '') + (entry.execution_status ? ' · items ' + escapeHtml(labelStatus(entry.execution_status)) : '') + '</div></div>'",
     "  }",
-    "  return '<div class=\"runtime-entry\"><div class=\"runtime-entry-head\"><span class=\"badge\" data-status=\"' + escapeHtml(entry.summary.status) + '\">' + escapeHtml(entry.summary.status) + '</span><strong>Supervision branch · ' + escapeHtml(entry.target) + '</strong></div><div class=\"runtime-note\">' + escapeHtml(entry.summary.status) + (entry.batch_id ? ' · batch ' + escapeHtml(entry.batch_id) : '') + (entry.task_status ? ' · tasks ' + escapeHtml(labelStatus(entry.task_status)) : '') + '</div></div>'",
+    "  return '<div class=\"runtime-entry\"><div class=\"runtime-entry-head\"><span class=\"badge\" data-status=\"' + escapeHtml(entry.summary.status) + '\">' + escapeHtml(entry.summary.status) + '</span><strong>Supervision branch · ' + escapeHtml(entry.target) + '</strong></div><div class=\"runtime-note\">' + escapeHtml(entry.summary.status) + (entry.batch_id ? ' · batch ' + escapeHtml(entry.batch_id) : '') + (entry.execution_status ? ' · items ' + escapeHtml(labelStatus(entry.execution_status)) : '') + '</div></div>'",
     "}",
     "function renderRuntimeSummary(runtime) {",
     "  if (!runtime) return '<div class=\"empty\">No runtime summary is available for this workstream.</div>'",
@@ -285,7 +285,7 @@ export function renderDashboardClientScript(repoRoot: string): string {
     "  return runtime.entries.map((entry) => renderRuntimeEntry(entry)).join('')",
     "}",
     "function renderTreeRow(node, depth) {",
-    "  const countLabel = node.taskCount + ' task' + (node.taskCount === 1 ? '' : 's')",
+    "  const countLabel = node.itemCount + ' item' + (node.itemCount === 1 ? '' : 's')",
     "  const note = node.kind === 'batch' && node.runtimeOverlay ? node.runtimeOverlay.text : ''",
     "  const assignee = node.assignedAgent ? ' · @' + node.assignedAgent : ''",
     "  return '<li class=\"tree-row\" data-kind=\"' + escapeHtml(node.kind) + '\" style=\"--tree-depth:' + escapeHtml(String(depth)) + '\"><span class=\"tree-kind\">' + escapeHtml(node.kind) + '</span><span class=\"badge\" data-status=\"' + escapeHtml(node.status) + '\">' + escapeHtml(labelStatus(node.status)) + '</span><strong>' + escapeHtml(node.displayLabel) + '</strong><span class=\"tree-meta\">' + escapeHtml(countLabel + assignee) + '</span>' + (note ? '<span class=\"tree-note\">' + escapeHtml(note) + '</span>' : '') + '</li>'",
@@ -295,10 +295,9 @@ export function renderDashboardClientScript(repoRoot: string): string {
     "  if (node.kind === 'workstream') { if (node.runtimeNotice) rows.push('<li class=\"tree-row tree-row-notice\"><span class=\"tree-kind\">runtime</span><span class=\"tree-note\">' + escapeHtml(node.runtimeNotice.text) + '</span></li>'); for (const stage of node.stages) collectTreeRows(stage, 0, rows) }",
     "  else if (node.kind === 'stage') { for (const batch of node.batches) collectTreeRows(batch, 1, rows) }",
     "  else if (node.kind === 'batch') { for (const thread of node.threads) collectTreeRows(thread, 2, rows) }",
-    "  else if (node.kind === 'thread') { for (const task of node.tasks) collectTreeRows(task, 3, rows) }",
     "}",
     "function renderTree(tree) {",
-    "  if (!tree || tree.taskCount === 0) return '<div class=\"empty\">No tasks were found in the canonical snapshot.</div>'",
+    "  if (!tree || tree.itemCount === 0) return '<div class=\"empty\">No items were found in the canonical snapshot.</div>'",
     "  const rows = []",
     "  collectTreeRows(tree, 0, rows)",
     "  if (rows.length === 0) return '<div class=\"empty\">No selected work tree levels are visible. Enable a level above to show matching rows.</div>'",
@@ -432,12 +431,12 @@ export function renderDashboardClientScript(repoRoot: string): string {
     "  hideState()",
     "  if (dashboard) dashboard.hidden = false",
     "  if (workstreamTitle) workstreamTitle.textContent = formatWorkstreamTitle(status.stream)",
-    "  if (workstreamMeta) workstreamMeta.textContent = 'tasks.json · generated ' + formatDateTime(snapshot.generated_at)",
+    "  if (workstreamMeta) workstreamMeta.textContent = 'structured runtime · generated ' + formatDateTime(snapshot.generated_at)",
     "  setBadge(statusBadge, status.aggregate_status, labelStatus(status.aggregate_status))",
-    "  if (statusSummary) statusSummary.innerHTML = [renderMetricCard('Tasks', String(status.counts.total), status.counts.done + ' done · ' + status.counts.in_progress + ' active'), renderMetricCard('Completion', status.completion.percent_done + '%', status.completion.done_tasks + ' done · ' + status.completion.remaining_tasks + ' remaining'), renderMetricCard('Workstream', formatWorkstreamTitle(status.stream), status.stream.is_current ? 'current' : 'not current'), renderMetricCard('Generated', formatDateTime(snapshot.generated_at), reason ? 'last refresh: ' + reason : 'canonical snapshot')].join('')",
+    "  if (statusSummary) statusSummary.innerHTML = [renderMetricCard('Items', String(status.counts.total), status.counts.done + ' done · ' + status.counts.in_progress + ' active'), renderMetricCard('Completion', status.completion.percent_done + '%', status.completion.done_items + ' done · ' + status.completion.remaining_items + ' remaining'), renderMetricCard('Workstream', formatWorkstreamTitle(status.stream), status.stream.is_current ? 'current' : 'not current'), renderMetricCard('Generated', formatDateTime(snapshot.generated_at), reason ? 'last refresh: ' + reason : 'canonical snapshot')].join('')",
     "  if (runtimeSummary) runtimeSummary.innerHTML = renderRuntimeSummary(runtime)",
     "  if (statusStages) statusStages.innerHTML = status.stages.length > 0 ? status.stages.map((stage) => renderStageRow(stage)).join('') : '<div class=\"empty\">No stages were found in the canonical snapshot.</div>'",
-    "  if (treeCount) treeCount.textContent = tree.taskCount + ' task' + (tree.taskCount === 1 ? '' : 's')",
+    "  if (treeCount) treeCount.textContent = tree.itemCount + ' item' + (tree.itemCount === 1 ? '' : 's')",
     "  if (treeBody) treeBody.innerHTML = renderTree(tree)",
     "  renderTmuxSessions(observability)",
     "  renderTerminalViews(observability)",
@@ -568,7 +567,7 @@ function renderDashboardShell(config: DashboardServerConfig): string {
       <header class="masthead">
         <p class="eyebrow">Current workstream</p>
         <h1 id="workstream-title">Loading current workstream…</h1>
-        <p id="workstream-meta" class="muted">tasks.json</p>
+        <p id="workstream-meta" class="muted">structured runtime</p>
         <p id="connection-status" class="muted">Connecting to live updates…</p>
       </header>
 
@@ -605,7 +604,7 @@ function renderDashboardShell(config: DashboardServerConfig): string {
               <label><input type="checkbox" data-tree-level="stage" checked /> Stage level</label>
               <label><input type="checkbox" data-tree-level="batch" checked /> Batch level</label>
               <label><input type="checkbox" data-tree-level="thread" checked /> Thread level</label>
-              <label><input type="checkbox" data-tree-level="task" checked /> Task level</label>
+              <label><input type="checkbox" data-tree-level="task" checked /> Item level</label>
             </div>
             <div id="tree-body" class="tree-root"></div>
           </section>

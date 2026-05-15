@@ -5,7 +5,7 @@ import { createTerminalViewRoutes } from "../src/routes/terminal-views.ts"
 
 const baseReadModel: CurrentWorkstreamDashboardReadModel = {
   canonicalState: {
-    source_of_truth: "tasks.json",
+    source_of_truth: "structured_runtime",
     status: {
       stream: {
         id: "002-web-workstream-dashboard",
@@ -29,11 +29,11 @@ const baseReadModel: CurrentWorkstreamDashboardReadModel = {
         done: 0,
       },
       completion: {
-        total_tasks: 1,
-        completed_tasks: 0,
-        cancelled_tasks: 0,
-        done_tasks: 0,
-        remaining_tasks: 1,
+        total_items: 1,
+        completed_items: 0,
+        cancelled_items: 0,
+        done_items: 0,
+        remaining_items: 1,
         percent_complete: 0,
         percent_done: 0,
       },
@@ -47,8 +47,8 @@ const baseReadModel: CurrentWorkstreamDashboardReadModel = {
       displayLabel: "Workstream: 002-web-workstream-dashboard",
       name: "002-web-workstream-dashboard",
       status: "in_progress",
-      taskCount: 1,
-      taskCounts: {
+      itemCount: 1,
+      itemCounts: {
         total: 1,
         pending: 0,
         in_progress: 1,
@@ -112,7 +112,7 @@ const baseReadModel: CurrentWorkstreamDashboardReadModel = {
     schema_version: "1.0.0",
     generated_at: "2026-04-16T12:00:00.000Z",
     canonical_state: {
-      source_of_truth: "tasks.json",
+      source_of_truth: "structured_runtime",
       status: {
         stream: {
           id: "002-web-workstream-dashboard",
@@ -136,11 +136,11 @@ const baseReadModel: CurrentWorkstreamDashboardReadModel = {
           done: 0,
         },
         completion: {
-          total_tasks: 1,
-          completed_tasks: 0,
-          cancelled_tasks: 0,
-          done_tasks: 0,
-          remaining_tasks: 1,
+          total_items: 1,
+          completed_items: 0,
+          cancelled_items: 0,
+          done_items: 0,
+          remaining_items: 1,
           percent_complete: 0,
           percent_done: 0,
         },
@@ -154,8 +154,8 @@ const baseReadModel: CurrentWorkstreamDashboardReadModel = {
         displayLabel: "Workstream: 002-web-workstream-dashboard",
         name: "002-web-workstream-dashboard",
         status: "in_progress",
-        taskCount: 1,
-        taskCounts: {
+        itemCount: 1,
+        itemCounts: {
           total: 1,
           pending: 0,
           in_progress: 1,
@@ -237,11 +237,11 @@ const baseReadModel: CurrentWorkstreamDashboardReadModel = {
       done: 0,
     },
     completion: {
-      total_tasks: 1,
-      completed_tasks: 0,
-      cancelled_tasks: 0,
-      done_tasks: 0,
-      remaining_tasks: 1,
+      total_items: 1,
+      completed_items: 0,
+      cancelled_items: 0,
+      done_items: 0,
+      remaining_items: 1,
       percent_complete: 0,
       percent_done: 0,
     },
@@ -257,8 +257,8 @@ const baseReadModel: CurrentWorkstreamDashboardReadModel = {
     displayLabel: "Workstream: 002-web-workstream-dashboard",
     name: "002-web-workstream-dashboard",
     status: "in_progress",
-    taskCount: 1,
-    taskCounts: {
+    itemCount: 1,
+    itemCounts: {
       total: 1,
       pending: 0,
       in_progress: 1,

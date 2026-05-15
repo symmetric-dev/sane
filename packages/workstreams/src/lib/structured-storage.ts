@@ -16,7 +16,7 @@ import type {
   StreamMetadata,
   StreamStatus,
   SupervisorStateFile,
-  TaskStatus,
+  ExecutionStatus,
   ThreadSynthesis,
 } from "./types.ts"
 
@@ -74,21 +74,6 @@ export interface StructuredThreadRecord {
   promptPath?: string
 }
 
-export interface StructuredTaskRecord {
-  id: string
-  stageId: string
-  batchId: string
-  threadId: string
-  number: number
-  name: string
-  status: TaskStatus
-  createdAt: string
-  updatedAt: string
-  breadcrumb?: string
-  report?: string
-  assignedAgent?: string
-}
-
 /**
  * Canonical hierarchy slice for a workstream's structured state.
  */
@@ -96,7 +81,6 @@ export interface StructuredWorkstreamHierarchy {
   stages: StructuredStageRecord[]
   batches: StructuredBatchRecord[]
   threads: StructuredThreadRecord[]
-  tasks: StructuredTaskRecord[]
 }
 
 /**
@@ -105,6 +89,13 @@ export interface StructuredWorkstreamHierarchy {
 export interface StructuredThreadRuntimeRecord {
   threadId: string
   sessions: SessionRecord[]
+  status?: ExecutionStatus
+  createdAt?: string
+  updatedAt?: string
+  itemName?: string
+  breadcrumb?: string
+  report?: string
+  assignedAgent?: string
   currentSessionId?: string
   opencodeSessionId?: string
   workingAgentSessionId?: string
@@ -112,7 +103,7 @@ export interface StructuredThreadRuntimeRecord {
   synthesis?: ThreadSynthesis
 }
 
-export type StructuredApprovalScope = "plan" | "tasks" | "stage"
+export type StructuredApprovalScope = "plan" | "stage"
 
 /**
  * Scope-keyed approval record used by the adapter boundary.
@@ -127,7 +118,6 @@ export interface StructuredApprovalRecord {
   revokedAt?: string
   revokedReason?: string
   planHash?: string
-  taskCount?: number // legacy/informational snapshot preserved for compatibility
   commitSha?: string
 }
 
@@ -199,19 +189,9 @@ export interface StructuredStorageStateAdapter {
   ): Promise<T>
 }
 
-export interface StructuredTaskMutation {
-  taskId: string
-  status?: TaskStatus
-  breadcrumb?: string
-  report?: string
-  assignedAgent?: string
-  updatedAt?: string
-}
-
 const APPROVAL_SCOPE_ORDER: Record<StructuredApprovalScope, number> = {
   plan: 0,
-  tasks: 1,
-  stage: 2,
+  stage: 1,
 }
 
 function compareStrings(left: string, right: string): number {
@@ -238,6 +218,13 @@ function cloneStructuredThreadRuntimeRecord(
   return {
     threadId: record.threadId,
     sessions: record.sessions.map(cloneSessionRecord),
+    ...(record.status ? { status: record.status } : {}),
+    ...(record.createdAt ? { createdAt: record.createdAt } : {}),
+    ...(record.updatedAt ? { updatedAt: record.updatedAt } : {}),
+    ...(record.itemName ? { itemName: record.itemName } : {}),
+    ...(record.breadcrumb ? { breadcrumb: record.breadcrumb } : {}),
+    ...(record.report ? { report: record.report } : {}),
+    ...(record.assignedAgent ? { assignedAgent: record.assignedAgent } : {}),
     ...(record.currentSessionId ? { currentSessionId: record.currentSessionId } : {}),
     ...(record.opencodeSessionId ? { opencodeSessionId: record.opencodeSessionId } : {}),
     ...(record.workingAgentSessionId
@@ -347,7 +334,6 @@ export function createEmptyStructuredStorageWorkstreamState(
       stages: [],
       batches: [],
       threads: [],
-      tasks: [],
     },
     approvals: [],
     threadRuntime: [],
@@ -427,20 +413,6 @@ export function approvalMetadataToStructuredApprovalRecords(
     },
   ]
 
-  if (approval.tasks) {
-    records.push({
-      streamId,
-      scope: "tasks",
-      status: approval.tasks.status,
-      ...(approval.tasks.approved_at ? { approvedAt: approval.tasks.approved_at } : {}),
-      ...(typeof approval.tasks.task_count === "number"
-        ? { taskCount: approval.tasks.task_count }
-        : {}),
-      ...(approval.tasks.revoked_at ? { revokedAt: approval.tasks.revoked_at } : {}),
-      ...(approval.tasks.revoked_reason ? { revokedReason: approval.tasks.revoked_reason } : {}),
-    })
-  }
-
   for (const [stageNumber, stageApproval] of Object.entries(approval.stages ?? {})) {
     records.push({
       streamId,
@@ -466,7 +438,6 @@ export function structuredApprovalRecordsToApprovalMetadata(
   }
 
   const planRecord = records.find((record) => record.scope === "plan")
-  const tasksRecord = records.find((record) => record.scope === "tasks")
   const stageRecords = records.filter((record) => record.scope === "stage")
 
   const approval: ApprovalMetadata = {
@@ -476,16 +447,6 @@ export function structuredApprovalRecordsToApprovalMetadata(
     ...(planRecord?.revokedAt ? { revoked_at: planRecord.revokedAt } : {}),
     ...(planRecord?.revokedReason ? { revoked_reason: planRecord.revokedReason } : {}),
     ...(planRecord?.planHash ? { plan_hash: planRecord.planHash } : {}),
-  }
-
-  if (tasksRecord) {
-    approval.tasks = {
-      status: tasksRecord.status,
-      ...(tasksRecord.approvedAt ? { approved_at: tasksRecord.approvedAt } : {}),
-      ...(typeof tasksRecord.taskCount === "number" ? { task_count: tasksRecord.taskCount } : {}),
-      ...(tasksRecord.revokedAt ? { revoked_at: tasksRecord.revokedAt } : {}),
-      ...(tasksRecord.revokedReason ? { revoked_reason: tasksRecord.revokedReason } : {}),
-    }
   }
 
   if (stageRecords.length > 0) {
@@ -512,32 +473,6 @@ export function structuredApprovalRecordsToApprovalMetadata(
   }
 
   return approval
-}
-
-export function updateStructuredTask(
-  state: StructuredStorageWorkstreamState,
-  mutation: StructuredTaskMutation,
-): StructuredTaskRecord | null {
-  const task = state.hierarchy.tasks.find((candidate) => candidate.id === mutation.taskId)
-  if (!task) {
-    return null
-  }
-
-  if (mutation.status !== undefined) {
-    task.status = mutation.status
-  }
-  if (mutation.breadcrumb !== undefined) {
-    task.breadcrumb = mutation.breadcrumb
-  }
-  if (mutation.report !== undefined) {
-    task.report = mutation.report
-  }
-  if (mutation.assignedAgent !== undefined) {
-    task.assignedAgent = mutation.assignedAgent
-  }
-  task.updatedAt = mutation.updatedAt ?? new Date().toISOString()
-
-  return task
 }
 
 export function upsertStructuredThreadRuntime(
@@ -634,9 +569,6 @@ export function createStructuredStorageParitySnapshot(args: {
         .sort((left, right) => compareStrings(left.id, right.id)),
       threads: [...args.workstream.hierarchy.threads]
         .map((thread) => ({ ...thread }))
-        .sort((left, right) => compareStrings(left.id, right.id)),
-      tasks: [...args.workstream.hierarchy.tasks]
-        .map((task) => ({ ...task }))
         .sort((left, right) => compareStrings(left.id, right.id)),
     },
     approvals: sortApprovalRecords(args.workstream.approvals.map(cloneApprovalRecord)),

@@ -1,12 +1,12 @@
 import { spawnSync } from "node:child_process"
 
-import { normalizeRuntimeState } from "../lib/tasks.ts"
+import { normalizeRuntimeState } from "../lib/runtime-state.ts"
 import type {
   PersistedBatchStatusFile,
   RootAgentBranchSession,
   StreamMetadata,
   SupervisorRunState,
-  TasksFile,
+  WorkstreamUnifiedRuntimeState,
 } from "../lib/types.ts"
 import type {
   CurrentWorkstreamDashboardObservabilitySnapshot,
@@ -361,18 +361,21 @@ function buildHistoricalSupervisionBranchTarget(
   }
 }
 
-function collectExpectedTargets(stream: StreamMetadata, tasksFile?: TasksFile | null): DashboardTmuxExpectedTarget[] {
-  const runtimeState = normalizeRuntimeState(stream.id, tasksFile?.runtime_state)
+function collectExpectedTargets(
+  stream: StreamMetadata,
+  runtimeState?: WorkstreamUnifiedRuntimeState | null,
+): DashboardTmuxExpectedTarget[] {
+  const normalizedRuntimeState = normalizeRuntimeState(stream.id, runtimeState)
   const targets: DashboardTmuxExpectedTarget[] = []
 
-  for (const batchId of Object.keys(runtimeState.batches).sort()) {
-    const target = buildImplementationTarget(runtimeState.batches[batchId]!)
+  for (const batchId of Object.keys(normalizedRuntimeState.batches).sort()) {
+    const target = buildImplementationTarget(normalizedRuntimeState.batches[batchId]!)
     if (target) {
       targets.push(target)
     }
   }
 
-  const supervision = runtimeState.supervision
+  const supervision = normalizedRuntimeState.supervision
   const consumedBranchIds = new Set<string>()
 
   if (supervision.current_branch_supervision) {
@@ -511,7 +514,7 @@ function createUnavailableTerminalSnapshot(checkedAt: string): DashboardTerminal
 
 export function createDashboardTmuxObservabilitySnapshot(args: {
   stream: StreamMetadata
-  tasksFile?: TasksFile | null
+  runtimeState?: WorkstreamUnifiedRuntimeState | null
   checkedAt?: string
   tmuxInspector?: DashboardTmuxSessionInspector
 }): DashboardTmuxObservabilitySnapshot {
@@ -533,7 +536,7 @@ export function createDashboardTmuxObservabilitySnapshot(args: {
     }
   }
 
-  const expectedTargets = collectExpectedTargets(args.stream, args.tasksFile)
+  const expectedTargets = collectExpectedTargets(args.stream, args.runtimeState)
   const exactSessionNames = new Set(expectedTargets.map((target) => target.sessionName))
   const prefixes = getStreamTmuxPrefixes(args.stream)
   const observedSessions = collectObservedSessions({ inspector, exactSessionNames, prefixes })
@@ -761,14 +764,14 @@ export function createDashboardTmuxObservabilitySnapshot(args: {
 
 export function createCurrentWorkstreamDashboardObservabilitySnapshot(args: {
   stream: StreamMetadata
-  tasksFile?: TasksFile | null
+  runtimeState?: WorkstreamUnifiedRuntimeState | null
   checkedAt?: string
   tmuxInspector?: DashboardTmuxSessionInspector
 }): CurrentWorkstreamDashboardObservabilitySnapshot {
   const checkedAt = args.checkedAt ?? new Date().toISOString()
   const tmux = createDashboardTmuxObservabilitySnapshot({
     stream: args.stream,
-    tasksFile: args.tasksFile,
+    runtimeState: args.runtimeState,
     checkedAt,
     tmuxInspector: args.tmuxInspector,
   })

@@ -8,8 +8,7 @@
 import { main as multiMain } from "./multi.ts"
 import { getRepoRoot } from "../lib/repo.ts"
 import { loadIndex, getResolvedStream } from "../lib/index.ts"
-import { readTasksFile } from "../lib/tasks.ts"
-import { findNextIncompleteBatch, findNextIncompleteBatchFromThreads } from "./multi.ts"
+import { findNextIncompleteBatchFromThreads } from "./multi.ts"
 import { loadThreads } from "../lib/threads.ts"
 import { queryThreadsForWorkstream, type HierarchyThreadQueryRecord } from "../lib/hierarchy-query.ts"
 import {
@@ -17,7 +16,7 @@ import {
   displayThreadStatusTable,
   type ThreadStatus,
 } from "../lib/interactive.ts"
-import type { Task, ThreadMetadata } from "../lib/types.ts"
+import type { ThreadMetadata } from "../lib/types.ts"
 
 interface ContinueCliArgs {
   repoRoot?: string
@@ -136,39 +135,7 @@ export function parseCliArgs(argv: string[]): ContinueCliArgs | null {
   return parsed
 }
 
-function getThreadTaskMapForBatch(tasks: Task[], batchId: string): Map<string, Task[]> {
-  const threadMap = new Map<string, Task[]>()
-
-  for (const task of tasks) {
-    const parts = task.id.split(".")
-    if (parts.length < 3) continue
-
-    const taskBatchId = `${parts[0]}.${parts[1]}`
-    if (taskBatchId !== batchId) continue
-
-    const threadId = `${parts[0]}.${parts[1]}.${parts[2]}`
-    if (!threadMap.has(threadId)) {
-      threadMap.set(threadId, [])
-    }
-    threadMap.get(threadId)!.push(task)
-  }
-
-  return threadMap
-}
-
-function getLastLegacySession(tasks: Task[]) {
-  for (let i = tasks.length - 1; i >= 0; i--) {
-    const sessions = tasks[i]?.sessions
-    if (sessions && sessions.length > 0) {
-      return sessions[sessions.length - 1]
-    }
-  }
-
-  return undefined
-}
-
-function findIncompleteThreadViewsInBatch(
-  tasks: Task[],
+export function findIncompleteThreadViewsInBatch(
   batchId: string,
   threadViews: HierarchyThreadQueryRecord[],
   threadMetadata: ThreadMetadata[] = [],
@@ -178,46 +145,14 @@ function findIncompleteThreadViewsInBatch(
   return threadViews
     .filter((thread) => thread.batchId === batchId)
     .filter((thread) => {
-      const threadTasks = tasks.filter((task) => task.id.startsWith(`${thread.threadId}.`))
-      const hasSessionHistory =
-        (threadMetadataMap.get(thread.threadId)?.sessions.length ?? 0) > 0 ||
-        threadTasks.some((task) => (task.sessions?.length ?? 0) > 0)
+      const hasSessionHistory = (threadMetadataMap.get(thread.threadId)?.sessions.length ?? 0) > 0
 
       return thread.aggregateStatus !== "completed" && hasSessionHistory
     })
     .map((thread) => thread.threadId)
 }
 
-/**
- * Find incomplete or failed threads with session history from the next batch
- */
-export function findIncompleteThreadsInBatch(
-  tasks: Task[],
-  batchId: string,
-  threadMetadata: ThreadMetadata[] = [],
-): string[] {
-  const threadMap = getThreadTaskMapForBatch(tasks, batchId)
-  const threadMetadataMap = new Map(threadMetadata.map((thread) => [thread.threadId, thread]))
-
-  const incompleteThreads: string[] = []
-  for (const [threadId, threadTasks] of threadMap.entries()) {
-    const allCompleted = threadTasks.every(
-      (t) => t.status === "completed" || t.status === "cancelled",
-    )
-    const hasSessionHistory =
-      (threadMetadataMap.get(threadId)?.sessions.length ?? 0) > 0 ||
-      threadTasks.some((t) => (t.sessions?.length ?? 0) > 0)
-
-    if (!allCompleted && hasSessionHistory) {
-      incompleteThreads.push(threadId)
-    }
-  }
-
-  return incompleteThreads.sort()
-}
-
 export function buildHeadlessThreadStatuses(
-  tasks: Task[],
   threadIds: string[],
   threadMetadata: ThreadMetadata[] = [],
   threadViews: HierarchyThreadQueryRecord[] = [],
@@ -226,30 +161,19 @@ export function buildHeadlessThreadStatuses(
   const threadViewMap = new Map(threadViews.map((thread) => [thread.threadId, thread]))
 
   return threadIds.map((threadId) => {
-    const threadTasks = tasks.filter((task) => task.id.startsWith(`${threadId}.`))
-    const firstTask = threadTasks[0]
     const meta = threadMetadataMap.get(threadId)
     const threadView = threadViewMap.get(threadId)
-    const legacySession = getLastLegacySession(threadTasks)
-    const lastSession =
-      meta && meta.sessions.length > 0
-        ? meta.sessions[meta.sessions.length - 1]
-        : legacySession
-    const allCompleted = threadTasks.every(
-      (task) => task.status === "completed" || task.status === "cancelled",
-    )
+    const lastSession = meta && meta.sessions.length > 0 ? meta.sessions[meta.sessions.length - 1] : undefined
 
     return {
       threadId,
-      threadName: threadView?.threadName || firstTask?.thread_name || "(unknown)",
-      status: (threadView?.aggregateStatus === "completed" || allCompleted)
+      threadName: threadView?.threadName || "(unknown)",
+      status: threadView?.aggregateStatus === "completed"
         ? "completed"
         : lastSession?.status === "failed"
           ? "failed"
           : "incomplete",
-      sessionsCount:
-        meta?.sessions.length ??
-        threadTasks.reduce((count, task) => count + (task.sessions?.length ?? 0), 0),
+      sessionsCount: meta?.sessions.length ?? 0,
       lastAgent: lastSession?.agentName,
     }
   })
@@ -293,22 +217,14 @@ export async function main(argv: string[] = process.argv): Promise<void> {
     process.exit(1)
   }
 
-  // Load tasks and find next incomplete batch
-  const tasksFile = readTasksFile(repoRoot, stream.id)
-  if (!tasksFile) {
-    console.error(`Error: No tasks found for stream ${stream.id}`)
+  const threadViews = queryThreadsForWorkstream(repoRoot, stream.id)
+  if (threadViews.length === 0) {
+    console.error(`Error: No canonical execution hierarchy found for stream ${stream.id}`)
+    console.error(`\nHint: Run 'work approve plan' to initialize the execution hierarchy for this batch.`)
     process.exit(1)
   }
 
-  let threadViews: ReturnType<typeof queryThreadsForWorkstream> = []
-  try {
-    threadViews = queryThreadsForWorkstream(repoRoot, stream.id)
-  } catch {
-    threadViews = []
-  }
-  const nextBatch =
-    findNextIncompleteBatchFromThreads(threadViews) ??
-    findNextIncompleteBatch(tasksFile.tasks)
+  const nextBatch = findNextIncompleteBatchFromThreads(threadViews)
   if (!nextBatch) {
     console.log("All batches are complete! Nothing to continue.")
     process.exit(0)
@@ -316,15 +232,11 @@ export async function main(argv: string[] = process.argv): Promise<void> {
 
   // Check for incomplete/failed threads with session history in the next batch
   const threadMetadata = loadThreads(repoRoot, stream.id)?.threads ?? []
-  const incompleteThreads =
-    threadViews.length > 0
-      ? findIncompleteThreadViewsInBatch(
-          tasksFile.tasks,
-          nextBatch,
-          threadViews,
-          threadMetadata,
-        )
-      : findIncompleteThreadsInBatch(tasksFile.tasks, nextBatch, threadMetadata)
+  const incompleteThreads = findIncompleteThreadViewsInBatch(
+    nextBatch,
+    threadViews,
+    threadMetadata,
+  )
   const headlessAction = resolveHeadlessContinueAction(incompleteThreads)
   
   if (incompleteThreads.length > 0) {
@@ -332,7 +244,6 @@ export async function main(argv: string[] = process.argv): Promise<void> {
     console.log(`\nFound ${incompleteThreads.length} incomplete/failed thread(s) with session history in batch ${nextBatch}:\n`)
     
     const threadStatuses = buildHeadlessThreadStatuses(
-      tasksFile.tasks,
       incompleteThreads,
       threadMetadata,
       threadViews.filter((thread) => thread.batchId === nextBatch),

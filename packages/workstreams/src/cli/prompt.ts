@@ -63,7 +63,7 @@ Description:
   thread. The prompt includes:
   - Thread identity/agent context from canonical thread query state when available
   - Thread summary and details from PLAN.md
-  - Compatibility task details attached to the thread
+  - Attached execution state and context for the thread
   - Stage definition and constitution
   - Parallel threads for awareness
 

@@ -5,15 +5,16 @@
  */
 
 import type {
-  Task,
-  TaskStatus,
+  ExecutionItem,
+  ExecutionStatus,
   StreamStatus,
   ProgressReport,
   StageReport,
   ChangelogEntry,
   ExportFormat,
 } from "./types.ts"
-import { getTasks, groupTasks, parseTaskId } from "./tasks.ts"
+import { listThreadExecutionItems, groupThreadExecutionItems } from "./thread-execution.ts"
+import { parseExecutionItemId } from "./execution-ids.ts"
 import { loadIndex, findStream } from "./index.ts"
 import { getStreamStatus } from "./status.ts"
 import { evaluateStream } from "./metrics.ts"
@@ -32,14 +33,14 @@ export function generateReport(
     throw new Error(`Workstream "${streamId}" not found`)
   }
 
-  const tasks = getTasks(repoRoot, stream.id)
+  const tasks = listThreadExecutionItems(repoRoot, stream.id)
   const metrics = evaluateStream(repoRoot, stream.id)
   const status = getStreamStatus(repoRoot, stream)
 
   // Group tasks by stage
-  const tasksByStage = new Map<number, Task[]>()
+  const tasksByStage = new Map<number, ExecutionItem[]>()
   for (const task of tasks) {
-    const { stage } = parseTaskId(task.id)
+    const { stage } = parseExecutionItemId(task.id)
     if (!tasksByStage.has(stage)) {
       tasksByStage.set(stage, [])
     }
@@ -52,21 +53,21 @@ export function generateReport(
 
   for (const stageNum of stageNumbers) {
     const stageTasks = tasksByStage.get(stageNum)!
-    const firstTask = stageTasks[0]
+    const firstItem = stageTasks[0]
 
     // Count unique batches and threads
-    const batches = new Set(stageTasks.map((t) => parseTaskId(t.id).batch))
+    const batches = new Set(stageTasks.map((t) => parseExecutionItemId(t.id).batch))
     const threads = new Set(stageTasks.map((t) => {
-      const { batch, thread } = parseTaskId(t.id)
+      const { batch, thread } = parseExecutionItemId(t.id)
       return `${batch}.${thread}`
     }))
 
     stageReports.push({
       stageNumber: stageNum,
-      stageName: firstTask?.stage_name ?? `Stage ${stageNum}`,
+      stageName: firstItem?.stageName ?? `Stage ${stageNum}`,
       batchCount: batches.size,
       threadCount: threads.size,
-      taskCount: stageTasks.length,
+      itemCount: stageTasks.length,
       completedCount: stageTasks.filter((t) => t.status === "completed").length,
       blockedCount: stageTasks.filter((t) => t.status === "blocked").length,
       inProgressCount: stageTasks.filter((t) => t.status === "in_progress")
@@ -101,7 +102,7 @@ export function formatReportMarkdown(report: ProgressReport): string {
   lines.push(``)
   lines.push(`| Metric | Value |`)
   lines.push(`|--------|-------|`)
-  lines.push(`| Total Tasks | ${report.metrics.totalTasks} |`)
+  lines.push(`| Total Items | ${report.metrics.totalItems} |`)
   lines.push(
     `| Completed | ${report.metrics.statusCounts.completed} (${report.metrics.completionRate.toFixed(1)}%) |`
   )
@@ -120,15 +121,15 @@ export function formatReportMarkdown(report: ProgressReport): string {
 
     for (const stage of report.stageReports) {
       const completionPct =
-        stage.taskCount > 0
-          ? ((stage.completedCount / stage.taskCount) * 100).toFixed(0)
+        stage.itemCount > 0
+          ? ((stage.completedCount / stage.itemCount) * 100).toFixed(0)
           : 0
       lines.push(`### Stage ${stage.stageNumber}: ${stage.stageName}`)
       lines.push(``)
       lines.push(`- **Batches:** ${stage.batchCount}`)
       lines.push(`- **Threads:** ${stage.threadCount}`)
       lines.push(
-        `- **Tasks:** ${stage.completedCount}/${stage.taskCount} (${completionPct}%)`
+        `- **Items:** ${stage.completedCount}/${stage.itemCount} (${completionPct}%)`
       )
       if (stage.inProgressCount > 0) {
         lines.push(`- **In Progress:** ${stage.inProgressCount}`)
@@ -144,32 +145,32 @@ export function formatReportMarkdown(report: ProgressReport): string {
 }
 
 /**
- * Generate changelog entries from completed tasks
+ * Generate changelog entries from completed execution items
  */
 export function generateChangelog(
   repoRoot: string,
   streamId: string,
   since?: Date
 ): ChangelogEntry[] {
-  const tasks = getTasks(repoRoot, streamId, "completed")
+  const tasks = listThreadExecutionItems(repoRoot, streamId, "completed")
 
   let filteredTasks = tasks
 
   if (since) {
-    filteredTasks = tasks.filter((t) => new Date(t.updated_at) >= since)
+    filteredTasks = tasks.filter((t) => new Date(t.updatedAt) >= since)
   }
 
   // Sort by completion date (most recent first)
   filteredTasks.sort(
-    (a, b) => new Date(b.updated_at).getTime() - new Date(a.updated_at).getTime()
+    (a, b) => new Date(b.updatedAt).getTime() - new Date(a.updatedAt).getTime()
   )
 
   return filteredTasks.map((task) => ({
-    taskId: task.id,
-    taskName: task.name,
-    stageName: task.stage_name,
-    threadName: task.thread_name,
-    completedAt: task.updated_at,
+    itemId: task.id,
+    itemName: task.name,
+    stageName: task.stageName,
+    threadName: task.threadName,
+    completedAt: task.updatedAt,
   }))
 }
 
@@ -178,13 +179,13 @@ export function generateChangelog(
  */
 export function formatChangelogMarkdown(entries: ChangelogEntry[]): string {
   if (entries.length === 0) {
-    return "No completed tasks found."
+    return "No completed items found."
   }
 
   const lines: string[] = []
   lines.push(`# Changelog`)
   lines.push(``)
-  lines.push(`_${entries.length} completed tasks_`)
+  lines.push(`_${entries.length} completed items_`)
   lines.push(``)
 
   // Group by date
@@ -201,7 +202,7 @@ export function formatChangelogMarkdown(entries: ChangelogEntry[]): string {
     lines.push(`## ${date}`)
     lines.push(``)
     for (const entry of dateEntries) {
-      lines.push(`- **[${entry.taskId}]** ${entry.taskName}`)
+      lines.push(`- **[${entry.itemId}]** ${entry.itemName}`)
       lines.push(`  - Stage: ${entry.stageName}`)
       lines.push(`  - Thread: ${entry.threadName}`)
     }
@@ -215,26 +216,26 @@ export function formatChangelogMarkdown(entries: ChangelogEntry[]): string {
  * Export workstream data as CSV
  */
 export function exportStreamAsCSV(repoRoot: string, streamId: string): string {
-  const tasks = getTasks(repoRoot, streamId)
+  const tasks = listThreadExecutionItems(repoRoot, streamId)
 
   const headers = [
-    "task_id",
+    "item_id",
     "name",
-    "stage_name",
-    "thread_name",
+     "stageName",
+     "threadName",
     "status",
-    "created_at",
-    "updated_at",
+     "createdAt",
+     "updatedAt",
   ]
 
   const rows = tasks.map((task) => [
     task.id,
     `"${task.name.replace(/"/g, '""')}"`,
-    `"${task.stage_name.replace(/"/g, '""')}"`,
-    `"${task.thread_name.replace(/"/g, '""')}"`,
+      `"${task.stageName.replace(/"/g, '""')}"`,
+      `"${task.threadName.replace(/"/g, '""')}"`,
     task.status,
-    task.created_at,
-    task.updated_at,
+      task.createdAt,
+      task.updatedAt,
   ])
 
   return [headers.join(","), ...rows.map((r) => r.join(","))].join("\n")
@@ -251,7 +252,7 @@ export function exportStreamAsJSON(repoRoot: string, streamId: string): string {
     throw new Error(`Workstream "${streamId}" not found`)
   }
 
-  const tasks = getTasks(repoRoot, stream.id)
+  const tasks = listThreadExecutionItems(repoRoot, stream.id)
   const metrics = evaluateStream(repoRoot, stream.id)
   const status = getStreamStatus(repoRoot, stream)
 
@@ -277,8 +278,8 @@ export function exportStreamAsJSON(repoRoot: string, streamId: string): string {
  */
 export function exportStreamAsMarkdown(repoRoot: string, streamId: string): string {
   const report = generateReport(repoRoot, streamId)
-  const tasks = getTasks(repoRoot, streamId)
-  const grouped = groupTasks(tasks, { byBatch: false })
+  const tasks = listThreadExecutionItems(repoRoot, streamId)
+  const grouped = groupThreadExecutionItems(tasks, { byBatch: false })
 
   const lines: string[] = []
 
@@ -287,12 +288,12 @@ export function exportStreamAsMarkdown(repoRoot: string, streamId: string): stri
   lines.push(``)
   lines.push(`**Status:** ${report.status}`)
   lines.push(
-    `**Progress:** ${report.metrics.statusCounts.completed}/${report.metrics.totalTasks} tasks (${report.metrics.completionRate.toFixed(0)}%)`
+    `**Progress:** ${report.metrics.statusCounts.completed}/${report.metrics.totalItems} items (${report.metrics.completionRate.toFixed(0)}%)`
   )
   lines.push(``)
 
-  // Task list by stage/thread
-  lines.push(`## Tasks`)
+  // Execution items grouped by stage/thread
+  lines.push(`## Execution Items`)
   lines.push(``)
 
   for (const [stageName, threads] of grouped) {
@@ -354,21 +355,21 @@ export function generateSummary(
   const m = report.metrics
 
   if (!detailed) {
-    return `${report.streamName}: ${m.statusCounts.completed}/${m.totalTasks} tasks completed (${m.completionRate.toFixed(0)}%), ${m.statusCounts.in_progress} in progress, ${m.statusCounts.blocked} blocked.`
+    return `${report.streamName}: ${m.statusCounts.completed}/${m.totalItems} items completed (${m.completionRate.toFixed(0)}%), ${m.statusCounts.in_progress} in progress, ${m.statusCounts.blocked} blocked.`
   }
 
   const lines: string[] = []
   lines.push(
-    `**${report.streamName}** is ${report.status} with ${m.completionRate.toFixed(0)}% of tasks completed.`
+    `**${report.streamName}** is ${report.status} with ${m.completionRate.toFixed(0)}% of items completed.`
   )
   lines.push(``)
   lines.push(
-    `Out of ${m.totalTasks} total tasks, ${m.statusCounts.completed} are completed, ${m.statusCounts.in_progress} are in progress, and ${m.statusCounts.pending} are pending.`
+    `Out of ${m.totalItems} total items, ${m.statusCounts.completed} are completed, ${m.statusCounts.in_progress} are in progress, and ${m.statusCounts.pending} are pending.`
   )
 
   if (m.statusCounts.blocked > 0) {
     lines.push(
-      ` There are ${m.statusCounts.blocked} blocked tasks that need attention.`
+      ` There are ${m.statusCounts.blocked} blocked items that need attention.`
     )
   }
 
@@ -377,8 +378,8 @@ export function generateSummary(
     lines.push(`The workstream spans ${report.stageReports.length} stages:`)
     for (const stage of report.stageReports) {
       const pct =
-        stage.taskCount > 0
-          ? ((stage.completedCount / stage.taskCount) * 100).toFixed(0)
+        stage.itemCount > 0
+          ? ((stage.completedCount / stage.itemCount) * 100).toFixed(0)
           : 0
       lines.push(
         `- Stage ${stage.stageNumber} (${stage.stageName}): ${pct}% complete`

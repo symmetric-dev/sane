@@ -2,7 +2,7 @@
  * Shared utility functions for workstream management
  */
 
-import type { TaskStatus, StageStatus } from "./types.ts"
+import type { ExecutionStatus, StageStatus } from "./types.ts"
 
 /**
  * Item that can be resolved by name or index
@@ -126,7 +126,7 @@ export function parsePositiveInt(value: string, name: string): number {
 /**
  * Convert status to markdown checkbox
  */
-export function statusToCheckbox(status: TaskStatus): string {
+export function statusToCheckbox(status: ExecutionStatus): string {
   switch (status) {
     case "completed":
       return "[x]"
@@ -144,7 +144,7 @@ export function statusToCheckbox(status: TaskStatus): string {
 /**
  * Parse task status from markdown checkbox
  */
-export function parseTaskStatus(line: string): TaskStatus {
+export function parseExecutionStatus(line: string): ExecutionStatus {
   if (line.includes("[x]") || line.includes("[X]")) return "completed"
   if (line.includes("[~]")) return "in_progress"
   if (line.includes("[!]")) return "blocked"

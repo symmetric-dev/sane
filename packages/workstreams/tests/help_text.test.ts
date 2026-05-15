@@ -2,8 +2,10 @@ import { describe, expect, test } from "bun:test"
 
 import { main as workMain } from "../bin/work.ts"
 import { main as approveMain } from "../src/cli/approve/index.ts"
+import { main as assignMain } from "../src/cli/assign.ts"
 import { main as createMain } from "../src/cli/create.ts"
-import { main as tasksMain } from "../src/cli/tasks.ts"
+import { main as readMain } from "../src/cli/read.ts"
+import { main as updateMain } from "../src/cli/update.ts"
 import { main as validateMain } from "../src/cli/validate.ts"
 import { saveIndex } from "../src/lib/index.ts"
 import type { WorkIndex } from "../src/lib/types.ts"
@@ -49,7 +51,6 @@ describe("draft-first help text", () => {
     expect(output).not.toContain("- files/")
     expect(output).toContain("work plan create --stages 3")
     expect(output).toContain("requires at least one stage")
-    expect(output).not.toContain("tasks.json")
   })
 
   test("validate and approve help reflect draft-plan semantics", async () => {
@@ -65,12 +66,11 @@ describe("draft-first help text", () => {
     expect(approveStderr).toHaveLength(0)
     expect(validateOutput).toContain("work validate requirements")
     expect(validateOutput).toContain("requirements  Validate requirements structure and content")
-    expect(validateOutput).toContain("supported stage-local model")
+    expect(validateOutput).toContain("stage-local workstream model")
     expect(validateOutput).not.toContain("work validate tasks")
-    expect(validateOutput).not.toContain("tasks    Validate TASKS.md structure and content")
     expect(approveOutput).toContain("requires at least one stage")
     expect(approveOutput).toContain("work plan create --stages <n>")
-    expect(approveOutput).toContain("plan approval also initializes execution state directly")
+    expect(approveOutput).toContain("Plan approval also initializes the execution hierarchy directly")
     expect(approveOutput).not.toContain("Usage:\n  work approve tasks")
   })
 
@@ -84,13 +84,14 @@ describe("draft-first help text", () => {
     expect(output).toMatch(/^\s+validate\s+Validate plan or requirements$/m)
     expect(output).toMatch(/^\s+reset-batch-state\s+Reset one batch for a clean rerun$/m)
     expect(output).toMatch(/^\s+list\s+List threads in a workstream \[default\]$/m)
-    expect(output).toMatch(/^\s+read\s+Read thread or compatibility task details$/m)
+    expect(output).toMatch(/^\s+read\s+Read thread details$/m)
     expect(output).toContain("work validate requirements")
     expect(output).not.toMatch(/^\s+tasks\s+/m)
+    expect(output).not.toMatch(/^\s+add-task\s+/m)
     expect(output).not.toMatch(/^\s+context\s+/m)
   })
 
-  test("removed task workflow commands hard error with migration guidance", async () => {
+  test("removed task flags are rejected by thread-first CLIs", async () => {
     const originalExit = process.exit
     const originalRole = process.env.WORKSTREAM_ROLE
     const workspace = createTestWorkstream(`001-removed-task-workflow-${Date.now()}`)
@@ -124,26 +125,19 @@ describe("draft-first help text", () => {
     process.env.WORKSTREAM_ROLE = "USER"
 
     try {
-      const tasksOutput = await captureCliOutput(() => {
+      const assignOutput = await captureCliOutput(async () => {
         try {
-          tasksMain(["bun", "work-tasks", "generate", "--repo-root", workspace.repoRoot])
-        } catch (error) {
-          if (!(error instanceof Error) || error.message !== "Process exited with code 1") {
-            throw error
-          }
-        }
-      })
-
-      const approveOutput = await captureCliOutput(async () => {
-        try {
-          await approveMain([
+          await assignMain([
             "bun",
-            "work-approve",
-            "tasks",
+            "work-assign",
             "--repo-root",
             workspace.repoRoot,
             "--stream",
             workspace.streamId,
+            "--task",
+            "01.01.01.01",
+            "--agent",
+            "default",
           ])
         } catch (error) {
           if (!(error instanceof Error) || error.message !== "Process exited with code 1") {
@@ -152,16 +146,17 @@ describe("draft-first help text", () => {
         }
       })
 
-      const validateOutput = await captureCliOutput(() => {
+      const readOutput = await captureCliOutput(() => {
         try {
-          validateMain([
+          readMain([
             "bun",
-            "work-validate",
-            "tasks",
+            "work-read",
             "--repo-root",
             workspace.repoRoot,
             "--stream",
             workspace.streamId,
+            "--task",
+            "01.01.01.01",
           ])
         } catch (error) {
           if (!(error instanceof Error) || error.message !== "Process exited with code 1") {
@@ -170,12 +165,30 @@ describe("draft-first help text", () => {
         }
       })
 
-      expect(tasksOutput.stderr.join("\n")).toContain("removed in 0.9.0")
-      expect(tasksOutput.stderr.join("\n")).toContain("work approve plan")
-      expect(approveOutput.stderr.join("\n")).toContain("removed in 0.9.0")
-      expect(approveOutput.stderr.join("\n")).toContain("work approve plan")
-      expect(validateOutput.stderr.join("\n")).toContain("removed in 0.9.0")
-      expect(validateOutput.stderr.join("\n")).toContain("work validate plan")
+      const updateOutput = await captureCliOutput(async () => {
+        try {
+          await updateMain([
+            "bun",
+            "work-update",
+            "--repo-root",
+            workspace.repoRoot,
+            "--stream",
+            workspace.streamId,
+            "--task",
+            "01.01.01.01",
+            "--status",
+            "completed",
+          ])
+        } catch (error) {
+          if (!(error instanceof Error) || error.message !== "Process exited with code 1") {
+            throw error
+          }
+        }
+      })
+
+      expect(assignOutput.stderr.join("\n")).toContain("Unknown argument: --task")
+      expect(readOutput.stderr.join("\n")).toContain("Unknown argument: --task")
+      expect(updateOutput.stderr.join("\n")).toContain("Unknown argument: --task")
     } finally {
       cleanupTestWorkstream(workspace)
       if (originalRole === undefined) {
@@ -210,5 +223,12 @@ describe("draft-first help text", () => {
     } finally {
       process.exit = originalExit
     }
+  })
+
+  test("approve help no longer advertises task approval", async () => {
+    const { stdout } = await captureHelpOutput(() => approveMain(["bun", "work-approve", "--help"]))
+    const output = stdout.join("\n")
+    expect(output).not.toContain("work approve tasks")
+    expect(output).not.toContain("Tasks:")
   })
 })

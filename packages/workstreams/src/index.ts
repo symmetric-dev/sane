@@ -23,21 +23,8 @@ export {
   createFilesystemAuthoritativeSqliteStructuredStorageAdapter,
   filesystemAuthoritativeSqliteStructuredStorageAdapter,
   getStructuredStorageAdapter,
-  inspectCriticalWorkflowDualWriteParitySync,
   type FilesystemAuthoritativeSqliteStructuredStorageAdapterOptions,
-  type CriticalWorkflowDualWriteParityInspection,
-  type CriticalWorkflowFilesystemCompatibilityData,
-  type CriticalWorkflowParityDivergence,
-  type CriticalWorkflowParityDivergenceKind,
-  type CriticalWorkflowParityDivergenceReport,
-  type CriticalWorkflowParityDivergenceSummary,
 } from "./lib/storage-adapter.ts"
-export {
-  createCompatibilityIndexProjection,
-  createCompatibilityTasksProjection,
-  rebuildCompatibilityProjectionFromSqlite,
-  type RebuildCompatibilityProjectionResult,
-} from "./lib/compatibility-projection.ts"
 export {
   getStructuredStorageSqlitePath,
   getSqliteStructuredStorageMirrorState,
@@ -77,7 +64,7 @@ export {
   validateStreamName,
   parsePositiveInt,
   statusToCheckbox,
-  parseTaskStatus,
+  parseExecutionStatus,
   parseStageStatus,
   setNestedField,
   getNestedField,
@@ -120,7 +107,7 @@ export {
   formatStreamStatusIcon,
   buildStageStatusSummaries,
   calculateStageStatus,
-  aggregateTaskStatus,
+  aggregateExecutionStatus,
   getRuntimeSummaryEntries,
   getRuntimeSummaryProjection,
 } from "./lib/status.ts"
@@ -178,7 +165,6 @@ export {
   replaceStructuredApprovals,
   replaceStructuredSupervisionState,
   structuredApprovalRecordsToApprovalMetadata,
-  updateStructuredTask,
   upsertStructuredBatchRun,
   upsertStructuredThreadRuntime,
   type StructuredApprovalRecord,
@@ -190,20 +176,10 @@ export {
   type StructuredStorageWorkspaceState,
   type StructuredStorageWorkstreamRecord,
   type StructuredStorageWorkstreamState,
-  type StructuredTaskMutation,
-  type StructuredTaskRecord,
   type StructuredThreadRecord,
   type StructuredThreadRuntimeRecord,
   type StructuredWorkstreamHierarchy,
 } from "./lib/structured-storage.ts"
-
-// Task updates
-export {
-  parseTaskId,
-  updateTask,
-  type UpdateTaskArgs,
-  type UpdateTaskResult,
-} from "./lib/update.ts"
 
 // Stream completion
 export {
@@ -217,30 +193,19 @@ export {
 } from "./lib/complete.ts"
 
 // ============================================
-// EXPORTS FOR PLAN.md + tasks.json SYSTEM
+// Execution hierarchy and runtime state helpers
 // ============================================
 
-// Task operations (tasks.json)
+// Thread/execution ID utilities
 export {
-  getTasksFilePath,
-  createEmptyTasksFile,
-  readTasksFile,
-  writeTasksFile,
-  getTaskById,
-  getTasks,
-  getTasksByThread,
-  updateTaskStatus,
-  addTasks,
-  getTaskCounts,
-  groupTasks,
-  formatTaskId,
-  deleteTask,
-  deleteTasksByStage,
-  deleteTasksByThread,
-  type GroupTasksOptions,
-  type GroupedByStageThread,
-  type GroupedByStageBatchThread,
-} from "./lib/tasks.ts"
+  listThreadExecutionItemsByThread,
+  getThreadExecutionItemCounts,
+  getBatchThreadMetadata,
+  groupThreadExecutionItems,
+  type GroupedThreadExecutionByStageThread,
+  type GroupedThreadExecutionByStageBatchThread,
+} from "./lib/thread-execution.ts"
+export { formatExecutionItemId, parseExecutionItemId } from "./lib/execution-ids.ts"
 
 // Thread runtime metadata
 export {
@@ -254,7 +219,7 @@ export {
   getStreamPreview,
 } from "./lib/stream-parser.ts"
 
-// Consolidation (PLAN.md → tasks.json)
+// Consolidation (PLAN.md validation)
 export {
   getStreamPlanMdPath,
   consolidateStream,
@@ -265,8 +230,8 @@ export {
 export {
   evaluateStream,
   evaluateAllStreams,
-  filterTasks,
-  filterTasksByStatus,
+  filterExecutionItems,
+  filterExecutionItemsByStatus,
   analyzeBlockers,
   formatMetricsOutput,
   formatBlockerAnalysis,

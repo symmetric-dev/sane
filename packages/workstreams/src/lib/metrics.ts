@@ -1,18 +1,18 @@
 /**
  * Metrics and evaluation functions for workstreams
  *
- * Provides functions to calculate metrics, filter tasks, and analyze blockers.
+ * Provides functions to calculate metrics, filter execution items, and analyze blockers.
  */
 
 import type {
-  Task,
-  TaskStatus,
+  ExecutionItem,
+  ExecutionStatus,
   EvaluationMetrics,
   BlockerAnalysis,
   FilterResult,
   StreamMetadata,
 } from "./types.ts"
-import { getTasks, parseTaskId } from "./tasks.ts"
+import { listThreadExecutionItems } from "./thread-execution.ts"
 import { loadIndex, resolveStreamId, findStream } from "./index.ts"
 
 /**
@@ -29,9 +29,9 @@ export function evaluateStream(
     throw new Error(`Workstream "${streamId}" not found`)
   }
 
-  const tasks = getTasks(repoRoot, stream.id)
+  const items = listThreadExecutionItems(repoRoot, stream.id)
 
-  const statusCounts: Record<TaskStatus, number> = {
+  const statusCounts: Record<ExecutionStatus, number> = {
     pending: 0,
     in_progress: 0,
     completed: 0,
@@ -39,11 +39,11 @@ export function evaluateStream(
     cancelled: 0,
   }
 
-  for (const task of tasks) {
-    statusCounts[task.status]++
+  for (const item of items) {
+    statusCounts[item.status]++
   }
 
-  const total = tasks.length
+  const total = items.length
   const completionRate = total > 0 ? (statusCounts.completed / total) * 100 : 0
   const blockedRate = total > 0 ? (statusCounts.blocked / total) * 100 : 0
   const cancelledRate = total > 0 ? (statusCounts.cancelled / total) * 100 : 0
@@ -51,7 +51,7 @@ export function evaluateStream(
   return {
     streamId: stream.id,
     streamName: stream.name,
-    totalTasks: total,
+    totalItems: total,
     statusCounts,
     completionRate,
     blockedRate,
@@ -69,40 +69,40 @@ export function evaluateAllStreams(repoRoot: string): EvaluationMetrics[] {
 }
 
 /**
- * Filter tasks by name pattern
+ * Filter execution items by name pattern
  */
-export function filterTasks(
-  tasks: Task[],
+export function filterExecutionItems(
+  items: ExecutionItem[],
   pattern: string,
   isRegex: boolean = false
 ): FilterResult {
-  let matchingTasks: Task[]
+  let matchingItems: ExecutionItem[]
 
   if (isRegex) {
     const regex = new RegExp(pattern, "i")
-    matchingTasks = tasks.filter((t) => regex.test(t.name))
+    matchingItems = items.filter((item) => regex.test(item.name))
   } else {
     const lowerPattern = pattern.toLowerCase()
-    matchingTasks = tasks.filter((t) =>
-      t.name.toLowerCase().includes(lowerPattern)
+    matchingItems = items.filter((item) =>
+      item.name.toLowerCase().includes(lowerPattern)
     )
   }
 
   return {
-    matchingTasks,
-    matchCount: matchingTasks.length,
-    totalTasks: tasks.length,
+    matchingItems,
+    matchCount: matchingItems.length,
+    totalItems: items.length,
   }
 }
 
 /**
- * Filter tasks by status
+ * Filter execution items by status
  */
-export function filterTasksByStatus(
-  tasks: Task[],
-  statuses: TaskStatus[]
-): Task[] {
-  return tasks.filter((t) => statuses.includes(t.status))
+export function filterExecutionItemsByStatus(
+  items: ExecutionItem[],
+  statuses: ExecutionStatus[]
+): ExecutionItem[] {
+  return items.filter((item) => statuses.includes(item.status))
 }
 
 /**
@@ -112,32 +112,34 @@ export function analyzeBlockers(
   repoRoot: string,
   streamId: string
 ): BlockerAnalysis {
-  const tasks = getTasks(repoRoot, streamId)
-  const blockedTasks = tasks.filter((t) => t.status === "blocked")
+  const items = listThreadExecutionItems(repoRoot, streamId)
+  const blockedItems = items.filter((item) => item.status === "blocked")
 
-  const blockersByStage: Record<number, Task[]> = {}
-  const blockersByBatch: Record<string, Task[]> = {}
-  for (const task of blockedTasks) {
-    const { stage, batch } = parseTaskId(task.id)
+  const blockersByStage: Record<number, ExecutionItem[]> = {}
+  const blockersByBatch: Record<string, ExecutionItem[]> = {}
+  for (const item of blockedItems) {
+    const [stageId = "00", batchNumber = "00"] = item.id.split(".")
+    const stage = Number.parseInt(stageId, 10) || 0
+    const batch = Number.parseInt(batchNumber, 10) || 0
     // By stage
     if (!blockersByStage[stage]) {
       blockersByStage[stage] = []
     }
-    blockersByStage[stage].push(task)
+    blockersByStage[stage].push(item)
 
     // By batch (stage.batch key)
     const batchKey = `${stage}.${batch.toString().padStart(2, "0")}`
     if (!blockersByBatch[batchKey]) {
       blockersByBatch[batchKey] = []
     }
-    blockersByBatch[batchKey].push(task)
+    blockersByBatch[batchKey].push(item)
   }
 
   const blockedPercentage =
-    tasks.length > 0 ? (blockedTasks.length / tasks.length) * 100 : 0
+    items.length > 0 ? (blockedItems.length / items.length) * 100 : 0
 
   return {
-    blockedTasks,
+    blockedItems,
     blockersByStage,
     blockersByBatch,
     blockedPercentage,
@@ -152,13 +154,13 @@ export function formatMetricsOutput(
   options: { compact?: boolean } = {}
 ): string {
   if (options.compact) {
-    return `${metrics.streamName}: ${metrics.statusCounts.completed}/${metrics.totalTasks} (${metrics.completionRate.toFixed(0)}%) | ${metrics.statusCounts.blocked} blocked | ${metrics.statusCounts.in_progress} in progress`
+    return `${metrics.streamName}: ${metrics.statusCounts.completed}/${metrics.totalItems} items (${metrics.completionRate.toFixed(0)}%) | ${metrics.statusCounts.blocked} blocked | ${metrics.statusCounts.in_progress} in progress`
   }
 
   const lines: string[] = []
   lines.push(`Workstream: ${metrics.streamId} (${metrics.streamName})`)
   lines.push(``)
-  lines.push(`Tasks: ${metrics.totalTasks}`)
+  lines.push(`Items: ${metrics.totalItems}`)
   lines.push(`  Completed:   ${metrics.statusCounts.completed} (${metrics.completionRate.toFixed(1)}%)`)
   lines.push(`  In Progress: ${metrics.statusCounts.in_progress}`)
   lines.push(`  Pending:     ${metrics.statusCounts.pending}`)
@@ -172,12 +174,12 @@ export function formatMetricsOutput(
  * Format blocker analysis for display
  */
 export function formatBlockerAnalysis(analysis: BlockerAnalysis): string {
-  if (analysis.blockedTasks.length === 0) {
-    return "No blocked tasks."
+  if (analysis.blockedItems.length === 0) {
+    return "No blocked items."
   }
 
   const lines: string[] = []
-  lines.push(`Blocked Tasks: ${analysis.blockedTasks.length} (${analysis.blockedPercentage.toFixed(1)}%)`)
+  lines.push(`Blocked Items: ${analysis.blockedItems.length} (${analysis.blockedPercentage.toFixed(1)}%)`)
   lines.push(``)
 
   const stages = Object.keys(analysis.blockersByStage)
@@ -204,7 +206,7 @@ export function aggregateMetrics(
   const aggregate: EvaluationMetrics = {
     streamId: "all",
     streamName: "All Workstreams",
-    totalTasks: 0,
+    totalItems: 0,
     statusCounts: {
       pending: 0,
       in_progress: 0,
@@ -219,7 +221,7 @@ export function aggregateMetrics(
   }
 
   for (const metrics of metricsList) {
-    aggregate.totalTasks += metrics.totalTasks
+    aggregate.totalItems += metrics.totalItems
     aggregate.statusCounts.pending += metrics.statusCounts.pending
     aggregate.statusCounts.in_progress += metrics.statusCounts.in_progress
     aggregate.statusCounts.completed += metrics.statusCounts.completed
@@ -228,13 +230,13 @@ export function aggregateMetrics(
     aggregate.inProgressCount += metrics.inProgressCount
   }
 
-  if (aggregate.totalTasks > 0) {
+  if (aggregate.totalItems > 0) {
     aggregate.completionRate =
-      (aggregate.statusCounts.completed / aggregate.totalTasks) * 100
+      (aggregate.statusCounts.completed / aggregate.totalItems) * 100
     aggregate.blockedRate =
-      (aggregate.statusCounts.blocked / aggregate.totalTasks) * 100
+      (aggregate.statusCounts.blocked / aggregate.totalItems) * 100
     aggregate.cancelledRate =
-      (aggregate.statusCounts.cancelled / aggregate.totalTasks) * 100
+      (aggregate.statusCounts.cancelled / aggregate.totalItems) * 100
   }
 
   return aggregate

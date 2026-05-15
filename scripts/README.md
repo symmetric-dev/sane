@@ -180,8 +180,8 @@ Use `preview-grid.ts` to visually debug the layout.
 ### Session tracking not working
 
 Check:
-- `tasks.json` → `runtime_state.threads` has session records
-- `threads.json` only if validating legacy migration/compatibility behavior
+- `workstream-state.json` → `runtime_state.threads` has session records
+- `threads.json` only if validating older legacy exports
 - Session IDs match if both canonical and legacy files are being compared
 
 ---

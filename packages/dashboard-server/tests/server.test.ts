@@ -13,6 +13,7 @@ import {
   CURRENT_WORKSTREAM_TREE_ROUTE,
   type CurrentWorkstreamDashboardSnapshot,
 } from "../../workstreams/src/internal/dashboard-contracts.ts"
+import type { WorkstreamStatusRuntimeSummaryProjection } from "../../workstreams/src/lib/types.ts"
 import {
   getResolvedCurrentWorkstreamDashboardObservabilitySnapshot,
   getResolvedWorkstreamStatusSnapshot,
@@ -69,119 +70,130 @@ async function createDashboardFixtureRepo(args: {
     ),
   )
   await writeFile(
-    join(tempDir, "work", streamId, "tasks.json"),
+    join(tempDir, "work", streamId, "workstream-state.json"),
     JSON.stringify(
       {
-        version: "2.0.0",
-        stream_id: streamId,
-        last_updated: "2026-04-15T12:00:00.000Z",
-        runtime_summary: {
-          updated_at: "2026-04-15T12:00:00.000Z",
-          batches: {
-            "02.02": {
-              batch_id: "02.02",
-              run_id: "batch-run-1",
-              status: "running",
-              updated_at: "2026-04-15T12:00:00.000Z",
-              started_at: "2026-04-15T11:30:00.000Z",
-              thread_summary: {
-                total: 1,
-                pending: 0,
-                running: 1,
-                completed: 0,
-                failed: 0,
-              },
+        version: "1.0.0",
+        streamId,
+        hierarchy: {
+          stages: [
+            {
+              id: "02",
+              number: 2,
+              name: "Build the Bun server package and backend snapshot pipeline",
             },
-          },
-          supervision: {
-            updated_at: "2026-04-15T12:00:00.000Z",
-            active_run_id: "supervision-run-1",
-            active_run: {
-              run_id: "supervision-run-1",
-              stage_id: "02",
-              status: "running",
-              updated_at: "2026-04-15T12:00:00.000Z",
-              started_at: "2026-04-15T11:45:00.000Z",
-              current_batch_id: "02.02",
-              review_passes: 1,
-              branch_session_id: "branch-session-1",
-              root_session_id: "root-session-1",
+          ],
+          batches: [
+            {
+              id: "02.02",
+              stageId: "02",
+              number: 2,
+              name: "Implement canonical snapshot assembly and tmux discovery",
             },
-          },
+          ],
+          threads: [
+            {
+              id: "02.02.01",
+              stageId: "02",
+              batchId: "02.02",
+              number: 1,
+              name: "Current-workstream snapshot assembly",
+            },
+            {
+              id: "02.02.02",
+              stageId: "02",
+              batchId: "02.02",
+              number: 2,
+              name: "tmux discovery and correlation",
+            },
+          ],
         },
-        ...(args.includeRuntimeState
-          ? {
-              runtime_state: {
-                version: "1.0.0",
-                last_updated: "2026-04-15T12:00:00.000Z",
-                threads: [],
-                batches: {
-                  "02.02": {
-                    version: "1.0.0",
-                    streamId,
-                    batchId: "02.02",
-                    runId: "batch-run-1",
-                    tmuxSessionName: "002-implementation-real-session",
-                    mode: "headless",
-                    status: "running",
-                    startedAt: "2026-04-15T11:30:00.000Z",
-                    updatedAt: "2026-04-15T12:00:00.000Z",
-                    summary: {
-                      total: 1,
-                      pending: 0,
-                      running: 1,
-                      completed: 0,
-                      failed: 0,
-                    },
-                    threads: [
-                      {
-                        threadId: "02.02.02",
-                        threadName: "tmux discovery and correlation",
-                        firstTaskId: "02.02.02.01",
-                        status: "running",
-                        updatedAt: "2026-04-15T12:00:00.000Z",
-                      },
-                    ],
-                  },
-                },
-                supervision: {
-                  version: "1.0.0",
-                  stream_id: streamId,
-                  last_updated: "2026-04-15T12:00:00.000Z",
-                  runs: [],
-                  checkpoint_pointers: [],
-                  branch_sessions: [],
-                  reviewed_batches: [],
-                  issue_summaries: [],
-                  fix_cycles: [],
-                  escalations: [],
-                  stage_stops: [],
-                },
-              },
-            }
-          : {}),
-        tasks: [
+        approvals: [],
+        threadRuntime: [
           {
-            id: "02.02.01.01",
-            name: "Resolve the current workstream from the workstream index",
-            stage_name: "Build the Bun server package and backend snapshot pipeline",
-            batch_name: "Implement canonical snapshot assembly and tmux discovery",
-            thread_name: "Current-workstream snapshot assembly",
+            threadId: "02.02.01",
+            sessions: [],
             status: "completed",
-            created_at: "2026-04-15T11:00:00.000Z",
-            updated_at: "2026-04-15T11:30:00.000Z",
+            createdAt: "2026-04-15T11:00:00.000Z",
+            updatedAt: "2026-04-15T11:30:00.000Z",
+            itemName: "Resolve the current workstream from the workstream index",
           },
           {
-            id: "02.02.01.02",
-            name: "Expose snapshot assembly through the dashboard routes",
-            stage_name: "Build the Bun server package and backend snapshot pipeline",
-            batch_name: "Implement canonical snapshot assembly and tmux discovery",
-            thread_name: "Current-workstream snapshot assembly",
+            threadId: "02.02.02",
+            sessions: [],
             status: "in_progress",
-            created_at: "2026-04-15T11:30:00.000Z",
-            updated_at: "2026-04-15T12:00:00.000Z",
+            createdAt: "2026-04-15T11:30:00.000Z",
+            updatedAt: "2026-04-15T12:00:00.000Z",
+            itemName: "Expose snapshot assembly through the dashboard routes",
+            ...(args.includeRuntimeState
+              ? {
+                  currentSessionId: "worker-session-1",
+                  workingAgentSessionId: "worker-session-1",
+                }
+              : {}),
           },
         ],
+        batchRuns: [
+          {
+            version: "1.0.0",
+            streamId,
+            batchId: "02.02",
+            runId: "batch-run-1",
+            ...(args.includeRuntimeState
+              ? { tmuxSessionName: "002-implementation-real-session" }
+              : {}),
+            mode: "headless",
+            status: "running",
+            stageName: "Build the Bun server package and backend snapshot pipeline",
+            batchName: "Implement canonical snapshot assembly and tmux discovery",
+            startedAt: "2026-04-15T11:30:00.000Z",
+            updatedAt: "2026-04-15T12:00:00.000Z",
+            summary: {
+              total: 1,
+              pending: 0,
+              running: 1,
+              completed: 0,
+              failed: 0,
+            },
+            threads: [
+              {
+                threadId: "02.02.02",
+                threadName: "tmux discovery and correlation",
+                firstItemId: "02.02.02.01",
+                status: "running",
+                updatedAt: "2026-04-15T12:00:00.000Z",
+              },
+            ],
+          },
+        ],
+        supervision: {
+          version: "1.0.0",
+          stream_id: streamId,
+          last_updated: "2026-04-15T12:00:00.000Z",
+          active_run_id: "supervision-run-1",
+          runs: [
+            {
+              runId: "supervision-run-1",
+              stageId: "02",
+              status: "running",
+              startedAt: "2026-04-15T11:45:00.000Z",
+              updatedAt: "2026-04-15T12:00:00.000Z",
+              currentBatchId: "02.02",
+              reviewPasses: 1,
+              issueSummaryIds: [],
+              escalationIds: [],
+              branchSessionId: "branch-session-1",
+              rootSessionId: "root-session-1",
+            },
+          ],
+          checkpoint_pointers: [],
+          branch_sessions: [],
+          reviewed_batches: [],
+          issue_summaries: [],
+          fix_cycles: [],
+          escalations: [],
+          stage_stops: [],
+        },
       },
       null,
       2,
@@ -326,7 +338,7 @@ describe("dashboard server", () => {
     expect(snapshotPayload).toMatchObject({
       schema_version: "1.0.0",
       canonical_state: {
-        source_of_truth: "tasks.json",
+        source_of_truth: "structured_runtime",
         status: {
           stream: {
             id: "002-web-workstream-dashboard",
@@ -384,7 +396,14 @@ describe("dashboard server", () => {
     )
     expect(runtimeResponse.status).toBe(200)
     expect(snapshotPayload.canonical_state.runtime).toBeDefined()
-    expect(await runtimeResponse.json()).toEqual(snapshotPayload.canonical_state.runtime)
+    const runtimePayload = await runtimeResponse.json() as WorkstreamStatusRuntimeSummaryProjection
+    expect(runtimePayload).toMatchObject({
+      ...snapshotPayload.canonical_state.runtime!,
+      summary: {
+        ...snapshotPayload.canonical_state.runtime!.summary,
+        updated_at: runtimePayload.summary.updated_at,
+      },
+    })
 
     const supervisionResponse = await fetch(
       new URL(CURRENT_WORKSTREAM_SUPERVISION_ROUTE.path, server.url),

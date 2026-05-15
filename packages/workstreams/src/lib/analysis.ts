@@ -241,27 +241,27 @@ export function extractFilesFromText(text: string): string[] {
 }
 
 /**
- * Find files that are referenced by multiple threads within the same batch in TASKS.md.
- * Parses the TASKS.md structure to detect parallel thread file conflicts.
+ * Find files that are referenced by multiple threads within the same batch.
+ * Parses the stream document structure to detect parallel thread file conflicts.
  * 
- * @param content - Raw TASKS.md content
+ * @param content - Raw stream planning content
  * @returns Array of warnings for shared files
  */
-export function findSharedFilesInTasksMd(content: string): SharedFileWarning[] {
+export function findSharedFilesInPlan(content: string): SharedFileWarning[] {
     const warnings: SharedFileWarning[] = []
     const lines = content.split("\n")
 
     // Parse structure to extract batches and threads
-    // TASKS.md format:
+    // Stream planning format:
     // ## Stage NN: StageName
     // ### Batch NN: BatchName
     // #### Thread NN: ThreadName @agent:...
-    // - [ ] Task ID: Description
+    // - [ ] Description
     
     interface ParsedThread {
         id: number
         name: string
-        tasks: string[]
+        items: string[]
     }
 
     interface ParsedBatch {
@@ -331,17 +331,17 @@ export function findSharedFilesInTasksMd(content: string): SharedFileWarning[] {
             currentThread = {
                 id: parseInt(threadMatch[1]!, 10),
                 name: threadMatch[2]!.trim(),
-                tasks: []
+                items: []
             }
             continue
         }
 
-        // Match task lines: - [ ] Task ID: Description or - [x] Task...
-        const taskMatch = line.match(/^\s*-\s*\[[^\]]*\]\s*(?:Task\s+[\d.]+:?\s*)?(.*)/i)
-        if (taskMatch && currentThread) {
-            const taskDescription = taskMatch[1]!.trim()
-            if (taskDescription) {
-                currentThread.tasks.push(taskDescription)
+        // Match checklist lines.
+        const itemMatch = line.match(/^\s*-\s*\[[^\]]*\]\s*(.*)/i)
+        if (itemMatch && currentThread) {
+            const itemDescription = itemMatch[1]!.trim()
+            if (itemDescription) {
+                currentThread.items.push(itemDescription)
             }
             continue
         }
@@ -370,9 +370,9 @@ export function findSharedFilesInTasksMd(content: string): SharedFileWarning[] {
             const fileToThreads = new Map<string, { id: number; name: string }[]>()
 
             for (const thread of batch.threads) {
-                // Combine all task descriptions for this thread
-                const allTaskText = thread.tasks.join("\n")
-                const files = extractFilesFromText(allTaskText)
+                // Combine all item descriptions for this thread
+                const allItemText = thread.items.join("\n")
+                const files = extractFilesFromText(allItemText)
 
                 for (const file of files) {
                     const normalizedFile = file.toLowerCase()

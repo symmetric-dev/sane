@@ -6,7 +6,7 @@ import { fileURLToPath, pathToFileURL } from "url"
 
 import {
   getResolvedStream,
-  getTasksByThread,
+  listThreadExecutionItemsByThread,
   loadIndex,
   parseThreadId,
   updateThreadMetadataLocked,
@@ -551,7 +551,7 @@ export const link_thread_session = tool({
       }
 
       const { stage, batch, thread } = parsedThreadId
-      const tasks = getTasksByThread(repoRoot, stream.id, stage, batch, thread)
+      const tasks = listThreadExecutionItemsByThread(repoRoot, stream.id, stage, batch, thread)
 
       if (tasks.length === 0) {
         return `Error linking thread session: Thread "${args.threadId}" not found in workstream "${stream.id}"`

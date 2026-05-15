@@ -9,7 +9,6 @@ import { join } from "path"
 import { existsSync } from "fs"
 import { getWorkDir } from "./repo.ts"
 import { loadAgentsConfig, getAgentModels } from "./agents-yaml.ts"
-import { discoverThreadsInBatch } from "./tasks.ts"
 import { getThreadMetadata } from "./threads.ts"
 import { queryThreadsForWorkstream } from "./hierarchy-query.ts"
 import {
@@ -27,7 +26,7 @@ import type { ThreadInfo, ThreadSessionMap } from "./multi-types.ts"
 
 /**
  * Build the prompt file path for a thread using metadata strings
- * Used when discovering threads from tasks.json instead of PLAN.md
+ * Used when reconstructing prompt paths from canonical thread metadata.
  */
 export function getPromptFilePathFromMetadata(
   repoRoot: string,
@@ -68,9 +67,9 @@ export function buildPaneTitle(threadInfo: ThreadInfo): string {
 
 /**
  * Collect thread information for a batch.
- * Prefers canonical thread query views, with tasks-based discovery as compatibility fallback.
+ * Uses canonical thread query views for batch discovery.
  */
-export function collectThreadInfoFromTasks(
+export function collectThreadInfoForBatch(
   repoRoot: string,
   streamId: string,
   stageNum: number,
@@ -120,72 +119,10 @@ export function collectThreadInfoFromTasks(
         promptPath,
         models,
         agentName,
-        firstTaskId: thread.representativeTaskId,
       }
     })
   }
-
-  const discoveredThreads = discoverThreadsInBatch(
-    repoRoot,
-    streamId,
-    stageNum,
-    batchNum,
-  )
-  if (!discoveredThreads || discoveredThreads.length === 0) {
-    return []
-  }
-
-  const threads: ThreadInfo[] = []
-
-  for (const discovered of discoveredThreads) {
-    // Get prompt path from canonical runtime_state thread metadata
-    // Fall back to reconstructing from metadata if not stored
-    const threadMeta = getThreadMetadata(repoRoot, streamId, discovered.threadId)
-    let promptPath: string
-    
-    if (threadMeta?.promptPath) {
-      // Use stored path from runtime_state.threads (relative path, need absolute)
-      promptPath = join(workDir, threadMeta.promptPath)
-    } else {
-      // Fallback: reconstruct from task metadata (legacy behavior)
-      promptPath = getPromptFilePathFromMetadata(
-        repoRoot,
-        streamId,
-        discovered.stageNum,
-        discovered.stageName,
-        discovered.batchNum,
-        discovered.batchName,
-        discovered.threadName,
-      )
-    }
-
-    // Get agent (from task or default)
-    const agentName = discovered.assignedAgent || "default"
-
-    // Get models from agent (for retry logic)
-    const models = getAgentModels(agentsConfig!, agentName)
-    if (models.length === 0) {
-      console.error(
-        `Error: Agent "${agentName}" not found in agents.yaml (referenced in thread ${discovered.threadId})`,
-      )
-      process.exit(1)
-    }
-
-    const threadInfo: ThreadInfo = {
-      threadId: discovered.threadId,
-      threadName: discovered.threadName,
-      stageName: discovered.stageName,
-      batchName: discovered.batchName,
-      promptPath,
-      models,
-      agentName,
-      firstTaskId: discovered.firstTaskId,
-    }
-
-    threads.push(threadInfo)
-  }
-
-  return threads
+  return []
 }
 
 /**
@@ -273,11 +210,10 @@ export function setupTmuxSession(
   const gridPaneIds = listPaneIds(`${sessionName}:0`)
   for (let i = 0; i < Math.min(4, threads.length); i++) {
     const thread = threads[i]!
-    if (thread.sessionId && thread.firstTaskId && gridPaneIds[i]) {
+    if (thread.sessionId && gridPaneIds[i]) {
       threadSessionMap.push({
         threadId: thread.threadId,
         sessionId: thread.sessionId,
-        taskId: thread.firstTaskId,
         paneId: gridPaneIds[i]!,
         windowIndex: 0,
       })
@@ -297,11 +233,10 @@ export function setupTmuxSession(
 
       // Capture pane ID for hidden window thread
       const windowPaneIds = listPaneIds(`${sessionName}:${windowName}`)
-      if (thread.sessionId && thread.firstTaskId && windowPaneIds[0]) {
+      if (thread.sessionId && windowPaneIds[0]) {
         threadSessionMap.push({
           threadId: thread.threadId,
           sessionId: thread.sessionId,
-          taskId: thread.firstTaskId,
           paneId: windowPaneIds[0]!,
           windowIndex: i - 3, // Hidden windows start at index 1
         })

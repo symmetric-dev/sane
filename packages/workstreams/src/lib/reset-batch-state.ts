@@ -10,15 +10,11 @@ import {
   getWorkingAgentSessionPath,
 } from "./opencode.ts"
 import type {
-  StructuredTaskRecord,
   StructuredThreadRecord,
   StructuredThreadRuntimeRecord,
 } from "./structured-storage.ts"
-import {
-  modifySqliteCanonicalRuntimeWorkstreamStateSync,
-  projectLegacyRuntimeCompatibilityArtifactsSync,
-} from "./storage-adapter.ts"
-import { normalizeSupervisorState } from "./tasks.ts"
+import { modifySqliteCanonicalRuntimeWorkstreamStateSync } from "./storage-adapter.ts"
+import { normalizeSupervisorState } from "./runtime-state.ts"
 import type {
   CurrentBranchSupervisionContext,
   RootAgentBranchSession,
@@ -33,11 +29,11 @@ import type {
 export interface ResetBatchStateResult {
   batchId: string
   threadIds: string[]
-  taskCount: number
-  tasksReset: number
-  taskReportsCleared: number
-  taskBreadcrumbsCleared: number
-  taskRuntimeBatchCleared: boolean
+  itemCount: number
+  itemsReset: number
+  itemReportsCleared: number
+  itemBreadcrumbsCleared: number
+  itemRuntimeBatchCleared: boolean
   threadRuntimeEntriesTouched: number
   supervision: {
     runsTouched: number
@@ -60,21 +56,11 @@ export interface ResetBatchStateResult {
   }
 }
 
-function isTaskInBatch(taskId: string, batchId: string): boolean {
-  return taskId.startsWith(`${batchId}.`)
-}
-
-function collectBatchThreadIds(tasks: Array<Pick<StructuredTaskRecord, "id">>, batchId: string): string[] {
-  const threadIds = new Set<string>()
-
-  for (const task of tasks) {
-    if (!isTaskInBatch(task.id, batchId)) continue
-    const parts = task.id.split(".")
-    if (parts.length !== 4) continue
-    threadIds.add(`${parts[0]}.${parts[1]}.${parts[2]}`)
-  }
-
-  return [...threadIds].sort((left, right) => left.localeCompare(right, undefined, { numeric: true }))
+function collectBatchThreadIds(threads: Array<Pick<StructuredThreadRecord, "id" | "batchId">>, batchId: string): string[] {
+  return threads
+    .filter((thread) => thread.batchId === batchId)
+    .map((thread) => thread.id)
+    .sort((left, right) => left.localeCompare(right, undefined, { numeric: true }))
 }
 
 function clearBatchThreadRuntimeMetadata(
@@ -366,38 +352,40 @@ export async function resetBatchState(
 ): Promise<ResetBatchStateResult> {
   const result: Omit<ResetBatchStateResult, "artifacts"> & { now: string } =
     modifySqliteCanonicalRuntimeWorkstreamStateSync({ repoRoot, streamId, fn: (workstreamState) => {
-      const batchTasks = workstreamState.hierarchy.tasks.filter((task) => isTaskInBatch(task.id, batchId))
-      if (batchTasks.length === 0) {
-        throw new Error(`No tasks found for batch ${batchId} in stream ${streamId}`)
+      const threadIds = collectBatchThreadIds(workstreamState.hierarchy.threads, batchId)
+      if (threadIds.length === 0) {
+        throw new Error(`No threads found for batch ${batchId} in stream ${streamId}`)
       }
 
       const now = new Date().toISOString()
-      const threadIds = collectBatchThreadIds(workstreamState.hierarchy.tasks, batchId)
       const threadIdSet = new Set(threadIds)
       const batchThreads = new Map(
         workstreamState.hierarchy.threads.map((thread) => [thread.id, thread] as const),
       )
 
-      let tasksReset = 0
-      let taskReportsCleared = 0
-      let taskBreadcrumbsCleared = 0
-      for (const task of batchTasks) {
-        if (task.status !== "pending") {
-          tasksReset++
+      let itemsReset = 0
+      let itemReportsCleared = 0
+      let itemBreadcrumbsCleared = 0
+      for (const runtime of workstreamState.threadRuntime) {
+        if (!threadIdSet.has(runtime.threadId)) {
+          continue
         }
-        task.status = "pending"
-        if (task.report !== undefined) {
-          delete task.report
-          taskReportsCleared++
+        if (runtime.status !== "pending") {
+          itemsReset++
         }
-        if (task.breadcrumb !== undefined) {
-          delete task.breadcrumb
-          taskBreadcrumbsCleared++
+        runtime.status = "pending"
+        if (runtime.report !== undefined) {
+          delete runtime.report
+          itemReportsCleared++
         }
-        task.updatedAt = now
+        if (runtime.breadcrumb !== undefined) {
+          delete runtime.breadcrumb
+          itemBreadcrumbsCleared++
+        }
+        runtime.updatedAt = now
       }
 
-      const taskRuntimeBatchCleared = workstreamState.batchRuns.some((run) => run.batchId === batchId)
+      const itemRuntimeBatchCleared = workstreamState.batchRuns.some((run) => run.batchId === batchId)
       workstreamState.batchRuns = workstreamState.batchRuns.filter((run) => run.batchId !== batchId)
 
       let threadRuntimeEntriesTouched = 0
@@ -429,11 +417,11 @@ export async function resetBatchState(
       return {
         batchId,
         threadIds,
-        taskCount: batchTasks.length,
-        tasksReset,
-        taskReportsCleared,
-        taskBreadcrumbsCleared,
-        taskRuntimeBatchCleared,
+        itemCount: threadIds.length,
+        itemsReset,
+        itemReportsCleared,
+        itemBreadcrumbsCleared,
+        itemRuntimeBatchCleared,
         threadRuntimeEntriesTouched,
         supervision: {
           runsTouched: prunedSupervision.runsTouched,
@@ -472,9 +460,6 @@ export async function resetBatchState(
       artifacts.synthesisLogsRemoved += 1
     }
   }
-
-  projectLegacyRuntimeCompatibilityArtifactsSync({ repoRoot, streamId })
-
   return {
     ...summary,
     artifacts,

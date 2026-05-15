@@ -54,7 +54,7 @@ When a review pass is expected to drive Root Agent branch-orchestration decision
       "severity": "high | medium | low",
       "difficulty": "complex | regular | trivial",
       "ownership": "product | engineering",
-      "effort": "tasks | revision | workstream",
+      "effort": "items | revision | workstream",
       "evidence": "optional evidence",
       "suggestedAction": "optional action"
     }
@@ -66,5 +66,5 @@ When a review pass is expected to drive Root Agent branch-orchestration decision
 
 Rules:
 - `issues` may be empty only when no problems were found.
-- Base review findings on canonical workstream state (task status, task reports, runtime metadata, and real artifacts/files when available), not on a separate synthesis artifact.
+- Base review findings on canonical workstream state (thread/item status, reports, runtime metadata, and real artifacts/files when available), not on a separate synthesis artifact.
 - Do not invent enum values outside the allowed sets.

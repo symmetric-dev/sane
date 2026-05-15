@@ -1,7 +1,7 @@
 /**
  * CLI: Workstream Review
  *
- * Output PLAN.md or tasks for review.
+ * Output PLAN.md or commits for review.
  */
 
 import { existsSync, readFileSync } from "fs"
@@ -9,7 +9,6 @@ import { getRepoRoot } from "../lib/repo.ts"
 import { loadIndex, getResolvedStream, resolveStreamId, findStream } from "../lib/index.ts"
 import { getStreamPlanMdPath } from "../lib/consolidate.ts"
 import { getStreamPreview } from "../lib/stream-parser.ts"
-import { getTasks } from "../lib/tasks.ts"
 import {
     parseGitLog,
     groupCommitsByStage,
@@ -24,7 +23,7 @@ import {
 interface ReviewCliArgs {
     repoRoot?: string
     streamId?: string
-    subcommand?: "plan" | "tasks" | "commits"
+    subcommand?: "plan" | "commits"
     summary: boolean
     json: boolean
     // Commits-specific options
@@ -36,7 +35,6 @@ export function isApprovalCommitSubject(subject: string): boolean {
     // Match only known automated approval commit subject shapes.
     return [
         /^Plan approved: .+/i,
-        /^Tasks approved: .+/i,
         /^Stage \d+ approved: .+/i,
         /^Approve stage \d+: .+/i,
         /^approve plan for \S+$/i,
@@ -45,16 +43,14 @@ export function isApprovalCommitSubject(subject: string): boolean {
 
 function printHelp(): void {
     console.log(`
-work review - Review workstream artifacts
+  work review - Review workstream artifacts
 
 Usage:
   work review plan [--summary] [--stream <stream-id>]
-  work review tasks [--stream <stream-id>]
   work review commits [--stage <num>] [--files] [--stream <stream-id>]
 
 Subcommands:
   plan     Output full PLAN.md content
-  tasks    Output tasks from tasks.json (confirms state even if empty)
   commits  Show commits grouped by stage for a workstream
 
 Options:
@@ -72,9 +68,6 @@ Examples:
 
   # Review plan structure only (stages and batches)
   work review plan --summary
-
-  # Review tasks
-  work review tasks
 
   # Review commits for current workstream
   work review commits
@@ -101,10 +94,6 @@ function parseCliArgs(argv: string[]): ReviewCliArgs | null {
         // Handle subcommand
         if (arg === "plan" && !parsed.subcommand) {
             parsed.subcommand = "plan"
-            continue
-        }
-        if (arg === "tasks" && !parsed.subcommand) {
-            parsed.subcommand = "tasks"
             continue
         }
         if (arg === "commits" && !parsed.subcommand) {
@@ -404,7 +393,7 @@ export function main(argv: string[] = process.argv): void {
 
     // Validate subcommand
     if (!cliArgs.subcommand) {
-        console.error("Error: subcommand required (plan, tasks, or commits)")
+        console.error("Error: subcommand required (plan or commits)")
         console.error("\nRun with --help for usage information.")
         process.exit(1)
     }
@@ -469,29 +458,6 @@ export function main(argv: string[] = process.argv): void {
                 console.log(JSON.stringify({ content }, null, 2))
             } else {
                 console.log(content)
-            }
-        }
-    } else if (cliArgs.subcommand === "tasks") {
-        const tasks = getTasks(repoRoot, stream.id)
-
-        if (cliArgs.json) {
-            console.log(JSON.stringify({ tasks, count: tasks.length }, null, 2))
-        } else {
-            if (tasks.length === 0) {
-                console.log("No tasks found.")
-                console.log("\nUse 'work add-task' to add tasks to this workstream.")
-            } else {
-                console.log(`Tasks (${tasks.length} total):\n`)
-                for (const task of tasks) {
-                    const statusIcon = {
-                        pending: "○",
-                        in_progress: "◐",
-                        completed: "●",
-                        blocked: "⊘",
-                        cancelled: "✗"
-                    }[task.status] || "○"
-                    console.log(`  ${statusIcon} ${task.id}: ${task.name}`)
-                }
             }
         }
     } else if (cliArgs.subcommand === "commits") {

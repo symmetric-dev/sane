@@ -177,7 +177,7 @@ export async function readCurrentWorkstreamDashboardSnapshot(
   const runtime = statusSnapshot.runtime ?? null
   const supervision = runtime?.summary.supervision ?? null
   const canonicalState: CurrentWorkstreamDashboardCanonicalState = {
-    source_of_truth: "tasks.json",
+    source_of_truth: "structured_runtime",
     status,
     tree,
     supervision,

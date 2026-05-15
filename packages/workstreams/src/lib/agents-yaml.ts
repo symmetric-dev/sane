@@ -5,7 +5,7 @@
  * which defines available agents with their descriptions and models.
  *
  * Supports multiple models per agent with optional variants for retry logic.
- * Agent-to-task assignments are stored in tasks.json (Task.assigned_agent).
+ * Agent assignments are stored in canonical execution item metadata.
  *
  * ## Schema
  *

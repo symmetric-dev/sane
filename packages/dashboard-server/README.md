@@ -17,7 +17,7 @@ The dashboard reads an existing AgENV repository on disk, so you still need a ch
 
 ## What it shows
 
-- canonical current-workstream state from `work/<stream-id>/tasks.json`
+- canonical current-workstream state from `work/<stream-id>/workstream-state.json`
 - runtime overlays derived from the canonical workstream snapshot
 - tmux session observability for matching workstream activity
 - optional embedded `ttyd` terminal views for read-only inspection
@@ -103,7 +103,7 @@ If the dashboard and observability disagree, trust the canonical snapshot first.
 
 The dashboard has three layers:
 
-1. **Canonical state**: `tasks.json` is the source of truth. Status, tree, runtime, and supervision summaries are derived from persisted workstream state.
+1. **Canonical state**: `workstream-state.json` is the source of truth. Status, tree, runtime, and supervision summaries are derived from persisted workstream state.
 2. **tmux observability**: live session discovery is correlated against canonical identifiers. It can be ready, degraded, unavailable, missing, stale, or ambiguous.
 3. **`ttyd` terminal views**: browser-friendly, read-only views layered on top of tmux sessions when local `ttyd` is available.
 

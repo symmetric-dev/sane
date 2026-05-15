@@ -34,7 +34,7 @@ function sanitizeName(name: string): string {
  * Build prompt file path from metadata (stage/batch/thread names)
  *
  * This is the more efficient path when metadata is already available,
- * such as when discovering threads from tasks.json.
+ * such as when discovering threads from structured workstream state.
  *
  * @param repoRoot - Repository root path
  * @param streamId - Workstream ID
@@ -68,7 +68,7 @@ export function resolvePromptPathFromMetadata(
 /**
  * Resolve prompt file path for a thread
  *
- * First checks tasks.json -> runtime_state.threads for a stored path,
+ * First checks persisted thread runtime metadata for a stored path,
  * then falls back to parsing PLAN.md to reconstruct the path.
  *
  * @param repoRoot - Repository root path

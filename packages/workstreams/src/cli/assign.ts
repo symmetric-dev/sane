@@ -2,25 +2,38 @@
  * CLI: Assign Agents to Threads
  *
  * Thread mutation is canonical.
- * Compatibility task targeting is an explicit alias for the owning thread.
  */
 
 import { getRepoRoot } from "../lib/repo.ts"
 import { loadIndex, getResolvedStream } from "../lib/index.ts"
-import { getTaskById } from "../lib/tasks.ts"
 import { loadAgentsConfig, getAgentYaml } from "../lib/agents-yaml.ts"
 import { queryThreadsForWorkstream } from "../lib/hierarchy-query.ts"
-import { mutateThreadTasks } from "../lib/update.ts"
+import { mutateThreadExecution } from "../lib/update.ts"
 
 interface AssignCliArgs {
   repoRoot?: string
   streamId?: string
-  task?: string
   thread?: string
   agent?: string
   list: boolean
   clear: boolean
   json: boolean
+}
+
+function toPublicThreadAssignmentView(thread: ReturnType<typeof queryThreadsForWorkstream>[number]) {
+  return {
+    threadId: thread.threadId,
+    threadName: thread.threadName,
+    stageId: thread.stageId,
+    stageName: thread.stageName,
+    batchId: thread.batchId,
+    batchName: thread.batchName,
+    aggregateStatus: thread.aggregateStatus,
+    assignedAgent: thread.assignedAgent,
+    itemCount: thread.itemCount,
+    ...(thread.breadcrumb ? { breadcrumb: thread.breadcrumb } : {}),
+    ...(thread.report ? { report: thread.report } : {}),
+  }
 }
 
 function printHelp(): void {
@@ -29,16 +42,13 @@ work assign - Assign agents to threads
 
 Usage:
   work assign --thread <threadId> --agent <agent>
-  work assign --task <taskId> --agent <agent>
   work assign --thread <threadId> --clear
-  work assign --task <taskId> --clear
   work assign --list
 
 Options:
   --repo-root, -r    Repository root (auto-detected if omitted)
   --stream, -s       Workstream ID or name (uses current if not specified)
-  --thread, -th      Thread ID (e.g., "01.01.01") (canonical)
-  --task, -t         Compatibility task ID alias (e.g., "01.01.02.03")
+  --thread, -th      Thread ID (e.g., "01.01.01")
   --agent, -a        Agent name to assign
   --list             List assigned threads (thread-first view)
   --clear            Remove agent assignment from the resolved thread
@@ -47,14 +57,11 @@ Options:
 
 Description:
   Assigns agents to execution threads. Agents must be defined first
-  in agents.yaml. tasks.json remains a compatibility projection.
+  in agents.yaml.
 
 Examples:
   # Assign an agent to a thread
   work assign --thread "01.01.01" --agent "backend-expert"
-
-  # Compatibility alias: resolve task -> owning thread -> assign
-  work assign --task "01.01.02.03" --agent "backend-orm-expert"
 
   # List assigned threads
   work assign --list
@@ -65,7 +72,8 @@ Examples:
 }
 
 function parseCliArgs(argv: string[]): AssignCliArgs | null {
-  const args = argv.slice(2)
+  const rawArgs = argv.slice(2)
+  const args = rawArgs[0] === "assign" ? rawArgs.slice(1) : rawArgs
   const parsed: AssignCliArgs = { list: false, clear: false, json: false }
 
   for (let i = 0; i < args.length; i++) {
@@ -92,16 +100,6 @@ function parseCliArgs(argv: string[]): AssignCliArgs | null {
           return null
         }
         parsed.streamId = next
-        i++
-        break
-
-      case "--task":
-      case "-t":
-        if (!next) {
-          console.error("Error: --task requires a value (e.g., '01.01.02.03')")
-          return null
-        }
-        parsed.task = next
         i++
         break
 
@@ -142,29 +140,14 @@ function parseCliArgs(argv: string[]): AssignCliArgs | null {
       case "-h":
         printHelp()
         process.exit(0)
+
+      default:
+        console.error(`Error: Unknown argument: ${arg}`)
+        return null
     }
   }
 
   return parsed
-}
-
-function resolveTargetThread(args: { repoRoot: string; streamId: string; task?: string; thread?: string }): {
-  threadId: string
-  compatibilityTaskId?: string
-} {
-  if (args.thread) {
-    return { threadId: args.thread }
-  }
-
-  const task = getTaskById(args.repoRoot, args.streamId, args.task!)
-  if (!task) {
-    throw new Error(`Task "${args.task}" not found`)
-  }
-
-  return {
-    threadId: task.id.split(".").slice(0, 3).join("."),
-    compatibilityTaskId: task.id,
-  }
 }
 
 export async function main(argv: string[] = process.argv): Promise<void> {
@@ -204,7 +187,16 @@ export async function main(argv: string[] = process.argv): Promise<void> {
     )
 
     if (cliArgs.json) {
-      console.log(JSON.stringify({ streamId: stream.id, threads: assignedThreads }, null, 2))
+      console.log(
+        JSON.stringify(
+          {
+            streamId: stream.id,
+            threads: assignedThreads.map(toPublicThreadAssignmentView),
+          },
+          null,
+          2,
+        ),
+      )
     } else if (assignedThreads.length === 0) {
       console.log(`No threads have agent assignments in workstream "${stream.name}"`)
     } else {
@@ -214,9 +206,7 @@ export async function main(argv: string[] = process.argv): Promise<void> {
       for (const thread of assignedThreads) {
         console.log(`  ${thread.threadId} -> ${thread.assignedAgent}`)
         console.log(`    ${thread.threadName}`)
-        if (thread.representativeTaskId) {
-          console.log(`    compatibility task: ${thread.representativeTaskId}`)
-        }
+        console.log(`    items: ${thread.itemCount}`)
         console.log("")
       }
     }
@@ -228,14 +218,14 @@ export async function main(argv: string[] = process.argv): Promise<void> {
     process.exit(1)
   }
 
-  if (cliArgs.clear && !cliArgs.task && !cliArgs.thread) {
-    console.error("Error: --clear requires --task or --thread")
+  if (cliArgs.clear && !cliArgs.thread) {
+    console.error("Error: --clear requires --thread")
     console.error("\nRun with --help for usage information.")
     process.exit(1)
   }
 
-  if (!cliArgs.clear && ((!cliArgs.task && !cliArgs.thread) || !cliArgs.agent)) {
-    console.error("Error: --agent and either --thread or --task are required")
+  if (!cliArgs.clear && (!cliArgs.thread || !cliArgs.agent)) {
+    console.error("Error: --agent and --thread are required")
     console.error("\nRun with --help for usage information.")
     process.exit(1)
   }
@@ -252,25 +242,12 @@ export async function main(argv: string[] = process.argv): Promise<void> {
     }
   }
 
-  let target
-  try {
-    target = resolveTargetThread({
-      repoRoot,
-      streamId: stream.id,
-      task: cliArgs.task,
-      thread: cliArgs.thread,
-    })
-  } catch (e) {
-    console.error(`Error: ${(e as Error).message}`)
-    process.exit(1)
-  }
-
   let result
   try {
-    result = await mutateThreadTasks({
+    result = await mutateThreadExecution({
       repoRoot,
       stream,
-      threadId: target.threadId,
+      threadId: cliArgs.thread!,
       assigned_agent: cliArgs.clear ? "" : cliArgs.agent,
     })
   } catch (e) {
@@ -284,10 +261,9 @@ export async function main(argv: string[] = process.argv): Promise<void> {
         {
           action: cliArgs.clear ? "cleared" : "assigned",
           streamId: stream.id,
-          threadId: target.threadId,
-          ...(target.compatibilityTaskId ? { compatibilityTaskId: target.compatibilityTaskId } : {}),
+          threadId: cliArgs.thread,
           ...(!cliArgs.clear && cliArgs.agent ? { agent: cliArgs.agent } : {}),
-          [cliArgs.clear ? "clearedCount" : "assignedCount"]: result.count,
+          [cliArgs.clear ? "clearedCount" : "assignedCount"]: result.updated ? 1 : 0,
         },
         null,
         2,
@@ -297,19 +273,11 @@ export async function main(argv: string[] = process.argv): Promise<void> {
   }
 
   if (cliArgs.clear) {
-    console.log(
-      target.compatibilityTaskId
-        ? `Cleared agent assignment from thread ${target.threadId} via compatibility task ${target.compatibilityTaskId}`
-        : `Cleared agent assignment from thread ${target.threadId}`,
-    )
+    console.log(`Cleared agent assignment from thread ${cliArgs.thread}`)
     return
   }
 
-  console.log(
-    target.compatibilityTaskId
-      ? `Assigned "${cliArgs.agent}" to thread ${target.threadId} via compatibility task ${target.compatibilityTaskId}`
-      : `Assigned "${cliArgs.agent}" to thread ${target.threadId}`,
-  )
+  console.log(`Assigned "${cliArgs.agent}" to thread ${cliArgs.thread}`)
 }
 
 if (import.meta.main) {

@@ -1,5 +1,5 @@
 import type { BatchStatusFile } from "../batch-status.ts"
-import { getTasksByThreadId } from "../tasks.ts"
+import { listThreadExecutionItemsByThreadId } from "../thread-execution.ts"
 import { loadThreads } from "../threads.ts"
 import { normalizeReviewerResult } from "../reviewer/output.ts"
 import type { ReviewerResult } from "../reviewer/types.ts"
@@ -17,8 +17,8 @@ export interface SupervisorThreadReviewInput {
   promptPath?: string
   sessionCount: number
   completedSessionCount: number
-  taskStatuses: Array<{
-    taskId: string
+  itemStatuses: Array<{
+    itemId: string
     status: string
     name: string
     report?: string
@@ -53,7 +53,7 @@ export function collectSupervisorReviewInput(
   const threadsFile = loadThreads(repoRoot, streamId)
 
   const threads = batchStatus.threads.map((thread) => {
-    const tasks = getTasksByThreadId(repoRoot, streamId, thread.threadId)
+    const items = listThreadExecutionItemsByThreadId(repoRoot, streamId, thread.threadId)
     const threadMeta = threadsFile?.threads.find((candidate) => candidate.threadId === thread.threadId)
 
     return {
@@ -69,11 +69,11 @@ export function collectSupervisorReviewInput(
       promptPath: threadMeta?.promptPath,
       sessionCount: threadMeta?.sessions.length ?? 0,
       completedSessionCount: threadMeta?.sessions.filter((session) => session.completedAt).length ?? 0,
-      taskStatuses: tasks.map((task) => ({
-        taskId: task.id,
-        status: task.status,
-        name: task.name,
-        report: task.report?.trim() || undefined,
+      itemStatuses: items.map((item) => ({
+        itemId: item.id,
+        status: item.status,
+        name: item.name,
+        report: item.report?.trim() || undefined,
       })),
     }
   })
@@ -94,11 +94,11 @@ export function getReviewAffectedThreadIds(input: SupervisorBatchReviewInput): s
   const impacted = new Set<string>()
 
   for (const thread of input.threads) {
-    const hasIncompleteTask = thread.taskStatuses.some(
+    const hasIncompleteItem = thread.itemStatuses.some(
       (task) => task.status !== "completed" && task.status !== "cancelled",
     )
 
-    if (thread.status === "failed" || hasIncompleteTask) {
+    if (thread.status === "failed" || hasIncompleteItem) {
       impacted.add(thread.threadId)
     }
   }
@@ -117,11 +117,11 @@ export function runDeterministicSupervisorReview(
   ]
 
   for (const thread of input.threads) {
-    const completedTasks = thread.taskStatuses.filter((task) => task.status === "completed")
-    const reportedTasks = completedTasks.filter((task) => task.report)
+    const completedItems = thread.itemStatuses.filter((item) => item.status === "completed")
+    const reportedItems = completedItems.filter((item) => item.report)
 
     notes.push(
-      `${thread.threadId}: ${thread.status}, ${reportedTasks.length}/${completedTasks.length} completed task report(s), ${thread.sessionCount} recorded session(s)`,
+      `${thread.threadId}: ${thread.status}, ${reportedItems.length}/${completedItems.length} completed item report(s), ${thread.sessionCount} recorded session(s)`,
     )
 
     if (thread.status === "failed") {
@@ -130,35 +130,35 @@ export function runDeterministicSupervisorReview(
         severity: "high",
         difficulty: "regular",
         ownership: "engineering",
-        effort: "tasks",
+        effort: "items",
         evidence: [
           `Batch status marked thread ${thread.threadId} as failed.`,
           thread.opencodeSessionId ? `opencodeSessionId=${thread.opencodeSessionId}` : null,
           thread.workingAgentSessionId ? `workingAgentSessionId=${thread.workingAgentSessionId}` : null,
           thread.currentSessionId ? `currentSessionId=${thread.currentSessionId}` : null,
-          reportedTasks.length > 0
-            ? `task reports: ${reportedTasks.map((task) => `${task.taskId}: ${task.report}`).join(" | ")}`
+          reportedItems.length > 0
+            ? `item reports: ${reportedItems.map((item) => `${item.itemId}: ${item.report}`).join(" | ")}`
             : null,
         ].filter(Boolean).join(" "),
         suggestedAction: "Inspect the failed thread session and resolve the blocking implementation issue.",
       })
     }
 
-    const incompleteTasks = thread.taskStatuses.filter(
-      (task) => task.status !== "completed" && task.status !== "cancelled",
+    const incompleteItems = thread.itemStatuses.filter(
+      (item) => item.status !== "completed" && item.status !== "cancelled",
     )
-    if (incompleteTasks.length > 0) {
+    if (incompleteItems.length > 0) {
       issues.push({
-        summary: `${thread.threadId} (${thread.threadName}) still has ${incompleteTasks.length} incomplete task(s).`,
+        summary: `${thread.threadId} (${thread.threadName}) still has ${incompleteItems.length} incomplete item(s).`,
         severity: thread.status === "failed" ? "high" : "medium",
         difficulty: "regular",
         ownership: "engineering",
-        effort: "tasks",
-        evidence: incompleteTasks.map((task) => {
-          const reportSuffix = task.report ? ` (${task.report})` : ""
-          return `${task.taskId}=${task.status}${reportSuffix}`
+        effort: "items",
+        evidence: incompleteItems.map((item) => {
+          const reportSuffix = item.report ? ` (${item.report})` : ""
+          return `${item.itemId}=${item.status}${reportSuffix}`
         }).join(", "),
-        suggestedAction: "Review the remaining tasks and rerun or follow up before continuing automatically.",
+        suggestedAction: "Review the remaining items and rerun or follow up before continuing automatically.",
       })
     }
   }

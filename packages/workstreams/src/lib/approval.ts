@@ -2,7 +2,7 @@
  * Approval gate logic for workstreams
  *
  * Implements the Human-In-The-Loop (HITL) approval workflow:
- * - Plans must be approved before tasks can be created
+ * - Plans must be approved before execution can begin
  * - Approval includes a hash of PLAN.md for modification detection
  * - If PLAN.md changes after approval, the approval is auto-revoked
  */
@@ -269,37 +269,6 @@ export function isPlanModified(repoRoot: string, stream: StreamMetadata): boolea
 }
 
 /**
- * Check if tasks can be created (plan must be approved)
- * Returns { allowed: boolean; reason?: string }
- */
-export function canCreateTasks(stream: StreamMetadata): {
-  allowed: boolean
-  reason?: string
-} {
-  const status = getApprovalStatus(stream)
-
-  switch (status) {
-    case "approved":
-      return { allowed: true }
-    case "draft":
-      return {
-        allowed: false,
-        reason: "Plan has not been approved. Run 'work approve' to approve it.",
-      }
-    case "revoked":
-      return {
-        allowed: false,
-        reason: `Plan approval was revoked${stream.approval?.revoked_reason ? `: ${stream.approval.revoked_reason}` : ""}. Run 'work approve' to re-approve.`,
-      }
-    default:
-      return {
-        allowed: false,
-        reason: `Unknown approval status: ${status}`,
-      }
-  }
-}
-
-/**
  * Approve a workstream
  * Stores the current PLAN.md hash to detect future modifications
  */
@@ -320,7 +289,6 @@ export function approveStream(
     repoRoot,
     streamId: stream.id,
     touchStreamUpdatedAt: true,
-    writeTasksFileIfMissing: false,
     update: (approval) => ({
       ...stream.approval,
       ...approval,
@@ -349,7 +317,6 @@ export function revokeApproval(
     repoRoot,
     streamId: stream.id,
     touchStreamUpdatedAt: true,
-    writeTasksFileIfMissing: false,
     update: (approval) => ({
       ...stream.approval,
       ...approval,
@@ -551,7 +518,6 @@ export function approveStage(
     repoRoot,
     streamId: stream.id,
     touchStreamUpdatedAt: true,
-    writeTasksFileIfMissing: false,
     update: (approval) => {
       const nextApproval = approval ?? { status: "draft" }
       nextApproval.stages = { ...(nextApproval.stages ?? {}) }
@@ -587,7 +553,6 @@ export function revokeStageApproval(
     repoRoot,
     streamId: stream.id,
     touchStreamUpdatedAt: true,
-    writeTasksFileIfMissing: false,
     update: (approval) => {
       const nextApproval = approval ?? { status: "draft" }
       nextApproval.stages = { ...(nextApproval.stages ?? {}) }
@@ -625,7 +590,6 @@ export function storeStageCommitSha(
     repoRoot,
     streamId: stream.id,
     touchStreamUpdatedAt: true,
-    writeTasksFileIfMissing: false,
     update: (approval) => {
       const nextApproval = approval ?? { status: "draft" }
       nextApproval.stages = { ...(nextApproval.stages ?? {}) }
@@ -642,60 +606,40 @@ export function storeStageCommitSha(
 }
 
 // ============================================
-// TASKS APPROVAL GATE
+// EXECUTION HIERARCHY APPROVAL GATE
 // ============================================
 
 /**
  * Result of checking if tasks can be approved
  */
-export interface TasksApprovalReadyResult {
+export interface ExecutionApprovalReadyResult {
   ready: boolean
   reason?: string
-  taskCount: number
+  threadCount: number
 }
 
 /**
- * Check if compatibility execution state can be approved
+ * Check if the execution hierarchy can be approved
  */
-export function checkTasksApprovalReady(
+export function checkExecutionApprovalReady(
   repoRoot: string,
   streamId: string
-): TasksApprovalReadyResult {
+): ExecutionApprovalReadyResult {
   const hierarchy = loadWorkstreamHierarchyQueryResult(repoRoot, streamId)
 
   if (hierarchy.threads.length === 0) {
     return {
       ready: false,
       reason:
-        "Execution hierarchy has not been initialized yet. Run 'work approve plan' to seed compatibility tasks from PLAN.md.",
-      taskCount: hierarchy.tasks.length,
+        "Execution hierarchy has not been initialized yet. Run 'work approve plan' to initialize it from PLAN.md.",
+      threadCount: hierarchy.threads.length,
     }
   }
 
   return {
     ready: true,
-    taskCount: hierarchy.tasks.length,
+    threadCount: hierarchy.threads.length,
   }
-}
-
-/**
- * Get tasks approval status
- */
-export function getTasksApprovalStatus(stream: StreamMetadata): ApprovalStatus {
-  return stream.approval?.tasks?.status ?? "draft"
-}
-
-export function queryTasksApprovalStatus(
-  repoRoot: string,
-  streamIdOrName: string,
-  stream?: StreamMetadata,
-): ApprovalStatus {
-  const approval = loadWorkstreamApprovalQueryResult(repoRoot, streamIdOrName).approval
-  if (approval?.tasks) {
-    return approval.tasks.status
-  }
-
-  return stream ? getTasksApprovalStatus(stream) : "draft"
 }
 
 export function queryIsFullyApproved(
@@ -703,10 +647,7 @@ export function queryIsFullyApproved(
   streamIdOrName: string,
   stream?: StreamMetadata,
 ): boolean {
-  return (
-    queryApprovalStatus(repoRoot, streamIdOrName, stream) === "approved" &&
-    queryTasksApprovalStatus(repoRoot, streamIdOrName, stream) === "approved"
-  )
+  return queryApprovalStatus(repoRoot, streamIdOrName, stream) === "approved"
 }
 
 export function queryFullApprovalStatus(
@@ -715,82 +656,14 @@ export function queryFullApprovalStatus(
   stream?: StreamMetadata,
 ): {
   plan: ApprovalStatus
-  tasks: ApprovalStatus
   fullyApproved: boolean
 } {
   const plan = queryApprovalStatus(repoRoot, streamIdOrName, stream)
-  const tasks = queryTasksApprovalStatus(repoRoot, streamIdOrName, stream)
 
   return {
     plan,
-    tasks,
-    fullyApproved: plan === "approved" && tasks === "approved",
+    fullyApproved: plan === "approved",
   }
-}
-
-/**
- * Approve tasks
- */
-export function approveTasks(
-  repoRoot: string,
-  streamIdOrName: string
-): StreamMetadata {
-  const index = loadIndex(repoRoot)
-  const stream = getIndexedStream(index, streamIdOrName)
-
-  // Check readiness
-  const readyCheck = checkTasksApprovalReady(repoRoot, stream.id)
-  if (!readyCheck.ready) {
-    throw new Error(readyCheck.reason!)
-  }
-
-  updateStructuredApprovalsSync({
-    repoRoot,
-    streamId: stream.id,
-    touchStreamUpdatedAt: true,
-    writeTasksFileIfMissing: false,
-    update: (approval) => {
-      const nextApproval = approval ?? { status: "draft" }
-      nextApproval.tasks = {
-        status: "approved",
-        approved_at: new Date().toISOString(),
-        task_count: readyCheck.taskCount,
-      }
-      return nextApproval
-    },
-  })
-
-  return getIndexedStream(loadIndex(repoRoot), stream.id)
-}
-
-/**
- * Revoke tasks approval
- */
-export function revokeTasksApproval(
-  repoRoot: string,
-  streamIdOrName: string,
-  reason?: string
-): StreamMetadata {
-  const index = loadIndex(repoRoot)
-  const stream = getIndexedStream(index, streamIdOrName)
-
-  updateStructuredApprovalsSync({
-    repoRoot,
-    streamId: stream.id,
-    touchStreamUpdatedAt: true,
-    writeTasksFileIfMissing: false,
-    update: (approval) => {
-      const nextApproval = approval ?? { status: "draft" }
-      nextApproval.tasks = {
-        status: "revoked",
-        revoked_at: new Date().toISOString(),
-        revoked_reason: reason,
-      }
-      return nextApproval
-    },
-  })
-
-  return getIndexedStream(loadIndex(repoRoot), stream.id)
 }
 
 
@@ -799,10 +672,7 @@ export function revokeTasksApproval(
 // ============================================
 
 export function isFullyApproved(stream: StreamMetadata): boolean {
-  return (
-    getApprovalStatus(stream) === "approved" &&
-    getTasksApprovalStatus(stream) === "approved"
-  )
+  return getApprovalStatus(stream) === "approved"
 }
 
 /**
@@ -810,12 +680,10 @@ export function isFullyApproved(stream: StreamMetadata): boolean {
  */
 export function getFullApprovalStatus(stream: StreamMetadata): {
   plan: ApprovalStatus
-  tasks: ApprovalStatus
   fullyApproved: boolean
 } {
   return {
     plan: getApprovalStatus(stream),
-    tasks: getTasksApprovalStatus(stream),
     fullyApproved: isFullyApproved(stream),
   }
 }

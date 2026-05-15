@@ -200,7 +200,7 @@ Stream ID: \`${streamId}\`
 3. Run \`work plan create --stream "${streamId}" --stages <n>\` to scaffold stage directories under \`stages/\`.
 4. For each stage, fill in \`REQUIREMENTS.md\`, \`PLAN.md\`, \`WORK.md\`, and \`specs/\`.
 
-This workstream intentionally starts with shared root context plus empty stage scaffolding. There is no root \`REQUIREMENTS.md\`, \`PLAN.md\`, or \`TASKS.md\` in the supported model.
+This workstream intentionally starts with shared root context plus empty stage scaffolding. There is no root \`REQUIREMENTS.md\` or \`PLAN.md\` in the supported model; stage planning lives under \`stages/<nn>/\`.
 `
 }
 

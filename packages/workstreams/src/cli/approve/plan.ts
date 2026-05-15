@@ -6,7 +6,6 @@
 
 import {
   approveStream,
-  approveTasks,
   revokeApproval,
   queryApprovalStatus,
   formatApprovalStatus,
@@ -30,10 +29,10 @@ import { closeStageIssue } from "../../lib/github/issues.ts"
 import { parseStreamDocument } from "../../lib/stream-parser.ts"
 import { type GitAutoCommitResult } from "../../lib/git/index.ts"
 import { getResolvedStream } from "../../lib/index.ts"
-import { getTasks, parseTaskId } from "../../lib/tasks.ts"
 import { generateAllPrompts } from "../../lib/prompts.ts"
-import { syncCompatibilityTasksFromPlan } from "../../lib/task-compatibility.ts"
+import { initializeCanonicalExecutionStateFromPlan } from "../../lib/execution-state.ts"
 import { loadWorkstreamPlan } from "../../lib/consolidate.ts"
+import { queryThreadsForWorkstream } from "../../lib/hierarchy-query.ts"
 
 import type { ApproveCliArgs } from "./utils.ts"
 
@@ -56,7 +55,7 @@ function formatApprovalAutoCommitSkip(result: GitAutoCommitResult): string {
 
 interface ExecutionStateInitializationResult {
   success: boolean
-  taskCount: number
+  threadCount: number
   error?: string
 }
 
@@ -67,34 +66,34 @@ function initializeExecutionStateFromPlan(
   try {
     const loadedPlan = loadWorkstreamPlan(repoRoot, streamId)
     if (!loadedPlan) {
-      return {
-        success: false,
-        taskCount: 0,
-        error: `No root or stage-local PLAN.md found for workstream "${streamId}"`,
-      }
+        return {
+          success: false,
+          threadCount: 0,
+          error: `No root or stage-local PLAN.md found for workstream "${streamId}"`,
+        }
     }
 
     const errors: any[] = []
     const doc = parseStreamDocument(loadedPlan.content, errors)
 
     if (!doc) {
-      return {
-        success: false,
-        taskCount: 0,
-        error: `Failed to parse PLAN.md: ${errors.map((e) => e.message).join(", ")}`,
-      }
+        return {
+          success: false,
+          threadCount: 0,
+          error: `Failed to parse PLAN.md: ${errors.map((e) => e.message).join(", ")}`,
+        }
     }
 
-    const tasks = syncCompatibilityTasksFromPlan(repoRoot, streamId, doc)
+    const threadCount = initializeCanonicalExecutionStateFromPlan(repoRoot, streamId, doc)
 
     return {
       success: true,
-      taskCount: tasks.length,
+      threadCount,
     }
   } catch (e) {
     return {
       success: false,
-      taskCount: 0,
+      threadCount: 0,
       error: (e as Error).message,
     }
   }
@@ -196,47 +195,13 @@ export async function handlePlanApproval(
       return
     }
 
-    // Validate that all tasks in the stage are completed
+    // Validate that all execution threads in the stage are completed
     if (!cliArgs.force) {
-      const allTasks = getTasks(repoRoot, stream.id)
-      const stageTasks = allTasks.filter((t) => {
-        try {
-          const parsed = parseTaskId(t.id)
-          return parsed.stage === stageNum
-        } catch {
-          return false
-        }
-      })
+      const incompleteThreads = queryThreadsForWorkstream(repoRoot, stream.id)
+        .filter((thread) => thread.stageId === stageNum.toString().padStart(2, "0"))
+        .filter((thread) => thread.aggregateStatus !== "completed")
 
-      const incompleteTasks = stageTasks.filter((t) => t.status !== "completed" && t.status !== "cancelled")
-
-      // Group incomplete tasks by thread
-      const incompleteThreads = new Map<
-        string,
-        { count: number; name: string }
-      >()
-
-      incompleteTasks.forEach((t) => {
-        try {
-          const parsed = parseTaskId(t.id)
-          // Format thread ID: stage.batch.thread
-          const threadId = `${parsed.stage.toString().padStart(2, "0")}.${parsed.batch.toString().padStart(2, "0")}.${parsed.thread.toString().padStart(2, "0")}`
-
-          if (!incompleteThreads.has(threadId)) {
-            incompleteThreads.set(threadId, {
-              count: 0,
-              name: t.thread_name || `Thread ${parsed.thread}`,
-            })
-          }
-
-          const threadInfo = incompleteThreads.get(threadId)!
-          threadInfo.count++
-        } catch {
-          // ignore parsing errors
-        }
-      })
-
-      if (incompleteThreads.size > 0) {
+      if (incompleteThreads.length > 0) {
         if (cliArgs.json) {
           console.log(
             JSON.stringify(
@@ -245,16 +210,15 @@ export async function handlePlanApproval(
                 scope: "stage",
                 stage: stageNum,
                 streamId: stream.id,
-                reason: "incomplete_tasks",
-                incompleteThreadCount: incompleteThreads.size,
-                incompleteTaskCount: incompleteTasks.length,
-                incompleteThreads: Array.from(incompleteThreads.entries()).map(
-                  ([id, info]) => ({
-                    id,
-                    name: info.name,
-                    incompleteTasks: info.count,
-                  })
-                ),
+                reason: "incomplete_threads",
+                incompleteThreadCount: incompleteThreads.length,
+                incompleteItemCount: incompleteThreads.reduce((sum, thread) => sum + thread.itemCount, 0),
+                incompleteThreads: incompleteThreads.map((thread) => ({
+                  id: thread.threadId,
+                  name: thread.threadName,
+                  incompleteItems: thread.itemCount,
+                  status: thread.aggregateStatus,
+                })),
               },
               null,
               2
@@ -262,18 +226,18 @@ export async function handlePlanApproval(
           )
         } else {
           console.error(
-            `Error: Cannot approve Stage ${stageNum} because ${incompleteThreads.size} thread(s) are not approved.`
+            `Error: Cannot approve Stage ${stageNum} because ${incompleteThreads.length} thread(s) are not complete.`
           )
           console.log("\nIncomplete threads:")
 
           // Sort threads by ID
-          const sortedThreads = Array.from(incompleteThreads.entries()).sort(
-            (a, b) => a[0].localeCompare(b[0])
+          const sortedThreads = [...incompleteThreads].sort((a, b) =>
+            a.threadId.localeCompare(b.threadId),
           )
 
-          for (const [threadId, info] of sortedThreads) {
+          for (const thread of sortedThreads) {
             console.log(
-              `  - ${threadId} (${info.name}): ${info.count} task(s) remaining`
+              `  - ${thread.threadId} (${thread.threadName}): ${thread.itemCount} item(s) remaining [${thread.aggregateStatus}]`
             )
           }
 
@@ -562,11 +526,9 @@ export async function handlePlanApproval(
 
     if (!executionStateResult.success) {
       throw new Error(
-        `Failed to initialize execution state from PLAN.md: ${executionStateResult.error}`,
+        `Failed to initialize execution hierarchy from PLAN.md: ${executionStateResult.error}`,
       )
     }
-
-    updatedStream = approveTasks(repoRoot, updatedStream.id)
 
     const promptsResult = generateAllPrompts(repoRoot, updatedStream.id)
     const promptsWarning = !promptsResult.success
@@ -594,7 +556,7 @@ export async function handlePlanApproval(
             forcedApproval: questionsResult.hasOpenQuestions && cliArgs.force,
             executionState: {
               initialized: executionStateResult.success,
-              taskCount: executionStateResult.taskCount,
+              threadCount: executionStateResult.threadCount,
               promptsGenerated: promptsResult.generatedFiles.length,
               promptThreadCount: promptsResult.totalThreads,
               promptErrors: promptsResult.errors,
@@ -621,7 +583,7 @@ export async function handlePlanApproval(
       )
       console.log(`  Status: ${formatApprovalStatus(updatedStream)}`)
       console.log(
-        `  Initialized execution state directly from PLAN.md (${executionStateResult.taskCount} compatibility task${executionStateResult.taskCount === 1 ? "" : "s"})`,
+        `  Initialized execution hierarchy from PLAN.md (${executionStateResult.threadCount} thread${executionStateResult.threadCount === 1 ? "" : "s"})`,
       )
       console.log(
         `  Prompts: ${promptsResult.generatedFiles.length}/${promptsResult.totalThreads} generated`,

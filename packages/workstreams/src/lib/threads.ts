@@ -2,8 +2,7 @@
  * Thread runtime metadata helpers
  *
  * This module exposes thread-level metadata helpers backed by
- * tasks.json -> runtime_state.threads.
- * Legacy threads.json terminology remains here for compatibility-facing APIs.
+ * canonical workstream runtime state.
  */
 
 import type {
@@ -11,14 +10,13 @@ import type {
   ThreadMetadata,
   ThreadsJson,
   SessionRecord,
-  TasksFile,
 } from "./types.ts"
 import {
   modifySqliteCanonicalRuntimeWorkstreamStateSync,
   loadThreadMetadataViewSync,
   replaceThreadMetadataViewSync,
+  getFilesystemWorkstreamStatePath,
 } from "./storage-adapter.ts"
-import { getTasksFilePath } from "./tasks.ts"
 import type {
   StructuredStorageWorkstreamState,
   StructuredThreadRuntimeRecord,
@@ -28,14 +26,14 @@ import { upsertStructuredThreadRuntime } from "./structured-storage.ts"
 const THREADS_FILE_VERSION = "1.0.0"
 
 /**
- * Get the canonical tasks.json path used by the legacy threads-store helpers.
+ * Get the canonical workstream state path used by thread metadata helpers.
  */
 export function getThreadsFilePath(repoRoot: string, streamId: string): string {
-  return getTasksFilePath(repoRoot, streamId)
+  return getFilesystemWorkstreamStatePath(repoRoot, streamId)
 }
 
 /**
- * Create an empty thread-metadata compatibility view.
+ * Create an empty thread-metadata view.
  */
 export function createEmptyThreadsFile(streamId: string): ThreadsJson {
   return {
@@ -62,7 +60,7 @@ export function loadThreads(
 }
 
 /**
- * Write thread metadata to the canonical runtime_state store.
+ * Write thread metadata to the canonical runtime state store.
  */
 export function saveThreads(
   repoRoot: string,
@@ -112,6 +110,13 @@ function createThreadMetadataViewFromWorkstreamState(
       ...(threadById.get(threadRuntime.threadId)?.promptPath
         ? { promptPath: threadById.get(threadRuntime.threadId)?.promptPath }
         : {}),
+      ...(threadRuntime.status ? { status: threadRuntime.status } : {}),
+      ...(threadRuntime.createdAt ? { createdAt: threadRuntime.createdAt } : {}),
+      ...(threadRuntime.updatedAt ? { updatedAt: threadRuntime.updatedAt } : {}),
+      ...(threadRuntime.itemName ? { itemName: threadRuntime.itemName } : {}),
+      ...(threadRuntime.breadcrumb ? { breadcrumb: threadRuntime.breadcrumb } : {}),
+      ...(threadRuntime.report ? { report: threadRuntime.report } : {}),
+      ...(threadRuntime.assignedAgent ? { assigned_agent: threadRuntime.assignedAgent } : {}),
       ...(threadRuntime.currentSessionId ? { currentSessionId: threadRuntime.currentSessionId } : {}),
       ...(threadRuntime.opencodeSessionId ? { opencodeSessionId: threadRuntime.opencodeSessionId } : {}),
       ...(threadRuntime.workingAgentSessionId
@@ -142,6 +147,13 @@ function applyThreadMetadataViewToWorkstreamState(
         ...session,
         ...(session.lineage ? { lineage: { ...session.lineage } } : {}),
       })),
+      ...(thread.status ? { status: thread.status } : {}),
+      ...(thread.createdAt ? { createdAt: thread.createdAt } : {}),
+      ...(thread.updatedAt ? { updatedAt: thread.updatedAt } : {}),
+      ...(thread.itemName ? { itemName: thread.itemName } : {}),
+      ...(thread.breadcrumb ? { breadcrumb: thread.breadcrumb } : {}),
+      ...(thread.report ? { report: thread.report } : {}),
+      ...(thread.assigned_agent ? { assignedAgent: thread.assigned_agent } : {}),
       ...(thread.currentSessionId ? { currentSessionId: thread.currentSessionId } : {}),
       ...(thread.opencodeSessionId ? { opencodeSessionId: thread.opencodeSessionId } : {}),
       ...(thread.workingAgentSessionId ? { workingAgentSessionId: thread.workingAgentSessionId } : {}),
@@ -635,174 +647,3 @@ export function getWorkingAgentSessionId(
 // ============================================
 // MIGRATION UTILITIES
 // ============================================
-
-/**
- * Extract thread ID from task ID
- * Task ID format: "SS.BB.TT.NN" -> Thread ID: "SS.BB.TT"
- */
-function extractThreadIdFromTaskId(taskId: string): string | null {
-  const parts = taskId.split(".")
-  if (parts.length !== 4) return null
-  return `${parts[0]}.${parts[1]}.${parts[2]}`
-}
-
-/**
- * Migration result structure
- */
-export interface MigrationResult {
-  threadsCreated: number
-  sessionsMigrated: number
-  errors: string[]
-}
-
-/**
- * Migrate session and GitHub issue data from tasks.json to threads.json
- * This is a one-time migration utility for transitioning to the new structure.
- * 
- * The migration:
- * 1. Reads tasks.json and extracts sessions and githubIssue from tasks
- * 2. Groups them by thread ID
- * 3. Creates/updates thread entries in threads.json
- * 4. Does NOT modify tasks.json (caller should clean up after verifying migration)
- * 
- * @param repoRoot - Repository root path
- * @param streamId - Workstream ID
- * @returns Migration result with counts and any errors
- */
-export function migrateFromTasksJson(
-  repoRoot: string,
-  streamId: string,
-  tasksFile: TasksFile,
-): MigrationResult {
-  const result: MigrationResult = {
-    threadsCreated: 0,
-    sessionsMigrated: 0,
-    errors: [],
-  }
-
-  // Load or create threads.json
-  let threadsFile = loadThreads(repoRoot, streamId)
-  if (!threadsFile) {
-    threadsFile = createEmptyThreadsFile(streamId)
-  }
-
-  // Build a map of existing threads for quick lookup
-  const threadMap = new Map<string, ThreadMetadata>()
-  for (const thread of threadsFile.threads) {
-    threadMap.set(thread.threadId, thread)
-  }
-
-  // Group tasks by thread ID
-  const tasksByThread = new Map<string, typeof tasksFile.tasks>()
-  for (const task of tasksFile.tasks) {
-    const threadId = extractThreadIdFromTaskId(task.id)
-    if (!threadId) {
-      result.errors.push(`Invalid task ID format: ${task.id}`)
-      continue
-    }
-
-    if (!tasksByThread.has(threadId)) {
-      tasksByThread.set(threadId, [])
-    }
-    tasksByThread.get(threadId)!.push(task)
-  }
-
-  // Process each thread
-  for (const [threadId, tasks] of tasksByThread) {
-    // Get or create thread metadata
-    let thread = threadMap.get(threadId)
-    const isNew = !thread
-
-    if (!thread) {
-      thread = {
-        threadId,
-        sessions: [],
-      }
-      threadMap.set(threadId, thread)
-      result.threadsCreated++
-    }
-
-    // Collect sessions from all tasks in this thread
-    for (const task of tasks) {
-      if (task.sessions && task.sessions.length > 0) {
-        // Append sessions, avoiding duplicates by sessionId
-        const existingSessionIds = new Set(thread.sessions.map((s) => s.sessionId))
-        for (const session of task.sessions) {
-          if (!existingSessionIds.has(session.sessionId)) {
-            thread.sessions.push(session)
-            result.sessionsMigrated++
-          }
-        }
-      }
-
-      // Use currentSessionId from first task with one (if thread doesn't have one)
-      if (!thread.currentSessionId && task.currentSessionId) {
-        thread.currentSessionId = task.currentSessionId
-      }
-    }
-
-    // GitHub issues are now stored in github.json per-stage, not in threads.json
-    // Migration of github_issue is no longer performed
-  }
-
-  // Update threads array
-  threadsFile.threads = Array.from(threadMap.values()).sort((a, b) =>
-    a.threadId.localeCompare(b.threadId, undefined, { numeric: true })
-  )
-
-  // Save threads.json
-  saveThreads(repoRoot, streamId, threadsFile)
-
-  return result
-}
-
-/**
- * Validate that migration was successful by comparing threads.json with tasks.json
- * Returns a list of discrepancies if any
- */
-export function validateMigration(
-  repoRoot: string,
-  streamId: string,
-  tasksFile: TasksFile,
-): string[] {
-  const issues: string[] = []
-
-  const threadsFile = loadThreads(repoRoot, streamId)
-  if (!threadsFile) {
-    issues.push("threads.json does not exist")
-    return issues
-  }
-
-  // Build thread map for quick lookup
-  const threadMap = new Map<string, ThreadMetadata>()
-  for (const thread of threadsFile.threads) {
-    threadMap.set(thread.threadId, thread)
-  }
-
-  // Check each task's data is reflected in threads.json
-  for (const task of tasksFile.tasks) {
-    const threadId = extractThreadIdFromTaskId(task.id)
-    if (!threadId) continue
-
-    const thread = threadMap.get(threadId)
-    if (!thread) {
-      issues.push(`Thread ${threadId} not found in threads.json`)
-      continue
-    }
-
-    // Check sessions are present
-    if (task.sessions) {
-      for (const session of task.sessions) {
-        const found = thread.sessions.some((s) => s.sessionId === session.sessionId)
-        if (!found) {
-          issues.push(`Session ${session.sessionId} from task ${task.id} not found in thread ${threadId}`)
-        }
-      }
-    }
-
-    // GitHub issues are now stored in github.json per-stage, not in threads.json
-    // Migration validation for github_issue is no longer performed
-  }
-
-  return issues
-}

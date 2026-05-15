@@ -8,7 +8,6 @@ import { readFileSync } from "fs"
 import { getRepoRoot } from "../lib/repo.ts"
 import { loadIndex, getResolvedStream } from "../lib/index.ts"
 import { loadWorkstreamPlan, consolidateStream } from "../lib/consolidate.ts"
-import { printRemovedTaskWorkflowError } from "../lib/removed-workflows.ts"
 import {
     loadWorkstreamRequirements,
     validateRequirementsDocument,
@@ -18,7 +17,7 @@ import { relative } from "path"
 interface ValidateCliArgs {
     repoRoot?: string
     streamId?: string
-    subcommand?: "plan" | "tasks" | "requirements"
+    subcommand?: "plan" | "requirements"
     json: boolean
 }
 
@@ -47,10 +46,8 @@ Options:
   --help, -h       Show this help message
 
 Description:
-  Validates planning and requirements markdown during the current transition.
-  In the supported stage-local model, shared goals live in root README.md and
-  stage details live under stages/<nn>/. Some validation flows still target the
-  compatibility plan/requirements documents where present.
+  Validates planning and requirements markdown for the stage-local workstream model.
+  Shared goals live in root README.md and stage details live under stages/<nn>/.
   Plan validation checks for files shared across parallel threads in the same batch.
   REQUIREMENTS.md validation checks required sections plus dependency/resource paths.
   When no root REQUIREMENTS.md exists, it validates filled stage-local files under
@@ -58,7 +55,7 @@ Description:
   Note: Use 'work check plan' to check for open questions and missing input files.
 
 Examples:
-  # Validate current workstream plan compatibility document
+  # Validate the current workstream plan
   work validate plan
 
   # Validate requirements and a newly scaffolded plan
@@ -87,8 +84,8 @@ function parseCliArgs(argv: string[]): ValidateCliArgs | null {
         const next = args[i + 1]
 
         // Handle subcommand
-        if ((arg === "plan" || arg === "tasks" || arg === "requirements") && !parsed.subcommand) {
-            parsed.subcommand = arg as "plan" | "tasks" | "requirements"
+        if ((arg === "plan" || arg === "requirements") && !parsed.subcommand) {
+            parsed.subcommand = arg as "plan" | "requirements"
             continue
         }
 
@@ -128,7 +125,7 @@ function parseCliArgs(argv: string[]): ValidateCliArgs | null {
     return parsed
 }
 
-function formatValidationResult(result: ValidationResult, fileType: "PLAN.md" | "TASKS.md" | "REQUIREMENTS.md"): string {
+function formatValidationResult(result: ValidationResult, fileType: "PLAN.md" | "REQUIREMENTS.md"): string {
     const lines: string[] = []
 
     if (result.valid) {
@@ -222,12 +219,6 @@ export function main(argv: string[] = process.argv): void {
         if (!result.valid) {
             process.exit(1)
         }
-    }
-
-    if (cliArgs.subcommand === "tasks") {
-        printRemovedTaskWorkflowError(
-            "Use 'work validate plan' to validate the thread/stage execution structure before 'work approve plan'.",
-        )
     }
 
     if (cliArgs.subcommand === "requirements") {

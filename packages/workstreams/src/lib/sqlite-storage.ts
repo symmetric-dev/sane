@@ -24,7 +24,6 @@ import type {
   StructuredApprovalRecord,
   StructuredBatchRecord,
   StructuredStageRecord,
-  StructuredTaskRecord,
   StructuredThreadRecord,
   StructuredThreadRuntimeRecord,
 } from "./structured-storage.ts"
@@ -38,9 +37,9 @@ import type {
 } from "./types.ts"
 import { createEmptySupervisorState } from "./supervisor-state.ts"
 import { createEmptyStructuredStorageWorkstreamState as createEmptyWorkstreamState } from "./structured-storage.ts"
-import { normalizeLoadedSupervisorState } from "./tasks.ts"
+import { normalizeLoadedSupervisorState } from "./runtime-state.ts"
 
-export const SQLITE_STRUCTURED_STORAGE_SCHEMA_VERSION = 1
+export const SQLITE_STRUCTURED_STORAGE_SCHEMA_VERSION = 2
 const SQLITE_BUSY_TIMEOUT_MS = 5000
 
 export const SQLITE_STRUCTURED_STORAGE_TABLES = [
@@ -50,7 +49,7 @@ export const SQLITE_STRUCTURED_STORAGE_TABLES = [
   "stages",
   "batches",
   "threads",
-  "tasks",
+  "execution_items",
   "approvals",
   "thread_sessions",
   "batch_runs",
@@ -86,27 +85,19 @@ export interface SqliteStructuredStorageMirrorState {
 
 const sqliteStructuredStorageMirrorStateByRepoRoot = new Map<string, SqliteStructuredStorageMirrorState>()
 
-export interface CriticalWorkflowThreadParityRecord {
-  threadId: string
+interface StructuredExecutionItemRecord {
+  id: string
   stageId: string
   batchId: string
+  threadId: string
   number: number
   name: string
-  promptPath?: string
-  currentSessionId?: string
-  opencodeSessionId?: string
-  workingAgentSessionId?: string
-  synthesisOutput?: string
-  synthesis?: StructuredThreadRuntimeRecord["synthesis"]
-  sessions: SessionRecord[]
-}
-
-export interface CriticalWorkflowParityProjection {
-  tasks: StructuredTaskRecord[]
-  threads: CriticalWorkflowThreadParityRecord[]
-  approvals: StructuredApprovalRecord[]
-  batchRuns: PersistedBatchStatusFile[]
-  supervisionRuns: SupervisorRunState[]
+  status: StructuredThreadRuntimeRecord["status"]
+  createdAt: string
+  updatedAt: string
+  breadcrumb?: string
+  report?: string
+  assignedAgent?: string
 }
 
 const SCHEMA_STATEMENTS = [
@@ -176,13 +167,13 @@ const SCHEMA_STATEMENTS = [
     FOREIGN KEY (stream_id, stage_id) REFERENCES stages(stream_id, stage_id) ON DELETE CASCADE,
     FOREIGN KEY (stream_id, batch_id) REFERENCES batches(stream_id, batch_id) ON DELETE CASCADE
   )`,
-  `CREATE TABLE IF NOT EXISTS tasks (
-    stream_id TEXT NOT NULL,
-    task_id TEXT NOT NULL,
+  `CREATE TABLE IF NOT EXISTS execution_items (
+     stream_id TEXT NOT NULL,
+    item_id TEXT NOT NULL,
     stage_id TEXT NOT NULL,
     batch_id TEXT NOT NULL,
     thread_id TEXT NOT NULL,
-    task_number INTEGER NOT NULL,
+    item_number INTEGER NOT NULL,
     name TEXT NOT NULL,
     status TEXT NOT NULL,
     created_at TEXT NOT NULL,
@@ -191,7 +182,7 @@ const SCHEMA_STATEMENTS = [
     report TEXT,
     assigned_agent TEXT,
     metadata_json TEXT NOT NULL DEFAULT '{}',
-    PRIMARY KEY (stream_id, task_id),
+    PRIMARY KEY (stream_id, item_id),
     FOREIGN KEY (stream_id) REFERENCES workstreams(stream_id) ON DELETE CASCADE,
     FOREIGN KEY (stream_id, stage_id) REFERENCES stages(stream_id, stage_id) ON DELETE CASCADE,
     FOREIGN KEY (stream_id, batch_id) REFERENCES batches(stream_id, batch_id) ON DELETE CASCADE,
@@ -208,7 +199,7 @@ const SCHEMA_STATEMENTS = [
     revoked_at TEXT,
     revoked_reason TEXT,
     plan_hash TEXT,
-    task_count INTEGER,
+    item_count INTEGER,
     commit_sha TEXT,
     metadata_json TEXT NOT NULL DEFAULT '{}',
     PRIMARY KEY (stream_id, approval_key),
@@ -253,7 +244,7 @@ const SCHEMA_STATEMENTS = [
     stream_id TEXT NOT NULL,
     run_id TEXT NOT NULL,
     thread_id TEXT NOT NULL,
-    first_task_id TEXT NOT NULL,
+    first_item_id TEXT NOT NULL,
     thread_name TEXT NOT NULL,
     status TEXT NOT NULL,
     started_at TEXT,
@@ -269,7 +260,7 @@ const SCHEMA_STATEMENTS = [
     PRIMARY KEY (stream_id, run_id, thread_id),
     FOREIGN KEY (stream_id, run_id) REFERENCES batch_runs(stream_id, run_id) ON DELETE CASCADE,
     FOREIGN KEY (stream_id, thread_id) REFERENCES threads(stream_id, thread_id) ON DELETE CASCADE,
-    FOREIGN KEY (stream_id, first_task_id) REFERENCES tasks(stream_id, task_id) ON DELETE CASCADE
+    FOREIGN KEY (stream_id, first_item_id) REFERENCES execution_items(stream_id, item_id) ON DELETE CASCADE
   )`,
   `CREATE TABLE IF NOT EXISTS supervision_state (
     stream_id TEXT PRIMARY KEY,
@@ -343,8 +334,8 @@ const SCHEMA_STATEMENTS = [
   "CREATE INDEX IF NOT EXISTS idx_stages_stream_number ON stages(stream_id, stage_number)",
   "CREATE INDEX IF NOT EXISTS idx_batches_stream_stage_number ON batches(stream_id, stage_id, batch_number)",
   "CREATE INDEX IF NOT EXISTS idx_threads_stream_batch_number ON threads(stream_id, batch_id, thread_number)",
-  "CREATE INDEX IF NOT EXISTS idx_tasks_stream_thread_number ON tasks(stream_id, thread_id, task_number)",
-  "CREATE INDEX IF NOT EXISTS idx_tasks_stream_status ON tasks(stream_id, status)",
+  "CREATE INDEX IF NOT EXISTS idx_execution_items_stream_thread_number ON execution_items(stream_id, thread_id, item_number)",
+  "CREATE INDEX IF NOT EXISTS idx_execution_items_stream_status ON execution_items(stream_id, status)",
   "CREATE INDEX IF NOT EXISTS idx_thread_sessions_stream_thread_started ON thread_sessions(stream_id, thread_id, started_at)",
   "CREATE INDEX IF NOT EXISTS idx_batch_runs_stream_batch_updated ON batch_runs(stream_id, batch_id, updated_at)",
   "CREATE INDEX IF NOT EXISTS idx_supervision_runs_stream_stage_updated ON supervision_runs(stream_id, stage_id, updated_at)",
@@ -392,7 +383,35 @@ function hasCurrentSqliteStructuredStorageSchema(database: Database): boolean {
     )
     .get("schema_version")
 
-  return schemaVersion?.value === String(SQLITE_STRUCTURED_STORAGE_SCHEMA_VERSION)
+  return (
+    schemaVersion?.value === String(SQLITE_STRUCTURED_STORAGE_SCHEMA_VERSION) &&
+    sqliteTableExists(database, "execution_items") &&
+    sqliteTableColumnExists(database, "execution_items", "item_id") &&
+    sqliteTableExists(database, "batch_run_threads") &&
+    sqliteTableColumnExists(database, "batch_run_threads", "first_item_id")
+  )
+}
+
+function sqliteTableExists(database: Database, tableName: string): boolean {
+  const row = database
+    .query<{ name: string }, [string]>(
+      `SELECT name
+       FROM sqlite_master
+       WHERE type = 'table' AND name = ?1
+       LIMIT 1`,
+    )
+    .get(tableName)
+
+  return row?.name === tableName
+}
+
+function sqliteTableColumnExists(database: Database, tableName: string, columnName: string): boolean {
+  if (!sqliteTableExists(database, tableName)) {
+    return false
+  }
+
+  const columns = database.query<{ name: string }, []>(`PRAGMA table_info(${tableName})`).all()
+  return columns.some((column) => column.name === columnName)
 }
 
 export function getSqliteStructuredStoragePath(repoRoot: string): string {
@@ -519,6 +538,18 @@ function initializeSqliteStructuredStorageSchema(database: Database, databasePat
 
     insertMetadataIfMissing.run("schema_version", String(SQLITE_STRUCTURED_STORAGE_SCHEMA_VERSION), now)
     insertMetadataIfMissing.run("database_path", databasePath, now)
+    database.run(
+      `UPDATE structured_storage_metadata
+       SET value = ?2, updated_at = ?3
+       WHERE key = ?1`,
+      ["schema_version", String(SQLITE_STRUCTURED_STORAGE_SCHEMA_VERSION), now],
+    )
+    database.run(
+      `UPDATE structured_storage_metadata
+       SET value = ?2, updated_at = ?3
+       WHERE key = ?1`,
+      ["database_path", databasePath, now],
+    )
 
     database.exec("COMMIT")
   } catch (error) {
@@ -577,8 +608,7 @@ export function loadSqliteStructuredStorageWorkspaceState(
     return null
   }
 
-  const database = new Database(databasePath, { readonly: true })
-  configureSqliteStructuredStorageConnection(database, { readonly: true })
+  const database = openSqliteStructuredStorageDatabase(repoRoot)
 
   try {
     const workspaceRow = database
@@ -619,6 +649,13 @@ type SqliteThreadMetadataJson = {
   name: string
   promptPath?: string
   hasRuntimeMetadata?: boolean
+  status?: StructuredThreadRuntimeRecord["status"]
+  createdAt?: string
+  updatedAt?: string
+  itemName?: string
+  breadcrumb?: string
+  report?: string
+  assignedAgent?: string
   currentSessionId?: string
   opencodeSessionId?: string
   workingAgentSessionId?: string
@@ -628,8 +665,7 @@ type SqliteThreadMetadataJson = {
 
 const APPROVAL_SCOPE_ORDER: Record<StructuredApprovalRecord["scope"], number> = {
   plan: 0,
-  tasks: 1,
-  stage: 2,
+  stage: 1,
 }
 
 function parseBatchId(batchId: string): { stageId: string; batchNumber: number } {
@@ -649,18 +685,48 @@ function parseThreadId(threadId: string): { stageId: string; batchId: string; th
   }
 }
 
-function parseTaskId(taskId: string): {
+function parseExecutionItemId(itemId: string): {
   stageId: string
   batchId: string
   threadId: string
-  taskNumber: number
+  itemNumber: number
 } {
-  const [stageId = "00", batchNumber = "0", threadNumber = "0", taskNumber = "0"] = taskId.split(".")
+  const [stageId = "00", batchNumber = "0", threadNumber = "0", itemNumber = "0"] = itemId.split(".")
   return {
     stageId,
     batchId: `${stageId}.${batchNumber}`,
     threadId: `${stageId}.${batchNumber}.${threadNumber}`,
-    taskNumber: Number.parseInt(taskNumber, 10) || 0,
+    itemNumber: Number.parseInt(itemNumber, 10) || 0,
+  }
+}
+
+function deriveExecutionItemIdForThread(args: {
+  threadId: string
+  items: StructuredExecutionItemRecord[]
+}): string {
+  return args.items.find((item) => item.threadId === args.threadId)?.id ?? `${args.threadId}.01`
+}
+
+function stripCompatibilityApprovalFields(
+  approval: StructuredApprovalRecord,
+): StructuredApprovalRecord {
+  return { ...approval }
+}
+
+function stripCompatibilityBatchStatusThreadFields(
+  thread: PersistedBatchStatusThread,
+): PersistedBatchStatusThread {
+  const canonicalThread = { ...(thread as PersistedBatchStatusThread & { firstItemId?: string }) }
+  delete canonicalThread.firstItemId
+  return canonicalThread
+}
+
+function stripCompatibilityBatchStatusFields(
+  batchRun: PersistedBatchStatusFile,
+): PersistedBatchStatusFile {
+  return {
+    ...batchRun,
+    threads: batchRun.threads.map(stripCompatibilityBatchStatusThreadFields),
   }
 }
 
@@ -713,12 +779,12 @@ function inferHierarchy(workstreamState: StructuredStorageWorkstreamState): {
   stages: StructuredStageRecord[]
   batches: StructuredBatchRecord[]
   threads: StructuredThreadRecord[]
-  tasks: StructuredTaskRecord[]
+  items: StructuredExecutionItemRecord[]
 } {
   const stages = new Map(workstreamState.hierarchy.stages.map((stage) => [stage.id, { ...stage }] as const))
   const batches = new Map(workstreamState.hierarchy.batches.map((batch) => [batch.id, { ...batch }] as const))
   const threads = new Map(workstreamState.hierarchy.threads.map((thread) => [thread.id, { ...thread }] as const))
-  const tasks = new Map(workstreamState.hierarchy.tasks.map((task) => [task.id, { ...task }] as const))
+  const items = new Map<string, StructuredExecutionItemRecord>()
 
   const ensureStage = (stageId: string, fallbackName?: string): void => {
     const canonicalStageId = normalizeCanonicalStageIdOrFallback(stageId)
@@ -755,18 +821,18 @@ function inferHierarchy(workstreamState: StructuredStorageWorkstreamState): {
     })
   }
 
-  const ensureTask = (taskId: string, updatedAt?: string): void => {
-    if (tasks.has(taskId)) return
-    const { stageId, batchId, threadId, taskNumber } = parseTaskId(taskId)
+  const ensureItem = (itemId: string, updatedAt?: string): void => {
+    if (items.has(itemId)) return
+    const { stageId, batchId, threadId, itemNumber } = parseExecutionItemId(itemId)
     ensureThread(threadId)
     const timestamp = updatedAt ?? new Date().toISOString()
-    tasks.set(taskId, {
-      id: taskId,
+    items.set(itemId, {
+      id: itemId,
       stageId,
       batchId,
       threadId,
-      number: taskNumber,
-      name: `Task ${taskId}`,
+      number: itemNumber,
+      name: `Thread ${itemId}`,
       status: "pending",
       createdAt: timestamp,
       updatedAt: timestamp,
@@ -779,19 +845,31 @@ function inferHierarchy(workstreamState: StructuredStorageWorkstreamState): {
   for (const thread of workstreamState.hierarchy.threads) {
     ensureBatch(thread.batchId)
   }
-  for (const task of workstreamState.hierarchy.tasks) {
-    ensureThread(task.threadId)
-  }
-
   for (const runtime of workstreamState.threadRuntime) {
     ensureThread(runtime.threadId)
+    const { stageId, batchId } = parseThreadId(runtime.threadId)
+    const createdAt = runtime.createdAt ?? new Date().toISOString()
+    items.set(runtime.threadId, {
+      id: runtime.threadId,
+      stageId,
+      batchId,
+      threadId: runtime.threadId,
+      number: 1,
+      name: runtime.itemName ?? threads.get(runtime.threadId)?.name ?? runtime.threadId,
+      status: runtime.status ?? "pending",
+      createdAt,
+      updatedAt: runtime.updatedAt ?? createdAt,
+      ...(runtime.breadcrumb ? { breadcrumb: runtime.breadcrumb } : {}),
+      ...(runtime.report ? { report: runtime.report } : {}),
+      ...(runtime.assignedAgent ? { assignedAgent: runtime.assignedAgent } : {}),
+    })
   }
 
   for (const batchRun of workstreamState.batchRuns) {
     ensureBatch(batchRun.batchId, batchRun.batchName)
     for (const thread of batchRun.threads) {
       ensureThread(thread.threadId, thread.threadName)
-      ensureTask(thread.firstTaskId, thread.updatedAt)
+      ensureItem(thread.threadId, thread.updatedAt)
     }
   }
 
@@ -835,7 +913,7 @@ function inferHierarchy(workstreamState: StructuredStorageWorkstreamState): {
     stages: [...stages.values()].sort((left, right) => compareIds(left.id, right.id)),
     batches: [...batches.values()].sort((left, right) => compareIds(left.id, right.id)),
     threads: [...threads.values()].sort((left, right) => compareIds(left.id, right.id)),
-    tasks: [...tasks.values()].sort((left, right) => compareIds(left.id, right.id)),
+    items: [...items.values()].sort((left, right) => compareIds(left.id, right.id)),
   }
 }
 
@@ -923,7 +1001,7 @@ function clearWorkstreamRows(database: Database, streamId: string): void {
   database.run("DELETE FROM supervision_state WHERE stream_id = ?", [streamId])
   database.run("DELETE FROM batch_runs WHERE stream_id = ?", [streamId])
   database.run("DELETE FROM approvals WHERE stream_id = ?", [streamId])
-  database.run("DELETE FROM tasks WHERE stream_id = ?", [streamId])
+  database.run("DELETE FROM execution_items WHERE stream_id = ?", [streamId])
   database.run("DELETE FROM threads WHERE stream_id = ?", [streamId])
   database.run("DELETE FROM batches WHERE stream_id = ?", [streamId])
   database.run("DELETE FROM stages WHERE stream_id = ?", [streamId])
@@ -1000,6 +1078,13 @@ function insertThreads(
         ...(runtime
           ? {
               hasRuntimeMetadata: true,
+              status: runtime.status,
+              createdAt: runtime.createdAt,
+              updatedAt: runtime.updatedAt,
+              itemName: runtime.itemName,
+              breadcrumb: runtime.breadcrumb,
+              report: runtime.report,
+              assignedAgent: runtime.assignedAgent,
               currentSessionId: runtime.currentSessionId,
               opencodeSessionId: runtime.opencodeSessionId,
               workingAgentSessionId: runtime.workingAgentSessionId,
@@ -1012,15 +1097,15 @@ function insertThreads(
   }
 }
 
-function insertTasks(database: Database, streamId: string, tasks: StructuredTaskRecord[]): void {
-  const insertTask = database.query(
-    `INSERT INTO tasks (
+function insertExecutionItems(database: Database, streamId: string, items: StructuredExecutionItemRecord[]): void {
+  const insertItem = database.query(
+    `INSERT INTO execution_items (
        stream_id,
-       task_id,
+       item_id,
        stage_id,
        batch_id,
        thread_id,
-       task_number,
+       item_number,
        name,
        status,
        created_at,
@@ -1032,22 +1117,22 @@ function insertTasks(database: Database, streamId: string, tasks: StructuredTask
      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
   )
 
-  for (const task of tasks) {
-    insertTask.run(
+  for (const item of items) {
+    insertItem.run(
       streamId,
-      task.id,
-      task.stageId,
-      task.batchId,
-      task.threadId,
-      task.number,
-      task.name,
-      task.status,
-      task.createdAt,
-      task.updatedAt,
-      task.breadcrumb ?? null,
-      task.report ?? null,
-      task.assignedAgent ?? null,
-      jsonStringify(task),
+      item.id,
+      item.stageId,
+      item.batchId,
+      item.threadId,
+      item.number,
+      item.name,
+      item.status ?? "pending",
+      item.createdAt,
+      item.updatedAt,
+      item.breadcrumb ?? null,
+      item.report ?? null,
+      item.assignedAgent ?? null,
+      jsonStringify(item),
     )
   }
 }
@@ -1065,10 +1150,9 @@ function insertApprovals(database: Database, streamId: string, approvals: Struct
        revoked_at,
        revoked_reason,
        plan_hash,
-       task_count,
        commit_sha,
        metadata_json
-     ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
   )
 
   for (const approval of approvals) {
@@ -1086,9 +1170,13 @@ function insertApprovals(database: Database, streamId: string, approvals: Struct
       approval.revokedAt ?? null,
       approval.revokedReason ?? null,
       approval.planHash ?? null,
-      approval.taskCount ?? null,
       approval.commitSha ?? null,
-      jsonStringify({ ...approval, ...(normalizedStageId ? { stageId: normalizedStageId } : {}) }),
+      jsonStringify(
+        stripCompatibilityApprovalFields({
+          ...approval,
+          ...(normalizedStageId ? { stageId: normalizedStageId } : {}),
+        }),
+      ),
     )
   }
 }
@@ -1163,13 +1251,14 @@ function insertBatchRunThreads(
   streamId: string,
   runId: string,
   threads: PersistedBatchStatusThread[],
+  hierarchyItems: StructuredExecutionItemRecord[],
 ): void {
   const insertThread = database.query(
     `INSERT INTO batch_run_threads (
        stream_id,
        run_id,
        thread_id,
-       first_task_id,
+       first_item_id,
        thread_name,
        status,
        started_at,
@@ -1190,7 +1279,7 @@ function insertBatchRunThreads(
       streamId,
       runId,
       thread.threadId,
-      thread.firstTaskId,
+      deriveExecutionItemIdForThread({ threadId: thread.threadId, items: hierarchyItems }),
       thread.threadName,
       thread.status,
       thread.startedAt ?? null,
@@ -1202,12 +1291,17 @@ function insertBatchRunThreads(
       thread.workingAgentSessionId ?? null,
       thread.synthesisUpdatedAt ?? null,
       thread.recoveryNote ?? null,
-      jsonStringify(thread),
+      jsonStringify(stripCompatibilityBatchStatusThreadFields(thread)),
     )
   }
 }
 
-function insertBatchRuns(database: Database, streamId: string, batchRuns: PersistedBatchStatusFile[]): void {
+function insertBatchRuns(
+  database: Database,
+  streamId: string,
+  batchRuns: PersistedBatchStatusFile[],
+  hierarchyItems: StructuredExecutionItemRecord[],
+): void {
   const insertBatchRun = database.query(
     `INSERT INTO batch_runs (
        stream_id,
@@ -1240,9 +1334,9 @@ function insertBatchRuns(database: Database, streamId: string, batchRuns: Persis
       batchRun.updatedAt,
       batchRun.completedAt ?? null,
       jsonStringify(batchRun.summary),
-      jsonStringify(batchRun),
+      jsonStringify(stripCompatibilityBatchStatusFields(batchRun)),
     )
-    insertBatchRunThreads(database, streamId, batchRun.runId, batchRun.threads)
+    insertBatchRunThreads(database, streamId, batchRun.runId, batchRun.threads, hierarchyItems)
   }
 }
 
@@ -1390,10 +1484,15 @@ function syncWorkstreamRows(
     inferredHierarchy.threads,
     new Map(workstreamState.threadRuntime.map((record) => [record.threadId, record] as const)),
   )
-  insertTasks(database, workstreamState.streamId, inferredHierarchy.tasks)
+  insertExecutionItems(database, workstreamState.streamId, inferredHierarchy.items)
   insertApprovals(database, workstreamState.streamId, persistedApprovals)
   insertThreadRuntime(database, workstreamState.streamId, workstreamState.threadRuntime)
-  insertBatchRuns(database, workstreamState.streamId, workstreamState.batchRuns)
+  insertBatchRuns(
+    database,
+    workstreamState.streamId,
+    workstreamState.batchRuns,
+    inferredHierarchy.items,
+  )
 
   database.run(
     `INSERT INTO supervision_state (
@@ -1484,13 +1583,13 @@ function loadSqliteStructuredStorageWorkstreamStateFromDatabase(
     .all(streamId)
     .map((row) => parseMetadataJson<StructuredBatchRecord>(row.metadata_json, "batches"))
 
-  const taskRows = database
+  const itemRows = database
     .query<{ metadata_json: string }, [string]>(
-      "SELECT metadata_json FROM tasks WHERE stream_id = ? ORDER BY task_id",
+      "SELECT metadata_json FROM execution_items WHERE stream_id = ? ORDER BY item_id",
     )
     .all(streamId)
-  const tasks = taskRows
-    .map((row) => parseMetadataJson<StructuredTaskRecord>(row.metadata_json, "tasks"))
+  const items = itemRows
+    .map((row) => parseMetadataJson<StructuredExecutionItemRecord>(row.metadata_json, "execution_items"))
     .sort((left, right) => compareIds(left.id, right.id))
 
   const approvalRows = database
@@ -1499,7 +1598,11 @@ function loadSqliteStructuredStorageWorkstreamStateFromDatabase(
     )
     .all(streamId)
   const approvals = approvalRows
-    .map((row) => parseMetadataJson<StructuredApprovalRecord>(row.metadata_json, "approvals"))
+    .map((row) =>
+      stripCompatibilityApprovalFields(
+        parseMetadataJson<StructuredApprovalRecord>(row.metadata_json, "approvals"),
+      ),
+    )
     .sort((left, right) => {
       const scopeOrder = APPROVAL_SCOPE_ORDER[left.scope] - APPROVAL_SCOPE_ORDER[right.scope]
       if (scopeOrder !== 0) return scopeOrder
@@ -1582,6 +1685,13 @@ function loadSqliteStructuredStorageWorkstreamStateFromDatabase(
             ? normalizeCanonicalThreadIdOrFallback(metadata.id) ?? metadata.id
             : metadata.id,
           sessions,
+          ...(metadata.status ? { status: metadata.status } : {}),
+          ...(metadata.createdAt ? { createdAt: metadata.createdAt } : {}),
+          ...(metadata.updatedAt ? { updatedAt: metadata.updatedAt } : {}),
+          ...(metadata.itemName ? { itemName: metadata.itemName } : {}),
+          ...(metadata.breadcrumb ? { breadcrumb: metadata.breadcrumb } : {}),
+          ...(metadata.report ? { report: metadata.report } : {}),
+          ...(metadata.assignedAgent ? { assignedAgent: metadata.assignedAgent } : {}),
           ...(metadata.currentSessionId ? { currentSessionId: metadata.currentSessionId } : {}),
           ...(metadata.opencodeSessionId ? { opencodeSessionId: metadata.opencodeSessionId } : {}),
           ...(metadata.workingAgentSessionId
@@ -1605,7 +1715,9 @@ function loadSqliteStructuredStorageWorkstreamStateFromDatabase(
     .all(streamId)
   const batchRuns = batchRunRows
     .map((row) => {
-      const batchRun = parseMetadataJson<PersistedBatchStatusFile>(row.metadata_json, "batch_runs")
+      const batchRun = stripCompatibilityBatchStatusFields(
+        parseMetadataJson<PersistedBatchStatusFile>(row.metadata_json, "batch_runs"),
+      )
       return shouldNormalizeIds ? normalizePersistedBatchStatus(batchRun) : batchRun
     })
     .sort((left, right) => {
@@ -1662,7 +1774,6 @@ function loadSqliteStructuredStorageWorkstreamStateFromDatabase(
     stages.length === 0 &&
     batches.length === 0 &&
     threads.length === 0 &&
-    tasks.length === 0 &&
     approvals.length === 0 &&
     threadRuntime.length === 0 &&
     batchRuns.length === 0 &&
@@ -1675,7 +1786,7 @@ function loadSqliteStructuredStorageWorkstreamStateFromDatabase(
   }
 
   const workstreamState = createEmptyWorkstreamState(streamId)
-  workstreamState.hierarchy = { stages, batches, threads, tasks }
+  workstreamState.hierarchy = { stages, batches, threads }
   workstreamState.approvals = approvals
   workstreamState.threadRuntime = threadRuntime
   workstreamState.batchRuns = batchRuns
@@ -1724,161 +1835,10 @@ export function loadSqliteStructuredStorageWorkstreamState(
     return null
   }
 
-  let database: Database
-  try {
-    database = new Database(databasePath, { readonly: true })
-    configureSqliteStructuredStorageConnection(database, { readonly: true })
-  } catch {
-    return null
-  }
+  const database = openSqliteStructuredStorageDatabase(repoRoot)
 
   try {
     return loadSqliteStructuredStorageWorkstreamStateFromDatabase(database, streamId, options)
-  } finally {
-    database.close()
-  }
-}
-
-/**
- * Developer-facing read model for dual-write parity checks on critical workflow entities.
- *
- * This intentionally excludes compatibility wrappers that only exist in filesystem views,
- * such as ThreadsJson envelope fields (version/last_updated).
- */
-export function loadSqliteCriticalWorkflowParityProjection(
-  repoRoot: string,
-  streamId: string,
-): CriticalWorkflowParityProjection | null {
-  const databasePath = getSqliteStructuredStoragePath(repoRoot)
-  if (!existsSync(databasePath)) {
-    return null
-  }
-
-  const database = new Database(databasePath, { readonly: true })
-  configureSqliteStructuredStorageConnection(database, { readonly: true })
-
-  try {
-    const taskRows = database
-      .query<{ metadata_json: string }, [string]>(
-        "SELECT metadata_json FROM tasks WHERE stream_id = ? ORDER BY task_id",
-      )
-      .all(streamId)
-    const tasks = taskRows
-      .map((row) => parseMetadataJson<StructuredTaskRecord>(row.metadata_json, "tasks"))
-      .sort((left, right) => compareIds(left.id, right.id))
-
-    const approvalRows = database
-      .query<{ metadata_json: string }, [string]>(
-        "SELECT metadata_json FROM approvals WHERE stream_id = ? ORDER BY scope, stage_id",
-      )
-      .all(streamId)
-    const approvals = approvalRows
-      .map((row) => parseMetadataJson<StructuredApprovalRecord>(row.metadata_json, "approvals"))
-      .sort((left, right) => {
-        const scopeOrder = APPROVAL_SCOPE_ORDER[left.scope] - APPROVAL_SCOPE_ORDER[right.scope]
-        if (scopeOrder !== 0) return scopeOrder
-        return compareOptionalIds(left.stageId, right.stageId)
-      })
-
-    const batchRunRows = database
-      .query<{ metadata_json: string }, [string]>(
-        "SELECT metadata_json FROM batch_runs WHERE stream_id = ? ORDER BY batch_id, run_id",
-      )
-      .all(streamId)
-    const batchRuns = batchRunRows
-      .map((row) => parseMetadataJson<PersistedBatchStatusFile>(row.metadata_json, "batch_runs"))
-      .sort((left, right) => {
-        const batchOrder = compareIds(left.batchId, right.batchId)
-        if (batchOrder !== 0) return batchOrder
-        return compareIds(left.runId, right.runId)
-      })
-      .map((batchRun) => ({
-        ...batchRun,
-        summary: { ...batchRun.summary },
-        threads: [...batchRun.threads].sort((left, right) => compareIds(left.threadId, right.threadId)),
-      }))
-
-    const supervisionRunRows = database
-      .query<{ metadata_json: string }, [string]>(
-        "SELECT metadata_json FROM supervision_runs WHERE stream_id = ? ORDER BY run_id",
-      )
-      .all(streamId)
-    const supervisionRuns = supervisionRunRows
-      .map((row) => parseMetadataJson<SupervisorRunState>(row.metadata_json, "supervision_runs"))
-      .sort((left, right) => compareIds(left.runId, right.runId))
-      .map((run) => ({
-        ...run,
-        issueSummaryIds: [...run.issueSummaryIds].sort(compareIds),
-        escalationIds: [...run.escalationIds].sort(compareIds),
-      }))
-
-    const threadRows = database
-      .query<{ thread_id: string; metadata_json: string }, [string]>(
-        "SELECT thread_id, metadata_json FROM threads WHERE stream_id = ? ORDER BY thread_id",
-      )
-      .all(streamId)
-    const sessionRows = database
-      .query<{ thread_id: string; metadata_json: string }, [string]>(
-        "SELECT thread_id, metadata_json FROM thread_sessions WHERE stream_id = ? ORDER BY thread_id, started_at, session_id",
-      )
-      .all(streamId)
-
-    const sessionsByThreadId = new Map<string, SessionRecord[]>()
-    for (const row of sessionRows) {
-      const session = normalizeSessionRecord(
-        parseMetadataJson<SessionRecord>(
-          row.metadata_json,
-          `thread_sessions(thread=${row.thread_id})`,
-        ),
-      )
-      const sessions = sessionsByThreadId.get(row.thread_id)
-      if (sessions) {
-        sessions.push(session)
-      } else {
-        sessionsByThreadId.set(row.thread_id, [session])
-      }
-    }
-
-    const threads = threadRows
-      .map((row) => {
-        const metadata = parseMetadataJson<SqliteThreadMetadataJson>(
-          row.metadata_json,
-          `threads(thread=${row.thread_id})`,
-        )
-        const sessions = (sessionsByThreadId.get(row.thread_id) ?? [])
-          .map(normalizeSessionRecord)
-          .sort((left, right) => {
-            const startedAtOrder = compareOptionalIds(left.startedAt, right.startedAt)
-            if (startedAtOrder !== 0) return startedAtOrder
-            return compareIds(left.sessionId, right.sessionId)
-          })
-
-        return {
-          threadId: metadata.id,
-          stageId: metadata.stageId,
-          batchId: metadata.batchId,
-          number: metadata.number,
-          name: metadata.name,
-          ...(metadata.promptPath ? { promptPath: metadata.promptPath } : {}),
-          ...(metadata.currentSessionId ? { currentSessionId: metadata.currentSessionId } : {}),
-          ...(metadata.opencodeSessionId ? { opencodeSessionId: metadata.opencodeSessionId } : {}),
-          ...(metadata.workingAgentSessionId
-            ? { workingAgentSessionId: metadata.workingAgentSessionId }
-            : {}),
-          ...(metadata.synthesisOutput ? { synthesisOutput: metadata.synthesisOutput } : {}),
-          ...(metadata.synthesis ? { synthesis: { ...metadata.synthesis } } : {}),
-          sessions,
-        } satisfies CriticalWorkflowThreadParityRecord
-      })
-      .sort((left, right) => compareIds(left.threadId, right.threadId))
-
-    return {
-      tasks,
-      threads,
-      approvals,
-      batchRuns,
-      supervisionRuns,
-    }
   } finally {
     database.close()
   }

@@ -8,8 +8,9 @@
 import { getRepoRoot } from "../lib/repo.ts"
 import { loadIndex, getResolvedStream, saveIndex } from "../lib/index.ts"
 import {
-    queryFullApprovalStatus,
+    queryApprovalStatus,
 } from "../lib/approval.ts"
+import { queryThreadsForWorkstream } from "../lib/hierarchy-query.ts"
 import { isGitHubEnabled, loadGitHubConfig } from "../lib/github/config.ts"
 import { createWorkstreamBranch } from "../lib/github/branches.ts"
 import { createStageIssuesForWorkstream } from "./github.ts"
@@ -38,7 +39,7 @@ Options:
   --help, -h       Show this help message
 
 Description:
-   Start a workstream after plan approval has initialized execution state.
+   Start a workstream after plan approval has initialized the execution hierarchy.
   
    This command:
    1. Creates the workstream branch on GitHub (workstream/{streamId})
@@ -46,7 +47,7 @@ Description:
    3. Creates GitHub issues for all stages in the workstream
 
 Prerequisites:
-  - Run 'work approve plan' to approve PLAN.md and seed compatibility execution state
+   - Run 'work approve plan' to approve PLAN.md and seed the execution hierarchy
   - Run 'work approve' to check approval status
 
 Examples:
@@ -144,13 +145,9 @@ export async function main(argv: string[] = process.argv): Promise<void> {
         process.exit(1)
     }
 
-    // Check all approvals
-    const fullStatus = queryFullApprovalStatus(repoRoot, stream.id, stream)
+    const planStatus = queryApprovalStatus(repoRoot, stream.id, stream)
 
-    if (!fullStatus.fullyApproved) {
-        const missing: string[] = []
-        if (fullStatus.plan !== "approved") missing.push("plan")
-        if (fullStatus.tasks !== "approved") missing.push("execution state")
+    if (planStatus !== "approved") {
 
         if (cliArgs.json) {
             console.log(JSON.stringify({
@@ -158,23 +155,30 @@ export async function main(argv: string[] = process.argv): Promise<void> {
                 reason: "missing_approvals",
                 streamId: stream.id,
                 streamName: stream.name,
-                missingApprovals: missing,
-                approvalStatus: fullStatus,
+                missingApprovals: ["plan"],
+                approvalStatus: { plan: planStatus },
             }, null, 2))
         } else {
-            console.error("Error: Cannot start workstream - missing approvals")
+            console.error("Error: Cannot start workstream - plan is not approved")
             console.error("")
-            console.error(`  Plan:    ${fullStatus.plan}`)
-            console.error(`  Execution state: ${fullStatus.tasks}`)
+            console.error(`  Plan: ${planStatus}`)
             console.error("")
-            console.error("Run the required approval command for missing items:")
-            for (const item of missing) {
-                if (item === "plan") {
-                    console.error("  work approve plan")
-                } else {
-                    console.error("  work approve plan  # reinitialize execution state from PLAN.md")
-                }
-            }
+            console.error("Run: work approve plan")
+        }
+        process.exit(1)
+    }
+
+    if (queryThreadsForWorkstream(repoRoot, stream.id).length === 0) {
+        if (cliArgs.json) {
+            console.log(JSON.stringify({
+                action: "blocked",
+                reason: "missing_execution_state",
+                streamId: stream.id,
+                streamName: stream.name,
+            }, null, 2))
+        } else {
+            console.error("Error: Cannot start workstream - no execution threads were initialized")
+            console.error("Run: work approve plan")
         }
         process.exit(1)
     }

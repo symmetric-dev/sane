@@ -16,9 +16,9 @@ import type {
 } from "./types.ts"
 import { isTerminalBatchStatus } from "./batch-status.ts"
 import {
+  getFilesystemWorkstreamStatePath,
   loadStructuredSupervisorStateSync,
   modifySqliteCanonicalRuntimeWorkstreamStateSync,
-  projectLegacyRuntimeCompatibilityArtifactsSync,
   replaceStructuredSupervisorStateSync,
 } from "./storage-adapter.ts"
 import {
@@ -36,7 +36,7 @@ import {
   normalizePersistedSupervisionProgress,
 } from "./stage-id.ts"
 import { replaceStructuredSupervisionState } from "./structured-storage.ts"
-import { getTasksFilePath, normalizeLoadedSupervisorState, normalizeSupervisorState } from "./tasks.ts"
+import { normalizeLoadedSupervisorState, normalizeSupervisorState } from "./runtime-state.ts"
 
 function inferStageIdFromBatchId(batchId?: string): string | undefined {
   return inferCanonicalStageIdFromBatchId(batchId)
@@ -165,14 +165,14 @@ function orderSupervisorState(
 }
 
 /**
- * Get the canonical tasks.json path used by supervisor-state compatibility helpers.
+ * Get the canonical workstream state path used by supervisor-state helpers.
  */
 export function getSupervisorStateFilePath(repoRoot: string, streamId: string): string {
-  return getTasksFilePath(repoRoot, streamId)
+  return getFilesystemWorkstreamStatePath(repoRoot, streamId)
 }
 
 /**
- * Create an empty supervisor runtime-state compatibility view.
+ * Create an empty supervisor runtime-state snapshot.
  */
 export function createEmptySupervisorState(streamId: string): SupervisorStateFile {
   return {
@@ -211,7 +211,7 @@ export function loadSupervisorState(
     parsed = loadStructuredSupervisorStateSync(repoRoot, streamId) ?? createEmptySupervisorState(streamId)
   } catch (error) {
     throw new Error(
-      `Failed to parse unified supervisor state in tasks.json at ${tasksPath}: ${error instanceof Error ? error.message : String(error)}`,
+      `Failed to parse supervisor state at ${tasksPath}: ${error instanceof Error ? error.message : String(error)}`,
     )
   }
   const normalized = normalizeLoadedSupervisorState(streamId, parsed)
@@ -587,7 +587,6 @@ export async function reconcileSupervisorRunsLocked(
     return reconciledRunIds
   } })
 
-  projectLegacyRuntimeCompatibilityArtifactsSync({ repoRoot, streamId })
   return Promise.resolve(reconciledRunIds)
 }
 

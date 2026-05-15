@@ -95,9 +95,9 @@ async function main() {
 ### Summary
 This is a test issue created by the GitHub integration test script.
 
-### Tasks
-- [ ] Task 01.01.01.01: Test task 1
-- [ ] Task 01.01.01.02: Test task 2
+### Execution Items
+- [ ] Verify first item
+- [ ] Verify second item
 
 ---
 *Created by workstreams GitHub integration*`,

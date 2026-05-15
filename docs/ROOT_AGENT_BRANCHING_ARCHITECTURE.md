@@ -158,7 +158,7 @@ We improved parent-side finalization so the Root Agent can rely on persisted evi
 
 Important elements include:
 
-- durable `branch_sessions[]` state in `tasks.json` under `runtime_state.supervision`
+- durable `branch_sessions[]` state in canonical supervision runtime storage
 - transcript export from the child native session
 - extracting the last completed assistant message as the branch report
 - keeping branch finalization parent-owned
@@ -240,7 +240,7 @@ Across the revisions we verified that:
 - stale ended-but-nonterminal branch sessions can be reconciled safely after the fact using `reconcile_workstream_supervision`
 - process-end evidence can be persisted even when explicit finalization is missing
 - a reconciled terminal `stopped` session no longer blocks a fresh launch for the same scope
-- operator verification should prefer the `work batch-status` CLI plus canonical `tasks.json` runtime state over assuming a specific persisted batch-status file path or treating a single pointer field as sufficient truth
+- operator verification should prefer the `work batch-status` CLI plus canonical supervision runtime state over assuming a specific persisted batch-status file path or treating a single pointer field as sufficient truth
 
 ## Remaining caveats
 
@@ -293,4 +293,3 @@ Because of that, AgEnv should continue to treat persisted state and transcript e
 - `docs/supervision-manual-verification-checklist.md`
 - `agent/skills/supervising-workstreams/SKILL.md`
 - `work/000-super-agent-v1/PLAN.md`
-- `work/000-super-agent-v1/tasks.json`

@@ -9,7 +9,7 @@ import {
     extractFilesFromThread,
     extractFilesFromText,
     findSharedFilesInParallelThreads,
-    findSharedFilesInTasksMd,
+    findSharedFilesInPlan,
     formatSharedFileWarnings,
     type SharedFileWarning
 } from "../src/lib/analysis"
@@ -21,14 +21,14 @@ describe("Analysis Logic", () => {
         test("finds unchecked items with line numbers", () => {
             const content = `
 # Plan
-- [ ] Task 1
-- [x] Task 2
-- [ ] Task 3
+- [ ] Open question 1
+- [x] Resolved note 2
+- [ ] Open question 3
 `
             const result = findOpenQuestions(content)
             expect(result).toHaveLength(2)
-            expect(result[0]).toEqual({ line: 3, question: "Task 1", stage: undefined })
-            expect(result[1]).toEqual({ line: 5, question: "Task 3", stage: undefined })
+            expect(result[0]).toEqual({ line: 3, question: "Open question 1", stage: undefined })
+            expect(result[1]).toEqual({ line: 5, question: "Open question 3", stage: undefined })
         })
 
         test("identifies stage context", () => {
@@ -283,42 +283,42 @@ See [docs](file://README.md) for reference.
         })
     })
 
-    describe("findSharedFilesInTasksMd", () => {
-        test("detects shared files in TASKS.md parallel threads", () => {
-            const content = `# Tasks: Test
+    describe("findSharedFilesInPlan", () => {
+        test("detects shared files in parallel threads", () => {
+            const content = `# Workstream: Test
 
 ## Stage 01: Implementation
 
 ### Batch 01: Parallel Work
 
 #### Thread 01: API Work
-- [ ] Task 01.01.01.01: Modify \`src/api.ts\` to add endpoint
+- [ ] Modify \`src/api.ts\` to add endpoint
 
 #### Thread 02: Service Work
-- [ ] Task 01.01.02.01: Update \`src/api.ts\` with service calls
+- [ ] Update \`src/api.ts\` with service calls
 `
-            const warnings = findSharedFilesInTasksMd(content)
+            const warnings = findSharedFilesInPlan(content)
             expect(warnings).toHaveLength(1)
             expect(warnings[0]!.file).toBe("src/api.ts")
             expect(warnings[0]!.threads).toHaveLength(2)
         })
 
         test("ignores files in different batches", () => {
-            const content = `# Tasks: Test
+            const content = `# Workstream: Test
 
 ## Stage 01: Implementation
 
 ### Batch 01: First Batch
 
 #### Thread 01: Thread A
-- [ ] Task 01.01.01.01: Edit \`shared.ts\`
+- [ ] Edit \`shared.ts\`
 
 ### Batch 02: Second Batch
 
 #### Thread 01: Thread B
-- [ ] Task 01.02.01.01: Edit \`shared.ts\`
+- [ ] Edit \`shared.ts\`
 `
-            const warnings = findSharedFilesInTasksMd(content)
+            const warnings = findSharedFilesInPlan(content)
             expect(warnings).toHaveLength(0)
         })
     })

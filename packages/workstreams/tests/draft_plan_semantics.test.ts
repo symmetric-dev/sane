@@ -141,7 +141,7 @@ Stages will be added later.
     expect(stdout).toHaveLength(0)
     expect(stderr.join("\n")).toContain("Cannot approve a draft plan with no stages")
     expect(stderr.join("\n")).toContain("work plan create")
-    expect(existsSync(join(repoRoot, "work", "stream-draft", "TASKS.md"))).toBe(false)
+    expect(existsSync(join(repoRoot, "work", "stream-draft", "WORK.md"))).toBe(false)
 
     const stream = loadIndex(repoRoot).streams[0]
     expect(stream?.approval?.status).toBeUndefined()

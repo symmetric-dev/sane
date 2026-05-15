@@ -2,6 +2,7 @@ import { spawn } from "child_process"
 import { randomUUID } from "crypto"
 import { fileURLToPath } from "url"
 import { syncBatchStatus, waitForBatchStatus } from "./batch-monitor.ts"
+import type { HierarchyThreadQueryRecord } from "./hierarchy-query.ts"
 import {
   createEmptySupervisorState,
   loadSupervisorState,
@@ -64,31 +65,27 @@ function matchesBatchSelectionScope(batchId: string, scope?: BatchSelectionScope
   return true
 }
 
-export function findNextIncompleteBatch(
-  tasks: Array<{ id: string; status: string }>,
+export function findNextIncompleteBatchFromHierarchy(
+  threads: Pick<HierarchyThreadQueryRecord, "batchId" | "aggregateStatus">[],
   scope?: BatchSelectionScope,
 ): string | null {
-  const batchMap = new Map<string, Array<{ id: string; status: string }>>()
+  const batchMap = new Map<string, Pick<HierarchyThreadQueryRecord, "batchId" | "aggregateStatus">[]>()
 
-  for (const task of tasks) {
-    const parts = task.id.split(".")
-    if (parts.length < 2) continue
-
-    const batchId = `${parts[0]}.${parts[1]}`
-    const batchTasks = batchMap.get(batchId) ?? []
-    batchTasks.push(task)
-    batchMap.set(batchId, batchTasks)
+  for (const thread of threads) {
+    const batchThreads = batchMap.get(thread.batchId) ?? []
+    batchThreads.push(thread)
+    batchMap.set(thread.batchId, batchThreads)
   }
 
-  for (const batchId of Array.from(batchMap.keys()).sort()) {
+  for (const batchId of Array.from(batchMap.keys()).sort((left, right) =>
+    left.localeCompare(right, undefined, { numeric: true }),
+  )) {
     if (!matchesBatchSelectionScope(batchId, scope)) {
       continue
     }
 
-    const batchTasks = batchMap.get(batchId) ?? []
-    const allDone = batchTasks.every(
-      (task) => task.status === "completed" || task.status === "cancelled",
-    )
+    const batchThreads = batchMap.get(batchId) ?? []
+    const allDone = batchThreads.every((thread) => thread.aggregateStatus === "completed")
     if (!allDone) {
       return batchId
     }

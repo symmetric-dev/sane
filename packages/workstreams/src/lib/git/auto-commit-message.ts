@@ -24,8 +24,8 @@ export interface CompletionCommitContext extends WorkstreamCommitContext {
   summary?: string
 }
 
-export interface TasksApprovalCommitContext extends WorkstreamCommitContext {
-  taskCount: number
+export interface ExecutionApprovalCommitContext extends WorkstreamCommitContext {
+  itemCount: number
 }
 
 type TrailerValue = string | number | null | undefined
@@ -87,18 +87,18 @@ export function buildPlanApprovalCommitMessage({
   )
 }
 
-export function buildTasksApprovalCommitMessage({
+export function buildExecutionApprovalCommitMessage({
   streamId,
   streamName,
-  taskCount,
-}: TasksApprovalCommitContext): AutoCommitMessage {
+  itemCount,
+}: ExecutionApprovalCommitContext): AutoCommitMessage {
   return buildAutoCommitMessage(
-    `Tasks approved: ${streamName}`,
-    [`Approved ${taskCount} tasks for workstream ${streamId}.`],
+    `Execution approved: ${streamName}`,
+    [`Approved ${itemCount} execution items for workstream ${streamId}.`],
     [
       ["Stream-Id", streamId],
       ["Stream-Name", streamName],
-      ["Task-Count", taskCount],
+      ["Item-Count", itemCount],
     ]
   )
 }

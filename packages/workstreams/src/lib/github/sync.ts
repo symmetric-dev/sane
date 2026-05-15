@@ -4,12 +4,12 @@
  * Functions for synchronizing workstream data with GitHub issues.
  * 
  * ## Stage-Level Sync
- * - `syncStageIssues()` - Sync stage issues with task status (uses github.json)
- * - `isStageComplete()` - Check if all tasks in a stage are completed
+ * - `syncStageIssues()` - Sync stage issues with execution status (uses github.json)
+ * - `isStageComplete()` - Check if all items in a stage are completed
  */
 
 import { loadGitHubConfig, isGitHubEnabled } from "./config";
-import { readTasksFile } from "../tasks";
+import { listThreadExecutionItems } from "../thread-execution";
 import { getGitHubAuth } from "./auth";
 import { createGitHubClient } from "./client";
 import {
@@ -33,64 +33,56 @@ export interface SyncStageIssuesResult {
 }
 
 /**
- * Check if all tasks in a stage are completed (or cancelled)
+ * Check if all items in a stage are completed (or cancelled)
  *
  * @param repoRoot - Repository root path
  * @param streamId - Workstream ID
  * @param stageNumber - Stage number (e.g., 1, 2)
- * @returns true if all tasks in the stage are completed or cancelled
+ * @returns true if all items in the stage are completed or cancelled
  */
 export function isStageComplete(
   repoRoot: string,
   streamId: string,
   stageNumber: number
 ): boolean {
-  const tasksFile = readTasksFile(repoRoot, streamId);
-  if (!tasksFile) return false;
-
   const stagePrefix = `${stageNumber.toString().padStart(2, "0")}.`;
-
-  // Get all tasks in this stage
-  const stageTasks = tasksFile.tasks.filter((t) =>
+  const stageItems = listThreadExecutionItems(repoRoot, streamId).filter((t) =>
     t.id.startsWith(stagePrefix)
   );
 
-  // If no tasks in stage, consider it not complete
-  if (stageTasks.length === 0) return false;
+  // If no items in stage, consider it not complete
+  if (stageItems.length === 0) return false;
 
-  // Check if all tasks are completed (or cancelled)
-  return stageTasks.every(
+  // Check if all items are completed (or cancelled)
+  return stageItems.every(
     (t) => t.status === "completed" || t.status === "cancelled"
   );
 }
 
 /**
- * Get metadata for a stage from tasks.json
+ * Get metadata for a stage from execution items
  *
  * @param repoRoot - Repository root path
  * @param streamId - Workstream ID
  * @param stageNumber - Stage number (e.g., 1, 2)
- * @returns Stage name from first task, or null if no tasks found
+ * @returns Stage name from first execution item, or null if none found
  */
 function getStageName(
   repoRoot: string,
   streamId: string,
   stageNumber: number
 ): string | null {
-  const tasksFile = readTasksFile(repoRoot, streamId);
-  if (!tasksFile) return null;
-
   const stagePrefix = `${stageNumber.toString().padStart(2, "0")}.`;
-  const firstTask = tasksFile.tasks.find((t) => t.id.startsWith(stagePrefix));
+  const firstItem = listThreadExecutionItems(repoRoot, streamId).find((t) => t.id.startsWith(stagePrefix));
 
-  return firstTask?.stage_name || null;
+  return firstItem?.stageName || null;
 }
 
 /**
- * Synchronize stage-level GitHub issues with local task status.
+ * Synchronize stage-level GitHub issues with local item status.
  * 
  * For each stage with an open issue in github.json:
- * - If all tasks in the stage are completed/cancelled, close the issue
+ * - If all items in the stage are completed/cancelled, close the issue
  * - Update the state field in github.json
  *
  * @param repoRoot - Repository root path
@@ -161,7 +153,7 @@ export async function syncStageIssues(
         stageNumber,
         stageName,
         issueNumber: stageIssue.issue_number,
-        reason: "Stage has incomplete tasks",
+        reason: "Stage has incomplete items",
       });
       continue;
     }

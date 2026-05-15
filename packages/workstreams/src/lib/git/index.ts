@@ -32,7 +32,7 @@ export {
   type AutoCommitMessage,
   buildPlanApprovalCommitMessage,
   buildStageApprovalCommitMessage,
-  buildTasksApprovalCommitMessage,
+  buildExecutionApprovalCommitMessage,
   buildWorkstreamCompletionCommitMessage,
   buildWorkstreamStartCommitMessage,
 } from "./auto-commit-message.ts"

@@ -2,7 +2,6 @@
  * Consolidation logic for PLAN.md validation
  *
  * This module handles parsing and validating PLAN.md structure.
- * Tasks are managed separately via the add-task command.
  */
 
 import { existsSync, readFileSync } from "fs"
@@ -252,8 +251,7 @@ function validateStreamDocument(
 /**
  * Consolidate (validate) PLAN.md
  *
- * This validates the PLAN.md structure but does NOT generate tasks.
- * Tasks are managed separately via the add-task command.
+ * This validates the PLAN.md structure and batch/thread authoring model.
  *
  * @param repoRoot - Repository root path
  * @param streamId - Workstream ID
@@ -309,7 +307,7 @@ export function consolidateStream(
   return {
     success: errors.length === 0,
     streamDocument,
-    tasksGenerated: [], // Tasks are managed separately
+    tasksGenerated: [],
     errors,
     warnings,
   }
@@ -354,7 +352,7 @@ export function formatConsolidateResult(result: ConsolidateResult, _dryRun: bool
     }
 
     lines.push("")
-    lines.push("Use 'work add-task' to add tasks to this workstream.")
+    lines.push("Next: approve the plan to seed the execution hierarchy.")
   } else {
     lines.push("Validation failed")
     lines.push("")

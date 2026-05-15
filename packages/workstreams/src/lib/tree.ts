@@ -1,16 +1,16 @@
 import { parseBatchId } from "./cli-utils.ts"
-import { parseTaskId } from "./tasks.ts"
+import type { HierarchyThreadQueryRecord } from "./hierarchy-query.ts"
 import type {
+  ExecutionItem,
   RuntimeBatchStatus,
   RuntimeBranchSupervisionStatus,
   RuntimeSupervisorStatus,
-  Task,
-  TaskStatus,
+  ExecutionStatus,
   WorkstreamRuntimeBatchSummary,
   WorkstreamRuntimeSummary,
 } from "./types.ts"
 
-export interface WorkstreamTreeTaskCounts {
+export interface WorkstreamTreeItemCounts {
   total: number
   pending: number
   in_progress: number
@@ -34,7 +34,7 @@ export interface WorkstreamTreeRuntimeNotice {
 export interface WorkstreamTreeBatchRuntimeOverlay {
   kind: "runtime" | "desync"
   text: string
-  taskStatus: TaskStatus
+  executionStatus: ExecutionStatus
   runtimeStatus: RuntimeBatchStatus
   detail: string
   runId: string
@@ -50,25 +50,12 @@ interface WorkstreamTreeNodeBase {
   label: string
   displayLabel: string
   name: string
-  status: TaskStatus
-  taskCount: number
+  status: ExecutionStatus
+  itemCount: number
 }
 
 interface WorkstreamTreeAggregateNode extends WorkstreamTreeNodeBase {
-  taskCounts: WorkstreamTreeTaskCounts
-}
-
-export interface WorkstreamTreeTaskNode extends WorkstreamTreeNodeBase {
-  kind: "task"
-  streamId: string
-  stageId: string
-  stageNumber: number
-  batchId: string
-  batchNumber: number
-  threadId: string
-  threadNumber: number
-  taskNumber: number
-  assignedAgent?: string
+  itemCounts: WorkstreamTreeItemCounts
 }
 
 export interface WorkstreamTreeThreadNode extends WorkstreamTreeAggregateNode {
@@ -81,7 +68,6 @@ export interface WorkstreamTreeThreadNode extends WorkstreamTreeAggregateNode {
   threadId: string
   threadNumber: number
   assignedAgent?: string
-  tasks: WorkstreamTreeTaskNode[]
 }
 
 export interface WorkstreamTreeBatchNode extends WorkstreamTreeAggregateNode {
@@ -112,15 +98,12 @@ export interface WorkstreamTreeSnapshot extends WorkstreamTreeAggregateNode {
 
 interface BuildWorkstreamTreeSnapshotOptions {
   streamId: string
-  tasks: Task[]
+  items: ExecutionItem[]
   runtimeSummary?: WorkstreamRuntimeSummary
   batchId?: string
 }
 
-interface MutableWorkstreamTreeTaskNode extends WorkstreamTreeTaskNode {}
-
 interface MutableWorkstreamTreeThreadNode extends WorkstreamTreeThreadNode {
-  tasks: MutableWorkstreamTreeTaskNode[]
 }
 
 interface MutableWorkstreamTreeBatchNode extends WorkstreamTreeBatchNode {
@@ -131,7 +114,7 @@ interface MutableWorkstreamTreeStageNode extends WorkstreamTreeStageNode {
   batches: MutableWorkstreamTreeBatchNode[]
 }
 
-function createEmptyTaskCounts(): WorkstreamTreeTaskCounts {
+function createEmptyTaskCounts(): WorkstreamTreeItemCounts {
   return {
     total: 0,
     pending: 0,
@@ -143,7 +126,7 @@ function createEmptyTaskCounts(): WorkstreamTreeTaskCounts {
   }
 }
 
-function incrementTaskCounts(taskCounts: WorkstreamTreeTaskCounts, status: TaskStatus): void {
+function incrementTaskCounts(taskCounts: WorkstreamTreeItemCounts, status: ExecutionStatus): void {
   taskCounts.total += 1
   taskCounts[status] += 1
 
@@ -152,7 +135,7 @@ function incrementTaskCounts(taskCounts: WorkstreamTreeTaskCounts, status: TaskS
   }
 }
 
-export function aggregateTreeStatus(taskCounts: WorkstreamTreeTaskCounts): TaskStatus {
+export function aggregateTreeStatus(taskCounts: WorkstreamTreeItemCounts): ExecutionStatus {
   if (taskCounts.total === 0) return "pending"
   if (taskCounts.blocked > 0) return "blocked"
   if (taskCounts.in_progress > 0) return "in_progress"
@@ -173,7 +156,7 @@ function normalizeBatchId(batchId: string): string | null {
   return `${padNumber(parsedBatchId.stage)}.${padNumber(parsedBatchId.batch)}`
 }
 
-function formatTaskStatus(status: TaskStatus): string {
+function formatExecutionStatus(status: ExecutionStatus): string {
   return status.replace("_", " ")
 }
 
@@ -189,23 +172,23 @@ function getBatchRuntimeDetail(batchStatus: WorkstreamRuntimeBatchSummary): stri
   return `${batchStatus.thread_summary.completed} completed`
 }
 
-function isBatchRuntimeStatusAligned(taskStatus: TaskStatus, runtimeStatus: WorkstreamRuntimeBatchSummary["status"]): boolean {
-  return (taskStatus === "in_progress" && runtimeStatus === "running") || taskStatus === runtimeStatus
+function isBatchRuntimeStatusAligned(executionStatus: ExecutionStatus, runtimeStatus: WorkstreamRuntimeBatchSummary["status"]): boolean {
+  return (executionStatus === "in_progress" && runtimeStatus === "running") || executionStatus === runtimeStatus
 }
 
 export function getBatchRuntimeOverlay(
   batchStatus: WorkstreamRuntimeBatchSummary,
-  taskStatus: TaskStatus,
+  executionStatus: ExecutionStatus,
 ): WorkstreamTreeBatchRuntimeOverlay | undefined {
   const detail = getBatchRuntimeDetail(batchStatus)
   const isRuntimeActive = ["running", "failed"].includes(batchStatus.status)
-  const isAlignedWithTasks = isBatchRuntimeStatusAligned(taskStatus, batchStatus.status)
+  const isAlignedWithExecution = isBatchRuntimeStatusAligned(executionStatus, batchStatus.status)
 
-  if (!isAlignedWithTasks) {
+  if (!isAlignedWithExecution) {
     return {
       kind: "desync",
-      text: `desync: tasks ${formatTaskStatus(taskStatus)}, runtime ${batchStatus.status} (${detail})`,
-      taskStatus,
+      text: `desync: items ${formatExecutionStatus(executionStatus)}, runtime ${batchStatus.status} (${detail})`,
+      executionStatus,
       runtimeStatus: batchStatus.status,
       detail,
       runId: batchStatus.run_id,
@@ -220,7 +203,7 @@ export function getBatchRuntimeOverlay(
     return {
       kind: "runtime",
       text: `runtime: ${batchStatus.status} (${detail})`,
-      taskStatus,
+      executionStatus,
       runtimeStatus: batchStatus.status,
       detail,
       runId: batchStatus.run_id,
@@ -296,41 +279,25 @@ export function getWorkstreamTreeRuntimeNotice(
   return undefined
 }
 
-function createTaskNode(streamId: string, task: Task): WorkstreamTreeTaskNode {
-  const parsedTaskId = parseTaskId(task.id)
-  const stageId = padNumber(parsedTaskId.stage)
-  const batchId = `${stageId}.${padNumber(parsedTaskId.batch)}`
-  const threadId = `${batchId}.${padNumber(parsedTaskId.thread)}`
-  const taskLabel = padNumber(parsedTaskId.task)
-
-  return {
-    kind: "task",
-    id: task.id,
-    parentId: threadId,
-    streamId,
-    stageId,
-    stageNumber: parsedTaskId.stage,
-    batchId,
-    batchNumber: parsedTaskId.batch,
-    threadId,
-    threadNumber: parsedTaskId.thread,
-    taskNumber: parsedTaskId.task,
-    label: `Task ${taskLabel}`,
-    displayLabel: `Task ${taskLabel}: ${task.name}`,
-    name: task.name,
-    status: task.status,
-    taskCount: 1,
-    ...(task.assigned_agent ? { assignedAgent: task.assigned_agent } : {}),
-  }
-}
-
-export function filterTasksForBatch(tasks: Task[], batchId: string): Task[] | null {
+export function filterExecutionItemsForBatch(items: ExecutionItem[], batchId: string): ExecutionItem[] | null {
   const normalizedBatchId = normalizeBatchId(batchId)
   if (!normalizedBatchId) {
     return null
   }
 
-  return tasks.filter((task) => task.id.startsWith(`${normalizedBatchId}.`))
+  return items.filter((item) => item.batchId === normalizedBatchId)
+}
+
+export function filterThreadsForBatch(
+  threads: HierarchyThreadQueryRecord[],
+  batchId: string,
+): HierarchyThreadQueryRecord[] | null {
+  const normalizedBatchId = normalizeBatchId(batchId)
+  if (!normalizedBatchId) {
+    return null
+  }
+
+  return threads.filter((thread) => thread.batchId === normalizedBatchId)
 }
 
 function filterRuntimeSummaryForBatch(
@@ -377,134 +344,146 @@ function filterRuntimeSummaryForBatch(
 
 export function buildWorkstreamTreeSnapshot({
   streamId,
-  tasks,
+  items,
   runtimeSummary,
   batchId,
 }: BuildWorkstreamTreeSnapshotOptions): WorkstreamTreeSnapshot {
-  const scopedRuntimeSummary = batchId ? filterRuntimeSummaryForBatch(runtimeSummary, batchId) : runtimeSummary
-  const sortedTasks = [...tasks].sort((left, right) => left.id.localeCompare(right.id, undefined, { numeric: true }))
-  const runtimeNotice = getWorkstreamTreeRuntimeNotice(scopedRuntimeSummary)
+  return buildWorkstreamTreeSnapshotFromThreads({
+    streamId,
+    threads: items.map((item) => ({
+      id: item.threadId,
+      threadId: item.threadId,
+      stageId: item.stageId,
+      batchId: item.batchId,
+      number: item.number,
+      name: item.threadName,
+      stageName: item.stageName,
+      batchName: item.batchName,
+      threadName: item.threadName,
+      aggregateStatus: item.status,
+      itemCount: 1,
+      ...(item.assignedAgent ? { assignedAgent: item.assignedAgent } : {}),
+      ...(item.breadcrumb ? { breadcrumb: item.breadcrumb } : {}),
+      ...(item.report ? { report: item.report } : {}),
+    })),
+    runtimeSummary,
+    ...(batchId ? { batchId } : {}),
+  })
+}
 
+export function buildWorkstreamTreeSnapshotFromThreads(args: {
+  streamId: string
+  threads: HierarchyThreadQueryRecord[]
+  runtimeSummary?: WorkstreamRuntimeSummary
+  batchId?: string
+}): WorkstreamTreeSnapshot {
+  const scopedRuntimeSummary = args.batchId ? filterRuntimeSummaryForBatch(args.runtimeSummary, args.batchId) : args.runtimeSummary
+  const runtimeNotice = getWorkstreamTreeRuntimeNotice(scopedRuntimeSummary)
   const snapshot: MutableWorkstreamTreeSnapshot = {
     kind: "workstream",
-    id: streamId,
-    streamId,
-    label: streamId,
-    displayLabel: `Workstream: ${streamId}`,
-    name: streamId,
+    id: args.streamId,
+    streamId: args.streamId,
+    label: args.streamId,
+    displayLabel: `Workstream: ${args.streamId}`,
+    name: args.streamId,
     status: "pending",
-    taskCount: 0,
-    taskCounts: createEmptyTaskCounts(),
+    itemCount: 0,
+    itemCounts: createEmptyTaskCounts(),
     ...(runtimeNotice ? { runtimeNotice } : {}),
     stages: [],
   }
 
   const stageMap = new Map<string, MutableWorkstreamTreeStageNode>()
-
-  for (const task of sortedTasks) {
-    const parsedTaskId = parseTaskId(task.id)
-    const stageId = padNumber(parsedTaskId.stage)
-    const batchId = `${stageId}.${padNumber(parsedTaskId.batch)}`
-    const threadId = `${batchId}.${padNumber(parsedTaskId.thread)}`
-
-    let stageNode = stageMap.get(stageId)
+  for (const thread of [...args.threads].sort((left, right) => left.threadId.localeCompare(right.threadId, undefined, { numeric: true }))) {
+    let stageNode = stageMap.get(thread.stageId)
     if (!stageNode) {
       stageNode = {
         kind: "stage",
-        id: stageId,
-        parentId: streamId,
-        streamId,
-        stageId,
-        stageNumber: parsedTaskId.stage,
-        label: `Stage ${stageId}`,
-        displayLabel: `Stage ${stageId}: ${task.stage_name}`,
-        name: task.stage_name,
+        id: thread.stageId,
+        parentId: args.streamId,
+        streamId: args.streamId,
+        stageId: thread.stageId,
+        stageNumber: Number.parseInt(thread.stageId, 10) || 0,
+        label: `Stage ${thread.stageId}`,
+        displayLabel: `Stage ${thread.stageId}: ${thread.stageName}`,
+        name: thread.stageName,
         status: "pending",
-        taskCount: 0,
-        taskCounts: createEmptyTaskCounts(),
+        itemCount: 0,
+        itemCounts: createEmptyTaskCounts(),
         batches: [],
       }
-      stageMap.set(stageId, stageNode)
       snapshot.stages.push(stageNode)
+      stageMap.set(thread.stageId, stageNode)
     }
 
-    let batchNode = stageNode.batches.find((candidate) => candidate.id === batchId)
+    let batchNode = stageNode.batches.find((candidate) => candidate.id === thread.batchId)
     if (!batchNode) {
+      const batchLabel = thread.batchId.split(".")[1] ?? "00"
       batchNode = {
         kind: "batch",
-        id: batchId,
-        parentId: stageId,
-        streamId,
-        stageId,
-        stageNumber: parsedTaskId.stage,
-        batchId,
-        batchNumber: parsedTaskId.batch,
-        label: `Batch ${padNumber(parsedTaskId.batch)}`,
-        displayLabel: `Batch ${padNumber(parsedTaskId.batch)}: ${task.batch_name}`,
-        name: task.batch_name,
+        id: thread.batchId,
+        parentId: thread.stageId,
+        streamId: args.streamId,
+        stageId: thread.stageId,
+        stageNumber: Number.parseInt(thread.stageId, 10) || 0,
+        batchId: thread.batchId,
+        batchNumber: Number.parseInt(batchLabel, 10) || 0,
+        label: `Batch ${batchLabel}`,
+        displayLabel: `Batch ${batchLabel}: ${thread.batchName}`,
+        name: thread.batchName,
         status: "pending",
-        taskCount: 0,
-        taskCounts: createEmptyTaskCounts(),
+        itemCount: 0,
+        itemCounts: createEmptyTaskCounts(),
         threads: [],
       }
       stageNode.batches.push(batchNode)
     }
 
-    let threadNode = batchNode.threads.find((candidate) => candidate.id === threadId)
-    if (!threadNode) {
-      threadNode = {
+    const itemCounts = createEmptyTaskCounts()
+    itemCounts.total = thread.itemCount
+    itemCounts[thread.aggregateStatus] = thread.itemCount
+    if (thread.aggregateStatus === "completed" || thread.aggregateStatus === "cancelled") {
+      itemCounts.done = thread.itemCount
+    }
+
+      batchNode.threads.push({
         kind: "thread",
-        id: threadId,
-        parentId: batchId,
-        streamId,
-        stageId,
-        stageNumber: parsedTaskId.stage,
-        batchId,
-        batchNumber: parsedTaskId.batch,
-        threadId,
-        threadNumber: parsedTaskId.thread,
-        label: `Thread ${padNumber(parsedTaskId.thread)}`,
-        displayLabel: `Thread ${padNumber(parsedTaskId.thread)}: ${task.thread_name}`,
-        name: task.thread_name,
-        status: "pending",
-        taskCount: 0,
-        taskCounts: createEmptyTaskCounts(),
-        ...(task.assigned_agent ? { assignedAgent: task.assigned_agent } : {}),
-        tasks: [],
-      }
-      batchNode.threads.push(threadNode)
-    }
-
-    const taskNode = createTaskNode(streamId, task)
-    threadNode.tasks.push(taskNode)
-
-    incrementTaskCounts(threadNode.taskCounts, task.status)
-    threadNode.taskCount = threadNode.taskCounts.total
-    threadNode.status = aggregateTreeStatus(threadNode.taskCounts)
-    if (!threadNode.assignedAgent && task.assigned_agent) {
-      threadNode.assignedAgent = task.assigned_agent
-    }
-
-    incrementTaskCounts(batchNode.taskCounts, task.status)
-    batchNode.taskCount = batchNode.taskCounts.total
-    batchNode.status = aggregateTreeStatus(batchNode.taskCounts)
-
-    incrementTaskCounts(stageNode.taskCounts, task.status)
-    stageNode.taskCount = stageNode.taskCounts.total
-    stageNode.status = aggregateTreeStatus(stageNode.taskCounts)
-
-    incrementTaskCounts(snapshot.taskCounts, task.status)
-    snapshot.taskCount = snapshot.taskCounts.total
-    snapshot.status = aggregateTreeStatus(snapshot.taskCounts)
+      id: thread.threadId,
+      parentId: thread.batchId,
+      streamId: args.streamId,
+      stageId: thread.stageId,
+      stageNumber: Number.parseInt(thread.stageId, 10) || 0,
+      batchId: thread.batchId,
+      batchNumber: Number.parseInt(thread.batchId.split(".")[1] ?? "0", 10) || 0,
+      threadId: thread.threadId,
+      threadNumber: thread.number,
+      label: `Thread ${padNumber(thread.number)}`,
+      displayLabel: `Thread ${padNumber(thread.number)}: ${thread.threadName}`,
+      name: thread.threadName,
+        status: thread.aggregateStatus,
+        itemCount: thread.itemCount,
+        itemCounts,
+        ...(thread.assignedAgent ? { assignedAgent: thread.assignedAgent } : {}),
+      })
   }
-
-  snapshot.runtimeNotice = runtimeNotice
 
   for (const stageNode of snapshot.stages) {
     stageNode.batches.sort((left, right) => left.id.localeCompare(right.id, undefined, { numeric: true }))
 
     for (const batchNode of stageNode.batches) {
       batchNode.threads.sort((left, right) => left.id.localeCompare(right.id, undefined, { numeric: true }))
+      batchNode.itemCounts = createEmptyTaskCounts()
+      for (const threadNode of batchNode.threads) {
+        batchNode.itemCounts.total += threadNode.itemCount
+        batchNode.itemCounts.pending += threadNode.itemCounts.pending
+        batchNode.itemCounts.in_progress += threadNode.itemCounts.in_progress
+        batchNode.itemCounts.completed += threadNode.itemCounts.completed
+        batchNode.itemCounts.blocked += threadNode.itemCounts.blocked
+        batchNode.itemCounts.cancelled += threadNode.itemCounts.cancelled
+        batchNode.itemCounts.done += threadNode.itemCounts.done
+      }
+      batchNode.itemCount = batchNode.itemCounts.total
+      batchNode.status = aggregateTreeStatus(batchNode.itemCounts)
 
       if (scopedRuntimeSummary?.batches[batchNode.batchId]) {
         batchNode.runtimeOverlay = getBatchRuntimeOverlay(
@@ -513,9 +492,35 @@ export function buildWorkstreamTreeSnapshot({
         )
       }
     }
+
+    stageNode.itemCounts = createEmptyTaskCounts()
+    for (const batchNode of stageNode.batches) {
+      stageNode.itemCounts.total += batchNode.itemCount
+      stageNode.itemCounts.pending += batchNode.itemCounts.pending
+      stageNode.itemCounts.in_progress += batchNode.itemCounts.in_progress
+      stageNode.itemCounts.completed += batchNode.itemCounts.completed
+      stageNode.itemCounts.blocked += batchNode.itemCounts.blocked
+      stageNode.itemCounts.cancelled += batchNode.itemCounts.cancelled
+      stageNode.itemCounts.done += batchNode.itemCounts.done
+    }
+    stageNode.itemCount = stageNode.itemCounts.total
+    stageNode.status = aggregateTreeStatus(stageNode.itemCounts)
   }
 
   snapshot.stages.sort((left, right) => left.id.localeCompare(right.id, undefined, { numeric: true }))
+  snapshot.itemCounts = createEmptyTaskCounts()
+  for (const stageNode of snapshot.stages) {
+    snapshot.itemCounts.total += stageNode.itemCount
+    snapshot.itemCounts.pending += stageNode.itemCounts.pending
+    snapshot.itemCounts.in_progress += stageNode.itemCounts.in_progress
+    snapshot.itemCounts.completed += stageNode.itemCounts.completed
+    snapshot.itemCounts.blocked += stageNode.itemCounts.blocked
+    snapshot.itemCounts.cancelled += stageNode.itemCounts.cancelled
+    snapshot.itemCounts.done += stageNode.itemCounts.done
+  }
+  snapshot.itemCount = snapshot.itemCounts.total
+  snapshot.status = aggregateTreeStatus(snapshot.itemCounts)
+  snapshot.runtimeNotice = runtimeNotice
 
   return snapshot
 }
@@ -524,7 +529,7 @@ interface MutableWorkstreamTreeSnapshot extends WorkstreamTreeSnapshot {
   stages: MutableWorkstreamTreeStageNode[]
 }
 
-export function statusToTreeIcon(status: TaskStatus): string {
+export function statusToTreeIcon(status: ExecutionStatus): string {
   switch (status) {
     case "completed":
       return "[x]"
@@ -542,7 +547,7 @@ export function statusToTreeIcon(status: TaskStatus): string {
 }
 
 export function renderWorkstreamTree(snapshot: WorkstreamTreeSnapshot): string[] {
-  const lines = [`${statusToTreeIcon(snapshot.status)} ${snapshot.displayLabel} (${snapshot.taskCount})`]
+  const lines = [`${statusToTreeIcon(snapshot.status)} ${snapshot.displayLabel} (${snapshot.itemCount})`]
 
   if (snapshot.runtimeNotice) {
     lines.push(`    Runtime: ${snapshot.runtimeNotice.text}`)
@@ -554,7 +559,7 @@ export function renderWorkstreamTree(snapshot: WorkstreamTreeSnapshot): string[]
     const stageChildPrefix = isLastStage ? "    " : "│   "
 
     lines.push(
-      `${stagePrefix}${statusToTreeIcon(stageNode.status)} ${stageNode.displayLabel} (${stageNode.taskCount})`,
+      `${stagePrefix}${statusToTreeIcon(stageNode.status)} ${stageNode.displayLabel} (${stageNode.itemCount})`,
     )
 
     stageNode.batches.forEach((batchNode, batchIndex) => {
@@ -564,7 +569,7 @@ export function renderWorkstreamTree(snapshot: WorkstreamTreeSnapshot): string[]
       const runtimeSuffix = batchNode.runtimeOverlay ? ` [${batchNode.runtimeOverlay.text}]` : ""
 
       lines.push(
-        `${stageChildPrefix}${batchPrefix}${statusToTreeIcon(batchNode.status)} ${batchNode.displayLabel} (${batchNode.taskCount})${runtimeSuffix}`,
+        `${stageChildPrefix}${batchPrefix}${statusToTreeIcon(batchNode.status)} ${batchNode.displayLabel} (${batchNode.itemCount})${runtimeSuffix}`,
       )
 
       batchNode.threads.forEach((threadNode, threadIndex) => {
@@ -573,7 +578,7 @@ export function renderWorkstreamTree(snapshot: WorkstreamTreeSnapshot): string[]
         const agentDisplay = threadNode.assignedAgent ? ` @${threadNode.assignedAgent}` : ""
 
         lines.push(
-          `${stageChildPrefix}${batchChildPrefix}${threadPrefix}${statusToTreeIcon(threadNode.status)} ${threadNode.displayLabel} (${threadNode.taskCount})${agentDisplay}`,
+          `${stageChildPrefix}${batchChildPrefix}${threadPrefix}${statusToTreeIcon(threadNode.status)} ${threadNode.displayLabel} (${threadNode.itemCount})${agentDisplay}`,
         )
       })
     })

@@ -1,7 +1,7 @@
 /**
  * CLI: Session Management
  *
- * Manage agent sessions for workstream tasks.
+ * Manage agent sessions for workstream threads.
  * 
  * Subcommands:
  *   complete    - Mark sessions as completed
@@ -12,13 +12,9 @@
 
 import { getRepoRoot } from "../lib/repo.ts"
 import { loadIndex, resolveStreamId } from "../lib/index.ts"
-import {
-  readTasksFile,
-  writeTasksFile,
-  parseThreadId,
-  getTasksFilePath,
-} from "../lib/tasks.ts"
-import type { Task, SessionStatus, SessionRecord } from "../lib/types.ts"
+import { parseThreadId } from "../lib/execution-ids.ts"
+import { loadThreads, saveThreads } from "../lib/threads.ts"
+import type { SessionStatus, SessionRecord, ThreadMetadata } from "../lib/types.ts"
 
 interface SessionCliArgs {
   repoRoot?: string
@@ -51,7 +47,7 @@ Global Options:
   --help, -h          Show this help message
 
 Description:
-  Sessions track agent execution on tasks. When tmux exits unexpectedly
+  Sessions track agent execution on threads. When tmux exits unexpectedly
   or an agent crashes, sessions may be left in 'running' or 'interrupted'
   state. Use this command to manually mark them as 'completed'.
 
@@ -132,26 +128,25 @@ function parseCliArgs(argv: string[]): SessionCliArgs | null {
 /**
  * Find all sessions with 'running' or 'interrupted' status
  */
-function findIncompleteSessionTasks(
-  tasks: Task[],
+function findIncompleteThreadSessions(
+  threads: ThreadMetadata[],
   filter?: { threadPrefix?: string; batchPrefix?: string }
-): Array<{ task: Task; session: SessionRecord }> {
-  const results: Array<{ task: Task; session: SessionRecord }> = []
+): Array<{ thread: ThreadMetadata; session: SessionRecord }> {
+  const results: Array<{ thread: ThreadMetadata; session: SessionRecord }> = []
 
-  for (const task of tasks) {
-    if (!task.sessions) continue
+  for (const thread of threads) {
+    if (!thread.sessions) continue
 
-    // Apply filter if provided
-    if (filter?.threadPrefix && !task.id.startsWith(filter.threadPrefix + ".")) {
+    if (filter?.threadPrefix && thread.threadId !== filter.threadPrefix) {
       continue
     }
-    if (filter?.batchPrefix && !task.id.startsWith(filter.batchPrefix + ".")) {
+    if (filter?.batchPrefix && !thread.threadId.startsWith(filter.batchPrefix + ".")) {
       continue
     }
 
-    for (const session of task.sessions) {
+    for (const session of thread.sessions) {
       if (session.status === "running" || session.status === "interrupted") {
-        results.push({ task, session })
+        results.push({ thread, session })
       }
     }
   }
@@ -167,41 +162,39 @@ function completeSessions(
   streamId: string,
   filter?: { threadPrefix?: string; batchPrefix?: string }
 ): {
-  completed: Array<{ taskId: string; sessionId: string; previousStatus: SessionStatus }>
+  completed: Array<{ threadId: string; sessionId: string; previousStatus: SessionStatus }>
   errors: string[]
 } {
-  const tasksFile = readTasksFile(repoRoot, streamId)
-  if (!tasksFile) {
-    return { completed: [], errors: ["Tasks file not found"] }
+  const threadsFile = loadThreads(repoRoot, streamId)
+  if (!threadsFile) {
+    return { completed: [], errors: ["Thread runtime state not found"] }
   }
 
-  const incompleteSessions = findIncompleteSessionTasks(tasksFile.tasks, filter)
-  const completed: Array<{ taskId: string; sessionId: string; previousStatus: SessionStatus }> = []
+  const incompleteSessions = findIncompleteThreadSessions(threadsFile.threads, filter)
+  const completed: Array<{ threadId: string; sessionId: string; previousStatus: SessionStatus }> = []
   const errors: string[] = []
   const now = new Date().toISOString()
 
-  for (const { task, session } of incompleteSessions) {
+  for (const { thread, session } of incompleteSessions) {
     const previousStatus = session.status
 
-    // Update session status
     session.status = "completed"
     session.completedAt = now
 
-    // Clear currentSessionId if this was the current session
-    if (task.currentSessionId === session.sessionId) {
-      task.currentSessionId = undefined
+    if (thread.currentSessionId === session.sessionId) {
+      thread.currentSessionId = undefined
     }
-    task.updated_at = now
+    thread.updatedAt = now
 
     completed.push({
-      taskId: task.id,
+      threadId: thread.threadId,
       sessionId: session.sessionId,
       previousStatus,
     })
   }
 
   if (completed.length > 0) {
-    writeTasksFile(repoRoot, streamId, tasksFile)
+    saveThreads(repoRoot, streamId, threadsFile)
   }
 
   return { completed, errors }
@@ -274,7 +267,7 @@ function handleComplete(
       console.log(`Completed ${result.completed.length} session(s):`)
       console.log("")
       for (const item of result.completed) {
-        console.log(`  Task ${item.taskId}`)
+        console.log(`  Thread ${item.threadId}`)
         console.log(`    Session: ${item.sessionId}`)
         console.log(`    Previous status: ${item.previousStatus}`)
         console.log("")

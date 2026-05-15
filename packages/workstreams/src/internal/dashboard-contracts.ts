@@ -7,7 +7,7 @@ import type { WorkstreamTreeSnapshot } from "../lib/tree.ts"
 
 export const CURRENT_WORKSTREAM_DASHBOARD_SNAPSHOT_SCHEMA_VERSION = "1.0.0" as const
 
-export type DashboardCanonicalStateSource = "tasks.json"
+export type DashboardCanonicalStateSource = "structured_runtime"
 export type DashboardObservabilityAvailability = "ready" | "degraded" | "unavailable"
 export type DashboardObservabilityIssueSeverity = "info" | "warn" | "error"
 export type DashboardObservabilityCorrelationStatus = "matched" | "missing" | "stale" | "ambiguous"
@@ -38,7 +38,7 @@ export interface DashboardObservabilityCorrelation {
   stage_id?: string
   batch_id?: string
   thread_id?: string
-  task_id?: string
+  item_id?: string
   reason?: string
 }
 

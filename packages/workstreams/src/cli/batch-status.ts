@@ -1,6 +1,7 @@
 import { getRepoRoot } from "../lib/repo.ts"
 import { loadIndex, getResolvedStream } from "../lib/index.ts"
 import { syncBatchStatus, waitForBatchStatus } from "../lib/batch-monitor.ts"
+import type { BatchStatusFile } from "../lib/batch-status.ts"
 
 interface BatchStatusCliArgs {
   repoRoot?: string
@@ -110,6 +111,38 @@ function formatTextOutput(status: Awaited<ReturnType<typeof syncBatchStatus>>): 
   return lines.join("\n")
 }
 
+function toPublicBatchStatus(status: BatchStatusFile) {
+  return {
+    version: status.version,
+    streamId: status.streamId,
+    batchId: status.batchId,
+    runId: status.runId,
+    ...(status.tmuxSessionName ? { tmuxSessionName: status.tmuxSessionName } : {}),
+    mode: status.mode,
+    status: status.status,
+    ...(status.stageName ? { stageName: status.stageName } : {}),
+    ...(status.batchName ? { batchName: status.batchName } : {}),
+    startedAt: status.startedAt,
+    updatedAt: status.updatedAt,
+    ...(status.completedAt ? { completedAt: status.completedAt } : {}),
+    summary: status.summary,
+    threads: status.threads.map((thread) => ({
+      threadId: thread.threadId,
+      threadName: thread.threadName,
+      status: thread.status,
+      ...(thread.startedAt ? { startedAt: thread.startedAt } : {}),
+      updatedAt: thread.updatedAt,
+      ...(thread.completedAt ? { completedAt: thread.completedAt } : {}),
+      ...(thread.markerDetectedAt ? { markerDetectedAt: thread.markerDetectedAt } : {}),
+      ...(thread.currentSessionId ? { currentSessionId: thread.currentSessionId } : {}),
+      ...(thread.opencodeSessionId ? { opencodeSessionId: thread.opencodeSessionId } : {}),
+      ...(thread.workingAgentSessionId ? { workingAgentSessionId: thread.workingAgentSessionId } : {}),
+      ...(thread.synthesisUpdatedAt ? { synthesisUpdatedAt: thread.synthesisUpdatedAt } : {}),
+      ...(thread.recoveryNote ? { recoveryNote: thread.recoveryNote } : {}),
+    })),
+  }
+}
+
 export async function main(argv: string[] = process.argv): Promise<void> {
   const cliArgs = parseCliArgs(argv)
   if (!cliArgs || !cliArgs.batch) {
@@ -151,7 +184,7 @@ export async function main(argv: string[] = process.argv): Promise<void> {
         })
 
     if (cliArgs.format === "json") {
-      console.log(JSON.stringify(status, null, 2))
+      console.log(JSON.stringify(toPublicBatchStatus(status), null, 2))
     } else {
       console.log(formatTextOutput(status))
     }

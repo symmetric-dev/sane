@@ -1,67 +1,34 @@
 /**
- * Thread-first mutation operations.
- *
- * tasks.json remains a compatibility projection backed by canonical thread
- * mutations over structured task rows.
+ * Thread-first mutation operations over canonical workstream state.
  */
-
-
-import type { TaskStatus, StreamMetadata, Task } from "./types.ts"
+import type { ExecutionItem, ExecutionStatus, StreamMetadata } from "./types.ts"
 import {
   loadStructuredWorkstreamStateSync,
   replaceStructuredWorkstreamStateSync,
 } from "./storage-adapter.ts"
-import { updateStructuredTask } from "./structured-storage.ts"
-import {
-  getTaskById,
-  formatThreadId,
-  getTasksByThread,
-  parseTaskId,
-  parseThreadId,
-} from "./tasks.ts"
+import { upsertStructuredThreadRuntime } from "./structured-storage.ts"
+import { queryExecutionItemsForWorkstream } from "./hierarchy-query.ts"
+import { parseThreadId } from "./execution-ids.ts"
 
-export interface UpdateTaskArgs {
-  repoRoot: string
-  stream: StreamMetadata
-  taskId: string
-  status: TaskStatus
-  note?: string // Note: notes are not currently stored in tasks.json
-  breadcrumb?: string
-  report?: string
-  assigned_agent?: string
-}
-
-export interface UpdateTaskResult {
-  updated: boolean
-  file: string
-  taskId: string
-  threadId: string
-  status: TaskStatus
-  task: Task | null
-  tasks: Task[]
-  count: number
-}
-
-export interface MutateThreadTasksArgs {
+export interface MutateThreadExecutionArgs {
   repoRoot: string
   stream: StreamMetadata
   threadId: string
-  status?: TaskStatus
+  status?: ExecutionStatus
   note?: string
   breadcrumb?: string
   report?: string
   assigned_agent?: string
 }
 
-export interface MutateThreadTasksResult {
+export interface MutateThreadExecutionResult {
   updated: boolean
-  file: string
+  storage: "structured_workstream_state"
   threadId: string
-  tasks: Task[]
-  count: number
+  thread: ExecutionItem
 }
 
-export async function mutateThreadTasks(args: MutateThreadTasksArgs): Promise<MutateThreadTasksResult> {
+export async function mutateThreadExecution(args: MutateThreadExecutionArgs): Promise<MutateThreadExecutionResult> {
   let parsed: { stage: number; batch: number; thread: number }
   try {
     parsed = parseThreadId(args.threadId)
@@ -71,17 +38,13 @@ export async function mutateThreadTasks(args: MutateThreadTasksArgs): Promise<Mu
     )
   }
 
-  const existingTasks = getTasksByThread(
-    args.repoRoot,
-    args.stream.id,
-    parsed.stage,
-    parsed.batch,
-    parsed.thread,
+  const existingItem = queryExecutionItemsForWorkstream(args.repoRoot, args.stream.id).find(
+    (item) => item.threadId === args.threadId,
   )
 
-  if (existingTasks.length === 0) {
+  if (!existingItem) {
     throw new Error(
-      `No tasks found in thread "${args.threadId}" in workstream "${args.stream.id}".`,
+      `Thread "${args.threadId}" not found in workstream "${args.stream.id}".`,
     )
   }
 
@@ -91,126 +54,100 @@ export async function mutateThreadTasks(args: MutateThreadTasksArgs): Promise<Mu
     throw new Error(`Workstream state for "${args.stream.id}" not found`)
   }
 
-  for (const task of workstreamState.hierarchy.tasks) {
-    if (task.threadId !== args.threadId) {
-      continue
-    }
-
-    updateStructuredTask(workstreamState, {
-      taskId: task.id,
-      ...(args.status !== undefined ? { status: args.status } : {}),
-      ...(args.breadcrumb !== undefined ? { breadcrumb: args.breadcrumb } : {}),
-      ...(args.report !== undefined ? { report: args.report } : {}),
-      ...(args.assigned_agent !== undefined ? { assignedAgent: args.assigned_agent } : {}),
-      updatedAt,
-    })
-  }
+  const existingRuntime = workstreamState.threadRuntime.find((thread) => thread.threadId === args.threadId)
+  upsertStructuredThreadRuntime(workstreamState, {
+    threadId: args.threadId,
+    sessions: existingRuntime?.sessions ?? [],
+    status: args.status ?? existingRuntime?.status ?? "pending",
+    createdAt: existingRuntime?.createdAt ?? updatedAt,
+    updatedAt,
+    itemName: existingRuntime?.itemName ?? existingItem.name,
+    ...(args.breadcrumb !== undefined
+      ? { breadcrumb: args.breadcrumb }
+      : existingRuntime?.breadcrumb
+        ? { breadcrumb: existingRuntime.breadcrumb }
+        : {}),
+    ...(args.report !== undefined
+      ? { report: args.report }
+      : existingRuntime?.report
+        ? { report: existingRuntime.report }
+        : {}),
+    ...(args.assigned_agent !== undefined
+      ? { assignedAgent: args.assigned_agent }
+      : existingRuntime?.assignedAgent
+        ? { assignedAgent: existingRuntime.assignedAgent }
+        : {}),
+    ...(existingRuntime?.currentSessionId ? { currentSessionId: existingRuntime.currentSessionId } : {}),
+    ...(existingRuntime?.opencodeSessionId ? { opencodeSessionId: existingRuntime.opencodeSessionId } : {}),
+    ...(existingRuntime?.workingAgentSessionId ? { workingAgentSessionId: existingRuntime.workingAgentSessionId } : {}),
+    ...(existingRuntime?.synthesisOutput ? { synthesisOutput: existingRuntime.synthesisOutput } : {}),
+    ...(existingRuntime?.synthesis ? { synthesis: existingRuntime.synthesis } : {}),
+  })
 
   replaceStructuredWorkstreamStateSync({
     repoRoot: args.repoRoot,
     workstreamState,
   })
 
-  const updatedTasks = getTasksByThread(
-    args.repoRoot,
-    args.stream.id,
-    parsed.stage,
-    parsed.batch,
-    parsed.thread,
-  )
+  const thread = {
+    ...existingItem,
+    name: existingRuntime?.itemName ?? existingItem.name,
+    updatedAt,
+    status: args.status ?? existingRuntime?.status ?? existingItem.status,
+    ...(args.breadcrumb !== undefined
+      ? { breadcrumb: args.breadcrumb }
+      : existingRuntime?.breadcrumb
+        ? { breadcrumb: existingRuntime.breadcrumb }
+        : existingItem.breadcrumb
+          ? { breadcrumb: existingItem.breadcrumb }
+          : {}),
+    ...(args.report !== undefined
+      ? { report: args.report }
+      : existingRuntime?.report
+        ? { report: existingRuntime.report }
+        : existingItem.report
+          ? { report: existingItem.report }
+          : {}),
+    ...(args.assigned_agent !== undefined
+      ? { assignedAgent: args.assigned_agent }
+      : existingRuntime?.assignedAgent
+        ? { assignedAgent: existingRuntime.assignedAgent }
+        : existingItem.assignedAgent
+          ? { assignedAgent: existingItem.assignedAgent }
+          : {}),
+  }
 
   return {
     updated: true,
-    file: "tasks.json",
+    storage: "structured_workstream_state",
     threadId: args.threadId,
-    tasks: updatedTasks,
-    count: updatedTasks.length,
+    thread,
   }
 }
 
-/**
- * Update a task's status in a workstream
- */
-export async function updateTask(args: UpdateTaskArgs): Promise<UpdateTaskResult> {
-  // Validate task ID format
-  try {
-    parseTaskId(args.taskId)
-  } catch (e) {
-    throw new Error(
-      `Invalid task ID: ${args.taskId}. Expected format "stage.batch.thread.task" (e.g., "01.01.02.03")`,
-    )
-  }
-
-  // Check if task exists and track previous status
-  const existingTask = getTaskById(args.repoRoot, args.stream.id, args.taskId)
-  if (!existingTask) {
-    throw new Error(
-      `Task "${args.taskId}" not found in workstream "${args.stream.id}". ` +
-      `Run "work add-task" to add tasks, or "work validate plan" to check the plan.`,
-    )
-  }
-  const parsedTaskId = parseTaskId(args.taskId)
-  const threadId = formatThreadId(parsedTaskId.stage, parsedTaskId.batch, parsedTaskId.thread)
-
-  const mutation = await mutateThreadTasks({
-    repoRoot: args.repoRoot,
-    stream: args.stream,
-    threadId,
-    status: args.status,
-    note: args.note,
-    breadcrumb: args.breadcrumb,
-    report: args.report,
-    assigned_agent: args.assigned_agent,
-  })
-
-  const updatedTask = mutation.tasks.find((task) => task.id === args.taskId) ?? getTaskById(args.repoRoot, args.stream.id, args.taskId)
-
-  if (!updatedTask) {
-    throw new Error(`Failed to update task "${args.taskId}"`)
-  }
-
-  return {
-    updated: true,
-    file: "tasks.json",
-    taskId: args.taskId,
-    threadId,
-    status: args.status,
-    task: updatedTask,
-    tasks: mutation.tasks,
-    count: mutation.count,
-  }
-}
-
-export interface UpdateThreadTasksArgs {
+export interface UpdateThreadExecutionArgs {
   repoRoot: string
   stream: StreamMetadata
   threadId: string
-  status: TaskStatus
+  status: ExecutionStatus
   note?: string
   breadcrumb?: string
   report?: string
   assigned_agent?: string
 }
 
-export interface UpdateThreadTasksResult {
+export interface UpdateThreadExecutionResult {
   updated: boolean
-  file: string
+  storage: "structured_workstream_state"
   threadId: string
-  status: TaskStatus
-  tasks: Task[]
-  count: number
+  thread: ExecutionItem
 }
 
 /**
- * Update all tasks in a thread
+ * Update thread execution state.
  */
-export async function updateThreadTasks(args: UpdateThreadTasksArgs): Promise<UpdateThreadTasksResult> {
-  const mutation = await mutateThreadTasks(args)
-  return {
-    ...mutation,
-    status: args.status,
-  }
+export async function updateThreadExecution(
+  args: UpdateThreadExecutionArgs,
+): Promise<UpdateThreadExecutionResult> {
+  return mutateThreadExecution(args)
 }
-
-// Re-export parseTaskId for backwards compatibility
-export { parseTaskId } from "./tasks.ts"

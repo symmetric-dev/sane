@@ -143,4 +143,5 @@ describe("sqlite structured storage bootstrap", () => {
       cleanupTestWorkstream(workspace)
     }
   })
+
 })

@@ -10,15 +10,9 @@ import { spawn } from "child_process"
 import { getRepoRoot, getWorkDir } from "../lib/repo.ts"
 import { loadIndex, getResolvedStream } from "../lib/index.ts"
 import { loadAgentsConfig, getAgentModels } from "../lib/agents-yaml.ts"
-import {
-  readTasksFile,
-  parseTaskId,
-  parseThreadId,
-  getTasksByThread,
-  startTaskSession,
-  completeTaskSession,
-} from "../lib/tasks.ts"
-import { getThreadMetadata } from "../lib/threads.ts"
+import { generateSessionId } from "../lib/session-id.ts"
+import { getThreadMetadata, startThreadSession, completeThreadSession } from "../lib/threads.ts"
+import { queryThreadByIdForWorkstream } from "../lib/hierarchy-query.ts"
 import { parseStreamDocument } from "../lib/stream-parser.ts"
 import type { StreamDocument, SessionStatus } from "../lib/types.ts"
 
@@ -182,7 +176,7 @@ function resolveThreadByName(
 
 /**
  * Build the prompt file path for a thread
- * First checks tasks.json -> runtime_state.threads for a stored path, then falls back to PLAN.md reconstruction
+ * First checks thread runtime metadata for a stored path, then falls back to PLAN.md reconstruction
  */
 function getPromptFilePath(
     repoRoot: string,
@@ -246,36 +240,14 @@ function getPromptFilePath(
 }
 
 /**
- * Get the assigned agent name for a thread from tasks.json
+ * Get the assigned agent name for a thread
  */
 function getThreadAssignedAgent(
     repoRoot: string,
     streamId: string,
     threadId: string
 ): string | undefined {
-    const tasksFile = readTasksFile(repoRoot, streamId)
-    if (!tasksFile) return undefined
-
-    // Parse thread ID to match task IDs that belong to this thread
-    const parts = threadId.split(".").map((p) => parseInt(p, 10))
-    if (parts.length !== 3) return undefined
-    const [stageNum, batchNum, threadNum] = parts
-
-    // Find first task in this thread that has an assigned agent
-    for (const task of tasksFile.tasks) {
-        try {
-            const parsed = parseTaskId(task.id)
-            if (parsed.stage === stageNum && parsed.batch === batchNum && parsed.thread === threadNum) {
-                if (task.assigned_agent) {
-                    return task.assigned_agent
-                }
-            }
-        } catch {
-            // Skip invalid task IDs
-        }
-    }
-
-    return undefined
+    return queryThreadByIdForWorkstream(repoRoot, streamId, threadId)?.assignedAgent
 }
 
 export async function main(argv: string[] = process.argv): Promise<void> {
@@ -414,37 +386,20 @@ export async function main(argv: string[] = process.argv): Promise<void> {
         return
     }
 
-    // Get all tasks in this thread for session tracking
-    const threadParsed = parseThreadId(resolvedThreadId)
-    const threadTasks = getTasksByThread(
-        repoRoot,
-        stream.id,
-        threadParsed.stage,
-        threadParsed.batch,
-        threadParsed.thread
-    )
-
-    // Start sessions for all tasks in the thread
     const modelString = primaryModel.variant
         ? `${primaryModel.model}:${primaryModel.variant}`
         : primaryModel.model
-    
-    const sessionIds: Map<string, string> = new Map()
-    for (const task of threadTasks) {
-        const session = startTaskSession(
-            repoRoot,
-            stream.id,
-            task.id,
-            agentName,
-            modelString
-        )
-        if (session) {
-            sessionIds.set(task.id, session.sessionId)
-        }
-    }
+    const session = startThreadSession(
+        repoRoot,
+        stream.id,
+        resolvedThreadId,
+        agentName,
+        modelString,
+        generateSessionId(),
+    )
 
     console.log(`Executing thread ${threadDisplayName} with agent "${agentName}" (${primaryModel.model})...`)
-    console.log(`Session tracking: ${sessionIds.size} task(s)`)
+    console.log(`Session tracking: ${session ? resolvedThreadId : "unavailable"}`)
     console.log(`Prompt: ${promptPath}\n`)
 
     // Execute via shell to handle pipe
@@ -457,13 +412,12 @@ export async function main(argv: string[] = process.argv): Promise<void> {
         // Determine session status based on exit code
         const sessionStatus: SessionStatus = code === 0 ? "completed" : "failed"
         
-        // Complete all sessions for this thread
-        for (const [taskId, sessionId] of sessionIds) {
-            completeTaskSession(
+        if (session) {
+            completeThreadSession(
                 repoRoot,
                 stream.id,
-                taskId,
-                sessionId,
+                resolvedThreadId,
+                session.sessionId,
                 sessionStatus,
                 code ?? undefined
             )
@@ -473,13 +427,12 @@ export async function main(argv: string[] = process.argv): Promise<void> {
     })
 
     child.on("error", (err) => {
-        // Mark all sessions as failed on error
-        for (const [taskId, sessionId] of sessionIds) {
-            completeTaskSession(
+        if (session) {
+            completeThreadSession(
                 repoRoot,
                 stream.id,
-                taskId,
-                sessionId,
+                resolvedThreadId,
+                session.sessionId,
                 "failed"
             )
         }

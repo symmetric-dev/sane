@@ -6,16 +6,14 @@
 - Batch (serial within stage)
 - Thread (parallel within batch)
 
-Internal compatibility still uses task IDs like `SS.BB.TT.NN`, but the supported workflow is now stage/batch/thread-first.
+Execution items live under their owning stage/batch/thread, and the supported workflow is fully stage/batch/thread-first.
 
 ## Files
 
 Each stream lives at `work/{stream-id}/`.
 
 - `README.md`: overall workstream goals, shared requirements, and workflow note
-- `tasks.json`: compatibility projection of structured workstream state when projected from sqlite; also a legacy hydration input for pre-sqlite repos
-- `threads.json`: legacy thread metadata artifact if present; sqlite-native workstreams no longer need it projected for normal runtime behavior
-- `supervisor-state.json`: legacy supervision artifact if present; still transitional compatibility/runtime output in the current sqlite-native phase
+- `workstream-state.json`: canonical filesystem fallback for structured state when sqlite is absent
 - `REPORT.md`: completion report input
 - `resources/`: supporting pre-work inputs referenced by root README or stage requirements
 - `docs/`: supporting notes and synthesized research
@@ -23,8 +21,6 @@ Each stream lives at `work/{stream-id}/`.
 - `stages/<nn>/PLAN.md`: stage-local batch/thread planning surface
 - `stages/<nn>/WORK.md`: stage-local execution guidance
 - `stages/<nn>/specs/`: optional stage specs directory
-
-`TASKS.md` was removed from the supported workflow in 0.9.0.
 
 ## Minimal Lifecycle
 
@@ -44,7 +40,7 @@ work report validate
 
 1. The planning agent uses `planning-workstreams` to create the workstream, gather context, update the root `README.md`, and then prepare stage-local planning files when planning is ready to start.
 2. The user approves the plan with `work approve plan`.
-3. Plan approval initializes compatibility execution state directly from the planned stage/thread structure.
+3. Plan approval initializes thread execution state directly from the planned stage/thread structure.
 4. The user manually `/fork`s the session and asks the forked session to supervise the approved work.
 5. The supervision branch uses `supervising-workstreams` to run `work supervise`, inspect persisted state, and drive the review/fix/escalation loop.
 6. Implementation agents inside that supervised batch use `implementing-workstreams` to inspect scope and keep execution state current with commands like `work status`, `work tree --batch`, `work list --thread`, and `work update`.
@@ -64,35 +60,24 @@ The older Root Agent management-launch flow is still available through the manag
 - Run `work current --set "NNN-feature"` first, or pass `--stream`, before `work plan create` and other follow-up commands.
 - `work plan create --stages <n>` scaffolds stage directories such as `stages/01/`, `stages/02/`, and so on.
 - Each stage gets `REQUIREMENTS.md`, `PLAN.md`, `WORK.md`, and `specs/`.
-- `work approve plan` requires at least one stage and seeds compatibility execution state from the staged planning structure.
+- `work approve plan` requires at least one stage and seeds thread execution state from the staged planning structure.
 
 ## Runtime State
 
 - In sqlite-authoritative repos, `work/db.sqlite` is the canonical structured machine state.
-- When `tasks.json` exists, `tasks.json -> runtime_state.threads`, `tasks.json -> runtime_state.batches`, and `tasks.json -> runtime_state.supervision` are compatibility projections rebuilt from sqlite.
-- Legacy `threads.json` and `supervisor-state.json` files may still exist for migration/compatibility, but they are not the primary runtime store.
-- `batch-status/*.json` is not a required live runtime surface for sqlite-native workstreams; use `work batch-status` instead.
+- Without sqlite, `work/<stream-id>/workstream-state.json` is the canonical filesystem runtime store.
+- Legacy `threads.json`, `supervisor-state.json`, and `batch-status/*.json` may be imported during migration, but they are not maintained as live runtime state.
 
 ## Sqlite-Authoritative Structured Storage
 
 - Recommended bootstrap for new and existing repos: `work init --sqlite`.
 - `work/db.sqlite` is the repo-local canonical store for structured workflow state.
-- Running `work init --sqlite` in an existing repo hydrates legacy `index.json`, `tasks.json`, and compatible runtime artifacts into sqlite.
-- `work/index.json` and `work/<stream-id>/tasks.json` become rebuildable compatibility projections instead of the source of truth.
+- Running `work init --sqlite` in an existing repo hydrates legacy workspace/runtime artifacts into sqlite.
 - Core markdown documents (`README.md`, stage-local `REQUIREMENTS.md` / `PLAN.md` / `WORK.md`, `REPORT.md`) plus `resources/` and artifact-like outputs remain filesystem-based.
-- permanent removal of compatibility JSON and any remote/service-backed storage model remain deferred follow-up work.
 - `work/db.sqlite` is local runtime state and is expected to stay out of version control; this repo currently ignores `work/` entirely.
 
 Operator guidance:
 
 - inspect live state with `work status`, `work tree`, `work list`, and `work batch-status`
-- rebuild `work/index.json` / `work/<stream-id>/tasks.json` compatibility files with `work rebuild-compat` or `work rebuild-compat --stream current`
-- use `work rebuild-compat --output-root /tmp/sqlite-compat-snapshot` for rollback-safe inspection of projected `index.json` / `tasks.json` files before replacing live compatibility files
-- do not expect `work rebuild-compat` snapshots to include legacy runtime compatibility artifacts like `threads.json`, `supervisor-state.json`, or `batch-status/*.json`
-- treat legacy `threads.json` / `supervisor-state.json` as migration inputs or compatibility artifacts only, not as normal runtime authority
-- treat on-disk `batch-status/*.json` as legacy/stale if present; `work batch-status` is the authoritative operator interface
-
-See also:
-
-- [`LOCAL_FIRST_SQLITE_ARCHITECTURE.md`](./LOCAL_FIRST_SQLITE_ARCHITECTURE.md) for the detailed local-first architecture writeup.
-- [`STORAGE_PACKAGE_BOUNDARIES.md`](./STORAGE_PACKAGE_BOUNDARIES.md) for the package/refactor recommendation that builds on that architecture.
+- treat legacy `threads.json`, `supervisor-state.json`, and `batch-status/*.json` as migration inputs only
+- use canonical queries and `work batch-status` for live operator state

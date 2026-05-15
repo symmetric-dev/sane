@@ -32,7 +32,7 @@ Options:
   --help, -h       Show this help message
 
 Formats:
-  md    Markdown summary with task checklist
+  md    Markdown summary with execution checklist
   csv   CSV spreadsheet format
   json  Full JSON export with metadata
 

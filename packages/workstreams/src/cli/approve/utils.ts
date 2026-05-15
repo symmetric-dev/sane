@@ -4,7 +4,7 @@
  * Common types, formatting, and validation helpers for approve subcommands.
  */
 
-export type ApproveTarget = "plan" | "tasks" | "revision"
+export type ApproveTarget = "plan" | "revision"
 
 export interface ApproveCliArgs {
   repoRoot?: string

@@ -10,10 +10,7 @@ import { getOrCreateIndex, saveIndex } from "../lib/index.ts"
 import { getAgentsYamlPath } from "../lib/agents-yaml.ts"
 import { getGitHubConfigPath } from "../lib/github/config.ts"
 import { bootstrapSqliteStructuredStorage } from "../lib/sqlite-storage.ts"
-import {
-  emitLegacyFilesystemSqliteHydrationDiagnostics,
-  hydrateLegacyFilesystemStateToSqliteSync,
-} from "../lib/storage-adapter.ts"
+import { hydrateFilesystemStateToSqliteSync } from "../lib/storage-adapter.ts"
 import {
   DEFAULT_AGENTS_YAML,
   DEFAULT_GITHUB_JSON,
@@ -148,7 +145,7 @@ export async function main(argv: string[]): Promise<void> {
       console.log("github.json already exists, skipping.")
     }
 
-    // 2. Initialize index.json compatibility projection when needed
+    // 2. Initialize index.json when needed
     const indexPath = getIndexPath(repoRoot)
     const shouldInitializeCompatibilityIndex = !bootstrapSqlite || existsSync(indexPath)
     if (shouldInitializeCompatibilityIndex && (!existsSync(indexPath) || force)) {
@@ -160,7 +157,7 @@ export async function main(argv: string[]): Promise<void> {
     } else if (existsSync(indexPath)) {
       console.log("index.json already exists, skipping.")
     } else if (bootstrapSqlite) {
-      console.log("Skipping index.json compatibility projection; sqlite will be canonical.")
+        console.log("Skipping index.json bootstrap; sqlite will be canonical.")
     }
 
     // 3. Initialize agents.yaml
@@ -178,17 +175,13 @@ export async function main(argv: string[]): Promise<void> {
       const result = bootstrapSqliteStructuredStorage(repoRoot)
       console.log(`Bootstrapped sqlite structured storage at ${result.databasePath}`)
 
-      const hydration = hydrateLegacyFilesystemStateToSqliteSync({
+      const hydration = hydrateFilesystemStateToSqliteSync({
         repoRoot,
-        projectLegacyRuntimeCompatibilityArtifacts: false,
       })
       if (hydration.hydratedStreamIds.length > 0) {
         console.log(
-          `Hydrated ${hydration.hydratedStreamIds.length} legacy workstream${hydration.hydratedStreamIds.length === 1 ? "" : "s"} into sqlite.`,
+          `Hydrated ${hydration.hydratedStreamIds.length} filesystem workstream${hydration.hydratedStreamIds.length === 1 ? "" : "s"} into sqlite.`,
         )
-      }
-      if (hydration.diagnostics.length > 0) {
-        emitLegacyFilesystemSqliteHydrationDiagnostics(hydration.diagnostics)
       }
     }
 

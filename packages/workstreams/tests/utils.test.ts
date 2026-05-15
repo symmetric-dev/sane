@@ -5,7 +5,7 @@ import {
   validateStreamName,
   parsePositiveInt,
   statusToCheckbox,
-  parseTaskStatus,
+  parseExecutionStatus,
   parseStageStatus,
   setNestedField,
   getNestedField,
@@ -126,30 +126,30 @@ describe("statusToCheckbox", () => {
   })
 })
 
-describe("parseTaskStatus", () => {
+describe("parseExecutionStatus", () => {
   test("parses completed status", () => {
-    expect(parseTaskStatus("- [x] Task done")).toBe("completed")
-    expect(parseTaskStatus("- [X] Task done")).toBe("completed")
+    expect(parseExecutionStatus("- [x] Item done")).toBe("completed")
+    expect(parseExecutionStatus("- [X] Item done")).toBe("completed")
   })
 
   test("parses in_progress status", () => {
-    expect(parseTaskStatus("- [~] Working on it")).toBe("in_progress")
+    expect(parseExecutionStatus("- [~] Working on it")).toBe("in_progress")
   })
 
   test("parses blocked status", () => {
-    expect(parseTaskStatus("- [!] Blocked by dependency")).toBe("blocked")
+    expect(parseExecutionStatus("- [!] Blocked by dependency")).toBe("blocked")
   })
 
   test("parses cancelled status", () => {
-    expect(parseTaskStatus("- [-] No longer needed")).toBe("cancelled")
+    expect(parseExecutionStatus("- [-] No longer needed")).toBe("cancelled")
   })
 
   test("parses pending status", () => {
-    expect(parseTaskStatus("- [ ] Todo item")).toBe("pending")
+    expect(parseExecutionStatus("- [ ] Todo item")).toBe("pending")
   })
 
   test("returns pending for lines without checkboxes", () => {
-    expect(parseTaskStatus("Some random text")).toBe("pending")
+    expect(parseExecutionStatus("Some random text")).toBe("pending")
   })
 })
 

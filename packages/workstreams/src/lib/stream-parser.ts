@@ -2,7 +2,7 @@
  * PLAN.md parsing utilities
  *
  * This module parses structured markdown from PLAN.md files using the marked lexer.
- * It extracts the stream document structure including stages, threads, and tasks.
+ * It extracts the stream document structure including stages, batches, and threads.
  */
 
 import { Lexer, type Token, type Tokens } from "marked"
@@ -278,8 +278,7 @@ export function parseStreamDocument(
 }
 
 /**
- * Parse all stages from the Stages section
- * Supports both old format (threads directly in stage) and new format (batches containing threads)
+ * Parse all stages from the Stages section.
  */
 function parseStages(
   tokens: Token[],
@@ -374,8 +373,7 @@ function parseStages(
           state.currentSection = "constitution"
         } else if (lower.includes("questions")) {
           state.currentSection = "questions"
-        } else if (lower.includes("batches") || lower.includes("threads")) {
-          // Support both old "threads" and new "batches" section names
+        } else if (lower.includes("batches")) {
           state.currentSection = "batches"
           state.currentBatch = null
           state.currentThread = null
@@ -386,9 +384,8 @@ function parseStages(
         }
       }
 
-      // H5: Batch NN: {name} OR Thread N: {name} (legacy support)
+      // H5: Batch NN: {name}
       if (heading.depth === 5 && state.currentSection === "batches") {
-        // Try parsing as batch first (new format)
         const batchInfo = parseBatchHeading(heading.text)
         if (batchInfo && currentStage) {
           saveCurrentBatch()
@@ -430,7 +427,7 @@ function parseStages(
       const para = token as Tokens.Paragraph
       let text = para.text // Use let so we can modify it if needed
 
-      // Check for bold section markers in constitution (legacy support or just ignore)
+      // Check for bold section markers in constitution
       if (state.currentSection === "constitution") {
         // Just treat everything as text
       }

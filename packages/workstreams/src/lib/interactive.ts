@@ -129,7 +129,7 @@ export async function selectThread(
 // FIX COMMAND INTERACTIVE UI
 // ============================================
 
-import type { Task } from "./types.ts"
+import type { ExecutionItem } from "./types.ts"
 
 /**
  * Thread status information for display
@@ -148,19 +148,14 @@ export interface ThreadStatus {
 export type FixAction = "resume" | "retry" | "change-agent" | "new-stage"
 
 /**
- * Calculate the status of a thread based on its tasks
+ * Calculate the status of a thread based on its execution items
  */
-export function calculateThreadStatus(tasks: Task[]): "completed" | "failed" | "incomplete" {
-  if (tasks.length === 0) return "incomplete"
+export function calculateThreadStatus(items: ExecutionItem[]): "completed" | "failed" | "incomplete" {
+  if (items.length === 0) return "incomplete"
   
-  const allCompleted = tasks.every(t => t.status === "completed" || t.status === "cancelled")
+  const allCompleted = items.every(t => t.status === "completed" || t.status === "cancelled")
   if (allCompleted) return "completed"
-  
-  const hasFailed = tasks.some(t => 
-    t.sessions && t.sessions.length > 0 && 
-    t.sessions[t.sessions.length - 1]?.status === "failed"
-  )
-  if (hasFailed) return "failed"
+  if (items.some((t) => t.status === "blocked")) return "failed"
   
   return "incomplete"
 }
@@ -168,45 +163,40 @@ export function calculateThreadStatus(tasks: Task[]): "completed" | "failed" | "
 /**
  * Get the last agent that worked on a thread
  */
-export function getLastAgent(tasks: Task[]): string | undefined {
+export function getLastAgent(tasks: ExecutionItem[]): string | undefined {
   for (let i = tasks.length - 1; i >= 0; i--) {
     const task = tasks[i]
-    if (task?.sessions && task.sessions.length > 0) {
-      const lastSession = task.sessions[task.sessions.length - 1]
-      if (lastSession?.agentName) {
-        return lastSession.agentName
-      }
+    if (task?.assignedAgent) {
+      return task.assignedAgent
     }
   }
   return undefined
 }
 
 /**
- * Get total session count across all tasks in a thread
+ * Get total session count across all execution items in a thread
  */
-export function getSessionCount(tasks: Task[]): number {
-  return tasks.reduce((sum, task) => {
-    return sum + (task.sessions?.length || 0)
-  }, 0)
+export function getSessionCount(items: ExecutionItem[]): number {
+  return items.length
 }
 
 /**
- * Build thread status information from tasks
+ * Build thread status information from execution items
  */
 export function buildThreadStatuses(
-  allTasks: Task[],
+  allItems: ExecutionItem[],
   threadIds: string[]
 ): ThreadStatus[] {
   return threadIds.map(threadId => {
-    const threadTasks = allTasks.filter(t => t.id.startsWith(threadId + "."))
-    const firstTask = threadTasks[0]
+    const threadItems = allItems.filter(t => t.threadId === threadId)
+    const firstItem = threadItems[0]
     
     return {
       threadId,
-      threadName: firstTask?.thread_name || "(unknown)",
-      status: calculateThreadStatus(threadTasks),
-      sessionsCount: getSessionCount(threadTasks),
-      lastAgent: getLastAgent(threadTasks)
+      threadName: firstItem?.threadName || "(unknown)",
+      status: calculateThreadStatus(threadItems),
+      sessionsCount: getSessionCount(threadItems),
+      lastAgent: getLastAgent(threadItems)
     }
   })
 }

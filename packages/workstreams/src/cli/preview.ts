@@ -9,8 +9,9 @@ import { getRepoRoot } from "../lib/repo.ts"
 import { loadIndex, getResolvedStream } from "../lib/index.ts"
 import { getStreamPreview } from "../lib/stream-parser.ts"
 import { getStreamPlanMdPath } from "../lib/consolidate.ts"
-import { getTasks, parseTaskId } from "../lib/tasks.ts"
-import type { Task } from "../lib/types.ts"
+import { listThreadExecutionItems } from "../lib/thread-execution.ts"
+import { parseExecutionItemId } from "../lib/execution-ids.ts"
+import type { ExecutionItem } from "../lib/types.ts"
 
 interface PreviewCliArgs {
   repoRoot?: string
@@ -123,9 +124,9 @@ interface StreamPreview {
 }
 
 /**
- * Task progress data for a single unit (stage/batch/thread)
+ * Progress data for a single execution unit (stage/batch/thread)
  */
-interface TaskProgress {
+interface ExecutionProgress {
   total: number
   completed: number
   inProgress: number
@@ -133,16 +134,16 @@ interface TaskProgress {
 }
 
 /**
- * Compute task progress for a given stage/batch/thread
+ * Compute execution progress for a given stage/batch/thread
  */
-function computeTaskProgress(
-  tasks: Task[],
+function computeExecutionProgress(
+  items: ExecutionItem[],
   stageNum?: number,
   batchNum?: number,
   threadNum?: number,
-): TaskProgress {
-  const filtered = tasks.filter((t) => {
-    const parsed = parseTaskId(t.id)
+): ExecutionProgress {
+  const filtered = items.filter((t) => {
+    const parsed = parseExecutionItemId(t.id)
     if (stageNum !== undefined && parsed.stage !== stageNum) return false
     if (batchNum !== undefined && parsed.batch !== batchNum) return false
     if (threadNum !== undefined && parsed.thread !== threadNum) return false
@@ -174,7 +175,7 @@ function progressPercent(completed: number, total: number): string {
   return `${Math.round((completed / total) * 100)}%`
 }
 
-function formatPreview(preview: StreamPreview, verbose: boolean, tasks: Task[]): string {
+function formatPreview(preview: StreamPreview, verbose: boolean, items: ExecutionItem[]): string {
   const lines: string[] = []
 
   if (!preview.streamName) {
@@ -188,13 +189,13 @@ function formatPreview(preview: StreamPreview, verbose: boolean, tasks: Task[]):
   }
 
   // Overall progress
-  const overallProgress = computeTaskProgress(tasks)
+  const overallProgress = computeExecutionProgress(items)
   if (overallProgress.total > 0) {
     lines.push("")
     lines.push(
       `Overall Progress: [${progressBar(overallProgress.completed, overallProgress.total)}] ` +
       `${progressPercent(overallProgress.completed, overallProgress.total)} ` +
-      `(${overallProgress.completed}/${overallProgress.total} tasks)`,
+      `(${overallProgress.completed}/${overallProgress.total} items)`,
     )
   }
 
@@ -211,7 +212,7 @@ function formatPreview(preview: StreamPreview, verbose: boolean, tasks: Task[]):
 
   for (let stageIdx = 0; stageIdx < preview.stages.length; stageIdx++) {
     const stage = preview.stages[stageIdx]!
-    const stageProgress = computeTaskProgress(tasks, stage.number)
+    const stageProgress = computeExecutionProgress(items, stage.number)
 
     // Stage header with progress
     const batchInfo = stage.batchCount > 1 ? `, ${stage.batchCount} batches` : ""
@@ -233,7 +234,7 @@ function formatPreview(preview: StreamPreview, verbose: boolean, tasks: Task[]):
     // Blocked indicator for stages after the first
     if (stageIdx > 0) {
       const prevStage = preview.stages[stageIdx - 1]!
-      const prevProgress = computeTaskProgress(tasks, prevStage.number)
+      const prevProgress = computeExecutionProgress(items, prevStage.number)
       if (prevProgress.total > 0 && prevProgress.completed < prevProgress.total) {
         stageLine += " (blocked by Stage " + prevStage.number + ")"
       }
@@ -242,7 +243,7 @@ function formatPreview(preview: StreamPreview, verbose: boolean, tasks: Task[]):
     lines.push(stageLine)
 
     for (const batch of stage.batches) {
-      const batchProgress = computeTaskProgress(tasks, stage.number, batch.number)
+      const batchProgress = computeExecutionProgress(items, stage.number, batch.number)
 
       // Only show batch header if there's more than one batch or in verbose mode
       if (stage.batchCount > 1 || verbose) {
@@ -259,7 +260,7 @@ function formatPreview(preview: StreamPreview, verbose: boolean, tasks: Task[]):
       if (verbose || batch.threads.length <= 5) {
         for (const thread of batch.threads) {
           const indent = stage.batchCount > 1 || verbose ? "        " : "     "
-          const threadProgress = computeTaskProgress(tasks, stage.number, batch.number, thread.number)
+          const threadProgress = computeExecutionProgress(items, stage.number, batch.number, thread.number)
           let threadLine = `${indent}- Thread ${thread.number}: ${thread.name}`
           if (threadProgress.total > 0) {
             threadLine += ` [${threadProgress.completed}/${threadProgress.total}]`
@@ -273,7 +274,7 @@ function formatPreview(preview: StreamPreview, verbose: boolean, tasks: Task[]):
         // Show first 3 threads and indicate more
         for (const thread of batch.threads.slice(0, 3)) {
           const indent = stage.batchCount > 1 || verbose ? "        " : "     "
-          const threadProgress = computeTaskProgress(tasks, stage.number, batch.number, thread.number)
+          const threadProgress = computeExecutionProgress(items, stage.number, batch.number, thread.number)
           let threadLine = `${indent}- Thread ${thread.number}: ${thread.name}`
           if (threadProgress.total > 0) {
             threadLine += ` [${threadProgress.completed}/${threadProgress.total}]`
@@ -350,24 +351,24 @@ export function main(argv: string[] = process.argv): void {
   const content = readFileSync(planMdPath, "utf-8")
   const preview = getStreamPreview(content)
 
-  // Load task data for progress
-  const tasks = getTasks(repoRoot, stream.id)
+  // Load execution item data for progress
+  const items = listThreadExecutionItems(repoRoot, stream.id)
 
   if (cliArgs.json) {
-    // Include task progress in JSON output
+    // Include execution item progress in JSON output
     const progressData = {
       ...preview,
-      taskProgress: {
-        total: tasks.length,
-        completed: tasks.filter((t) => t.status === "completed").length,
-        inProgress: tasks.filter((t) => t.status === "in_progress").length,
-        blocked: tasks.filter((t) => t.status === "blocked").length,
-        pending: tasks.filter((t) => t.status === "pending").length,
+      itemProgress: {
+        total: items.length,
+        completed: items.filter((t) => t.status === "completed").length,
+        inProgress: items.filter((t) => t.status === "in_progress").length,
+        blocked: items.filter((t) => t.status === "blocked").length,
+        pending: items.filter((t) => t.status === "pending").length,
       },
     }
     console.log(JSON.stringify(progressData, null, 2))
   } else {
-    console.log(formatPreview(preview, cliArgs.verbose, tasks))
+    console.log(formatPreview(preview, cliArgs.verbose, items))
   }
 }
 

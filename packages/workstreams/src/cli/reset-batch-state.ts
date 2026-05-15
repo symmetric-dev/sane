@@ -22,9 +22,10 @@ Options:
   --help, -h             Show this help message
 
 Description:
-  Resets task state, canonical runtime_state entries, supervisor recovery pointers,
-  and temp batch execution artifacts for a single batch so it can be rerun fresh.
-  tasks.json remains the canonical source of truth.
+  Resets thread execution state, canonical runtime_state entries, supervisor
+  recovery pointers, and temporary batch artifacts for a single batch so it can
+  be rerun fresh.
+  Canonical sqlite/thread runtime state remains the source of truth.
 
 Examples:
   work reset-batch-state --batch "03.01"
@@ -99,10 +100,10 @@ export async function main(argv: string[] = process.argv): Promise<void> {
 
     console.log(`Reset batch ${result.batchId} for stream ${streamId}.`)
     console.log(
-      `Tasks: ${result.taskCount} in batch, ${result.tasksReset} status reset to pending, ${result.taskReportsCleared} reports cleared, ${result.taskBreadcrumbsCleared} breadcrumbs cleared.`,
+      `Items: ${result.itemCount} in batch, ${result.itemsReset} status reset to pending, ${result.itemReportsCleared} reports cleared, ${result.itemBreadcrumbsCleared} breadcrumbs cleared.`,
     )
     console.log(
-      `Runtime: ${result.taskRuntimeBatchCleared ? "cleared" : "no existing"} batch runtime entry, ${result.threadRuntimeEntriesTouched} thread runtime entr${result.threadRuntimeEntriesTouched === 1 ? "y" : "ies"} cleaned.`,
+      `Runtime: ${result.itemRuntimeBatchCleared ? "cleared" : "no existing"} batch runtime entry, ${result.threadRuntimeEntriesTouched} thread runtime entr${result.threadRuntimeEntriesTouched === 1 ? "y" : "ies"} cleaned.`,
     )
     console.log(
       `Supervision: ${result.supervision.runsTouched} runs updated, ${result.supervision.branchSessionsRemoved} branch sessions removed, ${result.supervision.reviewedBatchesRemoved} reviews removed, ${result.supervision.stageStopsRemoved} stage stops removed, active run ${result.supervision.activeRunCleared ? "cleared" : "unchanged"}, current branch ${result.supervision.currentBranchCleared ? "cleared" : "unchanged"}.`,

@@ -3,17 +3,16 @@
  * work - Unified CLI for workstream management
  *
  * Subcommands:
- *   create      - Create a new workstream
+ *   create      - Create a draft workstream container
  *   status      - Show workstream progress
- *   update      - Update a task's status
+ *   update      - Update a thread status
  *   complete    - Mark a workstream as complete
  *   index       - Update workstream metadata fields
- *   read        - Read task details
- *   list        - List tasks in a workstream
- *   add-task    - Add a task to a workstream
- *   delete      - Delete workstreams, stages, threads, or tasks
- *   review      - Review plan or tasks
- *   validate    - Validate PLAN.md structure
+ *   read        - Read thread details
+ *   list        - List threads in a workstream
+ *   delete      - Delete workstreams, stages, batches, or threads
+ *   review      - Review plan or commits
+ *   validate    - Validate plan or requirements
  *   check       - Find unchecked items in plan
  *   preview     - Show PLAN.md structure
  *   init        - Initialize work/ directory with default config files

@@ -3,19 +3,22 @@
  */
 
 import {
-  queryTaskByIdForWorkstream,
+  queryExecutionItemsForWorkstream,
   queryThreadsForWorkstream,
+  type ExecutionItemQueryRecord,
+  type HierarchyThreadQueryRecord,
 } from "./hierarchy-query.ts"
-import { getTasks } from "./tasks.ts"
-import type { Task } from "./types.ts"
 
 export interface ContinueContext {
-  activeTask?: Task
-  nextTask?: Task
-  lastCompletedTask?: Task
+  activeThread?: HierarchyThreadQueryRecord
+  nextThread?: HierarchyThreadQueryRecord
+  lastCompletedThread?: HierarchyThreadQueryRecord
+  activeItem?: ExecutionItemQueryRecord
+  nextItem?: ExecutionItemQueryRecord
+  lastCompletedItem?: ExecutionItemQueryRecord
   streamId: string
   streamName: string
-  assignedAgent?: string // Agent assigned to active task (from task.assigned_agent)
+  assignedAgent?: string
 }
 
 export function getContinueContext(
@@ -23,58 +26,30 @@ export function getContinueContext(
   streamId: string,
   streamName: string,
 ): ContinueContext {
-  let threadViews: ReturnType<typeof queryThreadsForWorkstream> = []
-  try {
-    threadViews = queryThreadsForWorkstream(repoRoot, streamId)
-  } catch {
-    threadViews = []
-  }
-  if (threadViews.length > 0) {
-    const activeThread = threadViews.find((thread) => thread.aggregateStatus === "in_progress")
-    const nextThread = threadViews.find((thread) => thread.aggregateStatus === "pending")
-    const lastCompletedThread = [...threadViews]
-      .reverse()
-      .find((thread) => thread.aggregateStatus === "completed")
+  const threadViews = queryThreadsForWorkstream(repoRoot, streamId)
+  const activeThread = threadViews.find((thread) => thread.aggregateStatus === "in_progress")
+  const nextThread = threadViews.find((thread) => thread.aggregateStatus === "pending")
+  const lastCompletedThread = [...threadViews]
+    .reverse()
+    .find((thread) => thread.aggregateStatus === "completed")
 
-    const activeTask =
-      (activeThread?.representativeTaskId
-        ? queryTaskByIdForWorkstream(repoRoot, streamId, activeThread.representativeTaskId)
-        : null) ?? undefined
-    const nextTask =
-      (nextThread?.representativeTaskId
-        ? queryTaskByIdForWorkstream(repoRoot, streamId, nextThread.representativeTaskId)
-        : null) ?? undefined
-    const lastCompletedTask =
-      (lastCompletedThread?.representativeTaskId
-        ? queryTaskByIdForWorkstream(repoRoot, streamId, lastCompletedThread.representativeTaskId)
-        : null) ?? undefined
+  const items = queryExecutionItemsForWorkstream(repoRoot, streamId)
+  const firstItemForThread = (threadId?: string) =>
+    threadId ? items.find((item) => item.threadId === threadId) : undefined
 
-    return {
-      activeTask,
-      nextTask,
-      lastCompletedTask,
-      streamId,
-      streamName,
-      assignedAgent: activeThread?.assignedAgent ?? nextThread?.assignedAgent,
-    }
-  }
-
-  const tasks = getTasks(repoRoot, streamId)
-  const activeTask = tasks.find((t) => t.status === "in_progress")
-  const nextTask = tasks.find((t) => t.status === "pending")
-
-  // Get assigned agent directly from task
-  const targetTask = activeTask || nextTask
-  const assignedAgent = targetTask?.assigned_agent || undefined
+  const activeItem = firstItemForThread(activeThread?.threadId)
+  const nextItem = firstItemForThread(nextThread?.threadId)
+  const lastCompletedItem = firstItemForThread(lastCompletedThread?.threadId)
 
   return {
-    activeTask,
-    nextTask,
-    lastCompletedTask: [...tasks]
-      .reverse()
-      .find((t) => t.status === "completed"),
+    activeThread,
+    nextThread,
+    lastCompletedThread,
+    activeItem,
+    nextItem,
+    lastCompletedItem,
     streamId,
     streamName,
-    assignedAgent,
+    assignedAgent: activeThread?.assignedAgent ?? nextThread?.assignedAgent,
   }
 }

@@ -2,9 +2,9 @@
 
 ## Summary
 
-For research-heavy, architecture-heavy, cleanup-sensitive workstreams, a stage-based structure is better than a single flat workstream with one top-level `REQUIREMENTS.md`, `PLAN.md`, and a monolithic task tracker.
+For research-heavy, architecture-heavy, cleanup-sensitive workstreams, a stage-based structure is better than a single flat workstream with one top-level `REQUIREMENTS.md`, `PLAN.md`, and a monolithic tracker.
 
-The current flat task model loses too much nuance between:
+The current flat execution-tracker model loses too much nuance between:
 
 - research/specification
 - planning
@@ -17,7 +17,7 @@ The biggest losses tend to be:
 - exact negative constraints (`must not remain`, `must not be mounted`, `must not live here`)
 - cross-file consistency requirements
 - distinction between historical context and target implementation surface
-- true serial dependencies hidden inside “parallel” task groups
+- true serial dependencies hidden inside “parallel” groups
 
 ## Core recommendation
 
@@ -26,11 +26,11 @@ Use a hybrid model:
 1. workstream-level docs for global context and cross-stage decisions
 2. stage-level docs for exact acceptance criteria and implementation boundaries
 3. richer execution docs (`WORK.md`) for thread/stage instructions
-4. lighter task/checkpoint items for tracking only
+4. lighter execution items for tracking only
 
 This is better than either:
 
-- many tiny checkbox tasks that try to encode architecture nuance, or
+- many tiny checkbox entries that try to encode architecture nuance, or
 - fully unstructured prose with no trackable execution units
 
 ## Recommended directory structure
@@ -73,7 +73,7 @@ Architecture and migration work often depends on truths like:
 - this route is historical context only, not target surface
 - report ambiguity instead of making a local decision
 
-Those constraints fit poorly into terse task items and belong in a richer stage or thread work doc.
+Those constraints fit poorly into terse execution items and belong in a richer stage or thread work doc.
 
 ### 3. Better supervision and review
 
@@ -89,7 +89,7 @@ Then review can ask:
 - did Stage 2 satisfy Stage 2 requirements?
 - did Stage 2 follow the Stage 2 architecture spec?
 
-instead of reconstructing that intent from a top-level task checklist.
+instead of reconstructing that intent from a top-level checklist.
 
 ### 4. Better resumability
 
@@ -134,11 +134,11 @@ Use `WORK.md` sections or thread-specific work notes for:
 - “do not decide this yourself” rules
 - escalation/report-back rules
 
-## Guidance on tasks
+## Guidance on execution items
 
-### Tasks should become lighter
+### Execution items should become lighter
 
-Task items should primarily:
+Execution items should primarily:
 
 - track status
 - mark sequence
@@ -147,14 +147,14 @@ Task items should primarily:
 
 They should not try to carry all architectural nuance themselves.
 
-### Good use of tasks
+### Good use of execution items
 
 - batch/thread orchestration
 - status tracking
 - sequencing and dependencies
 - supervision checkpoints
 
-### Bad use of tasks
+### Bad use of execution items
 
 - encoding subtle architecture rules
 - encoding large negative constraints
@@ -182,8 +182,8 @@ Best overall model:
 1. **Root workstream docs** define the global problem and cross-stage direction.
 2. **Stage docs** define exactly what this stage must accomplish.
 3. **Stage `WORK.md`** gives detailed execution guidance.
-4. **Tasks/checkpoints** remain minimal and machine-trackable.
-5. **Supervision/review** judges the stage against stage-local requirements/specs, not only top-level tasks.
+4. **Execution items/checkpoints** remain minimal and machine-trackable.
+5. **Supervision/review** judges the stage against stage-local requirements/specs, not only top-level checklists.
 
 ## Specific lessons from supervision-heavy architecture work
 
@@ -195,7 +195,7 @@ The most common drift patterns were:
 4. historical context is confused with target implementation
 5. hidden serial dependencies are mistaken for parallel work
 
-Stage-local structure plus richer `WORK.md` guidance addresses all five better than a flat top-level task list.
+Stage-local structure plus richer `WORK.md` guidance addresses all five better than a flat top-level checklist.
 
 ## Bottom line
 
@@ -203,7 +203,7 @@ For complex workstreams, the best model is:
 
 - structured stages and threads
 - rich stage-local execution docs
-- lighter tracking tasks
+- lighter tracking items
 - explicit stage-local requirements and plan files
 
 This preserves nuance much better without giving up orchestration.

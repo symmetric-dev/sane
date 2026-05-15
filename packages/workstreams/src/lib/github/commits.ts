@@ -12,7 +12,7 @@ import {
 import {
   buildPlanApprovalCommitMessage,
   buildStageApprovalCommitMessage,
-  buildTasksApprovalCommitMessage,
+  buildExecutionApprovalCommitMessage,
 } from "../git/auto-commit-message.ts"
 import {
   executeGitAutoCommit,
@@ -30,7 +30,7 @@ function createApprovalAutoCommit(
 
 export type StageCommitResult = GitAutoCommitResult
 export type PlanCommitResult = GitAutoCommitResult
-export type TasksCommitResult = GitAutoCommitResult
+export type ExecutionCommitResult = GitAutoCommitResult
 
 /**
  * Format a commit message for plan approval.
@@ -71,28 +71,28 @@ export function createPlanApprovalCommit(
 }
 
 /**
- * Format a commit message for tasks approval.
+ * Format a commit message for execution approval.
  */
-export function formatTasksCommitMessage(
+export function formatExecutionCommitMessage(
   streamId: string,
   streamName: string,
-  taskCount: number
+  itemCount: number
 ): { title: string; body: string } {
-  return buildTasksApprovalCommitMessage({
+  return buildExecutionApprovalCommitMessage({
     streamId,
     streamName,
-    taskCount,
+    itemCount,
   })
 }
 
 /**
- * Create a commit for tasks approval.
+ * Create a commit for execution approval.
  */
-export function createTasksApprovalCommit(
+export function createExecutionApprovalCommit(
   repoRoot: string,
   stream: StreamMetadata,
-  taskCount: number
-): TasksCommitResult {
+  itemCount: number
+): ExecutionCommitResult {
   const namingStatus = getPlanApprovalCommitNamingStatus(repoRoot, stream)
   if (!namingStatus.trustworthy) {
     return {
@@ -106,7 +106,7 @@ export function createTasksApprovalCommit(
   }
 
   const { streamName } = resolvePlanNames(repoRoot, stream)
-  const message = formatTasksCommitMessage(stream.id, streamName, taskCount)
+  const message = formatExecutionCommitMessage(stream.id, streamName, itemCount)
 
   return createApprovalAutoCommit(repoRoot, message)
 }

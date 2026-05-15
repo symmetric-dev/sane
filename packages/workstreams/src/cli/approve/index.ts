@@ -2,18 +2,17 @@
  * CLI: Approve Workstream Gates
  *
  * Approve or revoke workstream approvals for plan or revisions.
- * Plan approval also initializes execution state needed by downstream commands.
+ * Plan approval also initializes the execution hierarchy needed by downstream commands.
  */
 
 import { getRepoRoot } from "../../lib/repo.ts"
 import { loadIndex, getResolvedStream } from "../../lib/index.ts"
-import { queryFullApprovalStatus } from "../../lib/approval.ts"
+import { queryApprovalStatus } from "../../lib/approval.ts"
 import { canExecuteCommand, getRoleDenialMessage } from "../../lib/roles.ts"
 
 import type { ApproveTarget, ApproveCliArgs } from "./utils.ts"
 import { formatApprovalIcon } from "./utils.ts"
 import { handlePlanApproval } from "./plan.ts"
-import { handleTasksApproval } from "./tasks.ts"
 import { handleRevisionApproval } from "./revision.ts"
 
 function printHelp(): void {
@@ -25,11 +24,11 @@ Requires: USER role
 Usage:
   work approve plan [--stream <id>] [--force]
   work approve revision [--stream <id>]
-  work approve [--stream <id>]  # Show status of all approvals
+  work approve [--stream <id>]  # Show plan approval status
 
 Targets:
   plan      Approve the staged planning structure (requires stages; blocks on open questions)
-  revision  Approve revised staged planning structure with new stages (refreshes execution state)
+  revision  Approve revised staged planning structure with new stages (refreshes execution hierarchy)
 
 Options:
   --repo-root, -r  Repository root (auto-detected if omitted)
@@ -43,14 +42,14 @@ Options:
   --help, -h       Show this help message
 
 Description:
-  Workstreams require 2 approvals before starting:
-  1. Plan approval - validates the staged planning structure from root PLAN.md or stage-local stages/*/PLAN.md, requires at least one stage, no open questions
-  2. Execution-state approval - seeded automatically during plan approval for compatibility/runtime flows
+  Workstreams require plan approval before starting.
+  Plan approval validates the staged planning structure from root PLAN.md or
+  stage-local stages/*/PLAN.md, requires at least one stage, and blocks on
+  open questions unless --force is used.
 
-  Run 'work start' after both approvals to create the GitHub branch and issues.
+  Run 'work start' after approval to create the GitHub branch and issues.
 
-  In 0.9.0, plan approval also initializes execution state directly from the plan structure.
-  The old TASKS.md / 'work approve tasks' workflow was removed.
+  Plan approval also initializes the execution hierarchy directly from the plan structure.
 
   Draft plans created with 'work create' must be scaffolded with
   'work plan create --stages <n>' before plan approval can succeed.
@@ -74,7 +73,8 @@ Examples:
 }
 
 function parseCliArgs(argv: string[]): ApproveCliArgs | null {
-  const args = argv.slice(2)
+  const rawArgs = argv.slice(2)
+  const args = rawArgs[0] === "approve" ? rawArgs.slice(1) : rawArgs
   const parsed: ApproveCliArgs = { revoke: false, force: false, json: false }
 
   for (let i = 0; i < args.length; i++) {
@@ -82,7 +82,7 @@ function parseCliArgs(argv: string[]): ApproveCliArgs | null {
     const next = args[i + 1]
 
     // Check for target subcommand
-    if (arg === "plan" || arg === "tasks" || arg === "revision") {
+    if (arg === "plan" || arg === "revision") {
       parsed.target = arg as ApproveTarget
       continue
     }
@@ -166,6 +166,10 @@ function parseCliArgs(argv: string[]): ApproveCliArgs | null {
       case "-h":
         printHelp()
         process.exit(0)
+
+      default:
+        console.error(`Error: Unknown argument: ${arg}`)
+        return null
     }
   }
 
@@ -217,16 +221,17 @@ export async function main(argv: string[] = process.argv): Promise<void> {
       cliArgs.target = "plan"
       // proceed to switch
     } else {
-      const fullStatus = queryFullApprovalStatus(repoRoot, stream.id, stream)
+      const planStatus = queryApprovalStatus(repoRoot, stream.id, stream)
 
       if (cliArgs.json) {
         console.log(
           JSON.stringify(
-            {
-              streamId: stream.id,
-              streamName: stream.name,
-              ...fullStatus,
-            },
+              {
+                streamId: stream.id,
+                streamName: stream.name,
+                plan: planStatus,
+                approved: planStatus === "approved",
+              },
             null,
             2
           )
@@ -234,16 +239,13 @@ export async function main(argv: string[] = process.argv): Promise<void> {
       } else {
         console.log(`Approval Status for "${stream.name}" (${stream.id})\n`)
         console.log(
-          `  ${formatApprovalIcon(fullStatus.plan)} Plan:    ${fullStatus.plan}`
-        )
-        console.log(
-          `  ${formatApprovalIcon(fullStatus.tasks)} Tasks:   ${fullStatus.tasks}`
+          `  ${formatApprovalIcon(planStatus)} Plan: ${planStatus}`
         )
         console.log("")
-        if (fullStatus.fullyApproved) {
-          console.log("All approvals complete. Run 'work start' to begin.")
+        if (planStatus === "approved") {
+          console.log("Plan approved. Run 'work start' to begin.")
         } else {
-          console.log("Pending approvals. Run 'work approve <target>' to approve.")
+          console.log("Plan approval pending. Run 'work approve plan' to approve.")
         }
       }
       return
@@ -254,9 +256,6 @@ export async function main(argv: string[] = process.argv): Promise<void> {
   switch (cliArgs.target) {
     case "plan":
       await handlePlanApproval(repoRoot, stream, cliArgs)
-      break
-    case "tasks":
-      await handleTasksApproval(repoRoot, stream, cliArgs)
       break
     case "revision":
       handleRevisionApproval(repoRoot, stream, cliArgs)

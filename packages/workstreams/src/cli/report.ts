@@ -22,15 +22,15 @@ import {
 import {
   evaluateStream,
   evaluateAllStreams,
-  filterTasks,
-  filterTasksByStatus,
+  filterExecutionItems,
+  filterExecutionItemsByStatus,
   analyzeBlockers,
   formatMetricsOutput,
   formatBlockerAnalysis,
   aggregateMetrics,
 } from "../lib/metrics.ts"
-import { getTasks } from "../lib/tasks.ts"
-import type { TaskStatus } from "../lib/types.ts"
+import { listThreadExecutionItems } from "../lib/thread-execution.ts"
+import type { ExecutionStatus } from "../lib/types.ts"
 
 interface ReportCliArgs {
   subcommand?: "init" | "validate" | "metrics"
@@ -73,10 +73,10 @@ Options:
   --help, -h       Show this help message
 
 Metrics Options (for 'work report metrics'):
-  --filter <pattern>   Filter tasks by name pattern
+  --filter <pattern>   Filter execution items by name pattern
   --regex              Treat filter as regex pattern
   --filter-status <s>  Filter by status (comma-separated: pending,blocked)
-  --blockers           Show blocked task analysis
+  --blockers           Show blocked item analysis
   --compact            Single-line summary per workstream
 
 Examples:
@@ -313,7 +313,7 @@ function handleValidate(repoRoot: string, streamId: string): void {
   }
 }
 
-function getStatusIcon(status: TaskStatus): string {
+function getStatusIcon(status: ExecutionStatus): string {
   switch (status) {
     case "completed":
       return "[x]"
@@ -396,18 +396,18 @@ function handleMetrics(repoRoot: string, cliArgs: ReportCliArgs): void {
 
   // Handle filters
   if (cliArgs.filter || cliArgs.filterStatus) {
-    let tasks = getTasks(repoRoot, stream.id)
+    let items = listThreadExecutionItems(repoRoot, stream.id)
 
     // Apply status filter first
     if (cliArgs.filterStatus) {
-      const statuses = cliArgs.filterStatus.split(",") as TaskStatus[]
-      tasks = filterTasksByStatus(tasks, statuses)
+      const statuses = cliArgs.filterStatus.split(",") as ExecutionStatus[]
+      items = filterExecutionItemsByStatus(items, statuses)
     }
 
     // Apply name filter
     if (cliArgs.filter) {
-      const result = filterTasks(tasks, cliArgs.filter, cliArgs.regex)
-      tasks = result.matchingTasks
+      const result = filterExecutionItems(items, cliArgs.filter, cliArgs.regex)
+      items = result.matchingItems
 
       if (cliArgs.json) {
         console.log(JSON.stringify(result, null, 2))
@@ -415,27 +415,27 @@ function handleMetrics(repoRoot: string, cliArgs: ReportCliArgs): void {
       }
 
       console.log(
-        `Found ${result.matchCount} of ${result.totalTasks} tasks matching "${cliArgs.filter}":`
+        `Found ${result.matchCount} of ${result.totalItems} execution items matching "${cliArgs.filter}":`
       )
       console.log("")
-      for (const task of tasks) {
-        const statusIcon = getStatusIcon(task.status)
-        console.log(`  ${statusIcon} [${task.id}] ${task.name}`)
+      for (const item of items) {
+        const statusIcon = getStatusIcon(item.status)
+        console.log(`  ${statusIcon} [${item.id}] ${item.name}`)
       }
       return
     }
 
     // Status filter only
     if (cliArgs.json) {
-      console.log(JSON.stringify({ tasks, count: tasks.length }, null, 2))
+      console.log(JSON.stringify({ items, count: items.length }, null, 2))
       return
     }
 
-    console.log(`Found ${tasks.length} tasks with status: ${cliArgs.filterStatus}`)
+    console.log(`Found ${items.length} execution items with status: ${cliArgs.filterStatus}`)
     console.log("")
-    for (const task of tasks) {
-      const statusIcon = getStatusIcon(task.status)
-      console.log(`  ${statusIcon} [${task.id}] ${task.name}`)
+    for (const item of items) {
+      const statusIcon = getStatusIcon(item.status)
+      console.log(`  ${statusIcon} [${item.id}] ${item.name}`)
     }
     return
   }

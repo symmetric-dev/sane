@@ -15,7 +15,7 @@ describe("dashboard ui route", () => {
 
     expect(response.status).toBe(200)
     expect(html).toContain("Current workstream")
-    expect(html).toContain("tasks.json")
+    expect(html).toContain("structured runtime")
     expect(html).toContain('role="tablist"')
     expect(html).toContain("Status Overview")
     expect(html).toContain("Work tree")
@@ -23,7 +23,7 @@ describe("dashboard ui route", () => {
     expect(html).toContain("Stage level")
     expect(html).toContain("Batch level")
     expect(html).toContain("Thread level")
-    expect(html).toContain("Task level")
+    expect(html).toContain("Item level")
     expect(html).not.toContain("Observability Notes")
     expect(html).not.toContain("Tmux session metadata")
     expect(html).toContain("canonical status remains primary")

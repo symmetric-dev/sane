@@ -1,7 +1,7 @@
 import { spawn } from "child_process"
 import { existsSync, readFileSync } from "fs"
 import { fileURLToPath } from "url"
-import { getBatchMetadata, readTasksFile } from "./tasks.ts"
+import { getBatchThreadMetadata } from "./thread-execution.ts"
 import {
   cleanupCompletionMarkers,
   cleanupResultFiles,
@@ -20,6 +20,7 @@ import {
   writeBatchStatusLocked,
 } from "./batch-status.ts"
 import { parseBatchId } from "./cli-utils.ts"
+import { queryThreadByIdForWorkstream, queryThreadsForWorkstream } from "./hierarchy-query.ts"
 import {
   getCompletionMarkerPath,
   getRunResultPath,
@@ -29,14 +30,11 @@ import {
   getThreadMetadata,
 } from "./threads.ts"
 import { applyFinalizationCompletions, type FinalizationCompletion } from "./multi-finalization.ts"
-import { projectLegacyRuntimeCompatibilityArtifactsSync } from "./storage-adapter.ts"
 import { sessionExists } from "./tmux.ts"
-import type { TasksFile, TaskStatus } from "./types.ts"
 
 interface BatchThreadSeed {
   threadId: string
   threadName: string
-  firstTaskId: string
 }
 
 export interface SyncBatchStatusOptions {
@@ -67,34 +65,13 @@ function getBatchThreadSeeds(
   streamId: string,
   batchId: string,
 ): BatchThreadSeed[] {
-  const tasksFile = readTasksFile(repoRoot, streamId)
-  if (!tasksFile) {
-    throw new Error(`No tasks found for stream ${streamId}`)
-  }
-
-  const prefix = `${batchId}.`
-  const threads = new Map<string, BatchThreadSeed>()
-
-  for (const task of tasksFile.tasks) {
-    if (!task.id.startsWith(prefix)) continue
-
-    const parts = task.id.split(".")
-    if (parts.length !== 4) continue
-    const threadId = `${parts[0]}.${parts[1]}.${parts[2]}`
-
-    const existing = threads.get(threadId)
-    if (!existing || task.id.localeCompare(existing.firstTaskId) < 0) {
-      threads.set(threadId, {
-        threadId,
-        threadName: task.thread_name,
-        firstTaskId: task.id,
-      })
-    }
-  }
-
-  return Array.from(threads.values()).sort((a, b) =>
-    a.threadId.localeCompare(b.threadId),
-  )
+  return queryThreadsForWorkstream(repoRoot, streamId)
+    .filter((thread) => thread.batchId === batchId)
+    .map((thread) => ({
+      threadId: thread.threadId,
+      threadName: thread.threadName,
+    }))
+    .sort((a, b) => a.threadId.localeCompare(b.threadId))
 }
 
 function finalizeCompletedThreadArtifacts(markerDetectedAt: string): Partial<BatchStatusThread> {
@@ -134,7 +111,6 @@ interface GhostBatchThreadRecovery {
   recoveryNote: string
 }
 
-const CANONICAL_COMPLETED_TASK_STATUSES = new Set<TaskStatus>(["completed", "cancelled"])
 const CANONICAL_RUN_START_TOLERANCE_MS = 60_000
 
 function readStoredRunResult(streamId: string, threadId: string): StoredRunResult | null {
@@ -155,16 +131,9 @@ function readStoredRunResult(streamId: string, threadId: string): StoredRunResul
   return null
 }
 
-function getThreadTasks(tasksFile: TasksFile, threadId: string) {
-  return tasksFile.tasks.filter((task) => task.id.startsWith(`${threadId}.`))
-}
-
-function areThreadTasksCanonicallyCompleted(tasksFile: TasksFile, threadId: string): boolean {
-  const tasks = getThreadTasks(tasksFile, threadId)
-  return (
-    tasks.length > 0 &&
-    tasks.every((task) => CANONICAL_COMPLETED_TASK_STATUSES.has(task.status))
-  )
+function areThreadTasksCanonicallyCompleted(repoRoot: string, streamId: string, threadId: string): boolean {
+  const thread = queryThreadByIdForWorkstream(repoRoot, streamId, threadId)
+  return thread?.aggregateStatus === "completed"
 }
 
 function startedAtOrAfterRunStart(startedAt: string | undefined, runStartedAt: string | undefined): boolean {
@@ -179,7 +148,8 @@ function startedAtOrAfterRunStart(startedAt: string | undefined, runStartedAt: s
 }
 
 function shouldFinalizeThreadFromCanonicalState(args: {
-  tasksFile: TasksFile
+  repoRoot: string
+  streamId: string
   threadId: string
   markerExists: boolean
   storedResult?: StoredRunResult | null
@@ -207,7 +177,7 @@ function shouldFinalizeThreadFromCanonicalState(args: {
     return false
   }
 
-  return areThreadTasksCanonicallyCompleted(args.tasksFile, args.threadId)
+  return areThreadTasksCanonicallyCompleted(args.repoRoot, args.streamId, args.threadId)
 }
 
 function deriveThreadStatus(args: {
@@ -267,7 +237,6 @@ async function reconcileGhostBatchRun(args: {
   batchId: string
   existing: BatchStatusFile
   threadSeeds: BatchThreadSeed[]
-  tasksFile: TasksFile
 }): Promise<BatchStatusFile> {
   const now = new Date().toISOString()
   const previousThreads = new Map(
@@ -289,7 +258,8 @@ async function reconcileGhostBatchRun(args: {
       currentSessionId: threadMeta?.currentSessionId,
     })
     const canonicalCompletion = shouldFinalizeThreadFromCanonicalState({
-      tasksFile: args.tasksFile,
+      repoRoot: args.repoRoot,
+      streamId: args.streamId,
       threadId: seed.threadId,
       markerExists,
       storedResult,
@@ -389,7 +359,6 @@ async function reconcileGhostBatchRun(args: {
     return {
       threadId: seed.threadId,
       threadName: seed.threadName,
-      firstTaskId: seed.firstTaskId,
       status: recovery?.status ?? "failed",
       startedAt: latestSession?.startedAt ?? previous?.startedAt ?? args.existing.startedAt,
       updatedAt: now,
@@ -430,10 +399,6 @@ async function reconcileGhostBatchRun(args: {
     args.streamId,
     args.threadSeeds.map((thread) => thread.threadId),
   )
-  projectLegacyRuntimeCompatibilityArtifactsSync({
-    repoRoot: args.repoRoot,
-    streamId: args.streamId,
-  })
   return batchStatus
 }
 
@@ -442,14 +407,13 @@ async function reconcileTerminalFailedBatchFromCanonicalState(args: {
   streamId: string
   existing: BatchStatusFile
   threadSeeds: BatchThreadSeed[]
-  tasksFile: TasksFile
 }): Promise<BatchStatusFile> {
   if (args.existing.status !== "failed") {
     return args.existing
   }
 
   const allThreadsCanonicallyCompleted = args.threadSeeds.every((seed) =>
-    areThreadTasksCanonicallyCompleted(args.tasksFile, seed.threadId),
+    areThreadTasksCanonicallyCompleted(args.repoRoot, args.streamId, seed.threadId),
   )
   if (!allThreadsCanonicallyCompleted) {
     return args.existing
@@ -468,7 +432,6 @@ async function reconcileTerminalFailedBatchFromCanonicalState(args: {
     return {
       threadId: seed.threadId,
       threadName: seed.threadName,
-      firstTaskId: seed.firstTaskId,
       status: "completed",
       startedAt: latestSession?.startedAt ?? previous?.startedAt ?? args.existing.startedAt,
       updatedAt: now,
@@ -478,7 +441,7 @@ async function reconcileTerminalFailedBatchFromCanonicalState(args: {
       ...(recoveredFromFailure
         ? {
             recoveryNote:
-              "completed: restored from canonical task state after terminal runtime failure; all thread tasks are completed.",
+              "completed: restored from canonical execution state after terminal runtime failure; all thread items are completed.",
           }
         : previous?.recoveryNote
           ? { recoveryNote: previous.recoveryNote }
@@ -496,10 +459,6 @@ async function reconcileTerminalFailedBatchFromCanonicalState(args: {
   }
 
   await writeBatchStatusLocked(args.repoRoot, args.streamId, batchStatus)
-  projectLegacyRuntimeCompatibilityArtifactsSync({
-    repoRoot: args.repoRoot,
-    streamId: args.streamId,
-  })
   return batchStatus
 }
 
@@ -524,10 +483,6 @@ export async function reconcileBatchStatusRunIfNeeded(
     options.streamId,
     options.batchId,
   )
-  const tasksFile = readTasksFile(options.repoRoot, options.streamId)
-  if (!tasksFile) {
-    throw new Error(`No tasks found for stream ${options.streamId}`)
-  }
 
   return reconcileGhostBatchRun({
     repoRoot: options.repoRoot,
@@ -535,7 +490,6 @@ export async function reconcileBatchStatusRunIfNeeded(
     batchId: options.batchId,
     existing,
     threadSeeds,
-    tasksFile,
   })
 }
 
@@ -575,7 +529,6 @@ async function finalizeCanonicalThreadState(
   repoRoot: string,
   streamId: string,
   threadSeeds: BatchThreadSeed[],
-  tasksFile: TasksFile,
   workTmuxSessionName?: string,
   runStartedAt?: string,
 ): Promise<void> {
@@ -595,7 +548,8 @@ async function finalizeCanonicalThreadState(
       (latestSession?.status === "running" ? latestSession.sessionId : undefined)
 
     const finalizeFromCanonicalState = shouldFinalizeThreadFromCanonicalState({
-      tasksFile,
+      repoRoot,
+      streamId,
       threadId: seed.threadId,
       markerExists,
       storedResult,
@@ -720,12 +674,7 @@ export async function syncBatchStatus(
     throw new Error(`No tasks found for batch ${batchId} in stream ${streamId}`)
   }
 
-  const tasksFile = readTasksFile(repoRoot, streamId)
-  if (!tasksFile) {
-    throw new Error(`No tasks found for stream ${streamId}`)
-  }
-
-  const batchMeta = getBatchMetadata(
+  const batchMeta = getBatchThreadMetadata(
     repoRoot,
     streamId,
     batchParsed.stage,
@@ -744,7 +693,6 @@ export async function syncBatchStatus(
       streamId,
       existing,
       threadSeeds,
-      tasksFile,
     })
   }
   const now = new Date().toISOString()
@@ -752,7 +700,6 @@ export async function syncBatchStatus(
     repoRoot,
     streamId,
     threadSeeds,
-    tasksFile,
     existing?.tmuxSessionName,
     existing?.startedAt,
   )
@@ -782,7 +729,6 @@ export async function syncBatchStatus(
     let thread: BatchStatusThread = {
       threadId: seed.threadId,
       threadName: seed.threadName,
-      firstTaskId: seed.firstTaskId,
       status: deriveThreadStatus({
         markerExists,
         storedResult,
@@ -826,7 +772,6 @@ export async function syncBatchStatus(
       repoRoot,
       streamId,
       threadSeeds,
-      tasksFile,
       existing?.tmuxSessionName,
       existing?.startedAt,
     )
@@ -852,8 +797,6 @@ export async function syncBatchStatus(
     cleanupResultFiles(streamId, threadIds)
     cleanupSessionFiles(streamId, threadIds)
   }
-
-  projectLegacyRuntimeCompatibilityArtifactsSync({ repoRoot, streamId })
 
   return batchStatus
 }

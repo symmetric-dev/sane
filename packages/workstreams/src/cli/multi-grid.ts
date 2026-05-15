@@ -9,10 +9,9 @@ import { join } from "path"
 import { readFileSync } from "fs"
 import readline from "readline"
 import { getRepoRoot, getWorkDir } from "../lib/repo.ts"
-import { readTasksFile, parseTaskId } from "../lib/tasks.ts"
+import { queryThreadsForWorkstream } from "../lib/hierarchy-query.ts"
 import { loadIndex, getResolvedStream } from "../lib/index.ts"
 import { parseStreamDocument } from "../lib/stream-parser.ts"
-import type { Task } from "../lib/types.ts"
 import {
     respawnPane,
     listPaneIds,
@@ -78,14 +77,14 @@ function parseArgs(argv: string[]): GridArgs | null {
 }
 
 /**
- * Get thread status from tasks.json
+ * Get thread status from canonical hierarchy state
  */
-function getThreadStatus(tasks: Task[], threadId: string): ThreadInfo['status'] {
-    const threadTasks = tasks.filter(t => t.id.startsWith(threadId))
-    if (threadTasks.length === 0) return 'pending'
-    if (threadTasks.some(t => t.status === 'blocked')) return 'failed'
-    if (threadTasks.some(t => t.status === 'in_progress')) return 'running'
-    if (threadTasks.every(t => t.status === 'completed')) return 'completed'
+function getThreadStatus(repoRoot: string, streamId: string, threadId: string): ThreadInfo['status'] {
+    const thread = queryThreadsForWorkstream(repoRoot, streamId).find((candidate) => candidate.threadId === threadId)
+    if (!thread) return 'pending'
+    if (thread.aggregateStatus === 'blocked') return 'failed'
+    if (thread.aggregateStatus === 'in_progress') return 'running'
+    if (thread.aggregateStatus === 'completed') return 'completed'
     return 'pending'
 }
 
@@ -223,12 +222,9 @@ class GridController {
 
     private updateStatus() {
         try {
-            const tasksFile = readTasksFile(this.repoRoot, this.streamId)
-            if (!tasksFile) return
-
             let changed = false
             for (const thread of this.threads) {
-                const newStatus = getThreadStatus(tasksFile.tasks, thread.id)
+                const newStatus = getThreadStatus(this.repoRoot, this.streamId, thread.id)
                 if (newStatus !== thread.status) {
                     thread.status = newStatus
                     changed = true

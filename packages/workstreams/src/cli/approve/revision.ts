@@ -6,14 +6,13 @@
 
 import { join } from "path"
 
-import { approveTasks, checkOpenQuestions } from "../../lib/approval.ts"
-import { detectNewStages } from "../../lib/tasks-md.ts"
+import { checkOpenQuestions } from "../../lib/approval.ts"
+import { loadWorkstreamHierarchyQueryResult } from "../../lib/hierarchy-query.ts"
 import { parseStreamDocument } from "../../lib/stream-parser.ts"
 import { getWorkDir } from "../../lib/repo.ts"
 import { getResolvedStream } from "../../lib/index.ts"
-import { getTasks } from "../../lib/tasks.ts"
 import { generateAllPrompts } from "../../lib/prompts.ts"
-import { syncCompatibilityTasksFromPlan } from "../../lib/task-compatibility.ts"
+import { initializeCanonicalExecutionStateFromPlan } from "../../lib/execution-state.ts"
 import { loadWorkstreamPlan } from "../../lib/consolidate.ts"
 
 import type { ApproveCliArgs } from "./utils.ts"
@@ -21,8 +20,8 @@ import type { ApproveCliArgs } from "./utils.ts"
 /**
  * Handle revision approval workflow
  *
- * Detects new stages in PLAN.md that don't have corresponding compatibility tasks,
- * validates them, and refreshes execution state directly from the revised plan.
+ * Detects new stages in PLAN.md that don't have corresponding canonical hierarchy stages,
+ * validates them, and refreshes the execution hierarchy directly from the revised plan.
  */
 export function handleRevisionApproval(
   repoRoot: string,
@@ -48,11 +47,15 @@ export function handleRevisionApproval(
     process.exit(1)
   }
 
-  // Step 2: Load existing tasks from tasks.json
-  const existingTasks = getTasks(repoRoot, stream.id)
+  // Step 2: Load existing canonical hierarchy state
+  const existingHierarchy = loadWorkstreamHierarchyQueryResult(repoRoot, stream.id)
+  const existingStageIds = new Set(existingHierarchy.stages.map((stage) => stage.number))
 
   // Step 3: Call detectNewStages() and error if no new stages found
-  const newStageNumbers = detectNewStages(doc, existingTasks)
+  const newStageNumbers = doc.stages
+    .map((stage) => stage.id)
+    .filter((stageId) => !existingStageIds.has(stageId))
+    .sort((left, right) => left - right)
 
   if (newStageNumbers.length === 0) {
     if (cliArgs.json) {
@@ -123,12 +126,11 @@ export function handleRevisionApproval(
     }
   }
 
-  // Step 5: Refresh compatibility execution state from the revised plan
-  const tasks = syncCompatibilityTasksFromPlan(repoRoot, stream.id, doc)
-  approveTasks(repoRoot, stream.id)
+  // Step 5: Refresh the execution hierarchy from the revised plan
+  const threadCount = initializeCanonicalExecutionStateFromPlan(repoRoot, stream.id, doc)
   const promptsResult = generateAllPrompts(repoRoot, stream.id)
 
-  // Step 6: Count new compatibility tasks
+  // Step 6: Count new threads introduced by the revision
   let newPlaceholderCount = 0
   const newStageSet = new Set(newStageNumbers)
 
@@ -149,10 +151,10 @@ export function handleRevisionApproval(
           target: "revision",
           streamId: stream.id,
           streamName: stream.name,
-          existingTaskCount: existingTasks.length,
+          existingStageCount: existingHierarchy.stages.length,
           newStageCount: newStageNumbers.length,
-          newPlaceholderCount,
-          totalTaskCount: tasks.length,
+          newThreadCount: newPlaceholderCount,
+          totalThreadCount: threadCount,
           newStages: newStageNumbers,
           promptsGenerated: promptsResult.generatedFiles.length,
           promptThreadCount: promptsResult.totalThreads,
@@ -164,7 +166,7 @@ export function handleRevisionApproval(
     )
   } else {
     console.log(
-      `Initialized execution state for ${newPlaceholderCount} new thread${newPlaceholderCount === 1 ? "" : "s"} (${tasks.length} compatibility tasks total)`
+      `Initialized execution hierarchy for ${newPlaceholderCount} new thread${newPlaceholderCount === 1 ? "" : "s"} (${threadCount} threads total)`
     )
     console.log("")
     console.log(

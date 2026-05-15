@@ -22,24 +22,24 @@ import {
   getRuntimeSummaryProjection,
   getWorkstreamStatusSnapshot,
 } from "../lib/status.ts"
+import { queryExecutionItemsForWorkstream, queryRuntimeSummaryForWorkstream } from "../lib/hierarchy-query.ts"
 import {
   buildWorkstreamTreeSnapshot,
-  filterTasksForBatch,
+  filterExecutionItemsForBatch,
 } from "../lib/tree.ts"
 import {
-  getEffectiveRuntimeSummary,
-  projectRuntimeSummary,
-  readTasksFile,
-} from "../lib/tasks.ts"
+  createRuntimeSummaryFromWorkstreamState,
+  resolveRuntimeSummary,
+} from "../lib/runtime-state.ts"
+import { loadStructuredWorkstreamStateSync } from "../lib/storage-adapter.ts"
 import {
   createCurrentWorkstreamDashboardObservabilitySnapshot,
   createDashboardTmuxObservabilitySnapshot,
   type DashboardTmuxSessionInspector,
 } from "./dashboard-observability.ts"
 import type {
+  ExecutionItem,
   StreamMetadata,
-  Task,
-  TasksFile,
   WorkIndex,
   WorkstreamRuntimeSummary,
   WorkstreamStatusRuntimeEntry,
@@ -53,8 +53,7 @@ import type {
   WorkstreamTreeRuntimeNotice,
   WorkstreamTreeSnapshot,
   WorkstreamTreeStageNode,
-  WorkstreamTreeTaskCounts,
-  WorkstreamTreeTaskNode,
+  WorkstreamTreeItemCounts,
   WorkstreamTreeThreadNode,
 } from "../lib/tree.ts"
 import type {
@@ -148,8 +147,7 @@ export function getResolvedRuntimeSummary(
   streamIdOrName?: string,
 ): WorkstreamRuntimeSummary | undefined {
   const { stream } = resolveWorkstreamReadTarget(repoRoot, streamIdOrName)
-  const tasksFile = readTasksFile(repoRoot, stream.id)
-  return getEffectiveRuntimeSummary(repoRoot, stream.id, tasksFile)
+  return queryRuntimeSummaryForWorkstream(repoRoot, stream.id)
 }
 
 export function getResolvedWorkstreamStatusSnapshot(
@@ -165,20 +163,19 @@ export function getResolvedWorkstreamTreeSnapshot(
   options: ResolvedWorkstreamTreeSnapshotOptions = {},
 ): WorkstreamTreeSnapshot {
   const { stream } = resolveWorkstreamReadTarget(repoRoot, options.streamIdOrName)
-  const tasksFile = readTasksFile(repoRoot, stream.id)
-  const allTasks = tasksFile?.tasks ?? []
-  const runtimeSummary = getEffectiveRuntimeSummary(repoRoot, stream.id, tasksFile)
-  const filteredTasks = options.batchId
-    ? filterTasksForBatch(allTasks, options.batchId)
-    : allTasks
+  const allItems = queryExecutionItemsForWorkstream(repoRoot, stream.id)
+  const runtimeSummary = queryRuntimeSummaryForWorkstream(repoRoot, stream.id)
+  const filteredItems = options.batchId
+    ? filterExecutionItemsForBatch(allItems, options.batchId)
+    : allItems
 
-  if (options.batchId && filteredTasks === null) {
+  if (options.batchId && filteredItems === null) {
     throw new Error(`Invalid batch ID format: "${options.batchId}"`)
   }
 
   return buildWorkstreamTreeSnapshot({
     streamId: stream.id,
-    tasks: filteredTasks ?? allTasks,
+    items: filteredItems ?? allItems,
     runtimeSummary,
     ...(options.batchId ? { batchId: options.batchId } : {}),
   })
@@ -192,11 +189,19 @@ export function getResolvedDashboardTmuxObservabilitySnapshot(
   } = {},
 ): DashboardTmuxObservabilitySnapshot {
   const { stream } = resolveWorkstreamReadTarget(repoRoot, streamIdOrName)
-  const tasksFile = readTasksFile(repoRoot, stream.id)
+  const state = loadStructuredWorkstreamStateSync(repoRoot, stream.id)
 
   return createDashboardTmuxObservabilitySnapshot({
     stream,
-    tasksFile,
+    runtimeState: state
+      ? {
+          version: "1.0.0",
+          last_updated: new Date().toISOString(),
+          threads: state.threadRuntime,
+          batches: Object.fromEntries(state.batchRuns.map((batchRun) => [batchRun.batchId, batchRun])),
+          supervision: state.supervision,
+        }
+      : undefined,
     checkedAt: options.checkedAt,
   })
 }
@@ -209,11 +214,19 @@ export function getResolvedCurrentWorkstreamDashboardObservabilitySnapshot(
   } = {},
 ): CurrentWorkstreamDashboardObservabilitySnapshot {
   const { stream } = resolveWorkstreamReadTarget(repoRoot, streamIdOrName)
-  const tasksFile = readTasksFile(repoRoot, stream.id)
+  const state = loadStructuredWorkstreamStateSync(repoRoot, stream.id)
 
   return createCurrentWorkstreamDashboardObservabilitySnapshot({
     stream,
-    tasksFile,
+    runtimeState: state
+      ? {
+          version: "1.0.0",
+          last_updated: new Date().toISOString(),
+          threads: state.threadRuntime,
+          batches: Object.fromEntries(state.batchRuns.map((batchRun) => [batchRun.batchId, batchRun])),
+          supervision: state.supervision,
+        }
+      : undefined,
     checkedAt: options.checkedAt,
   })
 }
@@ -223,11 +236,10 @@ export {
   createDashboardTmuxObservabilitySnapshot,
   buildWorkstreamTreeSnapshot,
   createWorkstreamStatusSnapshot,
-  getEffectiveRuntimeSummary,
+  resolveRuntimeSummary,
   getRuntimeSummaryEntries,
   getRuntimeSummaryProjection,
   getWorkstreamStatusSnapshot,
-  projectRuntimeSummary,
 }
 
 export type {
@@ -235,8 +247,6 @@ export type {
   DashboardTmuxObservabilitySnapshot,
   DashboardTmuxSessionInspector,
   StreamMetadata,
-  Task,
-  TasksFile,
   WorkIndex,
   WorkstreamRuntimeSummary,
   WorkstreamStatusRuntimeEntry,
@@ -247,7 +257,6 @@ export type {
   WorkstreamTreeRuntimeNotice,
   WorkstreamTreeSnapshot,
   WorkstreamTreeStageNode,
-  WorkstreamTreeTaskCounts,
-  WorkstreamTreeTaskNode,
+  WorkstreamTreeItemCounts,
   WorkstreamTreeThreadNode,
 }

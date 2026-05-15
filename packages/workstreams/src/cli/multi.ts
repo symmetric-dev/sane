@@ -9,14 +9,10 @@
 import { getRepoRoot } from "../lib/repo.ts"
 import { loadIndex, getResolvedStream } from "../lib/index.ts"
 import { loadAgentsConfig } from "../lib/agents-yaml.ts"
-import {
-  readTasksFile,
-  parseTaskId,
-  generateSessionId,
-  startMultipleSessionsLocked,
-  getBatchMetadata,
-} from "../lib/tasks.ts"
-import type { Task, ThreadInfo, ThreadSessionMap } from "../lib/types.ts"
+import { getBatchThreadMetadata } from "../lib/thread-execution.ts"
+import { generateSessionId } from "../lib/session-id.ts"
+import { startMultipleThreadSessionsLocked } from "../lib/threads.ts"
+import type { ThreadInfo, ThreadSessionMap } from "../lib/types.ts"
 import { MAX_THREADS_PER_BATCH } from "../lib/types.ts"
 import type { MultiCliArgs } from "../lib/multi-types.ts"
 import { buildRootAgentLineage } from "../lib/root-agent-branch.ts"
@@ -43,7 +39,7 @@ import {
   type HierarchyThreadQueryRecord,
 } from "../lib/hierarchy-query.ts"
 import {
-  collectThreadInfoFromTasks,
+  collectThreadInfoForBatch,
   buildThreadRunCommand,
   setupTmuxSession,
   setupGridController,
@@ -89,8 +85,7 @@ Optional:
 
 Description:
   Executes all threads in a batch simultaneously in parallel using tmux.
-  Batch/thread discovery prefers canonical thread hierarchy state before
-  falling back to compatibility task grouping.
+  Batch/thread discovery uses canonical thread hierarchy state.
   Each thread runs in its own tmux window with a full opencode TUI.
 
   A shared opencode serve backend is started (unless --no-server) to
@@ -277,49 +272,6 @@ export function buildRootAgentThreadSessionLineage(
   })
 }
 
-/**
- * Find the next incomplete batch based on tasks
- */
-export function findNextIncompleteBatch(tasks: Task[]): string | null {
-  // Group tasks by batch ID "SS.BB"
-  const batches = new Map<string, Task[]>()
-
-  for (const task of tasks) {
-    try {
-      const parsed = parseTaskId(task.id)
-      if (!parsed) continue
-
-      const batchId = `${parsed.stage.toString().padStart(2, "0")}.${parsed.batch.toString().padStart(2, "0")}`
-
-      if (!batches.has(batchId)) {
-        batches.set(batchId, [])
-      }
-      batches.get(batchId)!.push(task)
-    } catch {
-      // Ignore invalid task IDs
-    }
-  }
-
-  // Sort batch IDs to check in order
-  const sortedBatchIds = Array.from(batches.keys()).sort()
-
-  // Find first batch that is not fully complete
-  for (const batchId of sortedBatchIds) {
-    const batchTasks = batches.get(batchId)!
-
-    // Check if all tasks in this batch are completed or cancelled
-    const allDone = batchTasks.every(
-      (t) => t.status === "completed" || t.status === "cancelled",
-    )
-
-    if (!allDone) {
-      return batchId
-    }
-  }
-
-  return null
-}
-
 export function findNextIncompleteBatchFromThreads(
   threads: Pick<HierarchyThreadQueryRecord, "batchId" | "aggregateStatus">[],
 ): string | null {
@@ -502,21 +454,14 @@ export async function main(argv: string[] = process.argv): Promise<void> {
   let batchId = cliArgs.batch
 
   if (cliArgs.continue) {
-    const tasksFile = readTasksFile(repoRoot, stream.id)
-    if (!tasksFile) {
-      console.error(`Error: No tasks found for stream ${stream.id}`)
+    const threadViews = queryThreadsForWorkstream(repoRoot, stream.id)
+    if (threadViews.length === 0) {
+      console.error(`Error: No canonical execution hierarchy found for stream ${stream.id}`)
+      console.error(`\nHint: Run 'work approve plan' to initialize the execution hierarchy for this batch.`)
       process.exit(1)
     }
 
-    let threadViews: ReturnType<typeof queryThreadsForWorkstream> = []
-    try {
-      threadViews = queryThreadsForWorkstream(repoRoot, stream.id)
-    } catch {
-      threadViews = []
-    }
-    const nextBatch =
-      findNextIncompleteBatchFromThreads(threadViews) ??
-      findNextIncompleteBatch(tasksFile.tasks)
+    const nextBatch = findNextIncompleteBatchFromThreads(threadViews)
     if (!nextBatch) {
       console.log("All batches are complete! Nothing to continue.")
       process.exit(0)
@@ -566,8 +511,8 @@ export async function main(argv: string[] = process.argv): Promise<void> {
     process.exit(1)
   }
 
-  // Discover threads from tasks.json
-  const threads = collectThreadInfoFromTasks(
+  // Discover threads from canonical hierarchy state
+  const threads = collectThreadInfoForBatch(
     repoRoot,
     stream.id,
     batchParsed.stage,
@@ -577,9 +522,9 @@ export async function main(argv: string[] = process.argv): Promise<void> {
 
   if (threads.length === 0) {
     console.error(
-      `Error: No tasks found for batch ${batchId} in stream ${stream.id}`,
+      `Error: No threads found for batch ${batchId} in stream ${stream.id}`,
     )
-    console.error(`\nHint: Make sure tasks.json has tasks for this batch.`)
+    console.error(`\nHint: Run 'work approve plan' to initialize the execution hierarchy for this batch.`)
     process.exit(1)
   }
 
@@ -594,13 +539,13 @@ export async function main(argv: string[] = process.argv): Promise<void> {
   }
 
   // Get batch metadata for display
-  const stageName = threads[0]?.stageName || getBatchMetadata(
+  const stageName = threads[0]?.stageName || getBatchThreadMetadata(
     repoRoot,
     stream.id,
     batchParsed.stage,
     batchParsed.batch,
   )?.stageName || `Stage ${batchParsed.stage}`
-  const batchName = threads[0]?.batchName || getBatchMetadata(
+  const batchName = threads[0]?.batchName || getBatchThreadMetadata(
     repoRoot,
     stream.id,
     batchParsed.stage,
@@ -664,11 +609,11 @@ export async function main(argv: string[] = process.argv): Promise<void> {
     thread.sessionId = generateSessionId()
   }
 
-  // Start sessions in tasks.json
+  // Start thread sessions in runtime state
   const sessionsToStart = threads
-    .filter((t) => t.firstTaskId && t.sessionId)
+    .filter((t) => t.sessionId)
     .map((t) => ({
-      taskId: t.firstTaskId!,
+      threadId: t.threadId,
       agentName: t.agentName,
       model: t.models[0]?.model || "unknown",
       sessionId: t.sessionId!,
@@ -678,8 +623,8 @@ export async function main(argv: string[] = process.argv): Promise<void> {
     }))
 
   if (sessionsToStart.length > 0) {
-    console.log(`Starting ${sessionsToStart.length} sessions in tasks.json...`)
-    await startMultipleSessionsLocked(repoRoot, stream.id, sessionsToStart)
+    console.log(`Starting ${sessionsToStart.length} thread session record(s)...`)
+    await startMultipleThreadSessionsLocked(repoRoot, stream.id, sessionsToStart)
   }
 
   // Start opencode serve if needed
@@ -712,7 +657,6 @@ export async function main(argv: string[] = process.argv): Promise<void> {
       threads: threads.map((thread) => ({
         threadId: thread.threadId,
         threadName: thread.threadName,
-        firstTaskId: thread.firstTaskId!,
       })),
     })
 

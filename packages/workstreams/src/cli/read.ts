@@ -1,39 +1,50 @@
 /**
  * CLI: Workstream Read
  *
- * Read thread-first details with compatibility task fallback.
+ * Read thread details.
  */
 
 import { getRepoRoot } from "../lib/repo.ts"
 import { loadIndex, getResolvedStream } from "../lib/index.ts"
 import {
-  queryTaskByIdForWorkstream,
   queryThreadByIdForWorkstream,
   type HierarchyThreadQueryRecord,
 } from "../lib/hierarchy-query.ts"
-import type { Task } from "../lib/types.ts"
 
 interface ReadCliArgs {
   repoRoot?: string
   streamId?: string
   threadId?: string
-  taskId?: string
   json: boolean
+}
+
+function toPublicThreadView(thread: HierarchyThreadQueryRecord) {
+  return {
+    threadId: thread.threadId,
+    stageId: thread.stageId,
+    stageName: thread.stageName,
+    batchId: thread.batchId,
+    batchName: thread.batchName,
+    threadName: thread.threadName,
+    aggregateStatus: thread.aggregateStatus,
+    itemCount: thread.itemCount,
+    ...(thread.assignedAgent ? { assignedAgent: thread.assignedAgent } : {}),
+    ...(thread.breadcrumb ? { breadcrumb: thread.breadcrumb } : {}),
+    ...(thread.report ? { report: thread.report } : {}),
+  }
 }
 
 function printHelp(): void {
   console.log(`
-work read - Read thread or compatibility task details
+work read - Read thread details
 
 Usage:
   work read --thread <thread-id> [--stream <stream-id>]
-  work read --task <task-id> [--stream <stream-id>]
 
 Options:
   --repo-root, -r  Repository root (auto-detected if omitted)
   --stream, -s     Workstream ID or name (uses current if not specified)
-  --thread         Thread ID in format "stage.batch.thread" (e.g., "01.01.02") (primary)
-  --task, -t       Compatibility task ID in format "stage.batch.thread.task" (e.g., "01.01.02.01")
+  --thread         Thread ID in format "stage.batch.thread" (e.g., "01.01.02")
   --json, -j       Output as JSON
   --help, -h       Show this help message
 
@@ -41,13 +52,14 @@ Examples:
   # Read thread 01.01.02 (uses current workstream)
   work read --thread "01.01.02"
 
-  # Read compatibility task from specific workstream
-  work read --stream "001-my-stream" --task "01.01.02.01"
+  # Read a specific thread from a specific workstream
+  work read --stream "001-my-stream" --thread "01.01.02"
 `)
 }
 
 function parseCliArgs(argv: string[]): ReadCliArgs | null {
-  const args = argv.slice(2)
+  const rawArgs = argv.slice(2)
+  const args = rawArgs[0] === "read" ? rawArgs.slice(1) : rawArgs
   const parsed: ReadCliArgs = { json: false }
 
   for (let i = 0; i < args.length; i++) {
@@ -86,16 +98,6 @@ function parseCliArgs(argv: string[]): ReadCliArgs | null {
         i++
         break
 
-      case "--task":
-      case "-t":
-        if (!next) {
-          console.error("Error: --task requires a value")
-          return null
-        }
-        parsed.taskId = next
-        i++
-        break
-
       case "--json":
       case "-j":
         parsed.json = true
@@ -105,22 +107,14 @@ function parseCliArgs(argv: string[]): ReadCliArgs | null {
       case "-h":
         printHelp()
         process.exit(0)
+
+      default:
+        console.error(`Error: Unknown argument: ${arg}`)
+        return null
     }
   }
 
   return parsed
-}
-
-function formatTask(task: Task): string {
-  const lines: string[] = []
-
-  lines.push(`Task ${task.id}: ${task.name}`)
-  lines.push(`Stage: ${task.stage_name}`)
-  lines.push(`Thread: ${task.thread_name}`)
-  lines.push(`Status: ${task.status}`)
-  lines.push(`Updated: ${task.updated_at.split("T")[0]}`)
-
-  return lines.join("\n")
 }
 
 function formatThread(thread: HierarchyThreadQueryRecord): string {
@@ -130,7 +124,7 @@ function formatThread(thread: HierarchyThreadQueryRecord): string {
   lines.push(`Stage: ${thread.stageName}`)
   lines.push(`Batch: ${thread.batchName}`)
   lines.push(`Status: ${thread.aggregateStatus}`)
-  lines.push(`Task count: ${thread.taskCount}`)
+  lines.push(`Item count: ${thread.itemCount}`)
   if (thread.assignedAgent) {
     lines.push(`Assigned agent: ${thread.assignedAgent}`)
   }
@@ -140,10 +134,6 @@ function formatThread(thread: HierarchyThreadQueryRecord): string {
   if (thread.report) {
     lines.push(`Report: ${thread.report}`)
   }
-  if (thread.representativeTaskId) {
-    lines.push(`Compatibility task: ${thread.representativeTaskId}`)
-  }
-
   return lines.join("\n")
 }
 
@@ -154,14 +144,8 @@ export function main(argv: string[] = process.argv): void {
     process.exit(1)
   }
 
-  if (!cliArgs.threadId && !cliArgs.taskId) {
-    console.error("Error: --thread or --task is required")
-    console.error("\nRun with --help for usage information.")
-    process.exit(1)
-  }
-
-  if (cliArgs.threadId && cliArgs.taskId) {
-    console.error("Error: --thread and --task are mutually exclusive")
+  if (!cliArgs.threadId) {
+    console.error("Error: --thread is required")
     console.error("\nRun with --help for usage information.")
     process.exit(1)
   }
@@ -190,31 +174,16 @@ export function main(argv: string[] = process.argv): void {
     process.exit(1)
   }
 
-  if (cliArgs.threadId) {
-    const thread = queryThreadByIdForWorkstream(repoRoot, stream.id, cliArgs.threadId)
-    if (!thread) {
-      console.error(`Error: Thread "${cliArgs.threadId}" not found in workstream "${stream.id}"`)
-      process.exit(1)
-    }
-
-    if (cliArgs.json) {
-      console.log(JSON.stringify(thread, null, 2))
-    } else {
-      console.log(formatThread(thread))
-    }
-    return
-  }
-
-  const task = queryTaskByIdForWorkstream(repoRoot, stream.id, cliArgs.taskId!)
-  if (!task) {
-    console.error(`Error: Task "${cliArgs.taskId}" not found in workstream "${stream.id}"`)
+  const thread = queryThreadByIdForWorkstream(repoRoot, stream.id, cliArgs.threadId)
+  if (!thread) {
+    console.error(`Error: Thread "${cliArgs.threadId}" not found in workstream "${stream.id}"`)
     process.exit(1)
   }
 
   if (cliArgs.json) {
-    console.log(JSON.stringify(task, null, 2))
+    console.log(JSON.stringify(toPublicThreadView(thread), null, 2))
   } else {
-    console.log(formatTask(task))
+    console.log(formatThread(thread))
   }
 }
 

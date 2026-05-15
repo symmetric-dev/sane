@@ -58,10 +58,10 @@ The day-to-day workflow is:
 
 1. Discuss the feature and let the agent research the repo.
 2. The agent uses `planning-workstreams` to create the workstream and prepare `REQUIREMENTS.md` and `PLAN.md`.
-3. You approve the plan, which now initializes compatibility execution state directly from `PLAN.md`.
+3. You approve the plan, which initializes canonical execution state directly from `PLAN.md`.
 4. You manually `/fork` the session and ask the forked session to supervise the approved work.
 5. The supervision branch uses `supervising-workstreams` to run `work supervise`, inspect persisted state, and drive the review/fix/escalation loop.
-6. Implementation agents spawned within that loop use `implementing-workstreams` to inspect batch/task scope and update task state while they work.
+6. Implementation agents spawned within that loop use `implementing-workstreams` to inspect batch/thread scope and update item state while they work.
 7. The supervisor fork reports back; you approve the completed stage with `work approve stage N`.
 8. Repeat the supervision loop for the next stage.
 9. If more work is needed after the original stages, use the revision flow.
@@ -94,7 +94,7 @@ Notes:
 - Agents handle most planning and execution details; humans control approvals, stage gates, and final evaluation.
 - Manual `/fork` supervision is the default handoff model. The older Root Agent management launch flow remains available through the managed install profile.
 - `work supervise` is the normal execution primitive; `work start` is no longer the main workflow entrypoint.
-- The implementation agents running inside supervision commonly inspect scope with `work status`, `work tree --batch`, and `work list --tasks --thread` before updating task state.
+- The implementation agents running inside supervision commonly inspect scope with `work status`, `work tree --batch`, and `work list --thread` before updating thread/item state.
 
 For supervised headless automation with review/fix/escalation policy, start with `docs/SUPERVISOR.md`; for quick validation drills and the optional tmux/tool E2E smoke test, use `docs/supervision-manual-verification-checklist.md`.
 
@@ -112,7 +112,7 @@ Example output from `work tree`:
 │   │   ├── [ ] Thread 01: Multimodal Embedding Service (3) @systems-engineer
 │   │   └── [ ] Thread 02: Embedding API Endpoints (3) @systems-engineer
 │   └── [ ] Batch 02: Re-indexing & Integration (5)
-│       ├── [ ] Thread 01: Re-index Background Task (3) @systems-engineer
+│       ├── [ ] Thread 01: Re-index Background Job (3) @systems-engineer
 │       └── [ ] Thread 02: Upload-Triggered Embedding (2) @default
 └── [ ] Stage 03: Frontend - Resource Management (8)
     └── [ ] Batch 01: API & Resource Definition (8)
@@ -129,7 +129,7 @@ Example output from `work status`:
 | Status: [x] completed                            |
 +--------------------------------------------------+
 | Progress: [##############################] 100%  |
-| Tasks: 22/22 complete, 0 in-progress, 0 blocked  |
+| Items: 22/22 complete, 0 in-progress, 0 blocked  |
 +--------------------------------------------------+
 | [x] Stage 01: Build System & Cleanup (15/15) ✓   |
 | [x] Stage 02: Testing & Documentation (7/7) ✓    |
@@ -144,7 +144,7 @@ AgEnv uses skill files under `agent/skills/*` to guide agent behavior through ea
 - `planning-workstreams`: used first to create the stream, fill `REQUIREMENTS.md`, shape `PLAN.md`, and get the workstream ready for plan approval.
 - `managing-workstreams`: optional managed-profile skill used by the Root Agent after plan approval to launch and monitor a supervision branch automatically.
 - `supervising-workstreams`: used by the supervision branch to run `work supervise`, inspect persisted state, and drive the review/fix/escalation loop.
-- `implementing-workstreams`: used by worker agents that execute thread tasks within supervised batches; these workers inspect their scope and keep task state current.
+- `implementing-workstreams`: used by worker agents that execute thread items within supervised batches; these workers inspect their scope and keep item state current.
 - `evaluating-workstreams`: used near completion to assess delivered work and finalize report quality (`REPORT.md`).
 
 In practice:
@@ -153,7 +153,7 @@ In practice:
 2. Human approves (`work approve plan`).
 3. Human manually `/fork`s the session and asks the forked session to supervise the work.
 4. Supervision branch uses the supervising skill to run `work supervise` and make review/fix/escalation decisions.
-5. Implementation agents use the implementation skill to work assigned threads and update task state.
+5. Implementation agents use the implementation skill to work assigned threads and update item state.
 6. Human approves each completed stage, and evaluation/reporting happens at the end.
 
 ## Custom Workstream Tools
