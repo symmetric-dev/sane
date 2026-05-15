@@ -4,10 +4,9 @@
  * Find todo items, unchecked boxes, and errors in PLAN.md.
  */
 
-import { existsSync, readFileSync } from "fs"
 import { getRepoRoot } from "../lib/repo.ts"
 import { loadIndex, getResolvedStream } from "../lib/index.ts"
-import { getStreamPlanMdPath, consolidateStream } from "../lib/consolidate.ts"
+import { loadWorkstreamPlan, consolidateStream } from "../lib/consolidate.ts"
 import { findOpenQuestions, extractInputFileReferences, findMissingInputFiles, type OpenQuestion } from "../lib/analysis.ts"
 
 interface CheckCliArgs {
@@ -43,7 +42,7 @@ Options:
   --help, -h       Show this help message
 
 Description:
-  Comprehensive check for PLAN.md including:
+  Comprehensive check for plan documents including:
   - Schema structure
   - Open questions [ ] (reports with line numbers)
   - Referenced input files (checks if they exist)
@@ -205,13 +204,12 @@ export function main(argv: string[] = process.argv): void {
     }
 
     if (cliArgs.subcommand === "plan") {
-        const planMdPath = getStreamPlanMdPath(repoRoot, stream.id)
-        if (!existsSync(planMdPath)) {
-            console.error(`Error: PLAN.md not found at ${planMdPath}`)
+        const loadedPlan = loadWorkstreamPlan(repoRoot, stream.id)
+        if (!loadedPlan) {
+            console.error(`Error: no root or stage-local PLAN.md found for workstream "${stream.id}"`)
             process.exit(1)
         }
-
-        const content = readFileSync(planMdPath, "utf-8")
+        const content = loadedPlan.content
 
         // 1. Schema Validation
         const consolidateResult = consolidateStream(repoRoot, stream.id, true)
@@ -222,7 +220,7 @@ export function main(argv: string[] = process.argv): void {
 
         // 3. Missing Inputs
         const inputFiles = extractInputFileReferences(content)
-        const missingInputFiles = findMissingInputFiles(repoRoot, planMdPath, inputFiles)
+        const missingInputFiles = findMissingInputFiles(repoRoot, loadedPlan.displayPath, inputFiles)
 
         const result: CheckResult = {
             schemaValid: consolidateResult.success,

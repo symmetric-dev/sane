@@ -4,7 +4,6 @@
  * Handles revision approval workflow for adding new stages to existing workstreams.
  */
 
-import { existsSync, readFileSync } from "fs"
 import { join } from "path"
 
 import { approveTasks, checkOpenQuestions } from "../../lib/approval.ts"
@@ -15,6 +14,7 @@ import { getResolvedStream } from "../../lib/index.ts"
 import { getTasks } from "../../lib/tasks.ts"
 import { generateAllPrompts } from "../../lib/prompts.ts"
 import { syncCompatibilityTasksFromPlan } from "../../lib/task-compatibility.ts"
+import { loadWorkstreamPlan } from "../../lib/consolidate.ts"
 
 import type { ApproveCliArgs } from "./utils.ts"
 
@@ -31,20 +31,19 @@ export function handleRevisionApproval(
 ): void {
   const workDir = getWorkDir(repoRoot)
   const streamDir = join(workDir, stream.id)
-  const planMdPath = join(streamDir, "PLAN.md")
-  // Step 1: Load PLAN.md and parse with parseStreamDocument
-  if (!existsSync(planMdPath)) {
-    console.error(`Error: PLAN.md not found at ${planMdPath}`)
+  const loadedPlan = loadWorkstreamPlan(repoRoot, stream.id)
+
+  if (!loadedPlan) {
+    console.error(`Error: PLAN.md not found for workstream at ${streamDir}`)
     process.exit(1)
   }
 
-  const planContent = readFileSync(planMdPath, "utf-8")
   const errors: any[] = []
-  const doc = parseStreamDocument(planContent, errors)
+  const doc = parseStreamDocument(loadedPlan.content, errors)
 
   if (!doc) {
     console.error(
-      `Error: Failed to parse PLAN.md: ${errors.map((e) => e.message).join(", ")}`
+      `Error: Failed to parse ${loadedPlan.displayPath}: ${errors.map((e) => e.message).join(", ")}`
     )
     process.exit(1)
   }

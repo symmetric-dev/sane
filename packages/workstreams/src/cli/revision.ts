@@ -28,7 +28,7 @@ Required:
   --name           Name of the revision (e.g., "documentation-updates")
 
 Optional:
-  --after-stage    Insert the revision after this stage number from PLAN.md
+  --after-stage    Insert the revision after this stage number
                    (e.g. 3 inserts after Stage 03). Defaults to append.
   --stream, -s     Workstream ID or name (uses current if not specified)
   --description    Description of the revision changes
@@ -171,7 +171,7 @@ export function main(argv: string[] = process.argv): void {
       if (revokedTasks) {
         console.log(`  Execution-state approval revoked for revision`)
       }
-      console.log(`\nEdit PLAN.md to fill in details, then run 'work approve revision'`)
+      console.log(`\nEdit the revised stage planning details, then run 'work approve revision'`)
     } else {
       console.error(`Error: ${result.message}`)
       process.exit(1)

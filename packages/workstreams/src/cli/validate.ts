@@ -1,18 +1,19 @@
 /**
  * CLI: Workstream Validate
  *
- * Validate PLAN.md and REQUIREMENTS.md structure and content.
+ * Validate planning documents and requirements content.
  */
 
-import { existsSync, readFileSync } from "fs"
+import { readFileSync } from "fs"
 import { getRepoRoot } from "../lib/repo.ts"
 import { loadIndex, getResolvedStream } from "../lib/index.ts"
-import { getStreamPlanMdPath, consolidateStream } from "../lib/consolidate.ts"
+import { loadWorkstreamPlan, consolidateStream } from "../lib/consolidate.ts"
 import { printRemovedTaskWorkflowError } from "../lib/removed-workflows.ts"
 import {
-    getRequirementsMdPath,
+    loadWorkstreamRequirements,
     validateRequirementsDocument,
 } from "../lib/requirements.ts"
+import { relative } from "path"
 
 interface ValidateCliArgs {
     repoRoot?: string
@@ -29,15 +30,15 @@ interface ValidationResult {
 
 function printHelp(): void {
     console.log(`
- work validate - Validate workstream plan and requirements
+ work validate - Validate workstream planning docs and requirements
 
 Usage:
   work validate plan [--stream <stream-id>]
   work validate requirements [--stream <stream-id>]
 
 Subcommands:
-  plan     Validate PLAN.md structure and content
-  requirements  Validate REQUIREMENTS.md structure and content
+  plan     Validate planning structure and content
+  requirements  Validate requirements structure and content
 
 Options:
   --repo-root, -r  Repository root (auto-detected if omitted)
@@ -46,25 +47,27 @@ Options:
   --help, -h       Show this help message
 
 Description:
-  Validates PLAN.md or REQUIREMENTS.md structure and content.
+  Validates planning and requirements markdown during the current transition.
+  In the supported stage-local model, shared goals live in root README.md and
+  stage details live under stages/<nn>/. Some validation flows still target the
+  compatibility plan/requirements documents where present.
   Plan validation checks for files shared across parallel threads in the same batch.
-  Draft plans with an empty Stages section are valid, but 'work validate plan'
-  emits a warning until stages are scaffolded.
   REQUIREMENTS.md validation checks required sections plus dependency/resource paths.
-  Use 'work validate requirements' after updating REQUIREMENTS.md or files in resources/.
+  When no root REQUIREMENTS.md exists, it validates filled stage-local files under
+  stages/<nn>/REQUIREMENTS.md and ignores untouched scaffolds.
   Note: Use 'work check plan' to check for open questions and missing input files.
 
 Examples:
-  # Validate current workstream plan
+  # Validate current workstream plan compatibility document
   work validate plan
 
-  # Validate a draft plan before stages exist yet
+  # Validate requirements and a newly scaffolded plan
   work create --name draft-feature
   work current --set "000-draft-feature"
-  work validate requirements
+  work plan create --stages 2
   work validate plan
 
-  # Validate requirements structure
+  # Validate root or stage-local requirements structure
   work validate requirements
 
   # Validate specific workstream
@@ -194,9 +197,9 @@ export function main(argv: string[] = process.argv): void {
     }
 
     if (cliArgs.subcommand === "plan") {
-        const planMdPath = getStreamPlanMdPath(repoRoot, stream.id)
-        if (!existsSync(planMdPath)) {
-            console.error(`Error: PLAN.md not found at ${planMdPath}`)
+        const loadedPlan = loadWorkstreamPlan(repoRoot, stream.id)
+        if (!loadedPlan) {
+            console.error(`Error: no root or stage-local PLAN.md found for workstream "${stream.id}"`)
             process.exit(1)
         }
 
@@ -228,28 +231,42 @@ export function main(argv: string[] = process.argv): void {
     }
 
     if (cliArgs.subcommand === "requirements") {
-        const requirementsMdPath = getRequirementsMdPath(repoRoot, stream.id)
-        if (!existsSync(requirementsMdPath)) {
-            console.error(`Error: REQUIREMENTS.md not found at ${requirementsMdPath}`)
+        const loadedRequirements = loadWorkstreamRequirements(repoRoot, stream.id)
+        if (!loadedRequirements) {
+            console.error(`Error: no root or stage-local REQUIREMENTS.md found for workstream "${stream.id}"`)
             process.exit(1)
         }
 
-        const content = readFileSync(requirementsMdPath, "utf-8")
-        const validation = validateRequirementsDocument({
-            content,
-            repoRoot,
-            streamId: stream.id,
-        })
-
         const result: ValidationResult = {
-            valid: validation.valid,
-            errors: validation.errors.map((error) => {
-                const location = error.line !== undefined
-                    ? `[${error.section} line ${error.line}]`
-                    : `[${error.section}]`
-                return `${location} ${error.message}`
-            }),
-            warnings: validation.warnings,
+            valid: true,
+            errors: [],
+            warnings: [...loadedRequirements.warnings],
+        }
+
+        for (const requirementsPath of loadedRequirements.documentPaths) {
+            const content = readFileSync(requirementsPath, "utf-8")
+            const validation = validateRequirementsDocument({
+                content,
+                repoRoot,
+                streamId: stream.id,
+            })
+
+            const pathPrefix = loadedRequirements.source === "stages"
+                ? `${relative(repoRoot, requirementsPath)}: `
+                : ""
+
+            result.valid = result.valid && validation.valid
+            result.errors.push(
+                ...validation.errors.map((error) => {
+                    const location = error.line !== undefined
+                        ? `[${error.section} line ${error.line}]`
+                        : `[${error.section}]`
+                    return `${pathPrefix}${location} ${error.message}`
+                }),
+            )
+            result.warnings.push(
+                ...validation.warnings.map((warning) => `${pathPrefix}${warning}`),
+            )
         }
 
         if (cliArgs.json) {

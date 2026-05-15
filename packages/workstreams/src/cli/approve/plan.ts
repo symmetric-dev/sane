@@ -4,9 +4,6 @@
  * Handles plan and stage-level approval/revocation workflows.
  */
 
-import { existsSync, readFileSync } from "fs"
-import { join } from "path"
-
 import {
   approveStream,
   approveTasks,
@@ -31,12 +28,12 @@ import {
 } from "../../lib/github/index.ts"
 import { closeStageIssue } from "../../lib/github/issues.ts"
 import { parseStreamDocument } from "../../lib/stream-parser.ts"
-import { getWorkDir } from "../../lib/repo.ts"
 import { type GitAutoCommitResult } from "../../lib/git/index.ts"
 import { getResolvedStream } from "../../lib/index.ts"
 import { getTasks, parseTaskId } from "../../lib/tasks.ts"
 import { generateAllPrompts } from "../../lib/prompts.ts"
 import { syncCompatibilityTasksFromPlan } from "../../lib/task-compatibility.ts"
+import { loadWorkstreamPlan } from "../../lib/consolidate.ts"
 
 import type { ApproveCliArgs } from "./utils.ts"
 
@@ -68,21 +65,17 @@ function initializeExecutionStateFromPlan(
   streamId: string,
 ): ExecutionStateInitializationResult {
   try {
-    const workDir = getWorkDir(repoRoot)
-    const streamDir = join(workDir, streamId)
-    const planMdPath = join(streamDir, "PLAN.md")
-
-    if (!existsSync(planMdPath)) {
+    const loadedPlan = loadWorkstreamPlan(repoRoot, streamId)
+    if (!loadedPlan) {
       return {
         success: false,
         taskCount: 0,
-        error: `PLAN.md not found at ${planMdPath}`,
+        error: `No root or stage-local PLAN.md found for workstream "${streamId}"`,
       }
     }
 
-    const planContent = readFileSync(planMdPath, "utf-8")
     const errors: any[] = []
-    const doc = parseStreamDocument(planContent, errors)
+    const doc = parseStreamDocument(loadedPlan.content, errors)
 
     if (!doc) {
       return {
@@ -490,11 +483,10 @@ export async function handlePlanApproval(
   // Check for open questions
   const questionsResult = checkOpenQuestions(repoRoot, stream.id)
 
-  const planMdPath = join(getWorkDir(repoRoot), stream.id, "PLAN.md")
-  if (existsSync(planMdPath)) {
-    const planContent = readFileSync(planMdPath, "utf-8")
+  const loadedPlan = loadWorkstreamPlan(repoRoot, stream.id)
+  if (loadedPlan) {
     const parseErrors: { message: string }[] = []
-    const doc = parseStreamDocument(planContent, parseErrors)
+    const doc = parseStreamDocument(loadedPlan.content, parseErrors)
 
     if (doc && doc.stages.length === 0) {
       if (cliArgs.json) {

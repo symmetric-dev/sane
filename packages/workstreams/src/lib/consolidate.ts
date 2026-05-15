@@ -15,9 +15,19 @@ import type {
 import { parseStreamDocument } from "./stream-parser.ts"
 import { getWorkDir } from "./repo.ts"
 import { findSharedFilesInParallelThreads, formatSharedFileWarnings } from "./analysis.ts"
+import { listOrderedStageDirectories } from "./stage-directories.ts"
 
 export const DRAFT_PLAN_NO_STAGES_WARNING =
   "Draft plan: no stages defined yet. Scaffold stages with 'work plan create'."
+
+export interface LoadedWorkstreamPlan {
+  content: string
+  displayPath: string
+  source: "root" | "stages"
+  stagePlanPaths: string[]
+  skippedStagePlanPaths: string[]
+  warnings: string[]
+}
 
 /**
  * Get the path to PLAN.md for a workstream
@@ -25,6 +35,165 @@ export const DRAFT_PLAN_NO_STAGES_WARNING =
 export function getStreamPlanMdPath(repoRoot: string, streamId: string): string {
   const workDir = getWorkDir(repoRoot)
   return join(workDir, streamId, "PLAN.md")
+}
+
+export function getStagePlanMdPaths(repoRoot: string, streamId: string): string[] {
+  const stagesDir = join(getWorkDir(repoRoot), streamId, "stages")
+  return listOrderedStageDirectories(stagesDir)
+    .map((entry) => join(stagesDir, entry.name, "PLAN.md"))
+    .filter((planPath) => existsSync(planPath))
+}
+
+function extractMarkdownSection(content: string, sectionName: string): string {
+  const lines = content.split("\n")
+  const startIndex = lines.findIndex((line) => line.trim().toLowerCase() === `## ${sectionName}`.toLowerCase())
+  if (startIndex === -1) {
+    return ""
+  }
+
+  const sectionLines: string[] = []
+  for (let index = startIndex + 1; index < lines.length; index++) {
+    const line = lines[index]!
+    if (line.startsWith("## ")) {
+      break
+    }
+    sectionLines.push(line)
+  }
+
+  return sectionLines.join("\n").trim()
+}
+
+function stripHtmlComments(content: string): string {
+  return content.replace(/<!--([\s\S]*?)-->/g, "").trim()
+}
+
+function hasVisibleMeaningfulText(content: string): boolean {
+  return content
+    .split("\n")
+    .map((line) => stripHtmlComments(line).replace(/^[-*]\s*/, "").trim())
+    .some((line) => line.length > 0 && line !== "[ ]" && line !== "[x]")
+}
+
+function hasMeaningfulStageContent(content: string): boolean {
+  const summary = hasVisibleMeaningfulText(extractMarkdownSection(content, "Summary"))
+  const references = hasVisibleMeaningfulText(extractMarkdownSection(content, "References"))
+  const questions = extractMarkdownSection(content, "Questions")
+    .split("\n")
+    .map((line) => line.replace(/^-\s*\[[ xX]\]\s*/, "").trim())
+    .some((line) => hasVisibleMeaningfulText(line))
+  const namedBatchOrThread = content
+    .split("\n")
+    .some((line) => /^(###|####)\s+/.test(line) && !line.includes("<!--"))
+
+  return summary || references || questions || namedBatchOrThread
+}
+
+function extractReadmePlanContext(streamDir: string, streamId: string): {
+  streamName: string
+  summary: string
+} {
+  const readmePath = join(streamDir, "README.md")
+  if (!existsSync(readmePath)) {
+    return {
+      streamName: streamId,
+      summary: "",
+    }
+  }
+
+  const content = readFileSync(readmePath, "utf-8")
+  const headingMatch = content.match(/^#\s+(.+)$/m)
+
+  return {
+    streamName: headingMatch?.[1]?.trim() || streamId,
+    summary: stripHtmlComments(extractMarkdownSection(content, "Summary")),
+  }
+}
+
+function toSyntheticStageSection(planPath: string, syntheticStageNumber: number): string {
+  const content = readFileSync(planPath, "utf-8")
+  const stageDirName = planPath.split("/").slice(-2, -1)[0] ?? "00"
+  const definition = stripHtmlComments(extractMarkdownSection(content, "Summary"))
+  const questions = extractMarkdownSection(content, "Questions")
+  const batches = extractMarkdownSection(content, "Batches")
+    .replace(/^####\s+/gm, "###### ")
+    .replace(/^###\s+/gm, "##### ")
+    .trim()
+
+  return [
+    `### Stage ${syntheticStageNumber}: Stage ${stageDirName}`,
+    "",
+    "#### Stage Definition",
+    definition,
+    "",
+    "#### Stage Constitution",
+    "",
+    "#### Stage Questions",
+    questions,
+    "",
+    "#### Stage Batches",
+    batches,
+  ].join("\n")
+}
+
+export function loadWorkstreamPlan(repoRoot: string, streamId: string): LoadedWorkstreamPlan | null {
+  const rootPlanPath = getStreamPlanMdPath(repoRoot, streamId)
+  if (existsSync(rootPlanPath)) {
+    return {
+      content: readFileSync(rootPlanPath, "utf-8"),
+      displayPath: rootPlanPath,
+      source: "root",
+      stagePlanPaths: [],
+      skippedStagePlanPaths: [],
+      warnings: [],
+    }
+  }
+
+  const streamDir = join(getWorkDir(repoRoot), streamId)
+  const stagePlanPaths = getStagePlanMdPaths(repoRoot, streamId)
+  if (stagePlanPaths.length === 0) {
+    return null
+  }
+
+  const includedStagePlanPaths: string[] = []
+  const skippedStagePlanPaths: string[] = []
+  const warnings: string[] = []
+  const stageSections: string[] = []
+
+  for (const planPath of stagePlanPaths) {
+    const content = readFileSync(planPath, "utf-8")
+    if (!hasMeaningfulStageContent(content)) {
+      skippedStagePlanPaths.push(planPath)
+      warnings.push(`Ignored unfilled stage scaffold at ${planPath}`)
+      continue
+    }
+
+    includedStagePlanPaths.push(planPath)
+    stageSections.push(toSyntheticStageSection(planPath, includedStagePlanPaths.length))
+  }
+
+  const readmeContext = extractReadmePlanContext(streamDir, streamId)
+  const content = [
+    `# Plan: ${readmeContext.streamName}`,
+    "",
+    "## Summary",
+    "",
+    readmeContext.summary,
+    "",
+    "## References",
+    "",
+    "## Stages",
+    "",
+    ...stageSections,
+  ].join("\n")
+
+  return {
+    content,
+    displayPath: `${join(streamDir, "stages")}/*/PLAN.md`,
+    source: "stages",
+    stagePlanPaths: includedStagePlanPaths,
+    skippedStagePlanPaths,
+    warnings,
+  }
 }
 
 /**
@@ -99,12 +268,12 @@ export function consolidateStream(
   const errors: ConsolidateError[] = []
   const warnings: string[] = []
 
-  // Check if PLAN.md exists
-  const planMdPath = getStreamPlanMdPath(repoRoot, streamId)
-  if (!existsSync(planMdPath)) {
+  const loadedPlan = loadWorkstreamPlan(repoRoot, streamId)
+  if (!loadedPlan) {
+    const planMdPath = getStreamPlanMdPath(repoRoot, streamId)
     errors.push({
       section: "File",
-      message: `PLAN.md not found at ${planMdPath}`,
+      message: `PLAN.md not found at ${planMdPath} and no stage-local plans were found under ${join(getWorkDir(repoRoot), streamId, "stages")}`,
     })
     return {
       success: false,
@@ -115,9 +284,9 @@ export function consolidateStream(
     }
   }
 
-  // Read and parse PLAN.md
-  const content = readFileSync(planMdPath, "utf-8")
-  const streamDocument = parseStreamDocument(content, errors)
+  warnings.push(...loadedPlan.warnings)
+
+  const streamDocument = parseStreamDocument(loadedPlan.content, errors)
 
   if (!streamDocument) {
     return {

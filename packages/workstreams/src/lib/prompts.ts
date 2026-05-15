@@ -5,7 +5,7 @@
  * including tasks, stage definition, parallel threads, and test requirements.
  */
 
-import { existsSync, readFileSync, mkdirSync, writeFileSync } from "fs"
+import { mkdirSync, writeFileSync } from "fs"
 import { join, dirname } from "path"
 import { getWorkDir } from "./repo.ts"
 import {
@@ -15,6 +15,7 @@ import {
 import { parseStreamDocument } from "./stream-parser.ts"
 import { getTasks, parseTaskId } from "./tasks.ts"
 import { getThreadMetadata, updateThreadMetadata } from "./threads.ts"
+import { loadWorkstreamPlan } from "./consolidate.ts"
 import type {
   Task,
   StageDefinition,
@@ -143,16 +144,14 @@ export function getPromptContext(
   }
 
   // Load PLAN.md
-  const workDir = getWorkDir(repoRoot)
-  const planPath = join(workDir, streamId, "PLAN.md")
-
-  if (!existsSync(planPath)) {
-    throw new Error(`PLAN.md not found at ${planPath}`)
+  const loadedPlan = loadWorkstreamPlan(repoRoot, streamId)
+  if (!loadedPlan) {
+    const workDir = getWorkDir(repoRoot)
+    throw new Error(`PLAN.md not found at ${join(workDir, streamId, "PLAN.md")}`)
   }
 
-  const planContent = readFileSync(planPath, "utf-8")
   const errors: ConsolidateError[] = []
-  const doc = parseStreamDocument(planContent, errors)
+  const doc = parseStreamDocument(loadedPlan.content, errors)
 
   if (!doc) {
     throw new Error(
@@ -440,18 +439,16 @@ export function generateAllPrompts(
   }
 
   // Load and parse PLAN.md
-  const workDir = getWorkDir(repoRoot)
-  const planPath = join(workDir, streamId, "PLAN.md")
-
-  if (!existsSync(planPath)) {
+  const loadedPlan = loadWorkstreamPlan(repoRoot, streamId)
+  if (!loadedPlan) {
+    const workDir = getWorkDir(repoRoot)
     result.success = false
-    result.errors.push(`PLAN.md not found at ${planPath}`)
+    result.errors.push(`PLAN.md not found at ${join(workDir, streamId, "PLAN.md")}`)
     return result
   }
 
-  const planContent = readFileSync(planPath, "utf-8")
   const parseErrors: ConsolidateError[] = []
-  const doc = parseStreamDocument(planContent, parseErrors)
+  const doc = parseStreamDocument(loadedPlan.content, parseErrors)
 
   if (!doc) {
     result.success = false

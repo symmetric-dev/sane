@@ -2,14 +2,14 @@
  * CLI: Planning Session Management
  *
  * Opens the planning opencode session for the current workstream,
- * or scaffolds plan stages for an existing draft workstream.
+ * or scaffolds stage-local planning directories for an existing draft workstream.
  * 
  * Usage:
  *   work plan                                  - Resume planning session for current workstream
  *   work plan --stream "001-my-stream"         - Resume planning session for specific workstream
  *   work plan --set <sessionId>                - Set the planning session ID for current workstream
  *   work plan --stream <id> --set <sessionId>  - Set planning session for specific workstream
- *   work plan create --stages 3                - Scaffold plan stages for current workstream
+ *   work plan create --stages 3                - Scaffold stage directories for current workstream
  */
 
 import { spawn } from "child_process"
@@ -28,7 +28,7 @@ interface PlanCliArgs {
 
 function printHelp(): void {
   console.log(`
-work plan - Resume planning sessions or scaffold plan stages
+work plan - Resume planning sessions or scaffold stage directories
 
 Usage:
   work plan [options]
@@ -38,8 +38,8 @@ Description:
   Default behavior keeps planning-session management intact: resume a linked
   opencode session or set the linked session ID for a workstream.
 
-  The 'create' subcommand scaffolds stage templates into an existing draft
-  PLAN.md after the workstream container has already been created.
+  The 'create' subcommand scaffolds stage directories for a workstream under
+  stages/ using the supported stage-local files.
 
   To link a session from within opencode, use the workstream_link_planning_session
   tool after creating a workstream.
@@ -55,9 +55,9 @@ Workflow:
   Draft-first flow:
     1. work create --name my-feature
     2. work current --set "001-my-feature"
-    3. work plan create --stages 3
-    4. Edit PLAN.md and validate it
-    5. work validate plan   # empty drafts warn but still validate
+    3. Update README.md with the overall goal and shared requirements
+    4. work plan create --stages 3
+    5. Edit stages/01/{REQUIREMENTS.md,PLAN.md,WORK.md}
     6. work approve plan    # requires at least one stage
 
   Planning-session flow:
@@ -170,11 +170,11 @@ function handleCreatePlan(
   try {
     const result = scaffoldPlanStages(repoRoot, streamId, stages)
     console.log(`Scaffolded ${result.stageCount} stage${result.stageCount === 1 ? "" : "s"} in workstream "${streamId}".`)
-    console.log(`  Updated: ${result.planPath}`)
+    console.log(`  Updated: ${result.stagesPath}`)
     console.log("")
     console.log("Next steps:")
-    console.log("  1. Edit PLAN.md to name stages, batches, and threads")
-    console.log("  2. Run: work validate plan")
+    console.log("  1. Edit each stage directory under stages/")
+    console.log("  2. Fill REQUIREMENTS.md, PLAN.md, WORK.md, and specs/ for each stage")
   } catch (e) {
     console.error(`Error: ${(e as Error).message}`)
     process.exit(1)

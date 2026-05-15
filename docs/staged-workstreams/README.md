@@ -38,20 +38,14 @@ This is better than either:
 ```text
 0xx-{workstream-name}/
   README.md
-  REQUIREMENTS.md          # optional high-level root summary only
-  PLAN.md                  # optional high-level cross-stage sequence only
   resources/               # shared references across all stages
   docs/                    # synthesized research and canonical notes
   stages/
-    01-{slug}/
-      README.md            # stage purpose, scope boundary, status
+    01/
       REQUIREMENTS.md      # stage-local acceptance criteria
       PLAN.md              # stage-local batches/threads
       WORK.md              # rich execution guidance for agents
-      CHECKPOINTS.md       # optional lightweight tracker/checklist
       specs/
-        *.md
-      notes/
         *.md
 ```
 

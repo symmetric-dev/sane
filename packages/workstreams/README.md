@@ -16,50 +16,45 @@ bun install -g @agenv/workstreams
 work init --sqlite
 work create --name "my-feature"
 work current --set "001-my-feature"
-work validate requirements
 work plan create --stages 2
-work validate plan
-work check plan
-work approve plan
 ```
 
 ## Core Workflow
 
 1. Create a draft workstream container: `work create --name "my-feature"`
-2. Fill `REQUIREMENTS.md` and add extra inputs under `resources/`
+2. Review `README.md` and capture shared context under `resources/` / `docs/`
 3. Set the current workstream (or pass `--stream`): `work current --set "001-my-feature"`
-4. Validate requirements: `work validate requirements`
-5. Scaffold plan stages: `work plan create --stages 2`
-6. Edit `PLAN.md`
-7. Validate/check the plan:
-   - `work validate plan` warns but succeeds for an empty draft plan
-   - `work check plan` highlights open questions and missing inputs
-8. Approve plan: `work approve plan` (user role, requires at least one stage)
-9. `work approve plan` also seeds compatibility `tasks.json` state directly from the thread/stage plan
-10. Manually `/fork` the session and ask the forked session to supervise the approved work
-11. The supervision branch uses `work supervise`, `work status`, `work tree`, and `work batch-status` to drive the next batch and review loop
-12. Implementation agents use `implementing-workstreams` to inspect assigned scope and update task state with `work update`
-13. The supervisor reports back; the user approves the completed stage with `work approve stage <n>`
-14. Repeat the supervision loop for the next stage
-15. If new stages are needed after the original plan, use the revision flow:
-   - `work revision --name "follow-up" [--after-stage N]`
-   - `work approve revision`
-16. Finalize the report with the `evaluating-workstreams` skill:
-   - `work report validate`
+4. Scaffold stage directories: `work plan create --stages 2`
+5. Fill `stages/01/REQUIREMENTS.md`, `stages/01/PLAN.md`, `stages/01/WORK.md`, and `stages/01/specs/` (repeat per stage)
+6. Approve plan: `work approve plan` (user role, requires at least one stage)
+7. `work approve plan` also seeds compatibility `tasks.json` state directly from the thread/stage plan
+8. Manually `/fork` the session and ask the forked session to supervise the approved work
+9. The supervision branch uses `work supervise`, `work status`, `work tree`, and `work batch-status` to drive the next batch and review loop
+10. Implementation agents use `implementing-workstreams` to inspect assigned scope and update task state with `work update`
+11. The supervisor reports back; the user approves the completed stage with `work approve stage <n>`
+12. Repeat the supervision loop for the next stage
+13. If new stages are needed after the original plan, use the revision flow:
+    - `work revision --name "follow-up" [--after-stage N]`
+    - `work approve revision`
+14. Finalize the report with the `evaluating-workstreams` skill:
+    - `work report validate`
 
 The optional managed install profile preserves the older Root Agent management-launch workflow. The default manual profile omits the management skill and launch tool so the user controls the `/fork` handoff.
 
-Shortcut:
-
-- `work create --name "my-feature" --stages 2` still creates the draft container and scaffolds stages immediately.
-
 Generated files on `work create`:
 
-- `REQUIREMENTS.md` for the human-authored summary, deliverables, dependencies, and resources
-- `resources/` for supplemental inputs referenced from `REQUIREMENTS.md`
-- `PLAN.md` for staged execution planning
-- `tasks.json` compatibility JSON for projected machine state
+- `README.md` for the initial shared workstream description and requirements
+- `resources/` for supplemental inputs gathered before stage planning
 - `docs/` for extra workstream notes
+- `stages/` as the stage workspace root
+
+Deferred artifacts created later in the workflow:
+
+- `stages/<nn>/REQUIREMENTS.md` for stage-local summary, deliverables, dependencies, and resources
+- `stages/<nn>/PLAN.md` for stage-local batch/thread planning
+- `stages/<nn>/WORK.md` for rich execution guidance
+- `stages/<nn>/specs/` for stage specs
+- `tasks.json` compatibility JSON after plan approval / compatibility projection
 
 ## Useful Commands
 

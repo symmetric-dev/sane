@@ -8,7 +8,13 @@ import { getStreamPlanMdPath } from "./consolidate.ts"
 import { queryStageApprovalStatus } from "./approval.ts"
 import { getWorkstreamGitHubPath } from "./github/workstream-github.ts"
 import { atomicWriteFile, loadIndex, saveIndex } from "./index.ts"
+import {
+  getNextAppendedStageDirectoryName,
+  getNextInsertedRevisionDirectoryName,
+  listOrderedStageDirectories,
+} from "./stage-directories.ts"
 import { generateAllPrompts } from "./prompts.ts"
+import { scaffoldStageDirectory } from "./generate.ts"
 import { getWorkDir } from "./repo.ts"
 import {
   loadStructuredWorkspaceStateSync,
@@ -1341,6 +1347,10 @@ export function appendRevisionStage(
   options: RevisionStageOptions,
 ): { success: boolean; newStageNumber: number; message: string } {
   const planPath = getStreamPlanMdPath(repoRoot, streamId)
+  if (!existsSync(planPath)) {
+    return appendRootlessRevisionStage(repoRoot, streamId, options)
+  }
+
   const content = readFileSync(planPath, "utf-8")
   const errors: ConsolidateError[] = []
 
@@ -1431,5 +1441,72 @@ Implement ${options.name}.
     message: options.afterStage !== undefined
       ? `Inserted ${formatStageLabel(newStageNumber)} after ${formatStageLabel(options.afterStage)} in PLAN.md`
       : `Appended ${formatStageLabel(newStageNumber)} to PLAN.md`,
+  }
+}
+
+function appendRootlessRevisionStage(
+  repoRoot: string,
+  streamId: string,
+  options: RevisionStageOptions,
+): { success: boolean; newStageNumber: number; message: string } {
+  const stagesDir = join(getWorkDir(repoRoot), streamId, "stages")
+  const stageDirectories = listOrderedStageDirectories(stagesDir)
+  const normalStages = stageDirectories.filter((entry) => !entry.isRevision)
+
+  if (normalStages.length === 0) {
+    return {
+      success: false,
+      newStageNumber: 0,
+      message: `No stage directories found under ${stagesDir}`,
+    }
+  }
+
+  if (
+    options.afterStage !== undefined &&
+    !normalStages.some((entry) => entry.baseStageNumber === options.afterStage)
+  ) {
+    return {
+      success: false,
+      newStageNumber: 0,
+      message: `${formatStageLabel(options.afterStage)} not found`,
+    }
+  }
+
+  const previousStageNumber =
+    options.afterStage ?? normalStages[normalStages.length - 1]?.baseStageNumber
+  const approvalCheck = ensureStageApprovedForRevisionInsertion(
+    repoRoot,
+    streamId,
+    previousStageNumber,
+  )
+
+  if (!approvalCheck.success) {
+    return {
+      success: false,
+      newStageNumber: 0,
+      message: approvalCheck.message || "Failed to validate stage approval",
+    }
+  }
+
+  const newStageDirName =
+    options.afterStage !== undefined
+      ? getNextInsertedRevisionDirectoryName(stageDirectories, options.afterStage)
+      : getNextAppendedStageDirectoryName(stageDirectories)
+  const newStageDir = join(stagesDir, newStageDirName)
+
+  if (existsSync(newStageDir)) {
+    return {
+      success: false,
+      newStageNumber: 0,
+      message: `Stage directory already exists: ${newStageDir}`,
+    }
+  }
+
+  scaffoldStageDirectory(newStageDir, newStageDirName)
+
+  return {
+    success: true,
+    newStageNumber: Number.parseInt(newStageDirName, 10),
+    message: `Created revision stage scaffold at stages/${newStageDirName}`,
   }
 }

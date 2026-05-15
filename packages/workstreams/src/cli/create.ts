@@ -1,8 +1,7 @@
 /**
  * CLI: Create Workstream
  *
- * Creates a new workstream container with PLAN.md, REQUIREMENTS.md,
- * resources/, and empty tasks.json.
+ * Creates a new workstream container with a minimal draft-first layout.
  */
 
 import { getRepoRoot } from "../lib/repo.ts"
@@ -12,7 +11,6 @@ import { validateStreamName } from "../lib/utils.ts"
 interface CreateStreamCliArgs {
   name: string
   repoRoot?: string
-  stages?: number
 }
 
 function printHelp(): void {
@@ -20,13 +18,12 @@ function printHelp(): void {
 work create - Create a draft workstream container
 
 Usage:
-  work create --name <name> [--stages <n>]
+  work create --name <name>
 
 Required:
   --name, -n       Workstream name in kebab-case (e.g., "migrate-sql-to-orm")
 
 Optional:
-  --stages         Scaffold this many plan stages immediately (1-20)
   --repo-root, -r  Repository root (auto-detected if omitted)
   --help, -h       Show this help message
 
@@ -34,32 +31,23 @@ Examples:
   # Create a draft workstream without stages yet
   work create --name migrate-sql-to-orm
 
-  # Shortcut: create a workstream and scaffold 3 stages immediately
-  work create --name migrate-sql-to-orm --stages 3
-
 Workstream Structure:
   Creates a new workstream directory with:
-  - PLAN.md     Structured markdown for workstream definition
-  - REQUIREMENTS.md  Requirements, dependencies, and resource references
-  - tasks.json  Empty task tracker (populate with "work add-task")
-  - resources/  Supporting files referenced from REQUIREMENTS.md
-  - docs/       Optional directory for additional documentation
+  - README.md   Shared workstream description, goals, and requirements
+  - resources/  Supporting files gathered before stage planning
+  - docs/       Optional draft notes and supporting documentation
+  - stages/     Stage directories added by 'work plan create'
 
 Workflow:
   1. Create draft:      work create --name my-feature
   2. Set current:       work current --set "001-my-feature"
-  3. Fill requirements: Edit REQUIREMENTS.md and add files under resources/
-  4. Validate:          work validate requirements
+  3. Gather context:    Add files under resources/ or docs/
+  4. Draft root context: Update README.md with the overall goal and requirements
   5. Scaffold stages:   work plan create --stages 3
-  6. Edit PLAN.md:      Fill in stage names, threads, and details
-  7. Validate:          work validate plan
-                         (empty drafts warn but still succeed)
+  6. Fill stage docs:   Edit stages/01/{REQUIREMENTS.md,PLAN.md,WORK.md}
+  7. Repeat for more stages as needed
   8. Approve:           work approve plan
-                         (requires at least one stage)
-  9. Track progress:    work list --stream "001-my-feature" --tasks
-
-Shortcut:
-  Skip step 2 with:     work create --name my-feature --stages 3
+                          (requires at least one stage)
 `)
 }
 
@@ -98,20 +86,6 @@ function parseCliArgs(argv: string[]): CreateStreamCliArgs | null {
         i++
         break
 
-      case "--stages":
-        if (!next) {
-          console.error("Error: --stages requires a number")
-          return null
-        }
-        const stages = parseInt(next, 10)
-        if (isNaN(stages) || stages < 1 || stages > 20) {
-          console.error("Error: --stages must be a number between 1 and 20")
-          return null
-        }
-        parsed.stages = stages
-        i++
-        break
-
       case "--help":
       case "-h":
         printHelp()
@@ -126,8 +100,13 @@ function parseCliArgs(argv: string[]): CreateStreamCliArgs | null {
 
       case "--supertasks":
       case "--subtasks":
-        console.error(`Error: ${arg} is no longer supported. Use --stages to specify the number of stages.`)
+        console.error(`Error: ${arg} is no longer supported. Use 'work plan create --stages <n>' after creating the workstream.`)
         console.error("Run with --help for usage information.")
+        return null
+
+      case "--stages":
+        console.error("Error: --stages is no longer supported on 'work create'.")
+        console.error("Create the workstream first, then run 'work plan create --stages <n>'.")
         return null
     }
   }
@@ -161,7 +140,6 @@ export function main(argv: string[] = process.argv): void {
   const generateArgs = createGenerateArgs(
     cliArgs.name,
     repoRoot,
-    cliArgs.stages,
   )
 
   try {
@@ -170,30 +148,16 @@ export function main(argv: string[] = process.argv): void {
     console.log(`   Path: ${result.streamPath}`)
     console.log("")
     console.log("Next steps:")
-    if (cliArgs.stages) {
-      console.log("  1. Fill REQUIREMENTS.md and add supporting files under resources/")
-      console.log("  2. Edit PLAN.md to define stages, threads, and tasks")
-      console.log(`  3. Run: work validate requirements`)
-      console.log(`  4. Run: work validate plan`)
-      console.log(`  5. View: work list --stream "${result.streamId}"`)
-    } else {
-      console.log("  1. Fill REQUIREMENTS.md and add supporting files under resources/")
-      console.log(`  2. Run: work validate requirements`)
-      console.log(`  3. Scaffold plan stages: work plan create --stream "${result.streamId}" --stages 3`)
-      console.log("  4. Edit PLAN.md to define stages, threads, and tasks")
-      console.log(`  5. Run: work validate plan`)
-    }
+    console.log("  1. Review and update README.md with the overall goal and shared requirements")
+    console.log("  2. Add supporting files under resources/ or docs/")
+    console.log(`  3. Run: work plan create --stream "${result.streamId}" --stages 3`)
+    console.log("  4. Fill each stage directory under stages/ with REQUIREMENTS.md, PLAN.md, WORK.md, and specs/")
     console.log("")
-    console.log("Created files:")
-    console.log(
-      cliArgs.stages
-        ? "  - PLAN.md     (includes scaffolded stage templates)"
-        : "  - PLAN.md     (draft plan with an empty Stages section)",
-    )
-    console.log("  - REQUIREMENTS.md  (draft requirements, dependencies, and resources)")
-    console.log("  - tasks.json  (empty task tracker)")
-    console.log("  - resources/  (supporting files referenced from REQUIREMENTS.md)")
-    console.log("  - docs/       (optional additional documentation)")
+    console.log("Initial filesystem state:")
+    console.log("  - README.md   (shared workstream description and requirements)")
+    console.log("  - resources/  (supporting files and gathered inputs)")
+    console.log("  - docs/       (optional draft notes and documentation)")
+    console.log("  - stages/     (empty until 'work plan create' scaffolds stage directories)")
   } catch (e) {
     console.error(`Error: ${(e as Error).message}`)
     process.exit(1)

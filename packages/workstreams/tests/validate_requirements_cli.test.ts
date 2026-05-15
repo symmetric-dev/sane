@@ -129,4 +129,66 @@ Broken requirements doc.
     )
     expect(parsed.warnings).toEqual([])
   })
+
+  test("validates stage-local requirements without a root REQUIREMENTS.md", async () => {
+    await mkdir(join(tempDir, "work", "001-test-stream", "stages", "01"), { recursive: true })
+    await mkdir(join(tempDir, "work", "001-test-stream", "stages", "02"), { recursive: true })
+
+    await writeFile(
+      join(tempDir, "work", "001-test-stream", "stages", "01", "REQUIREMENTS.md"),
+      `# Stage 01 Requirements
+
+## Summary
+
+Implement stage-local requirements validation.
+
+## Deliverables
+
+- Validate filled stage requirements documents
+
+## Dependencies
+
+- \`packages/workstreams/src/lib/generate.ts\`
+
+## Resources
+
+- \`resources/notes.md\`
+`,
+    )
+
+    await writeFile(
+      join(tempDir, "work", "001-test-stream", "stages", "02", "REQUIREMENTS.md"),
+      `# Stage 02 Requirements
+
+## Summary
+
+<!-- Describe this stage's goal in freeform markdown. Do not use bullets in this section. -->
+
+## Deliverables
+
+<!-- Keep this section as bullets. List the concrete outputs this stage must produce. -->
+- Replace with a concrete stage deliverable
+
+## Dependencies
+
+<!-- Keep this section as bullets. Reference repo-relative code paths in backticks, for example: \`packages/workstreams/src/lib/generate.ts\` -->
+- \`packages/workstreams/src/lib/generate.ts\`
+
+## Resources
+
+<!-- Keep this section as bullets. Reference shared resources under \`resources/\` -->
+- \`resources/example-notes.md\`
+`,
+    )
+
+    const { stdout, stderr } = await captureCliOutput(() => {
+      validateMain(["bun", "work-validate", "requirements", "--repo-root", tempDir])
+    })
+
+    const output = stdout.join("\n")
+    expect(stderr).toEqual([])
+    expect(output).toContain("REQUIREMENTS.md validation passed")
+    expect(output).toContain("Ignored unfilled stage scaffold at")
+    expect(output).toContain("stages/02/REQUIREMENTS.md")
+  })
 })

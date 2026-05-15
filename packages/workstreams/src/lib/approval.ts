@@ -8,7 +8,7 @@
  */
 
 import { createHash } from "crypto"
-import { existsSync, readFileSync } from "fs"
+import { existsSync } from "fs"
 import { join } from "path"
 import type { ApprovalStatus, StreamMetadata, WorkIndex, ConsolidateError } from "./types.ts"
 import { loadIndex } from "./index.ts"
@@ -16,6 +16,7 @@ import { getWorkDir } from "./repo.ts"
 import { parseStreamDocument } from "./stream-parser.ts"
 import { updateStructuredApprovalsSync } from "./storage-adapter.ts"
 import { loadWorkstreamApprovalQueryResult, loadWorkstreamHierarchyQueryResult } from "./hierarchy-query.ts"
+import { loadWorkstreamPlan } from "./consolidate.ts"
 
 function getIndexedStream(index: WorkIndex, streamIdOrName: string): StreamMetadata {
   const stream = index.streams.find((s) => s.id === streamIdOrName || s.name === streamIdOrName)
@@ -162,15 +163,14 @@ export function resolvePlanNames(
     stageSources: {},
   }
 
-  const planPath = getPlanMdPath(repoRoot, stream.id)
-  if (!existsSync(planPath)) {
+  const loadedPlan = loadWorkstreamPlan(repoRoot, stream.id)
+  if (!loadedPlan) {
     return fallback
   }
 
   try {
-    const content = readFileSync(planPath, "utf-8")
     const errors: ConsolidateError[] = []
-    const doc = parseStreamDocument(content, errors)
+    const doc = parseStreamDocument(loadedPlan.content, errors)
 
     if (!doc) {
       return fallback
@@ -222,14 +222,12 @@ export function resolveStageApprovalNames(
  * Compute SHA-256 hash of PLAN.md content for modification detection
  */
 export function computePlanHash(repoRoot: string, streamId: string): string | null {
-  const planPath = getPlanMdPath(repoRoot, streamId)
-
-  if (!existsSync(planPath)) {
+  const loadedPlan = loadWorkstreamPlan(repoRoot, streamId)
+  if (!loadedPlan) {
     return null
   }
 
-  const content = readFileSync(planPath, "utf-8")
-  return createHash("sha256").update(content).digest("hex")
+  return createHash("sha256").update(loadedPlan.content).digest("hex")
 }
 
 /**
@@ -445,9 +443,8 @@ export function checkOpenQuestions(
   repoRoot: string,
   streamId: string
 ): OpenQuestionsResult {
-  const planPath = getPlanMdPath(repoRoot, streamId)
-
-  if (!existsSync(planPath)) {
+  const loadedPlan = loadWorkstreamPlan(repoRoot, streamId)
+  if (!loadedPlan) {
     return {
       hasOpenQuestions: false,
       openCount: 0,
@@ -456,9 +453,8 @@ export function checkOpenQuestions(
     }
   }
 
-  const content = readFileSync(planPath, "utf-8")
   const errors: ConsolidateError[] = []
-  const doc = parseStreamDocument(content, errors)
+  const doc = parseStreamDocument(loadedPlan.content, errors)
 
   if (!doc) {
     return {

@@ -28,8 +28,8 @@ Usage:
   work approve [--stream <id>]  # Show status of all approvals
 
 Targets:
-  plan      Approve the PLAN.md structure (requires stages; blocks on open questions)
-  revision  Approve revised PLAN.md with new stages (refreshes execution state)
+  plan      Approve the staged planning structure (requires stages; blocks on open questions)
+  revision  Approve revised staged planning structure with new stages (refreshes execution state)
 
 Options:
   --repo-root, -r  Repository root (auto-detected if omitted)
@@ -44,12 +44,12 @@ Options:
 
 Description:
   Workstreams require 2 approvals before starting:
-  1. Plan approval - validates PLAN.md structure, requires at least one stage, no open questions
+  1. Plan approval - validates the staged planning structure from root PLAN.md or stage-local stages/*/PLAN.md, requires at least one stage, no open questions
   2. Execution-state approval - seeded automatically during plan approval for compatibility/runtime flows
 
   Run 'work start' after both approvals to create the GitHub branch and issues.
 
-  In 0.9.0, plan approval also initializes execution state directly from PLAN.md.
+  In 0.9.0, plan approval also initializes execution state directly from the plan structure.
   The old TASKS.md / 'work approve tasks' workflow was removed.
 
   Draft plans created with 'work create' must be scaffolded with

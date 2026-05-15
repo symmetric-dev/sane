@@ -14,9 +14,9 @@ description: Create and prepare workstreams for execution. Planning only, no cod
 ## Workflow
 
 1. Create and set stream: `work create --name "feature-name"` and `work current --set "NNN-feature-name"`
-2. Work on `REQUIREMENTS.md` along with the user. Add supporting files under `resources/`. Validate requirements: `work validate requirements`
-3. Scaffold stages: `work plan create --stages N`. This will create a plan with a given number of stages.
-4. Fill `PLAN.md` with stages, batches, threads, and questions for each stage.
+2. Work on the root `README.md` along with the user so it captures the overall goal, deliverables, dependencies, and shared resources. Add supporting files under `resources/`.
+3. Scaffold stages: `work plan create --stages N`. This will create stage directories under `stages/`.
+4. Fill each stage's `REQUIREMENTS.md`, `PLAN.md`, `WORK.md`, and `specs/`.
 5. Validate before review:
    - `work validate plan`
    - `work check plan`
@@ -25,15 +25,15 @@ description: Create and prepare workstreams for execution. Planning only, no cod
 7. Link the planning session using `link_planning_session` once the plan is ready for handoff.
 
 Notes:
-- `REQUIREMENTS.md` is the human-facing source of truth for summary, deliverables, dependencies, and resource inputs.
-- `work validate requirements` must pass before scaffolding or reviewing the execution plan.
-- If requirements are missing or incomplete, stop and ask the user to provide them, or help the user draft `REQUIREMENTS.md` first.
+- Root `README.md` is the human-facing source of truth for shared summary, deliverables, dependencies, and resources.
+- Stage-local `REQUIREMENTS.md` files capture stage-specific acceptance criteria and inputs.
+- If shared requirements are missing or incomplete, stop and ask the user to provide them, or help the user draft the root `README.md` first.
 
 ## Planning Rules
 
-- No planning without validated requirements.
-- Do not scaffold or edit `PLAN.md` until `work validate requirements` passes.
-- Treat `PLAN.md` summary as the current planning-state/horizon note.
+- No planning without a clear root `README.md`.
+- Do not scaffold or edit stage-local plans until the root `README.md` captures the shared goal and constraints.
+- Treat each stage `PLAN.md` summary as that stage's current planning-state/horizon note.
 - When the plan is intentionally partial, the summary should say: (1) what is planned now, (2) what is intentionally deferred, and (3) what finding or event unlocks more planning.
 - If you add, remove, or substantially change stages, update the `## Summary` text so it matches the current planning horizon and scope boundary.
 - If uncertainty materially affects downstream implementation, prefer a research/discovery-first stage and keep later stages out of the plan until findings are known.
@@ -52,12 +52,9 @@ Notes:
 ```bash
 work create --name "feature-name"
 work current --set "001-feature-name"
-work validate requirements
 work plan create --stages 3
 work edit
 work preview
-work validate plan
-work check plan
 work revision --name "post-stage-review" --after-stage 3
 work agents # list agents
 work assign --thread "01.01.01" --agent "backend-expert"

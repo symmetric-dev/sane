@@ -2,8 +2,9 @@
  * REQUIREMENTS.md generation, parsing, and validation helpers.
  */
 
-import { existsSync } from "fs"
+import { existsSync, readFileSync } from "fs"
 import { join, normalize, isAbsolute } from "path"
+import { listOrderedStageDirectories } from "./stage-directories.ts"
 
 export const REQUIREMENTS_SECTION_ORDER = [
   "Summary",
@@ -41,6 +42,14 @@ export interface RequirementsValidationResult {
   warnings: string[]
 }
 
+export interface LoadedRequirementsDocuments {
+  displayPath: string
+  source: "root" | "stages"
+  documentPaths: string[]
+  skippedStageRequirementPaths: string[]
+  warnings: string[]
+}
+
 interface ParsedSection {
   heading: string
   content: string
@@ -54,6 +63,59 @@ const URI_SCHEME_RE = /^[a-z][a-z0-9+.-]*:/i
 
 export function getRequirementsMdPath(repoRoot: string, streamId: string): string {
   return join(repoRoot, "work", streamId, "REQUIREMENTS.md")
+}
+
+export function getStageRequirementsMdPaths(repoRoot: string, streamId: string): string[] {
+  const stagesDir = join(repoRoot, "work", streamId, "stages")
+  return listOrderedStageDirectories(stagesDir)
+    .map((entry) => join(stagesDir, entry.name, "REQUIREMENTS.md"))
+    .filter((requirementsPath) => existsSync(requirementsPath))
+}
+
+export function loadWorkstreamRequirements(repoRoot: string, streamId: string): LoadedRequirementsDocuments | null {
+  const rootRequirementsPath = getRequirementsMdPath(repoRoot, streamId)
+  if (existsSync(rootRequirementsPath)) {
+    return {
+      displayPath: rootRequirementsPath,
+      source: "root",
+      documentPaths: [rootRequirementsPath],
+      skippedStageRequirementPaths: [],
+      warnings: [],
+    }
+  }
+
+  const streamDir = join(repoRoot, "work", streamId)
+  const stageRequirementPaths = getStageRequirementsMdPaths(repoRoot, streamId)
+  if (stageRequirementPaths.length === 0) {
+    return null
+  }
+
+  const documentPaths: string[] = []
+  const skippedStageRequirementPaths: string[] = []
+  const warnings: string[] = []
+
+  for (const requirementsPath of stageRequirementPaths) {
+    const content = readFileSync(requirementsPath, "utf-8")
+    if (!hasMeaningfulRequirementsContent(content)) {
+      skippedStageRequirementPaths.push(requirementsPath)
+      warnings.push(`Ignored unfilled stage scaffold at ${requirementsPath}`)
+      continue
+    }
+
+    documentPaths.push(requirementsPath)
+  }
+
+  if (documentPaths.length === 0) {
+    return null
+  }
+
+  return {
+    displayPath: `${join(streamDir, "stages")}/*/REQUIREMENTS.md`,
+    source: "stages",
+    documentPaths,
+    skippedStageRequirementPaths,
+    warnings,
+  }
 }
 
 export function generateRequirementsMd(): string {
@@ -302,6 +364,21 @@ function parseBulletSection(
 
 function stripComments(value: string): string {
   return value.replace(HTML_COMMENT_RE, "")
+}
+
+function hasMeaningfulRequirementsContent(content: string): boolean {
+  const document = parseRequirementsDocument(content)
+
+  return (
+    document.summary.trim().length > 0 ||
+    document.deliverables.some((entry) => !isDefaultDeliverablePlaceholder(entry.raw)) ||
+    document.dependencies.some((entry) => entry.path && entry.path !== "packages/workstreams/src/lib/generate.ts") ||
+    document.resources.some((entry) => entry.path && entry.path !== "resources/example-notes.md")
+  )
+}
+
+function isDefaultDeliverablePlaceholder(value: string): boolean {
+  return /^Replace with a concrete (stage|workstream) deliverable$/i.test(value.trim())
 }
 
 function extractNormalizedBacktickPath(value: string): string | undefined {
