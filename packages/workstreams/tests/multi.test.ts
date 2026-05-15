@@ -1,10 +1,11 @@
 import { describe, expect, test, mock, beforeEach, afterEach, spyOn } from "bun:test"
-import { mkdtempSync, writeFileSync, rmSync, existsSync } from "fs"
+import { mkdtempSync, writeFileSync, rmSync, existsSync, mkdirSync } from "fs"
 import { join } from "path"
 import { tmpdir } from "os"
 import {
     buildRootAgentThreadSessionLineage,
     findNextIncompleteBatch,
+    findNextIncompleteBatchFromThreads,
     parseCliArgs as parseMultiCliArgs,
     validateCliArgs as validateMultiCliArgs,
 } from "../src/cli/multi"
@@ -12,6 +13,9 @@ import { getCompletionMarkerPath, getSessionFilePath, buildRunCommand, buildRetr
 import type { Task, NormalizedModelSpec } from "../src/lib/types"
 import * as notifications from "../src/lib/notifications"
 import { mockPlayNotification } from "./helpers"
+import { collectThreadInfoFromTasks } from "../src/lib/multi-orchestrator"
+import { bootstrapSqliteStructuredStorage, syncStructuredStorageWorkstreamStateToSqlite } from "../src/lib/sqlite-storage"
+import { createEmptyStructuredStorageWorkstreamState } from "../src/lib/structured-storage"
 
 describe("multi cli", () => {
     const streamId = "001-test-stream"
@@ -82,6 +86,96 @@ describe("multi cli", () => {
             ] as Task[]
 
             expect(findNextIncompleteBatch(tasks)).toBe("01.01")
+        })
+
+        test("prefers canonical thread ordering when choosing the next batch", () => {
+            expect(findNextIncompleteBatchFromThreads([
+                {
+                    batchId: "01.02",
+                    aggregateStatus: "pending",
+                },
+                {
+                    batchId: "01.01",
+                    aggregateStatus: "in_progress",
+                },
+            ])).toBe("01.01")
+        })
+    })
+
+    describe("thread discovery", () => {
+        test("collects batch threads from canonical hierarchy before compatibility tasks", () => {
+            const tempDir = mkdtempSync(join(tmpdir(), "agenv-multi-sqlite-"))
+            const testStreamId = "001-thread-first-batch"
+
+            try {
+                const workDir = join(tempDir, "work", testStreamId)
+                mkdirSync(workDir, { recursive: true })
+                writeFileSync(join(workDir, "tasks.json"), JSON.stringify({
+                    version: "1.0.0",
+                    stream_id: testStreamId,
+                    last_updated: new Date().toISOString(),
+                    tasks: [
+                        {
+                            id: "01.02.01.01",
+                            name: "compat later task",
+                            thread_name: "Compatibility later",
+                            batch_name: "Compatibility batch 2",
+                            stage_name: "Compatibility stage",
+                            created_at: new Date().toISOString(),
+                            updated_at: new Date().toISOString(),
+                            status: "pending",
+                        },
+                    ],
+                }, null, 2))
+
+                const state = createEmptyStructuredStorageWorkstreamState(testStreamId)
+                state.hierarchy.stages = [{ id: "01", number: 1, name: "Stage 1" }]
+                state.hierarchy.batches = [
+                    { id: "01.01", stageId: "01", number: 1, name: "Batch 1" },
+                    { id: "01.02", stageId: "01", number: 2, name: "Batch 2" },
+                ]
+                state.hierarchy.threads = [
+                    {
+                        id: "01.01.01",
+                        stageId: "01",
+                        batchId: "01.01",
+                        number: 1,
+                        name: "Canonical first thread",
+                        promptPath: `${testStreamId}/prompts/01-stage-1/01-batch-1/canonical-first-thread.md`,
+                    },
+                ]
+                state.hierarchy.tasks = [
+                    {
+                        id: "01.01.01.01",
+                        stageId: "01",
+                        batchId: "01.01",
+                        threadId: "01.01.01",
+                        number: 1,
+                        name: "Canonical first task",
+                        status: "pending",
+                        createdAt: "2026-05-14T00:00:00.000Z",
+                        updatedAt: "2026-05-14T00:00:00.000Z",
+                        assignedAgent: "canonical-agent",
+                    },
+                ]
+
+                bootstrapSqliteStructuredStorage(tempDir)
+                syncStructuredStorageWorkstreamStateToSqlite(tempDir, state)
+
+                const threads = collectThreadInfoFromTasks(tempDir, testStreamId, 1, 1, {
+                    agents: [{ name: "canonical-agent", description: "", best_for: "", models: ["anthropic/claude-sonnet-4"] }],
+                })
+
+                expect(threads).toHaveLength(1)
+                expect(threads[0]).toMatchObject({
+                    threadId: "01.01.01",
+                    threadName: "Canonical first thread",
+                    agentName: "canonical-agent",
+                })
+                expect(threads[0]?.promptPath).toContain("canonical-first-thread.md")
+            } finally {
+                rmSync(tempDir, { recursive: true, force: true })
+            }
         })
     })
 

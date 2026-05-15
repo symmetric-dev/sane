@@ -94,21 +94,6 @@ Cover the sqlite-authoritative lifecycle.
   )
 }
 
-function writeTasksMd(streamDir: string, streamId: string): void {
-  writeFileSync(
-    join(streamDir, "TASKS.md"),
-    `# Tasks: ${streamId}
-
-## Stage 01: Core Lifecycle
-
-### Batch 01: Regression coverage
-
-#### Thread 01: Command and lifecycle regression @agent:default
-- [ ] Task 01.01.01.01: Validate sqlite-authoritative lifecycle transitions
-`,
-  )
-}
-
 function writeLegacyIndex(repoRoot: string, streamId: string): void {
   writeFileSync(
     join(repoRoot, "work", "index.json"),
@@ -167,8 +152,6 @@ describe("sqlite-authoritative workflow lifecycle regression", () => {
 
     writeLegacyIndex(repoRoot, streamId)
     writeValidPlan(streamDir)
-    writeTasksMd(streamDir, streamId)
-
     await initMain(["bun", "work", "init", "--repo-root", repoRoot, "--sqlite"])
     expect(existsSync(getStructuredStorageSqlitePath(repoRoot))).toBeTrue()
 
@@ -184,18 +167,11 @@ describe("sqlite-authoritative workflow lifecycle regression", () => {
       approveMain(["bun", "work", "approve", "plan", "--repo-root", repoRoot, "--stream", streamId]),
     )
     expect(planApproveOutput.exitCode).toBeNull()
+    expect(existsSync(join(streamDir, "TASKS.md"))).toBeFalse()
 
-    // Plan approval regenerates TASKS.md placeholders; fill a concrete task before task approval.
-    writeTasksMd(streamDir, streamId)
-
-    const tasksApproveOutput = await runCliSafely(() =>
-      approveMain(["bun", "work", "approve", "tasks", "--repo-root", repoRoot, "--stream", streamId]),
-    )
-    if (tasksApproveOutput.exitCode !== null) {
-      throw new Error(
-        `tasks approval failed: ${[...tasksApproveOutput.stderr, ...tasksApproveOutput.stdout].join("\\n")}`,
-      )
-    }
+    const approvedTasksFile = readTasksFile(repoRoot, streamId)
+    expect(approvedTasksFile?.tasks.map((task) => task.id)).toEqual(["01.01.01.01"])
+    expect(approvedTasksFile?.tasks[0]?.name).toBe("Cover the sqlite-authoritative lifecycle.")
 
     const updatedOutput = await runCliSafely(() =>
       updateTaskMain([
@@ -216,7 +192,9 @@ describe("sqlite-authoritative workflow lifecycle regression", () => {
     )
     expect(updatedOutput.exitCode).toBeNull()
     expect(updatedOutput.stderr).toHaveLength(0)
-    expect(updatedOutput.stdout.join("\n")).toContain("Updated task 01.01.01.01")
+    expect(updatedOutput.stdout.join("\n")).toContain(
+      "Updated thread 01.01.01 via compatibility task 01.01.01.01 (1 compatibility task(s)) to completed",
+    )
 
     const stageApproveOutput = await runCliSafely(() =>
       approveMain([

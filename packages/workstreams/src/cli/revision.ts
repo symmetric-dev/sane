@@ -159,7 +159,7 @@ export function main(argv: string[] = process.argv): void {
     })
 
     if (result.success) {
-      // Auto-revoke tasks approval if currently approved
+      // Auto-revoke execution-state approval if currently approved
       const tasksStatus = queryTasksApprovalStatus(repoRoot, stream.id, stream)
       let revokedTasks = false
       if (tasksStatus === "approved") {
@@ -169,7 +169,7 @@ export function main(argv: string[] = process.argv): void {
 
       console.log(result.message)
       if (revokedTasks) {
-        console.log(`  Tasks approval revoked for revision`)
+        console.log(`  Execution-state approval revoked for revision`)
       }
       console.log(`\nEdit PLAN.md to fill in details, then run 'work approve revision'`)
     } else {

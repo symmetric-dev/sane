@@ -1,5 +1,5 @@
 import type { BatchStatusFile } from "../batch-status.ts"
-import { getTasksByThread, parseTaskId } from "../tasks.ts"
+import { getTasksByThreadId } from "../tasks.ts"
 import { loadThreads } from "../threads.ts"
 import { normalizeReviewerResult } from "../reviewer/output.ts"
 import type { ReviewerResult } from "../reviewer/types.ts"
@@ -53,14 +53,7 @@ export function collectSupervisorReviewInput(
   const threadsFile = loadThreads(repoRoot, streamId)
 
   const threads = batchStatus.threads.map((thread) => {
-    const parsedThread = parseTaskId(`${thread.threadId}.01`)
-    const tasks = getTasksByThread(
-      repoRoot,
-      streamId,
-      parsedThread.stage,
-      parsedThread.batch,
-      parsedThread.thread,
-    )
+    const tasks = getTasksByThreadId(repoRoot, streamId, thread.threadId)
     const threadMeta = threadsFile?.threads.find((candidate) => candidate.threadId === thread.threadId)
 
     return {

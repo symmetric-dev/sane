@@ -1,7 +1,8 @@
 /**
  * CLI: Update Task
  *
- * Updates a specific task's status in a workstream's checklist.
+ * Updates a thread status in a workstream.
+ * Compatibility task targeting is an explicit alias for the owning thread.
  */
 
 import type { TaskStatus } from "../lib/types.ts"
@@ -31,15 +32,15 @@ const VALID_STATUSES: TaskStatus[] = [
 
 function printHelp(): void {
   console.log(`
-work update - Update a task's status or all tasks in a thread
+work update - Update a thread or compatibility task status
 
 Usage:
-  work update --task <id> --status <status> [options]
   work update --thread <id> --status <status> [options]
+  work update --task <id> --status <status> [options]
 
 Required (one of):
-  --task, -t       Task ID (e.g., "01.01.01.01" = Stage 01, Batch 01, Thread 01, Task 01)
-  --thread         Thread ID (e.g., "01.01.01" = Stage 01, Batch 01, Thread 01) - updates ALL tasks
+  --thread         Thread ID (e.g., "01.01.01" = Stage 01, Batch 01, Thread 01) - canonical
+  --task, -t       Compatibility task ID alias (e.g., "01.01.01.01" = Stage 01, Batch 01, Thread 01, Task 01)
   --status         New status: pending, in_progress, completed, blocked, cancelled
 
 Optional:
@@ -56,13 +57,13 @@ ID Formats:
   Thread: "01.01.02"    = Stage 01, Batch 01, Thread 02
 
 Examples:
-  # Mark single task completed
-  work update --task "01.01.01.01" --status completed
-
   # Mark all tasks in a thread completed
   work update --thread "01.01.01" --status completed
 
-  # Mark task completed with report (recommended)
+  # Compatibility alias: resolve task -> owning thread -> update
+  work update --task "01.01.01.01" --status completed
+
+  # Mark task completed with report
   work update --task "01.01.01.01" --status completed --report "Added hono dependencies."
 
   # Mark all tasks in thread cancelled
@@ -185,7 +186,7 @@ function parseCliArgs(argv: string[]): UpdateTaskCliArgs | null {
 
   // Validate required args
   if (!parsed.taskId && !parsed.threadId) {
-    console.error("Error: --task or --thread is required")
+    console.error("Error: --thread or --task is required")
     return null
   }
   if (parsed.taskId && parsed.threadId) {
@@ -245,9 +246,8 @@ export async function main(argv: string[] = process.argv): Promise<void> {
         report: cliArgs.report,
         assigned_agent: cliArgs.assigned_agent,
       })
-      console.log(`Updated ${result.count} task(s) in thread ${result.threadId} to ${result.status}`)
+      console.log(`Updated thread ${result.threadId} (${result.count} compatibility task(s)) to ${result.status}`)
     } else {
-      // Update single task
       const result = await updateTask({
         repoRoot,
         stream,
@@ -258,7 +258,10 @@ export async function main(argv: string[] = process.argv): Promise<void> {
         report: cliArgs.report,
         assigned_agent: cliArgs.assigned_agent,
       })
-      console.log(`Updated task ${result.taskId} to ${result.status}`)
+      console.log(
+        `Updated thread ${result.threadId} via compatibility task ${result.taskId} ` +
+        `(${result.count} compatibility task(s)) to ${result.status}`,
+      )
     }
   } catch (e) {
     console.error(`Error: ${(e as Error).message}`)

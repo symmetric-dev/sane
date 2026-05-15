@@ -355,7 +355,6 @@ async function reconcileGhostBatchRun(args: {
 
     if (sessionId && completionStatus) {
       completions.push({
-        taskId: seed.firstTaskId,
         threadId: seed.threadId,
         sessionId,
         status: completionStatus,
@@ -615,13 +614,12 @@ async function finalizeCanonicalThreadState(
       continue
     }
 
-      completions.push({
-        taskId: seed.firstTaskId,
-        threadId: seed.threadId,
-        sessionId,
-        status: storedResult?.status ?? "completed",
-        exitCode: storedResult?.exitCode,
-      })
+    completions.push({
+      threadId: seed.threadId,
+      sessionId,
+      status: storedResult?.status ?? "completed",
+      exitCode: storedResult?.exitCode,
+    })
   }
 
   if (completions.length > 0) {

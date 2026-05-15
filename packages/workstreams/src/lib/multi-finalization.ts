@@ -9,7 +9,7 @@ import {
   getRunResultPath,
   getCompletionMarkerPath,
 } from "./opencode.ts"
-import { completeMultipleSessionsLocked } from "./tasks.ts"
+import { completeMultipleThreadSessionsLocked } from "./threads.ts"
 import { getSessionPaneStatuses, sessionExists } from "./tmux.ts"
 import type { ThreadSessionMap } from "./types.ts"
 
@@ -21,11 +21,11 @@ interface StoredRunResult {
 }
 
 export interface FinalizationCompletion {
-  taskId: string
   threadId: string
   sessionId: string
   status: FinalStatus
   exitCode?: number
+  taskId?: string
 }
 
 export interface FinalizeMultiRunOptions {
@@ -191,11 +191,11 @@ export async function applyFinalizationCompletions(options: {
   if (verbose) {
     console.log(`\nUpdating ${completions.length} session statuses in tasks.json...`)
   }
-  await completeMultipleSessionsLocked(
+  await completeMultipleThreadSessionsLocked(
     repoRoot,
     streamId,
-    completions.map(({ taskId, sessionId, status, exitCode }) => ({
-      taskId,
+    completions.map(({ threadId, sessionId, status, exitCode }) => ({
+      threadId,
       sessionId,
       status,
       exitCode,

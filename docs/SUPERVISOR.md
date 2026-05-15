@@ -11,7 +11,7 @@ This guide is the operator-facing reference for supervised workstream runs.
 Supervision is the execution layer inside the broader workstream lifecycle:
 
 1. A planning agent uses `planning-workstreams` to prepare the workstream.
-2. The user approves the plan and tasks.
+2. The user approves the plan.
 3. The user manually `/fork`s the session and asks the forked session to supervise the approved work.
 4. The supervision branch uses `supervising-workstreams` and runs `work supervise`.
 5. Implementation agents inside that supervised batch use `implementing-workstreams` to inspect task scope, execute their assigned work, and keep task state accurate.
@@ -74,7 +74,7 @@ The default 20-minute wait budget is the normal mode. Use short timeouts only fo
 
 ```bash
 work status
-work list --tasks --batch "SS.BB"
+work list --batch "SS.BB"
 work tree --batch "SS.BB"
 work supervise --batch "SS.BB"
 ```
@@ -86,7 +86,8 @@ During or after a supervise pass, implementation agents commonly inspect their s
 ```bash
 work status
 work tree --batch "SS.BB"
-work list --tasks --thread "SS.BB.TT"
+work list --thread "SS.BB.TT"
+work list --tasks --thread "SS.BB.TT"   # compatibility task view
 ```
 
 They are expected to keep task state current while they work:

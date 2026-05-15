@@ -1,14 +1,16 @@
 /**
- * CLI: Assign Agents to Tasks
+ * CLI: Assign Agents to Threads
  *
- * Assign agents to tasks in tasks.json.
- * Agent assignments are stored directly on each task.
+ * Thread mutation is canonical.
+ * Compatibility task targeting is an explicit alias for the owning thread.
  */
 
 import { getRepoRoot } from "../lib/repo.ts"
 import { loadIndex, getResolvedStream } from "../lib/index.ts"
-import { getTasks, updateTaskStatus, getTaskById } from "../lib/tasks.ts"
+import { getTaskById } from "../lib/tasks.ts"
 import { loadAgentsConfig, getAgentYaml } from "../lib/agents-yaml.ts"
+import { queryThreadsForWorkstream } from "../lib/hierarchy-query.ts"
+import { mutateThreadTasks } from "../lib/update.ts"
 
 interface AssignCliArgs {
   repoRoot?: string
@@ -23,40 +25,42 @@ interface AssignCliArgs {
 
 function printHelp(): void {
   console.log(`
-work assign - Assign agents to tasks
+work assign - Assign agents to threads
 
 Usage:
+  work assign --thread <threadId> --agent <agent>
   work assign --task <taskId> --agent <agent>
+  work assign --thread <threadId> --clear
   work assign --task <taskId> --clear
   work assign --list
 
 Options:
   --repo-root, -r    Repository root (auto-detected if omitted)
   --stream, -s       Workstream ID or name (uses current if not specified)
-  --thread, -th      Thread ID (e.g., "01.01.01")
-  --task, -t         Task ID (e.g., "01.01.02.03")
+  --thread, -th      Thread ID (e.g., "01.01.01") (canonical)
+  --task, -t         Compatibility task ID alias (e.g., "01.01.02.03")
   --agent, -a        Agent name to assign
-  --list             List all tasks with agent assignments
-  --clear            Remove agent assignment from task
+  --list             List assigned threads (thread-first view)
+  --clear            Remove agent assignment from the resolved thread
   --json, -j         Output as JSON
   --help, -h         Show this help message
 
 Description:
-  Assigns agents to tasks for execution. Agents must be defined first
-  in agents.yaml. Assignments are stored in tasks.json.
+  Assigns agents to execution threads. Agents must be defined first
+  in agents.yaml. tasks.json remains a compatibility projection.
 
 Examples:
   # Assign an agent to a thread
   work assign --thread "01.01.01" --agent "backend-expert"
 
-  # Assign an agent to a specific task
+  # Compatibility alias: resolve task -> owning thread -> assign
   work assign --task "01.01.02.03" --agent "backend-orm-expert"
 
-  # List all tasks with assignments
+  # List assigned threads
   work assign --list
 
   # Remove an assignment
-  work assign --task "01.01.02.03" --clear
+  work assign --thread "01.01.01" --clear
 `)
 }
 
@@ -144,14 +148,32 @@ function parseCliArgs(argv: string[]): AssignCliArgs | null {
   return parsed
 }
 
-export function main(argv: string[] = process.argv): void {
+function resolveTargetThread(args: { repoRoot: string; streamId: string; task?: string; thread?: string }): {
+  threadId: string
+  compatibilityTaskId?: string
+} {
+  if (args.thread) {
+    return { threadId: args.thread }
+  }
+
+  const task = getTaskById(args.repoRoot, args.streamId, args.task!)
+  if (!task) {
+    throw new Error(`Task "${args.task}" not found`)
+  }
+
+  return {
+    threadId: task.id.split(".").slice(0, 3).join("."),
+    compatibilityTaskId: task.id,
+  }
+}
+
+export async function main(argv: string[] = process.argv): Promise<void> {
   const cliArgs = parseCliArgs(argv)
   if (!cliArgs) {
     console.error("\nRun with --help for usage information.")
     process.exit(1)
   }
 
-  // Auto-detect repo root if not provided
   let repoRoot: string
   try {
     repoRoot = cliArgs.repoRoot ?? getRepoRoot()
@@ -160,7 +182,6 @@ export function main(argv: string[] = process.argv): void {
     process.exit(1)
   }
 
-  // Load index and find workstream
   let index
   try {
     index = loadIndex(repoRoot)
@@ -177,191 +198,120 @@ export function main(argv: string[] = process.argv): void {
     process.exit(1)
   }
 
-  // Handle --list
   if (cliArgs.list) {
-    const tasks = getTasks(repoRoot, stream.id)
-    const assignedTasks = tasks.filter((t) => t.assigned_agent)
+    const assignedThreads = queryThreadsForWorkstream(repoRoot, stream.id).filter(
+      (thread) => thread.assignedAgent,
+    )
 
     if (cliArgs.json) {
-      console.log(JSON.stringify({ streamId: stream.id, tasks: assignedTasks }, null, 2))
+      console.log(JSON.stringify({ streamId: stream.id, threads: assignedThreads }, null, 2))
+    } else if (assignedThreads.length === 0) {
+      console.log(`No threads have agent assignments in workstream "${stream.name}"`)
     } else {
-      if (assignedTasks.length === 0) {
-        console.log(`No tasks have agent assignments in workstream "${stream.name}"`)
-        return
-      }
-
-      console.log(`Tasks with agent assignments in "${stream.name}":`)
+      console.log(`Threads with agent assignments in "${stream.name}":`)
       console.log("")
 
-      for (const t of assignedTasks) {
-        console.log(`  ${t.id} -> ${t.assigned_agent}`)
-        console.log(`    ${t.name}`)
+      for (const thread of assignedThreads) {
+        console.log(`  ${thread.threadId} -> ${thread.assignedAgent}`)
+        console.log(`    ${thread.threadName}`)
+        if (thread.representativeTaskId) {
+          console.log(`    compatibility task: ${thread.representativeTaskId}`)
+        }
         console.log("")
       }
     }
     return
   }
 
-  // Handle --clear
-  if (cliArgs.clear) {
-    // Determine targets
-    let targetTasks: string[] = []
-
-    if (cliArgs.task) {
-      targetTasks.push(cliArgs.task)
-    } else if (cliArgs.thread) {
-      // Find all tasks in thread
-      const tasks = getTasks(repoRoot, stream.id)
-      const threadPrefix = cliArgs.thread + "."
-      targetTasks = tasks
-        .filter((t) => t.id.startsWith(threadPrefix))
-        .map((t) => t.id)
-
-      if (targetTasks.length === 0) {
-        console.error(`Error: No tasks found for thread "${cliArgs.thread}"`)
-        process.exit(1)
-      }
-    } else {
-      console.error("Error: --clear requires --task or --thread")
-      console.error("\nRun with --help for usage information.")
-      process.exit(1)
-    }
-
-    let successCount = 0
-    const errors: string[] = []
-
-    for (const taskId of targetTasks) {
-      const existingTask = getTaskById(repoRoot, stream.id, taskId)
-      if (!existingTask) {
-        errors.push(`Task "${taskId}" not found`)
-        continue
-      }
-
-      const updated = updateTaskStatus(repoRoot, stream.id, taskId, {
-        assigned_agent: "",
-      })
-
-      if (!updated) {
-        errors.push(`Failed to update task "${taskId}"`)
-      } else {
-        successCount++
-      }
-    }
-
-    if (errors.length > 0) {
-      console.error("Errors clearing assignments:")
-      errors.forEach((e) => console.error(`  - ${e}`))
-    }
-
-    if (cliArgs.json) {
-      console.log(
-        JSON.stringify(
-          {
-            action: "cleared",
-            streamId: stream.id,
-            clearedCount: successCount,
-            errors,
-          },
-          null,
-          2
-        )
-      )
-    } else {
-      console.log(`Cleared agent assignment from ${successCount} tasks`)
-    }
-
-    if (errors.length > 0) process.exit(1)
-    return
+  if (cliArgs.clear && cliArgs.agent) {
+    console.error("Error: --clear cannot be combined with --agent")
+    process.exit(1)
   }
 
-  // Default: create assignment
-  if ((!cliArgs.task && !cliArgs.thread) || !cliArgs.agent) {
-    console.error("Error: --agent and either --task or --thread are required")
+  if (cliArgs.clear && !cliArgs.task && !cliArgs.thread) {
+    console.error("Error: --clear requires --task or --thread")
     console.error("\nRun with --help for usage information.")
     process.exit(1)
   }
 
-  // Verify agent exists
-  const agentsConfig = loadAgentsConfig(repoRoot)
-  if (agentsConfig) {
-    const agentDef = getAgentYaml(agentsConfig, cliArgs.agent)
-    if (!agentDef) {
-      console.error(`Error: Agent "${cliArgs.agent}" is not defined`)
-      console.error("Define it in agents.yaml first.")
-      process.exit(1)
+  if (!cliArgs.clear && ((!cliArgs.task && !cliArgs.thread) || !cliArgs.agent)) {
+    console.error("Error: --agent and either --thread or --task are required")
+    console.error("\nRun with --help for usage information.")
+    process.exit(1)
+  }
+
+  if (!cliArgs.clear) {
+    const agentsConfig = loadAgentsConfig(repoRoot)
+    if (agentsConfig) {
+      const agentDef = getAgentYaml(agentsConfig, cliArgs.agent!)
+      if (!agentDef) {
+        console.error(`Error: Agent "${cliArgs.agent}" is not defined`)
+        console.error("Define it in agents.yaml first.")
+        process.exit(1)
+      }
     }
   }
 
-  // Identify target tasks
-  let targetTasks: { id: string; name: string }[] = []
-
-  if (cliArgs.task) {
-    const existingTask = getTaskById(repoRoot, stream.id, cliArgs.task)
-    if (!existingTask) {
-      console.error(`Error: Task "${cliArgs.task}" not found`)
-      process.exit(1)
-    }
-    targetTasks.push(existingTask)
-  } else if (cliArgs.thread) {
-    // Find all tasks in thread
-    const tasks = getTasks(repoRoot, stream.id)
-    const threadPrefix = cliArgs.thread + "."
-    targetTasks = tasks
-      .filter((t) => t.id.startsWith(threadPrefix))
-
-    if (targetTasks.length === 0) {
-      console.error(`Error: No tasks found for thread "${cliArgs.thread}"`)
-      process.exit(1)
-    }
-  }
-
-  // Update tasks
-  let successCount = 0
-  const errors: string[] = []
-
-  for (const task of targetTasks) {
-    const updated = updateTaskStatus(repoRoot, stream.id, task.id, {
-      assigned_agent: cliArgs.agent,
+  let target
+  try {
+    target = resolveTargetThread({
+      repoRoot,
+      streamId: stream.id,
+      task: cliArgs.task,
+      thread: cliArgs.thread,
     })
+  } catch (e) {
+    console.error(`Error: ${(e as Error).message}`)
+    process.exit(1)
+  }
 
-    if (!updated) {
-      errors.push(`Failed to update task "${task.id}"`)
-    } else {
-      successCount++
-    }
+  let result
+  try {
+    result = await mutateThreadTasks({
+      repoRoot,
+      stream,
+      threadId: target.threadId,
+      assigned_agent: cliArgs.clear ? "" : cliArgs.agent,
+    })
+  } catch (e) {
+    console.error(`Error: ${(e as Error).message}`)
+    process.exit(1)
   }
 
   if (cliArgs.json) {
     console.log(
       JSON.stringify(
         {
-          action: "assigned",
+          action: cliArgs.clear ? "cleared" : "assigned",
           streamId: stream.id,
-          agent: cliArgs.agent,
-          assignedCount: successCount,
-          errors,
+          threadId: target.threadId,
+          ...(target.compatibilityTaskId ? { compatibilityTaskId: target.compatibilityTaskId } : {}),
+          ...(!cliArgs.clear && cliArgs.agent ? { agent: cliArgs.agent } : {}),
+          [cliArgs.clear ? "clearedCount" : "assignedCount"]: result.count,
         },
         null,
-        2
-      )
+        2,
+      ),
     )
-  } else {
-    console.log(`Assigned "${cliArgs.agent}" to ${successCount} tasks`)
-    if (cliArgs.thread) {
-      console.log(`Thread: ${cliArgs.thread}`)
-    } else {
-      console.log(`Task: ${targetTasks[0]?.name}`)
-    }
+    return
   }
 
-  if (errors.length > 0) {
-    console.error("Errors assigning agent:")
-    errors.forEach((e) => console.error(`  - ${e}`))
-    process.exit(1)
+  if (cliArgs.clear) {
+    console.log(
+      target.compatibilityTaskId
+        ? `Cleared agent assignment from thread ${target.threadId} via compatibility task ${target.compatibilityTaskId}`
+        : `Cleared agent assignment from thread ${target.threadId}`,
+    )
+    return
   }
+
+  console.log(
+    target.compatibilityTaskId
+      ? `Assigned "${cliArgs.agent}" to thread ${target.threadId} via compatibility task ${target.compatibilityTaskId}`
+      : `Assigned "${cliArgs.agent}" to thread ${target.threadId}`,
+  )
 }
 
-// Run if called directly
 if (import.meta.main) {
-  main()
+  await main()
 }

@@ -1,16 +1,14 @@
 /**
  * CLI: Workstream Validate
  *
- * Validate PLAN.md, TASKS.md, and REQUIREMENTS.md structure and content.
+ * Validate PLAN.md and REQUIREMENTS.md structure and content.
  */
 
 import { existsSync, readFileSync } from "fs"
-import { join } from "path"
-import { getRepoRoot, getWorkDir } from "../lib/repo.ts"
+import { getRepoRoot } from "../lib/repo.ts"
 import { loadIndex, getResolvedStream } from "../lib/index.ts"
 import { getStreamPlanMdPath, consolidateStream } from "../lib/consolidate.ts"
-import { parseTasksMd } from "../lib/tasks-md.ts"
-import { findSharedFilesInTasksMd, formatSharedFileWarnings } from "../lib/analysis.ts"
+import { printRemovedTaskWorkflowError } from "../lib/removed-workflows.ts"
 import {
     getRequirementsMdPath,
     validateRequirementsDocument,
@@ -31,16 +29,14 @@ interface ValidationResult {
 
 function printHelp(): void {
     console.log(`
- work validate - Validate workstream plan, tasks, and requirements
+ work validate - Validate workstream plan and requirements
 
 Usage:
   work validate plan [--stream <stream-id>]
-  work validate tasks [--stream <stream-id>]
   work validate requirements [--stream <stream-id>]
 
 Subcommands:
   plan     Validate PLAN.md structure and content
-  tasks    Validate TASKS.md structure and content
   requirements  Validate REQUIREMENTS.md structure and content
 
 Options:
@@ -50,8 +46,8 @@ Options:
   --help, -h       Show this help message
 
 Description:
-  Validates PLAN.md, TASKS.md, or REQUIREMENTS.md structure and content.
-  Plan/tasks validation checks for files shared across parallel threads in the same batch.
+  Validates PLAN.md or REQUIREMENTS.md structure and content.
+  Plan validation checks for files shared across parallel threads in the same batch.
   Draft plans with an empty Stages section are valid, but 'work validate plan'
   emits a warning until stages are scaffolded.
   REQUIREMENTS.md validation checks required sections plus dependency/resource paths.
@@ -67,9 +63,6 @@ Examples:
   work current --set "000-draft-feature"
   work validate requirements
   work validate plan
-
-  # Validate tasks structure
-  work validate tasks
 
   # Validate requirements structure
   work validate requirements
@@ -169,7 +162,7 @@ export function main(argv: string[] = process.argv): void {
 
     // Validate subcommand
     if (!cliArgs.subcommand) {
-        console.error("Error: subcommand required (e.g., 'plan', 'tasks', or 'requirements')")
+        console.error("Error: subcommand required (e.g., 'plan' or 'requirements')")
         console.error("\nRun with --help for usage information.")
         process.exit(1)
     }
@@ -229,38 +222,9 @@ export function main(argv: string[] = process.argv): void {
     }
 
     if (cliArgs.subcommand === "tasks") {
-        const workDir = getWorkDir(repoRoot)
-        const tasksMdPath = join(workDir, stream.id, "TASKS.md")
-        if (!existsSync(tasksMdPath)) {
-            console.error(`Error: TASKS.md not found at ${tasksMdPath}`)
-            process.exit(1)
-        }
-
-        const content = readFileSync(tasksMdPath, "utf-8")
-
-        // Parse TASKS.md to check for structural errors
-        const parseResult = parseTasksMd(content, stream.id)
-
-        // Check for shared files in parallel threads
-        const sharedFileWarnings = findSharedFilesInTasksMd(content)
-        const formattedWarnings = formatSharedFileWarnings(sharedFileWarnings)
-
-        const result: ValidationResult = {
-            valid: parseResult.errors.length === 0,
-            errors: parseResult.errors,
-            warnings: formattedWarnings,
-        }
-
-        if (cliArgs.json) {
-            console.log(JSON.stringify(result, null, 2))
-        } else {
-            console.log(formatValidationResult(result, "TASKS.md"))
-        }
-
-        // Exit with error if validation failed
-        if (!result.valid) {
-            process.exit(1)
-        }
+        printRemovedTaskWorkflowError(
+            "Use 'work validate plan' to validate the thread/stage execution structure before 'work approve plan'.",
+        )
     }
 
     if (cliArgs.subcommand === "requirements") {

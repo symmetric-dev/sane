@@ -15,7 +15,6 @@ import { loadIndex } from "./index.ts"
 import { getWorkDir } from "./repo.ts"
 import { parseStreamDocument } from "./stream-parser.ts"
 import { updateStructuredApprovalsSync } from "./storage-adapter.ts"
-import { parseTasksMd } from "./tasks-md.ts"
 import { loadWorkstreamApprovalQueryResult, loadWorkstreamHierarchyQueryResult } from "./hierarchy-query.ts"
 
 function getIndexedStream(index: WorkIndex, streamIdOrName: string): StreamMetadata {
@@ -660,45 +659,26 @@ export interface TasksApprovalReadyResult {
 }
 
 /**
- * Check if tasks can be approved (TASKS.md exists with tasks)
+ * Check if compatibility execution state can be approved
  */
 export function checkTasksApprovalReady(
   repoRoot: string,
   streamId: string
 ): TasksApprovalReadyResult {
-  const workDir = getWorkDir(repoRoot)
-  const tasksMdPath = join(workDir, streamId, "TASKS.md")
+  const hierarchy = loadWorkstreamHierarchyQueryResult(repoRoot, streamId)
 
-  if (!existsSync(tasksMdPath)) {
+  if (hierarchy.threads.length === 0) {
     return {
       ready: false,
-      reason: "TASKS.md not found. Run 'work tasks' or create it manually to generate tasks.",
-      taskCount: 0,
-    }
-  }
-
-  const content = readFileSync(tasksMdPath, "utf-8")
-  const { tasks, errors } = parseTasksMd(content, streamId)
-
-  if (errors.length > 0) {
-    return {
-      ready: false,
-      reason: `TASKS.md has errors: ${errors[0]}`, // formatting issue
-      taskCount: 0,
-    }
-  }
-
-  if (tasks.length === 0) {
-    return {
-      ready: false,
-      reason: "TASKS.md exists but contains no valid tasks.",
-      taskCount: 0,
+      reason:
+        "Execution hierarchy has not been initialized yet. Run 'work approve plan' to seed compatibility tasks from PLAN.md.",
+      taskCount: hierarchy.tasks.length,
     }
   }
 
   return {
     ready: true,
-    taskCount: tasks.length,
+    taskCount: hierarchy.tasks.length,
   }
 }
 
@@ -720,6 +700,36 @@ export function queryTasksApprovalStatus(
   }
 
   return stream ? getTasksApprovalStatus(stream) : "draft"
+}
+
+export function queryIsFullyApproved(
+  repoRoot: string,
+  streamIdOrName: string,
+  stream?: StreamMetadata,
+): boolean {
+  return (
+    queryApprovalStatus(repoRoot, streamIdOrName, stream) === "approved" &&
+    queryTasksApprovalStatus(repoRoot, streamIdOrName, stream) === "approved"
+  )
+}
+
+export function queryFullApprovalStatus(
+  repoRoot: string,
+  streamIdOrName: string,
+  stream?: StreamMetadata,
+): {
+  plan: ApprovalStatus
+  tasks: ApprovalStatus
+  fullyApproved: boolean
+} {
+  const plan = queryApprovalStatus(repoRoot, streamIdOrName, stream)
+  const tasks = queryTasksApprovalStatus(repoRoot, streamIdOrName, stream)
+
+  return {
+    plan,
+    tasks,
+    fullyApproved: plan === "approved" && tasks === "approved",
+  }
 }
 
 /**

@@ -9,6 +9,7 @@ import { join } from "path"
 
 import {
   approveStream,
+  approveTasks,
   revokeApproval,
   queryApprovalStatus,
   formatApprovalStatus,
@@ -29,12 +30,13 @@ import {
   updateStageIssueState,
 } from "../../lib/github/index.ts"
 import { closeStageIssue } from "../../lib/github/issues.ts"
-import { generateTasksMdFromPlan } from "../../lib/tasks-md.ts"
 import { parseStreamDocument } from "../../lib/stream-parser.ts"
 import { getWorkDir } from "../../lib/repo.ts"
 import { type GitAutoCommitResult } from "../../lib/git/index.ts"
-import { atomicWriteFile, getResolvedStream } from "../../lib/index.ts"
+import { getResolvedStream } from "../../lib/index.ts"
 import { getTasks, parseTaskId } from "../../lib/tasks.ts"
+import { generateAllPrompts } from "../../lib/prompts.ts"
+import { syncCompatibilityTasksFromPlan } from "../../lib/task-compatibility.ts"
 
 import type { ApproveCliArgs } from "./utils.ts"
 
@@ -55,47 +57,29 @@ function formatApprovalAutoCommitSkip(result: GitAutoCommitResult): string {
   return result.error ?? "unknown"
 }
 
-/**
- * Result of TASKS.md generation attempt
- */
-interface TasksMdGenerationResult {
+interface ExecutionStateInitializationResult {
   success: boolean
-  path?: string
-  overwritten?: boolean
+  taskCount: number
   error?: string
 }
 
-/**
- * Generate TASKS.md file after plan approval
- *
- * @param repoRoot - Repository root path
- * @param streamId - Workstream ID
- * @param streamName - Workstream name for the file header
- * @returns Result of the generation attempt
- */
-function generateTasksMdAfterApproval(
+function initializeExecutionStateFromPlan(
   repoRoot: string,
   streamId: string,
-  streamName: string
-): TasksMdGenerationResult {
+): ExecutionStateInitializationResult {
   try {
     const workDir = getWorkDir(repoRoot)
     const streamDir = join(workDir, streamId)
-    const tasksMdPath = join(streamDir, "TASKS.md")
     const planMdPath = join(streamDir, "PLAN.md")
 
-    // Check if PLAN.md exists
     if (!existsSync(planMdPath)) {
       return {
         success: false,
+        taskCount: 0,
         error: `PLAN.md not found at ${planMdPath}`,
       }
     }
 
-    // Check if TASKS.md already exists
-    const overwritten = existsSync(tasksMdPath)
-
-    // Parse PLAN.md to get the stream document
     const planContent = readFileSync(planMdPath, "utf-8")
     const errors: any[] = []
     const doc = parseStreamDocument(planContent, errors)
@@ -103,24 +87,21 @@ function generateTasksMdAfterApproval(
     if (!doc) {
       return {
         success: false,
+        taskCount: 0,
         error: `Failed to parse PLAN.md: ${errors.map((e) => e.message).join(", ")}`,
       }
     }
 
-    // Generate TASKS.md content from the plan structure
-    const content = generateTasksMdFromPlan(streamName, doc)
-
-    // Write the file
-    atomicWriteFile(tasksMdPath, content)
+    const tasks = syncCompatibilityTasksFromPlan(repoRoot, streamId, doc)
 
     return {
       success: true,
-      path: tasksMdPath,
-      overwritten,
+      taskCount: tasks.length,
     }
   } catch (e) {
     return {
       success: false,
+      taskCount: 0,
       error: (e as Error).message,
     }
   }
@@ -580,14 +561,23 @@ export async function handlePlanApproval(
   }
 
   try {
-    const updatedStream = approveStream(repoRoot, stream.id, "user")
+    let updatedStream = approveStream(repoRoot, stream.id, "user")
 
-    // Auto-generate TASKS.md after successful plan approval
-    const tasksMdResult = generateTasksMdAfterApproval(
+    const executionStateResult = initializeExecutionStateFromPlan(
       repoRoot,
       updatedStream.id,
-      updatedStream.name
     )
+
+    if (!executionStateResult.success) {
+      throw new Error(
+        `Failed to initialize execution state from PLAN.md: ${executionStateResult.error}`,
+      )
+    }
+
+    updatedStream = approveTasks(repoRoot, updatedStream.id)
+
+    const promptsResult = generateAllPrompts(repoRoot, updatedStream.id)
+    const promptsWarning = !promptsResult.success
 
     // Auto-commit on plan approval if configured.
     // This uses plain git and does not require GitHub integration to be enabled.
@@ -610,11 +600,12 @@ export async function handlePlanApproval(
               ? questionsResult.openCount
               : 0,
             forcedApproval: questionsResult.hasOpenQuestions && cliArgs.force,
-            tasksMd: {
-              generated: tasksMdResult.success,
-              path: tasksMdResult.path,
-              overwritten: tasksMdResult.overwritten,
-              error: tasksMdResult.error,
+            executionState: {
+              initialized: executionStateResult.success,
+              taskCount: executionStateResult.taskCount,
+              promptsGenerated: promptsResult.generatedFiles.length,
+              promptThreadCount: promptsResult.totalThreads,
+              promptErrors: promptsResult.errors,
             },
             commit: commitResult
               ? {
@@ -637,17 +628,22 @@ export async function handlePlanApproval(
         `Approved plan for workstream "${updatedStream.name}" (${updatedStream.id})`
       )
       console.log(`  Status: ${formatApprovalStatus(updatedStream)}`)
-
-      // Report TASKS.md generation result
-      if (tasksMdResult.success) {
-        if (tasksMdResult.overwritten) {
-          console.log(`  Warning: Overwrote existing TASKS.md`)
+      console.log(
+        `  Initialized execution state directly from PLAN.md (${executionStateResult.taskCount} compatibility task${executionStateResult.taskCount === 1 ? "" : "s"})`,
+      )
+      console.log(
+        `  Prompts: ${promptsResult.generatedFiles.length}/${promptsResult.totalThreads} generated`,
+      )
+      if (promptsWarning) {
+        console.log(`  Warning: Some prompts failed to generate:`)
+        for (const err of promptsResult.errors.slice(0, 3)) {
+          console.log(`    - ${err}`)
         }
-        console.log(`  TASKS.md generated at ${tasksMdResult.path}`)
-      } else {
-        console.log(
-          `  Warning: Failed to generate TASKS.md: ${tasksMdResult.error}`
-        )
+        if (promptsResult.errors.length > 3) {
+          console.log(
+            `    ... and ${promptsResult.errors.length - 3} more errors`,
+          )
+        }
       }
 
       if (commitResult?.success && commitResult.commitSha) {

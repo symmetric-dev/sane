@@ -22,6 +22,8 @@ import {
 } from "../src/lib/prompts.ts"
 import { saveIndex } from "../src/lib/index.ts"
 import type { WorkIndex } from "../src/lib/types.ts"
+import { bootstrapSqliteStructuredStorage, syncStructuredStorageWorkstreamStateToSqlite } from "../src/lib/sqlite-storage.ts"
+import { createEmptyStructuredStorageWorkstreamState } from "../src/lib/structured-storage.ts"
 
 const TEST_DIR = join(import.meta.dir, "temp_prompts_test")
 const REPO_ROOT = TEST_DIR
@@ -295,6 +297,58 @@ describe("Prompt Generation Library", () => {
       expect(() =>
         getPromptContext(REPO_ROOT, "test-stream", "99.01.01"),
       ).toThrow(/Stage 99 not found/)
+    })
+
+    test("prefers canonical thread query state for agent and task context", () => {
+      const state = createEmptyStructuredStorageWorkstreamState("test-stream")
+      state.hierarchy.stages = [
+        { id: "01", number: 1, name: "Setup" },
+        { id: "02", number: 2, name: "Implementation" },
+      ]
+      state.hierarchy.batches = [
+        { id: "01.01", stageId: "01", number: 1, name: "Core Setup" },
+        { id: "01.02", stageId: "01", number: 2, name: "Testing Setup" },
+        { id: "02.01", stageId: "02", number: 1, name: "Features" },
+      ]
+      state.hierarchy.threads = [
+        {
+          id: "01.01.01",
+          stageId: "01",
+          batchId: "01.01",
+          number: 1,
+          name: "Database Setup",
+          promptPath: "test-stream/prompts/persisted/database-setup.md",
+        },
+        { id: "01.01.02", stageId: "01", batchId: "01.01", number: 2, name: "API Setup" },
+        { id: "01.02.01", stageId: "01", batchId: "01.02", number: 1, name: "Unit Tests" },
+        { id: "02.01.01", stageId: "02", batchId: "02.01", number: 1, name: "Feature A" },
+      ]
+      state.hierarchy.tasks = [
+        {
+          id: "01.01.01.01",
+          stageId: "01",
+          batchId: "01.01",
+          threadId: "01.01.01",
+          number: 1,
+          name: "Canonical schema task",
+          status: "pending",
+          createdAt: "2026-05-14T00:00:00.000Z",
+          updatedAt: "2026-05-14T00:00:00.000Z",
+          assignedAgent: "canonical-db-agent",
+        },
+      ]
+
+      bootstrapSqliteStructuredStorage(REPO_ROOT)
+      syncStructuredStorageWorkstreamStateToSqlite(REPO_ROOT, state)
+
+      const context = getPromptContext(REPO_ROOT, "test-stream", "01.01.01")
+
+      expect(context.agentName).toBe("canonical-db-agent")
+      expect(context.tasks).toHaveLength(1)
+      expect(context.tasks[0]).toMatchObject({
+        id: "01.01.01.01",
+        name: "Canonical schema task",
+      })
     })
   })
 

@@ -57,8 +57,8 @@ Optional skill install:
 The day-to-day workflow is:
 
 1. Discuss the feature and let the agent research the repo.
-2. The agent uses `planning-workstreams` to create the workstream and prepare `REQUIREMENTS.md`, `PLAN.md`, and draft tasks.
-3. You approve the plan first, then approve tasks after the plan/task back-and-forth is complete.
+2. The agent uses `planning-workstreams` to create the workstream and prepare `REQUIREMENTS.md` and `PLAN.md`.
+3. You approve the plan, which now initializes compatibility execution state directly from `PLAN.md`.
 4. You manually `/fork` the session and ask the forked session to supervise the approved work.
 5. The supervision branch uses `supervising-workstreams` to run `work supervise`, inspect persisted state, and drive the review/fix/escalation loop.
 6. Implementation agents spawned within that loop use `implementing-workstreams` to inspect batch/task scope and update task state while they work.
@@ -84,7 +84,6 @@ Human approval / inspection commands typically look like:
 work tree
 work status
 work approve plan
-work approve tasks
 work approve stage 1
 work report validate
 ```
@@ -142,16 +141,16 @@ Example output from `work status`:
 
 AgEnv uses skill files under `agent/skills/*` to guide agent behavior through each phase.
 
-- `planning-workstreams`: used first to create the stream, fill `REQUIREMENTS.md`, shape `PLAN.md`, validate/check, and prepare tasks for approval.
-- `managing-workstreams`: optional managed-profile skill used by the Root Agent after task approval to launch and monitor a supervision branch automatically.
+- `planning-workstreams`: used first to create the stream, fill `REQUIREMENTS.md`, shape `PLAN.md`, and get the workstream ready for plan approval.
+- `managing-workstreams`: optional managed-profile skill used by the Root Agent after plan approval to launch and monitor a supervision branch automatically.
 - `supervising-workstreams`: used by the supervision branch to run `work supervise`, inspect persisted state, and drive the review/fix/escalation loop.
 - `implementing-workstreams`: used by worker agents that execute thread tasks within supervised batches; these workers inspect their scope and keep task state current.
 - `evaluating-workstreams`: used near completion to assess delivered work and finalize report quality (`REPORT.md`).
 
 In practice:
 
-1. Planning agent uses planning skill to prepare requirements/plan/tasks.
-2. Human approves (`work approve plan`, `work approve tasks`).
+1. Planning agent uses planning skill to prepare requirements and plan structure.
+2. Human approves (`work approve plan`).
 3. Human manually `/fork`s the session and asks the forked session to supervise the work.
 4. Supervision branch uses the supervising skill to run `work supervise` and make review/fix/escalation decisions.
 5. Implementation agents use the implementation skill to work assigned threads and update task state.

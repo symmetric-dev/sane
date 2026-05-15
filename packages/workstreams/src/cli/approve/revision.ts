@@ -7,23 +7,22 @@
 import { existsSync, readFileSync } from "fs"
 import { join } from "path"
 
-import { checkOpenQuestions } from "../../lib/approval.ts"
-import {
-  detectNewStages,
-  generateTasksMdForRevision,
-} from "../../lib/tasks-md.ts"
+import { approveTasks, checkOpenQuestions } from "../../lib/approval.ts"
+import { detectNewStages } from "../../lib/tasks-md.ts"
 import { parseStreamDocument } from "../../lib/stream-parser.ts"
 import { getWorkDir } from "../../lib/repo.ts"
-import { atomicWriteFile, getResolvedStream } from "../../lib/index.ts"
+import { getResolvedStream } from "../../lib/index.ts"
 import { getTasks } from "../../lib/tasks.ts"
+import { generateAllPrompts } from "../../lib/prompts.ts"
+import { syncCompatibilityTasksFromPlan } from "../../lib/task-compatibility.ts"
 
 import type { ApproveCliArgs } from "./utils.ts"
 
 /**
  * Handle revision approval workflow
  *
- * Detects new stages in PLAN.md that don't have corresponding tasks,
- * validates them, and generates TASKS.md with placeholders for the new stages.
+ * Detects new stages in PLAN.md that don't have corresponding compatibility tasks,
+ * validates them, and refreshes execution state directly from the revised plan.
  */
 export function handleRevisionApproval(
   repoRoot: string,
@@ -33,8 +32,6 @@ export function handleRevisionApproval(
   const workDir = getWorkDir(repoRoot)
   const streamDir = join(workDir, stream.id)
   const planMdPath = join(streamDir, "PLAN.md")
-  const tasksMdPath = join(streamDir, "TASKS.md")
-
   // Step 1: Load PLAN.md and parse with parseStreamDocument
   if (!existsSync(planMdPath)) {
     console.error(`Error: PLAN.md not found at ${planMdPath}`)
@@ -127,18 +124,12 @@ export function handleRevisionApproval(
     }
   }
 
-  // Step 5: Call generateTasksMdForRevision() and write TASKS.md
-  const tasksMdContent = generateTasksMdForRevision(
-    stream.name,
-    existingTasks,
-    doc,
-    newStageNumbers
-  )
+  // Step 5: Refresh compatibility execution state from the revised plan
+  const tasks = syncCompatibilityTasksFromPlan(repoRoot, stream.id, doc)
+  approveTasks(repoRoot, stream.id)
+  const promptsResult = generateAllPrompts(repoRoot, stream.id)
 
-  atomicWriteFile(tasksMdPath, tasksMdContent)
-
-  // Step 6: Count new placeholders
-  // Each new stage has batches, each batch has threads, each thread gets 1 placeholder task
+  // Step 6: Count new compatibility tasks
   let newPlaceholderCount = 0
   const newStageSet = new Set(newStageNumbers)
 
@@ -162,8 +153,11 @@ export function handleRevisionApproval(
           existingTaskCount: existingTasks.length,
           newStageCount: newStageNumbers.length,
           newPlaceholderCount,
+          totalTaskCount: tasks.length,
           newStages: newStageNumbers,
-          tasksMdPath,
+          promptsGenerated: promptsResult.generatedFiles.length,
+          promptThreadCount: promptsResult.totalThreads,
+          promptErrors: promptsResult.errors,
         },
         null,
         2
@@ -171,15 +165,14 @@ export function handleRevisionApproval(
     )
   } else {
     console.log(
-      `Generated TASKS.md with ${existingTasks.length} existing tasks and ${newPlaceholderCount} new task placeholders`
+      `Initialized execution state for ${newPlaceholderCount} new thread${newPlaceholderCount === 1 ? "" : "s"} (${tasks.length} compatibility tasks total)`
     )
     console.log("")
     console.log(
       `New stages: ${newStageNumbers.map((n) => `Stage ${n}`).join(", ")}`
     )
-    console.log("")
     console.log(
-      "Edit TASKS.md to add task details and assign agents, then run 'work approve tasks'"
+      `Prompts: ${promptsResult.generatedFiles.length}/${promptsResult.totalThreads} generated`,
     )
   }
 }

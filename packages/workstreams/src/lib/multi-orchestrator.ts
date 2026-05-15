@@ -11,6 +11,7 @@ import { getWorkDir } from "./repo.ts"
 import { loadAgentsConfig, getAgentModels } from "./agents-yaml.ts"
 import { discoverThreadsInBatch } from "./tasks.ts"
 import { getThreadMetadata } from "./threads.ts"
+import { queryThreadsForWorkstream } from "./hierarchy-query.ts"
 import {
   createSession,
   addWindow,
@@ -66,8 +67,8 @@ export function buildPaneTitle(threadInfo: ThreadInfo): string {
 }
 
 /**
- * Collect thread information from tasks.json (not PLAN.md)
- * Discovers threads dynamically from tasks, including dynamically added ones
+ * Collect thread information for a batch.
+ * Prefers canonical thread query views, with tasks-based discovery as compatibility fallback.
  */
 export function collectThreadInfoFromTasks(
   repoRoot: string,
@@ -76,6 +77,54 @@ export function collectThreadInfoFromTasks(
   batchNum: number,
   agentsConfig: ReturnType<typeof loadAgentsConfig>,
 ): ThreadInfo[] {
+  const workDir = getWorkDir(repoRoot)
+  let canonicalThreads: ReturnType<typeof queryThreadsForWorkstream> = []
+  try {
+    canonicalThreads = queryThreadsForWorkstream(repoRoot, streamId).filter(
+      (thread) => thread.stageId === stageNum.toString().padStart(2, "0") && thread.batchId === `${stageNum.toString().padStart(2, "0")}.${batchNum.toString().padStart(2, "0")}`,
+    )
+  } catch {
+    canonicalThreads = []
+  }
+
+  if (canonicalThreads.length > 0) {
+    return canonicalThreads.map((thread) => {
+      const threadMeta = getThreadMetadata(repoRoot, streamId, thread.threadId)
+      const promptPath = thread.promptPath
+        ? join(workDir, thread.promptPath)
+        : threadMeta?.promptPath
+          ? join(workDir, threadMeta.promptPath)
+          : getPromptFilePathFromMetadata(
+              repoRoot,
+              streamId,
+              stageNum,
+              thread.stageName,
+              batchNum,
+              thread.batchName,
+              thread.threadName,
+            )
+      const agentName = thread.assignedAgent || "default"
+      const models = getAgentModels(agentsConfig!, agentName)
+      if (models.length === 0) {
+        console.error(
+          `Error: Agent "${agentName}" not found in agents.yaml (referenced in thread ${thread.threadId})`,
+        )
+        process.exit(1)
+      }
+
+      return {
+        threadId: thread.threadId,
+        threadName: thread.threadName,
+        stageName: thread.stageName,
+        batchName: thread.batchName,
+        promptPath,
+        models,
+        agentName,
+        firstTaskId: thread.representativeTaskId,
+      }
+    })
+  }
+
   const discoveredThreads = discoverThreadsInBatch(
     repoRoot,
     streamId,
@@ -96,7 +145,6 @@ export function collectThreadInfoFromTasks(
     
     if (threadMeta?.promptPath) {
       // Use stored path from runtime_state.threads (relative path, need absolute)
-      const workDir = getWorkDir(repoRoot)
       promptPath = join(workDir, threadMeta.promptPath)
     } else {
       // Fallback: reconstruct from task metadata (legacy behavior)

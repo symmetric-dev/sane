@@ -5,15 +5,15 @@
  * Subcommands:
  *   create      - Create a draft workstream container
  *   status      - Show workstream progress
- *   update      - Update a task's status
+ *   update      - Update a thread or compatibility task status
  *   complete    - Mark a workstream as complete
  *   index       - Update workstream metadata fields
- *   read        - Read task details
- *   list        - List tasks in a workstream
+ *   read        - Read thread or compatibility task details
+ *   list        - List threads in a workstream
  *   add-task    - Add a task to a workstream
  *   delete      - Delete workstreams, stages, threads, or tasks
  *   review      - Review plan or tasks
- *   validate    - Validate plan/tasks/requirements
+ *   validate    - Validate plan/requirements
  *   check       - Find unchecked items in plan
  *   preview     - Show PLAN.md structure
  *   init        - Initialize work/ directory with default config files
@@ -134,7 +134,7 @@ const COMMAND_DESCRIPTIONS: Record<string, string> = {
   current: "Get or set the current workstream",
   continue: "Continue execution (alias for 'work multi --continue')",
   "add-stage": "Append a fix stage to a workstream",
-  approve: "Approve workstream plan/tasks/prompts (subcommands: plan, tasks, prompts)",
+  approve: "Approve workstream plans and revisions [plan seeds execution state]",
   start: "Start execution (requires all approvals, creates GitHub branch/issues)",
   plan: "Manage planning sessions or scaffold a plan (subcommand: create)",
   supervise: "Run batch-bounded supervision execution/recovery helper",
@@ -148,20 +148,20 @@ const COMMAND_DESCRIPTIONS: Record<string, string> = {
   "batch-status": "Show persisted batch execution status for supervisors",
   status: "Show workstream progress",
   "set-status": "Set workstream status (pending, in_progress, completed, on_hold)",
-  update: "Update a task's status",
+  update: "Update a thread or compatibility task status",
   complete: "Mark a workstream as complete",
   index: "Update workstream metadata fields",
-  read: "Read task details",
-  list: "List tasks in a workstream",
+  read: "Read thread or compatibility task details",
+  list: "List threads in a workstream [default]",
   "add-task": "Add a task to a workstream (interactive if no flags)",
   "add-batch": "Add a batch to a stage",
   "add-thread": "Add a thread to a batch",
   edit: "Open PLAN.md in editor",
   delete: "Delete workstreams, stages, threads, or tasks",
   files: "List and index files in files/ directory",
-  tasks: "Manage TASKS.md intermediate file (generate/serialize)",
+  tasks: "Removed legacy TASKS.md workflow",
   review: "Review plan, tasks, or commits (plan, tasks, commits)",
-  validate: "Validate plan, tasks, or requirements",
+  validate: "Validate plan or requirements",
   check: "Find unchecked items in plan",
   preview: "Show PLAN.md structure",
   report: "Generate progress report (includes metrics)",
@@ -178,9 +178,10 @@ const COMMAND_DESCRIPTIONS: Record<string, string> = {
 
 function printHelp(showAllCommands: boolean = false): void {
   const allCommands = Object.keys(SUBCOMMANDS)
+  const visibleCommands = allCommands.filter((cmd) => cmd !== "tasks")
   const availableCommands = showAllCommands
-    ? allCommands
-    : filterCommandsForRole(allCommands)
+    ? visibleCommands
+    : filterCommandsForRole(visibleCommands)
   const commandWidth = Math.max(...availableCommands.map((cmd) => cmd.length), 0) + 2
 
   // Build command list with role indicators
@@ -212,7 +213,7 @@ Current Workstream:
 
   Then run commands without --stream:
     work status
-    work list --tasks
+    work list
     work update --task "01.01.01.01" --status completed
 
 Examples:
@@ -222,7 +223,7 @@ Examples:
   work validate requirements
   work validate plan
   work status
-  work list --tasks
+  work list
   work update --task "01.01.01.01" --status completed
   work add-task --stage 01 --batch 01 --thread 01 --name "Task description"
   work files --save

@@ -188,7 +188,7 @@ export type ApprovalStatus = "draft" | "approved" | "revoked"
  * Approval metadata for human-in-the-loop gate
  * Workstreams require 2 approvals before starting:
  * 1. Plan approval (PLAN.md structure is correct)
- * 2. Tasks approval (tasks.json exists with tasks)
+ * 2. Execution approval (canonical hierarchy exists; compatibility task snapshots remain persisted)
  */
 export interface ApprovalMetadata {
   status: ApprovalStatus
@@ -212,7 +212,7 @@ export interface ApprovalMetadata {
   tasks?: {
     status: ApprovalStatus
     approved_at?: string
-    task_count?: number // snapshot of task count at approval time
+    task_count?: number // legacy/informational snapshot captured at approval time
     revoked_at?: string
     revoked_reason?: string
   }
@@ -569,7 +569,7 @@ export interface WorkstreamRuntimeSummary {
 export interface PersistedBatchStatusThread {
   threadId: string
   threadName: string
-  firstTaskId: string
+  firstTaskId: string // compatibility anchor; threadId remains the canonical runtime identity
   status: RuntimeBatchStatus
   startedAt?: string
   updatedAt: string
@@ -1266,7 +1266,7 @@ export interface ThreadInfo {
   agentName: string
   // Session tracking (populated before spawn)
   sessionId?: string
-  firstTaskId?: string // First task in thread (for session tracking)
+  firstTaskId?: string // Compatibility anchor for legacy task-addressed session tracking
 }
 
 /**
@@ -1276,7 +1276,7 @@ export interface ThreadInfo {
 export interface ThreadSessionMap {
   threadId: string
   sessionId: string
-  taskId: string // First task in thread
+  taskId?: string // Compatibility anchor for legacy callers; runtime control is thread-native
   paneId: string
   windowIndex: number
 }

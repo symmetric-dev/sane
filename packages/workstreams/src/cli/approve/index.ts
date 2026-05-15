@@ -1,13 +1,13 @@
 /**
  * CLI: Approve Workstream Gates
  *
- * Approve or revoke workstream approvals for plan, tasks, or prompts.
- * Plan and tasks must be approved before running `work start`.
+ * Approve or revoke workstream approvals for plan or revisions.
+ * Plan approval also initializes execution state needed by downstream commands.
  */
 
 import { getRepoRoot } from "../../lib/repo.ts"
 import { loadIndex, getResolvedStream } from "../../lib/index.ts"
-import { getFullApprovalStatus } from "../../lib/approval.ts"
+import { queryFullApprovalStatus } from "../../lib/approval.ts"
 import { canExecuteCommand, getRoleDenialMessage } from "../../lib/roles.ts"
 
 import type { ApproveTarget, ApproveCliArgs } from "./utils.ts"
@@ -24,14 +24,12 @@ Requires: USER role
 
 Usage:
   work approve plan [--stream <id>] [--force]
-  work approve tasks [--stream <id>]
   work approve revision [--stream <id>]
   work approve [--stream <id>]  # Show status of all approvals
 
 Targets:
   plan      Approve the PLAN.md structure (requires stages; blocks on open questions)
-  tasks     Approve tasks (requires TASKS.md with tasks)
-  revision  Approve revised PLAN.md with new stages (generates TASKS.md)
+  revision  Approve revised PLAN.md with new stages (refreshes execution state)
 
 Options:
   --repo-root, -r  Repository root (auto-detected if omitted)
@@ -47,9 +45,12 @@ Options:
 Description:
   Workstreams require 2 approvals before starting:
   1. Plan approval - validates PLAN.md structure, requires at least one stage, no open questions
-  2. Tasks approval - ensures tasks.json exists with tasks
+  2. Execution-state approval - seeded automatically during plan approval for compatibility/runtime flows
 
   Run 'work start' after both approvals to create the GitHub branch and issues.
+
+  In 0.9.0, plan approval also initializes execution state directly from PLAN.md.
+  The old TASKS.md / 'work approve tasks' workflow was removed.
 
   Draft plans created with 'work create' must be scaffolded with
   'work plan create --stages <n>' before plan approval can succeed.
@@ -63,10 +64,6 @@ Examples:
 
   # Approve plan
   work approve plan
-
-  # Approve tasks
-  work approve tasks
-
 
   # Revoke plan approval
   work approve plan --revoke --reason "Need to revise stage 2"
@@ -220,7 +217,7 @@ export async function main(argv: string[] = process.argv): Promise<void> {
       cliArgs.target = "plan"
       // proceed to switch
     } else {
-      const fullStatus = getFullApprovalStatus(stream)
+      const fullStatus = queryFullApprovalStatus(repoRoot, stream.id, stream)
 
       if (cliArgs.json) {
         console.log(

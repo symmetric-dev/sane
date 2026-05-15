@@ -13,7 +13,7 @@ description: How to carry on execution of workstreams after a plan.
 
 ## Supervision Branch
 
-After tasks are approved by the user, you can start execution by calling `workstream_launch_supervision_branch`.
+After the user approves the plan, you can start execution by calling `launch_supervision_branch`.
 
 - Use the tool from the Root Agent/planner session to launch a supervision branch agent.
 - Prefer stage scope unless you intentionally want batch-bounded supervision.

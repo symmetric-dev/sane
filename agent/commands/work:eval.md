@@ -1,5 +1,5 @@
 ---
-description: Ask for session link and tasks update
+description: Ask for workstream evaluation
 ---
 
 Work is done, can you run a subagent to evaluate the workstream? Tell it to use the `evaluating workstreams` skill.

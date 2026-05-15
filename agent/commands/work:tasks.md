@@ -1,5 +1,5 @@
 ---
-description: Ask for tasks update
+description: Ask for plan/thread update
 ---
 
-Done, please update the TASKS.md file.
+Done, please update the plan or thread assignments for the workstream.

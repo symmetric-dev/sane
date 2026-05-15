@@ -4,8 +4,8 @@
  * Generates execution prompts for agents with full thread context.
  */
 
-import { join, dirname } from "path"
-import { mkdirSync, writeFileSync, readFileSync, existsSync } from "fs"
+import { join } from "path"
+import { readFileSync, existsSync } from "fs"
 import { getRepoRoot, getWorkDir } from "../lib/repo.ts"
 import { loadIndex, getResolvedStream } from "../lib/index.ts"
 import { parseStreamDocument } from "../lib/stream-parser.ts"
@@ -13,6 +13,7 @@ import {
   getPromptContext,
   generateThreadPrompt,
   generateThreadPromptJson,
+  savePromptToFile,
   type PromptContext,
 } from "../lib/prompts.ts"
 
@@ -60,8 +61,9 @@ Optional:
 Description:
   Generates a comprehensive execution prompt for an agent to work on a specific
   thread. The prompt includes:
+  - Thread identity/agent context from canonical thread query state when available
   - Thread summary and details from PLAN.md
-  - Tasks assigned to the thread
+  - Compatibility task details attached to the thread
   - Stage definition and constitution
   - Parallel threads for awareness
 
@@ -72,47 +74,6 @@ Examples:
   work prompt --stage 1 --batch 1
   work prompt --stage 1 --batch 1
 `)
-}
-
-function savePromptToFile(
-  repoRoot: string,
-  context: PromptContext,
-  content: string,
-) {
-  const workDir = getWorkDir(repoRoot)
-
-  // Construct path: {workstream}/prompts/{stage-prefix}-{stage-name}/{batch-prefix}-{batch-name}/{thread-name}.md
-  const safeStageName = context.stage.name
-    .replace(/[^a-zA-Z0-9_-]/g, "-")
-    .toLowerCase()
-  const safeBatchName = context.batch.name
-    .replace(/[^a-zA-Z0-9_-]/g, "-")
-    .toLowerCase()
-  const safeThreadName = context.thread.name
-    .replace(/[^a-zA-Z0-9_-]/g, "-")
-    .toLowerCase()
-
-  const stagePrefix = context.stage.id.toString().padStart(2, "0")
-
-  const relPath = join(
-    context.streamId,
-    "prompts",
-    `${stagePrefix}-${safeStageName}`,
-    `${context.batch.prefix}-${safeBatchName}`,
-    `${safeThreadName}.md`,
-  )
-
-  const fullPath = join(workDir, relPath)
-
-  try {
-    mkdirSync(dirname(fullPath), { recursive: true })
-    writeFileSync(fullPath, content)
-    // console.warn(`Saved prompt to ${relPath}`)
-  } catch (e) {
-    console.warn(
-      `Warning: Failed to save prompt to ${relPath}: ${(e as Error).message}`,
-    )
-  }
 }
 
 function parseCliArgs(argv: string[]): PromptCliArgs | null {

@@ -84,7 +84,10 @@ describe("updateTask", () => {
 
       const tasks = getTasks(tempDir, "001-test-stream")
       expect(tasks[0]?.status).toBe("completed")
-      expect(tasks[1]?.status).toBe("pending")
+      expect(tasks[1]?.status).toBe("completed")
+      expect(result.task?.id).toBe("01.01.01.01")
+      expect(result.threadId).toBe("01.01.01")
+      expect(result.count).toBe(2)
     })
 
     test("updates task status to in_progress", async () => {
@@ -123,6 +126,73 @@ describe("updateTask", () => {
 
       const tasks = getTasks(tempDir, "001-test-stream")
       expect(tasks[0]?.status).toBe("in_progress")
+    })
+
+    test("resolves compatibility task updates to the owning thread mutation", async () => {
+      const tasksFile: TasksFile = {
+        version: "1.0.0",
+        stream_id: "001-test-stream",
+        last_updated: new Date().toISOString(),
+        tasks: [
+          {
+            id: "01.01.01.01",
+            name: "First task",
+            thread_name: "T1",
+            batch_name: "B01",
+            stage_name: "S1",
+            created_at: "",
+            updated_at: "",
+            status: "pending",
+          },
+          {
+            id: "01.01.01.02",
+            name: "Second task",
+            thread_name: "T1",
+            batch_name: "B01",
+            stage_name: "S1",
+            created_at: "",
+            updated_at: "",
+            status: "pending",
+          },
+          {
+            id: "01.01.02.01",
+            name: "Other thread task",
+            thread_name: "T2",
+            batch_name: "B01",
+            stage_name: "S1",
+            created_at: "",
+            updated_at: "",
+            status: "pending",
+          },
+        ],
+      }
+
+      await writeFile(
+        join(tempDir, "work/001-test-stream/tasks.json"),
+        JSON.stringify(tasksFile, null, 2),
+      )
+
+      const result = await updateTask({
+        repoRoot: tempDir,
+        stream: baseStream,
+        taskId: "01.01.01.02",
+        status: "completed",
+        report: "done",
+      })
+
+      expect(result.threadId).toBe("01.01.01")
+      expect(result.count).toBe(2)
+
+      const tasks = getTasks(tempDir, "001-test-stream")
+      expect(tasks.find((task) => task.id === "01.01.01.01")).toMatchObject({
+        status: "completed",
+        report: "done",
+      })
+      expect(tasks.find((task) => task.id === "01.01.01.02")).toMatchObject({
+        status: "completed",
+        report: "done",
+      })
+      expect(tasks.find((task) => task.id === "01.01.02.01")?.status).toBe("pending")
     })
 
     test("updates task status to blocked", async () => {
@@ -534,6 +604,8 @@ describe("updateTask", () => {
       expect(result.updated).toBe(true)
       expect(result.file).toBe("tasks.json")
       expect(result.taskId).toBe("01.01.01.01")
+      expect(result.threadId).toBe("01.01.01")
+      expect(result.count).toBe(1)
       expect(result.status).toBe("completed")
       expect(result.task).not.toBeNull()
       expect(result.task?.name).toBe("First task")

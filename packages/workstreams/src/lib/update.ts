@@ -1,7 +1,8 @@
 /**
- * Task update operations
+ * Thread-first mutation operations.
  *
- * Updates task status in tasks.json
+ * tasks.json remains a compatibility projection backed by canonical thread
+ * mutations over structured task rows.
  */
 
 
@@ -9,11 +10,11 @@ import type { TaskStatus, StreamMetadata, Task } from "./types.ts"
 import {
   loadStructuredWorkstreamStateSync,
   replaceStructuredWorkstreamStateSync,
-  updateStructuredTaskSync,
 } from "./storage-adapter.ts"
 import { updateStructuredTask } from "./structured-storage.ts"
 import {
   getTaskById,
+  formatThreadId,
   getTasksByThread,
   parseTaskId,
   parseThreadId,
@@ -34,91 +35,42 @@ export interface UpdateTaskResult {
   updated: boolean
   file: string
   taskId: string
+  threadId: string
   status: TaskStatus
   task: Task | null
+  tasks: Task[]
+  count: number
 }
 
-/**
- * Update a task's status in a workstream
- */
-export async function updateTask(args: UpdateTaskArgs): Promise<UpdateTaskResult> {
-  // Validate task ID format
-  try {
-    parseTaskId(args.taskId)
-  } catch (e) {
-    throw new Error(
-      `Invalid task ID: ${args.taskId}. Expected format "stage.batch.thread.task" (e.g., "01.01.02.03")`,
-    )
-  }
-
-  // Check if task exists and track previous status
-  const existingTask = getTaskById(args.repoRoot, args.stream.id, args.taskId)
-  if (!existingTask) {
-    throw new Error(
-      `Task "${args.taskId}" not found in workstream "${args.stream.id}". ` +
-      `Run "work add-task" to add tasks, or "work validate plan" to check the plan.`,
-    )
-  }
-  // Update the task
-  updateStructuredTaskSync(args.repoRoot, args.stream.id, {
-    taskId: args.taskId,
-    status: args.status,
-    breadcrumb: args.breadcrumb,
-    report: args.report,
-    assignedAgent: args.assigned_agent,
-  })
-
-  const updatedTask = getTaskById(args.repoRoot, args.stream.id, args.taskId)
-
-  if (!updatedTask) {
-    throw new Error(`Failed to update task "${args.taskId}"`)
-  }
-
-  return {
-    updated: true,
-    file: "tasks.json",
-    taskId: args.taskId,
-    status: args.status,
-    task: updatedTask,
-  }
-}
-
-export interface UpdateThreadTasksArgs {
+export interface MutateThreadTasksArgs {
   repoRoot: string
   stream: StreamMetadata
   threadId: string
-  status: TaskStatus
+  status?: TaskStatus
   note?: string
   breadcrumb?: string
   report?: string
   assigned_agent?: string
 }
 
-export interface UpdateThreadTasksResult {
+export interface MutateThreadTasksResult {
   updated: boolean
   file: string
   threadId: string
-  status: TaskStatus
   tasks: Task[]
   count: number
 }
 
-/**
- * Update all tasks in a thread
- */
-export async function updateThreadTasks(args: UpdateThreadTasksArgs): Promise<UpdateThreadTasksResult> {
-  // Parse the thread ID
-
+export async function mutateThreadTasks(args: MutateThreadTasksArgs): Promise<MutateThreadTasksResult> {
   let parsed: { stage: number; batch: number; thread: number }
   try {
     parsed = parseThreadId(args.threadId)
-  } catch (e) {
+  } catch {
     throw new Error(
       `Invalid thread ID: ${args.threadId}. Expected format "stage.batch.thread" (e.g., "01.01.02")`,
     )
   }
 
-  // Update all tasks in the thread
   const existingTasks = getTasksByThread(
     args.repoRoot,
     args.stream.id,
@@ -146,10 +98,10 @@ export async function updateThreadTasks(args: UpdateThreadTasksArgs): Promise<Up
 
     updateStructuredTask(workstreamState, {
       taskId: task.id,
-      status: args.status,
-      breadcrumb: args.breadcrumb,
-      report: args.report,
-      assignedAgent: args.assigned_agent,
+      ...(args.status !== undefined ? { status: args.status } : {}),
+      ...(args.breadcrumb !== undefined ? { breadcrumb: args.breadcrumb } : {}),
+      ...(args.report !== undefined ? { report: args.report } : {}),
+      ...(args.assigned_agent !== undefined ? { assignedAgent: args.assigned_agent } : {}),
       updatedAt,
     })
   }
@@ -167,14 +119,96 @@ export async function updateThreadTasks(args: UpdateThreadTasksArgs): Promise<Up
     parsed.thread,
   )
 
-
   return {
     updated: true,
     file: "tasks.json",
     threadId: args.threadId,
-    status: args.status,
     tasks: updatedTasks,
     count: updatedTasks.length,
+  }
+}
+
+/**
+ * Update a task's status in a workstream
+ */
+export async function updateTask(args: UpdateTaskArgs): Promise<UpdateTaskResult> {
+  // Validate task ID format
+  try {
+    parseTaskId(args.taskId)
+  } catch (e) {
+    throw new Error(
+      `Invalid task ID: ${args.taskId}. Expected format "stage.batch.thread.task" (e.g., "01.01.02.03")`,
+    )
+  }
+
+  // Check if task exists and track previous status
+  const existingTask = getTaskById(args.repoRoot, args.stream.id, args.taskId)
+  if (!existingTask) {
+    throw new Error(
+      `Task "${args.taskId}" not found in workstream "${args.stream.id}". ` +
+      `Run "work add-task" to add tasks, or "work validate plan" to check the plan.`,
+    )
+  }
+  const parsedTaskId = parseTaskId(args.taskId)
+  const threadId = formatThreadId(parsedTaskId.stage, parsedTaskId.batch, parsedTaskId.thread)
+
+  const mutation = await mutateThreadTasks({
+    repoRoot: args.repoRoot,
+    stream: args.stream,
+    threadId,
+    status: args.status,
+    note: args.note,
+    breadcrumb: args.breadcrumb,
+    report: args.report,
+    assigned_agent: args.assigned_agent,
+  })
+
+  const updatedTask = mutation.tasks.find((task) => task.id === args.taskId) ?? getTaskById(args.repoRoot, args.stream.id, args.taskId)
+
+  if (!updatedTask) {
+    throw new Error(`Failed to update task "${args.taskId}"`)
+  }
+
+  return {
+    updated: true,
+    file: "tasks.json",
+    taskId: args.taskId,
+    threadId,
+    status: args.status,
+    task: updatedTask,
+    tasks: mutation.tasks,
+    count: mutation.count,
+  }
+}
+
+export interface UpdateThreadTasksArgs {
+  repoRoot: string
+  stream: StreamMetadata
+  threadId: string
+  status: TaskStatus
+  note?: string
+  breadcrumb?: string
+  report?: string
+  assigned_agent?: string
+}
+
+export interface UpdateThreadTasksResult {
+  updated: boolean
+  file: string
+  threadId: string
+  status: TaskStatus
+  tasks: Task[]
+  count: number
+}
+
+/**
+ * Update all tasks in a thread
+ */
+export async function updateThreadTasks(args: UpdateThreadTasksArgs): Promise<UpdateThreadTasksResult> {
+  const mutation = await mutateThreadTasks(args)
+  return {
+    ...mutation,
+    status: args.status,
   }
 }
 

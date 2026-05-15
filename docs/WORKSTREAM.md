@@ -5,9 +5,8 @@
 - Stage (serial)
 - Batch (serial within stage)
 - Thread (parallel within batch)
-- Task (granular unit)
 
-Task ID format: `SS.BB.TT.NN`.
+Internal compatibility still uses task IDs like `SS.BB.TT.NN`, but the supported workflow is now stage/batch/thread-first.
 
 ## Files
 
@@ -15,12 +14,13 @@ Each stream lives at `work/{stream-id}/`.
 
 - `REQUIREMENTS.md`: human-authored goals, deliverables, dependencies, and resources
 - `PLAN.md`: structure and intent
-- `TASKS.md`: intermediate task editing file
 - `tasks.json`: compatibility projection of structured workstream state when projected from sqlite; also a legacy hydration input for pre-sqlite repos
 - `threads.json`: legacy thread metadata artifact if present; sqlite-native workstreams no longer need it projected for normal runtime behavior
 - `supervisor-state.json`: legacy supervision artifact if present; still transitional compatibility/runtime output in the current sqlite-native phase
 - `REPORT.md`: completion report input
 - `resources/`: supporting pre-work inputs referenced by `REQUIREMENTS.md`
+
+`TASKS.md` was removed from the supported workflow in 0.9.0.
 
 ## Minimal Lifecycle
 
@@ -33,7 +33,6 @@ work plan create --stages 2
 work validate plan
 work check plan
 work approve plan
-work approve tasks
 work supervise --batch "01.01"
 work approve stage 1
 work supervise
@@ -42,18 +41,17 @@ work report validate
 
 ## Canonical Agent Workflow
 
-1. The planning agent uses `planning-workstreams` to create the workstream and prepare `REQUIREMENTS.md`, `PLAN.md`, and task drafts.
+1. The planning agent uses `planning-workstreams` to create the workstream and prepare `REQUIREMENTS.md` and `PLAN.md`.
 2. The user approves the plan with `work approve plan`.
-3. After task editing/serialization is complete, the user approves tasks with `work approve tasks`.
+3. Plan approval initializes compatibility execution state directly from `PLAN.md`.
 4. The user manually `/fork`s the session and asks the forked session to supervise the approved work.
 5. The supervision branch uses `supervising-workstreams` to run `work supervise`, inspect persisted state, and drive the review/fix/escalation loop.
-6. Implementation agents inside that supervised batch use `implementing-workstreams` to inspect scope and keep task state current with commands like `work status`, `work tree --batch`, `work list --tasks --thread`, and `work update`.
+6. Implementation agents inside that supervised batch use `implementing-workstreams` to inspect scope and keep execution state current with commands like `work status`, `work tree --batch`, `work list --thread`, and `work update`.
 7. The supervisor fork reports back to the user, and the user approves each completed stage with `work approve stage N`.
 8. Repeat the supervise → review → stage approval loop until all stages are done.
 9. If more work is needed after the original stages, use the revision flow:
    - `work revision --name "follow-up" [--after-stage N]`
    - `work approve revision`
-   - `work approve tasks`
 10. At the end, use `evaluating-workstreams` to finalize `REPORT.md` and run `work report validate`.
 
 The older Root Agent management-launch flow is still available through the managed installation profile, but the default profile omits the `managing-workstreams` skill and supervision launch tool so the user controls the `/fork` handoff explicitly.
@@ -66,7 +64,7 @@ The older Root Agent management-launch flow is still available through the manag
 - `work validate requirements` checks the requirements structure plus referenced repo/resource paths.
 - `work plan create --stages <n>` scaffolds stage templates later.
 - `work validate plan` succeeds for an empty draft plan, but warns that no stages exist yet.
-- `work approve plan` requires at least one stage, so draft plans must be scaffolded before approval.
+- `work approve plan` requires at least one stage, seeds compatibility execution state directly from `PLAN.md`, and generates prompts.
 - Optional shortcut: `work create --name "feature" --stages 2` creates the draft container and scaffolds stages in one command.
 
 ## Runtime State
@@ -82,13 +80,13 @@ The older Root Agent management-launch flow is still available through the manag
 - `work/db.sqlite` is the repo-local canonical store for structured workflow state.
 - Running `work init --sqlite` in an existing repo hydrates legacy `index.json`, `tasks.json`, and compatible runtime artifacts into sqlite.
 - `work/index.json` and `work/<stream-id>/tasks.json` become rebuildable compatibility projections instead of the source of truth.
-- Core markdown documents (`REQUIREMENTS.md`, `PLAN.md`, `TASKS.md`, `REPORT.md`) plus `resources/` and artifact-like outputs remain filesystem-based.
+- Core markdown documents (`REQUIREMENTS.md`, `PLAN.md`, `REPORT.md`) plus `resources/` and artifact-like outputs remain filesystem-based.
 - permanent removal of compatibility JSON and any remote/service-backed storage model remain deferred follow-up work.
 - `work/db.sqlite` is local runtime state and is expected to stay out of version control; this repo currently ignores `work/` entirely.
 
 Operator guidance:
 
-- inspect live state with `work status`, `work tree`, `work list --tasks`, and `work batch-status`
+- inspect live state with `work status`, `work tree`, `work list`, and `work batch-status`
 - rebuild `work/index.json` / `work/<stream-id>/tasks.json` compatibility files with `work rebuild-compat` or `work rebuild-compat --stream current`
 - use `work rebuild-compat --output-root /tmp/sqlite-compat-snapshot` for rollback-safe inspection of projected `index.json` / `tasks.json` files before replacing live compatibility files
 - do not expect `work rebuild-compat` snapshots to include legacy runtime compatibility artifacts like `threads.json`, `supervisor-state.json`, or `batch-status/*.json`

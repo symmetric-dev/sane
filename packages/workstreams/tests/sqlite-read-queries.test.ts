@@ -3,6 +3,8 @@ import { mkdirSync, readFileSync, writeFileSync } from "fs"
 import { join } from "path"
 
 import {
+  checkTasksApprovalReady,
+  queryFullApprovalStatus,
   queryStageApprovalStatus,
   queryTasksApprovalStatus,
 } from "../src/lib/approval.ts"
@@ -215,6 +217,86 @@ describe("sqlite-backed approval and task queries", () => {
         runtime_state?: { batches?: Record<string, unknown> }
       }
       expect(persisted.runtime_state?.batches).toEqual({})
+    } finally {
+      cleanupTestWorkstream(workspace)
+    }
+  })
+
+  test("thread-first approval readiness ignores stale compatibility task_count snapshots", () => {
+    const workspace = createTestWorkstream(`001-sqlite-approval-ready-${Date.now()}`)
+
+    try {
+      const index: WorkIndex = {
+        version: "1.0.0",
+        last_updated: new Date().toISOString(),
+        current_stream: workspace.streamId,
+        streams: [
+          {
+            id: workspace.streamId,
+            name: "sqlite-approval-ready",
+            order: 1,
+            size: "short",
+            session_estimated: {
+              length: 1,
+              unit: "session",
+              session_minutes: [30, 45],
+              session_iterations: [4, 8],
+            },
+            created_at: new Date().toISOString(),
+            updated_at: new Date().toISOString(),
+            path: `work/${workspace.streamId}`,
+            generated_by: { workstreams: "1.0.0" },
+            approval: {
+              status: "approved",
+              tasks: {
+                status: "approved",
+                approved_at: "2026-04-20T00:00:00.000Z",
+                task_count: 99,
+              },
+            },
+          },
+        ],
+      }
+      saveIndex(workspace.repoRoot, index)
+
+      bootstrapSqliteStructuredStorage(workspace.repoRoot)
+
+      const emptyState = createEmptyStructuredStorageWorkstreamState(workspace.streamId)
+      emptyState.approvals = approvalMetadataToStructuredApprovalRecords(workspace.streamId, {
+        status: "approved",
+        tasks: {
+          status: "approved",
+          approved_at: "2026-04-20T00:00:00.000Z",
+          task_count: 99,
+        },
+      })
+      syncStructuredStorageWorkstreamStateToSqlite(workspace.repoRoot, emptyState)
+
+      expect(checkTasksApprovalReady(workspace.repoRoot, workspace.streamId)).toEqual({
+        ready: false,
+        reason:
+          "Execution hierarchy has not been initialized yet. Run 'work approve plan' to seed compatibility tasks from PLAN.md.",
+        taskCount: 0,
+      })
+      expect(queryFullApprovalStatus(workspace.repoRoot, workspace.streamId)).toEqual({
+        plan: "approved",
+        tasks: "approved",
+        fullyApproved: true,
+      })
+
+      const threadedState = createEmptyStructuredStorageWorkstreamState(workspace.streamId)
+      threadedState.hierarchy.stages = [{ id: "01", number: 1, name: "Stage 01" }]
+      threadedState.hierarchy.batches = [{ id: "01.01", stageId: "01", number: 1, name: "Batch 01" }]
+      threadedState.hierarchy.threads = [
+        { id: "01.01.01", stageId: "01", batchId: "01.01", number: 1, name: "Thread 01" },
+      ]
+      threadedState.approvals = emptyState.approvals
+      syncStructuredStorageWorkstreamStateToSqlite(workspace.repoRoot, threadedState)
+
+      expect(checkTasksApprovalReady(workspace.repoRoot, workspace.streamId)).toEqual({
+        ready: true,
+        taskCount: 0,
+      })
     } finally {
       cleanupTestWorkstream(workspace)
     }

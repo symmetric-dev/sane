@@ -35,18 +35,16 @@ work approve plan
    - `work validate plan` warns but succeeds for an empty draft plan
    - `work check plan` highlights open questions and missing inputs
 8. Approve plan: `work approve plan` (user role, requires at least one stage)
-9. Fill `TASKS.md`
-10. Approve tasks: `work approve tasks` (user role)
-11. Manually `/fork` the session and ask the forked session to supervise the approved work
-12. The supervision branch uses `work supervise`, `work status`, `work tree`, and `work batch-status` to drive the next batch and review loop
-13. Implementation agents use `implementing-workstreams` to inspect assigned scope and update task state with `work update`
-14. The supervisor reports back; the user approves the completed stage with `work approve stage <n>`
-15. Repeat the supervision loop for the next stage
-16. If new stages are needed after the original plan, use the revision flow:
+9. `work approve plan` also seeds compatibility `tasks.json` state directly from the thread/stage plan
+10. Manually `/fork` the session and ask the forked session to supervise the approved work
+11. The supervision branch uses `work supervise`, `work status`, `work tree`, and `work batch-status` to drive the next batch and review loop
+12. Implementation agents use `implementing-workstreams` to inspect assigned scope and update task state with `work update`
+13. The supervisor reports back; the user approves the completed stage with `work approve stage <n>`
+14. Repeat the supervision loop for the next stage
+15. If new stages are needed after the original plan, use the revision flow:
    - `work revision --name "follow-up" [--after-stage N]`
    - `work approve revision`
-   - `work approve tasks`
-17. Finalize the report with the `evaluating-workstreams` skill:
+16. Finalize the report with the `evaluating-workstreams` skill:
    - `work report validate`
 
 The optional managed install profile preserves the older Root Agent management-launch workflow. The default manual profile omits the management skill and launch tool so the user controls the `/fork` handoff.
@@ -70,8 +68,9 @@ work status
 work tree
 work tree --batch "01.01"
 work batch-status --batch "01.01" --format json
-work list --tasks
-work list --tasks --thread "01.01.01"
+work list
+work list --thread "01.01.01"
+work list --tasks --thread "01.01.01"   # compatibility task view
 work update --task "01.01.01.01" --status in_progress
 work update --task "01.01.01.01" --status completed --report "Implemented X"
 work report metrics --blockers
@@ -101,7 +100,7 @@ After cutover, normal operator commands read canonical sqlite state first:
 ```bash
 work status
 work tree --batch "01.01"
-work list --tasks --thread "01.01.01"
+work list --thread "01.01.01"
 work batch-status --batch "01.01" --format json
 ```
 
@@ -193,7 +192,8 @@ Within that supervised batch execution, implementation agents commonly inspect s
 ```bash
 work status
 work tree --batch "01.01"
-work list --tasks --thread "01.01.01"
+work list --thread "01.01.01"
+work list --tasks --thread "01.01.01"   # compatibility task details
 ```
 
 They are expected to keep task state accurate while they work:

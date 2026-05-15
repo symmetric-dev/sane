@@ -36,7 +36,7 @@ When no options are provided, shows the current workstream.
 
 Once a current workstream is set, all commands default to it:
   work status              # Uses current workstream
-  work list --tasks        # Uses current workstream
+  work list                # Uses current workstream
   work update --task 1.1.1 --status completed
 
 You can still override with --stream:

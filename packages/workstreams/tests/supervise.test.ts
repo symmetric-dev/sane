@@ -320,6 +320,64 @@ describe("supervise", () => {
     expect(getReviewAffectedThreadIds(reviewInput)).toEqual([])
   })
 
+  test("review input assembly does not depend on firstTaskId for thread lookup", () => {
+    workspace = createTestWorkstream("001-supervise-thread-native-review")
+    writeIndex(workspace.repoRoot, workspace.streamId, "supervise-thread-native-review")
+    writeValidPlan(workspace.workDir)
+    writeTasksList(workspace.workDir, workspace.streamId, [
+      {
+        id: "01.01.01.01",
+        status: "completed",
+        threadName: "Thread 1",
+        batchName: "Batch 1",
+        stageName: "Stage 1",
+        report: "Done.",
+      },
+    ])
+
+    saveThreads(workspace.repoRoot, workspace.streamId, {
+      version: "1.0.0",
+      stream_id: workspace.streamId,
+      last_updated: new Date().toISOString(),
+      threads: [{ threadId: "01.01.01", sessions: [] }],
+    })
+
+    const reviewInput = collectSupervisorReviewInput(workspace.repoRoot, workspace.streamId, {
+      version: "1.0.0",
+      streamId: workspace.streamId,
+      batchId: "01.01",
+      runId: "batch-run-thread-native",
+      mode: "headless",
+      status: "completed",
+      startedAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
+      summary: {
+        total: 1,
+        pending: 0,
+        running: 0,
+        completed: 1,
+        failed: 0,
+      },
+      threads: [
+        {
+          threadId: "01.01.01",
+          threadName: "Thread 1",
+          firstTaskId: "not-a-real-task-anchor",
+          status: "completed",
+          updatedAt: new Date().toISOString(),
+        },
+      ],
+    })
+
+    expect(reviewInput.threads[0]?.taskStatuses).toEqual([
+      expect.objectContaining({
+        taskId: "01.01.01.01",
+        status: "completed",
+        report: "Done.",
+      }),
+    ])
+  })
+
   test("CLI recovers a completed batch and pauses for root-agent handoff", async () => {
     workspace = createTestWorkstream("001-supervise-cli")
     writeIndex(workspace.repoRoot, workspace.streamId, "supervise-cli")

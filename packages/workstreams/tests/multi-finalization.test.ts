@@ -1,6 +1,9 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test"
 import { existsSync, rmSync, writeFileSync } from "fs"
-import { finalizeMultiRun } from "../src/lib/multi-finalization"
+import {
+  applyFinalizationCompletions,
+  finalizeMultiRun,
+} from "../src/lib/multi-finalization"
 import {
   getRunResultPath,
   getSessionFilePath,
@@ -102,5 +105,33 @@ describe("multi finalization", () => {
 
     expect(result.cleanup.resultFiles).toBe(1)
     expect(result.cleanup.sessionFiles).toBe(1)
+  })
+
+  test("applies completions by threadId and sessionId without requiring taskId", async () => {
+    await startMultipleSessionsLocked(workspace.repoRoot, workspace.streamId, [
+      {
+        taskId: "01.01.01.01",
+        agentName: "default",
+        model: "anthropic/claude-sonnet-4",
+        sessionId: "ses_test_thread_native",
+      },
+    ])
+
+    const result = await applyFinalizationCompletions({
+      repoRoot: workspace.repoRoot,
+      streamId: workspace.streamId,
+      verbose: false,
+      completions: [
+        {
+          threadId: "01.01.01",
+          sessionId: "ses_test_thread_native",
+          status: "completed",
+          exitCode: 0,
+        },
+      ],
+    })
+
+    expect(result.completedThreadIds).toEqual(["01.01.01"])
+    expect(getLastSessionForThread(workspace.repoRoot, workspace.streamId, "01.01.01")?.status).toBe("completed")
   })
 })

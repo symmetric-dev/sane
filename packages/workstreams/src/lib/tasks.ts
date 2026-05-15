@@ -2079,6 +2079,21 @@ export function getTasksByThread(
 }
 
 /**
+ * Get all tasks in a thread by thread ID.
+ */
+export function getTasksByThreadId(
+  repoRoot: string,
+  streamId: string,
+  threadId: string,
+): Task[] {
+  const tasksFile = readTasksFile(repoRoot, streamId)
+  if (!tasksFile) return []
+
+  const threadPrefix = `${threadId}.`
+  return tasksFile.tasks.filter((task) => task.id.startsWith(threadPrefix))
+}
+
+/**
  * Update all tasks in a thread
  * Returns the updated tasks
  */

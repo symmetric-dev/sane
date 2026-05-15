@@ -5,7 +5,9 @@ import { join } from "path"
 import { readBatchStatus } from "../src/lib/batch-status.ts"
 import { formatStatusSnapshot, getWorkstreamStatusSnapshot } from "../src/lib/status.ts"
 import { resolveCurrentBranchSupervisionContext } from "../src/lib/root-agent-branch.ts"
+import { queryThreadByIdForWorkstream } from "../src/lib/hierarchy-query.ts"
 import {
+  bootstrapSqliteStructuredStorage,
   loadSqliteStructuredStorageWorkstreamState,
   syncStructuredStorageWorkstreamStateToSqlite,
 } from "../src/lib/sqlite-storage.ts"
@@ -586,6 +588,90 @@ describe("runtime sqlite-backed read model", () => {
           },
         },
       })
+    } finally {
+      cleanupTestWorkstream(workspace)
+    }
+  })
+
+  test("thread-native reads keep working when persisted firstTaskId is stale or bogus", () => {
+    const workspace = createTestWorkstream("001-runtime-sqlite-bogus-first-task-anchor")
+
+    try {
+      writeIndex(workspace.repoRoot, workspace.streamId, workspace.streamId)
+      bootstrapSqliteStructuredStorage(workspace.repoRoot)
+
+      const now = "2026-04-20T01:00:00.000Z"
+      const state = createEmptyStructuredStorageWorkstreamState(workspace.streamId)
+      state.hierarchy = {
+        stages: [{ id: "01", number: 1, name: "Stage 01" }],
+        batches: [{ id: "01.01", stageId: "01", number: 1, name: "Batch 01" }],
+        threads: [{ id: "01.01.01", stageId: "01", batchId: "01.01", number: 1, name: "Thread 01" }],
+        tasks: [
+          {
+            id: "01.01.01.01",
+            stageId: "01",
+            batchId: "01.01",
+            threadId: "01.01.01",
+            number: 1,
+            name: "Canonical task",
+            status: "completed",
+            createdAt: now,
+            updatedAt: now,
+          },
+        ],
+      }
+      state.batchRuns = [
+        {
+          version: "1.0.0",
+          streamId: workspace.streamId,
+          batchId: "01.01",
+          runId: "sqlite-run",
+          mode: "headless",
+          status: "completed",
+          stageName: "Stage 01",
+          batchName: "Batch 01",
+          startedAt: now,
+          updatedAt: now,
+          completedAt: now,
+          summary: {
+            total: 1,
+            pending: 0,
+            running: 0,
+            completed: 1,
+            failed: 0,
+          },
+          threads: [
+            {
+              threadId: "01.01.01",
+              threadName: "Thread 01",
+              firstTaskId: "99.99.99.99",
+              status: "completed",
+              updatedAt: now,
+            },
+          ],
+        },
+      ]
+
+      syncStructuredStorageWorkstreamStateToSqlite(workspace.repoRoot, state)
+
+      expect(queryThreadByIdForWorkstream(workspace.repoRoot, workspace.streamId, "01.01.01")).toMatchObject({
+        threadId: "01.01.01",
+        threadName: "Thread 01",
+        representativeTaskId: "01.01.01.01",
+        taskCount: 1,
+      })
+
+      const sqliteState = loadSqliteStructuredStorageWorkstreamState(workspace.repoRoot, workspace.streamId)
+      expect(sqliteState?.batchRuns[0]?.threads[0]?.firstTaskId).toBe("99.99.99.99")
+
+      expect(readBatchStatus(workspace.repoRoot, workspace.streamId, "01.01")?.threads[0]).toMatchObject({
+        threadId: "01.01.01",
+        firstTaskId: "99.99.99.99",
+        status: "completed",
+      })
+
+      const snapshot = getWorkstreamStatusSnapshot(workspace.repoRoot, buildBaseStream(workspace.streamId))
+      expect(snapshot.stages.map((stage) => stage.stage_id)).toEqual(["01"])
     } finally {
       cleanupTestWorkstream(workspace)
     }

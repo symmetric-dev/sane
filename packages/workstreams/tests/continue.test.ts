@@ -5,6 +5,8 @@ import { join } from "node:path"
 import { getContinueContext } from "../src/lib/continue"
 import { buildHeadlessThreadStatuses, findIncompleteThreadsInBatch, parseCliArgs as parseContinueCliArgs, resolveHeadlessContinueAction } from "../src/cli/continue"
 import type { TasksFile, Task, ThreadMetadata } from "../src/lib/types"
+import { bootstrapSqliteStructuredStorage, syncStructuredStorageWorkstreamStateToSqlite } from "../src/lib/sqlite-storage"
+import { createEmptyStructuredStorageWorkstreamState } from "../src/lib/structured-storage"
 
 describe("getContinueContext", () => {
   let tempDir: string
@@ -144,6 +146,77 @@ describe("getContinueContext", () => {
     expect(ctx.activeTask).toBeUndefined()
     expect(ctx.nextTask).toBeUndefined()
     expect(ctx.lastCompletedTask?.id).toBe("1.1.1")
+  })
+
+  test("prefers canonical thread views over compatibility task ordering", async () => {
+    const tasksFile: TasksFile = {
+      version: "1.0.0",
+      stream_id: streamId,
+      last_updated: new Date().toISOString(),
+      tasks: [
+        {
+          id: "01.02.01.01",
+          name: "Later compatibility task",
+          thread_name: "Compatibility thread 2",
+          batch_name: "Compatibility batch 2",
+          stage_name: "Compatibility stage 1",
+          created_at: "",
+          updated_at: "",
+          status: "pending",
+          assigned_agent: "compat-agent",
+        },
+      ],
+    }
+
+    await writeFile(
+      join(tempDir, "work", streamId, "tasks.json"),
+      JSON.stringify(tasksFile, null, 2),
+    )
+
+    const state = createEmptyStructuredStorageWorkstreamState(streamId)
+    state.hierarchy.stages = [{ id: "01", number: 1, name: "Canonical stage" }]
+    state.hierarchy.batches = [
+      { id: "01.01", stageId: "01", number: 1, name: "Canonical batch 1" },
+      { id: "01.02", stageId: "01", number: 2, name: "Canonical batch 2" },
+    ]
+    state.hierarchy.threads = [
+      { id: "01.01.01", stageId: "01", batchId: "01.01", number: 1, name: "Canonical thread 1" },
+      { id: "01.02.01", stageId: "01", batchId: "01.02", number: 1, name: "Canonical thread 2" },
+    ]
+    state.hierarchy.tasks = [
+      {
+        id: "01.01.01.01",
+        stageId: "01",
+        batchId: "01.01",
+        threadId: "01.01.01",
+        number: 1,
+        name: "Canonical next task",
+        status: "pending",
+        createdAt: "2026-05-14T00:00:00.000Z",
+        updatedAt: "2026-05-14T00:00:00.000Z",
+        assignedAgent: "canonical-agent",
+      },
+      {
+        id: "01.02.01.01",
+        stageId: "01",
+        batchId: "01.02",
+        threadId: "01.02.01",
+        number: 1,
+        name: "Canonical later task",
+        status: "pending",
+        createdAt: "2026-05-14T00:00:00.000Z",
+        updatedAt: "2026-05-14T00:00:00.000Z",
+        assignedAgent: "later-agent",
+      },
+    ]
+
+    bootstrapSqliteStructuredStorage(tempDir)
+    syncStructuredStorageWorkstreamStateToSqlite(tempDir, state)
+
+    const ctx = getContinueContext(tempDir, streamId, streamName)
+
+    expect(ctx.nextTask?.id).toBe("01.01.01.01")
+    expect(ctx.assignedAgent).toBe("canonical-agent")
   })
 })
 

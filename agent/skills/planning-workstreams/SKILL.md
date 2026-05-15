@@ -9,7 +9,7 @@ description: Create and prepare workstreams for execution. Planning only, no cod
 
 - Planning only.
 - Do not implement code.
-- Keep plan and tasks concrete, short, and executable.
+- Keep the plan concrete, short, and executable.
 
 ## Workflow
 
@@ -21,9 +21,8 @@ description: Create and prepare workstreams for execution. Planning only, no cod
    - `work validate plan`
    - `work check plan`
    - `work preview`
-6. Ask user to approve plan: `!work approve plan` (the TASKS.md file will be generated during approval)
-7. Fill generated `TASKS.md` with specific tasks and agent assignments and ask user to approve: `!work approve tasks`
-8. Link planning session using `workstream_link_planning_session`.
+6. Ask user to approve plan: `!work approve plan`
+7. Link the planning session using `link_planning_session` once the plan is ready for handoff.
 
 Notes:
 - `REQUIREMENTS.md` is the human-facing source of truth for summary, deliverables, dependencies, and resource inputs.
@@ -39,7 +38,7 @@ Notes:
 - If you add, remove, or substantially change stages, update the `## Summary` text so it matches the current planning horizon and scope boundary.
 - If uncertainty materially affects downstream implementation, prefer a research/discovery-first stage and keep later stages out of the plan until findings are known.
 - Prefer independent threads in the same batch.
-- Keep tasks concrete and observable.
+- Keep thread scope concrete and observable.
 - Use clear file paths and concrete outputs.
 - Put unresolved decisions in Stage Questions (`- [ ] ...`).
 

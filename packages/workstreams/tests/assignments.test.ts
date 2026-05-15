@@ -1,73 +1,183 @@
-import { describe, test, expect, beforeEach, afterEach } from "bun:test"
-import { mkdtemp, rm, mkdir, writeFile } from "node:fs/promises"
-import { tmpdir } from "node:os"
-import { join } from "node:path"
-import { updateTask } from "../src/lib/update"
-import { getTasks } from "../src/lib/tasks"
-import type { StreamMetadata, TasksFile } from "../src/lib/types"
+import { afterEach, beforeEach, describe, expect, test } from "bun:test"
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "fs"
+import { tmpdir } from "os"
+import { join } from "path"
+
+import { main as assignMain } from "../src/cli/assign.ts"
+import { createEmptyTasksFile, getTasks, writeTasksFile } from "../src/lib/tasks.ts"
 
 describe("assignments", () => {
   let tempDir: string
-  const baseStream: StreamMetadata = {
-    id: "001-test-stream",
-    name: "test-stream",
-    order: 0,
-    size: "medium",
-    session_estimated: {
-      length: 1,
-      unit: "session",
-      session_minutes: [30, 45],
-      session_iterations: [4, 8],
-    },
-    created_at: "2024-01-01",
-    updated_at: "2024-01-01",
-    path: "work/001-test-stream",
-    generated_by: { workstreams: "0.1.0" },
-  }
+  let repoRoot: string
+  const streamId = "001-test-stream"
 
-  beforeEach(async () => {
-    tempDir = await mkdtemp(join(tmpdir(), "agenv-assignments-test-"))
-    await mkdir(join(tempDir, "work", "001-test-stream"), { recursive: true })
-  })
-
-  afterEach(async () => {
-    await rm(tempDir, { recursive: true, force: true })
-  })
-
-  test("assigns agent to task", async () => {
-    const tasksFile: TasksFile = {
-      version: "1.0.0",
-      stream_id: "001-test-stream",
-      last_updated: new Date().toISOString(),
-      tasks: [
-        {
-          id: "01.01.01.01",
-          name: "Task 1",
-          thread_name: "T1",
-          batch_name: "B00",
-          stage_name: "S1",
-          created_at: "",
-          updated_at: "",
-          status: "pending",
-        },
-      ],
-    }
-
-    await writeFile(
-      join(tempDir, "work/001-test-stream/tasks.json"),
-      JSON.stringify(tasksFile, null, 2),
+  beforeEach(() => {
+    tempDir = mkdtempSync(join(tmpdir(), "agenv-assignments-test-"))
+    repoRoot = join(tempDir, "repo")
+    mkdirSync(join(repoRoot, "work", streamId), { recursive: true })
+    writeFileSync(
+      join(repoRoot, "work", "index.json"),
+      JSON.stringify({
+        streams: [{ id: streamId, name: "test-stream", status: "active", relativePath: streamId }],
+      }),
     )
 
-    await updateTask({
-      repoRoot: tempDir,
-      stream: baseStream,
-      taskId: "01.01.01.01",
-      status: "in_progress",
-      assigned_agent: "CodebaseAgent",
+    const tasksFile = createEmptyTasksFile(streamId)
+    tasksFile.tasks = [
+      {
+        id: "01.01.01.01",
+        name: "Task 1",
+        thread_name: "T1",
+        batch_name: "B01",
+        stage_name: "S1",
+        created_at: new Date().toISOString(),
+        updated_at: new Date().toISOString(),
+        status: "pending",
+      },
+      {
+        id: "01.01.01.02",
+        name: "Task 2",
+        thread_name: "T1",
+        batch_name: "B01",
+        stage_name: "S1",
+        created_at: new Date().toISOString(),
+        updated_at: new Date().toISOString(),
+        status: "pending",
+      },
+      {
+        id: "01.01.02.01",
+        name: "Task 3",
+        thread_name: "T2",
+        batch_name: "B01",
+        stage_name: "S1",
+        created_at: new Date().toISOString(),
+        updated_at: new Date().toISOString(),
+        status: "pending",
+      },
+    ]
+    writeTasksFile(repoRoot, streamId, tasksFile)
+  })
+
+  afterEach(() => {
+    rmSync(tempDir, { recursive: true, force: true })
+  })
+
+  function captureConsole() {
+    const stdout: string[] = []
+    const stderr: string[] = []
+    const originalLog = console.log
+    const originalError = console.error
+    const originalExit = process.exit
+
+    console.log = (...args) => stdout.push(args.join(" "))
+    console.error = (...args) => stderr.push(args.join(" "))
+    process.exit = ((code?: number) => {
+      throw new Error(`process.exit:${code ?? 0}`)
+    }) as typeof process.exit
+
+    return {
+      stdout,
+      stderr,
+      restore: () => {
+        console.log = originalLog
+        console.error = originalError
+        process.exit = originalExit
+      },
+    }
+  }
+
+  test("assign --thread canonically assigns the whole thread", async () => {
+    const output = captureConsole()
+
+    try {
+      await assignMain([
+        "bun",
+        "work",
+        "assign",
+        "--repo-root",
+        repoRoot,
+        "--stream",
+        streamId,
+        "--thread",
+        "01.01.01",
+        "--agent",
+        "CodebaseAgent",
+      ])
+    } finally {
+      output.restore()
+    }
+
+    const tasks = getTasks(repoRoot, streamId)
+    expect(tasks.find((task) => task.id === "01.01.01.01")?.assigned_agent).toBe("CodebaseAgent")
+    expect(tasks.find((task) => task.id === "01.01.01.02")?.assigned_agent).toBe("CodebaseAgent")
+    expect(tasks.find((task) => task.id === "01.01.02.01")?.assigned_agent).toBeUndefined()
+    expect(output.stdout.join("\n")).toContain('Assigned "CodebaseAgent" to thread 01.01.01')
+  })
+
+  test("assign --task is a compatibility alias for assigning the owning thread", async () => {
+    const output = captureConsole()
+
+    try {
+      await assignMain([
+        "bun",
+        "work",
+        "assign",
+        "--repo-root",
+        repoRoot,
+        "--stream",
+        streamId,
+        "--task",
+        "01.01.01.02",
+        "--agent",
+        "CodebaseAgent",
+      ])
+    } finally {
+      output.restore()
+    }
+
+    const tasks = getTasks(repoRoot, streamId)
+    expect(tasks.find((task) => task.id === "01.01.01.01")?.assigned_agent).toBe("CodebaseAgent")
+    expect(tasks.find((task) => task.id === "01.01.01.02")?.assigned_agent).toBe("CodebaseAgent")
+    expect(tasks.find((task) => task.id === "01.01.02.01")?.assigned_agent).toBeUndefined()
+    expect(output.stdout.join("\n")).toContain(
+      'Assigned "CodebaseAgent" to thread 01.01.01 via compatibility task 01.01.01.02',
+    )
+  })
+
+  test("assign --task --clear clears the owning thread assignment", async () => {
+    const seed = getTasks(repoRoot, streamId).map((task) => ({
+      ...task,
+      ...(task.id.startsWith("01.01.01.") ? { assigned_agent: "CodebaseAgent" } : {}),
+    }))
+    writeTasksFile(repoRoot, streamId, {
+      ...createEmptyTasksFile(streamId),
+      tasks: seed,
     })
 
-    const tasks = getTasks(tempDir, "001-test-stream")
-    expect(tasks[0]?.status).toBe("in_progress")
-    expect(tasks[0]?.assigned_agent).toBe("CodebaseAgent")
+    const output = captureConsole()
+
+    try {
+      await assignMain([
+        "bun",
+        "work",
+        "assign",
+        "--repo-root",
+        repoRoot,
+        "--stream",
+        streamId,
+        "--task",
+        "01.01.01.01",
+        "--clear",
+      ])
+    } finally {
+      output.restore()
+    }
+
+    const tasks = getTasks(repoRoot, streamId)
+    expect(tasks.find((task) => task.id === "01.01.01.01")?.assigned_agent).toBeUndefined()
+    expect(tasks.find((task) => task.id === "01.01.01.02")?.assigned_agent).toBeUndefined()
+    expect(output.stdout.join("\n")).toContain(
+      "Cleared agent assignment from thread 01.01.01 via compatibility task 01.01.01.01",
+    )
   })
 })

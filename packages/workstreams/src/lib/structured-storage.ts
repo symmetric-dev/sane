@@ -127,7 +127,7 @@ export interface StructuredApprovalRecord {
   revokedAt?: string
   revokedReason?: string
   planHash?: string
-  taskCount?: number
+  taskCount?: number // legacy/informational snapshot preserved for compatibility
   commitSha?: string
 }
 

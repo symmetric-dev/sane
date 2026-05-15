@@ -12,7 +12,6 @@ When using Opencode chat, prefix user-invoked CLI commands with `!`.
 !work status
 !work review plan
 !work approve plan
-!work approve tasks
 !work start
 !work complete
 ```
@@ -21,4 +20,5 @@ When using Opencode chat, prefix user-invoked CLI commands with `!`.
 
 - User approval commands should be run by the user with `!`.
 - Draft-first setup commands like `!work create`, `!work current --set`, `!work validate requirements`, and `!work plan create` are also user-invoked when driving the workflow from chat.
+- Session linking is tool-driven (`link_planning_session` / `workstream_link_planning_session`), not a `!work ...` CLI command.
 - Agent-executed commands run directly without `!`.

@@ -56,7 +56,7 @@ Keep human-authored and artifact-like content in the workstream directory:
 
 - `REQUIREMENTS.md`
 - `PLAN.md`
-- `TASKS.md`
+- legacy `TASKS.md` files if present during migration, but they are not part of the supported 0.9.0 authoring workflow
 - `REPORT.md`
 - `resources/`
 - generated prompts, reports, logs, screenshots, transcripts, and similar outputs

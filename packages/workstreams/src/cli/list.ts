@@ -1,12 +1,16 @@
 /**
  * CLI: Workstream List
  *
- * List all tasks in a workstream with their status.
+ * List thread-first or compatibility task views for a workstream.
  */
 
 import { getRepoRoot } from "../lib/repo.ts"
 import { loadIndex, getResolvedStream } from "../lib/index.ts"
-import { queryTasksForWorkstream } from "../lib/hierarchy-query.ts"
+import {
+  queryTasksForWorkstream,
+  queryThreadsForWorkstream,
+  type HierarchyThreadQueryRecord,
+} from "../lib/hierarchy-query.ts"
 import { getEffectiveRuntimeSummary, groupTasks, readTasksFile } from "../lib/tasks.ts"
 import type { Task, TaskStatus } from "../lib/types.ts"
 
@@ -23,7 +27,7 @@ interface ListCliArgs {
 
 function printHelp(): void {
   console.log(`
-work list - List tasks in a workstream
+work list - List threads in a workstream
 
 Usage:
   work list [--stream <stream-id>] [--tasks] [--status <status>]
@@ -32,7 +36,7 @@ Usage:
 Options:
   --repo-root, -r  Repository root (auto-detected if omitted)
   --stream, -s     Workstream ID or name (uses current if not specified)
-  --tasks          Show tasks (default if no other flags)
+  --tasks          Show compatibility tasks instead of the default thread view
   --status         Filter by status (pending, in_progress, completed, blocked, cancelled)
   --stage          Filter by stage number (e.g. 1)
   --batch          Filter by batch ID (e.g. "01.02")
@@ -41,17 +45,17 @@ Options:
   --help, -h       Show this help message
 
 Examples:
-  # List all tasks (uses current workstream)
-  work list --tasks
+  # List all threads (uses current workstream)
+  work list
 
-  # List only in-progress tasks
-  work list --tasks --status in_progress
+  # List only in-progress threads
+  work list --status in_progress
 
-  # List tasks for a specific batch
+  # List compatibility tasks for a specific batch
   work list --tasks --batch "01.02"
 
-  # List tasks for a specific workstream
-  work list --stream "001-my-stream" --tasks
+  # List threads for a specific workstream
+  work list --stream "001-my-stream"
 `)
 }
 
@@ -90,7 +94,7 @@ function parseCliArgs(argv: string[]): ListCliArgs | null {
         parsed.tasks = true
         break
 
-      case "--status":
+      case "--status": {
         if (!next) {
           console.error("Error: --status requires a value")
           return null
@@ -103,8 +107,9 @@ function parseCliArgs(argv: string[]): ListCliArgs | null {
         parsed.status = next as TaskStatus
         i++
         break
+      }
 
-      case "--stage":
+      case "--stage": {
         if (!next) {
           console.error("Error: --stage requires a value")
           return null
@@ -117,6 +122,7 @@ function parseCliArgs(argv: string[]): ListCliArgs | null {
         parsed.stage = stageNum
         i++
         break
+      }
 
       case "--batch":
         if (!next) {
@@ -148,11 +154,6 @@ function parseCliArgs(argv: string[]): ListCliArgs | null {
     }
   }
 
-  // Default to showing tasks if no specific flag
-  if (!parsed.tasks) {
-    parsed.tasks = true
-  }
-
   return parsed
 }
 
@@ -171,9 +172,76 @@ function statusToIcon(status: TaskStatus): string {
   }
 }
 
-// ... imports remain the same, just updated groupTasks import above
+function aggregateStatus(tasks: Task[]): TaskStatus {
+  if (tasks.length === 0) return "pending"
+  if (tasks.some((task) => task.status === "blocked")) return "blocked"
+  if (tasks.some((task) => task.status === "in_progress")) return "in_progress"
+  if (tasks.some((task) => task.status === "pending")) return "pending"
+  return "completed"
+}
 
-// ... (skipping to formatTaskList replacement)
+function formatThreadList(streamId: string, threads: HierarchyThreadQueryRecord[]): string {
+  const lines: string[] = []
+  const counts = {
+    total: threads.length,
+    completed: threads.filter((thread) => thread.aggregateStatus === "completed").length,
+    in_progress: threads.filter((thread) => thread.aggregateStatus === "in_progress").length,
+    pending: threads.filter((thread) => thread.aggregateStatus === "pending").length,
+    blocked: threads.filter((thread) => thread.aggregateStatus === "blocked").length,
+  }
+
+  lines.push(`Workstream: ${streamId}`)
+  lines.push(
+    `Threads: ${counts.total} total | ${counts.completed} completed | ${counts.in_progress} in progress | ${counts.pending} pending${counts.blocked ? ` | ${counts.blocked} blocked` : ""}`,
+  )
+  lines.push("")
+
+  const stageMap = new Map<string, { name: string; batches: Map<string, { name: string; threads: HierarchyThreadQueryRecord[] }> }>()
+
+  for (const thread of threads) {
+    let stageEntry = stageMap.get(thread.stageId)
+    if (!stageEntry) {
+      stageEntry = { name: thread.stageName, batches: new Map() }
+      stageMap.set(thread.stageId, stageEntry)
+    }
+
+    let batchEntry = stageEntry.batches.get(thread.batchId)
+    if (!batchEntry) {
+      batchEntry = { name: thread.batchName, threads: [] }
+      stageEntry.batches.set(thread.batchId, batchEntry)
+    }
+
+    batchEntry.threads.push(thread)
+  }
+
+  const sortedStages = [...stageMap.entries()].sort(([left], [right]) =>
+    left.localeCompare(right, undefined, { numeric: true }),
+  )
+
+  for (const [stageId, stageEntry] of sortedStages) {
+    lines.push(`Stage ${stageId}: ${stageEntry.name}`)
+    const sortedBatches = [...stageEntry.batches.entries()].sort(([left], [right]) =>
+      left.localeCompare(right, undefined, { numeric: true }),
+    )
+
+    for (const [batchId, batchEntry] of sortedBatches) {
+      lines.push(`  Batch ${batchId.split(".")[1] ?? "?"}: ${batchEntry.name}`)
+      const sortedThreads = [...batchEntry.threads].sort((left, right) =>
+        left.threadId.localeCompare(right.threadId, undefined, { numeric: true }),
+      )
+
+      for (const thread of sortedThreads) {
+        const agentDisplay = thread.assignedAgent ? ` @${thread.assignedAgent}` : ""
+        const taskSuffix = ` (${thread.taskCount} task${thread.taskCount === 1 ? "" : "s"})`
+        lines.push(`    ${statusToIcon(thread.aggregateStatus)} ${thread.threadId} ${thread.threadName}${taskSuffix}${agentDisplay}`)
+      }
+    }
+
+    lines.push("")
+  }
+
+  return lines.join("\n").trimEnd()
+}
 
 function formatTaskList(streamId: string, tasks: Task[]): string {
   const lines: string[] = []
@@ -182,19 +250,15 @@ function formatTaskList(streamId: string, tasks: Task[]): string {
     completed: tasks.filter((t) => t.status === "completed").length,
     in_progress: tasks.filter((t) => t.status === "in_progress").length,
     pending: tasks.filter((t) => t.status === "pending").length,
-    blocked: tasks.filter((t) => t.status === "blocked").length,
   }
 
   lines.push(`Workstream: ${streamId}`)
   lines.push(
-    `Tasks: ${counts.total} total | ${counts.completed} completed | ${counts.in_progress} in progress | ${counts.pending} pending`
+    `Tasks: ${counts.total} total | ${counts.completed} completed | ${counts.in_progress} in progress | ${counts.pending} pending`,
   )
   lines.push("")
 
-  // Group tasks by stage, batch, and thread
   const grouped = groupTasks(tasks, { byBatch: true })
-
-  // Sort stages
   const stageEntries = Array.from(grouped.entries())
   stageEntries.sort((a, b) => {
     const aFirstTask = getFirstTaskFromStage(a[1])
@@ -209,7 +273,6 @@ function formatTaskList(streamId: string, tasks: Task[]): string {
 
     lines.push(`Stage ${stageNum}: ${stageName}`)
 
-    // Sort batches
     const batchEntries = Array.from(batchMap.entries())
     batchEntries.sort((a, b) => {
       const aFirst = getFirstTaskFromBatch(a[1])
@@ -219,13 +282,11 @@ function formatTaskList(streamId: string, tasks: Task[]): string {
     })
 
     for (const [batchName, threadMap] of batchEntries) {
-      // Get batch number from first task
       const firstBatchTask = getFirstTaskFromBatch(threadMap)
       const batchNum = firstBatchTask ? firstBatchTask.id.split(".")[1] : "?"
 
       lines.push(`  Batch ${batchNum}: ${batchName}`)
 
-      // Sort threads
       const threadEntries = Array.from(threadMap.entries())
       threadEntries.sort((a, b) => {
         const aTask = a[1][0]
@@ -235,7 +296,6 @@ function formatTaskList(streamId: string, tasks: Task[]): string {
       })
 
       for (const [threadName, threadTasks] of threadEntries) {
-        // Thread is index 2 in "stage.batch.thread.task"
         const threadNum = threadTasks[0]?.id.split(".")[2] ?? "?"
         lines.push(`    Thread ${threadNum}: ${threadName}`)
 
@@ -251,14 +311,6 @@ function formatTaskList(streamId: string, tasks: Task[]): string {
   return lines.join("\n").trimEnd()
 }
 
-function aggregateStatus(tasks: Task[]): TaskStatus {
-  if (tasks.length === 0) return "pending"
-  if (tasks.some((task) => task.status === "blocked")) return "blocked"
-  if (tasks.some((task) => task.status === "in_progress")) return "in_progress"
-  if (tasks.some((task) => task.status === "pending")) return "pending"
-  return "completed"
-}
-
 export function formatRuntimeSummary(streamId: string, tasks: Task[], repoRoot: string): string[] {
   const tasksFile = readTasksFile(repoRoot, streamId)
   const runtimeSummary = getEffectiveRuntimeSummary(repoRoot, streamId, tasksFile)
@@ -272,7 +324,8 @@ export function formatRuntimeSummary(streamId: string, tasks: Task[], repoRoot: 
     if (parts.length < 2) continue
     const batchId = `${parts[0]}.${parts[1]}`
     if (!batchTaskStatus.has(batchId)) {
-      batchTaskStatus.set(batchId, aggregateStatus(tasks.filter((candidate) => candidate.id.startsWith(`${batchId}.`))))
+      const batchTasks = tasks.filter((candidate) => candidate.id.startsWith(`${batchId}.`))
+      batchTaskStatus.set(batchId, aggregateStatus(batchTasks))
     }
   }
 
@@ -283,9 +336,7 @@ export function formatRuntimeSummary(streamId: string, tasks: Task[], repoRoot: 
     const isRuntimeActive = ["running", "failed"].includes(batch.status)
     if (!taskStatus) continue
     if (batch.status !== taskStatus || isRuntimeActive) {
-      lines.push(
-        `Runtime: ${batchId} tasks ${taskStatus.replace("_", " ")} vs runtime ${batch.status}`,
-      )
+      lines.push(`Runtime: ${batchId} tasks ${taskStatus.replace("_", " ")} vs runtime ${batch.status}`)
     }
   }
 
@@ -302,7 +353,6 @@ export function formatRuntimeSummary(streamId: string, tasks: Task[], repoRoot: 
   return lines
 }
 
-// Helper to get first task from nested maps structure for sorting
 function getFirstTaskFromStage(batchMap: Map<string, Map<string, Task[]>>): Task | undefined {
   const firstBatch = batchMap.values().next().value
   return getFirstTaskFromBatch(firstBatch)
@@ -314,6 +364,29 @@ function getFirstTaskFromBatch(threadMap: Map<string, Task[]> | undefined): Task
   return firstThread?.[0]
 }
 
+function matchesFilters(identifier: string, cliArgs: ListCliArgs, mode: "task" | "thread"): boolean {
+  if (cliArgs.stage !== undefined) {
+    const stagePrefix = `${cliArgs.stage.toString().padStart(2, "0")}.`
+    if (!identifier.startsWith(stagePrefix)) return false
+  }
+
+  if (cliArgs.batch) {
+    const batchPrefix = cliArgs.batch.endsWith(".") ? cliArgs.batch : `${cliArgs.batch}.`
+    if (!identifier.startsWith(batchPrefix)) return false
+  }
+
+  if (cliArgs.thread) {
+    const threadPrefix = cliArgs.thread.endsWith(".") ? cliArgs.thread : `${cliArgs.thread}.`
+    if (mode === "task") {
+      if (!identifier.startsWith(threadPrefix)) return false
+    } else if (identifier !== cliArgs.thread) {
+      return false
+    }
+  }
+
+  return true
+}
+
 export function main(argv: string[] = process.argv): void {
   const cliArgs = parseCliArgs(argv)
   if (!cliArgs) {
@@ -321,7 +394,6 @@ export function main(argv: string[] = process.argv): void {
     process.exit(1)
   }
 
-  // Auto-detect repo root if not provided
   let repoRoot: string
   try {
     repoRoot = cliArgs.repoRoot ?? getRepoRoot()
@@ -330,7 +402,6 @@ export function main(argv: string[] = process.argv): void {
     process.exit(1)
   }
 
-  // Load index and find workstream (uses current if not specified)
   let index
   try {
     index = loadIndex(repoRoot)
@@ -347,46 +418,56 @@ export function main(argv: string[] = process.argv): void {
     process.exit(1)
   }
 
-  // Get tasks
-  let tasks = queryTasksForWorkstream(repoRoot, stream.id, cliArgs.status)
+  const allTasks = queryTasksForWorkstream(repoRoot, stream.id)
 
-  // Apply filters
-  if (cliArgs.stage !== undefined) {
-    const stagePrefix = `${cliArgs.stage.toString().padStart(2, "0")}.`
-    tasks = tasks.filter((t) => t.id.startsWith(stagePrefix))
-  }
+  if (cliArgs.tasks) {
+    const tasks = queryTasksForWorkstream(repoRoot, stream.id, cliArgs.status).filter((task) =>
+      matchesFilters(task.id, cliArgs, "task"),
+    )
 
-  if (cliArgs.batch) {
-    // Ensure strict prefix matching (e.g. "01.02.")
-    const batchPrefix = cliArgs.batch.endsWith(".") ? cliArgs.batch : `${cliArgs.batch}.`
-    tasks = tasks.filter((t) => t.id.startsWith(batchPrefix))
-  }
+    if (tasks.length === 0) {
+      if (cliArgs.status) {
+        console.log(`No tasks with status "${cliArgs.status}" found in workstream "${stream.id}"`)
+      } else {
+        console.log(`No tasks found in workstream "${stream.id}".`)
+      }
+      return
+    }
 
-  if (cliArgs.thread) {
-    const threadPrefix = cliArgs.thread.endsWith(".") ? cliArgs.thread : `${cliArgs.thread}.`
-    tasks = tasks.filter((t) => t.id.startsWith(threadPrefix))
-  }
-
-  if (tasks.length === 0) {
-    if (cliArgs.status) {
-      console.log(`No tasks with status "${cliArgs.status}" found in workstream "${stream.id}"`)
+    if (cliArgs.json) {
+      console.log(JSON.stringify(tasks, null, 2))
     } else {
-      console.log(`No tasks found in workstream "${stream.id}".`)
+      const output = [formatTaskList(stream.id, tasks), ...formatRuntimeSummary(stream.id, allTasks, repoRoot)]
+        .filter(Boolean)
+        .join("\n")
+      console.log(output)
+    }
+    return
+  }
+
+  const threads = queryThreadsForWorkstream(repoRoot, stream.id, cliArgs.status).filter((thread) =>
+    matchesFilters(thread.threadId, cliArgs, "thread"),
+  )
+
+  if (threads.length === 0) {
+    if (cliArgs.status) {
+      console.log(`No threads with status "${cliArgs.status}" found in workstream "${stream.id}"`)
+    } else {
+      console.log(`No threads found in workstream "${stream.id}".`)
     }
     return
   }
 
   if (cliArgs.json) {
-    console.log(JSON.stringify(tasks, null, 2))
+    console.log(JSON.stringify(threads, null, 2))
   } else {
-    const output = [formatTaskList(stream.id, tasks), ...formatRuntimeSummary(stream.id, tasks, repoRoot)]
+    const output = [formatThreadList(stream.id, threads), ...formatRuntimeSummary(stream.id, allTasks, repoRoot)]
       .filter(Boolean)
       .join("\n")
     console.log(output)
   }
 }
 
-// Run if called directly
 if (import.meta.main) {
   main()
 }

@@ -39,6 +39,10 @@ import {
 import { NotificationTracker } from "../lib/notifications.ts"
 import { parseBatchId } from "../lib/cli-utils.ts"
 import {
+  queryThreadsForWorkstream,
+  type HierarchyThreadQueryRecord,
+} from "../lib/hierarchy-query.ts"
+import {
   collectThreadInfoFromTasks,
   buildThreadRunCommand,
   setupTmuxSession,
@@ -85,6 +89,8 @@ Optional:
 
 Description:
   Executes all threads in a batch simultaneously in parallel using tmux.
+  Batch/thread discovery prefers canonical thread hierarchy state before
+  falling back to compatibility task grouping.
   Each thread runs in its own tmux window with a full opencode TUI.
 
   A shared opencode serve backend is started (unless --no-server) to
@@ -314,6 +320,33 @@ export function findNextIncompleteBatch(tasks: Task[]): string | null {
   return null
 }
 
+export function findNextIncompleteBatchFromThreads(
+  threads: Pick<HierarchyThreadQueryRecord, "batchId" | "aggregateStatus">[],
+): string | null {
+  const batches = new Map<string, Pick<HierarchyThreadQueryRecord, "batchId" | "aggregateStatus">[]>()
+
+  for (const thread of threads) {
+    const existing = batches.get(thread.batchId)
+    if (existing) {
+      existing.push(thread)
+    } else {
+      batches.set(thread.batchId, [thread])
+    }
+  }
+
+  for (const batchId of [...batches.keys()].sort((left, right) =>
+    left.localeCompare(right, undefined, { numeric: true }),
+  )) {
+    const batchThreads = batches.get(batchId) ?? []
+    const allDone = batchThreads.every((thread) => thread.aggregateStatus === "completed")
+    if (!allDone) {
+      return batchId
+    }
+  }
+
+  return null
+}
+
 /**
  * Print dry run output showing what would be executed
  */
@@ -475,7 +508,15 @@ export async function main(argv: string[] = process.argv): Promise<void> {
       process.exit(1)
     }
 
-    const nextBatch = findNextIncompleteBatch(tasksFile.tasks)
+    let threadViews: ReturnType<typeof queryThreadsForWorkstream> = []
+    try {
+      threadViews = queryThreadsForWorkstream(repoRoot, stream.id)
+    } catch {
+      threadViews = []
+    }
+    const nextBatch =
+      findNextIncompleteBatchFromThreads(threadViews) ??
+      findNextIncompleteBatch(tasksFile.tasks)
     if (!nextBatch) {
       console.log("All batches are complete! Nothing to continue.")
       process.exit(0)
@@ -553,14 +594,18 @@ export async function main(argv: string[] = process.argv): Promise<void> {
   }
 
   // Get batch metadata for display
-  const batchMeta = getBatchMetadata(
+  const stageName = threads[0]?.stageName || getBatchMetadata(
     repoRoot,
     stream.id,
     batchParsed.stage,
     batchParsed.batch,
-  )
-  const stageName = batchMeta?.stageName || `Stage ${batchParsed.stage}`
-  const batchName = batchMeta?.batchName || `Batch ${batchParsed.batch}`
+  )?.stageName || `Stage ${batchParsed.stage}`
+  const batchName = threads[0]?.batchName || getBatchMetadata(
+    repoRoot,
+    stream.id,
+    batchParsed.stage,
+    batchParsed.batch,
+  )?.batchName || `Batch ${batchParsed.batch}`
 
   // Validate prompt files exist
   const missingPrompts = validateThreadPrompts(threads)

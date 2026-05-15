@@ -8,9 +8,13 @@
 import { existsSync, readFileSync, mkdirSync, writeFileSync } from "fs"
 import { join, dirname } from "path"
 import { getWorkDir } from "./repo.ts"
+import {
+  queryTasksForWorkstream,
+  queryThreadByIdForWorkstream,
+} from "./hierarchy-query.ts"
 import { parseStreamDocument } from "./stream-parser.ts"
 import { getTasks, parseTaskId } from "./tasks.ts"
-import { updateThreadMetadata } from "./threads.ts"
+import { getThreadMetadata, updateThreadMetadata } from "./threads.ts"
 import type {
   Task,
   StageDefinition,
@@ -187,17 +191,30 @@ export function getPromptContext(
     )
   }
 
+  let threadView: ReturnType<typeof queryThreadByIdForWorkstream> = null
+  try {
+    threadView = queryThreadByIdForWorkstream(repoRoot, streamId, threadIdStr)
+  } catch {
+    threadView = null
+  }
+
   // Get parallel threads (other threads in the same batch)
   const parallelThreads = batch.threads.filter((t) => t.id !== threadId.thread)
 
-  // Load tasks filtered to this thread
-  const allTasks = getTasks(repoRoot, streamId)
+  // Load tasks filtered to this thread, preferring canonical thread/query views
   const threadPrefix = `${threadId.stage.toString().padStart(2, "0")}.${threadId.batch.toString().padStart(2, "0")}.${threadId.thread.toString().padStart(2, "0")}.`
-  const tasks = allTasks.filter((t) => t.id.startsWith(threadPrefix))
+  let queriedTasks: Task[] = []
+  try {
+    queriedTasks = queryTasksForWorkstream(repoRoot, streamId).filter((t) =>
+      t.id.startsWith(threadPrefix),
+    )
+  } catch {
+    queriedTasks = []
+  }
+  const tasks = queriedTasks.length > 0 ? queriedTasks : getTasks(repoRoot, streamId).filter((t) => t.id.startsWith(threadPrefix))
 
-  // Get agent assignment from first task (they should all have the same agent)
-  // We use this to personalize the prompt
-  const assignedAgent = tasks.find((t) => t.assigned_agent)?.assigned_agent
+  // Get agent assignment from canonical thread state first, then compatibility tasks.
+  const assignedAgent = threadView?.assignedAgent ?? tasks.find((t) => t.assigned_agent)?.assigned_agent
   const agentName = assignedAgent
 
   return {
@@ -275,7 +292,7 @@ export function generateThreadPrompt(
 
   // Skill instruction
   lines.push(
-    `When listing tasks, use \`work list --tasks --batch "${batchId}"\` to see tasks for this batch only.`,
+    `When listing threads, use \`work list --batch "${batchId}"\`. Add \`--tasks\` to inspect compatibility tasks.`,
   )
   lines.push("")
   lines.push("Use the `implementing-workstreams` skill.")
@@ -340,7 +357,7 @@ export function generateThreadPromptJson(context: PromptContext): object {
  * Get the relative path for a prompt file
  * Format: {streamId}/prompts/{stage-prefix}-{stage-name}/{batch-prefix}-{batch-name}/{thread-name}.md
  */
-function getPromptRelativePath(context: PromptContext): string {
+export function getPromptRelativePath(context: PromptContext): string {
   const safeStageName = context.stage.name
     .replace(/[^a-zA-Z0-9_-]/g, "-")
     .toLowerCase()
@@ -366,13 +383,26 @@ function getPromptRelativePath(context: PromptContext): string {
  * Save a prompt to file and return the relative path
  * Returns null if saving failed
  */
-function savePromptToFile(
+export function savePromptToFile(
   repoRoot: string,
   context: PromptContext,
   content: string,
 ): string | null {
   const workDir = getWorkDir(repoRoot)
-  const relPath = getPromptRelativePath(context)
+  let persistedPromptPath: string | undefined
+  try {
+    persistedPromptPath = queryThreadByIdForWorkstream(
+      repoRoot,
+      context.streamId,
+      context.threadIdString,
+    )?.promptPath
+  } catch {
+    persistedPromptPath = undefined
+  }
+  const relPath =
+    persistedPromptPath ??
+    getThreadMetadata(repoRoot, context.streamId, context.threadIdString)?.promptPath ??
+    getPromptRelativePath(context)
   const fullPath = join(workDir, relPath)
 
   try {

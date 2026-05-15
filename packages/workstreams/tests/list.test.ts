@@ -115,7 +115,7 @@ function captureConsole(): {
 }
 
 describe("CLI: List Tasks with Filtering", () => {
-  test("should list all tasks when no filters provided", () => {
+  test("should list threads by default when no filters provided", () => {
     const workspace = setupWorkspace()
     const output = captureConsole()
 
@@ -123,6 +123,29 @@ describe("CLI: List Tasks with Filtering", () => {
       main(["node", "work", "list", "--repo-root", workspace.repoRoot, "--stream", STREAM_ID, "--json"])
       const parsed = JSON.parse(output.logOutput[0] || "[]")
       expect(parsed.length).toBe(4)
+      expect(parsed[0]).toMatchObject({
+        threadId: "01.01.01",
+        aggregateStatus: "pending",
+        taskCount: 1,
+        representativeTaskId: "01.01.01.01",
+      })
+    } finally {
+      output.restore()
+      workspace.cleanup()
+    }
+  })
+
+  test("should list compatibility tasks with --tasks", () => {
+    const workspace = setupWorkspace()
+    const output = captureConsole()
+
+    try {
+      main([
+        "node", "work", "list", "--repo-root", workspace.repoRoot, "--stream", STREAM_ID, "--tasks", "--json",
+      ])
+      const parsed = JSON.parse(output.logOutput[0] || "[]")
+      expect(parsed.length).toBe(4)
+      expect(parsed[0]).toMatchObject({ id: "01.01.01.01", name: "Task 1" })
     } finally {
       output.restore()
       workspace.cleanup()
@@ -143,7 +166,7 @@ describe("CLI: List Tasks with Filtering", () => {
       ])
       const parsed = JSON.parse(output.logOutput[0] || "[]")
       expect(parsed.length).toBe(3)
-      expect(parsed.every((task: any) => task.id.startsWith("01."))).toBe(true)
+      expect(parsed.every((thread: any) => thread.threadId.startsWith("01."))).toBe(true)
     } finally {
       output.restore()
       workspace.cleanup()
@@ -164,7 +187,7 @@ describe("CLI: List Tasks with Filtering", () => {
       ])
       const parsed = JSON.parse(output.logOutput[0] || "[]")
       expect(parsed.length).toBe(2)
-      expect(parsed.every((task: any) => task.id.startsWith("01.01."))).toBe(true)
+      expect(parsed.every((thread: any) => thread.threadId.startsWith("01.01."))).toBe(true)
     } finally {
       output.restore()
       workspace.cleanup()
@@ -185,7 +208,7 @@ describe("CLI: List Tasks with Filtering", () => {
       ])
       const parsed = JSON.parse(output.logOutput[0] || "[]")
       expect(parsed.length).toBe(1)
-      expect(parsed[0].id).toBe("01.01.02.01")
+      expect(parsed[0].threadId).toBe("01.01.02")
     } finally {
       output.restore()
       workspace.cleanup()
@@ -204,14 +227,14 @@ describe("CLI: List Tasks with Filtering", () => {
         "--batch", "99.99",
         "--json",
       ])
-      expect(output.logOutput[0] || "").toContain("No tasks found")
+      expect(output.logOutput[0] || "").toContain("No threads found")
     } finally {
       output.restore()
       workspace.cleanup()
     }
   })
 
-  test("should display correct hierarchy in text output", () => {
+  test("should display thread-first hierarchy in text output", () => {
     const workspace = setupWorkspace()
     const output = captureConsole()
 
@@ -223,12 +246,13 @@ describe("CLI: List Tasks with Filtering", () => {
       ])
 
       const rendered = output.logOutput.join("\n")
+      expect(rendered).toContain("Threads: 4 total")
       expect(rendered).toContain("Stage 01: Stage 1")
       expect(rendered).toContain("  Batch 01: Batch 1")
-      expect(rendered).toContain("    Thread 01: Thread 1")
-      expect(rendered).toContain("    Thread 02: Thread 2")
+      expect(rendered).toContain("    [ ] 01.01.01 Thread 1")
+      expect(rendered).toContain("    [~] 01.01.02 Thread 2")
       expect(rendered).toContain("  Batch 02: Batch 2")
-      expect(rendered).toContain("    Thread 01: Thread 1 of Batch 2")
+      expect(rendered).toContain("    [ ] 01.02.01 Thread 1 of Batch 2")
     } finally {
       output.restore()
       workspace.cleanup()

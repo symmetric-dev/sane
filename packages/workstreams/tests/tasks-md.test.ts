@@ -6,6 +6,7 @@ import {
   serializeTasksMd,
   detectNewStages,
 } from "../src/lib/tasks-md"
+import { deriveCompatibilityTasksFromPlan } from "../src/lib/task-compatibility"
 import type {
   Task,
   StreamDocument,
@@ -61,6 +62,40 @@ describe("tasks-md", () => {
         stages: [],
       }),
     ).toThrow("Cannot generate TASKS.md from a draft plan with no stages")
+  })
+
+  test("deriveCompatibilityTasksFromPlan seeds one compatibility task per thread", () => {
+    const tasks = deriveCompatibilityTasksFromPlan({
+      ...mockStreamDoc,
+      stages: [
+        {
+          ...mockStreamDoc.stages[0]!,
+          batches: [
+            {
+              ...mockStreamDoc.stages[0]!.batches[0]!,
+              threads: [
+                {
+                  id: 1,
+                  name: "Thread One",
+                  summary: "Implement the lifecycle regression coverage.",
+                  details: "More detail.",
+                },
+              ],
+            },
+          ],
+        },
+      ],
+    })
+
+    expect(tasks).toHaveLength(1)
+    expect(tasks[0]).toMatchObject({
+      id: "01.01.01.01",
+      name: "Implement the lifecycle regression coverage.",
+      stage_name: "Stage One",
+      batch_name: "Setup",
+      thread_name: "Thread One",
+      status: "pending",
+    })
   })
 
   test("parseTasksMd extracts tasks correctly", () => {

@@ -8,10 +8,7 @@
 import { getRepoRoot } from "../lib/repo.ts"
 import { loadIndex, getResolvedStream, saveIndex } from "../lib/index.ts"
 import {
-    isFullyApproved,
-    getFullApprovalStatus,
-    getApprovalStatus,
-    getTasksApprovalStatus,
+    queryFullApprovalStatus,
 } from "../lib/approval.ts"
 import { isGitHubEnabled, loadGitHubConfig } from "../lib/github/config.ts"
 import { createWorkstreamBranch } from "../lib/github/branches.ts"
@@ -41,7 +38,7 @@ Options:
   --help, -h       Show this help message
 
 Description:
-  Start a workstream after plan and tasks approvals are complete.
+   Start a workstream after plan approval has initialized execution state.
   
    This command:
    1. Creates the workstream branch on GitHub (workstream/{streamId})
@@ -49,8 +46,7 @@ Description:
    3. Creates GitHub issues for all stages in the workstream
 
 Prerequisites:
-  - Run 'work approve plan' to approve the PLAN.md
-  - Run 'work approve tasks' to approve tasks.json
+  - Run 'work approve plan' to approve PLAN.md and seed compatibility execution state
   - Run 'work approve' to check approval status
 
 Examples:
@@ -149,12 +145,12 @@ export async function main(argv: string[] = process.argv): Promise<void> {
     }
 
     // Check all approvals
-    const fullStatus = getFullApprovalStatus(stream)
+    const fullStatus = queryFullApprovalStatus(repoRoot, stream.id, stream)
 
     if (!fullStatus.fullyApproved) {
         const missing: string[] = []
         if (fullStatus.plan !== "approved") missing.push("plan")
-        if (fullStatus.tasks !== "approved") missing.push("tasks")
+        if (fullStatus.tasks !== "approved") missing.push("execution state")
 
         if (cliArgs.json) {
             console.log(JSON.stringify({
@@ -169,11 +165,15 @@ export async function main(argv: string[] = process.argv): Promise<void> {
             console.error("Error: Cannot start workstream - missing approvals")
             console.error("")
             console.error(`  Plan:    ${fullStatus.plan}`)
-            console.error(`  Tasks:   ${fullStatus.tasks}`)
+            console.error(`  Execution state: ${fullStatus.tasks}`)
             console.error("")
-            console.error("Run 'work approve <target>' to approve missing items:")
+            console.error("Run the required approval command for missing items:")
             for (const item of missing) {
-                console.error(`  work approve ${item}`)
+                if (item === "plan") {
+                    console.error("  work approve plan")
+                } else {
+                    console.error("  work approve plan  # reinitialize execution state from PLAN.md")
+                }
             }
         }
         process.exit(1)

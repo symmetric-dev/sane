@@ -175,7 +175,7 @@ export function main(argv: string[] = process.argv): void {
       console.log("  2. Edit PLAN.md to define stages, threads, and tasks")
       console.log(`  3. Run: work validate requirements`)
       console.log(`  4. Run: work validate plan`)
-      console.log(`  5. View: work list --stream "${result.streamId}" --tasks`)
+      console.log(`  5. View: work list --stream "${result.streamId}"`)
     } else {
       console.log("  1. Fill REQUIREMENTS.md and add supporting files under resources/")
       console.log(`  2. Run: work validate requirements`)
