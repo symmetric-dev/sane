@@ -1,6 +1,6 @@
 # WORK.md template
 
-Use this as the canonical thread-level execution document created by the planner.
+Use this as the canonical thread-level execution document generated after plan or revision approval.
 Keep sections short, concrete, and implementer-facing.
 
 ---
@@ -43,13 +43,13 @@ Use the READ / ALLOWED / FORBIDDEN groups below.
 Keep each list short and explicit.
 -->
 
-READ:
+### READ
 - 
 
-ALLOWED:
+### ALLOWED
 - 
 
-FORBIDDEN:
+### FORBIDDEN
 - 
 
 ## Verify

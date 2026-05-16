@@ -14,6 +14,7 @@ import { getResolvedStream } from "../../lib/index.ts"
 import { generateAllPrompts } from "../../lib/prompts.ts"
 import { initializeCanonicalExecutionStateFromPlan } from "../../lib/execution-state.ts"
 import { loadWorkstreamPlan } from "../../lib/consolidate.ts"
+import { ensureThreadWorkDocsForPlan } from "../../lib/thread-workdocs.ts"
 
 import type { ApproveCliArgs } from "./utils.ts"
 
@@ -128,6 +129,7 @@ export function handleRevisionApproval(
 
   // Step 5: Refresh the execution hierarchy from the revised plan
   const threadCount = initializeCanonicalExecutionStateFromPlan(repoRoot, stream.id, doc)
+  ensureThreadWorkDocsForPlan(repoRoot, stream.id, doc)
   const promptsResult = generateAllPrompts(repoRoot, stream.id)
 
   // Step 6: Count new threads introduced by the revision

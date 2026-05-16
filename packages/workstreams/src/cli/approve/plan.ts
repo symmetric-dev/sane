@@ -33,6 +33,7 @@ import { generateAllPrompts } from "../../lib/prompts.ts"
 import { initializeCanonicalExecutionStateFromPlan } from "../../lib/execution-state.ts"
 import { loadWorkstreamPlan } from "../../lib/consolidate.ts"
 import { queryThreadsForWorkstream } from "../../lib/hierarchy-query.ts"
+import { ensureThreadWorkDocsForPlan } from "../../lib/thread-workdocs.ts"
 
 import type { ApproveCliArgs } from "./utils.ts"
 
@@ -85,6 +86,7 @@ function initializeExecutionStateFromPlan(
     }
 
     const threadCount = initializeCanonicalExecutionStateFromPlan(repoRoot, streamId, doc)
+    ensureThreadWorkDocsForPlan(repoRoot, streamId, doc)
 
     return {
       success: true,

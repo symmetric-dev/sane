@@ -8,14 +8,21 @@
 import { mkdirSync, writeFileSync } from "fs"
 import { join, dirname } from "path"
 import { getWorkDir } from "./repo.ts"
-import { listOrderedStageDirectories } from "./stage-directories.ts"
 import {
   queryExecutionItemsForWorkstream,
   queryThreadByIdForWorkstream,
 } from "./hierarchy-query.ts"
 import { parseStreamDocument } from "./stream-parser.ts"
 import { getThreadMetadata, updateThreadMetadata } from "./threads.ts"
-import { loadWorkstreamPlan } from "./consolidate.ts"
+import {
+  loadWorkstreamPlan,
+  formatMissingWorkstreamPlanMessage,
+} from "./consolidate.ts"
+import {
+  getPreferredWorkMdRelativePath,
+  getThreadWorkMdRelativePath,
+  resolveStageDirectoryName,
+} from "./thread-workdocs.ts"
 import type {
   StageDefinition,
   BatchDefinition,
@@ -52,9 +59,11 @@ export interface PromptContext {
   executionItems: ExecutionItemQueryRecord[]
   parallelThreads: ThreadDefinition[]
   references: {
+    primaryWorkPath: string
     readmePath: string
-    requirementsPath: string
-    workPath: string
+    stageRequirementsPath: string
+    stageWorkPath: string
+    threadWorkPath: string
   }
   agentName?: string
 }
@@ -75,17 +84,6 @@ export interface GeneratePromptsResult {
   generatedFiles: string[] // Relative paths of generated prompt files
   errors: string[] // Error messages for failed generations
   totalThreads: number // Total number of threads found
-}
-
-function resolveStageDirectoryName(
-  repoRoot: string,
-  streamId: string,
-  syntheticStageId: number,
-): string {
-  const stagesDir = join(getWorkDir(repoRoot), streamId, "stages")
-  const stageDirectories = listOrderedStageDirectories(stagesDir)
-  const directoryName = stageDirectories[syntheticStageId - 1]?.name
-  return directoryName ?? syntheticStageId.toString().padStart(2, "0")
 }
 
 // ============================================
@@ -162,8 +160,7 @@ export function getPromptContext(
   // Load PLAN.md
   const loadedPlan = loadWorkstreamPlan(repoRoot, streamId)
   if (!loadedPlan) {
-    const workDir = getWorkDir(repoRoot)
-    throw new Error(`PLAN.md not found at ${join(workDir, streamId, "PLAN.md")}`)
+    throw new Error(formatMissingWorkstreamPlanMessage(repoRoot, streamId))
   }
 
   const errors: ConsolidateError[] = []
@@ -238,9 +235,11 @@ export function getPromptContext(
     executionItems,
     parallelThreads,
     references: {
+      primaryWorkPath: getPreferredWorkMdRelativePath(repoRoot, streamId, threadIdStr),
       readmePath: join(workstreamRoot, "README.md"),
-      requirementsPath: join(stageRoot, "REQUIREMENTS.md"),
-      workPath: join(stageRoot, "WORK.md"),
+      stageRequirementsPath: join(stageRoot, "REQUIREMENTS.md"),
+      stageWorkPath: join(stageRoot, "WORK.md"),
+      threadWorkPath: join("work", getThreadWorkMdRelativePath(repoRoot, streamId, threadIdStr)),
     },
     agentName,
   }
@@ -265,8 +264,9 @@ export function generateThreadPrompt(
   lines.push("")
   lines.push("Use the `implementing-workstreams` skill.")
   lines.push("")
-  lines.push(`Read this document \`${context.references.workPath}\` before making any changes.`)
-  lines.push(`If you need stage requirements, read \`${context.references.requirementsPath}\`.`)
+  lines.push(`Read this document first: \`${context.references.primaryWorkPath}\`.`)
+  lines.push(`If you need shared stage guidance, read \`${context.references.stageWorkPath}\`.`)
+  lines.push(`If you need stage requirements, read \`${context.references.stageRequirementsPath}\`.`)
   lines.push(`If you need overall workstream context, read \`${context.references.readmePath}\`.`)
   lines.push("")
   lines.push("Thread objective:")
@@ -320,9 +320,11 @@ export function generateThreadPromptJson(context: PromptContext): object {
       details: context.thread.details,
     },
     references: {
+      primaryWorkPath: context.references.primaryWorkPath,
       readmePath: context.references.readmePath,
-      requirementsPath: context.references.requirementsPath,
-      workPath: context.references.workPath,
+      stageRequirementsPath: context.references.stageRequirementsPath,
+      stageWorkPath: context.references.stageWorkPath,
+      threadWorkPath: context.references.threadWorkPath,
     },
     executionItems: context.executionItems.map((item) => ({
       id: item.id,
@@ -435,9 +437,8 @@ export function generateAllPrompts(
   // Load and parse PLAN.md
   const loadedPlan = loadWorkstreamPlan(repoRoot, streamId)
   if (!loadedPlan) {
-    const workDir = getWorkDir(repoRoot)
     result.success = false
-    result.errors.push(`PLAN.md not found at ${join(workDir, streamId, "PLAN.md")}`)
+    result.errors.push(formatMissingWorkstreamPlanMessage(repoRoot, streamId))
     return result
   }
 

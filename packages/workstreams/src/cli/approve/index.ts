@@ -43,8 +43,9 @@ Options:
 
 Description:
   Workstreams require plan approval before starting.
-  Plan approval validates the staged planning structure from root PLAN.md or
-  stage-local stages/*/PLAN.md, requires at least one stage, and blocks on
+  Plan approval validates the staged planning structure from stage-local
+  stages/*/PLAN.md (or a legacy root PLAN.md when present), requires at least
+  one stage, and blocks on
   open questions unless --force is used.
 
   Run 'work start' after approval to create the GitHub branch and issues.

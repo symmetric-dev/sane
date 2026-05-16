@@ -4,17 +4,18 @@
  * Generates execution prompts for agents with full thread context.
  */
 
-import { join } from "path"
-import { readFileSync, existsSync } from "fs"
-import { getRepoRoot, getWorkDir } from "../lib/repo.ts"
+import { getRepoRoot } from "../lib/repo.ts"
 import { loadIndex, getResolvedStream } from "../lib/index.ts"
 import { parseStreamDocument } from "../lib/stream-parser.ts"
+import {
+  loadWorkstreamPlan,
+  formatMissingWorkstreamPlanMessage,
+} from "../lib/consolidate.ts"
 import {
   getPromptContext,
   generateThreadPrompt,
   generateThreadPromptJson,
   savePromptToFile,
-  type PromptContext,
 } from "../lib/prompts.ts"
 
 interface PromptCliArgs {
@@ -62,7 +63,7 @@ Description:
   Generates a comprehensive execution prompt for an agent to work on a specific
   thread. The prompt includes:
   - Thread identity/agent context from canonical thread query state when available
-  - Thread summary and details from PLAN.md
+  - Thread summary and details from the workstream plan (stage-local stages/<nn>/PLAN.md by default)
   - Attached execution state and context for the thread
   - Stage definition and constitution
   - Parallel threads for awareness
@@ -71,7 +72,7 @@ Examples:
   work prompt --thread "01.01.01"
   work prompt --thread "01.01.02" --stream "001-my-feature"
   work prompt --thread "01.01.01" --json
-  work prompt --stage 1 --batch 1
+  work prompt --stage 1
   work prompt --stage 1 --batch 1
 `)
 }
@@ -234,18 +235,16 @@ export async function main(argv: string[] = process.argv): Promise<void> {
       process.exit(1)
     }
 
-    // Load and parse PLAN.md
-    const workDir = getWorkDir(repoRoot)
-    const planPath = join(workDir, stream.id, "PLAN.md")
+    // Load and parse the workstream plan using the same resolution path as the rest of the system
+    const loadedPlan = loadWorkstreamPlan(repoRoot, stream.id)
 
-    if (!existsSync(planPath)) {
-      console.error(`Error: PLAN.md not found at ${planPath}`)
+    if (!loadedPlan) {
+      console.error(`Error: ${formatMissingWorkstreamPlanMessage(repoRoot, stream.id)}`)
       process.exit(1)
     }
 
-    const planContent = readFileSync(planPath, "utf-8")
     const errors: any[] = []
-    const doc = parseStreamDocument(planContent, errors)
+    const doc = parseStreamDocument(loadedPlan.content, errors)
 
     if (!doc) {
       console.error("Error parsing PLAN.md")

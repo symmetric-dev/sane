@@ -151,7 +151,7 @@ const COMMAND_DESCRIPTIONS: Record<string, string> = {
   delete: "Delete workstreams, stages, batches, or threads",
   files: "List and index files in files/ directory",
   review: "Review plan or commits (plan, commits)",
-  validate: "Validate plan or requirements",
+  validate: "Validate plan, requirements, or work docs",
   check: "Find unchecked items in plan",
   preview: "Show PLAN.md structure",
   report: "Generate progress report (includes metrics)",

@@ -6,7 +6,11 @@
 
 import { getRepoRoot } from "../lib/repo.ts"
 import { loadIndex, getResolvedStream } from "../lib/index.ts"
-import { loadWorkstreamPlan, consolidateStream } from "../lib/consolidate.ts"
+import {
+    loadWorkstreamPlan,
+    consolidateStream,
+    formatMissingWorkstreamPlanMessage,
+} from "../lib/consolidate.ts"
 import { findOpenQuestions, extractInputFileReferences, findMissingInputFiles, type OpenQuestion } from "../lib/analysis.ts"
 
 interface CheckCliArgs {
@@ -206,7 +210,7 @@ export function main(argv: string[] = process.argv): void {
     if (cliArgs.subcommand === "plan") {
         const loadedPlan = loadWorkstreamPlan(repoRoot, stream.id)
         if (!loadedPlan) {
-            console.error(`Error: no root or stage-local PLAN.md found for workstream "${stream.id}"`)
+            console.error(`Error: ${formatMissingWorkstreamPlanMessage(repoRoot, stream.id)}`)
             process.exit(1)
         }
         const content = loadedPlan.content

@@ -7,17 +7,22 @@
 import { readFileSync } from "fs"
 import { getRepoRoot } from "../lib/repo.ts"
 import { loadIndex, getResolvedStream } from "../lib/index.ts"
-import { loadWorkstreamPlan, consolidateStream } from "../lib/consolidate.ts"
+import {
+    loadWorkstreamPlan,
+    consolidateStream,
+    formatMissingWorkstreamPlanMessage,
+} from "../lib/consolidate.ts"
 import {
     loadWorkstreamRequirements,
     validateRequirementsDocument,
 } from "../lib/requirements.ts"
 import { relative } from "path"
+import { validateWorkstreamThreadWorkDocs } from "../lib/work-validation.ts"
 
 interface ValidateCliArgs {
     repoRoot?: string
     streamId?: string
-    subcommand?: "plan" | "requirements"
+    subcommand?: "plan" | "requirements" | "work"
     json: boolean
 }
 
@@ -34,10 +39,12 @@ function printHelp(): void {
 Usage:
   work validate plan [--stream <stream-id>]
   work validate requirements [--stream <stream-id>]
+  work validate work [--stream <stream-id>]
 
 Subcommands:
   plan     Validate planning structure and content
   requirements  Validate requirements structure and content
+  work          Validate per-thread WORK.md structure and content
 
 Options:
   --repo-root, -r  Repository root (auto-detected if omitted)
@@ -46,12 +53,14 @@ Options:
   --help, -h       Show this help message
 
 Description:
-  Validates planning and requirements markdown for the stage-local workstream model.
-  Shared goals live in root README.md and stage details live under stages/<nn>/.
+  Validates planning, per-stage requirements, and per-thread WORK.md files for the stage-local workstream model.
+  Shared workstream context lives in root README.md; shared stage guidance and requirements live under stages/<nn>/.
   Plan validation checks for files shared across parallel threads in the same batch.
   REQUIREMENTS.md validation checks required sections plus dependency/resource paths.
-  When no root REQUIREMENTS.md exists, it validates filled stage-local files under
-  stages/<nn>/REQUIREMENTS.md and ignores untouched scaffolds.
+  WORK.md validation checks that each planned thread has a thread-local WORK.md with the
+  canonical required sections filled with real content.
+  Requirements validation uses filled stage-local files under stages/<nn>/REQUIREMENTS.md
+  and ignores untouched scaffolds; a legacy root REQUIREMENTS.md is only used when present.
   Note: Use 'work check plan' to check for open questions and missing input files.
 
 Examples:
@@ -64,7 +73,7 @@ Examples:
   work plan create --stages 2
   work validate plan
 
-  # Validate root or stage-local requirements structure
+  # Validate stage-local requirements structure
   work validate requirements
 
   # Validate specific workstream
@@ -84,8 +93,8 @@ function parseCliArgs(argv: string[]): ValidateCliArgs | null {
         const next = args[i + 1]
 
         // Handle subcommand
-        if ((arg === "plan" || arg === "requirements") && !parsed.subcommand) {
-            parsed.subcommand = arg as "plan" | "requirements"
+        if ((arg === "plan" || arg === "requirements" || arg === "work") && !parsed.subcommand) {
+            parsed.subcommand = arg as "plan" | "requirements" | "work"
             continue
         }
 
@@ -125,7 +134,7 @@ function parseCliArgs(argv: string[]): ValidateCliArgs | null {
     return parsed
 }
 
-function formatValidationResult(result: ValidationResult, fileType: "PLAN.md" | "REQUIREMENTS.md"): string {
+function formatValidationResult(result: ValidationResult, fileType: "PLAN.md" | "REQUIREMENTS.md" | "WORK.md"): string {
     const lines: string[] = []
 
     if (result.valid) {
@@ -162,7 +171,7 @@ export function main(argv: string[] = process.argv): void {
 
     // Validate subcommand
     if (!cliArgs.subcommand) {
-        console.error("Error: subcommand required (e.g., 'plan' or 'requirements')")
+        console.error("Error: subcommand required (e.g., 'plan', 'requirements', or 'work')")
         console.error("\nRun with --help for usage information.")
         process.exit(1)
     }
@@ -196,7 +205,7 @@ export function main(argv: string[] = process.argv): void {
     if (cliArgs.subcommand === "plan") {
         const loadedPlan = loadWorkstreamPlan(repoRoot, stream.id)
         if (!loadedPlan) {
-            console.error(`Error: no root or stage-local PLAN.md found for workstream "${stream.id}"`)
+            console.error(`Error: ${formatMissingWorkstreamPlanMessage(repoRoot, stream.id)}`)
             process.exit(1)
         }
 
@@ -231,7 +240,7 @@ export function main(argv: string[] = process.argv): void {
         }
 
         if (loadedRequirementsResult.status === "missing") {
-            console.error(`Error: no root or stage-local REQUIREMENTS.md found for workstream "${stream.id}"`)
+            console.error(`Error: no stage-local REQUIREMENTS.md found for workstream "${stream.id}" under work/${stream.id}/stages/*/REQUIREMENTS.md (legacy root REQUIREMENTS.md also checked)`)
             process.exit(1)
         }
 
@@ -273,6 +282,20 @@ export function main(argv: string[] = process.argv): void {
             console.log(JSON.stringify(result, null, 2))
         } else {
             console.log(formatValidationResult(result, "REQUIREMENTS.md"))
+        }
+
+        if (!result.valid) {
+            process.exit(1)
+        }
+    }
+
+    if (cliArgs.subcommand === "work") {
+        const result = validateWorkstreamThreadWorkDocs(repoRoot, stream.id)
+
+        if (cliArgs.json) {
+            console.log(JSON.stringify(result, null, 2))
+        } else {
+            console.log(formatValidationResult(result, "WORK.md"))
         }
 
         if (!result.valid) {

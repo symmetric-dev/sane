@@ -36,6 +36,11 @@ export function getStreamPlanMdPath(repoRoot: string, streamId: string): string 
   return join(workDir, streamId, "PLAN.md")
 }
 
+export function formatMissingWorkstreamPlanMessage(repoRoot: string, streamId: string): string {
+  const workDir = getWorkDir(repoRoot)
+  return `No stage-local PLAN.md found under ${join(workDir, streamId, "stages", "*", "PLAN.md")} for workstream "${streamId}" (legacy root PLAN.md also checked at ${getStreamPlanMdPath(repoRoot, streamId)})`
+}
+
 export function getStagePlanMdPaths(repoRoot: string, streamId: string): string[] {
   const stagesDir = join(getWorkDir(repoRoot), streamId, "stages")
   return listOrderedStageDirectories(stagesDir)

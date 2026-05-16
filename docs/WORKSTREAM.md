@@ -12,14 +12,15 @@ Execution items live under their owning stage/batch/thread, and the supported wo
 
 Each stream lives at `work/{stream-id}/`.
 
-- `README.md`: overall workstream goals, shared requirements, and workflow note
+- `README.md`: overall workstream context
 - `workstream-state.json`: canonical filesystem fallback for structured state when sqlite is absent
 - `REPORT.md`: completion report input
 - `resources/`: supporting pre-work inputs referenced by root README or stage requirements
 - `docs/`: supporting notes and synthesized research
 - `stages/<nn>/REQUIREMENTS.md`: stage-local acceptance criteria and resources
 - `stages/<nn>/PLAN.md`: stage-local batch/thread planning surface
-- `stages/<nn>/WORK.md`: stage-local execution guidance
+- `stages/<nn>/WORK.md`: shared stage guidance
+- `stages/<nn>/threads/<thread-id>/WORK.md`: primary worker doc generated after plan/revision approval
 - `stages/<nn>/specs/`: optional stage specs directory
 
 ## Minimal Lifecycle
@@ -40,7 +41,7 @@ work report validate
 
 1. The planning agent uses `planning-workstreams` to create the workstream, gather context, update the root `README.md`, and then prepare stage-local planning files when planning is ready to start.
 2. The user approves the plan with `work approve plan`.
-3. Plan approval initializes thread execution state directly from the planned stage/thread structure.
+3. Plan approval initializes thread execution state directly from the planned stage/thread structure and generates per-thread `WORK.md` files.
 4. The user manually `/fork`s the session and asks the forked session to supervise the approved work.
 5. The supervision branch uses `supervising-workstreams` to run `work supervise`, inspect persisted state, and drive the review/fix/escalation loop.
 6. Implementation agents inside that supervised batch use `implementing-workstreams` to inspect scope and keep execution state current with commands like `work status`, `work tree --batch`, `work list --thread`, and `work update`.
@@ -60,6 +61,7 @@ The older Root Agent management-launch flow is still available through the manag
 - Run `work current --set "NNN-feature"` first, or pass `--stream`, before `work plan create` and other follow-up commands.
 - `work plan create --stages <n>` scaffolds stage directories such as `stages/01/`, `stages/02/`, and so on.
 - Each stage gets `REQUIREMENTS.md`, `PLAN.md`, `WORK.md`, and `specs/`.
+- After plan or revision approval, each planned thread gets `stages/<nn>/threads/<thread-id>/WORK.md` as its primary worker doc.
 - `work approve plan` requires at least one stage and seeds thread execution state from the staged planning structure.
 
 ## Runtime State
@@ -73,7 +75,7 @@ The older Root Agent management-launch flow is still available through the manag
 - Recommended bootstrap for new and existing repos: `work init --sqlite`.
 - `work/db.sqlite` is the repo-local canonical store for structured workflow state.
 - Running `work init --sqlite` in an existing repo hydrates legacy workspace/runtime artifacts into sqlite.
-- Core markdown documents (`README.md`, stage-local `REQUIREMENTS.md` / `PLAN.md` / `WORK.md`, `REPORT.md`) plus `resources/` and artifact-like outputs remain filesystem-based.
+- Core markdown documents (`README.md`, stage-local `REQUIREMENTS.md` / `PLAN.md` / `WORK.md`, per-thread `WORK.md`, `REPORT.md`) plus `resources/` and artifact-like outputs remain filesystem-based.
 - `work/db.sqlite` is local runtime state and is expected to stay out of version control; this repo currently ignores `work/` entirely.
 
 Operator guidance:

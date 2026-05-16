@@ -12,7 +12,7 @@
  *   list        - List threads in a workstream
  *   delete      - Delete workstreams, stages, batches, or threads
  *   review      - Review plan or commits
- *   validate    - Validate plan or requirements
+ *   validate    - Validate plan, requirements, or work docs
  *   check       - Find unchecked items in plan
  *   preview     - Show PLAN.md structure
  *   init        - Initialize work/ directory with default config files

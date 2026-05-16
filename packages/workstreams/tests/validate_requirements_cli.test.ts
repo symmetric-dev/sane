@@ -232,7 +232,7 @@ Implement stage-local requirements validation.
 
     expect(stdout).toEqual([])
     expect(stderr).toEqual([
-      'Error: no root or stage-local REQUIREMENTS.md found for workstream "001-test-stream"',
+      'Error: no stage-local REQUIREMENTS.md found for workstream "001-test-stream" under work/001-test-stream/stages/*/REQUIREMENTS.md (legacy root REQUIREMENTS.md also checked)',
     ])
   })
 })

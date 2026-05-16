@@ -42,12 +42,12 @@ Workflow:
   1. Create draft:      work create --name my-feature
   2. Set current:       work current --set "001-my-feature"
   3. Gather context:    Add files under resources/ or docs/
-  4. Draft root context: Update README.md with the overall goal and requirements
+  4. Draft root context: Update README.md with the overall workstream context
   5. Scaffold stages:   work plan create --stages 3
   6. Fill stage docs:   Edit stages/01/{REQUIREMENTS.md,PLAN.md,WORK.md}
   7. Repeat for more stages as needed
   8. Approve:           work approve plan
-                          (requires at least one stage)
+                           (requires at least one stage; then thread WORK.md files are generated)
 `)
 }
 
@@ -148,13 +148,14 @@ export function main(argv: string[] = process.argv): void {
     console.log(`   Path: ${result.streamPath}`)
     console.log("")
     console.log("Next steps:")
-    console.log("  1. Review and update README.md with the overall goal and shared requirements")
+    console.log("  1. Review and update README.md with the overall workstream context")
     console.log("  2. Add supporting files under resources/ or docs/")
     console.log(`  3. Run: work plan create --stream "${result.streamId}" --stages 3`)
     console.log("  4. Fill each stage directory under stages/ with REQUIREMENTS.md, PLAN.md, WORK.md, and specs/")
+    console.log("  5. After plan or revision approval, use the generated thread WORK.md files as primary worker docs")
     console.log("")
     console.log("Initial filesystem state:")
-    console.log("  - README.md   (shared workstream description and requirements)")
+    console.log("  - README.md   (shared workstream context)")
     console.log("  - resources/  (supporting files and gathered inputs)")
     console.log("  - docs/       (optional draft notes and documentation)")
     console.log("  - stages/     (empty until 'work plan create' scaffolds stage directories)")

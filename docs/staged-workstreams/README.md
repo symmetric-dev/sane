@@ -25,7 +25,7 @@ Use a hybrid model:
 
 1. workstream-level docs for global context and cross-stage decisions
 2. stage-level docs for exact acceptance criteria and implementation boundaries
-3. richer execution docs (`WORK.md`) for thread/stage instructions
+3. richer execution docs split between shared stage guidance and per-thread worker docs
 4. lighter execution items for tracking only
 
 This is better than either:
@@ -44,7 +44,10 @@ This is better than either:
     01/
       REQUIREMENTS.md      # stage-local acceptance criteria
       PLAN.md              # stage-local batches/threads
-      WORK.md              # rich execution guidance for agents
+      WORK.md              # shared stage guidance for all threads in the stage
+      threads/
+        01.01.01/
+          WORK.md          # primary worker doc generated after approval
       specs/
         *.md
 ```
@@ -73,7 +76,7 @@ Architecture and migration work often depends on truths like:
 - this route is historical context only, not target surface
 - report ambiguity instead of making a local decision
 
-Those constraints fit poorly into terse execution items and belong in a richer stage or thread work doc.
+Those constraints fit poorly into terse execution items and belong in shared stage guidance or a thread worker doc.
 
 ### 3. Better supervision and review
 

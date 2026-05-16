@@ -57,8 +57,8 @@ Optional skill install:
 The day-to-day workflow is:
 
 1. Discuss the feature and let the agent research the repo.
-2. The agent uses `planning-workstreams` to create the workstream and prepare `REQUIREMENTS.md` and `PLAN.md`.
-3. You approve the plan, which initializes canonical execution state directly from `PLAN.md`.
+2. The agent uses `planning-workstreams` to create the workstream, fill the root `README.md`, and prepare stage `REQUIREMENTS.md` / `PLAN.md` / `WORK.md` files.
+3. You approve the plan, which initializes canonical execution state directly from `PLAN.md` and generates per-thread `WORK.md` files.
 4. You manually `/fork` the session and ask the forked session to supervise the approved work.
 5. The supervision branch uses `supervising-workstreams` to run `work supervise`, inspect persisted state, and drive the review/fix/escalation loop.
 6. Implementation agents spawned within that loop use `implementing-workstreams` to inspect batch/thread scope and update item state while they work.
@@ -141,7 +141,7 @@ Example output from `work status`:
 
 AgEnv uses skill files under `agent/skills/*` to guide agent behavior through each phase.
 
-- `planning-workstreams`: used first to create the stream, fill `REQUIREMENTS.md`, shape `PLAN.md`, and get the workstream ready for plan approval.
+- `planning-workstreams`: used first to create the stream, fill the root `README.md`, shape stage docs, and get the workstream ready for plan approval.
 - `managing-workstreams`: optional managed-profile skill used by the Root Agent after plan approval to launch and monitor a supervision branch automatically.
 - `supervising-workstreams`: used by the supervision branch to run `work supervise`, inspect persisted state, and drive the review/fix/escalation loop.
 - `implementing-workstreams`: used by worker agents that execute thread items within supervised batches; these workers inspect their scope and keep item state current.
@@ -149,7 +149,7 @@ AgEnv uses skill files under `agent/skills/*` to guide agent behavior through ea
 
 In practice:
 
-1. Planning agent uses planning skill to prepare requirements and plan structure.
+1. Planning agent uses planning skill to prepare the root `README.md` plus stage requirements, plan, and shared guidance.
 2. Human approves (`work approve plan`).
 3. Human manually `/fork`s the session and asks the forked session to supervise the work.
 4. Supervision branch uses the supervising skill to run `work supervise` and make review/fix/escalation decisions.

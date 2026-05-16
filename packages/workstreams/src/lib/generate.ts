@@ -127,20 +127,31 @@ function generateStageWorkMd(stageLabel: number | string): string {
 
   return `# Stage ${stageDir} Work
 
-## Purpose
+## Role
+
+This file is shared stage guidance for every thread in Stage ${stageDir}.
+It is not the primary worker doc; after plan or revision approval, each planned thread gets its own \`threads/<thread-id>/WORK.md\`.
+
+## Stage Objective
 
 <!-- Describe exactly what this stage exists to accomplish. -->
 
-## Inputs
+## Files to Know
 
-- \`./REQUIREMENTS.md\`
-- \`./PLAN.md\`
-- \`./specs/\`
-- \`../../README.md\`
+### READ
 
-## Required Outputs
+- \`./REQUIREMENTS.md\` — stage requirements
+- \`./PLAN.md\` — approved stage plan
+- \`./specs/\` — stage-specific specs
+- \`../../README.md\` — overall workstream context
 
-<!-- List the exact files, directories, or artifacts this stage must produce or update. -->
+### THREAD DOCS
+
+- \`./threads/<thread-id>/WORK.md\` — primary worker doc generated after approval
+
+## Shared Stage Guidance
+
+<!-- Capture instructions that apply across multiple threads in this stage. -->
 
 ## Allowed Files To Modify
 
@@ -149,6 +160,10 @@ function generateStageWorkMd(stageLabel: number | string): string {
 ## Forbidden Files / Boundaries
 
 <!-- Be explicit about what must not be touched. -->
+
+## Coordination Notes
+
+<!-- Note any cross-thread sequencing, handoff, or consistency rules. -->
 
 ## Acceptance Checks
 
@@ -184,7 +199,7 @@ Stream ID: \`${streamId}\`
 
 ## Initial Layout
 
-- \`README.md\` — overall workstream description, shared requirements, and workflow notes
+- \`README.md\` — overall workstream context
 - \`resources/\` — shared inputs gathered before stage planning
 - \`docs/\` — supporting notes and drafts
 - \`stages/\` — stage-specific planning and execution material
@@ -192,9 +207,11 @@ Stream ID: \`${streamId}\`
 ## Stage Planning Workflow
 
 1. Capture shared context and reference material under \`resources/\` and \`docs/\`.
-2. Update this \`README.md\` with the overall goal, deliverables, dependencies, and shared resources.
+2. Update this \`README.md\` with the overall workstream context, deliverables, dependencies, and shared resources.
 3. Run \`work plan create --stream "${streamId}" --stages <n>\` to scaffold stage directories under \`stages/\`.
 4. For each stage, fill in \`REQUIREMENTS.md\`, \`PLAN.md\`, \`WORK.md\`, and \`specs/\`.
+5. Treat each stage \`WORK.md\` as shared stage guidance, not the primary worker doc.
+6. After plan or revision approval initializes execution, thread-specific \`WORK.md\` files are generated under \`stages/<stage-dir>/threads/<thread-id>/\`.
 
 This workstream intentionally starts with shared root context plus empty stage scaffolding. There is no root \`REQUIREMENTS.md\` or \`PLAN.md\` in the supported model; stage planning lives under \`stages/<nn>/\`.
 `
