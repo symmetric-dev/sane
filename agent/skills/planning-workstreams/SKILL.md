@@ -16,7 +16,7 @@ description: Create and prepare workstreams for execution. Planning only, no cod
 1. Create and set stream: `work create --name "feature-name"` and `work current --set "NNN-feature-name"`
 2. Work on the root `README.md` along with the user so it captures the overall workstream context, deliverables, dependencies, and shared resources. Add supporting files under `resources/`.
 3. Scaffold stages: `work plan create --stages N`. This will create stage directories under `stages/`.
-4. Fill each stage's `REQUIREMENTS.md`, `PLAN.md`, `WORK.md`, and `specs/`. Treat stage `WORK.md` as shared stage guidance, not the primary worker doc.
+4. Fill each stage's `REQUIREMENTS.md`, `PLAN.md`, and `specs/`.
 5. Validate before review:
    - `work validate plan`
    - `work check plan`
@@ -27,7 +27,7 @@ description: Create and prepare workstreams for execution. Planning only, no cod
 Notes:
 - Root `README.md` is the human-facing source of truth for shared summary, deliverables, dependencies, and resources.
 - Stage-local `REQUIREMENTS.md` files capture stage-specific acceptance criteria and inputs.
-- Stage-local `WORK.md` files capture shared stage guidance; the primary worker doc is `stages/<stage>/threads/<thread-id>/WORK.md`, generated after plan or revision approval.
+- The primary worker doc is `stages/<stage>/threads/<thread-id>/WORK.md`, generated after plan or revision approval.
 - If shared root context is missing or incomplete, stop and ask the user to provide it, or help the user draft the root `README.md` first.
 
 ## Planning Rules

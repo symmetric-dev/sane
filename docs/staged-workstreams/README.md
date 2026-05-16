@@ -25,7 +25,7 @@ Use a hybrid model:
 
 1. workstream-level docs for global context and cross-stage decisions
 2. stage-level docs for exact acceptance criteria and implementation boundaries
-3. richer execution docs split between shared stage guidance and per-thread worker docs
+3. richer execution docs with per-thread worker docs
 4. lighter execution items for tracking only
 
 This is better than either:
@@ -44,7 +44,6 @@ This is better than either:
     01/
       REQUIREMENTS.md      # stage-local acceptance criteria
       PLAN.md              # stage-local batches/threads
-      WORK.md              # shared stage guidance for all threads in the stage
       threads/
         01.01.01/
           WORK.md          # primary worker doc generated after approval
@@ -76,7 +75,7 @@ Architecture and migration work often depends on truths like:
 - this route is historical context only, not target surface
 - report ambiguity instead of making a local decision
 
-Those constraints fit poorly into terse execution items and belong in shared stage guidance or a thread worker doc.
+Those constraints fit poorly into terse execution items and belong in stage requirements or a thread worker doc.
 
 ### 3. Better supervision and review
 
@@ -128,7 +127,7 @@ Use stage-level docs for:
 
 ### Thread level
 
-Use `WORK.md` sections or thread-specific work notes for:
+Use thread `WORK.md` sections for:
 
 - exact inputs
 - exact outputs
@@ -164,9 +163,9 @@ They should not try to carry all architectural nuance themselves.
 - encoding all cleanup conditions
 - encoding cross-file consistency expectations in one sentence
 
-## Strong recommendation: add `WORK.md`
+## Strong recommendation: add thread `WORK.md`
 
-The most important improvement is introducing a richer `WORK.md` per stage (or per thread when needed).
+The most important improvement is introducing a richer `WORK.md` per thread.
 
 That file should hold the nuance that repeatedly gets lost in execution:
 
@@ -184,7 +183,7 @@ Best overall model:
 
 1. **Root workstream docs** define the global problem and cross-stage direction.
 2. **Stage docs** define exactly what this stage must accomplish.
-3. **Stage `WORK.md`** gives detailed execution guidance.
+3. **Thread `WORK.md`** gives detailed execution guidance.
 4. **Execution items/checkpoints** remain minimal and machine-trackable.
 5. **Supervision/review** judges the stage against stage-local requirements/specs, not only top-level checklists.
 
@@ -198,14 +197,14 @@ The most common drift patterns were:
 4. historical context is confused with target implementation
 5. hidden serial dependencies are mistaken for parallel work
 
-Stage-local structure plus richer `WORK.md` guidance addresses all five better than a flat top-level checklist.
+Stage-local structure plus richer thread `WORK.md` guidance addresses all five better than a flat top-level checklist.
 
 ## Bottom line
 
 For complex workstreams, the best model is:
 
 - structured stages and threads
-- rich stage-local execution docs
+- rich thread-local execution docs
 - lighter tracking items
 - explicit stage-local requirements and plan files
 

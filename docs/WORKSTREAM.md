@@ -19,7 +19,6 @@ Each stream lives at `work/{stream-id}/`.
 - `docs/`: supporting notes and synthesized research
 - `stages/<nn>/REQUIREMENTS.md`: stage-local acceptance criteria and resources
 - `stages/<nn>/PLAN.md`: stage-local batch/thread planning surface
-- `stages/<nn>/WORK.md`: shared stage guidance
 - `stages/<nn>/threads/<thread-id>/WORK.md`: primary worker doc generated after plan/revision approval
 - `stages/<nn>/specs/`: optional stage specs directory
 
@@ -60,7 +59,7 @@ The older Root Agent management-launch flow is still available through the manag
 - Review `README.md` and gather shared context in `resources/` / `docs/`.
 - Run `work current --set "NNN-feature"` first, or pass `--stream`, before `work plan create` and other follow-up commands.
 - `work plan create --stages <n>` scaffolds stage directories such as `stages/01/`, `stages/02/`, and so on.
-- Each stage gets `REQUIREMENTS.md`, `PLAN.md`, `WORK.md`, and `specs/`.
+- Each stage gets `REQUIREMENTS.md`, `PLAN.md`, `specs/`, and eventually thread `WORK.md` files.
 - After plan or revision approval, each planned thread gets `stages/<nn>/threads/<thread-id>/WORK.md` as its primary worker doc.
 - `work approve plan` requires at least one stage and seeds thread execution state from the staged planning structure.
 
@@ -75,7 +74,7 @@ The older Root Agent management-launch flow is still available through the manag
 - Recommended bootstrap for new and existing repos: `work init --sqlite`.
 - `work/db.sqlite` is the repo-local canonical store for structured workflow state.
 - Running `work init --sqlite` in an existing repo hydrates legacy workspace/runtime artifacts into sqlite.
-- Core markdown documents (`README.md`, stage-local `REQUIREMENTS.md` / `PLAN.md` / `WORK.md`, per-thread `WORK.md`, `REPORT.md`) plus `resources/` and artifact-like outputs remain filesystem-based.
+- Core markdown documents (`README.md`, stage-local `REQUIREMENTS.md` / `PLAN.md`, per-thread `WORK.md`, `REPORT.md`) plus `resources/` and artifact-like outputs remain filesystem-based.
 - `work/db.sqlite` is local runtime state and is expected to stay out of version control; this repo currently ignores `work/` entirely.
 
 Operator guidance:

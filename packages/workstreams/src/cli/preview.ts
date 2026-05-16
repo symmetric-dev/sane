@@ -4,11 +4,10 @@
  * Show the structure of PLAN.md (stages, threads, questions).
  */
 
-import { existsSync, readFileSync } from "fs"
 import { getRepoRoot } from "../lib/repo.ts"
 import { loadIndex, getResolvedStream } from "../lib/index.ts"
 import { getStreamPreview } from "../lib/stream-parser.ts"
-import { getStreamPlanMdPath } from "../lib/consolidate.ts"
+import { loadWorkstreamPlan, formatMissingWorkstreamPlanMessage } from "../lib/consolidate.ts"
 import { listThreadExecutionItems } from "../lib/thread-execution.ts"
 import { parseExecutionItemId } from "../lib/execution-ids.ts"
 import type { ExecutionItem } from "../lib/types.ts"
@@ -22,7 +21,7 @@ interface PreviewCliArgs {
 
 function printHelp(): void {
   console.log(`
-work preview - Show PLAN.md structure
+work preview - Show workstream plan structure
 
 Usage:
   work preview [--stream <stream-id>]
@@ -35,7 +34,8 @@ Options:
   --help, -h       Show this help message
 
 Description:
-  Preview shows the structure of PLAN.md including:
+  Preview shows the structure of the canonical workstream plan, loaded from
+  stage-local stages/*/PLAN.md files by default (legacy root PLAN.md still supported):
   - Workstream name and summary
   - Stages with their threads
   - Question counts (open vs resolved)
@@ -179,7 +179,7 @@ function formatPreview(preview: StreamPreview, verbose: boolean, items: Executio
   const lines: string[] = []
 
   if (!preview.streamName) {
-    return "Could not parse PLAN.md - invalid format"
+    return "Could not parse workstream plan - invalid format"
   }
 
   lines.push(`Workstream: ${preview.streamName}`)
@@ -340,15 +340,14 @@ export function main(argv: string[] = process.argv): void {
     process.exit(1)
   }
 
-  // Check if PLAN.md exists
-  const planMdPath = getStreamPlanMdPath(repoRoot, stream.id)
-  if (!existsSync(planMdPath)) {
-    console.error(`Error: PLAN.md not found at ${planMdPath}`)
+  const loadedPlan = loadWorkstreamPlan(repoRoot, stream.id)
+  if (!loadedPlan) {
+    console.error(`Error: ${formatMissingWorkstreamPlanMessage(repoRoot, stream.id)}`)
     process.exit(1)
   }
 
-  // Read and parse PLAN.md
-  const content = readFileSync(planMdPath, "utf-8")
+  // Read and parse the canonical workstream plan
+  const content = loadedPlan.content
   const preview = getStreamPreview(content)
 
   // Load execution item data for progress

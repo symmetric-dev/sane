@@ -131,7 +131,6 @@ Preserve manual edits.
     expect(createdContent).toContain("### ALLOWED")
     expect(createdContent).toContain("### FORBIDDEN")
     expect(createdContent).toContain("- `./WORK.md` — this thread's execution contract")
-    expect(createdContent).toContain("- `../../WORK.md` — shared stage guidance")
     expect(createdContent).toContain("- `../../REQUIREMENTS.md` — stage requirements")
     expect(createdContent).toContain("- `../../../README.md` — overall workstream context")
     expect(createdContent).toContain("Keep this short. Use the groups below with path + reason.")

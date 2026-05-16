@@ -44,7 +44,7 @@ Workflow:
   3. Gather context:    Add files under resources/ or docs/
   4. Draft root context: Update README.md with the overall workstream context
   5. Scaffold stages:   work plan create --stages 3
-  6. Fill stage docs:   Edit stages/01/{REQUIREMENTS.md,PLAN.md,WORK.md}
+  6. Fill stage docs:   Edit stages/01/{REQUIREMENTS.md,PLAN.md} and specs/
   7. Repeat for more stages as needed
   8. Approve:           work approve plan
                            (requires at least one stage; then thread WORK.md files are generated)
@@ -151,7 +151,7 @@ export function main(argv: string[] = process.argv): void {
     console.log("  1. Review and update README.md with the overall workstream context")
     console.log("  2. Add supporting files under resources/ or docs/")
     console.log(`  3. Run: work plan create --stream "${result.streamId}" --stages 3`)
-    console.log("  4. Fill each stage directory under stages/ with REQUIREMENTS.md, PLAN.md, WORK.md, and specs/")
+    console.log("  4. Fill each stage directory under stages/ with REQUIREMENTS.md, PLAN.md, specs/, and later thread WORK.md files")
     console.log("  5. After plan or revision approval, use the generated thread WORK.md files as primary worker docs")
     console.log("")
     console.log("Initial filesystem state:")

@@ -25,7 +25,7 @@ work plan create --stages 2
 2. Review `README.md` and capture shared context under `resources/` / `docs/`
 3. Set the current workstream (or pass `--stream`): `work current --set "001-my-feature"`
 4. Scaffold stage directories: `work plan create --stages 2`
-5. Fill `stages/01/REQUIREMENTS.md`, `stages/01/PLAN.md`, `stages/01/WORK.md`, and `stages/01/specs/` (repeat per stage). Stage `WORK.md` is shared stage guidance.
+5. Fill `stages/01/REQUIREMENTS.md`, `stages/01/PLAN.md`, and `stages/01/specs/` (repeat per stage).
 6. Approve plan: `work approve plan` (user role, requires at least one stage)
 7. `work approve plan` also initializes thread execution state directly from the stage/thread plan and generates `stages/<nn>/threads/<thread-id>/WORK.md`
 8. Manually `/fork` the session and ask the forked session to supervise the approved work
@@ -52,7 +52,6 @@ Deferred artifacts created later in the workflow:
 
 - `stages/<nn>/REQUIREMENTS.md` for stage-local summary, deliverables, dependencies, and resources
 - `stages/<nn>/PLAN.md` for stage-local batch/thread planning
-- `stages/<nn>/WORK.md` for shared stage guidance
 - `stages/<nn>/specs/` for stage specs
 - `stages/<nn>/threads/<thread-id>/WORK.md` for the primary worker doc generated after plan/revision approval
 

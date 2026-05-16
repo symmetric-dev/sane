@@ -44,7 +44,7 @@ Usage:
 Subcommands:
   plan     Validate planning structure and content
   requirements  Validate requirements structure and content
-  work          Validate per-thread WORK.md structure and content
+  work          Validate generated per-thread WORK.md structure and content
 
 Options:
   --repo-root, -r  Repository root (auto-detected if omitted)
@@ -54,11 +54,12 @@ Options:
 
 Description:
   Validates planning, per-stage requirements, and per-thread WORK.md files for the stage-local workstream model.
-  Shared workstream context lives in root README.md; shared stage guidance and requirements live under stages/<nn>/.
+  Shared workstream context lives in root README.md; stage requirements live under stages/<nn>/.
   Plan validation checks for files shared across parallel threads in the same batch.
   REQUIREMENTS.md validation checks required sections plus dependency/resource paths.
-  WORK.md validation checks that each planned thread has a thread-local WORK.md with the
-  canonical required sections filled with real content.
+  WORK.md validation is a post-approval / post-generation check that each planned
+  thread has a generated thread-local WORK.md with the canonical required sections
+  filled with real content.
   Requirements validation uses filled stage-local files under stages/<nn>/REQUIREMENTS.md
   and ignores untouched scaffolds; a legacy root REQUIREMENTS.md is only used when present.
   Note: Use 'work check plan' to check for open questions and missing input files.
@@ -78,6 +79,10 @@ Examples:
 
   # Validate specific workstream
   work validate plan --stream "001-my-stream"
+
+  # Validate generated thread work docs after approval
+  work approve plan
+  work validate work
 
   # Output as JSON
   work validate plan --json

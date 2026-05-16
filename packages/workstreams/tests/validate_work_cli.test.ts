@@ -100,7 +100,8 @@ ${objective}
 ### READ
 
 - \`./WORK.md\` — this thread's execution contract
-- \`../../WORK.md\` — shared stage guidance
+- \`../../REQUIREMENTS.md\` — stage requirements
+- \`../../../README.md\` — overall workstream context
 
 ### ALLOWED
 
@@ -166,7 +167,8 @@ ${objective}
 ### READ
 
 - \`./WORK.md\` — this thread's execution contract
-- \`../../WORK.md\` — shared stage guidance
+- \`../../REQUIREMENTS.md\` — stage requirements
+- \`../../../README.md\` — overall workstream context
 
 ### ALLOWED
 

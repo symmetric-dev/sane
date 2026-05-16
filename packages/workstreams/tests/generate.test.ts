@@ -85,7 +85,7 @@ describe("generateStream", () => {
       expect(content).toContain("There is no root `REQUIREMENTS.md` or `PLAN.md`")
       expect(content).toContain("work plan create --stream \"000-test-feature\" --stages <n>")
       expect(content).toContain("thread-specific `WORK.md` files are generated")
-      expect(content).toContain("Treat each stage `WORK.md` as shared stage guidance")
+      expect(content).not.toContain("Treat each stage `WORK.md` as shared stage guidance")
     })
   })
 
@@ -97,8 +97,6 @@ describe("generateStream", () => {
       const stageDir = join(tempDir, "work/000-test-feature/stages/01")
       const planContent = await readFile(join(stageDir, "PLAN.md"), "utf-8")
       const requirementsContent = await readFile(join(stageDir, "REQUIREMENTS.md"), "utf-8")
-      const workContent = await readFile(join(stageDir, "WORK.md"), "utf-8")
-
       expect(result.stagesPath).toBe(join(tempDir, "work/000-test-feature/stages"))
       expect(planContent).toContain("# Stage 01 Plan")
       expect(planContent).toContain("## Batches")
@@ -106,14 +104,9 @@ describe("generateStream", () => {
       expect(planContent).toContain("#### Thread 01:")
       expect(requirementsContent).toContain("# Stage 01 Requirements")
       expect(requirementsContent).toContain("## Deliverables")
-      expect(workContent).toContain("# Stage 01 Work")
-      expect(workContent).toContain("This file is shared stage guidance for every thread in Stage 01")
-      expect(workContent).toContain("It is not the primary worker doc")
-      expect(workContent).toContain("## Files to Know")
-      expect(workContent).toContain("### THREAD DOCS")
       expect(existsSync(join(stageDir, "specs"))).toBe(true)
-      expect(readdirSync(stageDir).sort()).toEqual(["PLAN.md", "REQUIREMENTS.md", "WORK.md", "specs"])
-      expect(existsSync(join(stageDir, "threads"))).toBe(false)
+      expect(existsSync(join(stageDir, "threads"))).toBe(true)
+      expect(readdirSync(stageDir).sort()).toEqual(["PLAN.md", "REQUIREMENTS.md", "specs", "threads"])
     })
 
     test("scaffolds sequentially numbered stage directories", async () => {

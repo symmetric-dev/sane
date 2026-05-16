@@ -63,7 +63,6 @@ function createPromptContext(): PromptContext {
       primaryWorkPath: "work/007-supervision-smoke/stages/01/threads/01.01.01/WORK.md",
       readmePath: "work/007-supervision-smoke/README.md",
       stageRequirementsPath: "work/007-supervision-smoke/stages/01/REQUIREMENTS.md",
-      stageWorkPath: "work/007-supervision-smoke/stages/01/WORK.md",
       threadWorkPath: "work/007-supervision-smoke/stages/01/threads/01.01.01/WORK.md",
     },
     agentName: "default",
@@ -75,23 +74,19 @@ describe("prompt generation", () => {
     const prompt = generateThreadPrompt(createPromptContext())
 
     expect(prompt).toContain(
-      "You are an agent working on thread 01.01.01 (Verify thread execution prep) in stage 01 (Stage 01) in workstream 007-supervision-smoke (Supervision Smoke).",
+      "You are an agent working on thread 01.01.01 (Verify thread execution prep) in stage Stage 01 in workstream 007-supervision-smoke (Supervision Smoke).",
     )
     expect(prompt).toContain("Use the `implementing-workstreams` skill.")
     expect(prompt).toContain(
       "Read this document first: `work/007-supervision-smoke/stages/01/threads/01.01.01/WORK.md`.",
     )
     expect(prompt).toContain(
-      "If you need shared stage guidance, read `work/007-supervision-smoke/stages/01/WORK.md`.",
-    )
-    expect(prompt).toContain(
-      "If you need stage requirements, read `work/007-supervision-smoke/stages/01/REQUIREMENTS.md`.",
+      "Then read stage requirements at `work/007-supervision-smoke/stages/01/REQUIREMENTS.md` for the required constraints and acceptance criteria.",
     )
     expect(prompt).toContain(
       "If you need overall workstream context, read `work/007-supervision-smoke/README.md`.",
     )
     expect(prompt).toContain("`work/007-supervision-smoke/README.md`")
-    expect(prompt).toContain("`work/007-supervision-smoke/stages/01/WORK.md`")
     expect(prompt).toContain("`work/007-supervision-smoke/stages/01/threads/01.01.01/WORK.md`")
     expect(prompt).toContain("Thread objective:")
     expect(prompt).toContain(
@@ -118,7 +113,6 @@ describe("prompt generation", () => {
       readmePath: "work/007-supervision-smoke/README.md",
       primaryWorkPath: "work/007-supervision-smoke/stages/01/threads/01.01.01/WORK.md",
       stageRequirementsPath: "work/007-supervision-smoke/stages/01/REQUIREMENTS.md",
-      stageWorkPath: "work/007-supervision-smoke/stages/01/WORK.md",
       threadWorkPath: "work/007-supervision-smoke/stages/01/threads/01.01.01/WORK.md",
     })
   })
@@ -135,7 +129,7 @@ describe("prompt generation", () => {
       rmSync(repoRoot, { recursive: true, force: true })
     })
 
-    test("falls back to stage WORK.md as the primary prompt document when thread WORK.md is missing", () => {
+    test("fails when the thread WORK.md does not exist yet", () => {
       createMain(["bun", "work-create", "--name", "prompt-fallback", "--repo-root", repoRoot])
       planMain(["bun", "work-plan", "create", "--stream", "000-prompt-fallback", "--stages", "1", "--repo-root", repoRoot])
 
@@ -181,14 +175,9 @@ Prefer thread work docs when present.
 `,
       )
 
-      const context = getPromptContext(repoRoot, "000-prompt-fallback", "01.01.01")
-      const prompt = generateThreadPrompt(context)
-
-      expect(context.references.primaryWorkPath).toBe("work/000-prompt-fallback/stages/01/WORK.md")
-      expect(context.references.threadWorkPath).toBe("work/000-prompt-fallback/stages/01/threads/01.01.01/WORK.md")
-      expect(context.references.stageWorkPath).toBe("work/000-prompt-fallback/stages/01/WORK.md")
-      expect(prompt).toContain("Read this document first: `work/000-prompt-fallback/stages/01/WORK.md`.")
-      expect(prompt).not.toContain("Read this document first: `work/000-prompt-fallback/stages/01/threads/01.01.01/WORK.md`.")
+      expect(() => getPromptContext(repoRoot, "000-prompt-fallback", "01.01.01")).toThrow(
+        "Thread WORK.md not found for 01.01.01 at work/000-prompt-fallback/stages/01/threads/01.01.01/WORK.md. Run 'work approve plan' or 'work approve revision' to generate thread WORK.md files before running 'work prompt'.",
+      )
     })
 
     test("uses thread WORK.md as the primary prompt document when it exists", () => {
@@ -287,6 +276,10 @@ Generate prompt JSON for the second thread.
 Use the stage-local plan.
 `,
       )
+      mkdirSync(join(repoRoot, "work/000-prompt-cli-stage-local/stages/01/threads/01.01.01"), { recursive: true })
+      mkdirSync(join(repoRoot, "work/000-prompt-cli-stage-local/stages/01/threads/01.01.02"), { recursive: true })
+      writeFileSync(join(repoRoot, "work/000-prompt-cli-stage-local/stages/01/threads/01.01.01/WORK.md"), "# Thread 01.01.01\n")
+      writeFileSync(join(repoRoot, "work/000-prompt-cli-stage-local/stages/01/threads/01.01.02/WORK.md"), "# Thread 01.01.02\n")
 
       const { stdout, stderr } = await captureCliOutput(() =>
         promptMain([
@@ -383,6 +376,12 @@ Return only this thread for stage/batch filtering.
 Batch filter coverage.
 `,
       )
+      mkdirSync(join(repoRoot, "work/000-prompt-cli-filtered/stages/01/threads/01.01.01"), { recursive: true })
+      mkdirSync(join(repoRoot, "work/000-prompt-cli-filtered/stages/02/threads/02.01.01"), { recursive: true })
+      mkdirSync(join(repoRoot, "work/000-prompt-cli-filtered/stages/02/threads/02.02.01"), { recursive: true })
+      writeFileSync(join(repoRoot, "work/000-prompt-cli-filtered/stages/01/threads/01.01.01/WORK.md"), "# Thread 01.01.01\n")
+      writeFileSync(join(repoRoot, "work/000-prompt-cli-filtered/stages/02/threads/02.01.01/WORK.md"), "# Thread 02.01.01\n")
+      writeFileSync(join(repoRoot, "work/000-prompt-cli-filtered/stages/02/threads/02.02.01/WORK.md"), "# Thread 02.02.01\n")
 
       const { stdout, stderr } = await captureCliOutput(() =>
         promptMain([
@@ -405,6 +404,75 @@ Batch filter coverage.
       expect(stderr).toEqual([])
       expect(prompts).toHaveLength(1)
       expect(prompts[0]).toMatchObject({ threadId: "02.02.01" })
+    })
+
+    test("cli prompt fails with actionable error when a thread WORK.md is missing", async () => {
+      const originalExit = process.exit
+      process.exit = ((code?: number) => {
+        throw new Error(`Process exited with code ${code ?? 0}`)
+      }) as typeof process.exit
+
+      try {
+        createMain(["bun", "work-create", "--name", "prompt-missing-thread-work", "--repo-root", repoRoot])
+        planMain(["bun", "work-plan", "create", "--stream", "000-prompt-missing-thread-work", "--stages", "1", "--repo-root", repoRoot])
+        writeFileSync(join(repoRoot, "work/000-prompt-missing-thread-work/README.md"), "# Prompt Missing Thread Work\n\n## Summary\n\nMissing thread work doc should fail prompt generation.\n")
+        writeFileSync(
+          join(repoRoot, "work/000-prompt-missing-thread-work/stages/01/PLAN.md"),
+          `# Stage 01 Plan
+
+## Summary
+
+Prompt should fail clearly.
+
+## References
+
+- \`packages/workstreams/src/lib/prompts.ts\`
+
+## Questions
+
+- [x] None
+
+## Batches
+
+### Batch 01: Prompt batch
+
+Prompt batch summary.
+
+#### Thread 01: First thread
+
+**Summary:**
+Fail when thread work is missing.
+
+**Details:**
+Require approval-generated thread work docs first.
+`,
+        )
+
+        const { stdout, stderr } = await captureCliOutput(async () => {
+          try {
+            await promptMain([
+              "bun",
+              "work-prompt",
+              "--repo-root",
+              repoRoot,
+              "--stream",
+              "000-prompt-missing-thread-work",
+              "--thread",
+              "01.01.01",
+            ])
+          } catch (error) {
+            if (!(error instanceof Error) || error.message !== "Process exited with code 1") {
+              throw error
+            }
+          }
+        })
+
+        expect(stdout).toEqual([])
+        expect(stderr.join("\n")).toContain("Thread WORK.md not found for 01.01.01")
+        expect(stderr.join("\n")).toContain("Run 'work approve plan' or 'work approve revision'")
+      } finally {
+        process.exit = originalExit
+      }
     })
   })
 })

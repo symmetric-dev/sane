@@ -18,11 +18,8 @@ import {
   loadWorkstreamPlan,
   formatMissingWorkstreamPlanMessage,
 } from "./consolidate.ts"
-import {
-  getPreferredWorkMdRelativePath,
-  getThreadWorkMdRelativePath,
-  resolveStageDirectoryName,
-} from "./thread-workdocs.ts"
+import { getThreadWorkMdPath, getThreadWorkMdRelativePath, resolveStageDirectoryName } from "./thread-workdocs.ts"
+import { existsSync } from "fs"
 import type {
   StageDefinition,
   BatchDefinition,
@@ -62,7 +59,6 @@ export interface PromptContext {
     primaryWorkPath: string
     readmePath: string
     stageRequirementsPath: string
-    stageWorkPath: string
     threadWorkPath: string
   }
   agentName?: string
@@ -223,6 +219,14 @@ export function getPromptContext(
   const stageDirectoryName = resolveStageDirectoryName(repoRoot, streamId, stage.id)
   const workstreamRoot = join("work", streamId)
   const stageRoot = join(workstreamRoot, "stages", stageDirectoryName)
+  const threadWorkPath = getThreadWorkMdPath(repoRoot, streamId, threadIdStr)
+  const threadWorkPathRelative = join("work", getThreadWorkMdRelativePath(repoRoot, streamId, threadIdStr))
+
+  if (!existsSync(threadWorkPath)) {
+    throw new Error(
+      `Thread WORK.md not found for ${threadIdStr} at ${threadWorkPathRelative}. Run 'work approve plan' or 'work approve revision' to generate thread WORK.md files before running 'work prompt'.`,
+    )
+  }
 
   return {
     threadId,
@@ -235,11 +239,10 @@ export function getPromptContext(
     executionItems,
     parallelThreads,
     references: {
-      primaryWorkPath: getPreferredWorkMdRelativePath(repoRoot, streamId, threadIdStr),
+      primaryWorkPath: threadWorkPathRelative,
       readmePath: join(workstreamRoot, "README.md"),
       stageRequirementsPath: join(stageRoot, "REQUIREMENTS.md"),
-      stageWorkPath: join(stageRoot, "WORK.md"),
-      threadWorkPath: join("work", getThreadWorkMdRelativePath(repoRoot, streamId, threadIdStr)),
+      threadWorkPath: threadWorkPathRelative,
     },
     agentName,
   }
@@ -259,14 +262,13 @@ export function generateThreadPrompt(
   const lines: string[] = []
 
   lines.push(
-    `You are an agent working on thread ${context.threadIdString} (${context.thread.name}) in stage ${context.stage.id.toString().padStart(2, "0")} (${context.stage.name}) in workstream ${context.streamId} (${context.streamName}).`,
+    `You are an agent working on thread ${context.threadIdString} (${context.thread.name}) in stage ${context.stage.name} in workstream ${context.streamId} (${context.streamName}).`,
   )
   lines.push("")
   lines.push("Use the `implementing-workstreams` skill.")
   lines.push("")
   lines.push(`Read this document first: \`${context.references.primaryWorkPath}\`.`)
-  lines.push(`If you need shared stage guidance, read \`${context.references.stageWorkPath}\`.`)
-  lines.push(`If you need stage requirements, read \`${context.references.stageRequirementsPath}\`.`)
+  lines.push(`Then read stage requirements at \`${context.references.stageRequirementsPath}\` for the required constraints and acceptance criteria.`)
   lines.push(`If you need overall workstream context, read \`${context.references.readmePath}\`.`)
   lines.push("")
   lines.push("Thread objective:")
@@ -323,7 +325,6 @@ export function generateThreadPromptJson(context: PromptContext): object {
       primaryWorkPath: context.references.primaryWorkPath,
       readmePath: context.references.readmePath,
       stageRequirementsPath: context.references.stageRequirementsPath,
-      stageWorkPath: context.references.stageWorkPath,
       threadWorkPath: context.references.threadWorkPath,
     },
     executionItems: context.executionItems.map((item) => ({

@@ -119,58 +119,6 @@ function generateStagePlanMd(stageLabel: number | string): string {
 `
 }
 
-/**
- * Generate stage-local WORK.md content.
- */
-function generateStageWorkMd(stageLabel: number | string): string {
-  const stageDir = formatStageDirectoryLabel(stageLabel)
-
-  return `# Stage ${stageDir} Work
-
-## Role
-
-This file is shared stage guidance for every thread in Stage ${stageDir}.
-It is not the primary worker doc; after plan or revision approval, each planned thread gets its own \`threads/<thread-id>/WORK.md\`.
-
-## Stage Objective
-
-<!-- Describe exactly what this stage exists to accomplish. -->
-
-## Files to Know
-
-### READ
-
-- \`./REQUIREMENTS.md\` — stage requirements
-- \`./PLAN.md\` — approved stage plan
-- \`./specs/\` — stage-specific specs
-- \`../../README.md\` — overall workstream context
-
-### THREAD DOCS
-
-- \`./threads/<thread-id>/WORK.md\` — primary worker doc generated after approval
-
-## Shared Stage Guidance
-
-<!-- Capture instructions that apply across multiple threads in this stage. -->
-
-## Allowed Files To Modify
-
-<!-- Be explicit about which repo paths are in scope. -->
-
-## Forbidden Files / Boundaries
-
-<!-- Be explicit about what must not be touched. -->
-
-## Coordination Notes
-
-<!-- Note any cross-thread sequencing, handoff, or consistency rules. -->
-
-## Acceptance Checks
-
-<!-- List the checks that must be true for this stage to be complete. -->
-`
-}
-
 function generateWorkstreamReadme(streamId: string, streamName: string): string {
   const titleName = toTitleCase(streamName)
 
@@ -209,9 +157,8 @@ Stream ID: \`${streamId}\`
 1. Capture shared context and reference material under \`resources/\` and \`docs/\`.
 2. Update this \`README.md\` with the overall workstream context, deliverables, dependencies, and shared resources.
 3. Run \`work plan create --stream "${streamId}" --stages <n>\` to scaffold stage directories under \`stages/\`.
-4. For each stage, fill in \`REQUIREMENTS.md\`, \`PLAN.md\`, \`WORK.md\`, and \`specs/\`.
-5. Treat each stage \`WORK.md\` as shared stage guidance, not the primary worker doc.
-6. After plan or revision approval initializes execution, thread-specific \`WORK.md\` files are generated under \`stages/<stage-dir>/threads/<thread-id>/\`.
+4. For each stage, fill in \`REQUIREMENTS.md\`, \`PLAN.md\`, and \`specs/\`.
+5. After plan or revision approval initializes execution, thread-specific \`WORK.md\` files are generated under \`stages/<stage-dir>/threads/<thread-id>/\`.
 
 This workstream intentionally starts with shared root context plus empty stage scaffolding. There is no root \`REQUIREMENTS.md\` or \`PLAN.md\` in the supported model; stage planning lives under \`stages/<nn>/\`.
 `
@@ -248,12 +195,13 @@ export function scaffoldPlanStages(repoRoot: string, streamId: string, numStages
 
 export function scaffoldStageDirectory(stageDir: string, stageLabel: string): void {
   const stageSpecsDir = join(stageDir, "specs")
+  const stageThreadsDir = join(stageDir, "threads")
 
   mkdirSync(stageDir, { recursive: true })
   mkdirSync(stageSpecsDir, { recursive: true })
+  mkdirSync(stageThreadsDir, { recursive: true })
   atomicWriteFile(join(stageDir, "REQUIREMENTS.md"), generateStageRequirementsMd(stageLabel))
   atomicWriteFile(join(stageDir, "PLAN.md"), generateStagePlanMd(stageLabel))
-  atomicWriteFile(join(stageDir, "WORK.md"), generateStageWorkMd(stageLabel))
 }
 
 /**

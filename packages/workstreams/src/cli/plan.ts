@@ -57,7 +57,7 @@ Workflow:
     2. work current --set "001-my-feature"
     3. Update README.md with the overall workstream context
     4. work plan create --stages 3
-    5. Edit stages/01/{REQUIREMENTS.md,PLAN.md,WORK.md}
+    5. Edit stages/01/{REQUIREMENTS.md,PLAN.md} and specs/
     6. work approve plan    # requires at least one stage; generates thread WORK.md files
 
   Planning-session flow:
@@ -174,7 +174,7 @@ function handleCreatePlan(
     console.log("")
     console.log("Next steps:")
     console.log("  1. Edit each stage directory under stages/")
-    console.log("  2. Fill REQUIREMENTS.md, PLAN.md, WORK.md, and specs/ for each stage")
+    console.log("  2. Fill REQUIREMENTS.md, PLAN.md, and specs/ for each stage")
     console.log("  3. After approval, use generated threads/<thread-id>/WORK.md files as the primary worker docs")
   } catch (e) {
     console.error(`Error: ${(e as Error).message}`)

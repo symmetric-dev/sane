@@ -68,6 +68,9 @@ Description:
   - Stage definition and constitution
   - Parallel threads for awareness
 
+  Prompt generation requires the thread WORK.md file to already exist.
+  Run work approve plan or work approve revision first so thread work docs are generated.
+
 Examples:
   work prompt --thread "01.01.01"
   work prompt --thread "01.01.02" --stream "001-my-feature"
@@ -264,6 +267,7 @@ export async function main(argv: string[] = process.argv): Promise<void> {
 
     const results: any[] = []
     let promptCount = 0
+    let hadErrors = false
 
     for (const stage of stages) {
       // Determine which batches to process in this stage
@@ -307,6 +311,7 @@ export async function main(argv: string[] = process.argv): Promise<void> {
             }
             promptCount++
           } catch (e) {
+            hadErrors = true
             console.error(
               `Error generating prompt for ${threadIdStr}: ${(e as Error).message}`,
             )
@@ -319,6 +324,10 @@ export async function main(argv: string[] = process.argv): Promise<void> {
       console.log(JSON.stringify(results, null, 2))
     } else {
       console.log(`Generated ${promptCount} prompts.`)
+    }
+
+    if (hadErrors) {
+      process.exit(1)
     }
   }
 }

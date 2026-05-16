@@ -106,22 +106,6 @@ export function getThreadWorkMdPath(
   return join(getWorkDir(repoRoot), getThreadWorkMdRelativePath(repoRoot, streamId, threadId))
 }
 
-export function getPreferredWorkMdRelativePath(
-  repoRoot: string,
-  streamId: string,
-  threadId: string,
-): string {
-  const threadWorkMdRelativePath = getThreadWorkMdRelativePath(repoRoot, streamId, threadId)
-  const threadWorkMdPath = join(getWorkDir(repoRoot), threadWorkMdRelativePath)
-  if (existsSync(threadWorkMdPath)) {
-    return join("work", threadWorkMdRelativePath)
-  }
-
-  const parsedThreadId = parseThreadId(threadId)
-  const stageDirectoryName = resolveStageDirectoryName(repoRoot, streamId, parsedThreadId.stage)
-  return join("work", streamId, "stages", stageDirectoryName, "WORK.md")
-}
-
 export function generateThreadWorkMd(args: GenerateThreadWorkMdArgs): string {
   const summary = args.summary.trim()
   const details = args.details.trim()
@@ -150,7 +134,6 @@ ${details || "<!-- Add the concrete work to perform here. -->"}
 ### READ
 
 - \`./WORK.md\` — this thread's execution contract
-- \`../../WORK.md\` — shared stage guidance
 - \`../../REQUIREMENTS.md\` — stage requirements
 - \`../../../README.md\` — overall workstream context
 - <!-- Add the most important files to read first. -->
@@ -280,10 +263,6 @@ function isPlaceholderOnlyLine(sectionName: ThreadWorkRequiredSection, value: st
     }
 
     if (/^`?\.\/WORK\.md`?\s+—\s+this thread's execution contract$/i.test(normalized)) {
-      return true
-    }
-
-    if (/^`?\.\.\/\.\.\/WORK\.md`?\s+—\s+shared stage guidance$/i.test(normalized)) {
       return true
     }
 

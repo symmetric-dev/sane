@@ -27,7 +27,7 @@ describe("CLI: create", () => {
     expect(output).toContain("Created workstream: 000-test-feature")
     expect(output).toContain("Review and update README.md with the overall workstream context")
     expect(output).toContain("work plan create --stream \"000-test-feature\" --stages 3")
-    expect(output).toContain("Fill each stage directory under stages/ with REQUIREMENTS.md, PLAN.md, WORK.md, and specs/")
+    expect(output).toContain("Fill each stage directory under stages/ with REQUIREMENTS.md, PLAN.md, specs/, and later thread WORK.md files")
     expect(output).toContain("After plan or revision approval, use the generated thread WORK.md files as primary worker docs")
     expect(output).toContain("README.md   (shared workstream context)")
     expect(output).toContain("resources/  (supporting files and gathered inputs)")
