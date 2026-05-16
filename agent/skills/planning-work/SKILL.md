@@ -1,5 +1,5 @@
 ---
-name: planning-workstreams
+name: planning-work
 description: Create and prepare workstreams for execution. Planning only, no code implementation.
 ---
 
@@ -22,8 +22,16 @@ description: Create and prepare workstreams for execution. Planning only, no cod
    - `work check plan`
    - `work preview`
 6. Ask user to approve plan: `!work approve plan`
-7. After approval, generated thread `WORK.md` files become the primary worker docs. If the execution handoff should target specific agents, assign them explicitly with `work assign --thread "01.01.01" --agent "frontend-expert"`.
-8. Link the planning session using `link_planning_session` once the plan is ready for handoff.
+7. After approval, generated thread `WORK.md` files become the primary worker docs. Review and fill them before execution starts.
+8. If the execution handoff should target specific agents, assign them explicitly with `work assign --thread "01.01.01" --agent "frontend-expert"`.
+9. Link the planning session using `link_planning_session` once the plan is ready for handoff.
+
+## Document hierarchya
+
+- `README.md` = overall workstream context
+- `stages/<n>/REQUIREMENTS.md` = stage constraints and acceptance criteria
+- `stages/<n>/PLAN.md` = orchestration only
+- `stages/<n>/threads/<thread-id>/WORK.md` = primary worker contract
 
 Notes:
 - Root `README.md` is the human-facing source of truth for shared summary, deliverables, dependencies, and resources.
@@ -41,10 +49,32 @@ Notes:
 - When the plan is intentionally partial, the summary should say: (1) what is planned now, (2) what is intentionally deferred, and (3) what finding or event unlocks more planning.
 - If you add, remove, or substantially change stages, update the `## Summary` text so it matches the current planning horizon and scope boundary.
 - If uncertainty materially affects downstream implementation, prefer a research/discovery-first stage and keep later stages out of the plan until findings are known.
-- Prefer independent threads in the same batch.
+- Only put threads in the same batch when they are truly parallelizable. If threads mostly touch the same file or state machine, prefer more serial batches instead of fake parallelism.
 - Keep thread scope concrete and observable.
 - Use clear file paths and concrete outputs.
 - Put unresolved decisions in Stage Questions (`- [ ] ...`).
+
+## Thread `WORK.md` quality bar
+
+Before handoff, every thread `WORK.md` should have concrete content for:
+
+- `Done When`
+- `Files to Know` (`READ`, `ALLOWED`, `FORBIDDEN`)
+- `Verify`
+- `Locked Decisions`
+- `Not In Scope`
+- `If Blocked`
+
+If structure, state, or interaction could be interpreted multiple ways, add a short `Implementation Sketch` inside the thread `WORK.md`. Keep it lightweight: state shape, layout sketch, or interaction flow only.
+
+## Planning handoff checklist
+
+- Root `README.md` is concrete.
+- Each stage `PLAN.md` has a meaningful title, not just `Stage 01 Plan`.
+- Same-batch threads are truly parallelizable.
+- Generated thread `WORK.md` files are reviewed and filled after approval.
+- Thread boundaries and verification commands are explicit.
+- Agents are assigned with `work assign` if the handoff is agent-specific.
 
 ## Asking Questions
 

@@ -1,5 +1,5 @@
 ---
-name: reviewing-workstreams
+name: reviewing-work
 description: Review workstream plans for structure, risks, and readiness.
 ---
 
@@ -24,6 +24,19 @@ description: Review workstream plans for structure, risks, and readiness.
     - explicit inputs/outputs
     - no unresolved blocking questions
 
+## Thread `WORK.md` review
+
+For execution-ready workstreams, also review thread docs:
+
+- `stages/<stage>/threads/<thread-id>/WORK.md` exists for every planned thread
+- `Done When` is concrete and observable
+- `Files to Know` has explicit `READ`, `ALLOWED`, and `FORBIDDEN` entries
+- `Verify` commands are specific
+- `Locked Decisions` / `Not In Scope` / `If Blocked` are short and useful
+- any `Implementation Sketch` is lightweight and reduces ambiguity rather than introducing new architecture
+
+If reviewing post-implementation work, compare delivered changes against the thread `WORK.md`, not just the stage plan.
+
 ## Draft Plans
 
 - A warning from `work validate plan` about "no stages defined yet" means the workstream is still a draft, not that the file is broken.
@@ -35,6 +48,7 @@ description: Review workstream plans for structure, risks, and readiness.
 - Provide concrete findings.
 - Call out blockers first.
 - Suggest exact edits, not general advice.
+- If same-batch threads are not truly parallelizable, call that out explicitly and recommend serial batches.
 
 ## Structured Reviewer Output Contract (Machine-Consumable)
 

@@ -31,7 +31,7 @@ const AGENV_COMMANDS = join(AGENV_HOME, "agent/commands")
 type InstallProfile = "manual" | "managed"
 
 const DEFAULT_INSTALL_PROFILE: InstallProfile = "manual"
-const MANAGEMENT_SKILLS = new Set(["managing-workstreams"])
+const MANAGEMENT_SKILLS = new Set(["managing-work"])
 
 function parseInstallProfile(value: string | undefined): InstallProfile {
   const normalized = (value ?? DEFAULT_INSTALL_PROFILE).trim().toLowerCase()

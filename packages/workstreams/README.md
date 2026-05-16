@@ -31,13 +31,13 @@ work plan create --stages 2
 8. Optionally assign agents to threads before execution, for example: `work assign --thread "01.01.01" --agent "frontend-expert"`
 9. Manually `/fork` the session and ask the forked session to supervise the approved work
 10. The supervision branch uses `work supervise`, `work status`, `work tree`, and `work batch-status` to drive the next batch and review loop
-11. Implementation agents use `implementing-workstreams` to inspect assigned scope and update thread state with `work update`
+11. Implementation agents use `implementing-work` to inspect assigned scope and update thread state with `work update`
 12. The supervisor reports back; the user approves the completed stage with `work approve stage <n>`
 13. Repeat the supervision loop for the next stage
 14. If new stages are needed after the original plan, use the revision flow:
     - `work revision --name "follow-up" [--after-stage N]`
     - `work approve revision`
-15. Finalize the report with the `evaluating-workstreams` skill:
+15. Finalize the report with the `evaluating-work` skill:
     - `work report validate`
 
 The optional managed install profile preserves the older Root Agent management-launch workflow. The default manual profile omits the management skill and launch tool so the user controls the `/fork` handoff.

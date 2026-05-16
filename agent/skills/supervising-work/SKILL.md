@@ -1,5 +1,5 @@
 ---
-name: supervising-workstreams
+name: supervising-work
 description: Run `work supervise`, drive review/fix cycles, and report back to user.
 ---
 
@@ -38,11 +38,18 @@ work batch-status --batch "SS.BB" --format json
 work tree --batch "SS.BB"
 ```
 
-2. Launch a review subagent.
-3. Judge the review against the escalation policy.
-4. Either:
+2. Review the actual changed files against the batch's thread `WORK.md` contract(s), not just status output.
+3. Launch a review subagent.
+4. Judge the review against the escalation policy.
+5. Either:
    - launch a fix subagent and then re-review, or
    - finalize supervision and then report back with a final report.
+
+Notes:
+- A fix subagent is optional when the batch is simple and review passes cleanly.
+- Use at most one automatic fix cycle per batch.
+- Inspect both canonical thread state and runtime/batch state; if they disagree, ground decisions in persisted evidence and actual changed files.
+- Treat thread `WORK.md` plus stage `REQUIREMENTS.md` as the execution contract.
 
 ## Escalation policy
 
@@ -67,6 +74,13 @@ Report back instead of fixing when the persisted evidence indicates any of the f
 - the issue is outside safe engineering-owned batch-local follow-up
 
 If none of those conditions hold and a fix cycle is still allowed, run a fix subagent and re-enter review.
+
+Prefer a small safe fix cycle when the issue is:
+
+- clearly batch-local
+- low or medium severity
+- easy to verify afterward
+- not product-directional
 
 ## Guardrails
 

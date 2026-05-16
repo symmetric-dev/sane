@@ -1,5 +1,5 @@
 ---
-name: evaluating-workstreams
+name: evaluating-work
 description: Evaluate completed workstream output and finalize REPORT.md.
 ---
 
@@ -12,6 +12,7 @@ description: Evaluate completed workstream output and finalize REPORT.md.
    - `work validate requirements`
    - `work review commits`
    - `work review plan`
+   - relevant thread reports and final thread `WORK.md` expectations
 3. Ensure report exists: `work report init` (if missing)
 4. Fill `REPORT.md` with:
    - summary
@@ -26,3 +27,5 @@ description: Evaluate completed workstream output and finalize REPORT.md.
 - Report reflects what was actually delivered.
 - Open issues are explicit and actionable.
 - Next steps are concrete and prioritized.
+- If a stage/thread deviated from its `WORK.md`, note that explicitly.
+- If follow-up work is needed, say whether it should be a revision stage or a separate workstream.

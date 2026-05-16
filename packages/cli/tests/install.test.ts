@@ -274,17 +274,17 @@ describe("ag install profiles", () => {
   async function createMockAgenv(home: string): Promise<string> {
     const agenvHome = join(home, "agenv")
 
-    await mkdir(join(agenvHome, "agent", "skills", "planning-workstreams"), { recursive: true })
-    await mkdir(join(agenvHome, "agent", "skills", "managing-workstreams"), { recursive: true })
+    await mkdir(join(agenvHome, "agent", "skills", "planning-work"), { recursive: true })
+    await mkdir(join(agenvHome, "agent", "skills", "managing-work"), { recursive: true })
     await mkdir(join(agenvHome, "agent", "tools"), { recursive: true })
 
     await writeFile(
-      join(agenvHome, "agent", "skills", "planning-workstreams", "SKILL.md"),
-      "---\nname: planning-workstreams\n---\n",
+      join(agenvHome, "agent", "skills", "planning-work", "SKILL.md"),
+      "---\nname: planning-work\n---\n",
     )
     await writeFile(
-      join(agenvHome, "agent", "skills", "managing-workstreams", "SKILL.md"),
-      "---\nname: managing-workstreams\n---\n",
+      join(agenvHome, "agent", "skills", "managing-work", "SKILL.md"),
+      "---\nname: managing-work\n---\n",
     )
     await writeFile(
       join(agenvHome, "agent", "tools", "workstream.ts"),
@@ -327,8 +327,8 @@ describe("ag install profiles", () => {
 
       const skillsResult = await runAgInstall(tempDir, ["skills", "--opencode"])
       expect(skillsResult.exitCode).toBe(0)
-      expect(existsSync(join(tempDir, ".config", "opencode", "skills", "planning-workstreams"))).toBe(true)
-      expect(existsSync(join(tempDir, ".config", "opencode", "skills", "managing-workstreams"))).toBe(false)
+      expect(existsSync(join(tempDir, ".config", "opencode", "skills", "planning-work"))).toBe(true)
+      expect(existsSync(join(tempDir, ".config", "opencode", "skills", "managing-work"))).toBe(false)
 
       const toolsResult = await runAgInstall(tempDir, ["tools", "--opencode"])
       expect(toolsResult.exitCode).toBe(0)
@@ -350,7 +350,7 @@ describe("ag install profiles", () => {
 
       const skillsResult = await runAgInstall(tempDir, ["skills", "--opencode", "--profile", "managed"])
       expect(skillsResult.exitCode).toBe(0)
-      expect(existsSync(join(tempDir, ".config", "opencode", "skills", "managing-workstreams"))).toBe(true)
+      expect(existsSync(join(tempDir, ".config", "opencode", "skills", "managing-work"))).toBe(true)
 
       const toolsResult = await runAgInstall(tempDir, ["tools", "--opencode", "--profile", "managed"])
       expect(toolsResult.exitCode).toBe(0)

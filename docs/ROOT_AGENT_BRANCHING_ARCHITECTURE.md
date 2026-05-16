@@ -115,7 +115,7 @@ This lets us create cleaner alternate timelines and reduces identity drift.
 
 ### 3. Simplified prompt semantics and added a dedicated supervision skill
 
-We introduced `agent/skills/supervising-workstreams/SKILL.md` and removed much of the meta prompt clutter.
+We introduced `agent/skills/supervising-work/SKILL.md` and removed much of the meta prompt clutter.
 
 The branch prompt now focuses on:
 
@@ -291,5 +291,5 @@ Because of that, AgEnv should continue to treat persisted state and transcript e
 - `ROOT_AGENT_BRANCHING.md`
 - `docs/SUPERVISOR.md`
 - `docs/supervision-manual-verification-checklist.md`
-- `agent/skills/supervising-workstreams/SKILL.md`
+- `agent/skills/supervising-work/SKILL.md`
 - `work/000-super-agent-v1/PLAN.md`

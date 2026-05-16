@@ -76,7 +76,7 @@ describe("prompt generation", () => {
     expect(prompt).toContain(
       "You are an agent working on thread 01.01.01 (Verify thread execution prep) in stage Stage 01 in workstream 007-supervision-smoke (Supervision Smoke).",
     )
-    expect(prompt).toContain("Use the `implementing-workstreams` skill.")
+    expect(prompt).toContain("Use the `implementing-work` skill.")
     expect(prompt).toContain(
       "Read this document first: `work/007-supervision-smoke/stages/01/threads/01.01.01/WORK.md`.",
     )
