@@ -36,6 +36,7 @@ describe("dashboard ui route", () => {
     expect(html).toContain("canonical status remains primary")
     expect(html).toContain("terminal-view-select")
     expect(html).toContain("terminal-view-status")
+    expect(html).toContain("terminal-view-active-label")
     expect(html).toContain("Open standalone view")
     expect(html).toContain("Page up")
     expect(html).toContain("Page down")
@@ -43,9 +44,19 @@ describe("dashboard ui route", () => {
     expect(html).toContain("terminal-scrollback-meta")
     expect(html).toContain("Choose a read-only tmux session to inspect from the dashboard.")
     expect(html).toContain("Matched terminal sessions")
+    expect(html).toContain(
+      "Loading canonical snapshot… Status overview will appear here when the first canonical snapshot arrives.",
+    )
+    expect(html).toContain(
+      "Loading read-only terminal panes… Terminal details remain read-only when canonical snapshot data arrives.",
+    )
+    expect(html).toContain("Loading read-only terminal")
     expect(html).toContain("Select an observable terminal view to embed the read-only ttyd session.")
-    expect(html).toContain("Select a terminal view to inspect tmux scrollback.")
+    expect(html).toContain(
+      "Waiting for the first canonical snapshot. Scrollback will appear for the selected read-only view once data is available.",
+    )
     expect(html).toContain("terminal-scrollback-editor")
+    expect(html).toContain("Selected terminal")
     expect(html.indexOf('<div id="terminal-view-frame"')).toBeLessThan(
       html.indexOf('<div id="terminal-scrollback-frame"'),
     )

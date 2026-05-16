@@ -86,6 +86,10 @@ function isUnsafeStageApprovalName(stageNumber: number, stageName: string): bool
   return new RegExp(`^stage\\s*0*${stageNumber}\\s*$`, "i").test(trimmed)
 }
 
+function getSafeStageApprovalLabel(stageNumber: number): string {
+  return `stage-${stageNumber.toString().padStart(2, "0")}`
+}
+
 export function getPlanApprovalCommitNamingStatus(
   repoRoot: string,
   stream: StreamMetadata
@@ -127,20 +131,6 @@ export function getStageApprovalCommitNamingStatus(
     return {
       trustworthy: false,
       reason: "unsafe_generic_stream_name",
-    }
-  }
-
-  if (names.stageSource !== "plan") {
-    return {
-      trustworthy: false,
-      reason: "unsafe_fallback_stage_name",
-    }
-  }
-
-  if (isUnsafeStageApprovalName(stageNumber, names.stageName)) {
-    return {
-      trustworthy: false,
-      reason: "unsafe_generic_stage_name",
     }
   }
 
@@ -209,12 +199,18 @@ export function resolveStageApprovalNames(
   stageSource: "plan" | "fallback"
 } {
   const names = resolvePlanNames(repoRoot, stream)
+  const resolvedStageName = names.stageNames[stageNumber]
+  const stageName = resolvedStageName && !isUnsafeStageApprovalName(stageNumber, resolvedStageName)
+    ? resolvedStageName
+    : getSafeStageApprovalLabel(stageNumber)
 
   return {
     streamName: names.streamName,
-    stageName: names.stageNames[stageNumber] ?? `Stage ${stageNumber}`,
+    stageName,
     streamSource: names.streamSource,
-    stageSource: names.stageSources[stageNumber] ?? "fallback",
+    stageSource: resolvedStageName && !isUnsafeStageApprovalName(stageNumber, resolvedStageName)
+      ? names.stageSources[stageNumber] ?? "fallback"
+      : "fallback",
   }
 }
 

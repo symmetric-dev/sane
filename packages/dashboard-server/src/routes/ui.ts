@@ -32,6 +32,8 @@ export function renderDashboardClientScript(repoRoot: string): string {
     `const workstreamTitle = document.getElementById("workstream-title")`,
     `const workstreamMeta = document.getElementById("workstream-meta")`,
     `const connectionStatus = document.getElementById("connection-status")`,
+    `const statusPaneAdvisory = document.getElementById("status-pane-advisory")`,
+    `const terminalPaneAdvisory = document.getElementById("terminal-pane-advisory")`,
     `const statusBadge = document.getElementById("status-badge")`,
     `const statusSummary = document.getElementById("status-summary")`,
     `const runtimeSummary = document.getElementById("runtime-summary")`,
@@ -46,6 +48,7 @@ export function renderDashboardClientScript(repoRoot: string): string {
     `const terminalSessionSummary = document.getElementById("terminal-session-summary")`,
     `const terminalSessionList = document.getElementById("terminal-session-list")`,
     `const terminalViewSummary = document.getElementById("terminal-view-summary")`,
+    `const terminalViewActiveLabel = document.getElementById("terminal-view-active-label")`,
     `const terminalViewSelect = document.getElementById("terminal-view-select")`,
     `const terminalViewStatus = document.getElementById("terminal-view-status")`,
     `const terminalViewDetails = document.getElementById("terminal-view-details")`,
@@ -87,16 +90,53 @@ export function renderDashboardClientScript(repoRoot: string): string {
     "}",
     "function hideState() { if (stateBanner) stateBanner.hidden = true }",
     "function setConnectionStatus(message) { if (connectionStatus) connectionStatus.textContent = message }",
+    "function renderPaneAdvisories() {",
+    "  let statusMessage = ''",
+    "  let terminalMessage = ''",
+    "  if (!state.snapshot) {",
+    "    if (state.snapshotAvailability === 'unavailable') {",
+    "      statusMessage = 'Waiting for the first canonical snapshot. The dashboard will reconnect once backend snapshot data is available.'",
+    "      terminalMessage = 'Waiting for the first canonical snapshot. Read-only terminal panes will populate when snapshot data arrives.'",
+    "    } else {",
+    "      statusMessage = 'Loading canonical snapshot… Status overview will appear here when the first canonical snapshot arrives.'",
+    "      terminalMessage = 'Loading read-only terminal panes… Terminal details remain read-only when canonical snapshot data arrives.'",
+    "    }",
+    "  } else if (state.snapshotAvailability === 'unavailable') {",
+    "    statusMessage = 'Refreshing the canonical snapshot is temporarily unavailable. The last successful canonical snapshot remains visible while the backend recovers.'",
+    "    terminalMessage = 'Read-only terminal panes remain visible while the dashboard retries for a fresh canonical snapshot.'",
+    "  } else if (state.liveConnectionState === 'reconnecting') {",
+    "    statusMessage = 'Live updates reconnecting… The last successful canonical snapshot remains visible while the connection recovers.'",
+    "    terminalMessage = 'Live updates reconnecting… Read-only terminal panes remain visible while the connection recovers.'",
+    "  }",
+    "  if (statusPaneAdvisory) { statusPaneAdvisory.hidden = statusMessage.length === 0; statusPaneAdvisory.textContent = statusMessage }",
+    "  if (terminalPaneAdvisory) { terminalPaneAdvisory.hidden = terminalMessage.length === 0; terminalPaneAdvisory.textContent = terminalMessage }",
+    "}",
     "function updateConnectionStatus() {",
     "  if (state.snapshotAvailability === 'unavailable') { setConnectionStatus('Snapshot unavailable'); return }",
     "  if (state.liveConnectionState === 'reconnecting') { setConnectionStatus('Live updates reconnecting…'); return }",
     "  if (state.liveConnectionState === 'connected') { setConnectionStatus('Live updates connected'); return }",
     "  setConnectionStatus('Connecting to live updates…')",
     "}",
-    "function setLiveConnectionState(nextState) { state.liveConnectionState = nextState; updateConnectionStatus() }",
-    "function setSnapshotAvailability(nextState) { state.snapshotAvailability = nextState; updateConnectionStatus() }",
+    "function setLiveConnectionState(nextState) { state.liveConnectionState = nextState; updateConnectionStatus(); renderPaneAdvisories() }",
+    "function setSnapshotAvailability(nextState) { state.snapshotAvailability = nextState; updateConnectionStatus(); renderPaneAdvisories() }",
     "function setBadge(element, status, label) { if (!element) return; element.dataset.status = status; element.textContent = label }",
     "function labelStatus(status) { return String(status).replaceAll('_', ' ') }",
+    "function terminalViewStatusRank(status) { if (status === 'available') return 0; if (status === 'degraded') return 1; return 2 }",
+    "function compareTerminalViews(a, b) {",
+    "  const statusDiff = terminalViewStatusRank(a.status) - terminalViewStatusRank(b.status)",
+    "  if (statusDiff !== 0) return statusDiff",
+    "  const labelDiff = String(a.label || '').localeCompare(String(b.label || ''), undefined, { sensitivity: 'base' })",
+    "  if (labelDiff !== 0) return labelDiff",
+    "  return String(a.terminal_view_id || '').localeCompare(String(b.terminal_view_id || ''))",
+    "}",
+    "function pickDefaultTerminalView(views, selectedTerminalViewId) {",
+    "  const orderedViews = Array.isArray(views) ? [...views].sort(compareTerminalViews) : []",
+    "  if (selectedTerminalViewId) {",
+    "    const requestedView = orderedViews.find((view) => view.terminal_view_id === selectedTerminalViewId) || null",
+    "    if (requestedView) return requestedView",
+    "  }",
+    "  return orderedViews.length > 0 ? orderedViews[0] : null",
+    "}",
     "function setLeftSidebarView(view) {",
     "  if (view !== 'overview' && view !== 'tree') return",
     "  state.leftSidebarView = view",
@@ -126,6 +166,9 @@ export function renderDashboardClientScript(repoRoot: string): string {
     "}",
     "function formatTerminalScope(prefix, stageId, batchId) { const scope = [stageId, batchId].filter(Boolean).join(' '); return scope ? prefix + ' ' + scope : prefix + ' terminal' }",
     "function formatTerminalSessionLabel(session) { return formatTerminalScope(session && session.role === 'implementation_thread' ? 'Implementation' : 'Supervision', session && (session.stage_id || (session.correlation && session.correlation.stage_id)), session && (session.batch_id || (session.correlation && session.correlation.batch_id))) }",
+    "function renderTerminalState(title, message, details) {",
+    "  return '<div class=\"terminal-state empty\"><div><strong>' + escapeHtml(title) + '</strong></div><div class=\"terminal-note\">' + escapeHtml(message) + '</div>' + (details ? '<div class=\"terminal-note\">' + escapeHtml(details) + '</div>' : '') + '</div>'",
+    "}",
     "function buildTerminalScrollbackPath(terminalViewId, params) {",
     "  const encodedId = encodeURIComponent(terminalViewId)",
     "  const path = terminalScrollbackPathTemplate.replace(':' + 'terminalViewId', encodedId)",
@@ -289,32 +332,36 @@ export function renderDashboardClientScript(repoRoot: string): string {
     "  if (rows.length === 0) return '<div class=\"empty\">No selected work tree levels are visible. Enable a level above to show matching rows.</div>'",
     "  return '<ul class=\"tree-list\">' + rows.join('') + '</ul>'",
     "}",
-    "function renderTmuxSessions(observability) {",
+    "function renderTmuxSessions(observability, selectedView) {",
     "  const tmux = observability && observability.tmux",
     "  const sessions = tmux && tmux.sessions ? tmux.sessions : []",
     "  if (terminalSessionSummary) terminalSessionSummary.textContent = tmux && tmux.availability === 'ready' ? 'Matched terminal sessions for this workstream.' : tmux && tmux.availability === 'degraded' ? 'Some terminal session details are degraded.' : 'No matched terminal session details are available.'",
     "  if (!terminalSessionList) return",
     "  if (sessions.length === 0) { terminalSessionList.innerHTML = '<li class=\"empty\">No matched terminal sessions.</li>'; return }",
+    "  const activeSessionIds = new Set([selectedView && selectedView.session_id, selectedView && selectedView.session_name, selectedView && selectedView.terminal_view_id].filter(Boolean))",
     "  terminalSessionList.innerHTML = sessions.map((session) => {",
     "    const scope = [session.stage_id, session.batch_id, session.thread_id, session.run_id].filter(Boolean).join(' · ')",
     "    const details = [session.session_id, session.state, session.correlation.status, session.pane_count + ' pane' + (session.pane_count === 1 ? '' : 's'), session.window_name || null].filter(Boolean).map(escapeHtml).join(' · ')",
-    "    return '<li class=\"terminal-session-row\"><div><strong>' + escapeHtml(formatTerminalSessionLabel(session)) + '</strong><div class=\"terminal-note\">session ' + escapeHtml(session.session_name) + '</div><div class=\"terminal-note\">' + details + '</div>' + (scope ? '<div class=\"terminal-note\">' + escapeHtml(scope) + '</div>' : '') + '</div><span class=\"badge\" data-status=\"' + escapeHtml(session.state) + '\">' + escapeHtml(session.role) + '</span></li>'",
+    "    const isActive = activeSessionIds.has(session.session_id) || activeSessionIds.has(session.session_name)",
+    "    return '<li class=\"terminal-session-row\" data-active=\"' + (isActive ? 'true' : 'false') + '\"' + (isActive ? ' aria-current=\"true\"' : '') + '><div><strong>' + escapeHtml(formatTerminalSessionLabel(session)) + '</strong><div class=\"terminal-note\">session ' + escapeHtml(session.session_name) + '</div><div class=\"terminal-note\">' + details + '</div>' + (scope ? '<div class=\"terminal-note\">' + escapeHtml(scope) + '</div>' : '') + '</div><div class=\"terminal-session-row-actions\"><span class=\"badge\" data-status=\"' + escapeHtml(session.state) + '\">' + escapeHtml(session.role) + '</span>' + (isActive ? '<span class=\"badge\" data-status=\"selected\">selected</span>' : '') + '</div></li>'",
     "  }).join('')",
     "}",
     "function renderTerminalViews(observability) {",
     "  const terminalViews = observability && observability.terminal_views",
     "  const views = terminalViews && terminalViews.views ? terminalViews.views : []",
-    "  const requestedView = views.find((view) => view.terminal_view_id === state.selectedTerminalViewId) || null",
-    "  const firstEmbeddableView = views.find((view) => view.status !== 'unavailable') || null",
-    "  const fallbackView = firstEmbeddableView || views[0] || null",
-    "  if (state.selectedTerminalViewId && !requestedView) state.selectedTerminalViewId = fallbackView ? fallbackView.terminal_view_id : null",
-    "  const selectedView = requestedView || fallbackView",
+    "  const orderedViews = [...views].sort(compareTerminalViews)",
+    "  const requestedView = state.selectedTerminalViewId ? orderedViews.find((view) => view.terminal_view_id === state.selectedTerminalViewId) || null : null",
+    "  const selectedView = pickDefaultTerminalView(orderedViews, state.selectedTerminalViewId)",
     "  const embeddableView = selectedView && selectedView.status !== 'unavailable' ? selectedView : null",
+    "  if (state.selectedTerminalViewId && !requestedView && !selectedView) state.selectedTerminalViewId = null",
+    "  if (state.selectedTerminalViewId && !requestedView && selectedView) state.selectedTerminalViewId = selectedView.terminal_view_id",
     "  if (!state.selectedTerminalViewId && selectedView) state.selectedTerminalViewId = selectedView.terminal_view_id",
-    "  if (terminalViewSummary) terminalViewSummary.textContent = terminalViews && terminalViews.availability === 'ready' ? 'Choose a read-only tmux session to inspect from the dashboard.' : terminalViews && terminalViews.availability === 'degraded' ? 'Read-only terminal observability is degraded, but canonical status remains primary.' : 'Read-only terminal observability is unavailable; canonical status remains primary.'",
+    "  if (terminalViewSummary) terminalViewSummary.textContent = !selectedView ? terminalViews && terminalViews.availability === 'ready' ? 'Choose a read-only tmux session to inspect from the dashboard.' : terminalViews && terminalViews.availability === 'degraded' ? 'Read-only terminal observability is degraded, but canonical status remains primary.' : 'Read-only terminal observability is unavailable; canonical status remains primary.' : 'Active terminal: ' + selectedView.label + ' · read-only selection · canonical status remains primary'",
+    "  if (terminalViewActiveLabel) { terminalViewActiveLabel.hidden = !selectedView; terminalViewActiveLabel.textContent = selectedView ? 'Active: ' + selectedView.label : '' }",
+    "  const terminalState = !selectedView ? { title: 'No observable terminal views', message: 'Select an observable terminal view to embed the read-only ttyd session.', details: 'Canonical workstream state remains visible, and the terminal panes stay read-only.' } : selectedView.status === 'unavailable' ? { title: 'Terminal observability unavailable', message: 'The embedded ttyd surface is unavailable, so scrollback is shown instead.', details: selectedView.notes || 'This terminal view remains read-only and does not change canonical workstream state.' } : selectedView.status === 'degraded' ? { title: 'Terminal observability degraded', message: 'This terminal view is still read-only, but some live details may be stale or incomplete.', details: selectedView.notes || 'Canonical workstream state remains primary while the observability signal recovers.' } : null",
     "  if (terminalViewSelect) {",
     "    terminalViewSelect.disabled = views.length === 0",
-    "    terminalViewSelect.innerHTML = views.length === 0 ? '<option value=\"\">No observable terminal views</option>' : views.map((view) => '<option value=\"' + escapeHtml(view.terminal_view_id) + '\"' + (view.terminal_view_id === state.selectedTerminalViewId ? ' selected' : '') + '>' + escapeHtml(view.label) + '</option>').join('')",
+    "    terminalViewSelect.innerHTML = orderedViews.length === 0 ? '<option value=\"\">No observable terminal views</option>' : orderedViews.map((view) => '<option value=\"' + escapeHtml(view.terminal_view_id) + '\"' + (view.terminal_view_id === state.selectedTerminalViewId ? ' selected' : '') + '>' + escapeHtml(view.label) + '</option>').join('')",
     "    if (state.selectedTerminalViewId) terminalViewSelect.value = state.selectedTerminalViewId",
     "  }",
     "  if (terminalViewStatus) {",
@@ -322,8 +369,8 @@ export function renderDashboardClientScript(repoRoot: string): string {
     "    else { terminalViewStatus.hidden = false; terminalViewStatus.dataset.status = selectedView.status; terminalViewStatus.textContent = selectedView.status }",
     "  }",
     "  if (terminalViewDetails) {",
-    "    if (!selectedView) terminalViewDetails.innerHTML = ''",
-    "    else terminalViewDetails.innerHTML = '<div><strong>' + escapeHtml(selectedView.label) + '</strong></div><div class=\"terminal-note\">' + escapeHtml(selectedView.role) + ' · session ' + escapeHtml(selectedView.session_name) + ' · read-only</div>' + (selectedView.notes ? '<div class=\"terminal-note\">' + escapeHtml(selectedView.notes) + '</div>' : '')",
+    "    if (!selectedView) terminalViewDetails.innerHTML = renderTerminalState(terminalState.title, terminalState.message, terminalState.details)",
+    "    else terminalViewDetails.innerHTML = '<div class=\"selector-details-head\"><div><strong>' + escapeHtml(selectedView.label) + '</strong><div class=\"terminal-note\">' + escapeHtml(selectedView.role) + ' · session ' + escapeHtml(selectedView.session_name) + ' · read-only</div></div><span class=\"badge\" data-status=\"selected\">selected</span></div>' + (selectedView.status !== 'available' ? '<div class=\"terminal-note\">' + escapeHtml(terminalState.message) + '</div>' : '') + (selectedView.notes ? '<div class=\"terminal-note\">' + escapeHtml(selectedView.notes) + '</div>' : '') + (selectedView.status !== 'available' ? '<div class=\"terminal-note\">' + escapeHtml(terminalState.details) + '</div>' : '')",
     "  }",
     "  if (terminalViewOpenLink) {",
     "    if (!selectedView) { terminalViewOpenLink.hidden = true; terminalViewOpenLink.removeAttribute('href') }",
@@ -331,7 +378,8 @@ export function renderDashboardClientScript(repoRoot: string): string {
     "  }",
     "  const showScrollbackFallback = Boolean(state.selectedTerminalViewId) && !embeddableView",
     "  if (terminalViewFrame) {",
-    "    if (!state.selectedTerminalViewId && !selectedView) { terminalViewFrame.hidden = false; terminalViewFrame.innerHTML = '<div style=\"padding: 1rem;\" class=\"empty\">Select a terminal view to inspect the read-only terminal surface.</div>' }",
+    "    if (!selectedView) { terminalViewFrame.hidden = false; terminalViewFrame.innerHTML = renderTerminalState(terminalState.title, terminalState.message, terminalState.details) }",
+    "    else if (selectedView.status === 'unavailable') { terminalViewFrame.hidden = false; terminalViewFrame.innerHTML = renderTerminalState(terminalState.title, terminalState.message, terminalState.details) }",
     "    else if (embeddableView) { terminalViewFrame.hidden = false; terminalViewFrame.innerHTML = '<iframe src=\"' + escapeHtml(embeddableView.routes.ttyd_proxy_path) + '\" title=\"' + escapeHtml(embeddableView.label) + '\"></iframe>' }",
     "    else { terminalViewFrame.hidden = true; terminalViewFrame.innerHTML = '' }",
     "  }",
@@ -339,6 +387,7 @@ export function renderDashboardClientScript(repoRoot: string): string {
     "  if (scrollbackMeta) scrollbackMeta.hidden = !showScrollbackFallback",
     "  if (scrollbackFrame) scrollbackFrame.hidden = !showScrollbackFallback",
     "  applyTerminalHeights()",
+    "  renderTmuxSessions(observability, selectedView)",
     "}",
     "function renderScrollback(scrollback) {",
     "  state.scrollback = scrollback || null",
@@ -353,9 +402,10 @@ export function renderDashboardClientScript(repoRoot: string): string {
     "  }",
     "  if (scrollbackFrame) scrollbackFrame.setAttribute('aria-busy', state.scrollbackLoading ? 'true' : 'false')",
     "  if (!scrollbackEditorMount || !scrollbackFallback || !scrollbackEmpty) return",
-    "  if (!state.selectedTerminalViewId) { scrollbackEditorMount.hidden = true; scrollbackFallback.hidden = true; scrollbackEmpty.hidden = false; scrollbackEmpty.textContent = 'Select a terminal view to inspect tmux scrollback.'; return }",
+    "  if (!state.snapshot) { scrollbackEditorMount.hidden = true; scrollbackFallback.hidden = true; scrollbackEmpty.hidden = false; scrollbackEmpty.textContent = 'Waiting for the first canonical snapshot. Scrollback will appear for the selected read-only view once data is available.'; return }",
+    "  if (!state.selectedTerminalViewId) { scrollbackEditorMount.hidden = true; scrollbackFallback.hidden = true; scrollbackEmpty.hidden = false; scrollbackEmpty.textContent = 'Select a read-only terminal view to inspect tmux scrollback. Canonical dashboard state remains visible.'; return }",
     "  if (state.scrollbackLoading && state.scrollback && state.scrollback.status === 'available') return",
-    "  if (!scrollback || scrollback.status !== 'available') { scrollbackEditorMount.hidden = true; scrollbackFallback.hidden = true; scrollbackEmpty.hidden = false; scrollbackEmpty.textContent = scrollback && scrollback.notes ? scrollback.notes : 'No tmux history is currently available for this view.'; return }",
+    "  if (!scrollback || scrollback.status !== 'available') { scrollbackEditorMount.hidden = true; scrollbackFallback.hidden = true; scrollbackEmpty.hidden = false; scrollbackEmpty.textContent = scrollback && scrollback.notes ? scrollback.notes : 'No tmux history is currently available for this read-only view.'; return }",
     "  renderScrollbackText(scrollback.lines.join('\\n'), renderToken)",
     "}",
     "async function refreshScrollback(reason, options) {",
@@ -425,7 +475,6 @@ export function renderDashboardClientScript(repoRoot: string): string {
     "  state.snapshot = snapshot",
     "  setSnapshotAvailability('ready')",
     "  hideState()",
-    "  if (dashboard) dashboard.hidden = false",
     "  if (workstreamTitle) workstreamTitle.textContent = formatWorkstreamTitle(status.stream)",
     "  if (workstreamMeta) workstreamMeta.textContent = 'structured runtime · generated ' + formatDateTime(snapshot.generated_at)",
     "  setBadge(statusBadge, status.aggregate_status, labelStatus(status.aggregate_status))",
@@ -435,7 +484,6 @@ export function renderDashboardClientScript(repoRoot: string): string {
     "  if (treeCount) treeCount.textContent = tree.itemCount + ' item' + (tree.itemCount === 1 ? '' : 's')",
     "  if (treeBody) treeBody.innerHTML = renderTree(tree)",
     "  renderLeftSidebarView()",
-    "  renderTmuxSessions(observability)",
     "  renderTerminalViews(observability)",
     "  if (!state.scrollback) state.pendingScrollIntent = 'bottom'",
     "  void refreshScrollback(reason)",
@@ -454,7 +502,7 @@ export function renderDashboardClientScript(repoRoot: string): string {
     "    const hasSnapshot = Boolean(state.snapshot)",
     "    setSnapshotAvailability('unavailable')",
     "    showState(hasSnapshot ? 'warning' : 'error', message, hasSnapshot ? 'The last successful canonical snapshot remains visible while the backend recovers.' : 'The dashboard can reconnect once the backend snapshot is available.')",
-    "    if (!hasSnapshot && dashboard) dashboard.hidden = true",
+    "    renderPaneAdvisories()",
     "  }",
     "}",
     "source.onopen = () => { setLiveConnectionState('connected') }",
@@ -469,11 +517,12 @@ export function renderDashboardClientScript(repoRoot: string): string {
     "  const details = payload && payload.retryable === false ? 'The dashboard will keep retrying for a fresh canonical snapshot.' : 'The dashboard will keep retrying and reconnect when the snapshot returns.'",
     "  setSnapshotAvailability('unavailable')",
     "  showState(state.snapshot ? 'warning' : 'error', message, details)",
-    "  if (!state.snapshot && dashboard) dashboard.hidden = true",
+    "  renderPaneAdvisories()",
     "})",
     "source.onerror = () => { if (state.snapshotAvailability !== 'unavailable') setLiveConnectionState('reconnecting') }",
     "if (typeof addEventListener === 'function') addEventListener('resize', () => { applyTerminalHeights() })",
     "applyTerminalHeights()",
+    "renderPaneAdvisories()",
     "void refreshSnapshot('initial load')",
   ].join("\n")
 }
@@ -515,7 +564,7 @@ function renderDashboardShell(config: DashboardServerConfig): string {
       .summary-value { font-size: 1.05rem; font-weight: 600; }
       .badge { display: inline-flex; align-items: center; gap: 0.35rem; border: 1px solid #2a2a2a; border-radius: 999px; padding: 0.18rem 0.55rem; font-size: 0.78rem; line-height: 1.1; white-space: nowrap; }
       .badge[data-status="completed"], .badge[data-status="ready"] { color: #b9f6c5; border-color: #23402b; }
-      .badge[data-status="in_progress"], .badge[data-status="running"] { color: #b9d9ff; border-color: #243a55; }
+      .badge[data-status="in_progress"], .badge[data-status="running"], .badge[data-status="selected"] { color: #b9d9ff; border-color: #243a55; }
       .badge[data-status="blocked"], .badge[data-status="failed"], .badge[data-status="unavailable"], .badge[data-status="error"] { color: #ffb7b7; border-color: #4a2323; }
       .badge[data-status="pending"], .badge[data-status="degraded"], .badge[data-status="stopped"] { color: #ddd; }
       .stack { display: grid; gap: 0.5rem; }
@@ -544,13 +593,17 @@ function renderDashboardShell(config: DashboardServerConfig): string {
       .subgrid { display: grid; gap: 0.75rem; }
       .terminal-session-list { display: grid; gap: 0; list-style: none; padding: 0; margin: 0; border-top: 1px solid #232323; }
       .terminal-session-row { display: flex; flex-wrap: wrap; justify-content: space-between; gap: 0.6rem; align-items: baseline; padding: 0.55rem 0; border-bottom: 1px solid #1b1b1b; }
+      .terminal-session-row[data-active="true"] { background: #0f1724; border-color: #37577c; box-shadow: inset 0 0 0 1px #37577c; padding-inline: 0.55rem; margin-inline: -0.55rem; }
+      .terminal-session-row-actions { display: flex; flex-wrap: wrap; gap: 0.4rem; align-items: center; justify-content: flex-end; }
       .terminal-selector-card { display: grid; gap: 0.6rem; padding: 0; }
       .terminal-selector-row, .selector-details-head { display: flex; flex-wrap: wrap; justify-content: space-between; gap: 0.6rem; align-items: center; }
       .terminal-selector-actions { display: flex; flex-wrap: wrap; gap: 0.5rem; align-items: center; }
       .terminal-select { width: min(100%, 34rem); border: 1px solid #2c2c2c; background: #161616; color: #f4f4f4; padding: 0.55rem 0.75rem; border-radius: 0.45rem; font: inherit; }
+      .terminal-active-label { justify-self: end; }
       .terminal-link { color: #8ec5ff; text-decoration: none; }
       .terminal-link:hover { text-decoration: underline; }
       .terminal-frame, .terminal-scrollback-frame { border: 1px solid #232323; background: #050505; min-height: 21rem; overflow: hidden; }
+      .terminal-state { display: grid; gap: 0.45rem; align-content: center; min-height: 21rem; padding: 1rem; }
       .terminal-frame iframe { border: 0; display: block; width: 100%; height: 21rem; }
       .panel-shell { display: grid; gap: 1rem; }
       .panel-shell > .panel { min-height: 0; }
@@ -573,7 +626,7 @@ function renderDashboardShell(config: DashboardServerConfig): string {
 
       <section id="state-banner" class="state" data-kind="loading">Loading canonical snapshot…</section>
 
-      <div id="dashboard" class="layout dashboard-shell" hidden>
+      <div id="dashboard" class="layout dashboard-shell">
         <aside id="dashboard-left-pane" class="shell-pane shell-pane-left" aria-label="Status and work tree">
           <nav id="left-sidebar-nav" class="panel left-sidebar-nav" aria-label="Left sidebar views">
             <button id="left-sidebar-overview-button" type="button" aria-pressed="true" data-active="true">Overview</button>
@@ -584,6 +637,7 @@ function renderDashboardShell(config: DashboardServerConfig): string {
               <h2 id="status-heading">Status overview</h2>
               <span id="status-badge" class="badge" data-status="pending">pending</span>
             </div>
+            <div id="status-pane-advisory" class="empty">Loading canonical snapshot… Status overview will appear here when the first canonical snapshot arrives.</div>
             <div id="status-summary" class="summary-grid"></div>
             <div id="runtime-summary" class="stack" style="margin-top: 1rem;"></div>
             <div id="status-stages" class="status-stages" style="margin-top: 1rem;"></div>
@@ -607,11 +661,15 @@ function renderDashboardShell(config: DashboardServerConfig): string {
           <section id="terminal-panel" class="panel panel-shell" aria-labelledby="terminal-heading">
             <div class="panel-head">
               <h2 id="terminal-heading">Read-only terminal</h2>
-              <span class="muted">ttyd-backed embed</span>
+              <div class="terminal-selector-actions">
+                <span id="terminal-view-active-label" class="badge terminal-active-label" data-status="selected" hidden>Selected terminal</span>
+                <span class="muted">ttyd-backed embed</span>
+              </div>
             </div>
+            <div id="terminal-pane-advisory" class="empty">Loading read-only terminal panes… Terminal details remain read-only when canonical snapshot data arrives.</div>
             <div class="subgrid">
               <div id="terminal-view-frame" class="terminal-frame">
-                <div style="padding: 1rem;" class="empty">Select an observable terminal view to embed the read-only ttyd session.</div>
+                <div style="padding: 1rem;" class="terminal-state empty"><div><strong>Loading read-only terminal</strong></div><div class="terminal-note">Waiting for the first canonical snapshot before embedding a ttyd view.</div><div class="terminal-note">Canonical state remains primary, and terminal panes stay read-only.</div></div>
               </div>
               <div class="terminal-selector-row">
                 <div id="terminal-scrollback-controls" class="terminal-controls">
@@ -626,7 +684,7 @@ function renderDashboardShell(config: DashboardServerConfig): string {
               <div id="terminal-scrollback-frame" class="terminal-scrollback-frame">
                 <div id="terminal-scrollback-editor" class="terminal-scrollback-editor" hidden></div>
                 <pre id="terminal-scrollback-fallback" class="terminal-scrollback-pre" hidden></pre>
-                <div id="terminal-scrollback-empty" class="terminal-scrollback-empty empty">Select a terminal view to inspect tmux scrollback.</div>
+                <div id="terminal-scrollback-empty" class="terminal-scrollback-empty empty">Waiting for the first canonical snapshot. Scrollback will appear for the selected read-only view once data is available.</div>
               </div>
             </div>
           </section>

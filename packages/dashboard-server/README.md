@@ -18,9 +18,10 @@ The dashboard reads an existing AgENV repository on disk, so you still need a ch
 ## What it shows
 
 - canonical current-workstream state from `work/<stream-id>/workstream-state.json`
-- runtime overlays derived from the canonical workstream snapshot
-- tmux session observability for matching workstream activity
-- optional embedded `ttyd` terminal views for read-only inspection
+- left sidebar views for Overview and Tree, both derived from canonical state
+- a center read-only terminal pane for live inspection only
+- a right sidebar terminal/session selector for choosing what the center pane shows
+- tmux session observability and optional embedded `ttyd` views, both read-only
 
 ## Local prerequisites
 
@@ -29,6 +30,7 @@ The dashboard is intentionally local-only in v1:
 - it always binds to `127.0.0.1`
 - embedded terminal views only proxy loopback `ttyd` targets
 - terminal observability is read-only and should be treated as inspection only
+- terminal panes never write back to workstream state
 
 Install or verify the local tools it depends on:
 
@@ -74,8 +76,8 @@ On startup the server prints a local URL such as `http://127.0.0.1:43119/`.
 
 ### HTML pages
 
-- `/`: current-workstream dashboard
-- `/terminal-views/:terminalViewId`: standalone page for one read-only terminal view
+- `/`: current-workstream dashboard with left/right sidebars and a center terminal pane
+- `/terminal-views/:terminalViewId`: standalone read-only terminal inspection page
 - `/terminal-views/:terminalViewId/ttyd`: proxied local `ttyd` target used by the dashboard iframe
 
 ### JSON + SSE endpoints
@@ -93,9 +95,9 @@ On startup the server prints a local URL such as `http://127.0.0.1:43119/`.
 
 1. Set the active workstream with `work current --set "<stream-id>"`.
 2. Start the dashboard server and open `/` in a browser.
-3. Use the summary cards, stage list, and task tree to inspect canonical progress.
-4. Use the tmux panel to see matched local sessions for the current workstream.
-5. If `ttyd` is available, choose a terminal view to embed a read-only terminal for that session.
+3. Use the summary cards and left sidebar to inspect canonical progress.
+4. Use the right sidebar to choose the terminal/session shown in the center pane.
+5. If `ttyd` is available, the selected terminal appears as a read-only inspection surface.
 
 If the dashboard and observability disagree, trust the canonical snapshot first.
 
@@ -103,8 +105,8 @@ If the dashboard and observability disagree, trust the canonical snapshot first.
 
 The dashboard has three layers:
 
-1. **Canonical state**: `workstream-state.json` is the source of truth. Status, tree, runtime, and supervision summaries are derived from persisted workstream state.
+1. **Canonical state**: `workstream-state.json` is the source of truth. Status, tree, runtime, and supervision summaries come from persisted workstream state.
 2. **tmux observability**: live session discovery is correlated against canonical identifiers. It can be ready, degraded, unavailable, missing, stale, or ambiguous.
 3. **`ttyd` terminal views**: browser-friendly, read-only views layered on top of tmux sessions when local `ttyd` is available.
 
-Only the first layer changes workstream truth. tmux and `ttyd` help operators inspect what is happening, but they do not determine completion, failure, or review state.
+Only the first layer changes workstream truth. The sidebars and center pane are inspection surfaces only; tmux and `ttyd` help operators observe what is happening, but they do not determine completion, failure, or review state.

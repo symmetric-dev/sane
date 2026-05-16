@@ -58,7 +58,8 @@ Workflow:
     3. Update README.md with the overall workstream context
     4. work plan create --stages 3
     5. Edit stages/01/{REQUIREMENTS.md,PLAN.md} and specs/
-    6. work approve plan    # requires at least one stage; generates thread WORK.md files
+    6. Rename each stage PLAN.md heading to a meaningful title (for example: # Stage 01 Discovery Plan)
+    7. work approve plan    # requires at least one stage; generates thread WORK.md files
 
   Planning-session flow:
     1. Open opencode and discuss the problem
@@ -175,7 +176,8 @@ function handleCreatePlan(
     console.log("Next steps:")
     console.log("  1. Edit each stage directory under stages/")
     console.log("  2. Fill REQUIREMENTS.md, PLAN.md, and specs/ for each stage")
-    console.log("  3. After approval, use generated threads/<thread-id>/WORK.md files as the primary worker docs")
+    console.log("  3. Rename each stage PLAN.md heading to a meaningful title so stage names carry through preview and approval flows")
+    console.log("  4. After approval, use generated threads/<thread-id>/WORK.md files as the primary worker docs")
   } catch (e) {
     console.error(`Error: ${(e as Error).message}`)
     process.exit(1)

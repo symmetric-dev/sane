@@ -4,6 +4,7 @@ import { main as workMain } from "../bin/work.ts"
 import { main as approveMain } from "../src/cli/approve/index.ts"
 import { main as assignMain } from "../src/cli/assign.ts"
 import { main as createMain } from "../src/cli/create.ts"
+import { main as planMain } from "../src/cli/plan.ts"
 import { main as readMain } from "../src/cli/read.ts"
 import { main as updateMain } from "../src/cli/update.ts"
 import { main as validateMain } from "../src/cli/validate.ts"
@@ -79,6 +80,17 @@ describe("draft-first help text", () => {
     expect(approveOutput).toContain("Plan approval also initializes the execution hierarchy directly")
     expect(approveOutput).toContain("stages/*/PLAN.md (or a legacy root PLAN.md when present)")
     expect(approveOutput).not.toContain("Usage:\n  work approve tasks")
+  })
+
+  test("plan create help tells planners to give stages meaningful titles", async () => {
+    const { stdout, stderr } = await captureHelpOutput(() => {
+      planMain(["bun", "work-plan", "--help"])
+    })
+
+    const output = stdout.join("\n")
+    expect(stderr).toHaveLength(0)
+    expect(output).toContain("Rename each stage PLAN.md heading to a meaningful title")
+    expect(output).toContain("# Stage 01 Discovery Plan")
   })
 
   test("main CLI help advertises requirements validation and hides context", async () => {

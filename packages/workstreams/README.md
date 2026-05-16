@@ -25,7 +25,7 @@ work plan create --stages 2
 2. Review `README.md` and capture shared context under `resources/` / `docs/`
 3. Set the current workstream (or pass `--stream`): `work current --set "001-my-feature"`
 4. Scaffold stage directories: `work plan create --stages 2`
-5. Fill `stages/01/REQUIREMENTS.md`, `stages/01/PLAN.md`, and `stages/01/specs/` (repeat per stage).
+5. Fill `stages/01/REQUIREMENTS.md`, `stages/01/PLAN.md`, and `stages/01/specs/` (repeat per stage), and rename each stage `PLAN.md` heading to a meaningful title such as `# Stage 01 Discovery Plan`.
 6. Approve plan: `work approve plan` (user role, requires at least one stage)
 7. `work approve plan` also initializes thread execution state directly from the stage/thread plan and generates `stages/<nn>/threads/<thread-id>/WORK.md`
 8. Optionally assign agents to threads before execution, for example: `work assign --thread "01.01.01" --agent "frontend-expert"`

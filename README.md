@@ -57,7 +57,7 @@ Optional skill install:
 The day-to-day workflow is:
 
 1. Discuss the feature and let the agent research the repo.
-2. The agent uses `planning-workstreams` to create the workstream, fill the root `README.md`, and prepare stage `REQUIREMENTS.md` / `PLAN.md` files plus any stage `specs/` content.
+2. The agent uses `planning-workstreams` to create the workstream, fill the root `README.md`, and prepare stage `REQUIREMENTS.md` / `PLAN.md` files plus any stage `specs/` content, including meaningful stage `PLAN.md` titles.
 3. You approve the plan, which initializes canonical execution state directly from `PLAN.md` and generates per-thread `WORK.md` files.
 4. You manually `/fork` the session and ask the forked session to supervise the approved work.
 5. The supervision branch uses `supervising-workstreams` to run `work supervise`, inspect persisted state, and drive the review/fix/escalation loop.

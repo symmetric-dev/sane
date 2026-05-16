@@ -99,6 +99,7 @@ describe("generateStream", () => {
       const requirementsContent = await readFile(join(stageDir, "REQUIREMENTS.md"), "utf-8")
       expect(result.stagesPath).toBe(join(tempDir, "work/000-test-feature/stages"))
       expect(planContent).toContain("# Stage 01 Plan")
+      expect(planContent).toContain("Rename this heading to something like `# Stage 01 Discovery Plan`")
       expect(planContent).toContain("## Batches")
       expect(planContent).toContain("### Batch 01:")
       expect(planContent).toContain("#### Thread 01:")

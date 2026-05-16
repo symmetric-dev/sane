@@ -116,6 +116,7 @@ class FakeDocument {
       "workstream-title",
       "workstream-meta",
       "connection-status",
+      "status-pane-advisory",
       "status-badge",
       "status-summary",
       "runtime-summary",
@@ -130,13 +131,15 @@ class FakeDocument {
       "tree-panel",
       "terminal-session-summary",
       "terminal-session-list",
-      "terminal-view-summary",
-      "terminal-view-select",
-      "terminal-view-status",
-      "terminal-view-details",
+        "terminal-view-summary",
+        "terminal-view-active-label",
+        "terminal-view-select",
+        "terminal-view-status",
+        "terminal-view-details",
       "terminal-view-open-link",
       "terminal-picker-panel",
       "terminal-panel",
+      "terminal-pane-advisory",
       "terminal-scrollback-meta",
       "terminal-scrollback-frame",
       "terminal-scrollback-editor",
@@ -149,7 +152,6 @@ class FakeDocument {
     }
 
     this.getElementById("state-banner")!.dataset.kind = "loading"
-    this.getElementById("dashboard")!.hidden = true
     this.getElementById("terminal-view-select")!.value = ""
   }
 
@@ -347,6 +349,23 @@ function runClient(args: {
 }
 
 describe("dashboard ui live refresh client", () => {
+  test("keeps the dashboard shell visible with pane loading advisories before the first snapshot", () => {
+    const { document } = runClient({
+      fetchImpl: async () => new Promise(() => {}),
+    })
+
+    expect(document.getElementById("dashboard")?.hidden).toBe(false)
+    expect(document.getElementById("state-banner")?.dataset.kind).toBe("loading")
+    expect(document.getElementById("status-pane-advisory")?.hidden).toBe(false)
+    expect(document.getElementById("status-pane-advisory")?.textContent).toContain(
+      "Loading canonical snapshot",
+    )
+    expect(document.getElementById("terminal-pane-advisory")?.hidden).toBe(false)
+    expect(document.getElementById("terminal-pane-advisory")?.textContent).toContain(
+      "Loading read-only terminal panes",
+    )
+  })
+
   test("keeps the three shell panes visible together", async () => {
     const { document } = runClient({})
 
@@ -360,6 +379,8 @@ describe("dashboard ui live refresh client", () => {
     expect(document.getElementById("dashboard-left-pane")?.hidden).toBe(false)
     expect(document.getElementById("dashboard-center-pane")?.hidden).toBe(false)
     expect(document.getElementById("dashboard-right-pane")?.hidden).toBe(false)
+    expect(document.getElementById("status-pane-advisory")?.hidden).toBe(true)
+    expect(document.getElementById("terminal-pane-advisory")?.hidden).toBe(true)
     expect(document.getElementById("left-sidebar-overview-button")?.dataset.active).toBe("true")
     expect(document.getElementById("left-sidebar-tree-button")?.dataset.active).toBe("false")
     expect(document.getElementById("status-panel")?.hidden).toBe(false)
@@ -396,6 +417,10 @@ describe("dashboard ui live refresh client", () => {
     expect(select?.innerHTML).toContain("Supervision 03 03.01")
     expect(select?.innerHTML).not.toContain("002-supervision-branch-1")
     expect(select?.value).toBe("branch/branch-1")
+    expect(document.getElementById("terminal-view-active-label")?.hidden).toBe(false)
+    expect(document.getElementById("terminal-view-active-label")?.textContent).toBe(
+      "Active: Supervision 03 03.01",
+    )
     expect(document.getElementById("terminal-view-status")?.textContent).toBe("degraded")
     expect(document.getElementById("terminal-view-details")?.innerHTML).toContain(
       "002-supervision-branch-1",
@@ -413,6 +438,65 @@ describe("dashboard ui live refresh client", () => {
 
     expect(document.getElementById("terminal-view-frame")?.innerHTML).toContain(
       "/terminal-views/branch%2Fbranch-1/ttyd",
+    )
+  })
+
+  test("picks an available default view and highlights the matched terminal session", async () => {
+    const snapshot = createSnapshot()
+    snapshot.observability.tmux.sessions = [
+      {
+        session_id: "002-worker-branch-2",
+        session_name: "002-worker-branch-2",
+        role: "supervision_branch",
+        state: "attached",
+        observed_at: "2026-04-16T12:00:00.000Z",
+        stage_id: "03",
+        batch_id: "03.02",
+        pane_count: 1,
+        correlation: {
+          status: "matched",
+          target_kind: "supervision_branch",
+          target_id: "002-worker-branch-2",
+          stage_id: "03",
+          batch_id: "03.02",
+        },
+      },
+    ] as any
+    snapshot.observability.terminal_views.views.push({
+      terminal_view_id: "branch/branch-2",
+      label: "Worker 03 03.02",
+      status: "available",
+      session_name: "002-worker-branch-2",
+      role: "supervision_branch",
+      notes: "Healthy terminal view.",
+      routes: {
+        view_path: "/terminal-views/branch%2Fbranch-2",
+        ttyd_proxy_path: "/terminal-views/branch%2Fbranch-2/ttyd",
+      },
+    } as any)
+
+    const { document } = runClient({
+      fetchImpl: createFetchMock({
+        ok: true,
+        status: 200,
+        json: async () => snapshot,
+      }),
+    })
+
+    await flushPromises()
+
+    expect(document.getElementById("terminal-view-select")?.value).toBe("branch/branch-2")
+    expect(document.getElementById("terminal-view-active-label")?.textContent).toBe(
+      "Active: Worker 03 03.02",
+    )
+    expect(document.getElementById("terminal-view-details")?.innerHTML).toContain(
+      "selected",
+    )
+    expect(document.getElementById("terminal-session-list")?.innerHTML).toContain(
+      'data-active="true"',
+    )
+    expect(document.getElementById("terminal-session-list")?.innerHTML).toContain(
+      "selected",
     )
   })
 
@@ -435,7 +519,13 @@ describe("dashboard ui live refresh client", () => {
     await flushPromises()
 
     expect(document.getElementById("terminal-view-select")?.value).toBe("branch/branch-1")
-    expect(document.getElementById("terminal-view-frame")?.hidden).toBe(true)
+    expect(document.getElementById("terminal-view-frame")?.hidden).toBe(false)
+    expect(document.getElementById("terminal-view-frame")?.innerHTML).toContain(
+      "Terminal observability unavailable",
+    )
+    expect(document.getElementById("terminal-view-frame")?.innerHTML).toContain(
+      "The embedded ttyd surface is unavailable, so scrollback is shown instead.",
+    )
     expect(document.getElementById("terminal-scrollback-frame")?.hidden).toBe(false)
     expect(document.getElementById("terminal-scrollback-controls")?.hidden).toBe(false)
     expect(document.getElementById("terminal-scrollback-meta")?.textContent).toContain(
@@ -447,14 +537,44 @@ describe("dashboard ui live refresh client", () => {
     )
   })
 
+  test("explains the empty terminal picker when no observable views are available", async () => {
+    const snapshot = createSnapshot()
+    snapshot.observability.terminal_views.views = []
+
+    const { document } = runClient({
+      fetchImpl: createFetchMock({
+        ok: true,
+        status: 200,
+        json: async () => snapshot,
+      }),
+    })
+
+    await flushPromises()
+    await flushPromises()
+
+    expect(document.getElementById("terminal-view-select")?.disabled).toBe(true)
+    expect(document.getElementById("terminal-view-summary")?.textContent).toContain(
+      "degraded, but canonical status remains primary",
+    )
+    expect(document.getElementById("terminal-view-details")?.innerHTML).toContain(
+      "No observable terminal views",
+    )
+    expect(document.getElementById("terminal-view-frame")?.innerHTML).toContain(
+      "No observable terminal views",
+    )
+    expect(document.getElementById("terminal-scrollback-empty")?.textContent).toContain(
+      "Canonical dashboard state remains visible.",
+    )
+  })
+
   test("falls back to a remaining terminal view when a later snapshot removes the selected view", async () => {
     const initialSnapshot = createSnapshot()
     initialSnapshot.observability.terminal_views.views.push({
       terminal_view_id: "branch/branch-2",
       label: "Worker 03 03.02",
-      status: "ready",
+      status: "available",
       session_name: "002-worker-branch-2",
-      role: "worker_branch",
+      role: "implementation_thread",
       notes: "Healthy terminal view.",
       routes: {
         view_path: "/terminal-views/branch%2Fbranch-2",
@@ -467,9 +587,9 @@ describe("dashboard ui live refresh client", () => {
       {
         terminal_view_id: "branch/branch-2",
         label: "Worker 03 03.02",
-        status: "ready",
+        status: "available",
         session_name: "002-worker-branch-2",
-        role: "worker_branch",
+        role: "implementation_thread",
         notes: "Healthy terminal view.",
         routes: {
           view_path: "/terminal-views/branch%2Fbranch-2",
@@ -502,13 +622,50 @@ describe("dashboard ui live refresh client", () => {
 
     source.emit("observability")
     await flushPromises()
+    await flushPromises()
 
     expect(select?.value).toBe("branch/branch-2")
-    expect(document.getElementById("terminal-view-details")?.innerHTML).toContain(
-      "002-worker-branch-2",
+    expect(document.getElementById("terminal-view-summary")?.textContent).toContain(
+      "canonical status remains primary",
     )
+  })
+
+  test("clears the selected terminal view when a later snapshot removes all views", async () => {
+    const initialSnapshot = createSnapshot()
+    const laterSnapshot = createSnapshot()
+    laterSnapshot.observability.terminal_views.views = []
+
+    const fetchImpl = createFetchMock(
+      {
+        ok: true,
+        status: 200,
+        json: async () => initialSnapshot,
+      },
+      {
+        ok: true,
+        status: 200,
+        json: async () => laterSnapshot,
+      },
+    )
+    const { document, source } = runClient({ fetchImpl })
+
+    await flushPromises()
+
+    const select = document.getElementById("terminal-view-select")
+    expect(select?.value).toBe("branch/branch-1")
+
+    source.emit("observability")
+    await flushPromises()
+    await flushPromises()
+
+    expect(select?.disabled).toBe(true)
+    expect(select?.innerHTML).toContain("No observable terminal views")
+    expect(document.getElementById("terminal-view-active-label")?.hidden).toBe(true)
     expect(document.getElementById("terminal-view-frame")?.innerHTML).toContain(
-      "/terminal-views/branch%2Fbranch-2/ttyd",
+      "No observable terminal views",
+    )
+    expect(document.getElementById("terminal-scrollback-empty")?.textContent).toContain(
+      "Select a read-only terminal view to inspect tmux scrollback.",
     )
   })
 
@@ -528,6 +685,14 @@ describe("dashboard ui live refresh client", () => {
 
     expect(document.getElementById("connection-status")?.textContent).toBe(
       "Live updates reconnecting…",
+    )
+    expect(document.getElementById("status-pane-advisory")?.hidden).toBe(false)
+    expect(document.getElementById("status-pane-advisory")?.textContent).toContain(
+      "Live updates reconnecting",
+    )
+    expect(document.getElementById("terminal-pane-advisory")?.hidden).toBe(false)
+    expect(document.getElementById("terminal-pane-advisory")?.textContent).toContain(
+      "Read-only terminal panes remain visible",
     )
   })
 
@@ -571,6 +736,15 @@ describe("dashboard ui live refresh client", () => {
     expect(document.getElementById("connection-status")?.textContent).toBe(
       "Snapshot unavailable",
     )
+    expect(document.getElementById("dashboard")?.hidden).toBe(false)
+    expect(document.getElementById("status-pane-advisory")?.hidden).toBe(false)
+    expect(document.getElementById("status-pane-advisory")?.textContent).toContain(
+      "last successful canonical snapshot remains visible",
+    )
+    expect(document.getElementById("terminal-pane-advisory")?.hidden).toBe(false)
+    expect(document.getElementById("terminal-pane-advisory")?.textContent).toContain(
+      "dashboard retries for a fresh canonical snapshot",
+    )
 
     document.getElementById("retry-button")?.click()
     await flushPromises()
@@ -579,6 +753,8 @@ describe("dashboard ui live refresh client", () => {
     expect(document.getElementById("connection-status")?.textContent).toBe(
       "Live updates connected",
     )
+    expect(document.getElementById("status-pane-advisory")?.hidden).toBe(true)
+    expect(document.getElementById("terminal-pane-advisory")?.hidden).toBe(true)
     expect(document.getElementById("status-summary")?.innerHTML).toContain(
       "last refresh: manual retry",
     )

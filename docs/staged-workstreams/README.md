@@ -51,6 +51,8 @@ This is better than either:
         *.md
 ```
 
+When filling a stage `PLAN.md`, rename its H1 to a meaningful title such as `# Stage 01 Discovery Plan` so previews and approvals can preserve the stage name.
+
 ## Why this is better
 
 ### 1. Better planning granularity

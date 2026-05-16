@@ -51,6 +51,7 @@ describe("work plan create", () => {
     expect(existsSync(join(tempDir, "work", "000-draft-feature", "stages", "02", "PLAN.md"))).toBe(true)
     expect(logs.join("\n")).toContain("Scaffolded 2 stages in workstream \"000-draft-feature\".")
     expect(logs.join("\n")).toContain(join(tempDir, "work", "000-draft-feature", "stages"))
+    expect(logs.join("\n")).toContain("Rename each stage PLAN.md heading to a meaningful title")
     expect(errors).toEqual([])
   })
 })

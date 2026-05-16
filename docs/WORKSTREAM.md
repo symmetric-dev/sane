@@ -59,7 +59,7 @@ The older Root Agent management-launch flow is still available through the manag
 - Review `README.md` and gather shared context in `resources/` / `docs/`.
 - Run `work current --set "NNN-feature"` first, or pass `--stream`, before `work plan create` and other follow-up commands.
 - `work plan create --stages <n>` scaffolds stage directories such as `stages/01/`, `stages/02/`, and so on.
-- Each stage gets `REQUIREMENTS.md`, `PLAN.md`, `specs/`, and eventually thread `WORK.md` files.
+- Each stage gets `REQUIREMENTS.md`, `PLAN.md`, `specs/`, and eventually thread `WORK.md` files; planners should rename each stage `PLAN.md` heading to a meaningful title such as `# Stage 01 Discovery Plan`.
 - After plan or revision approval, each planned thread gets `stages/<nn>/threads/<thread-id>/WORK.md` as its primary worker doc.
 - `work approve plan` requires at least one stage and seeds thread execution state from the staged planning structure.
 

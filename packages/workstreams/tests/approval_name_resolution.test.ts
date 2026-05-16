@@ -99,7 +99,7 @@ Reuse naming helpers across approvals.
   test("falls back safely when PLAN.md is missing or invalid", () => {
     expect(resolveStageApprovalNames(TEST_DIR, stream, 2)).toEqual({
       streamName: "fallback-stream-name",
-      stageName: "Stage 2",
+      stageName: "stage-02",
       streamSource: "fallback",
       stageSource: "fallback",
     })
@@ -108,7 +108,7 @@ Reuse naming helpers across approvals.
 
     expect(resolveStageApprovalNames(TEST_DIR, stream, 3)).toEqual({
       streamName: "fallback-stream-name",
-      stageName: "Stage 3",
+      stageName: "stage-03",
       streamSource: "fallback",
       stageSource: "fallback",
     })
@@ -138,7 +138,7 @@ Keep approval naming trustworthy.
     })
   })
 
-  test("flags generic stage approval names as unsafe", () => {
+  test("falls back to a safe label when the stage name is generic", () => {
     writeFileSync(
       join(TEST_DIR, "work", "stream-001", "PLAN.md"),
       `# Plan: Approval Auto Commit Centralization
@@ -153,8 +153,62 @@ Keep approval naming trustworthy.
     )
 
     expect(getStageApprovalCommitNamingStatus(TEST_DIR, stream, 1)).toEqual({
-      trustworthy: false,
-      reason: "unsafe_generic_stage_name",
+      trustworthy: true,
+    })
+    expect(resolveStageApprovalNames(TEST_DIR, stream, 1)).toEqual({
+      streamName: "Approval Auto Commit Centralization",
+      stageName: "stage-01",
+      streamSource: "plan",
+      stageSource: "fallback",
+    })
+  })
+
+  test("derives a meaningful stage name from a stage-local PLAN heading when possible", () => {
+    mkdirSync(join(TEST_DIR, "work", "stream-001", "stages", "01"), { recursive: true })
+    writeFileSync(
+      join(TEST_DIR, "work", "stream-001", "README.md"),
+      `# Approval Auto Commit Centralization
+
+## Summary
+
+Centralize approval flows.
+`,
+    )
+    writeFileSync(
+      join(TEST_DIR, "work", "stream-001", "stages", "01", "PLAN.md"),
+      `# Stage 01 Discovery Plan
+
+## Summary
+
+Keep stage-local naming meaningful.
+
+## References
+
+- \`packages/workstreams/src/lib/consolidate.ts\`
+
+## Questions
+
+- [x] None
+
+## Batches
+
+### Batch 01: Naming
+
+#### Thread 01: Heuristic
+
+**Summary:**
+Preserve the heading-derived name.
+
+**Details:**
+Use the H1 title when synthesizing the stream document.
+`,
+    )
+
+    expect(resolveStageApprovalNames(TEST_DIR, stream, 1)).toEqual({
+      streamName: "Approval Auto Commit Centralization",
+      stageName: "Discovery",
+      streamSource: "plan",
+      stageSource: "plan",
     })
   })
 })

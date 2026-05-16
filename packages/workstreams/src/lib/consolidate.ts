@@ -71,6 +71,55 @@ function stripHtmlComments(content: string): string {
   return content.replace(/<!--([\s\S]*?)-->/g, "").trim()
 }
 
+function escapeRegExp(value: string): string {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")
+}
+
+function isGenericStageTitle(title: string, stageDirName: string): boolean {
+  const trimmed = stripHtmlComments(title)
+    .replace(/\s+/g, " ")
+    .trim()
+
+  if (!trimmed) {
+    return true
+  }
+
+  const stageNumber = parseInt(stageDirName, 10)
+  const escapedStageDirName = escapeRegExp(stageDirName)
+
+  return [
+    new RegExp(`^stage\\s*${escapedStageDirName}$`, "i"),
+    new RegExp(`^stage\\s*${escapedStageDirName}\\s*plan$`, "i"),
+    new RegExp(`^stage\\s*0*${stageNumber}$`, "i"),
+    new RegExp(`^stage\\s*0*${stageNumber}\\s*plan$`, "i"),
+    /^stage$/i,
+    /^plan$/i,
+  ].some((pattern) => pattern.test(trimmed))
+}
+
+function extractMeaningfulStageTitle(content: string, stageDirName: string): string | null {
+  const headingMatch = content.match(/^#\s+(.+)$/m)
+  const headingText = stripHtmlComments(headingMatch?.[1] ?? "")
+  if (!headingText) {
+    return null
+  }
+
+  const stageNumber = parseInt(stageDirName, 10)
+  const escapedStageDirName = escapeRegExp(stageDirName)
+  const candidate = headingText
+    .replace(new RegExp(`^stage\\s*${escapedStageDirName}\\s*[-:–—]?\\s*`, "i"), "")
+    .replace(new RegExp(`^stage\\s*0*${stageNumber}\\s*[-:–—]?\\s*`, "i"), "")
+    .replace(/\bplan\b\s*$/i, "")
+    .replace(/\s+/g, " ")
+    .trim()
+
+  if (!candidate || isGenericStageTitle(candidate, stageDirName) || /^meaningful stage name$/i.test(candidate)) {
+    return null
+  }
+
+  return candidate
+}
+
 function hasVisibleMeaningfulText(content: string): boolean {
   return content
     .split("\n")
@@ -116,6 +165,7 @@ function extractReadmePlanContext(streamDir: string, streamId: string): {
 function toSyntheticStageSection(planPath: string, syntheticStageNumber: number): string {
   const content = readFileSync(planPath, "utf-8")
   const stageDirName = planPath.split("/").slice(-2, -1)[0] ?? "00"
+  const stageName = extractMeaningfulStageTitle(content, stageDirName) ?? `Stage ${stageDirName}`
   const definition = stripHtmlComments(extractMarkdownSection(content, "Summary"))
   const questions = extractMarkdownSection(content, "Questions")
   const batches = extractMarkdownSection(content, "Batches")
@@ -124,7 +174,7 @@ function toSyntheticStageSection(planPath: string, syntheticStageNumber: number)
     .trim()
 
   return [
-    `### Stage ${syntheticStageNumber}: Stage ${stageDirName}`,
+    `### Stage ${syntheticStageNumber}: ${stageName}`,
     "",
     "#### Stage Definition",
     definition,

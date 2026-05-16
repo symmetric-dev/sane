@@ -28,6 +28,7 @@ description: Create and prepare workstreams for execution. Planning only, no cod
 Notes:
 - Root `README.md` is the human-facing source of truth for shared summary, deliverables, dependencies, and resources.
 - Stage-local `REQUIREMENTS.md` files capture stage-specific acceptance criteria and inputs.
+- Give each stage `PLAN.md` a meaningful H1 title (for example `# Stage 01 Discovery Plan`) so downstream tools preserve the stage name.
 - The primary worker doc is `stages/<stage>/threads/<thread-id>/WORK.md`, generated after plan or revision approval.
 - Agent assignment is runtime thread metadata set with `work assign` (or `work update --agent`), not inline `@agent:` markers in `PLAN.md` or `WORK.md`.
 - If shared root context is missing or incomplete, stop and ask the user to provide it, or help the user draft the root `README.md` first.
