@@ -163,7 +163,6 @@ Opencode custom tools support parts of the workstream workflow that need access 
 
 - `workstream_link_planning_session`: links the current opencode session to a workstream as its planning session.
 - `workstream_launch_supervision_branch`: optional managed-profile tool that launches the supervision branch from the Root Agent session.
-- `finalize_workstream_supervision`: persists the terminal supervision result before reporting back.
 - `reconcile_workstream_supervision`: reconciles stale ended-but-nonterminal supervision sessions.
 - `link_thread_session`: used by implementation agents to link the current opencode session to their assigned thread before substantive implementation work begins.
 

@@ -43,7 +43,7 @@ work tree --batch "SS.BB"
 4. Judge the review against the escalation policy.
 5. Either:
    - launch a fix subagent and then re-review, or
-   - finalize supervision and then report back with a final report.
+   - stop the loop and report back with a final report.
 
 Notes:
 - A fix subagent is optional when the batch is simple and review passes cleanly.
@@ -90,8 +90,6 @@ Prefer a small safe fix cycle when the issue is:
 - Keep the loop grounded in actual batch/stage state, not high-level orchestration discussion.
 
 ## Final report format
-
-Immediately before your final assistant report, call `finalize_workstream_supervision` with the terminal supervision status (`completed`, `stopped`, or `failed`) and include any useful notes / summary / report text you want persisted.
 
 When you report back, the **final assistant message** must use exactly these headings:
 

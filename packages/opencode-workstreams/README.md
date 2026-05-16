@@ -28,7 +28,6 @@ export AGENV_WORKSTREAMS_PROFILE=managed
 - `link_planning_session`
 - `link_thread_session`
 - `current_workstream`
-- `finalize_workstream_supervision`
 - `reconcile_workstream_supervision`
 - `tool_runtime_info`
 

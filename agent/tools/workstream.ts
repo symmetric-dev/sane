@@ -20,7 +20,6 @@ import type {
   ReconcileWorkstreamRuntimeDeps,
   ReconcileWorkstreamSupervisionArgs,
   ReconcileWorkstreamSupervisionDeps,
-  SupervisionTerminalStatus,
   WorkstreamsToolRuntimeInfo,
   WorkstreamsToolRuntimeLoadOptions as PackageWorkstreamsToolRuntimeLoadOptions,
   WorkstreamsToolRuntimeModule,
@@ -582,46 +581,9 @@ export const current_workstream = tool({
   },
 })
 
-export const finalize_workstream_supervision = Object.assign(
-  tool({
-    description:
-      "Mark the current workstream supervision session as completed, stopped, or failed and persist optional notes before the final report.",
-    args: {
-      status: tool.schema
-        .string()
-        .describe("Terminal supervision status: 'completed', 'stopped', or 'failed'."),
-      streamId: tool.schema
-        .string()
-        .describe(
-          "Optional workstream ID or name. Usually omitted because the current supervision context is inferred automatically.",
-        )
-        .optional(),
-      notes: tool.schema.string().describe("Optional supervision notes to persist.").optional(),
-      summary: tool.schema.string().describe("Optional short supervision summary to persist.").optional(),
-      reportText: tool.schema
-        .string()
-        .describe("Optional final report text to persist before sending it to the user.")
-        .optional(),
-    },
-  async execute(
-      args: {
-        status: SupervisionTerminalStatus
-        streamId?: string
-        notes?: string
-        summary?: string
-        reportText?: string
-      },
-      context: { sessionID?: string },
-    ) {
-      return executeFinalizeWorkstreamSupervision(args as FinalizeWorkstreamSupervisionArgs, context)
-    },
-  }),
-  {
-    __test: {
-      executeFinalizeWorkstreamSupervision,
-    },
-  },
-)
+// finalize_workstream_supervision is intentionally not exposed right now.
+// Parent-side reconciliation remains the active path for supervision-session finalization.
+void executeFinalizeWorkstreamSupervision
 
 export const reconcile_workstream_supervision = Object.assign(
   tool({
@@ -730,4 +692,3 @@ export const launch_supervision_branch = Object.assign(
 )
 
 export type { LaunchSupervisionBranchDeps }
-export type { SupervisionTerminalStatus }
