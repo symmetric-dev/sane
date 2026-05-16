@@ -10,7 +10,7 @@ description: Execute assigned thread work and keep execution state accurate.
 ```bash
 work status
 work tree --batch "01.01"
-work list --thread "01.01.01"
+work list --stream "<stream-id>" --thread "01.01.01"
 ```
 
 Before substantive implementation work, link the current opencode session to your assigned thread using the custom tool:
@@ -23,17 +23,17 @@ Do this after confirming your workstream/thread scope and before marking executi
 
 1. Work only on your assigned thread.
 2. Link the current opencode session to your assigned thread with `link_thread_session` before implementation work begins.
-3. Mark thread start: `work update --thread "ID" --status in_progress`
+3. Mark thread start: `work update --stream "<stream-id>" --thread "ID" --status in_progress`
 4. Mark completion with report:
-   `work update --thread "ID" --status completed --report "1-2 sentence summary"`
+   `work update --stream "<stream-id>" --thread "ID" --status completed --report "1-2 sentence summary"`
 5. If blocked:
-   `work update --thread "ID" --status blocked --report "reason and dependency"`
+   `work update --stream "<stream-id>" --thread "ID" --status blocked --report "reason and dependency"`
 
 ## Questions
 
 - Do not ask questions to the user during implementation.
 - If a thread or plan is unclear, mark the thread as blocked:
-  `work update --thread "ID" --status blocked --report "unclear: <specific question>"`
+  `work update --stream "<stream-id>" --thread "ID" --status blocked --report "unclear: <specific question>"`
 - Describe the exact ambiguity so it can be resolved during review.
 
 ## Report Quality
@@ -48,4 +48,4 @@ Do this after confirming your workstream/thread scope and before marking executi
 - If thread intent is unclear, review:
   - `work validate requirements`
   - `work review plan`
-  - `work read --thread "ID"`
+  - `work read --stream "<stream-id>" --thread "ID"`

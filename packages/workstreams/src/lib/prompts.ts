@@ -282,7 +282,10 @@ export function generateThreadPrompt(
   }
 
   lines.push(
-    `Keep execution state current with \`work update --thread "${context.threadIdString}" --status <status>\`.`,
+    `Keep execution state current with \`work update --stream "${context.streamId}" --thread "${context.threadIdString}" --status <status>\`.`,
+  )
+  lines.push(
+    `For thread-scoped \`work\` commands, keep \`--stream "${context.streamId}"\` explicit (for example \`work read --stream "${context.streamId}" --thread "${context.threadIdString}"\` and \`work list --stream "${context.streamId}" --thread "${context.threadIdString}"\`).`,
   )
   lines.push(
     `When the thread is completed or blocked, include a short \`--report\` explaining the outcome.`,

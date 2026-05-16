@@ -109,6 +109,10 @@ class FakeDocument {
     for (const id of [
       "state-banner",
       "dashboard",
+      "dashboard-shell",
+      "dashboard-left-pane",
+      "dashboard-center-pane",
+      "dashboard-right-pane",
       "workstream-title",
       "workstream-meta",
       "connection-status",
@@ -116,9 +120,14 @@ class FakeDocument {
       "status-summary",
       "runtime-summary",
       "status-stages",
+      "status-panel",
+      "left-sidebar-nav",
+      "left-sidebar-overview-button",
+      "left-sidebar-tree-button",
       "tree-body",
       "tree-count",
       "tree-level-controls",
+      "tree-panel",
       "terminal-session-summary",
       "terminal-session-list",
       "terminal-view-summary",
@@ -126,6 +135,8 @@ class FakeDocument {
       "terminal-view-status",
       "terminal-view-details",
       "terminal-view-open-link",
+      "terminal-picker-panel",
+      "terminal-panel",
       "terminal-scrollback-meta",
       "terminal-scrollback-frame",
       "terminal-scrollback-editor",
@@ -133,24 +144,13 @@ class FakeDocument {
       "terminal-scrollback-empty",
       "terminal-scrollback-controls",
       "terminal-view-frame",
-      "tab-status-overview",
-      "tab-work-tree",
-      "tab-terminal-views",
-      "panel-status-overview",
-      "panel-work-tree",
-      "panel-terminal-views",
     ]) {
       this.ensureElement(id)
     }
 
-    this.getElementById("tab-status-overview")!.dataset.tabId = "status-overview"
-    this.getElementById("tab-work-tree")!.dataset.tabId = "work-tree"
-    this.getElementById("tab-terminal-views")!.dataset.tabId = "terminal-views"
     this.getElementById("state-banner")!.dataset.kind = "loading"
     this.getElementById("dashboard")!.hidden = true
     this.getElementById("terminal-view-select")!.value = ""
-    this.getElementById("panel-work-tree")!.hidden = true
-    this.getElementById("panel-terminal-views")!.hidden = true
   }
 
   ensureElement(id: string): FakeElement {
@@ -347,7 +347,7 @@ function runClient(args: {
 }
 
 describe("dashboard ui live refresh client", () => {
-  test("shows one major section at a time via tabs", async () => {
+  test("keeps the three shell panes visible together", async () => {
     const { document } = runClient({})
 
     await flushPromises()
@@ -355,17 +355,36 @@ describe("dashboard ui live refresh client", () => {
     expect(document.getElementById("workstream-title")?.textContent).toBe(
       "Web Workstream Dashboard (002)",
     )
-    expect(document.getElementById("panel-status-overview")?.hidden).toBe(false)
-    expect(document.getElementById("panel-work-tree")?.hidden).toBe(true)
+    expect(document.getElementById("status-panel")?.hidden).toBe(false)
+    expect(document.getElementById("dashboard")?.hidden).toBe(false)
+    expect(document.getElementById("dashboard-left-pane")?.hidden).toBe(false)
+    expect(document.getElementById("dashboard-center-pane")?.hidden).toBe(false)
+    expect(document.getElementById("dashboard-right-pane")?.hidden).toBe(false)
+    expect(document.getElementById("left-sidebar-overview-button")?.dataset.active).toBe("true")
+    expect(document.getElementById("left-sidebar-tree-button")?.dataset.active).toBe("false")
+    expect(document.getElementById("status-panel")?.hidden).toBe(false)
+    expect(document.getElementById("tree-panel")?.hidden).toBe(true)
+  })
 
-    document.getElementById("tab-work-tree")?.click()
+  test("switches the left sidebar between overview and tree views", async () => {
+    const { document } = runClient({})
 
-    expect(document.getElementById("panel-status-overview")?.hidden).toBe(true)
-    expect(document.getElementById("panel-work-tree")?.hidden).toBe(false)
-    expect(document.getElementById("tab-work-tree")?.dataset.active).toBe("true")
-    expect(document.getElementById("tab-status-overview")?.dataset.active).toBe(
-      "false",
-    )
+    await flushPromises()
+
+    document.getElementById("left-sidebar-tree-button")?.click()
+
+    expect(document.getElementById("status-panel")?.hidden).toBe(true)
+    expect(document.getElementById("tree-panel")?.hidden).toBe(false)
+    expect(document.getElementById("tree-level-controls")?.hidden).toBe(false)
+    expect(document.getElementById("dashboard-center-pane")?.hidden).toBe(false)
+    expect(document.getElementById("dashboard-right-pane")?.hidden).toBe(false)
+    expect(document.getElementById("left-sidebar-overview-button")?.dataset.active).toBe("false")
+    expect(document.getElementById("left-sidebar-tree-button")?.dataset.active).toBe("true")
+
+    document.getElementById("left-sidebar-overview-button")?.click()
+
+    expect(document.getElementById("status-panel")?.hidden).toBe(false)
+    expect(document.getElementById("tree-panel")?.hidden).toBe(true)
   })
 
   test("uses a dropdown selector for terminal views and updates the selected details", async () => {
@@ -385,12 +404,111 @@ describe("dashboard ui live refresh client", () => {
       "No matched terminal sessions.",
     )
     expect(document.getElementById("terminal-view-open-link")?.hidden).toBe(false)
+    expect(document.getElementById("terminal-view-frame")?.hidden).toBe(false)
+    expect(document.getElementById("terminal-scrollback-frame")?.hidden).toBe(true)
+    expect(document.getElementById("terminal-scrollback-controls")?.hidden).toBe(true)
 
     select!.value = "branch/branch-1"
     select?.dispatch("change")
 
     expect(document.getElementById("terminal-view-frame")?.innerHTML).toContain(
       "/terminal-views/branch%2Fbranch-1/ttyd",
+    )
+  })
+
+  test("promotes scrollback into the center pane when ttyd is unavailable", async () => {
+    const snapshot = createSnapshot()
+    const view = snapshot.observability.terminal_views.views[0]!
+    view.status = "unavailable"
+    view.notes =
+      "The embedded ttyd surface is unavailable, so scrollback is shown instead."
+
+    const { document } = runClient({
+      fetchImpl: createFetchMock({
+        ok: true,
+        status: 200,
+        json: async () => snapshot,
+      }),
+    })
+
+    await flushPromises()
+    await flushPromises()
+
+    expect(document.getElementById("terminal-view-select")?.value).toBe("branch/branch-1")
+    expect(document.getElementById("terminal-view-frame")?.hidden).toBe(true)
+    expect(document.getElementById("terminal-scrollback-frame")?.hidden).toBe(false)
+    expect(document.getElementById("terminal-scrollback-controls")?.hidden).toBe(false)
+    expect(document.getElementById("terminal-scrollback-meta")?.textContent).toContain(
+      "Lines 1–3 of 3",
+    )
+    expect(document.getElementById("terminal-scrollback-fallback")?.hidden).toBe(false)
+    expect(document.getElementById("terminal-scrollback-fallback")?.textContent).toContain(
+      "alpha\nbeta\ngamma",
+    )
+  })
+
+  test("falls back to a remaining terminal view when a later snapshot removes the selected view", async () => {
+    const initialSnapshot = createSnapshot()
+    initialSnapshot.observability.terminal_views.views.push({
+      terminal_view_id: "branch/branch-2",
+      label: "Worker 03 03.02",
+      status: "ready",
+      session_name: "002-worker-branch-2",
+      role: "worker_branch",
+      notes: "Healthy terminal view.",
+      routes: {
+        view_path: "/terminal-views/branch%2Fbranch-2",
+        ttyd_proxy_path: "/terminal-views/branch%2Fbranch-2/ttyd",
+      },
+    })
+
+    const laterSnapshot = createSnapshot()
+    laterSnapshot.observability.terminal_views.views = [
+      {
+        terminal_view_id: "branch/branch-2",
+        label: "Worker 03 03.02",
+        status: "ready",
+        session_name: "002-worker-branch-2",
+        role: "worker_branch",
+        notes: "Healthy terminal view.",
+        routes: {
+          view_path: "/terminal-views/branch%2Fbranch-2",
+          ttyd_proxy_path: "/terminal-views/branch%2Fbranch-2/ttyd",
+        },
+      },
+    ]
+
+    const fetchImpl = createFetchMock(
+      {
+        ok: true,
+        status: 200,
+        json: async () => initialSnapshot,
+      },
+      {
+        ok: true,
+        status: 200,
+        json: async () => laterSnapshot,
+      },
+    )
+    const { document, source } = runClient({ fetchImpl })
+
+    await flushPromises()
+
+    const select = document.getElementById("terminal-view-select")
+    select!.value = "branch/branch-1"
+    select?.dispatch("change")
+
+    expect(select?.value).toBe("branch/branch-1")
+
+    source.emit("observability")
+    await flushPromises()
+
+    expect(select?.value).toBe("branch/branch-2")
+    expect(document.getElementById("terminal-view-details")?.innerHTML).toContain(
+      "002-worker-branch-2",
+    )
+    expect(document.getElementById("terminal-view-frame")?.innerHTML).toContain(
+      "/terminal-views/branch%2Fbranch-2/ttyd",
     )
   })
 

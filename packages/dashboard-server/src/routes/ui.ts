@@ -21,11 +21,14 @@ function escapeHtml(value: string): string {
 export function renderDashboardClientScript(repoRoot: string): string {
   return [
     `const repoRoot = ${JSON.stringify(repoRoot)}`,
-    `const tabIds = ['status-overview', 'work-tree', 'terminal-views']`,
     `const snapshotPath = ${JSON.stringify(CURRENT_WORKSTREAM_DASHBOARD_SNAPSHOT_ROUTE.path)}`,
     `const source = new EventSource(${JSON.stringify(DASHBOARD_LIVE_PATH)})`,
     `const stateBanner = document.getElementById("state-banner")`,
     `const dashboard = document.getElementById("dashboard")`,
+    `const dashboardShell = document.getElementById("dashboard-shell")`,
+    `const leftPane = document.getElementById("dashboard-left-pane")`,
+    `const centerPane = document.getElementById("dashboard-center-pane")`,
+    `const rightPane = document.getElementById("dashboard-right-pane")`,
     `const workstreamTitle = document.getElementById("workstream-title")`,
     `const workstreamMeta = document.getElementById("workstream-meta")`,
     `const connectionStatus = document.getElementById("connection-status")`,
@@ -33,9 +36,13 @@ export function renderDashboardClientScript(repoRoot: string): string {
     `const statusSummary = document.getElementById("status-summary")`,
     `const runtimeSummary = document.getElementById("runtime-summary")`,
     `const statusStages = document.getElementById("status-stages")`,
+    `const statusPanel = document.getElementById("status-panel")`,
+    `const leftSidebarOverviewButton = document.getElementById("left-sidebar-overview-button")`,
+    `const leftSidebarTreeButton = document.getElementById("left-sidebar-tree-button")`,
     `const treeBody = document.getElementById("tree-body")`,
     `const treeCount = document.getElementById("tree-count")`,
     `const treeLevelControls = document.getElementById("tree-level-controls")`,
+    `const treePanel = document.getElementById("tree-panel")`,
     `const terminalSessionSummary = document.getElementById("terminal-session-summary")`,
     `const terminalSessionList = document.getElementById("terminal-session-list")`,
     `const terminalViewSummary = document.getElementById("terminal-view-summary")`,
@@ -43,6 +50,8 @@ export function renderDashboardClientScript(repoRoot: string): string {
     `const terminalViewStatus = document.getElementById("terminal-view-status")`,
     `const terminalViewDetails = document.getElementById("terminal-view-details")`,
     `const terminalViewOpenLink = document.getElementById("terminal-view-open-link")`,
+    `const terminalPickerPanel = document.getElementById("terminal-picker-panel")`,
+    `const terminalPanel = document.getElementById("terminal-panel")`,
     `const scrollbackMeta = document.getElementById("terminal-scrollback-meta")`,
     `const scrollbackFrame = document.getElementById("terminal-scrollback-frame")`,
     `const scrollbackEditorMount = document.getElementById("terminal-scrollback-editor")`,
@@ -50,13 +59,12 @@ export function renderDashboardClientScript(repoRoot: string): string {
     `const scrollbackEmpty = document.getElementById("terminal-scrollback-empty")`,
     `const scrollbackControls = document.getElementById("terminal-scrollback-controls")`,
     `const terminalViewFrame = document.getElementById("terminal-view-frame")`,
-    "const tabButtons = tabIds.map((tabId) => document.getElementById('tab-' + tabId)).filter(Boolean)",
     `const terminalScrollbackPathTemplate = ${JSON.stringify(DASHBOARD_TERMINAL_VIEW_SCROLLBACK_ROUTE_PATH_TEMPLATE)}`,
     "const monacoLoaderUrl = 'https://cdn.jsdelivr.net/npm/monaco-editor@0.52.2/min/vs/loader.js'",
     "const monacoVsPath = 'https://cdn.jsdelivr.net/npm/monaco-editor@0.52.2/min/vs'",
     "const scrollbackEditorFallbackHeightPx = 560",
     "const terminalFrameHeightPx = 336",
-    "const state = { activeTabId: tabIds[0], selectedTerminalViewId: null, snapshot: null, liveConnectionState: 'connecting', snapshotAvailability: 'loading', scrollback: null, scrollbackLoading: false, scrollbackRenderToken: 0, pendingScrollIntent: null, treeLevels: { stage: true, batch: true, thread: true, task: true } }",
+    "const state = { selectedTerminalViewId: null, snapshot: null, liveConnectionState: 'connecting', snapshotAvailability: 'loading', scrollback: null, scrollbackLoading: false, scrollbackRenderToken: 0, pendingScrollIntent: null, leftSidebarView: 'overview', treeLevels: { stage: true, batch: true, thread: true } }",
     "let monacoEditor = null",
     "let monacoLoaderPromise = null",
     "const scrollbackPageSize = 1200",
@@ -89,6 +97,18 @@ export function renderDashboardClientScript(repoRoot: string): string {
     "function setSnapshotAvailability(nextState) { state.snapshotAvailability = nextState; updateConnectionStatus() }",
     "function setBadge(element, status, label) { if (!element) return; element.dataset.status = status; element.textContent = label }",
     "function labelStatus(status) { return String(status).replaceAll('_', ' ') }",
+    "function setLeftSidebarView(view) {",
+    "  if (view !== 'overview' && view !== 'tree') return",
+    "  state.leftSidebarView = view",
+    "  renderLeftSidebarView()",
+    "}",
+    "function renderLeftSidebarView() {",
+    "  const showingOverview = state.leftSidebarView === 'overview'",
+    "  if (statusPanel) statusPanel.hidden = !showingOverview",
+    "  if (treePanel) treePanel.hidden = showingOverview",
+    "  if (leftSidebarOverviewButton) { leftSidebarOverviewButton.setAttribute('aria-pressed', showingOverview ? 'true' : 'false'); leftSidebarOverviewButton.dataset.active = showingOverview ? 'true' : 'false' }",
+    "  if (leftSidebarTreeButton) { leftSidebarTreeButton.setAttribute('aria-pressed', showingOverview ? 'false' : 'true'); leftSidebarTreeButton.dataset.active = showingOverview ? 'false' : 'true' }",
+    "}",
     "function titleCaseWorkstreamName(value) {",
     "  const words = String(value || '').replace(/^\\d+[-_ ]+/, '').split(/[-_\\s]+/).filter(Boolean)",
     "  if (words.length === 0) return 'Current Workstream'",
@@ -106,40 +126,6 @@ export function renderDashboardClientScript(repoRoot: string): string {
     "}",
     "function formatTerminalScope(prefix, stageId, batchId) { const scope = [stageId, batchId].filter(Boolean).join(' '); return scope ? prefix + ' ' + scope : prefix + ' terminal' }",
     "function formatTerminalSessionLabel(session) { return formatTerminalScope(session && session.role === 'implementation_thread' ? 'Implementation' : 'Supervision', session && (session.stage_id || (session.correlation && session.correlation.stage_id)), session && (session.batch_id || (session.correlation && session.correlation.batch_id))) }",
-    "function getHashValue() { return typeof location !== 'undefined' && typeof location.hash === 'string' ? location.hash.slice(1) : '' }",
-    "function setHashValue(tabId) { if (typeof history !== 'undefined' && history && typeof history.replaceState === 'function' && typeof location !== 'undefined') history.replaceState(null, '', '#' + tabId); else if (typeof location !== 'undefined') location.hash = tabId }",
-    "function setActiveTab(tabId, options) {",
-    "  const nextTabId = tabIds.includes(tabId) ? tabId : tabIds[0]",
-    "  state.activeTabId = nextTabId",
-    "  for (const currentTabId of tabIds) {",
-    "    const button = document.getElementById('tab-' + currentTabId)",
-    "    const panel = document.getElementById('panel-' + currentTabId)",
-    "    const isActive = currentTabId === nextTabId",
-    "    if (button) { button.setAttribute('aria-selected', isActive ? 'true' : 'false'); button.setAttribute('tabindex', isActive ? '0' : '-1'); button.dataset.active = isActive ? 'true' : 'false' }",
-    "    if (panel) panel.hidden = !isActive",
-    "  }",
-    "  if (!options || options.updateHash !== false) setHashValue(nextTabId)",
-    "}",
-    "function syncTabFromHash() { const hashTabId = getHashValue(); setActiveTab(hashTabId || state.activeTabId, { updateHash: hashTabId === '' }) }",
-    "if (tabButtons.length > 0) {",
-    "  for (const button of tabButtons) {",
-    "    button.addEventListener('click', () => { const tabId = button.getAttribute('data-tab-id'); if (tabId) setActiveTab(tabId) })",
-    "    button.addEventListener('keydown', (event) => {",
-    "      const currentIndex = tabIds.indexOf(button.getAttribute('data-tab-id') || '')",
-    "      if (currentIndex < 0) return",
-    "      if (!(event instanceof KeyboardEvent)) return",
-    "      if (event.key !== 'ArrowLeft' && event.key !== 'ArrowRight' && event.key !== 'Home' && event.key !== 'End') return",
-    "      event.preventDefault()",
-    "      const nextIndex = event.key === 'Home' ? 0 : event.key === 'End' ? tabIds.length - 1 : event.key === 'ArrowLeft' ? (currentIndex - 1 + tabIds.length) % tabIds.length : (currentIndex + 1) % tabIds.length",
-    "      const nextButton = document.getElementById('tab-' + tabIds[nextIndex])",
-    "      const nextTabId = tabIds[nextIndex]",
-    "      setActiveTab(nextTabId)",
-    "      if (nextButton && typeof nextButton.focus === 'function') nextButton.focus()",
-    "    })",
-    "  }",
-    "  if (typeof addEventListener === 'function') addEventListener('hashchange', () => { syncTabFromHash() })",
-    "  syncTabFromHash()",
-    "}",
     "function buildTerminalScrollbackPath(terminalViewId, params) {",
     "  const encodedId = encodeURIComponent(terminalViewId)",
     "  const path = terminalScrollbackPathTemplate.replace(':' + 'terminalViewId', encodedId)",
@@ -319,10 +305,12 @@ export function renderDashboardClientScript(repoRoot: string): string {
     "  const terminalViews = observability && observability.terminal_views",
     "  const views = terminalViews && terminalViews.views ? terminalViews.views : []",
     "  const requestedView = views.find((view) => view.terminal_view_id === state.selectedTerminalViewId) || null",
-    "  const embeddableFallbackView = views.find((view) => view.status !== 'unavailable') || null",
-    "  const selectedView = requestedView || embeddableFallbackView || views[0] || null",
+    "  const firstEmbeddableView = views.find((view) => view.status !== 'unavailable') || null",
+    "  const fallbackView = firstEmbeddableView || views[0] || null",
+    "  if (state.selectedTerminalViewId && !requestedView) state.selectedTerminalViewId = fallbackView ? fallbackView.terminal_view_id : null",
+    "  const selectedView = requestedView || fallbackView",
     "  const embeddableView = selectedView && selectedView.status !== 'unavailable' ? selectedView : null",
-    "  state.selectedTerminalViewId = selectedView ? selectedView.terminal_view_id : null",
+    "  if (!state.selectedTerminalViewId && selectedView) state.selectedTerminalViewId = selectedView.terminal_view_id",
     "  if (terminalViewSummary) terminalViewSummary.textContent = terminalViews && terminalViews.availability === 'ready' ? 'Choose a read-only tmux session to inspect from the dashboard.' : terminalViews && terminalViews.availability === 'degraded' ? 'Read-only terminal observability is degraded, but canonical status remains primary.' : 'Read-only terminal observability is unavailable; canonical status remains primary.'",
     "  if (terminalViewSelect) {",
     "    terminalViewSelect.disabled = views.length === 0",
@@ -341,9 +329,15 @@ export function renderDashboardClientScript(repoRoot: string): string {
     "    if (!selectedView) { terminalViewOpenLink.hidden = true; terminalViewOpenLink.removeAttribute('href') }",
     "    else { terminalViewOpenLink.hidden = false; terminalViewOpenLink.setAttribute('href', selectedView.routes.view_path) }",
     "  }",
+    "  const showScrollbackFallback = Boolean(state.selectedTerminalViewId) && !embeddableView",
     "  if (terminalViewFrame) {",
-    "    if (!embeddableView) { terminalViewFrame.innerHTML = views.length === 0 ? '<div style=\"padding: 1rem;\" class=\"empty\">No read-only ttyd views are currently available.</div>' : '<div style=\"padding: 1rem;\" class=\"empty\">The selected tmux session cannot currently be embedded, but its details and scrollback remain available above.</div>' } else { terminalViewFrame.innerHTML = '<iframe src=\"' + escapeHtml(embeddableView.routes.ttyd_proxy_path) + '\" title=\"' + escapeHtml(embeddableView.label) + '\"></iframe>' }",
+    "    if (!state.selectedTerminalViewId && !selectedView) { terminalViewFrame.hidden = false; terminalViewFrame.innerHTML = '<div style=\"padding: 1rem;\" class=\"empty\">Select a terminal view to inspect the read-only terminal surface.</div>' }",
+    "    else if (embeddableView) { terminalViewFrame.hidden = false; terminalViewFrame.innerHTML = '<iframe src=\"' + escapeHtml(embeddableView.routes.ttyd_proxy_path) + '\" title=\"' + escapeHtml(embeddableView.label) + '\"></iframe>' }",
+    "    else { terminalViewFrame.hidden = true; terminalViewFrame.innerHTML = '' }",
     "  }",
+    "  if (scrollbackControls) scrollbackControls.hidden = !showScrollbackFallback",
+    "  if (scrollbackMeta) scrollbackMeta.hidden = !showScrollbackFallback",
+    "  if (scrollbackFrame) scrollbackFrame.hidden = !showScrollbackFallback",
     "  applyTerminalHeights()",
     "}",
     "function renderScrollback(scrollback) {",
@@ -398,6 +392,8 @@ export function renderDashboardClientScript(repoRoot: string): string {
     "    if (treeBody && tree) treeBody.innerHTML = renderTree(tree)",
     "  })",
     "}",
+    "if (leftSidebarOverviewButton) leftSidebarOverviewButton.addEventListener('click', () => { setLeftSidebarView('overview') })",
+    "if (leftSidebarTreeButton) leftSidebarTreeButton.addEventListener('click', () => { setLeftSidebarView('tree') })",
     "if (terminalViewSelect) {",
     "  terminalViewSelect.addEventListener('change', () => {",
     "    const terminalViewId = terminalViewSelect.value || ''",
@@ -438,6 +434,7 @@ export function renderDashboardClientScript(repoRoot: string): string {
     "  if (statusStages) statusStages.innerHTML = status.stages.length > 0 ? status.stages.map((stage) => renderStageRow(stage)).join('') : '<div class=\"empty\">No stages were found in the canonical snapshot.</div>'",
     "  if (treeCount) treeCount.textContent = tree.itemCount + ' item' + (tree.itemCount === 1 ? '' : 's')",
     "  if (treeBody) treeBody.innerHTML = renderTree(tree)",
+    "  renderLeftSidebarView()",
     "  renderTmuxSessions(observability)",
     "  renderTerminalViews(observability)",
     "  if (!state.scrollback) state.pendingScrollIntent = 'bottom'",
@@ -505,15 +502,14 @@ function renderDashboardShell(config: DashboardServerConfig): string {
       h2 { font-size: 0.92rem; text-transform: uppercase; letter-spacing: 0.12em; color: #d7d7d7; }
       code, pre, .mono { font-family: ui-monospace, SFMono-Regular, SF Mono, Menlo, monospace; }
       .layout { display: grid; gap: 1rem; }
-      .layout-grid { display: grid; gap: 1rem; grid-template-columns: minmax(0, 1fr); }
-      @media (min-width: 1100px) { .layout-grid { grid-template-columns: minmax(0, 1fr) minmax(0, 1.15fr); align-items: start; } }
+      .dashboard-shell { display: grid; gap: 1rem; grid-template-columns: minmax(18rem, 0.92fr) minmax(0, 1.45fr) minmax(18rem, 0.92fr); align-items: start; }
+      .shell-pane { display: grid; gap: 1rem; align-content: start; }
+      .shell-pane-center { grid-template-rows: auto 1fr; }
+      .shell-pane-left, .shell-pane-right { position: relative; }
+      @media (max-width: 1200px) { .dashboard-shell { grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); } .shell-pane-right { grid-column: 1 / -1; } }
+      @media (max-width: 800px) { .dashboard-shell { grid-template-columns: minmax(0, 1fr); } }
       .panel-head { display: flex; align-items: baseline; justify-content: space-between; gap: 1rem; margin-bottom: 0.9rem; }
       .summary-grid { display: grid; gap: 0.75rem; grid-template-columns: repeat(auto-fit, minmax(12rem, 1fr)); }
-      .tabs { display: grid; gap: 0.75rem; }
-      .tab-list { display: flex; flex-wrap: wrap; gap: 0.6rem; border-bottom: 1px solid #232323; padding-bottom: 0.75rem; }
-      .tab-button { border-radius: 999px; background: #121212; color: #cfcfcf; }
-      .tab-button[data-active="true"], .tab-button[aria-selected="true"] { border-color: #3f6d99; background: #16202a; color: #8ec5ff; }
-      .tab-panel { display: grid; gap: 1rem; }
       .summary-card, .status-row, .runtime-entry, .issue { border: 1px solid #232323; background: #0d0d0d; }
       .summary-card { display: grid; gap: 0.25rem; padding: 0.75rem; }
       .summary-value { font-size: 1.05rem; font-weight: 600; }
@@ -523,6 +519,8 @@ function renderDashboardShell(config: DashboardServerConfig): string {
       .badge[data-status="blocked"], .badge[data-status="failed"], .badge[data-status="unavailable"], .badge[data-status="error"] { color: #ffb7b7; border-color: #4a2323; }
       .badge[data-status="pending"], .badge[data-status="degraded"], .badge[data-status="stopped"] { color: #ddd; }
       .stack { display: grid; gap: 0.5rem; }
+      .left-sidebar-nav { display: flex; flex-wrap: wrap; gap: 0.5rem; }
+      .left-sidebar-nav button[data-active="true"] { background: #243a55; border-color: #37577c; color: #d9ecff; }
       .status-row { display: grid; gap: 0.4rem; padding: 0.7rem; }
       .status-row-head, .issue-head, .runtime-entry-head { display: flex; flex-wrap: wrap; align-items: baseline; gap: 0.6rem; }
       .status-stages, .tree-list, .runtime-list, .issue-list { display: grid; gap: 0.5rem; }
@@ -554,6 +552,8 @@ function renderDashboardShell(config: DashboardServerConfig): string {
       .terminal-link:hover { text-decoration: underline; }
       .terminal-frame, .terminal-scrollback-frame { border: 1px solid #232323; background: #050505; min-height: 21rem; overflow: hidden; }
       .terminal-frame iframe { border: 0; display: block; width: 100%; height: 21rem; }
+      .panel-shell { display: grid; gap: 1rem; }
+      .panel-shell > .panel { min-height: 0; }
       .terminal-scrollback-frame { position: relative; overflow: hidden; }
       .terminal-scrollback-editor { width: 100%; height: 560px; }
       .terminal-scrollback-pre, .terminal-scrollback-empty { margin: 0; min-height: 560px; height: 560px; padding: 1rem; white-space: pre-wrap; word-break: break-word; overflow: auto; }
@@ -573,17 +573,13 @@ function renderDashboardShell(config: DashboardServerConfig): string {
 
       <section id="state-banner" class="state" data-kind="loading">Loading canonical snapshot…</section>
 
-      <div id="dashboard" class="layout tabs" hidden>
-        <nav class="panel" aria-label="Dashboard sections">
-          <div class="tab-list" role="tablist" aria-label="Dashboard sections">
-            <button id="tab-status-overview" class="tab-button" type="button" role="tab" aria-controls="panel-status-overview" aria-selected="true" aria-label="Status Overview" data-active="true" data-tab-id="status-overview">Status Overview</button>
-            <button id="tab-work-tree" class="tab-button" type="button" role="tab" aria-controls="panel-work-tree" aria-selected="false" tabindex="-1" data-active="false" data-tab-id="work-tree">Work tree</button>
-            <button id="tab-terminal-views" class="tab-button" type="button" role="tab" aria-controls="panel-terminal-views" aria-selected="false" tabindex="-1" data-active="false" data-tab-id="terminal-views">Read-only Terminal Views</button>
-          </div>
-        </nav>
-
-        <section id="panel-status-overview" class="tab-panel" role="tabpanel" aria-labelledby="tab-status-overview">
-          <section class="panel" aria-labelledby="status-heading">
+      <div id="dashboard" class="layout dashboard-shell" hidden>
+        <aside id="dashboard-left-pane" class="shell-pane shell-pane-left" aria-label="Status and work tree">
+          <nav id="left-sidebar-nav" class="panel left-sidebar-nav" aria-label="Left sidebar views">
+            <button id="left-sidebar-overview-button" type="button" aria-pressed="true" data-active="true">Overview</button>
+            <button id="left-sidebar-tree-button" type="button" aria-pressed="false" data-active="false">Tree</button>
+          </nav>
+          <section id="status-panel" class="panel" aria-labelledby="status-heading">
             <div class="panel-head">
               <h2 id="status-heading">Status overview</h2>
               <span id="status-badge" class="badge" data-status="pending">pending</span>
@@ -592,10 +588,8 @@ function renderDashboardShell(config: DashboardServerConfig): string {
             <div id="runtime-summary" class="stack" style="margin-top: 1rem;"></div>
             <div id="status-stages" class="status-stages" style="margin-top: 1rem;"></div>
           </section>
-        </section>
 
-        <section id="panel-work-tree" class="tab-panel" role="tabpanel" aria-labelledby="tab-work-tree" hidden>
-          <section class="panel" aria-labelledby="tree-heading">
+          <section id="tree-panel" class="panel" aria-labelledby="tree-heading" hidden>
             <div class="panel-head">
               <h2 id="tree-heading">Work tree</h2>
               <span id="tree-count" class="muted"></span>
@@ -604,20 +598,48 @@ function renderDashboardShell(config: DashboardServerConfig): string {
               <label><input type="checkbox" data-tree-level="stage" checked /> Stage level</label>
               <label><input type="checkbox" data-tree-level="batch" checked /> Batch level</label>
               <label><input type="checkbox" data-tree-level="thread" checked /> Thread level</label>
-              <label><input type="checkbox" data-tree-level="task" checked /> Item level</label>
             </div>
             <div id="tree-body" class="tree-root"></div>
           </section>
+        </aside>
+
+        <section id="dashboard-center-pane" class="shell-pane shell-pane-center" aria-label="Terminal focus">
+          <section id="terminal-panel" class="panel panel-shell" aria-labelledby="terminal-heading">
+            <div class="panel-head">
+              <h2 id="terminal-heading">Read-only terminal</h2>
+              <span class="muted">ttyd-backed embed</span>
+            </div>
+            <div class="subgrid">
+              <div id="terminal-view-frame" class="terminal-frame">
+                <div style="padding: 1rem;" class="empty">Select an observable terminal view to embed the read-only ttyd session.</div>
+              </div>
+              <div class="terminal-selector-row">
+                <div id="terminal-scrollback-controls" class="terminal-controls">
+                  <button type="button" data-scroll-action="up">Up</button>
+                  <button type="button" data-scroll-action="down">Down</button>
+                  <button type="button" data-scroll-action="page-up">Page up</button>
+                  <button type="button" data-scroll-action="page-down">Page down</button>
+                  <button type="button" data-scroll-action="bottom">Bottom</button>
+                </div>
+                <span id="terminal-scrollback-meta" class="muted"></span>
+              </div>
+              <div id="terminal-scrollback-frame" class="terminal-scrollback-frame">
+                <div id="terminal-scrollback-editor" class="terminal-scrollback-editor" hidden></div>
+                <pre id="terminal-scrollback-fallback" class="terminal-scrollback-pre" hidden></pre>
+                <div id="terminal-scrollback-empty" class="terminal-scrollback-empty empty">Select a terminal view to inspect tmux scrollback.</div>
+              </div>
+            </div>
+          </section>
         </section>
 
-        <section id="panel-terminal-views" class="tab-panel" role="tabpanel" aria-labelledby="tab-terminal-views" hidden>
-          <section class="panel" aria-labelledby="terminal-heading">
+        <aside id="dashboard-right-pane" class="shell-pane shell-pane-right" aria-label="Terminal session picker">
+          <section id="terminal-picker-panel" class="panel" aria-labelledby="terminal-picker-heading">
             <div class="panel-head">
-              <h2 id="terminal-heading">Read-only terminal views</h2>
-              <span class="muted">ttyd-backed embeds</span>
+              <h2 id="terminal-picker-heading">Terminal session picker</h2>
+              <span class="muted">readonly selection</span>
             </div>
             <p id="terminal-view-summary" class="muted">Loading terminal views…</p>
-            <div class="terminal-selector-card" style="margin-top: 1rem;">
+            <div class="terminal-selector-card">
               <div class="terminal-selector-row">
                 <select id="terminal-view-select" class="terminal-select" aria-label="Select a terminal view">
                   <option>Waiting for snapshot data…</option>
@@ -638,28 +660,8 @@ function renderDashboardShell(config: DashboardServerConfig): string {
                 <li class="empty">Waiting for snapshot data…</li>
               </ul>
             </details>
-            <div style="margin-top: 1rem;" class="subgrid">
-              <div class="terminal-selector-row">
-                <div id="terminal-scrollback-controls" class="terminal-controls">
-                  <button type="button" data-scroll-action="up">Up</button>
-                  <button type="button" data-scroll-action="down">Down</button>
-                  <button type="button" data-scroll-action="page-up">Page up</button>
-                  <button type="button" data-scroll-action="page-down">Page down</button>
-                  <button type="button" data-scroll-action="bottom">Bottom</button>
-                </div>
-                <span id="terminal-scrollback-meta" class="muted"></span>
-              </div>
-              <div id="terminal-scrollback-frame" class="terminal-scrollback-frame">
-                <div id="terminal-scrollback-editor" class="terminal-scrollback-editor" hidden></div>
-                <pre id="terminal-scrollback-fallback" class="terminal-scrollback-pre" hidden></pre>
-                <div id="terminal-scrollback-empty" class="terminal-scrollback-empty empty">Select a terminal view to inspect tmux scrollback.</div>
-              </div>
-            </div>
-            <div id="terminal-view-frame" class="terminal-frame" style="margin-top: 1rem;">
-              <div style="padding: 1rem;" class="empty">Select an observable terminal view to embed the read-only ttyd session.</div>
-            </div>
           </section>
-        </section>
+        </aside>
       </div>
     </main>
 

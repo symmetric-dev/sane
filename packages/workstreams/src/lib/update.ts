@@ -9,6 +9,12 @@ import {
 import { upsertStructuredThreadRuntime } from "./structured-storage.ts"
 import { queryExecutionItemsForWorkstream } from "./hierarchy-query.ts"
 import { parseThreadId } from "./execution-ids.ts"
+import { readBatchStatus } from "./batch-status.ts"
+import { syncBatchStatus } from "./batch-monitor.ts"
+
+function formatBatchId(stage: number, batch: number): string {
+  return `${stage.toString().padStart(2, "0")}.${batch.toString().padStart(2, "0")}`
+}
 
 export interface MutateThreadExecutionArgs {
   repoRoot: string
@@ -88,6 +94,15 @@ export async function mutateThreadExecution(args: MutateThreadExecutionArgs): Pr
     repoRoot: args.repoRoot,
     workstreamState,
   })
+
+  const batchId = formatBatchId(parsed.stage, parsed.batch)
+  if (readBatchStatus(args.repoRoot, args.stream.id, batchId)) {
+    await syncBatchStatus({
+      repoRoot: args.repoRoot,
+      streamId: args.stream.id,
+      batchId,
+    })
+  }
 
   const thread = {
     ...existingItem,

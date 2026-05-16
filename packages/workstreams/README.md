@@ -28,15 +28,16 @@ work plan create --stages 2
 5. Fill `stages/01/REQUIREMENTS.md`, `stages/01/PLAN.md`, and `stages/01/specs/` (repeat per stage).
 6. Approve plan: `work approve plan` (user role, requires at least one stage)
 7. `work approve plan` also initializes thread execution state directly from the stage/thread plan and generates `stages/<nn>/threads/<thread-id>/WORK.md`
-8. Manually `/fork` the session and ask the forked session to supervise the approved work
-9. The supervision branch uses `work supervise`, `work status`, `work tree`, and `work batch-status` to drive the next batch and review loop
-10. Implementation agents use `implementing-workstreams` to inspect assigned scope and update thread state with `work update`
-11. The supervisor reports back; the user approves the completed stage with `work approve stage <n>`
-12. Repeat the supervision loop for the next stage
-13. If new stages are needed after the original plan, use the revision flow:
+8. Optionally assign agents to threads before execution, for example: `work assign --thread "01.01.01" --agent "frontend-expert"`
+9. Manually `/fork` the session and ask the forked session to supervise the approved work
+10. The supervision branch uses `work supervise`, `work status`, `work tree`, and `work batch-status` to drive the next batch and review loop
+11. Implementation agents use `implementing-workstreams` to inspect assigned scope and update thread state with `work update`
+12. The supervisor reports back; the user approves the completed stage with `work approve stage <n>`
+13. Repeat the supervision loop for the next stage
+14. If new stages are needed after the original plan, use the revision flow:
     - `work revision --name "follow-up" [--after-stage N]`
     - `work approve revision`
-14. Finalize the report with the `evaluating-workstreams` skill:
+15. Finalize the report with the `evaluating-workstreams` skill:
     - `work report validate`
 
 The optional managed install profile preserves the older Root Agent management-launch workflow. The default manual profile omits the management skill and launch tool so the user controls the `/fork` handoff.
@@ -65,6 +66,7 @@ work batch-status --batch "01.01" --format json
 work list
 work list --thread "01.01.01"
 work read --thread "01.01.01"
+work assign --thread "01.01.01" --agent "frontend-expert"
 work update --thread "01.01.01" --status in_progress
 work update --thread "01.01.01" --status completed --report "Implemented X"
 work report metrics --blockers

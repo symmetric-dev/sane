@@ -62,7 +62,7 @@ export function getPromptFilePathFromMetadata(
  * Build the pane title for a thread
  */
 export function buildPaneTitle(threadInfo: ThreadInfo): string {
-  return threadInfo.threadName
+  return `${threadInfo.threadId} ${threadInfo.threadName}`
 }
 
 /**

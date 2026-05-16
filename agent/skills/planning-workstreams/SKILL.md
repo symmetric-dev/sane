@@ -22,12 +22,14 @@ description: Create and prepare workstreams for execution. Planning only, no cod
    - `work check plan`
    - `work preview`
 6. Ask user to approve plan: `!work approve plan`
-7. Link the planning session using `link_planning_session` once the plan is ready for handoff.
+7. After approval, generated thread `WORK.md` files become the primary worker docs. If the execution handoff should target specific agents, assign them explicitly with `work assign --thread "01.01.01" --agent "frontend-expert"`.
+8. Link the planning session using `link_planning_session` once the plan is ready for handoff.
 
 Notes:
 - Root `README.md` is the human-facing source of truth for shared summary, deliverables, dependencies, and resources.
 - Stage-local `REQUIREMENTS.md` files capture stage-specific acceptance criteria and inputs.
 - The primary worker doc is `stages/<stage>/threads/<thread-id>/WORK.md`, generated after plan or revision approval.
+- Agent assignment is runtime thread metadata set with `work assign` (or `work update --agent`), not inline `@agent:` markers in `PLAN.md` or `WORK.md`.
 - If shared root context is missing or incomplete, stop and ask the user to provide it, or help the user draft the root `README.md` first.
 
 ## Planning Rules
@@ -59,5 +61,6 @@ work preview
 work revision --name "post-stage-review" --after-stage 3
 work agents # list agents
 work assign --thread "01.01.01" --agent "backend-expert"
+work update --thread "01.01.01" --agent "backend-expert" --status in_progress
 work prompt --stage 1 --batch 1
 ```

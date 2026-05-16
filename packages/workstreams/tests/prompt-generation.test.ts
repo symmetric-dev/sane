@@ -90,7 +90,10 @@ describe("prompt generation", () => {
     expect(prompt).toContain("`work/007-supervision-smoke/stages/01/threads/01.01.01/WORK.md`")
     expect(prompt).toContain("Thread objective:")
     expect(prompt).toContain(
-      "Keep execution state current with `work update --thread \"01.01.01\" --status <status>`.",
+      'Keep execution state current with `work update --stream "007-supervision-smoke" --thread "01.01.01" --status <status>`.',
+    )
+    expect(prompt).toContain(
+      'For thread-scoped `work` commands, keep `--stream "007-supervision-smoke"` explicit (for example `work read --stream "007-supervision-smoke" --thread "01.01.01"` and `work list --stream "007-supervision-smoke" --thread "01.01.01"`).',
     )
   })
 
