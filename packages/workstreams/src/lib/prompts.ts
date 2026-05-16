@@ -54,7 +54,6 @@ export interface PromptContext {
   references: {
     readmePath: string
     requirementsPath: string
-    planPath: string
     workPath: string
   }
   agentName?: string
@@ -241,7 +240,6 @@ export function getPromptContext(
     references: {
       readmePath: join(workstreamRoot, "README.md"),
       requirementsPath: join(stageRoot, "REQUIREMENTS.md"),
-      planPath: join(stageRoot, "PLAN.md"),
       workPath: join(stageRoot, "WORK.md"),
     },
     agentName,
@@ -261,20 +259,17 @@ export function generateThreadPrompt(
 ): string {
   const lines: string[] = []
 
-  lines.push(`You are working on "${context.streamName}".`)
-  lines.push("")
-  lines.push(`Thread: ${context.threadIdString} — ${context.thread.name}`)
-  lines.push(`Stage: ${context.stage.id.toString().padStart(2, "0")} — ${context.stage.name}`)
+  lines.push(
+    `You are an agent working on thread ${context.threadIdString} (${context.thread.name}) in stage ${context.stage.id.toString().padStart(2, "0")} (${context.stage.name}) in workstream ${context.streamId} (${context.streamName}).`,
+  )
   lines.push("")
   lines.push("Use the `implementing-workstreams` skill.")
   lines.push("")
-  lines.push("Read these files before making changes:")
-  lines.push(`- \`${context.references.readmePath}\``)
-  lines.push(`- \`${context.references.requirementsPath}\``)
-  lines.push(`- \`${context.references.planPath}\``)
-  lines.push(`- \`${context.references.workPath}\``)
+  lines.push(`Read this document \`${context.references.workPath}\` before making any changes.`)
+  lines.push(`If you need stage requirements, read \`${context.references.requirementsPath}\`.`)
+  lines.push(`If you need overall workstream context, read \`${context.references.readmePath}\`.`)
   lines.push("")
-  lines.push("Your thread objective:")
+  lines.push("Thread objective:")
   lines.push(context.thread.summary || "(No summary provided)")
   lines.push("")
 
@@ -327,7 +322,6 @@ export function generateThreadPromptJson(context: PromptContext): object {
     references: {
       readmePath: context.references.readmePath,
       requirementsPath: context.references.requirementsPath,
-      planPath: context.references.planPath,
       workPath: context.references.workPath,
     },
     executionItems: context.executionItems.map((item) => ({

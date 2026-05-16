@@ -139,14 +139,14 @@ describe("generateStream", () => {
       expect(content).toContain("@agenv/workstreams@")
     })
 
-    test("stage plan includes last updated timestamp", async () => {
+    test("stage plan does not include last updated footer", async () => {
       generateStream(createGenerateArgs("test-feature", tempDir))
       scaffoldPlanStages(tempDir, "000-test-feature", 1)
 
       const planMdPath = join(tempDir, "work/000-test-feature/stages/01/PLAN.md")
       const content = await readFile(planMdPath, "utf-8")
 
-      expect(content).toMatch(/\*Last updated: \d{4}-\d{2}-\d{2}\*/)
+      expect(content).not.toContain("Last updated:")
     })
   })
 

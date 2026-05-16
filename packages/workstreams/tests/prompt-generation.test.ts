@@ -1,6 +1,10 @@
 import { describe, expect, test } from "bun:test"
 
-import { generateThreadPrompt, type PromptContext } from "../src/lib/prompts.ts"
+import {
+  generateThreadPrompt,
+  generateThreadPromptJson,
+  type PromptContext,
+} from "../src/lib/prompts.ts"
 
 function createPromptContext(): PromptContext {
   return {
@@ -49,7 +53,6 @@ function createPromptContext(): PromptContext {
     references: {
       readmePath: "work/007-supervision-smoke/README.md",
       requirementsPath: "work/007-supervision-smoke/stages/01/REQUIREMENTS.md",
-      planPath: "work/007-supervision-smoke/stages/01/PLAN.md",
       workPath: "work/007-supervision-smoke/stages/01/WORK.md",
     },
     agentName: "default",
@@ -57,25 +60,49 @@ function createPromptContext(): PromptContext {
 }
 
 describe("prompt generation", () => {
-  test("generates a simple file-reference-first thread prompt", () => {
+  test("generates a short hierarchical thread prompt", () => {
     const prompt = generateThreadPrompt(createPromptContext())
 
-    expect(prompt).toContain('You are working on "Supervision Smoke".')
-    expect(prompt).toContain("Thread: 01.01.01 — Verify thread execution prep")
-    expect(prompt).toContain("Stage: 01 — Stage 01")
+    expect(prompt).toContain(
+      "You are an agent working on thread 01.01.01 (Verify thread execution prep) in stage 01 (Stage 01) in workstream 007-supervision-smoke (Supervision Smoke).",
+    )
     expect(prompt).toContain("Use the `implementing-workstreams` skill.")
+    expect(prompt).toContain(
+      "Read this document `work/007-supervision-smoke/stages/01/WORK.md` before making any changes.",
+    )
+    expect(prompt).toContain(
+      "If you need stage requirements, read `work/007-supervision-smoke/stages/01/REQUIREMENTS.md`.",
+    )
+    expect(prompt).toContain(
+      "If you need overall workstream context, read `work/007-supervision-smoke/README.md`.",
+    )
     expect(prompt).toContain("`work/007-supervision-smoke/README.md`")
     expect(prompt).toContain("`work/007-supervision-smoke/stages/01/WORK.md`")
-    expect(prompt).toContain("Your thread objective:")
-    expect(prompt).toContain("Keep execution state current with `work update --thread \"01.01.01\" --status <status>`." )
+    expect(prompt).toContain("Thread objective:")
+    expect(prompt).toContain(
+      "Keep execution state current with `work update --thread \"01.01.01\" --status <status>`.",
+    )
   })
 
-  test("does not include legacy greeting or task list wording", () => {
+  test("does not tell agents to read PLAN.md or use legacy wording", () => {
     const prompt = generateThreadPrompt(createPromptContext())
 
     expect(prompt).not.toContain("Hello Agent!")
     expect(prompt).not.toContain("You are working on the \"")
     expect(prompt).not.toContain("Your tasks are:")
     expect(prompt).not.toContain("work list --tasks")
+    expect(prompt).not.toContain("PLAN.md")
+  })
+
+  test("does not expose PLAN.md in prompt json references", () => {
+    const promptJson = generateThreadPromptJson(createPromptContext()) as {
+      references: Record<string, string>
+    }
+
+    expect(promptJson.references).toEqual({
+      readmePath: "work/007-supervision-smoke/README.md",
+      requirementsPath: "work/007-supervision-smoke/stages/01/REQUIREMENTS.md",
+      workPath: "work/007-supervision-smoke/stages/01/WORK.md",
+    })
   })
 })

@@ -116,10 +116,6 @@ function generateStagePlanMd(stageLabel: number | string): string {
 
 **Details:**
 <!-- Any content - implementation notes, dependencies, goals, code examples, etc. -->
-
----
-
-*Last updated: ${now}*
 `
 }
 
