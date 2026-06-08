@@ -87,6 +87,47 @@ Verify preview can read stage-local planning.
 Use the shared loader instead of requiring a root PLAN.md.
 `,
     )
+
+    writeFileSync(
+      join(repoRoot, "work", streamId, "workstream-state.json"),
+      JSON.stringify(
+        {
+          version: "1.0.0",
+          streamId,
+          hierarchy: {
+            stages: [{ id: "01", number: 1, name: "Discovery" }],
+            batches: [{ id: "01.01", stageId: "01", number: 1, name: "UI scaffolding" }],
+            threads: [{ id: "01.01.01", stageId: "01", batchId: "01.01", number: 1, name: "Preview stage-local plan" }],
+          },
+          approvals: [],
+          threadRuntime: [
+            {
+              threadId: "01.01.01",
+              status: "completed",
+              sessions: [],
+              createdAt: new Date().toISOString(),
+              updatedAt: new Date().toISOString(),
+            },
+          ],
+          batchRuns: [],
+          supervision: {
+            version: "1.0.0",
+            stream_id: streamId,
+            last_updated: new Date().toISOString(),
+            runs: [],
+            checkpoint_pointers: [],
+            branch_sessions: [],
+            reviewed_batches: [],
+            issue_summaries: [],
+            fix_cycles: [],
+            escalations: [],
+            stage_stops: [],
+          },
+        },
+        null,
+        2,
+      ),
+    )
   })
 
   afterEach(() => {
@@ -114,8 +155,9 @@ Use the shared loader instead of requiring a root PLAN.md.
     const output = stdout.join("\n")
     expect(stderr).toHaveLength(0)
     expect(output).toContain("Workstream: Dashboard terminal-first UI")
+    expect(output).toContain("(1/1 threads)")
     expect(output).toContain("1. Discovery")
-    expect(output).toContain("Thread 1: Preview stage-local plan")
+    expect(output).toContain("Thread 1: Preview stage-local plan [1/1] ✓")
     expect(output).toContain("Questions: 1 open, 1 resolved")
   })
 })

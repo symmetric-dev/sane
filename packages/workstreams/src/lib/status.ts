@@ -140,13 +140,13 @@ function parseExecutionItemIdParts(itemId: string): {
   itemNumber: number
 } | null {
   const parts = itemId.split(".")
-  if (parts.length !== 4) {
+  if (parts.length !== 3 && parts.length !== 4) {
     return null
   }
   const stageNumber = parseInt(parts[0]!, 10)
   const batchNumber = parseInt(parts[1]!, 10)
   const threadNumber = parseInt(parts[2]!, 10)
-  const itemNumber = parseInt(parts[3]!, 10)
+  const itemNumber = parts[3] !== undefined ? parseInt(parts[3], 10) : 1
   if (isNaN(stageNumber)) {
     return null
   }
@@ -701,9 +701,9 @@ export function formatProgress(
     "|"
   )
 
-  // Execution item counts
+  // Thread counts
   lines.push(
-    `| Items: ${progress.completedItems}/${progress.totalItems} complete, ${progress.inProgressItems} in-progress, ${progress.blockedItems} blocked`.padEnd(
+    `| Threads: ${progress.completedItems}/${progress.totalItems} complete, ${progress.inProgressItems} in-progress, ${progress.blockedItems} blocked`.padEnd(
       51
     ) + "|"
   )

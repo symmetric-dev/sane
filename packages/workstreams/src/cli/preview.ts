@@ -9,7 +9,6 @@ import { loadIndex, getResolvedStream } from "../lib/index.ts"
 import { getStreamPreview } from "../lib/stream-parser.ts"
 import { loadWorkstreamPlan, formatMissingWorkstreamPlanMessage } from "../lib/consolidate.ts"
 import { listThreadExecutionItems } from "../lib/thread-execution.ts"
-import { parseExecutionItemId } from "../lib/execution-ids.ts"
 import type { ExecutionItem } from "../lib/types.ts"
 
 interface PreviewCliArgs {
@@ -133,6 +132,10 @@ interface ExecutionProgress {
   blocked: number
 }
 
+function padId(value: number): string {
+  return value.toString().padStart(2, "0")
+}
+
 /**
  * Compute execution progress for a given stage/batch/thread
  */
@@ -142,11 +145,16 @@ function computeExecutionProgress(
   batchNum?: number,
   threadNum?: number,
 ): ExecutionProgress {
+  const stageId = stageNum !== undefined ? padId(stageNum) : undefined
+  const batchId = stageNum !== undefined && batchNum !== undefined ? `${padId(stageNum)}.${padId(batchNum)}` : undefined
+  const threadId = stageNum !== undefined && batchNum !== undefined && threadNum !== undefined
+    ? `${padId(stageNum)}.${padId(batchNum)}.${padId(threadNum)}`
+    : undefined
+
   const filtered = items.filter((t) => {
-    const parsed = parseExecutionItemId(t.id)
-    if (stageNum !== undefined && parsed.stage !== stageNum) return false
-    if (batchNum !== undefined && parsed.batch !== batchNum) return false
-    if (threadNum !== undefined && parsed.thread !== threadNum) return false
+    if (stageId !== undefined && t.stageId !== stageId) return false
+    if (batchId !== undefined && t.batchId !== batchId) return false
+    if (threadId !== undefined && t.threadId !== threadId) return false
     return true
   })
 
@@ -195,7 +203,7 @@ function formatPreview(preview: StreamPreview, verbose: boolean, items: Executio
     lines.push(
       `Overall Progress: [${progressBar(overallProgress.completed, overallProgress.total)}] ` +
       `${progressPercent(overallProgress.completed, overallProgress.total)} ` +
-      `(${overallProgress.completed}/${overallProgress.total} items)`,
+      `(${overallProgress.completed}/${overallProgress.total} threads)`,
     )
   }
 
@@ -350,20 +358,22 @@ export function main(argv: string[] = process.argv): void {
   const content = loadedPlan.content
   const preview = getStreamPreview(content)
 
-  // Load execution item data for progress
+  // Load thread execution data for progress
   const items = listThreadExecutionItems(repoRoot, stream.id)
 
   if (cliArgs.json) {
-    // Include execution item progress in JSON output
+    // Include thread progress in JSON output. Keep itemProgress as a legacy alias.
+    const threadProgress = {
+      total: items.length,
+      completed: items.filter((t) => t.status === "completed").length,
+      inProgress: items.filter((t) => t.status === "in_progress").length,
+      blocked: items.filter((t) => t.status === "blocked").length,
+      pending: items.filter((t) => t.status === "pending").length,
+    }
     const progressData = {
       ...preview,
-      itemProgress: {
-        total: items.length,
-        completed: items.filter((t) => t.status === "completed").length,
-        inProgress: items.filter((t) => t.status === "in_progress").length,
-        blocked: items.filter((t) => t.status === "blocked").length,
-        pending: items.filter((t) => t.status === "pending").length,
-      },
+      threadProgress,
+      itemProgress: threadProgress,
     }
     console.log(JSON.stringify(progressData, null, 2))
   } else {

@@ -2,6 +2,12 @@
 
 All notable changes to `@agenv/workstreams` are documented in this file.
 
+## 0.9.1 - 2026-06-08
+
+- Fixed `work preview` progress rendering for canonical thread IDs after the tasks-to-threads migration.
+- Fixed `work status` stage summaries so per-stage thread counts and statuses no longer collapse to `0/0` with only approval state visible.
+- Updated status/preview wording and regression coverage to treat threads as the canonical execution unit.
+
 ## 0.8.0 - 2026-05-06
 
 - Stopped projecting legacy `batch-status/*.json` and `threads.json` runtime artifacts for sqlite-native workstreams while keeping sqlite-backed batch/thread runtime behavior authoritative.

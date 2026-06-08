@@ -215,13 +215,13 @@ export type StageStatus = "pending" | "in_progress" | "complete" | "blocked"
 
 // Parsed execution item from canonical status data
 export interface ParsedExecutionItem {
-  id: string // e.g., "01.02.03.04" for stage 1, batch 2, thread 3, item 4
+  id: string // e.g., "01.02.03" for stage 1, batch 2, thread 3
   description: string
   status: ExecutionStatus
   stageNumber?: number
   batchNumber?: number
   threadNumber: number
-  itemNumber: number
+  itemNumber: number // legacy field; thread records use 1
   lineNumber: number // for editing
 }
 
