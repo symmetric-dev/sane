@@ -3,8 +3,8 @@
  */
 
 import { existsSync, mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "fs"
-import { join } from "path"
-import { getStreamPlanMdPath } from "./consolidate.ts"
+import { basename, dirname, join } from "path"
+import { getStagePlanMdPaths, getStreamPlanMdPath } from "./consolidate.ts"
 import { queryStageApprovalStatus } from "./approval.ts"
 import { getWorkstreamGitHubPath } from "./github/workstream-github.ts"
 import { atomicWriteFile, loadIndex, saveIndex } from "./index.ts"
@@ -594,12 +594,202 @@ function insertStageTemplate(
   }
 }
 
+function getRootlessStagePlanPath(
+  repoRoot: string,
+  streamId: string,
+  stageNumber: number,
+): string | null {
+  const stagePlanPaths = getStagePlanMdPaths(repoRoot, streamId)
+
+  for (const planPath of stagePlanPaths) {
+    const stageDirName = basename(dirname(planPath))
+    if (!stageDirName) {
+      continue
+    }
+
+    const parsedStageNumber = Number.parseInt(stageDirName, 10)
+    if (parsedStageNumber === stageNumber) {
+      return planPath
+    }
+  }
+
+  return null
+}
+
+function generateRootlessFixBatchTemplate(options: FixStageOptions): string {
+  const stageIdPadded = options.targetStage.toString().padStart(2, "0")
+  const newBatchPrefix = "__BATCH__"
+
+  return `### Batch ${newBatchPrefix}: Fix - ${options.name}
+
+Addressing issues in Stage ${stageIdPadded}.
+${options.description || "Fixes and improvements."}
+
+#### Thread 01: Fix Implementation
+
+**Summary:**
+Address the identified follow-up issues for Stage ${stageIdPadded}.
+
+**Details:**
+- [ ] Analyze root cause
+- [ ] Implement fix
+- [ ] Verify fix`
+}
+
+function appendRootlessFixBatch(
+  repoRoot: string,
+  streamId: string,
+  options: FixStageOptions,
+): { success: boolean; newBatchNumber: number; message: string } {
+  const planPath = getRootlessStagePlanPath(repoRoot, streamId, options.targetStage)
+  if (!planPath) {
+    return {
+      success: false,
+      newBatchNumber: 0,
+      message: `Stage ${options.targetStage} not found`,
+    }
+  }
+
+  const content = readFileSync(planPath, "utf-8")
+  const lines = content.split("\n")
+  const batchesHeadingIndex = lines.findIndex((line) => line.trim().toLowerCase() === "## batches")
+  const existingBatchNumbers = lines
+    .map((line) => line.match(/^###\s+Batch\s+(\d{1,2}):/i))
+    .filter((match): match is RegExpMatchArray => match !== null)
+    .map((match) => Number.parseInt(match[1]!, 10))
+  const newBatchNumber = existingBatchNumbers.length === 0
+    ? 0
+    : Math.max(...existingBatchNumbers) + 1
+  const newBatchPrefix = newBatchNumber.toString().padStart(2, "0")
+  const template = generateRootlessFixBatchTemplate(options).replace("__BATCH__", newBatchPrefix)
+
+  if (batchesHeadingIndex === -1) {
+    const nextContent = `${content.trimEnd()}\n\n## Batches\n\n${template}\n`
+    atomicWriteFile(planPath, nextContent)
+  } else {
+    let insertIndex = lines.length
+    for (let i = batchesHeadingIndex + 1; i < lines.length; i++) {
+      if (lines[i]?.startsWith("## ")) {
+        insertIndex = i
+        break
+      }
+    }
+
+    const blockLines = ["", template, ""]
+    lines.splice(insertIndex, 0, ...blockLines)
+    atomicWriteFile(planPath, lines.join("\n"))
+  }
+
+  return {
+    success: true,
+    newBatchNumber,
+    message: `Appended Batch ${newBatchPrefix} to Stage ${options.targetStage}`,
+  }
+}
+
+function generateRootlessFixStagePlan(
+  streamId: string,
+  stageLabel: string,
+  options: FixStageOptions,
+): string {
+  const targetStagePadded = options.targetStage.toString().padStart(2, "0")
+
+  return `# Stage ${stageLabel} Fix Plan
+
+## Summary
+
+Addressing issues found in Stage ${targetStagePadded}.
+${options.description || "Fixes and improvements based on evaluation."}
+
+## References
+
+- \`work/${streamId}/stages/${targetStagePadded}/PLAN.md\`
+
+## Questions
+
+- [ ] Confirm the root cause before implementation.
+
+## Batches
+
+### Batch 01: Fixes
+
+Apply the approved follow-up fixes for Stage ${targetStagePadded}.
+
+#### Thread 01: Implementation
+
+**Summary:**
+Apply fixes for ${options.name}.
+
+**Details:**
+- [ ] Analyze root cause
+- [ ] Implement fix
+- [ ] Verify fix`
+}
+
+function appendRootlessFixStage(
+  repoRoot: string,
+  streamId: string,
+  options: FixStageOptions,
+): { success: boolean; newStageNumber: number; message: string } {
+  const stagesDir = join(getWorkDir(repoRoot), streamId, "stages")
+  const stageDirectories = listOrderedStageDirectories(stagesDir)
+  const normalStages = stageDirectories.filter((entry) => !entry.isRevision)
+
+  if (normalStages.length === 0) {
+    return {
+      success: false,
+      newStageNumber: 0,
+      message: `No stage directories found under ${stagesDir}`,
+    }
+  }
+
+  if (
+    options.afterStage !== undefined &&
+    !normalStages.some((entry) => entry.baseStageNumber === options.afterStage)
+  ) {
+    return {
+      success: false,
+      newStageNumber: 0,
+      message: `${formatStageLabel(options.afterStage)} not found`,
+    }
+  }
+
+  const newStageDirName = options.afterStage !== undefined
+    ? getNextInsertedRevisionDirectoryName(stageDirectories, options.afterStage)
+    : getNextAppendedStageDirectoryName(stageDirectories)
+  const newStageDir = join(stagesDir, newStageDirName)
+
+  if (existsSync(newStageDir)) {
+    return {
+      success: false,
+      newStageNumber: 0,
+      message: `Stage directory already exists: ${newStageDir}`,
+    }
+  }
+
+  scaffoldStageDirectory(newStageDir, newStageDirName)
+  const customizedPlan = generateRootlessFixStagePlan(streamId, newStageDirName, options)
+  atomicWriteFile(join(newStageDir, "PLAN.md"), `${customizedPlan}\n`)
+
+  return {
+    success: true,
+    newStageNumber: Number.parseInt(newStageDirName, 10),
+    message: options.afterStage !== undefined
+      ? `Created fix stage scaffold at stages/${newStageDirName} after ${formatStageLabel(options.afterStage)}`
+      : `Created fix stage scaffold at stages/${newStageDirName}`,
+  }
+}
+
 export function appendFixBatch(
   repoRoot: string,
   streamId: string,
   options: FixStageOptions,
 ): { success: boolean; newBatchNumber: number; message: string } {
   const planPath = getStreamPlanMdPath(repoRoot, streamId)
+  if (!existsSync(planPath)) {
+    return appendRootlessFixBatch(repoRoot, streamId, options)
+  }
+
   const content = readFileSync(planPath, "utf-8")
   const errors: ConsolidateError[] = []
 
@@ -706,6 +896,10 @@ export function appendFixStage(
   options: FixStageOptions,
 ): { success: boolean; newStageNumber: number; message: string } {
   const planPath = getStreamPlanMdPath(repoRoot, streamId)
+  if (!existsSync(planPath)) {
+    return appendRootlessFixStage(repoRoot, streamId, options)
+  }
+
   const content = readFileSync(planPath, "utf-8")
   const errors: ConsolidateError[] = []
 

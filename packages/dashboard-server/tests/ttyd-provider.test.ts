@@ -67,8 +67,19 @@ function createFakeInstance(port: number): SpawnedTtydInstance & { stopped: bool
   }
 }
 
+function createDeferredPromise<T>() {
+  let resolve!: (value: T | PromiseLike<T>) => void
+
+  const promise = new Promise<T>((innerResolve, innerReject) => {
+    resolve = innerResolve
+    void innerReject
+  })
+
+  return { promise, resolve }
+}
+
 describe("ttyd terminal observability provider", () => {
-  test("builds read-only ttyd launch arguments for tmux-backed sessions", () => {
+  test("builds persistent read-only ttyd launch arguments for tmux-backed sessions", () => {
     const args = buildTtydLaunchArgs({
       label: "Implementation 03 03.01",
       port: 43001,
@@ -79,12 +90,13 @@ describe("ttyd terminal observability provider", () => {
     expect(args).toContain("attach-session")
     expect(args).toContain("-r")
     expect(args).not.toContain("-W")
+    expect(args).not.toContain("-q")
+    expect(args).not.toContain("--exit-no-conn")
     expect(args).toEqual([
       "-i",
       "127.0.0.1",
       "-p",
       "43001",
-      "-q",
       "-t",
       "disableLeaveAlert=true",
       "-t",
@@ -412,5 +424,46 @@ describe("ttyd terminal observability provider", () => {
 
     provider.close()
     expect(instances[1]?.stopped).toBe(true)
+  })
+
+  test("keeps an in-flight ttyd launch stable across snapshot refreshes for the same session", async () => {
+    const deferredLaunch = createDeferredPromise<SpawnedTtydInstance & { stopped: boolean }>()
+    let launchCount = 0
+    const provider = createTtydTerminalObservabilityProvider({
+      launcher: {
+        async getCapability() {
+          return {
+            enabled: true,
+            message: "ttyd is available.",
+            mode: "ttyd" as const,
+          }
+        },
+        async launch() {
+          launchCount += 1
+          return await deferredLaunch.promise
+        },
+      },
+    })
+
+    await provider.listViews({
+      checkedAt: "2026-04-16T12:00:00.000Z",
+      tmux: createTmuxSnapshot([createSession()]),
+    })
+
+    const targetPromise = provider.resolveViewTarget("thread/03.01.01")
+
+    await provider.listViews({
+      checkedAt: "2026-04-16T12:00:05.000Z",
+      tmux: createTmuxSnapshot([createSession()]),
+    })
+
+    deferredLaunch.resolve(createFakeInstance(43126))
+
+    await expect(targetPromise).resolves.toMatchObject({
+      terminalViewId: "thread/03.01.01",
+      sessionName: "002-implementation-thread-a",
+      port: 43126,
+    })
+    expect(launchCount).toBe(1)
   })
 })

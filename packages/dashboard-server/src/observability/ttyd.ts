@@ -376,7 +376,6 @@ export function buildTtydLaunchArgs(options: BuildTtydLaunchArgsOptions): string
     LOCAL_ONLY_HOSTNAME,
     "-p",
     `${options.port}`,
-    "-q",
     "-t",
     "disableLeaveAlert=true",
     "-t",
@@ -384,6 +383,9 @@ export function buildTtydLaunchArgs(options: BuildTtydLaunchArgsOptions): string
     "-t",
     "disableResizeOverlay=true",
     "-t",
+    // Avoid ttyd's "exit when no clients are connected" mode here.
+    // The server performs an HTTP readiness probe before the browser iframe connects,
+    // so exiting on no-connection can tear down the process before the real viewer arrives.
     `titleFixed=${options.label}`,
     "tmux",
     "attach-session",
@@ -521,18 +523,33 @@ export function createTtydTerminalObservabilityProvider(
     manageabilityReason?: string
     sessionName: string
   }): TerminalViewRegistryEntry {
-    const existing = entries.get(args.baseView.terminal_view_id)
+    const terminalViewId = args.baseView.terminal_view_id
+    const existing = entries.get(terminalViewId)
 
     if (existing && existing.sessionName !== args.sessionName) {
-      stopEntry(args.baseView.terminal_view_id)
+      stopEntry(terminalViewId)
+    }
+
+    const reusableEntry = entries.get(terminalViewId)
+    if (reusableEntry) {
+      reusableEntry.baseView = args.baseView
+      reusableEntry.capabilityEnabled = args.capabilityEnabled
+      reusableEntry.manageable = args.manageable
+      reusableEntry.manageabilityReason = args.manageabilityReason
+      reusableEntry.sessionName = args.sessionName
+
+      if (!reusableEntry.manageable) {
+        reusableEntry.instance?.stop()
+        delete reusableEntry.instance
+        delete reusableEntry.launchPromise
+      }
+
+      return reusableEntry
     }
 
     const nextEntry: TerminalViewRegistryEntry = {
       baseView: args.baseView,
       capabilityEnabled: args.capabilityEnabled,
-      instance: existing?.instance,
-      lastLaunchError: existing?.lastLaunchError,
-      launchPromise: existing?.launchPromise,
       manageable: args.manageable,
       manageabilityReason: args.manageabilityReason,
       sessionName: args.sessionName,
@@ -544,7 +561,7 @@ export function createTtydTerminalObservabilityProvider(
       delete nextEntry.launchPromise
     }
 
-    entries.set(args.baseView.terminal_view_id, nextEntry)
+    entries.set(terminalViewId, nextEntry)
     return nextEntry
   }
 

@@ -11,10 +11,10 @@ Use this skill when you are supervising workstream work.
 
 Run `work supervise` to execute the next batch, then enter the fix cycle:
 
-1. launch a review subagent to assess quality and alignment to the plan
-2. read the reviewer output and persisted workstream state
+1. review the work yourself for quality and alignment to the plan; do **not** launch a review subagent
+2. inspect your review findings and persisted workstream state
 3. decide whether to run a fix subagent or report back to the user
-4. if you run a fix subagent, re-enter the fix cycle and review again
+4. if you run a fix subagent, inspect its changes and re-enter the fix cycle by reviewing again yourself
 5. stop only when the current scope is complete or escalation policy says to yield / report back
 
 ## Command usage
@@ -39,10 +39,10 @@ work tree --batch "SS.BB"
 ```
 
 2. Review the actual changed files against the batch's thread `WORK.md` contract(s), not just status output.
-3. Launch a review subagent.
-4. Judge the review against the escalation policy.
+3. Run this review yourself; do **not** delegate review to a subagent.
+4. Judge your review findings against the escalation policy.
 5. Either:
-   - launch a fix subagent and then re-review, or
+   - launch a fix subagent to apply fixes and then re-review yourself, or
    - stop the loop and report back with a final report.
 
 Notes:
@@ -59,7 +59,7 @@ Treat canonical workstream state, actual review findings, and these supervision 
 - **Report back** instead of continuing when review results require user input
 - stage completion is a valid stop reason for stage-scoped supervision
 
-Use the reviewer issue categories to decide whether to report back to user or fix:
+Use these review issue categories to decide whether to report back to user or fix:
 
 - **severity**
 - **difficulty**
@@ -73,7 +73,7 @@ Report back instead of fixing when the persisted evidence indicates any of the f
 - the current supervision scope is complete
 - the issue is outside safe engineering-owned batch-local follow-up
 
-If none of those conditions hold and a fix cycle is still allowed, run a fix subagent and re-enter review.
+If none of those conditions hold and a fix cycle is still allowed, run a fix subagent and then re-enter review yourself.
 
 Prefer a small safe fix cycle when the issue is:
 

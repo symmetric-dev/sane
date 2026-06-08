@@ -22,6 +22,7 @@ import {
   resolveWorkstreamReadTarget,
 } from "@agenv/workstreams/internal/server"
 
+import { createRepoRootDebugContext, logDashboardDiagnostic, serializeErrorForLog } from "./logging.ts"
 import type {
   TerminalObservabilityCapability,
   TerminalObservabilityProvider,
@@ -165,45 +166,66 @@ export async function readCurrentWorkstreamDashboardSnapshot(
 ): Promise<CurrentWorkstreamDashboardReadModel> {
   const now = options.now ?? (() => new Date())
   const generatedAt = now().toISOString()
-  const target = resolveWorkstreamReadTarget(options.repoRoot)
-  const statusSnapshot = getResolvedWorkstreamStatusSnapshot(
-    options.repoRoot,
-    target.stream.id,
-  )
-  const status = toCanonicalStatusSnapshot(statusSnapshot)
-  const tree = getResolvedWorkstreamTreeSnapshot(options.repoRoot, {
-    streamIdOrName: target.stream.id,
-  })
-  const runtime = statusSnapshot.runtime ?? null
-  const supervision = runtime?.summary.supervision ?? null
-  const canonicalState: CurrentWorkstreamDashboardCanonicalState = {
-    source_of_truth: "structured_runtime",
-    status,
-    tree,
-    supervision,
-    ...(runtime ? { runtime } : {}),
-  }
-  const observability = await buildObservabilitySnapshot({
-    repoRoot: options.repoRoot,
-    checkedAt: generatedAt,
-    terminalProvider: options.terminalProvider,
-  })
-  const snapshot: CurrentWorkstreamDashboardSnapshot = {
-    schema_version: CURRENT_WORKSTREAM_DASHBOARD_SNAPSHOT_SCHEMA_VERSION,
-    generated_at: generatedAt,
-    canonical_state: canonicalState,
-    observability,
-  }
+  let phase = "resolve_workstream_target"
+  let resolvedStreamId: string | null = null
 
-  return {
-    canonicalState,
-    currentStreamId: target.currentStreamId ?? target.stream.id,
-    observability,
-    runtime,
-    snapshot,
-    status,
-    streamId: target.stream.id,
-    supervision: canonicalState.supervision,
-    tree,
+  try {
+    const target = resolveWorkstreamReadTarget(options.repoRoot)
+    resolvedStreamId = target.stream.id
+
+    phase = "read_status_snapshot"
+    const statusSnapshot = getResolvedWorkstreamStatusSnapshot(
+      options.repoRoot,
+      target.stream.id,
+    )
+    const status = toCanonicalStatusSnapshot(statusSnapshot)
+
+    phase = "read_tree_snapshot"
+    const tree = getResolvedWorkstreamTreeSnapshot(options.repoRoot, {
+      streamIdOrName: target.stream.id,
+    })
+    const runtime = statusSnapshot.runtime ?? null
+    const supervision = runtime?.summary.supervision ?? null
+    const canonicalState: CurrentWorkstreamDashboardCanonicalState = {
+      source_of_truth: "structured_runtime",
+      status,
+      tree,
+      supervision,
+      ...(runtime ? { runtime } : {}),
+    }
+
+    phase = "build_observability_snapshot"
+    const observability = await buildObservabilitySnapshot({
+      repoRoot: options.repoRoot,
+      checkedAt: generatedAt,
+      terminalProvider: options.terminalProvider,
+    })
+    const snapshot: CurrentWorkstreamDashboardSnapshot = {
+      schema_version: CURRENT_WORKSTREAM_DASHBOARD_SNAPSHOT_SCHEMA_VERSION,
+      generated_at: generatedAt,
+      canonical_state: canonicalState,
+      observability,
+    }
+
+    return {
+      canonicalState,
+      currentStreamId: target.currentStreamId ?? target.stream.id,
+      observability,
+      runtime,
+      snapshot,
+      status,
+      streamId: target.stream.id,
+      supervision: canonicalState.supervision,
+      tree,
+    }
+  } catch (error) {
+    logDashboardDiagnostic("failed to read current workstream dashboard snapshot", {
+      phase,
+      generatedAt,
+      resolvedStreamId,
+      error: serializeErrorForLog(error),
+      repo: createRepoRootDebugContext(options.repoRoot),
+    })
+    throw error
   }
 }

@@ -26,30 +26,9 @@ description: Create a workstream for research-first exploration, gather findings
    - wait for more user direction before researching.
 6. When research completes, summarize what is now understood and ask whether specs are needed before planning begins.
 
-## Research model
+## How to 
 
-During research-only workstreams, the hierarchy is intentionally simple:
-
-- `README.md` = research goal, scope, and current understanding
-- `resources/` = raw gathered inputs and references
-- `docs/` = interpreted findings and recommendation notes
-
-No stages, no thread `WORK.md`, and no execution planning until the research is mature enough.
-
-## Using subagents
-
-When you launch research subagents:
-
-- tell them where to place outputs
-- prefer `docs/` for synthesized findings
-- prefer `resources/` for raw source material or collected references
-- split research by topic when it helps parallelize discovery safely
-
-Examples:
-
-- architecture options -> `docs/architecture-options.md`
-- UI references or screenshots -> `resources/ui-references.md`
-- API behavior investigation -> `docs/api-research.md`
+- Please use subagents to research in parallel after a quick read of top level documentation
 
 ## After research completes
 

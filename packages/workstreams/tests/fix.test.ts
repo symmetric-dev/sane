@@ -273,4 +273,108 @@ A stage with no batches yet.
     expect(stage2Index).toBeGreaterThan(-1)
     expect(batchIndex).toBeLessThan(stage2Index)
   })
+
+  test("appends fix stage in a rootless staged workstream", async () => {
+    await mkdir(join(tempDir, "work", streamId, "stages", "01"), { recursive: true })
+    await writeFile(
+      join(tempDir, "work", streamId, "stages", "01", "PLAN.md"),
+      `# Stage 01 Discovery Plan
+
+## Summary
+
+Initial work.
+
+## Questions
+
+- [ ] Validate the first slice.
+
+## Batches
+
+### Batch 01: Discovery
+
+Initial batch.
+
+#### Thread 01: Investigate
+
+**Summary:**
+Understand the current state.
+
+**Details:**
+Review the flow.
+`,
+    )
+
+    const result = appendFixStage(tempDir, streamId, {
+      targetStage: 1,
+      name: "bug-fixes",
+      description: "Fixing bugs without a root plan",
+    })
+
+    expect(result.success).toBe(true)
+    expect(result.newStageNumber).toBe(2)
+
+    const newContent = await readFile(
+      join(tempDir, "work", streamId, "stages", "02", "PLAN.md"),
+      "utf-8",
+    )
+
+    expect(newContent).toContain("# Stage 02 Fix Plan")
+    expect(newContent).toContain("Addressing issues found in Stage 01")
+    expect(newContent).toContain("Fixing bugs without a root plan")
+    expect(newContent).toContain("### Batch 01: Fixes")
+  })
+
+  test("appends fix batch in a rootless staged workstream", async () => {
+    await mkdir(join(tempDir, "work", streamId, "stages", "01"), { recursive: true })
+    await writeFile(
+      join(tempDir, "work", streamId, "stages", "01", "PLAN.md"),
+      `# Stage 01 Discovery Plan
+
+## Summary
+
+Initial work.
+
+## Questions
+
+- [ ] Validate the first slice.
+
+## Batches
+
+### Batch 01: Discovery
+
+Initial batch.
+
+#### Thread 01: Investigate
+
+**Summary:**
+Understand the current state.
+
+**Details:**
+Review the flow.
+`,
+    )
+
+    const result = appendFixBatch(tempDir, streamId, {
+      targetStage: 1,
+      name: "validation-fix",
+      description: "Fixing validation logic without a root plan",
+    })
+
+    expect(result.success).toBe(true)
+    expect(result.newBatchNumber).toBe(2)
+
+    const newContent = await readFile(
+      join(tempDir, "work", streamId, "stages", "01", "PLAN.md"),
+      "utf-8",
+    )
+
+    expect(newContent).toContain("### Batch 02: Fix - validation-fix")
+    expect(newContent).toContain("Fixing validation logic without a root plan")
+
+    const originalBatchIndex = newContent.indexOf("### Batch 01: Discovery")
+    const newBatchIndex = newContent.indexOf("### Batch 02: Fix - validation-fix")
+
+    expect(originalBatchIndex).toBeGreaterThan(-1)
+    expect(newBatchIndex).toBeGreaterThan(originalBatchIndex)
+  })
 })

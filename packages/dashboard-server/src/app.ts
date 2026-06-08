@@ -2,6 +2,7 @@ import { Hono } from "hono"
 
 import type { DashboardServerConfig } from "./config.ts"
 import type { LiveRefreshHub } from "./live-refresh.ts"
+import { createRepoRootDebugContext, logDashboardDiagnostic, serializeErrorForLog } from "./logging.ts"
 import type { TerminalObservabilityProvider } from "./observability/terminal.ts"
 import { createCurrentWorkstreamRoutes } from "./routes/current-workstream.ts"
 import { createLiveRoutes } from "./routes/live.ts"
@@ -46,6 +47,16 @@ export function createDashboardApp(dependencies: DashboardAppDependencies): Hono
   })
 
   app.onError((error, context) => {
+    const requestUrl = new URL(context.req.url)
+    logDashboardDiagnostic("request failed", {
+      method: context.req.method,
+      path: requestUrl.pathname,
+      error: serializeErrorForLog(error),
+      ...(requestUrl.pathname.startsWith("/api/current-workstream")
+        ? { repo: createRepoRootDebugContext(dependencies.config.repoRoot) }
+        : {}),
+    })
+
     return context.json(
       {
         ok: false,
