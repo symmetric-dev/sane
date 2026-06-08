@@ -11,7 +11,6 @@ import { loadWorkstreamHierarchyQueryResult } from "../../lib/hierarchy-query.ts
 import { parseStreamDocument } from "../../lib/stream-parser.ts"
 import { getWorkDir } from "../../lib/repo.ts"
 import { getResolvedStream } from "../../lib/index.ts"
-import { generateAllPrompts } from "../../lib/prompts.ts"
 import { initializeCanonicalExecutionStateFromPlan } from "../../lib/execution-state.ts"
 import { loadWorkstreamPlan } from "../../lib/consolidate.ts"
 import { ensureThreadWorkDocsForPlan } from "../../lib/thread-workdocs.ts"
@@ -129,8 +128,7 @@ export function handleRevisionApproval(
 
   // Step 5: Refresh the execution hierarchy from the revised plan
   const threadCount = initializeCanonicalExecutionStateFromPlan(repoRoot, stream.id, doc)
-  ensureThreadWorkDocsForPlan(repoRoot, stream.id, doc)
-  const promptsResult = generateAllPrompts(repoRoot, stream.id)
+  const workDocsResult = ensureThreadWorkDocsForPlan(repoRoot, stream.id, doc)
 
   // Step 6: Count new threads introduced by the revision
   let newPlaceholderCount = 0
@@ -158,9 +156,8 @@ export function handleRevisionApproval(
           newThreadCount: newPlaceholderCount,
           totalThreadCount: threadCount,
           newStages: newStageNumbers,
-          promptsGenerated: promptsResult.generatedFiles.length,
-          promptThreadCount: promptsResult.totalThreads,
-          promptErrors: promptsResult.errors,
+          workDocsCreated: workDocsResult.createdFiles.length,
+          workDocsPreserved: workDocsResult.preservedFiles.length,
         },
         null,
         2
@@ -175,7 +172,7 @@ export function handleRevisionApproval(
       `New stages: ${newStageNumbers.map((n) => `Stage ${n}`).join(", ")}`
     )
     console.log(
-      `Prompts: ${promptsResult.generatedFiles.length}/${promptsResult.totalThreads} generated`,
+      `Thread WORK.md: ${workDocsResult.createdFiles.length} created, ${workDocsResult.preservedFiles.length} preserved`,
     )
   }
 }

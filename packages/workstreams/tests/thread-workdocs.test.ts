@@ -90,7 +90,7 @@ Preserve manual edits.
     mkdirSync(dirname(existingThreadWorkPath), { recursive: true })
     writeFileSync(existingThreadWorkPath, "manual thread work doc\n")
 
-    const { stderr } = await captureCliOutput(async () => {
+    const { stdout, stderr } = await captureCliOutput(async () => {
       await approveMain([
         "bun",
         "work-approve",
@@ -103,6 +103,9 @@ Preserve manual edits.
     })
 
     expect(stderr).toEqual([])
+    const output = stdout.join("\n")
+    expect(output).toContain("Thread WORK.md: 1 created, 1 preserved")
+    expect(output).not.toContain("Prompts:")
 
     const createdThreadWorkPath = join(
       repoRoot,
@@ -139,6 +142,7 @@ Preserve manual edits.
     expect(createdContent).toContain("Keep this short. State what this thread must avoid changing.")
     expect(createdContent).toContain("Keep this short. State what to capture before stopping.")
     expect(readFileSync(existingThreadWorkPath, "utf-8")).toBe("manual thread work doc\n")
+    expect(existsSync(join(repoRoot, "work/000-thread-workdocs/prompts"))).toBe(false)
   })
 
   test("skips untouched scaffold stage directories when mapping synthetic stage ids", () => {
@@ -237,7 +241,7 @@ Do not incorrectly use stage directory 02.
     ).toBe(false)
   })
 
-  test("revision approval creates thread WORK.md inside revision stage directories", () => {
+  test("revision approval creates thread WORK.md inside revision stage directories", async () => {
     createMain(["bun", "work-create", "--name", "revision-thread-workdocs", "--repo-root", repoRoot])
     planMain(["bun", "work-plan", "create", "--stream", "000-revision-thread-workdocs", "--stages", "2", "--repo-root", repoRoot])
 
@@ -335,16 +339,24 @@ Revision details.
     expect(doc).not.toBeNull()
     expect(resolveStageDirectoryName(repoRoot, "000-revision-thread-workdocs", 2)).toBe("01-r1")
 
-    approveMain([
-      "bun",
-      "work-approve",
-      "revision",
-      "--stream",
-      "000-revision-thread-workdocs",
-      "--repo-root",
-      repoRoot,
-    ])
+    const { stdout, stderr } = await captureCliOutput(() => {
+      approveMain([
+        "bun",
+        "work-approve",
+        "revision",
+        "--stream",
+        "000-revision-thread-workdocs",
+        "--repo-root",
+        repoRoot,
+      ])
+    })
+
+    expect(stderr).toEqual([])
+    const output = stdout.join("\n")
+    expect(output).toContain("Thread WORK.md: 1 created, 1 preserved")
+    expect(output).not.toContain("Prompts:")
 
     expect(existsSync(getThreadWorkMdPath(repoRoot, "000-revision-thread-workdocs", "02.01.01"))).toBe(true)
+    expect(existsSync(join(repoRoot, "work/000-revision-thread-workdocs/prompts"))).toBe(false)
   })
 })

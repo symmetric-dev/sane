@@ -29,11 +29,10 @@ import { closeStageIssue } from "../../lib/github/issues.ts"
 import { parseStreamDocument } from "../../lib/stream-parser.ts"
 import { type GitAutoCommitResult } from "../../lib/git/index.ts"
 import { getResolvedStream } from "../../lib/index.ts"
-import { generateAllPrompts } from "../../lib/prompts.ts"
 import { initializeCanonicalExecutionStateFromPlan } from "../../lib/execution-state.ts"
 import { loadWorkstreamPlan } from "../../lib/consolidate.ts"
 import { queryThreadsForWorkstream } from "../../lib/hierarchy-query.ts"
-import { ensureThreadWorkDocsForPlan } from "../../lib/thread-workdocs.ts"
+import { ensureThreadWorkDocsForPlan, type EnsureThreadWorkDocsResult } from "../../lib/thread-workdocs.ts"
 
 import type { ApproveCliArgs } from "./utils.ts"
 
@@ -57,6 +56,7 @@ function formatApprovalAutoCommitSkip(result: GitAutoCommitResult): string {
 interface ExecutionStateInitializationResult {
   success: boolean
   threadCount: number
+  workDocs?: EnsureThreadWorkDocsResult
   error?: string
 }
 
@@ -86,11 +86,12 @@ function initializeExecutionStateFromPlan(
     }
 
     const threadCount = initializeCanonicalExecutionStateFromPlan(repoRoot, streamId, doc)
-    ensureThreadWorkDocsForPlan(repoRoot, streamId, doc)
+    const workDocs = ensureThreadWorkDocsForPlan(repoRoot, streamId, doc)
 
     return {
       success: true,
       threadCount,
+      workDocs,
     }
   } catch (e) {
     return {
@@ -532,9 +533,6 @@ export async function handlePlanApproval(
       )
     }
 
-    const promptsResult = generateAllPrompts(repoRoot, updatedStream.id)
-    const promptsWarning = !promptsResult.success
-
     // Auto-commit on plan approval if configured.
     // This uses plain git and does not require GitHub integration to be enabled.
     let commitResult: GitAutoCommitResult | undefined
@@ -559,9 +557,8 @@ export async function handlePlanApproval(
             executionState: {
               initialized: executionStateResult.success,
               threadCount: executionStateResult.threadCount,
-              promptsGenerated: promptsResult.generatedFiles.length,
-              promptThreadCount: promptsResult.totalThreads,
-              promptErrors: promptsResult.errors,
+              workDocsCreated: executionStateResult.workDocs?.createdFiles.length ?? 0,
+              workDocsPreserved: executionStateResult.workDocs?.preservedFiles.length ?? 0,
             },
             commit: commitResult
               ? {
@@ -588,19 +585,8 @@ export async function handlePlanApproval(
         `  Initialized execution hierarchy from PLAN.md (${executionStateResult.threadCount} thread${executionStateResult.threadCount === 1 ? "" : "s"})`,
       )
       console.log(
-        `  Prompts: ${promptsResult.generatedFiles.length}/${promptsResult.totalThreads} generated`,
+        `  Thread WORK.md: ${executionStateResult.workDocs?.createdFiles.length ?? 0} created, ${executionStateResult.workDocs?.preservedFiles.length ?? 0} preserved`,
       )
-      if (promptsWarning) {
-        console.log(`  Warning: Some prompts failed to generate:`)
-        for (const err of promptsResult.errors.slice(0, 3)) {
-          console.log(`    - ${err}`)
-        }
-        if (promptsResult.errors.length > 3) {
-          console.log(
-            `    ... and ${promptsResult.errors.length - 3} more errors`,
-          )
-        }
-      }
 
       if (commitResult?.success && commitResult.commitSha) {
         console.log(`  Committed: ${commitResult.commitSha.substring(0, 7)}`)
