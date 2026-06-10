@@ -11,8 +11,8 @@ import { getRepoRoot, getWorkDir } from "../lib/repo.ts"
 import { loadIndex, getResolvedStream } from "../lib/index.ts"
 import { loadAgentsConfig, getAgentModels } from "../lib/agents-yaml.ts"
 import { generateSessionId } from "../lib/session-id.ts"
-import { getThreadMetadata, startThreadSession, completeThreadSession } from "../lib/threads.ts"
-import { queryThreadByIdForWorkstream } from "../lib/hierarchy-query.ts"
+import { startThreadSession, completeThreadSession } from "../lib/threads.ts"
+import { getPromptContext, generateThreadPrompt } from "../lib/prompts.ts"
 import { parseStreamDocument } from "../lib/stream-parser.ts"
 import type { StreamDocument, SessionStatus } from "../lib/types.ts"
 
@@ -174,82 +174,6 @@ function resolveThreadByName(
     return null
 }
 
-/**
- * Build the prompt file path for a thread
- * First checks thread runtime metadata for a stored path, then falls back to PLAN.md reconstruction
- */
-function getPromptFilePath(
-    repoRoot: string,
-    streamId: string,
-    threadId: string
-): string | null {
-    const workDir = getWorkDir(repoRoot)
-    
-    // First, try canonical runtime_state.threads metadata
-    const threadMeta = getThreadMetadata(repoRoot, streamId, threadId)
-    if (threadMeta?.promptPath) {
-        return join(workDir, threadMeta.promptPath)
-    }
-    
-    // Fallback: reconstruct from PLAN.md (legacy behavior)
-    const planPath = join(workDir, streamId, "PLAN.md")
-
-    if (!existsSync(planPath)) {
-        return null
-    }
-
-    const planContent = readFileSync(planPath, "utf-8")
-    const errors: { message: string }[] = []
-    const doc = parseStreamDocument(planContent, errors)
-
-    if (!doc) {
-        return null
-    }
-
-    // Parse thread ID: "01.02.03" -> stage 1, batch 2, thread 3
-    const parts = threadId.split(".").map((p) => parseInt(p, 10))
-    if (parts.length !== 3 || parts.some(isNaN)) {
-        return null
-    }
-    const [stageNum, batchNum, threadNum] = parts
-
-    const stage = doc.stages.find((s) => s.id === stageNum)
-    if (!stage) return null
-
-    const batch = stage.batches.find((b) => b.id === batchNum)
-    if (!batch) return null
-
-    const thread = batch.threads.find((t) => t.id === threadNum)
-    if (!thread) return null
-
-    // Build path matching prompt.ts logic
-    const safeStageName = stage.name.replace(/[^a-zA-Z0-9_-]/g, "-").toLowerCase()
-    const safeBatchName = batch.name.replace(/[^a-zA-Z0-9_-]/g, "-").toLowerCase()
-    const safeThreadName = thread.name.replace(/[^a-zA-Z0-9_-]/g, "-").toLowerCase()
-
-    const stagePrefix = stageNum!.toString().padStart(2, "0")
-
-    return join(
-        workDir,
-        streamId,
-        "prompts",
-        `${stagePrefix}-${safeStageName}`,
-        `${batch.prefix}-${safeBatchName}`,
-        `${safeThreadName}.md`
-    )
-}
-
-/**
- * Get the assigned agent name for a thread
- */
-function getThreadAssignedAgent(
-    repoRoot: string,
-    streamId: string,
-    threadId: string
-): string | undefined {
-    return queryThreadByIdForWorkstream(repoRoot, streamId, threadId)?.assignedAgent
-}
-
 export async function main(argv: string[] = process.argv): Promise<void> {
     const cliArgs = parseCliArgs(argv)
     if (!cliArgs) {
@@ -331,23 +255,21 @@ export async function main(argv: string[] = process.argv): Promise<void> {
         console.log(`Resolved thread: "${cliArgs.threadId}" → ${threadDisplayName}`)
     }
 
-    // Get prompt file path
-    const promptPath = getPromptFilePath(repoRoot, stream.id, resolvedThreadId)
-    if (!promptPath) {
-        console.error(`Error: Could not find thread ${resolvedThreadId} in stream ${stream.id}`)
-        process.exit(1)
-    }
-
-    if (!existsSync(promptPath)) {
-        console.error(`Error: Prompt file not found: ${promptPath}`)
-        console.error(`\nHint: Run 'work prompt --thread "${resolvedThreadId}"' to generate it first.`)
+    let promptContext: ReturnType<typeof getPromptContext>
+    let promptContent: string
+    try {
+        promptContext = getPromptContext(repoRoot, stream.id, resolvedThreadId)
+        promptContent = generateThreadPrompt(promptContext)
+    } catch (e) {
+        console.error(`Error: ${(e as Error).message}`)
+        console.error(`\nHint: Run 'work approve plan', 'work approve revision', or 'work validate work' to create or verify thread WORK.md files.`)
         process.exit(1)
     }
 
     // Determine agent
     let agentName = cliArgs.agent
     if (!agentName) {
-        agentName = getThreadAssignedAgent(repoRoot, stream.id, resolvedThreadId)
+        agentName = promptContext.agentName
     }
 
     if (!agentName) {
@@ -373,8 +295,7 @@ export async function main(argv: string[] = process.argv): Promise<void> {
     const primaryModel = models[0]!
     const variantFlag = primaryModel.variant ? ` --variant "${primaryModel.variant}"` : ""
 
-    // Build and execute command
-    const command = `cat "${promptPath}" | opencode run --model "${primaryModel.model}"${variantFlag}`
+    const command = `printf '%s' "$GENERATED_THREAD_PROMPT" | opencode run --model "${primaryModel.model}"${variantFlag}`
 
     if (cliArgs.dryRun) {
         console.log("Would execute:")
@@ -382,7 +303,7 @@ export async function main(argv: string[] = process.argv): Promise<void> {
         console.log(`\nThread: ${threadDisplayName}`)
         console.log(`Agent: ${agentName}`)
         console.log(`Model: ${primaryModel.model}${primaryModel.variant ? ` (variant: ${primaryModel.variant})` : ""}`)
-        console.log(`Prompt: ${promptPath}`)
+        console.log(`Prompt: generated in memory from thread context and ${promptContext.references.threadWorkPath}`)
         return
     }
 
@@ -400,13 +321,19 @@ export async function main(argv: string[] = process.argv): Promise<void> {
 
     console.log(`Executing thread ${threadDisplayName} with agent "${agentName}" (${primaryModel.model})...`)
     console.log(`Session tracking: ${session ? resolvedThreadId : "unavailable"}`)
-    console.log(`Prompt: ${promptPath}\n`)
+    console.log(`Prompt: generated in memory from thread context and ${promptContext.references.threadWorkPath}\n`)
 
-    // Execute via shell to handle pipe
-    const child = spawn("sh", ["-c", command], {
-        stdio: "inherit",
+    const childArgs = ["run", "--model", primaryModel.model]
+    if (primaryModel.variant) {
+        childArgs.push("--variant", primaryModel.variant)
+    }
+
+    const child = spawn("opencode", childArgs, {
+        stdio: ["pipe", "inherit", "inherit"],
         cwd: repoRoot,
     })
+
+    child.stdin?.end(promptContent)
 
     child.on("close", (code) => {
         // Determine session status based on exit code

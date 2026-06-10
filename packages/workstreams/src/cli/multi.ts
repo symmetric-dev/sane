@@ -41,10 +41,11 @@ import {
 import {
   collectThreadInfoForBatch,
   buildThreadRunCommand,
+  prepareRuntimeThreadPrompts,
   setupTmuxSession,
   setupGridController,
   setupKillSessionKeybind,
-  validateThreadPrompts,
+  validateThreadWorkDocuments,
 } from "../lib/multi-orchestrator.ts"
 import { startMarkerPolling } from "../lib/marker-polling.ts"
 import { finalizeMultiRun } from "../lib/multi-finalization.ts"
@@ -366,7 +367,7 @@ function printDryRunOutput(
     console.log(`\n${thread.threadId}: ${thread.threadName}`)
     console.log(`  Agent: ${thread.agentName}`)
     console.log(`  Working Models: ${thread.models.map((m) => m.model).join(" → ")}`)
-    console.log(`  Prompt: ${thread.promptPath}`)
+    console.log("  Prompt: generated in memory from thread context and WORK.md")
   }
 }
 
@@ -552,15 +553,25 @@ export async function main(argv: string[] = process.argv): Promise<void> {
     batchParsed.batch,
   )?.batchName || `Batch ${batchParsed.batch}`
 
-  // Validate prompt files exist
-  const missingPrompts = validateThreadPrompts(threads)
-  if (missingPrompts.length > 0) {
-    console.error("Error: Missing prompt files:")
-    for (const msg of missingPrompts) {
+  // Validate canonical thread WORK.md files exist before execution.
+  const missingWorkDocs = validateThreadWorkDocuments(repoRoot, stream.id, threads)
+  if (missingWorkDocs.length > 0) {
+    console.error("Error: Missing thread WORK.md files:")
+    for (const msg of missingWorkDocs) {
       console.error(msg)
     }
     console.error(
-      `\nHint: Run 'work prompt --stage ${batchParsed.stage} --batch ${batchParsed.batch}' to generate them.`,
+      `\nHint: Run 'work approve plan', 'work approve revision', or 'work validate work' to create or verify thread WORK.md files.`,
+    )
+    process.exit(1)
+  }
+
+  try {
+    prepareRuntimeThreadPrompts(repoRoot, stream.id, threads)
+  } catch (e) {
+    console.error(`Error: ${(e as Error).message}`)
+    console.error(
+      `\nHint: Run 'work approve plan', 'work approve revision', or 'work validate work' to create or verify thread WORK.md files.`,
     )
     process.exit(1)
   }

@@ -5,12 +5,11 @@
  * Handles thread discovery, session setup, pane spawning, and session tracking.
  */
 
-import { join } from "path"
 import { existsSync } from "fs"
-import { getWorkDir } from "./repo.ts"
 import { loadAgentsConfig, getAgentModels } from "./agents-yaml.ts"
-import { getThreadMetadata } from "./threads.ts"
 import { queryThreadsForWorkstream } from "./hierarchy-query.ts"
+import { getPromptContext, generateThreadPrompt } from "./prompts.ts"
+import { getThreadWorkMdPath, getThreadWorkMdRelativePath } from "./thread-workdocs.ts"
 import {
   createSession,
   addWindow,
@@ -24,38 +23,23 @@ import {
 import { buildRetryRunCommand } from "./opencode.ts"
 import type { ThreadInfo, ThreadSessionMap } from "./multi-types.ts"
 
+function shellQuote(str: string): string {
+  return `'${str.replace(/'/g, "'\\''")}'`
+}
+
 /**
- * Build the prompt file path for a thread using metadata strings
- * Used when reconstructing prompt paths from canonical thread metadata.
+ * Build the runtime prompt content for a thread.
+ *
+ * The prompt is generated in memory from the same prompt context used by the
+ * legacy prompt-file flow. It is not persisted under work/<stream>/prompts.
  */
-export function getPromptFilePathFromMetadata(
+export function generateRuntimeThreadPrompt(
   repoRoot: string,
   streamId: string,
-  stageNum: number,
-  stageName: string,
-  batchNum: number,
-  batchName: string,
-  threadName: string,
+  threadId: string,
 ): string {
-  const workDir = getWorkDir(repoRoot)
-
-  const safeStageName = stageName.replace(/[^a-zA-Z0-9_-]/g, "-").toLowerCase()
-  const safeBatchName = batchName.replace(/[^a-zA-Z0-9_-]/g, "-").toLowerCase()
-  const safeThreadName = threadName
-    .replace(/[^a-zA-Z0-9_-]/g, "-")
-    .toLowerCase()
-
-  const stagePrefix = stageNum.toString().padStart(2, "0")
-  const batchPrefix = batchNum.toString().padStart(2, "0")
-
-  return join(
-    workDir,
-    streamId,
-    "prompts",
-    `${stagePrefix}-${safeStageName}`,
-    `${batchPrefix}-${safeBatchName}`,
-    `${safeThreadName}.md`,
-  )
+  const context = getPromptContext(repoRoot, streamId, threadId)
+  return generateThreadPrompt(context)
 }
 
 /**
@@ -76,7 +60,6 @@ export function collectThreadInfoForBatch(
   batchNum: number,
   agentsConfig: ReturnType<typeof loadAgentsConfig>,
 ): ThreadInfo[] {
-  const workDir = getWorkDir(repoRoot)
   let canonicalThreads: ReturnType<typeof queryThreadsForWorkstream> = []
   try {
     canonicalThreads = queryThreadsForWorkstream(repoRoot, streamId).filter(
@@ -88,20 +71,6 @@ export function collectThreadInfoForBatch(
 
   if (canonicalThreads.length > 0) {
     return canonicalThreads.map((thread) => {
-      const threadMeta = getThreadMetadata(repoRoot, streamId, thread.threadId)
-      const promptPath = thread.promptPath
-        ? join(workDir, thread.promptPath)
-        : threadMeta?.promptPath
-          ? join(workDir, threadMeta.promptPath)
-          : getPromptFilePathFromMetadata(
-              repoRoot,
-              streamId,
-              stageNum,
-              thread.stageName,
-              batchNum,
-              thread.batchName,
-              thread.threadName,
-            )
       const agentName = thread.assignedAgent || "default"
       const models = getAgentModels(agentsConfig!, agentName)
       if (models.length === 0) {
@@ -116,7 +85,6 @@ export function collectThreadInfoForBatch(
         threadName: thread.threadName,
         stageName: thread.stageName,
         batchName: thread.batchName,
-        promptPath,
         models,
         agentName,
       }
@@ -145,15 +113,33 @@ export function buildThreadRunCommand(
   streamId: string,
   options: { headless?: boolean } = {},
 ): string {
+  if (!thread.promptContent) {
+    throw new Error(
+      `Runtime prompt content has not been generated for thread ${thread.threadId}`,
+    )
+  }
   const paneTitle = buildPaneTitle(thread)
   return buildRetryRunCommand(
     port,
     thread.models,
-    thread.promptPath,
+    thread.promptContent,
     paneTitle,
     thread.threadId,
     { headless: options.headless, streamId },
   )
+}
+
+/**
+ * Generate in-memory runtime prompt content for each thread.
+ */
+export function prepareRuntimeThreadPrompts(
+  repoRoot: string,
+  streamId: string,
+  threads: ThreadInfo[],
+): void {
+  for (const thread of threads) {
+    thread.promptContent = generateRuntimeThreadPrompt(repoRoot, streamId, thread.threadId)
+  }
 }
 
 /**
@@ -272,7 +258,7 @@ export async function setupGridController(
   const threadCmdEnv = threads
     .map((t, i) => {
       const cmd = buildThreadRunCommand(t, port, streamId, options)
-      return `THREAD_CMD_${i + 1}="${cmd}"`
+      return `THREAD_CMD_${i + 1}=${shellQuote(cmd)}`
     })
     .join(" ")
 
@@ -301,15 +287,22 @@ export function setupKillSessionKeybind(): void {
 }
 
 /**
- * Validate that all thread prompts exist
- * Returns array of error messages for missing prompts
+ * Validate that all canonical thread WORK.md files exist.
+ * Returns array of error messages for missing WORK.md files.
  */
-export function validateThreadPrompts(threads: ThreadInfo[]): string[] {
-  const missingPrompts: string[] = []
+export function validateThreadWorkDocuments(
+  repoRoot: string,
+  streamId: string,
+  threads: Pick<ThreadInfo, "threadId">[],
+): string[] {
+  const missingWorkDocs: string[] = []
   for (const thread of threads) {
-    if (!existsSync(thread.promptPath)) {
-      missingPrompts.push(`  ${thread.threadId}: ${thread.promptPath}`)
+    const workPath = getThreadWorkMdPath(repoRoot, streamId, thread.threadId)
+    if (!existsSync(workPath)) {
+      missingWorkDocs.push(
+        `  ${thread.threadId}: work/${getThreadWorkMdRelativePath(repoRoot, streamId, thread.threadId)}`,
+      )
     }
   }
-  return missingPrompts
+  return missingWorkDocs
 }

@@ -1230,7 +1230,7 @@ export interface ThreadInfo {
   threadName: string
   stageName: string
   batchName: string
-  promptPath: string
+  promptContent?: string // Generated in memory at execution time; never persisted
   models: NormalizedModelSpec[] // List of models to try in order (working agent models)
   agentName: string
   // Session tracking (populated before spawn)

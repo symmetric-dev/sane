@@ -179,7 +179,7 @@ Prefer thread work docs when present.
       )
 
       expect(() => getPromptContext(repoRoot, "000-prompt-fallback", "01.01.01")).toThrow(
-        "Thread WORK.md not found for 01.01.01 at work/000-prompt-fallback/stages/01/threads/01.01.01/WORK.md. Run 'work approve plan' or 'work approve revision' to generate thread WORK.md files before running 'work prompt'.",
+        "Thread WORK.md not found for 01.01.01 at work/000-prompt-fallback/stages/01/threads/01.01.01/WORK.md. Run 'work approve plan', 'work approve revision', or 'work validate work' to create or verify thread WORK.md files before execution.",
       )
     })
 
@@ -472,7 +472,7 @@ Require approval-generated thread work docs first.
 
         expect(stdout).toEqual([])
         expect(stderr.join("\n")).toContain("Thread WORK.md not found for 01.01.01")
-        expect(stderr.join("\n")).toContain("Run 'work approve plan' or 'work approve revision'")
+        expect(stderr.join("\n")).toContain("Run 'work approve plan', 'work approve revision', or 'work validate work'")
       } finally {
         process.exit = originalExit
       }

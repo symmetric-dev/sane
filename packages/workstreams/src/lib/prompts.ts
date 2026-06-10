@@ -224,7 +224,7 @@ export function getPromptContext(
 
   if (!existsSync(threadWorkPath)) {
     throw new Error(
-      `Thread WORK.md not found for ${threadIdStr} at ${threadWorkPathRelative}. Run 'work approve plan' or 'work approve revision' to generate thread WORK.md files before running 'work prompt'.`,
+      `Thread WORK.md not found for ${threadIdStr} at ${threadWorkPathRelative}. Run 'work approve plan', 'work approve revision', or 'work validate work' to create or verify thread WORK.md files before execution.`,
     )
   }
 

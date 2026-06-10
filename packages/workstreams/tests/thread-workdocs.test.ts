@@ -6,7 +6,10 @@ import { dirname, join } from "node:path"
 
 import { main as approveMain } from "../src/cli/approve/index.ts"
 import { main as createMain } from "../src/cli/create.ts"
+import { main as multiMain } from "../src/cli/multi.ts"
 import { main as planMain } from "../src/cli/plan.ts"
+import { getPromptContext, generateThreadPrompt } from "../src/lib/prompts.ts"
+import { generateRuntimeThreadPrompt } from "../src/lib/multi-orchestrator.ts"
 import {
   getThreadWorkMdPath,
   resolveStageDirectoryName,
@@ -14,6 +17,111 @@ import {
 import { loadWorkstreamPlan } from "../src/lib/consolidate.ts"
 import { parseStreamDocument } from "../src/lib/stream-parser.ts"
 import { captureCliOutput } from "./helpers/cli-runner.ts"
+
+async function captureCliOutputAndExit(fn: () => Promise<void> | void): Promise<{
+  stdout: string[]
+  stderr: string[]
+  exitCode: number | undefined
+}> {
+  const stdout: string[] = []
+  const stderr: string[] = []
+  const originalLog = console.log
+  const originalError = console.error
+  const originalExit = process.exit
+  let exitCode: number | undefined
+
+  console.log = (...args: any[]) => stdout.push(args.map((a) => String(a)).join(" "))
+  console.error = (...args: any[]) => stderr.push(args.map((a) => String(a)).join(" "))
+  process.exit = ((code?: string | number | null | undefined) => {
+    exitCode = typeof code === "number" ? code : code ? Number(code) : 0
+    throw new Error("__PROCESS_EXIT__")
+  }) as typeof process.exit
+
+  try {
+    await fn()
+  } catch (e) {
+    if (!(e instanceof Error) || e.message !== "__PROCESS_EXIT__") {
+      throw e
+    }
+  } finally {
+    console.log = originalLog
+    console.error = originalError
+    process.exit = originalExit
+  }
+
+  return { stdout, stderr, exitCode }
+}
+
+function writeDefaultAgentsYaml(repoRoot: string): void {
+  writeFileSync(
+    join(repoRoot, "work/agents.yaml"),
+    `agents:
+  - name: default
+    description: Default implementation agent
+    best_for: general implementation work
+    models:
+      - openai/gpt-4o
+`,
+  )
+}
+
+async function createApprovedSingleThreadWorkstream(repoRoot: string): Promise<void> {
+  createMain(["bun", "work-create", "--name", "runtime-prompts", "--repo-root", repoRoot])
+  writeDefaultAgentsYaml(repoRoot)
+  planMain(["bun", "work-plan", "create", "--stream", "000-runtime-prompts", "--stages", "1", "--repo-root", repoRoot])
+
+  writeFileSync(
+    join(repoRoot, "work/000-runtime-prompts/README.md"),
+    `# Runtime Prompts
+
+## Summary
+
+Runtime prompt generation should use thread WORK.md as the canonical contract.
+`,
+  )
+
+  writeFileSync(
+    join(repoRoot, "work/000-runtime-prompts/stages/01/PLAN.md"),
+    `# Stage 01 Plan
+
+## Summary
+
+Validate runtime prompt generation.
+
+## References
+
+- \`packages/workstreams/src/lib/multi-orchestrator.ts\`
+
+## Questions
+
+- [x] None
+
+## Batches
+
+### Batch 01: Runtime prompt batch
+
+Generate execution prompts in memory.
+
+#### Thread 01: Runtime prompt thread
+
+**Summary:**
+Use generated wrapper prompt content.
+
+**Details:**
+Do not use raw WORK.md as the complete prompt.
+`,
+  )
+
+  await approveMain([
+    "bun",
+    "work-approve",
+    "plan",
+    "--stream",
+    "000-runtime-prompts",
+    "--repo-root",
+    repoRoot,
+  ])
+}
 
 describe("thread WORK.md generation", () => {
   let repoRoot: string
@@ -143,6 +251,80 @@ Preserve manual edits.
     expect(createdContent).toContain("Keep this short. State what to capture before stopping.")
     expect(readFileSync(existingThreadWorkPath, "utf-8")).toBe("manual thread work doc\n")
     expect(existsSync(join(repoRoot, "work/000-thread-workdocs/prompts"))).toBe(false)
+  })
+
+  test("multi dry-run generates runtime prompts from WORK.md without prompt files", async () => {
+    await createApprovedSingleThreadWorkstream(repoRoot)
+
+    const promptsDir = join(repoRoot, "work/000-runtime-prompts/prompts")
+    expect(existsSync(promptsDir)).toBe(false)
+
+    const { stdout, stderr } = await captureCliOutput(async () => {
+      await multiMain([
+        "bun",
+        "work-multi",
+        "--batch",
+        "01.01",
+        "--stream",
+        "000-runtime-prompts",
+        "--repo-root",
+        repoRoot,
+        "--dry-run",
+        "--no-server",
+      ])
+    })
+
+    expect(stderr).toEqual([])
+    const output = stdout.join("\n")
+    expect(output).toContain("Prompt: generated in memory from thread context and WORK.md")
+    expect(output).toContain("You are an agent working on thread 01.01.01")
+    expect(output).toContain("work/000-runtime-prompts/stages/01/threads/01.01.01/WORK.md")
+    expect(output).not.toContain("Run 'work prompt")
+    expect(existsSync(promptsDir)).toBe(false)
+  })
+
+  test("multi dry-run fails with a WORK.md-specific error when thread work doc is missing", async () => {
+    await createApprovedSingleThreadWorkstream(repoRoot)
+    rmSync(getThreadWorkMdPath(repoRoot, "000-runtime-prompts", "01.01.01"), { force: true })
+
+    const { stderr, exitCode } = await captureCliOutputAndExit(async () => {
+      await multiMain([
+        "bun",
+        "work-multi",
+        "--batch",
+        "01.01",
+        "--stream",
+        "000-runtime-prompts",
+        "--repo-root",
+        repoRoot,
+        "--dry-run",
+        "--no-server",
+      ])
+    })
+
+    const errors = stderr.join("\n")
+    expect(exitCode).toBe(1)
+    expect(errors).toContain("Error: Missing thread WORK.md files:")
+    expect(errors).toContain("01.01.01: work/000-runtime-prompts/stages/01/threads/01.01.01/WORK.md")
+    expect(errors).toContain("work approve plan")
+    expect(errors).toContain("work approve revision")
+    expect(errors).toContain("work validate work")
+    expect(errors).not.toContain("prompt files")
+    expect(errors).not.toContain("work prompt")
+  })
+
+  test("runtime prompt is generated with wrapper text instead of raw WORK.md", async () => {
+    await createApprovedSingleThreadWorkstream(repoRoot)
+
+    const context = getPromptContext(repoRoot, "000-runtime-prompts", "01.01.01")
+    const generatedPrompt = generateRuntimeThreadPrompt(repoRoot, "000-runtime-prompts", "01.01.01")
+    const expectedPrompt = generateThreadPrompt(context)
+    const rawWorkMd = readFileSync(getThreadWorkMdPath(repoRoot, "000-runtime-prompts", "01.01.01"), "utf-8")
+
+    expect(generatedPrompt).toBe(expectedPrompt)
+    expect(generatedPrompt).not.toBe(rawWorkMd)
+    expect(generatedPrompt).toContain("You are an agent working on thread 01.01.01")
+    expect(generatedPrompt).toContain("Read this document first: `work/000-runtime-prompts/stages/01/threads/01.01.01/WORK.md`.")
   })
 
   test("skips untouched scaffold stage directories when mapping synthetic stage ids", () => {

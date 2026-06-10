@@ -13,7 +13,6 @@ import {
   getNextInsertedRevisionDirectoryName,
   listOrderedStageDirectories,
 } from "./stage-directories.ts"
-import { generateAllPrompts } from "./prompts.ts"
 import { scaffoldStageDirectory } from "./generate.ts"
 import { getWorkDir } from "./repo.ts"
 import {

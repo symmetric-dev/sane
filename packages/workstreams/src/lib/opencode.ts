@@ -164,17 +164,10 @@ export function getSynthesisLogPath(streamId: string, threadId: string): string 
 }
 
 /**
- * Escape a string for use in shell commands wrapped in sh -c '...'
- * Handles both the outer single-quote wrapper and inner double-quoted strings
+ * Quote a value as one POSIX shell argument.
  */
-function escapeForShell(str: string): string {
-  // First escape single quotes for the outer sh -c '...' wrapper
-  // Then escape double quotes, $, and backticks for inner double-quoted strings
-  return str
-    .replace(/'/g, "'\\''")
-    .replace(/"/g, '\\"')
-    .replace(/\$/g, "\\$")
-    .replace(/`/g, "\\`")
+function shellQuote(str: string): string {
+  return `'${str.replace(/'/g, "'\\''")}'`
 }
 
 function buildCommandPrefix(options?: RunCommandOptions): string {
@@ -216,20 +209,18 @@ printf '{"status":"%s","exitCode":%s}\n' "$RESULT_STATUS" "${shellExitVarWithDef
 export function buildRunCommand(
   port: number,
   model: string,
-  promptPath: string,
+  promptContent: string,
   threadTitle: string,
   variant?: string,
   threadId?: string,
   options: RunCommandOptions = {},
 ): string {
-  // Escape single quotes in paths by replacing ' with '\''
-  const escapedPath = promptPath.replace(/'/g, "'\\''")
   // Truncate and escape the title for shell safety
   const truncated = truncateTitle(threadTitle, 32)
-  const escapedTitle = escapeForShell(truncated)
+  const quotedTitle = shellQuote(truncated)
 
   // Build variant flag if specified
-  const variantFlag = variant ? ` --variant "${variant}"` : ""
+  const variantFlag = variant ? ` --variant ${shellQuote(variant)}` : ""
 
   // Build completion marker path if threadId provided
   const completionMarkerCmd = threadId && options.streamId
@@ -238,24 +229,24 @@ export function buildRunCommand(
 
   const resultWriteCmd = buildResultWriteCommand(options.streamId, threadId, "RUN_EXIT")
   const commandPrefix = buildCommandPrefix(options)
+  const script = `RUN_EXIT=0
+PROMPT_CONTENT=${shellQuote(promptContent)}
+echo "════════════════════════════════════════"
+echo ${shellQuote(`Thread: ${truncated}`)}
+echo ${shellQuote(`Model: ${model}${variant ? ` (${variant})` : ""}`)}
+echo "════════════════════════════════════════"
+echo ""
+printf '%s' "$PROMPT_CONTENT" | opencode run --port ${port} --model ${shellQuote(model)}${variantFlag} --title ${quotedTitle}
+RUN_EXIT=$?
+${resultWriteCmd}
+${completionMarkerCmd}
+exit $RUN_EXIT`
 
   // Build a shell script that:
   // 1. Runs opencode with the provided title
   // 2. Writes result metadata (if threadId provided)
   // 3. Writes completion marker file (if threadId provided)
-  return `${commandPrefix}sh -c '
-RUN_EXIT=0
-echo "════════════════════════════════════════"
-echo "Thread: ${escapedTitle}"
-echo "Model: ${model}${variant ? ` (${variant})` : ""}"
-echo "════════════════════════════════════════"
-echo ""
-cat "${escapedPath}" | opencode run --port ${port} --model "${model}"${variantFlag} --title "${escapedTitle}"
-RUN_EXIT=$?
-${resultWriteCmd}
-${completionMarkerCmd}
-exit $RUN_EXIT
-'`
+  return `${commandPrefix}sh -c ${shellQuote(script)}`
 }
 
 import type { NormalizedModelSpec } from "./types.ts"
@@ -276,7 +267,7 @@ const EARLY_FAILURE_THRESHOLD_SECONDS = 10
 export function buildRetryRunCommand(
   port: number,
   models: NormalizedModelSpec[],
-  promptPath: string,
+  promptContent: string,
   threadTitle: string,
   threadId?: string,
   options: RunCommandOptions = {},
@@ -288,19 +279,18 @@ export function buildRetryRunCommand(
   // If only one model, use simple command without retry logic
   if (models.length === 1) {
     const m = models[0]!
-    return buildRunCommand(port, m.model, promptPath, threadTitle, m.variant, threadId, options)
+    return buildRunCommand(port, m.model, promptContent, threadTitle, m.variant, threadId, options)
   }
 
-  // Escape single quotes in paths by replacing ' with '\''
-  const escapedPath = promptPath.replace(/'/g, "'\\''")
   // Truncate and escape the title for shell safety
   const truncated = truncateTitle(threadTitle, 32)
-  const escapedTitle = escapeForShell(truncated)
+  const quotedTitle = shellQuote(truncated)
 
   // Build model attempt blocks
   const modelAttempts = models
     .map((m, i) => {
-      const variantFlag = m.variant ? ` --variant "${m.variant}"` : ""
+      const variantArg = m.variant ? ` --variant ${shellQuote(m.variant)}` : ""
+      const modelArg = shellQuote(m.model)
       const isLast = i === models.length - 1
 
       if (i === 0) {
@@ -308,7 +298,7 @@ export function buildRetryRunCommand(
         return `
   START_TIME=$(date +%s)
   echo "Trying model ${i + 1}/${models.length}: ${m.model}${m.variant ? ` (variant: ${m.variant})` : ""}"
-  cat "${escapedPath}" | opencode run --port ${port} --model "${m.model}"${variantFlag} --title "$TITLE"
+  printf '%s' "$PROMPT_CONTENT" | opencode run --port ${port} --model ${modelArg}${variantArg} --title ${quotedTitle}
   EXIT_CODE=$?
   ELAPSED=$(($(date +%s) - START_TIME))
   
@@ -324,7 +314,7 @@ export function buildRetryRunCommand(
   if [ -z "$FINAL_EXIT" ]; then
     START_TIME=$(date +%s)
     echo "Trying model ${i + 1}/${models.length}: ${m.model}${m.variant ? ` (variant: ${m.variant})` : ""}"
-    cat "${escapedPath}" | opencode run --port ${port} --model "${m.model}"${variantFlag} --title "$TITLE"
+    printf '%s' "$PROMPT_CONTENT" | opencode run --port ${port} --model ${modelArg}${variantArg} --title ${quotedTitle}
     FINAL_EXIT=$?
   fi`
       } else {
@@ -333,7 +323,7 @@ export function buildRetryRunCommand(
   if [ -z "$FINAL_EXIT" ]; then
     START_TIME=$(date +%s)
     echo "Trying model ${i + 1}/${models.length}: ${m.model}${m.variant ? ` (variant: ${m.variant})` : ""}"
-    cat "${escapedPath}" | opencode run --port ${port} --model "${m.model}"${variantFlag} --title "$TITLE"
+    printf '%s' "$PROMPT_CONTENT" | opencode run --port ${port} --model ${modelArg}${variantArg} --title ${quotedTitle}
     EXIT_CODE=$?
     ELAPSED=$(($(date +%s) - START_TIME))
     
@@ -357,13 +347,11 @@ export function buildRetryRunCommand(
 
   const resultWriteCmd = buildResultWriteCommand(options.streamId, threadId, "FINAL_EXIT")
   const commandPrefix = buildCommandPrefix(options)
-
-  return `${commandPrefix}sh -c '
-FINAL_EXIT=""
-TITLE="${escapedTitle}"
+  const script = `FINAL_EXIT=""
+PROMPT_CONTENT=${shellQuote(promptContent)}
 echo "════════════════════════════════════════"
-echo "Thread: ${escapedTitle}"
-echo "Models: ${modelList}"
+echo ${shellQuote(`Thread: ${truncated}`)}
+echo ${shellQuote(`Models: ${modelList}`)}
 echo "════════════════════════════════════════"
 echo ""
 ${modelAttempts}
@@ -372,8 +360,9 @@ if [ -z "$FINAL_EXIT" ]; then
 fi
 ${resultWriteCmd}
 ${completionMarkerCmd}
-exit $FINAL_EXIT
-'`
+exit $FINAL_EXIT`
+
+  return `${commandPrefix}sh -c ${shellQuote(script)}`
 }
 
 /**
