@@ -129,11 +129,11 @@ Stream ID: \`${streamId}\`
 
 ## Summary
 
-<!-- Describe the overall workstream goal and context in freeform markdown. -->
+<!-- Describe the future implementation workstream goal and context in freeform markdown. Do not describe the current planning session. -->
 
 ## Deliverables
 
-<!-- Keep this section as bullets. List the cross-stage outputs this workstream must produce. -->
+<!-- Keep this section as bullets. List concrete implementation outcomes this workstream must produce across stages. Do not list planning artifacts. -->
 - Replace with a concrete workstream deliverable
 
 ## Dependencies

@@ -7,7 +7,7 @@ description: Review implemented workstream batches or threads against `WORK.md`,
 
 ## Model
 
-Implementation review judges completed agent work against the execution contract. It does not review abstract plans and does not perform manual user acceptance.
+Implementation review judges agent work against the execution contract. It does not review abstract plans and does not perform manual user acceptance.
 
 Primary contract order:
 

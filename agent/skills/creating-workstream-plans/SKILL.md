@@ -16,7 +16,7 @@ Planning-only describes this session, not the future workstream. Do not implemen
 1. Create or select the workstream:
    - `work create --name "feature-name"`
    - `work current --set "NNN-feature-name"`
-2. Fill root `README.md` with shared goal, context, deliverables, dependencies, and resources.
+2. Fill root `README.md` with the future implementation workstream's goal, context, implementation deliverables, dependencies, and resources. Do not describe the current planning session as the workstream deliverable.
 3. Scaffold stages: `work plan create --stages N`.
 4. Fill each stage's `REQUIREMENTS.md`, `PLAN.md`, and `specs/` as needed.
 5. Validate before review:
@@ -26,7 +26,7 @@ Planning-only describes this session, not the future workstream. Do not implemen
 6. Ask user to approve plan: `!work approve plan`.
 7. After approval, review and fill generated thread `WORK.md` files before execution starts.
 8. Assign agents with `work assign --thread "01.01.01" --agent "agent-name"` if needed.
-9. Link the planning session with `link_planning_session` once ready for handoff.
+9. Link the planning session with `link_planning_session` and the explicit stream id once ready for handoff. Do not rely on repository current state.
 
 ## Stage and Thread Rules
 

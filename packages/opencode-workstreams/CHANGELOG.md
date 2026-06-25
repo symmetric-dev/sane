@@ -2,6 +2,11 @@
 
 All notable changes to `@agenv/opencode-workstreams` are documented in this file.
 
+## 0.2.1 - 2026-06-25
+
+- Removed the `current_workstream` tool from the exposed OpenCode plugin tools; agents should use the `work current` CLI command explicitly when needed.
+- Required `link_planning_session` callers to pass an explicit `streamId` instead of relying on repository current state.
+
 ## 0.2.0 - 2026-06-08
 
 - Removed the disabled branch-supervision finalization tool from the exposed OpenCode plugin tools.

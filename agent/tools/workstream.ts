@@ -492,25 +492,21 @@ async function executeLaunchSupervisionBranch(
 
 export const link_planning_session = tool({
   description:
-    "Link the current opencode session to a workstream as its planning session. Use this after creating a workstream to enable resuming this conversation later with 'work plan'.",
+    "Link the current opencode session to an explicitly specified workstream as its planning session. Use this after creating a workstream to enable resuming this conversation later with 'work plan'. Always pass streamId; do not rely on repository current state.",
   args: {
     streamId: tool.schema
       .string()
       .describe(
-        "The workstream ID or name (e.g., '012-my-feature' or 'my-feature'). If omitted, uses the current workstream.",
-      )
-      .optional(),
+        "The explicit workstream ID or name to link (e.g., '012-my-feature' or 'my-feature'). Required; do not rely on repository current state.",
+      ),
   },
-  async execute(args: { streamId?: string }, context: { sessionID?: string }) {
+  async execute(args: { streamId: string }, context: { sessionID?: string }) {
     const sessionId = context.sessionID
     if (!sessionId) {
       return "Error: Could not determine current session ID"
     }
 
-    const cmdArgs = ["plan", "--set", sessionId]
-    if (args.streamId) {
-      cmdArgs.push("--stream", args.streamId)
-    }
+    const cmdArgs = ["plan", "--set", sessionId, "--stream", args.streamId]
 
     try {
       const result = await Bun.$`work ${cmdArgs}`.text()
@@ -563,20 +559,6 @@ export const link_thread_session = tool({
       return `Linked current session ${sessionId} to thread ${args.threadId} in ${stream.id}.`
     } catch (error) {
       return `Error linking thread session: ${error instanceof Error ? error.message : String(error)}`
-    }
-  },
-})
-
-export const current_workstream = tool({
-  description:
-    "Get information about the current workstream, including its ID, name, and planning session status.",
-  args: {},
-  async execute() {
-    try {
-      const result = await Bun.$`work current`.text()
-      return result.trim()
-    } catch (error) {
-      return `Error getting current workstream: ${error instanceof Error ? error.message : String(error)}`
     }
   },
 })

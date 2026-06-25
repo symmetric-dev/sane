@@ -5,6 +5,12 @@ description: Evaluate completed workstream output and finalize REPORT.md.
 
 # Evaluating Workstreams
 
+## Model
+
+Evaluation closes a workstream after implementation is complete or intentionally stopped.
+
+It summarizes delivered work, deviations, unresolved issues, and whether follow-up belongs in a revision stage or separate workstream. It does not perform implementation, management, or manual user acceptance.
+
 ## Workflow
 
 1. Check current state: `work status`

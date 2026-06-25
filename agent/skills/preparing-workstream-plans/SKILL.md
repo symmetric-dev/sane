@@ -7,7 +7,7 @@ description: Prepare workstream plans by researching uncertainty before stage pl
 
 ## Model
 
-Preparation resolves uncertainty so planning can start. It does not create stages, batches, threads, or implementation work.
+Preparation resolves uncertainty so planning can start. It does not create stages, batches, threads, or execution contracts.
 
 Output from this phase should answer: what should the future implementation plan do?
 

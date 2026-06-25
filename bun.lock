@@ -47,7 +47,7 @@
     },
     "packages/opencode-workstreams": {
       "name": "@agenv/opencode-workstreams",
-      "version": "0.1.1",
+      "version": "0.2.1",
       "dependencies": {
         "@agenv/workstreams": "^0.6.1",
         "@opencode-ai/plugin": "^1.2.27",

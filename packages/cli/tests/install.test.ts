@@ -291,7 +291,6 @@ describe("ag install profiles", () => {
       [
         "export const link_planning_session = {}",
         "export const launch_supervision_branch = {}",
-        "export const current_workstream = {}",
       ].join("\n"),
     )
 

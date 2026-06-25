@@ -41,8 +41,8 @@ Description:
   The 'create' subcommand scaffolds stage directories for a workstream under
   stages/ using the supported stage-local files.
 
-  To link a session from within opencode, use the workstream_link_planning_session
-  tool after creating a workstream.
+  To link a session from within opencode, use the link_planning_session tool
+  with an explicit streamId after creating a workstream.
 
 Options:
   --stream, -s <id>    Workstream ID or name (uses current if not specified)
@@ -64,7 +64,7 @@ Workflow:
   Planning-session flow:
     1. Open opencode and discuss the problem
     2. Ask agent to create workstream with planning skill
-    3. Use workstream_link_planning_session to link session
+    3. Use link_planning_session with explicit streamId to link session
     4. Later, resume with: work plan
 
 Examples:
