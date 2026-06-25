@@ -57,7 +57,7 @@ Terminal-first dashboard implementation.
 
     writeFileSync(
       join(repoRoot, "work", streamId, "stages", "01", "PLAN.md"),
-      `# Stage 01 Discovery Plan
+      `# Stage 01 Implementation Plan
 
 ## Summary
 
@@ -144,7 +144,7 @@ Use the shared loader instead of requiring a root PLAN.md.
     expect(loadedPlan?.stagePlanPaths).toHaveLength(1)
     expect(loadedPlan?.displayPath).toContain(`work/${streamId}/stages`)
     expect(loadedPlan?.content).toContain("# Plan: Dashboard terminal-first UI")
-    expect(loadedPlan?.content).toContain("### Stage 1: Discovery")
+    expect(loadedPlan?.content).toContain("### Stage 1: Implementation")
   })
 
   test("work preview --stream succeeds for a workstream with only stage-local plans", async () => {
@@ -156,7 +156,7 @@ Use the shared loader instead of requiring a root PLAN.md.
     expect(stderr).toHaveLength(0)
     expect(output).toContain("Workstream: Dashboard terminal-first UI")
     expect(output).toContain("(1/1 threads)")
-    expect(output).toContain("1. Discovery")
+    expect(output).toContain("1. Implementation")
     expect(output).toContain("Thread 1: Preview stage-local plan [1/1] ✓")
     expect(output).toContain("Questions: 1 open, 1 resolved")
   })

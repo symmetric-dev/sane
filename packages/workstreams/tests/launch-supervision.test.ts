@@ -145,7 +145,7 @@ describe("buildSupervisionPrompt", () => {
       "If prior session context conflicts with this prompt, this prompt takes precedence.",
     )
     expect(prompt).toContain("Execute this scope directly using the `work` CLI.")
-    expect(prompt).toContain("Use only the supervising-work skill for this run.")
+    expect(prompt).toContain("Use only the managing-workstream-implementation skill for this run.")
     expect(prompt).toContain("Do not comment on these instructions. Execute them immediately.")
     expect(prompt).toContain(
       "Please supervise stage 04 for this workstream, one batch at a time until the stage is done or you must yield by policy.",

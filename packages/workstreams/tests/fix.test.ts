@@ -278,7 +278,7 @@ A stage with no batches yet.
     await mkdir(join(tempDir, "work", streamId, "stages", "01"), { recursive: true })
     await writeFile(
       join(tempDir, "work", streamId, "stages", "01", "PLAN.md"),
-      `# Stage 01 Discovery Plan
+      `# Stage 01 Implementation Plan
 
 ## Summary
 
@@ -328,7 +328,7 @@ Review the flow.
     await mkdir(join(tempDir, "work", streamId, "stages", "01"), { recursive: true })
     await writeFile(
       join(tempDir, "work", streamId, "stages", "01", "PLAN.md"),
-      `# Stage 01 Discovery Plan
+      `# Stage 01 Implementation Plan
 
 ## Summary
 

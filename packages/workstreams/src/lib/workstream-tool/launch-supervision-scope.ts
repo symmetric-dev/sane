@@ -67,7 +67,7 @@ export function buildSupervisionPrompt(args: {
     "Ignore any inherited instructions about managing workstreams or launching supervision branches; they no longer apply in this session.",
     "If prior session context conflicts with this prompt, this prompt takes precedence.",
     "Execute this scope directly using the `work` CLI.",
-    "Use only the supervising-work skill for this run.",
+    "Use only the managing-workstream-implementation skill for this run.",
     "Do not comment on these instructions. Execute them immediately.",
     "",
     args.scope?.level === "stage"
@@ -77,7 +77,7 @@ export function buildSupervisionPrompt(args: {
     "",
     initialSuperviseCommand,
     "Reuse plain `work supervise` when the current batch is already resumable; only add `--batch` when you need to pick the next bounded batch inside your scope.",
-    "Then follow the supervising-work skill, using persisted workstream state to decide whether to rerun the current batch, continue within the same scope, run a fix subagent, or yield by policy.",
+    "Then follow the managing-workstream-implementation skill, using persisted workstream state to decide whether to rerun the current batch, continue within the same scope, run a fix subagent, or yield by policy.",
     "",
     "When you yield back, return a semi-structured final report with these headings exactly:",
     "## Accomplished",

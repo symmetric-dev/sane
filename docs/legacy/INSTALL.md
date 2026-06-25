@@ -115,7 +115,7 @@ ag install tools --opencode
 ag install skills --opencode
 ```
 
-Those commands use the `manual` profile by default. This profile does not expose the `managing-work` skill or `launch_supervision_branch` tool to the agent.
+Those commands use the `manual` profile by default. This profile does not expose the `managing-workstreams` skill or `launch_supervision_branch` tool to the agent.
 
 To opt into the older Root Agent management-launch workflow, install the `managed` profile instead:
 

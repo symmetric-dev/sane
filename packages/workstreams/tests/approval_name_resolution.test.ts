@@ -176,7 +176,7 @@ Centralize approval flows.
     )
     writeFileSync(
       join(TEST_DIR, "work", "stream-001", "stages", "01", "PLAN.md"),
-      `# Stage 01 Discovery Plan
+      `# Stage 01 Implementation Plan
 
 ## Summary
 
@@ -206,7 +206,7 @@ Use the H1 title when synthesizing the stream document.
 
     expect(resolveStageApprovalNames(TEST_DIR, stream, 1)).toEqual({
       streamName: "Approval Auto Commit Centralization",
-      stageName: "Discovery",
+      stageName: "Implementation",
       streamSource: "plan",
       stageSource: "plan",
     })

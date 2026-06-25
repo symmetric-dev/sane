@@ -265,7 +265,7 @@ export function generateThreadPrompt(
     `You are an agent working on thread ${context.threadIdString} (${context.thread.name}) in stage ${context.stage.name} in workstream ${context.streamId} (${context.streamName}).`,
   )
   lines.push("")
-  lines.push("Use the `implementing-work` skill.")
+  lines.push("Use the `implementing-workstream-threads` skill.")
   lines.push("")
   lines.push(`Read this document first: \`${context.references.primaryWorkPath}\`.`)
   lines.push(`Then read stage requirements at \`${context.references.stageRequirementsPath}\` for the required constraints and acceptance criteria.`)

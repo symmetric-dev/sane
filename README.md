@@ -57,15 +57,15 @@ Optional skill install:
 The day-to-day workflow is:
 
 1. Discuss the feature and let the agent research the repo.
-2. The agent uses `planning-work` to create the workstream, fill the root `README.md`, and prepare stage `REQUIREMENTS.md` / `PLAN.md` files plus any stage `specs/` content, including meaningful stage `PLAN.md` titles.
+2. The agent uses `creating-workstream-plans` to create the workstream, fill the root `README.md`, and prepare stage `REQUIREMENTS.md` / `PLAN.md` files plus any stage `specs/` content, including meaningful stage `PLAN.md` titles.
 3. You approve the plan, which initializes canonical execution state directly from `PLAN.md` and generates per-thread `WORK.md` files.
 4. You manually `/fork` the session and ask the forked session to supervise the approved work.
-5. The supervision branch uses `supervising-work` to run `work supervise`, inspect persisted state, and drive the review/fix/escalation loop.
-6. Implementation agents spawned within that loop use `implementing-work` to inspect batch/thread scope and update item state while they work.
+5. The management branch uses `managing-workstream-implementation` to run `work supervise`, inspect persisted state, and drive the review/fix/escalation loop.
+6. Implementation agents spawned within that loop use `implementing-workstream-threads` to inspect batch/thread scope and update item state while they work.
 7. The supervisor fork reports back; you approve the completed stage with `work approve stage N`.
 8. Repeat the supervision loop for the next stage.
 9. If more work is needed after the original stages, use the revision flow.
-10. When the workstream is done, use `evaluating-work` to finalize `REPORT.md` and validate the report.
+10. When the workstream is done, use `evaluating-workstreams` to finalize `REPORT.md` and validate the report.
 
 Draft-first planning usually starts like:
 
@@ -141,12 +141,12 @@ Example output from `work status`:
 
 AgEnv uses skill files under `agent/skills/*` to guide agent behavior through each phase.
 
-- `planning-work`: used first to create the stream, fill the root `README.md`, shape stage docs, and get the workstream ready for plan approval.
-- `managing-work`: optional managed-profile skill used by the Root Agent after plan approval to launch and monitor a supervision branch automatically.
-- `researching-work`: used when the user wants research/discovery before any staged planning begins.
-- `supervising-work`: used by the supervision branch to run `work supervise`, inspect persisted state, and drive the review/fix/escalation loop.
-- `implementing-work`: used by worker agents that execute thread items within supervised batches; these workers inspect their scope and keep item state current.
-- `evaluating-work`: used near completion to assess delivered work and finalize report quality (`REPORT.md`).
+- `creating-workstream-plans`: used to create the stream, fill the root `README.md`, shape stage docs, and get the workstream ready for plan approval.
+- `managing-workstreams`: optional managed-profile skill used by the Root Agent after plan approval to launch and monitor a supervision branch automatically.
+- `preparing-workstream-plans`: used when research/discovery is needed before staged planning begins.
+- `managing-workstream-implementation`: used by the management branch to run `work supervise`, inspect persisted state, and drive the review/fix/escalation loop.
+- `implementing-workstream-threads`: used by worker agents that execute thread items within managed batches; these workers inspect their scope and keep item state current.
+- `evaluating-workstreams`: used near completion to assess delivered work and finalize report quality (`REPORT.md`).
 
 In practice:
 

@@ -25,19 +25,19 @@ work plan create --stages 2
 2. Review `README.md` and capture shared context under `resources/` / `docs/`
 3. Set the current workstream (or pass `--stream`): `work current --set "001-my-feature"`
 4. Scaffold stage directories: `work plan create --stages 2`
-5. Fill `stages/01/REQUIREMENTS.md`, `stages/01/PLAN.md`, and `stages/01/specs/` (repeat per stage), and rename each stage `PLAN.md` heading to a meaningful title such as `# Stage 01 Discovery Plan`.
+5. Fill `stages/01/REQUIREMENTS.md`, `stages/01/PLAN.md`, and `stages/01/specs/` (repeat per stage), and rename each stage `PLAN.md` heading to a meaningful title such as `# Stage 01 Implementation Plan`.
 6. Approve plan: `work approve plan` (user role, requires at least one stage)
 7. `work approve plan` also initializes thread execution state directly from the stage/thread plan and generates `stages/<nn>/threads/<thread-id>/WORK.md`
 8. Optionally assign agents to threads before execution, for example: `work assign --thread "01.01.01" --agent "frontend-expert"`
 9. Manually `/fork` the session and ask the forked session to supervise the approved work
 10. The supervision branch uses `work supervise`, `work status`, `work tree`, and `work batch-status` to drive the next batch and review loop
-11. Implementation agents use `implementing-work` to inspect assigned scope and update thread state with `work update`
+11. Implementation agents use `implementing-workstream-threads` to inspect assigned scope and update thread state with `work update`
 12. The supervisor reports back; the user approves the completed stage with `work approve stage <n>`
 13. Repeat the supervision loop for the next stage
 14. If new stages are needed after the original plan, use the revision flow:
     - `work revision --name "follow-up" [--after-stage N]`
     - `work approve revision`
-15. Finalize the report with the `evaluating-work` skill:
+15. Finalize the report with the `evaluating-workstreams` skill:
     - `work report validate`
 
 The optional managed install profile preserves the older Root Agent management-launch workflow. The default manual profile omits the management skill and launch tool so the user controls the `/fork` handoff.
@@ -55,6 +55,14 @@ Deferred artifacts created later in the workflow:
 - `stages/<nn>/PLAN.md` for stage-local batch/thread planning
 - `stages/<nn>/specs/` for stage specs
 - `stages/<nn>/threads/<thread-id>/WORK.md` for the primary worker doc generated after plan/revision approval
+
+## Execution Prompt Model
+
+Thread execution is `WORK.md`-first. `work multi`, `work supervise`, and `work execute` require the thread's `stages/<nn>/threads/<thread-id>/WORK.md` file, but they do not require persisted prompt files under `work/<stream>/prompts/`.
+
+When a thread is launched, the CLI generates the execution prompt in memory from the thread context and `WORK.md` path, then pipes that generated prompt to `opencode run`. Agents receive the normal wrapper prompt (including “You are an agent working on thread …”, `implementing-workstream-threads` guidance, and the `WORK.md` path), not raw `WORK.md` as the entire prompt.
+
+If execution fails because a `WORK.md` is missing, create or verify thread work docs with `work approve plan`, `work approve revision`, or `work validate work`.
 
 ## Useful Commands
 

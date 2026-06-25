@@ -10,14 +10,14 @@ This guide is the operator-facing reference for supervised workstream runs.
 
 Supervision is the execution layer inside the broader workstream lifecycle:
 
-1. A planning agent uses `planning-work` to prepare the workstream.
+1. A planning agent uses `creating-workstream-plans` to prepare the workstream.
 2. The user approves the plan.
 3. The user manually `/fork`s the session and asks the forked session to supervise the approved work.
-4. The supervision branch uses `supervising-work` and runs `work supervise`.
-5. Implementation agents inside that supervised batch use `implementing-work` to inspect thread scope, execute their assigned work, and keep thread state accurate.
+4. The management branch uses `managing-workstream-implementation` and runs `work supervise`.
+5. Implementation agents inside that managed batch use `implementing-workstream-threads` to inspect thread scope, execute their assigned work, and keep thread state accurate.
 6. The supervisor fork reports back to the user.
 7. The user approves the completed stage with `work approve stage N`.
-8. The loop repeats until all stages are complete, then `REPORT.md` is finalized with `evaluating-work`.
+8. The loop repeats until all stages are complete, then `REPORT.md` is finalized with `evaluating-workstreams`.
 
 So this document is specifically about steps 3-5 above: manually handing work to a supervisor fork, running, observing, resuming, and interpreting supervised execution. The older Root Agent management-launch flow remains available through the managed installation profile, but it is not the default.
 

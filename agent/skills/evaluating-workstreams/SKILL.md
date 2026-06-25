@@ -1,5 +1,5 @@
 ---
-name: evaluating-work
+name: evaluating-workstreams
 description: Evaluate completed workstream output and finalize REPORT.md.
 ---
 

@@ -58,7 +58,7 @@ Workflow:
     3. Update README.md with the overall workstream context
     4. work plan create --stages 3
     5. Edit stages/01/{REQUIREMENTS.md,PLAN.md} and specs/
-    6. Rename each stage PLAN.md heading to a meaningful title (for example: # Stage 01 Discovery Plan)
+    6. Rename each stage PLAN.md heading to a meaningful title (for example: # Stage 01 Implementation Plan)
     7. work approve plan    # requires at least one stage; generates thread WORK.md files
 
   Planning-session flow:

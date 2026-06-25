@@ -90,7 +90,7 @@ describe("draft-first help text", () => {
     const output = stdout.join("\n")
     expect(stderr).toHaveLength(0)
     expect(output).toContain("Rename each stage PLAN.md heading to a meaningful title")
-    expect(output).toContain("# Stage 01 Discovery Plan")
+    expect(output).toContain("# Stage 01 Implementation Plan")
   })
 
   test("main CLI help advertises requirements validation and hides context", async () => {
