@@ -122,6 +122,57 @@ function toPublicBatchStatus(status: BatchStatusFile) {
     status: status.status,
     ...(status.stageName ? { stageName: status.stageName } : {}),
     ...(status.batchName ? { batchName: status.batchName } : {}),
+    ...(status.executionBackend !== undefined
+      ? { executionBackend: status.executionBackend }
+      : {}),
+    ...(status.provider !== undefined ? { provider: status.provider } : {}),
+    ...(status.runtime !== undefined ? { runtime: status.runtime } : {}),
+    ...(status.logicalAgent !== undefined ? { logicalAgent: status.logicalAgent } : {}),
+    ...(status.resolvedModel !== undefined ? { resolvedModel: status.resolvedModel } : {}),
+    ...(status.resolvedVariant !== undefined
+      ? { resolvedVariant: status.resolvedVariant }
+      : {}),
+    ...(status.runtimeSelectionSource !== undefined
+      ? { runtimeSelectionSource: status.runtimeSelectionSource }
+      : {}),
+    ...(status.executorOwnerToken !== undefined
+      ? { executorOwnerToken: status.executorOwnerToken }
+      : {}),
+    ...(status.executorPid !== undefined ? { executorPid: status.executorPid } : {}),
+    ...(status.executorStartedAt !== undefined
+      ? { executorStartedAt: status.executorStartedAt }
+      : {}),
+    ...(status.executorHeartbeatAt !== undefined
+      ? { executorHeartbeatAt: status.executorHeartbeatAt }
+      : {}),
+    ...(status.executorFinishedAt !== undefined
+      ? { executorFinishedAt: status.executorFinishedAt }
+      : {}),
+    ...(status.lastEventAt !== undefined ? { lastEventAt: status.lastEventAt } : {}),
+    ...(status.lastActivityAt !== undefined
+      ? { lastActivityAt: status.lastActivityAt }
+      : {}),
+    ...(status.cancellationRequestedAt !== undefined
+      ? { cancellationRequestedAt: status.cancellationRequestedAt }
+      : {}),
+    ...(status.cancellationAcknowledgedAt !== undefined
+      ? { cancellationAcknowledgedAt: status.cancellationAcknowledgedAt }
+      : {}),
+    ...(status.terminalOutcome !== undefined
+      ? { terminalOutcome: status.terminalOutcome }
+      : {}),
+    ...(status.errorSummary !== undefined ? { errorSummary: status.errorSummary } : {}),
+    ...(status.resultSummary !== undefined ? { resultSummary: status.resultSummary } : {}),
+    ...(status.runtimeDirectory !== undefined
+      ? { runtimeDirectory: status.runtimeDirectory }
+      : {}),
+    ...(status.activityJournalPath !== undefined
+      ? { activityJournalPath: status.activityJournalPath }
+      : {}),
+    ...(status.snapshotPath !== undefined ? { snapshotPath: status.snapshotPath } : {}),
+    ...(status.executorLogPath !== undefined
+      ? { executorLogPath: status.executorLogPath }
+      : {}),
     startedAt: status.startedAt,
     updatedAt: status.updatedAt,
     ...(status.completedAt ? { completedAt: status.completedAt } : {}),
@@ -139,6 +190,39 @@ function toPublicBatchStatus(status: BatchStatusFile) {
       ...(thread.workingAgentSessionId ? { workingAgentSessionId: thread.workingAgentSessionId } : {}),
       ...(thread.synthesisUpdatedAt ? { synthesisUpdatedAt: thread.synthesisUpdatedAt } : {}),
       ...(thread.recoveryNote ? { recoveryNote: thread.recoveryNote } : {}),
+      ...(thread.executionBackend !== undefined
+        ? { executionBackend: thread.executionBackend }
+        : {}),
+      ...(thread.provider !== undefined ? { provider: thread.provider } : {}),
+      ...(thread.runtime !== undefined ? { runtime: thread.runtime } : {}),
+      ...(thread.logicalAgent !== undefined ? { logicalAgent: thread.logicalAgent } : {}),
+      ...(thread.resolvedModel !== undefined ? { resolvedModel: thread.resolvedModel } : {}),
+      ...(thread.resolvedVariant !== undefined
+        ? { resolvedVariant: thread.resolvedVariant }
+        : {}),
+      ...(thread.runtimeSelectionSource !== undefined
+        ? { runtimeSelectionSource: thread.runtimeSelectionSource }
+        : {}),
+      ...(thread.attemptId !== undefined ? { attemptId: thread.attemptId } : {}),
+      ...(thread.nativeSessionId !== undefined
+        ? { nativeSessionId: thread.nativeSessionId }
+        : {}),
+      ...(thread.nativeRunId !== undefined ? { nativeRunId: thread.nativeRunId } : {}),
+      ...(thread.lastEventAt !== undefined ? { lastEventAt: thread.lastEventAt } : {}),
+      ...(thread.lastActivityAt !== undefined
+        ? { lastActivityAt: thread.lastActivityAt }
+        : {}),
+      ...(thread.cancellationRequestedAt !== undefined
+        ? { cancellationRequestedAt: thread.cancellationRequestedAt }
+        : {}),
+      ...(thread.cancellationAcknowledgedAt !== undefined
+        ? { cancellationAcknowledgedAt: thread.cancellationAcknowledgedAt }
+        : {}),
+      ...(thread.terminalOutcome !== undefined
+        ? { terminalOutcome: thread.terminalOutcome }
+        : {}),
+      ...(thread.errorSummary !== undefined ? { errorSummary: thread.errorSummary } : {}),
+      ...(thread.resultSummary !== undefined ? { resultSummary: thread.resultSummary } : {}),
     })),
   }
 }

@@ -3,6 +3,8 @@ import type {
   PersistedBatchStatusFile,
   PersistedBatchStatusSummary,
   PersistedBatchStatusThread,
+  PersistedBatchExecutionMetadata,
+  PersistedExecutionAttemptMetadata,
 } from "./types.ts"
 import { upsertStructuredBatchRun } from "./structured-storage.ts"
 import {
@@ -26,12 +28,12 @@ export type BatchStatusThread = PersistedBatchStatusThread
 export type BatchStatusSummary = PersistedBatchStatusSummary
 export type BatchStatusFile = PersistedBatchStatusFile
 
-export interface BatchStatusThreadSeed {
+export interface BatchStatusThreadSeed extends Partial<PersistedExecutionAttemptMetadata> {
   threadId: string
   threadName: string
 }
 
-export interface InitializeBatchStatusRunArgs {
+export interface InitializeBatchStatusRunArgs extends Partial<PersistedBatchExecutionMetadata> {
   repoRoot: string
   streamId: string
   batchId: string
@@ -84,7 +86,7 @@ export function createBatchStatusFile(args: {
   threads: BatchStatusThreadSeed[]
   startedAt?: string
   runId?: string
-}): BatchStatusFile {
+} & Partial<PersistedBatchExecutionMetadata>): BatchStatusFile {
   const startedAt = args.startedAt ?? new Date().toISOString()
   const threads: BatchStatusThread[] = args.threads.map((thread) => ({
     ...thread,
@@ -102,6 +104,57 @@ export function createBatchStatusFile(args: {
     status: "pending",
     ...(args.stageName ? { stageName: args.stageName } : {}),
     ...(args.batchName ? { batchName: args.batchName } : {}),
+    ...(args.executionBackend !== undefined
+      ? { executionBackend: args.executionBackend }
+      : {}),
+    ...(args.provider !== undefined ? { provider: args.provider } : {}),
+    ...(args.runtime !== undefined ? { runtime: args.runtime } : {}),
+    ...(args.logicalAgent !== undefined ? { logicalAgent: args.logicalAgent } : {}),
+    ...(args.resolvedModel !== undefined ? { resolvedModel: args.resolvedModel } : {}),
+    ...(args.resolvedVariant !== undefined
+      ? { resolvedVariant: args.resolvedVariant }
+      : {}),
+    ...(args.runtimeSelectionSource !== undefined
+      ? { runtimeSelectionSource: args.runtimeSelectionSource }
+      : {}),
+    ...(args.executorOwnerToken !== undefined
+      ? { executorOwnerToken: args.executorOwnerToken }
+      : {}),
+    ...(args.executorPid !== undefined ? { executorPid: args.executorPid } : {}),
+    ...(args.executorStartedAt !== undefined
+      ? { executorStartedAt: args.executorStartedAt }
+      : {}),
+    ...(args.executorHeartbeatAt !== undefined
+      ? { executorHeartbeatAt: args.executorHeartbeatAt }
+      : {}),
+    ...(args.executorFinishedAt !== undefined
+      ? { executorFinishedAt: args.executorFinishedAt }
+      : {}),
+    ...(args.lastEventAt !== undefined ? { lastEventAt: args.lastEventAt } : {}),
+    ...(args.lastActivityAt !== undefined
+      ? { lastActivityAt: args.lastActivityAt }
+      : {}),
+    ...(args.cancellationRequestedAt !== undefined
+      ? { cancellationRequestedAt: args.cancellationRequestedAt }
+      : {}),
+    ...(args.cancellationAcknowledgedAt !== undefined
+      ? { cancellationAcknowledgedAt: args.cancellationAcknowledgedAt }
+      : {}),
+    ...(args.terminalOutcome !== undefined
+      ? { terminalOutcome: args.terminalOutcome }
+      : {}),
+    ...(args.errorSummary !== undefined ? { errorSummary: args.errorSummary } : {}),
+    ...(args.resultSummary !== undefined ? { resultSummary: args.resultSummary } : {}),
+    ...(args.runtimeDirectory !== undefined
+      ? { runtimeDirectory: args.runtimeDirectory }
+      : {}),
+    ...(args.activityJournalPath !== undefined
+      ? { activityJournalPath: args.activityJournalPath }
+      : {}),
+    ...(args.snapshotPath !== undefined ? { snapshotPath: args.snapshotPath } : {}),
+    ...(args.executorLogPath !== undefined
+      ? { executorLogPath: args.executorLogPath }
+      : {}),
     startedAt,
     updatedAt: startedAt,
     summary: summarizeBatchThreads(threads),
@@ -120,25 +173,81 @@ function orderBatchStatus(batchStatus: BatchStatusFile): BatchStatusFile {
     status: batchStatus.status,
     ...(batchStatus.stageName ? { stageName: batchStatus.stageName } : {}),
     ...(batchStatus.batchName ? { batchName: batchStatus.batchName } : {}),
+    ...(batchStatus.executionBackend !== undefined
+      ? { executionBackend: batchStatus.executionBackend }
+      : {}),
+    ...(batchStatus.provider !== undefined ? { provider: batchStatus.provider } : {}),
+    ...(batchStatus.runtime !== undefined ? { runtime: batchStatus.runtime } : {}),
+    ...(batchStatus.logicalAgent !== undefined
+      ? { logicalAgent: batchStatus.logicalAgent }
+      : {}),
+    ...(batchStatus.resolvedModel !== undefined
+      ? { resolvedModel: batchStatus.resolvedModel }
+      : {}),
+    ...(batchStatus.resolvedVariant !== undefined
+      ? { resolvedVariant: batchStatus.resolvedVariant }
+      : {}),
+    ...(batchStatus.runtimeSelectionSource !== undefined
+      ? { runtimeSelectionSource: batchStatus.runtimeSelectionSource }
+      : {}),
+    ...(batchStatus.executorOwnerToken !== undefined
+      ? { executorOwnerToken: batchStatus.executorOwnerToken }
+      : {}),
+    ...(batchStatus.executorPid !== undefined ? { executorPid: batchStatus.executorPid } : {}),
+    ...(batchStatus.executorStartedAt !== undefined
+      ? { executorStartedAt: batchStatus.executorStartedAt }
+      : {}),
+    ...(batchStatus.executorHeartbeatAt !== undefined
+      ? { executorHeartbeatAt: batchStatus.executorHeartbeatAt }
+      : {}),
+    ...(batchStatus.executorFinishedAt !== undefined
+      ? { executorFinishedAt: batchStatus.executorFinishedAt }
+      : {}),
+    ...(batchStatus.lastEventAt !== undefined
+      ? { lastEventAt: batchStatus.lastEventAt }
+      : {}),
+    ...(batchStatus.lastActivityAt !== undefined
+      ? { lastActivityAt: batchStatus.lastActivityAt }
+      : {}),
+    ...(batchStatus.cancellationRequestedAt !== undefined
+      ? { cancellationRequestedAt: batchStatus.cancellationRequestedAt }
+      : {}),
+    ...(batchStatus.cancellationAcknowledgedAt !== undefined
+      ? { cancellationAcknowledgedAt: batchStatus.cancellationAcknowledgedAt }
+      : {}),
+    ...(batchStatus.terminalOutcome !== undefined
+      ? { terminalOutcome: batchStatus.terminalOutcome }
+      : {}),
+    ...(batchStatus.errorSummary !== undefined
+      ? { errorSummary: batchStatus.errorSummary }
+      : {}),
+    ...(batchStatus.resultSummary !== undefined
+      ? { resultSummary: batchStatus.resultSummary }
+      : {}),
+    ...(batchStatus.runtimeDirectory !== undefined
+      ? { runtimeDirectory: batchStatus.runtimeDirectory }
+      : {}),
+    ...(batchStatus.activityJournalPath !== undefined
+      ? { activityJournalPath: batchStatus.activityJournalPath }
+      : {}),
+    ...(batchStatus.snapshotPath !== undefined
+      ? { snapshotPath: batchStatus.snapshotPath }
+      : {}),
+    ...(batchStatus.executorLogPath !== undefined
+      ? { executorLogPath: batchStatus.executorLogPath }
+      : {}),
     startedAt: batchStatus.startedAt,
     updatedAt: batchStatus.updatedAt,
     ...(batchStatus.completedAt ? { completedAt: batchStatus.completedAt } : {}),
     summary: batchStatus.summary,
-    threads: batchStatus.threads,
+    threads: batchStatus.threads.map((thread) => ({ ...thread })),
   }
 }
 
 export function initializeBatchStatusRun(
   args: InitializeBatchStatusRunArgs,
 ): BatchStatusFile {
-  const batchStatus = createBatchStatusFile({
-      streamId: args.streamId,
-      batchId: args.batchId,
-      tmuxSessionName: args.tmuxSessionName,
-      stageName: args.stageName,
-      batchName: args.batchName,
-      threads: args.threads,
-  })
+  const batchStatus = createBatchStatusFile(args)
 
   writeBatchStatus(args.repoRoot, args.streamId, batchStatus)
   return batchStatus
@@ -147,14 +256,7 @@ export function initializeBatchStatusRun(
 export async function initializeBatchStatusRunLocked(
   args: InitializeBatchStatusRunArgs,
 ): Promise<BatchStatusFile> {
-  const batchStatus = createBatchStatusFile({
-    streamId: args.streamId,
-    batchId: args.batchId,
-    tmuxSessionName: args.tmuxSessionName,
-    stageName: args.stageName,
-    batchName: args.batchName,
-    threads: args.threads,
-  })
+  const batchStatus = createBatchStatusFile(args)
 
   await writeBatchStatusLocked(args.repoRoot, args.streamId, batchStatus)
   return batchStatus

@@ -260,6 +260,39 @@ export function normalizePersistedSessionRecord(session: SessionRecord): Session
     sessionId: session.sessionId,
     agentName: session.agentName,
     model: session.model,
+    ...(session.executionBackend !== undefined
+      ? { executionBackend: session.executionBackend }
+      : {}),
+    ...(session.provider !== undefined ? { provider: session.provider } : {}),
+    ...(session.runtime !== undefined ? { runtime: session.runtime } : {}),
+    ...(session.logicalAgent !== undefined ? { logicalAgent: session.logicalAgent } : {}),
+    ...(session.resolvedModel !== undefined ? { resolvedModel: session.resolvedModel } : {}),
+    ...(session.resolvedVariant !== undefined
+      ? { resolvedVariant: session.resolvedVariant }
+      : {}),
+    ...(session.runtimeSelectionSource !== undefined
+      ? { runtimeSelectionSource: session.runtimeSelectionSource }
+      : {}),
+    ...(session.attemptId !== undefined ? { attemptId: session.attemptId } : {}),
+    ...(session.nativeSessionId !== undefined
+      ? { nativeSessionId: session.nativeSessionId }
+      : {}),
+    ...(session.nativeRunId !== undefined ? { nativeRunId: session.nativeRunId } : {}),
+    ...(session.lastEventAt !== undefined ? { lastEventAt: session.lastEventAt } : {}),
+    ...(session.lastActivityAt !== undefined
+      ? { lastActivityAt: session.lastActivityAt }
+      : {}),
+    ...(session.cancellationRequestedAt !== undefined
+      ? { cancellationRequestedAt: session.cancellationRequestedAt }
+      : {}),
+    ...(session.cancellationAcknowledgedAt !== undefined
+      ? { cancellationAcknowledgedAt: session.cancellationAcknowledgedAt }
+      : {}),
+    ...(session.terminalOutcome !== undefined
+      ? { terminalOutcome: session.terminalOutcome }
+      : {}),
+    ...(session.errorSummary !== undefined ? { errorSummary: session.errorSummary } : {}),
+    ...(session.resultSummary !== undefined ? { resultSummary: session.resultSummary } : {}),
     startedAt: session.startedAt,
     completedAt: session.completedAt,
     status: session.status,

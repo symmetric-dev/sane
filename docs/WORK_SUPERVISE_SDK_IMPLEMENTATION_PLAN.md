@@ -62,9 +62,10 @@ parallel provider attempts and writes canonical state. Tmux remains available
 for the legacy backend, interactive sessions, and optional observation, but is
 not required to keep SDK agents alive.
 
-The initial executor can run concurrent attempts in one process with bounded
-concurrency. Per-thread child processes can be added later if process isolation
-proves necessary.
+The initial executor can run concurrent attempts in one process using the same
+parallelism as the current batch execution. Per-thread child processes or
+additional concurrency limits can be added later if provider isolation proves
+necessary; they are not part of the first implementation.
 
 ### OpenCode first, Cursor second
 
@@ -80,8 +81,9 @@ OpenCode `promptAsync` is not required for the first production path. It remains
 an optional future capability.
 
 Cursor uses its local SDK inside the detached executor. A Cursor attempt is
-considered failed if the owning executor is lost. SDK retry is disabled by
-default; if a future retry policy is enabled, it creates a new agent.
+considered failed if the owning executor is lost. The executor does not
+implicitly retry the same model under another runtime; only a later model
+candidate explicitly listed for the assigned agent may be used as fallback.
 
 ### Manager invocation
 
@@ -185,7 +187,7 @@ Rules:
 
 - string model references may use `model@runtime`;
 - structured model references use a separate `runtime` field;
-- an omitted runtime uses `execution.defaultRuntime`;
+- an omitted runtime uses the top-level `work/*` execution default;
 - `variant` remains a provider-specific option and is validated by the
   selected adapter;
 - a structured model should not also include a runtime suffix in its `model`
@@ -198,7 +200,7 @@ Recommended precedence is:
 ```text
 explicit CLI --runtime override
   > explicit @runtime suffix on the model
-  > workstream execution.defaultRuntime
+  > top-level work/* execution.defaultRuntime
   > legacy default: opencode
 ```
 
@@ -209,12 +211,15 @@ example:
 work-sdk supervise --batch "01.01" --runtime cursor
 ```
 
-The assigned logical agent profile still supplies the provider-specific model
-configuration. A future `agents.yaml` shape should preserve the legacy
-OpenCode `models` field while allowing serialized runtime suffixes, for
-example:
+The assigned logical agent profile still supplies the ordered model candidates.
+The top-level `work/agents.yaml` configuration applies to all workstreams in
+the current repository path and can provide the default runtime while
+preserving the existing agent catalog, for example:
 
 ```yaml
+execution:
+  defaultRuntime: opencode
+
 agents:
   - name: default
     models:
@@ -228,28 +233,29 @@ OpenCode validation should require a non-empty `provider/model` value and
 Cursor validation should use Cursor's model rules rather than the OpenCode
 slash validator. Runtime-specific validation belongs in each adapter.
 
-An omitted suffix uses the workstream default. The resolved backend, provider,
-model, source profile, and runtime-selection source must be persisted on the
-batch run and per-thread attempt before provider execution starts.
+An omitted suffix uses the top-level `work/*` default. The resolved backend,
+runtime, model, source profile, and runtime-selection source must be persisted
+on the batch run and per-thread attempt before provider execution starts.
 
 Runtime selection is per model candidate and therefore per thread attempt. Two
-threads in one batch may use different SDKs, and a later model candidate may
-explicitly select a different SDK if retries are enabled.
+threads in one batch may use different SDKs. A later model candidate may
+explicitly select a different SDK as an ordered fallback.
 
-SDK retry is disabled by default. The first implementation should fail an
-attempt quickly rather than automatically launch a replacement. A future
-explicit retry policy may enable fresh attempts, for example:
+SDK retry is disabled by default in the sense that the executor must not
+implicitly retry a model under another runtime or repeat the same model. The
+ordered `models` list is the explicit fallback policy already used by the
+workstream configuration:
 
 ```yaml
-execution:
-  retry:
-    enabled: true
-    maxAttempts: 2
+models:
+  - { model: gpt-5.6-luna, runtime: cursor }
+  - { model: anthropic/claude-sonnet-4-5, runtime: opencode }
 ```
 
-Any retry must use a fresh attempt ID and provider session/agent. Existing
-legacy backend retry behavior remains unchanged until the SDK backend is
-selected.
+If the first candidate fails, the second candidate may be attempted because it
+was explicitly listed. If only one candidate is listed, the attempt fails
+without a replacement. A fallback candidate always receives a fresh attempt ID
+and provider session/agent. Existing legacy backend behavior remains unchanged.
 
 Do not encode providers as agent names such as `cursor-default` or
 `opencode-default`, and do not force Cursor model IDs through OpenCode's
@@ -349,7 +355,8 @@ Tasks:
    runtime override support.
 3. Add provider-specific model validation instead of requiring every model to
    use OpenCode's `provider/model` syntax.
-4. Add retry policy fields with SDK retry disabled by default.
+4. Preserve explicit ordered model fallbacks while preventing implicit
+   same-model/runtime retries.
 5. Add fake adapter fixtures and contract tests.
 6. Keep the legacy backend and all current defaults unchanged.
 
@@ -366,9 +373,11 @@ Likely code areas:
 Done when:
 
 - the contracts represent both providers without exposing SDK types;
-- model references resolve `@cursor`/`@opencode` and workstream defaults;
+- model references resolve `@cursor`/`@opencode` and the top-level `work/*`
+  default;
 - invalid runtime/model combinations fail before provider startup;
-- SDK attempts fail without automatic retry unless an explicit policy is enabled;
+- SDK attempts do not retry the same model under an unlisted runtime;
+- ordered model-list fallbacks continue to work;
 - fake adapters can produce success, failure, cancellation, and timeout
   attempts;
 - legacy typecheck and tests remain unchanged and passing.
@@ -416,7 +425,8 @@ The executor should:
 1. Load the prepared batch and thread records.
 2. Record its PID and start time.
 3. Start a heartbeat every few seconds.
-4. Start one adapter attempt per thread with bounded concurrency.
+4. Start one adapter attempt per thread using the same parallelism model as the
+   current batch execution.
 5. Persist native IDs before prompts.
 6. Update canonical thread state on meaningful transitions.
 7. Capture compact activity records.
@@ -435,10 +445,12 @@ Failure semantics:
 - explicit stop: request provider cancellation and finalize as cancelled;
 - supervisor wait timeout: stop waiting, but do not imply remote cancellation;
 - executor process loss: heartbeat/reconciliation marks the run recoverable;
-- automatic retry: disabled by default;
-- explicitly enabled retry: create a new attempt and provider agent/session;
+- same-model/runtime retry: never implicit;
+- explicit ordered fallback: try only the next model candidate listed for the
+  assigned agent;
+- fallback attempt: create a new attempt and provider agent/session;
 - OpenCode orphan: inspect or abort the persisted native session before an
-  explicitly enabled retry when possible.
+  explicitly listed fallback when possible.
 
 Required tests:
 
@@ -447,8 +459,8 @@ Required tests:
 - executor heartbeat updates;
 - SIGTERM cancellation;
 - process-loss/restart detection;
-- quick failure with no automatic retry;
-- fresh attempt IDs when an explicit retry policy is enabled;
+- quick failure when no fallback model is listed;
+- ordered fallback candidates use fresh attempt IDs;
 - no duplicate launch while a batch is active.
 
 ### Step 4: Integrate the SDK backend with existing orchestration
@@ -564,8 +576,8 @@ Required tests:
 - cancellation;
 - disposal failure;
 - concurrent attempts;
-- new-agent retry after failure;
-- no automatic retry by default;
+- no same-model/runtime retry;
+- explicit ordered fallback uses a new agent/session;
 - gated live completion and file-creation probes.
 
 ### Step 7: Add an optional OpenCode tool facade
@@ -590,8 +602,8 @@ Required tests:
 Keep the legacy backend as the default until the SDK backend passes:
 
 - parallel execution;
-- quick failure without automatic retry;
-- explicit fresh retry when enabled;
+- quick failure when no explicit fallback candidate exists;
+- explicit ordered model fallback;
 - explicit cancellation;
 - supervisor timeout/resume;
 - executor process loss;

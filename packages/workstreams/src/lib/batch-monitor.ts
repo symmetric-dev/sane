@@ -31,16 +31,72 @@ import {
 } from "./threads.ts"
 import { applyFinalizationCompletions, type FinalizationCompletion } from "./multi-finalization.ts"
 import { sessionExists } from "./tmux.ts"
+import { modifySqliteCanonicalRuntimeWorkstreamStateSync } from "./storage-adapter.ts"
+import { upsertStructuredThreadRuntime } from "./structured-storage.ts"
+import type { PersistedExecutionAttemptMetadata, SessionRecord } from "./types.ts"
 
 interface BatchThreadSeed {
   threadId: string
   threadName: string
 }
 
+/**
+ * Batch reconciliation rebuilds thread projections from several sources. Keep
+ * the SDK/attempt seam when doing that rebuild instead of treating the legacy
+ * status fields as an exhaustive record.
+ */
+function copyAttemptMetadata(
+  source?: Partial<PersistedExecutionAttemptMetadata> | null,
+): Partial<PersistedExecutionAttemptMetadata> {
+  if (!source) {
+    return {}
+  }
+
+  return {
+    ...(source.executionBackend !== undefined
+      ? { executionBackend: source.executionBackend }
+      : {}),
+    ...(source.provider !== undefined ? { provider: source.provider } : {}),
+    ...(source.runtime !== undefined ? { runtime: source.runtime } : {}),
+    ...(source.logicalAgent !== undefined ? { logicalAgent: source.logicalAgent } : {}),
+    ...(source.resolvedModel !== undefined ? { resolvedModel: source.resolvedModel } : {}),
+    ...(source.resolvedVariant !== undefined
+      ? { resolvedVariant: source.resolvedVariant }
+      : {}),
+    ...(source.runtimeSelectionSource !== undefined
+      ? { runtimeSelectionSource: source.runtimeSelectionSource }
+      : {}),
+    ...(source.attemptId !== undefined ? { attemptId: source.attemptId } : {}),
+    ...(source.nativeSessionId !== undefined
+      ? { nativeSessionId: source.nativeSessionId }
+      : {}),
+    ...(source.nativeRunId !== undefined ? { nativeRunId: source.nativeRunId } : {}),
+    ...(source.lastEventAt !== undefined ? { lastEventAt: source.lastEventAt } : {}),
+    ...(source.lastActivityAt !== undefined
+      ? { lastActivityAt: source.lastActivityAt }
+      : {}),
+    ...(source.cancellationRequestedAt !== undefined
+      ? { cancellationRequestedAt: source.cancellationRequestedAt }
+      : {}),
+    ...(source.cancellationAcknowledgedAt !== undefined
+      ? { cancellationAcknowledgedAt: source.cancellationAcknowledgedAt }
+      : {}),
+    ...(source.terminalOutcome !== undefined
+      ? { terminalOutcome: source.terminalOutcome }
+      : {}),
+    ...(source.errorSummary !== undefined ? { errorSummary: source.errorSummary } : {}),
+    ...(source.resultSummary !== undefined ? { resultSummary: source.resultSummary } : {}),
+  }
+}
+
 export interface SyncBatchStatusOptions {
   repoRoot: string
   streamId: string
   batchId: string
+  /** SDK-only liveness seams; legacy tmux reconciliation ignores these. */
+  sdkExecutorStaleAfterMs?: number
+  now?: () => string
+  isProcessAlive?: (pid: number) => boolean
 }
 
 export interface WaitForBatchStatusOptions extends SyncBatchStatusOptions {
@@ -112,6 +168,118 @@ interface GhostBatchThreadRecovery {
 }
 
 const CANONICAL_RUN_START_TOLERANCE_MS = 60_000
+const DEFAULT_SDK_EXECUTOR_STALE_AFTER_MS = 30_000
+
+function defaultProcessAlive(pid: number): boolean {
+  if (!Number.isInteger(pid) || pid <= 0) return false
+  try {
+    process.kill(pid, 0)
+    return true
+  } catch {
+    return false
+  }
+}
+
+function sdkExecutorIsHealthy(
+  batchStatus: BatchStatusFile,
+  options: Pick<SyncBatchStatusOptions, "now" | "isProcessAlive" | "sdkExecutorStaleAfterMs">,
+): boolean {
+  if (batchStatus.executionBackend !== "sdk" || batchStatus.status !== "running") return false
+  if (batchStatus.executorPid === undefined || batchStatus.executorHeartbeatAt === undefined) return false
+  const processAlive = options.isProcessAlive ?? defaultProcessAlive
+  if (!processAlive(batchStatus.executorPid)) return false
+
+  const heartbeatAt = new Date(batchStatus.executorHeartbeatAt).getTime()
+  const now = new Date((options.now ?? (() => new Date().toISOString()))()).getTime()
+  if (!Number.isFinite(heartbeatAt) || !Number.isFinite(now)) return false
+  return now - heartbeatAt <= (options.sdkExecutorStaleAfterMs ?? DEFAULT_SDK_EXECUTOR_STALE_AFTER_MS)
+}
+
+function sdkExecutorRecoveryMessage(existing: BatchStatusFile): string {
+  if (existing.executorPid === undefined) return "SDK executor was lost: no executor PID was persisted."
+  if (existing.executorHeartbeatAt === undefined) {
+    return `SDK executor ${existing.executorPid} was lost: no heartbeat was persisted.`
+  }
+  return `SDK executor ${existing.executorPid} was lost or its heartbeat became stale at ${existing.executorHeartbeatAt}.`
+}
+
+/**
+ * Mark only an SDK batch whose detached owner is gone as recoverably failed.
+ * Legacy runs remain on the tmux/session reconciliation path below.
+ */
+async function reconcileLostSdkBatchRun(args: {
+  repoRoot: string
+  streamId: string
+  existing: BatchStatusFile
+  now?: () => string
+}): Promise<BatchStatusFile> {
+  const now = (args.now ?? (() => new Date().toISOString()))()
+  const message = sdkExecutorRecoveryMessage(args.existing)
+  const batchThreadIds = new Set(args.existing.threads.map((thread) => thread.threadId))
+
+  modifySqliteCanonicalRuntimeWorkstreamStateSync({
+    repoRoot: args.repoRoot,
+    streamId: args.streamId,
+    fn: (state) => {
+      for (const runtime of state.threadRuntime) {
+        if (!batchThreadIds.has(runtime.threadId)) continue
+        const updatedSessions: SessionRecord[] = runtime.sessions.map((session) => {
+          if (session.status !== "running" || session.executionBackend !== "sdk") return session
+          return {
+            ...session,
+            status: "interrupted",
+            completedAt: now,
+            terminalOutcome: "failed",
+            errorSummary: message,
+            lastActivityAt: now,
+          }
+        })
+        const hadRunningSdkSession = runtime.sessions.some(
+          (session) => session.status === "running" && session.executionBackend === "sdk",
+        )
+        upsertStructuredThreadRuntime(state, {
+          ...runtime,
+          sessions: updatedSessions,
+          ...(hadRunningSdkSession
+            ? { currentSessionId: undefined }
+            : runtime.currentSessionId
+              ? { currentSessionId: runtime.currentSessionId }
+              : {}),
+        })
+      }
+    },
+  })
+
+  const nextThreads: BatchStatusThread[] = args.existing.threads.map((thread) => {
+    if (thread.status === "completed" || thread.status === "failed") return { ...thread }
+    return {
+      ...thread,
+      status: "failed",
+      updatedAt: now,
+      completedAt: now,
+      terminalOutcome: "failed",
+      errorSummary: message,
+      recoveryNote: `${message} The run is terminal and can be explicitly relaunched after inspection.`,
+      currentSessionId: undefined,
+    }
+  })
+
+  const next: BatchStatusFile = {
+    ...args.existing,
+    status: "failed",
+    updatedAt: now,
+    completedAt: now,
+    executorFinishedAt: now,
+    executorHeartbeatAt: now,
+    terminalOutcome: "failed",
+    errorSummary: message,
+    resultSummary: "SDK executor process loss was reconciled; unfinished threads were interrupted.",
+    summary: summarizeBatchThreads(nextThreads),
+    threads: nextThreads,
+  }
+  await writeBatchStatusLocked(args.repoRoot, args.streamId, next)
+  return next
+}
 
 function readStoredRunResult(streamId: string, threadId: string): StoredRunResult | null {
   const resultPath = getRunResultPath(streamId, threadId)
@@ -357,6 +525,8 @@ async function reconcileGhostBatchRun(args: {
     const latestSession = getLastSessionForThread(args.repoRoot, args.streamId, seed.threadId)
 
     return {
+      ...copyAttemptMetadata(previous),
+      ...copyAttemptMetadata(latestSession),
       threadId: seed.threadId,
       threadName: seed.threadName,
       status: recovery?.status ?? "failed",
@@ -430,6 +600,8 @@ async function reconcileTerminalFailedBatchFromCanonicalState(args: {
     const recoveredFromFailure = previous?.status === "failed"
 
     return {
+      ...copyAttemptMetadata(previous),
+      ...copyAttemptMetadata(latestSession),
       threadId: seed.threadId,
       threadName: seed.threadName,
       status: "completed",
@@ -468,6 +640,16 @@ export async function reconcileBatchStatusRunIfNeeded(
   const existing = readBatchStatus(options.repoRoot, options.streamId, options.batchId)
   if (!existing || isTerminalBatchStatus(existing.status)) {
     return existing
+  }
+
+  if (existing.status === "running" && existing.executionBackend === "sdk") {
+    if (sdkExecutorIsHealthy(existing, options)) return existing
+    return reconcileLostSdkBatchRun({
+      repoRoot: options.repoRoot,
+      streamId: options.streamId,
+      existing,
+      now: options.now,
+    })
   }
 
   if (existing.status !== "running" || !existing.tmuxSessionName) {
@@ -727,6 +909,8 @@ export async function syncBatchStatus(
     const storedResult = readStoredRunResult(streamId, seed.threadId)
 
     let thread: BatchStatusThread = {
+      ...copyAttemptMetadata(previous),
+      ...copyAttemptMetadata(latestSession),
       threadId: seed.threadId,
       threadName: seed.threadName,
       status: deriveThreadStatus({

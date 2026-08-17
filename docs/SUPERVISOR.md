@@ -87,9 +87,10 @@ work-sdk supervise --batch "SS.BB" --runtime cursor
 This command reuses the same persisted supervision state and handoff logic but
 always selects the SDK backend. It is not a separate state machine. The runtime
 override is a forced batch run for experiments; normal selection is per model
-reference (`model@runtime`) with a workstream default fallback. The thread's
+reference (`model@runtime`) with a top-level `work/*` default fallback. The thread's
 assigned logical agent profile still supplies the ordered model candidates.
-SDK retry is disabled by default.
+No same-model/runtime retry is implicit; only explicitly listed model
+candidates are fallback options.
 
 Recommended default for real operator runs:
 
@@ -412,7 +413,7 @@ For an SDK-backed batch with no tmux session, inspect the executor heartbeat and
 PID metadata instead. If the executor is no longer live, treat the attempt as
 lost, reconcile any known OpenCode native session, and let the existing batch
 recovery path mark the attempt/batch failed. A fresh attempt requires an
-explicitly enabled retry policy or a deliberate rerun.
+explicitly listed fallback model or a deliberate rerun.
 
 Recovery tool:
 

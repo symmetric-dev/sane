@@ -530,7 +530,7 @@ export interface WorkstreamRuntimeSummary {
   supervision?: WorkstreamRuntimeSupervisionSummary
 }
 
-export interface PersistedBatchStatusThread {
+export interface PersistedBatchStatusThread extends PersistedExecutionAttemptMetadata {
   threadId: string
   threadName: string
   status: RuntimeBatchStatus
@@ -545,6 +545,77 @@ export interface PersistedBatchStatusThread {
   recoveryNote?: string
 }
 
+/**
+ * Provider-neutral execution selection and lifecycle metadata for one
+ * persisted attempt.  These fields are deliberately AgENV-owned: provider SDK
+ * request/event payloads do not belong in canonical workstream state.
+ *
+ * Every field is optional so records written by older AgENV versions remain
+ * valid and retain their existing shape when read back.
+ */
+export type RuntimeSelectionSource =
+  | "cli_override"
+  | "model_reference"
+  | "config_default"
+  | "legacy_default"
+
+export type ExecutionTerminalOutcome = "completed" | "failed" | "cancelled"
+
+export interface PersistedExecutionSelectionMetadata {
+  /** Which AgENV execution implementation owns the attempt. */
+  executionBackend?: "legacy" | "sdk"
+  /** Provider selected for the attempt. */
+  provider?: ModelRuntime
+  /** Alias retained at the persistence boundary for runtime-aware selection. */
+  runtime?: ModelRuntime
+  /** Logical profile name assigned to the thread. */
+  logicalAgent?: string
+  /** Resolved provider model and optional variant used for this attempt. */
+  resolvedModel?: string
+  resolvedVariant?: string
+  runtimeSelectionSource?: RuntimeSelectionSource
+}
+
+export interface PersistedExecutionAttemptMetadata extends PersistedExecutionSelectionMetadata {
+  /** Fresh ID for this atomic provider attempt. */
+  attemptId?: string
+  nativeSessionId?: string
+  nativeRunId?: string
+  lastEventAt?: string
+  lastActivityAt?: string
+  cancellationRequestedAt?: string
+  cancellationAcknowledgedAt?: string
+  terminalOutcome?: ExecutionTerminalOutcome
+  /** Compact, provider-neutral terminal diagnostics. */
+  errorSummary?: string
+  resultSummary?: string
+}
+
+/**
+ * Batch/executor-level metadata.  Batch runs may also carry selection fields
+ * when a batch has a uniform selection; per-thread records remain authoritative
+ * when a batch contains different providers or model candidates.
+ */
+export interface PersistedBatchExecutionMetadata extends PersistedExecutionSelectionMetadata {
+  /** Opaque AgENV ownership token used to claim a manager-prepared SDK run. */
+  executorOwnerToken?: string
+  executorPid?: number
+  executorStartedAt?: string
+  executorHeartbeatAt?: string
+  executorFinishedAt?: string
+  lastEventAt?: string
+  lastActivityAt?: string
+  cancellationRequestedAt?: string
+  cancellationAcknowledgedAt?: string
+  terminalOutcome?: ExecutionTerminalOutcome
+  errorSummary?: string
+  resultSummary?: string
+  runtimeDirectory?: string
+  activityJournalPath?: string
+  snapshotPath?: string
+  executorLogPath?: string
+}
+
 export interface PersistedBatchStatusSummary {
   total: number
   pending: number
@@ -553,7 +624,7 @@ export interface PersistedBatchStatusSummary {
   failed: number
 }
 
-export interface PersistedBatchStatusFile {
+export interface PersistedBatchStatusFile extends PersistedBatchExecutionMetadata {
   version: string
   streamId: string
   batchId: string
@@ -1167,7 +1238,7 @@ export type SessionStatus = "running" | "completed" | "failed" | "interrupted"
  * Record of a single agent session working on a thread/item scope
  * Tracks execution details for debugging, retry logic, and metrics
  */
-export interface SessionRecord {
+export interface SessionRecord extends PersistedExecutionAttemptMetadata {
   sessionId: string // Unique identifier for the session
   agentName: string // Name of the agent that ran this session
   model: string // Model used (e.g., "anthropic/claude-sonnet-4")
@@ -1183,13 +1254,30 @@ export interface SessionRecord {
 // ============================================
 
 /**
- * Model specification - can be a simple string or object with variant
- * 
+ * Supported model execution runtimes.
+ *
+ * Runtime selection is intentionally separate from the model identifier: the
+ * same model name can be interpreted by different providers, and some
+ * providers (such as Cursor) do not use OpenCode's provider/model syntax.
+ */
+export type ModelRuntime = "opencode" | "cursor"
+
+/**
+ * Model specification - can be a simple string or object with variant/runtime.
+ *
  * Examples:
  *   - "anthropic/claude-sonnet-4-5"
+ *   - "auto@cursor"
  *   - { model: "google/antigravity-gemini-3-flash", variant: "low" }
+ *   - { model: "claude-sonnet-4", runtime: "cursor" }
  */
-export type ModelSpec = string | { model: string; variant?: string }
+export type ModelSpec =
+  | string
+  | {
+      model: string
+      variant?: string
+      runtime?: ModelRuntime
+    }
 
 /**
  * Normalized model specification (always object form)
@@ -1197,6 +1285,18 @@ export type ModelSpec = string | { model: string; variant?: string }
 export interface NormalizedModelSpec {
   model: string
   variant?: string
+  /**
+   * Resolved runtime when the spec has passed through the runtime-aware
+   * resolver. Optional to keep hand-authored legacy values source-compatible.
+   */
+  runtime?: ModelRuntime
+}
+
+/**
+ * Runtime-aware model specification returned by the resolver.
+ */
+export interface ResolvedModelSpec extends NormalizedModelSpec {
+  runtime: ModelRuntime
 }
 
 /**
@@ -1215,6 +1315,14 @@ export interface AgentDefinitionYaml {
  */
 export interface AgentsConfigYaml {
   agents: AgentDefinitionYaml[]
+  execution?: ExecutionConfigYaml
+}
+
+/**
+ * Execution defaults for agents.yaml.
+ */
+export interface ExecutionConfigYaml {
+  defaultRuntime?: ModelRuntime
 }
 
 // ============================================

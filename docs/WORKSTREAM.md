@@ -128,10 +128,11 @@ models:
   - { model: auto, runtime: cursor }
 ```
 
-An omitted suffix uses the workstream's default runtime. The resolved backend,
-runtime, model, and logical agent are persisted on the batch/attempt before
-execution. Different threads in one batch may use different SDKs. SDK retry is
-disabled by default.
+An omitted suffix uses the top-level `work/*` default runtime. The resolved
+backend, runtime, model, and logical agent are persisted on the batch/attempt
+before execution. Different threads in one batch may use different SDKs. No
+same-model/runtime retry is implicit; only explicitly listed model candidates
+are fallback options.
 
 See [`docs/WORK_SUPERVISE_SDK_ARCHITECTURE.md`](./WORK_SUPERVISE_SDK_ARCHITECTURE.md)
 and [`docs/WORK_SUPERVISE_SDK_IMPLEMENTATION_PLAN.md`](./WORK_SUPERVISE_SDK_IMPLEMENTATION_PLAN.md)

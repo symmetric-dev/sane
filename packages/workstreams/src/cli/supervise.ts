@@ -28,12 +28,13 @@ import {
   type SupervisionExecutionAction,
 } from "../lib/supervision-helper.ts"
 import { queryThreadsForWorkstream, type HierarchyThreadQueryRecord } from "../lib/hierarchy-query.ts"
-interface SuperviseCliArgs {
+export interface SuperviseCliArgs {
   repoRoot?: string
   streamId?: string
   batch?: string
   tmuxSessionName?: string
   port?: number
+  runtime?: string
   noServer?: boolean
   dryRun?: boolean
   silent?: boolean
@@ -63,18 +64,24 @@ interface ResolvedRootAgentBranchContextResult {
 
 const DEFAULT_SUPERVISE_TIMEOUT_MS = 30 * 60 * 1000
 const DEFAULT_SUPERVISE_POLL_INTERVAL_MS = 1000
-function printHelp(): void {
+
+export interface SuperviseMainOptions {
+  /** Legacy remains the default and is the only backend used by work. */
+  executionBackend?: "legacy" | "sdk"
+}
+function printHelp(commandName = "work"): void {
   console.log(`
-work supervise - Run a batch-bounded supervision helper
+${commandName} supervise - Run a batch-bounded supervision helper
 
 Usage:
-  work supervise [options]
-  work supervise --batch "01.01" [options]
+  ${commandName} supervise [options]
+  ${commandName} supervise --batch "01.01" [options]
 
 Options:
   --repo-root, -r        Repository root (auto-detected if omitted)
   --stream, -s           Workstream ID or name (uses current if not specified)
   --batch, -b            Start from a specific batch instead of the next incomplete batch
+  --runtime              SDK runtime override (opencode or cursor; work uses legacy backend)
   --port, -p             OpenCode server port for the headless batch run
   --no-server            Skip starting opencode serve during the batch launch
   --silent               Disable notification sounds during batch execution
@@ -101,13 +108,13 @@ Description:
   fix, and escalation policy stays outside the CLI.
 
 Examples:
-  work supervise
-  work supervise --batch "03.01"
-  work supervise --batch "03.01"
+  ${commandName} supervise
+  ${commandName} supervise --batch "03.01"
+  ${commandName} supervise --batch "03.01"
 `)
 }
 
-function parseCliArgs(argv: string[]): SuperviseCliArgs | null {
+function parseCliArgs(argv: string[], commandName = "work"): SuperviseCliArgs | null {
   const args = argv.slice(2)
   const parsed: SuperviseCliArgs = {}
 
@@ -139,6 +146,11 @@ function parseCliArgs(argv: string[]): SuperviseCliArgs | null {
         if (!next) return null
         parsed.port = Number(next)
         if (Number.isNaN(parsed.port)) return null
+        i++
+        break
+      case "--runtime":
+        if (!next) return null
+        parsed.runtime = next
         i++
         break
       case "--tmux-session-name":
@@ -210,7 +222,7 @@ function parseCliArgs(argv: string[]): SuperviseCliArgs | null {
         break
       case "--help":
       case "-h":
-        printHelp()
+        printHelp(commandName)
         process.exit(0)
     }
   }
@@ -401,10 +413,16 @@ async function recordSupervisionBranchSession(args: {
   )
 }
 
-function getDryRunActionMessage(action: Exclude<SupervisionExecutionAction, "stop">, batchId: string): string {
+function getDryRunActionMessage(
+  action: Exclude<SupervisionExecutionAction, "stop">,
+  batchId: string,
+  executionBackend: "legacy" | "sdk",
+): string {
   switch (action) {
     case "launch":
-      return `[supervise] would launch batch ${batchId} with work multi --headless --async`
+      return executionBackend === "sdk"
+        ? `[supervise] would launch batch ${batchId} with work-sdk batch-executor --execution-backend sdk`
+        : `[supervise] would launch batch ${batchId} with work multi --headless --async`
     case "wait":
       return `[supervise] would wait for in-progress batch ${batchId}`
     case "recover":
@@ -481,8 +499,12 @@ function getStoredSupervisionBranchSession(args: {
   })
 }
 
-export async function main(argv: string[] = process.argv): Promise<void> {
-  const cliArgs = parseCliArgs(argv)
+export async function main(
+  argv: string[] = process.argv,
+  options: SuperviseMainOptions = {},
+): Promise<void> {
+  const executionBackend = options.executionBackend ?? "legacy"
+  const cliArgs = parseCliArgs(argv, executionBackend === "sdk" ? "work-sdk" : "work")
   if (!cliArgs) {
     console.error("Error: invalid supervise arguments")
     console.error("\nRun with --help for usage information.")
@@ -547,7 +569,7 @@ export async function main(argv: string[] = process.argv): Promise<void> {
         `[supervise] would use supervision session ${branchContext.branchSessionId} under session ${branchContext.rootSessionId}`,
       )
     }
-    console.log(getDryRunActionMessage(startPlan.action, startPlan.batchId))
+    console.log(getDryRunActionMessage(startPlan.action, startPlan.batchId, executionBackend))
     console.log(
       `[supervise] would record a supervise-pass handoff for ${startPlan.batchId} and yield batch state back to the user or caller for review decisions.`,
     )
@@ -622,18 +644,20 @@ export async function main(argv: string[] = process.argv): Promise<void> {
   try {
     if (startPlan.action === "launch") {
       console.log(`[supervise] start batch ${startPlan.batchId}`)
-      await launchHeadlessBatchExecution({
-        repoRoot,
-        streamId: stream.id,
-        batchId: startPlan.batchId,
-        port: cliArgs.port,
-        noServer: cliArgs.noServer,
-        silent: cliArgs.silent,
-        rootSessionId: branchContext?.rootSessionId,
-        parentSessionId: branchContext?.nativeSessionId ?? branchContext?.parentSessionId,
-        parentBranchSessionId: branchContext?.branchSessionId,
-        branchRole: "supervision",
-      })
+        await launchHeadlessBatchExecution({
+          repoRoot,
+          streamId: stream.id,
+          batchId: startPlan.batchId,
+          executionBackend,
+          runtime: executionBackend === "sdk" ? cliArgs.runtime : undefined,
+          port: cliArgs.port,
+          noServer: cliArgs.noServer,
+          silent: cliArgs.silent,
+          rootSessionId: branchContext?.rootSessionId,
+          parentSessionId: branchContext?.nativeSessionId ?? branchContext?.parentSessionId,
+          parentBranchSessionId: branchContext?.branchSessionId,
+          branchRole: "supervision",
+        })
     }
 
     const batchStatus: Awaited<ReturnType<typeof waitForBatchStatus>> =
@@ -762,4 +786,5 @@ if (import.meta.main) {
 
 export const __test = {
   getStoredSupervisionBranchSession,
+  parseCliArgs,
 }

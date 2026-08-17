@@ -1,7 +1,14 @@
-import { spawn } from "child_process"
+import { spawn, type ChildProcess } from "child_process"
 import { randomUUID } from "crypto"
 import { fileURLToPath } from "url"
+import { closeSync, openSync } from "node:fs"
+import { join } from "node:path"
 import { syncBatchStatus, waitForBatchStatus } from "./batch-monitor.ts"
+import {
+  prepareSdkBatchRun,
+  type BatchExecutorOptions,
+} from "./agent-runtime/batch-executor.ts"
+import { readBatchStatus, type BatchStatusFile } from "./batch-status.ts"
 import type { HierarchyThreadQueryRecord } from "./hierarchy-query.ts"
 import {
   createEmptySupervisorState,
@@ -29,6 +36,9 @@ export interface LaunchHeadlessBatchArgs {
   repoRoot: string
   streamId: string
   batchId: string
+  /** The default is deliberately legacy for the existing work command. */
+  executionBackend?: "legacy" | "sdk"
+  runtime?: string
   port?: number
   noServer?: boolean
   silent?: boolean
@@ -36,6 +46,19 @@ export interface LaunchHeadlessBatchArgs {
   parentSessionId?: string
   parentBranchSessionId?: string
   branchRole?: "supervision" | "fix"
+  /** Internal metadata used only by the detached SDK handoff. */
+  runId?: string
+  ownerToken?: string
+}
+
+export interface SupervisionHelperDependencies {
+  spawn?: typeof spawn
+  openExecutorLog?: (path: string) => number
+  closeExecutorLog?: (fd: number) => void
+  prepareSdkBatchRun?: (options: BatchExecutorOptions) => ReturnType<typeof prepareSdkBatchRun>
+  readBatchStatus?: typeof readBatchStatus
+  sleep?: (ms: number) => Promise<void>
+  now?: () => number
 }
 
 export interface BuildSupervisionExecutionPlanArgs {
@@ -104,9 +127,126 @@ export function summarizeBatchStatus(
   return `${status.summary.completed}/${status.summary.total} completed, ${status.summary.failed} failed, ${status.summary.running} running, ${status.summary.pending} pending`
 }
 
+function getSdkWorkerPath(): string {
+  return fileURLToPath(new URL("../../bin/work-sdk.ts", import.meta.url))
+}
+
+async function waitForSdkWorkerInitialization(args: {
+  repoRoot: string
+  streamId: string
+  batchId: string
+  runId: string
+  executorLogPath?: string
+  readBatchStatus: typeof readBatchStatus
+  sleep: (ms: number) => Promise<void>
+  now: () => number
+  timeoutMs?: number
+}): Promise<BatchStatusFile> {
+  const timeoutMs = args.timeoutMs ?? 15_000
+  const startedAt = args.now()
+  let attempts = 0
+
+  while (args.now() - startedAt < timeoutMs && attempts < Math.ceil(timeoutMs / 25)) {
+    attempts += 1
+    const status = args.readBatchStatus(args.repoRoot, args.streamId, args.batchId)
+    if (status?.runId === args.runId && status.executionBackend === "sdk") {
+      // A terminal state is also valid: the worker initialized and completed
+      // before the manager observed the first poll.
+      if (status.status !== "pending" || status.executorPid !== undefined) return status
+    }
+    await args.sleep(25)
+  }
+
+  const logHint = args.executorLogPath ? `; inspect ${args.executorLogPath}` : ""
+  throw new Error(
+    `SDK batch worker did not initialize canonical run ${args.runId} within ${timeoutMs}ms${logHint}`,
+  )
+}
+
+async function launchSdkBatchExecution(
+  args: LaunchHeadlessBatchArgs,
+  dependencies: SupervisionHelperDependencies,
+): Promise<void> {
+  const prepare = dependencies.prepareSdkBatchRun ?? prepareSdkBatchRun
+  const prepared = prepare({
+    repoRoot: args.repoRoot,
+    streamId: args.streamId,
+    batchId: args.batchId,
+    runtimeOverride: args.runtime,
+    serverPort: args.port,
+    noServer: args.noServer,
+    runId: args.runId,
+    ownerToken: args.ownerToken,
+  })
+  const runId = prepared.batch.runId
+  const ownerToken = prepared.ownerToken
+  const workerPath = getSdkWorkerPath()
+  const commandArgs = [
+    workerPath,
+    "batch-executor",
+    "--repo-root",
+    args.repoRoot,
+    "--stream",
+    args.streamId,
+    "--batch-id",
+    args.batchId,
+    "--execution-backend",
+    "sdk",
+    "--run-id",
+    runId,
+    "--owner-token",
+    ownerToken,
+  ]
+
+  if (args.runtime !== undefined) commandArgs.push("--runtime", args.runtime)
+  if (args.port !== undefined) commandArgs.push("--port", String(args.port))
+  if (args.noServer) commandArgs.push("--no-server")
+  if (args.silent) commandArgs.push("--silent")
+
+  const executorLogPath = prepared.batch.executorLogPath
+  if (!executorLogPath) throw new Error(`SDK batch ${args.batchId} has no executor log path`)
+  const absoluteExecutorLogPath = join(args.repoRoot, executorLogPath)
+  const openLog = dependencies.openExecutorLog ?? ((path: string) => openSync(path, "a"))
+  const closeLog = dependencies.closeExecutorLog ?? closeSync
+  const spawnProcess = dependencies.spawn ?? spawn
+  const logFd = openLog(absoluteExecutorLogPath)
+
+  let child: ChildProcess
+  try {
+    // Numeric stdio descriptors are deliberate: the manager owns no pipes and
+    // cannot accidentally retain the worker's provider output stream.
+    child = spawnProcess(process.execPath, commandArgs, {
+      cwd: args.repoRoot,
+      detached: true,
+      stdio: ["ignore", logFd, logFd],
+    })
+  } finally {
+    closeLog(logFd)
+  }
+  child.unref()
+
+  await waitForSdkWorkerInitialization({
+    repoRoot: args.repoRoot,
+    streamId: args.streamId,
+    batchId: args.batchId,
+    runId,
+    executorLogPath: absoluteExecutorLogPath,
+    readBatchStatus: dependencies.readBatchStatus ?? readBatchStatus,
+    sleep: dependencies.sleep ?? ((ms) => Bun.sleep(ms)),
+    now: dependencies.now ?? Date.now,
+  })
+}
+
 export async function launchHeadlessBatchExecution(
   args: LaunchHeadlessBatchArgs,
+  dependencies: SupervisionHelperDependencies = {},
 ): Promise<void> {
+  if (args.executionBackend === "sdk") {
+    await launchSdkBatchExecution(args, dependencies)
+    return
+  }
+
+  // Keep this legacy command construction and attached pipe handling intact.
   const workCliPath = fileURLToPath(new URL("../../bin/work.ts", import.meta.url))
   const commandArgs = [
     workCliPath,
@@ -144,7 +284,7 @@ export async function launchHeadlessBatchExecution(
   }
 
   await new Promise<void>((resolve, reject) => {
-    const child = spawn(process.execPath, commandArgs, {
+    const child = (dependencies.spawn ?? spawn)(process.execPath, commandArgs, {
       cwd: args.repoRoot,
       stdio: ["ignore", "pipe", "pipe"],
     })

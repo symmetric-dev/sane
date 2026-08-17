@@ -145,7 +145,7 @@ versioned, and its Effect lifecycle is acceptable for the detached executor.
 - Keep `batch-status` and AgENV runtime state as the canonical source of truth.
 - Persist provider-native session and run identifiers when they are created.
 - Treat one implementation-agent execution as an atomic attempt. A failed or
-  lost attempt is terminal by default; an explicitly enabled retry policy may
+  lost attempt is terminal by default; an explicitly listed fallback model may
   create a new provider session/agent. Provider conversation resume is not
   required for the initial SDK backend.
 - Make tmux optional for SDK headless execution and retain the current
@@ -361,9 +361,11 @@ work supervise
 ```
 
 The executor should run one provider session/agent per implementation thread,
-with bounded concurrency. A failed attempt is terminal at the attempt level.
-Retries are disabled by default; an explicitly enabled retry policy creates a
-new provider session/agent rather than resuming a conversation.
+using the same parallelism as the current batch execution. A failed attempt is
+terminal at the attempt level.
+The executor does not implicitly retry the same model under another runtime.
+Only an explicitly listed later model candidate may create a new provider
+session/agent rather than resuming a conversation.
 
 ### Optional tmux observability and compatibility
 
@@ -385,7 +387,8 @@ Cursor local SDK runs inside the owning Node/Bun process. A parent command must
 not create a local agent and then exit while expecting the run to continue.
 The detached executor provides the required ownership. Provider conversation
 resume is not required after an executor failure; the batch recovery path starts
-a new attempt only when an explicit retry policy allows it.
+a new attempt only when an explicitly listed fallback model exists or a
+deliberate rerun is requested.
 
 OpenCode is easier to detach because `opencode serve` already provides a
 persistent server. The initial SDK backend should use synchronous prompts while
@@ -443,15 +446,13 @@ another one.
 
 ## Provider configuration
 
-The existing `work/agents.yaml` model schema is OpenCode-oriented. A future
-configuration should allow serialized runtime suffixes and a workstream-level
-default, for example:
+The existing top-level `work/agents.yaml` model schema is OpenCode-oriented. A
+future configuration should allow serialized runtime suffixes and a default
+that applies to all workstreams in the current repository path, for example:
 
 ```yaml
 execution:
   defaultRuntime: opencode
-  retry:
-    enabled: false
 
 agents:
   - name: default
@@ -509,7 +510,7 @@ Use this precedence:
 ```text
 explicit CLI --runtime override
   > explicit @runtime suffix on the model
-  > workstream execution.defaultRuntime
+  > top-level work/* execution.defaultRuntime
   > legacy default: opencode
 ```
 
@@ -524,10 +525,10 @@ source on the batch run and per-thread attempt before starting execution. Do
 not encode a provider into the agent name or force Cursor model IDs through the
 OpenCode validator.
 
-SDK retry is disabled by default. A provider error fails the attempt and the
-batch projection without automatically launching a replacement. A future
-explicit retry policy may create a fresh attempt and provider session/agent;
-retries must not be inferred from the model list unless that policy is enabled.
+A provider error fails the attempt and updates the batch projection without
+implicitly changing runtimes or repeating the same model. An explicitly listed
+later model candidate may create a fresh attempt and provider session/agent;
+retries must not be inferred beyond the configured model list.
 
 ## Recommended implementation plan
 
@@ -559,7 +560,6 @@ The short sequence is:
   launcher when packaging requires it?
 - How should OpenCode orphan sessions be inspected or aborted before a fresh
   attempt is launched?
-- What bounded concurrency should be used per provider and batch?
 - Which compact activity summaries are useful to operators without storing
   complete transcripts in canonical state?
 - When should the future OpenCode V2 HTTP adapter be introduced behind the same

@@ -33,11 +33,14 @@ import { parse as parseYaml, stringify as stringifyYaml } from "yaml"
 import type {
     AgentsConfigYaml,
     AgentDefinitionYaml,
+    ExecutionConfigYaml,
     ModelSpec,
     NormalizedModelSpec,
+    ResolvedModelSpec,
 } from "./types.ts"
 import { getWorkDir } from "./repo.ts"
-import { isValidModelFormat } from "./model.ts"
+import { resolveModelSpec } from "./model.ts"
+import type { ModelResolutionOptions } from "./model.ts"
 
 /**
  * Get the agents.yaml file path
@@ -53,7 +56,11 @@ export function normalizeModelSpec(spec: ModelSpec): NormalizedModelSpec {
     if (typeof spec === "string") {
         return { model: spec }
     }
-    return { model: spec.model, variant: spec.variant }
+    return {
+        model: spec.model,
+        ...(spec.variant === undefined ? {} : { variant: spec.variant }),
+        ...(spec.runtime === undefined ? {} : { runtime: spec.runtime }),
+    }
 }
 
 /**
@@ -81,6 +88,28 @@ export function parseAgentsYaml(content: string): {
         if (!Array.isArray(parsed.agents)) {
             errors.push("Invalid YAML: expected 'agents' array at root")
             return { config: null, errors }
+        }
+
+        let execution: ExecutionConfigYaml | undefined
+        if (parsed.execution !== undefined) {
+            if (!parsed.execution || typeof parsed.execution !== "object" || Array.isArray(parsed.execution)) {
+                errors.push("Invalid YAML: expected 'execution' to be an object")
+            } else if (parsed.execution.defaultRuntime !== undefined) {
+                try {
+                    // Validate the configured runtime through the same
+                    // AgENV-owned path used for model references.
+                    resolveModelSpec(parsed.execution.defaultRuntime === "cursor" ? "auto" : "provider/model", {
+                        defaultRuntime: parsed.execution.defaultRuntime,
+                    })
+                    execution = { defaultRuntime: parsed.execution.defaultRuntime }
+                } catch (error) {
+                    errors.push(
+                        `Invalid execution.defaultRuntime: ${error instanceof Error ? error.message : String(error)}`,
+                    )
+                }
+            } else {
+                execution = {}
+            }
         }
 
         const agents: AgentDefinitionYaml[] = []
@@ -114,18 +143,23 @@ export function parseAgentsYaml(content: string): {
                 continue
             }
 
-            // Validate each model
+            // Validate each model through the runtime-aware resolver. Retain
+            // the original syntax in the parsed config so legacy callers
+            // still receive strings/objects rather than a forced OpenCode
+            // representation.
             const validModels: ModelSpec[] = []
             for (let j = 0; j < agent.models.length; j++) {
                 const model = agent.models[j]
-                let modelStr: string
+                let modelSpec: ModelSpec
 
                 if (typeof model === "string") {
-                    modelStr = model
-                    validModels.push(model)
+                    modelSpec = model
                 } else if (model && typeof model === "object" && model.model) {
-                    modelStr = model.model
-                    validModels.push({ model: model.model, variant: model.variant })
+                    modelSpec = {
+                        model: model.model,
+                        ...(model.variant === undefined ? {} : { variant: model.variant }),
+                        ...(model.runtime === undefined ? {} : { runtime: model.runtime }),
+                    } as ModelSpec
                 } else {
                     errors.push(
                         `Agent "${agent.name}": model ${j + 1} must be a string or object with 'model' field`
@@ -133,9 +167,14 @@ export function parseAgentsYaml(content: string): {
                     continue
                 }
 
-                if (!isValidModelFormat(modelStr)) {
+                try {
+                    resolveModelSpec(modelSpec, {
+                        defaultRuntime: execution?.defaultRuntime,
+                    })
+                    validModels.push(modelSpec)
+                } catch (error) {
                     errors.push(
-                        `Agent "${agent.name}": model "${modelStr}" is not in provider/model format`
+                        `Agent "${agent.name}": model ${j + 1} is invalid: ${error instanceof Error ? error.message : String(error)}`
                     )
                 }
             }
@@ -153,7 +192,13 @@ export function parseAgentsYaml(content: string): {
             })
         }
 
-        return { config: { agents }, errors }
+        return {
+            config: {
+                agents,
+                ...(execution === undefined ? {} : { execution }),
+            },
+            errors,
+        }
     } catch (e) {
         errors.push(`YAML parse error: ${e instanceof Error ? e.message : String(e)}`)
         return { config: null, errors }
@@ -230,13 +275,19 @@ export function getAgentYaml(
  */
 export function getAgentModels(
     config: AgentsConfigYaml,
-    agentName: string
-): NormalizedModelSpec[] {
+    agentName: string,
+    options: ModelResolutionOptions = {},
+): ResolvedModelSpec[] {
     const agent = getAgentYaml(config, agentName)
     if (!agent) {
         return []
     }
-    return agent.models.map(normalizeModelSpec)
+    return agent.models.map((spec) =>
+        resolveModelSpec(spec, {
+            ...options,
+            defaultRuntime: options.defaultRuntime ?? config.execution?.defaultRuntime,
+        }),
+    )
 }
 
 /**
@@ -245,8 +296,9 @@ export function getAgentModels(
  */
 export function getPrimaryModel(
     config: AgentsConfigYaml,
-    agentName: string
-): NormalizedModelSpec | null {
-    const models = getAgentModels(config, agentName)
+    agentName: string,
+    options: ModelResolutionOptions = {},
+): ResolvedModelSpec | null {
+    const models = getAgentModels(config, agentName, options)
     return models.length > 0 ? models[0]! : null
 }
