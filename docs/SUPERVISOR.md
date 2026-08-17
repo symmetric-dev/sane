@@ -32,12 +32,24 @@ It does four things:
 3. waits for persisted `batch-status` to become terminal,
 4. records a **handoff** back to the Root Agent or calling branch.
 
+Here, “resume” means resuming or reconciling the persisted batch orchestration.
+It does not require resuming a Cursor conversation or an individual provider
+message/tool call.
+
 It does **not** approve, reject, escalate, or run fix cycles by itself. Those decisions remain parent-side and are persisted in canonical supervision runtime state.
 
 That distinction is the most important operator mental model:
 
 - `work supervise` gets a batch to a trustworthy handoff point.
 - the supervisor fork and user decide what to do next.
+
+The current default implementation uses the legacy OpenCode CLI/tmux backend.
+The planned SDK backend keeps this exact manager contract while replacing only
+the worker execution path. It launches a detached SDK `BatchExecutor`, runs
+Cursor/OpenCode attempts in parallel, updates the same canonical state, and
+returns the same terminal handoff. One provider execution is treated as one
+atomic attempt; a failed or lost attempt may be retried with a brand-new
+provider agent/session rather than resuming a conversation.
 
 ## Primary commands
 
@@ -59,6 +71,25 @@ Common flags:
 - `--silent`: disable sounds
 - `--timeout-ms`: stop waiting after this many milliseconds (default `1200000` / 20 minutes)
 - `--poll-interval-ms`: polling interval while waiting for `batch-status` (default `1000`)
+
+The SDK backend will be selected through an explicit execution-backend option
+during rollout. The legacy backend remains the default until no-tmux completion,
+executor-loss recovery, cancellation, and compatibility tests pass.
+
+Before changing the main command, the SDK path may be exercised through the
+separate experimental entry point:
+
+```bash
+work-sdk supervise --batch "SS.BB"
+work-sdk supervise --batch "SS.BB" --runtime cursor
+```
+
+This command reuses the same persisted supervision state and handoff logic but
+always selects the SDK backend. It is not a separate state machine. The runtime
+override is a forced batch run for experiments; normal selection is per model
+reference (`model@runtime`) with a workstream default fallback. The thread's
+assigned logical agent profile still supplies the ordered model candidates.
+SDK retry is disabled by default.
 
 Recommended default for real operator runs:
 
@@ -134,6 +165,22 @@ Operator expectations:
 
 If tmux disappears but persisted state reaches a terminal result, trust persisted evidence first.
 
+### 4) Observe an SDK-backed batch
+
+An SDK-backed headless batch does not require an implementation tmux session.
+Inspect it through the canonical state interface first:
+
+```bash
+work batch-status --batch "SS.BB" --format json
+work tree --batch "SS.BB"
+```
+
+The planned SDK runtime also writes an executor log, a compact activity journal,
+and a snapshot outside the manager command output. A future follow command such
+as `work batch-events --follow --batch "SS.BB"` can provide live observation;
+the exact command is part of the implementation plan. These logs are
+observability evidence, not the canonical batch state.
+
 ## Source-of-truth hierarchy
 
 For any supervised run, inspect these in this order:
@@ -166,6 +213,9 @@ Key fields to inspect:
 - `updatedAt`
 - `completedAt` when terminal
 - `tmuxSessionName` when the launch recorded one
+- SDK batches will additionally expose executor PID/heartbeat, backend/provider,
+  attempt IDs, native provider IDs, and last activity timestamps when that
+  backend is enabled.
 
 Some code paths and historical discussion still use the label `supervisor-state`; today the canonical persisted runtime lives in sqlite-backed supervision state.
 
@@ -217,7 +267,8 @@ Evidence:
 Meaning:
 
 - the helper stopped waiting,
-- the underlying batch may still be running or may finish later,
+- the underlying batch may still be running or may finish later; this does not
+  imply provider cancellation,
 - rerunning `work supervise` should resume the same batch before any later incomplete batch.
 
 ### C. Already-terminal recovery
@@ -357,6 +408,12 @@ If the tmux session is gone:
 2. if state is already terminal, proceed from persisted evidence
 3. if branch supervision is stuck nonterminal, reconcile it
 
+For an SDK-backed batch with no tmux session, inspect the executor heartbeat and
+PID metadata instead. If the executor is no longer live, treat the attempt as
+lost, reconcile any known OpenCode native session, and let the existing batch
+recovery path mark the attempt/batch failed. A fresh attempt requires an
+explicitly enabled retry policy or a deliberate rerun.
+
 Recovery tool:
 
 ```text
@@ -402,6 +459,8 @@ Inspect `branch_sessions[]` first.
 
 ## Related references
 
+- [`docs/WORK_SUPERVISE_SDK_ARCHITECTURE.md`](./WORK_SUPERVISE_SDK_ARCHITECTURE.md)
+- [`docs/WORK_SUPERVISE_SDK_IMPLEMENTATION_PLAN.md`](./WORK_SUPERVISE_SDK_IMPLEMENTATION_PLAN.md)
 - [`docs/ROOT_AGENT_BRANCHING_ARCHITECTURE.md`](./ROOT_AGENT_BRANCHING_ARCHITECTURE.md)
 - [`docs/supervision-manual-verification-checklist.md`](./supervision-manual-verification-checklist.md)
 - [`docs/INSTALL.md`](./INSTALL.md)

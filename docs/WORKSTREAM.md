@@ -82,6 +82,61 @@ Operationally:
 - Without sqlite, `work/<stream-id>/workstream-state.json` is the canonical filesystem runtime store.
 - Legacy `threads.json`, `supervisor-state.json`, and `batch-status/*.json` may be imported during migration, but they are not maintained as live runtime state.
 
+## SDK Execution Backend
+
+The planned SDK backend changes how implementation attempts execute, not how
+workstream hierarchy or canonical state works.
+
+- `work supervise` remains the manager-facing orchestration CLI.
+- A detached `BatchExecutor` runs parallel provider attempts without requiring
+  an implementation tmux session.
+- One Cursor Agent or OpenCode session is created per implementation thread.
+- One provider execution is one atomic attempt. A failed or lost attempt may be
+  retried with a brand-new provider agent/session; conversation-level resume is
+  not required initially.
+- Provider-native IDs, executor PID/heartbeat, attempt IDs, and activity times
+  are persisted as execution metadata.
+- `batch-status`, SQLite/filesystem state, and canonical thread state remain the
+  source of truth.
+- Executor logs and activity journals are supporting observability evidence,
+  not replacements for canonical state.
+- The existing CLI/tmux backend remains available as the compatibility and
+  interactive path during rollout.
+
+The manager currently continues to invoke `work supervise` through the bash
+tool. A future OpenCode plugin tool may be a thin facade over the same
+orchestration service, but provider SDK processes should remain owned by the
+detached executor rather than the plugin callback.
+
+The SDK path can be introduced before changing the default command through an
+experimental `work-sdk supervise` entry point. It should reuse the same
+supervision persistence and handoff code, selecting only the SDK execution
+backend. The normal `work supervise --execution-backend sdk` option can be
+added after that entry point is validated.
+
+Provider selection is separate from thread agent assignment. `assignedAgent`
+continues to identify the logical profile configured in `agents.yaml`; each
+model candidate may select its runtime with a serialized suffix:
+
+```bash
+work-sdk supervise --batch "SS.BB" --runtime cursor
+```
+
+```yaml
+models:
+  - { model: anthropic/claude-sonnet-4-5, runtime: opencode }
+  - { model: auto, runtime: cursor }
+```
+
+An omitted suffix uses the workstream's default runtime. The resolved backend,
+runtime, model, and logical agent are persisted on the batch/attempt before
+execution. Different threads in one batch may use different SDKs. SDK retry is
+disabled by default.
+
+See [`docs/WORK_SUPERVISE_SDK_ARCHITECTURE.md`](./WORK_SUPERVISE_SDK_ARCHITECTURE.md)
+and [`docs/WORK_SUPERVISE_SDK_IMPLEMENTATION_PLAN.md`](./WORK_SUPERVISE_SDK_IMPLEMENTATION_PLAN.md)
+for the implementation direction.
+
 ## Sqlite-Authoritative Structured Storage
 
 - Recommended bootstrap for new and existing repos: `work init --sqlite`.
