@@ -1,0 +1,453 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Local SDK Monitor PoC</title>
+  <style>
+    :root {
+      color-scheme: dark;
+      --bg: #10141b;
+      --panel: #181e28;
+      --panel-alt: #202936;
+      --border: #303b4b;
+      --text: #e9eef5;
+      --muted: #9eabbc;
+      --accent: #6db6ff;
+      --good: #56d397;
+      --warn: #f3c969;
+      --bad: #ff7f86;
+      --mono: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+    }
+
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      background: var(--bg);
+      color: var(--text);
+      font: 14px/1.45 system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    }
+    main { max-width: 1500px; margin: 0 auto; padding: 24px; }
+    header { display: flex; justify-content: space-between; gap: 20px; align-items: flex-start; margin-bottom: 18px; }
+    h1, h2, h3, p { margin-top: 0; }
+    h1 { margin-bottom: 4px; font-size: 25px; letter-spacing: -.02em; }
+    h2 { font-size: 17px; margin-bottom: 14px; }
+    h3 { font-size: 15px; margin-bottom: 8px; }
+    .subtitle, .muted { color: var(--muted); }
+    .toolbar { display: flex; flex-wrap: wrap; justify-content: flex-end; align-items: center; gap: 8px 14px; color: var(--muted); text-align: right; }
+    button { border: 1px solid var(--border); border-radius: 6px; background: var(--panel-alt); color: var(--text); padding: 7px 11px; cursor: pointer; }
+    button:hover { border-color: var(--accent); }
+    .connection { color: var(--good); }
+    .connection.error { color: var(--bad); }
+    .panel { background: var(--panel); border: 1px solid var(--border); border-radius: 10px; padding: 16px; min-width: 0; }
+    .grid { display: grid; gap: 14px; margin-bottom: 14px; }
+    .overview { grid-template-columns: minmax(0, 1.6fr) minmax(280px, 1fr); }
+    .two-col { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+    .three-col { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+    @media (max-width: 900px) {
+      main { padding: 16px; }
+      header, .overview, .two-col, .three-col { display: block; }
+      header > * { margin-bottom: 12px; }
+      .panel { margin-bottom: 14px; }
+      .toolbar { justify-content: flex-start; text-align: left; }
+    }
+    .facts { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 10px; }
+    .fact { background: var(--panel-alt); border-radius: 7px; padding: 10px; min-width: 0; }
+    .fact-label { display: block; color: var(--muted); font-size: 11px; text-transform: uppercase; letter-spacing: .06em; margin-bottom: 3px; }
+    .fact-value { display: block; overflow-wrap: anywhere; font-weight: 600; }
+    .status { display: inline-block; border-radius: 99px; padding: 2px 8px; font-size: 12px; font-weight: 650; background: #354153; color: var(--text); }
+    .status-running, .status-in_progress { background: #174e4a; color: #92f2c6; }
+    .status-completed { background: #194c3b; color: #8eeebd; }
+    .status-pending { background: #4e421e; color: #ffe49a; }
+    .status-failed, .status-cancelled, .status-blocked { background: #5a2930; color: #ffb0b5; }
+    .counts { display: grid; grid-template-columns: repeat(5, minmax(58px, 1fr)); gap: 8px; margin-top: 14px; }
+    .count { text-align: center; padding: 8px 3px; border: 1px solid var(--border); border-radius: 6px; }
+    .count strong { display: block; font-size: 20px; }
+    .count span { color: var(--muted); font-size: 11px; }
+    .path-list { margin: 0; }
+    .path-row { display: grid; grid-template-columns: 145px minmax(0, 1fr); gap: 12px; padding: 8px 0; border-bottom: 1px solid #27313e; }
+    .path-row:last-child { border-bottom: 0; }
+    .path-label { color: var(--muted); }
+    code, pre, .mono { font-family: var(--mono); }
+    code { color: #c5ddff; overflow-wrap: anywhere; }
+    .path-absolute { display: block; color: var(--muted); font-size: 11px; margin-top: 3px; overflow-wrap: anywhere; }
+    .thread { border: 1px solid var(--border); border-radius: 8px; padding: 12px; margin-bottom: 10px; background: #151b23; }
+    .thread:last-child { margin-bottom: 0; }
+    .thread-heading { display: flex; justify-content: space-between; gap: 12px; align-items: baseline; }
+    .thread-meta { color: var(--muted); font-size: 12px; overflow-wrap: anywhere; }
+    .session-table { width: 100%; border-collapse: collapse; margin-top: 10px; font-size: 12px; }
+    .session-table th, .session-table td { border-top: 1px solid #293441; padding: 7px 6px; text-align: left; vertical-align: top; overflow-wrap: anywhere; }
+    .session-table th { color: var(--muted); font-weight: 500; }
+    .activity-list { max-height: 560px; overflow: auto; }
+    .activity-item { border-bottom: 1px solid #293441; padding: 9px 0; }
+    .activity-item:last-child { border-bottom: 0; }
+    .activity-meta { color: var(--muted); font: 11px/1.4 var(--mono); overflow-wrap: anywhere; }
+    .activity-summary { margin-top: 3px; white-space: pre-wrap; overflow-wrap: anywhere; }
+    pre.log { max-height: 360px; overflow: auto; white-space: pre-wrap; overflow-wrap: anywhere; background: #0c1015; border-radius: 6px; padding: 12px; margin: 0; color: #d3dce8; font-size: 12px; }
+    .empty { color: var(--muted); padding: 6px 0; }
+    .errors { border-color: #71424a; }
+    .error-list { margin: 0; padding-left: 19px; color: #ffb0b5; }
+    .error-list li { margin: 4px 0; overflow-wrap: anywhere; }
+    .notice { color: var(--warn); }
+    [hidden] { display: none !important; }
+  </style>
+</head>
+<body>
+  <main>
+    <header>
+      <div>
+        <h1>Local SDK Monitor <span class="muted">PoC</span></h1>
+        <p class="subtitle">Read-only view of the canonical filesystem state in <code>/Users/beto/gene</code>.</p>
+      </div>
+      <div class="toolbar">
+        <span id="connection-status" class="connection">Starting…</span>
+        <span id="poll-countdown">Next poll in 5s</span>
+        <span>Last refresh: <strong id="last-refresh">never</strong></span>
+        <button id="refresh-button" type="button">Refresh now</button>
+      </div>
+    </header>
+
+    <section class="grid overview">
+      <article class="panel">
+        <h2>Selected batch / run</h2>
+        <div id="batch-empty" class="empty" hidden>No SDK batch/run is currently available.</div>
+        <div id="batch-content">
+          <div class="facts">
+            <div class="fact"><span class="fact-label">Stream</span><span id="stream-id" class="fact-value mono">—</span></div>
+            <div class="fact"><span class="fact-label">Batch</span><span id="batch-id" class="fact-value mono">—</span></div>
+            <div class="fact"><span class="fact-label">Run</span><span id="run-id" class="fact-value mono">—</span></div>
+            <div class="fact"><span class="fact-label">Status</span><span id="batch-status" class="fact-value">—</span></div>
+            <div class="fact"><span class="fact-label">Stage / name</span><span id="batch-name" class="fact-value">—</span></div>
+            <div class="fact"><span class="fact-label">Selection</span><span id="selection-reason" class="fact-value">—</span></div>
+          </div>
+          <div class="counts">
+            <div class="count"><strong id="count-total">0</strong><span>Total</span></div>
+            <div class="count"><strong id="count-pending">0</strong><span>Pending</span></div>
+            <div class="count"><strong id="count-running">0</strong><span>Running</span></div>
+            <div class="count"><strong id="count-completed">0</strong><span>Completed</span></div>
+            <div class="count"><strong id="count-failed">0</strong><span>Failed</span></div>
+          </div>
+        </div>
+      </article>
+
+      <article class="panel">
+        <h2>Executor</h2>
+        <div class="facts">
+          <div class="fact"><span class="fact-label">Status</span><span id="executor-status" class="fact-value">—</span></div>
+          <div class="fact"><span class="fact-label">PID</span><span id="executor-pid" class="fact-value mono">—</span></div>
+          <div class="fact"><span class="fact-label">Heartbeat age</span><span id="heartbeat-age" class="fact-value">—</span></div>
+          <div class="fact"><span class="fact-label">Heartbeat at</span><span id="heartbeat-at" class="fact-value mono">—</span></div>
+        </div>
+        <p id="transport-error" class="notice" hidden></p>
+      </article>
+    </section>
+
+    <section class="panel" style="margin-bottom:14px">
+      <h2>Runtime artifact paths</h2>
+      <div id="runtime-paths" class="path-list"></div>
+    </section>
+
+    <section class="panel" style="margin-bottom:14px">
+      <h2>Threads and sessions</h2>
+      <div id="threads"></div>
+    </section>
+
+    <section class="grid two-col">
+      <article class="panel">
+        <h2>Recent activity <span class="muted">(tail 50)</span></h2>
+        <div id="activity" class="activity-list"></div>
+      </article>
+      <article class="panel">
+        <h2>Executor log <span class="muted">(tail 200 lines)</span></h2>
+        <pre id="executor-log" class="log"></pre>
+      </article>
+    </section>
+
+    <section id="errors-panel" class="panel errors" hidden>
+      <h2>Read errors</h2>
+      <ul id="errors" class="error-list"></ul>
+    </section>
+  </main>
+
+  <script>
+    (() => {
+      "use strict";
+
+      const POLL_MS = 5000;
+      let nextPollAt = Date.now() + POLL_MS;
+      let polling = false;
+
+      const byId = (id) => document.getElementById(id);
+      const text = (id, value) => { byId(id).textContent = value == null ? "—" : String(value); };
+      const clear = (element) => { while (element.firstChild) element.removeChild(element.firstChild); };
+      const value = (input, fallback = "—") => input == null || input === "" ? fallback : String(input);
+
+      function formatTime(input) {
+        if (!input) return "—";
+        const date = new Date(input);
+        return Number.isNaN(date.getTime()) ? String(input) : date.toLocaleString();
+      }
+
+      function formatAge(ageMs) {
+        if (typeof ageMs !== "number" || !Number.isFinite(ageMs)) return "unknown";
+        if (ageMs < 1000) return `${Math.round(ageMs)} ms`;
+        const seconds = ageMs / 1000;
+        if (seconds < 60) return `${seconds.toFixed(1)} s`;
+        const minutes = Math.floor(seconds / 60);
+        return `${minutes}m ${Math.floor(seconds % 60)}s`;
+      }
+
+      function statusElement(status) {
+        const element = document.createElement("span");
+        const normalized = value(status, "unknown").toLowerCase().replace(/[^a-z0-9_-]/g, "-");
+        element.className = `status status-${normalized}`;
+        element.textContent = value(status, "unknown");
+        return element;
+      }
+
+      function addFact(parent, label, content) {
+        const row = document.createElement("div");
+        row.className = "fact";
+        const labelElement = document.createElement("span");
+        labelElement.className = "fact-label";
+        labelElement.textContent = label;
+        const valueElement = document.createElement("span");
+        valueElement.className = "fact-value";
+        valueElement.textContent = value(content);
+        row.append(labelElement, valueElement);
+        parent.appendChild(row);
+      }
+
+      function renderBatch(data) {
+        const batch = data.batch;
+        byId("batch-empty").hidden = Boolean(batch);
+        byId("batch-content").hidden = !batch;
+        if (!batch) return;
+
+        text("stream-id", data.streamId);
+        text("batch-id", batch.batchId);
+        text("run-id", batch.runId);
+        const status = byId("batch-status");
+        clear(status);
+        status.appendChild(statusElement(batch.status));
+        text("batch-name", [batch.stageName, batch.batchName].filter(Boolean).join(" / ") || "—");
+        text("selection-reason", batch.selectionReason);
+        const summary = batch.summary || {};
+        ["total", "pending", "running", "completed", "failed"].forEach((key) => text(`count-${key}`, summary[key] ?? 0));
+      }
+
+      function renderExecutor(executor) {
+        if (!executor) {
+          ["executor-status", "executor-pid", "heartbeat-age", "heartbeat-at"].forEach((id) => text(id, "—"));
+          return;
+        }
+        const status = byId("executor-status");
+        clear(status);
+        status.appendChild(statusElement(executor.status));
+        text("executor-pid", executor.executorPid);
+        text("heartbeat-age", formatAge(executor.heartbeatAgeMs));
+        text("heartbeat-at", formatTime(executor.executorHeartbeatAt));
+      }
+
+      function renderPaths(runtime) {
+        const container = byId("runtime-paths");
+        clear(container);
+        if (!runtime) {
+          const empty = document.createElement("div");
+          empty.className = "empty";
+          empty.textContent = "Runtime paths are not available until a batch/run is selected.";
+          container.appendChild(empty);
+          return;
+        }
+
+        [["Run path", runtime.runPath], ["Runtime directory", runtime.runtimeDirectory], ["Activity journal", runtime.activityJournalPath], ["Snapshot", runtime.snapshotPath], ["Executor log", runtime.executorLogPath]].forEach(([label, info]) => {
+          const row = document.createElement("div");
+          row.className = "path-row";
+          const labelElement = document.createElement("span");
+          labelElement.className = "path-label";
+          labelElement.textContent = label;
+          const detail = document.createElement("div");
+          if (!info) {
+            detail.className = "muted";
+            detail.textContent = "not recorded yet";
+          } else {
+            const recorded = document.createElement("code");
+            recorded.textContent = value(info.recorded);
+            detail.appendChild(recorded);
+            const absolute = document.createElement("span");
+            absolute.className = "path-absolute";
+            absolute.textContent = `${info.exists ? "exists" : "missing"} · ${value(info.absolute)}`;
+            detail.appendChild(absolute);
+          }
+          row.append(labelElement, detail);
+          container.appendChild(row);
+        });
+      }
+
+      function renderThreads(threads) {
+        const container = byId("threads");
+        clear(container);
+        if (!Array.isArray(threads) || threads.length === 0) {
+          const empty = document.createElement("div");
+          empty.className = "empty";
+          empty.textContent = "No thread runtime records are available for the selected run.";
+          container.appendChild(empty);
+          return;
+        }
+
+        threads.forEach((thread) => {
+          const article = document.createElement("article");
+          article.className = "thread";
+          const heading = document.createElement("div");
+          heading.className = "thread-heading";
+          const title = document.createElement("h3");
+          title.textContent = `${value(thread.threadId)} — ${value(thread.threadName, "Unnamed thread")}`;
+          const status = statusElement(thread.status);
+          heading.append(title, status);
+          article.appendChild(heading);
+
+          const meta = document.createElement("div");
+          meta.className = "thread-meta mono";
+          meta.textContent = [
+            thread.currentSessionId ? `session=${thread.currentSessionId}` : null,
+            thread.attemptId ? `attempt=${thread.attemptId}` : null,
+            thread.nativeSessionId ? `nativeSession=${thread.nativeSessionId}` : null,
+            thread.nativeRunId ? `nativeRun=${thread.nativeRunId}` : null,
+          ].filter(Boolean).join(" · ") || "No native/session identifiers recorded";
+          article.appendChild(meta);
+
+          const sessions = Array.isArray(thread.sessions) ? thread.sessions : [];
+          if (sessions.length === 0) {
+            const empty = document.createElement("div");
+            empty.className = "empty";
+            empty.textContent = "No correlated sessions recorded.";
+            article.appendChild(empty);
+          } else {
+            const table = document.createElement("table");
+            table.className = "session-table";
+            const head = document.createElement("thead");
+            const headRow = document.createElement("tr");
+            ["Session", "Status", "Provider/runtime", "Native IDs", "Activity"].forEach((label) => {
+              const cell = document.createElement("th");
+              cell.textContent = label;
+              headRow.appendChild(cell);
+            });
+            head.appendChild(headRow);
+            table.appendChild(head);
+            const body = document.createElement("tbody");
+            sessions.forEach((session) => {
+              const row = document.createElement("tr");
+              const sessionId = document.createElement("td");
+              sessionId.className = "mono";
+              sessionId.textContent = value(session.sessionId);
+              const sessionStatus = document.createElement("td");
+              sessionStatus.appendChild(statusElement(session.status));
+              const provider = document.createElement("td");
+              provider.textContent = [session.provider, session.runtime, session.resolvedModel].filter(Boolean).join(" / ") || "—";
+              const native = document.createElement("td");
+              native.className = "mono";
+              native.textContent = [session.nativeSessionId ? `session=${session.nativeSessionId}` : null, session.nativeRunId ? `run=${session.nativeRunId}` : null].filter(Boolean).join("\n") || "—";
+              const activity = document.createElement("td");
+              activity.textContent = formatTime(session.lastActivityAt || session.lastEventAt || session.completedAt || session.startedAt);
+              row.append(sessionId, sessionStatus, provider, native, activity);
+              body.appendChild(row);
+            });
+            table.appendChild(body);
+            article.appendChild(table);
+          }
+          container.appendChild(article);
+        });
+      }
+
+      function renderActivity(records) {
+        const container = byId("activity");
+        clear(container);
+        if (!Array.isArray(records) || records.length === 0) {
+          const empty = document.createElement("div");
+          empty.className = "empty";
+          empty.textContent = "No complete activity records available.";
+          container.appendChild(empty);
+          return;
+        }
+        records.slice().reverse().forEach((record) => {
+          const item = document.createElement("div");
+          item.className = "activity-item";
+          const meta = document.createElement("div");
+          meta.className = "activity-meta";
+          meta.textContent = [formatTime(record.timestamp), record.kind, record.threadId ? `thread=${record.threadId}` : null, record.nativeSessionId ? `native=${record.nativeSessionId}` : null].filter(Boolean).join(" · ");
+          const summary = document.createElement("div");
+          summary.className = "activity-summary";
+          summary.textContent = value(record.summary, JSON.stringify(record));
+          item.append(meta, summary);
+          container.appendChild(item);
+        });
+      }
+
+      function renderLog(lines) {
+        byId("executor-log").textContent = Array.isArray(lines) && lines.length > 0 ? lines.join("\n") : "No complete executor log lines available.";
+      }
+
+      function renderErrors(errors) {
+        const panel = byId("errors-panel");
+        const list = byId("errors");
+        clear(list);
+        panel.hidden = !Array.isArray(errors) || errors.length === 0;
+        if (!panel.hidden) {
+          errors.forEach((error) => {
+            const item = document.createElement("li");
+            item.textContent = [error.source, error.path, error.message].filter(Boolean).join(" · ");
+            list.appendChild(item);
+          });
+        }
+      }
+
+      function render(data) {
+        renderBatch(data);
+        renderExecutor(data.executor);
+        renderPaths(data.runtime);
+        renderThreads(data.sessions);
+        renderActivity(data.activity);
+        renderLog(data.executorLog);
+        renderErrors(data.readErrors);
+        text("last-refresh", formatTime(data.capturedAt));
+      }
+
+      async function poll() {
+        if (polling) return;
+        polling = true;
+        const connection = byId("connection-status");
+        try {
+          const response = await fetch("/api/sdk-monitor", { cache: "no-store" });
+          const data = await response.json();
+          render(data);
+          connection.textContent = response.ok ? "Connected · filesystem read" : "Connected with monitor error";
+          connection.className = response.ok ? "connection" : "connection error";
+          const transport = byId("transport-error");
+          transport.hidden = response.ok;
+          transport.textContent = response.ok ? "" : `HTTP ${response.status}: monitor response was incomplete.`;
+        } catch (error) {
+          connection.textContent = "Disconnected";
+          connection.className = "connection error";
+          const transport = byId("transport-error");
+          transport.hidden = false;
+          transport.textContent = `Read request failed: ${error instanceof Error ? error.message : String(error)}`;
+        } finally {
+          polling = false;
+          nextPollAt = Date.now() + POLL_MS;
+        }
+      }
+
+      function updateCountdown() {
+        const seconds = Math.max(0, Math.ceil((nextPollAt - Date.now()) / 1000));
+        text("poll-countdown", `Next poll in ${seconds}s`);
+      }
+
+      byId("refresh-button").addEventListener("click", poll);
+      setInterval(updateCountdown, 250);
+      setInterval(poll, POLL_MS);
+      updateCountdown();
+      poll();
+    })();
+  </script>
+</body>
+</html>

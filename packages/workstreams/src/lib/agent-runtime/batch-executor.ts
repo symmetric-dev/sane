@@ -1,4 +1,5 @@
-import { join } from "node:path"
+import { appendFileSync, mkdirSync } from "node:fs"
+import { dirname, join } from "node:path"
 import { randomUUID } from "node:crypto"
 
 import {
@@ -219,6 +220,56 @@ function errorSummary(error: AgentAttemptError | unknown): string {
       ? error as AgentAttemptError
       : normalizeAttemptError(error)
   return compact(normalized.message) ?? "Provider attempt failed"
+}
+
+function redactFailureMessage(message: string): string {
+  let redacted = message
+    .replace(/(https?:\/\/[^\s/@]+:)[^\s/@]+@/gi, "$1[REDACTED]@")
+    .replace(/(\bBearer\s+)[^\s,;]+/gi, "$1[REDACTED]")
+    .replace(
+      /((?:api[-_ ]?(?:key|token)|access[-_ ]?token|auth(?:orization)?(?:[-_ ]?token)?|password|passwd|secret|client[-_ ]?secret|private[-_ ]?key|credential|token|key)\s*[:=]\s*)(["']?)[^"'\s,;}\]]+/gi,
+      "$1$2[REDACTED]",
+    )
+
+  return redacted.replace(
+    /\b(?:sk|pk|rk|ghp|glpat|github_pat|xox[baprs])-[A-Za-z0-9_-]{8,}\b/gi,
+    "[REDACTED]",
+  )
+}
+
+function redactedFailureSummary(error: AgentAttemptError | unknown): string {
+  return redactFailureMessage(errorSummary(error))
+}
+
+interface RuntimeArtifactPaths {
+  runtimeDirectory: string
+  activityJournalPath: string
+  snapshotPath: string
+  executorLogPath: string
+}
+
+function deriveRuntimeArtifactPaths(
+  streamId: string,
+  batchId: string,
+  runId: string,
+): RuntimeArtifactPaths {
+  const runtimeDirectory = join("work", streamId, "runtime", "batches", batchId, "runs", runId)
+  return {
+    runtimeDirectory,
+    activityJournalPath: join(runtimeDirectory, "activity.jsonl"),
+    snapshotPath: join(runtimeDirectory, "snapshot.json"),
+    executorLogPath: join(runtimeDirectory, "executor.log"),
+  }
+}
+
+function fillMissingRuntimeArtifactPaths(
+  batch: Pick<BatchStatusFile, keyof RuntimeArtifactPaths>,
+  paths: RuntimeArtifactPaths,
+): void {
+  if (!batch.runtimeDirectory) batch.runtimeDirectory = paths.runtimeDirectory
+  if (!batch.activityJournalPath) batch.activityJournalPath = paths.activityJournalPath
+  if (!batch.snapshotPath) batch.snapshotPath = paths.snapshotPath
+  if (!batch.executorLogPath) batch.executorLogPath = paths.executorLogPath
 }
 
 function nowIso(now: () => string): string {
@@ -539,6 +590,76 @@ export class BatchExecutor {
     }
   }
 
+  private ensureRuntimeArtifacts(batch: BatchStatusFile): void {
+    if (
+      !batch.runtimeDirectory ||
+      !batch.activityJournalPath ||
+      !batch.snapshotPath ||
+      !batch.executorLogPath
+    ) {
+      return
+    }
+
+    try {
+      ensureRuntimeArtifactFiles({
+        runtimeDirectory: join(this.options.repoRoot, batch.runtimeDirectory),
+        activityJournalPath: join(this.options.repoRoot, batch.activityJournalPath),
+        snapshotPath: join(this.options.repoRoot, batch.snapshotPath),
+        executorLogPath: join(this.options.repoRoot, batch.executorLogPath),
+      }, this.options.observabilityFileSystem)
+    } catch (error) {
+      // Runtime artifact setup is supporting evidence only. Provider execution
+      // remains authoritative when the local filesystem is unavailable.
+      this.reportObservabilityFailure(error)
+    }
+  }
+
+  private logAttemptFailure(args: {
+    thread: PreparedBatchThread
+    candidate: PreparedBatchCandidate
+    attemptId: string
+    workSessionId: string
+    result: Extract<AttemptResult, { status: "failed" }>
+  }): void {
+    const executorLogPath = this.batch?.executorLogPath
+    if (!executorLogPath) return
+
+    const message = redactedFailureSummary(args.result.error)
+    const record = {
+      event: "sdk_attempt_failed",
+      timestamp: args.result.timestamp,
+      streamId: this.options.streamId,
+      batchId: this.options.batchId,
+      threadId: args.thread.threadId,
+      attemptId: args.attemptId,
+      workSessionId: args.workSessionId,
+      provider: args.candidate.model.runtime,
+      message,
+    }
+    const line = `${JSON.stringify(record)}\n`
+    const absolutePath = join(this.options.repoRoot, executorLogPath)
+
+    try {
+      if (this.options.observabilityFileSystem) {
+        this.options.observabilityFileSystem.mkdirSync(dirname(absolutePath), { recursive: true })
+        this.options.observabilityFileSystem.appendFileSync(absolutePath, line)
+      } else {
+        mkdirSync(dirname(absolutePath), { recursive: true })
+        appendFileSync(absolutePath, line, "utf8")
+      }
+    } catch (error) {
+      // Failure logging must not turn a provider failure into a different
+      // execution result. The detached worker's stderr remains a best-effort
+      // fallback because supervision redirects it to executor.log.
+      this.reportObservabilityFailure(error)
+      try {
+        console.error(`[sdk attempt failure] ${line.trim()}`)
+      } catch {
+        // Diagnostics are best effort too.
+      }
+    }
+  }
+
   private observe(input: ActivityRecordInput): void {
     if (this.observabilityDisabled) return
     const batch = this.batch
@@ -669,7 +790,13 @@ export class BatchExecutor {
     errorSummary?: string
     resultSummary?: string
   }): void {
-    this.persistThreadSession(args)
+    const safeErrorSummary = args.errorSummary === undefined
+      ? undefined
+      : redactFailureMessage(args.errorSummary)
+    const persistedArgs = safeErrorSummary === undefined
+      ? args
+      : { ...args, errorSummary: safeErrorSummary }
+    this.persistThreadSession(persistedArgs)
     const threadStatus = args.status === "running" ? "running" : threadStatusForResult(args.terminalOutcome ?? "failed")
     const batch = this.persistBatch((current) => {
       const thread = current.threads.find((entry) => entry.threadId === args.thread.threadId)
@@ -705,8 +832,8 @@ export class BatchExecutor {
       else thread.cancellationAcknowledgedAt = args.cancellationAcknowledgedAt
       if (args.terminalOutcome === undefined) delete thread.terminalOutcome
       else thread.terminalOutcome = args.terminalOutcome
-      if (args.errorSummary === undefined) delete thread.errorSummary
-      else thread.errorSummary = args.errorSummary
+      if (safeErrorSummary === undefined) delete thread.errorSummary
+      else thread.errorSummary = safeErrorSummary
       if (args.resultSummary === undefined) delete thread.resultSummary
       else thread.resultSummary = args.resultSummary
       if (args.nativeSessionId && args.candidate.model.runtime === "opencode") {
@@ -747,23 +874,7 @@ export class BatchExecutor {
 
   private createInitialBatch(prepared: PreparedSdkBatch, status: "pending" | "running"): BatchStatusFile {
     const runId = this.options.runId ?? `${this.options.batchId}-${Date.now()}-${randomUUID().slice(0, 8)}`
-    const runtimeDirectory = join("work", this.options.streamId, "runtime", "batches", this.options.batchId, "runs", runId)
-    const absoluteRuntimeDirectory = join(this.options.repoRoot, runtimeDirectory)
-    const activityJournalPath = join(runtimeDirectory, "activity.jsonl")
-    const snapshotPath = join(runtimeDirectory, "snapshot.json")
-    const executorLogPath = join(runtimeDirectory, "executor.log")
-    try {
-      ensureRuntimeArtifactFiles({
-        runtimeDirectory: absoluteRuntimeDirectory,
-        activityJournalPath: join(this.options.repoRoot, activityJournalPath),
-        snapshotPath: join(this.options.repoRoot, snapshotPath),
-        executorLogPath: join(this.options.repoRoot, executorLogPath),
-      }, this.options.observabilityFileSystem)
-    } catch (error) {
-      // The runtime paths are still recorded canonically. A local artifact
-      // setup failure must not prevent provider execution.
-      this.reportObservabilityFailure(error)
-    }
+    const artifactPaths = deriveRuntimeArtifactPaths(this.options.streamId, this.options.batchId, runId)
 
     const startedAt = nowIso(this.now)
     const initial = createBatchStatusFile({
@@ -780,14 +891,12 @@ export class BatchExecutor {
         // detached worker claims the run and replaces it with its true start.
         executorStartedAt: startedAt,
       }),
-      runtimeDirectory,
-      activityJournalPath,
-      snapshotPath,
-      executorLogPath,
+      ...artifactPaths,
       ...(this.cancellationRequested ? { cancellationRequestedAt: startedAt } : {}),
     })
     initial.status = status
     initial.updatedAt = startedAt
+    this.ensureRuntimeArtifacts(initial)
 
     return initial
   }
@@ -842,11 +951,16 @@ export class BatchExecutor {
         current.executorStartedAt = startedAt
         current.executorHeartbeatAt = startedAt
         current.updatedAt = startedAt
+        fillMissingRuntimeArtifactPaths(
+          current,
+          deriveRuntimeArtifactPaths(this.options.streamId, this.options.batchId, current.runId),
+        )
         upsertStructuredBatchRun(state, current)
         return current
       },
     })
     this.batch = adopted
+    this.ensureRuntimeArtifacts(adopted)
     this.initializeObservability(adopted)
     this.observeBatch("batch_adopted", `SDK batch ${adopted.batchId} adopted by executor ${this.ownerPid}`)
     return adopted
@@ -959,7 +1073,7 @@ export class BatchExecutor {
     } catch {
       // The run may not have initialized its canonical batch yet.
     }
-    this.observeBatch("cancellation_requested", this.cancellationReason)
+    this.observeBatch("cancellation_requested", redactFailureMessage(this.cancellationReason))
 
     this.cancellationPromise = Promise.all(
       [...this.activeAttempts.values()].map(async (active) => {
@@ -978,7 +1092,7 @@ export class BatchExecutor {
                   nativeRunId: active.native.nativeRunId,
                   eventId: cancelled.eventId,
                   timestamp: cancelled.timestamp,
-                  summary: `Provider cancellation acknowledged: ${reason}`,
+                  summary: `Provider cancellation acknowledged: ${redactFailureMessage(reason)}`,
                   flush: true,
                 })
                 return {
@@ -1003,7 +1117,9 @@ export class BatchExecutor {
                 nativeRunId: active.native.nativeRunId,
                 eventId: cancelled.eventId,
                 timestamp: cancelled.timestamp,
-                summary: cancelled.error?.message ?? "Provider cancellation was not acknowledged",
+                summary: cancelled.error
+                  ? redactFailureMessage(cancelled.error.message)
+                  : "Provider cancellation was not acknowledged",
                 flush: true,
               })
               return {
@@ -1026,7 +1142,7 @@ export class BatchExecutor {
                 provider: active.input.model.runtime,
                 nativeSessionId: active.native.nativeSessionId,
                 nativeRunId: active.native.nativeRunId,
-                summary: errorSummary(error),
+                summary: redactedFailureSummary(error),
                 flush: true,
               })
               return {
@@ -1085,6 +1201,9 @@ export class BatchExecutor {
     lastActivityAt: string
     errorSummary?: string
   }): void {
+    const safeErrorSummary = args.errorSummary === undefined
+      ? undefined
+      : redactFailureMessage(args.errorSummary)
     modifySqliteCanonicalRuntimeWorkstreamStateSync({
       repoRoot: this.options.repoRoot,
       streamId: this.options.streamId,
@@ -1100,7 +1219,7 @@ export class BatchExecutor {
             ...(args.nativeRunId === undefined ? {} : { nativeRunId: args.nativeRunId }),
             ...(args.lastEventAt === undefined ? {} : { lastEventAt: args.lastEventAt }),
             lastActivityAt: args.lastActivityAt,
-            ...(args.errorSummary === undefined ? {} : { errorSummary: args.errorSummary }),
+            ...(safeErrorSummary === undefined ? {} : { errorSummary: safeErrorSummary }),
           }
         })
         upsertStructuredThreadRuntime(state, {
@@ -1117,7 +1236,7 @@ export class BatchExecutor {
       if (args.nativeRunId !== undefined) thread.nativeRunId = args.nativeRunId
       if (args.lastEventAt !== undefined) thread.lastEventAt = args.lastEventAt
       thread.lastActivityAt = args.lastActivityAt
-      if (args.errorSummary !== undefined) thread.errorSummary = args.errorSummary
+      if (safeErrorSummary !== undefined) thread.errorSummary = safeErrorSummary
       batch.lastEventAt = args.lastEventAt ?? batch.lastEventAt
       batch.lastActivityAt = args.lastActivityAt
     })
@@ -1184,7 +1303,9 @@ export class BatchExecutor {
           nativeRunId: event.nativeRunId ?? active.native.nativeRunId,
           eventId: event.eventId,
           kind: event.type,
-          summary: describeAgentEvent(event),
+          summary: event.type === "failed" || event.type === "cancelled"
+            ? redactFailureMessage(describeAgentEvent(event))
+            : describeAgentEvent(event),
           ...(event.type === "assistant" && event.text !== undefined ? { assistantText: event.text } : {}),
           ...(event.type === "assistant" ? { coalesceAssistant: true } : {}),
           ...(event.diagnostic === undefined ? {} : { diagnostic: event.diagnostic }),
@@ -1216,7 +1337,7 @@ export class BatchExecutor {
         nativeRunId: active.native.nativeRunId,
         lastEventAt: at,
         lastActivityAt: at,
-        errorSummary: errorSummary(error),
+        errorSummary: redactedFailureSummary(error),
       })
       this.observe({
         threadId: thread.threadId,
@@ -1226,7 +1347,7 @@ export class BatchExecutor {
         nativeSessionId: active.native.nativeSessionId,
         nativeRunId: active.native.nativeRunId,
         kind: "observation_error",
-        summary: `Provider event stream failed: ${errorSummary(error)}`,
+        summary: `Provider event stream failed: ${redactedFailureSummary(error)}`,
         diagnostic: error,
         flush: true,
       })
@@ -1414,9 +1535,18 @@ export class BatchExecutor {
         ...(this.cancellationRequested ? { cancellationRequestedAt: this.batch?.cancellationRequestedAt ?? completedAt } : {}),
         ...(this.cancellationRequested ? { cancellationAcknowledgedAt: completedAt } : {}),
         terminalOutcome: result.status,
-        ...(terminalMessage ? { errorSummary: errorSummary(terminalMessage) } : {}),
+        ...(terminalMessage ? { errorSummary: redactedFailureSummary(terminalMessage) } : {}),
         ...(result.status === "completed" ? { resultSummary: compact(result.result) } : {}),
       })
+      if (result.status === "failed") {
+        this.logAttemptFailure({
+          thread,
+          candidate,
+          attemptId,
+          workSessionId,
+          result,
+        })
+      }
       this.observe({
         threadId: thread.threadId,
         attemptId,
@@ -1434,8 +1564,8 @@ export class BatchExecutor {
         summary: result.status === "completed"
           ? `Attempt completed${result.result === undefined ? "" : `: ${compact(result.result)}`}`
           : result.status === "cancelled"
-            ? `Attempt cancelled: ${result.reason ?? this.cancellationReason}`
-            : `Attempt failed: ${errorSummary(result.error)}`,
+            ? `Attempt cancelled: ${redactFailureMessage(result.reason ?? this.cancellationReason)}`
+            : `Attempt failed: ${redactedFailureSummary(result.error)}`,
         diagnostic: result.status === "failed" ? result.error.diagnostic : undefined,
         flush: true,
       })
@@ -1471,14 +1601,14 @@ export class BatchExecutor {
         record.completedAt = at
         record.updatedAt = at
         record.terminalOutcome = "cancelled"
-        record.errorSummary = this.cancellationReason
+        record.errorSummary = redactFailureMessage(this.cancellationReason)
         delete record.currentSessionId
         batch.summary = summarizeBatchThreads(batch.threads)
       })
       this.observe({
         threadId: thread.threadId,
         kind: "attempt_cancelled",
-        summary: `Thread cancelled before an attempt could start: ${this.cancellationReason}`,
+        summary: `Thread cancelled before an attempt could start: ${redactFailureMessage(this.cancellationReason)}`,
         flush: true,
       })
     }
@@ -1529,14 +1659,14 @@ export class BatchExecutor {
               record.completedAt = at
               record.updatedAt = at
               record.terminalOutcome = "failed"
-              record.errorSummary = errorSummary(error)
+              record.errorSummary = redactedFailureSummary(error)
               delete record.currentSessionId
               batch.summary = summarizeBatchThreads(batch.threads)
             })
             this.observe({
               threadId: thread.threadId,
               kind: "attempt_failed",
-              summary: `Thread execution failed: ${errorSummary(error)}`,
+              summary: `Thread execution failed: ${redactedFailureSummary(error)}`,
               diagnostic: error,
               flush: true,
             })
@@ -1570,9 +1700,9 @@ export class BatchExecutor {
         if (this.cancellationRequested) batch.cancellationAcknowledgedAt = finishedAt
         if (batch.status === "failed" && !batch.errorSummary) {
           batch.errorSummary = runFailure
-            ? errorSummary(runFailure)
+            ? redactedFailureSummary(runFailure)
             : anyCancelled
-              ? this.cancellationReason
+              ? redactFailureMessage(this.cancellationReason)
               : `${batch.summary.failed} SDK thread(s) failed`
         }
         if (batch.status === "completed") batch.resultSummary = `${batch.summary.completed} SDK thread(s) completed`

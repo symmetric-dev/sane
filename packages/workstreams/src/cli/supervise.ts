@@ -28,6 +28,11 @@ import {
   type SupervisionExecutionAction,
 } from "../lib/supervision-helper.ts"
 import { queryThreadsForWorkstream, type HierarchyThreadQueryRecord } from "../lib/hierarchy-query.ts"
+
+export type SuperviseExecutionBackend = "legacy" | "sdk"
+
+export const WORKSTREAM_EXECUTION_BACKEND_ENV = "WORKSTREAM_EXECUTION_BACKEND"
+
 export interface SuperviseCliArgs {
   repoRoot?: string
   streamId?: string
@@ -48,6 +53,7 @@ export interface SuperviseCliArgs {
   checkpointMessageIndex?: number
   checkpointCreatedAt?: string
   nativeBranchSessionId?: string
+  executionBackend?: SuperviseExecutionBackend
 }
 
 interface ResolvedSupervisorContext {
@@ -66,9 +72,57 @@ const DEFAULT_SUPERVISE_TIMEOUT_MS = 30 * 60 * 1000
 const DEFAULT_SUPERVISE_POLL_INTERVAL_MS = 1000
 
 export interface SuperviseMainOptions {
-  /** Legacy remains the default and is the only backend used by work. */
-  executionBackend?: "legacy" | "sdk"
+  /** Forced backend injected by work-sdk; normal work resolves CLI/env/default selection. */
+  executionBackend?: SuperviseExecutionBackend
 }
+
+function formatExecutionBackendValues(): string {
+  return 'expected "legacy" or "sdk"'
+}
+
+export function parseExecutionBackend(
+  value: string | undefined,
+  source = "--execution-backend",
+): SuperviseExecutionBackend {
+  if (value === undefined || value.trim() === "") {
+    throw new Error(`Error: ${source} requires a value; ${formatExecutionBackendValues()}.`)
+  }
+
+  if (value !== "legacy" && value !== "sdk") {
+    throw new Error(`Error: invalid ${source} value "${value}"; ${formatExecutionBackendValues()}.`)
+  }
+
+  return value
+}
+
+export function resolveExecutionBackend(args: {
+  cliBackend?: string
+  envValue?: string
+  forcedBackend?: SuperviseExecutionBackend
+}): SuperviseExecutionBackend {
+  const cliBackend =
+    args.cliBackend === undefined
+      ? undefined
+      : parseExecutionBackend(args.cliBackend, "--execution-backend")
+  const envBackend =
+    args.envValue === undefined
+      ? undefined
+      : parseExecutionBackend(args.envValue, WORKSTREAM_EXECUTION_BACKEND_ENV)
+
+  if (args.forcedBackend !== undefined) {
+    if (cliBackend !== undefined && cliBackend !== args.forcedBackend) {
+      throw new Error(
+        `Error: work-sdk supervise is forced to the "${args.forcedBackend}" execution backend; ` +
+          `--execution-backend ${cliBackend} is not supported.`,
+      )
+    }
+
+    return args.forcedBackend
+  }
+
+  return cliBackend ?? envBackend ?? "sdk"
+}
+
 function printHelp(commandName = "work"): void {
   console.log(`
 ${commandName} supervise - Run a batch-bounded supervision helper
@@ -81,7 +135,8 @@ Options:
   --repo-root, -r        Repository root (auto-detected if omitted)
   --stream, -s           Workstream ID or name (uses current if not specified)
   --batch, -b            Start from a specific batch instead of the next incomplete batch
-  --runtime              SDK runtime override (opencode or cursor; work uses legacy backend)
+  --execution-backend    Select "legacy" or detached SDK execution (default: env or sdk)
+  --runtime              SDK runtime override (opencode or cursor; used by the SDK backend)
   --port, -p             OpenCode server port for the headless batch run
   --no-server            Skip starting opencode serve during the batch launch
   --silent               Disable notification sounds during batch execution
@@ -89,6 +144,9 @@ Options:
   --poll-interval-ms     Poll interval while waiting for batch status (default: 1000)
   --dry-run              Show the planned helper actions without executing them
   --help, -h             Show this help message
+
+Environment:
+  WORKSTREAM_EXECUTION_BACKEND  Default backend: "legacy" or "sdk" (CLI flag wins)
 
   Advanced lineage/debug overrides (normally auto-resolved for branch runs):
   --root-session-id           Root Agent session ID for lineage metadata
@@ -151,6 +209,15 @@ function parseCliArgs(argv: string[], commandName = "work"): SuperviseCliArgs | 
       case "--runtime":
         if (!next) return null
         parsed.runtime = next
+        i++
+        break
+      case "--execution-backend":
+        if (!next || next.startsWith("-")) {
+          throw new Error(
+            `Error: --execution-backend requires a value; ${formatExecutionBackendValues()}.`,
+          )
+        }
+        parsed.executionBackend = parseExecutionBackend(next)
         i++
         break
       case "--tmux-session-name":
@@ -503,8 +570,24 @@ export async function main(
   argv: string[] = process.argv,
   options: SuperviseMainOptions = {},
 ): Promise<void> {
-  const executionBackend = options.executionBackend ?? "legacy"
-  const cliArgs = parseCliArgs(argv, executionBackend === "sdk" ? "work-sdk" : "work")
+  const forcedBackend = options.executionBackend
+  const commandName = forcedBackend === "sdk" ? "work-sdk" : "work"
+
+  let cliArgs: SuperviseCliArgs | null
+  let executionBackend: SuperviseExecutionBackend
+  try {
+    cliArgs = parseCliArgs(argv, commandName)
+    executionBackend = resolveExecutionBackend({
+      cliBackend: cliArgs?.executionBackend,
+      envValue: process.env[WORKSTREAM_EXECUTION_BACKEND_ENV],
+      forcedBackend,
+    })
+  } catch (error) {
+    console.error((error as Error).message)
+    console.error("\nRun with --help for usage information.")
+    process.exit(1)
+  }
+
   if (!cliArgs) {
     console.error("Error: invalid supervise arguments")
     console.error("\nRun with --help for usage information.")
@@ -786,5 +869,7 @@ if (import.meta.main) {
 
 export const __test = {
   getStoredSupervisionBranchSession,
+  parseExecutionBackend,
   parseCliArgs,
+  resolveExecutionBackend,
 }

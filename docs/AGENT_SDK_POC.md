@@ -366,10 +366,11 @@ optional future evidence, not the required execution path.
 
 The manager should continue to invoke `work supervise` through the bash tool.
 An OpenCode plugin tool can be added later as a thin facade over the same
-orchestration path, but it should not own provider SDK processes directly.
-Before changing the default command, the implementation can expose a separate
-`work-sdk supervise` entry point that selects the SDK backend while reusing the
-same persisted supervision state and handoff logic.
+orchestration path, but it should not own provider SDK processes directly. The
+production handoff now exposes `work-sdk supervise` and the normal
+`work supervise --execution-backend sdk` opt-in, both reusing the same persisted
+supervision state and handoff logic. `WORKSTREAM_EXECUTION_BACKEND=sdk` is a
+reversible verification switch for regular `work` commands.
 
 The detailed implementation sequence is in
 [`docs/WORK_SUPERVISE_SDK_IMPLEMENTATION_PLAN.md`](./WORK_SUPERVISE_SDK_IMPLEMENTATION_PLAN.md).

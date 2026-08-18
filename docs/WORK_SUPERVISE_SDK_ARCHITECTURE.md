@@ -172,13 +172,18 @@ The current headless path is:
 ```text
 work supervise
   -> launchHeadlessBatchExecution()
-  -> work multi --headless --async
-  -> opencode serve
-  -> tmux implementation session
-  -> shell-wrapped opencode run per thread
-  -> /tmp completion/result artifacts
+  -> selected backend
+       -> legacy: work multi --headless --async -> tmux -> opencode run
+       -> sdk: detached work-sdk batch-executor
+  -> OpenCode SDK or Cursor local SDK for SDK runs
+  -> canonical batch/thread state
   -> batch-status polling
 ```
+
+The SDK backend is selected with either
+`work supervise --execution-backend sdk` or the reversible
+`WORKSTREAM_EXECUTION_BACKEND=sdk` environment default. With neither setting,
+the legacy path remains the default.
 
 Important repository references:
 
@@ -187,19 +192,24 @@ Important repository references:
   - Waits for terminal `batch-status`.
   - Records the supervision handoff.
 - `packages/workstreams/src/lib/supervision-helper.ts`
-  - Spawns `work multi --headless --async`.
+  - Selects the legacy attached worker or detached SDK `work-sdk
+    batch-executor`.
+- `packages/workstreams/bin/work-sdk.ts` and
+  `packages/workstreams/src/cli/work-sdk.ts`
+  - Expose `supervise`, `batch-executor`, and `batch-events` for SDK execution
+    and observation.
 - `packages/workstreams/src/cli/multi.ts`
-  - Starts the OpenCode server.
-  - Initializes headless batch state.
-  - Creates the tmux session and detached batch monitor.
+  - Owns the legacy headless batch launch and tmux compatibility path.
 - `packages/workstreams/src/lib/multi-orchestrator.ts`
   - Builds the per-thread runtime command.
 - `packages/workstreams/src/lib/opencode.ts`
   - Owns OpenCode server health, shell command construction, retry logic, and
     completion/result artifact paths.
 - `packages/workstreams/src/lib/batch-monitor.ts`
-  - Derives thread and batch status from persisted state, markers, result files,
-    canonical task state, and tmux recovery signals.
+  - Derives legacy status from markers/artifacts/tmux and reconciles SDK
+    executor PID/heartbeat loss.
+- `packages/workstreams/src/lib/agent-runtime/observability.ts`
+  - Writes compact SDK activity journals and atomic execution snapshots.
 - `packages/workstreams/src/lib/multi-finalization.ts`
   - Converts pane/result state into thread session completion records.
 - `packages/workstreams/src/lib/tmux.ts`
@@ -354,7 +364,7 @@ state while redirecting its own stdout/stderr to a runtime log:
 
 ```text
 work supervise
-  -> detached work batch-executor --backend sdk
+  -> detached work-sdk batch-executor --execution-backend sdk
   -> parallel Cursor/OpenCode attempts
   -> canonical batch/thread state
   -> activity journal and heartbeat
@@ -534,23 +544,27 @@ retries must not be inferred beyond the configured model list.
 
 The detailed step-by-step implementation plan is maintained in
 [`docs/WORK_SUPERVISE_SDK_IMPLEMENTATION_PLAN.md`](./WORK_SUPERVISE_SDK_IMPLEMENTATION_PLAN.md).
-The short sequence is:
+The implementation sequence is now:
 
-1. Define adapter, attempt, executor, and activity-event contracts without
-   changing the legacy default.
-2. Implement the OpenCode V1 adapter using synchronous prompts against the
-   existing shared server.
-3. Implement a detached SDK `BatchExecutor` with parallel attempts, heartbeat,
-   canonical state updates, and separate runtime logs.
-4. Expose a separate `work-sdk supervise` entry point that always selects the
-   SDK backend while reusing the existing supervision state and handoff logic.
-5. Add a separate activity journal/following path for operator observation.
-6. Integrate `--execution-backend sdk` into the normal `work supervise` command.
-7. Implement the Cursor local adapter using the same atomic-attempt contract.
+1. **Complete:** Define adapter, attempt, executor, and activity-event contracts
+   without changing the legacy default.
+2. **Complete:** Implement the OpenCode V1 adapter using synchronous prompts
+   against the existing shared server.
+3. **Complete:** Implement a detached SDK `BatchExecutor` with parallel
+   attempts, heartbeat, canonical state updates, and separate runtime logs.
+4. **Complete:** Expose `work-sdk supervise` and the internal detached worker
+   while reusing existing supervision state and handoff logic.
+5. **Complete:** Add the activity journal, atomic snapshot, and
+   `work-sdk batch-events` observer.
+6. **Complete:** Integrate `--execution-backend sdk` and the reversible
+   `WORKSTREAM_EXECUTION_BACKEND` default into normal `work supervise`.
+7. **Complete:** Implement the Cursor local adapter using the same
+   atomic-attempt contract.
 8. Add an optional OpenCode plugin-tool facade only after the CLI path is
    stable.
 9. Switch defaults only after compatibility, cancellation, process-loss,
-   terminal-without-tmux, and parallel-provider tests pass.
+   terminal-without-tmux, parallel-provider tests, and real-workstream
+   verification pass.
 
 ## Implementation questions that remain intentionally bounded
 
@@ -644,12 +658,11 @@ implementation.
 
 ## Resume point
 
-The exploratory SDK PoC is complete enough to begin implementation planning in
-the existing codebase. Follow
-[`docs/WORK_SUPERVISE_SDK_IMPLEMENTATION_PLAN.md`](./WORK_SUPERVISE_SDK_IMPLEMENTATION_PLAN.md):
-turn the observed provider-specific runners into tested adapters, then build the
-detached `BatchExecutor` and its canonical state integration. Use the PoC
-commands and raw artifacts as implementation and manual-verification
-references, not as production persistence. Do not remove tmux or change the
-default `work supervise` backend until executor process-loss handling,
-cancellation, terminal-without-tmux, and compatibility tests are in place.
+The provider adapters, detached executor, canonical state integration, separate
+observer, and normal-command SDK opt-in are implemented and covered by unit and
+compatibility tests. The next verification step is a real workstream run using
+`WORKSTREAM_EXECUTION_BACKEND=sdk work supervise` (or an explicit
+`--execution-backend sdk`). Use the PoC commands and raw artifacts as provider
+behavior references, not as production persistence. Do not remove tmux or make
+SDK execution the permanent default until real-workstream verification and
+rollout approval are complete.

@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, test } from "bun:test"
-import { mkdirSync, readFileSync, writeFileSync } from "node:fs"
+import { mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs"
 import { join } from "node:path"
 
 import {
@@ -568,6 +568,94 @@ describe("detached SDK BatchExecutor", () => {
     }).run()).rejects.toThrow(/active canonical run/)
 
     await expect(firstRun).resolves.toMatchObject({ batch: { status: "completed", executorPid: 111 } })
+  })
+
+  test("backfills adopted artifact metadata and records a redacted provider failure", async () => {
+    const secret = "cursor-secret-value"
+    const workspace = createExecutorWorkspace({ threadCount: 1, models: '"auto@cursor"' })
+    const prepared = prepareSdkBatchRun({
+      repoRoot: workspace.repoRoot,
+      streamId: workspace.streamId,
+      batchId: "01.01",
+      ownerToken: "owner-token",
+      pid: 111,
+      now: () => "2026-08-17T00:00:00.000Z",
+    })
+    const runDirectory = join(
+      workspace.repoRoot,
+      "work",
+      workspace.streamId,
+      "runtime",
+      "batches",
+      "01.01",
+      "runs",
+      prepared.batch.runId,
+    )
+    rmSync(runDirectory, { recursive: true, force: true })
+
+    const missingMetadata = { ...prepared.batch }
+    delete missingMetadata.runtimeDirectory
+    delete missingMetadata.activityJournalPath
+    delete missingMetadata.snapshotPath
+    delete missingMetadata.executorLogPath
+    writeBatchStatus(workspace.repoRoot, workspace.streamId, missingMetadata)
+
+    const result = await executeSdkBatch({
+      repoRoot: workspace.repoRoot,
+      streamId: workspace.streamId,
+      batchId: "01.01",
+      runId: prepared.batch.runId,
+      ownerToken: prepared.ownerToken,
+      pid: 111,
+      handleSignals: false,
+      adapterFactory: () => new FakeAgentAttemptAdapter("cursor", {
+        outcome: {
+          status: "failed",
+          error: { message: `Cursor request failed: CURSOR_API_KEY=${secret}; retryable request` },
+        },
+      }),
+    })
+
+    expect(result.batch.status).toBe("failed")
+    expect(result.batch.runtimeDirectory).toBe(
+      `work/${workspace.streamId}/runtime/batches/01.01/runs/${prepared.batch.runId}`,
+    )
+    expect(result.batch.activityJournalPath).toBe(`${result.batch.runtimeDirectory}/activity.jsonl`)
+    expect(result.batch.snapshotPath).toBe(`${result.batch.runtimeDirectory}/snapshot.json`)
+    expect(result.batch.executorLogPath).toBe(`${result.batch.runtimeDirectory}/executor.log`)
+
+    const canonicalState = loadStructuredWorkstreamStateSync(workspace.repoRoot, workspace.streamId)!
+    const canonicalSession = canonicalState.threadRuntime[0]!.sessions[0]!
+    const canonicalOutput = JSON.stringify({
+      batch: result.batch,
+      session: canonicalSession,
+    })
+    expect(result.batch.threads[0]!.errorSummary).toContain("Cursor request failed")
+    expect(result.batch.threads[0]!.errorSummary).not.toContain(secret)
+    expect(canonicalSession.errorSummary).not.toContain(secret)
+    expect(canonicalOutput).toContain("Cursor request failed")
+    expect(canonicalOutput).not.toContain(secret)
+
+    const activityPath = join(workspace.repoRoot, result.batch.activityJournalPath!)
+    const activityText = readFileSync(activityPath, "utf8")
+    const records = readActivityJournal(activityPath)
+    expect(records.some((record) => record.kind === "attempt_failed" && record.summary.includes("Cursor request failed"))).toBe(true)
+    expect(activityText).not.toContain(secret)
+
+    const snapshotText = readFileSync(join(workspace.repoRoot, result.batch.snapshotPath!), "utf8")
+    const snapshot = JSON.parse(snapshotText)
+    expect(snapshotText).not.toContain(secret)
+    expect(snapshot).toMatchObject({
+      runId: prepared.batch.runId,
+      status: "failed",
+      terminalOutcome: "failed",
+    })
+    expect(snapshot.threads[0].errorSummary).toContain("Cursor request failed")
+
+    const executorLog = readFileSync(join(workspace.repoRoot, result.batch.executorLogPath!), "utf8")
+    expect(executorLog).toContain('"event":"sdk_attempt_failed"')
+    expect(executorLog).toContain("Cursor request failed")
+    expect(executorLog).not.toContain(secret)
   })
 
   test("--no-server fails clearly without starting OpenCode", async () => {

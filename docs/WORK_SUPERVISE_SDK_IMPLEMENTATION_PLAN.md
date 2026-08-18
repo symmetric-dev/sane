@@ -2,10 +2,11 @@
 
 ## Status
 
-Proposed implementation plan. This is a repository implementation plan, not a
-formal AgENV workstream. It deliberately preserves the existing manager,
-supervision, and batch-state workflow while adding an opt-in SDK execution
-backend.
+Implementation through the opt-in SDK backend is complete. This is a repository
+implementation plan, not a formal AgENV workstream. It preserves the existing
+manager, supervision, and batch-state workflow while keeping the legacy backend
+as the default compatibility path. Remaining work is real-workstream
+verification, rollout hardening, and optional future capabilities.
 
 ## Goal
 
@@ -97,11 +98,10 @@ An OpenCode plugin tool can be added later as a thin facade over the same
 orchestration library or CLI. It must not own provider SDK processes directly
 inside the plugin callback.
 
-### Experimental CLI before default integration
+### Separate and normal CLI integration
 
-The SDK backend can be exercised before changing the main `work supervise`
-command by adding a second entry point from the same `@agenv/workstreams`
-package:
+The SDK backend is available through a second entry point from the same
+`@agenv/workstreams` package:
 
 ```bash
 work-sdk supervise --batch "01.01" --timeout-ms 1200000
@@ -122,15 +122,22 @@ work-sdk batch-executor --batch-id "01.01" --execution-backend sdk
 is primarily for automated tests and diagnostics; normal users should invoke
 the supervision command.
 
-After the separate CLI is stable, the normal command can gain an explicit
-backend option:
+The normal command now also supports an explicit backend option:
 
 ```bash
 work supervise --execution-backend sdk --batch "01.01"
 ```
 
-Only after that opt-in path passes compatibility tests should SDK execution be
-considered for the default `work supervise` behavior.
+For temporary verification, the normal command also accepts a reversible
+environment default:
+
+```bash
+WORKSTREAM_EXECUTION_BACKEND=sdk work supervise --batch "01.01"
+```
+
+The explicit CLI option overrides the environment. Unset the variable, or pass
+`--execution-backend legacy`, to use the legacy backend again. SDK execution is
+not permanently the default.
 
 ### Provider and agent selection
 
@@ -266,8 +273,9 @@ Do not encode providers as agent names such as `cursor-default` or
 ```text
 work supervise
   -> existing launch/wait/recover/stop planning
-  -> work multi --headless --async --execution-backend sdk
-  -> detached work batch-executor --batch-id ...
+  -> selected backend
+       -> legacy work multi --headless --async
+       -> detached work-sdk batch-executor --batch-id ... --execution-backend sdk
   -> provider adapters
        -> OpenCode V1 SDK -> existing opencode serve
        -> Cursor local SDK
@@ -321,6 +329,8 @@ state.
 ## Step-by-step implementation
 
 ### Step 1: Define production contracts without changing the default
+
+**Status: Complete.**
 
 Create AgENV-owned types for:
 
@@ -384,6 +394,8 @@ Done when:
 
 ### Step 2: Implement the OpenCode V1 adapter
 
+**Status: Complete.**
+
 Adapt the tested PoC request and event handling into a production adapter.
 
 Required behavior:
@@ -414,10 +426,12 @@ Required tests:
 
 ### Step 3: Implement the detached `BatchExecutor`
 
+**Status: Complete.**
+
 Add an internal command, for example:
 
 ```bash
-work batch-executor --batch-id "SS.BB" --execution-backend sdk
+work-sdk batch-executor --batch-id "SS.BB" --execution-backend sdk
 ```
 
 The executor should:
@@ -465,6 +479,8 @@ Required tests:
 
 ### Step 4: Integrate the SDK backend with existing orchestration
 
+**Status: Complete for the opt-in path.**
+
 First expose the separate `work-sdk` entry point described above. Then change
 the smallest existing orchestration seams:
 
@@ -477,10 +493,10 @@ the smallest existing orchestration seams:
   records;
 - `supervise.ts` continues to select launch, wait, recover, or stop.
 
-The separate CLI path should retain existing `work supervise` output and
-handoff semantics. The main `work supervise --execution-backend sdk` option is
-added only after the separate path is passing. Neither SDK path should require
-an implementation tmux session.
+The separate CLI path retains existing `work supervise` output and handoff
+semantics. The normal `work supervise --execution-backend sdk` option and the
+reversible `WORKSTREAM_EXECUTION_BACKEND=sdk` default now select the same
+detached worker. Neither SDK path requires an implementation tmux session.
 
 OpenCode server ownership remains the current local shared-server behavior. Do
 not introduce V2 `Service.ensure()` or embedded `sdk-next` into this step.
@@ -498,6 +514,8 @@ Required tests:
 - legacy CLI/tmux execution remains unchanged.
 
 ### Step 5: Add quiet operator observability
+
+**Status: Complete.**
 
 Use canonical state for truth and a separate activity journal for monitoring.
 
@@ -537,8 +555,8 @@ results should be persisted promptly.
 Add a separate observer command, such as:
 
 ```bash
-work batch-events --follow --batch "SS.BB"
-work batch-status --watch --batch "SS.BB"
+work-sdk batch-events --follow --batch "SS.BB"
+work batch-status --batch "SS.BB" --format json
 ```
 
 The exact command name can follow existing CLI conventions. The important
@@ -554,6 +572,8 @@ Required tests:
 - observer works when no tmux session exists.
 
 ### Step 6: Add the Cursor local adapter
+
+**Status: Complete.**
 
 Implement Cursor after the executor and OpenCode path are stable.
 
@@ -599,6 +619,8 @@ Required tests:
 
 ### Step 8: Controlled rollout and future providers
 
+**Status: In progress: real-workstream verification and rollout decision remain.**
+
 Keep the legacy backend as the default until the SDK backend passes:
 
 - parallel execution;
@@ -629,6 +651,9 @@ prompt shapes, service ownership, and event payloads remain inside adapters.
 - replacing interactive `work multi` tmux behavior;
 - changing parent-side review/fix/escalation behavior;
 - making SDK execution the default before compatibility evidence exists.
+
+The environment-controlled SDK default is a verification switch, not a
+permanent product-default change.
 
 ## Verification commands
 
