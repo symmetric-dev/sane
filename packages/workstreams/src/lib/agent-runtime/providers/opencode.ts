@@ -644,12 +644,13 @@ export class OpenCodeV1Adapter implements AgentAttemptAdapter {
         state.nativeMessageId = messageId
         state.native.nativeRunId = messageId
       }
-      if (part.type === "text" && typeof part.text === "string") {
+      if ((part.type === "text" || part.type === "reasoning") && typeof part.text === "string") {
         const delta = typeof properties.delta === "string" ? properties.delta : part.text
         this.emit(state, {
           type: "assistant",
           text: delta,
           delta: typeof properties.delta === "string",
+          ...(part.type === "reasoning" ? { contentKind: "reasoning" as const } : {}),
           diagnostic,
         })
       } else if (part.type === "tool") {
@@ -683,7 +684,13 @@ export class OpenCodeV1Adapter implements AgentAttemptAdapter {
     // from the generated union shipped by the installed SDK.
     if (type === "session.next.text.delta" || type === "session.next.reasoning.delta") {
       if (typeof properties.delta === "string") {
-        this.emit(state, { type: "assistant", text: properties.delta, delta: true, diagnostic })
+        this.emit(state, {
+          type: "assistant",
+          text: properties.delta,
+          delta: true,
+          ...(type === "session.next.reasoning.delta" ? { contentKind: "reasoning" as const } : {}),
+          diagnostic,
+        })
       }
       return
     }

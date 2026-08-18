@@ -44,6 +44,8 @@ import {
   describeAgentEvent,
   ensureRuntimeArtifactFiles,
   projectBatchExecutionSnapshot,
+  redactTextLogValue,
+  safeFilePart,
   type ActivityRecordInput,
   type ObservabilityFileSystem,
 } from "./observability.ts"
@@ -125,6 +127,7 @@ export interface BatchExecutorOptions {
   activityMaxPendingBytes?: number
   activityMaxPendingRecords?: number
   activityMaxAssistantChars?: number
+  activityMaxTextSummaryLength?: number
 }
 
 export interface PreparedSdkBatchRun {
@@ -238,7 +241,7 @@ function redactFailureMessage(message: string): string {
 }
 
 function redactedFailureSummary(error: AgentAttemptError | unknown): string {
-  return redactFailureMessage(errorSummary(error))
+  return redactTextLogValue(redactFailureMessage(errorSummary(error)))
 }
 
 interface RuntimeArtifactPaths {
@@ -253,7 +256,15 @@ function deriveRuntimeArtifactPaths(
   batchId: string,
   runId: string,
 ): RuntimeArtifactPaths {
-  const runtimeDirectory = join("work", streamId, "runtime", "batches", batchId, "runs", runId)
+  const runtimeDirectory = join(
+    "work",
+    safeFilePart(streamId),
+    "runtime",
+    "batches",
+    safeFilePart(batchId),
+    "runs",
+    safeFilePart(runId),
+  )
   return {
     runtimeDirectory,
     activityJournalPath: join(runtimeDirectory, "activity.jsonl"),
@@ -564,6 +575,8 @@ export class BatchExecutor {
           maxPendingBytes: this.options.activityMaxPendingBytes,
           maxPendingRecords: this.options.activityMaxPendingRecords,
           maxAssistantChars: this.options.activityMaxAssistantChars,
+          maxTextSummaryLength: this.options.activityMaxTextSummaryLength,
+          onTextLogError: (error) => this.reportObservabilityFailure(error),
         })
       }
       if (!this.snapshotWriter && snapshotPath) {
@@ -1302,6 +1315,9 @@ export class BatchExecutor {
           nativeSessionId: event.nativeSessionId ?? active.native.nativeSessionId,
           nativeRunId: event.nativeRunId ?? active.native.nativeRunId,
           eventId: event.eventId,
+          ...(event.type === "assistant" && event.contentKind !== undefined
+            ? { contentKind: event.contentKind }
+            : {}),
           kind: event.type,
           summary: event.type === "failed" || event.type === "cancelled"
             ? redactFailureMessage(describeAgentEvent(event))

@@ -1,8 +1,13 @@
 import {
+  closeSync,
   existsSync,
+  openSync,
   readFileSync,
+  readSync,
   realpathSync,
+  statSync,
 } from "node:fs"
+import { createHash } from "node:crypto"
 import {
   dirname,
   isAbsolute,
@@ -12,11 +17,25 @@ import {
 } from "node:path"
 
 const REPO_ROOT = "/Users/beto/gene"
+const CONFIGURED_REPO_ROOT = process.env.AGENV_MONITOR_REPO_ROOT?.trim()
+  ? process.env.AGENV_MONITOR_REPO_ROOT.trim()
+  : REPO_ROOT
+const resolvedConfiguredRoot = resolve(CONFIGURED_REPO_ROOT)
+export const MONITOR_REPO_ROOT = (() => {
+  try {
+    return realpathSync(resolvedConfiguredRoot)
+  } catch {
+    return resolvedConfiguredRoot
+  }
+})()
 const PORT = 43120
 const HOSTNAME = "127.0.0.1"
 const MONITOR_HTML_PATH = join(import.meta.dir, "index.html")
 const ACTIVITY_LIMIT = 50
 const EXECUTOR_LOG_LIMIT = 200
+const SESSION_TEXT_LIMIT = 200
+const SESSION_TEXT_MAX_BYTES = 64 * 1024
+const REPO_ROOT_ALIASES = [MONITOR_REPO_ROOT, resolvedConfiguredRoot]
 
 type JsonObject = Record<string, unknown>
 
@@ -72,17 +91,20 @@ function addReadError(
 }
 
 function isWithinRepo(candidate: string): boolean {
-  const relativePath = relative(REPO_ROOT, candidate)
-  return relativePath === ""
-    || (!relativePath.startsWith("../")
-      && !relativePath.startsWith("..\\")
-      && relativePath !== ".."
-      && !isAbsolute(relativePath))
+  return REPO_ROOT_ALIASES.some((root) => {
+    const relativePath = relative(root, candidate)
+    return relativePath === ""
+      || (!relativePath.startsWith("../")
+        && !relativePath.startsWith("..\\")
+        && relativePath !== ".."
+        && !isAbsolute(relativePath))
+  })
 }
 
 /**
  * Resolve a path recorded in canonical state without allowing it to escape the
- * fixed PoC repository. Existing symlinks are checked with realpath as well.
+ * configured PoC repository. Existing symlinks are checked with realpath as
+ * well.
  */
 function resolveRecordedPath(
   value: unknown,
@@ -96,10 +118,10 @@ function resolveRecordedPath(
 
   const candidate = isAbsolute(recorded)
     ? resolve(recorded)
-    : resolve(REPO_ROOT, recorded)
+    : resolve(MONITOR_REPO_ROOT, recorded)
 
   if (!isWithinRepo(candidate)) {
-    addReadError(errors, source, "Recorded path escapes the fixed repository root", recorded)
+    addReadError(errors, source, "Recorded path escapes the configured repository root", recorded)
     return null
   }
 
@@ -111,7 +133,7 @@ function resolveRecordedPath(
     try {
       const realPath = realpathSync(existingPath)
       if (!isWithinRepo(realPath)) {
-        addReadError(errors, source, "Recorded path resolves outside the fixed repository root", recorded)
+        addReadError(errors, source, "Recorded path resolves outside the configured repository root", recorded)
         return null
       }
       break
@@ -242,6 +264,91 @@ function readExecutorLog(
   }
 }
 
+function safeLogPart(value: string): string {
+  const readable = /^[a-zA-Z0-9._-]+$/.test(value) && value !== "." && value !== ".."
+  if (readable && value.length <= 80) return value
+
+  const encoded = Array.from(value).map((character) => {
+    if (/^[a-zA-Z0-9._-]$/.test(character) && value !== "." && value !== "..") return character
+    return [...Buffer.from(character, "utf8")]
+      .map((byte) => `~${byte.toString(16).toUpperCase().padStart(2, "0")}`)
+      .join("")
+  }).join("") || "~00"
+
+  if (encoded.length <= 80 && encoded !== "." && encoded !== "..") return encoded
+
+  const digest = createHash("sha256").update(value).digest("hex").slice(0, 16)
+  const suffix = `~${digest}`
+  return `${encoded.slice(0, Math.max(1, 80 - suffix.length))}${suffix}`
+}
+
+function readTailLines(
+  filePath: string,
+  lineLimit: number,
+  errors: ReadError[],
+  source: string,
+  recordedPath: string,
+): string[] {
+  let descriptor: number | undefined
+  try {
+    const size = statSync(filePath).size
+    const start = Math.max(0, size - SESSION_TEXT_MAX_BYTES)
+    const length = size - start
+    if (length <= 0) return []
+
+    descriptor = openSync(filePath, "r")
+    const buffer = Buffer.alloc(length)
+    const bytesRead = readSync(descriptor, buffer, 0, length, start)
+    let text = buffer.subarray(0, bytesRead).toString("utf8")
+    if (start > 0) {
+      const firstNewline = text.indexOf("\n")
+      if (firstNewline < 0) return []
+      text = text.slice(firstNewline + 1)
+    }
+    return completeLines(text).slice(-lineLimit)
+  } catch (error) {
+    addReadError(errors, source, errorMessage(error), recordedPath)
+    return []
+  } finally {
+    if (descriptor !== undefined) {
+      try {
+        closeSync(descriptor)
+      } catch {
+        // The file may disappear between the read and close during a poll.
+      }
+    }
+  }
+}
+
+function readSessionText(
+  filePath: PathInfo | null,
+  errors: ReadError[],
+): string[] {
+  // A session log is created lazily on its first normalized activity flush.
+  // Missing logs are therefore normal for pending/never-started sessions.
+  if (!filePath || !filePath.exists) return []
+  return readTailLines(filePath.absolute, SESSION_TEXT_LIMIT, errors, "sessionText", filePath.recorded)
+}
+
+function derivedSessionTextPath(
+  runtimeDirectory: PathInfo | null,
+  threadId: string,
+  attemptId: string | undefined,
+  errors: ReadError[],
+): PathInfo | null {
+  if (!runtimeDirectory) return null
+  const recorded = join(
+    runtimeDirectory.recorded,
+    "sessions",
+    safeLogPart(threadId),
+    ...(attemptId === undefined ? [] : [safeLogPart(attemptId)]),
+    "session.log",
+  )
+  const absolute = resolveRecordedPath(recorded, "sessionText", errors)
+  if (!absolute) return null
+  return { recorded, absolute, exists: existsSync(absolute) }
+}
+
 function timestampValue(batch: JsonObject): number {
   const values = [
     batch.updatedAt,
@@ -368,8 +475,13 @@ function sessionSortValue(session: JsonObject): number {
   )
 }
 
-function createSessionView(session: JsonObject): JsonObject {
-  return pickDefined(session, [
+function createSessionView(
+  session: JsonObject,
+  threadId: string,
+  runtimeDirectory: PathInfo | null,
+  errors: ReadError[],
+): JsonObject {
+  const view = pickDefined(session, [
     "sessionId",
     "status",
     "executionBackend",
@@ -390,9 +502,23 @@ function createSessionView(session: JsonObject): JsonObject {
     "errorSummary",
     "resultSummary",
   ])
+  const attemptId = asString(session.attemptId)
+  const path = derivedSessionTextPath(runtimeDirectory, threadId, attemptId, errors)
+  return {
+    ...view,
+    sessionText: {
+      path,
+      lines: readSessionText(path, errors),
+    },
+  }
 }
 
-function createThreadViews(state: JsonObject, batch: JsonObject): JsonObject[] {
+function createThreadViews(
+  state: JsonObject,
+  batch: JsonObject,
+  runtimeDirectory: PathInfo | null,
+  errors: ReadError[],
+): JsonObject[] {
   const hierarchy = asObject(state.hierarchy)
   const hierarchyThreads = Array.isArray(hierarchy?.threads)
     ? hierarchy.threads.map(asObject).filter((thread): thread is JsonObject => thread !== null)
@@ -412,7 +538,7 @@ function createThreadViews(state: JsonObject, batch: JsonObject): JsonObject[] {
     const rawSessions = Array.isArray(runtime?.sessions)
       ? runtime.sessions.map(asObject).filter((session): session is JsonObject => session !== null)
       : []
-    const sessions = rawSessions.map(createSessionView)
+    const sessions = rawSessions.map((session) => createSessionView(session, threadId, runtimeDirectory, errors))
     const currentSessionId = asString(batchThread.currentSessionId) ?? asString(runtime?.currentSessionId)
     const selectedSession = rawSessions.find((session) => session.sessionId === currentSessionId)
       ?? [...rawSessions].sort((left, right) => sessionSortValue(right) - sessionSortValue(left))[0]
@@ -461,7 +587,7 @@ function heartbeatAgeMs(value: unknown, capturedAt: string): number | null {
   return Math.max(0, captured - heartbeat)
 }
 
-function buildPayload(): MonitorPayload {
+export function buildMonitorPayload(): MonitorPayload {
   const capturedAt = new Date().toISOString()
   const readErrors: ReadError[] = []
   const empty: MonitorPayload = {
@@ -476,7 +602,7 @@ function buildPayload(): MonitorPayload {
     readErrors,
   }
 
-  const index = readJsonFile(join(REPO_ROOT, "work", "index.json"), "index", readErrors)
+  const index = readJsonFile(join(MONITOR_REPO_ROOT, "work", "index.json"), "index", readErrors)
   const streamId = asString(index?.current_stream)
   if (!streamId) {
     addReadError(readErrors, "index", "current_stream is not set")
@@ -506,7 +632,6 @@ function buildPayload(): MonitorPayload {
 
   const batch = selection.batch
   empty.batch = createBatchView(batch, selection.reason)
-  empty.sessions = createThreadViews(state, batch)
   empty.executor = {
     status: asString(batch.status) ?? "unknown",
     ...pickDefined(batch, [
@@ -524,13 +649,22 @@ function buildPayload(): MonitorPayload {
   const activityPath = pathInfo(batch.activityJournalPath, "activityJournalPath", readErrors)
   const snapshotPath = pathInfo(batch.snapshotPath, "snapshotPath", readErrors)
   const executorLogPath = pathInfo(batch.executorLogPath, "executorLogPath", readErrors)
+  const sessionTextLogPath = runtimeDirectory
+    ? pathInfo(join(runtimeDirectory.recorded, "session.log"), "sessionTextLog", readErrors)
+    : null
+  const sessionTextLog = sessionTextLogPath
+    ? { ...sessionTextLogPath, lines: readSessionText(sessionTextLogPath, readErrors) }
+    : null
   empty.runtime = {
     runPath: runtimeDirectory,
     runtimeDirectory,
     activityJournalPath: activityPath,
     snapshotPath,
     executorLogPath,
+    sessionTextLog,
   }
+
+  empty.sessions = createThreadViews(state, batch, runtimeDirectory, readErrors)
 
   const activityRecordedPath = asString(batch.activityJournalPath)
   const executorLogRecordedPath = asString(batch.executorLogPath)
@@ -549,7 +683,7 @@ function jsonResponse(value: unknown, status = 200): Response {
   })
 }
 
-function requestHandler(request: Request): Response {
+export function requestHandler(request: Request): Response {
   const url = new URL(request.url)
 
   if (request.method !== "GET") {
@@ -577,7 +711,7 @@ function requestHandler(request: Request): Response {
 
   if (url.pathname === "/api/sdk-monitor") {
     try {
-      return jsonResponse(buildPayload())
+      return jsonResponse(buildMonitorPayload())
     } catch (error) {
       // A partially written canonical file should never take down the tiny
       // server. Keep the response shape useful for the page.
@@ -598,10 +732,12 @@ function requestHandler(request: Request): Response {
   return new Response("Not Found\n", { status: 404 })
 }
 
-const server = Bun.serve({
-  hostname: HOSTNAME,
-  port: PORT,
-  fetch: requestHandler,
-})
+if (import.meta.main) {
+  const server = Bun.serve({
+    hostname: HOSTNAME,
+    port: PORT,
+    fetch: requestHandler,
+  })
 
-console.log(`SDK monitor PoC listening at ${server.url}`)
+  console.log(`SDK monitor PoC listening at ${server.url}`)
+}

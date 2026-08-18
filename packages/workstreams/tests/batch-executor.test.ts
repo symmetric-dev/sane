@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, test } from "bun:test"
-import { mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs"
+import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs"
 import { join } from "node:path"
 
 import {
@@ -31,6 +31,7 @@ import { observeBatchEvents } from "../src/cli/batch-events.ts"
 import { FakeAgentAttemptAdapter } from "./fixtures/fake-agent-runtime.ts"
 import { cleanupTestWorkstream, createTestWorkstream, type TestWorkspace } from "./helpers/test-workspace.ts"
 import type { PersistedBatchStatusFile, SessionRecord } from "../src/lib/types.ts"
+import { safeFilePart } from "../src/lib/agent-runtime/observability.ts"
 
 const PLAN = `# Plan: Executor Test Plan
 
@@ -335,6 +336,9 @@ describe("detached SDK BatchExecutor", () => {
       status: "completed",
       threads: [{ nativeSessionId: "fake-session-cursor-attempt-heartbeat" }],
     })
+    const runTextLog = readFileSync(join(workspace.repoRoot, result.batch.runtimeDirectory!, "session.log"), "utf8")
+    expect(runTextLog).toContain("kind=heartbeat")
+    expect(runTextLog).toContain("kind=batch_completed")
 
     const state = loadStructuredWorkstreamStateSync(workspace.repoRoot, workspace.streamId)!
     const session = state.threadRuntime[0]!.sessions[0]!
@@ -656,6 +660,18 @@ describe("detached SDK BatchExecutor", () => {
     expect(executorLog).toContain('"event":"sdk_attempt_failed"')
     expect(executorLog).toContain("Cursor request failed")
     expect(executorLog).not.toContain(secret)
+
+    const sessionTextLog = readFileSync(join(
+      workspace.repoRoot,
+      result.batch.runtimeDirectory!,
+      "sessions",
+      result.threads[0]!.threadId,
+      canonicalSession.attemptId!,
+      "session.log",
+    ), "utf8")
+    expect(sessionTextLog).toContain("kind=attempt_failed")
+    expect(sessionTextLog).toContain("Cursor request failed")
+    expect(sessionTextLog).not.toContain(secret)
   })
 
   test("--no-server fails clearly without starting OpenCode", async () => {
@@ -758,6 +774,168 @@ describe("detached SDK BatchExecutor", () => {
     expect(assistant.length).toBeGreaterThan(0)
     expect(assistant.length).toBeLessThan(150)
     expect(assistant.every((record) => record.summary.length <= 20)).toBe(true)
+  })
+
+  test("writes bounded derived session text per thread and attempt", async () => {
+    const workspace = createExecutorWorkspace({ threadCount: 2 })
+    let attemptSequence = 0
+    let sessionSequence = 0
+    const result = await executeSdkBatch({
+      repoRoot: workspace.repoRoot,
+      streamId: workspace.streamId,
+      batchId: "01.01",
+      handleSignals: false,
+      createAttemptId: () => `attempt-text-${++attemptSequence}`,
+      createWorkSessionId: () => `session-text-${++sessionSequence}`,
+      adapterFactory: (_candidate, input) => new FakeAgentAttemptAdapter("cursor", {
+        outcome: { status: "completed", result: "done" },
+        events: [
+          {
+            provider: "cursor",
+            attemptId: input.attemptId,
+            workSessionId: input.workSessionId,
+            eventId: `${input.attemptId}:assistant`,
+            timestamp: "2026-08-17T00:00:01.000Z",
+            type: "assistant",
+            text: "hello\nworld CURSOR_API_KEY=do-not-persist {\"api_key\":\"json-secret\"} Bearer bearer-secret token=assignment-secret",
+            delta: false,
+          },
+          {
+            provider: "cursor",
+            attemptId: input.attemptId,
+            workSessionId: input.workSessionId,
+            eventId: `${input.attemptId}:reasoning`,
+            timestamp: "2026-08-17T00:00:02.000Z",
+            type: "assistant",
+            contentKind: "reasoning",
+            text: "considering the next step",
+            delta: true,
+          },
+          {
+            provider: "cursor",
+            attemptId: input.attemptId,
+            workSessionId: input.workSessionId,
+            eventId: `${input.attemptId}:tool-start`,
+            timestamp: "2026-08-17T00:00:03.000Z",
+            type: "tool",
+            toolName: "shell",
+            phase: "started",
+            input: { command: "printf hidden-tool-args" },
+          },
+          {
+            provider: "cursor",
+            attemptId: input.attemptId,
+            workSessionId: input.workSessionId,
+            eventId: `${input.attemptId}:tool-finish`,
+            timestamp: "2026-08-17T00:00:04.000Z",
+            type: "tool",
+            toolName: "shell",
+            phase: "completed",
+            output: "hidden-tool-result",
+          },
+          {
+            provider: "cursor",
+            attemptId: input.attemptId,
+            workSessionId: input.workSessionId,
+            eventId: `${input.attemptId}:status`,
+            timestamp: "2026-08-17T00:00:05.000Z",
+            type: "progress",
+            progress: 0.5,
+            message: "half\tway",
+          },
+        ],
+      }),
+    })
+
+    const runDirectory = join(workspace.repoRoot, result.batch.runtimeDirectory!)
+    const textLogs = result.threads.map((thread) => {
+      const attemptId = thread.attempts[0]!.attemptId
+      return readFileSync(join(runDirectory, "sessions", thread.threadId, attemptId, "session.log"), "utf8")
+    })
+
+    expect(textLogs).toHaveLength(2)
+    const firstTextLog = textLogs[0]!
+    const secondTextLog = textLogs[1]!
+    expect(firstTextLog).toContain("provider=cursor")
+    expect(firstTextLog).toContain("scope=01.01.01/attempt-text-")
+    expect(firstTextLog).toContain("kind=assistant")
+    expect(firstTextLog).toContain("kind=reasoning")
+    expect(firstTextLog).toContain("kind=tool")
+    expect(firstTextLog).toContain("kind=progress")
+    expect(firstTextLog).toContain("Attempt completed")
+    expect(firstTextLog).toContain("CURSOR_API_KEY=[REDACTED]")
+    expect(firstTextLog).not.toContain("json-secret")
+    expect(firstTextLog).not.toContain("bearer-secret")
+    expect(firstTextLog).not.toContain("assignment-secret")
+    expect(firstTextLog).not.toContain("do-not-persist")
+    expect(firstTextLog).not.toContain("hidden-tool-args")
+    expect(firstTextLog).not.toContain("hidden-tool-result")
+    expect(firstTextLog.split("\n").every((line) => !line.includes("\r"))).toBe(true)
+    expect(firstTextLog.split("\n").filter(Boolean).every((line) => line.length <= 500)).toBe(true)
+    expect(secondTextLog).toContain("scope=01.01.02/attempt-text-")
+    expect(secondTextLog).not.toContain("01.01.01")
+  })
+
+  test("encodes derived session path components without traversal or collisions", async () => {
+    expect(safeFilePart(".")).toBe("~2E")
+    expect(safeFilePart("..")).toBe("~2E~2E")
+    expect(safeFilePart("a/b")).not.toBe(safeFilePart("a-b"))
+
+    const workspace = createExecutorWorkspace({
+      models: '"auto@cursor", "composer-1@cursor"',
+      threadCount: 1,
+    })
+    const attemptIds = ["a/b", "a-b"]
+    const result = await executeSdkBatch({
+      repoRoot: workspace.repoRoot,
+      streamId: workspace.streamId,
+      batchId: "01.01",
+      handleSignals: false,
+      createAttemptId: () => attemptIds.shift()!,
+      adapterFactory: (_candidate, input) => new FakeAgentAttemptAdapter("cursor", {
+        outcome: input.attemptId === "a/b"
+          ? { status: "failed", error: { message: "try the fallback" } }
+          : { status: "completed", result: "done" },
+      }),
+    })
+
+    const runDirectory = join(workspace.repoRoot, result.batch.runtimeDirectory!)
+    const encodedSlashPath = join(runDirectory, "sessions", "01.01.01", "a~2Fb", "session.log")
+    const readableDashPath = join(runDirectory, "sessions", "01.01.01", "a-b", "session.log")
+    expect(existsSync(encodedSlashPath)).toBe(true)
+    expect(existsSync(readableDashPath)).toBe(true)
+    expect(readFileSync(encodedSlashPath, "utf8")).toContain("kind=attempt_failed")
+    expect(readFileSync(readableDashPath, "utf8")).toContain("Attempt completed")
+    expect(existsSync(join(runDirectory, "sessions", "a-b", "session.log"))).toBe(false)
+  })
+
+  test("a derived text-log write failure is nonfatal to JSON activity and execution", async () => {
+    const workspace = createExecutorWorkspace({ threadCount: 1 })
+    const writes: string[] = []
+    const fileSystem: ObservabilityFileSystem = {
+      mkdirSync: () => undefined,
+      appendFileSync: (path, content) => {
+        if (path.includes("/sessions/")) throw new Error("session text unavailable")
+        writes.push(`${path}:${content}`)
+      },
+      writeFileSync: () => undefined,
+      renameSync: () => undefined,
+      rmSync: () => undefined,
+    }
+
+    const result = await executeSdkBatch({
+      repoRoot: workspace.repoRoot,
+      streamId: workspace.streamId,
+      batchId: "01.01",
+      handleSignals: false,
+      observabilityFileSystem: fileSystem,
+      adapterFactory: () => new FakeAgentAttemptAdapter("cursor", {
+        outcome: { status: "completed", result: "provider result survives" },
+      }),
+    })
+
+    expect(result.batch.status).toBe("completed")
+    expect(writes.some((write) => write.includes("batch_completed"))).toBe(true)
   })
 
   test("atomically replaces a useful canonical execution snapshot", () => {

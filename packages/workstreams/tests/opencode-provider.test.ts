@@ -202,6 +202,10 @@ describe("OpenCode V1 provider adapter", () => {
             state: { status: "completed", input: { command: "pwd" }, output: "/workspace" },
           },
         }),
+        event("session.next.reasoning.delta", {
+          sessionID: sessionId,
+          delta: "thinking delta",
+        }),
       ],
     })
     const adapter = new OpenCodeV1Adapter({ serverUrl: "http://127.0.0.1:4096", cwd, client })
@@ -216,11 +220,13 @@ describe("OpenCode V1 provider adapter", () => {
       "usage",
       "assistant",
       "tool",
+      "assistant",
       "usage",
       "completed",
     ])
     expect(observed.filter((item) => item.type === "status")[0]).toMatchObject({ status: "busy" })
     expect(observed.filter((item) => item.type === "assistant")[0]).toMatchObject({ text: "text delta", delta: true })
+    expect(observed.filter((item) => item.type === "assistant")[1]).toMatchObject({ text: "thinking delta", contentKind: "reasoning" })
     expect(observed.filter((item) => item.type === "tool")[0]).toMatchObject({ toolName: "shell", phase: "completed" })
     expect(observed.every((item) => item.attemptId === "attempt-events")).toBe(true)
     expect(observed.every((item) => item.diagnostic !== undefined || item.type === "started" || item.type === "completed")).toBe(true)

@@ -119,6 +119,8 @@ export interface AgentAssistantEvent extends AgentEventBase {
   text?: string
   /** True when `text` is a delta rather than the complete assistant output. */
   delta?: boolean
+  /** Distinguishes model reasoning from user-visible assistant output. */
+  contentKind?: "assistant" | "reasoning"
 }
 
 export interface AgentToolEvent extends AgentEventBase {

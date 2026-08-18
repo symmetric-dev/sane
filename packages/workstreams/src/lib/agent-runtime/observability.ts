@@ -8,7 +8,7 @@ import {
   writeFileSync,
 } from "node:fs"
 import { basename, dirname, isAbsolute, join, relative } from "node:path"
-import { randomUUID } from "node:crypto"
+import { createHash, randomUUID } from "node:crypto"
 
 import type { AgentEvent, AgentProvider } from "./contracts.ts"
 import type { BatchStatusFile } from "../batch-status.ts"
@@ -19,6 +19,7 @@ const DEFAULT_MAX_PENDING_BYTES = 64 * 1024
 const DEFAULT_MAX_PENDING_RECORDS = 100
 const DEFAULT_MAX_ASSISTANT_CHARS = 4_000
 const DEFAULT_MAX_ASSISTANT_STREAMS = 128
+const DEFAULT_MAX_TEXT_SUMMARY_LENGTH = 320
 
 export type ActivityKind =
   | "batch_reserved"
@@ -51,6 +52,7 @@ export interface ActivityRecord {
   nativeSessionId?: string
   nativeRunId?: string
   eventId?: string
+  contentKind?: "assistant" | "reasoning"
   kind: ActivityKind | (string & {})
   summary: string
   rawDiagnosticRef?: string
@@ -65,6 +67,7 @@ export interface ActivityRecordInput {
   nativeSessionId?: string
   nativeRunId?: string
   eventId?: string
+  contentKind?: "assistant" | "reasoning"
   kind: ActivityKind | (string & {})
   summary: string
   /** Assistant text is coalesced instead of writing one record per delta. */
@@ -133,6 +136,12 @@ export interface ActivityJournalOptions {
   maxPendingRecords?: number
   maxAssistantChars?: number
   maxAssistantStreams?: number
+  /** Optional root for derived, human-readable session logs. */
+  textLogDirectory?: string
+  /** Bounds each derived text-log summary independently of JSON summaries. */
+  maxTextSummaryLength?: number
+  /** Supporting text-log failures are reported without escaping the append path. */
+  onTextLogError?: (error: unknown) => void
 }
 
 interface PendingAssistant {
@@ -155,6 +164,21 @@ function compactText(value: unknown, maxLength = DEFAULT_MAX_SUMMARY_LENGTH): st
   return `${normalized.slice(0, Math.max(1, maxLength - 1))}…`
 }
 
+const SECRET_ASSIGNMENT_PATTERN = /((['"]?)(?:api[-_ ]?(?:key|token)|access[-_ ]?token|auth(?:orization)?(?:[-_ ]?token)?|password|passwd|secret|client[-_ ]?secret|private[-_ ]?key|credential|token|key)\2\s*[:=]\s*)(?:(['"])(?:\\[\s\S]|(?!\3)[\s\S])*\3|([^\s,;)}\]]+))/gi
+
+/** Redact secrets from the small, human-readable projection only. */
+export function redactTextLogValue(value: string): string {
+  return value
+    .replace(/(https?:\/\/[^\s/@]+:)[^\s/@]+@/gi, "$1[REDACTED]@")
+    .replace(/(\b(?:bearer|basic)\s+)[^\s,;]+/gi, "$1[REDACTED]")
+    .replace(SECRET_ASSIGNMENT_PATTERN, (_match, prefix: string, _keyQuote: string, valueQuote: string | undefined) =>
+      `${prefix}${valueQuote ? `${valueQuote}[REDACTED]${valueQuote}` : "[REDACTED]"}`,
+    )
+    .replace(/\b(?:sk|pk|rk|ghp|glpat|github_pat|xox[baprs])-[A-Za-z0-9_-]{8,}\b/gi, "[REDACTED]")
+    .replace(/\bAKIA[0-9A-Z]{16}\b/g, "[REDACTED]")
+    .replace(/\beyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\b/g, "[REDACTED]")
+}
+
 function validTimestamp(value: string | undefined, fallback: () => string): string {
   const candidate = value ?? fallback()
   const date = new Date(candidate)
@@ -174,9 +198,60 @@ function safeJson(value: unknown): string {
   }
 }
 
-function safeFilePart(value: string): string {
-  const sanitized = value.replace(/[^a-zA-Z0-9._-]+/g, "-").replace(/^-+|-+$/g, "")
-  return sanitized.slice(0, 80) || "event"
+/**
+ * Keep readable identifiers when they are already safe, and encode every
+ * other byte instead of replacing it. Encoding avoids collisions such as
+ * `a/b` and `a-b`, while also ensuring a component can never add a path
+ * separator or become `.`/`..`.
+ */
+export function safeFilePart(value: string): string {
+  const readable = /^[a-zA-Z0-9._-]+$/.test(value) && value !== "." && value !== ".."
+  if (readable && value.length <= 80) return value
+
+  const encoded = Array.from(value).map((character) => {
+    if (/^[a-zA-Z0-9._-]$/.test(character) && value !== "." && value !== "..") return character
+    return [...Buffer.from(character, "utf8")]
+      .map((byte) => `~${byte.toString(16).toUpperCase().padStart(2, "0")}`)
+      .join("")
+  }).join("") || "~00"
+
+  if (encoded.length <= 80 && encoded !== "." && encoded !== "..") return encoded
+
+  const digest = createHash("sha256").update(value).digest("hex").slice(0, 16)
+  const suffix = `~${digest}`
+  return `${encoded.slice(0, Math.max(1, 80 - suffix.length))}${suffix}`
+}
+
+function sessionTextPath(textLogDirectory: string, record: ActivityRecord): string {
+  if (record.threadId && record.attemptId) {
+    return join(textLogDirectory, safeFilePart(record.threadId), safeFilePart(record.attemptId), "session.log")
+  }
+  if (record.threadId) {
+    return join(textLogDirectory, safeFilePart(record.threadId), "session.log")
+  }
+  return join(dirname(textLogDirectory), "session.log")
+}
+
+/**
+ * Format only the safe, derived projection of an activity record. Raw provider
+ * diagnostics and tool arguments/results are intentionally not available here.
+ */
+export function formatSessionTextRecord(
+  record: ActivityRecord,
+  maxSummaryLength = DEFAULT_MAX_TEXT_SUMMARY_LENGTH,
+): string {
+  const scope = record.threadId
+    ? [record.threadId, record.attemptId].filter(Boolean).map((value) => safeFilePart(value!)).join("/")
+    : `batch/${safeFilePart(record.batchId)}`
+  const kind = record.contentKind && record.kind === "assistant" ? record.contentKind : record.kind
+  const provider = safeFilePart(record.provider ?? "unknown")
+  const rawSummary = record.kind === "attempt_completed"
+    ? "Attempt completed"
+    : record.kind === "completed"
+      ? "Provider attempt completed"
+      : record.summary
+  const summary = compactText(redactTextLogValue(rawSummary), maxSummaryLength) || "(no summary)"
+  return `${record.timestamp} provider=${provider} scope=${scope} kind=${safeFilePart(kind)} ${summary}`
 }
 
 /**
@@ -199,10 +274,14 @@ export class ActivityJournal {
   private readonly maxPendingRecords: number
   private readonly maxAssistantChars: number
   private readonly maxAssistantStreams: number
+  private readonly textLogDirectory?: string
+  private readonly maxTextSummaryLength: number
+  private readonly onTextLogError?: (error: unknown) => void
   private readonly pendingRecords: ActivityRecord[] = []
   private readonly pendingAssistants = new Map<string, PendingAssistant>()
   private pendingBytes = 0
   private lastFlushAt: string
+  private textLogErrorReported = false
 
   constructor(options: ActivityJournalOptions) {
     this.path = options.path
@@ -219,6 +298,9 @@ export class ActivityJournal {
     this.maxPendingRecords = Math.max(1, options.maxPendingRecords ?? DEFAULT_MAX_PENDING_RECORDS)
     this.maxAssistantChars = Math.max(1, options.maxAssistantChars ?? DEFAULT_MAX_ASSISTANT_CHARS)
     this.maxAssistantStreams = Math.max(1, options.maxAssistantStreams ?? DEFAULT_MAX_ASSISTANT_STREAMS)
+    this.textLogDirectory = options.textLogDirectory ?? (options.runtimeDirectory ? join(options.runtimeDirectory, "sessions") : undefined)
+    this.maxTextSummaryLength = Math.max(1, options.maxTextSummaryLength ?? DEFAULT_MAX_TEXT_SUMMARY_LENGTH)
+    this.onTextLogError = options.onTextLogError
     this.lastFlushAt = validTimestamp(undefined, this.now)
   }
 
@@ -238,6 +320,7 @@ export class ActivityJournal {
       ...(input.nativeSessionId === undefined ? {} : { nativeSessionId: input.nativeSessionId }),
       ...(input.nativeRunId === undefined ? {} : { nativeRunId: input.nativeRunId }),
       ...(input.eventId === undefined ? {} : { eventId: input.eventId }),
+      ...(input.contentKind === undefined ? {} : { contentKind: input.contentKind }),
       kind: input.kind,
       ...(diagnosticRef === undefined ? {} : { rawDiagnosticRef: diagnosticRef }),
     }
@@ -262,6 +345,7 @@ export class ActivityJournal {
     this.fileSystem.mkdirSync(dirname(this.path), { recursive: true })
     const content = `${this.pendingRecords.map((record) => JSON.stringify(record)).join("\n")}\n`
     this.fileSystem.appendFileSync(this.path, content)
+    this.flushTextLogs(this.pendingRecords)
     this.pendingRecords.length = 0
     this.pendingBytes = 0
     this.lastFlushAt = validTimestamp(undefined, this.now)
@@ -289,6 +373,7 @@ export class ActivityJournal {
       base.workSessionId ?? "",
       base.provider ?? "",
       base.nativeSessionId ?? "",
+      base.contentKind ?? "",
     ].join("\u0000")
     const timestamp = base.timestamp
     let pending = this.pendingAssistants.get(key)
@@ -356,6 +441,36 @@ export class ActivityJournal {
       return relativePath || basename(path)
     } catch {
       return undefined
+    }
+  }
+
+  private flushTextLogs(records: readonly ActivityRecord[]): void {
+    if (!this.textLogDirectory || records.length === 0) return
+
+    const contents = new Map<string, string>()
+    for (const record of records) {
+      const path = sessionTextPath(this.textLogDirectory, record)
+      const line = `${formatSessionTextRecord(record, this.maxTextSummaryLength)}\n`
+      contents.set(path, `${contents.get(path) ?? ""}${line}`)
+    }
+
+    // A text projection is supporting evidence. Failure of one session log
+    // must not prevent sibling logs, JSONL, or provider execution from
+    // continuing.
+    for (const [path, content] of contents) {
+      try {
+        this.fileSystem.mkdirSync(dirname(path), { recursive: true })
+        this.fileSystem.appendFileSync(path, content)
+      } catch (error) {
+        if (!this.textLogErrorReported) {
+          this.textLogErrorReported = true
+          try {
+            this.onTextLogError?.(error)
+          } catch {
+            // Reporting is best effort too.
+          }
+        }
+      }
     }
   }
 }
@@ -537,7 +652,9 @@ export function describeAgentEvent(event: AgentEvent): string {
     case "started":
       return "Provider attempt started"
     case "assistant":
-      return event.text ? `Assistant: ${compactText(event.text)}` : "Assistant output updated"
+      return event.text
+        ? `${event.contentKind === "reasoning" ? "Reasoning" : "Assistant"}: ${compactText(event.text)}`
+        : `${event.contentKind === "reasoning" ? "Reasoning" : "Assistant"} output updated`
     case "tool":
       return `${event.phase ?? "updated"} tool${event.toolName ? ` ${event.toolName}` : ""}`
     case "status":

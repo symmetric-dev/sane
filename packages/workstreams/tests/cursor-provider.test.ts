@@ -166,6 +166,7 @@ describe("Cursor local provider adapter", () => {
     ])
     expect(observed.every((event) => event.provider === "cursor" && event.attemptId === "event-attempt" && event.workSessionId === "event-session")).toBe(true)
     expect(observed.find((event) => event.type === "assistant" && event.text === "hello")).toMatchObject({ delta: false })
+    expect(observed.find((event) => event.type === "assistant" && event.text === "reasoning")).toMatchObject({ delta: true, contentKind: "reasoning" })
     expect(observed.find((event) => event.type === "tool")).toMatchObject({ toolName: "shell", phase: "completed", input: { command: "pwd" }, output: "/workspace", correlationId: "call-1" })
     expect(observed.find((event) => event.type === "usage")).toMatchObject({ usage: { inputTokens: 2, outputTokens: 3, totalTokens: 5, cachedInputTokens: 1 } })
     expect(observed.filter((event) => event.diagnostic !== undefined).every((event) => JSON.stringify(event.diagnostic).length < 3_000)).toBe(true)

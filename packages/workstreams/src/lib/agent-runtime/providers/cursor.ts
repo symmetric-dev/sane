@@ -555,7 +555,13 @@ export class CursorLocalAdapter implements AgentAttemptAdapter {
     }
 
     if (type === "thinking") {
-      this.emit(state, { type: "assistant", text: stringField(raw.text), delta: true, ...common }, raw)
+      this.emit(state, {
+        type: "assistant",
+        text: stringField(raw.text),
+        delta: true,
+        contentKind: "reasoning",
+        ...common,
+      }, raw)
       return
     }
 

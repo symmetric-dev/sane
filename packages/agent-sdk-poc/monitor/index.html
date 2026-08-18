@@ -71,13 +71,47 @@
     code, pre, .mono { font-family: var(--mono); }
     code { color: #c5ddff; overflow-wrap: anywhere; }
     .path-absolute { display: block; color: var(--muted); font-size: 11px; margin-top: 3px; overflow-wrap: anywhere; }
-    .thread { border: 1px solid var(--border); border-radius: 8px; padding: 12px; margin-bottom: 10px; background: #151b23; }
-    .thread:last-child { margin-bottom: 0; }
-    .thread-heading { display: flex; justify-content: space-between; gap: 12px; align-items: baseline; }
-    .thread-meta { color: var(--muted); font-size: 12px; overflow-wrap: anywhere; }
-    .session-table { width: 100%; border-collapse: collapse; margin-top: 10px; font-size: 12px; }
-    .session-table th, .session-table td { border-top: 1px solid #293441; padding: 7px 6px; text-align: left; vertical-align: top; overflow-wrap: anywhere; }
-    .session-table th { color: var(--muted); font-weight: 500; }
+    .section-heading { display: flex; justify-content: space-between; gap: 12px; align-items: center; }
+    .section-heading h2 { margin-bottom: 14px; }
+    .toggle { display: inline-flex; align-items: center; gap: 6px; color: var(--muted); user-select: none; }
+    .toggle input { accent-color: var(--accent); }
+    .thread-workspace { display: grid; grid-template-columns: minmax(220px, .34fr) minmax(0, 1fr); min-height: 540px; border-top: 1px solid #293441; }
+    .thread-list { min-width: 0; max-height: 620px; overflow: auto; padding: 6px 14px 6px 0; }
+    .thread-list-empty { padding: 12px 0; }
+    .thread-item { display: block; width: 100%; border: 0; border-bottom: 1px solid #293441; border-radius: 0; background: transparent; color: var(--text); padding: 12px 10px; text-align: left; }
+    .thread-item:hover { background: #1c2531; }
+    .thread-item.selected { background: #202b39; box-shadow: inset 2px 0 0 var(--accent); }
+    .thread-item:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
+    .thread-item-heading, .thread-item-footer { display: flex; justify-content: space-between; gap: 10px; align-items: baseline; }
+    .thread-item-title { display: block; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-weight: 650; }
+    .thread-item-id, .thread-item-activity { color: var(--muted); font: 11px/1.4 var(--mono); overflow-wrap: anywhere; }
+    .thread-item-id { margin-top: 3px; }
+    .thread-item-footer { margin-top: 8px; }
+    .thread-item-activity { text-align: right; }
+    .thread-detail { min-width: 0; min-height: 0; padding: 18px 0 6px 20px; border-left: 1px solid #293441; display: flex; flex-direction: column; }
+    .thread-detail-header { display: flex; justify-content: space-between; gap: 16px; align-items: flex-start; padding-bottom: 14px; }
+    .thread-detail-heading { min-width: 0; }
+    .thread-detail-heading h3 { margin-bottom: 5px; overflow-wrap: anywhere; }
+    .thread-detail-activity { color: var(--muted); font-size: 12px; }
+    .thread-detail-status { flex: 0 0 auto; }
+    .session-picker { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin-bottom: 12px; color: var(--muted); font-size: 12px; }
+    .session-picker select { min-width: 150px; max-width: 100%; border: 1px solid var(--border); border-radius: 5px; background: var(--panel-alt); color: var(--text); padding: 6px 8px; }
+    .thread-details { margin-bottom: 12px; color: var(--muted); font-size: 12px; }
+    .thread-details summary { cursor: pointer; color: var(--accent); }
+    .thread-details summary:hover { color: var(--text); }
+    .detail-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 8px 16px; margin-top: 9px; }
+    .detail-row { min-width: 0; }
+    .detail-label { display: block; margin-bottom: 2px; color: var(--muted); font-size: 11px; text-transform: uppercase; letter-spacing: .05em; }
+    .detail-value { display: block; overflow-wrap: anywhere; color: var(--text); }
+    .thread-log-label { margin-bottom: 6px; color: var(--muted); font-size: 11px; text-transform: uppercase; letter-spacing: .06em; }
+    pre.thread-log { height: min(58vh, 500px); min-height: 260px; max-height: 500px; overflow: auto; white-space: pre-wrap; overflow-wrap: anywhere; background: #0c1015; border-radius: 6px; padding: 14px; margin: 0; color: #d3dce8; font-size: 12px; line-height: 1.55; }
+    .thread-log-empty { display: flex; align-items: center; justify-content: center; height: 100%; min-height: 220px; color: var(--muted); text-align: center; }
+    @media (max-width: 900px) {
+      .thread-workspace { display: block; min-height: 0; }
+      .thread-list { max-height: 250px; padding: 6px 0 10px; }
+      .thread-detail { border-top: 1px solid #293441; border-left: 0; padding: 16px 0 0; }
+      pre.thread-log { height: 400px; }
+    }
     .activity-list { max-height: 560px; overflow: auto; }
     .activity-item { border-bottom: 1px solid #293441; padding: 9px 0; }
     .activity-item:last-child { border-bottom: 0; }
@@ -97,7 +131,7 @@
     <header>
       <div>
         <h1>Local SDK Monitor <span class="muted">PoC</span></h1>
-        <p class="subtitle">Read-only view of the canonical filesystem state in <code>/Users/beto/gene</code>.</p>
+        <p class="subtitle">Read-only view of canonical SDK runtime state.</p>
       </div>
       <div class="toolbar">
         <span id="connection-status" class="connection">Starting…</span>
@@ -148,7 +182,10 @@
     </section>
 
     <section class="panel" style="margin-bottom:14px">
-      <h2>Threads and sessions</h2>
+      <div class="section-heading">
+        <h2>Threads and sessions</h2>
+        <label class="toggle"><input id="verbose-toggle" type="checkbox"> Verbose</label>
+      </div>
       <div id="threads"></div>
     </section>
 
@@ -174,13 +211,27 @@
       "use strict";
 
       const POLL_MS = 5000;
+      const VERBOSE_STORAGE_KEY = "agent-sdk-monitor.verbose";
       let nextPollAt = Date.now() + POLL_MS;
       let polling = false;
+      let latestData = null;
+      let verbose = false;
+      let selectedThreadKey = null;
+      let selectedSessionKey = null;
+      let selectedSessionThreadKey = null;
 
       const byId = (id) => document.getElementById(id);
       const text = (id, value) => { byId(id).textContent = value == null ? "—" : String(value); };
       const clear = (element) => { while (element.firstChild) element.removeChild(element.firstChild); };
       const value = (input, fallback = "—") => input == null || input === "" ? fallback : String(input);
+
+      try {
+        verbose = window.localStorage.getItem(VERBOSE_STORAGE_KEY) === "true";
+      } catch {
+        // localStorage may be unavailable in a restricted browser context.
+      }
+      const verboseToggle = byId("verbose-toggle");
+      verboseToggle.checked = verbose;
 
       function formatTime(input) {
         if (!input) return "—";
@@ -284,79 +335,268 @@
         });
       }
 
-      function renderThreads(threads) {
+      function logViewerState() {
+        const log = byId("thread-log");
+        if (!log || !log.dataset.logKey) return null;
+        const maxScrollTop = Math.max(0, log.scrollHeight - log.clientHeight);
+        return {
+          key: log.dataset.logKey,
+          scrollTop: log.scrollTop,
+          atTail: maxScrollTop - log.scrollTop <= 2,
+        };
+      }
+
+      function restoreLogScroll(log, previous, followTail) {
+        const maxScrollTop = Math.max(0, log.scrollHeight - log.clientHeight);
+        if (followTail || !previous || previous.atTail) {
+          log.scrollTop = maxScrollTop;
+        } else {
+          log.scrollTop = Math.min(previous.scrollTop, maxScrollTop);
+        }
+      }
+
+      function parseCompactSessionLine(line) {
+        const current = line.match(/^\S+(?:\s+\S+=\S+)*\s+kind=(assistant|thinking|reasoning|tool)(?:\s+([\s\S]*))?$/i);
+        if (current) return { kind: current[1].toLowerCase(), text: current[2]?.trim() || "" };
+
+        const legacy = line.match(/(?:^|\s)\[(assistant|thinking|reasoning|tool)\]\s*([\s\S]*)$/i);
+        return legacy ? { kind: legacy[1].toLowerCase(), text: legacy[2].trim() } : null;
+      }
+
+      function compactSessionText(lines) {
+        const output = [];
+        let paragraph = [];
+        const flushParagraph = () => {
+          if (paragraph.length > 0) output.push(paragraph.join(" "));
+          paragraph = [];
+        };
+
+        lines.forEach((line) => {
+          const record = parseCompactSessionLine(line);
+          if (!record) return;
+          if (record.kind === "assistant" || record.kind === "thinking" || record.kind === "reasoning") {
+            if (record.text) paragraph.push(record.text);
+            return;
+          }
+          if (record.kind === "tool") {
+            flushParagraph();
+            output.push(`Tool: ${record.text || "updated"}`);
+          }
+        });
+        flushParagraph();
+        return output.join("\n");
+      }
+
+      function threadKey(thread) {
+        return String(thread.threadId ?? thread.batchId ?? thread.threadName ?? "thread");
+      }
+
+      function sessionKey(session, index) {
+        return String(session.sessionId ?? session.attemptId ?? `session-${index}`);
+      }
+
+      function activityValue(record) {
+        const candidates = [
+          record.lastActivityAt,
+          record.lastEventAt,
+          record.updatedAt,
+          record.completedAt,
+          record.startedAt,
+          ...(Array.isArray(record.sessions) ? record.sessions : []).flatMap((session) => [
+            session.lastActivityAt,
+            session.lastEventAt,
+            session.completedAt,
+            session.startedAt,
+          ]),
+        ].filter(Boolean);
+        return candidates.sort((left, right) => {
+          const leftTime = Date.parse(left);
+          const rightTime = Date.parse(right);
+          if (Number.isFinite(leftTime) && Number.isFinite(rightTime)) return leftTime - rightTime;
+          return String(left).localeCompare(String(right));
+        }).at(-1) || null;
+      }
+
+      function addDetail(parent, label, content) {
+        const row = document.createElement("div");
+        row.className = "detail-row";
+        const labelElement = document.createElement("span");
+        labelElement.className = "detail-label";
+        labelElement.textContent = label;
+        const valueElement = document.createElement("span");
+        valueElement.className = "detail-value mono";
+        valueElement.textContent = value(content);
+        row.append(labelElement, valueElement);
+        parent.appendChild(row);
+      }
+
+      function renderThreads(threads, followTail = false) {
         const container = byId("threads");
+        const previousLog = logViewerState();
         clear(container);
         if (!Array.isArray(threads) || threads.length === 0) {
+          selectedThreadKey = null;
+          selectedSessionKey = null;
+          selectedSessionThreadKey = null;
           const empty = document.createElement("div");
-          empty.className = "empty";
+          empty.className = "empty thread-list-empty";
           empty.textContent = "No thread runtime records are available for the selected run.";
           container.appendChild(empty);
           return;
         }
 
+        const selectedThread = threads.find((thread) => threadKey(thread) === selectedThreadKey);
+        if (!selectedThread) {
+          selectedThreadKey = threadKey(threads[0]);
+          selectedSessionKey = null;
+          selectedSessionThreadKey = null;
+        }
+        const activeThread = threads.find((thread) => threadKey(thread) === selectedThreadKey) || threads[0];
+
+        const workspace = document.createElement("div");
+        workspace.className = "thread-workspace";
+        const list = document.createElement("div");
+        list.className = "thread-list";
+        list.setAttribute("role", "listbox");
+        list.setAttribute("aria-label", "Threads");
+
         threads.forEach((thread) => {
-          const article = document.createElement("article");
-          article.className = "thread";
+          const key = threadKey(thread);
+          const item = document.createElement("button");
+          item.type = "button";
+          item.className = `thread-item${key === selectedThreadKey ? " selected" : ""}`;
+          item.setAttribute("role", "option");
+          item.setAttribute("aria-selected", String(key === selectedThreadKey));
+
           const heading = document.createElement("div");
-          heading.className = "thread-heading";
-          const title = document.createElement("h3");
-          title.textContent = `${value(thread.threadId)} — ${value(thread.threadName, "Unnamed thread")}`;
-          const status = statusElement(thread.status);
-          heading.append(title, status);
-          article.appendChild(heading);
+          heading.className = "thread-item-heading";
+          const title = document.createElement("span");
+          title.className = "thread-item-title";
+          title.textContent = value(thread.threadName, "Unnamed thread");
+          heading.appendChild(title);
+          heading.appendChild(statusElement(thread.status));
 
-          const meta = document.createElement("div");
-          meta.className = "thread-meta mono";
-          meta.textContent = [
-            thread.currentSessionId ? `session=${thread.currentSessionId}` : null,
-            thread.attemptId ? `attempt=${thread.attemptId}` : null,
-            thread.nativeSessionId ? `nativeSession=${thread.nativeSessionId}` : null,
-            thread.nativeRunId ? `nativeRun=${thread.nativeRunId}` : null,
-          ].filter(Boolean).join(" · ") || "No native/session identifiers recorded";
-          article.appendChild(meta);
+          const id = document.createElement("div");
+          id.className = "thread-item-id mono";
+          id.textContent = thread.threadId ? `thread=${thread.threadId}` : `batch=${value(thread.batchId)}`;
 
+          const footer = document.createElement("div");
+          footer.className = "thread-item-footer";
           const sessions = Array.isArray(thread.sessions) ? thread.sessions : [];
-          if (sessions.length === 0) {
-            const empty = document.createElement("div");
-            empty.className = "empty";
-            empty.textContent = "No correlated sessions recorded.";
-            article.appendChild(empty);
-          } else {
-            const table = document.createElement("table");
-            table.className = "session-table";
-            const head = document.createElement("thead");
-            const headRow = document.createElement("tr");
-            ["Session", "Status", "Provider/runtime", "Native IDs", "Activity"].forEach((label) => {
-              const cell = document.createElement("th");
-              cell.textContent = label;
-              headRow.appendChild(cell);
-            });
-            head.appendChild(headRow);
-            table.appendChild(head);
-            const body = document.createElement("tbody");
-            sessions.forEach((session) => {
-              const row = document.createElement("tr");
-              const sessionId = document.createElement("td");
-              sessionId.className = "mono";
-              sessionId.textContent = value(session.sessionId);
-              const sessionStatus = document.createElement("td");
-              sessionStatus.appendChild(statusElement(session.status));
-              const provider = document.createElement("td");
-              provider.textContent = [session.provider, session.runtime, session.resolvedModel].filter(Boolean).join(" / ") || "—";
-              const native = document.createElement("td");
-              native.className = "mono";
-              native.textContent = [session.nativeSessionId ? `session=${session.nativeSessionId}` : null, session.nativeRunId ? `run=${session.nativeRunId}` : null].filter(Boolean).join("\n") || "—";
-              const activity = document.createElement("td");
-              activity.textContent = formatTime(session.lastActivityAt || session.lastEventAt || session.completedAt || session.startedAt);
-              row.append(sessionId, sessionStatus, provider, native, activity);
-              body.appendChild(row);
-            });
-            table.appendChild(body);
-            article.appendChild(table);
-          }
-          container.appendChild(article);
+          const sessionCount = document.createElement("span");
+          sessionCount.className = "muted";
+          sessionCount.textContent = `${sessions.length} session${sessions.length === 1 ? "" : "s"}`;
+          const activity = document.createElement("time");
+          activity.className = "thread-item-activity";
+          activity.dateTime = value(activityValue(thread), "");
+          activity.textContent = formatTime(activityValue(thread));
+          activity.title = activity.textContent;
+          footer.append(sessionCount, activity);
+          item.append(heading, id, footer);
+          item.addEventListener("click", () => {
+            selectedThreadKey = key;
+            selectedSessionKey = null;
+            selectedSessionThreadKey = key;
+            if (latestData) render(latestData, true);
+          });
+          list.appendChild(item);
         });
+
+        const detail = document.createElement("section");
+        detail.className = "thread-detail";
+        detail.setAttribute("aria-label", "Selected thread session");
+        const detailHeader = document.createElement("div");
+        detailHeader.className = "thread-detail-header";
+        const detailHeading = document.createElement("div");
+        detailHeading.className = "thread-detail-heading";
+        const detailTitle = document.createElement("h3");
+        detailTitle.textContent = value(activeThread.threadName, "Unnamed thread");
+        const detailActivity = document.createElement("div");
+        detailActivity.className = "thread-detail-activity";
+        detailActivity.textContent = `Latest activity: ${formatTime(activityValue(activeThread))}`;
+        detailHeading.append(detailTitle, detailActivity);
+        const detailStatus = document.createElement("div");
+        detailStatus.className = "thread-detail-status";
+        detailStatus.appendChild(statusElement(activeThread.status));
+        detailHeader.append(detailHeading, detailStatus);
+        detail.appendChild(detailHeader);
+
+        const sessions = Array.isArray(activeThread.sessions) ? activeThread.sessions : [];
+        if (selectedSessionThreadKey !== selectedThreadKey) selectedSessionKey = null;
+        selectedSessionThreadKey = selectedThreadKey;
+        let activeSession = null;
+        let activeSessionIndex = -1;
+        if (sessions.length > 0) {
+          activeSessionIndex = sessions.findIndex((session, index) => sessionKey(session, index) === selectedSessionKey);
+          if (activeSessionIndex < 0 && activeThread.currentSessionId) {
+            activeSessionIndex = sessions.findIndex((session) => session.sessionId === activeThread.currentSessionId);
+          }
+          if (activeSessionIndex < 0) activeSessionIndex = 0;
+          activeSession = sessions[activeSessionIndex] || null;
+          selectedSessionKey = activeSession ? sessionKey(activeSession, activeSessionIndex) : null;
+        } else {
+          selectedSessionKey = null;
+        }
+
+        if (sessions.length > 1) {
+          const picker = document.createElement("label");
+          picker.className = "session-picker";
+          const pickerText = document.createElement("span");
+          pickerText.textContent = "Session / attempt";
+          const select = document.createElement("select");
+          select.setAttribute("aria-label", "Session or attempt");
+          sessions.forEach((session, index) => {
+            const option = document.createElement("option");
+            option.value = sessionKey(session, index);
+            option.textContent = `Session ${index + 1}${session.status ? ` · ${session.status}` : ""}`;
+            option.selected = index === activeSessionIndex;
+            select.appendChild(option);
+          });
+          select.addEventListener("change", () => {
+            selectedSessionKey = select.value;
+            selectedSessionThreadKey = selectedThreadKey;
+            if (latestData) render(latestData, true);
+          });
+          picker.append(pickerText, select);
+          detail.appendChild(picker);
+        }
+
+        if (activeSession) {
+          const details = document.createElement("details");
+          details.className = "thread-details";
+          const summary = document.createElement("summary");
+          summary.textContent = "Details";
+          const detailGrid = document.createElement("div");
+          detailGrid.className = "detail-grid";
+          addDetail(detailGrid, "Session ID", activeSession.sessionId);
+          addDetail(detailGrid, "Attempt ID", activeSession.attemptId || activeThread.attemptId);
+          addDetail(detailGrid, "Native session", activeSession.nativeSessionId || activeThread.nativeSessionId);
+          addDetail(detailGrid, "Native run", activeSession.nativeRunId || activeThread.nativeRunId);
+          addDetail(detailGrid, "Provider / runtime", [activeSession.provider, activeSession.runtime, activeSession.resolvedModel].filter(Boolean).join(" / "));
+          details.append(summary, detailGrid);
+          detail.appendChild(details);
+        }
+
+        const logLabel = document.createElement("div");
+        logLabel.className = "thread-log-label";
+        logLabel.textContent = verbose ? "Full session log" : "Session output";
+        detail.appendChild(logLabel);
+        const log = document.createElement("pre");
+        log.id = "thread-log";
+        log.className = "thread-log";
+        log.dataset.logKey = [selectedThreadKey, selectedSessionKey].join("/");
+        const lines = activeSession && activeSession.sessionText && Array.isArray(activeSession.sessionText.lines)
+          ? activeSession.sessionText.lines
+          : [];
+        const content = verbose ? lines.join("\n") : compactSessionText(lines);
+        log.textContent = content || (verbose
+          ? "No complete session text records available."
+          : "No assistant, reasoning, or tool session text records available.");
+        detail.appendChild(log);
+
+        workspace.append(list, detail);
+        container.appendChild(workspace);
+        restoreLogScroll(log, previousLog && previousLog.key === log.dataset.logKey ? previousLog : null, followTail);
       }
 
       function renderActivity(records) {
@@ -401,11 +641,11 @@
         }
       }
 
-      function render(data) {
+      function render(data, followTail = false) {
         renderBatch(data);
         renderExecutor(data.executor);
         renderPaths(data.runtime);
-        renderThreads(data.sessions);
+        renderThreads(data.sessions, followTail);
         renderActivity(data.activity);
         renderLog(data.executorLog);
         renderErrors(data.readErrors);
@@ -419,6 +659,7 @@
         try {
           const response = await fetch("/api/sdk-monitor", { cache: "no-store" });
           const data = await response.json();
+          latestData = data;
           render(data);
           connection.textContent = response.ok ? "Connected · filesystem read" : "Connected with monitor error";
           connection.className = response.ok ? "connection" : "connection error";
@@ -442,6 +683,15 @@
         text("poll-countdown", `Next poll in ${seconds}s`);
       }
 
+      verboseToggle.addEventListener("change", () => {
+        verbose = verboseToggle.checked;
+        try {
+          window.localStorage.setItem(VERBOSE_STORAGE_KEY, String(verbose));
+        } catch {
+          // localStorage may be unavailable in a restricted browser context.
+        }
+        if (latestData) render(latestData, true);
+      });
       byId("refresh-button").addEventListener("click", poll);
       setInterval(updateCountdown, 250);
       setInterval(poll, POLL_MS);
