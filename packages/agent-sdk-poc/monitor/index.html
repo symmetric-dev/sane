@@ -73,8 +73,15 @@
     .path-absolute { display: block; color: var(--muted); font-size: 11px; margin-top: 3px; overflow-wrap: anywhere; }
     .section-heading { display: flex; justify-content: space-between; gap: 12px; align-items: center; }
     .section-heading h2 { margin-bottom: 14px; }
-    .toggle { display: inline-flex; align-items: center; gap: 6px; color: var(--muted); user-select: none; }
-    .toggle input { accent-color: var(--accent); }
+    .verbosity-control { display: inline-flex; flex-wrap: wrap; align-items: center; justify-content: flex-end; gap: 8px; color: var(--muted); font-size: 12px; }
+    .verbosity-label { white-space: nowrap; }
+    .verbosity-options { display: inline-flex; }
+    .verbosity-options button { border-radius: 0; padding: 5px 8px; font-size: 12px; }
+    .verbosity-options button:first-child { border-radius: 5px 0 0 5px; }
+    .verbosity-options button:last-child { border-radius: 0 5px 5px 0; }
+    .verbosity-options button + button { margin-left: -1px; }
+    .verbosity-options button[aria-pressed="true"] { border-color: var(--accent); background: #294461; color: #fff; position: relative; z-index: 1; }
+    .verbosity-current { color: var(--text); white-space: nowrap; }
     .thread-workspace { display: grid; grid-template-columns: minmax(220px, .34fr) minmax(0, 1fr); min-height: 540px; border-top: 1px solid #293441; }
     .thread-list { min-width: 0; max-height: 620px; overflow: auto; padding: 6px 14px 6px 0; }
     .thread-list-empty { padding: 12px 0; }
@@ -184,7 +191,15 @@
     <section class="panel" style="margin-bottom:14px">
       <div class="section-heading">
         <h2>Threads and sessions</h2>
-        <label class="toggle"><input id="verbose-toggle" type="checkbox"> Verbose</label>
+        <div class="verbosity-control" aria-label="Session log verbosity">
+          <span class="verbosity-label">Log detail</span>
+          <div id="verbosity-options" class="verbosity-options" role="group" aria-label="Session log level">
+            <button type="button" data-verbosity-level="1" aria-pressed="false" aria-label="Level 1 summary">Level 1</button>
+            <button type="button" data-verbosity-level="2" aria-pressed="false" aria-label="Level 2 compact">Level 2</button>
+            <button type="button" data-verbosity-level="3" aria-pressed="false" aria-label="Level 3 full session log">Level 3</button>
+          </div>
+          <span id="verbosity-current" class="verbosity-current" aria-live="polite">Level 1 · Summary</span>
+        </div>
       </div>
       <div id="threads"></div>
     </section>
@@ -211,11 +226,17 @@
       "use strict";
 
       const POLL_MS = 5000;
-      const VERBOSE_STORAGE_KEY = "agent-sdk-monitor.verbose";
+      const VERBOSITY_STORAGE_KEY = "agent-sdk-monitor.verbosity";
+      const LEGACY_VERBOSE_STORAGE_KEY = "agent-sdk-monitor.verbose";
+      const VERBOSITY_LABELS = {
+        1: "Level 1 · Summary",
+        2: "Level 2 · Compact",
+        3: "Level 3 · Full",
+      };
       let nextPollAt = Date.now() + POLL_MS;
       let polling = false;
       let latestData = null;
-      let verbose = false;
+      let verbosityLevel = 1;
       let selectedThreadKey = null;
       let selectedSessionKey = null;
       let selectedSessionThreadKey = null;
@@ -225,13 +246,30 @@
       const clear = (element) => { while (element.firstChild) element.removeChild(element.firstChild); };
       const value = (input, fallback = "—") => input == null || input === "" ? fallback : String(input);
 
+      function validVerbosityLevel(input) {
+        const parsed = Number(input);
+        return Number.isInteger(parsed) && parsed >= 1 && parsed <= 3 ? parsed : null;
+      }
+
       try {
-        verbose = window.localStorage.getItem(VERBOSE_STORAGE_KEY) === "true";
+        const stored = window.localStorage.getItem(VERBOSITY_STORAGE_KEY);
+        const legacy = window.localStorage.getItem(LEGACY_VERBOSE_STORAGE_KEY);
+        verbosityLevel = validVerbosityLevel(stored) ?? (legacy === "true" ? 3 : 1);
+        window.localStorage.setItem(VERBOSITY_STORAGE_KEY, String(verbosityLevel));
       } catch {
         // localStorage may be unavailable in a restricted browser context.
       }
-      const verboseToggle = byId("verbose-toggle");
-      verboseToggle.checked = verbose;
+      const verbosityButtons = Array.from(document.querySelectorAll("[data-verbosity-level]"));
+
+      function updateVerbosityControl() {
+        verbosityButtons.forEach((button) => {
+          const selected = Number(button.dataset.verbosityLevel) === verbosityLevel;
+          button.setAttribute("aria-pressed", String(selected));
+        });
+        byId("verbosity-current").textContent = VERBOSITY_LABELS[verbosityLevel];
+      }
+
+      updateVerbosityControl();
 
       function formatTime(input) {
         if (!input) return "—";
@@ -356,35 +394,161 @@
       }
 
       function parseCompactSessionLine(line) {
-        const current = line.match(/^\S+(?:\s+\S+=\S+)*\s+kind=(assistant|thinking|reasoning|tool)(?:\s+([\s\S]*))?$/i);
+        const current = String(line).match(/(?:^|\s)kind=(assistant|thinking|reasoning|tool)(?:\s+([\s\S]*))?$/i);
         if (current) return { kind: current[1].toLowerCase(), text: current[2]?.trim() || "" };
 
-        const legacy = line.match(/(?:^|\s)\[(assistant|thinking|reasoning|tool)\]\s*([\s\S]*)$/i);
+        const legacy = String(line).match(/(?:^|\s)\[(assistant|thinking|reasoning|tool)\]\s*([\s\S]*)$/i);
         return legacy ? { kind: legacy[1].toLowerCase(), text: legacy[2].trim() } : null;
+      }
+
+      function compactText(value) {
+        return String(value || "").replace(/\s+/g, " ").trim();
+      }
+
+      const TOOL_START_PHASES = new Set(["started", "called", "pending", "running"]);
+      const TOOL_COMPLETION_PHASES = new Set(["completed", "success", "succeeded", "failed", "error", "done", "finished", "cancelled", "canceled"]);
+
+      function parseToolRecord(record) {
+        const source = compactText(record.text);
+        const phaseMatch = source.match(/\b(started|called|pending|running|updated|update|completed|success|succeeded|failed|error|done|finished|cancelled|canceled)\b/i);
+        const phase = phaseMatch ? phaseMatch[1].toLowerCase() : "";
+        const nameField = source.match(/\b(?:toolName|tool|name)=(?:["']?)([^\s,"']+)/i);
+        let name = nameField ? nameField[1] : "";
+
+        if (!name) {
+          const afterTool = source.match(/\btool\s+([a-zA-Z0-9_.:/-]+)/i);
+          if (afterTool && !TOOL_START_PHASES.has(afterTool[1].toLowerCase()) && !TOOL_COMPLETION_PHASES.has(afterTool[1].toLowerCase())) {
+            name = afterTool[1];
+          }
+        }
+
+        if (!name) {
+          const candidate = source.split(/\s+/).map((part) => part.replace(/^[([{"']+|[)\]}"',;:]+$/g, ""))
+            .find((part) => {
+              const normalized = part.toLowerCase();
+              return part && normalized !== "tool" && normalized !== phase && !/^(?:args?|input|output|result|status|phase)=/i.test(part);
+            });
+          if (candidate) name = candidate;
+        }
+
+        return { name, phase };
+      }
+
+      function formatToolSummary(record) {
+        return compactText(record.text) || "updated";
       }
 
       function compactSessionText(lines) {
         const output = [];
         let paragraph = [];
+        let paragraphKind = null;
         const flushParagraph = () => {
-          if (paragraph.length > 0) output.push(paragraph.join(" "));
+          if (paragraph.length > 0) {
+            output.push(paragraphKind === "thinking" ? `[thinking] ${paragraph.join(" ")}` : paragraph.join(" "));
+          }
           paragraph = [];
+          paragraphKind = null;
         };
 
         lines.forEach((line) => {
           const record = parseCompactSessionLine(line);
           if (!record) return;
           if (record.kind === "assistant" || record.kind === "thinking" || record.kind === "reasoning") {
-            if (record.text) paragraph.push(record.text);
+            const kind = record.kind === "assistant" ? "assistant" : "thinking";
+            const content = compactText(record.text);
+            if (paragraphKind && paragraphKind !== kind) flushParagraph();
+            paragraphKind = kind;
+            if (content) paragraph.push(content);
             return;
           }
           if (record.kind === "tool") {
             flushParagraph();
-            output.push(`Tool: ${record.text || "updated"}`);
+            output.push(`[tool] ${formatToolSummary(record)}`);
           }
         });
         flushParagraph();
         return output.join("\n");
+      }
+
+      function summarizeSessionText(lines) {
+        const entries = [];
+        const pendingTools = [];
+        let paragraph = [];
+        let paragraphKind = null;
+
+        const flushParagraph = () => {
+          if (paragraphKind === "thinking") {
+            entries.push({ type: "thinking" });
+          } else if (paragraph.length > 0) {
+            entries.push({ type: "assistant", text: paragraph.join(" ") });
+          }
+          paragraph = [];
+          paragraphKind = null;
+        };
+
+        const pendingToolIndex = (name) => {
+          for (let index = pendingTools.length - 1; index >= 0; index -= 1) {
+            if (!name || !pendingTools[index] || pendingTools[index] === name) return index;
+          }
+          return -1;
+        };
+
+        const appendToolInvocation = (name) => {
+          const displayName = name || "tool";
+          const previous = entries.at(-1);
+          if (previous && previous.type === "tool" && previous.name === displayName) {
+            previous.count += 1;
+          } else {
+            entries.push({ type: "tool", name: displayName, count: 1 });
+          }
+        };
+
+        lines.forEach((line) => {
+          const record = parseCompactSessionLine(line);
+          if (!record) return;
+
+          if (record.kind === "assistant" || record.kind === "thinking" || record.kind === "reasoning") {
+            const kind = record.kind === "assistant" ? "assistant" : "thinking";
+            if (paragraphKind && paragraphKind !== kind) flushParagraph();
+            paragraphKind = kind;
+            const content = compactText(record.text);
+            if (content) paragraph.push(content);
+            return;
+          }
+
+          if (record.kind !== "tool") return;
+          flushParagraph();
+          const details = parseToolRecord(record);
+          const pendingIndex = pendingToolIndex(details.name);
+          if (TOOL_COMPLETION_PHASES.has(details.phase)) {
+            if (pendingIndex >= 0) pendingTools.splice(pendingIndex, 1);
+            else appendToolInvocation(details.name);
+            return;
+          }
+
+          if (pendingIndex >= 0 && (
+            !TOOL_START_PHASES.has(details.phase)
+            || details.phase === "pending"
+            || details.phase === "running"
+          )) {
+            return;
+          }
+
+          pendingTools.push(details.name || "");
+          appendToolInvocation(details.name);
+        });
+
+        flushParagraph();
+        return entries.map((entry) => {
+          if (entry.type === "thinking") return "[thinking…]";
+          if (entry.type === "tool") return `[${entry.name}${entry.count > 1 ? ` ×${entry.count}` : ""}]`;
+          return entry.text;
+        }).join("\n");
+      }
+
+      function renderSessionText(lines) {
+        if (verbosityLevel === 3) return lines.join("\n");
+        return verbosityLevel === 2 ? compactSessionText(lines) : summarizeSessionText(lines);
       }
 
       function threadKey(thread) {
@@ -579,7 +743,9 @@
 
         const logLabel = document.createElement("div");
         logLabel.className = "thread-log-label";
-        logLabel.textContent = verbose ? "Full session log" : "Session output";
+        logLabel.textContent = verbosityLevel === 3
+          ? "Full session log"
+          : verbosityLevel === 2 ? "Compact session output" : "Summary session output";
         detail.appendChild(logLabel);
         const log = document.createElement("pre");
         log.id = "thread-log";
@@ -588,10 +754,12 @@
         const lines = activeSession && activeSession.sessionText && Array.isArray(activeSession.sessionText.lines)
           ? activeSession.sessionText.lines
           : [];
-        const content = verbose ? lines.join("\n") : compactSessionText(lines);
-        log.textContent = content || (verbose
+        const content = renderSessionText(lines);
+        log.textContent = content || (verbosityLevel === 3
           ? "No complete session text records available."
-          : "No assistant, reasoning, or tool session text records available.");
+          : verbosityLevel === 2
+            ? "No assistant, thinking, or tool session text records available."
+            : "No assistant, thinking, or tool summary records available.");
         detail.appendChild(log);
 
         workspace.append(list, detail);
@@ -683,15 +851,16 @@
         text("poll-countdown", `Next poll in ${seconds}s`);
       }
 
-      verboseToggle.addEventListener("change", () => {
-        verbose = verboseToggle.checked;
+      verbosityButtons.forEach((button) => button.addEventListener("click", () => {
+        verbosityLevel = validVerbosityLevel(button.dataset.verbosityLevel) || 1;
+        updateVerbosityControl();
         try {
-          window.localStorage.setItem(VERBOSE_STORAGE_KEY, String(verbose));
+          window.localStorage.setItem(VERBOSITY_STORAGE_KEY, String(verbosityLevel));
         } catch {
           // localStorage may be unavailable in a restricted browser context.
         }
-        if (latestData) render(latestData, true);
-      });
+        if (latestData) render(latestData);
+      }));
       byId("refresh-button").addEventListener("click", poll);
       setInterval(updateCountdown, 250);
       setInterval(poll, POLL_MS);
