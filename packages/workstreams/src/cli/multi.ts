@@ -25,7 +25,10 @@ import {
   buildAttachCommand,
   waitForAllPanesExit,
 } from "../lib/tmux.ts"
-import { queryStageApprovalStatus } from "../lib/approval.ts"
+import {
+  checkPreviousStageApprovalForBatch,
+  printPreviousStageApprovalError,
+} from "../lib/approval.ts"
 import {
   isServerRunning,
   startServer,
@@ -488,21 +491,22 @@ export async function main(argv: string[] = process.argv): Promise<void> {
     process.exit(1)
   }
 
-  // Check Previous Stage Approval
-  if (batchParsed.stage > 1) {
-    const prevStageNum = batchParsed.stage - 1
-    const approvalStatus = queryStageApprovalStatus(repoRoot, stream.id, prevStageNum, stream)
-
-    if (approvalStatus !== "approved") {
-      console.error(
-        `Error: Previous stage (Stage ${prevStageNum}) is not approved.`,
-      )
-      console.error(
-        `\nYou must approve the outputs of Stage ${prevStageNum} before proceeding to Stage ${batchParsed.stage}.`,
-      )
-      console.error(`Run: work approve stage ${prevStageNum}`)
-      process.exit(1)
-    }
+  const previousStageApproval = checkPreviousStageApprovalForBatch(
+    repoRoot,
+    stream.id,
+    batchId,
+    stream,
+  )
+  if (
+    !previousStageApproval.allowed &&
+    previousStageApproval.previousStageNumber !== undefined &&
+    previousStageApproval.currentStageNumber !== undefined
+  ) {
+    printPreviousStageApprovalError(
+      previousStageApproval.previousStageNumber,
+      previousStageApproval.currentStageNumber,
+    )
+    process.exit(1)
   }
 
   // Load agents config

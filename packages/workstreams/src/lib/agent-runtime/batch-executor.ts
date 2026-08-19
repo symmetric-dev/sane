@@ -43,6 +43,7 @@ import {
   AtomicSnapshotWriter,
   describeAgentEvent,
   ensureRuntimeArtifactFiles,
+  normalizeActivityUsage,
   projectBatchExecutionSnapshot,
   redactTextLogValue,
   safeFilePart,
@@ -1304,8 +1305,10 @@ export class BatchExecutor {
           })
         }
         const isPromptlyPersisted = event.type === "started" ||
+          event.type === "usage" ||
           event.type === "tool" && (event.phase === "started" || event.phase === "completed" || event.phase === "failed") ||
           event.type === "failed" || event.type === "cancelled" || event.type === "completed"
+        const usage = event.type === "usage" ? normalizeActivityUsage(event.usage) : undefined
         this.observe({
           timestamp: eventTimestamp,
           threadId: thread.threadId,
@@ -1322,6 +1325,7 @@ export class BatchExecutor {
           summary: event.type === "failed" || event.type === "cancelled"
             ? redactFailureMessage(describeAgentEvent(event))
             : describeAgentEvent(event),
+          ...(usage === undefined ? {} : { usage }),
           ...(event.type === "assistant" && event.text !== undefined ? { assistantText: event.text } : {}),
           ...(event.type === "assistant" ? { coalesceAssistant: true } : {}),
           ...(event.diagnostic === undefined ? {} : { diagnostic: event.diagnostic }),

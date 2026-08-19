@@ -16,18 +16,14 @@ import {
   resolve,
 } from "node:path"
 
-const REPO_ROOT = "/Users/beto/gene"
-const CONFIGURED_REPO_ROOT = process.env.AGENV_MONITOR_REPO_ROOT?.trim()
-  ? process.env.AGENV_MONITOR_REPO_ROOT.trim()
-  : REPO_ROOT
-const resolvedConfiguredRoot = resolve(CONFIGURED_REPO_ROOT)
-export const MONITOR_REPO_ROOT = (() => {
-  try {
-    return realpathSync(resolvedConfiguredRoot)
-  } catch {
-    return resolvedConfiguredRoot
-  }
-})()
+import { formatLatestUsageSummary } from "./usage-format.ts"
+
+export const MONITORED_REPOSITORIES = Object.freeze([
+  Object.freeze({ key: "gene", label: "~/gene", root: "/Users/beto/gene" }),
+  Object.freeze({ key: "betalytics-backend", label: "~/betalytics-backend", root: "/Users/beto/betalytics-backend" }),
+  Object.freeze({ key: "agenv", label: "~/agenv", root: "/Users/beto/agenv" }),
+] as const)
+const DEFAULT_REPOSITORY_KEY = "gene"
 const PORT = 43120
 const HOSTNAME = "127.0.0.1"
 const MONITOR_HTML_PATH = join(import.meta.dir, "index.html")
@@ -35,7 +31,44 @@ const ACTIVITY_LIMIT = 50
 const EXECUTOR_LOG_LIMIT = 200
 const SESSION_TEXT_LIMIT = 200
 const SESSION_TEXT_MAX_BYTES = 64 * 1024
-const REPO_ROOT_ALIASES = [MONITOR_REPO_ROOT, resolvedConfiguredRoot]
+
+export type MonitorRepository = (typeof MONITORED_REPOSITORIES)[number]
+
+function canonicalPath(path: string): string {
+  const resolved = resolve(path)
+  try {
+    return realpathSync(resolved)
+  } catch {
+    return resolved
+  }
+}
+
+function configuredRepository(): MonitorRepository {
+  const configured = process.env.AGENV_MONITOR_REPO_ROOT?.trim()
+  if (configured) {
+    const configuredRoot = canonicalPath(configured)
+    const matchingRepository = MONITORED_REPOSITORIES.find((repository) => {
+      return canonicalPath(repository.root) === configuredRoot
+    })
+    if (matchingRepository) return matchingRepository
+  }
+
+  return MONITORED_REPOSITORIES.find(({ key }) => key === DEFAULT_REPOSITORY_KEY)!
+}
+
+export function getMonitorRepository(key?: string): MonitorRepository | null {
+  if (key === undefined) return configuredRepository()
+  return MONITORED_REPOSITORIES.find((repository) => repository.key === key) ?? null
+}
+
+export function resolveMonitorRepoRoot(key?: string): string {
+  const repository = getMonitorRepository(key)
+  if (!repository) throw new Error(`Unknown monitored repository key: ${key}`)
+  return repository.root
+}
+
+/** Default configured repository root for the monitor PoC. */
+export const MONITOR_REPO_ROOT = resolveMonitorRepoRoot()
 
 type JsonObject = Record<string, unknown>
 
@@ -52,6 +85,7 @@ interface PathInfo {
 }
 
 interface MonitorPayload {
+  repository: MonitorRepository
   capturedAt: string
   streamId: string | null
   batch: JsonObject | null
@@ -90,8 +124,10 @@ function addReadError(
   })
 }
 
-function isWithinRepo(candidate: string): boolean {
-  return REPO_ROOT_ALIASES.some((root) => {
+function isWithinRepo(candidate: string, repository: MonitorRepository): boolean {
+  const roots = [repository.root, canonicalPath(repository.root)]
+  return roots.some((root, index) => {
+    if (index > 0 && root === roots[0]) return false
     const relativePath = relative(root, candidate)
     return relativePath === ""
       || (!relativePath.startsWith("../")
@@ -110,6 +146,7 @@ function resolveRecordedPath(
   value: unknown,
   source: string,
   errors: ReadError[],
+  repository: MonitorRepository,
 ): string | null {
   const recorded = asString(value)
   if (!recorded) {
@@ -118,9 +155,9 @@ function resolveRecordedPath(
 
   const candidate = isAbsolute(recorded)
     ? resolve(recorded)
-    : resolve(MONITOR_REPO_ROOT, recorded)
+    : resolve(repository.root, recorded)
 
-  if (!isWithinRepo(candidate)) {
+  if (!isWithinRepo(candidate, repository)) {
     addReadError(errors, source, "Recorded path escapes the configured repository root", recorded)
     return null
   }
@@ -132,7 +169,7 @@ function resolveRecordedPath(
   while (true) {
     try {
       const realPath = realpathSync(existingPath)
-      if (!isWithinRepo(realPath)) {
+      if (!isWithinRepo(realPath, repository)) {
         addReadError(errors, source, "Recorded path resolves outside the configured repository root", recorded)
         return null
       }
@@ -178,13 +215,14 @@ function pathInfo(
   recordedValue: unknown,
   source: string,
   errors: ReadError[],
+  repository: MonitorRepository,
 ): PathInfo | null {
   const recorded = asString(recordedValue)
   if (!recorded) {
     return null
   }
 
-  const absolute = resolveRecordedPath(recorded, source, errors)
+  const absolute = resolveRecordedPath(recorded, source, errors, repository)
   if (!absolute) {
     return null
   }
@@ -206,7 +244,75 @@ function completeLines(text: string): string[] {
   return lines.filter((line) => line.trim().length > 0)
 }
 
-function readActivity(
+interface LatestUsageView {
+  timestamp?: string
+  provider?: string
+  inputTokens?: number
+  outputTokens?: number
+  totalTokens?: number
+  cacheReadTokens?: number
+  cacheWriteTokens?: number
+  reasoningTokens?: number
+}
+
+interface SessionUsageSelector {
+  threadId: string
+  attemptId?: string
+  workSessionId?: string
+}
+
+function usageFromRecord(record: JsonObject): LatestUsageView | null {
+  if (record.kind !== "usage") return null
+  const usage = asObject(record.usage)
+  if (!usage) return null
+  const view: LatestUsageView = {
+    ...(asString(record.timestamp) === undefined ? {} : { timestamp: asString(record.timestamp) }),
+    ...(asString(record.provider) === undefined ? {} : { provider: asString(record.provider) }),
+    ...(asNumber(usage.inputTokens) === undefined ? {} : { inputTokens: asNumber(usage.inputTokens) }),
+    ...(asNumber(usage.outputTokens) === undefined ? {} : { outputTokens: asNumber(usage.outputTokens) }),
+    ...(asNumber(usage.totalTokens) === undefined ? {} : { totalTokens: asNumber(usage.totalTokens) }),
+    ...(asNumber(usage.cacheReadTokens) === undefined ? {} : { cacheReadTokens: asNumber(usage.cacheReadTokens) }),
+    ...(asNumber(usage.cacheWriteTokens) === undefined ? {} : { cacheWriteTokens: asNumber(usage.cacheWriteTokens) }),
+    ...(asNumber(usage.reasoningTokens) === undefined ? {} : { reasoningTokens: asNumber(usage.reasoningTokens) }),
+  }
+  return Object.keys(view).length > 0 ? view : null
+}
+
+function recordMatchesSession(record: JsonObject, selector: SessionUsageSelector): boolean {
+  const threadId = asString(record.threadId)
+  if (threadId !== selector.threadId) return false
+  const attemptId = asString(record.attemptId)
+  if (selector.attemptId !== undefined && attemptId !== undefined && attemptId !== selector.attemptId) {
+    return false
+  }
+  const workSessionId = asString(record.workSessionId)
+  if (selector.workSessionId !== undefined && workSessionId !== undefined && workSessionId !== selector.workSessionId) {
+    return false
+  }
+  return true
+}
+
+export function selectLatestSessionUsage(
+  records: readonly JsonObject[],
+  selector: SessionUsageSelector,
+): LatestUsageView | null {
+  let latest: LatestUsageView | null = null
+  let latestTimestamp = Number.NEGATIVE_INFINITY
+  for (const record of records) {
+    if (!recordMatchesSession(record, selector)) continue
+    const usage = usageFromRecord(record)
+    if (!usage) continue
+    const timestamp = Date.parse(usage.timestamp ?? asString(record.timestamp) ?? "")
+    const sortValue = Number.isFinite(timestamp) ? timestamp : latestTimestamp + 1
+    if (sortValue >= latestTimestamp) {
+      latestTimestamp = sortValue
+      latest = usage
+    }
+  }
+  return latest
+}
+
+function readActivityRecords(
   filePath: string | null,
   recordedPath: string | undefined,
   errors: ReadError[],
@@ -228,8 +334,7 @@ function readActivity(
 
   const lines = completeLines(text)
   const records: JsonObject[] = []
-  const tail = lines.slice(-ACTIVITY_LIMIT)
-  for (const [index, line] of tail.entries()) {
+  for (const [index, line] of lines.entries()) {
     try {
       const parsed = asObject(JSON.parse(line))
       if (!parsed) {
@@ -242,6 +347,12 @@ function readActivity(
     }
   }
   return records
+}
+
+function readActivity(
+  records: readonly JsonObject[],
+): JsonObject[] {
+  return records.slice(-ACTIVITY_LIMIT)
 }
 
 function readExecutorLog(
@@ -335,6 +446,7 @@ function derivedSessionTextPath(
   threadId: string,
   attemptId: string | undefined,
   errors: ReadError[],
+  repository: MonitorRepository,
 ): PathInfo | null {
   if (!runtimeDirectory) return null
   const recorded = join(
@@ -344,7 +456,7 @@ function derivedSessionTextPath(
     ...(attemptId === undefined ? [] : [safeLogPart(attemptId)]),
     "session.log",
   )
-  const absolute = resolveRecordedPath(recorded, "sessionText", errors)
+  const absolute = resolveRecordedPath(recorded, "sessionText", errors, repository)
   if (!absolute) return null
   return { recorded, absolute, exists: existsSync(absolute) }
 }
@@ -479,7 +591,9 @@ function createSessionView(
   session: JsonObject,
   threadId: string,
   runtimeDirectory: PathInfo | null,
+  activityRecords: readonly JsonObject[],
   errors: ReadError[],
+  repository: MonitorRepository,
 ): JsonObject {
   const view = pickDefined(session, [
     "sessionId",
@@ -503,13 +617,22 @@ function createSessionView(
     "resultSummary",
   ])
   const attemptId = asString(session.attemptId)
-  const path = derivedSessionTextPath(runtimeDirectory, threadId, attemptId, errors)
+  const path = derivedSessionTextPath(runtimeDirectory, threadId, attemptId, errors, repository)
+  const latestUsage = selectLatestSessionUsage(activityRecords, {
+    threadId,
+    ...(attemptId === undefined ? {} : { attemptId }),
+    ...(asString(session.sessionId) === undefined ? {} : { workSessionId: asString(session.sessionId) }),
+  })
   return {
     ...view,
     sessionText: {
       path,
       lines: readSessionText(path, errors),
     },
+    ...(latestUsage === null ? {} : {
+      latestUsage,
+      latestUsageSummary: formatLatestUsageSummary(latestUsage),
+    }),
   }
 }
 
@@ -517,7 +640,9 @@ function createThreadViews(
   state: JsonObject,
   batch: JsonObject,
   runtimeDirectory: PathInfo | null,
+  activityRecords: readonly JsonObject[],
   errors: ReadError[],
+  repository: MonitorRepository,
 ): JsonObject[] {
   const hierarchy = asObject(state.hierarchy)
   const hierarchyThreads = Array.isArray(hierarchy?.threads)
@@ -538,7 +663,7 @@ function createThreadViews(
     const rawSessions = Array.isArray(runtime?.sessions)
       ? runtime.sessions.map(asObject).filter((session): session is JsonObject => session !== null)
       : []
-    const sessions = rawSessions.map((session) => createSessionView(session, threadId, runtimeDirectory, errors))
+    const sessions = rawSessions.map((session) => createSessionView(session, threadId, runtimeDirectory, activityRecords, errors, repository))
     const currentSessionId = asString(batchThread.currentSessionId) ?? asString(runtime?.currentSessionId)
     const selectedSession = rawSessions.find((session) => session.sessionId === currentSessionId)
       ?? [...rawSessions].sort((left, right) => sessionSortValue(right) - sessionSortValue(left))[0]
@@ -587,10 +712,9 @@ function heartbeatAgeMs(value: unknown, capturedAt: string): number | null {
   return Math.max(0, captured - heartbeat)
 }
 
-export function buildMonitorPayload(): MonitorPayload {
-  const capturedAt = new Date().toISOString()
-  const readErrors: ReadError[] = []
-  const empty: MonitorPayload = {
+function emptyMonitorPayload(repository: MonitorRepository, capturedAt = new Date().toISOString()): MonitorPayload {
+  return {
+    repository,
     capturedAt,
     streamId: null,
     batch: null,
@@ -599,10 +723,20 @@ export function buildMonitorPayload(): MonitorPayload {
     sessions: [],
     activity: [],
     executorLog: [],
-    readErrors,
+    readErrors: [],
   }
+}
 
-  const index = readJsonFile(join(MONITOR_REPO_ROOT, "work", "index.json"), "index", readErrors)
+export function buildMonitorPayload(repositoryKey?: string): MonitorPayload {
+  const repository = getMonitorRepository(repositoryKey)
+  if (!repository) throw new Error(`Unknown monitored repository key: ${repositoryKey}`)
+
+  const capturedAt = new Date().toISOString()
+  const readErrors: ReadError[] = []
+  const empty = emptyMonitorPayload(repository, capturedAt)
+  empty.readErrors = readErrors
+
+  const index = readJsonFile(join(repository.root, "work", "index.json"), "index", readErrors)
   const streamId = asString(index?.current_stream)
   if (!streamId) {
     addReadError(readErrors, "index", "current_stream is not set")
@@ -614,6 +748,7 @@ export function buildMonitorPayload(): MonitorPayload {
     join("work", streamId, "workstream-state.json"),
     "workstream-state",
     readErrors,
+    repository,
   )
   if (!statePath) {
     return empty
@@ -645,12 +780,12 @@ export function buildMonitorPayload(): MonitorPayload {
     heartbeatAgeMs: heartbeatAgeMs(batch.executorHeartbeatAt, capturedAt),
   }
 
-  const runtimeDirectory = pathInfo(batch.runtimeDirectory, "runtimeDirectory", readErrors)
-  const activityPath = pathInfo(batch.activityJournalPath, "activityJournalPath", readErrors)
-  const snapshotPath = pathInfo(batch.snapshotPath, "snapshotPath", readErrors)
-  const executorLogPath = pathInfo(batch.executorLogPath, "executorLogPath", readErrors)
+  const runtimeDirectory = pathInfo(batch.runtimeDirectory, "runtimeDirectory", readErrors, repository)
+  const activityPath = pathInfo(batch.activityJournalPath, "activityJournalPath", readErrors, repository)
+  const snapshotPath = pathInfo(batch.snapshotPath, "snapshotPath", readErrors, repository)
+  const executorLogPath = pathInfo(batch.executorLogPath, "executorLogPath", readErrors, repository)
   const sessionTextLogPath = runtimeDirectory
-    ? pathInfo(join(runtimeDirectory.recorded, "session.log"), "sessionTextLog", readErrors)
+    ? pathInfo(join(runtimeDirectory.recorded, "session.log"), "sessionTextLog", readErrors, repository)
     : null
   const sessionTextLog = sessionTextLogPath
     ? { ...sessionTextLogPath, lines: readSessionText(sessionTextLogPath, readErrors) }
@@ -664,11 +799,11 @@ export function buildMonitorPayload(): MonitorPayload {
     sessionTextLog,
   }
 
-  empty.sessions = createThreadViews(state, batch, runtimeDirectory, readErrors)
-
   const activityRecordedPath = asString(batch.activityJournalPath)
   const executorLogRecordedPath = asString(batch.executorLogPath)
-  empty.activity = readActivity(activityPath?.absolute ?? null, activityRecordedPath, readErrors)
+  const activityRecords = readActivityRecords(activityPath?.absolute ?? null, activityRecordedPath, readErrors)
+  empty.activity = readActivity(activityRecords)
+  empty.sessions = createThreadViews(state, batch, runtimeDirectory, activityRecords, readErrors, repository)
   empty.executorLog = readExecutorLog(executorLogPath?.absolute ?? null, executorLogRecordedPath, readErrors)
   return empty
 }
@@ -693,13 +828,10 @@ export function requestHandler(request: Request): Response {
     })
   }
 
-  // This PoC has no query-parameter API. Rejecting a query string makes it
-  // impossible to turn this endpoint into an arbitrary path reader later.
-  if (url.search.length > 0) {
-    return new Response("Query parameters are not supported\n", { status: 400 })
-  }
-
   if (url.pathname === "/") {
+    if (url.search.length > 0) {
+      return new Response("Query parameters are not supported\n", { status: 400 })
+    }
     try {
       return new Response(readFileSync(MONITOR_HTML_PATH, "utf8"), {
         headers: { "content-type": "text/html; charset=utf-8" },
@@ -710,22 +842,35 @@ export function requestHandler(request: Request): Response {
   }
 
   if (url.pathname === "/api/sdk-monitor") {
+    const repositoryValues = url.searchParams.getAll("repo")
+    const unsupportedParameter = [...url.searchParams.keys()].find((key) => key !== "repo")
+    if (unsupportedParameter) {
+      return jsonResponse({
+        error: `Unsupported query parameter: ${unsupportedParameter}`,
+        supportedRepositories: MONITORED_REPOSITORIES.map(({ key }) => key),
+      }, 400)
+    }
+    if (repositoryValues.length > 1) {
+      return jsonResponse({ error: "The repo query parameter may only be provided once" }, 400)
+    }
+
+    const requestedRepositoryKey = repositoryValues[0]
+    const repository = getMonitorRepository(requestedRepositoryKey)
+    if (!repository) {
+      return jsonResponse({
+        error: `Unknown monitored repository key: ${requestedRepositoryKey ?? ""}`,
+        supportedRepositories: MONITORED_REPOSITORIES.map(({ key }) => key),
+      }, 400)
+    }
+
     try {
-      return jsonResponse(buildMonitorPayload())
+      return jsonResponse(buildMonitorPayload(repository.key))
     } catch (error) {
       // A partially written canonical file should never take down the tiny
       // server. Keep the response shape useful for the page.
-      return jsonResponse({
-        capturedAt: new Date().toISOString(),
-        streamId: null,
-        batch: null,
-        executor: null,
-        runtime: null,
-        sessions: [],
-        activity: [],
-        executorLog: [],
-        readErrors: [{ source: "monitor", message: errorMessage(error) }],
-      }, 500)
+      const payload = emptyMonitorPayload(repository)
+      payload.readErrors.push({ source: "monitor", message: errorMessage(error) })
+      return jsonResponse(payload, 500)
     }
   }
 

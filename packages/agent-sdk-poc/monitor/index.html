@@ -35,6 +35,9 @@
     h3 { font-size: 15px; margin-bottom: 8px; }
     .subtitle, .muted { color: var(--muted); }
     .toolbar { display: flex; flex-wrap: wrap; justify-content: flex-end; align-items: center; gap: 8px 14px; color: var(--muted); text-align: right; }
+    .repository-control { display: inline-flex; flex-wrap: wrap; align-items: center; justify-content: flex-end; gap: 6px 8px; color: var(--muted); }
+    .repository-control select { min-width: 175px; border: 1px solid var(--border); border-radius: 5px; background: var(--panel-alt); color: var(--text); padding: 6px 8px; }
+    .repository-root { flex-basis: 100%; color: var(--muted); font: 11px/1.35 var(--mono); overflow-wrap: anywhere; }
     button { border: 1px solid var(--border); border-radius: 6px; background: var(--panel-alt); color: var(--text); padding: 7px 11px; cursor: pointer; }
     button:hover { border-color: var(--accent); }
     .connection { color: var(--good); }
@@ -111,6 +114,10 @@
     .detail-label { display: block; margin-bottom: 2px; color: var(--muted); font-size: 11px; text-transform: uppercase; letter-spacing: .05em; }
     .detail-value { display: block; overflow-wrap: anywhere; color: var(--text); }
     .thread-log-label { margin-bottom: 6px; color: var(--muted); font-size: 11px; text-transform: uppercase; letter-spacing: .06em; }
+    .thread-log-header { display: flex; justify-content: space-between; gap: 12px; align-items: flex-start; margin-bottom: 6px; }
+    .thread-log-usage { flex: 0 1 auto; max-width: min(100%, 520px); color: var(--text); font: 11px/1.45 var(--mono); text-align: right; overflow-wrap: anywhere; }
+    .thread-log-usage.empty { color: var(--muted); font-style: italic; }
+    .thread-log-usage time { display: block; margin-top: 2px; color: var(--muted); font-size: 10px; }
     pre.thread-log { height: min(58vh, 500px); min-height: 260px; max-height: 500px; overflow: auto; white-space: pre-wrap; overflow-wrap: anywhere; background: #0c1015; border-radius: 6px; padding: 14px; margin: 0; color: #d3dce8; font-size: 12px; line-height: 1.55; }
     .thread-log-empty { display: flex; align-items: center; justify-content: center; height: 100%; min-height: 220px; color: var(--muted); text-align: center; }
     @media (max-width: 900px) {
@@ -141,6 +148,15 @@
         <p class="subtitle">Read-only view of canonical SDK runtime state.</p>
       </div>
       <div class="toolbar">
+        <label class="repository-control" for="repository-select">
+          <span>Repository</span>
+          <select id="repository-select" aria-label="Monitored repository">
+            <option value="gene">~/gene</option>
+            <option value="betalytics-backend">~/betalytics-backend</option>
+            <option value="agenv">~/agenv</option>
+          </select>
+          <span id="repository-root" class="repository-root">~/gene · /Users/beto/gene</span>
+        </label>
         <span id="connection-status" class="connection">Starting…</span>
         <span id="poll-countdown">Next poll in 5s</span>
         <span>Last refresh: <strong id="last-refresh">never</strong></span>
@@ -226,6 +242,13 @@
       "use strict";
 
       const POLL_MS = 5000;
+      const REPOSITORY_STORAGE_KEY = "agent-sdk-monitor.repository";
+      const REPOSITORIES = {
+        gene: { label: "~/gene", root: "/Users/beto/gene" },
+        "betalytics-backend": { label: "~/betalytics-backend", root: "/Users/beto/betalytics-backend" },
+        agenv: { label: "~/agenv", root: "/Users/beto/agenv" },
+      };
+      const DEFAULT_REPOSITORY_KEY = "gene";
       const VERBOSITY_STORAGE_KEY = "agent-sdk-monitor.verbosity";
       const LEGACY_VERBOSE_STORAGE_KEY = "agent-sdk-monitor.verbose";
       const VERBOSITY_LABELS = {
@@ -240,6 +263,7 @@
       let selectedThreadKey = null;
       let selectedSessionKey = null;
       let selectedSessionThreadKey = null;
+      let selectedRepositoryKey = DEFAULT_REPOSITORY_KEY;
 
       const byId = (id) => document.getElementById(id);
       const text = (id, value) => { byId(id).textContent = value == null ? "—" : String(value); };
@@ -250,6 +274,31 @@
         const parsed = Number(input);
         return Number.isInteger(parsed) && parsed >= 1 && parsed <= 3 ? parsed : null;
       }
+
+      function validRepositoryKey(input) {
+        return typeof input === "string" && Object.prototype.hasOwnProperty.call(REPOSITORIES, input)
+          ? input
+          : null;
+      }
+
+      try {
+        selectedRepositoryKey = validRepositoryKey(window.localStorage.getItem(REPOSITORY_STORAGE_KEY)) || DEFAULT_REPOSITORY_KEY;
+        window.localStorage.setItem(REPOSITORY_STORAGE_KEY, selectedRepositoryKey);
+      } catch {
+        // localStorage may be unavailable in a restricted browser context.
+      }
+
+      function updateRepositoryControl(repository) {
+        const key = validRepositoryKey(repository && repository.key) || selectedRepositoryKey;
+        const fallback = REPOSITORIES[key] || REPOSITORIES[DEFAULT_REPOSITORY_KEY];
+        const label = value(repository && repository.label, fallback.label);
+        const root = value(repository && repository.root, fallback.root);
+        const select = byId("repository-select");
+        select.value = key;
+        byId("repository-root").textContent = `${label} · ${root}`;
+      }
+
+      updateRepositoryControl({ key: selectedRepositoryKey });
 
       try {
         const stored = window.localStorage.getItem(VERBOSITY_STORAGE_KEY);
@@ -401,8 +450,54 @@
         return legacy ? { kind: legacy[1].toLowerCase(), text: legacy[2].trim() } : null;
       }
 
+      function formatTokenCount(value) {
+        if (value == null || !Number.isFinite(Number(value))) return null;
+        return new Intl.NumberFormat("en-US").format(Number(value));
+      }
+
+      function formatLatestUsageSummary(usage) {
+        if (!usage || typeof usage !== "object") return "Usage not reported yet";
+        const parts = [];
+        const input = formatTokenCount(usage.inputTokens);
+        const output = formatTokenCount(usage.outputTokens);
+        const total = formatTokenCount(usage.totalTokens);
+        const cacheRead = formatTokenCount(usage.cacheReadTokens);
+        const cacheWrite = formatTokenCount(usage.cacheWriteTokens);
+        const reasoning = formatTokenCount(usage.reasoningTokens);
+        if (input != null) parts.push(`in ${input}`);
+        if (output != null) parts.push(`out ${output}`);
+        if (total != null) parts.push(`total ${total}`);
+        if (cacheRead != null) parts.push(`cache read ${cacheRead}`);
+        if (cacheWrite != null) parts.push(`cache write ${cacheWrite}`);
+        if (reasoning != null) parts.push(`reasoning ${reasoning}`);
+        if (parts.length === 0) return "Usage not reported yet";
+        const provider = usage.provider ? ` · ${usage.provider}` : "";
+        return `${parts.join(" · ")}${provider}`;
+      }
+
+      function renderUsageSummary(usage, summaryText) {
+        const container = document.createElement("div");
+        const textValue = summaryText || formatLatestUsageSummary(usage);
+        const empty = textValue === "Usage not reported yet";
+        container.className = `thread-log-usage${empty ? " empty" : ""}`;
+        const summary = document.createElement("span");
+        summary.textContent = textValue;
+        container.appendChild(summary);
+        if (!empty && usage && usage.timestamp) {
+          const time = document.createElement("time");
+          time.dateTime = String(usage.timestamp);
+          time.textContent = formatTime(usage.timestamp);
+          container.appendChild(time);
+        }
+        return container;
+      }
+
       function compactText(value) {
         return String(value || "").replace(/\s+/g, " ").trim();
+      }
+
+      function isEmptyReasoningUpdate(record) {
+        return record.kind === "reasoning" && compactText(record.text).toLowerCase() === "reasoning output updated";
       }
 
       const TOOL_START_PHASES = new Set(["started", "called", "pending", "running"]);
@@ -453,6 +548,7 @@
         lines.forEach((line) => {
           const record = parseCompactSessionLine(line);
           if (!record) return;
+          if (isEmptyReasoningUpdate(record)) return;
           if (record.kind === "assistant" || record.kind === "thinking" || record.kind === "reasoning") {
             const kind = record.kind === "assistant" ? "assistant" : "thinking";
             const content = compactText(record.text);
@@ -506,6 +602,7 @@
         lines.forEach((line) => {
           const record = parseCompactSessionLine(line);
           if (!record) return;
+          if (isEmptyReasoningUpdate(record)) return;
 
           if (record.kind === "assistant" || record.kind === "thinking" || record.kind === "reasoning") {
             const kind = record.kind === "assistant" ? "assistant" : "thinking";
@@ -741,12 +838,21 @@
           detail.appendChild(details);
         }
 
+        const logHeader = document.createElement("div");
+        logHeader.className = "thread-log-header";
         const logLabel = document.createElement("div");
         logLabel.className = "thread-log-label";
         logLabel.textContent = verbosityLevel === 3
           ? "Full session log"
           : verbosityLevel === 2 ? "Compact session output" : "Summary session output";
-        detail.appendChild(logLabel);
+        logHeader.append(
+          logLabel,
+          renderUsageSummary(
+            activeSession && activeSession.latestUsage,
+            activeSession && activeSession.latestUsageSummary,
+          ),
+        );
+        detail.appendChild(logHeader);
         const log = document.createElement("pre");
         log.id = "thread-log";
         log.className = "thread-log";
@@ -810,6 +916,7 @@
       }
 
       function render(data, followTail = false) {
+        updateRepositoryControl(data && data.repository);
         renderBatch(data);
         renderExecutor(data.executor);
         renderPaths(data.runtime);
@@ -823,10 +930,12 @@
       async function poll() {
         if (polling) return;
         polling = true;
+        const requestedRepositoryKey = selectedRepositoryKey;
         const connection = byId("connection-status");
         try {
-          const response = await fetch("/api/sdk-monitor", { cache: "no-store" });
+          const response = await fetch(`/api/sdk-monitor?repo=${encodeURIComponent(requestedRepositoryKey)}`, { cache: "no-store" });
           const data = await response.json();
+          if (requestedRepositoryKey !== selectedRepositoryKey) return;
           latestData = data;
           render(data);
           connection.textContent = response.ok ? "Connected · filesystem read" : "Connected with monitor error";
@@ -861,6 +970,17 @@
         }
         if (latestData) render(latestData);
       }));
+      byId("repository-select").addEventListener("change", (event) => {
+        const key = validRepositoryKey(event.target.value) || DEFAULT_REPOSITORY_KEY;
+        selectedRepositoryKey = key;
+        updateRepositoryControl({ key });
+        try {
+          window.localStorage.setItem(REPOSITORY_STORAGE_KEY, key);
+        } catch {
+          // localStorage may be unavailable in a restricted browser context.
+        }
+        poll();
+      });
       byId("refresh-button").addEventListener("click", poll);
       setInterval(updateCountdown, 250);
       setInterval(poll, POLL_MS);

@@ -27,6 +27,10 @@ import {
   summarizeBatchStatus,
   type SupervisionExecutionAction,
 } from "../lib/supervision-helper.ts"
+import {
+  checkPreviousStageApprovalForBatch,
+  printPreviousStageApprovalError,
+} from "../lib/approval.ts"
 import { queryThreadsForWorkstream, type HierarchyThreadQueryRecord } from "../lib/hierarchy-query.ts"
 
 export type SuperviseExecutionBackend = "legacy" | "sdk"
@@ -634,6 +638,25 @@ export async function main(
   if (startPlan.action === "stop") {
     console.log(startPlan.message ?? `[supervise] stop: batch ${startPlan.batchId} is already terminal.`)
     return
+  }
+
+  if (startPlan.action === "launch") {
+    const previousStageApproval = checkPreviousStageApprovalForBatch(
+      repoRoot,
+      stream.id,
+      startPlan.batchId,
+    )
+    if (
+      !previousStageApproval.allowed &&
+      previousStageApproval.previousStageNumber !== undefined &&
+      previousStageApproval.currentStageNumber !== undefined
+    ) {
+      printPreviousStageApprovalError(
+        previousStageApproval.previousStageNumber,
+        previousStageApproval.currentStageNumber,
+      )
+      process.exit(1)
+    }
   }
 
   if (reconciledRunIds.length > 0) {

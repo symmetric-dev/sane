@@ -17,6 +17,7 @@ import { parseStreamDocument } from "./stream-parser.ts"
 import { updateStructuredApprovalsSync } from "./storage-adapter.ts"
 import { loadWorkstreamApprovalQueryResult, loadWorkstreamHierarchyQueryResult } from "./hierarchy-query.ts"
 import { loadWorkstreamPlan } from "./consolidate.ts"
+import { parseBatchId } from "./cli-utils.ts"
 
 function getIndexedStream(index: WorkIndex, streamIdOrName: string): StreamMetadata {
   const stream = index.streams.find((s) => s.id === streamIdOrName || s.name === streamIdOrName)
@@ -604,6 +605,65 @@ export function storeStageCommitSha(
 // ============================================
 // EXECUTION HIERARCHY APPROVAL GATE
 // ============================================
+
+export interface PreviousStageApprovalGateResult {
+  allowed: boolean
+  previousStageNumber?: number
+  currentStageNumber?: number
+}
+
+/**
+ * Check whether batch execution may start based on previous-stage approval.
+ * Stage 01 batches are always allowed because they have no previous stage.
+ */
+export function checkPreviousStageApprovalForBatch(
+  repoRoot: string,
+  streamId: string,
+  batchId: string,
+  stream?: StreamMetadata,
+): PreviousStageApprovalGateResult {
+  const batchParsed = parseBatchId(batchId)
+  if (!batchParsed || batchParsed.stage <= 1) {
+    return { allowed: true }
+  }
+
+  const previousStageNumber = batchParsed.stage - 1
+  const approvalStatus = queryStageApprovalStatus(
+    repoRoot,
+    streamId,
+    previousStageNumber,
+    stream,
+  )
+
+  if (approvalStatus === "approved") {
+    return {
+      allowed: true,
+      previousStageNumber,
+      currentStageNumber: batchParsed.stage,
+    }
+  }
+
+  return {
+    allowed: false,
+    previousStageNumber,
+    currentStageNumber: batchParsed.stage,
+  }
+}
+
+export function formatPreviousStageApprovalError(previousStageNumber: number): string {
+  return `Error: Previous stage (Stage ${previousStageNumber}) is not approved.`
+}
+
+export function printPreviousStageApprovalError(
+  previousStageNumber: number,
+  currentStageNumber: number,
+): void {
+  console.error(formatPreviousStageApprovalError(previousStageNumber))
+  console.error(
+    `\nYou must approve the outputs of Stage ${previousStageNumber} before proceeding to Stage ${currentStageNumber}.`,
+  )
+  console.error(`Run: work approve stage ${previousStageNumber}`)
+}
 
 /**
  * Result of checking if tasks can be approved

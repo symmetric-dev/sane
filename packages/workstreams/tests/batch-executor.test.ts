@@ -776,6 +776,64 @@ describe("detached SDK BatchExecutor", () => {
     expect(assistant.every((record) => record.summary.length <= 20)).toBe(true)
   })
 
+  test("persists structured usage from provider usage events", async () => {
+    const workspace = createExecutorWorkspace({ threadCount: 1 })
+    const result = await executeSdkBatch({
+      repoRoot: workspace.repoRoot,
+      streamId: workspace.streamId,
+      batchId: "01.01",
+      handleSignals: false,
+      adapterFactory: (_candidate, input) => new FakeAgentAttemptAdapter("cursor", {
+        outcome: { status: "completed", result: "done" },
+        events: [
+          {
+            provider: "cursor",
+            attemptId: input.attemptId,
+            workSessionId: input.workSessionId,
+            eventId: `${input.attemptId}:usage`,
+            timestamp: "2026-08-17T00:00:04.000Z",
+            type: "usage",
+            usage: {
+              inputTokens: 12,
+              outputTokens: 8,
+              totalTokens: 20,
+              cachedInputTokens: 4,
+              cacheWriteTokens: 2,
+              reasoningTokens: 1,
+            },
+          },
+        ],
+      }),
+    })
+
+    const records = readActivityJournal(join(workspace.repoRoot, result.batch.activityJournalPath!))
+    const usage = records.find((record) => record.kind === "usage")
+    expect(usage).toMatchObject({
+      threadId: "01.01.01",
+      attemptId: result.threads[0]!.attempts[0]!.attemptId,
+      usage: {
+        inputTokens: 12,
+        outputTokens: 8,
+        totalTokens: 20,
+        cacheReadTokens: 4,
+        cacheWriteTokens: 2,
+        reasoningTokens: 1,
+      },
+    })
+
+    const sessionLog = readFileSync(join(
+      workspace.repoRoot,
+      result.batch.runtimeDirectory!,
+      "sessions",
+      "01.01.01",
+      result.threads[0]!.attempts[0]!.attemptId,
+      "session.log",
+    ), "utf8")
+    expect(sessionLog).toContain("kind=usage")
+    expect(sessionLog).toContain("inputTokens=12")
+    expect(sessionLog).toContain("cacheReadTokens=4")
+  })
+
   test("writes bounded derived session text per thread and attempt", async () => {
     const workspace = createExecutorWorkspace({ threadCount: 2 })
     let attemptSequence = 0

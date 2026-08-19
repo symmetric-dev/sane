@@ -10,7 +10,7 @@ import {
 import { basename, dirname, isAbsolute, join, relative } from "node:path"
 import { createHash, randomUUID } from "node:crypto"
 
-import type { AgentEvent, AgentProvider } from "./contracts.ts"
+import type { AgentEvent, AgentProvider, AgentUsage } from "./contracts.ts"
 import type { BatchStatusFile } from "../batch-status.ts"
 
 const DEFAULT_MAX_SUMMARY_LENGTH = 1_000
@@ -20,6 +20,16 @@ const DEFAULT_MAX_PENDING_RECORDS = 100
 const DEFAULT_MAX_ASSISTANT_CHARS = 4_000
 const DEFAULT_MAX_ASSISTANT_STREAMS = 128
 const DEFAULT_MAX_TEXT_SUMMARY_LENGTH = 320
+
+/** Provider-neutral token usage persisted on normalized activity records. */
+export interface ActivityUsage {
+  inputTokens?: number
+  outputTokens?: number
+  totalTokens?: number
+  cacheReadTokens?: number
+  cacheWriteTokens?: number
+  reasoningTokens?: number
+}
 
 export type ActivityKind =
   | "batch_reserved"
@@ -55,6 +65,7 @@ export interface ActivityRecord {
   contentKind?: "assistant" | "reasoning"
   kind: ActivityKind | (string & {})
   summary: string
+  usage?: ActivityUsage
   rawDiagnosticRef?: string
 }
 
@@ -70,6 +81,7 @@ export interface ActivityRecordInput {
   contentKind?: "assistant" | "reasoning"
   kind: ActivityKind | (string & {})
   summary: string
+  usage?: ActivityUsage
   /** Assistant text is coalesced instead of writing one record per delta. */
   assistantText?: string
   coalesceAssistant?: boolean
@@ -149,6 +161,45 @@ interface PendingAssistant {
   text: string
   firstTimestamp: string
   lastTimestamp: string
+}
+
+function usageNumber(value: unknown): number | undefined {
+  return typeof value === "number" && Number.isFinite(value) ? value : undefined
+}
+
+/** Normalize provider usage into the compact activity-record shape. */
+export function normalizeActivityUsage(usage: AgentUsage | undefined): ActivityUsage | undefined {
+  if (!usage) return undefined
+  const inputTokens = usageNumber(usage.inputTokens)
+  const outputTokens = usageNumber(usage.outputTokens)
+  const totalTokens = usageNumber(usage.totalTokens)
+  const cacheReadTokens = usageNumber(usage.cacheReadTokens)
+    ?? usageNumber(usage.cachedInputTokens)
+  const cacheWriteTokens = usageNumber(usage.cacheWriteTokens)
+  const reasoningTokens = usageNumber(usage.reasoningTokens)
+  if (
+    inputTokens === undefined && outputTokens === undefined && totalTokens === undefined &&
+    cacheReadTokens === undefined && cacheWriteTokens === undefined && reasoningTokens === undefined
+  ) return undefined
+  return {
+    ...(inputTokens === undefined ? {} : { inputTokens }),
+    ...(outputTokens === undefined ? {} : { outputTokens }),
+    ...(totalTokens === undefined ? {} : { totalTokens }),
+    ...(cacheReadTokens === undefined ? {} : { cacheReadTokens }),
+    ...(cacheWriteTokens === undefined ? {} : { cacheWriteTokens }),
+    ...(reasoningTokens === undefined ? {} : { reasoningTokens }),
+  }
+}
+
+function formatUsageTokenFields(usage: ActivityUsage): string {
+  const parts: string[] = []
+  if (usage.inputTokens !== undefined) parts.push(`inputTokens=${usage.inputTokens}`)
+  if (usage.outputTokens !== undefined) parts.push(`outputTokens=${usage.outputTokens}`)
+  if (usage.totalTokens !== undefined) parts.push(`totalTokens=${usage.totalTokens}`)
+  if (usage.cacheReadTokens !== undefined) parts.push(`cacheReadTokens=${usage.cacheReadTokens}`)
+  if (usage.cacheWriteTokens !== undefined) parts.push(`cacheWriteTokens=${usage.cacheWriteTokens}`)
+  if (usage.reasoningTokens !== undefined) parts.push(`reasoningTokens=${usage.reasoningTokens}`)
+  return parts.join(" ")
 }
 
 function compactText(value: unknown, maxLength = DEFAULT_MAX_SUMMARY_LENGTH): string {
@@ -251,7 +302,10 @@ export function formatSessionTextRecord(
       ? "Provider attempt completed"
       : record.summary
   const summary = compactText(redactTextLogValue(rawSummary), maxSummaryLength) || "(no summary)"
-  return `${record.timestamp} provider=${provider} scope=${scope} kind=${safeFilePart(kind)} ${summary}`
+  const usageSuffix = record.kind === "usage" && record.usage
+    ? ` ${formatUsageTokenFields(record.usage)}`
+    : ""
+  return `${record.timestamp} provider=${provider} scope=${scope} kind=${safeFilePart(kind)} ${summary}${usageSuffix}`
 }
 
 /**
@@ -322,6 +376,7 @@ export class ActivityJournal {
       ...(input.eventId === undefined ? {} : { eventId: input.eventId }),
       ...(input.contentKind === undefined ? {} : { contentKind: input.contentKind }),
       kind: input.kind,
+      ...(input.usage === undefined ? {} : { usage: input.usage }),
       ...(diagnosticRef === undefined ? {} : { rawDiagnosticRef: diagnosticRef }),
     }
 
