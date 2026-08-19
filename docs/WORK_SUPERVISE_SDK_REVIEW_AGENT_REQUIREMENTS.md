@@ -1,300 +1,170 @@
-# SDK batch review agent technical requirements
+# Thin SDK batch-review agent design
 
 ## Status
 
-Technical requirements for a proposed batch-level SDK reviewer. This document
-does not authorize implementation and does not change the current
-`work supervise` behavior.
+Design direction confirmed. This document describes the intentionally small
+review layer; it does not authorize automatic fixes or manager-side decisions.
 
-The reviewer is a read-only implementation assessor. It produces a report for
-the manager agent; it does not run a fix cycle, mutate workstream state, or
-replace the manager's review and escalation decisions.
+The reviewer is a heuristic completion check that runs after a successful SDK
+implementation batch. It returns plain text to the caller of `work supervise`.
+It is not a second implementation workflow, a policy engine, or a structured
+quality-assurance pipeline.
 
-Related references:
+## Goal and scope
 
-- [`WORK_SUPERVISE_SDK_ARCHITECTURE.md`](./WORK_SUPERVISE_SDK_ARCHITECTURE.md)
-- [`WORK_SUPERVISE_SDK_IMPLEMENTATION_PLAN.md`](./WORK_SUPERVISE_SDK_IMPLEMENTATION_PLAN.md)
-- [`../agent/skills/managing-workstream-implementation/SKILL.md`](../agent/skills/managing-workstream-implementation/SKILL.md)
-
-## Scope
-
-The first version reviews one completed implementation batch:
+For a batch such as `SS.BB`:
 
 ```text
 work supervise --batch "SS.BB"
-  -> detached SDK implementation batch
-  -> terminal batch state
-  -> optional detached SDK batch reviewer
-  -> reviewer report and manager handoff
+  -> implementation batch
+  -> completed batch only
+  -> optional reviewer agent call
+  -> plain-text review output
+  -> normal supervise handoff
 ```
 
-The reviewer is batch-level, not a thread assignment. It runs once for an
-eligible implementation run and receives the batch's requirements, contracts,
-thread work documents, changed implementation, and execution evidence.
+Review is disabled by default so existing workstreams behave unchanged. When
+enabled, `work supervise` blocks until the reviewer call finishes or reaches its
+review timeout.
 
-The manager remains responsible for:
+The reviewer must not:
 
-- deciding whether the report is accepted;
-- deciding whether a fix cycle is safe;
-- starting or supervising any fix agent;
-- producing the final manager report and escalation decision.
+- run a fix agent;
+- update implementation, plan, approval, thread, or manager-review state;
+- make decisions for the manager or calling agent;
+- be assigned to an implementation thread;
+- require or produce structured review data.
 
-## Lifecycle and architecture
+## Eligibility and failure behavior
 
-### Required lifecycle
+- Run only when the implementation batch status is exactly `completed`.
+- Do not run for failed, cancelled, or otherwise incomplete batches.
+- Use a default ten-minute wall-clock review timeout.
+- Retry launch failures at most two times with back-off.
+- Provider startup, timeout, or exhausted launch failures leave the batch result
+  unchanged and produce a warning only.
+- Warning text must describe the review failure without prescribing a next step.
+  Workflow guidance belongs in the reviewing skill, not in the warning.
 
-The reviewer must start only after the implementation batch reaches a terminal
-state and satisfies the configured eligibility policy. The minimum viable policy
-is successful completion of every implementation thread.
+The review timeout is an AgENV-level bound. Current provider adapters expose
+optional adapter-level timeouts, but do not expose a separate native ten-minute
+review timeout. Provider cancellation and cleanup must remain bounded
+independently.
 
-The implementation executor and reviewer must be separate processes and have
-separate ownership metadata. The reviewer must not extend the implementation
-executor's heartbeat, PID ownership, cancellation scope, or terminalization
-logic.
+## Reviewer input
 
-The preferred shape is:
+The reviewer receives only:
 
-```text
-supervise.ts
-  -> waitForBatchStatus(...)
-  -> verify review eligibility
-  -> launch detached work-sdk batch-review worker
-  -> wait for or record review terminal state
-  -> return report path and review state to the manager
-```
+- the repository working directory;
+- the current workstream identifier;
+- the current batch identifier and basic run context;
+- the batch-review skill/prompt contract.
 
-The reviewer must be exposed through a dedicated internal command, such as
-`work-sdk batch-review`, so it can be tested, recovered, and observed
-independently of the implementation worker. `BatchExecutor.runInternal()` must
-not own the reviewer lifecycle.
+AgENV must not construct or inject a document manifest, file contents, bounded
+diff, execution evidence bundle, structured requirements payload, or repository
+dump. The reviewer can inspect the current workstream and batch itself through
+its normal read-only-oriented agent interaction.
 
-### Ownership, recovery, and idempotency
+The reviewer is instructed not to modify files. This is a heuristic contract,
+not a provider-enforced sandbox or a guarantee of immutability.
 
-Each review run must have:
+## Agent and model selection
 
-- a unique `reviewId`;
-- a unique owner token, separate from the implementation owner token;
-- a PID and heartbeat while running;
-- a source implementation `runId` and `batchId`;
-- terminal status and error/reason fields;
-- an idempotency check for an already completed review of the same source run.
+Reviewer selection belongs only to `work/agents.yaml`. A reviewer is never
+selected from thread `assignedAgent` values.
 
-Duplicate review launches for the same source batch run must be rejected or
-resolved to the existing active/completed review. A stale reviewer must be
-recoverable without changing the implementation batch's terminal result.
+When a reviewer agent/model is configured, use the same model resolution,
+provider selection, and candidate fallback behavior used by regular agents.
+When no reviewer model is configured but review is enabled, the default model is
+`auto@cursor`.
 
-Reviewer timeout, cancellation, provider failure, or crash must produce a
-review-terminal failure and manager-visible handoff; none may reopen or mutate
-implementation thread state.
+The resolved provider, runtime, model, variant, and selection source must be
+visible in reviewer lifecycle logs and monitor output.
 
-## Configuration
+Review configuration is disabled by default and must not affect normal thread
+assignment or implementation runtime selection.
 
-Reviewer configuration must be separate from per-thread `assignedAgent` values
-in `work/agents.yaml`. The proposed shape is:
+## Execution boundary
 
-```yaml
-agents:
-  - name: code-reviewer
-    description: Reviews completed implementation batches.
-    best_for: Requirements alignment, implementation review, and reporting.
-    models:
-      - { model: provider/model, variant: review, runtime: opencode }
+The reviewer should use a dedicated internal SDK call/worker boundary rather
+than `BatchExecutor.runInternal()` owning reviewer lifecycle. The reviewer is
+not an implementation thread and must have separate lifecycle metadata.
 
-execution:
-  defaultRuntime: cursor
+The implementation may reuse provider adapters and model-resolution helpers, but
+must not reuse thread-oriented batch execution in a way that mutates thread
+state or invents an implementation assignment.
 
-review:
-  enabled: false
-  agent: code-reviewer
-  when: batch_completed
-  runtime: opencode
-```
+## Output
 
-Requirements:
+The reviewer returns one unconstrained plain-text report. There is no required
+heading, JSON schema, alignment enum, issue severity, missing-output list,
+confidence field, suggested-action field, or output normalization.
 
-- `review.enabled` defaults to `false` for existing workstreams.
-- `review.agent` must reference a declared agent.
-- `review.when` must use a closed enum; the initial supported value should be
-  `batch_completed`.
-- `review.runtime`, when present, must use the existing runtime validation.
-- Reviewer model candidates must use the same provider/model validation and
-  fallback rules as implementation candidates.
-- Reviewer configuration must not alter thread agent assignment or normal
-  implementation runtime selection.
-- CLI overrides, if added, must be reviewer-specific; `--runtime` for an
-  implementation batch must not silently change reviewer configuration.
+`work supervise` exposes the returned text directly to its caller. No reviewer
+report file is created.
 
-The configuration parser must preserve compatibility with workstreams that do
-not contain a `review` block.
+## Persistence and observability
 
-## Review input contract
-
-The reviewer input should be a bounded manifest plus document contents, not an
-unbounded dump of the repository.
-
-For batch `SS.BB`, resolve the stage directory using the existing workstream
-path helpers and provide:
-
-```text
-work/<stream>/README.md
-work/<stream>/stages/<stage-dir>/PLAN.md
-work/<stream>/stages/<stage-dir>/REQUIREMENTS.md
-work/<stream>/stages/<stage-dir>/specs/*       # policy-controlled
-work/<stream>/stages/<stage-dir>/threads/<SS.BB.TT>/WORK.md
-```
-
-The reviewer must also receive:
-
-- the batch and thread terminal status;
-- the configured agent/model/runtime selection;
-- the relevant changed-file list and bounded diff;
-- focused verification evidence and failure summaries;
-- report/artifact paths for deeper evidence when needed.
-
-The manifest must identify each source path, scope, and truncation status. The
-reviewer should receive full stage requirements and thread contracts when they
-fit the configured budget, while large plans, specs, diffs, and logs must be
-bounded deterministically.
-
-Relevant implementation seams include the existing prompt and work-document
-helpers, including `prompts.ts`, `thread-workdocs.ts`, and plan/stage path
-resolution in `consolidate.ts`.
-
-## Reviewer behavior contract
-
-The reviewer must:
-
-- read the supplied requirements, plans, thread contracts, implementation diff,
-  and execution evidence;
-- assess alignment, completeness, verification evidence, and contract
-  violations;
-- write one structured result and one manager-facing Markdown report;
-- make no source, plan, state, approval, or thread-status changes;
-- launch no fix agent or additional management loop;
-- avoid mutating provider sessions or external services.
-
-The provider SDK does not currently provide a hard read-only capability. The
-initial implementation therefore requires:
-
-- an explicit read-only prompt contract;
-- no AgENV mutation APIs in the reviewer worker;
-- a pre-review and post-review Git status/diff check;
-- failure/escalation if unexpected source or plan changes are detected.
-
-A future sandbox or provider-level read-only mode may strengthen this contract.
-
-## Report and artifacts
-
-Reviewer artifacts should live under the source implementation run:
-
-```text
-work/<stream>/runtime/batches/<batch>/runs/<run>/review/
-  reviewer-result.json
-  implementation-report.md
-  review-activity.jsonl
-  review.log
-  review-snapshot.json
-```
-
-`reviewer-result.json` must use the existing reviewer result normalization
-contract where possible (`reviewer/types.ts` and `reviewer/output.ts`). It must
-contain at least:
-
-- schema version;
-- alignment status and rationale;
-- missing outputs;
-- issues with severity, evidence, ownership, and suggested action;
-- confidence;
-- source batch/review identifiers.
-
-`implementation-report.md` must use the manager workflow headings:
-
-```md
-## Accomplished
-## Issues Found
-## Fixes Applied
-## What is Next
-```
-
-The reviewer must state that no fixes were applied. The existing manager review
-state must remain separate from the provider reviewer result.
-
-## Canonical review state
-
-Review lifecycle state must not be stored as a session on an implementation
-thread. Add a batch-level review record or `reviewRuns[]` projection with fields
-equivalent to:
+Only minimal reviewer lifecycle metadata is persisted under the existing
+workstream state:
 
 ```text
 reviewId
-kind: reviewer
-status: pending | running | completed | failed | cancelled
 sourceBatchId
 sourceBatchRunId
-ownerToken
-pid
-attemptId
+status: pending | running | completed | failed | cancelled
+attempt count
 provider
 runtime
 model
+variant
 startedAt
 updatedAt
-heartbeatAt
 completedAt
-reportPath
-markdownReportPath
-summary
-error
+heartbeat/owner metadata while running
+error, when applicable
 ```
 
-The review record must be observable without changing implementation thread
-status, approval state, or manager-side `SupervisorReviewedBatch` decisions.
-
-## Observability and monitor requirements
-
-Reviewer events must be distinguishable from implementation events. Use a
-review role/kind and a separate review activity/session path, for example:
+The current file-level batch state is:
 
 ```text
-review/review-activity.jsonl
-review/sessions/<attempt-id>/session.log
+work/<stream-id>/workstream-state.json
 ```
 
-At minimum record:
+Batch runs are stored in its `batchRuns[]` data. The existing structured-storage
+mirror also uses `work/db.sqlite` (`batch_runs` and `batch_run_threads`). Review
+metadata must use that existing persistence boundary and must remain separate
+from manager-side `supervision.reviewed_batches` decisions.
 
-- review started/completed/failed/cancelled;
-- provider/runtime/model;
-- source batch and implementation run;
-- report path;
-- current heartbeat and terminal summary.
+Reviewer status must appear in existing monitoring and logging as a distinct
+**Batch review** section/state, not as another implementation thread. Monitoring
+must show lifecycle status and resolved model information, but does not need
+structured issue or alignment summaries.
 
-The monitor must show a separate **Batch review** section or badge. Reviewer
-state must not appear as an additional implementation thread or be confused
-with a thread attempt.
+No review-specific report, activity, snapshot, or log files are required.
 
 ## Compatibility and focused verification
 
-Existing workstreams without reviewer configuration must behave exactly as they
-do today. The first implementation requires focused tests for:
+Existing workstreams without review configuration must behave exactly as today.
+Focused verification should cover:
 
-1. `agents.yaml` review configuration parsing and validation;
-2. completed-batch eligibility and disabled-review behavior;
-3. stage/thread document manifest construction;
-4. reviewer output normalization and Markdown report creation;
-5. one reviewer attempt with a fake provider and no thread-state mutation;
-6. duplicate/recovery/timeout handling;
-7. supervise integration after terminal batch state;
-8. monitor review status and report path projection;
-9. unexpected Git changes or malformed reviewer output.
-
-The full workstreams suite is not a requirement for the initial design phase;
-focused agent-runnable checks are required before enabling the feature.
+1. review-disabled behavior;
+2. completed-batch-only eligibility;
+3. reviewer model resolution and `auto@cursor` fallback;
+4. synchronous waiting and the ten-minute timeout boundary;
+5. two launch retries with back-off;
+6. plain-text output propagation to `work supervise`;
+7. warning-only review failures with no remediation instructions;
+8. no thread, approval, implementation, or manager-review mutations;
+9. lifecycle metadata and monitoring/logging projection.
 
 ## Explicit non-goals
 
-- automatic fix-agent execution;
-- updating thread status, approvals, or manager review decisions;
-- replacing the manager's review/fix/escalation loop;
-- reviewing each thread independently;
-- unbounded repository or log ingestion;
-- claiming provider-enforced read-only behavior before a sandbox exists.
+- structured reviewer results;
+- JSON or Markdown report artifacts;
+- direct document, diff, or evidence manifests;
+- automatic fixes;
+- manager approval or escalation decisions;
+- thread-level reviewer assignments;
+- provider-enforced read-only isolation;
+- reviewer interpretation of its own report by `work supervise`.

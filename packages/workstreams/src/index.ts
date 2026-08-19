@@ -364,15 +364,6 @@ export {
   aggregateMetrics,
 } from "./lib/metrics.ts"
 
-// Supervisor deterministic review helpers
-export {
-  collectSupervisorReviewInput,
-  getReviewAffectedThreadIds,
-  runDeterministicSupervisorReview,
-  type SupervisorBatchReviewInput,
-  type SupervisorThreadReviewInput,
-} from "./lib/supervisor/index.ts"
-
 // Document generation and export
 export {
   generateReport,
@@ -399,31 +390,6 @@ export {
   type ThreadId,
   type GeneratePromptOptions,
 } from "./lib/prompts.ts"
-
-// Reviewer output contract
-export {
-  REVIEWER_ALIGNMENT_STATUSES,
-  REVIEWER_CONFIDENCE_LEVELS,
-  REVIEWER_DIFFICULTIES,
-  REVIEWER_EFFORTS,
-  REVIEWER_OWNERSHIPS,
-  REVIEWER_SEVERITIES,
-  normalizeReviewerResult,
-  parseReviewerResult,
-  type ReviewerAlignment,
-  type ReviewerAlignmentStatus,
-  type ReviewerConfidence,
-  type ReviewerDifficulty,
-  type ReviewerEffort,
-  type ReviewerIssue,
-  type ReviewerNormalizeFailure,
-  type ReviewerNormalizeResult,
-  type ReviewerNormalizeSuccess,
-  type ReviewerOwnership,
-  type ReviewerResult,
-  type ReviewerSeverity,
-  type ReviewerValidationError,
-} from "./lib/reviewer/index.js"
 
 // Role-based access control
 export {
