@@ -90,6 +90,10 @@ The reviewer should use a dedicated internal SDK call/worker boundary rather
 than `BatchExecutor.runInternal()` owning reviewer lifecycle. The reviewer is
 not an implementation thread and must have separate lifecycle metadata.
 
+The provider-neutral call boundary may use a reviewer-specific input type or a
+union with the existing attempt input. It must not require a synthetic thread
+identifier or pretend that the reviewer is an implementation assignment.
+
 The implementation may reuse provider adapters and model-resolution helpers, but
 must not reuse thread-oriented batch execution in a way that mutates thread
 state or invents an implementation assignment.
@@ -100,8 +104,12 @@ The reviewer returns one unconstrained plain-text report. There is no required
 heading, JSON schema, alignment enum, issue severity, missing-output list,
 confidence field, suggested-action field, or output normalization.
 
-`work supervise` exposes the returned text directly to its caller. No reviewer
-report file is created.
+`work supervise` exposes the returned text directly to its caller. The first
+version focuses on printing the text and does not add a reviewer-specific
+logging extension or persist the report as metadata. Existing SDK process
+logging may capture the output incidentally, as it does for other SDK workers,
+but that is not part of the reviewer contract. No reviewer report file is
+created.
 
 ## Persistence and observability
 
@@ -136,10 +144,9 @@ mirror also uses `work/db.sqlite` (`batch_runs` and `batch_run_threads`). Review
 metadata must use that existing persistence boundary and must remain separate
 from manager-side `supervision.reviewed_batches` decisions.
 
-Reviewer status must appear in existing monitoring and logging as a distinct
-**Batch review** section/state, not as another implementation thread. Monitoring
-must show lifecycle status and resolved model information, but does not need
-structured issue or alignment summaries.
+Reviewer lifecycle metadata may be exposed by existing status/monitoring code as
+a distinct **Batch review** state, not as another implementation thread. The
+first version does not require a custom reviewer log or report projection.
 
 No review-specific report, activity, snapshot, or log files are required.
 
@@ -156,7 +163,7 @@ Focused verification should cover:
 6. plain-text output propagation to `work supervise`;
 7. warning-only review failures with no remediation instructions;
 8. no thread, approval, implementation, or manager-review mutations;
-9. lifecycle metadata and monitoring/logging projection.
+9. lifecycle metadata and plain-text CLI output.
 
 ## Explicit non-goals
 

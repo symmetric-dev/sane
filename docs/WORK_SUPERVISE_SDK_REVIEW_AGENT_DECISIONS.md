@@ -55,6 +55,11 @@ The reviewer produces unconstrained plain text. `work supervise` exposes that
 text directly to the calling agent/user. No JSON schema, Markdown template,
 alignment status, issue taxonomy, or output parser is needed.
 
+The first version focuses on printing the text. It does not add custom reviewer
+logging or persist the report text as metadata. Existing SDK process logging may
+capture worker output incidentally, but a future revision can add an explicit
+reviewer logging extension.
+
 ### 8. Persistence
 
 Do not create reviewer report or activity files. Persist only minimal lifecycle
@@ -70,9 +75,10 @@ manager-side `supervision.reviewed_batches`.
 
 ### 9. Monitoring
 
-Include reviewer lifecycle and model information in existing monitoring and
-logging as a distinct **Batch review** state. Do not represent it as an
-implementation thread and do not require structured issue summaries.
+Reviewer lifecycle metadata may be surfaced in existing monitoring as a distinct
+**Batch review** state. Do not represent it as an implementation thread and do
+not require custom reviewer logging or structured issue summaries in the first
+version.
 
 ### 10. Default rollout
 
@@ -100,9 +106,5 @@ the unrelated `work review` command.
 ## Questions remaining before thin-layer implementation
 
 1. What exact `review:` shape should be added to `work/agents.yaml`?
-2. Should the plain-text report be persisted as a string in metadata, or only
-   returned through the `work supervise` process output?
-3. Should best-effort Git-change detection be omitted, or emit only a warning?
-4. What back-off intervals should the two launch retries use?
-5. Should completed review text be reused on repeated supervision of the same
-   implementation run?
+2. Should the dedicated SDK call use a reviewer-specific input type or a union
+   with the existing attempt input? It must not use fake thread identifiers.
