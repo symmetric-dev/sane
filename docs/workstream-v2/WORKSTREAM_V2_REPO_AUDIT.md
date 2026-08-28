@@ -427,7 +427,8 @@ Primary scope:
 #### Broad integration scope
 
 The integration theme covers command changes, aliases, exports, dashboards,
-help text, fixtures, tests, legacy reads, and manual migration requirements.
+help text, fixtures, tests, and removal of legacy reads. Migration is
+intentionally out of scope for V2 to keep the redesign simple.
 
 Primary scope:
 
@@ -435,7 +436,8 @@ Primary scope:
 - approval, validation, prompt, runtime, storage, and supervision tests;
 - `README.md`, `docs/WORKSTREAM.md`, staged-workstream docs, and skills;
 - templates and generated artifacts; and
-- the current pilot workstream migration procedure.
+- explicit V2 documentation that no migration or compatibility procedure is
+  provided.
 
 ## Completed execution order
 
@@ -447,9 +449,9 @@ The 17 slices were run in bounded groups:
 4. A11–A12: prompts and global skills;
 5. A13: public CLI dispatch and exports;
 6. A14–A16: focused test deltas; and
-7. A17: documentation, templates, and migration.
+7. A17: documentation, templates, and clean break.
 
 The first two groups establish the planning and live-state gaps. Runtime and
 agent-contract findings build on those boundaries. The final groups identify
-the externally visible and migration surface. See the results document for
+the externally visible clean-break surface. See the results document for
 the synthesized findings and remaining design decisions.

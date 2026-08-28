@@ -271,7 +271,7 @@ Primary surfaces: state/storage/dashboard tests and workspace helpers.
 
 Primary surfaces: runtime/supervision/prompt tests and fake runtime fixture.
 
-### A17 — Documentation, templates, and clean-break migration
+### A17 — Documentation, templates, and clean break
 
 **Result:** Conflicting user-facing guidance.
 
@@ -279,8 +279,8 @@ Primary surfaces: runtime/supervision/prompt tests and fake runtime fixture.
   `WORK.md`, `/fork`, and stage approval.
 - The staged-workstream template presents `WORK.md` as canonical.
 - Reporting docs do not distinguish per-Job reports from a stream-level report.
-- The pilot migration path is not identified; the v2 docs establish manual
-  migration but do not record the pilot's current source/status.
+- V1 migration is intentionally out of scope. V2 documentation must state that
+  no migration or compatibility path will be designed.
 
 Primary surfaces: root/package READMEs, `docs/WORKSTREAM.md`, staged-workstream
 docs/template, supervisor/legacy docs, and v2 reference docs.
@@ -329,7 +329,8 @@ instructions must not survive in the v2 contract.
 
 ## Settled invariants confirmed by the audits
 
-- The v2 change is a clean break; legacy layout compatibility is not required.
+- The v2 change is a clean break; legacy layout compatibility and migration are
+  intentionally out of scope to avoid over-engineering.
 - `plan/` contains no batches, threads, Jobs, Job Groups, assignments, execution
   status, or `WORK.md`.
 - Stage and Phase identifiers are numeric and stable.
@@ -371,9 +372,9 @@ written precisely:
    reset, and retry to `aborted` and `aborted → in_progress`.
 9. **CLI compatibility:** whether `--batch` remains an alias and which legacy
    commands/Batch-named exports are removed versus kept internally.
-10. **Pilot migration/document status:** identify the pilot, define its manual
-    re-expression into `plan/`, and decide whether old guidance is archived,
-    rewritten, or explicitly historical.
+10. **Documentation status:** decide whether old guidance is archived,
+    rewritten, or explicitly historical. No pilot migration procedure is
+    required.
 
 ## Recommended implementation dependency order
 
@@ -387,8 +388,7 @@ This is a dependency order for future planning, not an implementation plan:
    and exact Job membership/dependencies.
 4. Replace prompt/tool contracts and global skills with Job/report and manual
    handoff rules.
-5. Replace CLI/help/exports, migrate focused tests/fixtures, update docs, and
-   perform the manual pilot migration.
+5. Replace CLI/help/exports, replace focused tests/fixtures, and update docs.
 
 No implementation should begin until the decisions that define its input/output
 contracts are recorded in the relevant v2 planning documents.

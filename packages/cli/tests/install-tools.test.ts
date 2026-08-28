@@ -6,7 +6,7 @@ import { join } from "node:path"
 
 const INSTALL_COMMAND_PATH = join(import.meta.dir, "..", "src", "commands", "install.ts")
 
-describe("ag install tools", () => {
+describe("sane install tools", () => {
   let tempHome: string
   let sourceToolsDir: string
   let targetToolsDir: string
@@ -33,7 +33,7 @@ describe("ag install tools", () => {
       [
         "bun",
         "-e",
-        `import { main } from ${JSON.stringify(INSTALL_COMMAND_PATH)}; main(["bun", "ag-install", "tools", "--opencode"])`,
+        `import { main } from ${JSON.stringify(INSTALL_COMMAND_PATH)}; main(["bun", "sane-install", "tools", "--opencode"])`,
       ],
       {
         cwd: tempHome,
@@ -80,7 +80,7 @@ describe("ag install tools", () => {
       [
         "bun",
         "-e",
-        `import { main } from ${JSON.stringify(INSTALL_COMMAND_PATH)}; main(["bun", "ag-install", "tools", "--opencode"])`,
+        `import { main } from ${JSON.stringify(INSTALL_COMMAND_PATH)}; main(["bun", "sane-install", "tools", "--opencode"])`,
       ],
       {
         cwd: tempHome,
@@ -111,7 +111,7 @@ describe("ag install tools", () => {
       [
         "bun",
         "-e",
-        `import { main } from ${JSON.stringify(INSTALL_COMMAND_PATH)}; main(["bun", "ag-install", "tools", "--opencode"])`,
+        `import { main } from ${JSON.stringify(INSTALL_COMMAND_PATH)}; main(["bun", "sane-install", "tools", "--opencode"])`,
       ],
       {
         cwd: tempHome,

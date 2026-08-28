@@ -1,6 +1,6 @@
-# AgEnv
+# Sane
 
-AgEnv is a developer toolkit for planning, running, and reviewing agent-driven work efficiently. It provides structured workstreams for breaking work into stages/batches/threads, plus CLI workflows that integrate with Opencode so humans and agents can collaborate with clear progress and handoffs.
+Sane is a developer toolkit for planning, running, and reviewing agent-driven work efficiently. It provides structured workstreams for breaking work into stages/batches/threads, plus CLI workflows that integrate with Opencode so humans and agents can collaborate with clear progress and handoffs.
 
 <p align="center">
   <img src=".github/assets/Web.JPG" alt="AgEnv workflow preview" width="900" />
@@ -24,7 +24,7 @@ Feature-dependent:
 ## Packages
 
 - `@agenv/workstreams`: workstream library + `work` CLI
-- `@agenv/cli`: `ag` CLI wrapper
+- `@agenv/cli`: `sane` CLI wrapper
 - `@agenv/workstream-dashboard`: local-only current-workstream dashboard server
 
 ## Repo Layout
@@ -33,8 +33,11 @@ Feature-dependent:
 packages/        # TypeScript packages
 agent/           # Skills, commands, tools, hooks
 docs/            # Minimal operational docs
-work/            # Workstream data in this repo
 ```
+
+The `work/` directory belongs to the `sane-work` workspace wrapper, not this
+tooling repository. Clone `sane-work` with its submodules when you need the
+tooling and its tracked workstream state together.
 
 ## Install (local development)
 

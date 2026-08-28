@@ -1,8 +1,8 @@
 #!/usr/bin/env bun
 /**
- * ag - AgEnv CLI
+ * sane - Sane CLI
  *
- * Root command for all AgEnv tools.
+ * Root command for all Sane tools.
  *
  * Subcommands:
  *   work       - Workstream management (create, status, update, complete, index)
@@ -24,10 +24,10 @@ const SUBCOMMANDS: Record<string, SubcommandModule> = {
 
 function printHelp(): void {
   console.log(`
-ag - AgEnv CLI
+sane - Sane CLI
 
 Usage:
-  ag <command> [subcommand] [options]
+  sane <command> [subcommand] [options]
 
 Commands:
   work       Workstream management (create, status, update, complete, index)
@@ -38,17 +38,17 @@ Options:
   --version, -v   Show version
 
 Examples:
-  ag work create --name my-feature
-  ag work status
-  ag install skills --claude
-  ag install skills --all
+  sane work create --name my-feature
+  sane work status
+  sane install skills --claude
+  sane install skills --all
 
-Run 'ag <command> --help' for more information on a command.
+Run 'sane <command> --help' for more information on a command.
 `)
 }
 
 function printVersion(): void {
-  console.log(`ag v${VERSION}`)
+  console.log(`sane v${VERSION}`)
 }
 
 async function main(): Promise<void> {
@@ -78,14 +78,14 @@ async function main(): Promise<void> {
     console.error(
       "\nAvailable commands: " + Object.keys(SUBCOMMANDS).join(", "),
     )
-    console.error("\nRun 'ag --help' for usage information.")
+    console.error("\nRun 'sane --help' for usage information.")
     process.exit(1)
   }
 
   // Call the subcommand
-  // We pass [bun, ag-subcommand, ...rest] to match expected argv format
+  // We pass [bun, sane-subcommand, ...rest] to match expected argv format
   // For work commands, inject the cli version for tracking
-  let subcommandArgs = ["bun", `ag-${command}`, ...args.slice(1)]
+  let subcommandArgs = ["bun", `sane-${command}`, ...args.slice(1)]
   if (command === "work") {
     // Inject cli version for work create command
     subcommandArgs = [...subcommandArgs, "--cli-version", VERSION]

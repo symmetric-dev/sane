@@ -23,8 +23,8 @@ describe("install.sh", () => {
 
     // Create mock CLI files
     await writeFile(
-      join(mockAgenvHome, "packages", "cli", "bin", "ag.ts"),
-      "#!/usr/bin/env bun\nconsole.log('ag')",
+      join(mockAgenvHome, "packages", "cli", "bin", "sane.ts"),
+      "#!/usr/bin/env bun\nconsole.log('sane')",
     )
     await writeFile(
       join(mockAgenvHome, "packages", "workstreams", "bin", "work.ts"),
@@ -73,17 +73,17 @@ describe("install.sh", () => {
   }
 
   describe("symlink creation", () => {
-    test("creates ag symlink", async () => {
+    test("creates sane symlink in the stable bin directory", async () => {
       const { exitCode } = await runInstallScript()
 
       expect(exitCode).toBe(0)
 
-      const agSymlink = join(mockAgenvHome, "bin", "ag")
-      expect(existsSync(agSymlink)).toBe(true)
-      expect(lstatSync(agSymlink).isSymbolicLink()).toBe(true)
+      const saneSymlink = join(mockHome, ".local", "bin", "sane")
+      expect(existsSync(saneSymlink)).toBe(true)
+      expect(lstatSync(saneSymlink).isSymbolicLink()).toBe(true)
 
-      const target = await readlink(agSymlink)
-      expect(target).toBe(join(mockAgenvHome, "packages", "cli", "bin", "ag.ts"))
+      const target = await readlink(saneSymlink)
+      expect(target).toBe(join(mockAgenvHome, "packages", "cli", "bin", "sane.ts"))
     })
 
     test("creates work symlink", async () => {
@@ -91,7 +91,7 @@ describe("install.sh", () => {
 
       expect(exitCode).toBe(0)
 
-      const workSymlink = join(mockAgenvHome, "bin", "work")
+      const workSymlink = join(mockHome, ".local", "bin", "work")
       expect(existsSync(workSymlink)).toBe(true)
       expect(lstatSync(workSymlink).isSymbolicLink()).toBe(true)
 
@@ -101,9 +101,10 @@ describe("install.sh", () => {
 
     test("removes legacy plan symlink if it exists", async () => {
       // Create legacy plan symlink using Node's symlink function
-      const planSymlink = join(mockAgenvHome, "bin", "plan")
+      const planSymlink = join(mockHome, ".local", "bin", "plan")
+      await mkdir(join(mockHome, ".local", "bin"), { recursive: true })
       // Point to an existing file so lstat works properly
-      const existingFile = join(mockAgenvHome, "packages", "cli", "bin", "ag.ts")
+      const existingFile = join(mockAgenvHome, "packages", "cli", "bin", "sane.ts")
       await symlink(existingFile, planSymlink)
 
       // Use try/catch with lstatSync to check if symlink exists (existsSync follows symlinks)
@@ -140,7 +141,7 @@ describe("install.sh", () => {
       expect(exitCode).toBe(0)
 
       const zshrc = await readFile(join(mockHome, ".zshrc"), "utf-8")
-      expect(zshrc).toContain("agenv/bin")
+      expect(zshrc).toContain(".local/bin")
       expect(zshrc).toContain("export PATH")
     })
 
@@ -150,7 +151,7 @@ describe("install.sh", () => {
       expect(exitCode).toBe(0)
 
       const bashrc = await readFile(join(mockHome, ".bashrc"), "utf-8")
-      expect(bashrc).toContain("agenv/bin")
+      expect(bashrc).toContain(".local/bin")
       expect(bashrc).toContain("export PATH")
     })
 
@@ -158,7 +159,7 @@ describe("install.sh", () => {
       // Pre-configure PATH in .zshrc
       await writeFile(
         join(mockHome, ".zshrc"),
-        '# existing zshrc\nexport PATH="$HOME/agenv/bin:$PATH"\n',
+        `# existing zshrc\nexport PATH="${mockHome}/.local/bin:$PATH"\n`,
       )
 
       const { exitCode, stdout } = await runInstallScript()
@@ -168,7 +169,7 @@ describe("install.sh", () => {
 
       const zshrc = await readFile(join(mockHome, ".zshrc"), "utf-8")
       // Should only appear once
-      const matches = zshrc.match(/agenv\/bin/g)
+      const matches = zshrc.match(/\.local\/bin/g)
       expect(matches?.length).toBe(1)
     })
   })
@@ -178,16 +179,16 @@ describe("install.sh", () => {
       const { exitCode, stdout } = await runInstallScript()
 
       expect(exitCode).toBe(0)
-      expect(stdout).toContain("AgEnv installed successfully!")
-      expect(stdout).toContain("ag work")
-      expect(stdout).toContain("ag install skills")
+      expect(stdout).toContain("Sane installed successfully!")
+      expect(stdout).toContain("sane work")
+      expect(stdout).toContain("sane install skills")
       expect(stdout).toContain("work")
     })
 
     test("shows symlink creation messages", async () => {
       const { stdout } = await runInstallScript()
 
-      expect(stdout).toContain("Creating ag command symlink")
+      expect(stdout).toContain("Creating sane command symlink")
       expect(stdout).toContain("Creating work command symlink")
     })
 
@@ -196,18 +197,18 @@ describe("install.sh", () => {
 
       expect(stdout).toContain("To use now in this shell")
       expect(stdout).toContain("rehash 2>/dev/null || hash -r 2>/dev/null || true")
-      expect(stdout).toContain(`${mockAgenvHome}/bin`)
+      expect(stdout).toContain(`${mockHome}/.local/bin`)
     })
   })
 
   describe("--skills-only flag", () => {
     test("skips CLI setup when --skills-only is passed", async () => {
-      // Note: This test may fail if bun/ag commands are not available
+      // Note: This test may fail if Bun or the CLI command is unavailable.
       // We just verify the script logic recognizes the flag
       const { stdout } = await runInstallScript(["--skills-only"])
 
       // Should not contain regular installation messages
-      expect(stdout).not.toContain("Creating ag command symlink")
+      expect(stdout).not.toContain("Creating sane command symlink")
     })
   })
 })
@@ -229,8 +230,8 @@ describe("shell config detect_shell_config function", () => {
       await mkdir(join(mockAgenvHome, "packages", "workstreams", "bin"), { recursive: true })
 
       await writeFile(
-        join(mockAgenvHome, "packages", "cli", "bin", "ag.ts"),
-        "#!/usr/bin/env bun\nconsole.log('ag')",
+        join(mockAgenvHome, "packages", "cli", "bin", "sane.ts"),
+        "#!/usr/bin/env bun\nconsole.log('sane')",
       )
       await writeFile(
         join(mockAgenvHome, "packages", "workstreams", "bin", "work.ts"),
@@ -263,14 +264,14 @@ describe("shell config detect_shell_config function", () => {
       // Check which config file was modified
       const configPath = join(mockHome, expectedConfig)
       const content = await readFile(configPath, "utf-8")
-      expect(content).toContain("agenv/bin")
+      expect(content).toContain(".local/bin")
     } finally {
       await rm(tempDir, { recursive: true, force: true })
     }
   })
 })
 
-describe("ag install profiles", () => {
+describe("sane install profiles", () => {
   async function createMockAgenv(home: string): Promise<string> {
     const agenvHome = join(home, "agenv")
 
@@ -297,12 +298,12 @@ describe("ag install profiles", () => {
     return agenvHome
   }
 
-  async function runAgInstall(
+  async function runSaneInstall(
     home: string,
     args: string[],
   ): Promise<{ exitCode: number; stdout: string; stderr: string }> {
-    const agCli = join(AGENV_ROOT, "packages", "cli", "bin", "ag.ts")
-    const proc = Bun.spawn(["bun", agCli, "install", ...args], {
+    const saneCli = join(AGENV_ROOT, "packages", "cli", "bin", "sane.ts")
+    const proc = Bun.spawn(["bun", saneCli, "install", ...args], {
       cwd: AGENV_ROOT,
       env: {
         ...process.env,
@@ -324,12 +325,12 @@ describe("ag install profiles", () => {
     try {
       await createMockAgenv(tempDir)
 
-      const skillsResult = await runAgInstall(tempDir, ["skills", "--opencode"])
+      const skillsResult = await runSaneInstall(tempDir, ["skills", "--opencode"])
       expect(skillsResult.exitCode).toBe(0)
       expect(existsSync(join(tempDir, ".config", "opencode", "skills", "planning-work"))).toBe(true)
       expect(existsSync(join(tempDir, ".config", "opencode", "skills", "managing-work"))).toBe(false)
 
-      const toolsResult = await runAgInstall(tempDir, ["tools", "--opencode"])
+      const toolsResult = await runSaneInstall(tempDir, ["tools", "--opencode"])
       expect(toolsResult.exitCode).toBe(0)
       const installedTool = await readFile(
         join(tempDir, ".config", "opencode", "tools", "workstream.ts"),
@@ -347,11 +348,11 @@ describe("ag install profiles", () => {
     try {
       await createMockAgenv(tempDir)
 
-      const skillsResult = await runAgInstall(tempDir, ["skills", "--opencode", "--profile", "managed"])
+      const skillsResult = await runSaneInstall(tempDir, ["skills", "--opencode", "--profile", "managed"])
       expect(skillsResult.exitCode).toBe(0)
       expect(existsSync(join(tempDir, ".config", "opencode", "skills", "managing-work"))).toBe(true)
 
-      const toolsResult = await runAgInstall(tempDir, ["tools", "--opencode", "--profile", "managed"])
+      const toolsResult = await runSaneInstall(tempDir, ["tools", "--opencode", "--profile", "managed"])
       expect(toolsResult.exitCode).toBe(0)
       const installedTool = await readFile(
         join(tempDir, ".config", "opencode", "tools", "workstream.ts"),

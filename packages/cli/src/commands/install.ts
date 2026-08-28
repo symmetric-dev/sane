@@ -1,5 +1,5 @@
 /**
- * ag install - Installation management
+ * sane install - Installation management
  *
  * Subcommands:
  *   skills    - Install skills to agent directories
@@ -83,10 +83,10 @@ const NC = "\x1b[0m" // No Color
 
 function printHelp(): void {
   console.log(`
-ag install - Installation management
+sane install - Installation management
 
 Usage:
-  ag install <subcommand> [options]
+  sane install <subcommand> [options]
 
 Subcommands:
   skills     Install skills to agent directories
@@ -95,16 +95,16 @@ Subcommands:
   tools      Install tools to agent directories
   commands   Install commands to agent directories
 
-Run 'ag install <subcommand> --help' for more information.
+Run 'sane install <subcommand> --help' for more information.
 `)
 }
 
 function printSkillsHelp(): void {
   console.log(`
-ag install skills - Install skills to agent directories
+sane install skills - Install skills to agent directories
 
 Usage:
-  ag install skills [options]
+  sane install skills [options]
 
 Options:
   --claude       Install to ~/.claude/skills (default if no option given)
@@ -119,13 +119,13 @@ Options:
   --help, -h     Show this help message
 
 Examples:
-  ag install skills --claude
-  ag install skills --opencode --profile manual
-  ag install skills --opencode --profile managed
-  ag install skills --all
-  ag install skills --clean --claude
-  ag install skills --target ~/my-agent/skills
-  ag install skills --list
+  sane install skills --claude
+  sane install skills --opencode --profile manual
+  sane install skills --opencode --profile managed
+  sane install skills --all
+  sane install skills --clean --claude
+  sane install skills --target ~/my-agent/skills
+  sane install skills --list
 `)
 }
 
@@ -304,10 +304,10 @@ const HOOKS_TARGETS: Record<string, string> = {
 
 function printHooksHelp(): void {
   console.log(`
-ag install hooks - Install hooks to agent settings
+sane install hooks - Install hooks to agent settings
 
 Usage:
-  ag install hooks [options]
+  sane install hooks [options]
 
 Options:
   --claude       Install to ~/.claude/settings.json (default)
@@ -316,9 +316,9 @@ Options:
   --help, -h     Show this help message
 
 Examples:
-  ag install hooks --claude
-  ag install hooks --list
-  ag install hooks --dry-run
+  sane install hooks --claude
+  sane install hooks --list
+  sane install hooks --dry-run
 `)
 }
 
@@ -462,10 +462,10 @@ const PLUGINS_TARGETS: Record<string, string> = {
 
 function printPluginsHelp(): void {
   console.log(`
-ag install plugins - Install plugins to agent directories
+sane install plugins - Install plugins to agent directories
 
 Usage:
-  ag install plugins [options]
+  sane install plugins [options]
 
 Options:
   --opencode     Install to ~/.config/opencode/plugins (default)
@@ -476,10 +476,10 @@ Options:
   --help, -h     Show this help message
 
 Examples:
-  ag install plugins --opencode
-  ag install plugins --clean --opencode
-  ag install plugins --target ~/my-project/.opencode/plugins
-  ag install plugins --list
+  sane install plugins --opencode
+  sane install plugins --clean --opencode
+  sane install plugins --target ~/my-project/.opencode/plugins
+  sane install plugins --list
 `)
 }
 
@@ -685,10 +685,10 @@ const COMMANDS_TARGETS: Record<string, string> = {
 
 function printToolsHelp(): void {
   console.log(`
-ag install tools - Install tools to agent directories
+sane install tools - Install tools to agent directories
 
 Usage:
-  ag install tools [options]
+  sane install tools [options]
 
 Options:
   --opencode     Install to ~/.config/opencode/tools (default)
@@ -700,12 +700,12 @@ Options:
   --help, -h     Show this help message
 
 Examples:
-  ag install tools --opencode
-  ag install tools --opencode --profile manual
-  ag install tools --opencode --profile managed
-  ag install tools --clean --opencode
-  ag install tools --target ~/my-project/.opencode/tools
-  ag install tools --list
+  sane install tools --opencode
+  sane install tools --opencode --profile manual
+  sane install tools --opencode --profile managed
+  sane install tools --clean --opencode
+  sane install tools --target ~/my-project/.opencode/tools
+  sane install tools --list
 `)
 }
 
@@ -986,10 +986,10 @@ function toolsCommand(args: string[]): void {
 
 function printCommandsHelp(): void {
   console.log(`
-ag install commands - Install commands to agent directories
+sane install commands - Install commands to agent directories
 
 Usage:
-  ag install commands [options]
+  sane install commands [options]
 
 Options:
   --opencode     Install to ~/.config/opencode/commands (default)
@@ -1000,10 +1000,10 @@ Options:
   --help, -h     Show this help message
 
 Examples:
-  ag install commands --opencode
-  ag install commands --clean --opencode
-  ag install commands --target ~/my-project/.opencode/commands
-  ag install commands --list
+  sane install commands --opencode
+  sane install commands --clean --opencode
+  sane install commands --target ~/my-project/.opencode/commands
+  sane install commands --list
 `)
 }
 
@@ -1318,7 +1318,7 @@ export function main(argv: string[]): void {
     default:
       console.error(`Error: Unknown subcommand "${subcommand}"`)
       console.error("\nAvailable subcommands: skills, hooks, plugins, tools, commands")
-      console.error("\nRun 'ag install --help' for usage information.")
+      console.error("\nRun 'sane install --help' for usage information.")
       process.exit(1)
   }
 }

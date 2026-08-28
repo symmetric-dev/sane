@@ -1,8 +1,8 @@
 #!/bin/bash
-# AgEnv Installation Script
+# Sane Installation Script
 #
 # This script:
-# 1. Adds ~/agenv/bin to PATH
+# 1. Adds ~/.local/bin to PATH by default
 # 2. Creates symlinks for all package CLI tools
 # 3. Updates shell configuration (.zshrc, .bashrc)
 # 4. Optionally installs agent resources from agent/ directory
@@ -15,7 +15,7 @@
 #   agent/hooks/    - Git and agent hooks
 #
 # Usage:
-#   ~/agenv/install.sh [options]
+#   ~/sane/repo/install.sh [options]
 #
 # Options:
 #   --with-skills     Also install skills to ~/.claude/skills
@@ -27,7 +27,7 @@ set -e
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" && pwd)"
 AGENV_HOME="${AGENV_HOME:-$SCRIPT_DIR}"
-AGENV_BIN="${AGENV_BIN:-$AGENV_HOME/bin}"
+AGENV_BIN="${AGENV_BIN:-$HOME/.local/bin}"
 
 # Parse arguments
 INSTALL_SKILLS="false"
@@ -63,11 +63,11 @@ done
 # Skip CLI setup if --skills-only
 if [ "$SKILLS_ONLY" = "true" ]; then
     cd "$AGENV_HOME" && bun install --silent
-    bun run "$AGENV_HOME/packages/cli/bin/ag.ts" install skills --all --profile "$SKILLS_PROFILE"
+    bun run "$AGENV_HOME/packages/cli/bin/sane.ts" install skills --all --profile "$SKILLS_PROFILE"
     exit 0
 fi
 
-echo "Installing AgEnv..."
+echo "Installing Sane..."
 
 # Create bin directory
 mkdir -p "$AGENV_BIN"
@@ -78,11 +78,11 @@ if [ -L "$AGENV_BIN/plan" ]; then
     rm -f "$AGENV_BIN/plan"
 fi
 
-# Create symlink for the main `ag` command from cli package
-echo "Creating ag command symlink..."
-chmod +x "$AGENV_HOME/packages/cli/bin/ag.ts"
-ln -sf "$AGENV_HOME/packages/cli/bin/ag.ts" "$AGENV_BIN/ag"
-echo "  ag -> $AGENV_HOME/packages/cli/bin/ag.ts"
+# Create symlink for the main `sane` command from cli package
+echo "Creating sane command symlink..."
+chmod +x "$AGENV_HOME/packages/cli/bin/sane.ts"
+ln -sf "$AGENV_HOME/packages/cli/bin/sane.ts" "$AGENV_BIN/sane"
+echo "  sane -> $AGENV_HOME/packages/cli/bin/sane.ts"
 
 # Create symlink for the standalone `work` command from workstreams package
 echo "Creating work command symlink..."
@@ -110,8 +110,19 @@ detect_shell_config() {
 SHELL_CONFIG=$(detect_shell_config)
 EXPORT_LINE="export PATH=\"$AGENV_BIN:\$PATH\""
 
-# Check if PATH is already configured
-if grep -Fq "$AGENV_BIN" "$SHELL_CONFIG" 2>/dev/null || grep -q 'agenv/bin' "$SHELL_CONFIG" 2>/dev/null; then
+# Remove the obsolete pre-wrapper checkout PATH entry before adding the stable bin directory.
+LEGACY_PATH_LINE='export PATH="$HOME/agenv/bin:$PATH"'
+if grep -Fq "$LEGACY_PATH_LINE" "$SHELL_CONFIG" 2>/dev/null; then
+    TEMP_CONFIG="$(mktemp)"
+    grep -Fv "$LEGACY_PATH_LINE" "$SHELL_CONFIG" > "$TEMP_CONFIG" || true
+    mv "$TEMP_CONFIG" "$SHELL_CONFIG"
+    echo "Removed obsolete ~/agenv/bin PATH entry from $SHELL_CONFIG"
+fi
+
+# Check if the selected bin directory is already configured. The default may
+# appear either as an absolute path or as a $HOME-based shell expression.
+if grep -Fq "$AGENV_BIN" "$SHELL_CONFIG" 2>/dev/null \
+    || { [ "$AGENV_BIN" = "$HOME/.local/bin" ] && grep -Fq '$HOME/.local/bin' "$SHELL_CONFIG" 2>/dev/null; }; then
     echo "PATH already configured in $SHELL_CONFIG"
 else
     echo "" >> "$SHELL_CONFIG"
@@ -141,22 +152,22 @@ if [ -f "$AGENV_HOME/package.json" ]; then
 fi
 
 echo ""
-echo "AgEnv installed successfully!"
+echo "Sane installed successfully!"
 echo ""
 echo "Available commands:"
-echo "  ag                   - Main CLI entry point"
-echo "  ag work              - Workstream management"
-echo "  ag install skills    - Install skills to agent directories"
-echo "  ag install commands  - Install slash commands to opencode"
+echo "  sane                 - Main CLI entry point"
+echo "  sane work            - Workstream management"
+echo "  sane install skills  - Install skills to agent directories"
+echo "  sane install commands - Install slash commands to opencode"
 echo "  work                 - Standalone workstream CLI"
 
 # Install skills if requested
 if [ "$INSTALL_SKILLS" = "true" ]; then
     echo ""
     if [ "$SKILLS_ALL" = "true" ]; then
-        bun run "$AGENV_HOME/packages/cli/bin/ag.ts" install skills --all --profile "$SKILLS_PROFILE"
+        bun run "$AGENV_HOME/packages/cli/bin/sane.ts" install skills --all --profile "$SKILLS_PROFILE"
     else
-        bun run "$AGENV_HOME/packages/cli/bin/ag.ts" install skills --claude --profile "$SKILLS_PROFILE"
+        bun run "$AGENV_HOME/packages/cli/bin/sane.ts" install skills --claude --profile "$SKILLS_PROFILE"
     fi
 fi
 
@@ -172,4 +183,4 @@ echo ""
 echo "Or restart your terminal."
 echo ""
 echo "To install skills separately, run:"
-echo "  ag install skills --help"
+echo "  sane install skills --help"

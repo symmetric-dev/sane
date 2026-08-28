@@ -1,6 +1,6 @@
 # Contributing
 
-Thanks for your interest in improving AgEnv.
+Thanks for your interest in improving Sane.
 
 ## Development Setup
 
@@ -12,7 +12,7 @@ bun install
 ## Project Structure
 
 - `packages/workstreams`: core workstream library and `work` CLI
-- `packages/cli`: `ag` CLI wrapper
+- `packages/cli`: `sane` CLI wrapper
 - `agent/`: agent skills, commands, and tooling
 
 ## Before Opening a PR

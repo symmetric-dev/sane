@@ -377,11 +377,11 @@ v2 Job Group/Job execution behavior without giving agents state authority?
 **Exclude:** SQL schema/read-model tests, planning tests, global skill prose,
 and unrelated provider/GitHub/notification tests. Do not rerun tests.
 
-#### A17 — Documentation, templates, and clean-break migration
+#### A17 — Documentation, templates, and clean break
 
 **Single question:** Which user-facing documents/templates describe the old
-layout or lifecycle, and what manual migration and documentation replacement is
-needed for the current pilot and future workstreams?
+layout or lifecycle, and what documentation replacement is needed to establish
+the V2 clean break?
 
 **Primary files:**
 
@@ -393,9 +393,9 @@ needed for the current pilot and future workstreams?
 - `docs/workstream-v2/*.md`
 - legacy workstream documentation directly linked from those files
 
-**Exclude:** Source-code design and test implementation. Do not invent a
-migration tool; document the clean-break/manual migration steps implied by the
-settled design.
+**Exclude:** Source-code design and test implementation. Migration is
+intentionally out of scope; document that V2 has no migration or compatibility
+path rather than designing one.
 
 ## Execution protocol
 
@@ -407,7 +407,7 @@ Run slices in bounded batches so results remain independently reviewable:
 4. A11–A12: prompts and global skills;
 5. A13: public CLI dispatch and exports;
 6. A14–A16: focused test deltas;
-7. A17: documentation, templates, and migration.
+7. A17: documentation, templates, and clean break.
 
 The batches may be parallelized internally, but a subagent must never be given
 more than one slice. After each batch, retain the returned reports as separate

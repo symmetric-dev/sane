@@ -7,8 +7,8 @@ replaces the current model in which stages contain batches, threads, and
 generated `WORK.md` files.
 
 This is a breaking change. The old planning and execution layout is not a
-compatibility target. Existing workstreams will be migrated manually as
-needed, beginning with the current pilot workstream.
+compatibility target. V2 does not consider migration of existing workstreams;
+excluding migration keeps the redesign simple and avoids over-engineering.
 
 This document defines the `plan/` path only. The future `manage/` path,
 including workforce division, groups, jobs, execution state, and management

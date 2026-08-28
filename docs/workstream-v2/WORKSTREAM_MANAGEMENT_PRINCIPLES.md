@@ -80,10 +80,9 @@ record the user's approval and update the relevant `work/*` state. They do not
 modify the codebase, planning documents, management artifacts, or reports by
 default. The user separately invokes and prompts the next top-level agent.
 
-Approval commands should not execute Git commands by default during this
-transition. Existing Git integration may remain disabled for approval flows so
-the structural and state changes can be migrated without adding repository
-side effects.
+Approval commands should not execute Git commands by default. Existing Git
+integration may remain disabled for approval flows so structural and state
+changes do not add repository side effects.
 
 The existing `--revoke` option may be used to revoke an approval. Revocation
 only updates the relevant `work/*` state; it does not modify code, planning

@@ -169,7 +169,7 @@ To reduce stale-tool confusion, we added:
 
 - `workstream_tool_runtime_info`
 - tool version metadata
-- install-time version/path reporting in `ag install tools --opencode`
+- install-time version/path reporting in `sane install tools --opencode`
 
 This made it much easier to distinguish:
 

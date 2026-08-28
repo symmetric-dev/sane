@@ -25,7 +25,7 @@ But the full workflow in this repo also depends on repo-managed assets such as:
 
 - `agent/tools/workstream.ts`
 - `agent/skills/*`
-- `ag install ...` commands used to install tools/skills into Opencode
+- `sane install ...` commands used to install tools/skills into Opencode
 - local docs, test helpers, and debugging workflows
 
 So:
@@ -65,7 +65,7 @@ work --help
 
 ### What this mode does **not** give you
 
-- `ag` helper CLI from this repo
+- `sane` helper CLI from this repo
 - repo-managed Opencode tools installation
 - repo-managed skills installation
 - local development/test/docs workflow
@@ -75,7 +75,7 @@ work --help
 Use this if you want:
 
 - `work`
-- `ag`
+- `sane`
 - Opencode tool installs
 - skill installs
 - Manual `/fork` branching/supervision workflow
@@ -84,8 +84,8 @@ Use this if you want:
 ### 1. Clone the repo
 
 ```bash
-git clone https://github.com/AlbertoV5/agenv.git
-cd agenv
+git clone --recurse-submodules https://github.com/AlbertoV5/sane-work.git sane
+cd sane/repo
 ```
 
 ### 2. Install dependencies and local commands
@@ -95,7 +95,7 @@ bun install
 ./install.sh
 ```
 
-This sets up `ag` and `work` in the repo's `bin/` directory and adds that directory to your shell `PATH`.
+This sets up `sane` and `work` in `~/.local/bin` and adds that directory to your shell `PATH`.
 
 If you want to use the commands immediately in the current shell after install, run:
 
@@ -111,8 +111,8 @@ For the default manual `/fork` supervision workflow, install the repo-managed to
 Recommended:
 
 ```bash
-ag install tools --opencode
-ag install skills --opencode
+sane install tools --opencode
+sane install skills --opencode
 ```
 
 Those commands use the `manual` profile by default. This profile does not expose the `managing-workstreams` skill or `launch_supervision_branch` tool to the agent.
@@ -120,21 +120,21 @@ Those commands use the `manual` profile by default. This profile does not expose
 To opt into the older Root Agent management-launch workflow, install the `managed` profile instead:
 
 ```bash
-ag install tools --opencode --profile managed
-ag install skills --opencode --profile managed
+sane install tools --opencode --profile managed
+sane install skills --opencode --profile managed
 ```
 
 If you want to inspect available install modes:
 
 ```bash
-ag install tools --help
-ag install skills --help
+sane install tools --help
+sane install skills --help
 ```
 
 ### 4. Verify installation
 
 ```bash
-ag --help
+sane --help
 work --help
 ```
 
@@ -154,9 +154,9 @@ Examples:
 ./install.sh --skills-only
 ./install.sh --skills-all --profile managed
 
-ag install skills --all
-ag install skills --all --profile managed
-ag install tools --list
+sane install skills --all
+sane install skills --all --profile managed
+sane install tools --list
 ```
 
 ## Recommended new-environment setup for the full workflow
@@ -176,15 +176,15 @@ For a fresh machine where you want everything needed for the manual `/fork` bran
 ```bash
 bun install
 ./install.sh
-ag install tools --opencode
-ag install skills --opencode
+sane install tools --opencode
+sane install skills --opencode
 ```
 
 4. Restart your shell / Opencode session
 5. Verify with:
 
 ```bash
-ag --help
+sane --help
 work --help
 ```
 

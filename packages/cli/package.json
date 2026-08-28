@@ -5,7 +5,7 @@
   "module": "src/index.ts",
   "type": "module",
   "bin": {
-    "ag": "./bin/ag.ts"
+    "sane": "./bin/sane.ts"
   },
   "exports": {
     ".": "./src/index.ts"
