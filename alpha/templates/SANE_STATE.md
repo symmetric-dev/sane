@@ -1,5 +1,8 @@
 # SANE State
 
+<!-- Keep this structure. Replace blank Notes with concise, user-directed status
+information. Add Stage and Job entries only when their identities exist. -->
+
 ## Workstream Foundation
 
 ### Product
@@ -22,34 +25,10 @@
 
 ## Workstream Stages
 
-### Stage <id>: <stage name>
-
-#### Design
-
-- Approval: `[ ] Pending`
-- Delivery: `design/stages/<id>-<stage-slug>/SPEC.md`,
-  `design/stages/<id>-<stage-slug>/SECTIONS.md`, and Section specifications
-- Notes:
-
-#### Execution
-
-- Approval: `[ ] Pending`
-- Delivery: `execution/stages/<id>-<stage-slug>/EXECUTION_PLAN.md` and Job
-  documents
-- Notes:
+<!-- Add one Stage section after the Design Assistant establishes its ID and
+name. Track its Design and Execution approvals and delivered artifacts here. -->
 
 ## Workstream Implementation
 
-### Stage <id>: <stage name>
-
-- Approval: `[ ] Pending`
-- Delivery: Implementation Reports under
-  `implementation/stages/<id>-<stage-slug>/reports/`
-- Notes:
-
-#### Job <id>: <job name>
-
-- Status: `[ ] Pending`
-- Job: `execution/stages/<stage-id>-<stage-slug>/jobs/<id>-<job-slug>.md`
-- Report:
-- Notes:
+<!-- Add an Implementation Stage and its Job entries only after the Stage's
+Execution Plan identifies the Jobs. Track the Job, report, and current status. -->
