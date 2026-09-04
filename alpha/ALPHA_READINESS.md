@@ -3,39 +3,37 @@
 ## Current Readiness
 
 The Alpha can bootstrap a workstream and run Product, Research, Design,
-Engineering, and Execution sessions. It is not yet ready for an end-to-end pilot
-that carries authorized Jobs through repository implementation and review.
+Engineering, Execution, and Implementation sessions. It is not yet ready for an
+end-to-end pilot.
 
 Available now:
 
 - initial-workstream bootstrap command;
 - shared SANE context and State template;
 - documented Implementation Stage and Job State entries;
-- Product, Research, Design, Engineering, and Execution role skills; and
+- documented local repository and workstream-repository convention;
+- Product, Research, Design, Engineering, Execution, and Implementation role
+  skills;
+- focused implementation-agent and read-only review-agent prompt instructions;
+  and
 - templates for all current Product, Research, Design, Execution, and
   Implementation documents.
 
 ## Required Before an End-to-End Pilot
 
-### Implementation Package
+### Repository Initialization
 
-Create the Stage-scoped `sane-implementation-assistant-role`, plus explicit
-Cursor instructions for:
+Implement and test the SANE repository-initialization command or script defined
+in [SANE Alpha Repository Setup](./SANE_REPOSITORY_SETUP.md). It must create or
+validate the local workstream repository, write the ignored `.sane/README.md`
+pointer, and add `/.sane/` to the implementation repository's `.gitignore`.
 
-- an implementation agent carrying out one Job; and
-- a read-only review agent reviewing one completed Job Group.
-
-The package must define Implementation Report handling, user-directed retries,
-and implementation State updates. The report contract is shared with Execution;
-it must not be replaced by a competing report schema.
-
-### Target Repository Convention
-
-Decide where a workstream durably records its target repository. The
-Implementation Assistant needs that path when it invokes Cursor:
+The Implementation Assistant uses the recorded implementation-repository path
+as the Bash working directory when it invokes Cursor with a timeout of at least
+40 minutes:
 
 ```bash
-agent -p --model composer-2.5 --workspace <target-repository> "<job prompt>"
+agent -p "<job prompt>"
 ```
 
 ### Later-Template Provisioning

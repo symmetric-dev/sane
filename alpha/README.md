@@ -12,8 +12,12 @@ target V2 decision records in `work/014-workstream-v2/docs/`. Its procedures and
 be retired once tested behavior is encoded by V2 tooling.
 
 The Alpha operating model and per-workstream context and State templates are
-defined. Detailed approval rules, role skills, agent configurations, and
-installation procedures remain to be written.
+defined. Role skills and the local repository-setup convention are also
+defined. Detailed approval rules, agent configurations, and installation
+procedures remain to be written.
+
+Before creating a workstream for an implementation repository, follow
+[SANE Alpha Repository Setup](./SANE_REPOSITORY_SETUP.md).
 
 ## What the Alpha Will Validate
 
@@ -59,16 +63,16 @@ the repository work.
 
 Cursor implementation agents do not receive special OpenCode agent
 configurations. The top-level Implementation Assistant invokes one agent for
-one authorized Job through Cursor's CLI, using `composer-2.5` by default:
+one authorized Job through Cursor's CLI with the target repository as the Bash
+working directory and a timeout of at least 40 minutes:
 
 ```bash
-agent -p --model composer-2.5 --workspace <target-repository> "<job prompt>"
+agent -p "<job prompt>"
 ```
 
-The Job prompt will explicitly identify the Job document, relevant shared and
-Implementation skills, required Design context, and the Implementation Report
-contract. The alpha must not use Cursor's `--force` or `--yolo` options by
-default.
+The focused Job and review prompts identify only their assigned documents,
+repository paths, and report contract. They do not provide general SANE context.
+The alpha must not use Cursor's `--force` or `--yolo` options by default.
 
 ## Shared Context Packages
 

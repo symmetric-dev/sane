@@ -25,6 +25,12 @@ holds the context, identity, decisions, coordination, and approval history
 needed to govern the work. It is not a duplicate implementation tree; the
 implementation happens in its target repository.
 
+Each implementation repository uses a separate local Git repository for its
+SANE workstreams. The target repository keeps an ignored `.sane/README.md`
+pointer to that workstream repository. The Alpha layout, initialization, and
+assistant-use rules are defined in
+[SANE Alpha Repository Setup](./SANE_REPOSITORY_SETUP.md).
+
 A **phase** is a horizontal responsibility view across a workstream. Each phase
 has its own objective and artifacts. Phases are not necessarily one-way steps:
 they may overlap and inform one another.
