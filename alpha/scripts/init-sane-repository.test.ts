@@ -32,8 +32,8 @@ describe("init-sane-repository", () => {
     await execFileAsync("git", ["init", "--quiet", implementationRepository])
     await mkdir(join(templateRoot, "repository"), { recursive: true })
     await Bun.write(
-      join(templateRoot, "repository", "README.md"),
-      "# SANE Repository Setup\n\n- Implementation repository: `<absolute-path-to-implementation-repository>`\n- Workstream repository: `<absolute-path-to-workstream-repository>`\n",
+      join(templateRoot, "repository", "paths"),
+      "implementation-path: <absolute-path-to-implementation-repository>\nworkstream-repository-path: <absolute-path-to-workstream-repository>\n",
     )
   })
 
@@ -51,7 +51,7 @@ describe("init-sane-repository", () => {
     }
   }
 
-  test("creates the paired Git repository, local pointer, and ignore entry", async () => {
+  test("creates the paired Git repository, local paths file, and ignore entry", async () => {
     const result = await initializeSaneRepository(options())
     const workstreamRepository = join(homeDirectory, "workstreams", "implementation-work")
     const canonicalImplementationRepository = await realpath(implementationRepository)
@@ -69,11 +69,10 @@ describe("init-sane-repository", () => {
       })).stdout.trim(),
     ).toBe("true")
     expect(
-      await readFile(join(implementationRepository, ".sane", "README.md"), "utf8"),
+      await readFile(join(implementationRepository, ".sane", "paths"), "utf8"),
     ).toBe(
-      "# SANE Repository Setup\n\n" +
-        `- Implementation repository: \`${canonicalImplementationRepository}\`\n` +
-        `- Workstream repository: \`${workstreamRepository}\`\n`,
+      `implementation-path: ${canonicalImplementationRepository}\n` +
+        `workstream-repository-path: ${workstreamRepository}\n`,
     )
     expect(await readFile(join(implementationRepository, ".gitignore"), "utf8")).toBe(
       "/.sane/\n",
@@ -147,15 +146,15 @@ describe("init-sane-repository", () => {
     await expectMissing(join(implementationRepository, ".sane"))
   })
 
-  test("rejects a differing local SANE README without changing it", async () => {
+  test("rejects a differing local SANE paths file without changing it", async () => {
     const workstreamRepository = join(homeDirectory, "workstreams", "implementation-work")
     await mkdir(join(implementationRepository, ".sane"))
-    await Bun.write(join(implementationRepository, ".sane", "README.md"), "different\n")
+    await Bun.write(join(implementationRepository, ".sane", "paths"), "different\n")
     await execFileAsync("git", ["init", "--quiet", workstreamRepository])
 
-    await expect(initializeSaneRepository(options())).rejects.toThrow("README differs")
+    await expect(initializeSaneRepository(options())).rejects.toThrow("paths file differs")
     expect(
-      await readFile(join(implementationRepository, ".sane", "README.md"), "utf8"),
+      await readFile(join(implementationRepository, ".sane", "paths"), "utf8"),
     ).toBe("different\n")
     await expectMissing(join(implementationRepository, ".gitignore"))
   })
@@ -174,10 +173,10 @@ describe("init-sane-repository", () => {
     await expectMissing(join(implementationRepository, ".gitignore"))
   })
 
-  test("validates the README template before creating destinations", async () => {
-    await Bun.write(join(templateRoot, "repository", "README.md"), "missing placeholders\n")
+  test("validates the paths template before creating destinations", async () => {
+    await Bun.write(join(templateRoot, "repository", "paths"), "missing placeholders\n")
 
-    await expect(initializeSaneRepository(options())).rejects.toThrow("exactly one")
+    await expect(initializeSaneRepository(options())).rejects.toThrow("exact .sane/paths schema")
     await expectMissing(join(homeDirectory, "workstreams"))
     await expectMissing(join(implementationRepository, ".sane"))
   })

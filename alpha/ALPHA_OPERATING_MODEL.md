@@ -26,8 +26,8 @@ needed to govern the work. It is not a duplicate implementation tree; the
 implementation happens in its target repository.
 
 Each implementation repository uses a separate local Git repository for its
-SANE workstreams. The target repository keeps an ignored `.sane/README.md`
-pointer to that workstream repository. The Alpha layout, initialization, and
+SANE workstreams. The target repository keeps an ignored `.sane/paths`
+record of the paired repositories. The Alpha layout, initialization, and
 assistant-use rules are defined in
 [SANE Alpha Repository Setup](./SANE_REPOSITORY_SETUP.md).
 
@@ -131,13 +131,17 @@ Every SANE Alpha session is started by the user and follows this lifecycle:
    context, its role context, and the role skill that it must use for the
    session.
 3. **Assistant performs pickup.** The assistant checks that the inputs required
-   for its role exist and reports its pickup status to the user.
-4. **User resolves pickup status.** The user may return to an earlier role for
-   Updates, resolve the missing input in another way, or authorize
-   the assistant to proceed.
-5. **Assistant performs its role.** The assistant helps the user produce its
+   for its role exist.
+4. **Assistant reports readiness.** The assistant reports its pickup result and
+   a concise summary of the selected workstream, assigned scope, relevant State,
+   and any missing inputs or blockers. It then waits; it does not begin role
+   Assistance merely because the user started the session.
+5. **User resolves pickup status or authorizes Assistance.** The user may return
+   to an earlier role for Updates, resolve a missing input in another way, add
+   session details, or explicitly authorize the assistant to proceed.
+6. **Assistant performs its role.** The assistant helps the user produce its
    assigned outcome. This may involve back-and-forth with the user.
-6. **Assistant performs delivery.** The assistant checks that the files and
+7. **Assistant performs delivery.** The assistant checks that the files and
    artifacts it owns are present and complete, then reports delivery to the
    user.
 

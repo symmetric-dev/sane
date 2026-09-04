@@ -33,8 +33,8 @@ describe("repository-aware Alpha workstream tools", () => {
     await execFileAsync("git", ["init", "--quiet", workstreamRepository])
     await mkdir(join(implementationRepository, ".sane"))
     await Bun.write(
-      join(implementationRepository, ".sane", "README.md"),
-      `# SANE Repository Setup\n\n- Implementation repository: \`${implementationRepository}\`\n- Workstream repository: \`${workstreamRepository}\`\n`,
+      join(implementationRepository, ".sane", "paths"),
+      `implementation-path: ${implementationRepository}\nworkstream-repository-path: ${workstreamRepository}\n`,
     )
     for (const source of [
       "SANE_CONTEXT.md", "SANE_STATE.md", "PRD.md", "research/INDEX.md",
@@ -93,16 +93,16 @@ describe("repository-aware Alpha workstream tools", () => {
     expect(await readFile(join(implementationRepository, ".sane", "current-workstream"), "utf8")).toBe("01-one\n")
   })
 
-  test("rejects missing or malformed pointers and a workstream pointer that is only a Git subdirectory", async () => {
-    await rm(join(implementationRepository, ".sane", "README.md"))
+  test("rejects missing or malformed paths files and a recorded workstream directory that is only a Git subdirectory", async () => {
+    await rm(join(implementationRepository, ".sane", "paths"))
     await expect(selectSaneWorkstream({ implementationRepository, workstreamPath: "one", write: () => {} })).rejects.toBeInstanceOf(SaneRepositoryError)
-    await Bun.write(join(implementationRepository, ".sane", "README.md"), `- Implementation repository: \`${implementationRepository}\`\n- Workstream repository: \`relative\`\n`)
+    await Bun.write(join(implementationRepository, ".sane", "paths"), `implementation-path: ${implementationRepository}\nworkstream-repository-path: relative\n`)
     await expect(selectSaneWorkstream({ implementationRepository, workstreamPath: "one", write: () => {} })).rejects.toThrow("absolute path")
-    await Bun.write(join(implementationRepository, ".sane", "README.md"), `- Implementation repository: \`${implementationRepository}\`\n- Implementation repository: \`${implementationRepository}\`\n- Workstream repository: \`${workstreamRepository}\`\n`)
-    await expect(selectSaneWorkstream({ implementationRepository, workstreamPath: "one", write: () => {} })).rejects.toThrow("exactly one")
+    await Bun.write(join(implementationRepository, ".sane", "paths"), `implementation-path: ${implementationRepository}\nimplementation-path: ${implementationRepository}\nworkstream-repository-path: ${workstreamRepository}\n`)
+    await expect(selectSaneWorkstream({ implementationRepository, workstreamPath: "one", write: () => {} })).rejects.toThrow("exact .sane/paths schema")
     const nested = join(workstreamRepository, "nested")
     await mkdir(nested)
-    await Bun.write(join(implementationRepository, ".sane", "README.md"), `- Implementation repository: \`${implementationRepository}\`\n- Workstream repository: \`${nested}\`\n`)
+    await Bun.write(join(implementationRepository, ".sane", "paths"), `implementation-path: ${implementationRepository}\nworkstream-repository-path: ${nested}\n`)
     await expect(selectSaneWorkstream({ implementationRepository, workstreamPath: "one", write: () => {} })).rejects.toThrow("Git repository root")
   })
 

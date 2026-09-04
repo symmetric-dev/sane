@@ -10,7 +10,7 @@ required heading structure.
 
 | Template | Created at | Owning role | V2 contract |
 | --- | --- | --- | --- |
-| `repository/README.md` | `<implementation-repository>/.sane/README.md` | SANE repository initialization | — |
+| `repository/paths` | `<implementation-repository>/.sane/paths` | SANE repository initialization | — |
 | `PRD.md` | `<workstream>/PRD.md` | Product | `PRODUCT_REQUIREMENTS_DOCUMENT_DEFINITION.md` |
 | `research/INDEX.md` | `<workstream>/research/INDEX.md` | Research | `RESEARCH_INDEX_DEFINITION.md` |
 | `research/TECH_BRIEF.md` | `<workstream>/research/TECH_BRIEF.md` | Research | `RESEARCH_INDEX_DEFINITION.md` |

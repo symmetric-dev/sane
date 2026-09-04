@@ -20,21 +20,19 @@ Available now:
 - Product, Research, Design, Engineering, Execution, and Implementation role
   skills;
 - focused implementation-agent and read-only review-agent prompt instructions;
+- Implementation Agent Cursor invocation through the recorded implementation
+  repository as the Bash working directory, with a timeout of at least 40
+  minutes:
+
+  ```bash
+  agent -p "<job prompt>"
+  ```
+
   and
 - templates for all current Product, Research, Design, Execution, and
   Implementation documents.
 
 ## Required Before an End-to-End Pilot
-
-### Implementation Agent Invocation
-
-The Implementation Assistant uses the recorded implementation-repository path
-as the Bash working directory when it invokes Cursor with a timeout of at least
-40 minutes:
-
-```bash
-agent -p "<job prompt>"
-```
 
 ### OpenCode Context Packages and Installation
 
@@ -59,6 +57,7 @@ reference in `README.md` to `SANE_STATE.md`.
 ## Key References
 
 - [Alpha operating model](./ALPHA_OPERATING_MODEL.md)
+- [Agent context packages](./SANE_AGENT_CONTEXT_PACKAGES.md)
 - [Bootstrap plan](./SANE_WORKSTREAM_BOOTSTRAP_PLAN.md)
 - [Bootstrap script](./scripts/create-sane-workstream.ts)
 - [Repository initializer](./scripts/init-sane-repository.ts)

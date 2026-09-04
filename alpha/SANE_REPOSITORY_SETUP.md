@@ -37,7 +37,7 @@ The implementation repository records its local workstream-repository location
 in an ignored file:
 
 ```text
-<implementation-repository>/.sane/README.md
+<implementation-repository>/.sane/paths
 ```
 
 The implementation repository's `.gitignore` must contain:
@@ -49,20 +49,18 @@ The implementation repository's `.gitignore` must contain:
 The `.sane/` directory is local-machine coordination data. Do not commit it,
 copy it into workstreams, or treat it as a product artifact.
 
-Initialization creates `README.md` from
-[`templates/repository/README.md`](./templates/repository/README.md). It records
-at least:
+Initialization creates `paths` from
+[`templates/repository/paths`](./templates/repository/paths). Its exact plain-text
+schema is:
 
-```md
-# SANE Repository Setup
-
-- Implementation repository: `/absolute/path/to/project`
-- Workstream repository: `/absolute/path/to/project-work`
+```text
+implementation-path: /absolute/path/to/project
+workstream-repository-path: /absolute/path/to/project-work
 ```
 
-Both paths are absolute local paths. When either repository moves, the user
-updates this local file; an assistant must not infer, relocate, or rewrite the
-paths without the user's direction.
+Both paths are normalized absolute local paths. When either repository moves,
+the user updates this local file; an assistant must not infer, relocate, or
+rewrite the paths without the user's direction.
 
 The currently selected workstream is separate local state at:
 
@@ -70,7 +68,8 @@ The currently selected workstream is separate local state at:
 <implementation-repository>/.sane/current-workstream
 ```
 
-It contains one normalized workstream-relative path followed by a newline. It is
+It contains one normalized path relative to `workstream-repository-path`,
+followed by a newline; it never contains an absolute workstream path. It is
 written only by an explicit selection or a successful repository-aware create.
 
 ## Initialization
@@ -94,7 +93,7 @@ The command:
 1. resolve the implementation repository's Git root and project name;
 2. create or validate `~/workstreams/<project-name>-work/` as its separate Git
    workstream repository without overwriting unrelated content;
-3. create `.sane/README.md` with the two absolute paths; and
+3. create `.sane/paths` with the two absolute paths; and
 4. add `/.sane/` to the implementation repository's `.gitignore` without
    removing existing entries.
 
@@ -105,13 +104,13 @@ workstream repository.
 ## Workstream Helpers
 
 After initialization, use the repository-aware creator rather than manually
-combining the pointer and bootstrap paths:
+combining the paths record and bootstrap paths:
 
 ```bash
 bun alpha/scripts/create-sane-repository-workstream.ts <implementation-repository> <workstream-relative-path>
 ```
 
-It validates the pointer and target containment, bootstraps with the standard
+It validates the paths record and target containment, bootstraps with the standard
 templates, then records the selection only after the bootstrap succeeds. To
 select an existing bootstrapped workstream instead:
 
@@ -136,11 +135,15 @@ Section Spec, or Job documents.
 ## Assistant Use
 
 When a top-level SANE assistant session starts in an implementation repository,
-it reads `.sane/README.md` to locate the workstream repository. The user then
-selects the relevant workstream; its `SANE_CONTEXT.md`, `SANE_STATE.md`,
-assigned artifacts, and role skill govern the session.
+it reads `.sane/paths` to locate the workstream repository and
+`.sane/current-workstream` for the normalized relative selection. The selected
+absolute workstream is `<workstream-repository-path>/<current-workstream>`.
+If the current pointer is missing or invalid, the assistant asks the user to
+select a workstream and stops; it does not infer or switch one. Its
+`SANE_CONTEXT.md`, `SANE_STATE.md`, assigned artifacts, and role skill then
+govern the session.
 
-The Implementation Assistant uses the recorded implementation-repository path as
+The Implementation Assistant uses the recorded `implementation-path` as
 the Bash working directory when launching Cursor. Cursor implementation and
 review prompts receive only their assigned paths and instructions. They do not
-read `.sane/README.md`, `SANE_CONTEXT.md`, or `SANE_STATE.md`.
+read `.sane/paths`, `SANE_CONTEXT.md`, or `SANE_STATE.md`.

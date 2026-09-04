@@ -7,10 +7,7 @@ import { promisify } from "node:util"
 import { BootstrapError, type TemplateRegistry, validateTemplateRegistry } from "./create-sane-workstream.ts"
 
 const execFileAsync = promisify(execFile)
-const POINTER_LINES = {
-  implementation: "Implementation repository",
-  workstream: "Workstream repository",
-} as const
+export const SANE_PATHS_FILENAME = "paths"
 const REQUIRED_WORKSTREAM_FILES = ["SANE_CONTEXT.md", "SANE_STATE.md", "PRD.md"] as const
 
 export class SaneRepositoryError extends BootstrapError {
@@ -20,7 +17,7 @@ export class SaneRepositoryError extends BootstrapError {
   }
 }
 
-export interface SaneRepositoryPointer {
+export interface SaneRepositoryPaths {
   implementationRepository: string
   workstreamRepository: string
 }
@@ -60,36 +57,34 @@ export async function resolveImplementationRepository(path: string): Promise<str
   }
 }
 
-function parsePointerPath(content: string, label: string): string {
-  const matches = content
-    .split(/\r?\n/)
-    .filter((line) => line.startsWith(`- ${label}: `))
-
-  if (matches.length !== 1) {
-    throw new SaneRepositoryError(`SANE repository pointer must contain exactly one ${label} list line.`)
+function parseNormalizedAbsolutePath(value: string, field: string): string {
+  if (!isAbsolute(value) || resolve(value) !== value) {
+    throw new SaneRepositoryError(`${field} in .sane/${SANE_PATHS_FILENAME} must be a normalized absolute path.`)
   }
-  const match = new RegExp(`^- ${label}: [\\x60]([^\\x60]+)[\\x60]$`).exec(matches[0]!)
-  if (!match?.[1] || !isAbsolute(match[1]) || resolve(match[1]) !== match[1]) {
-    throw new SaneRepositoryError(`${label} in the SANE repository pointer must be a normalized absolute path.`)
-  }
-  return match[1]
+  return value
 }
 
-/** Parse the deliberately small, ignored local repository pointer format. */
-export async function readSaneRepositoryPointer(
+/** Parse the exact, deliberately small ignored local repository paths schema. */
+export async function readSaneRepositoryPaths(
   implementationRepository: string,
-): Promise<SaneRepositoryPointer> {
+): Promise<SaneRepositoryPaths> {
   const saneDirectory = join(implementationRepository, ".sane")
   if (!(await lstatOrUndefined(saneDirectory))?.isDirectory()) {
     throw new SaneRepositoryError(`Local SANE path is missing or not a directory: ${saneDirectory}`)
   }
-  const readmePath = join(implementationRepository, ".sane", "README.md")
-  if (!(await lstatOrUndefined(readmePath))?.isFile()) {
-    throw new SaneRepositoryError(`SANE repository pointer is missing or not a regular file: ${readmePath}`)
+  const pathsPath = join(saneDirectory, SANE_PATHS_FILENAME)
+  if (!(await lstatOrUndefined(pathsPath))?.isFile()) {
+    throw new SaneRepositoryError(`SANE repository paths file is missing or not a regular file: ${pathsPath}`)
   }
-  const content = await readFile(readmePath, "utf8")
-  const recordedImplementation = parsePointerPath(content, POINTER_LINES.implementation)
-  const workstreamRepository = parsePointerPath(content, POINTER_LINES.workstream)
+  const content = await readFile(pathsPath, "utf8")
+  const match = /^implementation-path: ([^\r\n]+)\nworkstream-repository-path: ([^\r\n]+)\n$/.exec(content)
+  if (!match) {
+    throw new SaneRepositoryError(
+      `SANE repository paths file must use the exact .sane/${SANE_PATHS_FILENAME} schema.`,
+    )
+  }
+  const recordedImplementation = parseNormalizedAbsolutePath(match[1]!, "implementation-path")
+  const workstreamRepository = parseNormalizedAbsolutePath(match[2]!, "workstream-repository-path")
 
   let sameImplementationRoot = false
   try {
@@ -106,7 +101,7 @@ export async function readSaneRepositoryPointer(
   return { implementationRepository, workstreamRepository }
 }
 
-/** Require that the pointer target is itself a Git root, rather than a subdirectory. */
+/** Require that the recorded workstream repository is itself a Git root. */
 export async function validateWorkstreamRepository(path: string): Promise<string> {
   const repository = resolve(path)
   if (!(await lstatOrUndefined(repository))?.isDirectory()) {
@@ -126,11 +121,11 @@ export async function validateWorkstreamRepository(path: string): Promise<string
   return repository
 }
 
-export async function resolveSaneRepository(path: string): Promise<SaneRepositoryPointer> {
+export async function resolveSaneRepository(path: string): Promise<SaneRepositoryPaths> {
   const implementationRepository = await resolveImplementationRepository(path)
-  const pointer = await readSaneRepositoryPointer(implementationRepository)
-  await validateWorkstreamRepository(pointer.workstreamRepository)
-  return pointer
+  const repositoryPaths = await readSaneRepositoryPaths(implementationRepository)
+  await validateWorkstreamRepository(repositoryPaths.workstreamRepository)
+  return repositoryPaths
 }
 
 function assertLexicallyContained(root: string, target: string, description: string): void {

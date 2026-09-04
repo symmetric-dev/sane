@@ -22,13 +22,16 @@ import {
 const execFileAsync = promisify(execFile)
 
 export const REPOSITORY_TEMPLATE_REGISTRY = [
-  { source: "repository/README.md", destination: ".sane/README.md" },
+  { source: "repository/paths", destination: ".sane/paths" },
 ] as const satisfies TemplateRegistry
 
 const IMPLEMENTATION_PATH_PLACEHOLDER =
   "<absolute-path-to-implementation-repository>"
 const WORKSTREAM_PATH_PLACEHOLDER =
   "<absolute-path-to-workstream-repository>"
+const REPOSITORY_PATHS_TEMPLATE =
+  `implementation-path: ${IMPLEMENTATION_PATH_PLACEHOLDER}\n` +
+  `workstream-repository-path: ${WORKSTREAM_PATH_PLACEHOLDER}\n`
 const SANE_IGNORE_ENTRY = "/.sane/"
 
 export class RepositoryInitializationError extends BootstrapError {
@@ -105,24 +108,15 @@ function resolveHomeDirectory(configuredHome?: string): string {
   return resolve(home)
 }
 
-function placeholderCount(template: string, placeholder: string): number {
-  return template.split(placeholder).length - 1
-}
-
-export function renderRepositoryReadme(
+export function renderRepositoryPaths(
   template: string,
   implementationRepository: string,
   workstreamRepository: string,
 ): string {
-  for (const placeholder of [
-    IMPLEMENTATION_PATH_PLACEHOLDER,
-    WORKSTREAM_PATH_PLACEHOLDER,
-  ]) {
-    if (placeholderCount(template, placeholder) !== 1) {
-      throw new RepositoryInitializationError(
-        `Repository README template must contain exactly one ${placeholder} placeholder.`,
-      )
-    }
+  if (template !== REPOSITORY_PATHS_TEMPLATE) {
+    throw new RepositoryInitializationError(
+      "Repository paths template must use the exact .sane/paths schema with its required placeholders.",
+    )
   }
 
   return template
@@ -151,9 +145,9 @@ function appendIgnoreEntry(content: string): string {
   return `${content}${content.endsWith("\n") ? "" : "\n"}${SANE_IGNORE_ENTRY}\n`
 }
 
-async function inspectLocalReadme(
+async function inspectLocalPaths(
   saneDirectory: string,
-  expectedReadme: string,
+  expectedPaths: string,
 ): Promise<"absent" | "expected"> {
   const saneStat = await lstatOrUndefined(saneDirectory)
   if (!saneStat) return "absent"
@@ -163,16 +157,16 @@ async function inspectLocalReadme(
     )
   }
 
-  const readmePath = join(saneDirectory, "README.md")
-  const readmeStat = await lstatOrUndefined(readmePath)
-  if (!readmeStat?.isFile()) {
+  const pathsPath = join(saneDirectory, "paths")
+  const pathsStat = await lstatOrUndefined(pathsPath)
+  if (!pathsStat?.isFile()) {
     throw new RepositoryInitializationError(
       `Existing local SANE directory is incomplete or unrelated: ${saneDirectory}`,
     )
   }
-  if ((await readFile(readmePath, "utf8")) !== expectedReadme) {
+  if ((await readFile(pathsPath, "utf8")) !== expectedPaths) {
     throw new RepositoryInitializationError(
-      `Existing local SANE README differs from the expected repository pointer: ${readmePath}`,
+      `Existing local SANE paths file differs from the expected repository paths: ${pathsPath}`,
     )
   }
   return "expected"
@@ -218,19 +212,19 @@ export async function initializeSaneRepository(
   )
   const workstreamsDirectory = dirname(workstreamRepository)
   const saneDirectory = join(implementationRepository, ".sane")
-  const readmePath = join(saneDirectory, "README.md")
+  const pathsPath = join(saneDirectory, "paths")
   const gitignorePath = join(implementationRepository, ".gitignore")
 
   // Validate all source content before creating either repository or local files.
   await validateTemplateRegistry(templateRoot, REPOSITORY_TEMPLATE_REGISTRY)
-  const template = await readFile(join(templateRoot, "repository", "README.md"), "utf8")
-  const expectedReadme = renderRepositoryReadme(
+  const template = await readFile(join(templateRoot, "repository", "paths"), "utf8")
+  const expectedPaths = renderRepositoryPaths(
     template,
     implementationRepository,
     workstreamRepository,
   )
 
-  const localReadmeState = await inspectLocalReadme(saneDirectory, expectedReadme)
+  const localPathsState = await inspectLocalPaths(saneDirectory, expectedPaths)
   const destinationStat = await lstatOrUndefined(workstreamRepository)
   const gitignoreState = await readGitignoreState(gitignorePath)
   const addedIgnoreEntry = !hasIgnoreEntry(gitignoreState.content)
@@ -241,9 +235,9 @@ export async function initializeSaneRepository(
         `Existing workstream destination is not the expected Git repository: ${workstreamRepository}`,
       )
     }
-    if (localReadmeState !== "expected") {
+    if (localPathsState !== "expected") {
       throw new RepositoryInitializationError(
-        `Existing workstream repository has no matching local SANE README: ${readmePath}`,
+        `Existing workstream repository has no matching local SANE paths file: ${pathsPath}`,
       )
     }
 
@@ -272,16 +266,16 @@ export async function initializeSaneRepository(
     }
   }
 
-  if (localReadmeState === "expected") {
+  if (localPathsState === "expected") {
     throw new RepositoryInitializationError(
-      `Local SANE README exists but its workstream repository is missing: ${workstreamRepository}`,
+      `Local SANE paths file exists but its workstream repository is missing: ${workstreamRepository}`,
     )
   }
 
   if (options.dryRun) {
     write("Dry run: no files or directories were modified.")
     write(`Planned: initialize Git repository ${workstreamRepository}`)
-    write(`Planned: create ${readmePath}`)
+    write(`Planned: create ${pathsPath}`)
     if (addedIgnoreEntry) write(`Planned: append ${SANE_IGNORE_ENTRY} to ${gitignorePath}`)
     return {
       implementationRepository,
@@ -301,7 +295,7 @@ export async function initializeSaneRepository(
 
     await mkdir(saneDirectory)
     wroteLocalState = true
-    await writeFile(readmePath, expectedReadme, { flag: "wx" })
+    await writeFile(pathsPath, expectedPaths, { flag: "wx" })
     await writeFile(gitignorePath, appendIgnoreEntry(gitignoreState.content))
 
     if (await lstatOrUndefined(workstreamRepository)) {
@@ -324,7 +318,7 @@ export async function initializeSaneRepository(
   }
 
   write(`Created: ${workstreamRepository}`)
-  write(`Created: ${readmePath}`)
+  write(`Created: ${pathsPath}`)
   if (addedIgnoreEntry) write(`Updated: ${gitignorePath}`)
   return {
     implementationRepository,

@@ -16,6 +16,10 @@ defined. Role skills and the local repository-setup convention are also
 defined. Detailed approval rules, agent configurations, and installation
 procedures remain to be written.
 
+The planned agent-context-package content, context-ingestion sequence, required
+working-directory and permission rules, and deferred Delivery-skill option are
+defined in [SANE Alpha Agent Context Packages](./SANE_AGENT_CONTEXT_PACKAGES.md).
+
 Before creating a workstream for an implementation repository, follow
 [SANE Alpha Repository Setup](./SANE_REPOSITORY_SETUP.md).
 
