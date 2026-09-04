@@ -1,8 +1,8 @@
 # SANE Alpha Document Templates
 
 These are source templates for the manual SANE Alpha workflow. They are not all
-copied when a workstream is bootstrapped: a role copies or references the
-template for the artifact it is about to create.
+copied when a workstream is bootstrapped: a role or SANE repository-initialization
+command copies or references the template for the artifact it is about to create.
 
 HTML comments are authoring guidance. Assistants replace or remove them with
 workstream-specific content before delivering an artifact, while preserving the
@@ -10,6 +10,7 @@ required heading structure.
 
 | Template | Created at | Owning role | V2 contract |
 | --- | --- | --- | --- |
+| `repository/README.md` | `<implementation-repository>/.sane/README.md` | SANE repository initialization | — |
 | `PRD.md` | `<workstream>/PRD.md` | Product | `PRODUCT_REQUIREMENTS_DOCUMENT_DEFINITION.md` |
 | `research/INDEX.md` | `<workstream>/research/INDEX.md` | Research | `RESEARCH_INDEX_DEFINITION.md` |
 | `research/TECH_BRIEF.md` | `<workstream>/research/TECH_BRIEF.md` | Research | `RESEARCH_INDEX_DEFINITION.md` |

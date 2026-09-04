@@ -49,7 +49,9 @@ The implementation repository's `.gitignore` must contain:
 The `.sane/` directory is local-machine coordination data. Do not commit it,
 copy it into workstreams, or treat it as a product artifact.
 
-`README.md` records at least:
+Initialization creates `README.md` from
+[`templates/repository/README.md`](./templates/repository/README.md). It records
+at least:
 
 ```md
 # SANE Repository Setup
@@ -62,12 +64,32 @@ Both paths are absolute local paths. When either repository moves, the user
 updates this local file; an assistant must not infer, relocate, or rewrite the
 paths without the user's direction.
 
+The currently selected workstream is separate local state at:
+
+```text
+<implementation-repository>/.sane/current-workstream
+```
+
+It contains one normalized workstream-relative path followed by a newline. It is
+written only by an explicit selection or a successful repository-aware create.
+
 ## Initialization
 
-SANE repository initialization is distinct from workstream bootstrap.
+SANE repository initialization is distinct from workstream bootstrap. Run the
+initializer with an explicit implementation-repository path:
 
-An eventual initialization command or script, run by the user from an
-implementation repository, must:
+```bash
+bun alpha/scripts/init-sane-repository.ts <implementation-repository>
+```
+
+Use `--dry-run` to validate the repository, template, and existing local state
+and print the planned changes without modifying either repository:
+
+```bash
+bun alpha/scripts/init-sane-repository.ts <implementation-repository> --dry-run
+```
+
+The command:
 
 1. resolve the implementation repository's Git root and project name;
 2. create or validate `~/workstreams/<project-name>-work/` as its separate Git
@@ -76,9 +98,40 @@ implementation repository, must:
 4. add `/.sane/` to the implementation repository's `.gitignore` without
    removing existing entries.
 
-It must not create a workstream, modify product or implementation source files,
-or start an agent session. Workstream bootstrap happens later inside the recorded
+It does not create a workstream, source or product files, agents, sessions,
+branches, or commits. Workstream bootstrap happens later inside the recorded
 workstream repository.
+
+## Workstream Helpers
+
+After initialization, use the repository-aware creator rather than manually
+combining the pointer and bootstrap paths:
+
+```bash
+bun alpha/scripts/create-sane-repository-workstream.ts <implementation-repository> <workstream-relative-path>
+```
+
+It validates the pointer and target containment, bootstraps with the standard
+templates, then records the selection only after the bootstrap succeeds. To
+select an existing bootstrapped workstream instead:
+
+```bash
+bun alpha/scripts/select-sane-workstream.ts <implementation-repository> <workstream-relative-path>
+```
+
+Both commands support `--dry-run`. A selected workstream must contain
+`SANE_CONTEXT.md`, `SANE_STATE.md`, and `PRD.md`.
+
+Provision only the approved role-start documents with:
+
+```bash
+bun alpha/scripts/provision-sane-role.ts <implementation-repository> <research|design|stage-design|engineering|execution> [--workstream <relative-path>] [--stage <two-digit-id>-<slug>]
+```
+
+Without `--workstream`, provision uses `current-workstream`. Stage roles require
+`--stage`; all provisioned destinations must be new. The command supports
+`--dry-run` and deliberately does not create Product, Implementation report,
+Section Spec, or Job documents.
 
 ## Assistant Use
 
