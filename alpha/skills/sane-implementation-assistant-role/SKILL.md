@@ -69,12 +69,11 @@ The workflow is as follows:
    replacing every placeholder with the assigned Job's actual path:
 
    ```text
-   You are implementing one bounded change in the current repository.
+   You are an implementation agent. Your role is to implement one bounded change in the current repository.
 
    Read:
    - <absolute path to Job document>
    - <absolute path to Implementation Report contract>
-   - every source, Design, interface, and predecessor path named in the Job's Context.
 
    Follow the Job document exactly. It is the source of truth for the goal,
    instructions, allowed and forbidden edits, verification, report requirements,
@@ -104,7 +103,7 @@ The workflow is as follows:
    Use this prompt shape:
 
    ```text
-   You are performing a read-only review of completed repository changes.
+   You are an implementation reviewer agent. Your role is to perform a read-only review of completed repository changes.
 
    Read:
    - <absolute path to Execution Plan>
@@ -123,9 +122,7 @@ The workflow is as follows:
    and blockers. State clearly when no findings exist.
    ```
 
-   The review agent is the only agent that assesses report accuracy and repository
-   implementation for the Implementation Assistant. The Implementation Assistant
-   relies on its findings rather than directly inspecting reports or changes.
+   You may inspect reports directly after this or go by the reviewer response.
 4. Report the Job outcomes and review findings to the user. Wait for the user to
    decide whether to proceed to the next Job Group, request a permitted retry or
    fix, return work to an earlier role, or stop.
