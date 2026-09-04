@@ -20,7 +20,7 @@ required heading structure.
 | `design/section/SPEC.md` | `<workstream>/design/stages/<id>-<slug>/sections/<id>-<slug>.md` | Engineering | `SECTION_TECHNICAL_DESIGN_DEFINITION.md` |
 | `execution/EXECUTION_PLAN.md` | `<workstream>/execution/stages/<id>-<slug>/EXECUTION_PLAN.md` | Execution | `EXECUTION_DOCUMENT_DEFINITIONS.md` |
 | `execution/JOB.md` | `<workstream>/execution/stages/<id>-<slug>/jobs/<id>-<slug>.md` | Execution | `EXECUTION_DOCUMENT_DEFINITIONS.md` |
-| `implementation/REPORT.md` | `<workstream>/implementation/stages/<id>-<slug>/reports/<id>-<slug>.md` | Implementation | `IMPLEMENTATION_REPORT_DEFINITION.md` |
+| `implementation/REPORT.md` | `<workstream>/implementation/reports/<id>-<slug>/<id>-<slug>.md` | Implementation | `IMPLEMENTATION_REPORT_DEFINITION.md` |
 
 `SANE_CONTEXT.md` and `SANE_STATE.md` are initial-workstream templates. The
 bootstrap command will copy them together with `PRD.md`.

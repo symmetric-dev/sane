@@ -30,5 +30,21 @@ name. Track its Design and Execution approvals and delivered artifacts here. -->
 
 ## Workstream Implementation
 
-<!-- Add an Implementation Stage and its Job entries only after the Stage's
-Execution Plan identifies the Jobs. Track the Job, report, and current status. -->
+<!-- Add one Stage section only after its Execution Plan identifies the Jobs.
+
+### Stage <stage id>: <stage name>
+
+- <Job name> `[ ] Pending`
+  - Report: `implementation/reports/<stage-id>-<stage-slug>/<job-id>-<job-slug>.md`
+  - Notes:
+
+Each Job status is one of:
+
+- `[ ] Pending` — not started.
+- `[~] Active` — Cursor work, review, or a required user decision is in progress.
+- `[!] Blocked` — implementation or review evidence requires a user decision.
+- `[✓] Approved` — the user accepted the Job outcome.
+- `[x] Cancelled` — the user cancelled the Job.
+
+Add Notes only when they provide useful blocked, review, retry, or outcome
+context. -->
