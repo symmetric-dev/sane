@@ -19,6 +19,15 @@ Available now:
 - documented local repository and workstream-repository convention;
 - Product, Research, Design, Engineering, Execution, and Implementation role
   skills;
+- tested Alpha agent-context-package installer for all six OpenCode agent
+  configurations, all six role skills, and the shared Implementation Report
+  contract. Run
+  `bun alpha/scripts/install-sane-agent-context-packages.ts [--dry-run] [--overwrite]`;
+  it installs agents under `<home>/.config/opencode/agents/`, skills under
+  `<home>/.agents/skills/`, and the contract at
+  `<home>/.agents/sane/contracts/IMPLEMENTATION_REPORT_DEFINITION.md`.
+  `--dry-run` validates and reports without mutation, while `--overwrite`
+  replaces only differing regular files;
 - focused implementation-agent and read-only review-agent prompt instructions;
 - Implementation Agent Cursor invocation through the recorded implementation
   repository as the Bash working directory, with a timeout of at least 40
@@ -33,15 +42,6 @@ Available now:
   Implementation documents.
 
 ## Required Before an End-to-End Pilot
-
-### OpenCode Context Packages and Installation
-
-Create concise OpenCode agent configurations for Product, Research, Design,
-Engineering, Execution, and Implementation. Define and test installation of:
-
-- role skills under `~/.agents/skills/`;
-- agent configurations under `~/.config/opencode/agents/`; and
-- stable shared V2-contract paths usable by OpenCode and Cursor prompts.
 
 ### Approval Rules and Documentation Cleanup
 
@@ -64,6 +64,7 @@ reference in `README.md` to `SANE_STATE.md`.
 - [Repository-aware workstream creator](./scripts/create-sane-repository-workstream.ts)
 - [Workstream selector](./scripts/select-sane-workstream.ts)
 - [Role artifact provisioner](./scripts/provision-sane-role.ts)
+- [Agent-context-package installer](./scripts/install-sane-agent-context-packages.ts)
 - [Template catalog](./templates/README.md)
 - [Shared context template](./templates/SANE_CONTEXT.md)
 - [Initial State template](./templates/SANE_STATE.md)

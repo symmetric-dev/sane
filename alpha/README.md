@@ -12,9 +12,9 @@ target V2 decision records in `work/014-workstream-v2/docs/`. Its procedures and
 be retired once tested behavior is encoded by V2 tooling.
 
 The Alpha operating model and per-workstream context and State templates are
-defined. Role skills and the local repository-setup convention are also
-defined. Detailed approval rules, agent configurations, and installation
-procedures remain to be written.
+defined. Role skills, tested agent-context-package installation, and the local
+repository-setup convention are also available. Detailed approval rules and the
+remaining README cleanup remain to be written.
 
 The planned agent-context-package content, context-ingestion sequence, required
 working-directory and permission rules, and deferred Delivery-skill option are
@@ -53,10 +53,16 @@ between agents automatically.
 
 The Product, Research, Design, Engineering, Execution, and top-level
 Implementation Assistants will be selected and started by the user in OpenCode.
-Their global OpenCode agent configurations will live under:
+Their global OpenCode agent configurations are installed with:
+
+```bash
+bun alpha/scripts/install-sane-agent-context-packages.ts [--dry-run] [--overwrite]
+```
+
+The command installs them under:
 
 ```text
-~/.config/opencode/agents/
+<home>/.config/opencode/agents/
 ```
 
 The top-level Implementation Assistant coordinates an authorized Job's Cursor
@@ -80,24 +86,25 @@ The alpha must not use Cursor's `--force` or `--yolo` options by default.
 
 ## Shared Context Packages
 
-The alpha source material will first be developed in this directory. Selected
-skills will then be copied to the shared location:
+The alpha source material is maintained in this directory. The context-package
+installer copies the selected skills to the shared location:
 
 ```text
-~/.agents/skills/<skill-name>/SKILL.md
+<home>/.agents/skills/<skill-name>/SKILL.md
 ```
 
 OpenCode auto-discovers skills from that path. Cursor does not rely on
 OpenCode's skill loader; its prompts explicitly provide the relevant skill
-paths for it to read.
+paths for it to read. Here `<home>` is `SANE_HOME` when it is set, otherwise the
+current user's home directory.
 
-The context packages will share the V2 document contracts rather than
-duplicating them. In particular, the Execution Assistant and the Implementation
-agent context packages will both reference the same installed Implementation
-Report contract, sourced from
-`work/014-workstream-v2/docs/IMPLEMENTATION_REPORT_DEFINITION.md`. The future alpha installation
-procedure will provide that shared path without creating competing report
-schemas.
+The context packages share V2 document contracts rather than duplicating them.
+In particular, the Execution Assistant and the Implementation agent context
+packages both reference the same Implementation Report contract, sourced from
+`work/014-workstream-v2/docs/IMPLEMENTATION_REPORT_DEFINITION.md` and installed
+at `<home>/.agents/sane/contracts/IMPLEMENTATION_REPORT_DEFINITION.md`. The installer
+leaves identical files unchanged, requires `--overwrite` for differing regular
+files, and supports a non-mutating `--dry-run`.
 
 ## Manual Approval and State
 

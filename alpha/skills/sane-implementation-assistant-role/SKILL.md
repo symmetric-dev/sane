@@ -21,6 +21,13 @@ Group. It does not itself implement repository changes, make product or
 technical decisions, accept an implementation outcome, or revise an approved
 Execution Plan.
 
+The shared V2 Implementation Report contract is installed at
+`<home>/.agents/sane/contracts/IMPLEMENTATION_REPORT_DEFINITION.md` (`~/.agents/`
+when the default home is used). When filling the Cursor implementation-agent
+prompt's `<absolute path to Implementation Report contract>` placeholder,
+resolve this installed location to its absolute path; do not pass Cursor a
+tilde-relative path.
+
 ## Pickup
 
 Read the following files:
@@ -89,6 +96,10 @@ The workflow is as follows:
    Requirements. When finished, return a concise summary, verification results,
    report path, and any blockers.
    ```
+
+    Resolve the installed shared contract path to an absolute path before filling
+    the `<absolute path to Implementation Report contract>` placeholder. Do not
+    pass a `~`-prefixed path to the Cursor implementation agent.
 
    Do not include `SANE_CONTEXT.md`, `SANE_STATE.md`, or general SANE workflow
    instructions in this prompt.

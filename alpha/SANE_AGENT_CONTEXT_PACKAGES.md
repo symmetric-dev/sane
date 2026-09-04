@@ -13,19 +13,41 @@ Source OpenCode agent definitions are maintained under:
 alpha/opencode/agents/
 ```
 
-The future installation procedure copies them as global OpenCode Markdown agents
-under:
+Install the complete context package with:
 
-```text
-~/.config/opencode/agents/
+```bash
+bun alpha/scripts/install-sane-agent-context-packages.ts [--dry-run] [--overwrite]
 ```
 
-The future installation procedure copies the corresponding source skills from
-`alpha/skills/` to:
+The installer uses `SANE_HOME` when set (otherwise the current user's home), so
+the command is isolated with `SANE_HOME=/temporary/home` when needed. It copies
+the six source agents as global OpenCode Markdown agents under:
 
 ```text
-~/.agents/skills/<skill-name>/SKILL.md
+<home>/.config/opencode/agents/
 ```
+
+It copies the corresponding source skills from `alpha/skills/` to:
+
+```text
+<home>/.agents/skills/<skill-name>/SKILL.md
+```
+
+It also copies the shared V2 Implementation Report contract from
+`work/014-workstream-v2/docs/IMPLEMENTATION_REPORT_DEFINITION.md` to this stable
+path:
+
+```text
+<home>/.agents/sane/contracts/IMPLEMENTATION_REPORT_DEFINITION.md
+```
+
+The installer validates every source and destination before changing anything.
+It creates parent directories as needed, leaves identical destinations unchanged,
+and refuses differing regular files by default. `--overwrite` replaces only
+differing regular files; it never replaces a non-regular destination. `--dry-run`
+performs the same validation and reports planned actions without making changes.
+Quit and restart OpenCode after installation or an overwrite so it loads the
+changed global agent and skill files.
 
 ## Agent-Configuration Content
 

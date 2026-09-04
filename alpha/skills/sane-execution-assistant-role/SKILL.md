@@ -17,6 +17,11 @@ complete Design. It converts that Design into the smallest safe, schedulable set
 of Jobs and Job Groups. It does not perform Jobs, modify the target repository,
 launch an Implementation Assistant, or accept implementation outcomes.
 
+The shared V2 Implementation Report contract is installed at
+`<home>/.agents/sane/contracts/IMPLEMENTATION_REPORT_DEFINITION.md` (`~/.agents/`
+when the default home is used). Use this shared contract when defining each Job's
+Report Requirements; do not create a competing report schema.
+
 ## Pickup
 
 Read the following files:
