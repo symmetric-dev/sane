@@ -6,7 +6,6 @@ import { dirname, join } from "node:path"
 import {
   AGENT_FILENAMES,
   AgentContextPackageInstallationError,
-  IMPLEMENTATION_REPORT_CONTRACT_PATH,
   ROLE_SKILL_NAMES,
   installSaneAgentContextPackages,
   parseCliArguments,
@@ -20,13 +19,11 @@ describe("install-sane-agent-context-packages", () => {
   let temporaryDirectory: string
   let homeDirectory: string
   let sourceRoot: string
-  let contractSource: string
 
   beforeEach(async () => {
     temporaryDirectory = await mkdtemp(join(tmpdir(), "sane-agent-context-packages-"))
     homeDirectory = join(temporaryDirectory, "home")
     sourceRoot = join(temporaryDirectory, "source")
-    contractSource = join(temporaryDirectory, "contract", "IMPLEMENTATION_REPORT_DEFINITION.md")
     for (const filename of AGENT_FILENAMES) {
       const path = join(sourceRoot, "opencode", "agents", filename)
       await mkdir(dirname(path), { recursive: true })
@@ -37,8 +34,6 @@ describe("install-sane-agent-context-packages", () => {
       await mkdir(dirname(path), { recursive: true })
       await Bun.write(path, `skill ${skillName}\n`)
     }
-    await mkdir(dirname(contractSource), { recursive: true })
-    await Bun.write(contractSource, "shared contract\n")
   })
 
   afterEach(async () => {
@@ -46,16 +41,16 @@ describe("install-sane-agent-context-packages", () => {
   })
 
   function options(extra: { dryRun?: boolean; overwrite?: boolean; write?: (line: string) => void } = {}) {
-    return { homeDirectory, sourceRoot, contractSource, write: () => {}, ...extra }
+    return { homeDirectory, sourceRoot, write: () => {}, ...extra }
   }
 
-  test("installs all six agents, all six skills, and the shared contract", async () => {
+  test("installs all six agents and all six skills", async () => {
     const result = await installSaneAgentContextPackages(options())
 
     expect(result.dryRun).toBe(false)
     expect(result.updated).toEqual([])
     expect(result.unchanged).toEqual([])
-    expect(result.created).toHaveLength(13)
+    expect(result.created).toHaveLength(12)
     for (const filename of AGENT_FILENAMES) {
       expect(await readFile(join(homeDirectory, ".config", "opencode", "agents", filename), "utf8")).toBe(
         `agent ${filename}\n`,
@@ -66,24 +61,24 @@ describe("install-sane-agent-context-packages", () => {
         `skill ${skillName}\n`,
       )
     }
-    expect(await readFile(join(homeDirectory, IMPLEMENTATION_REPORT_CONTRACT_PATH), "utf8")).toBe(
-      "shared contract\n",
-    )
   })
 
   test("uses SANE_HOME when no home directory option is provided", async () => {
     const previousSaneHome = process.env.SANE_HOME
     process.env.SANE_HOME = homeDirectory
     try {
-      await installSaneAgentContextPackages({ sourceRoot, contractSource, write: () => {} })
+      await installSaneAgentContextPackages({ sourceRoot, write: () => {} })
     } finally {
       if (previousSaneHome === undefined) delete process.env.SANE_HOME
       else process.env.SANE_HOME = previousSaneHome
     }
 
     expect(
-      await readFile(join(homeDirectory, IMPLEMENTATION_REPORT_CONTRACT_PATH), "utf8"),
-    ).toBe("shared contract\n")
+      await readFile(
+        join(homeDirectory, ".config", "opencode", "agents", AGENT_FILENAMES[0]),
+        "utf8",
+      ),
+    ).toBe(`agent ${AGENT_FILENAMES[0]}\n`)
   })
 
   test("repeats as a no-op when every destination is identical", async () => {
@@ -91,7 +86,7 @@ describe("install-sane-agent-context-packages", () => {
     const result = await installSaneAgentContextPackages(options())
 
     expect(result).toMatchObject({ created: [], updated: [] })
-    expect(result.unchanged).toHaveLength(13)
+    expect(result.unchanged).toHaveLength(12)
   })
 
   test("dry run validates and reports plans without creating a home directory", async () => {
@@ -99,9 +94,9 @@ describe("install-sane-agent-context-packages", () => {
     const result = await installSaneAgentContextPackages(options({ dryRun: true, write: (line) => lines.push(line) }))
 
     expect(result.dryRun).toBe(true)
-    expect(result.created).toHaveLength(13)
+    expect(result.created).toHaveLength(12)
     expect(lines).toContain("Dry run: no files or directories were modified.")
-    expect(lines.filter((line) => line.startsWith("Planned:"))).toHaveLength(13)
+    expect(lines.filter((line) => line.startsWith("Planned:"))).toHaveLength(12)
     await expectMissing(homeDirectory)
   })
 

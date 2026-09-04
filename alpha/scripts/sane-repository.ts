@@ -8,7 +8,12 @@ import { BootstrapError, type TemplateRegistry, validateTemplateRegistry } from 
 
 const execFileAsync = promisify(execFile)
 export const SANE_PATHS_FILENAME = "paths"
-const REQUIRED_WORKSTREAM_FILES = ["SANE_CONTEXT.md", "SANE_STATE.md", "PRD.md"] as const
+const REQUIRED_WORKSTREAM_FILES = [
+  "SANE_CONTEXT.md",
+  "SANE_STATE.md",
+  "PRD.md",
+  "resources/IMPLEMENTATION_REPORT_TEMPLATE.md",
+] as const
 
 export class SaneRepositoryError extends BootstrapError {
   constructor(message: string) {

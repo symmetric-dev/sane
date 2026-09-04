@@ -28,6 +28,8 @@ describe("create-sane-workstream", () => {
     await Bun.write(join(templateRoot, "SANE_CONTEXT.md"), "context template\n")
     await Bun.write(join(templateRoot, "SANE_STATE.md"), "state template\n")
     await Bun.write(join(templateRoot, "PRD.md"), "prd template\n")
+    await mkdir(join(templateRoot, "implementation"))
+    await Bun.write(join(templateRoot, "implementation", "REPORT.md"), "report template\n")
   })
 
   afterEach(async () => {
@@ -52,7 +54,9 @@ describe("create-sane-workstream", () => {
     }
     for (const directory of INITIAL_DIRECTORIES) {
       await access(join(destination, directory))
-      expect(await readdir(join(destination, directory))).toEqual([])
+      expect(await readdir(join(destination, directory))).toEqual(
+        directory === "resources" ? ["IMPLEMENTATION_REPORT_TEMPLATE.md"] : [],
+      )
     }
     expect(lines).toContain(`Created: ${destination}`)
     expect(lines).toContain(
@@ -117,6 +121,6 @@ describe("create-sane-workstream", () => {
     expect(await readFile(join(stagingRoot, "skills", "product", "SKILL.md"), "utf8")).toBe(
       "product role template\n",
     )
-    expect(INITIAL_TEMPLATE_REGISTRY).toHaveLength(3)
+    expect(INITIAL_TEMPLATE_REGISTRY).toHaveLength(4)
   })
 })

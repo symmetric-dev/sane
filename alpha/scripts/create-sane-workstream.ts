@@ -19,6 +19,10 @@ export const INITIAL_TEMPLATE_REGISTRY = [
   { source: "SANE_CONTEXT.md", destination: "SANE_CONTEXT.md" },
   { source: "SANE_STATE.md", destination: "SANE_STATE.md" },
   { source: "PRD.md", destination: "PRD.md" },
+  {
+    source: "implementation/REPORT.md",
+    destination: "resources/IMPLEMENTATION_REPORT_TEMPLATE.md",
+  },
 ] as const satisfies TemplateRegistry
 
 export const INITIAL_DIRECTORIES = [
@@ -203,12 +207,12 @@ export async function createSaneWorkstream(
   try {
     await mkdir(parent, { recursive: true })
     stagingDirectory = await mkdtemp(join(parent, `.${destinationName}.sane-bootstrap-`))
+    await createInitialDirectories(stagingDirectory)
     await copyTemplateRegistry(
       templateRoot,
       stagingDirectory,
       INITIAL_TEMPLATE_REGISTRY,
     )
-    await createInitialDirectories(stagingDirectory)
 
     // Recheck immediately before rename. This prevents ordinary concurrent use
     // from replacing a just-created destination; staging is removed on refusal.

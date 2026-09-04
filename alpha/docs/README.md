@@ -1,18 +1,18 @@
-# V2 Alpha Intent
+# SANE Alpha Intent
 
 ## Purpose
 
-This directory will hold a temporary, manual V2-alpha workflow for validating
-the V2 Product, Research, Design, Execution, and Implementation model in real
-projects before V2 CLI tooling is designed or implemented.
+This directory holds a temporary, manual Alpha workflow for validating the SANE
+Product, Research, Design, Execution, and Implementation model in real projects
+before CLI tooling is designed or implemented.
 
-The alpha is a documentation and agent-context prototype. It is not a V2 CLI
-implementation, a permanent workstream artifact model, or a replacement for the
-target V2 decision records in `work/014-workstream-v2/docs/`. Its procedures and state records may
-be retired once tested behavior is encoded by V2 tooling.
+The Alpha is a documentation and agent-context prototype. It is not a CLI
+implementation or a permanent workstream artifact model. Its procedures and
+state records may be retired once tested behavior is encoded by tooling.
 
-The Alpha operating model and per-workstream context and State templates are
-defined. Role skills, tested agent-context-package installation, and the local
+The Alpha operating model is defined, and `alpha/templates/` is the canonical
+source of SANE templates, including per-workstream context and State templates.
+Role skills, tested agent-context-package installation, and the local
 repository-setup convention are also available. Detailed approval rules and the
 remaining README cleanup remain to be written.
 
@@ -25,7 +25,7 @@ Before creating a workstream for an implementation repository, follow
 
 ## What the Alpha Will Validate
 
-The alpha will test the full V2 workflow by hand:
+The Alpha will test the full workflow by hand:
 
 1. Product, Research, and Design assistants prepare their defined artifacts.
 2. The Execution Assistant prepares a per-stage `EXECUTION_PLAN.md` and Job
@@ -81,13 +81,15 @@ agent -p "<job prompt>"
 ```
 
 The focused Job and review prompts identify only their assigned documents,
-repository paths, and report contract. They do not provide general SANE context.
+repository paths, and report requirements. They do not provide general SANE
+context.
 The alpha must not use Cursor's `--force` or `--yolo` options by default.
 
 ## Shared Context Packages
 
-The alpha source material is maintained in this directory. The context-package
-installer copies the selected skills to the shared location:
+The Alpha source material is maintained in this directory. `alpha/templates/` is
+the canonical source of SANE templates. The context-package installer copies the
+six role skills to the shared location:
 
 ```text
 <home>/.agents/skills/<skill-name>/SKILL.md
@@ -98,13 +100,9 @@ OpenCode's skill loader; its prompts explicitly provide the relevant skill
 paths for it to read. Here `<home>` is `SANE_HOME` when it is set, otherwise the
 current user's home directory.
 
-The context packages share V2 document contracts rather than duplicating them.
-In particular, the Execution Assistant and the Implementation agent context
-packages both reference the same Implementation Report contract, sourced from
-`work/014-workstream-v2/docs/IMPLEMENTATION_REPORT_DEFINITION.md` and installed
-at `<home>/.agents/sane/contracts/IMPLEMENTATION_REPORT_DEFINITION.md`. The installer
-leaves identical files unchanged, requires `--overwrite` for differing regular
-files, and supports a non-mutating `--dry-run`.
+The installer copies exactly twelve files: six OpenCode agent configurations and
+six role skills. It leaves identical files unchanged, requires `--overwrite` for
+differing regular files, and supports a non-mutating `--dry-run`.
 
 ## Manual Approval and State
 
@@ -122,11 +120,9 @@ applicable boundary. The user or a user-authorized assistant records approvals
 and revocations in the alpha state record. No agent may treat a document as
 approved merely because it exists.
 
-## Existing V2 Contracts
+## Canonical Templates
 
-The alpha uses the target V2 document contracts already defined in
-`work/014-workstream-v2/docs/`,
-including:
+`alpha/templates/` is the canonical source of SANE templates, including:
 
 - Product Requirements Document;
 - Research Index and Technical Brief;
@@ -134,6 +130,5 @@ including:
 - stage Execution Plan and Job documents; and
 - stage-scoped Implementation Reports.
 
-The alpha may reveal gaps or unsafe assumptions in those contracts. Such a
-finding must be recorded and returned to the V2 decision records for an
-explicit user decision; it must not silently redefine the target model.
+The Alpha may reveal gaps or unsafe assumptions in these templates. Record such
+findings for an explicit user decision; do not silently redefine the model.

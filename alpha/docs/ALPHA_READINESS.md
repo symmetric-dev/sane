@@ -20,14 +20,11 @@ Available now:
 - Product, Research, Design, Engineering, Execution, and Implementation role
   skills;
 - tested Alpha agent-context-package installer for all six OpenCode agent
-  configurations, all six role skills, and the shared Implementation Report
-  contract. Run
+  configurations and all six role skills. Run
   `bun alpha/scripts/install-sane-agent-context-packages.ts [--dry-run] [--overwrite]`;
   it installs agents under `<home>/.config/opencode/agents/`, skills under
-  `<home>/.agents/skills/`, and the contract at
-  `<home>/.agents/sane/contracts/IMPLEMENTATION_REPORT_DEFINITION.md`.
-  `--dry-run` validates and reports without mutation, while `--overwrite`
-  replaces only differing regular files;
+  `<home>/.agents/skills/`. `--dry-run` validates and reports without mutation,
+  while `--overwrite` replaces only differing regular files;
 - focused implementation-agent and read-only review-agent prompt instructions;
 - Implementation Agent Cursor invocation through the recorded implementation
   repository as the Bash working directory, with a timeout of at least 40
@@ -65,9 +62,6 @@ reference in `README.md` to `SANE_STATE.md`.
 - [Workstream selector](./scripts/select-sane-workstream.ts)
 - [Role artifact provisioner](./scripts/provision-sane-role.ts)
 - [Agent-context-package installer](./scripts/install-sane-agent-context-packages.ts)
-- [Template catalog](./templates/README.md)
-- [Shared context template](./templates/SANE_CONTEXT.md)
-- [Initial State template](./templates/SANE_STATE.md)
-- [V2 Workstream structure](../work/014-workstream-v2/docs/PLAN_STRUCTURE.md)
-- [V2 assistant boundaries](../work/014-workstream-v2/docs/WORKSTREAM_ASSISTANTS.md)
-- [Implementation Report contract](../work/014-workstream-v2/docs/IMPLEMENTATION_REPORT_DEFINITION.md)
+- [Canonical SANE templates](../templates/)
+- [Shared context template](../templates/SANE_CONTEXT.md)
+- [Initial State template](../templates/SANE_STATE.md)

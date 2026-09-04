@@ -33,15 +33,8 @@ It copies the corresponding source skills from `alpha/skills/` to:
 <home>/.agents/skills/<skill-name>/SKILL.md
 ```
 
-It also copies the shared V2 Implementation Report contract from
-`work/014-workstream-v2/docs/IMPLEMENTATION_REPORT_DEFINITION.md` to this stable
-path:
-
-```text
-<home>/.agents/sane/contracts/IMPLEMENTATION_REPORT_DEFINITION.md
-```
-
-The installer validates every source and destination before changing anything.
+The installer has exactly twelve destinations: six agent configurations and six
+role skills. It validates every source and destination before changing anything.
 It creates parent directories as needed, leaves identical destinations unchanged,
 and refuses differing regular files by default. `--overwrite` replaces only
 differing regular files; it never replaces a non-regular destination. `--dry-run`
@@ -64,7 +57,8 @@ Each role configuration starts with the same three concepts, in this order:
    installed SANE role skill as the detailed role contract.
 
 The configuration does not repeat the substantive role instructions from the
-skill or duplicate V2 document contracts.
+skill or duplicate SANE template guidance. `alpha/templates/` is the canonical
+source of SANE templates.
 
 ## Context Ingestion and Pickup
 

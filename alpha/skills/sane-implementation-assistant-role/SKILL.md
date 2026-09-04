@@ -21,13 +21,6 @@ Group. It does not itself implement repository changes, make product or
 technical decisions, accept an implementation outcome, or revise an approved
 Execution Plan.
 
-The shared V2 Implementation Report contract is installed at
-`<home>/.agents/sane/contracts/IMPLEMENTATION_REPORT_DEFINITION.md` (`~/.agents/`
-when the default home is used). When filling the Cursor implementation-agent
-prompt's `<absolute path to Implementation Report contract>` placeholder,
-resolve this installed location to its absolute path; do not pass Cursor a
-tilde-relative path.
-
 ## Pickup
 
 Read the following files:
@@ -35,6 +28,7 @@ Read the following files:
 - `SANE_CONTEXT.md`
 - `SANE_STATE.md`
 - `PRD.md`
+- `resources/IMPLEMENTATION_REPORT_TEMPLATE.md`
 - `design/SPEC.md`
 - `design/stages/<id>-<slug>/SPEC.md`
 - `design/stages/<id>-<slug>/SECTIONS.md`
@@ -78,30 +72,27 @@ The workflow is as follows:
    ```text
    You are an implementation agent. Your role is to implement one bounded change in the current repository.
 
-   Read:
-   - <absolute path to Job document>
-   - <absolute path to Implementation Report contract>
+    Read:
+    - <absolute path to Job document>
+    - <absolute path to resources/IMPLEMENTATION_REPORT_TEMPLATE.md>
 
-   Follow the Job document exactly. It is the source of truth for the goal,
+    Follow the Job document exactly. It is the source of truth for the goal,
    instructions, allowed and forbidden edits, verification, report requirements,
    and stop or escalation rules.
 
-   Modify only target-repository paths the Job allows. Run the Job's permitted
-   verification. Do not change planning documents or make unrequested decisions.
+    Modify only target-repository paths the Job allows. Run the Job's permitted
+    verification. Do not change planning documents or make unrequested decisions.
 
    Write the Job's Implementation Report to:
    <absolute path to implementation/reports/<stage-id>-<stage-slug>/<job-id>-<job-slug>.md>
 
-   Use the Report contract's required structure and include the Job's Report
-   Requirements. When finished, return a concise summary, verification results,
-   report path, and any blockers.
-   ```
+    Create that report by copying the supplied workstream-local template. Replace
+    its placeholders and guidance comments, retain its H1 and every H2 exactly
+    once and in order, and include the Job's Report Requirements. When finished,
+    return a concise summary, verification results, report path, and any blockers.
+    ```
 
-    Resolve the installed shared contract path to an absolute path before filling
-    the `<absolute path to Implementation Report contract>` placeholder. Do not
-    pass a `~`-prefixed path to the Cursor implementation agent.
-
-   Do not include `SANE_CONTEXT.md`, `SANE_STATE.md`, or general SANE workflow
+    Do not include `SANE_CONTEXT.md`, `SANE_STATE.md`, or general SANE workflow
    instructions in this prompt.
 3. After every Job in the group has returned, launch one read-only review agent
    for the complete group through the Bash tool with the same target-repository
@@ -116,10 +107,11 @@ The workflow is as follows:
    ```text
    You are an implementation reviewer agent. Your role is to perform a read-only review of completed repository changes.
 
-   Read:
-   - <absolute path to Execution Plan>
-   - <absolute paths to every Job document in this Job Group>
-   - <absolute paths to their Implementation Reports>
+    Read:
+    - <absolute path to Execution Plan>
+    - <absolute paths to every Job document in this Job Group>
+    - <absolute path to resources/IMPLEMENTATION_REPORT_TEMPLATE.md>
+    - <absolute paths to their Implementation Reports>
    - every source, Design, interface, and predecessor path named in those Jobs' Context.
 
    Inspect the current repository without modifying any file. For every Job,
@@ -171,9 +163,9 @@ direction.
 
 ## Clarifications
 
-- An Implementation Report records one carried-out Job outcome. Its fixed
-  `Accomplished`, `Found Issues`, and `Notes` structure is shared with Execution;
-  Job-specific Report Requirements add evidence without changing that structure.
+- An Implementation Report records one carried-out Job outcome. Copy the
+  workstream-local `resources/IMPLEMENTATION_REPORT_TEMPLATE.md` to create it;
+  Job-specific Report Requirements add evidence without changing its structure.
 - A review is a read-only assessment after a Job Group. Its findings inform the
   user; it neither changes the repository nor accepts the group's work.
 - A user-directed retry remains the same authorized Job and updates its matching

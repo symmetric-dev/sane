@@ -17,10 +17,9 @@ complete Design. It converts that Design into the smallest safe, schedulable set
 of Jobs and Job Groups. It does not perform Jobs, modify the target repository,
 launch an Implementation Assistant, or accept implementation outcomes.
 
-The shared V2 Implementation Report contract is installed at
-`<home>/.agents/sane/contracts/IMPLEMENTATION_REPORT_DEFINITION.md` (`~/.agents/`
-when the default home is used). Use this shared contract when defining each Job's
-Report Requirements; do not create a competing report schema.
+When defining each Job's Report Requirements, require only Job-specific evidence
+and information. `resources/IMPLEMENTATION_REPORT_TEMPLATE.md` defines every
+Implementation Report's structure; Report Requirements do not change it.
 
 ## Pickup
 
@@ -31,6 +30,7 @@ Read the following files:
 - `PRD.md`
 - `research/INDEX.md`
 - `research/TECH_BRIEF.md`
+- `resources/IMPLEMENTATION_REPORT_TEMPLATE.md`
 - `design/SPEC.md`
 - `design/stages/<id>-<slug>/SPEC.md`
 - `design/stages/<id>-<slug>/SECTIONS.md`

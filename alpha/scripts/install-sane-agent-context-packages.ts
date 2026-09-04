@@ -22,15 +22,6 @@ export const ROLE_SKILL_NAMES = [
 ] as const
 
 export const DEFAULT_SOURCE_ROOT = fileURLToPath(new URL("../", import.meta.url))
-export const DEFAULT_CONTRACT_SOURCE = fileURLToPath(
-  new URL("../../work/014-workstream-v2/docs/IMPLEMENTATION_REPORT_DEFINITION.md", import.meta.url),
-)
-export const IMPLEMENTATION_REPORT_CONTRACT_PATH = join(
-  ".agents",
-  "sane",
-  "contracts",
-  "IMPLEMENTATION_REPORT_DEFINITION.md",
-)
 
 export class AgentContextPackageInstallationError extends Error {
   constructor(message: string) {
@@ -44,8 +35,6 @@ export interface AgentContextPackageInstallationOptions {
   homeDirectory?: string
   /** Root containing the source `opencode/agents` and `skills` directories. */
   sourceRoot?: string
-  /** Source of the shared V2 Implementation Report contract. */
-  contractSource?: string
   dryRun?: boolean
   overwrite?: boolean
   write?: (line: string) => void
@@ -93,7 +82,6 @@ function resolveHomeDirectory(configuredHome?: string): string {
 
 function installationEntries(
   sourceRoot: string,
-  contractSource: string,
   homeDirectory: string,
 ): InstallationEntry[] {
   return [
@@ -105,10 +93,6 @@ function installationEntries(
       source: join(sourceRoot, "skills", skillName, "SKILL.md"),
       destination: join(homeDirectory, ".agents", "skills", skillName, "SKILL.md"),
     })),
-    {
-      source: contractSource,
-      destination: join(homeDirectory, IMPLEMENTATION_REPORT_CONTRACT_PATH),
-    },
   ]
 }
 
@@ -173,7 +157,7 @@ async function planDestinations(
 }
 
 /**
- * Install all Alpha OpenCode agents, role skills, and the shared report contract.
+ * Install all Alpha OpenCode agents and role skills.
  * All source and destination checks finish before this function creates a directory
  * or writes a destination file.
  */
@@ -183,10 +167,7 @@ export async function installSaneAgentContextPackages(
   const write = options.write ?? console.log
   const homeDirectory = resolveHomeDirectory(options.homeDirectory)
   const sourceRoot = resolve(options.sourceRoot ?? DEFAULT_SOURCE_ROOT)
-  const contractSource = resolve(options.contractSource ?? DEFAULT_CONTRACT_SOURCE)
-  const sourcedEntries = await validateSources(
-    installationEntries(sourceRoot, contractSource, homeDirectory),
-  )
+  const sourcedEntries = await validateSources(installationEntries(sourceRoot, homeDirectory))
   const plannedEntries = await planDestinations(sourcedEntries, options.overwrite === true)
   const result: AgentContextPackageInstallationResult = {
     homeDirectory,
