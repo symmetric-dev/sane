@@ -3,11 +3,11 @@ import { describe, expect, test } from "bun:test"
 import { COMMANDS, type AlphaCommand, runSaneAlpha } from "./sane-alpha.ts"
 
 const expectedCommands: AlphaCommand[] = [
-  "init-sane-repository",
+  "init-sane",
   "create-workstream",
-  "select-sane-workstream",
-  "provision-sane-role",
-  "install-sane-agent-context-packages",
+  "select-workstream",
+  "provision",
+  "install-context-packages",
   "sane-path",
 ]
 
@@ -29,12 +29,12 @@ describe("sane-alpha dispatcher", () => {
     const argumentsToPreserve = ["", "two words", "--", "--stage", "01-foundation"]
 
     const result = await runSaneAlpha(
-      ["provision-sane-role", ...argumentsToPreserve],
+      ["provision", ...argumentsToPreserve],
       handlers,
     )
 
-    expect(result).toBe(expectedCommands.indexOf("provision-sane-role") + 10)
-    expect(received).toEqual([{ command: "provision-sane-role", args: argumentsToPreserve }])
+    expect(result).toBe(expectedCommands.indexOf("provision") + 10)
+    expect(received).toEqual([{ command: "provision", args: argumentsToPreserve }])
   })
 
   test("prints help successfully and rejects an unknown command", async () => {

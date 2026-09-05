@@ -27,8 +27,8 @@ repository with its local SANE workstream repository:
 ```bash
 IMPL="/absolute/path/to/invoice-application"
 
-sane-alpha install-sane-agent-context-packages
-sane-alpha init-sane-repository "$IMPL"
+sane-alpha install-context-packages
+sane-alpha init-sane "$IMPL"
 ```
 
 The initializer creates or validates the separate paired Git repository at
@@ -85,7 +85,7 @@ the assistant redelivers before the user approves it.
 Create the Research artifacts before opening the role session:
 
 ```bash
-sane-alpha provision-sane-role "$IMPL" research --workstream "$WORKSTREAM"
+sane-alpha provision "$IMPL" research --workstream "$WORKSTREAM"
 ```
 
 **User action:** Select the **SANE Research Assistant** in OpenCode.
@@ -109,7 +109,7 @@ Research delivery and request its State update.
 Provision the root Design artifacts:
 
 ```bash
-sane-alpha provision-sane-role "$IMPL" design --workstream "$WORKSTREAM"
+sane-alpha provision "$IMPL" design --workstream "$WORKSTREAM"
 ```
 
 **User action:** Select the **SANE Design Assistant**.
@@ -135,7 +135,7 @@ session for that Stage:
 
 ```bash
 STAGE="01-csv-export"
-sane-alpha provision-sane-role "$IMPL" stage-design \
+sane-alpha provision "$IMPL" stage-design \
   --workstream "$WORKSTREAM" --stage "$STAGE"
 ```
 
@@ -153,7 +153,7 @@ Next, create Section planning artifacts and start the **SANE Engineering
 Assistant**:
 
 ```bash
-sane-alpha provision-sane-role "$IMPL" engineering \
+sane-alpha provision "$IMPL" engineering \
   --workstream "$WORKSTREAM" --stage "$STAGE"
 ```
 
@@ -175,7 +175,7 @@ needed, then explicitly approves the complete Stage Design.
 Create the Stage Execution Plan, then start the **SANE Execution Assistant**:
 
 ```bash
-sane-alpha provision-sane-role "$IMPL" execution \
+sane-alpha provision "$IMPL" execution \
   --workstream "$WORKSTREAM" --stage "$STAGE"
 ```
 
@@ -260,7 +260,7 @@ The user can stop after any delivery or Job Group. To resume later, select the
 workstream explicitly if another one became selected:
 
 ```bash
-sane-alpha select-sane-workstream "$IMPL" "$WORKSTREAM"
+sane-alpha select-workstream "$IMPL" "$WORKSTREAM"
 ```
 
 Then open the role session that owns the next user-directed action. That role's

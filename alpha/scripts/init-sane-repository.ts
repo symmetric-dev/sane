@@ -330,7 +330,7 @@ export async function initializeSaneRepository(
 }
 
 export const USAGE =
-  "Usage: bun alpha/scripts/init-sane-repository.ts <implementation-repository> [--dry-run]"
+  "Usage: sane-alpha init-sane <implementation-repository> [--dry-run]"
 
 export function parseCliArguments(args: string[]): {
   implementationRepository: string

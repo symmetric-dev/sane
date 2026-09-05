@@ -198,7 +198,7 @@ export async function installSaneAgentContextPackages(
 }
 
 export const USAGE =
-  "Usage: bun alpha/scripts/install-sane-agent-context-packages.ts [--dry-run] [--overwrite]"
+  "Usage: sane-alpha install-context-packages [--dry-run] [--overwrite]"
 
 export function parseCliArguments(args: string[]): { dryRun: boolean; overwrite: boolean } {
   let dryRun = false

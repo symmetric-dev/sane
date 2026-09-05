@@ -22,7 +22,7 @@ Available now:
   skills;
 - tested Alpha agent-context-package installer for all six OpenCode agent
   configurations and all six role skills. Run
-  `sane-alpha install-sane-agent-context-packages [--dry-run] [--overwrite]`;
+   `sane-alpha install-context-packages [--dry-run] [--overwrite]`;
   it installs agents under `<home>/.config/opencode/agents/`, skills under
   `<home>/.agents/skills/`. `--dry-run` validates and reports without mutation,
   while `--overwrite` replaces only differing regular files;

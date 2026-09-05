@@ -16,7 +16,7 @@ alpha/opencode/agents/
 Install the complete context package with:
 
 ```bash
-sane-alpha install-sane-agent-context-packages [--dry-run] [--overwrite]
+sane-alpha install-context-packages [--dry-run] [--overwrite]
 ```
 
 The installer uses `SANE_HOME` when set (otherwise the current user's home), so

@@ -8,32 +8,32 @@ import { runCli as runProvisionRole } from "../scripts/provision-sane-role.ts"
 import { runCli as runSelectWorkstream } from "../scripts/select-sane-workstream.ts"
 
 export type AlphaCommand =
-  | "init-sane-repository"
+  | "init-sane"
   | "create-workstream"
-  | "select-sane-workstream"
-  | "provision-sane-role"
-  | "install-sane-agent-context-packages"
+  | "select-workstream"
+  | "provision"
+  | "install-context-packages"
   | "sane-path"
 
 export type AlphaCommandHandler = (args: string[]) => Promise<number>
 
 export const COMMANDS: Record<AlphaCommand, AlphaCommandHandler> = {
-  "init-sane-repository": runInitializeRepository,
+  "init-sane": runInitializeRepository,
   "create-workstream": runCreateRepositoryWorkstream,
-  "select-sane-workstream": runSelectWorkstream,
-  "provision-sane-role": runProvisionRole,
-  "install-sane-agent-context-packages": runInstallAgentContextPackages,
+  "select-workstream": runSelectWorkstream,
+  provision: runProvisionRole,
+  "install-context-packages": runInstallAgentContextPackages,
   "sane-path": runPrintSanePath,
 }
 
 export const USAGE = `Usage: sane-alpha <command> [arguments...]
 
 Commands:
-  init-sane-repository
+  init-sane
   create-workstream
-  select-sane-workstream
-  provision-sane-role
-  install-sane-agent-context-packages
+  select-workstream
+  provision
+  install-context-packages
   sane-path                      Print the paired SANE workstream repository path
 
 Run 'sane-alpha <command> --help' for a command's argument validation.`

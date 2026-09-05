@@ -73,7 +73,7 @@ Implementation Assistants will be selected and started by the user in OpenCode.
 Their global OpenCode agent configurations are installed with:
 
 ```bash
-sane-alpha install-sane-agent-context-packages [--dry-run] [--overwrite]
+sane-alpha install-context-packages [--dry-run] [--overwrite]
 ```
 
 The command installs them under:

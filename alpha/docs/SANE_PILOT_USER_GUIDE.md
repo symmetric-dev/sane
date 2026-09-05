@@ -37,13 +37,13 @@ bun alpha/scripts/install-sane-alpha.ts --overwrite
 Install the SANE OpenCode agents and role skills:
 
 ```bash
-sane-alpha install-sane-agent-context-packages
+sane-alpha install-context-packages
 ```
 
 Pair the implementation repository with its local workstream repository:
 
 ```bash
-sane-alpha init-sane-repository "$IMPL"
+sane-alpha init-sane "$IMPL"
 ```
 
 ## Start a Workstream
@@ -72,21 +72,21 @@ Run a command immediately before starting the corresponding role session:
 
 ```bash
 # Research
-sane-alpha provision-sane-role "$IMPL" research --workstream "$WORKSTREAM"
+sane-alpha provision "$IMPL" research --workstream "$WORKSTREAM"
 
 # Root Design
-sane-alpha provision-sane-role "$IMPL" design --workstream "$WORKSTREAM"
+sane-alpha provision "$IMPL" design --workstream "$WORKSTREAM"
 
 # Stage Design
-sane-alpha provision-sane-role "$IMPL" stage-design \
+sane-alpha provision "$IMPL" stage-design \
   --workstream "$WORKSTREAM" --stage 01-foundation
 
 # Engineering
-sane-alpha provision-sane-role "$IMPL" engineering \
+sane-alpha provision "$IMPL" engineering \
   --workstream "$WORKSTREAM" --stage 01-foundation
 
 # Execution
-sane-alpha provision-sane-role "$IMPL" execution \
+sane-alpha provision "$IMPL" execution \
   --workstream "$WORKSTREAM" --stage 01-foundation
 ```
 
@@ -98,7 +98,7 @@ template; there is no report-provisioning command.
 Select an existing workstream before starting a new SANE role session:
 
 ```bash
-sane-alpha select-sane-workstream "$IMPL" "$WORKSTREAM"
+sane-alpha select-workstream "$IMPL" "$WORKSTREAM"
 ```
 
 ## Run Git in the SANE Workstream Repository
@@ -118,5 +118,5 @@ After changing Alpha agent configurations or role skills, reinstall them and
 restart OpenCode:
 
 ```bash
-sane-alpha install-sane-agent-context-packages --overwrite
+sane-alpha install-context-packages --overwrite
 ```

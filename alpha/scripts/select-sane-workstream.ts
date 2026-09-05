@@ -26,7 +26,7 @@ export async function selectSaneWorkstream(options: SelectWorkstreamOptions): Pr
   return { dryRun: false, relativePath: workstream.relativePath }
 }
 
-export const USAGE = "Usage: bun alpha/scripts/select-sane-workstream.ts <implementation-repository> <workstream-relative-path> [--dry-run]"
+export const USAGE = "Usage: sane-alpha select-workstream <implementation-repository> <workstream-relative-path> [--dry-run]"
 
 export function parseCliArguments(args: string[]): { implementationRepository: string; workstreamPath: string; dryRun: boolean } {
   let dryRun = false

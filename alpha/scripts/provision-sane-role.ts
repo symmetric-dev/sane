@@ -86,7 +86,7 @@ export async function provisionSaneRole(options: ProvisionRoleOptions): Promise<
   return { dryRun: false, role, relativePath: workstream.relativePath }
 }
 
-export const USAGE = "Usage: bun alpha/scripts/provision-sane-role.ts <implementation-repository> <role> [--workstream <relative-path>] [--stage <id>-<slug>] [--dry-run]"
+export const USAGE = "Usage: sane-alpha provision <implementation-repository> <role> [--workstream <relative-path>] [--stage <id>-<slug>] [--dry-run]"
 
 export function parseCliArguments(args: string[]): ProvisionRoleOptions {
   let dryRun = false
