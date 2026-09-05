@@ -9,7 +9,7 @@ import { runCli as runSelectWorkstream } from "../scripts/select-sane-workstream
 
 export type AlphaCommand =
   | "init-sane-repository"
-  | "create-sane-repository-workstream"
+  | "create-workstream"
   | "select-sane-workstream"
   | "provision-sane-role"
   | "install-sane-agent-context-packages"
@@ -19,7 +19,7 @@ export type AlphaCommandHandler = (args: string[]) => Promise<number>
 
 export const COMMANDS: Record<AlphaCommand, AlphaCommandHandler> = {
   "init-sane-repository": runInitializeRepository,
-  "create-sane-repository-workstream": runCreateRepositoryWorkstream,
+  "create-workstream": runCreateRepositoryWorkstream,
   "select-sane-workstream": runSelectWorkstream,
   "provision-sane-role": runProvisionRole,
   "install-sane-agent-context-packages": runInstallAgentContextPackages,
@@ -30,7 +30,7 @@ export const USAGE = `Usage: sane-alpha <command> [arguments...]
 
 Commands:
   init-sane-repository
-  create-sane-repository-workstream
+  create-workstream
   select-sane-workstream
   provision-sane-role
   install-sane-agent-context-packages

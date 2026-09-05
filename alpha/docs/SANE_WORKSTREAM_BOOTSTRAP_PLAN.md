@@ -27,7 +27,7 @@ The installed command exposes the repository-aware pilot utilities:
 
 ```bash
 sane-alpha init-sane-repository <implementation-repository>
-sane-alpha create-sane-repository-workstream <implementation-repository> <workstream-relative-path>
+sane-alpha create-workstream <implementation-repository> <workstream-relative-path>
 sane-alpha select-sane-workstream <implementation-repository> <workstream-relative-path>
 sane-alpha provision-sane-role <implementation-repository> <role> [...]
 sane-alpha install-sane-agent-context-packages [...]

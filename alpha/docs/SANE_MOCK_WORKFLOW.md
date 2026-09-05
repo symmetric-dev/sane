@@ -41,7 +41,7 @@ The user chooses a stable relative name and creates the workstream:
 
 ```bash
 WORKSTREAM="01-invoice-csv-export"
-sane-alpha create-sane-repository-workstream "$IMPL" "$WORKSTREAM"
+sane-alpha create-workstream "$IMPL" "$WORKSTREAM"
 ```
 
 This selects the workstream and creates its initial artifacts:

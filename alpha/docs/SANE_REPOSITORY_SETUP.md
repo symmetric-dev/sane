@@ -107,7 +107,7 @@ After initialization, use the repository-aware creator rather than manually
 combining the paths record and bootstrap paths:
 
 ```bash
-sane-alpha create-sane-repository-workstream <implementation-repository> <workstream-relative-path>
+sane-alpha create-workstream <implementation-repository> <workstream-relative-path>
 ```
 
 It validates the paths record and target containment, bootstraps with the standard

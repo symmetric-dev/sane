@@ -35,7 +35,7 @@ export async function createSaneRepositoryWorkstream(options: CreateRepositoryWo
   return { dryRun: result.dryRun, relativePath: workstream.relativePath }
 }
 
-export const USAGE = "Usage: bun alpha/scripts/create-sane-repository-workstream.ts <implementation-repository> <workstream-relative-path> [--dry-run]"
+export const USAGE = "Usage: sane-alpha create-workstream <implementation-repository> <workstream-relative-path> [--dry-run]"
 
 export function parseCliArguments(args: string[]): { implementationRepository: string; workstreamPath: string; dryRun: boolean } {
   let dryRun = false

@@ -51,7 +51,7 @@ sane-alpha init-sane-repository "$IMPL"
 Create and select a new workstream in the paired workstream repository:
 
 ```bash
-sane-alpha create-sane-repository-workstream "$IMPL" "$WORKSTREAM"
+sane-alpha create-workstream "$IMPL" "$WORKSTREAM"
 ```
 
 This creates the initial Product documents and the local Implementation Report

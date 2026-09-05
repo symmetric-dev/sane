@@ -4,7 +4,7 @@ import { COMMANDS, type AlphaCommand, runSaneAlpha } from "./sane-alpha.ts"
 
 const expectedCommands: AlphaCommand[] = [
   "init-sane-repository",
-  "create-sane-repository-workstream",
+  "create-workstream",
   "select-sane-workstream",
   "provision-sane-role",
   "install-sane-agent-context-packages",
