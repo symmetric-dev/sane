@@ -4,7 +4,7 @@
 
 This directory holds a temporary, manual Alpha workflow for validating the SANE
 Product, Research, Design, Execution, and Implementation model in real projects
-before permanent CLI tooling is designed or implemented.
+with small, pilot-support CLI utilities.
 
 The Alpha is a documentation and agent-context prototype. It is not a permanent
 workstream artifact model. Its procedures and state records may be retired once
@@ -13,12 +13,11 @@ tested behavior is encoded by tooling.
 The Alpha operating model is defined, and `alpha/templates/` is the canonical
 source of SANE templates, including per-workstream context and State templates.
 Role skills, tested agent-context-package installation, and the local
-repository-setup convention are also available. Detailed approval rules and the
-remaining README cleanup remain to be written.
+repository-setup convention are also available.
 
-The planned agent-context-package content, context-ingestion sequence, required
-working-directory and permission rules, and deferred Delivery-skill option are
-defined in [SANE Alpha Agent Context Packages](./SANE_AGENT_CONTEXT_PACKAGES.md).
+The agent-context-package content, context-ingestion sequence, and required
+working-directory and permission rules are defined in
+[SANE Alpha Agent Context Packages](./SANE_AGENT_CONTEXT_PACKAGES.md).
 
 Before creating a workstream for an implementation repository, follow
 [SANE Alpha Repository Setup](./SANE_REPOSITORY_SETUP.md).
@@ -35,10 +34,11 @@ This writes `sane-alpha` to `~/.local/bin` by default and reports the required
 `PATH` export when that directory is not already on `PATH`; it does not change
 shell configuration. Use `--bin-dir <path>` for another directory, `--dry-run`
 to validate without mutation, and `--overwrite` to replace a differing regular
-file. The wrapper imports this checkout by absolute path, so reinstall it after
-moving the checkout. See the [Pilot User Guide](./SANE_PILOT_USER_GUIDE.md) for
-the exposed commands and examples, and the [Mock Workflow](./SANE_MOCK_WORKFLOW.md)
-for an end-to-end illustrative pilot.
+file. The wrapper imports this checkout by absolute path. If the checkout moves,
+run `bun alpha/scripts/install-sane-alpha.ts --overwrite` from its new location.
+See the [Pilot User Guide](./SANE_PILOT_USER_GUIDE.md) for the exposed commands
+and examples, and the [Mock Workflow](./SANE_MOCK_WORKFLOW.md) for an end-to-end
+illustrative pilot.
 
 ## What the Alpha Will Validate
 
@@ -123,19 +123,16 @@ differing regular files, and supports a non-mutating `--dry-run`.
 
 ## Manual Approval and State
 
-The alpha will use documentation, not CLI state or `work approve` commands.
-Future alpha documents will define:
+The Alpha uses workstream documentation and role skills, not CLI approval
+commands. `SANE_CONTEXT.md` establishes the user's exclusive authority over
+session starts, approvals, redirects, and stops. Each role skill defines its
+Pickup, Delivery, approval boundary, and State-update procedure.
 
-- `ALPHA_APPROVAL_RULES.md` for manual equivalents of Product review, Research,
-  root and Stage Design, Stage Execution, and eventual Implementation acceptance
-  gates; and
-- `ALPHA_STATE.md` for temporary approval, revocation, active-Job, and outcome
-  tracking inside an alpha workstream.
-
-Assistants must ask the user for explicit verbal or written permission at each
-applicable boundary. The user or a user-authorized assistant records approvals
-and revocations in the alpha state record. No agent may treat a document as
-approved merely because it exists.
+`SANE_STATE.md` records the current approval, active, blocked, cancelled, and
+accepted-outcome status. No agent may treat an artifact as approved merely
+because it exists or because the user is silent. On explicit user approval, the
+role that owns the relevant entry updates only that entry and only when the user
+requests the State update.
 
 ## Canonical Templates
 

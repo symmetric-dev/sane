@@ -127,7 +127,7 @@ The installer must:
    directory is on `PATH`.
 
 The wrapper points to this checkout's Alpha script. If the checkout moves or is
-removed, the user reruns the installer from its new location.
+removed, the user runs the installer from its new location with `--overwrite`.
 
 ## Implementation Sequence
 

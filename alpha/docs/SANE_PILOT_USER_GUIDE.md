@@ -28,7 +28,11 @@ export PATH="$HOME/.local/bin:$PATH"
 Use `--bin-dir <path>` to select another user-owned executable directory.
 `--dry-run` validates without changing files, and `--overwrite` is required to
 replace a differing regular `sane-alpha` file. The installed wrapper remains
-tied to this checkout; rerun the installer if the checkout moves or is removed.
+tied to this checkout. If the checkout moves, run this from its new location:
+
+```bash
+bun alpha/scripts/install-sane-alpha.ts --overwrite
+```
 
 Install the SANE OpenCode agents and role skills:
 
