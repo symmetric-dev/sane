@@ -78,14 +78,14 @@ SANE repository initialization is distinct from workstream bootstrap. Run the
 initializer with an explicit implementation-repository path:
 
 ```bash
-bun alpha/scripts/init-sane-repository.ts <implementation-repository>
+sane-alpha init-sane-repository <implementation-repository>
 ```
 
 Use `--dry-run` to validate the repository, template, and existing local state
 and print the planned changes without modifying either repository:
 
 ```bash
-bun alpha/scripts/init-sane-repository.ts <implementation-repository> --dry-run
+sane-alpha init-sane-repository <implementation-repository> --dry-run
 ```
 
 The command:
@@ -107,7 +107,7 @@ After initialization, use the repository-aware creator rather than manually
 combining the paths record and bootstrap paths:
 
 ```bash
-bun alpha/scripts/create-sane-repository-workstream.ts <implementation-repository> <workstream-relative-path>
+sane-alpha create-sane-repository-workstream <implementation-repository> <workstream-relative-path>
 ```
 
 It validates the paths record and target containment, bootstraps with the standard
@@ -115,7 +115,7 @@ templates, then records the selection only after the bootstrap succeeds. To
 select an existing bootstrapped workstream instead:
 
 ```bash
-bun alpha/scripts/select-sane-workstream.ts <implementation-repository> <workstream-relative-path>
+sane-alpha select-sane-workstream <implementation-repository> <workstream-relative-path>
 ```
 
 Both commands support `--dry-run`. A selected workstream must contain
@@ -125,7 +125,7 @@ Both commands support `--dry-run`. A selected workstream must contain
 Provision only the approved role-start documents with:
 
 ```bash
-bun alpha/scripts/provision-sane-role.ts <implementation-repository> <research|design|stage-design|engineering|execution> [--workstream <relative-path>] [--stage <two-digit-id>-<slug>]
+sane-alpha provision-sane-role <implementation-repository> <research|design|stage-design|engineering|execution> [--workstream <relative-path>] [--stage <two-digit-id>-<slug>]
 ```
 
 Without `--workstream`, provision uses `current-workstream`. Stage roles require

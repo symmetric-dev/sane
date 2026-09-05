@@ -46,3 +46,4 @@ work/
 
 # Agent SDK PoC artifacts may contain prompts, tool arguments, paths, and model output
 **/.tmp/agent-sdk-poc/
+/.sane/

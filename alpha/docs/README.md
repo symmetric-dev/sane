@@ -4,11 +4,11 @@
 
 This directory holds a temporary, manual Alpha workflow for validating the SANE
 Product, Research, Design, Execution, and Implementation model in real projects
-before CLI tooling is designed or implemented.
+before permanent CLI tooling is designed or implemented.
 
-The Alpha is a documentation and agent-context prototype. It is not a CLI
-implementation or a permanent workstream artifact model. Its procedures and
-state records may be retired once tested behavior is encoded by tooling.
+The Alpha is a documentation and agent-context prototype. It is not a permanent
+workstream artifact model. Its procedures and state records may be retired once
+tested behavior is encoded by tooling.
 
 The Alpha operating model is defined, and `alpha/templates/` is the canonical
 source of SANE templates, including per-workstream context and State templates.
@@ -22,6 +22,22 @@ defined in [SANE Alpha Agent Context Packages](./SANE_AGENT_CONTEXT_PACKAGES.md)
 
 Before creating a workstream for an implementation repository, follow
 [SANE Alpha Repository Setup](./SANE_REPOSITORY_SETUP.md).
+
+## Alpha Command Installation
+
+From the SANE checkout, install the Alpha dispatcher once:
+
+```bash
+bun alpha/scripts/install-sane-alpha.ts
+```
+
+This writes `sane-alpha` to `~/.local/bin` by default and reports the required
+`PATH` export when that directory is not already on `PATH`; it does not change
+shell configuration. Use `--bin-dir <path>` for another directory, `--dry-run`
+to validate without mutation, and `--overwrite` to replace a differing regular
+file. The wrapper imports this checkout by absolute path, so reinstall it after
+moving the checkout. See the [Pilot User Guide](./SANE_PILOT_USER_GUIDE.md) for
+the exposed commands and examples.
 
 ## What the Alpha Will Validate
 
@@ -56,7 +72,7 @@ Implementation Assistants will be selected and started by the user in OpenCode.
 Their global OpenCode agent configurations are installed with:
 
 ```bash
-bun alpha/scripts/install-sane-agent-context-packages.ts [--dry-run] [--overwrite]
+sane-alpha install-sane-agent-context-packages [--dry-run] [--overwrite]
 ```
 
 The command installs them under:

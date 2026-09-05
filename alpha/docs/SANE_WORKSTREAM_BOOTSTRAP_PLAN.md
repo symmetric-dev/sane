@@ -9,31 +9,34 @@ on the user's machine.
 This is convenience tooling for the manual Alpha workflow. It does not select
 agents, move work between roles, approve work, or implement V2 CLI behavior.
 
-## Proposed Commands
+## Commands
 
-The source command is a Bun script in this Alpha directory:
+The low-level bootstrap source command remains available for development:
 
 ```bash
 bun alpha/scripts/create-sane-workstream.ts <workstream-path>
 ```
 
-An installation script creates a machine-local command alias:
+Install the machine-local dispatcher from the checkout:
 
 ```bash
 bun alpha/scripts/install-sane-alpha.ts
 ```
 
-The installed command is proposed as:
+The installed command exposes the repository-aware pilot utilities:
 
 ```bash
-sane-alpha create <workstream-path>
+sane-alpha init-sane-repository <implementation-repository>
+sane-alpha create-sane-repository-workstream <implementation-repository> <workstream-relative-path>
+sane-alpha select-sane-workstream <implementation-repository> <workstream-relative-path>
+sane-alpha provision-sane-role <implementation-repository> <role> [...]
+sane-alpha install-sane-agent-context-packages [...]
 ```
 
 `sane-alpha` is a command wrapper rather than a shell-specific `alias`. The
-installer should place it in a user-local executable directory, proposed as
-`~/.local/bin/`, so it works from all shells without editing shell startup
-files. If that directory is not on `PATH`, the installer reports the exact
-user-owned `PATH` change rather than modifying shell configuration silently.
+installer places it in `~/.local/bin/` by default, or a selected `--bin-dir`,
+without editing shell startup files. If that directory is not on `PATH`, the
+installer reports the exact user-owned `PATH` change.
 
 ## Bootstrap Output
 
@@ -98,18 +101,18 @@ before the bootstrap command is implemented.
 
 ## Command Installation
 
-The installer will create or replace only the dedicated `sane-alpha` wrapper in
-the chosen user-local binary directory. The wrapper invokes the maintained
-source command with Bun and forwards all arguments.
+The installer creates only the dedicated `sane-alpha` wrapper in the chosen
+user-local binary directory. The wrapper imports the checked-out dispatcher by
+absolute file URL with Bun and forwards all arguments.
 
 The installer must:
 
-1. Resolve and validate the Alpha source directory and Bun executable.
+1. Resolve and validate the Alpha dispatcher source file.
 2. Create the chosen binary directory when needed.
 3. Refuse to replace an unrelated existing `sane-alpha` executable.
-4. Write or update the wrapper only when it is already SANE-managed or the user
-   explicitly allows replacement.
-5. Mark the wrapper executable.
+4. Write or update the wrapper only when its contents are already SANE-managed
+   or the user explicitly allows replacement with `--overwrite`.
+5. Mark a created or updated wrapper executable.
 6. Report the installed location, source location, and whether the binary
    directory is on `PATH`.
 
@@ -126,13 +129,10 @@ removed, the user reruns the installer from its new location.
 4. Add a dry-run mode and automated temporary-directory tests for bootstrap
    success, existing-destination refusal, missing-template refusal, and wrapper
    installation safety.
-5. Manually install the wrapper, create a sample workstream, and begin the
-   Product workflow.
+5. Install the wrapper, create a sample workstream, and begin the Product
+   workflow.
 
 ## Open Decisions
 
-- Confirm `sane-alpha` as the installed command name.
-- Confirm whether the bootstrap should support a user-selected binary directory
-  in addition to the default `~/.local/bin`.
 - Decide whether initial empty directories should be retained in Git by a
   placeholder file when a workstream is version controlled.
