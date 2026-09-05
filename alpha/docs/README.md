@@ -37,7 +37,8 @@ shell configuration. Use `--bin-dir <path>` for another directory, `--dry-run`
 to validate without mutation, and `--overwrite` to replace a differing regular
 file. The wrapper imports this checkout by absolute path, so reinstall it after
 moving the checkout. See the [Pilot User Guide](./SANE_PILOT_USER_GUIDE.md) for
-the exposed commands and examples.
+the exposed commands and examples, and the [Mock Workflow](./SANE_MOCK_WORKFLOW.md)
+for an end-to-end illustrative pilot.
 
 ## What the Alpha Will Validate
 
