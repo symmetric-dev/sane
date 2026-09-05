@@ -6,6 +6,7 @@ import { dirname, join } from "node:path"
 import { promisify } from "node:util"
 
 import { createSaneRepositoryWorkstream } from "./create-sane-repository-workstream.ts"
+import { printSanePath } from "./print-sane-path.ts"
 import { provisionSaneRole } from "./provision-sane-role.ts"
 import { SaneRepositoryError } from "./sane-repository.ts"
 import { selectSaneWorkstream } from "./select-sane-workstream.ts"
@@ -69,6 +70,14 @@ describe("repository-aware Alpha workstream tools", () => {
       implementationRepository, workstreamPath: "01-first", templateRoot, write: () => {},
     })).rejects.toThrow("Destination already exists")
     expect(await readFile(join(implementationRepository, ".sane", "current-workstream"), "utf8")).toBe("01-first\n")
+  })
+
+  test("prints the paired SANE workstream repository's absolute path", async () => {
+    const lines: string[] = []
+
+    await expect(printSanePath({ implementationRepository, write: (line) => lines.push(line) }))
+      .resolves.toBe(workstreamRepository)
+    expect(lines).toEqual([workstreamRepository])
   })
 
   test("dry-run creation validates but creates and selects nothing", async () => {

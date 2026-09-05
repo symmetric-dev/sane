@@ -95,6 +95,17 @@ Select an existing workstream before starting a new SANE role session:
 sane-alpha select-sane-workstream "$IMPL" "$WORKSTREAM"
 ```
 
+## Run Git in the SANE Workstream Repository
+
+`sane-path` prints the paired SANE workstream repository's validated absolute
+path. It does not point at an individual workstream directory. Compose it with
+Git rather than using a SANE Git proxy:
+
+```bash
+git -C "$(sane-alpha sane-path "$IMPL")" status
+git -C "$(sane-alpha sane-path "$IMPL")" log --oneline
+```
+
 ## Update Installed Agent Context
 
 After changing Alpha agent configurations or role skills, reinstall them and

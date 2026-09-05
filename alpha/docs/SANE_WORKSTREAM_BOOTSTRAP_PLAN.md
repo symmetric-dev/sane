@@ -31,6 +31,7 @@ sane-alpha create-sane-repository-workstream <implementation-repository> <workst
 sane-alpha select-sane-workstream <implementation-repository> <workstream-relative-path>
 sane-alpha provision-sane-role <implementation-repository> <role> [...]
 sane-alpha install-sane-agent-context-packages [...]
+sane-alpha sane-path <implementation-repository>
 ```
 
 `sane-alpha` is a command wrapper rather than a shell-specific `alias`. The

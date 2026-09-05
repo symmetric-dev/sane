@@ -8,6 +8,7 @@ const expectedCommands: AlphaCommand[] = [
   "select-sane-workstream",
   "provision-sane-role",
   "install-sane-agent-context-packages",
+  "sane-path",
 ]
 
 describe("sane-alpha dispatcher", () => {
