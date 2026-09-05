@@ -8,7 +8,7 @@ information. Add Stage and Job entries only when their identities exist. -->
 ### Product
 
 - Approval: `[ ] Pending`
-- Delivery: `PRD.md`
+- Delivery: `Product root artifact.md (PRD.md or FOUNDATION.md)`
 - Notes:
 
 ### Research

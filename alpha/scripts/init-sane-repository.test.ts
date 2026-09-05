@@ -30,9 +30,9 @@ describe("init-sane-repository", () => {
     templateRoot = join(tempDirectory, "templates")
     await mkdir(implementationRepository)
     await execFileAsync("git", ["init", "--quiet", implementationRepository])
-    await mkdir(join(templateRoot, "repository"), { recursive: true })
+    await mkdir(join(templateRoot, "shared", "repository"), { recursive: true })
     await Bun.write(
-      join(templateRoot, "repository", "paths"),
+      join(templateRoot, "shared", "repository", "paths"),
       "implementation-path: <absolute-path-to-implementation-repository>\nworkstream-repository-path: <absolute-path-to-workstream-repository>\n",
     )
   })
@@ -174,10 +174,19 @@ describe("init-sane-repository", () => {
   })
 
   test("validates the paths template before creating destinations", async () => {
-    await Bun.write(join(templateRoot, "repository", "paths"), "missing placeholders\n")
+    await Bun.write(join(templateRoot, "shared", "repository", "paths"), "missing placeholders\n")
 
     await expect(initializeSaneRepository(options())).rejects.toThrow("exact .sane/paths schema")
     await expectMissing(join(homeDirectory, "workstreams"))
     await expectMissing(join(implementationRepository, ".sane"))
+  })
+
+  test("uses the default shared repository paths source", async () => {
+    const result = await initializeSaneRepository({
+      ...options({ dryRun: true }),
+      templateRoot: undefined,
+    })
+
+    expect(result).toMatchObject({ dryRun: true, createdWorkstreamRepository: true })
   })
 })

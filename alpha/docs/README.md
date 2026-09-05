@@ -25,6 +25,11 @@ Before creating a workstream for an implementation repository, follow
 [Workstream Types](./WORKSTREAM_TYPES.md) describes the supported `feature` and
 `foundation` types, their immutable metadata, and proposed future types.
 
+[Workstream History and Project Documentation](./WORKSTREAM_HISTORY_AND_PROJECT_DOCUMENTATION.md)
+defines the boundary between historical workstream artifacts and current
+implementation-repository documentation, including historical context transfer
+and supersession.
+
 ## Alpha Command Installation
 
 From the SANE checkout, install the Alpha dispatcher once:
@@ -111,7 +116,8 @@ The Alpha source material is maintained in this directory. `alpha/templates/` is
 the canonical source of SANE templates: reusable templates are under
 `alpha/templates/shared/`, feature roots under `alpha/templates/feature/`, and
 foundation roots under `alpha/templates/foundation/`. The context-package
-installer copies the six type-neutral role skills to the shared location:
+installer copies the four shared role skills plus four typed Product and Design
+skills to the shared location:
 
 ```text
 <home>/.agents/skills/<skill-name>/SKILL.md
@@ -122,9 +128,11 @@ OpenCode's skill loader; its prompts explicitly provide the relevant skill
 paths for it to read. Here `<home>` is `SANE_HOME` when it is set, otherwise the
 current user's home directory.
 
-The installer copies exactly twelve files: six OpenCode agent configurations and
-six role skills. It leaves identical files unchanged, requires `--overwrite` for
-differing regular files, and supports a non-mutating `--dry-run`.
+The installer copies exactly fourteen files: six OpenCode agent configurations
+and eight role skills. Product and Design select a Feature or Foundation skill
+from the type explicitly declared by the user; the other roles use shared skills.
+It leaves identical files unchanged, requires `--overwrite` for differing regular
+files, and supports a non-mutating `--dry-run`.
 
 ## Manual Approval and State
 

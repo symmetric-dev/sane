@@ -22,7 +22,7 @@ import {
 const execFileAsync = promisify(execFile)
 
 export const REPOSITORY_TEMPLATE_REGISTRY = [
-  { source: "repository/paths", destination: ".sane/paths" },
+  { source: "shared/repository/paths", destination: ".sane/paths" },
 ] as const satisfies TemplateRegistry
 
 const IMPLEMENTATION_PATH_PLACEHOLDER =
@@ -217,7 +217,7 @@ export async function initializeSaneRepository(
 
   // Validate all source content before creating either repository or local files.
   await validateTemplateRegistry(templateRoot, REPOSITORY_TEMPLATE_REGISTRY)
-  const template = await readFile(join(templateRoot, "repository", "paths"), "utf8")
+  const template = await readFile(join(templateRoot, "shared", "repository", "paths"), "utf8")
   const expectedPaths = renderRepositoryPaths(
     template,
     implementationRepository,
