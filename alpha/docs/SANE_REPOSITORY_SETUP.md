@@ -120,7 +120,8 @@ sane-alpha select-sane-workstream <implementation-repository> <workstream-relati
 
 Both commands support `--dry-run`. A selected workstream must contain
 `SANE_CONTEXT.md`, `SANE_STATE.md`, `PRD.md`, and
-`resources/IMPLEMENTATION_REPORT_TEMPLATE.md`.
+`resources/IMPLEMENTATION_REPORT_TEMPLATE.md` and
+`resources/SECTION_SPEC_TEMPLATE.md` and `resources/JOB_TEMPLATE.md`.
 
 Provision only the approved role-start documents with:
 

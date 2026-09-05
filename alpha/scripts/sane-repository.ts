@@ -13,6 +13,8 @@ const REQUIRED_WORKSTREAM_FILES = [
   "SANE_STATE.md",
   "PRD.md",
   "resources/IMPLEMENTATION_REPORT_TEMPLATE.md",
+  "resources/SECTION_SPEC_TEMPLATE.md",
+  "resources/JOB_TEMPLATE.md",
 ] as const
 
 export class SaneRepositoryError extends BootstrapError {

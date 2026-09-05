@@ -31,6 +31,7 @@ Read the following files:
 - `research/INDEX.md`
 - `research/TECH_BRIEF.md`
 - `resources/IMPLEMENTATION_REPORT_TEMPLATE.md`
+- `resources/JOB_TEMPLATE.md`
 - `design/SPEC.md`
 - `design/stages/<id>-<slug>/SPEC.md`
 - `design/stages/<id>-<slug>/SECTIONS.md`
@@ -54,9 +55,10 @@ The workflow is as follows:
    set of implementation Jobs.
 2. Define Job Groups, their dependencies, and permitted parallelism in
    `execution/stages/<id>-<slug>/EXECUTION_PLAN.md`.
-3. Create one Job document for every Job in the plan. Give it the approved
-   context, instructions, edit boundaries, verification, report requirements,
-   and resolution rules it needs.
+3. Create one Job document for every Job in the plan by copying
+   `resources/JOB_TEMPLATE.md`. Give it the approved context, instructions,
+   edit boundaries, verification, report requirements, and resolution rules it
+   needs.
 4. Do not create a formal Section-to-Job mapping. Job-list order assigns IDs;
    Job-Group relationships define execution order and permitted parallelism.
 5. If a question requires research or changes an approved Design decision,

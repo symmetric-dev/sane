@@ -51,10 +51,12 @@ sane-alpha create-sane-repository-workstream "$IMPL" "$WORKSTREAM"
 ```
 
 This creates the initial Product documents and the local Implementation Report
-template at:
+Section Spec, and Job templates at:
 
 ```text
 resources/IMPLEMENTATION_REPORT_TEMPLATE.md
+resources/SECTION_SPEC_TEMPLATE.md
+resources/JOB_TEMPLATE.md
 ```
 
 Start the appropriate SANE role agent in OpenCode. Product begins with the

@@ -23,6 +23,14 @@ export const INITIAL_TEMPLATE_REGISTRY = [
     source: "implementation/REPORT.md",
     destination: "resources/IMPLEMENTATION_REPORT_TEMPLATE.md",
   },
+  {
+    source: "design/section/SPEC.md",
+    destination: "resources/SECTION_SPEC_TEMPLATE.md",
+  },
+  {
+    source: "execution/JOB.md",
+    destination: "resources/JOB_TEMPLATE.md",
+  },
 ] as const satisfies TemplateRegistry
 
 export const INITIAL_DIRECTORIES = [

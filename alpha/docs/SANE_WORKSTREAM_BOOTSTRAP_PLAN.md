@@ -53,7 +53,13 @@ For a new, previously nonexistent workstream path, the bootstrap command will:
    ```text
    <workstream>/PRD.md
    ```
-4. Create the initial standard directories:
+4. Copy the shared local templates to:
+   ```text
+   <workstream>/resources/IMPLEMENTATION_REPORT_TEMPLATE.md
+   <workstream>/resources/SECTION_SPEC_TEMPLATE.md
+   <workstream>/resources/JOB_TEMPLATE.md
+   ```
+5. Create the initial standard directories:
    ```text
    resources/
    docs/
@@ -62,7 +68,7 @@ For a new, previously nonexistent workstream path, the bootstrap command will:
    execution/
    implementation/
    ```
-5. Print every created path and the next manual action: start a Product
+6. Print every created path and the next manual action: start a Product
    Assistant session for the new workstream.
 
 The bootstrap command does not create Research, Design, Stage, Execution, Job,
@@ -80,6 +86,9 @@ Required source templates are:
 alpha/templates/SANE_CONTEXT.md
 alpha/templates/SANE_STATE.md
 alpha/templates/PRD.md
+alpha/templates/implementation/REPORT.md
+alpha/templates/design/section/SPEC.md
+alpha/templates/execution/JOB.md
 ```
 
 `SANE_STATE.md` must start with the Workstream Foundation structure and empty

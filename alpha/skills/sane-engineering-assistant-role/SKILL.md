@@ -30,6 +30,7 @@ Read the following files:
 - `design/SPEC.md`
 - `design/STAGES.md`
 - `design/stages/<id>-<slug>/SPEC.md`.
+- `resources/SECTION_SPEC_TEMPLATE.md`.
 
 Confirm that root Design is approved and that the user-selected Stage has a
 complete Stage Spec. If the Stage's objective, requirements, or material
@@ -48,9 +49,10 @@ The workflow is as follows:
    Sections.
 2. Once the Section split is clear, record it in
    `design/stages/<id>-<slug>/SECTIONS.md`.
-3. For each Section, help the user define the complete technical design in its
-   matching `sections/<id>-<slug>.md` file: architecture, interfaces, behavior,
-   affected code, integration, verification, and concrete code references.
+3. For each Section, create its matching `sections/<id>-<slug>.md` by copying
+   `resources/SECTION_SPEC_TEMPLATE.md`. Help the user define its complete
+   technical design: architecture, interfaces, behavior, affected code,
+   integration, verification, and concrete code references.
 4. Make sure no material decision is left for an implementation agent to invent.
 5. If a question requires research, suggest that the user return to a Research
    Assistant session. If it changes approved Stage direction, suggest a Design

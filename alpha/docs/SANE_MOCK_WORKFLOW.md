@@ -51,6 +51,8 @@ PRD.md
 SANE_CONTEXT.md
 SANE_STATE.md
 resources/IMPLEMENTATION_REPORT_TEMPLATE.md
+resources/SECTION_SPEC_TEMPLATE.md
+resources/JOB_TEMPLATE.md
 ```
 
 ## 3. Product Session
@@ -164,8 +166,9 @@ design decisions.
 ```
 
 The assistant delivers `design/stages/01-csv-export/SECTIONS.md` and the related
-Section Specs. The user reviews, requests Updates where needed, then explicitly
-approves the complete Stage Design.
+Section Specs. It creates each Section Spec by copying
+`resources/SECTION_SPEC_TEMPLATE.md`. The user reviews, requests Updates where
+needed, then explicitly approves the complete Stage Design.
 
 ## 7. Execution Planning Session
 
@@ -190,6 +193,9 @@ The assistant delivers:
 execution/stages/01-csv-export/EXECUTION_PLAN.md
 execution/stages/01-csv-export/jobs/<job-id>-<job-slug>.md
 ```
+
+The assistant creates each Job document by copying
+`resources/JOB_TEMPLATE.md`.
 
 **User decision:** Review the plan and every Job. Explicitly approve the Stage
 Execution Plan and request its State update. This authorizes the defined Jobs;

@@ -30,6 +30,10 @@ describe("create-sane-workstream", () => {
     await Bun.write(join(templateRoot, "PRD.md"), "prd template\n")
     await mkdir(join(templateRoot, "implementation"))
     await Bun.write(join(templateRoot, "implementation", "REPORT.md"), "report template\n")
+    await mkdir(join(templateRoot, "design", "section"), { recursive: true })
+    await Bun.write(join(templateRoot, "design", "section", "SPEC.md"), "section template\n")
+    await mkdir(join(templateRoot, "execution"), { recursive: true })
+    await Bun.write(join(templateRoot, "execution", "JOB.md"), "job template\n")
   })
 
   afterEach(async () => {
@@ -54,8 +58,14 @@ describe("create-sane-workstream", () => {
     }
     for (const directory of INITIAL_DIRECTORIES) {
       await access(join(destination, directory))
-      expect(await readdir(join(destination, directory))).toEqual(
-        directory === "resources" ? ["IMPLEMENTATION_REPORT_TEMPLATE.md"] : [],
+      expect((await readdir(join(destination, directory))).sort()).toEqual(
+        directory === "resources"
+          ? [
+              "IMPLEMENTATION_REPORT_TEMPLATE.md",
+              "JOB_TEMPLATE.md",
+              "SECTION_SPEC_TEMPLATE.md",
+            ]
+          : [],
       )
     }
     expect(lines).toContain(`Created: ${destination}`)
@@ -121,6 +131,6 @@ describe("create-sane-workstream", () => {
     expect(await readFile(join(stagingRoot, "skills", "product", "SKILL.md"), "utf8")).toBe(
       "product role template\n",
     )
-    expect(INITIAL_TEMPLATE_REGISTRY).toHaveLength(4)
+    expect(INITIAL_TEMPLATE_REGISTRY).toHaveLength(6)
   })
 })
