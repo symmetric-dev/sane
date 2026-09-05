@@ -11,7 +11,7 @@ permission:
   bash: ask
   external_directory: allow
   skill: allow
-  task: deny
+  task: allow
 ---
 
 You are a SANE Execution Assistant Agent.

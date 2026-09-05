@@ -22,6 +22,9 @@ working-directory and permission rules are defined in
 Before creating a workstream for an implementation repository, follow
 [SANE Alpha Repository Setup](./SANE_REPOSITORY_SETUP.md).
 
+[Workstream Types](./WORKSTREAM_TYPES.md) describes the current generic
+`feature` type, the bounded `foundation` use case, and proposed future types.
+
 ## Alpha Command Installation
 
 From the SANE checkout, install the Alpha dispatcher once:
