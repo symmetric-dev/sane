@@ -16,33 +16,31 @@ Alpha has a tested repository and template layer for two workstream types:
 - Repository pairing, workstream selection, role-artifact provisioning, the
   `sane-alpha` installer, shared context installation, and generic role skills
   are available and tested.
+- Focused Feature and Foundation Product and Design skills are available as
+  source packages, but are not yet installed or selected by the role agents.
 
-The generic role skills and installed agent packages are still type-neutral.
+The installed agent packages are still type-neutral.
 Therefore, Alpha has type-aware scripts and templates, but not yet complete
 type-aware agent operation.
 
 ## Work Remaining for Complete Type Support
 
-1. Create focused `feature` and `foundation` skills for Product and Design.
-   These are the only roles whose root artifacts and root responsibilities differ
-   materially by type.
-2. Keep the existing OpenCode role configurations stable. All role agents must
-   validate the workstream root `type` before operating; only Product and Design
-   route from the user-declared and root-`type`-confirmed type to a matching
-   type-specific skill. A prompt/type mismatch must be reported to the user, not
-   guessed.
-3. Keep Research, Engineering, Execution, and Implementation on their shared
+1. Keep the existing OpenCode role configurations stable. Product and Design
+   route from the workstream type explicitly declared by the user to one matching
+   type-specific skill. Agents do not read the root `type` file as session
+   context; if the user omits the type, they ask for it rather than guessing.
+2. Keep Research, Engineering, Execution, and Implementation on their shared
    skills. Their current artifacts and contracts are intentionally type-neutral;
    they receive type-specific direction through the approved Product and Design
    artifacts.
-4. Extend the agent-context-package installer and its tests to install and
+3. Extend the agent-context-package installer and its tests to install and
    validate the four Product and Design type-specific skills while preserving
    safe dry-run and overwrite behavior.
-5. Run one fresh manual `feature` pilot and one fresh manual `foundation` pilot.
+4. Run one fresh manual `feature` pilot and one fresh manual `foundation` pilot.
    Each must validate creation, selection, provisioning, skill routing,
    implementation in the target repository, verification, user approval, and
    later-workstream handoff.
-6. Use pilot evidence to decide whether foundation needs specialized Stage or
+5. Use pilot evidence to decide whether foundation needs specialized Stage or
    Section templates. Research, Execution Plan, Job, Implementation Report,
    State, and shared Context remain intentionally common unless that evidence
    shows otherwise.
