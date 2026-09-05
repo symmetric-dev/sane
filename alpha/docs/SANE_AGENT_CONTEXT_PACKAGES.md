@@ -27,14 +27,17 @@ the six source agents as global OpenCode Markdown agents under:
 <home>/.config/opencode/agents/
 ```
 
-It copies the corresponding source skills from `alpha/skills/` to:
+It copies the eight source skills from `alpha/skills/` to:
 
 ```text
 <home>/.agents/skills/<skill-name>/SKILL.md
 ```
 
-The installer has exactly twelve destinations: six agent configurations and six
-role skills. It validates every source and destination before changing anything.
+The installer has exactly fourteen destinations: six agent configurations and
+eight role skills. The skills are the four shared Research, Engineering,
+Execution, and Implementation role skills, plus Feature and Foundation Product
+and Design skills. It validates every source and destination before changing
+anything.
 It creates parent directories as needed, leaves identical destinations unchanged,
 and refuses differing regular files by default. `--overwrite` replaces only
 differing regular files; it never replaces a non-regular destination. `--dry-run`
@@ -53,16 +56,18 @@ Each role configuration starts with the same three concepts, in this order:
    `workstream-repository-path`; `.sane/current-workstream` records the selected
    normalized path relative to `workstream-repository-path`, never an absolute
    workstream path.
-3. **Assigned role:** the agent identifies its role and loads its named,
-   installed SANE role skill as the detailed role contract.
+3. **Assigned role:** Research, Engineering, Execution, and Implementation load
+   their named installed SANE role skill. Product and Design use the workstream
+   type explicitly declared by the user to load one matching type-specific skill.
 
 The configuration does not repeat the substantive role instructions from the
 skill or duplicate SANE template guidance. `alpha/templates/` is the canonical
 source of SANE templates.
 
-The installed packages are not type-specific: they do not select or route a
-skill by `feature` or `foundation`. Type-specific skills and package changes are
-future Alpha work.
+Product and Design agent configurations require the user to declare `feature` or
+`foundation` in the initial session prompt. They load the matching type-specific
+skill and ask the user for the type if it was omitted. They do not read the root
+`type` metadata file as session context.
 
 ## Context Ingestion and Pickup
 

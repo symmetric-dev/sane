@@ -44,13 +44,13 @@ describe("install-sane-agent-context-packages", () => {
     return { homeDirectory, sourceRoot, write: () => {}, ...extra }
   }
 
-  test("installs all six agents and all six skills", async () => {
+  test("installs all six agents and all eight skills", async () => {
     const result = await installSaneAgentContextPackages(options())
 
     expect(result.dryRun).toBe(false)
     expect(result.updated).toEqual([])
     expect(result.unchanged).toEqual([])
-    expect(result.created).toHaveLength(12)
+    expect(result.created).toHaveLength(14)
     for (const filename of AGENT_FILENAMES) {
       expect(await readFile(join(homeDirectory, ".config", "opencode", "agents", filename), "utf8")).toBe(
         `agent ${filename}\n`,
@@ -86,7 +86,7 @@ describe("install-sane-agent-context-packages", () => {
     const result = await installSaneAgentContextPackages(options())
 
     expect(result).toMatchObject({ created: [], updated: [] })
-    expect(result.unchanged).toHaveLength(12)
+    expect(result.unchanged).toHaveLength(14)
   })
 
   test("dry run validates and reports plans without creating a home directory", async () => {
@@ -94,9 +94,9 @@ describe("install-sane-agent-context-packages", () => {
     const result = await installSaneAgentContextPackages(options({ dryRun: true, write: (line) => lines.push(line) }))
 
     expect(result.dryRun).toBe(true)
-    expect(result.created).toHaveLength(12)
+    expect(result.created).toHaveLength(14)
     expect(lines).toContain("Dry run: no files or directories were modified.")
-    expect(lines.filter((line) => line.startsWith("Planned:"))).toHaveLength(12)
+    expect(lines.filter((line) => line.startsWith("Planned:"))).toHaveLength(14)
     await expectMissing(homeDirectory)
   })
 
@@ -150,6 +150,16 @@ describe("install-sane-agent-context-packages", () => {
 
     await expect(installSaneAgentContextPackages(options())).rejects.toThrow("Required source")
     await expectMissing(homeDirectory)
+  })
+
+  test("the default source manifest contains every required source skill", async () => {
+    const result = await installSaneAgentContextPackages({
+      homeDirectory,
+      dryRun: true,
+      write: () => {},
+    })
+
+    expect(result.created).toHaveLength(14)
   })
 
   test("validates CLI options and rejects positional arguments", () => {
