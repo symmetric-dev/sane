@@ -10,6 +10,8 @@ ready to begin its first manual end-to-end pilot.
 Available now:
 
 - initial-workstream bootstrap command;
+- type-aware workstream creation for exactly `feature` and `foundation`, with
+  immutable root `type` metadata and type-derived root Design provisioning;
 - tested SANE repository-initialization command;
 - tested repository-aware workstream creation and current-workstream selection;
 - tested role-artifact provisioner for Research, Design, Stage Design,
@@ -65,5 +67,7 @@ gaps for an explicit user decision.
 - [Agent-context-package installer](../scripts/install-sane-agent-context-packages.ts)
 - [Alpha command installer](../scripts/install-sane-alpha.ts)
 - [Canonical SANE templates](../templates/)
-- [Shared context template](../templates/SANE_CONTEXT.md)
-- [Initial State template](../templates/SANE_STATE.md)
+- [Shared context template](../templates/shared/SANE_CONTEXT.md)
+- [Initial State template](../templates/shared/SANE_STATE.md)
+- [Feature templates](../templates/feature/)
+- [Foundation templates](../templates/foundation/)

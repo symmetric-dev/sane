@@ -14,7 +14,7 @@ agents, move work between roles, approve work, or implement V2 CLI behavior.
 The low-level bootstrap source command remains available for development:
 
 ```bash
-bun alpha/scripts/create-sane-workstream.ts <workstream-path>
+bun alpha/scripts/create-sane-workstream.ts <workstream-path> --type <feature|foundation> [--dry-run]
 ```
 
 Install the machine-local dispatcher from the checkout:
@@ -26,11 +26,11 @@ bun alpha/scripts/install-sane-alpha.ts
 The installed command exposes the repository-aware pilot utilities:
 
 ```bash
-sane-alpha init-sane <implementation-repository>
-sane-alpha create-workstream <implementation-repository> <workstream-relative-path>
-sane-alpha select-workstream <implementation-repository> <workstream-relative-path>
-sane-alpha provision <implementation-repository> <role> [...]
-sane-alpha install-context-packages [...]
+sane-alpha init-sane <implementation-repository> [--dry-run]
+sane-alpha create-workstream <implementation-repository> <workstream-relative-path> --type <feature|foundation> [--dry-run]
+sane-alpha select-workstream <implementation-repository> <workstream-relative-path> [--dry-run]
+sane-alpha provision <implementation-repository> <research|design|stage-design|engineering|execution> [--workstream <relative-path>] [--stage <id>-<slug>] [--dry-run]
+sane-alpha install-context-packages [--dry-run] [--overwrite]
 sane-alpha sane-path <implementation-repository>
 ```
 
@@ -43,15 +43,17 @@ installer reports the exact user-owned `PATH` change.
 
 For a new, previously nonexistent workstream path, the bootstrap command will:
 
-1. Create the workstream root.
+1. Validate the required `feature` or `foundation` type, create the workstream
+   root, and write its immutable plain-text `type` file.
 2. Copy the shared context and State templates to:
    ```text
    <workstream>/SANE_CONTEXT.md
    <workstream>/SANE_STATE.md
    ```
-3. Copy the Product template to:
-   ```text
-   <workstream>/PRD.md
+3. Copy the type-specific Product root template to:
+    ```text
+    <workstream>/PRD.md           # feature
+    <workstream>/FOUNDATION.md    # foundation
    ```
 4. Copy the shared local templates to:
    ```text
@@ -83,20 +85,26 @@ generate their contents from document definitions at runtime.
 Required source templates are:
 
 ```text
-alpha/templates/SANE_CONTEXT.md
-alpha/templates/SANE_STATE.md
-alpha/templates/PRD.md
-alpha/templates/implementation/REPORT.md
-alpha/templates/design/section/SPEC.md
-alpha/templates/execution/JOB.md
+alpha/templates/shared/SANE_CONTEXT.md
+alpha/templates/shared/SANE_STATE.md
+alpha/templates/shared/implementation/REPORT.md
+alpha/templates/shared/design/section/SPEC.md
+alpha/templates/shared/execution/JOB.md
+alpha/templates/feature/PRD.md
+alpha/templates/foundation/FOUNDATION.md
 ```
 
 `SANE_STATE.md` must start with the Workstream Foundation structure and empty
 Workstream Stages and Workstream Implementation sections. Stage and Job entries
 are added only after the workstream establishes their existing identities.
 
-The `PRD.md` template must be created from the agreed Product document contract
-before the bootstrap command is implemented.
+Feature root Design is sourced from `alpha/templates/feature/design/SPEC.md`;
+foundation root Design is sourced from
+`alpha/templates/foundation/design/SPEC.md`. Other reusable material is under
+`alpha/templates/shared/`. Destination paths remain conventional: `PRD.md` or
+`FOUNDATION.md` at the root and `design/SPEC.md` for root Design. Foundation
+durable decisions belong only in that `design/SPEC.md`, not in a
+`FOUNDATION_DECISIONS.md` file.
 
 ## Safety Rules
 
@@ -131,16 +139,10 @@ removed, the user runs the installer from its new location with `--overwrite`.
 
 ## Implementation Sequence
 
-1. Create the copyable `PRD.md` template and simplify `SANE_STATE.md` so it has
-   no placeholder Stage or Job entries.
-2. Implement `create-sane-workstream.ts` with destination/template validation,
-   safe creation, and clear output.
-3. Implement `install-sane-alpha.ts` and its managed `sane-alpha` wrapper.
-4. Add a dry-run mode and automated temporary-directory tests for bootstrap
-   success, existing-destination refusal, missing-template refusal, and wrapper
-   installation safety.
-5. Install the wrapper, create a sample workstream, and begin the Product
-   workflow.
+The implemented bootstrap uses the type-aware command above. It validates all
+required template sources before writing output, refuses an existing destination,
+and supports `--dry-run`. The repository-aware command selects a successfully
+created workstream only after creation completes.
 
 ## Open Decisions
 

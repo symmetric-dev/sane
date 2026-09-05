@@ -5,17 +5,22 @@ import { dirname, isAbsolute, join, normalize, relative, resolve, sep } from "no
 import { promisify } from "node:util"
 
 import { BootstrapError, type TemplateRegistry, validateTemplateRegistry } from "./create-sane-workstream.ts"
+import { parseWorkstreamType, type WorkstreamType, WorkstreamTypeError } from "./workstream-type.ts"
 
 const execFileAsync = promisify(execFile)
 export const SANE_PATHS_FILENAME = "paths"
 const REQUIRED_WORKSTREAM_FILES = [
   "SANE_CONTEXT.md",
   "SANE_STATE.md",
-  "PRD.md",
   "resources/IMPLEMENTATION_REPORT_TEMPLATE.md",
   "resources/SECTION_SPEC_TEMPLATE.md",
   "resources/JOB_TEMPLATE.md",
 ] as const
+
+const ROOT_ARTIFACT_BY_TYPE: Record<WorkstreamType, string> = {
+  feature: "PRD.md",
+  foundation: "FOUNDATION.md",
+}
 
 export class SaneRepositoryError extends BootstrapError {
   constructor(message: string) {
@@ -183,7 +188,23 @@ export async function resolveSafeWorkstreamPath(
 }
 
 /** Ensure a candidate is an existing initial-workstream bootstrap. */
-export async function validateBootstrappedWorkstream(path: string): Promise<void> {
+export async function readWorkstreamType(path: string): Promise<WorkstreamType> {
+  const typePath = join(path, "type")
+  if (!(await lstatOrUndefined(typePath))?.isFile()) {
+    throw new SaneRepositoryError(`Workstream type file is missing or not a regular file: ${typePath}`)
+  }
+  try {
+    return parseWorkstreamType(await readFile(typePath, "utf8"))
+  } catch (error) {
+    if (error instanceof WorkstreamTypeError) {
+      throw new SaneRepositoryError(`Workstream type is invalid at ${typePath}: ${error.message}`)
+    }
+    throw error
+  }
+}
+
+/** Ensure a candidate is an existing initial-workstream bootstrap. */
+export async function validateBootstrappedWorkstream(path: string): Promise<WorkstreamType> {
   if (!(await lstatOrUndefined(path))?.isDirectory()) {
     throw new SaneRepositoryError(`Workstream is not an existing directory: ${path}`)
   }
@@ -192,15 +213,21 @@ export async function validateBootstrappedWorkstream(path: string): Promise<void
       throw new SaneRepositoryError(`Workstream is not bootstrapped; missing regular file: ${join(path, filename)}`)
     }
   }
+  const workstreamType = await readWorkstreamType(path)
+  const rootArtifact = join(path, ROOT_ARTIFACT_BY_TYPE[workstreamType])
+  if (!(await lstatOrUndefined(rootArtifact))?.isFile()) {
+    throw new SaneRepositoryError(`Workstream is not bootstrapped; missing regular file: ${rootArtifact}`)
+  }
+  return workstreamType
 }
 
 export async function resolveBootstrappedWorkstream(
   workstreamRepository: string,
   requestedPath: string,
-): Promise<{ relativePath: string; path: string }> {
+): Promise<{ relativePath: string; path: string; type: WorkstreamType }> {
   const workstream = await resolveSafeWorkstreamPath(workstreamRepository, requestedPath)
-  await validateBootstrappedWorkstream(workstream.path)
-  return workstream
+  const type = await validateBootstrappedWorkstream(workstream.path)
+  return { ...workstream, type }
 }
 
 function currentWorkstreamPath(implementationRepository: string): string {
@@ -240,7 +267,7 @@ export async function writeCurrentWorkstream(
 export async function readCurrentWorkstream(
   implementationRepository: string,
   workstreamRepository: string,
-): Promise<{ relativePath: string; path: string }> {
+): Promise<{ relativePath: string; path: string; type: WorkstreamType }> {
   const selectionPath = currentWorkstreamPath(implementationRepository)
   if (!(await lstatOrUndefined(selectionPath))?.isFile()) {
     throw new SaneRepositoryError(`Current workstream selection is missing or not a regular file: ${selectionPath}`)

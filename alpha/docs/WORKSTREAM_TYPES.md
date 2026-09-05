@@ -19,62 +19,38 @@ operational change, the implementation repository and its supported environment
 are transformed as part of the work; documentation is not a substitute for that
 result.
 
-The Alpha does not yet record a type in its tooling. Until type-aware tooling is
-implemented, record the selected type, outcome, boundaries, and deferred work
-in the type-appropriate root document and the workstream's State.
+## Type Metadata and CLI Behavior
 
-## Planned CLI Type Selection
+Alpha supports exactly two types: `feature` and `foundation`. The user chooses
+the type when creating a workstream:
 
-The type-aware CLI will store the current selected workstream and its immutable,
-user-declared type in the implementation repository's `.sane/current-workstream`
-file using this single-line form:
-
-```text
-<workstream-relative-path> (feature|foundation)
+```bash
+sane-alpha create-workstream <implementation-repository> <workstream-relative-path> --type <feature|foundation> [--dry-run]
 ```
 
-For example:
+`--type` is required. Creation writes the selected immutable type as the exact
+one-line plain-text root file `<workstream>/type`; it also selects the new
+workstream. `.sane/current-workstream` stores only the selected normalized
+relative path followed by a newline, never a type.
 
-```text
-project-foundation (foundation)
-```
+`sane-alpha select-workstream` takes no type argument. It accepts only a
+bootstrapped workstream with a valid root `type` file. Provisioning obtains the
+workstream type from that root file, whether it uses the current selection or an
+explicit `--workstream`, and has no type override. Missing, malformed, or
+unsupported type metadata is rejected. Legacy or untyped workstreams are not
+supported.
 
-Creation records the type. Provisioning reads this file as its only type source
-and does not accept a type override, so an agent cannot provision the selected
-workstream using another type's templates. A type must not be changed after
-creation; when the user determines that a workstream was incorrectly classified,
-the user starts a new workstream and decides how to record the prior one. The
-broader cancellation and failure-state lifecycle remains outside the current
-Alpha scope.
+The CLI does not enforce eligibility, dependencies, or relationships between
+workstreams. The user retains authority over scope, sequencing, approvals,
+redirects, and stops. A type cannot be changed after creation; if it was chosen
+incorrectly, the user creates a new workstream and decides how to record the
+prior one.
 
-## Type-Specific Role Skills
+## Type-Specific Skills and Agent Context
 
-Workstream type should constrain each assistant through a type-specific role
-skill, rather than through one large skill containing conditional instructions
-for every type. The existing OpenCode role agent configurations can remain
-stable; each configuration acts only as a small router to the appropriate skill
-for its role and the active workstream type.
-
-The selection flow is:
-
-1. The user starts the desired role agent and explicitly identifies the
-   workstream type in the session prompt.
-2. The agent ingests the workstream context and confirms the type and assigned
-   scope.
-3. The agent selects and reads the matching role-and-type skill before
-   performing pickup.
-
-For example, a Product agent selects a foundation Product skill for a
-`foundation` workstream and a feature Product skill for a `feature` workstream.
-The type-specific skill contains that role's complete procedure, boundaries,
-artifact contract, and delivery checks. It must not itself branch with
-instructions such as “if this is a foundation workstream …; if this is a
-feature workstream …”.
-
-If the user prompt and workstream context identify different types, the agent
-reports the mismatch and waits for the user to resolve it; it does not select a
-skill by assumption. The exact package names and agent-configuration changes
-remain future Alpha work.
+The installed role skills and agent context packages are currently type-neutral.
+Type-specific skills, routing, and agent-context-package changes are future
+work; they are not provided by Alpha today.
 
 ## Feature
 
@@ -100,8 +76,10 @@ repository, and is also useful when an existing project needs a deliberate
 architectural reset.
 
 Its Product-phase root artifact is `FOUNDATION.md`, using the canonical template
-at `alpha/templates/foundation/FOUNDATION.md`. Type-aware bootstrap support for
-copying that template is future Alpha work.
+at `alpha/templates/foundation/FOUNDATION.md`. Its root Design artifact is
+`design/SPEC.md`, copied from `alpha/templates/foundation/design/SPEC.md`; this
+is the sole durable-decision record. Alpha does not use
+`FOUNDATION_DECISIONS.md`.
 
 Its intended outcomes may include:
 

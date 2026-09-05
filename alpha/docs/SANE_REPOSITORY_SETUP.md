@@ -50,7 +50,7 @@ The `.sane/` directory is local-machine coordination data. Do not commit it,
 copy it into workstreams, or treat it as a product artifact.
 
 Initialization creates `paths` from
-[`templates/repository/paths`](./templates/repository/paths). Its exact plain-text
+[`templates/shared/repository/paths`](../templates/shared/repository/paths). Its exact plain-text
 schema is:
 
 ```text
@@ -107,32 +107,38 @@ After initialization, use the repository-aware creator rather than manually
 combining the paths record and bootstrap paths:
 
 ```bash
-sane-alpha create-workstream <implementation-repository> <workstream-relative-path>
+sane-alpha create-workstream <implementation-repository> <workstream-relative-path> --type <feature|foundation> [--dry-run]
 ```
 
-It validates the paths record and target containment, bootstraps with the standard
-templates, then records the selection only after the bootstrap succeeds. To
-select an existing bootstrapped workstream instead:
+`--type` is required. The command validates the paths record and target
+containment, writes the immutable root `type` file, bootstraps with shared and
+type-specific templates, then records the selection only after bootstrap
+succeeds. To select an existing bootstrapped workstream instead:
 
 ```bash
-sane-alpha select-workstream <implementation-repository> <workstream-relative-path>
+sane-alpha select-workstream <implementation-repository> <workstream-relative-path> [--dry-run]
 ```
 
-Both commands support `--dry-run`. A selected workstream must contain
-`SANE_CONTEXT.md`, `SANE_STATE.md`, `PRD.md`, and
+Both commands support `--dry-run`; selection takes no type argument. A selected
+workstream must contain a valid root `type` file, `SANE_CONTEXT.md`,
+`SANE_STATE.md`, its type-specific root artifact (`PRD.md` for `feature` or
+`FOUNDATION.md` for `foundation`), and
 `resources/IMPLEMENTATION_REPORT_TEMPLATE.md` and
 `resources/SECTION_SPEC_TEMPLATE.md` and `resources/JOB_TEMPLATE.md`.
 
 Provision only the approved role-start documents with:
 
 ```bash
-sane-alpha provision <implementation-repository> <research|design|stage-design|engineering|execution> [--workstream <relative-path>] [--stage <two-digit-id>-<slug>]
+sane-alpha provision <implementation-repository> <research|design|stage-design|engineering|execution> [--workstream <relative-path>] [--stage <two-digit-id>-<slug>] [--dry-run]
 ```
 
-Without `--workstream`, provision uses `current-workstream`. Stage roles require
+Without `--workstream`, provision uses `current-workstream`. It derives the
+workstream type from the target workstream's root `type` file and has no type
+override; missing or unsupported metadata is rejected. Stage roles require
 `--stage`; all provisioned destinations must be new. The command supports
 `--dry-run` and deliberately does not create Product, Implementation report,
-Section Spec, or Job documents.
+Section Spec, or Job documents. It does not enforce cross-workstream eligibility
+or dependencies.
 
 ## Assistant Use
 
@@ -140,8 +146,9 @@ When a top-level SANE assistant session starts in an implementation repository,
 it reads `.sane/paths` to locate the workstream repository and
 `.sane/current-workstream` for the normalized relative selection. The selected
 absolute workstream is `<workstream-repository-path>/<current-workstream>`.
-If the current pointer is missing or invalid, the assistant asks the user to
-select a workstream and stops; it does not infer or switch one. Its
+If the current pointer or selected workstream type metadata is missing or
+invalid, the assistant asks the user to select a valid workstream and stops; it
+does not infer or switch one. Its
 `SANE_CONTEXT.md`, `SANE_STATE.md`, assigned artifacts, and role skill then
 govern the session.
 

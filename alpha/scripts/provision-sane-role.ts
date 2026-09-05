@@ -1,6 +1,7 @@
 import { fileURLToPath } from "node:url"
 
 import { type TemplateRegistry } from "./create-sane-workstream.ts"
+import { type WorkstreamType } from "./workstream-type.ts"
 import {
   SaneRepositoryError,
   provisionTemplates,
@@ -14,16 +15,15 @@ export const DEFAULT_TEMPLATE_ROOT = fileURLToPath(new URL("../templates/", impo
 
 const ROLE_TEMPLATES = {
   research: [
-    { source: "research/INDEX.md", destination: "research/INDEX.md" },
-    { source: "research/TECH_BRIEF.md", destination: "research/TECH_BRIEF.md" },
+    { source: "shared/research/INDEX.md", destination: "research/INDEX.md" },
+    { source: "shared/research/TECH_BRIEF.md", destination: "research/TECH_BRIEF.md" },
   ],
   design: [
-    { source: "design/SPEC.md", destination: "design/SPEC.md" },
-    { source: "design/STAGES.md", destination: "design/STAGES.md" },
+    { source: "shared/design/STAGES.md", destination: "design/STAGES.md" },
   ],
-  "stage-design": [{ source: "design/stage/SPEC.md", destination: "" }],
-  engineering: [{ source: "design/stage/SECTIONS.md", destination: "" }],
-  execution: [{ source: "execution/EXECUTION_PLAN.md", destination: "" }],
+  "stage-design": [{ source: "shared/design/stage/SPEC.md", destination: "" }],
+  engineering: [{ source: "shared/design/stage/SECTIONS.md", destination: "" }],
+  execution: [{ source: "shared/execution/EXECUTION_PLAN.md", destination: "" }],
 } as const satisfies Record<string, TemplateRegistry>
 
 type SupportedRole = keyof typeof ROLE_TEMPLATES
@@ -49,7 +49,13 @@ function validateStage(stage: string | undefined): string {
   return stage
 }
 
-function roleRegistry(role: SupportedRole, stage?: string): TemplateRegistry {
+function roleRegistry(role: SupportedRole, workstreamType: WorkstreamType, stage?: string): TemplateRegistry {
+  if (role === "design") {
+    return [
+      { source: `${workstreamType}/design/SPEC.md`, destination: "design/SPEC.md" },
+      ...ROLE_TEMPLATES.design,
+    ]
+  }
   if (!isStageRole(role)) return ROLE_TEMPLATES[role]
   const validStage = validateStage(stage)
   const template = ROLE_TEMPLATES[role][0]!
@@ -72,7 +78,7 @@ export async function provisionSaneRole(options: ProvisionRoleOptions): Promise<
   const workstream = options.workstreamPath
     ? await resolveBootstrappedWorkstream(pointer.workstreamRepository, options.workstreamPath)
     : await readCurrentWorkstream(pointer.implementationRepository, pointer.workstreamRepository)
-  const registry = roleRegistry(role, options.stage)
+  const registry = roleRegistry(role, workstream.type, options.stage)
   const templateRoot = options.templateRoot ?? DEFAULT_TEMPLATE_ROOT
   // Validation of every source and every destination precedes all mkdir/copy work.
   if (options.dryRun) {

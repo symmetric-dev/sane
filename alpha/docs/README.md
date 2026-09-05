@@ -22,8 +22,8 @@ working-directory and permission rules are defined in
 Before creating a workstream for an implementation repository, follow
 [SANE Alpha Repository Setup](./SANE_REPOSITORY_SETUP.md).
 
-[Workstream Types](./WORKSTREAM_TYPES.md) describes the current generic
-`feature` type, the bounded `foundation` use case, and proposed future types.
+[Workstream Types](./WORKSTREAM_TYPES.md) describes the supported `feature` and
+`foundation` types, their immutable metadata, and proposed future types.
 
 ## Alpha Command Installation
 
@@ -108,8 +108,10 @@ The alpha must not use Cursor's `--force` or `--yolo` options by default.
 ## Shared Context Packages
 
 The Alpha source material is maintained in this directory. `alpha/templates/` is
-the canonical source of SANE templates. The context-package installer copies the
-six role skills to the shared location:
+the canonical source of SANE templates: reusable templates are under
+`alpha/templates/shared/`, feature roots under `alpha/templates/feature/`, and
+foundation roots under `alpha/templates/foundation/`. The context-package
+installer copies the six type-neutral role skills to the shared location:
 
 ```text
 <home>/.agents/skills/<skill-name>/SKILL.md
@@ -142,6 +144,7 @@ requests the State update.
 `alpha/templates/` is the canonical source of SANE templates, including:
 
 - Product Requirements Document;
+- Foundation Workstream Definition;
 - Research Index and Technical Brief;
 - root, Stage, and Section Design Specifications;
 - stage Execution Plan and Job documents; and

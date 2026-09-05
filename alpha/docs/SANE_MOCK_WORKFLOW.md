@@ -41,13 +41,14 @@ The user chooses a stable relative name and creates the workstream:
 
 ```bash
 WORKSTREAM="01-invoice-csv-export"
-sane-alpha create-workstream "$IMPL" "$WORKSTREAM"
+sane-alpha create-workstream "$IMPL" "$WORKSTREAM" --type feature
 ```
 
 This selects the workstream and creates its initial artifacts:
 
 ```text
 PRD.md
+type                         # feature
 SANE_CONTEXT.md
 SANE_STATE.md
 resources/IMPLEMENTATION_REPORT_TEMPLATE.md

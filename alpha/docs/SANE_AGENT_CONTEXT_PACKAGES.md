@@ -60,6 +60,10 @@ The configuration does not repeat the substantive role instructions from the
 skill or duplicate SANE template guidance. `alpha/templates/` is the canonical
 source of SANE templates.
 
+The installed packages are not type-specific: they do not select or route a
+skill by `feature` or `foundation`. Type-specific skills and package changes are
+future Alpha work.
+
 ## Context Ingestion and Pickup
 
 Every user-started SANE session follows this sequence:

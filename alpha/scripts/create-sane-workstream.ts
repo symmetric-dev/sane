@@ -1,7 +1,13 @@
-import { copyFile, lstat, mkdir, mkdtemp, rename, rm } from "node:fs/promises"
+import { copyFile, lstat, mkdir, mkdtemp, rename, rm, writeFile } from "node:fs/promises"
 import { constants as fsConstants } from "node:fs"
 import { dirname, join, relative, resolve, sep } from "node:path"
 import { fileURLToPath } from "node:url"
+
+import {
+  type WorkstreamType,
+  WorkstreamTypeError,
+  validateWorkstreamType,
+} from "./workstream-type.ts"
 
 /**
  * Initial templates deliberately remain a small, explicit registry. Future
@@ -15,23 +21,31 @@ export interface TemplateMapping {
 
 export type TemplateRegistry = readonly TemplateMapping[]
 
-export const INITIAL_TEMPLATE_REGISTRY = [
-  { source: "SANE_CONTEXT.md", destination: "SANE_CONTEXT.md" },
-  { source: "SANE_STATE.md", destination: "SANE_STATE.md" },
-  { source: "PRD.md", destination: "PRD.md" },
+const SHARED_INITIAL_TEMPLATE_REGISTRY = [
+  { source: "shared/SANE_CONTEXT.md", destination: "SANE_CONTEXT.md" },
+  { source: "shared/SANE_STATE.md", destination: "SANE_STATE.md" },
   {
-    source: "implementation/REPORT.md",
+    source: "shared/implementation/REPORT.md",
     destination: "resources/IMPLEMENTATION_REPORT_TEMPLATE.md",
   },
   {
-    source: "design/section/SPEC.md",
+    source: "shared/design/section/SPEC.md",
     destination: "resources/SECTION_SPEC_TEMPLATE.md",
   },
   {
-    source: "execution/JOB.md",
+    source: "shared/execution/JOB.md",
     destination: "resources/JOB_TEMPLATE.md",
   },
 ] as const satisfies TemplateRegistry
+
+const TYPE_INITIAL_TEMPLATE_REGISTRY: Record<WorkstreamType, TemplateRegistry> = {
+  feature: [{ source: "feature/PRD.md", destination: "PRD.md" }],
+  foundation: [{ source: "foundation/FOUNDATION.md", destination: "FOUNDATION.md" }],
+}
+
+export function initialTemplateRegistry(workstreamType: WorkstreamType): TemplateRegistry {
+  return [...SHARED_INITIAL_TEMPLATE_REGISTRY, ...TYPE_INITIAL_TEMPLATE_REGISTRY[workstreamType]]
+}
 
 export const INITIAL_DIRECTORIES = [
   "resources",
@@ -55,6 +69,7 @@ export class BootstrapError extends Error {
 
 export interface BootstrapOptions {
   destination: string
+  type: string
   /** Primarily enables isolated tests; the CLI always uses the Alpha checkout. */
   templateRoot?: string
   dryRun?: boolean
@@ -168,10 +183,11 @@ async function createInitialDirectories(destinationRoot: string): Promise<void> 
   }
 }
 
-function outputPaths(destination: string): string[] {
+function outputPaths(destination: string, registry: TemplateRegistry): string[] {
   return [
     destination,
-    ...INITIAL_TEMPLATE_REGISTRY.map((template) =>
+    join(destination, "type"),
+    ...registry.map((template) =>
       join(destination, template.destination),
     ),
     ...INITIAL_DIRECTORIES.map((directory) => join(destination, directory)),
@@ -188,6 +204,14 @@ export async function createSaneWorkstream(
   const destination = resolve(options.destination)
   const templateRoot = resolve(options.templateRoot ?? DEFAULT_TEMPLATE_ROOT)
   const write = options.write ?? console.log
+  let workstreamType: WorkstreamType
+  try {
+    workstreamType = validateWorkstreamType(options.type)
+  } catch (error) {
+    if (error instanceof WorkstreamTypeError) throw new BootstrapError(error.message)
+    throw error
+  }
+  const registry = initialTemplateRegistry(workstreamType)
 
   if (destination === dirname(destination)) {
     throw new BootstrapError("The destination must not be the filesystem root.")
@@ -195,14 +219,15 @@ export async function createSaneWorkstream(
 
   // Complete all validation before creating the target parent, staging tree, or
   // any workstream output.
-  await validateTemplateRegistry(templateRoot, INITIAL_TEMPLATE_REGISTRY)
+  await validateTemplateRegistry(templateRoot, registry)
   if (await pathExists(destination)) {
     throw new BootstrapError(`Destination already exists: ${destination}`)
   }
 
-  const paths = outputPaths(destination)
+  const paths = outputPaths(destination, registry)
   if (options.dryRun) {
     write("Dry run: no files or directories were created.")
+    write(`Planned workstream type: ${workstreamType}`)
     for (const path of paths) write(`Planned: ${path}`)
     write(`Next action: start a Product Assistant session for ${destination}.`)
     return { destination, paths, dryRun: true }
@@ -216,10 +241,11 @@ export async function createSaneWorkstream(
     await mkdir(parent, { recursive: true })
     stagingDirectory = await mkdtemp(join(parent, `.${destinationName}.sane-bootstrap-`))
     await createInitialDirectories(stagingDirectory)
+    await writeFile(join(stagingDirectory, "type"), `${workstreamType}\n`, { flag: "wx" })
     await copyTemplateRegistry(
       templateRoot,
       stagingDirectory,
-      INITIAL_TEMPLATE_REGISTRY,
+      registry,
     )
 
     // Recheck immediately before rename. This prevents ordinary concurrent use
@@ -243,21 +269,37 @@ export async function createSaneWorkstream(
 }
 
 export const USAGE =
-  "Usage: bun alpha/scripts/create-sane-workstream.ts [--dry-run] <workstream-path>"
+  "Usage: bun alpha/scripts/create-sane-workstream.ts <workstream-path> --type <feature|foundation> [--dry-run]"
 
 export function parseCliArguments(args: string[]): {
   destination: string
+  type: WorkstreamType
   dryRun: boolean
 } {
   let dryRun = false
+  let type: WorkstreamType | undefined
   const positional: string[] = []
   let parseOptions = true
 
-  for (const argument of args) {
+  for (let index = 0; index < args.length; index += 1) {
+    const argument = args[index]!
     if (parseOptions && argument === "--") {
       parseOptions = false
     } else if (parseOptions && argument === "--dry-run") {
       dryRun = true
+    } else if (parseOptions && argument === "--type") {
+      const value = args[index + 1]
+      if (!value || value.startsWith("-")) {
+        throw new BootstrapError("Option --type requires a value.")
+      }
+      if (type) throw new BootstrapError("Option --type may be provided only once.")
+      try {
+        type = validateWorkstreamType(value)
+      } catch (error) {
+        if (error instanceof WorkstreamTypeError) throw new BootstrapError(error.message)
+        throw error
+      }
+      index += 1
     } else if (parseOptions && argument.startsWith("-")) {
       throw new BootstrapError(`Unknown option: ${argument}`)
     } else {
@@ -268,14 +310,15 @@ export function parseCliArguments(args: string[]): {
   if (positional.length !== 1) {
     throw new BootstrapError("Provide exactly one workstream destination path.")
   }
+  if (!type) throw new BootstrapError("Option --type is required.")
 
-  return { destination: positional[0]!, dryRun }
+  return { destination: positional[0]!, type, dryRun }
 }
 
 export async function runCli(args: string[]): Promise<number> {
   try {
-    const { destination, dryRun } = parseCliArguments(args)
-    await createSaneWorkstream({ destination, dryRun })
+    const { destination, type, dryRun } = parseCliArguments(args)
+    await createSaneWorkstream({ destination, type, dryRun })
     return 0
   } catch (error) {
     console.error(`Error: ${(error as Error).message}`)

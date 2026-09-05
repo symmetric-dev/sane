@@ -6,9 +6,9 @@ import { join } from "node:path"
 import {
   BootstrapError,
   INITIAL_DIRECTORIES,
-  INITIAL_TEMPLATE_REGISTRY,
   copyTemplateRegistry,
   createSaneWorkstream,
+  initialTemplateRegistry,
   type TemplateRegistry,
   validateTemplateRegistry,
 } from "./create-sane-workstream.ts"
@@ -25,37 +25,38 @@ describe("create-sane-workstream", () => {
     tempDirectory = await mkdtemp(join(tmpdir(), "sane-alpha-bootstrap-"))
     templateRoot = join(tempDirectory, "templates")
     await mkdir(templateRoot)
-    await Bun.write(join(templateRoot, "SANE_CONTEXT.md"), "context template\n")
-    await Bun.write(join(templateRoot, "SANE_STATE.md"), "state template\n")
-    await Bun.write(join(templateRoot, "PRD.md"), "prd template\n")
-    await mkdir(join(templateRoot, "implementation"))
-    await Bun.write(join(templateRoot, "implementation", "REPORT.md"), "report template\n")
-    await mkdir(join(templateRoot, "design", "section"), { recursive: true })
-    await Bun.write(join(templateRoot, "design", "section", "SPEC.md"), "section template\n")
-    await mkdir(join(templateRoot, "execution"), { recursive: true })
-    await Bun.write(join(templateRoot, "execution", "JOB.md"), "job template\n")
+    for (const source of [
+      ...initialTemplateRegistry("feature"),
+      ...initialTemplateRegistry("foundation"),
+    ].map((template) => template.source)) {
+      await mkdir(join(templateRoot, source, ".."), { recursive: true })
+      await Bun.write(join(templateRoot, source), `${source}\n`)
+    }
   })
 
   afterEach(async () => {
     await rm(tempDirectory, { recursive: true, force: true })
   })
 
-  test("creates exactly the initial templates and directories", async () => {
+  test("creates feature templates, metadata, and directories", async () => {
     const destination = join(tempDirectory, "new-workstream")
     const lines: string[] = []
 
     const result = await createSaneWorkstream({
       destination,
+      type: "feature",
       templateRoot,
       write: (line) => lines.push(line),
     })
 
     expect(result.dryRun).toBe(false)
-    for (const template of INITIAL_TEMPLATE_REGISTRY) {
+    for (const template of initialTemplateRegistry("feature")) {
       expect(await readFile(join(destination, template.destination), "utf8")).toBe(
         await readFile(join(templateRoot, template.source), "utf8"),
       )
     }
+    expect(await readFile(join(destination, "type"), "utf8")).toBe("feature\n")
+    await expectMissing(join(destination, "FOUNDATION.md"))
     for (const directory of INITIAL_DIRECTORIES) {
       await access(join(destination, directory))
       expect((await readdir(join(destination, directory))).sort()).toEqual(
@@ -74,17 +75,30 @@ describe("create-sane-workstream", () => {
     )
   })
 
+  test("creates a foundation root artifact and type metadata", async () => {
+    const destination = join(tempDirectory, "foundation-workstream")
+
+    await createSaneWorkstream({ destination, type: "foundation", templateRoot, write: () => {} })
+
+    expect(await readFile(join(destination, "type"), "utf8")).toBe("foundation\n")
+    expect(await readFile(join(destination, "FOUNDATION.md"), "utf8")).toBe("foundation/FOUNDATION.md\n")
+    await expectMissing(join(destination, "PRD.md"))
+  })
+
   test("dry run leaves no destination", async () => {
     const destination = join(tempDirectory, "dry-run-workstream")
+    const lines: string[] = []
 
     const result = await createSaneWorkstream({
       destination,
+      type: "foundation",
       templateRoot,
       dryRun: true,
-      write: () => {},
+      write: (line) => lines.push(line),
     })
 
     expect(result.dryRun).toBe(true)
+    expect(lines).toContain("Planned workstream type: foundation")
     await expectMissing(destination)
   })
 
@@ -93,7 +107,7 @@ describe("create-sane-workstream", () => {
     await Bun.write(join(destination, "existing.md"), "keep this file\n")
 
     await expect(
-      createSaneWorkstream({ destination, templateRoot, write: () => {} }),
+      createSaneWorkstream({ destination, type: "feature", templateRoot, write: () => {} }),
     ).rejects.toBeInstanceOf(BootstrapError)
     expect(await readFile(join(destination, "existing.md"), "utf8")).toBe(
       "keep this file\n",
@@ -102,10 +116,10 @@ describe("create-sane-workstream", () => {
 
   test("a missing source template leaves no destination", async () => {
     const destination = join(tempDirectory, "missing-template-workstream")
-    await rm(join(templateRoot, "PRD.md"))
+    await rm(join(templateRoot, "feature", "PRD.md"))
 
     await expect(
-      createSaneWorkstream({ destination, templateRoot, write: () => {} }),
+      createSaneWorkstream({ destination, type: "feature", templateRoot, write: () => {} }),
     ).rejects.toThrow("Required source template")
     await expectMissing(destination)
   })
@@ -131,6 +145,15 @@ describe("create-sane-workstream", () => {
     expect(await readFile(join(stagingRoot, "skills", "product", "SKILL.md"), "utf8")).toBe(
       "product role template\n",
     )
-    expect(INITIAL_TEMPLATE_REGISTRY).toHaveLength(6)
+    expect(initialTemplateRegistry("feature")).toHaveLength(6)
+  })
+
+  test("rejects unsupported types before writing a destination", async () => {
+    const destination = join(tempDirectory, "invalid-type")
+
+    await expect(
+      createSaneWorkstream({ destination, type: "legacy", templateRoot, write: () => {} }),
+    ).rejects.toThrow("Unsupported workstream type")
+    await expectMissing(destination)
   })
 })

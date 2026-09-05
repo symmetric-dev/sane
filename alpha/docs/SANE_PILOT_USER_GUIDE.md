@@ -51,10 +51,12 @@ sane-alpha init-sane "$IMPL"
 Create and select a new workstream in the paired workstream repository:
 
 ```bash
-sane-alpha create-workstream "$IMPL" "$WORKSTREAM"
+sane-alpha create-workstream "$IMPL" "$WORKSTREAM" --type feature
 ```
 
-This creates the initial Product documents and the local Implementation Report
+`--type` is required and accepts only `feature` or `foundation`. This example
+creates a feature workstream, records `feature` in its immutable root `type`
+file, selects it, and creates `PRD.md` plus the local Implementation Report,
 Section Spec, and Job templates at:
 
 ```text
@@ -63,8 +65,10 @@ resources/SECTION_SPEC_TEMPLATE.md
 resources/JOB_TEMPLATE.md
 ```
 
-Start the appropriate SANE role agent in OpenCode. Product begins with the
-bootstrapped `PRD.md`.
+For `--type foundation`, creation instead creates `FOUNDATION.md`; root Design
+uses the foundation `design/SPEC.md` template. Start the appropriate SANE role
+agent in OpenCode. Product begins with the bootstrapped type-specific root
+document. Installed skills and agent context remain type-neutral.
 
 ## Provision Role Artifacts
 
@@ -100,6 +104,10 @@ Select an existing workstream before starting a new SANE role session:
 ```bash
 sane-alpha select-workstream "$IMPL" "$WORKSTREAM"
 ```
+
+Selection takes no type argument and rejects a workstream with missing or
+unsupported root `type` metadata. Provisioning derives its template type from
+that metadata and has no type override.
 
 ## Run Git in the SANE Workstream Repository
 
