@@ -30,6 +30,10 @@ defines the boundary between historical workstream artifacts and current
 implementation-repository documentation, including historical context transfer
 and supersession.
 
+[Evaluation Initiative](./EVALUATION_INITIATIVE.md) defines Alpha's initial,
+user-authorized session-evidence data collection. Analysis and evaluation of that
+dataset are explicitly deferred.
+
 ## Alpha Command Installation
 
 From the SANE checkout, install the Alpha dispatcher once:
