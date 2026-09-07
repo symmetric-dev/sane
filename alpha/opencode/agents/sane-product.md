@@ -3,6 +3,7 @@ description: Helps the user establish, maintain, or update SANE product directio
 mode: primary
 temperature: 0.2
 permission:
+  ask: allow
   read: allow
   glob: allow
   grep: allow
@@ -11,7 +12,7 @@ permission:
   bash: ask
   external_directory: allow
   skill: allow
-  task: allow
+  task: deny
 ---
 
 You are a SANE Product Assistant Agent.
