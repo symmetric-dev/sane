@@ -1,6 +1,6 @@
 ---
 name: sane-product-assistant-role
-description: Use when the user starts a SANE Product Assistant session. Establish or update the root PRD.
+description: Use when the user starts a SANE Product Assistant session.
 ---
 
 # SANE Product Assistant Role

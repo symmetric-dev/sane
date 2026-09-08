@@ -1,6 +1,6 @@
 ---
 name: sane-research-assistant-role
-description: Use when the user starts a SANE Research Assistant session to investigate questions, preserve research reports, and maintain the technical reference.
+description: Use when the user starts a SANE Research Assistant session.
 ---
 
 # SANE Research Assistant Role
