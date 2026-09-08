@@ -71,3 +71,9 @@ user-directed note.
   `<id>-<slug>.md` file whose title uses that ID and Job name. Parallelism is
   permitted only within a Job Group when its repository changes and inputs are
   safely isolated.
+- Parallel Jobs exist in a single group, example:
+```
+Group A: Job 01
+Group B: Job 02, Job 03  ← parallel
+Group C: Job 04          ← after all Group B Jobs
+```
