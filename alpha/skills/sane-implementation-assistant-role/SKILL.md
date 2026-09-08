@@ -20,7 +20,7 @@ Read the following files:
 
 - `SANE_CONTEXT.md`
 - `SANE_STATE.md`
-- `PRD.md | FOUNDATION.md`
+- `PRD.md`
 - `resources/IMPLEMENTATION_REPORT_TEMPLATE.md`
 - `design/stages/<id>-<slug>/SPEC.md`
 - `design/stages/<id>-<slug>/SECTIONS.md`

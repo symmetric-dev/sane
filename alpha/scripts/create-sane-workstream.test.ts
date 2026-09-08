@@ -56,7 +56,6 @@ describe("create-sane-workstream", () => {
       )
     }
     expect(await readFile(join(destination, "type"), "utf8")).toBe("feature\n")
-    await expectMissing(join(destination, "FOUNDATION.md"))
     for (const directory of INITIAL_DIRECTORIES) {
       await access(join(destination, directory))
       expect((await readdir(join(destination, directory))).sort()).toEqual(
@@ -82,14 +81,13 @@ describe("create-sane-workstream", () => {
     )
   })
 
-  test("creates a foundation root artifact and type metadata", async () => {
+  test("creates a foundation PRD and type metadata", async () => {
     const destination = join(tempDirectory, "foundation-workstream")
 
     await createSaneWorkstream({ destination, type: "foundation", templateRoot, write: () => {} })
 
     expect(await readFile(join(destination, "type"), "utf8")).toBe("foundation\n")
-    expect(await readFile(join(destination, "FOUNDATION.md"), "utf8")).toBe("foundation/FOUNDATION.md\n")
-    await expectMissing(join(destination, "PRD.md"))
+    expect(await readFile(join(destination, "PRD.md"), "utf8")).toBe("foundation/PRD.md\n")
   })
 
   test("dry run leaves no destination", async () => {

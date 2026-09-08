@@ -46,11 +46,13 @@ redirects, and stops. A type cannot be changed after creation; if it was chosen
 incorrectly, the user creates a new workstream and decides how to record the
 prior one.
 
-## Type-Specific Skills and Agent Context
+## Type Boundaries for Templates and Agents
 
-The installed role skills and agent context packages are currently type-neutral.
-Type-specific skills, routing, and agent-context-package changes are future
-work; they are not provided by Alpha today.
+Type controls CLI creation and root Design provisioning. Every workstream
+receives `PRD.md`; feature and foundation each receive their matching root Design
+template. The six role skills are generic: role-agent admission and skill loading
+do not require a user type declaration and do not use root `type` metadata as
+session context.
 
 ## Feature
 
@@ -75,10 +77,11 @@ is required when creating or establishing an almost-empty implementation
 repository, and is also useful when an existing project needs a deliberate
 architectural reset.
 
-Its Product-phase root artifact is `FOUNDATION.md`, using the canonical template
-at `alpha/templates/foundation/FOUNDATION.md`. Its root Design artifact is
-`design/SPEC.md`, copied from `alpha/templates/foundation/design/SPEC.md`; this
-is the sole durable-decision record. Alpha does not use
+Its Product-phase root artifact is `PRD.md`, using the foundation-specific
+canonical template at `alpha/templates/foundation/PRD.md`. Its root Design
+artifact is `design/SPEC.md`, copied from
+`alpha/templates/foundation/design/SPEC.md`; this is the sole durable-decision
+record. Alpha does not use
 `FOUNDATION_DECISIONS.md`.
 
 Its intended outcomes may include:

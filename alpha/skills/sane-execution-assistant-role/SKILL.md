@@ -22,7 +22,7 @@ Read the following files:
 
 - `SANE_CONTEXT.md`
 - `SANE_STATE.md`
-- `PRD.md | FOUNDATION.md`: For product reference.
+- `PRD.md`: For product reference.
 - `resources/IMPLEMENTATION_REPORT_TEMPLATE.md`: For template reference.
 - `resources/JOB_TEMPLATE.md`: For template reference.
 - `design/stages/<id>-<slug>/SPEC.md`: For the selected Stage's specification.

@@ -12,15 +12,11 @@ export const SANE_PATHS_FILENAME = "paths"
 const REQUIRED_WORKSTREAM_FILES = [
   "SANE_CONTEXT.md",
   "SANE_STATE.md",
+  "PRD.md",
   "resources/IMPLEMENTATION_REPORT_TEMPLATE.md",
   "resources/SECTION_SPEC_TEMPLATE.md",
   "resources/JOB_TEMPLATE.md",
 ] as const
-
-const ROOT_ARTIFACT_BY_TYPE: Record<WorkstreamType, string> = {
-  feature: "PRD.md",
-  foundation: "FOUNDATION.md",
-}
 
 export class SaneRepositoryError extends BootstrapError {
   constructor(message: string) {
@@ -213,12 +209,7 @@ export async function validateBootstrappedWorkstream(path: string): Promise<Work
       throw new SaneRepositoryError(`Workstream is not bootstrapped; missing regular file: ${join(path, filename)}`)
     }
   }
-  const workstreamType = await readWorkstreamType(path)
-  const rootArtifact = join(path, ROOT_ARTIFACT_BY_TYPE[workstreamType])
-  if (!(await lstatOrUndefined(rootArtifact))?.isFile()) {
-    throw new SaneRepositoryError(`Workstream is not bootstrapped; missing regular file: ${rootArtifact}`)
-  }
-  return workstreamType
+  return readWorkstreamType(path)
 }
 
 export async function resolveBootstrappedWorkstream(

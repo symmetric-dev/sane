@@ -50,10 +50,9 @@ For a new, previously nonexistent workstream path, the bootstrap command will:
    <workstream>/SANE_CONTEXT.md
    <workstream>/SANE_STATE.md
    ```
-3. Copy the type-specific Product root template to:
-    ```text
-    <workstream>/PRD.md           # feature
-    <workstream>/FOUNDATION.md    # foundation
+3. Copy the type-specific Product root template to `PRD.md`:
+     ```text
+     <workstream>/PRD.md
    ```
 4. Copy the local fallback templates to:
     ```text
@@ -108,7 +107,7 @@ alpha/templates/shared/design/stage/SECTIONS.md
 alpha/templates/shared/execution/EXECUTION_PLAN.md
 alpha/templates/feature/PRD.md
 alpha/templates/feature/design/SPEC.md
-alpha/templates/foundation/FOUNDATION.md
+alpha/templates/foundation/PRD.md
 alpha/templates/foundation/design/SPEC.md
 ```
 
@@ -119,9 +118,9 @@ are added only after the workstream establishes their existing identities.
 Feature root Design is sourced from `alpha/templates/feature/design/SPEC.md`;
 foundation root Design is sourced from
 `alpha/templates/foundation/design/SPEC.md`. Other reusable material is under
-`alpha/templates/shared/`. Destination paths remain conventional: `PRD.md` or
-`FOUNDATION.md` at the root and `design/SPEC.md` for root Design. Foundation
-durable decisions belong only in that `design/SPEC.md`, not in a
+`alpha/templates/shared/`. Destination paths remain conventional: `PRD.md` at
+the root and `design/SPEC.md` for root Design. Foundation durable decisions
+belong only in that `design/SPEC.md`, not in a
 `FOUNDATION_DECISIONS.md` file.
 
 ## Safety Rules

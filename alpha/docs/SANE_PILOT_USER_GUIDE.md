@@ -71,12 +71,13 @@ resources/STAGE_SECTIONS_TEMPLATE.md
 resources/EXECUTION_PLAN_TEMPLATE.md
 ```
 
-For `--type foundation`, creation instead creates `FOUNDATION.md`; root Design
-uses the foundation `design/SPEC.md` template. Start the appropriate SANE role
-agent in OpenCode. Product begins with the bootstrapped type-specific root
-document. Product and Design require the user to declare `feature` or
-`foundation` at session start so their agents load the matching installed skill;
-the other roles use shared skills.
+For `--type foundation`, creation also creates `PRD.md`; root Design uses the
+foundation `design/SPEC.md` template. Start the appropriate SANE role
+agent in OpenCode. Product and Design load their single generic role skill and
+work with the applicable bootstrapped root artifact and root Design template. No
+role agent requires a type declaration or reads root `type` metadata as session
+context; type remains the CLI and provisioning control for root artifacts and
+templates.
 
 ## Provision Role Artifacts
 
@@ -136,3 +137,7 @@ restart OpenCode:
 ```bash
 sane-alpha install-context-packages --overwrite
 ```
+
+Reinstalling does not remove typed skill directories installed by earlier Alpha
+versions. Remove those directories only if you explicitly choose to clean them
+up.

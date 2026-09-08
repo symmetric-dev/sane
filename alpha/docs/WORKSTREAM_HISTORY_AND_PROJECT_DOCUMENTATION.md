@@ -16,8 +16,8 @@ This policy applies to both `feature` and `foundation` workstreams.
 | Workstream record | The paired workstream repository | The intent, evidence, decisions, approvals, and delivery record for one bounded change at a particular time | Historical after delivery |
 | Project documentation | The implementation repository | The current practical description of what the repository, product, service, and operating environment contain and how to use or evolve them | Continuously maintained as the repository changes |
 
-Workstream artifacts include `FOUNDATION.md`, `PRD.md`, research documents,
-root and Stage Design, State, Execution Plans, Jobs, and Implementation Reports.
+Workstream artifacts include `PRD.md`, research documents, root and Stage Design,
+State, Execution Plans, Jobs, and Implementation Reports.
 They explain what was intended, why it was chosen, what constraints applied, and
 what the user approved.
 
@@ -41,7 +41,7 @@ Such documentation must be explicitly included in the workstream's approved
 outcome and acceptance evidence:
 
 - Product identifies its intended audience, purpose, required outcome, and
-  validation in `FOUNDATION.md` or `PRD.md`.
+  validation in `PRD.md`.
 - Design identifies its relationship to the repository, ownership, destination
   paths, and high-level constraints in root or Stage Design.
 - Engineering and Execution turn it into bounded Sections and Jobs where needed.

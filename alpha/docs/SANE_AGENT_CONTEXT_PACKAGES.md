@@ -27,16 +27,15 @@ the six source agents as global OpenCode Markdown agents under:
 <home>/.config/opencode/agents/
 ```
 
-It copies the eight source skills from `alpha/skills/` to:
+It copies the six generic role skills from `alpha/skills/` to:
 
 ```text
 <home>/.agents/skills/<skill-name>/SKILL.md
 ```
 
-The installer has exactly fourteen destinations: six agent configurations and
-eight role skills. The skills are the four shared Research, Engineering,
-Execution, and Implementation role skills, plus Feature and Foundation Product
-and Design skills. It validates every source and destination before changing
+The installer has exactly twelve destinations: six agent configurations and six
+generic role skills: Product, Research, Design, Engineering, Execution, and
+Implementation. It validates every source and destination before changing
 anything.
 It creates parent directories as needed, leaves identical destinations unchanged,
 and refuses differing regular files by default. `--overwrite` replaces only
@@ -56,18 +55,21 @@ Each role configuration starts with the same three concepts, in this order:
    `workstream-repository-path`; `.sane/current-workstream` records the selected
    normalized path relative to `workstream-repository-path`, never an absolute
    workstream path.
-3. **Assigned role:** Research, Engineering, Execution, and Implementation load
-   their named installed SANE role skill. Product and Design use the workstream
-   type explicitly declared by the user to load one matching type-specific skill.
+3. **Assigned role:** each agent loads its one named installed SANE role skill.
 
 The configuration does not repeat the substantive role instructions from the
 skill or duplicate SANE template guidance. `alpha/templates/` is the canonical
 source of SANE templates.
 
-Product and Design agent configurations require the user to declare `feature` or
-`foundation` in the initial session prompt. They load the matching type-specific
-skill and ask the user for the type if it was omitted. They do not read the root
-`type` metadata file as session context.
+No role agent requires a user to declare a workstream type, and role agents do
+not read root `type` metadata as session context. Product and Design load their
+single generic skill directly. Their skills use the provisioned `PRD.md` and
+applicable root Design template without routing by type.
+
+Reinstalling updates only the twelve managed destinations; it does not delete
+previously installed typed skill directories. If they remain from an earlier
+Alpha installation, inspect and remove them only through explicit user-directed
+cleanup.
 
 ## Context Ingestion and Pickup
 

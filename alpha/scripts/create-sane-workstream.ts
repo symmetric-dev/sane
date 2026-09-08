@@ -71,7 +71,7 @@ const TYPE_INITIAL_TEMPLATE_REGISTRY: Record<WorkstreamType, TemplateRegistry> =
     },
   ],
   foundation: [
-    { source: "foundation/FOUNDATION.md", destination: "FOUNDATION.md" },
+    { source: "foundation/PRD.md", destination: "PRD.md" },
     {
       source: "foundation/design/SPEC.md",
       destination: "resources/ROOT_DESIGN_SPEC_TEMPLATE.md",

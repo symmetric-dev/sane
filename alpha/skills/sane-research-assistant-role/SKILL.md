@@ -24,7 +24,7 @@ Read the following files:
 
 - `SANE_CONTEXT.md`
 - `SANE_STATE.md`
-- `PRD.md | FOUNDATION.md`: For overall context of the product
+- `PRD.md`: For overall product context.
 - `research/INDEX.md`: For research context if available or relevant
 - `research/TECH_BRIEF.md`: For research context if available or relevant
 - `design/SPEC.md`: For design phase context if available or relevant

@@ -11,25 +11,25 @@ Alpha has a tested repository and template layer for two workstream types:
   the selected workstream's type from its root; it has no type override.
 - Reusable source templates live in `alpha/templates/shared/`; feature and
   foundation root artifacts and root Designs use their own template sources.
-- Foundation creates `FOUNDATION.md` and uses its foundation root
-  `design/SPEC.md`; that Design is its durable decision record.
+- Every workstream creates `PRD.md`; foundation uses its foundation root
+  `design/SPEC.md`, which remains its durable decision record.
 - Repository pairing, workstream selection, role-artifact provisioning, the
   `sane-alpha` installer, shared context installation, and generic role skills
   are available and tested.
-- Product and Design agents load a focused Feature or Foundation skill from the
-  workstream type explicitly declared by the user; they do not read root `type`
-  metadata as session context.
+- The six generic role skills serve Product, Research, Design, Engineering,
+  Execution, and Implementation. No role agent requires a user type declaration
+  or reads root `type` metadata as session context.
 
-Alpha has type-aware scripts, templates, and Product/Design agent operation.
+Alpha has type-aware scripts and templates, with type-neutral role-agent
+operation.
 
 ## Work Remaining for Complete Type Support
 
-1. Keep Research, Engineering, Execution, and Implementation on their shared
-   skills. Their current artifacts and contracts are intentionally type-neutral;
-   they receive type-specific direction through the approved Product and Design
-   artifacts.
+1. Keep all six role skills generic. Their artifacts and contracts are
+   intentionally type-neutral except for the type-selected root artifacts and
+   templates handled by Product and Design.
 2. Run one fresh manual `feature` pilot and one fresh manual `foundation` pilot.
-   Each must validate creation, selection, provisioning, skill routing,
+    Each must validate creation, selection, provisioning, generic skill use,
    implementation in the target repository, verification, user approval, and
    later-workstream handoff.
 3. Use pilot evidence to decide whether foundation needs specialized Stage or

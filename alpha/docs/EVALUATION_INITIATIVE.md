@@ -61,7 +61,8 @@ Every export carries a concise, versioned manifest containing at least:
 - source-session identifier, when available;
 - export time and session start/end time, when available;
 - selected SANE role agent;
-- workstream type explicitly declared by the user;
+- workstream type from the workstream record when needed for evaluating
+  type-aware template behavior (not a user session-admission requirement);
 - normalized workstream-relative path and selected Stage, when applicable;
 - stable implementation and workstream repository identifiers or paths;
 - model, agent-configuration, and skill-version identifiers when available;
@@ -138,7 +139,8 @@ complete package:
 
 1. the user explicitly authorizes export;
 2. the raw source-session evidence is captured without summary substitution;
-3. the manifest identifies the role, user-declared type, workstream scope, and
+3. the manifest identifies the role, recorded workstream type when applicable,
+   workstream scope, and
    relevant repository revisions;
 4. the package records its completeness and any exclusions or redactions;
 5. checksums verify the stored raw files; and

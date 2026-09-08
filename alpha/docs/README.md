@@ -120,8 +120,8 @@ The Alpha source material is maintained in this directory. `alpha/templates/` is
 the canonical source of SANE templates: reusable templates are under
 `alpha/templates/shared/`, feature roots under `alpha/templates/feature/`, and
 foundation roots under `alpha/templates/foundation/`. The context-package
-installer copies the four shared role skills plus four typed Product and Design
-skills to the shared location:
+installer copies the six generic role skills (Product, Research, Design,
+Engineering, Execution, and Implementation) to the shared location:
 
 ```text
 <home>/.agents/skills/<skill-name>/SKILL.md
@@ -132,11 +132,15 @@ OpenCode's skill loader; its prompts explicitly provide the relevant skill
 paths for it to read. Here `<home>` is `SANE_HOME` when it is set, otherwise the
 current user's home directory.
 
-The installer copies exactly fourteen files: six OpenCode agent configurations
-and eight role skills. Product and Design select a Feature or Foundation skill
-from the type explicitly declared by the user; the other roles use shared skills.
-It leaves identical files unchanged, requires `--overwrite` for differing regular
-files, and supports a non-mutating `--dry-run`.
+The installer copies exactly twelve files: six OpenCode agent configurations and
+six role skills. No role agent requires a type declaration or reads root `type`
+metadata as session context. Type remains an input to CLI creation and template
+provisioning: it creates `PRD.md` and selects the matching root Design template,
+which the generic Product and Design skills handle directly. The
+installer leaves identical files unchanged, requires `--overwrite` for differing
+regular files, and supports a non-mutating `--dry-run`. Reinstalling does not
+delete previously installed typed skill directories; cleanup is explicit and
+user-directed.
 
 ## Manual Approval and State
 

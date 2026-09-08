@@ -13,14 +13,12 @@ export const AGENT_FILENAMES = [
 ] as const
 
 export const ROLE_SKILL_NAMES = [
+  "sane-product-assistant-role",
+  "sane-research-assistant-role",
+  "sane-design-assistant-role",
   "sane-engineering-assistant-role",
   "sane-execution-assistant-role",
   "sane-implementation-assistant-role",
-  "sane-research-assistant-role",
-  "sane-feature-design-assistant-role",
-  "sane-feature-product-assistant-role",
-  "sane-foundation-design-assistant-role",
-  "sane-foundation-product-assistant-role",
 ] as const
 
 export const DEFAULT_SOURCE_ROOT = fileURLToPath(new URL("../", import.meta.url))

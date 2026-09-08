@@ -6,6 +6,7 @@ import { dirname, join } from "node:path"
 import {
   AGENT_FILENAMES,
   AgentContextPackageInstallationError,
+  DEFAULT_SOURCE_ROOT,
   ROLE_SKILL_NAMES,
   installSaneAgentContextPackages,
   parseCliArguments,
@@ -44,13 +45,13 @@ describe("install-sane-agent-context-packages", () => {
     return { homeDirectory, sourceRoot, write: () => {}, ...extra }
   }
 
-  test("installs all six agents and all eight skills", async () => {
+  test("installs all six agents and all six generic role skills", async () => {
     const result = await installSaneAgentContextPackages(options())
 
     expect(result.dryRun).toBe(false)
     expect(result.updated).toEqual([])
     expect(result.unchanged).toEqual([])
-    expect(result.created).toHaveLength(14)
+    expect(result.created).toHaveLength(12)
     for (const filename of AGENT_FILENAMES) {
       expect(await readFile(join(homeDirectory, ".config", "opencode", "agents", filename), "utf8")).toBe(
         `agent ${filename}\n`,
@@ -86,7 +87,7 @@ describe("install-sane-agent-context-packages", () => {
     const result = await installSaneAgentContextPackages(options())
 
     expect(result).toMatchObject({ created: [], updated: [] })
-    expect(result.unchanged).toHaveLength(14)
+    expect(result.unchanged).toHaveLength(12)
   })
 
   test("dry run validates and reports plans without creating a home directory", async () => {
@@ -94,9 +95,9 @@ describe("install-sane-agent-context-packages", () => {
     const result = await installSaneAgentContextPackages(options({ dryRun: true, write: (line) => lines.push(line) }))
 
     expect(result.dryRun).toBe(true)
-    expect(result.created).toHaveLength(14)
+    expect(result.created).toHaveLength(12)
     expect(lines).toContain("Dry run: no files or directories were modified.")
-    expect(lines.filter((line) => line.startsWith("Planned:"))).toHaveLength(14)
+    expect(lines.filter((line) => line.startsWith("Planned:"))).toHaveLength(12)
     await expectMissing(homeDirectory)
   })
 
@@ -152,14 +153,66 @@ describe("install-sane-agent-context-packages", () => {
     await expectMissing(homeDirectory)
   })
 
-  test("the default source manifest contains every required source skill", async () => {
+  test("the default source manifest validates six generic skills using the root PRD", async () => {
     const result = await installSaneAgentContextPackages({
       homeDirectory,
       dryRun: true,
       write: () => {},
     })
 
-    expect(result.created).toHaveLength(14)
+    expect(ROLE_SKILL_NAMES).toEqual([
+      "sane-product-assistant-role",
+      "sane-research-assistant-role",
+      "sane-design-assistant-role",
+      "sane-engineering-assistant-role",
+      "sane-execution-assistant-role",
+      "sane-implementation-assistant-role",
+    ])
+    expect(result.created).toHaveLength(12)
+    for (const skillName of ROLE_SKILL_NAMES) {
+      expect(await readFile(join(DEFAULT_SOURCE_ROOT, "skills", skillName, "SKILL.md"), "utf8")).not.toBe("")
+    }
+    const productSkill = await readFile(
+      join(DEFAULT_SOURCE_ROOT, "skills", "sane-product-assistant-role", "SKILL.md"),
+      "utf8",
+    )
+    const designSkill = await readFile(
+      join(DEFAULT_SOURCE_ROOT, "skills", "sane-design-assistant-role", "SKILL.md"),
+      "utf8",
+    )
+    expect(productSkill).toContain("`PRD.md`")
+    expect(designSkill).toContain("`PRD.md`")
+    expect(productSkill).not.toContain("`FOUNDATION.md`")
+    expect(designSkill).not.toContain("`FOUNDATION.md`")
+    const productAgent = await readFile(join(DEFAULT_SOURCE_ROOT, "opencode", "agents", "sane-product.md"), "utf8")
+    const designAgent = await readFile(join(DEFAULT_SOURCE_ROOT, "opencode", "agents", "sane-design.md"), "utf8")
+    for (const [agent, skillName] of [
+      [productAgent, "sane-product-assistant-role"],
+      [designAgent, "sane-design-assistant-role"],
+    ]) {
+      expect(agent).toContain(`Read the \`${skillName}\` skill.`)
+      expect(agent).not.toContain("sane-feature-")
+      expect(agent).not.toContain("sane-foundation-")
+      expect(agent).not.toContain("explicitly declared by the user")
+      expect(agent).not.toContain("workstream `type` file")
+    }
+  })
+
+  test("does not delete previously installed typed skill directories", async () => {
+    await installSaneAgentContextPackages(options())
+    const legacySkill = join(
+      homeDirectory,
+      ".agents",
+      "skills",
+      "sane-feature-product-assistant-role",
+      "SKILL.md",
+    )
+    await mkdir(dirname(legacySkill), { recursive: true })
+    await Bun.write(legacySkill, "user-directed legacy skill\n")
+
+    await installSaneAgentContextPackages(options())
+
+    expect(await readFile(legacySkill, "utf8")).toBe("user-directed legacy skill\n")
   })
 
   test("validates CLI options and rejects positional arguments", () => {

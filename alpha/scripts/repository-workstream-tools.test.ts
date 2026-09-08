@@ -42,7 +42,7 @@ describe("repository-aware Alpha workstream tools", () => {
     )
     for (const source of [
         "shared/SANE_CONTEXT.md", "shared/SANE_STATE.md", "feature/PRD.md",
-        "foundation/FOUNDATION.md", "shared/research/INDEX.md",
+        "foundation/PRD.md", "shared/research/INDEX.md",
         "shared/research/TECH_BRIEF.md", "feature/design/SPEC.md",
         "foundation/design/SPEC.md", "shared/design/STAGES.md",
         "shared/design/stage/SPEC.md", "shared/design/stage/SECTIONS.md",
@@ -158,6 +158,17 @@ describe("repository-aware Alpha workstream tools", () => {
     await expect(selectSaneWorkstream({ implementationRepository, workstreamPath: "02-missing", write: () => {} }))
       .rejects.toThrow("Workstream type is invalid")
     expect(await readFile(join(implementationRepository, ".sane", "current-workstream"), "utf8")).toBe("01-valid\n")
+  })
+
+  test("requires PRD.md for a foundation workstream", async () => {
+    const foundation = await bootstrap("01-foundation", "foundation")
+    await rm(join(foundation, "PRD.md"))
+
+    await expect(selectSaneWorkstream({
+      implementationRepository,
+      workstreamPath: "01-foundation",
+      write: () => {},
+    })).rejects.toThrow("missing regular file")
   })
 
   test("provisions approved roles from current selection or a validated override", async () => {
