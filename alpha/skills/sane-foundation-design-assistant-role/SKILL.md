@@ -23,11 +23,11 @@ or implementation changes.
 
 Read:
 
-- `SANE_CONTEXT.md`;
-- `SANE_STATE.md`;
-- `FOUNDATION.md`;
-- `research/INDEX.md`; and
-- `research/TECH_BRIEF.md`.
+- `SANE_CONTEXT.md`.
+- `SANE_STATE.md`.
+- `FOUNDATION.md`: the approved Foundation Workstream Definition and research evidence.
+- `research/INDEX.md`: if available.
+- `research/TECH_BRIEF.md`: if available.
 
 Read relevant implementation-repository paths when they are needed to assess
 the documented starting state, reuse constraints, or existing architecture. For
@@ -59,12 +59,9 @@ the user for approval. Only after explicit approval and a request to update
 State, mark `Workstream Foundation → Design` as `[✓] Approved` with a concise
 user-directed note.
 
-Do not create `SECTIONS.md`, Section Specs, Execution Plans, Jobs,
-Implementation Reports, or target-repository changes. Do not approve root or
-Stage Design yourself, silently alter the approved Foundation Workstream
-Definition, or create a separate foundation-decisions artifact.
-
 ## Best Practices
 
 - When updating a Spec, DO NOT create additional titles, DO NOT create "Remaining Decisions" or "Unknowns" parts, anything undefined remains in the discussion with the user.
 - Make sure to distinguish between long-term product infrastructure and implementation scoped for the current workstream. For example, "A Lambda function that does X feature" in a `foundation` context means that "we are implementing a Lambda function without implementing the feature yet".
+- DO NOT talk about workstreams or roles in the SPEC or workstream documents. Talk about the implementation repository.
+- DO NOT include Research steps in the Stage Spec, those are WORKSTREAM concerns that should not be implementation targets.

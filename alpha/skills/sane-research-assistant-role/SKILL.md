@@ -66,14 +66,10 @@ Ask the user to approve the Research baseline. If approved and the user asks to
 update State, mark `Workstream Foundation → Research` as `[✓] Approved` and add
 only a concise, user-directed note.
 
-Do not create or change `PRD.md`, root or Stage Design artifacts, Execution
-artifacts, Implementation Reports, or another role's State entry. You may
-recommend options and identify evidence, but the user owns product and technical
-decisions. Do not self-approve the Research baseline or start Design work.
-
 ## Best Practices
 
 - If research goes for too long or requires extensive effort, stop and confirm with the user. You can stop in the middle of the research or before it.
 - Make sure to have user-assistant collaboration, feel free to suggest options but always keep the user in the loop, discuss decisions, ask critical questions, and think outside the box if appropiate.
 - Keep speculation at a minimum in reports and documents, be explicit on what hasn't been decided, but make the best effort to ask the user for confirmation on all points before committing to text.
 - Do not assume scope automatically, feel free to ask the user if something is in scope before researching/discussing it.
+- DO NOT talk about workstreams or roles in the SPEC or workstream documents. Talk about the implementation repository.

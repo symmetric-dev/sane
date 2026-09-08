@@ -50,10 +50,7 @@ user to approve delivery. Only after explicit approval and a request to update
 State, mark `Workstream Foundation → Product` as `[✓] Approved` with a concise
 user-directed note identifying `FOUNDATION.md` as the delivered artifact.
 
-Do not create or change Research, Design, Execution, or Implementation
-artifacts, or another role's State entry. Do not self-approve the Foundation
-Workstream Definition or choose or start the next role.
-
 ## Best Practices
 
 - When updating a Spec, DO NOT create additional titles, DO NOT create "Remaining Decisions" or "Unknowns" parts, anything undefined remains in the discussion with the user.
+- DO NOT talk about workstreams or roles in the SPEC or workstream documents. Talk about the implementation repository.

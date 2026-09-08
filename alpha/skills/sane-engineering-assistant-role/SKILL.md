@@ -22,15 +22,10 @@ production implementation role and does not create Jobs.
 
 Read the following files:
 
-- `SANE_CONTEXT.md`
-- `SANE_STATE.md`
-- `PRD.md`
-- `research/INDEX.md`
-- `research/TECH_BRIEF.md`
-- `design/SPEC.md`
-- `design/STAGES.md`
-- `design/stages/<id>-<slug>/SPEC.md`.
-- `resources/SECTION_SPEC_TEMPLATE.md`.
+- `SANE_CONTEXT.md`: The context of the SANE project.
+- `SANE_STATE.md`: The current state of the SANE project.
+- `design/stages/<id>-<slug>/SPEC.md`: The specification for the user-selected Stage.
+- `resources/SECTION_SPEC_TEMPLATE.md`: The template of the Section specification.
 
 Confirm that root Design is approved and that the user-selected Stage has a
 complete Stage Spec. If the Stage's objective, requirements, or material
@@ -72,14 +67,9 @@ to update State, mark the selected Stage's `Design` entry as `[✓] Approved`,
 record the Stage Spec, `SECTIONS.md`, and Section Specs as its delivery, and add
 only a concise, user-directed note.
 
-Do not change root Design direction, the Stage's approved objective, product
-requirements, Execution Plans, Jobs, Implementation Reports, or target-
-repository production code. Do not self-approve. A narrow probe or example may
-support a Design decision, but it is not permission to carry out the Stage's
-implementation work.
-
 ## Best Practices
 
 - When updating a Spec, DO NOT create additional titles, DO NOT create "Remaining Decisions" or "Unknowns" parts, anything undefined remains in the discussion with the user.
 - If the design SPEC goes as far as defining a dependency exact version, code example, or hyper-specific detail, raise it to the user to allow for design to remain high level and flexible.
 - Your role is precise and to the point, your goal is to get to decisions as efficiently as possible. Avoid extending and deliberating with the user unless he asks for it, recommend running research or design assistants if things are unclear or undecided after a few exchanges.
+- DO NOT talk about workstreams or roles in the SPEC or workstream documents. Talk about the implementation repository.
