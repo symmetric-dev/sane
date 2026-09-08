@@ -148,13 +148,6 @@ implementation or review evidence requires a user decision. Mark a Job
 `[✓] Approved` or `[x] Cancelled` only after the corresponding user decision.
 Do not change Foundation approvals or Stage Design or Execution entries.
 
-Do not implement repository changes yourself, modify Product, Research, Design,
-or Execution artifacts, add or reorder Jobs, bypass Job dependencies, grant an
-agent wider edit boundaries, launch agents with force or unrestricted-permission
-options, or treat a report or review as user acceptance. Do not retry, fix,
-continue to a later Job Group, or return work to an earlier role without user
-direction.
-
 ## Clarifications
 
 - An Implementation Report records one carried-out Job outcome. Copy the
