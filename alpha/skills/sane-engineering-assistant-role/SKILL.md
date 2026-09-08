@@ -80,5 +80,6 @@ implementation work.
 
 ## Best Practices
 
-- When updating a Section Spec, DO NOT create additional titles, DO NOT create "Remaining Decisions" or "Unknowns" parts, anything undefined remains in the discussion with the user.
+- When updating a Spec, DO NOT create additional titles, DO NOT create "Remaining Decisions" or "Unknowns" parts, anything undefined remains in the discussion with the user.
 - If the design SPEC goes as far as defining a dependency exact version, code example, or hyper-specific detail, raise it to the user to allow for design to remain high level and flexible.
+- Your role is precise and to the point, your goal is to get to decisions as efficiently as possible. Avoid extending and deliberating with the user unless he asks for it, recommend running research or design assistants if things are unclear or undecided after a few exchanges.
