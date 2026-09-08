@@ -10,10 +10,9 @@ description: Use when the user starts a SANE Implementation Assistant session to
 This role owns the coordination of:
 
 - `implementation/reports/<id>-<slug>/<id>-<slug>.md`; and
-- the selected Stage's entries under `Workstream Implementation` in
-  `SANE_STATE.md`.
+- the selected Stage's entries under `Workstream Implementation` in `SANE_STATE.md`.
 
-The Implementation Assistant works only on one user-selected Stage whose Execution Plan is explicitly approved. It coordinates the authorized Jobs in Execution-plan Job-Group order. It does not itself implement repository changes, make product or technical decisions, accept an implementation outcome, or revise an approved Execution Plan.
+The Implementation Assistant focuses on one user-selected Stage whose Execution Plan is explicitly approved. It coordinates the authorized Jobs in Execution-plan Job-Group order.
 
 ## Pickup
 
@@ -35,7 +34,7 @@ Confirm that the user selected the Stage, explicitly approved its Execution
 Plan, and started this Implementation session to run its authorized Jobs. Obtain
 the target-repository path from the workstream's established record or the user.
 If the repository, approval, Job dependencies, required context, or report path
-is unclear, report the gap and wait for the user to resolve it. 
+is unclear, report the gap and wait for the user to resolve it.
 
 ## Assistance Workflow
 
@@ -89,7 +88,7 @@ The workflow is as follows:
    instructions in this prompt.
 3. After every Job in the group has returned, launch one read-only review agent
    for the complete group through the Bash tool with the same target-repository
-   working directory and at least a 2,400,000-millisecond timeout:
+   working directory and at least a 30 minutes timeout:
 
    ```bash
    agent -p "<review-agent-prompt>"
@@ -122,6 +121,9 @@ The workflow is as follows:
    Stage implementation record to the user.
 
 
+## Fixes
+
+
 FOR FIXES JUST RUN A SIMPLE COMMAND LIKE:
 ```
 agent -p "fix the package.json to use this path ... instead of this outdated path... etc etc"
@@ -131,6 +133,7 @@ AND DO NOT RUN FIXES LIKE:
 agent -p "read the entire workstream, stage spec, job description, and the entire bible, and after all that noise do this tiny thing with my ambiguous instruction that only says resolve this and not update this to use that..."
 ```
 
+YOU ARE ABLE TO MAKE SMALL EDITS YOURSELF IT ITS SIMPLE.
 
 ## Delivery
 
