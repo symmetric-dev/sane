@@ -60,18 +60,19 @@ describe("create-sane-workstream", () => {
       await access(join(destination, directory))
       expect((await readdir(join(destination, directory))).sort()).toEqual(
         directory === "resources"
-           ? [
-               "EXECUTION_PLAN_TEMPLATE.md",
-               "IMPLEMENTATION_REPORT_TEMPLATE.md",
-               "JOB_TEMPLATE.md",
-                "RESEARCH_REPORT_TEMPLATE.md",
-               "ROOT_DESIGN_SPEC_TEMPLATE.md",
-                "SECTION_SPEC_TEMPLATE.md",
-               "STAGES_TEMPLATE.md",
-               "STAGE_DESIGN_SPEC_TEMPLATE.md",
-                "STAGE_SECTIONS_TEMPLATE.md",
-                "TECHNICAL_REFERENCE_TEMPLATE.md",
-             ]
+          ? [
+              "EXECUTION_PLAN_TEMPLATE.md",
+              "IMPLEMENTATION_REPORT_TEMPLATE.md",
+              "JOB_TEMPLATE.md",
+              "RESEARCH_REPORT_TEMPLATE.md",
+              "ROOT_DESIGN_SPEC_TEMPLATE.md",
+              "SECTION_SPEC_TEMPLATE.md",
+              "STAGES_TEMPLATE.md",
+              "STAGE_DESIGN_SPEC_TEMPLATE.md",
+              "STAGE_IMPLEMENTATION_BRIEF_TEMPLATE.md",
+              "STAGE_SECTIONS_TEMPLATE.md",
+              "TECHNICAL_REFERENCE_TEMPLATE.md",
+            ]
           : [],
       )
     }
@@ -150,7 +151,7 @@ describe("create-sane-workstream", () => {
     expect(await readFile(join(stagingRoot, "skills", "product", "SKILL.md"), "utf8")).toBe(
       "product role template\n",
     )
-    expect(initialTemplateRegistry("feature")).toHaveLength(13)
+    expect(initialTemplateRegistry("feature")).toHaveLength(14)
   })
 
   test("rejects unsupported types before writing a destination", async () => {

@@ -32,7 +32,8 @@ operation.
    later-workstream handoff.
 3. Use pilot evidence to decide whether foundation needs specialized Stage or
    Section templates. Research, Execution Plan, Job, Implementation Report,
-   State, and shared Context remain intentionally common unless that evidence
+   Stage Implementation Brief, State, and shared Context remain intentionally
+   common unless that evidence
    shows otherwise.
 
 ## Deferred

@@ -10,17 +10,10 @@ description: Use when the user starts a SANE Implementation Assistant session.
 This role owns the coordination of:
 
 - `implementation/reports/<id>-<slug>/<id>-<slug>.md`; and
+- `implementation/briefs/STAGE_<two-digit-id>.md`; and
 - the selected Stage's entries under `Workstream Implementation` in `SANE_STATE.md`.
 
 The Implementation Assistant focuses on one user-selected Stage whose Execution Plan is explicitly approved. It coordinates the authorized Jobs in Execution-plan Job-Group order.
-
-## Artifact Creation
-
-Inspect `resources/` first. For a missing Job Implementation Report, create its
-parent directory and copy `resources/IMPLEMENTATION_REPORT_TEMPLATE.md` to
-`implementation/reports/<stage-id>-<stage-slug>/<job-id>-<job-slug>.md`. Never
-overwrite an existing report; edit the copy and preserve its required headings
-and structure.
 
 ## Pickup
 
@@ -30,6 +23,7 @@ Read the following files:
 - `SANE_STATE.md`
 - `PRD.md`
 - `resources/IMPLEMENTATION_REPORT_TEMPLATE.md`
+- `resources/STAGE_IMPLEMENTATION_BRIEF_TEMPLATE.md`
 - `design/stages/<id>-<slug>/SPEC.md`
 - `design/stages/<id>-<slug>/SECTIONS.md`
 - the Section Specs relevant to the selected Stage's Jobs;
@@ -37,6 +31,9 @@ Read the following files:
 - every Job document for the selected Stage; and
 - the paths, but not the contents, of any existing Implementation Reports for
   the selected Stage.
+
+If `implementation/briefs/STAGE_<two-digit-id>.md` already exists for the
+selected valid Stage identifier, read it as the existing handoff to update.
 
 Confirm that the user selected the Stage, explicitly approved its Execution
 Plan, and started this Implementation session to run its authorized Jobs. Obtain
@@ -124,9 +121,12 @@ The workflow is as follows:
 4. Report the Job outcomes and review findings to the user. Wait for the user to
    decide whether to proceed to the next Job Group, request a permitted retry or
    fix, return work to an earlier role, or stop.
-5. Repeat only under the user's direction. After all Job Groups are reportable,
-   check the Execution Plan's Stage Handoff Requirements and deliver the complete
-   Stage implementation record to the user.
+5. Repeat only under the user's direction. Once every authorized Job has been
+   completed and received its required read-only Job-Group review, check the
+   Execution Plan's Stage Handoff Requirements. Create or update the Stage
+   Implementation Brief from the actual Job reports and review evidence, then
+   deliver the complete Stage implementation record to the user. Do not offer
+   Stage implementation delivery before this brief exists and is current.
 
 
 ## Fixes
@@ -145,6 +145,18 @@ YOU ARE ABLE TO MAKE SMALL EDITS YOURSELF IT ITS SIMPLE.
 YOU ARE AUTHORIZED TO EDIT THE IMPLEMENTATION REPORTS AFTER THE FIXES.
 
 
+## Artifact Creation
+
+Inspect `resources/` first. For a missing Job Implementation Report, create its
+parent directory and copy `resources/IMPLEMENTATION_REPORT_TEMPLATE.md` to
+`implementation/reports/<stage-id>-<stage-slug>/<job-id>-<job-slug>.md`. For a
+missing Stage Implementation Brief, create its parent directory and copy
+`resources/STAGE_IMPLEMENTATION_BRIEF_TEMPLATE.md` to
+`implementation/briefs/STAGE_<two-digit-id>.md`. Derive `<two-digit-id>` only
+from the selected valid Stage identifier; do not invent a Stage number. Never
+overwrite an existing report or brief; edit the copy and preserve its required
+headings and structure.
+
 ## Delivery
 
 Make sure every carried-out Job has one matching Implementation Report at
@@ -152,8 +164,15 @@ Make sure every carried-out Job has one matching Implementation Report at
 the same local ID, slug, and Job name. Based on the review-agent findings,
 confirm that reports meet their Job Report Requirements, every completed Job
 Group received a read-only review, and the Stage Handoff Requirements have been
-addressed. Report the actual implementation and review state, including
-unresolved findings, to the user.
+addressed. Before offering delivery, create or update
+`implementation/briefs/STAGE_<two-digit-id>.md` from
+`resources/STAGE_IMPLEMENTATION_BRIEF_TEMPLATE.md` if it is absent, preserving
+the brief's structure if it already exists. The brief must concisely record only
+actual implemented results, material repository changes, verification evidence,
+and Design reconciliation or next-Stage technical context. It supplements and
+does not replace one Implementation Report per carried-out Job. Report the
+actual implementation and review state, including unresolved findings, to the
+user.
 
 ## Approval and Boundaries
 
@@ -171,6 +190,8 @@ Do not change Foundation approvals or Stage Design or Execution entries.
 - An Implementation Report records one carried-out Job outcome. Copy the
   workstream-local `resources/IMPLEMENTATION_REPORT_TEMPLATE.md` to create it;
   Job-specific Report Requirements add evidence without changing its structure.
+- A Stage Implementation Brief is one actual-state handoff after all authorized
+  Jobs for the selected Stage have completed and been reviewed. 
 - A review is a read-only assessment after a Job Group. Its findings inform the
   user; it neither changes the repository nor accepts the group's work.
 - A user-directed retry remains the same authorized Job and updates its matching

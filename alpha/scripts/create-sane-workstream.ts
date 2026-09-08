@@ -28,6 +28,10 @@ const SHARED_INITIAL_TEMPLATE_REGISTRY = [
     destination: "resources/IMPLEMENTATION_REPORT_TEMPLATE.md",
   },
   {
+    source: "shared/implementation/STAGE_BRIEF.md",
+    destination: "resources/STAGE_IMPLEMENTATION_BRIEF_TEMPLATE.md",
+  },
+  {
     source: "shared/design/section/SPEC.md",
     destination: "resources/SECTION_SPEC_TEMPLATE.md",
   },

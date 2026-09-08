@@ -52,6 +52,7 @@ type                         # feature
 SANE_CONTEXT.md
 SANE_STATE.md
 resources/IMPLEMENTATION_REPORT_TEMPLATE.md
+resources/STAGE_IMPLEMENTATION_BRIEF_TEMPLATE.md
 resources/SECTION_SPEC_TEMPLATE.md
 resources/JOB_TEMPLATE.md
 resources/RESEARCH_REPORT_TEMPLATE.md
@@ -217,6 +218,18 @@ to the Job-specific destination:
 ```text
 implementation/reports/01-csv-export/<job-id>-<job-slug>.md
 ```
+
+Once every authorized Job has completed and received its Job-Group review, the
+Implementation Assistant creates or updates this actual-state handoff before
+offering Stage implementation delivery:
+
+```text
+implementation/briefs/STAGE_01.md
+```
+
+It is created from `resources/STAGE_IMPLEMENTATION_BRIEF_TEMPLATE.md` only when
+absent. The brief supplements the per-Job reports with actual implemented
+results, repository changes, verification evidence, and next-Stage Design context.
 
 **User decision after each Job Group:** The user may accept completed Job
 outcomes, request a permitted retry or fix, return work to Research, Design, or

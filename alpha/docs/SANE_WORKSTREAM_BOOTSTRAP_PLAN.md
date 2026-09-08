@@ -56,6 +56,7 @@ For a new, previously nonexistent workstream path, the bootstrap command will:
 4. Copy the local fallback templates to:
     ```text
     <workstream>/resources/IMPLEMENTATION_REPORT_TEMPLATE.md
+    <workstream>/resources/STAGE_IMPLEMENTATION_BRIEF_TEMPLATE.md
     <workstream>/resources/SECTION_SPEC_TEMPLATE.md
     <workstream>/resources/JOB_TEMPLATE.md
     <workstream>/resources/RESEARCH_REPORT_TEMPLATE.md
@@ -79,8 +80,9 @@ For a new, previously nonexistent workstream path, the bootstrap command will:
    Assistant session for the new workstream.
 
 The bootstrap command does not create Research, Design, Stage, Execution, Job,
-or Implementation Report artifacts. Its `resources/` copies are the sole
-creation mechanism for those artifacts: the owning role inspects `resources/`,
+Implementation Report, or Stage Implementation Brief artifacts. Its
+`resources/` copies are the sole creation mechanism for those artifacts: the
+owning role inspects `resources/`,
 creates the destination parent directory, copies the matching local template,
 then edits the copy. Roles never overwrite an existing artifact and preserve
 the copied template's required headings and structure.
@@ -96,6 +98,7 @@ Required source templates are:
 alpha/templates/shared/SANE_CONTEXT.md
 alpha/templates/shared/SANE_STATE.md
 alpha/templates/shared/implementation/REPORT.md
+alpha/templates/shared/implementation/STAGE_BRIEF.md
 alpha/templates/shared/design/section/SPEC.md
 alpha/templates/shared/execution/JOB.md
 alpha/templates/shared/research/TECHNICAL_REFERENCE.md

@@ -60,6 +60,7 @@ file, selects it, and creates `PRD.md` plus local fallback templates at:
 
 ```text
 resources/IMPLEMENTATION_REPORT_TEMPLATE.md
+resources/STAGE_IMPLEMENTATION_BRIEF_TEMPLATE.md
 resources/SECTION_SPEC_TEMPLATE.md
 resources/JOB_TEMPLATE.md
 resources/RESEARCH_REPORT_TEMPLATE.md
@@ -98,7 +99,10 @@ artifact and preserves the template's required headings and structure:
   `execution/stages/<id>-<slug>/EXECUTION_PLAN.md`; `JOB_TEMPLATE.md` →
   `execution/stages/<id>-<slug>/jobs/<id>-<slug>.md`.
 - Implementation: `IMPLEMENTATION_REPORT_TEMPLATE.md` →
-  `implementation/reports/<stage-id>-<stage-slug>/<job-id>-<job-slug>.md`.
+  `implementation/reports/<stage-id>-<stage-slug>/<job-id>-<job-slug>.md`; after
+  all authorized Jobs are completed and reviewed,
+  `STAGE_IMPLEMENTATION_BRIEF_TEMPLATE.md` →
+  `implementation/briefs/STAGE_<two-digit-id>.md`.
 
 `PRD.md`, `SANE_CONTEXT.md`, and `SANE_STATE.md` are bootstrap-root artifacts;
 their owning roles edit them in place.

@@ -38,6 +38,8 @@ name. Track its Design and Execution approvals and delivered artifacts here. -->
   - Report: `implementation/reports/<stage-id>-<stage-slug>/<job-id>-<job-slug>.md`
   - Notes:
 
+- Stage brief: `implementation/briefs/STAGE_<two-digit-id>.md`
+
 Each Job status is one of:
 
 - `[ ] Pending` — not started.

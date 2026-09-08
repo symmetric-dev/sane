@@ -64,8 +64,10 @@ The Alpha will test the full workflow by hand:
    authorized Jobs.
 5. Each Cursor implementation agent carries out one Job in the target
    repository and writes its matching Implementation Report.
-6. The user reviews reports and carries handoff context to later agents or
-   stages.
+6. After all authorized Jobs are completed and reviewed, the Implementation
+   Assistant creates or updates the actual-state Stage Implementation Brief; the
+   user reviews it with the per-Job reports and carries handoff context to later
+   Design work or stages.
 
 The initial alpha may validate one Stage first. It tracks workstream State
 manually and permits parallel implementation only when an Execution-defined Job
@@ -164,7 +166,7 @@ requests the State update.
 - Technical Reference and historical Research Reports;
 - root, Stage, and Section Design Specifications;
 - stage Execution Plan and Job documents; and
-- stage-scoped Implementation Reports.
+- stage-scoped Implementation Reports and Stage Implementation Briefs.
 
 The Alpha may reveal gaps or unsafe assumptions in these templates. Record such
 findings for an explicit user decision; do not silently redefine the model.

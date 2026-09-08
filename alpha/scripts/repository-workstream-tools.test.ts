@@ -47,6 +47,7 @@ describe("repository-aware Alpha workstream tools", () => {
         "shared/design/stage/SPEC.md", "shared/design/stage/SECTIONS.md",
         "shared/execution/EXECUTION_PLAN.md", "shared/design/section/SPEC.md",
         "shared/execution/JOB.md", "shared/implementation/REPORT.md",
+        "shared/implementation/STAGE_BRIEF.md",
     ]) {
       await mkdir(dirname(join(templateRoot, source)), { recursive: true })
       await Bun.write(join(templateRoot, source), `${source}\n`)

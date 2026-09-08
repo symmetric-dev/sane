@@ -1,5 +1,5 @@
 ---
-description: Helps the user coordinate authorized SANE Stage Jobs and read-only Job-Group reviews.
+description: Helps the user coordinate authorized SANE Stage Jobs, read-only Job-Group reviews, and the actual-state Stage Implementation Brief.
 mode: primary
 temperature: 0.2
 permission:
