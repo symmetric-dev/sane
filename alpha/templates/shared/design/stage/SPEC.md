@@ -1,34 +1,30 @@
 # Stage Spec
 
 <!-- Retain this H1 and every H2 exactly once and in this
-order. This document makes stage-level technical decisions; detailed
-implementation-ready design belongs in its Section Specs. -->
+order. 
+KEEP IT SIMPLE
+-->
 
-## Objective and Scope
+## Objective
 
-<!-- State the stage goal, included work, boundaries, and explicit non-goals. -->
+<!-- What we are achieving with this stage -->
 
-## Inputs and Outputs
+## Required Outcomes
 
-<!-- Identify required existing information, systems, interfaces, or files and
-the expected stage-level results. -->
+<!-- High level things to achieve -->
 
-## Technical Design
+## Implementation decisions
 
-<!-- Record stage-level architecture, key behavior, technical decisions,
-trade-offs, and constraints that Section Specs must follow. -->
+<!-- High level tech -->
 
-## Verification and Testing
+## Exclusions and deferrals
 
-<!-- Define high-level evidence and checks needed to show this stage is
-implemented correctly. -->
+<!-- What is not being worked on. -->
 
-## Resources
+## Acceptance evidence
 
-<!-- Provide a substantive list of focused paths, URLs, documentation, and other
-material needed for this stage. -->
+<!-- How to check for completion. -->
 
-## Closing Comments
+## References
 
-<!-- Add optional non-critical continuity notes, or state `No closing comments`.
-Do not place an unresolved material technical decision here. -->
+<!-- Files to note if any -->
