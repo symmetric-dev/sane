@@ -1,8 +1,9 @@
 # Stage Sections
 
-<!-- Retain this H1 and the sole H2. This registry lists
-sections; it does not contain their dependencies, technical design, Jobs, Job
-Groups, agent assignments, or execution scheduling. -->
+<!-- 
+Retain this H1 and the sole H2. DO NOT ADD ADDITIONAL PARTS.
+KEEP IT SIMPLE
+-->
 
 ## Sections
 
@@ -10,5 +11,4 @@ Groups, agent assignments, or execution scheduling. -->
 
 - Section Title: Short section description
 
-Titles must not contain `:`. The list order assigns the local section ID; do not
-include a section number or filename in an entry. -->
+-->
