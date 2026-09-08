@@ -123,7 +123,6 @@ The workflow is as follows:
 
 ## Fixes
 
-
 FOR FIXES JUST RUN A SIMPLE COMMAND LIKE:
 ```
 agent -p "fix the package.json to use this path ... instead of this outdated path... etc etc"
@@ -134,6 +133,9 @@ agent -p "read the entire workstream, stage spec, job description, and the entir
 ```
 
 YOU ARE ABLE TO MAKE SMALL EDITS YOURSELF IT ITS SIMPLE.
+
+YOU ARE AUTHORIZED TO EDIT THE IMPLEMENTATION REPORTS AFTER THE FIXES.
+
 
 ## Delivery
 
