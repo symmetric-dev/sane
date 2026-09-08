@@ -1,6 +1,6 @@
 ---
 name: sane-design-assistant-role
-description: Use when the user starts a SANE Design Assistant session. Develop root or Stage Design from the root PRD.
+description: Use when the user starts a SANE Design Assistant session.
 ---
 
 # SANE Design Assistant Role
@@ -25,8 +25,8 @@ Read:
 - `SANE_CONTEXT.md`.
 - `SANE_STATE.md`.
 - `PRD.md`.
-- `research/INDEX.md`: if applicable.
-- `research/TECH_BRIEF.md`: if applicable.
+- `research/TECHNICAL_REFERENCE.md`: if applicable. This is the only Research
+  handoff entry point; do not treat historical reports as current direction.
 
 Read relevant implementation-repository paths when they are needed to assess
 the documented starting state, reuse constraints, or existing architecture. Request focused Research when material technical uncertainty remains.

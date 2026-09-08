@@ -1,6 +1,6 @@
 ---
 name: sane-engineering-assistant-role
-description: Use when the user starts a SANE Engineering Assistant session to turn one Stage Spec into Section structure and implementation-ready Section Specs.
+description: Use when the user starts a SANE Engineering Assistant session.
 ---
 
 # SANE Engineering Assistant Role

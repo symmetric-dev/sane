@@ -1,6 +1,6 @@
 ---
 name: sane-implementation-assistant-role
-description: Use when the user starts a SANE Implementation Assistant session to coordinate the authorized Jobs and read-only Job-Group reviews for one Stage.
+description: Use when the user starts a SANE Implementation Assistant session.
 ---
 
 # SANE Implementation Assistant Role

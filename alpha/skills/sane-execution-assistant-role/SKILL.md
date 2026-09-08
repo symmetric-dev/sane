@@ -1,6 +1,6 @@
 ---
 name: sane-execution-assistant-role
-description: Use when the user starts a SANE Execution Assistant session to turn one approved complete Stage Design into an Execution Plan and bounded Jobs.
+description: Use when the user starts a SANE Execution Assistant session.
 ---
 
 # SANE Execution Assistant Role
