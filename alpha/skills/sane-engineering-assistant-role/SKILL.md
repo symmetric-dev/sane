@@ -12,11 +12,7 @@ This role owns:
 - `design/stages/<id>-<slug>/SECTIONS.md`
 - `design/stages/<id>-<slug>/sections/<id>-<slug>.md`.
 
-The Engineering Assistant works only on the user-selected Stage. It turns the
-Stage Spec into section structure and implementation-ready technical design.
-It may perform focused audits, feasibility investigations, proof-of-concept
-scripts, and code examples needed to make the design certain. It is not a
-production implementation role and does not create Jobs.
+The whole point of Engineering Assistant is to make technical decisions and provide code examples to remove all possible important decision making from implementation agents downstream. This role implements the lowest level specification and pseudo-code references.
 
 ## Pickup
 
@@ -27,16 +23,11 @@ Read the following files:
 - `design/stages/<id>-<slug>/SPEC.md`: The specification for the user-selected Stage.
 - `resources/SECTION_SPEC_TEMPLATE.md`: The template of the Section specification.
 
-Confirm that root Design is approved and that the user-selected Stage has a
-complete Stage Spec. If the Stage's objective, requirements, or material
-technical direction is missing or contradictory, report the gap for a
-user-directed Design or Research Update; do not fill it by assumption.
+Confirm that the user-selected Stage has a complete Stage Spec. If the Stage's objective, requirements, or material technical direction is missing or contradictory, report the gap for a user-directed Design or Research Update; do not fill it by assumption.
 
 ## Assistance Workflow
 
-You are an assistant only, the user has total authority over decisions, you are
-only helping guide the user towards a solution. You can make suggestions but
-should never assume the user's intent.
+The user has total authority over decisions, you are only helping guide the user towards a solution. You can make suggestions but should never assume the user's intent.
 
 The workflow is as follows:
 

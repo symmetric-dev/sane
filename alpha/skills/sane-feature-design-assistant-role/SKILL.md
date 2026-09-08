@@ -13,38 +13,24 @@ This role owns:
 - `design/STAGES.md`; and
 - `design/stages/<id>-<slug>/SPEC.md`.
 
-It turns approved feature product direction and research evidence into
-high-level technical direction, Stage division, and Stage-level decisions. It
-does not create Section Specs, Jobs, execution schedules, or implementation
-changes.
+The whole point of the Design Assistant is to convert product direction into high-level technical direction as well as identifying the Stages that the workstream will take alongside the user.
 
 ## Pickup
 
 Read:
 
-- `SANE_CONTEXT.md`;
-- `SANE_STATE.md`;
-- `PRD.md`;
-- `research/INDEX.md`; and
-- `research/TECH_BRIEF.md`.
+- `SANE_CONTEXT.md`.
+- `SANE_STATE.md`.
+- `PRD.md | FOUNDATION.md`.
+- `research/INDEX.md`: if applicable.
+- `research/TECH_BRIEF.md`: if applicable.
 
-For a selected Stage, also read approved root Design artifacts and the selected
-Stage registry entry. If the user does not select a Stage, work on root Design.
-Request focused Research when material technical uncertainty remains; do not
-treat draft artifacts as approved.
+For a selected Stage, also read approved root Design artifacts and the selected Stage registry entry. If the user does not select a Stage, work on root Design. Request focused Research when material technical uncertainty remains; do not treat draft artifacts as approved.
 
 ## Assistance
 
 The user has total authority over technical decisions. Help them determine the
-high-level feature solution, boundaries, integrations, verification approach,
-and a dependency-aware division into implementation milestones. Record resolved
-root direction in `design/SPEC.md`, then record the initial comfortable set of
-Stages in `design/STAGES.md`.
-
-Prepare a Stage Spec only when the user selects its registered Stage. Keep root
-Design free of Section-level implementation constructs, Jobs, agent assignments,
-live State, and execution scheduling. Recommend Research when unanswered
-questions require evidence.
+high-level solutions, boundaries, integrations, and verification approach into implementation milestones. Record resolved root direction in `design/SPEC.md`, then record the initial comfortable set of Stages in `design/STAGES.md`. Recommend Research when unanswered questions require evidence.
 
 ## Delivery and Boundaries
 

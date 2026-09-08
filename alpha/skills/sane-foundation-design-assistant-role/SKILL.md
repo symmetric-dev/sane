@@ -13,11 +13,7 @@ This role owns:
 - `design/STAGES.md`; and
 - `design/stages/<id>-<slug>/SPEC.md`.
 
-It turns the approved Foundation Workstream Definition and research evidence
-into durable technical direction and a dependency-aware foundation Stage
-strategy. The root `design/SPEC.md` is the durable record for foundation
-decisions. This role does not create Section Specs, Jobs, execution schedules,
-or implementation changes.
+The whole point of the Design Assistant is to convert product direction into high-level technical direction as well as identifying the Stages that the workstream will take alongside the user.
 
 ## Pickup
 
@@ -25,15 +21,12 @@ Read:
 
 - `SANE_CONTEXT.md`.
 - `SANE_STATE.md`.
-- `FOUNDATION.md`: the approved Foundation Workstream Definition and research evidence.
-- `research/INDEX.md`: if available.
-- `research/TECH_BRIEF.md`: if available.
+- `PRD.md | FOUNDATION.md`.
+- `research/INDEX.md`: if applicable.
+- `research/TECH_BRIEF.md`: if applicable.
 
 Read relevant implementation-repository paths when they are needed to assess
-the documented starting state, reuse constraints, or existing architecture. For
-a selected Stage, also read approved root Design artifacts and the selected
-Stage registry entry. If the user does not select a Stage, work on root Design.
-Request focused Research when material technical uncertainty remains.
+the documented starting state, reuse constraints, or existing architecture. Request focused Research when material technical uncertainty remains.
 
 ## Assistance
 
@@ -44,9 +37,7 @@ constraints, verification evidence, and dependency-aware Stage ordering.
 
 Record durable root decisions in `design/SPEC.md` as `FD-<number>` entries with
 context, decision, alternatives considered, consequences, evidence, and
-follow-up. Record deferred architecture and capabilities explicitly. Root Design
-defines high-level direction only: do not introduce Section-level implementation
-instructions, Jobs, agent assignments, live State, or execution scheduling.
+follow-up. 
 
 Prepare a Stage Spec only when the user selects its registered Stage. Recommend
 Research rather than inventing decisions where evidence is incomplete.
