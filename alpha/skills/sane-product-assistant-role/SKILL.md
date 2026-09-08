@@ -11,6 +11,9 @@ This role establishes and maintains the approved product direction in `PRD.md`.
 Follow the document's existing template and guidance. Do not read root `type`
 metadata as session context or require the user to declare a type.
 
+`PRD.md` is a bootstrap-root artifact. Inspect it and edit it in place; do not
+recreate, copy, or overwrite it.
+
 Define intended outcomes and acceptance evidence, not architecture, package
 choices, implementation structure, commands, configuration values, or planning.
 

@@ -6,7 +6,6 @@ const expectedCommands: AlphaCommand[] = [
   "init-sane",
   "create-workstream",
   "select-workstream",
-  "provision",
   "install-context-packages",
   "sane-path",
 ]
@@ -26,15 +25,15 @@ describe("sane-alpha dispatcher", () => {
         return index + 10
       },
     ])) as Record<AlphaCommand, (args: string[]) => Promise<number>>
-    const argumentsToPreserve = ["", "two words", "--", "--stage", "01-foundation"]
+    const argumentsToPreserve = ["", "two words", "--", "--type", "feature"]
 
     const result = await runSaneAlpha(
-      ["provision", ...argumentsToPreserve],
+      ["create-workstream", ...argumentsToPreserve],
       handlers,
     )
 
-    expect(result).toBe(expectedCommands.indexOf("provision") + 10)
-    expect(received).toEqual([{ command: "provision", args: argumentsToPreserve }])
+    expect(result).toBe(expectedCommands.indexOf("create-workstream") + 10)
+    expect(received).toEqual([{ command: "create-workstream", args: argumentsToPreserve }])
   })
 
   test("prints help successfully and rejects an unknown command", async () => {

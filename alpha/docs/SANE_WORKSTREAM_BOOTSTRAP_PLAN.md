@@ -29,7 +29,6 @@ The installed command exposes the repository-aware pilot utilities:
 sane-alpha init-sane <implementation-repository> [--dry-run]
 sane-alpha create-workstream <implementation-repository> <workstream-relative-path> --type <feature|foundation> [--dry-run]
 sane-alpha select-workstream <implementation-repository> <workstream-relative-path> [--dry-run]
-sane-alpha provision <implementation-repository> <research|design|stage-design|engineering|execution> [--workstream <relative-path>] [--stage <id>-<slug>] [--dry-run]
 sane-alpha install-context-packages [--dry-run] [--overwrite]
 sane-alpha sane-path <implementation-repository>
 ```
@@ -59,8 +58,8 @@ For a new, previously nonexistent workstream path, the bootstrap command will:
     <workstream>/resources/IMPLEMENTATION_REPORT_TEMPLATE.md
     <workstream>/resources/SECTION_SPEC_TEMPLATE.md
     <workstream>/resources/JOB_TEMPLATE.md
-    <workstream>/resources/RESEARCH_INDEX_TEMPLATE.md
-    <workstream>/resources/RESEARCH_TECH_BRIEF_TEMPLATE.md
+    <workstream>/resources/RESEARCH_REPORT_TEMPLATE.md
+    <workstream>/resources/TECHNICAL_REFERENCE_TEMPLATE.md
     <workstream>/resources/ROOT_DESIGN_SPEC_TEMPLATE.md
     <workstream>/resources/STAGES_TEMPLATE.md
     <workstream>/resources/STAGE_DESIGN_SPEC_TEMPLATE.md
@@ -80,11 +79,11 @@ For a new, previously nonexistent workstream path, the bootstrap command will:
    Assistant session for the new workstream.
 
 The bootstrap command does not create Research, Design, Stage, Execution, Job,
-or Implementation Report artifacts. Its `resources/` copies are fallback source
-templates only: if a provision command is unavailable or not run, the user may
-explicitly direct the owning role to copy the matching fallback into its normal
-artifact destination. Their owning roles still create and deliver the artifacts
-when their work begins.
+or Implementation Report artifacts. Its `resources/` copies are the sole
+creation mechanism for those artifacts: the owning role inspects `resources/`,
+creates the destination parent directory, copies the matching local template,
+then edits the copy. Roles never overwrite an existing artifact and preserve
+the copied template's required headings and structure.
 
 ## Templates
 
@@ -99,8 +98,8 @@ alpha/templates/shared/SANE_STATE.md
 alpha/templates/shared/implementation/REPORT.md
 alpha/templates/shared/design/section/SPEC.md
 alpha/templates/shared/execution/JOB.md
-alpha/templates/shared/research/INDEX.md
-alpha/templates/shared/research/TECH_BRIEF.md
+alpha/templates/shared/research/TECHNICAL_REFERENCE.md
+alpha/templates/shared/research/REPORT.md
 alpha/templates/shared/design/STAGES.md
 alpha/templates/shared/design/stage/SPEC.md
 alpha/templates/shared/design/stage/SECTIONS.md

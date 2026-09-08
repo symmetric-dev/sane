@@ -63,7 +63,7 @@ source of SANE templates.
 
 No role agent requires a user to declare a workstream type, and role agents do
 not read root `type` metadata as session context. Product and Design load their
-single generic skill directly. Their skills use the provisioned `PRD.md` and
+single generic skill directly. Their skills use the bootstrapped `PRD.md` and
 applicable root Design template without routing by type.
 
 Reinstalling updates only the twelve managed destinations; it does not delete

@@ -14,6 +14,15 @@ artifacts. A Stage topic may keep its historical evidence under
 The Technical Reference is the only Research handoff entry point. It is a
 current, precise technical reference, not a research history or draft.
 
+## Artifact Creation
+
+Inspect `resources/` first. For a missing Technical Reference, create its parent
+directory and copy `resources/TECHNICAL_REFERENCE_TEMPLATE.md` to
+`research/TECHNICAL_REFERENCE.md`. For a user-directed topic report, create
+`research/stage-<two-digit-id>/<topic>/` and copy
+`resources/RESEARCH_REPORT_TEMPLATE.md` to `REPORT.md`. Never overwrite an
+existing artifact; edit the copy and preserve its required headings and structure.
+
 ## Pickup
 
 Read the following files:

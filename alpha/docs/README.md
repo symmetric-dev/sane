@@ -134,8 +134,8 @@ current user's home directory.
 
 The installer copies exactly twelve files: six OpenCode agent configurations and
 six role skills. No role agent requires a type declaration or reads root `type`
-metadata as session context. Type remains an input to CLI creation and template
-provisioning: it creates `PRD.md` and selects the matching root Design template,
+metadata as session context. Type remains an input to CLI creation: it creates
+`PRD.md` and selects the matching root Design resource template,
 which the generic Product and Design skills handle directly. The
 installer leaves identical files unchanged, requires `--overwrite` for differing
 regular files, and supports a non-mutating `--dry-run`. Reinstalling does not
@@ -161,7 +161,7 @@ requests the State update.
 
 - Product Requirements Document;
 - Foundation Workstream Definition;
-- Research Index and Technical Brief;
+- Technical Reference and historical Research Reports;
 - root, Stage, and Section Design Specifications;
 - stage Execution Plan and Job documents; and
 - stage-scoped Implementation Reports.

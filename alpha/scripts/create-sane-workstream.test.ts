@@ -64,13 +64,13 @@ describe("create-sane-workstream", () => {
                "EXECUTION_PLAN_TEMPLATE.md",
                "IMPLEMENTATION_REPORT_TEMPLATE.md",
                "JOB_TEMPLATE.md",
-               "RESEARCH_INDEX_TEMPLATE.md",
-               "RESEARCH_TECH_BRIEF_TEMPLATE.md",
+                "RESEARCH_REPORT_TEMPLATE.md",
                "ROOT_DESIGN_SPEC_TEMPLATE.md",
-               "SECTION_SPEC_TEMPLATE.md",
+                "SECTION_SPEC_TEMPLATE.md",
                "STAGES_TEMPLATE.md",
                "STAGE_DESIGN_SPEC_TEMPLATE.md",
-               "STAGE_SECTIONS_TEMPLATE.md",
+                "STAGE_SECTIONS_TEMPLATE.md",
+                "TECHNICAL_REFERENCE_TEMPLATE.md",
              ]
           : [],
       )

@@ -14,7 +14,7 @@ information. Add Stage and Job entries only when their identities exist. -->
 ### Research
 
 - Approval: `[ ] Pending`
-- Delivery: `research/INDEX.md`, `research/TECH_BRIEF.md`
+- Delivery: `research/TECHNICAL_REFERENCE.md`
 - Notes:
 
 ### Design

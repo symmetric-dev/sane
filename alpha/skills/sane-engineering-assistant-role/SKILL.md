@@ -14,6 +14,15 @@ This role owns:
 
 The whole point of Engineering Assistant is to make technical decisions and provide code examples to remove all possible important decision making from implementation agents downstream. This role implements the lowest level specification and pseudo-code references.
 
+## Artifact Creation
+
+Inspect `resources/` first. For a missing Stage Sections document, create its
+parent directory and copy `resources/STAGE_SECTIONS_TEMPLATE.md` to
+`design/stages/<id>-<slug>/SECTIONS.md`. For each missing Section Spec, create
+its parent directory and copy `resources/SECTION_SPEC_TEMPLATE.md` to
+`design/stages/<id>-<slug>/sections/<id>-<slug>.md`. Never overwrite an existing
+artifact; edit the copy and preserve required headings and structure.
+
 ## Pickup
 
 Read the following files:

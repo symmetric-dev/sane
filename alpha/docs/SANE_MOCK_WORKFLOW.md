@@ -54,8 +54,8 @@ SANE_STATE.md
 resources/IMPLEMENTATION_REPORT_TEMPLATE.md
 resources/SECTION_SPEC_TEMPLATE.md
 resources/JOB_TEMPLATE.md
-resources/RESEARCH_INDEX_TEMPLATE.md
-resources/RESEARCH_TECH_BRIEF_TEMPLATE.md
+resources/RESEARCH_REPORT_TEMPLATE.md
+resources/TECHNICAL_REFERENCE_TEMPLATE.md
 resources/ROOT_DESIGN_SPEC_TEMPLATE.md
 resources/STAGES_TEMPLATE.md
 resources/STAGE_DESIGN_SPEC_TEMPLATE.md
@@ -90,12 +90,6 @@ the assistant redelivers before the user approves it.
 
 ## 4. Research Session
 
-Create the Research artifacts before opening the role session:
-
-```bash
-sane-alpha provision "$IMPL" research --workstream "$WORKSTREAM"
-```
-
 **User action:** Select the **SANE Research Assistant** in OpenCode.
 
 **User prompt:**
@@ -106,19 +100,16 @@ definition, current export conventions, and CSV safety concerns. Record evidence
 and open questions needed for Design.
 ```
 
-The assistant delivers `research/INDEX.md` and `research/TECH_BRIEF.md`.
+The assistant creates `research/TECHNICAL_REFERENCE.md` by copying
+`resources/TECHNICAL_REFERENCE_TEMPLATE.md`, then delivers the current reference.
+For historical topic research it creates `research/stage-01/csv-safety/` and
+copies `resources/RESEARCH_REPORT_TEMPLATE.md` to `REPORT.md` before editing it.
 
 **User decision:** Review the findings. Either request additional research,
 return to Product if the desired outcome must change, or explicitly approve the
 Research delivery and request its State update.
 
 ## 5. Root Design Session
-
-Provision the root Design artifacts:
-
-```bash
-sane-alpha provision "$IMPL" design --workstream "$WORKSTREAM"
-```
 
 **User action:** Select the **SANE Design Assistant**.
 
@@ -130,22 +121,19 @@ the overall design and the smallest safe Stages. Keep unresolved product or
 research questions visible rather than inventing a decision.
 ```
 
-The assistant delivers `design/SPEC.md` and `design/STAGES.md`. For this example,
-the user and assistant identify a Stage named `01-csv-export`.
+The assistant creates `design/SPEC.md` and `design/STAGES.md` from
+`resources/ROOT_DESIGN_SPEC_TEMPLATE.md` and `resources/STAGES_TEMPLATE.md`, then
+delivers them. For this example, the user and assistant identify a Stage named
+`01-csv-export`.
 
 **User decision:** Explicitly approve the root Design delivery and request the
 corresponding State update, or request an Update first.
 
 ## 6. Stage Design and Engineering Sessions
 
-Create the Stage Design artifact, then start another **SANE Design Assistant**
-session for that Stage:
-
-```bash
-STAGE="01-csv-export"
-sane-alpha provision "$IMPL" stage-design \
-  --workstream "$WORKSTREAM" --stage "$STAGE"
-```
+Start another **SANE Design Assistant** session for that Stage. It creates
+`design/stages/01-csv-export/SPEC.md` by copying
+`resources/STAGE_DESIGN_SPEC_TEMPLATE.md` before editing it:
 
 **User prompt:**
 
@@ -157,13 +145,9 @@ the behavior, interfaces, error handling, authorization, and testable outcomes.
 After reviewing its delivery, the user explicitly approves the Stage Design and
 requests its State update.
 
-Next, create Section planning artifacts and start the **SANE Engineering
-Assistant**:
-
-```bash
-sane-alpha provision "$IMPL" engineering \
-  --workstream "$WORKSTREAM" --stage "$STAGE"
-```
+Next, start the **SANE Engineering Assistant**. It creates
+`design/stages/01-csv-export/SECTIONS.md` from
+`resources/STAGE_SECTIONS_TEMPLATE.md` before editing it:
 
 **User prompt:**
 
@@ -180,12 +164,8 @@ needed, then explicitly approves the complete Stage Design.
 
 ## 7. Execution Planning Session
 
-Create the Stage Execution Plan, then start the **SANE Execution Assistant**:
-
-```bash
-sane-alpha provision "$IMPL" execution \
-  --workstream "$WORKSTREAM" --stage "$STAGE"
-```
+Start the **SANE Execution Assistant**. It creates the Stage Execution Plan from
+`resources/EXECUTION_PLAN_TEMPLATE.md` before editing it:
 
 **User prompt:**
 
@@ -211,8 +191,7 @@ it does not automatically start implementation.
 
 ## 8. Implementation Session and Job Groups
 
-**User action:** Select the **SANE Implementation Assistant** in OpenCode. No
-report-provisioning command is needed.
+**User action:** Select the **SANE Implementation Assistant** in OpenCode.
 
 **User prompt:**
 

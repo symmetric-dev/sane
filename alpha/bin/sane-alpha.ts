@@ -4,14 +4,12 @@ import { runCli as runCreateRepositoryWorkstream } from "../scripts/create-sane-
 import { runCli as runInitializeRepository } from "../scripts/init-sane-repository.ts"
 import { runCli as runInstallAgentContextPackages } from "../scripts/install-sane-agent-context-packages.ts"
 import { runCli as runPrintSanePath } from "../scripts/print-sane-path.ts"
-import { runCli as runProvisionRole } from "../scripts/provision-sane-role.ts"
 import { runCli as runSelectWorkstream } from "../scripts/select-sane-workstream.ts"
 
 export type AlphaCommand =
   | "init-sane"
   | "create-workstream"
   | "select-workstream"
-  | "provision"
   | "install-context-packages"
   | "sane-path"
 
@@ -21,7 +19,6 @@ export const COMMANDS: Record<AlphaCommand, AlphaCommandHandler> = {
   "init-sane": runInitializeRepository,
   "create-workstream": runCreateRepositoryWorkstream,
   "select-workstream": runSelectWorkstream,
-  provision: runProvisionRole,
   "install-context-packages": runInstallAgentContextPackages,
   "sane-path": runPrintSanePath,
 }
@@ -32,7 +29,6 @@ Commands:
   init-sane
   create-workstream
   select-workstream
-  provision
   install-context-packages
   sane-path                      Print the paired SANE workstream repository path
 

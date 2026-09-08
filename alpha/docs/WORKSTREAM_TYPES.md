@@ -34,9 +34,7 @@ workstream. `.sane/current-workstream` stores only the selected normalized
 relative path followed by a newline, never a type.
 
 `sane-alpha select-workstream` takes no type argument. It accepts only a
-bootstrapped workstream with a valid root `type` file. Provisioning obtains the
-workstream type from that root file, whether it uses the current selection or an
-explicit `--workstream`, and has no type override. Missing, malformed, or
+bootstrapped workstream with a valid root `type` file. Missing, malformed, or
 unsupported type metadata is rejected. Legacy or untyped workstreams are not
 supported.
 
@@ -48,7 +46,8 @@ prior one.
 
 ## Type Boundaries for Templates and Agents
 
-Type controls CLI creation and root Design provisioning. Every workstream
+Type controls CLI creation and the root Design template copied into `resources/`.
+Every workstream
 receives `PRD.md`; feature and foundation each receive their matching root Design
 template. The six role skills are generic: role-agent admission and skill loading
 do not require a user type declaration and do not use root `type` metadata as

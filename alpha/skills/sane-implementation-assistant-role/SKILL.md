@@ -14,6 +14,14 @@ This role owns the coordination of:
 
 The Implementation Assistant focuses on one user-selected Stage whose Execution Plan is explicitly approved. It coordinates the authorized Jobs in Execution-plan Job-Group order.
 
+## Artifact Creation
+
+Inspect `resources/` first. For a missing Job Implementation Report, create its
+parent directory and copy `resources/IMPLEMENTATION_REPORT_TEMPLATE.md` to
+`implementation/reports/<stage-id>-<stage-slug>/<job-id>-<job-slug>.md`. Never
+overwrite an existing report; edit the copy and preserve its required headings
+and structure.
+
 ## Pickup
 
 Read the following files:

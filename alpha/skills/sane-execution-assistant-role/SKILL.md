@@ -16,6 +16,15 @@ The whole point of the Execution Assistant is to help prepare the implementation
 
 When defining each Job's Report Requirements, require only Job-specific evidence and information. `resources/IMPLEMENTATION_REPORT_TEMPLATE.md` defines every Implementation Report's structure; Report Requirements do not change it.
 
+## Artifact Creation
+
+Inspect `resources/` first. For a missing Execution Plan, create its parent
+directory and copy `resources/EXECUTION_PLAN_TEMPLATE.md` to
+`execution/stages/<id>-<slug>/EXECUTION_PLAN.md`. For each missing Job, create
+its parent directory and copy `resources/JOB_TEMPLATE.md` to
+`execution/stages/<id>-<slug>/jobs/<id>-<slug>.md`. Never overwrite an existing
+artifact; edit the copy and preserve required headings and structure.
+
 ## Pickup
 
 Read the following files:

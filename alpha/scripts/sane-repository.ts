@@ -1,10 +1,9 @@
 import { execFile } from "node:child_process"
-import { constants as fsConstants } from "node:fs"
-import { copyFile, lstat, mkdir, readFile, realpath, writeFile } from "node:fs/promises"
+import { lstat, readFile, realpath, writeFile } from "node:fs/promises"
 import { dirname, isAbsolute, join, normalize, relative, resolve, sep } from "node:path"
 import { promisify } from "node:util"
 
-import { BootstrapError, type TemplateRegistry, validateTemplateRegistry } from "./create-sane-workstream.ts"
+import { BootstrapError } from "./create-sane-workstream.ts"
 import { parseWorkstreamType, type WorkstreamType, WorkstreamTypeError } from "./workstream-type.ts"
 
 const execFileAsync = promisify(execFile)
@@ -16,6 +15,13 @@ const REQUIRED_WORKSTREAM_FILES = [
   "resources/IMPLEMENTATION_REPORT_TEMPLATE.md",
   "resources/SECTION_SPEC_TEMPLATE.md",
   "resources/JOB_TEMPLATE.md",
+  "resources/TECHNICAL_REFERENCE_TEMPLATE.md",
+  "resources/RESEARCH_REPORT_TEMPLATE.md",
+  "resources/ROOT_DESIGN_SPEC_TEMPLATE.md",
+  "resources/STAGES_TEMPLATE.md",
+  "resources/STAGE_DESIGN_SPEC_TEMPLATE.md",
+  "resources/STAGE_SECTIONS_TEMPLATE.md",
+  "resources/EXECUTION_PLAN_TEMPLATE.md",
 ] as const
 
 export class SaneRepositoryError extends BootstrapError {
@@ -273,40 +279,4 @@ export async function readCurrentWorkstream(
     throw new SaneRepositoryError(`Current workstream selection is not normalized: ${selectionPath}`)
   }
   return workstream
-}
-
-/** Copy an already-validated registry, refusing any existing destination. */
-export async function validateProvisionTemplates(
-  templateRoot: string,
-  workstreamPath: string,
-  registry: TemplateRegistry,
-): Promise<void> {
-  await validateTemplateRegistry(templateRoot, registry)
-  const destinations = registry.map((template) => resolve(workstreamPath, template.destination))
-  for (const destination of destinations) {
-    assertLexicallyContained(workstreamPath, destination, "Template destination")
-    await assertExistingAncestorContained(workstreamPath, destination)
-    if (await lstatOrUndefined(destination)) {
-      throw new SaneRepositoryError(`Refusing to overwrite existing role artifact: ${destination}`)
-    }
-  }
-}
-
-export async function provisionTemplates(
-  templateRoot: string,
-  workstreamPath: string,
-  registry: TemplateRegistry,
-  createStageDirectories: boolean,
-): Promise<void> {
-  await validateProvisionTemplates(templateRoot, workstreamPath, registry)
-  const destinations = registry.map((template) => resolve(workstreamPath, template.destination))
-  if (createStageDirectories) {
-    for (const destination of destinations) await mkdir(dirname(destination), { recursive: true })
-  }
-  for (let index = 0; index < registry.length; index += 1) {
-    const template = registry[index]!
-    const destination = destinations[index]!
-    await mkdir(dirname(destination), { recursive: true })
-    await copyFile(join(templateRoot, template.source), destination, fsConstants.COPYFILE_EXCL)
-  }
 }

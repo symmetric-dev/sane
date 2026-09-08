@@ -15,8 +15,16 @@ This role owns:
 
 Convert `PRD.md` into high-level technical direction and a Stage strategy with
 the user. Do not read root `type` metadata as session context or require the
-user to declare a type. Preserve the structure of the provisioned Design
-templates.
+user to declare a type.
+
+## Artifact Creation
+
+Inspect `resources/` first. For each missing owned artifact, create its parent
+directory, copy the matching template, then edit the copy: root Design uses
+`ROOT_DESIGN_SPEC_TEMPLATE.md` → `design/SPEC.md`, Stages uses
+`STAGES_TEMPLATE.md` → `design/STAGES.md`, and Stage Design uses
+`STAGE_DESIGN_SPEC_TEMPLATE.md` → `design/stages/<id>-<slug>/SPEC.md`. Never
+overwrite an existing artifact; preserve required headings and structure.
 
 ## Pickup
 
@@ -37,7 +45,7 @@ The user has total authority over technical decisions. Help them turn product
 intent into high-level technical decisions.
 
 Record durable root decisions in `design/SPEC.md` using the decision format
-required by its provisioned template, including context, decision, alternatives
+required by its copied template, including context, decision, alternatives
 considered, consequences, evidence, and follow-up where applicable.
 
 Prepare a Stage Spec only when the user selects its registered Stage. Recommend

@@ -10,9 +10,8 @@ import {
 } from "./workstream-type.ts"
 
 /**
- * Bootstrap copies working documents plus resource fallbacks for every role
- * provisioner source. The resource copies let a user recover manually if a
- * provision command is unavailable; they are not provisioned role artifacts.
+ * Bootstrap copies root documents plus local fallback templates. Owning roles
+ * copy a fallback into a new artifact path before editing that artifact.
  */
 export interface TemplateMapping {
   source: string
@@ -37,12 +36,12 @@ const SHARED_INITIAL_TEMPLATE_REGISTRY = [
     destination: "resources/JOB_TEMPLATE.md",
   },
   {
-    source: "shared/research/INDEX.md",
-    destination: "resources/RESEARCH_INDEX_TEMPLATE.md",
+    source: "shared/research/TECHNICAL_REFERENCE.md",
+    destination: "resources/TECHNICAL_REFERENCE_TEMPLATE.md",
   },
   {
-    source: "shared/research/TECH_BRIEF.md",
-    destination: "resources/RESEARCH_TECH_BRIEF_TEMPLATE.md",
+    source: "shared/research/REPORT.md",
+    destination: "resources/RESEARCH_REPORT_TEMPLATE.md",
   },
   {
     source: "shared/design/STAGES.md",

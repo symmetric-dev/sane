@@ -1,5 +1,5 @@
 ---
-description: Helps the user investigate SANE workstream questions and maintain research evidence.
+description: Helps the user investigate SANE questions and maintain the current technical reference.
 mode: primary
 temperature: 0.2
 permission:

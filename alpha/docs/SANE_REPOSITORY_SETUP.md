@@ -123,22 +123,15 @@ Both commands support `--dry-run`; selection takes no type argument. A selected
 workstream must contain a valid root `type` file, `SANE_CONTEXT.md`,
 `SANE_STATE.md`, `PRD.md`, and every bootstrapped `resources/` fallback template.
 Those fallbacks include the Implementation Report, Section Spec, Job,
-Research Index, Technical Brief, root Design, Stage registry, Stage Design,
+Technical Reference, Research Report, root Design, Stage registry, Stage Design,
 Stage Sections, and Execution Plan templates.
 
-Provision only the approved role-start documents with:
-
-```bash
-sane-alpha provision <implementation-repository> <research|design|stage-design|engineering|execution> [--workstream <relative-path>] [--stage <two-digit-id>-<slug>] [--dry-run]
-```
-
-Without `--workstream`, provision uses `current-workstream`. It derives the
-workstream type from the target workstream's root `type` file and has no type
-override; missing or unsupported metadata is rejected. Stage roles require
-`--stage`; all provisioned destinations must be new. The command supports
-`--dry-run` and deliberately does not create Product, Implementation report,
-Section Spec, or Job documents. It does not enforce cross-workstream eligibility
-or dependencies.
+There is no role-artifact CLI command. When a role needs an artifact, it inspects
+the selected workstream's `resources/`, creates the artifact's parent directory,
+copies the matching local template to its normal destination, then edits the
+copy. It never overwrites an existing artifact and preserves required headings
+and structure. `PRD.md`, `SANE_CONTEXT.md`, and `SANE_STATE.md` are bootstrap-root
+artifacts and are edited in place.
 
 ## Assistant Use
 

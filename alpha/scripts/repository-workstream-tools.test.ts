@@ -10,7 +10,6 @@ import {
   parseCliArguments as parseCreateCliArguments,
 } from "./create-sane-repository-workstream.ts"
 import { printSanePath } from "./print-sane-path.ts"
-import { provisionSaneRole } from "./provision-sane-role.ts"
 import { SaneRepositoryError } from "./sane-repository.ts"
 import { selectSaneWorkstream } from "./select-sane-workstream.ts"
 
@@ -42,8 +41,8 @@ describe("repository-aware Alpha workstream tools", () => {
     )
     for (const source of [
         "shared/SANE_CONTEXT.md", "shared/SANE_STATE.md", "feature/PRD.md",
-        "foundation/PRD.md", "shared/research/INDEX.md",
-        "shared/research/TECH_BRIEF.md", "feature/design/SPEC.md",
+        "foundation/PRD.md", "shared/research/TECHNICAL_REFERENCE.md",
+        "shared/research/REPORT.md", "feature/design/SPEC.md",
         "foundation/design/SPEC.md", "shared/design/STAGES.md",
         "shared/design/stage/SPEC.md", "shared/design/stage/SECTIONS.md",
         "shared/execution/EXECUTION_PLAN.md", "shared/design/section/SPEC.md",
@@ -171,38 +170,15 @@ describe("repository-aware Alpha workstream tools", () => {
     })).rejects.toThrow("missing regular file")
   })
 
-  test("provisions approved roles from current selection or a validated override", async () => {
-    const first = await bootstrap("01-first", "foundation")
-    const second = await bootstrap("02-second", "feature")
-    await provisionSaneRole({ implementationRepository, role: "research", templateRoot, write: () => {} })
-    expect(await readFile(join(second, "research", "INDEX.md"), "utf8")).toBe("shared/research/INDEX.md\n")
-    await provisionSaneRole({ implementationRepository, role: "design", workstreamPath: "01-first", templateRoot, write: () => {} })
-    expect(await readFile(join(first, "design", "SPEC.md"), "utf8")).toBe("foundation/design/SPEC.md\n")
-    await provisionSaneRole({ implementationRepository, role: "design", templateRoot, write: () => {} })
-    expect(await readFile(join(second, "design", "SPEC.md"), "utf8")).toBe("feature/design/SPEC.md\n")
-  })
+  test("requires every local fallback template for selection", async () => {
+    const workstream = await bootstrap("01-resources")
+    await rm(join(workstream, "resources", "STAGE_DESIGN_SPEC_TEMPLATE.md"))
 
-  test("enforces role and stage constraints and refuses existing artifacts", async () => {
-    const workstream = await bootstrap("01-stage")
-    await expect(provisionSaneRole({ implementationRepository, role: "product", templateRoot, write: () => {} })).rejects.toThrow("Unsupported role")
-    await expect(provisionSaneRole({ implementationRepository, role: "stage-design", templateRoot, write: () => {} })).rejects.toThrow("Stage must")
-    await expect(provisionSaneRole({ implementationRepository, role: "engineering", stage: "1-unsafe/path", templateRoot, write: () => {} })).rejects.toThrow("Stage must")
-    await provisionSaneRole({ implementationRepository, role: "stage-design", stage: "01-foundation", templateRoot, write: () => {} })
-    expect(await readFile(join(workstream, "design", "stages", "01-foundation", "SPEC.md"), "utf8")).toBe("shared/design/stage/SPEC.md\n")
-    await expect(provisionSaneRole({ implementationRepository, role: "stage-design", stage: "01-foundation", templateRoot, write: () => {} })).rejects.toThrow("Refusing to overwrite")
-  })
-
-  test("role dry run validates all inputs and leaves artifacts and stage directories absent", async () => {
-    const workstream = await bootstrap("01-dry")
-    await provisionSaneRole({ implementationRepository, role: "execution", stage: "03-release", templateRoot, dryRun: true, write: () => {} })
-    await expectMissing(join(workstream, "execution", "stages", "03-release"))
-  })
-
-  test("validates every role source before creating any destination", async () => {
-    const workstream = await bootstrap("01-sources")
-    await rm(join(templateRoot, "shared", "research", "TECH_BRIEF.md"))
-    await expect(provisionSaneRole({ implementationRepository, role: "research", templateRoot, write: () => {} })).rejects.toThrow("Required source template")
-    await expectMissing(join(workstream, "research", "INDEX.md"))
+    await expect(selectSaneWorkstream({
+      implementationRepository,
+      workstreamPath: "01-resources",
+      write: () => {},
+    })).rejects.toThrow("STAGE_DESIGN_SPEC_TEMPLATE.md")
   })
 
   test("requires a supported public create-workstream type argument", () => {
@@ -213,4 +189,5 @@ describe("repository-aware Alpha workstream tools", () => {
       dryRun: true,
     })
   })
+
 })

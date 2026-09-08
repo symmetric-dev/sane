@@ -180,10 +180,17 @@ describe("install-sane-agent-context-packages", () => {
       join(DEFAULT_SOURCE_ROOT, "skills", "sane-design-assistant-role", "SKILL.md"),
       "utf8",
     )
+    const researchSkill = await readFile(
+      join(DEFAULT_SOURCE_ROOT, "skills", "sane-research-assistant-role", "SKILL.md"),
+      "utf8",
+    )
     expect(productSkill).toContain("`PRD.md`")
     expect(designSkill).toContain("`PRD.md`")
     expect(productSkill).not.toContain("`FOUNDATION.md`")
     expect(designSkill).not.toContain("`FOUNDATION.md`")
+    expect(researchSkill).toContain("`research/TECHNICAL_REFERENCE.md`")
+    expect(researchSkill).not.toContain("`research/INDEX.md`")
+    expect(researchSkill).not.toContain("`research/TECH_BRIEF.md`")
     const productAgent = await readFile(join(DEFAULT_SOURCE_ROOT, "opencode", "agents", "sane-product.md"), "utf8")
     const designAgent = await readFile(join(DEFAULT_SOURCE_ROOT, "opencode", "agents", "sane-design.md"), "utf8")
     for (const [agent, skillName] of [

@@ -7,15 +7,13 @@ Alpha has a tested repository and template layer for two workstream types:
 
 - `create-workstream` requires `--type feature|foundation` and creates an
   immutable root `type` metadata file.
-- Selection and role provisioning validate that metadata. Provisioning derives
-  the selected workstream's type from its root; it has no type override.
+- Selection validates that metadata; roles do not read it as session context.
 - Reusable source templates live in `alpha/templates/shared/`; feature and
   foundation root artifacts and root Designs use their own template sources.
 - Every workstream creates `PRD.md`; foundation uses its foundation root
   `design/SPEC.md`, which remains its durable decision record.
-- Repository pairing, workstream selection, role-artifact provisioning, the
-  `sane-alpha` installer, shared context installation, and generic role skills
-  are available and tested.
+- Repository pairing, workstream selection, the `sane-alpha` installer, shared
+  context installation, and generic role skills are available and tested.
 - The six generic role skills serve Product, Research, Design, Engineering,
   Execution, and Implementation. No role agent requires a user type declaration
   or reads root `type` metadata as session context.
@@ -29,7 +27,7 @@ operation.
    intentionally type-neutral except for the type-selected root artifacts and
    templates handled by Product and Design.
 2. Run one fresh manual `feature` pilot and one fresh manual `foundation` pilot.
-    Each must validate creation, selection, provisioning, generic skill use,
+    Each must validate creation, selection, template-copy artifact creation, generic skill use,
    implementation in the target repository, verification, user approval, and
    later-workstream handoff.
 3. Use pilot evidence to decide whether foundation needs specialized Stage or

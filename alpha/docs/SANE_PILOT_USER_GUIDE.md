@@ -62,8 +62,8 @@ file, selects it, and creates `PRD.md` plus local fallback templates at:
 resources/IMPLEMENTATION_REPORT_TEMPLATE.md
 resources/SECTION_SPEC_TEMPLATE.md
 resources/JOB_TEMPLATE.md
-resources/RESEARCH_INDEX_TEMPLATE.md
-resources/RESEARCH_TECH_BRIEF_TEMPLATE.md
+resources/RESEARCH_REPORT_TEMPLATE.md
+resources/TECHNICAL_REFERENCE_TEMPLATE.md
 resources/ROOT_DESIGN_SPEC_TEMPLATE.md
 resources/STAGES_TEMPLATE.md
 resources/STAGE_DESIGN_SPEC_TEMPLATE.md
@@ -76,35 +76,32 @@ foundation `design/SPEC.md` template. Start the appropriate SANE role
 agent in OpenCode. Product and Design load their single generic role skill and
 work with the applicable bootstrapped root artifact and root Design template. No
 role agent requires a type declaration or reads root `type` metadata as session
-context; type remains the CLI and provisioning control for root artifacts and
-templates.
+context; type only controls bootstrap root artifacts and templates.
 
-## Provision Role Artifacts
+## Role-Created Artifacts
 
-Run a command immediately before starting the corresponding role session:
+There is no CLI command to create role artifacts. When an owning role needs an artifact,
+it inspects `resources/`, creates the parent directory, copies the matching local
+template to the destination, and edits the copy. It never overwrites an existing
+artifact and preserves the template's required headings and structure:
 
-```bash
-# Research
-sane-alpha provision "$IMPL" research --workstream "$WORKSTREAM"
+- Research: `TECHNICAL_REFERENCE_TEMPLATE.md` →
+  `research/TECHNICAL_REFERENCE.md`; `RESEARCH_REPORT_TEMPLATE.md` →
+  `research/stage-<id>/<topic>/REPORT.md`.
+- Design: `ROOT_DESIGN_SPEC_TEMPLATE.md` → `design/SPEC.md`,
+  `STAGES_TEMPLATE.md` → `design/STAGES.md`, and
+  `STAGE_DESIGN_SPEC_TEMPLATE.md` → `design/stages/<id>-<slug>/SPEC.md`.
+- Engineering: `STAGE_SECTIONS_TEMPLATE.md` →
+  `design/stages/<id>-<slug>/SECTIONS.md`; `SECTION_SPEC_TEMPLATE.md` →
+  `design/stages/<id>-<slug>/sections/<id>-<slug>.md`.
+- Execution: `EXECUTION_PLAN_TEMPLATE.md` →
+  `execution/stages/<id>-<slug>/EXECUTION_PLAN.md`; `JOB_TEMPLATE.md` →
+  `execution/stages/<id>-<slug>/jobs/<id>-<slug>.md`.
+- Implementation: `IMPLEMENTATION_REPORT_TEMPLATE.md` →
+  `implementation/reports/<stage-id>-<stage-slug>/<job-id>-<job-slug>.md`.
 
-# Root Design
-sane-alpha provision "$IMPL" design --workstream "$WORKSTREAM"
-
-# Stage Design
-sane-alpha provision "$IMPL" stage-design \
-  --workstream "$WORKSTREAM" --stage 01-foundation
-
-# Engineering
-sane-alpha provision "$IMPL" engineering \
-  --workstream "$WORKSTREAM" --stage 01-foundation
-
-# Execution
-sane-alpha provision "$IMPL" execution \
-  --workstream "$WORKSTREAM" --stage 01-foundation
-```
-
-The Implementation Assistant creates each Job's report from the workstream-local
-template; there is no report-provisioning command.
+`PRD.md`, `SANE_CONTEXT.md`, and `SANE_STATE.md` are bootstrap-root artifacts;
+their owning roles edit them in place.
 
 ## Resume Another Workstream
 
@@ -115,8 +112,7 @@ sane-alpha select-workstream "$IMPL" "$WORKSTREAM"
 ```
 
 Selection takes no type argument and rejects a workstream with missing or
-unsupported root `type` metadata. Provisioning derives its template type from
-that metadata and has no type override.
+unsupported root `type` metadata.
 
 ## Run Git in the SANE Workstream Repository
 
