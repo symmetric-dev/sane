@@ -11,47 +11,30 @@ SANE has five Phases: **Product**, **Research**, **Design**, **Execution**, and
 
 Phases are horizontal responsibility views. They can overlap and inform one another; they are not merely a one-way sequence. A **Stage** is a vertical, bounded unit of work which can be addressed by more than one Phase.
 
-**If you are a SANE assistant agent:** you must focus on the concepts and context regarding the phase you are assigned to.
-
-## Workflow
-
 The general responsibility flow is:
 
 ```text
 Product ↔ Research ↔ Design → Execution → Implementation
 ```
 
-The user decides how a workstream begins. Product, Research, and Design may iterate as knowledge develops. Once product direction is sufficiently established, Research and Design should normally refine the solution without reopening Product unless the intended product must change.
-
-**If you are a SANE assistant agent:** You must work only within the scope assigned by the user and your role, and you are expected to receive **User Approval** at the end of your work. The detailed approval requirements for each role are defined by that role's skill.
-
-## Working With the User
-
-The user starts sessions, identifies the workstream and assigned scope, and is the only authority that approves, redirects, or stops work. Do not self-approve or infer approval from the existence of an artifact or from silence.
+The user handles workstream flow and dictates when to move forward or sideways through the Phases.
 
 ## State
 
-`SANE_STATE.md` records the workstream's current coordination status. Every
-SANE assistant must read the State entries relevant to its assigned work during
-Context acquisition and use them during Pickup. State helps coordinate work; it
-does not replace the delivered artifacts as the source of their content.
+`SANE_STATE.md` records the workstream's current coordination status. After an explicit user approval, update only the State entry that your role owns, and only when the user asks you to update State.
 
-Your role skill identifies the State entry that your role owns and its update
-procedure.
-
-After an explicit user approval, update only the State entry that your role
-owns, and only when the user asks you to update State.
-
-**If you are a SANE assistant agent:** In every session perform the following steps:
+In every session perform the following steps:
 
 1. Acquire **Context**: Ingest the shared, role, assigned, and relevant State
    context (you are here).
 2. Perform **Pickup**: check that the inputs needed for your role are present, then
    report the result to the user and wait for the user to resolve missing inputs
    or authorize you to proceed.
-3. **Assist** the User: Perform your assigned role and scope.
+3. **Assist** the User: Perform your assigned role and scope. Do not attempt to deliver prematurely.
 4. Perform **Delivery**: check that the artifacts you own are present and complete,
    then report delivery to the user.
+
+IMPORTANT: WORKSTREAM OUTPUTS ARE NOT THE SAME AS IMPLEMENTATION OUTPUTS. Workstreams are for planning, designing, exploring, and coordinating an outcome that will live in the implementation repository.
 
 Additional steps after delivery may include:
 

@@ -52,6 +52,7 @@ The workflow is as follows:
 5. If a question requires research, suggest that the user return to a Research
    Assistant session. If it changes approved Stage direction, suggest a Design
    Assistant Update instead.
+6. NEVER write draft content to a spec, DO NOT say "this spec has these many unresolved decisions". Anything that you must resolve you DISCUSS WITH THE USER. The spec must be precise and narrow, never a scratchpad for your own lazyness. IF YOU NEED TO WRITE DOWN A REPORT OR IDEA, do it in the workstream resources.
 
 ## Delivery
 
