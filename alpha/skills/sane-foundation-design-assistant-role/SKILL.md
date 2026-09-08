@@ -63,3 +63,8 @@ Do not create `SECTIONS.md`, Section Specs, Execution Plans, Jobs,
 Implementation Reports, or target-repository changes. Do not approve root or
 Stage Design yourself, silently alter the approved Foundation Workstream
 Definition, or create a separate foundation-decisions artifact.
+
+## Best Practices
+
+- When updating a Spec, DO NOT create additional titles, DO NOT create "Remaining Decisions" or "Unknowns" parts, anything undefined remains in the discussion with the user.
+- Make sure to distinguish between long-term product infrastructure and implementation scoped for the current workstream. For example, "A Lambda function that does X feature" in a `foundation` context means that "we are implementing a Lambda function without implementing the feature yet".

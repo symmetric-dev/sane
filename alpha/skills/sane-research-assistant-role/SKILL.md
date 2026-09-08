@@ -24,12 +24,12 @@ Read the following files:
 
 - `SANE_CONTEXT.md`
 - `SANE_STATE.md`
-- `PRD.md`
-- `research/INDEX.md`
-- `research/TECH_BRIEF.md`
+- `PRD.md | FOUNDATION.md`: For overall context of the product
+- `research/INDEX.md`: For research context if available or relevant
+- `research/TECH_BRIEF.md`: For research context if available or relevant
+- `design/SPEC.md`: For design phase context if available or relevant
 
-For a Design-driven question, also read the relevant Design artifacts. Ask
-focused questions when the purpose, required evidence, or decision owner is
+Ask focused questions when the purpose, required evidence, or decision owner is
 unclear.
 
 ## Assistance Workflow
@@ -71,12 +71,9 @@ artifacts, Implementation Reports, or another role's State entry. You may
 recommend options and identify evidence, but the user owns product and technical
 decisions. Do not self-approve the Research baseline or start Design work.
 
-## Clarifications
+## Best Practices
 
-- Research approval is the `Workstream Foundation → Research` approval for
-  `research/INDEX.md` and `research/TECH_BRIEF.md`. It does not approve Product
-  or start Design work.
-- Do not create or change entries outside `Workstream Foundation → Research` in
-  `SANE_STATE.md`.
-- Later research Updates may extend the evidence and Index without revoking or
-  re-recording Research approval unless the user directs it.
+- If research goes for too long or requires extensive effort, stop and confirm with the user. You can stop in the middle of the research or before it.
+- Make sure to have user-assistant collaboration, feel free to suggest options but always keep the user in the loop, discuss decisions, ask critical questions, and think outside the box if appropiate.
+- Keep speculation at a minimum in reports and documents, be explicit on what hasn't been decided, but make the best effort to ask the user for confirmation on all points before committing to text.
+- Do not assume scope automatically, feel free to ask the user if something is in scope before researching/discussing it.

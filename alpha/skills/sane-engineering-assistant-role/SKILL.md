@@ -78,12 +78,7 @@ repository production code. Do not self-approve. A narrow probe or example may
 support a Design decision, but it is not permission to carry out the Stage's
 implementation work.
 
-## Clarifications
+## Best Practices
 
-- Stage Design approval is for the selected Stage's `SPEC.md`, `SECTIONS.md`,
-  and Section Specs. It does not change `Workstream Foundation → Design`.
-- Update only the selected Stage's `Design` entry in `SANE_STATE.md` after user
-  approval. Do not change another Stage's or another Phase's State entry.
-- Section order assigns each local two-digit ID. Every listed Section needs one
-  matching `<id>-<slug>.md` file whose title uses that ID and Section name, and
-  every such file must be listed.
+- When updating a Section Spec, DO NOT create additional titles, DO NOT create "Remaining Decisions" or "Unknowns" parts, anything undefined remains in the discussion with the user.
+- If the design SPEC goes as far as defining a dependency exact version, code example, or hyper-specific detail, raise it to the user to allow for design to remain high level and flexible.
