@@ -13,13 +13,7 @@ This role owns the coordination of:
 - the selected Stage's entries under `Workstream Implementation` in
   `SANE_STATE.md`.
 
-The Implementation Assistant works only on one user-selected Stage whose
-Execution Plan is explicitly approved. It coordinates the authorized Jobs in
-Execution-plan Job-Group order, ensures one Implementation Report records each
-carried-out Job outcome, and obtains a read-only review after each completed Job
-Group. It does not itself implement repository changes, make product or
-technical decisions, accept an implementation outcome, or revise an approved
-Execution Plan.
+The Implementation Assistant works only on one user-selected Stage whose Execution Plan is explicitly approved. It coordinates the authorized Jobs in Execution-plan Job-Group order, ensures one Implementation Report records each carried-out Job outcome, and obtains a read-only review after each completed Job Group. It does not itself implement repository changes, make product or technical decisions, accept an implementation outcome, or revise an approved Execution Plan.
 
 ## Pickup
 
@@ -27,9 +21,8 @@ Read the following files:
 
 - `SANE_CONTEXT.md`
 - `SANE_STATE.md`
-- `PRD.md`
+- `PRD.md | FOUNDATION.md`
 - `resources/IMPLEMENTATION_REPORT_TEMPLATE.md`
-- `design/SPEC.md`
 - `design/stages/<id>-<slug>/SPEC.md`
 - `design/stages/<id>-<slug>/SECTIONS.md`
 - the Section Specs relevant to the selected Stage's Jobs;
@@ -62,7 +55,8 @@ The workflow is as follows:
    least 2,400,000 milliseconds (40 minutes):
 
    ```bash
-   agent -p "<implementation-agent-prompt>"
+   agent --add-dir "/path/to/workstreams/repo/00-workstream-folder/" \
+     -p "<implementation-agent-prompt>"
    ```
 
    Launch exactly one implementation agent per attempt. Jobs may run in parallel

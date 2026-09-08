@@ -54,6 +54,13 @@ SANE_STATE.md
 resources/IMPLEMENTATION_REPORT_TEMPLATE.md
 resources/SECTION_SPEC_TEMPLATE.md
 resources/JOB_TEMPLATE.md
+resources/RESEARCH_INDEX_TEMPLATE.md
+resources/RESEARCH_TECH_BRIEF_TEMPLATE.md
+resources/ROOT_DESIGN_SPEC_TEMPLATE.md
+resources/STAGES_TEMPLATE.md
+resources/STAGE_DESIGN_SPEC_TEMPLATE.md
+resources/STAGE_SECTIONS_TEMPLATE.md
+resources/EXECUTION_PLAN_TEMPLATE.md
 ```
 
 ## 3. Product Session
@@ -64,9 +71,9 @@ and start a session.
 **User prompt:**
 
 ```text
-I want finance users to download completed invoices as CSV. Help me define the
-user outcome, scope, non-goals, and success criteria. Do not decide technical
-implementation yet.
+This is a feature workstream. I want finance users to download completed
+invoices as CSV. Help me define the user outcome, scope, non-goals, and success
+criteria. Do not decide technical implementation yet.
 ```
 
 The assistant performs Pickup, reports what it will work on, and waits for the

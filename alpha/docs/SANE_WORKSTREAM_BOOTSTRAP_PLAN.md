@@ -55,12 +55,19 @@ For a new, previously nonexistent workstream path, the bootstrap command will:
     <workstream>/PRD.md           # feature
     <workstream>/FOUNDATION.md    # foundation
    ```
-4. Copy the shared local templates to:
-   ```text
-   <workstream>/resources/IMPLEMENTATION_REPORT_TEMPLATE.md
-   <workstream>/resources/SECTION_SPEC_TEMPLATE.md
-   <workstream>/resources/JOB_TEMPLATE.md
-   ```
+4. Copy the local fallback templates to:
+    ```text
+    <workstream>/resources/IMPLEMENTATION_REPORT_TEMPLATE.md
+    <workstream>/resources/SECTION_SPEC_TEMPLATE.md
+    <workstream>/resources/JOB_TEMPLATE.md
+    <workstream>/resources/RESEARCH_INDEX_TEMPLATE.md
+    <workstream>/resources/RESEARCH_TECH_BRIEF_TEMPLATE.md
+    <workstream>/resources/ROOT_DESIGN_SPEC_TEMPLATE.md
+    <workstream>/resources/STAGES_TEMPLATE.md
+    <workstream>/resources/STAGE_DESIGN_SPEC_TEMPLATE.md
+    <workstream>/resources/STAGE_SECTIONS_TEMPLATE.md
+    <workstream>/resources/EXECUTION_PLAN_TEMPLATE.md
+    ```
 5. Create the initial standard directories:
    ```text
    resources/
@@ -74,7 +81,10 @@ For a new, previously nonexistent workstream path, the bootstrap command will:
    Assistant session for the new workstream.
 
 The bootstrap command does not create Research, Design, Stage, Execution, Job,
-or Implementation Report artifacts. Their owning roles create and deliver them
+or Implementation Report artifacts. Its `resources/` copies are fallback source
+templates only: if a provision command is unavailable or not run, the user may
+explicitly direct the owning role to copy the matching fallback into its normal
+artifact destination. Their owning roles still create and deliver the artifacts
 when their work begins.
 
 ## Templates
@@ -90,8 +100,16 @@ alpha/templates/shared/SANE_STATE.md
 alpha/templates/shared/implementation/REPORT.md
 alpha/templates/shared/design/section/SPEC.md
 alpha/templates/shared/execution/JOB.md
+alpha/templates/shared/research/INDEX.md
+alpha/templates/shared/research/TECH_BRIEF.md
+alpha/templates/shared/design/STAGES.md
+alpha/templates/shared/design/stage/SPEC.md
+alpha/templates/shared/design/stage/SECTIONS.md
+alpha/templates/shared/execution/EXECUTION_PLAN.md
 alpha/templates/feature/PRD.md
+alpha/templates/feature/design/SPEC.md
 alpha/templates/foundation/FOUNDATION.md
+alpha/templates/foundation/design/SPEC.md
 ```
 
 `SANE_STATE.md` must start with the Workstream Foundation structure and empty

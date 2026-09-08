@@ -56,19 +56,27 @@ sane-alpha create-workstream "$IMPL" "$WORKSTREAM" --type feature
 
 `--type` is required and accepts only `feature` or `foundation`. This example
 creates a feature workstream, records `feature` in its immutable root `type`
-file, selects it, and creates `PRD.md` plus the local Implementation Report,
-Section Spec, and Job templates at:
+file, selects it, and creates `PRD.md` plus local fallback templates at:
 
 ```text
 resources/IMPLEMENTATION_REPORT_TEMPLATE.md
 resources/SECTION_SPEC_TEMPLATE.md
 resources/JOB_TEMPLATE.md
+resources/RESEARCH_INDEX_TEMPLATE.md
+resources/RESEARCH_TECH_BRIEF_TEMPLATE.md
+resources/ROOT_DESIGN_SPEC_TEMPLATE.md
+resources/STAGES_TEMPLATE.md
+resources/STAGE_DESIGN_SPEC_TEMPLATE.md
+resources/STAGE_SECTIONS_TEMPLATE.md
+resources/EXECUTION_PLAN_TEMPLATE.md
 ```
 
 For `--type foundation`, creation instead creates `FOUNDATION.md`; root Design
 uses the foundation `design/SPEC.md` template. Start the appropriate SANE role
 agent in OpenCode. Product begins with the bootstrapped type-specific root
-document. Installed skills and agent context remain type-neutral.
+document. Product and Design require the user to declare `feature` or
+`foundation` at session start so their agents load the matching installed skill;
+the other roles use shared skills.
 
 ## Provision Role Artifacts
 

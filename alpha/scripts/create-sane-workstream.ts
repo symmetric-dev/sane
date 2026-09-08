@@ -10,9 +10,9 @@ import {
 } from "./workstream-type.ts"
 
 /**
- * Initial templates deliberately remain a small, explicit registry. Future
- * commands may reuse the copy helper, but this bootstrap only creates these
- * workstream-foundation documents.
+ * Bootstrap copies working documents plus resource fallbacks for every role
+ * provisioner source. The resource copies let a user recover manually if a
+ * provision command is unavailable; they are not provisioned role artifacts.
  */
 export interface TemplateMapping {
   source: string
@@ -36,11 +36,47 @@ const SHARED_INITIAL_TEMPLATE_REGISTRY = [
     source: "shared/execution/JOB.md",
     destination: "resources/JOB_TEMPLATE.md",
   },
+  {
+    source: "shared/research/INDEX.md",
+    destination: "resources/RESEARCH_INDEX_TEMPLATE.md",
+  },
+  {
+    source: "shared/research/TECH_BRIEF.md",
+    destination: "resources/RESEARCH_TECH_BRIEF_TEMPLATE.md",
+  },
+  {
+    source: "shared/design/STAGES.md",
+    destination: "resources/STAGES_TEMPLATE.md",
+  },
+  {
+    source: "shared/design/stage/SPEC.md",
+    destination: "resources/STAGE_DESIGN_SPEC_TEMPLATE.md",
+  },
+  {
+    source: "shared/design/stage/SECTIONS.md",
+    destination: "resources/STAGE_SECTIONS_TEMPLATE.md",
+  },
+  {
+    source: "shared/execution/EXECUTION_PLAN.md",
+    destination: "resources/EXECUTION_PLAN_TEMPLATE.md",
+  },
 ] as const satisfies TemplateRegistry
 
 const TYPE_INITIAL_TEMPLATE_REGISTRY: Record<WorkstreamType, TemplateRegistry> = {
-  feature: [{ source: "feature/PRD.md", destination: "PRD.md" }],
-  foundation: [{ source: "foundation/FOUNDATION.md", destination: "FOUNDATION.md" }],
+  feature: [
+    { source: "feature/PRD.md", destination: "PRD.md" },
+    {
+      source: "feature/design/SPEC.md",
+      destination: "resources/ROOT_DESIGN_SPEC_TEMPLATE.md",
+    },
+  ],
+  foundation: [
+    { source: "foundation/FOUNDATION.md", destination: "FOUNDATION.md" },
+    {
+      source: "foundation/design/SPEC.md",
+      destination: "resources/ROOT_DESIGN_SPEC_TEMPLATE.md",
+    },
+  ],
 }
 
 export function initialTemplateRegistry(workstreamType: WorkstreamType): TemplateRegistry {

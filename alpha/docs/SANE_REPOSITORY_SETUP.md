@@ -122,9 +122,10 @@ sane-alpha select-workstream <implementation-repository> <workstream-relative-pa
 Both commands support `--dry-run`; selection takes no type argument. A selected
 workstream must contain a valid root `type` file, `SANE_CONTEXT.md`,
 `SANE_STATE.md`, its type-specific root artifact (`PRD.md` for `feature` or
-`FOUNDATION.md` for `foundation`), and
-`resources/IMPLEMENTATION_REPORT_TEMPLATE.md` and
-`resources/SECTION_SPEC_TEMPLATE.md` and `resources/JOB_TEMPLATE.md`.
+`FOUNDATION.md` for `foundation`), and every bootstrapped `resources/` fallback
+template. Those fallbacks include the Implementation Report, Section Spec, Job,
+Research Index, Technical Brief, root Design, Stage registry, Stage Design,
+Stage Sections, and Execution Plan templates.
 
 Provision only the approved role-start documents with:
 
