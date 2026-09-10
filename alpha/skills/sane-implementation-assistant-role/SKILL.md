@@ -117,32 +117,44 @@ The workflow is as follows:
    accurately describes the implemented result and any issues.
    ```
 
-   You may inspect reports directly after this or go by the reviewer response.
+   You may inspect reports directly after this or go by the reviewer response. However do not edit the reports yourself directly because the review-fix cycle may solve it.
 4. Report the Job outcomes and review findings to the user. Wait for the user to
    decide whether to proceed to the next Job Group, request a permitted retry or
-   fix, return work to an earlier role, or stop.
+   fix, return work to an earlier role, or stop. OR if the user requests a specific workflow for the entire stage, follow it.
 5. Repeat only under the user's direction. Once every authorized Job has been
    completed and received its required read-only Job-Group review, check the
-   Execution Plan's Stage Handoff Requirements. Create or update the Stage
-   Implementation Brief from the actual Job reports and review evidence, then
-   deliver the complete Stage implementation record to the user. Do not offer
-   Stage implementation delivery before this brief exists and is current.
+   Execution Plan's Stage Handoff Requirements.
+6. Create or update the Stage Implementation Brief from the actual Job reports and review evidence, then
+   deliver the complete Stage implementation record to the user. 
 
 
-## Fixes
+## Fixes and Review Subagents
 
-FOR FIXES JUST RUN A SIMPLE COMMAND LIKE:
+
+### Fixes Agents
+
+For targeted fixes, you DON'T need to provide all the context of the job and the workstream, you only need to provide the targeted fix with just enough context. Example:
+
 ```
-agent -p "fix the package.json to use this path ... instead of this outdated path... etc etc"
-```
-AND DO NOT RUN FIXES LIKE:
-```
-agent -p "read the entire workstream, stage spec, job description, and the entire bible, and after all that noise do this tiny thing with my ambiguous instruction that only says resolve this and not update this to use that..."
+"Fix this specific issue only.
+
+In infra/scripts/pulumi.ts, the final Pulumi up and destroy invocations must inherit
+the human operator’s stdin so they can answer Pulumi’s interactive confirmation.
+Previews, refreshes, identity checks, backups, and other child commands must keep
+stdin ignored. Preserve the existing interactive-terminal requirement and --yes
+rejection.
+
+Add focused tests covering that boundary. Run the focused tests and report the
+changed files and results. Do not modify any other behavior."
 ```
 
-YOU ARE ABLE TO MAKE SMALL EDITS YOURSELF IT ITS SIMPLE.
+### Review Agents
 
-YOU ARE AUTHORIZED TO EDIT THE IMPLEMENTATION REPORTS AFTER THE FIXES.
+For Review agents, provide just enough context like:
+
+```
+"Review this specific change only; do not edit files. In infra/scripts/pulumi.ts, the interactive update and destroy paths now pass inheritStdin: true to the process runner so a human operator can answer Pulumi's confirmation prompt. Verify that stdin is inherited only for those final state-changing Pulumi calls, not their previews or unrelated commands; confirm the focused tests cover this and report findings."
+```
 
 
 ## Artifact Creation
