@@ -115,9 +115,9 @@ are handed back to the appropriate role.
   reads that Stage's Execution documentation, launches the required
   implementation and review agents, reports state to the user, and only
   relaunches or fixes work at the user's direction.
-- **Cursor implementation agent:** executes one Job in the target repository
+- **Worker agent:** executes one Job in the target repository
   and records its outcome.
-- **Cursor review agent:** reviews a Stage's Job reports and repository changes
+- **Review agent:** reviews a Stage's Job reports and repository changes
   against the Execution documentation. It is instructed to be read-only and
   reports its findings to the Implementation Assistant.
 
@@ -182,9 +182,6 @@ scope, and directs it to pick up the relevant delivered work.
 
 ## Alpha Execution Model
 
-Product, Research, Design, Engineering, Execution, and Implementation
-Assistants run in the coordination harness. Cursor runs implementation agents
-and read-only review agents.
 
 After the user approves a Stage Execution plan, the user starts a
 Stage-scoped Implementation Assistant and asks it to run the authorized Jobs.
@@ -193,9 +190,9 @@ The user does not separately authorize every Job in that approved plan.
 Execution and repository implementation proceed sequentially by Stage. An
 Implementation Assistant runs the Job Groups in its authorized Stage in their
 Execution-plan order. Jobs within the same Job Group may run in parallel; the
-coordination harness launches their Cursor agents in parallel.
+coordination harness launches their worker in parallel.
 
-After each Job Group, the Implementation Assistant launches one Cursor review
+After each Job Group, the Implementation Assistant launches one review
 agent. That agent is instructed to be read-only and reviews the Job Group's
 reports and repository changes against its Jobs and Stage Execution plan. It
 may produce findings, but it does not make changes or accept work. The
@@ -220,7 +217,7 @@ The assigned workstream artifacts provide the active session's concrete scope.
 They identify the relevant workstream, Phase, Stage, Job, decisions, and
 outcomes needed for pickup and delivery.
 
-Cursor implementation and review agents receive an explicit prompt that tells
+Worker and review agents receive an explicit prompt that tells
 them to read their implementation skill and the relevant Job and context
 materials. Their prompts provide only the context needed for their assigned
 implementation or review work.

@@ -47,7 +47,7 @@ Additional steps after delivery may include:
 ## State Statuses
 
 - `[ ] Pending` — not started or not approved.
-- `[~] Active` — work, Cursor review, or a required user decision is in progress.
+- `[~] Active` — work, review, or a required user decision is in progress.
 - `[✓] Approved` — the user explicitly approved the tracked outcome, including
   an Implementation Job outcome.
 - `[!] Blocked` — available implementation or review evidence requires a user

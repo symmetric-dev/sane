@@ -43,7 +43,7 @@ name. Track its Design and Execution approvals and delivered artifacts here. -->
 Each Job status is one of:
 
 - `[ ] Pending` — not started.
-- `[~] Active` — Cursor work, review, or a required user decision is in progress.
+- `[~] Active` — work, review, or a required user decision is in progress.
 - `[!] Blocked` — implementation or review evidence requires a user decision.
 - `[✓] Approved` — the user accepted the Job outcome.
 - `[x] Cancelled` — the user cancelled the Job.

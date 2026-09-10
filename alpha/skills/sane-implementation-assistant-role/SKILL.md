@@ -51,23 +51,11 @@ The workflow is as follows:
 1. Identify the next runnable Job Group from the approved Execution Plan. Confirm
    that all required predecessor Job Groups have their required reports and that
    the user has directed you to run this group.
-2. Before launching the group, mark its Jobs `[~] Active` in the selected Stage's
-   `Workstream Implementation` State entry. For each Job attempt, use the Bash
-   tool with the target repository as its working directory and a timeout of at
-   least 2,400,000 milliseconds (40 minutes):
+2. Before launching the group, mark its Jobs `[~] Active` in the selected Stage's `Workstream Implementation` 
+  State entry. For each Job attempt, launch exactly one `worker agent` per attempt. Jobs may run in parallel only when they share the same approved Job-Group tag. Use this prompt shape, replacing every placeholder with the assigned Job's actual path:
 
-   ```bash
-   agent --add-dir "/path/to/workstreams/repo/00-workstream-folder/" \
-    --force \
-    -p "<implementation-agent-prompt>"
    ```
-
-   Launch exactly one implementation agent per attempt. Jobs may run in parallel
-   only when they share the same approved Job-Group tag. Use this prompt shape,
-   replacing every placeholder with the assigned Job's actual path:
-
-   ```text
-   You are an implementation agent. Your role is to implement one bounded change in the current repository.
+   You are a worker agent. Your role is to implement one bounded change in the current repository.
 
     Read:
     - <absolute path to Job document>
@@ -92,17 +80,10 @@ The workflow is as follows:
     Do not include `SANE_CONTEXT.md`, `SANE_STATE.md`, or general SANE workflow
    instructions in this prompt.
 3. After every Job in the group has returned, launch one read-only review agent
-   for the complete group through the Bash tool with the same target-repository
-   working directory and at least a 30 minutes timeout:
+   for the complete group. Use this prompt shape:
 
-   ```bash
-   agent -p "<review-agent-prompt>"
    ```
-
-   Use this prompt shape:
-
-   ```text
-   You are an implementation reviewer agent. Your role is to perform a read-only review of completed repository changes.
+   You are a reviewer agent. Your role is to perform a read-only review of completed repository changes.
 
     Read:
     - <absolute path to Execution Plan>
@@ -118,6 +99,7 @@ The workflow is as follows:
    ```
 
    You may inspect reports directly after this or go by the reviewer response. However do not edit the reports yourself directly because the review-fix cycle may solve it.
+
 4. Report the Job outcomes and review findings to the user. Wait for the user to
    decide whether to proceed to the next Job Group, request a permitted retry or
    fix, return work to an earlier role, or stop. OR if the user requests a specific workflow for the entire stage, follow it.
@@ -128,18 +110,17 @@ The workflow is as follows:
    deliver the complete Stage implementation record to the user. 
 
 
-## Fixes and Review Subagents
+## Fixer and Review Subagents
 
-
-### Fixes Agents
+### Fixer Agents
 
 For targeted fixes, you DON'T need to provide all the context of the job and the workstream, you only need to provide the targeted fix with just enough context. Example:
 
 ```
-"Fix this specific issue only.
+"Fix this specific issue:
 
-In infra/scripts/pulumi.ts, the final Pulumi up and destroy invocations must inherit
-the human operator’s stdin so they can answer Pulumi’s interactive confirmation.
+In path/to/file.ext, the final <library>'s up and destroy invocations must inherit
+the human operator's stdin so they can answer <library>'s interactive confirmation.
 Previews, refreshes, identity checks, backups, and other child commands must keep
 stdin ignored. Preserve the existing interactive-terminal requirement and --yes
 rejection.
@@ -155,7 +136,6 @@ For Review agents, provide just enough context like:
 ```
 "Review this specific change only; do not edit files. In infra/scripts/pulumi.ts, the interactive update and destroy paths now pass inheritStdin: true to the process runner so a human operator can answer Pulumi's confirmation prompt. Verify that stdin is inherited only for those final state-changing Pulumi calls, not their previews or unrelated commands; confirm the focused tests cover this and report findings."
 ```
-
 
 ## Artifact Creation
 

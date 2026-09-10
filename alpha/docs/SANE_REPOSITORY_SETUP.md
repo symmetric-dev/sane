@@ -146,6 +146,6 @@ does not infer or switch one. Its
 govern the session.
 
 The Implementation Assistant uses the recorded `implementation-path` as
-the Bash working directory when launching Cursor. Cursor implementation and
+the Bash working directory when launching workers. Worker and
 review prompts receive only their assigned paths and instructions. They do not
 read `.sane/paths`, `SANE_CONTEXT.md`, or `SANE_STATE.md`.

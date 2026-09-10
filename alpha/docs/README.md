@@ -60,9 +60,9 @@ The Alpha will test the full workflow by hand:
 2. The Execution Assistant prepares a per-stage `EXECUTION_PLAN.md` and Job
    documents from an approved complete Stage Design specification.
 3. The user reviews and authorizes the stage Execution plan manually.
-4. An Implementation Assistant invokes Cursor implementation agents for the
+4. An Implementation Assistant invokes worker agents for the
    authorized Jobs.
-5. Each Cursor implementation agent carries out one Job in the target
+5. Each worker agent carries out one Job in the target
    repository and writes its matching Implementation Report.
 6. After all authorized Jobs are completed and reviewed, the Implementation
    Assistant creates or updates the actual-state Stage Implementation Brief; the
@@ -96,25 +96,19 @@ The command installs them under:
 <home>/.config/opencode/agents/
 ```
 
-The top-level Implementation Assistant coordinates an authorized Job's Cursor
-invocation; it is distinct from the Cursor implementation agent that performs
+The top-level Implementation Assistant coordinates an authorized Job's
+invocation; it is distinct from the worker agent that performs
 the repository work.
 
-### Cursor implementation agents
+### Worker agents
 
-Cursor implementation agents do not receive special OpenCode agent
+Worker agents do not receive special OpenCode agent
 configurations. The top-level Implementation Assistant invokes one agent for
-one authorized Job through Cursor's CLI with the target repository as the Bash
-working directory and a timeout of at least 40 minutes:
-
-```bash
-agent -p "<job prompt>"
-```
+one authorized Job.
 
 The focused Job and review prompts identify only their assigned documents,
 repository paths, and report requirements. They do not provide general SANE
 context.
-The alpha must not use Cursor's `--force` or `--yolo` options by default.
 
 ## Shared Context Packages
 
@@ -129,9 +123,7 @@ Engineering, Execution, and Implementation) to the shared location:
 <home>/.agents/skills/<skill-name>/SKILL.md
 ```
 
-OpenCode auto-discovers skills from that path. Cursor does not rely on
-OpenCode's skill loader; its prompts explicitly provide the relevant skill
-paths for it to read. Here `<home>` is `SANE_HOME` when it is set, otherwise the
+OpenCode auto-discovers skills from that path. Here `<home>` is `SANE_HOME` when it is set, otherwise the
 current user's home directory.
 
 The installer copies exactly twelve files: six OpenCode agent configurations and
