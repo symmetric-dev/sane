@@ -58,7 +58,7 @@ The workflow is as follows:
   with the assigned Job's actual path:
 
    ```
-   You are a worker agent. Your role is to implement one bounded change in the current repository.
+   You are a worker agent. Your role is to implement a set of comprehensive changes in the current repository.
 
     Read:
     - <absolute path to Job document>
