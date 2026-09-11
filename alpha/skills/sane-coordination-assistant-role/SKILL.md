@@ -13,7 +13,7 @@ This role owns the coordination of:
 - `implementation/briefs/STAGE_<two-digit-id>.md`; and
 - the selected Stage's entries under `Workstream Implementation` in `SANE_STATE.md`.
 
-The Coordination Assistant focuses on one user-selected Stage whose Execution Plan is explicitly approved. It coordinates the authorized Jobs in Execution-plan Job-Group order.
+The Coordination Assistant focuses on one user-selected Stage whose Execution Plan is explicitly approved. It coordinates the authorized Jobs in Execution-plan Job-Group order. It CAN edit Jobs and execution plans.
 
 ## Pickup
 
@@ -58,26 +58,45 @@ The workflow is as follows:
   with the assigned Job's actual path:
 
    ```
-   You are a worker agent. Your role is to implement a set of comprehensive changes in the current repository.
+   You are a worker implementer agent. Your role is to implement one bounded Job
+   thoroughly and deliver a complete, integrated, production-quality result.
 
     Read:
     - <absolute path to Job document>
     - <absolute path to resources/IMPLEMENTATION_REPORT_TEMPLATE.md>
 
-    Follow the Job document exactly. It is the source of truth for the goal,
-   instructions, allowed and forbidden edits, verification, report requirements,
-   and stop or escalation rules.
+    Follow the Job document as the source of truth for the goal, requirements,
+   forbidden edits, verification, report requirements, and stop or escalation
+   rules. Do not optimize for the smallest diff or stop at the first literal
+   implementation that appears to satisfy the request.
 
-    Modify only target-repository paths the Job allows. Run the Job's permitted
-    verification. Do not change planning documents or make unrequested decisions.
+    Inspect all Job context and the directly connected implementation,
+   interfaces, callers, configuration, and tests needed to understand the real
+   change boundary. Treat paths listed by the Job as the expected implementation
+   surface. You may modify additional target-repository paths when they are
+   genuinely necessary for correctness, completeness, integration,
+   compatibility, or verification. Never modify an explicitly forbidden path,
+   broaden approved behavior, or make a product, Design, ownership, or
+   architectural decision without stopping and escalating.
+
+    Exercise engineering judgment within that boundary. Address directly
+   coupled defects or omissions when leaving them unresolved would make the Job
+   incomplete, misleading, unsafe, or unintegrated. Review the finished change
+   for correctness, completeness, regressions, error handling, and
+   maintainability. Run comprehensive permitted verification. Do not change
+   planning or coordination documents.
 
    Write the Job's Implementation Report to:
    <absolute path to implementation/reports/<stage-id>-<stage-slug>/<job-id>-<job-slug>.md>
 
     Create that report by copying the supplied workstream-local template. Replace
     its placeholders and guidance comments, retain its H1 and every H2 exactly
-    once and in order, and include the Job's Report Requirements. When finished,
-    return a concise summary, verification results, report path, and any blockers.
+    once and in order, and include the Job's Report Requirements. Record every
+   changed path and explain why any path beyond the Job's expected surface was
+   necessary. When finished, return the implementation result, all changed
+   files, verification results, report path, deviations, blockers, and clearly
+   separated optional improvement suggestions that the coordinator may present
+   to the user.
     ```
 
     Do not include `SANE_CONTEXT.md`, `SANE_STATE.md`, or general SANE workflow
@@ -101,7 +120,11 @@ The workflow is as follows:
    accurately describes the implemented result and any issues.
    ```
 
-   You may inspect reports directly after this or go by the reviewer response. However do not edit the reports yourself directly because the review-fix cycle may solve it.
+   You may inspect reports directly after this or go by the reviewer response.
+   For every changed path beyond a Job's expected implementation surface,
+   confirm that the report explains its necessity and that the reviewer assessed
+   whether it remained traceable to the approved Job. Do not edit the reports
+   yourself directly because the review-fix cycle may solve an inaccuracy.
 
 4. Report the Job outcomes and review findings to the user. Before starting a
    review-fix cycle, ask which coordination preference to use unless the user has
@@ -163,20 +186,68 @@ allowed-edit boundary."
 Use Bounded Remediation when related findings share a root cause or coherent
 failure boundary, and correcting only one symptom would predictably leave the
 same contract, operation, or behavior defective elsewhere. A remediation may
-span multiple coupled files or layers, but its prompt must explicitly state:
+span multiple coupled files or layers. Build its prompt as a remediation brief
+with these sections:
 
-- the shared root cause or coherent failure boundary;
-- every behavior that must be corrected and preserved;
-- allowed paths and forbidden edits;
-- relevant interfaces, ownership boundaries, and approved constraints;
-- focused and aggregate verification;
-- Implementation Report handling when applicable; and
-- stop conditions for any newly discovered expansion.
+1. **Completion mandate:** require the complete current remediation, not a token,
+   partial, or symptom-only attempt.
+2. **Read first:** list every Job, Design, report, implementation, test,
+   interface, and configuration path needed to understand the authorized
+   boundary.
+3. **Verified current state:** identify behavior already confirmed correct and
+   requiring preservation, reproduced failures, completed work, and remaining
+   gaps. Distinguish verified observations from suspected causes. When a root
+   cause is not conclusively established, require the fixer to confirm or revise
+   the diagnosis before editing.
+4. **Required work:** enumerate every remaining outcome and scenario that must be
+   completed coherently. Do not rely on a broad instruction such as “fix all
+   tests.”
+5. **Allowed paths:** list the complete authorized edit surface, including report
+   paths when reconciliation is required.
+6. **Forbidden paths and operations:** state protected behavior, files,
+   environments, external mutations, and non-goals explicitly.
+7. **Quality expectations:** define realistic boundary behavior, regression,
+   lifecycle, cleanup, compatibility, and evidence expectations relevant to the
+   remediation. Difficulty constructing fixtures or exercising the real
+   boundary is not itself completion or a blocker.
+8. **Verification obligations:** enumerate focused and aggregate commands,
+   operational checks, cleanup or leak inspection, and repository checks. Require
+   scenario-level evidence where the remediation contains multiple scenarios.
+9. **Report reconciliation:** identify every report to update and the evidence,
+   deviations, and remaining risks it must record while preserving its required
+   structure.
+10. **Stop conditions:** stop only when completion genuinely requires crossing
+    an explicit allowed-edit or approved-behavior boundary, or making a
+    user-owned product, Design, ownership, or architectural decision. Require
+    concrete reproduction and technical evidence for a blocker.
+11. **Return requirements:** request a concise implementation summary, evidence
+    for each required outcome or scenario, all verification results, changed
+    paths, updated reports, unresolved assumptions, and genuine blockers.
+
+Require verification results to distinguish commands executed and passed,
+executed and failed, unavailable or unsafe to execute, explicitly deferred by
+the Job, and requiring user-only evidence. The fixer must never claim a command
+or scenario that it did not actually run or inspect.
+
+When the Job requires proof through a production entrypoint or operational
+boundary, helper-level mocks alone are insufficient. Require controlled
+test-side infrastructure that exercises the real mechanism without adding
+production-reachable test hooks. Keep concrete mechanisms such as fake tools,
+isolated checkouts, emulated terminals, provider fixtures, or archive inspection
+in the remediation prompt only when the Job requires them; do not assume them
+for every remediation.
 
 Provide the fixer enough directly relevant context to reason across the complete
 authorized boundary. Do not provide general workstream context merely because
 the remediation is wider. Do not split a known coherent remediation into serial
 symptom fixes solely to minimize each diff.
+
+Treat Bounded Remediation as complete only when every enumerated outcome has
+been implemented or evidenced, preserved behavior remains intact, required
+realistic boundary and aggregate verification has been addressed, cleanup and
+lifecycle obligations have been checked when relevant, reports match actual
+evidence, and any unresolved item is a genuine boundary blocker rather than
+unfinished implementation.
 
 If the coherent remediation exceeds the Job's allowed edits, changes an
 interface or ownership boundary, contradicts approved behavior, or requires a
@@ -192,8 +263,64 @@ the review.
 
 ### Review Agents
 
-For targeted follow-up reviews, launch a `sane-worker-reviewer` agent and provide
-just enough context like:
+For every Job-Group review and thorough post-remediation review, give the
+`sane-worker-reviewer` a structured review brief containing:
+
+1. **Review mandate:** identify the complete Job Group, revised Job, remediation,
+   or targeted change to assess, and state that the review is read-only.
+2. **Read set:** list the applicable Execution Plan, Jobs, Design and interface
+   context, Implementation Reports, changed source, tests, configuration, and
+   directly relevant helpers.
+3. **Claims to verify:** enumerate current implementation, behavior, regression,
+   lifecycle, cleanup, compatibility, and evidence claims. Present these as
+   assertions for independent verification, not facts the reviewer must accept.
+4. **Review criteria:** enumerate every required behavior and scenario, including
+   preserved behavior and explicit current-Job requirements.
+5. **Test-validity expectations:** identify when proof must exercise a production
+   entrypoint or operational boundary rather than nominal helper events or
+   self-fulfilling mocks. Require checks for weakened, skipped, incomplete, or
+   ineffective assertions.
+6. **Verification permission and limits:** identify focused or aggregate commands
+   the reviewer may independently run and prohibit formatters, snapshot updates,
+   generators, dependency installation, production mutation, and other
+   intentional repository changes. Tests may create their normal ephemeral
+   artifacts only when the review boundary permits them.
+7. **Report reconciliation:** require comparison of each report with source,
+   tests, actual command results, deviations, deferred evidence, and required
+   template structure.
+8. **Non-goals:** state retired requirements, unrelated systems, or broader
+   behavior that the reviewer must not revive or assess.
+9. **Return requirements:** require findings ordered by severity, exact evidence
+   for every material finding, criterion-level evidence, verification results,
+   remaining requirements, and an explicit completion assessment.
+
+Require the reviewer to classify findings as applicable:
+
+- production defect;
+- missing required behavior;
+- missing automated evidence;
+- invalid, weak, or non-representative evidence;
+- user-only or unavailable verification;
+- report inaccuracy; or
+- historical Design contradiction or unresolved Design drift.
+
+A missing test is blocking only when the current Job requires automated proof
+and the production mechanism can reasonably be exercised in the permitted
+environment. The reviewer must distinguish an implementation defect from
+evidence that is legitimately deferred or user-only.
+
+Require one final completion assessment:
+
+- **Complete** — all current requirements and evidence obligations are met.
+- **Complete with non-blocking observations** — the current boundary is met, with
+  clearly separated optional observations.
+- **Incomplete** — one or more current requirements or evidence obligations
+  remain unmet.
+- **Blocked** — completion depends on a user-owned decision or evidence that
+  cannot be obtained within the authorized environment.
+
+For a smaller targeted follow-up review, retain the same principles but provide
+only the context and criteria needed for that boundary. Example:
 
 ```
 "Review this specific change only; do not edit files. In infra/scripts/pulumi.ts, the interactive update and destroy paths now pass inheritStdin: true to the process runner so a human operator can answer Pulumi's confirmation prompt. Verify that stdin is inherited only for those final state-changing Pulumi calls, not their previews or unrelated commands; confirm the focused tests cover this and report findings."
@@ -252,6 +379,12 @@ Do not change Foundation approvals or Stage Design or Execution entries.
   Implementation Report; it does not create a new Job or silently broaden its
   boundaries. A user may direct each retry or delegate a bounded review-fix
   cycle, but only the user may authorize expanded behavior or accept the result.
+- A necessary additional repository path does not by itself broaden a Job's
+  behavioral boundary. The implementer may change such a path when it is
+  directly required for correctness, completeness, integration, compatibility,
+  or verification, is not explicitly forbidden, and is fully reported with its
+  rationale. A change to approved behavior, public contracts, ownership,
+  architecture, or an explicit forbidden boundary still requires escalation.
 - A Job changes to `[~] Active` immediately before its agent starts and remains
   Active through review. Record its report and review result in optional Notes
   when useful. Mark it `[!] Blocked` when evidence requires the user's decision;

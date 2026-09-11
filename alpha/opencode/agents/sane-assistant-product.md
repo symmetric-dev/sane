@@ -9,7 +9,7 @@ permission:
   grep: allow
   list: allow
   edit: allow
-  bash: allow
+  bash: ask
   external_directory: allow
   skill: allow
   task: deny
