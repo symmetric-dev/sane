@@ -1,9 +1,9 @@
 ---
-name: sane-implementation-assistant-role
-description: Use when the user starts a SANE Implementation Assistant session.
+name: sane-coordination-assistant-role
+description: Use when the user starts a SANE Coordination Assistant session to coordinate authorized Stage implementation.
 ---
 
-# SANE Implementation Assistant Role
+# SANE Coordination Assistant Role
 
 ## Purpose and Scope
 
@@ -13,7 +13,7 @@ This role owns the coordination of:
 - `implementation/briefs/STAGE_<two-digit-id>.md`; and
 - the selected Stage's entries under `Workstream Implementation` in `SANE_STATE.md`.
 
-The Implementation Assistant focuses on one user-selected Stage whose Execution Plan is explicitly approved. It coordinates the authorized Jobs in Execution-plan Job-Group order.
+The Coordination Assistant focuses on one user-selected Stage whose Execution Plan is explicitly approved. It coordinates the authorized Jobs in Execution-plan Job-Group order.
 
 ## Pickup
 
@@ -52,7 +52,10 @@ The workflow is as follows:
    that all required predecessor Job Groups have their required reports and that
    the user has directed you to run this group.
 2. Before launching the group, mark its Jobs `[~] Active` in the selected Stage's `Workstream Implementation` 
-  State entry. For each Job attempt, launch exactly one `worker agent` per attempt. Jobs may run in parallel only when they share the same approved Job-Group tag. Use this prompt shape, replacing every placeholder with the assigned Job's actual path:
+  State entry. For each Job attempt, launch exactly one `sane-worker-implementer`
+  agent per attempt. Jobs may run in parallel only when they share the same
+  approved Job-Group tag. Use this prompt shape, replacing every placeholder
+  with the assigned Job's actual path:
 
    ```
    You are a worker agent. Your role is to implement one bounded change in the current repository.
@@ -79,8 +82,8 @@ The workflow is as follows:
 
     Do not include `SANE_CONTEXT.md`, `SANE_STATE.md`, or general SANE workflow
    instructions in this prompt.
-3. After every Job in the group has returned, launch one read-only review agent
-   for the complete group. Use this prompt shape:
+3. After every Job in the group has returned, launch one read-only
+   `sane-worker-reviewer` agent for the complete group. Use this prompt shape:
 
    ```
    You are a reviewer agent. Your role is to perform a read-only review of completed repository changes.
@@ -114,7 +117,9 @@ The workflow is as follows:
 
 ### Fixer Agents
 
-For targeted fixes, you DON'T need to provide all the context of the job and the workstream, you only need to provide the targeted fix with just enough context. Example:
+For targeted fixes, launch a `sane-worker-fixer` agent. You DON'T need to provide
+all the context of the job and the workstream, you only need to provide the
+targeted fix with just enough context. Example:
 
 ```
 "Fix this specific issue:
@@ -131,7 +136,8 @@ changed files and results. Do not modify any other behavior."
 
 ### Review Agents
 
-For Review agents, provide just enough context like:
+For targeted follow-up reviews, launch a `sane-worker-reviewer` agent and provide
+just enough context like:
 
 ```
 "Review this specific change only; do not edit files. In infra/scripts/pulumi.ts, the interactive update and destroy paths now pass inheritStdin: true to the process runner so a human operator can answer Pulumi's confirmation prompt. Verify that stdin is inherited only for those final state-changing Pulumi calls, not their previews or unrelated commands; confirm the focused tests cover this and report findings."

@@ -60,7 +60,7 @@ The Alpha will test the full workflow by hand:
 2. The Execution Assistant prepares a per-stage `EXECUTION_PLAN.md` and Job
    documents from an approved complete Stage Design specification.
 3. The user reviews and authorizes the stage Execution plan manually.
-4. An Implementation Assistant invokes worker agents for the
+4. A Coordination Assistant invokes worker implementer agents for the
    authorized Jobs.
 5. Each worker agent carries out one Job in the target
    repository and writes its matching Implementation Report.
@@ -83,7 +83,7 @@ between agents automatically.
 ### OpenCode assistants
 
 The Product, Research, Design, Engineering, Execution, and top-level
-Implementation Assistants will be selected and started by the user in OpenCode.
+Coordination Assistants will be selected and started by the user in OpenCode.
 Their global OpenCode agent configurations are installed with:
 
 ```bash
@@ -96,19 +96,20 @@ The command installs them under:
 <home>/.config/opencode/agents/
 ```
 
-The top-level Implementation Assistant coordinates an authorized Job's
-invocation; it is distinct from the worker agent that performs
+The top-level Coordination Assistant coordinates an authorized Job's
+invocation; it is distinct from the worker implementer agent that performs
 the repository work.
 
-### Worker agents
+### Implementation subagents
 
-Worker agents do not receive special OpenCode agent
-configurations. The top-level Implementation Assistant invokes one agent for
-one authorized Job.
+Worker implementer, reviewer, and fixer agents receive narrow OpenCode subagent
+configurations. The top-level Coordination Assistant invokes one implementer
+for one authorized Job, one read-only reviewer for a completed Job Group, and
+one fixer only for a user-directed targeted correction.
 
-The focused Job and review prompts identify only their assigned documents,
-repository paths, and report requirements. They do not provide general SANE
-context.
+The focused worker, review, and fix prompts identify only their assigned
+documents, repository paths, requirements, and boundaries. They do not provide
+general SANE context.
 
 ## Shared Context Packages
 

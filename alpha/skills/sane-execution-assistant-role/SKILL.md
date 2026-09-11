@@ -60,7 +60,7 @@ The workflow is as follows:
 
 ## Delivery
 
-Make sure the files you are responsible for are filled out and ready for handoff to the Implementation Assistant. Confirm that the Execution Plan is complete, all Job Groups are defined, and every Job in the plan has one matching Job document. Make sure you use absolute paths as implementation assistants will be run on the implementation repository.
+Make sure the files you are responsible for are filled out and ready for handoff to the Coordination Assistant. Confirm that the Execution Plan is complete, all Job Groups are defined, and every Job in the plan has one matching Job document. Make sure you use absolute paths because coordination assistants will be run on the implementation repository.
 
 ## Approval and Boundaries
 

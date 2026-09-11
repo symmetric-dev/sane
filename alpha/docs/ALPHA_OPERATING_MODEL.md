@@ -111,7 +111,7 @@ are handed back to the appropriate role.
   code examples and pseudocode, but does not implement the complete solution.
 - **Execution Assistant:** works on one approved Stage. It picks up the Stage's
   complete Design, then produces its Execution Plan and Jobs.
-- **Implementation Assistant:** normally works on one authorized Stage. It
+- **Coordination Assistant:** normally works on one authorized Stage. It
   reads that Stage's Execution documentation, launches the required
   implementation and review agents, reports state to the user, and only
   relaunches or fixes work at the user's direction.
@@ -119,7 +119,7 @@ are handed back to the appropriate role.
   and records its outcome.
 - **Review agent:** reviews a Stage's Job reports and repository changes
   against the Execution documentation. It is instructed to be read-only and
-  reports its findings to the Implementation Assistant.
+  reports its findings to the Coordination Assistant.
 
 ## Session Lifecycle
 
@@ -184,19 +184,19 @@ scope, and directs it to pick up the relevant delivered work.
 
 
 After the user approves a Stage Execution plan, the user starts a
-Stage-scoped Implementation Assistant and asks it to run the authorized Jobs.
+Stage-scoped Coordination Assistant and asks it to run the authorized Jobs.
 The user does not separately authorize every Job in that approved plan.
 
 Execution and repository implementation proceed sequentially by Stage. An
-Implementation Assistant runs the Job Groups in its authorized Stage in their
+Coordination Assistant runs the Job Groups in its authorized Stage in their
 Execution-plan order. Jobs within the same Job Group may run in parallel; the
 coordination harness launches their worker in parallel.
 
-After each Job Group, the Implementation Assistant launches one review
+After each Job Group, the Coordination Assistant launches one review
 agent. That agent is instructed to be read-only and reviews the Job Group's
 reports and repository changes against its Jobs and Stage Execution plan. It
 may produce findings, but it does not make changes or accept work. The
-Implementation Assistant reports the implementation and review state to the
+Coordination Assistant reports the implementation and review state to the
 user, who decides whether to proceed or request Updates.
 
 ## Agent Context Model

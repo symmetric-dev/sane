@@ -21,7 +21,7 @@ sane-alpha install-context-packages [--dry-run] [--overwrite]
 
 The installer uses `SANE_HOME` when set (otherwise the current user's home), so
 the command is isolated with `SANE_HOME=/temporary/home` when needed. It copies
-the six source agents as global OpenCode Markdown agents under:
+the nine source agents as global OpenCode Markdown agents under:
 
 ```text
 <home>/.config/opencode/agents/
@@ -33,10 +33,12 @@ It copies the six generic role skills from `alpha/skills/` to:
 <home>/.agents/skills/<skill-name>/SKILL.md
 ```
 
-The installer has exactly twelve destinations: six agent configurations and six
-generic role skills: Product, Research, Design, Engineering, Execution, and
-Implementation. It validates every source and destination before changing
-anything.
+The installer has exactly fifteen destinations: six primary role-agent
+configurations, three implementation subagent configurations, and six generic
+role skills. The primary roles are Product, Research, Design, Engineering,
+Execution, and Coordination; the subagents are Worker Implementer, Worker
+Reviewer, and Worker Fixer.
+It validates every source and destination before changing anything.
 It creates parent directories as needed, leaves identical destinations unchanged,
 and refuses differing regular files by default. `--overwrite` replaces only
 differing regular files; it never replaces a non-regular destination. `--dry-run`
@@ -46,7 +48,8 @@ changed global agent and skill files.
 
 ## Agent-Configuration Content
 
-Each role configuration starts with the same three concepts, in this order:
+Each of the six primary role configurations starts with the same three concepts,
+in this order:
 
 1. **SANE:** “SANE is a structured, reasonable way for people and agents to
    acquire and apply knowledge in service of deliberate change.”
@@ -61,17 +64,33 @@ The configuration does not repeat the substantive role instructions from the
 skill or duplicate SANE template guidance. `alpha/templates/` is the canonical
 source of SANE templates.
 
+The three implementation subagent configurations instead treat their invocation
+prompt as the complete assignment. Their built-in context reinforces role,
+permissions, scope control, stopping behavior, and return shape without adding
+workstream context that could compete with the orchestrator's supplied prompt.
+
 No role agent requires a user to declare a workstream type, and role agents do
 not read root `type` metadata as session context. Product and Design load their
 single generic skill directly. Their skills use the bootstrapped `PRD.md` and
 applicable root Design template without routing by type.
 
-Reinstalling updates only the twelve managed destinations; it does not delete
-previously installed typed skill directories. If they remain from an earlier
-Alpha installation, inspect and remove them only through explicit user-directed
-cleanup.
+Reinstalling updates only the fifteen managed destinations; it does not delete
+files from an earlier naming scheme. After upgrading an existing installation,
+inspect and explicitly remove obsolete `sane-implementation.md` and other
+pre-`sane-assistant-*` agent files from `<home>/.config/opencode/agents/`, plus
+`<home>/.agents/skills/sane-implementation-assistant-role/`. The installer does
+not remove potentially user-modified files automatically.
 
 ## Context Ingestion and Pickup
+
+The Worker Implementer, Worker Reviewer, and Worker Fixer are intentionally
+different from the six user-started role agents described below. They are
+subagents invoked by the
+Coordination Assistant with self-contained, narrowly scoped prompts. They do not
+discover `.sane` and workstream context. They may load directly relevant
+non-SANE technical or repository skills, while OpenCode permission rules deny
+all `sane-*-assistant-role` skills. Worker Implementer and Worker Fixer can edit
+only within their supplied assignments; Worker Reviewer is strictly read-only.
 
 Every user-started SANE session follows this sequence:
 

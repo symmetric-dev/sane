@@ -45,13 +45,13 @@ describe("install-sane-agent-context-packages", () => {
     return { homeDirectory, sourceRoot, write: () => {}, ...extra }
   }
 
-  test("installs all six agents and all six generic role skills", async () => {
+  test("installs all nine agents and all six generic role skills", async () => {
     const result = await installSaneAgentContextPackages(options())
 
     expect(result.dryRun).toBe(false)
     expect(result.updated).toEqual([])
     expect(result.unchanged).toEqual([])
-    expect(result.created).toHaveLength(12)
+    expect(result.created).toHaveLength(15)
     for (const filename of AGENT_FILENAMES) {
       expect(await readFile(join(homeDirectory, ".config", "opencode", "agents", filename), "utf8")).toBe(
         `agent ${filename}\n`,
@@ -87,7 +87,7 @@ describe("install-sane-agent-context-packages", () => {
     const result = await installSaneAgentContextPackages(options())
 
     expect(result).toMatchObject({ created: [], updated: [] })
-    expect(result.unchanged).toHaveLength(12)
+    expect(result.unchanged).toHaveLength(15)
   })
 
   test("dry run validates and reports plans without creating a home directory", async () => {
@@ -95,9 +95,9 @@ describe("install-sane-agent-context-packages", () => {
     const result = await installSaneAgentContextPackages(options({ dryRun: true, write: (line) => lines.push(line) }))
 
     expect(result.dryRun).toBe(true)
-    expect(result.created).toHaveLength(12)
+    expect(result.created).toHaveLength(15)
     expect(lines).toContain("Dry run: no files or directories were modified.")
-    expect(lines.filter((line) => line.startsWith("Planned:"))).toHaveLength(12)
+    expect(lines.filter((line) => line.startsWith("Planned:"))).toHaveLength(15)
     await expectMissing(homeDirectory)
   })
 
@@ -161,14 +161,25 @@ describe("install-sane-agent-context-packages", () => {
     })
 
     expect(ROLE_SKILL_NAMES).toEqual([
+      "sane-coordination-assistant-role",
       "sane-product-assistant-role",
       "sane-research-assistant-role",
       "sane-design-assistant-role",
       "sane-engineering-assistant-role",
       "sane-execution-assistant-role",
-      "sane-implementation-assistant-role",
     ])
-    expect(result.created).toHaveLength(12)
+    expect(AGENT_FILENAMES).toEqual([
+      "sane-assistant-coordination.md",
+      "sane-assistant-design.md",
+      "sane-assistant-engineering.md",
+      "sane-assistant-execution.md",
+      "sane-assistant-product.md",
+      "sane-assistant-research.md",
+      "sane-worker-fixer.md",
+      "sane-worker-implementer.md",
+      "sane-worker-reviewer.md",
+    ])
+    expect(result.created).toHaveLength(15)
     for (const skillName of ROLE_SKILL_NAMES) {
       expect(await readFile(join(DEFAULT_SOURCE_ROOT, "skills", skillName, "SKILL.md"), "utf8")).not.toBe("")
     }
@@ -191,8 +202,14 @@ describe("install-sane-agent-context-packages", () => {
     expect(researchSkill).toContain("`research/TECHNICAL_REFERENCE.md`")
     expect(researchSkill).not.toContain("`research/INDEX.md`")
     expect(researchSkill).not.toContain("`research/TECH_BRIEF.md`")
-    const productAgent = await readFile(join(DEFAULT_SOURCE_ROOT, "opencode", "agents", "sane-product.md"), "utf8")
-    const designAgent = await readFile(join(DEFAULT_SOURCE_ROOT, "opencode", "agents", "sane-design.md"), "utf8")
+    const productAgent = await readFile(
+      join(DEFAULT_SOURCE_ROOT, "opencode", "agents", "sane-assistant-product.md"),
+      "utf8",
+    )
+    const designAgent = await readFile(
+      join(DEFAULT_SOURCE_ROOT, "opencode", "agents", "sane-assistant-design.md"),
+      "utf8",
+    )
     for (const [agent, skillName] of [
       [productAgent, "sane-product-assistant-role"],
       [designAgent, "sane-design-assistant-role"],
@@ -203,6 +220,19 @@ describe("install-sane-agent-context-packages", () => {
       expect(agent).not.toContain("explicitly declared by the user")
       expect(agent).not.toContain("workstream `type` file")
     }
+    for (const filename of ["sane-worker-implementer.md", "sane-worker-reviewer.md", "sane-worker-fixer.md"]) {
+      const agent = await readFile(join(DEFAULT_SOURCE_ROOT, "opencode", "agents", filename), "utf8")
+      expect(agent).toContain("mode: subagent")
+      expect(agent).toContain('"*": allow')
+      expect(agent).toContain('"sane-*-assistant-role": deny')
+      expect(agent).toContain("task: deny")
+      expect(agent).not.toContain("Read the `sane-coordination-assistant-role` skill.")
+    }
+    const reviewerAgent = await readFile(
+      join(DEFAULT_SOURCE_ROOT, "opencode", "agents", "sane-worker-reviewer.md"),
+      "utf8",
+    )
+    expect(reviewerAgent).toContain("edit: deny")
   })
 
   test("does not delete previously installed typed skill directories", async () => {

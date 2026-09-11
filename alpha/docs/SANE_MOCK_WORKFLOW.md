@@ -192,7 +192,7 @@ it does not automatically start implementation.
 
 ## 8. Implementation Session and Job Groups
 
-**User action:** Select the **SANE Implementation Assistant** in OpenCode.
+**User action:** Select the **SANE Coordination Assistant** in OpenCode.
 
 **User prompt:**
 
@@ -202,7 +202,7 @@ report the runnable Jobs and planned repository changes, and wait for my
 confirmation before launching an implementation agent.
 ```
 
-After the user confirms, the Implementation Assistant launches the bounded
+After the user confirms, the Coordination Assistant launches the bounded
 implementation agent or agents in `$IMPL`, then a read-only review agent for the
 completed Job Group. It reports the Job outcomes and review findings to the user.
 
@@ -220,7 +220,7 @@ implementation/reports/01-csv-export/<job-id>-<job-slug>.md
 ```
 
 Once every authorized Job has completed and received its Job-Group review, the
-Implementation Assistant creates or updates this actual-state handoff before
+Coordination Assistant creates or updates this actual-state handoff before
 offering Stage implementation delivery:
 
 ```text

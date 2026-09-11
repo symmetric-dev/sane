@@ -4,21 +4,24 @@ import { fileURLToPath } from "node:url"
 import { dirname, join, resolve } from "node:path"
 
 export const AGENT_FILENAMES = [
-  "sane-design.md",
-  "sane-engineering.md",
-  "sane-execution.md",
-  "sane-implementation.md",
-  "sane-product.md",
-  "sane-research.md",
+  "sane-assistant-coordination.md",
+  "sane-assistant-design.md",
+  "sane-assistant-engineering.md",
+  "sane-assistant-execution.md",
+  "sane-assistant-product.md",
+  "sane-assistant-research.md",
+  "sane-worker-fixer.md",
+  "sane-worker-implementer.md",
+  "sane-worker-reviewer.md",
 ] as const
 
 export const ROLE_SKILL_NAMES = [
+  "sane-coordination-assistant-role",
   "sane-product-assistant-role",
   "sane-research-assistant-role",
   "sane-design-assistant-role",
   "sane-engineering-assistant-role",
   "sane-execution-assistant-role",
-  "sane-implementation-assistant-role",
 ] as const
 
 export const DEFAULT_SOURCE_ROOT = fileURLToPath(new URL("../", import.meta.url))

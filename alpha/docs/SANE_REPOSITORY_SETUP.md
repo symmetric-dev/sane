@@ -145,7 +145,7 @@ does not infer or switch one. Its
 `SANE_CONTEXT.md`, `SANE_STATE.md`, assigned artifacts, and role skill then
 govern the session.
 
-The Implementation Assistant uses the recorded `implementation-path` as
+The Coordination Assistant uses the recorded `implementation-path` as
 the Bash working directory when launching workers. Worker and
 review prompts receive only their assigned paths and instructions. They do not
 read `.sane/paths`, `SANE_CONTEXT.md`, or `SANE_STATE.md`.
