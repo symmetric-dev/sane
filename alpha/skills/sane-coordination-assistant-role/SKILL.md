@@ -103,12 +103,20 @@ The workflow is as follows:
 
    You may inspect reports directly after this or go by the reviewer response. However do not edit the reports yourself directly because the review-fix cycle may solve it.
 
-4. Report the Job outcomes and review findings to the user. Wait for the user to
-   decide whether to proceed to the next Job Group, request a permitted retry or
-   fix, return work to an earlier role, or stop. OR if the user requests a specific workflow for the entire stage, follow it.
-5. Repeat only under the user's direction. Once every authorized Job has been
-   completed and received its required read-only Job-Group review, check the
-   Execution Plan's Stage Handoff Requirements.
+4. Report the Job outcomes and review findings to the user. Before starting a
+   review-fix cycle, ask which coordination preference to use unless the user has
+   already supplied one for the Stage:
+   - **Checkpointed:** return after every review and wait for the user to direct
+     the next fix, retry, earlier-role handoff, or stop.
+   - **Delegated cycle:** coordinate review and authorized fixes without pausing
+     after every attempt, until review is clean, a stop or escalation condition
+     applies, or the user-specified attempt limit is reached.
+   Confirm the applicable scope and attempt limit before using a delegated cycle.
+   This preference delegates coordination only; it does not let the assistant
+   accept a Job outcome, broaden approved behavior, or cross Job boundaries.
+5. Repeat according to the user's selected coordination preference. Once every
+   authorized Job has been completed and received its required read-only
+   Job-Group review, check the Execution Plan's Stage Handoff Requirements.
 6. Create or update the Stage Implementation Brief from the actual Job reports and review evidence, then
    deliver the complete Stage implementation record to the user. 
 
@@ -117,9 +125,23 @@ The workflow is as follows:
 
 ### Fixer Agents
 
-For targeted fixes, launch a `sane-worker-fixer` agent. You DON'T need to provide
-all the context of the job and the workstream, you only need to provide the
-targeted fix with just enough context. Example:
+Before launching a `sane-worker-fixer`, classify the correction as either a
+**Narrow Fix** or **Bounded Remediation**. Here, bounded means bounded by the
+coherent problem and its approved behavior, not necessarily by the smallest
+possible diff.
+
+#### Narrow Fix
+
+Use a Narrow Fix when the root cause is known, the affected contract and
+ownership boundaries remain unchanged, the existing allowed paths are
+sufficient, and focused verification can prove the correction. Supply only the
+specific defect, directly affected paths and tests, behavior to preserve,
+verification, report handling when applicable, and this stop condition:
+
+> Stop if resolution requires changing an interface, ownership boundary,
+> approved behavior, or allowed-edit boundary.
+
+Example:
 
 ```
 "Fix this specific issue:
@@ -131,8 +153,42 @@ stdin ignored. Preserve the existing interactive-terminal requirement and --yes
 rejection.
 
 Add focused tests covering that boundary. Run the focused tests and report the
-changed files and results. Do not modify any other behavior."
+changed files and results. Do not modify any other behavior. Stop if resolution
+requires changing an interface, ownership boundary, approved behavior, or
+allowed-edit boundary."
 ```
+
+#### Bounded Remediation
+
+Use Bounded Remediation when related findings share a root cause or coherent
+failure boundary, and correcting only one symptom would predictably leave the
+same contract, operation, or behavior defective elsewhere. A remediation may
+span multiple coupled files or layers, but its prompt must explicitly state:
+
+- the shared root cause or coherent failure boundary;
+- every behavior that must be corrected and preserved;
+- allowed paths and forbidden edits;
+- relevant interfaces, ownership boundaries, and approved constraints;
+- focused and aggregate verification;
+- Implementation Report handling when applicable; and
+- stop conditions for any newly discovered expansion.
+
+Provide the fixer enough directly relevant context to reason across the complete
+authorized boundary. Do not provide general workstream context merely because
+the remediation is wider. Do not split a known coherent remediation into serial
+symptom fixes solely to minimize each diff.
+
+If the coherent remediation exceeds the Job's allowed edits, changes an
+interface or ownership boundary, contradicts approved behavior, or requires a
+product or Design decision, do not authorize it implicitly. Stop and present the
+required boundary change to the user. Continue only after the user authorizes
+the expanded remediation or directs an earlier-role handoff.
+
+After any unsuccessful fix, reassess whether the remaining issue is still a
+Narrow Fix or whether the evidence now supports Bounded Remediation. Do not
+repeat narrow fixes mechanically. Under a delegated cycle, continue only within
+the user-approved scope and attempt limit; otherwise return to the user after
+the review.
 
 ### Review Agents
 
@@ -192,9 +248,10 @@ Do not change Foundation approvals or Stage Design or Execution entries.
   Jobs for the selected Stage have completed and been reviewed. 
 - A review is a read-only assessment after a Job Group. Its findings inform the
   user; it neither changes the repository nor accepts the group's work.
-- A user-directed retry remains the same authorized Job and updates its matching
+- A retry remains the same authorized Job and updates its matching
   Implementation Report; it does not create a new Job or silently broaden its
-  boundaries.
+  boundaries. A user may direct each retry or delegate a bounded review-fix
+  cycle, but only the user may authorize expanded behavior or accept the result.
 - A Job changes to `[~] Active` immediately before its agent starts and remains
   Active through review. Record its report and review result in optional Notes
   when useful. Mark it `[!] Blocked` when evidence requires the user's decision;
