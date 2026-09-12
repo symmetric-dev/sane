@@ -45,13 +45,13 @@ describe("install-sane-agent-context-packages", () => {
     return { homeDirectory, sourceRoot, write: () => {}, ...extra }
   }
 
-  test("installs all nine agents and all six generic role skills", async () => {
+  test("installs all ten agents and all six assistant role skills", async () => {
     const result = await installSaneAgentContextPackages(options())
 
     expect(result.dryRun).toBe(false)
     expect(result.updated).toEqual([])
     expect(result.unchanged).toEqual([])
-    expect(result.created).toHaveLength(15)
+    expect(result.created).toHaveLength(16)
     for (const filename of AGENT_FILENAMES) {
       expect(await readFile(join(homeDirectory, ".config", "opencode", "agents", filename), "utf8")).toBe(
         `agent ${filename}\n`,
@@ -87,7 +87,7 @@ describe("install-sane-agent-context-packages", () => {
     const result = await installSaneAgentContextPackages(options())
 
     expect(result).toMatchObject({ created: [], updated: [] })
-    expect(result.unchanged).toHaveLength(15)
+    expect(result.unchanged).toHaveLength(16)
   })
 
   test("dry run validates and reports plans without creating a home directory", async () => {
@@ -95,9 +95,9 @@ describe("install-sane-agent-context-packages", () => {
     const result = await installSaneAgentContextPackages(options({ dryRun: true, write: (line) => lines.push(line) }))
 
     expect(result.dryRun).toBe(true)
-    expect(result.created).toHaveLength(15)
+    expect(result.created).toHaveLength(16)
     expect(lines).toContain("Dry run: no files or directories were modified.")
-    expect(lines.filter((line) => line.startsWith("Planned:"))).toHaveLength(15)
+    expect(lines.filter((line) => line.startsWith("Planned:"))).toHaveLength(16)
     await expectMissing(homeDirectory)
   })
 
@@ -153,7 +153,7 @@ describe("install-sane-agent-context-packages", () => {
     await expectMissing(homeDirectory)
   })
 
-  test("the default source manifest validates six generic skills using the root PRD", async () => {
+  test("the default source manifest validates all registered agents and role skills", async () => {
     const result = await installSaneAgentContextPackages({
       homeDirectory,
       dryRun: true,
@@ -177,9 +177,10 @@ describe("install-sane-agent-context-packages", () => {
       "sane-assistant-research.md",
       "sane-worker-fixer.md",
       "sane-worker-implementer.md",
+      "sane-worker-researcher.md",
       "sane-worker-reviewer.md",
     ])
-    expect(result.created).toHaveLength(15)
+    expect(result.created).toHaveLength(16)
     for (const skillName of ROLE_SKILL_NAMES) {
       expect(await readFile(join(DEFAULT_SOURCE_ROOT, "skills", skillName, "SKILL.md"), "utf8")).not.toBe("")
     }
@@ -240,6 +241,65 @@ describe("install-sane-agent-context-packages", () => {
       "utf8",
     )
     expect(reviewerAgent).toContain("edit: deny")
+  })
+
+  test("the self-contained Research Worker agent enforces the delegated research contract", async () => {
+    const workerAgent = await readFile(
+      join(DEFAULT_SOURCE_ROOT, "opencode", "agents", "sane-worker-researcher.md"),
+      "utf8",
+    )
+    expect(workerAgent).toContain("mode: subagent")
+    expect(workerAgent).toMatch(/ask:\s*deny/)
+    expect(workerAgent).toMatch(/task:\s*deny/)
+    expect(workerAgent).not.toMatch(/(?:Read|Load) the `sane-[^`]*worker[^`]*` skill/i)
+    expect(workerAgent).toMatch(/(?:write|edit)[\s\S]{0,80}only[\s\S]{0,80}assigned[\s\S]{0,80}(?:`REPORT\.md`|report)/i)
+    expect(workerAgent).toMatch(/(?:never|do not)[\s\S]{0,100}(?:edit|update|write)[\s\S]{0,100}baseline/i)
+    expect(workerAgent).toMatch(/(?:do not|never)[\s\S]{0,180}(?:ask questions of the user|user-question|pickup|approval|delivery)/i)
+    expect(workerAgent).toMatch(/inspect[\s\S]{0,120}(?:implementation|repository|source|code)[\s\S]{0,120}read-only/i)
+    expect(workerAgent).toMatch(/non-destructive[\s\S]{0,120}(?:command|verification)/i)
+    expect(workerAgent).toMatch(/unless the assignment explicitly authorizes/i)
+    expect(workerAgent).toMatch(/never edit[\s\S]{0,180}(?:implementation source|tests)[\s\S]{0,80}configuration/i)
+    expect(workerAgent).toMatch(/do not[\s\S]{0,100}(?:install|update)[\s\S]{0,120}dependenc/i)
+    expect(workerAgent).toMatch(/(?:run )?migrations/i)
+    expect(workerAgent).toMatch(/deploy/i)
+    expect(workerAgent).toMatch(/(?:live[\s-](?:service|credential)|access[\s\S]{0,40}credentials?)/i)
+    expect(workerAgent).toMatch(/baseline[\s\S]{0,100}revision/i)
+    expect(workerAgent).toMatch(/(?:relationship|relat(?:e|ion))[\s\S]{0,120}baseline|baseline[\s\S]{0,120}(?:relationship|relat(?:e|ion))/i)
+    expect(workerAgent).toMatch(/concise handoff[\s\S]{0,120}launching assistant/i)
+    expect(workerAgent).toMatch(/\*\*Complete\*\*[\s\S]{0,40}\*\*Partial\*\*[\s\S]{0,40}\*\*Blocked\*\*/)
+  })
+
+  test("Engineering may launch research only for an explicit user research request", async () => {
+    const engineeringAgent = await readFile(
+      join(DEFAULT_SOURCE_ROOT, "opencode", "agents", "sane-assistant-engineering.md"),
+      "utf8",
+    )
+    const engineeringRole = await readFile(
+      join(DEFAULT_SOURCE_ROOT, "skills", "sane-engineering-assistant-role", "SKILL.md"),
+      "utf8",
+    )
+
+    expect(engineeringAgent).toMatch(/task:\s*\n\s+"\*": deny\s*\n\s+"sane-worker-researcher": allow/)
+    expect(engineeringRole).toMatch(/user[\s\S]{0,100}explicit(?:ly)?[\s\S]{0,100}(?:request|asks?)[\s\S]{0,180}research/i)
+    expect(engineeringRole).toMatch(/sane-worker-researcher|Research Worker/)
+    expect(engineeringRole).toMatch(/ordinary confirmation[\s\S]{0,100}not authorization[\s\S]{0,100}(?:launch|research)/i)
+  })
+
+  test("assistant task permissions allow only their assigned worker agents", async () => {
+    const researchAgent = await readFile(
+      join(DEFAULT_SOURCE_ROOT, "opencode", "agents", "sane-assistant-research.md"),
+      "utf8",
+    )
+    const coordinationAgent = await readFile(
+      join(DEFAULT_SOURCE_ROOT, "opencode", "agents", "sane-assistant-coordination.md"),
+      "utf8",
+    )
+
+    expect(researchAgent).toMatch(/task:\s*\n\s+"\*": deny\s*\n\s+"sane-worker-researcher": allow/)
+    expect(coordinationAgent).toMatch(
+      /task:\s*\n\s+"\*": deny\s*\n\s+"sane-worker-implementer": allow\s*\n\s+"sane-worker-reviewer": allow\s*\n\s+"sane-worker-fixer": allow/,
+    )
+    expect(coordinationAgent).not.toContain('"sane-worker-researcher": allow')
   })
 
   test("does not delete previously installed typed skill directories", async () => {

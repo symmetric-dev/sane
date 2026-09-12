@@ -106,13 +106,21 @@ are handed back to the appropriate role.
 - **Research Assistant:** has one assigned scope: `research/workstream/` for
   non-Stage or cross-Stage Research, or `research/stage-NN/` for Stage Research.
   Only that scope's coordinating Research Assistant updates its `BASELINE.md`.
-  Delegated researchers write topic `REPORT.md` files.
+  It may launch Research Workers; each writes one bounded topic `REPORT.md` and
+  any explicitly assigned supporting files after reading the applicable
+  baseline. The user may also continue to start a Research Assistant directly.
+- **Research Worker:** is a prompt-invoked subagent, not a user-started SANE
+  session. It investigates one bounded topic, reads the supplied Research
+  baseline, and writes only its assigned report and supporting-file destinations.
+  It never updates the baseline.
 - **Design Assistant:** works horizontally across the Design phase. It develops
   the root Design, defines Stages, and writes the Stage specifications.
 - **Engineering Assistant:** works vertically on one Stage. It picks up that
   Stage's specification, divides it into Sections, and writes the Section
   specifications that provide the Stage's engineering solutions. It may use
   code examples and pseudocode, but does not implement the complete solution.
+  During its otherwise unchanged lifecycle, it may launch a Research Worker only
+  after the user explicitly requests research in that Engineering session.
 - **Execution Assistant:** works on one approved Stage. It picks up the Stage's
   complete Design, then produces its Execution Plan and Jobs.
 - **Coordination Assistant:** normally works on one authorized Stage. It
@@ -173,6 +181,15 @@ Implementation follows the new direction.
 Delivery completes the assistant's current action. The assistant must not
 presume that a later user response—or no response—is approval. After delivery,
 it expects either a request for Updates or an explicit user approval.
+
+The Research Worker is an exception because it is a bounded subagent rather
+than a SANE role session. It has no user Pickup, readiness checkpoint, Delivery,
+approval, State update, or question loop. Its launcher gives it one exact,
+self-contained prompt containing the topic, baseline and evidence paths,
+allowed output paths, implementation-repository path, constraints, verification,
+and requested return shape. It completes the assignment or stops with a concise
+blocker, then returns a concise summary of files written, findings, verification,
+and blockers to its launcher.
 
 When the user requests **Updates**, the responsible assistant applies the
 requested update and then performs an **Updates Delivery**: it verifies that
@@ -243,3 +260,11 @@ Worker and review agents receive an explicit prompt that tells
 them to read their implementation skill and the relevant Job and context
 materials. Their prompts provide only the context needed for their assigned
 implementation or review work.
+
+The same prompt-is-the-assignment rule applies to a Research Worker. Its
+behavioral boundary permits read-only inspection and non-destructive verification
+in the implementation repository. It must not write there or run installs,
+migrations, deployments, or commands requiring live credentials unless the
+prompt explicitly assigns that action. Configuration permissions are not a
+claim that these path-sensitive boundaries can always be enforced dynamically;
+the prompt and worker contract remain the governing behavioral boundary.

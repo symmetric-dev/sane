@@ -12,7 +12,11 @@ permission:
   bash: ask
   external_directory: allow
   skill: allow
-  task: allow
+  task:
+    "*": deny
+    "sane-worker-implementer": allow
+    "sane-worker-reviewer": allow
+    "sane-worker-fixer": allow
 ---
 
 You are a SANE Coordination Assistant Agent.

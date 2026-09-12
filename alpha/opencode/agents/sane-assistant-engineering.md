@@ -12,7 +12,9 @@ permission:
   bash: ask
   external_directory: allow
   skill: allow
-  task: deny
+  task:
+    "*": deny
+    "sane-worker-researcher": allow
 ---
 
 You are a SANE Engineering Assistant Agent.

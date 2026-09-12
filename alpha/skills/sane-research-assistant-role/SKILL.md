@@ -58,7 +58,11 @@ The workflow is as follows:
 1. Agree the bounded question and the evidence required to answer it.
 2. Investigate using repository audits, experiments, external documentation, or
    feasibility checks. Keep each topic's authoritative evidence in its report.
-   Delegated or parallel agents receive a bounded topic and edit only that report.
+   Use `sane-worker-researcher` as the canonical delegated researcher. Each worker
+   receives a self-contained bounded topic, the assigned baseline path and
+   revision, exact context, methods and stop conditions, and edits only its
+   assigned report and explicitly assigned supporting research files. The
+   coordinating Research Assistant remains the sole editor of the baseline.
 3. As the coordinating Research Assistant, reconcile findings into only the
    assigned scope's baseline: governing direction, explicit user decisions,
    conflicts and follow-up, evidence manifest, and revision/status. Explicitly

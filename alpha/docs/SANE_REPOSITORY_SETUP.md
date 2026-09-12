@@ -140,6 +140,12 @@ under that assigned scope. Only its coordinating Research Assistant updates the
 baseline; delegated agents write reports. Cross-scope evidence applies only
 when the consuming baseline explicitly links it.
 
+A Research Worker may write one bounded topic report and explicitly assigned
+supporting files beneath that scope after reading its baseline. The coordinating
+Research Assistant remains the sole baseline owner. Engineering may launch a
+Research Worker only following an explicit user research request in its normal,
+unchanged lifecycle; the user may still start a Research Assistant directly.
+
 ## Assistant Use
 
 When a top-level SANE assistant session starts in an implementation repository,
@@ -156,3 +162,12 @@ The Coordination Assistant uses the recorded `implementation-path` as
 the Bash working directory when launching workers. Worker and
 review prompts receive only their assigned paths and instructions. They do not
 read `.sane/paths`, `SANE_CONTEXT.md`, or `SANE_STATE.md`.
+
+A Research Worker likewise receives exact paths in one self-contained prompt;
+it does not discover or select workstream context. It has no user Pickup,
+Delivery, approval, State update, or questions, and returns a concise result to
+its launcher. It may inspect the implementation repository read-only and perform
+non-destructive verification. It must not make implementation writes, install,
+migrate, deploy, or use live credentials unless explicitly assigned. This is a
+behavioral scope boundary; the documentation does not claim dynamic permissions
+can enforce arbitrary prompt-supplied paths.

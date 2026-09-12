@@ -14,12 +14,24 @@ Alpha has a tested repository and template layer for two workstream types:
   `design/SPEC.md`, which remains its durable decision record.
 - Repository pairing, workstream selection, the `sane-alpha` installer, shared
   context installation, and generic role skills are available and tested.
-- The six generic role skills serve Product, Research, Design, Engineering,
-  Execution, and Implementation. No role agent requires a user type declaration
+- Context installation now manages ten agent configurations, six assistant
+  skills, and sixteen destinations. OpenCode must be restarted after installation or an
+  overwrite. No role agent requires a user type declaration
   or reads root `type` metadata as session context.
 - Research uses authoritative topic `REPORT.md` evidence within one assigned
   workstream or Stage scope, coordinated by that scope's `BASELINE.md`. Every
   baseline uses the single `RESEARCH_BASELINE_TEMPLATE.md` resource.
+- The coordinating Research Assistant owns each baseline. A Research Worker
+  reads it and writes one bounded topic report plus assigned supporting files.
+  Engineering may launch that worker only after an explicit user research
+  request during its otherwise unchanged lifecycle; users may still start the
+  Research Assistant.
+- The worker has no user Pickup, Delivery, approval, or question loop. Its exact,
+  self-contained prompt and concise return govern the assignment. Read-only
+  implementation inspection and non-destructive verification are allowed;
+  implementation writes, installs, migrations, deployments, and live credentials
+  require explicit assignment. This is a behavioral, not overstated dynamic
+  path-permission, boundary.
 
 Alpha has type-aware scripts and templates, with type-neutral role-agent
 operation.

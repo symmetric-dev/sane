@@ -31,6 +31,8 @@ sane-alpha install-context-packages
 sane-alpha init-sane "$IMPL"
 ```
 
+Quit and restart OpenCode after installing the context packages.
+
 The initializer creates or validates the separate paired Git repository at
 `~/workstreams/invoice-application-work/` and records the pairing locally in
 `$IMPL/.sane/paths`.
@@ -112,6 +114,14 @@ only their reports. The coordinating Research Assistant reviews those reports
 and alone updates the assigned Stage baseline. Evidence from workstream or other
 Stage scopes applies only when this baseline explicitly links it.
 
+For one bounded topic, the coordinating Research Assistant may launch a
+Research Worker with an exact, self-contained prompt. The worker reads
+`research/stage-01/BASELINE.md`, writes only its assigned `REPORT.md` and any
+named supporting files, and returns a concise findings/output/verification/blocker
+summary. It does not perform user Pickup or Delivery, seek approval, ask the
+user questions, update State, or edit the baseline. The user may instead start
+another Research Assistant session.
+
 **User decision:** Review the findings. Either request additional research,
 return to Product if the desired outcome must change, or explicitly approve the
 Research delivery and request its State update.
@@ -173,6 +183,14 @@ The assistant delivers `design/stages/01-csv-export/SECTIONS.md` and the related
 Section Specs. It creates each Section Spec by copying
 `resources/SECTION_SPEC_TEMPLATE.md`. The user reviews, requests Updates where
 needed, then explicitly approves the complete Stage Design.
+
+If the user explicitly requests a bounded research investigation during this
+Engineering session, Engineering may launch the same Research Worker without
+changing its normal Pickup, Assistance, baseline-recheck, and Delivery lifecycle.
+The worker may inspect `$IMPL` read-only and run non-destructive verification.
+Its prompt must prohibit implementation writes, installs, migrations,
+deployments, and live credentials unless the user explicitly assigned them.
+These are behavioral boundaries rather than a claim of dynamic path enforcement.
 
 ## 7. Execution Planning Session
 

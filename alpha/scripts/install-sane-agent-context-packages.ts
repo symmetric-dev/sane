@@ -12,6 +12,7 @@ export const AGENT_FILENAMES = [
   "sane-assistant-research.md",
   "sane-worker-fixer.md",
   "sane-worker-implementer.md",
+  "sane-worker-researcher.md",
   "sane-worker-reviewer.md",
 ] as const
 

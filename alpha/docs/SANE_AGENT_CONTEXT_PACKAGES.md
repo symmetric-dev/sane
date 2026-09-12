@@ -2,10 +2,11 @@
 
 ## Purpose
 
-An Alpha agent context package combines a concise OpenCode agent configuration
-with the installed skill for its assigned SANE role. The configuration is the
-session entrypoint; the role skill is the detailed contract for Pickup,
-Assistance, Delivery, approvals, and artifact boundaries.
+An Alpha assistant context package combines a concise OpenCode agent
+configuration with the installed skill for its assigned SANE role. Worker
+context packages are self-contained OpenCode agent configurations. The
+configuration is the entrypoint; assistant role skills provide the detailed
+contracts for Pickup, Assistance, Delivery, approvals, and artifact boundaries.
 
 Source OpenCode agent definitions are maintained under:
 
@@ -21,23 +22,24 @@ sane-alpha install-context-packages [--dry-run] [--overwrite]
 
 The installer uses `SANE_HOME` when set (otherwise the current user's home), so
 the command is isolated with `SANE_HOME=/temporary/home` when needed. It copies
-the nine source agents as global OpenCode Markdown agents under:
+the ten source agents as global OpenCode Markdown agents under:
 
 ```text
 <home>/.config/opencode/agents/
 ```
 
-It copies the six generic role skills from `alpha/skills/` to:
+It copies the six assistant role skills from `alpha/skills/` to:
 
 ```text
 <home>/.agents/skills/<skill-name>/SKILL.md
 ```
 
-The installer has exactly fifteen destinations: six primary role-agent
-configurations, three implementation subagent configurations, and six generic
-role skills. The primary roles are Product, Research, Design, Engineering,
-Execution, and Coordination; the subagents are Worker Implementer, Worker
-Reviewer, and Worker Fixer.
+The installer has exactly sixteen destinations: six primary role-agent
+configurations, four worker/subagent configurations, and six assistant skills. The
+primary roles are Product, Research, Design, Engineering, Execution, and
+Coordination; the subagents are Research Worker, Worker Implementer, Worker
+Reviewer, and Worker Fixer. Each worker's substantive contract is contained in
+its agent configuration rather than a worker role skill.
 It validates every source and destination before changing anything.
 It creates parent directories as needed, leaves identical destinations unchanged,
 and refuses differing regular files by default. `--overwrite` replaces only
@@ -64,7 +66,7 @@ The configuration does not repeat the substantive role instructions from the
 skill or duplicate SANE template guidance. `alpha/templates/` is the canonical
 source of SANE templates.
 
-The three implementation subagent configurations instead treat their invocation
+The four worker/subagent configurations instead treat their invocation
 prompt as the complete assignment. Their built-in context reinforces role,
 permissions, scope control, stopping behavior, and return shape without adding
 workstream context that could compete with the orchestrator's supplied prompt.
@@ -74,7 +76,7 @@ not read root `type` metadata as session context. Product and Design load their
 single generic skill directly. Their skills use the bootstrapped `PRD.md` and
 applicable root Design template without routing by type.
 
-Reinstalling updates only the fifteen managed destinations; it does not delete
+Reinstalling updates only the sixteen managed destinations; it does not delete
 files from an earlier naming scheme. After upgrading an existing installation,
 inspect and explicitly remove obsolete `sane-implementation.md` and other
 pre-`sane-assistant-*` agent files from `<home>/.config/opencode/agents/`, plus
@@ -83,14 +85,28 @@ not remove potentially user-modified files automatically.
 
 ## Context Ingestion and Pickup
 
-The Worker Implementer, Worker Reviewer, and Worker Fixer are intentionally
-different from the six user-started role agents described below. They are
-subagents invoked by the
-Coordination Assistant with self-contained, narrowly scoped prompts. They do not
-discover `.sane` and workstream context. They may load directly relevant
+The Research Worker, Worker Implementer, Worker Reviewer, and Worker Fixer are
+intentionally different from the six user-started role agents described below.
+They are subagents invoked by their authorized launcher with self-contained,
+narrowly scoped prompts. They do not discover `.sane` and workstream context.
+They may load directly relevant
 non-SANE technical or repository skills, while OpenCode permission rules deny
 all `sane-*-assistant-role` skills. Worker Implementer and Worker Fixer can edit
 only within their supplied assignments; Worker Reviewer is strictly read-only.
+
+The coordinating Research Assistant owns and updates its scope's baseline. It
+may launch a Research Worker for one bounded topic. An Engineering Assistant may
+do so only after the user explicitly requests research during its normal,
+otherwise unchanged Engineering lifecycle. A user may still start the Research
+Assistant directly.
+
+A Research Worker receives one exact, self-contained prompt specifying the
+bounded question, baseline and source paths to read, report and supporting-file
+paths it may write, implementation-repository path, constraints, verification,
+and concise return shape. It reads the baseline, writes only those assigned
+Research destinations, and never updates the baseline. It has no user Pickup,
+Delivery, approval, State update, or question loop. It returns only a concise
+summary of outputs, findings, verification, and blockers to its launcher.
 
 Every user-started SANE session follows this sequence:
 
@@ -142,6 +158,13 @@ Each SANE OpenCode configuration must grant `external_directory: allow` so the
 agent can read and, when its role permits, edit the paired workstream repository
 outside the implementation repository. It must also grant `skill: allow` so the
 agent can load its role skill. Other permissions remain role-specific.
+
+For the Research Worker, permissions support the assignment but do not imply
+reliable dynamic enforcement of every supplied path. Its behavioral contract
+allows read-only inspection and non-destructive verification in the
+implementation repository. It prohibits implementation-repository writes,
+installs, migrations, deployments, and use of live credentials unless the exact
+prompt explicitly assigns them.
 
 Engineering, Execution, and Implementation sessions require a user-selected
 Stage. Without one, Pickup is incomplete and the agent reports the missing Stage
