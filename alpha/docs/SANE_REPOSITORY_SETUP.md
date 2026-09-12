@@ -123,8 +123,8 @@ Both commands support `--dry-run`; selection takes no type argument. A selected
 workstream must contain a valid root `type` file, `SANE_CONTEXT.md`,
 `SANE_STATE.md`, `PRD.md`, and every bootstrapped `resources/` fallback template.
 Those fallbacks include the Implementation Report, Section Spec, Job,
-Technical Reference, Research Report, root Design, Stage registry, Stage Design,
-Stage Sections, and Execution Plan templates.
+Research Report, Research Baseline, root Design, Stage list, Stage Design, Stage
+Sections, and Execution Plan templates.
 
 There is no role-artifact CLI command. When a role needs an artifact, it inspects
 the selected workstream's `resources/`, creates the artifact's parent directory,
@@ -132,6 +132,13 @@ copies the matching local template to its normal destination, then edits the
 copy. It never overwrites an existing artifact and preserves required headings
 and structure. `PRD.md`, `SANE_CONTEXT.md`, and `SANE_STATE.md` are bootstrap-root
 artifacts and are edited in place.
+
+Research uses one `RESEARCH_BASELINE_TEMPLATE.md` resource. A session creates
+and uses either `research/workstream/BASELINE.md` for non-Stage or cross-Stage
+scope, or `research/stage-NN/BASELINE.md` for Stage scope. Topic reports live
+under that assigned scope. Only its coordinating Research Assistant updates the
+baseline; delegated agents write reports. Cross-scope evidence applies only
+when the consuming baseline explicitly links it.
 
 ## Assistant Use
 

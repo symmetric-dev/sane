@@ -40,8 +40,8 @@ const SHARED_INITIAL_TEMPLATE_REGISTRY = [
     destination: "resources/JOB_TEMPLATE.md",
   },
   {
-    source: "shared/research/TECHNICAL_REFERENCE.md",
-    destination: "resources/TECHNICAL_REFERENCE_TEMPLATE.md",
+    source: "shared/research/BASELINE.md",
+    destination: "resources/RESEARCH_BASELINE_TEMPLATE.md",
   },
   {
     source: "shared/research/REPORT.md",

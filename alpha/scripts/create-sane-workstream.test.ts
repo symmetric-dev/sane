@@ -64,6 +64,7 @@ describe("create-sane-workstream", () => {
               "EXECUTION_PLAN_TEMPLATE.md",
               "IMPLEMENTATION_REPORT_TEMPLATE.md",
               "JOB_TEMPLATE.md",
+              "RESEARCH_BASELINE_TEMPLATE.md",
               "RESEARCH_REPORT_TEMPLATE.md",
               "ROOT_DESIGN_SPEC_TEMPLATE.md",
               "SECTION_SPEC_TEMPLATE.md",
@@ -71,11 +72,11 @@ describe("create-sane-workstream", () => {
               "STAGE_DESIGN_SPEC_TEMPLATE.md",
               "STAGE_IMPLEMENTATION_BRIEF_TEMPLATE.md",
               "STAGE_SECTIONS_TEMPLATE.md",
-              "TECHNICAL_REFERENCE_TEMPLATE.md",
             ]
           : [],
       )
     }
+    await expectMissing(join(destination, "resources", "TECHNICAL_REFERENCE_TEMPLATE.md"))
     expect(lines).toContain(`Created: ${destination}`)
     expect(lines).toContain(
       `Next action: start a Product Assistant session for ${destination}.`,

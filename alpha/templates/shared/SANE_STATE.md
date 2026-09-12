@@ -14,8 +14,10 @@ information. Add Stage and Job entries only when their identities exist. -->
 ### Research
 
 - Approval: `[ ] Pending`
-- Delivery: `research/TECHNICAL_REFERENCE.md`
-- Notes:
+- Delivery: `research/workstream/BASELINE.md`
+- Notes: <!-- When useful, list other applicable assigned-scope baselines, such
+  as `research/stage-<two-digit-id>/BASELINE.md`, without implying inheritance
+  or automatic cross-scope applicability. -->
 
 ### Design
 

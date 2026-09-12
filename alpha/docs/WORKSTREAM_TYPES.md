@@ -124,6 +124,12 @@ future templates or project-type frameworks, but must be deliberately extracted
 and approved; a foundation workstream does not automatically prescribe future
 work.
 
+Both supported types use the same Research model: authoritative topic reports
+and one baseline for each independently assigned workstream or Stage scope. Type
+does not change baseline ownership or authority. Only the coordinator of an
+assigned scope updates its baseline; approved Design remains implementation
+authority until the user approves a required Design Update.
+
 ## Proposed Future Types
 
 The following types are useful candidates for later Alpha definition. They do

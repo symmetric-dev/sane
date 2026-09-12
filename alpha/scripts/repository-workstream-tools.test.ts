@@ -41,7 +41,7 @@ describe("repository-aware Alpha workstream tools", () => {
     )
     for (const source of [
         "shared/SANE_CONTEXT.md", "shared/SANE_STATE.md", "feature/PRD.md",
-        "foundation/PRD.md", "shared/research/TECHNICAL_REFERENCE.md",
+        "foundation/PRD.md", "shared/research/BASELINE.md",
         "shared/research/REPORT.md", "feature/design/SPEC.md",
         "foundation/design/SPEC.md", "shared/design/STAGES.md",
         "shared/design/stage/SPEC.md", "shared/design/stage/SECTIONS.md",
@@ -180,6 +180,18 @@ describe("repository-aware Alpha workstream tools", () => {
       workstreamPath: "01-resources",
       write: () => {},
     })).rejects.toThrow("STAGE_DESIGN_SPEC_TEMPLATE.md")
+  })
+
+  test("requires the uniform research baseline template and not the obsolete technical reference", async () => {
+    const workstream = await bootstrap("01-research-baseline")
+
+    await expectMissing(join(workstream, "resources", "TECHNICAL_REFERENCE_TEMPLATE.md"))
+    await rm(join(workstream, "resources", "RESEARCH_BASELINE_TEMPLATE.md"))
+    await expect(selectSaneWorkstream({
+      implementationRepository,
+      workstreamPath: "01-research-baseline",
+      write: () => {},
+    })).rejects.toThrow("RESEARCH_BASELINE_TEMPLATE.md")
   })
 
   test("requires a supported public create-workstream type argument", () => {

@@ -64,7 +64,7 @@ resources/STAGE_IMPLEMENTATION_BRIEF_TEMPLATE.md
 resources/SECTION_SPEC_TEMPLATE.md
 resources/JOB_TEMPLATE.md
 resources/RESEARCH_REPORT_TEMPLATE.md
-resources/TECHNICAL_REFERENCE_TEMPLATE.md
+resources/RESEARCH_BASELINE_TEMPLATE.md
 resources/ROOT_DESIGN_SPEC_TEMPLATE.md
 resources/STAGES_TEMPLATE.md
 resources/STAGE_DESIGN_SPEC_TEMPLATE.md
@@ -86,9 +86,10 @@ it inspects `resources/`, creates the parent directory, copies the matching loca
 template to the destination, and edits the copy. It never overwrites an existing
 artifact and preserves the template's required headings and structure:
 
-- Research: `TECHNICAL_REFERENCE_TEMPLATE.md` →
-  `research/TECHNICAL_REFERENCE.md`; `RESEARCH_REPORT_TEMPLATE.md` →
-  `research/stage-<id>/<topic>/REPORT.md`.
+- Coordinating Research: `RESEARCH_BASELINE_TEMPLATE.md` → either
+  `research/workstream/BASELINE.md` for non-Stage or cross-Stage scope, or
+  `research/stage-NN/BASELINE.md` for Stage scope.
+- Topic Research: `RESEARCH_REPORT_TEMPLATE.md` → `<assigned-scope>/<topic>/REPORT.md`.
 - Design: `ROOT_DESIGN_SPEC_TEMPLATE.md` → `design/SPEC.md`,
   `STAGES_TEMPLATE.md` → `design/STAGES.md`, and
   `STAGE_DESIGN_SPEC_TEMPLATE.md` → `design/stages/<id>-<slug>/SPEC.md`.
@@ -106,6 +107,15 @@ artifact and preserves the template's required headings and structure:
 
 `PRD.md`, `SANE_CONTEXT.md`, and `SANE_STATE.md` are bootstrap-root artifacts;
 their owning roles edit them in place.
+
+Topic `REPORT.md` files are authoritative evidence. A Research session has one
+assigned workstream or Stage scope, and only its coordinator updates that
+scope's baseline. Delegated researchers write reports under the assigned scope.
+Cross-scope evidence applies only when the consuming baseline explicitly links
+it. Root Design reads the workstream baseline; Stage Design reads its assigned
+Stage baseline. Research consumers capture that baseline's revision at Pickup
+and recheck it at Delivery. Approved Design remains implementation authority,
+so a material Research conflict requires a Design Update and approval.
 
 ## Resume Another Workstream
 

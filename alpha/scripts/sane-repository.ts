@@ -16,7 +16,7 @@ const REQUIRED_WORKSTREAM_FILES = [
   "resources/STAGE_IMPLEMENTATION_BRIEF_TEMPLATE.md",
   "resources/SECTION_SPEC_TEMPLATE.md",
   "resources/JOB_TEMPLATE.md",
-  "resources/TECHNICAL_REFERENCE_TEMPLATE.md",
+  "resources/RESEARCH_BASELINE_TEMPLATE.md",
   "resources/RESEARCH_REPORT_TEMPLATE.md",
   "resources/ROOT_DESIGN_SPEC_TEMPLATE.md",
   "resources/STAGES_TEMPLATE.md",

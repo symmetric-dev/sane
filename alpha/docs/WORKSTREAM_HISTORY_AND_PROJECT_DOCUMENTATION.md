@@ -21,6 +21,12 @@ State, Execution Plans, Jobs, and Implementation Reports.
 They explain what was intended, why it was chosen, what constraints applied, and
 what the user approved.
 
+For Research, topic `REPORT.md` files are the authoritative historical evidence.
+The `research/workstream/BASELINE.md` file preserves non-Stage and cross-Stage
+context; each `research/stage-NN/BASELINE.md` preserves its Stage context.
+Cross-scope evidence applies only where the consuming baseline explicitly links
+it.
+
 Project documentation includes material such as a README, architecture overview,
 developer and contributor guidance, operational runbooks, interface
 documentation, product overview, and setup instructions. It explains what exists
@@ -60,8 +66,8 @@ outcome useful. They do not directly mutate target-repository documentation.
 
 - **Product** establishes the product or foundation outcome and user-facing
   purpose without making technical implementation decisions.
-- **Research** gathers evidence about the current repository, prior work, and
-  external sources when that evidence is needed.
+- **Research** gathers evidence in topic reports; each session has one assigned
+  scope, whose coordinating assistant alone maintains its baseline.
 - **Design** establishes technical direction, documentation constraints, and
   the relationship between the intended documentation and the repository.
 - **Engineering, Execution, and Implementation** plan, authorize, and perform
@@ -113,7 +119,8 @@ The roles have distinct historical responsibilities:
 - **Product** investigates prior intent, stakeholder commitments, scope changes,
   and product decisions.
 - **Research** investigates prior evidence, outcomes, recurring unknowns, and
-  relevant implementation history.
+  relevant implementation history, citing authoritative topic reports and the
+  baseline for the assigned scope.
 - **Design** investigates reusable technical patterns, architecture decisions,
   trade-offs, and decisions that the new work must preserve or supersede.
 
@@ -143,6 +150,10 @@ approved Job or Design conflicts materially with the current repository,
 project documentation, or discovered implementation constraints, the agent must
 report the mismatch. It must not silently select a historical direction, change
 approved Design, or publish misleading current-state documentation.
+
+Approved Design remains implementation authority. If current Research conflicts
+with it, the responsible role requests a Design Update and approval rather than
+allowing a baseline or report to alter implementation direction implicitly.
 
 The user then decides whether to clarify the current workstream, return to the
 appropriate earlier role, or establish a new/superseding workstream.

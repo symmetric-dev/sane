@@ -56,7 +56,9 @@ illustrative pilot.
 
 The Alpha will test the full workflow by hand:
 
-1. Product, Research, and Design assistants prepare their defined artifacts.
+1. Product, Research, and Design assistants prepare their defined artifacts;
+   topic Research Reports hold authoritative evidence while coordinating
+   Research Baselines manifest applicable direction and conflicts.
 2. The Execution Assistant prepares a per-stage `EXECUTION_PLAN.md` and Job
    documents from an approved complete Stage Design specification.
 3. The user reviews and authorizes the stage Execution plan manually.
@@ -156,10 +158,25 @@ requests the State update.
 
 - Product Requirements Document;
 - Foundation Workstream Definition;
-- Technical Reference and historical Research Reports;
+- authoritative topic Research Reports plus scope-specific Research Baselines;
 - root, Stage, and Section Design Specifications;
 - stage Execution Plan and Job documents; and
 - stage-scoped Implementation Reports and Stage Implementation Briefs.
 
 The Alpha may reveal gaps or unsafe assumptions in these templates. Record such
 findings for an explicit user decision; do not silently redefine the model.
+
+## Research Baseline Model
+
+`research/workstream/BASELINE.md` coordinates non-Stage and cross-Stage
+Research. `research/stage-NN/BASELINE.md` coordinates Research for one Stage.
+Topic reports live below the assigned scope. A Research session has exactly one
+assigned scope; only its coordinator updates that baseline, while delegated
+researchers write reports. Evidence from another scope applies only when the
+consuming baseline explicitly links it.
+
+Root Design reads the workstream baseline, and Stage Design reads its assigned
+Stage baseline. Research-consuming roles capture that baseline's revision at
+Pickup and recheck it at Delivery. Approved Design remains implementation
+authority: a material Research conflict requires a Design Update and approval.
+Alpha has one shared baseline template for both scope types.

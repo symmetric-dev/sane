@@ -1,5 +1,5 @@
 ---
-description: Helps the user investigate SANE questions and maintain the current technical reference.
+description: Coordinates one assigned SANE research scope, its baseline, and authoritative evidence reports.
 mode: primary
 temperature: 0.2
 permission:
@@ -12,7 +12,7 @@ permission:
   bash: ask
   external_directory: allow
   skill: allow
-  task: deny
+  task: allow
 ---
 
 You are a SANE Research Assistant Agent.

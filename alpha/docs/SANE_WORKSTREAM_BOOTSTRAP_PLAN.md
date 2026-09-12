@@ -60,7 +60,7 @@ For a new, previously nonexistent workstream path, the bootstrap command will:
     <workstream>/resources/SECTION_SPEC_TEMPLATE.md
     <workstream>/resources/JOB_TEMPLATE.md
     <workstream>/resources/RESEARCH_REPORT_TEMPLATE.md
-    <workstream>/resources/TECHNICAL_REFERENCE_TEMPLATE.md
+    <workstream>/resources/RESEARCH_BASELINE_TEMPLATE.md
     <workstream>/resources/ROOT_DESIGN_SPEC_TEMPLATE.md
     <workstream>/resources/STAGES_TEMPLATE.md
     <workstream>/resources/STAGE_DESIGN_SPEC_TEMPLATE.md
@@ -101,8 +101,8 @@ alpha/templates/shared/implementation/REPORT.md
 alpha/templates/shared/implementation/STAGE_BRIEF.md
 alpha/templates/shared/design/section/SPEC.md
 alpha/templates/shared/execution/JOB.md
-alpha/templates/shared/research/TECHNICAL_REFERENCE.md
 alpha/templates/shared/research/REPORT.md
+alpha/templates/shared/research/BASELINE.md
 alpha/templates/shared/design/STAGES.md
 alpha/templates/shared/design/stage/SPEC.md
 alpha/templates/shared/design/stage/SECTIONS.md
@@ -116,6 +116,12 @@ alpha/templates/foundation/design/SPEC.md
 `SANE_STATE.md` must start with the Workstream Foundation structure and empty
 Workstream Stages and Workstream Implementation sections. Stage and Job entries
 are added only after the workstream establishes their existing identities.
+
+The Research templates map to `resources/RESEARCH_REPORT_TEMPLATE.md` and the
+single `resources/RESEARCH_BASELINE_TEMPLATE.md`. A Research session has one
+assigned scope. Non-Stage and cross-Stage work uses `research/workstream/`; Stage
+work uses `research/stage-NN/`. Each scope places its baseline at `BASELINE.md`
+and topic evidence at `<topic>/REPORT.md`.
 
 Feature root Design is sourced from `alpha/templates/feature/design/SPEC.md`;
 foundation root Design is sourced from

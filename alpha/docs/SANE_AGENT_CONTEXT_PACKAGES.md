@@ -110,6 +110,8 @@ Every user-started SANE session follows this sequence:
    `<workstream-repository-path>/<current-workstream>`, then reads its
    `SANE_CONTEXT.md`, `SANE_STATE.md`, and the role-specific Pickup inputs
    required by its installed skill.
+   A role that consumes Research records the revision of its assigned scope's
+   `research/workstream/BASELINE.md` or `research/stage-NN/BASELINE.md`.
 7. The agent performs Pickup and reports a readiness checkpoint to the user. The
    checkpoint concisely identifies the workstream, assigned role and Stage when
    applicable, relevant current State, proposed session scope, and any missing
@@ -119,6 +121,15 @@ Every user-started SANE session follows this sequence:
 9. The user resolves missing inputs, supplies additional details, or explicitly
    directs the agent to proceed, for example with “let's start,” “proceed,” or
    “continue.” The agent then performs Assistance according to its role skill.
+
+Before Delivery, a Research-consuming role rechecks the captured baseline
+revision and reconciles changes or reports the stale-input conflict. Topic
+`REPORT.md` files remain authoritative evidence. A Research session has one
+assigned scope, and only its coordinator updates that scope's baseline;
+delegated researchers write reports. Evidence from another scope applies only
+through an explicit link in the consuming baseline. Approved Design remains
+implementation authority, so a material Research conflict is routed to Design
+as an Update.
 
 ## Working Directory, Permissions, and Scope
 
@@ -137,6 +148,11 @@ Stage. Without one, Pickup is incomplete and the agent reports the missing Stage
 at its readiness checkpoint. Design may operate on the root Design or on a
 user-selected Stage; Product and Research normally operate across the
 workstream, though Research may have a user-directed Stage scope.
+
+A Research session is assigned either workstream scope for non-Stage or
+cross-Stage work, or one Stage scope. Its coordinator owns that scope's
+baseline. Delegated agents write only their assigned topic reports. Root Design
+reads the workstream baseline; Stage Design reads its assigned Stage baseline.
 
 ## Deferred Delivery-Skill Design
 

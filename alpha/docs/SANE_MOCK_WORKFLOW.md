@@ -56,7 +56,7 @@ resources/STAGE_IMPLEMENTATION_BRIEF_TEMPLATE.md
 resources/SECTION_SPEC_TEMPLATE.md
 resources/JOB_TEMPLATE.md
 resources/RESEARCH_REPORT_TEMPLATE.md
-resources/TECHNICAL_REFERENCE_TEMPLATE.md
+resources/RESEARCH_BASELINE_TEMPLATE.md
 resources/ROOT_DESIGN_SPEC_TEMPLATE.md
 resources/STAGES_TEMPLATE.md
 resources/STAGE_DESIGN_SPEC_TEMPLATE.md
@@ -101,10 +101,16 @@ definition, current export conventions, and CSV safety concerns. Record evidence
 and open questions needed for Design.
 ```
 
-The assistant creates `research/TECHNICAL_REFERENCE.md` by copying
-`resources/TECHNICAL_REFERENCE_TEMPLATE.md`, then delivers the current reference.
-For historical topic research it creates `research/stage-01/csv-safety/` and
-copies `resources/RESEARCH_REPORT_TEMPLATE.md` to `REPORT.md` before editing it.
+This session is assigned Stage 01 scope. Its coordinating Research Assistant
+creates `research/stage-01/BASELINE.md` from
+`resources/RESEARCH_BASELINE_TEMPLATE.md`.
+
+Topic researchers create authoritative evidence reports such as
+`research/stage-01/csv-safety/REPORT.md` from
+`resources/RESEARCH_REPORT_TEMPLATE.md`. Parallel or delegated researchers edit
+only their reports. The coordinating Research Assistant reviews those reports
+and alone updates the assigned Stage baseline. Evidence from workstream or other
+Stage scopes applies only when this baseline explicitly links it.
 
 **User decision:** Review the findings. Either request additional research,
 return to Product if the desired outcome must change, or explicitly approve the
@@ -126,6 +132,11 @@ The assistant creates `design/SPEC.md` and `design/STAGES.md` from
 `resources/ROOT_DESIGN_SPEC_TEMPLATE.md` and `resources/STAGES_TEMPLATE.md`, then
 delivers them. For this example, the user and assistant identify a Stage named
 `01-csv-export`.
+
+Root Design reads `research/workstream/BASELINE.md`. When preparing Stage 01,
+Stage Design reads `research/stage-01/BASELINE.md`. At Pickup, Design records the
+revision of the baseline for its assigned Design scope; at Delivery, it rechecks
+that revision and reconciles any changes before offering the Design for approval.
 
 **User decision:** Explicitly approve the root Design delivery and request the
 corresponding State update, or request an Update first.
@@ -236,6 +247,11 @@ outcomes, request a permitted retry or fix, return work to Research, Design, or
 Execution, or stop. The assistant does not continue to another Job Group without
 the user's direction. After the final group, the user reviews the Stage handoff
 record and explicitly accepts or redirects the implementation outcomes.
+
+Approved Design remains the implementation authority. If a newer Research
+Report or baseline conflicts materially with it, Execution or Implementation
+stops and requests a Design Update; Research does not silently override the
+approved direction.
 
 ## 9. Inspect and Commit Workstream Artifacts
 

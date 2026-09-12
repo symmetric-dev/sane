@@ -33,8 +33,19 @@ Read:
 - `SANE_CONTEXT.md`.
 - `SANE_STATE.md`.
 - `PRD.md`.
-- `research/TECHNICAL_REFERENCE.md`: if applicable. This is the only Research
-  handoff entry point; do not treat historical reports as current direction.
+- For root Design, `research/workstream/BASELINE.md`, if available.
+- For Stage Design, only that Stage's
+  `research/stage-<two-digit-id>/BASELINE.md`, if available.
+- Reports explicitly linked by the baseline being read when evidence must be
+  evaluated.
+
+Each baseline independently governs its assigned scope; there is no hierarchy,
+inheritance, root registry, or automatic cross-scope applicability. Cross-scope
+evidence applies only when explicitly linked by the baseline being read. Linked
+reports govern underlying evidence. Do not infer current direction from an
+unlinked report. If Research conflicts with approved Product or Design, surface
+the conflict and route it to the corresponding Update rather than resolving it
+silently.
 
 Read relevant implementation-repository paths when they are needed to assess
 the documented starting state, reuse constraints, or existing architecture. Request focused Research when material technical uncertainty remains.

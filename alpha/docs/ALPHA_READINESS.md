@@ -17,6 +17,9 @@ Alpha has a tested repository and template layer for two workstream types:
 - The six generic role skills serve Product, Research, Design, Engineering,
   Execution, and Implementation. No role agent requires a user type declaration
   or reads root `type` metadata as session context.
+- Research uses authoritative topic `REPORT.md` evidence within one assigned
+  workstream or Stage scope, coordinated by that scope's `BASELINE.md`. Every
+  baseline uses the single `RESEARCH_BASELINE_TEMPLATE.md` resource.
 
 Alpha has type-aware scripts and templates, with type-neutral role-agent
 operation.
@@ -35,6 +38,9 @@ operation.
    Stage Implementation Brief, State, and shared Context remain intentionally
    common unless that evidence
    shows otherwise.
+4. Validate that Research consumers capture the assigned baseline revision at
+   Pickup, recheck it at Delivery, and route material conflicts with approved
+   Design through an explicit Design Update.
 
 ## Deferred
 

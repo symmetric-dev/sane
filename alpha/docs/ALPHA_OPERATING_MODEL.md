@@ -47,6 +47,10 @@ Additional terms are:
   schedulable implementation work.
 - **Job:** a bounded unit of implementation work prepared for one agent.
 - **Implementation Report:** the recorded outcome of one Job.
+- **Research Report:** an authoritative, evidence-bearing record for one
+  research topic within an assigned Research scope.
+- **Research Baseline:** a coordinating record of a scope's Research Reports,
+  direction, and conflicts without replacing their evidence.
 - **Approval:** the user's authorization to cross a defined work boundary.
 - **Handoff:** the deliberate transfer of the relevant context, artifact, and
   next action from one role to another.
@@ -99,10 +103,10 @@ are handed back to the appropriate role.
 - **Product Assistant:** works across the whole workstream. It establishes and
   maintains product direction when new information materially changes intended
   behavior or requirements.
-- **Research Assistant:** works across the workstream's knowledge base. It may
-  also be brought into a dedicated Stage-level session when a Stage needs
-  research. Workstream and Stage scopes are encouraged, without making them a
-  hard restriction.
+- **Research Assistant:** has one assigned scope: `research/workstream/` for
+  non-Stage or cross-Stage Research, or `research/stage-NN/` for Stage Research.
+  Only that scope's coordinating Research Assistant updates its `BASELINE.md`.
+  Delegated researchers write topic `REPORT.md` files.
 - **Design Assistant:** works horizontally across the Design phase. It develops
   the root Design, defines Stages, and writes the Stage specifications.
 - **Engineering Assistant:** works vertically on one Stage. It picks up that
@@ -147,6 +151,24 @@ Every SANE Alpha session is started by the user and follows this lifecycle:
 
 Pickup verifies the inputs needed to begin the role. Delivery verifies only the
 outputs that the role owns.
+
+For any role that consumes Research, Pickup records the revision of the baseline
+for the Research scope it consumes. Delivery rechecks it. If it changed, the
+assistant reconciles the new direction before delivery or reports the mismatch
+instead of silently delivering against stale Research.
+
+`research/workstream/BASELINE.md` coordinates non-Stage and cross-Stage
+Research. `research/stage-NN/BASELINE.md` coordinates Research assigned to that
+Stage. Reports live under their assigned scope. Evidence from another scope
+applies only when the consuming baseline explicitly links it.
+
+Root Design reads the workstream baseline. Stage Design reads the baseline for
+its assigned Stage.
+
+Approved Design remains implementation authority. Research discovered after
+Design approval does not amend implementation direction by itself. A material
+conflict requires an explicit Design Update and approval before Execution or
+Implementation follows the new direction.
 
 Delivery completes the assistant's current action. The assistant must not
 presume that a later user response—or no response—is approval. After delivery,
