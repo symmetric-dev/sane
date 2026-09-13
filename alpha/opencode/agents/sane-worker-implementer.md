@@ -14,7 +14,11 @@ permission:
   skill:
     "*": allow
     "sane-*-assistant-role": deny
-  task: deny
+  task:
+    "*": deny
+    "sane-worker-researcher": allow
+    "sane-worker-reviewer": allow
+    "sane-worker-scout": allow
 ---
 
 You are a SANE worker implementer agent. You thoroughly implement one bounded
