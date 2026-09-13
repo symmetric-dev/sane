@@ -288,7 +288,10 @@ describe("install-sane-agent-context-packages", () => {
       expect(agent).toContain("mode: subagent")
       expect(agent).toContain('"*": allow')
       expect(agent).toContain('"sane-*-assistant-role": deny')
-      expect(agent).toContain("task: deny")
+      const metadata = Bun.YAML.parse(agent.split("---")[1]!) as { permission: { task: string | Record<string, string> } }
+      expect(metadata.permission.task).toEqual(filename === "sane-worker-implementer.md"
+        ? { "*": "deny", "sane-worker-scout": "allow" }
+        : "deny")
       expect(agent).not.toContain("Read the `sane-coordination-assistant-role` skill.")
     }
     const reviewerAgent = await readFile(
@@ -344,7 +347,13 @@ describe("install-sane-agent-context-packages", () => {
     expect(scout).toMatch(/external_directory:\s*allow/)
     expect(scout).toMatch(/exact external workstream-context path|exact workstream artifacts? supplied/i)
     expect(scout).toMatch(/does not authorize external discovery|must not discover wider workstream context/i)
-    expect(scout).toMatch(/exact supplied scope|exact, bounded scope/i)
+    expect(scout).toMatch(/assigned implementation scope/i)
+    expect(scout).toMatch(/Any agent whose\s+launch permissions permit Scout may invoke you/i)
+    expect(scout).toMatch(/complete, self-contained\s+assignment/i)
+    expect(scout).toMatch(/findings or blockers[\s\S]{0,80}inline handoff directly to your\s+parent/i)
+    expect(scout).toMatch(/directly connected implementation paths\s+beyond the starting paths/i)
+    expect(scout).toMatch(/never cross a forbidden path or explicit scope boundary/i)
+    expect(scout).not.toContain("launching Engineering Assistant")
     expect(scout).toMatch(/repository instructions[\s\S]{0,180}source[\s\S]{0,100}tests[\s\S]{0,100}configuration/i)
     expect(scout).toMatch(/callers[\s\S]{0,100}(?:integration points|interfaces)/i)
     expect(scout).toMatch(/safe, non-destructive commands/i)
@@ -353,6 +362,17 @@ describe("install-sane-agent-context-packages", () => {
     expect(scout).toMatch(/inline handoff/i)
     expect(scout).toMatch(/never create or update[\s\S]{0,60}(?:Research )?`REPORT\.md`/i)
     expect(scout).toMatch(/\*\*Complete\*\*[\s\S]{0,40}\*\*Partial\*\*[\s\S]{0,40}\*\*Blocked\*\*/)
+  })
+
+  test("the implementer delegates only supporting inspection and retains Job ownership", async () => {
+    const implementer = await readFile(
+      join(DEFAULT_SOURCE_ROOT, "opencode", "agents", "sane-worker-implementer.md"), "utf8",
+    )
+    expect(implementer).toMatch(/bounded, read-only supporting codebase inspection only to\s+`sane-worker-scout`/)
+    expect(implementer).toMatch(/self-contained assignment/)
+    expect(implementer).toMatch(/Do not launch\s+Researcher, Reviewer, or any other agent/)
+    expect(implementer).toMatch(/retain ownership of the whole Job,[\s\S]{0,120}Implementation\s+Report/)
+    expect(implementer).not.toContain("or launch another agent.")
   })
 
   test("Engineering requires permission for Scout inspection and explicitly requested Researcher work", async () => {

@@ -112,6 +112,13 @@ The workflow is as follows:
    maintainability. Run comprehensive permitted verification. Do not change
    planning or coordination documents.
 
+   You are highly encouraged to launch sane-worker-scout for bounded, read-only supporting
+   inspection. Supply a self-contained scoped assignment with permitted context
+   and stop conditions; require findings or blockers inline directly back to you,
+   no writes, and no subdelegation. Retain ownership of implementation,
+   verification, decisions, and the Implementation Report. Scout does not replace
+   Coordination's independent batch review. Do not launch any other agent.
+
    Write the Job's Implementation Report to:
    <absolute path to implementation/reports/<stage-id>-<stage-slug>/<job-id>-<job-slug>.md>
 

@@ -165,13 +165,18 @@ the Bash working directory when launching workers. Worker and
 review prompts receive only their assigned paths and instructions. They do not
 read `.sane/paths`, `SANE_CONTEXT.md`, or `SANE_STATE.md`.
 
-A Scout receives an exact implementation-repository scope from Engineering after
-the user normally confirms Assistance. Because the workstream repository is
-separate, Engineering also supplies exact workstream-artifact paths when they are
+A Scout receives a self-contained bounded implementation-repository assignment
+from its invoking parent agent, subject to that parent's launch permissions.
+Engineering launches it after normal Assistance confirmation; Implementer may
+launch only Scout for supporting inspection and retains Job ownership. Because
+the workstream repository is separate, the parent supplies exact artifact paths when they are
 needed as context. Scout performs codebase inspection only inside its bounded
 implementation scope, reads only those exact external context paths, runs safe
 non-destructive commands, writes no files or Research Reports, and returns inline
-path-and-line evidence. It does not discover wider workstream context.
+path-and-line evidence or blockers directly to its parent. Necessary directly
+connected implementation inspection may extend beyond starting paths, never
+beyond explicit scope or forbidden-path boundaries. It does not discover wider
+workstream context or subdelegate.
 
 A Research Worker likewise receives exact paths in one self-contained prompt;
 it does not discover or select workstream context. It has no user Pickup,

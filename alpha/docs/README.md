@@ -149,6 +149,13 @@ State edits and has no user conversation, approval, or subdelegation authority.
 
 ### Scout and Research Workers
 
+Scout can serve any invoking parent agent whose launch permissions permit it,
+returning scoped findings or blockers inline directly to that parent. Implementer
+may launch only Scout for supporting inspection and retains implementation,
+verification, and report ownership. Nested launches require the top-level
+[`subagent_depth: 2` prerequisite](./SANE_AGENT_CONTEXT_PACKAGES.md#nested-scout-delegation-prerequisite);
+other agents' launch permissions are unchanged.
+
 Both workers are subagents, not user-started role sessions. After the user
 normally confirms Engineering Assistance, Engineering may use Scout for one
 bounded internal implementation-repository inspection. Scout is read-only,

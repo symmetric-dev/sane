@@ -51,6 +51,31 @@ performs the same validation and reports planned actions without making changes.
 Quit and restart OpenCode after installation or an overwrite so it loads the
 changed global agent and skill files.
 
+### Nested Scout delegation prerequisite
+
+Implementer may launch only Scout for bounded, read-only supporting inspection;
+it retains ownership of implementation, verification, decisions, and its report.
+Scout accepts self-contained scoped assignments from any invoking agent whose
+task permissions permit it and returns findings or blockers inline directly to
+that parent. This does not grant other agents new launch permissions.
+
+For primary → implementer → Scout, merge the following into your project or global
+`opencode.json` (preserving existing configuration):
+
+```json
+{
+  "$schema": "https://opencode.ai/config.json",
+  "subagent_depth": 2
+}
+```
+
+The published OpenCode schema defines `subagent_depth` at the top level; its
+default of `1` prevents subagents from launching subagents. It is not an agent
+frontmatter setting. The context-package installer does not change this setting.
+Use an OpenCode version supporting it, and quit and restart OpenCode after
+configuration changes. The depth setting permits nesting; agent task permissions
+still restrict launch targets, and Scout itself cannot subdelegate.
+
 ### Optional per-agent models (YAML)
 
 Source agents intentionally have no `model` field. To select models for installed
