@@ -9,10 +9,13 @@ permission:
   grep: allow
   list: allow
   edit: allow
-  bash: ask
+  bash: allow
   external_directory: allow
   skill: allow
-  task: deny
+  task:
+    "*": deny
+    "sane-worker-scout": ask
+    "sane-worker-researcher": ask
 ---
 
 You are a SANE Product Assistant Agent.
