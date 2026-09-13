@@ -37,12 +37,13 @@ bun alpha/scripts/install-sane-alpha.ts --overwrite
 Install the SANE OpenCode agents and role skills:
 
 ```bash
-sane-alpha install-context-packages
+sane-alpha install-context-packages --overwrite --model-config ./alpha/models.yaml 
 ```
 
 Quit and restart OpenCode after installation (and after any overwrite) so the
-ten agent configurations and six assistant skills are loaded. The installer
-manages sixteen destinations in total.
+eleven agent configurations and six assistant skills are loaded. The installer
+manages seventeen destinations in total: six assistants and five workers plus
+the six skills.
 
 Pair the implementation repository with its local workstream repository:
 
@@ -121,19 +122,32 @@ Stage baseline. Research consumers capture that baseline's revision at Pickup
 and recheck it at Delivery. Approved Design remains implementation authority,
 so a material Research conflict requires a Design Update and approval.
 
-The coordinating Research Assistant may invoke a Research Worker to write one
-bounded topic report and explicitly named supporting files; only the coordinator
+The coordinating Research Assistant may invoke a Research Worker for external
+evidence and to write one bounded topic report and explicitly named supporting files; only the coordinator
 owns the baseline. Engineering may invoke that worker only after an explicit
-user research request during its normal, unchanged lifecycle. You may always
+user request for bounded external research during its normal, unchanged lifecycle. You may always
 start the Research Assistant directly instead.
 
-The worker receives an exact, self-contained prompt, reads the baseline, and
+Researcher receives an exact, self-contained prompt, reads the baseline, and
 returns a concise summary to its launcher. It has no user Pickup, Delivery,
-approval, or question loop. It may inspect the implementation repository
-read-only and perform non-destructive verification, but may not write
-implementation files, install dependencies, run migrations or deployments, or
-use live credentials unless explicitly assigned. Treat this as a behavioral
+approval, or question loop. It may inspect exact supplied local context needed
+for the external question, but general internal repository discovery belongs to
+Scout. It may not write
+implementation files, install dependencies, or run migrations or deployments.
+Live-credential or external-system access requires an exact explicit assignment.
+Treat this as a behavioral
 boundary; do not assume dynamic path permissions enforce every prompt path.
+
+After you normally confirm Engineering Assistance, Engineering may invoke Scout
+for one exact internal implementation-repository inspection. Scout can inspect
+instructions, source, tests, configuration, callers, and integration points and
+run safe non-destructive commands. Engineering may give it exact artifacts from
+the separate workstream repository as read-only context. It cannot ask
+questions, use external research, launch children, discover wider external
+context, mutate either repository, or write a Research Report; it returns concise
+inline findings with precise paths and line numbers. Engineering reviews and
+synthesizes those findings with you. Research Assistant does its own repository
+audits and cannot invoke Scout.
 
 ## Resume Another Workstream
 

@@ -140,11 +140,13 @@ under that assigned scope. Only its coordinating Research Assistant updates the
 baseline; delegated agents write reports. Cross-scope evidence applies only
 when the consuming baseline explicitly links it.
 
-A Research Worker may write one bounded topic report and explicitly assigned
-supporting files beneath that scope after reading its baseline. The coordinating
+A Research Worker may investigate one bounded external-evidence topic and write
+its report and explicitly assigned supporting files beneath that scope after reading its baseline. The coordinating
 Research Assistant remains the sole baseline owner. Engineering may launch a
-Research Worker only following an explicit user research request in its normal,
+Research Worker only following an explicit user request for bounded external research in its normal,
 unchanged lifecycle; the user may still start a Research Assistant directly.
+Research Assistant performs internal repository audits directly and cannot
+launch Scout.
 
 ## Assistant Use
 
@@ -163,11 +165,21 @@ the Bash working directory when launching workers. Worker and
 review prompts receive only their assigned paths and instructions. They do not
 read `.sane/paths`, `SANE_CONTEXT.md`, or `SANE_STATE.md`.
 
+A Scout receives an exact implementation-repository scope from Engineering after
+the user normally confirms Assistance. Because the workstream repository is
+separate, Engineering also supplies exact workstream-artifact paths when they are
+needed as context. Scout performs codebase inspection only inside its bounded
+implementation scope, reads only those exact external context paths, runs safe
+non-destructive commands, writes no files or Research Reports, and returns inline
+path-and-line evidence. It does not discover wider workstream context.
+
 A Research Worker likewise receives exact paths in one self-contained prompt;
 it does not discover or select workstream context. It has no user Pickup,
 Delivery, approval, State update, or questions, and returns a concise result to
-its launcher. It may inspect the implementation repository read-only and perform
-non-destructive verification. It must not make implementation writes, install,
-migrate, deploy, or use live credentials unless explicitly assigned. This is a
+its launcher. It researches external evidence and may inspect only exact supplied
+local context necessary to understand the question; internal repository
+discovery belongs to Scout. It must not make implementation writes, install,
+migrate, or deploy. Live-credential or external-system access requires an exact
+explicit assignment. This is a
 behavioral scope boundary; the documentation does not claim dynamic permissions
 can enforce arbitrary prompt-supplied paths.

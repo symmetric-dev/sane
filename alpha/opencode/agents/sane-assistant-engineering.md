@@ -14,6 +14,7 @@ permission:
   skill: allow
   task:
     "*": deny
+    "sane-worker-scout": allow
     "sane-worker-researcher": allow
 ---
 

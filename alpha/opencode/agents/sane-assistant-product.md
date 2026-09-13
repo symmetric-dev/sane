@@ -1,7 +1,7 @@
 ---
 description: Helps the user establish, maintain, or update the root SANE PRD.
 mode: primary
-temperature: 0.2
+temperature: 0.3
 permission:
   ask: allow
   read: allow

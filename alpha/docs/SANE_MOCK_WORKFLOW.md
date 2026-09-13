@@ -114,8 +114,8 @@ only their reports. The coordinating Research Assistant reviews those reports
 and alone updates the assigned Stage baseline. Evidence from workstream or other
 Stage scopes applies only when this baseline explicitly links it.
 
-For one bounded topic, the coordinating Research Assistant may launch a
-Research Worker with an exact, self-contained prompt. The worker reads
+For one bounded external-evidence topic, the coordinating Research Assistant may
+launch a Research Worker with an exact, self-contained prompt. The worker reads
 `research/stage-01/BASELINE.md`, writes only its assigned `REPORT.md` and any
 named supporting files, and returns a concise findings/output/verification/blocker
 summary. It does not perform user Pickup or Delivery, seek approval, ask the
@@ -184,12 +184,23 @@ Section Specs. It creates each Section Spec by copying
 `resources/SECTION_SPEC_TEMPLATE.md`. The user reviews, requests Updates where
 needed, then explicitly approves the complete Stage Design.
 
-If the user explicitly requests a bounded research investigation during this
-Engineering session, Engineering may launch the same Research Worker without
-changing its normal Pickup, Assistance, baseline-recheck, and Delivery lifecycle.
-The worker may inspect `$IMPL` read-only and run non-destructive verification.
-Its prompt must prohibit implementation writes, installs, migrations,
-deployments, and live credentials unless the user explicitly assigned them.
+After the user normally confirms Engineering Assistance, Engineering may launch
+Scout to inspect one exact internal `$IMPL` scope—for example, the existing
+invoice model, its callers, tests, and integration path. Scout is read-only,
+runs only safe non-destructive commands, and returns inline observations,
+inferences, limitations, and path-and-line evidence. It does not write a
+Research Report or use external research. If the inspection depends on the
+approved Stage or Section design, Engineering includes those exact paths from
+the separate `$WORK` repository in the assignment; Scout may read them as
+context without discovering wider workstream state.
+
+If the user explicitly requests a bounded external research investigation during
+this Engineering session, Engineering may launch Researcher without changing its
+normal Pickup, Assistance, baseline-recheck, and Delivery lifecycle. Researcher
+may read exact supplied local context needed to understand that external
+question, but internal repository discovery belongs to Scout. Its prompt must
+prohibit implementation writes, installs, migrations, and deployments.
+Live-credential or external-system access requires an exact explicit assignment.
 These are behavioral boundaries rather than a claim of dynamic path enforcement.
 
 ## 7. Execution Planning Session

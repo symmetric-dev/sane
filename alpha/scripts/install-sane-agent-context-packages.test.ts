@@ -41,17 +41,17 @@ describe("install-sane-agent-context-packages", () => {
     await rm(temporaryDirectory, { recursive: true, force: true })
   })
 
-  function options(extra: { dryRun?: boolean; overwrite?: boolean; write?: (line: string) => void } = {}) {
+  function options(extra: { modelConfigPath?: string; dryRun?: boolean; overwrite?: boolean; write?: (line: string) => void } = {}) {
     return { homeDirectory, sourceRoot, write: () => {}, ...extra }
   }
 
-  test("installs all ten agents and all six assistant role skills", async () => {
+  test("installs all eleven agents and all six assistant role skills", async () => {
     const result = await installSaneAgentContextPackages(options())
 
     expect(result.dryRun).toBe(false)
     expect(result.updated).toEqual([])
     expect(result.unchanged).toEqual([])
-    expect(result.created).toHaveLength(16)
+    expect(result.created).toHaveLength(17)
     for (const filename of AGENT_FILENAMES) {
       expect(await readFile(join(homeDirectory, ".config", "opencode", "agents", filename), "utf8")).toBe(
         `agent ${filename}\n`,
@@ -62,6 +62,40 @@ describe("install-sane-agent-context-packages", () => {
         `skill ${skillName}\n`,
       )
     }
+  })
+
+  test("applies YAML models before planning, without touching sources or unmapped files", async () => {
+    const modelConfigPath = join(temporaryDirectory, "models.yaml")
+    const source = join(sourceRoot, "opencode", "agents", AGENT_FILENAMES[0])
+    const original = "---\nmode: primary\n---\n\nOriginal body\n"
+    await Bun.write(source, original)
+    await Bun.write(modelConfigPath, `${AGENT_FILENAMES[0].slice(0, -3)}: openai/gpt-5\n`)
+    await installSaneAgentContextPackages(options({ modelConfigPath, dryRun: true }))
+    await expectMissing(homeDirectory)
+    await installSaneAgentContextPackages(options({ modelConfigPath }))
+    const destination = join(homeDirectory, ".config", "opencode", "agents", AGENT_FILENAMES[0])
+    expect(await readFile(destination, "utf8")).toContain('model: "openai/gpt-5"')
+    expect(await readFile(source, "utf8")).toBe(original)
+    expect(await readFile(join(homeDirectory, ".config", "opencode", "agents", AGENT_FILENAMES[1]), "utf8")).toBe(`agent ${AGENT_FILENAMES[1]}\n`)
+    expect((await installSaneAgentContextPackages(options({ modelConfigPath }))).unchanged).toHaveLength(17)
+    await Bun.write(modelConfigPath, `${AGENT_FILENAMES[0].slice(0, -3)}: anthropic/claude-sonnet-4-6\n`)
+    await expect(installSaneAgentContextPackages(options({ modelConfigPath }))).rejects.toThrow("--overwrite")
+    expect((await installSaneAgentContextPackages(options({ modelConfigPath, overwrite: true, dryRun: true }))).updated).toEqual([destination])
+    expect(await readFile(destination, "utf8")).toContain('model: "openai/gpt-5"')
+    expect((await installSaneAgentContextPackages(options({ modelConfigPath, overwrite: true }))).updated).toEqual([destination])
+    expect(await readFile(destination, "utf8")).toContain('model: "anthropic/claude-sonnet-4-6"')
+  })
+
+  test("invalid YAML config or mapped frontmatter fails before writes", async () => {
+    const modelConfigPath = join(temporaryDirectory, "models.yaml")
+    for (const yaml of ["unknown: openai/gpt-5", "[]", "invalid: [", "sane-worker-scout: openai/gpt-5"]) {
+      await Bun.write(modelConfigPath, yaml)
+      await expect(installSaneAgentContextPackages(options({ modelConfigPath, overwrite: true }))).rejects.toThrow()
+      await expectMissing(homeDirectory)
+    }
+    await rm(modelConfigPath)
+    await expect(installSaneAgentContextPackages(options({ modelConfigPath }))).rejects.toThrow("Could not load model config")
+    await expectMissing(homeDirectory)
   })
 
   test("uses SANE_HOME when no home directory option is provided", async () => {
@@ -87,7 +121,7 @@ describe("install-sane-agent-context-packages", () => {
     const result = await installSaneAgentContextPackages(options())
 
     expect(result).toMatchObject({ created: [], updated: [] })
-    expect(result.unchanged).toHaveLength(16)
+    expect(result.unchanged).toHaveLength(17)
   })
 
   test("dry run validates and reports plans without creating a home directory", async () => {
@@ -95,9 +129,9 @@ describe("install-sane-agent-context-packages", () => {
     const result = await installSaneAgentContextPackages(options({ dryRun: true, write: (line) => lines.push(line) }))
 
     expect(result.dryRun).toBe(true)
-    expect(result.created).toHaveLength(16)
+    expect(result.created).toHaveLength(17)
     expect(lines).toContain("Dry run: no files or directories were modified.")
-    expect(lines.filter((line) => line.startsWith("Planned:"))).toHaveLength(16)
+    expect(lines.filter((line) => line.startsWith("Planned:"))).toHaveLength(17)
     await expectMissing(homeDirectory)
   })
 
@@ -179,8 +213,9 @@ describe("install-sane-agent-context-packages", () => {
       "sane-worker-implementer.md",
       "sane-worker-researcher.md",
       "sane-worker-reviewer.md",
+      "sane-worker-scout.md",
     ])
-    expect(result.created).toHaveLength(16)
+    expect(result.created).toHaveLength(17)
     for (const skillName of ROLE_SKILL_NAMES) {
       expect(await readFile(join(DEFAULT_SOURCE_ROOT, "skills", skillName, "SKILL.md"), "utf8")).not.toBe("")
     }
@@ -228,7 +263,13 @@ describe("install-sane-agent-context-packages", () => {
       expect(agent).not.toContain("explicitly declared by the user")
       expect(agent).not.toContain("workstream `type` file")
     }
-    for (const filename of ["sane-worker-implementer.md", "sane-worker-reviewer.md", "sane-worker-fixer.md"]) {
+    for (const filename of [
+      "sane-worker-implementer.md",
+      "sane-worker-reviewer.md",
+      "sane-worker-fixer.md",
+      "sane-worker-researcher.md",
+      "sane-worker-scout.md",
+    ]) {
       const agent = await readFile(join(DEFAULT_SOURCE_ROOT, "opencode", "agents", filename), "utf8")
       expect(agent).toContain("mode: subagent")
       expect(agent).toContain('"*": allow')
@@ -251,17 +292,22 @@ describe("install-sane-agent-context-packages", () => {
     expect(workerAgent).toContain("mode: subagent")
     expect(workerAgent).toMatch(/ask:\s*deny/)
     expect(workerAgent).toMatch(/task:\s*deny/)
+    expect(workerAgent).toMatch(/webfetch:\s*allow/)
+    expect(workerAgent).toMatch(/websearch:\s*allow/)
     expect(workerAgent).not.toMatch(/(?:Read|Load) the `sane-[^`]*worker[^`]*` skill/i)
     expect(workerAgent).toMatch(/(?:write|edit)[\s\S]{0,80}only[\s\S]{0,80}assigned[\s\S]{0,80}(?:`REPORT\.md`|report)/i)
     expect(workerAgent).toMatch(/(?:never|do not)[\s\S]{0,100}(?:edit|update|write)[\s\S]{0,100}baseline/i)
     expect(workerAgent).toMatch(/(?:do not|never)[\s\S]{0,180}(?:ask questions of the user|user-question|pickup|approval|delivery)/i)
-    expect(workerAgent).toMatch(/inspect[\s\S]{0,120}(?:implementation|repository|source|code)[\s\S]{0,120}read-only/i)
+    expect(workerAgent).toMatch(/external evidence|external-evidence/i)
+    expect(workerAgent).toMatch(/exact supplied local files[\s\S]{0,100}read-only/i)
+    expect(workerAgent).toMatch(/internal source[\s\S]{0,180}belongs to the SANE[\s\S]{0,40}Scout Worker/i)
     expect(workerAgent).toMatch(/non-destructive[\s\S]{0,120}(?:command|verification)/i)
-    expect(workerAgent).toMatch(/unless the assignment explicitly authorizes/i)
+    expect(workerAgent).toMatch(/unless\s+the\s+assignment explicitly authorizes/i)
     expect(workerAgent).toMatch(/never edit[\s\S]{0,180}(?:implementation source|tests)[\s\S]{0,80}configuration/i)
-    expect(workerAgent).toMatch(/do not[\s\S]{0,100}(?:install|update)[\s\S]{0,120}dependenc/i)
+    expect(workerAgent).toMatch(/(?:do not|never)[\s\S]{0,100}(?:install|update)[\s\S]{0,120}dependenc/i)
     expect(workerAgent).toMatch(/(?:run )?migrations/i)
     expect(workerAgent).toMatch(/deploy/i)
+    expect(workerAgent).toMatch(/implementation repository as read-only[\s\S]{0,180}(?:otherwise mutate it|never)/i)
     expect(workerAgent).toMatch(/(?:live[\s-](?:service|credential)|access[\s\S]{0,40}credentials?)/i)
     expect(workerAgent).toMatch(/baseline[\s\S]{0,100}revision/i)
     expect(workerAgent).toMatch(/(?:relationship|relat(?:e|ion))[\s\S]{0,120}baseline|baseline[\s\S]{0,120}(?:relationship|relat(?:e|ion))/i)
@@ -269,7 +315,33 @@ describe("install-sane-agent-context-packages", () => {
     expect(workerAgent).toMatch(/\*\*Complete\*\*[\s\S]{0,40}\*\*Partial\*\*[\s\S]{0,40}\*\*Blocked\*\*/)
   })
 
-  test("Engineering may launch research only for an explicit user research request", async () => {
+  test("the Scout is a bounded read-only inline implementation inspector", async () => {
+    const scout = await readFile(
+      join(DEFAULT_SOURCE_ROOT, "opencode", "agents", "sane-worker-scout.md"),
+      "utf8",
+    )
+
+    expect(scout).toContain("mode: subagent")
+    expect(scout).toMatch(/edit:\s*deny/)
+    expect(scout).toMatch(/(?:ask|question):\s*deny/)
+    expect(scout).toMatch(/task:\s*deny/)
+    expect(scout).toMatch(/webfetch:\s*deny/)
+    expect(scout).toMatch(/websearch:\s*deny/)
+    expect(scout).toMatch(/external_directory:\s*allow/)
+    expect(scout).toMatch(/exact external workstream-context path|exact workstream artifacts? supplied/i)
+    expect(scout).toMatch(/does not authorize external discovery|must not discover wider workstream context/i)
+    expect(scout).toMatch(/exact supplied scope|exact, bounded scope/i)
+    expect(scout).toMatch(/repository instructions[\s\S]{0,180}source[\s\S]{0,100}tests[\s\S]{0,100}configuration/i)
+    expect(scout).toMatch(/callers[\s\S]{0,100}(?:integration points|interfaces)/i)
+    expect(scout).toMatch(/safe, non-destructive commands/i)
+    expect(scout).toMatch(/precise repository[\s\S]{0,60}paths and line numbers/i)
+    expect(scout).toMatch(/\*\*Observations\*\*[\s\S]{0,80}\*\*Inferences\*\*[\s\S]{0,80}\*\*Limitations\*\*/)
+    expect(scout).toMatch(/inline handoff/i)
+    expect(scout).toMatch(/never create or update[\s\S]{0,60}(?:Research )?`REPORT\.md`/i)
+    expect(scout).toMatch(/\*\*Complete\*\*[\s\S]{0,40}\*\*Partial\*\*[\s\S]{0,40}\*\*Blocked\*\*/)
+  })
+
+  test("Engineering routes internal inspection to Scout and explicit external research to Researcher", async () => {
     const engineeringAgent = await readFile(
       join(DEFAULT_SOURCE_ROOT, "opencode", "agents", "sane-assistant-engineering.md"),
       "utf8",
@@ -279,10 +351,17 @@ describe("install-sane-agent-context-packages", () => {
       "utf8",
     )
 
-    expect(engineeringAgent).toMatch(/task:\s*\n\s+"\*": deny\s*\n\s+"sane-worker-researcher": allow/)
-    expect(engineeringRole).toMatch(/user[\s\S]{0,100}explicit(?:ly)?[\s\S]{0,100}(?:request|asks?)[\s\S]{0,180}research/i)
-    expect(engineeringRole).toMatch(/sane-worker-researcher|Research Worker/)
-    expect(engineeringRole).toMatch(/ordinary confirmation[\s\S]{0,100}not authorization[\s\S]{0,100}(?:launch|research)/i)
+    expect(engineeringAgent).toMatch(
+      /task:\s*\n\s+"\*": deny\s*\n\s+"sane-worker-scout": allow\s*\n\s+"sane-worker-researcher": allow/,
+    )
+    expect(engineeringRole).toMatch(/internal codebase inspection[\s\S]{0,180}sane-worker-scout/i)
+    expect(engineeringRole).toMatch(/normally confirms?[\s\S]{0,180}Engineering Assistance[\s\S]{0,180}sane-worker-scout/i)
+    expect(engineeringRole).toMatch(/external evidence/i)
+    expect(engineeringRole).toContain("`sane-worker-researcher`")
+    expect(engineeringRole).toMatch(/explicitly requests bounded[\s\S]{0,80}external research/i)
+    expect(engineeringRole).toMatch(/ordinary confirmation[\s\S]{0,100}not authorization[\s\S]{0,100}(?:launch|Researcher)/i)
+    expect(engineeringRole).toMatch(/own synthesis|own[s]? synthesis/i)
+    expect(engineeringRole).toMatch(/Scout[\s\S]{0,100}never writes[\s\S]{0,80}`REPORT\.md`/i)
   })
 
   test("assistant task permissions allow only their assigned worker agents", async () => {
@@ -296,10 +375,20 @@ describe("install-sane-agent-context-packages", () => {
     )
 
     expect(researchAgent).toMatch(/task:\s*\n\s+"\*": deny\s*\n\s+"sane-worker-researcher": allow/)
+    expect(researchAgent).not.toContain('"sane-worker-scout": allow')
     expect(coordinationAgent).toMatch(
       /task:\s*\n\s+"\*": deny\s*\n\s+"sane-worker-implementer": allow\s*\n\s+"sane-worker-reviewer": allow\s*\n\s+"sane-worker-fixer": allow/,
     )
     expect(coordinationAgent).not.toContain('"sane-worker-researcher": allow')
+    expect(coordinationAgent).not.toContain('"sane-worker-scout": allow')
+
+    const researchRole = await readFile(
+      join(DEFAULT_SOURCE_ROOT, "skills", "sane-research-assistant-role", "SKILL.md"),
+      "utf8",
+    )
+    expect(researchRole).toMatch(/repository audits directly/i)
+    expect(researchRole).toMatch(/no permission to launch Scout/i)
+    expect(researchRole).toMatch(/sane-worker-researcher[\s\S]{0,100}external-evidence worker/i)
   })
 
   test("does not delete previously installed typed skill directories", async () => {
@@ -321,6 +410,10 @@ describe("install-sane-agent-context-packages", () => {
 
   test("validates CLI options and rejects positional arguments", () => {
     expect(parseCliArguments([])).toEqual({ dryRun: false, overwrite: false })
+    expect(parseCliArguments(["--model-config", "two words.yaml", "--dry-run"])).toEqual({ dryRun: true, overwrite: false, modelConfigPath: "two words.yaml" })
+    for (const args of [["--model-config"], ["--model-config", "--overwrite"], ["--model-config", ""], ["--model-config", "a", "--model-config", "b"]]) {
+      expect(() => parseCliArguments(args)).toThrow("--model-config")
+    }
     expect(parseCliArguments(["--dry-run", "--overwrite"])).toEqual({ dryRun: true, overwrite: true })
     expect(() => parseCliArguments(["destination"])).toThrow("does not accept positional")
     expect(() => parseCliArguments(["--unexpected"])).toThrow("Unknown option")

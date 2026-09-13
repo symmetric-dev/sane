@@ -29,7 +29,7 @@ Commands:
   init-sane
   create-workstream
   select-workstream
-  install-context-packages
+  install-context-packages [--dry-run] [--overwrite] [--model-config <path>]
   sane-path                      Print the paired SANE workstream repository path
 
 Run 'sane-alpha <command> --help' for a command's argument validation.`

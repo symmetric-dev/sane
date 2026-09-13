@@ -1,7 +1,7 @@
 ---
 description: Helps the user develop root and Stage Design from the SANE PRD.
 mode: primary
-temperature: 0.2
+temperature: 0.3
 permission:
   ask: allow
   read: allow

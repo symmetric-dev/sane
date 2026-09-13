@@ -1,4 +1,7 @@
 import { describe, expect, test } from "bun:test"
+import { mkdtemp, readFile, rm, access } from "node:fs/promises"
+import { tmpdir } from "node:os"
+import { join } from "node:path"
 
 import { COMMANDS, type AlphaCommand, runSaneAlpha } from "./sane-alpha.ts"
 
@@ -11,6 +14,40 @@ const expectedCommands: AlphaCommand[] = [
 ]
 
 describe("sane-alpha dispatcher", () => {
+  test("direct and dispatched installers accept YAML config and report errors before writes", async () => {
+    const temporaryDirectory = await mkdtemp(join(tmpdir(), "sane-model-cli-"))
+    try {
+      const config = join(temporaryDirectory, "my models.yaml")
+      await Bun.write(config, "sane-worker-scout: openai/gpt-5\n")
+      for (const [index, command] of [
+        ["alpha/scripts/install-sane-agent-context-packages.ts"],
+        ["alpha/bin/sane-alpha.ts", "install-context-packages"],
+      ].entries()) {
+        const home = join(temporaryDirectory, `home-${index}`)
+        const run = async (...args: string[]) => {
+          const child = Bun.spawn([process.execPath, ...command, ...args], {
+            cwd: new URL("../../", import.meta.url).pathname,
+            env: { ...process.env, SANE_HOME: home }, stdout: "pipe", stderr: "pipe",
+          })
+          const [exit, stdout, stderr] = await Promise.all([child.exited, new Response(child.stdout).text(), new Response(child.stderr).text()])
+          return { exit, stdout, stderr }
+        }
+        expect((await run("--model-config", config, "--dry-run")).exit).toBe(0)
+        await expect(access(home)).rejects.toThrow()
+        expect((await run("--model-config", config)).exit).toBe(0)
+        expect(await readFile(join(home, ".config/opencode/agents/sane-worker-scout.md"), "utf8")).toContain('model: "openai/gpt-5"')
+        expect((await run("--model-config", config)).stdout).not.toContain("Created:")
+        const invalid = await run("--model-config", join(temporaryDirectory, "missing.yaml"))
+        expect(invalid.exit).toBe(1)
+        expect(invalid.stderr).toContain("Could not load model config")
+        expect(invalid.stderr).toContain("--model-config <path>")
+        expect((await run("--model-config")).exit).toBe(1)
+      }
+    } finally {
+      await rm(temporaryDirectory, { recursive: true, force: true })
+    }
+  })
+
   test("exposes every repository-aware Alpha utility and not the low-level bootstrap", () => {
     expect(Object.keys(COMMANDS).sort()).toEqual([...expectedCommands].sort())
     expect(COMMANDS).not.toHaveProperty("create-sane-workstream")

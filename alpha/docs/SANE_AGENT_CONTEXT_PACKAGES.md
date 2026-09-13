@@ -17,12 +17,12 @@ alpha/opencode/agents/
 Install the complete context package with:
 
 ```bash
-sane-alpha install-context-packages [--dry-run] [--overwrite]
+sane-alpha install-context-packages [--dry-run] [--overwrite] [--model-config <path>]
 ```
 
 The installer uses `SANE_HOME` when set (otherwise the current user's home), so
 the command is isolated with `SANE_HOME=/temporary/home` when needed. It copies
-the ten source agents as global OpenCode Markdown agents under:
+the eleven source agents as global OpenCode Markdown agents under:
 
 ```text
 <home>/.config/opencode/agents/
@@ -34,12 +34,14 @@ It copies the six assistant role skills from `alpha/skills/` to:
 <home>/.agents/skills/<skill-name>/SKILL.md
 ```
 
-The installer has exactly sixteen destinations: six primary role-agent
-configurations, four worker/subagent configurations, and six assistant skills. The
+The installer has exactly seventeen destinations: six primary role-agent
+configurations, five worker/subagent configurations, and six assistant skills. The
 primary roles are Product, Research, Design, Engineering, Execution, and
-Coordination; the subagents are Research Worker, Worker Implementer, Worker
-Reviewer, and Worker Fixer. Each worker's substantive contract is contained in
-its agent configuration rather than a worker role skill.
+Coordination; the subagents are Scout Worker, Research Worker, Worker
+Implementer, Worker Reviewer, and Worker Fixer. Scout handles bounded internal
+implementation-repository inspection, while Researcher handles bounded external
+evidence. Each worker's substantive contract is contained in its agent
+configuration rather than a worker role skill.
 It validates every source and destination before changing anything.
 It creates parent directories as needed, leaves identical destinations unchanged,
 and refuses differing regular files by default. `--overwrite` replaces only
@@ -47,6 +49,39 @@ differing regular files; it never replaces a non-regular destination. `--dry-run
 performs the same validation and reports planned actions without making changes.
 Quit and restart OpenCode after installation or an overwrite so it loads the
 changed global agent and skill files.
+
+### Optional per-agent models (YAML)
+
+Source agents intentionally have no `model` field. To select models for installed
+agents, create a flat YAML file such as `models.yaml`:
+
+```yaml
+# Keys are agent filenames without .md; omitted agents keep their source bytes.
+sane-assistant-engineering: "openai/gpt-5"
+sane-worker-scout: "anthropic/claude-sonnet-4-6"
+```
+
+```bash
+sane-alpha install-context-packages --model-config ./models.yaml --dry-run
+sane-alpha install-context-packages --model-config ./models.yaml --overwrite
+# Direct script invocation supports the same options:
+bun alpha/scripts/install-sane-agent-context-packages.ts --model-config ./models.yaml
+```
+
+Only known agent names and nonempty `provider/model` strings without whitespace
+are accepted. Use providers/models available in your OpenCode configuration.
+An empty mapping (`{}`) is allowed; empty files, lists, nested mappings, unknown
+names, and invalid model values fail before any installation writes.
+
+The programmatic installer accepts `modelConfigPath`. Paths resolve from the
+current working directory. Models are injected or replaced in memory before
+destination comparisons; source files and skills are never modified. Mapped
+frontmatter is reserialized as YAML (formatting/comments may change), preserving
+other metadata values and the exact Markdown body. Without a config, or for an
+unmapped agent, original bytes are preserved. Repeating the same configuration is
+a no-op; changing or removing an installed override requires `--overwrite` when
+the destination differs. Dry runs perform the same validation without writes.
+Quit and restart OpenCode after installation to load the selected models.
 
 ## Agent-Configuration Content
 
@@ -66,7 +101,7 @@ The configuration does not repeat the substantive role instructions from the
 skill or duplicate SANE template guidance. `alpha/templates/` is the canonical
 source of SANE templates.
 
-The four worker/subagent configurations instead treat their invocation
+The five worker/subagent configurations instead treat their invocation
 prompt as the complete assignment. Their built-in context reinforces role,
 permissions, scope control, stopping behavior, and return shape without adding
 workstream context that could compete with the orchestrator's supplied prompt.
@@ -76,7 +111,7 @@ not read root `type` metadata as session context. Product and Design load their
 single generic skill directly. Their skills use the bootstrapped `PRD.md` and
 applicable root Design template without routing by type.
 
-Reinstalling updates only the sixteen managed destinations; it does not delete
+Reinstalling updates only the seventeen managed destinations; it does not delete
 files from an earlier naming scheme. After upgrading an existing installation,
 inspect and explicitly remove obsolete `sane-implementation.md` and other
 pre-`sane-assistant-*` agent files from `<home>/.config/opencode/agents/`, plus
@@ -85,23 +120,34 @@ not remove potentially user-modified files automatically.
 
 ## Context Ingestion and Pickup
 
-The Research Worker, Worker Implementer, Worker Reviewer, and Worker Fixer are
+The Scout Worker, Research Worker, Worker Implementer, Worker Reviewer, and Worker Fixer are
 intentionally different from the six user-started role agents described below.
 They are subagents invoked by their authorized launcher with self-contained,
 narrowly scoped prompts. They do not discover `.sane` and workstream context.
 They may load directly relevant
 non-SANE technical or repository skills, while OpenCode permission rules deny
 all `sane-*-assistant-role` skills. Worker Implementer and Worker Fixer can edit
-only within their supplied assignments; Worker Reviewer is strictly read-only.
+only within their supplied assignments; Worker Reviewer and Scout are strictly
+read-only.
 
 The coordinating Research Assistant owns and updates its scope's baseline. It
-may launch a Research Worker for one bounded topic. An Engineering Assistant may
-do so only after the user explicitly requests research during its normal,
-otherwise unchanged Engineering lifecycle. A user may still start the Research
-Assistant directly.
+may launch a Research Worker for one bounded external-evidence topic. An
+Engineering Assistant may use Scout for bounded internal codebase inspection
+after normal user confirmation to proceed with Assistance. It may use Researcher
+only after the user explicitly requests bounded external research during its
+normal, otherwise unchanged lifecycle. Engineering owns synthesis and decisions
+with the user. A user may still start the Research Assistant directly.
+
+A Scout receives an exact implementation-repository scope and question plus any
+exact workstream-artifact paths Engineering supplies as necessary context. It
+inspects applicable repository instructions, source, tests, configuration,
+callers, and integration points with safe non-destructive commands, then returns
+an inline evidence handoff with paths and line numbers. It cannot ask questions,
+use web research, launch children, discover wider external context, mutate files,
+or write a Research `REPORT.md`.
 
 A Research Worker receives one exact, self-contained prompt specifying the
-bounded question, baseline and source paths to read, report and supporting-file
+bounded external-evidence question, baseline and source paths to read, report and supporting-file
 paths it may write, implementation-repository path, constraints, verification,
 and concise return shape. It reads the baseline, writes only those assigned
 Research destinations, and never updates the baseline. It has no user Pickup,
@@ -159,12 +205,22 @@ agent can read and, when its role permits, edit the paired workstream repository
 outside the implementation repository. It must also grant `skill: allow` so the
 agent can load its role skill. Other permissions remain role-specific.
 
-For the Research Worker, permissions support the assignment but do not imply
-reliable dynamic enforcement of every supplied path. Its behavioral contract
-allows read-only inspection and non-destructive verification in the
-implementation repository. It prohibits implementation-repository writes,
-installs, migrations, deployments, and use of live credentials unless the exact
-prompt explicitly assigns them.
+For the Research Worker, permissions support assigned external research and
+report outputs but do not imply reliable dynamic enforcement of every supplied
+path. Its behavioral contract allows only exact supplied local context needed to
+understand the external question; general implementation-repository discovery
+belongs to Scout. It prohibits all implementation-repository writes, installs,
+migrations, and deployments. Live credentials or external-system calls require
+an exact explicit assignment.
+
+Scout has `external_directory: allow` because the paired workstream repository
+is separate from the implementation repository and Engineering may need to give
+it exact Stage, Section, or other workstream artifacts as inspection context.
+The permission does not authorize external discovery: Scout may read only exact
+external paths supplied in its assignment. It denies web access and has
+`edit: deny`. Although Bash supports focused inspection, its contract prohibits
+every mutating command and keeps codebase exploration inside the exact supplied
+implementation scope.
 
 Engineering, Execution, and Implementation sessions require a user-selected
 Stage. Without one, Pickup is incomplete and the agent reports the missing Stage

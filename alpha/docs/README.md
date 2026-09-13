@@ -91,7 +91,7 @@ Coordination Assistants will be selected and started by the user in OpenCode.
 Their global OpenCode agent configurations are installed with:
 
 ```bash
-sane-alpha install-context-packages [--dry-run] [--overwrite]
+sane-alpha install-context-packages [--dry-run] [--overwrite] [--model-config <path>]
 ```
 
 The command installs them under:
@@ -115,21 +115,32 @@ The focused worker, review, and fix prompts identify only their assigned
 documents, repository paths, requirements, and boundaries. They do not provide
 general SANE context.
 
-### Research Worker
+### Scout and Research Workers
 
-The Research Worker is a subagent, not a user-started role session. A
-coordinating Research Assistant may launch it for one bounded topic. Engineering
-may launch it only after an explicit user research request during Engineering's
-normal, otherwise unchanged lifecycle. Users may still start the Research
-Assistant directly.
+Both workers are subagents, not user-started role sessions. After the user
+normally confirms Engineering Assistance, Engineering may use Scout for one
+bounded internal implementation-repository inspection. Scout is read-only,
+cannot use the web, and returns a concise inline handoff with path-and-line
+evidence without writing a Research Report. Engineering may supply exact
+artifacts from the separate workstream repository as read-only context; Scout
+cannot discover wider external context or mutate either repository.
 
-The worker reads the applicable baseline and receives one exact, self-contained
+A coordinating Research Assistant may launch Researcher for one bounded
+external-evidence topic. Engineering may launch Researcher only after an
+explicit user request for bounded external research during Engineering's normal,
+otherwise unchanged lifecycle. Users may still start the Research Assistant
+directly. Research Assistant performs direct repository audits itself and cannot
+launch Scout. Engineering remains responsible for synthesis and decisions with
+the user.
+
+Researcher reads the applicable baseline and receives one exact, self-contained
 prompt with its topic, inputs, allowed report/supporting-file destinations,
 constraints, verification, and concise return shape. It has no user Pickup,
-Delivery, approval, or question loop and never edits the baseline. Read-only
-implementation-repository inspection and non-destructive verification are
-allowed; implementation writes, installs, migrations, deployments, and live
-credentials are prohibited unless explicitly assigned. This is a behavioral
+Delivery, approval, or question loop and never edits the baseline. Exact local
+context needed to interpret the external question may be inspected read-only,
+but general internal repository discovery belongs to Scout. Implementation
+writes, installs, migrations, and deployments are prohibited. Live credentials
+or external-system calls require an exact explicit assignment. This is a behavioral
 boundary, not an overstatement of dynamic path permission enforcement.
 
 ## Shared Context Packages
@@ -147,7 +158,7 @@ installer copies six assistant role skills to the shared location:
 OpenCode auto-discovers skills from that path. Here `<home>` is `SANE_HOME` when it is set, otherwise the
 current user's home directory.
 
-The installer manages exactly sixteen destinations: ten OpenCode agent
+The installer manages exactly seventeen destinations: eleven OpenCode agent
 configurations and six assistant skills. Restart OpenCode after installation or an
 overwrite so it loads them. No role agent requires a type declaration or reads root `type`
 metadata as session context. Type remains an input to CLI creation: it creates

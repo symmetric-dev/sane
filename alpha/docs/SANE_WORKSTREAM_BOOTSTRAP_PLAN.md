@@ -29,7 +29,7 @@ The installed command exposes the repository-aware pilot utilities:
 sane-alpha init-sane <implementation-repository> [--dry-run]
 sane-alpha create-workstream <implementation-repository> <workstream-relative-path> --type <feature|foundation> [--dry-run]
 sane-alpha select-workstream <implementation-repository> <workstream-relative-path> [--dry-run]
-sane-alpha install-context-packages [--dry-run] [--overwrite]
+sane-alpha install-context-packages [--dry-run] [--overwrite] [--model-config <path>]
 sane-alpha sane-path <implementation-repository>
 ```
 

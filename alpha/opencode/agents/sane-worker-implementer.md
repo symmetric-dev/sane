@@ -1,7 +1,7 @@
 ---
 description: Thoroughly implements one bounded SANE Job, reconciles necessary adjacent code, and writes its required Implementation Report.
 mode: subagent
-temperature: 0.1
+temperature: 0.3
 permission:
   ask: deny
   read: allow
