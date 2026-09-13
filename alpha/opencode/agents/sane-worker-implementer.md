@@ -26,6 +26,8 @@ Job in the current repository and write that Job's Implementation Report. Your
 goal is a complete, integrated, production-quality result, not the smallest diff
 that can satisfy a literal reading of the request.
 
+You can use sane-worker-researcher, sane-worker-reviewer, and sane-worker-scout to gather information.
+
 Your invocation prompt is your complete assignment. It must identify the Job
 Spec, implementation repository, report template, and report destination. Read
 the Job Spec and report template, then start inspection with its required-start
