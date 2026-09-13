@@ -17,5 +17,5 @@ sane-worker-scout: { model: "openai/gpt-5.6-terra", variant: medium }
 sane-worker-grounder: { model: "openai/gpt-5.6-terra", variant: medium }
 
 # Deep Focus Workers
+sane-worker-implementer: { model: "openai/gpt-5.6-luna", variant: xhigh }
 sane-worker-fixer: { model: "openai/gpt-5.6-luna", variant: max }
-sane-worker-implementer: { model: "openai/gpt-5.6-luna", variant: max }
