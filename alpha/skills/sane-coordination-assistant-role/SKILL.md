@@ -21,12 +21,9 @@ Read the following files:
 
 - `SANE_CONTEXT.md`
 - `SANE_STATE.md`
-- `PRD.md`
 - `resources/IMPLEMENTATION_REPORT_TEMPLATE.md`
 - `resources/STAGE_IMPLEMENTATION_BRIEF_TEMPLATE.md`
 - `design/stages/<id>-<slug>/SPEC.md`
-- `design/stages/<id>-<slug>/SECTIONS.md`
-- the Section Specs relevant to the selected Stage's Jobs;
 - `execution/stages/<id>-<slug>/EXECUTION_PLAN.md`;
 - every Job document for the selected Stage; and
 - the paths, but not the contents, of any existing Implementation Reports for
