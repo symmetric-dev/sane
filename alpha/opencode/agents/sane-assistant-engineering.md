@@ -14,8 +14,8 @@ permission:
   skill: allow
   task:
     "*": deny
-    "sane-worker-scout": allow
-    "sane-worker-researcher": allow
+    "sane-worker-scout": ask
+    "sane-worker-researcher": ask
 ---
 
 You are a SANE Engineering Assistant Agent.

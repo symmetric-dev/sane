@@ -64,31 +64,43 @@ describe("install-sane-agent-context-packages", () => {
     }
   })
 
-  test("applies YAML models before planning, without touching sources or unmapped files", async () => {
+  test.each(["shorthand", "flow", "block", "model-only"])("applies %s YAML models before planning, without touching sources or unmapped files", async (form) => {
     const modelConfigPath = join(temporaryDirectory, "models.yaml")
     const source = join(sourceRoot, "opencode", "agents", AGENT_FILENAMES[0])
-    const original = "---\nmode: primary\n---\n\nOriginal body\n"
+    const original = "---\nmode: primary\nvariant: high\n---\n\nOriginal body\n"
+    const mapping = (model: string, variant: string) => `${AGENT_FILENAMES[0].slice(0, -3)}: ${form === "shorthand" ? model : form === "flow" ? `{ model: ${model}, variant: ${variant} }` : form === "block" ? `\n  model: ${model}\n  variant: ${variant}` : `{ model: ${model} }`}\n`
     await Bun.write(source, original)
-    await Bun.write(modelConfigPath, `${AGENT_FILENAMES[0].slice(0, -3)}: openai/gpt-5\n`)
+    await Bun.write(modelConfigPath, mapping("openai/gpt-5", "low"))
     await installSaneAgentContextPackages(options({ modelConfigPath, dryRun: true }))
     await expectMissing(homeDirectory)
     await installSaneAgentContextPackages(options({ modelConfigPath }))
     const destination = join(homeDirectory, ".config", "opencode", "agents", AGENT_FILENAMES[0])
     expect(await readFile(destination, "utf8")).toContain('model: "openai/gpt-5"')
+    const installed = await readFile(destination, "utf8")
+    expect(installed).toContain(form === "flow" || form === "block" ? 'variant: "low"' : "variant: high")
+    expect(installed.endsWith("\nOriginal body\n")).toBe(true)
     expect(await readFile(source, "utf8")).toBe(original)
     expect(await readFile(join(homeDirectory, ".config", "opencode", "agents", AGENT_FILENAMES[1]), "utf8")).toBe(`agent ${AGENT_FILENAMES[1]}\n`)
     expect((await installSaneAgentContextPackages(options({ modelConfigPath }))).unchanged).toHaveLength(17)
-    await Bun.write(modelConfigPath, `${AGENT_FILENAMES[0].slice(0, -3)}: anthropic/claude-sonnet-4-6\n`)
+    await Bun.write(modelConfigPath, mapping("anthropic/claude-sonnet-4-6", "medium"))
     await expect(installSaneAgentContextPackages(options({ modelConfigPath }))).rejects.toThrow("--overwrite")
     expect((await installSaneAgentContextPackages(options({ modelConfigPath, overwrite: true, dryRun: true }))).updated).toEqual([destination])
     expect(await readFile(destination, "utf8")).toContain('model: "openai/gpt-5"')
     expect((await installSaneAgentContextPackages(options({ modelConfigPath, overwrite: true }))).updated).toEqual([destination])
     expect(await readFile(destination, "utf8")).toContain('model: "anthropic/claude-sonnet-4-6"')
+    expect((await installSaneAgentContextPackages(options({ modelConfigPath }))).unchanged).toHaveLength(17)
+    expect(await readFile(source, "utf8")).toBe(original)
+    if (form === "flow" || form === "block") {
+      expect(await readFile(destination, "utf8")).toContain('variant: "medium"')
+      await Bun.write(modelConfigPath, mapping("anthropic/claude-sonnet-4-6", "low"))
+      expect((await installSaneAgentContextPackages(options({ modelConfigPath, overwrite: true, dryRun: true }))).updated).toEqual([destination])
+      expect(await readFile(destination, "utf8")).toContain('variant: "medium"')
+    }
   })
 
   test("invalid YAML config or mapped frontmatter fails before writes", async () => {
     const modelConfigPath = join(temporaryDirectory, "models.yaml")
-    for (const yaml of ["unknown: openai/gpt-5", "[]", "invalid: [", "sane-worker-scout: openai/gpt-5"]) {
+    for (const yaml of ["unknown: openai/gpt-5", "[]", "invalid: [", "sane-worker-scout: openai/gpt-5", "sane-worker-scout: { model: openai/gpt-5, varient: low }", "sane-worker-scout:\n  model: openai/gpt-5\n  variant: null"]) {
       await Bun.write(modelConfigPath, yaml)
       await expect(installSaneAgentContextPackages(options({ modelConfigPath, overwrite: true }))).rejects.toThrow()
       await expectMissing(homeDirectory)

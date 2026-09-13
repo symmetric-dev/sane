@@ -41,7 +41,7 @@ export interface AgentContextPackageInstallationOptions {
   homeDirectory?: string
   /** Root containing the source `opencode/agents` and `skills` directories. */
   sourceRoot?: string
-  /** YAML mapping of agent names (without .md) to provider/model identifiers. */
+  /** YAML mapping of agent names (without .md) to model strings or model/variant objects. */
   modelConfigPath?: string
   dryRun?: boolean
   overwrite?: boolean

@@ -53,12 +53,17 @@ changed global agent and skill files.
 ### Optional per-agent models (YAML)
 
 Source agents intentionally have no `model` field. To select models for installed
-agents, create a flat YAML file such as `models.yaml`:
+agents, create a YAML file such as `models.yaml`. Values may be string shorthand
+or objects with a required `model` and optional `variant` (flow or block YAML):
 
 ```yaml
 # Keys are agent filenames without .md; omitted agents keep their source bytes.
 sane-assistant-engineering: "openai/gpt-5"
 sane-worker-scout: "anthropic/claude-sonnet-4-6"
+sane-assistant-coordination: { model: "openai/gpt-6-astra", variant: low }
+sane-assistant-design:
+  model: "openai/gpt-6-astra"
+  variant: high
 ```
 
 ```bash
@@ -70,14 +75,17 @@ bun alpha/scripts/install-sane-agent-context-packages.ts --model-config ./models
 
 Only known agent names and nonempty `provider/model` strings without whitespace
 are accepted. Use providers/models available in your OpenCode configuration.
-An empty mapping (`{}`) is allowed; empty files, lists, nested mappings, unknown
-names, and invalid model values fail before any installation writes.
+Object variants must be nonempty strings. Unknown object fields, missing models,
+malformed values, unknown agent names, empty files, and lists fail before any
+installation writes. An empty mapping (`{}`) is allowed.
 
 The programmatic installer accepts `modelConfigPath`. Paths resolve from the
-current working directory. Models are injected or replaced in memory before
+current working directory. Models and explicitly supplied top-level variants are
+injected or replaced in memory before
 destination comparisons; source files and skills are never modified. Mapped
 frontmatter is reserialized as YAML (formatting/comments may change), preserving
-other metadata values and the exact Markdown body. Without a config, or for an
+other metadata values and the exact Markdown body. Omitting `variant` (including
+string shorthand) preserves the source variant, if any. Without a config, or for an
 unmapped agent, original bytes are preserved. Repeating the same configuration is
 a no-op; changing or removing an installed override requires `--overwrite` when
 the destination differs. Dry runs perform the same validation without writes.
