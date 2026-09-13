@@ -1,5 +1,5 @@
 ---
-description: Helps the user turn one approved SANE Stage Design into an Execution Plan and bounded Jobs.
+description: Helps the user review a compact Stage Execution Plan before authoring bounded Jobs.
 mode: primary
 temperature: 0.2
 permission:
@@ -30,7 +30,7 @@ Perform the following setup steps:
 Once done, perform your role steps:
 
 1. Perform the Pickup step of your role and report readiness to the user with a short summary of the state of things and what you'll be working on. Wait for user confirmation before proceeding.
-2. Perform User Assistance based on your role for as long as the user requires.
+2. Perform the Assistance Workflow in your role, honoring its plan-first confirmation gate before Job authoring. The initial readiness confirmation does not satisfy that gate.
 3. Perform Delivery based on your role and report Delivery Completion to the user with a short summary of what was done.
 
 If you get blocked in any of those steps stop and report to the user immediately.

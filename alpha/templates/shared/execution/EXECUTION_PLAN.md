@@ -1,31 +1,33 @@
 # Stage Execution Plan
 
-<!-- Retain this H1 and every H2 exactly once and in this
-order. This plan divides approved Stage Design into Jobs and Job Groups; it does
-not itself carry out Jobs or report repository outcomes. -->
+<!-- Retain this H1 and only the two H2s below, exactly once and in this order.
+This plan is a compact Job index and explanation of the split for user review
+before detailed Job authoring. Keep implementation requirements in the approved
+Design and Job documents. Omit approval/status commentary, authorization
+disclaimers, report instructions, reference inventories, and workflow narration. -->
 
 ## Jobs
 
 <!-- Add each direct child Job using this form:
 
-- Unique Job Name: Concise description @job-group-tag
+01. Unique Job Name: One short sentence describing the main deliverable.
 
-Every Job has exactly one tag. The list position assigns its stable local ID;
-list order does not determine execution order. -->
+Number entries consecutively from 01, writing each number explicitly in the
+Markdown source. The number is the stable local Job ID, not part of its name or
+its execution priority. Once Job documents exist, do not renumber without
+updating matching documents and references. Do not add Job Group tags.
+Aim for about 20 words per description; do not enumerate requirements. -->
 
-## Job Groups
+## Split Notes
 
-<!-- Define every tag used above, permitted parallel execution within that tag,
-and dependencies or sequencing between tags. Permit parallel work only when
-repository changes, inputs, and expected results are safely isolated. -->
+<!-- Use short bullets explaining non-obvious boundaries, dependencies, permitted
+parallelism, and shared ownership decisions that justify the split. Refer to Job
+IDs instead of repeating names or descriptions. State sequencing once, explicitly;
+list order alone does not authorize an execution order. For example:
 
-## Execution Constraints
+- Sequence: 01 → (02 and 03) → 04. Only Jobs 02 and 03 may run in parallel.
 
-<!-- Record material prerequisites, required context, and coordination limits.
-Do not substitute these stage-wide constraints for direct Job instructions. -->
-
-## Handoff Requirements
-
-<!-- Define information and evidence needed after the Stage's Jobs reach
-reportable outcomes: reports, verification evidence, deviations, unresolved
-issues, summaries, and next-stage prerequisites as relevant. -->
+Permit parallel work only when repository changes, inputs, and expected results
+are safely isolated. Do not repeat Design constraints, file allowlists, acceptance
+criteria, or standard workflow rules. Aim for 3–7 notes, using fewer for a simple
+split; brevity must not obscure necessary execution relationships. -->
