@@ -25,11 +25,10 @@ Read the following files:
 
 - `SANE_CONTEXT.md`
 - `SANE_STATE.md`
-- `PRD.md`: For product reference.
 - `resources/EXECUTION_PLAN_TEMPLATE.md`: For plan syntax and content boundaries.
 - `resources/IMPLEMENTATION_REPORT_TEMPLATE.md`: For template reference.
 - `resources/JOB_TEMPLATE.md`: For template reference.
-- `design/stages/<id>-<slug>/SPEC.md`: For the selected Stage's specification.
+- `design/stages/<id>-<slug>/SPEC.md`: For the selected Stage's design specification.
 - `design/stages/<id>-<slug>/sections/<id>-<slug>.md`: For the Stage's Section Specs.
 - The selected Stage's existing Execution Plan and Job documents, if present.
 
