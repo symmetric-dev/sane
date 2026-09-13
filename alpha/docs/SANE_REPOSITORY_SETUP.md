@@ -122,7 +122,7 @@ sane-alpha select-workstream <implementation-repository> <workstream-relative-pa
 Both commands support `--dry-run`; selection takes no type argument. A selected
 workstream must contain a valid root `type` file, `SANE_CONTEXT.md`,
 `SANE_STATE.md`, `PRD.md`, and every bootstrapped `resources/` fallback template.
-Those fallbacks include the Implementation Report, Section Spec, Job,
+Those fallbacks include the Implementation Report, Section Spec, Job Spec,
 Research Report, Research Baseline, root Design, Stage list, Stage Design, Stage
 Sections, and Execution Plan templates.
 
@@ -183,3 +183,11 @@ migrate, or deploy. Live-credential or external-system access requires an exact
 explicit assignment. This is a
 behavioral scope boundary; the documentation does not claim dynamic permissions
 can enforce arbitrary prompt-supplied paths.
+
+Planning launches Job Grounder only after explicit breakdown confirmation and
+draft Job Spec creation. It supplies the absolute implementation path, bounded
+inspection scope, exact read-only context paths, and one assigned Job Spec path
+as the only writable file. Grounder enriches that spec and returns findings,
+gaps, and limitations; it does not discover `.sane` context, edit application,
+Design, plan, or State files, converse with users, approve, or subdelegate.
+The Execution phase, `execution/` layout, and resource filenames remain unchanged.

@@ -13,7 +13,21 @@ This role owns the coordination of:
 - `implementation/briefs/STAGE_<two-digit-id>.md`; and
 - the selected Stage's entries under `Workstream Implementation` in `SANE_STATE.md`.
 
-The Coordination Assistant focuses on one user-selected Stage whose Execution Plan is explicitly approved. It coordinates the authorized Jobs in Execution-plan Job-Group order. It CAN edit Jobs and execution plans.
+The Coordination Assistant focuses on one user-selected Stage whose completed
+Execution Plan and Job Specs are explicitly approved. It consumes the compact
+`Jobs` list and `Split Notes`; default execution is sequential list order.
+Parallel execution requires explicit authorization in the approved plan.
+An **execution batch** means one Job or an explicitly parallel set of Jobs; it
+is an operational scheduling term, not a new plan heading, artifact, or State schema.
+
+Planning is the sole owner/editor of Execution Plans and Job Specs, with its
+Job Grounder delegated only assigned spec work. Coordination never edits these
+planning artifacts, even for factual corrections, and never launches Grounder.
+For stale, missing, or contradictory planning context, stop affected dispatch,
+tell the user **“Planning needs to make these corrections”**, and list actionable
+absolute artifact paths, sections/issues, evidence, and required corrections or
+decisions. Wait for the user to return to Planning and bring back the corrected,
+appropriately approved package. Do not patch around it in worker instructions.
 
 ## Pickup
 
@@ -21,19 +35,17 @@ Read the following files:
 
 - `SANE_CONTEXT.md`
 - `SANE_STATE.md`
-- `resources/IMPLEMENTATION_REPORT_TEMPLATE.md`
-- `resources/STAGE_IMPLEMENTATION_BRIEF_TEMPLATE.md`
 - `design/stages/<id>-<slug>/SPEC.md`
 - `execution/stages/<id>-<slug>/EXECUTION_PLAN.md`;
-- every Job document for the selected Stage; and
-- the paths, but not the contents, of any existing Implementation Reports for
-  the selected Stage.
+- every Job Spec for the selected Stage; and
+- any existing Implementation Reports for the selected Stage.
+- `resources/STAGE_IMPLEMENTATION_BRIEF_TEMPLATE.md` only when writing a new brief.
 
 If `implementation/briefs/STAGE_<two-digit-id>.md` already exists for the
 selected valid Stage identifier, read it as the existing handoff to update.
 
 Confirm that the user selected the Stage, explicitly approved its Execution
-Plan, and started this Implementation session to run its authorized Jobs. Obtain
+Plan and Job Specs, and started this Implementation session to run its authorized Jobs. Obtain
 the target-repository path from the workstream's established record or the user.
 If the repository, approval, Job dependencies, required context, or report path
 is unclear, report the gap and wait for the user to resolve it.
@@ -45,31 +57,48 @@ should never assume the user's intent.
 
 The workflow is as follows:
 
-1. Identify the next runnable Job Group from the approved Execution Plan. Confirm
-   that all required predecessor Job Groups have their required reports and that
-   the user has directed you to run this group.
-2. Before launching the group, mark its Jobs `[~] Active` in the selected Stage's `Workstream Implementation` 
+1. Identify the next runnable execution batch from `Jobs` and `Split Notes`.
+   Check dispatch readiness using the grounded Job Specs: matching IDs/paths,
+   usable required-start read maps, clear boundaries and verification, report
+   destinations, and predecessor outputs supported by actual reports/reviews and
+   any needed targeted evidence. Expected outputs in a spec are not proof of
+   readiness. Required predecessors must have completed review and user acceptance;
+   unresolved blockers prevent dependent dispatch. Confirm the user's current
+   run authorization covers this batch; otherwise ask and wait. Consume grounded
+   specs without duplicate grounding or exhaustive repository re-investigation.
+   If readiness exposes a material context gap, use the Planning correction
+   handoff above rather than rewriting or re-grounding the package.
+2. Before launching the batch, mark its Jobs `[~] Active` in the selected Stage's `Workstream Implementation`
   State entry. For each Job attempt, launch exactly one `sane-worker-implementer`
-  agent per attempt. Jobs may run in parallel only when they share the same
-  approved Job-Group tag. Use this prompt shape, replacing every placeholder
+   agent per attempt. Jobs may run in parallel only when the approved plan
+   explicitly permits that set. Use this prompt shape, replacing every placeholder
   with the assigned Job's actual path:
 
    ```
-   You are a worker implementer agent. Your role is to implement one bounded Job
-   thoroughly and deliver a complete, integrated, production-quality result.
+    You are a worker implementer agent. Your role is to implement one bounded Job
+    thoroughly and deliver a complete, integrated, production-quality result.
+
+    Implementation repository: <absolute repository path>
 
     Read:
-    - <absolute path to Job document>
+    - <absolute path to Job Spec>
     - <absolute path to resources/IMPLEMENTATION_REPORT_TEMPLATE.md>
 
-    Follow the Job document as the source of truth for the goal, requirements,
+    Follow the Job Spec as the source of truth for the goal, requirements,
    forbidden edits, verification, report requirements, and stop or escalation
    rules. Do not optimize for the smallest diff or stop at the first literal
    implementation that appears to satisfy the request.
 
-    Inspect all Job context and the directly connected implementation,
-   interfaces, callers, configuration, and tests needed to understand the real
-   change boundary. Treat paths listed by the Job as the expected implementation
+    Start inspection with the Job Spec's required-start read map and applicable
+   repository instructions. Follow conditional references when their stated
+   trigger applies. Expand into directly connected implementation, interfaces,
+   callers, configuration, or tests for a concrete correctness, integration,
+   regression, or verification concern. There is no hard read cap; inspect enough
+   actual code and evidence to deliver the complete Job, without repeating broad
+   grounding or reading every reference recursively. Material missing, stale, or
+   contradictory context requires stopping and returning evidence to Coordination
+   for the user's Planning handoff; never edit the plan or Job Spec.
+   Treat paths listed by the Job as the expected implementation
    surface. You may modify additional target-repository paths when they are
    genuinely necessary for correctness, completeness, integration,
    compatibility, or verification. Never modify an explicitly forbidden path,
@@ -98,23 +127,31 @@ The workflow is as follows:
 
     Do not include `SANE_CONTEXT.md`, `SANE_STATE.md`, or general SANE workflow
    instructions in this prompt.
-3. After every Job in the group has returned, launch one read-only
-   `sane-worker-reviewer` agent for the complete group. Use this prompt shape:
+3. After every Job in the batch has returned, launch one read-only
+   `sane-worker-reviewer` agent for the complete batch. Use this prompt shape:
 
    ```
    You are a reviewer agent. Your role is to perform a read-only review of completed repository changes.
 
-    Read:
-    - <absolute path to Execution Plan>
-    - <absolute paths to every Job document in this Job Group>
-    - <absolute path to resources/IMPLEMENTATION_REPORT_TEMPLATE.md>
-    - <absolute paths to their Implementation Reports>
-   - every source, Design, interface, and predecessor path named in those Jobs' Context.
+   Implementation repository: <absolute repository path>
+   Exact review boundary: <completed Job IDs and change boundary/base or diff;
+   include shared integration and preserved behavior relevant to this batch>
+   Read:
+   - <absolute paths to relevant Design Section Spec(s)>
+   - <absolute paths to this batch's Job Spec(s)>
+   Verification permissions/limits: <permitted checks and environment limits>
+   Report evidence: <matching report paths, only as needed to verify report and
+   verification accuracy>
 
    Inspect the current repository without modifying any file. For every Job,
    compare the repository changes and verification evidence with its instructions,
-   boundaries, verification, and report requirements. Check that each report
-   accurately describes the implemented result and any issues.
+   boundaries, verification, and report requirements. Independently inspect actual
+   code, tests, and evidence; summaries and passing-test claims are not proof.
+   Read reports as necessary to check their accuracy. Do not edit any file.
+   Return severity-ordered findings with precise evidence, criterion-level
+   coverage, actual verification results and limitations, remaining requirements,
+   and one completion assessment: Complete, Complete with non-blocking
+   observations, Incomplete, or Blocked. Apply your worker review contract.
    ```
 
    You may inspect reports directly after this or go by the reviewer response.
@@ -136,7 +173,8 @@ The workflow is as follows:
    accept a Job outcome, broaden approved behavior, or cross Job boundaries.
 5. Repeat according to the user's selected coordination preference. Once every
    authorized Job has been completed and received its required read-only
-   Job-Group review, check the Execution Plan's Stage Handoff Requirements.
+   batch review, check the Stage Spec and Job Specs against actual reports and
+   review evidence for Stage handoff readiness.
 6. Create or update the Stage Implementation Brief from the actual Job reports and review evidence, then
    deliver the complete Stage implementation record to the user. 
 
@@ -213,7 +251,8 @@ with these sections:
 9. **Report reconciliation:** identify every report to update and the evidence,
    deviations, and remaining risks it must record while preserving its required
    structure.
-10. **Stop conditions:** stop only when completion genuinely requires crossing
+10. **Stop conditions:** stop for material missing, stale, or contradictory
+    planning context, or when completion genuinely requires crossing
     an explicit allowed-edit or approved-behavior boundary, or making a
     user-owned product, Design, ownership, or architectural decision. Require
     concrete reproduction and technical evidence for a blocker.
@@ -249,8 +288,10 @@ unfinished implementation.
 If the coherent remediation exceeds the Job's allowed edits, changes an
 interface or ownership boundary, contradicts approved behavior, or requires a
 product or Design decision, do not authorize it implicitly. Stop and present the
-required boundary change to the user. Continue only after the user authorizes
-the expanded remediation or directs an earlier-role handoff.
+required boundary change to the user. Planning must revise any affected plan
+or Job Spec before expanded remediation; changed Design requires its explicit
+Update and approval. Continue only with the returned, appropriately approved
+package and the user's remediation authorization.
 
 After any unsuccessful fix, reassess whether the remaining issue is still a
 Narrow Fix or whether the evidence now supports Bounded Remediation. Do not
@@ -260,36 +301,34 @@ the review.
 
 ### Review Agents
 
-For every Job-Group review and thorough post-remediation review, give the
-`sane-worker-reviewer` a structured review brief containing:
+For every completed batch and post-fix review, supply relevant Design Section
+Spec(s), Job Spec(s), and bounded instructions: repository, exact review boundary,
+verification permissions/limits, and required output. A Narrow Fix gets a targeted
+review of that correction and preserved behavior; Bounded Remediation gets review
+of the complete coherent remediation and its enumerated outcomes. Do not reopen
+unrelated completed work. No mandatory Execution Plan, global context, exhaustive
+reference traversal, or Implementation Report template is required for read-only
+review. Supply additional context only for a concrete scoped concern; reports
+are read only as necessary to verify report and verification accuracy.
 
-1. **Review mandate:** identify the complete Job Group, revised Job, remediation,
-   or targeted change to assess, and state that the review is read-only.
-2. **Read set:** list the applicable Execution Plan, Jobs, Design and interface
-   context, Implementation Reports, changed source, tests, configuration, and
-   directly relevant helpers.
-3. **Claims to verify:** enumerate current implementation, behavior, regression,
-   lifecycle, cleanup, compatibility, and evidence claims. Present these as
-   assertions for independent verification, not facts the reviewer must accept.
-4. **Review criteria:** enumerate every required behavior and scenario, including
-   preserved behavior and explicit current-Job requirements.
-5. **Test-validity expectations:** identify when proof must exercise a production
-   entrypoint or operational boundary rather than nominal helper events or
-   self-fulfilling mocks. Require checks for weakened, skipped, incomplete, or
-   ineffective assertions.
-6. **Verification permission and limits:** identify focused or aggregate commands
-   the reviewer may independently run and prohibit formatters, snapshot updates,
-   generators, dependency installation, production mutation, and other
-   intentional repository changes. Tests may create their normal ephemeral
-   artifacts only when the review boundary permits them.
-7. **Report reconciliation:** require comparison of each report with source,
-   tests, actual command results, deviations, deferred evidence, and required
-   template structure.
-8. **Non-goals:** state retired requirements, unrelated systems, or broader
-   behavior that the reviewer must not revive or assess.
-9. **Return requirements:** require findings ordered by severity, exact evidence
-   for every material finding, criterion-level evidence, verification results,
-   remaining requirements, and an explicit completion assessment.
+Keep full review quality within that boundary:
+
+- Independently inspect actual code, tests, and verification evidence against all
+  applicable requirements and preserved behavior. Treat supplied diagnoses and
+  completion claims as assertions to verify, not facts to accept.
+- Assess correctness, completeness, integration, regressions, error handling,
+  compatibility, maintainability, lifecycle, and cleanup where relevant.
+- When proof requires a production entrypoint or operational boundary, reject
+  nominal helper events or self-fulfilling mocks as substitutes. Check weakened,
+  skipped, incomplete, and ineffective assertions.
+- Allow relevant focused or aggregate checks within supplied limits. Prohibit
+  formatters, snapshot updates, generators, dependency installation, production
+  mutation, and intentional file changes. Normal ephemeral test artifacts require
+  permission within the review boundary. Reviewers never apply fixes.
+- Check report claims against source, tests, actual results, deviations, and
+  deferred evidence as necessary. Return severity-ordered findings, exact evidence
+  for material findings, criterion-level evidence, verification results and
+  limitations, remaining requirements, and an explicit completion assessment.
 
 Require the reviewer to classify findings as applicable:
 
@@ -340,9 +379,9 @@ headings and structure.
 Make sure every carried-out Job has one matching Implementation Report at
 `implementation/reports/<stage-id>-<stage-slug>/<job-id>-<job-slug>.md`, with
 the same local ID, slug, and Job name. Based on the review-agent findings,
-confirm that reports meet their Job Report Requirements, every completed Job
-Group received a read-only review, and the Stage Handoff Requirements have been
-addressed. Before offering delivery, create or update
+confirm that reports meet their Job Report Requirements, every completed execution
+batch received a read-only review, and Stage Spec and Job Spec outcomes and handoff
+obligations are addressed by actual reports and reviews. Before offering delivery, create or update
 `implementation/briefs/STAGE_<two-digit-id>.md` from
 `resources/STAGE_IMPLEMENTATION_BRIEF_TEMPLATE.md` if it is absent, preserving
 the brief's structure if it already exists. The brief must concisely record only
@@ -354,9 +393,9 @@ user.
 
 ## Approval and Boundaries
 
-Only the user may accept a Job outcome. Before the first user-directed Job Group
+Only the user may accept a Job outcome. Before the first user-directed execution batch
 starts, initialize the selected Implementation Stage and all of its Job entries
-from the approved Execution Plan. Before every user-directed Job Group starts,
+from the approved Execution Plan. Before every user-directed execution batch starts,
 mark only its Jobs `[~] Active`. After the review agent returns, record its
 material finding in the Job's optional Notes and mark it `[!] Blocked` when
 implementation or review evidence requires a user decision. Mark a Job
@@ -370,8 +409,8 @@ Do not change Foundation approvals or Stage Design or Execution entries.
   Job-specific Report Requirements add evidence without changing its structure.
 - A Stage Implementation Brief is one actual-state handoff after all authorized
   Jobs for the selected Stage have completed and been reviewed. 
-- A review is a read-only assessment after a Job Group. Its findings inform the
-  user; it neither changes the repository nor accepts the group's work.
+- A review is a read-only assessment after an execution batch or authorized fix.
+  Its findings inform the user; it neither changes the repository nor accepts work.
 - A retry remains the same authorized Job and updates its matching
   Implementation Report; it does not create a new Job or silently broaden its
   boundaries. A user may direct each retry or delegate a bounded review-fix
@@ -386,9 +425,10 @@ Do not change Foundation approvals or Stage Design or Execution entries.
   Active through review. Record its report and review result in optional Notes
   when useful. Mark it `[!] Blocked` when evidence requires the user's decision;
   only the user can set its final `[✓] Approved` or `[x] Cancelled` state.
-- A Job Group is a scheduling boundary, not a directory or parent artifact. Job
-  order in the Execution Plan assigns identity only; Job-Group dependencies
-  govern execution order and permitted parallelism.
+- Execution follows list order sequentially by default, honoring dependencies
+  and any explicit sequencing or parallel authorization in `Split Notes`.
+  Ambiguous or conflicting scheduling goes to Planning through the user. An
+  execution batch adds no group tags, plan headings, or State statuses.
 - State records coordination status, not the technical substance of a Job. Keep
   repository changes, evidence, deviations, and handoff detail in the matching
   Implementation Report.

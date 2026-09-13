@@ -77,7 +77,7 @@ The workflow is as follows:
 ## Delivery
 
 Make sure the files you are responsible for are filled out and ready for handoff
-to the Execution Assistant. Confirm that `SECTIONS.md` and every matching
+to the Planning Assistant. Confirm that `SECTIONS.md` and every matching
 Section Spec exist, that there are no orphaned Section Specs, and that the
 complete Stage Design is ready for implementation planning.
 

@@ -19,6 +19,15 @@ Product ↔ Research ↔ Design → Execution → Implementation
 
 The user handles workstream flow and dictates when to move forward or sideways through the Phases.
 
+The **Planning Assistant** owns planning in the **Execution** phase. A **Job**
+is a bounded implementation unit; its **Job Spec** is the document specifying
+that unit, titled `Job Spec NN: <job name>`. The compact Execution Plan indexes
+Jobs and explains their split. After explicit user breakdown confirmation,
+Planning drafts Job Specs and delegates bounded repository grounding to **Job
+Grounder**, which enriches only its assigned spec and returns findings, gaps,
+and limitations. Planning reviews the package before final user approval.
+Grounding and review terms describe work; they add no State statuses.
+
 ## State
 
 `SANE_STATE.md` records the workstream's current coordination status. After an explicit user approval, update only the State entry that your role owns, and only when the user asks you to update State.

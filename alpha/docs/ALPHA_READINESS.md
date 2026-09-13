@@ -14,8 +14,8 @@ Alpha has a tested repository and template layer for two workstream types:
   `design/SPEC.md`, which remains its durable decision record.
 - Repository pairing, workstream selection, the `sane-alpha` installer, shared
   context installation, and generic role skills are available and tested.
-- Context installation now manages eleven agent configurations (six assistants
-  and five workers), six assistant skills, and seventeen destinations. OpenCode
+- Context installation now manages twelve agent configurations (six assistants
+  and six workers), six assistant skills, and eighteen destinations. OpenCode
   must be restarted after installation or an
   overwrite. No role agent requires a user type declaration
   or reads root `type` metadata as session context.
@@ -47,6 +47,28 @@ Alpha has a tested repository and template layer for two workstream types:
 Alpha has type-aware scripts and templates, with type-neutral role-agent
 operation.
 
+Planning now owns Execution-phase planning under `sane-assistant-planning` and
+`sane-planning-assistant-role`. It preserves readiness and explicit plan-first
+breakdown gates, drafts Job Specs, delegates bounded evidence-based enrichment
+to Job Grounder (one writable spec), reviews summaries/cross-job consistency with
+targeted inspection, and seeks final package approval. Changed splits require
+renewed confirmation; changed Design requires an approved Update. Grounding
+terms are not new State statuses. See the
+[migration guidance](./SANE_AGENT_CONTEXT_PACKAGES.md#planning-migration) for
+non-deleting upgrades, old installed paths, and model-key changes.
+
+Coordination now consumes compact `Jobs` / `Split Notes` with sequential list
+order by default and explicitly authorized parallel execution batches. It uses
+lightweight dispatch readiness, predecessor evidence and user acceptance, one
+read-only reviewer per completed batch, and bounded review/fix cycles with attempt
+limits. Planning alone owns plan/spec revisions, including factual corrections;
+Coordination returns actionable corrections through the user and never launches
+Grounder. Implementers use guided read maps; reviewers independently inspect code
+and evidence from relevant Section Specs, Job Specs, and bounded instructions.
+Reports are read as necessary to verify accuracy; a report template and Execution
+Plan are not mandatory review inputs. Stage handoff uses Stage/Job Specs and
+actual reports/reviews, preserving existing paths, templates, and State statuses.
+
 ## Work Remaining for Complete Type Support
 
 1. Keep all six role skills generic. Their artifacts and contracts are
@@ -57,7 +79,7 @@ operation.
    implementation in the target repository, verification, user approval, and
    later-workstream handoff.
 3. Use pilot evidence to decide whether foundation needs specialized Stage or
-   Section templates. Research, Execution Plan, Job, Implementation Report,
+   Section templates. Research, Execution Plan, Job Spec, Implementation Report,
    Stage Implementation Brief, State, and shared Context remain intentionally
    common unless that evidence
    shows otherwise.

@@ -46,6 +46,8 @@ Additional terms are:
 - **Execution Plan:** the stage-level plan that turns approved Design into
   schedulable implementation work.
 - **Job:** a bounded unit of implementation work prepared for one agent.
+- **Job Spec:** the document specifying one Job, titled `Job Spec NN: <job name>`.
+  It carries grounded implementation guidance; the Job itself is the work unit.
 - **Implementation Report:** the recorded outcome of one Job.
 - **Research Report:** an authoritative, evidence-bearing record for one
   research topic within an assigned Research scope.
@@ -88,10 +90,15 @@ The user experiences the workflow as:
 5. Each Engineering Assistant delivers that Stage's Section specifications. The
    user approves the complete Design for Stage `N` before its Execution work
    can begin.
-6. The Execution Assistant picks up Stage `N` only after that approval and,
+6. The Planning Assistant picks up Stage `N` only after that approval and,
    except for the first Stage, after the previous Stage's Execution plan is
-   approved. It creates the Stage's Execution Plan and Jobs.
-7. The user approves the Stage Execution plan. Implementation then carries out
+   approved. After readiness and user permission to proceed, it proposes the
+   compact Execution Plan and waits for explicit breakdown confirmation. Only
+   then does it draft Job Specs, delegate one spec per Job Grounder, and review
+   summaries, cross-job consistency, and targeted repository evidence. Changed
+   splits need renewed confirmation; changed Design needs an approved Update.
+7. The user approves the completed Stage Execution Plan and all Job Specs.
+   Implementation then carries out
    the authorized Jobs in the target repository and records their outcomes.
 
 Later learning can return work to an earlier phase when necessary. Such a
@@ -130,16 +137,29 @@ are handed back to the appropriate role.
   configuration, callers, and integration points, then returns inline findings
   with path-and-line evidence. It does not use external research, write reports,
   mutate files, or launch children.
-- **Execution Assistant:** works on one approved Stage. It picks up the Stage's
-  complete Design, then produces its Execution Plan and Jobs.
+- **Planning Assistant:** works on one approved Stage in the Execution phase.
+  It owns the compact Execution Plan, confirmed breakdown, draft Job Specs,
+  delegated grounding, synthesis, and final package review with the user.
+  It is the sole owner/editor of plans and Job Specs, including all later factual
+  corrections and revisions; only its Grounder may enrich an assigned spec.
+- **Job Grounder:** is a bounded repository-investigation subagent launched by
+  Planning after breakdown confirmation. It directly enriches only one assigned
+  Job Spec with an evidence-based prioritized read map (paths, symbols, reasons),
+  actionable steps, integration contracts, and exact verified verification
+  commands. It distinguishes current facts, required changes, and predecessor
+  expected outputs, plus command definitions versus actual execution outcomes.
+  It returns findings, gaps, and limitations, escalating split or Design changes.
+  It never edits application files, Design, plans, State, or sibling specs, seeks
+  approvals, converses with users, or subdelegates.
 - **Coordination Assistant:** normally works on one authorized Stage. It
   reads that Stage's Execution documentation, launches the required
   implementation and review agents, reports state to the user, and only
   relaunches or fixes work at the user's direction.
 - **Worker agent:** executes one Job in the target repository
   and records its outcome.
-- **Review agent:** reviews a Stage's Job reports and repository changes
-  against the Execution documentation. It is instructed to be read-only and
+- **Review agent:** independently inspects scoped code and evidence against
+  relevant Design Section Specs and Job Specs, reading reports as necessary to
+  verify report and verification accuracy. It is instructed to be read-only and
   reports its findings to the Coordination Assistant.
 
 ## Session Lifecycle
@@ -191,7 +211,7 @@ Delivery completes the assistant's current action. The assistant must not
 presume that a later user response—or no response—is approval. After delivery,
 it expects either a request for Updates or an explicit user approval.
 
-Scout and Researcher are exceptions because they are bounded subagents rather
+Scout, Researcher, and Job Grounder are exceptions because they are bounded subagents rather
 than SANE role sessions. They have no user Pickup, readiness checkpoint, Delivery,
 approval, State update, or question loop. Each launcher gives its worker one exact,
 self-contained prompt containing the topic, baseline and evidence paths,
@@ -199,7 +219,9 @@ allowed output paths, implementation-repository path, constraints, verification,
 and requested return shape. Each completes the assignment or stops with a concise
 blocker. Scout returns only an inline inspection handoff and writes nothing;
 Researcher returns a summary of assigned research outputs, findings,
-verification, and blockers.
+verification, and blockers. Job Grounder returns a summary of its one enriched
+Job Spec, findings, gaps, and limitations. Grounding and worker completion
+assessments are descriptive, not additional State statuses or approvals.
 
 When the user requests **Updates**, the responsible assistant applies the
 requested update and then performs an **Updates Delivery**: it verifies that
@@ -218,7 +240,8 @@ The user approval gates are:
 - Research readiness;
 - root Design;
 - Design for each Stage; and
-- the Execution Plan for each Stage.
+- the confirmed Job breakdown before Job Spec authoring/grounding, followed by
+  final approval of the completed Execution Plan and Job Specs for each Stage.
 
 An assistant cannot self-approve. After its delivery, it asks for and waits for
 an explicit user approval or Updates. When the user approves its
@@ -231,22 +254,42 @@ scope, and directs it to pick up the relevant delivered work.
 
 ## Alpha Execution Model
 
-
-After the user approves a Stage Execution plan, the user starts a
+After the user approves a Stage Execution Plan and Job Specs, the user starts a
 Stage-scoped Coordination Assistant and asks it to run the authorized Jobs.
-The user does not separately authorize every Job in that approved plan.
+Run authorization may cover multiple Jobs; package approval alone does not start
+Implementation. Coordination confirms the current authorization before dispatch.
 
-Execution and repository implementation proceed sequentially by Stage. An
-Coordination Assistant runs the Job Groups in its authorized Stage in their
-Execution-plan order. Jobs within the same Job Group may run in parallel; the
-coordination harness launches their worker in parallel.
+Execution and repository implementation proceed sequentially by Stage. Within a
+Stage, Coordination consumes the compact `Jobs` and `Split Notes`: sequential list
+order is the default, and parallel execution requires explicit plan authorization.
+An **execution batch** is one Job or an explicitly parallel set, an operational
+term requiring no new headings, group tags, artifacts, or State schema.
+Predecessors need actual outputs, reports, review, and user acceptance before
+dependent work starts. Lightweight dispatch readiness consumes grounded specs;
+it does not duplicate grounding. Coordination never edits planning artifacts,
+even factual corrections, or launches Grounder. It says **“Planning needs to make
+these corrections”**, supplies actionable artifact paths/issues and evidence,
+and waits for the user to return to Planning with the corrections. Planning owns
+revisions under the existing breakdown/final approval and Design Update gates.
 
-After each Job Group, the Coordination Assistant launches one review
-agent. That agent is instructed to be read-only and reviews the Job Group's
-reports and repository changes against its Jobs and Stage Execution plan. It
-may produce findings, but it does not make changes or accept work. The
-Coordination Assistant reports the implementation and review state to the
-user, who decides whether to proceed or request Updates.
+Implementers start with required-start read maps and conditional references,
+expanding for concrete concerns without hard read caps. Material context gaps
+stop affected work for the user's Planning handoff. After each completed batch,
+Coordination launches one read-only reviewer with relevant Design Section Specs,
+Job Specs, and bounded repository/review/output instructions. The reviewer
+independently inspects actual code and evidence; reports are needed only to verify
+report and verification accuracy, not as a substitute for inspection. No report
+template, Execution Plan, global context, or exhaustive references are mandatory.
+Full correctness, integration, regression, test-validity, and evidence review
+remain required within the boundary. Narrow Fix reviews stay targeted; Bounded
+Remediation reviews cover the complete coherent remediation.
+
+The user selects checkpointed or delegated review/fix cycles; delegated cycles
+require explicit scope and attempt limits. Only the user accepts outcomes or
+authorizes expanded work. Stage handoff uses the Stage Spec, Job Specs, actual
+reports, and review evidence. Coordination maintains per-Job reports, the
+actual-state Stage Implementation Brief, and the existing Implementation State
+entries; no removed plan handoff section is required.
 
 ## Agent Context Model
 
@@ -271,7 +314,11 @@ them to read their implementation skill and the relevant Job and context
 materials. Their prompts provide only the context needed for their assigned
 implementation or review work.
 
-The same prompt-is-the-assignment rule applies to Scout and Researcher. Scout is
+The same prompt-is-the-assignment rule applies to Job Grounder, Scout, and Researcher.
+Job Grounder receives one writable spec and exact read-only context paths. It
+applies Scout's evidence discipline but writes its findings directly into that
+spec, with an inline summary for Planning. It must not discover wider workstream
+context or use Bash to mutate files. Scout is
 the bounded internal code inspector: it may read exact supplied artifacts from
 the separate workstream repository as context, but it cannot discover wider
 external context, mutate either repository, use web research, or write reports.

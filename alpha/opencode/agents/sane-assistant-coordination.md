@@ -1,5 +1,5 @@
 ---
-description: Coordinates authorized SANE Stage Jobs, read-only Job-Group reviews, targeted fixes, and the actual-state Stage Implementation Brief.
+description: Coordinates authorized SANE Stage execution batches, read-only reviews, bounded fixes, and the actual-state Stage Implementation Brief.
 mode: primary
 temperature: 0.1
 permission:

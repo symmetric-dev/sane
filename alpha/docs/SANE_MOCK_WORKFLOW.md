@@ -205,46 +205,85 @@ These are behavioral boundaries rather than a claim of dynamic path enforcement.
 
 ## 7. Execution Planning Session
 
-Start the **SANE Execution Assistant**. It creates the Stage Execution Plan from
-`resources/EXECUTION_PLAN_TEMPLATE.md` before editing it:
+Start the **SANE Planning Assistant** (`sane-assistant-planning`) in the
+Execution phase. It reads Pickup inputs, reports readiness, and waits for the
+user to permit Assistance before creating or editing the compact Stage
+Execution Plan from `resources/EXECUTION_PLAN_TEMPLATE.md`:
 
 **User prompt:**
 
 ```text
 Turn the approved 01-csv-export Stage Design into the smallest safe set of Jobs.
-Define Job Groups, dependencies, edit boundaries, verification, report
-requirements, and handoff requirements. Do not start implementation.
+Propose a compact Jobs index and Split Notes explaining boundaries,
+dependencies, and permitted parallelism. Wait for me to confirm that breakdown
+before drafting or grounding Job Specs. Do not start implementation.
 ```
 
-The assistant delivers:
+The assistant presents the compact plan. **User decision:** “I confirm this
+breakdown; draft and ground the Job Specs.” Readiness confirmation alone does
+not satisfy this gate. After this separate confirmation, the assistant creates
+each draft Job Spec by copying `resources/JOB_TEMPLATE.md`, with the H1
+`# Job Spec NN: <job name>` matching its plan entry.
+
+Planning delegates one existing draft to each **Job Grounder**, supplying its
+exact writable path, bounded `$IMPL` inspection scope, approved Design and plan
+paths, and predecessor context. The worker enriches only that spec with verified
+path/symbol/reason read maps, actionable steps, integration contracts, and exact
+command definitions. It distinguishes current repository facts, required
+changes, expected predecessor outputs, and commands actually run. It returns
+findings, gaps, and limitations without asking users questions or editing the
+application, Design, plan, State, or other specs.
+
+Planning reviews summaries and cross-job consistency and performs targeted
+repository inspection where needed. If evidence changes the split, it revises
+the plan and obtains renewed confirmation before affected work continues. Design
+changes go back for an explicit Design Update and approval first. Grounding is
+descriptive work, not a new State status.
+
+The completed package contains:
 
 ```text
 execution/stages/01-csv-export/EXECUTION_PLAN.md
 execution/stages/01-csv-export/jobs/<job-id>-<job-slug>.md
 ```
 
-The assistant creates each Job document by copying
-`resources/JOB_TEMPLATE.md`.
-
-**User decision:** Review the plan and every Job. Explicitly approve the Stage
-Execution Plan and request its State update. This authorizes the defined Jobs;
+**User decision:** Review the plan and every Job Spec. Explicitly approve the
+completed package and request its Execution State update. This authorizes the defined Jobs;
 it does not automatically start implementation.
 
-## 8. Implementation Session and Job Groups
+## 8. Implementation Session and Execution Batches
+
+Coordination consumes `Jobs` and `Split Notes`. Sequential list order is the
+default; parallel work requires explicit plan authorization. An execution batch
+is one Job or an explicitly parallel set, not a new heading or State schema.
 
 **User action:** Select the **SANE Coordination Assistant** in OpenCode.
 
 **User prompt:**
 
 ```text
-Run the first approved Job Group for Stage 01-csv-export. Start with Pickup,
+Run the first execution batch for Stage 01-csv-export. Start with Pickup,
 report the runnable Jobs and planned repository changes, and wait for my
 confirmation before launching an implementation agent.
 ```
 
 After the user confirms, the Coordination Assistant launches the bounded
 implementation agent or agents in `$IMPL`, then a read-only review agent for the
-completed Job Group. It reports the Job outcomes and review findings to the user.
+completed batch. It reports the Job outcomes and review findings to the user.
+
+Before dispatch it checks grounded specs and actual predecessor outputs, reports,
+reviews, and user acceptance without repeating grounding. If, for example, a Job
+Spec names a stale export symbol, Coordination reports **“Planning needs to make
+these corrections”** with the absolute spec path, affected Context/Instructions,
+and repository evidence. It never edits the spec or launches Grounder. The user
+returns to Planning for revisions and applicable approvals before resuming.
+
+Implementers start with required-start read maps and follow conditional references
+or expand for concrete concerns without hard read caps. Reviewers receive the
+relevant Design Section Specs, Job Specs, and bounded repository/review/output
+instructions. They independently inspect actual code and evidence and read
+reports only as necessary to verify accuracy; no report template or Execution
+Plan is mandatory review context, and reviewers never edit files.
 
 Each implementation agent writes its report by copying the workstream-local
 template:
@@ -259,7 +298,7 @@ to the Job-specific destination:
 implementation/reports/01-csv-export/<job-id>-<job-slug>.md
 ```
 
-Once every authorized Job has completed and received its Job-Group review, the
+Once every authorized Job has completed and received its batch review, the
 Coordination Assistant creates or updates this actual-state handoff before
 offering Stage implementation delivery:
 
@@ -270,11 +309,15 @@ implementation/briefs/STAGE_01.md
 It is created from `resources/STAGE_IMPLEMENTATION_BRIEF_TEMPLATE.md` only when
 absent. The brief supplements the per-Job reports with actual implemented
 results, repository changes, verification evidence, and next-Stage Design context.
+Handoff readiness uses the Stage Spec, Job Specs, actual reports, and reviews.
 
-**User decision after each Job Group:** The user may accept completed Job
+**User decision after each execution batch:** The user may accept completed Job
 outcomes, request a permitted retry or fix, return work to Research, Design, or
-Execution, or stop. The assistant does not continue to another Job Group without
-the user's direction. After the final group, the user reviews the Stage handoff
+Planning, or stop. The assistant does not continue to another batch without
+the user's authorization. For review/fix cycles, the user chooses checkpointed
+reviews or delegates an explicit scope and attempt limit. Narrow Fix reviews stay
+targeted; Bounded Remediation reviews cover all assigned outcomes. Delegation
+never accepts results on the user's behalf. After the final batch, the user reviews the Stage handoff
 record and explicitly accepts or redirects the implementation outcomes.
 
 Approved Design remains the implementation authority. If a newer Research
@@ -301,7 +344,7 @@ repository and the implementation repository are separate Git repositories.
 
 ## 10. Pause and Resume
 
-The user can stop after any delivery or Job Group. To resume later, select the
+The user can stop after any delivery or execution batch. To resume later, select the
 workstream explicitly if another one became selected:
 
 ```bash

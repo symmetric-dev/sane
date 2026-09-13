@@ -61,22 +61,33 @@ The Alpha will test the full workflow by hand:
    Research Baselines manifest applicable direction and conflicts. A Research
    Worker may produce one bounded topic report and supporting files, while the
    coordinating Research Assistant alone owns the baseline.
-2. The Execution Assistant prepares a per-stage `EXECUTION_PLAN.md` and Job
-   documents from an approved complete Stage Design specification.
-3. The user reviews and authorizes the stage Execution plan manually.
+2. The Planning Assistant prepares a compact per-stage `EXECUTION_PLAN.md` from
+   approved complete Stage Design. After readiness confirmation and a separate
+   explicit breakdown confirmation, it drafts Job Specs and delegates each to
+   Job Grounder, then reviews findings and cross-job consistency with targeted
+   repository inspection. Changed splits/Design require renewed confirmation
+   and, for Design, an approved Update.
+3. The user reviews and approves the completed Execution Plan and Job Specs.
 4. A Coordination Assistant invokes worker implementer agents for the
    authorized Jobs.
 5. Each worker agent carries out one Job in the target
    repository and writes its matching Implementation Report.
-6. After all authorized Jobs are completed and reviewed, the Implementation
+6. After all authorized Jobs are completed and reviewed, the Coordination
    Assistant creates or updates the actual-state Stage Implementation Brief; the
    user reviews it with the per-Job reports and carries handoff context to later
    Design work or stages.
 
 The initial alpha may validate one Stage first. It tracks workstream State
-manually and permits parallel implementation only when an Execution-defined Job
-Group allows it. Git-worktree strategy, merge automation, retry automation, and
+manually and uses sequential list order unless the approved plan explicitly
+authorizes parallel Jobs. Git-worktree strategy, merge automation, retry automation, and
 CLI supervision are intentionally outside this first alpha scope.
+
+Coordination consumes `Jobs` / `Split Notes` using execution batches (one Job or
+an explicitly parallel set), without new plan headings or State statuses.
+Planning alone edits plans and Job Specs, including factual corrections, with
+Grounder limited to its assigned spec. Coordination returns actionable corrections
+through the user to Planning and waits; it never launches Grounder. See the
+[operating model](./ALPHA_OPERATING_MODEL.md#alpha-execution-model).
 
 ## Agent Model
 
@@ -86,7 +97,7 @@ between agents automatically.
 
 ### OpenCode assistants
 
-The Product, Research, Design, Engineering, Execution, and top-level
+The Product, Research, Design, Engineering, Planning, and top-level
 Coordination Assistants will be selected and started by the user in OpenCode.
 Their global OpenCode agent configurations are installed with:
 
@@ -108,12 +119,33 @@ the repository work.
 
 Worker implementer, reviewer, and fixer agents receive narrow OpenCode subagent
 configurations. The top-level Coordination Assistant invokes one implementer
-for one authorized Job, one read-only reviewer for a completed Job Group, and
-one fixer only for a user-directed targeted correction.
+for one authorized Job, one read-only reviewer per completed execution batch, and
+one fixer for an authorized Narrow Fix or Bounded Remediation. Delegated review/fix
+cycles require user-approved scope and attempt limits; only the user accepts work.
 
 The focused worker, review, and fix prompts identify only their assigned
 documents, repository paths, requirements, and boundaries. They do not provide
 general SANE context.
+
+Dispatch readiness consumes grounded specs and actual predecessor evidence,
+without duplicate grounding. Implementers begin with required-start read maps
+and follow conditional references or expand for concrete concerns without hard
+read caps. Reviewers receive relevant Section Specs, Job Specs, and bounded
+repository/review/output instructions, independently inspect code and evidence,
+and read reports only as necessary to verify accuracy. No mandatory report
+template, Execution Plan, or exhaustive reference list is required for review.
+Stage handoff is based on Stage/Job Specs and actual reports/reviews.
+
+### Job Grounder
+
+Planning invokes `sane-worker-grounder` after explicit breakdown confirmation.
+It investigates bounded repository context and writes only one assigned Job Spec,
+using Scout's evidence discipline. Its guidance includes a compact prioritized
+read map with symbols/reasons, actionable steps, integration contracts, and exact
+verified command definitions, separating current facts, required changes,
+predecessor expected outputs, and actual command outcomes. It returns findings,
+gaps, and limitations to Planning; it makes no application, Design, plan, or
+State edits and has no user conversation, approval, or subdelegation authority.
 
 ### Scout and Research Workers
 
@@ -158,7 +190,7 @@ installer copies six assistant role skills to the shared location:
 OpenCode auto-discovers skills from that path. Here `<home>` is `SANE_HOME` when it is set, otherwise the
 current user's home directory.
 
-The installer manages exactly seventeen destinations: eleven OpenCode agent
+The installer manages exactly eighteen destinations: twelve OpenCode agent
 configurations and six assistant skills. Restart OpenCode after installation or an
 overwrite so it loads them. No role agent requires a type declaration or reads root `type`
 metadata as session context. Type remains an input to CLI creation: it creates
@@ -168,6 +200,10 @@ installer leaves identical files unchanged, requires `--overwrite` for differing
 regular files, and supports a non-mutating `--dry-run`. Reinstalling does not
 delete previously installed typed skill directories; cleanup is explicit and
 user-directed.
+
+For the Execution-to-Planning source rename, obsolete installed paths, manual
+cleanup, and model-key migration, see
+[Planning migration](./SANE_AGENT_CONTEXT_PACKAGES.md#planning-migration).
 
 ## Manual Approval and State
 
@@ -190,7 +226,7 @@ requests the State update.
 - Foundation Workstream Definition;
 - authoritative topic Research Reports plus scope-specific Research Baselines;
 - root, Stage, and Section Design Specifications;
-- stage Execution Plan and Job documents; and
+- stage Execution Plan and Job Specs (documents specifying bounded Jobs); and
 - stage-scoped Implementation Reports and Stage Implementation Briefs.
 
 The Alpha may reveal gaps or unsafe assumptions in these templates. Record such

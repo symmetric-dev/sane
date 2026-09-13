@@ -22,7 +22,7 @@ sane-alpha install-context-packages [--dry-run] [--overwrite] [--model-config <p
 
 The installer uses `SANE_HOME` when set (otherwise the current user's home), so
 the command is isolated with `SANE_HOME=/temporary/home` when needed. It copies
-the eleven source agents as global OpenCode Markdown agents under:
+the twelve source agents as global OpenCode Markdown agents under:
 
 ```text
 <home>/.config/opencode/agents/
@@ -34,13 +34,14 @@ It copies the six assistant role skills from `alpha/skills/` to:
 <home>/.agents/skills/<skill-name>/SKILL.md
 ```
 
-The installer has exactly seventeen destinations: six primary role-agent
-configurations, five worker/subagent configurations, and six assistant skills. The
-primary roles are Product, Research, Design, Engineering, Execution, and
+The installer has exactly eighteen destinations: six primary role-agent
+configurations, six worker/subagent configurations, and six assistant skills. The
+primary roles are Product, Research, Design, Engineering, Planning, and
 Coordination; the subagents are Scout Worker, Research Worker, Worker
-Implementer, Worker Reviewer, and Worker Fixer. Scout handles bounded internal
+Implementer, Worker Reviewer, Worker Fixer, and Job Grounder. Scout handles bounded internal
 implementation-repository inspection, while Researcher handles bounded external
-evidence. Each worker's substantive contract is contained in its agent
+evidence. Job Grounder investigates bounded repository context and directly
+enriches one assigned Job Spec for Planning. Each worker's substantive contract is contained in its agent
 configuration rather than a worker role skill.
 It validates every source and destination before changing anything.
 It creates parent directories as needed, leaves identical destinations unchanged,
@@ -109,7 +110,7 @@ The configuration does not repeat the substantive role instructions from the
 skill or duplicate SANE template guidance. `alpha/templates/` is the canonical
 source of SANE templates.
 
-The five worker/subagent configurations instead treat their invocation
+The six worker/subagent configurations instead treat their invocation
 prompt as the complete assignment. Their built-in context reinforces role,
 permissions, scope control, stopping behavior, and return shape without adding
 workstream context that could compete with the orchestrator's supplied prompt.
@@ -119,16 +120,50 @@ not read root `type` metadata as session context. Product and Design load their
 single generic skill directly. Their skills use the bootstrapped `PRD.md` and
 applicable root Design template without routing by type.
 
-Reinstalling updates only the seventeen managed destinations; it does not delete
+Reinstalling updates only the eighteen managed destinations; it does not delete
 files from an earlier naming scheme. After upgrading an existing installation,
 inspect and explicitly remove obsolete `sane-implementation.md` and other
 pre-`sane-assistant-*` agent files from `<home>/.config/opencode/agents/`, plus
 `<home>/.agents/skills/sane-implementation-assistant-role/`. The installer does
 not remove potentially user-modified files automatically.
 
+### Planning migration
+
+The source agent is now `sane-assistant-planning.md`, loading
+`sane-planning-assistant-role`; their old Execution-named sources have been
+renamed, not retained as aliases. The new worker is `sane-worker-grounder.md`,
+formally **Job Grounder**. The Execution phase, `execution/` artifact paths,
+`EXECUTION_PLAN_TEMPLATE.md`, and `JOB_TEMPLATE.md` resource filenames remain.
+
+Existing installations keep these obsolete paths because installation never
+deletes files, even with `--overwrite`:
+
+- `<home>/.config/opencode/agents/sane-assistant-execution.md`
+- `<home>/.agents/skills/sane-execution-assistant-role/` (including `SKILL.md`)
+
+Inspect them for local customizations, transfer any wanted changes to the new
+Planning sources/configuration, and manually remove the obsolete files/directory
+when ready. Also inspect any manually installed copies in project or alternate
+OpenCode agent/skill directories. No automatic cleanup is performed.
+
+In custom model YAML, rename the `sane-assistant-execution` key to
+`sane-assistant-planning`, preserving its model and variant. The old key is now
+unknown and fails validation before installation writes. Add an explicit
+`sane-worker-grounder` mapping if desired. The checked-in `alpha/models.yaml`
+transfers Planning's `openai/gpt-5.6-sol` / `low` mapping unchanged and assigns
+Grounder `openai/gpt-5.6-terra` / `medium`, matching Scout's evidence-oriented
+repository work. Use the existing installer with `--model-config` and `--dry-run`
+to review, then `--overwrite` as needed. Quit and restart OpenCode afterward.
+
+Existing workstreams and their copied resources are not migrated by context
+installation. Review their local Job template and active Job Specs explicitly:
+use `# Job Spec NN: <job name>` with the existing two-digit ID and exact plan
+name, retain required H2s and paths, and preserve authored content and approval
+history. Grounding terms are descriptive, not new State statuses.
+
 ## Context Ingestion and Pickup
 
-The Scout Worker, Research Worker, Worker Implementer, Worker Reviewer, and Worker Fixer are
+The Scout Worker, Research Worker, Job Grounder, Worker Implementer, Worker Reviewer, and Worker Fixer are
 intentionally different from the six user-started role agents described below.
 They are subagents invoked by their authorized launcher with self-contained,
 narrowly scoped prompts. They do not discover `.sane` and workstream context.
@@ -203,6 +238,58 @@ as an Update.
 
 ## Working Directory, Permissions, and Scope
 
+Planning first reads its Pickup inputs, reports readiness, and waits. After the
+user permits Assistance, it proposes only the compact Execution Plan (`Jobs`
+and `Split Notes`) and waits for explicit breakdown confirmation before creating
+draft Job Specs or launching Job Grounder. Each worker receives one spec's exact
+writable path, bounded repository scope, and exact read-only Design, plan, and
+predecessor context. It enriches that spec with a prioritized path/symbol/reason
+read map, actionable steps, integration contracts, and exact verified command
+definitions, distinguishing current facts, required changes, expected predecessor
+outputs, and actual command outcomes. It returns findings, gaps, and limitations.
+It cannot edit application files, Design, plan, State, or other specs, approve
+anything, converse with users, or subdelegate. Planning reviews summaries and
+cross-job consistency, performs targeted inspection, and obtains renewed
+confirmation for changed splits and approved Design Updates for changed Design.
+The completed plan and all Job Specs then require final user package approval.
+
+Job Grounder's `edit: allow` and `external_directory: allow` permit writing its
+assigned spec in the paired repository. Arbitrary invocation-supplied path limits
+are behavioral, not dynamically enforced by those permissions. Bash is available
+only for safe read-only inspection; mutating verification must be recorded as not
+run. Planning may delegate only to `sane-worker-grounder`.
+
+Planning is the sole owner/editor of Execution Plans and Job Specs, including
+later factual corrections and revisions, with Grounder limited to its assigned
+spec. Coordination never edits planning artifacts or launches Grounder; its task
+allowlist contains only implementer, reviewer, and fixer. It reports **“Planning
+needs to make these corrections”** with actionable paths/issues and evidence and
+waits for the user to return to Planning. Planning redelivers revisions under the
+existing explicit breakdown/final approval gates and Design Update escalation.
+Engineering retains `ask` permissions for both Scout and Researcher.
+
+Coordination consumes compact `Jobs` / `Split Notes` with lightweight dispatch
+readiness rather than duplicate grounding. Sequential list order is the default;
+parallel execution requires explicit plan authorization. An execution batch is
+one Job or an explicitly parallel set, with ready, reviewed, user-accepted
+predecessors and current user run authorization. It adds no plan headings or
+State schema. One reviewer assesses each completed batch; review/fix cycles retain
+user-selected checkpoints or delegated scope/attempt limits and user-only acceptance.
+Stage handoff uses Stage/Job Specs, actual reports, and review evidence.
+
+Implementer assignments start inspection at the Job Spec's required-start read
+map and applicable repository instructions. Conditional references carry triggers;
+concrete correctness, integration, regression, or verification concerns justify
+targeted expansion without hard read caps. Material context gaps stop affected
+work for the user's Planning handoff. The reviewer core assignment is relevant
+Design Section Spec(s), Job Spec(s), and bounded repository/review/output
+instructions. Reviewers independently inspect actual code and evidence, reading
+reports only as necessary to verify report and verification accuracy. There is
+no mandatory report template, Execution Plan, global context, or exhaustive
+reference traversal. Full review quality applies within the boundary; Narrow Fix
+reviews stay targeted, and Bounded Remediation reviews cover the coherent problem.
+Reviewers never edit files; fixers never edit planning artifacts.
+
 The implementation repository is the required OpenCode session working
 directory. An agent started elsewhere reports that condition and waits for the
 user to start it from the implementation repository or otherwise resolve the
@@ -230,7 +317,7 @@ external paths supplied in its assignment. It denies web access and has
 every mutating command and keeps codebase exploration inside the exact supplied
 implementation scope.
 
-Engineering, Execution, and Implementation sessions require a user-selected
+Engineering, Planning (Execution phase), and Implementation sessions require a user-selected
 Stage. Without one, Pickup is incomplete and the agent reports the missing Stage
 at its readiness checkpoint. Design may operate on the root Design or on a
 user-selected Stage; Product and Research normally operate across the

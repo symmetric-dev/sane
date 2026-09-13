@@ -17,7 +17,7 @@ This policy applies to both `feature` and `foundation` workstreams.
 | Project documentation | The implementation repository | The current practical description of what the repository, product, service, and operating environment contain and how to use or evolve them | Continuously maintained as the repository changes |
 
 Workstream artifacts include `PRD.md`, research documents, root and Stage Design,
-State, Execution Plans, Jobs, and Implementation Reports.
+State, Execution Plans, Job Specs, and Implementation Reports.
 They explain what was intended, why it was chosen, what constraints applied, and
 what the user approved.
 
@@ -50,7 +50,7 @@ outcome and acceptance evidence:
   validation in `PRD.md`.
 - Design identifies its relationship to the repository, ownership, destination
   paths, and high-level constraints in root or Stage Design.
-- Engineering and Execution turn it into bounded Sections and Jobs where needed.
+- Engineering and Planning turn it into bounded Sections and Job Specs where needed.
 - Implementation creates or updates the target-repository documents, verifies
   them against the implemented repository, and records the result in the
   Implementation Report.
@@ -70,8 +70,10 @@ outcome useful. They do not directly mutate target-repository documentation.
   scope, whose coordinating assistant alone maintains its baseline.
 - **Design** establishes technical direction, documentation constraints, and
   the relationship between the intended documentation and the repository.
-- **Engineering, Execution, and Implementation** plan, authorize, and perform
+- **Engineering, Planning (Execution phase), and Implementation** prepare and perform
   the target-repository change at the appropriate Stage and Job scopes.
+  The user alone authorizes it; Job Grounder enriches one assigned Job Spec with
+  repository evidence and never edits project documentation or approves work.
 
 This keeps high-level roles authoritative over intent and design without giving
 them uncontrolled implementation-repository mutation authority. An
@@ -131,7 +133,7 @@ or make downstream roles reconstruct a full history.
 
 ## Focused Downstream Context
 
-Engineering, Execution, and Implementation consume the distilled, approved
+Engineering, Planning, and Implementation consume the distilled, approved
 current-workstream artifacts plus only the implementation-repository paths and
 current documentation relevant to their assigned Stage or Job. They do not
 perform open-ended historical archaeology by default.

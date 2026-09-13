@@ -41,8 +41,8 @@ sane-alpha install-context-packages --overwrite --model-config ./alpha/models.ya
 ```
 
 Quit and restart OpenCode after installation (and after any overwrite) so the
-eleven agent configurations and six assistant skills are loaded. The installer
-manages seventeen destinations in total: six assistants and five workers plus
+twelve agent configurations and six assistant skills are loaded. The installer
+manages eighteen destinations in total: six assistants and six workers plus
 the six skills.
 
 Pair the implementation repository with its local workstream repository:
@@ -101,7 +101,7 @@ artifact and preserves the template's required headings and structure:
 - Engineering: `STAGE_SECTIONS_TEMPLATE.md` →
   `design/stages/<id>-<slug>/SECTIONS.md`; `SECTION_SPEC_TEMPLATE.md` →
   `design/stages/<id>-<slug>/sections/<id>-<slug>.md`.
-- Execution: `EXECUTION_PLAN_TEMPLATE.md` →
+- Planning (Execution phase): `EXECUTION_PLAN_TEMPLATE.md` →
   `execution/stages/<id>-<slug>/EXECUTION_PLAN.md`; `JOB_TEMPLATE.md` →
   `execution/stages/<id>-<slug>/jobs/<id>-<slug>.md`.
 - Implementation: `IMPLEMENTATION_REPORT_TEMPLATE.md` →
@@ -112,6 +112,47 @@ artifact and preserves the template's required headings and structure:
 
 `PRD.md`, `SANE_CONTEXT.md`, and `SANE_STATE.md` are bootstrap-root artifacts;
 their owning roles edit them in place.
+
+Select `sane-assistant-planning` for the Execution phase. After Pickup it reports
+readiness and waits. Once you permit Assistance, it proposes the compact plan
+(`Jobs` and `Split Notes`) and waits for separate explicit breakdown confirmation.
+Only then does it draft Job Specs and invoke `sane-worker-grounder` for one spec
+at a time per worker. A Job is the work unit; a Job Spec is its document, titled
+`# Job Spec NN: <job name>` with the plan's exact ID and name.
+
+Job Grounder writes only its assigned spec, adding a prioritized verified read
+map (paths, symbols, reasons), steps, integration contracts, and exact command
+definitions. It distinguishes existing facts, required changes, expected
+predecessor outputs, and actual verification outcomes, and returns findings,
+gaps, and limitations. It cannot edit application files, Design, plan, State,
+or other specs, hold user conversations, approve, or subdelegate. Planning
+reviews cross-job consistency and targeted evidence. A changed split requires
+renewed confirmation; changed Design requires an approved Update. Finally you
+approve the complete plan and all Job Specs; grounding itself grants no approval
+and introduces no State status.
+
+Planning alone edits plans and Job Specs, including factual corrections, through
+its own work and assigned Grounder enrichment. Coordination never edits them or
+launches Grounder. If a spec is stale or incomplete, it reports **“Planning needs
+to make these corrections”** with actionable paths/issues and waits for you to
+return to Planning. Existing breakdown/final approvals and Design escalation apply.
+
+Coordination checks grounded dispatch inputs and actual predecessor readiness,
+including review and your acceptance. Execution follows sequential list order
+unless `Split Notes` explicitly authorizes parallel work. Each execution batch
+(one Job or an explicitly parallel set) gets one read-only review. Implementers
+use required-start read maps, conditional references, and targeted expansion
+without hard read caps. Reviewers receive relevant Section Specs, Job Specs, and
+bounded repository/review/output instructions; they independently inspect code
+and evidence and read reports as necessary to verify accuracy. They need no
+mandatory report template or Execution Plan and never edit files.
+
+Choose checkpointed or delegated review/fix cycles, with explicit scope and
+attempt limits for delegation. Only you accept outcomes. Narrow Fix reviews stay
+targeted; Bounded Remediation reviews cover the coherent remediation. Stage
+handoff uses the Stage Spec, Job Specs, actual reports, and reviews to produce
+the existing brief and Implementation State record. See the
+[operating model](./ALPHA_OPERATING_MODEL.md#alpha-execution-model).
 
 Topic `REPORT.md` files are authoritative evidence. A Research session has one
 assigned workstream or Stage scope, and only its coordinator updates that
@@ -183,3 +224,10 @@ sane-alpha install-context-packages --overwrite
 Reinstalling does not remove typed skill directories installed by earlier Alpha
 versions. Remove those directories only if you explicitly choose to clean them
 up.
+
+The same non-deletion rule retains old installed
+`sane-assistant-execution.md` and `sane-execution-assistant-role/`. Inspect and
+manually clean up those paths after preserving local customizations, and rename
+custom model key `sane-assistant-execution` to `sane-assistant-planning` before
+installation. See [Planning migration](./SANE_AGENT_CONTEXT_PACKAGES.md#planning-migration)
+for exact paths, model choices, and existing-workstream template guidance.

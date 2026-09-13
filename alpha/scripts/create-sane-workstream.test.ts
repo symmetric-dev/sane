@@ -92,6 +92,29 @@ describe("create-sane-workstream", () => {
     expect(await readFile(join(destination, "PRD.md"), "utf8")).toBe("foundation/PRD.md\n")
   })
 
+  test.each(["feature", "foundation"])("%s bootstrap retains Execution paths and copies compact plan and Job Spec resources", async (type) => {
+    const destination = join(tempDirectory, `${type}-planning`)
+    await createSaneWorkstream({ destination, type, write: () => {} })
+    const plan = await readFile(join(destination, "resources", "EXECUTION_PLAN_TEMPLATE.md"), "utf8")
+    const spec = await readFile(join(destination, "resources", "JOB_TEMPLATE.md"), "utf8")
+    expect(plan.match(/^#{1,2} .+$/gm)).toEqual(["# Stage Execution Plan", "## Jobs", "## Split Notes"])
+    expect(plan).toContain("Do not add Job Group tags.")
+    expect(plan).toContain("Execution defaults to sequential list order.")
+    expect(plan).toContain("state sequencing exceptions and parallel authorization explicitly")
+    expect(spec.match(/^#{1,2} .+$/gm)).toEqual([
+      "# Job Spec <id>: <job name>", "## Goal", "## Context", "## Instructions",
+      "## Boundaries", "## Verification", "## Report Requirements", "## Resolutions",
+    ])
+    expect(spec).toContain("`# Job Spec NN: <job name>`")
+    expect(spec).toContain("compact prioritized")
+    expect(spec).toContain("required-start reads from conditional references with concrete triggers")
+    expect(spec).toContain("definition-verified commands")
+    await access(join(destination, "execution"))
+    await expectMissing(join(destination, "planning"))
+    expect(await readFile(join(destination, "SANE_CONTEXT.md"), "utf8"))
+      .toContain("**Design**, **Execution**, and")
+  })
+
   test("dry run leaves no destination", async () => {
     const destination = join(tempDirectory, "dry-run-workstream")
     const lines: string[] = []
