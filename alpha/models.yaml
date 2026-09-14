@@ -18,5 +18,5 @@ sane-worker-grounder: { model: "openai/gpt-5.6-terra", variant: medium }
 
 # Deep Focus Workers
 # sane-worker-implementer: { model: "openai/gpt-6-astra", variant: low }
-sane-worker-implementer: { model: "openai/gpt-5.6-terra", variant: medium }
+sane-worker-implementer: { model: "openai/gpt-5.6-terra", variant: high }
 sane-worker-fixer: { model: "openai/gpt-6-astra", variant: low }

@@ -112,8 +112,7 @@ The workflow is as follows:
    You may inspect reports directly after this or go by the reviewer response.
    For every changed path beyond a Job's expected implementation surface,
    confirm that the report explains its necessity and that the reviewer assessed
-   whether it remained traceable to the approved Job. Do not edit the reports
-   yourself directly because the review-fix cycle may solve an inaccuracy.
+   whether it remained traceable to the approved Job.
 
 4. Report the Job outcomes and review findings to the user. Before starting a
    review-fix cycle, ask which coordination preference to use unless the user has
@@ -134,109 +133,18 @@ The workflow is as follows:
    deliver the complete Stage implementation record to the user. 
 
 
-## Fixer and Review Subagents
+## Fixes Procedure
 
-### Fixer Agents
+If the `sane-worker-reviewer` finds issues, you may proceed with targeted fixes for each of the identified issues as fixes of the reviewed job before starting the next Job(s).
 
-Before launching a `sane-worker-fixer`, classify the correction as either a
-**Narrow Fix** or **Bounded Remediation**. Here, bounded means bounded by the
-coherent problem and its approved behavior, not necessarily by the smallest
-possible diff.
+If the `sane-worker-reviewer` agent does NOT find issues, you may proceed with the next Job(s), however, you can expect that the next `sane-worker-implementer` may report gaps or missing work that its Job requires, in that case, the fixes will be assigned to the previous Job, and we will run an agent to attempt to fix all gaps before moving onto the next Job. Example:
 
-#### Narrow Fix
+- Job 03 completes, review accepts it and we go to Job 04
+- Job 04 starts, but it identifies 2 missing gaps that it needs to start its work
+- You receive the Job 04 report and then pass down the exact gaps reported or any file where they were written to the `sane-worker-fixer` for a fix targeted for Job 03
+- Once that is done you can proceed with Job 04 again without running a reviewer
+- You can do this process twice before scalating to the user for identifying any planning corrections
 
-Use a Narrow Fix when the root cause is known, the affected contract and
-ownership boundaries remain unchanged, the existing allowed paths are
-sufficient, and focused verification can prove the correction. Supply only the
-specific defect, directly affected paths and tests, behavior to preserve,
-verification, report handling when applicable, and this stop condition:
-
-> Stop if resolution requires changing an interface, ownership boundary,
-> approved behavior, or allowed-edit boundary.
-
-Example:
-
-```
-"Fix this specific issue:
-
-In path/to/file.ext, the final <library>'s up and destroy invocations must inherit
-the human operator's stdin so they can answer <library>'s interactive confirmation.
-Previews, refreshes, identity checks, backups, and other child commands must keep
-stdin ignored. Preserve the existing interactive-terminal requirement and --yes
-rejection.
-
-Add focused tests covering that boundary. Run the focused tests and report the
-changed files and results. Do not modify any other behavior. Stop if resolution
-requires changing an interface, ownership boundary, approved behavior, or
-allowed-edit boundary."
-```
-
-#### Bounded Remediation
-
-Use Bounded Remediation when related findings share a root cause or coherent
-failure boundary, and correcting only one symptom would predictably leave the
-same contract, operation, or behavior defective elsewhere. A remediation may
-span multiple coupled files or layers. Build its prompt as a remediation brief
-with these sections:
-
-1. **Completion mandate:** require the complete current remediation, not a token,
-   partial, or symptom-only attempt.
-2. **Read first:** list every Job, Design, report, implementation, test,
-   interface, and configuration path needed to understand the authorized
-   boundary.
-3. **Verified current state:** identify behavior already confirmed correct and
-   requiring preservation, reproduced failures, completed work, and remaining
-   gaps. Distinguish verified observations from suspected causes. When a root
-   cause is not conclusively established, require the fixer to confirm or revise
-   the diagnosis before editing.
-4. **Required work:** enumerate every remaining outcome and scenario that must be
-   completed coherently. Do not rely on a broad instruction such as “fix all
-   tests.”
-5. **Allowed paths:** list the complete authorized edit surface, including report
-   paths when reconciliation is required.
-6. **Forbidden paths and operations:** state protected behavior, files,
-   environments, external mutations, and non-goals explicitly.
-7. **Quality expectations:** define realistic boundary behavior, regression,
-   lifecycle, cleanup, compatibility, and evidence expectations relevant to the
-   remediation. Difficulty constructing fixtures or exercising the real
-   boundary is not itself completion or a blocker.
-8. **Verification obligations:** enumerate focused and aggregate commands,
-   operational checks, cleanup or leak inspection, and repository checks. Require
-   scenario-level evidence where the remediation contains multiple scenarios.
-9. **Report reconciliation:** identify every report to update and the evidence,
-   deviations, and remaining risks it must record while preserving its required
-   structure.
-10. **Stop conditions:** stop for material missing, stale, or contradictory
-    planning context, or when completion genuinely requires crossing
-    an explicit allowed-edit or approved-behavior boundary, or making a
-    user-owned product, Design, ownership, or architectural decision. Require
-    concrete reproduction and technical evidence for a blocker.
-11. **Return requirements:** request a concise implementation summary, evidence
-    for each required outcome or scenario, all verification results, changed
-    paths, updated reports, unresolved assumptions, and genuine blockers.
-
-Require verification results to distinguish commands executed and passed,
-executed and failed, unavailable or unsafe to execute, explicitly deferred by
-the Job, and requiring user-only evidence. The fixer must never claim a command
-or scenario that it did not actually run or inspect.
-
-Provide the fixer enough directly relevant context to reason across the complete
-authorized boundary. Do not provide general workstream context merely because
-the remediation is wider. Do not split a known coherent remediation into serial
-symptom fixes solely to minimize each diff.
-
-Treat Bounded Remediation as complete only when every enumerated outcome has
-been implemented or evidenced, preserved behavior remains intact, required
-realistic boundary and aggregate verification has been addressed, cleanup and
-lifecycle obligations have been checked when relevant, reports match actual
-evidence, and any unresolved item is a genuine boundary blocker rather than
-unfinished implementation.
-
-After any unsuccessful fix, reassess whether the remaining issue is still a
-Narrow Fix or whether the evidence now supports Bounded Remediation. Do not
-repeat narrow fixes mechanically. Under a delegated cycle, continue only within
-the user-approved scope and attempt limit; otherwise return to the user after
-the review.
 
 ## Artifact Creation
 
@@ -269,14 +177,9 @@ user.
 
 ## Approval and Boundaries
 
-Only the user may accept a Job outcome. Before the first user-directed execution batch
-starts, initialize the selected Implementation Stage and all of its Job entries
-from the approved Execution Plan. Before every user-directed execution batch starts,
-mark only its Jobs `[~] Active`. After the review agent returns, record its
-material finding in the Job's optional Notes and mark it `[!] Blocked` when
-implementation or review evidence requires a user decision. Mark a Job
-`[✓] Approved` or `[x] Cancelled` only after the corresponding user decision.
-Do not change Foundation approvals or Stage Design or Execution entries.
+Depending on the user instructions, you may be able to approve jobs and move on with coordination until the Stage is done, or wait for user approval on specific chekcs. Initialize the selected Implementation Stage and all of the Job entries the user requests coordination for (or all in the plan) from the approved Execution Plan. 
+
+Before every user-directed execution batch starts, mark only its Jobs `[~] Active`. After the review agent returns, record its material finding in the Job's optional Notes and mark it `[!] Blocked` when implementation or review evidence requires a user decision. Mark a Job `[✓] Approved` or `[x] Cancelled` only after the corresponding user decision. Do not change Foundation approvals or Stage Design or Execution entries.
 
 ## Clarifications
 
@@ -285,18 +188,6 @@ Do not change Foundation approvals or Stage Design or Execution entries.
   Job-specific Report Requirements add evidence without changing its structure.
 - A Stage Implementation Brief is one actual-state handoff after all authorized
   Jobs for the selected Stage have completed and been reviewed. 
-- A review is a read-only assessment after an execution batch or authorized fix.
-  Its findings inform the user; it neither changes the repository nor accepts work.
-- A retry remains the same authorized Job and updates its matching
-  Implementation Report; it does not create a new Job or silently broaden its
-  boundaries. A user may direct each retry or delegate a bounded review-fix
-  cycle, but only the user may authorize expanded behavior or accept the result.
-- A necessary additional repository path does not by itself broaden a Job's
-  behavioral boundary. The implementer may change such a path when it is
-  directly required for correctness, completeness, integration, compatibility,
-  or verification, is not explicitly forbidden, and is fully reported with its
-  rationale. A change to approved behavior, public contracts, ownership,
-  architecture, or an explicit forbidden boundary still requires escalation.
 - A Job changes to `[~] Active` immediately before its agent starts and remains
   Active through review. Record its report and review result in optional Notes
   when useful. Mark it `[!] Blocked` when evidence requires the user's decision;
