@@ -26,6 +26,8 @@ appropriately approved package. Do not patch around it in worker instructions.
 
 However, if the user asks for a set of fixes to move on with the workflow, accept their request and help them.
 
+IMPORTANT: Keep verification and tests minimal and pragmatic. We can create specialized testing workstreams later on, priority is implementation and getting the results to the user.
+
 ## Pickup
 
 Read the following files:

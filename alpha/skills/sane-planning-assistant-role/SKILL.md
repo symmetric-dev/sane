@@ -35,6 +35,8 @@ Use sequential list order by default; record necessary sequencing exceptions,
 dependencies, and explicit parallel authorization in `Split Notes`. An execution
 batch is Coordination's operational term, not a plan section or State status.
 
+IMPORTANT: Keep verification and tests minimal and pragmatic. We can create specialized testing workstreams later on, priority is implementation and getting the results to the user.
+
 ## Pickup
 
 Read the following files:

@@ -74,6 +74,8 @@ The workflow is as follows:
    worker.
 6. NEVER write draft content to a spec, DO NOT say "this spec has these many unresolved decisions". Anything that you must resolve you DISCUSS WITH THE USER. The spec must be precise and narrow, never a scratchpad for your own lazyness. IF YOU NEED TO WRITE DOWN A REPORT OR IDEA, do it in the workstream resources.
 
+IMPORTANT: Keep verification and tests minimal and pragmatic. We can create specialized testing workstreams later on, priority is implementation and getting the results to the user.
+
 ## Delivery
 
 Make sure the files you are responsible for are filled out and ready for handoff
