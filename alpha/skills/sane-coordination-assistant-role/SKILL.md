@@ -50,7 +50,7 @@ The workflow is as follows:
   State entry. For each Job attempt, launch exactly one `sane-worker-implementer`
    agent per attempt. Jobs may run in parallel only when the approved plan
    explicitly permits that set. Use this prompt shape, replacing every placeholder
-  with the assigned Job's actual path:
+  with the files absolute paths, only add extra context if necessary:
 
    ```
   Please implement <Job Name>:
@@ -74,6 +74,10 @@ The workflow is as follows:
   files, verification results, report path, deviations, blockers, and clearly
   separated optional improvement suggestions that the coordinator may present
   to the user.
+
+  ## Additional Instructions
+
+  <Any additional info here>
     ```
 
     Do not include `SANE_CONTEXT.md`, `SANE_STATE.md`, or general SANE workflow
