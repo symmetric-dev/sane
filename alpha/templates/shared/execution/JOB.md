@@ -20,8 +20,6 @@ read map with verified paths, symbols, reasons, and line evidence where availabl
 Separate required-start reads from conditional references with concrete triggers.
 Guide inspection first; expand for concrete correctness, integration, regression,
 or verification concerns without a hard read cap or exhaustive reference traversal.
-Distinguish current repository facts, required changes, and predecessor expected
-outputs; a predecessor spec is not evidence that its code already exists.
 Explain surrounding code and locked decisions that implementation must follow. -->
 
 ## Instructions
@@ -34,21 +32,15 @@ registrations, and tests when applicable. Do not invent missing decisions. -->
 
 ## Boundaries
 
-<!-- List concise allowlisted paths/files the Job may edit and denylisted
-paths/files it must not edit. Distinguish verified existing paths from required
-new paths traceable to approved Design or confirmed scope. Escalate a changed
-split, ownership boundary, or Design instead of silently expanding the Job. -->
+<!-- Overall heuristic on what not to modify, no exact files are needed but they can be included. 
+Escalate a changed split, ownership boundary, or Design instead of silently expanding the Job. -->
 
 ## Verification
 
-<!-- Define exact commands, working directories, prerequisites, focused tests,
-expected outputs, and step-by-step checks. Cite inspected scripts/configuration
-or tool usage verifying each command. Distinguish definition-verified commands
-from commands actually run and their outcomes. Label future tests/commands as
+<!-- Define overall commands, working directories, prerequisites, focused tests,
+expected outputs, and overall checks. Label future tests/commands as
 required additions with their approved basis, never as existing verified checks.
-Record limitations for unavailable or unsafe checks; grounding need not execute
-mutating checks. Mark a check as user-only when the implementation agent must not
-perform it. Never invent command names, paths, flags, or passing results. -->
+Record limitations for unavailable or unsafe checks. -->
 
 ## Report Requirements
 
