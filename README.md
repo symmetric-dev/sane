@@ -3,6 +3,10 @@
 SANE Alpha is a documentation and agent-context prototype for validating the
 SANE product, research, design, execution, and implementation workflow.
 
+<p align="center">
+  <img src=".github/assets/Web.JPG" alt="SANE agent-driven workstream workflow" width="900" />
+</p>
+
 See [the Alpha guide](docs/README.md) for the operating model, installation,
 commands, templates, and pilot workflow.
 
