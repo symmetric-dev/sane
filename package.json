@@ -1,0 +1,17 @@
+{
+  "name": "sane-alpha",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "bin": {
+    "sane-alpha": "./bin/sane-alpha.ts"
+  },
+  "scripts": {
+    "test": "bun test",
+    "typecheck": "tsc --noEmit"
+  },
+  "devDependencies": {
+    "@types/bun": "^1.3.6",
+    "typescript": "^5"
+  }
+}

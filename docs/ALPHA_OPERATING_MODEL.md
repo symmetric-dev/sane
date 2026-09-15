@@ -1,0 +1,330 @@
+# SANE Alpha Operating Model
+
+## What Is SANE Alpha?
+
+SANE means **Sane Agentic Noesis Edifice**. It is a semi-recursive name:
+“Sane” describes the quality that SANE itself is intended to have while also
+being the acronym's name.
+
+SANE is a reasonable, realistic edifice: a structured set of people, agents,
+artifacts, and decisions that supports knowledge acquisition and reasoning in
+service of deliberate change. A workstream is the top-level unit of that
+edifice.
+
+SANE Alpha is the current human-led, agent-assisted way of operating SANE. It
+aims to prove reliable agent collaboration without CLI tooling by moving a
+workstream deliberately from product intent to reviewed repository changes.
+
+This operating model is for the people defining and maintaining SANE Alpha. The
+agent-facing shared context is a separate, tailored `SANE_CONTEXT.md` template.
+
+## Core Concepts
+
+A **workstream** is a complex undertaking organized for AI-assisted work. It
+holds the context, identity, decisions, coordination, and approval history
+needed to govern the work. It is not a duplicate implementation tree; the
+implementation happens in its target repository.
+
+Each implementation repository uses a separate local Git repository for its
+SANE workstreams. The target repository keeps an ignored `.sane/paths`
+record of the paired repositories. The Alpha layout, initialization, and
+assistant-use rules are defined in
+[SANE Alpha Repository Setup](./SANE_REPOSITORY_SETUP.md).
+
+A **phase** is a horizontal responsibility view across a workstream. Each phase
+has its own objective and artifacts. Phases are not necessarily one-way steps:
+they may overlap and inform one another.
+
+A **stage** is a vertical unit of work bounded by a coherent set of decisions,
+an initial state, and expected outcomes. The same stage can be addressed by
+multiple phases. Each phase may subdivide a stage differently to serve that
+phase's objective. The criteria for division into stages is "checkpoints which require outcomes to inform the next stage technical decisions or that function as user approval milestones".
+
+Additional terms are:
+
+- **Section:** a coherent technical-design slice within a Design Stage.
+- **Execution Plan:** the stage-level plan that turns approved Design into
+  schedulable implementation work.
+- **Job:** a bounded unit of implementation work prepared for one agent.
+- **Job Spec:** the document specifying one Job, titled `Job Spec NN: <job name>`.
+  It carries grounded implementation guidance; the Job itself is the work unit.
+- **Implementation Report:** the recorded outcome of one Job.
+- **Research Report:** an authoritative, evidence-bearing record for one
+  research topic within an assigned Research scope.
+- **Research Baseline:** a coordinating record of a scope's Research Reports,
+  direction, and conflicts without replacing their evidence.
+- **Approval:** the user's authorization to cross a defined work boundary.
+- **Handoff:** the deliberate transfer of the relevant context, artifact, and
+  next action from one role to another.
+
+## Top-Level Workflow
+
+SANE normally progresses through the following responsibility flow:
+
+```text
+Product ↔ Research ↔ Design → Execution → Implementation
+```
+
+The user chooses where a workstream starts. Starting with Product is encouraged
+when the user has enough knowledge of the work and target codebase to establish
+an initial product direction. Product and Research may begin in either order
+and refine one another.
+
+Product, Research, and Design continue to exchange knowledge while the work is
+being shaped. Once Product and Research establish a solid product foundation,
+Research and Design should normally refine the solution without reopening
+Product. A return to Product remains possible when later knowledge shows that
+the intended product itself must change.
+
+The user experiences the workflow as:
+
+1. Establish or refine product direction and the knowledge needed to support
+   it.
+2. The Design Assistant develops the root Design and its Stage specifications;
+   Research continues as needed to ground Design decisions.
+3. The Design Assistant delivers the root Design. The user approves it before
+   beginning Stage-level Engineering work.
+4. The user starts an Engineering Assistant for each desired Stage. These
+   Stage sessions may proceed independently because each Engineering Assistant
+   focuses only on its assigned Stage.
+5. Each Engineering Assistant delivers that Stage's Section specifications. The
+   user approves the complete Design for Stage `N` before its Execution work
+   can begin.
+6. The Planning Assistant picks up Stage `N` only after that approval and,
+   except for the first Stage, after the previous Stage's Execution plan is
+   approved. After readiness and user permission to proceed, it proposes the
+   compact Execution Plan and waits for explicit breakdown confirmation. Only
+   then does it draft Job Specs, delegate one spec per Job Grounder, and review
+   summaries, cross-job consistency, and targeted repository evidence. Changed
+   splits need renewed confirmation; changed Design needs an approved Update.
+7. The user approves the completed Stage Execution Plan and all Job Specs.
+   Implementation then carries out
+   the authorized Jobs in the target repository and records their outcomes.
+
+Later learning can return work to an earlier phase when necessary. Such a
+return is deliberate: the relevant context, decision, and required follow-up
+are handed back to the appropriate role.
+
+## Roles and Scope
+
+- **Product Assistant:** works across the whole workstream. It establishes and
+  maintains product direction when new information materially changes intended
+  behavior or requirements.
+- **Research Assistant:** has one assigned scope: `research/workstream/` for
+  non-Stage or cross-Stage Research, or `research/stage-NN/` for Stage Research.
+  Only that scope's coordinating Research Assistant updates its `BASELINE.md`.
+  It may launch Research Workers for external evidence; each writes one bounded topic `REPORT.md` and
+  any explicitly assigned supporting files after reading the applicable
+  baseline. The user may also continue to start a Research Assistant directly.
+- **Research Worker:** is a prompt-invoked subagent, not a user-started SANE
+  session. It investigates one bounded external-evidence topic, reads the supplied Research
+  baseline, and writes only its assigned report and supporting-file destinations.
+  It never updates the baseline. Exact supplied local context may clarify the
+  external question, but it does not discover the implementation repository.
+- **Design Assistant:** works horizontally across the Design phase. It develops
+  the root Design, defines Stages, and writes the Stage specifications.
+- **Engineering Assistant:** works vertically on one Stage. It picks up that
+  Stage's specification, divides it into Sections, and writes the Section
+  specifications that provide the Stage's engineering solutions. It may use
+  code examples and pseudocode, but does not implement the complete solution.
+  After normal user confirmation to proceed with Assistance, it may launch Scout
+  for bounded internal codebase inspection. It may launch Researcher only after
+  the user explicitly requests bounded external research in that Engineering
+  session. Engineering synthesizes worker evidence and owns decisions with the
+  user.
+- **Scout Worker:** is a read-only prompt-invoked subagent for one exact internal
+  implementation-repository scope. It inspects instructions, source, tests,
+  configuration, callers, and integration points, then returns inline findings
+  with path-and-line evidence. It does not use external research, write reports,
+  mutate files, or launch children.
+- **Planning Assistant:** works on one approved Stage in the Execution phase.
+  It owns the compact Execution Plan, confirmed breakdown, draft Job Specs,
+  delegated grounding, synthesis, and final package review with the user.
+  It is the sole owner/editor of plans and Job Specs, including all later factual
+  corrections and revisions; only its Grounder may enrich an assigned spec.
+- **Job Grounder:** is a bounded repository-investigation subagent launched by
+  Planning after breakdown confirmation. It directly enriches only one assigned
+  Job Spec with an evidence-based prioritized read map (paths, symbols, reasons),
+  actionable steps, integration contracts, and exact verified verification
+  commands. It distinguishes current facts, required changes, and predecessor
+  expected outputs, plus command definitions versus actual execution outcomes.
+  It returns findings, gaps, and limitations, escalating split or Design changes.
+  It never edits application files, Design, plans, State, or sibling specs, seeks
+  approvals, converses with users, or subdelegates.
+- **Coordination Assistant:** normally works on one authorized Stage. It
+  reads that Stage's Execution documentation, launches the required
+  implementation and review agents, reports state to the user, and only
+  relaunches or fixes work at the user's direction.
+- **Worker agent:** executes one Job in the target repository
+  and records its outcome.
+- **Review agent:** independently inspects scoped code and evidence against
+  relevant Design Section Specs and Job Specs, reading reports as necessary to
+  verify report and verification accuracy. It is instructed to be read-only and
+  reports its findings to the Coordination Assistant.
+
+## Session Lifecycle
+
+Every SANE Alpha session is started by the user and follows this lifecycle:
+
+1. **User starts the session.** The user identifies the workstream, Phase, and,
+   when relevant, Stage to work on.
+2. **Assistant ingests context.** The assistant receives the shared SANE
+   context, its role context, and the role skill that it must use for the
+   session.
+3. **Assistant performs pickup.** The assistant checks that the inputs required
+   for its role exist.
+4. **Assistant reports readiness.** The assistant reports its pickup result and
+   a concise summary of the selected workstream, assigned scope, relevant State,
+   and any missing inputs or blockers. It then waits; it does not begin role
+   Assistance merely because the user started the session.
+5. **User resolves pickup status or authorizes Assistance.** The user may return
+   to an earlier role for Updates, resolve a missing input in another way, add
+   session details, or explicitly authorize the assistant to proceed.
+6. **Assistant performs its role.** The assistant helps the user produce its
+   assigned outcome. This may involve back-and-forth with the user.
+7. **Assistant performs delivery.** The assistant checks that the files and
+   artifacts it owns are present and complete, then reports delivery to the
+   user.
+
+Pickup verifies the inputs needed to begin the role. Delivery verifies only the
+outputs that the role owns.
+
+For any role that consumes Research, Pickup records the revision of the baseline
+for the Research scope it consumes. Delivery rechecks it. If it changed, the
+assistant reconciles the new direction before delivery or reports the mismatch
+instead of silently delivering against stale Research.
+
+`research/workstream/BASELINE.md` coordinates non-Stage and cross-Stage
+Research. `research/stage-NN/BASELINE.md` coordinates Research assigned to that
+Stage. Reports live under their assigned scope. Evidence from another scope
+applies only when the consuming baseline explicitly links it.
+
+Root Design reads the workstream baseline. Stage Design reads the baseline for
+its assigned Stage.
+
+Approved Design remains implementation authority. Research discovered after
+Design approval does not amend implementation direction by itself. A material
+conflict requires an explicit Design Update and approval before Execution or
+Implementation follows the new direction.
+
+Delivery completes the assistant's current action. The assistant must not
+presume that a later user response—or no response—is approval. After delivery,
+it expects either a request for Updates or an explicit user approval.
+
+Scout, Researcher, and Job Grounder are exceptions because they are bounded subagents rather
+than SANE role sessions. They have no user Pickup, readiness checkpoint, Delivery,
+approval, State update, or question loop. Each launcher gives its worker one exact,
+self-contained prompt containing the topic, baseline and evidence paths,
+allowed output paths, implementation-repository path, constraints, verification,
+and requested return shape. Each completes the assignment or stops with a concise
+blocker. Scout returns only an inline inspection handoff and writes nothing;
+Researcher returns a summary of assigned research outputs, findings,
+verification, and blockers. Job Grounder returns a summary of its one enriched
+Job Spec, findings, gaps, and limitations. Grounding and worker completion
+assessments are descriptive, not additional State statuses or approvals.
+
+When the user requests **Updates**, the responsible assistant applies the
+requested update and then performs an **Updates Delivery**: it verifies that
+the changed artifacts it owns are present and complete. An Update
+does not repeat the full session lifecycle unless the change introduces new
+required inputs.
+
+## User Authority and Collaboration
+
+The user governs every transition in SANE Alpha. The user chooses the scope and
+role for each session, starts sessions, resolves pickup failures, owns
+decisions, and alone approves, redirects, or stops work.
+
+The user approval gates are:
+
+- Research readiness;
+- root Design;
+- Design for each Stage; and
+- the confirmed Job breakdown before Job Spec authoring/grounding, followed by
+  final approval of the completed Execution Plan and Job Specs for each Stage.
+
+An assistant cannot self-approve. After its delivery, it asks for and waits for
+an explicit user approval or Updates. When the user approves its
+delivery, that assistant records the approval in the workstream's state-tracking
+file. The user may update that file directly instead.
+
+Delivery makes an assistant's output available for handoff; it does not start a
+new session or transfer control. The user starts the next role, identifies its
+scope, and directs it to pick up the relevant delivered work.
+
+## Alpha Execution Model
+
+After the user approves a Stage Execution Plan and Job Specs, the user starts a
+Stage-scoped Coordination Assistant and asks it to run the authorized Jobs.
+Run authorization may cover multiple Jobs; package approval alone does not start
+Implementation. Coordination confirms the current authorization before dispatch.
+
+Execution and repository implementation proceed sequentially by Stage. Within a
+Stage, Coordination consumes the compact `Jobs` and `Split Notes`: sequential list
+order is the default, and parallel execution requires explicit plan authorization.
+An **execution batch** is one Job or an explicitly parallel set, an operational
+term requiring no new headings, group tags, artifacts, or State schema.
+Predecessors need actual outputs, reports, review, and user acceptance before
+dependent work starts. Lightweight dispatch readiness consumes grounded specs;
+it does not duplicate grounding. Coordination never edits planning artifacts,
+even factual corrections, or launches Grounder. It says **“Planning needs to make
+these corrections”**, supplies actionable artifact paths/issues and evidence,
+and waits for the user to return to Planning with the corrections. Planning owns
+revisions under the existing breakdown/final approval and Design Update gates.
+
+Implementers start with required-start read maps and conditional references,
+expanding for concrete concerns without hard read caps. Material context gaps
+stop affected work for the user's Planning handoff. After each completed batch,
+Coordination launches one read-only reviewer with relevant Design Section Specs,
+Job Specs, and bounded repository/review/output instructions. The reviewer
+independently inspects actual code and evidence; reports are needed only to verify
+report and verification accuracy, not as a substitute for inspection. No report
+template, Execution Plan, global context, or exhaustive references are mandatory.
+Full correctness, integration, regression, test-validity, and evidence review
+remain required within the boundary. Narrow Fix reviews stay targeted; Bounded
+Remediation reviews cover the complete coherent remediation.
+
+The user selects checkpointed or delegated review/fix cycles; delegated cycles
+require explicit scope and attempt limits. Only the user accepts outcomes or
+authorizes expanded work. Stage handoff uses the Stage Spec, Job Specs, actual
+reports, and review evidence. Coordination maintains per-Job reports, the
+actual-state Stage Implementation Brief, and the existing Implementation State
+entries; no removed plan handoff section is required.
+
+## Agent Context Model
+
+Every SANE workstream receives a `SANE_CONTEXT.md` file created from the Alpha
+agent-context template. It provides the shared orientation for every role that
+works in that workstream.
+
+Agent configuration provides a short, role-specific introduction: who the agent
+is, the outcome it helps the user create, and which role skill it must use. It
+does not repeat the full SANE model.
+
+The role skill contains most role-specific instructions, boundaries, and
+repeatable procedure. It applies the shared SANE model to that role without
+redefining it.
+
+The assigned workstream artifacts provide the active session's concrete scope.
+They identify the relevant workstream, Phase, Stage, Job, decisions, and
+outcomes needed for pickup and delivery.
+
+Worker and review agents receive an explicit prompt that tells
+them to read their implementation skill and the relevant Job and context
+materials. Their prompts provide only the context needed for their assigned
+implementation or review work.
+
+The same prompt-is-the-assignment rule applies to Job Grounder, Scout, and Researcher.
+Job Grounder receives one writable spec and exact read-only context paths. It
+applies Scout's evidence discipline but writes its findings directly into that
+spec, with an inline summary for Planning. It must not discover wider workstream
+context or use Bash to mutate files. Scout is
+the bounded internal code inspector: it may read exact supplied artifacts from
+the separate workstream repository as context, but it cannot discover wider
+external context, mutate either repository, use web research, or write reports.
+Researcher is the external evidence worker; it may read only exact supplied
+local context needed to frame that question. It must not write implementation files or run installs,
+migrations, or deployments. Live-credential or external-system access requires
+an exact explicit assignment. Configuration permissions are not a
+claim that these path-sensitive boundaries can always be enforced dynamically;
+the prompt and worker contract remain the governing behavioral boundary.
