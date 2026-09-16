@@ -6,8 +6,8 @@ invoices as CSV**. It is an example of the interaction model, not a required
 sequence or product specification.
 
 Every OpenCode session below starts in the implementation repository. The user
-selects the named SANE agent in OpenCode; the agent reads the paired repository,
-the selected workstream, its role skill, and its Pickup inputs before assisting.
+selects the named SANE agent in OpenCode; the agent reads the selected workstream,
+its role skill, and its Pickup inputs before assisting.
 The user alone starts sessions, approves a delivery or Job outcome, redirects
 work, and stops work.
 
@@ -21,8 +21,8 @@ bun alpha/scripts/install-sane-alpha.ts
 export PATH="$HOME/.local/bin:$PATH"
 ```
 
-Install the OpenCode role agents and skills, then pair the implementation
-repository with its local SANE workstream repository:
+Install the OpenCode role agents and skills, then initialize local SANE
+workstream storage inside the implementation repository:
 
 ```bash
 IMPL="/absolute/path/to/invoice-application"
@@ -33,9 +33,8 @@ sane-alpha init-sane "$IMPL"
 
 Quit and restart OpenCode after installing the context packages.
 
-The initializer creates or validates the separate paired Git repository at
-`~/workstreams/invoice-application-work/` and records the pairing locally in
-`$IMPL/.sane/paths`.
+The initializer creates or validates the ignored workstreams root at
+`$IMPL/.sane/workstreams/`.
 
 ## 2. User Starts a Workstream
 
@@ -191,7 +190,7 @@ runs only safe non-destructive commands, and returns inline observations,
 inferences, limitations, and path-and-line evidence. It does not write a
 Research Report or use external research. If the inspection depends on the
 approved Stage or Section design, Engineering includes those exact paths from
-the separate `$WORK` repository in the assignment; Scout may read them as
+the selected workstream at `$IMPL/.sane/workstreams/$WORKSTREAM` in the assignment; Scout may read them as
 context without discovering wider workstream state.
 
 If the user explicitly requests a bounded external research investigation during
@@ -325,22 +324,18 @@ Report or baseline conflicts materially with it, Execution or Implementation
 stops and requests a Design Update; Research does not silently override the
 approved direction.
 
-## 9. Inspect and Commit Workstream Artifacts
+## 9. Inspect Workstream Artifacts
 
-The paired SANE repository contains all workstream directories. `sane-path`
-prints that repository root; it does not point to an individual workstream:
+All workstream directories live under the ignored `$IMPL/.sane/workstreams/`
+root. Workstreams are local coordination data, not committed artifacts: inspect
+them directly, for example:
 
 ```bash
-SANE_REPOSITORY="$(sane-alpha sane-path "$IMPL")"
-
-git -C "$SANE_REPOSITORY" status
-git -C "$SANE_REPOSITORY" add "$WORKSTREAM"
-git -C "$SANE_REPOSITORY" commit -m "Document invoice CSV export workstream"
+ls "$IMPL/.sane/workstreams/$WORKSTREAM"
 ```
 
 Repository changes made by implementation agents remain in `$IMPL`; review and
-commit them using that repository's normal workflow. The SANE workstream
-repository and the implementation repository are separate Git repositories.
+commit them using that repository's normal workflow.
 
 ## 10. Pause and Resume
 

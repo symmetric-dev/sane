@@ -27,7 +27,7 @@ export async function createSaneRepositoryWorkstream(options: CreateRepositoryWo
     throw error
   }
   const pointer = await resolveSaneRepository(options.implementationRepository)
-  const workstream = await resolveSafeWorkstreamPath(pointer.workstreamRepository, options.workstreamPath)
+  const workstream = await resolveSafeWorkstreamPath(pointer.workstreamsRoot, options.workstreamPath)
   // Reject unrelated selection data before bootstrap, but do not write it until
   // the bootstrap's staging rename has completed successfully.
   await validateCurrentSelectionDestination(pointer.implementationRepository)

@@ -30,8 +30,8 @@ sane-alpha create-workstream <implementation-repository> <workstream-relative-pa
 
 `--type` is required. Creation writes the selected immutable type as the exact
 one-line plain-text root file `<workstream>/type`; it also selects the new
-workstream. `.sane/current-workstream` stores only the selected normalized
-relative path followed by a newline, never a type.
+workstream. `.sane/current-workstream` stores only the selected path normalized
+relative to `.sane/workstreams`, followed by a newline, never a type.
 
 `sane-alpha select-workstream` takes no type argument. It accepts only a
 bootstrapped workstream with a valid root `type` file. Missing, malformed, or

@@ -29,7 +29,7 @@ complete the assigned boundary coherently.
 
 Keep the fix isolated:
 
-- Do not read `.sane/paths`, `.sane/current-workstream`, `SANE_CONTEXT.md`, or
+- Do not read `.sane/current-workstream`, `SANE_CONTEXT.md`, or
   `SANE_STATE.md`.
 - You may load a non-SANE technical or repository skill when it directly helps
   apply the assigned fix. Do not load any `sane-*-assistant-role` skill, recover

@@ -125,10 +125,9 @@ in this order:
 1. **SANE:** “SANE is a structured, reasonable way for people and agents to
    acquire and apply knowledge in service of deliberate change.”
 2. **File convention:** the current working directory is the implementation
-   repository. Its ignored `.sane/paths` records `implementation-path` and
-   `workstream-repository-path`; `.sane/current-workstream` records the selected
-   normalized path relative to `workstream-repository-path`, never an absolute
-   workstream path.
+   repository. Its ignored `.sane/workstreams/` directory holds all
+   workstreams; `.sane/current-workstream` records the selected normalized
+   path relative to `.sane/workstreams`, never an absolute workstream path.
 3. **Assigned role:** each agent loads its one named installed SANE role skill.
 
 The configuration does not repeat the substantive role instructions from the
@@ -230,14 +229,15 @@ Every user-started SANE session follows this sequence:
    prompt. The configuration tells the agent which role skill to load.
 3. The agent loads that installed role skill.
 4. The agent treats its current working directory as the implementation
-   repository and reads `.sane/paths` to obtain the paired repository locations.
-5. Unless the user explicitly selected a different workstream, the agent reads
-   `.sane/current-workstream` to obtain the normalized workstream-relative path.
+   repository and reads `.sane/current-workstream` to obtain the normalized
+   workstream-relative path.
+5. Unless the user explicitly selected a different workstream, the agent uses
+   that selection directly.
    If that current pointer is missing or invalid, the agent asks the user to
    select a workstream and stops. It must not infer, create, or switch a
    workstream.
 6. The agent resolves the selected absolute workstream as
-   `<workstream-repository-path>/<current-workstream>`, then reads its
+   `<implementation-repository>/.sane/workstreams/<current-workstream>`, then reads its
    `SANE_CONTEXT.md`, `SANE_STATE.md`, and the role-specific Pickup inputs
    required by its installed skill.
    A role that consumes Research records the revision of its assigned scope's
@@ -279,7 +279,7 @@ confirmation for changed splits and approved Design Updates for changed Design.
 The completed plan and all Job Specs then require final user package approval.
 
 Job Grounder's `edit: allow` and `external_directory: allow` permit writing its
-assigned spec in the paired repository. Arbitrary invocation-supplied path limits
+assigned spec in the ignored workstream directory. Arbitrary invocation-supplied path limits
 are behavioral, not dynamically enforced by those permissions. Bash is available
 only for safe read-only inspection; mutating verification must be recorded as not
 run. Planning may delegate only to `sane-worker-grounder`.
@@ -321,8 +321,8 @@ user to start it from the implementation repository or otherwise resolve the
 location; it does not guess a repository.
 
 Each SANE OpenCode configuration must grant `external_directory: allow` so the
-agent can read and, when its role permits, edit the paired workstream repository
-outside the implementation repository. It must also grant `skill: allow` so the
+agent can read and, when its role permits, edit the ignored workstream
+directory outside the tracked implementation repository. It must also grant `skill: allow` so the
 agent can load its role skill. Other permissions remain role-specific.
 
 For the Research Worker, permissions support assigned external research and
@@ -333,8 +333,8 @@ belongs to Scout. It prohibits all implementation-repository writes, installs,
 migrations, and deployments. Live credentials or external-system calls require
 an exact explicit assignment.
 
-Scout has `external_directory: allow` because the paired workstream repository
-is separate from the implementation repository and Engineering may need to give
+Scout has `external_directory: allow` because workstreams live in the ignored
+`.sane/workstreams/` directory and Engineering may need to give
 it exact Stage, Section, or other workstream artifacts as inspection context.
 The permission does not authorize external discovery: Scout may read only exact
 external paths supplied in its assignment. It denies web access and has

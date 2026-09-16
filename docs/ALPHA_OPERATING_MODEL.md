@@ -25,10 +25,10 @@ holds the context, identity, decisions, coordination, and approval history
 needed to govern the work. It is not a duplicate implementation tree; the
 implementation happens in its target repository.
 
-Each implementation repository uses a separate local Git repository for its
-SANE workstreams. The target repository keeps an ignored `.sane/paths`
-record of the paired repositories. The Alpha layout, initialization, and
-assistant-use rules are defined in
+Each implementation repository keeps its SANE workstreams in the ignored
+`.sane/workstreams/` directory. The target repository records only the selected
+workstream's normalized relative path in `.sane/current-workstream`. The Alpha
+layout, initialization, and assistant-use rules are defined in
 [SANE Alpha Repository Setup](./SANE_REPOSITORY_SETUP.md).
 
 A **phase** is a horizontal responsibility view across a workstream. Each phase
@@ -320,7 +320,7 @@ applies Scout's evidence discipline but writes its findings directly into that
 spec, with an inline summary for Planning. It must not discover wider workstream
 context or use Bash to mutate files. Scout is
 the bounded internal code inspector: it may read exact supplied artifacts from
-the separate workstream repository as context, but it cannot discover wider
+the local workstream directory as context, but it cannot discover wider
 external context, mutate either repository, use web research, or write reports.
 Researcher is the external evidence worker; it may read only exact supplied
 local context needed to frame that question. It must not write implementation files or run installs,

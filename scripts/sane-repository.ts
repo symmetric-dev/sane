@@ -7,7 +7,8 @@ import { BootstrapError } from "./create-sane-workstream.ts"
 import { parseWorkstreamType, type WorkstreamType, WorkstreamTypeError } from "./workstream-type.ts"
 
 const execFileAsync = promisify(execFile)
-export const SANE_PATHS_FILENAME = "paths"
+export const SANE_DIRECTORY_NAME = ".sane"
+export const WORKSTREAMS_DIRECTORY_NAME = "workstreams"
 const REQUIRED_WORKSTREAM_FILES = [
   "SANE_CONTEXT.md",
   "SANE_STATE.md",
@@ -32,9 +33,9 @@ export class SaneRepositoryError extends BootstrapError {
   }
 }
 
-export interface SaneRepositoryPaths {
+export interface SaneRepository {
   implementationRepository: string
-  workstreamRepository: string
+  workstreamsRoot: string
 }
 
 function errorCode(error: unknown): string | undefined {
@@ -72,75 +73,26 @@ export async function resolveImplementationRepository(path: string): Promise<str
   }
 }
 
-function parseNormalizedAbsolutePath(value: string, field: string): string {
-  if (!isAbsolute(value) || resolve(value) !== value) {
-    throw new SaneRepositoryError(`${field} in .sane/${SANE_PATHS_FILENAME} must be a normalized absolute path.`)
-  }
-  return value
+/** Derive the canonical workstreams root for an implementation repository. */
+export function saneWorkstreamsRoot(implementationRepository: string): string {
+  return join(implementationRepository, SANE_DIRECTORY_NAME, WORKSTREAMS_DIRECTORY_NAME)
 }
 
-/** Parse the exact, deliberately small ignored local repository paths schema. */
-export async function readSaneRepositoryPaths(
-  implementationRepository: string,
-): Promise<SaneRepositoryPaths> {
-  const saneDirectory = join(implementationRepository, ".sane")
-  if (!(await lstatOrUndefined(saneDirectory))?.isDirectory()) {
-    throw new SaneRepositoryError(`Local SANE path is missing or not a directory: ${saneDirectory}`)
-  }
-  const pathsPath = join(saneDirectory, SANE_PATHS_FILENAME)
-  if (!(await lstatOrUndefined(pathsPath))?.isFile()) {
-    throw new SaneRepositoryError(`SANE repository paths file is missing or not a regular file: ${pathsPath}`)
-  }
-  const content = await readFile(pathsPath, "utf8")
-  const match = /^implementation-path: ([^\r\n]+)\nworkstream-repository-path: ([^\r\n]+)\n$/.exec(content)
-  if (!match) {
-    throw new SaneRepositoryError(
-      `SANE repository paths file must use the exact .sane/${SANE_PATHS_FILENAME} schema.`,
-    )
-  }
-  const recordedImplementation = parseNormalizedAbsolutePath(match[1]!, "implementation-path")
-  const workstreamRepository = parseNormalizedAbsolutePath(match[2]!, "workstream-repository-path")
-
-  let sameImplementationRoot = false
-  try {
-    sameImplementationRoot =
-      (await realpath(recordedImplementation)) === (await realpath(implementationRepository))
-  } catch {
-    // The recorded path is malformed for this local repository even if it is absolute.
-  }
-  if (!sameImplementationRoot) {
-    throw new SaneRepositoryError(
-      `Recorded implementation repository does not match the resolved Git root: ${recordedImplementation}`,
-    )
-  }
-  return { implementationRepository, workstreamRepository }
-}
-
-/** Require that the recorded workstream repository is itself a Git root. */
-export async function validateWorkstreamRepository(path: string): Promise<string> {
-  const repository = resolve(path)
-  if (!(await lstatOrUndefined(repository))?.isDirectory()) {
-    throw new SaneRepositoryError(`Recorded workstream repository is not an existing directory: ${repository}`)
-  }
-  try {
-    const gitDirectory = await lstatOrUndefined(join(repository, ".git"))
-    const gitRoot = resolve(await runGit(["-C", repository, "rev-parse", "--show-toplevel"]))
-    if (!gitDirectory?.isDirectory() || (await realpath(gitRoot)) !== (await realpath(repository))) {
-      throw new Error("not a standalone Git root")
-    }
-  } catch {
-    throw new SaneRepositoryError(
-      `Recorded workstream repository is not an expected Git repository root: ${repository}`,
-    )
-  }
-  return repository
-}
-
-export async function resolveSaneRepository(path: string): Promise<SaneRepositoryPaths> {
+export async function resolveSaneRepository(path: string): Promise<SaneRepository> {
   const implementationRepository = await resolveImplementationRepository(path)
-  const repositoryPaths = await readSaneRepositoryPaths(implementationRepository)
-  await validateWorkstreamRepository(repositoryPaths.workstreamRepository)
-  return repositoryPaths
+  const legacyPathsPath = join(implementationRepository, SANE_DIRECTORY_NAME, "paths")
+  if (await lstatOrUndefined(legacyPathsPath)) {
+    throw new SaneRepositoryError(
+      `Legacy .sane/paths file exists at ${legacyPathsPath}. Move workstreams into .sane/workstreams/ and delete this file.`,
+    )
+  }
+  const workstreamsRoot = saneWorkstreamsRoot(implementationRepository)
+  if (!(await lstatOrUndefined(workstreamsRoot))?.isDirectory()) {
+    throw new SaneRepositoryError(
+      `SANE workstreams directory is missing or not a directory: ${workstreamsRoot}. Run init-sane first.`,
+    )
+  }
+  return { implementationRepository, workstreamsRoot }
 }
 
 function assertLexicallyContained(root: string, target: string, description: string): void {
@@ -160,17 +112,17 @@ async function assertExistingAncestorContained(root: string, target: string): Pr
   }
   const ancestorRelative = relative(realRoot, await realpath(existingAncestor))
   if (ancestorRelative === ".." || ancestorRelative.startsWith(`..${sep}`)) {
-    throw new SaneRepositoryError("Workstream path resolves outside the recorded workstream repository.")
+    throw new SaneRepositoryError("Workstream path resolves outside .sane/workstreams.")
   }
 }
 
 /**
  * Resolve a user path without accepting a traversal component. Existing
  * ancestors are also realpath-checked so a symlink cannot redirect a new file
- * outside the workstream repository.
+ * outside the workstreams root.
  */
 export async function resolveSafeWorkstreamPath(
-  workstreamRepository: string,
+  workstreamsRoot: string,
   requestedPath: string,
 ): Promise<{ relativePath: string; path: string }> {
   if (!requestedPath || requestedPath.trim() === "" || isAbsolute(requestedPath)) {
@@ -183,10 +135,10 @@ export async function resolveSafeWorkstreamPath(
   if (relativePath === "." || relativePath === "" || isAbsolute(relativePath)) {
     throw new SaneRepositoryError("Workstream path must be a non-empty relative path.")
   }
-  const path = resolve(workstreamRepository, relativePath)
-  assertLexicallyContained(workstreamRepository, path, "Workstream path")
+  const path = resolve(workstreamsRoot, relativePath)
+  assertLexicallyContained(workstreamsRoot, path, "Workstream path")
 
-  await assertExistingAncestorContained(workstreamRepository, path)
+  await assertExistingAncestorContained(workstreamsRoot, path)
   return { relativePath, path }
 }
 
@@ -220,10 +172,10 @@ export async function validateBootstrappedWorkstream(path: string): Promise<Work
 }
 
 export async function resolveBootstrappedWorkstream(
-  workstreamRepository: string,
+  workstreamsRoot: string,
   requestedPath: string,
 ): Promise<{ relativePath: string; path: string; type: WorkstreamType }> {
-  const workstream = await resolveSafeWorkstreamPath(workstreamRepository, requestedPath)
+  const workstream = await resolveSafeWorkstreamPath(workstreamsRoot, requestedPath)
   const type = await validateBootstrappedWorkstream(workstream.path)
   return { ...workstream, type }
 }
@@ -264,7 +216,7 @@ export async function writeCurrentWorkstream(
 /** Read and validate the local selection without trusting its contents. */
 export async function readCurrentWorkstream(
   implementationRepository: string,
-  workstreamRepository: string,
+  workstreamsRoot: string,
 ): Promise<{ relativePath: string; path: string; type: WorkstreamType }> {
   const selectionPath = currentWorkstreamPath(implementationRepository)
   if (!(await lstatOrUndefined(selectionPath))?.isFile()) {
@@ -275,7 +227,7 @@ export async function readCurrentWorkstream(
     throw new SaneRepositoryError(`Current workstream selection is malformed: ${selectionPath}`)
   }
   const selected = content.slice(0, -1)
-  const workstream = await resolveBootstrappedWorkstream(workstreamRepository, selected)
+  const workstream = await resolveBootstrappedWorkstream(workstreamsRoot, selected)
   if (workstream.relativePath !== selected) {
     throw new SaneRepositoryError(`Current workstream selection is not normalized: ${selectionPath}`)
   }

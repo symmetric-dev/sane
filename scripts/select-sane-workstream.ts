@@ -15,7 +15,7 @@ export interface SelectWorkstreamOptions {
 export async function selectSaneWorkstream(options: SelectWorkstreamOptions): Promise<{ dryRun: boolean; relativePath: string }> {
   const write = options.write ?? console.log
   const pointer = await resolveSaneRepository(options.implementationRepository)
-  const workstream = await resolveBootstrappedWorkstream(pointer.workstreamRepository, options.workstreamPath)
+  const workstream = await resolveBootstrappedWorkstream(pointer.workstreamsRoot, options.workstreamPath)
   if (options.dryRun) {
     write("Dry run: no files were modified.")
     write(`Planned: select ${workstream.relativePath}`)

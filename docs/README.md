@@ -161,7 +161,7 @@ normally confirms Engineering Assistance, Engineering may use Scout for one
 bounded internal implementation-repository inspection. Scout is read-only,
 cannot use the web, and returns a concise inline handoff with path-and-line
 evidence without writing a Research Report. Engineering may supply exact
-artifacts from the separate workstream repository as read-only context; Scout
+artifacts from the local workstream directory as read-only context; Scout
 cannot discover wider external context or mutate either repository.
 
 A coordinating Research Assistant may launch Researcher for one bounded

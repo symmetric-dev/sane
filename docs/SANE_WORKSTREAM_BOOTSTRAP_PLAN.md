@@ -30,7 +30,6 @@ sane-alpha init-sane <implementation-repository> [--dry-run]
 sane-alpha create-workstream <implementation-repository> <workstream-relative-path> --type <feature|foundation> [--dry-run]
 sane-alpha select-workstream <implementation-repository> <workstream-relative-path> [--dry-run]
 sane-alpha install-context-packages [--dry-run] [--overwrite] [--model-config <path>]
-sane-alpha sane-path <implementation-repository>
 ```
 
 `sane-alpha` is a command wrapper rather than a shell-specific `alias`. The

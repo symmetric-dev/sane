@@ -3,41 +3,40 @@
 ## Purpose
 
 A SANE workstream is not stored in, and does not duplicate, the repository where
-its implementation occurs. Each implementation repository has one separate,
-local SANE workstream repository that contains all of its workstreams.
+its implementation occurs. Each implementation repository keeps its workstreams
+in a local, ignored directory inside that same repository.
 
-This document defines the Alpha convention for creating and locating that
-workstream repository before the first workstream is created.
+This document defines the Alpha convention for creating and locating those
+workstreams before the first workstream is created.
 
 ## Layout
 
-For an implementation repository named `<project-name>`, its SANE workstream
-repository is:
+For an implementation repository, its SANE workstreams live at:
 
 ```text
-~/workstreams/<project-name>-work/
+<implementation-repository>/.sane/workstreams/<workstream-name>/
 ```
 
 For example:
 
 ```text
-~/projects/example-project/         # implementation repository
-~/workstreams/example-project-work/ # separate Git workstream repository
-  <workstream-name>/                # one bootstrapped SANE workstream
+~/projects/example-project/                         # implementation repository
+~/projects/example-project/.sane/workstreams/        # local workstreams root (ignored)
+~/projects/example-project/.sane/workstreams/01-foo/ # one bootstrapped SANE workstream
 ```
 
-The workstream repository is a Git repository. Its direct children are SANE
-workstreams; a workstream is created at a user-selected path inside that
-repository. Repository changes made by implementation agents remain in the
+The workstreams root is not a separate Git repository. Its direct children are
+SANE workstreams; a workstream is created at a user-selected relative path
+inside that root. Repository changes made by implementation agents remain in the
 implementation repository.
 
-## Local Repository Reference
+## Local Reference
 
-The implementation repository records its local workstream-repository location
-in an ignored file:
+The implementation repository records its currently selected workstream in a
+local file:
 
 ```text
-<implementation-repository>/.sane/paths
+<implementation-repository>/.sane/current-workstream
 ```
 
 The implementation repository's `.gitignore` must contain:
@@ -47,30 +46,14 @@ The implementation repository's `.gitignore` must contain:
 ```
 
 The `.sane/` directory is local-machine coordination data. Do not commit it,
-copy it into workstreams, or treat it as a product artifact.
+copy it into workstreams, or treat it as a product artifact. No separate paths
+file exists: workstream locations are derived from the implementation
+repository itself, never from a recorded absolute pairing.
 
-Initialization creates `paths` from
-[`templates/shared/repository/paths`](../templates/shared/repository/paths). Its exact plain-text
-schema is:
-
-```text
-implementation-path: /absolute/path/to/project
-workstream-repository-path: /absolute/path/to/project-work
-```
-
-Both paths are normalized absolute local paths. When either repository moves,
-the user updates this local file; an assistant must not infer, relocate, or
-rewrite the paths without the user's direction.
-
-The currently selected workstream is separate local state at:
-
-```text
-<implementation-repository>/.sane/current-workstream
-```
-
-It contains one normalized path relative to `workstream-repository-path`,
-followed by a newline; it never contains an absolute workstream path. It is
-written only by an explicit selection or a successful repository-aware create.
+The current-workstream file contains one normalized path relative to
+`.sane/workstreams`, followed by a newline; it never contains an absolute
+workstream path. It is written only by an explicit selection or a successful
+create.
 
 ## Initialization
 
@@ -81,8 +64,8 @@ initializer with an explicit implementation-repository path:
 sane-alpha init-sane <implementation-repository>
 ```
 
-Use `--dry-run` to validate the repository, template, and existing local state
-and print the planned changes without modifying either repository:
+Use `--dry-run` to validate the repository and existing local state and print
+the planned changes without modifying anything:
 
 ```bash
 sane-alpha init-sane <implementation-repository> --dry-run
@@ -90,30 +73,29 @@ sane-alpha init-sane <implementation-repository> --dry-run
 
 The command:
 
-1. resolve the implementation repository's Git root and project name;
-2. create or validate `~/workstreams/<project-name>-work/` as its separate Git
-   workstream repository without overwriting unrelated content;
-3. create `.sane/paths` with the two absolute paths; and
-4. add `/.sane/` to the implementation repository's `.gitignore` without
+1. resolve the implementation repository's Git root;
+2. create or validate `<implementation-repository>/.sane/workstreams/` without
+   overwriting unrelated content; and
+3. add `/.sane/` to the implementation repository's `.gitignore` without
    removing existing entries.
 
 It does not create a workstream, source or product files, agents, sessions,
-branches, or commits. Workstream bootstrap happens later inside the recorded
-workstream repository.
+branches, or commits. Workstream bootstrap happens later inside
+`.sane/workstreams/`.
 
 ## Workstream Helpers
 
 After initialization, use the repository-aware creator rather than manually
-combining the paths record and bootstrap paths:
+combining paths and bootstrap templates:
 
 ```bash
 sane-alpha create-workstream <implementation-repository> <workstream-relative-path> --type <feature|foundation> [--dry-run]
 ```
 
-`--type` is required. The command validates the paths record and target
-containment, writes the immutable root `type` file, bootstraps with shared and
-type-specific templates, then records the selection only after bootstrap
-succeeds. To select an existing bootstrapped workstream instead:
+`--type` is required. The command validates the target containment, writes the
+immutable root `type` file, bootstraps with shared and type-specific templates,
+then records the selection only after bootstrap succeeds. To select an existing
+bootstrapped workstream instead:
 
 ```bash
 sane-alpha select-workstream <implementation-repository> <workstream-relative-path> [--dry-run]
@@ -151,25 +133,25 @@ launch Scout.
 ## Assistant Use
 
 When a top-level SANE assistant session starts in an implementation repository,
-it reads `.sane/paths` to locate the workstream repository and
-`.sane/current-workstream` for the normalized relative selection. The selected
-absolute workstream is `<workstream-repository-path>/<current-workstream>`.
+it reads `.sane/current-workstream` for the normalized relative selection and
+resolves the selected absolute workstream as
+`<implementation-repository>/.sane/workstreams/<current-workstream>`.
 If the current pointer or selected workstream type metadata is missing or
 invalid, the assistant asks the user to select a valid workstream and stops; it
 does not infer or switch one. Its
 `SANE_CONTEXT.md`, `SANE_STATE.md`, assigned artifacts, and role skill then
 govern the session.
 
-The Coordination Assistant uses the recorded `implementation-path` as
-the Bash working directory when launching workers. Worker and
+The Coordination Assistant uses the implementation repository root as the Bash
+working directory when launching workers. Worker and
 review prompts receive only their assigned paths and instructions. They do not
-read `.sane/paths`, `SANE_CONTEXT.md`, or `SANE_STATE.md`.
+read `.sane/current-workstream`, `SANE_CONTEXT.md`, or `SANE_STATE.md`.
 
 A Scout receives a self-contained bounded implementation-repository assignment
 from its invoking parent agent, subject to that parent's launch permissions.
 Engineering launches it after normal Assistance confirmation; Implementer may
 launch only Scout for supporting inspection and retains Job ownership. Because
-the workstream repository is separate, the parent supplies exact artifact paths when they are
+the workstream lives under the ignored `.sane/` directory, the parent supplies exact artifact paths when they are
 needed as context. Scout performs codebase inspection only inside its bounded
 implementation scope, reads only those exact external context paths, runs safe
 non-destructive commands, writes no files or Research Reports, and returns inline

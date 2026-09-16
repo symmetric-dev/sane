@@ -108,7 +108,7 @@ describe("create-sane-workstream", () => {
     expect(spec).toContain("`# Job Spec NN: <job name>`")
     expect(spec).toContain("compact prioritized")
     expect(spec).toContain("required-start reads from conditional references with concrete triggers")
-    expect(spec).toContain("definition-verified commands")
+    expect(spec).toContain("required additions with their approved basis, never as existing verified checks")
     await access(join(destination, "execution"))
     await expectMissing(join(destination, "planning"))
     expect(await readFile(join(destination, "SANE_CONTEXT.md"), "utf8"))

@@ -56,7 +56,7 @@ The workflow is as follows:
      workstream-artifact paths needed as context, desired evidence, and stop
      conditions. Scout is read-only, returns findings inline, and never writes a
      Research `REPORT.md`. It may read those exact supplied artifacts from the
-     paired external workstream repository but must not discover wider
+     local workstream directory but must not discover wider
      workstream context.
    - For external evidence such as official documentation, standards, published
      technical material, or third-party behavior, the user may choose a separate

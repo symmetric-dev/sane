@@ -45,7 +45,7 @@ twelve agent configurations and six assistant skills are loaded. The installer
 manages eighteen destinations in total: six assistants and six workers plus
 the six skills.
 
-Pair the implementation repository with its local workstream repository:
+Initialize local SANE workstream storage inside the implementation repository:
 
 ```bash
 sane-alpha init-sane "$IMPL"
@@ -53,7 +53,7 @@ sane-alpha init-sane "$IMPL"
 
 ## Start a Workstream
 
-Create and select a new workstream in the paired workstream repository:
+Create and select a new workstream under the ignored `.sane/workstreams/` root:
 
 ```bash
 sane-alpha create-workstream "$IMPL" "$WORKSTREAM" --type feature
@@ -183,7 +183,7 @@ After you normally confirm Engineering Assistance, Engineering may invoke Scout
 for one exact internal implementation-repository inspection. Scout can inspect
 instructions, source, tests, configuration, callers, and integration points and
 run safe non-destructive commands. Engineering may give it exact artifacts from
-the separate workstream repository as read-only context. It cannot ask
+the local workstream repository as read-only context. It cannot ask
 questions, use external research, launch children, discover wider external
 context, mutate either repository, or write a Research Report; it returns concise
 inline findings with precise paths and line numbers. Engineering reviews and
@@ -201,15 +201,15 @@ sane-alpha select-workstream "$IMPL" "$WORKSTREAM"
 Selection takes no type argument and rejects a workstream with missing or
 unsupported root `type` metadata.
 
-## Run Git in the SANE Workstream Repository
+## Inspect the Selected Workstream
 
-`sane-path` prints the paired SANE workstream repository's validated absolute
-path. It does not point at an individual workstream directory. Compose it with
-Git rather than using a SANE Git proxy:
+Workstreams live under the ignored `$IMPL/.sane/workstreams/` root and are
+never committed. Inspect the selected workstream directly rather than using
+Git on it:
 
 ```bash
-git -C "$(sane-alpha sane-path "$IMPL")" status
-git -C "$(sane-alpha sane-path "$IMPL")" log --oneline
+ls "$IMPL/.sane/workstreams/$WORKSTREAM"
+cat "$IMPL/.sane/current-workstream"
 ```
 
 ## Update Installed Agent Context

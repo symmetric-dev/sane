@@ -1,37 +1,12 @@
 import { execFile } from "node:child_process"
-import {
-  lstat,
-  mkdir,
-  mkdtemp,
-  readFile,
-  rename,
-  rm,
-  writeFile,
-} from "node:fs/promises"
-import { homedir } from "node:os"
-import { basename, dirname, join, resolve } from "node:path"
+import { lstat, mkdir, readFile, rm, writeFile } from "node:fs/promises"
+import { join, resolve } from "node:path"
 import { promisify } from "node:util"
 
-import {
-  BootstrapError,
-  DEFAULT_TEMPLATE_ROOT,
-  type TemplateRegistry,
-  validateTemplateRegistry,
-} from "./create-sane-workstream.ts"
+import { BootstrapError } from "./create-sane-workstream.ts"
 
 const execFileAsync = promisify(execFile)
 
-export const REPOSITORY_TEMPLATE_REGISTRY = [
-  { source: "shared/repository/paths", destination: ".sane/paths" },
-] as const satisfies TemplateRegistry
-
-const IMPLEMENTATION_PATH_PLACEHOLDER =
-  "<absolute-path-to-implementation-repository>"
-const WORKSTREAM_PATH_PLACEHOLDER =
-  "<absolute-path-to-workstream-repository>"
-const REPOSITORY_PATHS_TEMPLATE =
-  `implementation-path: ${IMPLEMENTATION_PATH_PLACEHOLDER}\n` +
-  `workstream-repository-path: ${WORKSTREAM_PATH_PLACEHOLDER}\n`
 const SANE_IGNORE_ENTRY = "/.sane/"
 
 export class RepositoryInitializationError extends BootstrapError {
@@ -43,18 +18,15 @@ export class RepositoryInitializationError extends BootstrapError {
 
 export interface RepositoryInitializationOptions {
   implementationRepository: string
-  /** Enables isolated tests and an explicitly configured local SANE home. */
-  homeDirectory?: string
-  templateRoot?: string
   dryRun?: boolean
   write?: (line: string) => void
 }
 
 export interface RepositoryInitializationResult {
   implementationRepository: string
-  workstreamRepository: string
+  workstreamsRoot: string
   dryRun: boolean
-  createdWorkstreamRepository: boolean
+  createdWorkstreamsRoot: boolean
   addedIgnoreEntry: boolean
 }
 
@@ -100,30 +72,6 @@ async function resolveImplementationRepository(path: string): Promise<string> {
   }
 }
 
-function resolveHomeDirectory(configuredHome?: string): string {
-  const home = configuredHome ?? process.env.SANE_HOME ?? homedir()
-  if (!home.trim()) {
-    throw new RepositoryInitializationError("Could not resolve a home directory.")
-  }
-  return resolve(home)
-}
-
-export function renderRepositoryPaths(
-  template: string,
-  implementationRepository: string,
-  workstreamRepository: string,
-): string {
-  if (template !== REPOSITORY_PATHS_TEMPLATE) {
-    throw new RepositoryInitializationError(
-      "Repository paths template must use the exact .sane/paths schema with its required placeholders.",
-    )
-  }
-
-  return template
-    .replace(IMPLEMENTATION_PATH_PLACEHOLDER, implementationRepository)
-    .replace(WORKSTREAM_PATH_PLACEHOLDER, workstreamRepository)
-}
-
 async function readGitignoreState(path: string): Promise<GitignoreState> {
   const stat = await lstatOrUndefined(path)
   if (!stat) return { exists: false, content: "" }
@@ -145,55 +93,8 @@ function appendIgnoreEntry(content: string): string {
   return `${content}${content.endsWith("\n") ? "" : "\n"}${SANE_IGNORE_ENTRY}\n`
 }
 
-async function inspectLocalPaths(
-  saneDirectory: string,
-  expectedPaths: string,
-): Promise<"absent" | "expected"> {
-  const saneStat = await lstatOrUndefined(saneDirectory)
-  if (!saneStat) return "absent"
-  if (!saneStat.isDirectory()) {
-    throw new RepositoryInitializationError(
-      `Local SANE path is not a directory: ${saneDirectory}`,
-    )
-  }
-
-  const pathsPath = join(saneDirectory, "paths")
-  const pathsStat = await lstatOrUndefined(pathsPath)
-  if (!pathsStat?.isFile()) {
-    throw new RepositoryInitializationError(
-      `Existing local SANE directory is incomplete or unrelated: ${saneDirectory}`,
-    )
-  }
-  if ((await readFile(pathsPath, "utf8")) !== expectedPaths) {
-    throw new RepositoryInitializationError(
-      `Existing local SANE paths file differs from the expected repository paths: ${pathsPath}`,
-    )
-  }
-  return "expected"
-}
-
-async function isGitRepositoryRoot(path: string): Promise<boolean> {
-  try {
-    const gitDirectory = await lstatOrUndefined(join(path, ".git"))
-    return (
-      gitDirectory?.isDirectory() === true &&
-      (await runGit(["-C", path, "rev-parse", "--show-prefix"])) === ""
-    )
-  } catch {
-    return false
-  }
-}
-
-async function restoreGitignore(path: string, state: GitignoreState): Promise<void> {
-  if (state.exists) {
-    await writeFile(path, state.content)
-  } else {
-    await rm(path, { force: true })
-  }
-}
-
 /**
- * Create or validate the local workstream repository paired with an
+ * Create or validate the local .sane/workstreams directory inside an
  * implementation repository. This deliberately does not bootstrap a workstream.
  */
 export async function initializeSaneRepository(
@@ -203,113 +104,95 @@ export async function initializeSaneRepository(
   const implementationRepository = await resolveImplementationRepository(
     options.implementationRepository,
   )
-  const templateRoot = resolve(options.templateRoot ?? DEFAULT_TEMPLATE_ROOT)
-  const homeDirectory = resolveHomeDirectory(options.homeDirectory)
-  const workstreamRepository = join(
-    homeDirectory,
-    "workstreams",
-    `${basename(implementationRepository)}-work`,
-  )
-  const workstreamsDirectory = dirname(workstreamRepository)
   const saneDirectory = join(implementationRepository, ".sane")
-  const pathsPath = join(saneDirectory, "paths")
+  const workstreamsRoot = join(saneDirectory, "workstreams")
   const gitignorePath = join(implementationRepository, ".gitignore")
+  const legacyPathsPath = join(saneDirectory, "paths")
 
-  // Validate all source content before creating either repository or local files.
-  await validateTemplateRegistry(templateRoot, REPOSITORY_TEMPLATE_REGISTRY)
-  const template = await readFile(join(templateRoot, "shared", "repository", "paths"), "utf8")
-  const expectedPaths = renderRepositoryPaths(
-    template,
-    implementationRepository,
-    workstreamRepository,
-  )
+  if (await lstatOrUndefined(legacyPathsPath)) {
+    throw new RepositoryInitializationError(
+      `Legacy .sane/paths file exists at ${legacyPathsPath}. Move workstreams into .sane/workstreams/ and delete this file.`,
+    )
+  }
 
-  const localPathsState = await inspectLocalPaths(saneDirectory, expectedPaths)
-  const destinationStat = await lstatOrUndefined(workstreamRepository)
+  const saneStat = await lstatOrUndefined(saneDirectory)
+  if (saneStat && !saneStat.isDirectory()) {
+    throw new RepositoryInitializationError(
+      `Local SANE path is not a directory: ${saneDirectory}`,
+    )
+  }
+
+  const destinationStat = await lstatOrUndefined(workstreamsRoot)
+  if (destinationStat && !destinationStat.isDirectory()) {
+    throw new RepositoryInitializationError(
+      `SANE workstreams path is not a directory: ${workstreamsRoot}`,
+    )
+  }
+
   const gitignoreState = await readGitignoreState(gitignorePath)
   const addedIgnoreEntry = !hasIgnoreEntry(gitignoreState.content)
 
-  if (destinationStat) {
-    if (!destinationStat.isDirectory() || !(await isGitRepositoryRoot(workstreamRepository))) {
-      throw new RepositoryInitializationError(
-        `Existing workstream destination is not the expected Git repository: ${workstreamRepository}`,
-      )
-    }
-    if (localPathsState !== "expected") {
-      throw new RepositoryInitializationError(
-        `Existing workstream repository has no matching local SANE paths file: ${pathsPath}`,
-      )
-    }
-
+  if (destinationStat?.isDirectory()) {
     if (options.dryRun) {
       write("Dry run: no files or directories were modified.")
-      write(`Validated: ${workstreamRepository}`)
+      write(`Validated: ${workstreamsRoot}`)
       if (addedIgnoreEntry) write(`Planned: append ${SANE_IGNORE_ENTRY} to ${gitignorePath}`)
       return {
         implementationRepository,
-        workstreamRepository,
+        workstreamsRoot,
         dryRun: true,
-        createdWorkstreamRepository: false,
+        createdWorkstreamsRoot: false,
         addedIgnoreEntry,
       }
     }
 
     if (addedIgnoreEntry) await writeFile(gitignorePath, appendIgnoreEntry(gitignoreState.content))
-    write(`Validated: ${workstreamRepository}`)
+    write(`Validated: ${workstreamsRoot}`)
     if (addedIgnoreEntry) write(`Updated: ${gitignorePath}`)
     return {
       implementationRepository,
-      workstreamRepository,
+      workstreamsRoot,
       dryRun: false,
-      createdWorkstreamRepository: false,
+      createdWorkstreamsRoot: false,
       addedIgnoreEntry,
     }
-  }
-
-  if (localPathsState === "expected") {
-    throw new RepositoryInitializationError(
-      `Local SANE paths file exists but its workstream repository is missing: ${workstreamRepository}`,
-    )
   }
 
   if (options.dryRun) {
     write("Dry run: no files or directories were modified.")
-    write(`Planned: initialize Git repository ${workstreamRepository}`)
-    write(`Planned: create ${pathsPath}`)
+    write(`Planned: create ${workstreamsRoot}`)
     if (addedIgnoreEntry) write(`Planned: append ${SANE_IGNORE_ENTRY} to ${gitignorePath}`)
     return {
       implementationRepository,
-      workstreamRepository,
+      workstreamsRoot,
       dryRun: true,
-      createdWorkstreamRepository: true,
+      createdWorkstreamsRoot: true,
       addedIgnoreEntry,
     }
   }
 
-  let stagingDirectory: string | undefined
-  let wroteLocalState = false
+  const gitignoreExisted = gitignoreState.exists
+  const previousGitignore = gitignoreState.content
+  let createdDirectory = false
   try {
-    await mkdir(workstreamsDirectory, { recursive: true })
-    stagingDirectory = await mkdtemp(join(workstreamsDirectory, `.${basename(workstreamRepository)}-`))
-    await runGit(["init", "--quiet", stagingDirectory])
-
-    await mkdir(saneDirectory)
-    wroteLocalState = true
-    await writeFile(pathsPath, expectedPaths, { flag: "wx" })
+    await mkdir(workstreamsRoot, { recursive: true })
+    createdDirectory = true
     await writeFile(gitignorePath, appendIgnoreEntry(gitignoreState.content))
-
-    if (await lstatOrUndefined(workstreamRepository)) {
-      throw new RepositoryInitializationError(
-        `Workstream destination was created concurrently: ${workstreamRepository}`,
-      )
-    }
-    await rename(stagingDirectory, workstreamRepository)
-    stagingDirectory = undefined
   } catch (error) {
-    if (stagingDirectory) await rm(stagingDirectory, { recursive: true, force: true })
-    if (wroteLocalState) {
-      await rm(saneDirectory, { recursive: true, force: true })
-      await restoreGitignore(gitignorePath, gitignoreState)
+    if (createdDirectory && !(await lstatOrUndefined(workstreamsRoot))) {
+      // Directory creation failed before leaving state behind; nothing to clean.
+    }
+    if (error instanceof RepositoryInitializationError) throw error
+    // Restore gitignore if we created it from scratch and then failed.
+    if (!gitignoreExisted) await rm(gitignorePath, { force: true })
+    else {
+      try {
+        if ((await readFile(gitignorePath, "utf8")) !== previousGitignore) {
+          await writeFile(gitignorePath, previousGitignore)
+        }
+      } catch {
+        // Best effort restore; surface the original failure below.
+      }
     }
     if (error instanceof RepositoryInitializationError) throw error
     throw new RepositoryInitializationError(
@@ -317,14 +200,13 @@ export async function initializeSaneRepository(
     )
   }
 
-  write(`Created: ${workstreamRepository}`)
-  write(`Created: ${pathsPath}`)
+  write(`Created: ${workstreamsRoot}`)
   if (addedIgnoreEntry) write(`Updated: ${gitignorePath}`)
   return {
     implementationRepository,
-    workstreamRepository,
+    workstreamsRoot,
     dryRun: false,
-    createdWorkstreamRepository: true,
+    createdWorkstreamsRoot: true,
     addedIgnoreEntry,
   }
 }

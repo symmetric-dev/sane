@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test"
 import { execFile } from "node:child_process"
-import { access, mkdir, mkdtemp, readFile, realpath, rm } from "node:fs/promises"
+import { access, lstat, mkdir, mkdtemp, readFile, realpath, rm } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { promisify } from "node:util"
@@ -19,22 +19,15 @@ async function expectMissing(path: string): Promise<void> {
 
 describe("init-sane-repository", () => {
   let tempDirectory: string
-  let homeDirectory: string
   let implementationRepository: string
-  let templateRoot: string
+  let workstreamsRoot: string
 
   beforeEach(async () => {
     tempDirectory = await mkdtemp(join(tmpdir(), "sane-alpha-repository-"))
-    homeDirectory = join(tempDirectory, "home")
     implementationRepository = join(tempDirectory, "implementation")
-    templateRoot = join(tempDirectory, "templates")
+    workstreamsRoot = join(implementationRepository, ".sane", "workstreams")
     await mkdir(implementationRepository)
     await execFileAsync("git", ["init", "--quiet", implementationRepository])
-    await mkdir(join(templateRoot, "shared", "repository"), { recursive: true })
-    await Bun.write(
-      join(templateRoot, "shared", "repository", "paths"),
-      "implementation-path: <absolute-path-to-implementation-repository>\nworkstream-repository-path: <absolute-path-to-workstream-repository>\n",
-    )
   })
 
   afterEach(async () => {
@@ -44,36 +37,23 @@ describe("init-sane-repository", () => {
   function options(extra: { dryRun?: boolean } = {}) {
     return {
       implementationRepository,
-      homeDirectory,
-      templateRoot,
       write: () => {},
       ...extra,
     }
   }
 
-  test("creates the paired Git repository, local paths file, and ignore entry", async () => {
+  test("creates the workstreams root and ignore entry", async () => {
     const result = await initializeSaneRepository(options())
-    const workstreamRepository = join(homeDirectory, "workstreams", "implementation-work")
     const canonicalImplementationRepository = await realpath(implementationRepository)
 
     expect(result).toMatchObject({
       implementationRepository: canonicalImplementationRepository,
-      workstreamRepository,
+      workstreamsRoot: join(canonicalImplementationRepository, ".sane", "workstreams"),
       dryRun: false,
-      createdWorkstreamRepository: true,
+      createdWorkstreamsRoot: true,
       addedIgnoreEntry: true,
     })
-    expect(
-      (await execFileAsync("git", ["-C", workstreamRepository, "rev-parse", "--is-inside-work-tree"], {
-        encoding: "utf8",
-      })).stdout.trim(),
-    ).toBe("true")
-    expect(
-      await readFile(join(implementationRepository, ".sane", "paths"), "utf8"),
-    ).toBe(
-      `implementation-path: ${canonicalImplementationRepository}\n` +
-        `workstream-repository-path: ${workstreamRepository}\n`,
-    )
+    expect((await lstat(workstreamsRoot)).isDirectory()).toBe(true)
     expect(await readFile(join(implementationRepository, ".gitignore"), "utf8")).toBe(
       "/.sane/\n",
     )
@@ -85,19 +65,22 @@ describe("init-sane-repository", () => {
     const repeat = await initializeSaneRepository(options())
 
     expect(repeat).toMatchObject({
-      createdWorkstreamRepository: false,
+      dryRun: false,
+      createdWorkstreamsRoot: false,
       addedIgnoreEntry: false,
     })
     expect(await readFile(join(implementationRepository, ".gitignore"), "utf8")).toBe(
       "dist/\n/.sane/\n",
     )
+    expect((await lstat(workstreamsRoot)).isDirectory()).toBe(true)
   })
 
   test("preserves existing .gitignore content and adds one ignore entry", async () => {
     await Bun.write(join(implementationRepository, ".gitignore"), "node_modules/\n.env")
 
-    await initializeSaneRepository(options())
+    const result = await initializeSaneRepository(options())
 
+    expect(result).toMatchObject({ createdWorkstreamsRoot: true, addedIgnoreEntry: true })
     expect(await readFile(join(implementationRepository, ".gitignore"), "utf8")).toBe(
       "node_modules/\n.env\n/.sane/\n",
     )
@@ -117,45 +100,42 @@ describe("init-sane-repository", () => {
     await expect(
       initializeSaneRepository({ ...options(), implementationRepository: nonGitDirectory }),
     ).rejects.toThrow("not a Git working tree")
-    await expectMissing(join(homeDirectory, "workstreams"))
+    await expectMissing(join(nonGitDirectory, ".sane"))
   })
 
-  test("rejects an unrelated nonempty workstream destination", async () => {
-    const workstreamRepository = join(homeDirectory, "workstreams", "implementation-work")
-    await mkdir(workstreamRepository, { recursive: true })
-    await Bun.write(join(workstreamRepository, "unrelated.txt"), "do not replace\n")
+  test("rejects when .sane is a file", async () => {
+    await Bun.write(join(implementationRepository, ".sane"), "not a directory\n")
+
+    await expect(initializeSaneRepository(options())).rejects.toThrow(
+      "not a directory",
+    )
+    await expectMissing(workstreamsRoot)
+    await expectMissing(join(implementationRepository, ".gitignore"))
+  })
+
+  test("rejects when the workstreams path is a file", async () => {
+    await mkdir(join(implementationRepository, ".sane"))
+    await Bun.write(workstreamsRoot, "not a directory\n")
+
+    await expect(initializeSaneRepository(options())).rejects.toThrow(
+      "not a directory",
+    )
+    expect((await lstat(workstreamsRoot)).isFile()).toBe(true)
+    await expectMissing(join(implementationRepository, ".gitignore"))
+  })
+
+  test("rejects a legacy .sane/paths file without changing it", async () => {
+    await mkdir(join(implementationRepository, ".sane"))
+    await Bun.write(join(implementationRepository, ".sane", "paths"), "different\n")
 
     await expect(initializeSaneRepository(options())).rejects.toBeInstanceOf(
       RepositoryInitializationError,
     )
-    expect(await readFile(join(workstreamRepository, "unrelated.txt"), "utf8")).toBe(
-      "do not replace\n",
-    )
-    await expectMissing(join(implementationRepository, ".sane"))
-  })
-
-  test("rejects a destination that is only a directory inside another Git repository", async () => {
-    const workstreamsDirectory = join(homeDirectory, "workstreams")
-    const workstreamRepository = join(workstreamsDirectory, "implementation-work")
-    await mkdir(workstreamRepository, { recursive: true })
-    await execFileAsync("git", ["init", "--quiet", workstreamsDirectory])
-
-    await expect(initializeSaneRepository(options())).rejects.toThrow(
-      "not the expected Git repository",
-    )
-    await expectMissing(join(implementationRepository, ".sane"))
-  })
-
-  test("rejects a differing local SANE paths file without changing it", async () => {
-    const workstreamRepository = join(homeDirectory, "workstreams", "implementation-work")
-    await mkdir(join(implementationRepository, ".sane"))
-    await Bun.write(join(implementationRepository, ".sane", "paths"), "different\n")
-    await execFileAsync("git", ["init", "--quiet", workstreamRepository])
-
-    await expect(initializeSaneRepository(options())).rejects.toThrow("paths file differs")
+    await expect(initializeSaneRepository(options())).rejects.toThrow("Legacy .sane/paths")
     expect(
       await readFile(join(implementationRepository, ".sane", "paths"), "utf8"),
     ).toBe("different\n")
+    await expectMissing(workstreamsRoot)
     await expectMissing(join(implementationRepository, ".gitignore"))
   })
 
@@ -166,27 +146,21 @@ describe("init-sane-repository", () => {
       write: (line) => lines.push(line),
     })
 
-    expect(result).toMatchObject({ dryRun: true, createdWorkstreamRepository: true })
+    expect(result).toMatchObject({ dryRun: true, createdWorkstreamsRoot: true })
     expect(lines).toContain("Dry run: no files or directories were modified.")
-    await expectMissing(join(homeDirectory, "workstreams"))
     await expectMissing(join(implementationRepository, ".sane"))
     await expectMissing(join(implementationRepository, ".gitignore"))
   })
 
-  test("validates the paths template before creating destinations", async () => {
-    await Bun.write(join(templateRoot, "shared", "repository", "paths"), "missing placeholders\n")
-
-    await expect(initializeSaneRepository(options())).rejects.toThrow("exact .sane/paths schema")
-    await expectMissing(join(homeDirectory, "workstreams"))
-    await expectMissing(join(implementationRepository, ".sane"))
-  })
-
-  test("uses the default shared repository paths source", async () => {
+  test("dry run validates an existing workstreams root without mutation", async () => {
+    await initializeSaneRepository(options())
+    const lines: string[] = []
     const result = await initializeSaneRepository({
       ...options({ dryRun: true }),
-      templateRoot: undefined,
+      write: (line) => lines.push(line),
     })
 
-    expect(result).toMatchObject({ dryRun: true, createdWorkstreamRepository: true })
+    expect(result).toMatchObject({ dryRun: true, createdWorkstreamsRoot: false })
+    expect(lines).toContain("Dry run: no files or directories were modified.")
   })
 })

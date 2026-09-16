@@ -13,7 +13,7 @@ This policy applies to both `feature` and `foundation` workstreams.
 
 | Kind | Location | What it is canonical for | Expected lifetime |
 | --- | --- | --- | --- |
-| Workstream record | The paired workstream repository | The intent, evidence, decisions, approvals, and delivery record for one bounded change at a particular time | Historical after delivery |
+| Workstream record | The ignored `.sane/workstreams/` directory | The intent, evidence, decisions, approvals, and delivery record for one bounded change at a particular time | Historical after delivery |
 | Project documentation | The implementation repository | The current practical description of what the repository, product, service, and operating environment contain and how to use or evolve them | Continuously maintained as the repository changes |
 
 Workstream artifacts include `PRD.md`, research documents, root and Stage Design,

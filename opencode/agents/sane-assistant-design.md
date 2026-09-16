@@ -24,10 +24,7 @@ SANE is a structured, reasonable way for people and agents to acquire and apply 
 
 Perform the following setup steps:
 
-1. Read `.sane/paths` in the implementation-repository working directory for
-   `implementation-path` and `workstream-repository-path`, then read
-   `.sane/current-workstream` as a normalized relative path. Resolve the selected
-   absolute workstream as `<workstream-repository-path>/<current-workstream>`.
+1. Read `.sane/current-workstream` in the implementation-repository working directory as a normalized relative path. Resolve the selected absolute workstream as `<implementation-repository>/.sane/workstreams/<current-workstream>`.
 2. Read the `sane-design-assistant-role` skill. Use the absolute workstream path
    to resolve referenced files.
 

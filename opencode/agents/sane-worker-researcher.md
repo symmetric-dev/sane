@@ -29,7 +29,7 @@ sources; assigned `REPORT.md` and any explicitly assigned supporting output
 paths; and permitted methods, commands, exceptions, and stop conditions.
 
 This is a worker handoff, not a user-facing session. Do not recover wider
-workstream context from `.sane/paths`, `.sane/current-workstream`, or unrelated
+workstream context from `.sane/current-workstream`, or unrelated
 planning artifacts. Do not perform Pickup, Delivery, approval, State-update, or
 user-question workflows; do not communicate with or ask questions of the user;
 and do not launch subagents. Return missing critical context to the launching
