@@ -11,7 +11,7 @@
  * 5. Merge into main with `git merge --no-ff sane/<user>/<workstream>` from a
  *    clean main checkout.
  * 6. Run main checks and smoke (typecheck + affected tests + boot check).
- * 7. Record `merge_commit` in the `merges` table; render into `SANE_STATE.md`.
+ * 7. Record `merge_commit` in the `merges` table; viewable via `sane-alpha state`.
  * 8. Remove the worktree (`git worktree remove`) and delete the branch only
  *    after the merge commit is recorded.
  *

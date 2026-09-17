@@ -28,7 +28,6 @@ async function expectMissing(path: string): Promise<void> {
 
 const NEW_TEMPLATE_SOURCES = [
   "shared/SANE_CONTEXT.md",
-  "shared/SANE_STATE.md",
   "shared/sdd/SDD.md",
   "shared/solutions/SOLUTION.md",
   "shared/research/REPORT.md",
@@ -183,7 +182,7 @@ describe("repository-aware Alpha workstream tools", () => {
   test("REQUIRED_WORKSTREAM_FILES matches the 0.2.0 bootstrap shape", () => {
     const required: string[] = [...REQUIRED_WORKSTREAM_FILES]
     expect(required).toContain("SANE_CONTEXT.md")
-    expect(required).toContain("SANE_STATE.md")
+    expect(required).not.toContain("SANE_STATE.md")
     expect(required).toContain("SDD.md")
     for (const resource of NEW_RESOURCE_FILES) {
       expect(required).toContain(resource)
@@ -197,8 +196,8 @@ describe("repository-aware Alpha workstream tools", () => {
     expect(required.join("\n")).not.toContain("IMPLEMENTATION_REPORT")
   })
 
-  test("requires the 0.2.0 fixed roots SANE_CONTEXT.md, SANE_STATE.md, and SDD.md", async () => {
-    for (const missing of ["SANE_CONTEXT.md", "SANE_STATE.md", "SDD.md"] as const) {
+  test("requires the 0.2.0 fixed roots SANE_CONTEXT.md and SDD.md", async () => {
+    for (const missing of ["SANE_CONTEXT.md", "SDD.md"] as const) {
       const workstream = await bootstrap(`01-fixed-${missing.replace(/[^A-Za-z]+/g, "-")}`)
       await rm(join(workstream, missing))
       await expect(selectSaneWorkstream({
@@ -309,7 +308,6 @@ describe("repository-aware Alpha workstream tools", () => {
     await Bun.write(join(legacyPath, "type"), "feature\n")
     await Bun.write(join(legacyPath, "PRD.md"), "old\n")
     await Bun.write(join(legacyPath, "SANE_CONTEXT.md"), "old\n")
-    await Bun.write(join(legacyPath, "SANE_STATE.md"), "old\n")
     for (const retired of RETIRED_WORKSTREAM_FILES) {
       await Bun.write(join(legacyPath, retired), "old\n")
     }

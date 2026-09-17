@@ -3,7 +3,7 @@
  *
  * Reports DB status for one workstream via `getWorkstreamStatus`.
  * Supports `--json` and `--repo-root` detection idioms matching existing CLIs.
- * Read-only; never writes `SANE_STATE.md`.
+ * Read-only; state is viewed via `sane-alpha state`, never written to disk.
  *
  * New file only (M2 wiring P0).
  */

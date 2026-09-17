@@ -258,10 +258,10 @@ describe("create-sane-workstream", () => {
     expect(await readFile(join(stagingRoot, "skills", "product", "SKILL.md"), "utf8")).toBe(
       "product role template\n",
     )
-    expect(initialTemplateRegistry("feature")).toHaveLength(11)
-    expect(initialTemplateRegistry("foundation")).toHaveLength(11)
-    expect(initialTemplateRegistry("issue")).toHaveLength(11)
-    expect(initialTemplateRegistry("maintenance")).toHaveLength(11)
+    expect(initialTemplateRegistry("feature")).toHaveLength(10)
+    expect(initialTemplateRegistry("foundation")).toHaveLength(10)
+    expect(initialTemplateRegistry("issue")).toHaveLength(10)
+    expect(initialTemplateRegistry("maintenance")).toHaveLength(10)
   })
 
   test("rejects unsupported types before writing a destination", async () => {

@@ -71,7 +71,7 @@ Workstream layout (new tooling bootstraps this shape):
   SDD.md                  # Solution Design Document (Design owns)
   solutions/<name>.md     # one comprehensive doc per solution area (Engineering owns)
   SANE_CONTEXT.md         # shared orientation (template copy, edited in place)
-  SANE_STATE.md           # rendered state (see section 2; per-repo sqlite is authority)
+                          # state is viewed via `sane-alpha state` (no state file on disk; per-repo sqlite is authority)
   research/<topic>/REPORT.md # append-only evidence (research owns registry)
   research/<topic>/REPORT.md
   plan/PLAN.md            # single compact plan (Planning owns)
@@ -113,9 +113,11 @@ recording and checking the declared precondition.
 ## 2. Data Model
 
 `sqlite` at `<repo>/.sane/sane.db` is the source of truth: one database per
-repository, not one per workstream. Markdown files (`SANE_STATE.md`, root
+repository, not one per workstream. Markdown files (root
 doc, `SDD.md`, specs, reports) are renders for humans and agent
 context. On conflict, the database wins; the renderer regenerates the files.
+Workstream state is viewed via `sane-alpha state` (stdout render, no state
+file on disk).
 Every mutation records `(actor_role, session_id, timestamp)`.
 
 Identity: every row is keyed by `(repo_root, user, workstream_id)` so
@@ -250,7 +252,7 @@ Each artifact has exactly one writer role; all other roles read it:
 - User: approvals only. No role self-approves.
 
 Approval gates (user action required, recorded as `approval_ref` plus
-`sane_hash` in `approvals` and a `[✓] Approved` note in the `SANE_STATE.md`
+`sane_hash` in `approvals` and a `[✓] Approved` note in the `sane-alpha state`
 render):
 
 1. Root doc plus SDD (Design).
@@ -356,7 +358,7 @@ server, migration against shared data, or deployment.
 5. Merge into main with `git merge --no-ff sane/<user>/<workstream>` from a
    clean main checkout.
 6. Run main checks and smoke (typecheck + affected tests + boot check).
-7. Record `merge_commit` in the `merges` table; render into `SANE_STATE.md`.
+7. Record `merge_commit` in the `merges` table; viewable via `sane-alpha state`.
 8. Remove the worktree (`git worktree remove`) and delete the branch only
    after the merge commit is recorded.
 

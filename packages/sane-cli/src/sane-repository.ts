@@ -19,7 +19,6 @@ export const WORKSTREAMS_DIRECTORY_NAME = "workstreams"
  */
 export const REQUIRED_WORKSTREAM_FILES = [
   "SANE_CONTEXT.md",
-  "SANE_STATE.md",
   "SDD.md",
   "resources/SDD_TEMPLATE.md",
   "resources/SOLUTION_SPEC_TEMPLATE.md",

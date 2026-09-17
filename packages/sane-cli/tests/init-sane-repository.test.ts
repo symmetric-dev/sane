@@ -175,7 +175,7 @@ describe("init-sane-repository", () => {
   test("0.2.0 REQUIRED_WORKSTREAM_FILES uses the new layout without Stage templates", () => {
     const required: string[] = [...REQUIRED_WORKSTREAM_FILES]
     expect(required).toContain("SANE_CONTEXT.md")
-    expect(required).toContain("SANE_STATE.md")
+    expect(required).not.toContain("SANE_STATE.md")
     expect(required).toContain("SDD.md")
     expect(required).toContain("resources/SDD_TEMPLATE.md")
     expect(required).toContain("resources/SOLUTION_SPEC_TEMPLATE.md")
@@ -204,10 +204,9 @@ describe("init-sane-repository", () => {
     await Bun.write(join(workstream, "type"), "issue\n")
     await Bun.write(join(workstream, "ISSUE.md"), "issue root\n")
     await Bun.write(join(workstream, "SANE_CONTEXT.md"), "context\n")
-    await Bun.write(join(workstream, "SANE_STATE.md"), "state\n")
     await Bun.write(join(workstream, "SDD.md"), "sdd placeholder\n")
     for (const file of REQUIRED_WORKSTREAM_FILES) {
-      if (file === "SANE_CONTEXT.md" || file === "SANE_STATE.md" || file === "SDD.md") continue
+      if (file === "SANE_CONTEXT.md" || file === "SDD.md") continue
       await Bun.write(join(workstream, file), `${file}\n`)
     }
     expect(await validateBootstrappedWorkstream(workstream)).toBe("issue")
@@ -223,7 +222,6 @@ describe("init-sane-repository", () => {
     await Bun.write(join(legacy, "type"), "feature\n")
     await Bun.write(join(legacy, "PRD.md"), "old\n")
     await Bun.write(join(legacy, "SANE_CONTEXT.md"), "old\n")
-    await Bun.write(join(legacy, "SANE_STATE.md"), "old\n")
     for (const retired of RETIRED_WORKSTREAM_FILES) {
       await Bun.write(join(legacy, retired), "old\n")
     }

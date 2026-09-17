@@ -1,10 +1,10 @@
 import { describe, expect, test } from "bun:test"
-import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises"
+import { mkdtemp, rm, writeFile } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { Database } from "bun:sqlite"
 
-import { SANE_STATE_SCHEMA, renderSaneState, writeSaneState } from "../src/sane-state.ts"
+import { SANE_STATE_SCHEMA, renderSaneState } from "../src/sane-state.ts"
 import { hashFile, normalizeGitCommit, sha256Hex, toApprovalHash } from "../src/sane-hash.ts"
 
 const IDENTITY = { repoRoot: "/repo", user: "alice", workstreamId: "01-demo" } as const
@@ -171,36 +171,26 @@ describe("sane-state renderer from DB", () => {
     }
   })
 
-  test("DB wins: editing the file then re-rendering overwrites the edit", async () => {
+  test("DB wins: re-rendering reflects DB rows with no state file", () => {
     const db = createDb()
-    let tempDirectory = ""
     try {
       seedWorkstream(db)
       seedPhases(db)
 
-      tempDirectory = await mkdtemp(join(tmpdir(), "sane-state-db-wins-"))
-      const filePath = join(tempDirectory, "SANE_STATE.md")
-
-      const first = await writeSaneState(db, { ...IDENTITY }, filePath)
-      expect(await readFile(filePath, "utf8")).toBe(first)
+      const first = renderSaneState(db, { ...IDENTITY })
       expect(first).toContain("Demo one-aspect scope")
 
-      // Simulate a stale manual edit that diverges from the DB.
-      await writeFile(filePath, `${first}\nSTALE MANUAL EDIT scope=wrong\n`)
-      expect(await readFile(filePath, "utf8")).toContain("STALE MANUAL EDIT")
-
-      // Re-render from the DB must overwrite the manual edit (DB wins).
+      // A DB update changes the next render; there is no file to diverge.
+      db.query(
+        "UPDATE workstreams SET scope = ? WHERE repo_root = ? AND user = ? AND workstream_id = ?",
+      ).run("Updated scope", IDENTITY.repoRoot, IDENTITY.user, IDENTITY.workstreamId)
       const second = renderSaneState(db, { ...IDENTITY })
-      await writeSaneState(db, { ...IDENTITY }, filePath)
-      const onDisk = await readFile(filePath, "utf8")
-      expect(onDisk).toBe(second)
-      expect(onDisk).toBe(first)
-      expect(onDisk).not.toContain("STALE MANUAL EDIT")
-      expect(onDisk).not.toContain("scope=wrong")
-      expect(onDisk).toContain("Demo one-aspect scope")
+      expect(second).toContain("Updated scope")
+      expect(second).not.toContain("Demo one-aspect scope")
+      // Re-rendering without DB changes is deterministic.
+      expect(renderSaneState(db, { ...IDENTITY })).toBe(second)
     } finally {
       db.close()
-      if (tempDirectory) await rm(tempDirectory, { recursive: true, force: true })
     }
   })
 

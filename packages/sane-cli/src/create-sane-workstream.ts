@@ -22,7 +22,6 @@ export type TemplateRegistry = readonly TemplateMapping[]
 
 const SHARED_INITIAL_TEMPLATE_REGISTRY = [
   { source: "shared/SANE_CONTEXT.md", destination: "SANE_CONTEXT.md" },
-  { source: "shared/SANE_STATE.md", destination: "SANE_STATE.md" },
   {
     source: "shared/sdd/SDD.md",
     destination: "SDD.md",

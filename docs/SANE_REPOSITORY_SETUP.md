@@ -103,7 +103,9 @@ sane-alpha select-workstream <implementation-repository> <workstream-relative-pa
 
 Both commands support `--dry-run`; selection takes no type argument. A selected
 workstream must contain a valid root `type` file, `SANE_CONTEXT.md`,
-`SANE_STATE.md`, `PRD.md`, and every bootstrapped `resources/` fallback template.
+`PRD.md`, and every bootstrapped `resources/` fallback template.
+There is no state file; view state with
+`sane-alpha state <implementation-repository> <workstream-relative-path>`.
 Those fallbacks include the Implementation Report, Section Spec, Job Spec,
 Research Report, root Design, Stage list, Stage Design, Stage
 Sections, and Execution Plan templates.
@@ -112,8 +114,9 @@ There is no role-artifact CLI command. When a role needs an artifact, it inspect
 the selected workstream's `resources/`, creates the artifact's parent directory,
 copies the matching local template to its normal destination, then edits the
 copy. It never overwrites an existing artifact and preserves required headings
-and structure. `PRD.md`, `SANE_CONTEXT.md`, and `SANE_STATE.md` are bootstrap-root
-artifacts and are edited in place.
+and structure. `PRD.md` and `SANE_CONTEXT.md` are bootstrap-root
+artifacts and are edited in place. There is no state file; view state with
+`sane-alpha state <implementation-repository> <workstream-relative-path>`.
 
 Research is an append-only archive: completed evidence lives at
 `research/<topic>/REPORT.md` (from `resources/RESEARCH_REPORT_TEMPLATE.md`).
@@ -147,13 +150,13 @@ resolves the selected absolute workstream as
 If the current pointer or selected workstream type metadata is missing or
 invalid, the assistant asks the user to select a valid workstream and stops; it
 does not infer or switch one. Its
-`SANE_CONTEXT.md`, `SANE_STATE.md`, assigned artifacts, and role skill then
+`SANE_CONTEXT.md`, state viewed via `sane-alpha state`, assigned artifacts, and role skill then
 govern the session.
 
 The Coordination Assistant uses the implementation repository root as the Bash
 working directory when launching workers. Worker and
 review prompts receive only their assigned paths and instructions. They do not
-read `.sane/current-workstream`, `SANE_CONTEXT.md`, or `SANE_STATE.md`.
+read `.sane/current-workstream` or `SANE_CONTEXT.md`, nor view state via `sane-alpha state`.
 
 A Scout receives a self-contained bounded implementation-repository assignment
 from its invoking parent agent, subject to that parent's launch permissions.

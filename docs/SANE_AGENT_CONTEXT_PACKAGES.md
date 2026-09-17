@@ -238,8 +238,9 @@ Every user-started SANE session follows this sequence:
    workstream.
 6. The agent resolves the selected absolute workstream as
    `<implementation-repository>/.sane/workstreams/<current-workstream>`, then reads its
-   `SANE_CONTEXT.md`, `SANE_STATE.md`, and the role-specific Pickup inputs
-   required by its installed skill.
+   `SANE_CONTEXT.md` and the role-specific Pickup inputs
+   required by its installed skill, and views state via
+   `sane-alpha state <impl-repo> <ws-path>`.
    A role that consumes Research records the hashes of the registered
    `research/<topic>/REPORT.md` files it uses, as shown by
    `sane-alpha research <impl-repo> <ws-path> --index`.

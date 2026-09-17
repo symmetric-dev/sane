@@ -1,14 +1,12 @@
-import { mkdir, rename, rm, writeFile } from "node:fs/promises"
-import { dirname, join } from "node:path"
 import type { Database } from "bun:sqlite"
 
 /**
- * SANE_STATE.md renderer from sqlite (docs/SANE_0_2_0.md Section 2).
+ * State renderer from sqlite (docs/SANE_0_2_0.md Section 2).
  *
- * `sqlite` at `<repo>/.sane/sane.db` is the source of truth; markdown files
- * are renders for humans and agent context. On conflict, the database wins;
- * this renderer regenerates the file. It deliberately replaces the old
- * Stage-shaped `templates/shared/SANE_STATE.md` layout (Workstream
+ * `sqlite` at `<repo>/.sane/sane.db` is the source of truth; the rendered
+ * markdown is printed to stdout by `sane-alpha state` and never written to a
+ * file. On conflict, the database wins. This renderer replaced the old
+ * Stage-shaped workstream-state layout (Workstream
  * Foundation/Stages/Implementation) with the 0.2.0 single-scope shape.
  */
 
@@ -190,8 +188,8 @@ function esc(value: string): string {
 }
 
 /**
- * Render SANE_STATE.md from the database. The database always wins: callers
- * overwrite the file with this return value instead of merging edits.
+ * Render workstream state from the database. The database always wins: there
+ * is no state file to merge with; callers print this return value.
  */
 export function renderSaneState(db: Database, identity: IdentityInput): string {
   const { repoRoot, user, workstreamId } = normalizeIdentity(identity)
@@ -209,7 +207,7 @@ export function renderSaneState(db: Database, identity: IdentityInput): string {
   const lines: string[] = []
   lines.push(`# SANE State — ${workstreamId}`)
   lines.push("")
-  lines.push("<!-- Rendered from sqlite sane.db; database wins. Renderer regenerates this file. -->")
+  lines.push("<!-- Rendered from sqlite sane.db; database wins. View via `sane-alpha state`. -->")
   lines.push("")
   lines.push(`- repo_root: ${esc(repoRoot)}`)
   lines.push(`- user: ${esc(user)}`)
@@ -339,37 +337,4 @@ export function renderSaneState(db: Database, identity: IdentityInput): string {
   }
 
   return lines.join("\n")
-}
-
-/**
- * Regenerate a SANE_STATE.md file from the database, overwriting any manual
- * edits (database wins). Returns the rendered markdown.
- *
- * Atomic: writes to a temp file in the same directory then renames, so a
- * crash never leaves a partial SANE_STATE.md.
- */
-export async function writeSaneState(
-  db: Database,
-  identity: IdentityInput,
-  filePath: string,
-): Promise<string> {
-  const rendered = renderSaneState(db, identity)
-  const directory = dirname(filePath)
-  await mkdir(directory, { recursive: true })
-  const tempPath = join(
-    directory,
-    `.SANE_STATE.md.tmp-${process.pid}-${Date.now()}-${Math.random().toString(36).slice(2)}`,
-  )
-  await writeFile(tempPath, rendered)
-  try {
-    await rename(tempPath, filePath)
-  } catch (error) {
-    try {
-      await rm(tempPath, { force: true })
-    } catch {
-      // Best effort cleanup; surface the original rename failure.
-    }
-    throw error
-  }
-  return rendered
 }

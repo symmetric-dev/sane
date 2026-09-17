@@ -1,17 +1,14 @@
 /**
  * SANE 0.2.0 M2 P0: `sane-alpha state` command.
  *
- * Renders `SANE_STATE.md` from the per-repo sqlite source of truth
- * (`<repo>/.sane/sane.db`; database wins) via `writeSaneState` (atomic
- * temp-file + rename). Supports `--json` and `--repo-root` detection idioms
- * matching existing CLIs.
- *
- * New file only (M2 wiring P0).
+ * Renders workstream state from the per-repo sqlite source of truth
+ * (`<repo>/.sane/sane.db`; database wins) via `renderSaneState` and prints
+ * it to stdout. Writes no file: state is viewed by running this command,
+ * never by reading a file. Supports `--json` and `--repo-root` detection
+ * idioms matching existing CLIs.
  */
-import { join } from "node:path"
-
 import { initSchema, openSaneDb, resolveSaneIdentity } from "./sane-db.ts"
-import { writeSaneState } from "./sane-state.ts"
+import { renderSaneState } from "./sane-state.ts"
 import {
   resolveBootstrappedWorkstream,
   resolveSaneRepository,
@@ -30,7 +27,6 @@ export interface SaneStateCommandResult {
   repoRoot: string
   user: string
   workstreamId: string
-  filePath: string
   rendered: string
   json: boolean
 }
@@ -101,9 +97,9 @@ export function parseCliArguments(args: string[]): {
 }
 
 /**
- * Render the workstream's `SANE_STATE.md` from the DB (database wins) with an
- * atomic write. Resolves the repo root via the existing git-root detection
- * and validates the bootstrapped workstream before writing.
+ * Render the workstream's state from the DB (database wins) and print it to
+ * stdout. Writes no file. Resolves the repo root via the existing git-root
+ * detection and validates the bootstrapped workstream before rendering.
  */
 export async function runSaneStateCommand(
   options: SaneStateCommandOptions,
@@ -122,13 +118,11 @@ export async function runSaneStateCommand(
   const db = await openSaneDb(pointer.implementationRepository)
   try {
     initSchema(db)
-    const filePath = join(workstream.path, "SANE_STATE.md")
-    const rendered = await writeSaneState(db, identity, filePath)
+    const rendered = renderSaneState(db, identity)
     const result: SaneStateCommandResult = {
       repoRoot: identity.repoRoot,
       user: identity.user,
       workstreamId: identity.workstreamId,
-      filePath,
       rendered,
       json: options.json === true,
     }
@@ -139,15 +133,14 @@ export async function runSaneStateCommand(
             repo_root: result.repoRoot,
             user: result.user,
             workstream_id: result.workstreamId,
-            file: result.filePath,
-            bytes: result.rendered.length,
+            rendered: result.rendered,
           },
           null,
           2,
         ),
       )
     } else {
-      write(`Wrote: ${filePath}`)
+      write(rendered)
     }
     return result
   } finally {
