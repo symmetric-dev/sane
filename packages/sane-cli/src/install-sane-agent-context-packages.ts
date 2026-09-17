@@ -5,11 +5,10 @@ import { dirname, join, resolve } from "node:path"
 import { injectAgentModel, loadAgentModelConfig } from "./agent-model-config.ts"
 
 export const AGENT_FILENAMES = [
-  "sane-assistant-coordination.md",
   "sane-assistant-design.md",
   "sane-assistant-engineering.md",
+  "sane-assistant-execution.md",
   "sane-assistant-planning.md",
-  "sane-assistant-product.md",
   "sane-assistant-research.md",
   "sane-worker-fixer.md",
   "sane-worker-grounder.md",
@@ -20,12 +19,11 @@ export const AGENT_FILENAMES = [
 ] as const
 
 export const ROLE_SKILL_NAMES = [
-  "sane-coordination-assistant-role",
-  "sane-product-assistant-role",
-  "sane-research-assistant-role",
   "sane-design-assistant-role",
   "sane-engineering-assistant-role",
+  "sane-execution-assistant-role",
   "sane-planning-assistant-role",
+  "sane-research-assistant-role",
 ] as const
 
 export const DEFAULT_SOURCE_ROOT = fileURLToPath(new URL("../../../", import.meta.url))

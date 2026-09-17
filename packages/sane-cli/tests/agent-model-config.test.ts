@@ -5,7 +5,7 @@ import { AGENT_FILENAMES } from "../src/install-sane-agent-context-packages.ts"
 describe("agent model YAML config", () => {
   test("supports comments, quoted values, empty mappings and every known agent", () => {
     const yaml = AGENT_FILENAMES.map((name) => `${name.slice(0, -3)}: 'openai/gpt-5' # model`).join("\n")
-    expect(parseAgentModelConfig(yaml, AGENT_FILENAMES).size).toBe(12)
+    expect(parseAgentModelConfig(yaml, AGENT_FILENAMES).size).toBe(11)
     expect(parseAgentModelConfig("{}", AGENT_FILENAMES).size).toBe(0)
   })
 
@@ -22,14 +22,14 @@ describe("agent model YAML config", () => {
   test("supports mixed shorthand, flow and block objects", () => {
     const config = parseAgentModelConfig(`
 sane-worker-scout: openai/gpt-5
-sane-assistant-coordination: { model: "openai/gpt-6-astra", variant: low }
+sane-assistant-execution: { model: "openai/gpt-6-astra", variant: low }
 sane-assistant-engineering:
   model: openai/gpt-6-astra
   variant: high
 sane-worker-fixer: { model: openai/gpt-5 }
 `, AGENT_FILENAMES)
     expect(config.get("sane-worker-scout")).toBe("openai/gpt-5")
-    expect(config.get("sane-assistant-coordination")).toEqual({ model: "openai/gpt-6-astra", variant: "low" })
+    expect(config.get("sane-assistant-execution")).toEqual({ model: "openai/gpt-6-astra", variant: "low" })
     expect(config.get("sane-assistant-engineering")).toEqual({ model: "openai/gpt-6-astra", variant: "high" })
     expect(config.get("sane-worker-fixer")).toEqual({ model: "openai/gpt-5" })
   })

@@ -1,11 +1,10 @@
 # Hard Problems Assistants
 sane-assistant-engineering: { model: "opencode-go/muse-spark-1.3-contributor", variant: high }
-sane-assistant-product: { model: "opencode-go/muse-spark-1.3-contributor", variant: high }
 
 # Wide Coverage Assistants
 sane-assistant-design: { model: "opencode-go/muse-spark-1.3-contributor", variant: high }
 sane-assistant-research: { model: "opencode-go/muse-spark-1.3-contributor", variant: high }
-sane-assistant-coordination: { model: "opencode-go/muse-spark-1.3-contributor", variant: high }
+sane-assistant-execution: { model: "opencode-go/muse-spark-1.3-contributor", variant: high }
 
 # Wide Coverage - Low Verbosity Assistants (They create more compact prompts for other agents)
 sane-assistant-planning: { model: "opencode-go/muse-spark-1.3-contributor", variant: high }

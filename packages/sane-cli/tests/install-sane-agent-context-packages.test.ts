@@ -45,13 +45,13 @@ describe("install-sane-agent-context-packages", () => {
     return { homeDirectory, sourceRoot, write: () => {}, ...extra }
   }
 
-  test("installs all twelve agents and all six assistant role skills", async () => {
+  test("installs all eleven agents and all five assistant role skills", async () => {
     const result = await installSaneAgentContextPackages(options())
 
     expect(result.dryRun).toBe(false)
     expect(result.updated).toEqual([])
     expect(result.unchanged).toEqual([])
-    expect(result.created).toHaveLength(18)
+    expect(result.created).toHaveLength(16)
     for (const filename of AGENT_FILENAMES) {
       expect(await readFile(join(homeDirectory, ".config", "opencode", "agents", filename), "utf8")).toBe(
         `agent ${filename}\n`,
@@ -81,14 +81,14 @@ describe("install-sane-agent-context-packages", () => {
     expect(installed.endsWith("\nOriginal body\n")).toBe(true)
     expect(await readFile(source, "utf8")).toBe(original)
     expect(await readFile(join(homeDirectory, ".config", "opencode", "agents", AGENT_FILENAMES[1]), "utf8")).toBe(`agent ${AGENT_FILENAMES[1]}\n`)
-    expect((await installSaneAgentContextPackages(options({ modelConfigPath }))).unchanged).toHaveLength(18)
+    expect((await installSaneAgentContextPackages(options({ modelConfigPath }))).unchanged).toHaveLength(16)
     await Bun.write(modelConfigPath, mapping("anthropic/claude-sonnet-4-6", "medium"))
     await expect(installSaneAgentContextPackages(options({ modelConfigPath }))).rejects.toThrow("--overwrite")
     expect((await installSaneAgentContextPackages(options({ modelConfigPath, overwrite: true, dryRun: true }))).updated).toEqual([destination])
     expect(await readFile(destination, "utf8")).toContain('model: "openai/gpt-5"')
     expect((await installSaneAgentContextPackages(options({ modelConfigPath, overwrite: true }))).updated).toEqual([destination])
     expect(await readFile(destination, "utf8")).toContain('model: "anthropic/claude-sonnet-4-6"')
-    expect((await installSaneAgentContextPackages(options({ modelConfigPath }))).unchanged).toHaveLength(18)
+    expect((await installSaneAgentContextPackages(options({ modelConfigPath }))).unchanged).toHaveLength(16)
     expect(await readFile(source, "utf8")).toBe(original)
     if (form === "flow" || form === "block") {
       expect(await readFile(destination, "utf8")).toContain('variant: "medium"')
@@ -133,7 +133,7 @@ describe("install-sane-agent-context-packages", () => {
     const result = await installSaneAgentContextPackages(options())
 
     expect(result).toMatchObject({ created: [], updated: [] })
-    expect(result.unchanged).toHaveLength(18)
+    expect(result.unchanged).toHaveLength(16)
   })
 
   test("dry run validates and reports plans without creating a home directory", async () => {
@@ -141,9 +141,9 @@ describe("install-sane-agent-context-packages", () => {
     const result = await installSaneAgentContextPackages(options({ dryRun: true, write: (line) => lines.push(line) }))
 
     expect(result.dryRun).toBe(true)
-    expect(result.created).toHaveLength(18)
+    expect(result.created).toHaveLength(16)
     expect(lines).toContain("Dry run: no files or directories were modified.")
-    expect(lines.filter((line) => line.startsWith("Planned:"))).toHaveLength(18)
+    expect(lines.filter((line) => line.startsWith("Planned:"))).toHaveLength(16)
     await expectMissing(homeDirectory)
   })
 
@@ -207,19 +207,17 @@ describe("install-sane-agent-context-packages", () => {
     })
 
     expect(ROLE_SKILL_NAMES).toEqual([
-      "sane-coordination-assistant-role",
-      "sane-product-assistant-role",
-      "sane-research-assistant-role",
       "sane-design-assistant-role",
       "sane-engineering-assistant-role",
+      "sane-execution-assistant-role",
       "sane-planning-assistant-role",
+      "sane-research-assistant-role",
     ])
     expect(AGENT_FILENAMES).toEqual([
-      "sane-assistant-coordination.md",
       "sane-assistant-design.md",
       "sane-assistant-engineering.md",
+      "sane-assistant-execution.md",
       "sane-assistant-planning.md",
-      "sane-assistant-product.md",
       "sane-assistant-research.md",
       "sane-worker-fixer.md",
       "sane-worker-grounder.md",
@@ -228,7 +226,7 @@ describe("install-sane-agent-context-packages", () => {
       "sane-worker-reviewer.md",
       "sane-worker-scout.md",
     ])
-    expect(result.created).toHaveLength(18)
+    expect(result.created).toHaveLength(16)
     for (const skillName of ROLE_SKILL_NAMES) {
       expect(await readFile(join(DEFAULT_SOURCE_ROOT, "skills", skillName, "SKILL.md"), "utf8")).not.toBe("")
     }
@@ -467,7 +465,7 @@ describe("install-sane-agent-context-packages", () => {
       write: () => {},
     }
     const dryRun = await installSaneAgentContextPackages({ ...installOptions, dryRun: true })
-    expect(dryRun.created).toHaveLength(18)
+    expect(dryRun.created).toHaveLength(16)
     const planningPath = join(homeDirectory, ".config", "opencode", "agents", "sane-assistant-planning.md")
     await expectMissing(planningPath)
     const result = await installSaneAgentContextPackages(installOptions)
@@ -481,7 +479,7 @@ describe("install-sane-agent-context-packages", () => {
     expect(grounder).toContain('variant: "high"')
     expect(await readFile(join(homeDirectory, ".agents", "skills", "sane-planning-assistant-role", "SKILL.md"), "utf8"))
       .toContain("# SANE Planning Assistant Role")
-    expect((await installSaneAgentContextPackages(installOptions)).unchanged).toHaveLength(18)
+    expect((await installSaneAgentContextPackages(installOptions)).unchanged).toHaveLength(16)
     for (const path of [oldAgent, oldSkill]) {
       expect(await readFile(path, "utf8")).toBe("preserve local execution customization\n")
     }
