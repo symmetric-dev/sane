@@ -15,6 +15,10 @@ const expectedCommands: AlphaCommand[] = [
   "pickup",
   "artifact",
   "approve",
+  "baseline",
+  "handoff",
+  "worktree",
+  "merge",
 ]
 
 describe("sane-alpha dispatcher", () => {
