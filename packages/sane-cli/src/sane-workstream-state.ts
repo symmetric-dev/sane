@@ -5,7 +5,8 @@
  * renders. This module reads the DB plus workstream files to report status and
  * to run pickup precondition checks:
  * - `foundation_rev` declared precondition missing/superseded -> throw.
- * - Baseline revision recorded vs current (file presence + report revs).
+ * - Research index: registered reports present and unmodified, unregistered
+ *   report files surfaced (warnings only).
  * - SDD/solutions `sane_hash` current vs approved (reported, never auto-revoked
  *   per Explicit Non-Goals; mismatches are warnings, not throws).
  *
@@ -17,9 +18,7 @@ import { dirname, isAbsolute, join } from "node:path"
 
 import { sha256Hex } from "./sane-hash.ts"
 import {
-  bumpBaselineRevision,
   getApproval,
-  getBaseline,
   getMerge,
   getWorkstream,
   listApprovals,
@@ -29,10 +28,8 @@ import {
   listStateEntries,
   normalizeWorkstreamId,
   type ApprovalRow,
-  type BaselineRow,
   type JobRow,
   type MergeRow,
-  type MutationContext,
   type ResearchReportRow,
   type SaneIdentity,
   type SelectionRow,
@@ -81,7 +78,6 @@ export interface WorkstreamStatusResult {
   phases: StateEntryRow[]
   approvals: ApprovalRow[]
   jobs: JobRow[]
-  baseline: BaselineRow | null
   merge: MergeRow | null
   selections: SelectionRow[]
   researchReports: ResearchReportRow[]
@@ -106,7 +102,6 @@ export function getWorkstreamStatus(db: Database, identity: SaneIdentity): Works
     phases: listStateEntries(db, identity),
     approvals: listApprovals(db, identity),
     jobs: listJobs(db, identity),
-    baseline: getBaseline(db, identity),
     merge: getMerge(db, identity),
     selections: listSelections(db, identity),
     researchReports: listResearchReports(db, identity),
@@ -126,12 +121,9 @@ export interface PickupFoundationCheck {
   status: FoundationCheckStatus
 }
 
-export interface PickupBaselineCheck {
-  recorded: BaselineRow | null
-  baselinePath: string
-  fileExists: boolean
-  reportsChecked: number
-  staleReports: Array<{ topic: string; baselineRev: number; recordedRev: number }>
+export interface PickupResearchCheck {
+  reports: IndexedResearchReport[]
+  unregisteredFiles: string[]
 }
 
 export interface PickupFileHash {
@@ -150,7 +142,7 @@ export interface PickupCheckResult {
   workstreamId: string
   workstreamDir: string
   foundation: PickupFoundationCheck
-  baseline: PickupBaselineCheck
+  research: PickupResearchCheck
   sdd: PickupFileHash
   solutions: PickupFileHash[]
   warnings: string[]
@@ -202,8 +194,8 @@ async function hashExistingFile(path: string): Promise<string | null> {
  *   (otherwise throw "missing"); when that foundation has a recorded
  *   `merges.merge_commit` differing from the declared revision, throw
  *   "superseded" until the user re-confirms. `NULL` means no precondition.
- * - Baseline: compares the recorded `baselines` revision/path against the
- *   workstream file and each `research_reports.baseline_rev` (warnings only).
+ * - Research index: registered reports present and unmodified, unregistered
+ *   report files surfaced (warnings only).
  * - SDD/solutions: compares current file `sane_hash` values against the
  *   `approvals` rows for gates `root-plus-sdd`/`solutions` (warnings only;
  *   no auto-revoke per Explicit Non-Goals).
@@ -260,46 +252,12 @@ export async function runPickupChecks(
     }
   }
 
-  // --- Baseline recorded vs current (warnings) ---
-  const recorded = getBaseline(db, identity)
-  const baselinePath = recorded && !isAbsolute(recorded.path)
-    ? join(workstreamDir, recorded.path)
-    : (recorded ? recorded.path : join(workstreamDir, "research/BASELINE.md"))
-  const baselineFileExists = await fileExists(baselinePath)
-  if (recorded && !baselineFileExists) {
-    warnings.push(
-      `baseline revision r${recorded.revision} recorded but file missing: ${baselinePath}`,
-    )
-  }
-  if (!recorded && baselineFileExists) {
-    warnings.push(`baseline file exists but no revision recorded: ${baselinePath}`)
-  }
-  const reports = listResearchReports(db, identity)
-  const staleReports: PickupBaselineCheck["staleReports"] = []
-  if (recorded) {
-    for (const report of reports) {
-      if (report.baseline_rev !== recorded.revision) {
-        staleReports.push({
-          topic: report.topic,
-          baselineRev: report.baseline_rev,
-          recordedRev: recorded.revision,
-        })
-        warnings.push(
-          `research report ${JSON.stringify(report.topic)} written against baseline r${report.baseline_rev} but current is r${recorded.revision}`,
-        )
-      }
-    }
-  } else if (reports.length > 0) {
-    warnings.push(
-      `no baseline recorded but ${reports.length} research report(s) exist; record a baseline revision first`,
-    )
-  }
-  const baseline: PickupBaselineCheck = {
-    recorded,
-    baselinePath,
-    fileExists: baselineFileExists,
-    reportsChecked: reports.length,
-    staleReports,
+  // --- Research index (warnings) ---
+  const researchIndex = await recheckResearchIndex(db, identity, workstreamDir)
+  for (const mismatch of researchIndex.mismatches) warnings.push(mismatch)
+  const research: PickupResearchCheck = {
+    reports: researchIndex.reports,
+    unregisteredFiles: researchIndex.unregisteredFiles,
   }
 
   // --- SDD sane_hash (warnings) ---
@@ -383,7 +341,7 @@ export async function runPickupChecks(
     workstreamId: identity.workstreamId,
     workstreamDir,
     foundation,
-    baseline,
+    research,
     sdd,
     solutions,
     warnings,
@@ -392,124 +350,101 @@ export async function runPickupChecks(
 }
 
 // ---------------------------------------------------------------------------
-// M3-B baseline record/recheck + pickup/delivery revision checks
-// (docs/SANE_0_2_0.md Sec 2: research support track owns research/BASELINE.md,
-// `baselines.revision`, `research_reports` rows with no gates; pickup records
-// consumed revisions; delivery rechecks and reconciles/reports instead of
-// delivering stale; approved SDD/Specs remain authority; later research
-// conflicts require a Design/Engineering update + re-approval).
+// M3-B research index check + pickup/delivery revision checks
+// (docs/SANE_0_2_0.md Sec 2: research is an append-only archive of
+// `research/<topic>/REPORT.md` rows in `research_reports`; no gates. Pickup
+// records consumed report hashes; delivery rechecks and reconciles/reports
+// instead of delivering stale; approved SDD/Specs remain authority; later
+// research conflicts require a Design/Engineering update + re-approval).
 //
 // Additive only: existing getWorkstreamStatus/runPickupChecks are unchanged.
 // ---------------------------------------------------------------------------
 
-export const DEFAULT_BASELINE_PATH = "research/BASELINE.md"
-
-function defaultBaselineMutation(): MutationContext {
-  return {
-    actorRole: "research",
-    sessionId: "baseline-record",
-    timestamp: new Date().toISOString(),
-  }
-}
-
-function resolveBaselineFilePath(recorded: BaselineRow | null, workstreamDir: string): string {
-  if (recorded && !isAbsolute(recorded.path)) return join(workstreamDir, recorded.path)
-  if (recorded) return recorded.path
-  return join(workstreamDir, DEFAULT_BASELINE_PATH)
-}
-
-export interface RecordBaselineRevisionInput {
-  /** Baseline file path stored in the `baselines` row. Defaults to the existing row path or `research/BASELINE.md`. */
-  path?: string
-  mutation?: MutationContext
-}
-
-/**
- * Increment the support-track baseline revision by one and update the path.
- * First record yields revision 0; each subsequent call adds one.
- * Thin wrapper over `bumpBaselineRevision` with M3-B defaults.
- */
-export function recordBaselineRevision(
-  db: Database,
-  identity: SaneIdentity,
-  input?: RecordBaselineRevisionInput,
-): BaselineRow {
-  const existing = getBaseline(db, identity)
-  const path = input?.path ?? existing?.path ?? DEFAULT_BASELINE_PATH
-  if (!path || path.trim() === "") {
-    throw new SaneWorkstreamStateError("Baseline path must be a non-empty string.")
-  }
-  return bumpBaselineRevision(db, identity, path, input?.mutation ?? defaultBaselineMutation())
-}
-
-export interface RecheckBaselineResult {
-  recorded: BaselineRow | null
-  baselinePath: string
+export interface IndexedResearchReport {
+  topic: string
+  path: string
+  registeredHash: string
+  currentHash: string | null
   fileExists: boolean
-  reportsChecked: number
-  staleReports: Array<{ topic: string; baselineRev: number; recordedRev: number }>
+}
+
+export interface RecheckResearchIndexResult {
+  reports: IndexedResearchReport[]
+  unregisteredFiles: string[]
   mismatches: string[]
   ok: boolean
 }
 
-/**
- * Compare the recorded `baselines` revision against the workstream file and
- * each `research_reports.baseline_rev`. Returns per-report mismatches;
- * never throws for stale content (throws only for missing workstream rows
- * via the underlying readers, which return null/empty when absent).
- */
-export async function recheckBaseline(
+/** List `research/<topic>/REPORT.md` files present on disk (workstream-relative). */
+export async function listUnregisteredReportFiles(
   db: Database,
   identity: SaneIdentity,
   workstreamDir: string,
-): Promise<RecheckBaselineResult> {
-  const recorded = getBaseline(db, identity)
-  const baselinePath = resolveBaselineFilePath(recorded, workstreamDir)
-  const exists = await fileExists(baselinePath)
-  const reports = listResearchReports(db, identity)
-  const staleReports: RecheckBaselineResult["staleReports"] = []
+): Promise<string[]> {
+  const registered = new Set(listResearchReports(db, identity).map((report) => report.path))
+  const researchDir = join(workstreamDir, "research")
+  let topics: string[] = []
+  try {
+    topics = (await readdir(researchDir)).sort()
+  } catch (error) {
+    if (errorCode(error) === "ENOENT") return []
+    throw error
+  }
+  const unregistered: string[] = []
+  for (const topic of topics) {
+    const relative = `research/${topic}/REPORT.md`
+    if (registered.has(relative)) continue
+    if (await fileExists(join(workstreamDir, relative))) unregistered.push(relative)
+  }
+  return unregistered
+}
+
+/**
+ * Compare the registered `research_reports` rows against workstream files.
+ * Reports are append-only: a registered file that changed hash was edited
+ * after registration, and an on-disk report with no row was never registered.
+ * Returns mismatches; never throws for stale content.
+ */
+export async function recheckResearchIndex(
+  db: Database,
+  identity: SaneIdentity,
+  workstreamDir: string,
+): Promise<RecheckResearchIndexResult> {
+  const reports: IndexedResearchReport[] = []
   const mismatches: string[] = []
-  if (recorded && !exists) {
-    mismatches.push(
-      `baseline revision r${recorded.revision} recorded but file missing: ${baselinePath}`,
-    )
-  }
-  if (!recorded && exists) {
-    mismatches.push(`baseline file exists but no revision recorded: ${baselinePath}`)
-  }
-  if (recorded) {
-    for (const report of reports) {
-      if (report.baseline_rev !== recorded.revision) {
-        staleReports.push({
-          topic: report.topic,
-          baselineRev: report.baseline_rev,
-          recordedRev: recorded.revision,
-        })
-        mismatches.push(
-          `research report ${JSON.stringify(report.topic)} written against baseline r${report.baseline_rev} but current is r${recorded.revision}`,
-        )
-      }
+  for (const report of listResearchReports(db, identity)) {
+    const absolute = !isAbsolute(report.path) ? join(workstreamDir, report.path) : report.path
+    const exists = await fileExists(absolute)
+    const currentHash = exists ? await hashExistingFile(absolute) : null
+    reports.push({
+      topic: report.topic,
+      path: report.path,
+      registeredHash: report.sane_hash,
+      currentHash,
+      fileExists: exists,
+    })
+    if (!exists) {
+      mismatches.push(`registered research report ${JSON.stringify(report.topic)} missing file: ${report.path}`)
+    } else if (report.sane_hash && currentHash !== report.sane_hash) {
+      mismatches.push(
+        `research report ${JSON.stringify(report.topic)} edited after registration (registered ${report.sane_hash.slice(0, 12)}… vs current ${currentHash?.slice(0, 12) ?? "(missing)"}…). Research is append-only: register a new topic instead of updating ${report.path}`,
+      )
     }
-  } else if (reports.length > 0) {
+  }
+  const unregisteredFiles = await listUnregisteredReportFiles(db, identity, workstreamDir)
+  for (const relative of unregisteredFiles) {
     mismatches.push(
-      `no baseline recorded but ${reports.length} research report(s) exist; record a baseline revision first`,
+      `research report file ${relative} is not registered; run research --register to index it`,
     )
   }
-  return {
-    recorded,
-    baselinePath,
-    fileExists: exists,
-    reportsChecked: reports.length,
-    staleReports,
-    mismatches,
-    ok: mismatches.length === 0,
-  }
+  return { reports, unregisteredFiles, mismatches, ok: mismatches.length === 0 }
 }
 
 export interface PickupRevisionSnapshotReport {
   topic: string
-  baselineRev: number
   path: string
+  registeredHash: string
+  currentHash: string | null
 }
 
 /**
@@ -523,8 +458,6 @@ export interface PickupRevisionSnapshot {
   user: string
   workstreamId: string
   recordedAt: string
-  baselineRev: number | null
-  baselinePath: string | null
   sddHash: string | null
   sddApprovedHash: string | null
   solutionHashes: Record<string, string | null>
@@ -533,6 +466,7 @@ export interface PickupRevisionSnapshot {
   foundationMergeCommit: string | null
   approvalHashes: Record<string, string>
   reports: PickupRevisionSnapshotReport[]
+  unregisteredFiles: string[]
 }
 
 export interface RecordPickupRevisionsOptions {
@@ -594,8 +528,8 @@ function readFoundationMergeCommit(
 }
 
 /**
- * Snapshot baseline rev + SDD hash + solution hashes + `foundation_rev`
- * (+ foundation merge commit) + approval hashes + research reports.
+ * Snapshot SDD hash + solution hashes + `foundation_rev`
+ * (+ foundation merge commit) + approval hashes + research report hashes.
  *
  * Persistence: when `options.sidecarPath` is set, the snapshot is written as
  * formatted JSON to that sidecar file. A future `pickup_revisions` DB table
@@ -615,15 +549,16 @@ export async function recordPickupRevisions(
       `No workstream row for repo_root=${JSON.stringify(identity.repoRoot)} user=${JSON.stringify(identity.user)} workstream_id=${JSON.stringify(identity.workstreamId)}.`,
     )
   }
-  const baseline = getBaseline(db, identity)
   const sddHash = await hashExistingFile(join(workstreamDir, "SDD.md"))
   const solutionHashes = await collectSolutionHashes(workstreamDir)
   const approvals = listApprovals(db, identity)
   const approvalHashes: Record<string, string> = {}
   for (const approval of approvals) approvalHashes[approval.gate] = approval.sane_hash
-  const reports = listResearchReports(db, identity).map((report) => ({
+  const researchIndex = await recheckResearchIndex(db, identity, workstreamDir)
+  const reports = researchIndex.reports.map((report) => ({
     topic: report.topic,
-    baselineRev: report.baseline_rev,
+    registeredHash: report.registeredHash,
+    currentHash: report.currentHash,
     path: report.path,
   }))
   const foundationRev = workstream.foundation_rev ?? null
@@ -632,8 +567,6 @@ export async function recordPickupRevisions(
     user: identity.user,
     workstreamId: identity.workstreamId,
     recordedAt: options?.recordedAt ?? new Date().toISOString(),
-    baselineRev: baseline?.revision ?? null,
-    baselinePath: baseline?.path ?? null,
     sddHash,
     sddApprovedHash: approvalHashes["root-plus-sdd"] ?? null,
     solutionHashes,
@@ -642,6 +575,7 @@ export async function recordPickupRevisions(
     foundationMergeCommit: readFoundationMergeCommit(db, identity, foundationRev),
     approvalHashes,
     reports,
+    unregisteredFiles: researchIndex.unregisteredFiles,
   }
   // Best-effort note: a `pickup_revisions`/`pickup_snapshots` table does not
   // exist in the M3-B schema (sane-db.ts is untouched); when a future schema
@@ -665,7 +599,6 @@ export async function recordPickupRevisions(
 }
 
 export type DeliveryMismatchKind =
-  | "baseline"
   | "sdd"
   | "solutions"
   | "foundation"
@@ -695,8 +628,6 @@ function normalizeSnapshotInput(snapshot: PickupRevisionSnapshot): PickupRevisio
     user: snapshot.user,
     workstreamId: snapshot.workstreamId,
     recordedAt: snapshot.recordedAt,
-    baselineRev: snapshot.baselineRev ?? null,
-    baselinePath: snapshot.baselinePath ?? null,
     sddHash: snapshot.sddHash ?? null,
     sddApprovedHash: snapshot.sddApprovedHash ?? null,
     solutionHashes: snapshot.solutionHashes ?? {},
@@ -704,7 +635,15 @@ function normalizeSnapshotInput(snapshot: PickupRevisionSnapshot): PickupRevisio
     foundationRev: snapshot.foundationRev ?? null,
     foundationMergeCommit: snapshot.foundationMergeCommit ?? null,
     approvalHashes: snapshot.approvalHashes ?? {},
-    reports: Array.isArray(snapshot.reports) ? snapshot.reports : [],
+    reports: Array.isArray(snapshot.reports)
+      ? snapshot.reports.map((report) => ({
+        topic: report.topic,
+        path: report.path,
+        registeredHash: report.registeredHash ?? "",
+        currentHash: report.currentHash ?? null,
+      }))
+      : [],
+    unregisteredFiles: Array.isArray(snapshot.unregisteredFiles) ? snapshot.unregisteredFiles : [],
   }
 }
 
@@ -739,19 +678,6 @@ export async function verifyDeliveryFreshness(
   const snapshot = normalizeSnapshotInput(rawSnapshot)
   const current = await recordPickupRevisions(db, identity, workstreamDir)
   const mismatches: DeliveryMismatch[] = []
-
-  if (snapshot.baselineRev !== current.baselineRev) {
-    mismatches.push({
-      kind: "baseline",
-      message: `baseline revision changed since pickup: pickup r${String(snapshot.baselineRev)} vs current r${String(current.baselineRev)}. Reconcile research against the current baseline instead of delivering stale.`,
-    })
-  }
-  if ((snapshot.baselinePath ?? null) !== (current.baselinePath ?? null)) {
-    mismatches.push({
-      kind: "baseline",
-      message: `baseline path changed since pickup: ${JSON.stringify(snapshot.baselinePath)} vs ${JSON.stringify(current.baselinePath)}.`,
-    })
-  }
 
   if ((snapshot.sddHash ?? null) !== (current.sddHash ?? null)) {
     mismatches.push({
@@ -800,14 +726,20 @@ export async function verifyDeliveryFreshness(
       if (!before) {
         mismatches.push({
           kind: "research",
-          message: `new research report ${JSON.stringify(topic)} (baseline r${after.baselineRev}) appeared since pickup. Reconcile the conflict instead of delivering stale; later research conflicts require a Design/Engineering update + re-approval.`,
+          message: `new research report ${JSON.stringify(topic)} appeared since pickup. Reconcile the conflict instead of delivering stale; later research conflicts require a Design/Engineering update + re-approval.`,
         })
         continue
       }
-      if (before.baselineRev !== after.baselineRev) {
+      if (before.registeredHash !== after.registeredHash) {
         mismatches.push({
           kind: "research",
-          message: `research report ${JSON.stringify(topic)} baseline_rev changed since pickup: pickup r${before.baselineRev} vs current r${after.baselineRev}. Reconcile instead of delivering stale.`,
+          message: `research report ${JSON.stringify(topic)} re-registered since pickup: pickup ${before.registeredHash.slice(0, 12)}… vs current ${after.registeredHash.slice(0, 12)}…. Reconcile instead of delivering stale.`,
+        })
+      }
+      if ((before.currentHash ?? null) !== (after.currentHash ?? null)) {
+        mismatches.push({
+          kind: "research",
+          message: `research report ${JSON.stringify(topic)} file changed since pickup: pickup ${before.currentHash?.slice(0, 12) ?? "(missing)"} vs current ${after.currentHash?.slice(0, 12) ?? "(missing)"}. Research is append-only; reconcile instead of delivering stale.`,
         })
       }
       if (before.path !== after.path) {
@@ -827,26 +759,33 @@ export async function verifyDeliveryFreshness(
         })
       }
     }
-    // Any current report stale against the current baseline is a conflict,
+    // Any current report edited after registration is a conflict,
     // even when the snapshot itself was taken while stale.
-    if (current.baselineRev !== null) {
-      for (const report of [...current.reports].sort((a, b) =>
-        a.topic < b.topic ? -1 : a.topic > b.topic ? 1 : 0,
-      )) {
-        if (report.baselineRev !== current.baselineRev) {
-          const alreadyReported = mismatches.some(
-            (entry) =>
-              entry.kind === "research" &&
-              entry.message.includes(JSON.stringify(report.topic)) &&
-              entry.message.includes(`r${report.baselineRev}`),
-          )
-          if (!alreadyReported) {
-            mismatches.push({
-              kind: "research",
-              message: `research report ${JSON.stringify(report.topic)} written against baseline r${report.baselineRev} but current is r${current.baselineRev} (stale/conflicting). Design/Engineering update + re-approval required before Planning/Execution follows the new direction.`,
-            })
-          }
+    for (const report of [...current.reports].sort((a, b) =>
+      a.topic < b.topic ? -1 : a.topic > b.topic ? 1 : 0,
+    )) {
+      if (report.registeredHash && report.currentHash !== report.registeredHash) {
+        const alreadyReported = mismatches.some(
+          (entry) =>
+            entry.kind === "research" &&
+            entry.message.includes(JSON.stringify(report.topic)) &&
+            entry.message.includes("since pickup"),
+        )
+        if (!alreadyReported) {
+          mismatches.push({
+            kind: "research",
+            message: `research report ${JSON.stringify(report.topic)} edited after registration (registered ${report.registeredHash.slice(0, 12)}… vs current ${report.currentHash?.slice(0, 12) ?? "(missing)"}…). Research is append-only: register a new topic instead of updating ${report.path}.`,
+          })
         }
+      }
+    }
+    const beforeUnregistered = new Set(snapshot.unregisteredFiles)
+    for (const relative of [...current.unregisteredFiles].sort()) {
+      if (!beforeUnregistered.has(relative)) {
+        mismatches.push({
+          kind: "research",
+          message: `new unregistered research file ${relative} appeared since pickup. Register it or reconcile instead of delivering stale.`,
+        })
       }
     }
   }

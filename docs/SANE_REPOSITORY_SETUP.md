@@ -105,7 +105,7 @@ Both commands support `--dry-run`; selection takes no type argument. A selected
 workstream must contain a valid root `type` file, `SANE_CONTEXT.md`,
 `SANE_STATE.md`, `PRD.md`, and every bootstrapped `resources/` fallback template.
 Those fallbacks include the Implementation Report, Section Spec, Job Spec,
-Research Report, Research Baseline, root Design, Stage list, Stage Design, Stage
+Research Report, root Design, Stage list, Stage Design, Stage
 Sections, and Execution Plan templates.
 
 There is no role-artifact CLI command. When a role needs an artifact, it inspects
@@ -115,16 +115,24 @@ copy. It never overwrites an existing artifact and preserves required headings
 and structure. `PRD.md`, `SANE_CONTEXT.md`, and `SANE_STATE.md` are bootstrap-root
 artifacts and are edited in place.
 
-Research uses one `RESEARCH_BASELINE_TEMPLATE.md` resource. A session creates
-and uses either `research/workstream/BASELINE.md` for non-Stage or cross-Stage
-scope, or `research/stage-NN/BASELINE.md` for Stage scope. Topic reports live
-under that assigned scope. Only its coordinating Research Assistant updates the
-baseline; delegated agents write reports. Cross-scope evidence applies only
-when the consuming baseline explicitly links it.
+Research is an append-only archive: completed evidence lives at
+`research/<topic>/REPORT.md` (from `resources/RESEARCH_REPORT_TEMPLATE.md`).
+Never update a registered report, write a new topic instead.
+`research/BASELINE.md`, `RESEARCH_BASELINE_TEMPLATE.md`, the baselines table,
+and baseline revisions are retired. The registry is the `research_reports`
+table (topic, path, creation time, content hash, commit); inspect it with
+`sane-alpha research <implementation-repository> <workstream-relative-path>`
+(default `--index` prints presence/status plus unregistered files;
+`--register`/`--unregister` record or remove rows). The old `sane-alpha
+baseline --record|--recheck` command is gone. Research has no gates: Pickup
+surfaces warnings for missing, modified, or unregistered files, and delivery
+mismatches on new, edited, or removed reports route to a Design/Engineering
+update plus re-approval.
 
 A Research Worker may investigate one bounded external-evidence topic and write
-its report and explicitly assigned supporting files beneath that scope after reading its baseline. The coordinating
-Research Assistant remains the sole baseline owner. Engineering may launch a
+its report and explicitly assigned supporting files beneath `research/<topic>/`.
+Only the Research Assistant reconciles the index (`--index`/`--unregister`); a
+worker registers its own report only when asked. Engineering may launch a
 Research Worker only following an explicit user request for bounded external research in its normal,
 unchanged lifecycle; the user may still start a Research Assistant directly.
 Research Assistant performs internal repository audits directly and cannot
@@ -160,7 +168,8 @@ connected implementation inspection may extend beyond starting paths, never
 beyond explicit scope or forbidden-path boundaries. It does not discover wider
 workstream context or subdelegate.
 
-A Research Worker likewise receives exact paths in one self-contained prompt;
+A Research Worker likewise receives exact paths in one self-contained prompt
+with no baseline context;
 it does not discover or select workstream context. It has no user Pickup,
 Delivery, approval, State update, or questions, and returns a concise result to
 its launcher. It researches external evidence and may inspect only exact supplied

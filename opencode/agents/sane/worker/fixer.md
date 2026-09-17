@@ -37,7 +37,7 @@ Keep the fix isolated:
   an artifact, or launch another agent.
 - Do not perform unrelated cleanup, redesign surrounding behavior, address
   findings outside the assigned failure boundary, or edit planning and
-  coordination documents. Execution Plans and Job Specs belong solely to Planning;
+  coordination documents. Execution Plans and Job Specs are read-only for you;
   never edit them, even for factual corrections.
 - Do not create or update an Implementation Report unless the invocation
   explicitly requires it and supplies its path and requirements.
@@ -50,8 +50,9 @@ is insufficient, the requested behavior conflicts with current constraints, or
 completion genuinely requires crossing an explicit allowed-edit or approved-
 behavior boundary, stop and return concrete reproduction and technical evidence
 instead of widening scope. Return material missing, stale, or contradictory
-planning context with actionable paths/issues to Coordination for the user's
-Planning handoff; an invocation cannot silently revise the approved Job Spec.
+planning context with actionable paths/issues to the launching assistant for
+the user's Planning handoff; an invocation cannot silently revise the approved
+Job Spec.
 
 For a Narrow Fix, make the smallest coherent change that resolves the known
 defect while preserving every explicit non-target behavior. For a Bounded

@@ -17,12 +17,10 @@ import {
   acceptJobsViaApproval,
   authorizeJobsViaApproval,
   branchForWorkstream,
-  bumpBaselineRevision,
   createJob,
   currentUser,
   deleteSelection,
   getApproval,
-  getBaseline,
   getJob,
   getMerge,
   getResearchReport,
@@ -39,12 +37,11 @@ import {
   openSaneDbAtPath,
   recordApproval,
   recordMergeCommit,
+  registerResearchReport,
   SaneDbError,
   saneDbPath,
   updateJobStatus,
-  upsertBaseline,
   upsertMerge,
-  upsertResearchReport,
   upsertSelection,
   upsertStateEntry,
   upsertWorkstream,
@@ -108,7 +105,6 @@ describe("sane-db (M2-A sqlite source of truth)", () => {
       "selections",
       "state_entries",
       "approvals",
-      "baselines",
       "research_reports",
       "jobs",
       "merges",
@@ -412,17 +408,20 @@ describe("sane-db (M2-A sqlite source of truth)", () => {
     )
     expect(getStateEntry(db, identity, "design")?.status).toBe("in_progress")
 
-    upsertBaseline(db, identity, { revision: 0, path: "research/BASELINE.md" }, m)
-    expect(getBaseline(db, identity)?.revision).toBe(0)
-    expect(bumpBaselineRevision(db, identity, "research/BASELINE.md", m).revision).toBe(1)
-
-    upsertResearchReport(
+    const registered = registerResearchReport(
       db,
       identity,
-      { topic: "auth", baselineRev: 1, path: "research/auth/REPORT.md" },
+      {
+        topic: "auth",
+        path: "research/auth/REPORT.md",
+        createdAt: "2026-09-16T00:00:00.000Z",
+        saneHash: "abc123",
+        gitCommit: "def456",
+      },
       m,
     )
-    expect(getResearchReport(db, identity, "auth")?.baseline_rev).toBe(1)
+    expect(registered.sane_hash).toBe("abc123")
+    expect(getResearchReport(db, identity, "auth")?.git_commit).toBe("def456")
 
     upsertMerge(
       db,

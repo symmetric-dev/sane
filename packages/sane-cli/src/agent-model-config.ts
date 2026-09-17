@@ -55,6 +55,52 @@ export async function loadAgentModelConfig(path: string, agentFilenames: readonl
   }
 }
 
+const TASK_PERMISSION_DECISIONS = new Set(["allow", "ask", "deny"])
+
+/**
+ * Validate an agent's `permission.task` block using the installer's source
+ * manifest as authority. Only structural rules are checked: frontmatter must
+ * exist and be a mapping, every task key must be "*" or a known agent name,
+ * and every decision must be allow, ask, or deny. Prose is never inspected.
+ */
+export function validateAgentTaskPermissions(
+  content: string,
+  agentName: string,
+  agentFilenames: readonly string[],
+): void {
+  const match = /^(\uFEFF?---\r?\n)([\s\S]*?)(^---[ \t]*(?:\r?\n|$))/m.exec(content)
+  if (!match || match.index !== 0) throw new Error(`Agent ${agentName} must have YAML frontmatter.`)
+  const metadata: unknown = Bun.YAML.parse(match[2]!)
+  if (!isMapping(metadata)) throw new Error(`Agent ${agentName} frontmatter must be a YAML mapping.`)
+  const permission = metadata.permission
+  if (permission === undefined) return
+  if (!isMapping(permission)) throw new Error(`Agent ${agentName} permission must be a YAML mapping.`)
+  const task = permission.task
+  if (task === undefined) return
+  if (typeof task === "string") {
+    validateTaskDecision(agentName, "*", task)
+    return
+  }
+  if (!isMapping(task)) {
+    throw new Error(`Agent ${agentName} task permissions must be deny or a mapping of agent names to decisions.`)
+  }
+  const knownNames = new Set(agentFilenames.map((filename) => filename.replace(/\.md$/, "")))
+  for (const [key, decision] of Object.entries(task)) {
+    if (key !== "*" && !knownNames.has(key)) {
+      throw new Error(`Unknown agent in ${agentName} task permissions: ${key}`)
+    }
+    validateTaskDecision(agentName, key, decision)
+  }
+}
+
+function validateTaskDecision(agentName: string, key: string, decision: unknown): void {
+  if (typeof decision !== "string" || !TASK_PERMISSION_DECISIONS.has(decision)) {
+    throw new Error(
+      `Invalid decision for ${key} in ${agentName} task permissions: expected allow, ask, or deny.`,
+    )
+  }
+}
+
 /** Only mapped agents are transformed. The Markdown body is never reserialized. */
 export function injectAgentModel(content: string, override?: AgentModelOverride): string {
   if (override === undefined) return content

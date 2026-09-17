@@ -56,7 +56,7 @@ function seedApprovals(db: Database): void {
   }
 }
 
-function seedJobsBaselineMerge(db: Database): void {
+function seedJobsResearchMerge(db: Database): void {
   db.query(
     "INSERT INTO jobs(repo_root, user, workstream_id, job_id, spec_path, report_path, status) VALUES (?, ?, ?, ?, ?, ?, ?)",
   ).run(
@@ -79,12 +79,17 @@ function seedJobsBaselineMerge(db: Database): void {
     null,
     "planned",
   )
-  db.query("INSERT INTO baselines(repo_root, user, workstream_id, revision, path) VALUES (?, ?, ?, ?, ?)").run(
+  db.query("INSERT INTO research_reports(repo_root, user, workstream_id, topic, path, created_at, sane_hash, git_commit, actor_role, session_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)").run(
     IDENTITY.repoRoot,
     IDENTITY.user,
     IDENTITY.workstreamId,
-    3,
-    "research/BASELINE.md",
+    "auth",
+    "research/auth/REPORT.md",
+    "2026-09-16T00:00:00.000Z",
+    "abc123def456",
+    null,
+    "research",
+    "ses_test",
   )
   db.query(
     "INSERT INTO merges(repo_root, user, workstream_id, branch, base_rev, merge_commit) VALUES (?, ?, ?, ?, ?, ?)",
@@ -105,12 +110,12 @@ describe("sane-state renderer from DB", () => {
       seedWorkstream(db)
       seedPhases(db)
       seedApprovals(db)
-      seedJobsBaselineMerge(db)
+      seedJobsResearchMerge(db)
 
       const rendered = renderSaneState(db, { ...IDENTITY })
 
       // Section headings (0.2.0 single-scope shape, not the old Stage shape).
-      for (const heading of ["## Workstream", "## Phases", "## Gates", "## Jobs", "## Baseline", "## Merge"]) {
+      for (const heading of ["## Workstream", "## Phases", "## Gates", "## Jobs", "## Research", "## Merge"]) {
         expect(rendered).toContain(heading)
       }
 
@@ -149,11 +154,11 @@ describe("sane-state renderer from DB", () => {
       expect(rendered).toContain("report_path:")
       expect(rendered).toContain("planned")
 
-      // Baseline (revision/path).
-      expect(rendered).toContain("revision:")
-      expect(rendered).toContain("3")
-      expect(rendered).toContain("research/BASELINE.md")
-      expect(rendered).toContain("path:")
+      // Research registry.
+      expect(rendered).toContain("## Research")
+      expect(rendered).toContain("research/auth/REPORT.md")
+      expect(rendered).toContain("2026-09-16T00:00:00.000Z")
+      expect(rendered).toContain("abc123def456")
 
       // Merge (branch/base_rev/merge_commit).
       expect(rendered).toContain("sane/alice/01-demo")

@@ -11,8 +11,8 @@ This role owns:
 
 - `solutions/<name>.md` — one comprehensive doc per solution area.
 
-Type-agnostic: reads only the SDD and never branches on workstream `type`.
-Removes downstream decision gaps so implementation agents invent nothing.
+Read the SDD and write one spec per solution area, whatever the workstream type.
+Remove downstream decision gaps so implementation agents invent nothing.
 
 ## Artifact Creation
 

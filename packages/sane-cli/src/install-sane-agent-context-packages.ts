@@ -2,7 +2,7 @@ import { lstat, mkdir, readFile, writeFile } from "node:fs/promises"
 import { homedir } from "node:os"
 import { fileURLToPath } from "node:url"
 import { dirname, join, resolve } from "node:path"
-import { injectAgentModel, loadAgentModelConfig } from "./agent-model-config.ts"
+import { injectAgentModel, loadAgentModelConfig, validateAgentTaskPermissions } from "./agent-model-config.ts"
 
 export const AGENT_FILENAMES = [
   "sane/assistant/design.md",
@@ -179,6 +179,15 @@ export async function installSaneAgentContextPackages(
   const homeDirectory = resolveHomeDirectory(options.homeDirectory)
   const sourceRoot = resolve(options.sourceRoot ?? DEFAULT_SOURCE_ROOT)
   const sourcedEntries = await validateSources(installationEntries(sourceRoot, homeDirectory))
+  try {
+    for (const entry of sourcedEntries) {
+      if (entry.agentName !== undefined) {
+        validateAgentTaskPermissions(entry.content, entry.agentName, AGENT_FILENAMES)
+      }
+    }
+  } catch (error) {
+    throw new AgentContextPackageInstallationError((error as Error).message)
+  }
   let configuredEntries = sourcedEntries
   if (options.modelConfigPath !== undefined) {
     try {

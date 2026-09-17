@@ -72,7 +72,7 @@ Workstream layout (new tooling bootstraps this shape):
   solutions/<name>.md     # one comprehensive doc per solution area (Engineering owns)
   SANE_CONTEXT.md         # shared orientation (template copy, edited in place)
   SANE_STATE.md           # rendered state (see section 2; per-repo sqlite is authority)
-  research/BASELINE.md    # support-track baseline (support track owns, no gate)
+  research/<topic>/REPORT.md # append-only evidence (research owns registry)
   research/<topic>/REPORT.md
   plan/PLAN.md            # single compact plan (Planning owns)
   plan/jobs/<job-id>-<job-slug>.md
@@ -181,22 +181,17 @@ approvals(
 -- Columns exist in the model now. No enforcement or auto-revoke on hash
 -- mismatch yet; that behavior is explicitly left room for.
 
-baselines(
-  repo_root TEXT NOT NULL,
-  user TEXT NOT NULL,
-  workstream_id TEXT NOT NULL,
-  revision INTEGER NOT NULL,     -- incremented by the support track on each update
-  path TEXT NOT NULL,            -- research/BASELINE.md
-  PRIMARY KEY (repo_root, user, workstream_id)
-);
-
-research_reports(
+research_reports(                 -- append-only registry of completed reports
   repo_root TEXT NOT NULL,
   user TEXT NOT NULL,
   workstream_id TEXT NOT NULL,
   topic TEXT NOT NULL,
-  baseline_rev INTEGER NOT NULL, -- baseline revision this report was written against
-  path TEXT NOT NULL,
+  path TEXT NOT NULL,            -- research/<topic>/REPORT.md
+  created_at TEXT NOT NULL,      -- registration timestamp
+  sane_hash TEXT NOT NULL,       -- content hash at registration
+  git_commit TEXT,               -- NULL when not git-backed
+  actor_role TEXT NOT NULL,
+  session_id TEXT NOT NULL,
   PRIMARY KEY (repo_root, user, workstream_id, topic)
 );
 
@@ -245,9 +240,12 @@ Each artifact has exactly one writer role; all other roles read it:
   `execution/BRIEF.md`, `jobs` status transitions from `running` onward,
   `merges` row, Execution `state_entries`. Implementer workers stay
   worker-level under this assistant; they never own phase sessions.
-- Research support track: `research/BASELINE.md`, `baselines.revision`,
-  `research_reports` rows for its workstream (topic work may be drafted by
-  bounded workers; only the track coordinator commits the baseline row).
+- Research support track: `research/<topic>/REPORT.md` files plus their
+  `research_reports` registry rows (topic, path, creation time, content hash,
+  commit). Reports are append-only: never update a registered report, write a
+  new topic instead. The Research Assistant registers each completed report
+  (`sane-alpha research --register`) and reconciles the index (`--index` /
+  `--unregister`); workers may register their own report only when asked.
   No gate semantics.
 - User: approvals only. No role self-approves.
 
@@ -262,7 +260,7 @@ render):
 4. Job outcomes (per batch; accepts results or authorizes retry/fix).
 5. Merge (authorizes the `sane/<user>/<workstream>` merge into main).
 
-Pickup records consumed revisions (baseline `revision`, SDD revision,
+Pickup records consumed revisions (report hashes, SDD revision,
 solution revisions, `foundation_rev`, `sane_hash` values). Delivery rechecks
 them; on mismatch the role reconciles or reports instead of delivering
 against stale inputs. Approved SDD and Specs remain execution authority;
@@ -294,7 +292,7 @@ POST /api/session/{id}/prompt   # deliver the handoff message to the registered 
 Queue delivery is the default: the handoff prompt queues behind the target
 session's current work. `steer` (interrupting an in-progress turn) is reserved
 for two cases only: an explicit user redirect, and an Execution abort (stale
-baseline, superseded foundation, conflicting merge). Roles never steer each
+research, superseded foundation, conflicting merge). Roles never steer each
 other for routine handoffs.
 
 ### Handoff message shape
@@ -306,7 +304,7 @@ target session reads the artifacts itself during Pickup:
 From: <slot> (<session_id>) / <user> / workstream <workstream-id>
 To: <slot> (<session_id or "new">)
 Approvals: <gate name + approval_ref + sane_hash, if any>
-Revisions: baseline r<revision>, sdd r<revision>, solutions <name>@<rev>, foundation <id>@<rev>
+Revisions: research <n> report(s), sdd <hash>, solutions <name>@<hash>, foundation <id>@<rev>
 Paths: <absolute workstream path>, <artifact paths changed>
 Next action: <one sentence>
 ```
@@ -404,9 +402,9 @@ mapping lives in chat as T0-T25.
   Bootstrap the repo, create/select a typed workstream, render state,
   copy templates to artifact destinations, run pickup checks (including
   `foundation_rev`), and report status.
-- P1: approvals, baseline record/recheck, session registry, handoff
+- P1: approvals, research index, session registry, handoff
   compose/send. Record `sane_hash` (+ nullable `git_commit`) on approval,
-  record and recheck baseline revisions, read/update the
+  register and index research reports, read/update the
   `(repo, user, workstream, slot)` registry, and compose/send the compact
   queue-default handoff prompt.
 - P2: worktree/merge. Create the namespaced worktree and branch, then run

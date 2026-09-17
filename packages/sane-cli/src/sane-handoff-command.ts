@@ -29,11 +29,11 @@ import type { Database } from "bun:sqlite"
 
 import {
   assertSelectionSlot,
-  getBaseline,
   getSelection,
   getWorkstream,
   initSchema,
   listApprovals,
+  listResearchReports,
   openSaneDb,
   resolveSaneIdentity,
   upsertSelection,
@@ -690,8 +690,8 @@ function collectRevisionRefs(
   identity: SaneIdentity,
 ): string {
   const parts: string[] = []
-  const baseline = getBaseline(db, identity)
-  if (baseline) parts.push(`baseline r${baseline.revision}`)
+  const reports = listResearchReports(db, identity)
+  if (reports.length > 0) parts.push(`research ${reports.length} report(s)`)
   const workstream = getWorkstream(db, identity)
   if (workstream?.foundation_rev) parts.push(`foundation ${workstream.foundation_rev}`)
   const approvals = listApprovals(db, identity)

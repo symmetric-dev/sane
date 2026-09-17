@@ -36,10 +36,6 @@ const SHARED_INITIAL_TEMPLATE_REGISTRY = [
     destination: "resources/SOLUTION_SPEC_TEMPLATE.md",
   },
   {
-    source: "shared/research/BASELINE.md",
-    destination: "resources/RESEARCH_BASELINE_TEMPLATE.md",
-  },
-  {
     source: "shared/research/REPORT.md",
     destination: "resources/RESEARCH_REPORT_TEMPLATE.md",
   },

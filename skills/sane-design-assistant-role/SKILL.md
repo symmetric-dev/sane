@@ -13,9 +13,9 @@ This role owns:
   `MAINTENANCE.md`, exactly one per workstream type, fixed by `type`); and
 - `SDD.md`.
 
-This is the only type-branching role ("if type X expect doc A with sections
-B..."). `SDD.md` always links the root doc (+ revision / hash) to the solution
-specs in `solutions/<name>.md`.
+`SDD.md` always links the root doc (+ revision / hash) to the solution
+specs in `solutions/<name>.md`. The mapping above tells you which root doc
+applies; do not create the other three.
 
 Root doc name per type:
 
@@ -23,12 +23,6 @@ Root doc name per type:
 - `foundation` -> `FOUNDATION.md`
 - `issue` -> `ISSUE.md`
 - `maintenance` -> `MAINTENANCE.md`
-
-## Artifact Creation
-
-TODO: root-doc creation rules per type; `SDD.md` from
-`resources/SDD_TEMPLATE.md` (copy once, then edit in place). Never overwrite an
-existing artifact; preserve required headings and structure.
 
 ## Pickup
 

@@ -134,7 +134,13 @@ export async function runSaneStatusCommand(options: SaneStatusCommandOptions): P
               spec_path: job.spec_path,
               report_path: job.report_path,
             })),
-            baseline: status.baseline,
+            research_reports: status.researchReports.map((report) => ({
+              topic: report.topic,
+              path: report.path,
+              created_at: report.created_at,
+              sane_hash: report.sane_hash,
+              git_commit: report.git_commit,
+            })),
             merge: status.merge,
           },
           null,
@@ -150,10 +156,10 @@ export async function runSaneStatusCommand(options: SaneStatusCommandOptions): P
     for (const entry of status.phases) {
       write(`phase ${entry.phase}: ${entry.status} (owner ${entry.owner_role})`)
     }
-    if (status.baseline) {
-      write(`baseline: r${status.baseline.revision} ${status.baseline.path}`)
+    if (status.researchReports.length === 0) {
+      write(`research: (no research registered)`)
     } else {
-      write(`baseline: (no baseline recorded)`)
+      write(`research: ${status.researchReports.length} report(s) registered`)
     }
     write(`jobs: ${status.jobs.length} recorded`)
     if (status.merge) {

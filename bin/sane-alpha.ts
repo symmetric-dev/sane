@@ -5,7 +5,7 @@ import { runCli as runInitializeRepository } from "../packages/sane-cli/src/init
 import { runCli as runInstallAgentContextPackages } from "../packages/sane-cli/src/install-sane-agent-context-packages.ts"
 import { runCli as runSaneApprove } from "../packages/sane-cli/src/sane-approve-command.ts"
 import { runCli as runSaneArtifact } from "../packages/sane-cli/src/sane-artifact-command.ts"
-import { runCli as runSaneBaseline } from "../packages/sane-cli/src/sane-baseline-command.ts"
+import { runCli as runSaneResearch } from "../packages/sane-cli/src/sane-research-command.ts"
 import { runCli as runSaneHandoff } from "../packages/sane-cli/src/sane-handoff-command.ts"
 import { runCli as runSaneMerge } from "../packages/sane-cli/src/sane-merge-command.ts"
 import { runCli as runSanePickup } from "../packages/sane-cli/src/sane-pickup-command.ts"
@@ -24,7 +24,7 @@ export type AlphaCommand =
   | "pickup"
   | "artifact"
   | "approve"
-  | "baseline"
+  | "research"
   | "handoff"
   | "worktree"
   | "merge"
@@ -41,7 +41,7 @@ export const COMMANDS: Record<AlphaCommand, AlphaCommandHandler> = {
   pickup: runSanePickup,
   artifact: runSaneArtifact,
   approve: runSaneApprove,
-  baseline: runSaneBaseline,
+  research: runSaneResearch,
   handoff: runSaneHandoff,
   worktree: runSaneWorktree,
   merge: runSaneMerge,
@@ -59,7 +59,7 @@ Commands:
   pickup
   artifact
   approve
-  baseline
+  research
   handoff
   worktree
   merge

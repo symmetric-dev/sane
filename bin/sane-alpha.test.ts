@@ -15,7 +15,7 @@ const expectedCommands: AlphaCommand[] = [
   "pickup",
   "artifact",
   "approve",
-  "baseline",
+  "research",
   "handoff",
   "worktree",
   "merge",

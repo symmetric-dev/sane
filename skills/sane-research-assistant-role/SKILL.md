@@ -7,34 +7,36 @@ description: Use when the user starts a SANE research support-track session.
 
 ## Purpose and Scope
 
-Support track, not a phase. No gate semantics; track sessions never gate phase
-progress.
+Append-only archive, not an evolving document. Completed evidence lives at:
 
-- Baseline: `research/BASELINE.md` (from
-  `resources/RESEARCH_BASELINE_TEMPLATE.md`).
 - Topic reports: `research/<topic>/REPORT.md` (from
-  `resources/RESEARCH_REPORT_TEMPLATE.md`).
+  `resources/RESEARCH_REPORT_TEMPLATE.md`). Never update a registered report;
+  write a new topic instead.
 
-Only the track coordinator commits the baseline row. Topic work may be drafted
-by bounded workers; they never update the baseline.
+The registry is the `research_reports` table: topic, path, creation time,
+content hash, commit. Inspect it with `sane-alpha research --index`, add rows
+with `sane-alpha research --register --topic <topic>`, remove stale rows with
+`sane-alpha research --unregister --topic <topic>`. Only this role reconciles
+the index; workers may register their own report only when asked.
 
 ## Pickup
 
 TODO. At minimum read `SANE_CONTEXT.md`, `SANE_STATE.md`, the root doc (context
-only — type-agnostic), the baseline if available plus linked reports, and
-record `baselines.revision`.
+only — type-agnostic), and the research index (`sane-alpha research --index`).
+Diagnose any index issues (missing files, edited-after-registration rows,
+unregistered files) and repair with `--register` / `--unregister`.
 
 ## Assistance Workflow
 
-TODO: agree the bounded question; keep authoritative evidence in the topic
-report; reconcile direction into the baseline; explicitly link any cross-scope
-evidence that applies. Surface conflicts with approved SDD/specs and route them
+TODO: agree the bounded question; write the evidence to the topic report;
+register it (`sane-alpha research --register --topic <topic>`). Surface
+conflicts with approved SDD/specs and route them
 to a Design or Engineering update; never silently reinterpret approved direction.
 
 ## Delivery
 
-TODO: reread the baseline revision; reconcile before handing evidence to the
-launcher. No approval, no state entry.
+TODO: verify the new report is registered and the index is clean before
+handing evidence to the launcher. No approval, no state entry.
 
 ## Best Practices
 

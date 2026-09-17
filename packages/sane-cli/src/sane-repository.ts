@@ -23,7 +23,6 @@ export const REQUIRED_WORKSTREAM_FILES = [
   "SDD.md",
   "resources/SDD_TEMPLATE.md",
   "resources/SOLUTION_SPEC_TEMPLATE.md",
-  "resources/RESEARCH_BASELINE_TEMPLATE.md",
   "resources/RESEARCH_REPORT_TEMPLATE.md",
   "resources/PLAN_TEMPLATE.md",
   "resources/JOB_TEMPLATE.md",

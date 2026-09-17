@@ -87,21 +87,17 @@ CREATE TABLE IF NOT EXISTS approvals(
   approved_at TEXT NOT NULL,
   PRIMARY KEY (repo_root, user, workstream_id, gate)
 );
-CREATE TABLE IF NOT EXISTS baselines(
-  repo_root TEXT NOT NULL,
-  user TEXT NOT NULL,
-  workstream_id TEXT NOT NULL,
-  revision INTEGER NOT NULL,
-  path TEXT NOT NULL,
-  PRIMARY KEY (repo_root, user, workstream_id)
-);
 CREATE TABLE IF NOT EXISTS research_reports(
   repo_root TEXT NOT NULL,
   user TEXT NOT NULL,
   workstream_id TEXT NOT NULL,
   topic TEXT NOT NULL,
-  baseline_rev INTEGER NOT NULL,
   path TEXT NOT NULL,
+  created_at TEXT NOT NULL,
+  sane_hash TEXT NOT NULL,
+  git_commit TEXT,
+  actor_role TEXT NOT NULL,
+  session_id TEXT NOT NULL,
   PRIMARY KEY (repo_root, user, workstream_id, topic)
 );
 CREATE TABLE IF NOT EXISTS jobs(
@@ -152,9 +148,12 @@ interface JobRow {
   status: string
 }
 
-interface BaselineRow {
-  revision: number
+interface ResearchReportRow {
+  topic: string
   path: string
+  created_at: string
+  sane_hash: string
+  git_commit: string | null
 }
 
 interface MergeRow {
@@ -303,18 +302,23 @@ export function renderSaneState(db: Database, identity: IdentityInput): string {
     }
   }
 
-  // --- Baseline (revision/path) ---
-  lines.push("## Baseline")
+  // --- Research (append-only registry of completed topic reports) ---
+  lines.push("## Research")
   lines.push("")
-  const baseline = db
-    .query("SELECT revision, path FROM baselines WHERE repo_root = ? AND user = ? AND workstream_id = ?")
-    .get(...key) as BaselineRow | null
-  if (!baseline) {
-    lines.push("(no baseline recorded)")
+  const reports = db
+    .query("SELECT topic, path, created_at, sane_hash, git_commit FROM research_reports WHERE repo_root = ? AND user = ? AND workstream_id = ? ORDER BY topic")
+    .all(...key) as ResearchReportRow[]
+  if (reports.length === 0) {
+    lines.push("(no research registered)")
     lines.push("")
   } else {
-    lines.push(`- revision: ${baseline.revision}`)
-    lines.push(`- path: ${esc(baseline.path)}`)
+    lines.push("| topic | created | sane_hash | git_commit | path |")
+    lines.push("| --- | --- | --- | --- | --- |")
+    for (const report of reports) {
+      lines.push(
+        `| ${esc(report.topic)} | ${esc(report.created_at)} | ${esc(report.sane_hash.slice(0, 12))} | ${esc(report.git_commit ? report.git_commit.slice(0, 12) : "-")} | ${esc(report.path)} |`,
+      )
+    }
     lines.push("")
   }
 

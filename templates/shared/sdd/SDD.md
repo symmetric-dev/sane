@@ -1,51 +1,53 @@
 # Solution Design Document
 
 <!-- Replace every guidance comment with workstream-specific content before
-delivery. Retain this H1 and every H2 exactly once and in this order. SDD.md
-is the nexus of product intent and technical requirements: it always links the
-root doc (+ revision / hash) to the Solution Specs in `solutions/<name>.md`.
-Design owns this file. Downstream roles (Engineering, Planning, Execution, and
-the research support track) read SDD and Specs and never branch on `type`. -->
+delivery. Retain this H1 and every H2 exactly once and in this order. -->
 
-## Root Document
+## Goals and Non-Goals
 
-<!-- Identify the single root doc for this workstream type
-(`PRD.md` | `FOUNDATION.md` | `ISSUE.md` | `MAINTENANCE.md`), its revision
-or hash, and the scope statement it establishes. -->
+<!-- User-driven impact of this work and how success is measured. Non-goals
+are outcomes that could plausibly be in scope but are explicitly excluded. -->
 
-## Objectives and Scope
+## Constraints
 
-<!-- Relate root-doc goals to the included technical work, boundaries, and
-explicit non-goals. -->
+<!-- What narrows the solution space: existing architecture, compatibility,
+performance, security, time, team, cost. State each constraint and what it
+rules out. -->
 
 ## Technical Direction
 
-<!-- Describe the product-to-technical solution direction: high-level features,
-capabilities, routes, integrations, and behavior. Do not prescribe detailed
-interfaces, patterns, adapters, algorithms, or code constructs; those belong
-in `solutions/<name>.md`. -->
-
-## Solution Areas
-
-<!-- List each solution area and its `solutions/<name>.md` path. One
-comprehensive doc per solution area; Engineering owns those Specs. -->
+<!-- The chosen product-to-technical approach at "why" level: capabilities,
+behavior, integrations. Do not prescribe detailed interfaces, patterns,
+adapters, algorithms, or code constructs; those belong in
+`solutions/<name>.md`. -->
 
 ## Decisions
 
-<!-- Record durable technical decisions with context, alternatives considered,
-consequences, and evidence. Do not place unresolved material decisions here. -->
+<!-- One entry per durable technical decision, each with status, context,
+options considered, decision, and consequences. Use one H3 per decision:
 
-## Verification and Testing
+### <short title> (accepted)
+- Context: what issue motivates this decision.
+- Options considered: alternatives with pros and cons.
+- Decision: the change being made.
+- Consequences: what becomes easier or more difficult.
 
-<!-- Record high-level evidence that the intended capabilities and technical
-direction can be verified. -->
+Mark reversed decisions as (superseded by <title>) and keep them in place.
+Do not place unresolved material decisions here. -->
 
-## Resources
+## Verification Approach
 
-<!-- List focused paths, URLs, documentation, and other material needed to
-understand this design. -->
+<!-- How the direction-level claims above get evidenced. Detailed test plans
+belong in the solution specs. -->
 
-## Closing Comments
+## Solution Areas
 
-<!-- Add optional non-critical continuity notes, or state `No closing comments`.
-Do not place an unresolved material product or technical decision here. -->
+<!-- Closing deconstruction: every solution area this direction requires.
+One table row per area:
+
+| Area | Spec | Status |
+| ---- | ---- | ------ |
+| ... | `solutions/<name>.md` | proposed \| specced \| approved |
+
+Every row must resolve to exactly one spec; no area without a spec, no spec
+without an area. -->

@@ -24,7 +24,6 @@ function expectedResourcesListing(): string[] {
     "EXECUTION_REPORT_TEMPLATE.md",
     "JOB_TEMPLATE.md",
     "PLAN_TEMPLATE.md",
-    "RESEARCH_BASELINE_TEMPLATE.md",
     "RESEARCH_REPORT_TEMPLATE.md",
     "SDD_TEMPLATE.md",
     "SOLUTION_SPEC_TEMPLATE.md",
@@ -259,10 +258,10 @@ describe("create-sane-workstream", () => {
     expect(await readFile(join(stagingRoot, "skills", "product", "SKILL.md"), "utf8")).toBe(
       "product role template\n",
     )
-    expect(initialTemplateRegistry("feature")).toHaveLength(12)
-    expect(initialTemplateRegistry("foundation")).toHaveLength(12)
-    expect(initialTemplateRegistry("issue")).toHaveLength(12)
-    expect(initialTemplateRegistry("maintenance")).toHaveLength(12)
+    expect(initialTemplateRegistry("feature")).toHaveLength(11)
+    expect(initialTemplateRegistry("foundation")).toHaveLength(11)
+    expect(initialTemplateRegistry("issue")).toHaveLength(11)
+    expect(initialTemplateRegistry("maintenance")).toHaveLength(11)
   })
 
   test("rejects unsupported types before writing a destination", async () => {

@@ -179,7 +179,6 @@ describe("init-sane-repository", () => {
     expect(required).toContain("SDD.md")
     expect(required).toContain("resources/SDD_TEMPLATE.md")
     expect(required).toContain("resources/SOLUTION_SPEC_TEMPLATE.md")
-    expect(required).toContain("resources/RESEARCH_BASELINE_TEMPLATE.md")
     expect(required).toContain("resources/RESEARCH_REPORT_TEMPLATE.md")
     expect(required).toContain("resources/PLAN_TEMPLATE.md")
     expect(required).toContain("resources/JOB_TEMPLATE.md")
@@ -247,7 +246,6 @@ describe("init-sane-repository", () => {
         "selections",
         "state_entries",
         "approvals",
-        "baselines",
         "research_reports",
         "jobs",
         "merges",

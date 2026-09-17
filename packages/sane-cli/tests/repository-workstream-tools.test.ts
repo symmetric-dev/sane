@@ -31,7 +31,6 @@ const NEW_TEMPLATE_SOURCES = [
   "shared/SANE_STATE.md",
   "shared/sdd/SDD.md",
   "shared/solutions/SOLUTION.md",
-  "shared/research/BASELINE.md",
   "shared/research/REPORT.md",
   "shared/plan/PLAN.md",
   "shared/plan/JOB.md",
@@ -46,7 +45,6 @@ const NEW_TEMPLATE_SOURCES = [
 const NEW_RESOURCE_FILES = [
   "resources/SDD_TEMPLATE.md",
   "resources/SOLUTION_SPEC_TEMPLATE.md",
-  "resources/RESEARCH_BASELINE_TEMPLATE.md",
   "resources/RESEARCH_REPORT_TEMPLATE.md",
   "resources/PLAN_TEMPLATE.md",
   "resources/JOB_TEMPLATE.md",
@@ -270,16 +268,16 @@ describe("repository-aware Alpha workstream tools", () => {
     }
   })
 
-  test("requires the uniform research baseline template and not the obsolete technical reference", async () => {
+  test("requires the research report template and not the obsolete technical reference", async () => {
     const workstream = await bootstrap("01-research-baseline")
 
     await expectMissing(join(workstream, "resources", "TECHNICAL_REFERENCE_TEMPLATE.md"))
-    await rm(join(workstream, "resources", "RESEARCH_BASELINE_TEMPLATE.md"))
+    await rm(join(workstream, "resources", "RESEARCH_REPORT_TEMPLATE.md"))
     await expect(selectSaneWorkstream({
       implementationRepository,
       workstreamPath: "01-research-baseline",
       write: () => {},
-    })).rejects.toThrow("RESEARCH_BASELINE_TEMPLATE.md")
+    })).rejects.toThrow("RESEARCH_REPORT_TEMPLATE.md")
   })
 
   test("rejects retired Stage artifacts even when new files are present", async () => {

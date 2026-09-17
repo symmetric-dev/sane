@@ -57,10 +57,9 @@ illustrative pilot.
 The Alpha will test the full workflow by hand:
 
 1. Product, Research, and Design assistants prepare their defined artifacts;
-   topic Research Reports hold authoritative evidence while coordinating
-   Research Baselines manifest applicable direction and conflicts. A Research
-   Worker may produce one bounded topic report and supporting files, while the
-   coordinating Research Assistant alone owns the baseline.
+   topic Research Reports hold authoritative evidence in an append-only archive.
+   A Research Worker may produce one bounded topic report and supporting files;
+   only the Research Assistant reconciles the index. Research has no gates.
 2. The Planning Assistant prepares a compact per-stage `EXECUTION_PLAN.md` from
    approved complete Stage Design. After readiness confirmation and a separate
    explicit breakdown confirmation, it drafts Job Specs and delegates each to
@@ -172,10 +171,11 @@ directly. Research Assistant performs direct repository audits itself and cannot
 launch Scout. Engineering remains responsible for synthesis and decisions with
 the user.
 
-Researcher reads the applicable baseline and receives one exact, self-contained
-prompt with its topic, inputs, allowed report/supporting-file destinations,
+Researcher receives one exact, self-contained prompt with no baseline context,
+specifying its topic, inputs, allowed report/supporting-file destinations,
 constraints, verification, and concise return shape. It has no user Pickup,
-Delivery, approval, or question loop and never edits the baseline. Exact local
+Delivery, approval, or question loop, and registers its own report only when
+asked. Exact local
 context needed to interpret the external question may be inspected read-only,
 but general internal repository discovery belongs to Scout. Implementation
 writes, installs, migrations, and deployments are prohibited. Live credentials
@@ -231,7 +231,7 @@ requests the State update.
 
 - Product Requirements Document;
 - Foundation Workstream Definition;
-- authoritative topic Research Reports plus scope-specific Research Baselines;
+- authoritative append-only topic Research Reports (`research/<topic>/REPORT.md`);
 - root, Stage, and Section Design Specifications;
 - stage Execution Plan and Job Specs (documents specifying bounded Jobs); and
 - stage-scoped Implementation Reports and Stage Implementation Briefs.
@@ -239,17 +239,24 @@ requests the State update.
 The Alpha may reveal gaps or unsafe assumptions in these templates. Record such
 findings for an explicit user decision; do not silently redefine the model.
 
-## Research Baseline Model
+## Research Archive Model
 
-`research/workstream/BASELINE.md` coordinates non-Stage and cross-Stage
-Research. `research/stage-NN/BASELINE.md` coordinates Research for one Stage.
-Topic reports live below the assigned scope. A Research session has exactly one
-assigned scope; only its coordinator updates that baseline, while delegated
-researchers write reports. Evidence from another scope applies only when the
-consuming baseline explicitly links it.
+Completed evidence lives at `research/<topic>/REPORT.md` (from
+`resources/RESEARCH_REPORT_TEMPLATE.md`). Reports are append-only: never update
+a registered report, write a new topic instead. The registry is the
+`research_reports` table (topic, path, creation time, content hash, commit).
 
-Root Design reads the workstream baseline, and Stage Design reads its assigned
-Stage baseline. Research-consuming roles capture that baseline's revision at
-Pickup and recheck it at Delivery. Approved Design remains implementation
-authority: a material Research conflict requires a Design Update and approval.
-Alpha has one shared baseline template for both scope types.
+`sane-alpha research <impl-repo> <ws-path> [--index|--register|--unregister]
+[--topic <t>] [--path <p>] [--git-commit <c>] [--json]` manages the registry;
+the default `--index` prints a table with presence/status plus unregistered
+files. Only the Research Assistant reconciles the index
+(`--index`/`--unregister`); workers register their own report only when asked.
+
+A Research session has exactly one assigned scope. Evidence from another scope
+applies only through an explicit reference to its registered report. Pickup
+surfaces warnings (missing, modified, or unregistered files); Delivery reports
+new, edited, or removed reports as mismatches. Research has no gates. Approved
+Design remains implementation authority: a material Research conflict requires a
+Design/Engineering update and re-approval. The retired baseline model
+(`research/BASELINE.md`, the baselines table, baseline revisions, and
+`sane-alpha baseline --record|--recheck`) no longer exists.

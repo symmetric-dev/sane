@@ -5,7 +5,7 @@
  * stub outcome (no template copy yet; P0 `state`/`status`/`pickup` carry the
  * render + check behavior). Supports `--json` and `--repo-root` detection
  * idioms matching existing CLIs so the dispatcher shape is stable for P1
- * (approvals/baseline/registry/handoff) and P2 (worktree/merge).
+ * (approvals/registry/handoff) and P2 (worktree/merge).
  *
  * New file only (M2 wiring P0).
  */

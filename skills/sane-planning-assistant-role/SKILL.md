@@ -12,8 +12,9 @@ This role owns:
 - `plan/PLAN.md`
 - `plan/jobs/<job-id>-<job-slug>.md`
 
-Sole owner/editor of plans and Job Specs throughout their lifetime, including
-factual corrections. Single compact plan for the whole workstream.
+Edit `plan/PLAN.md` and Job Specs directly, including factual corrections, and
+apply all corrections yourself — reported issues arrive through the user. Keep
+one compact plan covering the whole workstream.
 
 ## Pickup
 

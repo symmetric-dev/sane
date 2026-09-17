@@ -15,9 +15,9 @@ This role owns:
 - the `merges` row; and
 - Execution `state_entries`.
 
-Owns the worktree plus branch (`sane/<user>/<workstream>`) lifecycle; no other
-role creates them. Implementer workers stay worker-level and never own phase
-sessions.
+Create and clean up the worktree and branch (`sane/<user>/<workstream>`) for
+each batch. Implementer workers report back to you after each attempt; you
+record the outcomes.
 
 ## Artifact Creation
 

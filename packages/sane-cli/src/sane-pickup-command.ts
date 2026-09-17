@@ -3,7 +3,7 @@
  *
  * Runs pickup precondition checks via `runPickupChecks`:
  * - `foundation_rev` missing/superseded -> throw (non-zero exit).
- * - Baseline recorded vs current + SDD/solutions `sane_hash` -> warnings
+ * - Research index + SDD/solutions `sane_hash` -> warnings
  *   (exit 0, human lines or `--json`).
  *
  * Supports `--json` and `--repo-root` detection idioms matching existing CLIs.
@@ -95,7 +95,7 @@ export function parseCliArguments(args: string[]): {
 
 /**
  * Run pickup checks. Foundation missing/superseded throws (caller maps to
- * exit 1); baseline/hash divergences are returned as warnings.
+ * exit 1); research/SDD/solutions divergences are returned as warnings.
  */
 export async function runSanePickupCommand(options: SanePickupCommandOptions): Promise<void> {
   const write = options.write ?? console.log
@@ -121,13 +121,15 @@ export async function runSanePickupCommand(options: SanePickupCommandOptions): P
             user: result.user,
             workstream_id: result.workstreamId,
             foundation: result.foundation,
-            baseline: {
-              revision: result.baseline.recorded?.revision ?? null,
-              path: result.baseline.recorded?.path ?? null,
-              file: result.baseline.baselinePath,
-              file_exists: result.baseline.fileExists,
-              reports_checked: result.baseline.reportsChecked,
-              stale_reports: result.baseline.staleReports,
+            research: {
+              reports: result.research.reports.map((report) => ({
+                topic: report.topic,
+                path: report.path,
+                registered_hash: report.registeredHash,
+                current_hash: report.currentHash,
+                file_exists: report.fileExists,
+              })),
+              unregistered_files: result.research.unregisteredFiles,
             },
             sdd: {
               path: result.sdd.relativePath,
@@ -157,9 +159,9 @@ export async function runSanePickupCommand(options: SanePickupCommandOptions): P
       write(`foundation: ${result.foundation.rev} ok`)
     }
     write(
-      result.baseline.recorded
-        ? `baseline: r${result.baseline.recorded.revision} ${result.baseline.recorded.path} file ${result.baseline.fileExists ? "present" : "missing"}`
-        : `baseline: (no baseline recorded) file ${result.baseline.fileExists ? "present" : "missing"}`,
+      result.research.reports.length === 0 && result.research.unregisteredFiles.length === 0
+        ? `research: (no research registered)`
+        : `research: ${result.research.reports.length} report(s)${result.research.unregisteredFiles.length === 0 ? "" : `, ${result.research.unregisteredFiles.length} unregistered file(s)`}`,
     )
     write(
       result.sdd.currentHash

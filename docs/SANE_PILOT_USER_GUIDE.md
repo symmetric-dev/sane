@@ -69,7 +69,6 @@ resources/STAGE_IMPLEMENTATION_BRIEF_TEMPLATE.md
 resources/SECTION_SPEC_TEMPLATE.md
 resources/JOB_TEMPLATE.md
 resources/RESEARCH_REPORT_TEMPLATE.md
-resources/RESEARCH_BASELINE_TEMPLATE.md
 resources/ROOT_DESIGN_SPEC_TEMPLATE.md
 resources/STAGES_TEMPLATE.md
 resources/STAGE_DESIGN_SPEC_TEMPLATE.md
@@ -91,10 +90,9 @@ it inspects `resources/`, creates the parent directory, copies the matching loca
 template to the destination, and edits the copy. It never overwrites an existing
 artifact and preserves the template's required headings and structure:
 
-- Coordinating Research: `RESEARCH_BASELINE_TEMPLATE.md` → either
-  `research/workstream/BASELINE.md` for non-Stage or cross-Stage scope, or
-  `research/stage-NN/BASELINE.md` for Stage scope.
-- Topic Research: `RESEARCH_REPORT_TEMPLATE.md` → `<assigned-scope>/<topic>/REPORT.md`.
+- Topic Research: `RESEARCH_REPORT_TEMPLATE.md` → `research/<topic>/REPORT.md`.
+  Reports are append-only: never update a registered report, write a new topic
+  instead. `research/BASELINE.md` and `RESEARCH_BASELINE_TEMPLATE.md` are retired.
 - Design: `ROOT_DESIGN_SPEC_TEMPLATE.md` → `design/SPEC.md`,
   `STAGES_TEMPLATE.md` → `design/STAGES.md`, and
   `STAGE_DESIGN_SPEC_TEMPLATE.md` → `design/stages/<id>-<slug>/SPEC.md`.
@@ -154,22 +152,29 @@ handoff uses the Stage Spec, Job Specs, actual reports, and reviews to produce
 the existing brief and Implementation State record. See the
 [operating model](./_legacy/ALPHA_OPERATING_MODEL.md#alpha-execution-model).
 
-Topic `REPORT.md` files are authoritative evidence. A Research session has one
-assigned workstream or Stage scope, and only its coordinator updates that
-scope's baseline. Delegated researchers write reports under the assigned scope.
-Cross-scope evidence applies only when the consuming baseline explicitly links
-it. Root Design reads the workstream baseline; Stage Design reads its assigned
-Stage baseline. Research consumers capture that baseline's revision at Pickup
-and recheck it at Delivery. Approved Design remains implementation authority,
-so a material Research conflict requires a Design Update and approval.
+Topic `REPORT.md` files are append-only evidence, registered in the
+`research_reports` table (topic, path, creation time, content hash, commit).
+Inspect the index with `sane-alpha research "$IMPL" "$WORKSTREAM"` (default
+`--index` prints presence/status plus unregistered files; `--register` and
+`--unregister` record or remove rows). The old `sane-alpha baseline
+--record|--recheck` command is gone. `research/BASELINE.md`, the baselines
+table, and baseline revisions are retired; never update a registered report,
+write a new topic instead.
 
-The coordinating Research Assistant may invoke a Research Worker for external
-evidence and to write one bounded topic report and explicitly named supporting files; only the coordinator
-owns the baseline. Engineering may invoke that worker only after an explicit
+Research has no gates. Pickup surfaces warnings for missing, modified, or
+unregistered files; delivery mismatches on new, edited, or removed reports
+route to a Design/Engineering update plus re-approval. Approved Design remains
+implementation authority.
+
+The Research Assistant reconciles the index (`--index`/`--unregister`);
+workers register their own report only when asked. The Research Assistant may
+invoke a Research Worker for external evidence and to write one bounded topic
+report and explicitly named supporting files. Engineering may invoke that
+worker only after an explicit
 user request for bounded external research during its normal, unchanged lifecycle. You may always
 start the Research Assistant directly instead.
 
-Researcher receives an exact, self-contained prompt, reads the baseline, and
+Researcher receives an exact, self-contained prompt with no baseline context, and
 returns a concise summary to its launcher. It has no user Pickup, Delivery,
 approval, or question loop. It may inspect exact supplied local context needed
 for the external question, but general internal repository discovery belongs to

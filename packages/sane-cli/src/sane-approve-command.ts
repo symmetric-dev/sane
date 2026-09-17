@@ -24,7 +24,7 @@
  * blocking non-user roles here.
  *
  * New file only (M3-A); read-only use of `sane-db.ts` helpers (no schema
- * refactor). Does not touch `sane-workstream-state.ts`, baseline logic,
+ * refactor). Does not touch `sane-workstream-state.ts`
  * `templates/`, or agents/skills.
  */
 import { lstat } from "node:fs/promises"

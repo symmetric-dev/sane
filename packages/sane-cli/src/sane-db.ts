@@ -361,21 +361,17 @@ CREATE TABLE IF NOT EXISTS approvals(
   approved_at TEXT NOT NULL,
   PRIMARY KEY (repo_root, user, workstream_id, gate)
 );
-CREATE TABLE IF NOT EXISTS baselines(
-  repo_root TEXT NOT NULL,
-  user TEXT NOT NULL,
-  workstream_id TEXT NOT NULL,
-  revision INTEGER NOT NULL CHECK(revision >= 0),
-  path TEXT NOT NULL,
-  PRIMARY KEY (repo_root, user, workstream_id)
-);
 CREATE TABLE IF NOT EXISTS research_reports(
   repo_root TEXT NOT NULL,
   user TEXT NOT NULL,
   workstream_id TEXT NOT NULL,
   topic TEXT NOT NULL,
-  baseline_rev INTEGER NOT NULL CHECK(baseline_rev >= 0),
   path TEXT NOT NULL,
+  created_at TEXT NOT NULL,
+  sane_hash TEXT NOT NULL,
+  git_commit TEXT,
+  actor_role TEXT NOT NULL,
+  session_id TEXT NOT NULL,
   PRIMARY KEY (repo_root, user, workstream_id, topic)
 );
 CREATE TABLE IF NOT EXISTS jobs(
@@ -408,6 +404,43 @@ CREATE TABLE IF NOT EXISTS sane_mutations(
   session_id TEXT NOT NULL,
   timestamp TEXT NOT NULL
 );
+`)
+  migrateResearchRegistry(db)
+}
+
+/**
+ * One-way migration off the retired baseline model: drop the `baselines`
+ * table and rebuild legacy `research_reports` rows (which carried
+ * `baseline_rev`) into the append-only registry shape. Migrated rows keep
+ * their topic/path with empty hash/created placeholders until re-registered.
+ */
+function migrateResearchRegistry(db: Database): void {
+  db.exec(`DROP TABLE IF EXISTS baselines`)
+  const columns = db
+    .query(`PRAGMA table_info(research_reports)`)
+    .all() as Array<{ name: string }>
+  const names = new Set(columns.map((column) => column.name))
+  if (!names.has("baseline_rev")) return
+  db.exec(`
+CREATE TABLE IF NOT EXISTS research_reports_new(
+  repo_root TEXT NOT NULL,
+  user TEXT NOT NULL,
+  workstream_id TEXT NOT NULL,
+  topic TEXT NOT NULL,
+  path TEXT NOT NULL,
+  created_at TEXT NOT NULL,
+  sane_hash TEXT NOT NULL,
+  git_commit TEXT,
+  actor_role TEXT NOT NULL,
+  session_id TEXT NOT NULL,
+  PRIMARY KEY (repo_root, user, workstream_id, topic)
+);
+INSERT OR IGNORE INTO research_reports_new
+  (repo_root, user, workstream_id, topic, path, created_at, sane_hash, git_commit, actor_role, session_id)
+  SELECT repo_root, user, workstream_id, topic, path, '', '', NULL, 'research', 'legacy-migration'
+  FROM research_reports;
+DROP TABLE research_reports;
+ALTER TABLE research_reports_new RENAME TO research_reports;
 `)
 }
 
@@ -482,21 +515,17 @@ export interface ApprovalRow {
   approved_at: string
 }
 
-export interface BaselineRow {
-  repo_root: string
-  user: string
-  workstream_id: string
-  revision: number
-  path: string
-}
-
 export interface ResearchReportRow {
   repo_root: string
   user: string
   workstream_id: string
   topic: string
-  baseline_rev: number
   path: string
+  created_at: string
+  sane_hash: string
+  git_commit: string | null
+  actor_role: string
+  session_id: string
 }
 
 export interface JobRow {
@@ -858,113 +887,53 @@ export function deleteApproval(
 }
 
 // ---------------------------------------------------------------------------
-// baselines
+// research_reports (append-only registry of completed topic reports)
 // ---------------------------------------------------------------------------
 
-export interface UpsertBaselineInput {
-  revision: number
-  path: string
-}
-
-export function upsertBaseline(
-  db: Database,
-  identity: SaneIdentity,
-  input: UpsertBaselineInput,
-  mutation: MutationContext,
-): BaselineRow {
-  assertIdentity(identity)
-  if (!Number.isInteger(input.revision) || input.revision < 0) {
-    throw new SaneDbError(`Invalid baseline revision "${input.revision}". Expected an integer >= 0.`)
-  }
-  assertNonEmpty("path", input.path)
-  const timestamp = resolveTimestamp(mutation)
-  db.query(
-    `INSERT INTO baselines (repo_root, user, workstream_id, revision, path)
-     VALUES (?, ?, ?, ?, ?)
-     ON CONFLICT(repo_root, user, workstream_id)
-     DO UPDATE SET revision=excluded.revision, path=excluded.path`,
-  ).run(identity.repoRoot, identity.user, identity.workstreamId, input.revision, input.path)
-  recordMutation(db, identity, "baselines", "upsert", mutation, timestamp)
-  const row = getBaseline(db, identity)
-  if (!row) throw new SaneDbError("Failed to read back baseline after upsert.")
-  return row
-}
-
-/** Increment the support-track baseline revision by one. */
-export function bumpBaselineRevision(
-  db: Database,
-  identity: SaneIdentity,
-  path: string,
-  mutation: MutationContext,
-): BaselineRow {
-  const current = getBaseline(db, identity)
-  const next = (current?.revision ?? -1) + 1
-  return upsertBaseline(db, identity, { revision: next, path }, mutation)
-}
-
-export function getBaseline(db: Database, identity: SaneIdentity): BaselineRow | null {
-  assertIdentity(identity)
-  const row = db
-    .query(`SELECT * FROM baselines WHERE repo_root = ? AND user = ? AND workstream_id = ?`)
-    .get(identity.repoRoot, identity.user, identity.workstreamId) as BaselineRow | null
-  return row ?? null
-}
-
-export function deleteBaseline(
-  db: Database,
-  identity: SaneIdentity,
-  mutation: MutationContext,
-): void {
-  assertIdentity(identity)
-  const timestamp = resolveTimestamp(mutation)
-  db.query(`DELETE FROM baselines WHERE repo_root = ? AND user = ? AND workstream_id = ?`).run(
-    identity.repoRoot,
-    identity.user,
-    identity.workstreamId,
-  )
-  recordMutation(db, identity, "baselines", "delete", mutation, timestamp)
-}
-
-// ---------------------------------------------------------------------------
-// research_reports
-// ---------------------------------------------------------------------------
-
-export interface UpsertResearchReportInput {
+export interface RegisterResearchReportInput {
   topic: string
-  baselineRev: number
   path: string
+  createdAt: string
+  saneHash: string
+  gitCommit?: string | null
+  actorRole?: string
+  sessionId?: string
 }
 
-export function upsertResearchReport(
+export function registerResearchReport(
   db: Database,
   identity: SaneIdentity,
-  input: UpsertResearchReportInput,
+  input: RegisterResearchReportInput,
   mutation: MutationContext,
 ): ResearchReportRow {
   assertIdentity(identity)
   assertNonEmpty("topic", input.topic)
   if (input.topic.includes("\n")) throw new SaneDbError("Research topic must not contain newlines.")
-  if (!Number.isInteger(input.baselineRev) || input.baselineRev < 0) {
-    throw new SaneDbError(`Invalid baseline_rev "${input.baselineRev}". Expected an integer >= 0.`)
-  }
   assertNonEmpty("path", input.path)
+  assertNonEmpty("createdAt", input.createdAt)
+  assertNonEmpty("saneHash", input.saneHash)
   const timestamp = resolveTimestamp(mutation)
   db.query(
-    `INSERT INTO research_reports (repo_root, user, workstream_id, topic, baseline_rev, path)
-     VALUES (?, ?, ?, ?, ?, ?)
+    `INSERT INTO research_reports (repo_root, user, workstream_id, topic, path, created_at, sane_hash, git_commit, actor_role, session_id)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
      ON CONFLICT(repo_root, user, workstream_id, topic)
-     DO UPDATE SET baseline_rev=excluded.baseline_rev, path=excluded.path`,
+     DO UPDATE SET path=excluded.path, created_at=excluded.created_at, sane_hash=excluded.sane_hash,
+       git_commit=excluded.git_commit, actor_role=excluded.actor_role, session_id=excluded.session_id`,
   ).run(
     identity.repoRoot,
     identity.user,
     identity.workstreamId,
     input.topic,
-    input.baselineRev,
     input.path,
+    input.createdAt,
+    input.saneHash,
+    input.gitCommit ?? null,
+    input.actorRole ?? mutation.actorRole,
+    input.sessionId ?? mutation.sessionId,
   )
-  recordMutation(db, identity, "research_reports", "upsert", mutation, timestamp)
+  recordMutation(db, identity, "research_reports", "register", mutation, timestamp)
   const row = getResearchReport(db, identity, input.topic)
-  if (!row) throw new SaneDbError("Failed to read back research report after upsert.")
+  if (!row) throw new SaneDbError("Failed to read back research report after register.")
   return row
 }
 

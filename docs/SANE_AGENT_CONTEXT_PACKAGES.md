@@ -197,7 +197,7 @@ all `sane-*-assistant-role` skills. Worker Implementer and Worker Fixer can edit
 only within their supplied assignments; Worker Reviewer and Scout are strictly
 read-only.
 
-The coordinating Research Assistant owns and updates its scope's baseline. It
+The Research Assistant reconciles its scope's research index. It
 may launch a Research Worker for one bounded external-evidence topic. An
 Engineering Assistant may use Scout for bounded internal codebase inspection
 after normal user confirmation to proceed with Assistance. It may use Researcher
@@ -214,10 +214,10 @@ use web research, launch children, discover wider external context, mutate files
 or write a Research `REPORT.md`.
 
 A Research Worker receives one exact, self-contained prompt specifying the
-bounded external-evidence question, baseline and source paths to read, report and supporting-file
+bounded external-evidence question, source paths to read, report and supporting-file
 paths it may write, implementation-repository path, constraints, verification,
-and concise return shape. It reads the baseline, writes only those assigned
-Research destinations, and never updates the baseline. It has no user Pickup,
+and concise return shape. The prompt carries no baseline context. It writes only those assigned
+Research destinations, and registers its own report only when asked. It has no user Pickup,
 Delivery, approval, State update, or question loop. It returns only a concise
 summary of outputs, findings, verification, and blockers to its launcher.
 
@@ -240,8 +240,9 @@ Every user-started SANE session follows this sequence:
    `<implementation-repository>/.sane/workstreams/<current-workstream>`, then reads its
    `SANE_CONTEXT.md`, `SANE_STATE.md`, and the role-specific Pickup inputs
    required by its installed skill.
-   A role that consumes Research records the revision of its assigned scope's
-   `research/workstream/BASELINE.md` or `research/stage-NN/BASELINE.md`.
+   A role that consumes Research records the hashes of the registered
+   `research/<topic>/REPORT.md` files it uses, as shown by
+   `sane-alpha research <impl-repo> <ws-path> --index`.
 7. The agent performs Pickup and reports a readiness checkpoint to the user. The
    checkpoint concisely identifies the workstream, assigned role and Stage when
    applicable, relevant current State, proposed session scope, and any missing
@@ -252,14 +253,17 @@ Every user-started SANE session follows this sequence:
    directs the agent to proceed, for example with “let's start,” “proceed,” or
    “continue.” The agent then performs Assistance according to its role skill.
 
-Before Delivery, a Research-consuming role rechecks the captured baseline
-revision and reconciles changes or reports the stale-input conflict. Topic
+Before Delivery, a Research-consuming role rechecks the captured report hashes
+and reconciles new, edited, or removed reports as a mismatch. Topic
 `REPORT.md` files remain authoritative evidence. A Research session has one
-assigned scope, and only its coordinator updates that scope's baseline;
-delegated researchers write reports. Evidence from another scope applies only
-through an explicit link in the consuming baseline. Approved Design remains
-implementation authority, so a material Research conflict is routed to Design
-as an Update.
+assigned scope; delegated researchers write reports. Only the Research Assistant
+reconciles the index (`--index`/`--unregister`); a worker registers its own
+report only when asked. Evidence from another scope applies only
+through an explicit reference to its registered report. Research has no gates.
+Approved Design remains implementation authority, so a material Research conflict
+is routed to a Design/Engineering update and re-approval. The retired baseline
+model (`research/BASELINE.md`, the baselines table, baseline revisions, and
+`sane-alpha baseline --record|--recheck`) no longer exists.
 
 ## Working Directory, Permissions, and Scope
 
@@ -349,9 +353,12 @@ user-selected Stage; Product and Research normally operate across the
 workstream, though Research may have a user-directed Stage scope.
 
 A Research session is assigned either workstream scope for non-Stage or
-cross-Stage work, or one Stage scope. Its coordinator owns that scope's
-baseline. Delegated agents write only their assigned topic reports. Root Design
-reads the workstream baseline; Stage Design reads its assigned Stage baseline.
+cross-Stage work, or one Stage scope. Completed evidence lives at
+`research/<topic>/REPORT.md` (from `resources/RESEARCH_REPORT_TEMPLATE.md`).
+Reports are append-only: never update a registered report, write a new topic
+instead. The registry is the `research_reports` table. Delegated agents write
+only their assigned topic reports. Root Design reads the workstream reports;
+Stage Design reads its assigned Stage reports.
 
 ## Deferred Delivery-Skill Design
 

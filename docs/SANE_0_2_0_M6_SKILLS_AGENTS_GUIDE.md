@@ -14,21 +14,24 @@ Workers need path updates only.
 3. New layout (Sec 1):
    `type`, `PRD.md|FOUNDATION.md|ISSUE.md|MAINTENANCE.md` (exactly one),
    `SDD.md`, `solutions/<name>.md`, `SANE_CONTEXT.md`, `SANE_STATE.md`,
-   `research/BASELINE.md`, `research/<topic>/REPORT.md`,
+   `research/<topic>/REPORT.md`,
    `plan/PLAN.md`, `plan/jobs/<job-id>-<job-slug>.md`,
    `execution/reports/<job-id>-<job-slug>.md`, `execution/BRIEF.md`, `resources/`.
 4. Retired (do not reference, do not create):
    `design/STAGES.md`, `resources/STAGES_TEMPLATE.md`,
    `design/stages/*/SPEC.md`, `SECTIONS.md`, `research/stage-NN/BASELINE.md`,
+   `research/BASELINE.md`, `resources/RESEARCH_BASELINE_TEMPLATE.md`,
    `execution/stages/*/EXECUTION_PLAN.md`, `implementation/briefs/STAGE_NN.md`,
    `design/SPEC.md` (single), `execution/PLAN.md`, `execution/jobs/*`,
    `implementation/` prefix, `Coordination` name, `Implementation` phase label.
 5. `SANE_STATE.md` is a render: DB (`sane.db`) wins. Skills must say
    "record approval via `sane-alpha approve ...`, then re-render with
    `sane-alpha state ...`" — never hand-edit status.
-6. Pickup records revisions (baseline rev, SDD hash, solutions hashes,
-   `foundation_rev`, approval `sane_hash`); Delivery rechecks and reconciles
-   or reports on mismatch (`sane-alpha pickup`, `sane-alpha status`).
+6. Pickup records revisions (SDD hash, solutions hashes, `foundation_rev`,
+   approval `sane_hash`) and surfaces research index warnings
+   (missing/modified/unregistered files); Delivery rechecks and reconciles
+   or reports on mismatch (`sane-alpha pickup`, `sane-alpha status`,
+   `sane-alpha research`).
    Approved SDD + Specs stay execution authority.
 7. Handoff (Sec 3): compact refs only (From/To/Approvals/Revisions/Paths/Next),
    queue default, steer only for user-redirect + Execution abort, rename target
@@ -56,7 +59,8 @@ Workers need path updates only.
 - `description`: "Owns the typed root doc plus SDD for one single-scope workstream."
 - Owns: root doc + `SDD.md` + Design `state_entries`. Only type-branching agent.
 - `SDD.md` always links root doc (+ revision/hash) to `solutions/<name>.md`.
-- Pickup: root doc + `research/BASELINE.md` + `SANE_STATE.md`; record revisions.
+- Pickup: root doc + `SANE_STATE.md`; record revisions. Research reports
+  surface as index warnings only.
 - Delete `design/stages`, `STAGES.md`, `SECTIONS.md` refs.
 
 ### 1d. `sane-assistant-engineering.md`
@@ -74,12 +78,19 @@ Workers need path updates only.
   Execution assistant (not Coordination).
 
 ### 1f. `sane-assistant-research.md`
-- `description`: "Support track: one workstream baseline plus topic evidence.
-  No gates, never blocks phases."
-- Paths: `research/BASELINE.md` + `research/<topic>/REPORT.md` only.
-- Delete `research/workstream/` vs `research/stage-NN/` scope choice; one
-  baseline per workstream. Only coordinator commits baseline row; workers draft
-  reports. No approval/state language.
+- `description`: "Support track: append-only topic evidence. No gates,
+  never blocks phases."
+- Paths: `research/<topic>/REPORT.md` only
+  (`resources/RESEARCH_REPORT_TEMPLATE.md`). `research/BASELINE.md`,
+  `resources/RESEARCH_BASELINE_TEMPLATE.md`, the baselines table, and baseline
+  revisions are retired; never update a registered report, write a new topic
+  instead. Delete `research/workstream/` vs `research/stage-NN/` scope branching.
+  Registry is the `research_reports` table (topic, path, creation
+  time, content hash, commit); CLI is `sane-alpha research <impl-repo>
+  <ws-path> [--index|--register|--unregister]` (default `--index` prints
+  presence/status plus unregistered files). Only the coordinator reconciles
+  the index (`--index`/`--unregister`); workers register their own report only
+  when asked. No approval/state language.
 
 Agents live in `opencode/agents/sane/assistant/*.md` and
 `opencode/agents/sane/worker/*.md` (short names). Agent IDs are path-derived:
@@ -96,7 +107,8 @@ accordingly.
 - `sane-worker-grounder.md`: writable file is `plan/jobs/<job-id>-<job-slug>.md`;
   read-only context is SDD + solutions + plan (not Stage design).
 - `sane-worker-researcher.md` / `sane-worker-scout.md`: unchanged contracts;
-  researcher reads assigned baseline rev, scout reads exact supplied paths.
+  researcher receives an exact self-contained prompt with no baseline context,
+  scout reads exact supplied paths.
 
 ## 2. Role skills (`skills/*/`)
 
@@ -111,8 +123,9 @@ accordingly.
   (single actual-state handoff from `resources/EXECUTION_BRIEF_TEMPLATE.md`),
   jobs `running` onward, `merges` row, Execution `state_entries`.
 - Pickup: `plan/PLAN.md` + all job specs + `SDD.md` + solutions + `SANE_STATE.md`;
-  confirm plan-package approval (gate 3) before dispatch; record baseline/SDD/
-  foundation revs.
+  confirm plan-package approval (gate 3) before dispatch; record SDD/
+  foundation revs; research reports surface as index warnings only
+  (missing/modified/unregistered files).
 - Assistance: batches from `plan/PLAN.md` Jobs + Split Notes (sequential default,
   parallel only if plan authorizes); worktree `sane/<user>/<slug>` via
   `sane-alpha worktree`; isolated checks only; read-only review per batch;
@@ -157,14 +170,24 @@ accordingly.
   authorizes Jobs but does not start execution. Handoff to Execution.
 
 ### 2f. `sane-research-assistant-role/SKILL.md`
-- One baseline: `research/BASELINE.md` (`resources/RESEARCH_BASELINE_TEMPLATE.md`);
-  reports `research/<topic>/REPORT.md` (`resources/RESEARCH_REPORT_TEMPLATE.md`).
-  Delete `research/workstream/` vs `research/stage-NN/` branching.
-- Pickup reads root doc (any of 4, for context only — type-agnostic) + baseline +
-  linked reports + SDD/solutions if present. Record `baselines.revision`.
+- Append-only archive: reports `research/<topic>/REPORT.md`
+  (`resources/RESEARCH_REPORT_TEMPLATE.md`). `research/BASELINE.md`,
+  `resources/RESEARCH_BASELINE_TEMPLATE.md`, the baselines table, and baseline
+  revisions are retired; the old `sane-alpha baseline --record|--recheck`
+  command is gone. Delete `research/workstream/` vs `research/stage-NN/`
+  branching.
+- Pickup surfaces research index warnings (missing/modified/unregistered files)
+  via `sane-alpha research <impl-repo> <ws-path>` (default `--index`); read
+  root doc (any of 4, for context only — type-agnostic) + registered reports +
+  SDD/solutions if present. Never update a registered report; write a new topic
+  instead.
 - No gates: delete "approve baseline / mark Workstream -> Research Approved".
-  Delivery = reread revision, reconcile, hand evidence to launcher; never blocks.
-- Keep Researcher-delegation + Scout-ownership rules as-is.
+  Delivery = reconcile the index, hand evidence to launcher; mismatches on
+  new/edited/removed reports route to a Design/Engineering update +
+  re-approval; never blocks.
+- Only the Research Assistant reconciles the index (`--index`/`--unregister`);
+  workers register their own report only when asked. Keep Researcher-delegation
+  + Scout-ownership rules as-is.
 
 ## 3. Installer manifest (must change with the above)
 - File: `packages/sane-cli/src/install-sane-agent-context-packages.ts`
@@ -192,7 +215,7 @@ accordingly.
   only worker-historical or explicit "no stages" notes.
 - [ ] `grep -ri "coordination\|product assistant\|implementation/briefs\|STAGES_TEMPLATE\|SECTION_SPEC" opencode skills templates docs` returns nothing
   requiring action (or explicit retired notes).
-- [ ] `grep -ri "execution/stages\|design/stages\|research/stage-\|research/workstream" opencode skills` empty.
+- [ ] `grep -ri "execution/stages\|design/stages\|research/stage-\|research/workstream\|research/BASELINE\|RESEARCH_BASELINE" opencode skills` empty (or explicit retired notes).
 - [ ] Installer test green after manifest update.
 - [ ] `bun run typecheck && bun run test` green (expect 184 + your new/updated tests).
 - [ ] One pilot workstream bootstraps with new agents (try `--type issue`).
