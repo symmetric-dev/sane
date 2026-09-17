@@ -25,17 +25,17 @@ Workers need path updates only.
    `design/SPEC.md` (single), `execution/PLAN.md`, `execution/jobs/*`,
    `implementation/` prefix, `Coordination` name, `Implementation` phase label.
 5. `SANE_STATE.md` is a render: DB (`sane.db`) wins. Skills must say
-   "record approval via `sane-alpha approve ...`, then re-render with
-   `sane-alpha state ...`" — never hand-edit status.
-6. Pickup records revisions (SDD hash, solutions hashes, `foundation_rev`,
+   "record approval via `sane approve ...`, then re-render with
+   `sane view ...`" — never hand-edit status.
+6. Pickup records revisions (SDD hash, solutions hashes,
    approval `sane_hash`) and surfaces research index warnings
    (missing/modified/unregistered files); Delivery rechecks and reconciles
-   or reports on mismatch (`sane-alpha pickup`, `sane-alpha status`,
-   `sane-alpha research`).
+   or reports on mismatch (`sane validate`, `sane status`,
+   `sane research`).
    Approved SDD + Specs stay execution authority.
 7. Handoff (Sec 3): compact refs only (From/To/Approvals/Revisions/Paths/Next),
    queue default, steer only for user-redirect + Execution abort, rename target
-   `[ready] <slot>: <next>`, no auto-open. CLI: `sane-alpha handoff ...`.
+   `[ready] <slot>: <next>`, no auto-open. CLI: `sane handoff ...`.
 8. Design is the ONLY type-branching role ("if type X expect doc A").
    Engineering / Planning / Execution / Research are type-agnostic: they read
    only SDD / Specs / jobs, never branch on `type`.
@@ -51,8 +51,8 @@ Workers need path updates only.
 - `task:` keep `sane-worker-implementer/reviewer/fixer` only (workers stay
   worker-level, never own phase sessions).
 - Setup steps: add (3) "Resolve target session via `selections` registry;
-  (4) handoff via `sane-alpha handoff` (queue default); (5) own worktree/branch
-  lifecycle (`sane-alpha worktree/merge`), isolated checks only."
+  (4) handoff via `sane handoff` (queue default); (5) own worktree/branch
+  lifecycle (`sane worktree/merge`), isolated checks only."
 - Remove every `Stage` / `STAGE_<NN>` / `implementation/briefs` / `Coordination`.
 
 ### 1c. `sane-assistant-design.md`
@@ -86,7 +86,7 @@ Workers need path updates only.
   revisions are retired; never update a registered report, write a new topic
   instead. Delete `research/workstream/` vs `research/stage-NN/` scope branching.
   Registry is the `research_reports` table (topic, path, creation
-  time, content hash, commit); CLI is `sane-alpha research <impl-repo>
+  time, content hash, commit); CLI is `sane research <impl-repo>
   <ws-path> [--index|--register|--unregister]` (default `--index` prints
   presence/status plus unregistered files). Only the coordinator reconciles
   the index (`--index`/`--unregister`); workers register their own report only
@@ -128,7 +128,7 @@ accordingly.
   (missing/modified/unregistered files).
 - Assistance: batches from `plan/PLAN.md` Jobs + Split Notes (sequential default,
   parallel only if plan authorizes); worktree `sane/<user>/<slug>` via
-  `sane-alpha worktree`; isolated checks only; read-only review per batch;
+  `sane worktree`; isolated checks only; read-only review per batch;
   "Planning needs to make these corrections" (never edit plan/specs, never
   launch Grounder).
 - Delivery: per-Job reports + `execution/BRIEF.md`; user accepts per batch
@@ -136,7 +136,7 @@ accordingly.
 - Delete all `implementation/reports/<stage>`, `implementation/briefs/STAGE_NN`,
   `Stage Implementation Brief`, `[~] Active/[!] Blocked` Stage-state language
   that references Stage entries (keep per-Job coordination notes if useful,
-  but status source is DB + `sane-alpha status`).
+  but status source is DB + `sane status`).
 
 ### 2c. `sane-design-assistant-role/SKILL.md`
 - Owns root doc + `SDD.md`. Add per-type root section:
@@ -148,7 +148,7 @@ accordingly.
   required before Planning/Execution follows new direction.
 - Artifact Creation: root `SDD.md` from `resources/SDD_TEMPLATE.md` (copy once,
   then edit); never overwrite.
-- Pickup/Delivery: add revision record/recheck + `foundation_rev` check.
+- Pickup/Delivery: add revision record/recheck.
 
 ### 2d. `sane-engineering-assistant-role/SKILL.md` (biggest rewrite)
 - Owns `solutions/<name>.md` (one comprehensive doc per solution area) from
@@ -159,25 +159,25 @@ accordingly.
   code refs) -> remove downstream decision gaps. Keep Scout/Researcher routing
   (already correct) + "surface approved-Design conflict, suggest Design Update."
 - Delivery: specs complete + ready for Planning. Approval: user approves Solution
-  Specs (gate 2) via `sane-alpha approve --gate solutions`.
+  Specs (gate 2) via `sane approve solutions`.
 
 ### 2e. `sane-planning-assistant-role/SKILL.md` (path sweep + gates)
 - Replace owned paths with `plan/PLAN.md` (`resources/PLAN_TEMPLATE.md`) +
   `plan/jobs/<job-id>-<job-slug>.md` (`resources/JOB_TEMPLATE.md`).
 - Delete `execution/stages/...`, Stage Design/Section inputs -> SDD + solutions.
 - Keep breakdown-confirmation gate, Grounder assignment, cross-job review.
-- Delivery: plan package approval = gate 3 (`sane-alpha approve --gate plan`),
+- Delivery: plan package approval = gate 3 (`sane approve plan`),
   authorizes Jobs but does not start execution. Handoff to Execution.
 
 ### 2f. `sane-research-assistant-role/SKILL.md`
 - Append-only archive: reports `research/<topic>/REPORT.md`
   (`resources/RESEARCH_REPORT_TEMPLATE.md`). `research/BASELINE.md`,
   `resources/RESEARCH_BASELINE_TEMPLATE.md`, the baselines table, and baseline
-  revisions are retired; the old `sane-alpha baseline --record|--recheck`
+  revisions are retired; the old `sane baseline --record|--recheck`
   command is gone. Delete `research/workstream/` vs `research/stage-NN/`
   branching.
 - Pickup surfaces research index warnings (missing/modified/unregistered files)
-  via `sane-alpha research <impl-repo> <ws-path>` (default `--index`); read
+  via `sane research <impl-repo> <ws-path>` (default `--index`); read
   root doc (any of 4, for context only — type-agnostic) + registered reports +
   SDD/solutions if present. Never update a registered report; write a new topic
   instead.

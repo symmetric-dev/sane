@@ -14,7 +14,6 @@ import { join } from "node:path"
 import { promisify } from "node:util"
 
 import {
-  acceptJobsViaApproval,
   authorizeJobsViaApproval,
   branchForWorkstream,
   createJob,
@@ -138,30 +137,32 @@ describe("sane-db (M2-A sqlite source of truth)", () => {
     const aliceOtherRepo: SaneIdentity = { repoRoot: absB, user: "alice", workstreamId: "01-export" }
     const aliceOtherStream: SaneIdentity = { repoRoot: absA, user: "alice", workstreamId: "02-import" }
 
-    upsertWorkstream(db, alice, { scope: "alice scope", status: "open" }, mutation())
-    upsertWorkstream(db, bob, { scope: "bob scope", status: "blocked" }, mutation())
+    upsertWorkstream(db, alice, { type: "feature", status: "open" }, mutation())
+    upsertWorkstream(db, bob, { type: "feature", status: "blocked" }, mutation())
     upsertWorkstream(
       db,
       aliceOtherRepo,
-      { scope: "other repo", status: "done" },
+      { type: "foundation", status: "done" },
       mutation(),
     )
     upsertWorkstream(
       db,
       aliceOtherStream,
-      { scope: "other stream", status: "open" },
+      { type: "issue", status: "open" },
       mutation(),
     )
 
-    expect(getWorkstream(db, alice)?.scope).toBe("alice scope")
-    expect(getWorkstream(db, bob)?.scope).toBe("bob scope")
-    expect(getWorkstream(db, aliceOtherRepo)?.scope).toBe("other repo")
-    expect(getWorkstream(db, aliceOtherStream)?.scope).toBe("other stream")
+    expect(getWorkstream(db, alice)?.status).toBe("open")
+    expect(getWorkstream(db, bob)?.status).toBe("blocked")
+    expect(getWorkstream(db, aliceOtherRepo)?.status).toBe("done")
+    expect(getWorkstream(db, aliceOtherStream)?.status).toBe("open")
+    expect(getWorkstream(db, alice)?.type).toBe("feature")
+    expect(getWorkstream(db, aliceOtherRepo)?.type).toBe("foundation")
 
     // Mutating one identity never leaks into another.
-    upsertWorkstream(db, alice, { scope: "alice v2", status: "done" }, mutation())
-    expect(getWorkstream(db, alice)?.scope).toBe("alice v2")
-    expect(getWorkstream(db, bob)?.scope).toBe("bob scope")
+    upsertWorkstream(db, alice, { type: "feature", status: "done" }, mutation())
+    expect(getWorkstream(db, alice)?.status).toBe("done")
+    expect(getWorkstream(db, bob)?.status).toBe("blocked")
 
     // Child tables are isolated by the same composite prefix.
     upsertSelection(
@@ -187,11 +188,14 @@ describe("sane-db (M2-A sqlite source of truth)", () => {
     const m = mutation()
 
     expect(() =>
-      upsertWorkstream(db!, identity, { scope: "s", status: "bogus" }, m),
+      upsertWorkstream(db!, identity, { type: "feature", status: "bogus" }, m),
     ).toThrow(SaneDbError)
     expect(() =>
-      upsertWorkstream(db!, identity, { scope: "s", status: "bogus" }, m),
+      upsertWorkstream(db!, identity, { type: "feature", status: "bogus" }, m),
     ).toThrow(/Invalid workstream status/)
+    expect(() =>
+      upsertWorkstream(db!, identity, { type: "bogus", status: "open" }, m),
+    ).toThrow(/Invalid workstream type/)
 
     expect(() =>
       upsertStateEntry(
@@ -216,27 +220,28 @@ describe("sane-db (M2-A sqlite source of truth)", () => {
       recordApproval(
         db!,
         identity,
-        { gate: "bogus", artifactPath: "a", saneHash: "h", approvalRef: "r" },
+        { phase: "bogus", artifactPath: "a", saneHash: "h", approvalRef: "r" },
         m,
       ),
-    ).toThrow(/Invalid approval gate/)
+    ).toThrow(/Invalid approval phase/)
 
     // Composite PK: repeated upsert for the same key updates instead of duplicating.
-    upsertWorkstream(db, identity, { scope: "v1", status: "open" }, m)
-    upsertWorkstream(db, identity, { scope: "v2", status: "open" }, m)
+    upsertWorkstream(db, identity, { type: "feature", status: "open" }, m)
+    upsertWorkstream(db, identity, { type: "foundation", status: "blocked" }, m)
     const rows = db
       .query(`SELECT * FROM workstreams WHERE repo_root = ? AND user = ? AND workstream_id = ?`)
       .all(identity.repoRoot, identity.user, identity.workstreamId) as unknown[]
     expect(rows).toHaveLength(1)
-    expect(getWorkstream(db, identity)?.scope).toBe("v2")
+    expect(getWorkstream(db, identity)?.status).toBe("blocked")
+    expect(getWorkstream(db, identity)?.type).toBe("foundation")
 
     // Raw CHECK enforcement also rejects bad enums at the SQL layer.
     expect(() =>
       db!
         .query(
-          `INSERT INTO workstreams (repo_root, user, workstream_id, scope, status, created_at) VALUES (?, ?, ?, ?, ?, ?)`,
+          `INSERT INTO workstreams (repo_root, user, workstream_id, type, status, created_at) VALUES (?, ?, ?, ?, ?, ?)`,
         )
-        .run(identity.repoRoot, identity.user, "other", "s", "bogus", new Date().toISOString()),
+        .run(identity.repoRoot, identity.user, "other", "feature", "bogus", new Date().toISOString()),
     ).toThrow()
   })
 
@@ -302,7 +307,7 @@ describe("sane-db (M2-A sqlite source of truth)", () => {
     }
     const m = mutation("planning", "ses_plan")
 
-    createJob(db, identity, { jobId: "job-01", specPath: "plan/jobs/job-01-a.md" }, m)
+    createJob(db, identity, { jobId: "job-01", specPath: "execution/jobs/job-01-a.md" }, m)
     expect(getJob(db, identity, "job-01")?.status).toBe("planned")
 
     // Direct transition is rejected.
@@ -321,31 +326,24 @@ describe("sane-db (M2-A sqlite source of truth)", () => {
       db,
       identity,
       ["job-01"],
-      { artifactPath: "plan/PLAN.md", saneHash: "hash-plan-1", approvalRef: "user-ok-plan" },
+      { artifactPath: "execution/PLAN.md", saneHash: "hash-plan-1", approvalRef: "user-ok-plan" },
       { actorRole: "user", sessionId: "ses_user" },
     )
     expect(authorized[0]?.status).toBe("authorized")
     expect(getJob(db, identity, "job-01")?.status).toBe("authorized")
-    expect(getApproval(db, identity, "plan")?.approval_ref).toBe("user-ok-plan")
+    expect(getApproval(db, identity, "planning")?.approval_ref).toBe("user-ok-plan")
 
     // Normal forward transitions still work directly.
     updateJobStatus(db, identity, "job-01", "running", mutation("execution", "ses_exec"))
     expect(getJob(db, identity, "job-01")?.status).toBe("running")
 
-    // Direct accept is rejected; helper accepts.
+    // Direct accept is rejected; per-job acceptance has no CLI path.
     updateJobStatus(db, identity, "job-01", "reported", mutation("execution", "ses_exec"))
     updateJobStatus(db, identity, "job-01", "reviewed", mutation("execution", "ses_exec"))
     expect(() => updateJobStatus(db!, identity, "job-01", "accepted", m)).toThrow(
-      /acceptJobsViaApproval/,
+      /no CLI path/,
     )
-    acceptJobsViaApproval(
-      db,
-      identity,
-      ["job-01"],
-      { artifactPath: "execution/BRIEF.md", saneHash: "hash-batch-1", approvalRef: "user-ok-batch" },
-      { actorRole: "user", sessionId: "ses_user" },
-    )
-    expect(getJob(db, identity, "job-01")?.status).toBe("accepted")
+    expect(getJob(db, identity, "job-01")?.status).toBe("reviewed")
     expect(listJobs(db, identity)).toHaveLength(1)
   })
 
@@ -361,7 +359,7 @@ describe("sane-db (M2-A sqlite source of truth)", () => {
     upsertWorkstream(
       db,
       identity,
-      { scope: "s", status: "open" },
+      { type: "feature", status: "open" },
       { actorRole: "design", sessionId: "ses_design", timestamp: "2026-01-01T00:00:00.000Z" },
     )
     upsertSelection(

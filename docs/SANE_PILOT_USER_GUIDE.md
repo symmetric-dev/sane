@@ -11,13 +11,13 @@ WORKSTREAM="01-my-workstream"
 
 ## One-Time Setup
 
-Install the `sane-alpha` command wrapper:
+Install the `sane` command wrapper:
 
 ```bash
-bun alpha/scripts/install-sane-alpha.ts
+bun alpha/scripts/install-sane.ts
 ```
 
-The installer writes a managed wrapper to `~/.local/bin/sane-alpha` by default
+The installer writes a managed wrapper to `~/.local/bin/sane` by default
 (`SANE_HOME/.local/bin` when `SANE_HOME` is set). It never edits shell startup
 files. Ensure that directory is on `PATH`, for example:
 
@@ -27,17 +27,17 @@ export PATH="$HOME/.local/bin:$PATH"
 
 Use `--bin-dir <path>` to select another user-owned executable directory.
 `--dry-run` validates without changing files, and `--overwrite` is required to
-replace a differing regular `sane-alpha` file. The installed wrapper remains
+replace a differing regular `sane` file. The installed wrapper remains
 tied to this checkout. If the checkout moves, run this from its new location:
 
 ```bash
-bun alpha/scripts/install-sane-alpha.ts --overwrite
+bun alpha/scripts/install-sane.ts --overwrite
 ```
 
 Install the SANE OpenCode agents and role skills:
 
 ```bash
-sane-alpha install-context-packages --overwrite --model-config ./alpha/models.yaml 
+sane install-context-packages --overwrite --model-config ./alpha/models.yaml 
 ```
 
 Quit and restart OpenCode after installation (and after any overwrite) so the
@@ -48,7 +48,7 @@ the six skills.
 Initialize local SANE workstream storage inside the implementation repository:
 
 ```bash
-sane-alpha init-sane "$IMPL"
+sane init-sane "$IMPL"
 ```
 
 ## Start a Workstream
@@ -56,7 +56,7 @@ sane-alpha init-sane "$IMPL"
 Create and select a new workstream under the ignored `.sane/workstreams/` root:
 
 ```bash
-sane-alpha create-workstream "$IMPL" "$WORKSTREAM" --type feature
+sane create-workstream "$IMPL" "$WORKSTREAM" --type feature
 ```
 
 `--type` is required and accepts only `feature` or `foundation`. This example
@@ -154,9 +154,9 @@ the existing brief and Implementation State record. See the
 
 Topic `REPORT.md` files are append-only evidence, registered in the
 `research_reports` table (topic, path, creation time, content hash, commit).
-Inspect the index with `sane-alpha research "$IMPL" "$WORKSTREAM"` (default
+Inspect the index with `sane research "$IMPL" "$WORKSTREAM"` (default
 `--index` prints presence/status plus unregistered files; `--register` and
-`--unregister` record or remove rows). The old `sane-alpha baseline
+`--unregister` record or remove rows). The old `sane baseline
 --record|--recheck` command is gone. `research/BASELINE.md`, the baselines
 table, and baseline revisions are retired; never update a registered report,
 write a new topic instead.
@@ -200,7 +200,7 @@ audits and cannot invoke Scout.
 Select an existing workstream before starting a new SANE role session:
 
 ```bash
-sane-alpha select-workstream "$IMPL" "$WORKSTREAM"
+sane select-workstream "$IMPL" "$WORKSTREAM"
 ```
 
 Selection takes no type argument and rejects a workstream with missing or
@@ -223,7 +223,7 @@ After changing Alpha agent configurations or role skills, reinstall them and
 restart OpenCode:
 
 ```bash
-sane-alpha install-context-packages --overwrite
+sane install-context-packages --overwrite
 ```
 
 Reinstalling does not remove typed skill directories installed by earlier Alpha

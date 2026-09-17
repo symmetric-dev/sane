@@ -53,10 +53,14 @@ be created by new tooling or roles:
 
 Retired naming (do not create; remap on sight):
 
-- Old single `design/SPEC.md` is replaced by the root doc plus `SDD.md`
+- Old single `design/SPEC.md` is replaced by the root doc plus `design/SDD.md`
   below.
-- Old planning paths `execution/PLAN.md` and `execution/jobs/*` are retired;
-  Planning owns `plan/`; Execution owns `execution/`.
+- Old planning paths `plan/PLAN.md` and `plan/jobs/*` are retired;
+  Planning owns `execution/PLAN.md` and `execution/jobs/`; Execution owns
+  `execution/FINAL_REPORT.md` and `execution/reports/`.
+- Old top-level `SDD.md`, `solutions/`, `SANE_CONTEXT.md`, `execution/BRIEF.md`,
+  and the `type` file are retired; use `design/SDD.md`, `design/solutions/`,
+  `README.md`, `execution/FINAL_REPORT.md`, and sqlite `workstreams.type`.
 - Old `implementation/` prefix is replaced by `execution/`.
 - The former Coordination assistant name is replaced by Execution assistant.
 - The old `Implementation` phase label is replaced by Execution.
@@ -65,24 +69,28 @@ Workstream layout (new tooling bootstraps this shape):
 
 ```text
 <workstream>/
-  type                    # immutable one-line type file (unchanged)
+  README.md                 # shared orientation (template copy, edited in place)
+                          # state is viewed via `sane view` (no state file on disk; per-repo sqlite is authority)
   PRD.md | FOUNDATION.md | ISSUE.md | MAINTENANCE.md
                           # root doc, exactly one present, fixed per type (Design owns)
-  SDD.md                  # Solution Design Document (Design owns)
-  solutions/<name>.md     # one comprehensive doc per solution area (Engineering owns)
-  SANE_CONTEXT.md         # shared orientation (template copy, edited in place)
-                          # state is viewed via `sane-alpha state` (no state file on disk; per-repo sqlite is authority)
+  design/SDD.md           # Solution Design Document (Design owns)
+  design/solutions/<name>.md # one comprehensive doc per solution area (Engineering owns)
   research/<topic>/REPORT.md # append-only evidence (research owns registry)
-  research/<topic>/REPORT.md
-  plan/PLAN.md            # single compact plan (Planning owns)
-  plan/jobs/<job-id>-<job-slug>.md
+  execution/PLAN.md       # single compact plan (Planning owns)
+  execution/jobs/<job-id>-<job-slug>.md
   execution/reports/<job-id>-<job-slug>.md
-  execution/BRIEF.md      # single actual-state handoff (Execution owns)
+  execution/FINAL_REPORT.md # single actual-state handoff (Execution owns)
   resources/              # local fallback templates (bootstrap copies only)
 ```
 
+Top-level dirs are exactly: design/, execution/, research/, resources/.
+There is no top-level SDD.md, solutions/, plan/, planning/, execution/BRIEF.md,
+SANE_CONTEXT.md, or `type` file. `type` lives in sqlite only
+(workstreams.type column).
+
 Workstream types are provisional and may change. Four are defined; the root
-doc name is fixed per type and the `type` file is immutable:
+doc name is fixed per type and the `type` value is stored in sqlite
+(workstreams.type), not in a file:
 
 - `feature` -> `PRD.md` (problem, users, goals, acceptance).
 - `foundation` -> `FOUNDATION.md` (goals, constraints, surfaces, consumers).
@@ -92,9 +100,9 @@ doc name is fixed per type and the `type` file is immutable:
 
 `--type` is required at create; select takes no type argument.
 
-Docs chain: Design owns the root doc and `SDD.md`. `SDD.md` is the nexus of
+Docs chain: Design owns the root doc and `design/SDD.md`. `design/SDD.md` is the nexus of
 product intent and technical requirements: it always links the root doc
-(+ revision / hash) to the Solution Specs in `solutions/<name>.md`.
+(+ revision / hash) to the Solution Specs in `design/solutions/<name>.md`.
 Engineering owns the Solution Specs (one comprehensive doc per solution
 area). Design is the only type-branching agent ("if type X expect doc A
 with sections B..."). Downstream roles (Engineering, Planning, Execution,
@@ -102,21 +110,16 @@ and the research support track) are type-agnostic: they read only
 SDD / Specs / jobs and never branch on `type`.
 
 Foundation work is not a Stage and not a phase inside a feature workstream.
-When a workstream depends on foundation outcomes, it declares a revision
-precondition: `foundation_rev` records the root-doc revision (or merge
-commit, see section 2) of the foundation workstream it builds on. Pickup fails
-when the precondition is missing or the referenced foundation revision is
-superseded without user re-confirmation. The user owns sequencing between
-foundation and dependent workstreams; the CLI enforces nothing beyond
-recording and checking the declared precondition.
+Workstreams never stack: there is no cross-workstream revision precondition.
+The user owns sequencing between foundation and dependent workstreams.
 
 ## 2. Data Model
 
 `sqlite` at `<repo>/.sane/sane.db` is the source of truth: one database per
 repository, not one per workstream. Markdown files (root
-doc, `SDD.md`, specs, reports) are renders for humans and agent
+doc, `design/SDD.md`, specs, reports) are renders for humans and agent
 context. On conflict, the database wins; the renderer regenerates the files.
-Workstream state is viewed via `sane-alpha state` (stdout render, no state
+Workstream state is viewed via `sane view` (stdout render, no state
 file on disk).
 Every mutation records `(actor_role, session_id, timestamp)`.
 
@@ -134,9 +137,8 @@ workstreams(
   repo_root TEXT NOT NULL,
   user TEXT NOT NULL,
   workstream_id TEXT NOT NULL,  -- normalized relative path under .sane/workstreams/
-  scope TEXT NOT NULL,           -- one-aspect statement; Design owns via root doc
-  status TEXT NOT NULL,          -- open | blocked | done | abandoned
-  foundation_rev TEXT,           -- NULL or "<workstream-id>@<revision>"
+  type TEXT NOT NULL,            -- feature | foundation | issue | maintenance (sole type authority; no type file)
+  status TEXT NOT NULL,          -- open | blocked | done | abandoned (retained, not displayed)
   created_at TEXT NOT NULL,
   PRIMARY KEY (repo_root, user, workstream_id)
 );
@@ -172,13 +174,13 @@ approvals(
   repo_root TEXT NOT NULL,
   user TEXT NOT NULL,
   workstream_id TEXT NOT NULL,
-  gate TEXT NOT NULL,            -- root-plus-sdd | solutions | plan | jobs-batch | merge
-  artifact_path TEXT NOT NULL,
-  sane_hash TEXT NOT NULL,       -- content hash of the approved artifact
+  phase TEXT NOT NULL,            -- design | engineering | planning | execution
+  artifact_path TEXT NOT NULL,    -- validated file list (comma-joined)
+  sane_hash TEXT NOT NULL,       -- composite hash over the validated files
   git_commit TEXT,               -- NULL when the workflow is not git-backed
   approval_ref TEXT NOT NULL,
   approved_at TEXT NOT NULL,
-  PRIMARY KEY (repo_root, user, workstream_id, gate)
+  PRIMARY KEY (repo_root, user, workstream_id, phase)
 );
 -- Columns exist in the model now. No enforcement or auto-revoke on hash
 -- mismatch yet; that behavior is explicitly left room for.
@@ -202,7 +204,7 @@ jobs(
   user TEXT NOT NULL,
   workstream_id TEXT NOT NULL,
   job_id TEXT NOT NULL,
-  spec_path TEXT NOT NULL,       -- plan/jobs/<job-id>-<job-slug>.md
+  spec_path TEXT NOT NULL,       -- execution/jobs/<job-id>-<job-slug>.md
   report_path TEXT,              -- execution/reports/<job-id>-<job-slug>.md
   status TEXT NOT NULL,          -- planned | authorized | running | reported | reviewed | accepted
   PRIMARY KEY (repo_root, user, workstream_id, job_id)
@@ -228,42 +230,47 @@ merges(
   `accepted`. `planned` becomes `authorized` only by explicit user approval of
   the plan package; `accepted` only by explicit user acceptance of the outcome.
 
-### Ownership and approval gates
+### Ownership and approvals
 
 Each artifact has exactly one writer role; all other roles read it:
 
 - Design Assistant: root doc (`PRD.md` | `FOUNDATION.md` | `ISSUE.md` |
-  `MAINTENANCE.md`), `SDD.md`, Design `state_entries`.
-- Engineering Assistant: `solutions/<name>.md`, Engineering `state_entries`.
-- Planning Assistant: `plan/PLAN.md`, `plan/jobs/*`, `jobs` rows
+  `MAINTENANCE.md`), `design/SDD.md`, Design `state_entries`.
+- Engineering Assistant: `design/solutions/<name>.md`, Engineering `state_entries`.
+- Planning Assistant: `execution/PLAN.md`, `execution/jobs/*`, `jobs` rows
   (`planned`), Planning `state_entries`. Sole editor of plans and Job Specs,
   including factual corrections.
 - Execution Assistant: `execution/reports/*` (via Implementer workers),
-  `execution/BRIEF.md`, `jobs` status transitions from `running` onward,
+  `execution/FINAL_REPORT.md`, `jobs` status transitions from `running` onward,
   `merges` row, Execution `state_entries`. Implementer workers stay
   worker-level under this assistant; they never own phase sessions.
 - Research support track: `research/<topic>/REPORT.md` files plus their
   `research_reports` registry rows (topic, path, creation time, content hash,
   commit). Reports are append-only: never update a registered report, write a
   new topic instead. The Research Assistant registers each completed report
-  (`sane-alpha research --register`) and reconciles the index (`--index` /
+  (`sane research --register`) and reconciles the index (`--index` /
   `--unregister`); workers may register their own report only when asked.
-  No gate semantics.
+  No approval semantics.
 - User: approvals only. No role self-approves.
 
-Approval gates (user action required, recorded as `approval_ref` plus
-`sane_hash` in `approvals` and a `[✓] Approved` note in the `sane-alpha state`
-render):
+Phase approvals (user action required, recorded as `approval_ref` plus a
+composite `sane_hash` in `approvals`, the phase marked `approved` in
+`state_entries`, and a `[✓] Approved` note in the `sane view`
+render). `sane validate <phase>` checks the phase's documents
+(exists, non-empty, no template guidance comments); `sane approve
+<phase>` runs the same validation first and refuses on problems:
 
-1. Root doc plus SDD (Design).
-2. Solution Specs (Engineering).
-3. Plan package (`plan/PLAN.md` + all Job Specs; authorizes Jobs but does
-   not start execution).
-4. Job outcomes (per batch; accepts results or authorizes retry/fix).
-5. Merge (authorizes the `sane/<user>/<workstream>` merge into main).
+1. Design (root doc plus design/SDD.md).
+2. Engineering (design/solutions specs).
+3. Planning (`execution/PLAN.md` + all Job Specs; registers and authorizes the
+   jobs found on disk, but does not start execution).
+4. Execution (final report plus job reports).
+
+No gates and no per-job approval. Research has no approval at
+all.
 
 Pickup records consumed revisions (report hashes, SDD revision,
-solution revisions, `foundation_rev`, `sane_hash` values). Delivery rechecks
+solution revisions, `sane_hash` values). Delivery rechecks
 them; on mismatch the role reconciles or reports instead of delivering
 against stale inputs. Approved SDD and Specs remain execution authority;
 later research conflicts require a Design or Engineering update and
@@ -277,9 +284,9 @@ subagents: subagent sessions are invisible to the user and cannot sustain the
 chat loop that Pickup, Assistance, Updates, and Delivery require.
 
 Research is not a phase. It is the first support track: kickoff-able from
-any phase with no gate semantics. A phase assistant (or the user) starts a
+any phase with no approval semantics. A phase assistant (or the user) starts a
 track session for a bounded topic; the track reads SDD / Specs / jobs and
-returns evidence to its launcher. Track sessions never gate phase progress.
+returns evidence to its launcher. Track sessions never block phase progress.
 
 ### Handoff mechanism
 
@@ -305,8 +312,8 @@ target session reads the artifacts itself during Pickup:
 ```text
 From: <slot> (<session_id>) / <user> / workstream <workstream-id>
 To: <slot> (<session_id or "new">)
-Approvals: <gate name + approval_ref + sane_hash, if any>
-Revisions: research <n> report(s), sdd <hash>, solutions <name>@<hash>, foundation <id>@<rev>
+Approvals: <phase + approval_ref + sane_hash, if any>
+Revisions: research <n> report(s), sdd <hash>, solutions <name>@<hash>
 Paths: <absolute workstream path>, <artifact paths changed>
 Next action: <one sentence>
 ```
@@ -330,6 +337,14 @@ rename API. The user decides when to switch; nothing advances merely because a
 handoff was delivered.
 
 ## 4. Parallelism
+
+> QUARANTINED FOR PILOT. SANE-managed worktrees (`sane worktree`,
+> `sane merge`) are unwired from the dispatcher and untested; the code
+> stays in tree. Worktrees are OpenCode-native for the pilot: the user
+> selects/creates them in the client, the session (and its subagents, which
+> inherit its working directory) runs there, and SANE only *records* the
+> foreign path via `sane handoff --worktree-path <dir> --branch <name>`
+> so CWD auto-detection resolves it. Revisit after the pilot.
 
 One git worktree plus one branch per active execution workstream:
 
@@ -358,7 +373,7 @@ server, migration against shared data, or deployment.
 5. Merge into main with `git merge --no-ff sane/<user>/<workstream>` from a
    clean main checkout.
 6. Run main checks and smoke (typecheck + affected tests + boot check).
-7. Record `merge_commit` in the `merges` table; viewable via `sane-alpha state`.
+7. Record `merge_commit` in the `merges` table; viewable via `sane view`.
 8. Remove the worktree (`git worktree remove`) and delete the branch only
    after the merge commit is recorded.
 
@@ -393,7 +408,7 @@ server, migration against shared data, or deployment.
 - No hash enforcement yet. `approvals` records `sane_hash` (and nullable
   `git_commit`) but nothing auto-revokes on mismatch; enforcement is future
   work.
-- No Research phase. Research is a support track with no gate semantics.
+- No Research phase. Research is a support track with no approval semantics.
 
 ## Appendix A. `sane` CLI
 
@@ -402,13 +417,13 @@ A new minimal `sane` CLI carries forward v1 (`packages/workstreams`) idioms
 narrow scope. It absorbs manual in-chat tasks over time; the full manual-task
 mapping lives in chat as T0-T25.
 
-- P0: `init`, `create`, `select`, `state`, `artifact`, `pickup`, `status`.
+- P0: `init`, `create`, `select`, `view`, `provide`, `validate`, `status`.
   Bootstrap the repo, create/select a typed workstream, render state,
-  copy templates to artifact destinations, run pickup checks (including
-  `foundation_rev`), and report status.
+  provision phase starters, validate phase documents, and report status.
 - P1: approvals, research index, session registry, handoff
-  compose/send. Record `sane_hash` (+ nullable `git_commit`) on approval,
-  register and index research reports, read/update the
+  compose/send. Validate then record the phase approval (validated file
+  list + composite hash), register and index research reports, read/update
+  the
   `(repo, user, workstream, slot)` registry, and compose/send the compact
   queue-default handoff prompt.
 - P2: worktree/merge. Create the namespaced worktree and branch, then run
@@ -428,7 +443,7 @@ order:
    a. CWD inside a checkout containing `.sane/` is a main-repo context:
       repo_root is the git toplevel and the workstream is the
       `.sane/current-workstream` pointer (a missing pointer errors and names
-      the fix: run `select-workstream`).
+      the fix: run `select --name <workstream-name>` from the repository root).
    b. Otherwise the `git rev-parse --git-common-dir` main-repo candidate is
       tried: when `<candidate>/.sane` exists, its `sane.db` is matched for a
       `selections` row whose `worktree_path` equals the CWD toplevel
@@ -440,9 +455,10 @@ order:
    c. Outside any git tree, or anything else ambiguous, errors: explicit
       args required.
 
-Bare invocation is supported by `state`, `status`, `pickup`, `artifact`,
-`approve`, `research`, `handoff`, `worktree`, and `merge`. It never applies
-to `init-sane` and `install-context-packages`, nor to the new-path argument
-of `create-workstream` or the target argument of `select-workstream`, which
-keep their required signatures. Explicit positionals and `--repo-root`
-always win and behave exactly as without auto-detection.
+Bare invocation is supported by `view`, `status`, `validate`, `approve`,
+`provide`, `research`, and `handoff`, which all auto-detect the workstream
+from the current directory and take no address arguments. (`init`,
+`create`, and `select` run from the repository root with flags instead of
+address positionals.) Explicit positionals and `--repo-root` on `view`,
+`status`, `research`, and `handoff` always win and behave exactly as
+without auto-detection.

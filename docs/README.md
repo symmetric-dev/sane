@@ -39,15 +39,15 @@ dataset are explicitly deferred.
 From the SANE checkout, install the Alpha dispatcher once:
 
 ```bash
-bun alpha/scripts/install-sane-alpha.ts
+bun alpha/scripts/install-sane.ts
 ```
 
-This writes `sane-alpha` to `~/.local/bin` by default and reports the required
+This writes `sane` to `~/.local/bin` by default and reports the required
 `PATH` export when that directory is not already on `PATH`; it does not change
 shell configuration. Use `--bin-dir <path>` for another directory, `--dry-run`
 to validate without mutation, and `--overwrite` to replace a differing regular
 file. The wrapper imports this checkout by absolute path. If the checkout moves,
-run `bun alpha/scripts/install-sane-alpha.ts --overwrite` from its new location.
+run `bun alpha/scripts/install-sane.ts --overwrite` from its new location.
 See the [Pilot User Guide](./SANE_PILOT_USER_GUIDE.md) for the exposed commands
 and examples, and the [Mock Workflow](./_legacy/SANE_MOCK_WORKFLOW.md) for an end-to-end
 illustrative pilot.
@@ -101,7 +101,7 @@ Coordination Assistants will be selected and started by the user in OpenCode.
 Their global OpenCode agent configurations are installed with:
 
 ```bash
-sane-alpha install-context-packages [--dry-run] [--overwrite] [--model-config <path>]
+sane install-context-packages [--dry-run] [--overwrite] [--model-config <path>]
 ```
 
 The command installs them under:
@@ -246,7 +246,7 @@ Completed evidence lives at `research/<topic>/REPORT.md` (from
 a registered report, write a new topic instead. The registry is the
 `research_reports` table (topic, path, creation time, content hash, commit).
 
-`sane-alpha research <impl-repo> <ws-path> [--index|--register|--unregister]
+`sane research <impl-repo> <ws-path> [--index|--register|--unregister]
 [--topic <t>] [--path <p>] [--git-commit <c>] [--json]` manages the registry;
 the default `--index` prints a table with presence/status plus unregistered
 files. Only the Research Assistant reconciles the index
@@ -259,4 +259,4 @@ new, edited, or removed reports as mismatches. Research has no gates. Approved
 Design remains implementation authority: a material Research conflict requires a
 Design/Engineering update and re-approval. The retired baseline model
 (`research/BASELINE.md`, the baselines table, baseline revisions, and
-`sane-alpha baseline --record|--recheck`) no longer exists.
+`sane baseline --record|--recheck`) no longer exists.

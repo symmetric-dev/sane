@@ -1,9 +1,9 @@
 /**
- * SANE 0.2.0 M2 P0: `sane-alpha status` command.
+ * SANE 0.2.0 M2 P0: `sane status` command.
  *
  * Reports DB status for one workstream via `getWorkstreamStatus`.
  * Supports `--json` and `--repo-root` detection idioms matching existing CLIs.
- * Read-only; state is viewed via `sane-alpha state`, never written to disk.
+ * Read-only; full state is viewed via `sane view`, never written to disk.
  *
  * New file only (M2 wiring P0).
  */
@@ -27,7 +27,7 @@ export interface SaneStatusCommandOptions {
 }
 
 export const USAGE =
-  "Usage: sane-alpha status [<implementation-repository> <workstream-relative-path>] [--json] [--repo-root <path>] (no positionals: auto-detect the target from the current directory)"
+  "Usage: sane status [<implementation-repository> <workstream-relative-path>] [--json] [--repo-root <path>] (no positionals: auto-detect the target from the current directory)"
 
 export function parseCliArguments(args: string[]): {
   implementationRepository: string
@@ -118,17 +118,13 @@ export async function runSaneStatusCommand(options: SaneStatusCommandOptions): P
             repo_root: status.repoRoot,
             user: status.user,
             workstream_id: status.workstreamId,
-            scope: status.workstream.scope,
-            status: status.workstream.status,
-            foundation_rev: status.workstream.foundation_rev,
             phases: status.phases.map((entry) => ({
               phase: entry.phase,
               status: entry.status,
-              owner_role: entry.owner_role,
               approval_ref: entry.approval_ref,
             })),
             approvals: status.approvals.map((approval) => ({
-              gate: approval.gate,
+              phase: approval.phase,
               artifact_path: approval.artifact_path,
               sane_hash: approval.sane_hash,
               approval_ref: approval.approval_ref,
@@ -155,11 +151,15 @@ export async function runSaneStatusCommand(options: SaneStatusCommandOptions): P
       return
     }
     write(`workstream: ${status.workstreamId}`)
-    write(`status: ${status.workstream.status}`)
-    write(`scope: ${status.workstream.scope}`)
-    write(`foundation_rev: ${status.workstream.foundation_rev ?? "(none)"}`)
     for (const entry of status.phases) {
-      write(`phase ${entry.phase}: ${entry.status} (owner ${entry.owner_role})`)
+      write(`phase ${entry.phase}: ${entry.status}`)
+    }
+    if (status.approvals.length === 0) {
+      write(`approvals: (none)`)
+    } else {
+      write(
+        `approvals: ${status.approvals.map((approval) => `${approval.phase}=${approval.approval_ref}`).join(", ")}`,
+      )
     }
     if (status.researchReports.length === 0) {
       write(`research: (no research registered)`)

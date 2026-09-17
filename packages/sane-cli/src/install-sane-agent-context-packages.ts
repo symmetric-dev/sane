@@ -230,7 +230,7 @@ export async function installSaneAgentContextPackages(
 }
 
 export const USAGE =
-  "Usage: sane-alpha install-context-packages [--dry-run] [--overwrite] [--model-config <path>]"
+  "Usage: sane install context-packages [--dry-run] [--overwrite] [--model-config <path>]"
 
 export function parseCliArguments(args: string[]): { dryRun: boolean; overwrite: boolean; modelConfigPath?: string } {
   let dryRun = false

@@ -34,7 +34,7 @@ needs an approved Design update first.
 
 TODO: plan package complete (every job has exactly one matching spec).
 Gate 3 (plan package) requires explicit user approval via
-`sane-alpha approve --gate plan ...`. Approval authorizes the Jobs but does not
+`sane approve --gate plan ...`. Approval authorizes the Jobs but does not
 start execution. Hand off to the Execution Assistant.
 
 ## Approval and Boundaries

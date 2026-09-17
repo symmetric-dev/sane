@@ -1,16 +1,13 @@
 /**
- * SANE 0.2.0 M2 P0: workstream status + pickup checks (docs/SANE_0_2_0.md Sec 2).
+ * SANE workstream status + pickup checks (docs/SANE_0_2_0.md Sec 2).
  *
  * `sqlite` at `<repo>/.sane/sane.db` is the source of truth; markdown files are
  * renders. This module reads the DB plus workstream files to report status and
  * to run pickup precondition checks:
- * - `foundation_rev` declared precondition missing/superseded -> throw.
  * - Research index: registered reports present and unmodified, unregistered
  *   report files surfaced (warnings only).
- * - SDD/solutions `sane_hash` current vs approved (reported, never auto-revoked
- *   per Explicit Non-Goals; mismatches are warnings, not throws).
- *
- * New file only (M2 wiring P0); does not modify M1 validation.
+ * - design/SDD.md + design/solutions `sane_hash` current vs approved (reported,
+ *   never auto-revoked per Explicit Non-Goals; mismatches are warnings, not throws).
  */
 import type { Database } from "bun:sqlite"
 import { lstat, mkdir, readdir, readFile, writeFile } from "node:fs/promises"
@@ -26,7 +23,6 @@ import {
   listResearchReports,
   listSelections,
   listStateEntries,
-  normalizeWorkstreamId,
   type ApprovalRow,
   type JobRow,
   type MergeRow,
@@ -112,15 +108,6 @@ export function getWorkstreamStatus(db: Database, identity: SaneIdentity): Works
 // runPickupChecks
 // ---------------------------------------------------------------------------
 
-export type FoundationCheckStatus = "none" | "ok" | "missing" | "superseded"
-
-export interface PickupFoundationCheck {
-  rev: string | null
-  referencedId: string | null
-  declaredRev: string | null
-  status: FoundationCheckStatus
-}
-
 export interface PickupResearchCheck {
   reports: IndexedResearchReport[]
   unregisteredFiles: string[]
@@ -141,39 +128,11 @@ export interface PickupCheckResult {
   user: string
   workstreamId: string
   workstreamDir: string
-  foundation: PickupFoundationCheck
   research: PickupResearchCheck
   sdd: PickupFileHash
   solutions: PickupFileHash[]
   warnings: string[]
   ok: boolean
-}
-
-function parseFoundationRev(
-  foundationRev: string,
-): { referencedId: string; declaredRev: string } {
-  const at = foundationRev.lastIndexOf("@")
-  if (at <= 0 || at === foundationRev.length - 1) {
-    throw new SaneWorkstreamStateError(
-      `Invalid foundation_rev ${JSON.stringify(foundationRev)}. Expected "<workstream-id>@<revision>".`,
-    )
-  }
-  const referencedId = foundationRev.slice(0, at)
-  const declaredRev = foundationRev.slice(at + 1)
-  // Re-validate the referenced id so traversal cannot bypass DB key checks.
-  try {
-    normalizeWorkstreamId(referencedId)
-  } catch (error) {
-    throw new SaneWorkstreamStateError(
-      `Invalid foundation_rev ${JSON.stringify(foundationRev)}: ${(error as Error).message}`,
-    )
-  }
-  if (!declaredRev.trim()) {
-    throw new SaneWorkstreamStateError(
-      `Invalid foundation_rev ${JSON.stringify(foundationRev)}. Expected "<workstream-id>@<revision>".`,
-    )
-  }
-  return { referencedId, declaredRev }
 }
 
 async function hashExistingFile(path: string): Promise<string | null> {
@@ -189,68 +148,26 @@ async function hashExistingFile(path: string): Promise<string | null> {
 /**
  * Run pickup precondition checks for one workstream.
  *
- * - Foundation: when `workstreams.foundation_rev` is set, the referenced
- *   foundation workstream row must exist for the same `(repo_root, user)`
- *   (otherwise throw "missing"); when that foundation has a recorded
- *   `merges.merge_commit` differing from the declared revision, throw
- *   "superseded" until the user re-confirms. `NULL` means no precondition.
  * - Research index: registered reports present and unmodified, unregistered
  *   report files surfaced (warnings only).
  * - SDD/solutions: compares current file `sane_hash` values against the
  *   `approvals` rows for gates `root-plus-sdd`/`solutions` (warnings only;
  *   no auto-revoke per Explicit Non-Goals).
  *
- * Throws `SaneWorkstreamStateError` for missing workstream rows and for
- * foundation missing/superseded. All other divergences are returned as
- * `warnings` with `ok: false`.
+ * Throws `SaneWorkstreamStateError` for missing workstream rows.
+ * All other divergences are returned as `warnings` with `ok: false`.
  */
 export async function runPickupChecks(
   db: Database,
   identity: SaneIdentity,
   workstreamDir: string,
 ): Promise<PickupCheckResult> {
-  const workstream = getWorkstream(db, identity)
-  if (!workstream) {
+  if (!getWorkstream(db, identity)) {
     throw new SaneWorkstreamStateError(
       `No workstream row for repo_root=${JSON.stringify(identity.repoRoot)} user=${JSON.stringify(identity.user)} workstream_id=${JSON.stringify(identity.workstreamId)}.`,
     )
   }
   const warnings: string[] = []
-
-  // --- Foundation precondition (throwing) ---
-  let foundation: PickupFoundationCheck
-  if (workstream.foundation_rev === null || workstream.foundation_rev === undefined) {
-    foundation = { rev: null, referencedId: null, declaredRev: null, status: "none" }
-  } else {
-    const { referencedId, declaredRev } = parseFoundationRev(workstream.foundation_rev)
-    const referencedIdentity: SaneIdentity = {
-      repoRoot: identity.repoRoot,
-      user: identity.user,
-      workstreamId: referencedId,
-    }
-    const referenced = getWorkstream(db, referencedIdentity)
-    if (!referenced) {
-      throw new SaneWorkstreamStateError(
-        `foundation precondition missing: ${JSON.stringify(workstream.foundation_rev)} references unknown workstream ${JSON.stringify(referencedId)} for user ${JSON.stringify(identity.user)}.`,
-      )
-    }
-    const foundationMerge = getMerge(db, referencedIdentity)
-    if (
-      foundationMerge?.merge_commit !== null &&
-      foundationMerge?.merge_commit !== undefined &&
-      foundationMerge.merge_commit !== declaredRev
-    ) {
-      throw new SaneWorkstreamStateError(
-        `foundation precondition superseded: declared ${JSON.stringify(workstream.foundation_rev)} but foundation ${JSON.stringify(referencedId)} merge_commit is ${JSON.stringify(foundationMerge.merge_commit)}. Re-confirm foundation_rev.`,
-      )
-    }
-    foundation = {
-      rev: workstream.foundation_rev,
-      referencedId,
-      declaredRev,
-      status: "ok",
-    }
-  }
 
   // --- Research index (warnings) ---
   const researchIndex = await recheckResearchIndex(db, identity, workstreamDir)
@@ -261,24 +178,24 @@ export async function runPickupChecks(
   }
 
   // --- SDD sane_hash (warnings) ---
-  const sddPath = join(workstreamDir, "SDD.md")
+  const sddPath = join(workstreamDir, "design", "SDD.md")
   const sddExists = await fileExists(sddPath)
   const sddCurrentHash = sddExists ? await hashExistingFile(sddPath) : null
-  const sddApproval = getApproval(db, identity, "root-plus-sdd")
+  const sddApproval = getApproval(db, identity, "design")
   let sddMatch: boolean | null = null
   if (sddApproval && sddCurrentHash !== null) {
     sddMatch = sddCurrentHash === sddApproval.sane_hash
     if (!sddMatch) {
       warnings.push(
-        `SDD.md hash ${sddCurrentHash.slice(0, 12)}… differs from approved ${sddApproval.sane_hash.slice(0, 12)}… (gate root-plus-sdd); re-approval required before Planning/Execution follows new direction`,
+        `design/SDD.md hash ${sddCurrentHash.slice(0, 12)}… differs from approved ${sddApproval.sane_hash.slice(0, 12)}… (phase design); re-approval required before Planning/Execution follows new direction`,
       )
     }
   } else if (!sddExists) {
-    warnings.push(`SDD.md missing: ${sddPath}`)
+    warnings.push(`design/SDD.md missing: ${sddPath}`)
   }
   const sdd: PickupFileHash = {
     path: sddPath,
-    relativePath: "SDD.md",
+    relativePath: "design/SDD.md",
     fileExists: sddExists,
     currentHash: sddCurrentHash,
     approvedHash: sddApproval?.sane_hash ?? null,
@@ -287,8 +204,8 @@ export async function runPickupChecks(
   }
 
   // --- Solutions sane_hash (warnings) ---
-  const solutionsDir = join(workstreamDir, "solutions")
-  const solutionsApproval = getApproval(db, identity, "solutions")
+  const solutionsDir = join(workstreamDir, "design", "solutions")
+  const solutionsApproval = getApproval(db, identity, "engineering")
   const solutions: PickupFileHash[] = []
   if (await dirExists(solutionsDir)) {
     let entries: string[] = []
@@ -309,7 +226,7 @@ export async function runPickupChecks(
       }
       solutions.push({
         path: full,
-        relativePath: `solutions/${name}`,
+        relativePath: `design/solutions/${name}`,
         fileExists: true,
         currentHash,
         approvedHash: solutionsApproval?.sane_hash ?? null,
@@ -322,9 +239,9 @@ export async function runPickupChecks(
     const anyMatch = solutions.some((entry) => entry.match === true)
     if (!anyMatch) {
       warnings.push(
-        `solutions hash differs from approved ${solutionsApproval.sane_hash.slice(0, 12)}… (gate solutions); re-approval required before Planning/Execution follows new direction`,
+        `solutions hash differs from approved ${solutionsApproval.sane_hash.slice(0, 12)}… (phase engineering); re-approval required before Planning/Execution follows new direction`,
       )
-      // Mark each as non-matching for clarity when a single gate hash exists.
+      // Mark each as non-matching for clarity when a single phase hash exists.
       for (const entry of solutions) {
         if (entry.match === null) continue
         entry.match = false
@@ -340,7 +257,6 @@ export async function runPickupChecks(
     user: identity.user,
     workstreamId: identity.workstreamId,
     workstreamDir,
-    foundation,
     research,
     sdd,
     solutions,
@@ -462,8 +378,6 @@ export interface PickupRevisionSnapshot {
   sddApprovedHash: string | null
   solutionHashes: Record<string, string | null>
   solutionsApprovedHash: string | null
-  foundationRev: string | null
-  foundationMergeCommit: string | null
   approvalHashes: Record<string, string>
   reports: PickupRevisionSnapshotReport[]
   unregisteredFiles: string[]
@@ -482,7 +396,7 @@ export interface RecordPickupRevisionsOptions {
 async function collectSolutionHashes(
   workstreamDir: string,
 ): Promise<Record<string, string | null>> {
-  const solutionsDir = join(workstreamDir, "solutions")
+  const solutionsDir = join(workstreamDir, "design", "solutions")
   const hashes: Record<string, string | null> = {}
   if (!(await dirExists(solutionsDir))) return hashes
   let entries: string[] = []
@@ -495,41 +409,14 @@ async function collectSolutionHashes(
   for (const name of entries) {
     const full = join(solutionsDir, name)
     if (!(await fileExists(full))) continue
-    hashes[`solutions/${name}`] = await hashExistingFile(full)
+    hashes[`design/solutions/${name}`] = await hashExistingFile(full)
   }
   return hashes
 }
 
-function readFoundationMergeCommit(
-  db: Database,
-  identity: SaneIdentity,
-  foundationRev: string | null,
-): string | null {
-  if (foundationRev === null) return null
-  const at = foundationRev.lastIndexOf("@")
-  if (at <= 0 || at === foundationRev.length - 1) return null
-  const referencedId = foundationRev.slice(0, at)
-  let normalized: string
-  try {
-    normalized = normalizeWorkstreamId(referencedId)
-  } catch {
-    return null
-  }
-  const referencedIdentity: SaneIdentity = {
-    repoRoot: identity.repoRoot,
-    user: identity.user,
-    workstreamId: normalized,
-  }
-  try {
-    return getMerge(db, referencedIdentity)?.merge_commit ?? null
-  } catch {
-    return null
-  }
-}
-
 /**
- * Snapshot SDD hash + solution hashes + `foundation_rev`
- * (+ foundation merge commit) + approval hashes + research report hashes.
+ * Snapshot SDD hash + solution hashes + approval hashes + research report
+ * hashes.
  *
  * Persistence: when `options.sidecarPath` is set, the snapshot is written as
  * formatted JSON to that sidecar file. A future `pickup_revisions` DB table
@@ -543,17 +430,16 @@ export async function recordPickupRevisions(
   workstreamDir: string,
   options?: RecordPickupRevisionsOptions,
 ): Promise<PickupRevisionSnapshot> {
-  const workstream = getWorkstream(db, identity)
-  if (!workstream) {
+  if (!getWorkstream(db, identity)) {
     throw new SaneWorkstreamStateError(
       `No workstream row for repo_root=${JSON.stringify(identity.repoRoot)} user=${JSON.stringify(identity.user)} workstream_id=${JSON.stringify(identity.workstreamId)}.`,
     )
   }
-  const sddHash = await hashExistingFile(join(workstreamDir, "SDD.md"))
+  const sddHash = await hashExistingFile(join(workstreamDir, "design", "SDD.md"))
   const solutionHashes = await collectSolutionHashes(workstreamDir)
   const approvals = listApprovals(db, identity)
   const approvalHashes: Record<string, string> = {}
-  for (const approval of approvals) approvalHashes[approval.gate] = approval.sane_hash
+  for (const approval of approvals) approvalHashes[approval.phase] = approval.sane_hash
   const researchIndex = await recheckResearchIndex(db, identity, workstreamDir)
   const reports = researchIndex.reports.map((report) => ({
     topic: report.topic,
@@ -561,18 +447,15 @@ export async function recordPickupRevisions(
     currentHash: report.currentHash,
     path: report.path,
   }))
-  const foundationRev = workstream.foundation_rev ?? null
   const snapshot: PickupRevisionSnapshot = {
     repoRoot: identity.repoRoot,
     user: identity.user,
     workstreamId: identity.workstreamId,
     recordedAt: options?.recordedAt ?? new Date().toISOString(),
     sddHash,
-    sddApprovedHash: approvalHashes["root-plus-sdd"] ?? null,
+    sddApprovedHash: approvalHashes["design"] ?? null,
     solutionHashes,
-    solutionsApprovedHash: approvalHashes["solutions"] ?? null,
-    foundationRev,
-    foundationMergeCommit: readFoundationMergeCommit(db, identity, foundationRev),
+    solutionsApprovedHash: approvalHashes["engineering"] ?? null,
     approvalHashes,
     reports,
     unregisteredFiles: researchIndex.unregisteredFiles,
@@ -601,7 +484,6 @@ export async function recordPickupRevisions(
 export type DeliveryMismatchKind =
   | "sdd"
   | "solutions"
-  | "foundation"
   | "research"
   | "approvals"
 
@@ -632,8 +514,6 @@ function normalizeSnapshotInput(snapshot: PickupRevisionSnapshot): PickupRevisio
     sddApprovedHash: snapshot.sddApprovedHash ?? null,
     solutionHashes: snapshot.solutionHashes ?? {},
     solutionsApprovedHash: snapshot.solutionsApprovedHash ?? null,
-    foundationRev: snapshot.foundationRev ?? null,
-    foundationMergeCommit: snapshot.foundationMergeCommit ?? null,
     approvalHashes: snapshot.approvalHashes ?? {},
     reports: Array.isArray(snapshot.reports)
       ? snapshot.reports.map((report) => ({
@@ -682,7 +562,7 @@ export async function verifyDeliveryFreshness(
   if ((snapshot.sddHash ?? null) !== (current.sddHash ?? null)) {
     mismatches.push({
       kind: "sdd",
-      message: `SDD.md hash changed since pickup: pickup ${snapshot.sddHash ?? "(missing)"} vs current ${current.sddHash ?? "(missing)"}. Approved SDD remains authority; reconcile or report instead of delivering stale.`,
+      message: `design/SDD.md hash changed since pickup: pickup ${snapshot.sddHash ?? "(missing)"} vs current ${current.sddHash ?? "(missing)"}. Approved SDD remains authority; reconcile or report instead of delivering stale.`,
     })
   }
 
@@ -701,19 +581,6 @@ export async function verifyDeliveryFreshness(
         })
       }
     }
-  }
-
-  if ((snapshot.foundationRev ?? null) !== (current.foundationRev ?? null)) {
-    mismatches.push({
-      kind: "foundation",
-      message: `foundation_rev changed since pickup: pickup ${JSON.stringify(snapshot.foundationRev)} vs current ${JSON.stringify(current.foundationRev)}. Re-confirm the foundation precondition.`,
-    })
-  }
-  if ((snapshot.foundationMergeCommit ?? null) !== (current.foundationMergeCommit ?? null)) {
-    mismatches.push({
-      kind: "foundation",
-      message: `foundation superseded since pickup: pickup merge_commit ${JSON.stringify(snapshot.foundationMergeCommit)} vs current ${JSON.stringify(current.foundationMergeCommit)} for ${JSON.stringify(current.foundationRev)}. Re-confirm foundation_rev before delivery.`,
-    })
   }
 
   {
@@ -791,17 +658,17 @@ export async function verifyDeliveryFreshness(
   }
 
   {
-    const gates = new Set([
+    const phases = new Set([
       ...Object.keys(snapshot.approvalHashes),
       ...Object.keys(current.approvalHashes),
     ])
-    for (const gate of [...gates].sort()) {
-      const before = snapshot.approvalHashes[gate] ?? null
-      const after = current.approvalHashes[gate] ?? null
+    for (const phase of [...phases].sort()) {
+      const before = snapshot.approvalHashes[phase] ?? null
+      const after = current.approvalHashes[phase] ?? null
       if (before !== after) {
         mismatches.push({
           kind: "approvals",
-          message: `approval ${JSON.stringify(gate)} hash changed since pickup: pickup ${before ?? "(missing)"} vs current ${after ?? "(missing)"}. Approved artifacts remain authority; re-approval required before following the new direction.`,
+          message: `approval ${JSON.stringify(phase)} hash changed since pickup: pickup ${before ?? "(missing)"} vs current ${after ?? "(missing)"}. Approved artifacts remain authority; re-approval required before following the new direction.`,
         })
       }
     }

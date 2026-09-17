@@ -67,11 +67,7 @@ export async function createSaneRepositoryWorkstream(options: CreateRepositoryWo
       upsertWorkstream(
         db,
         identity,
-        {
-          scope: `${workstreamType} workstream ${identity.workstreamId}`,
-          status: "open",
-          foundationRev: null,
-        },
+        { type: workstreamType, status: "open" },
         mutation,
       )
       for (const phase of PHASES) {
@@ -93,12 +89,12 @@ export async function createSaneRepositoryWorkstream(options: CreateRepositoryWo
   return { dryRun: result.dryRun, relativePath: workstream.relativePath }
 }
 
-export const USAGE = "Usage: sane-alpha create-workstream <implementation-repository> <workstream-relative-path> --type <feature|foundation|issue|maintenance> [--dry-run]"
+export const USAGE = "Usage: sane create --name <workstream-name> --type <feature|foundation|issue|maintenance> [--dry-run] (run from the repository root)"
 
 export function parseCliArguments(args: string[]): { implementationRepository: string; workstreamPath: string; type: string; dryRun: boolean } {
   let dryRun = false
   let type: string | undefined
-  const positional: string[] = []
+  let name: string | undefined
   let parseOptions = true
   for (let index = 0; index < args.length; index += 1) {
     const argument = args[index]!
@@ -116,14 +112,19 @@ export function parseCliArguments(args: string[]): { implementationRepository: s
       }
       index += 1
     }
+    else if (parseOptions && argument === "--name") {
+      const value = args[index + 1]
+      if (!value || value.startsWith("-")) throw new SaneRepositoryError("Option --name requires a value.")
+      if (name) throw new SaneRepositoryError("Option --name may be provided only once.")
+      name = value
+      index += 1
+    }
     else if (parseOptions && argument.startsWith("-")) throw new SaneRepositoryError(`Unknown option: ${argument}`)
-    else positional.push(argument)
+    else throw new SaneRepositoryError("This command takes no positional arguments. Pass --name <workstream-name>.")
   }
-  if (positional.length !== 2 || !positional[0] || !positional[1]) {
-    throw new SaneRepositoryError("Provide an implementation repository and workstream relative path.")
-  }
+  if (!name) throw new SaneRepositoryError("Option --name is required.")
   if (!type) throw new SaneRepositoryError("Option --type is required.")
-  return { implementationRepository: positional[0], workstreamPath: positional[1], type, dryRun }
+  return { implementationRepository: process.cwd(), workstreamPath: name, type, dryRun }
 }
 
 export async function runCli(args: string[]): Promise<number> {

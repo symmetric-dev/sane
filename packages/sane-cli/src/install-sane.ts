@@ -4,7 +4,7 @@ import { delimiter, dirname, join, resolve } from "node:path"
 import { fileURLToPath, pathToFileURL } from "node:url"
 
 export const DEFAULT_SOURCE_ROOT = fileURLToPath(new URL("../../../", import.meta.url))
-export const COMMAND_FILENAME = "sane-alpha"
+export const COMMAND_FILENAME = "sane"
 
 export class SaneAlphaInstallationError extends Error {
   constructor(message: string) {
@@ -16,7 +16,7 @@ export class SaneAlphaInstallationError extends Error {
 export interface SaneAlphaInstallationOptions {
   /** Enables isolated tests and an explicitly configured local SANE home. */
   homeDirectory?: string
-  /** Root of the Alpha checkout containing bin/sane-alpha.ts. */
+  /** Root of the Alpha checkout containing bin/sane.ts. */
   sourceRoot?: string
   /** User-owned directory in which the managed command is installed. */
   binDirectory?: string
@@ -96,7 +96,7 @@ function isOnPath(binDirectory: string, pathEnvironment: string | undefined): bo
 
 /**
  * Install a generated Bun wrapper that imports the dispatcher by absolute file
- * URL. This keeps `sane-alpha` tied to its checkout rather than the caller's
+ * URL. This keeps `sane` tied to its checkout rather than the caller's
  * working directory. All validation completes before any directory or file is
  * changed.
  */
@@ -106,7 +106,7 @@ export async function installSaneAlpha(
   const write = options.write ?? console.log
   const homeDirectory = resolveHomeDirectory(options.homeDirectory)
   const sourceRoot = resolve(options.sourceRoot ?? DEFAULT_SOURCE_ROOT)
-  const sourceCommand = join(sourceRoot, "bin", "sane-alpha.ts")
+  const sourceCommand = join(sourceRoot, "bin", "sane.ts")
   const binDirectory = resolveBinDirectory(options, homeDirectory)
   const destination = join(binDirectory, COMMAND_FILENAME)
 
@@ -156,12 +156,12 @@ export async function installSaneAlpha(
   }
   write(result.pathConfigured
     ? `PATH includes ${binDirectory}`
-    : `Add this directory to PATH to use sane-alpha: export PATH="${binDirectory}:$PATH"`)
+    : `Add this directory to PATH to use sane: export PATH="${binDirectory}:$PATH"`)
   return result
 }
 
 export const USAGE =
-  "Usage: bun alpha/packages/sane-cli/src/install-sane-alpha.ts [--bin-dir <path>] [--dry-run] [--overwrite]"
+  "Usage: bun alpha/packages/sane-cli/src/install-sane.ts [--bin-dir <path>] [--dry-run] [--overwrite]"
 
 export function parseCliArguments(args: string[]): {
   binDirectory?: string

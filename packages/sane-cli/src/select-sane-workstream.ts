@@ -4,6 +4,7 @@ import {
   resolveSaneRepository,
   writeCurrentWorkstream,
 } from "./sane-repository.ts"
+import { getWorkstream, initSchema, openSaneDb, resolveSaneIdentity } from "./sane-db.ts"
 
 export interface SelectWorkstreamOptions {
   implementationRepository: string
@@ -16,6 +17,31 @@ export async function selectSaneWorkstream(options: SelectWorkstreamOptions): Pr
   const write = options.write ?? console.log
   const pointer = await resolveSaneRepository(options.implementationRepository)
   const workstream = await resolveBootstrappedWorkstream(pointer.workstreamsRoot, options.workstreamPath)
+  const identity = await resolveSaneIdentity(
+    pointer.implementationRepository,
+    workstream.relativePath,
+  )
+  const db = await openSaneDb(pointer.implementationRepository)
+  try {
+    initSchema(db)
+    const dbRow = getWorkstream(db, identity)
+    if (!dbRow) {
+      throw new SaneRepositoryError(
+        `No workstream row for ${identity.workstreamId} (repo ${identity.repoRoot} user ${identity.user}). Re-create the workstream so its type is recorded in sqlite.`,
+      )
+    }
+    if (dbRow.type !== workstream.type) {
+      throw new SaneRepositoryError(
+        `Workstream type mismatch: sqlite has type "${dbRow.type}" but the filesystem root doc implies "${workstream.type}". Re-create the workstream or fix the root doc.`,
+      )
+    }
+  } finally {
+    try {
+      db.close()
+    } catch {
+      // Best effort.
+    }
+  }
   if (options.dryRun) {
     write("Dry run: no files were modified.")
     write(`Planned: select ${workstream.relativePath}`)
@@ -26,22 +52,28 @@ export async function selectSaneWorkstream(options: SelectWorkstreamOptions): Pr
   return { dryRun: false, relativePath: workstream.relativePath }
 }
 
-export const USAGE = "Usage: sane-alpha select-workstream <implementation-repository> <workstream-relative-path> [--dry-run]"
+export const USAGE = "Usage: sane select --name <workstream-name> [--dry-run] (run from the repository root)"
 
 export function parseCliArguments(args: string[]): { implementationRepository: string; workstreamPath: string; dryRun: boolean } {
   let dryRun = false
-  const positional: string[] = []
+  let name: string | undefined
   let parseOptions = true
-  for (const argument of args) {
+  for (let index = 0; index < args.length; index += 1) {
+    const argument = args[index]!
     if (parseOptions && argument === "--") parseOptions = false
     else if (parseOptions && argument === "--dry-run") dryRun = true
+    else if (parseOptions && argument === "--name") {
+      const value = args[index + 1]
+      if (!value || value.startsWith("-")) throw new SaneRepositoryError("Option --name requires a value.")
+      if (name) throw new SaneRepositoryError("Option --name may be provided only once.")
+      name = value
+      index += 1
+    }
     else if (parseOptions && argument.startsWith("-")) throw new SaneRepositoryError(`Unknown option: ${argument}`)
-    else positional.push(argument)
+    else throw new SaneRepositoryError("This command takes no positional arguments. Pass --name <workstream-name>.")
   }
-  if (positional.length !== 2 || !positional[0] || !positional[1]) {
-    throw new SaneRepositoryError("Provide an implementation repository and workstream relative path.")
-  }
-  return { implementationRepository: positional[0], workstreamPath: positional[1], dryRun }
+  if (!name) throw new SaneRepositoryError("Option --name is required.")
+  return { implementationRepository: process.cwd(), workstreamPath: name, dryRun }
 }
 
 export async function runCli(args: string[]): Promise<number> {

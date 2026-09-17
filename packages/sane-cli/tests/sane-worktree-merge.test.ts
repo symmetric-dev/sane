@@ -50,7 +50,11 @@ import {
 
 const execFileAsync = promisify(execFile)
 
-describe("sane worktree + merge (M5 Sec 4)", () => {
+// QUARANTINED FOR PILOT: SANE-managed worktrees are disabled (see
+// docs/SANE_0_2_0.md Section 4 and bin/sane.ts). This suite is skipped,
+// not deleted; re-enable by restoring `describe` once the pilot decides the
+// OpenCode-native worktree workflow.
+describe.skip("sane worktree + merge (M5 Sec 4)", () => {
   let tempDirectory: string
   let repo: string
 
@@ -548,7 +552,7 @@ describe("sane worktree + merge (M5 Sec 4)", () => {
     expect(() => parseWorktreeArgs([repo, "01-demo", "--create", "--force"])).toThrow(
       /--force applies only to --remove/,
     )
-    expect(WORKTREE_USAGE).toContain("sane-alpha worktree")
+    expect(WORKTREE_USAGE).toContain("sane worktree")
     expect(WORKTREE_USAGE).toContain("--create")
     expect(WORKTREE_USAGE).toContain("--remove")
     expect(WORKTREE_USAGE).toContain("--json")
@@ -576,7 +580,7 @@ describe("sane worktree + merge (M5 Sec 4)", () => {
       /exactly one of/,
     )
     expect(() => parseMergeArgs([repo, "01-demo", "--bogus"])).toThrow(/Unknown option/)
-    expect(MERGE_USAGE).toContain("sane-alpha merge")
+    expect(MERGE_USAGE).toContain("sane merge")
     expect(MERGE_USAGE).toContain("--rebase")
     expect(MERGE_USAGE).toContain("--no-ff")
     expect(MERGE_USAGE).toContain("--record")

@@ -1,11 +1,11 @@
 {
-  "name": "sane-alpha",
+  "name": "sane",
   "version": "0.1.0",
   "private": true,
   "type": "module",
   "workspaces": ["packages/*"],
   "bin": {
-    "sane-alpha": "./bin/sane-alpha.ts"
+    "sane": "./bin/sane.ts"
   },
   "scripts": {
     "test": "bun test",

@@ -1,5 +1,5 @@
 /**
- * SANE 0.2.0 M4: session registry + handoff (`sane-alpha handoff`).
+ * SANE 0.2.0 M4: session registry + handoff (`sane handoff`).
  *
  * Docs: `docs/SANE_0_2_0.md` Section 3 (Session Flow).
  *
@@ -21,7 +21,7 @@
  *
  * New file only (M4). Read-only use of `sane-db.ts` selections CRUD
  * (`upsertSelection`/`getSelection`); no schema refactor. Does not touch
- * `bin/sane-alpha.ts` (integrator wires), worktree/merge files,
+ * `bin/sane.ts` (integrator wires), worktree/merge files,
  * `templates/`, or agents/skills.
  */
 
@@ -120,7 +120,7 @@ function assertSlot(slot: string): void {
 // ---------------------------------------------------------------------------
 
 export interface HandoffApprovalRef {
-  gate: string
+  phase: string
   approvalRef: string
   saneHash: string
 }
@@ -142,7 +142,7 @@ function isApprovalRef(value: unknown): value is HandoffApprovalRef {
   if (typeof value !== "object" || value === null) return false
   const record = value as Record<string, unknown>
   return (
-    typeof record["gate"] === "string" &&
+    typeof record["phase"] === "string" &&
     typeof record["approvalRef"] === "string" &&
     typeof record["saneHash"] === "string"
   )
@@ -161,7 +161,7 @@ function formatApprovals(value: ComposeHandoffInput["approvals"]): string {
       const trimmed = entry.trim()
       if (trimmed !== "") parts.push(trimmed)
     } else if (isApprovalRef(entry)) {
-      parts.push(`${entry.gate} ${entry.approvalRef} ${entry.saneHash}`)
+      parts.push(`${entry.phase} ${entry.approvalRef} ${entry.saneHash}`)
     } else {
       parts.push(String(entry).trim())
     }
@@ -469,7 +469,7 @@ export async function renameReady(input: RenameReadyInput): Promise<RenameReadyR
 }
 
 // ---------------------------------------------------------------------------
-// CLI: sane-alpha handoff
+// CLI: sane handoff
 // ---------------------------------------------------------------------------
 
 export interface SaneHandoffCommandOptions {
@@ -486,6 +486,8 @@ export interface SaneHandoffCommandOptions {
   pathsOverride?: string
   json?: boolean
   userOverride?: string
+  worktreePath?: string | null
+  branch?: string | null
   fetchImpl?: HandoffFetch
   write?: (line: string) => void
 }
@@ -516,11 +518,13 @@ export interface ParsedHandoffArguments {
   approvalsOverride: string | undefined
   revisionsOverride: string | undefined
   pathsOverride: string | undefined
+  worktreePath: string | undefined
+  branch: string | undefined
   json: boolean
 }
 
 export const USAGE =
-  "Usage: sane-alpha handoff [<implementation-repository> <workstream-relative-path>] --from <slot> --to <slot> --next <action> [--steer-reason <user-redirect|execution-abort>] [--server-url <url>] [--from-session <id>] [--approvals <refs>] [--revisions <refs>] [--paths <refs>] [--json] [--repo-root <path>] (no positionals: auto-detect the target from the current directory)"
+  "Usage: sane handoff [<implementation-repository> <workstream-relative-path>] --from <slot> --to <slot> --next <action> [--steer-reason <user-redirect|execution-abort>] [--server-url <url>] [--from-session <id>] [--approvals <refs>] [--revisions <refs>] [--paths <refs>] [--worktree-path <dir>] [--branch <name>] [--json] [--repo-root <path>] (no positionals: auto-detect the target from the current directory)"
 
 function requireOptionValue(args: string[], index: number, option: string): string {
   const value = args[index + 1]
@@ -546,6 +550,8 @@ export function parseCliArguments(args: string[]): ParsedHandoffArguments {
   let approvalsOverride: string | undefined
   let revisionsOverride: string | undefined
   let pathsOverride: string | undefined
+  let worktreePath: string | undefined
+  let branch: string | undefined
   const positional: string[] = []
   let parseOptions = true
 
@@ -590,6 +596,14 @@ export function parseCliArguments(args: string[]): ParsedHandoffArguments {
     } else if (parseOptions && argument === "--paths") {
       assertSingleOption(pathsOverride, "--paths")
       pathsOverride = requireOptionValue(args, index, "--paths")
+      index += 1
+    } else if (parseOptions && argument === "--worktree-path") {
+      assertSingleOption(worktreePath, "--worktree-path")
+      worktreePath = requireOptionValue(args, index, "--worktree-path")
+      index += 1
+    } else if (parseOptions && argument === "--branch") {
+      assertSingleOption(branch, "--branch")
+      branch = requireOptionValue(args, index, "--branch")
       index += 1
     } else if (parseOptions && argument === "--repo-root") {
       const value = args[index + 1]
@@ -680,6 +694,8 @@ export function parseCliArguments(args: string[]): ParsedHandoffArguments {
     approvalsOverride,
     revisionsOverride,
     pathsOverride,
+    worktreePath,
+    branch,
     json,
   }
 }
@@ -687,7 +703,7 @@ export function parseCliArguments(args: string[]): ParsedHandoffArguments {
 function collectApprovalRefs(db: Database, identity: SaneIdentity): string {
   const rows = listApprovals(db, identity)
   if (rows.length === 0) return "(none)"
-  return rows.map((row) => `${row.gate} ${row.approval_ref} ${row.sane_hash}`).join(", ")
+  return rows.map((row) => `${row.phase} ${row.approval_ref} ${row.sane_hash}`).join(", ")
 }
 
 function collectRevisionRefs(
@@ -697,12 +713,11 @@ function collectRevisionRefs(
   const parts: string[] = []
   const reports = listResearchReports(db, identity)
   if (reports.length > 0) parts.push(`research ${reports.length} report(s)`)
-  const workstream = getWorkstream(db, identity)
-  if (workstream?.foundation_rev) parts.push(`foundation ${workstream.foundation_rev}`)
   const approvals = listApprovals(db, identity)
   for (const approval of approvals) {
-    if (approval.gate === "root-plus-sdd") parts.push(`sdd ${approval.sane_hash.slice(0, 12)}`)
-    if (approval.gate === "solutions") parts.push(`solutions ${approval.sane_hash.slice(0, 12)}`)
+    if (approval.phase === "design") parts.push(`design ${approval.sane_hash.slice(0, 12)}`)
+    if (approval.phase === "engineering") parts.push(`engineering ${approval.sane_hash.slice(0, 12)}`)
+    if (approval.phase === "planning") parts.push(`planning ${approval.sane_hash.slice(0, 12)}`)
   }
   return parts.length === 0 ? "(none)" : parts.join(", ")
 }
@@ -777,6 +792,11 @@ export async function runSaneHandoffCommand(
       slot: options.toSlot,
       mutation: { actorRole: options.fromSlot, sessionId: fromSession },
       fetchImpl,
+      // Pilot: record an OpenCode-native (foreign) worktree for the target
+      // slot so CWD auto-detection resolves it. SANE-managed worktrees are
+      // quarantined; SANE never creates the directory itself.
+      worktreePath: options.worktreePath ?? null,
+      branch: options.branch ?? null,
     })
 
     const approvalsText =

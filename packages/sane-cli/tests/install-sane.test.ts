@@ -10,25 +10,25 @@ import {
   installSaneAlpha,
   managedWrapperContent,
   parseCliArguments,
-} from "../src/install-sane-alpha.ts"
+} from "../src/install-sane.ts"
 
 async function expectMissing(path: string): Promise<void> {
   await expect(access(path)).rejects.toThrow()
 }
 
-describe("install-sane-alpha", () => {
+describe("install-sane", () => {
   let temporaryDirectory: string
   let homeDirectory: string
   let sourceRoot: string
   let binDirectory: string
 
   beforeEach(async () => {
-    temporaryDirectory = await mkdtemp(join(tmpdir(), "sane-alpha-install-"))
+    temporaryDirectory = await mkdtemp(join(tmpdir(), "sane-install-"))
     homeDirectory = join(temporaryDirectory, "home")
     sourceRoot = join(temporaryDirectory, "source")
     binDirectory = join(homeDirectory, ".local", "bin")
     await mkdir(join(sourceRoot, "bin"), { recursive: true })
-    await writeFile(join(sourceRoot, "bin", "sane-alpha.ts"), "export const runSaneAlpha = async () => 0\n")
+    await writeFile(join(sourceRoot, "bin", "sane.ts"), "export const runSaneAlpha = async () => 0\n")
   })
 
   afterEach(async () => {
@@ -45,7 +45,7 @@ describe("install-sane-alpha", () => {
 
     expect(result).toMatchObject({ destination, action: "create", pathConfigured: true })
     expect(await readFile(destination, "utf8")).toBe(
-      managedWrapperContent(join(sourceRoot, "bin", "sane-alpha.ts")),
+      managedWrapperContent(join(sourceRoot, "bin", "sane.ts")),
     )
     expect((await lstat(destination)).mode & 0o111).not.toBe(0)
   })
@@ -82,7 +82,7 @@ describe("install-sane-alpha", () => {
 
     expect(result.action).toBe("update")
     expect(await readFile(destination, "utf8")).toBe(
-      managedWrapperContent(join(sourceRoot, "bin", "sane-alpha.ts")),
+      managedWrapperContent(join(sourceRoot, "bin", "sane.ts")),
     )
   })
 
@@ -93,11 +93,11 @@ describe("install-sane-alpha", () => {
   })
 
   test("validates source and destination parents before creating any path", async () => {
-    await rm(join(sourceRoot, "bin", "sane-alpha.ts"))
+    await rm(join(sourceRoot, "bin", "sane.ts"))
     await expect(installSaneAlpha(options())).rejects.toThrow("Required source command")
     await expectMissing(binDirectory)
 
-    await writeFile(join(sourceRoot, "bin", "sane-alpha.ts"), "export const runSaneAlpha = async () => 0\n")
+    await writeFile(join(sourceRoot, "bin", "sane.ts"), "export const runSaneAlpha = async () => 0\n")
     await mkdir(homeDirectory, { recursive: true })
     await writeFile(join(homeDirectory, ".local"), "not a directory\n")
     await expect(installSaneAlpha(options())).rejects.toThrow("Destination parent is not a directory")
@@ -119,7 +119,7 @@ describe("install-sane-alpha", () => {
     const stderr = await new Response(process.stderr).text()
 
     expect(await process.exited).toBe(1)
-    expect(stderr).toContain('Unknown SANE Alpha command "not-an-alpha-command"')
+    expect(stderr).toContain('Unknown SANE command "not-an-alpha-command"')
   })
 
   test("supports a configurable home through SANE_HOME", async () => {

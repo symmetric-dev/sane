@@ -1,5 +1,5 @@
 /**
- * SANE 0.2.0 M5: `sane-alpha merge` command + merge protocol
+ * SANE 0.2.0 M5: `sane merge` command + merge protocol
  * (docs/SANE_0_2_0.md Section 4).
  *
  * Merge protocol (8 steps):
@@ -11,7 +11,7 @@
  * 5. Merge into main with `git merge --no-ff sane/<user>/<workstream>` from a
  *    clean main checkout.
  * 6. Run main checks and smoke (typecheck + affected tests + boot check).
- * 7. Record `merge_commit` in the `merges` table; viewable via `sane-alpha state`.
+ * 7. Record `merge_commit` in the `merges` table; viewable via `sane view`.
  * 8. Remove the worktree (`git worktree remove`) and delete the branch only
  *    after the merge commit is recorded.
  *
@@ -25,7 +25,7 @@
  *   user-directed approval is forbidden.
  *
  * New file only (M5); read-only use of `sane-db.ts` helpers (no schema
- * refactor). Does not touch `bin/sane-alpha.ts`, `sane-db.ts` schema,
+ * refactor). Does not touch `bin/sane.ts`, `sane-db.ts` schema,
  * handoff files, `templates/`, or agents/skills.
  */
 import { execFile } from "node:child_process"
@@ -478,7 +478,7 @@ export async function mergeProtocol(
 }
 
 // ---------------------------------------------------------------------------
-// CLI: sane-alpha merge <repo> <workstream> --rebase|--checks|...
+// CLI: sane merge <repo> <workstream> --rebase|--checks|...
 // ---------------------------------------------------------------------------
 
 export type SaneMergeAction = "rebase" | "checks" | "review" | "merge" | "record" | "cleanup"
@@ -498,7 +498,7 @@ export interface SaneMergeCommandOptions {
 }
 
 export const USAGE =
-  "Usage: sane-alpha merge [<implementation-repository> <workstream-relative-path>] --rebase|--checks|--review|--merge --no-ff|--record <commit>|--cleanup [--worktrees-dir <dir>] [--user <name>] [--json] [--repo-root <path>] (no positionals: auto-detect the target from the current directory)"
+  "Usage: sane merge [<implementation-repository> <workstream-relative-path>] --rebase|--checks|--review|--merge --no-ff|--record <commit>|--cleanup [--worktrees-dir <dir>] [--user <name>] [--json] [--repo-root <path>] (no positionals: auto-detect the target from the current directory)"
 
 export interface ParsedMergeArguments {
   implementationRepository: string
@@ -700,7 +700,7 @@ export async function runSaneMergeCommand(
         break
       }
       case "merge": {
-        const approval = getApproval(db, resolvedIdentity, "merge")
+        const approval = getApproval(db, resolvedIdentity, "execution")
         if (!approval) {
           throw new SaneMergeError(
             `Merge refused: missing gate-5 (merge) user approval for ${JSON.stringify(resolvedIdentity.workstreamId)}. Record a merge approval before merging.`,

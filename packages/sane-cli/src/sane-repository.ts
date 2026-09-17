@@ -4,29 +4,30 @@ import { dirname, isAbsolute, join, normalize, relative, resolve, sep } from "no
 import { promisify } from "node:util"
 
 import { BootstrapError } from "./create-sane-workstream.ts"
-import { parseWorkstreamType, type WorkstreamType, WorkstreamTypeError } from "./workstream-type.ts"
+import type { WorkstreamType } from "./workstream-type.ts"
 
 const execFileAsync = promisify(execFile)
 export const SANE_DIRECTORY_NAME = ".sane"
 export const WORKSTREAMS_DIRECTORY_NAME = "workstreams"
 /**
- * 0.2.0 single-scope bootstrap shape (docs/SANE_0_2_0.md Section 1).
+ * Workstream bootstrap shape (docs/SANE_0_2_0.md Section 1).
  *
- * Fixed roots plus the M1-B resources set. The per-type root document is
- * validated separately via ROOT_DOC_BY_TYPE (exactly one present, fixed per
- * type). This list coordinates with create-sane-workstream.ts
+ * Fixed roots plus the resources set. The per-type root document is
+ * validated separately via ROOT_DOC_BY_TYPE (exactly one present; type is
+ * inferred from which root doc exists and stored in sqlite, not in a `type`
+ * file). This list coordinates with create-sane-workstream.ts
  * initialTemplateRegistry without editing that registry here.
  */
 export const REQUIRED_WORKSTREAM_FILES = [
-  "SANE_CONTEXT.md",
-  "SDD.md",
+  "README.md",
+  "design/SDD.md",
   "resources/SDD_TEMPLATE.md",
   "resources/SOLUTION_SPEC_TEMPLATE.md",
   "resources/RESEARCH_REPORT_TEMPLATE.md",
   "resources/PLAN_TEMPLATE.md",
   "resources/JOB_TEMPLATE.md",
   "resources/EXECUTION_REPORT_TEMPLATE.md",
-  "resources/EXECUTION_BRIEF_TEMPLATE.md",
+  "resources/EXECUTION_FINAL_REPORT_TEMPLATE.md",
 ] as const
 
 export const ROOT_DOC_BY_TYPE: Record<WorkstreamType, string> = {
@@ -39,9 +40,23 @@ export const ROOT_DOC_BY_TYPE: Record<WorkstreamType, string> = {
 export const ROOT_DOC_CANDIDATES = ["PRD.md", "FOUNDATION.md", "ISSUE.md", "MAINTENANCE.md"] as const
 
 /**
+ * Previous-layout artifacts (pre-migration paths). Presence of any of these
+ * fails validation with an old-layout error so a stale workstream never
+ * passes as the current layout. Top-level dirs are exactly design/,
+ * execution/, research/, resources/.
+ */
+export const OLD_WORKSTREAM_FILES = [
+  "SANE_CONTEXT.md",
+  "SDD.md",
+  "execution/BRIEF.md",
+] as const
+
+export const OLD_WORKSTREAM_DIRS = ["solutions", "plan", "planning"] as const
+
+/**
  * Retired Stage-model artifacts (SANE 0.2.0 Section 1, Explicit Non-Goals).
  * Presence of any of these fails validation so an old Stage layout never
- * passes as a 0.2.0 workstream.
+ * passes as a current workstream.
  */
 export const RETIRED_WORKSTREAM_FILES = [
   "resources/IMPLEMENTATION_REPORT_TEMPLATE.md",
@@ -170,23 +185,14 @@ export async function resolveSafeWorkstreamPath(
   return { relativePath, path }
 }
 
-/** Ensure a candidate is an existing initial-workstream bootstrap. */
-export async function readWorkstreamType(path: string): Promise<WorkstreamType> {
-  const typePath = join(path, "type")
-  if (!(await lstatOrUndefined(typePath))?.isFile()) {
-    throw new SaneRepositoryError(`Workstream type file is missing or not a regular file: ${typePath}`)
-  }
-  try {
-    return parseWorkstreamType(await readFile(typePath, "utf8"))
-  } catch (error) {
-    if (error instanceof WorkstreamTypeError) {
-      throw new SaneRepositoryError(`Workstream type is invalid at ${typePath}: ${error.message}`)
-    }
-    throw error
-  }
+const ROOT_DOC_TO_TYPE: Record<string, WorkstreamType> = {
+  "PRD.md": "feature",
+  "FOUNDATION.md": "foundation",
+  "ISSUE.md": "issue",
+  "MAINTENANCE.md": "maintenance",
 }
 
-/** Ensure a candidate is an existing initial-workstream bootstrap. */
+/** Ensure a candidate is an existing workstream bootstrap (type inferred from root doc). */
 export async function validateBootstrappedWorkstream(path: string): Promise<WorkstreamType> {
   if (!(await lstatOrUndefined(path))?.isDirectory()) {
     throw new SaneRepositoryError(`Workstream is not an existing directory: ${path}`)
@@ -194,7 +200,21 @@ export async function validateBootstrappedWorkstream(path: string): Promise<Work
   for (const filename of RETIRED_WORKSTREAM_FILES) {
     if ((await lstatOrUndefined(join(path, filename)))?.isFile()) {
       throw new SaneRepositoryError(
-        `Workstream contains retired Stage artifact and is not a 0.2.0 workstream: ${join(path, filename)}`,
+        `Workstream contains retired Stage artifact and is not a current workstream: ${join(path, filename)}`,
+      )
+    }
+  }
+  for (const filename of OLD_WORKSTREAM_FILES) {
+    if ((await lstatOrUndefined(join(path, filename)))?.isFile()) {
+      throw new SaneRepositoryError(
+        `Workstream contains old-layout file ${filename} at ${join(path, filename)}; expected new layout with README.md, design/SDD.md, design/solutions/, execution/PLAN.md, execution/jobs/, execution/FINAL_REPORT.md, execution/reports/. Re-create the workstream with the current bootstrap.`,
+      )
+    }
+  }
+  for (const dirname of OLD_WORKSTREAM_DIRS) {
+    if (await lstatOrUndefined(join(path, dirname))) {
+      throw new SaneRepositoryError(
+        `Workstream contains old-layout directory ${dirname}/ at ${join(path, dirname)}; expected new layout with top-level dirs exactly design/, execution/, research/, resources/. Re-create the workstream with the current bootstrap.`,
       )
     }
   }
@@ -203,22 +223,24 @@ export async function validateBootstrappedWorkstream(path: string): Promise<Work
       throw new SaneRepositoryError(`Workstream is not bootstrapped; missing regular file: ${join(path, filename)}`)
     }
   }
-  const type = await readWorkstreamType(path)
-  const expectedRootDoc = ROOT_DOC_BY_TYPE[type]
-  if (!(await lstatOrUndefined(join(path, expectedRootDoc)))?.isFile()) {
+  const present = (
+    await Promise.all(
+      ROOT_DOC_CANDIDATES.map(async (candidate) =>
+        (await lstatOrUndefined(join(path, candidate)))?.isFile() ? candidate : null,
+      ),
+    )
+  ).filter((candidate): candidate is (typeof ROOT_DOC_CANDIDATES)[number] => candidate !== null)
+  if (present.length === 0) {
     throw new SaneRepositoryError(
-      `Workstream is not bootstrapped; missing regular file: ${join(path, expectedRootDoc)}`,
+      `Workstream is not bootstrapped; missing root document (exactly one of ${ROOT_DOC_CANDIDATES.join(", ")} required): ${path}`,
     )
   }
-  for (const candidate of ROOT_DOC_CANDIDATES) {
-    if (candidate === expectedRootDoc) continue
-    if (await lstatOrUndefined(join(path, candidate))) {
-      throw new SaneRepositoryError(
-        `Workstream type "${type}" must contain exactly one root document ${expectedRootDoc}; unexpected file: ${join(path, candidate)}`,
-      )
-    }
+  if (present.length > 1) {
+    throw new SaneRepositoryError(
+      `Workstream must contain exactly one root document; found ${present.join(", ")} in ${path}`,
+    )
   }
-  return type
+  return ROOT_DOC_TO_TYPE[present[0]!]!
 }
 
 export async function resolveBootstrappedWorkstream(

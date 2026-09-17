@@ -97,22 +97,22 @@ describe("sane-handoff (M4 session registry + handoff)", () => {
       toSessionOrNew: "ses_eng_1",
       user: "alice",
       workstreamId: "01-demo",
-      approvals: [{ gate: "root-plus-sdd", approvalRef: "user-ok", saneHash: "abc123" }],
+      approvals: [{ phase: "design", approvalRef: "user-ok", saneHash: "abc123" }],
       revisions: "baseline r0, sdd r1, foundation 00-base@commit-a",
-      paths: "/repo/.sane/workstreams/01-demo, SDD.md",
-      nextAction: "Pick up SDD.md and draft solutions.",
+      paths: "/repo/.sane/workstreams/01-demo, design/SDD.md",
+      nextAction: "Pick up design/SDD.md and draft solutions.",
     })
     expect(message).toContain("From: design (ses_design_1) / alice / workstream 01-demo")
     expect(message).toContain("To: engineering (ses_eng_1)")
     expect(message).toContain("Approvals:")
-    expect(message).toContain("root-plus-sdd")
+    expect(message).toContain("design")
     expect(message).toContain("user-ok")
     expect(message).toContain("abc123")
     expect(message).toContain("Revisions:")
     expect(message).toContain("baseline r0")
     expect(message).toContain("Paths:")
     expect(message).toContain("/repo/.sane/workstreams/01-demo")
-    expect(message).toContain("Next action: Pick up SDD.md and draft solutions.")
+    expect(message).toContain("Next action: Pick up design/SDD.md and draft solutions.")
     expect(message).not.toContain(secretContents)
     // Exact six-line Sec 3 shape.
     const lines = message.split("\n")
@@ -267,6 +267,43 @@ describe("sane-handoff (M4 session registry + handoff)", () => {
     expect(calls).toHaveLength(1)
   })
 
+  test("resolve records a foreign (OpenCode-native) worktree path and branch", async () => {
+    const createFetch: HandoffFetch = (async () =>
+      okJson({ id: "ses_exec_new" })) as unknown as HandoffFetch
+    const created = await resolveOrCreateSession(db!, identity, {
+      serverUrl: "http://127.0.0.1:4096",
+      slot: "execution",
+      mutation: mutation("planning", "ses_plan"),
+      fetchImpl: createFetch,
+      worktreePath: "/wt/opencode-managed/01-demo",
+      branch: "opencode/some-branch",
+    })
+    expect(created.created).toBe(true)
+    const row = getSelection(db!, identity, "execution")
+    expect(row?.worktree_path).toBe("/wt/opencode-managed/01-demo")
+    expect(row?.branch).toBe("opencode/some-branch")
+  })
+
+  test("CLI parses --worktree-path and --branch", () => {
+    const parsed = parseCliArguments([
+      "/repo",
+      "01-demo",
+      "--from",
+      "planning",
+      "--to",
+      "execution",
+      "--next",
+      "Run it.",
+      "--worktree-path",
+      "/wt/opencode-managed/01-demo",
+      "--branch",
+      "opencode/some-branch",
+    ])
+    expect(parsed.worktreePath).toBe("/wt/opencode-managed/01-demo")
+    expect(parsed.branch).toBe("opencode/some-branch")
+    expect(USAGE).toContain("--worktree-path")
+  })
+
   test("resolve handles alternate create-response shapes", async () => {
     for (const [slot, payload, expected] of [
       ["design", { sessionId: "ses_a" }, "ses_a"],
@@ -306,7 +343,7 @@ describe("sane-handoff (M4 session registry + handoff)", () => {
   })
 
   test("handoff CLI parses --from/--to/--next with --json/--repo-root idioms", () => {
-    expect(USAGE).toContain("sane-alpha handoff")
+    expect(USAGE).toContain("sane handoff")
     expect(USAGE).toContain("--from")
     expect(USAGE).toContain("--to")
     expect(USAGE).toContain("--next")
