@@ -157,6 +157,27 @@ describe("sane-cwd-target resolver", () => {
     expect(fromNested).toMatchObject({ repoRoot, workstreamId: "01-demo" })
   })
 
+  test("worktree nested under the default in-repo dir matches selections", async () => {
+    const wtDir = join(repoRoot, ".sane", "worktrees", user, "01-demo")
+    await git([
+      "-C",
+      repoRoot,
+      "worktree",
+      "add",
+      wtDir,
+      "-b",
+      branchForWorkstream(user, "01-demo"),
+    ])
+    await registerSelection(await resolveSaneIdentity(repoRoot, "01-demo", user), wtDir, "ses-nested")
+    const target = await resolveCwdTarget(wtDir)
+    expect(target).toMatchObject({
+      repoRoot,
+      workstreamId: "01-demo",
+      user,
+      source: "worktree-selection",
+    })
+  })
+
   test("main-repo context without a pointer names select-workstream", async () => {
     const bare = join(tempDirectory, "bare")
     await mkdir(bare, { recursive: true })
