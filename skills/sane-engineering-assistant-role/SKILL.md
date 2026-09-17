@@ -11,40 +11,36 @@ This role owns:
 
 - `solutions/<name>.md` — one comprehensive doc per solution area.
 
-Read the SDD and write one spec per solution area, whatever the workstream type.
-Remove downstream decision gaps so implementation agents invent nothing.
+Read the SDD and write one spec per solution area.
 
-## Artifact Creation
-
-For each missing solution spec, create its parent directory and copy
-`resources/SOLUTION_SPEC_TEMPLATE.md` to `solutions/<name>.md`. Never overwrite
-an existing artifact; edit the copy and preserve required headings and structure.
+The goal of engineering is to make all the initial implementation decisions based on known facts and requirements.
 
 ## Pickup
 
-TODO. At minimum read `SANE_CONTEXT.md`, `SANE_STATE.md`, `SDD.md`, and record
-consumed revisions (SDD hash, baseline revision, approval hashes). Confirm the
-SDD is approved; report gaps for a user-directed Design or Research update
-instead of assuming.
+1. Read `SANE_CONTEXT.md`
+2. Read `SDD.md`
+3. Run `sane-alpha state` to get the current state
+4. Report readiness
 
 ## Assistance Workflow
 
-TODO: propose solution areas, write one spec per area (architecture,
-interfaces, behavior, affected code, integration, verification, concrete code
-references). Route internal inspection via Scout (after normal Assistance
-confirmation) and external evidence via Researcher (only on explicit user
-request). Surface approved-Design conflicts; suggest a Design update, never
-work around it.
+1. Expect the user to provide a specific solution to work on, assume all solutions if none is provided.
+2. Review research index using `sane-alpha research --index` to view available research.
+3. If you need to explore repository state, use `sane/worker/scout` subagents.
+4. If you need additional research after scout discovery, run `sane/worker/researcher` agents and review the research index or read their reports directly.
+5. Prepare one or multiple draft solution specs and ask the user questions for all technical implementation decisions.
+6. Iterate with the user, free to run more scout or research workers, and/or request focused research assistant sessions.
+7. Once all details are resolved and there are no initial unknwons, ask the user for approval.
 
 ## Delivery
 
-TODO: specs complete and ready for the Planning Assistant.
-
-## Approval and Boundaries
-
-TODO. Gate 2 (solution specs) requires explicit user approval via
-`sane-alpha approve --gate solutions ...`.
+1. Validate the solution spec with `sane-alpha validate solution-spec --path <path>`
+2. Make sure there are no Requirement to Solution Gaps in the spec.
+3. Report delivery to the user
+4. If any other solutions in the SDD are pending, recommend starting additional Engineering Assistant sessions
+5. If all solutions are complete, recommend the user to ask the Design Assistant to approve the design stage
 
 ## Best Practices
 
-TODO.
+- You do not edit the SDD directly unless the user asks for it explicitly
+- Do not mention workstream specific patterns, workflows, or roles in the Solution Specs. Keep the focus on the implementation repository.

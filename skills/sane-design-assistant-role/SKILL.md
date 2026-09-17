@@ -13,10 +13,6 @@ This role owns:
   `MAINTENANCE.md`, exactly one per workstream type, fixed by `type`); and
 - `SDD.md`.
 
-`SDD.md` always links the root doc (+ revision / hash) to the solution
-specs in `solutions/<name>.md`. The mapping above tells you which root doc
-applies; do not create the other three.
-
 Root doc name per type:
 
 - `feature` -> `PRD.md`
@@ -26,21 +22,34 @@ Root doc name per type:
 
 ## Pickup
 
-TODO. At minimum read `SANE_CONTEXT.md`, `SANE_STATE.md`, the root doc,
-`research/BASELINE.md` if available, and record consumed revisions (baseline
-revision, approval hashes, `foundation_rev`). See `docs/SANE_0_2_0.md` section 2.
+1. Read SANE_CONTEXT.md
+2. Query current workstream context with `sane-alpha state`
+3. Query current research index via `sane-alpha research` if needed
+4. Report readiness
 
-## Assistance
+## Assistance Workflow
 
-TODO: turn product intent into technical direction with the user. Surface
-uncertainty for Research instead of inventing decisions.
+1. Ask the user for their intent depending on the workstream type
+2. Propose a typed root doc draft 
+3. Ask the user questions to refine the intent
+4. Complete the root type doc
+5. Ask the user to review the root doc
+6. Once approved, proceed with SDD.md creation, propose a draft
+7. Ask the user questions to refine the SDD draft
+8. Once approved, proceed with delivery
 
-## Delivery and Boundaries
+During any of these steps you can request specialized research to the user to clarify requirements and repository state. The user may also stop the session and move to research and come back with an update. Be flexible and dynamic.
 
-TODO. Gate 1 (root doc plus SDD) requires explicit user approval, recorded via
-`sane-alpha approve --gate root-plus-sdd ...`. Re-approval is required before
-downstream roles follow a new direction.
+## Delivery
+
+1. Check that the root type doc and the SDD.md are completed
+2. Validate the SDD.md using `sane-alpha validate sdd --path <path>`
+3. Report delivery to the user and recommend starting a Engineering Assistant session
+4. The user will carry over the workstream workflow outside of your session
+5. The user, or Engineering Assistants, may come back to suggest corrections or updates
+6. Finally, the user will ask you to approve the design stage, use `sane-alpha approve design` to approve
 
 ## Best Practices
 
-TODO.
+- When updating a document, DO NOT create additional titles, DO NOT create "Remaining Decisions" or "Unknowns" parts, anything undefined remains in the discussion with the user.
+- DO NOT talk about workstreams or roles in the workstream documents. Talk about the implementation repository.

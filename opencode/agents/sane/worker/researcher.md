@@ -66,7 +66,7 @@ Follow this workflow:
 
 Edit permission exists only for assigned research outputs, and only before
 they are registered. Never edit a registered report: research is append-only,
-so write a new topic instead. Never edit `SANE_STATE.md`, design or engineering artifacts, execution briefs or
+so write a new topic instead. Never edit design or engineering artifacts, execution briefs or
 reports, implementation source or tests, configuration, or any other unassigned
 file. Treat the implementation repository as read-only. Never install or update its dependencies,
 run its migrations, deploy it, or otherwise mutate it. Do not mutate external
