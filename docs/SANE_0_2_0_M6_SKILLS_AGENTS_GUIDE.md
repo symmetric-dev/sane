@@ -39,12 +39,9 @@ Workers need path updates only.
 
 ## 1. Agent files (`opencode/agents/`)
 
-### 1a. RETIRE `sane-assistant-product.md`
-- Delete. Its job (root `PRD.md`) moves into the Design agent/skill.
-- Remove from installer manifest (see Sec 3), or `install-context-packages`
-  tests fail.
+### 1a. RETIRE `sane-assistant-product.md` — DONE (in `_legacy/`, no successor)
 
-### 1b. RENAME `sane-assistant-coordination.md` -> `sane-assistant-execution.md`
+### 1b. RENAME `sane-assistant-coordination.md` -> `sane/assistant/execution.md` — DONE (scaffold; fill body per below)
 - Frontmatter `description`: "Coordinates authorized SANE job execution,
   worktrees, read-only reviews, bounded fixes, and the execution brief."
 - Body `You are a SANE Execution Assistant Agent.`
@@ -83,6 +80,11 @@ Workers need path updates only.
 - Delete `research/workstream/` vs `research/stage-NN/` scope choice; one
   baseline per workstream. Only coordinator commits baseline row; workers draft
   reports. No approval/state language.
+
+Agents live in `opencode/agents/sane/assistant/*.md` and
+`opencode/agents/sane/worker/*.md` (short names). Agent IDs are path-derived:
+`sane/assistant/design`, `sane/worker/scout`. Update every ID reference below
+accordingly.
 
 ### 1g. Workers (no role rewrite, path sweep only)
 - `sane-worker-implementer.md`: report destination
@@ -186,7 +188,7 @@ Workers need path updates only.
   pointing at them.
 
 ## 5. Done checklist
-- [ ] `grep -ri "stage" opencode/agents/sane-assistant-*.md skills/*/SKILL.md` returns
+- [ ] `grep -ri "stage" opencode/agents/sane/assistant/*.md opencode/agents/sane/worker/*.md skills/*/SKILL.md` returns
   only worker-historical or explicit "no stages" notes.
 - [ ] `grep -ri "coordination\|product assistant\|implementation/briefs\|STAGES_TEMPLATE\|SECTION_SPEC" opencode skills templates docs` returns nothing
   requiring action (or explicit retired notes).

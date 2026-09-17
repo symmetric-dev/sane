@@ -9,9 +9,9 @@ describe("agent model YAML config", () => {
     expect(parseAgentModelConfig("{}", AGENT_FILENAMES).size).toBe(0)
   })
 
-  test.each(["", "null", "[]", "hello", "unknown: openai/gpt-5", "sane-worker-scout.md: openai/gpt-5", ...[
+  test.each(["", "null", "[]", "hello", "unknown: openai/gpt-5", "sane/worker/scout.md: openai/gpt-5", ...[
     "null", "123", "{}", "[]", "''", "model", "'/model'", "'provider/'", "'provider/model name'",
-  ].map((value) => `sane-worker-scout: ${value}`), "sane-worker-scout: ["])("rejects invalid config: %s", (yaml) => {
+  ].map((value) => `sane/worker/scout: ${value}`), "sane/worker/scout: ["])("rejects invalid config: %s", (yaml) => {
     expect(() => parseAgentModelConfig(yaml, AGENT_FILENAMES)).toThrow()
   })
 
@@ -21,17 +21,17 @@ describe("agent model YAML config", () => {
 
   test("supports mixed shorthand, flow and block objects", () => {
     const config = parseAgentModelConfig(`
-sane-worker-scout: openai/gpt-5
-sane-assistant-execution: { model: "openai/gpt-6-astra", variant: low }
-sane-assistant-engineering:
+sane/worker/scout: openai/gpt-5
+sane/assistant/execution: { model: "openai/gpt-6-astra", variant: low }
+sane/assistant/engineering:
   model: openai/gpt-6-astra
   variant: high
-sane-worker-fixer: { model: openai/gpt-5 }
+sane/worker/fixer: { model: openai/gpt-5 }
 `, AGENT_FILENAMES)
-    expect(config.get("sane-worker-scout")).toBe("openai/gpt-5")
-    expect(config.get("sane-assistant-execution")).toEqual({ model: "openai/gpt-6-astra", variant: "low" })
-    expect(config.get("sane-assistant-engineering")).toEqual({ model: "openai/gpt-6-astra", variant: "high" })
-    expect(config.get("sane-worker-fixer")).toEqual({ model: "openai/gpt-5" })
+    expect(config.get("sane/worker/scout")).toBe("openai/gpt-5")
+    expect(config.get("sane/assistant/execution")).toEqual({ model: "openai/gpt-6-astra", variant: "low" })
+    expect(config.get("sane/assistant/engineering")).toEqual({ model: "openai/gpt-6-astra", variant: "high" })
+    expect(config.get("sane/worker/fixer")).toEqual({ model: "openai/gpt-5" })
   })
 
   test.each([
@@ -40,7 +40,7 @@ sane-worker-fixer: { model: openai/gpt-5 }
     ...["null", "123", "false", "[]", "{}", "''", "'   '"].map((variant) => `{ model: openai/gpt-5, variant: ${variant} }`),
     "{ model: openai/gpt-5, varient: low }", "{ model: openai/gpt-5, extra: true }",
   ])("rejects malformed object: %s", (value) => {
-    expect(() => parseAgentModelConfig(`sane-worker-scout: ${value}`, AGENT_FILENAMES)).toThrow("Invalid model for sane-worker-scout")
+    expect(() => parseAgentModelConfig(`sane/worker/scout: ${value}`, AGENT_FILENAMES)).toThrow("Invalid model for sane/worker/scout")
   })
 
   test.each(["\n", "\r\n"])("objects replace or preserve top-level variant (%j)", (newline) => {

@@ -100,7 +100,7 @@ describe("install-sane-agent-context-packages", () => {
 
   test("invalid YAML config or mapped frontmatter fails before writes", async () => {
     const modelConfigPath = join(temporaryDirectory, "models.yaml")
-    for (const yaml of ["unknown: openai/gpt-5", "[]", "invalid: [", "sane-worker-scout: openai/gpt-5", "sane-worker-scout: { model: openai/gpt-5, varient: low }", "sane-worker-scout:\n  model: openai/gpt-5\n  variant: null"]) {
+    for (const yaml of ["unknown: openai/gpt-5", "[]", "invalid: [", "sane/worker/scout: openai/gpt-5", "sane/worker/scout: { model: openai/gpt-5, varient: low }", "sane/worker/scout:\n  model: openai/gpt-5\n  variant: null"]) {
       await Bun.write(modelConfigPath, yaml)
       await expect(installSaneAgentContextPackages(options({ modelConfigPath, overwrite: true }))).rejects.toThrow()
       await expectMissing(homeDirectory)
@@ -214,17 +214,17 @@ describe("install-sane-agent-context-packages", () => {
       "sane-research-assistant-role",
     ])
     expect(AGENT_FILENAMES).toEqual([
-      "sane-assistant-design.md",
-      "sane-assistant-engineering.md",
-      "sane-assistant-execution.md",
-      "sane-assistant-planning.md",
-      "sane-assistant-research.md",
-      "sane-worker-fixer.md",
-      "sane-worker-grounder.md",
-      "sane-worker-implementer.md",
-      "sane-worker-researcher.md",
-      "sane-worker-reviewer.md",
-      "sane-worker-scout.md",
+      "sane/assistant/design.md",
+      "sane/assistant/engineering.md",
+      "sane/assistant/execution.md",
+      "sane/assistant/planning.md",
+      "sane/assistant/research.md",
+      "sane/worker/fixer.md",
+      "sane/worker/grounder.md",
+      "sane/worker/implementer.md",
+      "sane/worker/researcher.md",
+      "sane/worker/reviewer.md",
+      "sane/worker/scout.md",
     ])
     expect(result.created).toHaveLength(16)
     for (const skillName of ROLE_SKILL_NAMES) {
@@ -261,7 +261,7 @@ describe("install-sane-agent-context-packages", () => {
       "utf8",
     )
     const designAgent = await readFile(
-      join(DEFAULT_SOURCE_ROOT, "opencode", "agents", "sane-assistant-design.md"),
+      join(DEFAULT_SOURCE_ROOT, "opencode", "agents", "sane/assistant/design.md"),
       "utf8",
     )
     for (const [agent, skillName] of [
@@ -275,25 +275,25 @@ describe("install-sane-agent-context-packages", () => {
       expect(agent).not.toContain("workstream `type` file")
     }
     for (const filename of [
-      "sane-worker-grounder.md",
-      "sane-worker-implementer.md",
-      "sane-worker-reviewer.md",
-      "sane-worker-fixer.md",
-      "sane-worker-researcher.md",
-      "sane-worker-scout.md",
+      "sane/worker/grounder.md",
+      "sane/worker/implementer.md",
+      "sane/worker/reviewer.md",
+      "sane/worker/fixer.md",
+      "sane/worker/researcher.md",
+      "sane/worker/scout.md",
     ]) {
       const agent = await readFile(join(DEFAULT_SOURCE_ROOT, "opencode", "agents", filename), "utf8")
       expect(agent).toContain("mode: subagent")
       expect(agent).toContain('"*": allow')
       expect(agent).toContain('"sane-*-assistant-role": deny')
       const metadata = Bun.YAML.parse(agent.split("---")[1]!) as { permission: { task: string | Record<string, string> } }
-      expect(metadata.permission.task).toEqual(filename === "sane-worker-implementer.md"
-        ? { "*": "deny", "sane-worker-scout": "allow" }
+      expect(metadata.permission.task).toEqual(filename === "sane/worker/implementer.md"
+        ? { "*": "deny", "sane/worker/scout": "allow" }
         : "deny")
       expect(agent).not.toContain("Read the `sane-coordination-assistant-role` skill.")
     }
     const reviewerAgent = await readFile(
-      join(DEFAULT_SOURCE_ROOT, "opencode", "agents", "sane-worker-reviewer.md"),
+      join(DEFAULT_SOURCE_ROOT, "opencode", "agents", "sane/worker/reviewer.md"),
       "utf8",
     )
     expect(reviewerAgent).toContain("edit: deny")
@@ -301,7 +301,7 @@ describe("install-sane-agent-context-packages", () => {
 
   test("the self-contained Research Worker agent enforces the delegated research contract", async () => {
     const workerAgent = await readFile(
-      join(DEFAULT_SOURCE_ROOT, "opencode", "agents", "sane-worker-researcher.md"),
+      join(DEFAULT_SOURCE_ROOT, "opencode", "agents", "sane/worker/researcher.md"),
       "utf8",
     )
     expect(workerAgent).toContain("mode: subagent")
@@ -332,7 +332,7 @@ describe("install-sane-agent-context-packages", () => {
 
   test("the Scout is a bounded read-only inline implementation inspector", async () => {
     const scout = await readFile(
-      join(DEFAULT_SOURCE_ROOT, "opencode", "agents", "sane-worker-scout.md"),
+      join(DEFAULT_SOURCE_ROOT, "opencode", "agents", "sane/worker/scout.md"),
       "utf8",
     )
 
@@ -366,22 +366,22 @@ describe("install-sane-agent-context-packages", () => {
 
   test("the implementer delegates only supporting inspection and retains Job ownership", async () => {
     const implementer = await readFile(
-      join(DEFAULT_SOURCE_ROOT, "opencode", "agents", "sane-worker-implementer.md"), "utf8",
+      join(DEFAULT_SOURCE_ROOT, "opencode", "agents", "sane/worker/implementer.md"), "utf8",
     )
-    expect(implementer).toMatch(/highly encouraged to launch `sane-worker-scout` agent for bounded, read-only supporting\s+inspection/)
+    expect(implementer).toMatch(/highly encouraged to launch `sane\/worker\/scout` agent for bounded, read-only supporting\s+inspection/)
     expect(implementer).toMatch(/Scout workers DO NOT have context of the workstream/i)
     expect(implementer).toMatch(/YOU read the context/i)
     expect(implementer).toMatch(/provide the absolute path/i)
     expect(implementer).toMatch(/You implement one bounded Job[\s\S]{0,120}Implementation Report/)
     expect(implementer).toMatch(/Create or update the report only at the supplied destination/)
     expect(implementer).toMatch(/path beyond the Job's expected surface/)
-    expect(implementer).not.toMatch(/sane-worker-(researcher|reviewer|fixer|grounder)/)
+    expect(implementer).not.toMatch(/sane\/worker\/(researcher|reviewer|fixer|grounder)/)
     expect(implementer).not.toContain("or launch another agent.")
   })
 
   test("Engineering requires permission for Scout inspection and explicitly requested Researcher work", async () => {
     const engineeringAgent = await readFile(
-      join(DEFAULT_SOURCE_ROOT, "opencode", "agents", "sane-assistant-engineering.md"),
+      join(DEFAULT_SOURCE_ROOT, "opencode", "agents", "sane/assistant/engineering.md"),
       "utf8",
     )
     const engineeringRole = await readFile(
@@ -390,12 +390,12 @@ describe("install-sane-agent-context-packages", () => {
     )
 
     expect(engineeringAgent).toMatch(
-      /task:\s*\n\s+"\*": deny\s*\n\s+"sane-worker-scout": ask\s*\n\s+"sane-worker-researcher": ask/,
+      /task:\s*\n\s+"\*": deny\s*\n\s+"sane\/worker\/scout": ask\s*\n\s+"sane\/worker\/researcher": ask/,
     )
-    expect(engineeringRole).toMatch(/internal codebase inspection[\s\S]{0,180}sane-worker-scout/i)
-    expect(engineeringRole).toMatch(/normally confirms?[\s\S]{0,180}Engineering Assistance[\s\S]{0,180}sane-worker-scout/i)
+    expect(engineeringRole).toMatch(/internal codebase inspection[\s\S]{0,180}sane\/worker\/scout/i)
+    expect(engineeringRole).toMatch(/normally confirms?[\s\S]{0,180}Engineering Assistance[\s\S]{0,180}sane\/worker\/scout/i)
     expect(engineeringRole).toMatch(/external evidence/i)
-    expect(engineeringRole).toContain("`sane-worker-researcher`")
+    expect(engineeringRole).toContain("`sane/worker/researcher`")
     expect(engineeringRole).toMatch(/explicitly requests bounded[\s\S]{0,80}external research/i)
     expect(engineeringRole).toMatch(/ordinary confirmation[\s\S]{0,100}not authorization[\s\S]{0,100}(?:launch|Researcher)/i)
     expect(engineeringRole).toMatch(/own synthesis|own[s]? synthesis/i)
@@ -404,25 +404,25 @@ describe("install-sane-agent-context-packages", () => {
 
   test("assistant task permissions allow only their assigned worker agents", async () => {
     const researchAgent = await readFile(
-      join(DEFAULT_SOURCE_ROOT, "opencode", "agents", "sane-assistant-research.md"),
+      join(DEFAULT_SOURCE_ROOT, "opencode", "agents", "sane/assistant/research.md"),
       "utf8",
     )
     const coordinationAgent = await readFile(
-      join(DEFAULT_SOURCE_ROOT, "opencode", "agents", "sane-assistant-coordination.md"),
+      join(DEFAULT_SOURCE_ROOT, "opencode", "agents", "sane/assistant/execution.md"),
       "utf8",
     )
 
-    expect(researchAgent).toMatch(/task:\s*\n\s+"\*": deny\s*\n\s+"sane-worker-researcher": allow/)
-    expect(researchAgent).not.toContain('"sane-worker-scout": allow')
+    expect(researchAgent).toMatch(/task:\s*\n\s+"\*": deny\s*\n\s+"sane\/worker\/researcher": allow/)
+    expect(researchAgent).not.toContain('"sane/worker/scout": allow')
     expect(coordinationAgent).toMatch(
-      /task:\s*\n\s+"\*": deny\s*\n\s+"sane-worker-implementer": allow\s*\n\s+"sane-worker-reviewer": allow\s*\n\s+"sane-worker-fixer": allow/,
+      /task:\s*\n\s+"\*": deny\s*\n\s+"sane\/worker\/implementer": allow\s*\n\s+"sane\/worker\/reviewer": allow\s*\n\s+"sane\/worker\/fixer": allow/,
     )
-    expect(coordinationAgent).not.toContain('"sane-worker-researcher": allow')
-    expect(coordinationAgent).not.toContain('"sane-worker-scout": allow')
+    expect(coordinationAgent).not.toContain('"sane/worker/researcher": allow')
+    expect(coordinationAgent).not.toContain('"sane/worker/scout": allow')
     const metadata = Bun.YAML.parse(coordinationAgent.split("---")[1]!) as { permission: { task: Record<string, string> } }
     expect(metadata.permission.task).toEqual({
-      "*": "deny", "sane-worker-implementer": "allow",
-      "sane-worker-reviewer": "allow", "sane-worker-fixer": "allow",
+      "*": "deny", "sane/worker/implementer": "allow",
+      "sane/worker/reviewer": "allow", "sane/worker/fixer": "allow",
     })
 
     const researchRole = await readFile(
@@ -431,7 +431,7 @@ describe("install-sane-agent-context-packages", () => {
     )
     expect(researchRole).toMatch(/repository audits directly/i)
     expect(researchRole).toMatch(/no permission to launch Scout/i)
-    expect(researchRole).toMatch(/sane-worker-researcher[\s\S]{0,100}external-evidence worker/i)
+    expect(researchRole).toMatch(/sane\/worker\/researcher[\s\S]{0,100}external-evidence worker/i)
   })
 
   test("does not delete previously installed typed skill directories", async () => {
@@ -452,7 +452,7 @@ describe("install-sane-agent-context-packages", () => {
   })
 
   test("Planning migration installs shipped models, preserves legacy customizations, and repeats unchanged", async () => {
-    const oldAgent = join(homeDirectory, ".config", "opencode", "agents", "sane-assistant-execution.md")
+    const oldAgent = join(homeDirectory, ".config", "opencode", "agents", "sane/assistant/execution.md")
     const oldSkill = join(homeDirectory, ".agents", "skills", "sane-execution-assistant-role", "SKILL.md")
     for (const path of [oldAgent, oldSkill]) {
       await mkdir(dirname(path), { recursive: true })
@@ -466,7 +466,7 @@ describe("install-sane-agent-context-packages", () => {
     }
     const dryRun = await installSaneAgentContextPackages({ ...installOptions, dryRun: true })
     expect(dryRun.created).toHaveLength(16)
-    const planningPath = join(homeDirectory, ".config", "opencode", "agents", "sane-assistant-planning.md")
+    const planningPath = join(homeDirectory, ".config", "opencode", "agents", "sane/assistant/planning.md")
     await expectMissing(planningPath)
     const result = await installSaneAgentContextPackages(installOptions)
     expect(result.created).toEqual(dryRun.created)
@@ -474,7 +474,7 @@ describe("install-sane-agent-context-packages", () => {
     expect(planning).toContain('model: "opencode-go/muse-spark-1.3-contributor"')
     expect(planning).toContain('variant: "high"')
     expect(planning).toContain("Read the `sane-planning-assistant-role` skill.")
-    const grounder = await readFile(join(homeDirectory, ".config", "opencode", "agents", "sane-worker-grounder.md"), "utf8")
+    const grounder = await readFile(join(homeDirectory, ".config", "opencode", "agents", "sane/worker/grounder.md"), "utf8")
     expect(grounder).toContain('model: "opencode-go/muse-spark-1.3-contributor"')
     expect(grounder).toContain('variant: "high"')
     expect(await readFile(join(homeDirectory, ".agents", "skills", "sane-planning-assistant-role", "SKILL.md"), "utf8"))
@@ -483,22 +483,22 @@ describe("install-sane-agent-context-packages", () => {
     for (const path of [oldAgent, oldSkill]) {
       expect(await readFile(path, "utf8")).toBe("preserve local execution customization\n")
     }
-    await expectMissing(join(DEFAULT_SOURCE_ROOT, "opencode", "agents", "sane-assistant-execution.md"))
+    await expectMissing(join(DEFAULT_SOURCE_ROOT, "opencode", "agents", "sane/assistant/execution.md"))
     await expectMissing(join(DEFAULT_SOURCE_ROOT, "skills", "sane-execution-assistant-role", "SKILL.md"))
   })
 
   test("obsolete execution model keys fail before any destination write", async () => {
     const modelConfigPath = join(temporaryDirectory, "models.yaml")
-    await Bun.write(modelConfigPath, "sane-assistant-execution: { model: openai/gpt-5.6-sol, variant: low }\n")
+    await Bun.write(modelConfigPath, "sane-assistant-legacy: { model: openai/gpt-5.6-sol, variant: low }\n")
     await expect(installSaneAgentContextPackages({ homeDirectory, modelConfigPath, write: () => {} }))
-      .rejects.toThrow("Unknown agent in model config: sane-assistant-execution")
+      .rejects.toThrow("Unknown agent in model config: sane-assistant-legacy")
     await expectMissing(homeDirectory)
   })
 
   test("Planning gates drafting and grounding before final approval and only delegates to Grounder", async () => {
-    const agent = await readFile(join(DEFAULT_SOURCE_ROOT, "opencode", "agents", "sane-assistant-planning.md"), "utf8")
+    const agent = await readFile(join(DEFAULT_SOURCE_ROOT, "opencode", "agents", "sane/assistant/planning.md"), "utf8")
     const metadata = Bun.YAML.parse(agent.split("---")[1]!) as { permission: { task: Record<string, string> } }
-    expect(metadata.permission.task).toEqual({ "*": "deny", "sane-worker-grounder": "allow" })
+    expect(metadata.permission.task).toEqual({ "*": "deny", "sane/worker/grounder": "allow" })
     expect(agent).toMatch(/Pickup[\s\S]*Wait for user confirmation before proceeding/)
     const role = await readFile(join(DEFAULT_SOURCE_ROOT, "skills", "sane-planning-assistant-role", "SKILL.md"), "utf8")
     expect(role).toMatch(/explicit confirmation before creating or substantively updating Job Specs or\s+delegating grounding/)
@@ -518,7 +518,7 @@ describe("install-sane-agent-context-packages", () => {
     expect(role).toMatch(/follows list order sequentially by default/)
     expect(role).toMatch(/run in parallel only when the approved plan\s+explicitly permits/)
     expect(role).toMatch(/runnable batch is a set of Jobs that can be launched together/i)
-    expect(role).toMatch(/launch exactly one `sane-worker-implementer`\s+agent per attempt/)
+    expect(role).toMatch(/launch exactly one `sane\/worker\/implementer`\s+agent per attempt/)
     expect(role).toMatch(/Do not change Foundation approvals or Stage Design or Execution entries/)
     expect(role).toMatch(/planning corrections/)
     expect(role).toMatch(/goes to Planning through the user/)
@@ -563,7 +563,7 @@ describe("install-sane-agent-context-packages", () => {
   })
 
   test("Job Grounder grants no delegation or conversation and limits enrichment to the assigned spec", async () => {
-    const grounder = await readFile(join(DEFAULT_SOURCE_ROOT, "opencode", "agents", "sane-worker-grounder.md"), "utf8")
+    const grounder = await readFile(join(DEFAULT_SOURCE_ROOT, "opencode", "agents", "sane/worker/grounder.md"), "utf8")
     const metadata = Bun.YAML.parse(grounder.split("---")[1]!) as { mode: string; permission: Record<string, unknown> }
     expect(metadata.mode).toBe("subagent")
     expect(metadata.permission).toMatchObject({

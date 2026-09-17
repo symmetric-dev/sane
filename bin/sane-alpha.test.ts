@@ -26,7 +26,7 @@ describe("sane-alpha dispatcher", () => {
     const temporaryDirectory = await mkdtemp(join(tmpdir(), "sane-model-cli-"))
     try {
       const config = join(temporaryDirectory, "my models.yaml")
-      await Bun.write(config, "sane-worker-scout: openai/gpt-5\n")
+      await Bun.write(config, "sane/worker/scout: openai/gpt-5\n")
       for (const [index, command] of [
         ["alpha/packages/sane-cli/src/install-sane-agent-context-packages.ts"],
         ["alpha/bin/sane-alpha.ts", "install-context-packages"],
@@ -43,7 +43,7 @@ describe("sane-alpha dispatcher", () => {
         expect((await run("--model-config", config, "--dry-run")).exit).toBe(0)
         await expect(access(home)).rejects.toThrow()
         expect((await run("--model-config", config)).exit).toBe(0)
-        expect(await readFile(join(home, ".config/opencode/agents/sane-worker-scout.md"), "utf8")).toContain('model: "openai/gpt-5"')
+        expect(await readFile(join(home, ".config/opencode/agents/sane/worker/scout.md"), "utf8")).toContain('model: "openai/gpt-5"')
         expect((await run("--model-config", config)).stdout).not.toContain("Created:")
         const invalid = await run("--model-config", join(temporaryDirectory, "missing.yaml"))
         expect(invalid.exit).toBe(1)

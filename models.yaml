@@ -1,21 +1,21 @@
 # Hard Problems Assistants
-sane-assistant-engineering: { model: "opencode-go/muse-spark-1.3-contributor", variant: high }
+sane/assistant/engineering: { model: "opencode-go/muse-spark-1.3-contributor", variant: high }
 
 # Wide Coverage Assistants
-sane-assistant-design: { model: "opencode-go/muse-spark-1.3-contributor", variant: high }
-sane-assistant-research: { model: "opencode-go/muse-spark-1.3-contributor", variant: high }
-sane-assistant-execution: { model: "opencode-go/muse-spark-1.3-contributor", variant: high }
+sane/assistant/design: { model: "opencode-go/muse-spark-1.3-contributor", variant: high }
+sane/assistant/research: { model: "opencode-go/muse-spark-1.3-contributor", variant: high }
+sane/assistant/execution: { model: "opencode-go/muse-spark-1.3-contributor", variant: high }
 
 # Wide Coverage - Low Verbosity Assistants (They create more compact prompts for other agents)
-sane-assistant-planning: { model: "opencode-go/muse-spark-1.3-contributor", variant: high }
+sane/assistant/planning: { model: "opencode-go/muse-spark-1.3-contributor", variant: high }
 
 # Wide Coverage Workers
-sane-worker-reviewer: { model: "opencode-go/muse-spark-1.3-contributor", variant: high }
-sane-worker-researcher: { model: "opencode-go/muse-spark-1.3-contributor", variant: high }
-sane-worker-scout: { model: "opencode-go/muse-spark-1.3-contributor", variant: high }
-sane-worker-grounder: { model: "opencode-go/muse-spark-1.3-contributor", variant: high }
+sane/worker/reviewer: { model: "opencode-go/muse-spark-1.3-contributor", variant: high }
+sane/worker/researcher: { model: "opencode-go/muse-spark-1.3-contributor", variant: high }
+sane/worker/scout: { model: "opencode-go/muse-spark-1.3-contributor", variant: high }
+sane/worker/grounder: { model: "opencode-go/muse-spark-1.3-contributor", variant: high }
 
 # Deep Focus Workers
 # sane-worker-implementer: { model: "openai/gpt-6-astra", variant: low }
-sane-worker-implementer: { model: "opencode-go/muse-spark-1.3-contributor", variant: high }
-sane-worker-fixer: { model: "opencode-go/muse-spark-1.3-contributor", variant: high }
+sane/worker/implementer: { model: "opencode-go/muse-spark-1.3-contributor", variant: high }
+sane/worker/fixer: { model: "opencode-go/muse-spark-1.3-contributor", variant: high }

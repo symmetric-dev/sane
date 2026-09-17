@@ -5,17 +5,17 @@ import { dirname, join, resolve } from "node:path"
 import { injectAgentModel, loadAgentModelConfig } from "./agent-model-config.ts"
 
 export const AGENT_FILENAMES = [
-  "sane-assistant-design.md",
-  "sane-assistant-engineering.md",
-  "sane-assistant-execution.md",
-  "sane-assistant-planning.md",
-  "sane-assistant-research.md",
-  "sane-worker-fixer.md",
-  "sane-worker-grounder.md",
-  "sane-worker-implementer.md",
-  "sane-worker-researcher.md",
-  "sane-worker-reviewer.md",
-  "sane-worker-scout.md",
+  "sane/assistant/design.md",
+  "sane/assistant/engineering.md",
+  "sane/assistant/execution.md",
+  "sane/assistant/planning.md",
+  "sane/assistant/research.md",
+  "sane/worker/fixer.md",
+  "sane/worker/grounder.md",
+  "sane/worker/implementer.md",
+  "sane/worker/researcher.md",
+  "sane/worker/reviewer.md",
+  "sane/worker/scout.md",
 ] as const
 
 export const ROLE_SKILL_NAMES = [
