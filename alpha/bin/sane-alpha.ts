@@ -1,17 +1,33 @@
 #!/usr/bin/env bun
 
-import { runCli as runCreateRepositoryWorkstream } from "../scripts/create-sane-repository-workstream.ts"
-import { runCli as runInitializeRepository } from "../scripts/init-sane-repository.ts"
-import { runCli as runInstallAgentContextPackages } from "../scripts/install-sane-agent-context-packages.ts"
-import { runCli as runPrintSanePath } from "../scripts/print-sane-path.ts"
-import { runCli as runSelectWorkstream } from "../scripts/select-sane-workstream.ts"
+import { runCli as runCreateRepositoryWorkstream } from "../packages/sane-cli/src/create-sane-repository-workstream.ts"
+import { runCli as runInitializeRepository } from "../packages/sane-cli/src/init-sane-repository.ts"
+import { runCli as runInstallAgentContextPackages } from "../packages/sane-cli/src/install-sane-agent-context-packages.ts"
+import { runCli as runSaneApprove } from "../packages/sane-cli/src/sane-approve-command.ts"
+import { runCli as runSaneArtifact } from "../packages/sane-cli/src/sane-artifact-command.ts"
+import { runCli as runSaneResearch } from "../packages/sane-cli/src/sane-research-command.ts"
+import { runCli as runSaneHandoff } from "../packages/sane-cli/src/sane-handoff-command.ts"
+import { runCli as runSaneMerge } from "../packages/sane-cli/src/sane-merge-command.ts"
+import { runCli as runSanePickup } from "../packages/sane-cli/src/sane-pickup-command.ts"
+import { runCli as runSaneState } from "../packages/sane-cli/src/sane-state-command.ts"
+import { runCli as runSaneStatus } from "../packages/sane-cli/src/sane-status-command.ts"
+import { runCli as runSaneWorktree } from "../packages/sane-cli/src/sane-worktree-command.ts"
+import { runCli as runSelectWorkstream } from "../packages/sane-cli/src/select-sane-workstream.ts"
 
 export type AlphaCommand =
   | "init-sane"
   | "create-workstream"
   | "select-workstream"
   | "install-context-packages"
-  | "sane-path"
+  | "state"
+  | "status"
+  | "pickup"
+  | "artifact"
+  | "approve"
+  | "research"
+  | "handoff"
+  | "worktree"
+  | "merge"
 
 export type AlphaCommandHandler = (args: string[]) => Promise<number>
 
@@ -20,7 +36,15 @@ export const COMMANDS: Record<AlphaCommand, AlphaCommandHandler> = {
   "create-workstream": runCreateRepositoryWorkstream,
   "select-workstream": runSelectWorkstream,
   "install-context-packages": runInstallAgentContextPackages,
-  "sane-path": runPrintSanePath,
+  state: runSaneState,
+  status: runSaneStatus,
+  pickup: runSanePickup,
+  artifact: runSaneArtifact,
+  approve: runSaneApprove,
+  research: runSaneResearch,
+  handoff: runSaneHandoff,
+  worktree: runSaneWorktree,
+  merge: runSaneMerge,
 }
 
 export const USAGE = `Usage: sane-alpha <command> [arguments...]
@@ -30,7 +54,15 @@ Commands:
   create-workstream
   select-workstream
   install-context-packages [--dry-run] [--overwrite] [--model-config <path>]
-  sane-path                      Print the paired SANE workstream repository path
+  state
+  status
+  pickup
+  artifact
+  approve
+  research
+  handoff
+  worktree
+  merge
 
 Run 'sane-alpha <command> --help' for a command's argument validation.`
 

@@ -2,8 +2,10 @@
 
 Sane is a developer toolkit for planning, running, and reviewing agent-driven work efficiently. It provides structured workstreams for breaking work into stages/batches/threads, plus CLI workflows that integrate with Opencode so humans and agents can collaborate with clear progress and handoffs.
 
+## Preview
+
 <p align="center">
-  <img src=".github/assets/Web.JPG" alt="AgEnv workflow preview" width="900" />
+  <img src=".github/assets/Web.JPG" alt="Sane agent-driven workstream workflow" width="900" />
 </p>
 
 ## External Dependencies

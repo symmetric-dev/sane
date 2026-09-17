@@ -17,7 +17,7 @@ SANE has three distinct record types:
 
 | Record | Primary purpose | Location |
 | --- | --- | --- |
-| Workstream artifacts | Historical record of the bounded change: intent, evidence, decisions, approvals, and delivery | Paired workstream repository |
+| Workstream artifacts | Historical record of the bounded change: intent, evidence, decisions, approvals, and delivery | Ignored `.sane/workstreams/` directory |
 | Project documentation | Practical current-state description of the implementation repository | Implementation repository |
 | Session evidence | Experimental trace of how users and agents performed the work | Separate local evidence store |
 
