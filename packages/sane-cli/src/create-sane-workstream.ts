@@ -24,20 +24,16 @@ const SHARED_INITIAL_TEMPLATE_REGISTRY = [
   { source: "shared/SANE_CONTEXT.md", destination: "SANE_CONTEXT.md" },
   { source: "shared/SANE_STATE.md", destination: "SANE_STATE.md" },
   {
-    source: "shared/implementation/REPORT.md",
-    destination: "resources/IMPLEMENTATION_REPORT_TEMPLATE.md",
+    source: "shared/sdd/SDD.md",
+    destination: "SDD.md",
   },
   {
-    source: "shared/implementation/STAGE_BRIEF.md",
-    destination: "resources/STAGE_IMPLEMENTATION_BRIEF_TEMPLATE.md",
+    source: "shared/sdd/SDD.md",
+    destination: "resources/SDD_TEMPLATE.md",
   },
   {
-    source: "shared/design/section/SPEC.md",
-    destination: "resources/SECTION_SPEC_TEMPLATE.md",
-  },
-  {
-    source: "shared/execution/JOB.md",
-    destination: "resources/JOB_TEMPLATE.md",
+    source: "shared/solutions/SOLUTION.md",
+    destination: "resources/SOLUTION_SPEC_TEMPLATE.md",
   },
   {
     source: "shared/research/BASELINE.md",
@@ -48,38 +44,28 @@ const SHARED_INITIAL_TEMPLATE_REGISTRY = [
     destination: "resources/RESEARCH_REPORT_TEMPLATE.md",
   },
   {
-    source: "shared/design/STAGES.md",
-    destination: "resources/STAGES_TEMPLATE.md",
+    source: "shared/plan/PLAN.md",
+    destination: "resources/PLAN_TEMPLATE.md",
   },
   {
-    source: "shared/design/stage/SPEC.md",
-    destination: "resources/STAGE_DESIGN_SPEC_TEMPLATE.md",
+    source: "shared/plan/JOB.md",
+    destination: "resources/JOB_TEMPLATE.md",
   },
   {
-    source: "shared/design/stage/SECTIONS.md",
-    destination: "resources/STAGE_SECTIONS_TEMPLATE.md",
+    source: "shared/execution/REPORT.md",
+    destination: "resources/EXECUTION_REPORT_TEMPLATE.md",
   },
   {
-    source: "shared/execution/EXECUTION_PLAN.md",
-    destination: "resources/EXECUTION_PLAN_TEMPLATE.md",
+    source: "shared/execution/BRIEF.md",
+    destination: "resources/EXECUTION_BRIEF_TEMPLATE.md",
   },
 ] as const satisfies TemplateRegistry
 
 const TYPE_INITIAL_TEMPLATE_REGISTRY: Record<WorkstreamType, TemplateRegistry> = {
-  feature: [
-    { source: "feature/PRD.md", destination: "PRD.md" },
-    {
-      source: "feature/design/SPEC.md",
-      destination: "resources/ROOT_DESIGN_SPEC_TEMPLATE.md",
-    },
-  ],
-  foundation: [
-    { source: "foundation/PRD.md", destination: "PRD.md" },
-    {
-      source: "foundation/design/SPEC.md",
-      destination: "resources/ROOT_DESIGN_SPEC_TEMPLATE.md",
-    },
-  ],
+  feature: [{ source: "feature/PRD.md", destination: "PRD.md" }],
+  foundation: [{ source: "foundation/FOUNDATION.md", destination: "FOUNDATION.md" }],
+  issue: [{ source: "issue/ISSUE.md", destination: "ISSUE.md" }],
+  maintenance: [{ source: "maintenance/MAINTENANCE.md", destination: "MAINTENANCE.md" }],
 }
 
 export function initialTemplateRegistry(workstreamType: WorkstreamType): TemplateRegistry {
@@ -88,15 +74,14 @@ export function initialTemplateRegistry(workstreamType: WorkstreamType): Templat
 
 export const INITIAL_DIRECTORIES = [
   "resources",
-  "docs",
+  "solutions",
   "research",
-  "design",
+  "plan",
   "execution",
-  "implementation",
 ] as const
 
 export const DEFAULT_TEMPLATE_ROOT = fileURLToPath(
-  new URL("../templates/", import.meta.url),
+  new URL("../../../templates/", import.meta.url),
 )
 
 export class BootstrapError extends Error {
@@ -308,7 +293,7 @@ export async function createSaneWorkstream(
 }
 
 export const USAGE =
-  "Usage: bun alpha/scripts/create-sane-workstream.ts <workstream-path> --type <feature|foundation> [--dry-run]"
+  "Usage: bun alpha/packages/sane-cli/src/create-sane-workstream.ts <workstream-path> --type <feature|foundation|issue|maintenance> [--dry-run]"
 
 export function parseCliArguments(args: string[]): {
   destination: string

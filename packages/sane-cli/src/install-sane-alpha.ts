@@ -3,7 +3,7 @@ import { homedir } from "node:os"
 import { delimiter, dirname, join, resolve } from "node:path"
 import { fileURLToPath, pathToFileURL } from "node:url"
 
-export const DEFAULT_SOURCE_ROOT = fileURLToPath(new URL("../", import.meta.url))
+export const DEFAULT_SOURCE_ROOT = fileURLToPath(new URL("../../../", import.meta.url))
 export const COMMAND_FILENAME = "sane-alpha"
 
 export class SaneAlphaInstallationError extends Error {
@@ -161,7 +161,7 @@ export async function installSaneAlpha(
 }
 
 export const USAGE =
-  "Usage: bun alpha/scripts/install-sane-alpha.ts [--bin-dir <path>] [--dry-run] [--overwrite]"
+  "Usage: bun alpha/packages/sane-cli/src/install-sane-alpha.ts [--bin-dir <path>] [--dry-run] [--overwrite]"
 
 export function parseCliArguments(args: string[]): {
   binDirectory?: string

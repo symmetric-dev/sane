@@ -1,5 +1,13 @@
 import { createSaneWorkstream } from "./create-sane-workstream.ts"
 import {
+  PHASES,
+  initSchema,
+  openSaneDb,
+  resolveSaneIdentity,
+  upsertStateEntry,
+  upsertWorkstream,
+} from "./sane-db.ts"
+import {
   SaneRepositoryError,
   resolveSafeWorkstreamPath,
   resolveSaneRepository,
@@ -41,11 +49,51 @@ export async function createSaneRepositoryWorkstream(options: CreateRepositoryWo
   if (!result.dryRun) {
     await writeCurrentWorkstream(pointer.implementationRepository, workstream.relativePath)
     write(`Selected: ${workstream.relativePath}`)
+    // M2 P0 DB integration: record the workstream + initial pending phases.
+    // Runs only after the staging rename succeeded, so a re-create of the same
+    // workstream still fails with "Destination already exists" inside
+    // createSaneWorkstream before any DB write (idempotent-safe ordering).
+    const identity = await resolveSaneIdentity(
+      pointer.implementationRepository,
+      workstream.relativePath,
+    )
+    const db = await openSaneDb(pointer.implementationRepository)
+    try {
+      initSchema(db)
+      const mutation = {
+        actorRole: "system",
+        sessionId: `create:${identity.workstreamId}`,
+      }
+      upsertWorkstream(
+        db,
+        identity,
+        {
+          scope: `${workstreamType} workstream ${identity.workstreamId}`,
+          status: "open",
+          foundationRev: null,
+        },
+        mutation,
+      )
+      for (const phase of PHASES) {
+        upsertStateEntry(
+          db,
+          identity,
+          { phase, status: "pending", ownerRole: phase },
+          mutation,
+        )
+      }
+    } finally {
+      try {
+        db.close()
+      } catch {
+        // Best effort; close is idempotent for create flows.
+      }
+    }
   }
   return { dryRun: result.dryRun, relativePath: workstream.relativePath }
 }
 
-export const USAGE = "Usage: sane-alpha create-workstream <implementation-repository> <workstream-relative-path> --type <feature|foundation> [--dry-run]"
+export const USAGE = "Usage: sane-alpha create-workstream <implementation-repository> <workstream-relative-path> --type <feature|foundation|issue|maintenance> [--dry-run]"
 
 export function parseCliArguments(args: string[]): { implementationRepository: string; workstreamPath: string; type: string; dryRun: boolean } {
   let dryRun = false

@@ -10,7 +10,7 @@ import {
   ROLE_SKILL_NAMES,
   installSaneAgentContextPackages,
   parseCliArguments,
-} from "./install-sane-agent-context-packages.ts"
+} from "../src/install-sane-agent-context-packages.ts"
 
 async function expectMissing(path: string): Promise<void> {
   await expect(access(path)).rejects.toThrow()

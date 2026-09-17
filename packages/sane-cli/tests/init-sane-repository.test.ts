@@ -9,7 +9,15 @@ import {
   RepositoryInitializationError,
   initializeSaneRepository,
   parseCliArguments,
-} from "./init-sane-repository.ts"
+} from "../src/init-sane-repository.ts"
+import {
+  REQUIRED_WORKSTREAM_FILES,
+  RETIRED_WORKSTREAM_FILES,
+  ROOT_DOC_BY_TYPE,
+  validateBootstrappedWorkstream,
+} from "../src/sane-repository.ts"
+import { saneDbPath } from "../src/sane-db.ts"
+import { Database } from "bun:sqlite"
 
 const execFileAsync = promisify(execFile)
 
@@ -162,5 +170,102 @@ describe("init-sane-repository", () => {
 
     expect(result).toMatchObject({ dryRun: true, createdWorkstreamsRoot: false })
     expect(lines).toContain("Dry run: no files or directories were modified.")
+  })
+
+  test("0.2.0 REQUIRED_WORKSTREAM_FILES uses the new layout without Stage templates", () => {
+    const required: string[] = [...REQUIRED_WORKSTREAM_FILES]
+    expect(required).toContain("SANE_CONTEXT.md")
+    expect(required).toContain("SANE_STATE.md")
+    expect(required).toContain("SDD.md")
+    expect(required).toContain("resources/SDD_TEMPLATE.md")
+    expect(required).toContain("resources/SOLUTION_SPEC_TEMPLATE.md")
+    expect(required).toContain("resources/RESEARCH_BASELINE_TEMPLATE.md")
+    expect(required).toContain("resources/RESEARCH_REPORT_TEMPLATE.md")
+    expect(required).toContain("resources/PLAN_TEMPLATE.md")
+    expect(required).toContain("resources/JOB_TEMPLATE.md")
+    expect(required).toContain("resources/EXECUTION_REPORT_TEMPLATE.md")
+    expect(required).toContain("resources/EXECUTION_BRIEF_TEMPLATE.md")
+    for (const retired of RETIRED_WORKSTREAM_FILES) {
+      expect(required).not.toContain(retired as string)
+    }
+    expect(required.join("\n")).not.toContain("STAGES_TEMPLATE")
+    expect(required.join("\n")).not.toContain("EXECUTION_PLAN_TEMPLATE")
+    expect(ROOT_DOC_BY_TYPE).toMatchObject({
+      feature: "PRD.md",
+      foundation: "FOUNDATION.md",
+      issue: "ISSUE.md",
+      maintenance: "MAINTENANCE.md",
+    })
+  })
+
+  test("initialized repository validates a 0.2.0 workstream and rejects Stage artifacts", async () => {
+    await initializeSaneRepository(options())
+    const workstream = join(workstreamsRoot, "01-0-2-0")
+    await mkdir(join(workstream, "resources"), { recursive: true })
+    await Bun.write(join(workstream, "type"), "issue\n")
+    await Bun.write(join(workstream, "ISSUE.md"), "issue root\n")
+    await Bun.write(join(workstream, "SANE_CONTEXT.md"), "context\n")
+    await Bun.write(join(workstream, "SANE_STATE.md"), "state\n")
+    await Bun.write(join(workstream, "SDD.md"), "sdd placeholder\n")
+    for (const file of REQUIRED_WORKSTREAM_FILES) {
+      if (file === "SANE_CONTEXT.md" || file === "SANE_STATE.md" || file === "SDD.md") continue
+      await Bun.write(join(workstream, file), `${file}\n`)
+    }
+    expect(await validateBootstrappedWorkstream(workstream)).toBe("issue")
+
+    await Bun.write(join(workstream, "resources/STAGES_TEMPLATE.md"), "retired\n")
+    await expect(validateBootstrappedWorkstream(workstream)).rejects.toThrow("retired Stage artifact")
+  })
+
+  test("initialized repository rejects an old Stage layout missing new files", async () => {
+    await initializeSaneRepository(options())
+    const legacy = join(workstreamsRoot, "01-legacy-stage")
+    await mkdir(join(legacy, "resources"), { recursive: true })
+    await Bun.write(join(legacy, "type"), "feature\n")
+    await Bun.write(join(legacy, "PRD.md"), "old\n")
+    await Bun.write(join(legacy, "SANE_CONTEXT.md"), "old\n")
+    await Bun.write(join(legacy, "SANE_STATE.md"), "old\n")
+    for (const retired of RETIRED_WORKSTREAM_FILES) {
+      await Bun.write(join(legacy, retired), "old\n")
+    }
+    await expect(validateBootstrappedWorkstream(legacy)).rejects.toThrow("retired Stage artifact")
+  })
+
+  test("creates the per-repo sqlite source of truth with schema tables (M2 P0)", async () => {
+    const result = await initializeSaneRepository(options())
+    const dbPath = saneDbPath(result.implementationRepository)
+    expect((await lstat(dbPath)).isFile()).toBe(true)
+
+    const db = new Database(dbPath)
+    try {
+      const tables = db
+        .query(`SELECT name FROM sqlite_master WHERE type='table' ORDER BY name`)
+        .all() as Array<{ name: string }>
+      const names = tables.map((table) => table.name)
+      for (const expected of [
+        "workstreams",
+        "selections",
+        "state_entries",
+        "approvals",
+        "baselines",
+        "research_reports",
+        "jobs",
+        "merges",
+      ]) {
+        expect(names).toContain(expected)
+      }
+    } finally {
+      db.close()
+    }
+
+    // Idempotent: second init keeps the DB and schema.
+    await initializeSaneRepository(options())
+    expect((await lstat(dbPath)).isFile()).toBe(true)
+  })
+
+  test("dry run creates no sqlite database file", async () => {
+    await initializeSaneRepository({ ...options(), dryRun: true })
+    const canonicalImplementationRepository = await realpath(implementationRepository)
+    await expectMissing(saneDbPath(canonicalImplementationRepository))
   })
 })

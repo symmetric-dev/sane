@@ -8,15 +8,51 @@ import { promisify } from "node:util"
 import {
   createSaneRepositoryWorkstream,
   parseCliArguments as parseCreateCliArguments,
-} from "./create-sane-repository-workstream.ts"
-import { SaneRepositoryError } from "./sane-repository.ts"
-import { selectSaneWorkstream } from "./select-sane-workstream.ts"
+} from "../src/create-sane-repository-workstream.ts"
+import {
+  REQUIRED_WORKSTREAM_FILES,
+  RETIRED_WORKSTREAM_FILES,
+  ROOT_DOC_BY_TYPE,
+  SaneRepositoryError,
+} from "../src/sane-repository.ts"
+import {
+  parseCliArguments as parseSelectCliArguments,
+  selectSaneWorkstream,
+} from "../src/select-sane-workstream.ts"
 
 const execFileAsync = promisify(execFile)
 
 async function expectMissing(path: string): Promise<void> {
   await expect(access(path)).rejects.toThrow()
 }
+
+const NEW_TEMPLATE_SOURCES = [
+  "shared/SANE_CONTEXT.md",
+  "shared/SANE_STATE.md",
+  "shared/sdd/SDD.md",
+  "shared/solutions/SOLUTION.md",
+  "shared/research/BASELINE.md",
+  "shared/research/REPORT.md",
+  "shared/plan/PLAN.md",
+  "shared/plan/JOB.md",
+  "shared/execution/REPORT.md",
+  "shared/execution/BRIEF.md",
+  "feature/PRD.md",
+  "foundation/FOUNDATION.md",
+  "issue/ISSUE.md",
+  "maintenance/MAINTENANCE.md",
+]
+
+const NEW_RESOURCE_FILES = [
+  "resources/SDD_TEMPLATE.md",
+  "resources/SOLUTION_SPEC_TEMPLATE.md",
+  "resources/RESEARCH_BASELINE_TEMPLATE.md",
+  "resources/RESEARCH_REPORT_TEMPLATE.md",
+  "resources/PLAN_TEMPLATE.md",
+  "resources/JOB_TEMPLATE.md",
+  "resources/EXECUTION_REPORT_TEMPLATE.md",
+  "resources/EXECUTION_BRIEF_TEMPLATE.md",
+]
 
 describe("repository-aware Alpha workstream tools", () => {
   let tempDirectory: string
@@ -32,16 +68,7 @@ describe("repository-aware Alpha workstream tools", () => {
     await mkdir(implementationRepository)
     await execFileAsync("git", ["init", "--quiet", implementationRepository])
     await mkdir(workstreamsRoot, { recursive: true })
-    for (const source of [
-        "shared/SANE_CONTEXT.md", "shared/SANE_STATE.md", "feature/PRD.md",
-        "foundation/PRD.md", "shared/research/BASELINE.md",
-        "shared/research/REPORT.md", "feature/design/SPEC.md",
-        "foundation/design/SPEC.md", "shared/design/STAGES.md",
-        "shared/design/stage/SPEC.md", "shared/design/stage/SECTIONS.md",
-        "shared/execution/EXECUTION_PLAN.md", "shared/design/section/SPEC.md",
-        "shared/execution/JOB.md", "shared/implementation/REPORT.md",
-        "shared/implementation/STAGE_BRIEF.md",
-    ]) {
+    for (const source of NEW_TEMPLATE_SOURCES) {
       await mkdir(dirname(join(templateRoot, source)), { recursive: true })
       await Bun.write(join(templateRoot, source), `${source}\n`)
     }
@@ -59,7 +86,11 @@ describe("repository-aware Alpha workstream tools", () => {
       templateRoot,
       write: () => {},
     })
-    return join(workstreamsRoot, relativePath)
+    const workstreamPath = join(workstreamsRoot, relativePath)
+    // SDD.md root is provided by the shared bootstrap registry
+    // (shared/sdd/SDD.md -> SDD.md). Access is tolerant when the file exists.
+    await access(join(workstreamPath, "SDD.md"))
+    return workstreamPath
   }
 
   test("creates a repository workstream and selects it only after successful creation", async () => {
@@ -151,26 +182,92 @@ describe("repository-aware Alpha workstream tools", () => {
     expect(await readFile(join(implementationRepository, ".sane", "current-workstream"), "utf8")).toBe("01-valid\n")
   })
 
-  test("requires PRD.md for a foundation workstream", async () => {
-    const foundation = await bootstrap("01-foundation", "foundation")
-    await rm(join(foundation, "PRD.md"))
+  test("REQUIRED_WORKSTREAM_FILES matches the 0.2.0 bootstrap shape", () => {
+    const required: string[] = [...REQUIRED_WORKSTREAM_FILES]
+    expect(required).toContain("SANE_CONTEXT.md")
+    expect(required).toContain("SANE_STATE.md")
+    expect(required).toContain("SDD.md")
+    for (const resource of NEW_RESOURCE_FILES) {
+      expect(required).toContain(resource)
+    }
+    for (const retired of RETIRED_WORKSTREAM_FILES) {
+      expect(required).not.toContain(retired as string)
+    }
+    expect(required.join("\n")).not.toContain("STAGES_TEMPLATE")
+    expect(required.join("\n")).not.toContain("STAGE_DESIGN_SPEC")
+    expect(required.join("\n")).not.toContain("EXECUTION_PLAN_TEMPLATE")
+    expect(required.join("\n")).not.toContain("IMPLEMENTATION_REPORT")
+  })
 
+  test("requires the 0.2.0 fixed roots SANE_CONTEXT.md, SANE_STATE.md, and SDD.md", async () => {
+    for (const missing of ["SANE_CONTEXT.md", "SANE_STATE.md", "SDD.md"] as const) {
+      const workstream = await bootstrap(`01-fixed-${missing.replace(/[^A-Za-z]+/g, "-")}`)
+      await rm(join(workstream, missing))
+      await expect(selectSaneWorkstream({
+        implementationRepository,
+        workstreamPath: `01-fixed-${missing.replace(/[^A-Za-z]+/g, "-")}`,
+        write: () => {},
+      })).rejects.toThrow("missing regular file")
+    }
+  })
+
+  test("requires the correct root doc per type and exactly one root doc", async () => {
+    const cases = [
+      { type: "feature", doc: "PRD.md" },
+      { type: "foundation", doc: "FOUNDATION.md" },
+      { type: "issue", doc: "ISSUE.md" },
+      { type: "maintenance", doc: "MAINTENANCE.md" },
+    ] as const
+    for (const { type, doc } of cases) {
+      expect(ROOT_DOC_BY_TYPE[type]).toBe(doc)
+      const workstream = await bootstrap(`01-${type}`, type)
+      expect(await readFile(join(workstream, doc), "utf8")).toContain(doc === "PRD.md" ? "PRD" : doc.replace(".md", ""))
+      // Exactly one root doc present after bootstrap.
+      for (const other of ["PRD.md", "FOUNDATION.md", "ISSUE.md", "MAINTENANCE.md"] as const) {
+        if (other === doc) continue
+        await expectMissing(join(workstream, other))
+      }
+      await selectSaneWorkstream({ implementationRepository, workstreamPath: `01-${type}`, write: () => {} })
+
+      // Missing the expected root doc fails.
+      await rm(join(workstream, doc))
+      await expect(selectSaneWorkstream({
+        implementationRepository, workstreamPath: `01-${type}`, write: () => {},
+      })).rejects.toThrow("missing regular file")
+    }
+  })
+
+  test("rejects an extra root doc that does not match the type", async () => {
+    const workstream = await bootstrap("01-extra-root", "feature")
+    await Bun.write(join(workstream, "FOUNDATION.md"), "wrong root\n")
+    await expect(selectSaneWorkstream({
+      implementationRepository, workstreamPath: "01-extra-root", write: () => {},
+    })).rejects.toThrow("exactly one root document")
+  })
+
+  test("rejects a foundation workstream using the old PRD.md root", async () => {
+    const workstream = await bootstrap("01-foundation-old-root", "foundation")
+    // Simulate the pre-0.2.0 bootstrap which wrote PRD.md for foundation.
+    await rm(join(workstream, "FOUNDATION.md"))
+    await Bun.write(join(workstream, "PRD.md"), "old foundation PRD\n")
     await expect(selectSaneWorkstream({
       implementationRepository,
-      workstreamPath: "01-foundation",
+      workstreamPath: "01-foundation-old-root",
       write: () => {},
     })).rejects.toThrow("missing regular file")
   })
 
-  test("requires every local fallback template for selection", async () => {
-    const workstream = await bootstrap("01-resources")
-    await rm(join(workstream, "resources", "STAGE_DESIGN_SPEC_TEMPLATE.md"))
-
-    await expect(selectSaneWorkstream({
-      implementationRepository,
-      workstreamPath: "01-resources",
-      write: () => {},
-    })).rejects.toThrow("STAGE_DESIGN_SPEC_TEMPLATE.md")
+  test("requires every new 0.2.0 fallback template for selection", async () => {
+    for (const resource of NEW_RESOURCE_FILES) {
+      const slug = resource.replace(/[^A-Za-z]+/g, "-")
+      const workstream = await bootstrap(`01-resource-${slug}`)
+      await rm(join(workstream, resource))
+      await expect(selectSaneWorkstream({
+        implementationRepository,
+        workstreamPath: `01-resource-${slug}`,
+        write: () => {},
+      })).rejects.toThrow(resource.split("/").pop()!)
+    }
   })
 
   test("requires the uniform research baseline template and not the obsolete technical reference", async () => {
@@ -185,13 +282,61 @@ describe("repository-aware Alpha workstream tools", () => {
     })).rejects.toThrow("RESEARCH_BASELINE_TEMPLATE.md")
   })
 
+  test("rejects retired Stage artifacts even when new files are present", async () => {
+    const retiredCases = [
+      "resources/STAGES_TEMPLATE.md",
+      "resources/STAGE_DESIGN_SPEC_TEMPLATE.md",
+      "resources/STAGE_SECTIONS_TEMPLATE.md",
+      "resources/SECTION_SPEC_TEMPLATE.md",
+      "resources/ROOT_DESIGN_SPEC_TEMPLATE.md",
+      "resources/STAGE_IMPLEMENTATION_BRIEF_TEMPLATE.md",
+      "resources/IMPLEMENTATION_REPORT_TEMPLATE.md",
+      "resources/EXECUTION_PLAN_TEMPLATE.md",
+    ]
+    for (const retired of retiredCases) {
+      const slug = retired.replace(/[^A-Za-z]+/g, "-")
+      const workstream = await bootstrap(`01-retired-${slug}`)
+      await Bun.write(join(workstream, retired), "retired\n")
+      await expect(selectSaneWorkstream({
+        implementationRepository,
+        workstreamPath: `01-retired-${slug}`,
+        write: () => {},
+      })).rejects.toThrow("retired Stage artifact")
+    }
+  })
+
+  test("rejects an old Stage layout missing new files", async () => {
+    const legacyPath = join(workstreamsRoot, "01-legacy-stage")
+    await mkdir(join(legacyPath, "resources"), { recursive: true })
+    await Bun.write(join(legacyPath, "type"), "feature\n")
+    await Bun.write(join(legacyPath, "PRD.md"), "old\n")
+    await Bun.write(join(legacyPath, "SANE_CONTEXT.md"), "old\n")
+    await Bun.write(join(legacyPath, "SANE_STATE.md"), "old\n")
+    for (const retired of RETIRED_WORKSTREAM_FILES) {
+      await Bun.write(join(legacyPath, retired), "old\n")
+    }
+    await expect(selectSaneWorkstream({
+      implementationRepository, workstreamPath: "01-legacy-stage", write: () => {},
+    })).rejects.toThrow("retired Stage artifact")
+  })
+
   test("requires a supported public create-workstream type argument", () => {
     expect(() => parseCreateCliArguments([implementationRepository, "01-new"])).toThrow("--type is required")
     expect(() => parseCreateCliArguments([implementationRepository, "01-new", "--type", "legacy"])).toThrow("Unsupported workstream type")
+    for (const type of ["feature", "foundation", "issue", "maintenance"] as const) {
+      expect(parseCreateCliArguments([implementationRepository, "01-new", "--type", type])).toMatchObject({ type })
+    }
     expect(parseCreateCliArguments([implementationRepository, "01-new", "--type", "foundation", "--dry-run"])).toMatchObject({
       type: "foundation",
       dryRun: true,
     })
   })
 
+  test("select-workstream takes no type argument", () => {
+    expect(parseSelectCliArguments([implementationRepository, "01-one"])).toMatchObject({
+      implementationRepository,
+      workstreamPath: "01-one",
+    })
+    expect(() => parseSelectCliArguments([implementationRepository, "01-one", "--type", "feature"])).toThrow("Unknown option")
+  })
 })

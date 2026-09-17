@@ -1,4 +1,4 @@
-export const SUPPORTED_WORKSTREAM_TYPES = ["feature", "foundation"] as const
+export const SUPPORTED_WORKSTREAM_TYPES = ["feature", "foundation", "issue", "maintenance"] as const
 
 export type WorkstreamType = (typeof SUPPORTED_WORKSTREAM_TYPES)[number]
 

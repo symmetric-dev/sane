@@ -4,6 +4,7 @@ import { join, resolve } from "node:path"
 import { promisify } from "node:util"
 
 import { BootstrapError } from "./create-sane-workstream.ts"
+import { initSchema, openSaneDbAtPath, saneDbPath } from "./sane-db.ts"
 
 const execFileAsync = promisify(execFile)
 
@@ -94,6 +95,30 @@ function appendIgnoreEntry(content: string): string {
 }
 
 /**
+ * M2 P0: ensure the per-repo sqlite source of truth exists.
+ * Creates `<repo>/.sane/sane.db` with the canonical schema (idempotent via
+ * `IF NOT EXISTS`). Call only for non-dry-run flows after the workstreams
+ * root has been validated/created.
+ */
+function ensureSaneDb(implementationRepository: string): void {
+  const dbPath = saneDbPath(implementationRepository)
+  const db = openSaneDbAtPath(dbPath)
+  try {
+    initSchema(db)
+  } catch (error) {
+    throw new RepositoryInitializationError(
+      `Could not initialize SANE database at ${dbPath}: ${(error as Error).message}`,
+    )
+  } finally {
+    try {
+      db.close()
+    } catch {
+      // Best effort; close is idempotent for init flows.
+    }
+  }
+}
+
+/**
  * Create or validate the local .sane/workstreams directory inside an
  * implementation repository. This deliberately does not bootstrap a workstream.
  */
@@ -147,6 +172,7 @@ export async function initializeSaneRepository(
     }
 
     if (addedIgnoreEntry) await writeFile(gitignorePath, appendIgnoreEntry(gitignoreState.content))
+    ensureSaneDb(implementationRepository)
     write(`Validated: ${workstreamsRoot}`)
     if (addedIgnoreEntry) write(`Updated: ${gitignorePath}`)
     return {
@@ -200,6 +226,7 @@ export async function initializeSaneRepository(
     )
   }
 
+  ensureSaneDb(implementationRepository)
   write(`Created: ${workstreamsRoot}`)
   if (addedIgnoreEntry) write(`Updated: ${gitignorePath}`)
   return {

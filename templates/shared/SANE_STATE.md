@@ -1,54 +1,123 @@
-# SANE State
+# SANE State — <workstream-id>
 
-<!-- Keep this structure. Replace blank Notes with concise, user-directed status
-information. Add Stage and Job entries only when their identities exist. -->
+<!-- Rendered from sqlite sane.db; database wins. Renderer regenerates this file. -->
+<!-- Do not edit by hand; `renderSaneState` in scripts/sane-state.ts overwrites this file from the DB. -->
+<!-- docs/SANE_0_2_0.md Section 2: sqlite is source of truth; markdown is render for humans/agent context. -->
 
-## Workstream Foundation
+- repo_root: <repo-root>
+- user: <user>
+- workstream_id: <workstream-id>
 
-### Product
+## Workstream
 
-- Approval: `[ ] Pending`
-- Delivery: `PRD.md`
-- Notes:
+- scope: <one-aspect-scope>
+- status: <open> <!-- open | blocked | done | abandoned -->
+- foundation_rev: <foundation-workstream-id@revision-or-(none)>
 
-### Research
+## Phases
 
-- Approval: `[ ] Pending`
-- Delivery: `research/workstream/BASELINE.md`
-- Notes: <!-- When useful, list other applicable assigned-scope baselines, such
-  as `research/stage-<two-digit-id>/BASELINE.md`, without implying inheritance
-  or automatic cross-scope applicability. -->
+### design
 
-### Design
+- status: <pending> <!-- pending | in_progress | delivered | approved | blocked -->
+- owner (owner_role): <design>
+- approval_ref: <approval-ref-or-(none)>
 
-- Approval: `[ ] Pending`
-- Delivery: `design/SPEC.md`, `design/STAGES.md`
-- Notes:
+### engineering
 
-## Workstream Stages
+- status: <pending>
+- owner (owner_role): <engineering>
+- approval_ref: <approval-ref-or-(none)>
 
-<!-- Add one Stage section after the Design Assistant establishes its ID and
-name. Track its Design and Execution approvals and delivered artifacts here. -->
+### planning
 
-## Workstream Implementation
+- status: <pending>
+- owner (owner_role): <planning>
+- approval_ref: <approval-ref-or-(none)>
 
-<!-- Add one Stage section only after its Execution Plan identifies the Jobs.
+### execution
 
-### Stage <stage id>: <stage name>
+- status: <pending>
+- owner (owner_role): <execution>
+- approval_ref: <approval-ref-or-(none)>
 
-- <Job name> `[ ] Pending`
-  - Report: `implementation/reports/<stage-id>-<stage-slug>/<job-id>-<job-slug>.md`
-  - Notes:
+## Gates
 
-- Stage brief: `implementation/briefs/STAGE_<two-digit-id>.md`
+<!-- Pending gates render `- status: [ ] Pending`; approved gates render `- status: [✓] Approved` plus approval_ref + sane_hash. -->
 
-Each Job status is one of:
+### root-plus-sdd
 
-- `[ ] Pending` — not started.
-- `[~] Active` — work, review, or a required user decision is in progress.
-- `[!] Blocked` — implementation or review evidence requires a user decision.
-- `[✓] Approved` — the user accepted the Job outcome.
-- `[x] Cancelled` — the user cancelled the Job.
+- status: [ ] Pending
+- artifact_path: (none)
+- sane_hash: (none)
+- git_commit: (none)
+- approval_ref: (none)
 
-Add Notes only when they provide useful blocked, review, retry, or outcome
-context. -->
+### solutions
+
+- status: [ ] Pending
+- artifact_path: (none)
+- sane_hash: (none)
+- git_commit: (none)
+- approval_ref: (none)
+
+### plan
+
+- status: [ ] Pending
+- artifact_path: (none)
+- sane_hash: (none)
+- git_commit: (none)
+- approval_ref: (none)
+
+### jobs-batch
+
+- status: [ ] Pending
+- artifact_path: (none)
+- sane_hash: (none)
+- git_commit: (none)
+- approval_ref: (none)
+
+### merge
+
+- status: [ ] Pending
+- artifact_path: (none)
+- sane_hash: (none)
+- git_commit: (none)
+- approval_ref: (none)
+
+<!-- Approved gate example (renderer emits approved_at only when approved): -->
+<!-- - status: [✓] Approved -->
+<!-- - artifact_path: <artifact-path> -->
+<!-- - sane_hash: <sane-hash> -->
+<!-- - git_commit: <git-commit-or-(none)> -->
+<!-- - approval_ref: <user-approval-ref> -->
+<!-- - approved_at: <timestamp> -->
+
+## Jobs
+
+<!-- Empty state renders `(no jobs recorded)`. -->
+
+| job_id | spec_path | report_path | status |
+| --- | --- | --- | --- |
+| <job-id> | <plan/jobs/<job-id>-<job-slug>.md> | <execution/reports/<job-id>-<job-slug>.md-or-(none)> | <planned> |
+
+### <job-id>
+
+- job_id: <job-id>
+- spec_path: <plan/jobs/<job-id>-<job-slug>.md>
+- report_path: <execution/reports/<job-id>-<job-slug>.md-or-(none)>
+- status: <planned> <!-- planned | authorized | running | reported | reviewed | accepted -->
+
+## Baseline
+
+<!-- Empty state renders `(no baseline recorded)`. -->
+
+- revision: <revision>
+- path: <research/BASELINE.md>
+
+## Merge
+
+<!-- Empty state renders `(no merge recorded)`; unmerged renders `merge_commit: (not merged)`. -->
+
+- branch: <sane/<user>/<workstream>>
+- base_rev: <main-head-at-worktree-creation>
+- merge_commit: <merge-commit-or-(not-merged)>

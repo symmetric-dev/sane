@@ -10,6 +10,11 @@ const expectedCommands: AlphaCommand[] = [
   "create-workstream",
   "select-workstream",
   "install-context-packages",
+  "state",
+  "status",
+  "pickup",
+  "artifact",
+  "approve",
 ]
 
 describe("sane-alpha dispatcher", () => {
@@ -19,7 +24,7 @@ describe("sane-alpha dispatcher", () => {
       const config = join(temporaryDirectory, "my models.yaml")
       await Bun.write(config, "sane-worker-scout: openai/gpt-5\n")
       for (const [index, command] of [
-        ["alpha/scripts/install-sane-agent-context-packages.ts"],
+        ["alpha/packages/sane-cli/src/install-sane-agent-context-packages.ts"],
         ["alpha/bin/sane-alpha.ts", "install-context-packages"],
       ].entries()) {
         const home = join(temporaryDirectory, `home-${index}`)

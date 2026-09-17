@@ -28,7 +28,7 @@ export const ROLE_SKILL_NAMES = [
   "sane-planning-assistant-role",
 ] as const
 
-export const DEFAULT_SOURCE_ROOT = fileURLToPath(new URL("../", import.meta.url))
+export const DEFAULT_SOURCE_ROOT = fileURLToPath(new URL("../../../", import.meta.url))
 
 export class AgentContextPackageInstallationError extends Error {
   constructor(message: string) {

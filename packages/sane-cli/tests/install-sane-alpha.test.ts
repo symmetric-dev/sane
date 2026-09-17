@@ -10,7 +10,7 @@ import {
   installSaneAlpha,
   managedWrapperContent,
   parseCliArguments,
-} from "./install-sane-alpha.ts"
+} from "../src/install-sane-alpha.ts"
 
 async function expectMissing(path: string): Promise<void> {
   await expect(access(path)).rejects.toThrow()

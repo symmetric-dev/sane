@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test"
-import { injectAgentModel, loadAgentModelConfig, parseAgentModelConfig } from "./agent-model-config.ts"
-import { AGENT_FILENAMES } from "./install-sane-agent-context-packages.ts"
+import { injectAgentModel, loadAgentModelConfig, parseAgentModelConfig } from "../src/agent-model-config.ts"
+import { AGENT_FILENAMES } from "../src/install-sane-agent-context-packages.ts"
 
 describe("agent model YAML config", () => {
   test("supports comments, quoted values, empty mappings and every known agent", () => {
