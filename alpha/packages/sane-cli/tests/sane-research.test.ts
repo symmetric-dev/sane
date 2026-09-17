@@ -1,6 +1,6 @@
 /**
  * SANE research index: append-only `research_reports` registry plus
- * `sane-alpha research --index|--register|--unregister`, pickup snapshot,
+ * `sane research --index|--register|--unregister`, pickup snapshot,
  * and delivery freshness over report hashes.
  */
 import { describe, expect, test, afterEach, beforeEach } from "bun:test"
@@ -56,7 +56,7 @@ describe("research registry (db + index check)", () => {
   beforeEach(async () => {
     tempDirectory = await mkdtemp(join(tmpdir(), "sane-research-"))
     workstreamDir = join(tempDirectory, "ws")
-    await mkdir(join(workstreamDir, "solutions"), { recursive: true })
+    await mkdir(join(workstreamDir, "design", "solutions"), { recursive: true })
     await mkdir(join(workstreamDir, "research"), { recursive: true })
     db = openInMemoryDb()
     initSchema(db)
@@ -74,7 +74,7 @@ describe("research registry (db + index check)", () => {
   })
 
   test("register upserts rows and recheck flags missing, modified, and unregistered files", async () => {
-    upsertWorkstream(db!, identity, { scope: "demo", status: "open" }, mutation())
+    upsertWorkstream(db!, identity, { type: "feature", status: "open" }, mutation())
     await mkdir(join(workstreamDir, "research", "auth"), { recursive: true })
     await writeFile(join(workstreamDir, "research", "auth", "REPORT.md"), "auth evidence\n")
     const row = registerResearchReport(
@@ -119,7 +119,7 @@ describe("research registry (db + index check)", () => {
   })
 
   test("missing registered files are mismatches", async () => {
-    upsertWorkstream(db!, identity, { scope: "demo", status: "open" }, mutation())
+    upsertWorkstream(db!, identity, { type: "feature", status: "open" }, mutation())
     registerResearchReport(
       db!,
       identity,
@@ -178,8 +178,8 @@ INSERT INTO research_reports VALUES ('/repo', 'alice', '01-demo', 'auth', 2, 're
   })
 
   test("pickup snapshot then delivery detects new, edited, and removed reports", async () => {
-    upsertWorkstream(db!, identity, { scope: "demo scope", status: "open" }, mutation())
-    await writeFile(join(workstreamDir, "SDD.md"), "sdd v1\n")
+    upsertWorkstream(db!, identity, { type: "feature", status: "open" }, mutation())
+    await writeFile(join(workstreamDir, "design", "SDD.md"), "sdd v1\n")
     await mkdir(join(workstreamDir, "research", "auth"), { recursive: true })
     await writeFile(join(workstreamDir, "research", "auth", "REPORT.md"), "auth v1\n")
     registerResearchReport(
@@ -197,8 +197,8 @@ INSERT INTO research_reports VALUES ('/repo', 'alice', '01-demo', 'auth', 2, 're
       db!,
       identity,
       {
-        gate: "root-plus-sdd",
-        artifactPath: "SDD.md",
+        phase: "design",
+        artifactPath: "design/SDD.md",
         saneHash: sha256Hex("sdd v1\n"),
         approvalRef: "user-ok-sdd",
       },
@@ -231,8 +231,8 @@ INSERT INTO research_reports VALUES ('/repo', 'alice', '01-demo', 'auth', 2, 're
   })
 
   test("delivery is clean when nothing changed", async () => {
-    upsertWorkstream(db!, identity, { scope: "demo", status: "open" }, mutation())
-    await writeFile(join(workstreamDir, "SDD.md"), "sdd v1\n")
+    upsertWorkstream(db!, identity, { type: "feature", status: "open" }, mutation())
+    await writeFile(join(workstreamDir, "design", "SDD.md"), "sdd v1\n")
     const snapshot = await recordPickupRevisions(db!, identity, workstreamDir)
     const fresh = await verifyDeliveryFreshness(db!, identity, workstreamDir, snapshot, {
       throwOnMismatch: false,
@@ -241,7 +241,7 @@ INSERT INTO research_reports VALUES ('/repo', 'alice', '01-demo', 'auth', 2, 're
   })
 })
 
-describe("sane-alpha research command", () => {
+describe("sane research command", () => {
   let tempDirectory = ""
   let implementationRepository = ""
 

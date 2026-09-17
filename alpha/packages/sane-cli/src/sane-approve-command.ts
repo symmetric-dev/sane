@@ -1,72 +1,59 @@
 /**
- * SANE 0.2.0 M3-A: `sane-alpha approve` command.
+ * SANE `sane approve <phase>` command.
  *
- * Records user approval for one of the five gates
- * (`root-plus-sdd | solutions | plan | jobs-batch | merge`) in the per-repo
- * sqlite source of truth (`<repo>/.sane/sane.db`; database wins). Computes
- * `sane_hash` via `hashFile` (content hash of the approved artifact) plus a
- * nullable `git_commit` (NULL when not git-backed). No hash enforcement yet;
- * values are recorded only (Explicit Non-Goals).
+ * Records user approval for one phase (`design | engineering | planning |
+ * execution`) in the per-repo sqlite source of truth (`<repo>/.sane/sane.db`;
+ * database wins). The workstream is auto-detected from the current
+ * directory: agents never pass paths to this command.
  *
- * Gate side effects (docs/SANE_0_2_0.md Section 2):
- * - `plan` with `--job` entries authorizes Jobs `planned -> authorized` via
- *   `authorizeJobsViaApproval` (does not start execution). Without `--job`
- *   it records the approval row only.
- * - `jobs-batch` with `--job` entries accepts results via
- *   `acceptJobsViaApproval`, or authorizes retry/fix via `--retry` (records
- *   the approval row then moves each job back to `authorized` for retry).
- *   Without `--job` it records the approval row only.
- * - All other gates record the approval row only.
+ * Approval runs validation internally (`validatePhaseDocs`) and refuses to
+ * record when problems exist. On success it records the approval row
+ * (validated file list + composite hash) and marks the phase `approved` in
+ * `state_entries`. Approving `planning` additionally registers every
+ * `execution/jobs/*.md` spec found on disk and authorizes the planned ones, so
+ * job tracking needs no per-job approval. No other job transitions happen
+ * here; there is no per-job approval in scope.
  *
- * Every mutation records `(actor_role, session_id, timestamp)`. Approvals are
- * user actions (`--actor-role` defaults to `user`); no role self-approves is
- * enforced by audit (actor_role is recorded in `sane_mutations`), not by
- * blocking non-user roles here.
- *
- * New file only (M3-A); read-only use of `sane-db.ts` helpers (no schema
- * refactor). Does not touch `sane-workstream-state.ts`
- * `templates/`, or agents/skills.
+ * Every mutation records `(actor_role, session_id, timestamp)`. Approvals
+ * are user actions (`--ref` is the user's approval token).
  */
-import { lstat } from "node:fs/promises"
-import { isAbsolute, join, resolve } from "node:path"
+import { readdir } from "node:fs/promises"
+import { join } from "node:path"
 
 import {
-  acceptJobsViaApproval,
-  APPROVAL_GATES,
   authorizeJobsViaApproval,
-  getApproval,
+  createJob,
+  getJob,
+  getWorkstream,
   initSchema,
   openSaneDb,
   recordApproval,
   resolveSaneIdentity,
-  updateJobStatus,
-  type ApprovalGate,
+  upsertStateEntry,
   type JobRow,
+  type Phase,
 } from "./sane-db.ts"
-import { hashFile, normalizeGitCommit } from "./sane-hash.ts"
 import { resolveCommandAddress } from "./sane-cwd-target.ts"
 import {
   resolveBootstrappedWorkstream,
   resolveSaneRepository,
 } from "./sane-repository.ts"
+import {
+  VALIDATE_PHASES,
+  validatePhaseDocs,
+  type ValidatePhase,
+} from "./sane-validate-command.ts"
 import { SaneWorkstreamStateError } from "./sane-workstream-state.ts"
 
-export type ApproveGate = ApprovalGate
+export type ApprovePhase = Phase
 
-const APPROVAL_GATE_LIST = [...APPROVAL_GATES] as const
-const APPROVAL_GATE_SET = new Set<string>(APPROVAL_GATE_LIST)
+const APPROVE_PHASE_SET = new Set<string>(VALIDATE_PHASES)
 
 export interface SaneApproveCommandOptions {
   implementationRepository: string
   workstreamPath: string
-  gate: string
-  artifact: string
+  phase: string
   approvalRef: string
-  gitCommit?: string | null
-  jobIds?: string[]
-  retry?: boolean
-  actorRole?: string
-  sessionId?: string
   userOverride?: string
   json?: boolean
   write?: (line: string) => void
@@ -76,65 +63,28 @@ export interface SaneApproveCommandResult {
   repoRoot: string
   user: string
   workstreamId: string
-  gate: ApproveGate
-  artifactPath: string
+  phase: ApprovePhase
+  files: string[]
   saneHash: string
-  gitCommit: string | null
   approvalRef: string
   approvedAt: string
   jobs: JobRow[]
-  retried: boolean
 }
 
 export const USAGE =
-  "Usage: sane-alpha approve [<implementation-repository> <workstream-relative-path>] --gate <root-plus-sdd|solutions|plan|jobs-batch|merge> --artifact <path> --ref <approval_ref> [--git-commit <sha>] [--job <job-id>]... [--retry] [--actor-role <role>] [--session-id <id>] [--json] [--repo-root <path>] (no positionals: auto-detect the target from the current directory)"
+  "Usage: sane approve <design|engineering|planning|execution> --ref <approval_ref> [--json] (auto-detects the workstream from the current directory; runs validation first and refuses on problems)"
 
 export interface ParsedApproveArguments {
   implementationRepository: string
   workstreamPath: string
-  gate: string
-  artifact: string
+  phase: string
   approvalRef: string
-  gitCommit: string | null
-  jobIds: string[]
-  retry: boolean
-  actorRole: string
-  sessionId: string | undefined
   json: boolean
-}
-
-function requireOptionValue(
-  args: string[],
-  index: number,
-  option: string,
-): string {
-  const value = args[index + 1]
-  if (!value || value.startsWith("-")) {
-    throw new SaneWorkstreamStateError(`Option ${option} requires a value.`)
-  }
-  return value
-}
-
-function assertSingleUse(
-  seen: string | undefined,
-  option: string,
-): void {
-  if (seen !== undefined) {
-    throw new SaneWorkstreamStateError(`Option ${option} may be provided only once.`)
-  }
 }
 
 export function parseCliArguments(args: string[]): ParsedApproveArguments {
   let json = false
-  let retry = false
-  let repoRootOpt: string | undefined
-  let gate: string | undefined
-  let artifact: string | undefined
   let approvalRef: string | undefined
-  let gitCommit: string | null | undefined
-  let actorRole: string | undefined
-  let sessionId: string | undefined
-  const jobIds: string[] = []
   const positional: string[] = []
   let parseOptions = true
 
@@ -144,48 +94,15 @@ export function parseCliArguments(args: string[]): ParsedApproveArguments {
       parseOptions = false
     } else if (parseOptions && argument === "--json") {
       json = true
-    } else if (parseOptions && argument === "--retry") {
-      retry = true
-    } else if (parseOptions && argument === "--gate") {
-      assertSingleUse(gate, "--gate")
-      gate = requireOptionValue(args, index, "--gate")
-      index += 1
-    } else if (parseOptions && argument === "--artifact") {
-      assertSingleUse(artifact, "--artifact")
-      artifact = requireOptionValue(args, index, "--artifact")
-      index += 1
     } else if (parseOptions && (argument === "--ref" || argument === "--approval-ref")) {
-      assertSingleUse(approvalRef, "--ref")
-      approvalRef = requireOptionValue(args, index, argument)
-      index += 1
-    } else if (parseOptions && argument === "--git-commit") {
-      assertSingleUse(gitCommit ?? undefined, "--git-commit")
-      gitCommit = requireOptionValue(args, index, "--git-commit")
-      index += 1
-    } else if (parseOptions && argument === "--job") {
-      const value = requireOptionValue(args, index, "--job")
-      if (value.trim() === "") {
-        throw new SaneWorkstreamStateError("Option --job requires a non-empty value.")
+      if (approvalRef !== undefined) {
+        throw new SaneWorkstreamStateError("Option --ref may be provided only once.")
       }
-      jobIds.push(value)
-      index += 1
-    } else if (parseOptions && argument === "--actor-role") {
-      assertSingleUse(actorRole, "--actor-role")
-      actorRole = requireOptionValue(args, index, "--actor-role")
-      index += 1
-    } else if (parseOptions && argument === "--session-id") {
-      assertSingleUse(sessionId, "--session-id")
-      sessionId = requireOptionValue(args, index, "--session-id")
-      index += 1
-    } else if (parseOptions && argument === "--repo-root") {
       const value = args[index + 1]
       if (!value || value.startsWith("-")) {
-        throw new SaneWorkstreamStateError("Option --repo-root requires a value.")
+        throw new SaneWorkstreamStateError(`Option ${argument} requires a value.`)
       }
-      if (repoRootOpt !== undefined) {
-        throw new SaneWorkstreamStateError("Option --repo-root may be provided only once.")
-      }
-      repoRootOpt = value
+      approvalRef = value
       index += 1
     } else if (parseOptions && argument.startsWith("-")) {
       throw new SaneWorkstreamStateError(`Unknown option: ${argument}`)
@@ -194,120 +111,87 @@ export function parseCliArguments(args: string[]): ParsedApproveArguments {
     }
   }
 
-  let implementationRepository: string
-  let workstreamPath: string
-  if (repoRootOpt !== undefined) {
-    if (positional.length !== 1 || !positional[0]) {
-      throw new SaneWorkstreamStateError(
-        "Provide exactly one workstream relative path when --repo-root is used.",
-      )
-    }
-    implementationRepository = repoRootOpt
-    workstreamPath = positional[0]
-  } else if (positional.length === 2 && positional[0] && positional[1]) {
-    implementationRepository = positional[0]
-    workstreamPath = positional[1]
-  } else if (positional.length === 1 && positional[0]) {
-    implementationRepository = process.cwd()
-    workstreamPath = positional[0]
-  } else if (positional.length === 0) {
-    // Bare invocation: the async run path auto-detects the target from CWD.
-    implementationRepository = ""
-    workstreamPath = ""
-  } else {
+  if (positional.length !== 1 || !positional[0]) {
     throw new SaneWorkstreamStateError(
-      "Provide an implementation repository and workstream relative path.",
+      `Provide exactly one phase. Expected one of: ${VALIDATE_PHASES.join(", ")}.`,
     )
   }
-
-  if (gate === undefined) {
-    throw new SaneWorkstreamStateError("Option --gate is required.")
-  }
-  if (!APPROVAL_GATE_SET.has(gate)) {
+  const phase = positional[0]
+  if (!APPROVE_PHASE_SET.has(phase)) {
     throw new SaneWorkstreamStateError(
-      `Invalid approval gate "${gate}". Expected one of: ${APPROVAL_GATE_LIST.join(", ")}.`,
+      `Invalid approval phase "${phase}". Expected one of: ${VALIDATE_PHASES.join(", ")}.`,
     )
-  }
-  if (artifact === undefined || artifact.trim() === "") {
-    throw new SaneWorkstreamStateError("Option --artifact is required.")
   }
   if (approvalRef === undefined || approvalRef.trim() === "") {
     throw new SaneWorkstreamStateError("Option --ref is required.")
   }
-  if (retry && gate !== "jobs-batch") {
-    throw new SaneWorkstreamStateError("Option --retry applies only to gate jobs-batch.")
-  }
-
-  return {
-    implementationRepository,
-    workstreamPath,
-    gate,
-    artifact,
-    approvalRef,
-    gitCommit: gitCommit ?? null,
-    jobIds,
-    retry,
-    actorRole: actorRole ?? "user",
-    sessionId,
-    json,
-  }
+  // Bare invocation: the async run path auto-detects the target from CWD.
+  return { implementationRepository: "", workstreamPath: "", phase, approvalRef, json }
 }
 
-async function fileExists(path: string): Promise<boolean> {
+function jobIdFromSpecFile(name: string): string {
+  const base = name.endsWith(".md") ? name.slice(0, -".md".length) : name
+  const dash = base.indexOf("-")
+  if (dash > 0) return base.slice(0, dash)
+  return base
+}
+
+/**
+ * Register every `execution/jobs/*.md` spec found on disk (idempotent) and
+ * authorize the planned ones. Gives job tracking without per-job approval.
+ */
+async function authorizePlannedJobs(
+  db: import("bun:sqlite").Database,
+  identity: { repoRoot: string; user: string; workstreamId: string },
+  workstreamDir: string,
+  approval: { artifactPath: string; saneHash: string; approvalRef: string },
+  mutation: { actorRole: string; sessionId: string },
+): Promise<JobRow[]> {
+  let names: string[] = []
   try {
-    return (await lstat(path)).isFile()
+    names = (await readdir(join(workstreamDir, "execution", "jobs")))
+      .filter((name) => name.endsWith(".md"))
+      .sort()
   } catch {
-    return false
+    return []
   }
+  const authorized: JobRow[] = []
+  const toAuthorize: string[] = []
+  for (const name of names) {
+    const jobId = jobIdFromSpecFile(name);
+    if (!jobId) continue
+    const existing = getJob(db, identity, jobId)
+    if (!existing) {
+      createJob(
+        db,
+        identity,
+        { jobId, specPath: `execution/jobs/${name}` },
+        mutation,
+      )
+      toAuthorize.push(jobId)
+    } else if (existing.status === "planned") {
+      toAuthorize.push(jobId)
+    }
+  }
+  if (toAuthorize.length === 0) return authorized
+  return authorizeJobsViaApproval(db, identity, toAuthorize, approval, mutation)
 }
 
-/**
- * Resolve the artifact file to hash. Absolute paths are used directly;
- * relative paths prefer the workstream directory (where SDD/solutions/plan
- * artifacts live) and fall back to cwd-relative resolution.
- */
-async function resolveArtifactFile(workstreamDir: string, artifact: string): Promise<string> {
-  if (isAbsolute(artifact)) return artifact
-  const inside = join(workstreamDir, artifact)
-  if (await fileExists(inside)) return inside
-  const cwdRelative = resolve(artifact)
-  if (await fileExists(cwdRelative)) return cwdRelative
-  // Default to the workstream-relative path so the missing-file error names
-  // the expected location.
-  return inside
-}
-
-/**
- * Record a gate approval (hash-on-approve). Plan with jobs authorizes them;
- * jobs-batch with jobs accepts (or authorizes retry with `--retry`).
- */
 export async function runSaneApproveCommand(
   options: SaneApproveCommandOptions,
 ): Promise<SaneApproveCommandResult> {
   const write = options.write ?? console.log
-  if (!options.gate || !APPROVAL_GATE_SET.has(options.gate)) {
+  if (!APPROVE_PHASE_SET.has(options.phase)) {
     throw new SaneWorkstreamStateError(
-      `Invalid approval gate "${options.gate}". Expected one of: ${APPROVAL_GATE_LIST.join(", ")}.`,
+      `Invalid approval phase "${options.phase}". Expected one of: ${VALIDATE_PHASES.join(", ")}.`,
     )
-  }
-  if (!options.artifact || options.artifact.trim() === "") {
-    throw new SaneWorkstreamStateError("Option --artifact is required.")
   }
   if (!options.approvalRef || options.approvalRef.trim() === "") {
     throw new SaneWorkstreamStateError("Option --ref is required.")
   }
-  if (options.retry && options.gate !== "jobs-batch") {
-    throw new SaneWorkstreamStateError("Option --retry applies only to gate jobs-batch.")
-  }
-  const actorRole = options.actorRole ?? "user"
-  if (!actorRole || actorRole.trim() === "") {
-    throw new SaneWorkstreamStateError("Actor role must be non-empty.")
-  }
-  const sessionId = options.sessionId ?? `cli-approve-${process.pid}-${Date.now()}`
-  if (!sessionId || sessionId.trim() === "") {
-    throw new SaneWorkstreamStateError("Session id must be non-empty.")
-  }
-  const jobIds = options.jobIds ?? []
+  const phase = options.phase as ValidatePhase
+  const sessionId = `cli-approve-${process.pid}-${Date.now()}`
+  const mutation = { actorRole: "user", sessionId }
 
   const pointer = await resolveSaneRepository(options.implementationRepository)
   const workstream = await resolveBootstrappedWorkstream(
@@ -322,64 +206,50 @@ export async function runSaneApproveCommand(
   const db = await openSaneDb(pointer.implementationRepository)
   try {
     initSchema(db)
-    const artifactFile = await resolveArtifactFile(workstream.path, options.artifact)
-    let saneHash: string
-    try {
-      saneHash = await hashFile(artifactFile)
-    } catch (error) {
+    const dbRow = getWorkstream(db, identity)
+    if (!dbRow) {
       throw new SaneWorkstreamStateError(
-        `Artifact file not found or unreadable: ${artifactFile} (${(error as Error).message})`,
+        `No workstream row for ${identity.workstreamId} (repo ${identity.repoRoot} user ${identity.user}). Re-create the workstream so its type is recorded in sqlite.`,
       )
     }
-    const gitCommit = normalizeGitCommit(options.gitCommit ?? null)
-    const mutation = { actorRole, sessionId }
+    if (dbRow.type !== workstream.type) {
+      throw new SaneWorkstreamStateError(
+        `Workstream type mismatch: sqlite has type "${dbRow.type}" but the filesystem root doc implies "${workstream.type}". Re-create the workstream or fix the root doc.`,
+      )
+    }
+    const validation = await validatePhaseDocs(db, identity, workstream.path, phase, dbRow.type)
+    if (!validation.ok) {
+      throw new SaneWorkstreamStateError(
+        `Cannot approve ${phase} for ${validation.workstreamId}:\n${validation.problems.map((problem) => `- ${problem}`).join("\n")}`,
+      )
+    }
     const approvalInput = {
-      artifactPath: options.artifact,
-      saneHash,
-      gitCommit,
+      artifactPath: validation.files.join(", "),
+      saneHash: validation.hash,
       approvalRef: options.approvalRef,
     }
-
-    let jobs: JobRow[] = []
-    let retried = false
-    if (options.gate === "plan" && jobIds.length > 0) {
-      jobs = authorizeJobsViaApproval(db, identity, jobIds, approvalInput, mutation)
-    } else if (options.gate === "jobs-batch" && jobIds.length > 0) {
-      if (options.retry === true) {
-        recordApproval(
-          db,
-          identity,
-          { gate: "jobs-batch", ...approvalInput },
-          mutation,
-        )
-        for (const jobId of jobIds) {
-          jobs.push(updateJobStatus(db, identity, jobId, "authorized", mutation))
-        }
-        retried = true
-      } else {
-        jobs = acceptJobsViaApproval(db, identity, jobIds, approvalInput, mutation)
-      }
-    } else {
-      recordApproval(db, identity, { gate: options.gate, ...approvalInput }, mutation)
-    }
-
-    const approvalRow = getApproval(db, identity, options.gate)
-    if (!approvalRow) {
-      throw new SaneWorkstreamStateError(`Failed to read back approval for gate "${options.gate}".`)
-    }
+    const approvalRow = recordApproval(db, identity, { phase, ...approvalInput }, mutation)
+    upsertStateEntry(
+      db,
+      identity,
+      { phase, status: "approved", ownerRole: phase, approvalRef: options.approvalRef },
+      mutation,
+    )
+    const jobs =
+      phase === "planning"
+        ? await authorizePlannedJobs(db, identity, workstream.path, approvalInput, mutation)
+        : []
 
     const result: SaneApproveCommandResult = {
       repoRoot: identity.repoRoot,
       user: identity.user,
       workstreamId: identity.workstreamId,
-      gate: options.gate as ApproveGate,
-      artifactPath: approvalRow.artifact_path,
+      phase: phase as ApprovePhase,
+      files: validation.files,
       saneHash: approvalRow.sane_hash,
-      gitCommit: approvalRow.git_commit,
       approvalRef: approvalRow.approval_ref,
       approvedAt: approvalRow.approved_at,
       jobs,
-      retried,
     }
 
     if (options.json === true) {
@@ -389,43 +259,37 @@ export async function runSaneApproveCommand(
             repo_root: result.repoRoot,
             user: result.user,
             workstream_id: result.workstreamId,
-            gate: result.gate,
-            artifact_path: result.artifactPath,
+            phase: result.phase,
+            files: result.files,
             sane_hash: result.saneHash,
-            git_commit: result.gitCommit,
             approval_ref: result.approvalRef,
             approved_at: result.approvedAt,
-            retried: result.retried,
             jobs: result.jobs.map((job) => ({
               job_id: job.job_id,
               status: job.status,
               spec_path: job.spec_path,
-              report_path: job.report_path,
             })),
+            warnings: validation.warnings,
           },
           null,
           2,
         ),
       )
     } else {
-      write(`Approved ${result.gate} for ${result.workstreamId}: ${result.approvalRef}`)
-      write(`  artifact: ${result.artifactPath}`)
+      write(`Approved ${result.phase} for ${result.workstreamId}: ${result.approvalRef}`)
+      for (const file of result.files) write(`  validated: ${file}`)
       write(`  sane_hash: ${result.saneHash}`)
-      write(`  git_commit: ${result.gitCommit ?? "(none)"}`)
       if (result.jobs.length > 0) {
-        const verb =
-          result.gate === "plan" ? "authorized" : retried ? "retry authorized" : "accepted"
-        write(
-          `  jobs ${verb}: ${result.jobs.map((job) => `${job.job_id}=${job.status}`).join(", ")}`,
-        )
+        write(`  jobs authorized: ${result.jobs.map((job) => job.job_id).join(", ")}`)
       }
+      for (const warning of validation.warnings) write(`  warning: ${warning}`)
     }
     return result
   } finally {
     try {
       db.close()
     } catch {
-      // Best effort; close is idempotent for approve flows.
+      // Best effort.
     }
   }
 }

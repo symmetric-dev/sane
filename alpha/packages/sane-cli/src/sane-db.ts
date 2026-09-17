@@ -52,26 +52,23 @@ export const JOB_STATUSES = [
 ] as const
 export type JobStatus = (typeof JOB_STATUSES)[number]
 
-export const APPROVAL_GATES = [
-  "root-plus-sdd",
-  "solutions",
-  "plan",
-  "jobs-batch",
-  "merge",
-] as const
-export type ApprovalGate = (typeof APPROVAL_GATES)[number]
-
 export const PHASES = ["design", "engineering", "planning", "execution"] as const
 export type Phase = (typeof PHASES)[number]
+
+/** Approvals are keyed by phase: one approval row per phase at most. */
+export type ApprovalPhase = Phase
 
 /** Phase slots plus support-track slots (`research:<topic>`). */
 export type SelectionSlot = Phase | `research:${string}`
 
+export const WORKSTREAM_TYPES = ["feature", "foundation", "issue", "maintenance"] as const
+export type WorkstreamType = (typeof WORKSTREAM_TYPES)[number]
+
 const PHASE_SET = new Set<string>(PHASES)
+const WORKSTREAM_TYPE_SET = new Set<string>(WORKSTREAM_TYPES)
 const WORKSTREAM_STATUS_SET = new Set<string>(WORKSTREAM_STATUSES)
 const STATE_ENTRY_STATUS_SET = new Set<string>(STATE_ENTRY_STATUSES)
 const JOB_STATUS_SET = new Set<string>(JOB_STATUSES)
-const APPROVAL_GATE_SET = new Set<string>(APPROVAL_GATES)
 
 /** Linear job order used for transition validation. */
 const JOB_STATUS_ORDER: Record<JobStatus, number> = {
@@ -201,6 +198,14 @@ function assertWorkstreamStatus(status: string): asserts status is WorkstreamSta
   }
 }
 
+function assertWorkstreamType(type: string): asserts type is WorkstreamType {
+  if (!WORKSTREAM_TYPE_SET.has(type)) {
+    throw new SaneDbError(
+      `Invalid workstream type "${type}". Expected one of: ${WORKSTREAM_TYPES.join(", ")}.`,
+    )
+  }
+}
+
 function assertStateEntryStatus(status: string): asserts status is StateEntryStatus {
   if (!STATE_ENTRY_STATUS_SET.has(status)) {
     throw new SaneDbError(
@@ -217,10 +222,10 @@ function assertJobStatus(status: string): asserts status is JobStatus {
   }
 }
 
-function assertApprovalGate(gate: string): asserts gate is ApprovalGate {
-  if (!APPROVAL_GATE_SET.has(gate)) {
+function assertApprovalPhase(phase: string): asserts phase is ApprovalPhase {
+  if (!PHASE_SET.has(phase)) {
     throw new SaneDbError(
-      `Invalid approval gate "${gate}". Expected one of: ${APPROVAL_GATES.join(", ")}.`,
+      `Invalid approval phase "${phase}". Expected one of: ${PHASES.join(", ")}.`,
     )
   }
 }
@@ -244,16 +249,6 @@ export function assertSelectionSlot(slot: string): asserts slot is SelectionSlot
   throw new SaneDbError(
     `Invalid selection slot "${slot}". Expected one of: ${PHASES.join(", ")}, or research:<topic>.`,
   )
-}
-
-function assertFoundationRev(value: string | null | undefined): void {
-  if (value === null || value === undefined) return
-  const at = value.indexOf("@")
-  if (at <= 0 || at === value.length - 1) {
-    throw new SaneDbError(
-      `Invalid foundation_rev "${value}". Expected NULL or "<workstream-id>@<revision>".`,
-    )
-  }
 }
 
 function assertNonEmpty(field: string, value: string): void {
@@ -321,9 +316,8 @@ CREATE TABLE IF NOT EXISTS workstreams(
   repo_root TEXT NOT NULL,
   user TEXT NOT NULL,
   workstream_id TEXT NOT NULL,
-  scope TEXT NOT NULL,
+  type TEXT NOT NULL CHECK(type IN ('feature','foundation','issue','maintenance')),
   status TEXT NOT NULL CHECK(status IN ('open','blocked','done','abandoned')),
-  foundation_rev TEXT,
   created_at TEXT NOT NULL,
   PRIMARY KEY (repo_root, user, workstream_id)
 );
@@ -353,13 +347,13 @@ CREATE TABLE IF NOT EXISTS approvals(
   repo_root TEXT NOT NULL,
   user TEXT NOT NULL,
   workstream_id TEXT NOT NULL,
-  gate TEXT NOT NULL CHECK(gate IN ('root-plus-sdd','solutions','plan','jobs-batch','merge')),
+  phase TEXT NOT NULL CHECK(phase IN ('design','engineering','planning','execution')),
   artifact_path TEXT NOT NULL,
   sane_hash TEXT NOT NULL,
   git_commit TEXT,
   approval_ref TEXT NOT NULL,
   approved_at TEXT NOT NULL,
-  PRIMARY KEY (repo_root, user, workstream_id, gate)
+  PRIMARY KEY (repo_root, user, workstream_id, phase)
 );
 CREATE TABLE IF NOT EXISTS research_reports(
   repo_root TEXT NOT NULL,
@@ -475,9 +469,8 @@ export interface WorkstreamRow {
   repo_root: string
   user: string
   workstream_id: string
-  scope: string
+  type: WorkstreamType
   status: WorkstreamStatus
-  foundation_rev: string | null
   created_at: string
 }
 
@@ -507,7 +500,7 @@ export interface ApprovalRow {
   repo_root: string
   user: string
   workstream_id: string
-  gate: ApprovalGate
+  phase: ApprovalPhase
   artifact_path: string
   sane_hash: string
   git_commit: string | null
@@ -564,9 +557,8 @@ export interface MutationLogRow {
 // ---------------------------------------------------------------------------
 
 export interface UpsertWorkstreamInput {
-  scope: string
+  type: string
   status: string
-  foundationRev?: string | null
 }
 
 export function upsertWorkstream(
@@ -576,23 +568,20 @@ export function upsertWorkstream(
   mutation: MutationContext,
 ): WorkstreamRow {
   assertIdentity(identity)
-  assertNonEmpty("scope", input.scope)
+  assertWorkstreamType(input.type)
   assertWorkstreamStatus(input.status)
-  assertFoundationRev(input.foundationRev ?? null)
   const timestamp = resolveTimestamp(mutation)
-  const foundationRev = input.foundationRev ?? null
   db.query(
-    `INSERT INTO workstreams (repo_root, user, workstream_id, scope, status, foundation_rev, created_at)
-     VALUES (?, ?, ?, ?, ?, ?, ?)
+    `INSERT INTO workstreams (repo_root, user, workstream_id, type, status, created_at)
+     VALUES (?, ?, ?, ?, ?, ?)
      ON CONFLICT(repo_root, user, workstream_id)
-     DO UPDATE SET scope=excluded.scope, status=excluded.status, foundation_rev=excluded.foundation_rev`,
+     DO UPDATE SET type=excluded.type, status=excluded.status`,
   ).run(
     identity.repoRoot,
     identity.user,
     identity.workstreamId,
-    input.scope,
+    input.type,
     input.status,
-    foundationRev,
     timestamp,
   )
   recordMutation(db, identity, "workstreams", "upsert", mutation, timestamp)
@@ -607,6 +596,14 @@ export function getWorkstream(db: Database, identity: SaneIdentity): WorkstreamR
     .query(`SELECT * FROM workstreams WHERE repo_root = ? AND user = ? AND workstream_id = ?`)
     .get(identity.repoRoot, identity.user, identity.workstreamId) as WorkstreamRow | null
   return row ?? null
+}
+
+/** Return the workstream type stored in sqlite (DB is the sole type authority). */
+export function getWorkstreamType(db: Database, identity: SaneIdentity): WorkstreamType | null {
+  const row = getWorkstream(db, identity)
+  if (!row) return null
+  assertWorkstreamType(row.type)
+  return row.type
 }
 
 export function listWorkstreams(
@@ -808,7 +805,7 @@ export function deleteStateEntry(
 // ---------------------------------------------------------------------------
 
 export interface RecordApprovalInput {
-  gate: string
+  phase: string
   artifactPath: string
   saneHash: string
   gitCommit?: string | null
@@ -822,21 +819,21 @@ export function recordApproval(
   mutation: MutationContext,
 ): ApprovalRow {
   assertIdentity(identity)
-  assertApprovalGate(input.gate)
+  assertApprovalPhase(input.phase)
   assertNonEmpty("artifactPath", input.artifactPath)
   assertNonEmpty("saneHash", input.saneHash)
   assertNonEmpty("approvalRef", input.approvalRef)
   const timestamp = resolveTimestamp(mutation)
   db.query(
-    `INSERT INTO approvals (repo_root, user, workstream_id, gate, artifact_path, sane_hash, git_commit, approval_ref, approved_at)
+    `INSERT INTO approvals (repo_root, user, workstream_id, phase, artifact_path, sane_hash, git_commit, approval_ref, approved_at)
      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-     ON CONFLICT(repo_root, user, workstream_id, gate)
+     ON CONFLICT(repo_root, user, workstream_id, phase)
      DO UPDATE SET artifact_path=excluded.artifact_path, sane_hash=excluded.sane_hash, git_commit=excluded.git_commit, approval_ref=excluded.approval_ref, approved_at=excluded.approved_at`,
   ).run(
     identity.repoRoot,
     identity.user,
     identity.workstreamId,
-    input.gate,
+    input.phase,
     input.artifactPath,
     input.saneHash,
     input.gitCommit ?? null,
@@ -844,7 +841,7 @@ export function recordApproval(
     timestamp,
   )
   recordMutation(db, identity, "approvals", "record", mutation, timestamp)
-  const row = getApproval(db, identity, input.gate)
+  const row = getApproval(db, identity, input.phase)
   if (!row) throw new SaneDbError("Failed to read back approval after record.")
   return row
 }
@@ -852,14 +849,14 @@ export function recordApproval(
 export function getApproval(
   db: Database,
   identity: SaneIdentity,
-  gate: string,
+  phase: string,
 ): ApprovalRow | null {
   assertIdentity(identity)
   const row = db
     .query(
-      `SELECT * FROM approvals WHERE repo_root = ? AND user = ? AND workstream_id = ? AND gate = ?`,
+      `SELECT * FROM approvals WHERE repo_root = ? AND user = ? AND workstream_id = ? AND phase = ?`,
     )
-    .get(identity.repoRoot, identity.user, identity.workstreamId, gate) as ApprovalRow | null
+    .get(identity.repoRoot, identity.user, identity.workstreamId, phase) as ApprovalRow | null
   return row ?? null
 }
 
@@ -867,7 +864,7 @@ export function listApprovals(db: Database, identity: SaneIdentity): ApprovalRow
   assertIdentity(identity)
   return db
     .query(
-      `SELECT * FROM approvals WHERE repo_root = ? AND user = ? AND workstream_id = ? ORDER BY gate`,
+      `SELECT * FROM approvals WHERE repo_root = ? AND user = ? AND workstream_id = ? ORDER BY phase`,
     )
     .all(identity.repoRoot, identity.user, identity.workstreamId) as ApprovalRow[]
 }
@@ -875,14 +872,14 @@ export function listApprovals(db: Database, identity: SaneIdentity): ApprovalRow
 export function deleteApproval(
   db: Database,
   identity: SaneIdentity,
-  gate: string,
+  phase: string,
   mutation: MutationContext,
 ): void {
   assertIdentity(identity)
   const timestamp = resolveTimestamp(mutation)
   db.query(
-    `DELETE FROM approvals WHERE repo_root = ? AND user = ? AND workstream_id = ? AND gate = ?`,
-  ).run(identity.repoRoot, identity.user, identity.workstreamId, gate)
+    `DELETE FROM approvals WHERE repo_root = ? AND user = ? AND workstream_id = ? AND phase = ?`,
+  ).run(identity.repoRoot, identity.user, identity.workstreamId, phase)
   recordMutation(db, identity, "approvals", "delete", mutation, timestamp)
 }
 
@@ -1046,8 +1043,8 @@ export function listJobs(db: Database, identity: SaneIdentity): JobRow[] {
 
 /**
  * Direct job status update. Rejects `planned -> authorized` (must go through
- * `authorizeJobsViaApproval` with an explicit plan approval) and any direct
- * transition to `accepted` (must go through `acceptJobsViaApproval`).
+ * `authorizeJobsViaApproval` with a planning approval) and any direct
+ * transition to `accepted` (no CLI path in the phase model).
  */
 export function updateJobStatus(
   db: Database,
@@ -1064,12 +1061,12 @@ export function updateJobStatus(
   if (!current) throw new SaneDbError(`Job not found: ${jobId}`)
   if (current.status === "planned" && newStatus === "authorized") {
     throw new SaneDbError(
-      `Job "${jobId}" cannot move planned -> authorized directly. Use authorizeJobsViaApproval with a "plan" approval.`,
+      `Job "${jobId}" cannot move planned -> authorized directly. Use authorizeJobsViaApproval with a "planning" approval.`,
     )
   }
   if (newStatus === "accepted") {
     throw new SaneDbError(
-      `Job "${jobId}" cannot move to "accepted" directly. Use acceptJobsViaApproval with a "jobs-batch" approval.`,
+      `Job "${jobId}" cannot move to "accepted" directly. Per-job acceptance has no CLI path in the phase model.`,
     )
   }
   const reportPath = options?.reportPath !== undefined ? options.reportPath : current.report_path
@@ -1091,7 +1088,7 @@ export interface PlanApprovalForJobs {
 
 /**
  * Authorize `planned` jobs via explicit user approval of the plan package
- * (gate `plan`). Records the approval row, then moves each job
+ * (phase `planning`). Records the approval row, then moves each job
  * `planned -> authorized` atomically. This is the only supported path for
  * that transition; `updateJobStatus` rejects it directly.
  */
@@ -1114,7 +1111,7 @@ export function authorizeJobsViaApproval(
       db,
       identity,
       {
-        gate: "plan",
+        phase: "planning",
         artifactPath: approval.artifactPath,
         saneHash: approval.saneHash,
         gitCommit: approval.gitCommit ?? null,
@@ -1140,62 +1137,6 @@ export function authorizeJobsViaApproval(
   return jobIds.map((jobId) => {
     const row = getJob(db, identity, jobId)
     if (!row) throw new SaneDbError(`Failed to read back job "${jobId}" after authorize.`)
-    return row
-  })
-}
-
-/**
- * Accept `reviewed` (or `reported`) jobs via explicit user acceptance
- * (gate `jobs-batch`). The only supported path to `accepted`.
- */
-export function acceptJobsViaApproval(
-  db: Database,
-  identity: SaneIdentity,
-  jobIds: string[],
-  approval: PlanApprovalForJobs,
-  mutation: MutationContext,
-): JobRow[] {
-  assertIdentity(identity)
-  if (jobIds.length === 0) throw new SaneDbError("acceptJobsViaApproval requires at least one job.")
-  const timestamp = resolveTimestamp(mutation)
-  const accept = db.transaction((ids: string[]) => {
-    recordApproval(
-      db,
-      identity,
-      {
-        gate: "jobs-batch",
-        artifactPath: approval.artifactPath,
-        saneHash: approval.saneHash,
-        gitCommit: approval.gitCommit ?? null,
-        approvalRef: approval.approvalRef,
-      },
-      { actorRole: mutation.actorRole, sessionId: mutation.sessionId, timestamp },
-    )
-    for (const jobId of ids) {
-      const current = getJob(db, identity, jobId)
-      if (!current) throw new SaneDbError(`Job not found: ${jobId}`)
-      if (current.status !== "reviewed" && current.status !== "reported") {
-        throw new SaneDbError(
-          `Job "${jobId}" is "${current.status}"; only reviewed/reported jobs can be accepted.`,
-        )
-      }
-      db.query(
-        `UPDATE jobs SET status = 'accepted' WHERE repo_root = ? AND user = ? AND workstream_id = ? AND job_id = ?`,
-      ).run(identity.repoRoot, identity.user, identity.workstreamId, jobId)
-      recordMutation(
-        db,
-        identity,
-        "jobs",
-        `status:${current.status}->accepted`,
-        mutation,
-        timestamp,
-      )
-    }
-  })
-  accept(jobIds)
-  return jobIds.map((jobId) => {
-    const row = getJob(db, identity, jobId)
-    if (!row) throw new SaneDbError(`Failed to read back job "${jobId}" after accept.`)
     return row
   })
 }

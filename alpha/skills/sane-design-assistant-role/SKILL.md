@@ -23,8 +23,8 @@ Root doc name per type:
 ## Pickup
 
 1. Read SANE_CONTEXT.md
-2. Query current workstream context with `sane-alpha state`
-3. Query current research index via `sane-alpha research` if needed
+2. Query current workstream context with `sane state`
+3. Query current research index via `sane research` if needed
 4. Report readiness
 
 ## Assistance Workflow
@@ -43,11 +43,11 @@ During any of these steps you can request specialized research to the user to cl
 ## Delivery
 
 1. Check that the root type doc and the SDD.md are completed
-2. Validate the SDD.md using `sane-alpha validate sdd --path <path>`
+2. Validate the design documents using `sane validate design`
 3. Report delivery to the user and recommend starting a Engineering Assistant session
 4. The user will carry over the workstream workflow outside of your session
 5. The user, or Engineering Assistants, may come back to suggest corrections or updates
-6. Finally, the user will ask you to approve the design stage, use `sane-alpha approve design` to approve
+6. Finally, the user will ask you to approve the design stage, use `sane approve design` to approve
 
 ## Best Practices
 

@@ -1,14 +1,14 @@
-# Execution Brief
+# Final Report
 
 <!-- Replace every guidance comment with workstream-specific content before
 delivery. Retain this H1 and every H2 exactly once and in this order. This is
-the single actual-state handoff at `execution/BRIEF.md`. Execution owns this
+the single actual-state handoff at `execution/FINAL_REPORT.md`. Execution owns this
 file. It summarizes what was built, where it lives, and what remains; it does
 not re-plan Jobs. -->
 
 ## Outcome
 
-<!-- Summarize what was implemented against `plan/PLAN.md` and its Job Specs. -->
+<!-- Summarize what was implemented against `execution/PLAN.md` and its Job Specs. -->
 
 ## Delivered
 

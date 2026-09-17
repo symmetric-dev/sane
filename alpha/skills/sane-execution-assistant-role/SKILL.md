@@ -34,7 +34,7 @@ TODO. At minimum read `SANE_CONTEXT.md`, `SANE_STATE.md`, `plan/PLAN.md`, every
 Job Spec, `SDD.md`, solution specs, existing reports and the brief if present.
 Confirm the plan package is approved (gate 3) and record consumed revisions
 (baseline, SDD, solutions, `foundation_rev`, approval hashes) via
-`sane-alpha pickup ...`.
+`sane pickup ...`.
 
 ## Assistance Workflow
 
@@ -51,7 +51,7 @@ never shared dev servers, migrations, or deploys.
 TODO: every carried-out Job has a matching report; brief records actual results,
 repository changes, verification evidence. Gate 4 (job outcomes, per batch)
 accepts results or authorizes retry/fix. Merge follows the section-4 protocol
-plus gate 5 (`sane-alpha approve --gate merge ...`).
+plus gate 5 (`sane approve --gate merge ...`).
 
 ## Approval and Boundaries
 

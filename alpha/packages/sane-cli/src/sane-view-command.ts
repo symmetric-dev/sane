@@ -1,28 +1,22 @@
 /**
- * SANE 0.2.0 M2 P0: `sane-alpha pickup` command.
+ * SANE 0.2.0 M2 P0: `sane view` command.
  *
- * Runs pickup precondition checks via `runPickupChecks`:
- * - `foundation_rev` missing/superseded -> throw (non-zero exit).
- * - Research index + SDD/solutions `sane_hash` -> warnings
- *   (exit 0, human lines or `--json`).
- *
- * Supports `--json` and `--repo-root` detection idioms matching existing CLIs.
- * Read-only; state is viewed via `sane-alpha state`, never written to disk.
- *
- * New file only (M2 wiring P0).
+ * Renders workstream state from the per-repo sqlite source of truth
+ * (`<repo>/.sane/sane.db`; database wins) via `renderSaneView` and prints
+ * it to stdout. Writes no file: state is viewed by running this command,
+ * never by reading a file. Supports `--json` and `--repo-root` detection
+ * idioms matching existing CLIs.
  */
 import { initSchema, openSaneDb, resolveSaneIdentity } from "./sane-db.ts"
 import { resolveCommandAddress } from "./sane-cwd-target.ts"
+import { renderSaneView } from "./sane-view.ts"
 import {
   resolveBootstrappedWorkstream,
   resolveSaneRepository,
 } from "./sane-repository.ts"
-import {
-  SaneWorkstreamStateError,
-  runPickupChecks,
-} from "./sane-workstream-state.ts"
+import { SaneWorkstreamStateError } from "./sane-workstream-state.ts"
 
-export interface SanePickupCommandOptions {
+export interface SaneViewCommandOptions {
   implementationRepository: string
   workstreamPath: string
   json?: boolean
@@ -30,8 +24,16 @@ export interface SanePickupCommandOptions {
   write?: (line: string) => void
 }
 
+export interface SaneViewCommandResult {
+  repoRoot: string
+  user: string
+  workstreamId: string
+  rendered: string
+  json: boolean
+}
+
 export const USAGE =
-  "Usage: sane-alpha pickup [<implementation-repository> <workstream-relative-path>] [--json] [--repo-root <path>] (no positionals: auto-detect the target from the current directory)"
+  "Usage: sane view [<implementation-repository> <workstream-relative-path>] [--json] [--repo-root <path>] (no positionals: auto-detect the target from the current directory)"
 
 export function parseCliArguments(args: string[]): {
   implementationRepository: string
@@ -87,6 +89,7 @@ export function parseCliArguments(args: string[]): {
     }
   }
   if (positional.length === 1 && positional[0]) {
+    // Repo-root detection: default to the current working directory's git root.
     return { implementationRepository: process.cwd(), workstreamPath: positional[0], json }
   }
   if (positional.length === 0) {
@@ -99,10 +102,13 @@ export function parseCliArguments(args: string[]): {
 }
 
 /**
- * Run pickup checks. Foundation missing/superseded throws (caller maps to
- * exit 1); research/SDD/solutions divergences are returned as warnings.
+ * Render the workstream's state from the DB (database wins) and print it to
+ * stdout. Writes no file. Resolves the repo root via the existing git-root
+ * detection and validates the bootstrapped workstream before rendering.
  */
-export async function runSanePickupCommand(options: SanePickupCommandOptions): Promise<void> {
+export async function runSaneViewCommand(
+  options: SaneViewCommandOptions,
+): Promise<SaneViewCommandResult> {
   const write = options.write ?? console.log
   const pointer = await resolveSaneRepository(options.implementationRepository)
   const workstream = await resolveBootstrappedWorkstream(
@@ -117,76 +123,36 @@ export async function runSanePickupCommand(options: SanePickupCommandOptions): P
   const db = await openSaneDb(pointer.implementationRepository)
   try {
     initSchema(db)
-    const result = await runPickupChecks(db, identity, workstream.path)
-    if (options.json === true) {
+    const rendered = renderSaneView(db, identity)
+    const result: SaneViewCommandResult = {
+      repoRoot: identity.repoRoot,
+      user: identity.user,
+      workstreamId: identity.workstreamId,
+      rendered,
+      json: options.json === true,
+    }
+    if (result.json) {
       write(
         JSON.stringify(
           {
             repo_root: result.repoRoot,
             user: result.user,
             workstream_id: result.workstreamId,
-            foundation: result.foundation,
-            research: {
-              reports: result.research.reports.map((report) => ({
-                topic: report.topic,
-                path: report.path,
-                registered_hash: report.registeredHash,
-                current_hash: report.currentHash,
-                file_exists: report.fileExists,
-              })),
-              unregistered_files: result.research.unregisteredFiles,
-            },
-            sdd: {
-              path: result.sdd.relativePath,
-              file_exists: result.sdd.fileExists,
-              current_hash: result.sdd.currentHash,
-              approved_hash: result.sdd.approvedHash,
-              match: result.sdd.match,
-            },
-            solutions: result.solutions.map((entry) => ({
-              path: entry.relativePath,
-              current_hash: entry.currentHash,
-              approved_hash: entry.approvedHash,
-              match: entry.match,
-            })),
-            warnings: result.warnings,
-            ok: result.ok,
+            rendered: result.rendered,
           },
           null,
           2,
         ),
       )
-      return
-    }
-    if (result.foundation.status === "none") {
-      write(`foundation: (none)`)
     } else {
-      write(`foundation: ${result.foundation.rev} ok`)
+      write(rendered)
     }
-    write(
-      result.research.reports.length === 0 && result.research.unregisteredFiles.length === 0
-        ? `research: (no research registered)`
-        : `research: ${result.research.reports.length} report(s)${result.research.unregisteredFiles.length === 0 ? "" : `, ${result.research.unregisteredFiles.length} unregistered file(s)`}`,
-    )
-    write(
-      result.sdd.currentHash
-        ? `sdd: ${result.sdd.relativePath} hash ${result.sdd.currentHash.slice(0, 12)}… match ${result.sdd.match === null ? "(no approval)" : String(result.sdd.match)}`
-        : `sdd: ${result.sdd.relativePath} missing`,
-    )
-    write(`solutions: ${result.solutions.length} file(s)`)
-    if (result.warnings.length === 0) {
-      write(`Pickup ok: ${result.workstreamId}`)
-    } else {
-      for (const warning of result.warnings) {
-        write(`Warning: ${warning}`)
-      }
-      write(`Pickup warnings: ${result.warnings.length} for ${result.workstreamId}`)
-    }
+    return result
   } finally {
     try {
       db.close()
     } catch {
-      // Best effort.
+      // Best effort; close is idempotent for state flows.
     }
   }
 }
@@ -195,7 +161,7 @@ export async function runCli(args: string[]): Promise<number> {
   try {
     const parsed = parseCliArguments(args)
     const address = await resolveCommandAddress(parsed)
-    await runSanePickupCommand({ ...parsed, ...address })
+    await runSaneViewCommand({ ...parsed, ...address })
     return 0
   } catch (error) {
     console.error(`Error: ${(error as Error).message}`)

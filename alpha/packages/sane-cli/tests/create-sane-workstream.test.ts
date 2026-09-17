@@ -17,10 +17,10 @@ async function expectMissing(path: string): Promise<void> {
   await expect(access(path)).rejects.toThrow()
 }
 
-// Resources directory contains only the new single-scope fallback templates.
+// Resources directory contains only the current fallback templates.
 function expectedResourcesListing(): string[] {
   return [
-    "EXECUTION_BRIEF_TEMPLATE.md",
+    "EXECUTION_FINAL_REPORT_TEMPLATE.md",
     "EXECUTION_REPORT_TEMPLATE.md",
     "JOB_TEMPLATE.md",
     "PLAN_TEMPLATE.md",
@@ -31,12 +31,12 @@ function expectedResourcesListing(): string[] {
 }
 
 const RETIRED_RESOURCE_TEMPLATES = [
+  "EXECUTION_BRIEF_TEMPLATE.md",
   "EXECUTION_PLAN_TEMPLATE.md",
   "IMPLEMENTATION_REPORT_TEMPLATE.md",
   "ROOT_DESIGN_SPEC_TEMPLATE.md",
   "SECTION_SPEC_TEMPLATE.md",
   "STAGES_TEMPLATE.md",
-  "STAGE_DESIGN_SPEC_TEMPLATE.md",
   "STAGE_IMPLEMENTATION_BRIEF_TEMPLATE.md",
   "STAGE_SECTIONS_TEMPLATE.md",
 ]
@@ -46,7 +46,7 @@ describe("create-sane-workstream", () => {
   let templateRoot: string
 
   beforeEach(async () => {
-    tempDirectory = await mkdtemp(join(tmpdir(), "sane-alpha-bootstrap-"))
+    tempDirectory = await mkdtemp(join(tmpdir(), "sane-bootstrap-"))
     templateRoot = join(tempDirectory, "templates")
     await mkdir(templateRoot)
     const sources = new Set(
@@ -86,24 +86,28 @@ describe("create-sane-workstream", () => {
         await readFile(join(templateRoot, template.source), "utf8"),
       )
     }
-    expect(await readFile(join(destination, "type"), "utf8")).toBe("feature\n")
+    // No type file: type lives in sqlite only.
+    await expectMissing(join(destination, "type"))
     // Exactly one root doc per type.
     expect(await readFile(join(destination, "PRD.md"), "utf8")).toBe("feature/PRD.md\n")
-    // M2: SDD.md root is copied from shared/sdd/SDD.md alongside the fallback.
-    expect(await readFile(join(destination, "SDD.md"), "utf8")).toBe("shared/sdd/SDD.md\n")
+    // design/SDD.md is copied from shared/sdd/SDD.md alongside the fallback.
+    expect(await readFile(join(destination, "design", "SDD.md"), "utf8")).toBe("shared/sdd/SDD.md\n")
     expect(await readFile(join(destination, "resources", "SDD_TEMPLATE.md"), "utf8")).toBe(
       "shared/sdd/SDD.md\n",
     )
+    expect(await readFile(join(destination, "README.md"), "utf8")).toBe("shared/README.md\n")
+    await expectMissing(join(destination, "SANE_CONTEXT.md"))
+    await expectMissing(join(destination, "SDD.md"))
     await expectMissing(join(destination, "FOUNDATION.md"))
     await expectMissing(join(destination, "ISSUE.md"))
     await expectMissing(join(destination, "MAINTENANCE.md"))
     expect([...INITIAL_DIRECTORIES].sort().join(",")).toBe(
-      "execution,plan,research,resources,solutions",
+      "design,execution,research,resources",
     )
     for (const directory of INITIAL_DIRECTORIES) {
       await access(join(destination, directory))
       expect((await readdir(join(destination, directory))).sort()).toEqual(
-        directory === "resources" ? expectedResourcesListing() : [],
+        directory === "resources" ? expectedResourcesListing() : directory === "design" ? ["SDD.md"] : [],
       )
     }
     // Retired Stage / implementation fallbacks must not be created.
@@ -112,18 +116,17 @@ describe("create-sane-workstream", () => {
     }
     await expectMissing(join(destination, "resources", "TECHNICAL_REFERENCE_TEMPLATE.md"))
     // Retired directories must not be created.
-    await expectMissing(join(destination, "design"))
+    await expectMissing(join(destination, "solutions"))
+    await expectMissing(join(destination, "plan"))
+    await expectMissing(join(destination, "planning"))
     await expectMissing(join(destination, "implementation"))
     await expectMissing(join(destination, "docs"))
-    // New single-scope directories must exist.
-    await access(join(destination, "plan"))
+    // New top-level directories must exist.
+    await access(join(destination, "design"))
     await access(join(destination, "execution"))
-    await access(join(destination, "solutions"))
     await access(join(destination, "research"))
+    await access(join(destination, "resources"))
     expect(lines).toContain(`Created: ${destination}`)
-    expect(lines).toContain(
-      `Next action: start a Product Assistant session for ${destination}.`,
-    )
   })
 
   test("creates the correct root doc per workstream type", async () => {
@@ -138,10 +141,10 @@ describe("create-sane-workstream", () => {
       const destination = join(tempDirectory, `${type}-workstream`)
       await createSaneWorkstream({ destination, type, templateRoot, write: () => {} })
 
-      expect(await readFile(join(destination, "type"), "utf8")).toBe(`${type}\n`)
+      await expectMissing(join(destination, "type"))
       expect(await readFile(join(destination, root), "utf8")).toBe(`${source}\n`)
-      // M2: SDD.md root is always copied from shared/sdd/SDD.md.
-      expect(await readFile(join(destination, "SDD.md"), "utf8")).toBe("shared/sdd/SDD.md\n")
+      // design/SDD.md is always copied from shared/sdd/SDD.md.
+      expect(await readFile(join(destination, "design", "SDD.md"), "utf8")).toBe("shared/sdd/SDD.md\n")
       // Exactly one root doc present.
       for (const other of ["PRD.md", "FOUNDATION.md", "ISSUE.md", "MAINTENANCE.md"]) {
         if (other === root) continue
@@ -168,11 +171,11 @@ describe("create-sane-workstream", () => {
     expect(spec).toContain("required-start reads from conditional references with concrete triggers")
     expect(spec).toContain("required additions with their approved basis, never as existing verified checks")
     await access(join(destination, "execution"))
-    await access(join(destination, "plan"))
-    await access(join(destination, "solutions"))
+    await access(join(destination, "design"))
     await access(join(destination, "research"))
     await expectMissing(join(destination, "implementation"))
-    await expectMissing(join(destination, "design"))
+    await expectMissing(join(destination, "solutions"))
+    await expectMissing(join(destination, "plan"))
     await expectMissing(join(destination, "planning"))
     // Retired single-file and Stage artifacts must not be created.
     await expectMissing(join(destination, "design", "SPEC.md"))
@@ -181,21 +184,24 @@ describe("create-sane-workstream", () => {
     await expectMissing(join(destination, "resources", "STAGES_TEMPLATE.md"))
     await expectMissing(join(destination, "resources", "EXECUTION_PLAN_TEMPLATE.md"))
     await expectMissing(join(destination, "resources", "ROOT_DESIGN_SPEC_TEMPLATE.md"))
-    // New single-scope fallbacks must exist.
+    await expectMissing(join(destination, "SANE_CONTEXT.md"))
+    await expectMissing(join(destination, "SDD.md"))
+    await expectMissing(join(destination, "execution", "BRIEF.md"))
+    // New fallbacks must exist.
     await access(join(destination, "resources", "SDD_TEMPLATE.md"))
     await access(join(destination, "resources", "SOLUTION_SPEC_TEMPLATE.md"))
     await access(join(destination, "resources", "PLAN_TEMPLATE.md"))
-    await access(join(destination, "resources", "EXECUTION_BRIEF_TEMPLATE.md"))
+    await access(join(destination, "resources", "EXECUTION_FINAL_REPORT_TEMPLATE.md"))
     await access(join(destination, "resources", "EXECUTION_REPORT_TEMPLATE.md"))
-    // M2: SDD.md root matches the shared template and its resources fallback.
-    expect(await readFile(join(destination, "SDD.md"), "utf8")).toBe(
+    // design/SDD.md matches the shared template and its resources fallback.
+    expect(await readFile(join(destination, "design", "SDD.md"), "utf8")).toBe(
       await readFile(join(destination, "resources", "SDD_TEMPLATE.md"), "utf8"),
     )
-    expect(await readFile(join(destination, "SDD.md"), "utf8")).toContain(
+    expect(await readFile(join(destination, "design", "SDD.md"), "utf8")).toContain(
       "# Solution Design Document",
     )
-    expect(await readFile(join(destination, "SANE_CONTEXT.md"), "utf8"))
-      .toContain("**Design**, **Execution**, and")
+    expect(await readFile(join(destination, "README.md"), "utf8"))
+      .toContain("four Phases")
   })
 
   test("dry run leaves no destination", async () => {

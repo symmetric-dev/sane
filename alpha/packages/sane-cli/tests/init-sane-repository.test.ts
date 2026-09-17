@@ -31,7 +31,7 @@ describe("init-sane-repository", () => {
   let workstreamsRoot: string
 
   beforeEach(async () => {
-    tempDirectory = await mkdtemp(join(tmpdir(), "sane-alpha-repository-"))
+    tempDirectory = await mkdtemp(join(tmpdir(), "sane-repository-"))
     implementationRepository = join(tempDirectory, "implementation")
     workstreamsRoot = join(implementationRepository, ".sane", "workstreams")
     await mkdir(implementationRepository)
@@ -95,10 +95,11 @@ describe("init-sane-repository", () => {
   })
 
   test("rejects missing, extra, and unknown CLI arguments", () => {
-    expect(() => parseCliArguments([])).toThrow("exactly one")
-    expect(() => parseCliArguments(["--dry-run"])).toThrow("exactly one")
-    expect(() => parseCliArguments(["first", "second"])).toThrow("exactly one")
-    expect(() => parseCliArguments(["--unexpected", "repository"])).toThrow("Unknown option")
+    expect(parseCliArguments([])).toMatchObject({ dryRun: false })
+    expect(parseCliArguments(["--dry-run"])).toMatchObject({ dryRun: true })
+    expect(parseCliArguments([]).implementationRepository).toBe(process.cwd())
+    expect(() => parseCliArguments(["somewhere"])).toThrow("no positional arguments")
+    expect(() => parseCliArguments(["--unexpected"])).toThrow("Unknown option")
   })
 
   test("rejects an implementation path that is not a Git repository", async () => {
@@ -172,18 +173,21 @@ describe("init-sane-repository", () => {
     expect(lines).toContain("Dry run: no files or directories were modified.")
   })
 
-  test("0.2.0 REQUIRED_WORKSTREAM_FILES uses the new layout without Stage templates", () => {
+  test("REQUIRED_WORKSTREAM_FILES uses the current layout without Stage templates", () => {
     const required: string[] = [...REQUIRED_WORKSTREAM_FILES]
-    expect(required).toContain("SANE_CONTEXT.md")
+    expect(required).toContain("README.md")
+    expect(required).not.toContain("SANE_CONTEXT.md")
     expect(required).not.toContain("SANE_STATE.md")
-    expect(required).toContain("SDD.md")
+    expect(required).toContain("design/SDD.md")
+    expect(required).not.toContain("SDD.md")
     expect(required).toContain("resources/SDD_TEMPLATE.md")
     expect(required).toContain("resources/SOLUTION_SPEC_TEMPLATE.md")
     expect(required).toContain("resources/RESEARCH_REPORT_TEMPLATE.md")
     expect(required).toContain("resources/PLAN_TEMPLATE.md")
     expect(required).toContain("resources/JOB_TEMPLATE.md")
     expect(required).toContain("resources/EXECUTION_REPORT_TEMPLATE.md")
-    expect(required).toContain("resources/EXECUTION_BRIEF_TEMPLATE.md")
+    expect(required).toContain("resources/EXECUTION_FINAL_REPORT_TEMPLATE.md")
+    expect(required).not.toContain("resources/EXECUTION_BRIEF_TEMPLATE.md")
     for (const retired of RETIRED_WORKSTREAM_FILES) {
       expect(required).not.toContain(retired as string)
     }
@@ -197,16 +201,16 @@ describe("init-sane-repository", () => {
     })
   })
 
-  test("initialized repository validates a 0.2.0 workstream and rejects Stage artifacts", async () => {
+  test("initialized repository validates a current workstream and rejects Stage artifacts", async () => {
     await initializeSaneRepository(options())
     const workstream = join(workstreamsRoot, "01-0-2-0")
     await mkdir(join(workstream, "resources"), { recursive: true })
-    await Bun.write(join(workstream, "type"), "issue\n")
+    await mkdir(join(workstream, "design"), { recursive: true })
     await Bun.write(join(workstream, "ISSUE.md"), "issue root\n")
-    await Bun.write(join(workstream, "SANE_CONTEXT.md"), "context\n")
-    await Bun.write(join(workstream, "SDD.md"), "sdd placeholder\n")
+    await Bun.write(join(workstream, "README.md"), "context\n")
+    await Bun.write(join(workstream, "design/SDD.md"), "sdd placeholder\n")
     for (const file of REQUIRED_WORKSTREAM_FILES) {
-      if (file === "SANE_CONTEXT.md" || file === "SDD.md") continue
+      if (file === "README.md" || file === "design/SDD.md") continue
       await Bun.write(join(workstream, file), `${file}\n`)
     }
     expect(await validateBootstrappedWorkstream(workstream)).toBe("issue")
@@ -215,11 +219,10 @@ describe("init-sane-repository", () => {
     await expect(validateBootstrappedWorkstream(workstream)).rejects.toThrow("retired Stage artifact")
   })
 
-  test("initialized repository rejects an old Stage layout missing new files", async () => {
+  test("initialized repository rejects an old layout", async () => {
     await initializeSaneRepository(options())
     const legacy = join(workstreamsRoot, "01-legacy-stage")
     await mkdir(join(legacy, "resources"), { recursive: true })
-    await Bun.write(join(legacy, "type"), "feature\n")
     await Bun.write(join(legacy, "PRD.md"), "old\n")
     await Bun.write(join(legacy, "SANE_CONTEXT.md"), "old\n")
     for (const retired of RETIRED_WORKSTREAM_FILES) {

@@ -7,7 +7,7 @@
  * a. If CWD's `git rev-parse --show-toplevel` contains `.sane/` it is a
  *    main-repo context: repo_root is the toplevel and the workstream is the
  *    `.sane/current-workstream` pointer (missing pointer errors name the fix:
- *    run `select-workstream`).
+ *    run `select`).
  * b. Else resolve `git rev-parse --git-common-dir` to a main-repo candidate
  *    (strip the trailing `.git`). If `<candidate>/.sane` exists, open its
  *    `sane.db` and match a `selections` row whose `worktree_path` equals the
@@ -84,7 +84,7 @@ async function resolveMainPointer(repoRoot: string, user: string): Promise<CwdTa
   if (!((await lstatOrUndefined(pointerPath))?.isFile())) {
     throw new SaneRepositoryError(
       `No current workstream selected in ${repoRoot} (${pointerPath} is missing or not a regular file). ` +
-        `Run: sane-alpha select-workstream ${repoRoot} <workstream-relative-path>`,
+        `Run: sane select --name <workstream-name> (run from the repository root)`,
     )
   }
   const workstream = await readCurrentWorkstream(repoRoot, saneWorkstreamsRoot(repoRoot))
@@ -206,7 +206,7 @@ async function resolveWorktreeSelection(
 /**
  * Resolve the CLI target for a CWD: main-repo pointer first, then worktree
  * selection via `--git-common-dir`. Errors ask for explicit args (or name
- * `select-workstream` for a missing pointer).
+ * `select` for a missing pointer).
  */
 export async function resolveCwdTarget(
   cwd: string = process.cwd(),

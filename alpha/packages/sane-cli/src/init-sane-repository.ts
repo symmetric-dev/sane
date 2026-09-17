@@ -239,14 +239,13 @@ export async function initializeSaneRepository(
 }
 
 export const USAGE =
-  "Usage: sane-alpha init-sane <implementation-repository> [--dry-run]"
+  "Usage: sane init [--dry-run] (initializes .sane in the current directory's repository)"
 
 export function parseCliArguments(args: string[]): {
   implementationRepository: string
   dryRun: boolean
 } {
   let dryRun = false
-  const positional: string[] = []
   let parseOptions = true
 
   for (const argument of args) {
@@ -257,16 +256,13 @@ export function parseCliArguments(args: string[]): {
     } else if (parseOptions && argument.startsWith("-")) {
       throw new RepositoryInitializationError(`Unknown option: ${argument}`)
     } else {
-      positional.push(argument)
+      throw new RepositoryInitializationError(
+        "This command takes no positional arguments. Run it from the repository root.",
+      )
     }
   }
 
-  if (positional.length !== 1 || !positional[0]) {
-    throw new RepositoryInitializationError(
-      "Provide exactly one implementation repository path.",
-    )
-  }
-  return { implementationRepository: positional[0], dryRun }
+  return { implementationRepository: process.cwd(), dryRun }
 }
 
 export async function runCli(args: string[]): Promise<number> {

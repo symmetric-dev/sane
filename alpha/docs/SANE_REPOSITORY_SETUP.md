@@ -58,17 +58,17 @@ create.
 ## Initialization
 
 SANE repository initialization is distinct from workstream bootstrap. Run the
-initializer with an explicit implementation-repository path:
+initializer from the repository root (no positional arguments):
 
 ```bash
-sane-alpha init-sane <implementation-repository>
+sane init
 ```
 
 Use `--dry-run` to validate the repository and existing local state and print
 the planned changes without modifying anything:
 
 ```bash
-sane-alpha init-sane <implementation-repository> --dry-run
+sane init --dry-run
 ```
 
 The command:
@@ -86,37 +86,42 @@ branches, or commits. Workstream bootstrap happens later inside
 ## Workstream Helpers
 
 After initialization, use the repository-aware creator rather than manually
-combining paths and bootstrap templates:
+combining paths and bootstrap templates (run from the repository root):
 
 ```bash
-sane-alpha create-workstream <implementation-repository> <workstream-relative-path> --type <feature|foundation> [--dry-run]
+sane create --name <workstream-name> --type <feature|foundation|issue|maintenance> [--dry-run]
 ```
 
-`--type` is required. The command validates the target containment, writes the
-immutable root `type` file, bootstraps with shared and type-specific templates,
-then records the selection only after bootstrap succeeds. To select an existing
+`--name` and `--type` are required. The command validates the target containment,
+bootstraps with shared and type-specific templates into the new layout
+(`README.md`, root doc, `design/SDD.md`, `resources/` fallbacks, top-level
+dirs exactly `design/`, `execution/`, `research/`, `resources/`), records the
+workstream `type` in sqlite (`workstreams.type`; no `type` file), then records
+the selection only after bootstrap succeeds. To select an existing
 bootstrapped workstream instead:
 
 ```bash
-sane-alpha select-workstream <implementation-repository> <workstream-relative-path> [--dry-run]
+sane select --name <workstream-name> [--dry-run]
 ```
 
 Both commands support `--dry-run`; selection takes no type argument. A selected
-workstream must contain a valid root `type` file, `SANE_CONTEXT.md`,
-`PRD.md`, and every bootstrapped `resources/` fallback template.
-There is no state file; view state with
-`sane-alpha state <implementation-repository> <workstream-relative-path>`.
-Those fallbacks include the Implementation Report, Section Spec, Job Spec,
-Research Report, root Design, Stage list, Stage Design, Stage
-Sections, and Execution Plan templates.
+workstream must contain `README.md`, `design/SDD.md`, exactly one root doc
+(`PRD.md` | `FOUNDATION.md` | `ISSUE.md` | `MAINTENANCE.md`, matching sqlite
+`workstreams.type`), and every bootstrapped `resources/` fallback template.
+There is no state file; view state with bare `sane view` (auto-detected
+from the current directory).
+Those fallbacks include the SDD, Solution Spec, Job Spec,
+Research Report, Plan, Execution Final Report, and Execution Report templates.
 
-There is no role-artifact CLI command. When a role needs an artifact, it inspects
-the selected workstream's `resources/`, creates the artifact's parent directory,
-copies the matching local template to its normal destination, then edits the
-copy. It never overwrites an existing artifact and preserves required headings
-and structure. `PRD.md` and `SANE_CONTEXT.md` are bootstrap-root
-artifacts and are edited in place. There is no state file; view state with
-`sane-alpha state <implementation-repository> <workstream-relative-path>`.
+Phase starters come from `sane provide <phase>` (never overwrites):
+it ensures the phase directory exists and copies a single starter file from
+`resources/` when the phase has no documents yet (`design/SDD.md`,
+`design/solutions/SOLUTION.md`, `execution/PLAN.md`,
+`execution/FINAL_REPORT.md`). Phase documents are
+checked with bare `sane validate <phase>` and approved with bare
+`sane approve <phase> --ref <approval_ref>` (validation runs first;
+problems refuse the approval). The root doc and `README.md` are
+bootstrap-root artifacts and are edited in place. There is no state file.
 
 Research is an append-only archive: completed evidence lives at
 `research/<topic>/REPORT.md` (from `resources/RESEARCH_REPORT_TEMPLATE.md`).
@@ -124,13 +129,13 @@ Never update a registered report, write a new topic instead.
 `research/BASELINE.md`, `RESEARCH_BASELINE_TEMPLATE.md`, the baselines table,
 and baseline revisions are retired. The registry is the `research_reports`
 table (topic, path, creation time, content hash, commit); inspect it with
-`sane-alpha research <implementation-repository> <workstream-relative-path>`
+`sane research <implementation-repository> <workstream-relative-path>`
 (default `--index` prints presence/status plus unregistered files;
-`--register`/`--unregister` record or remove rows). The old `sane-alpha
-baseline --record|--recheck` command is gone. Research has no gates: Pickup
-surfaces warnings for missing, modified, or unregistered files, and delivery
-mismatches on new, edited, or removed reports route to a Design/Engineering
-update plus re-approval.
+`--register`/`--unregister` record or remove rows). The old `sane
+baseline --record|--recheck` command is gone. Research has no approval
+semantics: `validate` surfaces warnings for missing, modified, or
+unregistered files, and delivery mismatches on new, edited, or removed
+reports route to a Design/Engineering update plus re-approval.
 
 A Research Worker may investigate one bounded external-evidence topic and write
 its report and explicitly assigned supporting files beneath `research/<topic>/`.
@@ -147,16 +152,17 @@ When a top-level SANE assistant session starts in an implementation repository,
 it reads `.sane/current-workstream` for the normalized relative selection and
 resolves the selected absolute workstream as
 `<implementation-repository>/.sane/workstreams/<current-workstream>`.
-If the current pointer or selected workstream type metadata is missing or
-invalid, the assistant asks the user to select a valid workstream and stops; it
+If the current pointer, the selected workstream bootstrap, or its sqlite
+`workstreams.type` row is missing or invalid, the assistant asks the user to
+select a valid workstream and stops; it
 does not infer or switch one. Its
-`SANE_CONTEXT.md`, state viewed via `sane-alpha state`, assigned artifacts, and role skill then
+`README.md`, state viewed via `sane view`, assigned artifacts, and role skill then
 govern the session.
 
 The Coordination Assistant uses the implementation repository root as the Bash
 working directory when launching workers. Worker and
 review prompts receive only their assigned paths and instructions. They do not
-read `.sane/current-workstream` or `SANE_CONTEXT.md`, nor view state via `sane-alpha state`.
+read `.sane/current-workstream` or `README.md`, nor view state via `sane view`.
 
 A Scout receives a self-contained bounded implementation-repository assignment
 from its invoking parent agent, subject to that parent's launch permissions.
@@ -189,4 +195,5 @@ inspection scope, exact read-only context paths, and one assigned Job Spec path
 as the only writable file. Grounder enriches that spec and returns findings,
 gaps, and limitations; it does not discover `.sane` context, edit application,
 Design, plan, or State files, converse with users, approve, or subdelegate.
-The Execution phase, `execution/` layout, and resource filenames remain unchanged.
+Phase paths are `design/SDD.md`, `design/solutions/`, `execution/PLAN.md`,
+`execution/jobs/`, `execution/FINAL_REPORT.md`, `execution/reports/`.

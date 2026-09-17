@@ -1,5 +1,5 @@
 /**
- * SANE 0.2.0 M5: `sane-alpha worktree` command (docs/SANE_0_2_0.md Section 4).
+ * SANE 0.2.0 M5: `sane worktree` command (docs/SANE_0_2_0.md Section 4).
  *
  * One git worktree plus one branch per active execution workstream:
  *
@@ -18,7 +18,7 @@
  * server, migration against shared data, or deployment.
  *
  * New files only (M5); read-only use of `sane-db.ts` helpers (no schema
- * refactor). Does not touch `bin/sane-alpha.ts`, `sane-db.ts` schema,
+ * refactor). Does not touch `bin/sane.ts`, `sane-db.ts` schema,
  * handoff files, `templates/`, or agents/skills.
  */
 import { execFile } from "node:child_process"
@@ -404,7 +404,7 @@ export async function removeWorktree(
 }
 
 // ---------------------------------------------------------------------------
-// CLI: sane-alpha worktree <repo> <workstream> --create|--remove
+// CLI: sane worktree <repo> <workstream> --create|--remove
 // ---------------------------------------------------------------------------
 
 export type SaneWorktreeMode = "create" | "remove"
@@ -424,7 +424,7 @@ export interface SaneWorktreeCommandOptions {
 }
 
 export const USAGE =
-  "Usage: sane-alpha worktree [<implementation-repository> <workstream-relative-path>] --create|--remove [--base-rev <rev>] [--worktrees-dir <dir>] [--user <name>] [--force] [--actor-role <role>] [--session-id <id>] [--json] [--repo-root <path>] (no positionals: auto-detect the target from the current directory)"
+  "Usage: sane worktree [<implementation-repository> <workstream-relative-path>] --create|--remove [--base-rev <rev>] [--worktrees-dir <dir>] [--user <name>] [--force] [--actor-role <role>] [--session-id <id>] [--json] [--repo-root <path>] (no positionals: auto-detect the target from the current directory)"
 
 export interface ParsedWorktreeArguments {
   implementationRepository: string

@@ -1,4 +1,4 @@
-import { copyFile, lstat, mkdir, mkdtemp, rename, rm, writeFile } from "node:fs/promises"
+import { copyFile, lstat, mkdir, mkdtemp, rename, rm } from "node:fs/promises"
 import { constants as fsConstants } from "node:fs"
 import { dirname, join, relative, resolve, sep } from "node:path"
 import { fileURLToPath } from "node:url"
@@ -21,10 +21,10 @@ export interface TemplateMapping {
 export type TemplateRegistry = readonly TemplateMapping[]
 
 const SHARED_INITIAL_TEMPLATE_REGISTRY = [
-  { source: "shared/SANE_CONTEXT.md", destination: "SANE_CONTEXT.md" },
+  { source: "shared/README.md", destination: "README.md" },
   {
     source: "shared/sdd/SDD.md",
-    destination: "SDD.md",
+    destination: "design/SDD.md",
   },
   {
     source: "shared/sdd/SDD.md",
@@ -51,8 +51,8 @@ const SHARED_INITIAL_TEMPLATE_REGISTRY = [
     destination: "resources/EXECUTION_REPORT_TEMPLATE.md",
   },
   {
-    source: "shared/execution/BRIEF.md",
-    destination: "resources/EXECUTION_BRIEF_TEMPLATE.md",
+    source: "shared/execution/FINAL_REPORT.md",
+    destination: "resources/EXECUTION_FINAL_REPORT_TEMPLATE.md",
   },
 ] as const satisfies TemplateRegistry
 
@@ -68,11 +68,10 @@ export function initialTemplateRegistry(workstreamType: WorkstreamType): Templat
 }
 
 export const INITIAL_DIRECTORIES = [
-  "resources",
-  "solutions",
-  "research",
-  "plan",
+  "design",
   "execution",
+  "research",
+  "resources",
 ] as const
 
 export const DEFAULT_TEMPLATE_ROOT = fileURLToPath(
@@ -205,7 +204,6 @@ async function createInitialDirectories(destinationRoot: string): Promise<void> 
 function outputPaths(destination: string, registry: TemplateRegistry): string[] {
   return [
     destination,
-    join(destination, "type"),
     ...registry.map((template) =>
       join(destination, template.destination),
     ),
@@ -248,7 +246,6 @@ export async function createSaneWorkstream(
     write("Dry run: no files or directories were created.")
     write(`Planned workstream type: ${workstreamType}`)
     for (const path of paths) write(`Planned: ${path}`)
-    write(`Next action: start a Product Assistant session for ${destination}.`)
     return { destination, paths, dryRun: true }
   }
 
@@ -260,7 +257,6 @@ export async function createSaneWorkstream(
     await mkdir(parent, { recursive: true })
     stagingDirectory = await mkdtemp(join(parent, `.${destinationName}.sane-bootstrap-`))
     await createInitialDirectories(stagingDirectory)
-    await writeFile(join(stagingDirectory, "type"), `${workstreamType}\n`, { flag: "wx" })
     await copyTemplateRegistry(
       templateRoot,
       stagingDirectory,
@@ -283,7 +279,6 @@ export async function createSaneWorkstream(
   }
 
   for (const path of paths) write(`Created: ${path}`)
-  write(`Next action: start a Product Assistant session for ${destination}.`)
   return { destination, paths, dryRun: false }
 }
 

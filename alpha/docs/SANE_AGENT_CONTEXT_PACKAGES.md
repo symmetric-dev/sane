@@ -17,7 +17,7 @@ alpha/opencode/agents/
 Install the complete context package with:
 
 ```bash
-sane-alpha install-context-packages [--dry-run] [--overwrite] [--model-config <path>]
+sane install context-packages [--dry-run] [--overwrite] [--model-config <path>]
 ```
 
 The installer uses `SANE_HOME` when set (otherwise the current user's home), so
@@ -93,8 +93,8 @@ sane-assistant-design:
 ```
 
 ```bash
-sane-alpha install-context-packages --model-config ./models.yaml --dry-run
-sane-alpha install-context-packages --model-config ./models.yaml --overwrite
+sane install context-packages --model-config ./models.yaml --dry-run
+sane install context-packages --model-config ./models.yaml --overwrite
 # Direct script invocation supports the same options:
 bun alpha/scripts/install-sane-agent-context-packages.ts --model-config ./models.yaml
 ```
@@ -240,10 +240,10 @@ Every user-started SANE session follows this sequence:
    `<implementation-repository>/.sane/workstreams/<current-workstream>`, then reads its
    `SANE_CONTEXT.md` and the role-specific Pickup inputs
    required by its installed skill, and views state via
-   `sane-alpha state <impl-repo> <ws-path>`.
+   `sane view <impl-repo> <ws-path>`.
    A role that consumes Research records the hashes of the registered
    `research/<topic>/REPORT.md` files it uses, as shown by
-   `sane-alpha research <impl-repo> <ws-path> --index`.
+   `sane research <impl-repo> <ws-path> --index`.
 7. The agent performs Pickup and reports a readiness checkpoint to the user. The
    checkpoint concisely identifies the workstream, assigned role and Stage when
    applicable, relevant current State, proposed session scope, and any missing
@@ -260,11 +260,11 @@ and reconciles new, edited, or removed reports as a mismatch. Topic
 assigned scope; delegated researchers write reports. Only the Research Assistant
 reconciles the index (`--index`/`--unregister`); a worker registers its own
 report only when asked. Evidence from another scope applies only
-through an explicit reference to its registered report. Research has no gates.
+through an explicit reference to its registered report. Research has no approval semantics.
 Approved Design remains implementation authority, so a material Research conflict
 is routed to a Design/Engineering update and re-approval. The retired baseline
 model (`research/BASELINE.md`, the baselines table, baseline revisions, and
-`sane-alpha baseline --record|--recheck`) no longer exists.
+`sane baseline --record|--recheck`) no longer exists.
 
 ## Working Directory, Permissions, and Scope
 
@@ -295,7 +295,7 @@ spec. Coordination never edits planning artifacts or launches Grounder; its task
 allowlist contains only implementer, reviewer, and fixer. It reports **“Planning
 needs to make these corrections”** with actionable paths/issues and evidence and
 waits for the user to return to Planning. Planning redelivers revisions under the
-existing explicit breakdown/final approval gates and Design Update escalation.
+existing explicit breakdown/final approvals and Design Update escalation.
 Engineering retains `ask` permissions for both Scout and Researcher.
 
 Coordination consumes compact `Jobs` / `Split Notes` with lightweight dispatch

@@ -3,25 +3,23 @@ import { mkdtemp, readFile, rm, access } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 
-import { COMMANDS, type AlphaCommand, runSaneAlpha } from "./sane-alpha.ts"
+import { COMMANDS, type AlphaCommand, runSaneAlpha } from "./sane.ts"
 
 const expectedCommands: AlphaCommand[] = [
-  "init-sane",
-  "create-workstream",
-  "select-workstream",
-  "install-context-packages",
-  "state",
+  "init",
+  "create",
+  "select",
+  "install",
+  "view",
   "status",
-  "pickup",
-  "artifact",
+  "validate",
   "approve",
+  "provide",
   "research",
   "handoff",
-  "worktree",
-  "merge",
 ]
 
-describe("sane-alpha dispatcher", () => {
+describe("sane dispatcher", () => {
   test("direct and dispatched installers accept YAML config and report errors before writes", async () => {
     const temporaryDirectory = await mkdtemp(join(tmpdir(), "sane-model-cli-"))
     try {
@@ -29,7 +27,7 @@ describe("sane-alpha dispatcher", () => {
       await Bun.write(config, "sane/worker/scout: openai/gpt-5\n")
       for (const [index, command] of [
         ["alpha/packages/sane-cli/src/install-sane-agent-context-packages.ts"],
-        ["alpha/bin/sane-alpha.ts", "install-context-packages"],
+        ["alpha/bin/sane.ts", "install", "context-packages"],
       ].entries()) {
         const home = join(temporaryDirectory, `home-${index}`)
         const run = async (...args: string[]) => {
@@ -73,12 +71,12 @@ describe("sane-alpha dispatcher", () => {
     const argumentsToPreserve = ["", "two words", "--", "--type", "feature"]
 
     const result = await runSaneAlpha(
-      ["create-workstream", ...argumentsToPreserve],
+      ["create", ...argumentsToPreserve],
       handlers,
     )
 
-    expect(result).toBe(expectedCommands.indexOf("create-workstream") + 10)
-    expect(received).toEqual([{ command: "create-workstream", args: argumentsToPreserve }])
+    expect(result).toBe(expectedCommands.indexOf("create") + 10)
+    expect(received).toEqual([{ command: "create", args: argumentsToPreserve }])
   })
 
   test("prints help successfully and rejects an unknown command", async () => {

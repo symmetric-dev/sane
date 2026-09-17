@@ -1,6 +1,6 @@
 /**
  * CWD-based target auto-detection: resolver unit tests plus bare-invocation
- * coverage for `state`, `pickup`, and `research` via their `runCli` entry
+ * coverage for `view`, `validate`, and `research` via their `runCli` entry
  * points (no positionals).
  */
 import { afterEach, beforeEach, describe, expect, test } from "bun:test"
@@ -26,9 +26,9 @@ import {
   type SaneIdentity,
 } from "../src/sane-db.ts"
 import { resolveImplementationRepository } from "../src/sane-repository.ts"
-import { runCli as runPickupCli } from "../src/sane-pickup-command.ts"
+import { runCli as runValidateCli } from "../src/sane-validate-command.ts"
 import { runCli as runResearchCli } from "../src/sane-research-command.ts"
-import { runCli as runStateCli } from "../src/sane-state-command.ts"
+import { runCli as runViewCli } from "../src/sane-view-command.ts"
 
 const execFileAsync = promisify(execFile)
 
@@ -178,12 +178,12 @@ describe("sane-cwd-target resolver", () => {
     })
   })
 
-  test("main-repo context without a pointer names select-workstream", async () => {
+  test("main-repo context without a pointer names select", async () => {
     const bare = join(tempDirectory, "bare")
     await mkdir(bare, { recursive: true })
     await git(["init", "--quiet", bare])
     await initializeSaneRepository({ implementationRepository: bare, write: () => {} })
-    await expect(resolveCwdTarget(bare)).rejects.toThrow("select-workstream")
+    await expect(resolveCwdTarget(bare)).rejects.toThrow("sane select")
   })
 
   test("worktree context matches the selections row", async () => {
@@ -290,7 +290,7 @@ describe("sane-cwd-target resolver", () => {
   })
 })
 
-describe("bare invocation via runCli (state, pickup, research)", () => {
+describe("bare invocation via runCli (view, validate, research)", () => {
   let tempDirectory = ""
   let repo = ""
   let repoRoot = ""
@@ -349,22 +349,24 @@ describe("bare invocation via runCli (state, pickup, research)", () => {
     return wtDir
   }
 
-  test("state bare from the main repo", async () => {
-    const result = await withCwd(repoRoot, () => captureOutput(() => runStateCli([])))
+  test("view bare from the main repo", async () => {
+    const result = await withCwd(repoRoot, () => captureOutput(() => runViewCli([])))
     expect(result.exit).toBe(0)
     expect(result.out).toContain("01-demo")
   })
 
-  test("state bare from a registered worktree", async () => {
+  test("view bare from a registered worktree", async () => {
     const wtDir = await addRegisteredWorktree()
-    const result = await withCwd(wtDir, () => captureOutput(() => runStateCli([])))
+    const result = await withCwd(wtDir, () => captureOutput(() => runViewCli([])))
     expect(result.exit).toBe(0)
     expect(result.out).toContain("01-demo")
   })
 
-  test("pickup bare from the main repo", async () => {
-    const result = await withCwd(repoRoot, () => captureOutput(() => runPickupCli([])))
-    expect(result.exit).toBe(0)
+  test("validate bare from the main repo", async () => {
+    // Fresh bootstrap docs are pristine templates, so validation reports
+    // problems (exit 1) — resolving the address at all proves auto-detect.
+    const result = await withCwd(repoRoot, () => captureOutput(() => runValidateCli(["design"])))
+    expect(result.exit).toBe(1)
     expect(result.out).toContain("01-demo")
   })
 
@@ -381,7 +383,7 @@ describe("bare invocation via runCli (state, pickup, research)", () => {
   test("bare outside any git tree exits 1 with explicit-args guidance", async () => {
     const plain = join(tempDirectory, "plain-cli")
     await mkdir(plain, { recursive: true })
-    const result = await withCwd(plain, () => captureOutput(() => runStateCli([])))
+    const result = await withCwd(plain, () => captureOutput(() => runViewCli([])))
     expect(result.exit).toBe(1)
     expect(result.err).toContain("explicitly")
   })

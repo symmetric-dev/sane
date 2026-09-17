@@ -4,13 +4,13 @@ import type { Database } from "bun:sqlite"
  * State renderer from sqlite (docs/SANE_0_2_0.md Section 2).
  *
  * `sqlite` at `<repo>/.sane/sane.db` is the source of truth; the rendered
- * markdown is printed to stdout by `sane-alpha state` and never written to a
+ * markdown is printed to stdout by `sane view` and never written to a
  * file. On conflict, the database wins. This renderer replaced the old
  * Stage-shaped workstream-state layout (Workstream
  * Foundation/Stages/Implementation) with the 0.2.0 single-scope shape.
  */
 
-export interface SaneStateIdentity {
+export interface SaneViewIdentity {
   repoRoot: string
   user: string
   workstreamId: string
@@ -18,20 +18,17 @@ export interface SaneStateIdentity {
 
 /** Accepted runtime shape (camelCase primary, snake_case tolerated). */
 type IdentityInput =
-  | SaneStateIdentity
+  | SaneViewIdentity
   | { repo_root: string; user: string; workstream_id: string }
   | (Record<string, unknown> & { user?: unknown })
 
 export const SANE_PHASES = ["design", "engineering", "planning", "execution"] as const
 export type SanePhase = (typeof SANE_PHASES)[number]
 
-export const SANE_GATES = ["root-plus-sdd", "solutions", "plan", "jobs-batch", "merge"] as const
-export type SaneGate = (typeof SANE_GATES)[number]
-
-export class SaneStateError extends Error {
+export class SaneViewError extends Error {
   constructor(message: string) {
     super(message)
-    this.name = "SaneStateError"
+    this.name = "SaneViewError"
   }
 }
 
@@ -40,14 +37,13 @@ export class SaneStateError extends Error {
  * One database per repository; every row keyed by
  * `(repo_root, user, workstream_id)`.
  */
-export const SANE_STATE_SCHEMA = `
+export const SANE_VIEW_SCHEMA = `
 CREATE TABLE IF NOT EXISTS workstreams(
   repo_root TEXT NOT NULL,
   user TEXT NOT NULL,
   workstream_id TEXT NOT NULL,
-  scope TEXT NOT NULL,
+  type TEXT NOT NULL,
   status TEXT NOT NULL,
-  foundation_rev TEXT,
   created_at TEXT NOT NULL,
   PRIMARY KEY (repo_root, user, workstream_id)
 );
@@ -77,13 +73,13 @@ CREATE TABLE IF NOT EXISTS approvals(
   repo_root TEXT NOT NULL,
   user TEXT NOT NULL,
   workstream_id TEXT NOT NULL,
-  gate TEXT NOT NULL,
+  phase TEXT NOT NULL,
   artifact_path TEXT NOT NULL,
   sane_hash TEXT NOT NULL,
   git_commit TEXT,
   approval_ref TEXT NOT NULL,
   approved_at TEXT NOT NULL,
-  PRIMARY KEY (repo_root, user, workstream_id, gate)
+  PRIMARY KEY (repo_root, user, workstream_id, phase)
 );
 CREATE TABLE IF NOT EXISTS research_reports(
   repo_root TEXT NOT NULL,
@@ -119,15 +115,8 @@ CREATE TABLE IF NOT EXISTS merges(
 );
 `.trim()
 
-interface WorkstreamRow {
-  scope: string
-  status: string
-  foundation_rev: string | null
-}
-
 interface StateEntryRow {
   status: string
-  owner_role: string
   approval_ref: string | null
 }
 
@@ -160,19 +149,19 @@ interface MergeRow {
   merge_commit: string | null
 }
 
-function normalizeIdentity(identity: IdentityInput): SaneStateIdentity {
+function normalizeIdentity(identity: IdentityInput): SaneViewIdentity {
   const record = identity as Record<string, unknown>
   const repoRoot = (record["repoRoot"] ?? record["repo_root"]) as unknown
   const workstreamId = (record["workstreamId"] ?? record["workstream_id"]) as unknown
   const user = record["user"] as unknown
   if (typeof repoRoot !== "string" || !repoRoot) {
-    throw new SaneStateError("SaneState identity requires repoRoot (repo_root).")
+    throw new SaneViewError("SaneView identity requires repoRoot (repo_root).")
   }
   if (typeof user !== "string" || !user) {
-    throw new SaneStateError("SaneState identity requires user.")
+    throw new SaneViewError("SaneView identity requires user.")
   }
   if (typeof workstreamId !== "string" || !workstreamId) {
-    throw new SaneStateError("SaneState identity requires workstreamId (workstream_id).")
+    throw new SaneViewError("SaneView identity requires workstreamId (workstream_id).")
   }
   return { repoRoot, user, workstreamId }
 }
@@ -191,15 +180,15 @@ function esc(value: string): string {
  * Render workstream state from the database. The database always wins: there
  * is no state file to merge with; callers print this return value.
  */
-export function renderSaneState(db: Database, identity: IdentityInput): string {
+export function renderSaneView(db: Database, identity: IdentityInput): string {
   const { repoRoot, user, workstreamId } = normalizeIdentity(identity)
   const key = [repoRoot, user, workstreamId] as const
 
   const workstream = db
-    .query("SELECT scope, status, foundation_rev FROM workstreams WHERE repo_root = ? AND user = ? AND workstream_id = ?")
-    .get(...key) as WorkstreamRow | null
+    .query("SELECT 1 FROM workstreams WHERE repo_root = ? AND user = ? AND workstream_id = ?")
+    .get(...key) as { "1": number } | null
   if (!workstream) {
-    throw new SaneStateError(
+    throw new SaneViewError(
       `No workstream row for repo_root=${JSON.stringify(repoRoot)} user=${JSON.stringify(user)} workstream_id=${JSON.stringify(workstreamId)}.`,
     )
   }
@@ -207,19 +196,11 @@ export function renderSaneState(db: Database, identity: IdentityInput): string {
   const lines: string[] = []
   lines.push(`# SANE State — ${workstreamId}`)
   lines.push("")
-  lines.push("<!-- Rendered from sqlite sane.db; database wins. View via `sane-alpha state`. -->")
+  lines.push("<!-- Rendered from sqlite sane.db; database wins. View via `sane view`. -->")
   lines.push("")
   lines.push(`- repo_root: ${esc(repoRoot)}`)
   lines.push(`- user: ${esc(user)}`)
   lines.push(`- workstream_id: ${esc(workstreamId)}`)
-  lines.push("")
-
-  // --- Workstream (scope, status, foundation_rev) ---
-  lines.push("## Workstream")
-  lines.push("")
-  lines.push(`- scope: ${esc(workstream.scope)}`)
-  lines.push(`- status: ${esc(workstream.status)}`)
-  lines.push(`- foundation_rev: ${esc(none(workstream.foundation_rev))}`)
   lines.push("")
 
   // --- Phases (design|engineering|planning|execution) ---
@@ -228,29 +209,28 @@ export function renderSaneState(db: Database, identity: IdentityInput): string {
   for (const phase of SANE_PHASES) {
     const entry = db
       .query(
-        "SELECT status, owner_role, approval_ref FROM state_entries WHERE repo_root = ? AND user = ? AND workstream_id = ? AND phase = ?",
+        "SELECT status, approval_ref FROM state_entries WHERE repo_root = ? AND user = ? AND workstream_id = ? AND phase = ?",
       )
       .get(repoRoot, user, workstreamId, phase) as StateEntryRow | null
     lines.push(`### ${phase}`)
     lines.push("")
     lines.push(`- status: ${esc(entry?.status ?? "pending")}`)
-    lines.push(`- owner (owner_role): ${esc(entry?.owner_role ?? phase)}`)
     lines.push(`- approval_ref: ${esc(none(entry?.approval_ref))}`)
     lines.push("")
   }
 
-  // --- Gates (approvals 1-5) ---
-  // Pending gates render "[ ] Pending" and never "[✓] Approved"; approved
-  // gates render approval_ref + sane_hash + "[✓] Approved".
-  lines.push("## Gates")
+  // --- Approvals (one row per phase, at most) ---
+  // Pending phases render "[ ] Pending" and never "[✓] Approved"; approved
+  // phases render approval_ref + sane_hash + "[✓] Approved".
+  lines.push("## Approvals")
   lines.push("")
-  for (const gate of SANE_GATES) {
+  for (const phase of SANE_PHASES) {
     const approval = db
       .query(
-        "SELECT artifact_path, sane_hash, git_commit, approval_ref, approved_at FROM approvals WHERE repo_root = ? AND user = ? AND workstream_id = ? AND gate = ?",
+        "SELECT artifact_path, sane_hash, git_commit, approval_ref, approved_at FROM approvals WHERE repo_root = ? AND user = ? AND workstream_id = ? AND phase = ?",
       )
-      .get(repoRoot, user, workstreamId, gate) as ApprovalRow | null
-    lines.push(`### ${gate}`)
+      .get(repoRoot, user, workstreamId, phase) as ApprovalRow | null
+    lines.push(`### ${phase}`)
     lines.push("")
     if (!approval) {
       lines.push("- status: [ ] Pending")

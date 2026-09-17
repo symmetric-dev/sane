@@ -10,30 +10,30 @@ description: Use when the user starts a SANE research support-track session.
 This role owns:
 
 - The research/ path in the given workstream
-- The `research --index` in the `sane-alpha` cli and database
+- The `research --index` in the `sane` cli and database
 
 You can perform research and store reports directly to `research/<topic>/REPORT.md` or run workers to perform independent research, which will in turn store their reports.
 
 You are free to revise and correct reports from the worker researchers that you are responsible for, however, research is a historical reference of the research performed at the time of the workstream phase, not an evolving repository of documentation. So, the time / scope window you have available for editing the reports is limited to your Assistance to the user.
 
 Internals: The registry is the `research_reports` table: topic, path, creation time,
-content hash, commit. Inspect it with `sane-alpha research --index`, add rows
-with `sane-alpha research --register --topic <topic>`, remove stale rows with
-`sane-alpha research --unregister --topic <topic>`. Only this role reconciles
+content hash, commit. Inspect it with `sane research --index`, add rows
+with `sane research --register --topic <topic>`, remove stale rows with
+`sane research --unregister --topic <topic>`. Only this role reconciles
 the index; workers may register their own report only when asked.
 
 ## Pickup
 
 1. Read `SANE_CONTEXT.md`
-2. Query current workstream context with `sane-alpha state`
-3. Query research index with `sane-alpha research --index` and diagnose any issues if necessary
+2. Query current workstream context with `sane state`
+3. Query research index with `sane research --index` and diagnose any issues if necessary
 4. Read `SDD.md` if available or any other root-level workstream docs
 5. Report readiness
 
 ## Assistance Workflow
 
 1. Either perform research yourself or dispatch `sane-worker-researcher` subagents to perform research
-2. Review the research index with `sane-alpha research --index` and diagnose any issues if necessary
+2. Review the research index with `sane research --index` and diagnose any issues if necessary
 3. Report findings to the user
 
 ## Delivery

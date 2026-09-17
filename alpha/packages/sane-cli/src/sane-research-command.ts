@@ -1,5 +1,5 @@
 /**
- * SANE 0.2.0: `sane-alpha research` command.
+ * SANE 0.2.0: `sane research` command.
  *
  * Research is an append-only archive of `research/<topic>/REPORT.md` files
  * indexed in the `research_reports` table (docs/SANE_0_2_0.md Sec 2).
@@ -9,11 +9,11 @@
  *   file and upserts its registry row. Re-registering refreshes the row.
  * - `--unregister --topic <t>` removes a registry row (index repair).
  *
- * Research has no gates: these commands record and report only. Freshness
+ * Research has no approval semantics: these commands record and report only. Freshness
  * warnings surface through pickup, not here.
  *
  * Supports `--json` and `--repo-root` detection idioms matching existing
- * CLIs. No dispatcher wiring here (bin/sane-alpha.ts stays with the
+ * CLIs. No dispatcher wiring here (bin/sane.ts stays with the
  * integrator).
  */
 
@@ -56,7 +56,7 @@ export interface SaneResearchCommandOptions {
 }
 
 export const USAGE =
-  "Usage: sane-alpha research [<implementation-repository> <workstream-relative-path>] [--index|--register|--unregister] [--topic <topic>] [--path <report-path>] [--git-commit <commit>] [--json] [--repo-root <path>] (no positionals: auto-detect the target from the current directory)"
+  "Usage: sane research [<implementation-repository> <workstream-relative-path>] [--index|--register|--unregister] [--topic <topic>] [--path <report-path>] [--git-commit <commit>] [--json] [--repo-root <path>] (no positionals: auto-detect the target from the current directory)"
 
 function singleLine(value: string | undefined, option: string): string | undefined {
   if (value === undefined) return undefined
