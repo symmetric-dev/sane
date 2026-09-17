@@ -37,6 +37,7 @@ import {
   upsertMerge,
 } from "./sane-db.ts"
 import { resolveImplementationRepository } from "./sane-repository.ts"
+import { resolveCommandAddress } from "./sane-cwd-target.ts"
 import { SaneWorkstreamStateError } from "./sane-workstream-state.ts"
 
 const execFileAsync = promisify(execFile)
@@ -423,7 +424,7 @@ export interface SaneWorktreeCommandOptions {
 }
 
 export const USAGE =
-  "Usage: sane-alpha worktree <implementation-repository> <workstream-relative-path> --create|--remove [--base-rev <rev>] [--worktrees-dir <dir>] [--user <name>] [--force] [--actor-role <role>] [--session-id <id>] [--json] [--repo-root <path>]"
+  "Usage: sane-alpha worktree [<implementation-repository> <workstream-relative-path>] --create|--remove [--base-rev <rev>] [--worktrees-dir <dir>] [--user <name>] [--force] [--actor-role <role>] [--session-id <id>] [--json] [--repo-root <path>] (no positionals: auto-detect the target from the current directory)"
 
 export interface ParsedWorktreeArguments {
   implementationRepository: string
@@ -548,6 +549,10 @@ export function parseCliArguments(args: string[]): ParsedWorktreeArguments {
   } else if (positional.length === 1 && positional[0]) {
     implementationRepository = process.cwd()
     workstreamPath = positional[0]
+  } else if (positional.length === 0) {
+    // Bare invocation: the async run path auto-detects the target from CWD.
+    implementationRepository = ""
+    workstreamPath = ""
   } else {
     throw new SaneWorktreeError(
       "Provide an implementation repository and workstream relative path.",
@@ -687,7 +692,8 @@ export async function runSaneWorktreeCommand(
 export async function runCli(args: string[]): Promise<number> {
   try {
     const parsed = parseCliArguments(args)
-    await runSaneWorktreeCommand(parsed)
+    const address = await resolveCommandAddress(parsed, { userOverride: parsed.userOverride })
+    await runSaneWorktreeCommand({ ...parsed, ...address })
     return 0
   } catch (error) {
     if (error instanceof SaneWorkstreamStateError) {

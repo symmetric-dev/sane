@@ -8,6 +8,7 @@
  * idioms matching existing CLIs.
  */
 import { initSchema, openSaneDb, resolveSaneIdentity } from "./sane-db.ts"
+import { resolveCommandAddress } from "./sane-cwd-target.ts"
 import { renderSaneState } from "./sane-state.ts"
 import {
   resolveBootstrappedWorkstream,
@@ -32,7 +33,7 @@ export interface SaneStateCommandResult {
 }
 
 export const USAGE =
-  "Usage: sane-alpha state <implementation-repository> <workstream-relative-path> [--json] [--repo-root <path>]"
+  "Usage: sane-alpha state [<implementation-repository> <workstream-relative-path>] [--json] [--repo-root <path>] (no positionals: auto-detect the target from the current directory)"
 
 export function parseCliArguments(args: string[]): {
   implementationRepository: string
@@ -90,6 +91,10 @@ export function parseCliArguments(args: string[]): {
   if (positional.length === 1 && positional[0]) {
     // Repo-root detection: default to the current working directory's git root.
     return { implementationRepository: process.cwd(), workstreamPath: positional[0], json }
+  }
+  if (positional.length === 0) {
+    // Bare invocation: the async run path auto-detects the target from CWD.
+    return { implementationRepository: "", workstreamPath: "", json }
   }
   throw new SaneWorkstreamStateError(
     "Provide an implementation repository and workstream relative path.",
@@ -155,7 +160,8 @@ export async function runSaneStateCommand(
 export async function runCli(args: string[]): Promise<number> {
   try {
     const parsed = parseCliArguments(args)
-    await runSaneStateCommand(parsed)
+    const address = await resolveCommandAddress(parsed)
+    await runSaneStateCommand({ ...parsed, ...address })
     return 0
   } catch (error) {
     console.error(`Error: ${(error as Error).message}`)

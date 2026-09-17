@@ -45,6 +45,7 @@ import {
   resolveBootstrappedWorkstream,
   resolveSaneRepository,
 } from "./sane-repository.ts"
+import { resolveCommandAddress } from "./sane-cwd-target.ts"
 import { SaneWorkstreamStateError } from "./sane-workstream-state.ts"
 
 export class SaneHandoffError extends Error {
@@ -519,7 +520,7 @@ export interface ParsedHandoffArguments {
 }
 
 export const USAGE =
-  "Usage: sane-alpha handoff <implementation-repository> <workstream-relative-path> --from <slot> --to <slot> --next <action> [--steer-reason <user-redirect|execution-abort>] [--server-url <url>] [--from-session <id>] [--approvals <refs>] [--revisions <refs>] [--paths <refs>] [--json] [--repo-root <path>]"
+  "Usage: sane-alpha handoff [<implementation-repository> <workstream-relative-path>] --from <slot> --to <slot> --next <action> [--steer-reason <user-redirect|execution-abort>] [--server-url <url>] [--from-session <id>] [--approvals <refs>] [--revisions <refs>] [--paths <refs>] [--json] [--repo-root <path>] (no positionals: auto-detect the target from the current directory)"
 
 function requireOptionValue(args: string[], index: number, option: string): string {
   const value = args[index + 1]
@@ -623,6 +624,10 @@ export function parseCliArguments(args: string[]): ParsedHandoffArguments {
   } else if (positional.length === 1 && positional[0]) {
     implementationRepository = process.cwd()
     workstreamPath = positional[0]
+  } else if (positional.length === 0) {
+    // Bare invocation: the async run path auto-detects the target from CWD.
+    implementationRepository = ""
+    workstreamPath = ""
   } else {
     throw new SaneHandoffError(
       "Provide an implementation repository and workstream relative path.",
@@ -874,7 +879,8 @@ export async function runSaneHandoffCommand(
 export async function runCli(args: string[]): Promise<number> {
   try {
     const parsed = parseCliArguments(args)
-    await runSaneHandoffCommand(parsed)
+    const address = await resolveCommandAddress(parsed)
+    await runSaneHandoffCommand({ ...parsed, ...address })
     return 0
   } catch (error) {
     console.error(`Error: ${(error as Error).message}`)

@@ -44,6 +44,7 @@ import {
   type JobRow,
 } from "./sane-db.ts"
 import { hashFile, normalizeGitCommit } from "./sane-hash.ts"
+import { resolveCommandAddress } from "./sane-cwd-target.ts"
 import {
   resolveBootstrappedWorkstream,
   resolveSaneRepository,
@@ -86,7 +87,7 @@ export interface SaneApproveCommandResult {
 }
 
 export const USAGE =
-  "Usage: sane-alpha approve <implementation-repository> <workstream-relative-path> --gate <root-plus-sdd|solutions|plan|jobs-batch|merge> --artifact <path> --ref <approval_ref> [--git-commit <sha>] [--job <job-id>]... [--retry] [--actor-role <role>] [--session-id <id>] [--json] [--repo-root <path>]"
+  "Usage: sane-alpha approve [<implementation-repository> <workstream-relative-path>] --gate <root-plus-sdd|solutions|plan|jobs-batch|merge> --artifact <path> --ref <approval_ref> [--git-commit <sha>] [--job <job-id>]... [--retry] [--actor-role <role>] [--session-id <id>] [--json] [--repo-root <path>] (no positionals: auto-detect the target from the current directory)"
 
 export interface ParsedApproveArguments {
   implementationRepository: string
@@ -209,6 +210,10 @@ export function parseCliArguments(args: string[]): ParsedApproveArguments {
   } else if (positional.length === 1 && positional[0]) {
     implementationRepository = process.cwd()
     workstreamPath = positional[0]
+  } else if (positional.length === 0) {
+    // Bare invocation: the async run path auto-detects the target from CWD.
+    implementationRepository = ""
+    workstreamPath = ""
   } else {
     throw new SaneWorkstreamStateError(
       "Provide an implementation repository and workstream relative path.",
@@ -428,7 +433,8 @@ export async function runSaneApproveCommand(
 export async function runCli(args: string[]): Promise<number> {
   try {
     const parsed = parseCliArguments(args)
-    await runSaneApproveCommand(parsed)
+    const address = await resolveCommandAddress(parsed)
+    await runSaneApproveCommand({ ...parsed, ...address })
     return 0
   } catch (error) {
     console.error(`Error: ${(error as Error).message}`)

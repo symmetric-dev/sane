@@ -385,7 +385,9 @@ server, migration against shared data, or deployment.
   derive from the implementation repository root. The initializer and resolver
   keep rejecting a legacy file of that kind.
 - No legacy path CLI argument. `create` and `select` keep their
-  `<implementation-repository> <workstream-relative-path>` signatures.
+  `<implementation-repository> <workstream-relative-path>` signatures. CWD
+  auto-detection (Appendix A) fills addressing for the other commands only;
+  it never supplies `create`'s new path or `select`'s target.
 - No auto-advance. Handoffs, approvals, merges, and session switches require
   explicit user action.
 - No hash enforcement yet. `approvals` records `sane_hash` (and nullable
@@ -412,3 +414,35 @@ mapping lives in chat as T0-T25.
 - P2: worktree/merge. Create the namespaced worktree and branch, then run
   the section-4 protocol (rebase, checks, review, user merge approval,
   `--no-ff`, main checks, record, cleanup).
+
+### Command addressing (CWD auto-detection)
+
+Repository-aware commands address a workstream three ways, in precedence
+order:
+
+1. Explicit positionals: `<implementation-repository>
+   <workstream-relative-path>`.
+2. `--repo-root <path>` plus one positional (the workstream path).
+3. Bare invocation (no positionals): the target is auto-detected from the
+   current directory with this fallback chain:
+   a. CWD inside a checkout containing `.sane/` is a main-repo context:
+      repo_root is the git toplevel and the workstream is the
+      `.sane/current-workstream` pointer (a missing pointer errors and names
+      the fix: run `select-workstream`).
+   b. Otherwise the `git rev-parse --git-common-dir` main-repo candidate is
+      tried: when `<candidate>/.sane` exists, its `sane.db` is matched for a
+      `selections` row whose `worktree_path` equals the CWD toplevel
+      (realpath-resolved on both sides, same repo only). The current OS user
+      wins; a single other-user registration is adopted as the effective
+      user (an explicit `--user` never falls back). No match, or more than
+      one distinct `(user, workstream)` registration, errors and asks for
+      explicit args.
+   c. Outside any git tree, or anything else ambiguous, errors: explicit
+      args required.
+
+Bare invocation is supported by `state`, `status`, `pickup`, `artifact`,
+`approve`, `research`, `handoff`, `worktree`, and `merge`. It never applies
+to `init-sane` and `install-context-packages`, nor to the new-path argument
+of `create-workstream` or the target argument of `select-workstream`, which
+keep their required signatures. Explicit positionals and `--repo-root`
+always win and behave exactly as without auto-detection.

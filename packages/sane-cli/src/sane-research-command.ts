@@ -34,6 +34,7 @@ import {
   resolveSaneRepository,
 } from "./sane-repository.ts"
 import { hashFile, normalizeGitCommit } from "./sane-hash.ts"
+import { resolveCommandAddress } from "./sane-cwd-target.ts"
 import {
   SaneWorkstreamStateError,
   recheckResearchIndex,
@@ -55,7 +56,7 @@ export interface SaneResearchCommandOptions {
 }
 
 export const USAGE =
-  "Usage: sane-alpha research <implementation-repository> <workstream-relative-path> [--index|--register|--unregister] [--topic <topic>] [--path <report-path>] [--git-commit <commit>] [--json] [--repo-root <path>]"
+  "Usage: sane-alpha research [<implementation-repository> <workstream-relative-path>] [--index|--register|--unregister] [--topic <topic>] [--path <report-path>] [--git-commit <commit>] [--json] [--repo-root <path>] (no positionals: auto-detect the target from the current directory)"
 
 function singleLine(value: string | undefined, option: string): string | undefined {
   if (value === undefined) return undefined
@@ -178,6 +179,10 @@ export function parseCliArguments(args: string[]): {
   } else if (positional.length === 1 && positional[0]) {
     implementationRepository = process.cwd()
     workstreamPath = positional[0]
+  } else if (positional.length === 0) {
+    // Bare invocation: the async run path auto-detects the target from CWD.
+    implementationRepository = ""
+    workstreamPath = ""
   } else {
     throw new SaneWorkstreamStateError(
       "Provide an implementation repository and workstream relative path.",
@@ -349,7 +354,8 @@ export async function runSaneResearchCommand(options: SaneResearchCommandOptions
 export async function runCli(args: string[]): Promise<number> {
   try {
     const parsed = parseCliArguments(args)
-    await runSaneResearchCommand(parsed)
+    const address = await resolveCommandAddress(parsed)
+    await runSaneResearchCommand({ ...parsed, ...address })
     return 0
   } catch (error) {
     console.error(`Error: ${(error as Error).message}`)

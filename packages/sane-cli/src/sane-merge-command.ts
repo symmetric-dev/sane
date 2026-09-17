@@ -42,6 +42,7 @@ import {
   resolveSaneIdentity,
 } from "./sane-db.ts"
 import { resolveImplementationRepository } from "./sane-repository.ts"
+import { resolveCommandAddress } from "./sane-cwd-target.ts"
 import {
   assertIsolatedCheckAllowed,
   branchName,
@@ -497,7 +498,7 @@ export interface SaneMergeCommandOptions {
 }
 
 export const USAGE =
-  "Usage: sane-alpha merge <implementation-repository> <workstream-relative-path> --rebase|--checks|--review|--merge --no-ff|--record <commit>|--cleanup [--worktrees-dir <dir>] [--user <name>] [--json] [--repo-root <path>]"
+  "Usage: sane-alpha merge [<implementation-repository> <workstream-relative-path>] --rebase|--checks|--review|--merge --no-ff|--record <commit>|--cleanup [--worktrees-dir <dir>] [--user <name>] [--json] [--repo-root <path>] (no positionals: auto-detect the target from the current directory)"
 
 export interface ParsedMergeArguments {
   implementationRepository: string
@@ -632,6 +633,10 @@ export function parseCliArguments(args: string[]): ParsedMergeArguments {
   } else if (positional.length === 1 && positional[0]) {
     implementationRepository = process.cwd()
     workstreamPath = positional[0]
+  } else if (positional.length === 0) {
+    // Bare invocation: the async run path auto-detects the target from CWD.
+    implementationRepository = ""
+    workstreamPath = ""
   } else {
     throw new SaneMergeError(
       "Provide an implementation repository and workstream relative path.",
@@ -775,7 +780,8 @@ export async function runSaneMergeCommand(
 export async function runCli(args: string[]): Promise<number> {
   try {
     const parsed = parseCliArguments(args)
-    await runSaneMergeCommand(parsed)
+    const address = await resolveCommandAddress(parsed, { userOverride: parsed.userOverride })
+    await runSaneMergeCommand({ ...parsed, ...address })
     return 0
   } catch (error) {
     console.error(`Error: ${(error as Error).message}`)
