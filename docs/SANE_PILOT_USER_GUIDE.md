@@ -152,7 +152,7 @@ attempt limits for delegation. Only you accept outcomes. Narrow Fix reviews stay
 targeted; Bounded Remediation reviews cover the coherent remediation. Stage
 handoff uses the Stage Spec, Job Specs, actual reports, and reviews to produce
 the existing brief and Implementation State record. See the
-[operating model](./ALPHA_OPERATING_MODEL.md#alpha-execution-model).
+[operating model](./_legacy/ALPHA_OPERATING_MODEL.md#alpha-execution-model).
 
 Topic `REPORT.md` files are authoritative evidence. A Research session has one
 assigned workstream or Stage scope, and only its coordinator updates that

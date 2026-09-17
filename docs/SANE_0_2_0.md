@@ -10,8 +10,8 @@ render.
 This document defines the workflow model only. It specifies no UI.
 
 It supersedes the Stage-based flow in
-[ALPHA_OPERATING_MODEL](./ALPHA_OPERATING_MODEL.md) and
-[SANE_MOCK_WORKFLOW](./SANE_MOCK_WORKFLOW.md). The repository layout,
+[ALPHA_OPERATING_MODEL](./_legacy/ALPHA_OPERATING_MODEL.md) and
+[SANE_MOCK_WORKFLOW](./_legacy/SANE_MOCK_WORKFLOW.md). The repository layout,
 initialization, and selection rules in
 [SANE_REPOSITORY_SETUP](./SANE_REPOSITORY_SETUP.md) remain in force except
 where this document retires Stage artifacts and renames phase and path

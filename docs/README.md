@@ -22,10 +22,10 @@ working-directory and permission rules are defined in
 Before creating a workstream for an implementation repository, follow
 [SANE Alpha Repository Setup](./SANE_REPOSITORY_SETUP.md).
 
-[Workstream Types](./WORKSTREAM_TYPES.md) describes the supported `feature` and
+[Workstream Types](./_legacy/WORKSTREAM_TYPES.md) describes the supported `feature` and
 `foundation` types, their immutable metadata, and proposed future types.
 
-[Workstream History and Project Documentation](./WORKSTREAM_HISTORY_AND_PROJECT_DOCUMENTATION.md)
+[Workstream History and Project Documentation](./_legacy/WORKSTREAM_HISTORY_AND_PROJECT_DOCUMENTATION.md)
 defines the boundary between historical workstream artifacts and current
 implementation-repository documentation, including historical context transfer
 and supersession.
@@ -49,7 +49,7 @@ to validate without mutation, and `--overwrite` to replace a differing regular
 file. The wrapper imports this checkout by absolute path. If the checkout moves,
 run `bun alpha/scripts/install-sane-alpha.ts --overwrite` from its new location.
 See the [Pilot User Guide](./SANE_PILOT_USER_GUIDE.md) for the exposed commands
-and examples, and the [Mock Workflow](./SANE_MOCK_WORKFLOW.md) for an end-to-end
+and examples, and the [Mock Workflow](./_legacy/SANE_MOCK_WORKFLOW.md) for an end-to-end
 illustrative pilot.
 
 ## What the Alpha Will Validate
@@ -87,7 +87,7 @@ an explicitly parallel set), without new plan headings or State statuses.
 Planning alone edits plans and Job Specs, including factual corrections, with
 Grounder limited to its assigned spec. Coordination returns actionable corrections
 through the user to Planning and waits; it never launches Grounder. See the
-[operating model](./ALPHA_OPERATING_MODEL.md#alpha-execution-model).
+[operating model](./_legacy/ALPHA_OPERATING_MODEL.md#alpha-execution-model).
 
 ## Agent Model
 
