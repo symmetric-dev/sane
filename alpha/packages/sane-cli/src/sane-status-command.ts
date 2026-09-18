@@ -94,6 +94,22 @@ export function parseCliArguments(args: string[]): {
   )
 }
 
+const PHASE_ORDER = ["design", "engineering", "planning", "execution"]
+
+function phaseGlyph(state: string): string {
+  switch (state) {
+    case "approved":
+      return "✓"
+    case "delivered":
+      return "●"
+    case "in_progress":
+      return "◐"
+    case "blocked":
+      return "!"
+    default:
+      return "○"
+  }
+}
 /** Report DB status for one workstream (human lines or `--json`). */
 export async function runSaneStatusCommand(options: SaneStatusCommandOptions): Promise<void> {
   const write = options.write ?? console.log
@@ -150,29 +166,36 @@ export async function runSaneStatusCommand(options: SaneStatusCommandOptions): P
       )
       return
     }
-    write(`workstream: ${status.workstreamId}`)
-    for (const entry of status.phases) {
-      write(`phase ${entry.phase}: ${entry.status}`)
+    write(`${status.workstreamId} (${status.workstream.type})`)
+    const byPhase = new Map(status.phases.map((entry) => [entry.phase, entry]))
+    const renderPhase = (phase: string, entry: { status: string; approval_ref: string | null } | undefined): void => {
+      const state = entry?.status ?? "pending"
+      const ref = entry?.approval_ref ? ` (${entry.approval_ref})` : ""
+      write(`  ${phaseGlyph(state)} ${phase.padEnd(11)} ${state}${ref}`)
     }
-    if (status.approvals.length === 0) {
-      write(`approvals: (none)`)
-    } else {
-      write(
-        `approvals: ${status.approvals.map((approval) => `${approval.phase}=${approval.approval_ref}`).join(", ")}`,
-      )
+    for (const phase of PHASE_ORDER) renderPhase(phase, byPhase.get(phase))
+    for (const entry of status.phases) {
+      if (!PHASE_ORDER.includes(entry.phase)) renderPhase(entry.phase, entry)
     }
     if (status.researchReports.length === 0) {
-      write(`research: (no research registered)`)
+      write(`  ○ research    (none registered)`)
     } else {
-      write(`research: ${status.researchReports.length} report(s) registered`)
-    }
-    write(`jobs: ${status.jobs.length} recorded`)
-    if (status.merge) {
       write(
-        `merge: ${status.merge.branch} base ${status.merge.base_rev} commit ${status.merge.merge_commit ?? "(not merged)"}`,
+        `  ● research    ${status.researchReports.map((report) => report.topic).join(", ")}`,
       )
+    }
+    if (status.jobs.length === 0) {
+      write(`  ○ jobs        (none recorded)`)
     } else {
-      write(`merge: (no merge recorded)`)
+      write(
+        `  ◐ jobs        ${status.jobs.map((job) => `${job.job_id} ${job.status}`).join(" · ")}`,
+      )
+    }
+    if (!status.merge) {
+      write(`  ○ merge       (none recorded)`)
+    } else {
+      const merged = status.merge.merge_commit ? `merged ${status.merge.merge_commit.slice(0, 12)}` : "open"
+      write(`  ◐ merge       ${status.merge.branch} @ ${status.merge.base_rev.slice(0, 12)} (${merged})`)
     }
   } finally {
     try {

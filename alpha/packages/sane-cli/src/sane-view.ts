@@ -113,6 +113,13 @@ CREATE TABLE IF NOT EXISTS merges(
   merge_commit TEXT,
   PRIMARY KEY (repo_root, user, workstream_id)
 );
+CREATE TABLE IF NOT EXISTS current_workstreams(
+  repo_root TEXT NOT NULL,
+  user TEXT NOT NULL,
+  workstream_id TEXT NOT NULL,
+  updated_at TEXT NOT NULL,
+  PRIMARY KEY (repo_root, user)
+);
 `.trim()
 
 interface StateEntryRow {

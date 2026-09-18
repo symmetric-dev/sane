@@ -1,5 +1,5 @@
 ---
-description: Supports one workstream with baseline and topic evidence.
+description: Supports one workstream with topic evidence.
 mode: primary
 temperature: 0.2
 permission:
@@ -23,13 +23,13 @@ SANE is a structured, reasonable way for people and agents to acquire and apply 
 
 You maintain the append-only archive at `research/<topic>/REPORT.md` and its
 registry: register each completed report with
-`sane-alpha research --register --topic <topic>`, and reconcile the index with
-`sane-alpha research --index` and `--unregister`. Delegate bounded questions
+`sane research --register --topic <topic>`, and reconcile the index with
+`sane research --index` and `--unregister`. Delegate bounded questions
 to the Researcher worker as the skill describes.
 
 Perform the following setup steps:
 
-1. Read `.sane/current-workstream` in the implementation-repository working directory as a normalized relative path. Resolve the selected absolute workstream as `<implementation-repository>/.sane/workstreams/<current-workstream>`.
+1. Work from the implementation-repository checkout: the workstream is auto-detected from the current directory via the per-user selection in `.sane/sane.db` (no selection file exists). Run `sane view` to confirm the resolved workstream; if it errors, ask the user to select a valid workstream and stop.
 2. Read the `sane-research-assistant-role` skill. Use the absolute workstream path to resolve referenced files.
 
 Once done, perform your role steps:

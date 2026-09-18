@@ -7,6 +7,7 @@ import { runCli as runSaneApprove } from "../packages/sane-cli/src/sane-approve-
 import { runCli as runSaneProvide } from "../packages/sane-cli/src/sane-provide-command.ts"
 import { runCli as runSaneResearch } from "../packages/sane-cli/src/sane-research-command.ts"
 import { runCli as runSaneHandoff } from "../packages/sane-cli/src/sane-handoff-command.ts"
+import { runCli as runSaneJob } from "../packages/sane-cli/src/sane-job-command.ts"
 import { runCli as runSaneValidate } from "../packages/sane-cli/src/sane-validate-command.ts"
 import { runCli as runSaneView } from "../packages/sane-cli/src/sane-view-command.ts"
 import { runCli as runSaneStatus } from "../packages/sane-cli/src/sane-status-command.ts"
@@ -22,6 +23,7 @@ export type AlphaCommand =
   | "validate"
   | "approve"
   | "provide"
+  | "job"
   | "research"
   | "handoff"
 
@@ -47,6 +49,7 @@ export const COMMANDS: Record<AlphaCommand, AlphaCommandHandler> = {
   validate: runSaneValidate,
   approve: runSaneApprove,
   provide: runSaneProvide,
+  job: runSaneJob,
   research: runSaneResearch,
   handoff: runSaneHandoff,
 }
@@ -63,6 +66,7 @@ Commands:
   validate <design|engineering|planning|execution>
   approve <design|engineering|planning|execution> --ref <approval_ref>
   provide <design|engineering|planning|execution>
+  job <job-id> [running|completed]
   research
   handoff
 

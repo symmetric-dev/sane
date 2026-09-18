@@ -15,6 +15,7 @@ const expectedCommands: AlphaCommand[] = [
   "validate",
   "approve",
   "provide",
+  "job",
   "research",
   "handoff",
 ]

@@ -28,9 +28,7 @@ and question; exact context and evidence sources; assigned `REPORT.md` and any
 explicitly assigned supporting output paths; and permitted methods, commands,
 exceptions, and stop conditions.
 
-This is a worker handoff, not a user-facing session. Do not recover wider
-workstream context from `.sane/current-workstream`, or unrelated
-planning artifacts. Do not perform Pickup, Delivery, approval, State-update, or
+This is a worker handoff, not a user-facing session. Do not perform Pickup, Delivery, approval, State-update, or
 user-question workflows; do not communicate with or ask questions of the user;
 and do not launch subagents. Return missing critical context to the launching
 assistant as a blocker. You may load a directly relevant non-SANE technical or
@@ -57,7 +55,7 @@ Follow this workflow:
    explicitly assigned by the invocation. Record the scope and question,
    methods and commands, evidence, findings, limitations, and unresolved
    conflicts. If the assignment directs registration, run
-   `sane-alpha research --register --topic <topic>` from the implementation
+   `sane research --register --topic <topic>` from the implementation
    repository after writing; otherwise leave registration to the launching
    assistant.
 5. Return a concise handoff to the launching assistant with output paths,

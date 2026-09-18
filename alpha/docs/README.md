@@ -17,7 +17,7 @@ repository-setup convention are also available.
 
 The agent-context-package content, context-ingestion sequence, and required
 working-directory and permission rules are defined in
-[SANE Alpha Agent Context Packages](./SANE_AGENT_CONTEXT_PACKAGES.md).
+[the Workflow Playbook](./SANE_WORKFLOW.md) with role skills in `skills/`.
 
 Before creating a workstream for an implementation repository, follow
 [SANE Alpha Repository Setup](./SANE_REPOSITORY_SETUP.md).
@@ -48,7 +48,7 @@ shell configuration. Use `--bin-dir <path>` for another directory, `--dry-run`
 to validate without mutation, and `--overwrite` to replace a differing regular
 file. The wrapper imports this checkout by absolute path. If the checkout moves,
 run `bun alpha/scripts/install-sane.ts --overwrite` from its new location.
-See the [Pilot User Guide](./SANE_PILOT_USER_GUIDE.md) for the exposed commands
+See the [Workflow Playbook](./SANE_WORKFLOW.md) for the exposed commands
 and examples, and the [Mock Workflow](./_legacy/SANE_MOCK_WORKFLOW.md) for an end-to-end
 illustrative pilot.
 
@@ -152,7 +152,7 @@ Scout can serve any invoking parent agent whose launch permissions permit it,
 returning scoped findings or blockers inline directly to that parent. Implementer
 may launch only Scout for supporting inspection and retains implementation,
 verification, and report ownership. Nested launches require the top-level
-[`subagent_depth: 2` prerequisite](./SANE_AGENT_CONTEXT_PACKAGES.md#nested-scout-delegation-prerequisite);
+[`subagent_depth: 2` prerequisite](./_legacy/SANE_AGENT_CONTEXT_PACKAGES.md#nested-scout-delegation-prerequisite);
 other agents' launch permissions are unchanged.
 
 Both workers are subagents, not user-started role sessions. After the user
@@ -210,7 +210,7 @@ user-directed.
 
 For the Execution-to-Planning source rename, obsolete installed paths, manual
 cleanup, and model-key migration, see
-[Planning migration](./SANE_AGENT_CONTEXT_PACKAGES.md#planning-migration).
+[Planning migration](./_legacy/SANE_AGENT_CONTEXT_PACKAGES.md#planning-migration).
 
 ## Manual Approval and State
 

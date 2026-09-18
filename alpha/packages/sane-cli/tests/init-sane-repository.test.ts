@@ -244,6 +244,7 @@ describe("init-sane-repository", () => {
       const names = tables.map((table) => table.name)
       for (const expected of [
         "workstreams",
+        "current_workstreams",
         "selections",
         "state_entries",
         "approvals",
