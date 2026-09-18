@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test"
 import { execFile } from "node:child_process"
-import { access, mkdir, mkdtemp, readFile, rm, symlink } from "node:fs/promises"
+import { access, mkdir, mkdtemp, readFile, rm, symlink, writeFile } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { dirname, join } from "node:path"
 import { promisify } from "node:util"
@@ -21,7 +21,14 @@ import {
   parseCliArguments as parseSelectCliArguments,
   selectSaneWorkstream,
 } from "../src/select-sane-workstream.ts"
-import { getWorkstream, initSchema, openSaneDb, resolveSaneIdentity } from "../src/sane-db.ts"
+import {
+  getCurrentWorkstream,
+  getWorkstream,
+  initSchema,
+  openSaneDb,
+  resolveSaneIdentity,
+  upsertWorkstream,
+} from "../src/sane-db.ts"
 
 const execFileAsync = promisify(execFile)
 
@@ -93,14 +100,38 @@ describe("repository-aware Alpha workstream tools", () => {
     return workstreamPath
   }
 
+  function legacyPointerPath(): string {
+    return join(implementationRepository, ".sane", "current-workstream")
+  }
+
+  async function readCurrentDb(userOverride?: string): Promise<string | null> {
+    const identity = await resolveSaneIdentity(implementationRepository, "dummy", userOverride)
+    const db = await openSaneDb(implementationRepository)
+    try {
+      initSchema(db)
+      return (
+        getCurrentWorkstream(db, { repoRoot: identity.repoRoot, user: identity.user })
+          ?.workstream_id ?? null
+      )
+    } finally {
+      try {
+        db.close()
+      } catch {
+        // Best effort.
+      }
+    }
+  }
+
   test("creates a repository workstream and selects it only after successful creation", async () => {
     await bootstrap("01-first")
-    expect(await readFile(join(implementationRepository, ".sane", "current-workstream"), "utf8")).toBe("01-first\n")
+    expect(await readCurrentDb()).toBe("01-first")
+    await expectMissing(legacyPointerPath())
 
     await expect(createSaneRepositoryWorkstream({
       implementationRepository, workstreamPath: "01-first", type: "feature", templateRoot, write: () => {},
     })).rejects.toThrow("Destination already exists")
-    expect(await readFile(join(implementationRepository, ".sane", "current-workstream"), "utf8")).toBe("01-first\n")
+    expect(await readCurrentDb()).toBe("01-first")
+    await expectMissing(legacyPointerPath())
   })
 
   test("create records the workstream type in sqlite (no type file)", async () => {
@@ -125,22 +156,29 @@ describe("repository-aware Alpha workstream tools", () => {
       implementationRepository, workstreamPath: "02-dry-run", type: "foundation", templateRoot, dryRun: true, write: () => {},
     })
     await expectMissing(join(workstreamsRoot, "02-dry-run"))
-    await expectMissing(join(implementationRepository, ".sane", "current-workstream"))
+    await expectMissing(legacyPointerPath())
+    expect(await readCurrentDb()).toBeNull()
   })
 
-  test("dry-run selection leaves the current-workstream file absent", async () => {
+  test("dry-run selection writes neither the DB pointer nor a legacy file", async () => {
     await bootstrap("02-dry-select")
-    await rm(join(implementationRepository, ".sane", "current-workstream"))
+    await bootstrap("02-dry-other")
+    // Current is now the second bootstrap; a dry-run select of the first
+    // must not switch it and must not create a legacy file.
+    expect(await readCurrentDb()).toBe("02-dry-other")
     await selectSaneWorkstream({ implementationRepository, workstreamPath: "02-dry-select", dryRun: true, write: () => {} })
-    await expectMissing(join(implementationRepository, ".sane", "current-workstream"))
+    expect(await readCurrentDb()).toBe("02-dry-other")
+    await expectMissing(legacyPointerPath())
   })
 
   test("selects an existing bootstrap, safely repeats, and replaces an explicit prior selection", async () => {
     await bootstrap("01-one")
     await bootstrap("02-two")
+    expect(await readCurrentDb()).toBe("02-two")
     await selectSaneWorkstream({ implementationRepository, workstreamPath: "01-one", write: () => {} })
     await selectSaneWorkstream({ implementationRepository, workstreamPath: "01-one", write: () => {} })
-    expect(await readFile(join(implementationRepository, ".sane", "current-workstream"), "utf8")).toBe("01-one\n")
+    expect(await readCurrentDb()).toBe("01-one")
+    await expectMissing(legacyPointerPath())
   })
 
   test("rejects a missing workstreams directory and a legacy paths file", async () => {
@@ -172,11 +210,69 @@ describe("repository-aware Alpha workstream tools", () => {
     await expect(selectSaneWorkstream({ implementationRepository, workstreamPath: "unbootstrapped", write: () => {} })).rejects.toThrow("not bootstrapped")
   })
 
-  test("does not overwrite a non-file current-workstream object", async () => {
-    await bootstrap("01-safe")
-    await rm(join(implementationRepository, ".sane", "current-workstream"))
-    await mkdir(join(implementationRepository, ".sane", "current-workstream"))
-    await expect(selectSaneWorkstream({ implementationRepository, workstreamPath: "01-safe", write: () => {} })).rejects.toThrow("not a regular file")
+  test("successful create and select delete a legacy file pointer", async () => {
+    await bootstrap("01-legacy-cleanup")
+    // Simulate a pre-migration checkout that still carries the retired file.
+    await writeFile(legacyPointerPath(), "stale-pointer\n")
+    await selectSaneWorkstream({ implementationRepository, workstreamPath: "01-legacy-cleanup", write: () => {} })
+    expect(await readCurrentDb()).toBe("01-legacy-cleanup")
+    await expectMissing(legacyPointerPath())
+
+    await writeFile(legacyPointerPath(), "stale-again\n")
+    await createSaneRepositoryWorkstream({
+      implementationRepository,
+      workstreamPath: "02-after-legacy",
+      type: "feature",
+      templateRoot,
+      write: () => {},
+    })
+    expect(await readCurrentDb()).toBe("02-after-legacy")
+    await expectMissing(legacyPointerPath())
+  })
+
+  test("current selection is strictly per-user", async () => {
+    await bootstrap("01-shared")
+    await bootstrap("02-other")
+    // Workstream rows are per-user; mirror the bootstrapped type rows for the
+    // test users so select's existing row+type check can succeed for each.
+    for (const testUser of ["alice", "bob"]) {
+      for (const ws of ["01-shared", "02-other"]) {
+        const testIdentity = await resolveSaneIdentity(implementationRepository, ws, testUser)
+        const db = await openSaneDb(implementationRepository)
+        try {
+          initSchema(db)
+          upsertWorkstream(
+            db,
+            testIdentity,
+            { type: "feature", status: "open" },
+            { actorRole: "system", sessionId: `test:${testUser}:${ws}` },
+          )
+        } finally {
+          try {
+            db.close()
+          } catch {
+            // Best effort.
+          }
+        }
+      }
+    }
+    await selectSaneWorkstream({
+      implementationRepository,
+      workstreamPath: "01-shared",
+      userOverride: "alice",
+      write: () => {},
+    })
+    expect(await readCurrentDb("alice")).toBe("01-shared")
+    // Another user has no row until they select explicitly.
+    expect(await readCurrentDb("bob")).toBeNull()
+    await selectSaneWorkstream({
+      implementationRepository,
+      workstreamPath: "02-other",
+      userOverride: "bob",
+      write: () => {},
+    })
+    expect(await readCurrentDb("bob")).toBe("02-other")
+    expect(await readCurrentDb("alice")).toBe("01-shared")
   })
 
   test("no type file is required; selection succeeds without one", async () => {
@@ -186,7 +282,8 @@ describe("repository-aware Alpha workstream tools", () => {
     // New layout has no type file; its absence must not block selection.
     await expectMissing(join(workstreamPath, "type"))
     await selectSaneWorkstream({ implementationRepository, workstreamPath: "02-missing", write: () => {} })
-    expect(await readFile(join(implementationRepository, ".sane", "current-workstream"), "utf8")).toBe("02-missing\n")
+    expect(await readCurrentDb()).toBe("02-missing")
+    await expectMissing(legacyPointerPath())
   })
 
   test("REQUIRED_WORKSTREAM_FILES matches the current bootstrap shape", () => {

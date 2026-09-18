@@ -2,8 +2,8 @@
  * SANE `sane approve <phase>` tests (phase model, no gates).
  *
  * Covers validation-first refusal, approval recording with composite hash,
- * phase status advancement to `approved`, planning job-spec registration +
- * authorize, direct `planned -> authorized` rejection, and actor_role audit.
+ * phase status advancement to `approved`, planning job-spec registration as
+ * `planned`, execution batch acceptance, and actor_role audit.
  */
 import { afterEach, beforeEach, describe, expect, test } from "bun:test"
 import { execFile } from "node:child_process"
@@ -141,7 +141,7 @@ describe("sane-approve (phase approvals)", () => {
     expect(await approvalFor("design")).toBeNull()
   })
 
-  test("approve planning registers job specs from disk and authorizes them", async () => {
+  test("approve planning registers job specs from disk as planned", async () => {
     await writeDoc("execution/PLAN.md", CLEAN_PLAN)
     await writeDoc("execution/jobs/01-first.md", CLEAN_JOB_A)
     await writeDoc("execution/jobs/02-second.md", CLEAN_JOB_B)
@@ -153,15 +153,15 @@ describe("sane-approve (phase approvals)", () => {
       write: () => {},
     })
     expect(result.jobs.map((job) => `${job.job_id}=${job.status}`).sort()).toEqual([
-      "01=authorized",
-      "02=authorized",
+      "01=planned",
+      "02=planned",
     ])
 
     const db = await openSaneDb(identity.repoRoot)
     try {
       initSchema(db)
       expect(getJob(db, identity, "01")?.spec_path).toBe("execution/jobs/01-first.md")
-      expect(getJob(db, identity, "02")?.status).toBe("authorized")
+      expect(getJob(db, identity, "02")?.status).toBe("planned")
       expect(getApproval(db, identity, "planning")?.approval_ref).toBe("user-ok-plan")
     } finally {
       try {
@@ -172,7 +172,7 @@ describe("sane-approve (phase approvals)", () => {
     }
   })
 
-  test("approve engineering and execution record without touching jobs", async () => {
+  test("approve engineering records without touching jobs; approve execution batch-accepts", async () => {
     await writeDoc("design/solutions/api.md", "# Spec\nReal spec.\n")
     const engineering = await runSaneApproveCommand({
       implementationRepository,
@@ -184,6 +184,16 @@ describe("sane-approve (phase approvals)", () => {
     expect(engineering.jobs).toEqual([])
     expect(await approvalFor("engineering")).not.toBeNull()
 
+    await writeDoc("execution/PLAN.md", CLEAN_PLAN)
+    await writeDoc("execution/jobs/01-first.md", CLEAN_JOB_A)
+    await runSaneApproveCommand({
+      implementationRepository,
+      workstreamPath: "01-demo",
+      phase: "planning",
+      approvalRef: "user-ok-plan",
+      write: () => {},
+    })
+
     await writeDoc("execution/FINAL_REPORT.md", CLEAN_FINAL_REPORT)
     await writeDoc("execution/reports/01-first.md", CLEAN_REPORT)
     const execution = await runSaneApproveCommand({
@@ -194,10 +204,25 @@ describe("sane-approve (phase approvals)", () => {
       write: () => {},
     })
     expect(execution.files).toEqual(["execution/FINAL_REPORT.md", "execution/reports/01-first.md"])
+    expect(execution.jobs.map((job) => `${job.job_id}=${job.status}`)).toEqual([
+      "01=completed",
+    ])
     expect(await approvalFor("execution")).not.toBeNull()
+
+    const db = await openSaneDb(identity.repoRoot)
+    try {
+      initSchema(db)
+      expect(getJob(db, identity, "01")?.status).toBe("completed")
+    } finally {
+      try {
+        db.close()
+      } catch {
+        // Best effort.
+      }
+    }
   })
 
-  test("direct planned -> authorized without approval is still rejected", async () => {
+  test("planned jobs move forward directly; backward moves rejected", async () => {
     const db = await openSaneDb(identity.repoRoot)
     try {
       initSchema(db)
@@ -207,14 +232,23 @@ describe("sane-approve (phase approvals)", () => {
         { jobId: "job-direct", specPath: "execution/jobs/job-direct-a.md" },
         { actorRole: "planning", sessionId: "ses-plan" },
       )
+      updateJobStatus(db, identity, "job-direct", "running", {
+        actorRole: "execution",
+        sessionId: "ses-exec",
+      })
+      expect(getJob(db, identity, "job-direct")?.status).toBe("running")
+      updateJobStatus(db, identity, "job-direct", "completed", {
+        actorRole: "execution",
+        sessionId: "ses-exec",
+      })
+      expect(getJob(db, identity, "job-direct")?.status).toBe("completed")
       expect(() =>
-        updateJobStatus(db, identity, "job-direct", "authorized", {
-          actorRole: "planning",
-          sessionId: "ses-plan",
+        updateJobStatus(db, identity, "job-direct", "running", {
+          actorRole: "execution",
+          sessionId: "ses-exec",
         }),
-      ).toThrow(/planned -> authorized directly/)
-      expect(getJob(db, identity, "job-direct")?.status).toBe("planned")
-      expect(getApproval(db, identity, "planning")).toBeNull()
+      ).toThrow(/backward moves rejected/)
+      expect(getApproval(db, identity, "execution")).toBeNull()
     } finally {
       try {
         db.close()

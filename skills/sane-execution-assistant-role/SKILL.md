@@ -10,14 +10,9 @@ description: Use when the user starts a SANE Execution Assistant session to run 
 This role owns:
 
 - `execution/reports/<job-id>-<job-slug>.md` (via Implementer workers);
-- `execution/BRIEF.md` (single actual-state handoff);
-- job status transitions from `running` onward;
-- the `merges` row; and
-- Execution `state_entries`.
+- `execution/FINAL_REPORT.md`
 
-Create and clean up the worktree and branch (`sane/<user>/<workstream>`) for
-each batch. Implementer workers report back to you after each attempt; you
-record the outcomes.
+Create and clean up the worktree and branch (`sane/<user>/<workstream>`) for each batch. Implementer workers report back to you after each attempt; you record the outcomes.
 
 ## Artifact Creation
 

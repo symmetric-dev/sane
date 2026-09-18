@@ -17,11 +17,11 @@ initialization, and selection rules in
 where this document retires Stage artifacts and renames phase and path
 conventions.
 
-Grounding: `scripts/sane-repository.ts` (`SaneRepository`
+Grounding: `packages/sane-cli/src/sane-repository.ts` (`SaneRepository`
 {`implementationRepository`, `workstreamsRoot`}, `.sane/workstreams/` +
-`current-workstream`), `scripts/init-sane-repository.ts`, `create`/`select`
-commands, `opencode/agents/sane-assistant-*.md` setup steps
-(`.sane/current-workstream` read, role skill read, Pickup/Assistance/Delivery),
+per-user `current_workstreams` row in `.sane/sane.db`),
+`packages/sane-cli/src/init-sane-repository.ts`, `create`/`select`
+commands, role skill read and Pickup/Assistance/Delivery,
 role skills in `skills/*/SKILL.md`, and `docs/SANE_REPOSITORY_SETUP.md`.
 
 Phases are exactly four: Design -> Engineering -> Planning -> Execution.
@@ -206,7 +206,7 @@ jobs(
   job_id TEXT NOT NULL,
   spec_path TEXT NOT NULL,       -- execution/jobs/<job-id>-<job-slug>.md
   report_path TEXT,              -- execution/reports/<job-id>-<job-slug>.md
-  status TEXT NOT NULL,          -- planned | authorized | running | reported | reviewed | accepted
+  status TEXT NOT NULL,          -- planned | running | completed
   PRIMARY KEY (repo_root, user, workstream_id, job_id)
 );
 
@@ -226,9 +226,11 @@ merges(
 - Workstream `status`: `open`, `blocked`, `done`, `abandoned`.
 - Phase `state_entries.status`: `pending`, `in_progress`, `delivered`,
   `approved`, `blocked`.
-- Job `status`: `planned`, `authorized`, `running`, `reported`, `reviewed`,
-  `accepted`. `planned` becomes `authorized` only by explicit user approval of
-  the plan package; `accepted` only by explicit user acceptance of the outcome.
+- Job `status`: `planned`, `running`, `completed`. `planned` means
+  authorized: planning approval registers every job spec as `planned`. The
+  Execution Assistant moves jobs forward (`running`, then `completed`) as
+  work proceeds — progress tracking, not per-job gates. Execution approval
+  completes any stragglers left outstanding.
 
 ### Ownership and approvals
 
@@ -262,8 +264,8 @@ render). `sane validate <phase>` checks the phase's documents
 
 1. Design (root doc plus design/SDD.md).
 2. Engineering (design/solutions specs).
-3. Planning (`execution/PLAN.md` + all Job Specs; registers and authorizes the
-   jobs found on disk, but does not start execution).
+3. Planning (`execution/PLAN.md` + all Job Specs; registers every job
+   spec found on disk as `planned`, but does not start execution).
 4. Execution (final report plus job reports).
 
 No gates and no per-job approval. Research has no approval at
@@ -441,9 +443,13 @@ order:
 3. Bare invocation (no positionals): the target is auto-detected from the
    current directory with this fallback chain:
    a. CWD inside a checkout containing `.sane/` is a main-repo context:
-      repo_root is the git toplevel and the workstream is the
-      `.sane/current-workstream` pointer (a missing pointer errors and names
-      the fix: run `select --name <workstream-name>` from the repository root).
+      repo_root is the git toplevel and the workstream is the per-user
+      `current_workstreams` row in `<repo>/.sane/sane.db` (the sole
+      authority; no selection file exists). The lookup is strict per-user
+      with no cross-user adoption; a missing row errors and names the fix:
+      run `select --name <workstream-name>` from the repository root. The
+      pointed workstream directory is validated (missing or old-layout
+      files fail with re-create guidance).
    b. Otherwise the `git rev-parse --git-common-dir` main-repo candidate is
       tried: when `<candidate>/.sane` exists, its `sane.db` is matched for a
       `selections` row whose `worktree_path` equals the CWD toplevel

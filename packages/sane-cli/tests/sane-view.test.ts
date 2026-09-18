@@ -66,7 +66,7 @@ function seedJobsResearchMerge(db: Database): void {
     "01",
     "execution/jobs/01-first-job.md",
     "execution/reports/01-first-job.md",
-    "reported",
+    "running",
   )
   db.query(
     "INSERT INTO jobs(repo_root, user, workstream_id, job_id, spec_path, report_path, status) VALUES (?, ?, ?, ?, ?, ?, ?)",
@@ -146,7 +146,7 @@ describe("sane-view renderer from DB", () => {
       expect(rendered).toContain("01")
       expect(rendered).toContain("execution/jobs/01-first-job.md")
       expect(rendered).toContain("execution/reports/01-first-job.md")
-      expect(rendered).toContain("reported")
+      expect(rendered).toContain("running")
       expect(rendered).toContain("execution/jobs/02-second-job.md")
       expect(rendered).toContain("job_id:")
       expect(rendered).toContain("spec_path:")

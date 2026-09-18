@@ -1,5 +1,5 @@
 import { execFile } from "node:child_process"
-import { lstat, readFile, realpath, writeFile } from "node:fs/promises"
+import { lstat, realpath, rm } from "node:fs/promises"
 import { dirname, isAbsolute, join, normalize, relative, resolve, sep } from "node:path"
 import { promisify } from "node:util"
 
@@ -252,56 +252,30 @@ export async function resolveBootstrappedWorkstream(
   return { ...workstream, type }
 }
 
-function currentWorkstreamPath(implementationRepository: string): string {
-  return join(implementationRepository, ".sane", "current-workstream")
-}
-
-/** Reject a symlink, directory, or other unrelated object before a later write. */
-export async function validateCurrentSelectionDestination(
+/**
+ * Best-effort removal of the retired `.sane/current-workstream` file pointer.
+ * The sqlite `current_workstreams` table is the sole authority; this exists
+ * only to clean up pre-migration checkouts. Returns true when a file was
+ * removed, false when nothing was present. Ignores ENOENT; propagates other
+ * errors to the caller (callers treat cleanup as best-effort).
+ */
+export async function deleteLegacySelectionFile(
   implementationRepository: string,
-): Promise<void> {
-  const selectionPath = currentWorkstreamPath(implementationRepository)
-  const stat = await lstatOrUndefined(selectionPath)
-  if (stat && !stat.isFile()) {
-    throw new SaneRepositoryError(`Current workstream selection is not a regular file: ${selectionPath}`)
-  }
-}
-
-/** Write the canonical selection only after the caller has validated its target. */
-export async function writeCurrentWorkstream(
-  implementationRepository: string,
-  relativePath: string,
 ): Promise<boolean> {
-  await validateCurrentSelectionDestination(implementationRepository)
-  const selectionPath = currentWorkstreamPath(implementationRepository)
-  const content = `${relativePath}\n`
-  const stat = await lstatOrUndefined(selectionPath)
-  if (!stat) {
-    await writeFile(selectionPath, content, { flag: "wx" })
+  // Legacy pointer filename retained here only for deletion of old checkouts.
+  const legacyPath = join(implementationRepository, ".sane", "current-workstream")
+  try {
+    await rm(legacyPath, { force: false })
     return true
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return false
+    // A legacy directory at the pointer path (or other non-file object)
+    // is also removed best-effort so no stale pointer survives.
+    try {
+      await rm(legacyPath, { recursive: true, force: true })
+      return true
+    } catch {
+      return false
+    }
   }
-  if ((await readFile(selectionPath, "utf8")) === content) return false
-  await writeFile(selectionPath, content)
-  return true
-}
-
-/** Read and validate the local selection without trusting its contents. */
-export async function readCurrentWorkstream(
-  implementationRepository: string,
-  workstreamsRoot: string,
-): Promise<{ relativePath: string; path: string; type: WorkstreamType }> {
-  const selectionPath = currentWorkstreamPath(implementationRepository)
-  if (!(await lstatOrUndefined(selectionPath))?.isFile()) {
-    throw new SaneRepositoryError(`Current workstream selection is missing or not a regular file: ${selectionPath}`)
-  }
-  const content = await readFile(selectionPath, "utf8")
-  if (!content.endsWith("\n") || content.slice(0, -1).includes("\n")) {
-    throw new SaneRepositoryError(`Current workstream selection is malformed: ${selectionPath}`)
-  }
-  const selected = content.slice(0, -1)
-  const workstream = await resolveBootstrappedWorkstream(workstreamsRoot, selected)
-  if (workstream.relativePath !== selected) {
-    throw new SaneRepositoryError(`Current workstream selection is not normalized: ${selectionPath}`)
-  }
-  return workstream
 }

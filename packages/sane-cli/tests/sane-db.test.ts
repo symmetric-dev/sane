@@ -3,7 +3,7 @@
  *
  * Temp repo + temp DB coverage: composite-key isolation
  * (multi-user/repo/workstream), enum rejection, selections address-book
- * upsert, and jobs planned -> authorized only via the approval helper.
+ * upsert, and jobs lifecycle (planned means authorized, batch complete only).
  */
 import { afterEach, beforeEach, describe, expect, test } from "bun:test"
 import { Database } from "bun:sqlite"
@@ -14,12 +14,13 @@ import { join } from "node:path"
 import { promisify } from "node:util"
 
 import {
-  authorizeJobsViaApproval,
+  completeAllJobs,
   branchForWorkstream,
   createJob,
   currentUser,
   deleteSelection,
   getApproval,
+  getCurrentWorkstream,
   getJob,
   getMerge,
   getResearchReport,
@@ -39,6 +40,7 @@ import {
   registerResearchReport,
   SaneDbError,
   saneDbPath,
+  setCurrentWorkstream,
   updateJobStatus,
   upsertMerge,
   upsertSelection,
@@ -101,6 +103,7 @@ describe("sane-db (M2-A sqlite source of truth)", () => {
     const names = tables.map((t) => t.name)
     for (const expected of [
       "workstreams",
+      "current_workstreams",
       "selections",
       "state_entries",
       "approvals",
@@ -296,7 +299,7 @@ describe("sane-db (M2-A sqlite source of truth)", () => {
     expect(listSelections(db, identity)).toHaveLength(2)
   })
 
-  test("jobs planned -> authorized only via the approval helper (stub)", async () => {
+  test("jobs lifecycle: planned means authorized, direct progress, batch completes stragglers", async () => {
     db = openInMemoryDb()
     initSchema(db)
     const { resolve } = await import("node:path")
@@ -308,43 +311,35 @@ describe("sane-db (M2-A sqlite source of truth)", () => {
     const m = mutation("planning", "ses_plan")
 
     createJob(db, identity, { jobId: "job-01", specPath: "execution/jobs/job-01-a.md" }, m)
+    createJob(db, identity, { jobId: "job-02", specPath: "execution/jobs/job-02-a.md" }, m)
     expect(getJob(db, identity, "job-01")?.status).toBe("planned")
 
-    // Direct transition is rejected.
-    expect(() => updateJobStatus(db!, identity, "job-01", "authorized", m)).toThrow(
-      /only via.*authorizeJobsViaApproval|planned -> authorized/,
-    )
-    expect(getJob(db, identity, "job-01")?.status).toBe("planned")
-
-    // New jobs must start planned.
+    // New jobs must start planned (planned already means authorized).
     expect(() =>
-      createJob(db!, identity, { jobId: "job-bad", specPath: "p", status: "authorized" }, m),
+      createJob(db!, identity, { jobId: "job-bad", specPath: "p", status: "running" }, m),
     ).toThrow(/must start as "planned"/)
 
-    // Approval-helper stub authorizes.
-    const authorized = authorizeJobsViaApproval(
-      db,
-      identity,
-      ["job-01"],
-      { artifactPath: "execution/PLAN.md", saneHash: "hash-plan-1", approvalRef: "user-ok-plan" },
-      { actorRole: "user", sessionId: "ses_user" },
-    )
-    expect(authorized[0]?.status).toBe("authorized")
-    expect(getJob(db, identity, "job-01")?.status).toBe("authorized")
-    expect(getApproval(db, identity, "planning")?.approval_ref).toBe("user-ok-plan")
-
-    // Normal forward transitions still work directly.
+    // Progress works directly and forward: planned -> running -> completed.
     updateJobStatus(db, identity, "job-01", "running", mutation("execution", "ses_exec"))
     expect(getJob(db, identity, "job-01")?.status).toBe("running")
+    updateJobStatus(db, identity, "job-01", "completed", mutation("execution", "ses_exec"))
+    expect(getJob(db, identity, "job-01")?.status).toBe("completed")
 
-    // Direct accept is rejected; per-job acceptance has no CLI path.
-    updateJobStatus(db, identity, "job-01", "reported", mutation("execution", "ses_exec"))
-    updateJobStatus(db, identity, "job-01", "reviewed", mutation("execution", "ses_exec"))
-    expect(() => updateJobStatus(db!, identity, "job-01", "accepted", m)).toThrow(
-      /no CLI path/,
+    // Backward moves are rejected.
+    expect(() => updateJobStatus(db!, identity, "job-01", "running", m)).toThrow(
+      /backward moves rejected/,
     )
-    expect(getJob(db, identity, "job-01")?.status).toBe("reviewed")
-    expect(listJobs(db, identity)).toHaveLength(1)
+    expect(getJob(db, identity, "job-01")?.status).toBe("completed")
+
+    // Batch complete closes every outstanding job at once.
+    const completed = completeAllJobs(db, identity, { actorRole: "user", sessionId: "ses_user" })
+    expect(completed.map((job) => `${job.job_id}=${job.status}`).sort()).toEqual([
+      "job-01=completed",
+      "job-02=completed",
+    ])
+    expect(getJob(db, identity, "job-01")?.status).toBe("completed")
+    expect(getJob(db, identity, "job-02")?.status).toBe("completed")
+    expect(listJobs(db, identity)).toHaveLength(2)
   })
 
   test("every mutation records actor, session, and timestamp", async () => {
@@ -430,5 +425,52 @@ describe("sane-db (M2-A sqlite source of truth)", () => {
     expect(getMerge(db, identity)?.merge_commit).toBeNull()
     recordMergeCommit(db, identity, "def456", m)
     expect(getMerge(db, identity)?.merge_commit).toBe("def456")
+  })
+
+  test("current_workstreams is strictly per-user with one row per repo+user", async () => {
+    db = openInMemoryDb()
+    initSchema(db)
+    const { resolve } = await import("node:path")
+    const absA = resolve(repoA)
+    const absB = resolve(repoB)
+    const m = mutation("system", "ses_current")
+
+    expect(getCurrentWorkstream(db, { repoRoot: absA, user: "alice" })).toBeNull()
+
+    const first = setCurrentWorkstream(
+      db,
+      { repoRoot: absA, user: "alice", workstreamId: "01-export" },
+      m,
+    )
+    expect(first.workstream_id).toBe("01-export")
+    expect(getCurrentWorkstream(db, { repoRoot: absA, user: "alice" })?.workstream_id).toBe(
+      "01-export",
+    )
+    // Other users, repos are isolated (no cross-user adoption).
+    expect(getCurrentWorkstream(db, { repoRoot: absA, user: "bob" })).toBeNull()
+    expect(getCurrentWorkstream(db, { repoRoot: absB, user: "alice" })).toBeNull()
+
+    // Re-setting the same user replaces the row (one row per repo+user).
+    setCurrentWorkstream(db, { repoRoot: absA, user: "alice", workstreamId: "02-import" }, m)
+    expect(getCurrentWorkstream(db, { repoRoot: absA, user: "alice" })?.workstream_id).toBe(
+      "02-import",
+    )
+    const rows = db
+      .query(`SELECT * FROM current_workstreams WHERE repo_root = ? AND user = ?`)
+      .all(absA, "alice") as unknown[]
+    expect(rows).toHaveLength(1)
+
+    // Mutations are recorded.
+    const log = listMutations(db, { tableName: "current_workstreams" })
+    expect(log.length).toBeGreaterThanOrEqual(2)
+    expect(log[0]).toMatchObject({ table_name: "current_workstreams" })
+
+    // Validation rejects bad keys.
+    expect(() =>
+      setCurrentWorkstream(db!, { repoRoot: absA, user: "alice", workstreamId: "../outside" }, m),
+    ).toThrow(SaneDbError)
+    expect(() =>
+      setCurrentWorkstream(db!, { repoRoot: absA, user: "", workstreamId: "01-export" }, m),
+    ).toThrow(SaneDbError)
   })
 })

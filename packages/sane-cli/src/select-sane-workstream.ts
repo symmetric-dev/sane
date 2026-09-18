@@ -1,16 +1,25 @@
 import {
   SaneRepositoryError,
+  deleteLegacySelectionFile,
   resolveBootstrappedWorkstream,
   resolveSaneRepository,
-  writeCurrentWorkstream,
 } from "./sane-repository.ts"
-import { getWorkstream, initSchema, openSaneDb, resolveSaneIdentity } from "./sane-db.ts"
+import {
+  getCurrentWorkstream,
+  getWorkstream,
+  initSchema,
+  openSaneDb,
+  resolveSaneIdentity,
+  setCurrentWorkstream,
+} from "./sane-db.ts"
 
 export interface SelectWorkstreamOptions {
   implementationRepository: string
   workstreamPath: string
   dryRun?: boolean
   write?: (line: string) => void
+  /** Override the operating user for the DB identity (tests only; CLI uses the OS user). */
+  userOverride?: string
 }
 
 export async function selectSaneWorkstream(options: SelectWorkstreamOptions): Promise<{ dryRun: boolean; relativePath: string }> {
@@ -20,8 +29,10 @@ export async function selectSaneWorkstream(options: SelectWorkstreamOptions): Pr
   const identity = await resolveSaneIdentity(
     pointer.implementationRepository,
     workstream.relativePath,
+    options.userOverride,
   )
   const db = await openSaneDb(pointer.implementationRepository)
+  let changed = true
   try {
     initSchema(db)
     const dbRow = getWorkstream(db, identity)
@@ -33,6 +44,25 @@ export async function selectSaneWorkstream(options: SelectWorkstreamOptions): Pr
     if (dbRow.type !== workstream.type) {
       throw new SaneRepositoryError(
         `Workstream type mismatch: sqlite has type "${dbRow.type}" but the filesystem root doc implies "${workstream.type}". Re-create the workstream or fix the root doc.`,
+      )
+    }
+    if (!options.dryRun) {
+      const previous = getCurrentWorkstream(db, {
+        repoRoot: identity.repoRoot,
+        user: identity.user,
+      })
+      changed = !previous || previous.workstream_id !== workstream.relativePath
+      setCurrentWorkstream(
+        db,
+        {
+          repoRoot: identity.repoRoot,
+          user: identity.user,
+          workstreamId: workstream.relativePath,
+        },
+        {
+          actorRole: "system",
+          sessionId: `select:${identity.workstreamId}`,
+        },
       )
     }
   } finally {
@@ -47,7 +77,11 @@ export async function selectSaneWorkstream(options: SelectWorkstreamOptions): Pr
     write(`Planned: select ${workstream.relativePath}`)
     return { dryRun: true, relativePath: workstream.relativePath }
   }
-  const changed = await writeCurrentWorkstream(pointer.implementationRepository, workstream.relativePath)
+  try {
+    await deleteLegacySelectionFile(pointer.implementationRepository)
+  } catch {
+    // Best effort cleanup; selection already succeeded.
+  }
   write(`${changed ? "Selected" : "Already selected"}: ${workstream.relativePath}`)
   return { dryRun: false, relativePath: workstream.relativePath }
 }

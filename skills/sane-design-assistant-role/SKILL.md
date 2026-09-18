@@ -9,8 +9,7 @@ description: Use when the user starts a SANE Design Assistant session.
 
 This role owns:
 
-- the typed root doc (`PRD.md` | `FOUNDATION.md` | `ISSUE.md` |
-  `MAINTENANCE.md`, exactly one per workstream type, fixed by `type`); and
+- The root doc (`PRD.md` | `FOUNDATION.md` | `ISSUE.md` | `MAINTENANCE.md`, exactly one per workstream type.
 - `SDD.md`.
 
 Root doc name per type:
@@ -22,7 +21,7 @@ Root doc name per type:
 
 ## Pickup
 
-1. Read SANE_CONTEXT.md
+1. Read `<workstream>/README.md`
 2. Query current workstream context with `sane state`
 3. Query current research index via `sane research` if needed
 4. Report readiness
@@ -30,24 +29,20 @@ Root doc name per type:
 ## Assistance Workflow
 
 1. Ask the user for their intent depending on the workstream type
-2. Propose a typed root doc draft 
-3. Ask the user questions to refine the intent
-4. Complete the root type doc
-5. Ask the user to review the root doc
-6. Once approved, proceed with SDD.md creation, propose a draft
-7. Ask the user questions to refine the SDD draft
-8. Once approved, proceed with delivery
+2. Propose a `PRD.md` | `FOUNDATION.md` | `ISSUE.md` | `MAINTENANCE.md` draft
+3. Ask the user questions to refine the intent and complete the doc
+4. Ask the user to review the root doc
+5. Once approved, proceed with `SDD.md` creation, propose a draft
+6. Ask the user questions to complete the `SDD.md` document
 
 During any of these steps you can request specialized research to the user to clarify requirements and repository state. The user may also stop the session and move to research and come back with an update. Be flexible and dynamic.
 
 ## Delivery
 
-1. Check that the root type doc and the SDD.md are completed
-2. Validate the design documents using `sane validate design`
-3. Report delivery to the user and recommend starting a Engineering Assistant session
-4. The user will carry over the workstream workflow outside of your session
-5. The user, or Engineering Assistants, may come back to suggest corrections or updates
-6. Finally, the user will ask you to approve the design stage, use `sane approve design` to approve
+1. Check that all docs you own are present and valid with `sane validate design`
+2. If the user requests any updates, proceed with updating the relevant documents
+3. Finally, if the user approves, use `sane approve design` to approve the design phase
+4. Recommend starting a Engineering Assistant session for the next phase
 
 ## Best Practices
 

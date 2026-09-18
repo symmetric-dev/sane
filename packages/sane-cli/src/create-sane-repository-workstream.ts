@@ -4,15 +4,15 @@ import {
   initSchema,
   openSaneDb,
   resolveSaneIdentity,
+  setCurrentWorkstream,
   upsertStateEntry,
   upsertWorkstream,
 } from "./sane-db.ts"
 import {
   SaneRepositoryError,
+  deleteLegacySelectionFile,
   resolveSafeWorkstreamPath,
   resolveSaneRepository,
-  validateCurrentSelectionDestination,
-  writeCurrentWorkstream,
 } from "./sane-repository.ts"
 import { type WorkstreamType, WorkstreamTypeError, validateWorkstreamType } from "./workstream-type.ts"
 
@@ -23,6 +23,8 @@ export interface CreateRepositoryWorkstreamOptions {
   templateRoot?: string
   dryRun?: boolean
   write?: (line: string) => void
+  /** Override the operating user for the DB identity (tests only; CLI uses the OS user). */
+  userOverride?: string
 }
 
 export async function createSaneRepositoryWorkstream(options: CreateRepositoryWorkstreamOptions): Promise<{ dryRun: boolean; relativePath: string }> {
@@ -36,9 +38,6 @@ export async function createSaneRepositoryWorkstream(options: CreateRepositoryWo
   }
   const pointer = await resolveSaneRepository(options.implementationRepository)
   const workstream = await resolveSafeWorkstreamPath(pointer.workstreamsRoot, options.workstreamPath)
-  // Reject unrelated selection data before bootstrap, but do not write it until
-  // the bootstrap's staging rename has completed successfully.
-  await validateCurrentSelectionDestination(pointer.implementationRepository)
   const result = await createSaneWorkstream({
     destination: workstream.path,
     type: workstreamType,
@@ -47,8 +46,6 @@ export async function createSaneRepositoryWorkstream(options: CreateRepositoryWo
     write,
   })
   if (!result.dryRun) {
-    await writeCurrentWorkstream(pointer.implementationRepository, workstream.relativePath)
-    write(`Selected: ${workstream.relativePath}`)
     // M2 P0 DB integration: record the workstream + initial pending phases.
     // Runs only after the staging rename succeeded, so a re-create of the same
     // workstream still fails with "Destination already exists" inside
@@ -56,6 +53,7 @@ export async function createSaneRepositoryWorkstream(options: CreateRepositoryWo
     const identity = await resolveSaneIdentity(
       pointer.implementationRepository,
       workstream.relativePath,
+      options.userOverride,
     )
     const db = await openSaneDb(pointer.implementationRepository)
     try {
@@ -78,6 +76,15 @@ export async function createSaneRepositoryWorkstream(options: CreateRepositoryWo
           mutation,
         )
       }
+      setCurrentWorkstream(
+        db,
+        {
+          repoRoot: identity.repoRoot,
+          user: identity.user,
+          workstreamId: identity.workstreamId,
+        },
+        mutation,
+      )
     } finally {
       try {
         db.close()
@@ -85,6 +92,13 @@ export async function createSaneRepositoryWorkstream(options: CreateRepositoryWo
         // Best effort; close is idempotent for create flows.
       }
     }
+    // Remove the retired file pointer when present; ignore when absent.
+    try {
+      await deleteLegacySelectionFile(pointer.implementationRepository)
+    } catch {
+      // Best effort cleanup; creation already succeeded.
+    }
+    write(`Selected: ${workstream.relativePath}`)
   }
   return { dryRun: result.dryRun, relativePath: workstream.relativePath }
 }

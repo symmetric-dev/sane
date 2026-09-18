@@ -32,11 +32,12 @@ implementation repository.
 
 ## Local Reference
 
-The implementation repository records its currently selected workstream in a
-local file:
+The implementation repository records its currently selected workstream in
+sqlite, not in a file. There is no `.sane/current-workstream` file; the sole
+authority is the per-user `current_workstreams` row in:
 
 ```text
-<implementation-repository>/.sane/current-workstream
+<implementation-repository>/.sane/sane.db
 ```
 
 The implementation repository's `.gitignore` must contain:
@@ -50,10 +51,12 @@ copy it into workstreams, or treat it as a product artifact. No separate paths
 file exists: workstream locations are derived from the implementation
 repository itself, never from a recorded absolute pairing.
 
-The current-workstream file contains one normalized path relative to
-`.sane/workstreams`, followed by a newline; it never contains an absolute
-workstream path. It is written only by an explicit selection or a successful
-create.
+The `current_workstreams` table holds one row per `(repo_root, user)` with the
+normalized path relative to `.sane/workstreams` as `workstream_id`; it never
+contains an absolute workstream path. It is written only by an explicit
+selection or a successful create, strict per-user with no cross-user adoption.
+A legacy `.sane/current-workstream` file from an older checkout is deleted
+best-effort on successful create/select and is otherwise ignored.
 
 ## Initialization
 
@@ -97,7 +100,8 @@ bootstraps with shared and type-specific templates into the new layout
 (`README.md`, root doc, `design/SDD.md`, `resources/` fallbacks, top-level
 dirs exactly `design/`, `execution/`, `research/`, `resources/`), records the
 workstream `type` in sqlite (`workstreams.type`; no `type` file), then records
-the selection only after bootstrap succeeds. To select an existing
+the per-user current selection in sqlite (`current_workstreams`; no selection
+file) only after bootstrap succeeds. To select an existing
 bootstrapped workstream instead:
 
 ```bash
@@ -149,8 +153,9 @@ launch Scout.
 ## Assistant Use
 
 When a top-level SANE assistant session starts in an implementation repository,
-it reads `.sane/current-workstream` for the normalized relative selection and
-resolves the selected absolute workstream as
+it resolves the per-user current selection from sqlite (`current_workstreams`
+in `<implementation-repository>/.sane/sane.db`; no selection file) and resolves
+the selected absolute workstream as
 `<implementation-repository>/.sane/workstreams/<current-workstream>`.
 If the current pointer, the selected workstream bootstrap, or its sqlite
 `workstreams.type` row is missing or invalid, the assistant asks the user to
@@ -162,7 +167,7 @@ govern the session.
 The Coordination Assistant uses the implementation repository root as the Bash
 working directory when launching workers. Worker and
 review prompts receive only their assigned paths and instructions. They do not
-read `.sane/current-workstream` or `README.md`, nor view state via `sane view`.
+read the DB current selection or `README.md`, nor view state via `sane view`.
 
 A Scout receives a self-contained bounded implementation-repository assignment
 from its invoking parent agent, subject to that parent's launch permissions.

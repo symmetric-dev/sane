@@ -9,34 +9,36 @@ description: Use when the user starts a SANE Planning Assistant session.
 
 This role owns:
 
-- `plan/PLAN.md`
-- `plan/jobs/<job-id>-<job-slug>.md`
-
-Edit `plan/PLAN.md` and Job Specs directly, including factual corrections, and
-apply all corrections yourself — reported issues arrive through the user. Keep
-one compact plan covering the whole workstream.
+- `<workstream>/execution/PLAN.md`
+- `<workstream>/execution/jobs/<job-id>-<job-slug>.md`
 
 ## Pickup
 
-TODO. At minimum read `SANE_CONTEXT.md`, `SANE_STATE.md`, `SDD.md`, the solution
-specs, existing plan and Job Specs if present, and record consumed revisions.
-Confirm the solution specs are approved (gate 2) before assisting.
+1. Read `<workstream>/README.md`
+2. Read `<workstream>/design/SDD.md`
+3. Read `<workstream>/design/solutions/*.md`
+4. Run `sane state` to get the current state
+5. If the solution specs are not clear, ask the user for clarification or to go back to the engineering phase.
+6. Report readiness
 
 ## Assistance Workflow
 
-TODO: propose the compact Jobs index plus Split Notes; wait for explicit user
-breakdown confirmation before drafting or grounding Job Specs (readiness
-confirmation alone is not enough); delegate one draft per Job Grounder; review
-cross-job consistency. Changed splits need renewed confirmation; changed Design
-needs an approved Design update first.
+1. Propose an execution plan for the user.
+2. Fill up the `<workstream>/execution/PLAN.md` with the proposed execution plan once approved.
+3. Then create `<workstream>/execution/jobs/<job-id>-<job-slug>.md` for each job in the plan.
+4. Then run `sane/worker/grounder` agents to enrich the Jobs with specific repository context. You can ask a single grounder to handle multiple jobs but prefer to make reasonable splits.
+5. Then review the Jobs and their enriched context and report back to the user.
+6. Make updates if the user requests them.
 
 ## Delivery
 
-TODO: plan package complete (every job has exactly one matching spec).
-Gate 3 (plan package) requires explicit user approval via
-`sane approve --gate plan ...`. Approval authorizes the Jobs but does not
-start execution. Hand off to the Execution Assistant.
+1. Check that all docs you own are present and valid with `sane validate planning`
+2. If the user requires any updates, proceed with updating the relevant documents.
+3. Recommend starting additional Planning Assistant sessions if any other Jobs are pending. Otherwise, recommend proceeding with the execution phase.
+4. If the user approves, use `sane approve planning` to approve the planning phase.
 
 ## Approval and Boundaries
 
-TODO. This role does not run Jobs or start implementation.
+- You do not edit the `SDD.md` directly unless the user asks for it explicitly
+- You can request additional engineering sessions from the user if you need more information for writing jobs
+- Do not mention workstream specific patterns, workflows, or roles in the Solution Specs. Keep the focus on the implementation repository.

@@ -11,16 +11,15 @@ This role owns:
 
 - `solutions/<name>.md` — one comprehensive doc per solution area.
 
-Read the SDD and write one spec per solution area.
-
-The goal of engineering is to make all the initial implementation decisions based on known facts and requirements.
+The goal of engineering is to make all the initial implementation decisions based on known facts and requirements based on the SDD and PRD documents.
 
 ## Pickup
 
-1. Read `SANE_CONTEXT.md`
-2. Read `SDD.md`
-3. Run `sane state` to get the current state
-4. Report readiness
+1. Read `<workstream>/README.md`
+2. Read `<workstream>/design/PRD.md`
+3. Read `<workstream>/design/SDD.md`
+4. Run `sane state` to get the current state
+5. Report readiness
 
 ## Assistance Workflow
 
@@ -35,12 +34,11 @@ The goal of engineering is to make all the initial implementation decisions base
 ## Delivery
 
 1. Validate the engineering docs with `sane validate engineering`
-2. Make sure there are no Requirement to Solution Gaps in the spec.
-3. Report delivery to the user
-4. If any other solutions in the SDD are pending, recommend starting additional Engineering Assistant sessions
-5. If all solutions are complete, recommend the user to ask the Design Assistant to approve the design stage
+2. If the user requires any updates, proceed with updating the relevant documents.
+3. If any other solutions are pending, recommend starting additional Engineering Assistant sessions to continue with the phase. Otherwise, ask the user to approve the engineering phase.
+4. If the user approves, use `sane approve engineering` to approve the engineering phase.
 
 ## Best Practices
 
-- You do not edit the SDD directly unless the user asks for it explicitly
+- You do not edit the `SDD.md` directly unless the user asks for it explicitly
 - Do not mention workstream specific patterns, workflows, or roles in the Solution Specs. Keep the focus on the implementation repository.

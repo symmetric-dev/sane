@@ -10,9 +10,10 @@
  * record when problems exist. On success it records the approval row
  * (validated file list + composite hash) and marks the phase `approved` in
  * `state_entries`. Approving `planning` additionally registers every
- * `execution/jobs/*.md` spec found on disk and authorizes the planned ones, so
- * job tracking needs no per-job approval. No other job transitions happen
- * here; there is no per-job approval in scope.
+ * `execution/jobs/*.md` spec found on disk as `planned` (`planned` means
+ * authorized), so job tracking needs no per-job approval. Approving
+ * `execution` batch-accepts every outstanding job. Job statuses are progress
+ * tracking, not per-job gates; there is no per-job approval in scope.
  *
  * Every mutation records `(actor_role, session_id, timestamp)`. Approvals
  * are user actions (`--ref` is the user's approval token).
@@ -21,7 +22,7 @@ import { readdir } from "node:fs/promises"
 import { join } from "node:path"
 
 import {
-  authorizeJobsViaApproval,
+  completeAllJobs,
   createJob,
   getJob,
   getWorkstream,
@@ -137,14 +138,14 @@ function jobIdFromSpecFile(name: string): string {
 }
 
 /**
- * Register every `execution/jobs/*.md` spec found on disk (idempotent) and
- * authorize the planned ones. Gives job tracking without per-job approval.
+ * Register every `execution/jobs/*.md` spec found on disk as `planned`
+ * (idempotent; `planned` means authorized). Gives job tracking without
+ * per-job approval.
  */
-async function authorizePlannedJobs(
+async function registerPlannedJobs(
   db: import("bun:sqlite").Database,
   identity: { repoRoot: string; user: string; workstreamId: string },
   workstreamDir: string,
-  approval: { artifactPath: string; saneHash: string; approvalRef: string },
   mutation: { actorRole: string; sessionId: string },
 ): Promise<JobRow[]> {
   let names: string[] = []
@@ -155,26 +156,25 @@ async function authorizePlannedJobs(
   } catch {
     return []
   }
-  const authorized: JobRow[] = []
-  const toAuthorize: string[] = []
+  const registered: JobRow[] = []
   for (const name of names) {
     const jobId = jobIdFromSpecFile(name);
     if (!jobId) continue
     const existing = getJob(db, identity, jobId)
     if (!existing) {
-      createJob(
-        db,
-        identity,
-        { jobId, specPath: `execution/jobs/${name}` },
-        mutation,
+      registered.push(
+        createJob(
+          db,
+          identity,
+          { jobId, specPath: `execution/jobs/${name}` },
+          mutation,
+        ),
       )
-      toAuthorize.push(jobId)
-    } else if (existing.status === "planned") {
-      toAuthorize.push(jobId)
+    } else {
+      registered.push(existing)
     }
   }
-  if (toAuthorize.length === 0) return authorized
-  return authorizeJobsViaApproval(db, identity, toAuthorize, approval, mutation)
+  return registered
 }
 
 export async function runSaneApproveCommand(
@@ -237,8 +237,10 @@ export async function runSaneApproveCommand(
     )
     const jobs =
       phase === "planning"
-        ? await authorizePlannedJobs(db, identity, workstream.path, approvalInput, mutation)
-        : []
+        ? await registerPlannedJobs(db, identity, workstream.path, mutation)
+        : phase === "execution"
+          ? completeAllJobs(db, identity, mutation)
+          : []
 
     const result: SaneApproveCommandResult = {
       repoRoot: identity.repoRoot,
@@ -280,7 +282,8 @@ export async function runSaneApproveCommand(
       for (const file of result.files) write(`  validated: ${file}`)
       write(`  sane_hash: ${result.saneHash}`)
       if (result.jobs.length > 0) {
-        write(`  jobs authorized: ${result.jobs.map((job) => job.job_id).join(", ")}`)
+        const verb = result.phase === "execution" ? "completed" : "registered"
+        write(`  jobs ${verb}: ${result.jobs.map((job) => job.job_id).join(", ")}`)
       }
       for (const warning of validation.warnings) write(`  warning: ${warning}`)
     }

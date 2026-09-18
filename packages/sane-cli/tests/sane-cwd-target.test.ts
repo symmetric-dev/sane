@@ -12,6 +12,7 @@ import { promisify } from "node:util"
 
 import { initializeSaneRepository } from "../src/init-sane-repository.ts"
 import { createSaneRepositoryWorkstream } from "../src/create-sane-repository-workstream.ts"
+import { selectSaneWorkstream } from "../src/select-sane-workstream.ts"
 import {
   resolveCommandAddress,
   resolveCwdTarget,
@@ -23,6 +24,7 @@ import {
   openSaneDb,
   resolveSaneIdentity,
   upsertSelection,
+  upsertWorkstream,
   type SaneIdentity,
 } from "../src/sane-db.ts"
 import { resolveImplementationRepository } from "../src/sane-repository.ts"
@@ -144,7 +146,7 @@ describe("sane-cwd-target resolver", () => {
     return wtDir
   }
 
-  test("main-repo context resolves the current-workstream pointer", async () => {
+  test("main-repo context resolves the DB current pointer", async () => {
     const fromRoot = await resolveCwdTarget(repoRoot)
     expect(fromRoot).toMatchObject({
       repoRoot,
@@ -155,6 +157,52 @@ describe("sane-cwd-target resolver", () => {
     const nested = join(repoRoot, ".sane", "workstreams", "01-demo")
     const fromNested = await resolveCwdTarget(nested)
     expect(fromNested).toMatchObject({ repoRoot, workstreamId: "01-demo" })
+  })
+
+  test("main-repo current pointer is strictly per-user (no cross-user adoption)", async () => {
+    // beforeEach selected 01-demo for the OS user only.
+    await expect(resolveCwdTarget(repoRoot, "nobody-else-here")).rejects.toThrow(
+      "sane select",
+    )
+    // Selecting as another user satisfies only that user.
+    await createSaneRepositoryWorkstream({
+      implementationRepository: repo,
+      workstreamPath: "02-other",
+      type: "feature",
+      write: () => {},
+    })
+    // Workstream rows are per-user; mirror the row for the isolated test user
+    // so select's existing row+type check can succeed.
+    const aliceIdentity = await resolveSaneIdentity(repoRoot, "01-demo", "alice-isolated")
+    const mirrorDb = await openSaneDb(repoRoot)
+    try {
+      initSchema(mirrorDb)
+      upsertWorkstream(
+        mirrorDb,
+        aliceIdentity,
+        { type: "feature", status: "open" },
+        { actorRole: "system", sessionId: "test:alice-isolated:01-demo" },
+      )
+    } finally {
+      try {
+        mirrorDb.close()
+      } catch {
+        // Best effort.
+      }
+    }
+    await selectSaneWorkstream({
+      implementationRepository: repoRoot,
+      workstreamPath: "01-demo",
+      userOverride: "alice-isolated",
+      write: () => {},
+    })
+    const asAlice = await resolveCwdTarget(repoRoot, "alice-isolated")
+    expect(asAlice).toMatchObject({
+      repoRoot,
+      workstreamId: "01-demo",
+      user: "alice-isolated",
+    })
+    await expect(resolveCwdTarget(repoRoot, "bob-isolated")).rejects.toThrow("sane select")
   })
 
   test("worktree nested under the default in-repo dir matches selections", async () => {

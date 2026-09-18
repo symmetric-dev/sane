@@ -44,11 +44,8 @@ export type StateEntryStatus = (typeof STATE_ENTRY_STATUSES)[number]
 
 export const JOB_STATUSES = [
   "planned",
-  "authorized",
   "running",
-  "reported",
-  "reviewed",
-  "accepted",
+  "completed",
 ] as const
 export type JobStatus = (typeof JOB_STATUSES)[number]
 
@@ -73,11 +70,8 @@ const JOB_STATUS_SET = new Set<string>(JOB_STATUSES)
 /** Linear job order used for transition validation. */
 const JOB_STATUS_ORDER: Record<JobStatus, number> = {
   planned: 0,
-  authorized: 1,
-  running: 2,
-  reported: 3,
-  reviewed: 4,
-  accepted: 5,
+  running: 1,
+  completed: 2,
 }
 
 // ---------------------------------------------------------------------------
@@ -375,7 +369,7 @@ CREATE TABLE IF NOT EXISTS jobs(
   job_id TEXT NOT NULL,
   spec_path TEXT NOT NULL,
   report_path TEXT,
-  status TEXT NOT NULL CHECK(status IN ('planned','authorized','running','reported','reviewed','accepted')),
+  status TEXT NOT NULL CHECK(status IN ('planned','running','completed')),
   PRIMARY KEY (repo_root, user, workstream_id, job_id)
 );
 CREATE TABLE IF NOT EXISTS merges(
@@ -386,6 +380,13 @@ CREATE TABLE IF NOT EXISTS merges(
   base_rev TEXT NOT NULL,
   merge_commit TEXT,
   PRIMARY KEY (repo_root, user, workstream_id)
+);
+CREATE TABLE IF NOT EXISTS current_workstreams(
+  repo_root TEXT NOT NULL,
+  user TEXT NOT NULL,
+  workstream_id TEXT NOT NULL,
+  updated_at TEXT NOT NULL,
+  PRIMARY KEY (repo_root, user)
 );
 CREATE TABLE IF NOT EXISTS sane_mutations(
   id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -552,6 +553,22 @@ export interface MutationLogRow {
   timestamp: string
 }
 
+export interface CurrentWorkstreamRow {
+  repo_root: string
+  user: string
+  workstream_id: string
+  updated_at: string
+}
+
+export interface CurrentWorkstreamKey {
+  repoRoot: string
+  user: string
+}
+
+export interface SetCurrentWorkstreamInput extends CurrentWorkstreamKey {
+  workstreamId: string
+}
+
 // ---------------------------------------------------------------------------
 // workstreams
 // ---------------------------------------------------------------------------
@@ -639,6 +656,69 @@ export function deleteWorkstream(
     identity.workstreamId,
   )
   recordMutation(db, identity, "workstreams", "delete", mutation, timestamp)
+}
+
+// ---------------------------------------------------------------------------
+// current_workstreams (per-user current selection; sole authority)
+// ---------------------------------------------------------------------------
+
+function assertCurrentKey(key: CurrentWorkstreamKey): void {
+  if (!key.repoRoot || !isAbsolute(key.repoRoot)) {
+    throw new SaneDbError("Current workstream repoRoot must be an absolute path.")
+  }
+  if (!key.user || key.user.trim() === "") {
+    throw new SaneDbError("Current workstream user must be non-empty.")
+  }
+}
+
+function assertCurrentInput(input: SetCurrentWorkstreamInput): void {
+  assertCurrentKey(input)
+  const normalized = normalizeWorkstreamId(input.workstreamId)
+  if (normalized !== input.workstreamId) {
+    throw new SaneDbError(`Current workstream workstreamId is not normalized: ${input.workstreamId}`)
+  }
+}
+
+/**
+ * Set the current workstream for one `(repo_root, user)` pair.
+ * One row per user per repo; strict per-user with no cross-user fallback.
+ */
+export function setCurrentWorkstream(
+  db: Database,
+  input: SetCurrentWorkstreamInput,
+  mutation: MutationContext,
+): CurrentWorkstreamRow {
+  assertCurrentInput(input)
+  const timestamp = resolveTimestamp(mutation)
+  db.query(
+    `INSERT INTO current_workstreams (repo_root, user, workstream_id, updated_at)
+     VALUES (?, ?, ?, ?)
+     ON CONFLICT(repo_root, user)
+     DO UPDATE SET workstream_id=excluded.workstream_id, updated_at=excluded.updated_at`,
+  ).run(input.repoRoot, input.user, input.workstreamId, timestamp)
+  recordMutation(
+    db,
+    { repoRoot: input.repoRoot, user: input.user, workstreamId: input.workstreamId },
+    "current_workstreams",
+    "set",
+    mutation,
+    timestamp,
+  )
+  const row = getCurrentWorkstream(db, { repoRoot: input.repoRoot, user: input.user })
+  if (!row) throw new SaneDbError("Failed to read back current workstream after set.")
+  return row
+}
+
+/** Read the current workstream for one `(repo_root, user)` pair (strict per-user). */
+export function getCurrentWorkstream(
+  db: Database,
+  key: CurrentWorkstreamKey,
+): CurrentWorkstreamRow | null {
+  assertCurrentKey(key)
+  const row = db
+    .query(`SELECT * FROM current_workstreams WHERE repo_root = ? AND user = ?`)
+    .get(key.repoRoot, key.user) as CurrentWorkstreamRow | null
+  return row ?? null
 }
 
 // ---------------------------------------------------------------------------
@@ -972,7 +1052,7 @@ export function deleteResearchReport(
 }
 
 // ---------------------------------------------------------------------------
-// jobs (planned -> authorized only via approval helper)
+// jobs (planned means authorized: planning approval registers specs as planned)
 // ---------------------------------------------------------------------------
 
 export interface CreateJobInput {
@@ -996,7 +1076,7 @@ export function createJob(
   assertJobStatus(status)
   if (status !== "planned") {
     throw new SaneDbError(
-      `New jobs must start as "planned" (got "${status}"). Use authorizeJobsViaApproval to authorize.`,
+      `New jobs must start as "planned" (got "${status}"). Jobs are registered as planned by planning approval.`,
     )
   }
   const timestamp = resolveTimestamp(mutation)
@@ -1042,9 +1122,11 @@ export function listJobs(db: Database, identity: SaneIdentity): JobRow[] {
 }
 
 /**
- * Direct job status update. Rejects `planned -> authorized` (must go through
- * `authorizeJobsViaApproval` with a planning approval) and any direct
- * transition to `accepted` (no CLI path in the phase model).
+ * Direct job status update (progress tracking, ungated). The Execution
+ * Assistant moves jobs `planned -> running -> completed` as work proceeds;
+ * moves must go forward (same status is a no-op). `planned` comes only from
+ * planning-approval registration. `sane approve execution` batch-completes
+ * stragglers via `completeAllJobs`.
  */
 export function updateJobStatus(
   db: Database,
@@ -1059,14 +1141,11 @@ export function updateJobStatus(
   const timestamp = resolveTimestamp(mutation)
   const current = getJob(db, identity, jobId)
   if (!current) throw new SaneDbError(`Job not found: ${jobId}`)
-  if (current.status === "planned" && newStatus === "authorized") {
+  const currentOrder = JOB_STATUS_ORDER[current.status as JobStatus]
+  const nextOrder = JOB_STATUS_ORDER[newStatus as JobStatus]
+  if (nextOrder < currentOrder) {
     throw new SaneDbError(
-      `Job "${jobId}" cannot move planned -> authorized directly. Use authorizeJobsViaApproval with a "planning" approval.`,
-    )
-  }
-  if (newStatus === "accepted") {
-    throw new SaneDbError(
-      `Job "${jobId}" cannot move to "accepted" directly. Per-job acceptance has no CLI path in the phase model.`,
+      `Job "${jobId}" cannot move ${current.status} -> ${newStatus} (backward moves rejected; statuses only track forward progress).`,
     )
   }
   const reportPath = options?.reportPath !== undefined ? options.reportPath : current.report_path
@@ -1079,66 +1158,37 @@ export function updateJobStatus(
   return row
 }
 
-export interface PlanApprovalForJobs {
-  artifactPath: string
-  saneHash: string
-  gitCommit?: string | null
-  approvalRef: string
-}
-
 /**
- * Authorize `planned` jobs via explicit user approval of the plan package
- * (phase `planning`). Records the approval row, then moves each job
- * `planned -> authorized` atomically. This is the only supported path for
- * that transition; `updateJobStatus` rejects it directly.
+ * Complete every outstanding job in one batch (execution approval). Moves each
+ * non-`completed` job to `completed` and records a mutation per job. Covers
+ * stragglers the Execution Assistant did not mark itself; already-`completed`
+ * jobs are left untouched. The user gate itself is the phase approval row.
  */
-export function authorizeJobsViaApproval(
+export function completeAllJobs(
   db: Database,
   identity: SaneIdentity,
-  jobIds: string[],
-  approval: PlanApprovalForJobs,
   mutation: MutationContext,
 ): JobRow[] {
   assertIdentity(identity)
-  if (jobIds.length === 0) throw new SaneDbError("authorizeJobsViaApproval requires at least one job.")
-  assertNonEmpty("artifactPath", approval.artifactPath)
-  assertNonEmpty("saneHash", approval.saneHash)
-  assertNonEmpty("approvalRef", approval.approvalRef)
   const timestamp = resolveTimestamp(mutation)
-
-  const authorize = db.transaction((ids: string[]) => {
-    recordApproval(
-      db,
-      identity,
-      {
-        phase: "planning",
-        artifactPath: approval.artifactPath,
-        saneHash: approval.saneHash,
-        gitCommit: approval.gitCommit ?? null,
-        approvalRef: approval.approvalRef,
-      },
-      { actorRole: mutation.actorRole, sessionId: mutation.sessionId, timestamp },
-    )
-    for (const jobId of ids) {
-      const current = getJob(db, identity, jobId)
-      if (!current) throw new SaneDbError(`Job not found: ${jobId}`)
-      if (current.status !== "planned") {
-        throw new SaneDbError(
-          `Job "${jobId}" is "${current.status}", not "planned"; only planned jobs can be authorized.`,
-        )
+  const complete = db.transaction(() => {
+    const completed: JobRow[] = []
+    for (const job of listJobs(db, identity)) {
+      if (job.status === "completed") {
+        completed.push(job)
+        continue
       }
       db.query(
-        `UPDATE jobs SET status = 'authorized' WHERE repo_root = ? AND user = ? AND workstream_id = ? AND job_id = ?`,
-      ).run(identity.repoRoot, identity.user, identity.workstreamId, jobId)
-      recordMutation(db, identity, "jobs", "status:planned->authorized", mutation, timestamp)
+        `UPDATE jobs SET status = 'completed' WHERE repo_root = ? AND user = ? AND workstream_id = ? AND job_id = ?`,
+      ).run(identity.repoRoot, identity.user, identity.workstreamId, job.job_id)
+      recordMutation(db, identity, "jobs", `status:${job.status}->completed`, mutation, timestamp)
+      const row = getJob(db, identity, job.job_id)
+      if (!row) throw new SaneDbError(`Failed to read back job "${job.job_id}" after complete.`)
+      completed.push(row)
     }
+    return completed
   })
-  authorize(jobIds)
-  return jobIds.map((jobId) => {
-    const row = getJob(db, identity, jobId)
-    if (!row) throw new SaneDbError(`Failed to read back job "${jobId}" after authorize.`)
-    return row
-  })
+  return complete()
 }
 
 export function deleteJob(

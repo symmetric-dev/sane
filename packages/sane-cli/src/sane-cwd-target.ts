@@ -6,8 +6,10 @@
  *
  * a. If CWD's `git rev-parse --show-toplevel` contains `.sane/` it is a
  *    main-repo context: repo_root is the toplevel and the workstream is the
- *    `.sane/current-workstream` pointer (missing pointer errors name the fix:
- *    run `select`).
+ *    per-user `current_workstreams` row in `<repo>/.sane/sane.db` (strict
+ *    per-user, no cross-user adoption; a missing row errors and names the
+ *    fix: run `select`). The pointed workstream directory is validated via
+ *    `validateBootstrappedWorkstream`.
  * b. Else resolve `git rev-parse --git-common-dir` to a main-repo candidate
  *    (strip the trailing `.git`). If `<candidate>/.sane` exists, open its
  *    `sane.db` and match a `selections` row whose `worktree_path` equals the
@@ -20,20 +22,21 @@
  *
  * Explicit positionals and `--repo-root` always win: `resolveCommandAddress`
  * returns them untouched without touching git or the DB. Resolution lives in
- * the async run path (parsers stay sync); the resolver is read-only and never
- * creates files, rows, or schema.
+ * the async run path (parsers stay sync).
  */
 import { execFile } from "node:child_process"
 import { lstat, realpath } from "node:fs/promises"
 import { basename, dirname, isAbsolute, join, resolve } from "node:path"
 import { promisify } from "node:util"
 
-import { currentUser, openSaneDbAtPath, saneDbPath } from "./sane-db.ts"
 import {
-  SaneRepositoryError,
-  readCurrentWorkstream,
-  saneWorkstreamsRoot,
-} from "./sane-repository.ts"
+  currentUser,
+  getCurrentWorkstream,
+  initSchema,
+  openSaneDbAtPath,
+  saneDbPath,
+} from "./sane-db.ts"
+import { SaneRepositoryError, validateBootstrappedWorkstream } from "./sane-repository.ts"
 
 const execFileAsync = promisify(execFile)
 
@@ -78,17 +81,47 @@ function explicitArgsHint(): string {
   return "Pass <implementation-repository> <workstream-relative-path> explicitly (or --repo-root <path> <workstream-relative-path>)."
 }
 
-/** Main-repo context: the pointer selects the workstream. */
+/** Main-repo context: the per-user DB pointer selects the workstream (strict, no adoption). */
 async function resolveMainPointer(repoRoot: string, user: string): Promise<CwdTarget> {
-  const pointerPath = join(repoRoot, ".sane", "current-workstream")
-  if (!((await lstatOrUndefined(pointerPath))?.isFile())) {
+  const dbPath = saneDbPath(repoRoot)
+  if (!((await lstatOrUndefined(dbPath))?.isFile())) {
     throw new SaneRepositoryError(
-      `No current workstream selected in ${repoRoot} (${pointerPath} is missing or not a regular file). ` +
+      `No current workstream selected in ${repoRoot} for user ${JSON.stringify(user)} (no current selection in ${dbPath}). ` +
         `Run: sane select --name <workstream-name> (run from the repository root)`,
     )
   }
-  const workstream = await readCurrentWorkstream(repoRoot, saneWorkstreamsRoot(repoRoot))
-  return { repoRoot, workstreamId: workstream.relativePath, user, source: "main-pointer" }
+  const db = openSaneDbAtPath(dbPath)
+  let workstreamId: string
+  try {
+    initSchema(db)
+    const row = getCurrentWorkstream(db, { repoRoot, user })
+    if (!row) {
+      throw new SaneRepositoryError(
+        `No current workstream selected in ${repoRoot} for user ${JSON.stringify(user)}. ` +
+          `Run: sane select --name <workstream-name> (run from the repository root)`,
+      )
+    }
+    workstreamId = row.workstream_id
+  } finally {
+    try {
+      db.close()
+    } catch {
+      // Best effort.
+    }
+  }
+  const workstreamDir = join(repoRoot, ".sane", "workstreams", workstreamId)
+  try {
+    await validateBootstrappedWorkstream(workstreamDir)
+  } catch (error) {
+    const message = (error as Error).message
+    if (message.includes("Re-create")) {
+      throw error instanceof SaneRepositoryError ? error : new SaneRepositoryError(message)
+    }
+    throw new SaneRepositoryError(
+      `${message} Re-create the workstream with the current bootstrap.`,
+    )
+  }
+  return { repoRoot, workstreamId, user, source: "main-pointer" }
 }
 
 /**
