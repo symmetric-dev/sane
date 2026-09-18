@@ -25,14 +25,14 @@ the index; workers may register their own report only when asked.
 ## Pickup
 
 1. Read `<workstream>/README.md`
-2. Query current workstream context with `sane state`
+2. Query current workstream context with `sane view`
 3. Query research index with `sane research --index` and diagnose any issues if necessary
-4. Read `<workstream>/design/SDD.md` if available or any other root-level workstream docs
+4. Read `<workstream>/design/SDD.md` if available or any other mentioned docs
 5. Report readiness
 
 ## Assistance Workflow
 
-1. Either perform research yourself or dispatch `sane-worker-researcher` subagents to perform research
+1. Either perform research yourself or dispatch `sane/worker/researcher` subagents to perform research
 2. Review the research index with `sane research --index` and diagnose any issues if necessary
 3. Report findings to the user
 

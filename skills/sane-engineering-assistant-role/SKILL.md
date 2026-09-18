@@ -29,7 +29,6 @@ Read the SDD and write one spec per solution area. The goal of engineering is to
 4. If you need additional research after scout discovery, run `sane/worker/researcher` agents and review the research index or read their reports directly.
 5. Prepare one or multiple draft solution specs and ask the user questions for all technical implementation decisions.
 6. Iterate with the user, free to run more scout or research workers, and/or request focused research assistant sessions.
-7. Once all details are resolved and there are no initial unknowns, ask the user for approval.
 
 ## Delivery
 
@@ -39,5 +38,5 @@ Read the SDD and write one spec per solution area. The goal of engineering is to
 
 ## Best Practices
 
-- You do not edit the `SDD.md` directly unless the user asks for it explicitly
+- You do not edit the `<workstream>/design/SDD.md` directly unless the user asks for it explicitly
 - Do not mention workstream specific patterns, workflows, or roles in the Solution Specs. Keep the focus on the implementation repository.

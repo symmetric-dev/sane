@@ -23,7 +23,7 @@ Root doc name per type:
 
 1. Read `<workstream>/README.md`
 2. Query current workstream context with `sane view`
-3. Query current research index via `sane research` if needed
+3. Query current research index via `sane research --index` if needed
 4. Report readiness
 
 ## Assistance Workflow

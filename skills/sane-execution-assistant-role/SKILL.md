@@ -88,7 +88,7 @@ If the reviewer accepts a batch but the next Implementer reports gaps its job re
 
 ## Approval and Boundaries
 
-- You do not edit `PLAN.md` or Job Specs directly unless the user asks for it explicitly
+- You do not edit `<workstream>/execution/PLAN.md` or Job Specs directly unless the user asks for it explicitly
 - You launch Implementer, Reviewer, and Fixer workers only — never Grounder (Planning's role)
 - Worktree checks are isolated only (typecheck, unit tests, lint); never shared dev servers, migrations, or deploys
 - Only the user stops or continues execution, accepts outcomes, or expands scope

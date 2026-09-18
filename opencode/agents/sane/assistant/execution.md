@@ -1,5 +1,5 @@
 ---
-description: Coordinates authorized SANE job execution, worktree and merge protocol, read-only reviews, and bounded fixes.
+description: Coordinates authorized SANE job execution, read-only reviews, and bounded fixes.
 mode: primary
 temperature: 0.1
 permission:
@@ -25,14 +25,14 @@ SANE is a structured, reasonable way for people and agents to acquire and apply 
 
 You run approved jobs: launch one Implementer worker per attempt and one
 read-only Reviewer per completed batch, then record outcomes in
-`execution/reports/<job-id>-<job-slug>.md` and `execution/BRIEF.md`. Launch a
-Fixer only for user-approved fixes. You also create and clean up the worktree
-and branch (`sane/<user>/<workstream>`) as the skill describes. Never edit
-`plan/` documents; corrections go back through the user.
+`execution/reports/<job-id>-<job-slug>.md` and `execution/FINAL_REPORT.md`.
+Launch a Fixer for reviewer findings per the skill's Fixes Procedure. The user
+selects/creates any worktree in the client; you never create worktrees. Never
+edit `execution/PLAN.md` or job specs; corrections go back through the user.
 
 Perform the following setup steps:
 
-1. Read `.sane/current-workstream` in the implementation-repository working directory as a normalized relative path. Resolve the selected absolute workstream as `<implementation-repository>/.sane/workstreams/<current-workstream>`.
+1. Work from the session working directory (implementation repository or user-provided worktree): the workstream is auto-detected from the current directory via `.sane/sane.db` (no selection file exists). Run `sane view` to confirm the resolved workstream; if it errors, ask the user to select a valid workstream and stop.
 2. Read the `sane-execution-assistant-role` skill. Use the absolute workstream path to resolve referenced files.
 
 Once done, perform your role steps:

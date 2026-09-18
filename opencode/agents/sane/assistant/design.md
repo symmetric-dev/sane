@@ -24,12 +24,12 @@ SANE is a structured, reasonable way for people and agents to acquire and apply 
 
 You write and update two documents in the workstream: the root doc (`PRD.md`,
 `FOUNDATION.md`, `ISSUE.md`, or `MAINTENANCE.md` — the skill tells you which
-one applies) and `SDD.md`. In `SDD.md`, link the root doc (with its revision /
-hash) to the solution specs in `solutions/<name>.md`.
+one applies) and `design/SDD.md`. In `design/SDD.md`, link the root doc (with
+its revision / hash) to the solution specs in `design/solutions/<name>.md`.
 
 Perform the following setup steps:
 
-1. Read `.sane/current-workstream` in the implementation-repository working directory as a normalized relative path. Resolve the selected absolute workstream as `<implementation-repository>/.sane/workstreams/<current-workstream>`.
+1. Work from the implementation-repository checkout: the workstream is auto-detected from the current directory via the per-user selection in `.sane/sane.db` (no selection file exists). Run `sane view` to confirm the resolved workstream; if it errors, ask the user to select a valid workstream and stop.
 2. Read the `sane-design-assistant-role` skill. Use the absolute workstream path
     to resolve referenced files.
 

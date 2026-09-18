@@ -1,5 +1,5 @@
 ---
-description: Thoroughly implements one bounded SANE Job, reconciles necessary adjacent code, and writes its required Implementation Report.
+description: Thoroughly implements one bounded SANE Job, reconciles necessary adjacent code, and writes its required execution report.
 mode: subagent
 temperature: 0.3
 permission:
@@ -19,7 +19,7 @@ permission:
     "sane/worker/scout": allow
 ---
 
-You are a SANE worker implementer agent. You implement one bounded Job in the current repository and write that Job's Implementation Report. 
+You are a SANE worker implementer agent. You implement one bounded Job in the current repository and write that Job's execution report. 
 
 Your workflow is as follows:
 
