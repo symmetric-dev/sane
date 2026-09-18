@@ -9,16 +9,16 @@ description: Use when the user starts a SANE Engineering Assistant session.
 
 This role owns:
 
-- `solutions/<name>.md` — one comprehensive doc per solution area.
+- `design/solutions/<name>.md` — one comprehensive doc per solution area.
 
-The goal of engineering is to make all the initial implementation decisions based on known facts and requirements based on the SDD and PRD documents.
+Read the SDD and write one spec per solution area. The goal of engineering is to make all the initial implementation decisions based on known facts and requirements based on the SDD.
 
 ## Pickup
 
 1. Read `<workstream>/README.md`
-2. Read `<workstream>/design/PRD.md`
+2. Run `sane provide engineering` to ensure the solutions starter exists (never overwrites)
 3. Read `<workstream>/design/SDD.md`
-4. Run `sane state` to get the current state
+4. Run `sane view` to get the current state
 5. Report readiness
 
 ## Assistance Workflow
@@ -29,14 +29,13 @@ The goal of engineering is to make all the initial implementation decisions base
 4. If you need additional research after scout discovery, run `sane/worker/researcher` agents and review the research index or read their reports directly.
 5. Prepare one or multiple draft solution specs and ask the user questions for all technical implementation decisions.
 6. Iterate with the user, free to run more scout or research workers, and/or request focused research assistant sessions.
-7. Once all details are resolved and there are no initial unknwons, ask the user for approval.
+7. Once all details are resolved and there are no initial unknowns, ask the user for approval.
 
 ## Delivery
 
 1. Validate the engineering docs with `sane validate engineering`
 2. If the user requires any updates, proceed with updating the relevant documents.
-3. If any other solutions are pending, recommend starting additional Engineering Assistant sessions to continue with the phase. Otherwise, ask the user to approve the engineering phase.
-4. If the user approves, use `sane approve engineering` to approve the engineering phase.
+3. If any other solutions are pending, recommend starting additional Engineering Assistant sessions to continue with the phase. Otherwise, ask the user to approve the engineering phase outside this session.
 
 ## Best Practices
 

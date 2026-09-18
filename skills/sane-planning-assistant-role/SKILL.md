@@ -15,11 +15,12 @@ This role owns:
 ## Pickup
 
 1. Read `<workstream>/README.md`
-2. Read `<workstream>/design/SDD.md`
-3. Read `<workstream>/design/solutions/*.md`
-4. Run `sane state` to get the current state
-5. If the solution specs are not clear, ask the user for clarification or to go back to the engineering phase.
-6. Report readiness
+2. Run `sane provide planning` to ensure the plan starter and jobs directory exist (never overwrites)
+3. Read `<workstream>/design/SDD.md`
+4. Read `<workstream>/design/solutions/*.md`
+5. Run `sane view` to get the current state
+6. If the solution specs are not clear, ask the user for clarification or to go back to the engineering phase.
+7. Report readiness
 
 ## Assistance Workflow
 
@@ -34,11 +35,10 @@ This role owns:
 
 1. Check that all docs you own are present and valid with `sane validate planning`
 2. If the user requires any updates, proceed with updating the relevant documents.
-3. Recommend starting additional Planning Assistant sessions if any other Jobs are pending. Otherwise, recommend proceeding with the execution phase.
-4. If the user approves, use `sane approve planning` to approve the planning phase.
+3. Recommend starting additional Planning Assistant sessions if any other Jobs are pending. Otherwise, recommend proceeding with the execution phase once the user has approved the planning phase outside this session.
 
 ## Approval and Boundaries
 
-- You do not edit the `SDD.md` directly unless the user asks for it explicitly
+- You do not edit `design/SDD.md` directly unless the user asks for it explicitly
 - You can request additional engineering sessions from the user if you need more information for writing jobs
-- Do not mention workstream specific patterns, workflows, or roles in the Solution Specs. Keep the focus on the implementation repository.
+- Do not mention workstream specific patterns, workflows, or roles in the Plan or Job Specs. Keep the focus on the implementation repository.

@@ -66,7 +66,7 @@ Commands:
   validate <design|engineering|planning|execution>
   approve <design|engineering|planning|execution> --ref <approval_ref>
   provide <design|engineering|planning|execution>
-  job <job-id> <running|completed>
+  job <job-id> [running|completed]
   research
   handoff
 

@@ -24,7 +24,7 @@ You shall never talk about or reference workstream specific language or workflow
 
 ## State
 
-View current status with `sane status`. Never hand-edit state; the user records approvals with `sane approve <phase> --ref <approval_ref>` after `sane validate <phase>` passes.
+View current status with `sane status`. Never hand-edit state; the user records approvals with `sane approve <phase>` after `sane validate <phase>` passes.
 
 In every session perform the following steps:
 
@@ -40,7 +40,7 @@ In every session perform the following steps:
 Additional steps after delivery may include:
 
 - User requests updates: The user may request additional changes to the assigned outputs. If so, update the assigned outputs and perform an Updates Delivery.
-- User approves: approval via `sane approve <phase> --ref <approval_ref>` (validation runs first and refuses on problems). After this, it is up to the user to end the
+- User approves: approval via `sane approve <phase>` (validation runs first and refuses on problems). After this, it is up to the user to end the
   session or pause it. Approval does not transfer control to you or start another session.
 
 ## State Statuses

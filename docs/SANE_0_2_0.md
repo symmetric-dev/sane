@@ -423,10 +423,10 @@ mapping lives in chat as T0-T25.
   Bootstrap the repo, create/select a typed workstream, render state,
   provision phase starters, validate phase documents, and report status.
 - P1: approvals, research index, session registry, handoff
-  compose/send. Validate then record the phase approval (validated file
+  compose/send, job progress. Validate then record the phase approval (validated file
   list + composite hash), register and index research reports, read/update
   the
-  `(repo, user, workstream, slot)` registry, and compose/send the compact
+  `(repo, user, workstream, slot)` registry, mark job progress, and compose/send the compact
   queue-default handoff prompt.
 - P2: worktree/merge. Create the namespaced worktree and branch, then run
   the section-4 protocol (rebase, checks, review, user merge approval,
@@ -465,6 +465,8 @@ Bare invocation is supported by `view`, `status`, `validate`, `approve`,
 `provide`, `research`, and `handoff`, which all auto-detect the workstream
 from the current directory and take no address arguments. (`init`,
 `create`, and `select` run from the repository root with flags instead of
-address positionals.) Explicit positionals and `--repo-root` on `view`,
+address positionals.) `job` always resolves the workstream from the current
+directory too: its positionals are payload (job id plus an optional status),
+never addresses. Explicit positionals and `--repo-root` on `view`,
 `status`, `research`, and `handoff` always win and behave exactly as
 without auto-detection.
