@@ -50,6 +50,10 @@ export const ROLE_SKILL_NAMES = [
  */
 export const PLUGIN_SRC_FILES = [
   "sane-link-tool.ts",
+  "sane-handoff-tool.ts",
+  "sane-handoff-command.ts",
+  "sane-workstream-state.ts",
+  "sane-hash.ts",
   "sane-db.ts",
   "sane-repository.ts",
   "sane-cwd-target.ts",

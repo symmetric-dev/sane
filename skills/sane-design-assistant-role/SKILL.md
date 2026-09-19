@@ -43,7 +43,7 @@ During any of these steps you can request specialized research to the user to cl
 1. Check that all docs you own are present and valid with `sane validate design`
 2. If the user requests any updates, proceed with updating the relevant documents
 3. Once the user has approved the design phase, recommend starting a Engineering Assistant session for the next phase
-4. Before handing off, check `sane sessions --slot engineering`; if the target slot has >1 session, ask the user which index to send to, else default latest; then `sane handoff --from design --to engineering --next "<action>" [--session-index <n>]`.
+4. Before handing off, check `sane sessions --slot engineering`; if the target slot has >1 session, ask the user which index to send to, else default latest; then call the `sane_handoff` tool (`to: "engineering"`, `message: "<action>"`, plus `session_index: <n>` when the user picked one). Your own slot is resolved from the tool context — never pass it.
 
 ## Best Practices
 

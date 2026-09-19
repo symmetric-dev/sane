@@ -41,7 +41,7 @@ the index; workers may register their own report only when asked.
 
 1. Verify that the research index matches the reports
 2. Report delivery to the user, recommend them go back to the current workstream phase
-3. Before handing off, check `sane sessions --slot <phase>`; if the target slot has >1 session, ask the user which index to send to, else default latest; then `sane handoff --from research:<topic> --to <phase> --next "<action>" [--session-index <n>]`. Any phase can receive the report via handoff to its linked phase session (latest by default), and research never blocks.
+3. Before handing off, check `sane sessions --slot <phase>`; if the target slot has >1 session, ask the user which index to send to, else default latest; then call the `sane_handoff` tool (`to: "<phase>"`, `message: "<action>"`, plus `session_index: <n>` when the user picked one). Your own slot is resolved from the tool context — never pass it. Any phase can receive the report via handoff to its linked phase session (latest by default), and research never blocks.
 4. If research remains open, recommend the user to start a new Research Assistant session instead
 
 ## Best Practices

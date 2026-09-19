@@ -156,7 +156,7 @@ describe("sane_link plugin executor (session from tool context)", () => {
 
   /** Drive `Plugin.define({ id, setup })` with a fake plugin context. */
   async function loadSaneLinkTool(sessionDirectory: string): Promise<CapturedTool> {
-    let captured: CapturedTool | undefined
+    const added: CapturedTool[] = []
     const pluginCtx = {
       session: {
         get: async () => ({ location: { directory: sessionDirectory } }),
@@ -165,11 +165,12 @@ describe("sane_link plugin executor (session from tool context)", () => {
         transform: async (callback: (editor: {
           add: (tool: CapturedTool) => void
         }) => void) => {
-          callback({ add: (tool) => { captured = tool } })
+          callback({ add: (tool) => { added.push(tool) } })
         },
       },
     }
     await SanePlugin.setup(pluginCtx as never)
+    const captured = added.find((tool) => tool.name === "sane_link")
     expect(captured).toBeDefined()
     return captured!
   }

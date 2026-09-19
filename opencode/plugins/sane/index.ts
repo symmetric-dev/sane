@@ -45,6 +45,7 @@ import {
 } from "../../../packages/sane-cli/src/sane-repository.ts"
 import { resolveCommandAddress } from "../../../packages/sane-cli/src/sane-cwd-target.ts"
 import { linkSessionSelection } from "../../../packages/sane-cli/src/sane-link-tool.ts"
+import { runHandoffAsSession } from "../../../packages/sane-cli/src/sane-handoff-tool.ts"
 
 /** Effective tool id referenced by the SANE skills. No namespace option. */
 export const SANE_LINK_TOOL_NAME = "sane_link" as const
@@ -92,6 +93,74 @@ export const saneLinkInputSchema = {
   required: ["slot"],
   additionalProperties: false,
 } as const
+
+/** Effective tool id referenced by the SANE skills. No namespace option. */
+export const SANE_HANDOFF_TOOL_NAME = "sane_handoff" as const
+
+export const SANE_HANDOFF_TOOL_DESCRIPTION =
+  "Send a SANE phase handoff to another workstream slot (queue delivery). " +
+  "The source slot is reverse-looked-up from the calling session; the workstream " +
+  "is resolved from the session working directory. " +
+  "The message is compact refs (From/To/Approvals/Revisions/Paths/Next action)."
+
+export interface SaneHandoffToolInput {
+  to: string
+  message: string
+  session_index?: number
+  from?: string
+}
+
+/**
+ * Plain JSON Schema input (no session param — the session always comes from
+ * the tool context). `session_index` is a 1-based index into the target
+ * slot's linked sessions; `from` disambiguates when the caller holds several
+ * slots.
+ */
+export const saneHandoffInputSchema = {
+  type: "object",
+  properties: {
+    to: {
+      type: "string",
+      description:
+        "Target phase slot: design, planning, execution, engineering, or research:<topic>.",
+    },
+    message: {
+      type: "string",
+      description: "Next action for the target session (single line).",
+    },
+    session_index: {
+      type: "number",
+      description:
+        "1-based index into the target slot's linked sessions (defaults to latest).",
+    },
+    from: {
+      type: "string",
+      description:
+        "Source slot when the calling session is linked to several slots.",
+    },
+  },
+  required: ["to", "message"],
+  additionalProperties: false,
+} as const
+
+async function resolveToolWorkstream(sessionID: string, ctx: {
+  session: { get: (args: { sessionID: string }) => Promise<unknown> }
+}): Promise<{ cwd: string }> {
+  // V2 tool contexts carry no working directory; resolve the session's
+  // project directory, falling back to process.cwd().
+  let cwd = process.cwd()
+  try {
+    const session = (await ctx.session.get({ sessionID })) as unknown as {
+      location?: { directory?: string }
+    }
+    if (typeof session?.location?.directory === "string" && session.location.directory !== "") {
+      cwd = session.location.directory
+    }
+  } catch {
+    // Fall through to process.cwd().
+  }
+  return { cwd }
+}
 
 export const SanePlugin = Plugin.define({
   id: "sane",
@@ -151,6 +220,69 @@ export const SanePlugin = Plugin.define({
                 session_id: result.sessionId,
                 index: result.index,
                 count: result.count,
+              }),
+            }
+          } finally {
+            try {
+              db.close()
+            } catch {
+              // Best effort.
+            }
+          }
+        },
+      })
+      editor.add({
+        name: SANE_HANDOFF_TOOL_NAME,
+        description: SANE_HANDOFF_TOOL_DESCRIPTION,
+        input: saneHandoffInputSchema,
+        execute: async (input, toolCtx) => {
+          // The session always comes from the tool context, never from input:
+          // there is no session param in the schema above.
+          const sessionId = toolCtx.sessionID
+          const typedInput = input as SaneHandoffToolInput
+          const { cwd } = await resolveToolWorkstream(sessionId, ctx)
+          const address = await resolveCommandAddress(
+            { implementationRepository: "", workstreamPath: "" },
+            { cwd },
+          )
+          const pointer = await resolveSaneRepository(address.implementationRepository)
+          const workstream = await resolveBootstrappedWorkstream(
+            pointer.workstreamsRoot,
+            address.workstreamPath,
+          )
+          const identity = await resolveSaneIdentity(
+            pointer.implementationRepository,
+            workstream.relativePath,
+            address.userOverride,
+          )
+
+          const db = await openSaneDb(pointer.implementationRepository)
+          try {
+            initSchema(db)
+            const result = await runHandoffAsSession(
+              db,
+              identity,
+              {
+                fromSession: sessionId,
+                to: typedInput.to,
+                message: typedInput.message,
+                ...(typedInput.session_index !== undefined
+                  ? { session_index: typedInput.session_index }
+                  : {}),
+                ...(typedInput.from !== undefined ? { from: typedInput.from } : {}),
+                workstreamPath: workstream.path,
+              },
+            )
+            return {
+              content: JSON.stringify({
+                from: result.from,
+                to: {
+                  slot: result.to.slot,
+                  session_id: result.to.session_id,
+                  session_index: result.to.session_index,
+                },
+                mode: result.mode,
+                ready_title: result.ready_title,
               }),
             }
           } finally {
