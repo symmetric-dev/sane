@@ -773,8 +773,10 @@ export function upsertSelection(
 /**
  * Link one more session to a slot (1:many registry). Each (slot, session_id)
  * pair is its own row; multiplicity lives in rows (stable 1-based index by
- * updated_at for later CLI work). Throws `SaneDbError` on an exact
- * (slot, session_id) duplicate — use `upsertSelection` to refresh in place.
+ * updated_at for later CLI work). Re-linking the exact same (slot,
+ * session_id) pair is idempotent: it refreshes that row in place (handoff
+ * tracking followed by Pickup self-registration must not collide). Use
+ * `upsertSelection` only when the legacy latest-wins return is needed.
  */
 export function linkSelection(
   db: Database,
@@ -813,9 +815,36 @@ export function linkSelection(
         input.sessionId,
       ) as SelectionRow | null
     if (existing) {
-      throw new SaneDbError(
-        `Selection already linked: slot "${input.slot}" already has session "${input.sessionId}".`,
+      // Idempotent re-link: the same session registering again (Pickup
+      // self-link after handoff tracking, or a retried link) refreshes its
+      // row in place instead of throwing.
+      db.query(
+        `UPDATE selections SET worktree_path = ?, branch = ?, updated_at = ?
+         WHERE repo_root = ? AND user = ? AND workstream_id = ? AND slot = ? AND session_id = ?`,
+      ).run(
+        input.worktreePath ?? null,
+        input.branch ?? null,
+        timestamp,
+        identity.repoRoot,
+        identity.user,
+        identity.workstreamId,
+        input.slot,
+        input.sessionId,
       )
+      recordMutation(db, identity, "selections", "link", mutation, timestamp)
+      const refreshed = db
+        .query(
+          `SELECT * FROM selections WHERE repo_root = ? AND user = ? AND workstream_id = ? AND slot = ? AND session_id = ?`,
+        )
+        .get(
+          identity.repoRoot,
+          identity.user,
+          identity.workstreamId,
+          input.slot,
+          input.sessionId,
+        ) as SelectionRow | null
+      if (!refreshed) throw new SaneDbError("Failed to read back selection after link.")
+      return refreshed
     }
     throw new SaneDbError(`Could not link selection: ${(error as Error).message}`)
   }

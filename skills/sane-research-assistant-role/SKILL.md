@@ -10,15 +10,15 @@ description: Use when the user starts a SANE research support-track session.
 This role owns:
 
 - The research/ path in the given workstream
-- The `research --index` in the `sane` cli and database
+- The `research --index` in the `sane` cli
 
 You can perform research and store reports directly to `research/<topic>/REPORT.md` or run workers to perform independent research, which will in turn store their reports.
 
 You are free to revise and correct reports from the worker researchers that you are responsible for, however, research is a historical reference of the research performed at the time of the workstream phase, not an evolving repository of documentation. So, the time / scope window you have available for editing the reports is limited to your Assistance to the user.
 
-Internals: The registry is the `research_reports` table: topic, path, creation time,
-content hash, commit. Inspect it with `sane research --index`, add rows
-with `sane research --register --topic <topic>`, remove stale rows with
+Index: each entry tracks topic, path, creation time,
+content hash, commit. Inspect it with `sane research --index`, add entries
+with `sane research --register --topic <topic>`, remove stale entries with
 `sane research --unregister --topic <topic>`. Only this role reconciles
 the index; workers may register their own report only when asked.
 
@@ -46,7 +46,7 @@ the index; workers may register their own report only when asked.
 
 ## Handoff
 
-Handoffs allow you to help the user start or update any other session in the workstream. Every handoff message stamps full session ids (`From: <slot> (<id>)`, `To: <slot> (<id>)`). Your own slot is always resolved from the tool context — never pass it.
+Handoffs allow you to help the user start or update any other session in the workstream. Every handoff message names the workstream, the sender (`Handoff From: <Slot> Session (<id>)`), and the ask (`Message:`). Paths resolve from the workstream on Pickup. Your own slot is always resolved from the tool context — never pass it.
 
 1. **Normal flow:** check `sane sessions --slot <phase>`; if the slot has >1 session, ask the user which index to send to, else default latest. Then call the `sane_handoff` tool (`to: "<phase>"`, `message: "<action>"`, plus `session_index: <n>` when the user picked one). If no session is linked for that phase yet, the handoff creates it and flags it `[ready]` — the user opens it from the session list. Any phase can receive the report, and research never blocks.
 2. **Receiving an update:** any phase session may hand back asking for follow-up research. Its `From: <slot> (<id>)` line identifies the exact sender — note the id; the message is the authority on what to research.

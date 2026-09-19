@@ -3,7 +3,7 @@
  *
  * - The pure `linkSessionSelection` operation mirrors the `sane link` CLI
  *   policy: 1:1 slots refuse a second session without force (same error
- *   text), force replaces, 1:many slots append, exact duplicates throw.
+ *   text), force replaces, 1:many slots append, exact re-link refreshes.
  * - The plugin executor takes the session from the tool context
  *   (`toolCtx.sessionID`), never from input: an input `session` key is
  *   ignored. Effective tool id is `sane_link`.
@@ -112,11 +112,10 @@ describe("linkSessionSelection (tool core policy)", () => {
     expect(topic).toMatchObject({ index: 1, count: 1 })
   })
 
-  test("exact (slot, session) duplicates throw; bad slots fail", () => {
+  test("exact (slot, session) re-link refreshes in place; bad slots fail", () => {
     linkSessionSelection(db!, identity, { slot: "planning", sessionId: "ses_p" })
-    expect(() =>
-      linkSessionSelection(db!, identity, { slot: "planning", sessionId: "ses_p" }),
-    ).toThrow(/already linked/)
+    const relinked = linkSessionSelection(db!, identity, { slot: "planning", sessionId: "ses_p" })
+    expect(relinked).toMatchObject({ slot: "planning", sessionId: "ses_p", index: 1, count: 1 })
     expect(() =>
       linkSessionSelection(db!, identity, { slot: "bogus", sessionId: "ses_x" }),
     ).toThrow(/Invalid selection slot/)

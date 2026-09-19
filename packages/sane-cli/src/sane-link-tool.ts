@@ -5,8 +5,8 @@
  * (`opencode/plugins/sane/index.ts`). Mirrors the `sane link` CLI policy in
  * `sane-link-command.ts` exactly: 1:1 slots (`design | planning | execution`)
  * refuse a distinct second session without `force` (same error text);
- * 1:many slots (`engineering | research | research:*`) always append; exact
- * (slot, session) duplicates throw via `linkSelection`.
+ * 1:many slots (`engineering | research | research:*`) always append; the
+ * exact (slot, session) re-link refreshes in place via `linkSelection`.
  *
  * New file only. Read-only reuse of `sane-db.ts` selections CRUD; does not
  * touch the CLI, skills, docs, or handoff/sessions commands.

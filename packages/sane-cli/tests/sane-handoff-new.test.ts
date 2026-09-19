@@ -175,7 +175,9 @@ describe("runHandoffAsSession new_session (tool core)", () => {
       session_index: 3,
       created: true,
     })
-    expect(result.message).toContain("To: engineering (ses_eng_third)")
+    expect(result.message).toBe(
+      "Workstream: 01-demo\nHandoff From: Design Session (ses_design)\nMessage: Fresh probe.",
+    )
   })
 
   test("absent new_session reuses latest without creating", async () => {

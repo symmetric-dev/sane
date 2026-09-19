@@ -5,8 +5,8 @@
  * (`toolCtx.sessionID`); there is no session/from-session input param. The
  * source slot is reverse-looked-up from the `selections` registry, the target
  * resolves latest-wins (or by 1-based `session_index`, or create-if-empty),
- * and the message is the exact Section 3 `composeHandoff` shape (compact
- * refs, never pasted contents).
+ * and the message is the exact Section 3 `composeHandoff` shape (workstream,
+ * sender, and ask — never pasted contents).
  *
  * Queue ONLY: tools never steer. Steer (interrupting an in-progress turn)
  * is reserved for an explicit user redirect or an Execution abort issued
@@ -24,8 +24,6 @@ import type { Database } from "bun:sqlite"
 
 import {
   assertSelectionSlot,
-  listApprovals,
-  listResearchReports,
   listSelections,
   listSelectionsBySlot,
   type SaneIdentity,
@@ -88,31 +86,12 @@ export function resolveFromSlot(
   return slots[0]!
 }
 
-function collectApprovalRefs(db: Database, identity: SaneIdentity): string {
-  const rows = listApprovals(db, identity)
-  if (rows.length === 0) return "(none)"
-  return rows.map((row) => `${row.phase} ${row.approval_ref} ${row.sane_hash}`).join(", ")
-}
-
-function collectRevisionRefs(db: Database, identity: SaneIdentity): string {
-  const parts: string[] = []
-  const reports = listResearchReports(db, identity)
-  if (reports.length > 0) parts.push(`research ${reports.length} report(s)`)
-  const approvals = listApprovals(db, identity)
-  for (const approval of approvals) {
-    if (approval.phase === "design") parts.push(`design ${approval.sane_hash.slice(0, 12)}`)
-    if (approval.phase === "engineering") parts.push(`engineering ${approval.sane_hash.slice(0, 12)}`)
-    if (approval.phase === "planning") parts.push(`planning ${approval.sane_hash.slice(0, 12)}`)
-  }
-  return parts.length === 0 ? "(none)" : parts.join(", ")
-}
-
 export interface HandoffAsSessionInput {
   /** Caller session id (from the tool context, never from tool input). */
   fromSession: string
   /** Target phase slot. */
   to: string
-  /** Next action (single line); becomes the `Next action:` ref line. */
+  /** The ask (single line); becomes the `Message:` line. */
   message: string
   /** 1-based index into the target slot's linked sessions (read-only resolve). */
   session_index?: number
@@ -126,8 +105,6 @@ export interface HandoffAsSessionInput {
   new_session?: boolean
   /** Source slot; required only when the caller session holds several slots. */
   from?: string
-  /** Absolute workstream directory for the auto-collected `Paths:` ref. */
-  workstreamPath?: string
 }
 
 export interface HandoffAsSessionResult {
@@ -196,28 +173,11 @@ export async function runHandoffAsSession(
     ...(input.new_session === true ? { forceNew: true } : {}),
   })
 
-  const approvalsText = collectApprovalRefs(db, identity)
-  const revisionsText = collectRevisionRefs(db, identity)
-  const approvalArtifactPaths = listApprovals(db, identity).map((row) => row.artifact_path)
-  const workstreamPath = input.workstreamPath?.trim() || null
-  const defaultPaths =
-    approvalArtifactPaths.length === 0
-      ? (workstreamPath ?? "(none)")
-      : workstreamPath
-        ? `${workstreamPath}, ${approvalArtifactPaths.join(", ")}`
-        : approvalArtifactPaths.join(", ")
-
   const message = composeHandoff({
     fromSlot,
     fromSession: input.fromSession,
-    toSlot: input.to,
-    toSessionOrNew: target.sessionId,
-    user: identity.user,
     workstreamId: identity.workstreamId,
-    approvals: approvalsText,
-    revisions: revisionsText,
-    paths: defaultPaths,
-    nextAction: input.message,
+    message: input.message,
   })
 
   await sendHandoff({

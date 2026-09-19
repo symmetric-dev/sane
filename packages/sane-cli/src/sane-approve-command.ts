@@ -209,12 +209,12 @@ export async function runSaneApproveCommand(
     const dbRow = getWorkstream(db, identity)
     if (!dbRow) {
       throw new SaneWorkstreamStateError(
-        `No workstream row for ${identity.workstreamId} (repo ${identity.repoRoot} user ${identity.user}). Re-create the workstream so its type is recorded in sqlite.`,
+        `No workstream row for ${identity.workstreamId} (repo ${identity.repoRoot} user ${identity.user}). Re-create the workstream so its type is recorded in SANE state.`,
       )
     }
     if (dbRow.type !== workstream.type) {
       throw new SaneWorkstreamStateError(
-        `Workstream type mismatch: sqlite has type "${dbRow.type}" but the filesystem root doc implies "${workstream.type}". Re-create the workstream or fix the root doc.`,
+        `Workstream type mismatch: SANE state has type "${dbRow.type}" but the filesystem root doc implies "${workstream.type}". Re-create the workstream or fix the root doc.`,
       )
     }
     const validation = await validatePhaseDocs(db, identity, workstream.path, phase, dbRow.type)

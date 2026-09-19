@@ -40,12 +40,12 @@ Read the SDD and write one spec per solution area. The goal of engineering is to
 
 ## Handoff
 
-Handoffs allow you to help the user start or update any other session in the workstream. Every handoff message stamps full session ids (`From: <slot> (<id>)`, `To: <slot> (<id>)`). Your own slot is always resolved from the tool context — never pass it.
+Handoffs allow you to help the user start or update any other session in the workstream. Every handoff message names the workstream, the sender (`Handoff From: <Slot> Session (<id>)`), and the ask (`Message:`). Paths resolve from the workstream on Pickup. Your own slot is always resolved from the tool context — never pass it.
 
 1. **Normal flow (no planning session yet):** check `sane sessions --slot planning`; if the slot has >1 session, ask the user which index to send to, else default latest. Then call the `sane_handoff` tool (`to: "planning"`, `message: "<action>"`, plus `session_index: <n>` when the user picked one). If no planning session is linked yet, the handoff creates it and flags it `[ready]` — the user opens it from the session list. When reporting gaps requiring planning changes, target planning latest unless the user says otherwise.
-2. **Receiving an update:** a design session may hand back asking for solution rework. Its `From: design (<id>)` line identifies the exact sender — note the id; the message is the authority on what to change, within the docs you own.
+2. **Receiving an update:** a design session may hand back asking for solution rework. Its `Handoff From:` line identifies the exact sender — note the id; the message is the authority on what to change, within the docs you own.
 3. **Replying:** once the requested update is done (and validated), hand back to that same agent with the `sane_handoff` tool (`to: "design"`, `message: "<what changed>"`, `to_session: "<sender id from step 2>"`). Prefer `to_session` over `session_index` for replies.
-4. **Requesting research:** call the `sane_handoff` tool (`to: "research"`, `message: "<question>"`, `new_session: true`) with the ask — one or many topics, deep or varied. Prefer a fresh session per problem; omit `new_session` only when continuing the same investigation. The handoff flags the session `[ready]` — the user opens it from the session list. The researcher hands back to this session; reply to follow-ups with `to_session` from its `From:` line.
+4. **Requesting research:** call the `sane_handoff` tool (`to: "research"`, `message: "<question>"`, `new_session: true`) with the ask — one or many topics, deep or varied. Prefer a fresh session per problem; omit `new_session` only when continuing the same investigation. The handoff flags the session `[ready]` — the user opens it from the session list. The researcher hands back to this session; reply to follow-ups with `to_session` from its `Handoff From:` line.
 
 ## Best Practices
 

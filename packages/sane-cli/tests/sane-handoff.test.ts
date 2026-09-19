@@ -1,7 +1,7 @@
 /**
  * SANE 0.2.0 M4: session registry + handoff tests.
  *
- * - compose shape contains From/To/Approvals/Revisions/Paths/Next
+ * - compose shape is Workstream/Handoff From/Message (no artifact contents)
  *   (no artifact contents)
  * - queue default, steer rejected without a valid reason
  * - resolve uses the registry without creating when the slot has a session,
@@ -20,6 +20,7 @@ import { promisify } from "node:util"
 import { initializeSaneRepository } from "../src/init-sane-repository.ts"
 import { createSaneRepositoryWorkstream } from "../src/create-sane-repository-workstream.ts"
 import {
+  assistantAgentForSlot,
   composeHandoff,
   DEFAULT_HANDOFF_SERVER_URL,
   parseCliArguments,
@@ -29,6 +30,7 @@ import {
   runCli,
   runSaneHandoffCommand,
   sendHandoff,
+  serverAuthHeaders,
   USAGE,
   type HandoffFetch,
   type HandoffFetchResponse,
@@ -88,60 +90,33 @@ describe("sane-handoff (M4 session registry + handoff)", () => {
     db = undefined
   })
 
-  test("compose shape contains From/To/Approvals/Revisions/Paths/Next and no artifact contents", () => {
+  test("compose shape is Workstream/Handoff From/Message and no artifact contents", () => {
     const secretContents = "SUPER SECRET ARTIFACT BODY THAT MUST NEVER APPEAR"
     const message = composeHandoff({
       fromSlot: "design",
       fromSession: "ses_design_1",
-      toSlot: "engineering",
-      toSessionOrNew: "ses_eng_1",
-      user: "alice",
       workstreamId: "01-demo",
-      approvals: [{ phase: "design", approvalRef: "user-ok", saneHash: "abc123" }],
-      revisions: "baseline r0, sdd r1, foundation 00-base@commit-a",
-      paths: "/repo/.sane/workstreams/01-demo, design/SDD.md",
-      nextAction: "Pick up design/SDD.md and draft solutions.",
+      message: "Pick up design/SDD.md and draft solutions.",
     })
-    expect(message).toContain("From: design (ses_design_1) / alice / workstream 01-demo")
-    expect(message).toContain("To: engineering (ses_eng_1)")
-    expect(message).toContain("Approvals:")
-    expect(message).toContain("design")
-    expect(message).toContain("user-ok")
-    expect(message).toContain("abc123")
-    expect(message).toContain("Revisions:")
-    expect(message).toContain("baseline r0")
-    expect(message).toContain("Paths:")
-    expect(message).toContain("/repo/.sane/workstreams/01-demo")
-    expect(message).toContain("Next action: Pick up design/SDD.md and draft solutions.")
-    expect(message).not.toContain(secretContents)
-    // Exact six-line Sec 3 shape.
+    // Exact three-line Sec 3 shape.
     const lines = message.split("\n")
-    expect(lines).toHaveLength(6)
-    expect(lines[0]!.startsWith("From: ")).toBe(true)
-    expect(lines[1]!.startsWith("To: ")).toBe(true)
-    expect(lines[2]!.startsWith("Approvals: ")).toBe(true)
-    expect(lines[3]!.startsWith("Revisions: ")).toBe(true)
-    expect(lines[4]!.startsWith("Paths: ")).toBe(true)
-    expect(lines[5]!.startsWith("Next action: ")).toBe(true)
+    expect(lines).toHaveLength(3)
+    expect(lines[0]).toBe("Workstream: 01-demo")
+    expect(lines[1]).toBe("Handoff From: Design Session (ses_design_1)")
+    expect(lines[2]).toBe("Message: Pick up design/SDD.md and draft solutions.")
+    expect(message).not.toContain(secretContents)
   })
 
-  test("compose supports To new and empty refs as (none)", () => {
-    const message = composeHandoff({
-      fromSlot: "planning",
-      fromSession: "ses_plan",
-      toSlot: "execution",
-      toSessionOrNew: "new",
-      user: "bob",
-      workstreamId: "02-work",
-      approvals: [],
-      revisions: "",
-      paths: [],
-      nextAction: "Start execution.",
-    })
-    expect(message).toContain("To: execution (new)")
-    expect(message).toContain("Approvals: (none)")
-    expect(message).toContain("Revisions: (none)")
-    expect(message).toContain("Paths: (none)")
+  test("compose rejects empty fields, multiline message, and bad slots", () => {
+    expect(() =>
+      composeHandoff({ fromSlot: "design", fromSession: "ses_a", workstreamId: "w", message: "  " }),
+    ).toThrow(/non-empty/)
+    expect(() =>
+      composeHandoff({ fromSlot: "design", fromSession: "ses_a", workstreamId: "w", message: "one\ntwo" }),
+    ).toThrow(/single line/)
+    expect(() =>
+      composeHandoff({ fromSlot: "bogus", fromSession: "ses_a", workstreamId: "w", message: "Go." }),
+    ).toThrow(/Invalid selection slot/)
   })
 
   test("sendHandoff defaults to queue; steer requires a valid reason", async () => {
@@ -155,7 +130,7 @@ describe("sane-handoff (M4 session registry + handoff)", () => {
     const queued = await sendHandoff({
       serverUrl: "http://127.0.0.1:4096",
       targetSessionId: "ses_target",
-      message: "From: design (a) / alice / workstream w\nTo: engineering (b)\nApprovals: (none)\nRevisions: (none)\nPaths: (none)\nNext action: Go.",
+      message: "Workstream: w\nHandoff From: Design Session (a)\nMessage: Go.",
       fetchImpl: capture,
     })
     expect(queued.mode).toBe("queue")
@@ -322,11 +297,11 @@ describe("sane-handoff (M4 session registry + handoff)", () => {
     }
   })
 
-  test("rename prefix is [ready] <slot>: <next> via the rename API (mock fetch)", async () => {
+  test("rename prefix is [ready] <slot>: <next> via PATCH /api/session/{id} (mock fetch)", async () => {
     expect(readyTitle("engineering", "Draft solutions.")).toBe("[ready] engineering: Draft solutions.")
-    const calls: Array<{ url: string; body: unknown }> = []
+    const calls: Array<{ url: string; method: string; body: unknown }> = []
     const capture: HandoffFetch = (async (url: string, init?: RequestInit) => {
-      calls.push({ url, body: JSON.parse(String((init as { body?: string })?.body ?? "{}")) })
+      calls.push({ url, method: String((init as { method?: string })?.method ?? ""), body: JSON.parse(String((init as { body?: string })?.body ?? "{}")) })
       return okJson({})
     }) as unknown as HandoffFetch
     const result = await renameReady({
@@ -337,9 +312,35 @@ describe("sane-handoff (M4 session registry + handoff)", () => {
       fetchImpl: capture,
     })
     expect(result.title).toBe("[ready] engineering: Draft solutions.")
-    expect(result.url).toBe("http://127.0.0.1:4096/api/session/ses_eng_1/rename")
+    expect(result.url).toBe("http://127.0.0.1:4096/api/session/ses_eng_1")
     expect(calls).toHaveLength(1)
+    expect(calls[0]!.method).toBe("PATCH")
     expect(calls[0]!.body).toMatchObject({ title: "[ready] engineering: Draft solutions." })
+  })
+
+  test("assistantAgentForSlot maps every slot to its assistant", () => {
+    expect(assistantAgentForSlot("design")).toBe("sane/assistant/design")
+    expect(assistantAgentForSlot("engineering")).toBe("sane/assistant/engineering")
+    expect(assistantAgentForSlot("planning")).toBe("sane/assistant/planning")
+    expect(assistantAgentForSlot("execution")).toBe("sane/assistant/execution")
+    expect(assistantAgentForSlot("research")).toBe("sane/assistant/research")
+    expect(assistantAgentForSlot("research:deep-dive")).toBe("sane/assistant/research")
+    expect(() => assistantAgentForSlot("bogus")).toThrow(/No assistant agent/)
+  })
+
+  test("serverAuthHeaders sends Basic auth only when a password is set", () => {
+    expect(serverAuthHeaders({} as NodeJS.ProcessEnv)).toEqual({})
+    expect(serverAuthHeaders({ OPENCODE_SERVER_PASSWORD: "pw" } as NodeJS.ProcessEnv)).toEqual({
+      Authorization: `Basic ${Buffer.from("opencode:pw", "utf8").toString("base64")}`,
+    })
+    expect(
+      serverAuthHeaders({
+        OPENCODE_SERVER_PASSWORD: "pw",
+        OPENCODE_SERVER_USERNAME: "custom",
+      } as NodeJS.ProcessEnv),
+    ).toEqual({
+      Authorization: `Basic ${Buffer.from("custom:pw", "utf8").toString("base64")}`,
+    })
   })
 
   test("handoff CLI parses --from/--to/--next with --json/--repo-root idioms", () => {
@@ -504,7 +505,7 @@ describe("sane-handoff CLI end to end (mock server)", () => {
         promptCalls.push({ url, body })
         return okJson({})
       }
-      if (url.includes("/rename")) {
+      if (url.includes("/api/session/") && !url.includes("/prompt")) {
         renameCalls.push({ url, body })
         return okJson({})
       }
@@ -525,8 +526,9 @@ describe("sane-handoff CLI end to end (mock server)", () => {
     expect(first.toSession).toBe("ses_eng_1")
     expect(first.targetCreated).toBe(true)
     expect(first.mode).toBe("queue")
-    expect(first.message).toContain("From: design (ses_design_1)")
-    expect(first.message).toContain("To: engineering (ses_eng_1)")
+    expect(first.message).toBe(
+      "Workstream: 01-demo\nHandoff From: Design Session (ses_design_1)\nMessage: Draft solutions.",
+    )
     expect(first.readyTitle).toBe("[ready] engineering: Draft solutions.")
     expect(creates).toBe(1)
     expect(promptCalls).toHaveLength(1)
@@ -573,7 +575,9 @@ describe("sane-handoff CLI end to end (mock server)", () => {
     expect(result.toSession).toBe("ses_research_new")
     expect(result.targetCreated).toBe(true)
     expect(result.targetIndex).toBe(1)
-    expect(result.message).toContain("To: research (ses_research_new)")
+    expect(result.message).toBe(
+      "Workstream: 01-demo\nHandoff From: Design Session (ses_design_1)\nMessage: Gather evidence.",
+    )
     expect(result.readyTitle).toBe("[ready] research: Gather evidence.")
     expect(creates).toBe(1)
   })
@@ -614,7 +618,7 @@ describe("sane-handoff CLI end to end (mock server)", () => {
         workstream_id: "01-demo",
         mode: "queue",
       })
-      expect(String(parsed.message)).toContain("Next action:")
+      expect(String(parsed.message)).toContain("Message:")
       expect(String(parsed.ready_title)).toMatch(/^\[ready\] planning: /)
     } finally {
       globalThis.fetch = originalFetch
