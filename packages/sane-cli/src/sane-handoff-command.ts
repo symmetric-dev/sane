@@ -34,6 +34,7 @@ import {
   initSchema,
   listApprovals,
   listResearchReports,
+  listSelectionsBySlot,
   openSaneDb,
   resolveSaneIdentity,
   upsertSelection,
@@ -295,6 +296,12 @@ export interface ResolveOrCreateSessionOptions {
   fetchImpl?: HandoffFetch
   /** User-directed rebuild: create even when the slot already has a session. */
   forceNew?: boolean
+  /**
+   * 1-based index into `listSelectionsBySlot` order (matches `sane sessions`
+   * `[n]`). When set, resolves the n-th linked session read-only: no creation,
+   * no registry write, no mutation record. Mutually exclusive with `forceNew`.
+   */
+  sessionIndex?: number
   worktreePath?: string | null
   branch?: string | null
   /** Optional title for the created session (`POST /api/session`). */
@@ -305,6 +312,8 @@ export interface ResolveOrCreateSessionResult {
   sessionId: string
   created: boolean
   row: SelectionRow
+  /** 1-based position of the resolved session in slot order (1 when freshly created). */
+  targetIndex: number
 }
 
 function extractSessionId(payload: unknown): string | null {
@@ -341,6 +350,10 @@ function extractSessionId(payload: unknown): string | null {
  * session via `POST /api/session` only when the slot has none (or when
  * `forceNew` is set for a user-directed rebuild), then updates the registry.
  * SessionIDs are stable across handoffs.
+ *
+ * When `sessionIndex` is set (1-based, `sane sessions` order), resolves the
+ * n-th linked session read-only instead: out-of-range (or an empty slot)
+ * throws rather than creating, and the registry is left untouched.
  */
 export async function resolveOrCreateSession(
   db: Database,
@@ -357,10 +370,35 @@ export async function resolveOrCreateSession(
   const base = normalizeServerUrl(options.serverUrl)
   const forceNew = options.forceNew === true
 
+  if (options.sessionIndex !== undefined) {
+    if (!Number.isInteger(options.sessionIndex) || (options.sessionIndex as number) < 1) {
+      throw new SaneHandoffError("Option --session-index must be a positive integer.")
+    }
+    if (forceNew) {
+      throw new SaneHandoffError("Options --force-new and --session-index are mutually exclusive.")
+    }
+    // Explicit index names an existing session: read-only resolve, never create.
+    const rows = listSelectionsBySlot(db, identity, options.slot)
+    const row = rows[options.sessionIndex - 1]
+    if (!row) {
+      throw new SaneHandoffError(
+        `No session at index ${options.sessionIndex} for slot "${options.slot}" (${rows.length} linked).`,
+      )
+    }
+    return { sessionId: row.session_id, created: false, row, targetIndex: options.sessionIndex }
+  }
+
   if (!forceNew) {
     const existing = getSelection(db, identity, options.slot)
     if (existing) {
-      return { sessionId: existing.session_id, created: false, row: existing }
+      const rows = listSelectionsBySlot(db, identity, options.slot)
+      const position = rows.findIndex((row) => row.session_id === existing.session_id)
+      return {
+        sessionId: existing.session_id,
+        created: false,
+        row: existing,
+        targetIndex: position >= 0 ? position + 1 : rows.length,
+      }
     }
   }
 
@@ -410,7 +448,9 @@ export async function resolveOrCreateSession(
     },
     options.mutation,
   )
-  return { sessionId, created: true, row }
+  const ordered = listSelectionsBySlot(db, identity, options.slot)
+  const position = ordered.findIndex((entry) => entry.session_id === sessionId)
+  return { sessionId, created: true, row, targetIndex: position >= 0 ? position + 1 : 1 }
 }
 
 // ---------------------------------------------------------------------------
@@ -488,6 +528,8 @@ export interface SaneHandoffCommandOptions {
   userOverride?: string
   worktreePath?: string | null
   branch?: string | null
+  /** 1-based index into the target slot's linked sessions (read-only resolve). */
+  sessionIndex?: number
   fetchImpl?: HandoffFetch
   write?: (line: string) => void
 }
@@ -501,6 +543,8 @@ export interface SaneHandoffCommandResult {
   toSlot: string
   toSession: string
   targetCreated: boolean
+  /** 1-based position of the target in slot order (1 when freshly created). */
+  targetIndex: number | null
   mode: HandoffDeliveryMode
   message: string
   readyTitle: string
@@ -520,11 +564,12 @@ export interface ParsedHandoffArguments {
   pathsOverride: string | undefined
   worktreePath: string | undefined
   branch: string | undefined
+  sessionIndex: number | undefined
   json: boolean
 }
 
 export const USAGE =
-  "Usage: sane handoff [<implementation-repository> <workstream-relative-path>] --from <slot> --to <slot> --next <action> [--steer-reason <user-redirect|execution-abort>] [--server-url <url>] [--from-session <id>] [--approvals <refs>] [--revisions <refs>] [--paths <refs>] [--worktree-path <dir>] [--branch <name>] [--json] [--repo-root <path>] (no positionals: auto-detect the target from the current directory)"
+  "Usage: sane handoff [<implementation-repository> <workstream-relative-path>] --from <slot> --to <slot> --next <action> [--session-index <n>] [--steer-reason <user-redirect|execution-abort>] [--server-url <url>] [--from-session <id>] [--approvals <refs>] [--revisions <refs>] [--paths <refs>] [--worktree-path <dir>] [--branch <name>] [--json] [--repo-root <path>] (no positionals: auto-detect the target from the current directory)"
 
 function requireOptionValue(args: string[], index: number, option: string): string {
   const value = args[index + 1]
@@ -536,6 +581,18 @@ function requireOptionValue(args: string[], index: number, option: string): stri
 
 function assertSingleOption(seen: string | undefined, option: string): void {
   if (seen !== undefined) throw new SaneHandoffError(`Option ${option} may be provided only once.`)
+}
+
+function parseSessionIndexOption(raw: string): number {
+  const trimmed = raw.trim()
+  if (!/^\d+$/.test(trimmed)) {
+    throw new SaneHandoffError("Option --session-index must be a positive integer.")
+  }
+  const parsed = Number(trimmed)
+  if (!Number.isSafeInteger(parsed) || parsed < 1) {
+    throw new SaneHandoffError("Option --session-index must be a positive integer.")
+  }
+  return parsed
 }
 
 export function parseCliArguments(args: string[]): ParsedHandoffArguments {
@@ -552,6 +609,8 @@ export function parseCliArguments(args: string[]): ParsedHandoffArguments {
   let pathsOverride: string | undefined
   let worktreePath: string | undefined
   let branch: string | undefined
+  let sessionIndexRaw: string | undefined
+  let sessionIndex: number | undefined
   const positional: string[] = []
   let parseOptions = true
 
@@ -604,6 +663,18 @@ export function parseCliArguments(args: string[]): ParsedHandoffArguments {
     } else if (parseOptions && argument === "--branch") {
       assertSingleOption(branch, "--branch")
       branch = requireOptionValue(args, index, "--branch")
+      index += 1
+    } else if (parseOptions && argument === "--session-index") {
+      assertSingleOption(sessionIndexRaw, "--session-index")
+      // Read the raw token directly (not requireOptionValue) so negative and
+      // non-numeric values report the positive-integer error, not a missing
+      // value error.
+      const raw = args[index + 1]
+      if (raw === undefined) {
+        throw new SaneHandoffError("Option --session-index requires a value.")
+      }
+      sessionIndexRaw = raw
+      sessionIndex = parseSessionIndexOption(raw)
       index += 1
     } else if (parseOptions && argument === "--repo-root") {
       const value = args[index + 1]
@@ -696,6 +767,7 @@ export function parseCliArguments(args: string[]): ParsedHandoffArguments {
     pathsOverride,
     worktreePath,
     branch,
+    sessionIndex,
     json,
   }
 }
@@ -745,6 +817,12 @@ export async function runSaneHandoffCommand(
   }
   assertSlot(options.fromSlot)
   assertSlot(options.toSlot)
+  if (
+    options.sessionIndex !== undefined &&
+    (!Number.isInteger(options.sessionIndex) || options.sessionIndex < 1)
+  ) {
+    throw new SaneHandoffError("Option --session-index must be a positive integer.")
+  }
   if (options.steerReason !== undefined && !STEER_REASON_SET.has(options.steerReason)) {
     throw new SaneHandoffError(
       `Invalid steer reason ${JSON.stringify(options.steerReason)}. Expected one of: ${HANDOFF_STEER_REASONS.join(", ")}.`,
@@ -792,6 +870,7 @@ export async function runSaneHandoffCommand(
       slot: options.toSlot,
       mutation: { actorRole: options.fromSlot, sessionId: fromSession },
       fetchImpl,
+      sessionIndex: options.sessionIndex,
       // Pilot: record an OpenCode-native (foreign) worktree for the target
       // slot so CWD auto-detection resolves it. SANE-managed worktrees are
       // quarantined; SANE never creates the directory itself.
@@ -849,6 +928,7 @@ export async function runSaneHandoffCommand(
       toSlot: options.toSlot,
       toSession: target.sessionId,
       targetCreated: target.created,
+      targetIndex: target.targetIndex,
       mode,
       message,
       readyTitle: renamed.title,
@@ -866,6 +946,7 @@ export async function runSaneHandoffCommand(
               slot: result.toSlot,
               session_id: result.toSession,
               created: result.targetCreated,
+              session_index: result.targetIndex,
             },
             mode: result.mode,
             steer_reason: options.steerReason ?? null,

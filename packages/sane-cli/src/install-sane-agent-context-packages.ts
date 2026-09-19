@@ -26,6 +26,61 @@ export const ROLE_SKILL_NAMES = [
   "sane-research-assistant-role",
 ] as const
 
+/**
+ * SANE OpenCode plugin (`sane_link` self-registration tool).
+ *
+ * `PLUGIN_FILENAMES` are installed from `<sourceRoot>/opencode/plugins/` to
+ * `<home>/.config/opencode/plugins/` — the global plugin directory OpenCode
+ * V2 auto-loads at startup (per https://opencode.ai/v2/docs/build/plugins/
+ * "From local files"; the directory exists on any machine with OpenCode
+ * installed).
+ * No plugin-local package.json is needed for discovery: local plugins load
+ * directly; the only npm dependency (`@opencode/plugin`) resolves via
+ * `<home>/.config/opencode/package.json` (see `OPENCODE_PLUGIN_*` below).
+ *
+ * `PLUGIN_SRC_FILES` is the vendored `sane-cli` closure the plugin imports.
+ * A straight copy of `index.ts` would leave its
+ * `../../../packages/sane-cli/src/*.ts` imports pointing at
+ * `<home>/.config/packages/...` (missing), so the installer copies these
+ * sources to `plugins/sane/sane-src/` and rewrites the import prefix in the
+ * installed `index.ts` to `./sane-src/`. All vendored files import each
+ * other via flat `./*.ts` specifiers, which keep working in the flat
+ * destination directory. Keep this list in sync with the relative imports in
+ * `opencode/plugins/sane/index.ts`.
+ */
+export const PLUGIN_SRC_FILES = [
+  "sane-link-tool.ts",
+  "sane-db.ts",
+  "sane-repository.ts",
+  "sane-cwd-target.ts",
+  "create-sane-workstream.ts",
+  "workstream-type.ts",
+] as const
+
+export const PLUGIN_FILENAMES = [
+  "sane/index.ts",
+  ...PLUGIN_SRC_FILES.map((filename) => `sane/sane-src/${filename}`),
+] as const
+
+/** Prefix used by the plugin source for `sane-cli` imports (rewritten on install). */
+export const PLUGIN_SRC_IMPORT_PREFIX = "../../../packages/sane-cli/src/"
+/** Replacement prefix pointing at the vendored closure next to the installed plugin. */
+export const PLUGIN_DEST_IMPORT_PREFIX = "./sane-src/"
+
+/**
+ * Runtime npm dependency of the installed plugin, resolved from
+ * `<home>/.config/opencode/package.json` (OpenCode installs local-plugin
+ * dependencies declared there at startup). The installer merges this entry
+ * without touching any other keys.
+ */
+export const OPENCODE_PLUGIN_DEPENDENCY = "@opencode/plugin"
+export const OPENCODE_PLUGIN_VERSION = "^2.0.8"
+export const OPENCODE_CONFIG_PACKAGE_FILENAME = "package.json"
+
+export function rewritePluginImports(content: string): string {
+  return content.split(PLUGIN_SRC_IMPORT_PREFIX).join(PLUGIN_DEST_IMPORT_PREFIX)
+}
+
 export const DEFAULT_SOURCE_ROOT = fileURLToPath(new URL("../../../", import.meta.url))
 
 export class AgentContextPackageInstallationError extends Error {
@@ -59,6 +114,8 @@ interface InstallationEntry {
   source: string
   destination: string
   agentName?: string
+  /** Rewrite `sane-cli` import prefixes for the installed plugin copy. */
+  rewriteImports?: boolean
 }
 
 interface LoadedInstallationEntry extends InstallationEntry {
@@ -103,6 +160,23 @@ function installationEntries(
     ...ROLE_SKILL_NAMES.map((skillName) => ({
       source: join(sourceRoot, "skills", skillName, "SKILL.md"),
       destination: join(homeDirectory, ".agents", "skills", skillName, "SKILL.md"),
+    })),
+    {
+      rewriteImports: true,
+      source: join(sourceRoot, "opencode", "plugins", "sane", "index.ts"),
+      destination: join(homeDirectory, ".config", "opencode", "plugins", "sane", "index.ts"),
+    },
+    ...PLUGIN_SRC_FILES.map((filename) => ({
+      source: join(sourceRoot, "packages", "sane-cli", "src", filename),
+      destination: join(
+        homeDirectory,
+        ".config",
+        "opencode",
+        "plugins",
+        "sane",
+        "sane-src",
+        filename,
+      ),
     })),
   ]
 }
@@ -168,7 +242,94 @@ async function planDestinations(
 }
 
 /**
- * Install all Alpha OpenCode agents and role skills.
+ * Resolve the `@opencode/plugin` version to declare in the installed
+ * config `package.json`: the repo's own devDependency when readable, else
+ * the bundled fallback. Never throws: a missing/unparseable source
+ * `package.json` falls back silently.
+ */
+async function resolvePluginDependencyVersion(sourceRoot: string): Promise<string> {
+  try {
+    const parsed = JSON.parse(await readFile(join(sourceRoot, "package.json"), "utf8")) as {
+      devDependencies?: Record<string, string>
+      dependencies?: Record<string, string>
+    }
+    const pinned =
+      parsed.devDependencies?.[OPENCODE_PLUGIN_DEPENDENCY] ??
+      parsed.dependencies?.[OPENCODE_PLUGIN_DEPENDENCY]
+    if (typeof pinned === "string" && pinned.trim() !== "") return pinned
+  } catch {
+    // Fall through to the bundled fallback.
+  }
+  return OPENCODE_PLUGIN_VERSION
+}
+
+function isPlainObject(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value)
+}
+
+/**
+ * Build the `<home>/.config/opencode/package.json` entry that guarantees the
+ * installed plugin's `@opencode/plugin` import resolves at OpenCode
+ * startup. Merges the dependency into an existing file without touching any
+ * other keys; a user-pinned spec is left untouched (reported unchanged).
+ * Shares the create/update/unchanged/dry-run/--overwrite semantics of every
+ * other installed file.
+ */
+async function loadConfigPackageEntry(
+  homeDirectory: string,
+  sourceRoot: string,
+): Promise<LoadedInstallationEntry> {
+  const destination = join(homeDirectory, ".config", "opencode", OPENCODE_CONFIG_PACKAGE_FILENAME)
+  const source = `generated:${OPENCODE_PLUGIN_DEPENDENCY}`
+  const version = await resolvePluginDependencyVersion(sourceRoot)
+  const stat = await lstatOrUndefined(destination)
+  if (stat && !stat.isFile()) {
+    throw new AgentContextPackageInstallationError(
+      `Destination is not a regular file: ${destination}`,
+    )
+  }
+  if (!stat) {
+    return {
+      source,
+      destination,
+      content: `${JSON.stringify({ dependencies: { [OPENCODE_PLUGIN_DEPENDENCY]: version } }, null, 2)}\n`,
+    }
+  }
+  const existing = await readFile(destination, "utf8")
+  let parsed: unknown
+  try {
+    parsed = JSON.parse(existing)
+  } catch {
+    throw new AgentContextPackageInstallationError(
+      `Existing config package is not valid JSON: ${destination}`,
+    )
+  }
+  if (!isPlainObject(parsed)) {
+    throw new AgentContextPackageInstallationError(
+      `Existing config package is not a JSON object: ${destination}`,
+    )
+  }
+  const dependencies = parsed.dependencies
+  if (dependencies !== undefined && !isPlainObject(dependencies)) {
+    throw new AgentContextPackageInstallationError(
+      `Existing config package has a non-object dependencies field: ${destination}`,
+    )
+  }
+  if (
+    isPlainObject(dependencies) &&
+    typeof dependencies[OPENCODE_PLUGIN_DEPENDENCY] === "string"
+  ) {
+    return { source, destination, content: existing }
+  }
+  const merged: Record<string, unknown> = {
+    ...parsed,
+    dependencies: { ...(isPlainObject(dependencies) ? dependencies : {}), [OPENCODE_PLUGIN_DEPENDENCY]: version },
+  }
+  return { source, destination, content: `${JSON.stringify(merged, null, 2)}\n` }
+}
+
+/**
+ * Install all Alpha OpenCode agents, role skills, and the SANE plugin.
  * All source and destination checks finish before this function creates a directory
  * or writes a destination file.
  */
@@ -179,8 +340,11 @@ export async function installSaneAgentContextPackages(
   const homeDirectory = resolveHomeDirectory(options.homeDirectory)
   const sourceRoot = resolve(options.sourceRoot ?? DEFAULT_SOURCE_ROOT)
   const sourcedEntries = await validateSources(installationEntries(sourceRoot, homeDirectory))
+  const rewrittenEntries = sourcedEntries.map((entry) =>
+    entry.rewriteImports ? { ...entry, content: rewritePluginImports(entry.content) } : entry,
+  )
   try {
-    for (const entry of sourcedEntries) {
+    for (const entry of rewrittenEntries) {
       if (entry.agentName !== undefined) {
         validateAgentTaskPermissions(entry.content, entry.agentName, AGENT_FILENAMES)
       }
@@ -188,11 +352,11 @@ export async function installSaneAgentContextPackages(
   } catch (error) {
     throw new AgentContextPackageInstallationError((error as Error).message)
   }
-  let configuredEntries = sourcedEntries
+  let configuredEntries = rewrittenEntries
   if (options.modelConfigPath !== undefined) {
     try {
       const models = await loadAgentModelConfig(options.modelConfigPath, AGENT_FILENAMES)
-      configuredEntries = sourcedEntries.map((entry) => ({
+      configuredEntries = rewrittenEntries.map((entry) => ({
         ...entry,
         content: injectAgentModel(entry.content, entry.agentName ? models.get(entry.agentName) : undefined),
       }))
@@ -200,7 +364,11 @@ export async function installSaneAgentContextPackages(
       throw new AgentContextPackageInstallationError((error as Error).message)
     }
   }
-  const plannedEntries = await planDestinations(configuredEntries, options.overwrite === true)
+  const configPackageEntry = await loadConfigPackageEntry(homeDirectory, sourceRoot)
+  const plannedEntries = await planDestinations(
+    [...configuredEntries, configPackageEntry],
+    options.overwrite === true,
+  )
   const result: AgentContextPackageInstallationResult = {
     homeDirectory,
     dryRun: options.dryRun === true,

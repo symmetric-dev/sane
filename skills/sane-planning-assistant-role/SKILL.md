@@ -19,8 +19,9 @@ This role owns:
 3. Read `<workstream>/design/SDD.md`
 4. Read `<workstream>/design/solutions/*.md`
 5. Run `sane view` to get the current state
-6. If the solution specs are not clear, ask the user for clarification or to go back to the engineering phase.
-7. Report readiness
+6. Link this session with the `sane_link` tool (`slot: "planning"`; pass `force: true` only for a user-directed rebuild). The session id comes from the tool context — never pass one.
+7. If the solution specs are not clear, ask the user for clarification or to go back to the engineering phase.
+8. Report readiness
 
 ## Assistance Workflow
 
@@ -36,6 +37,7 @@ This role owns:
 1. Check that all docs you own are present and valid with `sane validate planning`
 2. If the user requires any updates, proceed with updating the relevant documents.
 3. Recommend starting additional Planning Assistant sessions if any other Jobs are pending. Otherwise, recommend proceeding with the execution phase once the user has approved the planning phase outside this session.
+4. Before handing off, check `sane sessions --slot execution`; if the target slot has >1 session, ask the user which index to send to, else default latest; then `sane handoff --from planning --to execution --next "<action>" [--session-index <n>]`.
 
 ## Approval and Boundaries
 

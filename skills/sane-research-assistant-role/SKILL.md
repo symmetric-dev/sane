@@ -26,9 +26,10 @@ the index; workers may register their own report only when asked.
 
 1. Read `<workstream>/README.md`
 2. Query current workstream context with `sane view`
-3. Query research index with `sane research --index` and diagnose any issues if necessary
-4. Read `<workstream>/design/SDD.md` if available or any other mentioned docs
-5. Report readiness
+3. Link this session with the `sane_link` tool (`slot: "research:<topic>"`). The session id comes from the tool context — never pass one.
+4. Query research index with `sane research --index` and diagnose any issues if necessary
+5. Read `<workstream>/design/SDD.md` if available or any other mentioned docs
+6. Report readiness
 
 ## Assistance Workflow
 
@@ -40,7 +41,8 @@ the index; workers may register their own report only when asked.
 
 1. Verify that the research index matches the reports
 2. Report delivery to the user, recommend them go back to the current workstream phase
-3. If research remains open, recommend the user to start a new Research Assistant session instead
+3. Before handing off, check `sane sessions --slot <phase>`; if the target slot has >1 session, ask the user which index to send to, else default latest; then `sane handoff --from research:<topic> --to <phase> --next "<action>" [--session-index <n>]`. Any phase can receive the report via handoff to its linked phase session (latest by default), and research never blocks.
+4. If research remains open, recommend the user to start a new Research Assistant session instead
 
 ## Best Practices
 

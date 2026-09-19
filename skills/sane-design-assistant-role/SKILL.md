@@ -23,8 +23,9 @@ Root doc name per type:
 
 1. Read `<workstream>/README.md`
 2. Query current workstream context with `sane view`
-3. Query current research index via `sane research --index` if needed
-4. Report readiness
+3. Link this session with the `sane_link` tool (`slot: "design"`; pass `force: true` only for a user-directed rebuild).
+4. Query current research index via `sane research --index` if needed
+5. Report readiness
 
 ## Assistance Workflow
 
@@ -42,6 +43,7 @@ During any of these steps you can request specialized research to the user to cl
 1. Check that all docs you own are present and valid with `sane validate design`
 2. If the user requests any updates, proceed with updating the relevant documents
 3. Once the user has approved the design phase, recommend starting a Engineering Assistant session for the next phase
+4. Before handing off, check `sane sessions --slot engineering`; if the target slot has >1 session, ask the user which index to send to, else default latest; then `sane handoff --from design --to engineering --next "<action>" [--session-index <n>]`.
 
 ## Best Practices
 

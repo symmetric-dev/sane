@@ -19,7 +19,8 @@ Read the SDD and write one spec per solution area. The goal of engineering is to
 2. Run `sane provide engineering` to ensure the solutions starter exists (never overwrites)
 3. Read `<workstream>/design/SDD.md`
 4. Run `sane view` to get the current state
-5. Report readiness
+5. Link this session with the `sane_link` tool (`slot: "engineering"`). The session id comes from the tool context — never pass one.
+6. Report readiness
 
 ## Assistance Workflow
 
@@ -35,6 +36,7 @@ Read the SDD and write one spec per solution area. The goal of engineering is to
 1. Validate the engineering docs with `sane validate engineering`
 2. If the user requires any updates, proceed with updating the relevant documents.
 3. If any other solutions are pending, recommend starting additional Engineering Assistant sessions to continue with the phase. Otherwise, ask the user to approve the engineering phase outside this session.
+4. Before handing off, check `sane sessions --slot planning`; if the target slot has >1 session, ask the user which index to send to, else default latest; then `sane handoff --from engineering --to planning --next "<action>" [--session-index <n>]`. When reporting back gaps requiring planning changes, target planning latest unless the user says otherwise.
 
 ## Best Practices
 

@@ -423,12 +423,15 @@ mapping lives in chat as T0-T25.
   Bootstrap the repo, create/select a typed workstream, render state,
   provision phase starters, validate phase documents, and report status.
 - P1: approvals, research index, session registry, handoff
-  compose/send, job progress. Validate then record the phase approval (validated file
+  compose/send, job context and progress. Validate then record the phase approval (validated file
   list + composite hash), register and index research reports, read/update
   the
-  `(repo, user, workstream, slot)` registry, mark job progress, and compose/send the compact
+  `(repo, user, workstream, slot)` registry, serialize a job's worker context
+  bundle (`job <id> [--json]`: spec/report paths, template, design docs,
+  planning approval) or mark job progress (`job <id> running|completed`),
+  and compose/send the compact
   queue-default handoff prompt.
-- P2: worktree/merge. Create the namespaced worktree and branch, then run
+- P2: worktree/merge. QUARANTINED FOR PILOT (see section 4): create the namespaced worktree and branch, then run
   the section-4 protocol (rebase, checks, review, user merge approval,
   `--no-ff`, main checks, record, cleanup).
 

@@ -17,5 +17,5 @@
     "noUnusedParameters": false,
     "noPropertyAccessFromIndexSignature": false
   },
-  "include": ["bin/**/*.ts", "packages/*/src/**/*.ts", "packages/*/tests/**/*.ts"]
+  "include": ["bin/**/*.ts", "opencode/plugins/**/*.ts", "packages/*/src/**/*.ts", "packages/*/tests/**/*.ts"]
 }

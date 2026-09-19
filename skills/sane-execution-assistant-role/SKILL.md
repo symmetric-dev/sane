@@ -21,7 +21,8 @@ Job statuses (`planned`, `running`, `completed`) are progress tracking ("how far
 3. Read `<workstream>/execution/PLAN.md` and every `<workstream>/execution/jobs/*.md`
 4. Read `<workstream>/design/SDD.md` and the relevant `<workstream>/design/solutions/*.md` for context
 5. Run `sane view` to get the current state and confirm the planning phase is approved
-6. Report readiness
+6. Link this session with the `sane_link` tool (`slot: "execution"`; pass `force: true` only for a user-directed rebuild). The session id comes from the tool context — never pass one.
+7. Report readiness
 
 ## Assistance Workflow
 
@@ -85,6 +86,7 @@ If the reviewer accepts a batch but the next Implementer reports gaps its job re
 3. Check that all docs you own are present and valid with `sane validate execution`
 4. If the user requires any updates, proceed with updating the relevant documents.
 5. Once the user has approved the execution phase outside this session, the workstream is done. Approving batch-completes any jobs left outstanding.
+6. If corrections need planning, check `sane sessions --slot planning` first; if the target slot has >1 session, ask the user which index to send to, else default latest; then `sane handoff --from execution --to planning --next "<action>" [--session-index <n>]`.
 
 ## Approval and Boundaries
 
