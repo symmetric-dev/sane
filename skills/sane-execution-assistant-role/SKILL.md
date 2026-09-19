@@ -71,7 +71,7 @@ Job statuses (`planned`, `running`, `completed`) are progress tracking ("how far
 
 5. Report the job outcomes and review findings to the user and ask whether to stop or continue. If a job cannot proceed without plan or spec changes, stop and report back: corrections go through the user back to Planning. Never edit planning artifacts yourself.
 
-During any of these steps you can request specialized research to the user to clarify repository state. The user may also stop the session and move to research and come back with an update. Be flexible and dynamic.
+During any of these steps you can request specialized research to the user to clarify repository state. To spin up a research session mid-phase, hand off per the Handoff section below (requesting research). The user may also stop the session and move to research and come back with an update. Be flexible and dynamic.
 
 ## Fixes Procedure
 
@@ -86,7 +86,16 @@ If the reviewer accepts a batch but the next Implementer reports gaps its job re
 3. Check that all docs you own are present and valid with `sane validate execution`
 4. If the user requires any updates, proceed with updating the relevant documents.
 5. Once the user has approved the execution phase outside this session, the workstream is done. Approving batch-completes any jobs left outstanding.
-6. If corrections need planning, check `sane sessions --slot planning` first; if the target slot has >1 session, ask the user which index to send to, else default latest; then call the `sane_handoff` tool (`to: "planning"`, `message: "<action>"`, plus `session_index: <n>` when the user picked one). If no planning session is linked yet, the handoff creates it and flags it `[ready]` — the user opens it from the session list. Your own slot is resolved from the tool context — never pass it.
+6. If corrections need planning, hand off per the Handoff section below.
+
+## Handoff
+
+Handoffs allow you to help the user start or update any other session in the workstream. Every handoff message stamps full session ids (`From: <slot> (<id>)`, `To: <slot> (<id>)`). Your own slot is always resolved from the tool context — never pass it.
+
+1. **Reporting corrections (no planning session yet):** check `sane sessions --slot planning`; if the slot has >1 session, ask the user which index to send to, else default latest. Then call the `sane_handoff` tool (`to: "planning"`, `message: "<action>"`, plus `session_index: <n>` when the user picked one). If no planning session is linked yet, the handoff creates it and flags it `[ready]` — the user opens it from the session list.
+2. **Receiving an update:** a planning session may hand back asking for rework. Its `From: planning (<id>)` line identifies the exact sender — note the id; the message is the authority on what to change, within the docs you own.
+3. **Replying:** once the requested update is done (and validated), hand back to that same agent with the `sane_handoff` tool (`to: "planning"`, `message: "<what changed>"`, `to_session: "<sender id from step 2>"`). Prefer `to_session` over `session_index` for replies.
+4. **Requesting research:** call the `sane_handoff` tool (`to: "research"`, `message: "<question>"`, `new_session: true`) with the ask — one or many topics, deep or varied. Prefer a fresh session per problem; omit `new_session` only when continuing the same investigation. The handoff flags the session `[ready]` — the user opens it from the session list. The researcher hands back to this session; reply to follow-ups with `to_session` from its `From:` line.
 
 ## Approval and Boundaries
 

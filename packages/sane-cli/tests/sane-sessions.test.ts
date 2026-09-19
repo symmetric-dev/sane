@@ -211,6 +211,67 @@ describe("sane-sessions CLI end to end (tmp repo)", () => {
     expect(engFirstLine).not.toContain("(latest)")
   })
 
+  test("bare research sorts with the research group after execution, bare first", async () => {
+    const identity = await resolveSaneIdentity(implementationRepository, "01-demo")
+    const db = await openSaneDb(identity.repoRoot)
+    try {
+      initSchema(db)
+      const at = (session: string, timestamp: string) => ({
+        actorRole: "research",
+        sessionId: session,
+        timestamp,
+      })
+      linkSelection(db, identity, { slot: "design", sessionId: "ses_design_1" }, at("ses_design_1", "2026-09-16T00:00:01.000Z"))
+      linkSelection(db, identity, { slot: "execution", sessionId: "ses_exec_1" }, at("ses_exec_1", "2026-09-16T00:00:02.000Z"))
+      linkSelection(db, identity, { slot: "research:zebra", sessionId: "ses_z" }, at("ses_z", "2026-09-16T00:00:03.000Z"))
+      linkSelection(db, identity, { slot: "research", sessionId: "ses_bare" }, at("ses_bare", "2026-09-16T00:00:04.000Z"))
+      linkSelection(db, identity, { slot: "research:auth", sessionId: "ses_a" }, at("ses_a", "2026-09-16T00:00:05.000Z"))
+    } finally {
+      try {
+        db.close()
+      } catch {
+        // Best effort.
+      }
+    }
+    const lines: string[] = []
+    const result = await runSaneSessionsCommand({
+      implementationRepository,
+      workstreamPath: "01-demo",
+      write: (line) => lines.push(line),
+    })
+    expect(result.total).toBe(5)
+    expect(Object.keys(result.slots)).toEqual([
+      "design",
+      "execution",
+      "research",
+      "research:auth",
+      "research:zebra",
+    ])
+    const output = lines.join("\n")
+    expect(output.indexOf("\ndesign")).toBeLessThan(output.indexOf("\nexecution"))
+    expect(output.indexOf("\nexecution")).toBeLessThan(output.indexOf("\nresearch ("))
+    expect(output.indexOf("\nresearch (")).toBeLessThan(output.indexOf("research:auth"))
+    expect(output.indexOf("research:auth")).toBeLessThan(output.indexOf("research:zebra"))
+    expect(output).toContain("[1] ses_bare (latest)")
+
+    // JSON key order matches human order.
+    const jsonLines: string[] = []
+    await runSaneSessionsCommand({
+      implementationRepository,
+      workstreamPath: "01-demo",
+      json: true,
+      write: (line) => jsonLines.push(line),
+    })
+    const parsed = JSON.parse(jsonLines.join("\n")) as { slots: Record<string, unknown> }
+    expect(Object.keys(parsed.slots)).toEqual([
+      "design",
+      "execution",
+      "research",
+      "research:auth",
+      "research:zebra",
+    ])
+  })
+
   test("--slot engineering filters; --slot bogus fails via runCli", async () => {
     await seedStandardRegistry()
     const lines: string[] = []

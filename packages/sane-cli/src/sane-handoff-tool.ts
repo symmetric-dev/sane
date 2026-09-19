@@ -27,6 +27,7 @@ import {
   listApprovals,
   listResearchReports,
   listSelections,
+  listSelectionsBySlot,
   type SaneIdentity,
 } from "./sane-db.ts"
 import {
@@ -115,6 +116,14 @@ export interface HandoffAsSessionInput {
   message: string
   /** 1-based index into the target slot's linked sessions (read-only resolve). */
   session_index?: number
+  /** Exact session id to reply to (must be linked to the target slot). Prefer over session_index for replies. */
+  to_session?: string
+  /**
+   * Create a fresh target session even when linked ones exist (prefer for
+   * new research problems; default reuses latest). Mutually exclusive with
+   * `session_index`/`to_session`.
+   */
+  new_session?: boolean
   /** Source slot; required only when the caller session holds several slots. */
   from?: string
   /** Absolute workstream directory for the auto-collected `Paths:` ref. */
@@ -123,7 +132,7 @@ export interface HandoffAsSessionInput {
 
 export interface HandoffAsSessionResult {
   from: { slot: string; session_id: string }
-  to: { slot: string; session_id: string; session_index: number }
+  to: { slot: string; session_id: string; session_index: number; created: boolean }
   mode: "queue"
   ready_title: string
   /** Full composed Section 3 message delivered to the target. */
@@ -155,8 +164,24 @@ export async function runHandoffAsSession(
   if (input.message.includes("\n")) {
     throw new SaneHandoffError("Option message must be a single line.")
   }
+  if (input.to_session !== undefined && input.session_index !== undefined) {
+    throw new SaneHandoffError("Options to_session and session_index are mutually exclusive.")
+  }
+  if (input.new_session === true && (input.session_index !== undefined || input.to_session !== undefined)) {
+    throw new SaneHandoffError("Options new_session and session_index/to_session are mutually exclusive.")
+  }
   assertSlot(input.to)
   const fromSlot = resolveFromSlot(db, identity, input.fromSession, input.from)
+
+  let sessionIndex = input.session_index
+  if (input.to_session !== undefined) {
+    const rows = listSelectionsBySlot(db, identity, input.to)
+    const position = rows.findIndex((row) => row.session_id === input.to_session)
+    if (position < 0) {
+      throw new SaneHandoffError(`Session ${input.to_session} is not linked to slot "${input.to}".`)
+    }
+    sessionIndex = position + 1
+  }
 
   const serverUrl =
     options?.serverUrl ?? process.env["OPENCODE_SERVER_URL"] ?? DEFAULT_HANDOFF_SERVER_URL
@@ -167,7 +192,8 @@ export async function runHandoffAsSession(
     slot: input.to,
     mutation: { actorRole: fromSlot, sessionId: input.fromSession },
     ...(fetchImpl ? { fetchImpl } : {}),
-    ...(input.session_index !== undefined ? { sessionIndex: input.session_index } : {}),
+    ...(sessionIndex !== undefined ? { sessionIndex } : {}),
+    ...(input.new_session === true ? { forceNew: true } : {}),
   })
 
   const approvalsText = collectApprovalRefs(db, identity)
@@ -211,7 +237,7 @@ export async function runHandoffAsSession(
 
   return {
     from: { slot: fromSlot, session_id: input.fromSession },
-    to: { slot: input.to, session_id: target.sessionId, session_index: target.targetIndex },
+    to: { slot: input.to, session_id: target.sessionId, session_index: target.targetIndex, created: target.created },
     mode: "queue",
     ready_title: renamed.title,
     message,

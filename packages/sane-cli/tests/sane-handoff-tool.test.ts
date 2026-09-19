@@ -175,6 +175,7 @@ describe("runHandoffAsSession (tool core)", () => {
       slot: "engineering",
       session_id: "ses_eng_second",
       session_index: 2,
+      created: false,
     })
     expect(result.mode).toBe("queue")
     expect(result.ready_title).toBe("[ready] engineering: Draft solutions.")
@@ -238,9 +239,25 @@ describe("runHandoffAsSession (tool core)", () => {
       { fromSession: "ses_design", to: "planning", message: "Start planning." },
       { fetchImpl: mockServer("ses_plan_new", calls), serverUrl: "http://127.0.0.1:4096" },
     )
-    expect(result.to).toEqual({ slot: "planning", session_id: "ses_plan_new", session_index: 1 })
+    expect(result.to).toEqual({ slot: "planning", session_id: "ses_plan_new", session_index: 1, created: true })
     expect(result.message).toContain("To: planning (ses_plan_new)")
     expect(calls[0]!.url).toBe("http://127.0.0.1:4096/api/session")
+  })
+
+  test("bare research target creates-if-empty (mock fetch)", async () => {
+    link(db!, "design", "ses_design", "2026-09-16T00:00:00.000Z")
+    const calls: RecordedCall[] = []
+    const result = await runHandoffAsSession(
+      db!,
+      identity,
+      { fromSession: "ses_design", to: "research", message: "Gather evidence." },
+      { fetchImpl: mockServer("ses_research_new", calls), serverUrl: "http://127.0.0.1:4096" },
+    )
+    expect(result.to).toEqual({ slot: "research", session_id: "ses_research_new", session_index: 1, created: true })
+    expect(result.message).toContain("To: research (ses_research_new)")
+    expect(result.ready_title).toBe("[ready] research: Gather evidence.")
+    expect(calls[0]!.url).toBe("http://127.0.0.1:4096/api/session")
+    expect(listSelectionsBySlot(db!, identity, "research")).toHaveLength(1)
   })
 
   test("message shape is the 6-line refs shape, never artifact contents", async () => {
@@ -315,5 +332,72 @@ describe("runHandoffAsSession (tool core)", () => {
       { fetchImpl: mockServer("ses_eng_new", calls), serverUrl: "http://127.0.0.1:4096" },
     )
     expect(disambiguated.from).toEqual({ slot: "planning", session_id: "ses_m" })
+  })
+
+  test("to_session resolves the exact session with no create", async () => {
+    seedDesignAndEngineering()
+    const calls: RecordedCall[] = []
+    const result = await runHandoffAsSession(
+      db!,
+      identity,
+      { fromSession: "ses_design", to: "engineering", message: "Reply one.", to_session: "ses_eng_first" },
+      { fetchImpl: mockServer(null, calls), serverUrl: "http://127.0.0.1:4096" },
+    )
+    expect(result.to).toEqual({
+      slot: "engineering",
+      session_id: "ses_eng_first",
+      session_index: 1,
+      created: false,
+    })
+    // No session-create POST: prompt + rename only, addressed to the first session.
+    expect(calls.map((call) => call.url)).toEqual([
+      "http://127.0.0.1:4096/api/session/ses_eng_first/prompt",
+      "http://127.0.0.1:4096/api/session/ses_eng_first/rename",
+    ])
+    expect(result.message).toContain("To: engineering (ses_eng_first)")
+    expect(listSelectionsBySlot(db!, identity, "engineering")).toHaveLength(2)
+  })
+
+  test("to_session unknown id throws not linked to slot", async () => {
+    seedDesignAndEngineering()
+    await expect(
+      runHandoffAsSession(
+        db!,
+        identity,
+        { fromSession: "ses_design", to: "engineering", message: "Go.", to_session: "ses_ghost" },
+        { fetchImpl: failingFetch(), serverUrl: "http://127.0.0.1:4096" },
+      ),
+    ).rejects.toThrow(/not linked to slot/)
+  })
+
+  test("to_session and session_index together throw mutually exclusive", async () => {
+    seedDesignAndEngineering()
+    await expect(
+      runHandoffAsSession(
+        db!,
+        identity,
+        {
+          fromSession: "ses_design",
+          to: "engineering",
+          message: "Go.",
+          to_session: "ses_eng_first",
+          session_index: 1,
+        },
+        { fetchImpl: failingFetch(), serverUrl: "http://127.0.0.1:4096" },
+      ),
+    ).rejects.toThrow(/mutually exclusive/)
+  })
+
+  test("to_session naming a session from a different slot throws", async () => {
+    seedDesignAndEngineering()
+    link(db!, "planning", "ses_plan_only", "2026-09-16T00:00:03.000Z")
+    await expect(
+      runHandoffAsSession(
+        db!,
+        identity,
+        { fromSession: "ses_design", to: "engineering", message: "Go.", to_session: "ses_plan_only" },
+        { fetchImpl: failingFetch(), serverUrl: "http://127.0.0.1:4096" },
+      ),
+    ).rejects.toThrow('Session ses_plan_only is not linked to slot "engineering".')
   })
 })

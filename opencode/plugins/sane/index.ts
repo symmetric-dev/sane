@@ -54,7 +54,7 @@ export const SANE_LINK_TOOL_DESCRIPTION =
   "Link the calling session to a SANE workstream phase slot (self-registration). " +
   "The workstream is resolved from the session working directory. " +
   "1:1 slots (design, planning, execution) refuse a second session unless force is true; " +
-  "engineering and research:<topic> slots append."
+  "engineering, research, and research:<topic> slots append."
 
 export interface SaneLinkToolInput {
   slot: string
@@ -74,7 +74,7 @@ export const saneLinkInputSchema = {
     slot: {
       type: "string",
       description:
-        "Phase slot to link: design, planning, execution, engineering, or research:<topic>.",
+        "Phase slot to link: design, planning, execution, engineering, research, or research:<topic>.",
     },
     worktree_path: {
       type: ["string", "null"],
@@ -107,6 +107,8 @@ export interface SaneHandoffToolInput {
   to: string
   message: string
   session_index?: number
+  to_session?: string
+  new_session?: boolean
   from?: string
 }
 
@@ -122,7 +124,7 @@ export const saneHandoffInputSchema = {
     to: {
       type: "string",
       description:
-        "Target phase slot: design, planning, execution, engineering, or research:<topic>.",
+        "Target phase slot: design, planning, execution, engineering, research, or research:<topic>.",
     },
     message: {
       type: "string",
@@ -132,6 +134,16 @@ export const saneHandoffInputSchema = {
       type: "number",
       description:
         "1-based index into the target slot's linked sessions (defaults to latest).",
+    },
+    to_session: {
+      type: "string",
+      description:
+        "Exact session id to reply to (must be linked to the target slot; from the sender's From: line). Prefer over session_index for replies.",
+    },
+    new_session: {
+      type: "boolean",
+      description:
+        "Create a fresh target session even when linked ones exist (prefer for new research problems; default reuses latest).",
     },
     from: {
       type: "string",
@@ -269,6 +281,12 @@ export const SanePlugin = Plugin.define({
                 ...(typedInput.session_index !== undefined
                   ? { session_index: typedInput.session_index }
                   : {}),
+                ...(typedInput.to_session !== undefined
+                  ? { to_session: typedInput.to_session }
+                  : {}),
+                ...(typedInput.new_session !== undefined
+                  ? { new_session: typedInput.new_session }
+                  : {}),
                 ...(typedInput.from !== undefined ? { from: typedInput.from } : {}),
                 workstreamPath: workstream.path,
               },
@@ -280,6 +298,7 @@ export const SanePlugin = Plugin.define({
                   slot: result.to.slot,
                   session_id: result.to.session_id,
                   session_index: result.to.session_index,
+                  created: result.to.created,
                 },
                 mode: result.mode,
                 ready_title: result.ready_title,

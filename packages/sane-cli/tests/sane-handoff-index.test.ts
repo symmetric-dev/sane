@@ -210,6 +210,21 @@ describe("resolveOrCreateSession --session-index (unit)", () => {
     expect(created.sessionId).toBe("ses_plan_new")
     expect(created.targetIndex).toBe(1)
   })
+
+  test("bare research creates-if-empty with index 1", async () => {
+    const createFetch: HandoffFetch = (async () =>
+      okJson({ id: "ses_research_new" })) as unknown as HandoffFetch
+    const created = await resolveOrCreateSession(db!, identity, {
+      serverUrl: "http://127.0.0.1:4096",
+      slot: "research",
+      mutation: mutation("design", "ses_design"),
+      fetchImpl: createFetch,
+    })
+    expect(created.created).toBe(true)
+    expect(created.sessionId).toBe("ses_research_new")
+    expect(created.targetIndex).toBe(1)
+    expect(listSelectionsBySlot(db!, identity, "research")).toHaveLength(1)
+  })
 })
 
 describe("sane handoff --session-index CLI parsing", () => {

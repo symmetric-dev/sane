@@ -55,8 +55,8 @@ export type Phase = (typeof PHASES)[number]
 /** Approvals are keyed by phase: one approval row per phase at most. */
 export type ApprovalPhase = Phase
 
-/** Phase slots plus support-track slots (`research:<topic>`). */
-export type SelectionSlot = Phase | `research:${string}`
+/** Phase slots plus support-track slots (`research` or `research:<topic>`). */
+export type SelectionSlot = Phase | "research" | `research:${string}`
 
 export const WORKSTREAM_TYPES = ["feature", "foundation", "issue", "maintenance"] as const
 export type WorkstreamType = (typeof WORKSTREAM_TYPES)[number]
@@ -236,12 +236,13 @@ function assertOwnerRole(ownerRole: string): asserts ownerRole is Phase {
 
 export function assertSelectionSlot(slot: string): asserts slot is SelectionSlot {
   if (PHASE_SET.has(slot)) return
+  if (slot === "research") return
   if (slot.startsWith("research:")) {
     const topic = slot.slice("research:".length)
     if (topic.trim() !== "" && !topic.includes("\n")) return
   }
   throw new SaneDbError(
-    `Invalid selection slot "${slot}". Expected one of: ${PHASES.join(", ")}, or research:<topic>.`,
+    `Invalid selection slot "${slot}". Expected one of: ${PHASES.join(", ")}, research, or research:<topic>.`,
   )
 }
 
@@ -319,7 +320,7 @@ CREATE TABLE IF NOT EXISTS selections(
   repo_root TEXT NOT NULL,
   user TEXT NOT NULL,
   workstream_id TEXT NOT NULL,
-  slot TEXT NOT NULL CHECK(slot IN ('design','engineering','planning','execution') OR slot LIKE 'research:%'),
+  slot TEXT NOT NULL CHECK(slot IN ('design','engineering','planning','execution') OR slot LIKE 'research:%' OR slot = 'research'),
   session_id TEXT NOT NULL,
   worktree_path TEXT,
   branch TEXT,

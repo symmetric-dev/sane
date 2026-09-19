@@ -48,7 +48,7 @@ function assertSlot(slot: string): void {
   }
 }
 
-/** Phase order for grouped output, then `research:*` alphabetically. */
+/** Phase order for grouped output, then `research` / `research:*` alphabetically (bare `research` first). */
 const PHASE_ORDER = ["design", "engineering", "planning", "execution"] as const
 
 function orderSlots(slots: string[]): string[] {
@@ -61,6 +61,10 @@ function orderSlots(slots: string[]): string[] {
     if (rankA !== undefined && rankB !== undefined) return rankA - rankB
     if (rankA !== undefined) return -1
     if (rankB !== undefined) return 1
+    // Research group sorts after execution (non-phase, alphabetical);
+    // bare `research` precedes `research:<topic>`.
+    if (a === "research" && b !== "research") return -1
+    if (b === "research" && a !== "research") return 1
     return a.localeCompare(b)
   })
 }

@@ -313,6 +313,31 @@ describe("sane-link CLI end to end (tmp repo)", () => {
     expect(rows[1]!.branch).toBe("opencode/some-branch")
   })
 
+  test("bare research is 1:many: two links both kept", async () => {
+    const first = await runSaneLinkCommand({
+      implementationRepository,
+      workstreamPath: "01-demo",
+      slot: "research",
+      sessionId: "ses_bare_1",
+      write: () => {},
+    })
+    expect(first.index).toBe(1)
+    expect(first.count).toBe(1)
+    const second = await runSaneLinkCommand({
+      implementationRepository,
+      workstreamPath: "01-demo",
+      slot: "research",
+      sessionId: "ses_bare_2",
+      write: () => {},
+    })
+    expect(second.index).toBe(2)
+    expect(second.count).toBe(2)
+    expect((await readSlot("research")).map((row) => row.session_id)).toEqual([
+      "ses_bare_1",
+      "ses_bare_2",
+    ])
+  })
+
   test("duplicate (slot, session) throws", async () => {
     await runSaneLinkCommand({
       implementationRepository,

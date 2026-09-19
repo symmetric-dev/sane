@@ -5,7 +5,7 @@
  * Pure DB write (no server calls). One row per (slot, session_id) via
  * `linkSelection`; 1:1 slots (`design | planning | execution`) reject a
  * second distinct session without `--force`, while 1:many slots
- * (`engineering | research:*`) always append. Exact (slot, session)
+ * (`engineering | research | research:*`) always append. Exact (slot, session)
  * duplicates always throw via `linkSelection`.
  *
  * New file only. Read-only use of `sane-db.ts` selections CRUD; does not

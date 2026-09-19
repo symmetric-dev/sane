@@ -530,6 +530,11 @@ export interface SaneHandoffCommandOptions {
   branch?: string | null
   /** 1-based index into the target slot's linked sessions (read-only resolve). */
   sessionIndex?: number
+  /**
+   * User-directed rebuild: create a fresh target session even when the slot
+   * already has linked sessions. Mutually exclusive with `sessionIndex`.
+   */
+  forceNew?: boolean
   fetchImpl?: HandoffFetch
   write?: (line: string) => void
 }
@@ -565,11 +570,13 @@ export interface ParsedHandoffArguments {
   worktreePath: string | undefined
   branch: string | undefined
   sessionIndex: number | undefined
+  /** `--new`: create a fresh target session even when linked ones exist. */
+  forceNew: boolean
   json: boolean
 }
 
 export const USAGE =
-  "Usage: sane handoff [<implementation-repository> <workstream-relative-path>] --from <slot> --to <slot> --next <action> [--session-index <n>] [--steer-reason <user-redirect|execution-abort>] [--server-url <url>] [--from-session <id>] [--approvals <refs>] [--revisions <refs>] [--paths <refs>] [--worktree-path <dir>] [--branch <name>] [--json] [--repo-root <path>] (no positionals: auto-detect the target from the current directory)"
+  "Usage: sane handoff [<implementation-repository> <workstream-relative-path>] --from <slot> --to <slot> --next <action> [--session-index <n>] [--new] [--steer-reason <user-redirect|execution-abort>] [--server-url <url>] [--from-session <id>] [--approvals <refs>] [--revisions <refs>] [--paths <refs>] [--worktree-path <dir>] [--branch <name>] [--json] [--repo-root <path>] (no positionals: auto-detect the target from the current directory)"
 
 function requireOptionValue(args: string[], index: number, option: string): string {
   const value = args[index + 1]
@@ -611,6 +618,7 @@ export function parseCliArguments(args: string[]): ParsedHandoffArguments {
   let branch: string | undefined
   let sessionIndexRaw: string | undefined
   let sessionIndex: number | undefined
+  let forceNew = false
   const positional: string[] = []
   let parseOptions = true
 
@@ -620,6 +628,8 @@ export function parseCliArguments(args: string[]): ParsedHandoffArguments {
       parseOptions = false
     } else if (parseOptions && argument === "--json") {
       json = true
+    } else if (parseOptions && argument === "--new") {
+      forceNew = true
     } else if (parseOptions && argument === "--from") {
       assertSingleOption(fromSlot, "--from")
       fromSlot = requireOptionValue(args, index, "--from")
@@ -752,6 +762,9 @@ export function parseCliArguments(args: string[]): ParsedHandoffArguments {
   if (fromSessionOverride !== undefined && fromSessionOverride.trim() === "") {
     throw new SaneHandoffError("Option --from-session must be non-empty.")
   }
+  if (forceNew && sessionIndex !== undefined) {
+    throw new SaneHandoffError("Options --new and --session-index are mutually exclusive.")
+  }
 
   return {
     implementationRepository,
@@ -768,6 +781,7 @@ export function parseCliArguments(args: string[]): ParsedHandoffArguments {
     worktreePath,
     branch,
     sessionIndex,
+    forceNew,
     json,
   }
 }
@@ -823,6 +837,9 @@ export async function runSaneHandoffCommand(
   ) {
     throw new SaneHandoffError("Option --session-index must be a positive integer.")
   }
+  if (options.forceNew === true && options.sessionIndex !== undefined) {
+    throw new SaneHandoffError("Options --new and --session-index are mutually exclusive.")
+  }
   if (options.steerReason !== undefined && !STEER_REASON_SET.has(options.steerReason)) {
     throw new SaneHandoffError(
       `Invalid steer reason ${JSON.stringify(options.steerReason)}. Expected one of: ${HANDOFF_STEER_REASONS.join(", ")}.`,
@@ -871,6 +888,7 @@ export async function runSaneHandoffCommand(
       mutation: { actorRole: options.fromSlot, sessionId: fromSession },
       fetchImpl,
       sessionIndex: options.sessionIndex,
+      forceNew: options.forceNew,
       // Pilot: record an OpenCode-native (foreign) worktree for the target
       // slot so CWD auto-detection resolves it. SANE-managed worktrees are
       // quarantined; SANE never creates the directory itself.
