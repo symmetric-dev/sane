@@ -552,6 +552,32 @@ describe("sane-handoff CLI end to end (mock server)", () => {
     expect(promptCalls).toHaveLength(2)
   })
 
+  test("handoff to bare research creates-if-empty (mock server)", async () => {
+    let creates = 0
+    const fetchImpl: HandoffFetch = (async (url: string) => {
+      if (url.endsWith("/api/session")) {
+        creates += 1
+        return okJson({ id: "ses_research_new" })
+      }
+      return okJson({})
+    }) as unknown as HandoffFetch
+    const result = await runSaneHandoffCommand({
+      implementationRepository,
+      workstreamPath: "01-demo",
+      fromSlot: "design",
+      toSlot: "research",
+      nextAction: "Gather evidence.",
+      fetchImpl,
+      write: () => {},
+    })
+    expect(result.toSession).toBe("ses_research_new")
+    expect(result.targetCreated).toBe(true)
+    expect(result.targetIndex).toBe(1)
+    expect(result.message).toContain("To: research (ses_research_new)")
+    expect(result.readyTitle).toBe("[ready] research: Gather evidence.")
+    expect(creates).toBe(1)
+  })
+
   test("runCli returns 0/1 and --json emits the handoff envelope", async () => {
     const fetchImpl: HandoffFetch = (async (url: string) => {
       if (url.endsWith("/api/session")) return okJson({ id: "ses_plan_1" })

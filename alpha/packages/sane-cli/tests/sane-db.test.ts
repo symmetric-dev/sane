@@ -31,6 +31,7 @@ import {
   listJobs,
   listMutations,
   listSelections,
+  listSelectionsBySlot,
   normalizeWorkstreamId,
   openInMemoryDb,
   openSaneDb,
@@ -248,7 +249,7 @@ describe("sane-db (M2-A sqlite source of truth)", () => {
     ).toThrow()
   })
 
-  test("selections address-book upsert keeps one row per slot", async () => {
+  test("selections registry keeps one row per linked session with latest-wins reads", async () => {
     db = openInMemoryDb()
     initSchema(db)
     const { resolve } = await import("node:path")
@@ -266,7 +267,7 @@ describe("sane-db (M2-A sqlite source of truth)", () => {
     )
     expect(first.session_id).toBe("ses_design_1")
 
-    // Same slot overwrites (address-book behavior).
+    // Same slot, different session adds a row (1:many registry); latest wins.
     const second = upsertSelection(
       db,
       identity,
@@ -280,6 +281,24 @@ describe("sane-db (M2-A sqlite source of truth)", () => {
     )
     expect(second.session_id).toBe("ses_design_2")
     expect(second.worktree_path).toBe("/tmp/u/01-export")
+    expect(listSelectionsBySlot(db, identity, "design")).toHaveLength(2)
+
+    // Same (slot, session) re-upsert refreshes in place instead of duplicating.
+    upsertSelection(
+      db,
+      identity,
+      {
+        slot: "design",
+        sessionId: "ses_design_2",
+        worktreePath: "/tmp/u/01-export-v2",
+        branch: branchForWorkstream(identity.user, identity.workstreamId),
+      },
+      mutation("design", "ses_design_2"),
+    )
+    const designRows = listSelectionsBySlot(db, identity, "design")
+    expect(designRows).toHaveLength(2)
+    expect(getSelection(db, identity, "design")?.session_id).toBe("ses_design_2")
+    expect(getSelection(db, identity, "design")?.worktree_path).toBe("/tmp/u/01-export-v2")
 
     // Other slots coexist.
     upsertSelection(db, identity, { slot: "engineering", sessionId: "ses_eng" }, mutation())
@@ -290,13 +309,18 @@ describe("sane-db (M2-A sqlite source of truth)", () => {
       mutation("research", "ses_research"),
     )
     const all = listSelections(db, identity)
-    expect(all.map((r) => r.slot).sort()).toEqual(["design", "engineering", "research:auth"])
+    expect(all.map((r) => r.slot).sort()).toEqual([
+      "design",
+      "design",
+      "engineering",
+      "research:auth",
+    ])
     expect(getSelection(db, identity, "design")?.session_id).toBe("ses_design_2")
 
-    // Delete removes only that slot.
+    // Delete removes every row for that slot only.
     deleteSelection(db, identity, "engineering", mutation())
     expect(getSelection(db, identity, "engineering")).toBeNull()
-    expect(listSelections(db, identity)).toHaveLength(2)
+    expect(listSelections(db, identity)).toHaveLength(3)
   })
 
   test("jobs lifecycle: planned means authorized, direct progress, batch completes stragglers", async () => {

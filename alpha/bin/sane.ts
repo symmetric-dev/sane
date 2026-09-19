@@ -7,6 +7,8 @@ import { runCli as runSaneApprove } from "../packages/sane-cli/src/sane-approve-
 import { runCli as runSaneProvide } from "../packages/sane-cli/src/sane-provide-command.ts"
 import { runCli as runSaneResearch } from "../packages/sane-cli/src/sane-research-command.ts"
 import { runCli as runSaneHandoff } from "../packages/sane-cli/src/sane-handoff-command.ts"
+import { runCli as runSaneLink } from "../packages/sane-cli/src/sane-link-command.ts"
+import { runCli as runSaneSessions } from "../packages/sane-cli/src/sane-sessions-command.ts"
 import { runCli as runSaneJob } from "../packages/sane-cli/src/sane-job-command.ts"
 import { runCli as runSaneValidate } from "../packages/sane-cli/src/sane-validate-command.ts"
 import { runCli as runSaneView } from "../packages/sane-cli/src/sane-view-command.ts"
@@ -26,6 +28,8 @@ export type AlphaCommand =
   | "job"
   | "research"
   | "handoff"
+  | "link"
+  | "sessions"
 
 export type AlphaCommandHandler = (args: string[]) => Promise<number>
 
@@ -52,6 +56,8 @@ export const COMMANDS: Record<AlphaCommand, AlphaCommandHandler> = {
   job: runSaneJob,
   research: runSaneResearch,
   handoff: runSaneHandoff,
+  link: runSaneLink,
+  sessions: runSaneSessions,
 }
 
 export const USAGE = `Usage: sane <command> [arguments...]
@@ -69,6 +75,8 @@ Commands:
   job <job-id> [running|completed]
   research
   handoff
+  link
+  sessions
 
 Run 'sane <command> --help' for a command's argument validation.`
 // QUARANTINED FOR PILOT (not wired): `worktree`, `merge`. SANE-managed

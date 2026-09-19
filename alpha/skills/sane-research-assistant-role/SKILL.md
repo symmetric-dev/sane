@@ -26,9 +26,10 @@ the index; workers may register their own report only when asked.
 
 1. Read `<workstream>/README.md`
 2. Query current workstream context with `sane view`
-3. Query research index with `sane research --index` and diagnose any issues if necessary
-4. Read `<workstream>/design/SDD.md` if available or any other mentioned docs
-5. Report readiness
+3. Link this session with the `sane_link` tool (`slot: "research"`). The session id comes from the tool context — never pass one.
+4. Query research index with `sane research --index` and diagnose any issues if necessary
+5. Read `<workstream>/design/SDD.md` if available or any other mentioned docs
+6. Report readiness
 
 ## Assistance Workflow
 
@@ -40,7 +41,16 @@ the index; workers may register their own report only when asked.
 
 1. Verify that the research index matches the reports
 2. Report delivery to the user, recommend them go back to the current workstream phase
-3. If research remains open, recommend the user to start a new Research Assistant session instead
+3. If the user wants the findings delivered to a phase session, hand off per the Handoff section below.
+4. If research remains open, recommend the user to start a new Research Assistant session instead
+
+## Handoff
+
+Handoffs allow you to help the user start or update any other session in the workstream. Every handoff message stamps full session ids (`From: <slot> (<id>)`, `To: <slot> (<id>)`). Your own slot is always resolved from the tool context — never pass it.
+
+1. **Normal flow:** check `sane sessions --slot <phase>`; if the slot has >1 session, ask the user which index to send to, else default latest. Then call the `sane_handoff` tool (`to: "<phase>"`, `message: "<action>"`, plus `session_index: <n>` when the user picked one). If no session is linked for that phase yet, the handoff creates it and flags it `[ready]` — the user opens it from the session list. Any phase can receive the report, and research never blocks.
+2. **Receiving an update:** any phase session may hand back asking for follow-up research. Its `From: <slot> (<id>)` line identifies the exact sender — note the id; the message is the authority on what to research.
+3. **Replying:** once the follow-up is done (and registered), hand back to that same agent with the `sane_handoff` tool (`to: "<slot>"`, `message: "<what changed>"`, `to_session: "<sender id from step 2>"`). Prefer `to_session` over `session_index` for replies.
 
 ## Best Practices
 

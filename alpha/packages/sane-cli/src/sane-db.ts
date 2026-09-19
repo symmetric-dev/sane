@@ -55,8 +55,8 @@ export type Phase = (typeof PHASES)[number]
 /** Approvals are keyed by phase: one approval row per phase at most. */
 export type ApprovalPhase = Phase
 
-/** Phase slots plus support-track slots (`research:<topic>`). */
-export type SelectionSlot = Phase | `research:${string}`
+/** Phase slots plus support-track slots (`research` or `research:<topic>`). */
+export type SelectionSlot = Phase | "research" | `research:${string}`
 
 export const WORKSTREAM_TYPES = ["feature", "foundation", "issue", "maintenance"] as const
 export type WorkstreamType = (typeof WORKSTREAM_TYPES)[number]
@@ -236,12 +236,13 @@ function assertOwnerRole(ownerRole: string): asserts ownerRole is Phase {
 
 export function assertSelectionSlot(slot: string): asserts slot is SelectionSlot {
   if (PHASE_SET.has(slot)) return
+  if (slot === "research") return
   if (slot.startsWith("research:")) {
     const topic = slot.slice("research:".length)
     if (topic.trim() !== "" && !topic.includes("\n")) return
   }
   throw new SaneDbError(
-    `Invalid selection slot "${slot}". Expected one of: ${PHASES.join(", ")}, or research:<topic>.`,
+    `Invalid selection slot "${slot}". Expected one of: ${PHASES.join(", ")}, research, or research:<topic>.`,
   )
 }
 
@@ -319,12 +320,12 @@ CREATE TABLE IF NOT EXISTS selections(
   repo_root TEXT NOT NULL,
   user TEXT NOT NULL,
   workstream_id TEXT NOT NULL,
-  slot TEXT NOT NULL CHECK(slot IN ('design','engineering','planning','execution') OR slot LIKE 'research:%'),
+  slot TEXT NOT NULL CHECK(slot IN ('design','engineering','planning','execution') OR slot LIKE 'research:%' OR slot = 'research'),
   session_id TEXT NOT NULL,
   worktree_path TEXT,
   branch TEXT,
   updated_at TEXT NOT NULL,
-  PRIMARY KEY (repo_root, user, workstream_id, slot)
+  PRIMARY KEY (repo_root, user, workstream_id, slot, session_id)
 );
 CREATE TABLE IF NOT EXISTS state_entries(
   repo_root TEXT NOT NULL,
@@ -738,6 +739,12 @@ export function upsertSelection(
   input: UpsertSelectionInput,
   mutation: MutationContext,
 ): SelectionRow {
+  // Multiplicity choice: one row per (slot, session_id). `upsertSelection` is
+  // the legacy single-call writer (`resolveOrCreateSession`): it inserts the
+  // (slot, session_id) row, refreshes that exact row when re-upserted, and
+  // never deletes sibling rows for the slot. It returns the latest row
+  // (latest-wins) so existing callers keep working unchanged. The future
+  // `link` CLI enforces 1:1 vs 1:many policy via link/unlinkSelection.
   assertIdentity(identity)
   assertSelectionSlot(input.slot)
   assertNonEmpty("sessionId", input.sessionId)
@@ -745,8 +752,8 @@ export function upsertSelection(
   db.query(
     `INSERT INTO selections (repo_root, user, workstream_id, slot, session_id, worktree_path, branch, updated_at)
      VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-     ON CONFLICT(repo_root, user, workstream_id, slot)
-     DO UPDATE SET session_id=excluded.session_id, worktree_path=excluded.worktree_path, branch=excluded.branch, updated_at=excluded.updated_at`,
+     ON CONFLICT(repo_root, user, workstream_id, slot, session_id)
+     DO UPDATE SET worktree_path=excluded.worktree_path, branch=excluded.branch, updated_at=excluded.updated_at`,
   ).run(
     identity.repoRoot,
     identity.user,
@@ -758,9 +765,110 @@ export function upsertSelection(
     timestamp,
   )
   recordMutation(db, identity, "selections", "upsert", mutation, timestamp)
-  const row = getSelection(db, identity, input.slot)
+  const row = getLatestSelection(db, identity, input.slot)
   if (!row) throw new SaneDbError("Failed to read back selection after upsert.")
   return row
+}
+
+/**
+ * Link one more session to a slot (1:many registry). Each (slot, session_id)
+ * pair is its own row; multiplicity lives in rows (stable 1-based index by
+ * updated_at for later CLI work). Throws `SaneDbError` on an exact
+ * (slot, session_id) duplicate — use `upsertSelection` to refresh in place.
+ */
+export function linkSelection(
+  db: Database,
+  identity: SaneIdentity,
+  input: UpsertSelectionInput,
+  mutation: MutationContext,
+): SelectionRow {
+  assertIdentity(identity)
+  assertSelectionSlot(input.slot)
+  assertNonEmpty("sessionId", input.sessionId)
+  const timestamp = resolveTimestamp(mutation)
+  try {
+    db.query(
+      `INSERT INTO selections (repo_root, user, workstream_id, slot, session_id, worktree_path, branch, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+    ).run(
+      identity.repoRoot,
+      identity.user,
+      identity.workstreamId,
+      input.slot,
+      input.sessionId,
+      input.worktreePath ?? null,
+      input.branch ?? null,
+      timestamp,
+    )
+  } catch (error) {
+    const existing = db
+      .query(
+        `SELECT * FROM selections WHERE repo_root = ? AND user = ? AND workstream_id = ? AND slot = ? AND session_id = ?`,
+      )
+      .get(
+        identity.repoRoot,
+        identity.user,
+        identity.workstreamId,
+        input.slot,
+        input.sessionId,
+      ) as SelectionRow | null
+    if (existing) {
+      throw new SaneDbError(
+        `Selection already linked: slot "${input.slot}" already has session "${input.sessionId}".`,
+      )
+    }
+    throw new SaneDbError(`Could not link selection: ${(error as Error).message}`)
+  }
+  recordMutation(db, identity, "selections", "link", mutation, timestamp)
+  const row = db
+    .query(
+      `SELECT * FROM selections WHERE repo_root = ? AND user = ? AND workstream_id = ? AND slot = ? AND session_id = ?`,
+    )
+    .get(
+      identity.repoRoot,
+      identity.user,
+      identity.workstreamId,
+      input.slot,
+      input.sessionId,
+    ) as SelectionRow | null
+  if (!row) throw new SaneDbError("Failed to read back selection after link.")
+  return row
+}
+
+/**
+ * All linked sessions for one slot, oldest first. Position in this list is
+ * the stable 1-based index later CLI work addresses (`engineering:<n>` lives
+ * here, not in the slot grammar). `rowid` breaks updated_at ties so the
+ * order is deterministic.
+ */
+export function listSelectionsBySlot(
+  db: Database,
+  identity: SaneIdentity,
+  slot: string,
+): SelectionRow[] {
+  assertIdentity(identity)
+  assertSelectionSlot(slot)
+  return db
+    .query(
+      `SELECT * FROM selections WHERE repo_root = ? AND user = ? AND workstream_id = ? AND slot = ? ORDER BY updated_at ASC, rowid ASC`,
+    )
+    .all(identity.repoRoot, identity.user, identity.workstreamId, slot) as SelectionRow[]
+}
+
+/** Newest linked session for one slot (single row or null). */
+export function getLatestSelection(
+  db: Database,
+  identity: SaneIdentity,
+  slot: string,
+): SelectionRow | null {
+  assertIdentity(identity)
+  assertSelectionSlot(slot)
+  const row = db
+    .query(
+      `SELECT * FROM selections WHERE repo_root = ? AND user = ? AND workstream_id = ? AND slot = ? ORDER BY updated_at DESC, rowid DESC LIMIT 1`,
+    )
+    .get(identity.repoRoot, identity.user, identity.workstreamId, slot) as SelectionRow | null
+  return row ?? null
 }
 
 export function getSelection(
@@ -768,13 +876,9 @@ export function getSelection(
   identity: SaneIdentity,
   slot: string,
 ): SelectionRow | null {
-  assertIdentity(identity)
-  const row = db
-    .query(
-      `SELECT * FROM selections WHERE repo_root = ? AND user = ? AND workstream_id = ? AND slot = ?`,
-    )
-    .get(identity.repoRoot, identity.user, identity.workstreamId, slot) as SelectionRow | null
-  return row ?? null
+  // Backward-compat latest-wins read: existing callers
+  // (`sane-handoff-command.ts`) keep working unchanged against multi-row slots.
+  return getLatestSelection(db, identity, slot)
 }
 
 export function listSelections(db: Database, identity: SaneIdentity): SelectionRow[] {
@@ -798,6 +902,24 @@ export function deleteSelection(
     `DELETE FROM selections WHERE repo_root = ? AND user = ? AND workstream_id = ? AND slot = ?`,
   ).run(identity.repoRoot, identity.user, identity.workstreamId, slot)
   recordMutation(db, identity, "selections", "delete", mutation, timestamp)
+}
+
+/** Remove one linked session from a slot, keeping sibling rows. */
+export function unlinkSelection(
+  db: Database,
+  identity: SaneIdentity,
+  slot: string,
+  sessionId: string,
+  mutation: MutationContext,
+): void {
+  assertIdentity(identity)
+  assertSelectionSlot(slot)
+  assertNonEmpty("sessionId", sessionId)
+  const timestamp = resolveTimestamp(mutation)
+  db.query(
+    `DELETE FROM selections WHERE repo_root = ? AND user = ? AND workstream_id = ? AND slot = ? AND session_id = ?`,
+  ).run(identity.repoRoot, identity.user, identity.workstreamId, slot, sessionId)
+  recordMutation(db, identity, "selections", "unlink", mutation, timestamp)
 }
 
 // ---------------------------------------------------------------------------

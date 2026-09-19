@@ -18,6 +18,8 @@ const expectedCommands: AlphaCommand[] = [
   "job",
   "research",
   "handoff",
+  "link",
+  "sessions",
 ]
 
 describe("sane dispatcher", () => {
