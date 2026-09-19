@@ -86,7 +86,7 @@ If the reviewer accepts a batch but the next Implementer reports gaps its job re
 3. Check that all docs you own are present and valid with `sane validate execution`
 4. If the user requires any updates, proceed with updating the relevant documents.
 5. Once the user has approved the execution phase outside this session, the workstream is done. Approving batch-completes any jobs left outstanding.
-6. If corrections need planning, check `sane sessions --slot planning` first; if the target slot has >1 session, ask the user which index to send to, else default latest; then call the `sane_handoff` tool (`to: "planning"`, `message: "<action>"`, plus `session_index: <n>` when the user picked one). Your own slot is resolved from the tool context — never pass it.
+6. If corrections need planning, check `sane sessions --slot planning` first; if the target slot has >1 session, ask the user which index to send to, else default latest; then call the `sane_handoff` tool (`to: "planning"`, `message: "<action>"`, plus `session_index: <n>` when the user picked one). If no planning session is linked yet, the handoff creates it and flags it `[ready]` — the user opens it from the session list. Your own slot is resolved from the tool context — never pass it.
 
 ## Approval and Boundaries
 

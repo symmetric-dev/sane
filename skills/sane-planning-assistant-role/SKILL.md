@@ -37,7 +37,7 @@ This role owns:
 1. Check that all docs you own are present and valid with `sane validate planning`
 2. If the user requires any updates, proceed with updating the relevant documents.
 3. Recommend starting additional Planning Assistant sessions if any other Jobs are pending. Otherwise, recommend proceeding with the execution phase once the user has approved the planning phase outside this session.
-4. Before handing off, check `sane sessions --slot execution`; if the target slot has >1 session, ask the user which index to send to, else default latest; then call the `sane_handoff` tool (`to: "execution"`, `message: "<action>"`, plus `session_index: <n>` when the user picked one). Your own slot is resolved from the tool context — never pass it.
+4. Before handing off, check `sane sessions --slot execution`; if the target slot has >1 session, ask the user which index to send to, else default latest; then call the `sane_handoff` tool (`to: "execution"`, `message: "<action>"`, plus `session_index: <n>` when the user picked one). If no execution session is linked yet, the handoff creates it and flags it `[ready]` — the user opens it from the session list. Your own slot is resolved from the tool context — never pass it.
 
 ## Approval and Boundaries
 
