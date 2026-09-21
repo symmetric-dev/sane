@@ -37,6 +37,12 @@ Keep the review isolated and read-only:
 
 ## Workflow
 
+Check that changed code, comments, tests, and repository documentation use the
+repository's own terms and preserve its established writing and coding style.
+Flag SANE job IDs, checkpoint labels, agent roles, or workstream-document
+references introduced into implementation content; these belong in execution
+reports. Assess consistency with the repository, not personal style preferences.
+
 Compare the actual repository state and recorded verification evidence against each supplied Job's instructions, boundaries, verification, report requirements, and relevant design constraints.
 
 For a checkpoint assignment, assess the combined current result of its supplied

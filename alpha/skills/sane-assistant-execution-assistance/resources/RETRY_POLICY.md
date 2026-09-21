@@ -9,7 +9,7 @@ with the implementation or assignment.
 | Outcome | Action |
 | --- | --- |
 | Worker is confirmed not to have started | Resolve the launch problem and retry the same assignment within the user's retry limit. |
-| Worker is still running | Wait for its result; keep the batch blocked. |
+| Worker is still running | Wait for its result before proceeding to subsequent work. |
 | No response and execution status is unknown | Use Worker Recovery to establish status. If it remains unknown, ask the user before launching a replacement. |
 | Worker was interrupted and is confirmed stopped | Use Worker Recovery to resume or relaunch within the retry limit. |
 | Worker finished but its response or report is missing | Use Worker Recovery to retrieve the missing result rather than repeat implementation work. |
