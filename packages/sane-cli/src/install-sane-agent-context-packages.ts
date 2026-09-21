@@ -1,4 +1,4 @@
-import { lstat, mkdir, readFile, readdir, writeFile } from "node:fs/promises"
+import { lstat, mkdir, readFile, readdir, rm, writeFile } from "node:fs/promises"
 import { homedir } from "node:os"
 import { fileURLToPath } from "node:url"
 import { dirname, join, resolve } from "node:path"
@@ -34,6 +34,14 @@ export const ROLE_SKILL_NAMES = [
   "sane-assistant-research-pickup",
   "sane-assistant-research-assistance",
   "sane-assistant-research-delivery",
+] as const
+
+const RETIRED_ROLE_SKILL_NAMES = [
+  "sane-design-assistant-role",
+  "sane-engineering-assistant-role",
+  "sane-planning-assistant-role",
+  "sane-execution-assistant-role",
+  "sane-research-assistant-role",
 ] as const
 
 /**
@@ -122,6 +130,8 @@ export interface AgentContextPackageInstallationResult {
   created: string[]
   updated: string[]
   unchanged: string[]
+  /** Retired skill directories removed, or planned for removal in a dry run. */
+  removed: string[]
 }
 
 interface InstallationEntry {
@@ -246,8 +256,16 @@ async function validateSources(entries: InstallationEntry[]): Promise<LoadedInst
 
 /** Reject an existing non-directory ancestor before any installation write. */
 async function validateDestinationParent(destination: string): Promise<void> {
+  const ancestors: string[] = []
   let ancestor = dirname(destination)
   while (true) {
+    ancestors.push(ancestor)
+    const parent = dirname(ancestor)
+    if (parent === ancestor) break
+    ancestor = parent
+  }
+  // Check from the root so even lstat never traverses a symlinked ancestor.
+  for (const ancestor of ancestors.reverse()) {
     const stat = await lstatOrUndefined(ancestor)
     if (stat) {
       if (!stat.isDirectory()) {
@@ -255,12 +273,23 @@ async function validateDestinationParent(destination: string): Promise<void> {
           `Destination parent is not a directory: ${ancestor}`,
         )
       }
-      return
     }
-    const parent = dirname(ancestor)
-    if (parent === ancestor) return
-    ancestor = parent
   }
+}
+
+async function planRetiredSkillRemovals(homeDirectory: string): Promise<string[]> {
+  const removals: string[] = []
+  for (const name of RETIRED_ROLE_SKILL_NAMES) {
+    const destination = join(homeDirectory, ".agents", "skills", name)
+    await validateDestinationParent(destination)
+    const stat = await lstatOrUndefined(destination)
+    if (!stat) continue
+    if (!stat.isDirectory()) {
+      throw new AgentContextPackageInstallationError(`Retired skill is not a directory: ${destination}`)
+    }
+    removals.push(destination)
+  }
+  return removals
 }
 
 async function planDestinations(
@@ -334,6 +363,7 @@ async function loadConfigPackageEntry(
   const destination = join(homeDirectory, ".config", "opencode", OPENCODE_CONFIG_PACKAGE_FILENAME)
   const source = `generated:${OPENCODE_PLUGIN_DEPENDENCY}`
   const version = await resolvePluginDependencyVersion(sourceRoot)
+  await validateDestinationParent(destination)
   const stat = await lstatOrUndefined(destination)
   if (stat && !stat.isFile()) {
     throw new AgentContextPackageInstallationError(
@@ -382,8 +412,8 @@ async function loadConfigPackageEntry(
 
 /**
  * Install all Alpha OpenCode agents, role skills, and the SANE plugin.
- * All source and destination checks finish before this function creates a directory
- * or writes a destination file.
+ * All source, destination, and removal checks finish before any mutation.
+ * Retired skills are removed only after installation writes succeed.
  */
 export async function installSaneAgentContextPackages(
   options: AgentContextPackageInstallationOptions = {},
@@ -424,12 +454,14 @@ export async function installSaneAgentContextPackages(
     [...configuredEntries, configPackageEntry],
     options.overwrite === true,
   )
+  const removals = await planRetiredSkillRemovals(homeDirectory)
   const result: AgentContextPackageInstallationResult = {
     homeDirectory,
     dryRun: options.dryRun === true,
     created: plannedEntries.filter((entry) => entry.action === "create").map((entry) => entry.destination),
     updated: plannedEntries.filter((entry) => entry.action === "update").map((entry) => entry.destination),
     unchanged: plannedEntries.filter((entry) => entry.action === "unchanged").map((entry) => entry.destination),
+    removed: removals,
   }
 
   if (options.dryRun) {
@@ -437,6 +469,7 @@ export async function installSaneAgentContextPackages(
     for (const entry of plannedEntries) {
       write(`${entry.action === "unchanged" ? "Unchanged" : "Planned"}: ${entry.destination}`)
     }
+    for (const destination of removals) write(`Planned removal: ${destination}`)
     return result
   }
 
@@ -448,6 +481,12 @@ export async function installSaneAgentContextPackages(
     await mkdir(dirname(entry.destination), { recursive: true })
     await writeFile(entry.destination, entry.content)
     write(`${entry.action === "create" ? "Created" : "Updated"}: ${entry.destination}`)
+  }
+  for (const destination of removals) {
+    // rm unlinks descendant symlinks rather than following them. Local contents
+    // of these exact retired directories are intentionally removed as well.
+    await rm(destination, { recursive: true, force: true })
+    write(`Removed: ${destination}`)
   }
   return result
 }

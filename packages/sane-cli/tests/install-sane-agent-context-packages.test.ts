@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test"
-import { access, lstat, mkdir, mkdtemp, readFile, rm, symlink } from "node:fs/promises"
+import { access, lstat, mkdir, mkdtemp, readFile, realpath, rm, symlink } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { dirname, join } from "node:path"
 
@@ -39,7 +39,7 @@ describe("install-sane-agent-context-packages", () => {
   let sourceRoot: string
 
   beforeEach(async () => {
-    temporaryDirectory = await mkdtemp(join(tmpdir(), "sane-agent-context-packages-"))
+    temporaryDirectory = await mkdtemp(join(await realpath(tmpdir()), "sane-agent-context-packages-"))
     homeDirectory = join(temporaryDirectory, "home")
     sourceRoot = join(temporaryDirectory, "source")
     for (const filename of AGENT_FILENAMES) {
@@ -69,6 +69,91 @@ describe("install-sane-agent-context-packages", () => {
   function options(extra: { modelConfigPath?: string; dryRun?: boolean; overwrite?: boolean; write?: (line: string) => void } = {}) {
     return { homeDirectory, sourceRoot, write: () => {}, ...extra }
   }
+
+  const retiredNames = ["sane-design-assistant-role", "sane-engineering-assistant-role", "sane-planning-assistant-role", "sane-execution-assistant-role", "sane-research-assistant-role"]
+
+  async function seedRetiredSkills(): Promise<string[]> {
+    const paths = retiredNames.map((name) => join(homeDirectory, ".agents", "skills", name))
+    for (const path of paths) {
+      await mkdir(join(path, "local", "nested"), { recursive: true })
+      await Bun.write(join(path, "SKILL.md"), "old role\n")
+      await Bun.write(join(path, "local", "nested", "custom.txt"), "local contents\n")
+    }
+    return paths
+  }
+
+  test("removes all five retired skill directories and local contents, preserves other skills, and repeats safely", async () => {
+    const retired = await seedRetiredSkills()
+    const preserved = ["sane-legacy-role", "sane-design-assistant-role-custom", "sane-feature-design-assistant-role", ...ROLE_SKILL_NAMES]
+    for (const name of preserved) {
+      const path = join(homeDirectory, ".agents", "skills", name)
+      await mkdir(path, { recursive: true })
+      await Bun.write(join(path, "custom.txt"), "keep\n")
+    }
+    const outside = join(temporaryDirectory, "outside.txt")
+    await Bun.write(outside, "outside\n")
+    await symlink(outside, join(retired[0]!, "local", "link"))
+    const lines: string[] = []
+    const result = await installSaneAgentContextPackages(options({ write: (line) => lines.push(line) }))
+    expect(result.removed).toEqual(retired)
+    for (const path of retired) {
+      await expectMissing(path)
+      expect(lines).toContain(`Removed: ${path}`)
+    }
+    for (const name of preserved) expect(await readFile(join(homeDirectory, ".agents", "skills", name, "custom.txt"), "utf8")).toBe("keep\n")
+    for (const name of ROLE_SKILL_NAMES) expect(await readFile(join(homeDirectory, ".agents", "skills", name, "SKILL.md"), "utf8")).toBe(`skill ${name}\n`)
+    expect(await readFile(outside, "utf8")).toBe("outside\n")
+    expect(await installSaneAgentContextPackages(options())).toMatchObject({ created: [], updated: [], removed: [] })
+  })
+
+  test("dry run reports all retired directories without installing or removing contents", async () => {
+    const retired = await seedRetiredSkills()
+    const lines: string[] = []
+    const result = await installSaneAgentContextPackages(options({ dryRun: true, write: (line) => lines.push(line) }))
+    expect(result.removed).toEqual(retired)
+    for (const path of retired) {
+      expect(lines).toContain(`Planned removal: ${path}`)
+      expect(await readFile(join(path, "local", "nested", "custom.txt"), "utf8")).toBe("local contents\n")
+    }
+    await expectMissing(join(homeDirectory, ".config"))
+    await expectMissing(join(homeDirectory, ".agents", "skills", ROLE_SKILL_NAMES[0]))
+  })
+
+  test.each(["missing-source", "conflict", "invalid-config"])("installation preflight failure %s leaves retired skills intact", async (kind) => {
+    const retired = await seedRetiredSkills()
+    if (kind === "missing-source") await rm(join(sourceRoot, "skills", ROLE_SKILL_NAMES[0], "SKILL.md"))
+    else {
+      const destination = kind === "conflict"
+        ? join(homeDirectory, ".agents", "skills", ROLE_SKILL_NAMES[0], "SKILL.md")
+        : join(homeDirectory, ".config", "opencode", "package.json")
+      await mkdir(dirname(destination), { recursive: true })
+      await Bun.write(destination, "invalid\n")
+    }
+    await expect(installSaneAgentContextPackages(options())).rejects.toBeInstanceOf(AgentContextPackageInstallationError)
+    for (const path of retired) expect(await readFile(join(path, "SKILL.md"), "utf8")).toBe("old role\n")
+    await expectMissing(join(homeDirectory, ".config", "opencode", "agents"))
+  })
+
+  test.each(["file", "symlink", "dangling-symlink", "ancestor-symlink"])("rejects unsafe retired target %s before any writes or cleanup", async (kind) => {
+    const retired = await seedRetiredSkills()
+    const target = retired[4]!
+    await rm(target, { recursive: true })
+    const outside = join(temporaryDirectory, "outside")
+    await mkdir(outside)
+    await Bun.write(join(outside, "keep.txt"), "keep\n")
+    if (kind === "file") await Bun.write(target, "keep\n")
+    else if (kind === "ancestor-symlink") {
+      await rm(join(homeDirectory, ".agents"), { recursive: true })
+      await mkdir(join(outside, "skills", retiredNames[4]!), { recursive: true })
+      await symlink(outside, join(homeDirectory, ".agents"))
+    } else await symlink(kind === "symlink" ? outside : join(outside, "missing"), target)
+    for (const dryRun of [false, true]) {
+      await expect(installSaneAgentContextPackages(options({ overwrite: true, dryRun }))).rejects.toBeInstanceOf(AgentContextPackageInstallationError)
+      await expectMissing(join(homeDirectory, ".config"))
+      expect(await readFile(join(outside, "keep.txt"), "utf8")).toBe("keep\n")
+      if (kind !== "ancestor-symlink") expect(await readFile(join(retired[0]!, "SKILL.md"), "utf8")).toBe("old role\n")
+    }
+  })
 
   test("installs all eleven agents, all fifteen assistant lifecycle skills, the sane plugin, and the plugin runtime dep", async () => {
     const result = await installSaneAgentContextPackages(options())

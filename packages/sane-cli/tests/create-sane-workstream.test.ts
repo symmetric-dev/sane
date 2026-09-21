@@ -201,7 +201,7 @@ describe("create-sane-workstream", () => {
       "# Solution Design Document",
     )
     expect(await readFile(join(destination, "README.md"), "utf8"))
-      .toContain("four Phases")
+      .toContain("# SANE Context")
   })
 
   test("dry run leaves no destination", async () => {

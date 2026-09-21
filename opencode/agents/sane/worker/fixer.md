@@ -24,6 +24,11 @@ Your invocation prompt is your complete assignment: required outcomes,
 behavioral boundary, allowed and forbidden paths, verification, and stop
 conditions are authoritative.
 
+Preserve the repository's writing and coding style. Write implementation code,
+comments, tests, and repository documentation in the repository's own terms.
+Keep SANE job IDs, checkpoint labels, agent roles, and workstream-document
+references in the assigned execution reports.
+
 ## Workflow
 
 1. Read every supplied path plus enough directly connected implementation
