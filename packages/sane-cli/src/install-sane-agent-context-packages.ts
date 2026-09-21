@@ -1,4 +1,4 @@
-import { lstat, mkdir, readFile, writeFile } from "node:fs/promises"
+import { lstat, mkdir, readFile, readdir, writeFile } from "node:fs/promises"
 import { homedir } from "node:os"
 import { fileURLToPath } from "node:url"
 import { dirname, join, resolve } from "node:path"
@@ -19,11 +19,21 @@ export const AGENT_FILENAMES = [
 ] as const
 
 export const ROLE_SKILL_NAMES = [
-  "sane-design-assistant-role",
-  "sane-engineering-assistant-role",
-  "sane-execution-assistant-role",
-  "sane-planning-assistant-role",
-  "sane-research-assistant-role",
+  "sane-assistant-design-pickup",
+  "sane-assistant-design-assistance",
+  "sane-assistant-design-delivery",
+  "sane-assistant-engineering-pickup",
+  "sane-assistant-engineering-assistance",
+  "sane-assistant-engineering-delivery",
+  "sane-assistant-execution-pickup",
+  "sane-assistant-execution-assistance",
+  "sane-assistant-execution-delivery",
+  "sane-assistant-planning-pickup",
+  "sane-assistant-planning-assistance",
+  "sane-assistant-planning-delivery",
+  "sane-assistant-research-pickup",
+  "sane-assistant-research-assistance",
+  "sane-assistant-research-delivery",
 ] as const
 
 /**
@@ -120,10 +130,11 @@ interface InstallationEntry {
   agentName?: string
   /** Rewrite `sane-cli` import prefixes for the installed plugin copy. */
   rewriteImports?: boolean
+  resource?: boolean
 }
 
 interface LoadedInstallationEntry extends InstallationEntry {
-  content: string
+  content: string | Buffer
 }
 
 interface PlannedInstallationEntry extends LoadedInstallationEntry {
@@ -185,6 +196,40 @@ function installationEntries(
   ]
 }
 
+async function resourceInstallationEntries(
+  sourceRoot: string,
+  homeDirectory: string,
+): Promise<InstallationEntry[]> {
+  const entries: InstallationEntry[] = []
+  async function visit(source: string, destination: string, optional = false): Promise<void> {
+    const stat = await lstatOrUndefined(source)
+    if (!stat && optional) return
+    if (!stat?.isDirectory()) {
+      throw new AgentContextPackageInstallationError(`Resource source must be a directory: ${source}`)
+    }
+    for (const name of (await readdir(source)).sort()) {
+      const childSource = join(source, name)
+      const childDestination = join(destination, name)
+      const childStat = await lstatOrUndefined(childSource)
+      if (childStat?.isDirectory()) {
+        await visit(childSource, childDestination)
+      } else if (childStat?.isFile()) {
+        entries.push({ source: childSource, destination: childDestination, resource: true })
+      } else {
+        throw new AgentContextPackageInstallationError(`Required source must be a regular file: ${childSource}`)
+      }
+    }
+  }
+  for (const skillName of ROLE_SKILL_NAMES) {
+    await visit(
+      join(sourceRoot, "skills", skillName, "resources"),
+      join(homeDirectory, ".agents", "skills", skillName, "resources"),
+      true,
+    )
+  }
+  return entries
+}
+
 async function validateSources(entries: InstallationEntry[]): Promise<LoadedInstallationEntry[]> {
   return Promise.all(
     entries.map(async (entry) => {
@@ -194,7 +239,7 @@ async function validateSources(entries: InstallationEntry[]): Promise<LoadedInst
           `Required source must be a regular file: ${entry.source}`,
         )
       }
-      return { ...entry, content: await readFile(entry.source, "utf8") }
+      return { ...entry, content: entry.resource ? await readFile(entry.source) : await readFile(entry.source, "utf8") }
     }),
   )
 }
@@ -232,7 +277,10 @@ async function planDestinations(
           `Destination is not a regular file: ${entry.destination}`,
         )
       }
-      if ((await readFile(entry.destination, "utf8")) === entry.content) {
+      const identical = typeof entry.content === "string"
+        ? (await readFile(entry.destination, "utf8")) === entry.content
+        : (await readFile(entry.destination)).equals(entry.content)
+      if (identical) {
         return { ...entry, action: "unchanged" }
       }
       if (!overwrite) {
@@ -343,14 +391,17 @@ export async function installSaneAgentContextPackages(
   const write = options.write ?? console.log
   const homeDirectory = resolveHomeDirectory(options.homeDirectory)
   const sourceRoot = resolve(options.sourceRoot ?? DEFAULT_SOURCE_ROOT)
-  const sourcedEntries = await validateSources(installationEntries(sourceRoot, homeDirectory))
+  const sourcedEntries = await validateSources([
+    ...installationEntries(sourceRoot, homeDirectory),
+    ...await resourceInstallationEntries(sourceRoot, homeDirectory),
+  ])
   const rewrittenEntries = sourcedEntries.map((entry) =>
-    entry.rewriteImports ? { ...entry, content: rewritePluginImports(entry.content) } : entry,
+    entry.rewriteImports ? { ...entry, content: rewritePluginImports(entry.content.toString()) } : entry,
   )
   try {
     for (const entry of rewrittenEntries) {
       if (entry.agentName !== undefined) {
-        validateAgentTaskPermissions(entry.content, entry.agentName, AGENT_FILENAMES)
+        validateAgentTaskPermissions(entry.content.toString(), entry.agentName, AGENT_FILENAMES)
       }
     }
   } catch (error) {
@@ -362,7 +413,7 @@ export async function installSaneAgentContextPackages(
       const models = await loadAgentModelConfig(options.modelConfigPath, AGENT_FILENAMES)
       configuredEntries = rewrittenEntries.map((entry) => ({
         ...entry,
-        content: injectAgentModel(entry.content, entry.agentName ? models.get(entry.agentName) : undefined),
+        content: entry.agentName ? injectAgentModel(entry.content.toString(), models.get(entry.agentName)) : entry.content,
       }))
     } catch (error) {
       throw new AgentContextPackageInstallationError((error as Error).message)

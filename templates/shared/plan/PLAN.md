@@ -1,9 +1,9 @@
 # Plan
 
-<!-- Retain this H1 and only the two H2s below, exactly once and in this order.
+<!-- Retain this H1 and the H2s below, exactly once and in this order.
 This plan is a compact Job index and explanation of the split for user review
-before detailed Job Spec authoring. Planning owns `plan/PLAN.md` and
-`plan/jobs/*`. Keep implementation requirements in the approved SDD, Solution
+before detailed Job Spec authoring. Planning owns `execution/PLAN.md` and
+`execution/jobs/*`. Keep implementation requirements in the approved SDD, Solution
 Specs, and Job Specs. Omit approval/status commentary, authorization
 disclaimers, report instructions, reference inventories, and workflow narration. -->
 
@@ -13,11 +13,11 @@ disclaimers, report instructions, reference inventories, and workflow narration.
 
 01. Unique Job Name: One short sentence describing the main deliverable.
 
-Number entries consecutively from 01, writing each number explicitly in the
-Markdown source. The number is the stable local Job ID, not part of its name.
-Execution defaults to sequential list order. Once Job Specs exist at
-`plan/jobs/<job-id>-<job-slug>.md`, do not renumber without updating matching
-documents and references. Do not add Job Group tags.
+Use stable Job IDs starting at 01, writing each ID explicitly in the Markdown
+source. Preserve existing IDs when inserting jobs: for example, 07a and 07b
+between 07 and 08. For inserted IDs, use an explicit list entry such as
+`- 07a. Unique Job Name: Short deliverable.` Execution defaults to listed order.
+Job Specs live at `execution/jobs/<job-id>-<job-slug>.md`.
 Aim for about 20 words per description; do not enumerate requirements. -->
 
 ## Split Notes
@@ -34,3 +34,21 @@ Permit parallel work only when repository changes, inputs, and expected results
 are safely isolated. Do not repeat SDD constraints, file allowlists, acceptance
 criteria, or standard workflow rules. Aim for 3–7 notes, using fewer for a simple
 split; brevity must not obscure necessary execution relationships. -->
+
+## Execution Checkpoints
+
+<!-- Define checkpoints at coherent review boundaries, especially before major
+dependency transitions. Every job belongs to exactly one checkpoint's Jobs
+column, in execution order; include a final checkpoint covering the remaining
+jobs. A parallel batch must fit wholly inside one checkpoint. Additional review
+context may include earlier jobs without assigning them to another checkpoint.
+
+| Checkpoint | After job(s) | Jobs | Review purpose / earlier context |
+| --- | --- | --- | --- |
+| CP1 | 03 | 01, 02, 03 | Backend ready for integration |
+| CP2 | 04 | 04 | Integration with backend from CP1 |
+| CP3 | 07 | 05, 06, 07 | Completed frontend flow |
+
+Checkpoints organize detailed review and commits; record intended boundaries
+here, not progress or commit hashes. Reconcile coverage, dependencies, and
+checkpoint boundaries whenever jobs change. -->

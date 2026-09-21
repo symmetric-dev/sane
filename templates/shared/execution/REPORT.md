@@ -21,3 +21,11 @@ issues found` when none exist. -->
 
 <!-- Record optional handoff context for the user, reviewer, or next agent.
 State `No additional notes` when none are needed. -->
+
+## Implementation Recommendations
+
+<!-- Record useful guidance or follow-up suggestions with supporting evidence,
+affected jobs/surfaces, applicability, and limits. Reference earlier report
+sections rather than duplicating evidence. Distinguish verified facts, observed
+workarounds, and proposed fixes. Known failing checks are baseline evidence,
+not permission to skip required verification. State `None` when appropriate. -->

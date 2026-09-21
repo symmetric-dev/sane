@@ -158,9 +158,9 @@ describe("create-sane-workstream", () => {
     await createSaneWorkstream({ destination, type, write: () => {} })
     const plan = await readFile(join(destination, "resources", "PLAN_TEMPLATE.md"), "utf8")
     const spec = await readFile(join(destination, "resources", "JOB_TEMPLATE.md"), "utf8")
-    expect(plan.match(/^#{1,2} .+$/gm)).toEqual(["# Plan", "## Jobs", "## Split Notes"])
-    expect(plan).toContain("Do not add Job Group tags.")
-    expect(plan).toContain("Execution defaults to sequential list order.")
+    expect(plan.match(/^#{1,2} .+$/gm)).toEqual(["# Plan", "## Jobs", "## Split Notes", "## Execution Checkpoints"])
+    expect(plan).toContain("Every job belongs to exactly one checkpoint's Jobs")
+    expect(plan).toContain("Execution defaults to listed order.")
     expect(plan).toContain("state sequencing exceptions and parallel authorization explicitly")
     expect(spec.match(/^#{1,2} .+$/gm)).toEqual([
       "# Job Spec <id>: <job name>", "## Goal", "## Context", "## Instructions",

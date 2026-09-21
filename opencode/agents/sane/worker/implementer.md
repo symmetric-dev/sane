@@ -14,6 +14,7 @@ permission:
   skill:
     "*": allow
     "sane-*-assistant-role": deny
+    "sane-assistant-*": deny
   task:
     "*": deny
     "sane/worker/scout": allow
@@ -52,5 +53,9 @@ Create or update the report only at the supplied destination, following the
 supplied template and the Job's Report Requirements exactly. Record every changed file, including any
 path beyond the Job's expected surface, and explain why each additional path was
 necessary.
+
+Capture Implementation Recommendations using the report template: useful
+predecessor guidance, evidence, applicability, and limits. Keep proposed fixes
+distinct from observed results so later jobs can use the evidence accurately.
 
 Return a small summary of what was done, any issues, blockers, and the path to the report if applicable.
