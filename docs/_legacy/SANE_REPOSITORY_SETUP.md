@@ -1,4 +1,7 @@
-# SANE Alpha Repository Setup
+# SANE Alpha Repository Setup (archived)
+
+> Historical reference only. Current setup instructions are in the
+> [Workflow Playbook](../SANE_WORKFLOW.md).
 
 ## Purpose
 

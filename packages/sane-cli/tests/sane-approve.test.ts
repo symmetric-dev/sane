@@ -15,6 +15,12 @@ import { promisify } from "node:util"
 import { initializeSaneRepository } from "../src/init-sane-repository.ts"
 import { createSaneRepositoryWorkstream } from "../src/create-sane-repository-workstream.ts"
 import {
+  parseCliArguments as parseJobArguments,
+  runCli as runJobCli,
+  runSaneJobRegisterCommand,
+} from "../src/sane-job-command.ts"
+import { runSaneValidateCommand } from "../src/sane-validate-command.ts"
+import {
   parseCliArguments,
   runCli,
   runSaneApproveCommand,
@@ -25,6 +31,7 @@ import {
   getApproval,
   getJob,
   initSchema,
+  listJobs,
   listMutations,
   listStateEntries,
   openSaneDb,
@@ -87,6 +94,151 @@ describe("sane-approve (phase approvals)", () => {
 
   afterEach(async () => {
     await rm(tempDirectory, { recursive: true, force: true })
+  })
+
+  const quiet = { workstreamPath: "01-demo", write: () => {} }
+
+  async function approvePlan() {
+    await writeDoc("execution/PLAN.md", CLEAN_PLAN)
+    await writeDoc("execution/jobs/01-first.md", CLEAN_JOB_A)
+    await writeDoc("execution/jobs/02-second.md", CLEAN_JOB_B)
+    return runSaneApproveCommand({ ...quiet, implementationRepository, phase: "planning", approvalRef: "original-user-approval" })
+  }
+
+  async function snapshot() {
+    const db = await openSaneDb(identity.repoRoot)
+    try {
+      return {
+        approval: getApproval(db, identity, "planning"),
+        state: listStateEntries(db, identity),
+        jobs: listJobs(db, identity),
+        mutations: listMutations(db, identity),
+      }
+    } finally {
+      db.close()
+    }
+  }
+
+  test("job registration requires an existing Planning approval", async () => {
+    await writeDoc("execution/PLAN.md", CLEAN_PLAN)
+    await writeDoc("execution/jobs/01-first.md", CLEAN_JOB_A)
+    const before = await snapshot()
+    await expect(runSaneJobRegisterCommand({ ...quiet, implementationRepository })).rejects.toThrow(/existing Planning approval/)
+    expect(await snapshot()).toEqual(before)
+  })
+
+  test("job registration preserves progress and approval, audits Planning, and is idempotent", async () => {
+    await approvePlan()
+    const db = await openSaneDb(identity.repoRoot)
+    try {
+      updateJobStatus(db, identity, "01", "running", { actorRole: "execution", sessionId: "progress" })
+      updateJobStatus(db, identity, "02", "completed", { actorRole: "execution", sessionId: "progress" }, { reportPath: "execution/reports/02-second.md" })
+    } finally {
+      db.close()
+    }
+    const before = await snapshot()
+    await writeDoc("execution/jobs/03-added.md", "# Added job\nAuthorized follow-up.\n")
+    const lines: string[] = []
+    const result = await runSaneJobRegisterCommand({ ...quiet, implementationRepository, json: true, write: (line) => lines.push(line) })
+    expect(JSON.parse(lines[0]!).jobs).toEqual(result.jobs)
+    expect(result.jobs.map((job) => job.status)).toEqual(["running", "completed", "planned"])
+    const after = await snapshot()
+    expect(after.approval).toEqual(before.approval)
+    expect(after.state).toEqual(before.state)
+    expect(after.jobs.slice(0, 2)).toEqual(before.jobs)
+    expect(after.mutations.length).toBe(before.mutations.length + 1)
+    const dbAfter = await openSaneDb(identity.repoRoot)
+    try {
+      const creates = listMutations(dbAfter, { ...identity, tableName: "jobs" })
+      expect(creates.filter((mutation) => mutation.actor_role === "planning")).toHaveLength(1)
+      expect(creates.some((mutation) => mutation.session_id.startsWith("cli-job-register-"))).toBe(true)
+    } finally {
+      dbAfter.close()
+    }
+    await runSaneJobRegisterCommand({ ...quiet, implementationRepository })
+    expect(await snapshot()).toEqual(after)
+  })
+
+  test.each(["invalid spec", "invalid plan", "duplicate new ID", "duplicate existing ID", "renamed spec", "path reassignment", "empty ID"])("registration rejects %s without partial mutation", async (scenario) => {
+    await approvePlan()
+    await writeDoc("execution/jobs/00-valid-addition.md", "# Valid addition\n")
+    if (scenario === "invalid spec") await writeDoc("execution/jobs/03-invalid.md", "<!-- unfinished -->")
+    if (scenario === "invalid plan") await writeDoc("execution/PLAN.md", "")
+    if (scenario === "duplicate new ID") {
+      await writeDoc("execution/jobs/03-first.md", "# First\n")
+      await writeDoc("execution/jobs/03-second.md", "# Second\n")
+    }
+    if (scenario === "duplicate existing ID") await writeDoc("execution/jobs/01-collision.md", "# Collision\n")
+    if (scenario === "renamed spec") {
+      await rm(join(workstreamDir, "execution/jobs/02-second.md"))
+      await writeDoc("execution/jobs/02-renamed.md", CLEAN_JOB_B)
+    }
+    if (scenario === "path reassignment") {
+      const db = await openSaneDb(identity.repoRoot)
+      try {
+        createJob(db, identity, { jobId: "legacy", specPath: "execution/jobs/03-added.md" }, { actorRole: "planning", sessionId: "legacy" })
+      } finally {
+        db.close()
+      }
+      await writeDoc("execution/jobs/03-added.md", "# Added\n")
+    }
+    if (scenario === "empty ID") await writeDoc("execution/jobs/-empty.md", "# Empty ID\n")
+    const before = await snapshot()
+    await expect(runSaneJobRegisterCommand({ ...quiet, implementationRepository })).rejects.toThrow()
+    expect(await snapshot()).toEqual(before)
+  })
+
+  test("initial approval and reapproval reject colliding IDs atomically", async () => {
+    await writeDoc("execution/PLAN.md", CLEAN_PLAN)
+    await writeDoc("execution/jobs/00-valid.md", CLEAN_JOB_A)
+    await writeDoc("execution/jobs/01-first.md", CLEAN_JOB_A)
+    await writeDoc("execution/jobs/01-second.md", CLEAN_JOB_B)
+    const before = await snapshot()
+    await expect(runSaneApproveCommand({ ...quiet, implementationRepository, phase: "planning", approvalRef: "must-not-record" })).rejects.toThrow(/Duplicate job ID/)
+    expect(await snapshot()).toEqual(before)
+    await rm(join(workstreamDir, "execution/jobs/01-second.md"))
+    await approvePlan()
+    await rm(join(workstreamDir, "execution/jobs/02-second.md"))
+    await writeDoc("execution/jobs/02-renamed.md", CLEAN_JOB_B)
+    const approved = await snapshot()
+    await expect(runSaneApproveCommand({ ...quiet, implementationRepository, phase: "planning", approvalRef: "must-not-replace" })).rejects.toThrow(/cannot reassign/)
+    expect(await snapshot()).toEqual(approved)
+  })
+
+  test("Planning drift retains authority and directs escalation to the user; other phases retain reapproval warning", async () => {
+    await approvePlan()
+    await writeDoc("execution/PLAN.md", "# Amended plan\n")
+    const result = await runSaneValidateCommand({ ...quiet, implementationRepository, phase: "planning" })
+    expect(result.ok).toBe(true)
+    const warning = result.warnings.join("\n")
+    expect(warning).toContain("differ from the approved snapshot")
+    expect(warning).toContain("within existing authorization may continue without reapproval")
+    expect(warning).toContain("directly to the user")
+    expect(warning).not.toContain("re-approve to refresh authority")
+    await writeDoc("PRD.md", CLEAN_PRD)
+    await writeDoc("design/SDD.md", CLEAN_SDD)
+    await runSaneApproveCommand({ ...quiet, implementationRepository, phase: "design", approvalRef: "design-ok" })
+    await writeDoc("design/SDD.md", "# Changed design\n")
+    const design = await runSaneValidateCommand({ ...quiet, implementationRepository, phase: "design" })
+    expect(design.warnings.join("\n")).toContain("re-approve to refresh authority")
+  })
+
+  test("registration CLI parses, auto-detects the workstream, and returns failures", async () => {
+    expect(parseJobArguments(["--register", "--json"])).toMatchObject({ register: true, json: true })
+    expect(() => parseJobArguments(["01", "--register"])).toThrow(/cannot be combined/)
+    expect(() => parseJobArguments(["--register", "completed"])).toThrow(/cannot be combined/)
+    await approvePlan()
+    await writeDoc("execution/jobs/03-added.md", "# Added\n")
+    const previousCwd = process.cwd()
+    process.chdir(implementationRepository)
+    try {
+      expect(await runJobCli(["--register", "--json"])).toBe(0)
+      expect((await snapshot()).jobs).toHaveLength(3)
+      await writeDoc("execution/jobs/04-invalid.md", "")
+      expect(await runJobCli(["--register"])).toBe(1)
+    } finally {
+      process.chdir(previousCwd)
+    }
   })
 
   test("approve design validates, records, and marks the phase approved", async () => {

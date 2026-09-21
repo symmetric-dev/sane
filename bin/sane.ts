@@ -73,6 +73,7 @@ Commands:
   approve <design|engineering|planning|execution> --ref <approval_ref>
   provide <design|engineering|planning|execution>
   job <job-id> [running|completed]
+  job --register [--json] (register additions under existing Planning approval)
   research
   handoff
   link

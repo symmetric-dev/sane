@@ -1,4 +1,7 @@
-# SANE Alpha Evaluation Initiative
+# SANE Alpha Evaluation Initiative (archived)
+
+> Preserved as background for the evaluation initiative. For day-to-day use,
+> start with the [Workflow Playbook](../SANE_WORKFLOW.md).
 
 ## Purpose
 

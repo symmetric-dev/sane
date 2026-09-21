@@ -1,7 +1,7 @@
 /**
  * SANE `sane job` command.
  *
- * Two forms, one command:
+ * Three forms, one command:
  *
  * - `sane job <job-id>` shows the job's serialized context bundle: job row,
  *   absolute spec/report paths (with existence), report template, phase
@@ -13,10 +13,12 @@
  * - `sane job <job-id> <running|completed>` marks progress (ungated): the
  *   Execution Assistant moves jobs forward as work proceeds. Moves must go
  *   forward (`planned -> running -> completed`; same status is a no-op).
- *   `planned` comes only from planning-approval registration and is not an
+ *   `planned` comes from registration under Planning approval and is not an
  *   accepted target. This form is not approval: the user gate stays
  *   `sane approve execution`, which validates the final report plus job
  *   reports and batch-completes stragglers.
+ * - `sane job --register` validates Planning documents and registers added
+ *   specs under the existing Planning approval, without replacing it.
  */
 import { readdir, readFile } from "node:fs/promises"
 import { join } from "node:path"
@@ -24,6 +26,7 @@ import { join } from "node:path"
 import {
   getApproval,
   getJob,
+  getWorkstream,
   initSchema,
   openSaneDb,
   resolveSaneIdentity,
@@ -31,6 +34,8 @@ import {
   type JobRow,
 } from "./sane-db.ts"
 import { resolveCommandAddress } from "./sane-cwd-target.ts"
+import { registerPlannedJobs } from "./sane-job-registration.ts"
+import { validatePhaseDocs } from "./sane-validate-command.ts"
 import {
   ROOT_DOC_BY_TYPE,
   resolveBootstrappedWorkstream,
@@ -101,17 +106,19 @@ export interface SaneJobCommandResult {
 }
 
 export const USAGE =
-  "Usage: sane job <job-id> [running|completed] [--json] (auto-detects the workstream from the current directory; bare job id shows the serialized context bundle, with a status marks progress, never approval)"
+  "Usage: sane job <job-id> [running|completed] [--json] | sane job --register [--json] (auto-detects the workstream; --register validates Planning docs and registers additions under existing Planning approval; never records approval)"
 
 export function parseCliArguments(args: string[]): {
   implementationRepository: string
   workstreamPath: string
   jobId: string
-  /** Target status, or null for the view-bundle form. */
+  /** Target status, or null for the view-bundle or registration form. */
   status: string | null
   json: boolean
+  register?: boolean
 } {
   let json = false
+  let register = false
   const positional: string[] = []
   let parseOptions = true
 
@@ -121,6 +128,8 @@ export function parseCliArguments(args: string[]): {
       parseOptions = false
     } else if (parseOptions && argument === "--json") {
       json = true
+    } else if (parseOptions && argument === "--register") {
+      register = true
     } else if (parseOptions && argument.startsWith("-")) {
       throw new SaneWorkstreamStateError(`Unknown option: ${argument}`)
     } else {
@@ -128,6 +137,12 @@ export function parseCliArguments(args: string[]): {
     }
   }
 
+  if (register) {
+    if (positional.length > 0) {
+      throw new SaneWorkstreamStateError("Option --register cannot be combined with a job id or status.")
+    }
+    return { implementationRepository: "", workstreamPath: "", jobId: "", status: null, json, register: true }
+  }
   if (positional.length < 1 || positional.length > 2 || !positional[0]) {
     throw new SaneWorkstreamStateError(
       "Provide exactly one job id, with an optional status (running|completed).",
@@ -202,7 +217,7 @@ export async function buildJobBundle(
   const row = getJob(db, identity, jobId)
   if (!row) {
     throw new SaneWorkstreamStateError(
-      `Job not found: ${jobId} (workstream ${identity.workstreamId}). Jobs register on planning approval.`,
+      `Job not found: ${jobId} (workstream ${identity.workstreamId}). Jobs register on planning approval or with sane job --register under existing Planning approval.`,
     )
   }
   const specPath = join(workstream.path, row.spec_path)
@@ -335,7 +350,7 @@ export async function runSaneJobCommand(
     const before = getJob(db, identity, options.jobId)
     if (!before) {
       throw new SaneWorkstreamStateError(
-        `Job not found: ${options.jobId} (workstream ${identity.workstreamId}). Jobs register on planning approval.`,
+        `Job not found: ${options.jobId} (workstream ${identity.workstreamId}). Jobs register on planning approval or with sane job --register under existing Planning approval.`,
       )
     }
     const row: JobRow = updateJobStatus(db, identity, options.jobId, options.status, mutation)
@@ -361,11 +376,53 @@ export async function runSaneJobCommand(
   }
 }
 
+export async function runSaneJobRegisterCommand(
+  options: Omit<SaneJobViewOptions, "jobId">,
+): Promise<{ jobs: JobRow[]; warnings: string[] }> {
+  const write = options.write ?? console.log
+  const { db, identity, workstream } = await resolveJobContext(options)
+  try {
+    const requireApproval = () => {
+      if (!getApproval(db, identity, "planning")) {
+        throw new SaneWorkstreamStateError("Cannot register jobs without existing Planning approval. Ask the user to approve Planning first.")
+      }
+    }
+    requireApproval()
+    const row = getWorkstream(db, identity)
+    if (!row || row.type !== workstream.type) {
+      throw new SaneWorkstreamStateError("Missing or mismatched workstream type in SANE state; fix the workstream before registering jobs.")
+    }
+    const validation = await validatePhaseDocs(db, identity, workstream.path, "planning", row.type)
+    if (!validation.ok) {
+      throw new SaneWorkstreamStateError(`Cannot register jobs for ${identity.workstreamId}:\n${validation.problems.map((problem) => `- ${problem}`).join("\n")}`)
+    }
+    const jobs = db.transaction(() => {
+      requireApproval()
+      return registerPlannedJobs(db, identity, validation.files, {
+        actorRole: "planning",
+        sessionId: `cli-job-register-${process.pid}-${Date.now()}`,
+      })
+    }).immediate()
+    const result = { jobs, warnings: validation.warnings }
+    if (options.json === true) {
+      write(JSON.stringify({ workstream_id: identity.workstreamId, ...result }, null, 2))
+    } else {
+      write(`Jobs registered for ${identity.workstreamId} (existing Planning approval retained): ${jobs.map((job) => job.job_id).join(", ")}`)
+      for (const warning of validation.warnings) write(`  warning: ${warning}`)
+    }
+    return result
+  } finally {
+    closeDb(db)
+  }
+}
+
 export async function runCli(args: string[]): Promise<number> {
   try {
     const parsed = parseCliArguments(args)
     const address = await resolveCommandAddress(parsed)
-    if (parsed.status === null) {
+    if (parsed.register) {
+      await runSaneJobRegisterCommand({ ...parsed, ...address })
+    } else if (parsed.status === null) {
       await runSaneJobViewCommand({ ...parsed, ...address })
     } else {
       const status: string = parsed.status

@@ -192,7 +192,9 @@ export async function validatePhaseDocs(
   const hash = sha256Hex([...hashes].sort().join("\n"))
   if (approval && approval.sane_hash !== hash) {
     warnings.push(
-      `${phase} is approved (${approval.approval_ref}) but its documents changed since approval; re-approve to refresh authority.`,
+      phase === "planning"
+        ? `planning is approved (${approval.approval_ref}) but its documents differ from the approved snapshot; routine amendments within existing authorization may continue without reapproval. Planning must escalate decisions exceeding that authorization directly to the user.`
+        : `${phase} is approved (${approval.approval_ref}) but its documents changed since approval; re-approve to refresh authority.`,
     )
   }
 
