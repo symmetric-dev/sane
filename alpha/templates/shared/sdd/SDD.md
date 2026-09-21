@@ -16,10 +16,9 @@ rules out. -->
 
 ## Technical Direction
 
-<!-- The chosen product-to-technical approach at "why" level: capabilities,
-behavior, integrations. Do not prescribe detailed interfaces, patterns,
-adapters, algorithms, or code constructs; those belong in
-`solutions/<name>.md`. -->
+<!-- Describe the chosen product-to-technical approach at "why" level:
+capabilities, behavior, and integrations. Keep detailed implementation decisions
+in the solution specs. -->
 
 ## Decisions
 
@@ -42,12 +41,12 @@ belong in the solution specs. -->
 
 ## Solution Areas
 
-<!-- Closing deconstruction: every solution area this direction requires.
-One table row per area:
+<!-- List the solution areas this direction requires, with their intended
+outcomes and boundaries. Describe areas by name and responsibility rather than
+file paths or spec lifecycle status. One table row per area:
 
-| Area | Spec | Status |
-| ---- | ---- | ------ |
-| ... | `solutions/<name>.md` | proposed \| specced \| approved |
+| Area | Intended outcome | Boundaries |
+| ---- | ---------------- | ---------- |
+| ... | ... | ... |
 
-Every row must resolve to exactly one spec; no area without a spec, no spec
-without an area. -->
+Engineering uses these areas to author the detailed solution specs. -->

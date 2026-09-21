@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test"
-import { access, lstat, mkdir, mkdtemp, readFile, rm } from "node:fs/promises"
+import { access, lstat, mkdir, mkdtemp, readFile, realpath, rm, symlink } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { dirname, join } from "node:path"
 
@@ -39,7 +39,7 @@ describe("install-sane-agent-context-packages", () => {
   let sourceRoot: string
 
   beforeEach(async () => {
-    temporaryDirectory = await mkdtemp(join(tmpdir(), "sane-agent-context-packages-"))
+    temporaryDirectory = await mkdtemp(join(await realpath(tmpdir()), "sane-agent-context-packages-"))
     homeDirectory = join(temporaryDirectory, "home")
     sourceRoot = join(temporaryDirectory, "source")
     for (const filename of AGENT_FILENAMES) {
@@ -70,13 +70,98 @@ describe("install-sane-agent-context-packages", () => {
     return { homeDirectory, sourceRoot, write: () => {}, ...extra }
   }
 
-  test("installs all eleven agents, all five assistant role skills, the sane plugin, and the plugin runtime dep", async () => {
+  const retiredNames = ["sane-design-assistant-role", "sane-engineering-assistant-role", "sane-planning-assistant-role", "sane-execution-assistant-role", "sane-research-assistant-role"]
+
+  async function seedRetiredSkills(): Promise<string[]> {
+    const paths = retiredNames.map((name) => join(homeDirectory, ".agents", "skills", name))
+    for (const path of paths) {
+      await mkdir(join(path, "local", "nested"), { recursive: true })
+      await Bun.write(join(path, "SKILL.md"), "old role\n")
+      await Bun.write(join(path, "local", "nested", "custom.txt"), "local contents\n")
+    }
+    return paths
+  }
+
+  test("removes all five retired skill directories and local contents, preserves other skills, and repeats safely", async () => {
+    const retired = await seedRetiredSkills()
+    const preserved = ["sane-legacy-role", "sane-design-assistant-role-custom", "sane-feature-design-assistant-role", ...ROLE_SKILL_NAMES]
+    for (const name of preserved) {
+      const path = join(homeDirectory, ".agents", "skills", name)
+      await mkdir(path, { recursive: true })
+      await Bun.write(join(path, "custom.txt"), "keep\n")
+    }
+    const outside = join(temporaryDirectory, "outside.txt")
+    await Bun.write(outside, "outside\n")
+    await symlink(outside, join(retired[0]!, "local", "link"))
+    const lines: string[] = []
+    const result = await installSaneAgentContextPackages(options({ write: (line) => lines.push(line) }))
+    expect(result.removed).toEqual(retired)
+    for (const path of retired) {
+      await expectMissing(path)
+      expect(lines).toContain(`Removed: ${path}`)
+    }
+    for (const name of preserved) expect(await readFile(join(homeDirectory, ".agents", "skills", name, "custom.txt"), "utf8")).toBe("keep\n")
+    for (const name of ROLE_SKILL_NAMES) expect(await readFile(join(homeDirectory, ".agents", "skills", name, "SKILL.md"), "utf8")).toBe(`skill ${name}\n`)
+    expect(await readFile(outside, "utf8")).toBe("outside\n")
+    expect(await installSaneAgentContextPackages(options())).toMatchObject({ created: [], updated: [], removed: [] })
+  })
+
+  test("dry run reports all retired directories without installing or removing contents", async () => {
+    const retired = await seedRetiredSkills()
+    const lines: string[] = []
+    const result = await installSaneAgentContextPackages(options({ dryRun: true, write: (line) => lines.push(line) }))
+    expect(result.removed).toEqual(retired)
+    for (const path of retired) {
+      expect(lines).toContain(`Planned removal: ${path}`)
+      expect(await readFile(join(path, "local", "nested", "custom.txt"), "utf8")).toBe("local contents\n")
+    }
+    await expectMissing(join(homeDirectory, ".config"))
+    await expectMissing(join(homeDirectory, ".agents", "skills", ROLE_SKILL_NAMES[0]))
+  })
+
+  test.each(["missing-source", "conflict", "invalid-config"])("installation preflight failure %s leaves retired skills intact", async (kind) => {
+    const retired = await seedRetiredSkills()
+    if (kind === "missing-source") await rm(join(sourceRoot, "skills", ROLE_SKILL_NAMES[0], "SKILL.md"))
+    else {
+      const destination = kind === "conflict"
+        ? join(homeDirectory, ".agents", "skills", ROLE_SKILL_NAMES[0], "SKILL.md")
+        : join(homeDirectory, ".config", "opencode", "package.json")
+      await mkdir(dirname(destination), { recursive: true })
+      await Bun.write(destination, "invalid\n")
+    }
+    await expect(installSaneAgentContextPackages(options())).rejects.toBeInstanceOf(AgentContextPackageInstallationError)
+    for (const path of retired) expect(await readFile(join(path, "SKILL.md"), "utf8")).toBe("old role\n")
+    await expectMissing(join(homeDirectory, ".config", "opencode", "agents"))
+  })
+
+  test.each(["file", "symlink", "dangling-symlink", "ancestor-symlink"])("rejects unsafe retired target %s before any writes or cleanup", async (kind) => {
+    const retired = await seedRetiredSkills()
+    const target = retired[4]!
+    await rm(target, { recursive: true })
+    const outside = join(temporaryDirectory, "outside")
+    await mkdir(outside)
+    await Bun.write(join(outside, "keep.txt"), "keep\n")
+    if (kind === "file") await Bun.write(target, "keep\n")
+    else if (kind === "ancestor-symlink") {
+      await rm(join(homeDirectory, ".agents"), { recursive: true })
+      await mkdir(join(outside, "skills", retiredNames[4]!), { recursive: true })
+      await symlink(outside, join(homeDirectory, ".agents"))
+    } else await symlink(kind === "symlink" ? outside : join(outside, "missing"), target)
+    for (const dryRun of [false, true]) {
+      await expect(installSaneAgentContextPackages(options({ overwrite: true, dryRun }))).rejects.toBeInstanceOf(AgentContextPackageInstallationError)
+      await expectMissing(join(homeDirectory, ".config"))
+      expect(await readFile(join(outside, "keep.txt"), "utf8")).toBe("keep\n")
+      if (kind !== "ancestor-symlink") expect(await readFile(join(retired[0]!, "SKILL.md"), "utf8")).toBe("old role\n")
+    }
+  })
+
+  test("installs all eleven agents, all fifteen assistant lifecycle skills, the sane plugin, and the plugin runtime dep", async () => {
     const result = await installSaneAgentContextPackages(options())
 
     expect(result.dryRun).toBe(false)
     expect(result.updated).toEqual([])
     expect(result.unchanged).toEqual([])
-    expect(result.created).toHaveLength(28)
+    expect(result.created).toHaveLength(38)
     for (const filename of AGENT_FILENAMES) {
       expect(await readFile(join(homeDirectory, ".config", "opencode", "agents", filename), "utf8")).toBe(
         agentFixture(filename),
@@ -137,14 +222,14 @@ describe("install-sane-agent-context-packages", () => {
     expect(installed.endsWith("\nOriginal body\n")).toBe(true)
     expect(await readFile(source, "utf8")).toBe(original)
     expect(await readFile(join(homeDirectory, ".config", "opencode", "agents", AGENT_FILENAMES[1]), "utf8")).toBe(agentFixture(AGENT_FILENAMES[1]))
-    expect((await installSaneAgentContextPackages(options({ modelConfigPath }))).unchanged).toHaveLength(28)
+    expect((await installSaneAgentContextPackages(options({ modelConfigPath }))).unchanged).toHaveLength(38)
     await Bun.write(modelConfigPath, mapping("anthropic/claude-sonnet-4-6", "medium"))
     await expect(installSaneAgentContextPackages(options({ modelConfigPath }))).rejects.toThrow("--overwrite")
     expect((await installSaneAgentContextPackages(options({ modelConfigPath, overwrite: true, dryRun: true }))).updated).toEqual([destination])
     expect(await readFile(destination, "utf8")).toContain('model: "openai/gpt-5"')
     expect((await installSaneAgentContextPackages(options({ modelConfigPath, overwrite: true }))).updated).toEqual([destination])
     expect(await readFile(destination, "utf8")).toContain('model: "anthropic/claude-sonnet-4-6"')
-    expect((await installSaneAgentContextPackages(options({ modelConfigPath }))).unchanged).toHaveLength(28)
+    expect((await installSaneAgentContextPackages(options({ modelConfigPath }))).unchanged).toHaveLength(38)
     expect(await readFile(source, "utf8")).toBe(original)
     if (form === "flow" || form === "block") {
       expect(await readFile(destination, "utf8")).toContain('variant: "medium"')
@@ -184,12 +269,109 @@ describe("install-sane-agent-context-packages", () => {
     ).toBe(agentFixture(AGENT_FILENAMES[0]))
   })
 
+  test("installs only listed skill resources with nested paths and exact bytes, then repeats unchanged", async () => {
+    const skillName = "sane-assistant-execution-assistance"
+    const files = ["FIX_AND_CORRECTION_POLICY.md", "nested/RETRY_POLICY.md", "nested/data.bin"]
+    const contents = [Buffer.from("fix policy\n"), Buffer.from("retry policy\n"), Buffer.from([0, 255, 128, 10])]
+    const destinations = files.map((file) => join(homeDirectory, ".agents", "skills", skillName, "resources", file))
+    for (const [index, file] of files.entries()) {
+      const source = join(sourceRoot, "skills", skillName, "resources", file)
+      await mkdir(dirname(source), { recursive: true })
+      await Bun.write(source, contents[index]!)
+    }
+    for (const file of [`${skillName}/other.txt`, "sane-execution-assistant-role/resources/legacy.md", "unlisted/resources/other.md"]) {
+      const source = join(sourceRoot, "skills", file)
+      await mkdir(dirname(source), { recursive: true })
+      await Bun.write(source, "excluded\n")
+    }
+    const modelConfigPath = join(temporaryDirectory, "models.yaml")
+    await Bun.write(modelConfigPath, "sane/worker/scout: openai/gpt-5\n")
+    const result = await installSaneAgentContextPackages(options({ modelConfigPath }))
+    expect(result.created).toHaveLength(41)
+    for (const [index, destination] of destinations.entries()) {
+      expect(result.created).toContain(destination)
+      expect(await readFile(destination)).toEqual(contents[index]!)
+    }
+    await expectMissing(join(homeDirectory, ".agents", "skills", skillName, "other.txt"))
+    await expectMissing(join(homeDirectory, ".agents", "skills", "sane-execution-assistant-role"))
+    await expectMissing(join(homeDirectory, ".agents", "skills", "unlisted"))
+    await expectMissing(join(homeDirectory, ".agents", "skills", ROLE_SKILL_NAMES[0], "resources"))
+    const repeated = await installSaneAgentContextPackages(options({ modelConfigPath }))
+    expect(repeated.created).toEqual([])
+    expect(repeated.updated).toEqual([])
+    expect(repeated.unchanged).toHaveLength(41)
+  })
+
+  test("resource files follow overwrite and dry-run semantics before any writes", async () => {
+    const relative = join("skills", ROLE_SKILL_NAMES[0], "resources", "nested", "policy.md")
+    const source = join(sourceRoot, relative)
+    const destination = join(homeDirectory, ".agents", relative)
+    await mkdir(dirname(source), { recursive: true })
+    await Bun.write(source, "policy\n")
+    expect((await installSaneAgentContextPackages(options({ dryRun: true }))).created).toContain(destination)
+    await expectMissing(homeDirectory)
+    await installSaneAgentContextPackages(options())
+    await Bun.write(destination, "custom policy\n")
+    const agentDestination = join(homeDirectory, ".config", "opencode", "agents", AGENT_FILENAMES[0])
+    await rm(agentDestination)
+    await expect(installSaneAgentContextPackages(options())).rejects.toThrow("--overwrite")
+    await expectMissing(agentDestination)
+    const dryRun = await installSaneAgentContextPackages(options({ overwrite: true, dryRun: true }))
+    expect(dryRun.updated).toEqual([destination])
+    expect(await readFile(destination, "utf8")).toBe("custom policy\n")
+    await expectMissing(agentDestination)
+    expect((await installSaneAgentContextPackages(options({ overwrite: true }))).updated).toEqual([destination])
+    expect(await readFile(destination, "utf8")).toBe("policy\n")
+  })
+
+  test.each(["file-root", "symlink-root", "symlink-file", "symlink-directory", "dangling-symlink"])("rejects invalid resource source %s before mutations", async (kind) => {
+    const resources = join(sourceRoot, "skills", ROLE_SKILL_NAMES[0], "resources")
+    const target = join(temporaryDirectory, "target")
+    await mkdir(target)
+    await Bun.write(join(target, "policy.md"), "policy\n")
+    if (kind === "file-root") {
+      await Bun.write(resources, "not a directory\n")
+    } else if (kind === "symlink-root") {
+      await symlink(target, resources)
+    } else {
+      await mkdir(join(resources, "nested"), { recursive: true })
+      await Bun.write(join(resources, "valid.md"), "valid\n")
+      await symlink(kind === "symlink-directory" ? target : join(target, kind === "symlink-file" ? "policy.md" : "missing"), join(resources, "nested", "invalid"))
+    }
+    for (const dryRun of [false, true]) {
+      await expect(installSaneAgentContextPackages(options({ overwrite: true, dryRun }))).rejects.toBeInstanceOf(AgentContextPackageInstallationError)
+      await expectMissing(homeDirectory)
+    }
+  })
+
+  test.each(["directory", "symlink", "parent-symlink"])("rejects resource destination %s before other writes", async (kind) => {
+    const relative = join("skills", ROLE_SKILL_NAMES[0], "resources", "nested", "policy.md")
+    const source = join(sourceRoot, relative)
+    const destination = join(homeDirectory, ".agents", relative)
+    await mkdir(dirname(source), { recursive: true })
+    await Bun.write(source, "policy\n")
+    const target = join(temporaryDirectory, "target")
+    await mkdir(target)
+    await Bun.write(join(target, "policy.md"), "untouched\n")
+    if (kind === "parent-symlink") {
+      await mkdir(dirname(dirname(destination)), { recursive: true })
+      await symlink(target, dirname(destination))
+    } else {
+      await mkdir(dirname(destination), { recursive: true })
+      if (kind === "directory") await mkdir(destination)
+      else await symlink(join(target, "policy.md"), destination)
+    }
+    await expect(installSaneAgentContextPackages(options({ overwrite: true }))).rejects.toBeInstanceOf(AgentContextPackageInstallationError)
+    await expectMissing(join(homeDirectory, ".config"))
+    expect(await readFile(join(target, "policy.md"), "utf8")).toBe("untouched\n")
+  })
+
   test("repeats as a no-op when every destination is identical", async () => {
     await installSaneAgentContextPackages(options())
     const result = await installSaneAgentContextPackages(options())
 
     expect(result).toMatchObject({ created: [], updated: [] })
-    expect(result.unchanged).toHaveLength(28)
+    expect(result.unchanged).toHaveLength(38)
   })
 
   test("dry run validates and reports plans without creating a home directory", async () => {
@@ -197,9 +379,9 @@ describe("install-sane-agent-context-packages", () => {
     const result = await installSaneAgentContextPackages(options({ dryRun: true, write: (line) => lines.push(line) }))
 
     expect(result.dryRun).toBe(true)
-    expect(result.created).toHaveLength(28)
+    expect(result.created).toHaveLength(38)
     expect(lines).toContain("Dry run: no files or directories were modified.")
-    expect(lines.filter((line) => line.startsWith("Planned:"))).toHaveLength(28)
+    expect(lines.filter((line) => line.startsWith("Planned:"))).toHaveLength(38)
     await expectMissing(homeDirectory)
   })
 
@@ -288,7 +470,7 @@ describe("install-sane-agent-context-packages", () => {
       `---\nmode: primary\npermission:\n  task:\n    "*": deny\n    "sane/worker/scout": ask\n---\nbody\n`,
     )
     const result = await installSaneAgentContextPackages(options())
-    expect(result.created).toHaveLength(28)
+    expect(result.created).toHaveLength(38)
     expect(await readFile(join(homeDirectory, ".config", "opencode", "agents", AGENT_FILENAMES[0]), "utf8"))
       .toContain('"sane/worker/scout": ask')
   })
@@ -319,7 +501,7 @@ describe("install-sane-agent-context-packages", () => {
     }
     const installOptions = { ...options(), overwrite: true }
     const dryRun = await installSaneAgentContextPackages({ ...installOptions, dryRun: true })
-    expect(dryRun.created).toHaveLength(28)
+    expect(dryRun.created).toHaveLength(38)
     expect(dryRun.updated).toEqual([])
     const planningDestination = join(homeDirectory, ".config", "opencode", "agents", "sane/assistant/planning.md")
     await expectMissing(planningDestination)
@@ -328,7 +510,7 @@ describe("install-sane-agent-context-packages", () => {
     expect(await readFile(planningDestination, "utf8")).toBe(
       await readFile(join(sourceRoot, "opencode", "agents", "sane/assistant/planning.md"), "utf8"),
     )
-    expect((await installSaneAgentContextPackages(installOptions)).unchanged).toHaveLength(28)
+    expect((await installSaneAgentContextPackages(installOptions)).unchanged).toHaveLength(38)
     for (const path of [oldAgent, oldSkill]) {
       expect(await readFile(path, "utf8")).toBe("preserve local execution customization\n")
     }
@@ -376,7 +558,7 @@ describe("install-sane-agent-context-packages", () => {
   test("plugin files follow the same overwrite and dry-run semantics", async () => {
     const lines: string[] = []
     const dryRun = await installSaneAgentContextPackages(options({ dryRun: true, write: (line) => lines.push(line) }))
-    expect(dryRun.created).toHaveLength(28)
+    expect(dryRun.created).toHaveLength(38)
     await expectMissing(homeDirectory)
 
     await installSaneAgentContextPackages(options())
@@ -436,7 +618,7 @@ describe("install-sane-agent-context-packages", () => {
     await Bun.write(configPackage, existing)
 
     const result = await installSaneAgentContextPackages(options())
-    expect(result.created).toHaveLength(27)
+    expect(result.created).toHaveLength(37)
     expect(result.unchanged).toContain(configPackage)
     expect(await readFile(configPackage, "utf8")).toBe(existing)
   })

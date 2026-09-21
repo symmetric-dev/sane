@@ -58,7 +58,7 @@ interface RecordedCall {
   body: unknown
 }
 
-/** Mock server: create returns `{ id }`; prompt/rename return ok and record. */
+/** Mock server: create returns `{ id }`; prompt/PATCH-title return ok and record. */
 function mockServer(createdId: string | null, calls: RecordedCall[]): HandoffFetch {
   return (async (url: string, init?: RequestInit) => {
     const body = JSON.parse(String((init as { body?: string })?.body ?? "{}"))
@@ -182,7 +182,7 @@ describe("runHandoffAsSession (tool core)", () => {
     // No session-create POST: prompt + rename only.
     expect(calls.map((call) => call.url)).toEqual([
       "http://127.0.0.1:4096/api/session/ses_eng_second/prompt",
-      "http://127.0.0.1:4096/api/session/ses_eng_second/rename",
+      "http://127.0.0.1:4096/api/session/ses_eng_second",
     ])
     expect(calls[0]!.body).toMatchObject({ delivery: "queue" })
     expect(listSelectionsBySlot(db!, identity, "engineering")).toHaveLength(2)
@@ -230,7 +230,7 @@ describe("runHandoffAsSession (tool core)", () => {
     ).rejects.toThrow("Option --session-index must be a positive integer.")
   })
 
-  test("empty target creates (mock fetch) with a composed To: line", async () => {
+  test("empty target creates (mock fetch) with the 3-line shape", async () => {
     link(db!, "design", "ses_design", "2026-09-16T00:00:00.000Z")
     const calls: RecordedCall[] = []
     const result = await runHandoffAsSession(
@@ -240,8 +240,15 @@ describe("runHandoffAsSession (tool core)", () => {
       { fetchImpl: mockServer("ses_plan_new", calls), serverUrl: "http://127.0.0.1:4096" },
     )
     expect(result.to).toEqual({ slot: "planning", session_id: "ses_plan_new", session_index: 1, created: true })
-    expect(result.message).toContain("To: planning (ses_plan_new)")
+    expect(result.message).toBe(
+      "Workstream: 01-demo\nHandoff From: Design Session (ses_design)\nMessage: Start planning.",
+    )
     expect(calls[0]!.url).toBe("http://127.0.0.1:4096/api/session")
+    expect(calls[0]!.body).toMatchObject({
+      agent: "sane/assistant/planning",
+      model: { id: "muse-spark-1.3-contributor", providerID: "opencode-go", variant: "high" },
+      location: { directory: "/repo" },
+    })
   })
 
   test("bare research target creates-if-empty (mock fetch)", async () => {
@@ -254,13 +261,16 @@ describe("runHandoffAsSession (tool core)", () => {
       { fetchImpl: mockServer("ses_research_new", calls), serverUrl: "http://127.0.0.1:4096" },
     )
     expect(result.to).toEqual({ slot: "research", session_id: "ses_research_new", session_index: 1, created: true })
-    expect(result.message).toContain("To: research (ses_research_new)")
+    expect(result.message).toBe(
+      "Workstream: 01-demo\nHandoff From: Design Session (ses_design)\nMessage: Gather evidence.",
+    )
     expect(result.ready_title).toBe("[ready] research: Gather evidence.")
     expect(calls[0]!.url).toBe("http://127.0.0.1:4096/api/session")
+    expect(calls[0]!.body).toMatchObject({ agent: "sane/assistant/research" })
     expect(listSelectionsBySlot(db!, identity, "research")).toHaveLength(1)
   })
 
-  test("message shape is the 6-line refs shape, never artifact contents", async () => {
+  test("message shape is Workstream/Handoff From/Message, never artifact contents", async () => {
     seedDesignAndEngineering()
     const secretContents = "SUPER-SECRET-ARTIFACT-CONTENTS-9f8e7d"
     const result = await runHandoffAsSession(
@@ -269,17 +279,9 @@ describe("runHandoffAsSession (tool core)", () => {
       { fromSession: "ses_design", to: "engineering", message: "Pick up the SDD.", session_index: 1 },
       { fetchImpl: mockServer(null, []), serverUrl: "http://127.0.0.1:4096" },
     )
-    const lines = result.message.split("\n")
-    expect(lines).toHaveLength(6)
-    expect(lines[0]!.startsWith("From: ")).toBe(true)
-    expect(lines[1]!.startsWith("To: ")).toBe(true)
-    expect(lines[2]!.startsWith("Approvals: ")).toBe(true)
-    expect(lines[3]!.startsWith("Revisions: ")).toBe(true)
-    expect(lines[4]!.startsWith("Paths: ")).toBe(true)
-    expect(lines[5]!.startsWith("Next action: ")).toBe(true)
-    expect(result.message).toContain("From: design (ses_design) / alice / workstream 01-demo")
-    expect(result.message).toContain("To: engineering (ses_eng_first)")
-    expect(result.message).toContain("Next action: Pick up the SDD.")
+    expect(result.message).toBe(
+      "Workstream: 01-demo\nHandoff From: Design Session (ses_design)\nMessage: Pick up the SDD.",
+    )
     expect(result.message).not.toContain(secretContents)
   })
 
@@ -352,9 +354,11 @@ describe("runHandoffAsSession (tool core)", () => {
     // No session-create POST: prompt + rename only, addressed to the first session.
     expect(calls.map((call) => call.url)).toEqual([
       "http://127.0.0.1:4096/api/session/ses_eng_first/prompt",
-      "http://127.0.0.1:4096/api/session/ses_eng_first/rename",
+      "http://127.0.0.1:4096/api/session/ses_eng_first",
     ])
-    expect(result.message).toContain("To: engineering (ses_eng_first)")
+    expect(result.message).toBe(
+      "Workstream: 01-demo\nHandoff From: Design Session (ses_design)\nMessage: Reply one.",
+    )
     expect(listSelectionsBySlot(db!, identity, "engineering")).toHaveLength(2)
   })
 

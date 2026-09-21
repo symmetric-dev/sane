@@ -1,4 +1,7 @@
-# SANE 0.2.0: Single-Scope Workstream Workflow
+# SANE 0.2.0: Single-Scope Workstream Workflow (archived)
+
+> Historical design reference; some details differ from the implementation.
+> For current operation, use the [Workflow Playbook](../SANE_WORKFLOW.md).
 
 ## Purpose
 
@@ -10,8 +13,8 @@ render.
 This document defines the workflow model only. It specifies no UI.
 
 It supersedes the Stage-based flow in
-[ALPHA_OPERATING_MODEL](./_legacy/ALPHA_OPERATING_MODEL.md) and
-[SANE_MOCK_WORKFLOW](./_legacy/SANE_MOCK_WORKFLOW.md). The repository layout,
+[ALPHA_OPERATING_MODEL](./ALPHA_OPERATING_MODEL.md) and
+[SANE_MOCK_WORKFLOW](./SANE_MOCK_WORKFLOW.md). The repository layout,
 initialization, and selection rules in
 [SANE_REPOSITORY_SETUP](./SANE_REPOSITORY_SETUP.md) remain in force except
 where this document retires Stage artifacts and renames phase and path
@@ -297,8 +300,12 @@ API directly:
 
 ```text
 POST /api/session               # only when the target slot has no registered session
+                                # (created with the slot's assistant agent, pinned model, repo directory)
 POST /api/session/{id}/prompt   # deliver the handoff message to the registered session
+PATCH /api/session/{id}         # flag the target [ready] without opening it
 ```
+
+Calls carry HTTP Basic auth when `OPENCODE_SERVER_PASSWORD` is set.
 
 Queue delivery is the default: the handoff prompt queues behind the target
 session's current work. `steer` (interrupting an in-progress turn) is reserved
@@ -308,16 +315,15 @@ other for routine handoffs.
 
 ### Handoff message shape
 
-Handoff messages are compact references, never pasted artifact contents. The
-target session reads the artifacts itself during Pickup:
+Handoff messages name the workstream, the sender, and the ask — never pasted
+artifact contents or ref dumps. Paths resolve from the workstream id on
+Pickup; approvals and revisions are read via `sane view`. The target session
+reads the artifacts itself during Pickup:
 
 ```text
-From: <slot> (<session_id>) / <user> / workstream <workstream-id>
-To: <slot> (<session_id or "new">)
-Approvals: <phase + approval_ref + sane_hash, if any>
-Revisions: research <n> report(s), sdd <hash>, solutions <name>@<hash>
-Paths: <absolute workstream path>, <artifact paths changed>
-Next action: <one sentence>
+Workstream: <workstream-id>
+Handoff From: <Slot> Session (<session_id>)
+Message: <one sentence>
 ```
 
 ### Session registry

@@ -346,7 +346,7 @@ describe("sane handoff --session-index end to end (mock server)", () => {
     expect(result.targetCreated).toBe(false)
     expect(result.targetIndex).toBe(1)
     expect(counter.creates).toBe(0)
-    expect(result.message).toContain("To: engineering (ses_eng_first)")
+    expect(result.message).toContain("Handoff From: Design Session (ses_design_1)")
   })
 
   test("--session-index 2 targets the second linked session with no create", async () => {
@@ -364,7 +364,7 @@ describe("sane handoff --session-index end to end (mock server)", () => {
     expect(result.toSession).toBe("ses_eng_second")
     expect(result.targetIndex).toBe(2)
     expect(counter.creates).toBe(0)
-    expect(result.message).toContain("To: engineering (ses_eng_second)")
+    expect(result.message).toContain("Handoff From: Design Session (ses_design_1)")
   })
 
   test("out-of-range index fails the handoff", async () => {

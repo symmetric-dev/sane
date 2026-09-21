@@ -38,12 +38,12 @@ export async function selectSaneWorkstream(options: SelectWorkstreamOptions): Pr
     const dbRow = getWorkstream(db, identity)
     if (!dbRow) {
       throw new SaneRepositoryError(
-        `No workstream row for ${identity.workstreamId} (repo ${identity.repoRoot} user ${identity.user}). Re-create the workstream so its type is recorded in sqlite.`,
+        `No workstream row for ${identity.workstreamId} (repo ${identity.repoRoot} user ${identity.user}). Re-create the workstream so its type is recorded in SANE state.`,
       )
     }
     if (dbRow.type !== workstream.type) {
       throw new SaneRepositoryError(
-        `Workstream type mismatch: sqlite has type "${dbRow.type}" but the filesystem root doc implies "${workstream.type}". Re-create the workstream or fix the root doc.`,
+        `Workstream type mismatch: SANE state has type "${dbRow.type}" but the filesystem root doc implies "${workstream.type}". Re-create the workstream or fix the root doc.`,
       )
     }
     if (!options.dryRun) {

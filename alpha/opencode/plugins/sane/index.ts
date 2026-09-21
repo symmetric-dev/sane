@@ -288,7 +288,6 @@ export const SanePlugin = Plugin.define({
                   ? { new_session: typedInput.new_session }
                   : {}),
                 ...(typedInput.from !== undefined ? { from: typedInput.from } : {}),
-                workstreamPath: workstream.path,
               },
             )
             return {

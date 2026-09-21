@@ -8,11 +8,12 @@
  *   Research is a support track (`research:<topic>`), kickoff-able from any
  *   phase, no gates.
  * - Handoff via shell to the OpenCode server API:
- *   `POST /api/session` (only when the target slot has none) and
+ *   `POST /api/session` (only when the target slot has none; created with
+ *   the slot's assistant agent and pinned model) and
  *   `POST /api/session/{id}/prompt` (queue default; steer only for explicit
  *   user redirect + Execution abort).
- * - Message is compact refs (`From/To/Approvals/Revisions/Paths/Next`
- *   action), never pasted contents. The target reads artifacts on Pickup.
+ * - Message is workstream + sender + ask (`Workstream/Handoff From/Message`),
+ *   never pasted contents. The target reads artifacts on Pickup.
  * - `selections` is the address book
  *   `(repo, user, workstream, slot) -> sessionID + worktree_path + branch`;
  *   stable IDs, new session only when slot empty or user-directed.
@@ -32,8 +33,6 @@ import {
   getSelection,
   getWorkstream,
   initSchema,
-  listApprovals,
-  listResearchReports,
   listSelectionsBySlot,
   openSaneDb,
   resolveSaneIdentity,
@@ -74,6 +73,40 @@ const STEER_REASON_SET = new Set<string>(HANDOFF_STEER_REASONS)
 
 export const DEFAULT_HANDOFF_SERVER_URL = "http://127.0.0.1:4096"
 
+/**
+ * Phase slot to OpenCode assistant agent. Created handoff sessions start
+ * with the target phase's assistant so the user lands in the right role
+ * (previously sessions came up as the default Build agent).
+ */
+export const ASSISTANT_AGENT_BY_SLOT: Record<string, string> = {
+  design: "sane/assistant/design",
+  engineering: "sane/assistant/engineering",
+  planning: "sane/assistant/planning",
+  execution: "sane/assistant/execution",
+  research: "sane/assistant/research",
+}
+
+/**
+ * Default model for created handoff sessions. Mirrors `models.yaml` (all
+ * SANE assistants pin `opencode-go/muse-spark-1.3-contributor`, variant
+ * high); keep in sync when `models.yaml` changes. Passed explicitly
+ * because the server does not apply the agent's configured model on its
+ * own (a bare create replies with the server default model).
+ */
+export const HANDOFF_DEFAULT_MODEL = {
+  id: "muse-spark-1.3-contributor",
+  providerID: "opencode-go",
+  variant: "high",
+} as const
+
+/** Assistant agent for a target slot (`research:<topic>` shares the research assistant). */
+export function assistantAgentForSlot(slot: string): string {
+  if (slot === "research" || slot.startsWith("research:")) return ASSISTANT_AGENT_BY_SLOT["research"]!
+  const agent = ASSISTANT_AGENT_BY_SLOT[slot]
+  if (!agent) throw new SaneHandoffError(`No assistant agent for slot ${JSON.stringify(slot)}.`)
+  return agent
+}
+
 export type HandoffFetchResponse = {
   ok: boolean
   status: number
@@ -91,6 +124,24 @@ function defaultFetch(): HandoffFetch {
   const impl = (globalThis as unknown as { fetch?: HandoffFetch }).fetch
   if (!impl) throw new SaneHandoffError("No fetch implementation available.")
   return impl
+}
+
+/**
+ * Basic-auth headers for the OpenCode server API. The server requires
+ * `Authorization: Basic base64(user:pass)` when `OPENCODE_SERVER_PASSWORD`
+ * is set (username defaults to `opencode`); without a password no header
+ * is sent. Reads env at call time so tests can stub per-case.
+ */
+export function serverAuthHeaders(env?: NodeJS.ProcessEnv): Record<string, string> {
+  const source = env ?? process.env
+  const password = source["OPENCODE_SERVER_PASSWORD"]
+  if (!password) return {}
+  const username = source["OPENCODE_SERVER_USERNAME"] || "opencode"
+  const token =
+    typeof Buffer !== "undefined"
+      ? Buffer.from(`${username}:${password}`, "utf8").toString("base64")
+      : btoa(`${username}:${password}`)
+  return { Authorization: `Basic ${token}` }
 }
 
 function normalizeServerUrl(serverUrl: string): string {
@@ -120,97 +171,36 @@ function assertSlot(slot: string): void {
 // composeHandoff
 // ---------------------------------------------------------------------------
 
-export interface HandoffApprovalRef {
-  phase: string
-  approvalRef: string
-  saneHash: string
-}
-
 export interface ComposeHandoffInput {
   fromSlot: string
   fromSession: string
-  toSlot: string
-  toSessionOrNew: string
-  user: string
   workstreamId: string
-  approvals?: string | string[] | HandoffApprovalRef[] | null
-  revisions?: string | string[] | null
-  paths?: string | string[] | null
-  nextAction: string
-}
-
-function isApprovalRef(value: unknown): value is HandoffApprovalRef {
-  if (typeof value !== "object" || value === null) return false
-  const record = value as Record<string, unknown>
-  return (
-    typeof record["phase"] === "string" &&
-    typeof record["approvalRef"] === "string" &&
-    typeof record["saneHash"] === "string"
-  )
-}
-
-function formatApprovals(value: ComposeHandoffInput["approvals"]): string {
-  if (value === undefined || value === null) return "(none)"
-  if (typeof value === "string") {
-    const trimmed = value.trim()
-    return trimmed === "" ? "(none)" : trimmed
-  }
-  if (value.length === 0) return "(none)"
-  const parts: string[] = []
-  for (const entry of value) {
-    if (typeof entry === "string") {
-      const trimmed = entry.trim()
-      if (trimmed !== "") parts.push(trimmed)
-    } else if (isApprovalRef(entry)) {
-      parts.push(`${entry.phase} ${entry.approvalRef} ${entry.saneHash}`)
-    } else {
-      parts.push(String(entry).trim())
-    }
-  }
-  const filtered = parts.filter((part) => part.trim() !== "")
-  return filtered.length === 0 ? "(none)" : filtered.join(", ")
-}
-
-function formatRefList(value: string | string[] | null | undefined): string {
-  if (value === undefined || value === null) return "(none)"
-  if (typeof value === "string") {
-    const trimmed = value.trim()
-    return trimmed === "" ? "(none)" : trimmed
-  }
-  const filtered = value.map((entry) => entry.trim()).filter((entry) => entry !== "")
-  return filtered.length === 0 ? "(none)" : filtered.join(", ")
+  /** The ask (single line). The receiver knows its role; paths resolve from the workstream. */
+  message: string
 }
 
 /**
- * Compose the exact Section 3 handoff message shape: compact references only,
- * never pasted artifact contents. The target session reads artifacts itself
- * during Pickup.
+ * Compose the exact Section 3 handoff message shape: workstream, sender,
+ * and ask only — never pasted artifact contents or ref dumps. Paths resolve
+ * from the workstream id on Pickup; approvals and revisions are read via
+ * `sane view`. The target session reads artifacts itself during Pickup.
  */
 export function composeHandoff(input: ComposeHandoffInput): string {
   assertNonEmpty("fromSlot", input.fromSlot)
   assertNonEmpty("fromSession", input.fromSession)
-  assertNonEmpty("toSlot", input.toSlot)
-  assertNonEmpty("toSessionOrNew", input.toSessionOrNew)
-  assertNonEmpty("user", input.user)
   assertNonEmpty("workstreamId", input.workstreamId)
-  assertNonEmpty("nextAction", input.nextAction)
+  assertNonEmpty("message", input.message)
   assertSlot(input.fromSlot)
-  assertSlot(input.toSlot)
   assertSingleLine("fromSession", input.fromSession.trim())
-  assertSingleLine("toSessionOrNew", input.toSessionOrNew.trim())
-  assertSingleLine("nextAction", input.nextAction.trim())
+  assertSingleLine("message", input.message.trim())
 
-  const approvals = formatApprovals(input.approvals)
-  const revisions = formatRefList(input.revisions)
-  const paths = formatRefList(input.paths)
+  const slot = input.fromSlot.trim()
+  const sender = `${slot.charAt(0).toUpperCase()}${slot.slice(1)} Session`
 
   return [
-    `From: ${input.fromSlot} (${input.fromSession}) / ${input.user} / workstream ${input.workstreamId}`,
-    `To: ${input.toSlot} (${input.toSessionOrNew})`,
-    `Approvals: ${approvals}`,
-    `Revisions: ${revisions}`,
-    `Paths: ${paths}`,
-    `Next action: ${input.nextAction.trim()}`,
+    `Workstream: ${input.workstreamId}`,
+    `Handoff From: ${sender} (${input.fromSession.trim()})`,
+    `Message: ${input.message.trim()}`,
   ].join("\n")
 }
 
@@ -265,15 +255,15 @@ export async function sendHandoff(input: SendHandoffInput): Promise<SendHandoffR
   const base = normalizeServerUrl(input.serverUrl)
   const url = `${base}/api/session/${encodeURIComponent(input.targetSessionId)}/prompt`
   const fetchImpl = input.fetchImpl ?? defaultFetch()
-  // V2 prompt shape: `{ prompt, delivery }` where `delivery` is
-  // `"queue" | "steer"`. `message` maps to `prompt`; `steerReason` is a
+  // Server prompt shape: `{ text, delivery }` where `delivery` is
+  // `"queue" | "steer"`. `message` maps to `text`; `steerReason` is a
   // local SANE guard and is not sent to the server.
-  const body = JSON.stringify({ prompt: input.message, delivery: mode })
+  const body = JSON.stringify({ text: input.message, delivery: mode })
   let response: HandoffFetchResponse
   try {
     response = await fetchImpl(url, {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers: { "Content-Type": "application/json", ...serverAuthHeaders() },
       body,
     })
   } catch (error) {
@@ -405,7 +395,15 @@ export async function resolveOrCreateSession(
   const existingForPaths = getSelection(db, identity, options.slot)
   const fetchImpl = options.fetchImpl ?? defaultFetch()
   const url = `${base}/api/session`
-  const createBody: Record<string, unknown> = {}
+  const createBody: Record<string, unknown> = {
+    agent: assistantAgentForSlot(options.slot),
+    model: { ...HANDOFF_DEFAULT_MODEL },
+    // Create the session in the implementation repository so it appears in
+    // the project-scoped session list (the server default lands elsewhere,
+    // e.g. the server cwd, making the [ready] session invisible). The
+    // workstream resolves from this directory on Pickup.
+    location: { directory: identity.repoRoot },
+  }
   if (options.title !== undefined) {
     if (options.title.trim() === "") throw new SaneHandoffError("Session title must be non-empty when provided.")
     createBody["title"] = options.title
@@ -414,7 +412,7 @@ export async function resolveOrCreateSession(
   try {
     response = await fetchImpl(url, {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers: { "Content-Type": "application/json", ...serverAuthHeaders() },
       body: JSON.stringify(createBody),
     })
   } catch (error) {
@@ -481,7 +479,7 @@ export function readyTitle(slot: string, nextAction: string): string {
 }
 
 /**
- * Rename the target session via `POST /api/session/{id}/rename` so the user
+ * Rename the target session via `PATCH /api/session/{id}` so the user
  * sees the handoff without auto-open. Delivering the prompt never focuses
  * the target; the user decides when to switch.
  */
@@ -490,13 +488,13 @@ export async function renameReady(input: RenameReadyInput): Promise<RenameReadyR
   assertSingleLine("targetSessionId", input.targetSessionId.trim())
   const title = readyTitle(input.slot, input.nextAction)
   const base = normalizeServerUrl(input.serverUrl)
-  const url = `${base}/api/session/${encodeURIComponent(input.targetSessionId)}/rename`
+  const url = `${base}/api/session/${encodeURIComponent(input.targetSessionId)}`
   const fetchImpl = input.fetchImpl ?? defaultFetch()
   let response: HandoffFetchResponse
   try {
     response = await fetchImpl(url, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
+      method: "PATCH",
+      headers: { "Content-Type": "application/json", ...serverAuthHeaders() },
       body: JSON.stringify({ title }),
     })
   } catch (error) {
@@ -521,9 +519,6 @@ export interface SaneHandoffCommandOptions {
   steerReason?: string
   serverUrl?: string
   fromSessionOverride?: string
-  approvalsOverride?: string
-  revisionsOverride?: string
-  pathsOverride?: string
   json?: boolean
   userOverride?: string
   worktreePath?: string | null
@@ -564,9 +559,6 @@ export interface ParsedHandoffArguments {
   steerReason: string | undefined
   serverUrl: string | undefined
   fromSessionOverride: string | undefined
-  approvalsOverride: string | undefined
-  revisionsOverride: string | undefined
-  pathsOverride: string | undefined
   worktreePath: string | undefined
   branch: string | undefined
   sessionIndex: number | undefined
@@ -576,7 +568,7 @@ export interface ParsedHandoffArguments {
 }
 
 export const USAGE =
-  "Usage: sane handoff [<implementation-repository> <workstream-relative-path>] --from <slot> --to <slot> --next <action> [--session-index <n>] [--new] [--steer-reason <user-redirect|execution-abort>] [--server-url <url>] [--from-session <id>] [--approvals <refs>] [--revisions <refs>] [--paths <refs>] [--worktree-path <dir>] [--branch <name>] [--json] [--repo-root <path>] (no positionals: auto-detect the target from the current directory)"
+  "Usage: sane handoff [<implementation-repository> <workstream-relative-path>] --from <slot> --to <slot> --next <action> [--session-index <n>] [--new] [--steer-reason <user-redirect|execution-abort>] [--server-url <url>] [--from-session <id>] [--worktree-path <dir>] [--branch <name>] [--json] [--repo-root <path>] (no positionals: auto-detect the target from the current directory)"
 
 function requireOptionValue(args: string[], index: number, option: string): string {
   const value = args[index + 1]
@@ -611,9 +603,6 @@ export function parseCliArguments(args: string[]): ParsedHandoffArguments {
   let steerReason: string | undefined
   let serverUrl: string | undefined
   let fromSessionOverride: string | undefined
-  let approvalsOverride: string | undefined
-  let revisionsOverride: string | undefined
-  let pathsOverride: string | undefined
   let worktreePath: string | undefined
   let branch: string | undefined
   let sessionIndexRaw: string | undefined
@@ -653,18 +642,6 @@ export function parseCliArguments(args: string[]): ParsedHandoffArguments {
     } else if (parseOptions && argument === "--from-session") {
       assertSingleOption(fromSessionOverride, "--from-session")
       fromSessionOverride = requireOptionValue(args, index, "--from-session")
-      index += 1
-    } else if (parseOptions && argument === "--approvals") {
-      assertSingleOption(approvalsOverride, "--approvals")
-      approvalsOverride = requireOptionValue(args, index, "--approvals")
-      index += 1
-    } else if (parseOptions && argument === "--revisions") {
-      assertSingleOption(revisionsOverride, "--revisions")
-      revisionsOverride = requireOptionValue(args, index, "--revisions")
-      index += 1
-    } else if (parseOptions && argument === "--paths") {
-      assertSingleOption(pathsOverride, "--paths")
-      pathsOverride = requireOptionValue(args, index, "--paths")
       index += 1
     } else if (parseOptions && argument === "--worktree-path") {
       assertSingleOption(worktreePath, "--worktree-path")
@@ -775,9 +752,6 @@ export function parseCliArguments(args: string[]): ParsedHandoffArguments {
     steerReason,
     serverUrl,
     fromSessionOverride,
-    approvalsOverride,
-    revisionsOverride,
-    pathsOverride,
     worktreePath,
     branch,
     sessionIndex,
@@ -786,32 +760,10 @@ export function parseCliArguments(args: string[]): ParsedHandoffArguments {
   }
 }
 
-function collectApprovalRefs(db: Database, identity: SaneIdentity): string {
-  const rows = listApprovals(db, identity)
-  if (rows.length === 0) return "(none)"
-  return rows.map((row) => `${row.phase} ${row.approval_ref} ${row.sane_hash}`).join(", ")
-}
-
-function collectRevisionRefs(
-  db: Database,
-  identity: SaneIdentity,
-): string {
-  const parts: string[] = []
-  const reports = listResearchReports(db, identity)
-  if (reports.length > 0) parts.push(`research ${reports.length} report(s)`)
-  const approvals = listApprovals(db, identity)
-  for (const approval of approvals) {
-    if (approval.phase === "design") parts.push(`design ${approval.sane_hash.slice(0, 12)}`)
-    if (approval.phase === "engineering") parts.push(`engineering ${approval.sane_hash.slice(0, 12)}`)
-    if (approval.phase === "planning") parts.push(`planning ${approval.sane_hash.slice(0, 12)}`)
-  }
-  return parts.length === 0 ? "(none)" : parts.join(", ")
-}
-
 /**
- * Compose registry-resolved refs, deliver the queue-default prompt, and flag
- * the target `[ready]` without opening it. The target session reads artifacts
- * on Pickup; this command only passes references.
+ * Deliver the queue-default prompt and flag the target `[ready]` without
+ * opening it. The target session reads artifacts on Pickup; this command
+ * only passes the workstream, the sender, and the ask.
  */
 export async function runSaneHandoffCommand(
   options: SaneHandoffCommandOptions,
@@ -896,28 +848,11 @@ export async function runSaneHandoffCommand(
       branch: options.branch ?? null,
     })
 
-    const approvalsText =
-      options.approvalsOverride ?? collectApprovalRefs(db, identity)
-    const revisionsText =
-      options.revisionsOverride ?? collectRevisionRefs(db, identity)
-    const approvalArtifactPaths = listApprovals(db, identity).map((row) => row.artifact_path)
-    const defaultPaths =
-      approvalArtifactPaths.length === 0
-        ? workstream.path
-        : `${workstream.path}, ${approvalArtifactPaths.join(", ")}`
-    const pathsText = options.pathsOverride ?? defaultPaths
-
     const message = composeHandoff({
       fromSlot: options.fromSlot,
       fromSession,
-      toSlot: options.toSlot,
-      toSessionOrNew: target.sessionId,
-      user: identity.user,
       workstreamId: identity.workstreamId,
-      approvals: approvalsText,
-      revisions: revisionsText,
-      paths: pathsText,
-      nextAction: options.nextAction,
+      message: options.nextAction,
     })
 
     await sendHandoff({

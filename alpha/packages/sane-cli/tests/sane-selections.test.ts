@@ -63,7 +63,7 @@ describe("sane selections (multiple linked sessions per slot)", () => {
     }
   })
 
-  test("duplicate (slot, session) link throws SaneDbError", () => {
+  test("duplicate (slot, session) link refreshes in place", () => {
     const db = openInMemoryDb()
     try {
       initSchema(db)
@@ -73,14 +73,14 @@ describe("sane selections (multiple linked sessions per slot)", () => {
         { slot: "design", sessionId: "ses_dup" },
         mutationAt("design", "ses_dup", "2026-09-18T10:00:00.000Z"),
       )
-      expect(() =>
-        linkSelection(
-          db,
-          identity,
-          { slot: "design", sessionId: "ses_dup" },
-          mutationAt("design", "ses_dup", "2026-09-18T11:00:00.000Z"),
-        ),
-      ).toThrow(SaneDbError)
+      const refreshed = linkSelection(
+        db,
+        identity,
+        { slot: "design", sessionId: "ses_dup" },
+        mutationAt("design", "ses_dup", "2026-09-18T11:00:00.000Z"),
+      )
+      expect(refreshed.session_id).toBe("ses_dup")
+      expect(refreshed.updated_at).toBe("2026-09-18T11:00:00.000Z")
       expect(listSelectionsBySlot(db, identity, "design")).toHaveLength(1)
     } finally {
       db.close()
@@ -230,15 +230,15 @@ describe("sane selections (multiple linked sessions per slot)", () => {
       expect(rows.map((row) => row.session_id)).toEqual(["ses_res_1", "ses_res_2"])
       expect(getLatestSelection(db, identity, "research")?.session_id).toBe("ses_res_2")
       expect(getSelection(db, identity, "research")?.session_id).toBe("ses_res_2")
-      // Exact duplicate still throws.
-      expect(() =>
-        linkSelection(
-          db,
-          identity,
-          { slot: "research", sessionId: "ses_res_1" },
-          mutationAt("research", "ses_res_1", "2026-09-18T12:00:00.000Z"),
-        ),
-      ).toThrow(SaneDbError)
+      // Exact duplicate refreshes in place (idempotent re-link).
+      const refreshed = linkSelection(
+        db,
+        identity,
+        { slot: "research", sessionId: "ses_res_1" },
+        mutationAt("research", "ses_res_1", "2026-09-18T12:00:00.000Z"),
+      )
+      expect(refreshed.session_id).toBe("ses_res_1")
+      expect(listSelectionsBySlot(db, identity, "research")).toHaveLength(2)
     } finally {
       db.close()
     }

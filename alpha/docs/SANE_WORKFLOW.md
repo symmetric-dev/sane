@@ -1,141 +1,162 @@
-# SANE Workflow Playbook (0.2.0)
+# SANE Workflow Playbook
 
-> Operator runbook for single-scope workstreams. The data model reference is
-> `docs/SANE_0_2_0.md`; repository setup is `docs/SANE_REPOSITORY_SETUP.md`.
-> This playbook is the normative phase-by-phase narrative: what each session
-> does, which commands it runs, and where the user gates are.
+SANE organizes a bounded software effort as a **workstream**. Each workstream
+moves through **Design → Engineering → Planning → Execution**. Research can
+support any phase. Users approve phases and accept outcomes.
 
-## Lifecycle
+## 1. Install
 
-One workstream, one scope, four phases in order — Design → Engineering →
-Planning → Execution — plus Research as a support track from any phase. Each
-phase is one long-lived top-level assistant session (never a subagent). The
-user moves the workstream forward: sessions do Pickup, Assistance, and
-Delivery; approvals happen outside sessions via the user's own `sane approve`
-invocation.
-
-```
-create → design → engineering → planning → execution → done
-              ↘ research (any point, never blocking) ↗
-```
-
-## Start a workstream
+Requires [Bun](https://bun.sh/) and OpenCode for assistant sessions.
+From the root of this SANE checkout (`alpha/`):
 
 ```bash
-sane init                                    # once per implementation repo
-sane create --name <name> --type <feature|foundation|issue|maintenance>
-sane select --name <name>                    # resume an existing one
+bun install
+bun packages/sane-cli/src/install-sane.ts
 ```
 
-`--type` is required at create and fixes the root doc. Type lives in sqlite
-only; there is no `type` file and no selection file. Every later command
-auto-detects the workstream from the current directory — run bare.
-
-## Phase sessions
-
-| Phase       | Agent / skill              | Owns                                              | Reads                        | Provide → Validate → Approve              |
-|-------------|----------------------------|---------------------------------------------------|------------------------------|-------------------------------------------|
-| Design      | assistant/design           | root doc + `design/SDD.md`                        | research index               | `provide design` → `validate design` → `approve design --ref <ref>` |
-| Engineering | assistant/engineering      | `design/solutions/<name>.md`                      | root doc, SDD                | `provide engineering` → `validate engineering` → `approve engineering --ref <ref>` |
-| Planning    | assistant/planning         | `execution/PLAN.md` + `execution/jobs/*.md`       | SDD, solutions               | `provide planning` → `validate planning` → `approve planning --ref <ref>` (registers jobs as `planned`) |
-| Execution   | assistant/execution        | `execution/reports/*.md` + `execution/FINAL_REPORT.md` | PLAN, jobs, SDD, solutions | `provide execution` → `validate execution` → `approve execution --ref <ref>` (batch-completes stragglers) |
-
-Every phase session follows the same rhythm:
-
-1. **Pickup** — read `README.md`, run `sane provide <phase>` (never
-   overwrites), read the inputs above, run `sane view`, report readiness,
-   wait for the user.
-2. **Assistance** — draft with the user, iterate. Planning confirms the plan
-   before writing Job Specs, then grounds them via `sane/worker/grounder`.
-   Execution confirms run order and checkpointed/delegated preference, then
-   dispatches workers.
-3. **Delivery** — `sane validate <phase>`, user-requested updates, then the
-   user approves the phase outside the session.
-
-<!-- USER PROSE: phase-entry criteria, what "good" looks like per artifact,
-     when to send work back a phase. -->
-
-## Research track
-
-Support track, no approval semantics. The Research Assistant (or any phase
-assistant via a bounded Researcher worker) writes append-only evidence to
-`research/<topic>/REPORT.md` and registers it:
+The installer places `sane` in `~/.local/bin` and prints a PATH instruction
+if needed. Follow that instruction, then install the agents, role skills,
+and SANE plugin:
 
 ```bash
-sane research --index                        # presence/status + unregistered files
-sane research --register --topic <topic>
-sane research --unregister --topic <topic>   # index repair only
+sane install context-packages
 ```
 
-Never update a registered report — write a new topic. Only the Research
-Assistant reconciles the index; workers register their own report only when
-asked. A material conflict with approved Design/Engineering routes to a
-Design/Engineering update plus re-approval; research never blocks.
+Restart OpenCode after installation. Both installers support `--dry-run`
+and `--overwrite`; use `--overwrite` to refresh an existing installation
+after pulling changes. If this checkout moves, rerun the CLI installer.
 
-<!-- USER PROSE: when to spin up research vs scouting, topic scoping. -->
+## 2. Start or resume a workstream
 
-## Execution dispatch
-
-Jobs are progress tracking (`planned` → `running` → `completed`), not
-per-job gates. `planned` means authorized by planning approval. The
-Execution Assistant marks progress itself and gives workers context via the
-serialized bundle — no pasted absolute paths:
+Run these commands from the repository where the implementation will happen:
 
 ```bash
-sane job <id> --json             # worker context bundle (spec/report paths,
-                                 # template, design docs, planning approval)
-sane job <id> running|completed  # progress marks (forward-only)
+sane init
+sane create --name my-change --type feature
+sane view
 ```
 
-Implementer writes its report to the bundle's `report_path` (copy
-`report_template` first, never overwrite). One read-only Reviewer per
-completed batch; fixes go through a Fixer per the skill's Fixes Procedure
-(max twice, then escalate to Planning via the user). Workers inherit the
-session working directory and are launch-generic: the same implementer,
-reviewer, fixer, scout, and researcher serve execution batches and
-research follow-ups.
+Choose the type that fits the work:
 
-<!-- USER PROSE: checkpointed vs delegated guidance, batch sizing. -->
+| Type | Root document | Use for |
+| --- | --- | --- |
+| `feature` | `PRD.md` | A product capability |
+| `foundation` | `FOUNDATION.md` | Shared technical foundations |
+| `issue` | `ISSUE.md` | A problem to investigate and fix |
+| `maintenance` | `MAINTENANCE.md` | Upkeep or bounded improvements |
 
-## User gates
-
-- The user approves each phase outside its session (`sane approve <phase>
-  --ref <ref>`); assistants never self-approve and never run `approve`.
-- Only the user stops/continues execution, accepts outcomes, expands scope,
-  or merges.
-- Handoffs between sessions are compact references (From/To, approvals,
-  revisions, paths, next action) via `sane handoff`; queue delivery is the
-  default. Nothing auto-advances.
-
-## Worktrees (pilot rule)
-
-SANE-managed worktrees are quarantined. The user selects/creates the
-worktree in the client; SANE only records the foreign path (`sane handoff
---worktree-path/--branch`) so CWD auto-detection resolves it. Execution
-never creates worktrees. Worktrees run isolated checks only (typecheck,
-unit tests, lint) — no shared dev servers, migrations, or deploys.
-
-## Command cheat sheet
+Creation selects the new workstream. To resume another:
 
 ```bash
-sane view                            # resolved workstream + phase state
-sane status                          # focused status report
-sane provide <phase>                 # phase starter (never overwrites)
-sane validate <phase>                # exists / non-empty / no template comments
-sane approve <phase> --ref <ref>     # validates first, refuses on problems
-sane job <id> [--json]               # worker context bundle
-sane job <id> <running|completed>    # progress mark
-sane research [--index|--register|--unregister] [--topic <t>]
-sane handoff                         # compose/send session handoff
+sane select --name my-change
 ```
 
-## Document map
+Workstream documents live in `.sane/workstreams/<name>/`. Selection, phase
+state, approvals, and session links live in `.sane/sane.db`. `sane init`
+adds `/.sane/` to the repository's `.gitignore`. Run subsequent commands
+from the implementation repository; SANE resolves the workstream from the
+current directory and selection. Use `sane view` to confirm the target.
 
-- This playbook — operator narrative (you are here).
-- `docs/SANE_0_2_0.md` — workflow + data model reference (sqlite is source
-  of truth, files are render).
-- `docs/SANE_REPOSITORY_SETUP.md` — layout, init/create/select, helper
-  semantics.
-- Role skills (`skills/*/SKILL.md`) — per-session contracts.
-- Agents (`opencode/agents/sane/`) — session entrypoints (assistants) and
-  self-contained assignments (workers).
+## 3. Work through the phases
+
+Start the SANE Design Assistant in OpenCode in the implementation repository.
+Each phase uses a top-level assistant session; workers handle bounded delegated
+tasks. The assistant reads the workstream context, links its session, and
+works with you on the phase's documents.
+
+| Phase | Main output |
+| --- | --- |
+| Design | Root document and `design/SDD.md` |
+| Engineering | Solution specs in `design/solutions/` |
+| Planning | `execution/PLAN.md` and `execution/jobs/` |
+| Execution | Implementation, `execution/reports/`, and `execution/FINAL_REPORT.md` |
+
+Planning confirms the plan with you before drafting and grounding Job Specs.
+Execution confirms run order and checkpoints, dispatches implementers, and
+coordinates review and fixes.
+
+At each phase's delivery, review the output, request changes if needed, and
+approve it yourself in the terminal:
+
+```bash
+sane validate design
+sane approve design --ref "Reviewed design"
+```
+
+Replace `design` with `engineering`, `planning`, or `execution` as you
+progress. Approval validates the phase first. Assistants never run approval
+commands. Planning approval authorizes the jobs; Execution tracks their
+progress. You control scope changes, acceptance, and merges.
+
+During execution, Planning can register added Job Specs within the existing
+authorization by running `sane job --register` (optionally `--json`). The command
+requires Planning approval, validates `execution/PLAN.md` and all Job Specs,
+and registers missing jobs as `planned`. IDs come from the filename prefix
+before the first dash (or the whole basename without `.md` if there is no dash).
+Duplicate IDs and changes to an existing ID's spec path are rejected atomically.
+Repeated registration preserves job progress and the original approval record;
+it does not reorder, renumber, or remove jobs.
+
+A Planning hash-drift warning means the documents differ from the approved
+snapshot. Routine authorized amendments can continue without deapproval or
+another `sane approve planning`. Planning escalates decisions exceeding that
+authorization directly to you. Registration records the actor as `planning`
+for audit purposes; this label is not authenticated role-based access control.
+
+### Sessions and handoffs
+
+Assistants use the installed `sane_link` and `sane_handoff` tools to register
+themselves and send work to another session. A handoff creates a target
+session if none is linked, or queues a message to an existing one. Open a
+newly created `[ready]` session from the OpenCode session list.
+
+```bash
+sane sessions
+sane sessions --slot engineering
+```
+
+Design, Planning, and Execution each have one linked session. Engineering
+and Research can have several; assistants ask which target to use when
+needed. Replies target the original sender. Prefer a fresh Research session
+for a new investigation. A handoff does not approve a phase.
+
+### Research
+
+Ask for Research whenever evidence is needed. Reports live at
+`research/<topic>/REPORT.md` and are registered in the research index:
+
+```bash
+sane research --index
+```
+
+Registered reports are append-only: new findings go into a new topic.
+Research has no approval gate. Findings that change an approved design or
+solution require updating that work and obtaining approval again.
+
+### Worktrees
+
+If using a worktree, create/select it in OpenCode and have the assistant
+record its path when linking the session. SANE-managed worktree and merge
+commands are disabled for the pilot. Use worktrees for isolated checks;
+keep shared dev servers, migrations, and deployments out of them.
+
+## Everyday commands
+
+| Command | Purpose |
+| --- | --- |
+| `sane view` | Show the resolved workstream and phase state |
+| `sane status` | Show a focused status report |
+| `sane provide <phase>` | Create starter documents without overwriting existing files |
+| `sane validate <phase>` | Check phase documents |
+| `sane approve <phase> --ref "<note>"` | Record your phase approval |
+| `sane sessions` | List linked assistant sessions |
+| `sane research --index` | Inspect registered reports and mismatches |
+| `sane job <id> --json` | Get a worker's job context |
+| `sane job --register [--json]` | Register added specs under existing Planning approval |
+| `sane job <id> running` | Mark a job as running |
+| `sane job <id> completed` | Mark a job as completed |
+
+Use `sane --help` for the command list. Detailed assistant procedures live
+in [role skills](../skills/); document starters come from
+[templates](../templates/). Older designs and guides are in the
+[archive](_legacy/README.md).

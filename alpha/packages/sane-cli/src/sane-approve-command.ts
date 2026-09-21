@@ -18,13 +18,8 @@
  * Every mutation records `(actor_role, session_id, timestamp)`. Approvals
  * are user actions (`--ref` is the user's approval token).
  */
-import { readdir } from "node:fs/promises"
-import { join } from "node:path"
-
 import {
   completeAllJobs,
-  createJob,
-  getJob,
   getWorkstream,
   initSchema,
   openSaneDb,
@@ -35,6 +30,7 @@ import {
   type Phase,
 } from "./sane-db.ts"
 import { resolveCommandAddress } from "./sane-cwd-target.ts"
+import { registerPlannedJobs } from "./sane-job-registration.ts"
 import {
   resolveBootstrappedWorkstream,
   resolveSaneRepository,
@@ -130,53 +126,6 @@ export function parseCliArguments(args: string[]): ParsedApproveArguments {
   return { implementationRepository: "", workstreamPath: "", phase, approvalRef, json }
 }
 
-function jobIdFromSpecFile(name: string): string {
-  const base = name.endsWith(".md") ? name.slice(0, -".md".length) : name
-  const dash = base.indexOf("-")
-  if (dash > 0) return base.slice(0, dash)
-  return base
-}
-
-/**
- * Register every `execution/jobs/*.md` spec found on disk as `planned`
- * (idempotent; `planned` means authorized). Gives job tracking without
- * per-job approval.
- */
-async function registerPlannedJobs(
-  db: import("bun:sqlite").Database,
-  identity: { repoRoot: string; user: string; workstreamId: string },
-  workstreamDir: string,
-  mutation: { actorRole: string; sessionId: string },
-): Promise<JobRow[]> {
-  let names: string[] = []
-  try {
-    names = (await readdir(join(workstreamDir, "execution", "jobs")))
-      .filter((name) => name.endsWith(".md"))
-      .sort()
-  } catch {
-    return []
-  }
-  const registered: JobRow[] = []
-  for (const name of names) {
-    const jobId = jobIdFromSpecFile(name);
-    if (!jobId) continue
-    const existing = getJob(db, identity, jobId)
-    if (!existing) {
-      registered.push(
-        createJob(
-          db,
-          identity,
-          { jobId, specPath: `execution/jobs/${name}` },
-          mutation,
-        ),
-      )
-    } else {
-      registered.push(existing)
-    }
-  }
-  return registered
-}
-
 export async function runSaneApproveCommand(
   options: SaneApproveCommandOptions,
 ): Promise<SaneApproveCommandResult> {
@@ -209,12 +158,12 @@ export async function runSaneApproveCommand(
     const dbRow = getWorkstream(db, identity)
     if (!dbRow) {
       throw new SaneWorkstreamStateError(
-        `No workstream row for ${identity.workstreamId} (repo ${identity.repoRoot} user ${identity.user}). Re-create the workstream so its type is recorded in sqlite.`,
+        `No workstream row for ${identity.workstreamId} (repo ${identity.repoRoot} user ${identity.user}). Re-create the workstream so its type is recorded in SANE state.`,
       )
     }
     if (dbRow.type !== workstream.type) {
       throw new SaneWorkstreamStateError(
-        `Workstream type mismatch: sqlite has type "${dbRow.type}" but the filesystem root doc implies "${workstream.type}". Re-create the workstream or fix the root doc.`,
+        `Workstream type mismatch: SANE state has type "${dbRow.type}" but the filesystem root doc implies "${workstream.type}". Re-create the workstream or fix the root doc.`,
       )
     }
     const validation = await validatePhaseDocs(db, identity, workstream.path, phase, dbRow.type)
@@ -228,19 +177,21 @@ export async function runSaneApproveCommand(
       saneHash: validation.hash,
       approvalRef: options.approvalRef,
     }
-    const approvalRow = recordApproval(db, identity, { phase, ...approvalInput }, mutation)
-    upsertStateEntry(
-      db,
-      identity,
-      { phase, status: "approved", ownerRole: phase, approvalRef: options.approvalRef },
-      mutation,
-    )
-    const jobs =
-      phase === "planning"
-        ? await registerPlannedJobs(db, identity, workstream.path, mutation)
+    const { approvalRow, jobs } = db.transaction(() => {
+      const jobs = phase === "planning"
+        ? registerPlannedJobs(db, identity, validation.files, mutation)
         : phase === "execution"
           ? completeAllJobs(db, identity, mutation)
           : []
+      const approvalRow = recordApproval(db, identity, { phase, ...approvalInput }, mutation)
+      upsertStateEntry(
+        db,
+        identity,
+        { phase, status: "approved", ownerRole: phase, approvalRef: options.approvalRef },
+        mutation,
+      )
+      return { approvalRow, jobs }
+    }).immediate()
 
     const result: SaneApproveCommandResult = {
       repoRoot: identity.repoRoot,

@@ -203,7 +203,7 @@ export function renderSaneView(db: Database, identity: IdentityInput): string {
   const lines: string[] = []
   lines.push(`# SANE State — ${workstreamId}`)
   lines.push("")
-  lines.push("<!-- Rendered from sqlite sane.db; database wins. View via `sane view`. -->")
+  lines.push("<!-- SANE workstream state. View via `sane view`. -->")
   lines.push("")
   lines.push(`- repo_root: ${esc(repoRoot)}`)
   lines.push(`- user: ${esc(user)}`)

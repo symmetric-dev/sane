@@ -4,7 +4,7 @@
  * - link design ok; second link to design without --force fails;
  *   with --force replaces (old row gone, count still 1)
  * - two links to engineering both kept, indexes 1 then 2 in order
- * - duplicate (slot, session) throws
+ * - duplicate (slot, session) re-links in place
  * - missing --slot/--session fail; bogus slot fails; unknown option fails
  * - --json envelope parses with expected keys
  * - e2e via runCli on a tmp repo (init + create workstream first)
@@ -338,7 +338,7 @@ describe("sane-link CLI end to end (tmp repo)", () => {
     ])
   })
 
-  test("duplicate (slot, session) throws", async () => {
+  test("duplicate (slot, session) re-links in place", async () => {
     await runSaneLinkCommand({
       implementationRepository,
       workstreamPath: "01-demo",
@@ -346,15 +346,14 @@ describe("sane-link CLI end to end (tmp repo)", () => {
       sessionId: "ses_dup",
       write: () => {},
     })
-    await expect(
-      runSaneLinkCommand({
-        implementationRepository,
-        workstreamPath: "01-demo",
-        slot: "engineering",
-        sessionId: "ses_dup",
-        write: () => {},
-      }),
-    ).rejects.toThrow(/already linked|already has session/)
+    const relinked = await runSaneLinkCommand({
+      implementationRepository,
+      workstreamPath: "01-demo",
+      slot: "engineering",
+      sessionId: "ses_dup",
+      write: () => {},
+    })
+    expect(relinked.sessionId).toBe("ses_dup")
     expect((await readSlot("engineering"))).toHaveLength(1)
   })
 

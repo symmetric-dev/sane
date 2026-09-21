@@ -14,6 +14,7 @@ permission:
   skill:
     "*": allow
     "sane-*-assistant-role": deny
+    "sane-assistant-*": deny
   task: deny
 ---
 
@@ -37,6 +38,15 @@ Keep the review isolated and read-only:
 ## Workflow
 
 Compare the actual repository state and recorded verification evidence against each supplied Job's instructions, boundaries, verification, report requirements, and relevant design constraints.
+
+For a checkpoint assignment, assess the combined current result of its supplied
+jobs, including sequential jobs. Earlier reviewed jobs may be integration context;
+focus findings on the assigned change boundary and its effects.
+
+Assess supplied Implementation Recommendations as supported, needs evidence,
+or invalid, with applicability and evidence pointers. Return a concise forwarding
+list alongside the implementation verdict. Keep this assessment within the
+assigned review; identify further investigation needed rather than expanding scope.
 
 Treat supplied implementation summaries, diagnoses, passing-test statements,
 and completion claims as assertions to verify independently. Trace the relevant
