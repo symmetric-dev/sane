@@ -39,6 +39,25 @@ import {
 } from "../src/sane-db.ts"
 
 const execFileAsync = promisify(execFile)
+const agentModel = { providerID: "openai", id: "test-model", variant: "high" }
+
+function mockCreate(slot: string, sessionId: string, directory: string, calls: string[]): HandoffFetch {
+  return async (url, init) => {
+    const parsed = new URL(url)
+    calls.push(parsed.pathname)
+    if (parsed.pathname === "/api/agent") {
+      expect(init?.method).toBe("GET")
+      expect(parsed.searchParams.get("location[directory]")).toBe(directory)
+      return okJson({ data: [{ id: `sane/assistant/${slot}`, model: agentModel }] })
+    }
+    expect(parsed.pathname).toBe("/api/session")
+    expect(init?.method).toBe("POST")
+    expect(JSON.parse(String(init?.body))).toMatchObject({
+      agent: `sane/assistant/${slot}`, model: agentModel, location: { directory },
+    })
+    return okJson({ id: sessionId })
+  }
+}
 
 function mutation(
   role = "design",
@@ -198,8 +217,8 @@ describe("resolveOrCreateSession --session-index (unit)", () => {
   })
 
   test("absent index still creates when the slot is empty (index 1)", async () => {
-    const createFetch: HandoffFetch = (async () =>
-      okJson({ id: "ses_plan_new" })) as unknown as HandoffFetch
+    const calls: string[] = []
+    const createFetch = mockCreate("planning", "ses_plan_new", identity.repoRoot, calls)
     const created = await resolveOrCreateSession(db!, identity, {
       serverUrl: "http://127.0.0.1:4096",
       slot: "planning",
@@ -209,11 +228,12 @@ describe("resolveOrCreateSession --session-index (unit)", () => {
     expect(created.created).toBe(true)
     expect(created.sessionId).toBe("ses_plan_new")
     expect(created.targetIndex).toBe(1)
+    expect(calls).toEqual(["/api/agent", "/api/session"])
   })
 
   test("bare research creates-if-empty with index 1", async () => {
-    const createFetch: HandoffFetch = (async () =>
-      okJson({ id: "ses_research_new" })) as unknown as HandoffFetch
+    const calls: string[] = []
+    const createFetch = mockCreate("research", "ses_research_new", identity.repoRoot, calls)
     const created = await resolveOrCreateSession(db!, identity, {
       serverUrl: "http://127.0.0.1:4096",
       slot: "research",
@@ -224,6 +244,7 @@ describe("resolveOrCreateSession --session-index (unit)", () => {
     expect(created.sessionId).toBe("ses_research_new")
     expect(created.targetIndex).toBe(1)
     expect(listSelectionsBySlot(db!, identity, "research")).toHaveLength(1)
+    expect(calls).toEqual(["/api/agent", "/api/session"])
   })
 })
 
@@ -289,6 +310,7 @@ describe("sane handoff --session-index end to end (mock server)", () => {
       write: () => {},
     })
     const identity = await resolveSaneIdentity(implementationRepository, "01-demo")
+    implementationRepository = identity.repoRoot
     const db = await openSaneDb(identity.repoRoot)
     try {
       initSchema(db)
@@ -321,10 +343,15 @@ describe("sane handoff --session-index end to end (mock server)", () => {
 
   /** Mock server fetch that counts session creates but otherwise succeeds. */
   function mockServer(counter: { creates: number }): HandoffFetch {
-    return (async (url: string) => {
+    const calls: string[] = []
+    const createFetch = mockCreate("planning", "ses_eng_created", implementationRepository, calls)
+    return (async (url: string, init?: RequestInit) => {
+      if (new URL(url).pathname === "/api/agent") return createFetch(url, init)
       if (url.endsWith("/api/session")) {
         counter.creates += 1
-        return okJson({ id: "ses_eng_created" })
+        const response = await createFetch(url, init)
+        expect(calls).toEqual(["/api/agent", "/api/session"])
+        return response
       }
       return okJson({})
     }) as unknown as HandoffFetch

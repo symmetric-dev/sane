@@ -37,6 +37,7 @@ import {
 } from "../src/sane-db.ts"
 
 const execFileAsync = promisify(execFile)
+const agentModel = { providerID: "openai", id: "test-model", variant: "high" }
 
 function mutation(
   role = "design",
@@ -153,9 +154,16 @@ describe("runHandoffAsSession new_session (tool core)", () => {
     seedTwoLinked(db!)
     let creates = 0
     const calls: string[] = []
-    const fetchImpl: HandoffFetch = (async (url: string) => {
+    const fetchImpl: HandoffFetch = (async (url: string, init?: RequestInit) => {
       calls.push(url)
+      if (new URL(url).pathname === "/api/agent") {
+        expect(init?.method).toBe("GET")
+        expect(new URL(url).searchParams.get("location[directory]")).toBe(identity.repoRoot)
+        return okJson({ data: [{ id: "sane/assistant/engineering", model: agentModel }] })
+      }
       if (url.endsWith("/api/session")) {
+        expect(init?.method).toBe("POST")
+        expect(JSON.parse(String(init?.body))).toMatchObject({ agent: "sane/assistant/engineering", model: agentModel })
         creates += 1
         return okJson({ id: "ses_eng_third" })
       }
@@ -168,6 +176,12 @@ describe("runHandoffAsSession new_session (tool core)", () => {
       { fetchImpl, serverUrl: "http://127.0.0.1:4096" },
     )
     expect(creates).toBe(1)
+    expect(calls.map((url) => new URL(url).pathname)).toEqual([
+      "/api/agent",
+      "/api/session",
+      "/api/session/ses_eng_third/prompt",
+      "/api/session/ses_eng_third",
+    ])
     expect(listSelectionsBySlot(db!, identity, "engineering")).toHaveLength(3)
     expect(result.to).toEqual({
       slot: "engineering",
@@ -273,6 +287,7 @@ describe("sane handoff --new end to end (mock server)", () => {
       write: () => {},
     })
     const seededIdentity = await resolveSaneIdentity(implementationRepository, "01-demo")
+    implementationRepository = seededIdentity.repoRoot
     const seededDb = await openSaneDb(seededIdentity.repoRoot)
     try {
       initSchema(seededDb)
@@ -305,8 +320,17 @@ describe("sane handoff --new end to end (mock server)", () => {
 
   test("forceNew creates a third session; default reuses latest", async () => {
     let creates = 0
-    const fetchImpl: HandoffFetch = (async (url: string) => {
+    const calls: string[] = []
+    const fetchImpl: HandoffFetch = (async (url: string, init?: RequestInit) => {
+      calls.push(new URL(url).pathname)
+      if (new URL(url).pathname === "/api/agent") {
+        expect(init?.method).toBe("GET")
+        expect(new URL(url).searchParams.get("location[directory]")).toBe(implementationRepository)
+        return okJson({ data: [{ id: "sane/assistant/engineering", model: agentModel }] })
+      }
       if (url.endsWith("/api/session")) {
+        expect(init?.method).toBe("POST")
+        expect(JSON.parse(String(init?.body))).toMatchObject({ agent: "sane/assistant/engineering", model: agentModel })
         creates += 1
         return okJson({ id: "ses_eng_third" })
       }
@@ -327,6 +351,10 @@ describe("sane handoff --new end to end (mock server)", () => {
     expect(fresh.targetCreated).toBe(true)
     expect(fresh.targetIndex).toBe(3)
     expect(creates).toBe(1)
+    expect(calls).toEqual([
+      "/api/agent", "/api/session", "/api/session/ses_eng_third/prompt", "/api/session/ses_eng_third",
+    ])
+    calls.length = 0
 
     const reused = await runSaneHandoffCommand({
       implementationRepository,
@@ -341,6 +369,7 @@ describe("sane handoff --new end to end (mock server)", () => {
     expect(reused.targetCreated).toBe(false)
     expect(reused.targetIndex).toBe(3)
     expect(creates).toBe(1)
+    expect(calls).toEqual(["/api/session/ses_eng_third/prompt", "/api/session/ses_eng_third"])
   })
 
   test("forceNew with sessionIndex fails the handoff", async () => {

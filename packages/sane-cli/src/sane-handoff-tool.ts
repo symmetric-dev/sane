@@ -24,6 +24,7 @@ import type { Database } from "bun:sqlite"
 
 import {
   assertSelectionSlot,
+  getWorkstreamImplementation,
   listSelections,
   listSelectionsBySlot,
   type SaneIdentity,
@@ -174,6 +175,7 @@ export async function runHandoffAsSession(
   })
 
   const message = composeHandoff({
+    implementationRoot: getWorkstreamImplementation(db, identity)?.worktree_path,
     fromSlot,
     fromSession: input.fromSession,
     workstreamId: identity.workstreamId,

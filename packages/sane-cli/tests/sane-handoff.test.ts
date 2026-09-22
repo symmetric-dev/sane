@@ -576,9 +576,12 @@ describe("sane-handoff CLI end to end (mock server)", () => {
       "Workstream: 01-demo\nHandoff From: Design Session (ses_design_1)\nMessage: Draft solutions.",
     )
     expect(first.readyTitle).toBe("[ready] engineering: Draft solutions.")
+    expect(lines).toHaveLength(1)
+    expect(lines[0]).toContain("ses_eng_1")
+    expect(lines.join("\n")).not.toContain("Draft solutions.")
     expect(creates).toBe(1)
     expect(promptCalls).toHaveLength(1)
-    expect(promptCalls[0]!.body).toMatchObject({ delivery: "queue" })
+    expect(promptCalls[0]!.body).toMatchObject({ delivery: "queue", text: first.message })
     expect(renameCalls).toHaveLength(1)
     expect(renameCalls[0]!.body).toMatchObject({
       title: "[ready] engineering: Draft solutions.",

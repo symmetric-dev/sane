@@ -413,7 +413,7 @@ describe("sane-link CLI end to end (tmp repo)", () => {
     expect(typeof parsed.repo_root).toBe("string")
     expect(typeof parsed.user).toBe("string")
     expect(Object.keys(parsed).sort()).toEqual(
-      ["branch", "count", "index", "repo_root", "session_id", "slot", "user", "workstream_id", "worktree_path"].sort(),
+      ["branch", "count", "index", "implementation_root", "repo_root", "session_id", "slot", "user", "workstream_id", "worktree_path"].sort(),
     )
   })
 

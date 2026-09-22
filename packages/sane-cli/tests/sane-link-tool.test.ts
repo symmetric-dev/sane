@@ -13,7 +13,7 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test"
 import type { Database } from "bun:sqlite"
 import { execFile } from "node:child_process"
-import { mkdir, mkdtemp, rm } from "node:fs/promises"
+import { mkdir, mkdtemp, realpath, rm } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { promisify } from "node:util"
@@ -241,8 +241,11 @@ describe("sane_link plugin executor (session from tool context)", () => {
       session_id: string
       index: number
       count: number
+      workstream: string
+      implementation_root: string
     }
-    expect(parsed).toEqual({ slot: "design", session_id: "ses_tool_1", index: 1, count: 1 })
+    expect(parsed).toEqual({ slot: "design", session_id: "ses_tool_1", index: 1, count: 1,
+      workstream: "01-demo", implementation_root: await realpath(implementationRepository) })
 
     const identity = await resolveSaneIdentity(implementationRepository, "01-demo")
     const db = await openSaneDb(identity.repoRoot)

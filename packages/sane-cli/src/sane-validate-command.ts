@@ -10,24 +10,28 @@
  * - design: exactly the typed root doc plus `design/SDD.md`.
  * - engineering: one or more `design/solutions/*.md`.
  * - planning: `execution/PLAN.md` plus one or more `execution/jobs/*.md`.
- * - execution: `execution/FINAL_REPORT.md` plus one or more
- *   `execution/reports/*.md`.
+ * - execution: `execution/FINAL_REPORT.md` plus registered completed-job
+ *   report coverage (approval additionally checks jobs it will complete).
+ * - execution report --id: only the assigned report, checked against its spec.
  *
- * Content rules per file: must exist, must be non-empty, and must contain
+ * General content rules per file: must exist, must be non-empty, and must contain
  * no `<!--` guidance comments (every template carries them with an
  * instruction to replace them, so an unedited template always fails).
  * Root docs have no template copy in `resources/`; the same three rules
- * apply uniformly.
+ * apply uniformly. Execution job reports additionally enforce their title,
+ * section structure, populated sections, and resolved placeholders.
  *
  * Research index divergences and approved-but-changed docs are warnings,
  * never failures. `sane approve <phase>` runs this validation first
  * and refuses to record when problems exist.
  */
 import { readdir, readFile } from "node:fs/promises"
-import { join } from "node:path"
+import { basename, join } from "node:path"
 
 import {
   getApproval,
+  getJob,
+  listJobs,
   getWorkstream,
   initSchema,
   openSaneDb,
@@ -43,6 +47,7 @@ import {
 import type { WorkstreamType } from "./workstream-type.ts"
 import { recheckResearchIndex } from "./sane-workstream-state.ts"
 import { SaneWorkstreamStateError } from "./sane-workstream-state.ts"
+import { jobSpecTitle, validateExecutionReport, type ReportDiagnostic } from "./sane-execution-report-validation.ts"
 
 export const VALIDATE_PHASES = ["design", "engineering", "planning", "execution"] as const
 export type ValidatePhase = (typeof VALIDATE_PHASES)[number]
@@ -81,6 +86,8 @@ export interface ValidatePhaseResult {
   problems: string[]
   warnings: string[]
   ok: boolean
+  diagnostics?: ReportDiagnostic[]
+  reportId?: string
 }
 
 async function fileExists(path: string): Promise<boolean> {
@@ -118,11 +125,30 @@ export async function validatePhaseDocs(
   workstreamDir: string,
   phase: ValidatePhase,
   type: WorkstreamType,
+  options: { reportId?: string; completingJobs?: boolean } = {},
 ): Promise<ValidatePhaseResult> {
   const problems: string[] = []
   const warnings: string[] = []
   const files: string[] = []
   const hashes: string[] = []
+  const diagnostics: ReportDiagnostic[] = []
+
+  async function checkReport(job: ReturnType<typeof listJobs>[number]): Promise<void> {
+    const path = job.report_path ?? `execution/reports/${basename(job.spec_path)}`
+    const content = await readIfExists(join(workstreamDir, path))
+    const spec = await readIfExists(join(workstreamDir, job.spec_path))
+    const title = spec === null ? null : jobSpecTitle(spec, job.job_id)
+    const errors: ReportDiagnostic[] = []
+    if (content === null) errors.push({ path, line: 1, message: `Missing report for job ${job.job_id}; author its assigned report.` })
+    if (title === null) errors.push({ path: job.spec_path, line: 1, message: `Expected Job Spec title: # Job Spec ${job.job_id}: <job name>` })
+    if (content !== null && title !== null) errors.push(...validateExecutionReport(content, path, job.job_id, title))
+    diagnostics.push(...errors)
+    problems.push(...errors.map((e) => `${e.path}:${e.line}: ${e.message}`))
+    if (!errors.length && content !== null && !files.includes(path)) {
+      files.push(path)
+      hashes.push(`${path}:${sha256Hex(content)}`)
+    }
+  }
 
   async function checkFile(relativePath: string): Promise<void> {
     const full = join(workstreamDir, relativePath)
@@ -143,7 +169,24 @@ export async function validatePhaseDocs(
     hashes.push(`${relativePath}:${sha256Hex(content)}`)
   }
 
-  if (phase === "design") {
+  if (options.reportId !== undefined) {
+    const job = getJob(db, identity, options.reportId)
+    if (!job) problems.push(`Unknown registered job: ${options.reportId}`)
+    else await checkReport(job)
+  } else if (phase === "execution") {
+    await checkFile("execution/FINAL_REPORT.md")
+    const jobs = listJobs(db, identity)
+    const reportPaths = new Set<string>()
+    for (const job of jobs) {
+      const path = job.report_path ?? `execution/reports/${basename(job.spec_path)}`
+      if (reportPaths.has(path)) problems.push(`${path}:1: Report path is assigned to multiple jobs; assign one report per job.`)
+      reportPaths.add(path)
+      if (options.completingJobs || job.status === "completed" || await fileExists(join(workstreamDir, path))) await checkReport(job)
+    }
+    for (const name of await listMarkdownFiles(join(workstreamDir, "execution/reports"))) {
+      if (!reportPaths.has(`execution/reports/${name}`)) problems.push(`execution/reports/${name}:1: Report has no registered job assignment.`)
+    }
+  } else if (phase === "design") {
     const expectedRoot = ROOT_DOC_BY_TYPE[type]
     for (const root of ROOT_DOCS) {
       if (root === expectedRoot) continue
@@ -172,7 +215,7 @@ export async function validatePhaseDocs(
   }
 
   // Research index divergences are warnings (pickup absorption).
-  try {
+  if (options.reportId === undefined) try {
     const researchIndex = await recheckResearchIndex(
       db,
       { repoRoot: identity.repoRoot, user: identity.user, workstreamId: identity.workstreamId },
@@ -190,7 +233,7 @@ export async function validatePhaseDocs(
     phase,
   )
   const hash = sha256Hex([...hashes].sort().join("\n"))
-  if (approval && approval.sane_hash !== hash) {
+  if (options.reportId === undefined && approval && approval.sane_hash !== hash) {
     warnings.push(
       phase === "planning"
         ? `planning is approved (${approval.approval_ref}) but its documents differ from the approved snapshot; routine amendments within existing authorization may continue without reapproval. Planning must escalate decisions exceeding that authorization directly to the user.`
@@ -209,6 +252,8 @@ export async function validatePhaseDocs(
     problems,
     warnings,
     ok: problems.length === 0,
+    ...(phase === "execution" ? { diagnostics } : {}),
+    ...(options.reportId !== undefined ? { reportId: options.reportId } : {}),
   }
 }
 
@@ -216,21 +261,24 @@ export interface SaneValidateCommandOptions {
   implementationRepository: string
   workstreamPath: string
   phase: string
+  reportId?: string
   json?: boolean
   userOverride?: string
   write?: (line: string) => void
 }
 
 export const USAGE =
-  "Usage: sane validate <design|engineering|planning|execution> [--json] (auto-detects the workstream from the current directory)"
+  "Usage: sane validate <design|engineering|planning|execution> [--json] | sane validate execution report --id <id> [--json]"
 
 export function parseCliArguments(args: string[]): {
   implementationRepository: string
   workstreamPath: string
   phase: string
   json: boolean
+  reportId?: string
 } {
   let json = false
+  let reportId: string | undefined
   const positional: string[] = []
   let parseOptions = true
 
@@ -240,6 +288,10 @@ export function parseCliArguments(args: string[]): {
       parseOptions = false
     } else if (parseOptions && argument === "--json") {
       json = true
+    } else if (parseOptions && argument === "--id") {
+      if (reportId !== undefined) throw new SaneWorkstreamStateError("Option --id may be provided only once.")
+      reportId = args[++index]
+      if (!reportId?.trim() || reportId.startsWith("-")) throw new SaneWorkstreamStateError("Option --id requires a job ID.")
     } else if (parseOptions && argument.startsWith("-")) {
       throw new SaneWorkstreamStateError(`Unknown option: ${argument}`)
     } else {
@@ -247,19 +299,21 @@ export function parseCliArguments(args: string[]): {
     }
   }
 
-  if (positional.length !== 1 || !positional[0]) {
+  const scoped = positional.length === 2 && positional[0] === "execution" && positional[1] === "report"
+  if ((!scoped && positional.length !== 1) || !positional[0]) {
     throw new SaneWorkstreamStateError(
       `Provide exactly one phase. Expected one of: ${VALIDATE_PHASES.join(", ")}.`,
     )
   }
   const phase = positional[0]
+  if (scoped !== (reportId !== undefined)) throw new SaneWorkstreamStateError("Use sane validate execution report --id <id> for scoped report validation.")
   if (!VALIDATE_PHASE_SET.has(phase)) {
     throw new SaneWorkstreamStateError(
       `Invalid phase "${phase}". Expected one of: ${VALIDATE_PHASES.join(", ")}.`,
     )
   }
   // Bare invocation: the async run path auto-detects the target from CWD.
-  return { implementationRepository: "", workstreamPath: "", phase, json }
+  return { implementationRepository: "", workstreamPath: "", phase, json, ...(reportId !== undefined ? { reportId } : {}) }
 }
 
 export async function runSaneValidateCommand(
@@ -272,6 +326,7 @@ export async function runSaneValidateCommand(
     )
   }
   const phase = options.phase as ValidatePhase
+  if (options.reportId !== undefined && (phase !== "execution" || !options.reportId.trim())) throw new SaneWorkstreamStateError("Report validation requires execution and a non-empty job ID.")
   const pointer = await resolveSaneRepository(options.implementationRepository)
   const workstream = await resolveBootstrappedWorkstream(
     pointer.workstreamsRoot,
@@ -296,12 +351,11 @@ export async function runSaneValidateCommand(
         `Workstream type mismatch: SANE state has type "${dbRow.type}" but the filesystem root doc implies "${workstream.type}". Re-create the workstream or fix the root doc.`,
       )
     }
-    const result = await validatePhaseDocs(db, identity, workstream.path, phase, dbRow.type)
+    const result = await validatePhaseDocs(db, identity, workstream.path, phase, dbRow.type, { reportId: options.reportId })
     if (options.json === true) {
       write(JSON.stringify({ ...result }, null, 2))
     } else if (result.ok) {
-      write(`Valid ${phase} for ${result.workstreamId}: ${result.files.length} document(s)`)
-      for (const file of result.files) write(`  ok: ${file}`)
+      write(`Valid ${phase}${options.reportId ? ` report ${options.reportId}` : ""} for ${result.workstreamId}: ${result.files.length} document(s)`)
       for (const warning of result.warnings) write(`  warning: ${warning}`)
     } else {
       write(`Invalid ${phase} for ${result.workstreamId}:`)

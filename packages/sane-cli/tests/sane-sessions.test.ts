@@ -200,9 +200,14 @@ describe("sane-sessions CLI end to end (tmp repo)", () => {
     expect(output).toContain("[1] ses_design_1")
     expect(output).toContain("[1] ses_eng_1")
     expect(output).toContain("[2] ses_eng_2 (latest)")
-    // Worktree/branch shown only when set.
-    expect(output).toContain("/wt/opencode-managed/01-demo")
-    expect(output).toContain("opencode/some-branch")
+    expect(output).not.toContain("/wt/opencode-managed/01-demo")
+    expect(output).not.toContain("[updated")
+    const detailed: string[] = []
+    await runSaneSessionsCommand({ implementationRepository, workstreamPath: "01-demo", verbose: true, write: (line) => detailed.push(line) })
+    expect(detailed.join("\n")).toContain("/wt/opencode-managed/01-demo")
+    expect(detailed.join("\n")).toContain("opencode/some-branch")
+    expect(detailed.join("\n")).toContain("[updated")
+    expect(parseCliArguments(["--slot", "engineering", "--verbose"]).verbose).toBe(true)
     const designLine = lines.find((line) => line.includes("ses_design_1")) ?? ""
     expect(designLine).not.toContain("worktree")
     expect(designLine).not.toContain("branch")

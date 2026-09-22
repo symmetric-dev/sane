@@ -22,19 +22,22 @@ export interface SaneStatusCommandOptions {
   implementationRepository: string
   workstreamPath: string
   json?: boolean
+  verbose?: boolean
   userOverride?: string
   write?: (line: string) => void
 }
 
 export const USAGE =
-  "Usage: sane status [<implementation-repository> <workstream-relative-path>] [--json] [--repo-root <path>] (no positionals: auto-detect the target from the current directory)"
+  "Usage: sane status [<implementation-repository> <workstream-relative-path>] [--json] [--verbose] [--repo-root <path>] (default: compact summary; --verbose: references and individual jobs; no positionals: auto-detect target)"
 
 export function parseCliArguments(args: string[]): {
   implementationRepository: string
   workstreamPath: string
   json: boolean
+  verbose?: boolean
 } {
   let json = false
+  let verbose = false
   let repoRootOpt: string | undefined
   const positional: string[] = []
   let parseOptions = true
@@ -45,6 +48,8 @@ export function parseCliArguments(args: string[]): {
       parseOptions = false
     } else if (parseOptions && argument === "--json") {
       json = true
+    } else if (parseOptions && argument === "--verbose") {
+      verbose = true
     } else if (parseOptions && argument === "--repo-root") {
       const value = args[index + 1]
       if (!value || value.startsWith("-")) {
@@ -72,6 +77,7 @@ export function parseCliArguments(args: string[]): {
       implementationRepository: repoRootOpt,
       workstreamPath: positional[0],
       json,
+      ...(verbose ? { verbose } : {}),
     }
   }
 
@@ -80,14 +86,15 @@ export function parseCliArguments(args: string[]): {
       implementationRepository: positional[0],
       workstreamPath: positional[1],
       json,
+      ...(verbose ? { verbose } : {}),
     }
   }
   if (positional.length === 1 && positional[0]) {
-    return { implementationRepository: process.cwd(), workstreamPath: positional[0], json }
+    return { implementationRepository: process.cwd(), workstreamPath: positional[0], json, ...(verbose ? { verbose } : {}) }
   }
   if (positional.length === 0) {
     // Bare invocation: the async run path auto-detects the target from CWD.
-    return { implementationRepository: "", workstreamPath: "", json }
+    return { implementationRepository: "", workstreamPath: "", json, ...(verbose ? { verbose } : {}) }
   }
   throw new SaneWorkstreamStateError(
     "Provide an implementation repository and workstream relative path.",
@@ -170,7 +177,7 @@ export async function runSaneStatusCommand(options: SaneStatusCommandOptions): P
     const byPhase = new Map(status.phases.map((entry) => [entry.phase, entry]))
     const renderPhase = (phase: string, entry: { status: string; approval_ref: string | null } | undefined): void => {
       const state = entry?.status ?? "pending"
-      const ref = entry?.approval_ref ? ` (${entry.approval_ref})` : ""
+      const ref = options.verbose && entry?.approval_ref ? ` (${entry.approval_ref})` : ""
       write(`  ${phaseGlyph(state)} ${phase.padEnd(11)} ${state}${ref}`)
     }
     for (const phase of PHASE_ORDER) renderPhase(phase, byPhase.get(phase))
@@ -181,21 +188,25 @@ export async function runSaneStatusCommand(options: SaneStatusCommandOptions): P
       write(`  ○ research    (none registered)`)
     } else {
       write(
-        `  ● research    ${status.researchReports.map((report) => report.topic).join(", ")}`,
+        `  ● research    ${options.verbose ? status.researchReports.map((report) => report.topic).join(", ") : `${status.researchReports.length} registered`}`,
       )
     }
     if (status.jobs.length === 0) {
       write(`  ○ jobs        (none recorded)`)
     } else {
+      const counts = new Map<string, number>()
+      for (const job of status.jobs) counts.set(job.status, (counts.get(job.status) ?? 0) + 1)
       write(
-        `  ◐ jobs        ${status.jobs.map((job) => `${job.job_id} ${job.status}`).join(" · ")}`,
+        `  ◐ jobs        ${options.verbose ? status.jobs.map((job) => `${job.job_id} ${job.status}`).join(" · ") : [...counts].map(([state, count]) => `${count} ${state}`).join(" · ")}`,
       )
     }
     if (!status.merge) {
       write(`  ○ merge       (none recorded)`)
     } else {
       const merged = status.merge.merge_commit ? `merged ${status.merge.merge_commit.slice(0, 12)}` : "open"
-      write(`  ◐ merge       ${status.merge.branch} @ ${status.merge.base_rev.slice(0, 12)} (${merged})`)
+      write(options.verbose
+        ? `  ◐ merge       ${status.merge.branch} @ ${status.merge.base_rev.slice(0, 12)} (${merged})`
+        : `  ◐ merge       ${status.merge.branch} (${status.merge.merge_commit ? "merged" : "open"})`)
     }
   } finally {
     try {

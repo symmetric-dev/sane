@@ -48,7 +48,7 @@ const CLEAN_PLAN = "# Plan\nReal plan package.\n"
 const CLEAN_JOB_A = "# Job Spec 01: first\nReal job.\n"
 const CLEAN_JOB_B = "# Job Spec 02: second\nReal job.\n"
 const CLEAN_FINAL_REPORT = "# Final Report\nReal outcomes.\n"
-const CLEAN_REPORT = "# Report\nReal results.\n"
+const CLEAN_REPORT = "# Job 01: first Report\n\n## Accomplished\nReal results.\n## Found Issues\nNone\n## Notes\nNone\n## Implementation Recommendations\nNone\n"
 
 describe("sane-approve (phase approvals)", () => {
   let tempDirectory: string
@@ -347,6 +347,9 @@ describe("sane-approve (phase approvals)", () => {
     })
 
     await writeDoc("execution/FINAL_REPORT.md", CLEAN_FINAL_REPORT)
+    await expect(runSaneApproveCommand({ ...quiet, implementationRepository, phase: "execution", approvalRef: "must-fail" })).rejects.toThrow(/Missing report for job 01/)
+    expect(await approvalFor("execution")).toBeNull()
+    expect((await snapshot()).jobs[0]?.status).toBe("planned")
     await writeDoc("execution/reports/01-first.md", CLEAN_REPORT)
     const execution = await runSaneApproveCommand({
       implementationRepository,

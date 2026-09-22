@@ -148,9 +148,9 @@ describe("sane-view renderer from DB", () => {
       expect(rendered).toContain("execution/reports/01-first-job.md")
       expect(rendered).toContain("running")
       expect(rendered).toContain("execution/jobs/02-second-job.md")
-      expect(rendered).toContain("job_id:")
-      expect(rendered).toContain("spec_path:")
-      expect(rendered).toContain("report_path:")
+      expect(rendered).toContain("| job_id | spec_path | report_path | status |")
+      expect(rendered.match(/execution\/jobs\/01-first-job.md/g)).toHaveLength(1)
+      expect(rendered).not.toContain("### 01")
       expect(rendered).toContain("planned")
 
       // Research registry.

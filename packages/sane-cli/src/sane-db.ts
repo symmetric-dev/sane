@@ -389,6 +389,22 @@ CREATE TABLE IF NOT EXISTS current_workstreams(
   updated_at TEXT NOT NULL,
   PRIMARY KEY (repo_root, user)
 );
+CREATE TABLE IF NOT EXISTS workstream_implementations(
+  repo_root TEXT NOT NULL,
+  user TEXT NOT NULL,
+  workstream_id TEXT NOT NULL,
+  worktree_path TEXT NOT NULL,
+  branch TEXT,
+  updated_at TEXT NOT NULL,
+  PRIMARY KEY (repo_root, user, workstream_id)
+);
+CREATE TABLE IF NOT EXISTS session_workstreams(
+  repo_root TEXT NOT NULL,
+  user TEXT NOT NULL,
+  session_id TEXT NOT NULL,
+  workstream_id TEXT NOT NULL,
+  PRIMARY KEY (repo_root, user, session_id)
+);
 CREATE TABLE IF NOT EXISTS sane_mutations(
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   repo_root TEXT NOT NULL,
@@ -485,6 +501,64 @@ export interface SelectionRow {
   worktree_path: string | null
   branch: string | null
   updated_at: string
+}
+
+export interface WorkstreamImplementationRow {
+  repo_root: string
+  user: string
+  workstream_id: string
+  worktree_path: string
+  branch: string | null
+  updated_at: string
+}
+
+export function getWorkstreamImplementation(db: Database, identity: SaneIdentity): WorkstreamImplementationRow | null {
+  assertIdentity(identity)
+  return db.query("SELECT * FROM workstream_implementations WHERE repo_root = ? AND user = ? AND workstream_id = ?")
+    .get(identity.repoRoot, identity.user, identity.workstreamId) as WorkstreamImplementationRow | null
+}
+
+/** Paths are validated by the asynchronous binding boundary before this write. */
+export function setWorkstreamImplementation(
+  db: Database, identity: SaneIdentity, input: { worktreePath: string; branch?: string | null; reassign?: boolean }, mutation: MutationContext,
+): WorkstreamImplementationRow {
+  assertIdentity(identity)
+  if (!isAbsolute(input.worktreePath)) throw new SaneDbError("Implementation worktree must be an absolute path.")
+  const timestamp = resolveTimestamp(mutation)
+  const existing = getWorkstreamImplementation(db, identity)
+  if (existing && existing.worktree_path !== input.worktreePath && !input.reassign) {
+    throw new SaneDbError(`Workstream ${identity.workstreamId} already has implementation worktree ${existing.worktree_path}; use --reassign to replace explicitly.`)
+  }
+  db.query(`INSERT INTO workstream_implementations VALUES (?, ?, ?, ?, ?, ?)
+    ON CONFLICT(repo_root, user, workstream_id) DO UPDATE SET worktree_path=excluded.worktree_path, branch=excluded.branch, updated_at=excluded.updated_at`)
+    .run(identity.repoRoot, identity.user, identity.workstreamId, input.worktreePath, input.branch ?? null, timestamp)
+  recordMutation(db, identity, "workstream_implementations", "bind", mutation, timestamp)
+  return getWorkstreamImplementation(db, identity)!
+}
+
+/** Includes legacy selection rows; ambiguity must never fall through to mutable selection. */
+export function getSessionWorkstream(db: Database, key: { repoRoot: string; user: string; sessionId: string }): string | null {
+  const rows = db.query(`SELECT workstream_id FROM session_workstreams WHERE repo_root = ? AND user = ? AND session_id = ?
+    UNION SELECT workstream_id FROM selections WHERE repo_root = ? AND user = ? AND session_id = ?`)
+    .all(key.repoRoot, key.user, key.sessionId, key.repoRoot, key.user, key.sessionId) as Array<{ workstream_id: string }>
+  if (rows.length > 1) throw new SaneDbError(`Session ${key.sessionId} is linked to multiple workstreams; explicitly reassign it with sane link --reassign.`)
+  return rows[0]?.workstream_id ?? null
+}
+
+export function bindSessionWorkstream(db: Database, identity: SaneIdentity, sessionId: string, mutation: MutationContext, reassign = false): void {
+  assertIdentity(identity)
+  assertNonEmpty("sessionId", sessionId)
+  const timestamp = resolveTimestamp(mutation)
+  if (!reassign) {
+    const existing = getSessionWorkstream(db, { ...identity, sessionId })
+    if (existing && existing !== identity.workstreamId) throw new SaneDbError(`Session ${sessionId} is already linked to workstream ${existing}; use --reassign to move it explicitly.`)
+  } else {
+    db.query("DELETE FROM selections WHERE repo_root = ? AND user = ? AND session_id = ? AND workstream_id != ?")
+      .run(identity.repoRoot, identity.user, sessionId, identity.workstreamId)
+  }
+  db.query(`INSERT INTO session_workstreams VALUES (?, ?, ?, ?) ON CONFLICT(repo_root, user, session_id) DO UPDATE SET workstream_id=excluded.workstream_id`)
+    .run(identity.repoRoot, identity.user, sessionId, identity.workstreamId)
+  recordMutation(db, identity, "session_workstreams", "bind", mutation, timestamp)
 }
 
 export interface StateEntryRow {

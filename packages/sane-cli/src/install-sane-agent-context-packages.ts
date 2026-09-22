@@ -68,6 +68,7 @@ const RETIRED_ROLE_SKILL_NAMES = [
  */
 export const PLUGIN_SRC_FILES = [
   "sane-link-tool.ts",
+  "sane-implementation.ts",
   "sane-handoff-tool.ts",
   "sane-handoff-command.ts",
   "sane-workstream-state.ts",

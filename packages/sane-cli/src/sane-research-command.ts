@@ -3,8 +3,8 @@
  *
  * Research is an append-only archive of `research/<topic>/REPORT.md` files
  * indexed in the `research_reports` table (docs/SANE_0_2_0.md Sec 2).
- * - `--index` (default) prints the table of contents: topic, creation time,
- *   content hash, commit, path, and file presence, plus unregistered files.
+ * - `--index` (default) prints topic, relative path, and file status, plus
+ *   unregistered files. `--verbose` adds creation time, hash, and commit.
  * - `--register --topic <t> [--path <p>] [--git-commit <c>]` hashes the report
  *   file and upserts its registry row. Re-registering refreshes the row.
  * - `--unregister --topic <t>` removes a registry row (index repair).
@@ -50,13 +50,14 @@ export interface SaneResearchCommandOptions {
   reportPath?: string
   gitCommit?: string | null
   json?: boolean
+  verbose?: boolean
   userOverride?: string
   sessionId?: string
   write?: (line: string) => void
 }
 
 export const USAGE =
-  "Usage: sane research [<implementation-repository> <workstream-relative-path>] [--index|--register|--unregister] [--topic <topic>] [--path <report-path>] [--git-commit <commit>] [--json] [--repo-root <path>] (no positionals: auto-detect the target from the current directory)"
+  "Usage: sane research [<implementation-repository> <workstream-relative-path>] [--index|--register|--unregister] [--topic <topic>] [--path <report-path>] [--git-commit <commit>] [--json] [--verbose] [--repo-root <path>] (default: compact index; --verbose: hashes, timestamps and commits; no positionals: auto-detect target)"
 
 function singleLine(value: string | undefined, option: string): string | undefined {
   if (value === undefined) return undefined
@@ -74,8 +75,10 @@ export function parseCliArguments(args: string[]): {
   reportPath?: string
   gitCommit?: string | null
   json: boolean
+  verbose?: boolean
 } {
   let json = false
+  let verbose = false
   let index = false
   let register = false
   let unregister = false
@@ -92,6 +95,8 @@ export function parseCliArguments(args: string[]): {
       parseOptions = false
     } else if (parseOptions && argument === "--json") {
       json = true
+    } else if (parseOptions && argument === "--verbose") {
+      verbose = true
     } else if (parseOptions && argument === "--index") {
       if (index) throw new SaneWorkstreamStateError("Option --index may be provided only once.")
       index = true
@@ -189,7 +194,7 @@ export function parseCliArguments(args: string[]): {
     )
   }
 
-  return { implementationRepository, workstreamPath, mode, topic, reportPath, gitCommit, json }
+  return { implementationRepository, workstreamPath, mode, topic, reportPath, gitCommit, json, ...(verbose ? { verbose } : {}) }
 }
 
 /** Resolve a workstream-relative report path; reject absolute paths and escapes. */
@@ -329,7 +334,7 @@ export async function runSaneResearchCommand(options: SaneResearchCommandOptions
     write(`research index: ${identity.workstreamId} (${entries.length} report(s))`)
     if (entries.length === 0) {
       write(`(no research registered)`)
-    } else {
+    } else if (options.verbose) {
       write(`| topic | created | sane_hash | git_commit | path | status |`)
       write(`| --- | --- | --- | --- | --- | --- |`)
       for (const entry of entries) {
@@ -337,6 +342,10 @@ export async function runSaneResearchCommand(options: SaneResearchCommandOptions
           `| ${entry.topic} | ${entry.created_at || "(unknown)"} | ${shortHash(entry.sane_hash)} | ${entry.git_commit ? entry.git_commit.slice(0, 12) : "-"} | ${entry.path} | ${entry.status} |`,
         )
       }
+    }
+    if (entries.length > 0 && !options.verbose) {
+      write("Paths relative to workstream:")
+      for (const entry of entries) write(`  ${entry.topic} ${entry.status} — ${entry.path}`)
     }
     if (unregisteredFiles.length > 0) {
       write(`unregistered report files:`)

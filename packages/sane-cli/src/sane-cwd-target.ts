@@ -32,15 +32,18 @@ import { promisify } from "node:util"
 import {
   currentUser,
   getCurrentWorkstream,
+  getSessionWorkstream,
   initSchema,
+  normalizeWorkstreamId,
   openSaneDbAtPath,
   saneDbPath,
 } from "./sane-db.ts"
 import { SaneRepositoryError, validateBootstrappedWorkstream } from "./sane-repository.ts"
+import { resolveSaneMainRepository } from "./sane-implementation.ts"
 
 const execFileAsync = promisify(execFile)
 
-export type CwdTargetSource = "main-pointer" | "worktree-selection"
+export type CwdTargetSource = "main-pointer" | "worktree-selection" | "session-binding"
 
 export interface CwdTarget {
   repoRoot: string
@@ -167,9 +170,11 @@ async function resolveWorktreeSelection(
   const db = openSaneDbAtPath(dbPath)
   let rows: SelectionMatch[]
   try {
+    initSchema(db)
     rows = db
       .query(
-        `SELECT repo_root, user, workstream_id, worktree_path FROM selections WHERE worktree_path IS NOT NULL`,
+        `SELECT repo_root, user, workstream_id, worktree_path FROM selections WHERE worktree_path IS NOT NULL
+         UNION SELECT repo_root, user, workstream_id, worktree_path FROM workstream_implementations`,
       )
       .all() as SelectionMatch[]
   } catch (error) {
@@ -244,6 +249,7 @@ async function resolveWorktreeSelection(
 export async function resolveCwdTarget(
   cwd: string = process.cwd(),
   userOverride?: string,
+  sessionId?: string,
 ): Promise<CwdTarget> {
   const start = resolve(cwd)
   let toplevel: string
@@ -257,6 +263,23 @@ export async function resolveCwdTarget(
   const preferredUser = userOverride ?? currentUser()
   if (!preferredUser || preferredUser.trim() === "") {
     throw new SaneRepositoryError("User must be non-empty.")
+  }
+  if (sessionId) {
+    const repository = await resolveSaneMainRepository(start)
+    const path = saneDbPath(repository)
+    if ((await lstatOrUndefined(path))?.isFile()) {
+      const db = openSaneDbAtPath(path)
+      try {
+        initSchema(db)
+        const workstreamId = getSessionWorkstream(db, { repoRoot: repository, user: preferredUser, sessionId })
+        if (workstreamId) {
+          await validateBootstrappedWorkstream(join(repository, ".sane", "workstreams", workstreamId))
+          return { repoRoot: repository, workstreamId, user: preferredUser, source: "session-binding" }
+        }
+      } finally {
+        db.close()
+      }
+    }
   }
   if (((await lstatOrUndefined(join(toplevel, ".sane")))?.isDirectory()) === true) {
     return resolveMainPointer(toplevel, preferredUser)
@@ -288,7 +311,7 @@ export interface CommandAddressInput {
  */
 export async function resolveCommandAddress<T extends CommandAddressInput>(
   parsed: T,
-  options?: { userOverride?: string; cwd?: string },
+  options?: { userOverride?: string; cwd?: string; sessionId?: string; workstream?: string },
 ): Promise<{
   implementationRepository: string
   workstreamPath: string
@@ -296,12 +319,20 @@ export async function resolveCommandAddress<T extends CommandAddressInput>(
 }> {
   if (parsed.workstreamPath) {
     return {
-      implementationRepository: parsed.implementationRepository,
+      implementationRepository: parsed.implementationRepository || await resolveSaneMainRepository(options?.cwd ?? process.cwd()),
       workstreamPath: parsed.workstreamPath,
       userOverride: options?.userOverride,
     }
   }
-  const target = await resolveCwdTarget(options?.cwd ?? process.cwd(), options?.userOverride)
+  if (options?.workstream !== undefined) {
+    return {
+      implementationRepository: await resolveSaneMainRepository(options.cwd ?? process.cwd()),
+      workstreamPath: normalizeWorkstreamId(options.workstream),
+      userOverride: options.userOverride,
+    }
+  }
+  const target = await resolveCwdTarget(options?.cwd ?? process.cwd(), options?.userOverride,
+    options?.sessionId ?? process.env["SANE_SESSION_ID"] ?? process.env["OPENCODE_SESSION_ID"])
   return {
     implementationRepository: target.repoRoot,
     workstreamPath: target.workstreamId,

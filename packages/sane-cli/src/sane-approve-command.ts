@@ -166,7 +166,7 @@ export async function runSaneApproveCommand(
         `Workstream type mismatch: SANE state has type "${dbRow.type}" but the filesystem root doc implies "${workstream.type}". Re-create the workstream or fix the root doc.`,
       )
     }
-    const validation = await validatePhaseDocs(db, identity, workstream.path, phase, dbRow.type)
+    const validation = await validatePhaseDocs(db, identity, workstream.path, phase, dbRow.type, { completingJobs: phase === "execution" })
     if (!validation.ok) {
       throw new SaneWorkstreamStateError(
         `Cannot approve ${phase} for ${validation.workstreamId}:\n${validation.problems.map((problem) => `- ${problem}`).join("\n")}`,

@@ -3,10 +3,10 @@
  *
  * Three forms, one command:
  *
- * - `sane job <job-id>` shows the job's serialized context bundle: job row,
- *   absolute spec/report paths (with existence), report template, phase
- *   documents, and the planning approval. Workers consume it with `--json`
- *   instead of receiving pasted absolute paths: the CLI resolves everything
+ * - `sane job <job-id>` shows compact worker context: repository/workstream
+ *   roots, relative spec/report paths (with existence), report template,
+ *   phase documents, and planning approval. `--json` retains the full
+ *   absolute-path bundle for machine consumers. The CLI resolves everything
  *   from the database plus CWD auto-detection. The workstream is
  *   auto-detected from the current directory: agents never pass paths to
  *   this command.
@@ -21,7 +21,7 @@
  *   specs under the existing Planning approval, without replacing it.
  */
 import { readdir, readFile } from "node:fs/promises"
-import { join } from "node:path"
+import { join, relative } from "node:path"
 
 import {
   getApproval,
@@ -34,6 +34,7 @@ import {
   type JobRow,
 } from "./sane-db.ts"
 import { resolveCommandAddress } from "./sane-cwd-target.ts"
+import { resolveImplementationRoot } from "./sane-implementation.ts"
 import { registerPlannedJobs } from "./sane-job-registration.ts"
 import { validatePhaseDocs } from "./sane-validate-command.ts"
 import {
@@ -70,6 +71,7 @@ export interface SaneJobViewOptions {
 
 export interface SaneJobBundle {
   repoRoot: string
+  implementationRoot: string
   user: string
   workstreamId: string
   job: {
@@ -106,7 +108,7 @@ export interface SaneJobCommandResult {
 }
 
 export const USAGE =
-  "Usage: sane job <job-id> [running|completed] [--json] | sane job --register [--json] (auto-detects the workstream; --register validates Planning docs and registers additions under existing Planning approval; never records approval)"
+  "Usage: sane job <job-id> [running|completed] [--json] | sane job --register [--json] (default: compact worker context with roots and relative paths; --json: absolute-path bundle; auto-detects workstream; --register validates Planning docs and registers additions under existing Planning approval; never records approval)"
 
 export function parseCliArguments(args: string[]): {
   implementationRepository: string
@@ -238,6 +240,7 @@ export async function buildJobBundle(
   const planningApproval = getApproval(db, identity, "planning")
   return {
     repoRoot: identity.repoRoot,
+    implementationRoot: await resolveImplementationRoot(db, identity),
     user: identity.user,
     workstreamId: identity.workstreamId,
     job: {
@@ -268,6 +271,8 @@ export async function buildJobBundle(
 function bundleToJson(bundle: SaneJobBundle): Record<string, unknown> {
   return {
     repo_root: bundle.repoRoot,
+    implementation_root: bundle.implementationRoot,
+    implementation_directory: bundle.implementationRoot,
     user: bundle.user,
     workstream_id: bundle.workstreamId,
     job: {
@@ -309,18 +314,23 @@ export async function runSaneJobViewCommand(
     if (options.json === true) {
       write(JSON.stringify(bundleToJson(bundle), null, 2))
     } else {
+      const path = (absolute: string) => relative(workstream.path, absolute)
       write(`job ${bundle.job.jobId} for ${bundle.workstreamId}: ${bundle.job.status}`)
-      write(`  spec: ${bundle.job.specPath}${bundle.job.specExists ? "" : " (missing)"}`)
-      write(`  report: ${bundle.job.reportPath}${bundle.job.reportExists ? "" : " (missing)"}`)
-      write(`  report_template: ${bundle.reportTemplate}`)
-      write(`  root_doc: ${bundle.documents.rootDoc}`)
-      write(`  sdd: ${bundle.documents.sdd}`)
-      write(`  plan: ${bundle.documents.plan}`)
-      for (const solution of bundle.documents.solutions) write(`  solution: ${solution}`)
-      write(`  final_report: ${bundle.documents.finalReport ?? "(not written)"}`)
+      write(`Repository root: ${bundle.repoRoot}`)
+      write(`Implementation root: ${bundle.implementationRoot}`)
+      write(`Workstream root: ${workstream.path}`)
+      write("Paths below are relative to workstream root:")
+      write(`  spec: ${path(bundle.job.specPath)}${bundle.job.specExists ? "" : " (missing)"}`)
+      write(`  report: ${path(bundle.job.reportPath)}${bundle.job.reportExists ? " (exists; preserve)" : " (not written)"}`)
+      write(`  report_template: ${path(bundle.reportTemplate)}${bundle.reportTemplateExists ? "" : " (missing)"}`)
+      write(`  root_doc: ${path(bundle.documents.rootDoc)}`)
+      write(`  sdd: ${path(bundle.documents.sdd)}`)
+      write(`  plan: ${path(bundle.documents.plan)}`)
+      for (const solution of bundle.documents.solutions) write(`  solution: ${path(solution)}`)
+      write(`  final_report: ${bundle.documents.finalReport ? path(bundle.documents.finalReport) : "(not written)"}`)
       write(
         bundle.planningApproval
-          ? `  planning_approval: ${bundle.planningApproval.approvalRef} ${bundle.planningApproval.saneHash}`
+          ? `  planning_approval: ${bundle.planningApproval.approvalRef}`
           : `  planning_approval: (none)`,
       )
     }
