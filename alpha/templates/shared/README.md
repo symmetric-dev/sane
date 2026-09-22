@@ -4,7 +4,7 @@
 
 SANE means **Sane Agentic Noesis Edifice**. It is a structured, reasonable, and agile way for people and agents to acquire and apply knowledge in service of deliberate change.
 
-A **workstream** is SANE's top-level coordination context for a complex undertaking. It holds the context, decisions, coordination, and approval history needed to govern the work. Implementation happens in the target repository, not in a separate duplicate tree.
+A **workstream** groups the documents and state for an undertaking. Its documents describe current requirements, solutions, and outcomes; the CLI and sessions hold progress, approvals, and collaboration history. Implementation happens in the target repository, not in a separate duplicate tree.
 
 The user directs the work and makes decisions with the assistant. Follow your
 role's skills for the assigned work and coordination with other sessions.

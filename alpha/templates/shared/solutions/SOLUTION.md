@@ -2,13 +2,15 @@
 
 <!-- Replace `<name>` and every guidance comment with workstream-specific
 content before delivery. One comprehensive doc per solution area in
-`solutions/<name>.md`. Engineering owns this file. It applies the approved
-root doc and `SDD.md`; it does not invent material product direction. -->
+`design/solutions/<name>.md`. Engineering owns this file. It applies the approved
+root doc and `design/SDD.md`; it does not invent material product direction.
+Paths in this template are relative to the workstream root unless identified
+as implementation-repository paths. -->
 
 ## Objective and Scope
 
 <!-- State the solution area, its boundaries, and explicit non-goals. Link the
-relevant `SDD.md` sections and root-doc requirements. -->
+relevant `design/SDD.md` sections and root-doc requirements. -->
 
 ## Technical Design
 

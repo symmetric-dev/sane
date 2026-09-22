@@ -22,6 +22,8 @@ import {
   USAGE,
 } from "../src/sane-job-command.ts"
 import { runSaneApproveCommand } from "../src/sane-approve-command.ts"
+import { runSaneViewCommand, parseCliArguments as parseView } from "../src/sane-view-command.ts"
+import { runSaneStatusCommand, parseCliArguments as parseStatus } from "../src/sane-status-command.ts"
 import {
   getJob,
   initSchema,
@@ -179,6 +181,14 @@ describe("sane-job (progress tracking)", () => {
     expect(bundle.documents.solutions).toEqual([join(workstreamDir, "design/solutions/api.md")])
     expect(bundle.planningApproval?.approvalRef).toBe("user-ok-plan")
     expect(lines.join("\n")).toContain("job 01 for 01-demo: planned")
+    expect(lines.filter((line) => line.includes(workstreamDir))).toHaveLength(1)
+    expect(lines.join("\n")).toContain("Paths below are relative to workstream root:")
+    expect(lines.join("\n")).toContain("spec: execution/jobs/01-first.md")
+    expect(lines.join("\n")).toContain("report_template: resources/EXECUTION_REPORT_TEMPLATE.md")
+    const json: string[] = []
+    await runSaneJobViewCommand({ implementationRepository, workstreamPath: "01-demo", jobId: "01", json: true, write: (line) => json.push(line) })
+    expect(JSON.parse(json.join("\n")).job.spec_path).toBe(bundle.job.specPath)
+    expect(JSON.parse(json.join("\n")).planning_approval.sane_hash).toBe(bundle.planningApproval?.saneHash)
 
     await expect(
       runSaneJobViewCommand({
@@ -188,6 +198,41 @@ describe("sane-job (progress tracking)", () => {
         write: () => {},
       }),
     ).rejects.toThrow(/Job not found: nope/)
+  })
+
+  test("view and status offer compact defaults, opt-in detail and structured JSON", async () => {
+    const lines: string[] = []
+    const options = { implementationRepository, workstreamPath: "01-demo", write: (line: string) => lines.push(line) }
+    await runSaneViewCommand(options)
+    expect(lines.join("\n")).toContain("01 planned")
+    expect(lines.join("\n")).not.toContain("sane_hash")
+    expect(lines.join("\n").match(/execution\/jobs\/01-first.md/g)).toHaveLength(1)
+    lines.length = 0
+    await runSaneViewCommand({ ...options, verbose: true })
+    expect(lines.join("\n")).toContain("sane_hash:")
+    lines.length = 0
+    await runSaneViewCommand({ ...options, json: true })
+    const state = JSON.parse(lines.join("\n"))
+    expect(state.rendered).toBeUndefined()
+    expect(state.jobs[0]).toMatchObject({ job_id: "01", status: "planned" })
+    expect(state.approvals[0].approval_ref).toBe("user-ok-plan")
+    expect(state.sessions).toBeArray()
+    lines.length = 0
+    await runSaneStatusCommand(options)
+    expect(lines.join("\n")).toContain("1 planned")
+    expect(lines.join("\n")).not.toContain("user-ok-plan")
+    lines.length = 0
+    await runSaneStatusCommand({ ...options, verbose: true })
+    expect(lines.join("\n")).toContain("01 planned")
+    expect(lines.join("\n")).toContain("user-ok-plan")
+    lines.length = 0
+    await runSaneStatusCommand({ ...options, json: true })
+    expect(JSON.parse(lines.join("\n")).jobs).toEqual([{ job_id: "01", status: "planned", spec_path: "execution/jobs/01-first.md", report_path: null }])
+    for (const parse of [parseView, parseStatus]) {
+      for (const args of [[], ["01-demo"], ["/repo", "01-demo"], ["01-demo", "--repo-root", "/repo"]]) {
+        expect(parse([...args, "--verbose"]).verbose).toBe(true)
+      }
+    }
   })
 
   test("runCli resolves the workstream from CWD and exits by outcome", async () => {

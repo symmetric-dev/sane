@@ -44,7 +44,7 @@ Execution assignments, edit only Context in the named unstarted Job Specs and
 follow Execution Context Enrichment. Return unclear assignment authority as a blocker.
 
 1. Read the assigned Job Spec(s) and any other given context files.
-2. Read all given specs and understand them and their inter-dependencies. You may read one spec before and after to understand what are the expectations.
+2. Read the assigned specs and relevant dependency contracts. Inspect repository relationships that affect the assignment rather than surveying surrounding code.
 3. Enrich the specs in place, for each section, do:
     - **Context:** Verify referenced paths and add useful paths as needed. Guide
        reads with conditional references and concrete triggers, so implementation
@@ -61,7 +61,7 @@ follow Execution Context Enrichment. Return unclear assignment authority as a bl
      actual repository scripts, configuration, test discovery and tool usage.
    Tests are not always required, this can be a thin verification layer.
    - **Report Requirements / Resolutions:** Enhance any paths to files and/or verify referenced files.
-4. Review the enriched spec(s) and confirm they are not malformed. Do not add additional requirements that are out of scope, however, you may raise notes and concerns to the planner for when there is incomplete requirements in the spec. We can have open ended instructions in the spec, but not gaps in the job to be performed.
+4. Check the edited sections and return missing prerequisites or decisions with evidence. Preserve uncertainty where the repository cannot settle it; do not invent contracts or expand the assignment to make the spec appear complete.
 
 ## Boundaries
 
@@ -89,9 +89,5 @@ You do read-only inspection of the implementation repository and can only edit t
 
 ## Return
 
-Return a summary to the invoking assistant:
-
-- What was enriched overall
-- Changed specs and evidence used
-- What gaps or limitations were identified
-- Any recommendations for missing requirements
+Return `Result: Enriched | Needs decision`, the changed spec paths, and any
+material gap with its evidence reference. Leave detailed context in the specs.

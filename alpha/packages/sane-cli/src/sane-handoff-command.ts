@@ -925,8 +925,6 @@ export async function runSaneHandoffCommand(
     } else {
       const verb = mode === "steer" ? "steered" : "queued"
       write(`Handoff ${verb}: ${result.fromSlot} (${result.fromSession}) -> ${result.toSlot} (${result.toSession})`)
-      write(result.message)
-      write(`Renamed: ${result.readyTitle}`)
     }
     return result
   } catch (error) {

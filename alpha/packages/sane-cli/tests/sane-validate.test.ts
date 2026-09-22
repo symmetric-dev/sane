@@ -23,6 +23,8 @@ import {
 } from "../src/sane-validate-command.ts"
 import {
   initSchema,
+  createJob,
+  updateJobStatus,
   openSaneDb,
   resolveSaneIdentity,
   type SaneIdentity,
@@ -128,12 +130,25 @@ describe("sane-validate (phase documents)", () => {
     expect(result.files).toEqual(["execution/PLAN.md", "execution/jobs/01-first.md"])
   })
 
-  test("execution requires final report plus at least one report", async () => {
+  test("execution requires coverage of completed jobs; scoped validation needs only assigned report", async () => {
+    const db = await openSaneDb(identity.repoRoot)
+    createJob(db, identity, { jobId: "01", specPath: "execution/jobs/01-first.md" }, { actorRole: "planning", sessionId: "test" })
+    updateJobStatus(db, identity, "01", "completed", { actorRole: "execution", sessionId: "test" })
+    db.close()
+    await writeDoc("execution/jobs/01-first.md", "# Job Spec 01: first\n")
     await writeDoc("execution/FINAL_REPORT.md", "# Final Report\nReal outcomes.\n")
     expect((await validate("execution")).ok).toBe(false)
-    await writeDoc("execution/reports/01-first.md", "# Report\nReal results.\n")
+    await writeDoc("execution/reports/01-first.md", "# Job 01: first Report\n## Accomplished\nInvestigation completed; implementation failed.\n## Found Issues\nBuild failed.\n## Notes\nNone\n## Implementation Recommendations\nRetry with corrected configuration.\n")
     const result = await validate("execution")
     expect(result.ok).toBe(true)
+    await rm(join(workstreamDir, "execution/FINAL_REPORT.md"))
+    await writeDoc("execution/reports/unrelated.md", "unfinished")
+    const output: string[] = []
+    const scoped = await runSaneValidateCommand({ implementationRepository, workstreamPath: "01-demo", phase: "execution", reportId: "01", json: true, write: (line) => output.push(line) })
+    expect(scoped.ok).toBe(true)
+    expect(scoped.files).toEqual(["execution/reports/01-first.md"])
+    expect(JSON.parse(output[0]!).reportId).toBe("01")
+    expect((await validate("execution")).ok).toBe(false)
   })
 
   test("parseCliArguments takes a bare phase positional only", () => {
@@ -143,6 +158,8 @@ describe("sane-validate (phase documents)", () => {
     expect(() => parseCliArguments(["bogus"])).toThrow(/Invalid phase/)
     expect(() => parseCliArguments(["design", "--bogus"])).toThrow(/Unknown option/)
     expect(USAGE).toContain("sane validate")
+    expect(parseCliArguments(["execution", "report", "--id", "01", "--json"])).toMatchObject({ phase: "execution", reportId: "01", json: true })
+    for (const args of [["execution", "report"], ["design", "--id", "01"], ["execution", "--id", "01"], ["execution", "report", "--id", "01", "--id", "02"]]) expect(() => parseCliArguments(args)).toThrow()
   })
 
   test("runCli resolves the workstream from CWD and exits by validity", async () => {

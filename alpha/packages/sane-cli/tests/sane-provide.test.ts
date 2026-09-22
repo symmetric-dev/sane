@@ -6,7 +6,7 @@
  */
 import { afterEach, beforeEach, describe, expect, test } from "bun:test"
 import { execFile } from "node:child_process"
-import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises"
+import { mkdir, mkdtemp, readFile, rm, writeFile, symlink } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { promisify } from "node:util"
@@ -17,9 +17,11 @@ import {
   parseCliArguments,
   runCli,
   runSaneProvideCommand,
+  refreshResourceTemplates,
   USAGE,
 } from "../src/sane-provide-command.ts"
 import { resolveSaneIdentity, type SaneIdentity } from "../src/sane-db.ts"
+import { initialTemplateRegistry } from "../src/create-sane-workstream.ts"
 
 const execFileAsync = promisify(execFile)
 
@@ -93,12 +95,61 @@ describe("sane-provide (phase starters)", () => {
     expect(result.existed).toContain("design/SDD.md")
   })
 
+  test("explicit refresh replaces resource templates only and preserves authored documents", async () => {
+    await writeFile(join(workstreamDir, "resources/EXECUTION_REPORT_TEMPLATE.md"), "obsolete")
+    await writeFile(join(workstreamDir, "design/SDD.md"), "authored")
+    const result = await runSaneProvideCommand({ implementationRepository, workstreamPath: "01-demo", phase: "execution", refreshTemplates: true, write: () => {} })
+    expect(result.created).toEqual([])
+    expect(result.refreshed).toContain("resources/EXECUTION_REPORT_TEMPLATE.md")
+    expect(result.refreshed.every((path) => path.startsWith("resources/"))).toBe(true)
+    expect(await readFile(join(workstreamDir, "design/SDD.md"), "utf8")).toBe("authored")
+    expect(await readFile(join(workstreamDir, "resources/EXECUTION_REPORT_TEMPLATE.md"), "utf8")).toContain("## Accomplished")
+    expect(await Bun.file(join(workstreamDir, "execution/FINAL_REPORT.md")).exists()).toBe(false)
+    expect(parseCliArguments(["execution", "--refresh-templates"])).toMatchObject({ refreshTemplates: true })
+  })
+
   test("parseCliArguments takes a bare phase positional only", () => {
     expect(parseCliArguments(["planning"])).toMatchObject({ phase: "planning" })
     expect(() => parseCliArguments([])).toThrow(/exactly one phase/)
     expect(() => parseCliArguments(["bogus"])).toThrow(/Invalid phase/)
     expect(() => parseCliArguments(["planning", "--bogus"])).toThrow(/Unknown option/)
     expect(USAGE).toContain("sane provide")
+  })
+
+  test.each(["destination file", "destination directory", "destination dangling", "source file", "source ancestor", "destination nonfile", "missing source"])("refresh preflights all templates before writes: %s", async (scenario) => {
+    const source = join(tempDirectory, "templates")
+    const target = join(tempDirectory, "refresh-target")
+    const registry = initialTemplateRegistry("feature").filter((entry) => entry.destination.startsWith("resources/"))
+    for (const entry of registry) {
+      await mkdir(join(source, entry.source, ".."), { recursive: true })
+      await mkdir(join(target, entry.destination, ".."), { recursive: true })
+      await writeFile(join(source, entry.source), "new template")
+      await writeFile(join(target, entry.destination), "retained template")
+    }
+    const authored = join(tempDirectory, "authored.md")
+    await writeFile(authored, "authored evidence")
+    const last = registry.at(-1)!
+    if (scenario.startsWith("destination") && scenario !== "destination directory") {
+      const path = join(target, last.destination)
+      await rm(path)
+      if (scenario === "destination nonfile") await mkdir(path)
+      else await symlink(scenario === "destination dangling" ? join(tempDirectory, "absent.md") : authored, path)
+    } else if (scenario === "destination directory") {
+      await rm(join(target, "resources"), { recursive: true })
+      await symlink(join(workstreamDir, "resources"), join(target, "resources"))
+    } else if (scenario === "source file") {
+      await rm(join(source, last.source))
+      await symlink(authored, join(source, last.source))
+    } else if (scenario === "source ancestor") {
+      await rm(join(source, "shared/execution"), { recursive: true })
+      await symlink(join(workstreamDir, "resources"), join(source, "shared/execution"))
+    } else await rm(join(source, last.source))
+    const first = join(target, registry[0]!.destination)
+    const before = await readFile(first, "utf8")
+    await expect(refreshResourceTemplates(target, "feature", source)).rejects.toThrow()
+    expect(await readFile(first, "utf8")).toBe(before)
+    expect(await readFile(authored, "utf8")).toBe("authored evidence")
+    expect(await Bun.file(join(tempDirectory, "absent.md")).exists()).toBe(false)
   })
 
   test("runCli resolves the workstream from CWD", async () => {

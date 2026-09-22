@@ -78,6 +78,7 @@ export interface SaneSessionsCommandOptions {
   workstreamPath: string
   slot?: string | undefined
   json?: boolean
+  verbose?: boolean
   userOverride?: string
   write?: (line: string) => void
 }
@@ -104,10 +105,11 @@ export interface ParsedSessionsArguments {
   workstreamPath: string
   slot: string | undefined
   json: boolean
+  verbose?: boolean
 }
 
 export const USAGE =
-  "Usage: sane sessions [<implementation-repository> <workstream-relative-path>] [--slot <slot>] [--json] [--repo-root <path>] (no positionals: auto-detect the target from the current directory)"
+  "Usage: sane sessions [<implementation-repository> <workstream-relative-path>] [--slot <slot>] [--json] [--verbose] [--repo-root <path>] (default: session IDs and indices; --verbose: worktrees, branches and timestamps; no positionals: auto-detect target)"
 
 function requireOptionValue(args: string[], index: number, option: string): string {
   const value = args[index + 1]
@@ -123,6 +125,7 @@ function assertSingleOption(seen: string | undefined, option: string): void {
 
 export function parseCliArguments(args: string[]): ParsedSessionsArguments {
   let json = false
+  let verbose = false
   let repoRootOpt: string | undefined
   let slot: string | undefined
   const positional: string[] = []
@@ -134,6 +137,8 @@ export function parseCliArguments(args: string[]): ParsedSessionsArguments {
       parseOptions = false
     } else if (parseOptions && argument === "--json") {
       json = true
+    } else if (parseOptions && argument === "--verbose") {
+      verbose = true
     } else if (parseOptions && argument === "--slot") {
       assertSingleOption(slot, "--slot")
       slot = requireOptionValue(args, index, "--slot")
@@ -194,6 +199,7 @@ export function parseCliArguments(args: string[]): ParsedSessionsArguments {
     workstreamPath,
     slot,
     json,
+    ...(verbose ? { verbose } : {}),
   }
 }
 
@@ -208,9 +214,10 @@ function entriesForRows(rows: SelectionRow[]): SaneSessionsSlotEntry[] {
   }))
 }
 
-function formatSessionLine(entry: SaneSessionsSlotEntry): string {
+function formatSessionLine(entry: SaneSessionsSlotEntry, verbose: boolean): string {
   let line = `  [${entry.index}] ${entry.session_id}`
   if (entry.latest) line += " (latest)"
+  if (!verbose) return line
   if (entry.worktree_path !== null && entry.branch !== null) {
     line += ` [worktree ${entry.worktree_path} @ ${entry.branch}]`
   } else if (entry.worktree_path !== null) {
@@ -313,7 +320,7 @@ export async function runSaneSessionsCommand(
           if (entries.length === 0) continue
           write(`${name} (${entries.length}):`)
           for (const entry of entries) {
-            write(formatSessionLine(entry))
+            write(formatSessionLine(entry, options.verbose === true))
           }
         }
         // A --slot filter matching nothing is still an empty registry view.

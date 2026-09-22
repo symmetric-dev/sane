@@ -23,8 +23,9 @@ compliance, performance, or enabling future work. -->
 
 ## Risk
 
-<!-- Assess change risk, blast radius, rollback strategy, and what must be
-preserved. -->
+<!-- Assess the maintenance change itself: blast radius, rollback expectations,
+and what must be preserved. Keep external dependencies and delivery uncertainty
+in Dependencies, Assumptions, and Risks. -->
 
 ## Verification
 
@@ -34,10 +35,7 @@ required evidence, not an automatic approval. -->
 
 ## Dependencies, Assumptions, and Risks
 
-<!-- Record material dependencies, assumptions requiring validation, and
-delivery risks requiring attention. -->
-
-## Open Questions
-
-<!-- List unresolved questions for the user or Research. Do not present an
-unapproved decision as settled. -->
+<!-- Record external dependencies, assumptions requiring validation, and delivery
+risks, without repeating the change-risk assessment above. Place any unresolved
+decision in its relevant section with its effect on the maintenance outcome;
+do not present an unapproved decision as settled. -->

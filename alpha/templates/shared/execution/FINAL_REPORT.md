@@ -1,38 +1,39 @@
 # Final Report
 
 <!-- Replace every guidance comment with workstream-specific content before
-delivery. Retain this H1 and every H2 exactly once and in this order. This is
-the single actual-state handoff at `execution/FINAL_REPORT.md`. Execution owns this
-file. It summarizes what was built, where it lives, and what remains; it does
-not re-plan Jobs. -->
+delivery. Retain this H1 and exactly the four H2 sections below, once each and
+in this order. Allow H3–H6 subordinate grouping within them. Execution owns
+`execution/FINAL_REPORT.md`. Produce this synthesis when the user requests the
+final report, using current Job reports and execution/review evidence. It is a
+mutable summary of the current outcome, not a live progress tracker, checkpoint
+ledger, or chronological diary. Revise in place if the outcome changes. -->
 
-## Outcome
+## Accomplished
 
-<!-- Summarize what was implemented against `execution/PLAN.md` and its Job Specs. -->
+<!-- Summarize what was implemented against `execution/PLAN.md` and its Job Specs,
+including delivered capabilities, important entry points, and material verified
+results. Link the essential `execution/reports/<job-id>-<job-slug>.md` reports
+and authoritative review/check evidence. Summarize checkpoint coverage and
+acceptance-relevant conclusions only as needed to establish the current outcome;
+keep detailed logs and review history at their authoritative locations. -->
 
-## Delivered
+## Found Issues
 
-<!-- List paths to delivered artifacts, entry points, descriptions, and
-behaviors. Reference `execution/reports/<job-id>-<job-slug>.md` evidence. -->
+<!-- State remaining failures, blockers, deferred work, incomplete verification
+or review, and their impact. Include the applicability and disposition of any
+retained non-blocking failures or workarounds. Link essential evidence rather
+than repeating Job findings. State `No issues found` when none remain. -->
 
-## Development Notes
+## Notes
 
-<!-- Record specific instructions or reference material about what was
-implemented: branch `sane/<user>/<workstream>`, base revision, checks run,
-and review-relevant context. -->
+<!-- Provide essential delivery and user-validation context, such as actual
+repository/branch/revision references, setup or usage instructions, and evidence
+limitations. Use actual inspected values rather than assuming a branch naming
+scheme. State `No additional notes` when none are needed. -->
 
-## Deferred
+## Implementation Recommendations
 
-<!-- Record what was not done, retries or follow-ups required, and any
-explanation. State `No deferred work` when none remains. -->
-
-## Checkpoint Outcomes
-
-<!-- Maintain this section as execution proceeds. For each planned checkpoint,
-record job coverage, implemented jobs awaiting review, review assessment and
-evidence, fixes/reviews performed, retained non-blocking findings, and commit
-hash (or why no commit was made). Identify incomplete checkpoints and pending
-Planning requests. Keep enough review evidence here to support later grounding
-and final acceptance; link detailed reports rather than duplicating them.
-An accepted checkpoint can retain non-blocking failing tests or workarounds;
-record their applicability and disposition. -->
+<!-- Give actionable follow-up recommendations justified by the current outcome,
+with affected surfaces, applicability, and limits. Distinguish verified facts
+from proposed changes. Refer to evidence and findings above rather than copying
+them or re-planning Jobs. State `None` when appropriate. -->

@@ -307,8 +307,15 @@ describe("sane research command", () => {
     const table = indexed.join("\n")
     expect(table).toContain("research index: 01-demo (1 report(s))")
     expect(table).toContain("research/auth/REPORT.md")
-    expect(table).toContain(sha256Hex("auth evidence\n").slice(0, 12))
-    expect(table).toContain("| ok |")
+    expect(table).not.toContain(sha256Hex("auth evidence\n").slice(0, 12))
+    expect(table).not.toContain("commit-1")
+    expect(table).toContain("auth ok")
+    const detailed: string[] = []
+    await runSaneResearchCommand({ implementationRepository, workstreamPath: "01-demo", mode: "index", verbose: true, write: (line) => detailed.push(line) })
+    expect(detailed.join("\n")).toContain(sha256Hex("auth evidence\n").slice(0, 12))
+    expect(detailed.join("\n")).toContain("commit-1")
+    expect(detailed.join("\n")).toContain("| ok |")
+    expect(parseCliArguments(["--verbose"]).verbose).toBe(true)
 
     const unregistered: string[] = []
     await runSaneResearchCommand({

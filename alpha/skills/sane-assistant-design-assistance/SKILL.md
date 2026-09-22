@@ -7,16 +7,16 @@ description: Use after Design Pickup confirmation for user collaboration and mid
 
 ## User Assistance Workflow
 
-1. Ask the user for their intent and refine the applicable root document using its template.
+1. Ask the user for their intent and refine the applicable root document using its template. Write it as a human-readable reference to the problem, desired behavior, scope, and success; keep technical detail only where it defines a real constraint.
 2. Discuss decisions and ask the user to review the root document.
-3. Once the user approves the root document, draft and refine `design/SDD.md` using its template.
-4. Follow the templates for headings, open questions, and document content. Keep the documents focused on the implementation repository.
+3. Once the user approves the root document, draft and refine `design/SDD.md` using its template. Explain how the solution's parts support its features, with clear language and only the architecture and rationale needed to guide Engineering.
+4. Resolve questions in conversation and update the relevant document sections in place. Documents describe the current solution, not session identities, approval exchanges, pending conversations, or superseded decisions. Keep the proposed solution as simple as its requirements allow.
 
 For light, bounded research, use `sane/worker/researcher` as needed.
 
 ## Receiving a Live Backward Handoff
 
-1. Read the request and relevant evidence from Engineering. Retain the originating session id from `Handoff From:`.
+1. Read the work request and referenced evidence from Engineering. Retain the originating session id from `Handoff From:` for the reply, not in the documents. A confirmation requires no reply.
 2. Apply the requested update when the handoff carries the user's agreed decision. If the update requires an additional decision or its authorization is unclear, ask the user before applying it.
 3. Run `sane validate design` and send a Live Backward Reply with `sane_handoff` (`to: "engineering"`, `to_session: "<originating session id>"`, `message: "<changes, evidence, and unresolved decisions>"`). If blocked, return the blocker and required user decision.
 
@@ -24,14 +24,8 @@ For light, bounded research, use `sane/worker/researcher` as needed.
 
 1. For deeper or more extensive research, propose the question and scope to the user and ask whether to perform a Support Handoff to Research.
 2. When requested, call `sane_handoff` (`to: "research"`, `new_session: true`, `message: "<question, scope, relevant documents>"`). Tell the user to open the new session.
-3. When findings return, read the referenced report and discuss their implications with the user before updating the documents.
+3. When findings return, read the referenced report and discuss their implications with the user before updating the documents. Do not send a confirmation handoff.
 
 ## Readiness for Delivery
 
 When the documents are ready for review, follow `sane-assistant-design-delivery`.
-
-## Best Practices
-
-- KEEPS THINGS SIMPLE, DO NOT OVER-ENGINEER
-- ROOT DOCUMENTS OR SDD ARE NOT HISTORICAL LOGS FOR YOU TO WRITE THE CURRENT PENDING STATE OF AN UPDATE, NOR PENDING DRAFT STATE, NOR YOUR STORY WITH THE HANDOFFS WITH ANOTHER AGENT
-- FOR HANDOFF, DO NOT EXPECT TO RECEIVE AN UPDATE

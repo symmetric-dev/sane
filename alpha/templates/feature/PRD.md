@@ -51,9 +51,6 @@ have been met. -->
 ## Dependencies, Assumptions, and Risks
 
 <!-- Record material product-facing dependencies, assumptions needing
-validation, and risks needing attention. -->
-
-## Open Questions
-
-<!-- List unresolved product decisions or questions for the user or Research.
-Do not present an unapproved decision as settled. -->
+validation, and risks needing attention. Place any unresolved product decision
+in its relevant section with its effect on the requirements; do not present an
+unapproved decision as settled. -->

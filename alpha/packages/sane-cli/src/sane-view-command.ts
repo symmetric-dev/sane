@@ -9,17 +9,18 @@
  */
 import { initSchema, openSaneDb, resolveSaneIdentity } from "./sane-db.ts"
 import { resolveCommandAddress } from "./sane-cwd-target.ts"
-import { renderSaneView } from "./sane-view.ts"
+import { renderSaneView, renderCompactSaneView } from "./sane-view.ts"
 import {
   resolveBootstrappedWorkstream,
   resolveSaneRepository,
 } from "./sane-repository.ts"
-import { SaneWorkstreamStateError } from "./sane-workstream-state.ts"
+import { getWorkstreamStatus, SaneWorkstreamStateError } from "./sane-workstream-state.ts"
 
 export interface SaneViewCommandOptions {
   implementationRepository: string
   workstreamPath: string
   json?: boolean
+  verbose?: boolean
   userOverride?: string
   write?: (line: string) => void
 }
@@ -33,14 +34,16 @@ export interface SaneViewCommandResult {
 }
 
 export const USAGE =
-  "Usage: sane view [<implementation-repository> <workstream-relative-path>] [--json] [--repo-root <path>] (no positionals: auto-detect the target from the current directory)"
+  "Usage: sane view [<implementation-repository> <workstream-relative-path>] [--json] [--verbose] [--repo-root <path>] (default: compact state; --verbose: full detail; --json: structured state; no positionals: auto-detect target)"
 
 export function parseCliArguments(args: string[]): {
   implementationRepository: string
   workstreamPath: string
   json: boolean
+  verbose?: boolean
 } {
   let json = false
+  let verbose = false
   let repoRootOpt: string | undefined
   const positional: string[] = []
   let parseOptions = true
@@ -51,6 +54,8 @@ export function parseCliArguments(args: string[]): {
       parseOptions = false
     } else if (parseOptions && argument === "--json") {
       json = true
+    } else if (parseOptions && argument === "--verbose") {
+      verbose = true
     } else if (parseOptions && argument === "--repo-root") {
       const value = args[index + 1]
       if (!value || value.startsWith("-")) {
@@ -78,6 +83,7 @@ export function parseCliArguments(args: string[]): {
       implementationRepository: repoRootOpt,
       workstreamPath: positional[0],
       json,
+      ...(verbose ? { verbose } : {}),
     }
   }
 
@@ -86,15 +92,16 @@ export function parseCliArguments(args: string[]): {
       implementationRepository: positional[0],
       workstreamPath: positional[1],
       json,
+      ...(verbose ? { verbose } : {}),
     }
   }
   if (positional.length === 1 && positional[0]) {
     // Repo-root detection: default to the current working directory's git root.
-    return { implementationRepository: process.cwd(), workstreamPath: positional[0], json }
+    return { implementationRepository: process.cwd(), workstreamPath: positional[0], json, ...(verbose ? { verbose } : {}) }
   }
   if (positional.length === 0) {
     // Bare invocation: the async run path auto-detects the target from CWD.
-    return { implementationRepository: "", workstreamPath: "", json }
+    return { implementationRepository: "", workstreamPath: "", json, ...(verbose ? { verbose } : {}) }
   }
   throw new SaneWorkstreamStateError(
     "Provide an implementation repository and workstream relative path.",
@@ -123,7 +130,8 @@ export async function runSaneViewCommand(
   const db = await openSaneDb(pointer.implementationRepository)
   try {
     initSchema(db)
-    const rendered = renderSaneView(db, identity)
+    const state = getWorkstreamStatus(db, identity)
+    const rendered = options.verbose ? renderSaneView(db, identity) : renderCompactSaneView(state)
     const result: SaneViewCommandResult = {
       repoRoot: identity.repoRoot,
       user: identity.user,
@@ -138,7 +146,13 @@ export async function runSaneViewCommand(
             repo_root: result.repoRoot,
             user: result.user,
             workstream_id: result.workstreamId,
-            rendered: result.rendered,
+            workstream: state.workstream,
+            phases: state.phases,
+            approvals: state.approvals,
+            jobs: state.jobs,
+            research_reports: state.researchReports,
+            sessions: state.selections,
+            merge: state.merge,
           },
           null,
           2,

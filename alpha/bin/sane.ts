@@ -67,11 +67,12 @@ Commands:
   create --name <name> --type <feature|foundation|issue|maintenance> [--dry-run]
   select --name <name> [--dry-run]
   install context-packages [--dry-run] [--overwrite] [--model-config <path>]
-  view
-  status
+  view [--verbose|--json]
+  status [--verbose|--json]
   validate <design|engineering|planning|execution>
+  validate execution report --id <job-id> [--json]
   approve <design|engineering|planning|execution> --ref <approval_ref>
-  provide <design|engineering|planning|execution>
+  provide <design|engineering|planning|execution> [--refresh-templates]
   job <job-id> [running|completed]
   job --register [--json] (register additions under existing Planning approval)
   research

@@ -18,8 +18,8 @@
  *   `execution/FINAL_REPORT.md` starter when missing. (Reports are authored by
  *   workers.)
  */
-import { mkdir, readdir, readFile, writeFile } from "node:fs/promises"
-import { dirname, join } from "node:path"
+import { lstat, mkdir, readdir, readFile, writeFile } from "node:fs/promises"
+import { dirname, join, resolve, relative, sep } from "node:path"
 
 import { getWorkstream, initSchema, openSaneDb, resolveSaneIdentity } from "./sane-db.ts"
 import { resolveCommandAddress } from "./sane-cwd-target.ts"
@@ -30,6 +30,37 @@ import {
 } from "./sane-repository.ts"
 import { VALIDATE_PHASES, type ValidatePhase } from "./sane-validate-command.ts"
 import { SaneWorkstreamStateError } from "./sane-workstream-state.ts"
+import { DEFAULT_TEMPLATE_ROOT, initialTemplateRegistry } from "./create-sane-workstream.ts"
+import type { WorkstreamType } from "./workstream-type.ts"
+
+/** Preflight every resource before writing any; never follow resource symlinks. */
+export async function refreshResourceTemplates(workstreamRoot: string, type: WorkstreamType, templateRoot = DEFAULT_TEMPLATE_ROOT): Promise<string[]> {
+  async function check(root: string, path: string, source: boolean): Promise<void> {
+    const within = relative(resolve(root), resolve(root, path))
+    if (!within || within === ".." || within.startsWith(`..${sep}`)) throw new SaneWorkstreamStateError(`Unsafe template path: ${path}`)
+    const parts = within.split(sep)
+    // The resolved root is the trust boundary; inspect it and all descendants.
+    for (let i = 0; i <= parts.length; i++) {
+      const candidate = join(root, ...parts.slice(0, i))
+      let stat
+      try { stat = await lstat(candidate) } catch (error) {
+        if (!source && (error as NodeJS.ErrnoException).code === "ENOENT") continue
+        throw error
+      }
+      const file = i === parts.length
+      if (stat.isSymbolicLink() || (file ? !stat.isFile() : !stat.isDirectory())) throw new SaneWorkstreamStateError(`Unsafe template ${source ? "source" : "destination"}: ${candidate}; expected a regular ${file ? "file" : "directory"}, not a symlink or other file type.`)
+    }
+  }
+  const registry = initialTemplateRegistry(type).filter((entry) => entry.destination.startsWith("resources/"))
+  for (const entry of registry) {
+    await check(templateRoot, entry.source, true)
+    await check(workstreamRoot, entry.destination, false)
+  }
+  const templates = await Promise.all(registry.map(async (entry) => ({ ...entry, content: await readFile(join(templateRoot, entry.source)) })))
+  await mkdir(join(workstreamRoot, "resources"), { recursive: true })
+  for (const template of templates) await writeFile(join(workstreamRoot, template.destination), template.content)
+  return templates.map((entry) => entry.destination)
+}
 
 const PROVIDE_PHASE_SET = new Set<string>(VALIDATE_PHASES)
 
@@ -38,6 +69,7 @@ export interface SaneProvideCommandOptions {
   workstreamPath: string
   phase: string
   json?: boolean
+  refreshTemplates?: boolean
   userOverride?: string
   write?: (line: string) => void
 }
@@ -49,18 +81,21 @@ export interface SaneProvideCommandResult {
   phase: ValidatePhase
   created: string[]
   existed: string[]
+  refreshed: string[]
 }
 
 export const USAGE =
-  "Usage: sane provide <design|engineering|planning|execution> [--json] (auto-detects the workstream from the current directory; never overwrites)"
+  "Usage: sane provide <design|engineering|planning|execution> [--refresh-templates] [--json] (refresh replaces only resources/* templates; authored documents are preserved)"
 
 export function parseCliArguments(args: string[]): {
   implementationRepository: string
   workstreamPath: string
   phase: string
   json: boolean
+  refreshTemplates: boolean
 } {
   let json = false
+  let refreshTemplates = false
   const positional: string[] = []
   let parseOptions = true
 
@@ -70,6 +105,8 @@ export function parseCliArguments(args: string[]): {
       parseOptions = false
     } else if (parseOptions && argument === "--json") {
       json = true
+    } else if (parseOptions && argument === "--refresh-templates") {
+      refreshTemplates = true
     } else if (parseOptions && argument.startsWith("-")) {
       throw new SaneWorkstreamStateError(`Unknown option: ${argument}`)
     } else {
@@ -89,7 +126,7 @@ export function parseCliArguments(args: string[]): {
     )
   }
   // Bare invocation: the async run path auto-detects the target from CWD.
-  return { implementationRepository: "", workstreamPath: "", phase, json }
+  return { implementationRepository: "", workstreamPath: "", phase, json, refreshTemplates }
 }
 
 async function exists(path: string): Promise<boolean> {
@@ -146,6 +183,11 @@ export async function runSaneProvideCommand(
     const workstreamType = dbRow.type
     const created: string[] = []
     const existed: string[] = []
+    const refreshed: string[] = []
+    if (options.refreshTemplates) {
+      // Refresh is resource-only: it never provisions or overwrites authored documents.
+      refreshed.push(...await refreshResourceTemplates(workstream.path, workstreamType))
+    }
 
     async function ensureStarter(relativePath: string, template: string): Promise<void> {
       if (await exists(join(workstream.path, relativePath))) {
@@ -163,7 +205,7 @@ export async function runSaneProvideCommand(
       created.push(relativePath)
     }
 
-    switch (phase) {
+    if (!options.refreshTemplates) switch (phase) {
       case "design": {
         const root = ROOT_DOC_BY_TYPE[workstreamType]
         if (!(await exists(join(workstream.path, root)))) {
@@ -204,9 +246,12 @@ export async function runSaneProvideCommand(
       phase,
       created,
       existed,
+      refreshed,
     }
     if (options.json === true) {
       write(JSON.stringify({ ...result }, null, 2))
+    } else if (refreshed.length > 0) {
+      write(`Refreshed ${refreshed.length} resource templates for ${result.workstreamId}`)
     } else if (created.length === 0) {
       write(`${phase} already provided for ${result.workstreamId}`)
     } else {

@@ -1,4 +1,5 @@
 import type { Database } from "bun:sqlite"
+import type { WorkstreamStatusResult } from "./sane-workstream-state.ts"
 
 /**
  * State renderer from sqlite (docs/SANE_0_2_0.md Section 2).
@@ -276,15 +277,6 @@ export function renderSaneView(db: Database, identity: IdentityInput): string {
       )
     }
     lines.push("")
-    for (const job of jobs) {
-      lines.push(`### ${esc(job.job_id)}`)
-      lines.push("")
-      lines.push(`- job_id: ${esc(job.job_id)}`)
-      lines.push(`- spec_path: ${esc(job.spec_path)}`)
-      lines.push(`- report_path: ${esc(none(job.report_path))}`)
-      lines.push(`- status: ${esc(job.status)}`)
-      lines.push("")
-    }
   }
 
   // --- Research (append-only registry of completed topic reports) ---
@@ -323,5 +315,23 @@ export function renderSaneView(db: Database, identity: IdentityInput): string {
     lines.push("")
   }
 
+  return lines.join("\n")
+}
+
+/** Human overview; paths are relative to the workstream directory. */
+export function renderCompactSaneView(state: WorkstreamStatusResult): string {
+  const phases = new Map(state.phases.map((entry) => [entry.phase, entry.status]))
+  const lines = [
+    `${state.workstreamId} (${state.workstream.type}): ${state.workstream.status}`,
+    `Phases: ${SANE_PHASES.map((phase) => `${phase} ${phases.get(phase) ?? "pending"}`).join(" · ")}`,
+    `Approvals: ${state.approvals.map((entry) => entry.phase).join(", ") || "none"}`,
+    `Jobs (${state.jobs.length}; paths relative to workstream):`,
+  ]
+  for (const job of state.jobs) {
+    lines.push(`  ${job.job_id} ${job.status} — ${job.spec_path}${job.report_path ? ` → ${job.report_path}` : ""}`)
+  }
+  lines.push(`Research (${state.researchReports.length}; paths relative to workstream):`)
+  for (const report of state.researchReports) lines.push(`  ${report.topic} — ${report.path}`)
+  lines.push(`Merge: ${state.merge ? `${state.merge.branch} (${state.merge.merge_commit ? "merged" : "open"})` : "none"}`)
   return lines.join("\n")
 }

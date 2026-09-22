@@ -75,6 +75,12 @@ Planning confirms the plan with you before drafting and grounding Job Specs.
 Execution confirms run order and checkpoints, dispatches implementers, and
 coordinates review and fixes.
 
+Job reports describe current outcomes and reference detailed evidence. Workers
+validate their assigned reports with `sane validate execution report --id <id>`;
+an honest unsuccessful outcome can have a valid report. Execution writes the
+final synthesis only when you request it, rather than maintaining it as a live log.
+Execution approval requires reports for all jobs it will mark completed.
+
 At each phase's delivery, review the output, request changes if needed, and
 approve it yourself in the terminal:
 
@@ -147,14 +153,30 @@ keep shared dev servers, migrations, and deployments out of them.
 | `sane view` | Show the resolved workstream and phase state |
 | `sane status` | Show a focused status report |
 | `sane provide <phase>` | Create starter documents without overwriting existing files |
+| `sane provide <phase> --refresh-templates` | Explicitly refresh retained resource templates without changing authored documents |
 | `sane validate <phase>` | Check phase documents |
+| `sane validate execution report --id <id>` | Validate one Job report without requiring a final report |
 | `sane approve <phase> --ref "<note>"` | Record your phase approval |
 | `sane sessions` | List linked assistant sessions |
 | `sane research --index` | Inspect registered reports and mismatches |
-| `sane job <id> --json` | Get a worker's job context |
+| `sane job <id>` | Get compact worker context with roots, spec/report/template and document paths |
 | `sane job --register [--json]` | Register added specs under existing Planning approval |
 | `sane job <id> running` | Mark a job as running |
 | `sane job <id> completed` | Mark a job as completed |
+
+Read commands default to compact human-readable output. Use `sane view --verbose`,
+`sane status --verbose`, `sane sessions --verbose`, or `sane research --index --verbose`
+when you need detailed references, timestamps, hashes, or worktree metadata.
+Use `sane sessions --slot <slot>` to look up a specific handoff destination.
+Job context prints repository and workstream roots once; the paths below them are
+relative to the workstream root. `sane job <id> --json` retains absolute paths and
+the full machine-readable bundle.
+
+`sane view --json` returns structured workstream state (`workstream`, `phases`,
+`approvals`, `jobs`, `research_reports`, `sessions`, and `merge`) rather than the
+former `rendered` Markdown string. Other read-command JSON contracts are unchanged.
+Handoff text output is a one-line delivery receipt; the full message is still
+delivered and is available in the existing `--json` result.
 
 Use `sane --help` for the command list. Detailed assistant procedures live
 in [role skills](../skills/); document starters come from

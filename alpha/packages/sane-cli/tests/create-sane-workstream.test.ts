@@ -167,6 +167,12 @@ describe("create-sane-workstream", () => {
       "## Boundaries", "## Verification", "## Report Requirements", "## Resolutions",
     ])
     expect(spec).toContain("`# Job Spec NN: <job name>`")
+    expect(spec).toContain("inserted ID such as `07a`")
+    expect(spec).toContain("`execution/jobs/<job-id>-<job-slug>.md`")
+    expect(spec).toContain("`execution/PLAN.md`")
+    expect(spec).toContain("`design/SDD.md`")
+    expect(spec).toContain("`design/solutions/<name>.md`")
+    expect(spec).toContain("authoritative location")
     expect(spec).toContain("compact prioritized")
     expect(spec).toContain("required-start reads from conditional references with concrete triggers")
     expect(spec).toContain("required additions with their approved basis, never as existing verified checks")
@@ -202,6 +208,34 @@ describe("create-sane-workstream", () => {
     )
     expect(await readFile(join(destination, "README.md"), "utf8"))
       .toContain("# SANE Context")
+
+    const rootName = {
+      feature: "PRD.md", foundation: "FOUNDATION.md",
+      issue: "ISSUE.md", maintenance: "MAINTENANCE.md",
+    }[type]!
+    const root = await readFile(join(destination, rootName), "utf8")
+    expect(root).not.toContain("## Open Questions")
+    if (type === "issue") {
+      expect(root).toContain("## Diagnosis")
+      expect(root).not.toContain("## Suspected Area")
+    }
+
+    const sdd = await readFile(join(destination, "design", "SDD.md"), "utf8")
+    expect(sdd.match(/^## .+$/gm)).toEqual([
+      "## Goals and Non-Goals", "## Constraints", "## Technical Direction",
+      "## Architecture", "## Verification Approach", "## Solution Areas",
+    ])
+    for (const resource of ["EXECUTION_REPORT_TEMPLATE.md", "EXECUTION_FINAL_REPORT_TEMPLATE.md"]) {
+      const report = await readFile(join(destination, "resources", resource), "utf8")
+      expect(report.match(/^## .+$/gm)).toEqual([
+        "## Accomplished", "## Found Issues", "## Notes", "## Implementation Recommendations",
+      ])
+      expect(report).toContain("H3–H6 subordinate grouping")
+      expect(report).toContain("authoritative location")
+    }
+    const solution = await readFile(join(destination, "resources", "SOLUTION_SPEC_TEMPLATE.md"), "utf8")
+    expect(solution).toContain("`design/solutions/<name>.md`")
+    expect(solution).toContain("`design/SDD.md`")
   })
 
   test("dry run leaves no destination", async () => {

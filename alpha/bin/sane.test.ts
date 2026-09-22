@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test"
-import { mkdtemp, readFile, rm, access } from "node:fs/promises"
+import { mkdtemp, readFile, rm, access, realpath } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 
@@ -24,7 +24,7 @@ const expectedCommands: AlphaCommand[] = [
 
 describe("sane dispatcher", () => {
   test("direct and dispatched installers accept YAML config and report errors before writes", async () => {
-    const temporaryDirectory = await mkdtemp(join(tmpdir(), "sane-model-cli-"))
+    const temporaryDirectory = await realpath(await mkdtemp(join(tmpdir(), "sane-model-cli-")))
     try {
       const config = join(temporaryDirectory, "my models.yaml")
       await Bun.write(config, "sane/worker/scout: openai/gpt-5\n")
@@ -41,7 +41,8 @@ describe("sane dispatcher", () => {
           const [exit, stdout, stderr] = await Promise.all([child.exited, new Response(child.stdout).text(), new Response(child.stderr).text()])
           return { exit, stdout, stderr }
         }
-        expect((await run("--model-config", config, "--dry-run")).exit).toBe(0)
+        const dryRun = await run("--model-config", config, "--dry-run")
+        expect(dryRun.exit, dryRun.stderr).toBe(0)
         await expect(access(home)).rejects.toThrow()
         expect((await run("--model-config", config)).exit).toBe(0)
         expect(await readFile(join(home, ".config/opencode/agents/sane/worker/scout.md"), "utf8")).toContain('model: "openai/gpt-5"')

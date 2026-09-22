@@ -11,7 +11,7 @@ description: Use after Execution Pickup confirmation to coordinate jobs, reviews
 2. Confirm coordination mode unless already supplied:
    - **User-directed:** return at each review checkpoint for the user's next instruction.
    - **Delegated cycle:** coordinate work within the agreed scope and attempt limit until accepted or a stop condition applies.
-3. For each job, run `sane job <id> running` and launch one `sane/worker/implementer` per attempt. Give the job id and ask it to run `sane job <id> --json` for its spec, report destination/template, and context. Ask it to implement the spec and return changes, verification, report path, deviations, blockers, and optional recommendations with evidence.
+3. For each job, run `sane job <id> running` and launch one `sane/worker/implementer` per attempt. Give the job id and ask it to run `sane job <id>` for its spec, report destination/template, and context paths. Ask it to implement the spec, validate its report, and return the result, report path, and any finding needing attention.
 4. Wait for all batch jobs workers to return before assessing implementation outcomes, requesting plan changes, or dispatching subsequent work. For launch failures, interruptions, or missing responses, read `resources/RETRY_POLICY.md` relative to this skill and follow its recovery rules.
 5. Continue through the checkpoint's jobs, then follow Checkpoint Review and Commit before starting the next checkpoint. Track implemented jobs awaiting review separately from accepted jobs in the execution evidence. Mark accepted jobs with `sane job <id> completed`.
 
@@ -24,18 +24,18 @@ description: Use after Execution Pickup confirmation to coordinate jobs, reviews
 
 ## Review and Fixes
 
-1. When an Implementer, Reviewer, or Grounder reports a gap, read `resources/FIX_AND_CORRECTION_POLICY.md` relative to this skill and follow its routing procedure.
+1. When a worker reports a missing prerequisite that prevents a Job from proceeding, launch a read-only Reviewer for prerequisite-gap assessment before commissioning a correction. Supply the affected Job, finding, evidence, and relevant predecessor contracts. Ask for connected gaps that must be resolved to resume that Job, not a general audit. Use `resources/FIX_AND_CORRECTION_POLICY.md` to route the assessment; ordinary bounded implementation defects can follow that policy directly.
 2. For a bounded fix, launch `sane/worker/fixer` with the affected jobs, precise findings, allowed change boundary, relevant evidence, required verification, and stop conditions. Supply the exact report path and requirements if the report needs updating. Use the user's agreed correction scope and attempt limit.
-3. Preserve prior reports and record the finding, chosen action, attempt outcomes, verification, and user decisions in the execution evidence. Link the details from the checkpoint record in `execution/FINAL_REPORT.md`.
+3. Have the assigned worker reconcile affected Job reports to the current outcome and validate them. Keep material evidence and accepted limitations in the existing sections; replace resolved findings rather than appending another attempt narrative.
 4. After a fix for checkpoint-review findings returns, launch a read-only Reviewer with the original findings, changed implementation, and affected integration scope. Preserve review coverage of all checkpoint jobs and resolve remaining blocking findings before acceptance. Other fixes receive review at their planned checkpoint.
 
 ## Checkpoint Review and Commit
 
-1. Launch one read-only `sane/worker/reviewer` for the checkpoint's jobs implemented since the previous checkpoint. Supply exact job ids, relevant earlier integration context, and the implementation change boundary. Ask it to obtain each context bundle with `sane job <id> --json`, compare the combined current implementation and reports with the assignments, and return findings and a completion assessment. Ask which recommendations are supported and which need evidence.
+1. Launch one read-only `sane/worker/reviewer` for the checkpoint's jobs implemented since the previous checkpoint. Supply exact job ids, relevant earlier integration context, and the implementation change boundary. Ask it to obtain context paths with `sane job <id>`, compare the implementation and reports with the assignments, and return material findings and an assessment. Additional verification should address a change, weak evidence, or a concrete concern.
 2. For blocking findings, follow Review and Fixes. Resolve the checkpoint before starting its successor.
 3. When the review is Complete or Complete with non-blocking observations, commit the reviewed implementation unless the user specifies otherwise. Commit authorization is the default. Inspect the diff and stage the checkpoint's changes, preserving unrelated user work. Write commit messages in the repository's style and describe the implementation change in repository terms. Do not include workstream language, SANE job IDs, checkpoint labels, agent roles, or workstream-document references in commit messages; keep that coordination context in execution reports. Pushing requires separate user instruction. If there are no changes to commit, record that outcome.
-4. Record the checkpoint's job coverage, review evidence, accepted observations, and commit hash in `execution/FINAL_REPORT.md` using its template. Keep the record current as execution proceeds.
-5. Consider whether accepted test failures, recurring workarounds, or coordination difficulties warrant Planning assessment. Commit accepted work first, then follow Planning Corrections and wait for the reply or user instruction before advancing.
+4. Add a concise review disposition and commit reference to Notes in the covered Job reports, including any accepted limitation. Reuse the review reference rather than copying its findings into every report. Keep progress in job status; write the Final Report only when the user requests it.
+5. Request Planning assessment when a finding materially changes upcoming assignments. Commit accepted work first, then follow Planning Corrections and wait for the reply or user instruction before advancing.
 
 ## Enriching Upcoming Jobs
 
@@ -45,7 +45,7 @@ description: Use after Execution Pickup confirmation to coordinate jobs, reviews
 
 ## Planning Corrections
 
-1. For a finding routed to Planning, gather the affected jobs, report and review references, expected versus actual outputs, fixes already attempted, and impact on upcoming work.
+1. For a finding routed to Planning, identify the affected jobs, evidence reference, and assignment change needed. Use the grouped prerequisite assessment when available; reference the evidence rather than restating it in the handoff.
 2. Ask the user whether to send the request to Planning, unless the user's delegated coordination instructions already authorize it.
 3. Check `sane sessions --slot planning` for the existing Planning session. If none is linked, treat the missing session as a blocker and ask the user to help recover its id from the current conversation or session records and restore the link before sending the request. If several sessions are linked, ask which to target.
 4. Call `sane_handoff` (`to: "planning"`, `to_session: "<selected existing Planning session id>"`, `message: "<affected jobs, evidence, requested amendment, and waiting work>"`). If the target cannot be resolved, report the failure and resolve it with the user.
@@ -59,17 +59,17 @@ description: Use after Execution Pickup confirmation to coordinate jobs, reviews
 
 ## Stop and Escalation Conditions
 
-Ask the user when work exceeds authorized scope, needs a changed acceptance decision, reaches the agreed attempt limit, or has an unresolved blocker. Pause affected work and report the required decision.
+Use bounded fixes and prerequisite assessment within the agreed coordination scope. Ask the user when resolution changes scope or acceptance, needs unavailable authorization, or reaches the agreed attempt limit. Another attempt needs a changed implementation, new evidence, or a different approach; otherwise return the discovery and required decision rather than repeating work.
 
 ## Readiness for Delivery
 
-When authorized execution is ready for acceptance, follow `sane-assistant-execution-delivery`.
+When authorized execution is ready, summarize the outcome and ask whether the user wants the final report. On request, follow `sane-assistant-execution-delivery`.
 
 ## Worker Prompt Templates
 
 You MUST use these templates with the named worker agent. Replace placeholders with the
 assigned scope and evidence. Workers inherit the session working directory;
-use `sane job <id> --json` to resolve job context. Keep prompts focused on the
+use `sane job <id>` to resolve job context paths. Keep prompts focused on the
 assignment rather than general workflow instructions.
 
 ### Implementer — `sane/worker/implementer`
@@ -77,18 +77,16 @@ assignment rather than general workflow instructions.
 ```text
 Implement job <id> (<name>).
 
-Run `sane job <id> --json` in the session working directory for the Job Spec,
+Run `sane job <id>` in the session working directory for the Job Spec,
 report destination/template, and supporting context. Implement the assignment
 and perform its required verification. Return any gap that prevents proceeding
 within the assignment with concrete evidence.
 
-Write the report at the bundle's report_path using report_template and the
-Job's Report Requirements. Preserve existing report evidence when continuing
-an earlier attempt. Include applicable Implementation Recommendations with
-evidence and limits.
+Write the assigned report using its template and the Job's Report Requirements.
+Reconcile existing sections to current outcomes and link detailed evidence.
+Validate with `sane validate execution report --id <id>`.
 
-Return the implementation result, changed files, verification results, report
-path, deviations, and unresolved findings.
+Return Result, Report path, and Attention only when a finding needs action.
 ```
 
 ### Reviewer — `sane/worker/reviewer`
@@ -96,31 +94,41 @@ path, deviations, and unresolved findings.
 ```text
 Perform a read-only review of the combined implementation for jobs <ids>.
 
-Run `sane job <id> --json` for each assigned job. Review boundary:
+Run `sane job <id>` for each assigned job. Review boundary:
 <base revision, relevant changes including uncommitted work, and exclusions>.
 Earlier integration context: <relevant previously reviewed jobs or interfaces>.
 Verification permissions and limits: <applicable checks and restrictions>.
 
 Compare current code, tests, and report evidence against each assignment.
-Independently verify claims and inspect the integration between these jobs.
-Assess Implementation Recommendations as supported, needs evidence, or invalid,
-with applicability and evidence pointers.
+Inspect the integration between these jobs. Reuse applicable verification;
+additional checks should resolve a concrete concern.
 
-Return severity-ordered findings, criterion-level evidence, verification
-results, coverage limitations, recommendations suitable for forwarding, and
-one assessment: Complete, Complete with non-blocking observations, Incomplete,
-or Blocked.
+Return Assessment: Complete, Complete with non-blocking observations,
+Incomplete, or Blocked; material findings with evidence references; and any
+acceptance-relevant limitation. Do not repeat the implementation reports.
 ```
 
 For re-review, add the original findings, fix evidence, and affected integration
 scope; retain the original job coverage.
+
+For prerequisite-gap assessment, use:
+
+```text
+Assess prerequisites preventing job <id> from proceeding.
+Reported gap and evidence: <finding and reference>.
+Relevant predecessor contracts: <jobs or spec paths>.
+Inspect related prerequisites needed to resume this Job and group connected
+gaps into one correction boundary. Return Readiness, findings with evidence,
+and resumption conditions, distinguishing implementation defects from missing
+assignments. Remain read-only and leave unrelated predecessor behavior aside.
+```
 
 ### Fixer — `sane/worker/fixer`
 
 ```text
 Apply a bounded fix for jobs <ids>.
 
-Run `sane job <id> --json` for the affected jobs.
+Run `sane job <id>` for the affected jobs.
 Findings and evidence: <specific defects and evidence pointers>.
 Required outcomes: <what the fix must satisfy>.
 Edit boundary: <allowed paths, relevant constraints, and excluded changes>.
@@ -128,9 +136,11 @@ Verification: <required checks and execution limits>.
 Report assignment: <exact report path and required update, or return evidence inline>.
 Stop conditions: <missing requirements or changes requiring a new decision>.
 
-Verify the complete assigned boundary and preserve prior report evidence.
-Return changed files, outcomes, verification results, any updated report paths,
-and remaining findings or decisions needed.
+Verify the correction and affected integration. Reconcile assigned reports
+within their existing sections and validate each with
+`sane validate execution report --id <id>`.
+Return Result, Report path if assigned, and Attention when needed. For an
+inline-only assignment, include changed paths and essential verification.
 ```
 
 ### Grounder — `sane/worker/grounder`
@@ -163,7 +173,7 @@ Continue the original assignment: <assignment>.
 Previous attempt: <session id and known outcome>.
 Existing changes and evidence: <paths and results>.
 Remaining work: <bounded continuation>.
-Report/return requirements: <destination, prior evidence to preserve, and missing output>.
+Report/return requirements: <destination and missing output>.
 
 Inspect the existing work before continuing and preserve completed results.
 Return the outcome and remaining issues for this continuation.

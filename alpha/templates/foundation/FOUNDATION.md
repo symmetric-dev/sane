@@ -58,9 +58,6 @@ decisions. Do not present unapproved technical decisions as settled. -->
 
 <!-- Record material product, organizational, provider, external-service,
 security, compliance, or delivery dependencies; assumptions requiring
-validation; and risks requiring attention. -->
-
-## Open Questions
-
-<!-- List unresolved questions for the user, Research, or Design. Do not present
-an unapproved decision as settled. -->
+validation; and risks requiring attention. Place any unresolved decision in its
+relevant section with its effect on the foundation outcome; do not present an
+unapproved decision as settled. -->
