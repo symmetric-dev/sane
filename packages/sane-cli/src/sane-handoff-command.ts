@@ -475,7 +475,8 @@ export function readyTitle(slot: string, nextAction: string): string {
   assertNonEmpty("nextAction", nextAction)
   assertSlot(slot)
   assertSingleLine("nextAction", nextAction.trim())
-  return `[ready] ${slot}: ${nextAction.trim()}`
+  const title = `[ready] ${slot}: ${nextAction.trim()}`
+  return title.length <= 200 ? title : `${title.slice(0, 199).trimEnd()}…`
 }
 
 /**

@@ -188,6 +188,23 @@ describe("runHandoffAsSession (tool core)", () => {
     expect(listSelectionsBySlot(db!, identity, "engineering")).toHaveLength(2)
   })
 
+  test("caps the session title while delivering the complete handoff message", async () => {
+    seedDesignAndEngineering()
+    const calls: RecordedCall[] = []
+    const message = `Draft solutions. ${"Essential context. ".repeat(30)}Preserve this final decision.`
+    const result = await runHandoffAsSession(
+      db!,
+      identity,
+      { fromSession: "ses_design", to: "engineering", message },
+      { fetchImpl: mockServer(null, calls), serverUrl: "http://127.0.0.1:4096" },
+    )
+    expect(result.ready_title.length).toBeLessThanOrEqual(200)
+    expect(result.ready_title).toEndWith("…")
+    expect(result.message).toContain(message)
+    expect(JSON.stringify(calls[0]!.body)).toContain(message)
+    expect(calls[1]!.body).toMatchObject({ title: result.ready_title })
+  })
+
   test("session_index 1 and 2 mirror CLI semantics", async () => {
     seedDesignAndEngineering()
     const first = await runHandoffAsSession(
