@@ -34,3 +34,8 @@ description: Use after Engineering Pickup confirmation for solution work and mid
 ## Readiness for Delivery
 
 When the assigned solution specs are ready for review, follow `sane-assistant-engineering-delivery`.
+
+## Best Practices
+
+- KEEPS THINGS SIMPLE, DO NOT OVER-ENGINEER
+- SOLUTION SEPCS ARE NOT HISTORICAL LOGS FOR YOU TO WRITE THE CURRENT PENDING STATE OF AN UPDATE, NOR PENDING DRAFT STATE, NOR YOUR STORY WITH THE HANDOFFS WITH ANOTHER AGENT

@@ -61,6 +61,10 @@ interface RecordedCall {
 /** Mock server: create returns `{ id }`; prompt/PATCH-title return ok and record. */
 function mockServer(createdId: string | null, calls: RecordedCall[]): HandoffFetch {
   return (async (url: string, init?: RequestInit) => {
+    if (url.includes("/api/agent?")) return okJson({ data: ["design", "engineering", "planning", "execution", "research"].map((slot) => ({
+      id: `sane/assistant/${slot}`,
+      model: { providerID: "openai", id: "gpt-6-astra", variant: "low" },
+    })) })
     const body = JSON.parse(String((init as { body?: string })?.body ?? "{}"))
     calls.push({ url, body })
     if (url.endsWith("/api/session")) {
@@ -263,7 +267,7 @@ describe("runHandoffAsSession (tool core)", () => {
     expect(calls[0]!.url).toBe("http://127.0.0.1:4096/api/session")
     expect(calls[0]!.body).toMatchObject({
       agent: "sane/assistant/planning",
-      model: { id: "muse-spark-1.3-contributor", providerID: "opencode-go", variant: "high" },
+      model: { id: "gpt-6-astra", providerID: "openai", variant: "low" },
       location: { directory: "/repo" },
     })
   })
