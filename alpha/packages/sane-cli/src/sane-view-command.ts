@@ -7,7 +7,7 @@
  * never by reading a file. Supports `--json` and `--repo-root` detection
  * idioms matching existing CLIs.
  */
-import { initSchema, openSaneDb, resolveSaneIdentity } from "./sane-db.ts"
+import { getWorkstreamImplementation, initSchema, openSaneDb, resolveSaneIdentity } from "./sane-db.ts"
 import { resolveCommandAddress } from "./sane-cwd-target.ts"
 import { renderSaneView, renderCompactSaneView } from "./sane-view.ts"
 import {
@@ -27,6 +27,7 @@ export interface SaneViewCommandOptions {
 
 export interface SaneViewCommandResult {
   repoRoot: string
+  implementationDirectory: string
   user: string
   workstreamId: string
   rendered: string
@@ -131,9 +132,11 @@ export async function runSaneViewCommand(
   try {
     initSchema(db)
     const state = getWorkstreamStatus(db, identity)
-    const rendered = options.verbose ? renderSaneView(db, identity) : renderCompactSaneView(state)
+    const implementationDirectory = getWorkstreamImplementation(db, identity)?.worktree_path ?? identity.repoRoot
+    const rendered = `${options.verbose ? renderSaneView(db, identity) : renderCompactSaneView(state)}\nImplementation directory: ${implementationDirectory}`
     const result: SaneViewCommandResult = {
       repoRoot: identity.repoRoot,
+      implementationDirectory,
       user: identity.user,
       workstreamId: identity.workstreamId,
       rendered,
@@ -144,6 +147,7 @@ export async function runSaneViewCommand(
         JSON.stringify(
           {
             repo_root: result.repoRoot,
+            implementation_directory: result.implementationDirectory,
             user: result.user,
             workstream_id: result.workstreamId,
             workstream: state.workstream,

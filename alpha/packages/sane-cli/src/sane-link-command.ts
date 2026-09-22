@@ -12,18 +12,11 @@
  * touch handoff behavior, skills, docs, or the `sessions` list command.
  */
 
-import type { Database } from "bun:sqlite"
-
 import {
   assertSelectionSlot,
-  deleteSelection,
   initSchema,
-  linkSelection,
-  listSelectionsBySlot,
   openSaneDb,
   resolveSaneIdentity,
-  type SaneIdentity,
-  type SelectionRow,
 } from "./sane-db.ts"
 import {
   resolveBootstrappedWorkstream,
@@ -31,6 +24,8 @@ import {
 } from "./sane-repository.ts"
 import { resolveCommandAddress } from "./sane-cwd-target.ts"
 import { SaneWorkstreamStateError } from "./sane-workstream-state.ts"
+import { bindAndLinkSession } from "./sane-link-tool.ts"
+import { resolveSaneMainRepository } from "./sane-implementation.ts"
 
 export class SaneLinkError extends Error {
   constructor(message: string) {
@@ -52,11 +47,6 @@ function assertSlot(slot: string): void {
   }
 }
 
-/** 1:1 slots: `design | planning | execution`. Everything else valid is 1:many. */
-function isOneToOneSlot(slot: string): boolean {
-  return slot === "design" || slot === "planning" || slot === "execution"
-}
-
 // ---------------------------------------------------------------------------
 // CLI: sane link
 // ---------------------------------------------------------------------------
@@ -69,6 +59,8 @@ export interface SaneLinkCommandOptions {
   worktreePath?: string | null
   branch?: string | null
   force?: boolean
+  reassign?: boolean
+  implementationWorktree?: string
   json?: boolean
   userOverride?: string
   write?: (line: string) => void
@@ -84,6 +76,7 @@ export interface SaneLinkCommandResult {
   count: number
   worktreePath: string | null
   branch: string | null
+  implementationRoot: string
 }
 
 export interface ParsedLinkArguments {
@@ -94,11 +87,13 @@ export interface ParsedLinkArguments {
   worktreePath: string | undefined
   branch: string | undefined
   force: boolean
+  reassign: boolean
+  implementationWorktree: string | undefined
   json: boolean
 }
 
 export const USAGE =
-  "Usage: sane link [<implementation-repository> <workstream-relative-path>] --slot <slot> --session <ses_id> [--worktree-path <dir>] [--branch <name>] [--force] [--json] [--repo-root <path>] (no positionals: auto-detect the target from the current directory)"
+  "Usage: sane link [<implementation-repository> <workstream-relative-path>] --slot <slot> --session <ses_id> [--implementation-worktree <dir>] [--reassign] [--worktree-path <session-dir>] [--branch <name>] [--force] [--json] [--repo-root <path>] (no positionals: session binding, then current directory; --reassign explicitly replaces an implementation or session binding)"
 
 function requireOptionValue(args: string[], index: number, option: string): string {
   const value = args[index + 1]
@@ -115,6 +110,8 @@ function assertSingleOption(seen: string | undefined, option: string): void {
 export function parseCliArguments(args: string[]): ParsedLinkArguments {
   let json = false
   let force = false
+  let reassign = false
+  let implementationWorktree: string | undefined
   let repoRootOpt: string | undefined
   let slot: string | undefined
   let sessionId: string | undefined
@@ -131,6 +128,12 @@ export function parseCliArguments(args: string[]): ParsedLinkArguments {
       json = true
     } else if (parseOptions && argument === "--force") {
       force = true
+    } else if (parseOptions && argument === "--reassign") {
+      reassign = true
+    } else if (parseOptions && argument === "--implementation-worktree") {
+      assertSingleOption(implementationWorktree, "--implementation-worktree")
+      implementationWorktree = requireOptionValue(args, index, "--implementation-worktree")
+      index += 1
     } else if (parseOptions && argument === "--slot") {
       assertSingleOption(slot, "--slot")
       slot = requireOptionValue(args, index, "--slot")
@@ -210,6 +213,8 @@ export function parseCliArguments(args: string[]): ParsedLinkArguments {
     worktreePath,
     branch,
     force,
+    reassign,
+    implementationWorktree,
     json,
   }
 }
@@ -232,9 +237,9 @@ export async function runSaneLinkCommand(
   assertSlot(options.slot)
   const slot = options.slot
   const sessionId = options.sessionId
-  const force = options.force === true
 
-  const pointer = await resolveSaneRepository(options.implementationRepository).catch((error) => {
+  const mainRepository = await resolveSaneMainRepository(options.implementationRepository)
+  const pointer = await resolveSaneRepository(mainRepository).catch((error) => {
     throw toLinkError(error)
   })
   const workstream = await resolveBootstrappedWorkstream(
@@ -251,48 +256,11 @@ export async function runSaneLinkCommand(
     throw toLinkError(error)
   })
 
-  // Mutation audit: the linking phase session registers itself.
-  const mutation = { actorRole: slot, sessionId }
-
   const db = await openSaneDb(pointer.implementationRepository)
   try {
     initSchema(db)
 
-    if (isOneToOneSlot(slot)) {
-      const existing = listSelectionsBySlot(db, identity, slot)
-      const different = existing.filter((row) => row.session_id !== sessionId)
-      if (different.length > 0) {
-        if (!force) {
-          const latest = existing[existing.length - 1] as SelectionRow
-          throw new SaneLinkError(
-            `Slot "${slot}" is already linked to ${latest.session_id} (${existing.length} session(s)); rerun with --force to replace.`,
-          )
-        }
-        deleteSelection(db, identity, slot, mutation)
-      }
-    }
-
-    let row: SelectionRow
-    try {
-      row = linkSelection(
-        db,
-        identity,
-        {
-          slot,
-          sessionId,
-          worktreePath: options.worktreePath ?? null,
-          branch: options.branch ?? null,
-        },
-        mutation,
-      )
-    } catch (error) {
-      throw toLinkError(error)
-    }
-
-    const after = listSelectionsBySlot(db, identity, slot)
-    const count = after.length
-    const found = after.findIndex((entry) => entry.session_id === sessionId)
-    const index = found >= 0 ? found + 1 : count
+    const linked = await bindAndLinkSession(db, identity, options).catch((error) => { throw toLinkError(error) })
 
     const result: SaneLinkCommandResult = {
       repoRoot: identity.repoRoot,
@@ -300,10 +268,11 @@ export async function runSaneLinkCommand(
       workstreamId: identity.workstreamId,
       slot,
       sessionId,
-      index,
-      count,
-      worktreePath: row.worktree_path,
-      branch: row.branch,
+      index: linked.index,
+      count: linked.count,
+      worktreePath: linked.worktreePath,
+      branch: linked.branch,
+      implementationRoot: linked.implementationRoot,
     }
 
     if (options.json === true) {
@@ -319,6 +288,7 @@ export async function runSaneLinkCommand(
             count: result.count,
             worktree_path: result.worktreePath,
             branch: result.branch,
+            implementation_root: result.implementationRoot,
           },
           null,
           2,
@@ -327,6 +297,7 @@ export async function runSaneLinkCommand(
     } else {
       write(`Linked: ${result.slot} -> ${result.sessionId} (workstream ${result.workstreamId})`)
       write(`session ${result.index} of ${result.count} for slot ${result.slot}`)
+      write(`Implementation root: ${result.implementationRoot}`)
     }
     return result
   } catch (error) {

@@ -34,6 +34,7 @@ import {
   type JobRow,
 } from "./sane-db.ts"
 import { resolveCommandAddress } from "./sane-cwd-target.ts"
+import { resolveImplementationRoot } from "./sane-implementation.ts"
 import { registerPlannedJobs } from "./sane-job-registration.ts"
 import { validatePhaseDocs } from "./sane-validate-command.ts"
 import {
@@ -70,6 +71,7 @@ export interface SaneJobViewOptions {
 
 export interface SaneJobBundle {
   repoRoot: string
+  implementationRoot: string
   user: string
   workstreamId: string
   job: {
@@ -238,6 +240,7 @@ export async function buildJobBundle(
   const planningApproval = getApproval(db, identity, "planning")
   return {
     repoRoot: identity.repoRoot,
+    implementationRoot: await resolveImplementationRoot(db, identity),
     user: identity.user,
     workstreamId: identity.workstreamId,
     job: {
@@ -268,6 +271,8 @@ export async function buildJobBundle(
 function bundleToJson(bundle: SaneJobBundle): Record<string, unknown> {
   return {
     repo_root: bundle.repoRoot,
+    implementation_root: bundle.implementationRoot,
+    implementation_directory: bundle.implementationRoot,
     user: bundle.user,
     workstream_id: bundle.workstreamId,
     job: {
@@ -312,6 +317,7 @@ export async function runSaneJobViewCommand(
       const path = (absolute: string) => relative(workstream.path, absolute)
       write(`job ${bundle.job.jobId} for ${bundle.workstreamId}: ${bundle.job.status}`)
       write(`Repository root: ${bundle.repoRoot}`)
+      write(`Implementation root: ${bundle.implementationRoot}`)
       write(`Workstream root: ${workstream.path}`)
       write("Paths below are relative to workstream root:")
       write(`  spec: ${path(bundle.job.specPath)}${bundle.job.specExists ? "" : " (missing)"}`)

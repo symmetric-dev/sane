@@ -30,6 +30,8 @@ import type { Database } from "bun:sqlite"
 
 import {
   assertSelectionSlot,
+  bindSessionWorkstream,
+  getWorkstreamImplementation,
   getSelection,
   getWorkstream,
   initSchema,
@@ -164,6 +166,7 @@ export interface ComposeHandoffInput {
   workstreamId: string
   /** The ask (single line). The receiver knows its role; paths resolve from the workstream. */
   message: string
+  implementationRoot?: string
 }
 
 /**
@@ -186,6 +189,7 @@ export function composeHandoff(input: ComposeHandoffInput): string {
 
   return [
     `Workstream: ${input.workstreamId}`,
+    ...(input.implementationRoot ? [`Implementation root: ${input.implementationRoot}`] : []),
     `Handoff From: ${sender} (${input.fromSession.trim()})`,
     `Message: ${input.message.trim()}`,
   ].join("\n")
@@ -446,6 +450,7 @@ export async function resolveOrCreateSession(
   if (!sessionId) {
     throw new SaneHandoffError("Session create response did not contain a session id.")
   }
+  bindSessionWorkstream(db, identity, sessionId, options.mutation)
   const row = upsertSelection(
     db,
     identity,
@@ -861,6 +866,7 @@ export async function runSaneHandoffCommand(
     })
 
     const message = composeHandoff({
+      implementationRoot: getWorkstreamImplementation(db, identity)?.worktree_path,
       fromSlot: options.fromSlot,
       fromSession,
       workstreamId: identity.workstreamId,

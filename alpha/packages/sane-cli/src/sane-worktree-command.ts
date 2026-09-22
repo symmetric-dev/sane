@@ -30,6 +30,8 @@ import {
   currentUser,
   flattenWorkstreamId,
   getMerge,
+  getWorkstreamImplementation,
+  setWorkstreamImplementation,
   initSchema,
   normalizeWorkstreamId,
   openSaneDb,
@@ -293,12 +295,16 @@ export async function createWorktree(
   const baseRev = input.baseRev.trim()
   const sessionId = input.sessionId ?? `worktree-create-${Date.now()}`
 
-  await execGit(["-C", repoRoot, "worktree", "add", path, "-b", branch, baseRev])
-
   const identity = await resolveSaneIdentity(repoRoot, normalizedId, input.user)
   const db = await openSaneDb(repoRoot)
   try {
     initSchema(db)
+    const existing = getWorkstreamImplementation(db, identity)
+    if (existing && existing.worktree_path !== resolve(path)) {
+      throw new SaneWorktreeError(`Workstream already has implementation worktree ${existing.worktree_path}; explicitly reassign it with sane link --reassign.`)
+    }
+    await execGit(["-C", repoRoot, "worktree", "add", path, "-b", branch, baseRev])
+    setWorkstreamImplementation(db, identity, { worktreePath: resolve(path), branch }, { actorRole: "execution", sessionId })
     upsertMerge(
       db,
       identity,

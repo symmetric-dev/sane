@@ -16,12 +16,16 @@ import type { Database } from "bun:sqlite"
 
 import {
   assertSelectionSlot,
+  bindSessionWorkstream,
+  getWorkstreamImplementation,
+  setWorkstreamImplementation,
   deleteSelection,
   linkSelection,
   listSelectionsBySlot,
   type SaneIdentity,
   type SelectionRow,
 } from "./sane-db.ts"
+import { validateImplementationWorktree } from "./sane-implementation.ts"
 
 export class SaneLinkToolError extends Error {
   constructor(message: string) {
@@ -54,6 +58,8 @@ export interface LinkSessionSelectionInput {
   worktreePath?: string | null
   branch?: string | null
   force?: boolean
+  /** Explicitly move a session or replace the workstream implementation binding. */
+  reassign?: boolean
 }
 
 export interface LinkSessionSelectionResult {
@@ -77,6 +83,10 @@ export function linkSessionSelection(
   identity: SaneIdentity,
   input: LinkSessionSelectionInput,
 ): LinkSessionSelectionResult {
+  return db.transaction(() => linkSessionSelectionTransaction(db, identity, input))()
+}
+
+function linkSessionSelectionTransaction(db: Database, identity: SaneIdentity, input: LinkSessionSelectionInput): LinkSessionSelectionResult {
   if (!input.slot || input.slot.trim() === "") {
     throw new SaneLinkToolError("Option --slot is required.")
   }
@@ -90,6 +100,11 @@ export function linkSessionSelection(
 
   // Mutation audit: the linking phase session registers itself.
   const mutation = { actorRole: slot, sessionId }
+  try {
+    bindSessionWorkstream(db, identity, sessionId, mutation, input.reassign)
+  } catch (error) {
+    throw toLinkToolError(error)
+  }
 
   if (isOneToOneSlot(slot)) {
     const existing = listSelectionsBySlot(db, identity, slot)
@@ -135,4 +150,20 @@ export function linkSessionSelection(
     worktreePath: row.worktree_path,
     branch: row.branch,
   }
+}
+
+/** Shared CLI/plugin boundary: validate Git ownership, then atomically bind and link. */
+export async function bindAndLinkSession(
+  db: Database,
+  identity: SaneIdentity,
+  input: LinkSessionSelectionInput & { implementationWorktree?: string },
+): Promise<LinkSessionSelectionResult & { implementationRoot: string }> {
+  const validated = input.implementationWorktree !== undefined
+    ? await validateImplementationWorktree(identity.repoRoot, input.implementationWorktree)
+    : undefined
+  return db.transaction(() => {
+    if (validated) setWorkstreamImplementation(db, identity, { ...validated, reassign: input.reassign }, { actorRole: input.slot, sessionId: input.sessionId })
+    const linked = linkSessionSelection(db, identity, input)
+    return { ...linked, implementationRoot: getWorkstreamImplementation(db, identity)?.worktree_path ?? identity.repoRoot }
+  })()
 }
