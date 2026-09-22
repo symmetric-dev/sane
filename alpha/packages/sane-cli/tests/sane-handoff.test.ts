@@ -214,6 +214,7 @@ describe("sane-handoff (M4 session registry + handoff)", () => {
     expect(getSelection(db!, identity, "planning")).toBeNull()
     const calls: string[] = []
     const createFetch: HandoffFetch = (async (url: string) => {
+      if (url.includes("/api/agent?")) return okJson({ data: [{ id: "sane/assistant/planning" }] })
       calls.push(url)
       return okJson({ id: "ses_plan_new" })
     }) as unknown as HandoffFetch
@@ -242,9 +243,52 @@ describe("sane-handoff (M4 session registry + handoff)", () => {
     expect(calls).toHaveLength(1)
   })
 
+  test("new sessions use the destination agent model and variant, or omit an unconfigured model", async () => {
+    for (const model of [
+      { id: "gpt-6-astra", providerID: "openai", variant: "low" },
+      { id: "another-model", providerID: "another-provider" },
+      undefined,
+    ]) {
+      const calls: string[] = []
+      const fetchImpl: HandoffFetch = async (url, init) => {
+        calls.push(url)
+        if (url.includes("/api/agent?")) {
+          expect(init?.method).toBe("GET")
+          expect(new URL(url).searchParams.get("location[directory]")).toBe(identity.repoRoot)
+          expect(new URL(url).pathname).toBe("/api/agent")
+          return okJson({ data: [{ id: "sane/assistant/design", model: { id: "other", providerID: "other" } }, { id: "sane/assistant/engineering", ...(model ? { model } : {}) }] })
+        }
+        const body = JSON.parse(String(init?.body))
+        expect(body.agent).toBe("sane/assistant/engineering")
+        expect(body.model).toEqual(model)
+        expect(Object.hasOwn(body, "model")).toBe(model !== undefined)
+        return okJson({ id: "ses_model_test" })
+      }
+      await resolveOrCreateSession(db!, identity, {
+        serverUrl: "http://127.0.0.1:4096", slot: "engineering", forceNew: true,
+        mutation: mutation(), fetchImpl,
+      })
+      expect(calls).toHaveLength(2)
+    }
+  })
+
+  test("agent lookup failures stop creation without registering a session", async () => {
+    for (const payload of [{}, { data: [{ id: "wrong-agent" }] }, {
+      data: [{ id: "sane/assistant/engineering", model: { id: "missing-provider" } }],
+    }]) {
+      let calls = 0
+      await expect(resolveOrCreateSession(db!, identity, {
+        serverUrl: "http://127.0.0.1:4096", slot: "engineering", mutation: mutation(),
+        fetchImpl: async () => { calls++; return okJson(payload) },
+      })).rejects.toThrow("Could not resolve handoff agent")
+      expect(calls).toBe(1)
+      expect(getSelection(db!, identity, "engineering")).toBeNull()
+    }
+  })
+
   test("resolve records a foreign (OpenCode-native) worktree path and branch", async () => {
-    const createFetch: HandoffFetch = (async () =>
-      okJson({ id: "ses_exec_new" })) as unknown as HandoffFetch
+    const createFetch: HandoffFetch = (async (url: string) =>
+      url.includes("/api/agent?") ? okJson({ data: [{ id: "sane/assistant/execution" }] }) : okJson({ id: "ses_exec_new" })) as unknown as HandoffFetch
     const created = await resolveOrCreateSession(db!, identity, {
       serverUrl: "http://127.0.0.1:4096",
       slot: "execution",
@@ -285,7 +329,8 @@ describe("sane-handoff (M4 session registry + handoff)", () => {
       ["engineering", { sessionID: "ses_b" }, "ses_b"],
       ["planning", { data: { id: "ses_c" } }, "ses_c"],
     ] as const) {
-      const fetchImpl: HandoffFetch = (async () => okJson(payload)) as unknown as HandoffFetch
+      const fetchImpl: HandoffFetch = (async (url: string) => url.includes("/api/agent?")
+        ? okJson({ data: [{ id: `sane/assistant/${slot}` }] }) : okJson(payload)) as unknown as HandoffFetch
       const result = await resolveOrCreateSession(db!, identity, {
         serverUrl: "http://127.0.0.1:4096",
         slot,
@@ -493,6 +538,7 @@ describe("sane-handoff CLI end to end (mock server)", () => {
     const renameCalls: Array<{ url: string; body: unknown }> = []
     let creates = 0
     const fetchImpl: HandoffFetch = (async (url: string, init?: RequestInit) => {
+      if (url.includes("/api/agent?")) return okJson({ data: [{ id: "sane/assistant/engineering" }] })
       const body = JSON.parse(String((init as { body?: string })?.body ?? "{}")) as Record<
         string,
         unknown
@@ -557,6 +603,7 @@ describe("sane-handoff CLI end to end (mock server)", () => {
   test("handoff to bare research creates-if-empty (mock server)", async () => {
     let creates = 0
     const fetchImpl: HandoffFetch = (async (url: string) => {
+      if (url.includes("/api/agent?")) return okJson({ data: [{ id: "sane/assistant/research" }] })
       if (url.endsWith("/api/session")) {
         creates += 1
         return okJson({ id: "ses_research_new" })
@@ -584,6 +631,7 @@ describe("sane-handoff CLI end to end (mock server)", () => {
 
   test("runCli returns 0/1 and --json emits the handoff envelope", async () => {
     const fetchImpl: HandoffFetch = (async (url: string) => {
+      if (url.includes("/api/agent?")) return okJson({ data: [{ id: "sane/assistant/planning" }] })
       if (url.endsWith("/api/session")) return okJson({ id: "ses_plan_1" })
       return okJson({})
     }) as unknown as HandoffFetch

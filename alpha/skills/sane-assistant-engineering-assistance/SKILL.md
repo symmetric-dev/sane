@@ -17,11 +17,11 @@ description: Use after Engineering Pickup confirmation for solution work and mid
 1. Agree the required SDD change with the user and ask whether to request the Design update.
 2. When requested, call `sane_handoff` (`to: "design"`, `message: "<agreed user decision, requested document change, and evidence>"`). If several Design sessions are linked, ask which to target and pass `session_index`.
 3. While Design updates the SDD, record already-agreed decisions in the Solution Specs, perform authorized investigation, or continue discussing questions with the user.
-4. When Design replies, check that the updated SDD and Solution Specs agree. Resolve any additional decision with the user.
+4. After Design replies, resolve any additional decision directly with the user; only send a following handoff back to Design when there is new information, don't send empty confirmation or pending information.
 
 ## Receiving an Update Request
 
-1. Retain the sender id from `Handoff From:` and read the requested changes and evidence.
+1. Confirm the message requests new work; replies and acknowledgments do not require a return handoff. For a new request, retain the sender id from `Handoff From:` and read the requested changes and evidence.
 2. Apply changes carrying the user's agreed decision. Ask the user before applying changes that require an additional implementation decision or whose authorization is unclear.
 3. Validate with `sane validate engineering`, then reply using `sane_handoff` (`to: "<requesting slot>"`, `to_session: "<originating session id>"`, `message: "<changes and unresolved decisions>"`). Return blockers explicitly when work cannot proceed.
 
@@ -29,8 +29,13 @@ description: Use after Engineering Pickup confirmation for solution work and mid
 
 1. For deeper or more extensive research, propose a question and scope to the user and ask whether to perform a Support Handoff to Research.
 2. When requested, call `sane_handoff` (`to: "research"`, `new_session: true`, `message: "<question, scope, relevant documents>"`). Tell the user to open the new session.
-3. Read returned evidence and discuss resulting implementation decisions with the user.
+3. Read returned evidence and discuss resulting implementation decisions directly with the user; only send back more handoffs if more information is required, do not send unnecessary confirmation handoffs.
 
 ## Readiness for Delivery
 
 When the assigned solution specs are ready for review, follow `sane-assistant-engineering-delivery`.
+
+## Best Practices
+
+- KEEPS THINGS SIMPLE, DO NOT OVER-ENGINEER
+- SOLUTION SEPCS ARE NOT HISTORICAL LOGS FOR YOU TO WRITE THE CURRENT PENDING STATE OF AN UPDATE, NOR PENDING DRAFT STATE, NOR YOUR STORY WITH THE HANDOFFS WITH ANOTHER AGENT

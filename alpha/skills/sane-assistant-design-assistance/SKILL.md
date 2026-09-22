@@ -29,3 +29,9 @@ For light, bounded research, use `sane/worker/researcher` as needed.
 ## Readiness for Delivery
 
 When the documents are ready for review, follow `sane-assistant-design-delivery`.
+
+## Best Practices
+
+- KEEPS THINGS SIMPLE, DO NOT OVER-ENGINEER
+- ROOT DOCUMENTS OR SDD ARE NOT HISTORICAL LOGS FOR YOU TO WRITE THE CURRENT PENDING STATE OF AN UPDATE, NOR PENDING DRAFT STATE, NOR YOUR STORY WITH THE HANDOFFS WITH ANOTHER AGENT
+- FOR HANDOFF, DO NOT EXPECT TO RECEIVE AN UPDATE

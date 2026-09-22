@@ -86,19 +86,6 @@ export const ASSISTANT_AGENT_BY_SLOT: Record<string, string> = {
   research: "sane/assistant/research",
 }
 
-/**
- * Default model for created handoff sessions. Mirrors `models.yaml` (all
- * SANE assistants pin `opencode-go/muse-spark-1.3-contributor`, variant
- * high); keep in sync when `models.yaml` changes. Passed explicitly
- * because the server does not apply the agent's configured model on its
- * own (a bare create replies with the server default model).
- */
-export const HANDOFF_DEFAULT_MODEL = {
-  id: "muse-spark-1.3-contributor",
-  providerID: "opencode-go",
-  variant: "high",
-} as const
-
 /** Assistant agent for a target slot (`research:<topic>` shares the research assistant). */
 export function assistantAgentForSlot(slot: string): string {
   if (slot === "research" || slot.startsWith("research:")) return ASSISTANT_AGENT_BY_SLOT["research"]!
@@ -394,10 +381,34 @@ export async function resolveOrCreateSession(
 
   const existingForPaths = getSelection(db, identity, options.slot)
   const fetchImpl = options.fetchImpl ?? defaultFetch()
+  const agent = assistantAgentForSlot(options.slot)
+  const agentUrl = new URL(`${base}/api/agent`)
+  agentUrl.searchParams.set("location[directory]", identity.repoRoot)
+  let model: unknown
+  try {
+    const response = await fetchImpl(agentUrl.toString(), {
+      method: "GET",
+      headers: serverAuthHeaders(),
+    })
+    if (!response.ok) throw new Error(`${response.status} ${response.statusText ?? ""}`.trim())
+    const payload = await response.json() as { data?: Array<{ id?: string; model?: unknown }> }
+    const configuredAgent = Array.isArray(payload?.data) ? payload.data.find((entry) => entry?.id === agent) : undefined
+    if (!configuredAgent) throw new Error("Response did not contain the requested agent.")
+    model = configuredAgent.model
+    if (model !== undefined && model !== null) {
+      const ref = model as { id?: unknown; providerID?: unknown; variant?: unknown }
+      if (typeof ref.id !== "string" || !ref.id || typeof ref.providerID !== "string" || !ref.providerID ||
+          (ref.variant !== undefined && typeof ref.variant !== "string")) {
+        throw new Error("Agent configuration contains an invalid model reference.")
+      }
+    }
+  } catch (error) {
+    throw new SaneHandoffError(`Could not resolve handoff agent ${agent}: ${(error as Error).message}`)
+  }
   const url = `${base}/api/session`
   const createBody: Record<string, unknown> = {
-    agent: assistantAgentForSlot(options.slot),
-    model: { ...HANDOFF_DEFAULT_MODEL },
+    agent,
+    ...(model != null ? { model } : {}),
     // Create the session in the implementation repository so it appears in
     // the project-scoped session list (the server default lands elsewhere,
     // e.g. the server cwd, making the [ready] session invisible). The
@@ -475,7 +486,8 @@ export function readyTitle(slot: string, nextAction: string): string {
   assertNonEmpty("nextAction", nextAction)
   assertSlot(slot)
   assertSingleLine("nextAction", nextAction.trim())
-  return `[ready] ${slot}: ${nextAction.trim()}`
+  const title = `[ready] ${slot}: ${nextAction.trim()}`
+  return title.length <= 200 ? title : `${title.slice(0, 199).trimEnd()}…`
 }
 
 /**

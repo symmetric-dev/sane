@@ -128,7 +128,7 @@ export const saneHandoffInputSchema = {
     },
     message: {
       type: "string",
-      description: "Next action for the target session (single line).",
+      description: "Concise next action for the target session (single line). Reference documents rather than repeating their contents; retain essential decisions and constraints. The full message is delivered; only the session title is truncated to 200 characters.",
     },
     session_index: {
       type: "number",
