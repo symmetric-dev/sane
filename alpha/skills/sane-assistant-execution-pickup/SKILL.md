@@ -13,7 +13,7 @@ description: Use when starting a new SANE Execution Assistant session.
 
 ## Required Inputs
 
-Read `execution/PLAN.md`, the next jobs and their dependencies, and `resources/EXECUTION_REPORT_TEMPLATE.md`. Consult solution specs or the SDD where needed to resolve an assignment question. When resuming, read relevant existing reports and review dispositions; defer the Final Report template until the user requests that report.
+Read the Execution Plan (`execution/PLAN.md`), the next Job Specs and their dependencies, and the Job Report template (`resources/EXECUTION_REPORT_TEMPLATE.md`). Consult Solution Specs or the SDD where needed to resolve an assignment question. When resuming, read relevant existing Job Reports and review dispositions available in the session; defer the Final Report template until the user requests the Final Report.
 
 ## Initial Handoff Context
 

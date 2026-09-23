@@ -1,7 +1,7 @@
 import { describe, expect, test } from "bun:test"
 import { jobSpecTitle, validateExecutionReport } from "../src/sane-execution-report-validation.ts"
 
-const report = "# Job 01: Investigate Report\n\n## Accomplished\nDiscovery completed; implementation failed.\n## Found Issues\nBuild failed.\n## Notes\nNone\n## Implementation Recommendations\nNone\n"
+const report = "# Job 01: Investigate Report\n\n## Outcome\nDiscovery completed; implementation failed.\n## Unresolved Issues\nBuild failed.\n## Recommendations\nNone\n"
 const validate = (content: string) => validateExecutionReport(content, "execution/reports/01-investigate.md", "01", "Investigate")
 
 describe("execution report structure", () => {
@@ -35,12 +35,12 @@ describe("execution report structure", () => {
     report.replace("Investigate Report", "Wrong Report"),
     report + "\n# Extra\n",
     report + "\n## Extra\nContent\n",
-    report + "\n## Notes\nAgain\n",
-    report.replace("## Notes\nNone\n", ""),
-    report.replace("## Notes", "## TEMP").replace("## Found Issues", "## Notes").replace("## TEMP", "## Found Issues"),
-    report.replace("## Notes\nNone", "## Notes\n### Empty nested heading"),
-    report.replace("## Notes\nNone", "## Notes\n<!-- guidance -->"),
-    report.replace("## Notes\nNone", "## Notes\nTBD"),
+    report + "\n## Recommendations\nAgain\n",
+    report.replace("## Recommendations\nNone\n", ""),
+    report.replace("## Recommendations", "## TEMP").replace("## Unresolved Issues", "## Recommendations").replace("## TEMP", "## Unresolved Issues"),
+    report.replace("## Recommendations\nNone", "## Recommendations\n### Empty nested heading"),
+    report.replace("## Recommendations\nNone", "## Recommendations\n<!-- guidance -->"),
+    report.replace("## Recommendations\nNone", "## Recommendations\nTBD"),
     report.replace("Investigate", "<job name>"),
     report + "\nExtra heading\n===\n",
   ])("rejects malformed report with actionable line diagnostics", (content) => {

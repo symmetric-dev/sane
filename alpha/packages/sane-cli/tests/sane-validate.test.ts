@@ -138,7 +138,7 @@ describe("sane-validate (phase documents)", () => {
     await writeDoc("execution/jobs/01-first.md", "# Job Spec 01: first\n")
     await writeDoc("execution/FINAL_REPORT.md", "# Final Report\nReal outcomes.\n")
     expect((await validate("execution")).ok).toBe(false)
-    await writeDoc("execution/reports/01-first.md", "# Job 01: first Report\n## Accomplished\nInvestigation completed; implementation failed.\n## Found Issues\nBuild failed.\n## Notes\nNone\n## Implementation Recommendations\nRetry with corrected configuration.\n")
+    await writeDoc("execution/reports/01-first.md", "# Job 01: first Report\n## Outcome\nInvestigation completed; implementation failed.\n## Unresolved Issues\nBuild failed.\n## Recommendations\nRetry with corrected configuration.\n")
     const result = await validate("execution")
     expect(result.ok).toBe(true)
     await rm(join(workstreamDir, "execution/FINAL_REPORT.md"))

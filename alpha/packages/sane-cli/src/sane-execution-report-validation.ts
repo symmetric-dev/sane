@@ -1,5 +1,5 @@
 /** Structural validation only: an honestly recorded failed outcome is valid. */
-export const REPORT_SECTIONS = ["Accomplished", "Found Issues", "Notes", "Implementation Recommendations"] as const
+export const REPORT_SECTIONS = ["Outcome", "Unresolved Issues", "Recommendations"] as const
 
 export interface ReportDiagnostic {
   path: string

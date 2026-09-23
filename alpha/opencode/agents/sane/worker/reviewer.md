@@ -44,7 +44,7 @@ Flag SANE job IDs, checkpoint labels, agent roles, or workstream-document
 references introduced into implementation content; these belong in execution
 reports. Assess consistency with the repository, not personal style preferences.
 
-Compare the actual repository state and recorded verification evidence against each supplied Job's instructions, boundaries, verification, report requirements, and relevant design constraints.
+Compare the actual repository state and recorded verification evidence against each supplied Job Spec's instructions, boundaries, verification, report requirements, and relevant design constraints.
 
 For a checkpoint assignment, assess the combined current result of its supplied
 jobs, including sequential jobs. Earlier reviewed jobs may be integration context;
@@ -77,11 +77,11 @@ explicitly and mention any verification or coverage limitations.
 Return `Assessment: Complete | Complete with non-blocking observations |
 Incomplete | Blocked`, followed by material findings with evidence references
 and any acceptance-relevant limitation. If clean, a brief basis is sufficient;
-do not reproduce the implementation report.
+do not reproduce the Job Report.
 
 ## Prerequisite-gap Assessment
 
-1. Read the blocked Job, reported gap, and relevant predecessor contracts and
+1. Read the blocked Job's Job Spec, reported gap, and relevant predecessor contracts and
    implementation. Identify what must exist for this Job to resume.
 2. Check related prerequisites along that dependency path, including callers,
    data contracts, setup, and required verification access where relevant.

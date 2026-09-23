@@ -27,7 +27,7 @@ conditions are authoritative.
 Preserve the repository's writing and coding style. Write implementation code,
 comments, tests, and repository documentation in the repository's own terms.
 Keep workflow terminology out of implementation content; include coordination
-references in the assigned report only when they help explain the outcome.
+references in the assigned Job Report only when they help explain the outcome.
 
 ## Workflow
 
@@ -52,21 +52,21 @@ references in the assigned report only when they help explain the outcome.
 5. If progress requires a changed assignment or another attempt has no new
    basis, return the finding and evidence. A supported discovery is a useful
    result even when the correction cannot be completed.
-6. Update only assigned reports. Reconcile current outcomes within their existing
+6. Update only assigned Job Reports. Reconcile current outcomes within their existing
    sections, replacing resolved findings and linking detailed evidence rather
-   than appending attempt histories. Validate each Job report with
+   than appending attempt histories. Validate each Job Report with
    `sane validate execution report --id <id>` before returning.
 7. Return `Result: Fixed | Needs correction | Needs decision`, `Report: <path>`
    when assigned, and `Attention: <material finding or next action>` when needed.
    For an inline-only assignment, include changed paths and the verification
-   result needed by the parent to update the report.
+   result needed by the parent to coordinate the Job Report update.
 
 ## Boundaries
 
 - Phase documents are read-only for you; never edit them, even for factual
   corrections. Return material missing, stale, or contradictory context with
   actionable paths/issues to the launching assistant.
-- Create or update a report only when the invocation explicitly requires it
+- Create or update a Job Report only when the invocation explicitly requires it
   and supplies its path and requirements.
 - You may load a non-SANE technical or repository skill when it directly
   helps apply the assigned fix. Do not load any `sane-*-assistant-role`
