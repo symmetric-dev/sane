@@ -1,31 +1,51 @@
 # Job <id>: <job name> Report
 
-<!-- Replace `<id>`, `<job name>`, and every guidance comment with actual
-content before delivery. Retain this H1 and every H2 exactly once and in this
-order. This records one carried-out Job outcome at
-`execution/reports/<job-id>-<job-slug>.md` for the user and later agents;
-it is not a copy of source-repository implementation. Execution owns this file
-(via Implementer workers). -->
+<!-- Replace the title placeholders, fill in applicable patterns, and remove
+guidance comments before delivery. Retain the directory convention and exactly
+these three H2 sections, once each and in order. H3–H6 grouping is optional.
+Use the report destination supplied by `sane job <id>`.
+Report the current outcome, including partial implementation, failure, or a
+discovered prerequisite gap. Apply the Job's Report Requirements. Update findings
+and results in place after fixes or new verification; retain history only when
+it explains the current outcome. Link authoritative evidence rather than copying
+logs or other reports. Adapt the number of items to the actual evidence. -->
 
-## Accomplished
+Directory convention: resolve these prefixes using `sane job <id>`.
+- `<implementation>/...` is relative to the command's **Implementation root**.
+- `<workstream>/...` is relative to the command's **Workstream root**.
 
-<!-- Record completed work, material results, changed paths when useful, and
-verification evidence or results. -->
+## Outcome
 
-## Found Issues
+<!-- State what was achieved and what remains incomplete. A useful outcome may
+be an evidenced finding rather than implemented code. Distinguish checks that
+passed, failed, or were not run, and state the limits of their evidence. -->
 
-<!-- Record blockers, failures, deviations, or unresolved issues. State `No
-issues found` when none exist. -->
+[Current result and any incomplete part of the assignment.]
 
-## Notes
+- [Implemented behavior or established finding], supported by
+  [source or evidence reference].
+- Verification: `[command or check]` from `[directory]` — [result, relevant
+  environment details, and limitation or reason the check was not run].
 
-<!-- Record optional handoff context for the user, reviewer, or next agent.
-State `No additional notes` when none are needed. -->
+## Unresolved Issues
 
-## Implementation Recommendations
+<!-- Record unresolved defects, blockers, material deviations, and uncertainties
+affecting the assignment. Include required but incomplete work here. Remove
+resolved findings unless they explain a current limitation or material outcome.
+If none remain, state `No unresolved issues identified within the performed work.`
+That statement does not replace disclosure of verification limitations. -->
 
-<!-- Record useful guidance or follow-up suggestions with supporting evidence,
-affected jobs/surfaces, applicability, and limits. Reference earlier report
-sections rather than duplicating evidence. Distinguish verified facts, observed
-workarounds, and proposed fixes. Known failing checks are baseline evidence,
-not permission to skip required verification. State `None` when appropriate. -->
+- [Current issue] — Evidence: [reference]. Effect: [requirement blocked,
+  incorrect behavior, or remaining uncertainty].
+
+## Recommendations
+
+<!-- Include an evidence-backed next action only when useful. Name the affected
+component or interface rather than assuming knowledge of the Execution Plan's job allocation.
+Distinguish a proposed action from a verified remedy; reference findings above
+instead of duplicating them. Required incomplete work remains in Unresolved Issues,
+even when a recommendation describes how to address it. State `None` when no
+recommendation is warranted. -->
+
+- [Suggested action] for [affected component or interface], because
+  [finding or evidence reference]. Applies when [relevant condition or limit].

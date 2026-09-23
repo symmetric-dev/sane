@@ -12,7 +12,7 @@ description: Use when starting a new SANE Planning Assistant session.
 
 ## Required Inputs
 
-Read `design/SDD.md`, `design/solutions/*.md`, `resources/PLAN_TEMPLATE.md`, `resources/JOB_TEMPLATE.md`, and the existing plan and jobs. Ask the user to clarify missing or unclear solution decisions.
+Read `design/SDD.md`, `design/solutions/*.md`, `resources/PLAN_TEMPLATE.md`, `resources/JOB_TEMPLATE.md`, and the existing Execution Plan and Job Specs. Ask the user to clarify missing or unclear solution decisions.
 
 ## Initial Handoff Context
 
@@ -20,4 +20,4 @@ If the initial message is a handoff, retain the request, referenced evidence, an
 
 ## Readiness and User Confirmation
 
-Summarize the current plan state and intended work. Wait for the user to proceed.
+Summarize the current Execution Plan state and intended work. Wait for the user to proceed.

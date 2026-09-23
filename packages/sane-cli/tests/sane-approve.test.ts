@@ -48,7 +48,7 @@ const CLEAN_PLAN = "# Plan\nReal plan package.\n"
 const CLEAN_JOB_A = "# Job Spec 01: first\nReal job.\n"
 const CLEAN_JOB_B = "# Job Spec 02: second\nReal job.\n"
 const CLEAN_FINAL_REPORT = "# Final Report\nReal outcomes.\n"
-const CLEAN_REPORT = "# Job 01: first Report\n\n## Accomplished\nReal results.\n## Found Issues\nNone\n## Notes\nNone\n## Implementation Recommendations\nNone\n"
+const CLEAN_REPORT = "# Job 01: first Report\n\n## Outcome\nReal results.\n## Unresolved Issues\nNone\n## Recommendations\nNone\n"
 
 describe("sane-approve (phase approvals)", () => {
   let tempDirectory: string

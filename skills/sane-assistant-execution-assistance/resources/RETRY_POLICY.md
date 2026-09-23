@@ -12,7 +12,7 @@ with the implementation or assignment.
 | Worker is still running | Wait for its result before proceeding to subsequent work. |
 | No response and execution status is unknown | Use Worker Recovery to establish status. If it remains unknown, ask the user before launching a replacement. |
 | Worker was interrupted and is confirmed stopped | Use Worker Recovery to resume or relaunch within the retry limit. |
-| Worker finished but its response or report is missing | Use Worker Recovery to retrieve the missing result rather than repeat implementation work. |
+| Worker finished but its response or Job Report is missing | Use Worker Recovery to retrieve the missing result rather than repeat implementation work. |
 | Mechanical failure persists or the retry limit is reached | Stop retrying and ask the user for help, including the error and attempts made. |
 
 ## Retry Limits

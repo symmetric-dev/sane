@@ -1,57 +1,94 @@
 # Job Spec <id>: <job name>
 
-<!-- Replace `<id>`, `<job name>`, and every guidance comment with actual
-content before delivery. Retain this H1 and every H2 exactly once and in this
-order. Use a two-digit local Job ID: `# Job Spec NN: <job name>`, with the
-plan's exact name. A Job is the unit of work; this Job Spec documents one
-bounded implementation request at `plan/jobs/<job-id>-<job-slug>.md`. It must
-apply approved decisions from the root doc, `SDD.md`, Solution Specs, and
-`plan/PLAN.md` rather than inventing material product, architectural, or
-technical decisions. Planning is the sole editor, including factual
-corrections. -->
+<!-- Authoring guidance: fill in the patterns and remove guidance comments
+before delivery. Retain the directory convention below and every H2 once, in
+order. Use the Execution Plan's exact Job ID and name, including inserted IDs such as 07a.
+Write a complete assignment for a fresh worker with no planning conversation
+or sibling jobs. Translate approved decisions into starting conditions,
+requirements, interfaces, and boundaries; keep scheduling and cross-job
+coordination in the Execution Plan. Adapt the pattern items to the assignment; their count
+does not prescribe the number of requirements or checks.-->
+
+Directory convention: resolve these prefixes using `sane job <id>`.
+- `<implementation>/...` is relative to the command's **Implementation root**.
+- `<workstream>/...` is relative to the command's **Workstream root**.
 
 ## Goal
 
-<!-- State the technical objective and resulting product capability or behavior. -->
+<!-- State the technical objective and resulting product capability or behavior
+in a short paragraph. -->
+
+[Technical outcome and the behavior or capability it enables.]
 
 ## Context
 
-<!-- Link only the relevant root doc, `SDD.md`, Solution Specs in
-`solutions/<name>.md`, `plan/PLAN.md`, source paths, interfaces, and
-predecessor outputs. Include a compact prioritized read map with verified
-paths, symbols, reasons, and line evidence where available. Separate
-required-start reads from conditional references with concrete triggers.
-Guide inspection first; expand for concrete correctness, integration, regression,
-or verification concerns without a hard read cap or exhaustive reference traversal.
-Explain surrounding code and locked decisions that implementation must follow. -->
+<!-- State relevant starting conditions and locked decisions directly. List
+verified inputs with a reading purpose and useful section or symbol anchors.
+Include only references needed for this assignment; add optional or conditional
+references when they have a concrete purpose. Omit unused reading groups. -->
+
+[Relevant existing behavior, expected starting state, and approved decisions
+needed to understand this assignment.]
+
+Read:
+- `<implementation>/[source path]`, `[symbol]` — [What to inspect and how it
+  informs the implementation.]
+- `<workstream>/design/solutions/[spec].md`, “[section]” — [Specific contract
+  or decision to apply.]
+
+Conditional reference:
+- `<implementation>/[related path]` — Read if [concrete trigger]; establish
+  [fact needed to resolve it].
 
 ## Instructions
 
-<!-- Give direct instructions for applying the approved design: locations,
-names, interfaces, sequences, examples, and focused Solution-Spec references.
-Use actionable steps grounded in inspected code. Specify integration contracts
-and producer/consumer expectations, including callers, data shapes, configuration,
-registrations, and tests when applicable. Do not invent missing decisions. -->
+<!-- Use numbered, actionable instructions grounded in inspected code. State
+locations, contracts, and expected behavior; make genuine ordering constraints
+explicit. Resolve missing design decisions before assigning implementation. -->
+
+1. [Action] in `<implementation>/[path]` to produce [required behavior], using
+   [specified interface or data contract].
+2. [Related action or integration] so that [caller/consumer] receives
+   [expected result, including relevant failure behavior].
 
 ## Boundaries
 
-<!-- Overall heuristic on what not to modify, no exact files are needed but they can be included.
-Escalate a changed split, ownership boundary, or SDD/Spec update instead of silently expanding the Job. -->
+<!-- Use bullets for concrete scope limits and adjacent interfaces to preserve.
+Describe the boundary itself rather than naming the job that owns other work. -->
+
+- Preserve [adjacent interface, behavior, or data invariant].
+- [Related capability or change] is outside this assignment.
 
 ## Verification
 
-<!-- Define overall commands, working directories, prerequisites, focused tests,
-expected outputs, and overall checks. Label future tests/commands as
-required additions with their approved basis, never as existing verified checks.
-Record limitations for unavailable or unsafe checks. -->
+<!-- List meaningful checks with commands, working directories, prerequisites,
+and expected outcomes. Mark future tests/commands as required additions with
+their approved basis, not existing verified checks. State evidence limitations. -->
+
+- From `<implementation>/[directory]`, run `[verified command]` with
+  [prerequisites]. Expect [observable result establishing the required behavior].
+- Required addition: [meaningful test or check] establishing [behavior or
+  regression protection], based on [requirement or contract].
+- [Unavailable check or evidence limitation, when applicable.]
 
 ## Report Requirements
 
-<!-- Define Job-specific evidence and information the execution report at
-`execution/reports/<job-id>-<job-slug>.md` must include, without changing the
-shared report structure. -->
+<!-- List only evidence specific to evaluating this assignment's outcome.
+Reference authoritative source or artifacts for detail rather than duplicating
+logs. The report destination and template are supplied by `sane job <id>`. -->
+
+- [Assignment-specific result to report], linking [authoritative source or
+  artifact] for detailed evidence.
+- [Verification evidence needed to evaluate this outcome, including relevant
+  command results or environment identity.]
+- If [relevant issue is encountered], record [finding and evidence needed for
+  follow-up].
 
 ## Resolutions
 
-<!-- Define completion, escalation, retry/fix, and stop rules: what completes
-the Job, what may be debugged, what must be raised, and when to stop. -->
+<!-- State completion conditions and assignment-specific reasons to stop or
+raise a decision. -->
+
+- Complete when [required outcome and verification conditions are satisfied].
+- If [specific prerequisite gap or decision boundary arises], return
+  [evidence and decision needed to proceed].
