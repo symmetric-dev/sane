@@ -185,10 +185,18 @@ describe("sane-job (progress tracking)", () => {
     expect(lines.join("\n")).toContain("Paths below are relative to workstream root:")
     expect(lines.join("\n")).toContain("spec: execution/jobs/01-first.md")
     expect(lines.join("\n")).toContain("report_template: resources/EXECUTION_REPORT_TEMPLATE.md")
+    expect(lines).toHaveLength(7)
+    for (const unrelated of ["Repository root:", "root_doc:", "sdd:", "plan:", "solution:", "final_report:", "planning_approval:", "design/"]) {
+      expect(lines.join("\n")).not.toContain(unrelated)
+    }
     const json: string[] = []
     await runSaneJobViewCommand({ implementationRepository, workstreamPath: "01-demo", jobId: "01", json: true, write: (line) => json.push(line) })
     expect(JSON.parse(json.join("\n")).job.spec_path).toBe(bundle.job.specPath)
-    expect(JSON.parse(json.join("\n")).planning_approval.sane_hash).toBe(bundle.planningApproval?.saneHash)
+    const output = JSON.parse(json.join("\n"))
+    expect(output.workstream_root).toBe(workstreamDir)
+    expect(output).not.toHaveProperty("documents")
+    expect(output).not.toHaveProperty("planning_approval")
+    expect(json.join("\n")).not.toContain("design/")
 
     await expect(
       runSaneJobViewCommand({

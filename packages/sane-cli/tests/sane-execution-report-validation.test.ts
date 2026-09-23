@@ -1,10 +1,34 @@
 import { describe, expect, test } from "bun:test"
+import { readFile } from "node:fs/promises"
 import { jobSpecTitle, validateExecutionReport } from "../src/sane-execution-report-validation.ts"
 
 const report = "# Job 01: Investigate Report\n\n## Outcome\nDiscovery completed; implementation failed.\n## Unresolved Issues\nBuild failed.\n## Recommendations\nNone\n"
 const validate = (content: string) => validateExecutionReport(content, "execution/reports/01-investigate.md", "01", "Investigate")
 
 describe("execution report structure", () => {
+  test("every report template slot is rejected after guidance is removed, including verification slots", async () => {
+    const template = (await readFile(new URL("../../../templates/shared/execution/REPORT.md", import.meta.url), "utf8"))
+      .replace(/<!--[\s\S]*?-->/g, "")
+      .replace("{{id}}", "01").replace("{{job name}}", "Investigate")
+    const slots = [...template.matchAll(/\{\{[^}]*\}\}/g)]
+    expect(slots.length).toBeGreaterThan(0)
+    for (let unresolved = 0; unresolved < slots.length; unresolved++) {
+      let index = 0
+      const content = template.replace(/\{\{[^}]*\}\}/g, (slot) => index++ === unresolved ? slot : "Verified evidence")
+      expect(validate(content).some((d) => d.message.includes("{{...}}"))).toBe(true)
+    }
+    expect(validate(template.replace(/\{\{[^}]*\}\}/g, "Verified evidence"))).toEqual([])
+  })
+
+  test("bracket text and literal template evidence are valid, but multiline prose slots are not", () => {
+    for (const evidence of ["Expected [a-z] and [optional] values; see [source](./source.md).", "Reviewed `{{value}}` and ``{{other}}``.", "```text\n{{value}}\n```", "Evidence:\n\n    {{value}}", "~~~text\n{{value}}\n~~~"]) {
+      expect(validate(report.replace("Build failed.", evidence))).toEqual([])
+    }
+    expect(validate(report.replace("Build failed.", "{{Current issue\nand evidence}}"))).toEqual([
+      { path: "execution/reports/01-investigate.md", line: 6, message: "Replace unresolved {{...}} placeholder with authored content." },
+    ])
+  })
+
   test("literal placeholder evidence and prose mentioning markers remain valid", () => {
     for (const evidence of ["No TODO markers remain.", "The FIXME comment explains the failure.", "Reviewed `TODO: retry` and `<job name>` examples.", "```ts\n// TODO: retry\n// FIXME: investigate\nconst example = '{{value}}'\n<!-- literal example -->\n```", "~~~text\nTBD\n~~~"]) {
       expect(validate(report.replace("Build failed.", evidence))).toEqual([])

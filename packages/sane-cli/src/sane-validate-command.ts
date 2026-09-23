@@ -18,7 +18,8 @@
  * no `<!--` guidance comments (every template carries them with an
  * instruction to replace them, so an unedited template always fails).
  * Root docs have no template copy in `resources/`; the same three rules
- * apply uniformly. Execution job reports additionally enforce their title,
+ * apply uniformly. Job Specs reject unresolved {{...}} prose slots.
+ * Execution job reports additionally enforce their title,
  * section structure, populated sections, and resolved placeholders.
  *
  * Research index divergences and approved-but-changed docs are warnings,
@@ -47,7 +48,7 @@ import {
 import type { WorkstreamType } from "./workstream-type.ts"
 import { recheckResearchIndex } from "./sane-workstream-state.ts"
 import { SaneWorkstreamStateError } from "./sane-workstream-state.ts"
-import { jobSpecTitle, validateExecutionReport, type ReportDiagnostic } from "./sane-execution-report-validation.ts"
+import { jobSpecTitle, validateExecutionReport, validateJobPlaceholders, type ReportDiagnostic } from "./sane-execution-report-validation.ts"
 
 export const VALIDATE_PHASES = ["design", "engineering", "planning", "execution"] as const
 export type ValidatePhase = (typeof VALIDATE_PHASES)[number]
@@ -164,6 +165,13 @@ export async function validatePhaseDocs(
     if (content.includes("<!--")) {
       problems.push(`unresolved guidance comments (<!-- -->) in: ${relativePath}`)
       return
+    }
+    if (phase === "planning" && relativePath.startsWith("execution/jobs/")) {
+      const errors = validateJobPlaceholders(content, relativePath)
+      if (errors.length) {
+        problems.push(...errors.map((e) => `${e.path}:${e.line}: ${e.message}`))
+        return
+      }
     }
     files.push(relativePath)
     hashes.push(`${relativePath}:${sha256Hex(content)}`)

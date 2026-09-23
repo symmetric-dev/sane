@@ -1,6 +1,6 @@
-# Job Spec <id>: <job name>
+# Job Spec {{id}}: {{job name}}
 
-<!-- Authoring guidance: fill in the patterns and remove guidance comments
+<!-- Authoring guidance: replace every {{...}} slot with authored content and remove guidance comments
 before delivery. Retain the directory convention below and every H2 once, in
 order. Use the Execution Plan's exact Job ID and name, including inserted IDs such as 07a.
 Write a complete assignment for a fresh worker with no planning conversation
@@ -18,7 +18,7 @@ Directory convention: resolve these prefixes using `sane job <id>`.
 <!-- State the technical objective and resulting product capability or behavior
 in a short paragraph. -->
 
-[Technical outcome and the behavior or capability it enables.]
+{{Technical outcome and the behavior or capability it enables.}}
 
 ## Context
 
@@ -27,18 +27,14 @@ verified inputs with a reading purpose and useful section or symbol anchors.
 Include only references needed for this assignment; add optional or conditional
 references when they have a concrete purpose. Omit unused reading groups. -->
 
-[Relevant existing behavior, expected starting state, and approved decisions
-needed to understand this assignment.]
+{{Relevant existing behavior, expected starting state, and approved decisions needed to understand this assignment.}}
 
 Read:
-- `<implementation>/[source path]`, `[symbol]` — [What to inspect and how it
-  informs the implementation.]
-- `<workstream>/design/solutions/[spec].md`, “[section]” — [Specific contract
-  or decision to apply.]
+- `<implementation>/`{{source path}}, {{symbol}} — {{What to inspect and how it informs the implementation.}}
+- `<workstream>/design/solutions/`{{spec}}.md, “{{section}}” — {{Specific contract or decision to apply.}}
 
 Conditional reference:
-- `<implementation>/[related path]` — Read if [concrete trigger]; establish
-  [fact needed to resolve it].
+- `<implementation>/`{{related path}} — Read if {{concrete trigger}}; establish {{fact needed to resolve it}}.
 
 ## Instructions
 
@@ -46,18 +42,16 @@ Conditional reference:
 locations, contracts, and expected behavior; make genuine ordering constraints
 explicit. Resolve missing design decisions before assigning implementation. -->
 
-1. [Action] in `<implementation>/[path]` to produce [required behavior], using
-   [specified interface or data contract].
-2. [Related action or integration] so that [caller/consumer] receives
-   [expected result, including relevant failure behavior].
+1. {{Action}} in `<implementation>/`{{path}} to produce {{required behavior}}, using {{specified interface or data contract}}.
+2. {{Related action or integration}} so that {{caller/consumer}} receives {{expected result, including relevant failure behavior}}.
 
 ## Boundaries
 
 <!-- Use bullets for concrete scope limits and adjacent interfaces to preserve.
 Describe the boundary itself rather than naming the job that owns other work. -->
 
-- Preserve [adjacent interface, behavior, or data invariant].
-- [Related capability or change] is outside this assignment.
+- Preserve {{adjacent interface, behavior, or data invariant}}.
+- {{Related capability or change}} is outside this assignment.
 
 ## Verification
 
@@ -65,11 +59,9 @@ Describe the boundary itself rather than naming the job that owns other work. --
 and expected outcomes. Mark future tests/commands as required additions with
 their approved basis, not existing verified checks. State evidence limitations. -->
 
-- From `<implementation>/[directory]`, run `[verified command]` with
-  [prerequisites]. Expect [observable result establishing the required behavior].
-- Required addition: [meaningful test or check] establishing [behavior or
-  regression protection], based on [requirement or contract].
-- [Unavailable check or evidence limitation, when applicable.]
+- From `<implementation>/`{{directory}}, run {{verified command}} with {{prerequisites}}. Expect {{observable result establishing the required behavior}}.
+- Required addition: {{meaningful test or check}} establishing {{behavior or regression protection}}, based on {{requirement or contract}}.
+- {{Unavailable check or evidence limitation, when applicable.}}
 
 ## Report Requirements
 
@@ -77,18 +69,14 @@ their approved basis, not existing verified checks. State evidence limitations. 
 Reference authoritative source or artifacts for detail rather than duplicating
 logs. The report destination and template are supplied by `sane job <id>`. -->
 
-- [Assignment-specific result to report], linking [authoritative source or
-  artifact] for detailed evidence.
-- [Verification evidence needed to evaluate this outcome, including relevant
-  command results or environment identity.]
-- If [relevant issue is encountered], record [finding and evidence needed for
-  follow-up].
+- {{Assignment-specific result to report}}, linking {{authoritative source or artifact}} for detailed evidence.
+- {{Verification evidence needed to evaluate this outcome, including relevant command results or environment identity.}}
+- If {{relevant issue is encountered}}, record {{finding and evidence needed for follow-up}}.
 
 ## Resolutions
 
 <!-- State completion conditions and assignment-specific reasons to stop or
 raise a decision. -->
 
-- Complete when [required outcome and verification conditions are satisfied].
-- If [specific prerequisite gap or decision boundary arises], return
-  [evidence and decision needed to proceed].
+- Complete when {{required outcome and verification conditions are satisfied}}.
+- If {{specific prerequisite gap or decision boundary arises}}, return {{evidence and decision needed to proceed}}.

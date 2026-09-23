@@ -5,8 +5,8 @@
  *
  * - `sane job <job-id>` shows compact worker context: repository/workstream
  *   roots, relative spec/report paths (with existence), report template,
- *   phase documents, and planning approval. `--json` retains the full
- *   absolute-path bundle for machine consumers. The CLI resolves everything
+ *   without unrelated phase documents. `--json` provides the same narrow
+ *   context with absolute paths for machine consumers. The CLI resolves everything
  *   from the database plus CWD auto-detection. The workstream is
  *   auto-detected from the current directory: agents never pass paths to
  *   this command.
@@ -268,11 +268,12 @@ export async function buildJobBundle(
   }
 }
 
-function bundleToJson(bundle: SaneJobBundle): Record<string, unknown> {
+function bundleToJson(bundle: SaneJobBundle, workstreamRoot: string): Record<string, unknown> {
   return {
     repo_root: bundle.repoRoot,
     implementation_root: bundle.implementationRoot,
     implementation_directory: bundle.implementationRoot,
+    workstream_root: workstreamRoot,
     user: bundle.user,
     workstream_id: bundle.workstreamId,
     job: {
@@ -285,19 +286,6 @@ function bundleToJson(bundle: SaneJobBundle): Record<string, unknown> {
     },
     report_template: bundle.reportTemplate,
     report_template_exists: bundle.reportTemplateExists,
-    documents: {
-      root_doc: bundle.documents.rootDoc,
-      sdd: bundle.documents.sdd,
-      plan: bundle.documents.plan,
-      solutions: bundle.documents.solutions,
-      final_report: bundle.documents.finalReport,
-    },
-    planning_approval: bundle.planningApproval
-      ? {
-          approval_ref: bundle.planningApproval.approvalRef,
-          sane_hash: bundle.planningApproval.saneHash,
-        }
-      : null,
   }
 }
 
@@ -312,27 +300,16 @@ export async function runSaneJobViewCommand(
   try {
     const bundle = await buildJobBundle(db, identity, workstream, options.jobId)
     if (options.json === true) {
-      write(JSON.stringify(bundleToJson(bundle), null, 2))
+      write(JSON.stringify(bundleToJson(bundle, workstream.path), null, 2))
     } else {
       const path = (absolute: string) => relative(workstream.path, absolute)
       write(`job ${bundle.job.jobId} for ${bundle.workstreamId}: ${bundle.job.status}`)
-      write(`Repository root: ${bundle.repoRoot}`)
       write(`Implementation root: ${bundle.implementationRoot}`)
       write(`Workstream root: ${workstream.path}`)
       write("Paths below are relative to workstream root:")
       write(`  spec: ${path(bundle.job.specPath)}${bundle.job.specExists ? "" : " (missing)"}`)
       write(`  report: ${path(bundle.job.reportPath)}${bundle.job.reportExists ? " (exists; preserve)" : " (not written)"}`)
       write(`  report_template: ${path(bundle.reportTemplate)}${bundle.reportTemplateExists ? "" : " (missing)"}`)
-      write(`  root_doc: ${path(bundle.documents.rootDoc)}`)
-      write(`  sdd: ${path(bundle.documents.sdd)}`)
-      write(`  plan: ${path(bundle.documents.plan)}`)
-      for (const solution of bundle.documents.solutions) write(`  solution: ${path(solution)}`)
-      write(`  final_report: ${bundle.documents.finalReport ? path(bundle.documents.finalReport) : "(not written)"}`)
-      write(
-        bundle.planningApproval
-          ? `  planning_approval: ${bundle.planningApproval.approvalRef}`
-          : `  planning_approval: (none)`,
-      )
     }
     return bundle
   } finally {

@@ -130,6 +130,28 @@ describe("sane-validate (phase documents)", () => {
     expect(result.files).toEqual(["execution/PLAN.md", "execution/jobs/01-first.md"])
   })
 
+  test("planning rejects each remaining Job template slot after comments are stripped", async () => {
+    await writeDoc("execution/PLAN.md", "# Plan\nImplement the verified contract.\n")
+    const template = (await readFile(new URL("../../../templates/shared/plan/JOB.md", import.meta.url), "utf8"))
+      .replace(/<!--[\s\S]*?-->/g, "")
+    const slots = [...template.matchAll(/\{\{[^}]*\}\}/g)]
+    expect(slots.length).toBeGreaterThan(0)
+    for (let unresolved = 0; unresolved < slots.length; unresolved++) {
+      let index = 0
+      await writeDoc("execution/jobs/01-first.md", template.replace(/\{\{[^}]*\}\}/g, (slot) => index++ === unresolved ? slot : "Authored requirement"))
+      const result = await validate("planning")
+      expect(result.ok).toBe(false)
+      expect(result.problems.join("\n")).toContain("execution/jobs/01-first.md:")
+      expect(result.problems.join("\n")).toContain("{{...}}")
+      expect(result.files).not.toContain("execution/jobs/01-first.md")
+    }
+    const authored = template.replace("{{id}}", "01").replace("{{job name}}", "first").replace(/\{\{[^}]*\}\}/g, "Verified contract")
+    await writeDoc("execution/jobs/01-first.md", authored + "\nAccept [a-z] and [optional] values; see [source](./source.md).\nLiteral `{{inline}}` and ``{{other}}`` examples:\n\n```text\n{{fenced}}\n```\n~~~text\n{{tilde fenced}}\n~~~\n\n    {{indented}}\n")
+    expect((await validate("planning")).problems).toEqual([])
+    await writeDoc("execution/jobs/01-first.md", authored + "\n{{Missing requirement\nand verification}}\n")
+    expect((await validate("planning")).ok).toBe(false)
+  })
+
   test("execution requires coverage of completed jobs; scoped validation needs only assigned report", async () => {
     const db = await openSaneDb(identity.repoRoot)
     createJob(db, identity, { jobId: "01", specPath: "execution/jobs/01-first.md" }, { actorRole: "planning", sessionId: "test" })

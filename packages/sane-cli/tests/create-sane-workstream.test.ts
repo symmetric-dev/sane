@@ -163,7 +163,7 @@ describe("create-sane-workstream", () => {
     expect(plan).toContain("Execution defaults to listed order.")
     expect(plan).toContain("state sequencing exceptions and parallel authorization explicitly")
     expect(spec.match(/^#{1,2} .+$/gm)).toEqual([
-      "# Job Spec <id>: <job name>", "## Goal", "## Context", "## Instructions",
+      "# Job Spec {{id}}: {{job name}}", "## Goal", "## Context", "## Instructions",
       "## Boundaries", "## Verification", "## Report Requirements", "## Resolutions",
     ])
     expect(spec).toBe(await readFile(new URL("../../../templates/shared/plan/JOB.md", import.meta.url), "utf8"))
