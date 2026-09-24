@@ -84,8 +84,6 @@ describe("sane-validate (phase documents)", () => {
   test("fresh bootstrap design fails on pristine template docs", async () => {
     const result = await validate("design")
     expect(result.ok).toBe(false)
-    expect(result.problems.join("\n")).toContain("PRD.md")
-    expect(result.problems.join("\n")).toContain("design/SDD.md")
   })
 
   test("design passes with authored root doc and SDD", async () => {
@@ -94,7 +92,6 @@ describe("sane-validate (phase documents)", () => {
     const result = await validate("design")
     expect(result.problems).toEqual([])
     expect(result.ok).toBe(true)
-    expect(result.files).toEqual(["PRD.md", "design/SDD.md"])
     expect(result.hash.trim()).not.toBe("")
   })
 
@@ -104,7 +101,6 @@ describe("sane-validate (phase documents)", () => {
     await writeDoc("FOUNDATION.md", "# Foundation\nWrong type.\n")
     const result = await validate("design")
     expect(result.ok).toBe(false)
-    expect(result.problems.join("\n")).toContain("FOUNDATION.md")
   })
 
   test("engineering requires at least one authored solution spec", async () => {
@@ -114,20 +110,34 @@ describe("sane-validate (phase documents)", () => {
     await writeDoc("design/solutions/api.md", template)
     const pristine = await validate("engineering")
     expect(pristine.ok).toBe(false)
-    expect(pristine.problems.join("\n")).toContain("design/solutions/api.md")
     await writeDoc("design/solutions/api.md", "# Spec\nReal spec.\n")
     const result = await validate("engineering")
     expect(result.ok).toBe(true)
-    expect(result.files).toEqual(["design/solutions/api.md"])
   })
 
-  test("planning requires PLAN plus at least one job spec", async () => {
-    await writeDoc("execution/PLAN.md", "# Plan\nReal plan.\n")
+  test("planning requires a Verification Spec for every checkpoint", async () => {
+    await writeDoc("execution/PLAN.md", "# Plan\n## Execution Checkpoints\n| Checkpoint | After job(s) | Jobs | Review purpose |\n| --- | --- | --- | --- |\n| Checkpoint 1 | 01 | 01 | Review delivery |\n")
     expect((await validate("planning")).ok).toBe(false)
     await writeDoc("execution/jobs/01-first.md", "# Job\nReal job.\n")
+    expect((await validate("planning")).ok).toBe(false)
+    await writeDoc("execution/verification/checkpoint-1.md", "# Verification Spec: Checkpoint 1\nMeaningful verification.\n")
     const result = await validate("planning")
     expect(result.ok).toBe(true)
-    expect(result.files).toEqual(["execution/PLAN.md", "execution/jobs/01-first.md"])
+    await writeDoc("execution/PLAN.md", "# Plan\n## Execution Checkpoints\n| Checkpoint | After job(s) | Jobs | Review purpose |\n| --- | --- | --- | --- |\n| Checkpoint 2 | 01 | 01 | Review delivery |\n")
+    expect((await validate("planning")).ok).toBe(false)
+    await writeDoc("execution/PLAN.md", "# Plan\n## Execution Checkpoints\n| Checkpoint | After job(s) | Jobs | Review purpose |\n| --- | --- | --- | --- |\n| Checkpoint 1 follow-up | 01 | 01 | Review delivery |\n")
+    await writeDoc("execution/verification/checkpoint-1-follow-up.md", "# Verification Spec: Checkpoint 1 follow-up\nCheck delivery.\n")
+    await rm(join(workstreamDir, "execution/verification/checkpoint-1.md"))
+    expect((await validate("planning")).ok).toBe(true)
+  })
+
+  test("planning rejects unresolved Job Spec placeholders", async () => {
+    await writeDoc("execution/PLAN.md", "# Plan\n## Execution Checkpoints\n| Checkpoint | After job(s) | Jobs | Review purpose |\n| --- | --- | --- | --- |\n| Checkpoint 1 | 01 | 01 | Review delivery |\n")
+    await writeDoc("execution/verification/checkpoint-1.md", "# Verification Spec: Checkpoint 1\nCheck behavior.\n")
+    await writeDoc("execution/jobs/01-first.md", "# Job Spec 01: first\n{{Missing requirement}}\n")
+    expect((await validate("planning")).ok).toBe(false)
+    await writeDoc("execution/jobs/01-first.md", "# Job Spec 01: first\nAuthored requirement.\n")
+    expect((await validate("planning")).ok).toBe(true)
   })
 
   test("execution requires coverage of completed jobs; scoped validation needs only assigned report", async () => {

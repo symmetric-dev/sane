@@ -103,7 +103,9 @@ describe("sane-provide (phase starters)", () => {
     expect(result.refreshed).toContain("resources/EXECUTION_REPORT_TEMPLATE.md")
     expect(result.refreshed.every((path) => path.startsWith("resources/"))).toBe(true)
     expect(await readFile(join(workstreamDir, "design/SDD.md"), "utf8")).toBe("authored")
-    expect(await readFile(join(workstreamDir, "resources/EXECUTION_REPORT_TEMPLATE.md"), "utf8")).toContain("## Outcome")
+    expect(await readFile(join(workstreamDir, "resources/EXECUTION_REPORT_TEMPLATE.md"), "utf8")).toBe(
+      await readFile(new URL("../../../templates/shared/execution/REPORT.md", import.meta.url), "utf8"),
+    )
     expect(await Bun.file(join(workstreamDir, "execution/FINAL_REPORT.md")).exists()).toBe(false)
     expect(parseCliArguments(["execution", "--refresh-templates"])).toMatchObject({ refreshTemplates: true })
   })

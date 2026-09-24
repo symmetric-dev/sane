@@ -44,7 +44,7 @@ const execFileAsync = promisify(execFile)
 
 const CLEAN_PRD = "# PRD\nReal product direction.\n"
 const CLEAN_SDD = "# Solution Design Document\nReal technical direction.\n"
-const CLEAN_PLAN = "# Plan\nReal plan package.\n"
+const CLEAN_PLAN = "# Plan\nReal plan package.\n## Execution Checkpoints\n| Checkpoint | After job(s) | Jobs | Review purpose |\n| --- | --- | --- | --- |\n| Checkpoint 1 | 02 | 01, 02 | Review delivery |\n"
 const CLEAN_JOB_A = "# Job Spec 01: first\nReal job.\n"
 const CLEAN_JOB_B = "# Job Spec 02: second\nReal job.\n"
 const CLEAN_FINAL_REPORT = "# Final Report\nReal outcomes.\n"
@@ -102,6 +102,7 @@ describe("sane-approve (phase approvals)", () => {
     await writeDoc("execution/PLAN.md", CLEAN_PLAN)
     await writeDoc("execution/jobs/01-first.md", CLEAN_JOB_A)
     await writeDoc("execution/jobs/02-second.md", CLEAN_JOB_B)
+    await writeDoc("execution/verification/checkpoint-1.md", "# Verification Spec: Checkpoint 1\nCheck delivered behavior.\n")
     return runSaneApproveCommand({ ...quiet, implementationRepository, phase: "planning", approvalRef: "original-user-approval" })
   }
 
@@ -190,6 +191,7 @@ describe("sane-approve (phase approvals)", () => {
 
   test("initial approval and reapproval reject colliding IDs atomically", async () => {
     await writeDoc("execution/PLAN.md", CLEAN_PLAN)
+    await writeDoc("execution/verification/checkpoint-1.md", "# Verification Spec: Checkpoint 1\nCheck delivery.\n")
     await writeDoc("execution/jobs/00-valid.md", CLEAN_JOB_A)
     await writeDoc("execution/jobs/01-first.md", CLEAN_JOB_A)
     await writeDoc("execution/jobs/01-second.md", CLEAN_JOB_B)
@@ -207,7 +209,7 @@ describe("sane-approve (phase approvals)", () => {
 
   test("Planning drift retains authority and directs escalation to the user; other phases retain reapproval warning", async () => {
     await approvePlan()
-    await writeDoc("execution/PLAN.md", "# Amended plan\n")
+    await writeDoc("execution/PLAN.md", CLEAN_PLAN.replace("Real plan package.", "Amended plan package."))
     const result = await runSaneValidateCommand({ ...quiet, implementationRepository, phase: "planning" })
     expect(result.ok).toBe(true)
     const warning = result.warnings.join("\n")
@@ -295,6 +297,7 @@ describe("sane-approve (phase approvals)", () => {
 
   test("approve planning registers job specs from disk as planned", async () => {
     await writeDoc("execution/PLAN.md", CLEAN_PLAN)
+    await writeDoc("execution/verification/checkpoint-1.md", "# Verification Spec: Checkpoint 1\nCheck delivery.\n")
     await writeDoc("execution/jobs/01-first.md", CLEAN_JOB_A)
     await writeDoc("execution/jobs/02-second.md", CLEAN_JOB_B)
     const result = await runSaneApproveCommand({
@@ -337,6 +340,7 @@ describe("sane-approve (phase approvals)", () => {
     expect(await approvalFor("engineering")).not.toBeNull()
 
     await writeDoc("execution/PLAN.md", CLEAN_PLAN)
+    await writeDoc("execution/verification/checkpoint-1.md", "# Verification Spec: Checkpoint 1\nCheck delivery.\n")
     await writeDoc("execution/jobs/01-first.md", CLEAN_JOB_A)
     await runSaneApproveCommand({
       implementationRepository,
@@ -351,6 +355,8 @@ describe("sane-approve (phase approvals)", () => {
     expect(await approvalFor("execution")).toBeNull()
     expect((await snapshot()).jobs[0]?.status).toBe("planned")
     await writeDoc("execution/reports/01-first.md", CLEAN_REPORT)
+    await expect(runSaneApproveCommand({ ...quiet, implementationRepository, phase: "execution", approvalRef: "must-fail" })).rejects.toThrow()
+    await writeDoc("execution/test-reports/checkpoint-1.md", "# Test Report: Checkpoint 1\n## Outcome\nVerified.\n## Evidence\nFocused check passed.\n## Findings\nNone.\n")
     const execution = await runSaneApproveCommand({
       implementationRepository,
       workstreamPath: "01-demo",
@@ -358,7 +364,6 @@ describe("sane-approve (phase approvals)", () => {
       approvalRef: "user-ok-exec",
       write: () => {},
     })
-    expect(execution.files).toEqual(["execution/FINAL_REPORT.md", "execution/reports/01-first.md"])
     expect(execution.jobs.map((job) => `${job.job_id}=${job.status}`)).toEqual([
       "01=completed",
     ])

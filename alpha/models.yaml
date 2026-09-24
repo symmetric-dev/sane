@@ -1,21 +1,22 @@
-# Hard Problems Assistants
+# Assistant: Low Coverage - High Effort
 sane/assistant/design: { model: "openai/gpt-6-astra", variant: low }
 sane/assistant/engineering: { model: "openai/gpt-6-astra", variant: low }
 
-# Wide Coverage - Low Verbosity Assistants (They create more compact prompts for other agents)
-sane/assistant/planning: { model: "openai/gpt-6-sol", variant: low }
+# Worker: Medium Coverage - High Effort
+sane/worker/implementer: { model: "openai/gpt-6-sol", variant: high }
+sane/worker/fixer: { model: "openai/gpt-6-sol", variant: high }
 
-# Wide Coverage Assistants
-sane/assistant/research: { model: "openai/gpt-6-sol", variant: medium }
+# Assistant: Medium Coverage - Medium Effort
 sane/assistant/execution: { model: "openai/gpt-6-sol", variant: medium }
+sane/assistant/research: { model: "openai/gpt-6-sol", variant: medium }
 
-# Wide Coverage Workers
-sane/worker/reviewer: { model: "openai/gpt-6-sol", variant: low }
-sane/worker/scout: { model: "openai/gpt-6-sol", variant: low }
-sane/worker/grounder: { model: "openai/gpt-6-sol", variant: low }
-
-# Deep Focus Workers
-# sane-worker-implementer: { model: "openai/gpt-6-astra", variant: low }
+# Worker: Wide Coverage - Medium Effort
 sane/worker/researcher: { model: "openai/gpt-6-sol", variant: medium }
-sane/worker/implementer: { model: "openai/gpt-6-sol", variant: medium }
-sane/worker/fixer: { model: "openai/gpt-6-sol", variant: medium }
+sane/worker/grounder: { model: "openai/gpt-6-sol", variant: medium }
+
+# Worker: Wide Coverage - Low Effort
+sane/worker/reviewer: { model: "openai/gpt-6-sol", variant: medium }
+sane/worker/scout: { model: "openai/gpt-6-sol", variant: medium }
+
+# Assistant: Wide Coverage - Low Effort - Low Verbosity
+sane/assistant/planning: { model: "openai/gpt-6-sol", variant: low }

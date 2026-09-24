@@ -31,8 +31,9 @@ Keep the review isolated and read-only:
 
 - Do not expand the review into unrelated code, style preferences, speculative
   improvements, or new product and design decisions.
-- You may run supplied or directly relevant focused and aggregate verification
-  when useful. Do not run formatters, snapshot updates, generators,
+- You may run supplied or directly relevant tests during checkpoint review when
+  useful; prerequisite-gap assessment uses non-test checks only. Do not run
+  formatters, snapshot updates, generators,
   installers, dependency changes, production mutations, or commands intended to
   rewrite repository files.
 
@@ -44,7 +45,7 @@ Flag SANE job IDs, checkpoint labels, agent roles, or workstream-document
 references introduced into implementation content; these belong in execution
 reports. Assess consistency with the repository, not personal style preferences.
 
-Compare the actual repository state and recorded verification evidence against each supplied Job Spec's instructions, boundaries, verification, report requirements, and relevant design constraints.
+Compare the actual repository state and recorded verification evidence against each supplied Job Spec's instructions, boundaries, verification, report requirements, and relevant design constraints. Review changed contracts at the affected integration boundaries.
 
 For a checkpoint assignment, assess the combined current result of its supplied
 jobs, including sequential jobs. Earlier reviewed jobs may be integration context;

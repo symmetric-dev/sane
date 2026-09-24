@@ -9,16 +9,18 @@
  * Phase expectations (path-based):
  * - design: exactly the typed root doc plus `design/SDD.md`.
  * - engineering: one or more `design/solutions/*.md`.
- * - planning: `execution/PLAN.md` plus one or more `execution/jobs/*.md`.
+ * - planning: `execution/PLAN.md`, one or more `execution/jobs/*.md`, and one
+ *   `execution/verification/<checkpoint-id>.md` per Plan checkpoint.
  * - execution: `execution/FINAL_REPORT.md` plus registered completed-job
- *   report coverage (approval additionally checks jobs it will complete).
+ *   report coverage and checkpoint Test Reports at approval.
  * - execution report --id: only the assigned report, checked against its spec.
  *
  * General content rules per file: must exist, must be non-empty, and must contain
  * no `<!--` guidance comments (every template carries them with an
  * instruction to replace them, so an unedited template always fails).
  * Root docs have no template copy in `resources/`; the same three rules
- * apply uniformly. Execution job reports additionally enforce their title,
+ * apply uniformly. Job Specs reject unresolved {{...}} prose slots.
+ * Execution job reports additionally enforce their title,
  * section structure, populated sections, and resolved placeholders.
  *
  * Research index divergences and approved-but-changed docs are warnings,
@@ -47,7 +49,7 @@ import {
 import type { WorkstreamType } from "./workstream-type.ts"
 import { recheckResearchIndex } from "./sane-workstream-state.ts"
 import { SaneWorkstreamStateError } from "./sane-workstream-state.ts"
-import { jobSpecTitle, validateExecutionReport, type ReportDiagnostic } from "./sane-execution-report-validation.ts"
+import { jobSpecTitle, validateExecutionReport, validateJobPlaceholders, type ReportDiagnostic } from "./sane-execution-report-validation.ts"
 
 export const VALIDATE_PHASES = ["design", "engineering", "planning", "execution"] as const
 export type ValidatePhase = (typeof VALIDATE_PHASES)[number]
@@ -68,7 +70,7 @@ function expectedDocs(phase: ValidatePhase, type: WorkstreamType): PhaseDocSpec[
     case "engineering":
       return [{ path: "design/solutions/" }]
     case "planning":
-      return [{ path: "execution/PLAN.md" }, { path: "execution/jobs/" }]
+      return [{ path: "execution/PLAN.md" }, { path: "execution/jobs/" }, { path: "execution/verification/" }]
     case "execution":
       return [{ path: "execution/FINAL_REPORT.md" }, { path: "execution/reports/" }]
   }
@@ -165,6 +167,14 @@ export async function validatePhaseDocs(
       problems.push(`unresolved guidance comments (<!-- -->) in: ${relativePath}`)
       return
     }
+    if ((phase === "planning" && (relativePath.startsWith("execution/jobs/") || relativePath.startsWith("execution/verification/")))
+      || (phase === "execution" && relativePath.startsWith("execution/test-reports/"))) {
+      const errors = validateJobPlaceholders(content, relativePath)
+      if (errors.length) {
+        problems.push(...errors.map((e) => `${e.path}:${e.line}: ${e.message}`))
+        return
+      }
+    }
     files.push(relativePath)
     hashes.push(`${relativePath}:${sha256Hex(content)}`)
   }
@@ -185,6 +195,15 @@ export async function validatePhaseDocs(
     }
     for (const name of await listMarkdownFiles(join(workstreamDir, "execution/reports"))) {
       if (!reportPaths.has(`execution/reports/${name}`)) problems.push(`execution/reports/${name}:1: Report has no registered job assignment.`)
+    }
+    const specs = await listMarkdownFiles(join(workstreamDir, "execution/verification"))
+    const reportNames = await listMarkdownFiles(join(workstreamDir, "execution/test-reports"))
+    for (const name of specs) {
+      const path = `execution/test-reports/${name}`
+      if (options.completingJobs || reportNames.includes(name)) await checkFile(path)
+    }
+    for (const name of reportNames) {
+      if (!specs.includes(name)) problems.push(`execution/test-reports/${name}: no matching Verification Spec`)
     }
   } else if (phase === "design") {
     const expectedRoot = ROOT_DOC_BY_TYPE[type]
@@ -210,6 +229,33 @@ export async function validatePhaseDocs(
       }
       for (const name of names) {
         await checkFile(`${spec.path}${name}`)
+      }
+    }
+    if (phase === "planning") {
+      const plan = await readIfExists(join(workstreamDir, "execution/PLAN.md"))
+      if (plan !== null && !plan.includes("<!--")) {
+        const section = plan.split(/^## Execution Checkpoints\s*$/m)[1]?.split(/^## /m)[0] ?? ""
+        const labels = [...section.matchAll(/^\|\s*([^|]+?)\s*\|/gm)]
+          .map((match) => match[1]!.trim())
+          .filter((label) => label !== "Checkpoint" && !/^[-: ]+$/.test(label))
+        if (labels.length === 0) problems.push("execution/PLAN.md: no Execution Checkpoints defined")
+        const expected = new Set<string>()
+        for (const label of labels) {
+          if (!/^[A-Za-z0-9][A-Za-z0-9_-]*(?: [A-Za-z0-9][A-Za-z0-9_-]*)*$/.test(label)) {
+            problems.push(`execution/PLAN.md: invalid checkpoint label: ${label}`)
+            continue
+          }
+          const name = `${label.toLowerCase().replace(/ +/g, "-")}.md`
+          if (expected.has(name)) problems.push(`execution/PLAN.md: duplicate checkpoint filename: ${name}`)
+          expected.add(name)
+        }
+        const actual = await listMarkdownFiles(join(workstreamDir, "execution/verification"))
+        for (const name of expected) {
+          if (!actual.includes(name)) problems.push(`missing: execution/verification/${name}`)
+        }
+        for (const name of actual) {
+          if (!expected.has(name)) problems.push(`execution/verification/${name}: no matching Plan checkpoint`)
+        }
       }
     }
   }

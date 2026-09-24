@@ -32,8 +32,20 @@ export function jobSpecTitle(content: string, jobId: string): string | null {
   return null
 }
 
+/** Template slots are prose; inline, fenced, and indented code may quote literal evidence. */
+export function validateJobPlaceholders(content: string, path: string): ReportDiagnostic[] {
+  const prose = markdownLines(content).map(({ text, code }) =>
+    code || /^(?: {4}|\t)/.test(text) ? "" : text.replace(/(`+)[\s\S]*?\1/g, ""),
+  ).join("\n")
+  return Array.from(prose.matchAll(/\{\{[^}]*\}\}/g), (match) => ({
+    path,
+    line: prose.slice(0, match.index).split("\n").length,
+    message: "Replace unresolved {{...}} placeholder with authored content.",
+  }))
+}
+
 export function validateExecutionReport(content: string, path: string, jobId: string, title: string): ReportDiagnostic[] {
-  const errors: ReportDiagnostic[] = []
+  const errors: ReportDiagnostic[] = validateJobPlaceholders(content, path)
   const error = (line: number, message: string) => errors.push({ path, line, message })
   const headings: { level: number; title: string; line: number }[] = []
   const lines = markdownLines(content)
@@ -43,7 +55,7 @@ export function validateExecutionReport(content: string, path: string, jobId: st
     if (code || /^(?: {4}|\t)/.test(text)) { paragraph = false; list = false; continue }
     // Literal code examples and prose about TODO markers are evidence, not unfinished sections.
     const prose = text.replace(/(`+)[\s\S]*?\1/g, "")
-    if (/<!--|<id>|<job name>|\{\{[^}]+\}\}/i.test(prose) || /^\s*(?:[-*+]\s+(?:\[[ x]\]\s+)?)?(?:TODO|TBD|FIXME)(?:\s*[:.!-]\s*.*)?\s*$/i.test(prose)) error(line, "Replace unresolved placeholder or guidance comment with actual report content.")
+    if (/<!--|<id>|<job name>/i.test(prose) || /^\s*(?:[-*+]\s+(?:\[[ x]\]\s+)?)?(?:TODO|TBD|FIXME)(?:\s*[:.!-]\s*.*)?\s*$/i.test(prose)) error(line, "Replace unresolved placeholder or guidance comment with actual report content.")
     const heading = /^ {0,3}(#{1,6})(?:\s+(.+?)\s*|\s*)$/.exec(text)
     if (heading) headings.push({ level: heading[1]!.length, title: (heading[2] ?? "").replace(/\s+#+$/, ""), line })
     // A setext underline needs an open paragraph, not a preceding list/block.

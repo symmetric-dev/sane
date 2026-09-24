@@ -1,6 +1,6 @@
-# Job <id>: <job name> Report
+# Job {{id}}: {{job name}} Report
 
-<!-- Replace the title placeholders, fill in applicable patterns, and remove
+<!-- Replace every {{...}} slot with authored content and remove
 guidance comments before delivery. Retain the directory convention and exactly
 these three H2 sections, once each and in order. H3–H6 grouping is optional.
 Use the report destination supplied by `sane job <id>`.
@@ -20,12 +20,10 @@ Directory convention: resolve these prefixes using `sane job <id>`.
 be an evidenced finding rather than implemented code. Distinguish checks that
 passed, failed, or were not run, and state the limits of their evidence. -->
 
-[Current result and any incomplete part of the assignment.]
+{{Current result and any incomplete part of the assignment.}}
 
-- [Implemented behavior or established finding], supported by
-  [source or evidence reference].
-- Verification: `[command or check]` from `[directory]` — [result, relevant
-  environment details, and limitation or reason the check was not run].
+- {{Implemented behavior or established finding}}, supported by {{source or evidence reference}}.
+- Verification: {{command or check}} from {{directory}} — {{result, relevant environment details, and limitation or reason the check was not run}}.
 
 ## Unresolved Issues
 
@@ -35,8 +33,7 @@ resolved findings unless they explain a current limitation or material outcome.
 If none remain, state `No unresolved issues identified within the performed work.`
 That statement does not replace disclosure of verification limitations. -->
 
-- [Current issue] — Evidence: [reference]. Effect: [requirement blocked,
-  incorrect behavior, or remaining uncertainty].
+- {{Current issue}} — Evidence: {{reference}}. Effect: {{requirement blocked, incorrect behavior, or remaining uncertainty}}.
 
 ## Recommendations
 
@@ -47,5 +44,4 @@ instead of duplicating them. Required incomplete work remains in Unresolved Issu
 even when a recommendation describes how to address it. State `None` when no
 recommendation is warranted. -->
 
-- [Suggested action] for [affected component or interface], because
-  [finding or evidence reference]. Applies when [relevant condition or limit].
+- {{Suggested action}} for {{affected component or interface}}, because {{finding or evidence reference}}. Applies when {{relevant condition or limit}}.

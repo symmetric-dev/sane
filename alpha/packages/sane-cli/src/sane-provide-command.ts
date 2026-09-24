@@ -12,9 +12,9 @@
  *   `create`; a missing root doc is an error, not something to invent).
  * - engineering: ensures `design/solutions/` plus a `design/solutions/SOLUTION.md`
  *   starter when empty.
- * - planning: ensures `execution/`, `execution/jobs/`, plus an `execution/PLAN.md`
- *   starter when missing. (Job specs are authored by agents.)
- * - execution: ensures `execution/`, `execution/reports/`, plus an
+ * - planning: ensures `execution/`, `execution/jobs/`, `execution/verification/`,
+ *   plus an `execution/PLAN.md` starter when missing. (Specs are authored by agents.)
+ * - execution: ensures `execution/`, `execution/reports/`, `execution/test-reports/`, plus an
  *   `execution/FINAL_REPORT.md` starter when missing. (Reports are authored by
  *   workers.)
  */
@@ -205,6 +205,18 @@ export async function runSaneProvideCommand(
       created.push(relativePath)
     }
 
+    if (!options.refreshTemplates) {
+      const resource = phase === "planning"
+        ? { destination: "resources/VERIFICATION_SPEC_TEMPLATE.md", source: "shared/plan/VERIFICATION.md" }
+        : phase === "execution"
+          ? { destination: "resources/TEST_REPORT_TEMPLATE.md", source: "shared/execution/TEST_REPORT.md" }
+          : null
+      if (resource && !(await exists(join(workstream.path, resource.destination)))) {
+        await writeFile(join(workstream.path, resource.destination), await readFile(join(DEFAULT_TEMPLATE_ROOT, resource.source)))
+        created.push(resource.destination)
+      }
+    }
+
     if (!options.refreshTemplates) switch (phase) {
       case "design": {
         const root = ROOT_DOC_BY_TYPE[workstreamType]
@@ -229,11 +241,13 @@ export async function runSaneProvideCommand(
       }
       case "planning": {
         await mkdir(join(workstream.path, "execution", "jobs"), { recursive: true })
+        await mkdir(join(workstream.path, "execution", "verification"), { recursive: true })
         await ensureStarter("execution/PLAN.md", "resources/PLAN_TEMPLATE.md")
         break
       }
       case "execution": {
         await mkdir(join(workstream.path, "execution", "reports"), { recursive: true })
+        await mkdir(join(workstream.path, "execution", "test-reports"), { recursive: true })
         await ensureStarter("execution/FINAL_REPORT.md", "resources/EXECUTION_FINAL_REPORT_TEMPLATE.md")
         break
       }

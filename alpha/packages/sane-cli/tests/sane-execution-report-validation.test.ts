@@ -5,6 +5,15 @@ const report = "# Job 01: Investigate Report\n\n## Outcome\nDiscovery completed;
 const validate = (content: string) => validateExecutionReport(content, "execution/reports/01-investigate.md", "01", "Investigate")
 
 describe("execution report structure", () => {
+  test("bracket text and literal template evidence are valid, but multiline prose slots are not", () => {
+    for (const evidence of ["Expected [a-z] and [optional] values; see [source](./source.md).", "Reviewed `{{value}}` and ``{{other}}``.", "```text\n{{value}}\n```", "Evidence:\n\n    {{value}}", "~~~text\n{{value}}\n~~~"]) {
+      expect(validate(report.replace("Build failed.", evidence))).toEqual([])
+    }
+    expect(validate(report.replace("Build failed.", "{{Current issue\nand evidence}}"))).toEqual([
+      { path: "execution/reports/01-investigate.md", line: 6, message: "Replace unresolved {{...}} placeholder with authored content." },
+    ])
+  })
+
   test("literal placeholder evidence and prose mentioning markers remain valid", () => {
     for (const evidence of ["No TODO markers remain.", "The FIXME comment explains the failure.", "Reviewed `TODO: retry` and `<job name>` examples.", "```ts\n// TODO: retry\n// FIXME: investigate\nconst example = '{{value}}'\n<!-- literal example -->\n```", "~~~text\nTBD\n~~~"]) {
       expect(validate(report.replace("Build failed.", evidence))).toEqual([])

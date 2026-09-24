@@ -47,8 +47,16 @@ const SHARED_INITIAL_TEMPLATE_REGISTRY = [
     destination: "resources/JOB_TEMPLATE.md",
   },
   {
+    source: "shared/plan/VERIFICATION.md",
+    destination: "resources/VERIFICATION_SPEC_TEMPLATE.md",
+  },
+  {
     source: "shared/execution/REPORT.md",
     destination: "resources/EXECUTION_REPORT_TEMPLATE.md",
+  },
+  {
+    source: "shared/execution/TEST_REPORT.md",
+    destination: "resources/TEST_REPORT_TEMPLATE.md",
   },
   {
     source: "shared/execution/FINAL_REPORT.md",

@@ -5,7 +5,8 @@ import { AGENT_FILENAMES } from "../src/install-sane-agent-context-packages.ts"
 describe("agent model YAML config", () => {
   test("supports comments, quoted values, empty mappings and every known agent", () => {
     const yaml = AGENT_FILENAMES.map((name) => `${name.slice(0, -3)}: 'openai/gpt-5' # model`).join("\n")
-    expect(parseAgentModelConfig(yaml, AGENT_FILENAMES).size).toBe(11)
+    const config = parseAgentModelConfig(yaml, AGENT_FILENAMES)
+    for (const name of AGENT_FILENAMES) expect(config.get(name.slice(0, -3))).toBe("openai/gpt-5")
     expect(parseAgentModelConfig("{}", AGENT_FILENAMES).size).toBe(0)
   })
 

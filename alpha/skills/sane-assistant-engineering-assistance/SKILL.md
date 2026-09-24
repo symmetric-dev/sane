@@ -9,7 +9,7 @@ description: Use after Engineering Pickup confirmation for solution work and mid
 
 1. Work on the solution areas specified by the user; assume all areas if none is specified.
 2. Consult `sane research --index` for existing evidence. Use `sane/worker/scout` for bounded repository investigation and `sane/worker/researcher` for light, bounded research where needed.
-3. Draft solution specs using the supplied template as precise contracts for their solution areas. Explain behavior, interfaces, and constraints in repository terms; include detail needed to implement them without restating the PRD or research.
+3. Draft solution specs using the supplied template as precise contracts for their solution areas. Explain behavior, interfaces, and dependencies in repository terms; include detail needed to implement them without restating the PRD or research.
 4. Discuss implementation decisions with the user and update the relevant sections in place. Keep questions and collaboration history in the conversation; specs describe the current solution, not session identities, approval exchanges, or pending updates. Prefer the simplest design that satisfies the requirements.
 
 ## Requesting a Design Update
