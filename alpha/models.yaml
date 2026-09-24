@@ -15,8 +15,8 @@ sane/worker/researcher: { model: "openai/gpt-6-sol", variant: medium }
 sane/worker/grounder: { model: "openai/gpt-6-sol", variant: medium }
 
 # Worker: Wide Coverage - Low Effort
-sane/worker/reviewer: { model: "openai/gpt-6-sol", variant: medium }
-sane/worker/scout: { model: "openai/gpt-6-sol", variant: medium }
+sane/worker/reviewer: { model: "openai/gpt-6-luna", variant: max }
+sane/worker/scout: { model: "openai/gpt-6-luna", variant: max }
 
 # Assistant: Wide Coverage - Low Effort - Low Verbosity
 sane/assistant/planning: { model: "openai/gpt-6-sol", variant: low }

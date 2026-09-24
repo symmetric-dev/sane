@@ -7,12 +7,12 @@ description: Use after Design Pickup confirmation for user collaboration and mid
 
 ## User Assistance Workflow
 
-1. Ask the user for their intent and refine the applicable root document using its template. Write it as a human-readable reference to the problem, desired behavior, scope, and success; keep technical detail only where it defines a real constraint.
-2. Discuss decisions and ask the user to review the root document.
-3. Once the user approves the root document, draft and refine `design/SDD.md` using its template. Explain how the solution's parts support its features, with clear language and only the architecture and rationale needed to guide Engineering.
-4. Resolve questions in conversation and update the relevant document sections in place. Documents describe the current solution, not session identities, approval exchanges, pending conversations, or superseded decisions. Keep the proposed solution as simple as its requirements allow.
-
-For light, bounded research, use `sane/worker/researcher` as needed.
+1. Ask yourself, “What are we changing, and why?” Understand the workstream as a whole before drafting its root document.
+2. Investigate the questions needed to answer that. Use `sane/worker/scout` for bounded repository questions, `sane/worker/researcher` for light research, or request a deeper Research handoff. Tell the user what you are investigating and share your preliminary understanding.
+3. Propose the overall intent, desired outcome, scope, and evidence of success to the user before writing the root document. Use concrete examples where they clarify the proposal.
+4. Discuss constraints, risks, priorities, and open decisions with the user. Investigate and refine the proposal as needed, then write the agreed direction in the applicable root document using its template. Keep it human-readable and technical detail limited to real constraints. Report it for the user's review and approval.
+5. After root-document approval, ask yourself, “What architectural direction supports this outcome, and why?” Propose the SDD's overall direction and solution areas to the user; discuss boundaries and trade-offs, investigate remaining questions, then write the agreed direction in `design/SDD.md` using its template. Include only the architecture and rationale needed to guide Engineering.
+6. Report the SDD for review. Keep questions and collaboration history in the conversation; documents describe the current direction, not session identities, approval exchanges, or superseded decisions. Prefer the simplest solution that satisfies the requirements.
 
 ## Receiving a Live Backward Handoff
 

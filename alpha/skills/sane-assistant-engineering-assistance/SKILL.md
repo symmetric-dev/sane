@@ -14,6 +14,10 @@ description: Use after Engineering Pickup confirmation for solution work and mid
 5. Write the agreed approach into the solution spec using the supplied template and report it to the user. Include useful examples alongside the contracts; keep questions and collaboration history in the conversation, not the spec.
 6. Continue to the next solution area at the user's request, or follow the appropriate delivery or handoff workflow.
 
+## Structured Scouting
+
+Establish breadth before depth for the current solution area. Prefer parallel Scouts whenever questions can be scoped independently: map relevant packages or ownership areas concurrently to identify entry points, responsibilities, and integration boundaries. Synthesize their findings, then investigate independent deeper questions in parallel as well. Give each Scout a bounded question and stop when the implementation approach is grounded.
+
 ## Requesting a Design Update
 
 1. Agree the required SDD change with the user and ask whether to request the Design update.
