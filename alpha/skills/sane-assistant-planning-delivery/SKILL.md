@@ -17,5 +17,5 @@ Review the Execution Plan, Job Specs, and Verification Specs against their templ
 ## Delivery Handoff
 
 1. After approval, ask whether the user wants to start Execution.
-2. When requested, call `sane_handoff` (`to: "execution"`, `new_session: true`, `message: "<approved Execution Plan and execution assignment>"`).
+2. When requested, call `sane_handoff` (`to: "execution"`, `new_session: true`, `message: "Start Execution session for workstream: <name>.<user notes>"`). Replace `<user notes>` with ` User Notes: <the user's specific notes>` only when the user asks to pass notes along; otherwise replace it with nothing. Add nothing else to the message.
 3. Summarize delivery and tell the user to open the newly created session.

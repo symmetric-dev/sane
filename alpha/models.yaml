@@ -9,6 +9,7 @@ sane/worker/fixer: { model: "openai/gpt-6-sol", variant: high }
 # Assistant: Medium Coverage - Medium Effort
 sane/assistant/execution: { model: "openai/gpt-6-sol", variant: medium }
 sane/assistant/research: { model: "openai/gpt-6-sol", variant: medium }
+sane/assistant/knowledge: { model: "openai/gpt-6-sol", variant: medium }
 
 # Worker: Wide Coverage - Medium Effort
 sane/worker/researcher: { model: "openai/gpt-6-sol", variant: medium }

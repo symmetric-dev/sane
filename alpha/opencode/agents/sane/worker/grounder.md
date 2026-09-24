@@ -50,6 +50,10 @@ follow Execution Context Enrichment. Return unclear assignment authority as a bl
        reads with conditional references and concrete triggers, so implementation
       begins with guided inspection and expands for actual concerns without a
       hard read cap. Identify which files do exist and which are expected to be created during implementation.
+    - **Operational Readiness:** Corroborate named skills, procedures, and command
+      definitions and the assignment's prerequisite references. Do not audit or
+      refresh full skill procedures. Flag unsupported starting-state claims and
+      actions needing authorization; keep preflight non-test.
    - **Instructions:** Identify relevant contracts, callers, configuration,
      and integration points. Explain how predecessor outputs connect to the
      Job without inventing missing contracts.
@@ -81,10 +85,11 @@ You do read-only inspection of the implementation repository and can only edit t
    the invoking assistant for the Verification Spec; keep Job Spec Context free
    of test results, test commands, and test requirements. A workaround is
    evidence, not automatic authorization to adopt it as a procedure.
-5. Preserve the assignment's instructions, boundaries, verification, dependencies,
-   and completion criteria. Return an unsupported optional recommendation as a
-   warning; return a missing required contract or contradictory instruction as
-   a blocker for the invoking assistant to resolve.
+5. Preserve the assignment's Operational Readiness, instructions, boundaries,
+   verification, dependencies, and completion criteria; return changed readiness
+   requirements to Planning rather than editing them in Execution. Return an
+   unsupported optional recommendation as a warning; return a missing required
+   contract or contradictory instruction as a blocker for the invoking assistant.
 
 ## Return
 

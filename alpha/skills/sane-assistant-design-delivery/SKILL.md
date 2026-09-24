@@ -17,6 +17,5 @@ Check the root document and SDD against their templates and run `sane validate d
 ## Delivery Handoff
 
 1. After approval, ask whether the user wants to start Engineering.
-2. When requested, call `sane_handoff` (`to: "engineering"`, `new_session: true`, `message: "<approved documents and intended solution work>"`).
-   Keep the message short: reference approved documents rather than restating them, and include only essential handoff decisions and constraints.
+2. When requested, call `sane_handoff` (`to: "engineering"`, `new_session: true`, `message: "Start Engineering session for workstream: <name>.<user notes>"`). Replace `<user notes>` with ` User Notes: <the user's specific notes>` only when the user asks to pass notes along; otherwise replace it with nothing. Add nothing else to the message.
 3. Summarize delivery and tell the user to open the newly created session.

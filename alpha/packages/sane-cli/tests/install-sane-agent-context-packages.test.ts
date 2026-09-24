@@ -6,6 +6,7 @@ import { dirname, join } from "node:path"
 import {
   AGENT_FILENAMES,
   AgentContextPackageInstallationError,
+  GLOBAL_SUPPORT_SKILL_NAMES,
   OPENCODE_CONFIG_PACKAGE_FILENAME,
   OPENCODE_PLUGIN_DEPENDENCY,
   OPENCODE_PLUGIN_VERSION,
@@ -51,6 +52,11 @@ describe("install-sane-agent-context-packages", () => {
       await mkdir(dirname(path), { recursive: true })
       await Bun.write(path, `skill ${skillName}\n`)
     }
+    for (const skillName of GLOBAL_SUPPORT_SKILL_NAMES) {
+      const path = join(sourceRoot, ".opencode", "skills", skillName, "SKILL.md")
+      await mkdir(dirname(path), { recursive: true })
+      await Bun.write(path, `global skill ${skillName}\n`)
+    }
     const pluginIndex = join(sourceRoot, "opencode", "plugins", "sane", "index.ts")
     await mkdir(dirname(pluginIndex), { recursive: true })
     await Bun.write(pluginIndex, pluginIndexFixture())
@@ -65,7 +71,7 @@ describe("install-sane-agent-context-packages", () => {
     await rm(temporaryDirectory, { recursive: true, force: true })
   })
 
-  function options(extra: { modelConfigPath?: string; dryRun?: boolean; overwrite?: boolean; write?: (line: string) => void } = {}) {
+  function options(extra: { modelConfigPath?: string; dryRun?: boolean; overwrite?: boolean; onlySkill?: "review-opencode-sessions"; write?: (line: string) => void } = {}) {
     return { homeDirectory, sourceRoot, write: () => {}, ...extra }
   }
 
@@ -170,6 +176,11 @@ describe("install-sane-agent-context-packages", () => {
         `skill ${skillName}\n`,
       )
     }
+    for (const skillName of GLOBAL_SUPPORT_SKILL_NAMES) {
+      const destination = join(homeDirectory, ".config", "opencode", "skills", skillName, "SKILL.md")
+      expect(result.created).toContain(destination)
+      expect(await readFile(destination, "utf8")).toBe(`global skill ${skillName}\n`)
+    }
     const installedIndex = join(homeDirectory, ".config", "opencode", "plugins", "sane", "index.ts")
     expect(result.created).toContain(installedIndex)
     const installedContent = await readFile(installedIndex, "utf8")
@@ -200,6 +211,26 @@ describe("install-sane-agent-context-packages", () => {
     expect(JSON.parse(await readFile(configPackage, "utf8"))).toEqual({
       dependencies: { [OPENCODE_PLUGIN_DEPENDENCY]: OPENCODE_PLUGIN_VERSION },
     })
+  })
+
+  test("installs the global review skill alone without changing existing agent packages", async () => {
+    const agent = join(homeDirectory, ".config", "opencode", "agents", AGENT_FILENAMES[0])
+    await mkdir(dirname(agent), { recursive: true })
+    await Bun.write(agent, "locally customized agent\n")
+    const retired = await seedRetiredSkills()
+    const destination = join(homeDirectory, ".config", "opencode", "skills", "review-opencode-sessions", "SKILL.md")
+
+    const planned = await installSaneAgentContextPackages(options({ onlySkill: "review-opencode-sessions", dryRun: true }))
+    expect(planned.created).toEqual([destination])
+    await expectMissing(destination)
+
+    const installed = await installSaneAgentContextPackages(options({ onlySkill: "review-opencode-sessions" }))
+    expect(installed).toMatchObject({ created: [destination], updated: [], unchanged: [], removed: [] })
+    expect(await readFile(destination, "utf8")).toBe("global skill review-opencode-sessions\n")
+    expect(await readFile(agent, "utf8")).toBe("locally customized agent\n")
+    for (const path of retired) expect(await readFile(join(path, "SKILL.md"), "utf8")).toBe("old role\n")
+    expect(await installSaneAgentContextPackages(options({ onlySkill: "review-opencode-sessions" })))
+      .toMatchObject({ created: [], updated: [], unchanged: [destination], removed: [] })
   })
 
   test.each(["shorthand", "flow", "block", "model-only"])("applies %s YAML models before planning, without touching sources or unmapped files", async (form) => {
@@ -525,6 +556,11 @@ describe("install-sane-agent-context-packages", () => {
       expect(() => parseCliArguments(args)).toThrow("--model-config")
     }
     expect(parseCliArguments(["--dry-run", "--overwrite"])).toEqual({ dryRun: true, overwrite: true })
+    expect(parseCliArguments(["--only", "review-opencode-sessions", "--dry-run"]))
+      .toEqual({ dryRun: true, overwrite: false, onlySkill: "review-opencode-sessions" })
+    expect(() => parseCliArguments(["--only", "other-skill"])).toThrow("--only requires")
+    expect(() => parseCliArguments(["--only", "review-opencode-sessions", "--model-config", "models.yaml"]))
+      .toThrow("cannot be combined")
     expect(() => parseCliArguments(["destination"])).toThrow("does not accept positional")
     expect(() => parseCliArguments(["--unexpected"])).toThrow("Unknown option")
     expect(() => parseCliArguments(["--", "destination"])).toThrow("does not accept positional")
