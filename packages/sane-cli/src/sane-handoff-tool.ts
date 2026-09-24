@@ -124,7 +124,7 @@ export interface HandoffAsSessionOptions {
 
 /**
  * Tool core: resolve the caller slot, resolve-or-create the target, compose
- * the Section 3 message, queue it, and flag the target `[ready]`. Queue-only
+ * the Section 3 message, queue it, and title the target. Queue-only
  * by construction (see module note); there is no steer/mode input.
  */
 export async function runHandoffAsSession(
@@ -193,7 +193,8 @@ export async function runHandoffAsSession(
     serverUrl,
     targetSessionId: target.sessionId,
     slot: input.to,
-    nextAction: input.message,
+    workstreamId: identity.workstreamId,
+    sessionIndex: target.targetIndex,
     fetchImpl,
   })
 

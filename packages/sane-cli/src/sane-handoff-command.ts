@@ -17,7 +17,7 @@
  * - `selections` is the address book
  *   `(repo, user, workstream, slot) -> sessionID + worktree_path + branch`;
  *   stable IDs, new session only when slot empty or user-directed.
- * - No auto-open: rename target `[ready] <slot>: <next>` via the session
+ * - No auto-open: rename target `[workstream] Role #index` via the session
  *   rename API; the user switches.
  *
  * New file only (M4). Read-only use of `sane-db.ts` selections CRUD
@@ -475,7 +475,8 @@ export interface RenameReadyInput {
   serverUrl: string
   targetSessionId: string
   slot: string
-  nextAction: string
+  workstreamId: string
+  sessionIndex: number
   fetchImpl?: HandoffFetch
 }
 
@@ -485,14 +486,21 @@ export interface RenameReadyResult {
   ok: boolean
 }
 
-/** No-auto-open signal: `[ready] <slot>: <next action>`. The user switches. */
-export function readyTitle(slot: string, nextAction: string): string {
+/** Stable session title, independent of the handoff message. */
+export function readyTitle(workstreamId: string, slot: string, sessionIndex: number): string {
+  assertNonEmpty("workstreamId", workstreamId)
+  assertSingleLine("workstreamId", workstreamId.trim())
   assertNonEmpty("slot", slot)
-  assertNonEmpty("nextAction", nextAction)
   assertSlot(slot)
-  assertSingleLine("nextAction", nextAction.trim())
-  const title = `[ready] ${slot}: ${nextAction.trim()}`
-  return title.length <= 200 ? title : `${title.slice(0, 199).trimEnd()}…`
+  if (!Number.isInteger(sessionIndex) || sessionIndex < 1) {
+    throw new SaneHandoffError("Session index must be a positive integer.")
+  }
+  const role = slot.split(":", 1)[0]!
+  const suffix = `] ${role[0]!.toUpperCase()}${role.slice(1)} #${sessionIndex}`
+  const name = workstreamId.trim()
+  const maxNameLength = 200 - suffix.length - 1
+  const displayName = name.length > maxNameLength ? `${name.slice(0, maxNameLength - 1)}…` : name
+  return `[${displayName}${suffix}`
 }
 
 /**
@@ -503,7 +511,7 @@ export function readyTitle(slot: string, nextAction: string): string {
 export async function renameReady(input: RenameReadyInput): Promise<RenameReadyResult> {
   assertNonEmpty("targetSessionId", input.targetSessionId)
   assertSingleLine("targetSessionId", input.targetSessionId.trim())
-  const title = readyTitle(input.slot, input.nextAction)
+  const title = readyTitle(input.workstreamId, input.slot, input.sessionIndex)
   const base = normalizeServerUrl(input.serverUrl)
   const url = `${base}/api/session/${encodeURIComponent(input.targetSessionId)}`
   const fetchImpl = input.fetchImpl ?? defaultFetch()
@@ -886,7 +894,8 @@ export async function runSaneHandoffCommand(
       serverUrl,
       targetSessionId: target.sessionId,
       slot: options.toSlot,
-      nextAction: options.nextAction,
+      workstreamId: identity.workstreamId,
+      sessionIndex: target.targetIndex,
       fetchImpl,
     })
 

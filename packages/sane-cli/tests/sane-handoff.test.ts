@@ -342,8 +342,12 @@ describe("sane-handoff (M4 session registry + handoff)", () => {
     }
   })
 
-  test("rename prefix is [ready] <slot>: <next> via PATCH /api/session/{id} (mock fetch)", async () => {
-    expect(readyTitle("engineering", "Draft solutions.")).toBe("[ready] engineering: Draft solutions.")
+  test("rename uses workstream, role and session index via PATCH /api/session/{id} (mock fetch)", async () => {
+    expect(readyTitle("01-demo", "engineering", 2)).toBe("[01-demo] Engineering #2")
+    expect(readyTitle("01-demo", "research:topic", 3)).toBe("[01-demo] Research #3")
+    const longTitle = readyTitle("a".repeat(250), "execution", 12)
+    expect(longTitle.length).toBe(200)
+    expect(longTitle).toEndWith("…] Execution #12")
     const calls: Array<{ url: string; method: string; body: unknown }> = []
     const capture: HandoffFetch = (async (url: string, init?: RequestInit) => {
       calls.push({ url, method: String((init as { method?: string })?.method ?? ""), body: JSON.parse(String((init as { body?: string })?.body ?? "{}")) })
@@ -353,14 +357,15 @@ describe("sane-handoff (M4 session registry + handoff)", () => {
       serverUrl: "http://127.0.0.1:4096",
       targetSessionId: "ses_eng_1",
       slot: "engineering",
-      nextAction: "Draft solutions.",
+      workstreamId: "01-demo",
+      sessionIndex: 2,
       fetchImpl: capture,
     })
-    expect(result.title).toBe("[ready] engineering: Draft solutions.")
+    expect(result.title).toBe("[01-demo] Engineering #2")
     expect(result.url).toBe("http://127.0.0.1:4096/api/session/ses_eng_1")
     expect(calls).toHaveLength(1)
     expect(calls[0]!.method).toBe("PATCH")
-    expect(calls[0]!.body).toMatchObject({ title: "[ready] engineering: Draft solutions." })
+    expect(calls[0]!.body).toMatchObject({ title: "[01-demo] Engineering #2" })
   })
 
   test("assistantAgentForSlot maps every slot to its assistant", () => {
@@ -533,7 +538,7 @@ describe("sane-handoff CLI end to end (mock server)", () => {
     tempDirectory = ""
   })
 
-  test("runSaneHandoffCommand resolves, sends queue-default, renames [ready], and reuses the target", async () => {
+  test("runSaneHandoffCommand resolves, sends queue-default, titles and reuses the target", async () => {
     const promptCalls: Array<{ url: string; body: unknown }> = []
     const renameCalls: Array<{ url: string; body: unknown }> = []
     let creates = 0
@@ -575,7 +580,7 @@ describe("sane-handoff CLI end to end (mock server)", () => {
     expect(first.message).toBe(
       "Workstream: 01-demo\nHandoff From: Design Session (ses_design_1)\nMessage: Draft solutions.",
     )
-    expect(first.readyTitle).toBe("[ready] engineering: Draft solutions.")
+    expect(first.readyTitle).toBe("[01-demo] Engineering #1")
     expect(lines).toHaveLength(1)
     expect(lines[0]).toContain("ses_eng_1")
     expect(lines.join("\n")).not.toContain("Draft solutions.")
@@ -584,7 +589,7 @@ describe("sane-handoff CLI end to end (mock server)", () => {
     expect(promptCalls[0]!.body).toMatchObject({ delivery: "queue", text: first.message })
     expect(renameCalls).toHaveLength(1)
     expect(renameCalls[0]!.body).toMatchObject({
-      title: "[ready] engineering: Draft solutions.",
+      title: "[01-demo] Engineering #1",
     })
 
     // Second handoff reuses the stable target without creating.
@@ -599,6 +604,7 @@ describe("sane-handoff CLI end to end (mock server)", () => {
     })
     expect(second.toSession).toBe("ses_eng_1")
     expect(second.targetCreated).toBe(false)
+    expect(second.readyTitle).toBe(first.readyTitle)
     expect(creates).toBe(1)
     expect(promptCalls).toHaveLength(2)
   })
@@ -628,7 +634,7 @@ describe("sane-handoff CLI end to end (mock server)", () => {
     expect(result.message).toBe(
       "Workstream: 01-demo\nHandoff From: Design Session (ses_design_1)\nMessage: Gather evidence.",
     )
-    expect(result.readyTitle).toBe("[ready] research: Gather evidence.")
+    expect(result.readyTitle).toBe("[01-demo] Research #1")
     expect(creates).toBe(1)
   })
 
@@ -670,7 +676,7 @@ describe("sane-handoff CLI end to end (mock server)", () => {
         mode: "queue",
       })
       expect(String(parsed.message)).toContain("Message:")
-      expect(String(parsed.ready_title)).toMatch(/^\[ready\] planning: /)
+      expect(parsed.ready_title).toBe("[01-demo] Planning #1")
     } finally {
       globalThis.fetch = originalFetch
     }

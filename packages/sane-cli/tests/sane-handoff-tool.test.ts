@@ -182,7 +182,7 @@ describe("runHandoffAsSession (tool core)", () => {
       created: false,
     })
     expect(result.mode).toBe("queue")
-    expect(result.ready_title).toBe("[ready] engineering: Draft solutions.")
+    expect(result.ready_title).toBe("[01-demo] Engineering #2")
     // No session-create POST: prompt + rename only.
     expect(calls.map((call) => call.url)).toEqual([
       "http://127.0.0.1:4096/api/session/ses_eng_second/prompt",
@@ -192,7 +192,7 @@ describe("runHandoffAsSession (tool core)", () => {
     expect(listSelectionsBySlot(db!, identity, "engineering")).toHaveLength(2)
   })
 
-  test("caps the session title while delivering the complete handoff message", async () => {
+  test("keeps the session title independent of the complete handoff message", async () => {
     seedDesignAndEngineering()
     const calls: RecordedCall[] = []
     const message = `Draft solutions. ${"Essential context. ".repeat(30)}Preserve this final decision.`
@@ -202,8 +202,7 @@ describe("runHandoffAsSession (tool core)", () => {
       { fromSession: "ses_design", to: "engineering", message },
       { fetchImpl: mockServer(null, calls), serverUrl: "http://127.0.0.1:4096" },
     )
-    expect(result.ready_title.length).toBeLessThanOrEqual(200)
-    expect(result.ready_title).toEndWith("…")
+    expect(result.ready_title).toBe("[01-demo] Engineering #2")
     expect(result.message).toContain(message)
     expect(JSON.stringify(calls[0]!.body)).toContain(message)
     expect(calls[1]!.body).toMatchObject({ title: result.ready_title })
@@ -218,6 +217,7 @@ describe("runHandoffAsSession (tool core)", () => {
       { fetchImpl: mockServer(null, []), serverUrl: "http://127.0.0.1:4096" },
     )
     expect(first.to).toMatchObject({ session_id: "ses_eng_first", session_index: 1 })
+    expect(first.ready_title).toBe("[01-demo] Engineering #1")
     const second = await runHandoffAsSession(
       db!,
       identity,
@@ -225,6 +225,7 @@ describe("runHandoffAsSession (tool core)", () => {
       { fetchImpl: mockServer(null, []), serverUrl: "http://127.0.0.1:4096" },
     )
     expect(second.to).toMatchObject({ session_id: "ses_eng_second", session_index: 2 })
+    expect(second.ready_title).toBe("[01-demo] Engineering #2")
   })
 
   test("session_index out-of-range throws the CLI text", async () => {
@@ -285,7 +286,7 @@ describe("runHandoffAsSession (tool core)", () => {
     expect(result.message).toBe(
       "Workstream: 01-demo\nHandoff From: Design Session (ses_design)\nMessage: Gather evidence.",
     )
-    expect(result.ready_title).toBe("[ready] research: Gather evidence.")
+    expect(result.ready_title).toBe("[01-demo] Research #1")
     expect(calls[0]!.url).toBe("http://127.0.0.1:4096/api/session")
     expect(calls[0]!.body).toMatchObject({ agent: "sane/assistant/research" })
     expect(listSelectionsBySlot(db!, identity, "research")).toHaveLength(1)
