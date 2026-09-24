@@ -14,9 +14,11 @@ relevant `design/SDD.md` sections and root-doc requirements. -->
 
 ## Technical Design
 
-<!-- Describe interfaces, data shapes, sequences, configuration, registrations,
-and integration contracts for this solution area. Ground decisions in inspected
-code with verified paths and symbols where available. -->
+<!-- Explain how to implement this solution: interfaces, models, data shapes,
+sequences, configuration, registrations, and integration contracts. Use compact
+code or pseudocode examples for most technical decisions; add sample payloads
+or diagrams where useful. Ground them in inspected code with verified paths and
+symbols; distinguish proposed examples from existing implementation. -->
 
 ## Dependencies and Integration
 

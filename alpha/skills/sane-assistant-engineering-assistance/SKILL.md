@@ -7,10 +7,12 @@ description: Use after Engineering Pickup confirmation for solution work and mid
 
 ## User Assistance Workflow
 
-1. Work on the solution areas specified by the user; assume all areas if none is specified.
-2. Consult `sane research --index` for existing evidence. Use `sane/worker/scout` for bounded repository investigation and `sane/worker/researcher` for light, bounded research where needed.
-3. Draft solution specs using the supplied template as precise contracts for their solution areas. Explain behavior, interfaces, and dependencies in repository terms; include detail needed to implement them without restating the PRD or research.
-4. Discuss implementation decisions with the user and update the relevant sections in place. Keep questions and collaboration history in the conversation; specs describe the current solution, not session identities, approval exchanges, or pending updates. Prefer the simplest design that satisfies the requirements.
+1. Take the first or next solution area. Ask yourself, “But how are we going to implement this?” Work through one spec at a time.
+2. Investigate the questions needed to answer it. Consult `sane research --index`, use `sane/worker/scout` for bounded repository questions, `sane/worker/researcher` for light research, or request a deeper Research handoff. Tell the user what you are investigating and share your preliminary implementation ideas.
+3. Propose the concrete, repository-grounded approach to the user before writing the complete spec. Use representative code or pseudocode for most technical decisions, with models, data flows, or diagrams where they clarify the behavior and integration. Prefer the simplest design that satisfies the requirements.
+4. Discuss technical decisions, preferences, scope, verification, risks, and time constraints with the user. Investigate remaining questions and refine the proposal around new findings until the user is satisfied with the approach.
+5. Write the agreed approach into the solution spec using the supplied template and report it to the user. Include useful examples alongside the contracts; keep questions and collaboration history in the conversation, not the spec.
+6. Continue to the next solution area at the user's request, or follow the appropriate delivery or handoff workflow.
 
 ## Requesting a Design Update
 
