@@ -36,6 +36,19 @@ Read:
 Conditional reference:
 - `<implementation>/`{{related path}} — Read if {{concrete trigger}}; establish {{fact needed to resolve it}}.
 
+## Operational Readiness
+
+<!-- Before implementation, name only the job-specific operational prerequisites:
+applicable repository skills or procedures, safe non-test preflight checks,
+required starting state, and when to stop with evidence for Execution. Reference
+reusable procedures instead of copying them. Do not assume that a skill proves
+the current environment state or authorizes a mutation. If no additional
+preflight is needed, state that explicitly. Keep tests and Verification Spec
+references out of this Job Spec. -->
+
+- Consult {{relevant repository skill or procedure}} for {{applicable operation}}; confirm {{required starting state}} using {{safe, non-test evidence}}.
+- If {{specific prerequisite is missing or an operational decision is required}}, stop before implementation and report {{observed state and decision needed}} to Execution.
+
 ## Instructions
 
 <!-- Use numbered, actionable instructions grounded in inspected code. State

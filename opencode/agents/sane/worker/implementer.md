@@ -34,6 +34,7 @@ references in the assigned Job Report only when they help explain the outcome.
 Your workflow is as follows:
 
 - Read the Job Spec and implement its required outcome. Resolve ordinary implementation details within its approved behavior and contracts. Report unmet requirements before returning.
+- Before editing, follow its Operational Readiness: consult applicable repository skills, check the required starting state with safe non-test inspection, and return an evidenced prerequisite gap when a condition fails or an operational action needs authorization. A skill is guidance, not proof of current state or permission to mutate it.
 - Treat listed paths as the expected edit surface. Change adjacent code only when necessary for the assigned outcome, and explain material deviations in the Job Report.
 - Use `sane/worker/scout` for a bounded repository question when helpful. Supply the repository's absolute path, inspection scope, and required evidence. Scout has no workstream context; read that context yourself and give it only the implementation question.
 - Use `sane/worker/researcher` for a bounded external-evidence question when needed. Supply the question, exact sources and context, and an assigned research report path. Review its findings against the Job Spec before applying them; report any conflict with approved behavior to the launching assistant.

@@ -8,6 +8,7 @@ export const AGENT_FILENAMES = [
   "sane/assistant/design.md",
   "sane/assistant/engineering.md",
   "sane/assistant/execution.md",
+  "sane/assistant/knowledge.md",
   "sane/assistant/planning.md",
   "sane/assistant/research.md",
   "sane/worker/fixer.md",
@@ -30,6 +31,9 @@ export const ROLE_SKILL_NAMES = [
   "sane-assistant-execution-pickup",
   "sane-assistant-execution-assistance",
   "sane-assistant-execution-delivery",
+  "sane-assistant-knowledge-pickup",
+  "sane-assistant-knowledge-assistance",
+  "sane-assistant-knowledge-delivery",
   "sane-assistant-planning-pickup",
   "sane-assistant-planning-assistance",
   "sane-assistant-planning-delivery",
@@ -37,6 +41,9 @@ export const ROLE_SKILL_NAMES = [
   "sane-assistant-research-assistance",
   "sane-assistant-research-delivery",
 ] as const
+
+/** Project-authored skills needed across implementation repositories. */
+export const GLOBAL_SUPPORT_SKILL_NAMES = ["review-opencode-sessions"] as const
 
 const RETIRED_ROLE_SKILL_NAMES = [
   "sane-design-assistant-role",
@@ -124,6 +131,8 @@ export interface AgentContextPackageInstallationOptions {
   modelConfigPath?: string
   dryRun?: boolean
   overwrite?: boolean
+  /** Install only this global support skill, leaving agents, plugins, and other skills untouched. */
+  onlySkill?: (typeof GLOBAL_SUPPORT_SKILL_NAMES)[number]
   write?: (line: string) => void
 }
 
@@ -188,6 +197,10 @@ function installationEntries(
     ...ROLE_SKILL_NAMES.map((skillName) => ({
       source: join(sourceRoot, "skills", skillName, "SKILL.md"),
       destination: join(homeDirectory, ".agents", "skills", skillName, "SKILL.md"),
+    })),
+    ...GLOBAL_SUPPORT_SKILL_NAMES.map((skillName) => ({
+      source: join(sourceRoot, ".opencode", "skills", skillName, "SKILL.md"),
+      destination: join(homeDirectory, ".config", "opencode", "skills", skillName, "SKILL.md"),
     })),
     {
       rewriteImports: true,
@@ -424,10 +437,15 @@ export async function installSaneAgentContextPackages(
   const write = options.write ?? console.log
   const homeDirectory = resolveHomeDirectory(options.homeDirectory)
   const sourceRoot = resolve(options.sourceRoot ?? DEFAULT_SOURCE_ROOT)
-  const sourcedEntries = await validateSources([
-    ...installationEntries(sourceRoot, homeDirectory),
-    ...await resourceInstallationEntries(sourceRoot, homeDirectory),
-  ])
+  if (options.onlySkill !== undefined && !GLOBAL_SUPPORT_SKILL_NAMES.includes(options.onlySkill)) {
+    throw new AgentContextPackageInstallationError(`Unknown global support skill: ${options.onlySkill}`)
+  }
+  const sourcedEntries = await validateSources(options.onlySkill === undefined
+    ? [...installationEntries(sourceRoot, homeDirectory), ...await resourceInstallationEntries(sourceRoot, homeDirectory)]
+    : [{
+        source: join(sourceRoot, ".opencode", "skills", options.onlySkill, "SKILL.md"),
+        destination: join(homeDirectory, ".config", "opencode", "skills", options.onlySkill, "SKILL.md"),
+      }])
   const rewrittenEntries = sourcedEntries.map((entry) =>
     entry.rewriteImports ? { ...entry, content: rewritePluginImports(entry.content.toString()) } : entry,
   )
@@ -452,12 +470,13 @@ export async function installSaneAgentContextPackages(
       throw new AgentContextPackageInstallationError((error as Error).message)
     }
   }
-  const configPackageEntry = await loadConfigPackageEntry(homeDirectory, sourceRoot)
+  const configPackageEntry = options.onlySkill === undefined
+    ? [await loadConfigPackageEntry(homeDirectory, sourceRoot)] : []
   const plannedEntries = await planDestinations(
-    [...configuredEntries, configPackageEntry],
+    [...configuredEntries, ...configPackageEntry],
     options.overwrite === true,
   )
-  const removals = await planRetiredSkillRemovals(homeDirectory)
+  const removals = options.onlySkill === undefined ? await planRetiredSkillRemovals(homeDirectory) : []
   const result: AgentContextPackageInstallationResult = {
     homeDirectory,
     dryRun: options.dryRun === true,
@@ -495,12 +514,13 @@ export async function installSaneAgentContextPackages(
 }
 
 export const USAGE =
-  "Usage: sane install context-packages [--dry-run] [--overwrite] [--model-config <path>]"
+  "Usage: sane install context-packages [--dry-run] [--overwrite] [--model-config <path>] [--only <global-support-skill>]"
 
-export function parseCliArguments(args: string[]): { dryRun: boolean; overwrite: boolean; modelConfigPath?: string } {
+export function parseCliArguments(args: string[]): { dryRun: boolean; overwrite: boolean; modelConfigPath?: string; onlySkill?: (typeof GLOBAL_SUPPORT_SKILL_NAMES)[number] } {
   let dryRun = false
   let overwrite = false
   let modelConfigPath: string | undefined
+  let onlySkill: (typeof GLOBAL_SUPPORT_SKILL_NAMES)[number] | undefined
   const positional: string[] = []
   let parseOptions = true
 
@@ -521,6 +541,13 @@ export function parseCliArguments(args: string[]): { dryRun: boolean; overwrite:
         throw new AgentContextPackageInstallationError("--model-config may only be specified once.")
       }
       modelConfigPath = path
+    } else if (parseOptions && argument === "--only") {
+      const skill = args[++index]
+      if (!skill || !GLOBAL_SUPPORT_SKILL_NAMES.includes(skill as (typeof GLOBAL_SUPPORT_SKILL_NAMES)[number])) {
+        throw new AgentContextPackageInstallationError(`--only requires a global support skill: ${GLOBAL_SUPPORT_SKILL_NAMES.join(", ")}.`)
+      }
+      if (onlySkill !== undefined) throw new AgentContextPackageInstallationError("--only may only be specified once.")
+      onlySkill = skill as (typeof GLOBAL_SUPPORT_SKILL_NAMES)[number]
     } else if (parseOptions && argument.startsWith("-")) {
       throw new AgentContextPackageInstallationError(`Unknown option: ${argument}`)
     } else {
@@ -531,7 +558,10 @@ export function parseCliArguments(args: string[]): { dryRun: boolean; overwrite:
   if (positional.length > 0) {
     throw new AgentContextPackageInstallationError("This command does not accept positional arguments.")
   }
-  return { dryRun, overwrite, ...(modelConfigPath === undefined ? {} : { modelConfigPath }) }
+  if (onlySkill !== undefined && modelConfigPath !== undefined) {
+    throw new AgentContextPackageInstallationError("--only cannot be combined with --model-config.")
+  }
+  return { dryRun, overwrite, ...(modelConfigPath === undefined ? {} : { modelConfigPath }), ...(onlySkill === undefined ? {} : { onlySkill }) }
 }
 
 export async function runCli(args: string[]): Promise<number> {
