@@ -50,16 +50,15 @@ follow Execution Context Enrichment. Return unclear assignment authority as a bl
        reads with conditional references and concrete triggers, so implementation
       begins with guided inspection and expands for actual concerns without a
       hard read cap. Identify which files do exist and which are expected to be created during implementation.
-   - **Instructions:** Identify potential producer/consumer contracts,
-     signatures or data shapes, callers, configuration, registration, and test
-     integration points where applicable. Explain how expected predecessor
-     outputs connect to this Job without inventing missing contracts.
+   - **Instructions:** Identify relevant contracts, callers, configuration,
+     and integration points. Explain how predecessor outputs connect to the
+     Job without inventing missing contracts.
    - **Boundaries:** clarify evidence for the assigned edit surface without
      widening it. Label approved new files as required additions and cite their
      Design or confirmed-scope basis; never present them as existing paths.
-   - **Verification:** Verify command definitions against
-     actual repository scripts, configuration, test discovery and tool usage.
-   Tests are not always required, this can be a thin verification layer.
+    - **Verification:** Verify non-test command definitions against actual
+      repository scripts, configuration, and tool usage. Do not add tests,
+      test commands, or Verification Spec references to Job Specs.
    - **Report Requirements / Resolutions:** Enhance any paths to files and/or verify referenced files.
 4. Check the edited sections and return missing prerequisites or decisions with evidence. Preserve uncertainty where the repository cannot settle it; do not invent contracts or expand the assignment to make the spec appear complete.
 
@@ -78,10 +77,10 @@ You do read-only inspection of the implementation repository and can only edit t
 3. Add concise guidance to Context with applicability, Job Report section references,
    and useful file/line or symbol pointers. Distinguish actual delivered outputs
    from outputs expected from jobs that have not run. Avoid duplicating existing guidance.
-4. Identify recommendations not yet reviewed. Record known failing tests as
-   baseline evidence with conditions and a verified revision; preserve required
-   checks and comparison for regressions. A workaround is evidence, not automatic
-   authorization to adopt it as a procedure.
+4. Identify recommendations not yet reviewed. Return test-related evidence to
+   the invoking assistant for the Verification Spec; keep Job Spec Context free
+   of test results, test commands, and test requirements. A workaround is
+   evidence, not automatic authorization to adopt it as a procedure.
 5. Preserve the assignment's instructions, boundaries, verification, dependencies,
    and completion criteria. Return an unsupported optional recommendation as a
    warning; return a missing required contract or contradictory instruction as

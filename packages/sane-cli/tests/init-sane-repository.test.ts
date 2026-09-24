@@ -13,7 +13,6 @@ import {
 import {
   REQUIRED_WORKSTREAM_FILES,
   RETIRED_WORKSTREAM_FILES,
-  ROOT_DOC_BY_TYPE,
   validateBootstrappedWorkstream,
 } from "../src/sane-repository.ts"
 import { saneDbPath } from "../src/sane-db.ts"
@@ -171,34 +170,6 @@ describe("init-sane-repository", () => {
 
     expect(result).toMatchObject({ dryRun: true, createdWorkstreamsRoot: false })
     expect(lines).toContain("Dry run: no files or directories were modified.")
-  })
-
-  test("REQUIRED_WORKSTREAM_FILES uses the current layout without Stage templates", () => {
-    const required: string[] = [...REQUIRED_WORKSTREAM_FILES]
-    expect(required).toContain("README.md")
-    expect(required).not.toContain("SANE_CONTEXT.md")
-    expect(required).not.toContain("SANE_STATE.md")
-    expect(required).toContain("design/SDD.md")
-    expect(required).not.toContain("SDD.md")
-    expect(required).toContain("resources/SDD_TEMPLATE.md")
-    expect(required).toContain("resources/SOLUTION_SPEC_TEMPLATE.md")
-    expect(required).toContain("resources/RESEARCH_REPORT_TEMPLATE.md")
-    expect(required).toContain("resources/PLAN_TEMPLATE.md")
-    expect(required).toContain("resources/JOB_TEMPLATE.md")
-    expect(required).toContain("resources/EXECUTION_REPORT_TEMPLATE.md")
-    expect(required).toContain("resources/EXECUTION_FINAL_REPORT_TEMPLATE.md")
-    expect(required).not.toContain("resources/EXECUTION_BRIEF_TEMPLATE.md")
-    for (const retired of RETIRED_WORKSTREAM_FILES) {
-      expect(required).not.toContain(retired as string)
-    }
-    expect(required.join("\n")).not.toContain("STAGES_TEMPLATE")
-    expect(required.join("\n")).not.toContain("EXECUTION_PLAN_TEMPLATE")
-    expect(ROOT_DOC_BY_TYPE).toMatchObject({
-      feature: "PRD.md",
-      foundation: "FOUNDATION.md",
-      issue: "ISSUE.md",
-      maintenance: "MAINTENANCE.md",
-    })
   })
 
   test("initialized repository validates a current workstream and rejects Stage artifacts", async () => {

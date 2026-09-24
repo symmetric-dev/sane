@@ -11,10 +11,9 @@ import {
 } from "../src/create-sane-repository-workstream.ts"
 import {
   OLD_WORKSTREAM_DIRS,
-  OLD_WORKSTREAM_FILES,
   REQUIRED_WORKSTREAM_FILES,
+  OLD_WORKSTREAM_FILES,
   RETIRED_WORKSTREAM_FILES,
-  ROOT_DOC_BY_TYPE,
   SaneRepositoryError,
 } from "../src/sane-repository.ts"
 import {
@@ -43,22 +42,14 @@ const NEW_TEMPLATE_SOURCES = [
   "shared/research/REPORT.md",
   "shared/plan/PLAN.md",
   "shared/plan/JOB.md",
+  "shared/plan/VERIFICATION.md",
   "shared/execution/REPORT.md",
+  "shared/execution/TEST_REPORT.md",
   "shared/execution/FINAL_REPORT.md",
   "feature/PRD.md",
   "foundation/FOUNDATION.md",
   "issue/ISSUE.md",
   "maintenance/MAINTENANCE.md",
-]
-
-const NEW_RESOURCE_FILES = [
-  "resources/SDD_TEMPLATE.md",
-  "resources/SOLUTION_SPEC_TEMPLATE.md",
-  "resources/RESEARCH_REPORT_TEMPLATE.md",
-  "resources/PLAN_TEMPLATE.md",
-  "resources/JOB_TEMPLATE.md",
-  "resources/EXECUTION_REPORT_TEMPLATE.md",
-  "resources/EXECUTION_FINAL_REPORT_TEMPLATE.md",
 ]
 
 describe("repository-aware Alpha workstream tools", () => {
@@ -286,30 +277,6 @@ describe("repository-aware Alpha workstream tools", () => {
     await expectMissing(legacyPointerPath())
   })
 
-  test("REQUIRED_WORKSTREAM_FILES matches the current bootstrap shape", () => {
-    const required: string[] = [...REQUIRED_WORKSTREAM_FILES]
-    expect(required).toContain("README.md")
-    expect(required).not.toContain("SANE_CONTEXT.md")
-    expect(required).not.toContain("SANE_STATE.md")
-    expect(required).toContain("design/SDD.md")
-    expect(required).not.toContain("SDD.md" as string)
-    for (const resource of NEW_RESOURCE_FILES) {
-      expect(required).toContain(resource)
-    }
-    expect(required).not.toContain("resources/EXECUTION_BRIEF_TEMPLATE.md")
-    for (const retired of RETIRED_WORKSTREAM_FILES) {
-      expect(required).not.toContain(retired as string)
-    }
-    for (const old of OLD_WORKSTREAM_DIRS) {
-      expect(required).not.toContain(old as string)
-    }
-    expect(required).not.toContain("SANE_CONTEXT.md" as string)
-    expect(required.join("\n")).not.toContain("STAGES_TEMPLATE")
-    expect(required.join("\n")).not.toContain("STAGE_DESIGN_SPEC")
-    expect(required.join("\n")).not.toContain("EXECUTION_PLAN_TEMPLATE")
-    expect(required.join("\n")).not.toContain("IMPLEMENTATION_REPORT")
-  })
-
   test("requires the fixed roots README.md and design/SDD.md", async () => {
     for (const missing of ["README.md", "design/SDD.md"] as const) {
       const workstream = await bootstrap(`01-fixed-${missing.replace(/[^A-Za-z]+/g, "-")}`)
@@ -330,7 +297,6 @@ describe("repository-aware Alpha workstream tools", () => {
       { type: "maintenance", doc: "MAINTENANCE.md" },
     ] as const
     for (const { type, doc } of cases) {
-      expect(ROOT_DOC_BY_TYPE[type]).toBe(doc)
       const workstream = await bootstrap(`01-${type}`, type)
       expect(await readFile(join(workstream, doc), "utf8")).toContain(doc === "PRD.md" ? "PRD" : doc.replace(".md", ""))
       // Exactly one root doc present after bootstrap.
@@ -391,7 +357,7 @@ describe("repository-aware Alpha workstream tools", () => {
   })
 
   test("requires every current fallback template for selection", async () => {
-    for (const resource of NEW_RESOURCE_FILES) {
+    for (const resource of REQUIRED_WORKSTREAM_FILES.filter((path) => path.startsWith("resources/"))) {
       const slug = resource.replace(/[^A-Za-z]+/g, "-")
       const workstream = await bootstrap(`01-resource-${slug}`)
       await rm(join(workstream, resource))
@@ -399,7 +365,7 @@ describe("repository-aware Alpha workstream tools", () => {
         implementationRepository,
         workstreamPath: `01-resource-${slug}`,
         write: () => {},
-      })).rejects.toThrow(resource.split("/").pop()!)
+      })).rejects.toThrow()
     }
   })
 

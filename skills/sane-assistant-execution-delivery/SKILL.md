@@ -7,8 +7,8 @@ description: Use when the user requests the Final Report and Execution delivery 
 
 ## Completion Checks
 
-1. On the user's request for the Final Report, check Job Reports for carried-out work and review dispositions, accepted limitations, and commit references available in the session. Identify incomplete work without reconstructing every attempt.
-2. Write `execution/FINAL_REPORT.md` using `resources/EXECUTION_FINAL_REPORT_TEMPLATE.md`. Synthesize delivered outcomes and remaining limitations from Job Reports; link evidence rather than copying logs or coordination history.
+1. On the user's request for the Final Report, check Job Reports, Test Reports, review dispositions, accepted limitations, and commit references available in the session. Identify incomplete work without reconstructing every attempt.
+2. Write `execution/FINAL_REPORT.md` using `resources/EXECUTION_FINAL_REPORT_TEMPLATE.md`. Synthesize delivered outcomes and remaining limitations from the reports; link evidence rather than copying logs or coordination history.
 3. Run `sane validate execution`.
 
 ## User Review and Approval

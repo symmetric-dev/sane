@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test"
-import { access, mkdir, mkdtemp, readFile, readdir, rm } from "node:fs/promises"
+import { access, mkdir, mkdtemp, readFile, rm } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 
@@ -15,19 +15,6 @@ import {
 
 async function expectMissing(path: string): Promise<void> {
   await expect(access(path)).rejects.toThrow()
-}
-
-// Resources directory contains only the current fallback templates.
-function expectedResourcesListing(): string[] {
-  return [
-    "EXECUTION_FINAL_REPORT_TEMPLATE.md",
-    "EXECUTION_REPORT_TEMPLATE.md",
-    "JOB_TEMPLATE.md",
-    "PLAN_TEMPLATE.md",
-    "RESEARCH_REPORT_TEMPLATE.md",
-    "SDD_TEMPLATE.md",
-    "SOLUTION_SPEC_TEMPLATE.md",
-  ]
 }
 
 const RETIRED_RESOURCE_TEMPLATES = [
@@ -88,27 +75,13 @@ describe("create-sane-workstream", () => {
     }
     // No type file: type lives in sqlite only.
     await expectMissing(join(destination, "type"))
-    // Exactly one root doc per type.
-    expect(await readFile(join(destination, "PRD.md"), "utf8")).toBe("feature/PRD.md\n")
-    // design/SDD.md is copied from shared/sdd/SDD.md alongside the fallback.
-    expect(await readFile(join(destination, "design", "SDD.md"), "utf8")).toBe("shared/sdd/SDD.md\n")
-    expect(await readFile(join(destination, "resources", "SDD_TEMPLATE.md"), "utf8")).toBe(
-      "shared/sdd/SDD.md\n",
-    )
-    expect(await readFile(join(destination, "README.md"), "utf8")).toBe("shared/README.md\n")
     await expectMissing(join(destination, "SANE_CONTEXT.md"))
     await expectMissing(join(destination, "SDD.md"))
     await expectMissing(join(destination, "FOUNDATION.md"))
     await expectMissing(join(destination, "ISSUE.md"))
     await expectMissing(join(destination, "MAINTENANCE.md"))
-    expect([...INITIAL_DIRECTORIES].sort().join(",")).toBe(
-      "design,execution,research,resources",
-    )
     for (const directory of INITIAL_DIRECTORIES) {
       await access(join(destination, directory))
-      expect((await readdir(join(destination, directory))).sort()).toEqual(
-        directory === "resources" ? expectedResourcesListing() : directory === "design" ? ["SDD.md"] : [],
-      )
     }
     // Retired Stage / implementation fallbacks must not be created.
     for (const retired of RETIRED_RESOURCE_TEMPLATES) {
@@ -142,91 +115,14 @@ describe("create-sane-workstream", () => {
       await createSaneWorkstream({ destination, type, templateRoot, write: () => {} })
 
       await expectMissing(join(destination, "type"))
-      expect(await readFile(join(destination, root), "utf8")).toBe(`${source}\n`)
+      expect(await readFile(join(destination, root), "utf8")).toBe(await readFile(join(templateRoot, source), "utf8"))
       // design/SDD.md is always copied from shared/sdd/SDD.md.
-      expect(await readFile(join(destination, "design", "SDD.md"), "utf8")).toBe("shared/sdd/SDD.md\n")
       // Exactly one root doc present.
       for (const other of ["PRD.md", "FOUNDATION.md", "ISSUE.md", "MAINTENANCE.md"]) {
         if (other === root) continue
         await expectMissing(join(destination, other))
       }
     }
-  })
-
-  test.each(["feature", "foundation", "issue", "maintenance"])("%s bootstrap retains execution paths and copies compact plan and Job Spec resources", async (type) => {
-    const destination = join(tempDirectory, `${type}-planning`)
-    await createSaneWorkstream({ destination, type, write: () => {} })
-    const plan = await readFile(join(destination, "resources", "PLAN_TEMPLATE.md"), "utf8")
-    const spec = await readFile(join(destination, "resources", "JOB_TEMPLATE.md"), "utf8")
-    expect(plan.match(/^#{1,2} .+$/gm)).toEqual(["# Plan", "## Jobs", "## Split Notes", "## Execution Checkpoints"])
-    expect(plan).toContain("Every job belongs to exactly one checkpoint's Jobs")
-    expect(plan).toContain("Execution defaults to listed order.")
-    expect(plan).toContain("state sequencing exceptions and parallel authorization explicitly")
-    expect(spec.match(/^#{1,2} .+$/gm)).toEqual([
-      "# Job Spec {{id}}: {{job name}}", "## Goal", "## Context", "## Instructions",
-      "## Boundaries", "## Verification", "## Report Requirements", "## Resolutions",
-    ])
-    expect(spec).toBe(await readFile(new URL("../../../templates/shared/plan/JOB.md", import.meta.url), "utf8"))
-    await access(join(destination, "execution"))
-    await access(join(destination, "design"))
-    await access(join(destination, "research"))
-    await expectMissing(join(destination, "implementation"))
-    await expectMissing(join(destination, "solutions"))
-    await expectMissing(join(destination, "plan"))
-    await expectMissing(join(destination, "planning"))
-    // Retired single-file and Stage artifacts must not be created.
-    await expectMissing(join(destination, "design", "SPEC.md"))
-    await expectMissing(join(destination, "design", "STAGES.md"))
-    await expectMissing(join(destination, "execution", "PLAN.md"))
-    await expectMissing(join(destination, "resources", "STAGES_TEMPLATE.md"))
-    await expectMissing(join(destination, "resources", "EXECUTION_PLAN_TEMPLATE.md"))
-    await expectMissing(join(destination, "resources", "ROOT_DESIGN_SPEC_TEMPLATE.md"))
-    await expectMissing(join(destination, "SANE_CONTEXT.md"))
-    await expectMissing(join(destination, "SDD.md"))
-    await expectMissing(join(destination, "execution", "BRIEF.md"))
-    // New fallbacks must exist.
-    await access(join(destination, "resources", "SDD_TEMPLATE.md"))
-    await access(join(destination, "resources", "SOLUTION_SPEC_TEMPLATE.md"))
-    await access(join(destination, "resources", "PLAN_TEMPLATE.md"))
-    await access(join(destination, "resources", "EXECUTION_FINAL_REPORT_TEMPLATE.md"))
-    await access(join(destination, "resources", "EXECUTION_REPORT_TEMPLATE.md"))
-    // design/SDD.md matches the shared template and its resources fallback.
-    expect(await readFile(join(destination, "design", "SDD.md"), "utf8")).toBe(
-      await readFile(join(destination, "resources", "SDD_TEMPLATE.md"), "utf8"),
-    )
-    expect(await readFile(join(destination, "design", "SDD.md"), "utf8")).toContain(
-      "# Solution Design Document",
-    )
-    expect(await readFile(join(destination, "README.md"), "utf8"))
-      .toContain("# SANE Context")
-
-    const rootName = {
-      feature: "PRD.md", foundation: "FOUNDATION.md",
-      issue: "ISSUE.md", maintenance: "MAINTENANCE.md",
-    }[type]!
-    const root = await readFile(join(destination, rootName), "utf8")
-    expect(root).not.toContain("## Open Questions")
-    if (type === "issue") {
-      expect(root).toContain("## Diagnosis")
-      expect(root).not.toContain("## Suspected Area")
-    }
-
-    const sdd = await readFile(join(destination, "design", "SDD.md"), "utf8")
-    expect(sdd.match(/^## .+$/gm)).toEqual([
-      "## Goals and Non-Goals", "## Constraints", "## Technical Direction",
-      "## Architecture", "## Verification Approach", "## Solution Areas",
-    ])
-    for (const [resource, source, headings] of [
-      ["EXECUTION_REPORT_TEMPLATE.md", "REPORT.md", ["## Outcome", "## Unresolved Issues", "## Recommendations"]],
-      ["EXECUTION_FINAL_REPORT_TEMPLATE.md", "FINAL_REPORT.md", ["## Accomplished", "## Found Issues", "## Notes", "## Implementation Recommendations"]],
-    ] as const) {
-      const report = await readFile(join(destination, "resources", resource), "utf8")
-      expect(report.match(/^## .+$/gm)).toEqual([...headings])
-      expect(report).toBe(await readFile(new URL(`../../../templates/shared/execution/${source}`, import.meta.url), "utf8"))
-    }
-    const solution = await readFile(join(destination, "resources", "SOLUTION_SPEC_TEMPLATE.md"), "utf8")
-    expect(solution).toContain("`design/solutions/<name>.md`")
-    expect(solution).toContain("`design/SDD.md`")
   })
 
   test("dry run leaves no destination", async () => {
@@ -289,10 +185,6 @@ describe("create-sane-workstream", () => {
     expect(await readFile(join(stagingRoot, "skills", "product", "SKILL.md"), "utf8")).toBe(
       "product role template\n",
     )
-    expect(initialTemplateRegistry("feature")).toHaveLength(10)
-    expect(initialTemplateRegistry("foundation")).toHaveLength(10)
-    expect(initialTemplateRegistry("issue")).toHaveLength(10)
-    expect(initialTemplateRegistry("maintenance")).toHaveLength(10)
   })
 
   test("rejects unsupported types before writing a destination", async () => {

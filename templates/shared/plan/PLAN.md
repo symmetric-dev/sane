@@ -40,14 +40,19 @@ split; brevity must not obscure necessary execution relationships. -->
 <!-- Define checkpoints at coherent review boundaries, especially before major
 dependency transitions. Every job belongs to exactly one checkpoint's Jobs
 column, in execution order; include a final checkpoint covering the remaining
-jobs. A parallel batch must fit wholly inside one checkpoint. Additional review
-context may include earlier jobs without assigning them to another checkpoint.
+jobs. A parallel batch must fit wholly inside one checkpoint. Author a matching
+`execution/verification/<checkpoint-id>.md` from the Verification Spec template
+for each checkpoint, replacing spaces in the checkpoint label with hyphens in
+the lowercase filename (for example, `Checkpoint 1 follow-up` becomes
+`checkpoint-1-follow-up.md`). Additional
+review context may include earlier jobs without
+assigning them to another checkpoint.
 
 | Checkpoint | After job(s) | Jobs | Review purpose / earlier context |
 | --- | --- | --- | --- |
-| CP1 | 03 | 01, 02, 03 | Backend ready for integration |
-| CP2 | 04 | 04 | Integration with backend from CP1 |
-| CP3 | 07 | 05, 06, 07 | Completed frontend flow |
+| Checkpoint 1 | 03 | 01, 02, 03 | Backend ready for integration |
+| Checkpoint 2 | 04 | 04 | Integration with backend from Checkpoint 1 |
+| Checkpoint 3 | 07 | 05, 06, 07 | Completed frontend flow |
 
 Checkpoints organize detailed review and commits; record intended boundaries
 here, not progress or commit hashes. Reconcile coverage, dependencies, and

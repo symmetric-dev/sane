@@ -16,6 +16,7 @@ export const AGENT_FILENAMES = [
   "sane/worker/researcher.md",
   "sane/worker/reviewer.md",
   "sane/worker/scout.md",
+  "sane/worker/tester.md",
 ] as const
 
 export const ROLE_SKILL_NAMES = [

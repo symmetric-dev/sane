@@ -55,13 +55,11 @@ Describe the boundary itself rather than naming the job that owns other work. --
 
 ## Verification
 
-<!-- List meaningful checks with commands, working directories, prerequisites,
-and expected outcomes. Mark future tests/commands as required additions with
-their approved basis, not existing verified checks. State evidence limitations. -->
+<!-- List non-test checks available to the Implementer, such as typechecking,
+static analysis, or a build, with working directories and expected outcomes.
+Keep test work in the Verification Spec, not in this Job Spec. -->
 
-- From `<implementation>/`{{directory}}, run {{verified command}} with {{prerequisites}}. Expect {{observable result establishing the required behavior}}.
-- Required addition: {{meaningful test or check}} establishing {{behavior or regression protection}}, based on {{requirement or contract}}.
-- {{Unavailable check or evidence limitation, when applicable.}}
+- From `<implementation>/`{{directory}}, run {{non-test command}}. Expect {{observable result}}.
 
 ## Report Requirements
 

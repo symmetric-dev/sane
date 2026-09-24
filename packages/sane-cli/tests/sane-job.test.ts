@@ -74,8 +74,9 @@ describe("sane-job (progress tracking)", () => {
     })
     identity = await resolveSaneIdentity(implementationRepository, "01-demo")
     workstreamDir = join(identity.repoRoot, ".sane", "workstreams", identity.workstreamId)
-    await writeDoc("execution/PLAN.md", "# Plan\nReal plan.\n")
+    await writeDoc("execution/PLAN.md", "# Plan\n## Execution Checkpoints\n| Checkpoint | After job(s) | Jobs | Review purpose |\n| --- | --- | --- | --- |\n| Checkpoint 1 | 01 | 01 | Review delivery |\n")
     await writeDoc("execution/jobs/01-first.md", "# Job\nReal job.\n")
+    await writeDoc("execution/verification/checkpoint-1.md", "# Verification Spec: Checkpoint 1\nCheck delivery.\n")
     await runSaneApproveCommand({
       implementationRepository,
       workstreamPath: "01-demo",
