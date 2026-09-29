@@ -19,6 +19,8 @@ workstream, and everyday operation.
 
 [Documentation map](docs/README.md) · [Historical archive](docs/_legacy/README.md)
 
+[SANE App](docs/sane-app/README.md) · [Ongoing App work](docs/sane-app/ongoing/README.md)
+
 ## Development
 
 Requires [Bun](https://bun.sh/). From this checkout:
@@ -31,8 +33,20 @@ bun run test
 
 - `bin/sane.ts` — CLI entry point.
 - `packages/sane-cli/` — implementation and tests.
+- `packages/sane-app/` — browser App and server.
+- `packages/sane-core/` — shared domain operations.
+- `docs/sane-app/` — App documentation and ongoing checkpoint work.
+- `poc/` — historical proof-of-concept implementations.
 - `opencode/` — agents and SANE integration plugin.
 - `skills/` — assistant role contracts.
 - `templates/` — workstream document templates.
 
 The package is private to prevent accidental package publication.
+## Run SANE App from this repository
+
+Use `bun run start:app --port 6700` (`bun run start` is an alias). It builds the
+App assets and starts a foreground server with the repository root as the default
+execution cwd. `bun run start:app --help` lists options without building or starting.
+The short launch is App-only: regular `.sane` workstreams are not loaded.
+See the [operator guide](packages/sane-app/HUMAN-OPERATOR-GUIDE.md#root-launch-and-current-storage-model)
+for App initialization, existing-store restart and Tailscale origin setup.

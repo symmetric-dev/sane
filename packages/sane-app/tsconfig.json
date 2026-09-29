@@ -1,0 +1,15 @@
+{
+  "compilerOptions": {
+    "target": "ESNext",
+    "module": "ESNext",
+    "moduleResolution": "bundler",
+    "strict": true,
+    "jsx": "react-jsx",
+    "lib": ["ESNext", "DOM", "DOM.Iterable"],
+    "skipLibCheck": true,
+    "noEmit": true,
+    "types": ["bun"],
+    "allowImportingTsExtensions": true
+  },
+  "include": ["start.ts", "setup.ts", "server.ts", "build.ts", "src/**/*.ts", "hooks/**/*.ts", "frontend/**/*.ts", "frontend/**/*.tsx"]
+}

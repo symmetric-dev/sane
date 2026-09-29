@@ -8,8 +8,15 @@
     "sane": "./bin/sane.ts"
   },
   "scripts": {
+    "start": "bun run start:app",
+    "start:app": "bun packages/sane-app/start.ts",
+    "setup:app": "bun packages/sane-app/setup.ts",
     "test": "bun test",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "bun run typecheck:workspace && bun run typecheck:app",
+    "typecheck:workspace": "tsc --noEmit",
+    "typecheck:app": "bun run --cwd packages/sane-app typecheck",
+    "build": "bun run build:app",
+    "build:app": "bun run --cwd packages/sane-app build"
   },
   "devDependencies": {
     "@opencode/plugin": "^2.0.8",

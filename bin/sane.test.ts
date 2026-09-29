@@ -3,24 +3,7 @@ import { mkdtemp, readFile, rm, access, realpath } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 
-import { COMMANDS, type AlphaCommand, runSaneAlpha } from "./sane.ts"
-
-const expectedCommands: AlphaCommand[] = [
-  "init",
-  "create",
-  "select",
-  "install",
-  "view",
-  "status",
-  "validate",
-  "approve",
-  "provide",
-  "job",
-  "research",
-  "handoff",
-  "link",
-  "sessions",
-]
+import { USAGE, runSaneAlpha } from "./sane.ts"
 
 describe("sane dispatcher", () => {
   test("direct and dispatched installers accept YAML config and report errors before writes", async () => {
@@ -29,13 +12,13 @@ describe("sane dispatcher", () => {
       const config = join(temporaryDirectory, "my models.yaml")
       await Bun.write(config, "sane/worker/scout: openai/gpt-5\n")
       for (const [index, command] of [
-        ["alpha/packages/sane-cli/src/install-sane-agent-context-packages.ts"],
-        ["alpha/bin/sane.ts", "install", "context-packages"],
+        ["packages/sane-cli/src/install-sane-agent-context-packages.ts"],
+        ["bin/sane.ts", "install", "context-packages"],
       ].entries()) {
         const home = join(temporaryDirectory, `home-${index}`)
         const run = async (...args: string[]) => {
           const child = Bun.spawn([process.execPath, ...command, ...args], {
-            cwd: new URL("../../", import.meta.url).pathname,
+            cwd: new URL("../", import.meta.url).pathname,
             env: { ...process.env, SANE_HOME: home }, stdout: "pipe", stderr: "pipe",
           })
           const [exit, stdout, stderr] = await Promise.all([child.exited, new Response(child.stdout).text(), new Response(child.stderr).text()])
@@ -58,29 +41,14 @@ describe("sane dispatcher", () => {
     }
   })
 
-  test("exposes every repository-aware Alpha utility and not the low-level bootstrap", () => {
-    expect(Object.keys(COMMANDS).sort()).toEqual([...expectedCommands].sort())
-    expect(COMMANDS).not.toHaveProperty("create-sane-workstream")
+  test("advertises supported shared-core commands rather than candidate roots", () => {
+    for (const command of ["init", "create", "select", "view", "status", "validate", "approve", "provide", "job", "research", "sessions", "authority", "conversation", "phase", "audit"]) expect(USAGE).toContain(command)
+    expect(USAGE).not.toContain("--state-root")
   })
 
-  test("forwards each command argument without modification and returns its exit status", async () => {
-    const received: Array<{ command: AlphaCommand; args: string[] }> = []
-    const handlers = Object.fromEntries(expectedCommands.map((command, index) => [
-      command,
-      async (args: string[]) => {
-        received.push({ command, args })
-        return index + 10
-      },
-    ])) as Record<AlphaCommand, (args: string[]) => Promise<number>>
-    const argumentsToPreserve = ["", "two words", "--", "--type", "feature"]
-
-    const result = await runSaneAlpha(
-      ["create", ...argumentsToPreserve],
-      handlers,
-    )
-
-    expect(result).toBe(expectedCommands.indexOf("create") + 10)
-    expect(received).toEqual([{ command: "create", args: argumentsToPreserve }])
+  test("rejects retired and malformed operations without injectable alternate handlers", async () => {
+    expect(await runSaneAlpha(["candidate", "init"])).toBe(1)
+    expect(await runSaneAlpha(["create", "--unknown"])).toBe(1)
   })
 
   test("prints help successfully and rejects an unknown command", async () => {

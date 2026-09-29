@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test"
-import { access, lstat, mkdir, mkdtemp, readFile, realpath, rm, symlink } from "node:fs/promises"
+import { access, lstat, mkdir, mkdtemp, readFile, readdir, realpath, rm, symlink } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { dirname, join } from "node:path"
 
@@ -11,6 +11,7 @@ import {
   OPENCODE_PLUGIN_DEPENDENCY,
   OPENCODE_PLUGIN_VERSION,
   PLUGIN_SRC_FILES,
+  PLUGIN_CORE_SRC_FILES,
   ROLE_SKILL_NAMES,
   installSaneAgentContextPackages,
   parseCliArguments,
@@ -26,7 +27,7 @@ function agentFixture(filename: string): string {
 }
 
 function pluginIndexFixture(): string {
-  return `import { Plugin } from "@opencode/plugin"\nimport { openSaneDb } from "../../../packages/sane-cli/src/sane-db.ts"\nplugin sane/index.ts\n`
+  return `import { Plugin } from "@opencode/plugin"\n// NATIVE_CONTEXT_UNAVAILABLE\n`
 }
 
 function pluginSrcFixture(filename: string): string {
@@ -62,6 +63,11 @@ describe("install-sane-agent-context-packages", () => {
     await Bun.write(pluginIndex, pluginIndexFixture())
     for (const filename of PLUGIN_SRC_FILES) {
       const path = join(sourceRoot, "packages", "sane-cli", "src", filename)
+      await mkdir(dirname(path), { recursive: true })
+      await Bun.write(path, pluginSrcFixture(filename))
+    }
+    for (const filename of PLUGIN_CORE_SRC_FILES) {
+      const path = join(sourceRoot, "packages", "sane-core", "src", filename)
       await mkdir(dirname(path), { recursive: true })
       await Bun.write(path, pluginSrcFixture(filename))
     }
@@ -185,7 +191,7 @@ describe("install-sane-agent-context-packages", () => {
     expect(result.created).toContain(installedIndex)
     const installedContent = await readFile(installedIndex, "utf8")
     expect(installedContent).toBe(
-      `import { Plugin } from "@opencode/plugin"\nimport { openSaneDb } from "./sane-src/sane-db.ts"\nplugin sane/index.ts\n`,
+      pluginIndexFixture(),
     )
     expect(installedContent).not.toContain("packages/sane-cli")
     for (const filename of PLUGIN_SRC_FILES) {
@@ -195,7 +201,7 @@ describe("install-sane-agent-context-packages", () => {
         "opencode",
         "plugins",
         "sane",
-        "sane-src",
+        "runtime", "packages", "sane-cli", "src",
         filename,
       )
       expect(result.created).toContain(destination)
@@ -209,8 +215,43 @@ describe("install-sane-agent-context-packages", () => {
     )
     expect(result.created).toContain(configPackage)
     expect(JSON.parse(await readFile(configPackage, "utf8"))).toEqual({
-      dependencies: { [OPENCODE_PLUGIN_DEPENDENCY]: OPENCODE_PLUGIN_VERSION },
+      dependencies: { [OPENCODE_PLUGIN_DEPENDENCY]: OPENCODE_PLUGIN_VERSION, "@opencode/client": "2.0.18", "@modelcontextprotocol/sdk": "^1.25.0" },
     })
+  })
+
+  test("actual repository packaging loads the shared-domain native closure", async () => {
+    await installSaneAgentContextPackages({ homeDirectory, write: () => {} })
+    const installed = join(homeDirectory, ".config", "opencode", "plugins", "sane")
+    const content = await readFile(join(installed, "index.ts"), "utf8")
+    expect(content).toBe(rewritePluginImports(await readFile(join(import.meta.dir, "../../../opencode/plugins/sane/index.ts"), "utf8")))
+    expect(content).not.toMatch(/sane-db|sane-src|sane-handoff-tool/)
+    await expectMissing(join(installed, "sane-src"))
+    await expectMissing(join(installed, "sane-core"))
+    await mkdir(join(homeDirectory, "node_modules/@opencode"), { recursive: true })
+    await mkdir(join(homeDirectory, "node_modules/@modelcontextprotocol"), { recursive: true })
+    await symlink(join(import.meta.dir, "../../../node_modules/@opencode/plugin"), join(homeDirectory, "node_modules/@opencode/plugin"))
+    await symlink(join(import.meta.dir, "../node_modules/@opencode/client"), join(homeDirectory, "node_modules/@opencode/client"))
+    await symlink(join(import.meta.dir, "../node_modules/@modelcontextprotocol/sdk"), join(homeDirectory, "node_modules/@modelcontextprotocol/sdk"))
+    const { SanePlugin } = await import(join(installed, "index.ts"))
+    expect(typeof SanePlugin.setup).toBe("function")
+    const native = await import(join(installed, "runtime/packages/sane-cli/src/native-caller.ts"))
+    expect(typeof native.openNativeCaller).toBe("function")
+    const configuration = await import(join(installed, "runtime/packages/sane-cli/src/native-configuration.ts"))
+    const generated = configuration.nativeIntegrationConfiguration({ pluginDirectory: installed, registrationFile: join(homeDirectory, "service.json"), profileRoot: homeDirectory, bindingRoot: join(homeDirectory, "bindings"), bunExecutable: process.execPath })
+    expect(generated.opencode.plugins[0].package).toBe(installed)
+    const { Server } = await import("@modelcontextprotocol/sdk/server/index.js")
+    expect(typeof Server).toBe("function")
+  })
+
+  test.each(["sane-src", "sane-core"])("obsolete %s closure blocks even overwrite without mutation", async (name) => {
+    const stale = join(homeDirectory, ".config", "opencode", "plugins", "sane", name, "writer.ts")
+    await mkdir(dirname(stale), { recursive: true })
+    await Bun.write(stale, "obsolete writer")
+    for (const dryRun of [true, false]) {
+      await expect(installSaneAgentContextPackages(options({ overwrite: true, dryRun }))).rejects.toThrow("Obsolete native plugin closure")
+      expect(await readFile(stale, "utf8")).toBe("obsolete writer")
+      await expectMissing(join(homeDirectory, ".agents"))
+    }
   })
 
   test("installs the global review skill alone without changing existing agent packages", async () => {
@@ -569,9 +610,9 @@ describe("install-sane-agent-context-packages", () => {
   test("rewritePluginImports rewrites only the sane-cli source prefix", () => {
     expect(
       rewritePluginImports(
-        `import { a } from "../../../packages/sane-cli/src/sane-db.ts"\nimport { Plugin } from "@opencode/plugin"\n`,
+        `import { a } from "../../../packages/sane-cli/src/native-caller.ts"\nimport { Plugin } from "@opencode/plugin"\n`,
       ),
-    ).toBe(`import { a } from "./sane-src/sane-db.ts"\nimport { Plugin } from "@opencode/plugin"\n`)
+    ).toBe(`import { a } from "./runtime/packages/sane-cli/src/native-caller.ts"\nimport { Plugin } from "@opencode/plugin"\n`)
   })
 
   test("rejects a missing plugin source before making any destination mutation", async () => {
@@ -579,10 +620,6 @@ describe("install-sane-agent-context-packages", () => {
     await expect(installSaneAgentContextPackages(options())).rejects.toThrow("Required source")
     await expectMissing(homeDirectory)
 
-    await Bun.write(join(sourceRoot, "opencode", "plugins", "sane", "index.ts"), pluginIndexFixture())
-    await rm(join(sourceRoot, "packages", "sane-cli", "src", PLUGIN_SRC_FILES[0]))
-    await expect(installSaneAgentContextPackages(options())).rejects.toThrow("Required source")
-    await expectMissing(homeDirectory)
   })
 
   test("plugin files follow the same overwrite and dry-run semantics", async () => {
@@ -597,7 +634,7 @@ describe("install-sane-agent-context-packages", () => {
     expect(await readFile(installedIndex, "utf8")).toBe("user content\n")
     const result = await installSaneAgentContextPackages(options({ overwrite: true }))
     expect(result.updated).toContain(installedIndex)
-    expect(await readFile(installedIndex, "utf8")).toContain("./sane-src/")
+    expect(await readFile(installedIndex, "utf8")).toContain("NATIVE_CONTEXT_UNAVAILABLE")
   })
 
   test("uses the source package.json plugin version for the config package dep", async () => {
@@ -608,7 +645,7 @@ describe("install-sane-agent-context-packages", () => {
     await installSaneAgentContextPackages(options())
     const configPackage = join(homeDirectory, ".config", "opencode", OPENCODE_CONFIG_PACKAGE_FILENAME)
     expect(JSON.parse(await readFile(configPackage, "utf8"))).toEqual({
-      dependencies: { [OPENCODE_PLUGIN_DEPENDENCY]: "^9.9.9" },
+      dependencies: { [OPENCODE_PLUGIN_DEPENDENCY]: "^9.9.9", "@opencode/client": "2.0.18", "@modelcontextprotocol/sdk": "^1.25.0" },
     })
   })
 
@@ -633,6 +670,8 @@ describe("install-sane-agent-context-packages", () => {
       dependencies: {
         "some-other": "^1.0.0",
         [OPENCODE_PLUGIN_DEPENDENCY]: OPENCODE_PLUGIN_VERSION,
+        "@opencode/client": "2.0.18",
+        "@modelcontextprotocol/sdk": "^1.25.0",
       },
     })
     expect((await installSaneAgentContextPackages(options({ overwrite: true }))).unchanged).toContain(
@@ -643,7 +682,7 @@ describe("install-sane-agent-context-packages", () => {
   test("leaves a user-pinned plugin dep untouched and reports it unchanged", async () => {
     const configPackage = join(homeDirectory, ".config", "opencode", OPENCODE_CONFIG_PACKAGE_FILENAME)
     await mkdir(dirname(configPackage), { recursive: true })
-    const existing = `${JSON.stringify({ dependencies: { [OPENCODE_PLUGIN_DEPENDENCY]: "1.2.10" } }, null, 2)}\n`
+    const existing = `${JSON.stringify({ dependencies: { [OPENCODE_PLUGIN_DEPENDENCY]: "1.2.10", "@opencode/client": "2.0.18", "@modelcontextprotocol/sdk": "^1.25.0" } }, null, 2)}\n`
     await Bun.write(configPackage, existing)
 
     const result = await installSaneAgentContextPackages(options())

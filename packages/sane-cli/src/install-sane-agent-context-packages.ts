@@ -53,51 +53,20 @@ const RETIRED_ROLE_SKILL_NAMES = [
   "sane-research-assistant-role",
 ] as const
 
-/**
- * SANE OpenCode plugin (`sane_link` self-registration tool).
- *
- * `PLUGIN_FILENAMES` are installed from `<sourceRoot>/opencode/plugins/` to
- * `<home>/.config/opencode/plugins/` — the global plugin directory OpenCode
- * V2 auto-loads at startup (per https://opencode.ai/v2/docs/build/plugins/
- * "From local files"; the directory exists on any machine with OpenCode
- * installed).
- * No plugin-local package.json is needed for discovery: local plugins load
- * directly; the only npm dependency (`@opencode/plugin`) resolves via
- * `<home>/.config/opencode/package.json` (see `OPENCODE_PLUGIN_*` below).
- *
- * `PLUGIN_SRC_FILES` is the vendored `sane-cli` closure the plugin imports.
- * A straight copy of `index.ts` would leave its
- * `../../../packages/sane-cli/src/*.ts` imports pointing at
- * `<home>/.config/packages/...` (missing), so the installer copies these
- * sources to `plugins/sane/sane-src/` and rewrites the import prefix in the
- * installed `index.ts` to `./sane-src/`. All vendored files import each
- * other via flat `./*.ts` specifiers, which keep working in the flat
- * destination directory. Keep this list in sync with the relative imports in
- * `opencode/plugins/sane/index.ts`.
- */
-export const PLUGIN_SRC_FILES = [
-  "sane-link-tool.ts",
-  "sane-implementation.ts",
-  "sane-handoff-tool.ts",
-  "sane-handoff-command.ts",
-  "sane-workstream-state.ts",
-  "sane-hash.ts",
-  "sane-db.ts",
-  "sane-repository.ts",
-  "sane-cwd-target.ts",
-  "create-sane-workstream.ts",
-  "workstream-type.ts",
-] as const
+export const PLUGIN_SRC_FILES: readonly string[] = ["cli-arguments.ts", "native-caller.ts", "native-opencode.ts", "native-claude.ts", "native-claude-hook.ts", "native-claude-mcp.ts", "native-configuration.ts", "native-handoff.ts"]
+
+export const PLUGIN_CORE_SRC_FILES: readonly string[] = ["artifact-lock.ts", "bootstrap-registry.ts", "bootstrap-validation.ts", "confined-lifecycle-filesystem.ts", "contracts.ts", "errors.ts", "execution-report-validation.ts", "handoff.ts", "job-policy.ts", "lifecycle-filesystem.ts", "lifecycle.ts", "native-source.ts", "provision.ts", "repository.ts", "schema.ts", "server.ts", "validation.ts", "workstream-type.ts"]
 
 export const PLUGIN_FILENAMES = [
   "sane/index.ts",
-  ...PLUGIN_SRC_FILES.map((filename) => `sane/sane-src/${filename}`),
+  ...PLUGIN_SRC_FILES.map((filename) => `sane/runtime/packages/sane-cli/src/${filename}`),
+  ...PLUGIN_CORE_SRC_FILES.map(filename => `sane/runtime/packages/sane-core/src/${filename}`),
 ] as const
 
 /** Prefix used by the plugin source for `sane-cli` imports (rewritten on install). */
 export const PLUGIN_SRC_IMPORT_PREFIX = "../../../packages/sane-cli/src/"
 /** Replacement prefix pointing at the vendored closure next to the installed plugin. */
-export const PLUGIN_DEST_IMPORT_PREFIX = "./sane-src/"
+export const PLUGIN_DEST_IMPORT_PREFIX = "./runtime/packages/sane-cli/src/"
 
 /**
  * Runtime npm dependency of the installed plugin, resolved from
@@ -208,6 +177,7 @@ function installationEntries(
       destination: join(homeDirectory, ".config", "opencode", "plugins", "sane", "index.ts"),
     },
     ...PLUGIN_SRC_FILES.map((filename) => ({
+      rewriteImports: true,
       source: join(sourceRoot, "packages", "sane-cli", "src", filename),
       destination: join(
         homeDirectory,
@@ -215,9 +185,13 @@ function installationEntries(
         "opencode",
         "plugins",
         "sane",
-        "sane-src",
+        "runtime", "packages", "sane-cli", "src",
         filename,
       ),
+    })),
+    ...PLUGIN_CORE_SRC_FILES.map(filename => ({
+      source: join(sourceRoot, "packages", "sane-core", "src", filename),
+      destination: join(homeDirectory, ".config", "opencode", "plugins", "sane", "runtime", "packages", "sane-core", "src", filename),
     })),
   ]
 }
@@ -379,6 +353,7 @@ async function loadConfigPackageEntry(
   const destination = join(homeDirectory, ".config", "opencode", OPENCODE_CONFIG_PACKAGE_FILENAME)
   const source = `generated:${OPENCODE_PLUGIN_DEPENDENCY}`
   const version = await resolvePluginDependencyVersion(sourceRoot)
+  const requiredDependencies = { [OPENCODE_PLUGIN_DEPENDENCY]: version, "@opencode/client": "2.0.18", "@modelcontextprotocol/sdk": "^1.25.0" }
   await validateDestinationParent(destination)
   const stat = await lstatOrUndefined(destination)
   if (stat && !stat.isFile()) {
@@ -390,7 +365,7 @@ async function loadConfigPackageEntry(
     return {
       source,
       destination,
-      content: `${JSON.stringify({ dependencies: { [OPENCODE_PLUGIN_DEPENDENCY]: version } }, null, 2)}\n`,
+      content: `${JSON.stringify({ dependencies: requiredDependencies }, null, 2)}\n`,
     }
   }
   const existing = await readFile(destination, "utf8")
@@ -415,13 +390,13 @@ async function loadConfigPackageEntry(
   }
   if (
     isPlainObject(dependencies) &&
-    typeof dependencies[OPENCODE_PLUGIN_DEPENDENCY] === "string"
+    Object.keys(requiredDependencies).every(name => typeof dependencies[name] === "string")
   ) {
     return { source, destination, content: existing }
   }
   const merged: Record<string, unknown> = {
     ...parsed,
-    dependencies: { ...(isPlainObject(dependencies) ? dependencies : {}), [OPENCODE_PLUGIN_DEPENDENCY]: version },
+    dependencies: { ...requiredDependencies, ...(isPlainObject(dependencies) ? dependencies : {}) },
   }
   return { source, destination, content: `${JSON.stringify(merged, null, 2)}\n` }
 }
@@ -437,6 +412,17 @@ export async function installSaneAgentContextPackages(
   const write = options.write ?? console.log
   const homeDirectory = resolveHomeDirectory(options.homeDirectory)
   const sourceRoot = resolve(options.sourceRoot ?? DEFAULT_SOURCE_ROOT)
+  if (options.onlySkill === undefined) {
+    for (const name of ["sane-src", "sane-core"]) {
+      const retired = join(homeDirectory, ".config", "opencode", "plugins", "sane", name)
+      await validateDestinationParent(retired)
+      if (await lstatOrUndefined(retired)) {
+        throw new AgentContextPackageInstallationError(
+          `Obsolete native plugin closure present: ${retired}. Use a fresh isolated home or explicitly retire obsolete copies and unload the old plugin before installation. --overwrite does not authorize cleanup.`,
+        )
+      }
+    }
+  }
   if (options.onlySkill !== undefined && !GLOBAL_SUPPORT_SKILL_NAMES.includes(options.onlySkill)) {
     throw new AgentContextPackageInstallationError(`Unknown global support skill: ${options.onlySkill}`)
   }

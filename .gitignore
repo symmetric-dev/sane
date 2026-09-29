@@ -7,3 +7,6 @@ coverage/
 dist/
 *.log
 /.sane/
+/.sane-app-daily/
+/.sane-app-dev/
+packages/sane-app/.data-fresh/

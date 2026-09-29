@@ -111,15 +111,18 @@ describe("install-sane", () => {
       binDirectory: actualBinDirectory,
       write: () => {},
     })
-    const process = Bun.spawn([result.destination, "not-an-alpha-command"], {
+    const { SANE_CALLER_CONTEXT: _caller, SANE_SESSION_ID: _session, OPENCODE_SESSION_ID: _opencode, ...cleanEnv } = process.env
+    const child = Bun.spawn([result.destination, "not-an-alpha-command"], {
       cwd: temporaryDirectory,
+      env: cleanEnv,
       stdout: "pipe",
       stderr: "pipe",
     })
-    const stderr = await new Response(process.stderr).text()
+    const stderr = await new Response(child.stderr).text()
 
-    expect(await process.exited).toBe(1)
-    expect(stderr).toContain('Unknown SANE command "not-an-alpha-command"')
+    expect(await child.exited).toBe(1)
+    expect(stderr).toContain('"code":"INVALID_ARGUMENT"')
+    expect(stderr).toContain("Unknown command.")
   })
 
   test("supports a configurable home through SANE_HOME", async () => {

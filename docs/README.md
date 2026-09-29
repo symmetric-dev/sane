@@ -8,6 +8,7 @@ Design, Engineering, Planning, and Execution, with Research available throughout
 - [Role skills](../skills/) — detailed assistant responsibilities and procedures.
 - [Agent definitions](../opencode/agents/sane/) — assistant and worker configurations.
 - [Templates](../templates/) — source templates for workstream documents.
+- [SANE App](sane-app/README.md) — current state, operator references and ongoing work.
 - [Archive](_legacy/README.md) — historical designs and older guides.
 
 ## Proposals

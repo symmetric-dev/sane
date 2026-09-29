@@ -1,0 +1,52 @@
+/* === workstreams === */
+.workstreams-view {
+  overflow: auto;
+  padding: 24px;
+  flex: 1;
+  min-height: 0;
+}
+.workstreams-view > header, .workstream-filters, .workstreams-view form {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px;
+  align-items: end;
+}
+.workstreams-view > header {
+  justify-content: space-between;
+  align-items: center;
+}
+.workstreams-view label {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin: 10px 0;
+}
+.workstreams-view input, .workstreams-view select {
+  max-width: 100%;
+  padding: 8px;
+  color: inherit;
+  background: var(--card);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+}
+.workstreams-view button {
+  padding: 6px 10px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+}
+
+/* === workstream === */
+.workstream-conversation {
+  padding: 16px 0;
+  border-top: 1px solid var(--border);
+}
+
+/* === workstreams === */
+.workstreams-view .context-path, .artifact-context {
+  overflow-wrap: anywhere;
+}
+
+/* === artifact === */
+.artifact-context {
+  padding: 12px 20px;
+}

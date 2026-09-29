@@ -1,0 +1,10 @@
+.data/
+.config.json
+.runtime/
+..data.sane-app.lock/
+..data.sane-app.lock.reconcile-gate/
+node_modules/
+.env
+.env.local
+public/assets/
+..data-fresh.sane-app.lock/
