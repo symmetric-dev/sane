@@ -14,7 +14,7 @@ import { formatTitle } from "./conversation-filter";
 import { HistoryDetail, HistoryList } from "./history-view";
 import { ConfigMenu, ConfigView } from "./config-view";
 import { History } from "./history-sidebar";
-import { Facts, NativeUsage, RunDetails, Thread, Usage } from "./thread";
+import { Facts, NativeHistoryDetails, NativeUsage, RunDetails, Thread, Usage } from "./thread";
 import { Drawer, Icon, SidebarFooter } from "./nav";
 import { harnessName } from "./types";
 import "./style.css";
@@ -74,6 +74,7 @@ function App() {
     {drawer === "details" && <Drawer title="Conversation details" close={() => setDrawer(null)}>
       <section className="detail-section"><p className="eyebrow">EXECUTION WORKTREE</p>{!state.selected ? <label className="directory-label">Launch directory<input value={store.draft().cwd} placeholder="Selected worktree root or a subdirectory" onChange={e => store.setDraft({ cwd: e.target.value })} /><small>Defaults to the selected worktree root. Optionally choose a directory inside that worktree.</small></label> : <Facts values={[["Conversation ID", state.selected], ["Harness", harnessName(store.harness())], ["Agent", store.conversationProfile(state.selected)?.label ?? (store.agent() || "Base")], ["Native session ID", conversation?.nativeSessionId], ["Launch directory", conversation?.cwd], ["Workspace", conversation?.workspaceId || "Unavailable"], ["Worktree", conversation?.worktreeId || "Unavailable"]]} />}<p className="muted">Each follow-up uses this conversation’s fixed execution directory and harness. Browsing another worktree does not retarget it.</p>{conversation?.association !== "resolved" && state.selected && <p className="notice" role="status">Execution workspace unavailable. Recorded history remains accessible.</p>}</section>
       <section className="detail-section"><h3>Latest reported usage</h3>{store.harness() === "opencode" ? <>{nativeUsageRun && nativeUsageRun.id !== state.runs.at(-1)?.id && <p className="muted">Showing an earlier run’s snapshot; the latest run has no reported usage yet.</p>}<NativeUsage run={nativeUsageRun} /></> : <>{latestUsage && latestUsage.runId !== state.runs.at(-1)?.id && <p className="muted">A newer run has no result snapshot yet. Showing an earlier run.</p>}<Usage snapshot={latestUsage} /></>}</section>
+      <NativeHistoryDetails state={state} />
       <section className="detail-section"><h3>Runs & diagnostics <span className="muted">{state.runs.length}</span></h3>{state.runs.length ? [...state.runs].reverse().map(run => <RunDetails key={run.id} run={run} />) : <p className="muted">Run IDs and raw events will appear here.</p>}</section>
     </Drawer>}
   </div></TerminalProvider></WorkspaceProvider>;

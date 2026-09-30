@@ -50,6 +50,7 @@ export function ChatMessage() {
   const isUser = message.role === "user";
   const plain = message.content.filter(p => p.type === "text").map(p => p.text).join("\n\n");
   const lastInTurn = source && (source.runId === "native-import" ? context.messages.slice(context.messages.indexOf(source) + 1).find(m => m.role === "assistant" || m.role === "user")?.role !== "assistant" : !context.messages.slice(context.messages.indexOf(source) + 1).some(m => m.runId === source.runId && m.role === "assistant"));
+  const canBranch = context.branchEnabled && source?.role === "assistant" && lastInTurn && (source.runId === "native-import" ? harness === "opencode" && source.status === "completed" : context.runs.some(r => r.id === source.runId && r.status === "completed"));
   return <MessagePrimitive.Root className={`message ${isUser ? "user-message" : "assistant-message"}`}>
     {!isUser && <div className="assistant-label"><FiZap size={13} aria-hidden="true" /> {source?.role === "system" ? `${harnessName(harness)} · System` : harnessName(harness)}</div>}
     <div className={isUser ? "user-bubble" : "assistant-body"}>
@@ -61,8 +62,8 @@ export function ChatMessage() {
       {source?.error !== undefined && <details className="run-warning"><summary>Reported error</summary><pre>{json(source.error)}</pre></details>}
       {!isUser && source?.runId !== "native-import" && message.status?.type === "incomplete" && <p className="run-warning" role="status">{message.status.reason === "error" ? "This run failed. The response may be incomplete." : "This run was interrupted or its completion is unknown."} See details for the recorded evidence.</p>}
     </div>
-    {!isUser && plain && <div className="message-actions"><Copy text={plain} label="Copy response" /></div>}
-    {context.branchEnabled && source?.role === "assistant" && lastInTurn && (source.runId === "native-import" ? harness === "opencode" && source.status === "completed" : context.runs.some(r => r.id === source.runId && r.status === "completed")) && <BranchAction sessionId={context.sessionId} harness={harness} {...(source.runId === "native-import" ? { messageId: source.id } : { runId: source.runId })} />}
+    {!isUser && (plain || canBranch) && <div className="message-actions">{plain && <Copy text={plain} label="Copy response" />}
+    {canBranch && source && <BranchAction sessionId={context.sessionId} harness={harness} {...(source.runId === "native-import" ? { messageId: source.id } : { runId: source.runId })} />}</div>}
   </MessagePrimitive.Root>;
 }
 
@@ -106,7 +107,7 @@ export function Thread({ state }: { state: State }) {
   const footer = <>
         {state.submissionError && <p className="notice error" role="alert">{state.submissionError}</p>}
         {harness === "opencode" && state.modelsError && <p className="notice" role="status">{state.modelsError} <button type="button" className="text-button" disabled={state.modelsLoading} onClick={() => void store.loadModels()}>Retry connection</button></p>}
-        {needsAck && <label className="notice"><input type="checkbox" checked={ack === state.selected} onChange={e => setAck(e.target.checked ? state.selected : "")} />I confirm external Claude execution for this conversation is stopped before this send.</label>}
+        {needsAck && !conversation?.replacedBy && <label className="notice"><input type="checkbox" checked={ack === state.selected} onChange={e => setAck(e.target.checked ? state.selected : "")} />I confirm external Claude execution for this conversation is stopped before this send.</label>}
         {missingModel && <p className="notice" role="status">Model {missingModel} is not in the current OpenCode catalog for this directory. Sending will still use this selection.</p>}
         {state.conversations.find(c => c.id === state.selected)?.attachment?.state === "pending" && <p className="notice error">Attachment incomplete. Use Attach native conversation with the same ID and checkout to retry. {state.conversations.find(c => c.id === state.selected)?.attachment?.error}</p>}
          {!conversation?.replacedBy && <form className="composer" onSubmit={event => { event.preventDefault(); if (!sendDisabled) void send(store.draft().text); }}>
@@ -121,27 +122,29 @@ export function Thread({ state }: { state: State }) {
         {pickerOpen && <AgentPicker close={() => setPickerOpen(false)} />}
         {helpOpen && <ShellDialog title="Sending messages" close={() => setHelpOpen(false)}><div className="composer-help-notes">{infoIssue ? <p className="notice error" role="alert">{infoIssue}{harness === "opencode" && state.modelsError ? <> <button type="button" className="text-button" disabled={state.modelsLoading} onClick={() => void store.loadModels()}>Retry connection</button></> : null}</p> : null}<p className="muted">Enter inserts a newline · Ctrl/Cmd+Enter sends. Other conversations can run concurrently.</p><p className="muted">Concurrent conversations in this checkout share files; their edits can overlap.</p><p className="muted">External Claude activity cannot be detected here. Finish it in Claude before sending to this same conversation.</p></div></ShellDialog>}
       </>;
-  return <TranscriptContext.Provider value={{ sessionId: state.selected, harness, messages: state.messages, runs: state.runs, workers, openWorker, branchEnabled: !parentId && !conversation?.worker && !conversation?.replacedBy }}><AssistantRuntimeProvider runtime={runtime}><ThreadPrimitive.Root className="thread">
+  return <TranscriptContext.Provider value={{ sessionId: state.selected, harness, messages: state.messages, runs: state.runs, workers, openWorker, branchEnabled: !state.loading && !state.sending && !running && !parentId && !conversation?.worker && !conversation?.replacedBy && !(conversation?.attachment && harness === "claude-code") }}><AssistantRuntimeProvider runtime={runtime}><ThreadPrimitive.Root className="thread">
     <BranchLinks key={state.selected} conversation={conversation} />
-    {conversation?.attachment && harness === "claude-code" && <p className="notice">Branching is unavailable for imported Claude conversations: complete-turn and idle evidence cannot be established.</p>}
     {parentId && <nav className="worker-parent-nav" aria-label="Worker navigation"><button type="button" className="text-button" disabled={state.sending} onClick={() => store.openConversation(parentId)}><FiArrowLeft size={14} aria-hidden="true" />Back to parent</button><span className="muted">Worker conversation</span></nav>}
     <ChatScroll resetKey={state.selected || `new:${repository.navigation.worktreeId}`} footer={footer}>
       <div className="transcript">
         {!state.messages.length && <div className="welcome"><span className="welcome-mark" aria-hidden="true"><FiZap size={44} aria-hidden="true" /></span><p className="eyebrow">YOUR LOCAL WORKSPACE</p><h1>{state.loading ? "Opening your conversation…" : state.selected ? "A little space to think." : "What shall we work on?"}</h1><p>{state.loading ? "Loading the bridge’s recorded history." : `Explore an idea, untangle a problem, or build something useful with ${harnessName(harness)}.`}</p>{!state.selected && <div className="suggestions">{["Help me understand this project", "Plan a thoughtful next step", "Review my recent changes"].map(text => <button key={text} type="button" onClick={() => store.setDraft({ text })}>{text}<FiArrowUpRight size={13} aria-hidden="true" /></button>)}</div>}</div>}
-        {state.selected && <p className="notice"><button type="button" disabled={state.actionBusy || running || !state.connected} onClick={() => void store.reconcile()}>Reconcile native history</button> Query/import only; does not stop or resume native work.</p>}
-        {state.nativeHistory && <p className="notice" role="status">Native snapshot imported {new Date(state.nativeHistory.importedAt).toLocaleString()} · activity {state.nativeHistory.activity}. {state.nativeHistory.reason}</p>}
-        {harness === "claude-code" && state.nativeHistory && <details className="notice"><summary>Native Claude transcript snapshot · separate from App run history</summary><p>Run correspondence is unavailable. App submissions and failures below are preserved.</p>{state.nativeHistory.messages.map(message => <section key={message.messageId}><strong>{message.role}</strong>{message.parts.map(part => part.type === "tool" ? <details key={part.id}><summary>{part.name} · {part.status}</summary><pre>{json(part.input)}</pre><pre>{json(part.output ?? part.error)}</pre></details> : <Markdown key={part.id} text={part.text} />)}</section>)}</details>}
         <ThreadPrimitive.Messages components={{ Message: ChatMessage }} />
         {running && <p className="working" role="status"><span className="pulse" />{!state.connected ? "Connection unavailable. The run’s current state is not yet known." : nativeIssue ? nativeIssue.nativeReason || "OpenCode connection unavailable; execution state remains unconfirmed." : `${harnessName(harness)} is working. New output will appear here.`}{store.capabilities()?.cancelRun && <button type="button" className="text-button" disabled={state.actionBusy || !state.connected} onClick={() => void store.cancel()}>Stop run</button>}</p>}
         {state.sending && !running && <p className="working" role="status"><span className="pulse" />Submitting… New output will appear here.</p>}
         {latestRun?.status === "failed" && latestRun.nativeReason && <p className="notice error" role="alert">Run failed: {latestRun.nativeReason}</p>}
-        {harness === "opencode" ? <Interactions state={state} /> : <>{state.actionNotice && <p role="status" className="notice">{state.actionNotice}</p>}{state.interactionError && <p role="alert" className="notice error">{state.interactionError}</p>}</>}
+        {harness === "opencode" && !conversation?.replacedBy ? <Interactions state={state} /> : <>{state.actionNotice && <p role="status" className="notice">{state.actionNotice}</p>}{state.interactionError && <p role="alert" className="notice error">{state.interactionError}</p>}</>}
       </div>
     </ChatScroll>
   </ThreadPrimitive.Root></AssistantRuntimeProvider></TranscriptContext.Provider>;
 }
 
 export function Facts({ values }: { values: [string, ReactNode][] }) { return <dl className="facts">{values.map(([key, value]) => <div key={key}><dt>{key}</dt><dd>{value ?? "Unavailable"}</dd></div>)}</dl>; }
+
+export function NativeHistoryDetails({ state }: { state: State }) {
+  if (!state.selected) return null;
+  const conversation = state.conversations.find(c => c.id === state.selected);
+  return <section className="detail-section"><h3>Conversation history</h3><p className="muted">Refresh messages recorded outside the App. This does not send a message or stop a run.</p><button type="button" className="text-button" disabled={state.actionBusy || state.sending || state.loading || state.runs.some(run => active(run.status)) || !state.connected} onClick={() => void store.reconcile()}>{state.actionBusy ? "Refreshing…" : "Refresh native history"}</button>{state.nativeHistory && <p className="muted">Last refreshed {new Date(state.nativeHistory.importedAt).toLocaleString()}</p>}{conversation?.attachment && conversation.harness === "claude-code" && <p className="muted">Imported Claude conversations cannot be branched because a completed turn cannot be verified.</p>}{state.interactionError && <p className="notice error" role="alert">{state.interactionError}</p>}</section>;
+}
 
 export function Usage({ snapshot }: { snapshot?: UsageSnapshot }) {
   if (!snapshot) return <p className="muted">Unavailable — no associated terminal result has been recorded.</p>;

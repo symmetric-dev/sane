@@ -1,8 +1,8 @@
 import { constants } from "node:fs";
-import { open, lstat, realpath, opendir, access } from "node:fs/promises";
-import { resolve, join, relative, isAbsolute, sep } from "node:path";
+import { open, lstat, realpath, opendir, access, unlink } from "node:fs/promises";
+import { resolve, join, relative, isAbsolute, sep, posix } from "node:path";
 import { createHash } from "node:crypto";
-import { WORKSPACE_MAX_BYTES, type Workspace, type WorkspaceList, type WorkspaceFile, type WorkspaceWrite, type WorkspaceGit, type GitEntry, type GitComparison, type WorkspaceDiff, type DiffReason } from "./workspace-contract";
+import { WORKSPACE_MAX_BYTES, type Workspace, type WorkspaceList, type WorkspaceFile, type WorkspaceWrite, type WorkspaceCreate, type WorkspaceCopy, type WorkspaceDelete, type WorkspaceGit, type GitEntry, type GitComparison, type WorkspaceDiff, type DiffReason } from "./workspace-contract";
 
 export class WorkspaceError extends Error {
   constructor(public status: number, public code: string, message: string) { super(message); }
@@ -29,6 +29,13 @@ function decode(bytes: Buffer): { text: string | null; reason?: "binary" | "inva
 export class WorkspaceService {
   private writes = new Map<string, Promise<unknown>>();
   constructor(private lookup: SessionLookup, private dataDir: string) {}
+
+  private async serialize<T>(target: string, action: () => Promise<T>): Promise<T> {
+    const previous = this.writes.get(target) ?? Promise.resolve();
+    const next = previous.catch(() => {}).then(action);
+    this.writes.set(target, next);
+    try { return await next; } finally { if (this.writes.get(target) === next) this.writes.delete(target); }
+  }
 
   private async bound(sessionId: string): Promise<Bound> {
     const session = await this.lookup(sessionId);
@@ -125,8 +132,7 @@ export class WorkspaceService {
   async write(sessionId: string, input: WorkspaceWrite): Promise<WorkspaceFile> {
     if (!input || typeof input.text !== "string" || typeof input.expectedRevision !== "string") fail(400, "invalid-write", "Expected text and expectedRevision");
     const bound = await this.bind(sessionId, input.workspaceId), target = this.lexical(bound, input.path);
-    const previous = this.writes.get(target) ?? Promise.resolve();
-    const next = previous.catch(() => {}).then(async () => {
+    return this.serialize(target, async () => {
       await this.bind(sessionId, input.workspaceId);
       const disk = await this.disk(bound, input.path, true);
       try {
@@ -152,8 +158,58 @@ export class WorkspaceService {
         return { ...current, text: input.text, revision: hash(bytes), bytes: bytes.length, eol: decode(bytes).eol };
       } finally { await disk.handle.close(); }
     });
-    this.writes.set(target, next);
-    try { return await next; } finally { if (this.writes.get(target) === next) this.writes.delete(target); }
+  }
+
+  private async createBytes(bound: Bound, path: string, bytes: Buffer, mode = 0o666): Promise<WorkspaceFile> {
+    const target = this.lexical(bound, path), parent = posix.dirname(path);
+    const directory = await this.checked(bound, parent === "." ? "" : parent, true);
+    if (!(await lstat(directory)).isDirectory()) fail(400, "not-directory", "Choose an existing destination folder");
+    // Exclusive creation never overwrites an existing file, directory, or symlink.
+    const handle = await open(target, constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL | constants.O_NOFOLLOW, mode);
+    try {
+      await this.checked(bound, path);
+      await handle.writeFile(bytes);
+      await handle.sync();
+      const opened = await handle.stat(), current = await lstat(await this.checked(bound, path));
+      if (opened.dev !== current.dev || opened.ino !== current.ino || opened.nlink !== 1) fail(409, "file-changed", "File changed while creating; refresh files");
+    } finally { await handle.close(); }
+    return this.file(bound.sessionId, bound.workspaceId, path);
+  }
+  async create(sessionId: string, input: WorkspaceCreate): Promise<WorkspaceFile> {
+    const bound = await this.bind(sessionId, input?.workspaceId), target = this.lexical(bound, input?.path);
+    return this.serialize(target, () => this.createBytes(bound, input.path, Buffer.alloc(0)));
+  }
+  private assertRevision(input: WorkspaceDelete) {
+    if (!input || typeof input.expectedRevision !== "string" || !/^[a-f0-9]{64}$/.test(input.expectedRevision)) fail(400, "revision-required", "Read the file before copying or deleting it");
+  }
+  async copy(sessionId: string, input: WorkspaceCopy): Promise<WorkspaceFile> {
+    this.assertRevision(input);
+    const bound = await this.bind(sessionId, input.workspaceId), target = this.lexical(bound, input.destination);
+    this.lexical(bound, input.path);
+    return this.serialize(target, async () => {
+      const disk = await this.disk(bound, input.path);
+      try {
+        if (disk.oversize) fail(413, "oversize", "File exceeds 256 KiB");
+        if (hash(disk.bytes) !== input.expectedRevision) fail(409, "revision-conflict", "Source changed on disk; reload before copying");
+        // Copy saved bytes exactly, including BOM, line endings, and binary content.
+        return await this.createBytes(bound, input.destination, disk.bytes, disk.info.mode & 0o777);
+      } finally { await disk.handle.close(); }
+    });
+  }
+  async delete(sessionId: string, input: WorkspaceDelete): Promise<{ workspaceId: string; path: string }> {
+    this.assertRevision(input);
+    const bound = await this.bind(sessionId, input.workspaceId), target = this.lexical(bound, input.path);
+    return this.serialize(target, async () => {
+      const disk = await this.disk(bound, input.path);
+      try {
+        if (disk.oversize) fail(413, "oversize", "File exceeds 256 KiB");
+        if (hash(disk.bytes) !== input.expectedRevision) fail(409, "revision-conflict", "File changed on disk; reload before deleting");
+        const current = await lstat(await this.checked(bound, input.path)), opened = await disk.handle.stat();
+        if (current.dev !== disk.info.dev || current.ino !== disk.info.ino || opened.nlink !== 1 || opened.size !== disk.info.size || opened.mtimeMs !== disk.info.mtimeMs || opened.ctimeMs !== disk.info.ctimeMs) fail(409, "revision-conflict", "File changed before deleting");
+        await unlink(target);
+        return { workspaceId: bound.workspaceId, path: input.path };
+      } finally { await disk.handle.close(); }
+    });
   }
 
   async git(cwd: string, args: string[], limit = MAX_GIT_OUTPUT): Promise<{ code: number; bytes: Buffer; stderr: string }> {
@@ -314,5 +370,6 @@ export function workspaceError(error: unknown): WorkspaceError {
   if (code === "ENOENT" || code === "ENOTDIR") return new WorkspaceError(404, "path-missing", "Path no longer exists");
   if (code === "EACCES" || code === "EPERM") return new WorkspaceError(403, "access-denied", "Filesystem access denied");
   if (code === "ELOOP") return new WorkspaceError(403, "symlink", "Symlink traversal is not supported");
+  if (code === "EEXIST") return new WorkspaceError(409, "path-exists", "Destination already exists; choose a different path");
   return new WorkspaceError(503, "workspace-unavailable", "Workspace operation is unavailable");
 }

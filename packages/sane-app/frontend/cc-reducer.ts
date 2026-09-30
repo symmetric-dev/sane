@@ -31,18 +31,20 @@ function record(run: Run, value: unknown, event: DiagnosticEvent) {
     const parts: Message["parts"] = typeof content === "string" ? [{ type: "text", text: content }] : [];
     if (Array.isArray(content)) for (const p of content) {
       if (p.type === "text" && typeof p.text === "string") parts.push({ type: "text", text: p.text });
+      if (p.type === "thinking" && typeof p.thinking === "string") parts.push({ type: "reasoning", text: p.thinking });
       if (p.type === "tool_use" && typeof p.id === "string") {
         const existing = tool(run, p.id) ?? run.toolResults.get(`${run.id}:${p.id}`);
         parts.push({ type: "tool", id: `${run.id}:${p.id}`, toolCallId: p.id, name: p.name || "Tool", input: p.input, ...(existing?.output !== undefined ? { output: existing.output, error: existing.error } : {}) });
       }
     }
     if (previous) {
+      if (typeof r.uuid === "string" && !previous.nativeIds?.includes(r.uuid)) (previous.nativeIds ??= []).push(r.uuid);
       // CLI can emit multiple content blocks with the same message ID.
       for (const part of parts) {
-        const index = previous.parts.findIndex(p => part.type === "tool" ? p.type === "tool" && p.id === part.id : p.type === "text" && p.text === part.text);
+        const index = previous.parts.findIndex(p => part.type === "tool" ? p.type === "tool" && p.id === part.id : p.type !== "tool" && p.type === part.type && p.text === part.text);
         if (index < 0) previous.parts.push(part); else previous.parts[index] = part;
       }
-    } else if (parts.length) run.messages.push({ id, runId: run.id, role: "assistant", parts, time: event.time, status: run.status });
+    } else if (parts.length) run.messages.push({ id, nativeIds: typeof r.uuid === "string" ? [r.uuid] : [], runId: run.id, role: "assistant", parts, time: event.time, status: run.status });
   }
   if (r.type === "user" && Array.isArray(content)) for (const p of content) {
     if (p.type === "tool_result" && typeof p.tool_use_id === "string") {

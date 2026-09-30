@@ -486,7 +486,7 @@ async function startOwned(options: Options, assetsDir: string, packageDir: strin
     if (sourceDomain.mode !== destinationDomain.mode || sourceDomain.mode === "repository" && (destinationDomain.mode !== "repository" || sourceDomain.repositoryId !== destinationDomain.repositoryId || sourceDomain.primaryCheckout !== destinationDomain.primaryCheckout) || admission.source.authorityId !== original.source.authorityId || admission.source.descriptor.harness !== original.source.descriptor.harness || admission.binding.executionCheckout !== original.binding.executionCheckout || admission.binding.workspaceId !== original.binding.workspaceId || admission.binding.worktreeId !== original.binding.worktreeId) throw new Error("Branch source and destination admission domains or execution bindings differ");
     let destination = meta.sessions.find(s => s.sessionId === op.destinationId);
     if (!destination) {
-      destination = { ...source, sessionId: op.destinationId, nativeSessionId: op.nativeId, lastStatus: "unknown", lastRunId: null, title: `${displayTitle(source).slice(0, 185)} · Branch` };
+      destination = { ...source, sessionId: op.destinationId, nativeSessionId: op.nativeId, lastStatus: "unknown", lastRunId: null, title: `${(displayTitle(source) ?? "Conversation").slice(0, 185)} · Branch` };
       delete destination.attachment; delete destination.hidden;
       meta.sessions.push(destination);
     }
@@ -1287,7 +1287,7 @@ async function startOwned(options: Options, assetsDir: string, packageDir: strin
           return json({ workspace: await catalog.setAlias(workspaceId, worktreeId, input?.alias ?? null) });
         } catch (error) { const failure = workspaceError(error); return json({ error: failure.message, code: failure.code }, failure.status); }
       }
-      const catalogMatch = /^\/api\/workspaces\/([^/]+)(?:\/worktrees\/([^/]+)(?:\/(list|file|git|diff))?)?$/.exec(path);
+      const catalogMatch = /^\/api\/workspaces\/([^/]+)(?:\/worktrees\/([^/]+)(?:\/(list|file|copy|git|diff))?)?$/.exec(path);
       if (catalogMatch) {
         try {
           const workspaceId = decodeURIComponent(catalogMatch[1]!), worktreeId = catalogMatch[2] && decodeURIComponent(catalogMatch[2]), operation = catalogMatch[3];
@@ -1297,12 +1297,18 @@ async function startOwned(options: Options, assetsDir: string, packageDir: strin
           if (operation === "list" && req.method === "GET") return json(await worktrees.list(key, revision, filePath));
           if (operation === "file" && req.method === "GET") return json(await worktrees.file(key, revision, filePath));
           if (operation === "file" && req.method === "PUT") { const input = await body(req); return json(await worktrees.write(key, { ...input, workspaceId: input?.bindingRevision ?? input?.workspaceId })); }
+          if ((operation === "file" && ["POST", "DELETE"].includes(req.method)) || (operation === "copy" && req.method === "POST")) {
+            const input = await body(req), boundInput = { ...input, workspaceId: input?.bindingRevision ?? input?.workspaceId };
+            if (operation === "copy") return json(await worktrees.copy(key, boundInput), 201);
+            if (req.method === "POST") return json(await worktrees.create(key, boundInput), 201);
+            return json(await worktrees.delete(key, boundInput));
+          }
           if (operation === "git" && req.method === "GET") return json(await worktrees.status(key, revision));
           if (operation === "diff" && req.method === "GET") return json(await worktrees.diff(key, revision, filePath, url.searchParams.get("comparison") ?? ""));
           return json({ error: "Method not allowed" }, 405);
         } catch (error) { const failure = workspaceError(error); return json({ error: failure.message, code: failure.code }, failure.status); }
       }
-      const workspaceMatch = /^\/api\/sessions\/([^/]+)\/workspace(?:\/(list|file|git|diff))?$/.exec(path);
+      const workspaceMatch = /^\/api\/sessions\/([^/]+)\/workspace(?:\/(list|file|copy|git|diff))?$/.exec(path);
       if (workspaceMatch) {
         try {
           const sessionId = decodeURIComponent(workspaceMatch[1]!);
@@ -1311,6 +1317,9 @@ async function startOwned(options: Options, assetsDir: string, packageDir: strin
           if (operation === "list" && req.method === "GET") return json(await workspace.list(sessionId, workspaceId, filePath));
           if (operation === "file" && req.method === "GET") return json(await workspace.file(sessionId, workspaceId, filePath));
           if (operation === "file" && req.method === "PUT") return json(await workspace.write(sessionId, await body(req)));
+          if (operation === "file" && req.method === "POST") return json(await workspace.create(sessionId, await body(req)), 201);
+          if (operation === "file" && req.method === "DELETE") return json(await workspace.delete(sessionId, await body(req)));
+          if (operation === "copy" && req.method === "POST") return json(await workspace.copy(sessionId, await body(req)), 201);
           if (operation === "git" && req.method === "GET") return json(await workspace.status(sessionId, workspaceId));
           if (operation === "diff" && req.method === "GET") return json(await workspace.diff(sessionId, workspaceId, filePath, url.searchParams.get("comparison") ?? ""));
           return json({ error: "Method not allowed", code: "method-not-allowed" }, 405);
@@ -1340,7 +1349,10 @@ async function startOwned(options: Options, assetsDir: string, packageDir: strin
         const workerSessions = new Map(workerStore.list().map(w => [w.sessionId, { id: w.id, parent: { sessionId: w.parent.sessionId, runId: w.parent.runId, toolCallId: w.parent.toolCallId } }]));
         const workerCounts = new Map<string, number>();
         for (const worker of workerStore.list()) workerCounts.set(worker.parent.sessionId, (workerCounts.get(worker.parent.sessionId) ?? 0) + 1);
-        return json({ sessions: meta.sessions.map(s => ({ ...s, branchOrigin: branches.list().find(op => op.destinationId === s.sessionId && op.state !== "failed")?.sourceId, replacedBy: branches.replaced(s.sessionId)?.destinationId, ...(branches.replaced(s.sessionId) ? { hidden: true } : {}), ...(workerSessions.has(s.sessionId) ? { worker: workerSessions.get(s.sessionId) } : {}), directWorkerCount: workerCounts.get(s.sessionId) ?? 0, profileId: sessionProfileId(s), title: displayTitle(s), admission: admissions.get(s.sessionId), ...catalog.association(s.sessionId), availability: availability(s.sessionId) })), admissions: admissions.list(), availability: availability() });
+        // Recovery never auto-sends a reserved prompt. Offer it as a composer
+        // draft only while no first run (including failed submissions) exists.
+        const branchDrafts = new Map(branches.list().filter(op => op.state === "completed" && op.firstMessage && !op.firstRunId && !meta.runs.some(run => run.sessionId === op.destinationId)).map(op => [op.destinationId, op.firstMessage]));
+        return json({ sessions: meta.sessions.map(s => ({ ...s, branchDraft: branchDrafts.get(s.sessionId), branchOrigin: branches.list().find(op => op.destinationId === s.sessionId && op.state !== "failed")?.sourceId, replacedBy: branches.replaced(s.sessionId)?.destinationId, ...(branches.replaced(s.sessionId) ? { hidden: true } : {}), ...(workerSessions.has(s.sessionId) ? { worker: workerSessions.get(s.sessionId) } : {}), directWorkerCount: workerCounts.get(s.sessionId) ?? 0, profileId: sessionProfileId(s), title: displayTitle(s), admission: admissions.get(s.sessionId), ...catalog.association(s.sessionId), availability: availability(s.sessionId) })), admissions: admissions.list(), availability: availability() });
       }
       const branchRoute = /^\/api\/sessions\/([^/]+)\/branch$/.exec(path);
       if (branchRoute) {

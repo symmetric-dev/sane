@@ -3,7 +3,8 @@ import type { EditorView } from "@codemirror/view";
 import type { WorkspaceFile, WorkspaceGit, GitComparison } from "../src/workspace-contract";
 import type { WorktreeResolution as Workspace } from "../src/catalog-contract";
 import { workspaceClient, WorkspaceError } from "./workspace-client";
-import { createBufferState } from "./workspace-editor";
+import { createBufferState, wrapping, wrappingExtension } from "./workspace-editor";
+import { codeSettings } from "./code-settings";
 
 export type Buffer = {
   path: string; state: EditorState; baseText: string; file: WorkspaceFile; disk?: WorkspaceFile;
@@ -13,6 +14,13 @@ export type Buffer = {
 export type TreePresentation = { expandedItems: string[]; focusedItem: string | null };
 export type RootState = { root: string; workspace: Workspace; generation: number; selected: string; buffers: Map<string, Buffer>; git?: WorkspaceGit; comparison: GitComparison; codeTree: TreePresentation; gitTree: TreePresentation };
 const roots = new Map<string, RootState>();
+codeSettings.subscribe(() => {
+  for (const root of roots.values()) for (const buffer of root.buffers.values()) {
+    buffer.state = buffer.state.update({ effects: wrapping.reconfigure(wrappingExtension(buffer.path)) }).state;
+    buffer.view?.setState(buffer.state);
+  }
+  notifyWorkspace();
+});
 let epoch = 0, version = 0;
 let authExpired: (() => void) | undefined;
 export const onWorkspaceAuthExpired = (handler: () => void) => { authExpired = handler; };

@@ -2,9 +2,10 @@ import { WorkspaceEditor, WorkspaceDiffEditor } from "./workspace-editor";
 import { goToNextChunk, goToPreviousChunk } from "@codemirror/merge";
 import { dirty, saveBuffer } from "./workspace-store";
 import { useWorkspace } from "./workspace-controller";
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { FiArrowDown, FiArrowUp, FiChevronDown } from "react-icons/fi";
 import { ShellDialog } from "./shell-dialog";
+import { FileOperationDialog, type FileOperation } from "./workspace-file-actions";
 import "./workspace.css";
 export { WorkspaceProvider } from "./workspace-controller";
 export { WorkspaceSidebar } from "./workspace-tree";
@@ -19,21 +20,27 @@ function canOpenInCode(controller: ReturnType<typeof useWorkspace>) {
 /** Contents of the shell's single topbar, never an additional workspace header. */
 export function WorkspaceHeader() {
   const [actionsOpen, setActionsOpen] = useState(false);
+  const [operation, setOperation] = useState<{ kind: FileOperation; source: string } | null>(null);
   const controller = useWorkspace();
   const { view, root, buffer, selected, scope, localCompare } = controller;
+  useEffect(() => { setActionsOpen(false); setOperation(null); }, [scope, view]);
   const diff = controller.comparison;
   const textDiff = view === "code" ? localCompare && buffer && !buffer.missing && buffer.disk?.text !== null : diff && !diff.reason && !diff.modeOnly && diff.before !== null && diff.after !== null && diff.before !== diff.after;
   return <>
     <div className="conversation-heading workspace-heading"><span title={selected || undefined}>{view === "code" ? "Code" : "Git"}{selected ? ` · ${selected}` : ""}{buffer && dirty(buffer) ? " •" : ""}</span>{(view === "git" && selected || localCompare) && <small>{localCompare ? "Disk → Local unsaved buffer" : root?.comparison}</small>}</div>
-    {(textDiff || view === "code" && buffer && scope || view === "git" && canOpenInCode(controller)) && <button type="button" className="file-actions-opener" aria-haspopup="dialog" aria-label={view === "code" ? "File actions" : "Change actions"} onClick={() => setActionsOpen(true)}><span>{view === "code" ? "File actions" : "Change actions"}</span><FiChevronDown size={13} aria-hidden="true" /></button>}
+    {(textDiff || view === "code" && scope || view === "git" && canOpenInCode(controller)) && <button type="button" className="file-actions-opener" aria-haspopup="dialog" aria-label={view === "code" ? "File actions" : "Change actions"} onClick={() => setActionsOpen(true)}><span>{view === "code" ? "File actions" : "Change actions"}</span><FiChevronDown size={13} aria-hidden="true" /></button>}
+    {operation && scope && view === "code" && <FileOperationDialog key={`${scope.generation}:${scope.workspace.workspaceId}:${operation.kind}:${operation.source}`} operation={operation.kind} source={operation.source} close={() => setOperation(null)} />}
     {actionsOpen && <ShellDialog title={view === "code" ? "File actions" : "Change actions"} close={() => setActionsOpen(false)}><p className="context-path">{selected}</p><div className="workspace-header-actions">
       {textDiff && <><button aria-label="Previous change" title="Previous change" onClick={() => { if (controller.diffEditor.current) goToPreviousChunk(controller.diffEditor.current); setActionsOpen(false); }}><FiArrowUp size={12} aria-hidden="true" /> Previous change</button><button aria-label="Next change" title="Next change" onClick={() => { if (controller.diffEditor.current) goToNextChunk(controller.diffEditor.current); setActionsOpen(false); }}><FiArrowDown size={12} aria-hidden="true" /> Next change</button></>}
+      {view === "code" && scope && <button type="button" onClick={() => { setActionsOpen(false); setOperation({ kind: "create", source: "" }); }}>New file</button>}
       {view === "code" && buffer && scope && <>
         <span className="workspace-file-meta">{buffer.file.eol.toUpperCase()}{buffer.file.bom ? " · BOM" : ""}</span>
         {localCompare && <button onClick={() => { controller.closeCompare(); setActionsOpen(false); }}>Back to editor</button>}
         <button disabled={buffer.saving || !dirty(buffer) || !buffer.file.editable || buffer.missing} onClick={() => { void saveBuffer(scope.id, scope.workspace, buffer); setActionsOpen(false); }}>{buffer.saving ? "Saving…" : "Save"}</button>
         <button disabled={buffer.checking || buffer.saving} onClick={() => { void controller.compareDisk(); setActionsOpen(false); }}>Compare disk</button>
         <button disabled={buffer.checking || buffer.saving || buffer.missing} onClick={() => { if (window.confirm(`Reload ${buffer.path} from disk? Unsaved edits will be discarded.`)) { void controller.compareDisk(true); setActionsOpen(false); } }}>Reload</button>
+        <button type="button" disabled={buffer.checking || buffer.saving || buffer.missing || !buffer.file.revision} onClick={() => { setActionsOpen(false); setOperation({ kind: "copy", source: selected }); }}>Copy file</button>
+        <button type="button" className="workspace-delete" disabled={buffer.checking || buffer.saving || buffer.missing || !buffer.file.revision} onClick={() => { setActionsOpen(false); setOperation({ kind: "delete", source: selected }); }}>Delete file</button>
       </>}
       {view === "git" && canOpenInCode(controller) && <button onClick={() => { controller.activate({ view: "code", path: selected }); setActionsOpen(false); }}>Open in Code</button>}
     </div></ShellDialog>}
@@ -49,7 +56,7 @@ export function WorkspaceView() {
     {error && <div className="workspace-notice workspace-error" role="alert">{error} <button onClick={controller.retrySelection}>Retry</button> <button onClick={controller.retryResolve}>Reopen workspace</button></div>}
     {buffer?.error && <div className="workspace-notice workspace-error" role="alert">{buffer.error} <button onClick={controller.retryResolve}>Reopen workspace</button></div>}
     {buffer?.disk && <div className="workspace-notice">Disk changed. Local edits are preserved. Compare disk, then reload explicitly to discard local changes.</div>}
-    {view === "code" ? !selected ? <div className="workspace-empty"><h2>Open a file to begin</h2><p>Choose a file in the sidebar. Existing UTF-8 files up to 256 KiB. Save explicitly with Cmd+S / Ctrl+S.</p></div>
+    {view === "code" ? !selected ? <div className="workspace-empty"><h2>Open a file to begin</h2><p>Choose a file in the sidebar or create one with New file. Edit UTF-8 files up to 256 KiB. Save explicitly with Cmd+S / Ctrl+S.</p></div>
       : !buffer ? <div className="workspace-empty"><p>{controller.opening ? "Opening file…" : "The selected file could not be opened."}</p>{!controller.opening && <button onClick={controller.retrySelection}>Retry file</button>}</div>
       : localCompare ? buffer.disk?.text === null || buffer.missing ? <p className="workspace-notice">Disk contents unavailable for comparison.</p> : <WorkspaceDiffEditor viewRef={controller.diffEditor} path={buffer.path} before={buffer.disk?.text ?? buffer.baseText} after={buffer.state.doc.toString()} label="Disk → Local unsaved buffer" />
       : !buffer.file.editable ? <div className="workspace-empty"><h2>File cannot be edited</h2><p>{buffer.file.reason || "Unsupported file"}. Only existing, writable UTF-8 text files up to 256 KiB are editable.</p></div>

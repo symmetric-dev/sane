@@ -45,6 +45,12 @@
 .workspace-header-actions button:hover {
   background:var(--muted);
 }
+.workspace-header-actions .workspace-delete,.workspace-file-dialog .workspace-delete {
+  color:var(--error);
+}
+.workspace-file-dialog .context-path {
+  overflow-wrap:anywhere;
+}
 .workspace-file-meta {
   font-size:10px;
   color:var(--muted-foreground);

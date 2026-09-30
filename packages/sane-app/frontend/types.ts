@@ -11,7 +11,7 @@ export const harnessName = (harness: Harness) => harness === "opencode" ? "OpenC
 export const harnessShort = (harness: Harness): "OC" | "CC" => harness === "opencode" ? "OC" : "CC";
 export type ModelChoice = { id: string; name: string; efforts: { id: string; name: string }[] };
 export type AgentChoice = { id: string; label: string; description: string };
-export type Conversation = { id: string; harness: Harness; nativeSessionId?: string; cwd: string; lastRunId: string | null; status: RunStatus; title?: string; hidden?: boolean; model?: string; effort?: string; agent?: string; profileId?: string; availability?: Availability; attachment?: { state: "pending" | "ready"; error?: string }; worker?: WorkerSessionMetadata; directWorkerCount?: number; branchOrigin?: string; replacedBy?: string } & Partial<Association>;
+export type Conversation = { id: string; harness: Harness; nativeSessionId?: string; cwd: string; lastRunId: string | null; status: RunStatus; title?: string; hidden?: boolean; model?: string; effort?: string; agent?: string; profileId?: string; availability?: Availability; attachment?: { state: "pending" | "ready"; error?: string }; worker?: WorkerSessionMetadata; directWorkerCount?: number; branchOrigin?: string; branchDraft?: string; replacedBy?: string } & Partial<Association>;
 export type Capabilities = {
   concurrency: { scope: "bridge" | "conversation"; limit: number; perConversation?: number; sharedCheckoutWrites?: boolean };
   cancelRun: boolean; midRunInput: boolean; permissionReplies: boolean;
@@ -19,7 +19,7 @@ export type Capabilities = {
 };
 export type TextPart = { type: "text"; text: string } | { type: "reasoning"; text: string };
 export type ToolPart = { type: "tool"; id: string; toolCallId?: string; name: string; input: unknown; output?: unknown; error?: boolean; toolStatus?: string };
-export type Message = { id: string; runId: string; role: "user" | "assistant" | "system"; parts: (TextPart | ToolPart)[]; time: string; status: RunStatus; normalized?: boolean; error?: unknown };
+export type Message = { id: string; nativeIds?: string[]; runId: string; role: "user" | "assistant" | "system"; parts: (TextPart | ToolPart)[]; time: string; status: RunStatus; normalized?: boolean; error?: unknown };
 export type UsageSnapshot = { runId: string; time: string; record: Record<string, any> };
 export type DiagnosticEvent = { seq: number; time: string; runId: string; sessionId: string; kind: string; data: unknown };
 export type Run = {

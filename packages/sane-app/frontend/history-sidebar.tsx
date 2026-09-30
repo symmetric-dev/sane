@@ -29,7 +29,7 @@ export function History({ state, onChoose }: { state: State; onChoose: (id: stri
   const deferred = useDeferredValue(filter);
   const workstreamMap = useMemo(() => buildWorkstreamMap(overview, state.conversations), [overview, state.conversations]);
   const visible = useMemo(() => filterConversations([...state.conversations].reverse().filter(c => !knownWorker(c.id)), deferred, { workstreamMap }), [state.conversations, deferred, workstreamMap, workerDiscovery]);
-  const hits = useMessageHits(deferred.query, deferred.workspaceId, deferred.worktreeId).filter(hit => !knownWorker(hit.sessionId));
+  const hits = useMessageHits(deferred.query, deferred.workspaceId, deferred.worktreeId).filter(hit => !knownWorker(hit.sessionId) && !state.conversations.find(c => c.id === hit.sessionId)?.replacedBy);
   const selectedWorkspace = repository.workspaces.find(w => w.workspaceId === nav.workspaceId);
   const groups = [...repository.workspaces.map(w => ({ id: w.workspaceId, name: w.name })), { id: null, name: "Unavailable workspace · recorded history" }];
   const scoped = deferred.workspaceId !== "all" && deferred.workspaceId !== "unavailable";

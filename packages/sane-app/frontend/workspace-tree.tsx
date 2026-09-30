@@ -1,10 +1,11 @@
-import { useEffect, useMemo, type SetStateAction } from "react";
-import { FiChevronDown, FiChevronRight, FiRefreshCw } from "react-icons/fi";
+import { useEffect, useMemo, useState, type SetStateAction } from "react";
+import { FiChevronDown, FiChevronRight, FiRefreshCw, FiPlus } from "react-icons/fi";
 import { asyncDataLoaderFeature, hotkeysCoreFeature, syncDataLoaderFeature, type TreeInstance } from "@headless-tree/core";
 import { useTree } from "@headless-tree/react";
 import type { GitComparison, GitEntry, WorkspaceEntry } from "../src/workspace-contract";
 import { dirty } from "./workspace-store";
 import { useWorkspace } from "./workspace-controller";
+import { FileOperationDialog } from "./workspace-file-actions";
 
 type TreeNode = {
   kind: WorkspaceEntry["kind"] | "group" | "error" | "notice";
@@ -140,9 +141,12 @@ function GitTree() {
 }
 
 export function WorkspaceSidebar() {
+  const [creating, setCreating] = useState(false);
   const controller = useWorkspace(), { view, scope, workspace } = controller;
+  useEffect(() => { setCreating(false); }, [scope, view]);
   return <section className="workspace-sidebar" aria-label={view === "code" ? "Code files" : "Git changes"}>
-    <div className="workspace-sidebar-heading"><h2>{view === "code" ? "Files" : "Changes"}</h2>{scope && <button onClick={view === "code" ? controller.refreshDirectories : controller.retrySelection} aria-label={view === "code" ? "Refresh files" : "Refresh changes"} title={view === "code" ? "Refresh files" : "Refresh changes"}><FiRefreshCw size={14} aria-hidden="true" /></button>}</div>
+    <div className="workspace-sidebar-heading"><h2>{view === "code" ? "Files" : "Changes"}</h2>{scope && <div>{view === "code" && <button type="button" onClick={() => setCreating(true)} aria-label="New file" title="New file"><FiPlus size={14} aria-hidden="true" /></button>}<button type="button" onClick={view === "code" ? controller.refreshDirectories : controller.retrySelection} aria-label={view === "code" ? "Refresh files" : "Refresh changes"} title={view === "code" ? "Refresh files" : "Refresh changes"}><FiRefreshCw size={14} aria-hidden="true" /></button></div>}</div>
+    {creating && scope && view === "code" && <FileOperationDialog key={`${scope.generation}:${workspace!.workspaceId}`} operation="create" source="" close={() => setCreating(false)} />}
     {workspace && <p className="workspace-sidebar-root" title={workspace.root}>{workspace.root.split("/").filter(Boolean).at(-1) || workspace.root}</p>}
     {view === "git" && <p className="workspace-disclaimer">Saved contents; unsaved editor changes are not included.</p>}
     {!scope ? <p className="workspace-tree-status">{controller.resolving ? "Opening workspace…" : controller.error || "Open a workspace to browse its files."}</p>

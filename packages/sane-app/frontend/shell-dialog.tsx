@@ -1,7 +1,7 @@
 import { useEffect, useId, useRef, type ReactNode } from "react";
 
 /** Native modal containment supplies keyboard focus trapping and Escape handling. */
-export function ShellDialog({ title, close, children, className = "", restoreFocus }: { title: string; close: () => void; children: ReactNode; className?: string; restoreFocus?: () => HTMLElement | null }) {
+export function ShellDialog({ title, close, children, className = "", restoreFocus, closeDisabled = false }: { title: string; close: () => void; children: ReactNode; className?: string; restoreFocus?: () => HTMLElement | null; closeDisabled?: boolean }) {
   const ref = useRef<HTMLDialogElement>(null);
   const titleId = useId();
   useEffect(() => {
@@ -10,7 +10,7 @@ export function ShellDialog({ title, close, children, className = "", restoreFoc
     dialog.showModal();
     return () => { dialog.close(); const target = restoreFocus?.() ?? previous; if (target?.isConnected) target.focus(); };
   }, []);
-  return <dialog ref={ref} className={`shell-dialog ${className}`} role="dialog" aria-modal="true" aria-labelledby={titleId} onCancel={event => { event.preventDefault(); close(); }} onClick={event => { if (event.target === event.currentTarget) close(); }}>
-    <div className="shell-dialog-content"><header><h2 id={titleId}>{title}</h2><button type="button" className="icon-button" aria-label={`Close ${title.toLowerCase()}`} onClick={close}>×</button></header>{children}</div>
+  return <dialog ref={ref} className={`shell-dialog ${className}`} role="dialog" aria-modal="true" aria-labelledby={titleId} onCancel={event => { event.preventDefault(); if (!closeDisabled) close(); }} onClick={event => { if (event.target === event.currentTarget && !closeDisabled) close(); }}>
+    <div className="shell-dialog-content"><header><h2 id={titleId}>{title}</h2><button type="button" className="icon-button" disabled={closeDisabled} aria-label={`Close ${title.toLowerCase()}`} onClick={close}>×</button></header>{children}</div>
   </dialog>;
 }

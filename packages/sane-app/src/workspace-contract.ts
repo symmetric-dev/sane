@@ -4,6 +4,8 @@
  * Base: /api/sessions/:id/workspace
  * GET base -> Workspace; GET /list?path= -> WorkspaceList;
  * GET /file?path= -> WorkspaceFile; PUT /file (WorkspaceWrite) -> WorkspaceFile;
+ * POST /file (WorkspaceCreate) -> WorkspaceFile; POST /copy (WorkspaceCopy) -> WorkspaceFile;
+ * DELETE /file (WorkspaceDelete) -> { workspaceId, path };
  * GET /git -> WorkspaceGit; GET /diff?path=&comparison= -> WorkspaceDiff.
  * File and diff text is BOM-free and LF-normalized. A null text/before/after
  * means unsupported content, not an empty file. Diff absence is the empty string.
@@ -17,6 +19,9 @@ export type WorkspaceList = { workspaceId: string; path: string; entries: Worksp
 export type FileReason = "binary" | "oversize" | "invalid-utf8" | "mixed-eol" | "not-writable";
 export type WorkspaceFile = { workspaceId: string; path: string; text: string | null; revision: string | null; editable: boolean; reason?: FileReason; eol: "lf" | "crlf" | "cr" | "none" | "mixed"; bom: boolean; bytes: number };
 export type WorkspaceWrite = { workspaceId: string; path: string; text: string; expectedRevision: string };
+export type WorkspaceCreate = { workspaceId: string; path: string };
+export type WorkspaceDelete = WorkspaceCreate & { expectedRevision: string };
+export type WorkspaceCopy = WorkspaceDelete & { destination: string };
 export type GitComparison = "staged" | "unstaged" | "untracked";
 export type GitEntry = { path: string; originalPath?: string; index: string; worktree: string; comparisons: GitComparison[]; conflict: boolean; submodule: boolean; renameOutsideWorkspace: boolean };
 export type WorkspaceGit = { workspaceId: string; available: boolean; reason?: string; entries: GitEntry[]; truncated: boolean };

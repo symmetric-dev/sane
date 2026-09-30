@@ -1,0 +1,14 @@
+.message-actions { display:flex; align-items:center; flex-wrap:wrap; gap:12px; }
+.branch-action { display:inline-flex; align-items:center; gap:5px; font-size:12px; }
+.branch-form { display:flex; flex-direction:column; gap:20px; }
+.branch-form p { margin:0; line-height:1.6; }
+.branch-replace { display:flex; align-items:center; gap:8px; font-weight:500; }
+.branch-form .branch-hint { margin-top:7px; font-size:12px; }
+.branch-prompt { display:block; font-weight:500; }
+.branch-prompt .muted { font-weight:400; }
+.branch-prompt textarea { display:block; width:100%; box-sizing:border-box; min-height:130px; margin-top:9px; padding:12px; resize:vertical; line-height:1.6; font-weight:400; background:var(--background); border:1px solid var(--border); border-radius:6px; }
+.branch-dialog-actions { display:flex; justify-content:flex-end; align-items:center; flex-wrap:wrap; gap:16px; }
+.branch-links { display:flex; align-items:center; flex-wrap:wrap; gap:8px; margin:10px 24px; color:var(--muted-foreground); font-size:12px; }
+.branch-links .text-button { font-size:inherit; }
+.history-detail .branch-links { margin:12px 0; }
+@media (max-width:600px) { .branch-links { margin-inline:16px; } }

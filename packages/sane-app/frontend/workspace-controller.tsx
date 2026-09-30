@@ -163,11 +163,47 @@ function useController(conversationId: string | null, view: ActiveView, navigate
     await refreshBuffer(scope.id, scope.workspace, buffer, reload, current);
     if (current()) setLocalCompare(reload ? null : selectionKey);
   }
+  async function mutateFile(operation: "create" | "copy" | "delete", path: string, source = selected): Promise<boolean> {
+    if (!scope || !root || !currentScope(scope)) throw new Error("Workspace changed. Reopen its files.");
+    const sourceBuffer = root.buffers.get(source);
+    const rootGeneration = root.generation;
+    if (operation !== "create" && (!sourceBuffer?.file.revision || sourceBuffer.missing || sourceBuffer.saving || sourceBuffer.checking)) throw new Error("Read the file and wait for pending operations before trying again.");
+    if (sourceBuffer && operation !== "create") { sourceBuffer.saving = true; notifyWorkspace(); }
+    try {
+      if (operation === "create") await workspaceClient.create(scope.id, scope.workspace.workspaceId, path);
+      else if (operation === "copy") await workspaceClient.copy(scope.id, scope.workspace.workspaceId, source, path, sourceBuffer!.file.revision!);
+      else await workspaceClient.delete(scope.id, scope.workspace.workspaceId, source, sourceBuffer!.file.revision!);
+      if (!currentScope(scope)) return false;
+      root.git = undefined;
+      refreshDirectories();
+      if (operation === "delete") {
+        root.buffers.delete(source);
+        if (root.selected === source) activate({ view: "code", path: "" });
+        root.codeTree.focusedItem = null;
+      } else {
+        const parts = path.split("/");
+        for (let index = 1; index < parts.length; index++) {
+          const id = `directory:${parts.slice(0, index).join("/")}`;
+          if (!root.codeTree.expandedItems.includes(id)) root.codeTree.expandedItems.push(id);
+        }
+        activate({ view: "code", path });
+      }
+      notifyWorkspace();
+      return true;
+    } catch (error) {
+      if (!currentScope(scope)) return false;
+      throw new Error(workspaceFailure(error));
+    }
+    finally {
+      // Leaving this workspace must not strand its cached buffer in a busy state.
+      if (sourceBuffer && operation !== "create" && scope.auth === workspaceEpoch() && root.generation === rootGeneration) { sourceBuffer.saving = false; notifyWorkspace(); }
+    }
+  }
   return { conversationId, view, scope, workspace, root, buffer, selected, error: error || (resolved && resolved.auth !== workspaceEpoch() ? "Sign-in expired. Reconnect or sign in again; unsaved buffers remain in memory." : ""), resolving, diffEditor,
     opening: opening === selectionKey, diffLoading: diffLoading === selectionKey,
     comparison: diff?.key === selectionKey ? diff.value : null,
     localCompare: localCompare === selectionKey, closeCompare: () => setLocalCompare(null),
-    activate, listDirectory, retryDirectory, refreshDirectories, compareDisk, updateTree,
+    activate, listDirectory, retryDirectory, refreshDirectories, compareDisk, updateTree, mutateFile,
     retryResolve: () => setResolveAttempt(value => value + 1), retrySelection: () => setOpenAttempt(value => value + 1),
   };
 }

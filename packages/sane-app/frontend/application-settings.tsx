@@ -1,6 +1,7 @@
 import { store, type State } from "./store";
 import { harnessName } from "./types";
 import { Facts } from "./thread";
+import { CodeSettings } from "./code-settings-view";
 
 const CAPABILITIES = [["cancelRun", "Cancel run"], ["permissionReplies", "Permission replies"], ["modelSelection", "Model selection"]] as const;
 
@@ -8,6 +9,7 @@ export function ApplicationSettings({ state, signOut }: { state: State; signOut:
   const harnesses = state.config?.harnesses ?? [], concurrency = state.config?.capabilities?.concurrency;
   return <section className="history-view app-settings" aria-label="Application settings">
     <header className="history-view-header"><h2>Application</h2></header>
+    <CodeSettings />
     <section className="interaction" aria-labelledby="app-connection">
       <h3 id="app-connection">Connection</h3>
       <div className="application-status"><span className={`connection-dot ${state.connected ? "online" : ""}`} /><span>{state.connected ? "Local bridge connected" : "Connecting to bridge"}</span></div>

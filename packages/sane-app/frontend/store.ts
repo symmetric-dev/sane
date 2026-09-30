@@ -1,7 +1,8 @@
 import { useRef, useSyncExternalStore } from "react";
 import { ApiError, conversationClient } from "./cc-client";
 import { publishWorkers, workersFor, registerWorkerSessions, setWorkerNavigator, workerReference } from "./worker-client";
-import { consume, createRun, messagesForRun } from "./cc-reducer";
+import { consume, createRun } from "./cc-reducer";
+import { transcriptMessages } from "./transcript";
 import { catalog } from "./catalog";
 import { invalidateWorkspaceRequests, onWorkspaceAuthExpired } from "./workspace-store";
 import { BASE_PROFILE_IDS, builtinProfiles, canAssign, legacyProfileId, type AgentProfile, type AgentProfileInput, type AgentProfiles } from "../src/agent-profiles-contract";
@@ -215,7 +216,7 @@ export class ChatStore {
       if (current()) {
         // Invalidate older reads even if reconnect is deferred while hidden.
         this.stop(); this.nativeHistoryLoaded = true;
-        this.update({ nativeHistory: history, actionNotice: "Native snapshot imported. No prompt was sent and no execution was stopped." });
+        this.update({ nativeHistory: history, actionNotice: "Conversation history refreshed." });
         this.reconnect();
       }
     } catch (error) {
@@ -296,19 +297,14 @@ export class ChatStore {
   choose = (selected: string) => {
     if (this.state.sending) return;
     if (selected === this.state.selected) return;
-    const workerTransition = !!workerReference(selected) || !!workerReference(this.state.selected);
     this.selectionEpoch++;
     this.stop(); this.runMap.clear();
     this.nativeHistoryLoaded = false;
     this.replied.clear();
-    // Stale-while-revalidate: keep the previous transcript mounted while the
-    // new conversation loads, so the welcome empty-state only appears when the
-    // cache is genuinely empty. A blank target clears immediately.
-    // Worker navigation clears immediately so a parent's text cannot look like
-    // the worker's transcript during loading or a failed read.
-    // (Same-id sends never reach here; send() polls for the delta instead.)
+    // Never show the source's turns or actions under a newly selected branch.
+    // Same-id sends do not reach here; their transcript remains mounted.
     this.update(selected
-      ? { selected, ...(workerTransition ? { runs: [], messages: [] } : {}), availability: { canSend: false }, nativeHistory: null, interactions: [], interactionError: "", actionBusy: false, actionNotice: "", loading: true, connected: false, connectionError: "", submissionError: "" }
+      ? { selected, runs: [], messages: [], availability: { canSend: false }, nativeHistory: null, interactions: [], interactionError: "", actionBusy: false, actionNotice: "", loading: true, connected: false, connectionError: "", submissionError: "" }
       : { selected, runs: [], messages: [], nativeHistory: null, interactions: [], interactionError: "", actionBusy: false, actionNotice: "", loading: false, connected: false, connectionError: "", submissionError: "" });
     void this.poll();
   };
@@ -346,17 +342,7 @@ export class ChatStore {
         }
       }
       const runs = [...this.runMap.values()].sort((a, b) => a.createdAt.localeCompare(b.createdAt));
-      const byId = new Map<string, Message>();
-      const mergeNative = listing.conversations.find(c => c.id === selected)?.harness === "opencode";
-      const nativeUsers = new Set(nativeHistory?.messages.filter(m => m.role === "user").map(m => m.messageId));
-      // A native snapshot replaces the display of covered App runs, whose raw
-      // evidence remains in Details. Native IDs are upserted, never appended twice.
-      for (const m of mergeNative ? nativeHistory?.messages ?? [] : []) byId.set(m.messageId, { id: m.messageId, runId: "native-import", role: m.role, time: m.createdAt, status: m.status, normalized: true, error: m.error,
-        parts: m.parts.map(p => p.type === "tool" ? { type: "tool", id: p.id, name: p.name, input: p.input, toolStatus: p.status, output: p.output ?? p.error, error: p.error !== undefined } : { type: p.type, text: p.text }) });
-      // Verify correspondence even for snapshots persisted by older builds that
-      // claimed every App run was covered. CC has no durable command correspondence.
-      for (const message of runs.filter(r => !(mergeNative && r.nativeCommandId && nativeUsers.has(r.nativeCommandId) && nativeHistory?.coveredRunIds.includes(r.id))).flatMap(messagesForRun)) byId.set(message.id, message);
-      const messages = [...byId.values()];
+      const messages = transcriptMessages(nativeHistory, runs);
       const title = messages.find(m => m.role === "user")?.parts.find(p => p.type === "text");
       // Backend titles win (persisted first prompt or handoff `<Role> #<n>`).
       // Otherwise the open conversation derives from its transcript and other
@@ -368,6 +354,8 @@ export class ChatStore {
         return old ? { ...c, title: old } : c;
       });
       this.nativeHistoryLoaded = true;
+      const branchDraft = conversations.find(c => c.id === selected)?.branchDraft;
+      if (branchDraft && !runs.length && !this.state.drafts[this.draftKey(selected)]) this.setDraft({ text: branchDraft }, selected);
       const availability = conversations.find(c => c.id === selected)?.availability ?? listing.availability;
       // Referential stability: an idle poll produces deep-equal data. Skipping
       // the broadcast keeps whole-store subscribers (App, transcript) from

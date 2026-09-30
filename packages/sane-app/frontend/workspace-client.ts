@@ -23,6 +23,9 @@ export const workspaceClient = {
   list: (id: string, workspaceId: string, path: string) => request<WorkspaceList>(id, `/list?${query(workspaceId, path)}`),
   file: (id: string, workspaceId: string, path: string) => request<WorkspaceFile>(id, `/file?${query(workspaceId, path)}`),
   save: (id: string, workspaceId: string, path: string, text: string, expectedRevision: string) => request<WorkspaceFile>(id, "/file", { method: "PUT", body: JSON.stringify({ workspaceId, path, text, expectedRevision }) }),
+  create: (id: string, workspaceId: string, path: string) => request<WorkspaceFile>(id, "/file", { method: "POST", body: JSON.stringify({ workspaceId, path }) }),
+  copy: (id: string, workspaceId: string, path: string, destination: string, expectedRevision: string) => request<WorkspaceFile>(id, "/copy", { method: "POST", body: JSON.stringify({ workspaceId, path, destination, expectedRevision }) }),
+  delete: (id: string, workspaceId: string, path: string, expectedRevision: string) => request<{ workspaceId: string; path: string }>(id, "/file", { method: "DELETE", body: JSON.stringify({ workspaceId, path, expectedRevision }) }),
   git: (id: string, workspaceId: string) => request<WorkspaceGit>(id, `/git?${query(workspaceId)}`),
   diff: (id: string, workspaceId: string, path: string, comparison: GitComparison) => request<WorkspaceDiff>(id, `/diff?${query(workspaceId, path)}&comparison=${comparison}`),
 };
