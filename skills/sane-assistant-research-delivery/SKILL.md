@@ -7,7 +7,7 @@ description: Use when presenting completed Research and returning findings to it
 
 ## Completion Checks
 
-Check reports against their template and verify that `sane research --index` matches the completed reports.
+Check reports against their template and verify that `sane research index` matches the completed reports.
 
 ## User Review
 

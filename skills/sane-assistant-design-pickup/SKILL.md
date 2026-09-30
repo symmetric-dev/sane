@@ -14,7 +14,7 @@ description: Use when starting a new SANE Design Assistant session.
 
 1. Read the existing root document and `design/SDD.md`, if present.
 2. Use the root document for the workstream type: feature → `PRD.md`, foundation → `FOUNDATION.md`, issue → `ISSUE.md`, maintenance → `MAINTENANCE.md`.
-3. Read the root starter's guidance and `resources/SDD_TEMPLATE.md` for document structure and content instructions. Consult `sane research --index` when research is relevant.
+3. Read the root starter's guidance and `resources/SDD_TEMPLATE.md` for document structure and content instructions. Consult `sane research index` when research is relevant.
 
 ## Initial Handoff Context
 

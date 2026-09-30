@@ -14,8 +14,8 @@ description: Use after Research Pickup confirmation for investigations and follo
 
 ## Reports and Index
 
-1. Register completed reports with `sane research --register --topic <topic>`. Workers may register their report when explicitly assigned that responsibility.
-2. Check `sane research --index`, refresh registrations after authorized report revisions, and remove stale entries with `sane research --unregister --topic <topic>`.
+1. Register completed reports with `sane research register --topic <topic> --path research/<topic>/REPORT.md`. Workers may register their report when explicitly assigned that responsibility.
+2. Check `sane research index`, refresh registrations after authorized report revisions, and remove stale entries with `sane research unregister --topic <topic>`.
 
 ## Receiving Follow-up Requests
 

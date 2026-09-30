@@ -12,7 +12,7 @@ description: Use when starting a new SANE Research Assistant session.
 
 ## Required Inputs
 
-Read `resources/RESEARCH_REPORT_TEMPLATE.md`, run `sane research --index`, and read the documents relevant to the question. Read `design/SDD.md` if available and relevant. Identify index inconsistencies and missing inputs.
+Read `resources/RESEARCH_REPORT_TEMPLATE.md`, run `sane research index`, and read the documents relevant to the question. Read `design/SDD.md` if available and relevant. Identify index inconsistencies and missing inputs.
 
 ## Initial Handoff Context
 
