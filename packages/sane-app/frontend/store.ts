@@ -1,12 +1,17 @@
 import { useRef, useSyncExternalStore } from "react";
 import { ApiError, conversationClient } from "./cc-client";
+import { publishWorkers, workersFor, registerWorkerSessions } from "./worker-client";
 import { consume, createRun, messagesForRun } from "./cc-reducer";
 import { catalog } from "./catalog";
 import { invalidateWorkspaceRequests, onWorkspaceAuthExpired } from "./workspace-store";
+import { BASE_PROFILE_IDS, builtinProfiles, canAssign, legacyProfileId, type AgentProfile, type AgentProfileInput, type AgentProfiles } from "../src/agent-profiles-contract";
+import type { AssistantAgentId } from "sane-core/agent-catalog";
 import type { Availability, Config, Conversation, ConversationClient, Harness, Interaction, InteractionReply, Message, ModelChoice, Run } from "./types";
 import type { ReconciledHistory } from "../src/reconcile";
 
-export type Draft = { text: string; harness: Harness; model: string; effort: string; cwd: string };
+/** Composer draft. New conversations pick `profileId` ("" = profiles.defaultId);
+ * selected Base conversations may stage `upgradeId` (assistant profile, same harness). */
+export type Draft = { text: string; cwd: string; profileId: string; upgradeId: string };
 export type State = {
   phase: "connecting" | "login" | "ready"; config?: Config; conversations: Conversation[];
   selected: string; runs: Run[]; messages: Message[]; drafts: Record<string, Draft>;
@@ -15,8 +20,10 @@ export type State = {
   models: ModelChoice[]; modelsLoading: boolean; modelsError: string; modelsLoaded: boolean;
   modelsCwd: string; interactions: Interaction[]; interactionError: string; actionBusy: boolean; actionNotice: string;
   nativeHistory?: ReconciledHistory | null;
+  profiles: AgentProfiles | null; profileError: string; profileBusy: boolean;
 };
-const emptyDraft = (): Draft => ({ text: "", harness: "claude-code", model: "", effort: "", cwd: "" });
+const emptyDraft = (): Draft => ({ text: "", cwd: "", profileId: "", upgradeId: "" });
+const fallbackProfiles: AgentProfiles = { version: 1, defaultId: BASE_PROFILE_IDS["claude-code"], profiles: builtinProfiles("") };
 export class ChatStore {
   private listeners = new Set<() => void>();
   private generation = 0;
@@ -27,7 +34,6 @@ export class ChatStore {
   private started = false;
   private modelRequest = 0;
   private replied = new Set<string>();
-  private hydrated = new Set<string>();
   private nativeHistoryLoaded = false;
   private selectionEpoch = 0;
   private actionSerial = 0;
@@ -36,7 +42,7 @@ export class ChatStore {
     this.update({ actionBusy: true, interactionError: "", actionNotice: "" });
     return () => selection === this.selectionEpoch && auth === this.authEpoch && operation === this.actionSerial;
   }
-  state: State = { phase: "connecting", conversations: [], selected: "", runs: [], messages: [], drafts: {}, connected: false, loading: true, sending: false, availability: { canSend: false }, connectionError: "", submissionError: "", authError: "", models: [], modelsLoading: false, modelsError: "", modelsLoaded: false, modelsCwd: "", interactions: [], interactionError: "", actionBusy: false, actionNotice: "" };
+  state: State = { phase: "connecting", conversations: [], selected: "", runs: [], messages: [], drafts: {}, connected: false, loading: true, sending: false, availability: { canSend: false }, connectionError: "", submissionError: "", authError: "", models: [], modelsLoading: false, modelsError: "", modelsLoaded: false, modelsCwd: "", interactions: [], interactionError: "", actionBusy: false, actionNotice: "", profiles: null, profileError: "", profileBusy: false };
   constructor(private client: ConversationClient) { onWorkspaceAuthExpired(() => this.loginRequired()); }
   subscribe = (listener: () => void) => { this.listeners.add(listener); return () => { this.listeners.delete(listener); }; };
   snapshot = () => this.state;
@@ -56,7 +62,6 @@ export class ChatStore {
     return this.state.drafts[this.draftKey(id)] ?? { ...emptyDraft(), cwd: id ? this.state.conversations.find(c => c.id === id)?.cwd ?? "" : worktree?.root ?? "" };
   };
   setDraft = (patch: Partial<Draft>, id = this.state.selected) => {
-    if ("model" in patch || "effort" in patch) this.hydrated.add(this.draftKey(id));
     this.update({ drafts: { ...this.state.drafts, [this.draftKey(id)]: { ...this.draft(id), ...patch } } });
   };
   executionUnavailable = () => {
@@ -69,18 +74,45 @@ export class ChatStore {
     const worktree = catalog.state.workspaces.find(w => w.workspaceId === nav.workspaceId)?.worktrees.find(w => w.worktreeId === nav.worktreeId);
     return !catalog.state.ready || !worktree || worktree.state !== "available" ? "Choose an available workspace and worktree to start a conversation." : "";
   };
-  harness = (): Harness => this.state.selected ? this.state.conversations.find(c => c.id === this.state.selected)?.harness ?? "claude-code" : this.draft().harness;
+  harness = (): Harness => this.state.selected ? this.state.conversations.find(c => c.id === this.state.selected)?.harness ?? "claude-code" : this.draftProfile().harness;
+  profileSet = (): AgentProfiles => this.state.profiles ?? this.state.config?.agentProfiles ?? fallbackProfiles;
+  profileList = (): AgentProfile[] => [...this.profileSet().profiles].sort((a, b) => a.order - b.order);
+  profile = (id: string | undefined): AgentProfile | undefined => id ? this.profileSet().profiles.find(p => p.id === id) : undefined;
+  defaultProfile = (): AgentProfile => { const set = this.profileSet(); return this.profile(set.defaultId) ?? this.profile(BASE_PROFILE_IDS["claude-code"]) ?? fallbackProfiles.profiles[0]!; };
+  /** New-conversation profile: the draft pick when still visible, else the default. */
+  draftProfile = (): AgentProfile => { const picked = this.profile(this.draft("").profileId); return picked && !picked.hidden && picked.kind !== "worker" ? picked : this.defaultProfile(); };
+  conversationProfileId = (id: string): string => {
+    const conversation = this.state.conversations.find(c => c.id === id);
+    return conversation?.profileId || legacyProfileId(conversation?.harness ?? "claude-code", (this.storedDefaults(id).agent || undefined) as AssistantAgentId | undefined);
+  };
+  /** Listing-only lookup (no run fallback): rows and previews. */
+  profileFor = (c: Conversation): AgentProfile | undefined => this.profile(c.profileId || legacyProfileId(c.harness, (c.agent || undefined) as AssistantAgentId | undefined));
+  conversationProfile = (id: string): AgentProfile | undefined => this.profile(this.conversationProfileId(id));
+  /** kind/harness of the selected conversation even when its profile was deleted. */
+  private currentShape = (): Pick<AgentProfile, "kind" | "harness"> | undefined => {
+    if (!this.state.selected) return undefined;
+    const profile = this.conversationProfile(this.state.selected);
+    if (profile) return profile;
+    const agent = this.storedDefaults(this.state.selected).agent || this.conversationProfileId(this.state.selected).startsWith("template:");
+    return { kind: agent ? "assistant" : "base", harness: this.harness() };
+  };
+  conversationKind = () => this.currentShape()?.kind;
+  pendingUpgrade = (): AgentProfile | undefined => this.state.selected ? this.profile(this.draft().upgradeId) : undefined;
+  /** Profile the next send runs with: pending upgrade, else the conversation's, else the draft's. */
+  effectiveProfile = (): AgentProfile | undefined => this.state.selected ? this.pendingUpgrade() ?? this.conversationProfile(this.state.selected) : this.draftProfile();
+  assignable = (profile: AgentProfile) => canAssign(this.currentShape(), profile);
+  pickProfile = (id: string) => {
+    const next = this.profile(id);
+    if (this.state.sending || !next || !this.assignable(next).ok) return;
+    if (this.state.selected) this.setDraft({ upgradeId: id }); else this.setDraft({ profileId: id }, "");
+  };
+  clearUpgrade = () => { if (this.state.selected && !this.state.sending) this.setDraft({ upgradeId: "" }); };
   workspace = () => {
     if (this.state.selected) return this.state.conversations.find(c => c.id === this.state.selected)?.cwd ?? "";
     const navigation = catalog.state.navigation;
     return this.draft().cwd.trim() || catalog.state.workspaces.find(w => w.workspaceId === navigation.workspaceId)?.worktrees.find(w => w.worktreeId === navigation.worktreeId)?.root || "";
   };
   capabilities = () => this.state.config?.harnesses?.find(h => h.id === this.harness())?.capabilities;
-  setHarness = (harness: Harness) => {
-    if (this.state.selected || this.state.sending) return;
-    this.setDraft({ harness, model: "", effort: "" });
-    if (harness === "opencode") void this.loadModels();
-  };
   loadModels = async () => {
     const cwd = this.workspace();
     if (this.state.modelsLoading && this.state.modelsCwd === cwd) return;
@@ -95,42 +127,66 @@ export class ChatStore {
       this.update({ modelsLoading: false, modelsLoaded: false, modelsError: `OpenCode unavailable: ${error instanceof Error ? error.message : "Could not load models."}` });
     }
   };
+  /** OpenCode gate: sending waits for the live per-cwd catalog. An empty profile
+   * model means the OC native default and is allowed. */
   modelUnavailable = () => {
     if (this.harness() !== "opencode") return false;
-    if (!this.state.modelsLoaded || this.state.modelsCwd !== this.workspace() || Boolean(this.state.modelsError)) return true;
-    const draft = this.draft();
-    if (draft.model) {
-      const entry = this.state.models.find(m => m.id === draft.model);
-      return !entry || (!!draft.effort && !entry.efforts.some(e => e.id === draft.effort));
-    }
-    // Selected conversation: a stored (or last-run) default satisfies the gate.
-    // Absence from the live per-cwd catalog warns instead of failing; the send
-    // still carries the saved selection for native resolution.
-    if (!this.state.selected) return true;
-    return !this.storedDefaults(this.state.selected).model;
+    return !this.state.modelsLoaded || this.state.modelsCwd !== this.workspace() || Boolean(this.state.modelsError);
   };
-  /** Saved model/effort for a conversation: Session defaults first, then the
-   * last run's values for pre-migration sessions that predate Session.model. */
-  storedDefaults = (id: string): { model: string; effort: string } => {
+  /** Model/variant the next OC send resolves (profile first, then saved session values). */
+  effectiveModel = (): { model: string; effort: string } => {
+    const profile = this.state.selected ? this.pendingUpgrade() : this.draftProfile();
+    if (profile?.model) return { model: profile.model, effort: profile.effort };
+    const saved = this.state.selected ? this.storedDefaults(this.state.selected) : { model: "", effort: "" };
+    return { model: saved.model, effort: saved.effort };
+  };
+  /** Warn-not-fail: a model absent from the live catalog still sends for native resolution. */
+  missingModel = (): string => {
+    if (this.harness() !== "opencode" || this.modelUnavailable()) return "";
+    const { model, effort } = this.effectiveModel();
+    if (!model) return "";
+    const entry = this.state.models.find(m => m.id === model);
+    return !entry ? model : effort && !entry.efforts.some(e => e.id === effort) ? `${model} (${effort})` : "";
+  };
+  /** Saved model/effort/agent for a conversation: Session defaults first, then the
+   * last run's values for pre-migration sessions that predate Session fields. */
+  storedDefaults = (id: string): { model: string; effort: string; agent: string } => {
     const conversation = this.state.conversations.find(c => c.id === id);
     // runMap holds only the selected conversation's runs (cleared on choose),
     // so filtering by id is exact at both choose-time (empty) and poll-time.
     const last = [...this.runMap.values()].filter(r => r.conversationId === id).sort((a, b) => a.createdAt.localeCompare(b.createdAt)).at(-1);
-    return { model: conversation?.model || last?.model || "", effort: conversation?.effort || last?.effort || "" };
+    return { model: conversation?.model || last?.model || "", effort: conversation?.effort || last?.effort || "", agent: conversation?.agent || last?.agent || "" };
   };
-  /** Seed an empty draft from saved defaults so a refresh keeps showing the
-   * conversation's model. Never clobbers user-entered values; each key seeds
-   * at most once (explicit user edits via setDraft also mark the key). */
-  private hydrateDraft(id: string) {
-    if (!id) return;
-    const key = this.draftKey(id);
-    if (this.hydrated.has(key)) return;
-    if ((this.state.drafts[key]?.model || this.state.drafts[key]?.effort)) { this.hydrated.add(key); return; }
-    const { model, effort } = this.storedDefaults(id);
-    if (!model && !effort) return;
-    this.hydrated.add(key);
-    this.update({ drafts: { ...this.state.drafts, [key]: { ...this.draft(id), model, effort } } });
+  /** Assistant role of the selected conversation (stored) or of the new-conversation profile. */
+  agent = (): string => this.state.selected ? this.storedDefaults(this.state.selected).agent || this.conversationProfile(this.state.selected)?.role || "" : this.draftProfile().role ?? "";
+  private async profileAction<T>(run: (client: ConversationClient) => Promise<T> | undefined): Promise<T | undefined> {
+    if (this.state.profileBusy) return;
+    const auth = this.authEpoch;
+    this.update({ profileBusy: true, profileError: "" });
+    try {
+      const pending = run(this.client);
+      if (!pending) throw new Error("Agent profiles are unavailable on this bridge.");
+      const result = await pending;
+      if (auth !== this.authEpoch) return;
+      await this.refreshProfiles();
+      return result;
+    } catch (error) {
+      if (auth === this.authEpoch && !this.expired(error)) this.update({ profileError: error instanceof Error ? error.message : "Agent update failed." });
+    } finally { if (auth === this.authEpoch) this.update({ profileBusy: false }); }
+  }
+  refreshProfiles = async () => {
+    if (!this.client.agents) return;
+    const auth = this.authEpoch;
+    try { const profiles = await this.client.agents(); if (auth === this.authEpoch) this.update({ profiles }); }
+    catch (error) { if (auth === this.authEpoch && !this.expired(error)) this.update({ profileError: error instanceof Error ? error.message : "Could not load agents." }); }
   };
+  saveProfile = (id: string, input: AgentProfileInput) => this.profileAction(c => c.updateAgent?.(id, input)).then(r => r?.profile);
+  createProfile = (fromId: string, input: AgentProfileInput = {}) => this.profileAction(c => c.createAgent?.(fromId, input)).then(r => r?.profile);
+  deleteProfile = (id: string) => this.profileAction(c => c.deleteAgent?.(id)).then(r => !!r);
+  resetProfile = (id: string) => this.profileAction(c => c.resetAgent?.(id)).then(r => r?.profile);
+  setDefaultProfile = (defaultId: string) => this.profileAction(c => c.orderAgents?.({ defaultId })).then(r => !!r);
+  reorderProfiles = (order: string[]) => this.profileAction(c => c.orderAgents?.({ order })).then(r => !!r);
+  clearProfileError = () => this.update({ profileError: "" });
   reply = async (interactionId: string, reply: InteractionReply) => {
     if (this.state.actionBusy || !this.state.selected) return;
     const id = this.state.selected, current = this.beginAction();
@@ -194,10 +250,9 @@ export class ChatStore {
   private loginRequired() {
     this.stop(); this.authEpoch++; this.runMap.clear();
     this.nativeHistoryLoaded = false;
-    this.hydrated.clear();
     catalog.invalidate(); invalidateWorkspaceRequests();
     this.replied.clear();
-    this.update({ phase: "login", config: undefined, conversations: [], runs: [], messages: [], nativeHistory: null, connected: false, loading: false, sending: false, availability: { canSend: false }, connectionError: "", submissionError: "", models: [], modelsLoading: false, modelsLoaded: false, modelsError: "", modelsCwd: "", interactions: [], interactionError: "", actionBusy: false, actionNotice: "" });
+    this.update({ phase: "login", config: undefined, conversations: [], runs: [], messages: [], nativeHistory: null, connected: false, loading: false, sending: false, availability: { canSend: false }, connectionError: "", submissionError: "", models: [], modelsLoading: false, modelsLoaded: false, modelsError: "", modelsCwd: "", interactions: [], interactionError: "", actionBusy: false, actionNotice: "", profiles: null, profileError: "", profileBusy: false });
   }
   private expired(error: unknown) { if (error instanceof ApiError && error.status === 401) { this.loginRequired(); return true; } return false; }
   start = () => { if (this.started) return; this.started = true; void this.boot(); };
@@ -210,7 +265,8 @@ export class ChatStore {
       const config = await this.client.config(controller.signal);
       if (generation !== this.generation || auth !== this.authEpoch) return;
       if (config.authRequired && !config.authenticated) { this.loginRequired(); return; }
-      this.update({ config, phase: "ready", authError: "", connectionError: "" });
+      this.update({ config, phase: "ready", authError: "", connectionError: "", ...(config.agentProfiles ? { profiles: config.agentProfiles } : {}) });
+      if (!config.agentProfiles) void this.refreshProfiles();
       void this.poll();
     } catch (error) {
       if (generation !== this.generation || auth !== this.authEpoch || this.expired(error)) return;
@@ -245,7 +301,6 @@ export class ChatStore {
     this.update(selected
       ? { selected, nativeHistory: null, interactions: [], interactionError: "", actionBusy: false, actionNotice: "", loading: true, connected: false, connectionError: "", submissionError: "" }
       : { selected, runs: [], messages: [], nativeHistory: null, interactions: [], interactionError: "", actionBusy: false, actionNotice: "", loading: false, connected: false, connectionError: "", submissionError: "" });
-    if (selected) this.hydrateDraft(selected);
     void this.poll();
   };
   private async poll() {
@@ -257,7 +312,12 @@ export class ChatStore {
     try {
       const listing = await this.client.conversations(controller.signal);
       if (!current()) return;
+      registerWorkerSessions(listing.conversations);
       const nativeHistory = selected && this.client.nativeHistory ? this.nativeHistoryLoaded ? this.state.nativeHistory : (await this.client.nativeHistory(selected, controller.signal)).history : null;
+      if (selected && this.client.workers) {
+        try { const projection = await this.client.workers(selected, controller.signal); if (current()) publishWorkers(selected, projection); }
+        catch (error) { if (current()) publishWorkers(selected, { ...workersFor(selected), error: error instanceof Error ? error.message : "Worker status unavailable" }); }
+      }
       if (!current()) return;
       if (selected) {
         const metadata = await this.client.runs(selected, controller.signal);
@@ -311,7 +371,6 @@ export class ChatStore {
         prev.runs.length === runs.length && runs.every((run, index) => prev.runs[index]?.id === run.id && prev.runs[index]?.status === run.status && prev.runs[index]?.cursor === run.cursor) &&
         JSON.stringify(prev.messages) === JSON.stringify(messages);
       if (!quiet) this.update({ ...listing, availability, nativeHistory, conversations, runs, messages, connected: true, loading: false, connectionError: "" });
-      if (selected) this.hydrateDraft(selected);
       if (selected && conversations.find(c => c.id === selected)?.harness === "opencode") {
         try {
           const interactions = await this.client.interactions(selected, controller.signal);
@@ -333,17 +392,20 @@ export class ChatStore {
     if (conversation?.attachment && conversation.harness === "claude-code" && !nativeStopped) { this.update({ submissionError: "Confirm external Claude execution is stopped before sending." }); return; }
     if (!text.trim() || this.state.sending || !this.state.connected || !this.state.availability.canSend || this.modelUnavailable() || this.executionUnavailable()) return;
     const selected = this.state.selected, draft = this.draft();
+    const upgrade = selected ? this.pendingUpgrade() : undefined;
+    const profileId = selected ? upgrade && this.assignable(upgrade).ok ? upgrade.id : "" : this.draftProfile().id;
     this.stop(); const generation = this.generation, auth = this.authEpoch;
     // Keep the submitted text until acceptance is known. Never auto-retry POST.
     this.setDraft({ text }, selected);
     this.update({ sending: true, submissionError: "", availability: { canSend: false, reason: "Submitting…" } });
     try {
       const navigation = catalog.state.navigation;
-      const result = await this.client.submit({ text, ...(nativeStopped ? { nativeStopped: true } : {}), ...(selected ? { conversationId: selected } : { harness: draft.harness, ...(draft.cwd.trim() ? { cwd: draft.cwd.trim() } : {}), workspaceId: navigation.workspaceId!, worktreeId: navigation.worktreeId! }), ...(draft.model.trim() ? { model: draft.model.trim() } : {}), ...(draft.effort ? { effort: draft.effort } : {}) });
+      const result = await this.client.submit({ text, ...(nativeStopped ? { nativeStopped: true } : {}), ...(selected ? { conversationId: selected } : { ...(draft.cwd.trim() ? { cwd: draft.cwd.trim() } : {}), workspaceId: navigation.workspaceId!, worktreeId: navigation.worktreeId! }), ...(profileId ? { profileId } : {}) });
       if (generation !== this.generation || auth !== this.authEpoch) return;
       if (this.draft(selected).text === text) this.setDraft({ text: "" }, selected);
+      if (selected && profileId) this.setDraft({ upgradeId: "" }, selected);
       if (!selected) {
-        this.setDraft({ ...this.draft(selected) }, result.conversationId);
+        this.setDraft({ ...this.draft(selected), profileId: "", upgradeId: "" }, result.conversationId);
         this.setDraft({ text: "" }, selected);
       }
       this.update({ sending: false });

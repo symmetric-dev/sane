@@ -1,18 +1,30 @@
 import { isAbsolute } from "node:path";
 import type { Harness } from "./oc-contract";
+import { isAssistantAgentId, isWorkerAgentId, type AssistantAgentId, type WorkerAgentId } from "sane-core/agent-catalog";
+
+/** Missing kind is a legacy assistant; workers always persist their kind. */
+export type AgentSnapshot = { agent?: AssistantAgentId | WorkerAgentId; agentKind?: "assistant" | "worker"; nativeAgentSelected?: boolean };
+export function validAgentSnapshot(value: AgentSnapshot): boolean {
+  if (value.nativeAgentSelected !== undefined && typeof value.nativeAgentSelected !== "boolean") return false;
+  if (value.agentKind !== undefined && value.agentKind !== "assistant" && value.agentKind !== "worker") return false;
+  if (value.agent === undefined) return value.agentKind === undefined && value.nativeAgentSelected === undefined;
+  return value.agentKind === "worker" ? isWorkerAgentId(value.agent) : isAssistantAgentId(value.agent);
+}
 
 export type Status = "running" | "completed" | "failed" | "interrupted";
-export type Session = { sessionId: string; harness?: Harness; nativeSessionId?: string; authorityId?: string; cwd: string; lastStatus: Status | "unknown"; lastRunId: string | null; title?: string; hidden?: boolean; model?: string; effort?: string; attachment?: { state: "pending" | "ready"; source: string; error?: string } };
+export type Session = AgentSnapshot & { sessionId: string; harness?: Harness; nativeSessionId?: string; authorityId?: string; cwd: string; lastStatus: Status | "unknown"; lastRunId: string | null; title?: string; hidden?: boolean; model?: string; effort?: string; profileId?: string; attachment?: { state: "pending" | "ready"; source: string; error?: string } };
 export const efforts = ["low", "medium", "high", "xhigh", "max"] as const;
 export type Effort = typeof efforts[number];
 export const validModel = (v: unknown): v is string => typeof v === "string" && v.length <= 200 && /^[a-zA-Z0-9][a-zA-Z0-9._:/\[\]-]*$/.test(v);
 export const validEffort = (v: unknown): v is Effort => typeof v === "string" && (efforts as readonly string[]).includes(v);
-export type Run = { runId: string; sessionId: string; cwd: string; status: Status; createdAt: string; endedAt?: string; model?: string; effort?: string; nativeCommandId?: string; nativePhase?: "preparing" | "sending" | "accepted"; nativeAcceptedAt?: number };
+export type Run = AgentSnapshot & { runId: string; sessionId: string; cwd: string; status: Status; createdAt: string; endedAt?: string; model?: string; effort?: string; profileId?: string; nativeCommandId?: string; nativePhase?: "preparing" | "sending" | "accepted"; nativeAcceptedAt?: number };
 export type Event = { seq: number; time: string; runId: string; sessionId: string; kind: "stdout" | "stderr" | "hook" | "status" | "submission" | "message"; data: unknown };
 export type Metadata = { sessions: Session[]; runs: Run[]; reconciliationRequired: boolean };
 
 const object = (v: unknown): v is Record<string, any> => !!v && typeof v === "object" && !Array.isArray(v);
 export const uuid = (v: unknown): v is string => typeof v === "string" && /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(v);
+/** Agent profile id: builtin ("base:cc" | "base:oc" | "template:<role>") or custom uuid. */
+export const validProfileId = (v: unknown): v is string => typeof v === "string" && (/^base:(cc|oc)$/.test(v) || v.startsWith("template:") && isAssistantAgentId(v.slice(9)) || v.startsWith("worker:") && isWorkerAgentId(v.slice(7)) || uuid(v));
 export const validVariant = (v: unknown): v is string => typeof v === "string" && v.length > 0 && v.length <= 200 && !/[\x00-\x1f]/.test(v);
 const status = (v: unknown): v is Status => typeof v === "string" && ["running", "completed", "failed", "interrupted"].includes(v);
 const timestamp = (v: unknown) => typeof v === "string" && Number.isFinite(Date.parse(v));
@@ -42,6 +54,10 @@ export function validateMetadata(value: unknown): Metadata {
     // Effort shape follows the session harness, mirroring run validation below.
     if (s.model !== undefined && !validModel(s.model)) return fail();
     if (s.effort !== undefined && !(s.harness === "opencode" ? validVariant(s.effort) : validEffort(s.effort))) return fail();
+    // Picker-selected assistant. Absent means native default; never persisted
+    // as empty. Immutable per conversation once set (like harness/cwd).
+    if (!validAgentSnapshot(s)) return fail();
+    if (s.profileId !== undefined && !validProfileId(s.profileId)) return fail();
     const key = JSON.stringify([s.harness, s.authorityId, s.nativeSessionId]);
     if (nativeIds.has(key)) return fail();
     nativeIds.add(key);
@@ -52,6 +68,8 @@ export function validateMetadata(value: unknown): Metadata {
     if (r.status === "running" ? r.endedAt !== undefined : !timestamp(r.endedAt)) return fail();
     if (r.endedAt !== undefined && Date.parse(r.endedAt) < Date.parse(r.createdAt)) return fail();
     if ((r.model !== undefined && !validModel(r.model)) || (r.effort !== undefined && !(sessions.get(r.sessionId)?.harness === "opencode" ? validVariant(r.effort) : validEffort(r.effort)))) return fail();
+    if (!validAgentSnapshot(r)) return fail();
+    if (r.profileId !== undefined && !validProfileId(r.profileId)) return fail();
     if (sessions.get(r.sessionId)?.harness === "opencode" && (typeof r.nativeCommandId !== "string" || !/^msg_[a-zA-Z0-9_-]+$/.test(r.nativeCommandId) || !["preparing", "sending", "accepted"].includes(r.nativePhase))) return fail();
     if (sessions.get(r.sessionId)?.cwd !== r.cwd) return fail();
     if (r.status === "running" && sessions.get(r.sessionId)?.lastRunId !== r.runId) return fail();

@@ -5,6 +5,7 @@
   "type": "module",
   "exports": {
     "./contracts": "./src/contracts.ts",
+    "./agent-catalog": "./src/agent-catalog.ts",
     "./server": "./src/server.ts"
   }
 }

@@ -3,6 +3,7 @@ import { homedir } from "node:os"
 import { fileURLToPath } from "node:url"
 import { dirname, join, resolve } from "node:path"
 import { injectAgentModel, loadAgentModelConfig, validateAgentTaskPermissions } from "./agent-model-config.ts"
+import { ccAgentFilename, parseSaneAgent, serializeCcAgent, serializeCcSettings } from "./agent-serialization.ts"
 
 export const AGENT_FILENAMES = [
   "sane/assistant/design.md",
@@ -53,9 +54,9 @@ const RETIRED_ROLE_SKILL_NAMES = [
   "sane-research-assistant-role",
 ] as const
 
-export const PLUGIN_SRC_FILES: readonly string[] = ["cli-arguments.ts", "native-caller.ts", "native-opencode.ts", "native-claude.ts", "native-claude-hook.ts", "native-claude-mcp.ts", "native-configuration.ts", "native-handoff.ts"]
+export const PLUGIN_SRC_FILES: readonly string[] = ["cli-arguments.ts", "native-caller.ts", "native-opencode.ts", "native-claude.ts", "native-claude-hook.ts", "native-claude-mcp.ts", "native-configuration.ts", "native-handoff.ts", "native-worker-contract.ts", "native-worker.ts"]
 
-export const PLUGIN_CORE_SRC_FILES: readonly string[] = ["artifact-lock.ts", "bootstrap-registry.ts", "bootstrap-validation.ts", "confined-lifecycle-filesystem.ts", "contracts.ts", "errors.ts", "execution-report-validation.ts", "handoff.ts", "job-policy.ts", "lifecycle-filesystem.ts", "lifecycle.ts", "native-source.ts", "provision.ts", "repository.ts", "schema.ts", "server.ts", "validation.ts", "workstream-type.ts"]
+export const PLUGIN_CORE_SRC_FILES: readonly string[] = ["agent-catalog.ts", "artifact-lock.ts", "bootstrap-registry.ts", "bootstrap-validation.ts", "confined-lifecycle-filesystem.ts", "contracts.ts", "errors.ts", "execution-report-validation.ts", "handoff.ts", "job-policy.ts", "lifecycle-filesystem.ts", "lifecycle.ts", "native-source.ts", "provision.ts", "repository.ts", "schema.ts", "server.ts", "validation.ts", "workstream-type.ts"]
 
 export const PLUGIN_FILENAMES = [
   "sane/index.ts",
@@ -167,9 +168,17 @@ function installationEntries(
       source: join(sourceRoot, "skills", skillName, "SKILL.md"),
       destination: join(homeDirectory, ".agents", "skills", skillName, "SKILL.md"),
     })),
+    ...ROLE_SKILL_NAMES.map((skillName) => ({
+      source: join(sourceRoot, "skills", skillName, "SKILL.md"),
+      destination: join(homeDirectory, ".claude", "skills", skillName, "SKILL.md"),
+    })),
     ...GLOBAL_SUPPORT_SKILL_NAMES.map((skillName) => ({
       source: join(sourceRoot, ".opencode", "skills", skillName, "SKILL.md"),
       destination: join(homeDirectory, ".config", "opencode", "skills", skillName, "SKILL.md"),
+    })),
+    ...GLOBAL_SUPPORT_SKILL_NAMES.map((skillName) => ({
+      source: join(sourceRoot, ".opencode", "skills", skillName, "SKILL.md"),
+      destination: join(homeDirectory, ".claude", "skills", skillName, "SKILL.md"),
     })),
     {
       rewriteImports: true,
@@ -226,8 +235,43 @@ async function resourceInstallationEntries(
       join(homeDirectory, ".agents", "skills", skillName, "resources"),
       true,
     )
+    await visit(
+      join(sourceRoot, "skills", skillName, "resources"),
+      join(homeDirectory, ".claude", "skills", skillName, "resources"),
+      true,
+    )
   }
   return entries
+}
+
+/**
+ * Derive global CC agent files + per-agent settings profiles from loaded OC
+ * agent entries. CC agents keep all tools (no `tools` restriction); the
+ * ask/allow profile lives in the sibling settings file. OC model overrides
+ * never leak into CC output.
+ */
+function ccAgentEntriesFromLoaded(
+  entries: LoadedInstallationEntry[],
+  homeDirectory: string,
+): LoadedInstallationEntry[] {
+  return entries
+    .filter((entry) => entry.agentName !== undefined && typeof entry.content === "string")
+    .flatMap((entry) => {
+      const spec = parseSaneAgent(entry.content.toString(), entry.agentName!)
+      const ccName = ccAgentFilename(entry.agentName!)
+      return [
+        {
+          source: entry.source,
+          destination: join(homeDirectory, ".claude", "agents", ccName),
+          content: serializeCcAgent(spec),
+        },
+        {
+          source: entry.source,
+          destination: join(homeDirectory, ".claude", "sane-agent-settings", ccName.replace(/\.md$/, ".settings.json")),
+          content: serializeCcSettings(spec),
+        },
+      ]
+    })
 }
 
 async function validateSources(entries: InstallationEntry[]): Promise<LoadedInstallationEntry[]> {
@@ -431,6 +475,9 @@ export async function installSaneAgentContextPackages(
     : [{
         source: join(sourceRoot, ".opencode", "skills", options.onlySkill, "SKILL.md"),
         destination: join(homeDirectory, ".config", "opencode", "skills", options.onlySkill, "SKILL.md"),
+      }, {
+        source: join(sourceRoot, ".opencode", "skills", options.onlySkill, "SKILL.md"),
+        destination: join(homeDirectory, ".claude", "skills", options.onlySkill, "SKILL.md"),
       }])
   const rewrittenEntries = sourcedEntries.map((entry) =>
     entry.rewriteImports ? { ...entry, content: rewritePluginImports(entry.content.toString()) } : entry,
@@ -444,11 +491,20 @@ export async function installSaneAgentContextPackages(
   } catch (error) {
     throw new AgentContextPackageInstallationError((error as Error).message)
   }
-  let configuredEntries = rewrittenEntries
+  let ccDerivedEntries: LoadedInstallationEntry[] = []
+  if (options.onlySkill === undefined) {
+    try {
+      ccDerivedEntries = ccAgentEntriesFromLoaded(rewrittenEntries, homeDirectory)
+    } catch (error) {
+      throw new AgentContextPackageInstallationError((error as Error).message)
+    }
+  }
+  const allEntries = [...rewrittenEntries, ...ccDerivedEntries]
+  let configuredEntries = allEntries
   if (options.modelConfigPath !== undefined) {
     try {
       const models = await loadAgentModelConfig(options.modelConfigPath, AGENT_FILENAMES)
-      configuredEntries = rewrittenEntries.map((entry) => ({
+      configuredEntries = allEntries.map((entry) => ({
         ...entry,
         content: entry.agentName ? injectAgentModel(entry.content.toString(), models.get(entry.agentName)) : entry.content,
       }))

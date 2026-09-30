@@ -1,20 +1,24 @@
 /** UI contract. Harness-specific records stay behind ConversationClient. */
 import type { Interaction, InteractionReply } from "../src/oc-contract";
 import type { Association } from "../src/catalog-contract";
+import type { AgentProfile, AgentProfileInput, AgentProfiles } from "../src/agent-profiles-contract";
+export type { AgentProfile, AgentProfileInput, AgentProfiles } from "../src/agent-profiles-contract";
 export type { Interaction, InteractionReply, FormField } from "../src/oc-contract";
 export type RunStatus = "starting" | "running" | "completed" | "failed" | "interrupted" | "unknown";
 export type Harness = "claude-code" | "opencode";
+export type WorkerSessionMetadata = { id: string; parent: { sessionId: string; runId: string; toolCallId: string } };
 export const harnessName = (harness: Harness) => harness === "opencode" ? "OpenCode" : "Claude Code";
 export const harnessShort = (harness: Harness): "OC" | "CC" => harness === "opencode" ? "OC" : "CC";
 export type ModelChoice = { id: string; name: string; efforts: { id: string; name: string }[] };
-export type Conversation = { id: string; harness: Harness; nativeSessionId?: string; cwd: string; lastRunId: string | null; status: RunStatus; title?: string; hidden?: boolean; model?: string; effort?: string; availability?: Availability; attachment?: { state: "pending" | "ready"; error?: string } } & Partial<Association>;
+export type AgentChoice = { id: string; label: string; description: string };
+export type Conversation = { id: string; harness: Harness; nativeSessionId?: string; cwd: string; lastRunId: string | null; status: RunStatus; title?: string; hidden?: boolean; model?: string; effort?: string; agent?: string; profileId?: string; availability?: Availability; attachment?: { state: "pending" | "ready"; error?: string }; worker?: WorkerSessionMetadata } & Partial<Association>;
 export type Capabilities = {
   concurrency: { scope: "bridge" | "conversation"; limit: number; perConversation?: number; sharedCheckoutWrites?: boolean };
   cancelRun: boolean; midRunInput: boolean; permissionReplies: boolean;
   attachments: boolean; modelSelection: boolean; effortValues: string[];
 };
 export type TextPart = { type: "text"; text: string } | { type: "reasoning"; text: string };
-export type ToolPart = { type: "tool"; id: string; name: string; input: unknown; output?: unknown; error?: boolean; toolStatus?: string };
+export type ToolPart = { type: "tool"; id: string; toolCallId?: string; name: string; input: unknown; output?: unknown; error?: boolean; toolStatus?: string };
 export type Message = { id: string; runId: string; role: "user" | "assistant" | "system"; parts: (TextPart | ToolPart)[]; time: string; status: RunStatus; normalized?: boolean; error?: unknown };
 export type UsageSnapshot = { runId: string; time: string; record: Record<string, any> };
 export type DiagnosticEvent = { seq: number; time: string; runId: string; sessionId: string; kind: string; data: unknown };
@@ -23,15 +27,15 @@ export type Run = {
   harness?: Harness; nativeSessionId?: string;
   nativeCommandId?: string;
   nativeConnection?: string; nativeReason?: string; nativeUsage?: { cost?: number; tokens?: unknown }; nativeUsageTime?: string;
-  model?: string; effort?: string; observedModel?: string; observedEfforts: string[];
+  model?: string; effort?: string; agent?: string; profileId?: string; observedModel?: string; observedEfforts: string[];
   messages: Message[]; events: DiagnosticEvent[]; cursor: number; seen: Set<number>;
   buffer: string; usage?: UsageSnapshot; result?: string; resultCount: number; resultKeys: Set<string>;
   toolResults: Map<string, { output: unknown; error?: boolean }>;
 };
 export type HarnessInfo = { id: Harness; available: boolean; connected: boolean; state: string; reason?: string; capabilities: { cancelRun?: boolean; permissionReplies?: boolean; questionReplies?: boolean; modelSelection?: boolean; effortValues?: string[] } };
-export type Config = { authRequired: boolean; authenticated: boolean; cwd?: string; capabilities?: Capabilities; harnesses?: HarnessInfo[] };
+export type Config = { authRequired: boolean; authenticated: boolean; cwd?: string; capabilities?: Capabilities; agents?: AgentChoice[]; agentProfiles?: AgentProfiles; harnesses?: HarnessInfo[] };
 export type Availability = { canSend: boolean; reason?: string };
-export type RunMetadata = Pick<Run, "id" | "conversationId" | "cwd" | "status" | "createdAt" | "endedAt" | "model" | "effort" | "harness" | "nativeSessionId" | "nativeCommandId">;
+export type RunMetadata = Pick<Run, "id" | "conversationId" | "cwd" | "status" | "createdAt" | "endedAt" | "model" | "effort" | "agent" | "profileId" | "harness" | "nativeSessionId" | "nativeCommandId">;
 export type SearchHit = { sessionId: string; runId?: string; snippet: string; score: number };
 export interface ConversationClient {
   config(signal?: AbortSignal): Promise<Config>;
@@ -39,6 +43,7 @@ export interface ConversationClient {
   logout(): Promise<void>;
   conversations(signal?: AbortSignal): Promise<{ conversations: Conversation[]; availability: Availability }>;
   runs(id: string, signal?: AbortSignal): Promise<RunMetadata[]>;
+  workers?(id: string, signal?: AbortSignal): Promise<import("./worker-client").WorkerProjection>;
   events(run: Run, signal?: AbortSignal): Promise<{ events: DiagnosticEvent[]; nextCursor: number; status: RunStatus }>;
    models(cwd: string, signal?: AbortSignal): Promise<ModelChoice[]>;
    interactions(id: string, signal?: AbortSignal): Promise<Interaction[]>;
@@ -49,6 +54,12 @@ export interface ConversationClient {
     search?(query: string, opts?: { workspaceId?: string | null; worktreeId?: string | null; limit?: number; signal?: AbortSignal }): Promise<{ results: import("./types").SearchHit[] }>;
     reconcile?(id: string): Promise<{ history: import("../src/reconcile").ReconciledHistory }>;
     nativeHistory?(id: string, signal?: AbortSignal): Promise<{ history: import("../src/reconcile").ReconciledHistory | null }>;
-   submit(input: { text: string; conversationId?: string; nativeStopped?: boolean; harness?: Harness; cwd?: string; workspaceId?: string; worktreeId?: string; model?: string; effort?: string }): Promise<{ conversationId: string; runId: string }>;
+    agents?(signal?: AbortSignal): Promise<AgentProfiles>;
+    createAgent?(fromId: string, input?: AgentProfileInput): Promise<{ profile: AgentProfile }>;
+    updateAgent?(id: string, input: AgentProfileInput): Promise<{ profile: AgentProfile }>;
+    deleteAgent?(id: string): Promise<{ ok: true }>;
+    resetAgent?(id: string): Promise<{ profile: AgentProfile }>;
+    orderAgents?(input: { order?: string[]; defaultId?: string }): Promise<AgentProfiles>;
+   submit(input: { text: string; conversationId?: string; nativeStopped?: boolean; harness?: Harness; cwd?: string; workspaceId?: string; worktreeId?: string; model?: string; effort?: string; agent?: string; profileId?: string }): Promise<{ conversationId: string; runId: string }>;
 }
 export const active = (status: RunStatus) => status === "running" || status === "starting";

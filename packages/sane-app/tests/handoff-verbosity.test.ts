@@ -1,5 +1,5 @@
 /**
- * C11 Phase 2 — handoff reply verbosity budgets (pure, no server boot).
+ * Handoff reply verbosity budgets (pure, no server boot).
  *
  * The native handoff enqueue/status replies are projected to the approved
  * agent-facing shapes; the full Handoff row stays server-side (reachable via
@@ -25,7 +25,7 @@ function fullHandoff(message: string): Handoff {
       ref: { harness: "oc", authorityId: "auth-1", nativeId: "ses_recipient" },
       harness: "oc",
       authorityId: "auth-1",
-      checkout: { path: "/repo", commit: "abc123", dirty: false },
+      checkout: { path: "/repo", commonDir: "/repo", gitDir: "/repo/.git", device: 1, inode: 1, commonDevice: 1, commonInode: 1, gitDevice: 1, gitInode: 1 },
     },
     status: "queued",
     revision: 3,
@@ -38,7 +38,7 @@ function fullHandoff(message: string): Handoff {
   };
 }
 
-describe("C11 handoff reply verbosity", () => {
+describe("handoff reply verbosity", () => {
   test("enqueue projection carries only the approved keys (plus runId for delivery correlation)", () => {
     const projected = projectHandoffEnqueue(fullHandoff("do the thing"));
     expect(projected).toEqual({

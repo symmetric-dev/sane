@@ -21,9 +21,9 @@ function seedRepo(root: string): { repo: string; caller: NativeCaller } {
   return { repo, caller }
 }
 
-describe("C11 Phase 1: context/link verbosity", () => {
+describe("context/link verbosity", () => {
   test("context reply fits the per-turn budget and carries workstream id + harness", () => {
-    const root = mkdtempSync(join(tmpdir(), "sane-c11-"))
+    const root = mkdtempSync(join(tmpdir(), "sane-t-"))
     try {
       const { caller } = seedRepo(root)
       linkNativeCaller(caller, { slot: "design", workstream: "native" })
@@ -42,7 +42,7 @@ describe("C11 Phase 1: context/link verbosity", () => {
   })
 
   test("link reply fits the per-turn budget and carries workstream id + harness", () => {
-    const root = mkdtempSync(join(tmpdir(), "sane-c11-"))
+    const root = mkdtempSync(join(tmpdir(), "sane-t-"))
     try {
       const { caller } = seedRepo(root)
       const reply = linkNativeCaller(caller, { slot: "engineering", workstream: "native" })

@@ -25,7 +25,7 @@ export function WorkspaceNavigation({ state, activeView, onNavigate }: { state: 
     { id: "terminal", label: "Terminal", Icon: FiTerminal },
     { id: "workstreams", label: "Workstreams", Icon: FiGitMerge },
     { id: "history", label: "History", Icon: FiCopy },
-    { id: "config", label: "Config", Icon: FiSettings },
+    { id: "config", label: "Settings", Icon: FiSettings },
   ] as const;
   return <nav className="workspace-navigation" aria-label="Workspace navigation">{items.map(view => <button type="button" key={view.id} aria-current={activeView === view.id ? "page" : undefined} aria-label={view.label} title={view.label} onClick={() => onNavigate(view.id)}><view.Icon size={17} aria-hidden="true" />{view.id === "chat" && (pending > 0 || running) && <span className={`chat-activity${pending ? " pending" : ""}`} role="status"><span className="pulse" />{pending ? `${pending}` : ""}<span className="sr-only">{pending ? `${pending} pending` : "Running"}</span></span>}</button>)}</nav>;
 }

@@ -215,12 +215,32 @@ export class RepositoryDomain {
   }
   listConversations(): Conversation[] { this.guard(); return this.rows("SELECT * FROM conversations ORDER BY created_at,id").map(c => this.conversationDTO(c)) }
   private handoffDTO(row: any): Handoff {
-    return { id: row.id, repositoryId: this.repositoryId, sender: this.reference(this.row("SELECT * FROM conversations WHERE id=?", row.sender_id)), workstreamId: row.workstream_id, input: JSON.parse(row.input), recipient: JSON.parse(row.recipient), status: row.status, revision: row.revision, attemptId: row.attempt_id, nativeCommandId: row.native_command_id, runId: row.run_id, evidence: row.evidence, createdAt: row.created_at, updatedAt: row.updated_at }
+    const h: Handoff = { id: row.id, repositoryId: this.repositoryId, sender: this.reference(this.row("SELECT * FROM conversations WHERE id=?", row.sender_id)), workstreamId: row.workstream_id, input: JSON.parse(row.input), recipient: JSON.parse(row.recipient), status: row.status, revision: row.revision, attemptId: row.attempt_id, nativeCommandId: row.native_command_id, runId: row.run_id, evidence: row.evidence, createdAt: row.created_at, updatedAt: row.updated_at }
+    const input = JSON.parse(row.input)
+    return input.kickoff ? { ...h, origin: { kind: "kickoff", sender: h.sender, requestId: input.requestId } } : h
   }
   getHandoff(id: string): Handoff { this.guard(); text(id, "handoff ID"); return this.handoffDTO(this.row("SELECT * FROM handoffs WHERE id=?", id) ?? fail("NOT_FOUND", "Unknown handoff.")) }
   findHandoff(sender: ConversationRef, requestId: string): Handoff | null {
     this.guard(); const c = this.conversationRow(sender), row = this.row("SELECT * FROM handoffs WHERE sender_id=? AND request_id=?", c.id, requestId)
     return row ? this.handoffDTO(row) : null
+  }
+  /** True when `workstreamId` was created by the kickoff handoff (sender, requestId). */
+  private kickoffCreated(workstreamId: string, sender: ConversationRef, requestId: string): boolean {
+    const c = this.conversationRow(sender)
+    return !!this.row("SELECT 1 FROM audit_events WHERE operation='workstream_created' AND workstream_id=? AND actor_kind='native' AND actor_conversation_id=? AND correlation_id=?", workstreamId, c.id, `kickoff:${requestId}`)
+  }
+  /** Idempotently create the kickoff workstream for a sender without one; the sender never joins it. */
+  kickoffWorkstream(sender: ConversationRef, input: unknown): Workstream {
+    const args = handoffInput(input), kickoff = args.kickoff ?? fail("INVALID_INPUT", "Kickoff arguments required.")
+    const invocation = this.resolveContext(sender)
+    if (invocation.workstream) fail("INVALID_CONTEXT", "Kickoff is only for senders without a workstream.")
+    const context: MutationContext = { actor: { kind: "native", repositoryId: this.repositoryId, ref: sender }, correlationId: `kickoff:${args.requestId}` }
+    if (this.row("SELECT id FROM workstreams WHERE id=?", kickoff.workstream)) {
+      const ws = this.getWorkstream(kickoff.workstream)
+      if (!this.kickoffCreated(ws.id, sender, args.requestId) || ws.title !== kickoff.title || ws.type !== kickoff.type) fail("CONFLICT", "Workstream already exists.")
+      return ws
+    }
+    return this.createWorkstream({ id: kickoff.workstream, title: kickoff.title, type: kickoff.type, defaultCheckout: args.checkout ?? invocation.executionCheckout }, context)
   }
   listHandoffs(): Handoff[] { this.guard(); return this.rows("SELECT * FROM handoffs ORDER BY created_at,id").map(row => this.handoffDTO(row)) }
   admitHandoff(sender: ConversationRef, input: unknown, recipient: HandoffRecipient, context: MutationContext): Handoff {
@@ -229,7 +249,13 @@ export class RepositoryDomain {
       if (context.actor.kind === "native" && JSON.stringify(context.actor.ref) !== JSON.stringify(sender)) fail("INVALID_CONTEXT", "Handoff sender differs from actor.")
       const old = this.findHandoff(sender, args.requestId)
       if (old) { if (JSON.stringify(old.input) !== JSON.stringify(args)) fail("CONFLICT", "Request ID is already bound to another handoff payload."); return old }
-      const invocation = this.resolveContext(sender), workstreamId = invocation.workstream?.id ?? fail("INVALID_CONTEXT", "Sender has no workstream.")
+      const invocation = this.resolveContext(sender)
+      let workstreamId: string
+      if (args.kickoff) {
+        if (invocation.workstream) fail("INVALID_CONTEXT", "Kickoff is only for senders without a workstream.")
+        if (!this.kickoffCreated(args.kickoff.workstream, sender, args.requestId)) fail("CONFLICT", "Workstream already exists.")
+        workstreamId = args.kickoff.workstream
+      } else workstreamId = invocation.workstream?.id ?? fail("INVALID_CONTEXT", "Sender has no workstream.")
       text(recipient.ownerId, "App store ID"); text(recipient.sessionId, "App session ID"); text(recipient.authorityId, "recipient authority")
       if (!["cc", "oc"].includes(recipient.harness)) fail("INVALID_INPUT", "Invalid recipient harness.")
       revalidateCheckout(this.context, recipient.checkout)
@@ -240,7 +266,7 @@ export class RepositoryDomain {
       } else if (!args.createNew || args.harness !== recipient.harness) fail("INVALID_INPUT", "New recipient requires explicit creation and harness.")
       const key = randomUUID(), time = now()
       this.run("INSERT INTO handoffs(id,sender_id,request_id,workstream_id,input,recipient,status,created_at,updated_at) VALUES(?,?,?,?,?,?,'queued',?,?)", key, this.conversationRow(sender).id, args.requestId, workstreamId, JSON.stringify(args), JSON.stringify(recipient), time, time)
-      this.event(context, "handoff_queued", workstreamId, key, { recipient, requestId: args.requestId })
+      this.event(context, "handoff_queued", workstreamId, key, { recipient, requestId: args.requestId, ...(args.kickoff ? { origin: { kind: "kickoff", sender, requestId: args.requestId } } : {}) })
       return this.getHandoff(key)
     })
   }

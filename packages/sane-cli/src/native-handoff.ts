@@ -9,7 +9,7 @@ export const nativeHandoffStatusSchema = { type: "object", properties: { request
 // C11 client-side guard: project any server handoff reply down to the approved
 // agent-facing shapes, so oversized payloads never reach agent context even if
 // the server regresses. Key names match the server projection exactly.
-const nativeHandoffStatusKeys = ["id", "status", "revision"] as const
+const nativeHandoffStatusKeys = ["id", "status", "revision", "workstreamId"] as const
 export function projectNativeHandoffReply(handoff: unknown, status: boolean): unknown {
   if (handoff === null || handoff === undefined || typeof handoff !== "object" || Array.isArray(handoff)) return handoff
   const src = handoff as Record<string, unknown>
@@ -32,6 +32,8 @@ export function projectNativeHandoffReply(handoff: unknown, status: boolean): un
     take("status")
     take("recipientSessionId", nested(src.recipient, "sessionId"))
     take("runId")
+    // Kickoff replies carry the created workstream; a full-row regression only exposes it for kickoffs.
+    if ("workstreamId" in src && (!("input" in src) || nested(src.input, "kickoff").found)) out.workstreamId = src.workstreamId
     return out
   }
   const out: Record<string, unknown> = {}

@@ -1,5 +1,5 @@
 /**
- * C9 Phase 1 — CLI-level lifecycle coverage against the current architecture.
+ * CLI-level lifecycle coverage against the current architecture.
  *
  * Thin-wrapper layer only (`executeCliCommand` / `runSane*Command(args)` with
  * disposable tmp git repos). Core domain logic is covered by
@@ -22,7 +22,7 @@ import {
 } from "../../sane-core/src/server.ts"
 import type { MutationContext } from "../../sane-core/src/contracts.ts"
 
-const mutation: MutationContext = { actor: { kind: "local" }, correlationId: "c9-lifecycle-cli" }
+const mutation: MutationContext = { actor: { kind: "local" }, correlationId: "lifecycle-cli" }
 const PLAN = "# Plan\n## Execution Checkpoints\n| Checkpoint | After job(s) |\n| --- | --- |\n| Checkpoint 1 | 01 |\n"
 const JOB_A = "# Job Spec 01: first\nWork.\n"
 const JOB_B = "# Job Spec 02: second\nAdditional authorized work.\n"
@@ -60,10 +60,10 @@ function planningDocs(): void {
 }
 
 beforeEach(async () => {
-  temporary = realpathSync(await mkdtemp(join(tmpdir(), "sane-c9-lifecycle-")))
+  temporary = realpathSync(await mkdtemp(join(tmpdir(), "sane-lifecycle-")))
   repo = join(temporary, "repo")
   execFileSync("git", ["init", "-q", repo])
-  execFileSync("git", ["-C", repo, "-c", "user.name=C9 Test", "-c", "user.email=c9@example.invalid", "commit", "--allow-empty", "-qm", "fixture"])
+  execFileSync("git", ["-C", repo, "-c", "user.name=Sane Test", "-c", "user.email=sane-test.invalid", "commit", "--allow-empty", "-qm", "fixture"])
   await cli(["init"])
   await cli(["create", "--name", "demo", "--type", "feature", "--title", "Demo"])
 })

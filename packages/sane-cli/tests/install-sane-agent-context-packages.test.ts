@@ -260,18 +260,20 @@ describe("install-sane-agent-context-packages", () => {
     await Bun.write(agent, "locally customized agent\n")
     const retired = await seedRetiredSkills()
     const destination = join(homeDirectory, ".config", "opencode", "skills", "review-opencode-sessions", "SKILL.md")
+    const ccDestination = join(homeDirectory, ".claude", "skills", "review-opencode-sessions", "SKILL.md")
 
     const planned = await installSaneAgentContextPackages(options({ onlySkill: "review-opencode-sessions", dryRun: true }))
-    expect(planned.created).toEqual([destination])
+    expect(planned.created).toEqual([destination, ccDestination])
     await expectMissing(destination)
 
     const installed = await installSaneAgentContextPackages(options({ onlySkill: "review-opencode-sessions" }))
-    expect(installed).toMatchObject({ created: [destination], updated: [], unchanged: [], removed: [] })
+    expect(installed).toMatchObject({ created: [destination, ccDestination], updated: [], unchanged: [], removed: [] })
     expect(await readFile(destination, "utf8")).toBe("global skill review-opencode-sessions\n")
+    expect(await readFile(ccDestination, "utf8")).toBe("global skill review-opencode-sessions\n")
     expect(await readFile(agent, "utf8")).toBe("locally customized agent\n")
     for (const path of retired) expect(await readFile(join(path, "SKILL.md"), "utf8")).toBe("old role\n")
     expect(await installSaneAgentContextPackages(options({ onlySkill: "review-opencode-sessions" })))
-      .toMatchObject({ created: [], updated: [], unchanged: [destination], removed: [] })
+      .toMatchObject({ created: [], updated: [], unchanged: [destination, ccDestination], removed: [] })
   })
 
   test.each(["shorthand", "flow", "block", "model-only"])("applies %s YAML models before planning, without touching sources or unmapped files", async (form) => {

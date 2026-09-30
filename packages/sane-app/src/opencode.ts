@@ -1,11 +1,14 @@
 import { Service } from "@opencode/client/service";
 import type { FormField, HarnessModel, Interaction, InteractionReply, MessagePart, MessageSnapshot } from "./oc-contract";
+import { validModel, validVariant } from "./history";
 
 // HTTP shapes from https://opencode.ai/v2/openapi.json and the V2 client guide.
 // Discovery connects to a registered service; this adapter never manages its process.
 type Connection = { base: string; headers: Record<string, string> };
-type ModelRef = { id: string; providerID: string; variant?: string };
-type NativeSession = { id: string; location?: { directory?: string }; model?: ModelRef; outcome?: "succeeded" | "failed" | "interrupted"; time: { created: number; updated: number; idle?: number } };
+export type ModelRef = { id: string; providerID: string; variant?: string };
+export type NativeAgent = { id: string; model?: ModelRef };
+export type OpenCodeLaunch = { agent?: string; model?: ModelRef };
+type NativeSession = { id: string; location?: { directory?: string }; agent?: string; model?: ModelRef; outcome?: "succeeded" | "failed" | "interrupted"; time: { created: number; updated: number; idle?: number } };
 type NativePart = { type: string; id?: string; name?: string; text?: string; state?: { status: string; input?: unknown; content?: unknown; error?: unknown } };
 export type NativeMessage = { id: string; type: string; time: { created: number; completed?: number }; text?: string; content?: NativePart[]; error?: unknown; cost?: number; tokens?: unknown; outcome?: string };
 type Page = { data: NativeMessage[]; cursor: { next?: string | null } };
@@ -54,8 +57,9 @@ export class OpenCodeAdapter {
     // An old in-flight request must not invalidate a newly discovered generation.
     if (this.managed === connection) { this.managed = undefined; this.expires = 0; }
   }
-  async request<T>(path: string, method = "GET", data?: unknown): Promise<T> {
+  async request<T>(path: string, method = "GET", data?: unknown, beforeSend?: () => void): Promise<T> {
     const connection = await this.endpoint();
+    beforeSend?.(); // Synchronous admission gate after discovery, immediately before the HTTP mutation.
     let response: Response;
     try { response = await fetch(connection.base + path, { method, headers: connection.headers, ...(data === undefined ? {} : { body: JSON.stringify(data) }), signal: AbortSignal.timeout(10000), redirect: "error" }); }
     catch { this.invalidate(connection); throw new OpenCodeError("OpenCode connection unavailable; execution state remains unconfirmed"); }
@@ -83,11 +87,31 @@ export class OpenCodeAdapter {
     if (slash < 1 || slash === value.length - 1) throw new OpenCodeError("OpenCode model must be provider/model", 400);
     return { providerID: value.slice(0, slash), id: value.slice(slash + 1), ...(effort === undefined ? {} : { variant: effort }) };
   }
-  async create(cwd: string, model?: string, effort?: string) {
-    const { data } = await this.request<{ data: NativeSession }>("/api/session", "POST", { location: { directory: cwd }, ...(model ? { model: this.model(model, effort) } : {}) });
+  async agents(cwd: string): Promise<NativeAgent[]> {
+    const response = await this.request<{ data: NativeAgent[] }>(`/api/agent?location%5Bdirectory%5D=${encodeURIComponent(cwd)}`);
+    const validModel = (m: ModelRef) => m && typeof m.id === "string" && !!m.id && typeof m.providerID === "string" && !!m.providerID && (m.variant === undefined || typeof m.variant === "string");
+    if (!Array.isArray(response.data) || response.data.some(a => !a || typeof a.id !== "string" || !a.id || a.model !== undefined && !validModel(a.model))) throw new OpenCodeError("Unsupported OpenCode V2 agent response");
+    return response.data;
+  }
+  /** Profile model > agent model > native default. Explicit models never inherit another model's variant. */
+  async resolveLaunch(cwd: string, input: { agent?: string; model?: string; effort?: string }): Promise<OpenCodeLaunch> {
+    const agent = input.agent === undefined ? undefined : (await this.agents(cwd)).find(a => a.id === input.agent);
+    if (input.agent !== undefined && !agent) throw new OpenCodeError(`OpenCode agent ${input.agent} is not installed for ${cwd}`, 400);
+    let model = input.model !== undefined ? this.model(input.model) : agent?.model ? { ...agent.model } : undefined;
+    if (input.effort !== undefined) {
+      if (!model) throw new OpenCodeError("Cannot resolve a model for the requested variant; configure a profile model or an agent model", 400);
+      model = { ...model, variant: input.effort };
+    }
+    return { ...(agent ? { agent: agent.id } : {}), ...(model ? { model } : {}) };
+  }
+  async createResolved(cwd: string, launch: OpenCodeLaunch) {
+    const { data } = await this.request<{ data: NativeSession }>("/api/session", "POST", { location: { directory: cwd }, ...launch });
     if (!data || !/^ses[a-zA-Z0-9_-]+$/.test(data.id)) throw new OpenCodeError("Unsupported OpenCode V2 session response");
     if (data.location?.directory !== cwd) throw new OpenCodeError("Created native session directory differs from the requested execution pin", 409);
     return data;
+  }
+  async create(cwd: string, model?: string, effort?: string, agent?: string) {
+    return this.createResolved(cwd, await this.resolveLaunch(cwd, { agent, model, effort }));
   }
   async select(id: string, model?: string, effort?: string) {
     if (model === undefined && effort === undefined) return;
@@ -96,12 +120,23 @@ export class OpenCodeAdapter {
     const ref = model ? this.model(model, effort) : { id: current!.id, providerID: current!.providerID, variant: effort };
     await this.request(this.path(id) + "/model", "POST", { model: ref });
   }
-  async prompt(id: string, commandId: string, text: string) {
-    const { data } = await this.request<{ data: { id: string; time: { created: number } } }>(this.path(id) + "/prompt", "POST", { id: commandId, text });
+  async prompt(id: string, commandId: string, text: string, beforeSubmit?: () => void) {
+    const { data } = await this.request<{ data: { id: string; time: { created: number } } }>(this.path(id) + "/prompt", "POST", { id: commandId, text }, beforeSubmit);
     if (data?.id !== commandId || !Number.isFinite(data.time?.created)) throw new OpenCodeError("OpenCode prompt acknowledgement mismatch; execution state unconfirmed");
     return data;
   }
   async session(id: string) { return (await this.request<{ data: NativeSession }>(this.path(id))).data; }
+  /** Recover an admission from confirmed Session.Info, never today's agent defaults.
+   * Reusable for assistant/worker admissions whose App metadata was not committed. */
+  async recoverLaunch(id: string, cwd: string, expectedAgent: string): Promise<OpenCodeLaunch> {
+    const session = await this.session(id);
+    if (!session || session.id !== id || session.location?.directory !== cwd) throw new OpenCodeError("Cannot recover launch: native session identity or checkout differs from the admission", 409);
+    if (session.agent !== expectedAgent) throw new OpenCodeError("Cannot recover launch: native selected agent is missing or differs from the requested agent; reconcile the admission", 409);
+    const model = session.model;
+    if (!model || typeof model.id !== "string" || !model.id || typeof model.providerID !== "string" || !model.providerID || model.variant !== undefined && (typeof model.variant !== "string" || !model.variant)) throw new OpenCodeError("Cannot recover launch: native selected model/variant is unavailable or invalid; reconcile the admission", 409);
+    if (!validModel(`${model.providerID}/${model.id}`) || model.variant !== undefined && !validVariant(model.variant)) throw new OpenCodeError("Cannot recover launch: native model/variant cannot be represented in App metadata; reconcile the admission", 409);
+    return { agent: session.agent, model: { ...model } };
+  }
   async activity(id: string, cwd: string) {
     const [session, active, inbox] = await Promise.all([
       this.session(id), this.request<{ data: Record<string, { type: string }> }>("/api/session/active"),

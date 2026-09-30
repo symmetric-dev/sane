@@ -1,5 +1,5 @@
 /**
- * C11 Phase 3 — CLI compact default output budgets.
+ * CLI compact default output budgets.
  *
  * Default CLI output is compact pretty lines (a few per op); full evidence
  * moves behind --verbose (pretty JSON) / --json (single-line JSON) with
@@ -16,7 +16,7 @@ import { EVIDENCE_LIST_CAP, capEvidence } from "../src/cli-verbosity.ts"
 import { discoverRepository, inspectRepositoryStore, normalizeNativeSource, openRepositoryDomain } from "../../sane-core/src/server.ts"
 import type { MutationContext } from "../../sane-core/src/contracts.ts"
 
-const mutation: MutationContext = { actor: { kind: "local" }, correlationId: "c11-cli-verbosity" }
+const mutation: MutationContext = { actor: { kind: "local" }, correlationId: "lifecycle-cli-verbosity" }
 const PLAN = "# Plan\n## Execution Checkpoints\n| Checkpoint | After job(s) |\n| --- | --- |\n| Checkpoint 1 | 01 |\n"
 const JOB_A = "# Job Spec 01: first\nWork.\n"
 
@@ -43,10 +43,10 @@ function write(path: string, content: string): void {
 }
 
 beforeEach(async () => {
-  temporary = realpathSync(await mkdtemp(join(tmpdir(), "sane-c11-cli-")))
+  temporary = realpathSync(await mkdtemp(join(tmpdir(), "sane-t-cli-")))
   repo = join(temporary, "repo")
   execFileSync("git", ["init", "-q", repo])
-  execFileSync("git", ["-C", repo, "-c", "user.name=C11 Test", "-c", "user.email=c11@example.invalid", "commit", "--allow-empty", "-qm", "fixture"])
+  execFileSync("git", ["-C", repo, "-c", "user.name=Sane Test", "-c", "user.email=sane-test.invalid", "commit", "--allow-empty", "-qm", "fixture"])
   await cli(["init"])
   await cli(["create", "--name", "demo", "--type", "feature", "--title", "Demo"])
 })
@@ -55,7 +55,7 @@ afterEach(async () => {
   await rm(temporary, { recursive: true, force: true })
 })
 
-describe("C11 Phase 3: compact default output budgets", () => {
+describe("compact default output budgets", () => {
   test("view/status default to a few short lines with id, status and next step", async () => {
     for (const op of ["view", "status", "detail"]) {
       const { lines, code } = await printed([op, "--workstream", "demo"])
@@ -137,7 +137,7 @@ describe("C11 Phase 3: compact default output budgets", () => {
   })
 })
 
-describe("C11 Phase 3: verbose/json full evidence with capped arrays", () => {
+describe("verbose/json full evidence with capped arrays", () => {
   test("verbose returns full shapes; json returns single-line full JSON", async () => {
     const { lines: verbose } = await printed(["status", "--workstream", "demo", "--verbose"])
     const pretty = verbose.join("\n").split("\n")

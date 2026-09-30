@@ -7,9 +7,11 @@ export type { WorkstreamType } from "./workstream-type.ts"
 export type Harness = "cc" | "oc"
 export interface ConversationRef { harness: Harness; authorityId: string; nativeId: string }
 export type HandoffStatus = "queued" | "acceptance_unknown" | "accepted" | "running" | "completed" | "failed"
-export interface HandoffInput { requestId: string; to: Phase; message: string; target?: ConversationRef; createNew?: boolean; harness?: Harness; checkout?: string }
+export interface HandoffInput { requestId: string; to: Phase; message: string; target?: ConversationRef; createNew?: boolean; harness?: Harness; checkout?: string; kickoff?: HandoffKickoff }
+/** Kickoff: a sender without a workstream creates one and hands off to a new recipient without joining it. */
+export interface HandoffKickoff { workstream: string; title: string; type: WorkstreamType }
 export interface HandoffRecipient { ownerId: string; sessionId: string; ref: ConversationRef | null; harness: Harness; authorityId: string; checkout: CheckoutPin }
-export interface Handoff { id: string; repositoryId: string; sender: ConversationRef; workstreamId: string; input: HandoffInput; recipient: HandoffRecipient; status: HandoffStatus; revision: number; attemptId: string | null; nativeCommandId: string | null; runId: string | null; evidence: string | null; createdAt: string; updatedAt: string }
+export interface Handoff { id: string; repositoryId: string; sender: ConversationRef; workstreamId: string; input: HandoffInput; recipient: HandoffRecipient; status: HandoffStatus; revision: number; attemptId: string | null; nativeCommandId: string | null; runId: string | null; evidence: string | null; createdAt: string; updatedAt: string; origin?: { kind: "kickoff"; sender: ConversationRef; requestId: string } }
 export type NativeSourceDescriptor = { version: 1; harness: "cc"; kind: "local-profile"; profileRoot: string } | { version: 1; harness: "oc"; kind: "local-registration"; registrationFile: string }
 export interface NativeAuthority { descriptor: NativeSourceDescriptor; authorityId: string }
 export type Phase = "design" | "engineering" | "planning" | "execution" | "research" | `research:${string}`

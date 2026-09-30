@@ -12,15 +12,26 @@ import { WorkspaceService, WorkspaceError, workspaceError } from "./workspace";
 import { CatalogService } from "./catalog";
 import { TerminalService, type TerminalSocketData } from "./terminal";
 import { RepositoryRouter, WorkstreamAdapterError, authenticatedWorkstreamRoute, validateWorkstreamInput, flushAndCloseWorkstreams } from "./workstreams";
-import { validateAppStore, assertSourceConfiguration, atomicAppRecord, type SourceConfiguration } from "./app-store";
+import { validateAppStore, assertSourceConfiguration, atomicAppRecord, loadAgentProfiles, validateAgentProfiles, AppStoreError, type SourceConfiguration } from "./app-store";
+import { builtinProfiles, canAssign, legacyProfileId, templateProfileId, resolveAgentLaunch, BASE_PROFILE_IDS, type AgentProfile, type AgentProfiles } from "./agent-profiles-contract";
 import { AdmissionService } from "./admission";
 import { HandoffService, handoffRecipientTitle, projectHandoffEnqueue, projectHandoffStatus, slotSessionIndex } from "./handoff";
-import { DomainError } from "sane-core/server";
+import { DomainError, normalizeNativeSource } from "sane-core/server";
+import { classifyCaller } from "../../sane-cli/src/cli-arguments";
+import { WorkerStore } from "./worker-store";
+import { WorkerService } from "./workers";
+import { createNativeWorkerHandler, NativeWorkerRequestError, type NativeWorkerCallerResolver } from "./native-workers";
+import { matchesOpenCodeWorkerPart, nativeWorkerInput, projectNativeWorkerReply } from "../../sane-cli/src/native-worker-contract";
+import { workerTerminationUncertainty } from "./worker-recovery";
+import { workerDeliveryEvidence, workerReportPrompt } from "./worker-outbox";
+import { workerResults, type WorkerDelivery } from "./worker-contract";
+import { ASSISTANT_AGENT_DESCRIPTIONS, ASSISTANT_AGENT_IDS, ASSISTANT_AGENT_LABELS, isAssistantAgentId, nativeAgentId } from "sane-core/agent-catalog";
+import { AgentLaunchConfigurationError, agentLaunchSnapshot, claudeAgentSettings, snapshotIdentity } from "./agent-launch";
 import { readClaudeHistory, coveredNativeRuns, type ReconciledHistory } from "./reconcile";
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 export const hookEvents = ["SessionStart", "SessionEnd", "UserPromptSubmit", "Stop", "PreToolUse", "PostToolUse", "PermissionRequest", "Notification", "SubagentStart", "SubagentStop", "PreCompact", "PostCompact", "CwdChanged"] as const;
-export type Options = { host: string; port: number; cwd: string; dataDir: string; claudeBin: string; nativeSources: SourceConfiguration; allowRemote: boolean; publicOrigin?: string; reconcileInterrupted: boolean; maxConcurrentRuns?: number; packageDir?: string; noBuild?: boolean };
+export type Options = { host: string; port: number; cwd: string; dataDir: string; claudeBin: string; nativeSources: SourceConfiguration; allowRemote: boolean; publicOrigin?: string; reconcileInterrupted: boolean; maxConcurrentRuns?: number; maxWorkersPerCheckout?: number; packageDir?: string; noBuild?: boolean };
 export function parseOptions(args: string[]): Options {
   return runtimeOptions(resolveAppConfig(args, { packageDir: root, invocationCwd: process.cwd() }));
 }
@@ -28,7 +39,7 @@ export function runtimeOptions(resolved: ReturnType<typeof resolveAppConfig>): O
   const { config: c, operational } = resolved;
   return { host: c.server.host, port: c.server.port, cwd: c.defaultExecutionCwd, dataDir: c.dataDir,
     claudeBin: c.native.claude.executable, allowRemote: c.server.allowRemote, publicOrigin: c.server.publicOrigin ?? undefined,
-    maxConcurrentRuns: c.maxConcurrentRuns, reconcileInterrupted: operational.reconcileInterrupted, noBuild: operational.noBuild,
+    maxConcurrentRuns: c.maxConcurrentRuns, maxWorkersPerCheckout: c.maxWorkersPerCheckout, reconcileInterrupted: operational.reconcileInterrupted, noBuild: operational.noBuild,
     nativeSources: { cc: { version: 1, harness: "cc", kind: "local-profile", profileRoot: c.native.claude.profileRoot },
       oc: { version: 1, harness: "oc", kind: "local-registration", registrationFile: c.native.opencode.registrationFile } } };
 }
@@ -69,7 +80,7 @@ export async function start(options: Options) {
     installation.update("serving", listener); data.update("serving", listener);
     const running = bridge;
     let closing: Promise<void> | undefined;
-    return { origin: running.origin, port: running.port, close() {
+    return { origin: running.origin, port: running.port, workers: running.workers, workerOutbox: running.workerOutbox, close() {
       return closing ??= (async () => {
         try { installation.update("draining"); data!.update("draining"); await running.close(); }
         catch (error) { retain(); throw error; }
@@ -85,6 +96,8 @@ async function startOwned(options: Options, assetsDir: string, packageDir: strin
   const indexHtml = await readFile(join(packageDir, "public", "index.html"), "utf8");
   const maxConcurrentRuns = options.maxConcurrentRuns ?? 16;
   if (!Number.isSafeInteger(maxConcurrentRuns) || maxConcurrentRuns < 1 || maxConcurrentRuns > 256) throw new Error("max-concurrent-runs must be an integer from 1 to 256");
+  const maxWorkersPerCheckout = options.maxWorkersPerCheckout ?? 4;
+  if (!Number.isSafeInteger(maxWorkersPerCheckout) || maxWorkersPerCheckout < 1 || maxWorkersPerCheckout > 256) throw new Error("maxWorkersPerCheckout must be an integer from 1 to 256");
   const store = validateAppStore(options.dataDir);
   assertSourceConfiguration(store.sources, options.nativeSources);
   if (options.nativeSources.cc.harness !== "cc" || options.nativeSources.oc.harness !== "oc") throw new Error("Invalid configured native harnesses");
@@ -106,6 +119,7 @@ async function startOwned(options: Options, assetsDir: string, packageDir: strin
   try {
   const metadataPath = join(options.dataDir, "metadata.json");
   const meta: Metadata = store.metadata;
+  let agentProfiles: AgentProfiles = loadAgentProfiles(options.dataDir);
   const catalog = new CatalogService(options.dataDir, () => meta.sessions);
   for (const session of meta.sessions) if (session.attachment && session.attachment.source !== nativeSource(session.harness)) throw new Error("Attached native authority source changed; restore the original native store/service configuration");
   await catalog.load();
@@ -113,6 +127,7 @@ async function startOwned(options: Options, assetsDir: string, packageDir: strin
   // outside App data. Use a canonical root for both ordinary Code entry points.
   router = new RepositoryRouter(catalog, store.sources);
   const admissions = new AdmissionService(options.dataDir, store.admissions, store.sources, catalog, router);
+  const workerStore = new WorkerStore(options.dataDir);
   const execution = async (sessionId: string) => { const a = admissions.get(sessionId); if (!a) throw new WorkstreamAdapterError(409, "admission-missing", "Conversation has no durable admission"); return router!.execution(a); };
   const domainProtectedPaths: string[] = [];
   const workspace = new WorkspaceService(async id => {
@@ -131,7 +146,7 @@ async function startOwned(options: Options, assetsDir: string, packageDir: strin
   }, options.dataDir);
   const events = new Map<string, Event[]>();
   const secrets = new Map<string, string>();
-  type Owner = { run: Run; native?: boolean; child?: Bun.Subprocess<"pipe", "pipe", "pipe">; done: Promise<void>; settled: boolean; stopping?: Promise<boolean>; cancel?: Promise<{ interrupted: boolean }>; cancelling?: boolean; stopRequested?: boolean; submission?: Promise<unknown> };
+  type Owner = { run: Run; native?: boolean; launchError?: string; workerDeliveryId?: string; child?: Bun.Subprocess<"pipe", "pipe", "pipe">; done: Promise<void>; settled: boolean; stopping?: Promise<boolean>; cancel?: Promise<{ interrupted: boolean }>; cancelling?: boolean; stopRequested?: boolean; submission?: Promise<unknown> };
   // Durable validation forbids aliases for a qualified native ID. New IDs are
   // reserved before awaits, then retained until the selected owner's lifecycle ends.
   const owners = new Map<string, Owner>();
@@ -179,10 +194,19 @@ async function startOwned(options: Options, assetsDir: string, packageDir: strin
         }
         if (a.source.authorityId !== h.recipient.authorityId || a.binding.executionCheckout !== cwd || a.binding.domain.mode !== "repository" || a.binding.domain.repositoryId !== h.repositoryId) throw new WorkstreamAdapterError(409, "recipient-mismatch", "Reserved recipient binding changed");
         if (closing || storageFailed) throw new WorkstreamAdapterError(503, "recipient-unavailable", "App execution owner unavailable");
-        if (a.state === "intent") a = await admissions.createNative(sessionId, async () => (await oc.create(cwd)).id);
+        const role = h.input.to.split(":")[0];
+        if (!isAssistantAgentId(role)) throw new Error("Unknown handoff assistant role");
+        // The handoff explicitly chooses its harness and role, not a mutable composer profile.
+        // Already-created recipients keep their original native configuration on recovery.
+        let launch = a.state === "intent" && harness === "opencode" ? await oc.resolveLaunch(cwd, { agent: nativeAgentId({ kind: "assistant", role }, harness) }) : undefined;
+        if (a.state === "intent") a = await admissions.createNative(sessionId, async () => (await oc.createResolved(cwd, launch!)).id);
         if (!a.nativeId || a.state === "native_creation_unknown") throw new WorkstreamAdapterError(409, "native_creation_unknown", "Reconcile recipient creation before retry");
         if (!meta.sessions.some(s => s.sessionId === sessionId)) {
-          meta.sessions.push({ sessionId, nativeSessionId: a.nativeId, harness, authorityId: a.source.authorityId, cwd, lastStatus: "unknown", lastRunId: null });
+          if (harness === "opencode" && !launch) launch = await oc.recoverLaunch(a.nativeId, cwd, nativeAgentId({ kind: "assistant", role }, harness));
+          meta.sessions.push({ sessionId, nativeSessionId: a.nativeId, harness, authorityId: a.source.authorityId, cwd, lastStatus: "unknown", lastRunId: null,
+            ...(harness === "claude-code" || launch ? { agent: role, agentKind: "assistant", nativeAgentSelected: true } : {}),
+            ...(launch?.model ? { model: `${launch.model.providerID}/${launch.model.id}`, ...(launch.model.variant ? { effort: launch.model.variant } : {}) } : {}),
+          });
           await persist();
         }
         await catalog.associate(sessionId, cwd, a.binding.workspaceId, a.binding.worktreeId);
@@ -201,6 +225,9 @@ async function startOwned(options: Options, assetsDir: string, packageDir: strin
         const status = (await router!.forWorkspace(workspaceId)).domain.getWorkstreamStatus(handoff.workstreamId);
         const assignment = status.activePhases.find(a => a.phase === handoff.input.to && a.ref.harness === ref.harness && a.ref.authorityId === ref.authorityId && a.ref.nativeId === ref.nativeId);
         session.title = handoffRecipientTitle(handoff.input.to, slotSessionIndex([...status.phaseHistory, ...status.activePhases], handoff.input.to, assignment?.id ?? ""));
+        // Legacy/recovered recipients may only have this display/lock profile.
+        const role = handoff.input.to.split(":")[0];
+        if (!session.profileId && isAssistantAgentId(role)) session.profileId = templateProfileId(role);
         await persist();
       }
     }
@@ -210,12 +237,13 @@ async function startOwned(options: Options, assetsDir: string, packageDir: strin
     if (storageFailed) return { canSend: false, reason: "Storage unavailable; operator reconciliation required" };
     if (meta.reconciliationRequired) return { canSend: false, reason: "Operator reconciliation required: restart with --reconcile-interrupted after verifying previous CLI processes are stopped" };
     if (closing) return { canSend: false, reason: "Bridge is shutting down" };
+    if (sessionId && workerStore.deliveries().some(d => d.parentSessionId === sessionId && ["claimed", "acceptance-unknown"].includes(d.state))) return { canSend: false, reason: "Worker report continuation is reserved or acceptance is unconfirmed; inspect worker delivery evidence", code: "worker-delivery-pending" };
     if (sessionId && !delivery && (handoffReservations.has(sessionId) || handoffDispatches.has(sessionId))) return { canSend: false, reason: "Recipient has an active or uncertain handoff", code: "handoff-pending" };
     const admission = sessionId ? admissions.get(sessionId) : undefined;
     if (admission && admission.state !== "ready" && !(preparation && admission.state === "identity_known" && admission.nativeId)) return { canSend: false, reason: "Admission pending; explicit known-identity retry is required", code: "admission-pending" };
     if (sessionId && meta.sessions.find(s => s.sessionId === sessionId)?.attachment?.state === "pending") return { canSend: false, reason: "Attachment incomplete. Retry Attach with the same harness, native ID and execution directory; no run is permitted.", code: "attachment-pending" };
     if (sessionId && (owners.has(sessionId) || admitting.has(sessionId))) return { canSend: false, reason: "This conversation already has an active run or reconciliation", code: "conversation-busy" };
-    const occupied = new Set([...owners.keys(), ...admitting, ...handoffDispatches.keys()]);
+    const occupied = new Set([...owners.keys(), ...admitting, ...handoffDispatches.keys(), ...workerStore.list().filter(w => !w.outcome).map(w => w.sessionId), ...workerStore.deliveries().filter(d => ["claimed", "acceptance-unknown"].includes(d.state)).map(d => d.parentSessionId)]);
     if (capacity && !(delivery && sessionId && handoffDispatches.has(sessionId)) && occupied.size >= maxConcurrentRuns) return { canSend: false, reason: `Bridge capacity reached (${maxConcurrentRuns} concurrent runs/requests); retry when a slot is free`, code: "capacity" };
     return { canSend: true };
   }
@@ -226,6 +254,23 @@ async function startOwned(options: Options, assetsDir: string, packageDir: strin
     const snapshot = JSON.stringify(meta);
     return enqueue(async () => { await writeFile(`${metadataPath}.tmp`, snapshot, { mode: 0o600 }); await rename(`${metadataPath}.tmp`, metadataPath); });
   }
+  // Validate a candidate profile set, then publish and persist it through the store queue.
+  function commitAgents(next: AgentProfiles) {
+    next.profiles.sort((a, b) => a.order - b.order);
+    agentProfiles = validateAgentProfiles(next);
+    const snapshot = structuredClone(next);
+    return enqueue(async () => atomicAppRecord(options.dataDir, "agents.json", snapshot));
+  }
+  const profileInputKeys = ["label", "description", "harness", "model", "effort", "icon", "color", "hidden", "workerProfiles"];
+  function applyProfileInput(profile: AgentProfile, input: Record<string, unknown>): AgentProfile {
+    const bad = Object.keys(input).find(k => !profileInputKeys.includes(k));
+    if (bad) throw new AppStoreError("APP_STORE_CORRUPT", `Unknown agent profile field: ${bad}`);
+    const next = { ...profile, ...Object.fromEntries(Object.entries(input).filter(([, v]) => v !== undefined)), updatedAt: new Date().toISOString() } as AgentProfile;
+    if (typeof next.label === "string") next.label = next.label.trim();
+    if (next.hidden === false) delete next.hidden;
+    return next;
+  }
+  const sessionProfileId = (s: Session) => s.profileId ?? legacyProfileId(s.harness ?? "claude-code", s.agent);
   function failClosed() {
     storageFailed = true; retainOwner = true; meta.reconciliationRequired = true;
     // Ownership records are the durable sentinel even if every later disk
@@ -301,6 +346,10 @@ async function startOwned(options: Options, assetsDir: string, packageDir: strin
       const session = meta.sessions.find(s => s.sessionId === run.sessionId)!; session.lastStatus = "interrupted";
       await emit(run, "status", { status: "interrupted", reason: "server restarted; verify old CLI process has stopped" });
     }
+    if (options.reconcileInterrupted && meta.sessions.find(s => s.sessionId === run.sessionId)?.harness === "claude-code") {
+      const uncertainty = workerTerminationUncertainty(events.get(run.runId) ?? []);
+      if (uncertainty) await emit(run, "status", { status: run.status, reason: "Operator confirmed previous CLI termination with --reconcile-interrupted", reconciliation: { kind: "termination-confirmed", throughSeq: uncertainty.seq } });
+    }
   }
   if (options.reconcileInterrupted) meta.reconciliationRequired = false;
   await persist();
@@ -348,16 +397,21 @@ async function startOwned(options: Options, assetsDir: string, packageDir: strin
       run.cwd = await execution(session.sessionId);
       const secret = crypto.randomUUID() + crypto.randomUUID(); secrets.set(run.runId, secret);
       const hooks = Object.fromEntries(hookEvents.map(event => [event, [{ hooks: [{ type: "command", command: `${quote(process.execPath)} ${quote(join(root, "hooks/forward.ts"))} ${quote(event)}`, timeout: 3 }] }]]));
+      const identity = snapshotIdentity(run);
+      const installed = identity ? await claudeAgentSettings(claudeRoot, identity) : undefined;
+      const ccAgent = installed?.agent, permissions = installed?.permissions;
       const settingsPath = join(options.dataDir, `${run.runId}.settings.json`);
-      await enqueue(() => writeFile(settingsPath, JSON.stringify({ hooks }), { mode: 0o600 }));
+      await enqueue(() => writeFile(settingsPath, JSON.stringify({ hooks, ...(permissions ? { permissions } : {}) }), { mode: 0o600 }));
       if (closing || storageFailed || owner.stopRequested) throw new Error("Closing before launch");
       const args = [options.claudeBin, "-p", "--output-format", "stream-json", "--verbose", resume ? "--resume" : "--session-id", session.nativeSessionId!, "--settings", settingsPath];
+      if (ccAgent !== undefined) args.push("--agent", ccAgent);
       if (run.model !== undefined) args.push("--model", run.model);
       if (run.effort !== undefined) args.push("--effort", run.effort);
       // Do not carry the launching shell's bridge credentials or SANE/native
       // session context into a fresh app-owned invocation. Native HOME/hooks stay shared.
       const env = Object.fromEntries(Object.entries(process.env).filter(([name, value]) => value !== undefined && !/^(CC_WEB_|OPENCODE_SERVER_|OPENCODE_SESSION_ID$|OPENCODE_TOKEN$|SANE_|BUN_INSPECT|NODE_OPTIONS$)/i.test(name))) as Record<string, string>;
       run.cwd = await execution(session.sessionId);
+      assertWorkerDeliverySubmission(owner);
       const child = Bun.spawn(args, {
         cwd: run.cwd, detached: true, stdin: "pipe", stdout: "pipe", stderr: "pipe", env: { ...env, CLAUDE_CONFIG_DIR: claudeRoot, CLAUDE_CODE_PROJECT_DIR_NAME: "", CC_WEB_HOOK_URL: `http://127.0.0.1:${hookServer.port}`, CC_WEB_RUN_ID: run.runId, CC_WEB_HOOK_SECRET: secret },
       });
@@ -375,12 +429,13 @@ async function startOwned(options: Options, assetsDir: string, packageDir: strin
       run.status = closing || owner.stopRequested ? "interrupted" : !storageFailed && exit === 0 && result.seen && !result.error ? "completed" : "failed";
       run.endedAt = new Date().toISOString(); meta.sessions.find(s => s.sessionId === run.sessionId)!.lastStatus = run.status;
       await emit(run, "status", { status: run.status, exitCode: exit, resultSeen: result.seen, ...(result.diagnostic ? { reason: result.diagnostic } : {}) });
-    } catch {
-      ready(false);
+    } catch (error) {
+      if (error instanceof AgentLaunchConfigurationError) owner.launchError = error.message;
       const stopped = await terminate(owner);
       run.status = stopped && (closing || owner.stopRequested) ? "interrupted" : "failed";
       run.endedAt = new Date().toISOString(); meta.sessions.find(s => s.sessionId === run.sessionId)!.lastStatus = run.status;
-      try { await emit(run, "status", { status: run.status, reason: !stopped ? "Process termination unconfirmed; operator reconciliation required" : storageFailed ? "Storage failure; operator reconciliation required" : "CLI launch, stream, or shutdown failure" }); } catch { failClosed(); }
+      try { await emit(run, "status", { status: run.status, reason: !stopped ? "Process termination unconfirmed; operator reconciliation required" : storageFailed ? "Storage failure; operator reconciliation required" : owner.launchError ?? "CLI launch, stream, or shutdown failure" }); } catch { failClosed(); }
+      ready(false);
     } finally {
       ready(false);
       // Consumers can still be unwinding after a failure. Do not free the slot
@@ -388,7 +443,7 @@ async function startOwned(options: Options, assetsDir: string, packageDir: strin
       const drained = await Promise.race([Promise.allSettled(streams).then(() => true), Bun.sleep(2200).then(() => false)]);
       if (!drained) { retainOwner = true; meta.reconciliationRequired = true; }
       run.endedAt = new Date().toISOString(); meta.sessions.find(s => s.sessionId === run.sessionId)!.lastStatus = run.status;
-      try { await persist(); } catch { failClosed(); }
+      try { if (owner.workerDeliveryId && !owner.child) await emit(run, "status", { status: run.status, workerDeliveryNotSubmitted: owner.workerDeliveryId }); await persist(); } catch { failClosed(); }
        secrets.delete(run.runId);
     }
   }
@@ -405,7 +460,7 @@ async function startOwned(options: Options, assetsDir: string, packageDir: strin
     for (const event of events.get(run.runId) ?? []) if (event.kind === "message") {
       const data = event.data as { messageId: string }; snapshots.set(data.messageId, JSON.stringify(data));
     }
-    let lastError = "";
+    let lastError = "", workerWaiting: boolean | undefined;
     while (!closing && !storageFailed && run.status === "running") {
       try {
         const snapshot = await oc.snapshot(session.nativeSessionId!, run.nativeCommandId!, session.cwd);
@@ -419,6 +474,10 @@ async function startOwned(options: Options, assetsDir: string, packageDir: strin
         if (lastError && (snapshot.messages.length || snapshot.pending)) { await emit(run, "status", { status: "running", connection: "connected", reason: "Native state reconnected" }); lastError = ""; }
         if (snapshot.outcome && ["succeeded", "failed", "interrupted"].includes(snapshot.outcome)) {
           await finishNative(owner, snapshot.outcome === "succeeded" ? "completed" : snapshot.outcome as Status); break;
+        }
+        if (workerStore.list().some(w => w.runId === run.runId)) {
+          const waiting = (await oc.interactions(session.nativeSessionId!)).length > 0;
+          if (workerWaiting !== waiting) { workerWaiting = waiting; await emit(run, "status", { status: "running", workerWaiting: waiting }); }
         }
         if (!snapshot.messages.length && !snapshot.pending && run.nativePhase === "sending" && !lastError) {
           lastError = "Prompt acceptance remains unconfirmed; reconnecting to native history without resending";
@@ -448,15 +507,17 @@ async function startOwned(options: Options, assetsDir: string, packageDir: strin
       if (closing || storageFailed || owner.stopRequested) throw new Error("Bridge unavailable before native submission");
       run.cwd = await execution(session.sessionId);
       // Native command ID is durable before the request. A timeout is ambiguous:
-       // keep this conversation's slot and reconcile, never replay automatically.
+      // keep this conversation's slot and reconcile, never replay automatically.
+      assertWorkerDeliverySubmission(owner);
       ready(true);
       try {
-        promptAttempted = true;
-        const submission = oc.prompt(session.nativeSessionId!, run.nativeCommandId!, prompt);
+        promptAttempted = !owner.workerDeliveryId;
+        const submission = oc.prompt(session.nativeSessionId!, run.nativeCommandId!, prompt, owner.workerDeliveryId ? () => { assertWorkerDeliverySubmission(owner); promptAttempted = true; } : undefined);
         owner.submission = submission;
         const admitted = await submission;
         run.nativePhase = "accepted"; run.nativeAcceptedAt = admitted.time.created; await persist();
       } catch (error) {
+        if (!promptAttempted) throw error; // Delivery was withheld before HTTP submission, including discovery failure.
         if (error instanceof OpenCodeError && [400, 401, 403, 404, 409].includes(error.status)) {
           await finishNative(owner, "failed", error.message); return;
         }
@@ -468,7 +529,301 @@ async function startOwned(options: Options, assetsDir: string, packageDir: strin
       if (storageFailed) return;
       if (!promptAttempted) await finishNative(owner, owner.stopRequested ? "interrupted" : "failed", error instanceof Error ? error.message : "Native preparation failed");
       else throw error;
-    } finally { ready(false); }
+    } finally { if (owner.workerDeliveryId && !promptAttempted && !storageFailed) await emit(run, "status", { status: run.status, workerDeliveryNotSubmitted: owner.workerDeliveryId }); ready(false); }
+  }
+  const resolveTrustedWorkerInvocation: NativeWorkerCallerResolver = async (request, context) => {
+    const reject = (): never => { throw new NativeWorkerRequestError(409, "worker-identity", "Worker invocation is not evidenced in its App-owned run. Ensure this conversation is repository-enrolled and retry only the same native tool invocation after its tool evidence is persisted."); };
+    context.assertActive();
+    const e = request.caller, source = normalizeNativeSource(e.source);
+    if (source.authorityId !== e.authorityId) reject();
+    const candidates = admissions.list().filter(a => a.state === "ready" && a.source.authorityId === source.authorityId && a.source.descriptor.harness === e.source.harness && a.nativeId === e.nativeId && a.binding.domain.mode === "repository" && a.binding.domain.primaryCheckout === e.repository && meta.sessions.some(s => s.sessionId === a.sessionId && !s.attachment));
+    if (candidates.length !== 1) return reject();
+    const admission = candidates[0]!;
+    const session = meta.sessions.find(s => s.sessionId === admission.sessionId)!;
+    const owner = owners.get(session.sessionId);
+    const old = request.operation === "start" ? workerStore.list().find(w => w.parent.sessionId === session.sessionId && w.input.requestId === request.input.requestId) : undefined;
+    // A durable reservation is the original binding, even after parent completion.
+    if (old && request.operation === "start") {
+      if (old.parent.native.harness !== e.source.harness || old.parent.native.authorityId !== e.authorityId || old.parent.native.nativeId !== e.nativeId || old.parent.toolCallId !== request.invocation.toolCallId || old.input.worker !== request.input.worker || old.input.prompt !== request.input.prompt || old.input.context !== request.input.context) return reject();
+      if (JSON.stringify(old.parent.invocation?.opencode) !== JSON.stringify(request.invocation.opencode)) return reject();
+      return { sessionId: session.sessionId, caller: { envelope: e, runId: old.parent.runId, toolCallId: old.parent.toolCallId, invocation: old.parent.invocation } };
+    }
+    const current = () => {
+      context.assertActive();
+      if (!owner || owners.get(session.sessionId) !== owner || owner.settled || owner.stopRequested || owner.cancelling || owner.run.status !== "running" || closing || storageFailed) reject();
+    };
+    current();
+    const run = owner!.run;
+    const name = `sane_worker_${request.operation}`;
+    const matchesName = (value: unknown) => value === name || e.source.harness === "cc" && value === `mcp__sane__${name}`;
+    await execution(session.sessionId);
+    (await router!.forAdmission(admission))!.domain.resolveContext({ harness: e.source.harness, authorityId: e.authorityId, nativeId: e.nativeId });
+    current();
+    let evidenced = false;
+    for (let attempt = 0; attempt < 3 && !evidenced; attempt++) {
+      current();
+      if (e.source.harness === "cc") {
+        evidenced = (events.get(run.runId) ?? []).some(event => {
+          const data = event.data as any;
+          if (event.kind === "hook") return data?.event === "PreToolUse" && data.payload?.session_id === e.nativeId && data.payload?.tool_use_id === request.invocation.toolCallId && matchesName(data.payload?.tool_name);
+          return event.kind === "stdout" && data?.type === "assistant" && !data.parent_tool_use_id && data.session_id === e.nativeId && Array.isArray(data.message?.content) && data.message.content.some((part: any) => part.type === "tool_use" && part.id === request.invocation.toolCallId && matchesName(part.name));
+        });
+      } else {
+        if (!run.nativeCommandId) return reject();
+        // Read actual persisted part IDs; callback callID is never converted.
+        const snapshot = await oc.snapshot(e.nativeId, run.nativeCommandId, session.cwd);
+        current();
+        evidenced = snapshot.messages.some(message => message.type === "assistant" && message.content?.some(part => matchesOpenCodeWorkerPart(request.operation, request.invocation, message.id, part)));
+      }
+      if (!evidenced && attempt < 2) await Bun.sleep(150);
+    }
+    current();
+    if (!evidenced) return reject();
+    return { sessionId: session.sessionId, caller: { envelope: e, runId: run.runId, toolCallId: request.invocation.toolCallId, invocation: request.invocation } };
+  };
+  const workerHandler = createNativeWorkerHandler({
+    resolveCaller: resolveTrustedWorkerInvocation,
+    operations: {
+      start: (caller, input, context) => workers.start(caller, input, () => context.assertActive()),
+      status: (caller, ids, context) => { context.assertActive(); return workers.status(caller, ids); },
+      acknowledge: (caller, refs, context) => { context.assertActive(); return workers.acknowledgeWait(caller, refs); },
+      cancel: (caller, ids, descendants, context) => { context.assertActive(); return workers.cancel(caller, ids, descendants); },
+      cancelAll: (caller, scope, context) => { context.assertActive(); return workers.cancelAll(caller, scope); },
+    },
+  });
+  async function nativeWorker(req: Request) {
+    if (req.method !== "POST" || req.headers.has("origin") || !equal(req.headers.get("authorization") ?? "", `Bearer ${handoffToken}`)) return json({ error: "Native authorization required" }, 401);
+    return workerHandler(req);
+  }
+  function assertWorkerDeliverySubmission(owner: Owner) {
+    if (!owner.workerDeliveryId) return;
+    const session = meta.sessions.find(s => s.sessionId === owner.run.sessionId);
+    if (closing || storageFailed || meta.reconciliationRequired || owner.stopRequested || owners.get(owner.run.sessionId) !== owner || workerStore.suppressed(owner.run.sessionId) || !session || session.hidden) throw new Error("Worker continuation withheld: parent stopped, hidden, or execution unavailable");
+  }
+  const workers = new WorkerService(workerStore, {
+    async parent(caller, starting) {
+      const classified = classifyCaller({ SANE_CALLER_CONTEXT: JSON.stringify(caller.envelope) });
+      if (classified.actorKind !== "native") throw new WorkstreamAdapterError(409, "worker-parent", "Qualified App-owned native caller required");
+      const e = classified.envelope, source = normalizeNativeSource(e.source);
+      if (source.authorityId !== e.authorityId) throw new WorkstreamAdapterError(409, "worker-parent", "Caller authority changed");
+      // Enrollment changes admission.operation; attachment metadata is the durable external-ownership discriminator.
+       const candidates = admissions.list().filter(a => a.state === "ready" && a.source.authorityId === e.authorityId && a.source.descriptor.harness === e.source.harness && a.nativeId === e.nativeId && a.binding.domain.mode === "repository" && a.binding.domain.primaryCheckout === e.repository && meta.sessions.some(s => s.sessionId === a.sessionId && !s.attachment));
+      const a = candidates.length === 1 ? candidates[0] : undefined;
+      const session = a && meta.sessions.find(s => s.sessionId === a.sessionId && !s.attachment);
+      const run = session && meta.runs.find(r => r.sessionId === session.sessionId && r.runId === caller.runId);
+      if (!a || !session || !run || typeof caller.toolCallId !== "string" || !caller.toolCallId || caller.toolCallId.length > 300 || starting && owners.get(session.sessionId)?.run !== run) throw new WorkstreamAdapterError(409, "worker-parent", "Worker operations require an App-owned repository parent and a known run; starts require its current owned run");
+      const checkout = await execution(session.sessionId);
+      const native = { harness: e.source.harness, authorityId: e.authorityId, nativeId: e.nativeId };
+      (await router!.forAdmission(a))!.domain.resolveContext(native);
+      return { sessionId: session.sessionId, runId: run.runId, native, checkout, profileId: sessionProfileId(session) };
+    },
+    assertCurrentParent(parent) {
+      const owner = owners.get(parent.sessionId);
+      if (!owner || owner.run.runId !== parent.runId || owner.run.status !== "running" || owner.settled || owner.stopRequested || owner.cancelling) throw new WorkstreamAdapterError(409, "worker-parent", "Parent run ended or stopped during worker qualification; no worker was reserved");
+    },
+    hasActiveExecution(w) { return owners.has(w.sessionId) || workerStore.deliveries().some(d => d.parentSessionId === w.sessionId && ["claimed", "acceptance-unknown"].includes(d.state)); },
+    assertCapacity() { const a = availability(); if (!a.canSend) throw new WorkstreamAdapterError(409, a.code ?? "worker-unavailable", a.reason!); },
+    async launch(w) {
+      workerStore.update(w.id, { state: "launching" });
+      const parentAdmission = admissions.get(w.parent.sessionId)!;
+      const harness = w.launch.harness;
+      admitting.add(w.sessionId);
+      try {
+        if (closing || storageFailed) throw new Error("App unavailable before worker creation");
+        let nativeLaunch = harness === "opencode" ? await oc.resolveLaunch(w.checkout, { agent: w.launch.agent, model: w.launch.model, effort: w.launch.effort }) : undefined;
+        if (harness === "claude-code") await claudeAgentSettings(claudeRoot, w.launch.identity!);
+        let a = await admissions.begin({ sessionId: w.sessionId, operation: "create", harness: harness === "opencode" ? "oc" : "cc", cwd: w.checkout, nativeId: harness === "opencode" ? null : crypto.randomUUID(), workspaceId: parentAdmission.binding.workspaceId, worktreeId: parentAdmission.binding.worktreeId, parent: w.parent.native });
+        if (harness === "opencode") a = await admissions.createNative(w.sessionId, async () => (await oc.createResolved(w.checkout, nativeLaunch!)).id);
+        const launch = { ...w.launch, ...(nativeLaunch?.model ? { model: `${nativeLaunch.model.providerID}/${nativeLaunch.model.id}`, effort: nativeLaunch.model.variant } : {}) };
+        const session: Session = { sessionId: w.sessionId, nativeSessionId: a.nativeId!, harness, authorityId: a.source.authorityId, cwd: w.checkout, lastStatus: "unknown", lastRunId: null, ...agentLaunchSnapshot(launch) };
+        workerStore.update(w.id, { launch, child: { harness: a.source.descriptor.harness, authorityId: a.source.authorityId, nativeId: a.nativeId! } });
+        meta.sessions.push(session); await persist();
+        await catalog.associate(w.sessionId, w.checkout, a.binding.workspaceId, a.binding.worktreeId);
+        await admissions.register(w.sessionId); admissions.ready(w.sessionId);
+        if (closing || storageFailed || meta.reconciliationRequired) throw new Error("App unavailable before worker submission; launch remains reserved");
+        if (workerStore.get(w.id)!.cancelRequestedAt) {
+          const at = new Date().toISOString(); workerStore.update(w.id, { state: "interrupted", outcome: { status: "interrupted", at, summary: "Cancelled before submission", log: null }, notification: { id: `worker-outcome:${w.id}`, state: "pending" } }); return;
+        }
+        const run: Run = { runId: crypto.randomUUID(), sessionId: w.sessionId, cwd: w.checkout, status: "running", createdAt: new Date().toISOString(), ...agentLaunchSnapshot(launch), ...(harness === "opencode" ? { nativeCommandId: `msg_${crypto.randomUUID().replaceAll("-", "")}`, nativePhase: "preparing" as const } : {}) };
+        workerStore.update(w.id, { runId: run.runId, state: "running" });
+        const finished = Promise.withResolvers<void>();
+        const owner: Owner = { run, native: harness === "opencode", done: finished.promise, settled: false };
+        owners.set(w.sessionId, owner); session.lastRunId = run.runId; session.lastStatus = "running"; meta.runs.push(run); events.set(run.runId, []);
+        const prompt = w.input.context === undefined ? w.input.prompt : `${w.input.prompt}\n\nSupplied context:\n${w.input.context}`;
+        void (owner.native ? executeNative(owner, prompt, false, () => {}) : execute(owner, prompt, false, () => {})).catch(async () => { failClosed(); await terminate(owner); }).finally(async () => {
+          owner.settled = true; releaseOwner(owner); finished.resolve();
+          try { if (!storageFailed) await workers.refresh(workerStore.get(w.id)!); } catch { failClosed(); }
+        });
+      } catch (e) {
+        const a = admissions.get(w.sessionId);
+        if (!a || a.state === "intent") {
+          const summary = e instanceof Error ? e.message : "Worker preparation failed";
+          workerStore.update(w.id, { state: "failed", error: summary, outcome: { status: "failed", at: new Date().toISOString(), summary, log: null }, notification: { id: `worker-outcome:${w.id}`, state: "pending" } });
+        }
+        throw e;
+      } finally { admitting.delete(w.sessionId); }
+    },
+    async observe(w) {
+      const results = workerResults(w);
+      // Durable delivery run identity recovers continuations after restart without replay.
+      const continuationDeliveries = workerStore.deliveries().filter(d => d.parentSessionId === w.sessionId);
+      const continuationIds = new Set(continuationDeliveries.filter(d => d.state !== "not-submitted" && workerDeliveryEvidence(d, meta.runs.find(r => r.runId === d.run.runId), events.get(d.run.runId) ?? []) !== "not-submitted").map(d => d.run.runId));
+      const candidates = meta.runs.filter(r => r.sessionId === w.sessionId && (!continuationDeliveries.some(d => d.run.runId === r.runId) || continuationIds.has(r.runId)));
+      const run = candidates.find(r => !results.some(result => result.runId === r.runId)) ?? candidates.at(-1);
+      if (run && results.some(result => result.runId === run.runId)) {
+        const skipped = continuationDeliveries.find(d => d.run.runId === w.continuation?.runId && !continuationIds.has(d.run.runId));
+        return skipped && w.state !== results.at(-1)!.outcome.status ? { state: results.at(-1)!.outcome.status, continuation: { runId: skipped.run.runId, state: "failed", error: "Continuation was not submitted; child notifications remain pending" } } : {};
+      }
+      if (!run && w.outcome) return {};
+      const continuation = run && run.runId !== w.runId ? { runId: run.runId, state: run.status } : undefined;
+      if (!run) {
+        if (admitting.has(w.sessionId) || owners.has(w.sessionId)) return {};
+        const uncertain = (reason: string) => ({ state: "uncertain" as const, error: `${reason}; reservation retained. Inspect admission ${w.sessionId}${w.runId ? ` and log ${w.runId}.jsonl` : ""}; reconcile native identity/termination explicitly before releasing capacity. Do not resend this start request.` });
+        if (storageFailed || retainOwner) return uncertain("App storage or execution ownership is unconfirmed");
+        if (meta.runs.some(r => r.sessionId === w.sessionId)) return uncertain("Worker run reference disagrees with session run metadata");
+        const a = admissions.get(w.sessionId);
+        if (a?.state === "native_creation_unknown") return uncertain("Native session creation acknowledgement was lost");
+        if (!a && (w.child || meta.sessions.some(s => s.sessionId === w.sessionId)) || a && (a.operation !== "create" || a.binding.executionCheckout !== w.checkout || w.child && (w.child.nativeId !== a.nativeId || w.child.authorityId !== a.source.authorityId))) return uncertain("Worker and admission identity evidence disagree");
+        if (w.runId) {
+          try {
+            const raw = await readFile(join(options.dataDir, `${w.runId}.jsonl`), "utf8");
+            const orphan = raw.length ? decodeLog(raw, { runId: w.runId, sessionId: w.sessionId } as Run).events : [];
+            // The executors persist run metadata before native launch/submission. Only their
+            // initial status and captured user prompt may precede that publication boundary.
+            if (orphan.some(e => e.kind !== "submission" && !(e.kind === "status" && (e.data as any)?.status === "running" && Object.keys((e.data ?? {}) as object).length === 1))) return uncertain("Orphan log contains evidence beyond the pre-submission publication boundary");
+          } catch (e) {
+            if ((e as NodeJS.ErrnoException).code !== "ENOENT") return uncertain("Orphan run log is unreadable or cannot prove non-submission");
+          }
+        }
+        if (admitting.has(w.sessionId) || owners.has(w.sessionId)) return {};
+        const status = w.cancelRequestedAt ? "interrupted" as const : "failed" as const;
+        const summary = "Worker preparation ended before durable run publication; native work was not submitted. Original request is closed and will not be replayed.";
+        return { state: status, error: undefined, outcome: { status, at: new Date().toISOString(), summary, log: null } };
+      }
+      const records = events.get(run.runId) ?? [];
+      const uncertain = workerTerminationUncertainty(records);
+      if (uncertain || retainOwner) return { ...(continuation ? { continuation: { ...continuation, state: "uncertain" as const, error: "Execution ownership or termination unconfirmed" } } : {}), state: "uncertain", error: uncertain && w.launch.harness === "claude-code" ? "CLI termination is unconfirmed. Verify the previous CLI process has stopped, then restart with --reconcile-interrupted to persist confirmation and release this reservation." : "Execution ownership or termination remains unconfirmed; reconcile the original native run without resubmitting." };
+      if (run.status !== "running") {
+        if (owners.get(w.sessionId)?.settled === false) return {}; // Finish log/metadata publication before recording an outcome.
+        // Existing log is authoritative. A summary is only a bounded preview, never a second transcript.
+        const output = records.flatMap(e => {
+          const d = e.data as any;
+          if (e.kind === "stdout" && d?.type === "result" && typeof d.result === "string") return [d.result];
+          if (e.kind === "message" && d?.role === "assistant") return (d.parts ?? []).filter((p: any) => p.type === "text" && typeof p.text === "string").map((p: any) => p.text);
+          return [];
+        });
+        return { ...(continuation ? { continuation } : {}), state: run.status, error: undefined, outcome: { status: run.status, at: run.endedAt!, summary: output.at(-1)?.slice(-4000) ?? String((records.filter(e => e.kind === "status").at(-1)?.data as any)?.reason ?? run.status), log: { sessionId: w.sessionId, runId: run.runId } } };
+      }
+      if (continuation) return { continuation: { ...continuation, state: w.continuationCancellation ? "cancelling" : "running" }, state: w.continuationCancellation ? "cancelling" : "running" };
+      if (w.cancelRequestedAt) return { state: "cancelling" };
+      const observed = records.filter(e => e.kind === "status" && typeof (e.data as any)?.workerWaiting === "boolean").at(-1);
+      if (observed) return { state: (observed.data as any).workerWaiting ? "waiting" : "running" };
+      const hook = records.filter(e => e.kind === "hook" && ["PermissionRequest", "PostToolUse"].includes((e.data as any)?.event)).at(-1);
+      if (hook) return { state: (hook.data as any).event === "PermissionRequest" ? "waiting" : "running" };
+      return {};
+    },
+    async cancel(w) {
+      const owner = owners.get(w.sessionId);
+      if (!owner) { if (!w.runId && admitting.has(w.sessionId)) return; throw new Error("No active App owner; termination requires native reconciliation"); }
+      await cancelOwner(owner);
+    },
+  }, () => agentProfiles, maxWorkersPerCheckout);
+
+  async function reconcileWorkerDelivery(d: WorkerDelivery) {
+    if (!["claimed", "acceptance-unknown"].includes(d.state)) return d;
+    const run = meta.runs.find(r => r.runId === d.run.runId && r.sessionId === d.parentSessionId);
+    if (!run) {
+      if (owners.has(d.parentSessionId) || admitting.has(d.parentSessionId) || storageFailed) return d;
+      // Both executors publish metadata before native submission. An absent run with
+      // only pre-publication log records proves this claim was never dispatched.
+      try {
+        const raw = await readFile(join(options.dataDir, `${d.run.runId}.jsonl`), "utf8");
+        const records = raw ? decodeLog(raw, d.run).events : [];
+        if (records.some(e => e.kind !== "submission" && !(e.kind === "status" && (e.data as any)?.status === "running" && Object.keys((e.data ?? {}) as object).length === 1))) return workerStore.advanceDelivery(d.id, "acceptance-unknown", "Orphan delivery log exceeds pre-submission boundary; inspect original run and native command. No automatic resend.");
+      } catch (e) { if ((e as NodeJS.ErrnoException).code !== "ENOENT") return workerStore.advanceDelivery(d.id, "acceptance-unknown", "Delivery log unreadable; repair/reconcile original run before retry. No automatic resend."); }
+      return workerStore.advanceDelivery(d.id, "not-submitted", "Bridge stopped before continuation run publication; outcomes remain pending");
+    }
+    const evidence = workerDeliveryEvidence(d, run, events.get(run.runId) ?? []);
+    if (evidence === "accepted") {
+      // Native evidence may arrive while execution continues. The run owner still
+      // holds capacity; delivered means accepted, not finished or comprehended.
+      await serial;
+      if (storageFailed) return d;
+      return workerStore.advanceDelivery(d.id, "delivered");
+    }
+    if (evidence === "not-submitted" && owners.get(d.parentSessionId)?.settled !== false) return workerStore.advanceDelivery(d.id, "not-submitted", "Continuation did not submit; check parent suppression, visibility and executor configuration before retry");
+    const problem = run.status === "running" ? "Waiting for correlated native acceptance; continuation will not be resent" : "Run ended without proof of acceptance or non-submission. Inspect the original native command; no automatic resend, even after termination acknowledgement.";
+    return d.error === problem && d.state === "acceptance-unknown" ? d : workerStore.advanceDelivery(d.id, "acceptance-unknown", problem);
+  }
+
+  async function dispatchWorkerReport(parentSessionId: string) {
+    const problem = (message: string) => workerStore.pendingProblem(parentSessionId, message);
+    const session = meta.sessions.find(s => s.sessionId === parentSessionId);
+    if (!session) return problem("Parent session unavailable; outcomes retained for inspection");
+    // Hidden is a reversible soft-hide: retain outcomes and pause automatic turns.
+    if (session.hidden) return problem("Parent is soft-hidden; unhide to restore report eligibility. Explicit stop suppression still requires user submission.");
+    if (workerStore.suppressed(parentSessionId)) return problem("Automatic continuation stopped; explicit user submission resumes report eligibility");
+    let available = availability(parentSessionId);
+    if (!available.canSend) return problem(available.reason ?? "Parent unavailable");
+    const a = admissions.get(parentSessionId);
+    if (!a || a.state !== "ready" || a.binding.domain.mode !== "repository" || session.attachment || !session.nativeSessionId || !session.lastRunId) return problem("Report recipient must remain an enrolled App-owned conversation with a known native run");
+    const pending = workerStore.list().filter(w => w.parent.sessionId === parentSessionId && workerResults(w).some(r => r.notification.state === "pending"));
+    if (pending.some(w => w.parent.native.nativeId !== a.nativeId || w.parent.native.authorityId !== a.source.authorityId || w.parent.native.harness !== a.source.descriptor.harness)) return problem("Report recipient native identity changed; reconcile the original parent binding");
+    const cwd = await execution(parentSessionId);
+    if (session.harness === "opencode") await oc.assertIdle(session.nativeSessionId, cwd);
+    // Recheck after all asynchronous preparation. Claim and owner acquisition below
+    // are synchronous, sharing arbitration with explicit wait acknowledgement.
+    available = availability(parentSessionId);
+    if (!available.canSend) return problem(available.reason ?? "Parent became unavailable");
+    if (session.hidden || workerStore.suppressed(parentSessionId)) return problem("Parent hidden or stopped during preparation; outcomes remain pending");
+    const workerParent = workerStore.list().find(w => w.sessionId === parentSessionId);
+    if (workerParent && workers.active().filter(w => w.checkout === cwd && w.sessionId !== parentSessionId).length >= maxWorkersPerCheckout) return problem(`Checkout worker capacity reached (${maxWorkersPerCheckout}); continuation remains pending`);
+    const now = new Date().toISOString();
+    const run: Run = { runId: crypto.randomUUID(), sessionId: parentSessionId, cwd, status: "running", createdAt: now, agent: session.agent, agentKind: session.agentKind, nativeAgentSelected: session.nativeAgentSelected, profileId: session.profileId, model: session.model, effort: session.effort };
+    const commandId = session.harness === "opencode" ? `msg_${crypto.randomUUID().replaceAll("-", "")}` : `${run.runId}:user`;
+    if (session.harness === "opencode") { run.nativeCommandId = commandId; run.nativePhase = "preparing"; }
+    const d = workerStore.claimDelivery({ id: crypto.randomUUID(), parentSessionId, native: { harness: a.source.descriptor.harness, authorityId: a.source.authorityId, nativeId: session.nativeSessionId }, run, commandId, createdAt: now, updatedAt: now });
+    if (!d) return;
+    workerStore.advanceDelivery(d.id, "acceptance-unknown");
+    const finished = Promise.withResolvers<void>();
+    const owner: Owner = { run, native: session.harness === "opencode", workerDeliveryId: d.id, done: finished.promise, settled: false };
+    owners.set(parentSessionId, owner); session.lastRunId = run.runId; session.lastStatus = "running"; meta.runs.push(run); events.set(run.runId, []);
+    if (workerParent) workerStore.update(workerParent.id, { state: "running", continuation: { runId: run.runId, state: "running" }, continuationCancellation: undefined });
+    const prompt = workerReportPrompt(d, workerStore.list());
+    void (owner.native ? executeNative(owner, prompt, true, () => {}) : execute(owner, prompt, true, () => {})).catch(async () => { failClosed(); await terminate(owner); }).finally(async () => {
+      owner.settled = true; releaseOwner(owner); finished.resolve();
+      try { if (!storageFailed) { await reconcileWorkerDelivery(d); if (workerParent) await workers.refresh(workerStore.get(workerParent.id)!); } } catch { failClosed(); }
+    });
+  }
+
+  let workerOutboxTask: Promise<void> | undefined;
+  async function consumeWorkerReports() {
+    for (const w of workerStore.list()) { if (closing || storageFailed) return; await workers.refresh(w); }
+    for (const d of workerStore.deliveries()) { if (closing || storageFailed) return; await reconcileWorkerDelivery(d); }
+    for (const parent of new Set(workerStore.list().filter(w => workerResults(w).some(r => r.notification.state === "pending" && (!r.notification.retryAfter || Date.parse(r.notification.retryAfter) <= Date.now()))).map(w => w.parent.sessionId))) {
+      if (closing || storageFailed) return;
+      try { await dispatchWorkerReport(parent); } catch (e) { workerStore.pendingProblem(parent, e instanceof Error ? e.message : "Worker report preparation unavailable"); }
+    }
+  }
+  const workerOutbox = { list: () => workerStore.deliveries(), reconcile: async (id: string) => { const d = workerStore.deliveries().find(d => d.id === id); if (!d) throw new WorkstreamAdapterError(404, "worker-delivery-missing", "Unknown worker delivery"); return reconcileWorkerDelivery(d); } };
+
+  async function cancelOwner(owner: Owner) {
+    if (!owner.cancel) {
+      owner.cancelling = true; owner.stopRequested = true;
+      owner.cancel = (async () => {
+        if (owner.run.status !== "running") return { interrupted: false };
+        await emit(owner.run, "status", { status: "running", connection: "stopping", reason: "Stop requested; waiting for terminal evidence" });
+        if (owner.native) {
+          if (!owner.submission && owner.run.nativePhase === "preparing") return { interrupted: false };
+          await owner.submission?.catch(() => {});
+          if (owner.run.status !== "running") return { interrupted: false };
+          return oc.cancel(meta.sessions.find(s => s.sessionId === owner.run.sessionId)!.nativeSessionId!);
+        }
+        return { interrupted: await terminate(owner) };
+      })().finally(() => { owner.cancelling = false; releaseOwner(owner); });
+    }
+    const attempt = owner.cancel;
+    try { return await attempt; } catch (e) { if (owner.cancel === attempt) owner.cancel = undefined; throw e; }
   }
   const handoffProblems = new Map<string, string>();
   async function reconcileHandoff(workspaceId: string, id: string) {
@@ -505,7 +860,7 @@ async function startOwned(options: Options, assetsDir: string, packageDir: strin
       const domain = (await router!.forWorkspace(workspaceId)).domain;
       const recipientContext = domain.resolveContext(h.recipient.ref!);
       const senderSlots = domain.getStatus(h.workstreamId).activePhases.filter(a => a.ref.harness === h.sender.harness && a.ref.authorityId === h.sender.authorityId && a.ref.nativeId === h.sender.nativeId).map(a => a.phase);
-      const run: Run = { runId: crypto.randomUUID(), sessionId: session.sessionId, cwd, status: "running", createdAt: new Date().toISOString() };
+      const run: Run = { runId: crypto.randomUUID(), sessionId: session.sessionId, cwd, status: "running", createdAt: new Date().toISOString(), agent: session.agent, agentKind: session.agentKind, nativeAgentSelected: session.nativeAgentSelected, model: session.model, effort: session.effort, profileId: session.profileId };
       const commandId = session.harness === "opencode" ? `msg_${crypto.randomUUID().replaceAll("-", "")}` : `${run.runId}:user`;
       h = domain.advanceHandoff(h.id, h.revision, { status: "acceptance_unknown", attemptId: crypto.randomUUID(), nativeCommandId: commandId, runId: run.runId }, { actor: { kind: "system" }, correlationId: h.id });
       handoffReservations.add(session.sessionId);
@@ -524,7 +879,7 @@ async function startOwned(options: Options, assetsDir: string, packageDir: strin
       const owner: Owner = { run, native: session.harness === "opencode", done: finished.promise, settled: false };
       owners.set(session.sessionId, owner);
       session.lastRunId = run.runId; session.lastStatus = "running"; meta.runs.push(run); events.set(run.runId, []);
-      const prompt = [`SANE handoff ${h.id}`, `Repository: ${domain.primaryCheckout}`, `Workstream: ${h.workstreamId}`, `Artifacts: ${recipientContext.artifactsRoot}`, `Destination: ${h.input.to}`, `From: ${JSON.stringify(h.sender)}`, `Sender slots: ${JSON.stringify(senderSlots)}`, `Recipient: ${JSON.stringify(h.recipient.ref)}`, `Execution checkout: ${cwd}`, h.input.createNew ? "Begin pickup for the assigned role using repository context and the references below." : "Continue this conversation using the request and references below.", "This delivery does not approve artifacts or lifecycle changes. Work independently; any reply is a separate optional asynchronous handoff to the qualified sender. Do not wait for a reply after sending.", "", h.input.message].join("\n");
+      const prompt = [`SANE handoff ${h.id}`, `Repository: ${domain.primaryCheckout}`, `Workstream: ${h.workstreamId}`, `Artifacts: ${recipientContext.artifactsRoot}`, `Destination: ${h.input.to}`, `From: ${JSON.stringify(h.sender)}`, `Sender slots: ${senderSlots.length ? JSON.stringify(senderSlots) : "(none)"}`, ...(h.input.kickoff ? ["Origin: kickoff; the sender created this workstream and is not a member."] : []), `Recipient: ${JSON.stringify(h.recipient.ref)}`, `Execution checkout: ${cwd}`, h.input.createNew ? "Begin pickup for the assigned role using repository context and the references below." : "Continue this conversation using the request and references below.", "This delivery does not approve artifacts or lifecycle changes. Work independently; any reply is a separate optional asynchronous handoff to the qualified sender. Do not wait for a reply after sending.", "", h.input.message].join("\n");
       void (owner.native ? executeNative(owner, prompt, resume, () => {}) : execute(owner, prompt, resume, () => {})).catch(async () => { failClosed(); await terminate(owner); }).finally(async () => {
         try { if (!storageFailed) await reconcileHandoff(workspaceId, h.id); } catch { failClosed(); }
         owner.settled = true; releaseOwner(owner); finished.resolve();
@@ -579,7 +934,7 @@ async function startOwned(options: Options, assetsDir: string, packageDir: strin
       if (!["GET", "HEAD"].includes(req.method) && req.headers.get("origin") !== origin) return json({ error: "Origin rejected" }, 403);
       if (path === "/api/config" && req.method === "GET") {
         const signedIn = authenticated(req);
-        return json({ authRequired: !!password, authenticated: signedIn, cwd: signedIn ? options.cwd : null, oneShot: true, ...(signedIn ? { capabilities: { concurrency: { scope: "conversation", limit: maxConcurrentRuns, perConversation: 1, sharedCheckoutWrites: true }, cancelRun: true, midRunInput: false, permissionReplies: true, attachments: false, modelSelection: true, effortValues: efforts, terminal: terminals.capability }, harnesses: [
+        return json({ authRequired: !!password, authenticated: signedIn, cwd: signedIn ? options.cwd : null, oneShot: true, ...(signedIn ? { capabilities: { concurrency: { scope: "conversation", limit: maxConcurrentRuns, perConversation: 1, sharedCheckoutWrites: true }, cancelRun: true, midRunInput: false, permissionReplies: true, attachments: false, modelSelection: true, effortValues: efforts, terminal: terminals.capability }, agents: ASSISTANT_AGENT_IDS.map(id => ({ id, label: ASSISTANT_AGENT_LABELS[id], description: ASSISTANT_AGENT_DESCRIPTIONS[id] })), agentProfiles, harnesses: [
           { id: "claude-code", name: "Claude Code", available: true, connected: true, state: "available", capabilities: { cancelRun: true, permissionReplies: false, questionReplies: false, modelSelection: true, effortValues: efforts } },
           { id: "opencode", name: "OpenCode", ...await oc.connection(options.cwd), capabilities: { cancelRun: true, permissionReplies: true, questionReplies: true, modelSelection: true } },
         ] } : {}) });
@@ -591,6 +946,57 @@ async function startOwned(options: Options, assetsDir: string, packageDir: strin
         return json({ authenticated: false }, 200, { "set-cookie": "sane_app=; HttpOnly; SameSite=Strict; Path=/; Max-Age=0" });
       }
       if (path.startsWith("/api/") && !authenticated(req)) return json({ error: "Authentication required" }, 401);
+      if (path === "/api/agents" || path.startsWith("/api/agents/")) {
+        try {
+          if (path === "/api/agents" && req.method === "GET") return json(agentProfiles);
+          // Read the body before cloning so concurrent edits never overwrite each other.
+          const input = req.method === "PUT" || req.method === "POST" && !path.endsWith("/reset") ? await body(req) : undefined;
+          const next = structuredClone(agentProfiles);
+          if (path === "/api/agents" && req.method === "POST") {
+            const { fromId, ...fields } = input ?? {};
+            const from = next.profiles.find(p => p.id === fromId);
+            if (!from) return json({ error: "Unknown agent profile" }, 404);
+            const profile = applyProfileInput({ ...from, id: crypto.randomUUID(), builtin: false, locked: false, order: Math.max(...next.profiles.map(p => p.order)) + 1 }, fields);
+            next.profiles.push(profile); await commitAgents(next);
+            return json({ profile });
+          }
+          if (path === "/api/agents/order" && req.method === "PUT") {
+            if (input?.order !== undefined) {
+              if (!Array.isArray(input.order) || input.order.length !== next.profiles.length || new Set(input.order).size !== input.order.length || next.profiles.some(p => !input.order.includes(p.id))) return json({ error: "order must list every agent profile id exactly once" }, 400);
+              for (const p of next.profiles) p.order = input.order.indexOf(p.id);
+            }
+            if (input?.defaultId !== undefined) next.defaultId = input.defaultId;
+            if (input?.workerDefaults !== undefined) next.workerDefaults = input.workerDefaults;
+            await commitAgents(next);
+            return json(agentProfiles);
+          }
+          const match = /^\/api\/agents\/([^/]+)(\/reset)?$/.exec(path);
+          const index = match ? next.profiles.findIndex(p => p.id === decodeURIComponent(match[1]!)) : -1;
+          if (!match || index < 0) return json({ error: "Unknown agent profile" }, 404);
+          const current = next.profiles[index]!;
+          if (match[2] && req.method === "POST") {
+            if (!current.builtin) return json({ error: "Only builtin profiles can be reset" }, 400);
+            const profile = { ...builtinProfiles().find(p => p.id === current.id)!, order: current.order };
+            next.profiles[index] = profile; await commitAgents(next);
+            return json({ profile });
+          }
+          if (!match[2] && req.method === "PUT") {
+            if (current.builtin && current.kind === "base" && input?.harness !== undefined && input.harness !== current.harness) return json({ error: "Base profile harness cannot change" }, 400);
+            const profile = applyProfileInput(current, input ?? {});
+            if (profile.hidden && next.defaultId === profile.id) return json({ error: "The default agent cannot be hidden" }, 400);
+            next.profiles[index] = profile; await commitAgents(next);
+            return json({ profile });
+          }
+          if (!match[2] && req.method === "DELETE") {
+            if (current.builtin) return json({ error: "Builtin profiles cannot be deleted" }, 400);
+            next.profiles.splice(index, 1);
+            if (next.defaultId === current.id) next.defaultId = BASE_PROFILE_IDS["claude-code"];
+            await commitAgents(next);
+            return json({ ok: true });
+          }
+          return json({ error: "Method not allowed" }, 405);
+        } catch (error) { if (error instanceof AppStoreError) return json({ error: error.message }, 400); throw error; }
+      }
       if (path === "/api/handoffs" && req.method === "GET") { const listed = await handoffs.list(url.searchParams.get("workspaceId") ?? ""); return json({ handoffs: listed, problems: Object.fromEntries(listed.filter(h => handoffProblems.has(h.id)).map(h => [h.id, handoffProblems.get(h.id)])) }); }
       const handoffAction = /^\/api\/handoffs\/([^/]+)\/(retry|acknowledge|reconcile)$/.exec(path);
       if (handoffAction && req.method === "POST") {
@@ -741,7 +1147,26 @@ async function startOwned(options: Options, assetsDir: string, packageDir: strin
         const cwd = resolve(url.searchParams.get("cwd") ?? options.cwd);
         return json({ models: await oc.models(cwd) });
       }
-      if (path === "/api/sessions" && req.method === "GET") return json({ sessions: meta.sessions.map(s => ({ ...s, title: displayTitle(s), admission: admissions.get(s.sessionId), ...catalog.association(s.sessionId), availability: availability(s.sessionId) })), admissions: admissions.list(), availability: availability() });
+      const workerCancel = /^\/api\/sessions\/([^/]+)\/workers\/cancel$/.exec(path);
+      if (workerCancel && req.method === "POST") {
+        const parentSessionId = workerCancel[1]!;
+        if (!meta.sessions.some(s => s.sessionId === parentSessionId && !s.attachment)) return json({ error: "App parent session not found" }, 404);
+        const input = await body(req);
+        try {
+          if (input.all === true && Object.keys(input).length === 1) return json(projectNativeWorkerReply({ workers: await workers.cancelForSession(parentSessionId, "all") }));
+          const args = nativeWorkerInput("cancel", input);
+          return json(projectNativeWorkerReply({ workers: await workers.cancelForSession(parentSessionId, args.ids, args.includeDescendants) }));
+        } catch { return json({ error: "Cancellation requires {ids, includeDescendants?} within this parent's worker tree, or {all:true}. Inspect worker status before retrying.", code: "worker-cancel" }, 409); }
+      }
+      const workerList = /^\/api\/sessions\/([^/]+)\/workers$/.exec(path);
+      if (workerList && req.method === "GET") {
+        if (!meta.sessions.some(s => s.sessionId === workerList[1])) return json({ error: "Unknown parent session" }, 404);
+        return json({ workers: await Promise.all(workers.tree(workerList[1]!).map(w => workers.refresh(w))), deliveries: workerStore.deliveries().filter(d => d.parentSessionId === workerList[1]), continuationSuppressed: workerStore.suppressed(workerList[1]!) });
+      }
+      if (path === "/api/sessions" && req.method === "GET") {
+        const workerSessions = new Map(workerStore.list().map(w => [w.sessionId, { id: w.id, parent: { sessionId: w.parent.sessionId, runId: w.parent.runId, toolCallId: w.parent.toolCallId } }]));
+        return json({ sessions: meta.sessions.map(s => ({ ...s, ...(workerSessions.has(s.sessionId) ? { worker: workerSessions.get(s.sessionId) } : {}), profileId: sessionProfileId(s), title: displayTitle(s), admission: admissions.get(s.sessionId), ...catalog.association(s.sessionId), availability: availability(s.sessionId) })), admissions: admissions.list(), availability: availability() });
+      }
       const admissionRoute = /^\/api\/sessions\/([^/]+)\/(enroll|retry-admission)$/.exec(path);
       if (admissionRoute && req.method === "POST") {
         const sessionId = admissionRoute[1]!, session = meta.sessions.find(s => s.sessionId === sessionId);
@@ -811,24 +1236,55 @@ async function startOwned(options: Options, assetsDir: string, packageDir: strin
         if (!input || typeof input.prompt !== "string" || !input.prompt.trim() || (input.cwd !== undefined && typeof input.cwd !== "string") || (input.sessionId !== undefined && typeof input.sessionId !== "string")) return json({ error: "Invalid request" }, 400);
         let session = input.sessionId ? meta.sessions.find(s => s.sessionId === input.sessionId) : undefined;
         if (input.sessionId !== undefined && !session) return json({ error: "Unknown session" }, 404);
+        // Agent profile selection: resolves harness/model/effort/agent and wins
+        // over the legacy fields. Existing sessions only accept a Base -> assistant upgrade.
+        // Legacy `agent` on a follow-up goes through the same transition rules as its template.
+        if (session && input.profileId === undefined && isAssistantAgentId(input.agent)) input.profileId = templateProfileId(input.agent);
+        if (input.profileId !== undefined && typeof input.profileId !== "string") return json({ error: "Invalid request" }, 400);
+        const profile = input.profileId !== undefined ? agentProfiles.profiles.find(p => p.id === input.profileId) : undefined;
+        if (input.profileId !== undefined && !profile) return json({ error: "Unknown agent profile" }, 400);
+        let upgrade: AgentProfile | undefined;
+        if (profile && !session) {
+          const check = canAssign(undefined, profile); if (!check.ok) return json({ error: check.reason }, 400);
+          const launch = resolveAgentLaunch(profile);
+          Object.assign(input, { harness: launch.harness, model: launch.model, effort: launch.effort, agent: launch.identity?.role });
+        } else if (profile && session) {
+          const currentId = sessionProfileId(session);
+          if (profile.id !== currentId) {
+            const current = agentProfiles.profiles.find(p => p.id === currentId) ?? { kind: session.agent ? "assistant" as const : "base" as const, harness: session.harness ?? "claude-code" };
+            const check: { ok: boolean; reason?: string } = profile.hidden ? { ok: false, reason: "Hidden agent" } : canAssign(current, profile);
+            if (!check.ok) return json({ error: check.reason === "Different harness" ? "Session harness cannot change" : "Session agent cannot change", reason: check.reason }, 400);
+            upgrade = profile;
+          }
+          Object.assign(input, { harness: undefined, model: undefined, effort: undefined, agent: undefined });
+        }
         const harness = input.harness ?? session?.harness ?? "claude-code";
         if (!["claude-code", "opencode"].includes(harness)) return json({ error: "Unknown harness" }, 400);
         if (session && (session.harness ?? "claude-code") !== harness) return json({ error: "Session harness cannot change" }, 400);
         if (session?.attachment && harness === "claude-code" && input.nativeStopped !== true) return json({ error: "Claude activity is unknown. Explicitly acknowledge external execution is stopped before each App submission.", code: "native-acknowledgement-required" }, 409);
         if (input.model !== undefined && !validModel(input.model)) return json({ error: "Invalid model ID" }, 400);
         if (input.effort !== undefined && !(harness === "opencode" ? validVariant(input.effort) : validEffort(input.effort))) return json({ error: harness === "opencode" ? "Invalid native variant ID" : "effort must be low, medium, high, xhigh, or max" }, 400);
+        if (input.agent !== undefined && !isAssistantAgentId(input.agent)) return json({ error: "Unknown agent" }, 400);
+        if (session && session.agent !== undefined && input.agent !== undefined && session.agent !== input.agent) return json({ error: "Session agent cannot change" }, 400);
         if (harness === "opencode" && input.model !== undefined) oc.model(input.model, input.effort);
-        if (harness === "opencode" && !session && input.effort !== undefined && input.model === undefined) return json({ error: "Select a model before selecting a variant" }, 400);
         // Conversation-level defaults: an omitted follow-up inherits the stored
         // selection instead of silently dropping to native default. Stored values
         // were validated when first sent, so only shape-check an inherited OC model.
-        const model = input.model ?? session?.model;
-        const effort = input.effort ?? session?.effort;
+        let model = upgrade ? upgrade.model || undefined : input.model ?? session?.model;
+        let effort = upgrade ? upgrade.effort || undefined : input.effort ?? session?.effort;
+        const agent = upgrade ? upgrade.role ?? undefined : input.agent ?? session?.agent;
         if (harness === "opencode" && input.model === undefined && model !== undefined) oc.model(model, effort);
         const selectedBinding = !session && input.cwd === undefined && typeof input.workspaceId === "string" && typeof input.worktreeId === "string" ? await catalog.binding(input.workspaceId, input.worktreeId) : undefined;
         const cwd = resolve(input.cwd ?? session?.cwd ?? selectedBinding?.cwd ?? options.cwd);
         try { if (!(await stat(cwd)).isDirectory()) throw 0; } catch { return json({ error: "cwd must be an existing directory" }, 400); }
         if (session && session.cwd !== cwd) return json({ error: "Session cwd cannot change" }, 400);
+        // Resolve before admitting a native creation so configuration errors are not
+        // mistaken for an unknown POST outcome. Existing sessions are never reselected.
+        const nativeLaunch = harness === "opencode" && !session ? await oc.resolveLaunch(cwd, { model, effort, ...(isAssistantAgentId(agent) ? { agent: nativeAgentId({ kind: "assistant", role: agent }, harness) } : {}) }) : undefined;
+        if (nativeLaunch?.model) {
+          model = input.model = `${nativeLaunch.model.providerID}/${nativeLaunch.model.id}`;
+          effort = input.effort = nativeLaunch.model.variant;
+        }
         const conversationId = session?.sessionId ?? crypto.randomUUID();
         const available = availability(conversationId);
         if (!available.canSend) return json({ error: available.reason, code: available.code }, available.code === "capacity" ? 429 : 409);
@@ -840,9 +1296,9 @@ async function startOwned(options: Options, assetsDir: string, packageDir: strin
         if (!session) {
           if (association.association !== "resolved") throw new WorkstreamAdapterError(409, "association-unresolved", "Execution association unavailable");
           await admissions.begin({ sessionId: conversationId, operation: "create", harness: harness === "opencode" ? "oc" : "cc", cwd, nativeId: harness === "opencode" ? null : crypto.randomUUID(), workspaceId: association.workspaceId, worktreeId: association.worktreeId });
-          if (harness === "opencode") await admissions.createNative(conversationId, async () => (await oc.create(cwd, input.model, input.effort)).id);
+          if (harness === "opencode") await admissions.createNative(conversationId, async () => (await oc.createResolved(cwd, nativeLaunch!)).id);
           const a = admissions.get(conversationId)!;
-          session = { sessionId: conversationId, harness, nativeSessionId: a.nativeId!, authorityId: a.source.authorityId, cwd, lastStatus: "unknown", lastRunId: null, ...(input.model !== undefined ? { model: input.model } : {}), ...(input.effort !== undefined ? { effort: input.effort } : {}) };
+          session = { sessionId: conversationId, harness, nativeSessionId: a.nativeId!, authorityId: a.source.authorityId, cwd, lastStatus: "unknown", lastRunId: null, ...(input.model !== undefined ? { model: input.model } : {}), ...(input.effort !== undefined ? { effort: input.effort } : {}), ...(input.agent !== undefined ? { agent: input.agent, agentKind: "assistant", nativeAgentSelected: true } : {}), ...(profile ? { profileId: profile.id } : {}) };
           meta.sessions.push(session); await persist();
           await admissions.register(conversationId);
           admissions.ready(conversationId);
@@ -853,13 +1309,22 @@ async function startOwned(options: Options, assetsDir: string, packageDir: strin
         // follow-up never erases them (the run below inherits them instead).
         if (input.model !== undefined) session.model = input.model;
         if (input.effort !== undefined) session.effort = input.effort;
+        // First assignment persists; later sends inherit. Never erased by omission.
+        if (input.agent !== undefined && session.agent === undefined) { session.agent = input.agent; if (session.profileId !== undefined) session.profileId = legacyProfileId(harness, input.agent); }
+        if (upgrade) {
+          session.profileId = upgrade.id; session.agent = upgrade.role ?? undefined;
+          if (upgrade.model) session.model = upgrade.model; else delete session.model;
+          if (upgrade.effort) session.effort = upgrade.effort; else delete session.effort;
+          await persist();
+        }
         // First prompt becomes the durable list title for untitled sessions
         // (handoff `<Role> #<n>` titles already set stay untouched).
         if (!session.title) {
           const firstTitle = titleFromPrompt(input.prompt);
           if (firstTitle) { session.title = firstTitle; await persist(); }
         }
-        const run: Run = { runId: crypto.randomUUID(), sessionId: conversationId, cwd, status: "running", createdAt: new Date().toISOString(), ...(model !== undefined ? { model } : {}), ...(effort !== undefined ? { effort } : {}) };
+        workerStore.suppress(conversationId, false); // Explicit user submission resumes automatic continuation eligibility.
+        const run: Run = { runId: crypto.randomUUID(), sessionId: conversationId, cwd, status: "running", createdAt: new Date().toISOString(), ...(model !== undefined ? { model } : {}), ...(effort !== undefined ? { effort } : {}), ...(agent !== undefined ? { agent, agentKind: session.agentKind, nativeAgentSelected: session.nativeAgentSelected } : {}), profileId: sessionProfileId(session) };
         const finished = Promise.withResolvers<void>();
         const accepted = Promise.withResolvers<boolean>();
         const owner: Owner = { run, native: harness === "opencode", done: finished.promise, settled: false };
@@ -868,11 +1333,15 @@ async function startOwned(options: Options, assetsDir: string, packageDir: strin
           run.nativeCommandId = `msg_${crypto.randomUUID().replaceAll("-", "")}`; run.nativePhase = "preparing";
         }
         session.lastRunId = run.runId; session.lastStatus = "running"; meta.runs.push(run); events.set(run.runId, []);
+        // Preserve legacy OC framing only where real agent selection was not established.
+        const effectivePrompt = isAssistantAgentId(agent) && harness === "opencode" && !session.nativeAgentSelected
+          ? `[SANE role: ${ASSISTANT_AGENT_LABELS[agent]} assistant. Follow the SANE ${ASSISTANT_AGENT_LABELS[agent]} assistant procedures for this conversation.]\n\n${input.prompt}`
+          : input.prompt;
         // Install the complete lifecycle promise before any asynchronous work.
-        void (harness === "opencode" ? executeNative(owner, input.prompt, resume, accepted.resolve) : execute(owner, input.prompt, resume, accepted.resolve)).catch(async () => {
+        void (harness === "opencode" ? executeNative(owner, effectivePrompt, resume, accepted.resolve) : execute(owner, effectivePrompt, resume, accepted.resolve)).catch(async () => {
           failClosed(); await terminate(owner); accepted.resolve(false);
         }).finally(() => { owner.settled = true; releaseOwner(owner); finished.resolve(); });
-        if (!(await accepted.promise)) return json({ error: "Run could not start; operator reconciliation may be required" }, 503);
+        if (!(await accepted.promise)) return json({ error: owner.launchError ?? "Run could not start; operator reconciliation may be required" }, 503);
         return json({ sessionId: run.sessionId, runId: run.runId, harness, nativeSessionId: session.nativeSessionId, ...association }, 202);
         } finally { admitting.delete(conversationId); }
       }
@@ -910,6 +1379,9 @@ async function startOwned(options: Options, assetsDir: string, packageDir: strin
         if (!session) return json({ error: "Unknown session" }, 404);
         if (cancelMatch && req.method === "POST") {
           if (closing || storageFailed) return json({ error: "Bridge unavailable; cancellation state must be checked in the native harness" }, 503);
+          workerStore.suppress(session.sessionId, true); // Persist even when the parent is already idle. Never cascade.
+          const worker = workerStore.list().find(w => w.sessionId === session.sessionId && !w.outcome);
+          if (worker) workerStore.update(worker.id, { state: "cancelling", cancelRequestedAt: worker.cancelRequestedAt ?? new Date().toISOString() });
           const owner = owners.get(session.sessionId);
           if (!owner) return json({ interrupted: false, status: session.lastStatus, reason: "No active App-owned run; external execution must be stopped in its native harness" });
           if (!owner.cancel) {
@@ -1082,7 +1554,7 @@ async function startOwned(options: Options, assetsDir: string, packageDir: strin
   }
   const server = Bun.serve<TerminalSocketData>({ hostname: options.host, port: options.port, maxRequestBodySize: 1024 * 1024, websocket: terminals.websocket, fetch: (req, srv) => handle(req, srv, (request, data) => srv.upgrade(request, { data })) });
   let hookServer: Bun.Server<undefined>;
-   try { hookServer = Bun.serve({ hostname: "127.0.0.1", port: 0, maxRequestBodySize: 1024 * 1024, fetch: async (req, srv) => new URL(req.url).pathname === "/native/handoffs" ? nativeHandoff(req) : new URL(req.url).pathname.startsWith("/hooks/") ? (await handle(req, srv)) ?? json({ error: "Not found" }, 404) : json({ error: "Not found" }, 404) }); }
+   try { hookServer = Bun.serve({ hostname: "127.0.0.1", port: 0, maxRequestBodySize: 1024 * 1024, fetch: async (req, srv) => new URL(req.url).pathname === "/native/workers" ? (loopback(srv.requestIP(req)?.address ?? "") ? nativeWorker(req) : json({ error: "Forbidden" }, 403)) : new URL(req.url).pathname === "/native/handoffs" ? nativeHandoff(req) : new URL(req.url).pathname.startsWith("/hooks/") ? (await handle(req, srv)) ?? json({ error: "Not found" }, 404) : json({ error: "Not found" }, 404) }); }
   catch (error) { await server.stop(true); throw error; }
   origin = options.publicOrigin ?? `http://${options.host.includes(":") ? `[${options.host}]` : options.host}:${server.port}`;
   try { atomicAppRecord(options.dataDir, "native-handoff.json", { version: 1, url: `http://127.0.0.1:${hookServer.port}/native/handoffs`, token: handoffToken, pid: process.pid }); }
@@ -1093,7 +1565,18 @@ async function startOwned(options: Options, assetsDir: string, packageDir: strin
     const finished = Promise.withResolvers<void>();
     const owner: Owner = { run: recovering, native: true, done: finished.promise, settled: false }; owners.set(recovering.sessionId, owner);
     void (recovering.nativePhase === "preparing" ? finishNative(owner, "failed", "Bridge restarted before native submission") : monitorNative(owner))
-      .catch(() => { failClosed(); }).finally(() => { owner.settled = true; releaseOwner(owner); finished.resolve(); });
+      .catch(() => { failClosed(); }).finally(async () => { owner.settled = true; releaseOwner(owner); finished.resolve(); const w = workerStore.list().find(w => w.runId === recovering.runId); if (w && !storageFailed) { try { await workers.refresh(w); } catch { failClosed(); } } });
+  }
+  // Recover selection only from the native identity recorded by admission. Never replay a creation or prompt.
+  for (const w of workers.active()) {
+    const a = admissions.get(w.sessionId);
+    if (!meta.runs.some(r => r.runId === w.runId && r.sessionId === w.sessionId) && a?.nativeId && w.launch.harness === "opencode") {
+      try {
+        const selected = await oc.recoverLaunch(a.nativeId, w.checkout, w.launch.agent!);
+        workerStore.update(w.id, { state: "uncertain", child: { harness: "oc", authorityId: a.source.authorityId, nativeId: a.nativeId }, launch: { ...w.launch, ...(selected?.model ? { model: `${selected.model.providerID}/${selected.model.id}`, effort: selected.model.variant } : {}) }, error: "Native selection recovered; reconciling admission and run-publication evidence without resubmitting" });
+      } catch (e) { workerStore.update(w.id, { state: "uncertain", error: e instanceof Error ? e.message : "Native selection recovery unavailable" }); }
+    }
+    await workers.refresh(workerStore.get(w.id)!);
   }
   let closePromise: Promise<void> | undefined;
   for (const w of (await catalog.list()).workspaces.filter(w => w.kind === "repository")) {
@@ -1103,11 +1586,18 @@ async function startOwned(options: Options, assetsDir: string, packageDir: strin
     if (closing || storageFailed || handoffTask) return;
     handoffTask = consumeHandoffs().catch(() => { failClosed(); }).finally(() => { handoffTask = undefined; });
   }, 500);
-  return { origin, port: server.port, handoffs, prepareHandoffRecipient, close() {
+  const workerOutboxTimer = setInterval(() => {
+    if (closing || storageFailed || workerOutboxTask) return;
+    workerOutboxTask = consumeWorkerReports().catch(() => { failClosed(); }).finally(() => { workerOutboxTask = undefined; });
+  }, 500);
+  return { origin, port: server.port, workers, workerOutbox, handoffs, prepareHandoffRecipient, close() {
     if (closePromise) return closePromise;
     closing = true;
     clearInterval(handoffTimer);
+    clearInterval(workerOutboxTimer);
     closePromise = (async () => {
+    try { await workers.drainLaunches(); } catch { failClosed(); }
+    await workerOutboxTask;
     await handoffTask;
     await Promise.all(handoffDispatches.values());
     await terminals.close();

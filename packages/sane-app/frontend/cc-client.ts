@@ -17,14 +17,15 @@ export const conversationClient: ConversationClient = {
   logout: () => request("/api/logout", { method: "POST" }),
   async conversations(signal) {
     const data = await request("/api/sessions", { signal });
-    return { conversations: (data.sessions ?? []).map((s: any) => ({ id: s.sessionId, harness: s.harness ?? "claude-code", nativeSessionId: s.nativeSessionId, cwd: s.cwd, lastRunId: s.lastRunId, status: s.lastStatus as RunStatus, title: s.title, hidden: s.hidden, model: s.model, effort: s.effort, workspaceId: s.workspaceId, worktreeId: s.worktreeId, association: s.association, associationReason: s.associationReason, availability: s.availability, attachment: s.attachment })),
+    return { conversations: (data.sessions ?? []).map((s: any) => ({ id: s.sessionId, harness: s.harness ?? "claude-code", nativeSessionId: s.nativeSessionId, cwd: s.cwd, lastRunId: s.lastRunId, status: s.lastStatus as RunStatus, title: s.title, hidden: s.hidden, model: s.model, effort: s.effort, agent: s.agent, profileId: s.profileId, workspaceId: s.workspaceId, worktreeId: s.worktreeId, association: s.association, associationReason: s.associationReason, availability: s.availability, attachment: s.attachment, worker: s.worker })),
       availability: data.availability ?? { canSend: false, reason: "Waiting for bridge availability." } };
   },
   async runs(id, signal): Promise<RunMetadata[]> {
     const data = await request(`/api/sessions/${encodeURIComponent(id)}/runs`, { signal });
-    return (data.runs ?? []).map((r: any) => ({ id: r.runId, conversationId: r.sessionId, harness: r.harness ?? "claude-code", nativeSessionId: r.nativeSessionId, nativeCommandId: r.nativeCommandId, cwd: r.cwd, status: r.status, createdAt: r.createdAt, endedAt: r.endedAt, model: r.model, effort: r.effort }));
+    return (data.runs ?? []).map((r: any) => ({ id: r.runId, conversationId: r.sessionId, harness: r.harness ?? "claude-code", nativeSessionId: r.nativeSessionId, nativeCommandId: r.nativeCommandId, cwd: r.cwd, status: r.status, createdAt: r.createdAt, endedAt: r.endedAt, model: r.model, effort: r.effort, agent: r.agent, profileId: r.profileId }));
   },
   events: (run, signal) => request(`/api/runs/${encodeURIComponent(run.id)}/events?after=${run.cursor}`, { signal }),
+  workers: (id, signal) => request(`/api/sessions/${encodeURIComponent(id)}/workers`, { signal }),
   async models(cwd, signal) {
     const data = await request(`/api/harnesses/opencode/models?cwd=${encodeURIComponent(cwd)}`, { signal });
     return data.models ?? [];
@@ -44,6 +45,12 @@ export const conversationClient: ConversationClient = {
   },
   reconcile: id => request(`/api/sessions/${encodeURIComponent(id)}/reconcile`, { method: "POST", body: "{}" }),
   nativeHistory: (id, signal) => request(`/api/sessions/${encodeURIComponent(id)}/native-history`, { signal }),
+  agents: signal => request("/api/agents", { signal }),
+  createAgent: (fromId, input = {}) => request("/api/agents", { method: "POST", body: JSON.stringify({ ...input, fromId }) }),
+  updateAgent: (id, input) => request(`/api/agents/${encodeURIComponent(id)}`, { method: "PUT", body: JSON.stringify(input) }),
+  deleteAgent: id => request(`/api/agents/${encodeURIComponent(id)}`, { method: "DELETE" }),
+  resetAgent: id => request(`/api/agents/${encodeURIComponent(id)}/reset`, { method: "POST", body: "{}" }),
+  orderAgents: input => request("/api/agents/order", { method: "PUT", body: JSON.stringify(input) }),
   async submit({ text, conversationId, ...options }) {
     const data = await request("/api/sessions", { method: "POST", body: JSON.stringify({ prompt: text, ...(conversationId ? { sessionId: conversationId } : {}), ...options }) });
     return { conversationId: data.sessionId, runId: data.runId };

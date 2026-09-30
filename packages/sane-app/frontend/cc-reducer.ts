@@ -33,7 +33,7 @@ function record(run: Run, value: unknown, event: DiagnosticEvent) {
       if (p.type === "text" && typeof p.text === "string") parts.push({ type: "text", text: p.text });
       if (p.type === "tool_use" && typeof p.id === "string") {
         const existing = tool(run, p.id) ?? run.toolResults.get(`${run.id}:${p.id}`);
-        parts.push({ type: "tool", id: `${run.id}:${p.id}`, name: p.name || "Tool", input: p.input, ...(existing?.output !== undefined ? { output: existing.output, error: existing.error } : {}) });
+        parts.push({ type: "tool", id: `${run.id}:${p.id}`, toolCallId: p.id, name: p.name || "Tool", input: p.input, ...(existing?.output !== undefined ? { output: existing.output, error: existing.error } : {}) });
       }
     }
     if (previous) {
@@ -68,7 +68,7 @@ export function consume(run: Run, events: DiagnosticEvent[]) {
     if (event.kind === "message" && object(event.data)) {
       const snapshot = event.data as MessageSnapshot;
       const message: Message = { id: snapshot.messageId, runId: run.id, role: snapshot.role, time: snapshot.createdAt, status: snapshot.status, normalized: true, error: snapshot.error,
-        parts: snapshot.parts.map(p => p.type === "tool" ? { type: "tool", id: p.id, name: p.name, input: p.input, toolStatus: p.status, output: p.output ?? p.error, error: p.error !== undefined } : { type: p.type, text: p.text }) };
+        parts: snapshot.parts.map(p => p.type === "tool" ? { type: "tool", id: p.id, toolCallId: p.id, name: p.name, input: p.input, toolStatus: p.status, output: p.output ?? p.error, error: p.error !== undefined } : { type: p.type, text: p.text }) };
       const index = run.messages.findIndex(m => m.id === message.id);
       if (index < 0) run.messages.push(message); else run.messages[index] = message;
       if (snapshot.usage) { run.nativeUsage = snapshot.usage; run.nativeUsageTime = event.time; }

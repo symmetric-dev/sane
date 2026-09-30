@@ -1,16 +1,14 @@
 /**
- * C9 Phase 2 — real-agent native recovery integration.
+ * Real-agent native recovery integration.
  * File 2: restart/uncertainty + attachment + failed shutdown + OC child inheritance + CC child refusal.
  *
- * Contract sources: docs/sane-app/ongoing/C9-PLAN.md, docs/sane-app/ongoing/C8-QUESTIONS.md
- * ("Deferred real-native integration tests"), packages/sane-app/src/bridge.ts
- * (restart reconcile 251-264,910-918; reconcile endpoints 546-566; failed-shutdown
- * drain 924-969), packages/sane-core/src/schema.ts (95-112) + server.ts (226-278),
- * packages/sane-app/src/installation-ownership.ts (37-144).
+ * Contract sources: packages/sane-app/src/bridge.ts,
+ * packages/sane-core/src/schema.ts + server.ts,
+ * packages/sane-app/src/installation-ownership.ts.
  *
- * Rules enforced here (shared with c9-native-handoff.test.ts):
+ * Rules enforced here (shared with native-handoff.test.ts):
  * - Serial only: top-level describe.serial; 45s sleep between tests
- *   (INTER_TEST_DELAY_MS, env C9_INTER_TEST_DELAY_MS). Never parallel.
+ *   (INTER_TEST_DELAY_MS, env NATIVE_INTER_TEST_DELAY_MS). Never parallel.
  * - Models: OC opencode-go/muse-spark-1.3-contributor (high variant); CC model only
  *   where a CC turn is unavoidable (none in this file). Max 5 agent turns per
  *   handoff, 600s per-handoff timeout.
@@ -23,7 +21,7 @@
  *   and shutdown-drain boundaries are used when present (hook names autodetected
  *   from bridge.ts); the two hook-dependent tests use test.skip with an explicit
  *   reason when absent — never a silent pass.
- * - Evidence log per handoff, secrets redacted; flushed to C9_EVIDENCE_DIR in afterAll.
+ * - Evidence log per handoff, secrets redacted; flushed to NATIVE_EVIDENCE_DIR in afterAll.
  *
  * Implementation only: real OC/CC agents launch when this suite runs, not at
  * authoring time. Verify with typecheck only (`bunx tsc --noEmit`); do NOT run.
@@ -42,7 +40,7 @@ import { OpenCodeAdapter } from "../src/opencode";
 import { classifyCaller } from "../../sane-cli/src/cli-arguments";
 
 const INTER_TEST_DELAY_MS = (() => {
-  const v = Number(process.env.C9_INTER_TEST_DELAY_MS ?? 45000);
+  const v = Number(process.env.NATIVE_INTER_TEST_DELAY_MS ?? 45000);
   return Number.isFinite(v) && v >= 0 ? v : 45000;
 })();
 const HANDOFF_TIMEOUT_MS = 600000;
@@ -60,18 +58,18 @@ const FAULT_NAMES = [...bridgeSource.matchAll(/SANE_TEST_FAULT\s*(?:===|==|!==|!
   .map((m) => String(m[1] ?? ""))
   .filter((n) => n.length > 0);
 const HAS_FAULT_HOOKS = bridgeSource.includes("SANE_TEST_FAULT") && FAULT_NAMES.length > 0;
-const ACCEPTANCE_FAULT = FAULT_NAMES.find((n) => /accept|uncertain|drop-run/i.test(n)) ?? "c9-uncertain-acceptance";
+const ACCEPTANCE_FAULT = FAULT_NAMES.find((n) => /accept|uncertain|drop-run/i.test(n)) ?? "itest-uncertain-acceptance";
 // NOTE: "handoff-drop-run" (bridge.ts dispatchHandoff) is the crash-simulation
 // hook that pins a handoff at acceptance_unknown with no persisted run; the
 // matcher must recognize it or r03 arms an inert fault value.
-const SHUTDOWN_FAULT = FAULT_NAMES.find((n) => /shutdown|drain|failed/i.test(n)) ?? "c9-shutdown-drain";
+const SHUTDOWN_FAULT = FAULT_NAMES.find((n) => /shutdown|drain|failed/i.test(n)) ?? "itest-shutdown-drain";
 const faultTest: typeof test = HAS_FAULT_HOOKS ? test : test.skip;
 const FAULT_SKIP_REASON = "SANE_TEST_FAULT hooks absent (Phase 1 parallel work has not landed them)";
 const ambient = (() => {
   try {
     return resolveAppConfig([], { packageDir: PKG_DIR, invocationCwd: process.cwd() });
   } catch (error) {
-    throw new Error(`C9: ambient App config unreadable, set C9_CLAUDE_PROFILE/C9_OPENCODE_REGISTRATION: ${error instanceof Error ? error.message : String(error)}`);
+    throw new Error(`native-test: ambient App config unreadable, set NATIVE_CLAUDE_PROFILE/NATIVE_OPENCODE_REGISTRATION: ${error instanceof Error ? error.message : String(error)}`);
   }
 })();
 
@@ -89,7 +87,7 @@ let chargedTurns = 0;
 function chargeTurns(n: number, label: string): void {
   chargedTurns += n;
   record({ kind: "turn-budget", label, charged: n, total: chargedTurns, budget: TURN_BUDGET });
-  if (chargedTurns > TURN_BUDGET) throw new Error(`C9 spend cap exceeded: ${chargedTurns}/${TURN_BUDGET} real agent turns (${label})`);
+  if (chargedTurns > TURN_BUDGET) throw new Error(`spend cap exceeded: ${chargedTurns}/${TURN_BUDGET} real agent turns (${label})`);
 }
 
 type TestApp = {
@@ -108,16 +106,16 @@ async function api(origin: string, path: string, init: RequestInit = {}): Promis
 const appHeaders = (origin: string): Record<string, string> => ({ "content-type": "application/json", origin });
 
 async function bootApp(tag: string, workstreamId: string): Promise<{ app: TestApp; options: Options }> {
-  const root = realpathSync(mkdtempSync(join(tmpdir(), `c9-${tag}-`)));
+  const root = realpathSync(mkdtempSync(join(tmpdir(), `itest--`)));
   const repoDir = join(root, "repo");
   const dataDir = join(root, "appdata");
   mkdirSync(repoDir, { recursive: true });
   mkdirSync(dataDir, { recursive: true });
   const git = Bun.spawn(["git", "init", repoDir], { stdout: "ignore", stderr: "ignore" });
-  if ((await git.exited) !== 0 || git.exitCode !== 0) throw new Error("C9: cannot init disposable repo (git init failed)");
-  const ccProfile = process.env.C9_CLAUDE_PROFILE ?? ambient.config.native.claude.profileRoot;
-  const ocRegistration = process.env.C9_OPENCODE_REGISTRATION ?? ambient.config.native.opencode.registrationFile;
-  const claudeBin = process.env.C9_CLAUDE_BIN ?? ambient.config.native.claude.executable;
+  if ((await git.exited) !== 0 || git.exitCode !== 0) throw new Error("native-test: cannot init disposable repo (git init failed)");
+  const ccProfile = process.env.NATIVE_CLAUDE_PROFILE ?? ambient.config.native.claude.profileRoot;
+  const ocRegistration = process.env.NATIVE_OPENCODE_REGISTRATION ?? ambient.config.native.opencode.registrationFile;
+  const claudeBin = process.env.NATIVE_CLAUDE_BIN ?? ambient.config.native.claude.executable;
   const configPath = join(root, "app.config.json");
   writeFileSync(configPath, `${JSON.stringify({ format: "sane-app-config", version: 1, dataDir, defaultExecutionCwd: repoDir,
     server: { host: "127.0.0.1", port: 0, publicOrigin: null, allowRemote: false }, maxConcurrentRuns: 16,
@@ -138,20 +136,20 @@ async function bootApp(tag: string, workstreamId: string): Promise<{ app: TestAp
   const workspaceId = reg.body?.workspaceId ?? reg.body?.workspace?.workspaceId ?? reg.body?.id;
   if (reg.status !== 201 || typeof workspaceId !== "string" || !workspaceId) {
     await handle.close();
-    throw new Error(`C9: disposable workspace registration failed: ${reg.status} ${JSON.stringify(reg.body)?.slice(0, 800)}`);
+    throw new Error(`native-test: disposable workspace registration failed: ${reg.status} ${JSON.stringify(reg.body)?.slice(0, 800)}`);
   }
   const qs = new URLSearchParams({ workspaceId }).toString();
   await api(origin, `/api/workstreams/inspect?${qs}`, { headers: { origin } });
   const init = await api(origin, `/api/workstreams/init?${qs}`, { method: "POST", headers, body: "{}" });
   if (init.status !== 200 && init.status !== 201) {
     await handle.close();
-    throw new Error(`C9: workstream init failed: ${init.status} ${JSON.stringify(init.body)?.slice(0, 800)}`);
+    throw new Error(`native-test: workstream init failed: ${init.status} ${JSON.stringify(init.body)?.slice(0, 800)}`);
   }
   const created = await api(origin, `/api/workstreams?${qs}`, { method: "POST", headers,
-    body: JSON.stringify({ id: workstreamId, title: `C9 ${tag} disposable`, type: "feature", defaultCheckout: repoDir }) });
+    body: JSON.stringify({ id: workstreamId, title: `integration  disposable`, type: "feature", defaultCheckout: repoDir }) });
   if (created.status !== 200 && created.status !== 201) {
     await handle.close();
-    throw new Error(`C9: workstream create failed: ${created.status} ${JSON.stringify(created.body)?.slice(0, 800)}`);
+    throw new Error(`native-test: workstream create failed: ${created.status} ${JSON.stringify(created.body)?.slice(0, 800)}`);
   }
   record({ kind: "app-boot", tag, originHost: "127.0.0.1", workstreamId });
   return { app: { origin, dataDir, repoDir, workspaceId, workstreamId, ccProfile, ocRegistration, claudeBin, root, close: () => handle.close() }, options };
@@ -160,26 +158,26 @@ async function bootApp(tag: string, workstreamId: string): Promise<{ app: TestAp
 async function admissionOf(app: TestApp, sessionId: string): Promise<any> {
   const res = await api(app.origin, "/api/sessions", { headers: { origin: app.origin } });
   const found = (res.body?.sessions as any[])?.find((s) => s?.sessionId === sessionId);
-  if (!found?.admission) throw new Error(`C9: no durable admission for ${sessionId}: ${JSON.stringify(res.body)?.slice(0, 500)}`);
+  if (!found?.admission) throw new Error(`native-test: no durable admission for ${sessionId}: ${JSON.stringify(res.body)?.slice(0, 500)}`);
   return found.admission;
 }
 function senderRef(admission: any): { authorityId: string; nativeId: string; harness: "oc" | "cc" } {
   const harness = admission?.source?.descriptor?.harness;
   if ((harness !== "oc" && harness !== "cc") || typeof admission?.source?.authorityId !== "string" || typeof admission?.nativeId !== "string") {
-    throw new Error(`C9: admission lacks qualified native identity: ${JSON.stringify(admission)?.slice(0, 500)}`);
+    throw new Error(`native-test: admission lacks qualified native identity: ${JSON.stringify(admission)?.slice(0, 500)}`);
   }
   return { authorityId: admission.source.authorityId, nativeId: admission.nativeId, harness };
 }
 async function managePhase(app: TestApp, operation: "associate" | "phase/assign", body: Record<string, unknown>): Promise<void> {
   const qs = new URLSearchParams({ workspaceId: app.workspaceId }).toString();
   const res = await api(app.origin, `/api/workstreams/${operation}?${qs}`, { method: "POST", headers: appHeaders(app.origin), body: JSON.stringify(body) });
-  if (res.status !== 200) throw new Error(`C9: ${operation} failed: ${res.status} ${JSON.stringify(res.body)?.slice(0, 500)}`);
+  if (res.status !== 200) throw new Error(`native-test: ${operation} failed: ${res.status} ${JSON.stringify(res.body)?.slice(0, 500)}`);
 }
 function markerPrompt(marker: string, opts: { slowSeconds?: number; pinPermission?: boolean } = {}): string {
   const steps = [`print exactly ${marker} on its own line`];
   if (opts.slowSeconds) steps.unshift(`run the shell command \`sleep ${opts.slowSeconds}\` to completion`);
   if (opts.pinPermission) steps.unshift("request permission to run the sleep command and wait for the decision");
-  return [`C9 marker task ${marker}.`, `Do exactly the following steps in order: ${steps.join("; ")}.`,
+  return [`integration marker task ${marker}.`, `Do exactly the following steps in order: ${steps.join("; ")}.`,
     "Execute only these commands, do not deviate, do not approve anything, do not send any handoff.",
     `End your turn immediately after reporting the marker (at most ${MAX_TURNS_PER_HANDOFF} agent turns).`].join("\n");
 }
@@ -190,14 +188,14 @@ async function startSession(app: TestApp, opts: { prompt: string; harness: "open
       ...(opts.model ? { model: opts.model } : {}), ...(opts.effort ? { effort: opts.effort } : {}),
       ...(opts.sessionId ? { sessionId: opts.sessionId } : {}) }) });
   if (res.status !== 202 || typeof res.body?.sessionId !== "string" || typeof res.body?.runId !== "string") {
-    throw new Error(`C9: session start refused (${opts.label}): ${res.status} ${JSON.stringify(res.body)?.slice(0, 800)}`);
+    throw new Error(`native-test: session start refused (${opts.label}): ${res.status} ${JSON.stringify(res.body)?.slice(0, 800)}`);
   }
   record({ kind: "session-start", label: opts.label, harness: opts.harness, sessionId: res.body.sessionId, runId: res.body.runId });
   return { sessionId: res.body.sessionId as string, runId: res.body.runId as string };
 }
 async function runsOf(app: TestApp, sessionId: string): Promise<any[]> {
   const res = await api(app.origin, `/api/sessions/${encodeURIComponent(sessionId)}/runs`, { headers: { origin: app.origin } });
-  if (!Array.isArray(res.body?.runs)) throw new Error(`C9: runs unavailable for ${sessionId}: ${res.status}`);
+  if (!Array.isArray(res.body?.runs)) throw new Error(`native-test: runs unavailable for ${sessionId}: ${res.status}`);
   return res.body.runs;
 }
 async function awaitRun(app: TestApp, sessionId: string, runId: string, timeoutMs: number): Promise<any> {
@@ -208,17 +206,17 @@ async function awaitRun(app: TestApp, sessionId: string, runId: string, timeoutM
     if (last && last.status !== "running") return last;
     await Bun.sleep(5000);
   }
-  throw new Error(`C9: run ${runId} did not settle: ${JSON.stringify(last)?.slice(0, 500)}`);
+  throw new Error(`native-test: run ${runId} did not settle: ${JSON.stringify(last)?.slice(0, 500)}`);
 }
 async function runEvents(app: TestApp, runId: string): Promise<any[]> {
   const res = await api(app.origin, `/api/runs/${encodeURIComponent(runId)}/events?after=0`, { headers: { origin: app.origin } });
-  if (!Array.isArray(res.body?.events)) throw new Error(`C9: events unavailable for ${runId}: ${res.status}`);
+  if (!Array.isArray(res.body?.events)) throw new Error(`native-test: events unavailable for ${runId}: ${res.status}`);
   return res.body.events;
 }
 async function enqueueHandoff(app: TestApp, sender: { authorityId: string; nativeId: string; harness: "oc" | "cc" }, input: Record<string, unknown>): Promise<{ status: number; body: any }> {
   const record = JSON.parse(readFileSync(join(app.dataDir, "native-handoff.json"), "utf8")) as { url?: unknown; token?: unknown };
   if (typeof record.url !== "string" || typeof record.token !== "string" || !record.url || !record.token) {
-    throw new Error("C9: native handoff record missing url/token; bridge did not publish its native endpoint");
+    throw new Error("native-test: native handoff record missing url/token; bridge did not publish its native endpoint");
   }
   const caller = { version: 1, repository: app.repoDir,
     source: sender.harness === "oc"
@@ -231,12 +229,12 @@ async function enqueueHandoff(app: TestApp, sender: { authorityId: string; nativ
 async function listHandoffs(app: TestApp): Promise<any[]> {
   const qs = new URLSearchParams({ workspaceId: app.workspaceId }).toString();
   const res = await api(app.origin, `/api/handoffs?${qs}`, { headers: { origin: app.origin } });
-  if (!Array.isArray(res.body?.handoffs)) throw new Error(`C9: handoff list unavailable: ${res.status}`);
+  if (!Array.isArray(res.body?.handoffs)) throw new Error(`native-test: handoff list unavailable: ${res.status}`);
   return res.body.handoffs;
 }
 function handoffById(list: any[], id: string): any {
   const h = list.find((x) => x?.id === id);
-  if (!h) throw new Error(`C9: handoff ${id} absent from durable domain list`);
+  if (!h) throw new Error(`native-test: handoff ${id} absent from durable domain list`);
   return h;
 }
 async function awaitHandoff(app: TestApp, id: string, timeoutMs: number): Promise<any> {
@@ -247,7 +245,7 @@ async function awaitHandoff(app: TestApp, id: string, timeoutMs: number): Promis
     if (last.status === "completed" || last.status === "failed") return last;
     await Bun.sleep(5000);
   }
-  throw new Error(`C9: handoff ${id} did not settle: ${JSON.stringify(last)?.slice(0, 500)}`);
+  throw new Error(`native-test: handoff ${id} did not settle: ${JSON.stringify(last)?.slice(0, 500)}`);
 }
 async function chargeOnDelivery(app: TestApp, handoffId: string, recipientSessionId: string, label: string, timeoutMs: number): Promise<string> {
   const deadline = Date.now() + timeoutMs;
@@ -259,22 +257,22 @@ async function chargeOnDelivery(app: TestApp, handoffId: string, recipientSessio
       record({ kind: "delivery-start", label, handoffId, runId, recipientSessionId, status: h.status });
       return runId;
     }
-    if (h.status === "failed") throw new Error(`C9: handoff ${handoffId} failed before delivery: ${JSON.stringify(h)?.slice(0, 500)}`);
+    if (h.status === "failed") throw new Error(`native-test: handoff ${handoffId} failed before delivery: ${JSON.stringify(h)?.slice(0, 500)}`);
     await Bun.sleep(2000);
   }
-  throw new Error(`C9: handoff ${handoffId} never reached native delivery`);
+  throw new Error(`native-test: handoff ${handoffId} never reached native delivery`);
 }
 
 let ctx: { app: TestApp; options: Options } | undefined;
 function mustCtx(): { app: TestApp; options: Options } {
-  if (!ctx) throw new Error("C9: disposable App is not booted (r00 must run first)");
+  if (!ctx) throw new Error("native-test: disposable App is not booted (r00 must run first)");
   return ctx;
 }
 let sSelf = "";
 let hRestartId = "";
 let reqRestart = "";
 
-describe.serial("C9 native recovery: restart, uncertainty, attachment, failed shutdown, child callers", () => {
+describe.serial("native recovery: restart, uncertainty, attachment, failed shutdown, child callers", () => {
   let seen = 0;
   beforeEach(async () => {
     if (seen++ > 0 && INTER_TEST_DELAY_MS > 0) await Bun.sleep(INTER_TEST_DELAY_MS);
@@ -282,23 +280,23 @@ describe.serial("C9 native recovery: restart, uncertainty, attachment, failed sh
   afterAll(async () => {
     const root = ctx?.app.root;
     try {
-      const dir = process.env.C9_EVIDENCE_DIR ?? (root ? join(root, "evidence") : null);
+      const dir = process.env.NATIVE_EVIDENCE_DIR ?? (root ? join(root, "evidence") : null);
       if (dir) {
         const { mkdirSync: mkdir } = await import("node:fs");
         mkdir(dir, { recursive: true });
-        writeFileSync(join(dir, "c9-native-recovery.json"), `${JSON.stringify({ turns: chargedTurns, budget: TURN_BUDGET, faultHooks: HAS_FAULT_HOOKS, faultNames: FAULT_NAMES, evidence }, null, 2)}\n`);
+        writeFileSync(join(dir, "native-recovery.json"), `${JSON.stringify({ turns: chargedTurns, budget: TURN_BUDGET, faultHooks: HAS_FAULT_HOOKS, faultNames: FAULT_NAMES, evidence }, null, 2)}\n`);
       }
     } finally {
       try { await ctx?.app.close(); } catch { /* close failure is evidence, not cleanup */ }
       ctx = undefined;
-      if (process.env.C9_KEEP_FIXTURES !== "1" && root) {
+      if (process.env.NATIVE_KEEP_FIXTURES !== "1" && root) {
         try { rmSync(root, { recursive: true, force: true }); } catch { /* best effort */ }
       }
     }
   }, QUICK_TIMEOUT_MS);
 
   test("r00 boot disposable App and verify installed OC model catalog", async () => {
-    const wsId = `c9-recovery-${randomUUID().slice(0, 8)}`;
+    const wsId = `itest-recovery-${randomUUID().slice(0, 8)}`;
     ctx = await bootApp("recovery", wsId);
     const models = await api(ctx.app.origin, `/api/harnesses/opencode/models?cwd=${encodeURIComponent(ctx.app.repoDir)}`, { headers: { origin: ctx.app.origin } });
     const ids = Array.isArray(models.body?.models) ? (models.body.models as any[]).map((m) => m?.id).filter((id): id is string => typeof id === "string") : [];
@@ -310,7 +308,7 @@ describe.serial("C9 native recovery: restart, uncertainty, attachment, failed sh
     } else {
       const resolved = ids.includes(OC_MODEL) ? OC_MODEL : (ids.find((id) => id.endsWith("muse-spark-1.3-contributor")) ?? ids.find((id) => id.includes("muse-spark-1.3-contributor")));
       if (!resolved) {
-        throw new Error(`C9: no muse-spark-1.3-contributor suffix match in OC catalog: ${JSON.stringify(ids.slice(0, 50))}`);
+        throw new Error(`native-test: no muse-spark-1.3-contributor suffix match in OC catalog: ${JSON.stringify(ids.slice(0, 50))}`);
       }
       resolvedOcModel = resolved;
       record({ kind: "model-catalog", ocModel: OC_MODEL, ocResolvedModel: resolvedOcModel, ocCatalogHit: true, ocCatalogEmpty: false, faultHooks: HAS_FAULT_HOOKS, faultNames: FAULT_NAMES });
@@ -334,9 +332,9 @@ describe.serial("C9 native recovery: restart, uncertainty, attachment, failed sh
     const sender = senderRef(await admissionOf(app, sSelf));
     const started = await startSession(app, { sessionId: sSelf, prompt: markerPrompt("RESTART-SLOW-OK", { slowSeconds: 200 }), harness: "opencode", label: "r01-slow-run" });
     expect(started.sessionId).toBe(sSelf);
-    reqRestart = `c9-restart-${randomUUID()}`;
+    reqRestart = `itest-restart-${randomUUID()}`;
     const enq = await enqueueHandoff(app, sender, { requestId: reqRestart, to: "execution", message: markerPrompt("RESTART-DELIVERY-OK") });
-    if (enq.status !== 202) throw new Error(`C9: restart enqueue refused: ${enq.status} ${JSON.stringify(enq.body)?.slice(0, 800)}`);
+    if (enq.status !== 202) throw new Error(`native-test: restart enqueue refused: ${enq.status} ${JSON.stringify(enq.body)?.slice(0, 800)}`);
     expect(enq.status).toBe(202);
     hRestartId = enq.body?.handoff?.id;
     expect(typeof hRestartId).toBe("string");
@@ -380,9 +378,9 @@ describe.serial("C9 native recovery: restart, uncertainty, attachment, failed sh
     process.env.SANE_TEST_FAULT = ACCEPTANCE_FAULT;
     try {
       const sender = senderRef(await admissionOf(app, sSelf));
-      const requestId = `c9-uncertain-${randomUUID()}`;
+      const requestId = `itest-uncertain-${randomUUID()}`;
       const enq = await enqueueHandoff(app, sender, { requestId, to: "execution", message: markerPrompt("UNCERTAIN-DELIVERY-OK"), createNew: true, harness: "oc", checkout: app.repoDir });
-      if (enq.status !== 202) throw new Error(`C9: uncertain enqueue refused: ${enq.status} ${JSON.stringify(enq.body)?.slice(0, 800)}`);
+      if (enq.status !== 202) throw new Error(`native-test: uncertain enqueue refused: ${enq.status} ${JSON.stringify(enq.body)?.slice(0, 800)}`);
       expect(enq.status).toBe(202);
       const hid = enq.body?.handoff?.id;
       const deadline = Date.now() + 180000;
@@ -391,7 +389,7 @@ describe.serial("C9 native recovery: restart, uncertainty, attachment, failed sh
         stuck = handoffById(await listHandoffs(app), hid);
         if (stuck.status === "acceptance_unknown") break;
         if (stuck.status === "completed" || stuck.status === "failed") {
-          throw new Error(`C9: fault ${ACCEPTANCE_FAULT} did not engage; handoff settled to ${stuck.status}. Align the Phase 1 hook name with this suite (detected: ${JSON.stringify(FAULT_NAMES)})`);
+          throw new Error(`native-test: fault ${ACCEPTANCE_FAULT} did not engage; handoff settled to ${stuck.status}. Align the Phase 1 hook name with this suite (detected: ${JSON.stringify(FAULT_NAMES)})`);
         }
         await Bun.sleep(2000);
       }
@@ -427,7 +425,7 @@ describe.serial("C9 native recovery: restart, uncertainty, attachment, failed sh
     const childMarker = "ATTACH-CHILD-OK";
     chargeTurns(1, "r04-external-child-hop");
     const admitted = await oc.prompt(childNativeId, commandId, [
-      `C9 marker task ${parentMarker}.`,
+      `integration marker task ${parentMarker}.`,
       `Do exactly the following steps in order: spawn one subagent to print exactly ${childMarker} on its own line; print exactly ${parentMarker} on its own line.`,
       "Execute only these commands, do not deviate, do not approve anything, do not send any handoff.",
       `End your turn immediately after reporting (at most ${MAX_TURNS_PER_HANDOFF} agent turns).`,
@@ -514,14 +512,14 @@ describe.serial("C9 native recovery: restart, uncertainty, attachment, failed sh
     const { app } = mustCtx();
     await app.close();
     ctx = undefined;
-    const parentDir = realpathSync(mkdtempSync(join(tmpdir(), "c9-r06-")));
+    const parentDir = realpathSync(mkdtempSync(join(tmpdir(), "itest-r06-")));
     const childData = join(parentDir, "appdata");
     mkdirSync(childData, { recursive: true });
     const childFile = join(parentDir, "c6-child.ts");
     writeFileSync(childFile, [
       `import { validateOwnershipPaths, acquireInstallation, acquireData } from ${JSON.stringify(join(PKG_DIR, "src", "installation-ownership.ts"))};`,
-      "const packageDir = process.env.C9_CHILD_PKG as string;",
-      "const dataDir = process.env.C9_CHILD_DATA as string;",
+      "const packageDir = process.env.NATIVE_CHILD_PKG as string;",
+      "const dataDir = process.env.NATIVE_CHILD_DATA as string;",
       "const paths = validateOwnershipPaths(packageDir, dataDir);",
       `process.env.SANE_TEST_FAULT = ${JSON.stringify(SHUTDOWN_FAULT)};`,
       'const installation = acquireInstallation(paths, { phase: "serving" });',
@@ -531,7 +529,7 @@ describe.serial("C9 native recovery: restart, uncertainty, attachment, failed sh
       "",
     ].join("\n"));
     const child = Bun.spawn([process.execPath, childFile], {
-      env: { ...process.env, C9_CHILD_PKG: PKG_DIR, C9_CHILD_DATA: childData },
+      env: { ...process.env, NATIVE_CHILD_PKG: PKG_DIR, NATIVE_CHILD_DATA: childData },
       stdout: "ignore", stderr: "ignore",
     });
     const childPid = child.pid;

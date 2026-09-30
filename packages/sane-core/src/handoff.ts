@@ -1,5 +1,6 @@
 import type { HandoffInput } from "./contracts.ts"
 import { DomainError } from "./errors.ts"
+import { SUPPORTED_WORKSTREAM_TYPES, isSupportedWorkstreamType } from "./workstream-type.ts"
 
 export const handoffSchema = {
   type: "object", properties: {
@@ -7,6 +8,7 @@ export const handoffSchema = {
     to: { type: "string", minLength: 1 }, message: { type: "string", minLength: 1, maxLength: 32000 },
     target: { type: "object", properties: { harness: { enum: ["cc", "oc"] }, authorityId: { type: "string" }, nativeId: { type: "string" } }, required: ["harness", "authorityId", "nativeId"], additionalProperties: false },
     createNew: { type: "boolean" }, harness: { enum: ["cc", "oc"] }, checkout: { type: "string" },
+    kickoff: { type: "object", properties: { workstream: { type: "string", pattern: "^[a-z0-9][a-z0-9_-]{0,95}$" }, title: { type: "string", minLength: 1, maxLength: 200 }, type: { enum: [...SUPPORTED_WORKSTREAM_TYPES] } }, required: ["workstream", "title", "type"], additionalProperties: false },
   }, required: ["requestId", "to", "message"], additionalProperties: false,
 } as const
 
@@ -25,5 +27,12 @@ export function handoffInput(input: unknown): HandoffInput {
     target = { harness: t.harness, authorityId: t.authorityId, nativeId: t.nativeId }
   }
   if (v.createNew ? !!target || !v.harness : v.harness !== undefined || v.checkout !== undefined) return invalid()
-  return { requestId: v.requestId, to: v.to as HandoffInput["to"], message: v.message, ...(target ? { target } : {}), ...(v.createNew ? { createNew: true, harness: v.harness as HandoffInput["harness"], ...(v.checkout ? { checkout: v.checkout as string } : {}) } : {}) }
+  let kickoff: HandoffInput["kickoff"]
+  if (v.kickoff !== undefined) {
+    if (!v.kickoff || typeof v.kickoff !== "object" || Array.isArray(v.kickoff) || !v.createNew || v.to !== "design") return invalid()
+    const k = v.kickoff as Record<string, unknown>
+    if (Object.keys(k).length !== 3 || typeof k.workstream !== "string" || !/^[a-z0-9][a-z0-9_-]{0,95}$/.test(k.workstream) || !text(k.title, 200) || !isSupportedWorkstreamType(k.type)) return invalid()
+    kickoff = { workstream: k.workstream, title: k.title, type: k.type }
+  }
+  return { requestId: v.requestId, to: v.to as HandoffInput["to"], message: v.message, ...(target ? { target } : {}), ...(v.createNew ? { createNew: true, harness: v.harness as HandoffInput["harness"], ...(v.checkout ? { checkout: v.checkout as string } : {}) } : {}), ...(kickoff ? { kickoff } : {}) }
 }

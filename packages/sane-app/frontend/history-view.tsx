@@ -2,6 +2,7 @@ import { useDeferredValue, useEffect, useMemo, useRef, useState, useSyncExternal
 import { catalog } from "./catalog";
 import { store, type State } from "./store";
 import { active, harnessName, harnessShort, type SearchHit } from "./types";
+import { AgentAvatar } from "./agent-visuals";
 import { defaultFilterFor, filterConversations, formatTitle } from "./conversation-filter";
 import { buildWorkstreamMap, ConversationFilterDialog } from "./conversation-filter-dialog";
 import { AttachConversation } from "./attach-conversation";
@@ -10,6 +11,8 @@ import { Facts } from "./thread";
 import { loadWorkstreams } from "./workstreams-client";
 import type { WorkstreamOverview } from "../src/workstreams-contract";
 import { worktreeDisplay, worktreeLabel } from "./catalog-selector";
+import { workerReference as knownWorker, knownWorker as hydratedWorker, openWorkerSession, useWorkerDiscovery, useWorkerPolling } from "./worker-client";
+import { WorkerCard, WorkerSection } from "./worker-ui";
 
 const basename = (path?: string | null) => path?.split("/").filter(Boolean).at(-1) || path || "Conversation";
 
@@ -102,6 +105,8 @@ export function HistoryView({ state, onChoose }: { state: State; onChoose: (id: 
 }
 
 function useHistoryData(state: State) {
+  useWorkerDiscovery();
+  const [workerFilter, setWorkerFilter] = useState<"all" | "workers" | "conversations">("all");
   const repository = useSyncExternalStore(catalog.subscribe, catalog.snapshot);
   const nav = repository.navigation;
   const [filter, setFilter] = useState(() => defaultFilterFor(nav.workspaceId, nav.worktreeId));
@@ -119,14 +124,16 @@ function useHistoryData(state: State) {
   }, [repository.workspaces, nav.workspaceId]);
   const activeFilterCount = (filter.harness !== "all" ? 1 : 0) + (filter.status !== "all" ? 1 : 0) + (filter.workstreamId !== "all" ? 1 : 0) + (filter.phase !== "all" ? 1 : 0) + (filter.showDeleted ? 1 : 0)
     + (filter.workspaceId === nav.workspaceId && filter.worktreeId === nav.worktreeId ? 0 : 1);
-  return { repository, nav, filter, setFilter, dialogOpen, setDialogOpen, overview, workstreamMap, visible, hits, groups, activeFilterCount };
+  const matchesWorker = (id: string) => workerFilter === "all" || (workerFilter === "workers" ? !!knownWorker(id) : !knownWorker(id));
+  return { repository, nav, filter, setFilter, dialogOpen, setDialogOpen, overview, workstreamMap, visible: visible.filter(c => matchesWorker(c.id)), hits: hits.filter(h => matchesWorker(h.sessionId)), groups, activeFilterCount, workerFilter, setWorkerFilter };
 }
 
 /** Sidebar session list for the History tab: preview-only, never opens chat. */
 export function HistoryList({ state, previewId, onPreview }: { state: State; previewId: string | null; onPreview: (id: string) => void }) {
-  const { nav, filter, setFilter, dialogOpen, setDialogOpen, overview, workstreamMap, visible, hits, groups, activeFilterCount } = useHistoryData(state);
+  const { nav, filter, setFilter, dialogOpen, setDialogOpen, overview, workstreamMap, visible, hits, groups, activeFilterCount, workerFilter, setWorkerFilter } = useHistoryData(state);
   const repository = useSyncExternalStore(catalog.subscribe, catalog.snapshot);
   return <>
+    <label className="history-search">Session type<select value={workerFilter} onChange={e => setWorkerFilter(e.target.value as typeof workerFilter)}><option value="all">All sessions</option><option value="conversations">Conversations</option><option value="workers">Workers</option></select></label>
     <div className="history-search-row">
       <label className="history-search"><span className="sr-only">Search sessions</span><input value={filter.query} onChange={e => setFilter({ ...filter, query: e.target.value })} placeholder="Search sessions" maxLength={200} /></label>
       <button type="button" className="history-filter-button" aria-label="Open session filters" title="Filter sessions" onClick={() => setDialogOpen(true)}>Filter{activeFilterCount ? ` · ${activeFilterCount}` : ""}</button>
@@ -145,7 +152,7 @@ export function HistoryList({ state, previewId, onPreview }: { state: State; pre
         const workspaceLabel = workspaceName ?? (c.association === "resolved" ? basename(c.cwd) : "Unavailable");
         const selected = previewId === c.id;
         const phases = membership?.phases ?? [];
-        return <div className="history-row" key={c.id}><button type="button" className={selected ? "selected" : ""} aria-current={selected ? "page" : undefined} onClick={() => onPreview(c.id)} title={c.title ? `${c.title}\n${c.cwd}` : c.cwd}><span className="history-line"><span className="history-title">{formatTitle(c.title, basename(c.cwd))}</span>{c.hidden && <span className="harness-badge">Hidden</span>}</span><span className="history-line"><span className="harness-badge" title={harnessName(c.harness)}>{harnessShort(c.harness)}</span><span className="harness-badge workspace-badge" title={c.cwd}>{workspaceLabel}</span>{membership?.workstreamId && <WorkstreamBadge workstreamId={membership.workstreamId} phases={membership.phases} />}{!phases.length && <StatusIcon status={c.status} />}</span>{!!phases.length && <span className="history-line">{phases.map(phase => <PhaseBadge key={phase} phase={phase} />)}<StatusIcon status={c.status} /></span>}</button><ConversationMenu conversationId={c.id} hidden={c.hidden} disabled={state.actionBusy} /></div>;
+        return <div className="history-row" key={c.id}><button type="button" className={selected ? "selected" : ""} aria-current={selected ? "page" : undefined} onClick={() => onPreview(c.id)} title={c.title ? `${c.title}\n${c.cwd}` : c.cwd}><span className="history-line"><span className="history-title">{formatTitle(c.title, basename(c.cwd))}</span>{knownWorker(c.id) && <span className="harness-badge">Worker</span>}{c.hidden && <span className="harness-badge">Hidden</span>}</span><span className="history-line">{(() => { const profile = store.profileFor(c); return profile?.kind === "assistant" ? <span className="agent-row-avatar" title={profile.label}><AgentAvatar profile={profile} size={16} /></span> : null; })()}<span className="harness-badge" title={harnessName(c.harness)}>{harnessShort(c.harness)}</span><span className="harness-badge workspace-badge" title={c.cwd}>{workspaceLabel}</span>{membership?.workstreamId && <WorkstreamBadge workstreamId={membership.workstreamId} phases={membership.phases} />}{!phases.length && <StatusIcon status={c.status} />}</span>{!!phases.length && <span className="history-line">{phases.map(phase => <PhaseBadge key={phase} phase={phase} />)}<StatusIcon status={c.status} /></span>}</button><ConversationMenu conversationId={c.id} hidden={c.hidden} disabled={state.actionBusy} /></div>;
       })}</section>;
     })}{!visible.length && <p className="muted history-empty">No sessions in this selection.</p>}</nav>
   </>;
@@ -190,6 +197,11 @@ function usePreviewRuns(previewId: string | null): { runs: PreviewRun[]; loading
 
 /** Main-panel session metadata for the History tab. Preview-only until Open in Chat. */
 export function HistoryDetail({ state, previewId, onOpen }: { state: State; previewId: string | null; onOpen: (id: string) => void }) {
+  useWorkerPolling(previewId !== state.selected ? previewId : null);
+  useWorkerDiscovery();
+  const worker = previewId ? knownWorker(previewId) : undefined;
+  useWorkerPolling(worker?.parent.sessionId && worker.parent.sessionId !== state.selected ? worker.parent.sessionId : null);
+  const record = previewId ? hydratedWorker(previewId) : undefined;
   const repository = useSyncExternalStore(catalog.subscribe, catalog.snapshot);
   const conversation = state.conversations.find(c => c.id === previewId) ?? null;
   const overview = useWorkstreamOverview(conversation?.workspaceId ?? null);
@@ -200,9 +212,12 @@ export function HistoryDetail({ state, previewId, onOpen }: { state: State; prev
   const worktree = workspace?.worktrees.find(t => t.worktreeId === conversation.worktreeId);
   const lastActivity = runs[0]?.endedAt || runs[0]?.createdAt || "";
   return <section className="history-detail" aria-label="Session preview">
-    <p className="eyebrow">SESSION PREVIEW</p>
+    <p className="eyebrow">{worker ? "WORKER SESSION · READ-ONLY" : "SESSION PREVIEW"}</p>
+    {worker && <p><button type="button" onClick={() => { if (knownWorker(worker.parent.sessionId)) void openWorkerSession(worker.parent.sessionId); else onOpen(worker.parent.sessionId); }}>Parent conversation</button> · Parent run {worker.parent.runId}</p>}
     <div className="history-detail-header"><h2 title={conversation.title || undefined}>{formatTitle(conversation.title, basename(conversation.cwd))}</h2><span className={`status ${conversation.status}`}>{conversation.status}</span>{conversation.hidden && <span className="harness-badge">Hidden</span>}</div>
-    <div className="history-detail-actions"><button type="button" className="primary-button" disabled={state.sending} onClick={() => onOpen(conversation.id)}>Open in Chat</button><button type="button" className="text-button" disabled={state.actionBusy} onClick={() => void (conversation.hidden ? store.unhide(conversation.id) : store.hide(conversation.id))}>{conversation.hidden ? "Unhide" : "Hide"}</button></div>
+    <div className="history-detail-actions"><button type="button" className="primary-button" disabled={state.sending} onClick={() => worker ? void openWorkerSession(conversation.id) : onOpen(conversation.id)}>{worker ? "Open worker read-only" : "Open in Chat"}</button><button type="button" className="text-button" disabled={state.actionBusy} onClick={() => void (conversation.hidden ? store.unhide(conversation.id) : store.hide(conversation.id))}>{conversation.hidden ? "Unhide" : "Hide"}</button></div>
+    {record && <WorkerCard worker={record} />}
+    <WorkerSection sessionId={conversation.id} />
     <Facts values={[
       ["Conversation ID", conversation.id],
       ["Harness", harnessName(conversation.harness)],
@@ -213,6 +228,7 @@ export function HistoryDetail({ state, previewId, onOpen }: { state: State; prev
       ["Worktree state", worktree?.state],
       ["Model", conversation.model || "Native default / unchanged"],
       ["Effort / variant", conversation.effort || "Native default / unchanged"],
+      ["Agent", store.conversationProfile(conversation.id)?.label ?? (conversation.agent || "Base")],
       ["Workstream", membership?.workstreamId ? `${membership.workstreamId}${membership.phases.length ? ` · ${membership.phases.join(", ")}` : ""}` : "Unassigned"],
       ["Association", conversation.association ?? "Unavailable"],
       ["Last run ID", conversation.lastRunId],

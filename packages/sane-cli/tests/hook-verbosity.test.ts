@@ -8,7 +8,7 @@ import { linkNativeCaller, nativeCallerEnvelope, nativeCallerReference, openComp
 import { classifyCaller } from "../src/cli-arguments.ts"
 import { executeCliCommand } from "../src/cli-command.ts"
 
-// C11 Phase 4: per-shell-call hook prefix carries only the compact caller
+// Per-shell-call hook prefix carries only the compact caller
 // reference. Budget: export line stays ≤200B beyond the unset lines.
 const EXPORT_BUDGET = 200
 const UNSET_LINE = "unset SANE_SESSION_ID OPENCODE_SESSION_ID\n"
@@ -32,9 +32,9 @@ function hookPrefix(payload: string, command: string): string {
   return `export SANE_CALLER_CONTEXT=${quote(payload)}\n${UNSET_LINE}${command}`
 }
 
-describe("C11 Phase 4: shell-hook caller reference verbosity", () => {
+describe("shell-hook caller reference verbosity", () => {
   test("hook prefix fits budget, carries harness + nativeId, drops paths and authority", () => {
-    const root = mkdtempSync(join(tmpdir(), "sane-c11-hook-"))
+    const root = mkdtempSync(join(tmpdir(), "sane-t-hook-"))
     try {
       const { repo, caller } = seedRepo(root)
       linkNativeCaller(caller, { slot: "design", workstream: "native" })
@@ -53,7 +53,7 @@ describe("C11 Phase 4: shell-hook caller reference verbosity", () => {
   })
 
   test("compact reference round-trips through classifyCaller with session checks", () => {
-    const root = mkdtempSync(join(tmpdir(), "sane-c11-hook-"))
+    const root = mkdtempSync(join(tmpdir(), "sane-t-hook-"))
     try {
       const { caller } = seedRepo(root)
       linkNativeCaller(caller, { slot: "design", workstream: "native" })
@@ -69,7 +69,7 @@ describe("C11 Phase 4: shell-hook caller reference verbosity", () => {
   })
 
   test("compact reference resolves server-side and drives CLI qualification", async () => {
-    const root = mkdtempSync(join(tmpdir(), "sane-c11-hook-"))
+    const root = mkdtempSync(join(tmpdir(), "sane-t-hook-"))
     try {
       const { repo, caller } = seedRepo(root)
       linkNativeCaller(caller, { slot: "design", workstream: "native" })

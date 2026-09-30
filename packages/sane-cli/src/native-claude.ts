@@ -4,7 +4,7 @@ import { isAbsolute, join } from "node:path"
 import { DomainError, normalizeNativeSource } from "../../sane-core/src/server.ts"
 import type { NativeCaller } from "./native-caller.ts"
 
-export const claudeNativeTools = ["sane_link", "sane_context", "sane_handoff", "sane_handoff_status"] as const
+export const claudeNativeTools = ["sane_link", "sane_context", "sane_handoff", "sane_handoff_status", "sane_worker_start", "sane_worker_status", "sane_worker_wait", "sane_worker_acknowledge", "sane_worker_cancel", "sane_worker_cancel_all"] as const
 type ClaudeTool = typeof claudeNativeTools[number]
 function unavailable(): never { throw new DomainError("NATIVE_CONTEXT_UNAVAILABLE", "Claude native caller binding is missing, invalid, expired or already consumed.") }
 function object(input: unknown): Record<string, unknown> {
@@ -29,7 +29,7 @@ export function qualifyClaudeHook(profileRoot: string, input: unknown): NativeCa
   if (hook.hook_event_name !== "PreToolUse" || !text(hook.session_id) || !/^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/i.test(hook.session_id) || !text(hook.cwd) || !isAbsolute(hook.cwd) || !text(hook.tool_use_id)) return unavailable()
   if (hook.agent_id !== undefined) throw new DomainError("NATIVE_CONTEXT_UNAVAILABLE", "Claude child agent identity is not a qualified resumable conversation.")
   const source = normalizeNativeSource({ version: 1, harness: "cc", kind: "local-profile", profileRoot })
-  return { source: source.descriptor, authorityId: source.authorityId, nativeId: hook.session_id, cwd: hook.cwd, ancestors: [], correlationId: `cc:${text(hook.prompt_id) ? hook.prompt_id : hook.session_id}:${hook.tool_use_id}`, ...(text(hook.agent_type) ? { agent: hook.agent_type } : {}) }
+  return { source: source.descriptor, authorityId: source.authorityId, nativeId: hook.session_id, cwd: hook.cwd, ancestors: [], correlationId: `cc:${text(hook.prompt_id) ? hook.prompt_id : hook.session_id}:${hook.tool_use_id}`, invocation: { toolCallId: hook.tool_use_id }, ...(text(hook.agent_type) ? { agent: hook.agent_type } : {}) }
 }
 export function issueClaudeInvocation(root: string, profileRoot: string, input: unknown) {
   const hook = object(input)

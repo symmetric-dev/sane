@@ -16,10 +16,10 @@ const system = (id: string): MutationContext => ({ actor: { kind: "system" }, co
 // next action needs. runId is kept in the enqueue projection — a deviation
 // from the drafted 5-key shape — for delivery correlation.
 export function projectHandoffEnqueue(h: Handoff) {
-  return { requestId: h.input.requestId, id: h.id, to: h.input.to, status: h.status, recipientSessionId: h.recipient.sessionId, runId: h.runId };
+  return { requestId: h.input.requestId, id: h.id, to: h.input.to, status: h.status, recipientSessionId: h.recipient.sessionId, runId: h.runId, ...(h.input.kickoff ? { workstreamId: h.workstreamId } : {}) };
 }
 export function projectHandoffStatus(h: Handoff) {
-  return { id: h.id, status: h.status, revision: h.revision };
+  return { id: h.id, status: h.status, revision: h.revision, ...(h.input.kickoff ? { workstreamId: h.workstreamId } : {}) };
 }
 
 // Legacy-minus-prefix recipient titles. Legacy `readyTitle` named handoff
@@ -80,7 +80,8 @@ export class HandoffService {
       if (JSON.stringify(old.input) !== JSON.stringify(args)) throw new DomainError("CONFLICT", "Request ID is already bound to another handoff payload.");
       return old;
     }
-    const workstream = context.workstream;
+    // Kickoff: sender without a workstream creates one (idempotent per requestId) and never joins it.
+    const workstream = args.kickoff ? (this.assertAvailable(), domain.kickoffWorkstream(ref, args)) : context.workstream;
     if (!workstream) throw new DomainError("INVALID_CONTEXT", "Sender has no workstream.");
     let recipient: HandoffRecipient;
     if (args.createNew) {

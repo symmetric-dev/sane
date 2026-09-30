@@ -1,0 +1,9 @@
+.worker-card { margin:12px 0; padding:14px; border:1px solid var(--border); border-radius:10px; background:var(--card); min-width:0; }
+.worker-card header,.worker-actions { display:flex; align-items:center; flex-wrap:wrap; gap:8px; }
+.worker-card p,.worker-card pre { overflow-wrap:anywhere; white-space:pre-wrap; }
+.worker-card details { margin:10px 0; }
+.worker-section { margin-block:18px; }
+.worker-section h3 { font-size:14px; }
+.worker-transcript { min-width:0; }
+.worker-transcript .message { max-width:100%; }
+.worker-actions button { font-size:12px; }

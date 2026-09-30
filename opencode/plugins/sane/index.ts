@@ -1,17 +1,32 @@
 import { Plugin } from "@opencode/plugin"
-import { qualifyOpenCodeCaller, type OpenCodeToolCaller } from "../../../packages/sane-cli/src/native-opencode.ts"
+import { OpenCodeWorkerInvocations, qualifyOpenCodeCaller, type OpenCodeToolCaller } from "../../../packages/sane-cli/src/native-opencode.ts"
 import { linkNativeCaller, nativeCallerContext, nativeCallerReference, nativeLinkSchema } from "../../../packages/sane-cli/src/native-caller.ts"
 import { handoffNativeCaller, nativeHandoffSchema, nativeHandoffStatusSchema } from "../../../packages/sane-cli/src/native-handoff.ts"
+import { nativeWorkerDescriptions, nativeWorkerOperations, nativeWorkerSchemas } from "../../../packages/sane-cli/src/native-worker-contract.ts"
+import { workerNativeCaller } from "../../../packages/sane-cli/src/native-worker.ts"
 
 export const SanePlugin = Plugin.define({
   id: "sane",
   async setup(ctx) {
     const registration = ctx.options.registrationFile
+    const workerInvocations = new OpenCodeWorkerInvocations()
+    await ctx.tool.hook("execute.before", event => { workerInvocations.before(event) })
+    await ctx.tool.hook("execute.after", event => { workerInvocations.after(event) })
     const qualify = (tool: OpenCodeToolCaller) => {
       if (typeof registration !== "string" || !registration.startsWith("/")) throw new Error("NATIVE_CONTEXT_UNAVAILABLE: configure an explicit absolute registrationFile plugin option.")
       return qualifyOpenCodeCaller(registration, ctx, tool)
     }
+    const qualifyWorker = async (tool: OpenCodeToolCaller, operation: (typeof nativeWorkerOperations)[number]) => {
+      const invocation = workerInvocations.callback(tool, operation)
+      return { ...await qualify(tool), invocation }
+    }
     await ctx.tool.transform(editor => {
+      for (const operation of nativeWorkerOperations) editor.add({
+        name: `sane_worker_${operation}`,
+        description: nativeWorkerDescriptions[operation],
+        input: nativeWorkerSchemas[operation],
+        execute: async (input, tool) => ({ content: JSON.stringify(await workerNativeCaller(await qualifyWorker(tool, operation), operation, input, ctx.options.appConnectionFile as string)) }),
+      })
       for (const status of [false, true]) editor.add({
         name: status ? "sane_handoff_status" : "sane_handoff",
         description: status ? "Read durable handoff status by the sender's requestId." : "Durably queue an asynchronous handoff through the running App. Reuse requestId for admission recovery. Returns without waiting for recipient execution or reply. Exact target selects a linked recipient; createNew requires harness and explicit checkout or validated default.",
@@ -43,6 +58,7 @@ export const SanePlugin = Plugin.define({
       const quote = (value: string) => `'${value.replaceAll("'", "'\\''")}'`
       event.input = { ...input, command: `export SANE_CALLER_CONTEXT=${quote(reference)}\nunset SANE_SESSION_ID OPENCODE_SESSION_ID\n${input.command}` }
     })
+    return () => workerInvocations.clear()
   },
 })
 

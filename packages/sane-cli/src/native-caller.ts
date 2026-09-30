@@ -10,6 +10,8 @@ export interface NativeCaller {
   correlationId: string
   ancestors: { nativeId: string; cwd: string }[]
   agent?: string
+  /** Trusted callback/hook fields; never recovered by splitting correlationId. */
+  invocation?: import("./native-worker-contract.ts").NativeWorkerInvocation
 }
 
 export function openNativeCaller(caller: NativeCaller, enroll = false) {

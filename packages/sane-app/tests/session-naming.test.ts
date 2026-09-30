@@ -1,5 +1,5 @@
 /**
- * C11 — handoff-created recipient session titles (pure, no server boot).
+ * Handoff-created recipient session titles (pure, no server boot).
  *
  * When a handoff creates a new recipient session, it is titled `<Role> #<n>`
  * (e.g. `Engineering #2`): legacy `readyTitle` counting (1-based position in
@@ -14,7 +14,7 @@ import { validateMetadata } from "../src/history";
 
 const assignment = (id: string, phase: string, startedAt: string): SlotAssignment => ({ id, phase, startedAt });
 
-describe("C11 recipient session naming", () => {
+describe("recipient session naming", () => {
   test("title format is `<Role> #<n>`", () => {
     expect(handoffRecipientTitle("engineering", 2)).toBe("Engineering #2");
     expect(handoffRecipientTitle("design", 1)).toBe("Design #1");

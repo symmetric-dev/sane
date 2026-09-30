@@ -1,16 +1,15 @@
 /**
- * C9 Phase 2 — real-agent native handoff integration.
+ * Real-agent native handoff integration.
  * File 1: four-direction baseline + targeting/idempotency + scheduling/cancellation.
  *
- * Contract sources: docs/sane-app/ongoing/C9-PLAN.md, docs/sane-app/ongoing/C8-QUESTIONS.md
- * ("Deferred real-native integration tests"), packages/sane-app/src/bridge.ts,
- * packages/sane-core/src/schema.ts (handoffs 95-112) + server.ts (226-278).
+ * Contract sources: packages/sane-app/src/bridge.ts,
+ * packages/sane-core/src/schema.ts (handoffs) + server.ts.
  *
  * Rules enforced here:
  * - Serial only: top-level describe.serial; a 45s sleep runs between tests
- *   (INTER_TEST_DELAY_MS, env C9_INTER_TEST_DELAY_MS). Never parallel.
+ *   (INTER_TEST_DELAY_MS, env NATIVE_INTER_TEST_DELAY_MS). Never parallel.
  * - Models: OC opencode-go/muse-spark-1.3-contributor (high variant), verified against
- *   the installed model catalog at runtime. CC C9_CC_MODEL when set, else the
+ *   the installed model catalog at runtime. CC NATIVE_CC_MODEL when set, else the
  *   installed CLI default model (no --model flag); explicit failure when unavailable.
  * - Narrow marker prompts (HANDOFF-*-OK): fixed reporting task, explicit
  *   "execute only these commands, do not deviate, do not approve anything,
@@ -20,7 +19,7 @@
  * - Spend cap: at most 7 real agent turns for this file (7 + recovery file 5 = 12
  *   combined worst case per full run). chargeTurns() fails explicitly past budget.
  * - Unsupported directions: test.skip with reason (CC gate below). No silent passes.
- * - Evidence log per handoff, secrets redacted; flushed to C9_EVIDENCE_DIR in afterAll.
+ * - Evidence log per handoff, secrets redacted; flushed to NATIVE_EVIDENCE_DIR in afterAll.
  *
  * Implementation only: real OC/CC agents launch when this suite runs, not at
  * authoring time. Verify with typecheck only (`bunx tsc --noEmit`); do NOT run.
@@ -37,7 +36,7 @@ import { validateOwnershipPaths, acquireInstallation, acquireData, type Ownershi
 import { initializeAppStore } from "../src/app-store";
 
 const INTER_TEST_DELAY_MS = (() => {
-  const v = Number(process.env.C9_INTER_TEST_DELAY_MS ?? 45000);
+  const v = Number(process.env.NATIVE_INTER_TEST_DELAY_MS ?? 45000);
   return Number.isFinite(v) && v >= 0 ? v : 45000;
 })();
 const HANDOFF_TIMEOUT_MS = 600000;
@@ -47,19 +46,19 @@ const TURN_BUDGET = 7;
 const OC_MODEL = "opencode-go/muse-spark-1.3-contributor";
 const OC_VARIANT = "high";
 let resolvedOcModel = OC_MODEL;
-const CC_ENV_MODEL = (process.env.C9_CC_MODEL ?? "").trim();
+const CC_ENV_MODEL = (process.env.NATIVE_CC_MODEL ?? "").trim();
 const MAX_TURNS_PER_HANDOFF = 5;
 
 const PKG_DIR = realpathSync(join(dirname(fileURLToPath(import.meta.url)), ".."));
 const bridgeSource = readFileSync(join(PKG_DIR, "src", "bridge.ts"), "utf8");
 if (!bridgeSource.includes("consumeHandoffs") || !bridgeSource.includes("maxConcurrentRuns")) {
-  throw new Error("C9: bridge handoff/scheduling implementation markers moved; update this suite");
+  throw new Error("native-test: bridge handoff/scheduling implementation markers moved; update this suite");
 }
 const ambient = (() => {
   try {
     return resolveAppConfig([], { packageDir: PKG_DIR, invocationCwd: process.cwd() });
   } catch (error) {
-    throw new Error(`C9: ambient App config unreadable, set C9_CLAUDE_PROFILE/C9_OPENCODE_REGISTRATION: ${error instanceof Error ? error.message : String(error)}`);
+    throw new Error(`native-test: ambient App config unreadable, set NATIVE_CLAUDE_PROFILE/NATIVE_OPENCODE_REGISTRATION: ${error instanceof Error ? error.message : String(error)}`);
   }
 })();
 const CC_STATIC_AVAILABLE = ambient.sources.claude.state === "available";
@@ -81,7 +80,7 @@ let chargedTurns = 0;
 function chargeTurns(n: number, label: string): void {
   chargedTurns += n;
   record({ kind: "turn-budget", label, charged: n, total: chargedTurns, budget: TURN_BUDGET });
-  if (chargedTurns > TURN_BUDGET) throw new Error(`C9 spend cap exceeded: ${chargedTurns}/${TURN_BUDGET} real agent turns (${label})`);
+  if (chargedTurns > TURN_BUDGET) throw new Error(`spend cap exceeded: ${chargedTurns}/${TURN_BUDGET} real agent turns (${label})`);
 }
 
 type TestApp = {
@@ -100,16 +99,16 @@ async function api(origin: string, path: string, init: RequestInit = {}): Promis
 const appHeaders = (origin: string): Record<string, string> => ({ "content-type": "application/json", origin });
 
 async function bootApp(tag: string, maxConcurrentRuns: number, workstreamId: string): Promise<TestApp> {
-  const root = realpathSync(mkdtempSync(join(tmpdir(), `c9-${tag}-`)));
+  const root = realpathSync(mkdtempSync(join(tmpdir(), `itest--`)));
   const repoDir = join(root, "repo");
   const dataDir = join(root, "appdata");
   mkdirSync(repoDir, { recursive: true });
   mkdirSync(dataDir, { recursive: true });
   const git = Bun.spawn(["git", "init", repoDir], { stdout: "ignore", stderr: "ignore" });
-  if ((await git.exited) !== 0 || git.exitCode !== 0) throw new Error("C9: cannot init disposable repo (git init failed)");
-  const ccProfile = process.env.C9_CLAUDE_PROFILE ?? ambient.config.native.claude.profileRoot;
-  const ocRegistration = process.env.C9_OPENCODE_REGISTRATION ?? ambient.config.native.opencode.registrationFile;
-  const claudeBin = process.env.C9_CLAUDE_BIN ?? ambient.config.native.claude.executable;
+  if ((await git.exited) !== 0 || git.exitCode !== 0) throw new Error("native-test: cannot init disposable repo (git init failed)");
+  const ccProfile = process.env.NATIVE_CLAUDE_PROFILE ?? ambient.config.native.claude.profileRoot;
+  const ocRegistration = process.env.NATIVE_OPENCODE_REGISTRATION ?? ambient.config.native.opencode.registrationFile;
+  const claudeBin = process.env.NATIVE_CLAUDE_BIN ?? ambient.config.native.claude.executable;
   const configPath = join(root, "app.config.json");
   writeFileSync(configPath, `${JSON.stringify({ format: "sane-app-config", version: 1, dataDir, defaultExecutionCwd: repoDir,
     server: { host: "127.0.0.1", port: 0, publicOrigin: null, allowRemote: false }, maxConcurrentRuns,
@@ -130,20 +129,20 @@ async function bootApp(tag: string, maxConcurrentRuns: number, workstreamId: str
   const workspaceId = reg.body?.workspaceId ?? reg.body?.workspace?.workspaceId ?? reg.body?.id;
   if (reg.status !== 201 || typeof workspaceId !== "string" || !workspaceId) {
     await handle.close();
-    throw new Error(`C9: disposable workspace registration failed: ${reg.status} ${JSON.stringify(reg.body)?.slice(0, 800)}`);
+    throw new Error(`native-test: disposable workspace registration failed: ${reg.status} ${JSON.stringify(reg.body)?.slice(0, 800)}`);
   }
   const qs = new URLSearchParams({ workspaceId }).toString();
   await api(origin, `/api/workstreams/inspect?${qs}`, { headers: { origin } });
   const init = await api(origin, `/api/workstreams/init?${qs}`, { method: "POST", headers, body: "{}" });
   if (init.status !== 200 && init.status !== 201) {
     await handle.close();
-    throw new Error(`C9: workstream init failed: ${init.status} ${JSON.stringify(init.body)?.slice(0, 800)}`);
+    throw new Error(`native-test: workstream init failed: ${init.status} ${JSON.stringify(init.body)?.slice(0, 800)}`);
   }
   const created = await api(origin, `/api/workstreams?${qs}`, { method: "POST", headers,
-    body: JSON.stringify({ id: workstreamId, title: `C9 ${tag} disposable`, type: "feature", defaultCheckout: repoDir }) });
+    body: JSON.stringify({ id: workstreamId, title: `integration  disposable`, type: "feature", defaultCheckout: repoDir }) });
   if (created.status !== 200 && created.status !== 201) {
     await handle.close();
-    throw new Error(`C9: workstream create failed: ${created.status} ${JSON.stringify(created.body)?.slice(0, 800)}`);
+    throw new Error(`native-test: workstream create failed: ${created.status} ${JSON.stringify(created.body)?.slice(0, 800)}`);
   }
   record({ kind: "app-boot", tag, originHost: "127.0.0.1", workstreamId, maxConcurrentRuns });
   return { origin, dataDir, repoDir, workspaceId, workstreamId, ccProfile, ocRegistration, claudeBin, root,
@@ -153,13 +152,13 @@ async function bootApp(tag: string, maxConcurrentRuns: number, workstreamId: str
 async function admissionOf(app: TestApp, sessionId: string): Promise<any> {
   const res = await api(app.origin, "/api/sessions", { headers: { origin: app.origin } });
   const found = (res.body?.sessions as any[])?.find((s) => s?.sessionId === sessionId);
-  if (!found?.admission) throw new Error(`C9: no durable admission for ${sessionId}: ${JSON.stringify(res.body)?.slice(0, 500)}`);
+  if (!found?.admission) throw new Error(`native-test: no durable admission for ${sessionId}: ${JSON.stringify(res.body)?.slice(0, 500)}`);
   return found.admission;
 }
 function senderRef(admission: any): { authorityId: string; nativeId: string; harness: "oc" | "cc" } {
   const harness = admission?.source?.descriptor?.harness;
   if ((harness !== "oc" && harness !== "cc") || typeof admission?.source?.authorityId !== "string" || typeof admission?.nativeId !== "string") {
-    throw new Error(`C9: admission lacks qualified native identity: ${JSON.stringify(admission)?.slice(0, 500)}`);
+    throw new Error(`native-test: admission lacks qualified native identity: ${JSON.stringify(admission)?.slice(0, 500)}`);
   }
   return { authorityId: admission.source.authorityId, nativeId: admission.nativeId, harness };
 }
@@ -169,18 +168,18 @@ async function managePhase(app: TestApp, operation: "associate" | "phase/assign"
 }
 async function associate(app: TestApp, sessionId: string): Promise<void> {
   const res = await managePhase(app, "associate", { sessionId, workstreamId: app.workstreamId });
-  if (res.status !== 200) throw new Error(`C9: associate failed: ${res.status} ${JSON.stringify(res.body)?.slice(0, 500)}`);
+  if (res.status !== 200) throw new Error(`native-test: associate failed: ${res.status} ${JSON.stringify(res.body)?.slice(0, 500)}`);
 }
 async function assignPhase(app: TestApp, sessionId: string, phase: string): Promise<void> {
   const res = await managePhase(app, "phase/assign", { sessionId, phase });
-  if (res.status !== 200) throw new Error(`C9: phase/assign failed: ${res.status} ${JSON.stringify(res.body)?.slice(0, 500)}`);
+  if (res.status !== 200) throw new Error(`native-test: phase/assign failed: ${res.status} ${JSON.stringify(res.body)?.slice(0, 500)}`);
 }
 
 function markerPrompt(marker: string, opts: { slowSeconds?: number; pinPermission?: boolean } = {}): string {
   const steps = [`print exactly ${marker} on its own line`];
   if (opts.slowSeconds) steps.unshift(`run the shell command \`sleep ${opts.slowSeconds}\` to completion`);
   if (opts.pinPermission) steps.unshift("request permission to run the sleep command and wait for the decision");
-  return [`C9 marker task ${marker}.`, `Do exactly the following steps in order: ${steps.join("; ")}.`,
+  return [`integration marker task ${marker}.`, `Do exactly the following steps in order: ${steps.join("; ")}.`,
     "Execute only these commands, do not deviate, do not approve anything, do not send any handoff.",
     `End your turn immediately after reporting the marker (at most ${MAX_TURNS_PER_HANDOFF} agent turns).`].join("\n");
 }
@@ -192,14 +191,14 @@ async function startSession(app: TestApp, opts: { prompt: string; harness: "open
       ...(opts.model ? { model: opts.model } : {}), ...(opts.effort ? { effort: opts.effort } : {}),
       ...(opts.sessionId ? { sessionId: opts.sessionId } : {}) }) });
   if (res.status !== 202 || typeof res.body?.sessionId !== "string" || typeof res.body?.runId !== "string") {
-    throw new Error(`C9: session start refused (${opts.label}): ${res.status} ${JSON.stringify(res.body)?.slice(0, 800)}`);
+    throw new Error(`native-test: session start refused (${opts.label}): ${res.status} ${JSON.stringify(res.body)?.slice(0, 800)}`);
   }
   record({ kind: "session-start", label: opts.label, harness: opts.harness, model: opts.model ?? null, sessionId: res.body.sessionId, runId: res.body.runId });
   return { sessionId: res.body.sessionId as string, runId: res.body.runId as string };
 }
 async function runsOf(app: TestApp, sessionId: string): Promise<any[]> {
   const res = await api(app.origin, `/api/sessions/${encodeURIComponent(sessionId)}/runs`, { headers: { origin: app.origin } });
-  if (!Array.isArray(res.body?.runs)) throw new Error(`C9: runs unavailable for ${sessionId}: ${res.status}`);
+  if (!Array.isArray(res.body?.runs)) throw new Error(`native-test: runs unavailable for ${sessionId}: ${res.status}`);
   return res.body.runs;
 }
 async function awaitRun(app: TestApp, sessionId: string, runId: string, timeoutMs: number): Promise<any> {
@@ -210,17 +209,17 @@ async function awaitRun(app: TestApp, sessionId: string, runId: string, timeoutM
     if (last && last.status !== "running") return last;
     await Bun.sleep(5000);
   }
-  throw new Error(`C9: run ${runId} did not settle: ${JSON.stringify(last)?.slice(0, 500)}`);
+  throw new Error(`native-test: run ${runId} did not settle: ${JSON.stringify(last)?.slice(0, 500)}`);
 }
 async function runEvents(app: TestApp, runId: string): Promise<any[]> {
   const res = await api(app.origin, `/api/runs/${encodeURIComponent(runId)}/events?after=0`, { headers: { origin: app.origin } });
-  if (!Array.isArray(res.body?.events)) throw new Error(`C9: events unavailable for ${runId}: ${res.status}`);
+  if (!Array.isArray(res.body?.events)) throw new Error(`native-test: events unavailable for ${runId}: ${res.status}`);
   return res.body.events;
 }
 async function enqueueHandoff(app: TestApp, sender: { authorityId: string; nativeId: string; harness: "oc" | "cc" }, input: Record<string, unknown>): Promise<{ status: number; body: any }> {
   const record = JSON.parse(readFileSync(join(app.dataDir, "native-handoff.json"), "utf8")) as { url?: unknown; token?: unknown };
   if (typeof record.url !== "string" || typeof record.token !== "string" || !record.url || !record.token) {
-    throw new Error("C9: native handoff record missing url/token; bridge did not publish its native endpoint");
+    throw new Error("native-test: native handoff record missing url/token; bridge did not publish its native endpoint");
   }
   const caller = { version: 1, repository: app.repoDir,
     source: sender.harness === "oc"
@@ -233,12 +232,12 @@ async function enqueueHandoff(app: TestApp, sender: { authorityId: string; nativ
 async function listHandoffs(app: TestApp): Promise<any[]> {
   const qs = new URLSearchParams({ workspaceId: app.workspaceId }).toString();
   const res = await api(app.origin, `/api/handoffs?${qs}`, { headers: { origin: app.origin } });
-  if (!Array.isArray(res.body?.handoffs)) throw new Error(`C9: handoff list unavailable: ${res.status}`);
+  if (!Array.isArray(res.body?.handoffs)) throw new Error(`native-test: handoff list unavailable: ${res.status}`);
   return res.body.handoffs;
 }
 function handoffById(list: any[], id: string): any {
   const h = list.find((x) => x?.id === id);
-  if (!h) throw new Error(`C9: handoff ${id} absent from durable domain list`);
+  if (!h) throw new Error(`native-test: handoff ${id} absent from durable domain list`);
   return h;
 }
 async function awaitHandoff(app: TestApp, id: string, timeoutMs: number): Promise<any> {
@@ -249,7 +248,7 @@ async function awaitHandoff(app: TestApp, id: string, timeoutMs: number): Promis
     if (last.status === "completed" || last.status === "failed") return last;
     await Bun.sleep(5000);
   }
-  throw new Error(`C9: handoff ${id} did not settle: ${JSON.stringify(last)?.slice(0, 500)}`);
+  throw new Error(`native-test: handoff ${id} did not settle: ${JSON.stringify(last)?.slice(0, 500)}`);
 }
 async function chargeOnDelivery(app: TestApp, handoffId: string, recipientSessionId: string, label: string, timeoutMs: number): Promise<string> {
   const deadline = Date.now() + timeoutMs;
@@ -263,25 +262,25 @@ async function chargeOnDelivery(app: TestApp, handoffId: string, recipientSessio
         return runId;
       }
     }
-    if (h.status === "failed") throw new Error(`C9: handoff ${handoffId} failed before delivery: ${JSON.stringify(h)?.slice(0, 500)}`);
+    if (h.status === "failed") throw new Error(`native-test: handoff ${handoffId} failed before delivery: ${JSON.stringify(h)?.slice(0, 500)}`);
     await Bun.sleep(2000);
   }
-  throw new Error(`C9: handoff ${handoffId} never reached native delivery`);
+  throw new Error(`native-test: handoff ${handoffId} never reached native delivery`);
 }
 function assertNoImplicitApproval(domain: any[], recipientNativeId: string, handoffId: string): void {
   const replies = domain.filter((h) => h?.sender?.nativeId === recipientNativeId);
   if (replies.length > 0) {
-    throw new Error(`C9: recipient reply handoff implies unrequested follow-up work (${handoffId}): ${JSON.stringify(replies[0])?.slice(0, 300)}`);
+    throw new Error(`native-test: recipient reply handoff implies unrequested follow-up work (${handoffId}): ${JSON.stringify(replies[0])?.slice(0, 300)}`);
   }
 }
 
 let app: TestApp | undefined;
 function mustApp(): TestApp {
-  if (!app) throw new Error("C9: disposable App is not booted (t00 must run first)");
+  if (!app) throw new Error("native-test: disposable App is not booted (t00 must run first)");
   return mustAppRef();
 }
 function mustAppRef(): TestApp {
-  if (!app) throw new Error("C9: disposable App is not booted (t00 must run first)");
+  if (!app) throw new Error("native-test: disposable App is not booted (t00 must run first)");
   return app;
 }
 let sOc = "";
@@ -295,7 +294,7 @@ let hOverlapId = "";
 let sCc = "";
 const CC_REASON = "no available CC native source in ambient config (SANE_TEST CC profile unavailable)";
 
-describe.serial("C9 native handoff: baseline, targeting/idempotency, scheduling/cancellation", () => {
+describe.serial("native handoff: baseline, targeting/idempotency, scheduling/cancellation", () => {
   let seen = 0;
   beforeEach(async () => {
     if (seen++ > 0 && INTER_TEST_DELAY_MS > 0) await Bun.sleep(INTER_TEST_DELAY_MS);
@@ -303,23 +302,23 @@ describe.serial("C9 native handoff: baseline, targeting/idempotency, scheduling/
   afterAll(async () => {
     const root = app?.root;
     try {
-      const dir = process.env.C9_EVIDENCE_DIR ?? (root ? join(root, "evidence") : null);
+      const dir = process.env.NATIVE_EVIDENCE_DIR ?? (root ? join(root, "evidence") : null);
       if (dir) {
         const { mkdirSync: mkdir } = await import("node:fs");
         mkdir(dir, { recursive: true });
-        writeFileSync(join(dir, "c9-native-handoff.json"), `${JSON.stringify({ turns: chargedTurns, budget: TURN_BUDGET, evidence }, null, 2)}\n`);
+        writeFileSync(join(dir, "native-handoff.json"), `${JSON.stringify({ turns: chargedTurns, budget: TURN_BUDGET, evidence }, null, 2)}\n`);
       }
     } finally {
       try { await app?.close(); } catch { /* close failure is evidence, not cleanup */ }
       app = undefined;
-      if (process.env.C9_KEEP_FIXTURES !== "1" && root) {
+      if (process.env.NATIVE_KEEP_FIXTURES !== "1" && root) {
         try { rmSync(root, { recursive: true, force: true }); } catch { /* best effort */ }
       }
     }
   }, QUICK_TIMEOUT_MS);
 
   test("t00 boot disposable App, workstream, and verify installed OC model catalog", async () => {
-    const wsId = `c9-handoff-${randomUUID().slice(0, 8)}`;
+    const wsId = `itest-handoff-${randomUUID().slice(0, 8)}`;
     app = await bootApp("handoff", 2, wsId);
     const a = mustAppRef();
     const models = await api(a.origin, `/api/harnesses/opencode/models?cwd=${encodeURIComponent(a.repoDir)}`, { headers: { origin: a.origin } });
@@ -332,7 +331,7 @@ describe.serial("C9 native handoff: baseline, targeting/idempotency, scheduling/
     } else {
       const resolved = ids.includes(OC_MODEL) ? OC_MODEL : (ids.find((id) => id.endsWith("muse-spark-1.3-contributor")) ?? ids.find((id) => id.includes("muse-spark-1.3-contributor")));
       if (!resolved) {
-        throw new Error(`C9: no muse-spark-1.3-contributor suffix match in OC catalog: ${JSON.stringify(ids.slice(0, 50))}`);
+        throw new Error(`native-test: no muse-spark-1.3-contributor suffix match in OC catalog: ${JSON.stringify(ids.slice(0, 50))}`);
       }
       resolvedOcModel = resolved;
       record({ kind: "model-catalog", ocModel: OC_MODEL, ocResolvedModel: resolvedOcModel, ocCatalogHit: true, ocCatalogEmpty: false, ccModel: CC_ENV_MODEL || null, ccStaticAvailable: CC_STATIC_AVAILABLE });
@@ -355,7 +354,7 @@ describe.serial("C9 native handoff: baseline, targeting/idempotency, scheduling/
   test("t02 OC→OC slow baseline dispatches to a new recipient", async () => {
     const a = mustApp();
     const sender = senderRef(await admissionOf(a, sOc));
-    const requestId = `c9-oc-oc-${randomUUID()}`;
+    const requestId = `itest-oc-oc-${randomUUID()}`;
     const res = await enqueueHandoff(a, sender, { requestId, to: "engineering", message: markerPrompt("HANDOFF-OC-OC-OK", { slowSeconds: 420, pinPermission: true }), createNew: true, harness: "oc", checkout: a.repoDir });
     expect(res.status).toBe(202);
     const h = res.body?.handoff;
@@ -384,7 +383,7 @@ describe.serial("C9 native handoff: baseline, targeting/idempotency, scheduling/
   test("t03 busy recipient queues, same-conversation input is refused, unique target auto-resolves", async () => {
     const a = mustApp();
     const sender = senderRef(await admissionOf(a, sOc));
-    reqQueue = `c9-oc-oc-reply-${randomUUID()}`;
+    reqQueue = `itest-oc-oc-reply-${randomUUID()}`;
     queueInput = { requestId: reqQueue, to: "engineering", message: markerPrompt("HANDOFF-OC-OC-REPLY-OK") };
     const res = await enqueueHandoff(a, sender, queueInput);
     expect(res.status).toBe(202);
@@ -408,7 +407,7 @@ describe.serial("C9 native handoff: baseline, targeting/idempotency, scheduling/
     const sender = senderRef(await admissionOf(a, sOc));
     const useCc = CC_STATIC_AVAILABLE;
     const marker = useCc ? "HANDOFF-OC-CC-OK" : "HANDOFF-OC-OC2-OK";
-    const requestId = `c9-overlap-${randomUUID()}`;
+    const requestId = `itest-overlap-${randomUUID()}`;
     const res = await enqueueHandoff(a, sender, { requestId, to: "planning", message: markerPrompt(marker, { slowSeconds: 120, pinPermission: true }),
       createNew: true, harness: useCc ? "cc" : "oc", ...(useCc ? {} : { checkout: a.repoDir }) });
     expect(res.status).toBe(202);
@@ -479,7 +478,7 @@ describe.serial("C9 native handoff: baseline, targeting/idempotency, scheduling/
     await assignPhase(a, cSess, "engineering");
     const runsBefore = (await runsOf(a, rOcOc)).length + (await runsOf(a, cSess)).length;
     const sender = senderRef(await admissionOf(a, sOc));
-    const res = await enqueueHandoff(a, sender, { requestId: `c9-ambiguous-${randomUUID()}`, to: "engineering", message: markerPrompt("HANDOFF-AMBIG-PROBE") });
+    const res = await enqueueHandoff(a, sender, { requestId: `itest-ambiguous-${randomUUID()}`, to: "engineering", message: markerPrompt("HANDOFF-AMBIG-PROBE") });
     expect(res.status).toBe(409);
     expect(JSON.stringify(res.body)).toContain("AMBIGUOUS");
     const runsAfter = (await runsOf(a, rOcOc)).length + (await runsOf(a, cSess)).length;
@@ -508,9 +507,9 @@ describe.serial("C9 native handoff: baseline, targeting/idempotency, scheduling/
   ccTest(`t09 CC→OC baseline delivery ${CC_STATIC_AVAILABLE ? "completes with its marker" : "(skipped: " + CC_REASON + ")"}`, async () => {
     const a = mustApp();
     const sender = senderRef(await admissionOf(a, sCc));
-    const requestId = `c9-cc-oc-${randomUUID()}`;
+    const requestId = `itest-cc-oc-${randomUUID()}`;
     const res = await enqueueHandoff(a, sender, { requestId, to: "planning", message: markerPrompt("HANDOFF-CC-OC-OK"), createNew: true, harness: "oc", checkout: a.repoDir });
-    if (res.status !== 202) throw new Error(`C9: CC→OC enqueue refused: ${res.status} ${JSON.stringify(res.body)?.slice(0, 800)}`);
+    if (res.status !== 202) throw new Error(`native-test: CC→OC enqueue refused: ${res.status} ${JSON.stringify(res.body)?.slice(0, 800)}`);
     expect(res.status).toBe(202);
     const h = res.body?.handoff;
     const runId = await chargeOnDelivery(a, h.id, h?.recipientSessionId, "t09-cc-oc-delivery", 180000);
@@ -524,9 +523,9 @@ describe.serial("C9 native handoff: baseline, targeting/idempotency, scheduling/
   ccTest(`t10 CC→CC baseline delivery ${CC_STATIC_AVAILABLE ? "completes with its marker" : "(skipped: " + CC_REASON + ")"}`, async () => {
     const a = mustApp();
     const sender = senderRef(await admissionOf(a, sCc));
-    const requestId = `c9-cc-cc-${randomUUID()}`;
+    const requestId = `itest-cc-cc-${randomUUID()}`;
     const res = await enqueueHandoff(a, sender, { requestId, to: "research", message: markerPrompt("HANDOFF-CC-CC-OK"), createNew: true, harness: "cc" });
-    if (res.status !== 202) throw new Error(`C9: CC→CC enqueue refused: ${res.status} ${JSON.stringify(res.body)?.slice(0, 800)}`);
+    if (res.status !== 202) throw new Error(`native-test: CC→CC enqueue refused: ${res.status} ${JSON.stringify(res.body)?.slice(0, 800)}`);
     expect(res.status).toBe(202);
     const h = res.body?.handoff;
     const runId = await chargeOnDelivery(a, h.id, h?.recipientSessionId, "t10-cc-cc-delivery", 180000);
@@ -554,13 +553,13 @@ describe.serial("C9 native handoff: baseline, targeting/idempotency, scheduling/
 });
 
 function resolveCcModel(a: TestApp): { id?: string; source: string } {
-  if (!CC_STATIC_AVAILABLE) throw new Error(`C9: CC direction unsupported (${CC_REASON})`);
+  if (!CC_STATIC_AVAILABLE) throw new Error(`native-test: CC direction unsupported (${CC_REASON})`);
   if (CC_ENV_MODEL) {
     if (!/^[A-Za-z0-9][A-Za-z0-9._:/-]*$/.test(CC_ENV_MODEL) || CC_ENV_MODEL.length > 200) {
-      throw new Error(`C9: CC model ID unavailable: ${JSON.stringify(CC_ENV_MODEL)}`);
+      throw new Error(`native-test: CC model ID unavailable: ${JSON.stringify(CC_ENV_MODEL)}`);
     }
-    record({ kind: "cc-model", id: CC_ENV_MODEL, source: "env:C9_CC_MODEL", repo: a.repoDir });
-    return { id: CC_ENV_MODEL, source: "env:C9_CC_MODEL" };
+    record({ kind: "cc-model", id: CC_ENV_MODEL, source: "env:NATIVE_CC_MODEL", repo: a.repoDir });
+    return { id: CC_ENV_MODEL, source: "env:NATIVE_CC_MODEL" };
   }
   // No explicit model: omit --model and let the installed CLI use its default.
   // The previous default (anthropic/claude-sonnet-5) is rejected by this
