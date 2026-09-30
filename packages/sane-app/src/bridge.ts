@@ -12,11 +12,11 @@ import { WorkspaceService, WorkspaceError, workspaceError } from "./workspace";
 import { CatalogService } from "./catalog";
 import { TerminalService, type TerminalSocketData } from "./terminal";
 import { RepositoryRouter, WorkstreamAdapterError, authenticatedWorkstreamRoute, validateWorkstreamInput, flushAndCloseWorkstreams } from "./workstreams";
-import { validateAppStore, assertSourceConfiguration, atomicAppRecord, loadAgentProfiles, validateAgentProfiles, AppStoreError, type SourceConfiguration } from "./app-store";
+import { validateAppStore, assertSourceConfiguration, atomicAppRecord, atomicNativeHistory, loadAgentProfiles, validateAgentProfiles, AppStoreError, type SourceConfiguration } from "./app-store";
 import { builtinProfiles, canAssign, legacyProfileId, templateProfileId, resolveAgentLaunch, resolveAssistantProfile, BASE_PROFILE_IDS, type AgentProfile, type AgentProfiles } from "./agent-profiles-contract";
 import { AdmissionService } from "./admission";
 import { HandoffService, handoffRecipientTitle, projectHandoffEnqueue, projectHandoffStatus, slotSessionIndex } from "./handoff";
-import { DomainError, normalizeNativeSource } from "sane-core/server";
+import { DomainError, normalizeNativeSource, revalidateCheckout } from "sane-core/server";
 import { classifyCaller } from "../../sane-cli/src/cli-arguments";
 import { WorkerStore } from "./worker-store";
 import { WorkerService } from "./workers";
@@ -253,7 +253,13 @@ async function startOwned(options: Options, assetsDir: string, packageDir: strin
   function availability(sessionId?: string, capacity = true, delivery = false, preparation = false): { canSend: boolean; reason?: string; code?: string } {
     if (sessionId && branches.list().some(op => op.state !== "failed" && (op.state !== "completed" || op.replace) && workers.tree(op.sourceId).some(w => w.sessionId === sessionId))) return { canSend: false, reason: "Ancestor conversation has a pending branch or was replaced", code: "branch-parent" };
     if (sessionId && branches.replaced(sessionId)) return { canSend: false, reason: "Replaced conversation · read-only. Open its replacement to continue.", code: "replaced" };
-    if (sessionId && branches.pending(sessionId)) return { canSend: false, reason: branches.pending(sessionId)!.error ?? "Branch operation pending. Open Branch status to inspect or recover; native creation is never retried automatically.", code: "branch-pending" };
+    if (sessionId && branches.pending(sessionId)) {
+      const pending = branches.pending(sessionId)!;
+      return { canSend: false, reason: pending.state === "creation_unknown" && !pending.nativeId
+        ? "The branch destination could not be confirmed. Sending is paused until its native history can be checked."
+        : pending.error ? "The branch could not be finished. Sending is paused to protect the conversation; restart the App to recheck it."
+        : "Finishing branch… Sending will be available when it is ready.", code: "branch-pending" };
+    }
     if (storageFailed) return { canSend: false, reason: "Storage unavailable; operator reconciliation required" };
     if (meta.reconciliationRequired) return { canSend: false, reason: "Operator reconciliation required: restart with --reconcile-interrupted after verifying previous CLI processes are stopped" };
     if (closing) return { canSend: false, reason: "Bridge is shutting down" };
@@ -404,12 +410,34 @@ async function startOwned(options: Options, assetsDir: string, packageDir: strin
     pending += decoder.decode(); await line(pending);
   }
   const branchContext = (id: string) => ({ actor: { kind: "system" as const }, correlationId: id });
-  const presentedBranch = (sessionId: string) => branches.pending(sessionId) ?? branches.list().find(op => op.destinationId === sessionId && op.state === "completed" && op.firstMessage && !meta.runs.some(run => run.sessionId === sessionId));
   const branchFingerprint = (value: unknown) => createHash("sha256").update(JSON.stringify(value)).digest("hex");
-  async function branchDomain(source: Session) {
+  async function branchDomain(source: Session, enroll = false) {
     const admission = admissions.get(source.sessionId);
     if (!admission || admission.state !== "ready") throw new Error("Source admission is not ready");
-    if (admission.binding.domain.mode === "app-only" && (await catalog.get(admission.binding.workspaceId)).kind === "repository" && (await router!.inspect(admission.binding.workspaceId)).state === "ready") throw new Error("Enroll this conversation in the initialized repository before branching so its current membership and phase assignments can be verified");
+    if (source.nativeSessionId !== admission.nativeId || source.authorityId !== admission.source.authorityId || source.harness !== (admission.source.descriptor.harness === "cc" ? "claude-code" : "opencode") || source.cwd !== admission.binding.executionCheckout) throw new Error("Source identity or execution checkout differs from its admission");
+    await router!.execution(admission);
+    if (admission.binding.domain.mode === "app-only" && (await catalog.get(admission.binding.workspaceId)).kind === "repository") {
+      const inspected = await router!.inspect(admission.binding.workspaceId);
+      if (inspected.state !== "ready" && inspected.state !== "uninitialized") throw new WorkstreamAdapterError(409, inspected.code, inspected.message);
+      if (inspected.state === "ready") {
+        const adapter = await router!.forWorkspace(admission.binding.workspaceId, inspected.context.repositoryId);
+        if (!admission.binding.checkoutPin) throw new Error("Source repository checkout pin is missing");
+        revalidateCheckout(adapter.domain.context, admission.binding.checkoutPin);
+        // Native enrollment can precede App admission promotion. Read the qualified
+        // registration so eligibility cannot overlook an existing phase assignment.
+        if (adapter.conversation(source)) adapter.invocation(source);
+        if (enroll) {
+          await admissions.enroll(source.sessionId);
+          const promoted = await router!.forAdmission(admissions.get(source.sessionId)!);
+          if (!promoted || promoted.repositoryId !== adapter.repositoryId || promoted.domain.primaryCheckout !== adapter.domain.primaryCheckout) throw new Error("Source repository changed during branch enrollment");
+          revalidateCheckout(promoted.domain.context, admission.binding.checkoutPin);
+          await admissions.register(source.sessionId);
+          admissions.ready(source.sessionId);
+          return router!.forAdmission(admissions.get(source.sessionId)!);
+        }
+        return adapter;
+      }
+    }
     return router!.forAdmission(admission);
   }
   function assertBranchIdle(source: Session) {
@@ -454,6 +482,8 @@ async function startOwned(options: Options, assetsDir: string, packageDir: strin
     if (!admissions.get(op.destinationId)) await admissions.begin({ sessionId: op.destinationId, operation: "create", harness: source.harness === "opencode" ? "oc" : "cc", cwd: source.cwd, nativeId: op.nativeId, workspaceId: original.binding.workspaceId, worktreeId: original.binding.worktreeId, parent: original.binding.domain.mode === "repository" ? { harness: original.source.descriptor.harness, authorityId: original.source.authorityId, nativeId: source.nativeSessionId! } : null });
     const admission = admissions.get(op.destinationId)!;
     if (admission.nativeId !== op.nativeId || !["identity_known", "ready"].includes(admission.state)) throw new Error("Destination admission differs from the confirmed branch identity");
+    const sourceDomain = original.binding.domain, destinationDomain = admission.binding.domain;
+    if (sourceDomain.mode !== destinationDomain.mode || sourceDomain.mode === "repository" && (destinationDomain.mode !== "repository" || sourceDomain.repositoryId !== destinationDomain.repositoryId || sourceDomain.primaryCheckout !== destinationDomain.primaryCheckout) || admission.source.authorityId !== original.source.authorityId || admission.source.descriptor.harness !== original.source.descriptor.harness || admission.binding.executionCheckout !== original.binding.executionCheckout || admission.binding.workspaceId !== original.binding.workspaceId || admission.binding.worktreeId !== original.binding.worktreeId) throw new Error("Branch source and destination admission domains or execution bindings differ");
     let destination = meta.sessions.find(s => s.sessionId === op.destinationId);
     if (!destination) {
       destination = { ...source, sessionId: op.destinationId, nativeSessionId: op.nativeId, lastStatus: "unknown", lastRunId: null, title: `${displayTitle(source).slice(0, 185)} · Branch` };
@@ -466,6 +496,27 @@ async function startOwned(options: Options, assetsDir: string, packageDir: strin
     return destination;
   }
   const branchFinishing = new Map<string, Promise<void>>();
+  async function reconcileBranch(op: BranchOperation) {
+    if (["completed", "failed"].includes(op.state)) return;
+    if (op.state !== "reserved" && !op.nativeId) return;
+    if (closing || storageFailed || meta.reconciliationRequired || owners.has(op.sourceId) || owners.has(op.destinationId) || admitting.has(op.sourceId) || admitting.has(op.destinationId)) return;
+    const source = meta.sessions.find(s => s.sessionId === op.sourceId);
+    if (!source || handoffReservations.has(op.destinationId) || handoffDispatches.has(op.destinationId)) return;
+    try { assertBranchIdle(source); } catch { return; }
+    admitting.add(op.sourceId); admitting.add(op.destinationId);
+    const done = Promise.withResolvers<void>(); attachmentTasks.add(done.promise);
+    try {
+      // Only release an unstarted reservation or finish an already identified fork.
+      // Never replay native creation or the saved initial prompt.
+      if (op.state === "reserved") await releaseBranch(op, "Interrupted before native creation. Original unchanged.");
+      else await finishBranch(op.id);
+    } catch (error) {
+      branches.save({ ...branches.get(op.id)!, error: error instanceof Error ? error.message : "Branch could not be finished" });
+    } finally {
+      admitting.delete(op.sourceId); admitting.delete(op.destinationId);
+      done.resolve(); attachmentTasks.delete(done.promise);
+    }
+  }
   async function releaseBranch(op: BranchOperation, error: string) {
     const source = meta.sessions.find(s => s.sessionId === op.sourceId)!, adapter = await branchDomain(source);
     adapter?.domain.finishBranch(adapter.reference(source), null, op.id, branchContext(op.id));
@@ -487,11 +538,15 @@ async function startOwned(options: Options, assetsDir: string, packageDir: strin
       }
       if (source.harness === "claude-code") await verifyClaudeFork(op.nativeId, source.cwd, source.nativeSessionId!, op.boundary, claudeRoot);
       const native = source.harness === "opencode" ? await oc.history(op.nativeId, source.cwd) : { messages: await readClaudeHistory(op.nativeId, source.cwd, claudeRoot), activity: "unknown" as const };
+      if (source.harness === "opencode" && native.activity !== "idle") throw new Error("The branch destination is active or has pending input. Wait for it to finish before restarting the App.");
+      if (closing || storageFailed) throw new Error("Branch completion paused while the App shuts down");
       op = { ...op, state: "confirmed", error: undefined }; branches.save(op);
       const destination = await enrollBranch(op, source);
-      if (adapter) adapter.domain.finishBranch(adapter.reference(source), adapter.reference(destination), op.id, branchContext(op.id));
       const history: ReconciledHistory = { sessionId: destination.sessionId, nativeSessionId: destination.nativeSessionId!, importedAt: new Date().toISOString(), messages: native.messages, activity: native.activity, coveredRunIds: [], reason: "Genuine native branch history. Branching did not rewind or restore files." };
-      atomicAppRecord(options.dataDir, `${destination.sessionId}.native-history.json`, history);
+      // Prepare the durable snapshot before committing the membership transfer.
+      // A previously committed domain transfer is still idempotently recoverable.
+      atomicNativeHistory(options.dataDir, history);
+      if (adapter) adapter.domain.finishBranch(adapter.reference(source), adapter.reference(destination), op.id, branchContext(op.id));
       if (op.replace) source.hidden = true;
       await persist(); branches.save({ ...op, state: "completed", error: undefined });
     })();
@@ -1063,7 +1118,7 @@ async function startOwned(options: Options, assetsDir: string, packageDir: strin
       }
       if (path.startsWith("/api/") && !authenticated(req)) return json({ error: "Authentication required" }, 401);
       const mutatingSession = /^\/api\/sessions\/([^/]+)(?:\/|$)/.exec(path)?.[1];
-      if (!["GET", "HEAD"].includes(req.method) && mutatingSession && !path.endsWith("/branch") && (branches.replaced(mutatingSession) || branches.pending(mutatingSession) && !path.endsWith("/cancel"))) return json({ error: branches.replaced(mutatingSession) ? "Replaced conversation is read-only; open its replacement" : "Branch reservation is pending; use Branch status recovery" }, 409);
+      if (!["GET", "HEAD"].includes(req.method) && mutatingSession && !path.endsWith("/branch") && (branches.replaced(mutatingSession) || branches.pending(mutatingSession) && !path.endsWith("/cancel"))) return json({ error: branches.replaced(mutatingSession) ? "Replaced conversation is read-only; open its replacement" : "The branch is not ready yet. Changes are paused to protect this conversation." }, 409);
       if (path === "/api/agents" || path.startsWith("/api/agents/")) {
         try {
           if (path === "/api/agents" && req.method === "GET") return json(agentProfiles);
@@ -1285,7 +1340,7 @@ async function startOwned(options: Options, assetsDir: string, packageDir: strin
         const workerSessions = new Map(workerStore.list().map(w => [w.sessionId, { id: w.id, parent: { sessionId: w.parent.sessionId, runId: w.parent.runId, toolCallId: w.parent.toolCallId } }]));
         const workerCounts = new Map<string, number>();
         for (const worker of workerStore.list()) workerCounts.set(worker.parent.sessionId, (workerCounts.get(worker.parent.sessionId) ?? 0) + 1);
-        return json({ sessions: meta.sessions.map(s => ({ ...s, branchOrigin: branches.list().find(op => op.destinationId === s.sessionId && op.state !== "failed")?.sourceId, replacedBy: branches.replaced(s.sessionId)?.destinationId, branchOperation: presentedBranch(s.sessionId), ...(branches.replaced(s.sessionId) ? { hidden: true } : {}), ...(workerSessions.has(s.sessionId) ? { worker: workerSessions.get(s.sessionId) } : {}), directWorkerCount: workerCounts.get(s.sessionId) ?? 0, profileId: sessionProfileId(s), title: displayTitle(s), admission: admissions.get(s.sessionId), ...catalog.association(s.sessionId), availability: availability(s.sessionId) })), admissions: admissions.list(), availability: availability() });
+        return json({ sessions: meta.sessions.map(s => ({ ...s, branchOrigin: branches.list().find(op => op.destinationId === s.sessionId && op.state !== "failed")?.sourceId, replacedBy: branches.replaced(s.sessionId)?.destinationId, ...(branches.replaced(s.sessionId) ? { hidden: true } : {}), ...(workerSessions.has(s.sessionId) ? { worker: workerSessions.get(s.sessionId) } : {}), directWorkerCount: workerCounts.get(s.sessionId) ?? 0, profileId: sessionProfileId(s), title: displayTitle(s), admission: admissions.get(s.sessionId), ...catalog.association(s.sessionId), availability: availability(s.sessionId) })), admissions: admissions.list(), availability: availability() });
       }
       const branchRoute = /^\/api\/sessions\/([^/]+)\/branch$/.exec(path);
       if (branchRoute) {
@@ -1295,9 +1350,9 @@ async function startOwned(options: Options, assetsDir: string, packageDir: strin
           try {
             assertBranchIdle(source);
             const available = availability(source.sessionId); if (!available.canSend) throw new Error(available.reason);
-            if (branches.pending(source.sessionId)) throw new Error("A branch operation is already pending; use Branch status");
+            if (branches.pending(source.sessionId)) throw new Error("A branch is already being prepared for this conversation");
             const boundary = await branchBoundary(source, url.searchParams.get("runId") ?? undefined, url.searchParams.get("messageId") ?? undefined);
-            const adapter = await branchDomain(source), state = adapter?.domain.branchState(adapter.reference(source));
+            const adapter = await branchDomain(source), state = adapter?.conversation(source) ? adapter.domain.branchState(adapter.reference(source)) : undefined;
             return json({ eligible: true, replaceRequired: !!state?.phases.length, ...boundary });
           } catch (error) { return json({ eligible: false, reason: error instanceof Error ? error.message : "Branch unavailable" }); }
         }
@@ -1311,22 +1366,23 @@ async function startOwned(options: Options, assetsDir: string, packageDir: strin
         if (previous) {
           if (previous.sourceId !== source.sessionId || previous.selector !== selector || previous.replace !== input.replace || previous.firstMessage !== (input.prompt.trim() ? input.prompt : undefined)) return json({ error: "This branch request ID is already bound to a different request" }, 409);
           if (previous.state !== "failed" && meta.sessions.some(s => s.sessionId === previous.destinationId)) return json({ sessionId: previous.destinationId, operation: previous });
-          return json({ error: previous.error ?? "Branch operation is pending; inspect Branch status. Native creation will not be repeated.", operation: previous }, 409);
+          return json({ error: previous.error ?? "This branch is still being prepared. Close this dialog and check your conversations.", operation: previous }, 409);
         }
         const available = availability(source.sessionId);
         if (!available.canSend) return json({ error: available.reason }, 409);
         assertBranchIdle(source);
-        if (branchRequests.has(input.requestId)) return json({ error: "This branch request is already in progress; inspect Branch status before retrying" }, 409);
+        if (branchRequests.has(input.requestId)) return json({ error: "This branch request is already in progress. Please wait." }, 409);
         branchRequests.add(input.requestId);
         admitting.add(source.sessionId);
         const branchDone = Promise.withResolvers<void>(); attachmentTasks.add(branchDone.promise);
         let op: BranchOperation | undefined;
         try {
           const boundary = await branchBoundary(source, input.runId, input.messageId);
-          const adapter = await branchDomain(source), state = adapter?.domain.branchState(adapter.reference(source));
+          const adapter = await branchDomain(source, true), state = adapter?.domain.branchState(adapter.reference(source));
           if (state?.phases.length && !input.replace) throw new Error("Active phase assignments require Replace original");
           op = { id: input.requestId, sourceId: source.sessionId, destinationId: crypto.randomUUID(), ...boundary, selector, replace: input.replace, state: "reserved", createdAt: new Date().toISOString(), ...(input.prompt.trim() ? { firstMessage: input.prompt } : {}) };
           branches.save(op);
+          admitting.add(op.destinationId);
           if (adapter) adapter.domain.reserveBranch(adapter.reference(source), op.id, op.replace, branchContext(op.id));
           if (closing || storageFailed) throw new Error("Bridge is closing");
           // Recheck the exact native cutoff after the durable domain reservation.
@@ -1356,18 +1412,20 @@ async function startOwned(options: Options, assetsDir: string, packageDir: strin
             if (current.state === "reserved") {
               const adapter = await branchDomain(source);
               try { adapter?.domain.finishBranch(adapter.reference(source), null, op.id, branchContext(op.id)); branches.save({ ...current, state: "failed", error: message }); }
-              catch { branches.save({ ...current, error: `${message}. Reservation release is unconfirmed; inspect Branch status.` }); }
+              catch { branches.save({ ...current, error: `${message}. The original remains locked until the branch can be checked.` }); }
             } else branches.save({ ...current, error: message });
           }
           return json({ error: message, operation: op && branches.get(op.id), sessionId: op?.nativeId ? op.destinationId : undefined }, 409);
-        } finally { admitting.delete(source.sessionId); branchRequests.delete(input.requestId); branchDone.resolve(); attachmentTasks.delete(branchDone.promise); }
+        } finally { admitting.delete(source.sessionId); if (op) admitting.delete(op.destinationId); branchRequests.delete(input.requestId); branchDone.resolve(); attachmentTasks.delete(branchDone.promise); }
       }
       const branchRecovery = /^\/api\/branches\/([^/]+)\/recover$/.exec(path);
       if (branchRecovery && req.method === "POST") {
         const op = branches.get(branchRecovery[1]!);
         if (!op) return json({ error: "Unknown branch operation" }, 404);
-        if (closing || storageFailed || meta.reconciliationRequired || owners.has(op.sourceId) || owners.has(op.destinationId) || admitting.has(op.sourceId)) return json({ error: "Branch recovery requires an available bridge and settled source/destination runs" }, 409);
+        if (closing || storageFailed || meta.reconciliationRequired || owners.has(op.sourceId) || owners.has(op.destinationId) || admitting.has(op.sourceId) || admitting.has(op.destinationId)) return json({ error: "Branch recovery requires an available bridge and settled source/destination runs" }, 409);
         admitting.add(op.sourceId);
+        admitting.add(op.destinationId);
+        const recoveryDone = Promise.withResolvers<void>(); attachmentTasks.add(recoveryDone.promise);
         try {
           if (op.state === "reserved") {
             await releaseBranch(op, "Interrupted before native creation. Reservation released; original unchanged.");
@@ -1376,7 +1434,7 @@ async function startOwned(options: Options, assetsDir: string, packageDir: strin
         } catch (error) {
           const current = branches.get(op.id)!, message = error instanceof Error ? error.message : "Recovery unavailable";
           branches.save({ ...current, error: message }); return json({ error: message, operation: branches.get(op.id) }, 409);
-        } finally { admitting.delete(op.sourceId); }
+        } finally { admitting.delete(op.sourceId); admitting.delete(op.destinationId); recoveryDone.resolve(); attachmentTasks.delete(recoveryDone.promise); }
       }
       const admissionRoute = /^\/api\/sessions\/([^/]+)\/(enroll|retry-admission)$/.exec(path);
       if (admissionRoute && req.method === "POST") {
@@ -1429,8 +1487,7 @@ async function startOwned(options: Options, assetsDir: string, packageDir: strin
           if (!session) { session = candidate; meta.sessions.push(session); }
           session.attachment = { state: "pending", source: nativeSource(harness) }; await persist();
           const history: ReconciledHistory = { sessionId, nativeSessionId, importedAt: new Date().toISOString(), ...native, coveredRunIds: [], reason: harness === "opencode" ? "Attached read-only native snapshot; activity is a point-in-time observation. Reconcile after external work." : "Attached read-only Claude transcript; active execution and run outcome are unknown. Confirm external Claude is stopped before each App submission." };
-          const historyPath = join(options.dataDir, `${sessionId}.native-history.json`);
-          await enqueue(async () => { await writeFile(`${historyPath}.tmp`, JSON.stringify(history), { mode: 0o600 }); await rename(`${historyPath}.tmp`, historyPath); });
+          await enqueue(async () => atomicNativeHistory(options.dataDir, history));
           const association = await catalog.associate(sessionId, cwd, input.workspaceId, input.worktreeId);
           if (closing || storageFailed) throw new OpenCodeError("Attachment interrupted by shutdown; retry explicitly", 503);
           await admissions.register(sessionId);
@@ -1578,7 +1635,7 @@ async function startOwned(options: Options, assetsDir: string, packageDir: strin
           const history: ReconciledHistory = { sessionId: session.sessionId, nativeSessionId, importedAt: new Date().toISOString(), ...native,
             coveredRunIds: coveredNativeRuns(session, meta.runs, native.messages),
             reason: session.harness === "opencode" ? "Read-only native history snapshot. Activity is a point-in-time observation; Reconcile again for later changes. Stop external work in OpenCode." : "Read-only Claude transcript. Active execution, message timestamps and run outcome are not exposed by the SDK history API. Ensure the external Claude conversation is stopped before sending here." };
-          await enqueue(async () => { await writeFile(`${historyPath}.tmp`, JSON.stringify(history), { mode: 0o600 }); await rename(`${historyPath}.tmp`, historyPath); });
+          await enqueue(async () => atomicNativeHistory(options.dataDir, history));
           return json({ history });
         } catch (error) { return json({ error: error instanceof Error ? error.message : "Native reconciliation unavailable" }, error instanceof OpenCodeError && error.status === 409 ? 409 : 503); }
         finally { admitting.delete(session.sessionId); }
@@ -1793,6 +1850,9 @@ async function startOwned(options: Options, assetsDir: string, packageDir: strin
   for (const w of (await catalog.list()).workspaces.filter(w => w.kind === "repository")) {
     try { for (const h of await handoffs.list(w.workspaceId)) if (h.recipient.ownerId === store.manifest.storeId && !["queued", "completed", "failed"].includes(h.status)) handoffReservations.add(h.recipient.sessionId); } catch {}
   }
+  // Startup-only reconciliation, after run ownership and worker recovery are known.
+  // The admission locks and attachment task set also coordinate request/shutdown races.
+  for (const op of branches.list()) void reconcileBranch(op).catch(() => { failClosed(); });
   const handoffTimer = setInterval(() => {
     if (closing || storageFailed || handoffTask) return;
     handoffTask = consumeHandoffs().catch(() => { failClosed(); }).finally(() => { handoffTask = undefined; });

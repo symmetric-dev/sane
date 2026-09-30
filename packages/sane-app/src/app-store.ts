@@ -150,6 +150,14 @@ function readRecord(root: string, name: string): unknown {
 }
 export function atomicAppRecord(root: string, name: string, value: unknown): void {
   if (!/^[a-z-]+\.json$/.test(name)) throw new Error("Invalid App record filename");
+  atomicRecord(root, name, value);
+}
+/** Native snapshots are keyed by App identity, not arbitrary record filenames. */
+export function atomicNativeHistory(root: string, history: import("./reconcile").ReconciledHistory): void {
+  if (!uuid(history.sessionId)) throw new Error("Invalid native history App session identity");
+  atomicRecord(root, `${history.sessionId}.native-history.json`, history);
+}
+function atomicRecord(root: string, name: string, value: unknown): void {
   const temporary = join(root, `.${name}.${crypto.randomUUID()}.tmp`), fd = openSync(temporary, "wx", 0o600);
   try { writeFileSync(fd, JSON.stringify(value)); fsyncSync(fd); } finally { closeSync(fd); }
   renameSync(temporary, join(root, name));

@@ -23,7 +23,7 @@ function BranchDialog({ sessionId, harness, runId, messageId, close }: { session
     try {
       const result = await request(`/api/sessions/${encodeURIComponent(sessionId)}/branch`, { method: "POST", body: JSON.stringify({ requestId, runId, messageId, replace, prompt }), signal: AbortSignal.timeout(120000) });
       close(); store.openConversation(result.sessionId);
-    } catch (e) { setError(`${e instanceof Error ? e.message : "Branch request failed"} Inspect Branch status before trying again; an interrupted request may already have created the destination.`); }
+    } catch (e) { setError(`${e instanceof Error ? e.message : "Branch request failed"} You can close this dialog and check your conversations. Retrying this same request will not create another branch.`); }
     finally { setBusy(false); }
   };
   return <ShellDialog title="Branch from here" close={() => { if (!busy) close(); }}>
@@ -40,15 +40,9 @@ function BranchDialog({ sessionId, harness, runId, messageId, close }: { session
 }
 
 export function BranchLinks({ conversation }: { conversation?: Conversation }) {
-  const [busy, setBusy] = useState(false), [error, setError] = useState("");
   if (!conversation) return null;
-  const op = conversation.branchOperation;
   return <>
     {conversation.branchOrigin && <p className="notice">Branched from <button type="button" className="text-button" onClick={() => store.openConversation(conversation.branchOrigin!)}>original conversation</button>. Files were not rewound.</p>}
     {conversation.replacedBy && <p className="notice">Replaced · read-only history. <button type="button" className="text-button" onClick={() => store.openConversation(conversation.replacedBy!)}>Open replacement</button></p>}
-    {op && <section className="notice" aria-label="Branch status"><strong>Branch status · {op.state.replaceAll("_", " ")}</strong><p>{op.error || (op.state === "completed" ? "Native branch creation completed. First-message delivery needs attention." : "Branch confirmation is pending. Creation will not be replayed. Original membership transfers only after the destination is confirmed.")}</p>
-      {op.state === "completed" ? <><p>The branch is retained, but its first-message run was not recorded. Inspect native history before resending; no message will be replayed automatically.</p><button type="button" onClick={() => { store.openConversation(conversation.id); store.setDraft({ text: op.firstMessage ?? "" }); }}>Recover first message to draft</button></> : op.state === "creation_unknown" && !op.nativeId ? <p>Destination identity is unknown. Recovery is blocked pending operator inspection; this version cannot safely attribute a native fork after a lost acknowledgement.</p> : <button type="button" disabled={busy} onClick={async () => { setBusy(true); setError(""); try { const result = await request(`/api/branches/${op.id}/recover`, { method: "POST" }); if (result.sessionId) store.openConversation(result.sessionId); } catch (e) { setError(e instanceof Error ? e.message : "Recovery failed"); } finally { setBusy(false); } }}>Recover branch operation</button>}
-      {error && <p role="alert">{error}</p>}
-    </section>}
   </>;
 }
