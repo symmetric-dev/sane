@@ -1,6 +1,6 @@
 import { discoverRepository, inspectRepositoryStore, normalizeNativeSource, openRepositoryDomain, DomainError, type RepositoryDomain } from "../../sane-core/src/server.ts"
 import type { ConversationRef, Harness, InvocationContext, NativeSourceDescriptor, Phase, MutationContext } from "../../sane-core/src/contracts.ts"
-import type { CallerEnvelope, CallerReference } from "./cli-arguments.ts"
+import type { CallerBootstrap, CallerEnvelope, CallerReference } from "./cli-arguments.ts"
 
 export interface NativeCaller {
   source: NativeSourceDescriptor
@@ -48,19 +48,19 @@ export function openNativeCaller(caller: NativeCaller, enroll = false) {
   } catch (error) { domain.close(); throw error }
 }
 
-export interface NativeLinkInput { slot: Phase; workstream?: string; reassign?: boolean }
+export interface NativeLinkInput { slot?: Phase; workstream?: string; reassign?: boolean }
 export const nativeLinkSchema = {
   type: "object", properties: {
     slot: { type: "string", pattern: "^(design|engineering|planning|execution|research|research:[a-z0-9][a-z0-9_-]{0,95})$" },
     workstream: { type: "string", pattern: "^[a-z0-9][a-z0-9_-]{0,95}$" },
     reassign: { type: "boolean" },
-  }, required: ["slot"], additionalProperties: false,
+  }, required: [], additionalProperties: false,
 } as const
 
 export function nativeLinkInput(input: unknown): NativeLinkInput {
   if (!input || typeof input !== "object" || Array.isArray(input)) throw new DomainError("INVALID_INPUT", "Expected link arguments.")
   const value = input as Record<string, unknown>
-  if (Object.keys(value).some(key => !["slot", "workstream", "reassign"].includes(key)) || typeof value.slot !== "string" || !/^(design|engineering|planning|execution|research|research:[a-z0-9][a-z0-9_-]{0,95})$/.test(value.slot) || (value.workstream !== undefined && (typeof value.workstream !== "string" || !/^[a-z0-9][a-z0-9_-]{0,95}$/.test(value.workstream))) || (value.reassign !== undefined && typeof value.reassign !== "boolean")) throw new DomainError("INVALID_INPUT", "Invalid link arguments.")
+  if (Object.keys(value).some(key => !["slot", "workstream", "reassign"].includes(key)) || (value.slot !== undefined && (typeof value.slot !== "string" || !/^(design|engineering|planning|execution|research|research:[a-z0-9][a-z0-9_-]{0,95})$/.test(value.slot))) || (value.workstream !== undefined && (typeof value.workstream !== "string" || !/^[a-z0-9][a-z0-9_-]{0,95}$/.test(value.workstream))) || (value.reassign !== undefined && typeof value.reassign !== "boolean")) throw new DomainError("INVALID_INPUT", "Invalid link arguments.")
   return value as unknown as NativeLinkInput
 }
 
@@ -109,6 +109,27 @@ export function nativeCallerReference(caller: NativeCaller): CallerReference {
   try { return { version: 1, harness: opened.ref.harness, nativeId: opened.ref.nativeId } } finally { opened.domain.close() }
 }
 
+/** Called only after native hook qualification. Bootstrap carries the actual
+ * source and checkout, never a guessed identity or a local-caller fallback.
+ * Existing enrollments still undergo their normal checkout-pin validation. */
+export function nativeShellCaller(caller: NativeCaller): CallerReference | CallerBootstrap {
+  const source = normalizeNativeSource(caller.source)
+  if (source.authorityId !== caller.authorityId || !caller.nativeId || !caller.correlationId) throw new DomainError("NATIVE_CONTEXT_UNAVAILABLE", "Incomplete or changed native caller.")
+  const discovery = discoverRepository(caller.cwd), state = inspectRepositoryStore(discovery)
+  if (state.state !== "ready" && state.state !== "uninitialized") throw new DomainError(state.code, state.message)
+  if (state.state === "ready") {
+    const domain = openRepositoryDomain(state.context)
+    try {
+      const ref: ConversationRef = { harness: source.descriptor.harness, authorityId: source.authorityId, nativeId: caller.nativeId }
+      if (domain.getConversation(ref)) {
+        if (domain.resolveContext(ref).executionCheckout !== discovery.invocationCheckout.path) throw new DomainError("INVALID_CHECKOUT", "Native directory differs from the enrolled execution checkout.")
+        return { version: 1, harness: ref.harness, nativeId: ref.nativeId }
+      }
+    } finally { domain.close() }
+  }
+  return { version: 1, bootstrap: true, repository: discovery.primaryCheckout, executionCheckout: discovery.invocationCheckout.path, source: source.descriptor, authorityId: source.authorityId, nativeId: caller.nativeId }
+}
+
 /** Resolve a compact shell reference: repository from cwd discovery, authority
  * from the enrolled conversation row. The nativeId is session-scoped and unique
  * per harness; zero or several matches fail closed. */
@@ -132,8 +153,9 @@ export function linkNativeCaller(caller: NativeCaller, input: unknown): NativeCo
     const current = opened.context.workstream?.id
     if (args.workstream && current && current !== args.workstream && !args.reassign) throw new DomainError("CONFLICT", "Use reassign to replace existing membership.")
     if (args.workstream) domain.associateConversation(ref, args.workstream, mutation)
-    const assignment = domain.assignPhase(ref, args.slot, mutation)
-    return formatNativeContextSummary(domain.resolveContext(ref), assignment.phase)
+    const assignment = args.slot ? domain.assignPhase(ref, args.slot, mutation) : null
+    const snapshot = domain.resolveContext(ref)
+    return formatNativeContextSummary(snapshot, assignment?.phase ?? latestNativePhase(domain, ref, snapshot.workstream?.id ?? null))
   } finally { opened.domain.close() }
 }
 

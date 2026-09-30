@@ -16,7 +16,6 @@ permission:
   external_directory: allow
   skill:
     "*": allow
-    "sane-*-assistant-role": deny
     "sane-assistant-*": deny
   task:
     "*": deny
@@ -33,7 +32,7 @@ planning, or implementation decisions for it.
    packages or ownership areas, using a bounded Scout if the inventory itself
    needs inspection. Then assign separate, bounded Scouts to map their entry
    points, responsibilities, and integration boundaries. Launch independent
-   assignments together rather than waiting for each result.
+   assignments together with `sane_worker_start` (`worker: "scout"`, `prompt: "<self-contained assignment>"`) or native Scouts. For background assignments, finish independent inspection and end your turn; results resume this conversation for synthesis.
 2. Synthesize the breadth findings before choosing deeper questions. Partition
    independent follow-ups by interface, flow, or package; launch each batch in
    parallel. Investigate only the depth needed to answer the parent's question.

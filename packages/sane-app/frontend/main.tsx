@@ -1,6 +1,4 @@
 import { createRoot } from "react-dom/client";
-import { WorkerViewerHost } from "./session-viewer";
-import { workerReference, openWorkerSession } from "./worker-client";
 import { useEffect, useState, useSyncExternalStore } from "react";
 import { FiMoreHorizontal, FiZap } from "react-icons/fi";
 import { store } from "./store";
@@ -50,12 +48,10 @@ function App() {
   useEffect(() => { if (state.phase === "ready") hydrate(); }, [state.phase]);
   const navigate = (view: ActiveView) => { setArtifact(null); catalog.navigate({ view }); setDrawer(null); };
   const choose = (id: string) => {
-    if (workerReference(id)) { void openWorkerSession(id); return; }
     if (state.sending) return;
-    const conversation = state.conversations.find(c => c.id === id);
-    catalog.navigate({ conversationId: id || null, view: "chat", ...(conversation ? { workspaceId: conversation.workspaceId ?? null, worktreeId: conversation.worktreeId ?? null, filePath: null, comparison: null } : {}) });
-    store.choose(id); setDrawer(null);
+    store.openConversation(id); setDrawer(null);
   };
+  useEffect(() => { setDrawer(null); }, [state.selected]);
   const signOut = () => {
     if (workspaceHasDirtyBuffers() && !window.confirm("Discard unsaved workspace changes and sign out?")) return;
     resetWorkspaceState();
@@ -80,7 +76,6 @@ function App() {
       <section className="detail-section"><h3>Latest reported usage</h3>{store.harness() === "opencode" ? <>{nativeUsageRun && nativeUsageRun.id !== state.runs.at(-1)?.id && <p className="muted">Showing an earlier run’s snapshot; the latest run has no reported usage yet.</p>}<NativeUsage run={nativeUsageRun} /></> : <>{latestUsage && latestUsage.runId !== state.runs.at(-1)?.id && <p className="muted">A newer run has no result snapshot yet. Showing an earlier run.</p>}<Usage snapshot={latestUsage} /></>}</section>
       <section className="detail-section"><h3>Runs & diagnostics <span className="muted">{state.runs.length}</span></h3>{state.runs.length ? [...state.runs].reverse().map(run => <RunDetails key={run.id} run={run} />) : <p className="muted">Run IDs and raw events will appear here.</p>}</section>
     </Drawer>}
-    <WorkerViewerHost />
   </div></TerminalProvider></WorkspaceProvider>;
 }
 

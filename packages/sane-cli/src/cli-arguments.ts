@@ -2,6 +2,8 @@
  * SANE_CALLER_CONTEXT is JSON: either the full envelope {version:1,
  * repository:string, source:SourceInput, authorityId:string, nativeId:string}
  * or the C11 Phase 4 compact shell reference {version:1, harness, nativeId}.
+ * Before enrollment, native hooks supply the full envelope plus bootstrap:true
+ * and executionCheckout; that form is restricted to init/inspect.
  * The compact form carries no absolute paths or authority digests; the server
  * side resolves them from the enrolled conversation. Source locators are
  * syntactically absolute; canonicalization, digest agreement and
@@ -15,7 +17,9 @@ export type QualifiedRef = { harness: Harness; authorityId: string; nativeId: st
 export type CallerEnvelope = { version: 1; repository: string; source: SourceInput; authorityId: string; nativeId: string }
 /** C11 Phase 4 minimal per-shell-call reference. No paths, no authority digest. */
 export type CallerReference = { version: 1; harness: Harness; nativeId: string }
-export type CallerClassification = { actorKind: "local" } | { actorKind: "native"; envelope: CallerEnvelope } | { actorKind: "native-ref"; ref: CallerReference }
+/** Hook-qualified identity before enrollment; permits repository bootstrap only. */
+export type CallerBootstrap = CallerEnvelope & { bootstrap: true; executionCheckout: string }
+export type CallerClassification = { actorKind: "local" } | { actorKind: "native"; envelope: CallerEnvelope } | { actorKind: "native-ref"; ref: CallerReference } | { actorKind: "native-bootstrap"; envelope: CallerBootstrap }
 export type CallerSignals = Readonly<Partial<Record<"SANE_CALLER_CONTEXT" | "SANE_SESSION_ID" | "OPENCODE_SESSION_ID", string>>>
 export type CliIntent = {
   operation: string
@@ -74,13 +78,22 @@ const callerFlags = ["caller-repo", "caller-source", "caller-authority", "caller
 export function classifyCaller(signals: CallerSignals, flags: Readonly<Record<string, string | boolean>> = {}): CallerClassification {
   let caller: CallerEnvelope | undefined
   let ref: CallerReference | undefined
+  let bootstrap: CallerBootstrap | undefined
   if (signals.SANE_CALLER_CONTEXT !== undefined) {
     const parsed = json(signals.SANE_CALLER_CONTEXT)
     const keys = parsed && typeof parsed === "object" && !Array.isArray(parsed) ? Object.keys(parsed) : []
     if (keys.length === 3 && keys.includes("version") && keys.includes("harness") && keys.includes("nativeId")) ref = reference(parsed)
-    else caller = envelope(parsed)
+    else if (keys.includes("bootstrap")) {
+      const input = object(parsed)
+      exact(input, ["version", "repository", "source", "authorityId", "nativeId", "bootstrap", "executionCheckout"])
+      if (input.bootstrap !== true || !nonempty(input.executionCheckout) || !input.executionCheckout.startsWith("/")) nativeFail()
+      const { bootstrap: _bootstrap, executionCheckout, ...identity } = input
+      caller = envelope(identity)
+      bootstrap = { ...caller, bootstrap: true, executionCheckout: executionCheckout as string }
+    } else caller = envelope(parsed)
   }
   if (callerFlags.some(key => flags[key] !== undefined)) {
+    if (bootstrap) nativeFail()
     if (!callerFlags.every(key => nonempty(flags[key]))) nativeFail()
     const explicit = envelope({ version: 1, repository: flags["caller-repo"], source: json(flags["caller-source"] as string), authorityId: flags["caller-authority"], nativeId: flags["caller-native-id"] })
     if (caller && JSON.stringify(caller) !== JSON.stringify(explicit)) nativeFail()
@@ -92,6 +105,7 @@ export function classifyCaller(signals: CallerSignals, flags: Readonly<Record<st
   for (const key of ["SANE_SESSION_ID", "OPENCODE_SESSION_ID"] as const) {
     if (signals[key] !== undefined && (!nativeId || !nonempty(signals[key]) || signals[key] !== nativeId || (key === "OPENCODE_SESSION_ID" && harness !== "oc"))) nativeFail()
   }
+  if (bootstrap) return { actorKind: "native-bootstrap", envelope: bootstrap }
   if (caller) return { actorKind: "native", envelope: caller }
   if (ref) return { actorKind: "native-ref", ref }
   return { actorKind: "local" }
@@ -139,6 +153,7 @@ export function parseCliCommand(args: readonly string[], signals: CallerSignals 
       }
     }
     const caller = classifyCaller(signals, options)
+    if (caller.actorKind === "native-bootstrap" && !["init", "inspect"].includes(command)) throw new ParseFailure("NATIVE_CONTEXT_UNAVAILABLE", "Native conversation is not enrolled. Run sane init if needed, then sane_link with empty arguments or a kickoff sane_handoff.")
     if (!Object.hasOwn(commandFlags, command)) fail("Unknown command.")
     if (options.json && options.verbose) fail("--json conflicts with --verbose.")
     if (options.workstream) safeId(options.workstream as string)

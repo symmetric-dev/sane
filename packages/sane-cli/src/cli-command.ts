@@ -74,6 +74,28 @@ async function executeCliFull(args: readonly string[], runtime: CliRuntime = {})
   const cwd = runtime.cwd ?? process.cwd()
   const o = intent.options
   const arg = (key: string) => o[key] as string
+  if (intent.caller.actorKind === "native-bootstrap") {
+    // Bootstrap is deliberately separate from enrolled mutation authority.
+    // Recheck source, repository and native execution checkout before init;
+    // --repo and shell directory changes cannot redirect this authority.
+    const envelope = intent.caller.envelope, source = normalizeNativeSource(envelope.source)
+    if (source.authorityId !== envelope.authorityId) throw new DomainError("NATIVE_CONTEXT_UNAVAILABLE", "Caller source and authority do not agree.")
+    const discovery = discoverRepository(envelope.executionCheckout)
+    const current = discoverRepository(cwd), target = discoverRepository(resolve(cwd, intent.repository ?? cwd))
+    if (discovery.primaryCheckout !== envelope.repository || discovery.invocationCheckout.path !== envelope.executionCheckout || current.invocationCheckout.path !== envelope.executionCheckout || target.commonDir !== discovery.commonDir || target.primaryCheckout !== discovery.primaryCheckout) throw new DomainError("INVALID_CONTEXT", "Bootstrap caller repository or execution checkout changed.")
+    const availability = inspectRepositoryStore(discovery)
+    if (availability.state === "ready") {
+      const domain = openRepositoryDomain(availability.context)
+      try {
+        const ref = { harness: source.descriptor.harness, authorityId: source.authorityId, nativeId: envelope.nativeId }
+        if (domain.getConversation(ref) && domain.resolveContext(ref).executionCheckout !== envelope.executionCheckout) throw new DomainError("INVALID_CHECKOUT", "Native directory differs from the enrolled execution checkout.")
+      } finally { domain.close() }
+    }
+    if (intent.operation === "inspect") return availability
+    if (intent.operation !== "init") throw new DomainError("NATIVE_CONTEXT_UNAVAILABLE", "Bootstrap context only permits init and inspect.")
+    if (availability.state !== "ready" && availability.state !== "uninitialized") throw new DomainError(availability.code, availability.message)
+    return o["dry-run"] ? { dryRun: true, operation: "init", availability } : initializeRepository(discovery)
+  }
   if (intent.operation === "native-config") {
     const configuration = nativeIntegrationConfiguration({ pluginDirectory: arg("plugin-directory"), registrationFile: arg("registration-file"), profileRoot: arg("profile-root"), bindingRoot: arg("binding-root"), bunExecutable: arg("bun-executable"), appConnectionFile: arg("app-connection-file") })
     switch (arg("format")) {

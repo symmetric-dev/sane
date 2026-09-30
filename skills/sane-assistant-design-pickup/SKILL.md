@@ -8,7 +8,7 @@ description: Use when starting a new SANE Design Assistant session.
 ## Workstream Setup
 
 1. Read `<workstream>/README.md`, run `sane view`, and run `sane provide design` to supply missing starters.
-2. Link this session with `sane_link` (`slot: "design"`). If another session occupies the slot, ask the user before replacing it with `force: true`.
+2. Link this session with `sane_link` (`slot: "design"`).
 
 ## Required Inputs
 
@@ -18,7 +18,7 @@ description: Use when starting a new SANE Design Assistant session.
 
 ## Initial Handoff Context
 
-If the initial message is a handoff, retain the request, referenced documents, and originating session id from `Handoff From:`.
+If the initial message is a handoff, retain the request, referenced documents, and qualified sender identity from `From:`.
 
 ## Readiness and User Confirmation
 

@@ -4,6 +4,7 @@ import { fileURLToPath } from "node:url"
 import { dirname, join, resolve } from "node:path"
 import { injectAgentModel, loadAgentModelConfig, validateAgentTaskPermissions } from "./agent-model-config.ts"
 import { ccAgentFilename, parseSaneAgent, serializeCcAgent, serializeCcSettings } from "./agent-serialization.ts"
+import { CLAUDE_PRE_TOOL_USE_MATCHER } from "./native-configuration.ts"
 
 export const AGENT_FILENAMES = [
   "sane/assistant/design.md",
@@ -382,6 +383,51 @@ function isPlainObject(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value)
 }
 
+/** Upgrade only existing native SANE hooks, retaining their configured command paths. */
+async function loadClaudeHookSettingsEntries(homeDirectory: string): Promise<LoadedInstallationEntry[]> {
+  const destination = join(homeDirectory, ".claude", "settings.json")
+  await validateDestinationParent(destination)
+  const stat = await lstatOrUndefined(destination)
+  if (!stat) return []
+  if (!stat.isFile()) {
+    throw new AgentContextPackageInstallationError(`Destination is not a regular file: ${destination}`)
+  }
+  const existing = await readFile(destination, "utf8")
+  let parsed: unknown
+  try {
+    parsed = JSON.parse(existing)
+  } catch {
+    throw new AgentContextPackageInstallationError(`Existing Claude settings are not valid JSON: ${destination}`)
+  }
+  if (!isPlainObject(parsed)) {
+    throw new AgentContextPackageInstallationError(`Existing Claude settings are not a JSON object: ${destination}`)
+  }
+  if (!isPlainObject(parsed.hooks) || !Array.isArray(parsed.hooks.PreToolUse)) return []
+  const isSaneHook = (hook: unknown): boolean =>
+    isPlainObject(hook) && hook.type === "command" && typeof hook.command === "string" &&
+    /\/runtime\/packages\/sane-cli\/src\/native-claude-hook\.ts(?:['"])?(?=\s|$)/.test(hook.command)
+  let found = false
+  let changed = false
+  parsed.hooks.PreToolUse = parsed.hooks.PreToolUse.flatMap((entry: unknown) => {
+    if (!isPlainObject(entry) || !Array.isArray(entry.hooks) || !entry.hooks.some(isSaneHook)) return [entry]
+    found = true
+    if (entry.matcher === CLAUDE_PRE_TOOL_USE_MATCHER) return [entry]
+    changed = true
+    if (entry.hooks.every(isSaneHook)) return [{ ...entry, matcher: CLAUDE_PRE_TOOL_USE_MATCHER }]
+    // Keep mixed hook groups in order without broadening unrelated hook matchers.
+    return entry.hooks.map((hook: unknown) => ({
+      ...entry,
+      ...(isSaneHook(hook) ? { matcher: CLAUDE_PRE_TOOL_USE_MATCHER } : {}),
+      hooks: [hook],
+    }))
+  })
+  return found ? [{
+    source: "generated:claude-sane-hook-matcher",
+    destination,
+    content: changed ? `${JSON.stringify(parsed, null, 2)}\n` : existing,
+  }] : []
+}
+
 /**
  * Build the `<home>/.config/opencode/package.json` entry that guarantees the
  * installed plugin's `@opencode/plugin` import resolves at OpenCode
@@ -514,8 +560,10 @@ export async function installSaneAgentContextPackages(
   }
   const configPackageEntry = options.onlySkill === undefined
     ? [await loadConfigPackageEntry(homeDirectory, sourceRoot)] : []
+  const claudeHookSettingsEntries = options.onlySkill === undefined
+    ? await loadClaudeHookSettingsEntries(homeDirectory) : []
   const plannedEntries = await planDestinations(
-    [...configuredEntries, ...configPackageEntry],
+    [...configuredEntries, ...configPackageEntry, ...claudeHookSettingsEntries],
     options.overwrite === true,
   )
   const removals = options.onlySkill === undefined ? await planRetiredSkillRemovals(homeDirectory) : []

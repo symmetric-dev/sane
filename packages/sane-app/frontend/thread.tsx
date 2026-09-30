@@ -1,14 +1,14 @@
 import { createContext, useContext, useEffect, useRef, useState, useSyncExternalStore, type ReactNode } from "react";
 import type { WorkerRecord } from "../src/worker-contract";
-import { useWorkers, openWorker } from "./worker-client";
-import { WorkerCard, WorkerSection } from "./worker-ui";
+import { useWorkers, openWorker, workerReference } from "./worker-client";
+import { WorkerCard, WorkerSection, WorkersButton } from "./worker-ui";
 import type { Harness, ToolPart } from "./types";
 import { AssistantRuntimeProvider, MessagePrimitive, ThreadPrimitive, useAuiState, useExternalStoreRuntime, type ThreadMessageLike } from "@assistant-ui/react";
 import { ChatInput } from "./chat-input";
 import { ChatScroll } from "./chat-scroll";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
-import { FiArrowUpRight, FiChevronDown, FiCommand, FiInfo, FiZap } from "react-icons/fi";
+import { FiArrowLeft, FiArrowUpRight, FiChevronDown, FiCommand, FiInfo, FiZap } from "react-icons/fi";
 import { store, type State } from "./store";
 import { Interactions } from "./interactions";
 import { catalog } from "./catalog";
@@ -16,7 +16,8 @@ import { ShellDialog } from "./shell-dialog";
 import { Icon } from "./nav";
 import { AgentAvatar } from "./agent-visuals";
 import { AgentPicker } from "./agent-picker";
-import { active, harnessName, harnessShort, type Message, type Run, type UsageSnapshot } from "./types";
+import { BranchAction, BranchLinks } from "./branch-ui";
+import { active, harnessName, type Message, type Run, type UsageSnapshot } from "./types";
 
 const json = (value: unknown) => typeof value === "string" ? value : JSON.stringify(value, null, 2) ?? "Unavailable";
 const number = (value: unknown, suffix = "") => typeof value === "number" && Number.isFinite(value) && value >= 0 ? `${value.toLocaleString(undefined, { maximumFractionDigits: 6 })}${suffix}` : "Unavailable";
@@ -34,7 +35,7 @@ function Markdown({ text }: { text: string }) {
   return <div className="prose"><ReactMarkdown remarkPlugins={[remarkGfm]} skipHtml components={{ pre: CodeBlock, a: ({ children, href }) => <a href={href} target="_blank" rel="noopener noreferrer">{children}</a>, img: ({ alt }) => <span className="muted">[Image: {alt || "image omitted"}]</span> }}>{text}</ReactMarkdown></div>;
 }
 
-export type TranscriptContextValue = { sessionId: string; harness: Harness; messages: Message[]; runs: Run[]; workers: WorkerRecord[]; openWorker: (worker: WorkerRecord) => void };
+export type TranscriptContextValue = { sessionId: string; harness: Harness; messages: Message[]; runs: Run[]; workers: WorkerRecord[]; openWorker: (worker: WorkerRecord) => void; branchEnabled?: boolean };
 export const TranscriptContext = createContext<TranscriptContextValue | null>(null);
 function TranscriptTool({ part, source }: { part: ToolPart; source: Message }) {
   const context = useContext(TranscriptContext)!;
@@ -48,6 +49,7 @@ export function ChatMessage() {
    const source = context.messages.find(m => m.id === message.id);
   const isUser = message.role === "user";
   const plain = message.content.filter(p => p.type === "text").map(p => p.text).join("\n\n");
+  const lastInTurn = source && (source.runId === "native-import" ? context.messages.slice(context.messages.indexOf(source) + 1).find(m => m.role === "assistant" || m.role === "user")?.role !== "assistant" : !context.messages.slice(context.messages.indexOf(source) + 1).some(m => m.runId === source.runId && m.role === "assistant"));
   return <MessagePrimitive.Root className={`message ${isUser ? "user-message" : "assistant-message"}`}>
     {!isUser && <div className="assistant-label"><FiZap size={13} aria-hidden="true" /> {source?.role === "system" ? `${harnessName(harness)} · System` : harnessName(harness)}</div>}
     <div className={isUser ? "user-bubble" : "assistant-body"}>
@@ -60,6 +62,7 @@ export function ChatMessage() {
       {!isUser && source?.runId !== "native-import" && message.status?.type === "incomplete" && <p className="run-warning" role="status">{message.status.reason === "error" ? "This run failed. The response may be incomplete." : "This run was interrupted or its completion is unknown."} See details for the recorded evidence.</p>}
     </div>
     {!isUser && plain && <div className="message-actions"><Copy text={plain} label="Copy response" /></div>}
+    {context.branchEnabled && source?.role === "assistant" && lastInTurn && (source.runId === "native-import" ? harness === "opencode" && source.status === "completed" : context.runs.some(r => r.id === source.runId && r.status === "completed")) && <BranchAction sessionId={context.sessionId} harness={harness} {...(source.runId === "native-import" ? { messageId: source.id } : { runId: source.runId })} />}
   </MessagePrimitive.Root>;
 }
 
@@ -71,10 +74,12 @@ export function convertMessage(message: Message): ThreadMessageLike {
 
 export function Thread({ state }: { state: State }) {
   const workers = useWorkers(state.selected).workers;
+  const parentId = workerReference(state.selected)?.parent.sessionId;
   const [ack, setAck] = useState("");
   const [helpOpen, setHelpOpen] = useState(false);
   const [pickerOpen, setPickerOpen] = useState(false);
   const needsAck = !!state.conversations.find(c => c.id === state.selected && c.harness === "claude-code")?.attachment;
+  const conversation = state.conversations.find(c => c.id === state.selected);
   useEffect(() => setAck(""), [state.selected]);
   const send = (text: string) => { const stopped = ack === state.selected && !!ack; setAck(""); return store.send(text, stopped); };
   const repository = useSyncExternalStore(catalog.subscribe, catalog.snapshot);
@@ -84,7 +89,7 @@ export function Thread({ state }: { state: State }) {
   const modelUnavailable = store.modelUnavailable();
   const profile = store.effectiveProfile();
   // Chip modes: new conversation picks freely; a Base conversation may be upgraded once; an assistant is fixed.
-  const fixed = !!state.selected && store.conversationKind() === "assistant";
+  const fixed = !!state.selected && (store.conversationKind() === "assistant" || !!parentId);
   useEffect(() => { if (harness === "opencode" && (state.modelsCwd !== workspace || (!state.modelsLoaded && !state.modelsLoading && !state.modelsError))) { const timer = setTimeout(() => void store.loadModels(), 300); return () => clearTimeout(timer); } }, [harness, workspace, state.modelsCwd, state.modelsLoaded, state.modelsLoading, state.modelsError]);
   const running = state.runs.some(run => active(run.status));
   // Warn-not-fail: a saved default absent from the live per-cwd catalog does
@@ -93,10 +98,10 @@ export function Thread({ state }: { state: State }) {
   const nativeIssue = [...state.runs].reverse().find(run => active(run.status) && run.nativeConnection && run.nativeConnection !== "connected");
   const latestRun = state.runs.at(-1);
   const runtime = useExternalStoreRuntime({ messages: state.messages, convertMessage, isRunning: running,
-    isSendDisabled: state.sending || !state.connected || !state.availability.canSend || modelUnavailable || !!store.executionUnavailable(),
+    isSendDisabled: running || state.loading || state.sending || !state.connected || !state.availability.canSend || modelUnavailable || !!store.executionUnavailable(),
     onNew: async message => { const text = message.content.filter(p => p.type === "text").map(p => p.text).join("\n"); await send(text); },
   });
-  const sendDisabled = running || state.sending || !state.connected || !state.availability.canSend || modelUnavailable || !!store.executionUnavailable() || (needsAck && ack !== state.selected);
+  const sendDisabled = running || state.loading || state.sending || !state.connected || !state.availability.canSend || modelUnavailable || !!store.executionUnavailable() || (needsAck && ack !== state.selected);
   const infoIssue = state.submissionError || (harness === "opencode" && state.modelsError) || store.executionUnavailable() || (!state.connected ? "Reconnecting to the bridge…" : "") || (!state.availability.canSend && state.availability.reason) || (modelUnavailable ? "Waiting for the OpenCode model catalog for this directory." : "");
   const footer = <>
         {state.submissionError && <p className="notice error" role="alert">{state.submissionError}</p>}
@@ -104,19 +109,22 @@ export function Thread({ state }: { state: State }) {
         {needsAck && <label className="notice"><input type="checkbox" checked={ack === state.selected} onChange={e => setAck(e.target.checked ? state.selected : "")} />I confirm external Claude execution for this conversation is stopped before this send.</label>}
         {missingModel && <p className="notice" role="status">Model {missingModel} is not in the current OpenCode catalog for this directory. Sending will still use this selection.</p>}
         {state.conversations.find(c => c.id === state.selected)?.attachment?.state === "pending" && <p className="notice error">Attachment incomplete. Use Attach native conversation with the same ID and checkout to retry. {state.conversations.find(c => c.id === state.selected)?.attachment?.error}</p>}
-        <form className="composer" onSubmit={event => { event.preventDefault(); if (!sendDisabled) void send(store.draft().text); }}>
+         {!conversation?.replacedBy && <form className="composer" onSubmit={event => { event.preventDefault(); if (!sendDisabled) void send(store.draft().text); }}>
           <ChatInput key={store.draftKey()} text={draft.text} save={text => store.setDraft({ text })} submit={() => { if (!sendDisabled) void send(store.draft().text); }} className="composer-input" rows={2} placeholder={state.selected ? "Continue the conversation…" : `Ask ${harnessName(harness)} anything…`} aria-label="Message" />
           <div className="composer-toolbar"><div className="composer-options">
             {profile ? fixed
-              ? <span className="agent-chip fixed" role="status" title="This conversation runs with a fixed assistant."><AgentAvatar profile={profile} size={20} /><span className="agent-chip-label">{profile.label}</span><span className="harness-badge">{harnessShort(profile.harness)}</span></span>
-              : <button type="button" className="agent-chip" aria-haspopup="dialog" disabled={state.sending} title={state.selected ? store.pendingUpgrade() ? "Assistant assigned on your next message" : "Assign an assistant to this conversation" : "Choose an agent for this conversation"} aria-label={`${state.selected ? "Agent" : "Agent for new conversation"}: ${profile.label}${store.pendingUpgrade() ? " (pending)" : ""}`} onClick={() => setPickerOpen(true)}><AgentAvatar profile={profile} size={20} /><span className="agent-chip-label">{profile.label}</span>{store.pendingUpgrade() && <span className="agent-chip-pending">pending</span>}<span className="harness-badge">{harnessShort(profile.harness)}</span><FiChevronDown size={12} aria-hidden="true" /></button>
-              : <span className="agent-chip fixed" role="status" title={fixed ? "This conversation runs with a fixed assistant." : undefined}><span className="agent-chip-label">{store.agent() || "Base"}</span><span className="harness-badge">{harnessShort(harness)}</span></span>}
-          </div><div className="composer-actions"><button type="button" className={`composer-help${infoIssue ? " has-issue" : ""}`} aria-label={infoIssue ? `Sending messages help: ${infoIssue}` : "Sending messages help"} title="Sending messages" onClick={() => setHelpOpen(true)}><FiInfo size={14} aria-hidden="true" />{infoIssue ? <span className="composer-help-dot" aria-hidden="true" /> : null}</button><button type="submit" className="send" disabled={sendDisabled || !draft.text.trim()} aria-label="Send message" title="Send message"><Icon name="send" /></button></div></div>
-        </form>
+              ? <span className="agent-chip fixed" role="status" title={profile.label}><AgentAvatar profile={profile} size={20} /><span className="agent-chip-label">{profile.label}</span></span>
+              : <button type="button" className="agent-chip" aria-haspopup="dialog" disabled={state.sending} title={profile.label} aria-label={`${state.selected ? "Agent" : "Agent for new conversation"}: ${profile.label}${store.pendingUpgrade() ? " (pending)" : ""}`} onClick={() => setPickerOpen(true)}><AgentAvatar profile={profile} size={20} /><span className="agent-chip-label">{profile.label}</span>{store.pendingUpgrade() && <span className="agent-chip-pending">pending</span>}<FiChevronDown size={12} aria-hidden="true" /></button>
+              : <span className="agent-chip fixed" role="status" title={store.agent() || "Base"}><span className="agent-chip-label">{store.agent() || "Base"}</span></span>}
+          </div><div className="composer-actions"><WorkersButton key={state.selected} sessionId={state.selected} /><button type="button" className={`composer-help${infoIssue ? " has-issue" : ""}`} aria-label={infoIssue ? `Sending messages help: ${infoIssue}` : "Sending messages help"} title="Sending messages" onClick={() => setHelpOpen(true)}><FiInfo size={14} aria-hidden="true" />{infoIssue ? <span className="composer-help-dot" aria-hidden="true" /> : null}</button><button type="submit" className="send" disabled={sendDisabled || !draft.text.trim()} aria-label="Send message" title="Send message"><Icon name="send" /></button></div></div>
+         </form>}
         {pickerOpen && <AgentPicker close={() => setPickerOpen(false)} />}
         {helpOpen && <ShellDialog title="Sending messages" close={() => setHelpOpen(false)}><div className="composer-help-notes">{infoIssue ? <p className="notice error" role="alert">{infoIssue}{harness === "opencode" && state.modelsError ? <> <button type="button" className="text-button" disabled={state.modelsLoading} onClick={() => void store.loadModels()}>Retry connection</button></> : null}</p> : null}<p className="muted">Enter inserts a newline · Ctrl/Cmd+Enter sends. Other conversations can run concurrently.</p><p className="muted">Concurrent conversations in this checkout share files; their edits can overlap.</p><p className="muted">External Claude activity cannot be detected here. Finish it in Claude before sending to this same conversation.</p></div></ShellDialog>}
       </>;
-  return <TranscriptContext.Provider value={{ sessionId: state.selected, harness, messages: state.messages, runs: state.runs, workers, openWorker }}><AssistantRuntimeProvider runtime={runtime}><ThreadPrimitive.Root className="thread">
+  return <TranscriptContext.Provider value={{ sessionId: state.selected, harness, messages: state.messages, runs: state.runs, workers, openWorker, branchEnabled: !parentId && !conversation?.worker && !conversation?.replacedBy }}><AssistantRuntimeProvider runtime={runtime}><ThreadPrimitive.Root className="thread">
+    <BranchLinks key={state.selected} conversation={conversation} />
+    {conversation?.attachment && harness === "claude-code" && <p className="notice">Branching is unavailable for imported Claude conversations: complete-turn and idle evidence cannot be established.</p>}
+    {parentId && <nav className="worker-parent-nav" aria-label="Worker navigation"><button type="button" className="text-button" disabled={state.sending} onClick={() => store.openConversation(parentId)}><FiArrowLeft size={14} aria-hidden="true" />Back to parent</button><span className="muted">Worker conversation</span></nav>}
     <ChatScroll resetKey={state.selected || `new:${repository.navigation.worktreeId}`} footer={footer}>
       <div className="transcript">
         {!state.messages.length && <div className="welcome"><span className="welcome-mark" aria-hidden="true"><FiZap size={44} aria-hidden="true" /></span><p className="eyebrow">YOUR LOCAL WORKSPACE</p><h1>{state.loading ? "Opening your conversation…" : state.selected ? "A little space to think." : "What shall we work on?"}</h1><p>{state.loading ? "Loading the bridge’s recorded history." : `Explore an idea, untangle a problem, or build something useful with ${harnessName(harness)}.`}</p>{!state.selected && <div className="suggestions">{["Help me understand this project", "Plan a thoughtful next step", "Review my recent changes"].map(text => <button key={text} type="button" onClick={() => store.setDraft({ text })}>{text}<FiArrowUpRight size={13} aria-hidden="true" /></button>)}</div>}</div>}
@@ -124,7 +132,6 @@ export function Thread({ state }: { state: State }) {
         {state.nativeHistory && <p className="notice" role="status">Native snapshot imported {new Date(state.nativeHistory.importedAt).toLocaleString()} · activity {state.nativeHistory.activity}. {state.nativeHistory.reason}</p>}
         {harness === "claude-code" && state.nativeHistory && <details className="notice"><summary>Native Claude transcript snapshot · separate from App run history</summary><p>Run correspondence is unavailable. App submissions and failures below are preserved.</p>{state.nativeHistory.messages.map(message => <section key={message.messageId}><strong>{message.role}</strong>{message.parts.map(part => part.type === "tool" ? <details key={part.id}><summary>{part.name} · {part.status}</summary><pre>{json(part.input)}</pre><pre>{json(part.output ?? part.error)}</pre></details> : <Markdown key={part.id} text={part.text} />)}</section>)}</details>}
         <ThreadPrimitive.Messages components={{ Message: ChatMessage }} />
-        {state.selected && <WorkerSection sessionId={state.selected} />}
         {running && <p className="working" role="status"><span className="pulse" />{!state.connected ? "Connection unavailable. The run’s current state is not yet known." : nativeIssue ? nativeIssue.nativeReason || "OpenCode connection unavailable; execution state remains unconfirmed." : `${harnessName(harness)} is working. New output will appear here.`}{store.capabilities()?.cancelRun && <button type="button" className="text-button" disabled={state.actionBusy || !state.connected} onClick={() => void store.cancel()}>Stop run</button>}</p>}
         {state.sending && !running && <p className="working" role="status"><span className="pulse" />Submitting… New output will appear here.</p>}
         {latestRun?.status === "failed" && latestRun.nativeReason && <p className="notice error" role="alert">Run failed: {latestRun.nativeReason}</p>}

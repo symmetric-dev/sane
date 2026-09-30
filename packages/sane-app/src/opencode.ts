@@ -126,6 +126,11 @@ export class OpenCodeAdapter {
     return data;
   }
   async session(id: string) { return (await this.request<{ data: NativeSession }>(this.path(id))).data; }
+  async fork(id: string, cwd: string, boundary: string, before?: string, beforeSend?: () => void) {
+    const { data } = await this.request<{ data: NativeSession & { fork?: { sessionID: string; boundary: { type: string; messageID: string } } } }>(this.path(id) + "/fork", "POST", before ? { before } : {}, beforeSend);
+    if (!data || !/^ses[a-zA-Z0-9_-]+$/.test(data.id) || data.id === id || data.location?.directory !== cwd || data.fork?.sessionID !== id || data.fork.boundary.type !== (before ? "before" : "through") || data.fork.boundary.messageID !== (before ?? boundary)) throw new OpenCodeError("Native fork acknowledgement mismatch; do not retry creation", 409);
+    return data;
+  }
   /** Recover an admission from confirmed Session.Info, never today's agent defaults.
    * Reusable for assistant/worker admissions whose App metadata was not committed. */
   async recoverLaunch(id: string, cwd: string, expectedAgent: string): Promise<OpenCodeLaunch> {
@@ -166,7 +171,8 @@ export class OpenCodeAdapter {
         // Pagination is not a transactional native snapshot. Report activity and
         // reject a moving transcript rather than importing a mixed history.
         if (before.session.time.updated !== after.session.time.updated) throw new OpenCodeError("Native history changed during reconciliation; retry after native activity settles", 409);
-        return { messages: messages.reverse().map(normalizeMessage).filter((m): m is MessageSnapshot => !!m), activity: after.active || after.pending ? "active" as const : "idle" as const };
+        const rawMessages = messages.reverse();
+        return { rawMessages, messages: rawMessages.map(normalizeMessage).filter((m): m is MessageSnapshot => !!m), activity: after.active || after.pending ? "active" as const : "idle" as const };
       }
     }
     throw new OpenCodeError("History exceeds 10,000-message import budget; no partial import");

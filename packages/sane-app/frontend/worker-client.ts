@@ -11,6 +11,8 @@ let viewer: WorkerRecord | null = null;
 let references: Record<string, WorkerSessionMetadata> = {};
 let opening = { sessionId: "", loading: false, error: "" };
 let openGeneration = 0;
+let navigateToWorker: (sessionId: string) => void = () => {};
+export function setWorkerNavigator(navigate: (sessionId: string) => void) { navigateToWorker = navigate; }
 const listeners = new Set<() => void>();
 const emit = () => listeners.forEach(fn => fn());
 const subscribe = (fn: () => void) => { listeners.add(fn); return () => { listeners.delete(fn); }; };
@@ -28,28 +30,32 @@ export const knownWorker = (id: string) => {
   return matches[0];
 };
 export const workerReference = (id: string) => references[id] ?? knownWorker(id);
+export function directWorkerCounts(): Map<string, number> {
+  const children = new Map<string, Set<string>>();
+  const add = (worker: WorkerSessionMetadata) => {
+    const ids = children.get(worker.parent.sessionId) ?? new Set<string>();
+    ids.add(worker.id); children.set(worker.parent.sessionId, ids);
+  };
+  Object.values(references).forEach(add);
+  Object.values(projections).forEach(projection => projection.workers.forEach(add));
+  return new Map([...children].map(([id, workers]) => [id, workers.size]));
+}
 export function registerWorkerSessions(sessions: { id: string; worker?: WorkerSessionMetadata }[]) {
   const next = Object.fromEntries(sessions.filter(s => s.worker).map(s => [s.id, s.worker!]));
   if (JSON.stringify(references) === JSON.stringify(next)) return;
   references = next; projections = { ...projections }; emit();
 }
 export async function openWorkerSession(sessionId: string): Promise<void> {
-  const reference = workerReference(sessionId), generation = ++openGeneration;
-  viewer = null; opening = { sessionId, loading: true, error: "" }; emit();
-  try {
-    if (!reference) throw new Error("Worker relationship metadata is unavailable.");
-    const projection = await workerClient.list(reference.parent.sessionId);
-    if (generation !== openGeneration) return;
-    publishWorkers(reference.parent.sessionId, projection);
-    const worker = projection.workers.find(w => w.id === reference.id && w.sessionId === sessionId && w.parent.sessionId === reference.parent.sessionId && w.parent.runId === reference.parent.runId && w.parent.toolCallId === reference.parent.toolCallId);
-    if (!worker) throw new Error("Worker was not found in its parent's worker list.");
-    viewer = worker; opening = { sessionId: "", loading: false, error: "" }; emit();
-  } catch (e) { if (generation === openGeneration) { opening = { sessionId, loading: false, error: e instanceof Error ? e.message : "Could not open worker" }; emit(); } }
+  closeWorker();
+  navigateToWorker(sessionId);
 }
 export function useWorkerOpening() { return useSyncExternalStore(subscribe, () => opening); }
 export function useWorkers(id: string) { return useSyncExternalStore(subscribe, () => workersFor(id)); }
 export function useWorkerDiscovery() { return useSyncExternalStore(subscribe, () => projections); }
-export const openWorker = (worker: WorkerRecord) => { ++openGeneration; opening = { sessionId: "", loading: false, error: "" }; viewer = worker; emit(); };
+export const openWorker = (worker: WorkerRecord) => {
+  references = { ...references, [worker.sessionId]: { id: worker.id, parent: worker.parent } };
+  void openWorkerSession(worker.sessionId);
+};
 export const closeWorker = () => { ++openGeneration; opening = { sessionId: "", loading: false, error: "" }; viewer = null; emit(); };
 export function useWorkerViewer() { return useSyncExternalStore(subscribe, () => viewer); }
 export function useWorkerPolling(id: string | null) {

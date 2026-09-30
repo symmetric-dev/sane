@@ -1,5 +1,6 @@
 import type { CSSProperties, KeyboardEvent } from "react";
 import type { IconType } from "react-icons";
+import { ASSISTANT_AGENT_LABELS, WORKER_AGENT_CATALOG, isAssistantAgentId, isWorkerAgentId } from "sane-core/agent-catalog";
 import { FiBookOpen, FiBox, FiCheck, FiCircle, FiClipboard, FiCode, FiCoffee, FiCompass, FiCpu, FiDatabase, FiFeather, FiFlag, FiGitBranch, FiGlobe, FiLayers, FiMoon, FiPenTool, FiSearch, FiShield, FiStar, FiSun, FiTarget, FiTerminal, FiTool, FiZap } from "react-icons/fi";
 import type { AgentColor, AgentColorId, AgentIconId, AgentProfile } from "../src/agent-profiles-contract";
 import { harnessName, harnessShort } from "./types";
@@ -23,12 +24,14 @@ export function AgentAvatar({ profile, size = 32 }: { profile: Visual; size?: nu
 }
 
 /** Shared profile tile for the picker and the Config grid. */
-export function AgentCard({ profile, selected, disabled, reason, tag, onSelect, onKeyDown }: { profile: AgentProfile; selected?: boolean; disabled?: boolean; reason?: string; tag?: string; onSelect?: () => void; onKeyDown?: (event: KeyboardEvent<HTMLButtonElement>) => void }) {
+export function AgentCard({ profile, selected, disabled, reason, tag, edit, onSelect, onKeyDown }: { profile: AgentProfile; selected?: boolean; disabled?: boolean; reason?: string; tag?: string; edit?: boolean; onSelect?: () => void; onKeyDown?: (event: KeyboardEvent<HTMLButtonElement>) => void }) {
+  const defaultModel = profile.harness === "opencode" && profile.kind !== "base" ? "Agent default model" : "Native default model";
   return <button type="button" className="agent-card" aria-pressed={selected} aria-disabled={disabled || undefined} title={disabled ? reason : profile.description || undefined} data-agent-id={profile.id} onKeyDown={onKeyDown} onClick={() => { if (!disabled) onSelect?.(); }}>
-    <span className="agent-card-head"><AgentAvatar profile={profile} />{selected && <span className="agent-card-check" aria-hidden="true"><FiCheck size={12} /></span>}</span>
+    <span className="agent-card-head"><AgentAvatar profile={profile} />{edit && <span className="agent-card-edit">Edit<span className="sr-only"> {profile.label}</span></span>}{selected && <span className="agent-card-check" aria-hidden="true"><FiCheck size={12} /></span>}</span>
     <span className="agent-card-label">{profile.label}{tag && <span className="harness-badge">{tag}</span>}</span>
-    <span className="agent-card-description">{profile.description || (profile.kind === "base" ? "Harness defaults." : "SANE assistant.")}</span>
-    <span className="agent-card-footer"><span className="harness-badge" title={harnessName(profile.harness)}>{harnessShort(profile.harness)}</span><span className="agent-card-model">{profileSummary(profile)}</span></span>
+    {edit && <span className="agent-card-role">{profile.kind === "base" ? "Base · No role" : isWorkerAgentId(profile.role) ? `Worker · ${WORKER_AGENT_CATALOG[profile.role].label}` : isAssistantAgentId(profile.role) ? `Assistant · ${ASSISTANT_AGENT_LABELS[profile.role]}` : profile.role}</span>}
+    <span className="agent-card-description">{profile.description || (profile.kind === "base" ? "Harness defaults." : profile.kind === "worker" ? "SANE worker." : "SANE assistant.")}</span>
+    <span className="agent-card-footer"><span className="harness-badge" title={harnessName(profile.harness)}>{edit ? harnessName(profile.harness) : harnessShort(profile.harness)}</span><span className="agent-card-model">{edit ? [profile.model || defaultModel, profile.effort].filter(Boolean).join(" · ") : profileSummary(profile)}</span></span>
     {disabled && reason && <span className="sr-only">Unavailable: {reason}</span>}
   </button>;
 }
@@ -36,7 +39,7 @@ export function AgentCard({ profile, selected, disabled, reason, tag, onSelect, 
 /** Arrow-key roving focus across `.agent-card` buttons inside `container`. */
 export function moveCardFocus(event: KeyboardEvent<HTMLElement>, container: HTMLElement | null) {
   if (!container || !["ArrowRight", "ArrowLeft", "ArrowDown", "ArrowUp", "Home", "End"].includes(event.key)) return;
-  const cards = [...container.querySelectorAll<HTMLButtonElement>(".agent-card")];
+  const cards = [...container.querySelectorAll<HTMLButtonElement>(".agent-card")].filter(card => !card.closest("[hidden]"));
   const index = cards.indexOf(document.activeElement as HTMLButtonElement);
   if (index < 0) return;
   event.preventDefault();

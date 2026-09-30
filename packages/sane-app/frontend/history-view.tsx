@@ -13,6 +13,7 @@ import type { WorkstreamOverview } from "../src/workstreams-contract";
 import { worktreeDisplay, worktreeLabel } from "./catalog-selector";
 import { workerReference as knownWorker, knownWorker as hydratedWorker, openWorkerSession, useWorkerDiscovery, useWorkerPolling } from "./worker-client";
 import { WorkerCard, WorkerSection } from "./worker-ui";
+import { BranchLinks } from "./branch-ui";
 
 const basename = (path?: string | null) => path?.split("/").filter(Boolean).at(-1) || path || "Conversation";
 
@@ -61,7 +62,7 @@ export function HistoryView({ state, onChoose }: { state: State; onChoose: (id: 
   const overview = useWorkstreamOverview(nav.workspaceId);
   const deferred = useDeferredValue(filter);
   const workstreamMap = useMemo(() => buildWorkstreamMap(overview, state.conversations), [overview, state.conversations]);
-  const visible = useMemo(() => filterConversations([...state.conversations].reverse(), deferred, { workstreamMap }), [state.conversations, deferred, workstreamMap]);
+  const visible = useMemo(() => filterConversations([...state.conversations].reverse(), deferred, { workstreamMap, includeReplaced: true }), [state.conversations, deferred, workstreamMap]);
   const hits = useMessageHits(deferred.query, deferred.workspaceId, deferred.worktreeId);
   const groups = useMemo(() => {
     const selected = repository.workspaces.find(w => w.workspaceId === nav.workspaceId);
@@ -92,11 +93,11 @@ export function HistoryView({ state, onChoose }: { state: State; onChoose: (id: 
         const worktree = repository.workspaces.find(w => w.workspaceId === c.workspaceId)?.worktrees.find(t => t.worktreeId === c.worktreeId);
         return <li key={c.id} className="history-row">
           <button type="button" className={state.selected === c.id ? "selected" : ""} aria-current={state.selected === c.id ? "page" : undefined} onClick={() => onChoose(c.id)} title={c.title ? `${c.title}\n${c.cwd}` : c.cwd}>
-            <span className="history-title">{formatTitle(c.title, basename(c.cwd))}</span>
+            <span className="history-title">{formatTitle(c.title, basename(c.cwd))}{c.replacedBy ? " · Replaced" : c.branchOrigin ? " · Branch" : ""}</span>
             <span className="history-meta"><span className="harness-badge" title={harnessName(c.harness)}>{harnessShort(c.harness)}</span>{c.hidden && <span className="harness-badge">Hidden</span>}{membership?.workstreamId && <WorkstreamBadge workstreamId={membership.workstreamId} phases={membership.phases} />}{active(c.status) && <span className="pulse" />}{c.status}</span>
             <small className="history-worktree" title={c.cwd || undefined}>{c.association === "resolved" && worktree ? `${worktreeDisplay(worktree)} · ${basename(c.cwd)}` : worktree ? `${worktreeLabel(worktree)} · ${basename(c.cwd)}` : c.association === "resolved" ? basename(c.cwd) : "Execution workspace unavailable"}</small>
           </button>
-          <ConversationMenu conversationId={c.id} hidden={c.hidden} disabled={state.actionBusy} />
+          <ConversationMenu conversationId={c.id} hidden={c.hidden} disabled={state.actionBusy || !!c.replacedBy} />
         </li>;
       })}</ul></section>;
     })}
@@ -115,7 +116,7 @@ function useHistoryData(state: State) {
   const overview = useWorkstreamOverview(nav.workspaceId);
   const deferred = useDeferredValue(filter);
   const workstreamMap = useMemo(() => buildWorkstreamMap(overview, state.conversations), [overview, state.conversations]);
-  const visible = useMemo(() => filterConversations([...state.conversations].reverse(), deferred, { workstreamMap }), [state.conversations, deferred, workstreamMap]);
+  const visible = useMemo(() => filterConversations([...state.conversations].reverse(), deferred, { workstreamMap, includeReplaced: true }), [state.conversations, deferred, workstreamMap]);
   const hits = useMessageHits(deferred.query, deferred.workspaceId, deferred.worktreeId);
   const groups = useMemo(() => {
     const selected = repository.workspaces.find(w => w.workspaceId === nav.workspaceId);
@@ -152,7 +153,7 @@ export function HistoryList({ state, previewId, onPreview }: { state: State; pre
         const workspaceLabel = workspaceName ?? (c.association === "resolved" ? basename(c.cwd) : "Unavailable");
         const selected = previewId === c.id;
         const phases = membership?.phases ?? [];
-        return <div className="history-row" key={c.id}><button type="button" className={selected ? "selected" : ""} aria-current={selected ? "page" : undefined} onClick={() => onPreview(c.id)} title={c.title ? `${c.title}\n${c.cwd}` : c.cwd}><span className="history-line"><span className="history-title">{formatTitle(c.title, basename(c.cwd))}</span>{knownWorker(c.id) && <span className="harness-badge">Worker</span>}{c.hidden && <span className="harness-badge">Hidden</span>}</span><span className="history-line">{(() => { const profile = store.profileFor(c); return profile?.kind === "assistant" ? <span className="agent-row-avatar" title={profile.label}><AgentAvatar profile={profile} size={16} /></span> : null; })()}<span className="harness-badge" title={harnessName(c.harness)}>{harnessShort(c.harness)}</span><span className="harness-badge workspace-badge" title={c.cwd}>{workspaceLabel}</span>{membership?.workstreamId && <WorkstreamBadge workstreamId={membership.workstreamId} phases={membership.phases} />}{!phases.length && <StatusIcon status={c.status} />}</span>{!!phases.length && <span className="history-line">{phases.map(phase => <PhaseBadge key={phase} phase={phase} />)}<StatusIcon status={c.status} /></span>}</button><ConversationMenu conversationId={c.id} hidden={c.hidden} disabled={state.actionBusy} /></div>;
+        return <div className="history-row" key={c.id}><button type="button" className={selected ? "selected" : ""} aria-current={selected ? "page" : undefined} onClick={() => onPreview(c.id)} title={c.title ? `${c.title}\n${c.cwd}` : c.cwd}><span className="history-line"><span className="history-title">{formatTitle(c.title, basename(c.cwd))}</span>{knownWorker(c.id) && <span className="harness-badge">Worker</span>}{c.replacedBy ? <span className="harness-badge">Replaced</span> : c.hidden && <span className="harness-badge">Hidden</span>}{c.branchOrigin && <span className="harness-badge">Branch</span>}</span><span className="history-line">{(() => { const profile = store.profileFor(c); return profile?.kind === "assistant" ? <span className="agent-row-avatar" title={profile.label}><AgentAvatar profile={profile} size={16} /></span> : null; })()}<span className="harness-badge" title={harnessName(c.harness)}>{harnessShort(c.harness)}</span><span className="harness-badge workspace-badge" title={c.cwd}>{workspaceLabel}</span>{membership?.workstreamId && <WorkstreamBadge workstreamId={membership.workstreamId} phases={membership.phases} />}{!phases.length && <StatusIcon status={c.status} />}</span>{!!phases.length && <span className="history-line">{phases.map(phase => <PhaseBadge key={phase} phase={phase} />)}<StatusIcon status={c.status} /></span>}</button><ConversationMenu conversationId={c.id} hidden={c.hidden} disabled={state.actionBusy || !!c.replacedBy} /></div>;
       })}</section>;
     })}{!visible.length && <p className="muted history-empty">No sessions in this selection.</p>}</nav>
   </>;
@@ -215,7 +216,8 @@ export function HistoryDetail({ state, previewId, onOpen }: { state: State; prev
     <p className="eyebrow">{worker ? "WORKER SESSION · READ-ONLY" : "SESSION PREVIEW"}</p>
     {worker && <p><button type="button" onClick={() => { if (knownWorker(worker.parent.sessionId)) void openWorkerSession(worker.parent.sessionId); else onOpen(worker.parent.sessionId); }}>Parent conversation</button> · Parent run {worker.parent.runId}</p>}
     <div className="history-detail-header"><h2 title={conversation.title || undefined}>{formatTitle(conversation.title, basename(conversation.cwd))}</h2><span className={`status ${conversation.status}`}>{conversation.status}</span>{conversation.hidden && <span className="harness-badge">Hidden</span>}</div>
-    <div className="history-detail-actions"><button type="button" className="primary-button" disabled={state.sending} onClick={() => worker ? void openWorkerSession(conversation.id) : onOpen(conversation.id)}>{worker ? "Open worker read-only" : "Open in Chat"}</button><button type="button" className="text-button" disabled={state.actionBusy} onClick={() => void (conversation.hidden ? store.unhide(conversation.id) : store.hide(conversation.id))}>{conversation.hidden ? "Unhide" : "Hide"}</button></div>
+    <BranchLinks key={conversation.id} conversation={conversation} />
+    <div className="history-detail-actions"><button type="button" className="primary-button" disabled={state.sending} onClick={() => worker ? void openWorkerSession(conversation.id) : onOpen(conversation.id)}>{worker ? "Open worker" : conversation.replacedBy ? "Open read-only transcript" : "Open in Chat"}</button>{!conversation.replacedBy && <button type="button" className="text-button" disabled={state.actionBusy} onClick={() => void (conversation.hidden ? store.unhide(conversation.id) : store.hide(conversation.id))}>{conversation.hidden ? "Unhide" : "Hide"}</button>}</div>
     {record && <WorkerCard worker={record} />}
     <WorkerSection sessionId={conversation.id} />
     <Facts values={[
@@ -226,15 +228,16 @@ export function HistoryDetail({ state, previewId, onOpen }: { state: State; prev
       ["Workspace", workspace ? workspace.name : conversation.workspaceId || "Unavailable"],
       ["Worktree", worktree ? `${worktreeDisplay(worktree)} · ${worktree.root}` : conversation.worktreeId || "Unavailable"],
       ["Worktree state", worktree?.state],
-      ["Model", conversation.model || "Native default / unchanged"],
-      ["Effort / variant", conversation.effort || "Native default / unchanged"],
-      ["Agent", store.conversationProfile(conversation.id)?.label ?? (conversation.agent || "Base")],
+      ["Saved model", conversation.model || runs[0]?.model || "No override saved"],
+      ["Saved effort / variant", conversation.effort || runs[0]?.effort || "No override saved"],
+      ["Saved conversation role", conversation.agent || "Base"],
       ["Workstream", membership?.workstreamId ? `${membership.workstreamId}${membership.phases.length ? ` · ${membership.phases.join(", ")}` : ""}` : "Unassigned"],
       ["Association", conversation.association ?? "Unavailable"],
       ["Last run ID", conversation.lastRunId],
       ["Attachment", conversation.attachment ? `${conversation.attachment.state}${conversation.attachment.error ? ` · ${conversation.attachment.error}` : ""}` : "None"],
       ["Availability", conversation.availability?.canSend ? "Can send" : conversation.availability?.reason || "Unavailable"],
     ]} />
+    <p className="muted">Saved conversation configuration is independent of current profile defaults. Model and effort fall back to the latest recorded run for older sessions; these are saved settings, not live native observations.</p>
     <h3>Runs · {loading ? "loading…" : runs.length}</h3>
     {lastActivity && <p className="muted">Last activity: {lastActivity ? new Date(lastActivity).toLocaleString() : "Unknown"}</p>}
     {loading && <p className="muted" role="status">Loading runs…</p>}

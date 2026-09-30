@@ -16,7 +16,7 @@ Read `resources/RESEARCH_REPORT_TEMPLATE.md`, run `sane research --index`, and r
 
 ## Initial Handoff Context
 
-If the initial message is a handoff, retain the question, scope, referenced evidence, and originating slot and session id from `Handoff From:`.
+If the initial message is a handoff, retain the question, scope, referenced evidence, and originating slot and qualified sender identity from `From:`.
 
 ## Readiness and User Confirmation
 

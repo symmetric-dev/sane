@@ -15,6 +15,7 @@ export type ConversationFilterState = {
 export type WorkstreamMembership = { workstreamId: string | null; phases: string[] };
 
 export type FilterConversationsOptions = {
+  includeReplaced?: boolean;
   workstreamMap?: Map<string, WorkstreamMembership>;
   searchText?: (c: Conversation) => string;
 };
@@ -71,7 +72,8 @@ export function filterConversations(
   const workstreamActive = filter.workstreamId !== "all";
 
   return conversations.filter(c => {
-    if (!filter.showDeleted && c.hidden) return false;
+    if (c.replacedBy && !opts.includeReplaced) return false;
+    if (!filter.showDeleted && c.hidden && !(c.replacedBy && opts.includeReplaced)) return false;
     if (queryHits && !queryHits.has(c.id)) return false;
     if (filter.harness !== "all" && c.harness !== filter.harness) return false;
     if (filter.status !== "all" && c.status !== filter.status) return false;

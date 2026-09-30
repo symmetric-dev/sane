@@ -1,10 +1,10 @@
-import { getSessionInfo, getSessionMessages, type SessionMessage } from "@anthropic-ai/claude-agent-sdk";
+import { forkSession, getSessionInfo, getSessionMessages, type SessionMessage } from "@anthropic-ai/claude-agent-sdk";
 import type { MessagePart, MessageSnapshot } from "./oc-contract";
 import type { Run, Session } from "./history";
 import { uuid } from "./history";
 import { open, realpath } from "node:fs/promises";
 import { constants } from "node:fs";
-import { join } from "node:path";
+import { isAbsolute, join, relative, sep } from "node:path";
 import { assertClaudeSource, claudeSourceRoot } from "./claude-source";
 
 export function coveredNativeRuns(session: Session, runs: Run[], messages: MessageSnapshot[]) {
@@ -21,9 +21,10 @@ export type ReconciledHistory = {
 
 /** Fail closed outside the verified local JSONL layout. SDKSessionInfo.cwd alone
  * is NOT evidence: installed SDK Ia falls back to the requested project path. */
-async function claudeCwdEvidence(id: string, cwd: string, root: string) {
+async function claudeCwdEvidence(id: string, cwd: string, root: string, fork?: { source: string; boundary: string }) {
   const project = cwd.replace(/[^a-zA-Z0-9]/g, "-");
   if (!uuid(id) || project.length > 200) throw new Error("Unsupported Claude transcript locator; genuine native cwd evidence is unavailable");
+  if (await realpath(cwd) !== cwd) throw new Error("Claude checkout root must be canonical for native attachment");
   if (await realpath(root) !== root) throw new Error("Claude configuration root must be canonical for native attachment");
   const path = join(root, "projects", project, `${id}.jsonl`);
   if (await realpath(path) !== path) throw new Error("Claude transcript path must be canonical for native attachment");
@@ -36,19 +37,42 @@ async function claudeCwdEvidence(id: string, cwd: string, root: string) {
     while (length < bytes.length) { const result = await file.read(bytes, length, bytes.length - length, length); if (!result.bytesRead) break; length += result.bytesRead; }
     const after = await file.stat();
     if (length !== before.size || before.size !== after.size || before.mtimeMs !== after.mtimeMs || before.ctimeMs !== after.ctimeMs) throw new Error("Claude transcript changed while checking native cwd evidence");
-    let found = false;
+    let found = false, forkFound = false;
+    const directories = new Set<string>();
     for (const line of bytes.subarray(0, length).toString("utf8").split("\n")) {
       if (!line.trim()) continue;
       const row = JSON.parse(line);
       if (row.type === "relocated") throw new Error("Relocated Claude transcript requires unsupported locator verification; no cwd inferred");
       if (row.isSidechain || (row.type !== "user" && row.type !== "assistant")) continue;
       if (row.sessionId !== id) throw new Error("Claude raw transcript session identity mismatch");
-      if (row.cwd !== undefined && row.cwd !== cwd) throw new Error("Claude raw transcript execution directory differs from the pinned conversation");
+      if (row.cwd !== undefined && !directories.has(row.cwd)) {
+        if (typeof row.cwd !== "string" || !isAbsolute(row.cwd)) throw new Error("Claude raw transcript execution directory is not an absolute path");
+        const child = relative(cwd, row.cwd);
+        // A shell cd may change cwd within the checkout. Require canonical paths
+        // so lexical containment cannot admit a symlink escape (or ../ alias).
+        if (child === ".." || child.startsWith(`..${sep}`) || isAbsolute(child) || await realpath(row.cwd) !== row.cwd) throw new Error("Claude raw transcript execution directory is not a canonical path within the pinned checkout");
+        directories.add(row.cwd);
+      }
       if (row.cwd === cwd) found = true;
+      if (fork && row.forkedFrom?.sessionId === fork.source && row.forkedFrom?.messageUuid === fork.boundary) forkFound = true;
     }
     if (!found) throw new Error("Claude transcript has no genuine native cwd evidence; SDK project-path fallback is insufficient");
-    return { size: before.size, mtime: before.mtimeMs, ctime: before.ctimeMs, ino: before.ino, dev: before.dev };
+    if (fork && !forkFound) throw new Error("Claude native fork provenance does not contain the selected source boundary");
+    return { size: before.size, mtime: before.mtimeMs, ctime: before.ctimeMs, ino: before.ino, dev: before.dev, directories: [...directories] };
   } finally { await file.close(); }
+}
+
+/** Native SDK copies the actual chain (inclusive), remaps UUIDs and records
+ * forkedFrom provenance. It does not copy undo snapshots or execute a model. */
+export async function forkClaudeHistory(source: string, cwd: string, boundary: string, root = claudeSourceRoot(), beforeFork?: () => void) {
+  assertClaudeSource(root);
+  await claudeCwdEvidence(source, cwd, root);
+  beforeFork?.();
+  return forkSession(source, { dir: cwd, upToMessageId: boundary });
+}
+export async function verifyClaudeFork(id: string, cwd: string, source: string, boundary: string, root = claudeSourceRoot()) {
+  assertClaudeSource(root);
+  await claudeCwdEvidence(id, cwd, root, { source, boundary });
 }
 
 /** SDK read-only transcript helpers plus raw local cwd evidence. Never invoke a native run. */
@@ -56,13 +80,13 @@ export async function readClaudeHistory(id: string, cwd: string, sourceRoot = cl
   assertClaudeSource(sourceRoot);
   const evidence = await claudeCwdEvidence(id, cwd, sourceRoot);
   const before = await getSessionInfo(id, { dir: cwd });
-  if (!before || before.sessionId !== id || before.cwd !== cwd) throw new Error("Claude transcript missing or its execution directory differs from the pinned conversation");
+  if (!before || before.sessionId !== id || !before.cwd || !evidence.directories.includes(before.cwd)) throw new Error("Claude transcript missing or its execution directory differs from the verified native cwd evidence");
   if (before.fileSize === undefined || before.fileSize > 16 * 1024 * 1024) throw new Error("Claude transcript size unavailable or exceeds 16 MiB import budget");
   if (before.fileSize !== evidence.size || before.lastModified !== Math.trunc(evidence.mtime)) throw new Error("SDK history does not match the verified local transcript");
   const records = await getSessionMessages(id, { dir: cwd, limit: 10001 });
   if (records.length > 10000) throw new Error("Claude transcript exceeds 10,000-message import budget");
   const after = await getSessionInfo(id, { dir: cwd });
-  if (!after || after.sessionId !== id || after.cwd !== cwd || before.lastModified !== after.lastModified || before.fileSize !== after.fileSize) throw new Error("Claude transcript changed during reconciliation; retry after native activity settles");
+  if (!after || after.sessionId !== id || after.cwd !== before.cwd || before.lastModified !== after.lastModified || before.fileSize !== after.fileSize) throw new Error("Claude transcript changed during reconciliation; retry after native activity settles");
   const finalEvidence = await claudeCwdEvidence(id, cwd, sourceRoot);
   if (JSON.stringify(evidence) !== JSON.stringify(finalEvidence)) throw new Error("Claude transcript changed during reconciliation; previous history preserved");
   assertClaudeSource(sourceRoot);

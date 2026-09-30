@@ -16,7 +16,7 @@ Read `design/SDD.md`, `design/solutions/*.md`, `resources/PLAN_TEMPLATE.md`, `re
 
 ## Initial Handoff Context
 
-If the initial message is a handoff, retain the request, referenced evidence, and originating session id from `Handoff From:`.
+If the initial message is a handoff, retain the request, referenced evidence, and qualified sender identity from `From:`.
 
 ## Readiness and User Confirmation
 

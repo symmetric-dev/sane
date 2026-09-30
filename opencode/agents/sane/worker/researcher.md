@@ -15,7 +15,7 @@ permission:
   external_directory: allow
   skill:
     "*": allow
-    "sane-*-assistant-role": deny
+    "sane-assistant-*": deny
   task: deny
 ---
 
@@ -32,7 +32,7 @@ This is a worker handoff, not a user-facing session. Do not perform Pickup, Deli
 user-question workflows; do not communicate with or ask questions of the user;
 and do not launch subagents. Return missing critical context to the launching
 agent as a blocker. You may load a directly relevant non-SANE technical or
-repository skill, but never load a `sane-*-assistant-role` skill.
+repository skill, but never load a `sane-assistant-*` skill.
 
 Follow this workflow:
 

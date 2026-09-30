@@ -1,5 +1,5 @@
 import { discoverRepository, handoffInput, normalizeNativeSource, revalidateCheckout, DomainError } from "sane-core/server";
-import type { ConversationRef, Handoff, HandoffRecipient, MutationContext } from "sane-core/contracts";
+import type { ConversationRef, Handoff, HandoffExecutionConfig, HandoffRecipient, MutationContext } from "sane-core/contracts";
 import { classifyCaller } from "../../sane-cli/src/cli-arguments";
 import type { AdmissionService } from "./admission";
 import type { CatalogService } from "./catalog";
@@ -59,7 +59,7 @@ export function slotSessionIndex(assignments: readonly SlotAssignment[], phase: 
 }
 
 export class HandoffService {
-  constructor(private admissions: AdmissionService, private catalog: CatalogService, private router: RepositoryRouter, private sources: SourceRecords, private sessions: () => Session[], private assertAvailable: () => void, private ownerId: string) {}
+  constructor(private admissions: AdmissionService, private catalog: CatalogService, private router: RepositoryRouter, private sources: SourceRecords, private sessions: () => Session[], private assertAvailable: () => void, private ownerId: string, private resolveRecipient: (to: string, checkout: string) => Promise<{ harness: HandoffRecipient["harness"]; executionConfig: HandoffExecutionConfig }>) {}
   private async caller(envelope: unknown) {
     const classified = classifyCaller({ SANE_CALLER_CONTEXT: JSON.stringify(envelope) });
     if (classified.actorKind !== "native") throw new DomainError("NATIVE_CONTEXT_UNAVAILABLE", "Qualified sender required.");
@@ -85,12 +85,13 @@ export class HandoffService {
     if (!workstream) throw new DomainError("INVALID_CONTEXT", "Sender has no workstream.");
     let recipient: HandoffRecipient;
     if (args.createNew) {
-      const source = normalizeNativeSource(this.sources[args.harness!].descriptor);
-      if (source.authorityId !== this.sources[args.harness!].authorityId) throw new DomainError("SOURCE_UNAVAILABLE", "Recipient source requires configuration refresh.");
       const checkout = args.checkout ? domain.validateExecutionCheckout(args.checkout) : workstream.defaultCheckout;
       if (!checkout) throw new DomainError("INVALID_CHECKOUT", "New recipient requires an explicit checkout or workstream default.");
       revalidateCheckout(domain.context, checkout);
-      recipient = { ownerId: this.ownerId, sessionId: crypto.randomUUID(), ref: null, harness: args.harness!, authorityId: source.authorityId, checkout };
+      const resolved = await this.resolveRecipient(args.to, checkout.path);
+      const source = normalizeNativeSource(this.sources[resolved.harness].descriptor);
+      if (source.authorityId !== this.sources[resolved.harness].authorityId) throw new DomainError("SOURCE_UNAVAILABLE", "Recipient source requires configuration refresh.");
+      recipient = { ownerId: this.ownerId, sessionId: crypto.randomUUID(), ref: null, ...resolved, authorityId: source.authorityId, checkout };
     } else {
       const linked = domain.getStatus(workstream.id).activePhases.filter(a => a.phase === args.to);
       const candidates = this.admissions.list().filter(a => a.state === "ready" && a.nativeId && a.binding.domain.mode === "repository" && a.binding.domain.repositoryId === domain.repositoryId && this.sessions().some(s => s.sessionId === a.sessionId && s.attachment?.state !== "pending")).filter(a => linked.some(l => same(l.ref, { harness: a.source.descriptor.harness, authorityId: a.source.authorityId, nativeId: a.nativeId! })));

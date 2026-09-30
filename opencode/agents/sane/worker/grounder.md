@@ -16,7 +16,6 @@ permission:
   external_directory: allow
   skill:
     "*": allow
-    "sane-*-assistant-role": deny
     "sane-assistant-*": deny
   task: deny
 ---

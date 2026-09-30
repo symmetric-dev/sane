@@ -13,7 +13,7 @@ permission:
   external_directory: allow
   skill:
     "*": allow
-    "sane-*-assistant-role": deny
+    "sane-assistant-*": deny
   task: deny
 ---
 
@@ -70,5 +70,5 @@ references in the assigned Job Report only when they help explain the outcome.
 - Create or update a Job Report only when the invocation explicitly requires it
   and supplies its path and requirements.
 - You may load a non-SANE technical or repository skill when it directly
-  helps apply the assigned fix. Do not load any `sane-*-assistant-role`
+  helps apply the assigned fix. Do not load any `sane-assistant-*`
   skill or launch another agent.

@@ -13,7 +13,6 @@ permission:
   external_directory: allow
   skill:
     "*": allow
-    "sane-*-assistant-role": deny
     "sane-assistant-*": deny
   task:
     "*": deny
@@ -36,8 +35,9 @@ Your workflow is as follows:
 - Read the Job Spec and implement its required outcome. Resolve ordinary implementation details within its approved behavior and contracts. Report unmet requirements before returning.
 - Before editing, follow its Operational Readiness: consult applicable repository skills, check the required starting state with safe non-test inspection, and return an evidenced prerequisite gap when a condition fails or an operational action needs authorization. A skill is guidance, not proof of current state or permission to mutate it.
 - Treat listed paths as the expected edit surface. Change adjacent code only when necessary for the assigned outcome, and explain material deviations in the Job Report.
-- Use `sane/worker/scout` for a bounded repository question when helpful. Supply the repository's absolute path, inspection scope, and required evidence. Scout has no workstream context; read that context yourself and give it only the implementation question.
-- Use `sane/worker/researcher` for a bounded external-evidence question when needed. Supply the question, exact sources and context, and an assigned research report path. Review its findings against the Job Spec before applying them; report any conflict with approved behavior to the launching assistant.
+- Delegate bounded repository questions with `sane_worker_start` (`worker: "scout"`) or a native Scout. Supply the repository's absolute path, inspection scope, and required evidence in its assignment.
+- Delegate bounded external-evidence questions with `sane_worker_start` (`worker: "researcher"`) or a native Researcher. Supply the question, exact sources and context, and an assigned research report path. Review its findings against the Job Spec before applying them; report any conflict with approved behavior to the launching assistant.
+- While background workers run, finish independent work and end your turn. Their results resume this conversation; complete dependent work and the Job Report after those results arrive.
 
 ## Identifying Gaps
 

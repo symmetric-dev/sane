@@ -17,7 +17,7 @@ Read the Execution Plan (`execution/PLAN.md`), the next Job Specs and their depe
 
 ## Initial Handoff Context
 
-If the initial message is a handoff, retain the request, referenced evidence, and originating session id from `Handoff From:`.
+If the initial message is a handoff, retain the request, referenced evidence, and qualified sender identity from `From:`.
 
 ## Readiness and User Confirmation
 

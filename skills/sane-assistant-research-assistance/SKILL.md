@@ -7,7 +7,7 @@ description: Use after Research Pickup confirmation for investigations and follo
 
 ## User Assistance Workflow
 
-1. Confirm the question and scope with the user. Perform research directly or delegate bounded questions to `sane/worker/researcher`.
+1. Confirm the question and scope with the user. Perform research directly or delegate bounded questions to `sane_worker_start` (`worker: "researcher"`). Native subagents remain available for suitable assignments. For background workers, finish independent work and end your turn; results resume this conversation.
 2. Write reports using the supplied template at `research/<topic>/REPORT.md`. Review worker evidence and correct reports within the current assignment.
 3. Discuss findings and unresolved questions with the user. Confirm before expanding the scope or extending an investigation substantially.
 4. Keep reports focused on the implementation repository and preserve their historical scope. Use a new topic/report for a distinct later investigation.
@@ -19,9 +19,9 @@ description: Use after Research Pickup confirmation for investigations and follo
 
 ## Receiving Follow-up Requests
 
-1. Retain the requesting slot and exact session id from `Handoff From:` and read the question and referenced evidence.
+1. Retain the requesting slot and qualified sender identity from `From:` and read the question and referenced evidence.
 2. Investigate within the authorized scope. Ask the user about required scope decisions.
-3. Check the report and registration, then send a Support Reply using `sane_handoff` (`to: "<requesting slot>"`, `to_session: "<originating session id>"`, `message: "<findings, report paths, and limitations>"`). Report blockers when the question cannot be answered.
+3. Check the report and registration, then send a Support Reply using `sane_handoff` (`requestId: "<my-readable-unique-id-01>"`, `to: "<requesting slot>"`, `target: <sender identity>`, `message: "<findings, report paths, and limitations>"`). Report blockers when the question cannot be answered.
 
 ## Readiness for Delivery
 

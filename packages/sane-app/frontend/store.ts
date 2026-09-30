@@ -1,6 +1,6 @@
 import { useRef, useSyncExternalStore } from "react";
 import { ApiError, conversationClient } from "./cc-client";
-import { publishWorkers, workersFor, registerWorkerSessions } from "./worker-client";
+import { publishWorkers, workersFor, registerWorkerSessions, setWorkerNavigator, workerReference } from "./worker-client";
 import { consume, createRun, messagesForRun } from "./cc-reducer";
 import { catalog } from "./catalog";
 import { invalidateWorkspaceRequests, onWorkspaceAuthExpired } from "./workspace-store";
@@ -287,9 +287,16 @@ export class ChatStore {
     try { await this.client.logout(); if (auth === this.authEpoch) this.loginRequired(); }
     catch (error) { if (auth !== this.authEpoch || this.expired(error)) return; this.update({ submissionError: `Sign-out failed: ${error instanceof Error ? error.message : "connection error"}` }); void this.poll(); }
   };
+  openConversation = (id: string) => {
+    if (this.state.sending) return;
+    const conversation = this.state.conversations.find(c => c.id === id);
+    this.choose(id);
+    catalog.navigate({ conversationId: id || null, view: "chat", ...(conversation ? { workspaceId: conversation.workspaceId ?? null, worktreeId: conversation.worktreeId ?? null, filePath: null, comparison: null } : {}) });
+  };
   choose = (selected: string) => {
     if (this.state.sending) return;
     if (selected === this.state.selected) return;
+    const workerTransition = !!workerReference(selected) || !!workerReference(this.state.selected);
     this.selectionEpoch++;
     this.stop(); this.runMap.clear();
     this.nativeHistoryLoaded = false;
@@ -297,9 +304,11 @@ export class ChatStore {
     // Stale-while-revalidate: keep the previous transcript mounted while the
     // new conversation loads, so the welcome empty-state only appears when the
     // cache is genuinely empty. A blank target clears immediately.
+    // Worker navigation clears immediately so a parent's text cannot look like
+    // the worker's transcript during loading or a failed read.
     // (Same-id sends never reach here; send() polls for the delta instead.)
     this.update(selected
-      ? { selected, nativeHistory: null, interactions: [], interactionError: "", actionBusy: false, actionNotice: "", loading: true, connected: false, connectionError: "", submissionError: "" }
+      ? { selected, ...(workerTransition ? { runs: [], messages: [] } : {}), availability: { canSend: false }, nativeHistory: null, interactions: [], interactionError: "", actionBusy: false, actionNotice: "", loading: true, connected: false, connectionError: "", submissionError: "" }
       : { selected, runs: [], messages: [], nativeHistory: null, interactions: [], interactionError: "", actionBusy: false, actionNotice: "", loading: false, connected: false, connectionError: "", submissionError: "" });
     void this.poll();
   };
@@ -390,7 +399,7 @@ export class ChatStore {
   send = async (text: string, nativeStopped = false) => {
     const conversation = this.state.conversations.find(c => c.id === this.state.selected);
     if (conversation?.attachment && conversation.harness === "claude-code" && !nativeStopped) { this.update({ submissionError: "Confirm external Claude execution is stopped before sending." }); return; }
-    if (!text.trim() || this.state.sending || !this.state.connected || !this.state.availability.canSend || this.modelUnavailable() || this.executionUnavailable()) return;
+    if (!text.trim() || this.state.loading || this.state.runs.some(r => r.status === "starting" || r.status === "running") || this.state.sending || !this.state.connected || !this.state.availability.canSend || this.modelUnavailable() || this.executionUnavailable()) return;
     const selected = this.state.selected, draft = this.draft();
     const upgrade = selected ? this.pendingUpgrade() : undefined;
     const profileId = selected ? upgrade && this.assignable(upgrade).ok ? upgrade.id : "" : this.draftProfile().id;
@@ -427,6 +436,7 @@ export class ChatStore {
   };
 }
 export const store = new ChatStore(conversationClient);
+setWorkerNavigator(store.openConversation);
 
 /** Slice subscription with per-selector equality: rerenders only when the
  * selected value changes identity (or content, via Object.is fallback in the

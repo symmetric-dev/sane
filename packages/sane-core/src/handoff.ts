@@ -7,7 +7,7 @@ export const handoffSchema = {
     requestId: { type: "string", minLength: 1, maxLength: 200 },
     to: { type: "string", minLength: 1 }, message: { type: "string", minLength: 1, maxLength: 32000 },
     target: { type: "object", properties: { harness: { enum: ["cc", "oc"] }, authorityId: { type: "string" }, nativeId: { type: "string" } }, required: ["harness", "authorityId", "nativeId"], additionalProperties: false },
-    createNew: { type: "boolean" }, harness: { enum: ["cc", "oc"] }, checkout: { type: "string" },
+    createNew: { type: "boolean" }, checkout: { type: "string" },
     kickoff: { type: "object", properties: { workstream: { type: "string", pattern: "^[a-z0-9][a-z0-9_-]{0,95}$" }, title: { type: "string", minLength: 1, maxLength: 200 }, type: { enum: [...SUPPORTED_WORKSTREAM_TYPES] } }, required: ["workstream", "title", "type"], additionalProperties: false },
   }, required: ["requestId", "to", "message"], additionalProperties: false,
 } as const
@@ -18,7 +18,7 @@ export function handoffInput(input: unknown): HandoffInput {
   const v = input as Record<string, unknown>
   const text = (v: unknown, max: number): v is string => typeof v === "string" && !!v.trim() && v.length <= max && !v.includes("\0")
   if (Object.keys(v).some(k => !Object.hasOwn(handoffSchema.properties, k)) || !text(v.requestId, 200) || !text(v.message, 32000) || typeof v.to !== "string" || !/^(design|engineering|planning|execution|research|research:[a-z0-9][a-z0-9_-]{0,95})$/.test(v.to)) return invalid()
-  if (v.createNew !== undefined && typeof v.createNew !== "boolean" || v.harness !== undefined && v.harness !== "cc" && v.harness !== "oc" || v.checkout !== undefined && (!text(v.checkout, 4096) || !v.checkout.startsWith("/"))) return invalid()
+  if (v.createNew !== undefined && typeof v.createNew !== "boolean" || v.checkout !== undefined && (!text(v.checkout, 4096) || !v.checkout.startsWith("/"))) return invalid()
   let target: HandoffInput["target"]
   if (v.target !== undefined) {
     if (!v.target || typeof v.target !== "object" || Array.isArray(v.target)) return invalid()
@@ -26,7 +26,7 @@ export function handoffInput(input: unknown): HandoffInput {
     if (Object.keys(t).length !== 3 || t.harness !== "cc" && t.harness !== "oc" || !text(t.authorityId, 200) || !text(t.nativeId, 200)) return invalid()
     target = { harness: t.harness, authorityId: t.authorityId, nativeId: t.nativeId }
   }
-  if (v.createNew ? !!target || !v.harness : v.harness !== undefined || v.checkout !== undefined) return invalid()
+  if (v.createNew ? !!target : v.checkout !== undefined) return invalid()
   let kickoff: HandoffInput["kickoff"]
   if (v.kickoff !== undefined) {
     if (!v.kickoff || typeof v.kickoff !== "object" || Array.isArray(v.kickoff) || !v.createNew || v.to !== "design") return invalid()
@@ -34,5 +34,5 @@ export function handoffInput(input: unknown): HandoffInput {
     if (Object.keys(k).length !== 3 || typeof k.workstream !== "string" || !/^[a-z0-9][a-z0-9_-]{0,95}$/.test(k.workstream) || !text(k.title, 200) || !isSupportedWorkstreamType(k.type)) return invalid()
     kickoff = { workstream: k.workstream, title: k.title, type: k.type }
   }
-  return { requestId: v.requestId, to: v.to as HandoffInput["to"], message: v.message, ...(target ? { target } : {}), ...(v.createNew ? { createNew: true, harness: v.harness as HandoffInput["harness"], ...(v.checkout ? { checkout: v.checkout as string } : {}) } : {}), ...(kickoff ? { kickoff } : {}) }
+  return { requestId: v.requestId, to: v.to as HandoffInput["to"], message: v.message, ...(target ? { target } : {}), ...(v.createNew ? { createNew: true, ...(v.checkout ? { checkout: v.checkout as string } : {}) } : {}), ...(kickoff ? { kickoff } : {}) }
 }

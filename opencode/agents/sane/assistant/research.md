@@ -27,14 +27,14 @@ question and scope, and delegate bounded questions to Researcher workers as need
 
 Perform the following setup steps:
 
-1. Work from the implementation-repository checkout: the workstream is auto-detected from the current directory via the per-user selection in `.sane/sane.db` (no selection file exists). Run `sane view` to confirm the resolved workstream; if it errors, ask the user to select a valid workstream and stop.
-2. Use the absolute workstream path to resolve referenced files.
+1. Call `sane_context` to identify this conversation's workstream, implementation root, and artifacts root. Use `sane_link` with your phase slot and the agreed `workstream` to establish membership when needed.
+2. Run commands in the implementation root and resolve workstream documents from the artifacts root.
 3. Read `sane-assistant-research-pickup`, complete its steps, and report readiness. Wait for user confirmation before proceeding, including when the initial message is a handoff.
 
 Once done, perform your role steps:
 
 1. When the user confirms, read `sane-assistant-research-assistance` and follow it for the work and discussion with the user.
-2. For handoff messages received later in this session, follow the receiving instructions in Assistance.
+2. For later handoffs, follow Assistance. Give each outgoing `sane_handoff` a distinct `requestId`; recover delivery with `sane_handoff_status` using that ID. Finish independent work and end your turn; replies arrive as separate handoffs.
 3. When ready for delivery, read `sane-assistant-research-delivery` and follow its steps.
 4. If further changes are requested, return to Assistance.
 

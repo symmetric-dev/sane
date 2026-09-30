@@ -118,6 +118,15 @@ export type ResolvedAgentLaunch = {
   effort?: string;
 };
 export class AgentProfileResolutionError extends Error {}
+/** Phase-addressed handoffs use the configured assistant template for that role. */
+export function resolveAssistantProfile(profiles: AgentProfiles, destination: string): ResolvedAgentLaunch {
+  const role = destination.split(":")[0];
+  if (!isAssistantAgentId(role)) throw new AgentProfileResolutionError(`Unknown assistant role: ${role}`);
+  const id = templateProfileId(role);
+  const profile = profiles.profiles.find(p => p.id === id);
+  if (!profile || profile.kind !== "assistant" || profile.role !== role) throw new AgentProfileResolutionError(`Assistant ${role} requires its configured profile ${id}`);
+  return resolveAgentLaunch(profile);
+}
 /** Snapshot a profile without inheriting any parent model or effort. */
 export function resolveAgentLaunch(profile: AgentProfile): ResolvedAgentLaunch {
   if (profile.harness !== "opencode" && profile.harness !== "claude-code") throw new AgentProfileResolutionError(`Invalid harness for profile ${profile.id}`);

@@ -42,10 +42,12 @@ export function projectNativeHandoffReply(handoff: unknown, status: boolean): un
 }
 
 export async function handoffNativeCaller(caller: NativeCaller, input: unknown, connectionFile: string, status = false) {
-  const opened = openNativeCaller(caller)
+  const args = status ? input as { requestId: string } : handoffInput(input)
+  if (!args || typeof args.requestId !== "string" || !args.requestId.trim() || args.requestId.length > 200 || status && Object.keys(args).some(k => k !== "requestId")) throw new DomainError("INVALID_INPUT", "Expected a requestId.")
+  // Only a validated kickoff may bootstrap enrollment from trusted native
+  // callback/hook identity. Status and ordinary handoffs remain enrollment-only.
+  const opened = openNativeCaller(caller, !status && "kickoff" in args && args.kickoff !== undefined)
   try {
-    const args = status ? input as { requestId: string } : handoffInput(input)
-    if (!args || typeof args.requestId !== "string" || !args.requestId.trim() || args.requestId.length > 200 || status && Object.keys(args).some(k => k !== "requestId")) throw new DomainError("INVALID_INPUT", "Expected a requestId.")
     if (typeof connectionFile !== "string" || !isAbsolute(connectionFile)) throw new DomainError("UNAVAILABLE", "Configure an explicit App native handoff connection file.")
     const stat = lstatSync(connectionFile)
     if (!stat.isFile() || stat.isSymbolicLink() || stat.nlink !== 1 || stat.uid !== process.getuid?.() || (stat.mode & 0o077) !== 0) throw new DomainError("UNAVAILABLE", "Invalid App connection file.")

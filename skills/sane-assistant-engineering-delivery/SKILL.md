@@ -19,11 +19,11 @@ Check assigned solution specs against their template and run `sane validate engi
 
 For remaining Engineering work:
 
-1. When requested, call `sane_handoff` (`to: "engineering"`, `new_session: true`, `message: "<completed specs, remaining solution areas, and essential agreed decisions or open questions>"`). Keep the message concise and reference the saved documents.
-2. Summarize delivery and tell the user to open the newly created session for Engineering Pickup and user confirmation.
+1. When requested, call `sane_handoff` (`requestId: "<my-readable-unique-id-01>"`, `to: "engineering"`, `createNew: true`, `message: "<completed specs, remaining solution areas, and essential agreed decisions or open questions>"`). Keep the message concise and reference the saved documents.
+2. Summarize delivery and identify the new Engineering conversation for Pickup and user confirmation.
 
 For Planning:
 
 1. After approval, ask whether the user wants to start Planning.
-2. When requested, call `sane_handoff` (`to: "planning"`, `new_session: true`, `message: "Start Planning session for workstream: <name>.<user notes>"`). Replace `<user notes>` with ` User Notes: <the user's specific notes>` only when the user asks to pass notes along; otherwise replace it with nothing. Add nothing else to the message.
-3. Summarize delivery and tell the user to open the newly created session.
+2. When requested, call `sane_handoff` (`requestId: "<my-readable-unique-id-01>"`, `to: "planning"`, `createNew: true`, `message: "Start Planning session for workstream: <name>.<user notes>"`). Replace `<user notes>` with ` User Notes: <the user's specific notes>` only when the user asks to pass notes along; otherwise replace it with nothing. Add nothing else to the message.
+3. Summarize delivery and identify the new conversation for the user.

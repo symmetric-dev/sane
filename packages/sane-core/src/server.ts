@@ -96,11 +96,12 @@ export class RepositoryDomain {
     if (context.actor.kind === "native") {
       if (context.actor.repositoryId !== this.repositoryId) fail("INVALID_CONTEXT", "Native actor cannot mutate another repository.")
       this.resolveContext(context.actor.ref)
+      this.assertConversationWritable(context.actor.ref)
     }
   }
   private transaction<T>(context: MutationContext, fn: () => T): T {
     this.mutationContext(context)
-    try { return this.db.transaction(fn).immediate() } catch (error) { return storageError(error) }
+    try { return this.db.transaction(() => { if (context.actor.kind === "native") this.assertConversationWritable(context.actor.ref); return fn() }).immediate() } catch (error) { return storageError(error) }
   }
   private event(context: MutationContext, operation: string, workstreamId: string | null = null, entityId: string | null = null, details: Record<string, unknown> = {}): number {
     const actor = context.actor.kind === "native" ? this.conversationRow(context.actor.ref).id : null
@@ -263,7 +264,7 @@ export class RepositoryDomain {
         const target = this.resolvePhaseTarget(workstreamId, args.to, recipient.ref)
         if (target.ref.harness !== recipient.harness || target.ref.authorityId !== recipient.authorityId || !samePin(target.executionCheckout, recipient.checkout)) fail("CONFLICT", "Recipient identity or checkout differs.")
         if (args.createNew || args.target && JSON.stringify(args.target) !== JSON.stringify(target.ref)) fail("CONFLICT", "Recipient differs from requested target.")
-      } else if (!args.createNew || args.harness !== recipient.harness) fail("INVALID_INPUT", "New recipient requires explicit creation and harness.")
+      } else if (!args.createNew) fail("INVALID_INPUT", "New recipient requires explicit creation.")
       const key = randomUUID(), time = now()
       this.run("INSERT INTO handoffs(id,sender_id,request_id,workstream_id,input,recipient,status,created_at,updated_at) VALUES(?,?,?,?,?,?,'queued',?,?)", key, this.conversationRow(sender).id, args.requestId, workstreamId, JSON.stringify(args), JSON.stringify(recipient), time, time)
       this.event(context, "handoff_queued", workstreamId, key, { recipient, requestId: args.requestId, ...(args.kickoff ? { origin: { kind: "kickoff", sender, requestId: args.requestId } } : {}) })
@@ -304,6 +305,76 @@ export class RepositoryDomain {
     })
   }
   getConversation(ref: ConversationRef): Conversation | null { this.guard(); qualified(ref); const row = this.row("SELECT * FROM conversations WHERE harness=? AND authority_id=? AND native_id=?", ref.harness, ref.authorityId, ref.nativeId); return row ? this.conversationDTO(row) : null }
+  /** The append-only audit journal is also the durable branch reservation. No
+   * existing identities or historical intervals are rewritten. */
+  assertConversationWritable(ref: ConversationRef): void {
+    this.guard()
+    const c = this.conversationRow(ref)
+    const event = this.row("SELECT operation,details FROM audit_events WHERE entity_id=? AND operation IN ('branch_reserved','branch_released','branch_completed') ORDER BY id DESC LIMIT 1", c.id)
+    if (event && (event.operation === "branch_reserved" || event.operation === "branch_completed" && JSON.parse(event.details).replace)) fail("CONFLICT", event.operation === "branch_reserved" ? "Conversation is reserved by a pending branch operation." : "Conversation was replaced and is read-only.")
+    if (c.parent_id) {
+      const parent = this.row("SELECT operation FROM audit_events WHERE entity_id=? AND operation IN ('branch_reserved','branch_released','branch_completed') ORDER BY id DESC LIMIT 1", c.parent_id)
+      if (parent?.operation === "branch_reserved") fail("CONFLICT", "Parent conversation has a pending branch reservation.")
+    }
+  }
+  branchState(ref: ConversationRef) {
+    this.guard(); const c = this.conversationRow(ref)
+    const membership = this.row("SELECT * FROM memberships WHERE conversation_id=? AND ended_at IS NULL", c.id)
+    const phases = membership ? this.rows("SELECT phase FROM phase_assignments WHERE membership_id=? AND ended_at IS NULL ORDER BY phase", membership.id).map(a => a.phase as Phase) : []
+    return { workstreamId: membership?.workstream_id as string | undefined, phases }
+  }
+  branchCompleted(ref: ConversationRef, operationId: string): boolean {
+    this.guard(); const c = this.conversationRow(ref)
+    return !!this.row("SELECT 1 FROM audit_events WHERE entity_id=? AND operation='branch_completed' AND correlation_id=?", c.id, operationId)
+  }
+  reserveBranch(ref: ConversationRef, operationId: string, replace: boolean, context: MutationContext): void {
+    text(operationId, "branch operation ID")
+    if (typeof replace !== "boolean") fail("INVALID_INPUT", "Replace must be boolean.")
+    this.transaction(context, () => {
+      if (context.actor.kind !== "system") fail("INVALID_CONTEXT", "Branch operations require the App execution owner.")
+      const c = this.conversationRow(ref)
+      const previous = this.row("SELECT details FROM audit_events WHERE operation='branch_reserved' AND entity_id=? AND correlation_id=?", c.id, operationId)
+      if (previous) { if (JSON.parse(previous.details).replace !== replace) fail("CONFLICT", "Branch intent changed."); return }
+      this.assertConversationWritable(ref)
+      const state = this.branchState(ref)
+      if (state.phases.length && !replace) fail("CONFLICT", "Phase-assigned conversations require Replace original.")
+      if (this.listHandoffs().some(h => !["completed", "failed"].includes(h.status) && (h.sender.nativeId === ref.nativeId && h.sender.authorityId === ref.authorityId || h.recipient.ref?.nativeId === ref.nativeId && h.recipient.ref.authorityId === ref.authorityId))) fail("CONFLICT", "Conversation has an outstanding handoff.")
+      this.event({ ...context, correlationId: operationId }, "branch_reserved", state.workstreamId ?? null, c.id, { replace, ...state })
+    })
+  }
+  finishBranch(source: ConversationRef, destination: ConversationRef | null, operationId: string, context: MutationContext): void {
+    text(operationId, "branch operation ID")
+    this.transaction(context, () => {
+      if (context.actor.kind !== "system") fail("INVALID_CONTEXT", "Branch operations require the App execution owner.")
+      const c = this.conversationRow(source)
+      // The App journal is published before acquiring the domain reservation.
+      // A crash/rejection in that gap needs no domain rollback.
+      if (!destination && !this.row("SELECT 1 FROM audit_events WHERE entity_id=? AND operation='branch_reserved' AND correlation_id=?", c.id, operationId)) return
+      const last = this.row("SELECT operation,correlation_id,details FROM audit_events WHERE entity_id=? AND operation IN ('branch_reserved','branch_released','branch_completed') ORDER BY id DESC LIMIT 1", c.id)
+      if (!last || last.correlation_id !== operationId) fail("CONFLICT", "Branch reservation changed.")
+      if (last.operation !== "branch_reserved") {
+        if (last.operation === (destination ? "branch_completed" : "branch_released")) return
+        fail("CONFLICT", "Branch already settled differently.")
+      }
+      const intent = JSON.parse(last.details), time = now()
+      if (destination) {
+        const target = this.conversationRow(destination)
+        if (target.id === c.id || target.execution_pin_id !== c.execution_pin_id || target.harness !== c.harness || target.authority_id !== c.authority_id) fail("CONFLICT", "Branch destination must have a distinct native identity in the same checkout and authority.")
+        const old = this.row("SELECT * FROM memberships WHERE conversation_id=? AND ended_at IS NULL", c.id)
+        let membership = this.row("SELECT * FROM memberships WHERE conversation_id=? AND ended_at IS NULL", target.id)
+        if (membership && membership.workstream_id !== old?.workstream_id) fail("CONFLICT", "Destination membership differs.")
+        if (old && !membership) { const key = randomUUID(); this.run("INSERT INTO memberships VALUES(?,?,?,?,NULL)", key, target.id, old.workstream_id, time); membership = { id: key } }
+        if (old && intent.replace) {
+          const phases = this.rows("SELECT phase FROM phase_assignments WHERE membership_id=? AND ended_at IS NULL", old.id)
+          this.run("UPDATE phase_assignments SET ended_at=? WHERE membership_id=? AND ended_at IS NULL", time, old.id)
+          this.run("UPDATE memberships SET ended_at=? WHERE id=?", time, old.id)
+          for (const a of phases) this.run("INSERT INTO phase_assignments VALUES(?,?,?,?,NULL)", randomUUID(), membership.id, a.phase, time)
+        }
+        if (old) this.touch(old.workstream_id)
+      }
+      this.event({ ...context, correlationId: operationId }, destination ? "branch_completed" : "branch_released", intent.workstreamId ?? null, c.id, { ...intent, destination })
+    })
+  }
   registerConversation(input: RegisterConversationInput, context: MutationContext): Conversation {
     qualified(input.ref); if (input.parent) qualified(input.parent)
     const checkout = this.validateExecutionCheckout(input.executionCheckout)
@@ -322,6 +393,7 @@ export class RepositoryDomain {
   }
   associateConversation(ref: ConversationRef, workstreamId: string | null, context: MutationContext): Conversation {
     this.transaction(context, () => {
+      this.assertConversationWritable(ref)
       const c = this.conversationRow(ref)
       if (workstreamId !== null) this.revision(workstreamId, context)
       const old = this.row("SELECT * FROM memberships WHERE conversation_id=? AND ended_at IS NULL", c.id)
@@ -354,6 +426,7 @@ export class RepositoryDomain {
   assignPhase(ref: ConversationRef, phase: Phase, context: MutationContext): PhaseAssignment {
     phaseName(phase)
     return this.transaction(context, () => {
+      this.assertConversationWritable(ref)
       const c = this.conversationRow(ref), membership = this.row("SELECT * FROM memberships WHERE conversation_id=? AND ended_at IS NULL", c.id)
       if (!membership) fail("CONFLICT", "Associate the conversation before assigning a phase.")
       this.revision(membership.workstream_id, context)
@@ -369,6 +442,8 @@ export class RepositoryDomain {
     text(assignmentId, "assignmentId")
     this.transaction(context, () => {
       const row = this.row("SELECT a.*,m.workstream_id FROM phase_assignments a JOIN memberships m ON m.id=a.membership_id WHERE a.id=?", assignmentId) ?? fail("NOT_FOUND", "Unknown phase assignment.")
+      const member = this.row("SELECT c.* FROM conversations c JOIN memberships m ON m.conversation_id=c.id WHERE m.id=?", row.membership_id)
+      this.assertConversationWritable(this.reference(member))
       this.revision(row.workstream_id, context)
       if (row.ended_at !== null) return
       this.run("UPDATE phase_assignments SET ended_at=? WHERE id=?", now(), assignmentId); this.touch(row.workstream_id)
@@ -380,6 +455,7 @@ export class RepositoryDomain {
     const targets = this.assignments(workstreamId).filter(a => a.endedAt === null && a.phase === phase && (!explicit || (a.ref.harness === explicit.harness && a.ref.authorityId === explicit.authorityId && a.ref.nativeId === explicit.nativeId)))
     if (targets.length > 1) fail("AMBIGUOUS_TARGET", "Several eligible conversations; supply an explicit qualified reference.")
     if (!targets.length) fail("NOT_FOUND", "No eligible conversation in this phase.")
+    this.assertConversationWritable(targets[0]!.ref)
     return this.getConversation(targets[0]!.ref)!
   }
   getWorkstreamStatus(workstreamId: string): WorkstreamStatus {
