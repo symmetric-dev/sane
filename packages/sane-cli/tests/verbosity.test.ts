@@ -22,41 +22,23 @@ function seedRepo(root: string): { repo: string; caller: NativeCaller } {
 }
 
 describe("context/link verbosity", () => {
-  test("context reply fits the per-turn budget and carries workstream id + harness", () => {
+  test("link and subsequent context replies fit the budget and retain compact identity", () => {
     const root = mkdtempSync(join(tmpdir(), "sane-t-"))
     try {
       const { caller } = seedRepo(root)
-      linkNativeCaller(caller, { slot: "design", workstream: "native" })
-      const reply = nativeCallerContext(caller)
-      const bytes = Buffer.byteLength(JSON.stringify(reply), "utf8")
-      expect(bytes).toBeLessThanOrEqual(BUDGET)
-      expect(reply.workstream).toBe("native")
-      expect(reply.harness).toBe("cc")
-      const text = JSON.stringify(reply)
-      expect(text).toContain("native")
-      expect(text).toContain("cc")
-      expect(reply.context).toContain("Artifacts root: ")
-      expect(reply.context).toContain("Implementation root: ")
-      for (const heavy of ["assignment", "caller", "conversation", "lifecycle", "repositoryId", "authorityId", "nativeId", "executionCheckout", "artifactsRoot"]) expect(reply).not.toHaveProperty(heavy)
-    } finally { rmSync(root, { recursive: true, force: true }) }
-  })
-
-  test("link reply fits the per-turn budget and carries workstream id + harness", () => {
-    const root = mkdtempSync(join(tmpdir(), "sane-t-"))
-    try {
-      const { caller } = seedRepo(root)
-      const reply = linkNativeCaller(caller, { slot: "engineering", workstream: "native" })
-      const bytes = Buffer.byteLength(JSON.stringify(reply), "utf8")
-      expect(bytes).toBeLessThanOrEqual(BUDGET)
-      expect(reply.workstream).toBe("native")
-      expect(reply.harness).toBe("cc")
-      expect(reply.phase).toBe("engineering")
-      const text = JSON.stringify(reply)
-      expect(text).toContain("native")
-      expect(text).toContain("cc")
-      expect(reply.context).toContain("Artifacts root: ")
-      expect(reply.context).toContain("Implementation root: ")
-      for (const heavy of ["assignment", "caller", "conversation", "lifecycle", "repositoryId", "authorityId", "nativeId", "executionCheckout", "artifactsRoot"]) expect(reply).not.toHaveProperty(heavy)
+      const linked = linkNativeCaller(caller, { slot: "engineering", workstream: "native" })
+      expect(linked.phase).toBe("engineering")
+      for (const reply of [linked, nativeCallerContext(caller)]) {
+        const text = JSON.stringify(reply)
+        expect(Buffer.byteLength(text, "utf8")).toBeLessThanOrEqual(BUDGET)
+        expect(reply.workstream).toBe("native")
+        expect(reply.harness).toBe("cc")
+        expect(text).toContain("native")
+        expect(text).toContain("cc")
+        expect(reply.context).toContain("Artifacts root: ")
+        expect(reply.context).toContain("Implementation root: ")
+        for (const heavy of ["assignment", "caller", "conversation", "lifecycle", "repositoryId", "authorityId", "nativeId", "executionCheckout", "artifactsRoot"]) expect(reply).not.toHaveProperty(heavy)
+      }
     } finally { rmSync(root, { recursive: true, force: true }) }
   })
 })

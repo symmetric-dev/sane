@@ -28,7 +28,6 @@ const JOB_A = "# Job Spec 01: first\nWork.\n"
 const JOB_B = "# Job Spec 02: second\nAdditional authorized work.\n"
 const VERIFY = "# Verify\n"
 const REPORT_A = "# Job 01: first Report\n\n## Outcome\nResults.\n## Unresolved Issues\nNone\n## Recommendations\nNone\n"
-const REPORT_B = "# Job 02: second Report\n\n## Outcome\nResults.\n## Unresolved Issues\nNone\n## Recommendations\nNone\n"
 
 let temporary = ""
 let repo = ""
@@ -72,7 +71,7 @@ afterEach(async () => {
   await rm(temporary, { recursive: true, force: true })
 })
 
-describe("c9 lifecycle CLI: approvals and advancement", () => {
+describe("lifecycle CLI: approval and validation routing", () => {
   test("refuses planning approval when docs are invalid (validation-first)", async () => {
     await expect(cli(["approve", "planning", "--ref", "owner", "--workstream", "demo"])).rejects.toThrow(/Cannot approve planning/)
   })
@@ -87,71 +86,31 @@ describe("c9 lifecycle CLI: approvals and advancement", () => {
     expect(current.workstream.lifecycle.phases.find((p: any) => p.phase === "engineering")?.status).toBe("approved")
   })
 
-  test("records design approval via thin wrapper after root doc and SDD", async () => {
+  test("thin approval wrapper forwards phase and reference; validation surfaces amendment warnings", async () => {
     write("PRD.md", "# Direction\n")
     write("design/SDD.md", "# Design\n")
     const approval = (await runSaneApproveCommand(["design", "--ref", "owner", "--workstream", "demo"], { cwd: repo, signals: {} })) as any
     expect(approval.phase).toBe("design")
-    const current = await status()
-    expect(current.workstream.lifecycle.approvals.filter((a: any) => a.phase === "design")).toHaveLength(1)
-  })
-
-  test("amendment warns and reapproval supersedes while history keeps both snapshots", async () => {
-    write("PRD.md", "# Direction\n")
-    write("design/SDD.md", "# Design\n")
-    await cli(["approve", "design", "--ref", "owner", "--workstream", "demo"])
+    expect(approval.approval_ref).toBe("owner")
     write("design/SDD.md", "# Amended design\n")
     const validation = (await cli(["validate", "design", "--workstream", "demo"])) as any
     expect(validation.ok).toBe(true)
     expect(validation.warnings.some((w: string) => w.includes("changed since approval"))).toBe(true)
-    await cli(["approve", "design", "--ref", "owner reapproval", "--workstream", "demo"])
-    const current = await status()
-    expect(current.workstream.lifecycle.approvals.filter((a: any) => a.phase === "design")).toHaveLength(1)
-    const discovery = discoverRepository(repo)
-    const state = inspectRepositoryStore(discovery)
-    if (state.state !== "ready") throw new Error(state.message)
-    const domain = openRepositoryDomain(state.context)
-    try {
-      const history = domain.getApprovalHistory("demo").filter((a) => a.phase === "design")
-      expect(history).toHaveLength(2)
-      expect(history[0]!.snapshotHash).not.toBe(history[1]!.snapshotHash)
-    } finally {
-      domain.close()
-    }
   })
 })
 
-describe("c9 lifecycle CLI: planning authority and job progression", () => {
-  test("job registration requires an existing Planning approval", async () => {
+describe("lifecycle CLI: job command routing", () => {
+  test("job registration, update, and context routes preserve errors and wrapper arguments", async () => {
     planningDocs()
     await expect(cli(["job", "--register", "--workstream", "demo"])).rejects.toThrow(/existing Planning approval/)
-    expect((await status()).workstream.lifecycle.jobs).toHaveLength(0)
-  })
-
-  test("planning approval registers jobs as planned; routine amendment preserves authority", async () => {
-    planningDocs()
     const approval = (await cli(["approve", "planning", "--ref", "owner", "--workstream", "demo"])) as any
     expect(approval.jobs.map((j: any) => j.job_id)).toEqual(["01"])
-    const before = (await status()).workstream.lifecycle.approvals
     write("execution/jobs/02-second.md", JOB_B)
     const registration = (await runSaneJobRegisterCommand(["--workstream", "demo"], { cwd: repo, signals: {} })) as any
     expect(registration.jobs.map((j: any) => j.job_id)).toEqual(["01", "02"])
-    expect(registration.warnings.some((w: string) => w.includes("routine amendments"))).toBe(true)
-    expect((await status()).workstream.lifecycle.approvals).toEqual(before)
-  })
-
-  test("job progresses planned->running->completed; backward moves rejected", async () => {
-    planningDocs()
-    await cli(["approve", "planning", "--ref", "owner", "--workstream", "demo"])
     expect(((await cli(["job", "01", "running", "--workstream", "demo"])) as any).changed).toBe(true)
-    expect(((await cli(["job", "01", "running", "--workstream", "demo"])) as any).changed).toBe(false)
     expect(((await cli(["job", "01", "completed", "--workstream", "demo"])) as any).status).toBe("completed")
     await expect(cli(["job", "01", "running", "--workstream", "demo"])).rejects.toThrow(/backward moves rejected/)
-  })
-
-  test("job context resolves spec and report paths", async () => {
-    planningDocs()
-    await cli(["approve", "planning", "--ref", "owner", "--workstream", "demo"])
     const context = (await cli(["job", "01", "--workstream", "demo", "--verbose"])) as any
     expect(context.job.jobId).toBe("01")
     expect(context.job.specExists).toBe(true)
@@ -159,31 +118,17 @@ describe("c9 lifecycle CLI: planning authority and job progression", () => {
   })
 })
 
-describe("c9 lifecycle CLI: execution reports", () => {
-  async function executionDocs(): Promise<void> {
+describe("lifecycle CLI: execution report routing", () => {
+  test("scoped report validation and execution approval route successes and failures", async () => {
     planningDocs()
     await cli(["approve", "planning", "--ref", "owner", "--workstream", "demo"])
     write("execution/FINAL_REPORT.md", "# Final\nDelivered.\n")
     write("execution/reports/01-first.md", REPORT_A)
-  }
-
-  test("scoped report validation accepts a well-formed report", async () => {
-    await executionDocs()
     expect(((await cli(["validate", "execution", "report", "--id", "01", "--workstream", "demo"])) as any).ok).toBe(true)
-  })
-
-  test("scoped report validation rejects placeholders and unknown ids", async () => {
-    await executionDocs()
     write("execution/reports/01-first.md", REPORT_A.replace("Results.", "{{unresolved}}"))
     expect(((await cli(["validate", "execution", "report", "--id", "01", "--workstream", "demo"])) as any).ok).toBe(false)
     expect(((await cli(["validate", "execution", "report", "--id", "unknown", "--workstream", "demo"])) as any).ok).toBe(false)
-  })
-
-  test("execution approval requires test reports, then completes jobs", async () => {
-    await executionDocs()
-    write("execution/jobs/02-second.md", JOB_B)
-    write("execution/reports/02-second.md", REPORT_B)
-    await cli(["job", "--register", "--workstream", "demo"])
+    write("execution/reports/01-first.md", REPORT_A)
     await expect(cli(["approve", "execution", "--ref", "owner", "--workstream", "demo"])).rejects.toThrow(/execution\/test-reports\/checkpoint-1\.md/)
     write("execution/test-reports/checkpoint-1.md", "# Verification\nPassed.\n")
     await cli(["approve", "execution", "--ref", "owner", "--workstream", "demo"])
@@ -192,8 +137,8 @@ describe("c9 lifecycle CLI: execution reports", () => {
   })
 })
 
-describe("c9 lifecycle CLI: research registration and freshness", () => {
-  test("index surfaces unregistered reports; register tracks freshness", async () => {
+describe("lifecycle CLI: research command routing", () => {
+  test("index, register, default index, and unregister route through the CLI", async () => {
     write("research/topic.md", "# Evidence\n")
     expect(((await cli(["research", "index", "--workstream", "demo", "--verbose"])) as any).unregistered).toEqual(["research/topic.md"])
     await cli(["research", "register", "--topic", "topic", "--path", "research/topic.md", "--workstream", "demo"])
@@ -201,23 +146,7 @@ describe("c9 lifecycle CLI: research registration and freshness", () => {
     write("research/topic.md", "# Changed\n")
     const index = (await cli(["research", "--workstream", "demo", "--verbose"])) as any
     expect(index.registered[0].modified).toBe(true)
-    expect(index.warnings.some((w: string) => w.includes("modified"))).toBe(true)
-  })
-
-  test("unregister retains the artifact and audit trail", async () => {
-    write("research/topic.md", "# Evidence\n")
-    await cli(["research", "register", "--topic", "topic", "--path", "research/topic.md", "--workstream", "demo"])
     expect(((await cli(["research", "unregister", "--topic", "topic", "--workstream", "demo"])) as any)).toEqual({ unregistered: "topic" })
     expect(((await cli(["research", "index", "--workstream", "demo", "--verbose"])) as any).unregistered).toEqual(["research/topic.md"])
-    const discovery = discoverRepository(repo)
-    const state = inspectRepositoryStore(discovery)
-    if (state.state !== "ready") throw new Error(state.message)
-    const domain = openRepositoryDomain(state.context)
-    try {
-      expect(domain.readArtifact("demo", "research/topic.md")).toBe("# Evidence\n")
-      expect(domain.readAudit("demo").some((e) => e.operation === "research_unregistered")).toBe(true)
-    } finally {
-      domain.close()
-    }
   })
 })

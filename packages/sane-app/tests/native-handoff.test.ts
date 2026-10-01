@@ -362,7 +362,7 @@ describe.serial("native handoff: baseline, targeting/idempotency, scheduling/can
     rOcOc = h?.recipientSessionId;
     expect(typeof rOcOc).toBe("string");
     rOcOcRun1 = await chargeOnDelivery(a, h.id, rOcOc, "t02-oc-oc-delivery", 180000);
-    // The recipient runs `sleep 240`, so it stays running past any bounded
+    // The recipient runs `sleep 420`, so it stays running past any bounded
     // awaitRun (which only returns on a non-running status). Poll until the run
     // is accepted (running with a nativeCommandId) and leave it running: t03
     // needs this recipient busy.
@@ -483,11 +483,6 @@ describe.serial("native handoff: baseline, targeting/idempotency, scheduling/can
     expect(JSON.stringify(res.body)).toContain("AMBIGUOUS");
     const runsAfter = (await runsOf(a, rOcOc)).length + (await runsOf(a, cSess)).length;
     expect(runsAfter).toBe(runsBefore);
-    try {
-      const status = await api(a.origin, `/api/workstreams/status?${new URLSearchParams({ workspaceId: a.workspaceId, id: a.workstreamId }).toString()}`, { headers: { origin: a.origin } });
-      const assignmentId = JSON.stringify(status.body).includes(rOcOc) ? undefined : undefined;
-      if (assignmentId) await managePhase(a, "phase/end", { sessionId: rOcOc, assignmentId });
-    } catch { /* best-effort cleanup only */ }
     record({ kind: "ambiguity-refusal", runsBefore, runsAfter });
   }, QUICK_TIMEOUT_MS);
 
@@ -540,7 +535,6 @@ describe.serial("native handoff: baseline, targeting/idempotency, scheduling/can
     const a = mustApp();
     const sender = senderRef(await admissionOf(a, sOc));
     const runsBefore = (await runsOf(a, rOcOc)).length;
-    const eventsBefore = (await runEvents(a, (await runsOf(a, rOcOc)).find((r) => r?.status === "completed" && r?.runId !== rOcOcRun1)?.runId ?? "")).length;
     const dup = await enqueueHandoff(a, sender, queueInput);
     expect(dup.status).toBe(202);
     expect(dup.body?.handoff?.id).toBe(hQueueId);
@@ -548,7 +542,7 @@ describe.serial("native handoff: baseline, targeting/idempotency, scheduling/can
     const changed = await enqueueHandoff(a, sender, { ...queueInput, message: `${queueInput.message}\naltered payload` });
     expect(changed.status).toBe(409);
     expect(JSON.stringify(changed.body)).toContain("CONFLICT");
-    record({ kind: "idempotency", handoffId: hQueueId, runsBefore, eventsBefore });
+    record({ kind: "idempotency", handoffId: hQueueId, runsBefore });
   }, QUICK_TIMEOUT_MS);
 });
 

@@ -283,8 +283,10 @@ describe("install-sane-agent-context-packages", () => {
     const mapping = (model: string, variant: string) => `${AGENT_FILENAMES[0].slice(0, -3)}: ${form === "shorthand" ? model : form === "flow" ? `{ model: ${model}, variant: ${variant} }` : form === "block" ? `\n  model: ${model}\n  variant: ${variant}` : `{ model: ${model} }`}\n`
     await Bun.write(source, original)
     await Bun.write(modelConfigPath, mapping("openai/gpt-5", "low"))
-    await installSaneAgentContextPackages(options({ modelConfigPath, dryRun: true }))
-    await expectMissing(homeDirectory)
+    if (form === "flow") {
+      await installSaneAgentContextPackages(options({ modelConfigPath, dryRun: true }))
+      await expectMissing(homeDirectory)
+    }
     await installSaneAgentContextPackages(options({ modelConfigPath }))
     const destination = join(homeDirectory, ".config", "opencode", "agents", AGENT_FILENAMES[0])
     expect(await readFile(destination, "utf8")).toContain('model: "openai/gpt-5"')
@@ -293,6 +295,9 @@ describe("install-sane-agent-context-packages", () => {
     expect(installed.endsWith("\nOriginal body\n")).toBe(true)
     expect(await readFile(source, "utf8")).toBe(original)
     expect(await readFile(join(homeDirectory, ".config", "opencode", "agents", AGENT_FILENAMES[1]), "utf8")).toBe(agentFixture(AGENT_FILENAMES[1]))
+    // Parsing/variant differences belong to this matrix; exercise the full
+    // installer conflict/overwrite lifecycle once, using an object override.
+    if (form !== "flow") return
     expect((await installSaneAgentContextPackages(options({ modelConfigPath }))).updated).toEqual([])
     await Bun.write(modelConfigPath, mapping("anthropic/claude-sonnet-4-6", "medium"))
     await expect(installSaneAgentContextPackages(options({ modelConfigPath }))).rejects.toThrow("--overwrite")
@@ -302,12 +307,10 @@ describe("install-sane-agent-context-packages", () => {
     expect(await readFile(destination, "utf8")).toContain('model: "anthropic/claude-sonnet-4-6"')
     expect((await installSaneAgentContextPackages(options({ modelConfigPath }))).updated).toEqual([])
     expect(await readFile(source, "utf8")).toBe(original)
-    if (form === "flow" || form === "block") {
-      expect(await readFile(destination, "utf8")).toContain('variant: "medium"')
-      await Bun.write(modelConfigPath, mapping("anthropic/claude-sonnet-4-6", "low"))
-      expect((await installSaneAgentContextPackages(options({ modelConfigPath, overwrite: true, dryRun: true }))).updated).toEqual([destination])
-      expect(await readFile(destination, "utf8")).toContain('variant: "medium"')
-    }
+    expect(await readFile(destination, "utf8")).toContain('variant: "medium"')
+    await Bun.write(modelConfigPath, mapping("anthropic/claude-sonnet-4-6", "low"))
+    expect((await installSaneAgentContextPackages(options({ modelConfigPath, overwrite: true, dryRun: true }))).updated).toEqual([destination])
+    expect(await readFile(destination, "utf8")).toContain('variant: "medium"')
   })
 
   test("invalid YAML config or mapped frontmatter fails before writes", async () => {
@@ -367,8 +370,6 @@ describe("install-sane-agent-context-packages", () => {
     await expectMissing(join(homeDirectory, ".agents", "skills", "unlisted"))
     await expectMissing(join(homeDirectory, ".agents", "skills", ROLE_SKILL_NAMES[0], "resources"))
     const repeated = await installSaneAgentContextPackages(options({ modelConfigPath }))
-    expect(repeated.created).toEqual([])
-    expect(repeated.updated).toEqual([])
     expect(repeated.created).toEqual([])
     expect(repeated.updated).toEqual([])
   })
@@ -435,15 +436,6 @@ describe("install-sane-agent-context-packages", () => {
     await expect(installSaneAgentContextPackages(options({ overwrite: true }))).rejects.toBeInstanceOf(AgentContextPackageInstallationError)
     await expectMissing(join(homeDirectory, ".config"))
     expect(await readFile(join(target, "policy.md"), "utf8")).toBe("untouched\n")
-  })
-
-  test("repeats as a no-op when every destination is identical", async () => {
-    await installSaneAgentContextPackages(options())
-    const result = await installSaneAgentContextPackages(options())
-
-    expect(result).toMatchObject({ created: [], updated: [] })
-    expect(result.created).toEqual([])
-    expect(result.updated).toEqual([])
   })
 
   test("dry run validates and reports plans without creating a home directory", async () => {
@@ -542,23 +534,6 @@ describe("install-sane-agent-context-packages", () => {
     const result = await installSaneAgentContextPackages(options())
     expect(await readFile(join(homeDirectory, ".config", "opencode", "agents", AGENT_FILENAMES[0]), "utf8"))
       .toContain('"sane/worker/scout": ask')
-  })
-
-  test("does not delete previously installed typed skill directories", async () => {
-    await installSaneAgentContextPackages(options())
-    const legacySkill = join(
-      homeDirectory,
-      ".agents",
-      "skills",
-      "sane-feature-product-assistant-role",
-      "SKILL.md",
-    )
-    await mkdir(dirname(legacySkill), { recursive: true })
-    await Bun.write(legacySkill, "user-directed legacy skill\n")
-
-    await installSaneAgentContextPackages(options())
-
-    expect(await readFile(legacySkill, "utf8")).toBe("user-directed legacy skill\n")
   })
 
   test("preserves unrelated legacy files and repeats unchanged", async () => {

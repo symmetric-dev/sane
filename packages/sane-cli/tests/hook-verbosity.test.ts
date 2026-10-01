@@ -4,14 +4,13 @@ import { mkdirSync, mkdtempSync, rmSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { discoverRepository, initializeRepository, normalizeNativeSource, openRepositoryDomain } from "../../sane-core/src/server.ts"
-import { linkNativeCaller, nativeCallerEnvelope, nativeCallerReference, openCompactCaller, type NativeCaller } from "../src/native-caller.ts"
+import { linkNativeCaller, nativeCallerEnvelope, nativeCallerReference, nativeShellCaller, openCompactCaller, type NativeCaller } from "../src/native-caller.ts"
 import { classifyCaller } from "../src/cli-arguments.ts"
 import { executeCliCommand } from "../src/cli-command.ts"
 
-// Per-shell-call hook prefix carries only the compact caller
-// reference. Budget: export line stays ≤200B beyond the unset lines.
-const EXPORT_BUDGET = 200
-const UNSET_LINE = "unset SANE_SESSION_ID OPENCODE_SESSION_ID\n"
+// Enrolled shell callers use compact references; bootstrap envelopes are a
+// separate contract. This is a payload budget, not a copied hook formatter.
+const REFERENCE_BUDGET = 200
 
 function seedRepo(root: string): { repo: string; caller: NativeCaller } {
   const repo = join(root, "repo"), profile = join(root, "profile")
@@ -26,38 +25,21 @@ function seedRepo(root: string): { repo: string; caller: NativeCaller } {
   return { repo, caller }
 }
 
-/** Same construction as both shell-hook transports (OC plugin + Claude hook). */
-function hookPrefix(payload: string, command: string): string {
-  const quote = (value: string) => `'${value.replaceAll("'", "'\\''")}'`
-  return `export SANE_CALLER_CONTEXT=${quote(payload)}\n${UNSET_LINE}${command}`
-}
-
 describe("shell-hook caller reference verbosity", () => {
-  test("hook prefix fits budget, carries harness + nativeId, drops paths and authority", () => {
+  test("enrolled shell reference is compact and round-trips with session checks", () => {
     const root = mkdtempSync(join(tmpdir(), "sane-t-hook-"))
     try {
-      const { repo, caller } = seedRepo(root)
+      const { caller } = seedRepo(root)
       linkNativeCaller(caller, { slot: "design", workstream: "native" })
-      const payload = JSON.stringify(nativeCallerReference(caller))
-      const prefix = hookPrefix(payload, "sane status")
-      const exportLine = prefix.slice(0, prefix.indexOf(UNSET_LINE))
-      expect(Buffer.byteLength(exportLine, "utf8")).toBeLessThanOrEqual(EXPORT_BUDGET)
-      expect(prefix).toContain(UNSET_LINE)
+      const reference = nativeShellCaller(caller)
+      expect(reference).toEqual(nativeCallerReference(caller))
+      const payload = JSON.stringify(reference)
+      expect(Buffer.byteLength(payload, "utf8")).toBeLessThanOrEqual(REFERENCE_BUDGET)
       expect(payload).not.toContain("/")
       expect(payload).not.toMatch(/[a-f0-9]{64}/)
       expect(payload).not.toContain("authority")
       const parsed = JSON.parse(payload)
       expect(parsed).toEqual({ version: 1, harness: "cc", nativeId: caller.nativeId })
-      expect(repo.length).toBeGreaterThan(0)
-    } finally { rmSync(root, { recursive: true, force: true }) }
-  })
-
-  test("compact reference round-trips through classifyCaller with session checks", () => {
-    const root = mkdtempSync(join(tmpdir(), "sane-t-hook-"))
-    try {
-      const { caller } = seedRepo(root)
-      linkNativeCaller(caller, { slot: "design", workstream: "native" })
-      const payload = JSON.stringify(nativeCallerReference(caller))
       expect(classifyCaller({ SANE_CALLER_CONTEXT: payload })).toEqual({ actorKind: "native-ref", ref: { version: 1, harness: "cc", nativeId: caller.nativeId } })
       expect(classifyCaller({ SANE_CALLER_CONTEXT: payload, SANE_SESSION_ID: caller.nativeId })).toMatchObject({ actorKind: "native-ref" })
       expect(() => classifyCaller({ SANE_CALLER_CONTEXT: payload, SANE_SESSION_ID: "different" })).toThrow()

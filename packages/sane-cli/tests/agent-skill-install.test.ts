@@ -31,9 +31,9 @@ describe("agent-skill-install", () => {
     await rm(temporaryDirectory, { recursive: true, force: true })
   }
 
-  test("all CC agents load: name, description, no tools restriction, body parity", async () => {
-    await freshHome()
+  test("real-source CC package loads agents, settings, and skills with source parity", async () => {
     try {
+      await freshHome()
       expect(AGENT_FILENAMES).toHaveLength(14)
       for (const filename of AGENT_FILENAMES) {
         const agentName = filename.slice(0, -3)
@@ -54,14 +54,6 @@ describe("agent-skill-install", () => {
         const ocBody = oc.replace(/^(\uFEFF?---\r?\n)([\s\S]*?)(^---[ \t]*(?:\r?\n|$))/m, "").trim()
         expect(body).toBe(ocBody)
       }
-    } finally {
-      await cleanup()
-    }
-  })
-
-  test("all CC settings profiles load: allow/ask only, never deny", async () => {
-    await freshHome()
-    try {
       for (const filename of AGENT_FILENAMES) {
         const ccName = ccAgentFilename(filename.slice(0, -3))
         const settingsName = ccName.replace(/\.md$/, ".settings.json")
@@ -73,14 +65,6 @@ describe("agent-skill-install", () => {
           expect(Array.isArray(list)).toBe(true)
         }
       }
-    } finally {
-      await cleanup()
-    }
-  })
-
-  test("all CC skills load and match their shared copies", async () => {
-    await freshHome()
-    try {
       for (const skillName of ROLE_SKILL_NAMES) {
         const cc = await readFile(join(homeDirectory, ".claude", "skills", skillName, "SKILL.md"), "utf8")
         const shared = await readFile(join(homeDirectory, ".agents", "skills", skillName, "SKILL.md"), "utf8")
@@ -97,7 +81,7 @@ describe("agent-skill-install", () => {
         expect(cc).toBe(oc)
       }
     } finally {
-      await cleanup()
+      if (temporaryDirectory) await cleanup()
     }
   })
 })
