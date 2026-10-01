@@ -2,7 +2,8 @@ import { expect, test } from "bun:test";
 import { Window } from "happy-dom";
 import { act } from "react";
 import type { Root } from "react-dom/client";
-import { contextualDestinations, ContextualNavigation, FilesModeControl, viewGroup } from "./nav";
+import { contextualDestinations, ContextualNavigation, FilesModeControl, ViewNavigationCommands, viewGroup } from "./nav";
+import { ApplicationCommandProvider } from "./application-commands";
 import { WorkspaceShell } from "./workspace-shell";
 import { store } from "./store";
 import type { ActiveView } from "./workspace-controller";
@@ -25,7 +26,7 @@ test("contextual destinations retain leaf IDs and exclude the current destinatio
   }
 });
 
-async function withDom(run: (host: HTMLDivElement, root: Root) => Promise<void>) {
+async function withDom(run: (host: HTMLDivElement, root: Root, browser: Window) => Promise<void>) {
   const browser = new Window({ url: "http://localhost" });
   const globals = { window: browser, document: browser.document, navigator: browser.navigator, HTMLElement: browser.HTMLElement, IS_REACT_ACT_ENVIRONMENT: true };
   const previous = new Map(Object.keys(globals).map(key => [key, Object.getOwnPropertyDescriptor(globalThis, key)]));
@@ -35,7 +36,7 @@ async function withDom(run: (host: HTMLDivElement, root: Root) => Promise<void>)
     const { createRoot } = await import("react-dom/client");
     const host = document.createElement("div"); document.body.append(host);
     root = createRoot(host);
-    await run(host, root);
+    await run(host, root, browser);
   } finally {
     if (root) await act(async () => { root!.unmount(); });
     browser.close();
@@ -54,11 +55,49 @@ test("navigation is accessible, view-only, and never submits a surrounding compo
     const buttons = [...host.querySelectorAll("button")];
     expect(buttons.map(button => button.getAttribute("aria-label"))).toEqual(["Terminal", "Files", "Settings"]);
     expect(buttons.every(button => button.type === "button" && !button.disabled)).toBe(true);
+    expect(buttons.map(button => button.getAttribute("aria-keyshortcuts"))).toEqual(["Meta+`", "Control+Meta+f", "Control+Meta+d"]);
+    expect(buttons.every(button => button.title.startsWith(`${button.getAttribute("aria-label")} (`))).toBe(true);
     await act(async () => { buttons.forEach(button => button.click()); });
     expect(chosen).toEqual(["terminal", "code", "config"]);
     expect(submits).toBe(0);
     await act(async () => { root.render(<ContextualNavigation state={state} activeView="terminal" onNavigate={view => chosen.push(view)} />); });
     expect(host.querySelector('[aria-label="Open Chat"]')?.textContent).toContain("Open Chat");
+  });
+});
+
+test("view hotkeys capture input/editor/terminal keys precisely and clean up registrations", async () => {
+  await withDom(async (host, root, browser) => {
+    const chosen: ActiveView[] = [];
+    const render = (onNavigate: (view: ActiveView) => void) => root.render(<ApplicationCommandProvider>
+      <ViewNavigationCommands onNavigate={onNavigate} />
+      <textarea /><div className="cm-editor"><input /></div><div className="xterm"><textarea /></div>
+    </ApplicationCommandProvider>);
+    await act(async () => render(view => chosen.push(view)));
+    const targets = [document.body, ...host.querySelectorAll("textarea, input")];
+    const emit = async (target: Element, key: string, options: object = {}) => {
+      const event = new browser.KeyboardEvent("keydown", { key, metaKey: true, ctrlKey: key !== "`", bubbles: true, cancelable: true, ...options });
+      await act(async () => { target.dispatchEvent(event as unknown as Event); });
+      return event.defaultPrevented;
+    };
+    for (const target of targets) {
+      for (const key of ["C", "`", "d", "f"]) expect(await emit(target, key)).toBe(true);
+    }
+    expect(chosen).toEqual(targets.flatMap(() => ["chat", "terminal", "config", "code"]));
+    const count = chosen.length;
+    for (const options of [{ metaKey: false }, { ctrlKey: false }, { shiftKey: true }, { altKey: true }, { repeat: true }, { isComposing: true }]) {
+      expect(await emit(targets[1]!, "c", options)).toBe(false);
+    }
+    expect(await emit(targets[3]!, "`", { ctrlKey: true })).toBe(false);
+    expect(await emit(targets[1]!, "Enter", { ctrlKey: true, metaKey: false })).toBe(false);
+    const dialog = document.createElement("dialog"); dialog.setAttribute("open", ""); host.append(dialog);
+    expect(await emit(document.body, "f")).toBe(false); dialog.remove();
+    expect(chosen).toHaveLength(count);
+    const updated: ActiveView[] = [];
+    await act(async () => render(view => updated.push(view)));
+    expect(await emit(document.body, "c")).toBe(true);
+    expect(updated).toEqual(["chat"]); expect(chosen).toHaveLength(count);
+    await act(async () => root.render(null));
+    expect(await emit(document.body, "c")).toBe(false);
   });
 });
 

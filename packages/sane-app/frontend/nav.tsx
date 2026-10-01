@@ -1,8 +1,9 @@
-import { useEffect, useId, useRef, type ReactNode } from "react";
+import { useEffect, useId, useMemo, useRef, type ReactNode } from "react";
 import { FiFileText, FiGitBranch, FiMessageSquare, FiSettings, FiTerminal } from "react-icons/fi";
 import type { State } from "./store";
 import type { ActiveView } from "./workspace-controller";
 import { active } from "./types";
+import { commandHint, useRegisterCommand } from "./application-commands";
 
 export function Icon({ name }: { name: "menu" | "plus" | "close" | "send" | "details" | "down" }) {
   const paths = { menu: "M4 6h16M4 12h16M4 18h16", plus: "M12 5v14M5 12h14", close: "m6 6 12 12M6 18 18 6", send: "M12 19V5m-6 6 6-6 6 6", details: "M12 11v6M12 7h.01M21 12a9 9 0 1 1-18 0 9 9 0 0 1 18 0", down: "M12 5v14m-6-6 6 6 6-6" };
@@ -34,11 +35,25 @@ export function viewGroup(view: ActiveView): ViewGroup {
 }
 
 const DESTINATIONS = [
-  { id: "chat", label: "Chat", Icon: FiMessageSquare },
-  { id: "terminal", label: "Terminal", Icon: FiTerminal },
-  { id: "code", label: "Files", Icon: FiFileText },
-  { id: "config", label: "Settings", Icon: FiSettings },
+  { id: "chat", label: "Chat", Icon: FiMessageSquare, binding: { key: "c", ctrl: true, meta: true } },
+  { id: "terminal", label: "Terminal", Icon: FiTerminal, binding: { key: "`", meta: true } },
+  { id: "code", label: "Files", Icon: FiFileText, binding: { key: "f", ctrl: true, meta: true } },
+  { id: "config", label: "Settings", Icon: FiSettings, binding: { key: "d", ctrl: true, meta: true } },
 ] as const;
+
+/** Register once at the shell level, including destinations whose button is hidden. */
+export function ViewNavigationCommands({ onNavigate }: { onNavigate: (view: ActiveView) => void }) {
+  return <>{DESTINATIONS.map(destination => <ViewNavigationCommand key={destination.id} destination={destination} onNavigate={onNavigate} />)}</>;
+}
+
+function ViewNavigationCommand({ destination, onNavigate }: { destination: typeof DESTINATIONS[number]; onNavigate: (view: ActiveView) => void }) {
+  useRegisterCommand(useMemo(() => ({
+    id: `navigation.${destination.id}`, label: destination.label, binding: destination.binding,
+    contexts: ["application", "input", "editor", "terminal"] as const,
+    available: () => true, action: () => onNavigate(destination.id),
+  }), [destination, onNavigate]));
+  return null;
+}
 
 /** Presentation only: keep the persisted leaf IDs and feature-owned state. */
 export function contextualDestinations(view: ActiveView) {
@@ -52,7 +67,7 @@ export function ContextualNavigation({ state, activeView, onNavigate }: { state:
   return <nav className="contextual-navigation" aria-label="View navigation">{contextualDestinations(activeView).map(item => {
     const openChat = item.id === "chat" && (activeView === "terminal" || activeView === "history");
     const label = openChat ? "Open Chat" : item.label;
-    return <button type="button" key={item.id} aria-label={label} title={label} onClick={() => onNavigate(item.id)}><item.Icon size={17} aria-hidden="true" />{openChat && <span className="navigation-label">{label}</span>}{item.id === "chat" && (pending > 0 || running) && <span className={`chat-activity${pending ? " pending" : ""}`} role="status"><span className="pulse" />{pending ? `${pending}` : ""}<span className="sr-only">{pending ? `${pending} pending` : "Running"}</span></span>}</button>;
+    return <button type="button" key={item.id} aria-label={label} title={`${label} (${commandHint(item.binding)})`} aria-keyshortcuts={`${"ctrl" in item.binding ? "Control+" : ""}Meta+${item.binding.key}`} onClick={() => onNavigate(item.id)}><item.Icon size={17} aria-hidden="true" />{openChat && <span className="navigation-label">{label}</span>}{item.id === "chat" && (pending > 0 || running) && <span className={`chat-activity${pending ? " pending" : ""}`} role="status"><span className="pulse" />{pending ? `${pending}` : ""}<span className="sr-only">{pending ? `${pending} pending` : "Running"}</span></span>}</button>;
   })}</nav>;
 }
 

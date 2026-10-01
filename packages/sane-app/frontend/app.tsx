@@ -16,7 +16,7 @@ import { ConversationSidebar, useConversationSidebarModel } from "./conversation
 import { ConversationHeading } from "./conversation-heading";
 import type { WorkstreamOverview } from "../src/workstreams-contract";
 import { Facts, NativeHistoryDetails, NativeUsage, RunDetails, Thread, Usage } from "./thread";
-import { ContextualNavigation, Drawer, FilesModeControl, Icon, viewGroup } from "./nav";
+import { ContextualNavigation, Drawer, FilesModeControl, Icon, ViewNavigationCommands, viewGroup } from "./nav";
 import { harnessName } from "./types";
 import { ApplicationCommandProvider } from "./application-commands";
 import { WorkspaceSearchButton, WorkspaceSearchFeature } from "./workspace-search";
@@ -97,6 +97,7 @@ function ReadyWorkspace({ state, signOut }: { state: State; signOut: () => void 
   /> : group === "files" ? <><FilesModeControl activeView={view} onNavigate={navigate} /><WorkspaceSidebar /></>
     : <ConfigMenu onSelect={() => { setArtifact(null); setDrawer(null); }} />;
   return <ApplicationCommandProvider><WorkspaceProvider view={view} navigate={navigate}><WorkspaceSearchFeature><TerminalProvider view={view}>
+    <ViewNavigationCommands onNavigate={navigate} />
     <WorkspaceShell view={view} sidebar={sidebar}
       retryCatalog={hydrateCatalog} sidebarOpen={drawer === "sidebar"}
       openSidebar={() => setDrawer("sidebar")} closeSidebar={() => setDrawer(null)}

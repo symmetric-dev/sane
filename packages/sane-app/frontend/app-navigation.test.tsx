@@ -211,6 +211,29 @@ test("App Terminal Open Chat does not submit or invoke shell actions and preserv
   }, { empty: true });
 });
 
+test("App view hotkeys preserve the live draft and navigate without submitting or starting a shell", async () => {
+  await withApp(async ({ browser, host, requests }) => {
+    const input = host.querySelector<HTMLTextAreaElement>("textarea")!;
+    input.focus(); input.setSelectionRange(7, 12);
+    const draft = { ...store.draft() };
+    const hotkey = async (key: string, target: Element = document.body) => {
+      const event = new browser.KeyboardEvent("keydown", { key, metaKey: true, ctrlKey: key !== "`", bubbles: true, cancelable: true });
+      await act(async () => { target.dispatchEvent(event as unknown as Event); });
+      expect(event.defaultPrevented).toBe(true);
+    };
+    await hotkey("`", input); expect(catalog.state.navigation.view).toBe("terminal");
+    await hotkey("f"); expect(catalog.state.navigation.view).toBe("code");
+    await hotkey("d"); expect(catalog.state.navigation.view).toBe("config");
+    await hotkey("c"); expect(catalog.state.navigation.view).toBe("chat");
+    // The current destination has no visible button, but its command remains registered.
+    await hotkey("c", input);
+    expect(host.querySelector("textarea")).toBe(input);
+    expect(input.value).toBe(draft.text); expect(input.selectionStart).toBe(7); expect(input.selectionEnd).toBe(12);
+    expect(store.draft()).toEqual(draft); expect(store.state.selected).toBe(live.id);
+    expect(requests.some(request => /terminal|\/cancel/.test(request.path))).toBe(false);
+  }, { empty: true });
+});
+
 test("App Files and Git lead to Settings leaves with the same workspace selector in sidebar and drawer", async () => {
   await withApp(async ({ host, requests }) => {
     await navigate(host, "Files");
