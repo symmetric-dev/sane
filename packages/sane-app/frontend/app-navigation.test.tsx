@@ -7,6 +7,8 @@ import { configSection } from "./config-view";
 import { store } from "./store";
 import type { Conversation } from "./types";
 import { publishWorkers, registerWorkerSessions, workersFor } from "./worker-client";
+import type { WorkstreamOverview } from "../src/workstreams-contract";
+import { overview, row } from "./workstreams.test-utils";
 
 const workspaceId = "app-navigation-workspace", worktreeId = "app-navigation-tree";
 const conversation = (id: string, title: string): Conversation => ({
@@ -30,7 +32,7 @@ function preserveOwnFields(target: object) {
   };
 }
 
-async function withApp(run: (fixture: Fixture) => Promise<void>, options: { empty?: boolean; replaced?: boolean; historyError?: boolean; mac?: boolean } = {}) {
+async function withApp(run: (fixture: Fixture) => Promise<void>, options: { empty?: boolean; replaced?: boolean; historyError?: boolean; mac?: boolean; workstreams?: WorkstreamOverview; sending?: boolean } = {}) {
   const browser = new Window({ url: "http://localhost" });
   Object.defineProperty(browser.navigator, "platform", { configurable: true, value: options.mac === false ? "Win32" : "MacIntel" });
   const requests: RequestRecord[] = [], unexpected: string[] = [];
@@ -61,8 +63,8 @@ async function withApp(run: (fixture: Fixture) => Promise<void>, options: { empt
       if ([live, preview].some(c => url.pathname === `/api/sessions/${c.id}/workers`)) return Response.json({ workers: [], deliveries: [], continuationSuppressed: false });
       if ([live, preview].some(c => url.pathname === `/api/sessions/${c.id}/native-history`)) return Response.json({ history: null });
       if ([live, preview].some(c => url.pathname === `/api/sessions/${c.id}/interactions`)) return Response.json({ interactions: [] });
-      if (url.pathname === "/api/workstreams/overview" && url.searchParams.get("workspaceId") === workspaceId) return Response.json({ repositoryId: "navigation-domain", workstreams: [], conversations: [] });
-      if (url.pathname === "/api/workstreams/inspect" && url.searchParams.get("workspaceId") === workspaceId) return Response.json({ error: "Repository inspection unavailable" }, { status: 503 });
+      if (url.pathname === "/api/workstreams/overview" && url.searchParams.get("workspaceId") === workspaceId) return Response.json(options.workstreams ?? { repositoryId: "navigation-domain", workstreams: [], conversations: [] });
+      if (url.pathname === "/api/workstreams/inspect" && url.searchParams.get("workspaceId") === workspaceId) return options.workstreams ? Response.json({ state: "ready" }) : Response.json({ error: "Repository inspection unavailable" }, { status: 503 });
       // A deliberate, realistic unavailable binding exercises the actual Files/Git error surfaces,
       // without populating the process-wide editor buffer cache or loading CodeMirror DOM editors.
       if ([worktreeId, "other-tree"].some(id => url.pathname === `/api/workspaces/${workspaceId}/worktrees/${id}`)) return Response.json({ error: "Fixture worktree unavailable", code: "workspace-changed" }, { status: 409 });
@@ -98,7 +100,7 @@ async function withApp(run: (fixture: Fixture) => Promise<void>, options: { empt
     store.state = { ...previousState, phase: "ready", selected: live.id,
       conversations: options.empty ? [] : [{ ...live, ...(options.replaced ? { replacedBy: preview.id } : {}) }, preview],
       config: { authRequired: false, authenticated: true }, profiles: null, runs: [], messages: [], drafts: {},
-      connected: true, loading: false, sending: false, availability: { canSend: true },
+      connected: true, loading: false, sending: options.sending ?? false, availability: { canSend: true },
       connectionError: "", submissionError: "", authError: "", interactions: [], interactionError: "",
       actionBusy: false, actionNotice: "", models: [], modelsLoading: false, modelsLoaded: false, modelsError: "", modelsCwd: "",
       nativeHistory: null, profileBusy: false, profileError: "",
@@ -256,7 +258,8 @@ test("App Files and Git lead to Settings leaves with the same workspace selector
     await click(host, ".sidebar .config-menu button:nth-child(2)");
     expect(catalog.state.navigation.view).toBe("workstreams");
     expect(host.querySelector("main .shell-content h2")?.textContent).toBe("Workstreams");
-    expect(host.querySelector("main .shell-content [role='alert']")?.textContent).toBe("Repository inspection unavailable");
+    expect(host.querySelector("main .shell-content [role='alert']")?.textContent).toBe("Couldn't load workstreams. Try refreshing.");
+    expect(host.querySelector("main .shell-content details")?.textContent).toContain("Repository inspection unavailable");
     expectNavigation(host, ["Chat", "Terminal", "Files"]);
     await click(host, "[aria-label='Open workspace navigation']");
     const drawer = host.querySelector<HTMLDialogElement>("dialog.drawer")!;
@@ -322,4 +325,28 @@ test("App replaced conversations retain navigation; History errors do not strand
     expect(host.querySelector(".composer-navigation-only .contextual-navigation")).not.toBeNull();
     expect(store.state.selected).toBe(live.id);
   }, { replaced: true, historyError: true });
+});
+
+test("App Workstreams Open explicitly navigates to selected App conversation and preserves existing draft and browse workspace", async () => {
+  await withApp(async ({ host, requests }) => {
+    const draft = { ...store.draft(live.id) };
+    await navigate(host, "Settings"); await click(host, ".sidebar .config-menu button:nth-child(2)");
+    expect(store.state.selected).toBe(live.id);
+    expect(host.querySelector("main .workstream-conversations-row h4")?.textContent).toContain(preview.id);
+    await click(host, "main .workstream-conversations-row-actions > button");
+    expect(store.state.selected).toBe(preview.id); expect(catalog.state.navigation.view).toBe("chat");
+    expect(catalog.state.navigation.conversationId).toBe(preview.id);
+    expect(catalog.state.navigation.workspaceId).toBe(workspaceId); expect(catalog.state.navigation.worktreeId).toBe(worktreeId);
+    expect(store.draft(live.id)).toEqual(draft);
+    expect(requests.some(request => request.path === `/api/sessions/${preview.id}/runs`)).toBe(true);
+  }, { workstreams: overview([row(preview.id)]) });
+});
+
+test("App Workstreams Open is disabled while sending and never changes the selected conversation", async () => {
+  await withApp(async ({ host }) => {
+    await navigate(host, "Settings"); await click(host, ".sidebar .config-menu button:nth-child(2)");
+    const open = button(host, "main .workstream-conversations-row-actions > button");
+    expect(open.disabled).toBe(true); await act(async () => { open.click(); });
+    expect(store.state.selected).toBe(live.id); expect(catalog.state.navigation.view).toBe("workstreams");
+  }, { workstreams: overview([row(preview.id)]), sending: true });
 });

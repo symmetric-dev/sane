@@ -166,9 +166,10 @@ test("Settings renders each leaf using the browsed workspace and forwards artifa
     expect(host.querySelector("h2")?.textContent).toBe("Workstreams");
     expect(requests.every(url => url.includes("workspaceId=browsed"))).toBe(true);
     expect(requests).toHaveLength(2);
-    const select = host.querySelector("label > select:not([name])") as HTMLSelectElement;
-    await act(async () => { select.value = "feature"; select.dispatchEvent(new Event("change", { bubbles: true })); });
-    const artifactButton = [...host.querySelectorAll("button")].find(button => button.textContent === "README.md · Open in Files")!;
+    expect(host.querySelector('[aria-current="true"] .workstreams-list-title')?.textContent).toBe("Feature");
+    const documents = host.querySelector<HTMLButtonElement>('[role="tab"]:last-child')!;
+    await act(async () => { documents.click(); });
+    const artifactButton = host.querySelector<HTMLButtonElement>('[aria-label="Open Workstream overview in Files"]')!;
     await act(async () => { artifactButton.click(); });
     expect(opened).toEqual([{ workspaceId: "browsed", workstreamId: "feature", path: "README.md", repositoryId: "domain" }]);
 
@@ -201,21 +202,21 @@ test("Settings Workstreams stops loading for uninitialized stores and shows refr
     await act(async () => { root.render(<ConfigView state={store.snapshot()} signOut={() => {}} workspaceId="browsed" />); });
     expect(host.textContent).toContain("Loading workstreams…");
     await act(async () => { resolve(Response.json({ state: "uninitialized", message: "No domain exists yet." })); });
-    expect(host.textContent).toContain("Repository workstreams are not initialized.");
+    expect(host.textContent).toContain("Organize your repository work");
     expect(host.textContent).not.toContain("Loading workstreams");
-    expect([...host.querySelectorAll("button")].some(button => button.textContent === "Initialize repository domain")).toBe(true);
+    expect([...host.querySelectorAll("button")].some(button => button.textContent === "Enable workstreams")).toBe(true);
 
     inspection = Promise.resolve(Response.json({ error: "Inspection failed" }, { status: 503 }));
     const refresh = [...host.querySelectorAll("button")].find(button => button.textContent === "Refresh")!;
     await act(async () => { refresh.click(); });
-    expect(host.querySelector('[role="alert"]')?.textContent).toBe("Inspection failed");
-    expect(host.textContent).toContain("Workstreams unavailable for this workspace.");
+    expect(host.querySelector('[role="alert"]')?.textContent).toBe("Couldn't load workstreams. Try refreshing.");
+    expect(host.querySelector("details")?.textContent).toContain("Inspection failed");
     expect(host.textContent).not.toContain("Loading workstreams");
-    expect(host.textContent).not.toContain("Initialize repository domain");
+    expect(host.textContent).not.toContain("Enable workstreams");
 
     inspection = Promise.resolve(Response.json({ state: "corrupt", message: "Repair the repository store." }));
     await act(async () => { refresh.click(); });
-    expect(host.textContent).toContain("Repository workstreams unavailable: corrupt.");
+    expect(host.textContent).toContain("Workstreams aren't available right now");
     expect(host.textContent).toContain("Repair the repository store.");
     expect(host.querySelector('[role="alert"]')).toBeNull();
     expect(host.textContent).not.toContain("Loading workstreams");

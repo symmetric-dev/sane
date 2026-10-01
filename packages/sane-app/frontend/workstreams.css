@@ -1,52 +1,59 @@
-/* === workstreams === */
-.workstreams-view {
-  overflow: auto;
-  padding: 24px;
-  flex: 1;
-  min-height: 0;
-}
-.workstreams-view > header, .workstream-filters, .workstreams-view form {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 12px;
-  align-items: end;
-}
-.workstreams-view > header {
-  justify-content: space-between;
-  align-items: center;
-}
-.workstreams-view label {
-  display: flex;
-  flex-direction: column;
-  gap: 6px;
-  margin: 10px 0;
-}
-.workstreams-view input, .workstreams-view select {
-  max-width: 100%;
-  padding: 8px;
-  color: inherit;
-  background: var(--card);
-  border: 1px solid var(--border);
-  border-radius: 6px;
-}
-.workstreams-view button {
-  padding: 6px 10px;
-  border: 1px solid var(--border);
-  border-radius: 6px;
-}
+/* Repository organizer; child cards and dialogs own their scoped styles. */
+.workstreams-view { display:flex; flex-direction:column; gap:20px; flex:1; min-width:0; min-height:0; padding:24px; overflow:auto; }
+.workstreams-header,.workstreams-content-header { display:flex; align-items:center; justify-content:space-between; gap:16px; }
+.workstreams-header { flex-shrink:0; }
+.workstreams-header h2,.workstreams-content-header h3 { margin:0; }
+.workstreams-repository { margin:4px 0 0; overflow-wrap:anywhere; font-size:12px; }
+.workstreams-actions { display:flex; flex-wrap:wrap; gap:8px; }
+.workstreams-actions button,.workstreams-content-header > button,.workstreams-empty > button { padding:8px 12px; border:1px solid var(--border); border-radius:8px; white-space:nowrap; }
+.workstreams-actions .primary-button,.workstreams-empty > .primary-button { margin:0; background:var(--primary); color:var(--primary-foreground); border-color:var(--primary); }
+.workstreams-actions button:not(.primary-button):hover:not(:disabled),.workstreams-content-header > button:hover { background:var(--accent); }
+.workstreams-organizer { display:grid; grid-template-columns:minmax(200px, 270px) minmax(0, 1fr); flex:1; min-height:320px; border:1px solid var(--border); border-radius:12px; background:var(--card); overflow:hidden; }
+.workstreams-sidebar { min-width:0; padding:16px; border-right:1px solid var(--border); background:color-mix(in srgb, var(--muted) 45%, var(--card)); }
+.workstreams-search { display:flex; flex-direction:column; gap:8px; margin-bottom:16px; color:var(--muted-foreground); font-size:12px; }
+.workstreams-search input { width:100%; min-width:0; padding:8px 10px; color:var(--foreground); background:var(--card); border:1px solid var(--border); border-radius:8px; font:inherit; }
+.workstreams-list { display:flex; flex-direction:column; gap:6px; }
+.workstreams-list > button { display:grid; grid-template-columns:minmax(0, 1fr) auto; align-items:start; gap:4px 8px; width:100%; padding:12px; border:1px solid transparent; border-radius:8px; text-align:left; }
+.workstreams-list > button:hover { background:var(--accent); }
+.workstreams-list > button[aria-current="true"] { background:var(--accent); border-color:color-mix(in srgb, var(--primary) 25%, var(--border)); }
+.workstreams-list-title { font-weight:600; overflow-wrap:anywhere; }
+.workstreams-list-meta { grid-column:1 / -1; color:var(--muted-foreground); font-size:11px; overflow-wrap:anywhere; }
+.workstreams-count { display:inline-grid; place-items:center; min-width:22px; padding:1px 5px; border-radius:6px; background:var(--muted); color:var(--muted-foreground); font-size:11px; font-variant-numeric:tabular-nums; }
+.workstreams-list > button[aria-current="true"] .workstreams-count { background:var(--card); color:var(--primary); }
+.workstreams-list > .workstreams-unassigned { margin-top:10px; border-top-color:var(--border); }
+.workstreams-list-empty { margin:8px 12px; font-size:12px; }
+.workstreams-content { min-width:0; }
+.workstreams-content-header { padding:20px 20px 12px; }
+.workstreams-content-header h3 { overflow-wrap:anywhere; }
+.workstreams-content-header p { margin:6px 0 0; font-size:12px; }
+.workstreams-tabs { display:flex; gap:4px; margin:0 20px; border-bottom:1px solid var(--border); }
+.workstreams-tabs button { padding:10px 12px; border-bottom:2px solid transparent; color:var(--muted-foreground); }
+.workstreams-tabs button[aria-selected="true"] { border-bottom-color:var(--primary); color:var(--foreground); }
+.workstreams-content > [role="tabpanel"] { padding:20px; }
+.workstreams-content > [role="tabpanel"][hidden] { display:none; }
+.workstreams-empty { padding:40px 20px; margin:auto; max-width:520px; text-align:center; }
+.workstreams-empty h3 { margin:0 0 8px; }
+.workstreams-empty p { margin:8px 0 16px; }
+.workstreams-technical { margin-top:20px; text-align:left; color:var(--muted-foreground); font-size:12px; }
+.workstreams-notice { flex-shrink:0; margin:0; }
+.workstreams-notice p { margin:0; }
+.workstreams-notice details { margin-top:8px; font-size:12px; }
+.workstreams-notice details p,.workstreams-technical p { margin-top:8px; overflow-wrap:anywhere; white-space:pre-wrap; }
+.workstreams-actions button:focus-visible,.workstreams-list button:focus-visible,.workstreams-search input:focus-visible,.workstreams-tabs button:focus-visible,.workstreams-content-header > button:focus-visible,.workstreams-empty > button:focus-visible { outline:2px solid var(--focus-ring); outline-offset:2px; }
+.artifact-context { padding:12px 20px; overflow-wrap:anywhere; }
 
-/* === workstream === */
-.workstream-conversation {
-  padding: 16px 0;
-  border-top: 1px solid var(--border);
+@media (max-width:900px) {
+  .workstreams-view { padding:16px; gap:16px; }
+  .workstreams-organizer { grid-template-columns:minmax(180px, 220px) minmax(0, 1fr); }
+  .workstreams-sidebar { padding:12px; }
+  .workstreams-content-header { padding:16px 16px 12px; }
+  .workstreams-tabs { margin-inline:16px; }
+  .workstreams-content > [role="tabpanel"] { padding:16px; }
 }
-
-/* === workstreams === */
-.workstreams-view .context-path, .artifact-context {
-  overflow-wrap: anywhere;
-}
-
-/* === artifact === */
-.artifact-context {
-  padding: 12px 20px;
+@media (max-width:640px) {
+  .workstreams-header { align-items:flex-start; flex-wrap:wrap; }
+  .workstreams-organizer { grid-template-columns:minmax(0, 1fr); flex:none; }
+  .workstreams-sidebar { max-height:280px; overflow:auto; border-right:0; border-bottom:1px solid var(--border); }
+  .workstreams-content-header { align-items:flex-start; }
+  .workstreams-content-header > button { flex-shrink:0; }
 }

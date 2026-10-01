@@ -160,7 +160,7 @@ function ShellContent({ state, view, workspaceId, artifact, closeArtifact, openA
     <div className="chat-surface" hidden={view !== "chat"} inert={view !== "chat"}><Thread state={state} active={view === "chat"} navigation={navigation} /></div>
     {view !== "chat" && view !== "terminal" && <div className="shell-content">
       {view === "history" && <HistoryDetail state={state} previewId={historyPreview} onOpen={choose} />}
-      {viewGroup(view) === "settings" && <ConfigView state={state} signOut={signOut} workspaceId={workspaceId} openArtifact={openArtifact} />}
+      {viewGroup(view) === "settings" && <ConfigView state={state} signOut={signOut} workspaceId={workspaceId} openArtifact={openArtifact} openConversation={choose} />}
       {view === "code" && artifact && artifact.workspaceId === workspaceId ? <WorkstreamArtifact artifact={artifact} close={closeArtifact} /> : (view === "code" || view === "git") && <WorkspaceView />}
     </div>}
     {view === "terminal" && <TerminalView navigation={navigation} />}

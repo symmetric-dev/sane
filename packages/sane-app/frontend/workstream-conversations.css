@@ -1,0 +1,65 @@
+.workstream-conversations { min-width: 0; }
+.workstream-conversations-header { display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 12px; }
+.workstream-conversations-header h3 { display: flex; align-items: center; gap: 8px; margin: 0; }
+.workstream-conversations-count { color: var(--muted-foreground); font-size: 12px; font-weight: 400; }
+.workstream-conversations-filters { display: flex; flex-wrap: wrap; gap: 12px; margin: 16px 0; }
+.workstream-conversations-filters label { flex: 1 1 160px; }
+.workstream-conversations label, .workstream-conversation-dialog label { display: flex; flex-direction: column; gap: 6px; }
+.workstream-conversations input, .workstream-conversations select, .workstream-conversation-dialog input:not([type="radio"]), .workstream-conversation-dialog select { width: 100%; min-width: 0; padding: 8px 10px; border: 1px solid var(--border); border-radius: 6px; color: inherit; background: var(--card); }
+.workstream-conversations button, .workstream-conversation-dialog button:not(.icon-button) { padding: 6px 10px; border: 1px solid var(--border); border-radius: 6px; color: inherit; background: var(--card); }
+.workstream-conversations button:disabled, .workstream-conversation-dialog button:disabled { opacity: .5; cursor: not-allowed; }
+.workstream-conversations :is(button, input, select, summary):focus-visible, .workstream-conversation-dialog :is(button, input, select, summary):focus-visible { outline: 2px solid var(--accent); outline-offset: 3px; }
+.workstream-conversations-list { list-style: none; margin: 0; padding: 0; }
+.workstream-conversations-row { display: flex; justify-content: space-between; align-items: flex-start; gap: 16px; padding: 16px 0; border-top: 1px solid var(--border); }
+.workstream-conversations-summary { flex: 1; min-width: 0; }
+.workstream-conversations-summary h4 { margin: 0 0 6px; overflow-wrap: anywhere; }
+.workstream-conversations-summary p, .workstream-conversations-empty, .workstream-conversation-dialog-subtitle { color: var(--muted-foreground); }
+.workstream-conversations-summary p { margin: 0 0 8px; font-size: 12px; }
+.workstream-conversations-phases { display: flex; flex-wrap: wrap; gap: 6px; }
+.workstream-conversations-phases > span { padding: 3px 7px; border-radius: 4px; background: var(--muted); font-size: 12px; }
+.workstream-conversations-phases > .workstream-conversations-no-phase { padding-left: 0; background: none; color: var(--muted-foreground); }
+.workstream-conversations-row-actions { display: flex; flex-wrap: wrap; gap: 8px; align-items: flex-start; justify-content: flex-end; }
+.workstream-conversations-actions { min-width: 90px; }
+.workstream-conversations-actions summary { padding: 6px 10px; border: 1px solid var(--border); border-radius: 6px; cursor: pointer; }
+.workstream-conversations-actions > div { display: flex; flex-direction: column; align-items: stretch; gap: 6px; margin-top: 6px; padding: 8px; border: 1px solid var(--border); border-radius: 6px; background: var(--card); }
+.workstream-conversations-actions button { text-align: left; }
+.workstream-conversation-dialog { width: min(620px, calc(100vw - 32px)); }
+.workstream-conversation-dialog .shell-dialog-content { min-width: 0; }
+.workstream-conversation-dialog h3 { margin: 18px 0 10px; font-size: 14px; }
+.workstream-conversation-dialog p { line-height: 1.5; overflow-wrap: anywhere; }
+.workstream-conversation-dialog form { display: flex; flex-direction: column; align-items: stretch; gap: 12px; }
+.workstream-conversation-dialog form h3, .workstream-conversation-dialog form p { margin: 0; }
+.workstream-conversation-dialog form > button { align-self: flex-start; }
+.workstream-conversation-dialog footer { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 8px; margin-top: 20px; }
+.workstream-conversation-warning, .workstream-conversation-error { padding: 12px; margin: 14px 0; background: var(--muted); border: 1px solid var(--border); border-radius: 6px; }
+.workstream-conversation-warning p:first-child, .workstream-conversation-error p:first-child { margin-top: 0; }
+.workstream-conversation-warning button + button { margin-left: 8px; }
+.workstream-conversation-error details, .workstream-conversation-dialog > details { margin-top: 8px; }
+.workstream-conversation-dialog summary { cursor: pointer; }
+.workstream-conversation-dialog pre { max-height: 280px; overflow: auto; white-space: pre-wrap; overflow-wrap: anywhere; padding: 10px; font-size: 12px; border: 1px solid var(--border); border-radius: 6px; background: var(--muted); }
+.workstream-conversation-dialog dl { display: grid; grid-template-columns: auto minmax(0, 1fr); gap: 8px 14px; font-size: 12px; }
+.workstream-conversation-dialog dt { color: var(--muted-foreground); }
+.workstream-conversation-dialog dd { margin: 0; overflow-wrap: anywhere; }
+.workstream-conversation-identity { overflow-wrap: anywhere; }
+.workstream-conversation-picker { max-height: 300px; overflow: auto; padding: 0; margin: 12px 0; border: 1px solid var(--border); border-radius: 6px; }
+.workstream-conversation-picker legend { padding: 0 8px; color: var(--muted-foreground); font-size: 12px; }
+.workstream-conversation-picker .workstream-conversation-picker-row { display: flex; flex-direction: row; align-items: center; gap: 10px; margin: 0; padding: 12px; border-bottom: 1px solid var(--border); cursor: pointer; }
+.workstream-conversation-picker-row:last-child { border-bottom: 0; }
+.workstream-conversation-picker-row:has(input:checked) { background: var(--muted); }
+.workstream-conversation-picker-row input { flex: 0 0 auto; }
+.workstream-conversation-picker-row span { min-width: 0; overflow-wrap: anywhere; }
+.workstream-conversation-picker-row strong { display: block; }
+.workstream-conversation-dialog small { display: block; margin-top: 4px; color: var(--muted-foreground); line-height: 1.5; }
+.workstream-conversation-phase-list { list-style: none; padding: 0; }
+.workstream-conversation-phase-list li { display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 10px; padding: 8px 0; border-bottom: 1px solid var(--border); }
+.workstream-conversation-history { padding-left: 18px; }
+.workstream-conversation-history li { margin-bottom: 10px; overflow-wrap: anywhere; }
+.workstream-conversations-sr-only { position: absolute; width: 1px; height: 1px; padding: 0; overflow: hidden; clip: rect(0, 0, 0, 0); white-space: nowrap; border: 0; }
+@media (max-width: 640px) {
+  .workstream-conversations-row { flex-direction: column; gap: 12px; }
+  .workstream-conversations-row-actions { justify-content: flex-start; width: 100%; }
+  .workstream-conversations-filters { flex-direction: column; }
+  .workstream-conversations-filters label { flex-basis: auto; }
+  .workstream-conversation-dialog dl { grid-template-columns: 1fr; gap: 4px; }
+  .workstream-conversation-dialog dd { margin-bottom: 8px; }
+}

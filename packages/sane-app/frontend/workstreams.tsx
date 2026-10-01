@@ -1,107 +1,153 @@
 import { useEffect, useId, useRef, useState, useSyncExternalStore } from "react";
-import { SUPPORTED_WORKSTREAM_TYPES } from "sane-core/contracts";
-import type { WorkstreamOverview, WorkstreamConversation } from "../src/workstreams-contract";
-import { filterWorkstreamConversations, loadWorkstreams, refKey, workstreamRequest } from "./workstreams-client";
+import type { WorkstreamOverview } from "../src/workstreams-contract";
+import { loadWorkstreams, workstreamRequest } from "./workstreams-client";
 import { catalog } from "./catalog";
+import { WorkstreamConversations } from "./workstream-conversations";
+import { CreateWorkstreamDialog, WorkstreamDetails, WorkstreamDocuments } from "./workstream-content";
 import "./workstreams.css";
 
 export type ArtifactSelection = { workspaceId: string; workstreamId: string; path: string; repositoryId: string };
-type WorkstreamsProps = { workspaceId: string | null; openArtifact?: (artifact: ArtifactSelection) => void };
-export function WorkstreamsView({ workspaceId, openArtifact }: WorkstreamsProps) {
+type WorkstreamsProps = {
+  workspaceId: string | null;
+  openArtifact?: (artifact: ArtifactSelection) => void;
+  openConversation?: (id: string) => void;
+  disabled?: boolean;
+};
+export function WorkstreamsView({ workspaceId, openArtifact, openConversation, disabled = false }: WorkstreamsProps) {
   const { workspaces } = useSyncExternalStore(catalog.subscribe, catalog.snapshot);
+  const workspace = workspaces.find(item => item.workspaceId === workspaceId);
   if (!workspaceId) return <section className="workspace-empty"><h2>Select a repository workspace</h2><p>Each repository owns its workstreams.</p></section>;
-  if (workspaces.find(workspace => workspace.workspaceId === workspaceId)?.kind === "directory") return <section className="workspace-empty"><h2>Workstreams require a repository</h2><p>This workspace is a plain directory. Select a repository workspace to manage workstreams.</p></section>;
-  return <RepositoryWorkstreams key={workspaceId} workspaceId={workspaceId} openArtifact={openArtifact} />;
+  if (workspace?.kind === "directory") return <section className="workspace-empty"><h2>Workstreams require a repository</h2><p>This workspace is a plain directory. Select a repository workspace to manage workstreams.</p></section>;
+  return <RepositoryWorkstreams key={workspaceId} workspaceId={workspaceId} workspaceName={workspace?.name ?? "Repository workspace"} openArtifact={openArtifact} openConversation={openConversation} disabled={disabled} />;
 }
-function RepositoryWorkstreams({ workspaceId, openArtifact }: WorkstreamsProps & { workspaceId: string }) {
+
+const TABS = ["conversations", "documents"] as const;
+function RepositoryWorkstreams({ workspaceId, workspaceName, openArtifact, openConversation, disabled }: WorkstreamsProps & { workspaceId: string; workspaceName: string }) {
   const [data, setData] = useState<WorkstreamOverview | null>(null), [error, setError] = useState("");
   const [loading, setLoading] = useState(true);
-  const [store, setStore] = useState<{ state: string; message?: string } | null>(null);
-  const [mutationError, setMutationError] = useState("");
-  const [busy, setBusy] = useState(false), [selected, setSelected] = useState("");
-  const [search, setSearch] = useState(""), [membership, setMembership] = useState("all"), [phase, setPhase] = useState("");
-  const [artifacts, setArtifacts] = useState<string[]>([]), [artifactError, setArtifactError] = useState("");
-  const alive = useRef(true), request = useRef(0);
+  const [availability, setAvailability] = useState<{ state: string; message?: string } | null>(null);
+  const [enableError, setEnableError] = useState(""), [enabling, setEnabling] = useState(false);
+  // Undefined is the initial selection; null is an intentional Unassigned selection.
+  const [selected, setSelected] = useState<string | null | undefined>(undefined);
+  const [search, setSearch] = useState(""), [tab, setTab] = useState<typeof TABS[number]>("conversations");
+  const [creating, setCreating] = useState(false), [detailsId, setDetailsId] = useState<string | null>(null);
+  const alive = useRef(true), request = useRef(0), enablePending = useRef(false);
+  const viewId = useId();
   useEffect(() => { alive.current = true; void refresh(); return () => { alive.current = false; request.current++; }; }, []);
-  async function refresh() {
+
+  async function refresh({ strict = false, selectId }: { strict?: boolean; selectId?: string } = {}): Promise<void> {
+    if (!alive.current) return;
     const generation = ++request.current;
+    const current = () => {
+      if (!alive.current) return false;
+      if (generation === request.current) return true;
+      if (strict) throw new Error("A newer refresh replaced this read. Retry refresh.");
+      return false;
+    };
     setLoading(true); setError("");
     try {
-      const availability = await workstreamRequest<{ state: string; message?: string }>(workspaceId, "inspect");
-      if (!alive.current || generation !== request.current) return;
-      setStore(availability); setData(null); setError("");
-      if (availability.state !== "ready") return;
-      const next = await loadWorkstreams(workspaceId); if (alive.current && generation === request.current) { setData(next); setError(""); }
+      const nextAvailability = await workstreamRequest<{ state: string; message?: string }>(workspaceId, "inspect");
+      if (!current()) return;
+      if ((strict || data) && nextAvailability.state !== "ready") throw new Error(nextAvailability.message ?? `Workstreams are not available (${nextAvailability.state}).`);
+      setAvailability(nextAvailability);
+      if (nextAvailability.state !== "ready") { setData(null); return; }
+      // Keep the existing organizer and child mutation state mounted during reads.
+      const next = await loadWorkstreams(workspaceId);
+      if (!current()) return;
+      if (selectId && !next.workstreams.some(item => item.workstream.id === selectId)) throw new Error("The created workstream is not available in the refreshed view yet. Retry opening it.");
+      setData(next);
+      setSelected(current => selectId ?? (current === null || next.workstreams.some(item => item.workstream.id === current) ? current : next.workstreams[0]?.workstream.id ?? null));
+      if (selectId) { setSearch(""); setTab("conversations"); setDetailsId(null); }
+      else setDetailsId(current => next.workstreams.some(item => item.workstream.id === current) ? current : null);
     }
-    catch (e) { if (alive.current && generation === request.current) setError(String(e instanceof Error ? e.message : e)); }
+    catch (e) {
+      if (alive.current && generation === request.current) {
+        setError(e instanceof Error ? e.message : String(e));
+      }
+      // Mutation dialogs must distinguish a committed write from a failed read.
+      // Initial, manual and post-enable reads still consume their own failures.
+      if (strict && alive.current) throw e;
+    }
     finally { if (alive.current && generation === request.current) setLoading(false); }
   }
-  async function mutate(operation: string, input: unknown) {
-    if (busy) return;
-    setBusy(true); setMutationError("");
+  async function enable() {
+    if (enablePending.current) return;
+    enablePending.current = true;
+    request.current++; // A pre-enable read cannot overwrite this mutation's outcome.
+    setLoading(false); setEnabling(true); setEnableError("");
     try {
-      if (operation === "enroll") {
-        const response = await fetch(`/api/sessions/${encodeURIComponent((input as { sessionId: string }).sessionId)}/enroll`, { method: "POST", credentials: "same-origin" });
-        if (!response.ok) throw new Error((await response.json()).error ?? "Enrollment failed");
-      } else await workstreamRequest(workspaceId, operation, input);
+      await workstreamRequest(workspaceId, "init", {});
       if (alive.current) await refresh();
     }
-    catch (e) { if (alive.current) setMutationError(e instanceof Error ? e.message : String(e)); }
-    finally { if (alive.current) setBusy(false); }
+    catch (e) { if (alive.current) setEnableError(e instanceof Error ? e.message : String(e)); }
+    finally { enablePending.current = false; if (alive.current) setEnabling(false); }
   }
-  useEffect(() => {
-    let current = true; setArtifacts([]); setArtifactError("");
-    if (selected) void workstreamRequest<string[]>(workspaceId, "artifacts/list", { id: selected }).then(paths => { if (current) setArtifacts(paths); }).catch(e => { if (current) setArtifactError(e.message); });
-    return () => { current = false; };
-  }, [selected, data]);
-  const detail = data?.workstreams.find(w => w.workstream.id === selected);
-  const assignments = data?.workstreams.flatMap(w => w.activePhases) ?? [];
-  const phases = [...new Set(assignments.map(p => p.phase))];
-  const visible = data ? filterWorkstreamConversations(data, { membership, phase, search }) : [];
+  function select(id: string | null) {
+    if (id !== selected) setDetailsId(null);
+    setSelected(id);
+    if (id === null) setTab("conversations");
+  }
+  async function created(id: string): Promise<void> {
+    if (!alive.current) return;
+    await refresh({ strict: true, selectId: id });
+  }
+
+  const detail = data?.workstreams.find(item => item.workstream.id === selected);
+  const visible = data?.workstreams.filter(item => `${item.workstream.title} ${item.workstream.id} ${item.workstream.type ?? ""}`.toLowerCase().includes(search.trim().toLowerCase())) ?? [];
+  const unassignedCount = data?.conversations.filter(row => !row.conversation || row.conversation.workstreamId === null).length ?? 0;
+  const count = detail ? data?.conversations.filter(row => row.conversation?.workstreamId === detail.workstream.id).length ?? 0 : unassignedCount;
+  const activeTab = detail ? tab : "conversations";
   return <section className="workstreams-view" aria-label="Repository workstreams">
-    <header><h2>Workstreams</h2><button disabled={busy} onClick={() => void refresh()}>Refresh</button></header>
-    <p className="muted">Shared repository state. Lifecycle, jobs and Research are read only here; use the CLI for those mutations. Native handoff integration is deferred to C8.</p>
-    {!loading && !error && store && store.state !== "ready" && <div role="status"><p>{store.state === "uninitialized" ? "Repository workstreams are not initialized." : store.state === "not-repository" ? "Workstreams require a repository workspace." : `Repository workstreams unavailable: ${store.state}.`}</p>{store.message && <p>{store.message}</p>}{store.state === "uninitialized" && <button disabled={busy} onClick={() => void mutate("init", {})}>Initialize repository domain</button>}</div>}
-    {error && <p className="notice error" role="alert">{error}</p>}
-    {mutationError && <p className="notice error" role="alert">{mutationError}</p>}
-    {!data ? (loading || error) && <p role="status">{error ? "Workstreams unavailable for this workspace." : "Loading workstreams…"}</p> : <>
-      <p className="context-path">Repository: {data.repositoryId}</p>
-      <details><summary>Create workstream</summary><form onSubmit={e => { e.preventDefault(); const values = new FormData(e.currentTarget); void mutate("", { id: values.get("id"), title: values.get("title"), type: values.get("type"), ...(values.get("checkout") ? { defaultCheckout: values.get("checkout") } : {}) }); }}>
-        <label>ID<input name="id" required /></label><label>Title<input name="title" required /></label><label>Type<select name="type" required defaultValue=""><option value="" disabled>Select type</option>{SUPPORTED_WORKSTREAM_TYPES.map(type => <option key={type} value={type}>{type}</option>)}</select></label><label>Default checkout (optional absolute path)<input name="checkout" /></label><button disabled={busy}>Create workstream</button>
-      </form></details>
-      <label>Workstream details<select value={selected} onChange={e => setSelected(e.target.value)}><option value="">Select workstream</option>{data.workstreams.map(w => <option key={w.workstream.id} value={w.workstream.id}>{w.workstream.title} · {w.workstream.id} · {w.workstream.type ?? "Incomplete: type not set"} · {w.conversations.length} conversations</option>)}</select></label>
-      {!data.workstreams.length && <p>No workstreams yet.</p>}
-      {detail && <section className="detail-section"><h3>{detail.workstream.title}</h3><p>Default checkout: {detail.workstream.defaultCheckout?.path ?? "Not set"}</p>
-        <p>Type: {detail.workstream.type}</p>
-        <h4>Lifecycle · read only</h4><p>Outcome: {detail.workstream.lifecycle.status}</p><ul>{detail.workstream.lifecycle.phases.map(p => <li key={p.phase}>{p.phase}: {p.status} · Approval: {p.approval_ref ?? "None"}</li>)}</ul>
-        <h4>Jobs · read only</h4><ul>{detail.workstream.lifecycle.jobs.map(j => <li key={j.job_id}>{j.job_id}: {j.status}</li>)}</ul>
-        <h4>Research · read only</h4><ul>{detail.research.registered.map(r => <li key={r.topic}>{r.topic}: {r.reportPath}{r.missing ? " · Missing" : r.modified ? " · Modified" : " · Current"}</li>)}</ul>{detail.research.warnings.map(w => <p key={w}>{w}</p>)}
-        <form key={`${selected}:${detail.workstream.defaultCheckout?.path}`} onSubmit={e => { e.preventDefault(); const checkout = new FormData(e.currentTarget).get("checkout"); void mutate("default-checkout", { id: selected, checkout: checkout || null }); }}><label>Default checkout<input name="checkout" defaultValue={detail.workstream.defaultCheckout?.path ?? ""} placeholder="Absolute checkout path; empty clears default" /></label><button disabled={busy}>Set default checkout</button></form>
-        <p className="muted">Defaults are suggestions for new conversations. Existing execution pins never move.</p>
-        <p>Active phases: {detail.activePhases.map(p => `${p.phase} (${p.ref.harness}:${p.ref.nativeId})`).join(", ") || "None"}</p>
-        <button onClick={() => setMembership(`workstream:${selected}`)}>Show member conversations</button>
-        <h4>Artifacts · read only</h4>{artifactError ? <p role="alert">{artifactError}</p> : artifacts.length ? <ul>{artifacts.map(path => <li key={path}><button disabled={!openArtifact} title={!openArtifact ? "Artifact navigation is unavailable" : undefined} onClick={() => openArtifact?.({ workspaceId, workstreamId: selected, path, repositoryId: data.repositoryId })}>{path} · Open in Files</button></li>)}</ul> : <p>No Markdown artifacts found.</p>}
-        <details><summary>Phase history · {detail.phaseHistory.length}</summary><ul>{detail.phaseHistory.map(p => <li key={p.id}>{p.phase} · {p.ref.harness}:{p.ref.nativeId} · {p.startedAt} → {p.endedAt ?? "Active"}</li>)}</ul></details>
-      </section>}
-      <h3>Conversations</h3><div className="workstream-filters"><label>Search<input value={search} onChange={e => setSearch(e.target.value)} /></label><label>Membership<select value={membership} onChange={e => setMembership(e.target.value)}><option value="all">All conversations</option><option value="unknown">Unknown association</option><option value="unassigned">Confirmed unassigned</option>{data.workstreams.map(w => <option key={w.workstream.id} value={`workstream:${w.workstream.id}`}>{w.workstream.title}</option>)}</select></label><label>Phase<select value={phase} onChange={e => setPhase(e.target.value)}><option value="">All phases</option>{phases.map(p => <option key={p}>{p}</option>)}</select></label></div>
-      {!visible.length && <p>No conversations match these filters.</p>}
-      {visible.map(row => <ConversationCard key={row.sessionId ?? refKey(row.ref)} row={row} data={data} busy={busy} mutate={mutate} />)}
-    </>}
+    <header className="workstreams-header">
+      <div><h2>Workstreams</h2><p className="muted workstreams-repository">{workspaceName}</p></div>
+      <div className="workstreams-actions">
+        <button type="button" className="primary-button" disabled={!data || enabling} onClick={() => setCreating(true)} aria-haspopup="dialog">New workstream</button>
+        <button type="button" disabled={loading || enabling} onClick={() => void refresh()}>{loading && data ? "Refreshing…" : "Refresh"}</button>
+      </div>
+    </header>
+    {error && <div className="notice error workstreams-notice"><p role="alert">{data ? "Couldn't refresh workstreams. Your previous view is still available." : "Couldn't load workstreams. Try refreshing."}</p><details><summary>Details</summary><p>{error}</p></details></div>}
+    {enableError && <div className="notice error workstreams-notice"><p role="alert">Couldn't enable workstreams. Try again when the repository is available.</p><details><summary>Details</summary><p>{enableError}</p></details></div>}
+    {!data && (loading ? <div className="workstreams-empty" role="status"><p>Loading workstreams…</p></div> : !error && availability && availability.state !== "ready" && <div className="workstreams-empty">
+      <h3>{availability.state === "uninitialized" ? "Organize your repository work" : availability.state === "not-repository" ? "Workstreams require a repository" : "Workstreams aren't available right now"}</h3>
+      <p className="muted">{availability.state === "uninitialized" ? "Enable workstreams to group conversations and documents for this repository." : availability.state === "not-repository" ? "Select a repository workspace to manage workstreams." : "Check that the repository is accessible, then refresh to try again."}</p>
+      {availability.state === "uninitialized" && <button type="button" className="primary-button" disabled={enabling} onClick={() => void enable()}>{enabling ? "Enabling…" : "Enable workstreams"}</button>}
+      <details className="workstreams-technical"><summary>Details</summary><p>{availability.message ?? `Repository state: ${availability.state}`}</p></details>
+    </div>)}
+    {data && <div className="workstreams-organizer">
+      <aside className="workstreams-sidebar">
+        <label className="workstreams-search" htmlFor={`${viewId}-search`}>Search workstreams<input id={`${viewId}-search`} type="search" placeholder="Search by name" value={search} onChange={event => setSearch(event.target.value)} /></label>
+        <nav className="workstreams-list" aria-label="Workstreams">
+          {visible.map(item => {
+            const conversations = data.conversations.filter(row => row.conversation?.workstreamId === item.workstream.id).length;
+            return <button type="button" key={item.workstream.id} aria-current={selected === item.workstream.id ? "true" : undefined} aria-controls={`${viewId}-content`} onClick={() => select(item.workstream.id)}>
+              <span className="workstreams-list-title">{item.workstream.title}</span><span className="workstreams-count" aria-label={`${conversations} conversations`}>{conversations}</span>
+              <small className="workstreams-list-meta">{item.workstream.type ?? "Type not set"} · {item.workstream.lifecycle.status}</small>
+            </button>;
+          })}
+          {!visible.length && <p className="muted workstreams-list-empty">{data.workstreams.length ? "No workstreams match your search." : "No workstreams yet. Create one to get started."}</p>}
+          <button type="button" className="workstreams-unassigned" aria-current={selected === null ? "true" : undefined} aria-controls={`${viewId}-content`} onClick={() => select(null)}><span className="workstreams-list-title">Unassigned</span><span className="workstreams-count" aria-label={`${unassignedCount} conversations`}>{unassignedCount}</span><small className="workstreams-list-meta">Conversations without a workstream</small></button>
+        </nav>
+      </aside>
+      <section className="workstreams-content" id={`${viewId}-content`} aria-label={detail?.workstream.title ?? "Unassigned conversations"}>
+        <header className="workstreams-content-header">
+          <div><h3>{detail?.workstream.title ?? "Unassigned"}</h3><p className="muted">{detail ? `${detail.workstream.type ?? "Type not set"} · Lifecycle: ${detail.workstream.lifecycle.status} · ` : "Without a workstream · "}{count} {count === 1 ? "conversation" : "conversations"}</p></div>
+          {detail && <button type="button" onClick={() => setDetailsId(detail.workstream.id)} aria-haspopup="dialog">Details</button>}
+        </header>
+        <div className="workstreams-tabs" role="tablist" aria-label="Workstream content">{TABS.map(value => <button type="button" key={value} role="tab" id={`${viewId}-tab-${value}`} aria-selected={activeTab === value} aria-controls={`${viewId}-panel-${value}`} tabIndex={activeTab === value ? 0 : -1} disabled={value === "documents" && !detail} title={value === "documents" && !detail ? "Select a workstream to browse its documents" : undefined} onClick={() => setTab(value)} onKeyDown={event => {
+          if (!detail || !["ArrowLeft", "ArrowRight", "Home", "End"].includes(event.key)) return;
+          event.preventDefault();
+          const next = event.key === "Home" ? "conversations" : event.key === "End" ? "documents" : value === "conversations" ? "documents" : "conversations";
+          setTab(next); document.getElementById(`${viewId}-tab-${next}`)?.focus();
+        }}>{value === "conversations" ? "Conversations" : "Documents"}</button>)}</div>
+        <div role="tabpanel" id={`${viewId}-panel-conversations`} aria-labelledby={`${viewId}-tab-conversations`} hidden={activeTab !== "conversations"}>
+          <WorkstreamConversations overview={data} workstreamId={detail?.workstream.id ?? null} workspaceId={workspaceId} openConversation={openConversation} onChanged={() => refresh({ strict: true })} disabled={disabled} />
+        </div>
+        <div role="tabpanel" id={`${viewId}-panel-documents`} aria-labelledby={`${viewId}-tab-documents`} hidden={activeTab !== "documents"}>
+          {detail && activeTab === "documents" && <WorkstreamDocuments workspaceId={workspaceId} detail={detail} openArtifact={openArtifact} />}
+        </div>
+      </section>
+    </div>}
+    {creating && <CreateWorkstreamDialog workspaceId={workspaceId} close={() => setCreating(false)} onCreated={created} />}
+    {detail && detailsId === detail.workstream.id && <WorkstreamDetails key={detail.workstream.id} workspaceId={workspaceId} detail={detail} close={() => setDetailsId(null)} onChanged={() => refresh({ strict: true })} />}
   </section>;
-}
-function ConversationCard({ row, data, busy, mutate }: { row: WorkstreamConversation; data: WorkstreamOverview; busy: boolean; mutate: (operation: string, input: unknown) => Promise<void> }) {
-  const conversation = row.conversation;
-  const phaseListId = useId();
-  const phases = data.workstreams.flatMap(w => w.activePhases).filter(p => refKey(p.ref) === refKey(row.ref));
-  const manage = (operation: string, fields: object) => void mutate("manage", { operation, ref: row.ref, ...fields });
-  return <article className="workstream-conversation"><h4>{row.title}</h4><p className="context-path">{row.ref ? `${row.ref.harness} · ${row.ref.authorityId} · ${row.ref.nativeId}` : "Native identity unavailable"}{!row.sessionId && " · No App history"}</p>
-    <p>Membership: {conversation ? conversation.workstreamId ?? "Confirmed unassigned" : "App-only — not enrolled in this repository domain"}</p>
-    {!conversation && row.sessionId && <button disabled={busy} onClick={() => void mutate("enroll", { sessionId: row.sessionId })}>Enroll conversation</button>}
-    <p className="context-path">Execution checkout: {conversation?.executionCheckout.path ?? "Not enrolled"}</p>
-    {conversation && <><form key={conversation.workstreamId ?? "unassigned"} onSubmit={e => { e.preventDefault(); manage("associate", { workstreamId: new FormData(e.currentTarget).get("membership") || null }); }}><label>Assign / reassign / unassign<select name="membership" defaultValue={conversation.workstreamId ?? ""}><option value="">Unassigned</option>{data.workstreams.map(w => <option key={w.workstream.id} value={w.workstream.id}>{w.workstream.title}</option>)}</select></label><button disabled={busy}>Save membership</button></form>
-      <p className="muted">Changing membership ends current phases; execution checkout stays pinned.</p>
-      <ul>{phases.map(p => <li key={p.id}>{p.phase} <button disabled={busy} onClick={() => manage("phase/end", { assignmentId: p.id })}>Remove phase</button></li>)}</ul>
-      {conversation.workstreamId && <form onSubmit={e => { e.preventDefault(); manage("phase/assign", { phase: new FormData(e.currentTarget).get("phase") }); }}><label>Add phase<input name="phase" list={phaseListId} required placeholder="research:topic" /></label><datalist id={phaseListId}>{["design", "engineering", "planning", "execution", "research"].map(p => <option key={p} value={p} />)}</datalist><button disabled={busy}>Add phase</button></form>}
-    </>}
-  </article>;
 }
