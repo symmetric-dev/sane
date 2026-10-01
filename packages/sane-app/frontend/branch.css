@@ -1,5 +1,7 @@
 .message-actions { display:flex; align-items:center; flex-wrap:wrap; gap:12px; }
 .branch-action { display:inline-flex; align-items:center; gap:5px; font-size:12px; }
+.message-actions > .copy,.message-actions > .branch-action { display:inline-flex; align-items:center; gap:5px; padding:4px 6px; border-radius:5px; font-size:12px; color:var(--muted-foreground); text-decoration:none; }
+.message-actions > .copy:hover,.message-actions > .branch-action:hover { color:var(--foreground); background:var(--muted); }
 .branch-form { display:flex; flex-direction:column; gap:20px; }
 .branch-form p { margin:0; line-height:1.6; }
 .branch-replace { display:flex; align-items:center; gap:8px; font-weight:500; }

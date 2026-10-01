@@ -17,7 +17,7 @@ export type Capabilities = {
   cancelRun: boolean; midRunInput: boolean; permissionReplies: boolean;
   attachments: boolean; modelSelection: boolean; effortValues: string[];
 };
-export type TextPart = { type: "text"; text: string } | { type: "reasoning"; text: string };
+export type TextPart = { type: "text"; text: string } | { type: "reasoning"; id?: string; text: string };
 export type ToolPart = { type: "tool"; id: string; toolCallId?: string; name: string; input: unknown; output?: unknown; error?: boolean; toolStatus?: string };
 export type Message = { id: string; nativeIds?: string[]; runId: string; role: "user" | "assistant" | "system"; parts: (TextPart | ToolPart)[]; time: string; status: RunStatus; normalized?: boolean; error?: unknown };
 /** Local submission, retained after acknowledgement only until its recorded user turn arrives. */

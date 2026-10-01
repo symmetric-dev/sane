@@ -11,19 +11,21 @@ import { ConversationLoading, PendingUserText } from "./chat-loading";
 import { messagesWithPendingTurn } from "./transcript";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
-import { FiArrowLeft, FiArrowUpRight, FiCommand, FiZap } from "react-icons/fi";
+import { FiArrowLeft, FiArrowUpRight, FiCopy, FiZap } from "react-icons/fi";
 import { store, type State } from "./store";
 import { Interactions } from "./interactions";
 import { catalog } from "./catalog";
 import { BranchAction, BranchLinks } from "./branch-ui";
 import { active, type Message, type Run, type UsageSnapshot } from "./types";
+import { activityPosition, useActivityPresentation, type ActivityEntry, type ActivityPresentation } from "./transcript-activity";
+import { TranscriptActivity } from "./activity-ui";
 
 const json = (value: unknown) => typeof value === "string" ? value : JSON.stringify(value, null, 2) ?? "Unavailable";
 const number = (value: unknown, suffix = "") => typeof value === "number" && Number.isFinite(value) && value >= 0 ? `${value.toLocaleString(undefined, { maximumFractionDigits: 6 })}${suffix}` : "Unavailable";
 
 function Copy({ text, label = "Copy" }: { text: string; label?: string }) {
   const [feedback, setFeedback] = useState("");
-  return <button type="button" className="copy" onClick={async () => { try { await navigator.clipboard.writeText(text); setFeedback("Copied"); } catch { setFeedback("Copy unavailable"); } }} aria-label={feedback || label}>{feedback || label}</button>;
+  return <button type="button" className="copy" onClick={async () => { try { await navigator.clipboard.writeText(text); setFeedback("Copied"); } catch { setFeedback("Copy unavailable"); } }} aria-label={feedback || label}><FiCopy size={13} aria-hidden="true" />{feedback || label}</button>;
 }
 function CodeBlock({ children }: { children?: ReactNode }) {
   const ref = useRef<HTMLPreElement>(null);
@@ -34,16 +36,21 @@ function Markdown({ text }: { text: string }) {
   return <div className="prose"><ReactMarkdown remarkPlugins={[remarkGfm]} skipHtml components={{ pre: CodeBlock, a: ({ children, href }) => <a href={href} target="_blank" rel="noopener noreferrer">{children}</a>, img: ({ alt }) => <span className="muted">[Image: {alt || "image omitted"}]</span> }}>{text}</ReactMarkdown></div>;
 }
 
-export type TranscriptContextValue = { sessionId: string; harness: Harness; messages: Message[]; runs: Run[]; workers: WorkerRecord[]; deliveries?: WorkerDelivery[]; openWorker: (worker: WorkerRecord) => void; branchEnabled?: boolean; pendingTurn?: PendingTurn | null };
+export type TranscriptContextValue = { sessionId: string; harness: Harness; messages: Message[]; runs: Run[]; workers: WorkerRecord[]; deliveries?: WorkerDelivery[]; openWorker: (worker: WorkerRecord) => void; branchEnabled?: boolean; pendingTurn?: PendingTurn | null; activities?: ActivityPresentation };
 export const TranscriptContext = createContext<TranscriptContextValue | null>(null);
 const isActivityMessage = (message: Message) => message.role === "assistant" && message.parts.some(part => part.type !== "text") && !message.parts.some(part => part.type === "text" && part.text.trim()) && message.error === undefined && message.status !== "failed" && message.status !== "interrupted";
+function ActivityBody({ part }: ActivityEntry) {
+  return part.type === "reasoning" ? <Markdown text={part.text} /> : <><p className="eyebrow">Input</p><pre>{json(part.input)}</pre>{part.output !== undefined && <><p className="eyebrow">{part.error ? "Error" : "Output"}</p><pre>{json(part.output)}</pre></>}</>;
+}
+const renderActivityBody = (entry: ActivityEntry) => <ActivityBody {...entry} />;
 function TranscriptTool({ part, source }: { part: ToolPart; source: Message }) {
   const context = useContext(TranscriptContext)!;
   const workers = dispatchedWorkers(context.sessionId, source, part, context.workers);
   // Open worker already contains the assignment. Keep raw tool evidence in run
   // diagnostics rather than duplicating the instructions in the parent thread.
   if (workers.length) return <>{workers.map(worker => <WorkerCard key={worker.id} worker={worker} workers={context.workers} runs={context.runs} open={context.openWorker} />)}{part.error && <p className="notice error" role="alert">Worker tool reported an error. Open run details for the recorded evidence.</p>}</>;
-  return <details className="tool"><summary><span>{part.name}</span><span className="tool-status">{part.toolStatus || (part.output !== undefined ? part.error ? "Failed" : "Result" : active(source.status) ? "Working" : "No result recorded")}</span></summary><div className="tool-body"><p className="eyebrow">Input</p><pre>{json(part.input)}</pre>{part.output !== undefined && <><p className="eyebrow">{part.error ? "Error" : "Output"}</p><pre>{json(part.output)}</pre></>}</div></details>;
+  const entry: ActivityEntry = { id: JSON.stringify([source.id, "tool", part.id]), source, index: source.parts.indexOf(part), part };
+  return <TranscriptActivity group={{ id: entry.id, entries: [entry] }} renderBody={renderActivityBody} />;
 }
 export function ChatMessage() {
   const message = useAuiState(s => s.message);
@@ -60,18 +67,34 @@ export function ChatMessage() {
   const next = context.messages[sourceIndex + 1];
   const continued = source?.role === "assistant" && next?.role === "assistant";
   const activity = !!source && isActivityMessage(source);
-  const activityContinued = continued && activity && isActivityMessage(next);
+  const activityContinued = continued && activity && isActivityMessage(next) && !next.parts.every((_, index) => context.activities?.plan.positions.get(activityPosition(next.id, index)) === null);
   const plain = message.content.filter(p => p.type === "text").map(p => p.text).join("\n\n");
   const lastInTurn = source && (source.runId === "native-import" ? context.messages.slice(context.messages.indexOf(source) + 1).find(m => m.role === "assistant" || m.role === "user")?.role !== "assistant" : !context.messages.slice(context.messages.indexOf(source) + 1).some(m => m.runId === source.runId && m.role === "assistant"));
   const canBranch = context.branchEnabled && source?.role === "assistant" && lastInTurn && (source.runId === "native-import" ? harness === "opencode" && source.status === "completed" : context.runs.some(r => r.id === source.runId && r.status === "completed"));
   const delivery = source && workerReportDelivery(source, context.deliveries ?? []);
   if (delivery) return <MessagePrimitive.Root className="message worker-report-message"><WorkerOutcomeReport delivery={delivery} workers={context.workers} runs={context.runs} open={context.openWorker} /></MessagePrimitive.Root>;
+  const warning = source?.error !== undefined || !isUser && source?.runId !== "native-import" && message.status?.type === "incomplete";
+  const consumed = source?.parts.length && source.parts.every((_, index) => context.activities?.plan.positions.get(activityPosition(source.id, index)) === null);
+  if (consumed && !showLabel && !warning && !plain && !canBranch) return null;
   return <MessagePrimitive.Root className={`message ${isUser ? "user-message" : "assistant-message"}${continued ? " assistant-continued" : ""}${activity ? " activity-message" : ""}${activityContinued ? " assistant-activity-continued" : ""}`}>
     {showLabel && <div className="assistant-label"><FiZap size={13} aria-hidden="true" /> {source?.role === "system" ? "System" : "Assistant"}</div>}
     <div className={isUser ? "user-bubble" : "assistant-body"}>
-      {pending ? <PendingUserText text={pending.text} sending={!pending.runId} /> : source ? source.parts.map((part, index) => part.type === "reasoning" ? <details className="tool reasoning" key={index}><summary>Reasoning</summary><div className="tool-body"><Markdown text={part.text} /></div></details> : part.type === "text" ? isUser ? <p key={index} className="user-text">{part.text}</p> : <Markdown key={index} text={part.text} /> : <TranscriptTool key={part.id} part={part} source={source} />) : message.content.map((part, index) => {
+      {pending ? <PendingUserText text={pending.text} sending={!pending.runId} /> : source ? source.parts.map((part, index) => {
         if (part.type === "text") return isUser ? <p key={index} className="user-text">{part.text}</p> : <Markdown key={index} text={part.text} />;
-        if (part.type === "tool-call") return <details className="tool" key={part.toolCallId}><summary><FiCommand size={13} className="tool-glyph" aria-hidden="true" /><span>{part.toolName}</span><span className="tool-status">{part.result !== undefined ? part.isError ? "Failed" : "Result" : message.status?.type === "running" ? "Working" : "No result recorded"}</span></summary><div className="tool-body"><p className="eyebrow">Input</p><pre>{json(part.args)}</pre>{part.result !== undefined && <><p className="eyebrow">{part.isError ? "Error" : "Output"}</p><pre>{json(part.result)}</pre></>}</div></details>;
+        const position = activityPosition(source.id, index);
+        if (context.activities?.plan.positions.has(position)) {
+          const group = context.activities.plan.positions.get(position);
+          return group ? <TranscriptActivity key={group.id} group={group} entrances={context.activities.entrances} renderBody={renderActivityBody} /> : null;
+        }
+        if (part.type === "tool") return <TranscriptTool key={part.id} part={part} source={source} />;
+        const entry: ActivityEntry = { id: JSON.stringify([source.id, "reasoning", part.id ?? index]), source, index, part };
+        return <TranscriptActivity key={entry.id} group={{ id: entry.id, entries: [entry] }} renderBody={renderActivityBody} />;
+      }) : message.content.map((part, index) => {
+        if (part.type === "text") return isUser ? <p key={index} className="user-text">{part.text}</p> : <Markdown key={index} text={part.text} />;
+        if (part.type === "tool-call") {
+          const fallback: Message = { id: message.id, runId: "native-import", role: "assistant", parts: [], time: "", status: message.status?.type === "running" ? "running" : "completed" };
+          return <TranscriptTool key={part.toolCallId} source={fallback} part={{ type: "tool", id: part.toolCallId, name: part.toolName, input: part.args, output: part.result, error: part.isError }} />;
+        }
         return null;
       })}
       {source?.error !== undefined && <details className="run-warning"><summary>Reported error</summary><pre>{json(source.error)}</pre></details>}
@@ -107,13 +130,14 @@ export function Thread({ state, active: isActive = true, navigation }: { state: 
   const latestRun = state.runs.at(-1);
   const pendingTurn = state.pendingTurn?.conversationId === state.selected ? state.pendingTurn : null;
   const messages = useMemo(() => messagesWithPendingTurn(state.messages, pendingTurn), [state.messages, pendingTurn]);
+  const activities = useActivityPresentation({ sessionId: state.selected, messages, workers, deliveries: projection.deliveries, loading: state.loading, animate: isActive && state.connected && !state.actionBusy });
   const runtime = useExternalStoreRuntime({ messages, convertMessage, isRunning: running,
     isSendDisabled: !isActive || running || state.loading || state.sending || !state.connected || !state.availability.canSend || modelUnavailable || !!store.executionUnavailable() || (needsAck && ack !== state.selected),
     onNew: async message => { const text = message.content.filter(p => p.type === "text").map(p => p.text).join("\n"); await send(text); },
   });
   const sendDisabled = !isActive || running || state.loading || state.sending || !state.connected || !state.availability.canSend || modelUnavailable || !!store.executionUnavailable() || (needsAck && ack !== state.selected);
   const footer = <ChatComposer state={state} active={isActive} navigation={navigation} ack={ack} onAckChange={setAck} send={send} sendDisabled={sendDisabled} parentId={parentId} />;
-  return <TranscriptContext.Provider value={{ sessionId: state.selected, harness, messages, runs: state.runs, workers, deliveries: projection.deliveries, openWorker, pendingTurn, branchEnabled: !state.loading && !state.sending && !running && !parentId && !conversation?.worker && !conversation?.replacedBy && !(conversation?.attachment && harness === "claude-code") }}><AssistantRuntimeProvider runtime={runtime}><ThreadPrimitive.Root className="thread">
+  return <TranscriptContext.Provider value={{ sessionId: state.selected, harness, messages, runs: state.runs, workers, deliveries: projection.deliveries, openWorker, pendingTurn, activities, branchEnabled: !state.loading && !state.sending && !running && !parentId && !conversation?.worker && !conversation?.replacedBy && !(conversation?.attachment && harness === "claude-code") }}><AssistantRuntimeProvider runtime={runtime}><ThreadPrimitive.Root className="thread">
     <BranchLinks key={state.selected} conversation={conversation} />
     {parentId && <nav className="worker-parent-nav" aria-label="Worker navigation"><button type="button" className="text-button" disabled={state.sending} onClick={() => store.openConversation(parentId)}><FiArrowLeft size={14} aria-hidden="true" />Back to parent</button><span className="muted">Worker conversation</span></nav>}
     <ChatScroll resetKey={state.selected || `new:${repository.navigation.worktreeId}`} footer={footer}>

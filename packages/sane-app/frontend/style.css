@@ -756,70 +756,90 @@ h3 {
   margin-top:11px;
 }
 
-/* === tool === */
-.tool {
+/* === transcript activity === */
+.transcript-activity {
   margin:4px 0;
   max-width:100%;
-  border-radius:6px;
-  background:color-mix(in srgb, var(--muted) 55%, transparent);
+  min-width:0;
   font-size:12px;
 }
-.assistant-body > .tool:first-child {
-  margin-top:0;
-}
-.assistant-body > .tool:last-child {
-  margin-bottom:0;
-}
-.assistant-body > .prose + .tool,
-.assistant-body > .tool + .prose {
-  margin-top:12px;
-}
-.tool summary {
+.assistant-body > .transcript-activity:first-child { margin-top:0; }
+.assistant-body > .transcript-activity:last-child { margin-bottom:0; }
+.assistant-body > .prose + .transcript-activity,
+.assistant-body > .transcript-activity + .prose { margin-top:12px; }
+.activity-row {
   display:flex;
-  gap:8px;
   align-items:center;
-  min-height:30px;
-  padding:5px 10px;
-  cursor:pointer;
-  list-style:none;
+  gap:8px;
+  min-width:0;
 }
-.tool summary::-webkit-details-marker {
-  display:none;
+.activity-tabs {
+  display:flex;
+  flex:1;
+  align-items:center;
+  gap:14px;
+  min-width:0;
+  padding:4px;
+  overflow-x:auto;
+  overscroll-behavior-x:contain;
+  scrollbar-width:thin;
 }
-.tool summary:hover,
-.tool[open] {
-  background:var(--muted);
-}
-.tool summary:hover {
-  border-radius:6px;
-}
-.tool summary:after {
-  content:"";
-  display:inline-block;
-  width:6px;
-  height:6px;
+.activity-tab {
+  display:inline-flex;
   flex-shrink:0;
-  border-right:1.5px solid var(--muted-foreground);
-  border-bottom:1.5px solid var(--muted-foreground);
-  transform:rotate(45deg);
-  margin-left:2px;
-}
-.tool[open] summary:after {
-  transform:rotate(180deg);
-}
-.tool-glyph {
-  color:var(--primary);
-  font-size:17px;
-}
-.tool-status {
+  align-items:center;
+  gap:7px;
+  min-height:30px;
+  padding:4px 0;
+  border-bottom:1px solid transparent;
+  background:none;
   color:var(--muted-foreground);
-  font-size:10px;
+  text-align:left;
+  white-space:nowrap;
+}
+.activity-tab:hover,.activity-tab.activity-selected { color:var(--foreground); background:none; }
+.activity-tab.activity-selected .activity-name { text-decoration-color:var(--primary); text-decoration-thickness:2px; }
+.activity-tab:focus-visible { outline-offset:1px; }
+.activity-latest > .activity-tab { min-width:0; flex-shrink:1; max-width:100%; }
+.activity-name { overflow:hidden; text-overflow:ellipsis; text-decoration:underline; text-underline-offset:3px; text-decoration-thickness:1px; }
+.activity-latest .activity-name { overflow-wrap:anywhere; white-space:normal; }
+.activity-status { font-size:10px; color:var(--muted-foreground); }
+.activity-error { color:var(--error); }
+.activity-collapse {
+  display:flex;
+  flex-shrink:0;
+  align-items:center;
+  justify-content:center;
+  min-width:30px;
+  min-height:30px;
   margin-left:auto;
+  padding:6px;
+  color:var(--muted-foreground);
+  background:none;
 }
-.tool-body {
-  padding:2px 12px 12px;
+.activity-collapse:hover { color:var(--foreground); background:none; }
+.activity-icon {
+  width:18px;
+  height:18px;
+  flex-shrink:0;
+  color:var(--primary);
+  transform-origin:center;
+  transform-box:fill-box;
 }
-.tool-body pre {
+.activity-wave.activity-arriving { animation:activity-wave-pulse .65s ease-in-out 2; }
+.activity-triangle.activity-arriving { animation:activity-triangle-turn .75s ease-in-out 2; }
+@keyframes activity-wave-pulse {
+  0%,100% { opacity:1; transform:scaleY(1); }
+  50% { opacity:.35; transform:scaleY(.5); }
+}
+@keyframes activity-triangle-turn {
+  to { transform:rotate(360deg); }
+}
+.activity-body {
+  min-width:0;
+  padding:8px 0 12px 25px;
+}
+.activity-body pre {
   max-height:360px;
   overflow:auto;
   white-space:pre-wrap;
@@ -827,7 +847,7 @@ h3 {
   font-size:11px;
   line-height:1.7;
 }
-.tool-body .eyebrow {
+.activity-body .eyebrow {
   margin:12px 0 5px;
 }
 
@@ -1289,10 +1309,12 @@ h3 {
   .message {
     margin-bottom:30px;
   }
-  .tool summary {
+  .activity-tab,.activity-collapse {
     min-height:40px;
     padding-block:8px;
   }
+  .activity-collapse { min-width:40px; }
+  .activity-body { padding-left:0; }
 }
 
 /* === at-rule @media(prefers-reduced-motion:reduce) === */
