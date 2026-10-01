@@ -100,7 +100,38 @@
   flex:1;
   flex-direction:column;
   min-height:0;
+  overflow:hidden;
+  padding:12px;
+  gap:12px;
+}
+.workspace-sidebar-content {
+  flex:1;
+  min-height:0;
   overflow:auto;
+}
+.workspace-sidebar-actions {
+  display:flex;
+  align-items:stretch;
+  flex-shrink:0;
+  gap:8px;
+  padding-top:12px;
+  border-top:1px solid var(--border);
+}
+.workspace-sidebar-actions .new-chat {
+  flex:1;
+  min-width:0;
+  width:auto;
+  gap:6px;
+  padding:10px 8px;
+  font-size:12px;
+}
+.workspace-sidebar-actions .history-sidebar-button {
+  gap:6px;
+  padding:10px 8px;
+  font-size:12px;
+}
+.workspace-sidebar-actions svg {
+  flex-shrink:0;
 }
 .workspace-sidebar-heading {
   display:flex;

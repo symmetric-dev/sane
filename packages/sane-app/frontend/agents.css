@@ -211,10 +211,6 @@ button.agent-chip:hover:not(:disabled) {
 .agent-tabs button { padding:10px 16px; border-bottom:2px solid transparent; color:var(--muted-foreground); }
 .agent-tabs button[aria-selected="true"] { border-bottom-color:var(--primary); color:var(--foreground); }
 .agent-tabs button:focus-visible { outline:2px solid var(--focus-ring); outline-offset:-2px; }
-.agent-base-section { padding-top:20px; border-top:1px solid var(--border); }
-.agent-base-section p { font-size:12px; margin:0 0 12px; }
-.agent-base-section .agent-card-description { display:none; }
-.agent-base-section .agent-card { gap:4px; padding:12px; }
 .agent-edit-dialog { width:min(640px,calc(100vw - 32px)); overflow:hidden; }
 .agent-edit-dialog .shell-dialog-content { display:flex; flex-direction:column; max-height:calc(100dvh - 42px); padding:0; }
 .agent-edit-dialog header { flex-shrink:0; margin:0; padding:20px 24px; border-bottom:1px solid var(--border); }

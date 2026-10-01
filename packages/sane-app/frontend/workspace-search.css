@@ -1,19 +1,41 @@
 .workspace-search-opener { display: flex; align-items: center; gap: 8px; white-space: nowrap; }
 .workspace-search-opener kbd { font-size: 11px; opacity: .65; }
-.shell-dialog.workspace-search-dialog { width: min(780px, calc(100vw - 32px)); max-height: calc(100dvh - 40px); }
+.workspace-search-modes { display: flex; gap: 0; margin: 0; border-bottom: 1px solid var(--border); }
+.workspace-search-modes button { flex: 1; padding: 8px; font-size: 12px; border-bottom: 2px solid transparent; }
+.workspace-search-modes button[aria-pressed="true"] { border-bottom-color: var(--primary); color: var(--primary); }
+.workspace-search-panel, .workspace-search-file { display: flex; flex-direction: column; flex: 1; min-height: 0; min-width: 0; overflow: hidden; }
+.workspace-search-toolbar { flex: none; padding: 12px 18px 8px; border-bottom: 1px solid var(--border); }
+.workspace-search-query-row { display: flex; gap: 12px; align-items: end; flex-wrap: wrap; }
 .workspace-search-scope, .workspace-search-help { color: var(--muted-foreground); font-size: 12px; }
+.workspace-search-scope { margin: 8px 0; }
+.workspace-search-query { flex: 1; min-width: 180px; font-size: 12px; }
 .workspace-search-query, .workspace-search-paths label { display: flex; flex-direction: column; gap: 6px; }
-.workspace-search-query input, .workspace-search-paths input { width: 100%; min-width: 0; padding: 8px 10px; }
-.workspace-search-options { display: flex; flex-wrap: wrap; gap: 18px; margin: 12px 0; }
-.workspace-search-options label { display: flex; align-items: center; gap: 6px; }
-.workspace-search-paths { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; font-size: 12px; }
-.workspace-search-status { margin: 12px 0; font-size: 12px; }
-.workspace-search-error { color: var(--error); }
-.workspace-search-results { max-height: 45dvh; overflow: auto; }
-.workspace-search-results h3 { margin: 12px 0 4px; font-size: 12px; overflow-wrap: anywhere; }
+.workspace-search-query input, .workspace-search-paths input { width: 100%; min-width: 0; padding: 8px 10px; border: 1px solid var(--border); border-radius: 4px; }
+.workspace-search-options { display: flex; align-items: center; flex-wrap: wrap; gap: 12px; font-size: 12px; padding-bottom: 6px; }
+.workspace-search-options label { display: flex; align-items: center; gap: 5px; }
+.workspace-search-paths { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; font-size: 12px; margin-top: 12px; }
+.workspace-search-paths p { grid-column: 1 / -1; margin: 0; color: var(--muted-foreground); }
+.workspace-search-status { margin: 6px 0; font-size: 12px; color: var(--muted-foreground); }
+.workspace-search-error { color: var(--error); font-size: 12px; overflow-wrap: anywhere; }
+.workspace-search-results { flex: 1; min-height: 0; overflow: auto; padding: 8px 18px 18px; }
+.workspace-search-results[hidden] { display: none; }
+.workspace-search-results h3 { display: flex; gap: 12px; margin: 14px 0 4px; font-size: 12px; overflow-wrap: anywhere; }
+.workspace-search-results h3 span, .workspace-search-count { color: var(--muted-foreground); font-size: 11px; }
 .workspace-search-results ul { padding: 0; margin: 0; list-style: none; }
 .workspace-search-results button { display: flex; gap: 12px; width: 100%; text-align: left; padding: 7px 8px; }
+.workspace-search-results button.is-active { background: var(--muted); }
 .workspace-search-results button:focus-visible { outline: 2px solid var(--primary); outline-offset: -2px; }
 .workspace-search-position { flex: none; min-width: 44px; color: var(--muted-foreground); font-size: 12px; }
 .workspace-search-results code { white-space: pre; overflow: hidden; text-overflow: ellipsis; }
-@media (max-width: 600px) { .workspace-search-paths { grid-template-columns: 1fr; } .workspace-search-opener kbd { display: none; } }
+.workspace-search-filebar { display: flex; align-items: center; gap: 10px; padding: 8px 18px; border-bottom: 1px solid var(--border); font-size: 12px; flex: none; }
+.workspace-search-filebar button { padding: 4px 6px; }
+.workspace-search-filename { flex: 1; min-width: 0; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
+.workspace-search-files .workspace-search-help { padding: 0 9px; margin-top: 0; }
+.workspace-search-count { margin-left: auto; }
+@media (max-width: 600px) {
+  .workspace-search-paths { grid-template-columns: 1fr; }
+  .workspace-search-opener kbd { display: none; }
+  .workspace-search-toolbar, .workspace-search-filebar { padding-left: 12px; padding-right: 12px; }
+  .workspace-search-query { flex-basis: 100%; }
+  .workspace-search-filebar { gap: 5px; }
+}

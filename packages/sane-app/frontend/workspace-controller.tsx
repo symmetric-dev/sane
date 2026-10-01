@@ -9,11 +9,11 @@ import { catalog, worktreeScope } from "./catalog";
 import { notifyWorkspace, openBuffer, refreshBuffer, rootState, subscribeWorkspace, workspaceEpoch, workspaceFailure, workspaceSnapshot, type TreePresentation } from "./workspace-store";
 
 export type ActiveView = NavigationBookmark["view"];
-export type WorkspaceActivation = { view: "code"; path: string; location?: WorkspaceLocation } | { view: "git"; path: string; comparison: GitComparison };
+export type WorkspaceActivation = { view: "code"; path: string; location?: WorkspaceLocation; source?: "files" | "search" } | { view: "git"; path: string; comparison: GitComparison };
 type DirectoryResult = { listing?: WorkspaceList; error?: string };
 type DirectoryRequest = { result?: DirectoryResult; promise?: Promise<DirectoryResult> };
 type Scope = {
-  id: string; workspace: Workspace; auth: number; generation: number;
+  id: string; workspace: Workspace; auth: number; generation: number; bindingRevision?: string;
   directories: Map<string, DirectoryRequest>; invalidators: Set<(path: string) => void>;
 };
 
@@ -30,21 +30,23 @@ function useController(conversationId: string | null, view: ActiveView, navigate
   const diffEditor = useRef<EditorView | null>(null);
   const pendingLocation = useRef<{ scope: Scope; path: string; location: WorkspaceLocation } | null>(null);
   const [locationNotice, setLocationNotice] = useState("");
+  const activationRevision = useRef(0);
+  const [codeActivation, setCodeActivation] = useState<{ scope: Scope; revision: number; source: "files" | "search" }>();
   // Render-time identity prevents previous-conversation callbacks from landing before effect cleanup.
-  const identity = useRef({ conversationId, view });
-  identity.current = { conversationId, view };
-  const scope = resolved?.id === conversationId && resolved.auth === workspaceEpoch() ? resolved : undefined;
+  const identity = useRef({ conversationId, view, bindingRevision });
+  identity.current = { conversationId, view, bindingRevision };
+  const scope = resolved?.id === conversationId && resolved.bindingRevision === bindingRevision && resolved.auth === workspaceEpoch() ? resolved : undefined;
   const workspace = scope?.workspace;
   const root = workspace ? rootState(workspace) : undefined;
   const selected = root?.selected ?? "", comparisonKind = root?.comparison ?? "unstaged";
   const buffer = root?.buffers.get(selected);
   const selectionKey = scope ? JSON.stringify([scope.generation, workspace!.workspaceId, view, selected, comparisonKind, openAttempt]) : "";
-  const currentScope = (candidate: Scope) => candidate.id === identity.current.conversationId && candidate.generation === generation.current && candidate.auth === workspaceEpoch();
+  const currentScope = (candidate: Scope) => candidate.id === identity.current.conversationId && candidate.bindingRevision === identity.current.bindingRevision && candidate.generation === generation.current && candidate.auth === workspaceEpoch();
 
   useEffect(() => {
     const request = ++generation.current, auth = workspaceEpoch();
     let active = true;
-    const current = () => active && request === generation.current && auth === workspaceEpoch() && identity.current.conversationId === conversationId;
+    const current = () => active && request === generation.current && auth === workspaceEpoch() && identity.current.conversationId === conversationId && identity.current.bindingRevision === bindingRevision;
     setResolved(null); setError(""); setDiff(null); setLocalCompare(null); setOpening(null); pendingLocation.current = null; setLocationNotice("");
     setResolving(!!conversationId);
     if (conversationId) void workspaceClient.resolve(conversationId).then(workspace => {
@@ -52,7 +54,7 @@ function useController(conversationId: string | null, view: ActiveView, navigate
         const root = rootState(workspace), bookmark = catalog.state.navigation;
         if (bookmark.filePath !== null) root.selected = bookmark.filePath;
         if (bookmark.comparison !== null) root.comparison = bookmark.comparison;
-        setResolved({ id: conversationId, workspace, auth, generation: request, directories: new Map(), invalidators: new Set() });
+        setResolved({ id: conversationId, workspace, auth, generation: request, bindingRevision, directories: new Map(), invalidators: new Set() });
       }
     }).catch(error => {
       if (current()) { setResolving(false); setError(workspaceFailure(error)); }
@@ -125,6 +127,7 @@ function useController(conversationId: string | null, view: ActiveView, navigate
 
   function activate(target: WorkspaceActivation) {
     if (!scope || !root || !currentScope(scope)) return;
+    if (target.view === "code") setCodeActivation({ scope, revision: ++activationRevision.current, source: target.source ?? "files" });
     selectionRequest.current++;
     pendingLocation.current = target.view === "code" && target.location ? { scope, path: target.path, location: target.location } : null;
     setLocationNotice("");
@@ -136,6 +139,13 @@ function useController(conversationId: string | null, view: ActiveView, navigate
     catalog.navigate({ filePath: target.path, comparison: target.view === "git" ? target.comparison : root.comparison });
     // Always call navigation, including reactivation of the current leaf (mobile drawer close).
     navigate(target.view);
+  }
+
+  // Change the shell leaf / dismiss its drawer or artifact without restarting file
+  // acquisition or discarding an already queued saved-match location.
+  function navigateView(target: ActiveView) {
+    if (!scope || !currentScope(scope)) return;
+    navigate(target);
   }
 
   async function listDirectory(path: string): Promise<DirectoryResult> {
@@ -225,7 +235,8 @@ function useController(conversationId: string | null, view: ActiveView, navigate
     opening: opening === selectionKey, diffLoading: diffLoading === selectionKey,
     comparison: diff?.key === selectionKey ? diff.value : null,
     localCompare: localCompare === selectionKey, closeCompare: () => setLocalCompare(null),
-    activate, locationNotice, listDirectory, retryDirectory, refreshDirectories, compareDisk, updateTree, mutateFile,
+    activate, navigateView, codeActivation: codeActivation?.scope === scope ? codeActivation : undefined,
+    locationNotice, listDirectory, retryDirectory, refreshDirectories, compareDisk, updateTree, mutateFile,
     retryResolve: () => setResolveAttempt(value => value + 1), retrySelection: () => setOpenAttempt(value => value + 1),
   };
 }

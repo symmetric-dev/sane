@@ -4,6 +4,7 @@ import { act } from "react";
 import type { Root } from "react-dom/client";
 import { WorkspaceProvider, useWorkspace } from "./workspace-controller";
 import { WorkspaceHeader } from "./workspace";
+import { WorkspaceSidebar } from "./workspace-tree";
 import { catalog } from "./catalog";
 import { dirty, notifyWorkspace, resetWorkspaceState } from "./workspace-store";
 import { copyDestination } from "./workspace-file-actions";
@@ -27,6 +28,7 @@ test("Code actions copy saved contents, preserve failed input/local edits, and c
         return pending.promise;
       }
       if (route === "tree") return Response.json({ root: "/fixture", workspaceId: "binding", bindingRevision: "binding", catalogWorkspaceId: "workspace", worktreeId: "tree", maxFileBytes: 262144 });
+      if (route === "list") return Response.json({ workspaceId: "binding", path: url.searchParams.get("path"), entries: [], truncated: false });
       if (route === "file") {
         const filePath = url.searchParams.get("path")!;
         return Response.json({ workspaceId: "binding", path: filePath, text: files.get(filePath), revision, bytes: 10, editable: true, eol: "lf", bom: false });
@@ -39,12 +41,17 @@ test("Code actions copy saved contents, preserve failed input/local edits, and c
   const previousCatalog = catalog.state;
   catalog.state = { ...catalog.state, ready: false, navigation: { revision: 0, workspaceId: "workspace", worktreeId: "tree", conversationId: null, view: "code", filePath: "notes.md", comparison: null } };
   let root: Root | undefined, controller: ReturnType<typeof useWorkspace>;
-  function Probe() { controller = useWorkspace(); return <WorkspaceHeader />; }
+  function Probe() { controller = useWorkspace(); return <><WorkspaceHeader /><WorkspaceSidebar /></>; }
   try {
     resetWorkspaceState();
     const { createRoot } = await import("react-dom/client"), host = document.createElement("div"); document.body.append(host); root = createRoot(host);
     await act(async () => root!.render(<WorkspaceProvider view="code" navigate={() => {}}><Probe /></WorkspaceProvider>));
     expect(controller!.selected).toBe("notes.md"); expect(controller!.buffer).toBeDefined();
+    const footer = host.querySelector(".workspace-sidebar-actions")!;
+    expect(footer.tagName).toBe("FOOTER");
+    expect(footer.previousElementSibling?.className).toBe("workspace-sidebar-content");
+    expect(host.querySelector(".workspace-sidebar-heading button")).toBeNull();
+    expect(footer.textContent).toBe("New fileRefresh");
     const original = controller!.buffer!;
     await act(async () => { original.state = original.state.update({ changes: { from: 0, to: original.state.doc.length, insert: "unsaved text" } }).state; notifyWorkspace(); });
     const button = (label: string) => [...host.querySelectorAll("button")].find(node => node.textContent === label)!;
@@ -86,14 +93,27 @@ test("Code actions copy saved contents, preserve failed input/local edits, and c
     expect(host.querySelector("input")!.getAttribute("placeholder")).toBe("docs/notes.md");
     expect(button("New file").disabled).toBe(true);
     await act(async () => button("Cancel").click());
-    // Creating through the same controller opens the new file and expands its folder.
-    let creating: Promise<boolean>;
-    await act(async () => { creating = controller!.mutateFile("create", "docs/new.md"); });
+    // Submit the actual sidebar dialog, rather than bypassing it via the controller.
+    await act(async () => footer.querySelector<HTMLButtonElement>("button")!.click());
+    await act(async () => {
+      const input = host.querySelector<HTMLInputElement>("#file-destination")!;
+      Object.getOwnPropertyDescriptor(browser.HTMLInputElement.prototype, "value")!.set!.call(input, "docs/new.md");
+      input.dispatchEvent(new browser.Event("input", { bubbles: true }) as unknown as Event);
+    });
+    expect(host.querySelector<HTMLButtonElement>('button[type="submit"]')!.disabled).toBe(false);
+    await act(async () => { submit(); });
+    expect(host.querySelector<HTMLButtonElement>('button[type="submit"]')!.textContent).toBe("Working…");
+    expect(host.querySelector<HTMLButtonElement>('button[type="submit"]')!.disabled).toBe(true);
     expect(writes[3]).toEqual({ route: "file", method: "POST", body: { workspaceId: "binding", path: "docs/new.md" } });
     files.set("docs/new.md", "");
-    await act(async () => { responses[3]!.resolve(Response.json({ path: "docs/new.md" }, { status: 201 })); await creating!; });
+    await act(async () => { responses[3]!.resolve(Response.json({ path: "docs/new.md" }, { status: 201 })); });
+    expect(host.querySelector("dialog")).toBeNull();
+    expect(host.textContent).not.toContain("Working…");
     expect(controller!.selected).toBe("docs/new.md"); expect(controller!.buffer!.state.doc.toString()).toBe("");
     expect(controller!.root!.codeTree.expandedItems).toContain("directory:docs");
+    invalidated = false;
+    await act(async () => footer.querySelector<HTMLButtonElement>('[aria-label="Refresh files"]')!.click());
+    expect(invalidated).toBe(true);
     // Late responses after switching workspaces never navigate back or strand a cached source.
     const newBuffer = controller!.buffer!;
     let copying: Promise<boolean>;

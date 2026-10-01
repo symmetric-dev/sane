@@ -103,6 +103,47 @@ test("Hotkeys settings shows shared Mac and Windows bindings without requesting 
   });
 });
 
+test("Agent settings separates Base, Assistants and Workers into keyboard-accessible tabs", async () => {
+  await withSettingsDom(unexpectedFetch, async (host, root) => {
+    configSection.set("agents");
+    await act(async () => root.render(<ConfigView state={store.snapshot()} signOut={() => {}} />));
+    const tabs = [...host.querySelectorAll<HTMLButtonElement>('[role="tab"]')];
+    expect(tabs.map(tab => tab.textContent)).toEqual(["Base", "Assistants", "Workers"]);
+    const panel = (name: string) => host.querySelector<HTMLDivElement>(`#agents-panel-${name}`)!;
+    const expectSelected = (name: string) => {
+      expect(tabs.filter(tab => tab.getAttribute("aria-selected") === "true").map(tab => tab.id)).toEqual([`agents-tab-${name}`]);
+      expect(tabs.filter(tab => tab.tabIndex === 0).map(tab => tab.id)).toEqual([`agents-tab-${name}`]);
+      expect([...host.querySelectorAll<HTMLDivElement>('[role="tabpanel"]')].filter(item => !item.hidden)).toEqual([panel(name)]);
+      expect(panel(name).getAttribute("aria-labelledby")).toBe(`agents-tab-${name}`);
+    };
+    expectSelected("assistants");
+    for (const [name, kind] of [["base", "base"], ["assistants", "assistant"], ["workers", "worker"]] as const) {
+      expect([...panel(name).querySelectorAll("[data-agent-id]")].map(card => card.getAttribute("data-agent-id"))).toEqual(store.profileList().filter(profile => profile.kind === kind).map(profile => profile.id));
+    }
+    expect(panel("base").textContent).toContain("Harness defaults without SANE instructions.");
+    expect(panel("assistants").textContent).toContain("New assistant");
+    expect(panel("assistants").textContent).not.toContain("Base defaults");
+    await act(async () => tabs[0]!.click());
+    expectSelected("base");
+    await act(async () => tabs[2]!.click());
+    expectSelected("workers");
+
+    const key = async (value: string, target: number, selected: string) => {
+      await act(async () => tabs[target]!.dispatchEvent(new window.KeyboardEvent("keydown", { key: value, bubbles: true, cancelable: true })));
+      expectSelected(selected);
+      expect(document.activeElement?.id).toBe(`agents-tab-${selected}`);
+    };
+    await key("ArrowRight", 2, "base");
+    await key("ArrowRight", 0, "assistants");
+    await key("ArrowRight", 1, "workers");
+    await key("ArrowLeft", 2, "assistants");
+    await key("ArrowLeft", 1, "base");
+    await key("ArrowLeft", 0, "workers");
+    await key("Home", 2, "base");
+    await key("End", 0, "workers");
+  });
+});
+
 test("Settings renders each leaf using the browsed workspace and forwards artifact navigation", async () => {
   const requests: string[] = [], opened: ArtifactSelection[] = [];
   const detail: WorkstreamOverview = { ...overview, workstreams: [{

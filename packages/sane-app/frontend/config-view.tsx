@@ -77,10 +77,12 @@ export function ConfigView({ state, signOut, workspaceId = null, openArtifact }:
   return current === "application" ? <ApplicationSettings state={state} signOut={signOut} /> : <AgentSettings state={state} />;
 }
 
+const AGENT_TABS = ["base", "assistants", "workers"] as const;
+
 function AgentSettings({ state }: { state: State }) {
   const set = store.profileSet();
   const list = store.profileList();
-  const [tab, setTab] = useState<"assistants" | "workers">("assistants");
+  const [tab, setTab] = useState<typeof AGENT_TABS[number]>("assistants");
   const [editing, setEditing] = useState<AgentProfile | null>(null);
   const [chooser, setChooser] = useState(false);
   const grid = useRef<HTMLDivElement>(null);
@@ -97,20 +99,24 @@ function AgentSettings({ state }: { state: State }) {
   return <section className="history-view agent-config-view" aria-label="Agent configuration">
     <header className="history-view-header"><h2>Agents</h2></header>
     <p className="muted agent-config-intro">Configure new conversations and worker launches. Existing sessions keep their saved configuration.</p>
-    <div className="agent-tabs" role="tablist" aria-label="Agent types">{(["assistants", "workers"] as const).map(value => <button key={value} type="button" role="tab" id={`agents-tab-${value}`} aria-selected={tab === value} aria-controls={`agents-panel-${value}`} tabIndex={tab === value ? 0 : -1} onClick={() => setTab(value)} onKeyDown={event => {
+    <div className="agent-tabs" role="tablist" aria-label="Agent types">{AGENT_TABS.map(value => <button key={value} type="button" role="tab" id={`agents-tab-${value}`} aria-selected={tab === value} aria-controls={`agents-panel-${value}`} tabIndex={tab === value ? 0 : -1} onClick={() => setTab(value)} onKeyDown={event => {
       if (!["ArrowLeft", "ArrowRight", "Home", "End"].includes(event.key)) return;
       event.preventDefault();
-      const next = event.key === "Home" ? "assistants" : event.key === "End" ? "workers" : value === "assistants" ? "workers" : "assistants";
+      const index = AGENT_TABS.indexOf(value);
+      const next = AGENT_TABS[event.key === "Home" ? 0 : event.key === "End" ? AGENT_TABS.length - 1 : (index + (event.key === "ArrowRight" ? 1 : -1) + AGENT_TABS.length) % AGENT_TABS.length]!;
       setTab(next); document.getElementById(`agents-tab-${next}`)?.focus();
-    }}>{value === "assistants" ? "Assistants" : "Workers"}</button>)}</div>
+    }}>{value === "base" ? "Base" : value === "assistants" ? "Assistants" : "Workers"}</button>)}</div>
     {!editing && !chooser && state.profileError && <p className="notice error" role="alert">{state.profileError}</p>}
     <div ref={grid} className="agent-config-grid" onKeyDown={event => moveCardFocus(event, grid.current)}>
+      <div role="tabpanel" id="agents-panel-base" aria-labelledby="agents-tab-base" hidden={tab !== "base"}>
+        <p className="muted">Harness defaults without SANE instructions.</p>
+        <div className="agent-grid">{cards(list.filter(p => p.kind === "base"))}</div>
+      </div>
       <div role="tabpanel" id="agents-panel-assistants" aria-labelledby="agents-tab-assistants" hidden={tab !== "assistants"}>
         <section className="agent-section" aria-label="Assistants"><div className="agent-grid">
           {cards(list.filter(p => p.kind === "assistant"))}
           <button type="button" className="agent-card agent-new" disabled={state.profileBusy} onClick={() => { rememberFocus(); store.clearProfileError(); setChooser(true); }}><span className="agent-new-mark" aria-hidden="true"><FiPlus size={16} /></span><span className="agent-card-label">New assistant</span><span className="agent-card-description">Start from an existing conversation profile.</span></button>
         </div></section>
-        <section className="agent-section agent-base-section" aria-labelledby="agent-base-title"><h3 id="agent-base-title">Base defaults</h3><p className="muted">Harness defaults without SANE instructions.</p><div className="agent-grid">{cards(list.filter(p => p.kind === "base"))}</div></section>
       </div>
       <div role="tabpanel" id="agents-panel-workers" aria-labelledby="agents-tab-workers" hidden={tab !== "workers"}>
         <p className="muted">Fixed worker roles launched through orchestration. Edit their profiles for future launches.</p>

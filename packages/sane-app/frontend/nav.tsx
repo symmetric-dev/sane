@@ -1,8 +1,9 @@
 import { useEffect, useId, useMemo, useRef, type ReactNode } from "react";
-import { FiFileText, FiGitBranch, FiMessageSquare, FiSettings, FiTerminal } from "react-icons/fi";
+import { FiFileText, FiGitBranch, FiMessageSquare, FiSearch, FiSettings, FiTerminal } from "react-icons/fi";
 import type { State } from "./store";
 import type { ActiveView } from "./workspace-controller";
 import { active } from "./types";
+import { useWorkspaceSearchContext } from "./workspace-search";
 import { commandHint, useRegisterCommand } from "./application-commands";
 import { NAVIGATION_HOTKEYS, navigationBinding, navigationKeyShortcuts } from "./navigation-hotkeys";
 
@@ -69,5 +70,10 @@ export function ContextualNavigation({ state, activeView, onNavigate }: { state:
 }
 
 export function FilesModeControl({ activeView, onNavigate }: { activeView: ActiveView; onNavigate: (view: ActiveView) => void }) {
-  return <nav className="sidebar-mode-control" aria-label="Files views"><button type="button" aria-pressed={activeView === "code"} onClick={() => onNavigate("code")}><FiFileText size={15} aria-hidden="true" />Files</button><button type="button" aria-pressed={activeView === "git"} onClick={() => onNavigate("git")}><FiGitBranch size={15} aria-hidden="true" />Git</button></nav>;
+  const search = useWorkspaceSearchContext();
+  return <nav className={`sidebar-mode-control${search ? " workspace-search-modes" : ""}`} aria-label="Files views">
+    <button type="button" aria-pressed={activeView === "code" && search?.mode !== "search"} onClick={() => search?.available ? search.files() : onNavigate("code")}><FiFileText size={15} aria-hidden="true" />Files</button>
+    {search && <button type="button" aria-pressed={activeView === "code" && search.mode === "search"} disabled={!search.available} onClick={search.enter}><FiSearch size={15} aria-hidden="true" />Search</button>}
+    <button type="button" aria-pressed={activeView === "git"} onClick={() => onNavigate("git")}><FiGitBranch size={15} aria-hidden="true" />Git</button>
+  </nav>;
 }

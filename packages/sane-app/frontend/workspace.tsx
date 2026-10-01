@@ -6,6 +6,7 @@ import { useEffect, useState } from "react";
 import { FiArrowDown, FiArrowUp, FiChevronDown } from "react-icons/fi";
 import { ShellDialog } from "./shell-dialog";
 import { FileOperationDialog, type FileOperation } from "./workspace-file-actions";
+import { WorkspaceSearchPanel, useWorkspaceSearchContext } from "./workspace-search";
 import "./workspace.css";
 export { WorkspaceProvider } from "./workspace-controller";
 export { WorkspaceSidebar } from "./workspace-tree";
@@ -22,13 +23,15 @@ export function WorkspaceHeader() {
   const [actionsOpen, setActionsOpen] = useState(false);
   const [operation, setOperation] = useState<{ kind: FileOperation; source: string } | null>(null);
   const controller = useWorkspace();
+  const search = useWorkspaceSearchContext();
   const { view, root, buffer, selected, scope, localCompare } = controller;
   useEffect(() => { setActionsOpen(false); setOperation(null); }, [scope, view]);
   const diff = controller.comparison;
+  const searchResults = view === "code" && search?.mode === "search" && !search.showingFile;
   const textDiff = view === "code" ? localCompare && buffer && !buffer.missing && buffer.disk?.text !== null : diff && !diff.reason && !diff.modeOnly && diff.before !== null && diff.after !== null && diff.before !== diff.after;
   return <>
-    <div className="conversation-heading workspace-heading"><span title={selected || undefined}>{view === "code" ? "Files" : "Git"}{selected ? ` · ${selected}` : ""}{buffer && dirty(buffer) ? " •" : ""}</span>{(view === "git" && selected || localCompare) && <small>{localCompare ? "Disk → Local unsaved buffer" : root?.comparison}</small>}</div>
-    {(textDiff || view === "code" && scope || view === "git" && canOpenInCode(controller)) && <button type="button" className="file-actions-opener" aria-haspopup="dialog" aria-label={view === "code" ? "File actions" : "Change actions"} onClick={() => setActionsOpen(true)}><span>{view === "code" ? "File actions" : "Change actions"}</span><FiChevronDown size={13} aria-hidden="true" /></button>}
+    <div className="conversation-heading workspace-heading"><span title={selected || undefined}>{view === "code" ? search?.mode === "search" ? "Search" : "Files" : "Git"}{selected && (search?.mode !== "search" || search.showingFile || view !== "code") ? ` · ${selected}` : ""}{buffer && dirty(buffer) ? " •" : ""}</span>{(view === "git" && selected || localCompare) && <small>{localCompare ? "Disk → Local unsaved buffer" : root?.comparison}</small>}</div>
+    {!searchResults && (textDiff || view === "code" && scope || view === "git" && canOpenInCode(controller)) && <button type="button" className="file-actions-opener" aria-haspopup="dialog" aria-label={view === "code" ? "File actions" : "Change actions"} onClick={() => setActionsOpen(true)}><span>{view === "code" ? "File actions" : "Change actions"}</span><FiChevronDown size={13} aria-hidden="true" /></button>}
     {operation && scope && view === "code" && <FileOperationDialog key={`${scope.generation}:${scope.workspace.workspaceId}:${operation.kind}:${operation.source}`} operation={operation.kind} source={operation.source} close={() => setOperation(null)} />}
     {actionsOpen && <ShellDialog title={view === "code" ? "File actions" : "Change actions"} close={() => setActionsOpen(false)}><p className="context-path">{selected}</p><div className="workspace-header-actions">
       {textDiff && <><button aria-label="Previous change" title="Previous change" onClick={() => { if (controller.diffEditor.current) goToPreviousChunk(controller.diffEditor.current); setActionsOpen(false); }}><FiArrowUp size={12} aria-hidden="true" /> Previous change</button><button aria-label="Next change" title="Next change" onClick={() => { if (controller.diffEditor.current) goToNextChunk(controller.diffEditor.current); setActionsOpen(false); }}><FiArrowDown size={12} aria-hidden="true" /> Next change</button></>}
@@ -57,7 +60,7 @@ export function WorkspaceView() {
     {controller.locationNotice && <div className="workspace-notice" role="status">{controller.locationNotice}</div>}
     {buffer?.error && <div className="workspace-notice workspace-error" role="alert">{buffer.error} <button onClick={controller.retryResolve}>Reopen workspace</button></div>}
     {buffer?.disk && <div className="workspace-notice">Disk changed. Local edits are preserved. Compare disk, then reload explicitly to discard local changes.</div>}
-    {view === "code" ? !selected ? <div className="workspace-empty"><h2>Open a file to begin</h2><p>Choose a file in the sidebar or create one with New file. Edit UTF-8 files up to 256 KiB. Save explicitly with Cmd+S / Ctrl+S.</p></div>
+    <WorkspaceSearchPanel>{view === "code" ? !selected ? <div className="workspace-empty"><h2>Open a file to begin</h2><p>Choose a file in the sidebar or create one with New file. Edit UTF-8 files up to 256 KiB. Save explicitly with Cmd+S / Ctrl+S.</p></div>
       : !buffer ? <div className="workspace-empty"><p>{controller.opening ? "Opening file…" : "The selected file could not be opened."}</p>{!controller.opening && <button onClick={controller.retrySelection}>Retry file</button>}</div>
       : localCompare ? buffer.disk?.text === null || buffer.missing ? <p className="workspace-notice">Disk contents unavailable for comparison.</p> : <WorkspaceDiffEditor viewRef={controller.diffEditor} path={buffer.path} before={buffer.disk?.text ?? buffer.baseText} after={buffer.state.doc.toString()} label="Disk → Local unsaved buffer" />
       : !buffer.file.editable ? <div className="workspace-empty"><h2>File cannot be edited</h2><p>{buffer.file.reason || "Unsupported file"}. Only existing, writable UTF-8 text files up to 256 KiB are editable.</p></div>
@@ -72,6 +75,6 @@ export function WorkspaceView() {
           : comparison.before === comparison.after ? <div className="workspace-empty">No text changes.</div>
           : comparison.before !== null && comparison.after !== null ? <WorkspaceDiffEditor viewRef={controller.diffEditor} path={comparison.path} before={comparison.before} after={comparison.after} label={comparison.comparison === "staged" ? "HEAD → Index" : comparison.comparison === "untracked" ? "Empty → Working tree" : "Index → Working tree"} />
           : <div className="workspace-empty">Text contents unavailable.</div>}
-      </>}
+      </>}</WorkspaceSearchPanel>
   </section>;
 }

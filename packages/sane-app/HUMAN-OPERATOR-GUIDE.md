@@ -77,6 +77,13 @@ In Files or Git view, press **Cmd+Shift+F** on macOS or **Ctrl+Shift+F** on Wind
 or use the visible search action. Search runs across the selected browsing
 worktree, independently of a conversation's execution checkout.
 
+Search is embedded in the Files workspace rather than a dialog. The Search
+sidebar shows only matching files, grouped by folder, with match counts; the
+main panel shows grouped matching lines. Opening a result keeps the search
+controls and filtered sidebar visible beside the existing file editor. Use
+**All results** to return to the matching lines, or **Files** to restore the
+normal file tree. Previous/next match controls navigate within the open file.
+
 This first version searches **saved file contents**, not unsaved editor buffers.
 Opening a result preserves local edits; save explicitly to include those edits
 in a subsequent search. Matching is literal, with case-sensitive and whole-word
@@ -98,6 +105,16 @@ symlink traversal, and hard-linked files are not searchable. Binary, unsupported
 and oversized files are skipped. Large searches are bounded; check the results
 for skipped-file or truncation notices and narrow your query when necessary.
 
+Ordinary repositories, standard linked worktrees, and ordinary directories can
+reuse a validated search-scoped binding while retaining filesystem checks on
+every read. Uncertain Git mappings or complex configuration use the original
+full-validation path instead; these searches may be slower. Results remain
+atomic: matches appear only after the final workspace validation succeeds.
+Search reads at most four files concurrently and admits at most two active
+search requests across the App. A busy response can be retried shortly. Ignore
+parsing and matching run outside the App process so their CPU work can be
+stopped on cancellation or deadline expiry.
+
 After updating App source, stop the running App gracefully and launch again with
 your usual `bun run start:app` command, then reload the browser. A running server
 does not adopt newly built assets or backend code automatically.
@@ -112,5 +129,8 @@ To smoke-test the feature:
    Verify the local edits remain intact and search still reports saved contents.
 4. Switch worktrees while a search is pending. Results from the old worktree
    must not appear or open files in the new one.
-5. Verify Escape closes search and restores focus, and that unrelated editor,
-   chat, and terminal shortcuts retain their behavior.
+5. Open a matching file from the filtered sidebar, navigate its matches, and
+   return with All results. Verify the query and results remain available and
+   switching to Files restores the ordinary tree.
+6. Verify Escape moves focus out of the search controls without discarding the
+   search, and unrelated editor, chat, and terminal shortcuts retain their behavior.

@@ -6,6 +6,7 @@ import type { GitComparison, GitEntry, WorkspaceEntry } from "../src/workspace-c
 import { dirty } from "./workspace-store";
 import { useWorkspace } from "./workspace-controller";
 import { FileOperationDialog } from "./workspace-file-actions";
+import { WorkspaceSearchFiles, useWorkspaceSearchContext } from "./workspace-search";
 
 type TreeNode = {
   kind: WorkspaceEntry["kind"] | "group" | "error" | "notice";
@@ -143,13 +144,20 @@ function GitTree() {
 export function WorkspaceSidebar() {
   const [creating, setCreating] = useState(false);
   const controller = useWorkspace(), { view, scope, workspace } = controller;
+  const search = useWorkspaceSearchContext(), searching = view === "code" && search?.mode === "search";
   useEffect(() => { setCreating(false); }, [scope, view]);
   return <section className="workspace-sidebar" aria-label={view === "code" ? "Code files" : "Git changes"}>
-    <div className="workspace-sidebar-heading"><h2>{view === "code" ? "Files" : "Changes"}</h2>{scope && <div>{view === "code" && <button type="button" onClick={() => setCreating(true)} aria-label="New file" title="New file"><FiPlus size={14} aria-hidden="true" /></button>}<button type="button" onClick={view === "code" ? controller.refreshDirectories : controller.retrySelection} aria-label={view === "code" ? "Refresh files" : "Refresh changes"} title={view === "code" ? "Refresh files" : "Refresh changes"}><FiRefreshCw size={14} aria-hidden="true" /></button></div>}</div>
     {creating && scope && view === "code" && <FileOperationDialog key={`${scope.generation}:${workspace!.workspaceId}`} operation="create" source="" close={() => setCreating(false)} />}
-    {workspace && <p className="workspace-sidebar-root" title={workspace.root}>{workspace.root.split("/").filter(Boolean).at(-1) || workspace.root}</p>}
-    {view === "git" && <p className="workspace-disclaimer">Saved contents; unsaved editor changes are not included.</p>}
-    {!scope ? <p className="workspace-tree-status">{controller.resolving ? "Opening workspace…" : controller.error || "Open a workspace to browse its files."}</p>
-      : view === "code" ? <CodeTree key={`${scope.generation}:${workspace!.workspaceId}`} /> : <GitTree key={`${scope.generation}:${workspace!.workspaceId}`} />}
+    <div className="workspace-sidebar-content">
+      {!searching && <div className="workspace-sidebar-heading"><h2>{view === "code" ? "Files" : "Changes"}</h2></div>}
+      {workspace && <p className="workspace-sidebar-root" title={workspace.root}>{workspace.root.split("/").filter(Boolean).at(-1) || workspace.root}</p>}
+      {view === "git" && <p className="workspace-disclaimer">Saved contents; unsaved editor changes are not included.</p>}
+      {!scope ? <p className="workspace-tree-status">{controller.resolving ? "Opening workspace…" : controller.error || "Open a workspace to browse its files."}</p>
+        : view === "code" ? searching ? <WorkspaceSearchFiles /> : <CodeTree key={`${scope.generation}:${workspace!.workspaceId}`} /> : <GitTree key={`${scope.generation}:${workspace!.workspaceId}`} />}
+    </div>
+    {!searching && <footer className="workspace-sidebar-actions" aria-label="File shortcuts">
+      {view === "code" && <button type="button" className="new-chat" disabled={!scope} onClick={() => setCreating(true)}><FiPlus size={16} aria-hidden="true" />New file</button>}
+      <button type="button" className="history-sidebar-button" disabled={!scope} onClick={view === "code" ? controller.refreshDirectories : controller.retrySelection} aria-label={view === "code" ? "Refresh files" : "Refresh changes"}><FiRefreshCw size={14} aria-hidden="true" />Refresh</button>
+    </footer>}
   </section>;
 }

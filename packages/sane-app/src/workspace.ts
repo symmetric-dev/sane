@@ -2,7 +2,9 @@ import { constants } from "node:fs";
 import { open, lstat, realpath, opendir, access, unlink } from "node:fs/promises";
 import { resolve, join, relative, isAbsolute, sep, posix } from "node:path";
 import { createHash } from "node:crypto";
-import ignore, { type Ignore } from "ignore";
+import type { WorkspaceSearchLeaseProvider, WorkspaceSearchLease } from "./workspace-search-scope";
+import { WorkspaceIgnoreEvaluator, WorkspaceIgnoreError, validateIgnoreSnapshot } from "./workspace-ignore";
+import { admitWorkspaceSearch } from "./workspace-search-admission";
 import { WORKSPACE_MAX_BYTES, type Workspace, type WorkspaceList, type WorkspaceFile, type WorkspaceWrite, type WorkspaceCreate, type WorkspaceCopy, type WorkspaceDelete, type WorkspaceGit, type GitEntry, type GitComparison, type WorkspaceDiff, type DiffReason, type WorkspaceSearchInput, type WorkspaceSearch } from "./workspace-contract";
 import { WORKSPACE_SEARCH_LIMITS as SEARCH, SEARCH_IGNORED_DIRECTORIES, searchPatterns, searchFilter, literalMatcher, searchWholeWord, searchPreview } from "./workspace-search";
 
@@ -33,7 +35,8 @@ export async function workspaceOperationWait<T>(operation: () => Promise<T>, opt
   try { const value = await Promise.race([operation(), interrupted]); workspaceOperationCheck(options); return value; }
   finally { if (timer !== undefined) clearTimeout(timer); if (abort) options.signal?.removeEventListener("abort", abort); }
 }
-type SessionLookup = (id: string, options?: WorkspaceOperationOptions) => { cwd: string; bindingRevision?: string; protectedPaths?: string[] } | undefined | Promise<{ cwd: string; bindingRevision?: string; protectedPaths?: string[] } | undefined>;
+type SearchBinding = { cwd: string; bindingRevision?: string; protectedPaths?: string[] };
+type SessionLookup = (id: string, options?: WorkspaceOperationOptions) => SearchBinding | undefined | Promise<SearchBinding | undefined>;
 type Bound = Workspace & { data: string; dev: number; ino: number; protectedPaths: string[]; operation?: WorkspaceOperationOptions };
 type GitRoot = { root: string; prefix: string };
 type Blob = { bytes: Buffer; mode: string | null; reason?: DiffReason };
@@ -51,7 +54,7 @@ function decode(bytes: Buffer): { text: string | null; reason?: "binary" | "inva
 
 export class WorkspaceService {
   private writes = new Map<string, Promise<unknown>>();
-  constructor(private lookup: SessionLookup, private dataDir: string) {}
+  constructor(private lookup: SessionLookup, private dataDir: string, private searchLeaseProvider?: WorkspaceSearchLeaseProvider) {}
 
   private async serialize<T>(target: string, action: () => Promise<T>): Promise<T> {
     const previous = this.writes.get(target) ?? Promise.resolve();
@@ -63,14 +66,20 @@ export class WorkspaceService {
   private async bound(sessionId: string, operation?: WorkspaceOperationOptions): Promise<Bound> {
     const session = await workspaceOperationWait(async () => this.lookup(sessionId, operation), operation);
     if (!session) fail(404, "unknown-session", "Unknown conversation");
+    return this.boundBinding(sessionId, session, operation);
+  }
+  private async boundBinding(sessionId: string, session: SearchBinding, operation?: WorkspaceOperationOptions): Promise<Bound> {
+    // Pin a copy: a caller mutating its binding object must not alter a search's
+    // initial policy snapshot (or change the meaning of its final comparison).
+    const protectedPaths = [...(session.protectedPaths ?? [])];
+    const { cwd, bindingRevision } = session;
     let root: string, data: string;
-    try { [root, data] = await workspaceOperationWait(() => Promise.all([realpath(session.cwd), realpath(this.dataDir)]), operation); }
+    try { [root, data] = await workspaceOperationWait(() => Promise.all([realpath(cwd), realpath(this.dataDir)]), operation); }
     catch (error) { if (error instanceof WorkspaceError) throw error; return fail(404, "workspace-unavailable", "Conversation workspace is unavailable"); }
     const info = await workspaceOperationWait(() => lstat(root), operation);
     if (!info.isDirectory() || root.split(sep).some(p => [".git", ".sane"].includes(p.toLowerCase())) || inside(data, root)) fail(403, "workspace-forbidden", "Workspace is not accessible");
-    const protectedPaths = session.protectedPaths ?? [];
     if (protectedPaths.some(path => inside(path, root))) fail(403, "workspace-forbidden", "Git administration directory is not accessible");
-    return { sessionId, root, data, protectedPaths, dev: info.dev, ino: info.ino, operation, maxFileBytes: WORKSPACE_MAX_BYTES, workspaceId: session.bindingRevision ?? hash(`${root}\0${info.dev}\0${info.ino}`) };
+    return { sessionId, root, data, protectedPaths, dev: info.dev, ino: info.ino, operation, maxFileBytes: WORKSPACE_MAX_BYTES, workspaceId: bindingRevision ?? hash(`${root}\0${info.dev}\0${info.ino}`) };
   }
   async resolve(sessionId: string): Promise<Workspace> {
     const { workspaceId, root, maxFileBytes } = await this.bound(sessionId);
@@ -93,6 +102,9 @@ export class WorkspaceService {
     const fresh = await this.bind(bound.sessionId, bound.workspaceId, bound.operation);
     if (fresh.root !== bound.root || fresh.dev !== bound.dev || fresh.ino !== bound.ino) fail(409, "workspace-changed", "Conversation workspace changed; resolve it again");
     this.lexical(fresh, path, rootAllowed);
+    return this.checkedComponents(bound, path, target, missing);
+  }
+  private async checkedComponents(bound: Bound, path: string, target: string, missing = false): Promise<string> {
     let cursor = bound.root;
     for (const part of path ? path.split("/") : []) {
       workspaceOperationCheck(bound.operation);
@@ -108,6 +120,49 @@ export class WorkspaceService {
     }
     workspaceOperationCheck(bound.operation);
     return target;
+  }
+  /** Search-only fast checker. No writable operation accepts this capability. */
+  private async searchChecked(bound: Bound, lease: WorkspaceSearchLease | undefined, path: string, rootAllowed = false, missing = false): Promise<string> {
+    if (!lease) return this.checked(bound, path, rootAllowed, missing);
+    const target = this.lexical(bound, path, rootAllowed);
+    await workspaceOperationWait(() => lease.validate(bound.operation ?? {}), bound.operation);
+    const [root, info] = await workspaceOperationWait(() => Promise.all([realpath(bound.root), lstat(bound.root)]), bound.operation);
+    if (root !== bound.root || !info.isDirectory() || info.isSymbolicLink() || info.dev !== bound.dev || info.ino !== bound.ino) fail(409, "workspace-changed", "Conversation workspace changed; resolve it again");
+    return this.checkedComponents(bound, path, target, missing);
+  }
+  /** Instance-local readonly acquisition seam; never used by writable disk(). */
+  private searchOpen(target: string) {
+    return open(target, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
+  }
+  private async searchDisk(bound: Bound, path: string, check: (path: string) => Promise<string>, readBudget: number) {
+    const target = await check(path);
+    // Never race resource-creating I/O: retain ownership even if cancellation
+    // arrives during open/read, and await close before freeing search admission.
+    const handle = await this.searchOpen(target);
+    try {
+      workspaceOperationCheck(bound.operation);
+      const info = await handle.stat();
+      if (!info.isFile()) fail(400, "not-file", "Only regular files are supported");
+      if (info.nlink !== 1) fail(403, "hardlink", "Hard-linked files are not supported");
+      await check(path);
+      const current = await lstat(target);
+      if (current.dev !== info.dev || current.ino !== info.ino || current.nlink !== 1) fail(409, "file-changed", "File changed while opening");
+      workspaceOperationCheck(bound.operation);
+      const bytes = Buffer.alloc(Math.min(Math.min(info.size, WORKSPACE_MAX_BYTES) + 1, readBudget));
+      let used = 0;
+      while (used < bytes.length) {
+        workspaceOperationCheck(bound.operation);
+        const read = await handle.read(bytes, used, bytes.length - used, used);
+        if (!read.bytesRead) break;
+        used += read.bytesRead;
+      }
+      const after = await handle.stat();
+      await check(path);
+      const final = await lstat(target);
+      workspaceOperationCheck(bound.operation);
+      if (after.nlink !== 1 || after.dev !== info.dev || after.ino !== info.ino || after.size !== info.size || after.mtimeMs !== info.mtimeMs || after.ctimeMs !== info.ctimeMs || final.dev !== info.dev || final.ino !== info.ino || final.nlink !== 1 || final.size !== after.size || final.mtimeMs !== after.mtimeMs || final.ctimeMs !== after.ctimeMs) fail(409, "file-changed", "File changed while reading");
+      return { info, bytes: bytes.subarray(0, used), oversize: info.size > WORKSPACE_MAX_BYTES || used > WORKSPACE_MAX_BYTES };
+    } finally { await handle.close(); }
   }
   async list(sessionId: string, workspaceId: unknown, path: string): Promise<WorkspaceList> {
     const bound = await this.bind(sessionId, workspaceId), target = await this.checked(bound, path, true);
@@ -163,141 +218,231 @@ export class WorkspaceService {
     let include: string[], exclude: string[];
     try { include = searchPatterns(input.include); exclude = searchPatterns(input.exclude); }
     catch { return fail(400, "invalid-search-filter", "Use at most 32 comma-separated relative globs with *, ?, and ** segments"); }
+    workspaceOperationCheck({ signal });
+    const release = admitWorkspaceSearch();
+    if (!release) fail(503, "search-busy", "Workspace search is busy; try again shortly");
     const deadline = Date.now() + SEARCH.milliseconds, operation = { signal, deadline };
+    // All operations receive the SAME absolute 5s deadline. Stop admitting
+    // scan work 500ms earlier to reserve cleanup and the full final fence.
+    const controller = new AbortController();
+    const abort = () => controller.abort();
+    signal?.addEventListener("abort", abort, { once: true });
+    if (signal?.aborted) abort();
+    const scanOperation = { signal: controller.signal, deadline };
+    let scanExpired = false;
+    const scanTimer = setTimeout(() => { scanExpired = true; controller.abort(); }, Math.max(0, deadline - 500 - Date.now()));
     const checkpoint = () => {
-      if (signal?.aborted) fail(499, "search-aborted", "Search cancelled");
-      // Reserve a small part of the same total budget for the mandatory final
-      // fence. If that fence cannot complete, fail closed instead of returning.
-      if (Date.now() >= deadline - 100) fail(504, "search-time-limit", "Search time budget reached");
+      if (scanExpired) fail(504, "search-time-limit", "Search time budget reached");
+      workspaceOperationCheck(scanOperation);
+      if (Date.now() >= deadline - 500) fail(504, "search-time-limit", "Search time budget reached");
     };
-    checkpoint();
-    const bound = await this.bind(sessionId, input.workspaceId, operation);
-    const result: WorkspaceSearch = { workspaceId: bound.workspaceId, matches: [], truncated: false, scannedFiles: 0, skippedFiles: 0 };
-    const matcher = literalMatcher(input.query, !!input.caseSensitive);
-    let entries = 0, files = 0, bytes = 0, outputBytes = 0, ignoreFiles = 0, ignoreBytes = 0, ignoreRules = 0;
-    type IgnoreScope = { path: string; rules: Ignore };
-    const skippable = (error: any) => (error instanceof WorkspaceError ? ["invalid-path", "path-forbidden", "symlink", "hardlink", "not-file", "file-changed"].includes(error.code) : ["ENOENT", "ENOTDIR", "EACCES", "EPERM", "ELOOP"].includes(error?.code));
+    let lease: WorkspaceSearchLease | undefined, evaluator: WorkspaceIgnoreEvaluator | undefined;
+    type Outcome = { path: string; reserved: number; used: number; text: string | null; grew: boolean; error?: unknown };
+    const pending = new Set<Promise<Outcome>>();
     try {
       checkpoint();
-      // Never run Git for ignores: its config, info/exclude and implicit
-      // .gitignore reads bypass our protected-path/no-hardlink read guards.
-      const directories = [{ path: "", depth: 0, ignores: [] as IgnoreScope[] }];
-      while (directories.length && !result.truncated) {
+      if (typeof input.workspaceId !== "string" || !input.workspaceId) fail(400, "workspace-required", "Resolve the conversation workspace first");
+      // A production provider already does a full binding lookup. Build the
+      // same canonical Bound from its result, without a second catalog call.
+      if (this.searchLeaseProvider) lease = await this.searchLeaseProvider(sessionId, scanOperation);
+      const bound = lease ? await this.boundBinding(sessionId, lease.binding, scanOperation) : await this.bind(sessionId, input.workspaceId, scanOperation);
+      if (bound.workspaceId !== input.workspaceId) fail(409, "workspace-changed", "Conversation workspace changed; resolve it again");
+      const paths = new Set<string>([""]);
+      const check = async (path: string, rootAllowed = false, missing = false) => {
         checkpoint();
-        const directory = directories.pop()!;
-        const scopes = [...directory.ignores];
-        const ignorePath = directory.path ? `${directory.path}/.gitignore` : ".gitignore";
-        try {
-          const ignoreTarget = await this.checked(bound, ignorePath, false, true);
-          const info = await workspaceOperationWait(() => lstat(ignoreTarget), operation);
-          // This stat is only budget planning, never permission to read: disk()
-          // independently fences the opened descriptor and refuses shared inodes.
-          if (info.isFile() && info.nlink === 1 && info.size <= WORKSPACE_MAX_BYTES) {
-            const remaining = Math.min(SEARCH.bytes - bytes, SEARCH.ignoreBytes - ignoreBytes);
-            if (files >= SEARCH.files || ignoreFiles >= SEARCH.ignoreFiles || info.size > remaining) { result.truncated = true; break; }
-            const disk = await this.disk(bound, ignorePath, false, remaining);
-            try {
-              files++; ignoreFiles++; bytes += disk.bytes.length; ignoreBytes += disk.bytes.length;
-              if (disk.info.size > remaining && !disk.oversize) { result.truncated = true; break; }
-              // Unsafe, unsupported or oversized ignore files supply no rules.
-              // The content scan independently skips these same guarded files.
+        this.lexical(bound, path, rootAllowed);
+        paths.add(path);
+        return this.searchChecked(bound, lease, path, rootAllowed, missing);
+      };
+      const result: WorkspaceSearch = { workspaceId: bound.workspaceId, matches: [], truncated: false, scannedFiles: 0, skippedFiles: 0 };
+      let entries = 0, files = 0, bytes = 0, outputBytes = 0, ignoreFiles = 0, ignoreBytes = 0, ignoreRules = 0;
+      const skippable = (error: any) => (error instanceof WorkspaceError ? ["invalid-path", "path-forbidden", "symlink", "hardlink", "not-file", "file-changed"].includes(error.code) : ["ENOENT", "ENOTDIR", "EACCES", "EPERM", "ELOOP"].includes(error?.code));
+      const launch = (path: string, reserved: number) => {
+        files++; bytes += reserved; // Coordinator reserves BEFORE launching I/O.
+        const worker = (async (): Promise<Outcome> => {
+          try {
+            const disk = await this.searchDisk(bound, path, check, reserved);
+            const grew = disk.info.size > reserved && !disk.oversize;
+            return { path, reserved, used: disk.bytes.length, text: grew || disk.oversize ? null : decode(disk.bytes).text, grew };
+          } catch (error) { return { path, reserved, used: reserved, text: null, grew: false, error }; }
+        })();
+        pending.add(worker);
+        return worker;
+      };
+      const consume = (outcome: Outcome) => {
+        checkpoint();
+        if (outcome.error !== undefined) {
+          if (!skippable(outcome.error)) throw outcome.error;
+          result.skippedFiles++; return;
+        }
+        if (outcome.grew) { result.truncated = true; return; }
+        if (outcome.text === null) { result.skippedFiles++; return; }
+        result.scannedFiles++;
+        // No mutable RegExp crosses an await or is shared between outcomes.
+        const matcher = literalMatcher(input.query, !!input.caseSensitive);
+        let lineNumber = 0;
+        for (const line of outcome.text.split("\n")) {
+          checkpoint(); lineNumber++; matcher.lastIndex = 0;
+          let match: RegExpExecArray | null;
+          while ((match = matcher.exec(line))) {
+            checkpoint();
+            const start = match.index, end = start + match[0].length;
+            if (input.wholeWord && !searchWholeWord(line, start, end)) continue;
+            const found = { path: outcome.path, line: lineNumber, column: start + 1, endColumn: end + 1, preview: searchPreview(line, start) };
+            const size = Buffer.byteLength(JSON.stringify(found)) + 1;
+            if (result.matches.length >= SEARCH.matches || outputBytes + size > SEARCH.outputBytes) { result.truncated = true; return; }
+            outputBytes += size; result.matches.push(found);
+          }
+        }
+      };
+      try {
+        const directories = [{ path: "", depth: 0, scopes: [] as string[] }];
+        while (directories.length && !result.truncated) {
+          checkpoint();
+          const directory = directories.pop()!, scopes = [...directory.scopes];
+          const ignorePath = directory.path ? `${directory.path}/.gitignore` : ".gitignore";
+          try {
+            const ignoreTarget = await check(ignorePath, false, true);
+            const info = await workspaceOperationWait(() => lstat(ignoreTarget), scanOperation);
+            // Planning metadata grants no read permission. searchDisk fences
+            // every descriptor, including ignore snapshots, independently.
+            if (info.isFile() && info.nlink === 1 && info.size <= WORKSPACE_MAX_BYTES) {
+              const remaining = Math.min(SEARCH.bytes - bytes, SEARCH.ignoreBytes - ignoreBytes);
+              if (files >= SEARCH.files || ignoreFiles >= SEARCH.ignoreFiles || info.size > remaining) { result.truncated = true; break; }
+              files++; ignoreFiles++; bytes += info.size; ignoreBytes += info.size;
+              const disk = await this.searchDisk(bound, ignorePath, path => check(path), info.size);
+              bytes += disk.bytes.length - info.size; ignoreBytes += disk.bytes.length - info.size;
+              if (disk.info.size > info.size && !disk.oversize) { result.truncated = true; break; }
               const text = disk.oversize ? null : decode(disk.bytes).text;
               if (text !== null) {
-                ignoreRules += text.split("\n").filter(line => line.trim() && !line.startsWith("#")).length;
-                if (ignoreRules > SEARCH.ignoreRules) { result.truncated = true; break; }
-                scopes.push({ path: directory.path, rules: ignore({ ignorecase: false }).add(text) });
-              }
-            } finally { await disk.handle.close(); }
-          }
-        } catch (error) { if (!skippable(error)) throw error; }
-        checkpoint();
-        let dir;
-        try { dir = await opendir(await this.checked(bound, directory.path, true)); }
-        catch (error) { if (directory.path && skippable(error)) continue; throw error; }
-        // Every rule is an immutable snapshot from the same guarded disk read
-        // as ordinary content; no parser performs additional filesystem reads.
-        let candidates: { path: string; directory: boolean; size: number }[] = [];
-        const scanBatch = async () => {
-          checkpoint();
-          for (const candidate of candidates) {
-            checkpoint();
-            let ignored = false;
-            for (const scope of scopes) {
-              const local = (scope.path ? candidate.path.slice(scope.path.length + 1) : candidate.path) + (candidate.directory ? "/" : "");
-              const match = scope.rules.test(local);
-              if (match.ignored) ignored = true;
-              else if (match.unignored) ignored = false;
-            }
-            if (ignored) { if (!candidate.directory) result.skippedFiles++; continue; }
-            if (candidate.directory) {
-              if (directory.depth >= SEARCH.depth) result.truncated = true;
-              else directories.push({ path: candidate.path, depth: directory.depth + 1, ignores: scopes });
-              continue;
-            }
-            if (files >= SEARCH.files || bytes + Math.min(candidate.size, WORKSPACE_MAX_BYTES + 1) > SEARCH.bytes) { result.truncated = true; break; }
-            files++;
-            try {
-              const remaining = SEARCH.bytes - bytes;
-              const disk = await this.disk(bound, candidate.path, false, remaining);
-              let text: string | null;
-              try {
-                bytes += disk.bytes.length;
-                // Enforce the budget at the guarded read itself, including a
-                // file that grew after discovery. Never scan a partial text.
-                if (disk.info.size > remaining && !disk.oversize) { result.truncated = true; break; }
-                text = disk.oversize ? null : decode(disk.bytes).text;
-                await this.checked(bound, candidate.path);
-              } finally { await disk.handle.close(); }
-              checkpoint();
-              if (text === null) { result.skippedFiles++; continue; }
-              result.scannedFiles++;
-              let lineNumber = 0;
-              for (const line of text.split("\n")) {
-                checkpoint(); lineNumber++; matcher.lastIndex = 0;
-                let match: RegExpExecArray | null;
-                while ((match = matcher.exec(line))) {
-                  checkpoint();
-                  const start = match.index, end = start + match[0].length;
-                  if (input.wholeWord && !searchWholeWord(line, start, end)) continue;
-                  const found = { path: candidate.path, line: lineNumber, column: start + 1, endColumn: end + 1, preview: searchPreview(line, start) };
-                  const size = Buffer.byteLength(JSON.stringify(found)) + 1;
-                  if (result.matches.length >= SEARCH.matches || outputBytes + size > SEARCH.outputBytes) { result.truncated = true; break; }
-                  outputBytes += size; result.matches.push(found);
+                let rules: number;
+                try { rules = validateIgnoreSnapshot(text).rules; }
+                catch (error) {
+                  if (!(error instanceof WorkspaceIgnoreError) || error.code !== "ignore-limit") throw error;
+                  result.truncated = true; break;
                 }
-                if (result.truncated) break;
+                if (ignoreRules + rules > SEARCH.ignoreRules) { result.truncated = true; break; }
+                ignoreRules += rules;
+                if (rules) {
+                  evaluator ??= new WorkspaceIgnoreEvaluator(scanOperation);
+                  await evaluator.register(directory.path, text);
+                  scopes.push(directory.path);
+                }
               }
-            } catch (error) { if (!skippable(error)) throw error; result.skippedFiles++; }
-            if (result.truncated) break;
-          }
-          candidates = [];
-        };
-        for await (const entry of dir) {
+            }
+          } catch (error) { if (!skippable(error)) throw error; }
           checkpoint();
-          if (++entries > SEARCH.entries) { result.truncated = true; break; }
-          const path = directory.path ? `${directory.path}/${entry.name}` : entry.name;
-          const isDirectory = entry.isDirectory();
-          if ((isDirectory && SEARCH_IGNORED_DIRECTORIES.has(entry.name.toLowerCase())) || searchFilter(exclude!, path, isDirectory) || (!isDirectory && include!.length && !searchFilter(include!, path))) { if (!isDirectory) result.skippedFiles++; continue; }
+          let dir;
+          try { dir = await opendir(await check(directory.path, true)); }
+          catch (error) { if (directory.path && skippable(error)) continue; throw error; }
+          type Candidate = { path: string; directory: boolean; size: number };
+          let candidates: Candidate[] = [];
+          const scanBatch = async () => {
+            checkpoint();
+            // The evaluator owns all ignore parsing/matching; no synchronous
+            // ignore add/test can stall the main request's cancellation loop.
+            const ignored = scopes.length ? await evaluator!.test(scopes, candidates) : candidates.map(() => false);
+            if (ignored.length !== candidates.length) fail(503, "search-ignore-failed", "Ignore evaluation failed");
+            let index = 0;
+            while (index < candidates.length && !result.truncated) {
+              const queue: Promise<Outcome>[] = [];
+              while (index < candidates.length && queue.length < 4 && !result.truncated) {
+                checkpoint();
+                const candidate = candidates[index]!, isIgnored = ignored[index++]!;
+                if (isIgnored) { if (!candidate.directory) result.skippedFiles++; continue; }
+                if (candidate.directory) {
+                  if (directory.depth >= SEARCH.depth) result.truncated = true;
+                  else directories.push({ path: candidate.path, depth: directory.depth + 1, scopes });
+                  continue;
+                }
+                const reserved = Math.min(candidate.size, WORKSPACE_MAX_BYTES + 1);
+                if (files >= SEARCH.files || bytes + reserved > SEARCH.bytes) { result.truncated = true; break; }
+                queue.push(launch(candidate.path, reserved));
+              }
+              // Only four workers/decoded outcomes exist at a time. All settle
+              // before consuming, so a later security failure cannot be hidden
+              // by an earlier match/output truncation, and order is discovery order.
+              const outcomes = await Promise.all(queue);
+              for (const worker of queue) pending.delete(worker);
+              for (const outcome of outcomes) bytes += outcome.used - outcome.reserved;
+              for (const outcome of outcomes) if (outcome.error !== undefined && !skippable(outcome.error)) throw outcome.error;
+              const admissionTruncated = result.truncated;
+              result.truncated = false;
+              for (const outcome of outcomes) { consume(outcome); if (result.truncated) break; }
+              result.truncated ||= admissionTruncated;
+            }
+            candidates = [];
+          };
           try {
-            const target = await this.checked(bound, path), info = await workspaceOperationWait(() => lstat(target), operation);
-            if (entry.isSymbolicLink() || (!info.isDirectory() && (!info.isFile() || info.nlink !== 1))) { result.skippedFiles++; continue; }
-            candidates.push({ path, directory: info.isDirectory(), size: info.size });
-          } catch (error) { if (!skippable(error)) throw error; if (!isDirectory) result.skippedFiles++; continue; }
-          if (candidates.length >= 128) { await scanBatch(); if (result.truncated) break; }
+            for await (const entry of dir) {
+              checkpoint();
+              if (++entries > SEARCH.entries) { result.truncated = true; break; }
+              const path = directory.path ? `${directory.path}/${entry.name}` : entry.name;
+              const isDirectory = entry.isDirectory();
+              if ((isDirectory && SEARCH_IGNORED_DIRECTORIES.has(entry.name.toLowerCase())) || searchFilter(exclude!, path, isDirectory) || (!isDirectory && include!.length && !searchFilter(include!, path))) { if (!isDirectory) result.skippedFiles++; continue; }
+              try {
+                const target = await check(path), info = await workspaceOperationWait(() => lstat(target), scanOperation);
+                if (entry.isSymbolicLink() || (!info.isDirectory() && (!info.isFile() || info.nlink !== 1))) { result.skippedFiles++; continue; }
+                candidates.push({ path, directory: info.isDirectory(), size: info.size });
+              } catch (error) { if (!skippable(error)) throw error; if (!isDirectory) result.skippedFiles++; continue; }
+              if (candidates.length >= 128) { await scanBatch(); if (result.truncated) break; }
+            }
+            await check(directory.path, true);
+            if (!result.truncated) await scanBatch();
+          } finally {
+            // Async iteration normally closes it itself; cancellation between
+            // opendir and iteration still leaves an owned handle to close.
+            try { await dir.close(); } catch (error: any) { if (error?.code !== "ERR_DIR_CLOSED") throw error; }
+          }
         }
-        await this.checked(bound, directory.path, true);
-        if (!result.truncated) await scanBatch();
+      } catch (error) {
+        if (signal?.aborted) fail(499, "search-aborted", "Search cancelled");
+        if ((error instanceof WorkspaceError || error instanceof WorkspaceIgnoreError) && (["search-time-limit", "git-timeout", "ignore-limit"].includes(error.code) || (scanExpired && error.code === "search-aborted"))) result.truncated = true;
+        else throw error;
+      } finally {
+        clearTimeout(scanTimer);
+        controller.abort();
+        const remaining = await Promise.all([...pending]);
+        pending.clear();
+        await evaluator?.close();
+        evaluator = undefined;
+        // An admission checkpoint can interrupt a partially filled queue.
+        // Do not lose a concurrent scope failure merely because it was not
+        // consumed: only cleanup cancellation/deadline errors may be ignored.
+        for (const outcome of remaining) {
+          if (outcome.error !== undefined && !skippable(outcome.error) && !(outcome.error instanceof WorkspaceError && ["search-aborted", "search-time-limit"].includes(outcome.error.code))) throw outcome.error;
+        }
       }
+      // Full catalog bind AFTER workers and evaluator are settled, even for
+      // zero-match/truncated searches. Compare the entire initial policy, not
+      // just result paths: a newly protected subtree invalidates all results.
+      const final = await this.bind(sessionId, input.workspaceId, operation);
+      const policy = (value: Bound) => JSON.stringify([...new Set(value.protectedPaths)].sort());
+      if (final.root !== bound.root || final.data !== bound.data || final.dev !== bound.dev || final.ino !== bound.ino || policy(final) !== policy(bound)) fail(409, "workspace-changed", "Conversation workspace changed; resolve it again");
+      if (lease) await workspaceOperationWait(() => lease!.validate(operation), operation);
+      for (const path of paths) { workspaceOperationCheck(operation); this.lexical(final, path, path === ""); }
+      workspaceOperationCheck(operation);
+      return result;
     } catch (error) {
       if (signal?.aborted) fail(499, "search-aborted", "Search cancelled");
-      if (error instanceof WorkspaceError && ["search-time-limit", "git-timeout"].includes(error.code)) result.truncated = true;
-      else throw error;
+      if (scanExpired && (error instanceof WorkspaceError || error instanceof WorkspaceIgnoreError) && error.code === "search-aborted") fail(504, "search-time-limit", "Search time budget reached");
+      throw error;
+    } finally {
+      clearTimeout(scanTimer);
+      controller.abort();
+      try {
+        await Promise.all([...pending]);
+        await evaluator?.close();
+      } finally {
+        try {
+          await lease?.dispose?.();
+          // Cleanup is part of the request lifetime, not work allowed after a
+          // successful response. Late cancellation/deadline still fails closed.
+          workspaceOperationCheck(operation);
+        }
+        finally { signal?.removeEventListener("abort", abort); release(); }
+      }
     }
-    // Partial results must never escape a changed workspace scope.
-    const final = await this.bind(sessionId, input.workspaceId, operation);
-    if (final.root !== bound.root || final.dev !== bound.dev || final.ino !== bound.ino) fail(409, "workspace-changed", "Conversation workspace changed; resolve it again");
-    for (const match of result.matches) this.lexical(final, match.path);
-    if (signal?.aborted) fail(499, "search-aborted", "Search cancelled");
-    return result;
   }
   async write(sessionId: string, input: WorkspaceWrite): Promise<WorkspaceFile> {
     if (!input || typeof input.text !== "string" || typeof input.expectedRevision !== "string") fail(400, "invalid-write", "Expected text and expectedRevision");
@@ -538,6 +683,7 @@ export class WorkspaceService {
 /** Keep filesystem diagnostics and absolute protected paths out of API errors. */
 export function workspaceError(error: unknown): WorkspaceError {
   if (error instanceof WorkspaceError) return error;
+  if (error instanceof WorkspaceIgnoreError) return new WorkspaceError(error.status, error.code, error.message);
   if (error instanceof SyntaxError) return new WorkspaceError(400, "invalid-request", "Invalid JSON request body");
   const code = (error as NodeJS.ErrnoException)?.code;
   if (code === "ENOENT" || code === "ENOTDIR") return new WorkspaceError(404, "path-missing", "Path no longer exists");

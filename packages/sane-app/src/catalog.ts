@@ -3,6 +3,7 @@ import { basename, isAbsolute, join, relative, sep } from "node:path";
 import { WorkspaceError, WorkspaceService, workspaceOperationCheck, workspaceOperationWait, type WorkspaceOperationOptions } from "./workspace";
 import { uuid, type Session } from "./history";
 import type { Association, WorkspaceRecord, WorktreeRecord, NavigationBookmark, NavigationWrite } from "./catalog-contract";
+import { createWorkspaceSearchLease, type WorkspaceSearchLease } from "./workspace-search-scope";
 
 type Identity = { dev: number; ino: number };
 type Tree = WorktreeRecord & { identity: Identity; gitIdentity: Identity | null };
@@ -156,6 +157,24 @@ export class CatalogService {
       if (operation && e instanceof WorkspaceError && ["search-aborted", "search-time-limit", "git-timeout"].includes(e.code)) throw e;
       t.state = "invalid"; t.reason = e instanceof WorkspaceError ? e.message : "Worktree path unavailable"; throw e instanceof WorkspaceError ? e : new WorkspaceError(409, "binding-invalid", t.reason);
     }
+  }
+  /** Search-only optimization. Ordinary bindings and every mutation retain full
+   * Git discovery. The lease checks authoritative state without subprocesses. */
+  async searchLease(workspaceId: string, worktreeId: string, operation: WorkspaceOperationOptions): Promise<WorkspaceSearchLease | undefined> {
+    const binding = await this.binding(workspaceId, worktreeId, operation);
+    const w = this.find(workspaceId), t = w.worktrees.find(t => t.worktreeId === worktreeId) ?? error(404, "unknown-worktree", "Unknown worktree");
+    const protectedPaths = [w.commonDir, t.gitDir].filter((path): path is string => !!path);
+    if (t.state !== "available" || binding.cwd !== t.root || binding.bindingRevision !== t.bindingRevision || JSON.stringify(binding.protectedPaths) !== JSON.stringify(protectedPaths)) error(409, "binding-invalid", "Search worktree binding changed");
+    const token = () => {
+      if (this.failed) error(503, "catalog-storage", "Catalog storage unavailable; restart required");
+      const currentWorkspace = this.find(workspaceId), currentTree = currentWorkspace.worktrees.find(tree => tree.worktreeId === worktreeId) ?? error(409, "binding-invalid", "Search worktree binding changed");
+      return JSON.stringify([currentWorkspace.kind, currentWorkspace.commonDir, currentWorkspace.identity, currentTree.root, currentTree.gitDir, currentTree.identity, currentTree.gitIdentity, currentTree.bindingRevision, currentTree.state]);
+    };
+    const pinned = token();
+    return createWorkspaceSearchLease({
+      binding, dataDir: this.dataDir, rootIdentity: { ...t.identity }, gitDir: t.gitDir, gitIdentity: t.gitIdentity && { ...t.gitIdentity }, commonDir: w.commonDir, commonIdentity: { ...w.identity },
+      validateBinding: () => { if (token() !== pinned) error(409, "binding-invalid", "Search worktree binding changed"); },
+    }, operation);
   }
   async get(id: string) { await this.serial; const w = this.find(id); for (const t of w.worktrees) { try { await this.binding(id, t.worktreeId); } catch {} } return this.publicWorkspace(w); }
   async list() { await this.serial; return { version: 1 as const, workspaces: await Promise.all(this.catalog.workspaces.map(w => this.get(w.workspaceId))) }; }

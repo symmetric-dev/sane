@@ -1,39 +1,96 @@
 import { afterEach, expect, test } from "bun:test";
-import { mkdtemp, mkdir, writeFile, readFile, appendFile, rm, symlink, link, realpath, chmod } from "node:fs/promises";
+import { mkdtemp, mkdir, writeFile, readFile, appendFile, rm, symlink, link, realpath, chmod, rename, type FileHandle } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
-import { WorkspaceService, type WorkspaceOperationOptions } from "../src/workspace";
+import { WorkspaceError, WorkspaceService, type WorkspaceOperationOptions } from "../src/workspace";
+import { WorkspaceIgnoreEvaluator, WorkspaceIgnoreError } from "../src/workspace-ignore";
+import type { WorkspaceSearchLeaseProvider } from "../src/workspace-search-scope";
 import { CatalogService } from "../src/catalog";
 import { WORKSPACE_MAX_BYTES, type WorkspaceSearchInput } from "../src/workspace-contract";
 import { WORKSPACE_SEARCH_LIMITS as LIMITS } from "../src/workspace-search";
 
 const roots: string[] = [];
 afterEach(async () => { for (const root of roots.splice(0)) await rm(root, { recursive: true, force: true }); });
-async function fixture(git = false) {
+async function fixture(git = false, optimized = false) {
   const root = await realpath(await mkdtemp(join(tmpdir(), "sane-workspace-search-"))); roots.push(root);
   const cwd = join(root, "checkout"), data = join(cwd, "app-data"), outside = join(root, "outside");
   await mkdir(data, { recursive: true }); await mkdir(outside);
-  let revision = "binding-v1", calls = 0, hook: ((count: number) => void) | undefined;
+  let revision = "binding-v1", lookups = 0, acquisitions = 0, validations = 0, disposals = 0;
+  const protectedPaths = [join(cwd, "admin")];
+  const binding = () => ({ cwd, bindingRevision: revision, protectedPaths });
+  const provider: WorkspaceSearchLeaseProvider = async id => {
+    acquisitions++;
+    if (id !== "session") return undefined;
+    const pinnedRevision = revision;
+    return {
+      binding: binding(),
+      validate: async () => {
+        validations++;
+        if (revision !== pinnedRevision) throw new WorkspaceError(409, "workspace-changed", "Binding changed");
+      },
+      dispose: async () => { disposals++; },
+    };
+  };
   const service = new WorkspaceService(id => {
-    hook?.(++calls);
-    return id === "session" ? { cwd, bindingRevision: revision, protectedPaths: [join(cwd, "admin")] } : undefined;
-  }, data);
+    lookups++;
+    return id === "session" ? binding() : undefined;
+  }, data, optimized ? provider : undefined);
   if (git) {
     const init = Bun.spawnSync(["git", "init", "-q", cwd]);
     if (init.exitCode) throw new Error(init.stderr.toString());
   }
   const { workspaceId } = await service.resolve("session");
   return {
-    service, workspaceId, cwd, data, outside,
+    service, workspaceId, cwd, data, outside, protectedPaths,
     search: (query: string, options: Partial<WorkspaceSearchInput> = {}, signal?: AbortSignal) => service.search("session", { workspaceId, query, ...options }, signal),
     changeBinding: () => { revision = "binding-v2"; },
-    watch: (callback: (count: number) => void) => { calls = 0; hook = callback; },
+    measurement: () => ({ lookups, acquisitions, validations, disposals }),
+  };
+}
+/** Private, deterministic phase hooks: assertions target semantic boundaries,
+ * not the number/order of catalog calls made by a particular implementation. */
+function observeSearch(service: WorkspaceService, hooks: {
+  check?: (path: string) => void | Promise<void>;
+  beforeRead?: (path: string) => void | Promise<void>;
+  afterRead?: (path: string) => void | Promise<void>;
+  final?: (operation: WorkspaceOperationOptions) => void | Promise<void>;
+}, callerSignal?: AbortSignal) {
+  const internal = service as any;
+  const check = internal.searchChecked.bind(service), disk = internal.searchDisk.bind(service), bind = internal.bind.bind(service);
+  internal.searchChecked = async (...args: any[]) => { await hooks.check?.(args[2]); return check(...args); };
+  internal.searchDisk = async (...args: any[]) => {
+    await hooks.beforeRead?.(args[1]);
+    const result = await disk(...args);
+    await hooks.afterRead?.(args[1]);
+    return result;
+  };
+  internal.bind = async (...args: any[]) => {
+    const operation = args[2] as WorkspaceOperationOptions | undefined;
+    // Worker guards get the search-owned signal; only the full final bind gets
+    // the caller's signal, including undefined for an uncancelled request.
+    if (operation && operation.signal === callerSignal) await hooks.final?.(operation);
+    return bind(...args);
   };
 }
 async function put(cwd: string, path: string, text: string | Buffer = "needle") {
   const parent = path.includes("/") ? path.slice(0, path.lastIndexOf("/")) : "";
   if (parent) await mkdir(join(cwd, parent), { recursive: true });
   await writeFile(join(cwd, path), text);
+}
+function latch() {
+  let release!: () => void;
+  const promise = new Promise<void>(resolve => { release = resolve; });
+  return { promise, release };
+}
+/** Test-owned startup watchdogs reject into the test's finally, rather than
+ * relying on Bun's timeout to unwind a suspended test (which it does not do). */
+async function bounded<T>(promise: Promise<T>, label: string, milliseconds = 1000): Promise<T> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    return await Promise.race([promise, new Promise<never>((_, reject) => {
+      timer = setTimeout(() => reject(new Error(`Timed out waiting for ${label}`)), milliseconds);
+    })]);
+  } finally { if (timer !== undefined) clearTimeout(timer); }
 }
 
 test("saved-content search normalizes BOM and EOL and returns every literal occurrence with UTF-16 columns", async () => {
@@ -142,12 +199,10 @@ test("stale binding fails at start, mid-scan and at the final fence, including a
   const start = await fixture(); start.changeBinding();
   await expect(start.search("needle")).rejects.toMatchObject({ status: 409, code: "workspace-changed" });
   const mid = await fixture(); await put(mid.cwd, "visible.txt");
-  mid.watch(count => { if (count === 5) mid.changeBinding(); });
+  observeSearch(mid.service, { beforeRead: path => { if (path === "visible.txt") mid.changeBinding(); } });
   await expect(mid.search("needle")).rejects.toMatchObject({ status: 409, code: "workspace-changed" });
-  const end = await fixture(); let total = 0;
-  end.watch(count => { total = count; }); await end.search("needle");
-  const final = total;
-  end.watch(count => { if (count === final) end.changeBinding(); });
+  const end = await fixture();
+  observeSearch(end.service, { final: () => end.changeBinding() });
   await expect(end.search("needle")).rejects.toMatchObject({ status: 409, code: "workspace-changed" });
 });
 
@@ -156,7 +211,7 @@ test("cancellation rejects before and during filesystem discovery without return
   const before = new AbortController(); before.abort();
   await expect(f.search("needle", {}, before.signal)).rejects.toMatchObject({ status: 499, code: "search-aborted" });
   const during = new AbortController();
-  f.watch(count => { if (count === 5) during.abort(); });
+  observeSearch(f.service, { beforeRead: path => { if (path === "visible.txt") during.abort(); } }, during.signal);
   await expect(f.search("needle", {}, during.signal)).rejects.toMatchObject({ code: "search-aborted" });
 });
 
@@ -209,39 +264,38 @@ test("Gitignore parser supports directory re-inclusion, escaped literals, anchor
 
 test("uncooperative initial and final binding lookups are cancellable and receive the same deadline", async () => {
   const f = await fixture();
-  let calls = 0, stallAt = 0, abortOnStall: AbortController | undefined;
+  let stall = true, abortOnStall: AbortController | undefined;
   const controls: WorkspaceOperationOptions[] = [];
   const service = new WorkspaceService(async (_id, operation) => {
-    calls++;
     if (operation) controls.push(operation);
-    if (calls === stallAt) { abortOnStall?.abort(); await new Promise(() => {}); }
+    if (stall) { abortOnStall?.abort(); await new Promise(() => {}); }
     return { cwd: f.cwd, bindingRevision: f.workspaceId };
   }, f.data);
   const input = { workspaceId: f.workspaceId, query: "needle" };
-  const initial = new AbortController(); stallAt = 1;
+  const initial = new AbortController();
   const timer = setTimeout(() => initial.abort(), 50), start = Date.now();
   try { await expect(service.search("session", input, initial.signal)).rejects.toMatchObject({ code: "search-aborted", status: 499 }); }
   finally { clearTimeout(timer); }
   expect(Date.now() - start).toBeLessThan(1000);
-  calls = 0; stallAt = 0; controls.length = 0;
+  stall = false; controls.length = 0;
   await service.search("session", input);
-  const final = calls;
   expect(new Set(controls.map(control => control.deadline)).size).toBe(1);
-  expect(controls).toHaveLength(calls);
-  calls = 0; stallAt = final; abortOnStall = new AbortController();
+  expect(controls.length).toBeGreaterThan(1);
+  abortOnStall = new AbortController();
+  observeSearch(service, { final: () => { stall = true; } }, abortOnStall.signal);
   await expect(service.search("session", input, abortOnStall.signal)).rejects.toMatchObject({ code: "search-aborted", status: 499 });
 });
 
 test("a blocked final fence fails closed within the total deadline instead of returning partial matches", async () => {
   const f = await fixture(); await put(f.cwd, "visible.txt");
-  let calls = 0, stallAt = 0;
+  let stall = false;
   const service = new WorkspaceService(async () => {
-    if (++calls === stallAt) await new Promise(() => {});
+    if (stall) await new Promise(() => {});
     return { cwd: f.cwd, bindingRevision: f.workspaceId };
   }, f.data);
   const input = { workspaceId: f.workspaceId, query: "needle" };
   expect((await service.search("session", input)).matches).toHaveLength(1);
-  stallAt = calls; calls = 0;
+  observeSearch(service, { final: () => { stall = true; } });
   const start = Date.now();
   await expect(service.search("session", input)).rejects.toMatchObject({ status: 504, code: "search-time-limit" });
   expect(Date.now() - start).toBeLessThan(LIMITS.milliseconds + 750);
@@ -254,9 +308,10 @@ test("production CatalogService lookup cancels blocked Git config includes at bo
   const config = join(f.cwd, ".git/config"), original = await readFile(config);
   const fifo = join(f.outside, "blocked-config");
   expect(Bun.spawnSync(["mkfifo", fifo]).exitCode).toBe(0);
-  let calls = 0, blockAt = 0, controller = new AbortController();
+  let block = false, controller = new AbortController();
   const service = new WorkspaceService(async (_id, operation) => {
-    if (++calls === blockAt) {
+    if (block) {
+      block = false;
       await appendFile(config, `\n[include]\n\tpath = ${fifo}\n`);
       setTimeout(() => controller.abort(), 50);
     }
@@ -264,10 +319,10 @@ test("production CatalogService lookup cancels blocked Git config includes at bo
   }, f.data);
   const { workspaceId } = await service.resolve("session");
   const input = { workspaceId, query: "needle" };
-  calls = 0; await service.search("session", input);
-  const final = calls;
-  for (const fence of [1, final]) {
-    await writeFile(config, original); calls = 0; blockAt = fence; controller = new AbortController();
+  await service.search("session", input);
+  for (const fence of ["initial", "final"]) {
+    await writeFile(config, original); block = fence === "initial"; controller = new AbortController();
+    if (fence === "final") observeSearch(service, { final: () => { block = true; } }, controller.signal);
     const start = Date.now();
     await expect(service.search("session", input, controller.signal)).rejects.toMatchObject({ code: "search-aborted", status: 499 });
     expect(Date.now() - start).toBeLessThan(1000);
@@ -332,3 +387,290 @@ test("file and discovery-entry budgets cap metadata truthfully", async () => {
   expect(entries.skippedFiles).toBeLessThanOrEqual(LIMITS.entries);
   expect(entries.skippedFiles).toBeGreaterThanOrEqual(LIMITS.entries - 1);
 }, 20000);
+
+test("optimized searches acquire one lease, use cheap guards, and do only the full final lookup", async () => {
+  const f = await fixture(false, true);
+  for (let i = 0; i < 12; i++) await put(f.cwd, `src/${i}.txt`);
+  const before = f.measurement();
+  const result = await f.search("needle");
+  const after = f.measurement();
+  expect(result.matches).toHaveLength(12);
+  expect(after.acquisitions - before.acquisitions).toBe(1);
+  expect(after.lookups - before.lookups).toBe(1);
+  expect(after.validations - before.validations).toBeGreaterThan(12);
+  expect(after.disposals - before.disposals).toBe(1);
+});
+
+test("undefined lease retains legacy per-path revalidation", async () => {
+  const f = await fixture(); await put(f.cwd, "visible.txt");
+  let lookups = 0, acquisitions = 0, revision = f.workspaceId;
+  const service = new WorkspaceService(() => {
+    lookups++;
+    return { cwd: f.cwd, bindingRevision: revision };
+  }, f.data, async () => { acquisitions++; return undefined; });
+  expect((await service.search("session", { workspaceId: f.workspaceId, query: "needle" })).matches).toHaveLength(1);
+  expect(acquisitions).toBe(1);
+  expect(lookups).toBeGreaterThan(2);
+  observeSearch(service, { beforeRead: () => { revision = "changed"; } });
+  await expect(service.search("session", { workspaceId: f.workspaceId, query: "needle" })).rejects.toMatchObject({ code: "workspace-changed" });
+});
+
+test("lease capabilities are search-only; ordinary file reads and writes retain full binding checks", async () => {
+  const f = await fixture(false, true); await put(f.cwd, "visible.txt");
+  const file = await f.service.file("session", f.workspaceId, "visible.txt");
+  await f.service.write("session", { workspaceId: f.workspaceId, path: "visible.txt", expectedRevision: file.revision!, text: "saved needle" });
+  expect(f.measurement().acquisitions).toBe(0);
+  expect(await readFile(join(f.cwd, "visible.txt"), "utf8")).toBe("saved needle");
+  f.changeBinding();
+  await expect(f.service.file("session", f.workspaceId, "visible.txt")).rejects.toMatchObject({ code: "workspace-changed" });
+});
+
+test("root identity changes fail even when an injected lease validator does not detect them", async () => {
+  const f = await fixture(false, true); await put(f.cwd, "visible.txt");
+  observeSearch(f.service, { beforeRead: async () => {
+    await rename(f.cwd, join(f.cwd, "..", "checkout-old"));
+    await mkdir(f.cwd);
+  } });
+  await expect(f.search("needle")).rejects.toMatchObject({ status: 409, code: "workspace-changed" });
+  expect(f.measurement().disposals).toBe(1);
+});
+
+test("an optimized stale initial binding fails before discovery and still disposes its lease", async () => {
+  const f = await fixture(false, true); f.changeBinding();
+  await expect(f.search("needle")).rejects.toMatchObject({ status: 409, code: "workspace-changed" });
+  expect(f.measurement()).toMatchObject({ acquisitions: 1, validations: 0, disposals: 1 });
+});
+
+test("policy changes invalidate empty and truncated searches, even outside all result paths", async () => {
+  for (const optimized of [false, true]) {
+    for (const truncated of [false, true]) {
+      const f = await fixture(false, optimized);
+      await put(f.cwd, "visible.txt", truncated ? "needle ".repeat(LIMITS.matches + 1) : "nothing here");
+      let finalCalls = 0;
+      observeSearch(f.service, { final: () => {
+        finalCalls++;
+        f.protectedPaths.push(join(f.cwd, "newly-protected-subtree"));
+      } });
+      await expect(f.search("needle")).rejects.toMatchObject({ status: 409, code: "workspace-changed" });
+      expect(finalCalls).toBe(1);
+      if (optimized) expect(f.measurement().disposals).toBe(1);
+    }
+  }
+});
+
+test("initial protection is pinned despite in-place mutation of a binding's path array", async () => {
+  const f = await fixture(false, true); await put(f.cwd, "visible.txt");
+  observeSearch(f.service, { beforeRead: () => { f.protectedPaths.push(join(f.cwd, "unsearched")); } });
+  await expect(f.search("needle")).rejects.toMatchObject({ status: 409, code: "workspace-changed" });
+  expect(f.measurement().disposals).toBe(1);
+});
+
+test("optimized read guards still refuse symlinks, shared inodes and protected data", async () => {
+  const f = await fixture(false, true);
+  await put(f.cwd, "visible.txt"); await put(f.data, "secret.txt"); await put(f.cwd, "admin/secret.txt");
+  await symlink(join(f.data, "secret.txt"), join(f.cwd, "linked.txt"));
+  await link(join(f.data, "secret.txt"), join(f.cwd, "shared.txt"));
+  await link(join(f.cwd, "admin/secret.txt"), join(f.cwd, ".gitignore"));
+  expect((await f.search("needle")).matches.map(match => match.path)).toEqual(["visible.txt"]);
+});
+
+test("four-slot reads preserve discovery order, use independent matchers and settle before the final fence", async () => {
+  const f = await fixture(false, true);
+  for (let i = 0; i < 9; i++) await put(f.cwd, `${i}.txt`, `needle ${i} needle`);
+  let active = 0, maximum = 0;
+  const gate = latch(), started = latch(), controller = new AbortController();
+  const discovered: string[] = [];
+  observeSearch(f.service, {
+    beforeRead: async path => {
+      discovered.push(path); active++; maximum = Math.max(maximum, active);
+      if (active === 4) { started.release(); gate.release(); }
+      await gate.promise;
+    },
+    afterRead: () => { active--; },
+    final: () => { expect(active).toBe(0); },
+  }, controller.signal);
+  const search = f.search("needle", {}, controller.signal);
+  const settled = Promise.allSettled([search]);
+  try {
+    await bounded(started.promise, "four read workers");
+    const result = await bounded(search, "four-slot search completion", 2000);
+    expect(maximum).toBe(4);
+    expect(result.scannedFiles).toBe(9);
+    expect(result.matches.map(match => match.path)).toEqual(discovered.flatMap(path => [path, path]));
+    expect(result.matches.map(match => match.column)).toEqual(Array.from({ length: 9 }, () => [1, 10]).flat());
+  } finally { controller.abort(); gate.release(); await settled; }
+});
+
+test("a file growing after reservation truncates rather than scanning partial text", async () => {
+  const f = await fixture(false, true); await put(f.cwd, "visible.txt", "needle");
+  observeSearch(f.service, { beforeRead: async () => { await appendFile(join(f.cwd, "visible.txt"), " more needle"); } });
+  expect(await f.search("needle")).toMatchObject({ matches: [], scannedFiles: 0, truncated: true });
+});
+
+test("process-wide admission spans services and holds slots through cancelled workers and lease disposal", async () => {
+  const first = await fixture(false, true), second = await fixture(false, true), third = await fixture(false, true);
+  for (const f of [first, second, third]) await put(f.cwd, "visible.txt");
+  const readGate = latch(), readStarted = latch(), disposeGate = latch(), disposeStarted = latch();
+  const firstController = new AbortController(), secondController = new AbortController();
+  let disposed = 0;
+  const binding = { cwd: second.cwd, bindingRevision: second.workspaceId, protectedPaths: second.protectedPaths };
+  const secondService = new WorkspaceService(() => binding, second.data, async () => ({
+    binding, validate: async () => {}, dispose: async () => {
+      disposeStarted.release(); await disposeGate.promise; disposed++;
+    },
+  }));
+  observeSearch(first.service, { beforeRead: async path => {
+    if (path === "visible.txt") { readStarted.release(); await readGate.promise; }
+  } }, firstController.signal);
+  // Bun's .rejects matcher can eagerly wait/pump the runner. Never construct
+  // one for a deliberately gated request: register plain settlement handlers
+  // immediately, then assert on the settled records AFTER releasing resources.
+  const settled = Promise.allSettled([
+    first.search("needle", {}, firstController.signal),
+    secondService.search("session", { workspaceId: second.workspaceId, query: "needle" }, secondController.signal),
+  ]);
+  let outcomes: Awaited<typeof settled> | undefined;
+  try {
+    await bounded(Promise.all([readStarted.promise, disposeStarted.promise]), "read and lease-disposal gates");
+    expect((await Promise.allSettled([third.search("needle")]))[0]).toMatchObject({ status: "rejected", reason: { status: 503, code: "search-busy" } });
+    firstController.abort(); secondController.abort();
+    expect((await Promise.allSettled([third.search("needle")]))[0]).toMatchObject({ status: "rejected", reason: { status: 503, code: "search-busy" } });
+    expect(disposed).toBe(0);
+  } finally {
+    // Every startup timeout/assertion failure follows the same real cleanup;
+    // no admission reset and no gated request survives into the next test.
+    firstController.abort(); secondController.abort();
+    readGate.release(); disposeGate.release();
+    outcomes = await settled;
+  }
+  for (const outcome of outcomes!) expect(outcome).toMatchObject({ status: "rejected", reason: { status: 499, code: "search-aborted" } });
+  expect(disposed).toBe(1);
+  expect((await third.search("needle")).matches).toHaveLength(1);
+  expect(first.measurement().disposals).toBe(1);
+});
+
+test("cancellation during lease disposal still rejects rather than returning completed matches", async () => {
+  const f = await fixture(); await put(f.cwd, "visible.txt");
+  const controller = new AbortController(), binding = { cwd: f.cwd, bindingRevision: f.workspaceId };
+  const service = new WorkspaceService(() => binding, f.data, async () => ({
+    binding, validate: async () => {}, dispose: async () => { controller.abort(); },
+  }));
+  await expect(service.search("session", { workspaceId: f.workspaceId, query: "needle" }, controller.signal)).rejects.toMatchObject({ status: 499, code: "search-aborted" });
+  expect((await f.search("needle")).matches).toHaveLength(1);
+});
+
+test("late search-only open/read operations retain and close their owned handles before cancellation settles", async () => {
+  for (const phase of ["open", "read"] as const) {
+    const f = await fixture(false, true); await put(f.cwd, "visible.txt");
+    const entered = latch(), gate = latch(), controller = new AbortController();
+    const internal = f.service as any, acquire = internal.searchOpen.bind(f.service);
+    let owned: FileHandle | undefined, closed = 0, finished = false;
+    const events: string[] = [];
+    // Only this service's readonly acquisition and this one actual descriptor
+    // are wrapped. Global fs I/O and writable disk() are never monkey-patched.
+    internal.searchOpen = async (target: string) => {
+      const handle = await acquire(target);
+      owned = handle;
+      const descriptor = {
+        stat: () => handle.stat(),
+        read: (...args: any[]) => handle.read(...args),
+        close: async () => { await handle.close(); closed++; events.push("closed"); },
+      };
+      if (phase === "open") {
+        entered.release(); await gate.promise; events.push("open-returned");
+      } else {
+        descriptor.read = async (...args: any[]) => {
+          entered.release(); await gate.promise;
+          const result = await handle.read(...args); events.push("read-finished"); return result;
+        };
+      }
+      return descriptor;
+    };
+    const settled = Promise.allSettled([f.search("needle", {}, controller.signal)]).then(outcomes => {
+      finished = true; return outcomes;
+    });
+    let outcomes: Awaited<typeof settled> | undefined;
+    try {
+      await bounded(entered.promise, `owned ${phase} operation`);
+      controller.abort();
+      // Give cancellation waiters a turn: a whole-operation Promise.race would
+      // incorrectly settle here while the real acquisition/read is still held.
+      await new Promise<void>(resolve => setTimeout(resolve, 20));
+      expect(finished).toBe(false);
+      expect(closed).toBe(0);
+      expect(f.measurement().disposals).toBe(0);
+    } finally {
+      controller.abort(); gate.release();
+      outcomes = await settled;
+    }
+    expect(outcomes![0]).toMatchObject({ status: "rejected", reason: { status: 499, code: "search-aborted" } });
+    expect(events).toEqual([phase === "open" ? "open-returned" : "read-finished", "closed"]);
+    expect(closed).toBe(1);
+    expect(f.measurement().disposals).toBe(1);
+    expect((await Promise.allSettled([owned!.stat()]))[0]?.status).toBe("rejected");
+  }
+});
+
+test("2001 tab-only ignore rules truncate before evaluator startup and still run the full final fence", async () => {
+  const f = await fixture(false, true); await put(f.cwd, "visible.txt");
+  await put(f.cwd, ".gitignore", "\t\n".repeat(LIMITS.ignoreRules + 1));
+  const register = WorkspaceIgnoreEvaluator.prototype.register;
+  let registrations = 0, finals = 0;
+  observeSearch(f.service, { final: () => { finals++; } });
+  WorkspaceIgnoreEvaluator.prototype.register = async () => {
+    registrations++;
+    // Child startup is lazy inside register; make any attempt a hard failure,
+    // rather than actually launching a child or silently supplying no rules.
+    throw new Error("Over-budget ignore snapshots must not start an evaluator");
+  };
+  const before = f.measurement();
+  try {
+    expect(await f.search("needle")).toMatchObject({ matches: [], truncated: true, scannedFiles: 0 });
+    expect(registrations).toBe(0);
+    expect(finals).toBe(1);
+    expect(f.measurement().lookups - before.lookups).toBe(1);
+    expect(f.measurement().disposals - before.disposals).toBe(1);
+  } finally { WorkspaceIgnoreEvaluator.prototype.register = register; }
+});
+
+test("ignore evaluator is lazy, and unexpected evaluation failure never becomes an empty rule set", async () => {
+  const f = await fixture(false, true); await put(f.cwd, "visible.txt");
+  const original = WorkspaceIgnoreEvaluator.prototype.register;
+  let registers = 0;
+  WorkspaceIgnoreEvaluator.prototype.register = async () => {
+    registers++;
+    throw new WorkspaceIgnoreError(503, "ignore-unavailable", "Evaluator unavailable");
+  };
+  try {
+    expect((await f.search("needle")).matches).toHaveLength(1);
+    await put(f.cwd, ".gitignore", "# comment only\n \n");
+    expect((await f.search("needle")).matches).toHaveLength(1);
+    expect(registers).toBe(0);
+    await put(f.cwd, ".gitignore", "visible.txt\n");
+    await expect(f.search("needle")).rejects.toMatchObject({ status: 503, code: "ignore-unavailable" });
+    expect(registers).toBe(1);
+    expect(f.measurement().disposals).toBe(3);
+  } finally { WorkspaceIgnoreEvaluator.prototype.register = original; }
+});
+
+test("ignore rule-length and evaluator budget exhaustion truncate with cleanup and a final fence", async () => {
+  const f = await fixture(false, true); await put(f.cwd, "visible.txt");
+  await put(f.cwd, ".gitignore", "x".repeat(4097));
+  let finals = 0;
+  observeSearch(f.service, { final: () => { finals++; } });
+  expect(await f.search("needle")).toMatchObject({ matches: [], truncated: true, scannedFiles: 0 });
+  expect(finals).toBe(1);
+  await put(f.cwd, ".gitignore", "visible.txt\n");
+  const original = WorkspaceIgnoreEvaluator.prototype.register, close = WorkspaceIgnoreEvaluator.prototype.close;
+  let closed = 0;
+  WorkspaceIgnoreEvaluator.prototype.register = async () => { throw new WorkspaceIgnoreError(413, "ignore-limit", "Budget reached"); };
+  WorkspaceIgnoreEvaluator.prototype.close = async function (this: WorkspaceIgnoreEvaluator) { closed++; await close.call(this); };
+  try {
+    expect(await f.search("needle")).toMatchObject({ matches: [], truncated: true, scannedFiles: 0 });
+    expect(closed).toBe(1);
+    expect(finals).toBe(2);
+  } finally {
+    WorkspaceIgnoreEvaluator.prototype.register = original;
+    WorkspaceIgnoreEvaluator.prototype.close = close;
+  }
+});

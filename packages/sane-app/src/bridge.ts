@@ -62,6 +62,39 @@ async function body(req: Request): Promise<any> {
   while (true) { const { value, done } = await reader.read(); if (done) break; size += value.length; if (size > 1024 * 1024) { await reader.cancel(); throw new Error("Body too large"); } parts.push(value); }
   return JSON.parse(Buffer.concat(parts).toString());
 }
+/** Both Code search routes share the host's read-only request lifetime. A
+ * completion enters the registry before action starts and leaves only after
+ * WorkspaceService.search has awaited its descriptor/evaluator cleanup. */
+export function createWorkspaceSearchLifecycle() {
+  const shutdown = new AbortController();
+  const active = new Set<Promise<void>>();
+  let drain: Promise<void> | undefined;
+  const assertOpen = () => { if (shutdown.signal.aborted) throw new WorkspaceError(503, "search-shutdown", "Bridge is shutting down"); };
+  return {
+    assertOpen,
+    async run<T>(requestSignal: AbortSignal, action: (signal: AbortSignal) => Promise<T>): Promise<T> {
+      assertOpen();
+      if (requestSignal.aborted) throw new WorkspaceError(499, "search-aborted", "Search cancelled");
+      const signal = AbortSignal.any([requestSignal, shutdown.signal]);
+      const done = Promise.withResolvers<void>();
+      active.add(done.promise);
+      try { return await action(signal); }
+      finally { done.resolve(); active.delete(done.promise); }
+    },
+    close(): Promise<void> {
+      if (drain) return drain;
+      shutdown.abort();
+      // Abort rejection is an ordinary read-only outcome, not storage failure.
+      return drain = Promise.all([...active]).then(() => {});
+    },
+  };
+}
+async function drainWorkspaceSearches(drain: Promise<void>): Promise<boolean> {
+  let timeout: ReturnType<typeof setTimeout> | undefined;
+  try {
+    return await Promise.race([drain.then(() => true), new Promise<boolean>(resolve => { timeout = setTimeout(() => resolve(false), 12000); })]);
+  } finally { if (timeout !== undefined) clearTimeout(timeout); }
+}
 export async function start(options: Options) {
   const paths = validateOwnershipPaths(options.packageDir ?? root, options.dataDir);
   const installation = acquireInstallation(paths, { phase: "starting", reconcileInterrupted: options.reconcileInterrupted });
@@ -117,6 +150,7 @@ async function startOwned(options: Options, assetsDir: string, packageDir: strin
   if (options.publicOrigin) { const u = new URL(options.publicOrigin); if ((u.protocol !== "https:" && !(u.protocol === "http:" && loopback(u.hostname) && !remote)) || u.origin !== options.publicOrigin || u.username || u.password) throw new Error("public-origin must be an exact HTTPS origin (or HTTP loopback origin for a local SSH forward)"); }
   let retainOwner = false;
   let router: RepositoryRouter | undefined;
+  const searches = createWorkspaceSearchLifecycle();
   try {
   const metadataPath = join(options.dataDir, "metadata.json");
   const meta: Metadata = store.metadata;
@@ -146,7 +180,28 @@ async function startOwned(options: Options, assetsDir: string, packageDir: strin
     const [workspaceId, worktreeId] = key.split("/");
     const binding = await catalog.binding(workspaceId!, worktreeId!, operation);
     return { ...binding, protectedPaths: [...binding.protectedPaths, ...domainProtectedPaths] };
-  }, options.dataDir);
+  }, options.dataDir, async (key, operation) => {
+    const [workspaceId, worktreeId] = key.split("/");
+    const protection = [...domainProtectedPaths];
+    const lease = await catalog.searchLease(workspaceId!, worktreeId!, operation);
+    if (!lease) return undefined;
+    let protectionInvalid = false;
+    const checkProtection = () => {
+      if (protectionInvalid || domainProtectedPaths.length !== protection.length || domainProtectedPaths.some((path, index) => path !== protection[index])) {
+        protectionInvalid = true;
+        throw new WorkspaceError(409, "binding-invalid", "Search protection changed");
+      }
+    };
+    const validate = async (next: typeof operation) => {
+      checkProtection();
+      await lease.validate(next);
+      checkProtection();
+    };
+    await validate(operation);
+    const binding = { ...lease.binding, protectedPaths: [...(lease.binding.protectedPaths ?? []), ...protection] };
+    Object.freeze(binding.protectedPaths); Object.freeze(binding);
+    return { binding, validate, dispose: lease.dispose };
+  });
   const events = new Map<string, Event[]>();
   const secrets = new Map<string, string>();
   type Owner = { run: Run; native?: boolean; launchError?: string; workerDeliveryId?: string; child?: Bun.Subprocess<"pipe", "pipe", "pipe">; done: Promise<void>; settled: boolean; stopping?: Promise<boolean>; cancel?: Promise<{ interrupted: boolean }>; cancelling?: boolean; stopRequested?: boolean; submission?: Promise<unknown> };
@@ -1297,7 +1352,11 @@ async function startOwned(options: Options, assetsDir: string, packageDir: strin
           if (operation === "list" && req.method === "GET") return json(await worktrees.list(key, revision, filePath));
           if (operation === "file" && req.method === "GET") return json(await worktrees.file(key, revision, filePath));
           if (operation === "file" && req.method === "PUT") { const input = await body(req); return json(await worktrees.write(key, { ...input, workspaceId: input?.bindingRevision ?? input?.workspaceId })); }
-          if (operation === "search" && req.method === "POST") { const input = await body(req); return json(await worktrees.search(key, { ...input, workspaceId: input?.bindingRevision ?? input?.workspaceId }, req.signal)); }
+          if (operation === "search" && req.method === "POST") {
+            searches.assertOpen();
+            const input = await body(req);
+            return json(await searches.run(req.signal, signal => worktrees.search(key, { ...input, workspaceId: input?.bindingRevision ?? input?.workspaceId }, signal)));
+          }
           if ((operation === "file" && ["POST", "DELETE"].includes(req.method)) || (operation === "copy" && req.method === "POST")) {
             const input = await body(req), boundInput = { ...input, workspaceId: input?.bindingRevision ?? input?.workspaceId };
             if (operation === "copy") return json(await worktrees.copy(key, boundInput), 201);
@@ -1318,7 +1377,11 @@ async function startOwned(options: Options, assetsDir: string, packageDir: strin
           if (operation === "list" && req.method === "GET") return json(await workspace.list(sessionId, workspaceId, filePath));
           if (operation === "file" && req.method === "GET") return json(await workspace.file(sessionId, workspaceId, filePath));
           if (operation === "file" && req.method === "PUT") return json(await workspace.write(sessionId, await body(req)));
-          if (operation === "search" && req.method === "POST") { const input = await body(req); return json(await workspace.search(sessionId, { ...input, workspaceId: input?.bindingRevision ?? input?.workspaceId }, req.signal)); }
+          if (operation === "search" && req.method === "POST") {
+            searches.assertOpen();
+            const input = await body(req);
+            return json(await searches.run(req.signal, signal => workspace.search(sessionId, { ...input, workspaceId: input?.bindingRevision ?? input?.workspaceId }, signal)));
+          }
           if (operation === "file" && req.method === "POST") return json(await workspace.create(sessionId, await body(req)), 201);
           if (operation === "file" && req.method === "DELETE") return json(await workspace.delete(sessionId, await body(req)));
           if (operation === "copy" && req.method === "POST") return json(await workspace.copy(sessionId, await body(req)), 201);
@@ -1878,6 +1941,7 @@ async function startOwned(options: Options, assetsDir: string, packageDir: strin
   return { origin, port: server.port, workers, workerOutbox, handoffs, prepareHandoffRecipient, close() {
     if (closePromise) return closePromise;
     closing = true;
+    const searchDrain = searches.close();
     clearInterval(handoffTimer);
     clearInterval(workerOutboxTimer);
     closePromise = (async () => {
@@ -1913,6 +1977,10 @@ async function startOwned(options: Options, assetsDir: string, packageDir: strin
     }
     const flushed = await Promise.race([serial.then(() => true), Bun.sleep(500).then(() => false)]);
     if (!flushed) retainOwner = true;
+    // Search promises include evaluator reap and all active read finally blocks.
+    // If resource cleanup cannot settle, retain ownership without classifying a
+    // read-only cancellation as a catalog/metadata storage failure.
+    if (!await drainWorkspaceSearches(searchDrain)) retainOwner = true;
     await server.stop(true); await hookServer.stop(true);
     await flushAndCloseWorkstreams(() => catalog.flush(), () => router?.close(), () => { retainOwner = true; });
     if (retainOwner) throw new Error("Shutdown did not drain safely; ownership retained. Explicit reconciliation required after process exit.");
@@ -1920,6 +1988,7 @@ async function startOwned(options: Options, assetsDir: string, packageDir: strin
     return closePromise;
   } };
   } catch (error) {
+    if (!await drainWorkspaceSearches(searches.close())) retainOwner = true;
     try { await router?.close(); } catch { retainOwner = true; }
     if (retainOwner) retainOwnership();
     throw error;
