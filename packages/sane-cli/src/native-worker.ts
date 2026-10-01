@@ -30,7 +30,9 @@ export async function workerNativeCaller(caller: NativeCaller, operation: Native
     }
     if (!response.ok) {
       const error = result && typeof result === "object" && "error" in result ? result.error : undefined
-      throw new DomainError("UNAVAILABLE", typeof error === "string" ? error.slice(0, 4000) : "App worker operation unavailable.")
+      const code = result && typeof result === "object" && "code" in result ? result.code : undefined
+      const label = typeof code === "string" && /^[a-z][a-z0-9-]{0,79}$/.test(code) ? ` [${code}]` : ""
+      throw new DomainError("UNAVAILABLE", `App worker request rejected (HTTP ${response.status})${label}: ${typeof error === "string" ? error.slice(0, 4000) : "App worker operation unavailable."}`)
     }
     return projectNativeWorkerReply(result)
   } finally { opened.domain.close() }

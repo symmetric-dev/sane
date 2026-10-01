@@ -1,5 +1,8 @@
 import { parseNativeWorkerRequest, projectNativeWorkerReply, type NativeWorkerRequest, type NativeWorkerResultRef, type NativeWorkerAcknowledgement } from "../../sane-cli/src/native-worker-contract";
 import { workerTerminal, type WorkerCaller, type WorkerRecord, type WorkerStart } from "./worker-contract";
+import { AgentProfileResolutionError } from "./agent-profiles-contract";
+import { WorkstreamAdapterError } from "./workstreams";
+import { WorkerCapacityError } from "./workers";
 
 /** Request cancellation belongs only to qualification/wait, never worker execution. */
 export type NativeWorkerRequestContext = {
@@ -60,6 +63,16 @@ export type NativeWorkerHandlerDependencies = {
 export class NativeWorkerRequestError extends Error {
   constructor(readonly status: number, readonly code: string, message: string) { super(message); }
 }
+
+/** Allowlisted messages, never the underlying adapter/profile error text. */
+const publicWorkerErrors: Readonly<Record<string, string>> = {
+  "invalid-worker-input": "Invalid worker arguments. Supply a supported worker role, bounded prompt/context and valid operation arguments.",
+  "worker-request-conflict": "Worker request identity is already bound to another invocation or payload. Inspect sane_worker_status; do not create a replacement invocation for work that may already be admitted.",
+  "worker-parent": "Worker operation requires a repository-enrolled, App-owned parent conversation and an evidenced run; new starts require its current running, non-stopping run. Inspect sane_worker_status before replacing any uncertain start.",
+  "worker-scope": "Requested workers must belong to this caller's descendant tree. Use sane_worker_status without IDs to discover visible workers; cancellation requires explicit worker IDs.",
+  "worker-wait": "Worker wait requires IDs and a timeout from 0 to 10 seconds; acknowledgement requires exact worker ID, result revision and notification ID from status or wait.",
+  "worker-notification-recipient": "Only a worker's immediate parent may acknowledge its result. Ancestors may inspect results without consuming that parent's notifications.",
+};
 
 function context(signal: AbortSignal, deadline: number): NativeWorkerRequestContext {
   return {
@@ -146,8 +159,11 @@ export function createNativeWorkerHandler(deps: NativeWorkerHandlerDependencies)
       return Response.json(projectNativeWorkerReply(result));
     } catch (error) {
       if (error instanceof NativeWorkerRequestError) return Response.json({ error: error.message.slice(0, 4000), code: error.code }, { status: error.status });
+      if (error instanceof WorkerCapacityError) return Response.json({ error: error.message, code: error.code }, { status: error.status });
+      if (error instanceof WorkstreamAdapterError && Object.hasOwn(publicWorkerErrors, error.code)) return Response.json({ error: publicWorkerErrors[error.code], code: error.code }, { status: error.status });
+      if (error instanceof AgentProfileResolutionError) return Response.json({ error: "Worker profile configuration is invalid or missing. Configure the caller's workerProfiles or App workerDefaults with a compatible worker profile for this role. This request did not admit a worker; other starts in the same batch may have succeeded. Inspect sane_worker_status before retrying only missing assignments.", code: "worker-profile" }, { status: 409 });
       // Never serialize arbitrary executor/storage errors, prompts or credentials.
-      return Response.json({ error: "App worker operation unavailable. Check caller enrollment, trusted invocation evidence, worker scope, profile and capacity in the App. Admission may be unconfirmed; inspect status before a new start invocation.", code: "worker-unavailable" }, { status: 503 });
+      return Response.json({ error: "App worker operation failed unexpectedly. Admission may be unconfirmed and other starts in the same batch may have succeeded; admitted workers continue independently. Inspect sane_worker_status and App diagnostics before a new start. Do not relaunch assignments through native subagents while admission is unresolved.", code: "worker-unavailable" }, { status: 503 });
     } finally {
       if (timer !== undefined) clearTimeout(timer);
       if (qualificationTimer !== undefined) clearTimeout(qualificationTimer);

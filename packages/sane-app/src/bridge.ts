@@ -25,7 +25,7 @@ import { matchesOpenCodeWorkerPart, nativeWorkerInput, projectNativeWorkerReply 
 import { workerTerminationUncertainty } from "./worker-recovery";
 import { workerDeliveryEvidence, workerReportPrompt } from "./worker-outbox";
 import { restoreWorkerOutput, workerOutput } from "./worker-output";
-import { workerResults, type WorkerDelivery } from "./worker-contract";
+import { DEFAULT_MAX_WORKERS_PER_CHECKOUT, workerResults, type WorkerDelivery } from "./worker-contract";
 import { ASSISTANT_AGENT_DESCRIPTIONS, ASSISTANT_AGENT_IDS, ASSISTANT_AGENT_LABELS, isAssistantAgentId, nativeAgentId } from "sane-core/agent-catalog";
 import { AgentLaunchConfigurationError, agentLaunchSnapshot, claudeAgentSettings, snapshotIdentity } from "./agent-launch";
 import { readClaudeHistory, forkClaudeHistory, verifyClaudeFork, coveredNativeRuns, type ReconciledHistory } from "./reconcile";
@@ -131,7 +131,7 @@ async function startOwned(options: Options, assetsDir: string, packageDir: strin
   const indexHtml = await readFile(join(packageDir, "public", "index.html"), "utf8");
   const maxConcurrentRuns = options.maxConcurrentRuns ?? 16;
   if (!Number.isSafeInteger(maxConcurrentRuns) || maxConcurrentRuns < 1 || maxConcurrentRuns > 256) throw new Error("max-concurrent-runs must be an integer from 1 to 256");
-  const maxWorkersPerCheckout = options.maxWorkersPerCheckout ?? 4;
+  const maxWorkersPerCheckout = options.maxWorkersPerCheckout ?? DEFAULT_MAX_WORKERS_PER_CHECKOUT;
   if (!Number.isSafeInteger(maxWorkersPerCheckout) || maxWorkersPerCheckout < 1 || maxWorkersPerCheckout > 256) throw new Error("maxWorkersPerCheckout must be an integer from 1 to 256");
   const store = validateAppStore(options.dataDir);
   assertSourceConfiguration(store.sources, options.nativeSources);
@@ -849,7 +849,13 @@ async function startOwned(options: Options, assetsDir: string, packageDir: strin
       if (!owner || owner.run.runId !== parent.runId || owner.run.status !== "running" || owner.settled || owner.stopRequested || owner.cancelling) throw new WorkstreamAdapterError(409, "worker-parent", "Parent run ended or stopped during worker qualification; no worker was reserved");
     },
     hasActiveExecution(w) { return owners.has(w.sessionId) || workerStore.deliveries().some(d => d.parentSessionId === w.sessionId && ["claimed", "acceptance-unknown"].includes(d.state)); },
-    assertCapacity() { const a = availability(); if (!a.canSend) throw new WorkstreamAdapterError(409, a.code ?? "worker-unavailable", a.reason!); },
+    assertCapacity() {
+      const a = availability();
+      if (!a.canSend) {
+        const code = a.code ?? (storageFailed ? "worker-storage-unavailable" : meta.reconciliationRequired ? "worker-reconciliation-required" : closing ? "worker-app-closing" : "worker-unavailable");
+        throw new NativeWorkerRequestError(a.code ? 409 : 503, code, `${a.reason} No worker was admitted by this request; other starts in the same batch may have succeeded. Inspect sane_worker_status before retrying only missing assignments once the App is available. Do not bypass this rejection by launching native subagents.`);
+      }
+    },
     async launch(w) {
       workerStore.update(w.id, { state: "launching" });
       const parentAdmission = admissions.get(w.parent.sessionId)!;

@@ -3,6 +3,7 @@ import { dirname, join, resolve } from "node:path";
 import { homedir } from "node:os";
 import { DomainError, normalizeNativeSource } from "sane-core/server";
 import type { NativeAuthority, NativeSourceDescriptor } from "sane-core/contracts";
+import { DEFAULT_MAX_WORKERS_PER_CHECKOUT } from "./worker-contract";
 
 export class AppConfigError extends Error { readonly code = "INVALID_APP_CONFIG"; }
 export type AppConfig = {
@@ -103,7 +104,7 @@ export function resolveAppConfig(args: string[], context: ConfigContext) {
     defaultExecutionCwd: path("cwd", raw.defaultExecutionCwd, invocation),
     server: { host: text(choose("host", server.host, "127.0.0.1"), "host"), port: integer(flags.has("port") ? Number(flags.get("port")) : server.port ?? 8787, 0, 65535, "port"), publicOrigin: choose("origin", server.publicOrigin, null) as string | null, allowRemote: choose("remote", server.allowRemote, false) as boolean },
     maxConcurrentRuns: integer(flags.has("concurrency") ? Number(flags.get("concurrency")) : raw.maxConcurrentRuns ?? 16, 1, 256, "concurrency"),
-    maxWorkersPerCheckout: integer(raw.maxWorkersPerCheckout ?? 4, 1, 256, "workers per checkout"),
+    maxWorkersPerCheckout: integer(raw.maxWorkersPerCheckout ?? DEFAULT_MAX_WORKERS_PER_CHECKOUT, 1, 256, "workers per checkout"),
     native: { claude: { executable: executable.includes("/") ? resolve(flags.has("executable") ? invocation : base, executable) : executable, profileRoot: path("profile", cc.profileRoot, resolve(invocation, env.CLAUDE_CONFIG_DIR ?? join(home, ".claude"))) }, opencode: { mode: "managed", registrationFile: path("registration", oc.registrationFile, resolve(invocation, env.XDG_STATE_HOME ?? join(home, ".local/state"), "opencode/service.json")) } },
   };
   const contradiction = (name: string) => invalid(`Native selector contradicts configuration: ${name}`);

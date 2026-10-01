@@ -3,6 +3,8 @@ import type { WorkerAgentId } from "sane-core/agent-catalog";
 import type { ResolvedAgentLaunch } from "./agent-profiles-contract";
 import type { Run } from "./history";
 
+export const DEFAULT_MAX_WORKERS_PER_CHECKOUT = 8;
+
 /** Supplied by the authenticated integration, never by tool arguments. */
 export type WorkerCaller = { envelope: unknown; runId: string; toolCallId: string; invocation?: import("../../sane-cli/src/native-worker-contract").NativeWorkerInvocation };
 export type WorkerStart = { requestId: string; worker: WorkerAgentId; prompt: string; context?: string };

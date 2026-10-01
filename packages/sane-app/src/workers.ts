@@ -2,7 +2,7 @@ import { isWorkerAgentId } from "sane-core/agent-catalog";
 import type { ConversationRef } from "sane-core/contracts";
 import { resolveWorkerProfile, type AgentProfiles } from "./agent-profiles-contract";
 import { WorkerStore } from "./worker-store";
-import { workerResults, workerTerminal, type WorkerCaller, type WorkerRecord, type WorkerStart } from "./worker-contract";
+import { DEFAULT_MAX_WORKERS_PER_CHECKOUT, workerResults, workerTerminal, type WorkerCaller, type WorkerRecord, type WorkerStart } from "./worker-contract";
 import { WorkstreamAdapterError } from "./workstreams";
 
 export type WorkerParent = { sessionId: string; runId: string; native: ConversationRef; checkout: string; profileId?: string };
@@ -17,10 +17,17 @@ export type WorkerExecutor = {
 };
 const error = (code: string, message: string): never => { throw new WorkstreamAdapterError(409, code, message); };
 
+/** Public admission failure: only counts and recovery guidance cross the native boundary. */
+export class WorkerCapacityError extends WorkstreamAdapterError {
+  constructor(readonly activeCount: number, readonly limit: number) {
+    super(409, "worker-capacity", `Checkout worker capacity reached (${activeCount}/${limit} active SANE workers). The limit includes scout crews, nested workers and active continuations in this checkout. This request did not admit a worker; other starts in the same batch may have succeeded. Inspect sane_worker_status before retrying only missing assignments when a slot is free. Do not relaunch the batch through native subagents to bypass capacity.`);
+  }
+}
+
 /** Orchestration records only. Execution, logs and recovery belong to the existing bridge. */
 export class WorkerService {
   private launches = new Set<Promise<void>>();
-  constructor(readonly store: WorkerStore, private executor: WorkerExecutor, private profiles: () => AgentProfiles, readonly checkoutLimit = 4) {}
+  constructor(readonly store: WorkerStore, private executor: WorkerExecutor, private profiles: () => AgentProfiles, readonly checkoutLimit = DEFAULT_MAX_WORKERS_PER_CHECKOUT) {}
   active() { return this.store.list().filter(w => !workerTerminal(w) || this.executor.hasActiveExecution(w)); }
   tree(parentSessionId: string) {
     const all = this.store.list(), parents = new Set([parentSessionId]), result: WorkerRecord[] = [];
@@ -47,7 +54,8 @@ export class WorkerService {
     }
     const launch = resolveWorkerProfile(this.profiles(), input.worker, parent.profileId);
     this.executor.assertCapacity();
-    if (this.active().filter(w => w.checkout === parent.checkout).length >= this.checkoutLimit) error("worker-capacity", `Checkout worker capacity reached (${this.checkoutLimit}); retry when a slot is free`);
+    const activeCount = this.active().filter(w => w.checkout === parent.checkout).length;
+    if (activeCount >= this.checkoutLimit) throw new WorkerCapacityError(activeCount, this.checkoutLimit);
     const now = new Date().toISOString();
     const w: WorkerRecord = { id: crypto.randomUUID(), sessionId: crypto.randomUUID(), runId: null, parent: { sessionId: parent.sessionId, runId: parent.runId, toolCallId: caller.toolCallId, native: parent.native, ...(caller.invocation ? { invocation: caller.invocation } : {}) }, input: payload, checkout: parent.checkout, launch, child: null, state: "reserved", createdAt: now, updatedAt: now };
     this.executor.assertCurrentParent(parent); // No await between this ownership check and durable reservation.
