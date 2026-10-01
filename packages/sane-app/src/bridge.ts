@@ -129,7 +129,7 @@ export async function start(options: Options) {
 }
 async function startOwned(options: Options, assetsDir: string, packageDir: string, retainOwnership: () => void) {
   const indexHtml = await readFile(join(packageDir, "public", "index.html"), "utf8");
-  const maxConcurrentRuns = options.maxConcurrentRuns ?? 16;
+  const maxConcurrentRuns = options.maxConcurrentRuns ?? 24;
   if (!Number.isSafeInteger(maxConcurrentRuns) || maxConcurrentRuns < 1 || maxConcurrentRuns > 256) throw new Error("max-concurrent-runs must be an integer from 1 to 256");
   const maxWorkersPerCheckout = options.maxWorkersPerCheckout ?? DEFAULT_MAX_WORKERS_PER_CHECKOUT;
   if (!Number.isSafeInteger(maxWorkersPerCheckout) || maxWorkersPerCheckout < 1 || maxWorkersPerCheckout > 256) throw new Error("maxWorkersPerCheckout must be an integer from 1 to 256");

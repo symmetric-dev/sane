@@ -8,7 +8,7 @@ Private Bun workspace package. Chat, workspace navigation, Code, Git and
 Terminal retain their source behavior. CC uses the installed `claude -p` and
 native continuation; OC connects to an existing V2 service through
 `@opencode/client`. Concurrent CC/OC runs are admitted, one App-owned run per
-native conversation, default bridge capacity 16 (configurable 1–256 with
+native conversation, default bridge capacity 24 (configurable 1–256 with
 `--max-concurrent-runs`). Shared-checkout writes are allowed.
 
 ## Owner installation and launch
