@@ -56,7 +56,6 @@ export function TranscriptActivity({ group, entrances, renderBody }: { group: Ac
   const historySelection = history.find(entry => entry.id === selected.id) ?? history[0];
   const selectedIndex = history.findIndex(entry => entry.id === historySelection?.id);
   const historyId = `${domId}-history`, latestId = `${domId}-latest`;
-  const tabs = useRef<HTMLDivElement>(null);
   const root = useRef<HTMLDivElement>(null);
   const collapseButton = useRef<HTMLButtonElement>(null);
   const focusedCollapse = useRef(false);
@@ -66,13 +65,6 @@ export function TranscriptActivity({ group, entrances, renderBody }: { group: Ac
   const latestOpen = selection.expanded && selected.id === latest.id;
   const choose = (entry: ActivityEntry) => setSelection({ id: entry.id, expanded: true });
   const activate = (entry: ActivityEntry) => setSelection({ id: entry.id, expanded: !selection.expanded || selected.id !== entry.id });
-  const revealTab = (button: HTMLButtonElement) => {
-    const strip = tabs.current;
-    if (!strip) return;
-    const left = button.getBoundingClientRect().left - strip.getBoundingClientRect().left + strip.scrollLeft;
-    if (left < strip.scrollLeft) strip.scrollLeft = left;
-    else if (left + button.offsetWidth > strip.scrollLeft + strip.clientWidth) strip.scrollLeft = left + button.offsetWidth - strip.clientWidth;
-  };
   const navigate = (event: KeyboardEvent<HTMLButtonElement>, index: number) => {
     if (!["ArrowLeft", "ArrowRight", "Home", "End"].includes(event.key)) return;
     event.preventDefault(); event.stopPropagation();
@@ -80,7 +72,9 @@ export function TranscriptActivity({ group, entrances, renderBody }: { group: Ac
     const entry = history[next]!;
     choose(entry);
     const button = buttons.current.get(entry.id);
-    if (button) { button.focus({ preventScroll: true }); revealTab(button); }
+    // Explicit keyboard navigation may reveal a wrapped row vertically. Live
+    // updates below still restore focus without moving the transcript.
+    button?.focus();
   };
   // If a focused control moves into the history row, follow that control,
   // rather than the new tail. Do not move focus from anywhere else in the UI.
@@ -88,7 +82,7 @@ export function TranscriptActivity({ group, entrances, renderBody }: { group: Ac
     if (focusedCollapse.current && document.activeElement === document.body) { collapseButton.current?.focus({ preventScroll: true }); return; }
     if (!focusedEntry.current || document.activeElement !== document.body && !(document.activeElement === buttons.current.get(latest.id) && focusedEntry.current !== latest.id)) return;
     const button = buttons.current.get(focusedEntry.current);
-    if (button) { button.focus({ preventScroll: true }); revealTab(button); }
+    button?.focus({ preventScroll: true });
   }, [latest.id]);
   const toggle = (button: HTMLButtonElement) => {
     if (selection.expanded && root.current?.contains(document.activeElement) && document.activeElement !== button) button.focus({ preventScroll: true });
@@ -101,12 +95,12 @@ export function TranscriptActivity({ group, entrances, renderBody }: { group: Ac
   </button>;
   const register = (entry: ActivityEntry, button: HTMLButtonElement | null) => { if (button) buttons.current.set(entry.id, button); else buttons.current.delete(entry.id); };
   return <div className="transcript-activity" ref={root} onBlurCapture={event => { if (event.relatedTarget && !event.currentTarget.contains(event.relatedTarget as Node)) { focusedEntry.current = null; focusedCollapse.current = false; } }}>
-    {history.length > 0 && <div className="activity-row">
-      <div ref={tabs} className="activity-tabs" role="tablist" aria-label="Earlier consecutive tools and reasoning">
+    {history.length > 0 && <div className="activity-row activity-history">
+      <div className="activity-tabs" role="tablist" aria-label="Earlier consecutive tools and reasoning">
         {history.map((entry, index) => <button type="button" role="tab" key={entry.id} ref={button => register(entry, button)} id={`${domId}-tab-${index}`}
           className={`activity-tab${historyOpen && entry.id === selected.id ? " activity-selected" : ""}`}
           aria-selected={index === selectedIndex} aria-expanded={historyOpen && entry.id === selected.id} aria-controls={historyId} tabIndex={index === selectedIndex ? 0 : -1}
-          onFocus={event => { focusedCollapse.current = false; focusedEntry.current = entry.id; revealTab(event.currentTarget); }} onKeyDown={event => navigate(event, index)} onClick={() => activate(entry)}>
+          onFocus={() => { focusedCollapse.current = false; focusedEntry.current = entry.id; }} onKeyDown={event => navigate(event, index)} onClick={() => activate(entry)}>
           <ActivityLabel entry={entry} entrance={entrances?.get(entry.id)} owner={animationOwner} />
         </button>)}
       </div>{collapse}

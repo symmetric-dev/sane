@@ -1,18 +1,18 @@
-import { useEffect, useId, useRef, useState } from "react";
+import { useEffect, useId, useRef, useState, type ReactNode } from "react";
 import { createPortal, flushSync } from "react-dom";
-import { FiCheckCircle, FiInfo, FiUsers, FiX } from "react-icons/fi";
+import { FiArrowUpRight, FiChevronRight, FiGitBranch, FiInfo, FiSquare, FiUsers, FiX } from "react-icons/fi";
 import type { WorkerDelivery, WorkerRecord, WorkerResult } from "../src/worker-contract";
 import { workerResults } from "../src/worker-contract";
-import { builtinProfiles } from "../src/agent-profiles-contract";
+import { builtinProfiles, type AgentProfile } from "../src/agent-profiles-contract";
 import { WORKER_AGENT_CATALOG } from "sane-core/agent-catalog";
-import { AgentAvatar } from "./agent-visuals";
+import { AGENT_ICONS, agentColor } from "./agent-visuals";
 import { workerClient, useWorkers, openWorker, type WorkerStop } from "./worker-client";
 import { harnessName, type Conversation, type Run } from "./types";
 import { useStore } from "./store";
 
-function Stop({ parent, input, children, disabled = false, className }: { parent: string; input: WorkerStop; children: string; disabled?: boolean; className?: string }) {
+function Stop({ parent, input, children, disabled = false, className = "worker-action", label, icon = <FiSquare size={13} aria-hidden="true" /> }: { parent: string; input: WorkerStop; children: string; disabled?: boolean; className?: string; label?: string; icon?: ReactNode }) {
   const [busy, setBusy] = useState(false), [notice, setNotice] = useState("");
-  return <><button type="button" className={className} disabled={busy || disabled} onClick={async () => { setBusy(true); setNotice(""); try { await workerClient.stop(parent, input); setNotice("Stop requested; inspect current status for confirmation."); } catch (e) { setNotice(e instanceof Error ? e.message : "Stop failed"); } finally { setBusy(false); } }}>{busy ? "Requesting…" : children}</button>{notice && <p role="status" className="notice">{notice}</p>}</>;
+  return <><button type="button" className={className} disabled={busy || disabled} aria-label={`${label ?? children}${busy ? ", requesting stop" : ""}`} aria-busy={busy} onClick={async () => { setBusy(true); setNotice(""); try { await workerClient.stop(parent, input); setNotice("Stop requested; inspect current status for confirmation."); } catch (e) { setNotice(e instanceof Error ? e.message : "Stop failed"); } finally { setBusy(false); } }}>{icon}{busy ? "Requesting…" : children}</button>{notice && <p role="status" className="notice">{notice}</p>}</>;
 }
 function workerExecution(w: WorkerRecord, runs: Run[], conversation?: Conversation) {
   const latest = runs.filter(r => r.conversationId === w.sessionId).at(-1);
@@ -28,8 +28,12 @@ function useWorkerVisual(w: WorkerRecord) {
   const profiles = useStore(state => state.profiles ?? state.config?.agentProfiles);
   return profiles?.profiles.find(p => p.id === w.launch.profileId) ?? defaultWorkerProfiles.find(p => p.id === `worker:${w.input.worker}`)!;
 }
-type WorkerView = "result" | "history" | "details";
-function WorkerDetails({ worker: w, view, result, close, trigger }: { worker: WorkerRecord; view: WorkerView; result?: WorkerResult; close: () => void; trigger: HTMLButtonElement | null }) {
+function WorkerIcon({ profile, size = 20 }: { profile: Pick<AgentProfile, "icon" | "color">; size?: number }) {
+  const Glyph = AGENT_ICONS[profile.icon] ?? FiUsers;
+  return <Glyph className="worker-glyph" size={size} style={{ color: agentColor(profile.color) }} aria-hidden="true" />;
+}
+type WorkerView = "history" | "details";
+function WorkerDetails({ worker: w, view, close, trigger }: { worker: WorkerRecord; view: WorkerView; close: () => void; trigger: HTMLButtonElement | null }) {
   const profile = useWorkerVisual(w);
   const dialog = useRef<HTMLDialogElement>(null);
   const id = useId();
@@ -39,43 +43,48 @@ function WorkerDetails({ worker: w, view, result, close, trigger }: { worker: Wo
     element.showModal();
     return () => { element.close(); if (trigger?.isConnected) trigger.focus(); };
   }, [trigger]);
-  const report = (r: WorkerResult) => <section className="worker-result" key={r.revision}><header><strong>Result {r.revision}</strong><span className="worker-status">{r.outcome.status}</span><time dateTime={r.outcome.at}>{new Date(r.outcome.at).toLocaleString()}</time></header><pre className="worker-result-output">{r.outcome.summary}</pre></section>;
+  const report = (r: WorkerResult) => <details className="worker-result" key={r.revision}><summary><strong>Result {r.revision}</strong><span className={`worker-status${r.outcome.status === "failed" ? " is-error" : ""}`}>{r.outcome.status}</span><time dateTime={r.outcome.at}>{new Date(r.outcome.at).toLocaleString()}</time><FiChevronRight className="worker-result-chevron" size={14} aria-hidden="true" /></summary><pre className="worker-result-output">{r.outcome.summary}</pre></details>;
   return createPortal(<dialog ref={dialog} className="worker-details-dialog" aria-modal="true" aria-labelledby={id} onCancel={event => { event.preventDefault(); close(); }} onClick={event => { if (event.target === event.currentTarget) close(); }}>
-    <header className="worker-details-header"><AgentAvatar profile={profile} /><div><h2 id={id}>{profile.label || WORKER_AGENT_CATALOG[w.input.worker].label}</h2><p className="muted">{view === "result" ? "Worker result" : view === "history" ? `Result history · ${results.length}` : "Worker details"}</p></div><button type="button" className="icon-button" aria-label="Close worker details" onClick={close}><FiX size={18} /></button></header>
-    <div className="worker-details-body">{view === "result" ? result ? report(result) : <p className="muted">No result recorded yet.</p> : view === "history" ? results.map(report) : <>
+    <header className="worker-details-header"><WorkerIcon profile={profile} size={24} /><div><h2 id={id}>{profile.label || WORKER_AGENT_CATALOG[w.input.worker].label}</h2><p className="muted">{view === "history" ? `Result history · ${results.length}` : "Worker details"}</p></div><button type="button" className="icon-button" aria-label="Close worker details" onClick={close}><FiX size={18} aria-hidden="true" /></button></header>
+    <div className="worker-details-body">{view === "history" ? results.length ? results.map(report) : <p className="muted">No results recorded yet.</p> : <>
       <dl className="facts">{[["Harness", harnessName(w.launch.harness)], ["Model", w.launch.model || "Native default"], ["Worker ID", w.id], ["Conversation ID", w.sessionId], ["Native session ID", w.child?.nativeId ?? "Unavailable"], ["Initial run", w.runId ?? "Unavailable"], ["Continuation run", w.continuation?.runId ?? "None"], ["Report-back", (w.latestResult ?? results.at(-1))?.notification.state ?? "No result yet"]].map(([label, value]) => <div key={label}><dt>{label}</dt><dd>{value}</dd></div>)}</dl>
       {w.error && <p className="notice error">{w.error}</p>}{w.continuation?.error && <p className="notice error">{w.continuation.error}</p>}{w.continuationCancellation && <p className="notice">Stop requested {new Date(w.continuationCancellation.requestedAt).toLocaleString()}. {w.continuationCancellation.error}</p>}
       {results.map(r => <p className="muted" key={r.revision}>Result {r.revision} · {r.notification.state}{r.notification.error && <span className="notice error">{r.notification.error}</span>}</p>)}
     </>}</div>
   </dialog>, document.body);
 }
-export function WorkerCard({ worker: w, workers = [], runs = [], open = openWorker, resultRevision }: { worker: WorkerRecord; workers?: WorkerRecord[]; runs?: Run[]; open?: (worker: WorkerRecord) => void; resultRevision?: number }) {
+export function WorkerCard({ worker: w, workers = [], runs = [], open = openWorker }: { worker: WorkerRecord; workers?: WorkerRecord[]; runs?: Run[]; open?: (worker: WorkerRecord) => void }) {
   const conversation = useStore(state => state.conversations.find(c => c.id === w.sessionId));
   const sending = useStore(state => state.sending);
   const execution = workerExecution(w, runs, conversation);
   const profile = useWorkerVisual(w);
   const results = workerResults(w);
-  const result = resultRevision === undefined ? results.at(-1) : results.find(r => r.revision === resultRevision);
-  const reporting = resultRevision !== undefined;
-  const moving = !reporting && execution.active;
+  const moving = execution.active;
   const [now, setNow] = useState(Date.now);
   const [view, setView] = useState<WorkerView | null>(null);
   const trigger = useRef<HTMLButtonElement | null>(null);
   useEffect(() => { if (!moving) return; setNow(Date.now()); const timer = setInterval(() => setNow(Date.now()), 1000); return () => clearInterval(timer); }, [moving]);
   const show = (next: WorkerView, button: HTMLButtonElement) => { trigger.current = button; setView(next); };
   const attention = !!(w.error || w.continuation?.error || w.continuationCancellation?.error || results.some(r => r.notification.error));
-  const timestamp = reporting ? result?.outcome.at : execution.latest?.createdAt ?? w.createdAt;
-  const reportRun = reporting && result ? runs.find(r => r.id === result.runId) : undefined;
-  const reportStart = reportRun?.createdAt ?? (result?.runId === w.runId ? w.createdAt : undefined);
-  const duration = reporting ? result && reportStart ? durationBetween(reportStart, Date.parse(result.outcome.at)) : undefined : elapsed(w, execution, now);
-  return <section className={`worker-card${moving ? " is-active" : ""}${reporting ? " is-report" : ""}`}>
-    <header><span className={`worker-avatar${moving ? " is-active" : ""}`}><AgentAvatar profile={profile} size={36} /></span><div className="worker-card-heading"><strong>{profile.label || WORKER_AGENT_CATALOG[w.input.worker].label}</strong><span className="worker-card-timing">{timestamp && <time dateTime={timestamp} title={new Date(timestamp).toLocaleString()}>{new Date(timestamp).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}</time>}{duration && <span>{duration}</span>}</span></div><span className={`worker-status${moving ? " is-active" : ""}`} role="status">{reporting ? result?.outcome.status ?? "Result unavailable" : `${execution.continuation ? "Continuation · " : ""}${execution.executionState}`}</span></header>
+  const timestamp = execution.latest?.createdAt ?? w.createdAt;
+  const duration = elapsed(w, execution, now);
+  const status = execution.executionState;
+  const statusClass = `${moving ? " is-active" : ""}${status === "failed" ? " is-error" : ""}${status === "uncertain" || status === "unknown" ? " is-uncertain" : ""}`;
+  return <section className={`worker-card${moving ? " is-active" : ""}`}>
+    <header><WorkerIcon profile={profile} /><div className="worker-card-heading"><strong>{profile.label || WORKER_AGENT_CATALOG[w.input.worker].label}</strong><span className="worker-card-timing">{timestamp && <time dateTime={timestamp} title={new Date(timestamp).toLocaleString()}>{new Date(timestamp).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}</time>}{duration && <span>{duration}</span>}</span></div><span className={`worker-status${statusClass}`} role="status">{`${execution.continuation ? "Continuation · " : ""}${status}`}</span></header>
     <div className="worker-card-controls">
-      <div className="worker-actions"><button type="button" className="primary-button" disabled={sending} onClick={() => open(w)}>Open worker</button><Stop className="primary-button" parent={w.parent.sessionId} input={{ ids: [w.id] }} disabled={!execution.active && !["uncertain", "unknown"].includes(execution.executionState)}>Stop worker</Stop>{workers.some(child => child.parent.sessionId === w.sessionId) && <Stop className="primary-button" parent={w.parent.sessionId} input={{ ids: [w.id], includeDescendants: true }}>Stop worker tree</Stop>}<button type="button" className={`worker-info icon-button${attention ? " has-issue" : ""}`} aria-label={attention ? "Worker details, attention needed" : "Worker details"} title={attention ? "Attention needed" : "Worker details"} onClick={event => show("details", event.currentTarget)}><FiInfo size={15} /></button></div>
-      <div className="worker-result-links"><button type="button" className="text-button" disabled={!result} onClick={event => show("result", event.currentTarget)}>{reporting ? "Result" : "Latest result"} <span className="worker-count">{result?.revision ?? 0}</span></button><button type="button" className="text-button" disabled={!results.length} onClick={event => show("history", event.currentTarget)}>History <span className="worker-count">{results.length}</span></button></div>
+      <div className="worker-actions">
+        <button type="button" className="worker-action" aria-label="Open worker" disabled={sending} onClick={() => open(w)}><FiArrowUpRight size={13} aria-hidden="true" />Open</button>
+        <Stop parent={w.parent.sessionId} input={{ ids: [w.id] }} label="Stop worker" disabled={!execution.active && !["uncertain", "unknown"].includes(execution.executionState)}>Stop</Stop>
+        {workers.some(child => child.parent.sessionId === w.sessionId) && <Stop parent={w.parent.sessionId} input={{ ids: [w.id], includeDescendants: true }} label="Stop worker tree" icon={<FiGitBranch size={13} aria-hidden="true" />}>Stop Tree</Stop>}
+      </div>
+      <div className="worker-actions worker-secondary-actions">
+        <button type="button" className="worker-action" aria-haspopup="dialog" disabled={!results.length} onClick={event => show("history", event.currentTarget)}>History <span className="worker-count">{results.length}</span></button>
+        <button type="button" className={`worker-action worker-info${attention ? " has-issue" : ""}`} aria-haspopup="dialog" aria-label={attention ? "Worker details, attention needed" : "Worker details"} title={attention ? "Attention needed" : "Worker details"} onClick={event => show("details", event.currentTarget)}><FiInfo size={13} aria-hidden="true" />Details</button>
+      </div>
     </div>
-    {execution.executionState === "waiting" && !reporting && <p className="worker-waiting muted">Waiting for input</p>}
-    {view && <WorkerDetails worker={w} view={view} result={result} trigger={trigger.current} close={() => setView(null)} />}
+    {execution.executionState === "waiting" && <p className="worker-waiting muted">Waiting for input</p>}
+    {view && <WorkerDetails worker={w} view={view} trigger={trigger.current} close={() => setView(null)} />}
   </section>;
 }
 function durationBetween(start: string, end: number) {
@@ -88,12 +97,32 @@ function elapsed(w: WorkerRecord, execution: ReturnType<typeof workerExecution>,
   return `${durationBetween(start, end)}${execution.continuation && !execution.latest ? " since dispatch" : ""}`;
 }
 
-export function WorkerOutcomeReport({ delivery, workers, runs, open = openWorker }: { delivery: WorkerDelivery; workers: WorkerRecord[]; runs: Run[]; open?: (worker: WorkerRecord) => void }) {
+function WorkerReceipt({ worker: w, revision }: { worker: WorkerRecord; revision: number }) {
+  const profile = useWorkerVisual(w);
+  const results = workerResults(w);
+  // A receipt describes this delivered revision, never a later continuation.
+  const result = results.find(record => record.revision === revision);
+  const [history, setHistory] = useState(false);
+  const trigger = useRef<HTMLButtonElement | null>(null);
+  return <div className="worker-receipt">
+    <WorkerIcon profile={profile} size={18} />
+    <div className="worker-receipt-summary">
+      <strong>{profile.label || WORKER_AGENT_CATALOG[w.input.worker].label}</strong>
+      <span aria-hidden="true">·</span><span>Result {revision}</span>
+      <span aria-hidden="true">·</span><span className={`worker-status${result?.outcome.status === "failed" ? " is-error" : !result ? " is-uncertain" : ""}`}>{result?.outcome.status ?? "Status unavailable"}</span>
+      {result && <><span aria-hidden="true">·</span><time dateTime={result.outcome.at} title={new Date(result.outcome.at).toLocaleString()}>{new Date(result.outcome.at).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}</time></>}
+    </div>
+    <button ref={trigger} type="button" className="worker-action worker-receipt-history" aria-haspopup="dialog" disabled={!results.length} onClick={() => setHistory(true)}>History</button>
+    {history && <WorkerDetails worker={w} view="history" trigger={trigger.current} close={() => setHistory(false)} />}
+  </div>;
+}
+
+export function WorkerOutcomeReport({ delivery, workers }: { delivery: WorkerDelivery; workers: WorkerRecord[] }) {
   const refs = delivery.resultRefs ?? delivery.workerIds.map(workerId => ({ workerId, revision: 1 }));
-  return <section className="worker-outcome-report" aria-label="Worker outcome report"><header className="worker-outcome-heading"><FiCheckCircle size={15} aria-hidden="true" /><span>Worker {refs.length === 1 ? "result" : "results"} received</span><span className="worker-count">{refs.length}</span></header><div className="worker-outcome-cards">{refs.map(ref => {
+  return <section className="worker-outcome-report" aria-label="Worker outcome report">{refs.map(ref => {
     const worker = workers.find(w => w.id === ref.workerId);
-    return worker ? <WorkerCard key={`${ref.workerId}:${ref.revision}`} worker={worker} workers={workers} runs={runs} open={open} resultRevision={ref.revision} /> : <p key={`${ref.workerId}:${ref.revision}`} className="muted">Worker result {ref.revision} · Status unavailable</p>;
-  })}</div></section>;
+    return worker ? <WorkerReceipt key={`${ref.workerId}:${ref.revision}`} worker={worker} revision={ref.revision} /> : <div key={`${ref.workerId}:${ref.revision}`} className="worker-receipt"><FiUsers className="worker-glyph" size={18} aria-hidden="true" /><div className="worker-receipt-summary"><strong>Worker</strong><span aria-hidden="true">·</span><span>Result {ref.revision}</span><span aria-hidden="true">·</span><span className="worker-status is-uncertain">Status unavailable</span></div></div>;
+  })}</section>;
 }
 
 export function WorkersButton({ sessionId, active = true }: { sessionId: string; active?: boolean }) {
