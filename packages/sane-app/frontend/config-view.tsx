@@ -55,7 +55,7 @@ const SECTIONS = [
   { id: "agents", label: "Agents", hint: "Conversation and worker profiles", Icon: FiUsers },
   { id: "workstreams", label: "Workstreams", hint: "Repository workstreams and associations", Icon: FiGitBranch },
   { id: "application", label: "Application", hint: "Connection, harnesses, account", Icon: FiSliders },
-  { id: "hotkeys", label: "Hotkeys", hint: "Keyboard shortcuts for navigation", Icon: FiCommand },
+  { id: "hotkeys", label: "Shortcuts", hint: "Global and view-local keyboard shortcuts", Icon: FiCommand },
 ] as const;
 
 export function ConfigMenu({ onSelect }: { onSelect?: () => void }) {

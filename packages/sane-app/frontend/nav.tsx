@@ -46,7 +46,7 @@ export function ViewNavigationCommands({ onNavigate }: { onNavigate: (view: Acti
 
 function ViewNavigationCommand({ destination, onNavigate }: { destination: typeof DESTINATIONS[number]; onNavigate: (view: ActiveView) => void }) {
   useRegisterCommand(useMemo(() => ({
-    id: `navigation.${destination.id}`, label: destination.label, binding: navigationBinding(destination.key),
+    id: `navigation.${destination.id}`, label: destination.label, binding: navigationBinding(destination.key), scope: { kind: "global" } as const,
     contexts: ["application", "input", "editor", "terminal"] as const,
     available: () => true, action: () => onNavigate(destination.id),
   }), [destination, onNavigate]));

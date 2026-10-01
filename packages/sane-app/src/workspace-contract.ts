@@ -5,6 +5,7 @@
  * GET base -> Workspace; GET /list?path= -> WorkspaceList;
  * GET /file?path= -> WorkspaceFile; PUT /file (WorkspaceWrite) -> WorkspaceFile;
  * POST /file (WorkspaceCreate) -> WorkspaceFile; POST /copy (WorkspaceCopy) -> WorkspaceFile;
+ * POST /rename (WorkspaceRename) -> WorkspaceFile at destination (also on worktree base);
  * DELETE /file (WorkspaceDelete) -> { workspaceId, path };
  * GET /git -> WorkspaceGit; GET /diff?path=&comparison= -> WorkspaceDiff;
  * POST /search (WorkspaceSearchInput) -> WorkspaceSearch (also on worktree base).
@@ -23,6 +24,13 @@ export type WorkspaceWrite = { workspaceId: string; path: string; text: string; 
 export type WorkspaceCreate = { workspaceId: string; path: string };
 export type WorkspaceDelete = WorkspaceCreate & { expectedRevision: string };
 export type WorkspaceCopy = WorkspaceDelete & { destination: string };
+/** Rename a bounded regular file, preserving its inode and raw bytes. destination
+ * is an exact workspace-relative path with the SAME parent as path (no moves).
+ * Existing destinations are never replaced, including racing creations. Native
+ * exclusive rename unavailable -> HTTP 501 / rename-unsupported, with no fallback.
+ * Identity/revision fences detect external changes; a post-rename conflict may
+ * mean the rename committed, so refresh files rather than blindly retrying. */
+export type WorkspaceRename = WorkspaceDelete & { destination: string };
 /** Saved content only; query is a nonempty single-line literal (at most 1024 UTF-16 units).
  * Filters are comma-separated, case-sensitive globs: * and ? match within a path
  * segment, ** as a complete segment matches zero or more segments. Slash patterns

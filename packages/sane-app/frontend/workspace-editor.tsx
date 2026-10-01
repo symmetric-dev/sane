@@ -14,10 +14,11 @@ import { workspaceEditorTheme } from "./workspace-theme";
 import { codeSettings, shouldWrap } from "./code-settings";
 
 export const wrapping = new Compartment();
+export const bufferLanguage = new Compartment();
 const noWrapping: Extension = [];
 export const wrappingExtension = (path: string) => shouldWrap(path, codeSettings.snapshot()) ? EditorView.lineWrapping : noWrapping;
 
-function language(path: string): Extension {
+export function language(path: string): Extension {
   const ext = path.split(".").pop()?.toLowerCase();
   if (["js", "mjs", "cjs", "jsx", "ts", "tsx"].includes(ext || "")) return javascript({ typescript: ext === "ts" || ext === "tsx", jsx: ext === "jsx" || ext === "tsx" });
   if (ext === "json") return json();
@@ -27,7 +28,7 @@ function language(path: string): Extension {
   return [];
 }
 export function createBufferState(path: string, text: string, update: (state: EditorState) => void, save: () => void) {
-  return EditorState.create({ doc: text, extensions: [workspaceEditorTheme, language(path), wrapping.of(wrappingExtension(path)), lineNumbers(), history(), drawSelection(), highlightActiveLine(), highlightActiveLineGutter(), indentOnInput(), bracketMatching(),
+  return EditorState.create({ doc: text, extensions: [workspaceEditorTheme, bufferLanguage.of(language(path)), wrapping.of(wrappingExtension(path)), lineNumbers(), history(), drawSelection(), highlightActiveLine(), highlightActiveLineGutter(), indentOnInput(), bracketMatching(),
     keymap.of([{ key: "Mod-s", run: () => { save(); return true; } }, ...defaultKeymap, ...historyKeymap, ...searchKeymap, indentWithTab]),
     EditorView.updateListener.of(transaction => { if (transaction.docChanged || transaction.selectionSet) update(transaction.state); }),
   ] });

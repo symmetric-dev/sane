@@ -39,3 +39,32 @@
   min-width:0;
   max-width:calc(100% - 20px);
 }
+
+/* Desktop Chat tabs reach the main panel; History and drawers stay contained. */
+.view-chat>.sidebar .conversation-sidebar-row {
+  margin-right:12px;
+}
+
+.view-chat>.sidebar .conversation-sidebar-row:has(>button.selected) {
+  margin-right:0;
+  /* Keep the panel connection opaque even while the selection is disabled. */
+  background:var(--background);
+  border-radius:9px 0 0 9px;
+}
+
+.view-chat>.sidebar .conversation-sidebar-row>button.selected {
+  background:var(--background);
+  border-color:var(--border);
+  border-right:0;
+  border-radius:9px 0 0 9px;
+  padding-right:25px;
+  transform:none;
+}
+
+.view-chat>.sidebar .conversation-sidebar-row:has(>button.selected)>.history-menu {
+  right:14px;
+}
+
+.view-chat>.sidebar .conversation-sidebar-row>button:focus-visible {
+  outline-offset:-3px;
+}

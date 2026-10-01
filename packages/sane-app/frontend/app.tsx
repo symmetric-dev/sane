@@ -20,6 +20,7 @@ import { ContextualNavigation, Drawer, FilesModeControl, Icon, ViewNavigationCom
 import { harnessName } from "./types";
 import { ApplicationCommandProvider } from "./application-commands";
 import { WorkspaceSearchButton, WorkspaceSearchFeature } from "./workspace-search";
+import { WorkspaceFileShortcuts } from "./workspace-file-shortcuts";
 
 // Restore selection without replacing the independently bookmarked browsing pair.
 const hydrateCatalog = () => void catalog.hydrate(bookmark => store.choose(bookmark.conversationId ?? ""));
@@ -96,7 +97,7 @@ function ReadyWorkspace({ state, signOut }: { state: State; signOut: () => void 
     onHistory={() => navigate(view === "history" ? "chat" : "history")}
   /> : group === "files" ? <><FilesModeControl activeView={view} onNavigate={navigate} /><WorkspaceSidebar /></>
     : <ConfigMenu onSelect={() => { setArtifact(null); setDrawer(null); }} />;
-  return <ApplicationCommandProvider><WorkspaceProvider view={view} navigate={navigate}><WorkspaceSearchFeature><TerminalProvider view={view}>
+  return <ApplicationCommandProvider><WorkspaceProvider view={view} navigate={navigate}><WorkspaceSearchFeature><WorkspaceFileShortcuts><TerminalProvider view={view}>
     <ViewNavigationCommands onNavigate={navigate} />
     <WorkspaceShell view={view} sidebar={sidebar}
       retryCatalog={hydrateCatalog} sidebarOpen={drawer === "sidebar"}
@@ -109,7 +110,7 @@ function ReadyWorkspace({ state, signOut }: { state: State; signOut: () => void 
     </WorkspaceShell>
     {drawer === "application" && <ApplicationDialog state={state} signOut={signOut} close={() => setDrawer(null)} />}
     {drawer === "details" && <ConversationDetails state={state} close={() => setDrawer(null)} />}
-  </TerminalProvider></WorkspaceSearchFeature></WorkspaceProvider></ApplicationCommandProvider>;
+  </TerminalProvider></WorkspaceFileShortcuts></WorkspaceSearchFeature></WorkspaceProvider></ApplicationCommandProvider>;
 }
 
 function ShellHeader({ state, view, artifact, overview, overviewWorkspaceId, openDetails, openApplication }: {

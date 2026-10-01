@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState, type SetStateAction } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, type SetStateAction } from "react";
 import { FiChevronDown, FiChevronRight, FiRefreshCw, FiPlus } from "react-icons/fi";
 import { asyncDataLoaderFeature, hotkeysCoreFeature, syncDataLoaderFeature, type TreeInstance } from "@headless-tree/core";
 import { useTree } from "@headless-tree/react";
@@ -7,6 +7,8 @@ import { dirty } from "./workspace-store";
 import { useWorkspace } from "./workspace-controller";
 import { FileOperationDialog } from "./workspace-file-actions";
 import { WorkspaceSearchFiles, useWorkspaceSearchContext } from "./workspace-search";
+import { useWorkspaceFileOperations, workspaceFileScopeKey } from "./workspace-file-shortcuts";
+import { FILE_SHORTCUTS, shortcutHint } from "./shortcut-definitions";
 
 type TreeNode = {
   kind: WorkspaceEntry["kind"] | "group" | "error" | "notice";
@@ -29,11 +31,19 @@ function usePresentation(mode: "code" | "git") {
 }
 
 function TreeRows({ tree, mode }: { tree: TreeInstance<TreeNode>; mode: "code" | "git" }) {
-  const { root } = useWorkspace();
+  const { root, scope } = useWorkspace(), operations = useWorkspaceFileOperations();
+  const container = useRef<HTMLDivElement>(null);
+  const registerContainer = useCallback((element: HTMLDivElement | null) => { container.current = element; tree.registerElement(element); }, [tree]);
+  // Run after the dialog's passive cleanup, which returns focus to this container.
+  useEffect(() => { if (mode === "code") operations?.restoreTreeFocus(container.current); });
   const items = tree.getItems();
   // Preserve shared focus during lazy hydration; a missing row still leaves a usable tab stop.
   const visibleFocus = items.some(item => item.isFocused());
-  return <div {...tree.getContainerProps(mode === "code" ? "Workspace files" : "Changed files")} className="workspace-tree" aria-multiselectable={false}>
+  return <div {...tree.getContainerProps(mode === "code" ? "Workspace files" : "Changed files")} ref={registerContainer} className="workspace-tree" aria-multiselectable={false}
+    aria-busy={mode === "code" && tree.getState().loadingItemChildrens.length > 0 || undefined}
+    data-workspace-file-tree={mode === "code" ? "" : undefined} data-workspace-scope={mode === "code" ? workspaceFileScopeKey(scope) : undefined}
+    data-workspace-file-kind={mode === "code" ? "directory" : undefined} data-workspace-file-path={mode === "code" ? "" : undefined}
+    tabIndex={mode === "code" ? 0 : undefined}>
     {items.map(item => {
       const node = item.getItemData(), folder = isFolder(node);
       const selected = node.kind === "file" && root!.selected === node.path && (mode === "code" || root!.comparison === node.comparison);
@@ -45,7 +55,8 @@ function TreeRows({ tree, mode }: { tree: TreeInstance<TreeNode>; mode: "code" |
         aria-selected={selected} aria-disabled={unavailable || undefined} aria-label={[node.name, metadata].filter(Boolean).join(" · ")} aria-busy={item.isLoading() || undefined}
         tabIndex={item.isFocused() || (!visibleFocus && item.getItemMeta().index === 0) ? 0 : -1}
         onFocus={() => { if (!item.isFocused()) item.setFocused(); }}
-        style={{ paddingLeft: `${8 + item.getItemMeta().level * 15}px` }} title={[node.path, metadata].filter(Boolean).join("\n")}>
+        data-workspace-file-kind={mode === "code" ? node.kind : undefined} data-workspace-file-path={mode === "code" ? node.path : undefined}
+        style={{ paddingLeft: `${8 + item.getItemMeta().level * 15}px` }} title={[node.path, metadata, mode === "code" && node.kind === "file" ? `Rename: ${shortcutHint(FILE_SHORTCUTS.rename)} · Delete: ${shortcutHint(FILE_SHORTCUTS.delete)} · Copy: ${shortcutHint(FILE_SHORTCUTS.copy)} · Paste: ${shortcutHint(FILE_SHORTCUTS.paste)}` : ""].filter(Boolean).join("\n")}>
         <span className="workspace-tree-glyph" aria-hidden="true">{folder ? item.isExpanded() ? <FiChevronDown size={12} aria-hidden="true" /> : <FiChevronRight size={12} aria-hidden="true" /> : node.kind === "error" ? <FiRefreshCw size={12} aria-hidden="true" /> : node.kind === "file" ? "·" : "—"}</span>
         <span className="workspace-tree-label"><span>{node.name}{unsaved ? " •" : ""}</span>{metadata && <small>{metadata}</small>}</span>
         {item.isLoading() && <span className="workspace-tree-loading" role="status">…</span>}
@@ -56,6 +67,7 @@ function TreeRows({ tree, mode }: { tree: TreeInstance<TreeNode>; mode: "code" |
 
 function CodeTree() {
   const controller = useWorkspace(), presentation = usePresentation("code");
+  const [refreshError, setRefreshError] = useState("");
   const tree = useTree<TreeNode>({
     rootItemId: codeId("directory", ""), ...presentation,
     getItemName: item => item.getItemData().name,
@@ -83,15 +95,18 @@ function CodeTree() {
   });
   useEffect(() => {
     const scope = controller.scope!;
+    let active = true;
     const invalidate = (path: string) => {
       const id = codeId("directory", path);
+      setRefreshError("");
       // Let any in-flight loader settle before invalidating; HT coalesces invalidation while loading.
-      void tree.loadChildrenIds(id).then(() => tree.getItemInstance(id).invalidateChildrenIds());
+      void tree.loadChildrenIds(id).then(() => { if (active) tree.getItemInstance(id).invalidateChildrenIds(); })
+        .catch(() => { if (active) setRefreshError("Could not refresh this folder. Use Refresh to try again."); });
     };
     scope.invalidators.add(invalidate);
-    return () => { scope.invalidators.delete(invalidate); };
+    return () => { active = false; scope.invalidators.delete(invalidate); };
   }, [controller.scope, tree]);
-  return <>{tree.getState().loadingItemChildrens.includes(codeId("directory", "")) && <p className="workspace-tree-status" role="status">Loading files…</p>}<TreeRows tree={tree} mode="code" /></>;
+  return <>{refreshError && <p className="workspace-tree-status workspace-error" role="alert">{refreshError}</p>}{tree.getState().loadingItemChildrens.includes(codeId("directory", "")) && <p className="workspace-tree-status" role="status">Loading files…</p>}<TreeRows tree={tree} mode="code" /></>;
 }
 
 function GitTree() {
@@ -145,18 +160,21 @@ export function WorkspaceSidebar() {
   const [creating, setCreating] = useState(false);
   const controller = useWorkspace(), { view, scope, workspace } = controller;
   const search = useWorkspaceSearchContext(), searching = view === "code" && search?.mode === "search";
+  const operations = useWorkspaceFileOperations();
   useEffect(() => { setCreating(false); }, [scope, view]);
   return <section className="workspace-sidebar" aria-label={view === "code" ? "Code files" : "Git changes"}>
     {creating && scope && view === "code" && <FileOperationDialog key={`${scope.generation}:${workspace!.workspaceId}`} operation="create" source="" close={() => setCreating(false)} />}
     <div className="workspace-sidebar-content">
       {!searching && <div className="workspace-sidebar-heading"><h2>{view === "code" ? "Files" : "Changes"}</h2></div>}
       {workspace && <p className="workspace-sidebar-root" title={workspace.root}>{workspace.root.split("/").filter(Boolean).at(-1) || workspace.root}</p>}
+      {operations?.notice && <p className={`workspace-tree-status${operations.notice.error ? " workspace-error" : ""}`} role={operations.notice.error ? "alert" : "status"}>{operations.notice.text}</p>}
+      {operations?.busy && !operations.operation && <p className="workspace-tree-status" role="status">Reading file for copy…</p>}
       {view === "git" && <p className="workspace-disclaimer">Saved contents; unsaved editor changes are not included.</p>}
       {!scope ? <p className="workspace-tree-status">{controller.resolving ? "Opening workspace…" : controller.error || "Open a workspace to browse its files."}</p>
         : view === "code" ? searching ? <WorkspaceSearchFiles /> : <CodeTree key={`${scope.generation}:${workspace!.workspaceId}`} /> : <GitTree key={`${scope.generation}:${workspace!.workspaceId}`} />}
     </div>
     {!searching && <footer className="workspace-sidebar-actions" aria-label="File shortcuts">
-      {view === "code" && <button type="button" className="new-chat" disabled={!scope} onClick={() => setCreating(true)}><FiPlus size={16} aria-hidden="true" />New file</button>}
+      {view === "code" && <button type="button" className="new-chat" disabled={!scope || operations?.busy} onClick={() => operations ? operations.open("create") : setCreating(true)}><FiPlus size={16} aria-hidden="true" />New file</button>}
       <button type="button" className="history-sidebar-button" disabled={!scope} onClick={view === "code" ? controller.refreshDirectories : controller.retrySelection} aria-label={view === "code" ? "Refresh files" : "Refresh changes"}><FiRefreshCw size={14} aria-hidden="true" />Refresh</button>
     </footer>}
   </section>;

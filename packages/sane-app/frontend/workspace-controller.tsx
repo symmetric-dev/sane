@@ -1,12 +1,12 @@
 import { createContext, useContext, useEffect, useRef, useState, useSyncExternalStore, type ReactNode } from "react";
-import type { GitComparison, WorkspaceDiff, WorkspaceList } from "../src/workspace-contract";
+import type { GitComparison, WorkspaceDiff, WorkspaceFile, WorkspaceList } from "../src/workspace-contract";
 import type { NavigationBookmark, WorktreeResolution as Workspace } from "../src/catalog-contract";
 import type { EditorView } from "@codemirror/view";
 import { EditorView as CodeMirrorView } from "@codemirror/view";
 import { searchSelection, type WorkspaceLocation } from "./workspace-location";
 import { workspaceClient, WorkspaceError } from "./workspace-client";
 import { catalog, worktreeScope } from "./catalog";
-import { notifyWorkspace, openBuffer, refreshBuffer, rootState, subscribeWorkspace, workspaceEpoch, workspaceFailure, workspaceSnapshot, type TreePresentation } from "./workspace-store";
+import { fencePath, notifyWorkspace, openBuffer, pathFence, refreshBuffer, renameBuffer, requestFence, rootState, subscribeWorkspace, workspaceEpoch, workspaceFailure, workspaceSnapshot, type Buffer, type TreePresentation } from "./workspace-store";
 
 export type ActiveView = NavigationBookmark["view"];
 export type WorkspaceActivation = { view: "code"; path: string; location?: WorkspaceLocation; source?: "files" | "search" } | { view: "git"; path: string; comparison: GitComparison };
@@ -36,6 +36,7 @@ function useController(conversationId: string | null, view: ActiveView, navigate
   const identity = useRef({ conversationId, view, bindingRevision });
   identity.current = { conversationId, view, bindingRevision };
   const scope = resolved?.id === conversationId && resolved.bindingRevision === bindingRevision && resolved.auth === workspaceEpoch() ? resolved : undefined;
+  const latestScope = useRef<Scope | undefined>(scope); latestScope.current = scope;
   const workspace = scope?.workspace;
   const root = workspace ? rootState(workspace) : undefined;
   const selected = root?.selected ?? "", comparisonKind = root?.comparison ?? "unstaged";
@@ -88,13 +89,14 @@ function useController(conversationId: string | null, view: ActiveView, navigate
         if (existing) await refreshBuffer(scope.id, scope.workspace, existing, false, current);
         if (!current()) return;
         if (view === "git") {
+          const gitVersion = root.gitVersion;
           const git = await workspaceClient.git(scope.id, scope.workspace.workspaceId);
-          if (!current()) return;
+          if (!current() || gitVersion !== root.gitVersion) return;
           root.git = git; notifyWorkspace();
           const entry = git.entries.find(entry => entry.path === selected);
           const value = selected && entry?.comparisons.includes(comparisonKind)
             ? await workspaceClient.diff(scope.id, scope.workspace.workspaceId, selected, comparisonKind) : null;
-          if (current()) { setDiff({ key: selectionKey, value }); setError(""); }
+          if (current() && gitVersion === root.gitVersion) { setDiff({ key: selectionKey, value }); setError(""); }
         }
       } catch (error) {
         if (current()) { setDiffLoading(null); setError(workspaceFailure(error)); }
@@ -195,40 +197,144 @@ function useController(conversationId: string | null, view: ActiveView, navigate
     await refreshBuffer(scope.id, scope.workspace, buffer, reload, current);
     if (current()) setLocalCompare(reload ? null : selectionKey);
   }
-  async function mutateFile(operation: "create" | "copy" | "delete", path: string, source = selected): Promise<boolean> {
-    if (!scope || !root || !currentScope(scope)) throw new Error("Workspace changed. Reopen its files.");
-    const sourceBuffer = root.buffers.get(source);
-    const rootGeneration = root.generation;
-    if (operation !== "create" && (!sourceBuffer?.file.revision || sourceBuffer.missing || sourceBuffer.saving || sourceBuffer.checking)) throw new Error("Read the file and wait for pending operations before trying again.");
-    if (sourceBuffer && operation !== "create") { sourceBuffer.saving = true; notifyWorkspace(); }
+  // File actions acquire saved metadata without selecting a row or opening an editor.
+  async function prepareFile(path: string): Promise<Buffer | undefined> {
+    if (!scope || !root || !currentScope(scope)) return;
+    const existing = root.buffers.get(path);
+    if (root.mutations.has(path) || existing?.saving || existing?.checking || existing?.missing) throw new Error("Wait for pending operations or reload the missing file before trying again.");
+    const unchanged = pathFence(root, path), current = requestFence(scope.workspace, () => currentScope(scope) && unchanged());
     try {
-      if (operation === "create") await workspaceClient.create(scope.id, scope.workspace.workspaceId, path);
-      else if (operation === "copy") await workspaceClient.copy(scope.id, scope.workspace.workspaceId, source, path, sourceBuffer!.file.revision!);
-      else await workspaceClient.delete(scope.id, scope.workspace.workspaceId, source, sourceBuffer!.file.revision!);
-      if (!currentScope(scope)) return false;
-      root.git = undefined;
-      refreshDirectories();
+      if (existing) {
+        await refreshBuffer(scope.id, scope.workspace, existing, false, current);
+        if (!current()) return;
+        if (existing.error) throw new Error(existing.error);
+      }
+      const prepared = existing ?? await openBuffer(scope.id, scope.workspace, path, current);
+      if (!current() || !prepared) return;
+      if (prepared.saving || prepared.checking || prepared.missing) throw new Error("Wait for pending operations or reload the missing file before trying again.");
+      if (!(prepared.disk ?? prepared.file).revision) throw new Error("This file has no safe source revision for file operations.");
+      return prepared;
+    } catch (error) {
+      if (!current()) return;
+      throw new Error(workspaceFailure(error));
+    }
+  }
+  async function mutateFile(operation: "create" | "copy" | "delete" | "rename", path: string, source = selected, expectedRevision?: string): Promise<boolean> {
+    if (!scope || !root || !currentScope(scope)) return false;
+    const parent = (value: string) => value.slice(0, Math.max(0, value.lastIndexOf("/")));
+    if (operation === "rename" && (parent(path) !== parent(source) || !path || path.startsWith("/") || path === source || /[\\\u0000-\u001f\u007f]/.test(path) || ["", ".", ".."].includes(path.split("/").at(-1)!))) throw new Error("Enter a different filename in the same folder.");
+    if (operation === "copy" && path === source) throw new Error("Choose a different destination path.");
+    const sourceBuffer = operation === "create" ? undefined : root.buffers.get(source);
+    const paths = [...new Set(operation === "create" ? [path] : operation === "delete" ? [source] : [source, path])];
+    if (paths.some(value => root.mutations.has(value)) || sourceBuffer?.saving || sourceBuffer?.checking || sourceBuffer?.missing) throw new Error("Wait for pending operations or reload the missing file before trying again.");
+    // Never replace another document's cached ownership, including missing/dirty buffers.
+    if (operation !== "delete" && root.buffers.has(path)) throw new Error("The destination already has an open document. Choose another filename.");
+    const owned = requestFence(scope.workspace);
+    const visible = () => currentScope(scope) && identity.current.view === view;
+    const visibleOwner = () => {
+      const active = latestScope.current, navigation = catalog.state.navigation;
+      return active && navigation.workspaceId && navigation.worktreeId && active.id === worktreeScope(navigation.workspaceId, navigation.worktreeId)
+        && currentScope(active) && rootState(active.workspace) === root ? active : undefined;
+    };
+    const invalidateDirectories = (directories: Set<string>) => {
+      // Returning to this worktree may have installed fresh tree/cache owners
+      // while the request still holds its initiating scope.
+      const scopes = new Set([scope, visibleOwner()].filter((value): value is Scope => !!value));
+      for (const target of scopes) for (const directory of directories) {
+        target.directories.delete(directory);
+        target.invalidators.forEach(invalidate => invalidate(directory));
+      }
+    };
+    const reconcileBookmark = (destination: string) => {
+      const active = visibleOwner();
+      if (!active || catalog.state.navigation.filePath !== source) return;
+      selectionRequest.current++; pendingLocation.current = null;
+      setLocationNotice(""); setLocalCompare(null); setDiff(null); setOpening(null);
+      if (operation === "rename" && identity.current.view === "code") setCodeActivation({ scope: active, revision: ++activationRevision.current, source: "files" });
+      catalog.navigate({ filePath: destination });
+    };
+    const siblings = scope.directories.get(parent(source))?.result?.listing?.entries.filter(entry => entry.kind === "file" || entry.kind === "directory");
+    const sourceIndex = siblings?.findIndex(entry => entry.path === source) ?? -1;
+    const neighbor = sourceIndex >= 0 ? siblings?.[sourceIndex + 1] ?? siblings?.[sourceIndex - 1] : undefined;
+    for (const value of paths) { root.mutations.add(value); fencePath(root, value); }
+    if (sourceBuffer) sourceBuffer.saving = true;
+    notifyWorkspace();
+    try {
+      let result: WorkspaceFile | undefined;
+      if (operation === "create") result = await workspaceClient.create(scope.id, scope.workspace.workspaceId, path);
+      else {
+        // Clipboard copies validate their captured DISK revision, independently of
+        // the editor baseline (which may intentionally retain older unsaved text).
+        const file = expectedRevision !== undefined ? await workspaceClient.file(scope.id, scope.workspace.workspaceId, source) : sourceBuffer?.file ?? await workspaceClient.file(scope.id, scope.workspace.workspaceId, source);
+        if (!owned() || !currentScope(scope)) return false;
+        if (!file.revision) throw new Error("This file has no safe source revision for file operations.");
+        if (expectedRevision !== undefined && file.revision !== expectedRevision) throw new Error("The source file changed since it was copied. Copy it again before pasting.");
+        const revision = expectedRevision ?? file.revision;
+        if (operation === "copy") result = await workspaceClient.copy(scope.id, scope.workspace.workspaceId, source, path, revision);
+        else if (operation === "rename") result = await workspaceClient.rename(scope.id, scope.workspace.workspaceId, source, path, revision);
+        else await workspaceClient.delete(scope.id, scope.workspace.workspaceId, source, revision);
+      }
+      // Disk mutations reconcile their original root even after the user navigates away.
+      if (!owned()) return false;
+      for (const value of paths) fencePath(root, value);
+      root.git = undefined; root.gitVersion++;
+      invalidateDirectories(new Set(operation === "delete" ? [parent(source)] : operation === "create" ? [parent(path)] : [parent(source), parent(path)]));
+      const selectedSource = root.selected === source;
+      const focusedComparison = (["staged", "unstaged", "untracked"] as const).find(comparison => root.gitTree.focusedItem === `file:${comparison}:${source}`);
       if (operation === "delete") {
         root.buffers.delete(source);
-        if (root.selected === source) activate({ view: "code", path: "" });
-        root.codeTree.focusedItem = null;
+        if (selectedSource) root.selected = "";
+        root.codeTree.focusedItem = neighbor ? `${neighbor.kind}:${neighbor.path}` : `directory:${parent(source)}`;
+        if (focusedComparison) root.gitTree.focusedItem = `group:${focusedComparison}:`;
       } else {
+        if (operation === "rename") {
+          if (sourceBuffer && result) renameBuffer(root, sourceBuffer, path, result);
+          if (selectedSource) root.selected = path;
+          if (focusedComparison) root.gitTree.focusedItem = `file:${focusedComparison}:${path}`;
+        }
         const parts = path.split("/");
         for (let index = 1; index < parts.length; index++) {
           const id = `directory:${parts.slice(0, index).join("/")}`;
           if (!root.codeTree.expandedItems.includes(id)) root.codeTree.expandedItems.push(id);
         }
-        activate({ view: "code", path });
+        root.codeTree.focusedItem = `file:${path}`;
       }
       notifyWorkspace();
+      if ((operation === "rename" || operation === "delete") && selectedSource) reconcileBookmark(operation === "delete" ? "" : path);
+      if (!visible()) return false;
+      if (operation === "create" || operation === "copy") activate({ view: "code", path });
+      setOpenAttempt(value => value + 1);
       return true;
     } catch (error) {
-      if (!currentScope(scope)) return false;
-      throw new Error(workspaceFailure(error));
-    }
-    finally {
-      // Leaving this workspace must not strand its cached buffer in a busy state.
-      if (sourceBuffer && operation !== "create" && scope.auth === workspaceEpoch() && root.generation === rootGeneration) { sourceBuffer.saving = false; notifyWorkspace(); }
+      const failure = workspaceFailure(error);
+      if (operation === "rename" && error instanceof WorkspaceError && error.code === "rename-committed" && owned()) {
+        // The native rename already happened. Never leave an unsaved document
+        // pointing at an old basename that another process could recreate.
+        for (const value of paths) fencePath(root, value);
+        root.git = undefined; root.gitVersion++;
+        invalidateDirectories(new Set([parent(source)]));
+        if (sourceBuffer) {
+          renameBuffer(root, sourceBuffer, path, { ...sourceBuffer.file, path });
+          sourceBuffer.error = failure;
+          sourceBuffer.missing = true; // Quarantine writes until a destination read reconciles it.
+        }
+        const selectedSource = root.selected === source;
+        if (selectedSource) root.selected = path;
+        root.codeTree.focusedItem = `file:${path}`;
+        notifyWorkspace();
+        if (selectedSource) reconcileBookmark(path);
+      }
+      if (!currentScope(scope) || !owned()) return false;
+      if (error instanceof WorkspaceError) throw error;
+      throw new Error(failure);
+    } finally {
+      // Do not clear a newer operation's reservation after auth/root invalidation.
+      if (owned()) {
+        for (const value of paths) root.mutations.delete(value);
+        if (sourceBuffer) sourceBuffer.saving = false;
+        notifyWorkspace();
+        if (currentScope(scope) && paths.includes(root.selected)) setOpenAttempt(value => value + 1);
+      }
     }
   }
   return { conversationId, view, scope, workspace, root, buffer, selected, error: error || (resolved && resolved.auth !== workspaceEpoch() ? "Sign-in expired. Reconnect or sign in again; unsaved buffers remain in memory." : ""), resolving, diffEditor,
@@ -236,7 +342,7 @@ function useController(conversationId: string | null, view: ActiveView, navigate
     comparison: diff?.key === selectionKey ? diff.value : null,
     localCompare: localCompare === selectionKey, closeCompare: () => setLocalCompare(null),
     activate, navigateView, codeActivation: codeActivation?.scope === scope ? codeActivation : undefined,
-    locationNotice, listDirectory, retryDirectory, refreshDirectories, compareDisk, updateTree, mutateFile,
+    locationNotice, listDirectory, retryDirectory, refreshDirectories, compareDisk, updateTree, prepareFile, mutateFile,
     retryResolve: () => setResolveAttempt(value => value + 1), retrySelection: () => setOpenAttempt(value => value + 1),
   };
 }

@@ -48,13 +48,13 @@ async function withSettingsDom(fetcher: Fetcher, run: (host: HTMLDivElement, roo
 
 const unexpectedFetch: Fetcher = async input => { throw new Error(`Unexpected request: ${input}`); };
 
-test("Settings menu orders Agents, Workstreams, Application, Hotkeys and coordinates existing bookmark leaves", async () => {
+test("Settings menu orders Agents, Workstreams, Application, Shortcuts and preserves the hotkeys bookmark", async () => {
   await withSettingsDom(unexpectedFetch, async (host, root) => {
     configSection.set("application");
     const selectedLeaves: string[] = [];
     await act(async () => { root.render(<ConfigMenu onSelect={() => selectedLeaves.push(catalog.snapshot().navigation.view)} />); });
     const buttons = [...host.querySelectorAll("button")];
-    expect(buttons.map(button => button.querySelector(".history-title")?.textContent)).toEqual(["Agents", "Workstreams", "Application", "Hotkeys"]);
+    expect(buttons.map(button => button.querySelector(".history-title")?.textContent)).toEqual(["Agents", "Workstreams", "Application", "Shortcuts"]);
     const current = () => [...host.querySelectorAll('[aria-current="page"]')].map(button => button.querySelector(".history-title")?.textContent);
     expect(current()).toEqual(["Application"]);
 
@@ -72,7 +72,7 @@ test("Settings menu orders Agents, Workstreams, Application, Hotkeys and coordin
     expect(catalog.snapshot().navigation.view).toBe("config");
     expect(current()).toEqual(["Application"]);
     await act(async () => { buttons[3]!.click(); });
-    expect(current()).toEqual(["Hotkeys"]);
+    expect(current()).toEqual(["Shortcuts"]);
     expect(configSection.snapshot()).toBe("hotkeys");
     expect(localStorage.getItem("sane.configSection")).toBe("hotkeys");
     expect(catalog.snapshot().navigation.view).toBe("config");
@@ -88,17 +88,29 @@ test("Settings menu orders Agents, Workstreams, Application, Hotkeys and coordin
   });
 });
 
-test("Hotkeys settings shows shared Mac and Windows bindings without requesting data", async () => {
+test("Shortcuts settings statically documents Global and local Files bindings without requesting data", async () => {
   await withSettingsDom(unexpectedFetch, async (host, root) => {
     configSection.set("hotkeys");
     await act(async () => root.render(<ConfigView state={store.snapshot()} signOut={() => {}} />));
-    expect(host.querySelector("h2")?.textContent).toBe("Hotkeys");
-    expect(host.querySelector('[aria-label="Hotkeys settings"]')).not.toBeNull();
-    expect([...host.querySelectorAll("thead th")].map(cell => cell.textContent)).toEqual(["View", "Mac", "Windows / Linux"]);
-    expect([...host.querySelectorAll("tbody tr")].map(row => [...row.children].map(cell => cell.textContent))).toEqual([
+    expect(host.querySelector("h2")?.textContent).toBe("Shortcuts");
+    expect(host.querySelector('[aria-label="Shortcuts settings"]')).not.toBeNull();
+    expect([...host.querySelectorAll("h3")].map(heading => heading.textContent)).toEqual(["Global", "Local to a View"]);
+    const rows = (label: string) => [...host.querySelectorAll(`table[aria-labelledby="${label}"] tbody tr`)].map(row => [...row.children].map(cell => cell.textContent));
+    for (const table of host.querySelectorAll("table")) expect([...table.querySelectorAll("thead th")].map(cell => cell.textContent)).toEqual(["Action", "Mac", "Windows / Linux"]);
+    expect(rows("hotkeys-navigation")).toEqual([
       ["Chat", "Ctrl⌘C", "Ctrl+Alt+C"], ["Terminal", "Ctrl⌘T", "Ctrl+Alt+T"],
       ["Files", "Ctrl⌘F", "Ctrl+Alt+F"], ["Settings", "Ctrl⌘S", "Ctrl+Alt+S"],
     ]);
+    expect(rows("hotkeys-files-view")).toEqual([["Search saved files", "⌘⇧F", "Ctrl+Shift+F"]]);
+    expect(rows("hotkeys-files-sidebar")).toEqual([
+      ["Rename", "⇧R", "Shift+R"], ["Delete", "Delete / ⌘Backspace", "Delete"],
+      ["Copy file", "⌘C", "Ctrl+C"], ["Paste file", "⌘V", "Ctrl+V"],
+    ]);
+    expect(rows("hotkeys-files-main-panel")).toEqual([
+      ["Save file", "⌘S", "Ctrl+S"], ["Find in file", "⌘F", "Ctrl+F"],
+      ["Copy text", "⌘C", "Ctrl+C"], ["Paste text", "⌘V", "Ctrl+V"],
+    ]);
+    expect(host.textContent).toContain("Normal text copy/paste is unchanged");
     expect(host.textContent).toContain("dialog is open");
   });
 });

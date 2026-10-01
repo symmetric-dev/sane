@@ -232,7 +232,7 @@ for (const mac of [true, false]) test(`App ${mac ? "Mac" : "Windows"} view hotke
     await hotkey("f"); expect(catalog.state.navigation.view).toBe("code");
     await hotkey("s"); expect(catalog.state.navigation.view).toBe("config");
     await click(host, ".sidebar .config-menu button:last-child");
-    expect(host.querySelector("main .shell-content h2")?.textContent).toBe("Hotkeys");
+    expect(host.querySelector("main .shell-content h2")?.textContent).toBe("Shortcuts");
     expect(host.querySelector("main .hotkeys-table")?.textContent).toContain("Ctrl+Alt+S");
     await hotkey("c"); expect(catalog.state.navigation.view).toBe("chat");
     // The current destination has no visible button, but its command remains registered.
@@ -265,7 +265,7 @@ test("App Files and Git lead to Settings leaves with the same workspace selector
     const drawer = host.querySelector<HTMLDialogElement>("dialog.drawer")!;
     expect(drawer.open).toBe(true);
     expect(drawer.querySelector(".shell-sidebar-header .workspace-opener")?.getAttribute("aria-label")).toBe(host.querySelector(".sidebar .workspace-opener")?.getAttribute("aria-label"));
-    expect([...drawer.querySelectorAll(".config-menu .history-title")].map(e => e.textContent)).toEqual(["Agents", "Workstreams", "Application", "Hotkeys"]);
+    expect([...drawer.querySelectorAll(".config-menu .history-title")].map(e => e.textContent)).toEqual(["Agents", "Workstreams", "Application", "Shortcuts"]);
     expect(drawer.querySelector(".config-menu [aria-current='page'] .history-title")?.textContent).toBe("Workstreams");
     await click(drawer, ".workspace-opener");
     const picker = host.querySelector<HTMLDialogElement>("dialog.shell-dialog")!;

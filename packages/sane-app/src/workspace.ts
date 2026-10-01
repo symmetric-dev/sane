@@ -1,11 +1,12 @@
-import { constants } from "node:fs";
+import { constants, lstatSync, fstatSync } from "node:fs";
 import { open, lstat, realpath, opendir, access, unlink } from "node:fs/promises";
 import { resolve, join, relative, isAbsolute, sep, posix } from "node:path";
 import { createHash } from "node:crypto";
 import type { WorkspaceSearchLeaseProvider, WorkspaceSearchLease } from "./workspace-search-scope";
 import { WorkspaceIgnoreEvaluator, WorkspaceIgnoreError, validateIgnoreSnapshot } from "./workspace-ignore";
 import { admitWorkspaceSearch } from "./workspace-search-admission";
-import { WORKSPACE_MAX_BYTES, type Workspace, type WorkspaceList, type WorkspaceFile, type WorkspaceWrite, type WorkspaceCreate, type WorkspaceCopy, type WorkspaceDelete, type WorkspaceGit, type GitEntry, type GitComparison, type WorkspaceDiff, type DiffReason, type WorkspaceSearchInput, type WorkspaceSearch } from "./workspace-contract";
+import { ExclusiveRenameError, loadExclusiveRename } from "./workspace-safe-rename";
+import { WORKSPACE_MAX_BYTES, type Workspace, type WorkspaceList, type WorkspaceFile, type WorkspaceWrite, type WorkspaceCreate, type WorkspaceCopy, type WorkspaceRename, type WorkspaceDelete, type WorkspaceGit, type GitEntry, type GitComparison, type WorkspaceDiff, type DiffReason, type WorkspaceSearchInput, type WorkspaceSearch } from "./workspace-contract";
 import { WORKSPACE_SEARCH_LIMITS as SEARCH, SEARCH_IGNORED_DIRECTORIES, searchPatterns, searchFilter, literalMatcher, searchWholeWord, searchPreview } from "./workspace-search";
 
 export class WorkspaceError extends Error {
@@ -15,6 +16,9 @@ function fail(status: number, code: string, message: string): never { throw new 
 const hash = (value: string | Uint8Array) => createHash("sha256").update(value).digest("hex");
 const inside = (root: string, path: string) => { const rel = relative(root, path); return !isAbsolute(rel) && rel !== ".." && !rel.startsWith(`..${sep}`); };
 const MAX_ENTRIES = 2000, MAX_GIT_OUTPUT = 4 * 1024 * 1024;
+// Shared across worktree and legacy-session service instances for the same
+// canonical paths. Reserve every operand together, never nest acquisitions.
+const mutationWrites = new Map<string, Promise<unknown>>();
 export type WorkspaceOperationOptions = { signal?: AbortSignal; deadline?: number };
 export function workspaceOperationCheck(options?: WorkspaceOperationOptions): void {
   if (options?.signal?.aborted) fail(499, "search-aborted", "Search cancelled");
@@ -53,14 +57,14 @@ function decode(bytes: Buffer): { text: string | null; reason?: "binary" | "inva
 }
 
 export class WorkspaceService {
-  private writes = new Map<string, Promise<unknown>>();
   constructor(private lookup: SessionLookup, private dataDir: string, private searchLeaseProvider?: WorkspaceSearchLeaseProvider) {}
 
-  private async serialize<T>(target: string, action: () => Promise<T>): Promise<T> {
-    const previous = this.writes.get(target) ?? Promise.resolve();
-    const next = previous.catch(() => {}).then(action);
-    this.writes.set(target, next);
-    try { return await next; } finally { if (this.writes.get(target) === next) this.writes.delete(target); }
+  private async serialize<T>(target: string | string[], action: () => Promise<T>): Promise<T> {
+    const targets = [...new Set(typeof target === "string" ? [target] : target)].sort();
+    const previous = Promise.all(targets.map(path => (mutationWrites.get(path) ?? Promise.resolve()).catch(() => {})));
+    const next = previous.then(action);
+    for (const path of targets) mutationWrites.set(path, next);
+    try { return await next; } finally { for (const path of targets) if (mutationWrites.get(path) === next) mutationWrites.delete(path); }
   }
 
   private async bound(sessionId: string, operation?: WorkspaceOperationOptions): Promise<Bound> {
@@ -495,13 +499,13 @@ export class WorkspaceService {
     return this.serialize(target, () => this.createBytes(bound, input.path, Buffer.alloc(0)));
   }
   private assertRevision(input: WorkspaceDelete) {
-    if (!input || typeof input.expectedRevision !== "string" || !/^[a-f0-9]{64}$/.test(input.expectedRevision)) fail(400, "revision-required", "Read the file before copying or deleting it");
+    if (!input || typeof input.expectedRevision !== "string" || !/^[a-f0-9]{64}$/.test(input.expectedRevision)) fail(400, "revision-required", "Read the file before copying, renaming or deleting it");
   }
   async copy(sessionId: string, input: WorkspaceCopy): Promise<WorkspaceFile> {
     this.assertRevision(input);
     const bound = await this.bind(sessionId, input.workspaceId), target = this.lexical(bound, input.destination);
-    this.lexical(bound, input.path);
-    return this.serialize(target, async () => {
+    const source = this.lexical(bound, input.path);
+    return this.serialize([source, target], async () => {
       const disk = await this.disk(bound, input.path);
       try {
         if (disk.oversize) fail(413, "oversize", "File exceeds 256 KiB");
@@ -524,6 +528,57 @@ export class WorkspaceService {
         await unlink(target);
         return { workspaceId: bound.workspaceId, path: input.path };
       } finally { await disk.handle.close(); }
+    });
+  }
+
+  async rename(sessionId: string, input: WorkspaceRename): Promise<WorkspaceFile> {
+    this.assertRevision(input);
+    const bound = await this.bind(sessionId, input.workspaceId), source = this.lexical(bound, input.path), target = this.lexical(bound, input.destination);
+    if ([input.path, input.destination].some(path => /[\uD800-\uDBFF](?![\uDC00-\uDFFF])|(?<![\uD800-\uDBFF])[\uDC00-\uDFFF]/u.test(path))) fail(400, "invalid-path", "Use an exact UTF-8 workspace-relative path");
+    const parent = posix.dirname(input.path);
+    if (posix.dirname(input.destination) !== parent) fail(400, "invalid-rename", "Rename must stay in the same folder");
+    if (source === target) fail(409, "path-exists", "Destination already exists; choose a different path");
+    let committed = false;
+    return this.serialize([source, target], async () => {
+      const exclusiveRename = await loadExclusiveRename();
+      const parentPath = parent === "." ? "" : parent, directoryPath = await this.checked(bound, parentPath, true);
+      const directory = await open(directoryPath, constants.O_RDONLY | constants.O_DIRECTORY | constants.O_NOFOLLOW);
+      try {
+        const directoryInfo = await directory.stat();
+        if (!directoryInfo.isDirectory()) fail(400, "not-directory", "Choose an existing destination folder");
+        const disk = await this.disk(bound, input.path);
+        try {
+          if (disk.oversize) fail(413, "oversize", "File exceeds 256 KiB");
+          if (hash(disk.bytes) !== input.expectedRevision) fail(409, "revision-conflict", "File changed on disk; reload before renaming");
+          await this.checked(bound, input.destination, false, true);
+          await this.checked(bound, input.path);
+          // Tight synchronous fence before the native operation. The pinned
+          // parent means the syscall cannot follow a newly substituted ancestor.
+          const parentNow = lstatSync(directoryPath), current = lstatSync(source), opened = fstatSync(disk.handle.fd);
+          if (!parentNow.isDirectory() || parentNow.dev !== directoryInfo.dev || parentNow.ino !== directoryInfo.ino) fail(409, "file-changed", "Folder changed before renaming; refresh files");
+          if (!current.isFile() || current.nlink !== 1 || current.dev !== disk.info.dev || current.ino !== disk.info.ino || current.size !== disk.info.size || current.mtimeMs !== disk.info.mtimeMs || current.ctimeMs !== disk.info.ctimeMs || opened.nlink !== 1 || opened.size !== disk.info.size || opened.mtimeMs !== disk.info.mtimeMs || opened.ctimeMs !== disk.info.ctimeMs) fail(409, "revision-conflict", "File changed before renaming");
+          exclusiveRename(directory.fd, posix.basename(input.path), posix.basename(input.destination));
+          committed = true;
+          // Do not roll back a committed rename: another process might already
+          // own either pathname. Report a conflict and require a refresh instead.
+          const renamed = await this.disk(bound, input.destination);
+          try {
+            if (renamed.info.dev !== disk.info.dev || renamed.info.ino !== disk.info.ino || renamed.oversize || renamed.info.mtimeMs !== disk.info.mtimeMs || hash(renamed.bytes) !== input.expectedRevision) fail(409, "file-changed", "File changed while renaming; refresh files");
+            const result = await this.fileResult(bound, input.destination, renamed);
+            await this.checked(bound, input.destination);
+            const after = lstatSync(target), stillOpened = fstatSync(renamed.handle.fd), parentAfter = lstatSync(directoryPath);
+            if (parentAfter.dev !== directoryInfo.dev || parentAfter.ino !== directoryInfo.ino || !after.isFile() || after.nlink !== 1 || after.dev !== disk.info.dev || after.ino !== disk.info.ino || after.size !== renamed.info.size || after.mtimeMs !== renamed.info.mtimeMs || after.ctimeMs !== renamed.info.ctimeMs || stillOpened.nlink !== 1 || stillOpened.size !== renamed.info.size || stillOpened.mtimeMs !== renamed.info.mtimeMs || stillOpened.ctimeMs !== renamed.info.ctimeMs) fail(409, "file-changed", "File changed while renaming; refresh files");
+            return result;
+          } finally { await renamed.handle.close(); }
+        } finally { await disk.handle.close(); }
+      } finally { await directory.close(); }
+    }).catch(error => {
+      // Catch OUTSIDE every descriptor's finally block: even a close failure
+      // after a successful commit must not masquerade as an uncommitted rename.
+      // Verification conflicts and raw filesystem errors have the same recovery
+      // contract. Never roll back or encourage an automatic mutation retry.
+      if (committed) fail(409, "rename-committed", "The file was renamed, but verification failed. Refresh files before continuing; do not retry blindly.");
+      throw error;
     });
   }
 
@@ -683,6 +738,7 @@ export class WorkspaceService {
 /** Keep filesystem diagnostics and absolute protected paths out of API errors. */
 export function workspaceError(error: unknown): WorkspaceError {
   if (error instanceof WorkspaceError) return error;
+  if (error instanceof ExclusiveRenameError) return new WorkspaceError(error.status, error.code, error.message);
   if (error instanceof WorkspaceIgnoreError) return new WorkspaceError(error.status, error.code, error.message);
   if (error instanceof SyntaxError) return new WorkspaceError(400, "invalid-request", "Invalid JSON request body");
   const code = (error as NodeJS.ErrnoException)?.code;

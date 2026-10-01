@@ -4,10 +4,11 @@ import { useCommand, useRegisterCommand } from "./application-commands";
 import { useWorkspace } from "./workspace-controller";
 import { workspaceClient } from "./workspace-client";
 import { dirty, workspaceEpoch, workspaceFailure } from "./workspace-store";
+import { FILE_SHORTCUTS } from "./shortcut-definitions";
 import "./workspace-search.css";
 
-export const workspaceSearchCommand = "workspace.search";
-export const workspaceSearchBinding = { key: "f", mod: true, shift: true } as const;
+export const workspaceSearchCommand = FILE_SHORTCUTS.search.id;
+export const workspaceSearchBinding = FILE_SHORTCUTS.search.binding;
 type SearchOptions = Omit<WorkspaceSearchInput, "workspaceId">;
 export const searchDebounceMs = 250;
 
@@ -112,7 +113,7 @@ function SearchProvider({ children }: { children: ReactNode }) {
   const controller = useWorkspace(), model = useSearchModel();
   const current = useRef({ controller, model }); current.current = { controller, model };
   const command = useMemo(() => ({
-    id: workspaceSearchCommand, label: "Search saved files", binding: workspaceSearchBinding,
+    ...FILE_SHORTCUTS.search,
     contexts: ["application", "editor", "input"] as const, priority: 10,
     available: () => !!current.current.controller.scope && current.current.controller.scope.auth === workspaceEpoch() && ["code", "git"].includes(current.current.controller.view),
     action: () => current.current.model.enter(),
