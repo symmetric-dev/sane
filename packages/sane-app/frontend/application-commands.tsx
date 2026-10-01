@@ -30,6 +30,8 @@ export class CommandRegistry {
   private commands = new Map<symbol, ApplicationCommand>();
   private listeners = new Set<() => void>();
   private version = 0;
+  private leftAltDown = false;
+  private rightAltDown = false;
   subscribe = (listener: () => void) => { this.listeners.add(listener); return () => { this.listeners.delete(listener); }; };
   snapshot = () => this.version;
   private changed() { this.version++; this.listeners.forEach(listener => listener()); }
@@ -44,16 +46,35 @@ export class CommandRegistry {
   }
   run(id: string) { const command = this.get(id); if (!command?.available()) return false; command.action(); return true; }
   dispatch(event: KeyboardEvent, context: CommandContext, mac: boolean) {
-    if (event.defaultPrevented || event.repeat || event.isComposing || event.keyCode === 229 || event.getModifierState?.("AltGraph")) return false;
+    // Firefox on Windows also reports ordinary Ctrl+Alt as AltGraph. Only
+    // allow that ambiguous state when the physical left Alt key is held;
+    // right Alt/AltGr remains available for international text entry.
+    if (event.defaultPrevented || event.repeat || event.isComposing || event.keyCode === 229 || this.rightAltDown || (event.getModifierState?.("AltGraph") && !this.leftAltDown)) return false;
     const command = [...this.commands.values()].sort((a, b) => (b.priority ?? 0) - (a.priority ?? 0)).find(command =>
       command.binding && matchesBinding(event, command.binding, mac) && (command.contexts ?? ["application"]).includes(context) && command.available());
     if (!command) return false;
     event.preventDefault(); event.stopPropagation(); command.action(); return true;
   }
   attach(document: Document, mac = isMacPlatform()) {
-    const listener = (event: KeyboardEvent) => this.dispatch(event, commandContext(event.target, document), mac);
+    const resetModifiers = () => { this.leftAltDown = false; this.rightAltDown = false; };
+    const listener = (event: KeyboardEvent) => {
+      if (event.code === "AltLeft") this.leftAltDown = true;
+      if (event.code === "AltRight" || event.key === "AltGraph") this.rightAltDown = true;
+      this.dispatch(event, commandContext(event.target, document), mac);
+    };
+    const release = (event: KeyboardEvent) => {
+      if (event.code === "AltLeft") this.leftAltDown = false;
+      if (event.code === "AltRight" || event.key === "AltGraph") this.rightAltDown = false;
+    };
     document.addEventListener("keydown", listener, true);
-    return () => document.removeEventListener("keydown", listener, true);
+    document.addEventListener("keyup", release, true);
+    document.defaultView?.addEventListener("blur", resetModifiers);
+    return () => {
+      document.removeEventListener("keydown", listener, true);
+      document.removeEventListener("keyup", release, true);
+      document.defaultView?.removeEventListener("blur", resetModifiers);
+      resetModifiers();
+    };
   }
 }
 const Commands = createContext<CommandRegistry | null>(null);

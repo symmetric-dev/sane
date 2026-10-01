@@ -48,13 +48,13 @@ async function withSettingsDom(fetcher: Fetcher, run: (host: HTMLDivElement, roo
 
 const unexpectedFetch: Fetcher = async input => { throw new Error(`Unexpected request: ${input}`); };
 
-test("Settings menu orders Agents, Workstreams, Application and coordinates existing bookmark leaves", async () => {
+test("Settings menu orders Agents, Workstreams, Application, Hotkeys and coordinates existing bookmark leaves", async () => {
   await withSettingsDom(unexpectedFetch, async (host, root) => {
     configSection.set("application");
     const selectedLeaves: string[] = [];
     await act(async () => { root.render(<ConfigMenu onSelect={() => selectedLeaves.push(catalog.snapshot().navigation.view)} />); });
     const buttons = [...host.querySelectorAll("button")];
-    expect(buttons.map(button => button.querySelector(".history-title")?.textContent)).toEqual(["Agents", "Workstreams", "Application"]);
+    expect(buttons.map(button => button.querySelector(".history-title")?.textContent)).toEqual(["Agents", "Workstreams", "Application", "Hotkeys"]);
     const current = () => [...host.querySelectorAll('[aria-current="page"]')].map(button => button.querySelector(".history-title")?.textContent);
     expect(current()).toEqual(["Application"]);
 
@@ -71,7 +71,12 @@ test("Settings menu orders Agents, Workstreams, Application and coordinates exis
     await act(async () => { buttons[2]!.click(); });
     expect(catalog.snapshot().navigation.view).toBe("config");
     expect(current()).toEqual(["Application"]);
-    expect(selectedLeaves).toEqual(["workstreams", "config", "config"]);
+    await act(async () => { buttons[3]!.click(); });
+    expect(current()).toEqual(["Hotkeys"]);
+    expect(configSection.snapshot()).toBe("hotkeys");
+    expect(localStorage.getItem("sane.configSection")).toBe("hotkeys");
+    expect(catalog.snapshot().navigation.view).toBe("config");
+    expect(selectedLeaves).toEqual(["workstreams", "config", "config", "config"]);
 
     // External restore/navigation wins over the saved local preference.
     await act(async () => { catalog.navigate({ view: "workstreams" }); configSection.set("agents"); });
@@ -80,6 +85,21 @@ test("Settings menu orders Agents, Workstreams, Application and coordinates exis
     expect(current()).toEqual(["Agents"]);
     await act(async () => { catalog.navigate({ view: "chat" }); });
     expect(current()).toEqual([]);
+  });
+});
+
+test("Hotkeys settings shows shared Mac and Windows bindings without requesting data", async () => {
+  await withSettingsDom(unexpectedFetch, async (host, root) => {
+    configSection.set("hotkeys");
+    await act(async () => root.render(<ConfigView state={store.snapshot()} signOut={() => {}} />));
+    expect(host.querySelector("h2")?.textContent).toBe("Hotkeys");
+    expect(host.querySelector('[aria-label="Hotkeys settings"]')).not.toBeNull();
+    expect([...host.querySelectorAll("thead th")].map(cell => cell.textContent)).toEqual(["View", "Mac", "Windows / Linux"]);
+    expect([...host.querySelectorAll("tbody tr")].map(row => [...row.children].map(cell => cell.textContent))).toEqual([
+      ["Chat", "Ctrl⌘C", "Ctrl+Alt+C"], ["Terminal", "Ctrl⌘T", "Ctrl+Alt+T"],
+      ["Files", "Ctrl⌘F", "Ctrl+Alt+F"], ["Settings", "Ctrl⌘S", "Ctrl+Alt+S"],
+    ]);
+    expect(host.textContent).toContain("dialog is open");
   });
 });
 

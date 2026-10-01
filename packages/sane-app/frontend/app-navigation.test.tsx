@@ -30,8 +30,9 @@ function preserveOwnFields(target: object) {
   };
 }
 
-async function withApp(run: (fixture: Fixture) => Promise<void>, options: { empty?: boolean; replaced?: boolean; historyError?: boolean } = {}) {
+async function withApp(run: (fixture: Fixture) => Promise<void>, options: { empty?: boolean; replaced?: boolean; historyError?: boolean; mac?: boolean } = {}) {
   const browser = new Window({ url: "http://localhost" });
+  Object.defineProperty(browser.navigator, "platform", { configurable: true, value: options.mac === false ? "Win32" : "MacIntel" });
   const requests: RequestRecord[] = [], unexpected: string[] = [];
   const restoreStore = preserveOwnFields(store), restoreCatalog = preserveOwnFields(catalog);
   const previousState = store.state, previousSection = configSection.snapshot();
@@ -211,19 +212,26 @@ test("App Terminal Open Chat does not submit or invoke shell actions and preserv
   }, { empty: true });
 });
 
-test("App view hotkeys preserve the live draft and navigate without submitting or starting a shell", async () => {
+for (const mac of [true, false]) test(`App ${mac ? "Mac" : "Windows"} view hotkeys preserve the live draft and navigate without submitting or starting a shell`, async () => {
   await withApp(async ({ browser, host, requests }) => {
     const input = host.querySelector<HTMLTextAreaElement>("textarea")!;
     input.focus(); input.setSelectionRange(7, 12);
     const draft = { ...store.draft() };
     const hotkey = async (key: string, target: Element = document.body) => {
-      const event = new browser.KeyboardEvent("keydown", { key, metaKey: true, ctrlKey: true, bubbles: true, cancelable: true });
-      await act(async () => { target.dispatchEvent(event as unknown as Event); });
+      const event = new browser.KeyboardEvent("keydown", { key, metaKey: mac, altKey: !mac, ctrlKey: true, bubbles: true, cancelable: true });
+      await act(async () => {
+        if (!mac) target.dispatchEvent(new browser.KeyboardEvent("keydown", { key: "Alt", code: "AltLeft", altKey: true, bubbles: true }) as unknown as Event);
+        target.dispatchEvent(event as unknown as Event);
+        if (!mac) document.dispatchEvent(new browser.KeyboardEvent("keyup", { key: "Alt", code: "AltLeft", bubbles: true }) as unknown as Event);
+      });
       expect(event.defaultPrevented).toBe(true);
     };
     await hotkey("t", input); expect(catalog.state.navigation.view).toBe("terminal");
     await hotkey("f"); expect(catalog.state.navigation.view).toBe("code");
-    await hotkey("d"); expect(catalog.state.navigation.view).toBe("config");
+    await hotkey("s"); expect(catalog.state.navigation.view).toBe("config");
+    await click(host, ".sidebar .config-menu button:last-child");
+    expect(host.querySelector("main .shell-content h2")?.textContent).toBe("Hotkeys");
+    expect(host.querySelector("main .hotkeys-table")?.textContent).toContain("Ctrl+Alt+S");
     await hotkey("c"); expect(catalog.state.navigation.view).toBe("chat");
     // The current destination has no visible button, but its command remains registered.
     await hotkey("c", input);
@@ -231,7 +239,7 @@ test("App view hotkeys preserve the live draft and navigate without submitting o
     expect(input.value).toBe(draft.text); expect(input.selectionStart).toBe(7); expect(input.selectionEnd).toBe(12);
     expect(store.draft()).toEqual(draft); expect(store.state.selected).toBe(live.id);
     expect(requests.some(request => /terminal|\/cancel/.test(request.path))).toBe(false);
-  }, { empty: true });
+  }, { empty: true, mac });
 });
 
 test("App Files and Git lead to Settings leaves with the same workspace selector in sidebar and drawer", async () => {
@@ -254,7 +262,7 @@ test("App Files and Git lead to Settings leaves with the same workspace selector
     const drawer = host.querySelector<HTMLDialogElement>("dialog.drawer")!;
     expect(drawer.open).toBe(true);
     expect(drawer.querySelector(".shell-sidebar-header .workspace-opener")?.getAttribute("aria-label")).toBe(host.querySelector(".sidebar .workspace-opener")?.getAttribute("aria-label"));
-    expect([...drawer.querySelectorAll(".config-menu .history-title")].map(e => e.textContent)).toEqual(["Agents", "Workstreams", "Application"]);
+    expect([...drawer.querySelectorAll(".config-menu .history-title")].map(e => e.textContent)).toEqual(["Agents", "Workstreams", "Application", "Hotkeys"]);
     expect(drawer.querySelector(".config-menu [aria-current='page'] .history-title")?.textContent).toBe("Workstreams");
     await click(drawer, ".workspace-opener");
     const picker = host.querySelector<HTMLDialogElement>("dialog.shell-dialog")!;
@@ -267,7 +275,7 @@ test("App Files and Git lead to Settings leaves with the same workspace selector
     await click(drawer, ".config-menu button:first-child");
     expect(host.querySelector("dialog.drawer")).toBeNull();
     expect(host.querySelector("main [aria-label='Agent configuration']")).not.toBeNull();
-    await click(host, ".sidebar .config-menu button:last-child");
+    await click(host, ".sidebar .config-menu button:nth-child(3)");
     expect(host.querySelector("main .shell-content h2")?.textContent).toBe("Application");
     expect(catalog.state.navigation.view).toBe("config"); expect(store.state.selected).toBe(live.id);
     expect(requests.filter(r => r.path.startsWith("/api/workstreams/")).every(r => r.path.includes(`workspaceId=${workspaceId}`))).toBe(true);

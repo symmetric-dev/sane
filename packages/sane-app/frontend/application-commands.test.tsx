@@ -68,3 +68,29 @@ test("one capture listener resolves editor/terminal/modal contexts and eligible 
   modal.remove(); dispose(); expect(emit(document.body)).toBe(false);
   detach(); expect(emit(document.body)).toBe(false); browser.close();
 });
+
+test("Ctrl+left Alt works when reported as AltGraph, while right Alt and lost-focus modifier state stay safe", () => {
+  const browser = new Window(), document = browser.document as unknown as Document, registry = new CommandRegistry();
+  let calls = 0;
+  registry.register({ id: "chat", label: "Chat", binding: { key: "c", ctrl: true, alt: true }, contexts: ["input"], available: () => true, action: () => calls++ });
+  const detach = registry.attach(document, false);
+  const input = document.createElement("textarea"); document.body.append(input);
+  const modifier = (type: "keydown" | "keyup", code: string, key = "Alt") => input.dispatchEvent(new browser.KeyboardEvent(type, { key, code, altKey: type === "keydown", bubbles: true }) as unknown as Event);
+  const emit = () => {
+    const event = new browser.KeyboardEvent("keydown", { key: "c", ctrlKey: true, altKey: true, bubbles: true, cancelable: true });
+    // Firefox Windows aliases Ctrl+Alt to AltGraph (as does Happy DOM).
+    event.getModifierState = key => key === "AltGraph";
+    input.dispatchEvent(event as unknown as Event); return event.defaultPrevented;
+  };
+  expect(emit()).toBe(false);
+  modifier("keydown", "AltLeft"); expect(emit()).toBe(true);
+  modifier("keydown", "AltRight", "AltGraph"); expect(emit()).toBe(false);
+  modifier("keyup", "AltRight", "AltGraph"); expect(emit()).toBe(true);
+  modifier("keyup", "AltLeft"); expect(emit()).toBe(false);
+  modifier("keydown", "AltRight", "AltGraph"); expect(emit()).toBe(false);
+  browser.dispatchEvent(new browser.Event("blur"));
+  modifier("keydown", "AltLeft"); expect(emit()).toBe(true);
+  browser.dispatchEvent(new browser.Event("blur")); expect(emit()).toBe(false);
+  modifier("keydown", "AltLeft"); detach(); expect(emit()).toBe(false);
+  expect(calls).toBe(3); browser.close();
+});

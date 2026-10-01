@@ -1,13 +1,15 @@
 import { useEffect, useRef, useState, useSyncExternalStore } from "react";
-import { FiGitBranch, FiPlus, FiSliders, FiUsers } from "react-icons/fi";
+import { FiCommand, FiGitBranch, FiPlus, FiSliders, FiUsers } from "react-icons/fi";
 import { ASSISTANT_AGENT_LABELS, WORKER_AGENT_CATALOG, isAssistantAgentId, isWorkerAgentId } from "sane-core/agent-catalog";
 import { AGENT_COLOR_IDS, AGENT_ICON_IDS, type AgentColor, type AgentIconId } from "../src/agent-profiles-contract";
 import { store, type State } from "./store";
 import { catalog } from "./catalog";
 import { ShellDialog } from "./shell-dialog";
+import { ModelPicker } from "./model-picker";
 import { AGENT_ICONS, AgentCard, agentColor, moveCardFocus } from "./agent-visuals";
 import { harnessName, type AgentProfile, type Harness } from "./types";
 import { ApplicationSettings } from "./application-settings";
+import { HotkeysSettings } from "./hotkeys-settings";
 import { WorkstreamsView, type ArtifactSelection } from "./workstreams";
 
 // Client-side mirrors of src/history.ts validModel/validEffort/validVariant and
@@ -38,11 +40,11 @@ const toForm = (p: AgentProfile): Form => ({ label: p.label, description: p.desc
 const formError = (form: Form, kind: AgentProfile["kind"]) => !form.label.trim() ? "Name is required." : form.label.trim().length > 80 ? "Name must be 80 characters or fewer." : form.description.length > 400 ? "Description must be 400 characters or fewer." : errorFor(form.harness, form, kind);
 const copyLabel = (p: AgentProfile) => `${p.label} copy`.slice(0, 80);
 
-export type ConfigSection = "agents" | "application";
+export type ConfigSection = "agents" | "application" | "hotkeys";
 // Only config-leaf sections are a local preference. Workstreams is selected by
 // the existing navigation bookmark, not a second persisted active section.
 const SECTION_KEY = "sane.configSection";
-let section: ConfigSection = (() => { try { return localStorage.getItem(SECTION_KEY) === "application" ? "application" : "agents"; } catch { return "agents"; } })();
+let section: ConfigSection = (() => { try { const saved = localStorage.getItem(SECTION_KEY); return saved === "application" || saved === "hotkeys" ? saved : "agents"; } catch { return "agents"; } })();
 const sectionListeners = new Set<() => void>();
 export const configSection = {
   snapshot: () => section,
@@ -53,6 +55,7 @@ const SECTIONS = [
   { id: "agents", label: "Agents", hint: "Conversation and worker profiles", Icon: FiUsers },
   { id: "workstreams", label: "Workstreams", hint: "Repository workstreams and associations", Icon: FiGitBranch },
   { id: "application", label: "Application", hint: "Connection, harnesses, account", Icon: FiSliders },
+  { id: "hotkeys", label: "Hotkeys", hint: "Keyboard shortcuts for navigation", Icon: FiCommand },
 ] as const;
 
 export function ConfigMenu({ onSelect }: { onSelect?: () => void }) {
@@ -70,6 +73,7 @@ export function ConfigView({ state, signOut, workspaceId = null, openArtifact }:
   const current = useSyncExternalStore(configSection.subscribe, configSection.snapshot);
   const { navigation } = useSyncExternalStore(catalog.subscribe, catalog.snapshot);
   if (navigation.view === "workstreams") return <WorkstreamsView workspaceId={workspaceId} openArtifact={openArtifact} />;
+  if (current === "hotkeys") return <HotkeysSettings />;
   return current === "application" ? <ApplicationSettings state={state} signOut={signOut} /> : <AgentSettings state={state} />;
 }
 
@@ -177,7 +181,7 @@ function AgentEditor({ profile, state, close, created, restoreFocus }: { profile
           <div className="interaction-field"><span className="agent-field-label">Fixed role</span><span className="agent-readonly">{profile.kind === "base" ? "None (harness defaults, no instructions)" : isWorkerAgentId(profile.role) ? `Worker · ${WORKER_AGENT_CATALOG[profile.role].label}` : isAssistantAgentId(profile.role) ? `Assistant · ${ASSISTANT_AGENT_LABELS[profile.role]}` : profile.role}</span></div>
           <div className="interaction-field"><span className="agent-field-label" id="agent-harness">Harness</span><div className="agent-segmented" role="group" aria-labelledby="agent-harness">{(["claude-code", "opencode"] as const).map(h => <button type="button" key={h} aria-pressed={form.harness === h} disabled={fixedHarness} onClick={() => { if (form.harness !== h) patch({ harness: h, model: "", effort: "" }); }}>{harnessName(h)}</button>)}</div><small>{fixedHarness ? "Fixed for built-in Base." : "Changing harness clears the model and effort selection."}</small></div>
           {form.harness === "opencode" ? <>
-             <div className="interaction-field"><label htmlFor="agent-oc-model">Model</label><select id="agent-oc-model" value={form.model} disabled={state.modelsLoading && !ocModels.length} onChange={event => patch({ model: event.target.value, effort: "" })}><option value="">{profile.kind === "base" ? "Native default" : "Agent default model"}</option>{form.model && !ocModels.some(m => m.id === form.model) && <option value={form.model}>{form.model} · not in catalog</option>}{ocModels.map(model => <option key={model.id} value={model.id}>{model.name} · {model.id}</option>)}</select><small>{state.modelsLoading ? "Loading the live catalog…" : profile.kind === "base" ? "Live catalog for the current directory. Empty means the native default." : "Empty uses the agent's configured model, then the native default."}</small></div>
+             <div className="interaction-field"><label htmlFor="agent-oc-model">Model</label><ModelPicker id="agent-oc-model" models={ocModels} value={form.model} defaultLabel={profile.kind === "base" ? "Native default" : "Agent default model"} disabled={busy || (state.modelsLoading && !ocModels.length)} loading={state.modelsLoading} onChange={model => patch({ model, effort: "" })} /><small>{state.modelsLoading ? "Loading the live catalog…" : profile.kind === "base" ? "Live catalog for the current directory. Empty means the native default." : "Empty uses the agent's configured model, then the native default."}</small></div>
             <div className="interaction-field"><label htmlFor="agent-oc-variant">Model variant</label>{!form.model && profile.kind !== "base" ? <><input id="agent-oc-variant" value={form.effort} maxLength={200} placeholder="Agent default variant" onChange={event => patch({ effort: event.target.value })} /><small>Variant ID for the agent's configured model. Its variants are not listed here. Launch requires a resolvable agent model; empty preserves its default variant.</small></> : <select id="agent-oc-variant" value={form.effort} disabled={!form.model || (!ocEfforts.length && !form.effort)} onChange={event => patch({ effort: event.target.value })} title={!form.model ? "Select a model before selecting a variant" : undefined}><option value="">Default variant</option>{form.effort && !ocEfforts.some(e => e.id === form.effort) && <option value={form.effort}>{form.effort}</option>}{ocEfforts.map(value => <option key={value.id} value={value.id}>{value.name}</option>)}</select>}</div>
           </> : <>
             <div className="interaction-field"><label htmlFor="agent-cc-model">Model</label><input id="agent-cc-model" list="agent-cc-models" value={form.model} onChange={event => patch({ model: event.target.value.trim() })} placeholder="Default model" maxLength={200} /><datalist id="agent-cc-models"><option value="sonnet" /><option value="opus" /><option value="haiku" /></datalist><small>Empty means the native default. Custom IDs supported.</small></div>

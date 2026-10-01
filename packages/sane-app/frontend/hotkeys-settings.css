@@ -1,0 +1,8 @@
+.hotkeys-settings .interaction h3 { font-size:14px; }
+.hotkeys-settings .interaction > p { font-size:12px; line-height:1.6; }
+.hotkeys-table-scroll { overflow-x:auto; }
+.hotkeys-table { width:100%; border-collapse:collapse; text-align:left; font-size:13px; }
+.hotkeys-table th, .hotkeys-table td { padding:12px 8px; border-bottom:1px solid var(--border); }
+.hotkeys-table thead th { color:var(--muted-foreground); font-size:12px; font-weight:500; }
+.hotkeys-table tbody th { font-weight:500; }
+.hotkeys-table kbd { white-space:nowrap; font-size:12px; }

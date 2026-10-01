@@ -26,8 +26,9 @@ test("contextual destinations retain leaf IDs and exclude the current destinatio
   }
 });
 
-async function withDom(run: (host: HTMLDivElement, root: Root, browser: Window) => Promise<void>) {
+async function withDom(run: (host: HTMLDivElement, root: Root, browser: Window) => Promise<void>, mac = true) {
   const browser = new Window({ url: "http://localhost" });
+  Object.defineProperty(browser.navigator, "platform", { configurable: true, value: mac ? "MacIntel" : "Win32" });
   const globals = { window: browser, document: browser.document, navigator: browser.navigator, HTMLElement: browser.HTMLElement, IS_REACT_ACT_ENVIRONMENT: true };
   const previous = new Map(Object.keys(globals).map(key => [key, Object.getOwnPropertyDescriptor(globalThis, key)]));
   for (const [key, value] of Object.entries(globals)) Object.defineProperty(globalThis, key, { configurable: true, writable: true, value });
@@ -55,7 +56,7 @@ test("navigation is accessible, view-only, and never submits a surrounding compo
     const buttons = [...host.querySelectorAll("button")];
     expect(buttons.map(button => button.getAttribute("aria-label"))).toEqual(["Terminal", "Files", "Settings"]);
     expect(buttons.every(button => button.type === "button" && !button.disabled)).toBe(true);
-    expect(buttons.map(button => button.getAttribute("aria-keyshortcuts"))).toEqual(["Control+Meta+t", "Control+Meta+f", "Control+Meta+d"]);
+    expect(buttons.map(button => button.getAttribute("aria-keyshortcuts"))).toEqual(["Control+Meta+t", "Control+Meta+f", "Control+Meta+s"]);
     expect(buttons.every(button => button.title.startsWith(`${button.getAttribute("aria-label")} (`))).toBe(true);
     await act(async () => { buttons.forEach(button => button.click()); });
     expect(chosen).toEqual(["terminal", "code", "config"]);
@@ -65,7 +66,7 @@ test("navigation is accessible, view-only, and never submits a surrounding compo
   });
 });
 
-test("view hotkeys capture input/editor/terminal keys precisely and clean up registrations", async () => {
+for (const mac of [true, false]) test(`${mac ? "Mac" : "Windows"} view hotkeys capture input/editor/terminal keys precisely and clean up registrations`, async () => {
   await withDom(async (host, root, browser) => {
     const chosen: ActiveView[] = [];
     const render = (onNavigate: (view: ActiveView) => void) => root.render(<ApplicationCommandProvider>
@@ -75,20 +76,25 @@ test("view hotkeys capture input/editor/terminal keys precisely and clean up reg
     await act(async () => render(view => chosen.push(view)));
     const targets = [document.body, ...host.querySelectorAll("textarea, input")];
     const emit = async (target: Element, key: string, options: object = {}) => {
-      const event = new browser.KeyboardEvent("keydown", { key, metaKey: true, ctrlKey: true, bubbles: true, cancelable: true, ...options });
-      await act(async () => { target.dispatchEvent(event as unknown as Event); });
+      const event = new browser.KeyboardEvent("keydown", { key, metaKey: mac, altKey: !mac, ctrlKey: true, bubbles: true, cancelable: true, ...options });
+      await act(async () => {
+        if (!mac) target.dispatchEvent(new browser.KeyboardEvent("keydown", { key: "Alt", code: "AltLeft", altKey: true, bubbles: true }) as unknown as Event);
+        target.dispatchEvent(event as unknown as Event);
+        if (!mac) document.dispatchEvent(new browser.KeyboardEvent("keyup", { key: "Alt", code: "AltLeft", bubbles: true }) as unknown as Event);
+      });
       return event.defaultPrevented;
     };
     for (const target of targets) {
-      for (const key of ["C", "t", "d", "f"]) expect(await emit(target, key)).toBe(true);
+      for (const key of ["C", "t", "s", "f"]) expect(await emit(target, key)).toBe(true);
     }
     expect(chosen).toEqual(targets.flatMap(() => ["chat", "terminal", "config", "code"]));
     const count = chosen.length;
-    for (const options of [{ metaKey: false }, { ctrlKey: false }, { shiftKey: true }, { altKey: true }, { repeat: true }, { isComposing: true }]) {
+    for (const options of [{ metaKey: !mac }, { ctrlKey: false }, { shiftKey: true }, { altKey: mac }, { repeat: true }, { isComposing: true }]) {
       expect(await emit(targets[1]!, "c", options)).toBe(false);
     }
     expect(await emit(targets[3]!, "t", { ctrlKey: false })).toBe(false);
-    expect(await emit(targets[3]!, "t", { metaKey: false })).toBe(false);
+    expect(await emit(targets[3]!, "t", { metaKey: !mac })).toBe(false);
+    expect(await emit(targets[3]!, "d")).toBe(false);
     expect(await emit(targets[3]!, "`", { ctrlKey: false })).toBe(false);
     expect(await emit(targets[1]!, "Enter", { ctrlKey: true, metaKey: false })).toBe(false);
     const dialog = document.createElement("dialog"); dialog.setAttribute("open", ""); host.append(dialog);
@@ -100,7 +106,16 @@ test("view hotkeys capture input/editor/terminal keys precisely and clean up reg
     expect(updated).toEqual(["chat"]); expect(chosen).toHaveLength(count);
     await act(async () => root.render(null));
     expect(await emit(document.body, "c")).toBe(false);
-  });
+  }, mac);
+});
+
+test("Windows navigation hints match Ctrl+Alt bindings", async () => {
+  await withDom(async (host, root) => {
+    await act(async () => root.render(<ContextualNavigation state={store.snapshot()} activeView="history" onNavigate={() => {}} />));
+    const buttons = [...host.querySelectorAll("button")];
+    expect(buttons.map(button => button.getAttribute("aria-keyshortcuts"))).toEqual(["Control+Alt+c", "Control+Alt+t", "Control+Alt+f", "Control+Alt+s"]);
+    expect(buttons.map(button => button.title)).toEqual(["Open Chat (Ctrl+Alt+C)", "Terminal (Ctrl+Alt+T)", "Files (Ctrl+Alt+F)", "Settings (Ctrl+Alt+S)"]);
+  }, false);
 });
 
 test("Files and Git controls navigate without requiring or mutating a file target", async () => {
