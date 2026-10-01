@@ -2,7 +2,9 @@ import { constants } from "node:fs";
 import { open, lstat, realpath, opendir, access, unlink } from "node:fs/promises";
 import { resolve, join, relative, isAbsolute, sep, posix } from "node:path";
 import { createHash } from "node:crypto";
-import { WORKSPACE_MAX_BYTES, type Workspace, type WorkspaceList, type WorkspaceFile, type WorkspaceWrite, type WorkspaceCreate, type WorkspaceCopy, type WorkspaceDelete, type WorkspaceGit, type GitEntry, type GitComparison, type WorkspaceDiff, type DiffReason } from "./workspace-contract";
+import ignore, { type Ignore } from "ignore";
+import { WORKSPACE_MAX_BYTES, type Workspace, type WorkspaceList, type WorkspaceFile, type WorkspaceWrite, type WorkspaceCreate, type WorkspaceCopy, type WorkspaceDelete, type WorkspaceGit, type GitEntry, type GitComparison, type WorkspaceDiff, type DiffReason, type WorkspaceSearchInput, type WorkspaceSearch } from "./workspace-contract";
+import { WORKSPACE_SEARCH_LIMITS as SEARCH, SEARCH_IGNORED_DIRECTORIES, searchPatterns, searchFilter, literalMatcher, searchWholeWord, searchPreview } from "./workspace-search";
 
 export class WorkspaceError extends Error {
   constructor(public status: number, public code: string, message: string) { super(message); }
@@ -11,10 +13,31 @@ function fail(status: number, code: string, message: string): never { throw new 
 const hash = (value: string | Uint8Array) => createHash("sha256").update(value).digest("hex");
 const inside = (root: string, path: string) => { const rel = relative(root, path); return !isAbsolute(rel) && rel !== ".." && !rel.startsWith(`..${sep}`); };
 const MAX_ENTRIES = 2000, MAX_GIT_OUTPUT = 4 * 1024 * 1024;
-type SessionLookup = (id: string) => { cwd: string; bindingRevision?: string; protectedPaths?: string[] } | undefined | Promise<{ cwd: string; bindingRevision?: string; protectedPaths?: string[] } | undefined>;
-type Bound = Workspace & { data: string; dev: number; ino: number; protectedPaths: string[] };
+export type WorkspaceOperationOptions = { signal?: AbortSignal; deadline?: number };
+export function workspaceOperationCheck(options?: WorkspaceOperationOptions): void {
+  if (options?.signal?.aborted) fail(499, "search-aborted", "Search cancelled");
+  if (options?.deadline !== undefined && Date.now() >= options.deadline) fail(504, "search-time-limit", "Search time budget reached");
+}
+/** Race uncooperative lookup promises too; production lookups also pass these
+ * controls to subprocesses so cancellation kills work, not just its waiter. */
+export async function workspaceOperationWait<T>(operation: () => Promise<T>, options?: WorkspaceOperationOptions): Promise<T> {
+  workspaceOperationCheck(options);
+  if (!options) return operation();
+  let timer: ReturnType<typeof setTimeout> | undefined, abort: (() => void) | undefined;
+  const interrupted = new Promise<never>((_, reject) => {
+    abort = () => reject(new WorkspaceError(499, "search-aborted", "Search cancelled"));
+    options.signal?.addEventListener("abort", abort, { once: true });
+    if (options.signal?.aborted) abort();
+    if (options.deadline !== undefined) timer = setTimeout(() => reject(new WorkspaceError(504, "search-time-limit", "Search time budget reached")), Math.max(0, options.deadline - Date.now()));
+  });
+  try { const value = await Promise.race([operation(), interrupted]); workspaceOperationCheck(options); return value; }
+  finally { if (timer !== undefined) clearTimeout(timer); if (abort) options.signal?.removeEventListener("abort", abort); }
+}
+type SessionLookup = (id: string, options?: WorkspaceOperationOptions) => { cwd: string; bindingRevision?: string; protectedPaths?: string[] } | undefined | Promise<{ cwd: string; bindingRevision?: string; protectedPaths?: string[] } | undefined>;
+type Bound = Workspace & { data: string; dev: number; ino: number; protectedPaths: string[]; operation?: WorkspaceOperationOptions };
 type GitRoot = { root: string; prefix: string };
 type Blob = { bytes: Buffer; mode: string | null; reason?: DiffReason };
+type GitOptions = { signal?: AbortSignal; timeoutMs?: number };
 function decode(bytes: Buffer): { text: string | null; reason?: "binary" | "invalid-utf8"; bom: boolean; eol: WorkspaceFile["eol"] } {
   const bom = bytes.length >= 3 && bytes[0] === 239 && bytes[1] === 187 && bytes[2] === 191;
   if (bytes.includes(0)) return { text: null, reason: "binary", bom, eol: "none" };
@@ -37,25 +60,25 @@ export class WorkspaceService {
     try { return await next; } finally { if (this.writes.get(target) === next) this.writes.delete(target); }
   }
 
-  private async bound(sessionId: string): Promise<Bound> {
-    const session = await this.lookup(sessionId);
+  private async bound(sessionId: string, operation?: WorkspaceOperationOptions): Promise<Bound> {
+    const session = await workspaceOperationWait(async () => this.lookup(sessionId, operation), operation);
     if (!session) fail(404, "unknown-session", "Unknown conversation");
     let root: string, data: string;
-    try { [root, data] = await Promise.all([realpath(session.cwd), realpath(this.dataDir)]); }
-    catch { return fail(404, "workspace-unavailable", "Conversation workspace is unavailable"); }
-    const info = await lstat(root);
+    try { [root, data] = await workspaceOperationWait(() => Promise.all([realpath(session.cwd), realpath(this.dataDir)]), operation); }
+    catch (error) { if (error instanceof WorkspaceError) throw error; return fail(404, "workspace-unavailable", "Conversation workspace is unavailable"); }
+    const info = await workspaceOperationWait(() => lstat(root), operation);
     if (!info.isDirectory() || root.split(sep).some(p => [".git", ".sane"].includes(p.toLowerCase())) || inside(data, root)) fail(403, "workspace-forbidden", "Workspace is not accessible");
     const protectedPaths = session.protectedPaths ?? [];
     if (protectedPaths.some(path => inside(path, root))) fail(403, "workspace-forbidden", "Git administration directory is not accessible");
-    return { sessionId, root, data, protectedPaths, dev: info.dev, ino: info.ino, maxFileBytes: WORKSPACE_MAX_BYTES, workspaceId: session.bindingRevision ?? hash(`${root}\0${info.dev}\0${info.ino}`) };
+    return { sessionId, root, data, protectedPaths, dev: info.dev, ino: info.ino, operation, maxFileBytes: WORKSPACE_MAX_BYTES, workspaceId: session.bindingRevision ?? hash(`${root}\0${info.dev}\0${info.ino}`) };
   }
   async resolve(sessionId: string): Promise<Workspace> {
     const { workspaceId, root, maxFileBytes } = await this.bound(sessionId);
     return { sessionId, workspaceId, root, maxFileBytes };
   }
-  private async bind(sessionId: string, workspaceId: unknown): Promise<Bound> {
+  private async bind(sessionId: string, workspaceId: unknown, operation?: WorkspaceOperationOptions): Promise<Bound> {
     if (typeof workspaceId !== "string" || !workspaceId) fail(400, "workspace-required", "Resolve the conversation workspace first");
-    const bound = await this.bound(sessionId);
+    const bound = await this.bound(sessionId, operation);
     if (bound.workspaceId !== workspaceId) fail(409, "workspace-changed", "Conversation workspace changed; resolve it again");
     return bound;
   }
@@ -67,19 +90,23 @@ export class WorkspaceService {
   }
   private async checked(bound: Bound, path: string, rootAllowed = false, missing = false): Promise<string> {
     const target = this.lexical(bound, path, rootAllowed);
-    await this.bind(bound.sessionId, bound.workspaceId);
+    const fresh = await this.bind(bound.sessionId, bound.workspaceId, bound.operation);
+    if (fresh.root !== bound.root || fresh.dev !== bound.dev || fresh.ino !== bound.ino) fail(409, "workspace-changed", "Conversation workspace changed; resolve it again");
+    this.lexical(fresh, path, rootAllowed);
     let cursor = bound.root;
     for (const part of path ? path.split("/") : []) {
+      workspaceOperationCheck(bound.operation);
       cursor = join(cursor, part);
       let info;
-      try { info = await lstat(cursor); } catch (error: any) {
+      try { info = await workspaceOperationWait(() => lstat(cursor), bound.operation); } catch (error: any) {
         if (missing && error.code === "ENOENT") return target;
         throw error;
       }
       if (info.isSymbolicLink()) fail(403, "symlink", "Symlink traversal is not supported");
-      const canonical = await realpath(cursor);
+      const canonical = await workspaceOperationWait(() => realpath(cursor), bound.operation);
       if (canonical !== cursor || !inside(bound.root, canonical) || inside(bound.data, canonical)) fail(403, "path-forbidden", "Path is not accessible");
     }
+    workspaceOperationCheck(bound.operation);
     return target;
   }
   async list(sessionId: string, workspaceId: unknown, path: string): Promise<WorkspaceList> {
@@ -96,10 +123,11 @@ export class WorkspaceService {
     entries.sort((a, b) => Number(b.kind === "directory") - Number(a.kind === "directory") || a.name.localeCompare(b.name));
     return { workspaceId: bound.workspaceId, path, entries, truncated };
   }
-  private async disk(bound: Bound, path: string, writable = false) {
+  private async disk(bound: Bound, path: string, writable = false, readBudget = WORKSPACE_MAX_BYTES + 1) {
     const target = await this.checked(bound, path);
     const handle = await open(target, (writable ? constants.O_RDWR : constants.O_RDONLY) | constants.O_NOFOLLOW | constants.O_NONBLOCK);
     try {
+      workspaceOperationCheck(bound.operation);
       const info = await handle.stat();
       if (!info.isFile()) fail(400, "not-file", "Only regular files are supported");
       // Shared inodes could alias protected data or paths outside the workspace.
@@ -107,11 +135,12 @@ export class WorkspaceService {
       await this.checked(bound, path);
       const current = await lstat(target);
       if (current.dev !== info.dev || current.ino !== info.ino) fail(409, "file-changed", "File changed while opening");
-      const bytes = Buffer.alloc(Math.min(info.size, WORKSPACE_MAX_BYTES) + 1);
+      const bytes = Buffer.alloc(Math.min(Math.min(info.size, WORKSPACE_MAX_BYTES) + 1, readBudget));
       let used = 0;
-      while (used < bytes.length) { const read = await handle.read(bytes, used, bytes.length - used, used); if (!read.bytesRead) break; used += read.bytesRead; }
+      while (used < bytes.length) { workspaceOperationCheck(bound.operation); const read = await handle.read(bytes, used, bytes.length - used, used); if (!read.bytesRead) break; used += read.bytesRead; }
       const after = await handle.stat();
-      if (after.size !== info.size || after.mtimeMs !== info.mtimeMs || after.ctimeMs !== info.ctimeMs) fail(409, "file-changed", "File changed while reading");
+      workspaceOperationCheck(bound.operation);
+      if (after.nlink !== 1 || after.size !== info.size || after.mtimeMs !== info.mtimeMs || after.ctimeMs !== info.ctimeMs) fail(409, "file-changed", "File changed while reading");
       return { handle, info, target, bytes: bytes.subarray(0, used), oversize: info.size > WORKSPACE_MAX_BYTES || used > WORKSPACE_MAX_BYTES };
     } catch (error) { await handle.close(); throw error; }
   }
@@ -128,6 +157,147 @@ export class WorkspaceService {
     const bound = await this.bind(sessionId, workspaceId), disk = await this.disk(bound, path);
     try { const result = await this.fileResult(bound, path, disk); await this.checked(bound, path); return result; }
     finally { await disk.handle.close(); }
+  }
+  async search(sessionId: string, input: WorkspaceSearchInput, signal?: AbortSignal): Promise<WorkspaceSearch> {
+    if (!input || typeof input.query !== "string" || !input.query.length || input.query.length > SEARCH.query || /[\0\r\n]/.test(input.query) || /[\uD800-\uDBFF](?![\uDC00-\uDFFF])|(?<![\uD800-\uDBFF])[\uDC00-\uDFFF]/u.test(input.query) || (input.caseSensitive !== undefined && typeof input.caseSensitive !== "boolean") || (input.wholeWord !== undefined && typeof input.wholeWord !== "boolean")) fail(400, "invalid-search", "Use a nonempty single-line literal query of at most 1024 characters and boolean search options");
+    let include: string[], exclude: string[];
+    try { include = searchPatterns(input.include); exclude = searchPatterns(input.exclude); }
+    catch { return fail(400, "invalid-search-filter", "Use at most 32 comma-separated relative globs with *, ?, and ** segments"); }
+    const deadline = Date.now() + SEARCH.milliseconds, operation = { signal, deadline };
+    const checkpoint = () => {
+      if (signal?.aborted) fail(499, "search-aborted", "Search cancelled");
+      // Reserve a small part of the same total budget for the mandatory final
+      // fence. If that fence cannot complete, fail closed instead of returning.
+      if (Date.now() >= deadline - 100) fail(504, "search-time-limit", "Search time budget reached");
+    };
+    checkpoint();
+    const bound = await this.bind(sessionId, input.workspaceId, operation);
+    const result: WorkspaceSearch = { workspaceId: bound.workspaceId, matches: [], truncated: false, scannedFiles: 0, skippedFiles: 0 };
+    const matcher = literalMatcher(input.query, !!input.caseSensitive);
+    let entries = 0, files = 0, bytes = 0, outputBytes = 0, ignoreFiles = 0, ignoreBytes = 0, ignoreRules = 0;
+    type IgnoreScope = { path: string; rules: Ignore };
+    const skippable = (error: any) => (error instanceof WorkspaceError ? ["invalid-path", "path-forbidden", "symlink", "hardlink", "not-file", "file-changed"].includes(error.code) : ["ENOENT", "ENOTDIR", "EACCES", "EPERM", "ELOOP"].includes(error?.code));
+    try {
+      checkpoint();
+      // Never run Git for ignores: its config, info/exclude and implicit
+      // .gitignore reads bypass our protected-path/no-hardlink read guards.
+      const directories = [{ path: "", depth: 0, ignores: [] as IgnoreScope[] }];
+      while (directories.length && !result.truncated) {
+        checkpoint();
+        const directory = directories.pop()!;
+        const scopes = [...directory.ignores];
+        const ignorePath = directory.path ? `${directory.path}/.gitignore` : ".gitignore";
+        try {
+          const ignoreTarget = await this.checked(bound, ignorePath, false, true);
+          const info = await workspaceOperationWait(() => lstat(ignoreTarget), operation);
+          // This stat is only budget planning, never permission to read: disk()
+          // independently fences the opened descriptor and refuses shared inodes.
+          if (info.isFile() && info.nlink === 1 && info.size <= WORKSPACE_MAX_BYTES) {
+            const remaining = Math.min(SEARCH.bytes - bytes, SEARCH.ignoreBytes - ignoreBytes);
+            if (files >= SEARCH.files || ignoreFiles >= SEARCH.ignoreFiles || info.size > remaining) { result.truncated = true; break; }
+            const disk = await this.disk(bound, ignorePath, false, remaining);
+            try {
+              files++; ignoreFiles++; bytes += disk.bytes.length; ignoreBytes += disk.bytes.length;
+              if (disk.info.size > remaining && !disk.oversize) { result.truncated = true; break; }
+              // Unsafe, unsupported or oversized ignore files supply no rules.
+              // The content scan independently skips these same guarded files.
+              const text = disk.oversize ? null : decode(disk.bytes).text;
+              if (text !== null) {
+                ignoreRules += text.split("\n").filter(line => line.trim() && !line.startsWith("#")).length;
+                if (ignoreRules > SEARCH.ignoreRules) { result.truncated = true; break; }
+                scopes.push({ path: directory.path, rules: ignore({ ignorecase: false }).add(text) });
+              }
+            } finally { await disk.handle.close(); }
+          }
+        } catch (error) { if (!skippable(error)) throw error; }
+        checkpoint();
+        let dir;
+        try { dir = await opendir(await this.checked(bound, directory.path, true)); }
+        catch (error) { if (directory.path && skippable(error)) continue; throw error; }
+        // Every rule is an immutable snapshot from the same guarded disk read
+        // as ordinary content; no parser performs additional filesystem reads.
+        let candidates: { path: string; directory: boolean; size: number }[] = [];
+        const scanBatch = async () => {
+          checkpoint();
+          for (const candidate of candidates) {
+            checkpoint();
+            let ignored = false;
+            for (const scope of scopes) {
+              const local = (scope.path ? candidate.path.slice(scope.path.length + 1) : candidate.path) + (candidate.directory ? "/" : "");
+              const match = scope.rules.test(local);
+              if (match.ignored) ignored = true;
+              else if (match.unignored) ignored = false;
+            }
+            if (ignored) { if (!candidate.directory) result.skippedFiles++; continue; }
+            if (candidate.directory) {
+              if (directory.depth >= SEARCH.depth) result.truncated = true;
+              else directories.push({ path: candidate.path, depth: directory.depth + 1, ignores: scopes });
+              continue;
+            }
+            if (files >= SEARCH.files || bytes + Math.min(candidate.size, WORKSPACE_MAX_BYTES + 1) > SEARCH.bytes) { result.truncated = true; break; }
+            files++;
+            try {
+              const remaining = SEARCH.bytes - bytes;
+              const disk = await this.disk(bound, candidate.path, false, remaining);
+              let text: string | null;
+              try {
+                bytes += disk.bytes.length;
+                // Enforce the budget at the guarded read itself, including a
+                // file that grew after discovery. Never scan a partial text.
+                if (disk.info.size > remaining && !disk.oversize) { result.truncated = true; break; }
+                text = disk.oversize ? null : decode(disk.bytes).text;
+                await this.checked(bound, candidate.path);
+              } finally { await disk.handle.close(); }
+              checkpoint();
+              if (text === null) { result.skippedFiles++; continue; }
+              result.scannedFiles++;
+              let lineNumber = 0;
+              for (const line of text.split("\n")) {
+                checkpoint(); lineNumber++; matcher.lastIndex = 0;
+                let match: RegExpExecArray | null;
+                while ((match = matcher.exec(line))) {
+                  checkpoint();
+                  const start = match.index, end = start + match[0].length;
+                  if (input.wholeWord && !searchWholeWord(line, start, end)) continue;
+                  const found = { path: candidate.path, line: lineNumber, column: start + 1, endColumn: end + 1, preview: searchPreview(line, start) };
+                  const size = Buffer.byteLength(JSON.stringify(found)) + 1;
+                  if (result.matches.length >= SEARCH.matches || outputBytes + size > SEARCH.outputBytes) { result.truncated = true; break; }
+                  outputBytes += size; result.matches.push(found);
+                }
+                if (result.truncated) break;
+              }
+            } catch (error) { if (!skippable(error)) throw error; result.skippedFiles++; }
+            if (result.truncated) break;
+          }
+          candidates = [];
+        };
+        for await (const entry of dir) {
+          checkpoint();
+          if (++entries > SEARCH.entries) { result.truncated = true; break; }
+          const path = directory.path ? `${directory.path}/${entry.name}` : entry.name;
+          const isDirectory = entry.isDirectory();
+          if ((isDirectory && SEARCH_IGNORED_DIRECTORIES.has(entry.name.toLowerCase())) || searchFilter(exclude!, path, isDirectory) || (!isDirectory && include!.length && !searchFilter(include!, path))) { if (!isDirectory) result.skippedFiles++; continue; }
+          try {
+            const target = await this.checked(bound, path), info = await workspaceOperationWait(() => lstat(target), operation);
+            if (entry.isSymbolicLink() || (!info.isDirectory() && (!info.isFile() || info.nlink !== 1))) { result.skippedFiles++; continue; }
+            candidates.push({ path, directory: info.isDirectory(), size: info.size });
+          } catch (error) { if (!skippable(error)) throw error; if (!isDirectory) result.skippedFiles++; continue; }
+          if (candidates.length >= 128) { await scanBatch(); if (result.truncated) break; }
+        }
+        await this.checked(bound, directory.path, true);
+        if (!result.truncated) await scanBatch();
+      }
+    } catch (error) {
+      if (signal?.aborted) fail(499, "search-aborted", "Search cancelled");
+      if (error instanceof WorkspaceError && ["search-time-limit", "git-timeout"].includes(error.code)) result.truncated = true;
+      else throw error;
+    }
+    // Partial results must never escape a changed workspace scope.
+    const final = await this.bind(sessionId, input.workspaceId, operation);
+    if (final.root !== bound.root || final.dev !== bound.dev || final.ino !== bound.ino) fail(409, "workspace-changed", "Conversation workspace changed; resolve it again");
+    for (const match of result.matches) this.lexical(final, match.path);
+    if (signal?.aborted) fail(499, "search-aborted", "Search cancelled");
+    return result;
   }
   async write(sessionId: string, input: WorkspaceWrite): Promise<WorkspaceFile> {
     if (!input || typeof input.text !== "string" || typeof input.expectedRevision !== "string") fail(400, "invalid-write", "Expected text and expectedRevision");
@@ -212,17 +382,20 @@ export class WorkspaceService {
     });
   }
 
-  async git(cwd: string, args: string[], limit = MAX_GIT_OUTPUT): Promise<{ code: number; bytes: Buffer; stderr: string }> {
+  async git(cwd: string, args: string[], limit = MAX_GIT_OUTPUT, options: GitOptions = {}): Promise<{ code: number; bytes: Buffer; stderr: string }> {
     // Do not inherit GIT_DIR/WORK_TREE/INDEX_FILE, config injection, alternates,
     // pagers, credentials, or provider secrets. No shell, hooks, filters or textconv.
     const env: Record<string, string> = { PATH: process.env.PATH ?? "/usr/bin:/bin", LANG: "C", LC_ALL: "C", GIT_CONFIG_NOSYSTEM: "1", GIT_CONFIG_GLOBAL: "/dev/null", GIT_TERMINAL_PROMPT: "0", GIT_OPTIONAL_LOCKS: "0", GIT_NO_REPLACE_OBJECTS: "1", GIT_NO_LAZY_FETCH: "1", GIT_ALLOW_PROTOCOL: "", GIT_ATTR_NOSYSTEM: "1" };
     let child;
+    if (options.signal?.aborted) fail(499, "search-aborted", "Search cancelled");
     try { child = Bun.spawn(["git", "--no-pager", "--literal-pathspecs", "-c", "core.fsmonitor=false", "-c", "core.untrackedCache=false", "-c", "core.hooksPath=/dev/null", "-c", "diff.external=", ...args], { cwd, env, detached: true, stdin: "ignore", stdout: "pipe", stderr: "pipe" }); }
     catch { return fail(503, "git-unavailable", "Git executable is unavailable"); }
     let total = 0;
     const kill = () => { try { process.kill(-child.pid, "SIGKILL"); } catch {} try { child.kill("SIGKILL"); } catch {} };
     let timer: ReturnType<typeof setTimeout>;
-    const deadline = new Promise<never>((_, reject) => { timer = setTimeout(() => { kill(); reject(new WorkspaceError(504, "git-timeout", "Git operation timed out")); }, 8000); });
+    const deadline = new Promise<never>((_, reject) => { timer = setTimeout(() => { kill(); reject(new WorkspaceError(504, "git-timeout", "Git operation timed out")); }, options.timeoutMs ?? 8000); });
+    let onAbort: () => void;
+    const aborted = new Promise<never>((_, reject) => { onAbort = () => { kill(); reject(new WorkspaceError(499, "search-aborted", "Search cancelled")); }; options.signal?.addEventListener("abort", onAbort, { once: true }); if (options.signal?.aborted) onAbort(); });
     const collect = async (stream: ReadableStream<Uint8Array>, keep: boolean) => {
       const reader = stream.getReader(), chunks: Uint8Array[] = [];
       try { while (true) { const { done, value } = await reader.read(); if (done) break; total += value.length; if (total > limit) { kill(); fail(413, "git-output-limit", "Git output exceeds the bounded response limit"); } if (keep) chunks.push(value); } }
@@ -230,9 +403,9 @@ export class WorkspaceService {
       return Buffer.concat(chunks);
     };
     try {
-      const [code, bytes, stderr] = await Promise.race([Promise.all([child.exited, collect(child.stdout, true), collect(child.stderr, true)]), deadline]);
+      const [code, bytes, stderr] = await Promise.race([Promise.all([child.exited, collect(child.stdout, true), collect(child.stderr, true)]), deadline, aborted]);
       return { code, bytes, stderr: stderr.toString("utf8") };
-    } finally { clearTimeout(timer!); kill(); }
+    } finally { clearTimeout(timer!); options.signal?.removeEventListener("abort", onAbort!); kill(); }
   }
   private async gitRoot(bound: Bound): Promise<GitRoot | null> {
     await this.bind(bound.sessionId, bound.workspaceId);

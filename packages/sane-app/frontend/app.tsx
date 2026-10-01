@@ -17,6 +17,8 @@ import { ConversationSidebar, useConversationSidebarModel } from "./conversation
 import { Facts, NativeHistoryDetails, NativeUsage, RunDetails, Thread, Usage } from "./thread";
 import { ContextualNavigation, Drawer, FilesModeControl, Icon, viewGroup } from "./nav";
 import { harnessName } from "./types";
+import { ApplicationCommandProvider } from "./application-commands";
+import { WorkspaceSearchButton, WorkspaceSearchFeature } from "./workspace-search";
 
 const basename = (path?: string | null) => path?.split("/").filter(Boolean).at(-1) || path || "Conversation";
 // Restore selection without replacing the independently bookmarked browsing pair.
@@ -94,7 +96,7 @@ function ReadyWorkspace({ state, signOut }: { state: State; signOut: () => void 
     onHistory={() => navigate(view === "history" ? "chat" : "history")}
   /> : group === "files" ? <><FilesModeControl activeView={view} onNavigate={navigate} /><WorkspaceSidebar /></>
     : <ConfigMenu onSelect={() => { setArtifact(null); setDrawer(null); }} />;
-  return <WorkspaceProvider view={view} navigate={navigate}><TerminalProvider view={view}>
+  return <ApplicationCommandProvider><WorkspaceProvider view={view} navigate={navigate}><WorkspaceSearchFeature><TerminalProvider view={view}>
     <WorkspaceShell view={view} sidebar={sidebar}
       retryCatalog={hydrateCatalog} sidebarOpen={drawer === "sidebar"}
       openSidebar={() => setDrawer("sidebar")} closeSidebar={() => setDrawer(null)}
@@ -106,7 +108,7 @@ function ReadyWorkspace({ state, signOut }: { state: State; signOut: () => void 
     </WorkspaceShell>
     {drawer === "application" && <ApplicationDialog state={state} signOut={signOut} close={() => setDrawer(null)} />}
     {drawer === "details" && <ConversationDetails state={state} close={() => setDrawer(null)} />}
-  </TerminalProvider></WorkspaceProvider>;
+  </TerminalProvider></WorkspaceSearchFeature></WorkspaceProvider></ApplicationCommandProvider>;
 }
 
 function ShellHeader({ state, view, artifact, openDetails, openApplication }: {
@@ -124,7 +126,7 @@ function ShellHeader({ state, view, artifact, openDetails, openApplication }: {
   else if (viewGroup(view) === "settings") heading = <div className="conversation-heading">{view === "workstreams" ? "Settings · Workstreams" : "Settings"}</div>;
   else if (artifact && view === "code") heading = <div className="conversation-heading">Files · Read-only workstream artifact</div>;
   else heading = <WorkspaceHeader />;
-  return <>{heading}<button type="button" className="icon-button application-opener" aria-label="Application menu" aria-haspopup="dialog" onClick={openApplication}><FiMoreHorizontal size={16} aria-hidden="true" /><span className={`connection-dot ${state.connected ? "online" : ""}`} /></button></>;
+  return <>{heading}{viewGroup(view) === "files" && <WorkspaceSearchButton />}<button type="button" className="icon-button application-opener" aria-label="Application menu" aria-haspopup="dialog" onClick={openApplication}><FiMoreHorizontal size={16} aria-hidden="true" /><span className={`connection-dot ${state.connected ? "online" : ""}`} /></button></>;
 }
 
 function ShellNotices({ state, view, openDetails }: { state: State; view: ActiveView; openDetails: () => void }) {

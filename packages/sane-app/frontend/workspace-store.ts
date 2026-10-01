@@ -74,7 +74,7 @@ export async function openBuffer(id: string, workspace: Workspace, path: string,
   if (root.buffers.has(path)) return root.buffers.get(path);
   const buffer = {} as Buffer;
   Object.assign(buffer, { path, file, baseText: file.text ?? "", saving: false, checking: false, missing: false, error: "", view: null,
-    attach: (view: EditorView | null) => { buffer.view = view; },
+    attach: (view: EditorView | null) => { if (buffer.view !== view) { buffer.view = view; notifyWorkspace(); } },
   });
   buffer.state = createBufferState(path, file.text ?? "", state => { buffer.state = state; notifyWorkspace(); }, () => { void saveBuffer(requestId(root.workspace), root.workspace, buffer); });
   root.buffers.set(path, buffer); notifyWorkspace();

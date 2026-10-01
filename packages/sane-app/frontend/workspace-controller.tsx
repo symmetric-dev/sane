@@ -2,12 +2,14 @@ import { createContext, useContext, useEffect, useRef, useState, useSyncExternal
 import type { GitComparison, WorkspaceDiff, WorkspaceList } from "../src/workspace-contract";
 import type { NavigationBookmark, WorktreeResolution as Workspace } from "../src/catalog-contract";
 import type { EditorView } from "@codemirror/view";
+import { EditorView as CodeMirrorView } from "@codemirror/view";
+import { searchSelection, type WorkspaceLocation } from "./workspace-location";
 import { workspaceClient, WorkspaceError } from "./workspace-client";
 import { catalog, worktreeScope } from "./catalog";
 import { notifyWorkspace, openBuffer, refreshBuffer, rootState, subscribeWorkspace, workspaceEpoch, workspaceFailure, workspaceSnapshot, type TreePresentation } from "./workspace-store";
 
 export type ActiveView = NavigationBookmark["view"];
-export type WorkspaceActivation = { view: "code"; path: string } | { view: "git"; path: string; comparison: GitComparison };
+export type WorkspaceActivation = { view: "code"; path: string; location?: WorkspaceLocation } | { view: "git"; path: string; comparison: GitComparison };
 type DirectoryResult = { listing?: WorkspaceList; error?: string };
 type DirectoryRequest = { result?: DirectoryResult; promise?: Promise<DirectoryResult> };
 type Scope = {
@@ -26,6 +28,8 @@ function useController(conversationId: string | null, view: ActiveView, navigate
   const [localCompare, setLocalCompare] = useState<string | null>(null);
   const generation = useRef(0), selectionRequest = useRef(0);
   const diffEditor = useRef<EditorView | null>(null);
+  const pendingLocation = useRef<{ scope: Scope; path: string; location: WorkspaceLocation } | null>(null);
+  const [locationNotice, setLocationNotice] = useState("");
   // Render-time identity prevents previous-conversation callbacks from landing before effect cleanup.
   const identity = useRef({ conversationId, view });
   identity.current = { conversationId, view };
@@ -41,7 +45,7 @@ function useController(conversationId: string | null, view: ActiveView, navigate
     const request = ++generation.current, auth = workspaceEpoch();
     let active = true;
     const current = () => active && request === generation.current && auth === workspaceEpoch() && identity.current.conversationId === conversationId;
-    setResolved(null); setError(""); setDiff(null); setLocalCompare(null); setOpening(null);
+    setResolved(null); setError(""); setDiff(null); setLocalCompare(null); setOpening(null); pendingLocation.current = null; setLocationNotice("");
     setResolving(!!conversationId);
     if (conversationId) void workspaceClient.resolve(conversationId).then(workspace => {
       if (current()) {
@@ -103,9 +107,27 @@ function useController(conversationId: string | null, view: ActiveView, navigate
     return () => { active = false; clearInterval(timer); window.removeEventListener("focus", refresh); document.removeEventListener("visibilitychange", refresh); };
   }, [scope, view, selected, comparisonKind, openAttempt]);
 
+  // Mount notification from buffer.attach covers artifact previews, same-file navigation,
+  // and file loads that finish before the editor exists. Latest activation wins.
+  useEffect(() => {
+    const pending = pendingLocation.current;
+    if (!pending) return;
+    if (!currentScope(pending.scope) || root?.selected !== pending.path) { pendingLocation.current = null; return; }
+    if (view !== "code" || localCompare || !buffer?.view) return;
+    pendingLocation.current = null;
+    const selection = searchSelection(buffer.state, pending.location);
+    if (selection) {
+      buffer.view.dispatch({ selection, effects: CodeMirrorView.scrollIntoView(selection.anchor, { y: "center" }) });
+      setLocationNotice("");
+    } else setLocationNotice("Saved search match no longer matches this buffer. Local edits are preserved; search within the editor to find its current location.");
+    buffer.view.focus();
+  });
+
   function activate(target: WorkspaceActivation) {
     if (!scope || !root || !currentScope(scope)) return;
     selectionRequest.current++;
+    pendingLocation.current = target.view === "code" && target.location ? { scope, path: target.path, location: target.location } : null;
+    setLocationNotice("");
     root.selected = target.path;
     if (target.view === "git") root.comparison = target.comparison;
     setError(""); setLocalCompare(null); setDiff(null); setOpening(null);
@@ -203,7 +225,7 @@ function useController(conversationId: string | null, view: ActiveView, navigate
     opening: opening === selectionKey, diffLoading: diffLoading === selectionKey,
     comparison: diff?.key === selectionKey ? diff.value : null,
     localCompare: localCompare === selectionKey, closeCompare: () => setLocalCompare(null),
-    activate, listDirectory, retryDirectory, refreshDirectories, compareDisk, updateTree, mutateFile,
+    activate, locationNotice, listDirectory, retryDirectory, refreshDirectories, compareDisk, updateTree, mutateFile,
     retryResolve: () => setResolveAttempt(value => value + 1), retrySelection: () => setOpenAttempt(value => value + 1),
   };
 }

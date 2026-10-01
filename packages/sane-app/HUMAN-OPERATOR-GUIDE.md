@@ -70,3 +70,47 @@ Open a directory and select its workspace/worktree. That selection chooses new
 conversations' execution checkout; existing conversations retain their recorded
 checkout. Finish external work in a conversation before sending from the App.
 Native linking and handoffs are separate work, not part of App setup.
+
+### Search files
+
+In Files or Git view, press **Cmd+Shift+F** on macOS or **Ctrl+Shift+F** on Windows/Linux,
+or use the visible search action. Search runs across the selected browsing
+worktree, independently of a conversation's execution checkout.
+
+This first version searches **saved file contents**, not unsaved editor buffers.
+Opening a result preserves local edits; save explicitly to include those edits
+in a subsequent search. Matching is literal, with case-sensitive and whole-word
+options and include/exclude path filters. Regular expressions, Quick Open
+(`Cmd+P`), and the Command Palette are not included yet.
+
+Filters are comma-separated, case-sensitive workspace-relative globs: `*.ts`
+matches basenames at any depth, `src/**/*.ts` matches paths, and `docs/` matches
+that directory's descendants. Supported wildcards are `*`, `?`, and `**` as a
+complete path segment; negation, brace expansion, and character classes are not
+supported. Searches honor safely readable `.gitignore` files inside the worktree,
+including nested rules and negation, even in non-Git directories. Global ignore
+settings, ignore files outside the browsing root, and `.git/info/exclude` are not
+read. Unsafe or oversized ignore files supply no rules. Dependency/generated folders named
+`node_modules`, `dist`, `build`, `coverage`, or `vendor` are always excluded.
+
+Search retains the file-access restrictions: protected App/project/Git data,
+symlink traversal, and hard-linked files are not searchable. Binary, unsupported,
+and oversized files are skipped. Large searches are bounded; check the results
+for skipped-file or truncation notices and narrow your query when necessary.
+
+After updating App source, stop the running App gracefully and launch again with
+your usual `bun run start:app` command, then reload the browser. A running server
+does not adopt newly built assets or backend code automatically.
+
+To smoke-test the feature:
+
+1. Select a worktree, open Files, and invoke the search shortcut with the editor
+   focused. Search for text in a nested file whose folder is still collapsed.
+2. Toggle case-sensitive/whole-word matching and narrow the include/exclude
+   filters. Open a match and check the selected text and editor position.
+3. Leave unsaved edits in a file, search again, and open a result for that file.
+   Verify the local edits remain intact and search still reports saved contents.
+4. Switch worktrees while a search is pending. Results from the old worktree
+   must not appear or open files in the new one.
+5. Verify Escape closes search and restores focus, and that unrelated editor,
+   chat, and terminal shortcuts retain their behavior.

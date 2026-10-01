@@ -1,4 +1,4 @@
-import type { WorkspaceList, WorkspaceFile, WorkspaceGit, WorkspaceDiff, GitComparison } from "../src/workspace-contract";
+import type { WorkspaceList, WorkspaceFile, WorkspaceGit, WorkspaceDiff, GitComparison, WorkspaceSearch, WorkspaceSearchInput } from "../src/workspace-contract";
 import type { WorktreeResolution } from "../src/catalog-contract";
 
 export class WorkspaceError extends Error {
@@ -21,6 +21,7 @@ export const workspaceClient = {
     return { ...workspace, workspaceId: workspace.bindingRevision };
   },
   list: (id: string, workspaceId: string, path: string) => request<WorkspaceList>(id, `/list?${query(workspaceId, path)}`),
+  search: (id: string, input: WorkspaceSearchInput, signal: AbortSignal) => request<WorkspaceSearch>(id, "/search", { method: "POST", body: JSON.stringify(input), signal }),
   file: (id: string, workspaceId: string, path: string) => request<WorkspaceFile>(id, `/file?${query(workspaceId, path)}`),
   save: (id: string, workspaceId: string, path: string, text: string, expectedRevision: string) => request<WorkspaceFile>(id, "/file", { method: "PUT", body: JSON.stringify({ workspaceId, path, text, expectedRevision }) }),
   create: (id: string, workspaceId: string, path: string) => request<WorkspaceFile>(id, "/file", { method: "POST", body: JSON.stringify({ workspaceId, path }) }),

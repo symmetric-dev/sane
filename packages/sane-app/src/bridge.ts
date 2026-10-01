@@ -133,18 +133,18 @@ async function startOwned(options: Options, assetsDir: string, packageDir: strin
   const branchRequests = new Set<string>();
   const execution = async (sessionId: string) => { const a = admissions.get(sessionId); if (!a) throw new WorkstreamAdapterError(409, "admission-missing", "Conversation has no durable admission"); return router!.execution(a); };
   const domainProtectedPaths: string[] = [];
-  const workspace = new WorkspaceService(async id => {
+  const workspace = new WorkspaceService(async (id, operation) => {
     const session = meta.sessions.find(session => session.sessionId === id);
     if (!session) return undefined;
     const a = catalog.association(id);
     if (a.association === "unresolved") throw new WorkspaceError(409, "association-unresolved", "Conversation workspace is unresolved; historical logs remain available");
-    const binding = await catalog.binding(a.workspaceId, a.worktreeId);
-    if ((await catalog.discover(session.cwd)).root !== binding.cwd) throw new WorkspaceError(409, "cwd-worktree-mismatch", "Conversation cwd binding changed");
+    const binding = await catalog.binding(a.workspaceId, a.worktreeId, operation);
+    if ((await catalog.discover(session.cwd, operation)).root !== binding.cwd) throw new WorkspaceError(409, "cwd-worktree-mismatch", "Conversation cwd binding changed");
     return { cwd: session.cwd, protectedPaths: [...binding.protectedPaths, ...domainProtectedPaths] };
   }, options.dataDir);
-  const worktrees = new WorkspaceService(async key => {
+  const worktrees = new WorkspaceService(async (key, operation) => {
     const [workspaceId, worktreeId] = key.split("/");
-    const binding = await catalog.binding(workspaceId!, worktreeId!);
+    const binding = await catalog.binding(workspaceId!, worktreeId!, operation);
     return { ...binding, protectedPaths: [...binding.protectedPaths, ...domainProtectedPaths] };
   }, options.dataDir);
   const events = new Map<string, Event[]>();
@@ -1287,7 +1287,7 @@ async function startOwned(options: Options, assetsDir: string, packageDir: strin
           return json({ workspace: await catalog.setAlias(workspaceId, worktreeId, input?.alias ?? null) });
         } catch (error) { const failure = workspaceError(error); return json({ error: failure.message, code: failure.code }, failure.status); }
       }
-      const catalogMatch = /^\/api\/workspaces\/([^/]+)(?:\/worktrees\/([^/]+)(?:\/(list|file|copy|git|diff))?)?$/.exec(path);
+      const catalogMatch = /^\/api\/workspaces\/([^/]+)(?:\/worktrees\/([^/]+)(?:\/(list|file|copy|git|diff|search))?)?$/.exec(path);
       if (catalogMatch) {
         try {
           const workspaceId = decodeURIComponent(catalogMatch[1]!), worktreeId = catalogMatch[2] && decodeURIComponent(catalogMatch[2]), operation = catalogMatch[3];
@@ -1297,6 +1297,7 @@ async function startOwned(options: Options, assetsDir: string, packageDir: strin
           if (operation === "list" && req.method === "GET") return json(await worktrees.list(key, revision, filePath));
           if (operation === "file" && req.method === "GET") return json(await worktrees.file(key, revision, filePath));
           if (operation === "file" && req.method === "PUT") { const input = await body(req); return json(await worktrees.write(key, { ...input, workspaceId: input?.bindingRevision ?? input?.workspaceId })); }
+          if (operation === "search" && req.method === "POST") { const input = await body(req); return json(await worktrees.search(key, { ...input, workspaceId: input?.bindingRevision ?? input?.workspaceId }, req.signal)); }
           if ((operation === "file" && ["POST", "DELETE"].includes(req.method)) || (operation === "copy" && req.method === "POST")) {
             const input = await body(req), boundInput = { ...input, workspaceId: input?.bindingRevision ?? input?.workspaceId };
             if (operation === "copy") return json(await worktrees.copy(key, boundInput), 201);
@@ -1308,7 +1309,7 @@ async function startOwned(options: Options, assetsDir: string, packageDir: strin
           return json({ error: "Method not allowed" }, 405);
         } catch (error) { const failure = workspaceError(error); return json({ error: failure.message, code: failure.code }, failure.status); }
       }
-      const workspaceMatch = /^\/api\/sessions\/([^/]+)\/workspace(?:\/(list|file|copy|git|diff))?$/.exec(path);
+      const workspaceMatch = /^\/api\/sessions\/([^/]+)\/workspace(?:\/(list|file|copy|git|diff|search))?$/.exec(path);
       if (workspaceMatch) {
         try {
           const sessionId = decodeURIComponent(workspaceMatch[1]!);
@@ -1317,6 +1318,7 @@ async function startOwned(options: Options, assetsDir: string, packageDir: strin
           if (operation === "list" && req.method === "GET") return json(await workspace.list(sessionId, workspaceId, filePath));
           if (operation === "file" && req.method === "GET") return json(await workspace.file(sessionId, workspaceId, filePath));
           if (operation === "file" && req.method === "PUT") return json(await workspace.write(sessionId, await body(req)));
+          if (operation === "search" && req.method === "POST") { const input = await body(req); return json(await workspace.search(sessionId, { ...input, workspaceId: input?.bindingRevision ?? input?.workspaceId }, req.signal)); }
           if (operation === "file" && req.method === "POST") return json(await workspace.create(sessionId, await body(req)), 201);
           if (operation === "file" && req.method === "DELETE") return json(await workspace.delete(sessionId, await body(req)));
           if (operation === "copy" && req.method === "POST") return json(await workspace.copy(sessionId, await body(req)), 201);

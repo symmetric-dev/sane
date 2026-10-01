@@ -54,6 +54,7 @@ export function WorkspaceView() {
   if (!workspace) return <section className="workspace-empty"><h2>{controller.resolving ? "Opening workspace…" : "Workspace unavailable"}</h2>{error && <p role="alert">{error}</p>}{!controller.resolving && <button onClick={controller.retryResolve}>Retry workspace</button>}</section>;
   return <section className="workspace-view" aria-label={view === "code" ? "Files workspace" : "Git changes"}>
     {error && <div className="workspace-notice workspace-error" role="alert">{error} <button onClick={controller.retrySelection}>Retry</button> <button onClick={controller.retryResolve}>Reopen workspace</button></div>}
+    {controller.locationNotice && <div className="workspace-notice" role="status">{controller.locationNotice}</div>}
     {buffer?.error && <div className="workspace-notice workspace-error" role="alert">{buffer.error} <button onClick={controller.retryResolve}>Reopen workspace</button></div>}
     {buffer?.disk && <div className="workspace-notice">Disk changed. Local edits are preserved. Compare disk, then reload explicitly to discard local changes.</div>}
     {view === "code" ? !selected ? <div className="workspace-empty"><h2>Open a file to begin</h2><p>Choose a file in the sidebar or create one with New file. Edit UTF-8 files up to 256 KiB. Save explicitly with Cmd+S / Ctrl+S.</p></div>

@@ -1,6 +1,6 @@
 import { readFile, writeFile, rename, realpath, lstat, open } from "node:fs/promises";
 import { basename, isAbsolute, join, relative, sep } from "node:path";
-import { WorkspaceError, WorkspaceService } from "./workspace";
+import { WorkspaceError, WorkspaceService, workspaceOperationCheck, workspaceOperationWait, type WorkspaceOperationOptions } from "./workspace";
 import { uuid, type Session } from "./history";
 import type { Association, WorkspaceRecord, WorktreeRecord, NavigationBookmark, NavigationWrite } from "./catalog-contract";
 
@@ -73,23 +73,30 @@ export class CatalogService {
       this.validateNavigation(n.bookmark, false); this.navigation = n.bookmark;
     } catch { throw new Error("Missing or invalid fresh navigation record"); }
   }
-  async discover(cwd: string): Promise<Discovery> {
+  async discover(cwd: string, operation?: WorkspaceOperationOptions): Promise<Discovery> {
+    workspaceOperationCheck(operation);
     if (!validPath(cwd)) error(400, "invalid-cwd", "cwd must be an absolute directory path");
     let path: string;
-    try { path = await realpath(cwd); } catch (e: any) { return error(e.code === "ENOENT" || e.code === "ENOTDIR" ? 404 : 403, "directory-unavailable", "Directory is unavailable"); }
-    const data = await realpath(this.dataDir);
-    await identity(path);
+    try { path = await workspaceOperationWait(() => realpath(cwd), operation); } catch (e: any) { if (e instanceof WorkspaceError) throw e; return error(e.code === "ENOENT" || e.code === "ENOTDIR" ? 404 : 403, "directory-unavailable", "Directory is unavailable"); }
+    const data = await workspaceOperationWait(() => realpath(this.dataDir), operation);
+    await workspaceOperationWait(() => identity(path), operation);
     if (inside(data, path) || path.split(sep).some(p => [".git", ".sane"].includes(p.toLowerCase()))) error(403, "workspace-forbidden", "Directory is protected");
-    const top = await this.git.git(path, ["rev-parse", "--show-toplevel"]);
+    const git = async (args: string[]) => {
+      workspaceOperationCheck(operation);
+      const result = await this.git.git(path, args, undefined, { signal: operation?.signal, timeoutMs: operation?.deadline === undefined ? undefined : Math.max(1, operation.deadline - Date.now()) });
+      workspaceOperationCheck(operation);
+      return result;
+    };
+    const top = await git(["rev-parse", "--show-toplevel"]);
     if (top.code) {
       if (!top.stderr.startsWith("fatal: not a git repository (or any of the parent directories): .git")) error(503, "git-discovery", "Git discovery failed");
-      const id = await identity(path); return { root: path, commonDir: null, gitDir: null, identity: id, gitIdentity: null, repoIdentity: id };
+      const id = await workspaceOperationWait(() => identity(path), operation); return { root: path, commonDir: null, gitDir: null, identity: id, gitIdentity: null, repoIdentity: id };
     }
-    const root = await realpath(top.bytes.toString("utf8").replace(/\n$/, ""));
-    const query = async (flag: string) => { const r = await this.git.git(path, ["rev-parse", "--path-format=absolute", flag]); if (r.code) error(503, "git-discovery", "Git directory discovery failed"); return realpath(r.bytes.toString("utf8").replace(/\n$/, "")); };
+    const root = await workspaceOperationWait(() => realpath(top.bytes.toString("utf8").replace(/\n$/, "")), operation);
+    const query = async (flag: string) => { const r = await git(["rev-parse", "--path-format=absolute", flag]); if (r.code) error(503, "git-discovery", "Git directory discovery failed"); return workspaceOperationWait(() => realpath(r.bytes.toString("utf8").replace(/\n$/, "")), operation); };
     const commonDir = await query("--git-common-dir"), gitDir = await query("--git-dir");
     if (!inside(root, path) || inside(data, root) || [commonDir, gitDir].some(p => inside(p, path) || inside(p, root))) error(403, "workspace-forbidden", "Git administration directory is protected");
-    return { root, commonDir, gitDir, identity: await identity(root), gitIdentity: await identity(gitDir), repoIdentity: await identity(commonDir) };
+    return { root, commonDir, gitDir, identity: await workspaceOperationWait(() => identity(root), operation), gitIdentity: await workspaceOperationWait(() => identity(gitDir), operation), repoIdentity: await workspaceOperationWait(() => identity(commonDir), operation) };
   }
   private add(d: Discovery): { workspace: Repo; tree: Tree } {
     let workspace = this.catalog.workspaces.find(w => d.commonDir ? w.commonDir === d.commonDir : w.kind === "directory" && w.worktrees[0]?.root === d.root);
@@ -135,14 +142,20 @@ export class CatalogService {
   }
   private find(id: string) { return this.catalog.workspaces.find(w => w.workspaceId === id) ?? error(404, "unknown-workspace", "Unknown workspace"); }
   private publicWorkspace(w: Repo): WorkspaceRecord { return { workspaceId: w.workspaceId, kind: w.kind, name: w.name, commonDir: w.commonDir, worktrees: w.worktrees.map(({ identity, gitIdentity, ...t }) => ({ ...t })) }; }
-  async binding(workspaceId: string, worktreeId: string) {
+  async binding(workspaceId: string, worktreeId: string, operation?: WorkspaceOperationOptions) {
+    workspaceOperationCheck(operation);
     const w = this.find(workspaceId), t = w.worktrees.find(t => t.worktreeId === worktreeId) ?? error(404, "unknown-worktree", "Unknown worktree");
     try {
-      const d = await this.discover(t.root);
+      const d = await this.discover(t.root, operation);
       if (d.root !== t.root || d.gitDir !== t.gitDir || d.commonDir !== w.commonDir || !same(d.identity, t.identity) || !same(d.gitIdentity, t.gitIdentity) || !same(d.repoIdentity, w.identity)) error(409, "binding-invalid", "Pinned filesystem binding changed");
+      workspaceOperationCheck(operation);
       t.state = "available"; delete t.reason;
       return { cwd: t.root, bindingRevision: t.bindingRevision, protectedPaths: [w.commonDir, t.gitDir].filter((p): p is string => !!p) };
-    } catch (e) { t.state = "invalid"; t.reason = e instanceof WorkspaceError ? e.message : "Worktree path unavailable"; throw e instanceof WorkspaceError ? e : new WorkspaceError(409, "binding-invalid", t.reason); }
+    } catch (e) {
+      // Cancellation/deadline is not evidence that the pinned worktree is bad.
+      if (operation && e instanceof WorkspaceError && ["search-aborted", "search-time-limit", "git-timeout"].includes(e.code)) throw e;
+      t.state = "invalid"; t.reason = e instanceof WorkspaceError ? e.message : "Worktree path unavailable"; throw e instanceof WorkspaceError ? e : new WorkspaceError(409, "binding-invalid", t.reason);
+    }
   }
   async get(id: string) { await this.serial; const w = this.find(id); for (const t of w.worktrees) { try { await this.binding(id, t.worktreeId); } catch {} } return this.publicWorkspace(w); }
   async list() { await this.serial; return { version: 1 as const, workspaces: await Promise.all(this.catalog.workspaces.map(w => this.get(w.workspaceId))) }; }
