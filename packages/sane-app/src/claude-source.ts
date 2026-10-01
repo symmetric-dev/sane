@@ -10,5 +10,5 @@ export function claudeSourceRoot(env: NodeJS.ProcessEnv = process.env): string {
 }
 
 export function assertClaudeSource(root: string): void {
-  if (claudeSourceRoot() !== root) throw new Error("Claude native source changed since bridge startup; restore the pinned launch environment");
+  if (claudeSourceRoot() !== root) throw new Error("Native source changed since bridge startup; restore the pinned launch environment");
 }

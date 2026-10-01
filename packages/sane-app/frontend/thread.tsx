@@ -1,12 +1,14 @@
-import { createContext, useContext, useEffect, useRef, useState, useSyncExternalStore, type ReactNode } from "react";
+import { createContext, useContext, useEffect, useMemo, useRef, useState, useSyncExternalStore, type ReactNode } from "react";
 import type { WorkerDelivery, WorkerRecord } from "../src/worker-contract";
 import { useWorkers, openWorker, workerReference } from "./worker-client";
 import { WorkerCard, WorkerOutcomeReport, WorkerSection } from "./worker-ui";
 import { dispatchedWorkers, workerReportDelivery } from "./worker-presentation";
-import type { Harness, ToolPart } from "./types";
+import type { Harness, PendingTurn, ToolPart } from "./types";
 import { AssistantRuntimeProvider, MessagePrimitive, ThreadPrimitive, useAuiState, useExternalStoreRuntime, type ThreadMessageLike } from "@assistant-ui/react";
 import { ChatComposer } from "./chat-composer";
 import { ChatScroll } from "./chat-scroll";
+import { ConversationLoading, PendingUserText } from "./chat-loading";
+import { messagesWithPendingTurn } from "./transcript";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import { FiArrowLeft, FiArrowUpRight, FiCommand, FiZap } from "react-icons/fi";
@@ -14,7 +16,7 @@ import { store, type State } from "./store";
 import { Interactions } from "./interactions";
 import { catalog } from "./catalog";
 import { BranchAction, BranchLinks } from "./branch-ui";
-import { active, harnessName, type Message, type Run, type UsageSnapshot } from "./types";
+import { active, type Message, type Run, type UsageSnapshot } from "./types";
 
 const json = (value: unknown) => typeof value === "string" ? value : JSON.stringify(value, null, 2) ?? "Unavailable";
 const number = (value: unknown, suffix = "") => typeof value === "number" && Number.isFinite(value) && value >= 0 ? `${value.toLocaleString(undefined, { maximumFractionDigits: 6 })}${suffix}` : "Unavailable";
@@ -32,7 +34,7 @@ function Markdown({ text }: { text: string }) {
   return <div className="prose"><ReactMarkdown remarkPlugins={[remarkGfm]} skipHtml components={{ pre: CodeBlock, a: ({ children, href }) => <a href={href} target="_blank" rel="noopener noreferrer">{children}</a>, img: ({ alt }) => <span className="muted">[Image: {alt || "image omitted"}]</span> }}>{text}</ReactMarkdown></div>;
 }
 
-export type TranscriptContextValue = { sessionId: string; harness: Harness; messages: Message[]; runs: Run[]; workers: WorkerRecord[]; deliveries?: WorkerDelivery[]; openWorker: (worker: WorkerRecord) => void; branchEnabled?: boolean };
+export type TranscriptContextValue = { sessionId: string; harness: Harness; messages: Message[]; runs: Run[]; workers: WorkerRecord[]; deliveries?: WorkerDelivery[]; openWorker: (worker: WorkerRecord) => void; branchEnabled?: boolean; pendingTurn?: PendingTurn | null };
 export const TranscriptContext = createContext<TranscriptContextValue | null>(null);
 const isActivityMessage = (message: Message) => message.role === "assistant" && message.parts.some(part => part.type !== "text") && !message.parts.some(part => part.type === "text" && part.text.trim()) && message.error === undefined && message.status !== "failed" && message.status !== "interrupted";
 function TranscriptTool({ part, source }: { part: ToolPart; source: Message }) {
@@ -50,6 +52,7 @@ export function ChatMessage() {
   const sourceIndex = context.messages.findIndex(m => m.id === message.id);
   const source = context.messages[sourceIndex];
   const isUser = message.role === "user";
+  const pending = isUser && context.pendingTurn?.id === message.id ? context.pendingTurn : null;
   // Native records are separate messages, but identity belongs to the user turn.
   // System notices retain their own label without resetting assistant identity.
   const previousSpeaker = context.messages.slice(0, Math.max(0, sourceIndex)).findLast(m => m.role !== "system");
@@ -64,9 +67,9 @@ export function ChatMessage() {
   const delivery = source && workerReportDelivery(source, context.deliveries ?? []);
   if (delivery) return <MessagePrimitive.Root className="message worker-report-message"><WorkerOutcomeReport delivery={delivery} workers={context.workers} runs={context.runs} open={context.openWorker} /></MessagePrimitive.Root>;
   return <MessagePrimitive.Root className={`message ${isUser ? "user-message" : "assistant-message"}${continued ? " assistant-continued" : ""}${activity ? " activity-message" : ""}${activityContinued ? " assistant-activity-continued" : ""}`}>
-    {showLabel && <div className="assistant-label"><FiZap size={13} aria-hidden="true" /> {source?.role === "system" ? `${harnessName(harness)} · System` : harnessName(harness)}</div>}
+    {showLabel && <div className="assistant-label"><FiZap size={13} aria-hidden="true" /> {source?.role === "system" ? "System" : "Assistant"}</div>}
     <div className={isUser ? "user-bubble" : "assistant-body"}>
-      {source ? source.parts.map((part, index) => part.type === "reasoning" ? <details className="tool reasoning" key={index}><summary>Reasoning</summary><div className="tool-body"><Markdown text={part.text} /></div></details> : part.type === "text" ? isUser ? <p key={index} className="user-text">{part.text}</p> : <Markdown key={index} text={part.text} /> : <TranscriptTool key={part.id} part={part} source={source} />) : message.content.map((part, index) => {
+      {pending ? <PendingUserText text={pending.text} sending={!pending.runId} /> : source ? source.parts.map((part, index) => part.type === "reasoning" ? <details className="tool reasoning" key={index}><summary>Reasoning</summary><div className="tool-body"><Markdown text={part.text} /></div></details> : part.type === "text" ? isUser ? <p key={index} className="user-text">{part.text}</p> : <Markdown key={index} text={part.text} /> : <TranscriptTool key={part.id} part={part} source={source} />) : message.content.map((part, index) => {
         if (part.type === "text") return isUser ? <p key={index} className="user-text">{part.text}</p> : <Markdown key={index} text={part.text} />;
         if (part.type === "tool-call") return <details className="tool" key={part.toolCallId}><summary><FiCommand size={13} className="tool-glyph" aria-hidden="true" /><span>{part.toolName}</span><span className="tool-status">{part.result !== undefined ? part.isError ? "Failed" : "Result" : message.status?.type === "running" ? "Working" : "No result recorded"}</span></summary><div className="tool-body"><p className="eyebrow">Input</p><pre>{json(part.args)}</pre>{part.result !== undefined && <><p className="eyebrow">{part.isError ? "Error" : "Output"}</p><pre>{json(part.result)}</pre></>}</div></details>;
         return null;
@@ -102,21 +105,22 @@ export function Thread({ state, active: isActive = true, navigation }: { state: 
   const running = state.runs.some(run => active(run.status));
   const nativeIssue = [...state.runs].reverse().find(run => active(run.status) && run.nativeConnection && run.nativeConnection !== "connected");
   const latestRun = state.runs.at(-1);
-  const runtime = useExternalStoreRuntime({ messages: state.messages, convertMessage, isRunning: running,
+  const pendingTurn = state.pendingTurn?.conversationId === state.selected ? state.pendingTurn : null;
+  const messages = useMemo(() => messagesWithPendingTurn(state.messages, pendingTurn), [state.messages, pendingTurn]);
+  const runtime = useExternalStoreRuntime({ messages, convertMessage, isRunning: running,
     isSendDisabled: !isActive || running || state.loading || state.sending || !state.connected || !state.availability.canSend || modelUnavailable || !!store.executionUnavailable() || (needsAck && ack !== state.selected),
     onNew: async message => { const text = message.content.filter(p => p.type === "text").map(p => p.text).join("\n"); await send(text); },
   });
   const sendDisabled = !isActive || running || state.loading || state.sending || !state.connected || !state.availability.canSend || modelUnavailable || !!store.executionUnavailable() || (needsAck && ack !== state.selected);
   const footer = <ChatComposer state={state} active={isActive} navigation={navigation} ack={ack} onAckChange={setAck} send={send} sendDisabled={sendDisabled} parentId={parentId} />;
-  return <TranscriptContext.Provider value={{ sessionId: state.selected, harness, messages: state.messages, runs: state.runs, workers, deliveries: projection.deliveries, openWorker, branchEnabled: !state.loading && !state.sending && !running && !parentId && !conversation?.worker && !conversation?.replacedBy && !(conversation?.attachment && harness === "claude-code") }}><AssistantRuntimeProvider runtime={runtime}><ThreadPrimitive.Root className="thread">
+  return <TranscriptContext.Provider value={{ sessionId: state.selected, harness, messages, runs: state.runs, workers, deliveries: projection.deliveries, openWorker, pendingTurn, branchEnabled: !state.loading && !state.sending && !running && !parentId && !conversation?.worker && !conversation?.replacedBy && !(conversation?.attachment && harness === "claude-code") }}><AssistantRuntimeProvider runtime={runtime}><ThreadPrimitive.Root className="thread">
     <BranchLinks key={state.selected} conversation={conversation} />
     {parentId && <nav className="worker-parent-nav" aria-label="Worker navigation"><button type="button" className="text-button" disabled={state.sending} onClick={() => store.openConversation(parentId)}><FiArrowLeft size={14} aria-hidden="true" />Back to parent</button><span className="muted">Worker conversation</span></nav>}
     <ChatScroll resetKey={state.selected || `new:${repository.navigation.worktreeId}`} footer={footer}>
       <div className="transcript">
-        {!state.messages.length && <div className="welcome"><span className="welcome-mark" aria-hidden="true"><FiZap size={44} aria-hidden="true" /></span><p className="eyebrow">YOUR LOCAL WORKSPACE</p><h1>{state.loading ? "Opening your conversation…" : state.selected ? "A little space to think." : "What shall we work on?"}</h1><p>{state.loading ? "Loading the bridge’s recorded history." : `Explore an idea, untangle a problem, or build something useful with ${harnessName(harness)}.`}</p>{!state.selected && <div className="suggestions">{["Help me understand this project", "Plan a thoughtful next step", "Review my recent changes"].map(text => <button key={text} type="button" onClick={() => store.setDraft({ text })}>{text}<FiArrowUpRight size={13} aria-hidden="true" /></button>)}</div>}</div>}
+        {!messages.length && (state.loading || !repository.ready || (state.selected && state.connectionError) ? <ConversationLoading label={state.selected ? state.connectionError ? "Reconnecting to your conversation…" : "Opening conversation…" : "Preparing your workspace…"} /> : !state.selected ? <div className="welcome"><span className="welcome-mark" aria-hidden="true"><FiZap size={44} aria-hidden="true" /></span><p className="eyebrow">YOUR LOCAL WORKSPACE</p><h1>What shall we work on?</h1><p>Explore an idea, untangle a problem, or build something useful with SANE.</p><div className="suggestions">{["Help me understand this project", "Plan a thoughtful next step", "Review my recent changes"].map(text => <button key={text} type="button" onClick={() => store.setDraft({ text })}>{text}<FiArrowUpRight size={13} aria-hidden="true" /></button>)}</div></div> : <div className="chat-empty"><FiZap size={24} aria-hidden="true" /><p>No messages yet.</p><span>Send a message to begin.</span></div>)}
         <ThreadPrimitive.Messages components={{ Message: ChatMessage }} />
-        {running && <p className="working" role="status"><span className="pulse" />{!state.connected ? "Connection unavailable. The run’s current state is not yet known." : nativeIssue ? nativeIssue.nativeReason || "OpenCode connection unavailable; execution state remains unconfirmed." : `${harnessName(harness)} is working. New output will appear here.`}{store.capabilities()?.cancelRun && <button type="button" className="text-button" disabled={state.actionBusy || !state.connected} onClick={() => void store.cancel()}>Stop run</button>}</p>}
-        {state.sending && !running && <p className="working" role="status"><span className="pulse" />Submitting… New output will appear here.</p>}
+        {running && <p className="working" role="status"><span className="pulse" />{!state.connected ? "Connection unavailable. The run’s current state is not yet known." : nativeIssue ? nativeIssue.nativeReason || "Assistant connection unavailable; execution state remains unconfirmed." : "Assistant is working. New output will appear here."}{store.capabilities()?.cancelRun && <button type="button" className="text-button" disabled={state.actionBusy || !state.connected} onClick={() => void store.cancel()}>Stop run</button>}</p>}
         {latestRun?.status === "failed" && latestRun.nativeReason && <p className="notice error" role="alert">Run failed: {latestRun.nativeReason}</p>}
         {harness === "opencode" && !conversation?.replacedBy ? <Interactions state={state} /> : <>{state.actionNotice && <p role="status" className="notice">{state.actionNotice}</p>}{state.interactionError && <p role="alert" className="notice error">{state.interactionError}</p>}</>}
       </div>
@@ -129,7 +133,7 @@ export function Facts({ values }: { values: [string, ReactNode][] }) { return <d
 export function NativeHistoryDetails({ state }: { state: State }) {
   if (!state.selected) return null;
   const conversation = state.conversations.find(c => c.id === state.selected);
-  return <section className="detail-section"><h3>Conversation history</h3><p className="muted">Refresh messages recorded outside the App. This does not send a message or stop a run.</p><button type="button" className="text-button" disabled={state.actionBusy || state.sending || state.loading || state.runs.some(run => active(run.status)) || !state.connected} onClick={() => void store.reconcile()}>{state.actionBusy ? "Refreshing…" : "Refresh native history"}</button>{state.nativeHistory && <p className="muted">Last refreshed {new Date(state.nativeHistory.importedAt).toLocaleString()}</p>}{conversation?.attachment && conversation.harness === "claude-code" && <p className="muted">Imported Claude conversations cannot be branched because a completed turn cannot be verified.</p>}{state.interactionError && <p className="notice error" role="alert">{state.interactionError}</p>}</section>;
+  return <section className="detail-section"><h3>Conversation history</h3><p className="muted">Refresh messages recorded outside the App. This does not send a message or stop a run.</p><button type="button" className="text-button" disabled={state.actionBusy || state.sending || state.loading || state.runs.some(run => active(run.status)) || !state.connected} onClick={() => void store.reconcile()}>{state.actionBusy ? "Refreshing…" : "Refresh native history"}</button>{state.nativeHistory && <p className="muted">Last refreshed {new Date(state.nativeHistory.importedAt).toLocaleString()}</p>}{conversation?.attachment && conversation.harness === "claude-code" && <p className="muted">This imported conversation cannot be branched because a completed turn cannot be verified.</p>}{state.interactionError && <p className="notice error" role="alert">{state.interactionError}</p>}</section>;
 }
 
 export function Usage({ snapshot }: { snapshot?: UsageSnapshot }) {

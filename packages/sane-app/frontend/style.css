@@ -502,6 +502,61 @@ h3 {
   line-height:1.8;
 }
 
+/* === conversation loading === */
+.conversation-loading,.chat-empty {
+  display:flex;
+  flex-direction:column;
+  align-items:center;
+  gap:14px;
+  margin:clamp(40px,12vh,120px) auto 70px;
+  color:var(--muted-foreground);
+  text-align:center;
+}
+.conversation-loading p,.chat-empty p {
+  margin:0;
+  font-size:14px;
+}
+.chat-empty span {
+  font-size:12px;
+}
+.conversation-loading-mark {
+  display:grid;
+  place-items:center;
+  width:48px;
+  height:48px;
+  border-radius:16px;
+  color:var(--primary);
+  background:var(--accent);
+  animation:conversation-breathe 1.8s ease-in-out infinite;
+}
+.conversation-loading-lines {
+  display:flex;
+  flex-direction:column;
+  align-items:center;
+  gap:9px;
+  width:min(220px,70%);
+  margin-top:10px;
+}
+.conversation-loading-lines span {
+  width:100%;
+  height:6px;
+  border-radius:6px;
+  background:var(--accent);
+  animation:conversation-breathe 1.8s ease-in-out infinite;
+}
+.conversation-loading-lines span:nth-child(2) {
+  width:80%;
+  animation-delay:.15s;
+}
+.conversation-loading-lines span:nth-child(3) {
+  width:55%;
+  animation-delay:.3s;
+}
+@keyframes conversation-breathe {
+  0%,100% { opacity:.45; }
+  50% { opacity:1; }
+}
+
 /* === suggestions === */
 .suggestions {
   display:flex;
@@ -557,6 +612,15 @@ h3 {
   overflow-wrap:anywhere;
   margin:0;
   line-height:1.75;
+}
+.user-submission-status {
+  display:flex;
+  align-items:center;
+  justify-content:flex-end;
+  gap:7px;
+  margin-top:7px;
+  color:var(--muted-foreground);
+  font-size:11px;
 }
 
 /* === assistant === */

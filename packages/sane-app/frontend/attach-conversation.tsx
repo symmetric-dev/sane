@@ -47,7 +47,7 @@ export function AttachConversation({ onChoose }: { onChoose: (id: string) => voi
       <label>Native session ID<input name="nativeSessionId" required disabled={busy} placeholder={harness === "opencode" ? "ses_…" : "Session UUID"} /></label>
       <label>Actual execution checkout<input name="cwd" required disabled={busy} defaultValue={store.workspace()} placeholder="/absolute/repository/root" /></label>
       <p>Reads existing native history through this server’s configured native authority. Does not send a prompt, create a replacement session or move its execution directory. Finish native work first; never use both clients concurrently for the same conversation.</p>
-      {harness === "claude-code" && <p>Claude activity is unknown: the SDK cannot discover running execution. Before every App send you must confirm external Claude is stopped.</p>}
+      {harness === "claude-code" && <p>External assistant activity is unknown: this harness cannot report running execution. Before every SANE send you must confirm external execution is stopped.</p>}
       <p>If registration is incomplete, retry these same identity and checkout values after resolving the reported error. Existing evidence is retained.</p>
       {error && <p role="alert" className="notice error">{error}</p>}
       <button type="submit" disabled={busy}>{busy ? "Verifying native history…" : "Verify and attach"}</button>

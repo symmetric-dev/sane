@@ -501,7 +501,7 @@ async function startOwned(options: Options, assetsDir: string, packageDir: strin
     if (source.agentKind === "worker" || workerStore.list().some(w => w.sessionId === source.sessionId)) throw new Error("Worker conversations cannot be branched");
     if (workers.tree(source.sessionId).some(w => !w.outcome || w.continuation && !["completed", "failed", "interrupted"].includes(w.continuation.state) || workerResults(w).some(r => ["pending", "claimed", "acceptance-unknown"].includes(r.notification.state))) || workerStore.deliveries().some(d => d.parentSessionId === source.sessionId && ["claimed", "acceptance-unknown"].includes(d.state))) throw new Error("Finish outstanding workers and worker report deliveries before branching");
     if (branches.replaced(source.sessionId)) throw new Error("Replaced conversations are read-only");
-    if (source.harness === "claude-code" && source.attachment) throw new Error("Imported Claude conversations lack trustworthy complete-turn and idle evidence; branching is unavailable");
+    if (source.harness === "claude-code" && source.attachment) throw new Error("This imported conversation lacks trustworthy complete-turn and idle evidence; branching is unavailable");
   }
   async function branchBoundary(source: Session, runId?: string, messageId?: string) {
     const run = runId ? meta.runs.find(r => r.runId === runId && r.sessionId === source.sessionId && r.status === "completed") : undefined;
@@ -523,12 +523,12 @@ async function startOwned(options: Options, assetsDir: string, packageDir: strin
       if (boundary < 0) throw new Error("No successful native complete-turn boundary was found");
       return { boundary: raw[boundary]!.id, before: raw[boundary + 1]?.id, sourceFingerprint: branchFingerprint(raw) };
     }
-    if (!run) throw new Error("Claude branching requires an App-recorded completed run");
+    if (!run) throw new Error("Branching on this harness requires a SANE-recorded completed run");
     const assistant = (id: string) => (events.get(id) ?? []).filter(e => e.kind === "stdout" && (e.data as any)?.type === "assistant" && !(e.data as any)?.parent_tool_use_id).at(-1)?.data as any;
     const selected = assistant(run.runId), latest = source.lastRunId && assistant(source.lastRunId);
-    if (source.lastStatus !== "completed" || !uuid(selected?.uuid) || !uuid(latest?.uuid) || selected.message?.content?.some((p: any) => p.type === "tool_use")) throw new Error("Claude complete-turn/idle evidence is unavailable");
+    if (source.lastStatus !== "completed" || !uuid(selected?.uuid) || !uuid(latest?.uuid) || selected.message?.content?.some((p: any) => p.type === "tool_use")) throw new Error("Complete-turn/idle evidence is unavailable for this harness");
     const native = await readClaudeHistory(source.nativeSessionId!, source.cwd, claudeRoot);
-    if (native.at(-1)?.messageId !== latest.uuid || !native.some(m => m.messageId === selected.uuid)) throw new Error("Claude native history differs from the App's completed run evidence; external activity must be reconciled");
+    if (native.at(-1)?.messageId !== latest.uuid || !native.some(m => m.messageId === selected.uuid)) throw new Error("Native history differs from SANE's completed run evidence; external activity must be reconciled");
     return { boundary: selected.uuid as string, before: undefined, sourceFingerprint: branchFingerprint(native) };
   }
   async function enrollBranch(op: BranchOperation, source: Session) {
@@ -1073,7 +1073,7 @@ async function startOwned(options: Options, assetsDir: string, packageDir: strin
     if (!availability(h.recipient.sessionId, true, true, true).canSend || handoffReservations.has(h.recipient.sessionId)) return;
     h = await prepareHandoffRecipient(workspaceId, id);
     const session = meta.sessions.find(s => s.sessionId === h.recipient.sessionId)!;
-    if (session.attachment && session.harness !== "opencode" && !handoffAcknowledgements.has(h.id)) throw new WorkstreamAdapterError(409, "native-acknowledgement-required", "Confirm external Claude execution is stopped with the handoff acknowledge endpoint before delivery");
+    if (session.attachment && session.harness !== "opencode" && !handoffAcknowledgements.has(h.id)) throw new WorkstreamAdapterError(409, "native-acknowledgement-required", "Confirm external assistant execution is stopped with the handoff acknowledge endpoint before delivery");
     if (!availability(session.sessionId, true, true).canSend || handoffReservations.has(session.sessionId)) return;
     admitting.add(session.sessionId);
     try {
@@ -1230,8 +1230,8 @@ async function startOwned(options: Options, assetsDir: string, packageDir: strin
         if (h.recipient.ownerId !== store.manifest.storeId) return json({ error: "Handoff belongs to another App store" }, 409);
         if (handoffAction[2] === "reconcile") {
           const run = meta.runs.find(r => r.runId === h.runId && r.sessionId === h.recipient.sessionId);
-          if (h.recipient.harness !== "cc" || !run || run.status !== "interrupted" || !["acceptance_unknown", "accepted", "running"].includes(h.status) || input.nativeStopped !== true || owners.has(h.recipient.sessionId) || !availability(undefined, false).canSend) return json({ error: "Interrupted Claude run, reconciled App ownership, and explicit nativeStopped acknowledgement required" }, 409);
-          const result = domain.advanceHandoff(h.id, h.revision, { status: "failed", evidence: `Operator confirmed interrupted Claude run ${run.runId} stopped; delivery outcome not claimed successful` }, { actor: { kind: "system" }, correlationId: h.id });
+          if (h.recipient.harness !== "cc" || !run || run.status !== "interrupted" || !["acceptance_unknown", "accepted", "running"].includes(h.status) || input.nativeStopped !== true || owners.has(h.recipient.sessionId) || !availability(undefined, false).canSend) return json({ error: "Interrupted assistant run, reconciled SANE ownership, and explicit nativeStopped acknowledgement required" }, 409);
+          const result = domain.advanceHandoff(h.id, h.revision, { status: "failed", evidence: `Operator confirmed interrupted assistant run ${run.runId} stopped; delivery outcome not claimed successful` }, { actor: { kind: "system" }, correlationId: h.id });
           handoffReservations.delete(h.recipient.sessionId); handoffProblems.delete(h.id);
           return json({ handoff: result });
         }
@@ -1436,7 +1436,7 @@ async function startOwned(options: Options, assetsDir: string, packageDir: strin
         const input = await body(req);
         if (!input || !uuid(input.requestId)) return json({ error: "A durable branch request ID is required" }, 400);
         if (input.runId !== undefined && !uuid(input.runId) || input.messageId !== undefined && (typeof input.messageId !== "string" || !/^msg_[a-zA-Z0-9_-]+$/.test(input.messageId))) return json({ error: "Invalid complete-turn selector" }, 400);
-        if (typeof input.prompt !== "string" || input.prompt.length > 100000 || typeof input.replace !== "boolean" || source.harness === "claude-code" && !input.prompt.trim()) return json({ error: "Provide Replace original and a first message (required for Claude)" }, 400);
+        if (typeof input.prompt !== "string" || input.prompt.length > 100000 || typeof input.replace !== "boolean" || source.harness === "claude-code" && !input.prompt.trim()) return json({ error: "Provide Replace original and a first message (required for this harness)" }, 400);
         const selector = input.runId ? `run:${input.runId}` : `message:${input.messageId ?? ""}`;
         const previous = branches.get(input.requestId);
         if (previous) {
@@ -1562,7 +1562,7 @@ async function startOwned(options: Options, assetsDir: string, packageDir: strin
           // a visible, non-executable pending row; explicit same-identity retry only.
           if (!session) { session = candidate; meta.sessions.push(session); }
           session.attachment = { state: "pending", source: nativeSource(harness) }; await persist();
-          const history: ReconciledHistory = { sessionId, nativeSessionId, importedAt: new Date().toISOString(), ...native, coveredRunIds: [], reason: harness === "opencode" ? "Attached read-only native snapshot; activity is a point-in-time observation. Reconcile after external work." : "Attached read-only Claude transcript; active execution and run outcome are unknown. Confirm external Claude is stopped before each App submission." };
+          const history: ReconciledHistory = { sessionId, nativeSessionId, importedAt: new Date().toISOString(), ...native, coveredRunIds: [], reason: harness === "opencode" ? "Attached read-only native snapshot; activity is a point-in-time observation. Reconcile after external work." : "Attached read-only native transcript; active execution and run outcome are unknown. Confirm external assistant execution is stopped before each SANE submission." };
           await enqueue(async () => atomicNativeHistory(options.dataDir, history));
           const association = await catalog.associate(sessionId, cwd, input.workspaceId, input.worktreeId);
           if (closing || storageFailed) throw new OpenCodeError("Attachment interrupted by shutdown; retry explicitly", 503);
@@ -1605,7 +1605,7 @@ async function startOwned(options: Options, assetsDir: string, packageDir: strin
         const harness = input.harness ?? session?.harness ?? "claude-code";
         if (!["claude-code", "opencode"].includes(harness)) return json({ error: "Unknown harness" }, 400);
         if (session && (session.harness ?? "claude-code") !== harness) return json({ error: "Session harness cannot change" }, 400);
-        if (session?.attachment && harness === "claude-code" && input.nativeStopped !== true) return json({ error: "Claude activity is unknown. Explicitly acknowledge external execution is stopped before each App submission.", code: "native-acknowledgement-required" }, 409);
+        if (session?.attachment && harness === "claude-code" && input.nativeStopped !== true) return json({ error: "External assistant activity is unknown. Explicitly acknowledge external execution is stopped before each SANE submission.", code: "native-acknowledgement-required" }, 409);
         if (input.model !== undefined && !validModel(input.model)) return json({ error: "Invalid model ID" }, 400);
         if (input.effort !== undefined && !(harness === "opencode" ? validVariant(input.effort) : validEffort(input.effort))) return json({ error: harness === "opencode" ? "Invalid native variant ID" : "effort must be low, medium, high, xhigh, or max" }, 400);
         if (input.agent !== undefined && !isAssistantAgentId(input.agent)) return json({ error: "Unknown agent" }, 400);
@@ -1710,7 +1710,7 @@ async function startOwned(options: Options, assetsDir: string, packageDir: strin
           if (closing || storageFailed) return json({ error: "Bridge unavailable" }, 503);
           const history: ReconciledHistory = { sessionId: session.sessionId, nativeSessionId, importedAt: new Date().toISOString(), ...native,
             coveredRunIds: coveredNativeRuns(session, meta.runs, native.messages),
-            reason: session.harness === "opencode" ? "Read-only native history snapshot. Activity is a point-in-time observation; Reconcile again for later changes. Stop external work in OpenCode." : "Read-only Claude transcript. Active execution, message timestamps and run outcome are not exposed by the SDK history API. Ensure the external Claude conversation is stopped before sending here." };
+            reason: session.harness === "opencode" ? "Read-only native history snapshot. Activity is a point-in-time observation; Reconcile again for later changes. Stop external work in OpenCode." : "Read-only native transcript. Active execution, message timestamps and run outcome are not exposed by the SDK history API. Ensure external assistant execution is stopped before sending here." };
           await enqueue(async () => atomicNativeHistory(options.dataDir, history));
           return json({ history });
         } catch (error) { return json({ error: error instanceof Error ? error.message : "Native reconciliation unavailable" }, error instanceof OpenCodeError && error.status === 409 ? 409 : 503); }
@@ -1755,7 +1755,7 @@ async function startOwned(options: Options, assetsDir: string, packageDir: strin
             throw error;
           }
         }
-        if (session.harness !== "opencode") return interactionMatch && req.method === "GET" ? json({ interactions: [] }) : json({ error: "Claude Code one-shot mode does not support this operation" }, 501);
+        if (session.harness !== "opencode") return interactionMatch && req.method === "GET" ? json({ interactions: [] }) : json({ error: "This harness's one-shot mode does not support this operation" }, 501);
         if (interactionMatch && !interactionMatch[2] && req.method === "GET") return json({ interactions: await oc.interactions(session.nativeSessionId!) });
         if (interactionMatch?.[2] && req.method === "POST") { await oc.reply(session.nativeSessionId!, decodeURIComponent(interactionMatch[2]), await body(req)); return json({ ok: true }); }
         return json({ error: "Method not allowed" }, 405);

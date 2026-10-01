@@ -8,7 +8,7 @@ import { catalog } from "./catalog";
 import { invalidateWorkspaceRequests, onWorkspaceAuthExpired } from "./workspace-store";
 import { BASE_PROFILE_IDS, builtinProfiles, canAssign, legacyProfileId, type AgentProfile, type AgentProfileInput, type AgentProfiles } from "../src/agent-profiles-contract";
 import type { AssistantAgentId } from "sane-core/agent-catalog";
-import type { Availability, Config, Conversation, ConversationClient, Harness, Interaction, InteractionReply, Message, ModelChoice, Run } from "./types";
+import type { Availability, Config, Conversation, ConversationClient, Harness, Interaction, InteractionReply, Message, ModelChoice, PendingTurn, Run } from "./types";
 import type { ReconciledHistory } from "../src/reconcile";
 
 /** Composer draft. New conversations pick `profileId` ("" = profiles.defaultId);
@@ -22,6 +22,7 @@ export type State = {
   models: ModelChoice[]; modelsLoading: boolean; modelsError: string; modelsLoaded: boolean;
   modelsCwd: string; interactions: Interaction[]; interactionError: string; actionBusy: boolean; actionNotice: string;
   nativeHistory?: ReconciledHistory | null;
+  pendingTurn?: PendingTurn | null;
   contextUsage?: ContextUsageSnapshot | null;
   profiles: AgentProfiles | null; profileError: string; profileBusy: boolean;
 };
@@ -40,6 +41,7 @@ export class ChatStore {
   private nativeHistoryLoaded = false;
   private selectionEpoch = 0;
   private actionSerial = 0;
+  private submissionSerial = 0;
   private beginAction() {
     const selection = this.selectionEpoch, auth = this.authEpoch, operation = ++this.actionSerial;
     this.update({ actionBusy: true, interactionError: "", actionNotice: "" });
@@ -255,7 +257,7 @@ export class ChatStore {
     this.nativeHistoryLoaded = false;
     catalog.invalidate(); invalidateWorkspaceRequests();
     this.replied.clear();
-    this.update({ phase: "login", config: undefined, conversations: [], runs: [], messages: [], nativeHistory: null, contextUsage: null, connected: false, loading: false, sending: false, availability: { canSend: false }, connectionError: "", submissionError: "", models: [], modelsLoading: false, modelsLoaded: false, modelsError: "", modelsCwd: "", interactions: [], interactionError: "", actionBusy: false, actionNotice: "", profiles: null, profileError: "", profileBusy: false });
+    this.update({ phase: "login", config: undefined, conversations: [], runs: [], messages: [], pendingTurn: null, nativeHistory: null, contextUsage: null, connected: false, loading: false, sending: false, availability: { canSend: false }, connectionError: "", submissionError: "", models: [], modelsLoading: false, modelsLoaded: false, modelsError: "", modelsCwd: "", interactions: [], interactionError: "", actionBusy: false, actionNotice: "", profiles: null, profileError: "", profileBusy: false });
   }
   private expired(error: unknown) { if (error instanceof ApiError && error.status === 401) { this.loginRequired(); return true; } return false; }
   start = () => { if (this.started) return; this.started = true; void this.boot(); };
@@ -296,7 +298,7 @@ export class ChatStore {
     this.choose(id);
     catalog.navigate({ conversationId: id || null, view: "chat", ...(conversation ? { workspaceId: conversation.workspaceId ?? null, worktreeId: conversation.worktreeId ?? null, filePath: null, comparison: null } : {}) });
   };
-  choose = (selected: string) => {
+  choose = (selected: string, pendingTurn: PendingTurn | null = null) => {
     if (this.state.sending) return;
     if (selected === this.state.selected) return;
     this.selectionEpoch++;
@@ -306,8 +308,8 @@ export class ChatStore {
     // Never show the source's turns or actions under a newly selected branch.
     // Same-id sends do not reach here; their transcript remains mounted.
     this.update(selected
-      ? { selected, runs: [], messages: [], availability: { canSend: false }, nativeHistory: null, contextUsage: null, interactions: [], interactionError: "", actionBusy: false, actionNotice: "", loading: true, connected: false, connectionError: "", submissionError: "" }
-      : { selected, runs: [], messages: [], nativeHistory: null, contextUsage: null, interactions: [], interactionError: "", actionBusy: false, actionNotice: "", loading: false, connected: false, connectionError: "", submissionError: "" });
+      ? { selected, runs: [], messages: [], pendingTurn, availability: { canSend: false }, nativeHistory: null, contextUsage: null, interactions: [], interactionError: "", actionBusy: false, actionNotice: "", loading: true, connected: false, connectionError: "", submissionError: "" }
+      : { selected, runs: [], messages: [], pendingTurn, nativeHistory: null, contextUsage: null, interactions: [], interactionError: "", actionBusy: false, actionNotice: "", loading: false, connected: false, connectionError: "", submissionError: "" });
     void this.poll();
   };
   private async poll() {
@@ -345,6 +347,8 @@ export class ChatStore {
       }
       const runs = [...this.runMap.values()].sort((a, b) => a.createdAt.localeCompare(b.createdAt));
       const messages = transcriptMessages(nativeHistory, runs);
+      const pending = this.state.pendingTurn;
+      const pendingTurn = pending && messages.some(message => message.runId === pending.runId && message.role === "user") ? null : pending;
       const title = messages.find(m => m.role === "user")?.parts.find(p => p.type === "text");
       // Backend titles win (persisted first prompt or handoff `<Role> #<n>`).
       // Otherwise the open conversation derives from its transcript and other
@@ -367,13 +371,14 @@ export class ChatStore {
       // re-rendering every 1.5s; the reschedule in finally still runs.
       const prev = this.state;
       const quiet = prev.connected && !prev.loading && !prev.connectionError &&
+        prev.pendingTurn === pendingTurn &&
         prev.nativeHistory === nativeHistory &&
         JSON.stringify(prev.conversations) === JSON.stringify(conversations) &&
         JSON.stringify(prev.availability) === JSON.stringify(availability) &&
         JSON.stringify(prev.contextUsage) === JSON.stringify(contextUsage) &&
         prev.runs.length === runs.length && runs.every((run, index) => prev.runs[index]?.id === run.id && prev.runs[index]?.status === run.status && prev.runs[index]?.cursor === run.cursor) &&
         JSON.stringify(prev.messages) === JSON.stringify(messages);
-      if (!quiet) this.update({ ...listing, availability, nativeHistory, contextUsage, conversations, runs, messages, connected: true, loading: false, connectionError: "" });
+      if (!quiet) this.update({ ...listing, availability, nativeHistory, contextUsage, conversations, runs, messages, pendingTurn, connected: true, loading: false, connectionError: "" });
       if (selected && conversations.find(c => c.id === selected)?.harness === "opencode") {
         try {
           const interactions = await this.client.interactions(selected, controller.signal);
@@ -392,26 +397,29 @@ export class ChatStore {
   }
   send = async (text: string, nativeStopped = false) => {
     const conversation = this.state.conversations.find(c => c.id === this.state.selected);
-    if (conversation?.attachment && conversation.harness === "claude-code" && !nativeStopped) { this.update({ submissionError: "Confirm external Claude execution is stopped before sending." }); return; }
+    if (conversation?.attachment && conversation.harness === "claude-code" && !nativeStopped) { this.update({ submissionError: "Confirm external assistant execution is stopped before sending." }); return; }
     if (!text.trim() || this.state.loading || this.state.runs.some(r => r.status === "starting" || r.status === "running") || this.state.sending || !this.state.connected || !this.state.availability.canSend || this.modelUnavailable() || this.executionUnavailable()) return;
-    const selected = this.state.selected, draft = this.draft();
+    const selected = this.state.selected, draft = this.draft(), draftKey = this.draftKey();
+    const pendingTurn: PendingTurn = { id: `pending:${++this.submissionSerial}`, conversationId: selected, text, time: new Date().toISOString() };
     const upgrade = selected ? this.pendingUpgrade() : undefined;
     const profileId = selected ? upgrade && this.assignable(upgrade).ok ? upgrade.id : "" : this.draftProfile().id;
     this.stop(); const generation = this.generation, auth = this.authEpoch;
-    // Keep the submitted text until acceptance is known. Never auto-retry POST.
-    this.setDraft({ text }, selected);
-    this.update({ sending: true, submissionError: "", availability: { canSend: false, reason: "Submitting…" } });
+    // Move text into a local bubble immediately; retain it here for failure recovery.
+    // This is presentation, not acceptance evidence. Never auto-retry POST.
+    this.update({ drafts: { ...this.state.drafts, [draftKey]: { ...draft, text: "" } }, pendingTurn, sending: true, submissionError: "", availability: { canSend: false, reason: "Submitting…" } });
     try {
       const navigation = catalog.state.navigation;
       const result = await this.client.submit({ text, ...(nativeStopped ? { nativeStopped: true } : {}), ...(selected ? { conversationId: selected } : { ...(draft.cwd.trim() ? { cwd: draft.cwd.trim() } : {}), workspaceId: navigation.workspaceId!, worktreeId: navigation.worktreeId! }), ...(profileId ? { profileId } : {}) });
       if (generation !== this.generation || auth !== this.authEpoch) return;
-      if (this.draft(selected).text === text) this.setDraft({ text: "" }, selected);
       if (selected && profileId) this.setDraft({ upgradeId: "" }, selected);
       if (!selected) {
-        this.setDraft({ ...this.draft(selected), profileId: "", upgradeId: "" }, result.conversationId);
-        this.setDraft({ text: "" }, selected);
+        const nextDraft = this.state.drafts[draftKey] ?? { ...draft, text: "" };
+        this.update({ drafts: { ...this.state.drafts, [result.conversationId]: { ...nextDraft, profileId: "", upgradeId: "" }, [draftKey]: { ...nextDraft, text: "" } } });
       }
-      this.update({ sending: false });
+      const acceptedTurn = { ...pendingTurn, conversationId: result.conversationId, runId: result.runId };
+      // Keep the local bubble in the old selection until choose switches both
+      // identities together. There must be no empty/welcome frame in between.
+      this.update({ sending: false, pendingTurn: result.conversationId === selected ? acceptedTurn : pendingTurn });
       if (result.conversationId === selected) {
         // Same-conversation follow-up: keep the mounted transcript and let the
         // next poll merge the new run as a delta. choose() would wipe
@@ -419,12 +427,20 @@ export class ChatStore {
         void this.poll();
         return;
       }
-      this.choose(result.conversationId);
+      this.choose(result.conversationId, acceptedTurn);
       if (!selected) catalog.navigate({ conversationId: result.conversationId });
     } catch (error) {
-      if (generation !== this.generation || auth !== this.authEpoch || this.expired(error)) return;
+      if (generation !== this.generation || auth !== this.authEpoch) return;
       const definite = error instanceof ApiError && error.status >= 400 && error.status < 500;
-      this.update({ sending: false, submissionError: `${error instanceof Error ? error.message : "Submission failed."} ${definite ? "Your draft is preserved." : "Acceptance is unknown. Check history before sending again; this request will not be retried automatically. Your draft is preserved."}` });
+      // Do not overwrite a new draft typed while this submission was in flight.
+      const currentDraft = this.state.drafts[draftKey] ?? draft;
+      const restored = !currentDraft.text;
+      if (error instanceof ApiError && error.status === 401) {
+        if (restored) this.update({ drafts: { ...this.state.drafts, [draftKey]: { ...currentDraft, text } } });
+        this.expired(error);
+        return;
+      }
+      this.update({ sending: false, pendingTurn: null, ...(restored ? { drafts: { ...this.state.drafts, [draftKey]: { ...currentDraft, text } } } : {}), submissionError: `${error instanceof Error ? error.message : "Submission failed."} ${definite ? "" : "Acceptance is unknown. Check history before sending again; this request will not be retried automatically. "}${restored ? "Your draft is restored." : `Your new draft is preserved. Submitted message: ${text}`}` });
       void this.poll();
     }
   };
