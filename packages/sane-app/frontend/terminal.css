@@ -59,6 +59,19 @@
   gap:4px;
   margin-left:auto;
 }
+.terminal-footer-actions .primary-button {
+  margin-top:0;
+  padding:8px 12px;
+  border:1px solid var(--primary);
+  border-radius:7px;
+  background:var(--primary);
+  color:var(--primary-foreground);
+  font-size:12px;
+}
+.terminal-footer-actions .primary-button:hover {
+  background:var(--primary);
+  filter:brightness(.95);
+}
 .terminal-footer-details {
   display:flex;
   flex:1 1 220px;

@@ -60,7 +60,7 @@ export class TerminalSession {
     window.addEventListener("pageshow", this.resume);
     document.addEventListener("visibilitychange", this.visibility);
     this.unsubscribe = subscribeWorkspace(() => { if (workspaceEpoch() !== this.auth) this.dispose(); });
-    void this.load();
+    void this.load(true);
   }
   private current() { return !this.disposed && workspaceEpoch() === this.auth && this.selected(); }
   private update(patch: Partial<TerminalPresentation>) {
@@ -83,13 +83,26 @@ export class TerminalSession {
     if (state.workspaceId !== this.selection.workspaceId || state.worktreeId !== this.selection.worktreeId || state.bindingRevision !== this.selection.bindingRevision) throw new Error("Worktree changed. Refresh its workspace before opening the terminal.");
     this.update({ state });
   }
-  private async load() {
+  private async load(startMissing = false) {
     if (!this.current()) return;
     this.update({ busy: true });
     try {
-      const state = await this.request();
+      let state = await this.request();
       if (!this.current()) return;
       this.accept(state);
+      // Opening the view is the start intent. Reconnect/resume are read-only,
+      // and retained closed/exited sessions must never be restarted implicitly.
+      if (startMissing && state.capability.available && state.status === "absent" && !state.terminalId) {
+        try { state = await this.request("", "POST"); }
+        catch (error) {
+          // Another viewer may have created the shared shell after our lookup.
+          // Attach to it instead of replacing it or retrying the spawn.
+          if (this.current() && error instanceof WorkspaceError && error.code === "terminal-exists") state = await this.request();
+          else throw error;
+        }
+        if (!this.current()) return;
+        this.accept(state);
+      }
       this.update({ busy: false, error: "" });
       if (state.terminalId && state.status !== "closed" && state.status !== "absent") this.attach();
     } catch (error) { if (this.current()) this.update({ busy: false, error: workspaceFailure(error) }); }

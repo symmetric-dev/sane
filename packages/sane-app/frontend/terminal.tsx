@@ -53,7 +53,7 @@ export function TerminalView({ navigation }: { navigation?: ReactNode }) {
   const canAct = !!selection && !!state?.capability.available && !p.busy;
   return <section className="terminal-view" aria-label="Worktree terminal">
     {!selection ? <div className="terminal-empty"><h2>{unavailable.startsWith("Loading") ? "Opening workspace…" : "Select an available worktree"}</h2><p>{unavailable}</p></div> : <>
-      {!exists && <div className="terminal-empty"><h2>{p.busy ? "Opening terminal…" : state?.status === "closed" ? "Terminal closed" : "A shell for this worktree"}</h2><p>{state?.capability.available === false ? state.capability.reason || "Terminal support is unavailable on this bridge." : "Start explicitly at the selected worktree root. Switching conversations in this worktree returns to the same shell."}</p>{state && state.capability.available && <button type="button" disabled={!canAct} onClick={() => void session.current?.action(state.terminalId ? "restart" : "start")}>{state.terminalId ? "Restart terminal" : "Start terminal"}</button>}</div>}
+      {!exists && <div className="terminal-empty"><h2>{p.busy ? "Opening terminal…" : state?.status === "closed" ? "Terminal closed" : "A shell for this worktree"}</h2><p>{state?.capability.available === false ? state.capability.reason || "Terminal support is unavailable on this bridge." : state?.status === "closed" ? "This terminal was closed. Restart it explicitly to open a new shell." : "Opening this view starts a new shell at the selected worktree root when none exists. Use Start terminal to retry if startup fails."}</p>{state && state.capability.available && <button type="button" disabled={!canAct} onClick={() => void session.current?.action(state.terminalId ? "restart" : "start")}>{state.terminalId ? "Restart terminal" : "Start terminal"}</button>}</div>}
       <div className={`terminal-scroll${exists ? "" : " terminal-dormant"}`} aria-hidden={!exists}><div ref={host} className="terminal-canvas" /></div>
     </>}
     {p.error && <p className="terminal-message error" role="alert">{p.error}</p>}
@@ -67,7 +67,7 @@ export function TerminalView({ navigation }: { navigation?: ReactNode }) {
       </div>
       <div className="terminal-footer-controls">
         <div className="terminal-footer-actions">
-          {acceptingInput && p.ready && (p.controlling ? <button type="button" onClick={() => session.current?.release()}>Release keyboard</button> : <button type="button" onClick={() => session.current?.claim()}>{state.controllerId ? "Take control here" : "Use keyboard here"}</button>)}
+          {acceptingInput && p.ready && (p.controlling ? <button type="button" onClick={() => session.current?.release()}>Release keyboard</button> : <button type="button" className="primary-button" onClick={() => session.current?.claim()}>{state.controllerId ? "Take control here" : "Interact"}</button>)}
           {exists && !acceptingInput && <button type="button" disabled={!canAct} onClick={() => void session.current?.action("restart")}>Restart terminal</button>}
           {exists && <button type="button" disabled={!canAct} onClick={() => { if (window.confirm("Close this worktree’s terminal for everyone? The shell will be stopped.")) void session.current?.action("close"); }}>Close terminal</button>}
           {selection && !p.busy && (!p.connected || p.error) && <button type="button" onClick={() => session.current?.reconnect()}>Reconnect</button>}

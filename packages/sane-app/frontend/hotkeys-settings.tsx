@@ -17,7 +17,7 @@ export function HotkeysSettings() {
           <td><kbd>{commandHint(navigationBinding(item.key, false), false)}</kbd></td>
         </tr>)}</tbody>
       </table></div>
-      <p className="muted">These shortcuts work in chat inputs, file editors, and the terminal. They pause while a dialog is open and never submit a message or start a shell.</p>
+      <p className="muted">These shortcuts work in chat inputs, file editors, and the terminal. They pause while a dialog is open and never submit a message. Opening Terminal starts a shell if the selected worktree has none.</p>
     </section>
   </section>;
 }
