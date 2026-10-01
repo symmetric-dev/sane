@@ -1,0 +1,162 @@
+import { expect, test } from "bun:test";
+import { Window } from "happy-dom";
+import { act } from "react";
+import type { Root } from "react-dom/client";
+import type { WorkspaceRecord } from "../src/catalog-contract";
+import type { WorkstreamOverview } from "../src/workstreams-contract";
+import { catalog } from "./catalog";
+import { ConfigMenu, ConfigView, configSection } from "./config-view";
+import { store } from "./store";
+import type { ArtifactSelection } from "./workstreams";
+
+const repository: WorkspaceRecord = { workspaceId: "browsed", kind: "repository", name: "Repository", commonDir: "/repo/.git", worktrees: [] };
+const overview: WorkstreamOverview = { repositoryId: "domain", workstreams: [], conversations: [] };
+
+type Fetcher = (input: string | URL | Request, init?: RequestInit) => Promise<Response>;
+async function withSettingsDom(fetcher: Fetcher, run: (host: HTMLDivElement, root: Root) => Promise<void>, workspace = repository) {
+  const browser = new Window({ url: "http://localhost" });
+  const globals = {
+    window: browser, document: browser.document, navigator: browser.navigator,
+    localStorage: browser.localStorage, HTMLElement: browser.HTMLElement,
+    Event: browser.Event, MouseEvent: browser.MouseEvent, FormData: browser.FormData,
+    IS_REACT_ACT_ENVIRONMENT: true, fetch: fetcher,
+  };
+  const prior = new Map(Object.keys(globals).map(key => [key, Object.getOwnPropertyDescriptor(globalThis, key)]));
+  const previousCatalog = catalog.snapshot(), previousSection = configSection.snapshot();
+  for (const [key, value] of Object.entries(globals)) Object.defineProperty(globalThis, key, { configurable: true, writable: true, value });
+  let root: Root | undefined;
+  try {
+    catalog.invalidate();
+    catalog.state = { ...previousCatalog, ready: false, loading: false, workspaces: [workspace], navigation: { ...previousCatalog.navigation, workspaceId: "execution-workspace", view: "config" } };
+    const { createRoot } = await import("react-dom/client");
+    const host = document.createElement("div"); document.body.append(host);
+    root = createRoot(host);
+    await run(host, root);
+  } finally {
+    try { if (root) await act(async () => { root!.unmount(); }); }
+    finally {
+      catalog.invalidate(); catalog.state = previousCatalog;
+      configSection.set(previousSection);
+      browser.close();
+      for (const [key, descriptor] of prior) {
+        if (descriptor) Object.defineProperty(globalThis, key, descriptor);
+        else Reflect.deleteProperty(globalThis, key);
+      }
+    }
+  }
+}
+
+const unexpectedFetch: Fetcher = async input => { throw new Error(`Unexpected request: ${input}`); };
+
+test("Settings menu orders Agents, Workstreams, Application and coordinates existing bookmark leaves", async () => {
+  await withSettingsDom(unexpectedFetch, async (host, root) => {
+    configSection.set("application");
+    const selectedLeaves: string[] = [];
+    await act(async () => { root.render(<ConfigMenu onSelect={() => selectedLeaves.push(catalog.snapshot().navigation.view)} />); });
+    const buttons = [...host.querySelectorAll("button")];
+    expect(buttons.map(button => button.querySelector(".history-title")?.textContent)).toEqual(["Agents", "Workstreams", "Application"]);
+    const current = () => [...host.querySelectorAll('[aria-current="page"]')].map(button => button.querySelector(".history-title")?.textContent);
+    expect(current()).toEqual(["Application"]);
+
+    await act(async () => { buttons[1]!.click(); });
+    expect(catalog.snapshot().navigation.view).toBe("workstreams");
+    expect(current()).toEqual(["Workstreams"]);
+    expect(configSection.snapshot()).toBe("application");
+    expect(localStorage.getItem("sane.configSection")).toBe("application");
+
+    await act(async () => { buttons[0]!.click(); });
+    expect(catalog.snapshot().navigation.view).toBe("config");
+    expect(current()).toEqual(["Agents"]);
+    expect(localStorage.getItem("sane.configSection")).toBe("agents");
+    await act(async () => { buttons[2]!.click(); });
+    expect(catalog.snapshot().navigation.view).toBe("config");
+    expect(current()).toEqual(["Application"]);
+    expect(selectedLeaves).toEqual(["workstreams", "config", "config"]);
+
+    // External restore/navigation wins over the saved local preference.
+    await act(async () => { catalog.navigate({ view: "workstreams" }); configSection.set("agents"); });
+    expect(current()).toEqual(["Workstreams"]);
+    await act(async () => { catalog.navigate({ view: "config" }); });
+    expect(current()).toEqual(["Agents"]);
+    await act(async () => { catalog.navigate({ view: "chat" }); });
+    expect(current()).toEqual([]);
+  });
+});
+
+test("Settings renders each leaf using the browsed workspace and forwards artifact navigation", async () => {
+  const requests: string[] = [], opened: ArtifactSelection[] = [];
+  const detail: WorkstreamOverview = { ...overview, workstreams: [{
+    workstream: { repositoryId: "domain", id: "feature", title: "Feature", type: "feature", defaultCheckout: null, createdAt: "2026-09-30T00:00:00Z", updatedAt: "2026-09-30T00:00:00Z", revision: 1, lifecycle: { status: "open", phases: [], approvals: [], jobs: [], mutations: [] } },
+    conversations: [], activePhases: [], phaseHistory: [], research: { registered: [], unregistered: [], warnings: [] },
+  }] };
+  await withSettingsDom(async input => {
+    const url = String(input); requests.push(url);
+    if (url.startsWith("/api/workstreams/inspect?")) return Response.json({ state: "ready" });
+    if (url.startsWith("/api/workstreams/overview?")) return Response.json(detail);
+    if (url.startsWith("/api/workstreams/artifacts/list?")) return Response.json(["README.md"]);
+    throw new Error(`Unexpected request: ${url}`);
+  }, async (host, root) => {
+    configSection.set("application");
+    await act(async () => { root.render(<ConfigView state={store.snapshot()} signOut={() => {}} workspaceId="browsed" openArtifact={artifact => opened.push(artifact)} />); });
+    expect(host.querySelector("h2")?.textContent).toBe("Application");
+    expect(requests).toHaveLength(0);
+
+    await act(async () => { catalog.navigate({ view: "workstreams" }); });
+    expect(host.querySelector("h2")?.textContent).toBe("Workstreams");
+    expect(requests.every(url => url.includes("workspaceId=browsed"))).toBe(true);
+    expect(requests).toHaveLength(2);
+    const select = host.querySelector("label > select:not([name])") as HTMLSelectElement;
+    await act(async () => { select.value = "feature"; select.dispatchEvent(new Event("change", { bubbles: true })); });
+    const artifactButton = [...host.querySelectorAll("button")].find(button => button.textContent === "README.md · Open in Files")!;
+    await act(async () => { artifactButton.click(); });
+    expect(opened).toEqual([{ workspaceId: "browsed", workstreamId: "feature", path: "README.md", repositoryId: "domain" }]);
+
+    await act(async () => { configSection.set("agents"); catalog.navigate({ view: "config" }); });
+    expect(host.querySelector("h2")?.textContent).toBe("Agents");
+    expect(host.querySelector("[aria-label='Agent configuration']")).not.toBeNull();
+  });
+});
+
+test("Settings Workstreams distinguishes no workspace and plain directory without repository requests", async () => {
+  await withSettingsDom(unexpectedFetch, async (host, root) => {
+    catalog.navigate({ view: "workstreams" });
+    await act(async () => { root.render(<ConfigView state={store.snapshot()} signOut={() => {}} />); });
+    expect(host.textContent).toContain("Select a repository workspace");
+    await act(async () => { root.render(<ConfigView state={store.snapshot()} signOut={() => {}} workspaceId="browsed" />); });
+    expect(host.textContent).toContain("Workstreams require a repository");
+    expect(host.textContent).not.toContain("Loading workstreams");
+    expect(host.querySelector("button")).toBeNull();
+  }, { ...repository, kind: "directory", commonDir: null });
+});
+
+test("Settings Workstreams stops loading for uninitialized stores and shows refresh failures separately", async () => {
+  let resolve!: (response: Response) => void;
+  let inspection = new Promise<Response>(done => { resolve = done; });
+  await withSettingsDom(async input => {
+    if (!String(input).startsWith("/api/workstreams/inspect?")) throw new Error(`Unexpected request: ${input}`);
+    return inspection;
+  }, async (host, root) => {
+    catalog.navigate({ view: "workstreams" });
+    await act(async () => { root.render(<ConfigView state={store.snapshot()} signOut={() => {}} workspaceId="browsed" />); });
+    expect(host.textContent).toContain("Loading workstreams…");
+    await act(async () => { resolve(Response.json({ state: "uninitialized", message: "No domain exists yet." })); });
+    expect(host.textContent).toContain("Repository workstreams are not initialized.");
+    expect(host.textContent).not.toContain("Loading workstreams");
+    expect([...host.querySelectorAll("button")].some(button => button.textContent === "Initialize repository domain")).toBe(true);
+
+    inspection = Promise.resolve(Response.json({ error: "Inspection failed" }, { status: 503 }));
+    const refresh = [...host.querySelectorAll("button")].find(button => button.textContent === "Refresh")!;
+    await act(async () => { refresh.click(); });
+    expect(host.querySelector('[role="alert"]')?.textContent).toBe("Inspection failed");
+    expect(host.textContent).toContain("Workstreams unavailable for this workspace.");
+    expect(host.textContent).not.toContain("Loading workstreams");
+    expect(host.textContent).not.toContain("Initialize repository domain");
+
+    inspection = Promise.resolve(Response.json({ state: "corrupt", message: "Repair the repository store." }));
+    await act(async () => { refresh.click(); });
+    expect(host.textContent).toContain("Repository workstreams unavailable: corrupt.");
+    expect(host.textContent).toContain("Repair the repository store.");
+    expect(host.querySelector('[role="alert"]')).toBeNull();
+    expect(host.textContent).not.toContain("Loading workstreams");
+  });
+});

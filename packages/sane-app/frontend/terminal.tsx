@@ -43,7 +43,7 @@ export function TerminalSidebar() {
   return <section className="terminal-sidebar" aria-label="Terminal workspace"><p className="eyebrow">WORKTREE TERMINAL</p><h2>{label}</h2>{selection && <p title={root}>{shortRoot}</p>}<p>One terminal per worktree, shared across conversations and devices.</p><p>Leaving this view releases your keyboard. The shell keeps running while the bridge is alive.</p></section>;
 }
 
-export function TerminalView() {
+export function TerminalView({ navigation }: { navigation?: ReactNode }) {
   const { selection, unavailable, host, session, presentation: p } = useTerminal();
   const state = p.state;
   const exists = !!state?.terminalId && state.status !== "absent" && state.status !== "closed";
@@ -59,16 +59,21 @@ export function TerminalView() {
     {p.error && <p className="terminal-message error" role="alert">{p.error}</p>}
     {state?.reason && <p className="terminal-message" role="status">{state.reason}</p>}
     <footer className="terminal-local-footer">
-      <span role="status">{status}</span>
-      {exists && p.geometry && <span>{p.geometry.cols} × {p.geometry.rows}</span>}
-      <div className="terminal-footer-actions">
-        {acceptingInput && p.ready && (p.controlling ? <button type="button" onClick={() => session.current?.release()}>Release keyboard</button> : <button type="button" onClick={() => session.current?.claim()}>{state.controllerId ? "Take control here" : "Use keyboard here"}</button>)}
-        {exists && !acceptingInput && <button type="button" disabled={!canAct} onClick={() => void session.current?.action("restart")}>Restart terminal</button>}
-        {exists && <button type="button" disabled={!canAct} onClick={() => { if (window.confirm("Close this worktree’s terminal for everyone? The shell will be stopped.")) void session.current?.action("close"); }}>Close terminal</button>}
-        {selection && !p.busy && (!p.connected || p.error) && <button type="button" onClick={() => session.current?.reconnect()}>Reconnect</button>}
+      <div className="terminal-footer-details">
+        <span role="status">{status}</span>
+        {exists && p.geometry && <span>{p.geometry.cols} × {p.geometry.rows}</span>}
+        {p.controlling && <div className="terminal-touch-keys" aria-label="Terminal keys"><button type="button" onClick={() => session.current?.focus()}>Keyboard</button><button type="button" onClick={() => session.current?.interrupt()}>Ctrl C</button>{([["Esc", "\u001b"], ["Tab", "\t"], ["←", "\u001b[D"], ["↓", "\u001b[B"], ["↑", "\u001b[A"], ["→", "\u001b[C"]] as const).map(([label, data]) => <button type="button" key={label} aria-label={label === "Esc" ? "Escape" : label} onClick={() => session.current?.key(data)}>{label}</button>)}</div>}
+        <span className="terminal-policy">One terminal per worktree · {p.controlling ? "Your keyboard controls the shared shell." : "Viewing does not send input or change terminal size."}</span>
       </div>
-      {p.controlling && <div className="terminal-touch-keys" aria-label="Terminal keys"><button type="button" onClick={() => session.current?.focus()}>Keyboard</button><button type="button" onClick={() => session.current?.interrupt()}>Ctrl C</button>{([["Esc", "\u001b"], ["Tab", "\t"], ["←", "\u001b[D"], ["↓", "\u001b[B"], ["↑", "\u001b[A"], ["→", "\u001b[C"]] as const).map(([label, data]) => <button type="button" key={label} aria-label={label === "Esc" ? "Escape" : label} onClick={() => session.current?.key(data)}>{label}</button>)}</div>}
-      <span className="terminal-policy">One terminal per worktree · {p.controlling ? "Your keyboard controls the shared shell." : "Viewing does not send input or change terminal size."}</span>
+      <div className="terminal-footer-controls">
+        <div className="terminal-footer-actions">
+          {acceptingInput && p.ready && (p.controlling ? <button type="button" onClick={() => session.current?.release()}>Release keyboard</button> : <button type="button" onClick={() => session.current?.claim()}>{state.controllerId ? "Take control here" : "Use keyboard here"}</button>)}
+          {exists && !acceptingInput && <button type="button" disabled={!canAct} onClick={() => void session.current?.action("restart")}>Restart terminal</button>}
+          {exists && <button type="button" disabled={!canAct} onClick={() => { if (window.confirm("Close this worktree’s terminal for everyone? The shell will be stopped.")) void session.current?.action("close"); }}>Close terminal</button>}
+          {selection && !p.busy && (!p.connected || p.error) && <button type="button" onClick={() => session.current?.reconnect()}>Reconnect</button>}
+        </div>
+        {navigation && <div className="terminal-footer-navigation">{navigation}</div>}
+      </div>
     </footer>
   </section>;
 }

@@ -4,8 +4,7 @@
   align-items:center;
   gap:5px;
   min-width:0;
-  flex:0 1 auto;
-  max-width:42%;
+  width:100%;
 }
 
 /* === workspace === */
@@ -346,41 +345,6 @@
   flex-shrink:0;
 }
 
-/* === topbar === */
-.topbar,.view-code .topbar,.view-git .topbar {
-  flex-wrap:nowrap;
-  height:46px;
-  min-height:46px;
-  max-height:46px;
-  padding:0 16px;
-  gap:10px;
-  overflow:hidden;
-}
-.topbar>.conversation-heading {
-  flex-basis:0;
-  min-width:0;
-  overflow:hidden;
-}
-.topbar>.conversation-heading>span {
-  font-size:12px;
-  line-height:1.3;
-}
-.topbar .conversation-heading small {
-  font-size:10px;
-  line-height:1.3;
-  margin-top:1px;
-}
-.topbar .icon-button {
-  padding:6px;
-}
-.topbar .details-button {
-  padding:6px 8px;
-  font-size:12px;
-}
-.topbar>.harness-badge {
-  font-size:10px;
-}
-
 /* === file === */
 .file-actions-opener {
   display:flex;
@@ -412,47 +376,13 @@
   display:block;
 }
 
-/* === at-rule @media(max-width:1000px) === */
-@media(max-width:1000px) {
-  .topbar>.harness-badge {
-    display:none;
-  }
-  .workspace-opener {
-    max-width:160px;
-  }
-  .topbar {
-    gap:6px;
-  }
-}
-
 /* === at-rule @media(max-width:700px) === */
 @media(max-width:700px) {
-  .topbar,.view-code .topbar,.view-git .topbar {
-    flex-wrap:nowrap;
-    height:44px;
-    min-height:44px;
-    max-height:44px;
-    padding:0 10px;
-    gap:6px;
-    overflow:hidden;
-  }
-  .context-switcher {
-    flex:0 1 42%;
-    max-width:42%;
-  }
   .workspace-opener {
     padding:6px;
     min-width:0;
     max-width:100%;
     font-size:11px;
-  }
-  .topbar>.conversation-heading {
-    flex-basis:0;
-    min-width:0;
-  }
-  .conversation-heading>span {
-    font-size:12px;
-    line-height:1.3;
   }
   .file-actions-opener {
     padding:6px 8px;
@@ -466,12 +396,6 @@
     line-height:1;
   }
   .application-opener {
-    padding:6px;
-  }
-  .topbar .icon-button {
-    padding:6px;
-  }
-  .topbar .details-button {
     padding:6px;
   }
   .shell-dialog-content {

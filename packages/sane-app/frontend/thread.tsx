@@ -1,21 +1,17 @@
 import { createContext, useContext, useEffect, useRef, useState, useSyncExternalStore, type ReactNode } from "react";
 import type { WorkerRecord } from "../src/worker-contract";
 import { useWorkers, openWorker, workerReference } from "./worker-client";
-import { WorkerCard, WorkerSection, WorkersButton } from "./worker-ui";
+import { WorkerCard, WorkerSection } from "./worker-ui";
 import type { Harness, ToolPart } from "./types";
 import { AssistantRuntimeProvider, MessagePrimitive, ThreadPrimitive, useAuiState, useExternalStoreRuntime, type ThreadMessageLike } from "@assistant-ui/react";
-import { ChatInput } from "./chat-input";
+import { ChatComposer } from "./chat-composer";
 import { ChatScroll } from "./chat-scroll";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
-import { FiArrowLeft, FiArrowUpRight, FiChevronDown, FiCommand, FiInfo, FiZap } from "react-icons/fi";
+import { FiArrowLeft, FiArrowUpRight, FiCommand, FiZap } from "react-icons/fi";
 import { store, type State } from "./store";
 import { Interactions } from "./interactions";
 import { catalog } from "./catalog";
-import { ShellDialog } from "./shell-dialog";
-import { Icon } from "./nav";
-import { AgentAvatar } from "./agent-visuals";
-import { AgentPicker } from "./agent-picker";
 import { BranchAction, BranchLinks } from "./branch-ui";
 import { active, harnessName, type Message, type Run, type UsageSnapshot } from "./types";
 
@@ -73,55 +69,28 @@ export function convertMessage(message: Message): ThreadMessageLike {
   return { id: message.id, role: message.role === "system" ? "assistant" : message.role, content, ...(message.time ? { createdAt: new Date(message.time) } : {}), ...(message.role !== "user" ? { status: active(message.status) ? { type: "running" as const } : message.status === "completed" ? { type: "complete" as const, reason: "stop" as const } : { type: "incomplete" as const, reason: message.status === "failed" ? "error" as const : "other" as const } } : {}) };
 }
 
-export function Thread({ state }: { state: State }) {
+export function Thread({ state, active: isActive = true, navigation }: { state: State; active?: boolean; navigation?: ReactNode }) {
   const workers = useWorkers(state.selected).workers;
   const parentId = workerReference(state.selected)?.parent.sessionId;
   const [ack, setAck] = useState("");
-  const [helpOpen, setHelpOpen] = useState(false);
-  const [pickerOpen, setPickerOpen] = useState(false);
   const needsAck = !!state.conversations.find(c => c.id === state.selected && c.harness === "claude-code")?.attachment;
   const conversation = state.conversations.find(c => c.id === state.selected);
-  useEffect(() => setAck(""), [state.selected]);
+  useEffect(() => setAck(""), [state.selected, isActive]);
   const send = (text: string) => { const stopped = ack === state.selected && !!ack; setAck(""); return store.send(text, stopped); };
   const repository = useSyncExternalStore(catalog.subscribe, catalog.snapshot);
-  const draft = store.draft();
   const harness = store.harness();
   const workspace = store.workspace();
   const modelUnavailable = store.modelUnavailable();
-  const profile = store.effectiveProfile();
-  // Chip modes: new conversation picks freely; a Base conversation may be upgraded once; an assistant is fixed.
-  const fixed = !!state.selected && (store.conversationKind() === "assistant" || !!parentId);
   useEffect(() => { if (harness === "opencode" && (state.modelsCwd !== workspace || (!state.modelsLoaded && !state.modelsLoading && !state.modelsError))) { const timer = setTimeout(() => void store.loadModels(), 300); return () => clearTimeout(timer); } }, [harness, workspace, state.modelsCwd, state.modelsLoaded, state.modelsLoading, state.modelsError]);
   const running = state.runs.some(run => active(run.status));
-  // Warn-not-fail: a saved default absent from the live per-cwd catalog does
-  // not block sending; the bridge still carries the saved selection natively.
-  const missingModel = store.missingModel();
   const nativeIssue = [...state.runs].reverse().find(run => active(run.status) && run.nativeConnection && run.nativeConnection !== "connected");
   const latestRun = state.runs.at(-1);
   const runtime = useExternalStoreRuntime({ messages: state.messages, convertMessage, isRunning: running,
-    isSendDisabled: running || state.loading || state.sending || !state.connected || !state.availability.canSend || modelUnavailable || !!store.executionUnavailable(),
+    isSendDisabled: !isActive || running || state.loading || state.sending || !state.connected || !state.availability.canSend || modelUnavailable || !!store.executionUnavailable() || (needsAck && ack !== state.selected),
     onNew: async message => { const text = message.content.filter(p => p.type === "text").map(p => p.text).join("\n"); await send(text); },
   });
-  const sendDisabled = running || state.loading || state.sending || !state.connected || !state.availability.canSend || modelUnavailable || !!store.executionUnavailable() || (needsAck && ack !== state.selected);
-  const infoIssue = state.submissionError || (harness === "opencode" && state.modelsError) || store.executionUnavailable() || (!state.connected ? "Reconnecting to the bridge…" : "") || (!state.availability.canSend && state.availability.reason) || (modelUnavailable ? "Waiting for the OpenCode model catalog for this directory." : "");
-  const footer = <>
-        {state.submissionError && <p className="notice error" role="alert">{state.submissionError}</p>}
-        {harness === "opencode" && state.modelsError && <p className="notice" role="status">{state.modelsError} <button type="button" className="text-button" disabled={state.modelsLoading} onClick={() => void store.loadModels()}>Retry connection</button></p>}
-        {needsAck && !conversation?.replacedBy && <label className="notice"><input type="checkbox" checked={ack === state.selected} onChange={e => setAck(e.target.checked ? state.selected : "")} />I confirm external Claude execution for this conversation is stopped before this send.</label>}
-        {missingModel && <p className="notice" role="status">Model {missingModel} is not in the current OpenCode catalog for this directory. Sending will still use this selection.</p>}
-        {state.conversations.find(c => c.id === state.selected)?.attachment?.state === "pending" && <p className="notice error">Attachment incomplete. Use Attach native conversation with the same ID and checkout to retry. {state.conversations.find(c => c.id === state.selected)?.attachment?.error}</p>}
-         {!conversation?.replacedBy && <form className="composer" onSubmit={event => { event.preventDefault(); if (!sendDisabled) void send(store.draft().text); }}>
-          <ChatInput key={store.draftKey()} text={draft.text} save={text => store.setDraft({ text })} submit={() => { if (!sendDisabled) void send(store.draft().text); }} className="composer-input" rows={2} placeholder={state.selected ? "Continue the conversation…" : `Ask ${harnessName(harness)} anything…`} aria-label="Message" />
-          <div className="composer-toolbar"><div className="composer-options">
-            {profile ? fixed
-              ? <span className="agent-chip fixed" role="status" title={profile.label}><AgentAvatar profile={profile} size={20} /><span className="agent-chip-label">{profile.label}</span></span>
-              : <button type="button" className="agent-chip" aria-haspopup="dialog" disabled={state.sending} title={profile.label} aria-label={`${state.selected ? "Agent" : "Agent for new conversation"}: ${profile.label}${store.pendingUpgrade() ? " (pending)" : ""}`} onClick={() => setPickerOpen(true)}><AgentAvatar profile={profile} size={20} /><span className="agent-chip-label">{profile.label}</span>{store.pendingUpgrade() && <span className="agent-chip-pending">pending</span>}<FiChevronDown size={12} aria-hidden="true" /></button>
-              : <span className="agent-chip fixed" role="status" title={store.agent() || "Base"}><span className="agent-chip-label">{store.agent() || "Base"}</span></span>}
-          </div><div className="composer-actions"><WorkersButton key={state.selected} sessionId={state.selected} /><button type="button" className={`composer-help${infoIssue ? " has-issue" : ""}`} aria-label={infoIssue ? `Sending messages help: ${infoIssue}` : "Sending messages help"} title="Sending messages" onClick={() => setHelpOpen(true)}><FiInfo size={14} aria-hidden="true" />{infoIssue ? <span className="composer-help-dot" aria-hidden="true" /> : null}</button><button type="submit" className="send" disabled={sendDisabled || !draft.text.trim()} aria-label="Send message" title="Send message"><Icon name="send" /></button></div></div>
-         </form>}
-        {pickerOpen && <AgentPicker close={() => setPickerOpen(false)} />}
-        {helpOpen && <ShellDialog title="Sending messages" close={() => setHelpOpen(false)}><div className="composer-help-notes">{infoIssue ? <p className="notice error" role="alert">{infoIssue}{harness === "opencode" && state.modelsError ? <> <button type="button" className="text-button" disabled={state.modelsLoading} onClick={() => void store.loadModels()}>Retry connection</button></> : null}</p> : null}<p className="muted">Enter inserts a newline · Ctrl/Cmd+Enter sends. Other conversations can run concurrently.</p><p className="muted">Concurrent conversations in this checkout share files; their edits can overlap.</p><p className="muted">External Claude activity cannot be detected here. Finish it in Claude before sending to this same conversation.</p></div></ShellDialog>}
-      </>;
+  const sendDisabled = !isActive || running || state.loading || state.sending || !state.connected || !state.availability.canSend || modelUnavailable || !!store.executionUnavailable() || (needsAck && ack !== state.selected);
+  const footer = <ChatComposer state={state} active={isActive} navigation={navigation} ack={ack} onAckChange={setAck} send={send} sendDisabled={sendDisabled} parentId={parentId} />;
   return <TranscriptContext.Provider value={{ sessionId: state.selected, harness, messages: state.messages, runs: state.runs, workers, openWorker, branchEnabled: !state.loading && !state.sending && !running && !parentId && !conversation?.worker && !conversation?.replacedBy && !(conversation?.attachment && harness === "claude-code") }}><AssistantRuntimeProvider runtime={runtime}><ThreadPrimitive.Root className="thread">
     <BranchLinks key={state.selected} conversation={conversation} />
     {parentId && <nav className="worker-parent-nav" aria-label="Worker navigation"><button type="button" className="text-button" disabled={state.sending} onClick={() => store.openConversation(parentId)}><FiArrowLeft size={14} aria-hidden="true" />Back to parent</button><span className="muted">Worker conversation</span></nav>}

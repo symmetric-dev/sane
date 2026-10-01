@@ -1,5 +1,5 @@
-import { useEffect, useRef, type ReactNode } from "react";
-import { FiCode, FiCopy, FiGitBranch, FiGitMerge, FiMessageSquare, FiSettings, FiTerminal } from "react-icons/fi";
+import { useEffect, useId, useRef, type ReactNode } from "react";
+import { FiFileText, FiGitBranch, FiMessageSquare, FiSettings, FiTerminal } from "react-icons/fi";
 import type { State } from "./store";
 import type { ActiveView } from "./workspace-controller";
 import { active } from "./types";
@@ -11,25 +11,51 @@ export function Icon({ name }: { name: "menu" | "plus" | "close" | "send" | "det
 
 export function Drawer({ title, children, close }: { title: string; children: ReactNode; close: () => void }) {
   const ref = useRef<HTMLDialogElement>(null);
-  useEffect(() => { const dialog = ref.current!; dialog.showModal(); return () => dialog.close(); }, []);
-  return <dialog ref={ref} className="drawer" onCancel={close} onClick={event => { if (event.target === event.currentTarget) close(); }}><div className="drawer-content"><header><h2>{title}</h2><button type="button" className="icon-button" aria-label={`Close ${title.toLowerCase()}`} onClick={close}><Icon name="close" /></button></header>{children}</div></dialog>;
+  const titleId = useId();
+  useEffect(() => {
+    const previous = document.activeElement instanceof HTMLElement ? document.activeElement : null;
+    const dialog = ref.current!;
+    dialog.showModal();
+    return () => {
+      dialog.close();
+      if (previous?.isConnected && !previous.closest("[hidden], [inert]")) previous.focus();
+    };
+  }, []);
+  return <dialog ref={ref} className="drawer" aria-modal="true" aria-labelledby={titleId} onCancel={event => { event.preventDefault(); close(); }} onClick={event => { if (event.target === event.currentTarget) close(); }}><div className="drawer-content"><header><h2 id={titleId}>{title}</h2><button type="button" className="icon-button" aria-label={`Close ${title.toLowerCase()}`} onClick={close}><Icon name="close" /></button></header>{children}</div></dialog>;
 }
 
-export function WorkspaceNavigation({ state, activeView, onNavigate }: { state: State; activeView: ActiveView; onNavigate: (view: ActiveView) => void }) {
+export type ViewGroup = "chat" | "files" | "settings";
+export function viewGroup(view: ActiveView): ViewGroup {
+  switch (view) {
+    case "code": case "git": return "files";
+    case "config": case "workstreams": return "settings";
+    default: return "chat";
+  }
+}
+
+const DESTINATIONS = [
+  { id: "chat", label: "Chat", Icon: FiMessageSquare },
+  { id: "terminal", label: "Terminal", Icon: FiTerminal },
+  { id: "code", label: "Files", Icon: FiFileText },
+  { id: "config", label: "Settings", Icon: FiSettings },
+] as const;
+
+/** Presentation only: keep the persisted leaf IDs and feature-owned state. */
+export function contextualDestinations(view: ActiveView) {
+  const current = view === "git" ? "code" : view === "workstreams" ? "config" : view;
+  return DESTINATIONS.filter(item => item.id !== current);
+}
+
+export function ContextualNavigation({ state, activeView, onNavigate }: { state: State; activeView: ActiveView; onNavigate: (view: ActiveView) => void }) {
   const pending = state.interactions.length;
   const running = state.sending || state.runs.some(run => active(run.status)) || state.conversations.some(conversation => active(conversation.status));
-  const items = [
-    { id: "chat", label: "Chat", Icon: FiMessageSquare },
-    { id: "code", label: "Code", Icon: FiCode },
-    { id: "git", label: "Git", Icon: FiGitBranch },
-    { id: "terminal", label: "Terminal", Icon: FiTerminal },
-    { id: "workstreams", label: "Workstreams", Icon: FiGitMerge },
-    { id: "history", label: "History", Icon: FiCopy },
-    { id: "config", label: "Settings", Icon: FiSettings },
-  ] as const;
-  return <nav className="workspace-navigation" aria-label="Workspace navigation">{items.map(view => <button type="button" key={view.id} aria-current={activeView === view.id ? "page" : undefined} aria-label={view.label} title={view.label} onClick={() => onNavigate(view.id)}><view.Icon size={17} aria-hidden="true" />{view.id === "chat" && (pending > 0 || running) && <span className={`chat-activity${pending ? " pending" : ""}`} role="status"><span className="pulse" />{pending ? `${pending}` : ""}<span className="sr-only">{pending ? `${pending} pending` : "Running"}</span></span>}</button>)}</nav>;
+  return <nav className="contextual-navigation" aria-label="View navigation">{contextualDestinations(activeView).map(item => {
+    const openChat = item.id === "chat" && (activeView === "terminal" || activeView === "history");
+    const label = openChat ? "Open Chat" : item.label;
+    return <button type="button" key={item.id} aria-label={label} title={label} onClick={() => onNavigate(item.id)}><item.Icon size={17} aria-hidden="true" />{openChat && <span className="navigation-label">{label}</span>}{item.id === "chat" && (pending > 0 || running) && <span className={`chat-activity${pending ? " pending" : ""}`} role="status"><span className="pulse" />{pending ? `${pending}` : ""}<span className="sr-only">{pending ? `${pending} pending` : "Running"}</span></span>}</button>;
+  })}</nav>;
 }
 
-export function SidebarFooter({ state, activeView, onNavigate }: { state: State; activeView: ActiveView; onNavigate: (view: ActiveView) => void }) {
-  return <footer className="shell-sidebar-footer"><WorkspaceNavigation state={state} activeView={activeView} onNavigate={onNavigate} /></footer>;
+export function FilesModeControl({ activeView, onNavigate }: { activeView: ActiveView; onNavigate: (view: ActiveView) => void }) {
+  return <nav className="sidebar-mode-control" aria-label="Files views"><button type="button" aria-pressed={activeView === "code"} onClick={() => onNavigate("code")}><FiFileText size={15} aria-hidden="true" />Files</button><button type="button" aria-pressed={activeView === "git"} onClick={() => onNavigate("git")}><FiGitBranch size={15} aria-hidden="true" />Git</button></nav>;
 }

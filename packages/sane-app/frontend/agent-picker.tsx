@@ -8,7 +8,7 @@ import type { AgentProfile } from "./types";
 
 const matches = (profile: AgentProfile, query: string) => !query || `${profile.label} ${profile.description} ${profile.role ?? "base"}`.toLowerCase().includes(query);
 
-export function AgentPicker({ close }: { close: () => void }) {
+export function AgentPicker({ close, restoreFocus }: { close: () => void; restoreFocus?: () => HTMLElement | null }) {
   // Re-render on profile/draft/selection changes.
   useStore(s => s.profiles); useStore(s => s.drafts); useStore(s => s.selected);
   const [query, setQuery] = useState("");
@@ -22,7 +22,7 @@ export function AgentPicker({ close }: { close: () => void }) {
     <h3>{title}</h3>
     <div className="agent-grid">{list.map(profile => { const check = store.assignable(profile); return <AgentCard key={profile.id} profile={profile} selected={profile.id === currentId} disabled={!check.ok} reason={check.ok ? undefined : check.reason} onSelect={() => choose(profile)} />; })}</div>
   </section>;
-  return <ShellDialog title={assign ? "Assign an assistant" : "Choose an agent"} close={close}>
+  return <ShellDialog title={assign ? "Assign an assistant" : "Choose an agent"} close={close} restoreFocus={restoreFocus}>
     <div className="agent-picker">
       <label className="workspace-search"><span className="sr-only">Search agents</span><input autoFocus value={query} onChange={event => setQuery(event.target.value)} placeholder="Search agents…" /></label>
       {assign && <p className="muted agent-picker-note">A Base conversation can be assigned one assistant on the same harness. The choice applies on your next message.</p>}

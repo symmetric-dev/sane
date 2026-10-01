@@ -1,16 +1,21 @@
-import { useEffect, useId, useRef, useState } from "react";
+import { useEffect, useId, useRef, useState, useSyncExternalStore } from "react";
 import { SUPPORTED_WORKSTREAM_TYPES } from "sane-core/contracts";
 import type { WorkstreamOverview, WorkstreamConversation } from "../src/workstreams-contract";
 import { filterWorkstreamConversations, loadWorkstreams, refKey, workstreamRequest } from "./workstreams-client";
+import { catalog } from "./catalog";
 import "./workstreams.css";
 
 export type ArtifactSelection = { workspaceId: string; workstreamId: string; path: string; repositoryId: string };
-export function WorkstreamsView({ workspaceId, openArtifact }: { workspaceId: string | null; openArtifact: (artifact: ArtifactSelection) => void }) {
+type WorkstreamsProps = { workspaceId: string | null; openArtifact?: (artifact: ArtifactSelection) => void };
+export function WorkstreamsView({ workspaceId, openArtifact }: WorkstreamsProps) {
+  const { workspaces } = useSyncExternalStore(catalog.subscribe, catalog.snapshot);
   if (!workspaceId) return <section className="workspace-empty"><h2>Select a repository workspace</h2><p>Each repository owns its workstreams.</p></section>;
+  if (workspaces.find(workspace => workspace.workspaceId === workspaceId)?.kind === "directory") return <section className="workspace-empty"><h2>Workstreams require a repository</h2><p>This workspace is a plain directory. Select a repository workspace to manage workstreams.</p></section>;
   return <RepositoryWorkstreams key={workspaceId} workspaceId={workspaceId} openArtifact={openArtifact} />;
 }
-function RepositoryWorkstreams({ workspaceId, openArtifact }: { workspaceId: string; openArtifact: (artifact: ArtifactSelection) => void }) {
+function RepositoryWorkstreams({ workspaceId, openArtifact }: WorkstreamsProps & { workspaceId: string }) {
   const [data, setData] = useState<WorkstreamOverview | null>(null), [error, setError] = useState("");
+  const [loading, setLoading] = useState(true);
   const [store, setStore] = useState<{ state: string; message?: string } | null>(null);
   const [mutationError, setMutationError] = useState("");
   const [busy, setBusy] = useState(false), [selected, setSelected] = useState("");
@@ -20,6 +25,7 @@ function RepositoryWorkstreams({ workspaceId, openArtifact }: { workspaceId: str
   useEffect(() => { alive.current = true; void refresh(); return () => { alive.current = false; request.current++; }; }, []);
   async function refresh() {
     const generation = ++request.current;
+    setLoading(true); setError("");
     try {
       const availability = await workstreamRequest<{ state: string; message?: string }>(workspaceId, "inspect");
       if (!alive.current || generation !== request.current) return;
@@ -28,6 +34,7 @@ function RepositoryWorkstreams({ workspaceId, openArtifact }: { workspaceId: str
       const next = await loadWorkstreams(workspaceId); if (alive.current && generation === request.current) { setData(next); setError(""); }
     }
     catch (e) { if (alive.current && generation === request.current) setError(String(e instanceof Error ? e.message : e)); }
+    finally { if (alive.current && generation === request.current) setLoading(false); }
   }
   async function mutate(operation: string, input: unknown) {
     if (busy) return;
@@ -54,10 +61,10 @@ function RepositoryWorkstreams({ workspaceId, openArtifact }: { workspaceId: str
   return <section className="workstreams-view" aria-label="Repository workstreams">
     <header><h2>Workstreams</h2><button disabled={busy} onClick={() => void refresh()}>Refresh</button></header>
     <p className="muted">Shared repository state. Lifecycle, jobs and Research are read only here; use the CLI for those mutations. Native handoff integration is deferred to C8.</p>
-    {store && store.state !== "ready" && <div role="status"><p>Repository store: {store.state === "uninitialized" ? "Not initialized" : store.state}</p>{store.message && <p>{store.message}</p>}{store.state === "uninitialized" && <button disabled={busy} onClick={() => void mutate("init", {})}>Initialize repository domain</button>}</div>}
+    {!loading && !error && store && store.state !== "ready" && <div role="status"><p>{store.state === "uninitialized" ? "Repository workstreams are not initialized." : store.state === "not-repository" ? "Workstreams require a repository workspace." : `Repository workstreams unavailable: ${store.state}.`}</p>{store.message && <p>{store.message}</p>}{store.state === "uninitialized" && <button disabled={busy} onClick={() => void mutate("init", {})}>Initialize repository domain</button>}</div>}
     {error && <p className="notice error" role="alert">{error}</p>}
     {mutationError && <p className="notice error" role="alert">{mutationError}</p>}
-    {!data ? <p role="status">{error ? "Workstreams unavailable for this workspace." : "Loading workstreams…"}</p> : <>
+    {!data ? (loading || error) && <p role="status">{error ? "Workstreams unavailable for this workspace." : "Loading workstreams…"}</p> : <>
       <p className="context-path">Repository: {data.repositoryId}</p>
       <details><summary>Create workstream</summary><form onSubmit={e => { e.preventDefault(); const values = new FormData(e.currentTarget); void mutate("", { id: values.get("id"), title: values.get("title"), type: values.get("type"), ...(values.get("checkout") ? { defaultCheckout: values.get("checkout") } : {}) }); }}>
         <label>ID<input name="id" required /></label><label>Title<input name="title" required /></label><label>Type<select name="type" required defaultValue=""><option value="" disabled>Select type</option>{SUPPORTED_WORKSTREAM_TYPES.map(type => <option key={type} value={type}>{type}</option>)}</select></label><label>Default checkout (optional absolute path)<input name="checkout" /></label><button disabled={busy}>Create workstream</button>
@@ -73,7 +80,7 @@ function RepositoryWorkstreams({ workspaceId, openArtifact }: { workspaceId: str
         <p className="muted">Defaults are suggestions for new conversations. Existing execution pins never move.</p>
         <p>Active phases: {detail.activePhases.map(p => `${p.phase} (${p.ref.harness}:${p.ref.nativeId})`).join(", ") || "None"}</p>
         <button onClick={() => setMembership(`workstream:${selected}`)}>Show member conversations</button>
-        <h4>Artifacts · read only</h4>{artifactError ? <p role="alert">{artifactError}</p> : artifacts.length ? <ul>{artifacts.map(path => <li key={path}><button onClick={() => openArtifact({ workspaceId, workstreamId: selected, path, repositoryId: data.repositoryId })}>{path} · Open in Code</button></li>)}</ul> : <p>No Markdown artifacts found.</p>}
+        <h4>Artifacts · read only</h4>{artifactError ? <p role="alert">{artifactError}</p> : artifacts.length ? <ul>{artifacts.map(path => <li key={path}><button disabled={!openArtifact} title={!openArtifact ? "Artifact navigation is unavailable" : undefined} onClick={() => openArtifact?.({ workspaceId, workstreamId: selected, path, repositoryId: data.repositoryId })}>{path} · Open in Files</button></li>)}</ul> : <p>No Markdown artifacts found.</p>}
         <details><summary>Phase history · {detail.phaseHistory.length}</summary><ul>{detail.phaseHistory.map(p => <li key={p.id}>{p.phase} · {p.ref.harness}:{p.ref.nativeId} · {p.startedAt} → {p.endedAt ?? "Active"}</li>)}</ul></details>
       </section>}
       <h3>Conversations</h3><div className="workstream-filters"><label>Search<input value={search} onChange={e => setSearch(e.target.value)} /></label><label>Membership<select value={membership} onChange={e => setMembership(e.target.value)}><option value="all">All conversations</option><option value="unknown">Unknown association</option><option value="unassigned">Confirmed unassigned</option>{data.workstreams.map(w => <option key={w.workstream.id} value={`workstream:${w.workstream.id}`}>{w.workstream.title}</option>)}</select></label><label>Phase<select value={phase} onChange={e => setPhase(e.target.value)}><option value="">All phases</option>{phases.map(p => <option key={p}>{p}</option>)}</select></label></div>

@@ -10,11 +10,9 @@
 .worker-parent-nav { display:flex; align-items:center; flex-wrap:wrap; gap:12px; padding:10px 20px; border-bottom:1px solid var(--border); flex-shrink:0; font-size:12px; }
 .worker-parent-nav button { display:inline-flex; align-items:center; gap:6px; }
 .history-workers { display:inline-flex; align-items:center; gap:4px; flex-shrink:0; color:var(--muted-foreground); font-size:11px; font-variant-numeric:tabular-nums; }
-.composer-options { flex:1; flex-wrap:nowrap; }
-.composer-options .agent-chip { min-width:0; max-width:min(260px, 100%); }
 .agent-chip > svg,.agent-chip > .agent-avatar,.agent-chip-pending { flex-shrink:0; }
 
-.composer-workers { display:inline-flex; align-items:center; gap:6px; padding:6px 8px; border:1px solid transparent; border-radius:8px; background:transparent; color:var(--muted-foreground); font-size:12px; white-space:nowrap; }
+.composer-workers { display:inline-flex; align-items:center; gap:6px; padding:6px 8px; border:1px solid transparent; border-radius:8px; background:transparent; color:var(--muted-foreground); font-size:12px; white-space:nowrap; flex-shrink:0; }
 .composer-workers:hover,.composer-workers[aria-expanded="true"] { background:var(--muted); border-color:var(--border); color:var(--foreground); }
 .workers-count { display:inline-grid; place-items:center; min-width:18px; height:18px; padding-inline:4px; border-radius:6px; background:var(--accent); color:var(--primary); font-size:11px; font-variant-numeric:tabular-nums; }
 .workers-attention { width:5px; height:5px; border-radius:50%; background:var(--error); }
@@ -50,10 +48,6 @@
 .workers-empty p { margin:0; font-size:13px; line-height:1.6; }
 .composer-workers:focus-visible,.workers-panel button:focus-visible,.worker-row summary:focus-visible { outline:2px solid var(--focus-ring); outline-offset:3px; }
 @media (max-width:640px) {
-  .composer-toolbar { flex-direction:column; align-items:stretch; gap:8px; }
-  .composer-options .agent-chip { max-width:100%; }
-  .composer-actions { width:100%; }
-  .composer-actions .composer-workers { margin-right:auto; }
   .workers-panel { inset:auto 0 0; width:100%; max-height:80dvh; border-radius:18px 18px 0 0; border-bottom:0; }
   .workers-panel::backdrop { background:rgb(0 0 0 / 28%); }
   .workers-panel-footer { padding-bottom:max(16px, env(safe-area-inset-bottom)); }

@@ -46,7 +46,7 @@ function elapsed(w: WorkerRecord, execution: ReturnType<typeof workerExecution>,
   return `${duration}${execution.continuation && !execution.latest ? " since dispatch" : ""}`;
 }
 
-export function WorkersButton({ sessionId }: { sessionId: string }) {
+export function WorkersButton({ sessionId, active = true }: { sessionId: string; active?: boolean }) {
   const projection = useWorkers(sessionId);
   const conversations = useStore(state => state.conversations);
   const runs = useStore(state => state.runs);
@@ -54,19 +54,24 @@ export function WorkersButton({ sessionId }: { sessionId: string }) {
   const [now, setNow] = useState(Date.now);
   const trigger = useRef<HTMLButtonElement>(null);
   const dialog = useRef<HTMLDialogElement>(null);
+  const activity = useRef(active); activity.current = active;
   const id = useId();
   const workers = projection.workers;
   const executions = workers.map(w => workerExecution(w, runs, conversations.find(c => c.id === w.sessionId)));
   const count = executions.filter(e => e.active).length;
   const uncertain = executions.filter(e => e.executionState === "uncertain" || e.executionState === "unknown").length;
   const attention = !!projection.error || projection.deliveries.some(d => d.error) || workers.some(w => w.error || w.continuation?.error || w.continuationCancellation?.error || (w.latestResult ?? w.results?.at(-1))?.notification.error || w.notification?.error);
+  useEffect(() => { if (!active) setOpened(false); }, [active]);
   useEffect(() => {
-    if (!opened) return;
+    if (!opened || !active) return;
     const element = dialog.current!;
     const position = () => {
       const rect = trigger.current?.getBoundingClientRect();
       if (!rect) return;
-      element.style.setProperty("--workers-right", `${Math.max(16, window.innerWidth - rect.right)}px`);
+      // The trigger now sits beside Agent on the left. Keep the panel inside
+      // the viewport rather than letting its old right alignment clip it.
+      const width = Math.min(460, window.innerWidth - 32);
+      element.style.setProperty("--workers-right", `${Math.max(16, Math.min(window.innerWidth - rect.right, window.innerWidth - width - 16))}px`);
       element.style.setProperty("--workers-bottom", `${window.innerHeight - rect.top + 10}px`);
       element.style.setProperty("--workers-height", `${Math.max(160, rect.top - 26)}px`);
     };
@@ -74,11 +79,11 @@ export function WorkersButton({ sessionId }: { sessionId: string }) {
     element.showModal();
     const timer = setInterval(() => setNow(Date.now()), 1000);
     window.addEventListener("resize", position);
-    return () => { clearInterval(timer); window.removeEventListener("resize", position); element.close(); trigger.current?.focus(); };
-  }, [opened]);
+    return () => { clearInterval(timer); window.removeEventListener("resize", position); element.close(); if (activity.current && trigger.current?.isConnected) trigger.current.focus(); };
+  }, [opened, active]);
   const open = (w: WorkerRecord) => { flushSync(() => setOpened(false)); openWorker(w); };
-  return <><button ref={trigger} type="button" className={`composer-workers${attention || projection.continuationSuppressed ? " has-issue" : ""}`} aria-haspopup="dialog" aria-expanded={opened} aria-controls={opened ? id : undefined} aria-label={`Workers, ${count} active${uncertain ? `, ${uncertain} unconfirmed` : ""}${attention ? ", attention needed" : ""}${projection.continuationSuppressed ? ", report-back paused" : ""}`} onClick={() => { setNow(Date.now()); setOpened(true); }}><FiUsers size={14} aria-hidden="true" /><span>Workers</span><span className="workers-count" aria-hidden="true">{count}</span>{(attention || projection.continuationSuppressed) && <span className="workers-attention" aria-hidden="true" />}</button>
-    {opened && createPortal(<dialog ref={dialog} id={id} className="workers-panel" aria-modal="true" aria-labelledby={`${id}-title`} onCancel={event => { event.preventDefault(); setOpened(false); }} onClick={event => { if (event.target === event.currentTarget) setOpened(false); }}><div className="workers-panel-content">
+  return <><button ref={trigger} type="button" disabled={!active} className={`composer-workers${attention || projection.continuationSuppressed ? " has-issue" : ""}`} aria-haspopup="dialog" aria-expanded={opened && active} aria-controls={opened && active ? id : undefined} aria-label={`Workers, ${count} active${uncertain ? `, ${uncertain} unconfirmed` : ""}${attention ? ", attention needed" : ""}${projection.continuationSuppressed ? ", report-back paused" : ""}`} title="Workers" onClick={() => { setNow(Date.now()); setOpened(true); }}><FiUsers size={14} aria-hidden="true" /><span className="workers-count" aria-hidden="true">{count}</span>{(attention || projection.continuationSuppressed) && <span className="workers-attention" aria-hidden="true" />}</button>
+    {opened && active && createPortal(<dialog ref={dialog} id={id} className="workers-panel" aria-modal="true" aria-labelledby={`${id}-title`} onCancel={event => { event.preventDefault(); setOpened(false); }} onClick={event => { if (event.target === event.currentTarget) setOpened(false); }}><div className="workers-panel-content">
       <header className="workers-panel-header"><div><h2 id={`${id}-title`}>Workers</h2><p className="muted">{count} active · {workers.length} total{uncertain ? ` · ${uncertain} unconfirmed` : ""}</p></div><button type="button" className="icon-button" aria-label="Close workers" onClick={() => setOpened(false)}><FiX size={18} /></button></header>
       <div className="workers-panel-body">
         {projection.error && <p className="notice error" role="alert">Worker status unavailable: {projection.error}</p>}

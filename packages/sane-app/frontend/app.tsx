@@ -1,0 +1,185 @@
+import { useEffect, useState, useSyncExternalStore, type ReactNode } from "react";
+import { FiMoreHorizontal, FiZap } from "react-icons/fi";
+import { store, type State } from "./store";
+import { catalog } from "./catalog";
+import { worktreeDisplay, worktreeLabel } from "./catalog-selector";
+import { WorkspaceHeader, WorkspaceProvider, WorkspaceSidebar, WorkspaceView, workspaceHasDirtyBuffers, resetWorkspaceState } from "./workspace";
+import type { ActiveView } from "./workspace-controller";
+import { TerminalHeader, TerminalProvider, TerminalView } from "./terminal";
+import { WorkspaceShell } from "./workspace-shell";
+import { ShellDialog } from "./shell-dialog";
+import type { ArtifactSelection } from "./workstreams";
+import { WorkstreamArtifact } from "./workstream-artifact";
+import { formatTitle } from "./conversation-filter";
+import { HistoryDetail } from "./history-view";
+import { ConfigMenu, ConfigView } from "./config-view";
+import { ConversationSidebar, useConversationSidebarModel } from "./conversation-sidebar";
+import { Facts, NativeHistoryDetails, NativeUsage, RunDetails, Thread, Usage } from "./thread";
+import { ContextualNavigation, Drawer, FilesModeControl, Icon, viewGroup } from "./nav";
+import { harnessName } from "./types";
+
+const basename = (path?: string | null) => path?.split("/").filter(Boolean).at(-1) || path || "Conversation";
+// Restore selection without replacing the independently bookmarked browsing pair.
+const hydrateCatalog = () => void catalog.hydrate(bookmark => store.choose(bookmark.conversationId ?? ""));
+
+export function App() {
+  const state = useSyncExternalStore(store.subscribe, store.snapshot);
+  useEffect(() => {
+    store.start();
+    window.addEventListener("online", store.reconnect);
+    document.addEventListener("visibilitychange", store.reconnect);
+    return () => {
+      window.removeEventListener("online", store.reconnect);
+      document.removeEventListener("visibilitychange", store.reconnect);
+    };
+  }, []);
+  useEffect(() => { if (state.phase === "ready") hydrateCatalog(); }, [state.phase]);
+  const signOut = () => {
+    if (workspaceHasDirtyBuffers() && !window.confirm("Discard unsaved workspace changes and sign out?")) return;
+    resetWorkspaceState();
+    void store.logout();
+  };
+  return state.phase === "ready" ? <ReadyWorkspace state={state} signOut={signOut} /> : <AuthScreen state={state} />;
+}
+
+function AuthScreen({ state }: { state: State }) {
+  const [password, setPassword] = useState("");
+  const [loggingIn, setLoggingIn] = useState(false);
+  return <main className="auth-screen"><div className="auth-card">
+    <span className="welcome-mark" aria-hidden="true"><FiZap size={44} /></span>
+    <p className="eyebrow">YOUR LOCAL BRIDGE</p>
+    <h1>{state.phase === "login" ? "Welcome back." : "Connecting your workspace."}</h1>
+    <p className="muted">{state.phase === "login" ? "Enter your bridge password to pick up where you left off." : "A quiet place to work with your local coding assistants."}</p>
+    {state.phase === "login" && <form onSubmit={async event => {
+      event.preventDefault(); setLoggingIn(true);
+      await store.login(password); setPassword(""); setLoggingIn(false);
+    }}>
+      <label htmlFor="password">Bridge password</label>
+      <input id="password" type="password" autoComplete="current-password" required autoFocus value={password} onChange={event => setPassword(event.target.value)} />
+      <button className="primary-button" disabled={loggingIn}>{loggingIn ? "Signing in…" : "Open workspace"}</button>
+    </form>}
+    {(state.authError || state.connectionError) && <p className="notice error" role="alert">{state.authError || state.connectionError}</p>}
+  </div></main>;
+}
+
+function ReadyWorkspace({ state, signOut }: { state: State; signOut: () => void }) {
+  const repository = useSyncExternalStore(catalog.subscribe, catalog.snapshot);
+  const { view, workspaceId, worktreeId } = repository.navigation;
+  const [drawer, setDrawer] = useState<"sidebar" | "details" | "application" | null>(null);
+  const [artifact, setArtifact] = useState<ArtifactSelection | null>(null);
+  const [historyPreview, setHistoryPreview] = useState<string | null>(null);
+  const mode = view === "history" ? "history" : "chat";
+  // The desktop sidebar and mobile drawer share one filter/search state owner.
+  const sidebarModel = useConversationSidebarModel(state, mode);
+  useEffect(() => { setArtifact(null); }, [workspaceId, worktreeId, repository.navigation.filePath]);
+  useEffect(() => { setHistoryPreview(null); }, [workspaceId, worktreeId]);
+  useEffect(() => {
+    if (view !== "history") return;
+    if (historyPreview && state.conversations.some(conversation => conversation.id === historyPreview)) return;
+    const scoped = state.conversations.filter(conversation => conversation.workspaceId === workspaceId && conversation.worktreeId === worktreeId);
+    setHistoryPreview(scoped.find(conversation => conversation.id === state.selected)?.id ?? scoped.at(-1)?.id ?? null);
+  }, [view, workspaceId, worktreeId, state.selected, state.conversations, historyPreview]);
+  useEffect(() => { setDrawer(null); }, [state.selected]);
+  const navigate = (next: ActiveView) => { setArtifact(null); catalog.navigate({ view: next }); setDrawer(null); };
+  const choose = (id: string) => {
+    if (state.sending) return;
+    store.openConversation(id); setDrawer(null);
+  };
+  const openArtifact = (selection: ArtifactSelection) => { setArtifact(selection); catalog.navigate({ view: "code" }); setDrawer(null); };
+  const navigation = <ContextualNavigation state={state} activeView={view} onNavigate={navigate} />;
+  const group = viewGroup(view);
+  const sidebar = group === "chat" ? <ConversationSidebar
+    state={state} model={sidebarModel} mode={mode} selectedId={mode === "history" ? historyPreview : state.selected}
+    onChoose={choose} onPreview={id => { setHistoryPreview(id); setDrawer(null); }}
+    onHistory={() => navigate(view === "history" ? "chat" : "history")}
+  /> : group === "files" ? <><FilesModeControl activeView={view} onNavigate={navigate} /><WorkspaceSidebar /></>
+    : <ConfigMenu onSelect={() => { setArtifact(null); setDrawer(null); }} />;
+  return <WorkspaceProvider view={view} navigate={navigate}><TerminalProvider view={view}>
+    <WorkspaceShell view={view} sidebar={sidebar}
+      retryCatalog={hydrateCatalog} sidebarOpen={drawer === "sidebar"}
+      openSidebar={() => setDrawer("sidebar")} closeSidebar={() => setDrawer(null)}
+      header={<ShellHeader state={state} view={view} artifact={artifact} openDetails={() => setDrawer("details")} openApplication={() => setDrawer("application")} />}
+      notices={<ShellNotices state={state} view={view} openDetails={() => setDrawer("details")} />}
+    >
+      <ShellContent state={state} view={view} workspaceId={workspaceId} artifact={artifact} closeArtifact={() => setArtifact(null)} openArtifact={openArtifact}
+        historyPreview={historyPreview} choose={choose} signOut={signOut} navigation={navigation} />
+    </WorkspaceShell>
+    {drawer === "application" && <ApplicationDialog state={state} signOut={signOut} close={() => setDrawer(null)} />}
+    {drawer === "details" && <ConversationDetails state={state} close={() => setDrawer(null)} />}
+  </TerminalProvider></WorkspaceProvider>;
+}
+
+function ShellHeader({ state, view, artifact, openDetails, openApplication }: {
+  state: State; view: ActiveView; artifact: ArtifactSelection | null; openDetails: () => void; openApplication: () => void;
+}) {
+  const conversation = state.conversations.find(item => item.id === state.selected);
+  let heading: ReactNode;
+  if (view === "chat") heading = <>
+    <div className="conversation-heading"><span title={conversation?.title || undefined}>{conversation?.title ? formatTitle(conversation.title, basename(conversation.cwd)) : state.selected ? "Conversation" : "New conversation"}</span></div>
+    <span className="harness-badge">{harnessName(store.harness())}</span>
+    <button type="button" className="details-button" aria-label="Conversation details" onClick={openDetails}><Icon name="details" /><span>Details</span></button>
+  </>;
+  else if (view === "terminal") heading = <TerminalHeader />;
+  else if (view === "history") heading = <div className="conversation-heading">History</div>;
+  else if (viewGroup(view) === "settings") heading = <div className="conversation-heading">{view === "workstreams" ? "Settings · Workstreams" : "Settings"}</div>;
+  else if (artifact && view === "code") heading = <div className="conversation-heading">Files · Read-only workstream artifact</div>;
+  else heading = <WorkspaceHeader />;
+  return <>{heading}<button type="button" className="icon-button application-opener" aria-label="Application menu" aria-haspopup="dialog" onClick={openApplication}><FiMoreHorizontal size={16} aria-hidden="true" /><span className={`connection-dot ${state.connected ? "online" : ""}`} /></button></>;
+}
+
+function ShellNotices({ state, view, openDetails }: { state: State; view: ActiveView; openDetails: () => void }) {
+  const repository = useSyncExternalStore(catalog.subscribe, catalog.snapshot);
+  const conversation = state.conversations.find(item => item.id === state.selected);
+  const workspace = repository.workspaces.find(item => item.workspaceId === conversation?.workspaceId);
+  const worktree = workspace?.worktrees.find(item => item.worktreeId === conversation?.worktreeId);
+  const mismatch = conversation && (conversation.workspaceId !== repository.navigation.workspaceId || conversation.worktreeId !== repository.navigation.worktreeId);
+  return <>
+    {state.connectionError && <div className="connection-notice" role="status">{state.connectionError}<button type="button" onClick={store.reconnect}>Reconnect</button></div>}
+    {mismatch && view !== "terminal" && <div className="execution-context" role="status">
+      <span title={worktree ? `${worktreeLabel(worktree)} · ${worktree.root}` : conversation.cwd}>Runs in: {worktree ? worktreeDisplay(worktree) : conversation.cwd || "Unavailable worktree"}</span>
+      {conversation.workspaceId && conversation.worktreeId ? <button type="button" disabled={state.sending} onClick={() => catalog.navigate({ workspaceId: conversation.workspaceId, worktreeId: conversation.worktreeId, filePath: null, comparison: null })}>Browse execution worktree</button> : <button type="button" onClick={openDetails}>Execution details</button>}
+    </div>}
+  </>;
+}
+
+/** Hidden chat stays mounted: switching views must not destroy native input state. */
+function ShellContent({ state, view, workspaceId, artifact, closeArtifact, openArtifact, historyPreview, choose, signOut, navigation }: {
+  state: State; view: ActiveView; workspaceId: string | null; artifact: ArtifactSelection | null;
+  closeArtifact: () => void; openArtifact: (selection: ArtifactSelection) => void;
+  historyPreview: string | null; choose: (id: string) => void; signOut: () => void; navigation: ReactNode;
+}) {
+  return <>
+    <div className="chat-surface" hidden={view !== "chat"} inert={view !== "chat"}><Thread state={state} active={view === "chat"} navigation={navigation} /></div>
+    {view !== "chat" && view !== "terminal" && <div className="shell-content">
+      {view === "history" && <HistoryDetail state={state} previewId={historyPreview} onOpen={choose} />}
+      {viewGroup(view) === "settings" && <ConfigView state={state} signOut={signOut} workspaceId={workspaceId} openArtifact={openArtifact} />}
+      {view === "code" && artifact && artifact.workspaceId === workspaceId ? <WorkstreamArtifact artifact={artifact} close={closeArtifact} /> : (view === "code" || view === "git") && <WorkspaceView />}
+    </div>}
+    {view === "terminal" && <TerminalView navigation={navigation} />}
+    {view !== "chat" && view !== "terminal" && <footer className="shell-content-footer">{navigation}</footer>}
+  </>;
+}
+
+function ApplicationDialog({ state, signOut, close }: { state: State; signOut: () => void; close: () => void }) {
+  return <ShellDialog title="Application" close={close}>
+    <div className="application-status"><span className={`connection-dot ${state.connected ? "online" : ""}`} /><span>{state.connected ? "Local bridge connected" : "Connecting to bridge"}</span></div>
+    <details className="application-connection"><summary>Connection details</summary><p className="muted">{state.connectionError || (state.connected ? "Connected to the local bridge." : "Waiting for the local bridge.")}</p><button type="button" className="text-button" onClick={store.reconnect}>Reconnect</button></details>
+    {state.config?.authRequired && <button type="button" className="application-signout" disabled={state.sending} onClick={signOut}>Sign out</button>}
+  </ShellDialog>;
+}
+
+function ConversationDetails({ state, close }: { state: State; close: () => void }) {
+  const conversation = state.conversations.find(item => item.id === state.selected);
+  const latestUsage = [...state.runs].reverse().find(run => run.usage)?.usage;
+  const nativeUsageRun = [...state.runs].reverse().find(run => run.nativeUsage);
+  return <Drawer title="Conversation details" close={close}>
+    <section className="detail-section"><p className="eyebrow">EXECUTION WORKTREE</p>
+      {!state.selected ? <label className="directory-label">Launch directory<input value={store.draft().cwd} placeholder="Selected worktree root or a subdirectory" onChange={event => store.setDraft({ cwd: event.target.value })} /><small>Defaults to the selected worktree root. Optionally choose a directory inside that worktree.</small></label> : <Facts values={[["Conversation ID", state.selected], ["Harness", harnessName(store.harness())], ["Agent", store.conversationProfile(state.selected)?.label ?? (store.agent() || "Base")], ["Native session ID", conversation?.nativeSessionId], ["Launch directory", conversation?.cwd], ["Workspace", conversation?.workspaceId || "Unavailable"], ["Worktree", conversation?.worktreeId || "Unavailable"]]} />}
+      <p className="muted">Each follow-up uses this conversation’s fixed execution directory and harness. Browsing another worktree does not retarget it.</p>
+      {conversation?.association !== "resolved" && state.selected && <p className="notice" role="status">Execution workspace unavailable. Recorded history remains accessible.</p>}
+    </section>
+    <section className="detail-section"><h3>Latest reported usage</h3>{store.harness() === "opencode" ? <>{nativeUsageRun && nativeUsageRun.id !== state.runs.at(-1)?.id && <p className="muted">Showing an earlier run’s snapshot; the latest run has no reported usage yet.</p>}<NativeUsage run={nativeUsageRun} /></> : <>{latestUsage && latestUsage.runId !== state.runs.at(-1)?.id && <p className="muted">A newer run has no result snapshot yet. Showing an earlier run.</p>}<Usage snapshot={latestUsage} /></>}</section>
+    <NativeHistoryDetails state={state} />
+    <section className="detail-section"><h3>Runs & diagnostics <span className="muted">{state.runs.length}</span></h3>{state.runs.length ? [...state.runs].reverse().map(run => <RunDetails key={run.id} run={run} />) : <p className="muted">Run IDs and raw events will appear here.</p>}</section>
+  </Drawer>;
+}

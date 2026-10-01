@@ -19,14 +19,6 @@
   color:var(--foreground);
 }
 
-/* === view === */
-.view-code .topbar,.view-git .topbar {
-  border-bottom:1px solid var(--border);
-  padding-left:20px;
-  padding-right:20px;
-  gap:12px;
-}
-
 /* === workspace === */
 .workspace-header-actions {
   display:flex;
@@ -239,16 +231,6 @@
 
 /* === at-rule @media(max-width:700px) === */
 @media(max-width:700px) {
-  .view-code .topbar,.view-git .topbar {
-    height:auto;
-    min-height:68px;
-    padding:10px 12px;
-    flex-wrap:wrap;
-    gap:8px;
-  }
-  .view-code .workspace-heading,.view-git .workspace-heading {
-    flex-basis:calc(100% - 54px);
-  }
   .workspace-header-actions {
     max-width:100%;
     margin-left:auto;

@@ -27,7 +27,7 @@ export function WorkspaceHeader() {
   const diff = controller.comparison;
   const textDiff = view === "code" ? localCompare && buffer && !buffer.missing && buffer.disk?.text !== null : diff && !diff.reason && !diff.modeOnly && diff.before !== null && diff.after !== null && diff.before !== diff.after;
   return <>
-    <div className="conversation-heading workspace-heading"><span title={selected || undefined}>{view === "code" ? "Code" : "Git"}{selected ? ` · ${selected}` : ""}{buffer && dirty(buffer) ? " •" : ""}</span>{(view === "git" && selected || localCompare) && <small>{localCompare ? "Disk → Local unsaved buffer" : root?.comparison}</small>}</div>
+    <div className="conversation-heading workspace-heading"><span title={selected || undefined}>{view === "code" ? "Files" : "Git"}{selected ? ` · ${selected}` : ""}{buffer && dirty(buffer) ? " •" : ""}</span>{(view === "git" && selected || localCompare) && <small>{localCompare ? "Disk → Local unsaved buffer" : root?.comparison}</small>}</div>
     {(textDiff || view === "code" && scope || view === "git" && canOpenInCode(controller)) && <button type="button" className="file-actions-opener" aria-haspopup="dialog" aria-label={view === "code" ? "File actions" : "Change actions"} onClick={() => setActionsOpen(true)}><span>{view === "code" ? "File actions" : "Change actions"}</span><FiChevronDown size={13} aria-hidden="true" /></button>}
     {operation && scope && view === "code" && <FileOperationDialog key={`${scope.generation}:${scope.workspace.workspaceId}:${operation.kind}:${operation.source}`} operation={operation.kind} source={operation.source} close={() => setOperation(null)} />}
     {actionsOpen && <ShellDialog title={view === "code" ? "File actions" : "Change actions"} close={() => setActionsOpen(false)}><p className="context-path">{selected}</p><div className="workspace-header-actions">
@@ -42,7 +42,7 @@ export function WorkspaceHeader() {
         <button type="button" disabled={buffer.checking || buffer.saving || buffer.missing || !buffer.file.revision} onClick={() => { setActionsOpen(false); setOperation({ kind: "copy", source: selected }); }}>Copy file</button>
         <button type="button" className="workspace-delete" disabled={buffer.checking || buffer.saving || buffer.missing || !buffer.file.revision} onClick={() => { setActionsOpen(false); setOperation({ kind: "delete", source: selected }); }}>Delete file</button>
       </>}
-      {view === "git" && canOpenInCode(controller) && <button onClick={() => { controller.activate({ view: "code", path: selected }); setActionsOpen(false); }}>Open in Code</button>}
+      {view === "git" && canOpenInCode(controller) && <button onClick={() => { controller.activate({ view: "code", path: selected }); setActionsOpen(false); }}>Open in Files</button>}
     </div></ShellDialog>}
   </>;
 }
@@ -50,9 +50,9 @@ export function WorkspaceHeader() {
 export function WorkspaceView() {
   const controller = useWorkspace();
   const { conversationId, workspace, selected, view, buffer, comparison, localCompare, error } = controller;
-  if (!conversationId) return <section className="workspace-empty"><h2>Open a workspace</h2><p>Choose a repository or directory from the workspace switcher above to browse Code and Git.</p></section>;
+  if (!conversationId) return <section className="workspace-empty"><h2>Open a workspace</h2><p>Choose a repository or directory from the workspace switcher above to browse Files and Git.</p></section>;
   if (!workspace) return <section className="workspace-empty"><h2>{controller.resolving ? "Opening workspace…" : "Workspace unavailable"}</h2>{error && <p role="alert">{error}</p>}{!controller.resolving && <button onClick={controller.retryResolve}>Retry workspace</button>}</section>;
-  return <section className="workspace-view" aria-label={view === "code" ? "Code workspace" : "Git changes"}>
+  return <section className="workspace-view" aria-label={view === "code" ? "Files workspace" : "Git changes"}>
     {error && <div className="workspace-notice workspace-error" role="alert">{error} <button onClick={controller.retrySelection}>Retry</button> <button onClick={controller.retryResolve}>Reopen workspace</button></div>}
     {buffer?.error && <div className="workspace-notice workspace-error" role="alert">{buffer.error} <button onClick={controller.retryResolve}>Reopen workspace</button></div>}
     {buffer?.disk && <div className="workspace-notice">Disk changed. Local edits are preserved. Compare disk, then reload explicitly to discard local changes.</div>}

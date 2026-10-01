@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState, useSyncExternalStore } from "react";
-import { FiPlus, FiSliders, FiUsers } from "react-icons/fi";
+import { FiGitBranch, FiPlus, FiSliders, FiUsers } from "react-icons/fi";
 import { ASSISTANT_AGENT_LABELS, WORKER_AGENT_CATALOG, isAssistantAgentId, isWorkerAgentId } from "sane-core/agent-catalog";
 import { AGENT_COLOR_IDS, AGENT_ICON_IDS, type AgentColor, type AgentIconId } from "../src/agent-profiles-contract";
 import { store, type State } from "./store";
@@ -8,6 +8,7 @@ import { ShellDialog } from "./shell-dialog";
 import { AGENT_ICONS, AgentCard, agentColor, moveCardFocus } from "./agent-visuals";
 import { harnessName, type AgentProfile, type Harness } from "./types";
 import { ApplicationSettings } from "./application-settings";
+import { WorkstreamsView, type ArtifactSelection } from "./workstreams";
 
 // Client-side mirrors of src/history.ts validModel/validEffort/validVariant and
 // src/bridge.ts submit validation (model always, effort per harness, variant
@@ -38,6 +39,8 @@ const formError = (form: Form, kind: AgentProfile["kind"]) => !form.label.trim()
 const copyLabel = (p: AgentProfile) => `${p.label} copy`.slice(0, 80);
 
 export type ConfigSection = "agents" | "application";
+// Only config-leaf sections are a local preference. Workstreams is selected by
+// the existing navigation bookmark, not a second persisted active section.
 const SECTION_KEY = "sane.configSection";
 let section: ConfigSection = (() => { try { return localStorage.getItem(SECTION_KEY) === "application" ? "application" : "agents"; } catch { return "agents"; } })();
 const sectionListeners = new Set<() => void>();
@@ -48,16 +51,25 @@ export const configSection = {
 };
 const SECTIONS = [
   { id: "agents", label: "Agents", hint: "Conversation and worker profiles", Icon: FiUsers },
+  { id: "workstreams", label: "Workstreams", hint: "Repository workstreams and associations", Icon: FiGitBranch },
   { id: "application", label: "Application", hint: "Connection, harnesses, account", Icon: FiSliders },
 ] as const;
 
 export function ConfigMenu({ onSelect }: { onSelect?: () => void }) {
-  const current = useSyncExternalStore(configSection.subscribe, configSection.snapshot);
-  return <nav className="history-list config-menu" aria-label="Settings sections">{SECTIONS.map(item => <button type="button" key={item.id} className={current === item.id ? "selected" : ""} aria-current={current === item.id ? "page" : undefined} onClick={() => { configSection.set(item.id); onSelect?.(); }}><span className="history-line"><item.Icon size={15} aria-hidden="true" /><span className="history-title">{item.label}</span></span><small className="muted config-menu-hint">{item.hint}</small></button>)}</nav>;
+  const preference = useSyncExternalStore(configSection.subscribe, configSection.snapshot);
+  const { navigation } = useSyncExternalStore(catalog.subscribe, catalog.snapshot);
+  const current = navigation.view === "workstreams" ? "workstreams" : navigation.view === "config" ? preference : null;
+  return <nav className="history-list config-menu" aria-label="Settings sections">{SECTIONS.map(item => <button type="button" key={item.id} className={current === item.id ? "selected" : ""} aria-current={current === item.id ? "page" : undefined} onClick={() => {
+    if (item.id === "workstreams") catalog.navigate({ view: "workstreams" });
+    else { configSection.set(item.id); catalog.navigate({ view: "config" }); }
+    onSelect?.();
+  }}><span className="history-line"><item.Icon size={15} aria-hidden="true" /><span className="history-title">{item.label}</span></span><small className="muted config-menu-hint">{item.hint}</small></button>)}</nav>;
 }
 
-export function ConfigView({ state, signOut }: { state: State; signOut: () => void }) {
+export function ConfigView({ state, signOut, workspaceId = null, openArtifact }: { state: State; signOut: () => void; workspaceId?: string | null; openArtifact?: (artifact: ArtifactSelection) => void }) {
   const current = useSyncExternalStore(configSection.subscribe, configSection.snapshot);
+  const { navigation } = useSyncExternalStore(catalog.subscribe, catalog.snapshot);
+  if (navigation.view === "workstreams") return <WorkstreamsView workspaceId={workspaceId} openArtifact={openArtifact} />;
   return current === "application" ? <ApplicationSettings state={state} signOut={signOut} /> : <AgentSettings state={state} />;
 }
 
