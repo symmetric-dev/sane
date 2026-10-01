@@ -114,7 +114,8 @@ export function matchesOpenCodeWorkerPart(operation: NativeWorkerOperation, invo
   return invocation.opencode?.wrapper === "execute" ? part.name === "execute" : part.name === `sane_worker_${operation}`
 }
 
-/** Agent-facing projection only. No launch config, input, parent envelope or notification record. */
+/** Compact agent-facing metadata, complete result text. No launch config, input,
+ * parent envelope or private notification record. */
 export type NativeWorkerSummary = {
   id: string; sessionId: string; runId: string | null; worker?: WorkerAgentId
   state: string; createdAt?: string; updatedAt?: string; cancelRequestedAt?: string
@@ -143,7 +144,7 @@ export function projectNativeWorkerReply(input: unknown): NativeWorkerReply {
     }
     if (src.outcome && typeof src.outcome === "object" && !Array.isArray(src.outcome)) {
       const source = src.outcome as Record<string, unknown>, outcome: Record<string, unknown> = {}
-      for (const key of ["status", "at", "summary"]) if (typeof source[key] === "string") outcome[key] = (source[key] as string).slice(0, key === "summary" ? 16000 : 2048)
+      for (const key of ["status", "at", "summary"]) if (typeof source[key] === "string") outcome[key] = key === "summary" ? source[key] : (source[key] as string).slice(0, 2048)
       if (source.log === null) outcome.log = null
       else if (source.log && typeof source.log === "object") {
         const log = source.log as Record<string, unknown>
@@ -179,5 +180,5 @@ export function projectNativeWorkerReply(input: unknown): NativeWorkerReply {
     if (!["pending", "wait-consumed", "claimed", "acceptance-unknown", "delivered"].includes(receipt.state as string) || typeof receipt.acknowledged !== "boolean") invalid("Invalid worker acknowledgement receipt.")
     return { workerId, revision, notificationId, state: receipt.state as NativeWorkerAcknowledgement["state"], acknowledged: receipt.acknowledged }
   }) : undefined
-  return { ...(value.worker !== undefined ? { worker: summary(value.worker) } : {}), ...(Array.isArray(value.workers) ? { workers: value.workers.slice(0, 256).map(summary) } : {}), ...(typeof value.timedOut === "boolean" ? { timedOut: value.timedOut } : {}), ...(receipts ? { receipts } : {}) }
+  return { ...(value.worker !== undefined ? { worker: summary(value.worker) } : {}), ...(Array.isArray(value.workers) ? { workers: value.workers.map(summary) } : {}), ...(typeof value.timedOut === "boolean" ? { timedOut: value.timedOut } : {}), ...(receipts ? { receipts } : {}) }
 }

@@ -24,6 +24,7 @@ import { createNativeWorkerHandler, NativeWorkerRequestError, type NativeWorkerC
 import { matchesOpenCodeWorkerPart, nativeWorkerInput, projectNativeWorkerReply } from "../../sane-cli/src/native-worker-contract";
 import { workerTerminationUncertainty } from "./worker-recovery";
 import { workerDeliveryEvidence, workerReportPrompt } from "./worker-outbox";
+import { restoreWorkerOutput, workerOutput } from "./worker-output";
 import { workerResults, type WorkerDelivery } from "./worker-contract";
 import { ASSISTANT_AGENT_DESCRIPTIONS, ASSISTANT_AGENT_IDS, ASSISTANT_AGENT_LABELS, isAssistantAgentId, nativeAgentId } from "sane-core/agent-catalog";
 import { AgentLaunchConfigurationError, agentLaunchSnapshot, claudeAgentSettings, snapshotIdentity } from "./agent-launch";
@@ -890,6 +891,8 @@ async function startOwned(options: Options, assetsDir: string, packageDir: strin
       } finally { admitting.delete(w.sessionId); }
     },
     async observe(w) {
+      const restored = restoreWorkerOutput(w, runId => events.get(runId) ?? []);
+      if (restored) w = workerStore.update(w.id, restored);
       const results = workerResults(w);
       // Durable delivery run identity recovers continuations after restart without replay.
       const continuationDeliveries = workerStore.deliveries().filter(d => d.parentSessionId === w.sessionId);
@@ -931,14 +934,8 @@ async function startOwned(options: Options, assetsDir: string, packageDir: strin
       if (uncertain || retainOwner) return { ...(continuation ? { continuation: { ...continuation, state: "uncertain" as const, error: "Execution ownership or termination unconfirmed" } } : {}), state: "uncertain", error: uncertain && w.launch.harness === "claude-code" ? "CLI termination is unconfirmed. Verify the previous CLI process has stopped, then restart with --reconcile-interrupted to persist confirmation and release this reservation." : "Execution ownership or termination remains unconfirmed; reconcile the original native run without resubmitting." };
       if (run.status !== "running") {
         if (owners.get(w.sessionId)?.settled === false) return {}; // Finish log/metadata publication before recording an outcome.
-        // Existing log is authoritative. A summary is only a bounded preview, never a second transcript.
-        const output = records.flatMap(e => {
-          const d = e.data as any;
-          if (e.kind === "stdout" && d?.type === "result" && typeof d.result === "string") return [d.result];
-          if (e.kind === "message" && d?.role === "assistant") return (d.parts ?? []).filter((p: any) => p.type === "text" && typeof p.text === "string").map((p: any) => p.text);
-          return [];
-        });
-        return { ...(continuation ? { continuation } : {}), state: run.status, error: undefined, outcome: { status: run.status, at: run.endedAt!, summary: output.at(-1)?.slice(-4000) ?? String((records.filter(e => e.kind === "status").at(-1)?.data as any)?.reason ?? run.status), log: { sessionId: w.sessionId, runId: run.runId } } };
+        // The log is authoritative; transport the full final response, not a UI preview.
+        return { ...(continuation ? { continuation } : {}), state: run.status, error: undefined, outcome: { status: run.status, at: run.endedAt!, summary: workerOutput(records) ?? String((records.filter(e => e.kind === "status").at(-1)?.data as any)?.reason ?? run.status), log: { sessionId: w.sessionId, runId: run.runId } } };
       }
       if (continuation) return { continuation: { ...continuation, state: w.continuationCancellation ? "cancelling" : "running" }, state: w.continuationCancellation ? "cancelling" : "running" };
       if (w.cancelRequestedAt) return { state: "cancelling" };

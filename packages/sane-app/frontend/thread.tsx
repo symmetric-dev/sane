@@ -1,7 +1,8 @@
 import { createContext, useContext, useEffect, useRef, useState, useSyncExternalStore, type ReactNode } from "react";
-import type { WorkerRecord } from "../src/worker-contract";
+import type { WorkerDelivery, WorkerRecord } from "../src/worker-contract";
 import { useWorkers, openWorker, workerReference } from "./worker-client";
-import { WorkerCard, WorkerSection } from "./worker-ui";
+import { WorkerCard, WorkerOutcomeReport, WorkerSection } from "./worker-ui";
+import { dispatchedWorkers, workerReportDelivery } from "./worker-presentation";
 import type { Harness, ToolPart } from "./types";
 import { AssistantRuntimeProvider, MessagePrimitive, ThreadPrimitive, useAuiState, useExternalStoreRuntime, type ThreadMessageLike } from "@assistant-ui/react";
 import { ChatComposer } from "./chat-composer";
@@ -31,13 +32,16 @@ function Markdown({ text }: { text: string }) {
   return <div className="prose"><ReactMarkdown remarkPlugins={[remarkGfm]} skipHtml components={{ pre: CodeBlock, a: ({ children, href }) => <a href={href} target="_blank" rel="noopener noreferrer">{children}</a>, img: ({ alt }) => <span className="muted">[Image: {alt || "image omitted"}]</span> }}>{text}</ReactMarkdown></div>;
 }
 
-export type TranscriptContextValue = { sessionId: string; harness: Harness; messages: Message[]; runs: Run[]; workers: WorkerRecord[]; openWorker: (worker: WorkerRecord) => void; branchEnabled?: boolean };
+export type TranscriptContextValue = { sessionId: string; harness: Harness; messages: Message[]; runs: Run[]; workers: WorkerRecord[]; deliveries?: WorkerDelivery[]; openWorker: (worker: WorkerRecord) => void; branchEnabled?: boolean };
 export const TranscriptContext = createContext<TranscriptContextValue | null>(null);
 const isActivityMessage = (message: Message) => message.role === "assistant" && message.parts.some(part => part.type !== "text") && !message.parts.some(part => part.type === "text" && part.text.trim()) && message.error === undefined && message.status !== "failed" && message.status !== "interrupted";
 function TranscriptTool({ part, source }: { part: ToolPart; source: Message }) {
   const context = useContext(TranscriptContext)!;
-  const workers = source.runId !== "native-import" && part.toolCallId ? context.workers.filter(w => w.parent.sessionId === context.sessionId && w.parent.runId === source.runId && w.parent.toolCallId === part.toolCallId) : [];
-  return <>{workers.map(worker => <WorkerCard key={worker.id} worker={worker} workers={context.workers} runs={context.runs} open={context.openWorker} />)}<details className="tool"><summary><span>{part.name}{workers.length ? " · Raw tool input/output" : ""}</span><span className="tool-status">{part.toolStatus || (part.output !== undefined ? part.error ? "Failed" : "Result" : active(source.status) ? "Working" : "No result recorded")}</span></summary><div className="tool-body"><p className="eyebrow">Input</p><pre>{json(part.input)}</pre>{part.output !== undefined && <><p className="eyebrow">{part.error ? "Error" : "Output"}</p><pre>{json(part.output)}</pre></>}</div></details></>;
+  const workers = dispatchedWorkers(context.sessionId, source, part, context.workers);
+  // Open worker already contains the assignment. Keep raw tool evidence in run
+  // diagnostics rather than duplicating the instructions in the parent thread.
+  if (workers.length) return <>{workers.map(worker => <WorkerCard key={worker.id} worker={worker} workers={context.workers} runs={context.runs} open={context.openWorker} />)}{part.error && <p className="notice error" role="alert">Worker tool reported an error. Open run details for the recorded evidence.</p>}</>;
+  return <details className="tool"><summary><span>{part.name}</span><span className="tool-status">{part.toolStatus || (part.output !== undefined ? part.error ? "Failed" : "Result" : active(source.status) ? "Working" : "No result recorded")}</span></summary><div className="tool-body"><p className="eyebrow">Input</p><pre>{json(part.input)}</pre>{part.output !== undefined && <><p className="eyebrow">{part.error ? "Error" : "Output"}</p><pre>{json(part.output)}</pre></>}</div></details>;
 }
 export function ChatMessage() {
   const message = useAuiState(s => s.message);
@@ -57,6 +61,8 @@ export function ChatMessage() {
   const plain = message.content.filter(p => p.type === "text").map(p => p.text).join("\n\n");
   const lastInTurn = source && (source.runId === "native-import" ? context.messages.slice(context.messages.indexOf(source) + 1).find(m => m.role === "assistant" || m.role === "user")?.role !== "assistant" : !context.messages.slice(context.messages.indexOf(source) + 1).some(m => m.runId === source.runId && m.role === "assistant"));
   const canBranch = context.branchEnabled && source?.role === "assistant" && lastInTurn && (source.runId === "native-import" ? harness === "opencode" && source.status === "completed" : context.runs.some(r => r.id === source.runId && r.status === "completed"));
+  const delivery = source && workerReportDelivery(source, context.deliveries ?? []);
+  if (delivery) return <MessagePrimitive.Root className="message worker-report-message"><WorkerOutcomeReport delivery={delivery} workers={context.workers} runs={context.runs} open={context.openWorker} /></MessagePrimitive.Root>;
   return <MessagePrimitive.Root className={`message ${isUser ? "user-message" : "assistant-message"}${continued ? " assistant-continued" : ""}${activity ? " activity-message" : ""}${activityContinued ? " assistant-activity-continued" : ""}`}>
     {showLabel && <div className="assistant-label"><FiZap size={13} aria-hidden="true" /> {source?.role === "system" ? `${harnessName(harness)} · System` : harnessName(harness)}</div>}
     <div className={isUser ? "user-bubble" : "assistant-body"}>
@@ -80,7 +86,8 @@ export function convertMessage(message: Message): ThreadMessageLike {
 }
 
 export function Thread({ state, active: isActive = true, navigation }: { state: State; active?: boolean; navigation?: ReactNode }) {
-  const workers = useWorkers(state.selected).workers;
+  const projection = useWorkers(state.selected);
+  const workers = projection.workers;
   const parentId = workerReference(state.selected)?.parent.sessionId;
   const [ack, setAck] = useState("");
   const needsAck = !!state.conversations.find(c => c.id === state.selected && c.harness === "claude-code")?.attachment;
@@ -101,7 +108,7 @@ export function Thread({ state, active: isActive = true, navigation }: { state: 
   });
   const sendDisabled = !isActive || running || state.loading || state.sending || !state.connected || !state.availability.canSend || modelUnavailable || !!store.executionUnavailable() || (needsAck && ack !== state.selected);
   const footer = <ChatComposer state={state} active={isActive} navigation={navigation} ack={ack} onAckChange={setAck} send={send} sendDisabled={sendDisabled} parentId={parentId} />;
-  return <TranscriptContext.Provider value={{ sessionId: state.selected, harness, messages: state.messages, runs: state.runs, workers, openWorker, branchEnabled: !state.loading && !state.sending && !running && !parentId && !conversation?.worker && !conversation?.replacedBy && !(conversation?.attachment && harness === "claude-code") }}><AssistantRuntimeProvider runtime={runtime}><ThreadPrimitive.Root className="thread">
+  return <TranscriptContext.Provider value={{ sessionId: state.selected, harness, messages: state.messages, runs: state.runs, workers, deliveries: projection.deliveries, openWorker, branchEnabled: !state.loading && !state.sending && !running && !parentId && !conversation?.worker && !conversation?.replacedBy && !(conversation?.attachment && harness === "claude-code") }}><AssistantRuntimeProvider runtime={runtime}><ThreadPrimitive.Root className="thread">
     <BranchLinks key={state.selected} conversation={conversation} />
     {parentId && <nav className="worker-parent-nav" aria-label="Worker navigation"><button type="button" className="text-button" disabled={state.sending} onClick={() => store.openConversation(parentId)}><FiArrowLeft size={14} aria-hidden="true" />Back to parent</button><span className="muted">Worker conversation</span></nav>}
     <ChatScroll resetKey={state.selected || `new:${repository.navigation.worktreeId}`} footer={footer}>
