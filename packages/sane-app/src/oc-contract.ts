@@ -10,9 +10,10 @@ export type MessagePart =
 export type MessageSnapshot = {
   messageId: string; role: "user" | "assistant" | "system"; parts: MessagePart[];
   status: "running" | "completed" | "failed" | "unknown"; createdAt: string;
+  model?: string; contextReset?: boolean;
   usage?: { cost?: number; tokens?: unknown }; error?: unknown;
 };
-export type HarnessModel = { id: string; name: string; efforts: { id: string; name: string }[] };
+export type HarnessModel = { id: string; name: string; efforts: { id: string; name: string }[]; contextWindow?: number };
 export type FormOption = { value: string; label: string; description?: string };
 type FormBase = { key: string; title?: string; description?: string; required?: boolean; hidden?: boolean; when?: { key: string; op: "eq" | "neq"; value: string | number | boolean }[] };
 export type FormField =

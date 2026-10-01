@@ -10,7 +10,7 @@ export type NativeAgent = { id: string; model?: ModelRef };
 export type OpenCodeLaunch = { agent?: string; model?: ModelRef };
 type NativeSession = { id: string; location?: { directory?: string }; agent?: string; model?: ModelRef; outcome?: "succeeded" | "failed" | "interrupted"; time: { created: number; updated: number; idle?: number } };
 type NativePart = { type: string; id?: string; name?: string; text?: string; state?: { status: string; input?: unknown; content?: unknown; error?: unknown } };
-export type NativeMessage = { id: string; type: string; time: { created: number; completed?: number }; text?: string; content?: NativePart[]; error?: unknown; cost?: number; tokens?: unknown; outcome?: string };
+export type NativeMessage = { id: string; type: string; time: { created: number; completed?: number }; model?: ModelRef; text?: string; content?: NativePart[]; error?: unknown; cost?: number; tokens?: unknown; outcome?: string };
 type Page = { data: NativeMessage[]; cursor: { next?: string | null } };
 export class OpenCodeError extends Error {
   constructor(message: string, public status = 503) { super(message); }
@@ -78,9 +78,9 @@ export class OpenCodeAdapter {
     catch (error) { return { available: false, connected: false, state: "unavailable" as const, reason: error instanceof Error ? error.message : "OpenCode unavailable" }; }
   }
   async models(cwd: string): Promise<HarnessModel[]> {
-    const response = await this.request<{ data: { id: string; providerID: string; name: string; enabled: boolean; variants: { id: string }[] }[] }>(`/api/model?location%5Bdirectory%5D=${encodeURIComponent(cwd)}`);
+    const response = await this.request<{ data: { id: string; providerID: string; name: string; enabled: boolean; variants: { id: string }[]; limit?: { context?: number } }[] }>(`/api/model?location%5Bdirectory%5D=${encodeURIComponent(cwd)}`);
     if (!Array.isArray(response.data)) throw new OpenCodeError("Unsupported OpenCode V2 model response");
-    return response.data.filter(m => m.enabled).map(m => ({ id: `${m.providerID}/${m.id}`, name: m.name, efforts: m.variants.map(v => ({ id: v.id, name: v.id })) }));
+    return response.data.filter(m => m.enabled).map(m => ({ id: `${m.providerID}/${m.id}`, name: m.name, efforts: m.variants.map(v => ({ id: v.id, name: v.id })), ...(typeof m.limit?.context === "number" && Number.isFinite(m.limit.context) && m.limit.context > 0 ? { contextWindow: m.limit.context } : {}) }));
   }
   model(value: string, effort?: string): ModelRef {
     const slash = value.indexOf("/");
@@ -240,6 +240,10 @@ export function commandSnapshot(history: NativeMessage[], commandId: string) {
 }
 
 export function normalizeMessage(message: NativeMessage): MessageSnapshot | undefined {
+  const model = message.model?.providerID && message.model.id ? `${message.model.providerID}/${message.model.id}` : undefined;
+  // Preserve context boundaries for the usage indicator without rendering them
+  // as conversation turns or counting the compaction request's token usage.
+  if (message.type === "compaction" || message.type === "model-switched") return { messageId: message.id, role: "system", parts: [], status: "completed", createdAt: new Date(message.time.created).toISOString(), ...(model ? { model } : {}), ...(message.type === "compaction" ? { contextReset: true } : {}) };
   if (!["user", "assistant", "system", "synthetic"].includes(message.type)) return;
   const parts: MessagePart[] = message.type === "assistant" ? (message.content ?? []).flatMap((part, i): MessagePart[] => {
     const id = part.id ?? `${message.id}:part:${i}`;
@@ -247,5 +251,5 @@ export function normalizeMessage(message: NativeMessage): MessageSnapshot | unde
     if (part.type === "tool") return [{ id, type: "tool", name: part.name ?? "tool", status: part.state?.status ?? "streaming", input: part.state?.input, output: part.state?.content, error: part.state?.error }];
     return [];
   }) : [{ id: `${message.id}:text`, type: "text", text: message.text ?? "" }];
-  return { messageId: message.id, role: message.type === "assistant" ? "assistant" : message.type === "user" ? "user" : "system", parts, status: message.error ? "failed" : message.type !== "assistant" || message.time.completed !== undefined ? "completed" : "running", createdAt: new Date(message.time.created).toISOString(), ...(message.cost !== undefined || message.tokens !== undefined ? { usage: { cost: message.cost, tokens: message.tokens } } : {}), ...(message.error ? { error: message.error } : {}) };
+  return { messageId: message.id, role: message.type === "assistant" ? "assistant" : message.type === "user" ? "user" : "system", parts, status: message.error ? "failed" : message.type !== "assistant" || message.time.completed !== undefined ? "completed" : "running", createdAt: new Date(message.time.created).toISOString(), ...(model ? { model } : {}), ...(message.cost !== undefined || message.tokens !== undefined ? { usage: { cost: message.cost, tokens: message.tokens } } : {}), ...(message.error ? { error: message.error } : {}) };
 }

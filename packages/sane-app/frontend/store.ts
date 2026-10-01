@@ -3,6 +3,7 @@ import { ApiError, conversationClient } from "./cc-client";
 import { publishWorkers, workersFor, registerWorkerSessions, setWorkerNavigator, workerReference } from "./worker-client";
 import { consume, createRun } from "./cc-reducer";
 import { transcriptMessages } from "./transcript";
+import { contextUsageFor, type ContextUsageSnapshot } from "./context-usage";
 import { catalog } from "./catalog";
 import { invalidateWorkspaceRequests, onWorkspaceAuthExpired } from "./workspace-store";
 import { BASE_PROFILE_IDS, builtinProfiles, canAssign, legacyProfileId, type AgentProfile, type AgentProfileInput, type AgentProfiles } from "../src/agent-profiles-contract";
@@ -21,6 +22,7 @@ export type State = {
   models: ModelChoice[]; modelsLoading: boolean; modelsError: string; modelsLoaded: boolean;
   modelsCwd: string; interactions: Interaction[]; interactionError: string; actionBusy: boolean; actionNotice: string;
   nativeHistory?: ReconciledHistory | null;
+  contextUsage?: ContextUsageSnapshot | null;
   profiles: AgentProfiles | null; profileError: string; profileBusy: boolean;
 };
 const emptyDraft = (): Draft => ({ text: "", cwd: "", profileId: "", upgradeId: "" });
@@ -253,7 +255,7 @@ export class ChatStore {
     this.nativeHistoryLoaded = false;
     catalog.invalidate(); invalidateWorkspaceRequests();
     this.replied.clear();
-    this.update({ phase: "login", config: undefined, conversations: [], runs: [], messages: [], nativeHistory: null, connected: false, loading: false, sending: false, availability: { canSend: false }, connectionError: "", submissionError: "", models: [], modelsLoading: false, modelsLoaded: false, modelsError: "", modelsCwd: "", interactions: [], interactionError: "", actionBusy: false, actionNotice: "", profiles: null, profileError: "", profileBusy: false });
+    this.update({ phase: "login", config: undefined, conversations: [], runs: [], messages: [], nativeHistory: null, contextUsage: null, connected: false, loading: false, sending: false, availability: { canSend: false }, connectionError: "", submissionError: "", models: [], modelsLoading: false, modelsLoaded: false, modelsError: "", modelsCwd: "", interactions: [], interactionError: "", actionBusy: false, actionNotice: "", profiles: null, profileError: "", profileBusy: false });
   }
   private expired(error: unknown) { if (error instanceof ApiError && error.status === 401) { this.loginRequired(); return true; } return false; }
   start = () => { if (this.started) return; this.started = true; void this.boot(); };
@@ -304,8 +306,8 @@ export class ChatStore {
     // Never show the source's turns or actions under a newly selected branch.
     // Same-id sends do not reach here; their transcript remains mounted.
     this.update(selected
-      ? { selected, runs: [], messages: [], availability: { canSend: false }, nativeHistory: null, interactions: [], interactionError: "", actionBusy: false, actionNotice: "", loading: true, connected: false, connectionError: "", submissionError: "" }
-      : { selected, runs: [], messages: [], nativeHistory: null, interactions: [], interactionError: "", actionBusy: false, actionNotice: "", loading: false, connected: false, connectionError: "", submissionError: "" });
+      ? { selected, runs: [], messages: [], availability: { canSend: false }, nativeHistory: null, contextUsage: null, interactions: [], interactionError: "", actionBusy: false, actionNotice: "", loading: true, connected: false, connectionError: "", submissionError: "" }
+      : { selected, runs: [], messages: [], nativeHistory: null, contextUsage: null, interactions: [], interactionError: "", actionBusy: false, actionNotice: "", loading: false, connected: false, connectionError: "", submissionError: "" });
     void this.poll();
   };
   private async poll() {
@@ -357,6 +359,9 @@ export class ChatStore {
       const branchDraft = conversations.find(c => c.id === selected)?.branchDraft;
       if (branchDraft && !runs.length && !this.state.drafts[this.draftKey(selected)]) this.setDraft({ text: branchDraft }, selected);
       const availability = conversations.find(c => c.id === selected)?.availability ?? listing.availability;
+      const conversation = conversations.find(c => c.id === selected);
+      const models = this.state.modelsLoaded && !this.state.modelsError && this.state.modelsCwd === conversation?.cwd ? this.state.models : [];
+      const contextUsage = conversation ? contextUsageFor(conversation.harness, runs, models, nativeHistory) : null;
       // Referential stability: an idle poll produces deep-equal data. Skipping
       // the broadcast keeps whole-store subscribers (App, transcript) from
       // re-rendering every 1.5s; the reschedule in finally still runs.
@@ -365,9 +370,10 @@ export class ChatStore {
         prev.nativeHistory === nativeHistory &&
         JSON.stringify(prev.conversations) === JSON.stringify(conversations) &&
         JSON.stringify(prev.availability) === JSON.stringify(availability) &&
+        JSON.stringify(prev.contextUsage) === JSON.stringify(contextUsage) &&
         prev.runs.length === runs.length && runs.every((run, index) => prev.runs[index]?.id === run.id && prev.runs[index]?.status === run.status && prev.runs[index]?.cursor === run.cursor) &&
         JSON.stringify(prev.messages) === JSON.stringify(messages);
-      if (!quiet) this.update({ ...listing, availability, nativeHistory, conversations, runs, messages, connected: true, loading: false, connectionError: "" });
+      if (!quiet) this.update({ ...listing, availability, nativeHistory, contextUsage, conversations, runs, messages, connected: true, loading: false, connectionError: "" });
       if (selected && conversations.find(c => c.id === selected)?.harness === "opencode") {
         try {
           const interactions = await this.client.interactions(selected, controller.signal);

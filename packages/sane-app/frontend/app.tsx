@@ -10,17 +10,17 @@ import { WorkspaceShell } from "./workspace-shell";
 import { ShellDialog } from "./shell-dialog";
 import type { ArtifactSelection } from "./workstreams";
 import { WorkstreamArtifact } from "./workstream-artifact";
-import { formatTitle } from "./conversation-filter";
 import { HistoryDetail } from "./history-view";
 import { ConfigMenu, ConfigView } from "./config-view";
 import { ConversationSidebar, useConversationSidebarModel } from "./conversation-sidebar";
+import { ConversationHeading } from "./conversation-heading";
+import type { WorkstreamOverview } from "../src/workstreams-contract";
 import { Facts, NativeHistoryDetails, NativeUsage, RunDetails, Thread, Usage } from "./thread";
 import { ContextualNavigation, Drawer, FilesModeControl, Icon, viewGroup } from "./nav";
 import { harnessName } from "./types";
 import { ApplicationCommandProvider } from "./application-commands";
 import { WorkspaceSearchButton, WorkspaceSearchFeature } from "./workspace-search";
 
-const basename = (path?: string | null) => path?.split("/").filter(Boolean).at(-1) || path || "Conversation";
 // Restore selection without replacing the independently bookmarked browsing pair.
 const hydrateCatalog = () => void catalog.hydrate(bookmark => store.choose(bookmark.conversationId ?? ""));
 
@@ -100,7 +100,7 @@ function ReadyWorkspace({ state, signOut }: { state: State; signOut: () => void 
     <WorkspaceShell view={view} sidebar={sidebar}
       retryCatalog={hydrateCatalog} sidebarOpen={drawer === "sidebar"}
       openSidebar={() => setDrawer("sidebar")} closeSidebar={() => setDrawer(null)}
-      header={<ShellHeader state={state} view={view} artifact={artifact} openDetails={() => setDrawer("details")} openApplication={() => setDrawer("application")} />}
+      header={<ShellHeader state={state} view={view} artifact={artifact} overview={sidebarModel.overview} overviewWorkspaceId={workspaceId} openDetails={() => setDrawer("details")} openApplication={() => setDrawer("application")} />}
       notices={<ShellNotices state={state} view={view} openDetails={() => setDrawer("details")} />}
     >
       <ShellContent state={state} view={view} workspaceId={workspaceId} artifact={artifact} closeArtifact={() => setArtifact(null)} openArtifact={openArtifact}
@@ -111,14 +111,19 @@ function ReadyWorkspace({ state, signOut }: { state: State; signOut: () => void 
   </TerminalProvider></WorkspaceSearchFeature></WorkspaceProvider></ApplicationCommandProvider>;
 }
 
-function ShellHeader({ state, view, artifact, openDetails, openApplication }: {
+function ShellHeader({ state, view, artifact, overview, overviewWorkspaceId, openDetails, openApplication }: {
   state: State; view: ActiveView; artifact: ArtifactSelection | null; openDetails: () => void; openApplication: () => void;
+  overview: WorkstreamOverview | null; overviewWorkspaceId: string | null;
 }) {
   const conversation = state.conversations.find(item => item.id === state.selected);
   let heading: ReactNode;
+  const usage = state.contextUsage;
+  const contextLabel = usage ? `${Math.round(usage.percentage)}% context` : "— context";
+  const contextHint = usage ? `Last reported input context: ${usage.tokens.toLocaleString()} / ${usage.capacity.toLocaleString()} tokens · ${usage.model} · Received ${new Date(usage.time).toLocaleString()}. Excludes output tokens; pending input and tool results may not be included. This is the model window, not the auto-compaction threshold.` : "Context usage unavailable. Waiting for reported input tokens and a matching model-window capacity.";
   if (view === "chat") heading = <>
-    <div className="conversation-heading"><span title={conversation?.title || undefined}>{conversation?.title ? formatTitle(conversation.title, basename(conversation.cwd)) : state.selected ? "Conversation" : "New conversation"}</span></div>
+    <ConversationHeading conversation={conversation} selectedId={state.selected} overview={overview} overviewWorkspaceId={overviewWorkspaceId} />
     <span className="harness-badge">{harnessName(store.harness())}</span>
+    <span className="context-usage" title={contextHint} aria-label={`${contextLabel}. ${contextHint}`} tabIndex={0}>{contextLabel}</span>
     <button type="button" className="details-button" aria-label="Conversation details" onClick={openDetails}><Icon name="details" /><span>Details</span></button>
   </>;
   else if (view === "terminal") heading = <TerminalHeader />;

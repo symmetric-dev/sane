@@ -33,6 +33,7 @@ function Markdown({ text }: { text: string }) {
 
 export type TranscriptContextValue = { sessionId: string; harness: Harness; messages: Message[]; runs: Run[]; workers: WorkerRecord[]; openWorker: (worker: WorkerRecord) => void; branchEnabled?: boolean };
 export const TranscriptContext = createContext<TranscriptContextValue | null>(null);
+const isActivityMessage = (message: Message) => message.role === "assistant" && message.parts.some(part => part.type !== "text") && !message.parts.some(part => part.type === "text" && part.text.trim()) && message.error === undefined && message.status !== "failed" && message.status !== "interrupted";
 function TranscriptTool({ part, source }: { part: ToolPart; source: Message }) {
   const context = useContext(TranscriptContext)!;
   const workers = source.runId !== "native-import" && part.toolCallId ? context.workers.filter(w => w.parent.sessionId === context.sessionId && w.parent.runId === source.runId && w.parent.toolCallId === part.toolCallId) : [];
@@ -40,15 +41,24 @@ function TranscriptTool({ part, source }: { part: ToolPart; source: Message }) {
 }
 export function ChatMessage() {
   const message = useAuiState(s => s.message);
-   const context = useContext(TranscriptContext)!;
-   const harness = context.harness;
-   const source = context.messages.find(m => m.id === message.id);
+  const context = useContext(TranscriptContext)!;
+  const harness = context.harness;
+  const sourceIndex = context.messages.findIndex(m => m.id === message.id);
+  const source = context.messages[sourceIndex];
   const isUser = message.role === "user";
+  // Native records are separate messages, but identity belongs to the user turn.
+  // System notices retain their own label without resetting assistant identity.
+  const previousSpeaker = context.messages.slice(0, Math.max(0, sourceIndex)).findLast(m => m.role !== "system");
+  const showLabel = !isUser && (source?.role === "system" || !source || previousSpeaker?.role !== "assistant");
+  const next = context.messages[sourceIndex + 1];
+  const continued = source?.role === "assistant" && next?.role === "assistant";
+  const activity = !!source && isActivityMessage(source);
+  const activityContinued = continued && activity && isActivityMessage(next);
   const plain = message.content.filter(p => p.type === "text").map(p => p.text).join("\n\n");
   const lastInTurn = source && (source.runId === "native-import" ? context.messages.slice(context.messages.indexOf(source) + 1).find(m => m.role === "assistant" || m.role === "user")?.role !== "assistant" : !context.messages.slice(context.messages.indexOf(source) + 1).some(m => m.runId === source.runId && m.role === "assistant"));
   const canBranch = context.branchEnabled && source?.role === "assistant" && lastInTurn && (source.runId === "native-import" ? harness === "opencode" && source.status === "completed" : context.runs.some(r => r.id === source.runId && r.status === "completed"));
-  return <MessagePrimitive.Root className={`message ${isUser ? "user-message" : "assistant-message"}`}>
-    {!isUser && <div className="assistant-label"><FiZap size={13} aria-hidden="true" /> {source?.role === "system" ? `${harnessName(harness)} · System` : harnessName(harness)}</div>}
+  return <MessagePrimitive.Root className={`message ${isUser ? "user-message" : "assistant-message"}${continued ? " assistant-continued" : ""}${activity ? " activity-message" : ""}${activityContinued ? " assistant-activity-continued" : ""}`}>
+    {showLabel && <div className="assistant-label"><FiZap size={13} aria-hidden="true" /> {source?.role === "system" ? `${harnessName(harness)} · System` : harnessName(harness)}</div>}
     <div className={isUser ? "user-bubble" : "assistant-body"}>
       {source ? source.parts.map((part, index) => part.type === "reasoning" ? <details className="tool reasoning" key={index}><summary>Reasoning</summary><div className="tool-body"><Markdown text={part.text} /></div></details> : part.type === "text" ? isUser ? <p key={index} className="user-text">{part.text}</p> : <Markdown key={index} text={part.text} /> : <TranscriptTool key={part.id} part={part} source={source} />) : message.content.map((part, index) => {
         if (part.type === "text") return isUser ? <p key={index} className="user-text">{part.text}</p> : <Markdown key={index} text={part.text} />;

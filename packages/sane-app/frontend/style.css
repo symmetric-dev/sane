@@ -530,6 +530,15 @@ h3 {
 .message {
   margin-bottom:35px;
 }
+.assistant-message {
+  margin-bottom:28px;
+}
+.assistant-message.assistant-continued {
+  margin-bottom:14px;
+}
+.assistant-message.assistant-activity-continued {
+  margin-bottom:4px;
+}
 
 /* === user === */
 .user-message {
@@ -558,7 +567,7 @@ h3 {
   font-size:11px;
   font-weight:600;
   color:var(--muted-foreground);
-  margin-bottom:12px;
+  margin-bottom:8px;
 }
 
 /* === small === */
@@ -685,19 +694,40 @@ h3 {
 
 /* === tool === */
 .tool {
-  margin:12px 0;
+  margin:4px 0;
   max-width:100%;
-  border-radius:10px;
-  background:var(--muted);
+  border-radius:6px;
+  background:color-mix(in srgb, var(--muted) 55%, transparent);
   font-size:12px;
+}
+.assistant-body > .tool:first-child {
+  margin-top:0;
+}
+.assistant-body > .tool:last-child {
+  margin-bottom:0;
+}
+.assistant-body > .prose + .tool,
+.assistant-body > .tool + .prose {
+  margin-top:12px;
 }
 .tool summary {
   display:flex;
-  gap:10px;
+  gap:8px;
   align-items:center;
-  padding:12px 14px;
+  min-height:30px;
+  padding:5px 10px;
   cursor:pointer;
   list-style:none;
+}
+.tool summary::-webkit-details-marker {
+  display:none;
+}
+.tool summary:hover,
+.tool[open] {
+  background:var(--muted);
+}
+.tool summary:hover {
+  border-radius:6px;
 }
 .tool summary:after {
   content:"";
@@ -723,7 +753,7 @@ h3 {
   margin-left:auto;
 }
 .tool-body {
-  padding:4px 16px 14px;
+  padding:2px 12px 12px;
 }
 .tool-body pre {
   max-height:360px;
@@ -1195,6 +1225,10 @@ h3 {
   }
   .message {
     margin-bottom:30px;
+  }
+  .tool summary {
+    min-height:40px;
+    padding-block:8px;
   }
 }
 

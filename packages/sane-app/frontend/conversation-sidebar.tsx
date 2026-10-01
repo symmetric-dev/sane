@@ -5,10 +5,11 @@ import { harnessName, harnessShort } from "./types";
 import { AgentAvatar } from "./agent-visuals";
 import { formatTitle } from "./conversation-filter";
 import { ConversationFilterDialog } from "./conversation-filter-dialog";
-import { ConversationMenu, PhaseBadge, StatusIcon, WorkstreamBadge } from "./conversation-row";
+import { ConversationMenu, PhaseBadge, StatusIcon } from "./conversation-row";
 import { Icon } from "./nav";
 import { workerReference as knownWorker } from "./worker-client";
 import type { ConversationSidebarMode, ConversationSidebarModel } from "./conversation-sidebar-model";
+import "./conversation-sidebar.css";
 
 export { useConversationSidebarModel } from "./conversation-sidebar-model";
 export type { ConversationSidebarMode, ConversationSidebarModel } from "./conversation-sidebar-model";
@@ -62,28 +63,35 @@ export function ConversationSidebarList({ state, model, mode, selectedId, onSele
         {conversations.map(c => {
           const membership = workstreamMap.get(c.id);
           const workspaceName = repository.workspaces.find(w => w.workspaceId === c.workspaceId)?.name;
-          const workspaceLabel = workspaceName ?? (c.association === "resolved" ? basename(c.cwd) : "Unavailable");
+          const rootLabel = c.cwd ? basename(c.cwd) : workspaceName ?? "Unavailable";
+          const workstream = overview?.workstreams.find(w => w.workstream.id === membership?.workstreamId)?.workstream;
+          const enrolled = overview?.conversations.some(row => row.sessionId === c.id && !!row.conversation);
+          const workstreamLabel = membership?.workstreamId ? workstream?.title || membership.workstreamId : enrolled ? "Free" : "Unknown";
+          const workstreamTitle = membership?.workstreamId ? `${workstreamLabel} · ${membership.workstreamId}` : enrolled ? "No workstream assigned" : "Workstream association unavailable";
           const selected = selectedId === c.id;
           const phases = membership?.phases ?? [];
           const workerCount = workerCounts.get(c.id) ?? 0;
           const profile = store.profileFor(c);
-          return <div className="history-row" key={c.id}>
+          return <div className="history-row conversation-sidebar-row" key={c.id}>
             <button type="button" className={selected ? "selected" : ""} aria-current={selected ? "page" : undefined} disabled={!history && state.sending} onClick={() => onSelect(c.id)} title={c.title ? `${c.title}\n${c.cwd}` : c.cwd}>
-              <span className="history-line">
+              <span className="history-line conversation-sidebar-heading">
                 <span className="history-title">{formatTitle(c.title, basename(c.cwd))}</span>
+                <span className="conversation-sidebar-separator" aria-hidden="true">-</span>
+                <span className="conversation-sidebar-workstream" title={workstreamTitle}>{workstreamLabel}</span>
+              </span>
+              <span className="history-line conversation-sidebar-metadata">
+                {profile?.kind === "assistant" && <span className="agent-row-avatar" title={profile.label}><AgentAvatar profile={profile} size={16} /></span>}
+                <span className="harness-badge" title={harnessName(c.harness)}>{harnessShort(c.harness)}</span>
+                {phases.map(phase => <PhaseBadge key={phase} phase={phase} />)}
                 {!history && workerCount > 0 && <span className="history-workers" title={`${workerCount} direct workers`}><FiUsers size={12} aria-hidden="true" /><span aria-hidden="true">{workerCount}</span><span className="sr-only">{workerCount} direct workers</span></span>}
                 {history && knownWorker(c.id) && <span className="harness-badge">Worker</span>}
                 {history && c.replacedBy ? <span className="harness-badge">Replaced</span> : c.hidden && <span className="harness-badge">Hidden</span>}
                 {history && c.branchOrigin && <span className="harness-badge">Branch</span>}
               </span>
-              <span className="history-line">
-                {profile?.kind === "assistant" && <span className="agent-row-avatar" title={profile.label}><AgentAvatar profile={profile} size={16} /></span>}
-                <span className="harness-badge" title={harnessName(c.harness)}>{harnessShort(c.harness)}</span>
-                <span className="harness-badge workspace-badge" title={history || c.association === "resolved" ? c.cwd : undefined}>{workspaceLabel}</span>
-                {membership?.workstreamId && <WorkstreamBadge workstreamId={membership.workstreamId} phases={membership.phases} />}
-                {!phases.length && <StatusIcon status={c.status} />}
+              <span className="history-line conversation-sidebar-footer">
+                <span className="harness-badge workspace-badge" title={c.cwd || undefined}>{rootLabel}</span>
+                <StatusIcon status={c.status} />
               </span>
-              {!!phases.length && <span className="history-line">{phases.map(phase => <PhaseBadge key={phase} phase={phase} />)}<StatusIcon status={c.status} /></span>}
             </button>
             <ConversationMenu conversationId={c.id} hidden={c.hidden} disabled={state.actionBusy || !!c.replacedBy} />
           </div>;

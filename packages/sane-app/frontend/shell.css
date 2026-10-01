@@ -53,6 +53,13 @@
 }
 .topbar .icon-button { padding:6px; }
 .topbar .details-button { padding:6px 8px; }
+.topbar .context-usage {
+  flex-shrink:0;
+  white-space:nowrap;
+  color:var(--muted-foreground);
+  font-size:11px;
+  font-variant-numeric:tabular-nums;
+}
 .chat-surface[hidden] { display:none; }
 .shell-content {
   display:flex;

@@ -1,0 +1,41 @@
+.conversation-sidebar-row .conversation-sidebar-heading {
+  flex-wrap:nowrap;
+}
+
+.conversation-sidebar-row .conversation-sidebar-heading .history-title {
+  flex:0 1 auto;
+}
+
+.conversation-sidebar-separator,
+.conversation-sidebar-workstream {
+  color:var(--muted-foreground);
+  font-size:12px;
+}
+
+.conversation-sidebar-separator {
+  flex-shrink:0;
+}
+
+.conversation-sidebar-workstream {
+  flex:0 1 auto;
+  min-width:0;
+  max-width:45%;
+  overflow:hidden;
+  text-overflow:ellipsis;
+  white-space:nowrap;
+}
+
+.conversation-sidebar-row .history-line.conversation-sidebar-metadata {
+  padding-right:0;
+}
+
+.conversation-sidebar-row .history-line.conversation-sidebar-footer {
+  flex-wrap:nowrap;
+  padding-right:26px;
+}
+
+.conversation-sidebar-row .conversation-sidebar-footer .workspace-badge {
+  flex-shrink:1;
+  min-width:0;
+  max-width:calc(100% - 20px);
+}

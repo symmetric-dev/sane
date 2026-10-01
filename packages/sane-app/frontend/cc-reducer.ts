@@ -69,6 +69,7 @@ export function consume(run: Run, events: DiagnosticEvent[]) {
     if (event.kind === "submission" && object(event.data) && typeof event.data.text === "string") user(run, event.data.text, event.time, event.data.messageId);
     if (event.kind === "message" && object(event.data)) {
       const snapshot = event.data as MessageSnapshot;
+      if (snapshot.role === "system" && !snapshot.parts.length) continue;
       const message: Message = { id: snapshot.messageId, runId: run.id, role: snapshot.role, time: snapshot.createdAt, status: snapshot.status, normalized: true, error: snapshot.error,
         parts: snapshot.parts.map(p => p.type === "tool" ? { type: "tool", id: p.id, toolCallId: p.id, name: p.name, input: p.input, toolStatus: p.status, output: p.output ?? p.error, error: p.error !== undefined } : { type: p.type, text: p.text }) };
       const index = run.messages.findIndex(m => m.id === message.id);

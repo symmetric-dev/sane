@@ -1,0 +1,61 @@
+.conversation-heading.conversation-binder {
+  display:flex;
+  align-items:center;
+  gap:12px;
+}
+
+.conversation-binder>.conversation-workstream-tab {
+  position:relative;
+  flex:0 1 auto;
+  min-width:0;
+  max-width:min(220px, 45%);
+  padding:6px 22px 6px 12px;
+  color:var(--primary);
+  font-size:12px;
+  font-weight:550;
+}
+
+.conversation-workstream-tab::before,
+.conversation-workstream-tab::after {
+  content:"";
+  position:absolute;
+  inset:0;
+  background:var(--border);
+  clip-path:polygon(0 0, 100% 0, calc(100% - 10px) 100%, 0 100%);
+  pointer-events:none;
+}
+
+.conversation-workstream-tab::after {
+  inset:1px;
+  background:var(--accent);
+}
+
+.conversation-workstream-tab>span {
+  position:relative;
+  z-index:1;
+  display:block;
+  overflow:hidden;
+  text-overflow:ellipsis;
+  white-space:nowrap;
+}
+
+.conversation-binder>.conversation-binder-title {
+  flex:1 1 0;
+  min-width:0;
+}
+
+.conversation-binder>.conversation-workstream-tab.is-free {
+  flex-shrink:0;
+  max-width:none;
+}
+
+@media (max-width:760px) {
+  .conversation-heading.conversation-binder {
+    gap:8px;
+  }
+  .conversation-binder>.conversation-workstream-tab {
+    max-width:min(120px, 40%);
+    padding:5px 18px 5px 9px;
+    font-size:11px;
+  }
+}
