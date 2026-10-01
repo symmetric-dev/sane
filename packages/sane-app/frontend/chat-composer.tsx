@@ -52,7 +52,7 @@ export function ChatComposer({ state, active = true, navigation, ack, onAckChang
     {missingModel && <p className="notice" role="status">Model {missingModel} is not in the current OpenCode catalog for this directory. Sending will still use this selection.</p>}
     {conversation?.attachment?.state === "pending" && <p className="notice error">Attachment incomplete. Use Attach native conversation with the same ID and checkout to retry. {conversation.attachment.error}</p>}
     {!conversation?.replacedBy ? <form className="composer" onSubmit={event => { event.preventDefault(); submit(); }}>
-      <ChatInput key={store.draftKey()} text={draft.text} save={text => store.setDraft({ text })} submit={submit} className="composer-input" rows={2} placeholder={state.selected ? "Continue the conversation…" : "Ask SANE anything…"} aria-label="Message" />
+      <ChatInput key={store.draftKey()} text={draft.text} save={text => store.setDraft({ text })} submit={submit} className="composer-input" placeholder={state.selected ? "Continue the conversation…" : "Ask SANE anything…"} aria-label="Message" />
       <div className="composer-toolbar"><div className="composer-options">
         {profile ? fixed
           ? <span className="agent-chip fixed" role="status" title={profile.label}><AgentAvatar profile={profile} size={20} /><span className="agent-chip-label">{profile.label}</span></span>

@@ -890,8 +890,8 @@ h3 {
   display:block;
   width:100%;
   resize:none;
-  min-height:51px;
-  max-height:240px;
+  min-height:0;
+  overflow-y:hidden;
   padding:20px 22px 10px;
   outline:none!important;
   border:0;
@@ -907,7 +907,7 @@ h3 {
   align-items:center;
   justify-content:space-between;
   gap:12px;
-  padding:6px 13px 12px;
+  padding:6px 13px 6px;
 }
 .composer-options {
   display:flex;
@@ -942,8 +942,9 @@ h3 {
 .send {
   display:grid;
   place-items:center;
-  width:36px;
-  height:36px;
+  width:32px;
+  height:32px;
+  padding:0;
   flex-shrink:0;
   border-radius:50%;
   background:var(--primary);
@@ -1255,11 +1256,9 @@ h3 {
   .composer-input {
     font-size:16px;
     padding:16px 17px 8px;
-    max-height:180px;
-    min-height:44px;
   }
   .composer-toolbar {
-    padding:5px 10px 10px;
+    padding:5px 10px 6px;
   }
   .option input,.option select {
     font-size:11px;
