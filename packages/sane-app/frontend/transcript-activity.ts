@@ -2,6 +2,7 @@ import { useLayoutEffect, useMemo, useRef, useState } from "react";
 import type { WorkerDelivery, WorkerRecord } from "../src/worker-contract";
 import type { Message, TextPart, ToolPart } from "./types";
 import { dispatchedWorkers, workerReportDelivery } from "./worker-presentation";
+import { ACTIVITY_ANIMATION_MAX_MS } from "./activity-visuals";
 
 export type ActivityEntry = { id: string; source: Message; index: number; part: Extract<TextPart, { type: "reasoning" }> | ToolPart };
 export type ActivityGroup = { id: string; entries: ActivityEntry[] };
@@ -70,7 +71,7 @@ export function useActivityPresentation({ sessionId, messages, workers, deliveri
     }
     previous.tail = messages.at(-1)?.id;
     if (arrivals.length) setEntrances(current => {
-      const next = new Map([...current].filter(([, entrance]) => !entrance.claimed || entrance.startedAt !== undefined && performance.now() - entrance.startedAt < 1500));
+      const next = new Map([...current].filter(([, entrance]) => !entrance.claimed || entrance.startedAt !== undefined && performance.now() - entrance.startedAt < ACTIVITY_ANIMATION_MAX_MS));
       for (const entry of arrivals) next.set(entry.id, { claimed: false });
       return next;
     });

@@ -1,7 +1,8 @@
-import { useId, useLayoutEffect, useRef, useState, type KeyboardEvent, type ReactNode } from "react";
+import { useId, useLayoutEffect, useRef, useState, type CSSProperties, type KeyboardEvent, type ReactNode } from "react";
 import { FiChevronDown, FiChevronLeft } from "react-icons/fi";
 import type { ActivityEntrance, ActivityEntry, ActivityGroup } from "./transcript-activity";
 import { active } from "./types";
+import { activityGlyph, ACTIVITY_ANIMATION_CYCLES, ACTIVITY_ANIMATION_MS, type ActivityGlyph } from "./activity-visuals";
 
 const triangleFaces = [
   ["M2 20.66h4L14 6.8l-2-3.46Z", .12],
@@ -22,7 +23,7 @@ function PenroseTriangle() {
   </g>;
 }
 
-function ActivityIcon({ reasoning, entrance, owner }: { reasoning: boolean; entrance?: ActivityEntrance; owner: object }) {
+function ActivityIcon({ glyph, entrance, owner }: { glyph: ActivityGlyph; entrance?: ActivityEntrance; owner: object }) {
   const [animation, setAnimation] = useState<{ delay: number } | null>(null);
   useLayoutEffect(() => {
     if (!entrance || entrance.claimed && entrance.owner !== owner) return;
@@ -30,11 +31,11 @@ function ActivityIcon({ reasoning, entrance, owner }: { reasoning: boolean; entr
     const elapsed = performance.now() - entrance.startedAt!;
     // Moving the tail into the tab strip continues the remaining animation;
     // remounting the sequence has a different owner and cannot replay it.
-    if (elapsed < (reasoning ? 1300 : 1500)) setAnimation({ delay: -elapsed });
-  }, [entrance, owner, reasoning]);
+    if (elapsed < ACTIVITY_ANIMATION_MS[glyph] * ACTIVITY_ANIMATION_CYCLES) setAnimation({ delay: -elapsed });
+  }, [entrance, owner, glyph]);
   return <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"
-    className={`activity-icon ${reasoning ? "activity-wave" : "activity-triangle"}${animation ? " activity-arriving" : ""}`} style={animation ? { animationDelay: `${animation.delay}ms` } : undefined} onAnimationEnd={() => setAnimation(null)}>
-    {reasoning ? <path d="M2 12c2.5 0 2.5-7 5-7s2.5 14 5 14 2.5-14 5-14 2.5 7 5 7" /> : <PenroseTriangle />}
+    className={`activity-icon activity-${glyph}${animation ? " activity-arriving" : ""}`} style={animation ? { animationDelay: `${animation.delay}ms`, "--activity-animation-duration": `${ACTIVITY_ANIMATION_MS[glyph]}ms`, "--activity-animation-cycles": ACTIVITY_ANIMATION_CYCLES } as CSSProperties : undefined} onAnimationEnd={() => setAnimation(null)}>
+    {glyph === "wave" ? <path d="M2 12c2.5 0 2.5-7 5-7s2.5 14 5 14 2.5-14 5-14 2.5 7 5 7" /> : glyph === "pencil" ? <><path d="m16 3 5 5L8 21H3v-5Z" /><path d="m13 6 5 5M3 16l5 5" /></> : glyph === "document" ? <><path d="M14 3H6a1 1 0 0 0-1 1v16a1 1 0 0 0 1 1h12a1 1 0 0 0 1-1V8Z" /><path d="M14 3v5h5M8 12h8M8 16h8" /></> : <PenroseTriangle />}
   </svg>;
 }
 
@@ -42,7 +43,7 @@ function ActivityLabel({ entry, entrance, owner }: { entry: ActivityEntry; entra
   const part = entry.part;
   const toolStatus = part.type === "tool" ? part.error ? "Failed" : part.toolStatus || (part.output !== undefined ? undefined : active(entry.source.status) ? "Working" : "No result recorded") : undefined;
   const status = toolStatus && /^(result|completed|complete|success)$/i.test(toolStatus) ? undefined : toolStatus;
-  return <><ActivityIcon reasoning={part.type === "reasoning"} entrance={entrance} owner={owner} /><span className="activity-name">{part.type === "reasoning" ? "Reasoning" : part.name}</span>{status && <span className={`activity-status${part.type === "tool" && part.error ? " activity-error" : ""}`}>{status}</span>}</>;
+  return <><ActivityIcon glyph={activityGlyph(part.type === "tool" ? part.name : undefined)} entrance={entrance} owner={owner} /><span className="activity-name">{part.type === "reasoning" ? "Reasoning" : part.name}</span>{status && <span className={`activity-status${part.type === "tool" && part.error ? " activity-error" : ""}`}>{status}</span>}</>;
 }
 
 /** One sequence, one selection: the newest activity always has its own row. */

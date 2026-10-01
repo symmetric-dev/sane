@@ -187,6 +187,9 @@
 .composer-actions .contextual-navigation { margin-right:4px; }
 .composer-toolbar { flex-wrap:wrap; row-gap:8px; }
 .composer-options { flex:1; flex-wrap:nowrap; align-items:center; min-width:0; }
+.composer-utilities { display:inline-flex; align-items:center; gap:4px; flex-shrink:0; }
+.composer-utilities > :is(.composer-workers,.composer-workstream-actions) { display:inline-flex; align-items:center; gap:4px; flex-shrink:0; white-space:nowrap; padding:6px 4px; border:1px solid transparent; border-radius:8px; background:transparent; color:var(--muted-foreground); font-size:12px; }
+.composer-utilities > :is(.composer-workers,.composer-workstream-actions):hover:not(:disabled),.composer-utilities > :is(.composer-workers,.composer-workstream-actions)[aria-expanded="true"] { background:var(--muted); border-color:var(--border); color:var(--foreground); }
 .composer-options .agent-chip { min-width:0; max-width:min(260px, max(0px, calc(100% - 190px))); }
 .composer-options:has(.composer-actions-retry) .agent-chip { max-width:min(260px, max(0px, calc(100% - 230px))); }
 .composer-actions { margin-left:auto; }

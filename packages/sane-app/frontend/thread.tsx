@@ -60,10 +60,7 @@ export function ChatMessage() {
   const source = context.messages[sourceIndex];
   const isUser = message.role === "user";
   const pending = isUser && context.pendingTurn?.id === message.id ? context.pendingTurn : null;
-  // Native records are separate messages, but identity belongs to the user turn.
-  // System notices retain their own label without resetting assistant identity.
-  const previousSpeaker = context.messages.slice(0, Math.max(0, sourceIndex)).findLast(m => m.role !== "system");
-  const showLabel = !isUser && (source?.role === "system" || !source || previousSpeaker?.role !== "assistant");
+   const showSystemLabel = !isUser && source?.role === "system";
   const next = context.messages[sourceIndex + 1];
   const continued = source?.role === "assistant" && next?.role === "assistant";
   const activity = !!source && isActivityMessage(source);
@@ -75,9 +72,9 @@ export function ChatMessage() {
   if (delivery) return <MessagePrimitive.Root className="message worker-report-message"><WorkerOutcomeReport delivery={delivery} workers={context.workers} /></MessagePrimitive.Root>;
   const warning = source?.error !== undefined || !isUser && source?.runId !== "native-import" && message.status?.type === "incomplete";
   const consumed = source?.parts.length && source.parts.every((_, index) => context.activities?.plan.positions.get(activityPosition(source.id, index)) === null);
-  if (consumed && !showLabel && !warning && !plain && !canBranch) return null;
+   if (consumed && !showSystemLabel && !warning && !plain && !canBranch) return null;
   return <MessagePrimitive.Root className={`message ${isUser ? "user-message" : "assistant-message"}${continued ? " assistant-continued" : ""}${activity ? " activity-message" : ""}${activityContinued ? " assistant-activity-continued" : ""}`}>
-    {showLabel && <div className="assistant-label"><FiZap size={13} aria-hidden="true" /> {source?.role === "system" ? "System" : "Assistant"}</div>}
+     {showSystemLabel && <div className="assistant-label"><FiZap size={13} aria-hidden="true" /> System</div>}
     <div className={isUser ? "user-bubble" : "assistant-body"}>
       {pending ? <PendingUserText text={pending.text} sending={!pending.runId} /> : source ? source.parts.map((part, index) => {
         if (part.type === "text") return isUser ? <p key={index} className="user-text">{part.text}</p> : <Markdown key={index} text={part.text} />;

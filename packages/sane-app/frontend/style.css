@@ -827,14 +827,25 @@ h3 {
   transform-origin:center;
   transform-box:fill-box;
 }
-.activity-wave.activity-arriving { animation:activity-wave-pulse .65s ease-in-out 2; }
-.activity-triangle.activity-arriving { animation:activity-triangle-turn .75s ease-in-out 2; }
+.activity-wave.activity-arriving { animation:activity-wave-pulse var(--activity-animation-duration) ease-in-out var(--activity-animation-cycles); }
+.activity-triangle.activity-arriving { animation:activity-triangle-turn var(--activity-animation-duration) ease-in-out var(--activity-animation-cycles); }
+.activity-pencil.activity-arriving { animation:activity-pencil-shake var(--activity-animation-duration) ease-in-out var(--activity-animation-cycles); }
+.activity-document.activity-arriving { animation:activity-document-bob var(--activity-animation-duration) ease-in-out var(--activity-animation-cycles); }
 @keyframes activity-wave-pulse {
   0%,100% { opacity:1; transform:scaleY(1); }
   50% { opacity:.35; transform:scaleY(.5); }
 }
 @keyframes activity-triangle-turn {
   to { transform:rotate(360deg); }
+}
+@keyframes activity-pencil-shake {
+  0%,100% { transform:translateX(0) rotate(0); }
+  25% { transform:translateX(-1px) rotate(-9deg); }
+  75% { transform:translateX(1px) rotate(9deg); }
+}
+@keyframes activity-document-bob {
+  0%,100% { transform:translateY(0); }
+  50% { transform:translateY(-2px); }
 }
 .activity-body {
   min-width:0;

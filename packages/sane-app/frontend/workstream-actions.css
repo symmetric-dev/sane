@@ -1,5 +1,3 @@
-.composer-workstream-actions { display:inline-flex; align-items:center; gap:6px; flex-shrink:0; white-space:nowrap; padding:6px 8px; border:1px solid transparent; border-radius:8px; background:transparent; color:var(--muted-foreground); font-size:12px; }
-.composer-workstream-actions:hover:not(:disabled),.composer-workstream-actions[aria-expanded="true"] { background:var(--muted); border-color:var(--border); color:var(--foreground); }
 .composer-actions-retry { flex-shrink:0; font-size:11px; }
 .shell-dialog.workstream-actions-dialog { width:min(480px, calc(100vw - 24px)); }
 .workstream-actions-dialog .shell-dialog-content { padding:0; }
@@ -41,5 +39,4 @@
   .workstream-actions-binder { flex-basis:50px; padding-inline:4px; }
   .workstream-action-tab { width:38px; }
   .workstream-actions-footer button { padding-inline:8px; }
-  .composer-workstream-actions { padding-inline:5px; gap:4px; }
 }

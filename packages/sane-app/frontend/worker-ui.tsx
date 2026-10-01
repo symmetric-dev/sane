@@ -135,10 +135,10 @@ export function WorkersButton({ sessionId, active = true }: { sessionId: string;
   const activity = useRef(active); activity.current = active;
   const id = useId();
   const workers = projection.workers;
+  const newestWorkers = [...workers].sort((a, b) => Date.parse(b.createdAt) - Date.parse(a.createdAt));
   const executions = workers.map(w => workerExecution(w, runs, conversations.find(c => c.id === w.sessionId)));
   const count = executions.filter(e => e.active).length;
   const uncertain = executions.filter(e => e.executionState === "uncertain" || e.executionState === "unknown").length;
-  const attention = !!projection.error || projection.deliveries.some(d => d.error) || workers.some(w => w.error || w.continuation?.error || w.continuationCancellation?.error || (w.latestResult ?? w.results?.at(-1))?.notification.error || w.notification?.error);
   useEffect(() => { if (!active) setOpened(false); }, [active]);
   useEffect(() => {
     if (!opened || !active) return;
@@ -159,7 +159,7 @@ export function WorkersButton({ sessionId, active = true }: { sessionId: string;
     return () => { window.removeEventListener("resize", position); element.close(); if (activity.current && trigger.current?.isConnected) trigger.current.focus(); };
   }, [opened, active]);
   const open = (w: WorkerRecord) => { flushSync(() => setOpened(false)); openWorker(w); };
-  return <><button ref={trigger} type="button" disabled={!active} className={`composer-workers${attention || projection.continuationSuppressed ? " has-issue" : ""}`} aria-haspopup="dialog" aria-expanded={opened && active} aria-controls={opened && active ? id : undefined} aria-label={`Workers, ${count} active${uncertain ? `, ${uncertain} unconfirmed` : ""}${attention ? ", attention needed" : ""}${projection.continuationSuppressed ? ", report-back paused" : ""}`} title="Workers" onClick={() => setOpened(true)}><FiUsers size={14} aria-hidden="true" /><span className="workers-count" aria-hidden="true">{count}</span>{(attention || projection.continuationSuppressed) && <span className="workers-attention" aria-hidden="true" />}</button>
+  return <><button ref={trigger} type="button" disabled={!active} className="composer-workers" aria-haspopup="dialog" aria-expanded={opened && active} aria-controls={opened && active ? id : undefined} aria-label={`Workers, ${count} active`} title="Workers" onClick={() => setOpened(true)}><FiUsers size={14} aria-hidden="true" /><span className="workers-count" aria-hidden="true">{count}</span></button>
     {opened && active && createPortal(<dialog ref={dialog} id={id} className="workers-panel" aria-modal="true" aria-labelledby={`${id}-title`} onCancel={event => { event.preventDefault(); setOpened(false); }} onClick={event => { if (event.target === event.currentTarget) setOpened(false); }}><div className="workers-panel-content">
       <header className="workers-panel-header"><div><h2 id={`${id}-title`}>Workers</h2><p className="muted">{count} active · {workers.length} total{uncertain ? ` · ${uncertain} unconfirmed` : ""}</p></div><button type="button" className="icon-button" aria-label="Close workers" onClick={() => setOpened(false)}><FiX size={18} /></button></header>
       <div className="workers-panel-body">
@@ -167,7 +167,7 @@ export function WorkersButton({ sessionId, active = true }: { sessionId: string;
         {projection.continuationSuppressed && <p className="notice" role="status">Automatic report-back is paused after an explicit stop. Results remain available; resuming this conversation re-enables delivery.</p>}
         {projection.deliveries.filter(d => d.error).map(d => <p key={d.id} className="notice error" role="alert">Report-back {d.state}: {d.error}</p>)}
         {!workers.length && <div className="workers-empty"><FiUsers size={26} aria-hidden="true" /><h3>No workers yet</h3><p>Delegated tasks will appear here with their progress and results.</p></div>}
-        {workers.map(w => <WorkerCard key={w.id} worker={w} workers={workers} runs={runs} open={open} />)}
+        {newestWorkers.map(w => <WorkerCard key={w.id} worker={w} workers={workers} runs={runs} open={open} />)}
       </div>
       {!!workers.length && <footer className="workers-panel-footer"><Stop parent={sessionId} input={{ all: true }}>Stop all workers</Stop><span className="muted">Includes nested workers</span></footer>}
     </div></dialog>, document.body)}
