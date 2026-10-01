@@ -217,11 +217,11 @@ test("App view hotkeys preserve the live draft and navigate without submitting o
     input.focus(); input.setSelectionRange(7, 12);
     const draft = { ...store.draft() };
     const hotkey = async (key: string, target: Element = document.body) => {
-      const event = new browser.KeyboardEvent("keydown", { key, metaKey: true, ctrlKey: key !== "`", bubbles: true, cancelable: true });
+      const event = new browser.KeyboardEvent("keydown", { key, metaKey: true, ctrlKey: true, bubbles: true, cancelable: true });
       await act(async () => { target.dispatchEvent(event as unknown as Event); });
       expect(event.defaultPrevented).toBe(true);
     };
-    await hotkey("`", input); expect(catalog.state.navigation.view).toBe("terminal");
+    await hotkey("t", input); expect(catalog.state.navigation.view).toBe("terminal");
     await hotkey("f"); expect(catalog.state.navigation.view).toBe("code");
     await hotkey("d"); expect(catalog.state.navigation.view).toBe("config");
     await hotkey("c"); expect(catalog.state.navigation.view).toBe("chat");

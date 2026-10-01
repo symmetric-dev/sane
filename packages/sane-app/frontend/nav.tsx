@@ -36,7 +36,7 @@ export function viewGroup(view: ActiveView): ViewGroup {
 
 const DESTINATIONS = [
   { id: "chat", label: "Chat", Icon: FiMessageSquare, binding: { key: "c", ctrl: true, meta: true } },
-  { id: "terminal", label: "Terminal", Icon: FiTerminal, binding: { key: "`", meta: true } },
+  { id: "terminal", label: "Terminal", Icon: FiTerminal, binding: { key: "t", ctrl: true, meta: true } },
   { id: "code", label: "Files", Icon: FiFileText, binding: { key: "f", ctrl: true, meta: true } },
   { id: "config", label: "Settings", Icon: FiSettings, binding: { key: "d", ctrl: true, meta: true } },
 ] as const;

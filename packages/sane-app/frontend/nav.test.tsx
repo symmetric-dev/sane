@@ -55,7 +55,7 @@ test("navigation is accessible, view-only, and never submits a surrounding compo
     const buttons = [...host.querySelectorAll("button")];
     expect(buttons.map(button => button.getAttribute("aria-label"))).toEqual(["Terminal", "Files", "Settings"]);
     expect(buttons.every(button => button.type === "button" && !button.disabled)).toBe(true);
-    expect(buttons.map(button => button.getAttribute("aria-keyshortcuts"))).toEqual(["Meta+`", "Control+Meta+f", "Control+Meta+d"]);
+    expect(buttons.map(button => button.getAttribute("aria-keyshortcuts"))).toEqual(["Control+Meta+t", "Control+Meta+f", "Control+Meta+d"]);
     expect(buttons.every(button => button.title.startsWith(`${button.getAttribute("aria-label")} (`))).toBe(true);
     await act(async () => { buttons.forEach(button => button.click()); });
     expect(chosen).toEqual(["terminal", "code", "config"]);
@@ -75,19 +75,21 @@ test("view hotkeys capture input/editor/terminal keys precisely and clean up reg
     await act(async () => render(view => chosen.push(view)));
     const targets = [document.body, ...host.querySelectorAll("textarea, input")];
     const emit = async (target: Element, key: string, options: object = {}) => {
-      const event = new browser.KeyboardEvent("keydown", { key, metaKey: true, ctrlKey: key !== "`", bubbles: true, cancelable: true, ...options });
+      const event = new browser.KeyboardEvent("keydown", { key, metaKey: true, ctrlKey: true, bubbles: true, cancelable: true, ...options });
       await act(async () => { target.dispatchEvent(event as unknown as Event); });
       return event.defaultPrevented;
     };
     for (const target of targets) {
-      for (const key of ["C", "`", "d", "f"]) expect(await emit(target, key)).toBe(true);
+      for (const key of ["C", "t", "d", "f"]) expect(await emit(target, key)).toBe(true);
     }
     expect(chosen).toEqual(targets.flatMap(() => ["chat", "terminal", "config", "code"]));
     const count = chosen.length;
     for (const options of [{ metaKey: false }, { ctrlKey: false }, { shiftKey: true }, { altKey: true }, { repeat: true }, { isComposing: true }]) {
       expect(await emit(targets[1]!, "c", options)).toBe(false);
     }
-    expect(await emit(targets[3]!, "`", { ctrlKey: true })).toBe(false);
+    expect(await emit(targets[3]!, "t", { ctrlKey: false })).toBe(false);
+    expect(await emit(targets[3]!, "t", { metaKey: false })).toBe(false);
+    expect(await emit(targets[3]!, "`", { ctrlKey: false })).toBe(false);
     expect(await emit(targets[1]!, "Enter", { ctrlKey: true, metaKey: false })).toBe(false);
     const dialog = document.createElement("dialog"); dialog.setAttribute("open", ""); host.append(dialog);
     expect(await emit(document.body, "f")).toBe(false); dialog.remove();
