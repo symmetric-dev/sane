@@ -50,7 +50,7 @@ function ChatMessage({ harness }: { harness: Harness }) {
       {source?.error !== undefined && <details className="run-warning"><summary>Reported error</summary><pre>{json(source.error)}</pre></details>}
       {!isUser && message.status?.type === "incomplete" && <p className="run-warning" role="status">{message.status.reason === "error" ? "This run failed. The response may be incomplete." : "This run was interrupted or its completion is unknown."} See details for the recorded evidence.</p>}
     </div>
-    {!isUser && plain && <div className="message-actions"><Copy text={plain} label="Copy response" /></div>}
+    {!isUser && plain && <div className="message-actions"><Copy text={plain} label="Copy" /></div>}
   </MessagePrimitive.Root>;
 }
 function convertMessage(message: Message): ThreadMessageLike {

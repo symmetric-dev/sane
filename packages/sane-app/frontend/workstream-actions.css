@@ -1,0 +1,45 @@
+.composer-workstream-actions { display:inline-flex; align-items:center; gap:6px; flex-shrink:0; white-space:nowrap; padding:6px 8px; border:1px solid transparent; border-radius:8px; background:transparent; color:var(--muted-foreground); font-size:12px; }
+.composer-workstream-actions:hover:not(:disabled),.composer-workstream-actions[aria-expanded="true"] { background:var(--muted); border-color:var(--border); color:var(--foreground); }
+.composer-actions-retry { flex-shrink:0; font-size:11px; }
+.shell-dialog.workstream-actions-dialog { width:min(480px, calc(100vw - 24px)); }
+.workstream-actions-dialog .shell-dialog-content { padding:0; }
+.workstream-actions-dialog .shell-dialog-content>header { padding:16px 18px; margin:0; border-bottom:1px solid var(--border); }
+.workstream-actions-dialog .shell-dialog-content>header h2 { min-width:0; overflow-wrap:anywhere; font-size:16px; }
+.workstream-actions-dialog .shell-dialog-heading { display:flex; flex-direction:column; flex:1; min-width:0; gap:4px; }
+.workstream-actions-dialog .shell-dialog-subtitle { margin:0; min-width:0; overflow-wrap:anywhere; font-size:13px; color:var(--muted-foreground); }
+.workstream-actions-dialog .shell-dialog-content>header .icon-button { flex-shrink:0; }
+.workstream-actions-layout { display:flex; min-height:292px; }
+.workstream-actions-binder { display:flex; flex-direction:column; align-items:center; flex:0 0 58px; gap:6px; padding:14px 6px; border-right:1px solid var(--border); }
+.workstream-action-tab { position:relative; display:grid; place-items:center; width:42px; height:34px; padding:0; border:1px solid transparent; border-radius:0 9px 9px 0; background:var(--phase-background, transparent); color:var(--phase-foreground, var(--muted-foreground)); }
+.workstream-action-tab.is-overview { width:34px; border-radius:9px; }
+.workstream-action-tab.is-overview svg { stroke-width:1.5; }
+.workstream-action-tab[aria-selected="true"] { background:none; border-color:var(--binder-selected-border); transform:translateY(1px); }
+.workstream-action-tab:focus-visible,.composer-workstream-actions:focus-visible { outline:2px solid var(--focus-ring); outline-offset:2px; }
+.workstream-actions-divider { width:28px; height:1px; margin:4px 0; background:var(--border); flex-shrink:0; }
+.workstream-actions-panel { display:flex; flex-direction:column; flex:1; min-width:0; padding:20px 20px 16px; gap:16px; font-size:13px; }
+.workstream-actions-panel p { margin:0; }
+.workstream-actions-summary { display:flex; align-items:center; justify-content:space-between; flex-wrap:wrap; gap:8px; }
+.workstream-actions-summary strong { font-size:15px; }
+.workstream-actions-phase-summary { display:grid; gap:12px; }
+.workstream-actions-phase-summary>div { display:flex; justify-content:space-between; gap:12px; }
+.workstream-actions-phase-label,.workstream-actions-track strong { color:var(--phase-foreground, var(--foreground)); }
+.workstream-actions-counts { font-size:12px; }
+.workstream-actions-track { display:flex; flex-direction:column; gap:6px; padding-bottom:14px; border-bottom:1px solid var(--border); }
+.workstream-actions-track:last-child { border-bottom:0; }
+.workstream-actions-outcome { font-size:12px; }
+.workstream-actions-read-error { display:flex; flex-wrap:wrap; align-items:center; gap:6px 10px; color:var(--muted-foreground); font-size:12px; }
+.workstream-actions-footer { margin-top:auto; padding-top:16px; border-top:1px solid var(--border); }
+.workstream-actions-buttons { display:flex; flex-wrap:wrap; gap:8px; }
+.workstream-actions-footer button { font-size:12px; padding:7px 10px; border:1px solid var(--border); border-radius:8px; }
+.workstream-actions-footer button:hover:not(:disabled) { background:var(--accent); }
+.workstream-actions-confirm { display:grid; gap:8px; margin-bottom:14px; }
+.workstream-actions-confirm label { font-size:12px; }
+.workstream-actions-confirm input { min-width:0; width:100%; padding:8px 10px; border:1px solid var(--border); border-radius:8px; background:var(--card); }
+.workstream-actions-confirm>div { display:flex; gap:8px; flex-wrap:wrap; }
+@media(max-width:480px) {
+  .workstream-actions-panel { padding:16px 12px; gap:14px; }
+  .workstream-actions-binder { flex-basis:50px; padding-inline:4px; }
+  .workstream-action-tab { width:38px; }
+  .workstream-actions-footer button { padding-inline:8px; }
+  .composer-workstream-actions { padding-inline:5px; gap:4px; }
+}

@@ -7,15 +7,25 @@ import type { WorkstreamOverview } from "../src/workstreams-contract";
 export function useWorkstreamOverview(workspaceId: string | null, active = true): WorkstreamOverview | null {
   const [result, setResult] = useState<{ workspaceId: string; overview: WorkstreamOverview | null } | null>(null);
   useEffect(() => {
-    // A persistent sidebar must reload after repository mutations in Settings.
-    // Inactive results are discarded without touching the shared filter state.
+    // Membership can change through handoff/linking without changing the chat
+    // listing. Refresh independently while active, just like conversation polling.
     if (!workspaceId || !active) { setResult(null); return; }
     let current = true;
+    let timer: ReturnType<typeof setTimeout> | undefined;
     setResult(null);
-    loadWorkstreams(workspaceId)
-      .then(overview => { if (current) setResult({ workspaceId, overview }); })
-      .catch(() => { if (current) setResult({ workspaceId, overview: null }); });
-    return () => { current = false; };
+    const refresh = async () => {
+      try {
+        const overview = await loadWorkstreams(workspaceId);
+        if (current) setResult(previous => previous?.workspaceId === workspaceId && JSON.stringify(previous.overview) === JSON.stringify(overview) ? previous : { workspaceId, overview });
+      } catch {
+        // Keep the last successful overview during transient failures; retry below.
+      } finally {
+        if (current) timer = setTimeout(() => void refresh(), 1500);
+      }
+    };
+    void refresh();
+    // Fence late responses and stop polling when unmounted, inactive or re-scoped.
+    return () => { current = false; clearTimeout(timer); };
   }, [workspaceId, active]);
   return active && workspaceId && result?.workspaceId === workspaceId ? result.overview : null;
 }

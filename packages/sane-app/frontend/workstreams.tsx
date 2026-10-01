@@ -4,6 +4,7 @@ import { loadWorkstreams, workstreamRequest } from "./workstreams-client";
 import { catalog } from "./catalog";
 import { WorkstreamConversations } from "./workstream-conversations";
 import { CreateWorkstreamDialog, WorkstreamDetails, WorkstreamDocuments } from "./workstream-content";
+import { WorkstreamActionsDialog } from "./workstream-actions";
 import "./workstreams.css";
 
 export type ArtifactSelection = { workspaceId: string; workstreamId: string; path: string; repositoryId: string };
@@ -31,6 +32,7 @@ function RepositoryWorkstreams({ workspaceId, workspaceName, openArtifact, openC
   const [selected, setSelected] = useState<string | null | undefined>(undefined);
   const [search, setSearch] = useState(""), [tab, setTab] = useState<typeof TABS[number]>("conversations");
   const [creating, setCreating] = useState(false), [detailsId, setDetailsId] = useState<string | null>(null);
+  const [actionsId, setActionsId] = useState<string | null>(null);
   const alive = useRef(true), request = useRef(0), enablePending = useRef(false);
   const viewId = useId();
   useEffect(() => { alive.current = true; void refresh(); return () => { alive.current = false; request.current++; }; }, []);
@@ -57,7 +59,7 @@ function RepositoryWorkstreams({ workspaceId, workspaceName, openArtifact, openC
       if (selectId && !next.workstreams.some(item => item.workstream.id === selectId)) throw new Error("The created workstream is not available in the refreshed view yet. Retry opening it.");
       setData(next);
       setSelected(current => selectId ?? (current === null || next.workstreams.some(item => item.workstream.id === current) ? current : next.workstreams[0]?.workstream.id ?? null));
-      if (selectId) { setSearch(""); setTab("conversations"); setDetailsId(null); }
+      if (selectId) { setSearch(""); setTab("conversations"); setDetailsId(null); setActionsId(null); }
       else setDetailsId(current => next.workstreams.some(item => item.workstream.id === current) ? current : null);
     }
     catch (e) {
@@ -83,7 +85,7 @@ function RepositoryWorkstreams({ workspaceId, workspaceName, openArtifact, openC
     finally { enablePending.current = false; if (alive.current) setEnabling(false); }
   }
   function select(id: string | null) {
-    if (id !== selected) setDetailsId(null);
+    if (id !== selected) { setDetailsId(null); setActionsId(null); }
     setSelected(id);
     if (id === null) setTab("conversations");
   }
@@ -131,7 +133,7 @@ function RepositoryWorkstreams({ workspaceId, workspaceName, openArtifact, openC
       <section className="workstreams-content" id={`${viewId}-content`} aria-label={detail?.workstream.title ?? "Unassigned conversations"}>
         <header className="workstreams-content-header">
           <div><h3>{detail?.workstream.title ?? "Unassigned"}</h3><p className="muted">{detail ? `${detail.workstream.type ?? "Type not set"} · Lifecycle: ${detail.workstream.lifecycle.status} · ` : "Without a workstream · "}{count} {count === 1 ? "conversation" : "conversations"}</p></div>
-          {detail && <button type="button" onClick={() => setDetailsId(detail.workstream.id)} aria-haspopup="dialog">Details</button>}
+          {detail && <div className="workstreams-actions"><button type="button" disabled={disabled} onClick={() => setActionsId(detail.workstream.id)} aria-haspopup="dialog">Actions</button><button type="button" onClick={() => setDetailsId(detail.workstream.id)} aria-haspopup="dialog">Details</button></div>}
         </header>
         <div className="workstreams-tabs" role="tablist" aria-label="Workstream content">{TABS.map(value => <button type="button" key={value} role="tab" id={`${viewId}-tab-${value}`} aria-selected={activeTab === value} aria-controls={`${viewId}-panel-${value}`} tabIndex={activeTab === value ? 0 : -1} disabled={value === "documents" && !detail} title={value === "documents" && !detail ? "Select a workstream to browse its documents" : undefined} onClick={() => setTab(value)} onKeyDown={event => {
           if (!detail || !["ArrowLeft", "ArrowRight", "Home", "End"].includes(event.key)) return;
@@ -149,5 +151,6 @@ function RepositoryWorkstreams({ workspaceId, workspaceName, openArtifact, openC
     </div>}
     {creating && <CreateWorkstreamDialog workspaceId={workspaceId} close={() => setCreating(false)} onCreated={created} />}
     {detail && detailsId === detail.workstream.id && <WorkstreamDetails key={detail.workstream.id} workspaceId={workspaceId} detail={detail} close={() => setDetailsId(null)} onChanged={() => refresh({ strict: true })} />}
+    {detail && actionsId === detail.workstream.id && <WorkstreamActionsDialog key={detail.workstream.id} workspaceId={workspaceId} detail={detail} close={() => setActionsId(null)} onChanged={() => refresh({ strict: true })} />}
   </section>;
 }

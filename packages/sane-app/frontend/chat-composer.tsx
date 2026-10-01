@@ -7,6 +7,7 @@ import { Icon } from "./nav";
 import { ShellDialog } from "./shell-dialog";
 import { store, type State } from "./store";
 import { WorkersButton } from "./worker-ui";
+import { ChatWorkstreamActions } from "./workstream-actions";
 
 /** Kept mounted with Thread: only the draft identity may replace the DOM input. */
 export function ChatComposer({ state, active = true, navigation, ack, onAckChange, send, sendDisabled, parentId }: {
@@ -59,6 +60,7 @@ export function ChatComposer({ state, active = true, navigation, ack, onAckChang
           : <button ref={agentTrigger} type="button" className="agent-chip" aria-haspopup="dialog" disabled={state.sending || !active} title={profile.label} aria-label={`${state.selected ? "Agent" : "Agent for new conversation"}: ${profile.label}${store.pendingUpgrade() ? " (pending)" : ""}`} onClick={() => setPickerOpen(true)}><AgentAvatar profile={profile} size={20} /><span className="agent-chip-label">{profile.label}</span>{store.pendingUpgrade() && <span className="agent-chip-pending">pending</span>}<FiChevronDown size={12} aria-hidden="true" /></button>
           : <span className="agent-chip fixed" role="status" title={store.agent() || "Base"}><span className="agent-chip-label">{store.agent() || "Base"}</span></span>}
         <WorkersButton key={state.selected} sessionId={state.selected} active={active} />
+        <ChatWorkstreamActions conversation={conversation} active={active} />
       </div><div className="composer-actions">
         {navigation}
         <button ref={helpTrigger} type="button" className={`composer-help${infoError ? " has-issue" : ""}`} disabled={!active} aria-label={infoText ? `Sending messages help: ${infoText}` : "Sending messages help"} title="Sending messages" onClick={() => setHelpOpen(true)}><FiInfo size={14} aria-hidden="true" />{infoError ? <span className="composer-help-dot" aria-hidden="true" /> : null}</button>

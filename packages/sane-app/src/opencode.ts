@@ -57,11 +57,11 @@ export class OpenCodeAdapter {
     // An old in-flight request must not invalidate a newly discovered generation.
     if (this.managed === connection) { this.managed = undefined; this.expires = 0; }
   }
-  async request<T>(path: string, method = "GET", data?: unknown, beforeSend?: () => void): Promise<T> {
+  async request<T>(path: string, method = "GET", data?: unknown, beforeSend?: () => void, timeoutMs = 10000): Promise<T> {
     const connection = await this.endpoint();
     beforeSend?.(); // Synchronous admission gate after discovery, immediately before the HTTP mutation.
     let response: Response;
-    try { response = await fetch(connection.base + path, { method, headers: connection.headers, ...(data === undefined ? {} : { body: JSON.stringify(data) }), signal: AbortSignal.timeout(10000), redirect: "error" }); }
+    try { response = await fetch(connection.base + path, { method, headers: connection.headers, ...(data === undefined ? {} : { body: JSON.stringify(data) }), signal: AbortSignal.timeout(timeoutMs), redirect: "error" }); }
     catch { this.invalidate(connection); throw new OpenCodeError("OpenCode connection unavailable; execution state remains unconfirmed"); }
     // Refresh on the next request only. In particular, never replay mutations.
     if (!response.ok) {
@@ -87,16 +87,32 @@ export class OpenCodeAdapter {
     if (slash < 1 || slash === value.length - 1) throw new OpenCodeError("OpenCode model must be provider/model", 400);
     return { providerID: value.slice(0, slash), id: value.slice(slash + 1), ...(effort === undefined ? {} : { variant: effort }) };
   }
-  async agents(cwd: string): Promise<NativeAgent[]> {
-    const response = await this.request<{ data: NativeAgent[] }>(`/api/agent?location%5Bdirectory%5D=${encodeURIComponent(cwd)}`);
+  async agents(cwd: string, timeoutMs = 10000): Promise<NativeAgent[]> {
+    const response = await this.request<{ data: NativeAgent[] }>(`/api/agent?location%5Bdirectory%5D=${encodeURIComponent(cwd)}`, "GET", undefined, undefined, timeoutMs);
     const validModel = (m: ModelRef) => m && typeof m.id === "string" && !!m.id && typeof m.providerID === "string" && !!m.providerID && (m.variant === undefined || typeof m.variant === "string");
     if (!Array.isArray(response.data) || response.data.some(a => !a || typeof a.id !== "string" || !a.id || a.model !== undefined && !validModel(a.model))) throw new OpenCodeError("Unsupported OpenCode V2 agent response");
     return response.data;
   }
+  /** Cold locations can return a valid but incomplete catalog before agent.updated.
+   * Retry only an absent agent in a successful read; API/transport errors still fail
+   * immediately, and native session creation and submission are never replayed. */
+  private async readyAgent(cwd: string, id: string): Promise<NativeAgent> {
+    const waitMs = 3000, deadline = performance.now() + waitMs;
+    let attempts = 0, delay = 100;
+    while (performance.now() < deadline) {
+      attempts++;
+      const agent = (await this.agents(cwd, Math.max(1, Math.ceil(deadline - performance.now())))).find(a => a.id === id);
+      if (agent) return agent;
+      const remaining = deadline - performance.now();
+      if (remaining <= 0) break;
+      await new Promise(resolve => setTimeout(resolve, Math.min(delay, remaining)));
+      delay = Math.min(delay * 2, 500);
+    }
+    throw new OpenCodeError(`OpenCode did not expose agent ${id} for ${cwd} within ${waitMs} ms (${attempts} agent-list attempts); check service readiness and global or project agent configuration`, 400);
+  }
   /** Profile model > agent model > native default. Explicit models never inherit another model's variant. */
   async resolveLaunch(cwd: string, input: { agent?: string; model?: string; effort?: string }): Promise<OpenCodeLaunch> {
-    const agent = input.agent === undefined ? undefined : (await this.agents(cwd)).find(a => a.id === input.agent);
-    if (input.agent !== undefined && !agent) throw new OpenCodeError(`OpenCode agent ${input.agent} is not installed for ${cwd}`, 400);
+    const agent = input.agent === undefined ? undefined : await this.readyAgent(cwd, input.agent);
     let model = input.model !== undefined ? this.model(input.model) : agent?.model ? { ...agent.model } : undefined;
     if (input.effort !== undefined) {
       if (!model) throw new OpenCodeError("Cannot resolve a model for the requested variant; configure a profile model or an agent model", 400);

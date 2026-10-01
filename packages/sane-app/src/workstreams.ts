@@ -1,6 +1,6 @@
 import { RepositoryDomain, DomainError, discoverRepository, inspectRepositoryStore, initializeRepository, openRepositoryDomain, normalizeNativeSource, revalidateCheckout } from "sane-core/server";
 import type { ConversationRef, CreateWorkstreamInput, Phase, MutationContext, RepositoryContext } from "sane-core/contracts";
-import type { Session } from "./history";
+import { uuid, type Session } from "./history";
 import type { WorkstreamOverview } from "./workstreams-contract";
 import type { CatalogService } from "./catalog";
 import type { Admission, SourceRecords } from "./app-store";
@@ -9,7 +9,7 @@ export type AppConversation = Pick<Session, "sessionId" | "harness" | "nativeSes
 export class WorkstreamAdapterError extends Error {
   constructor(public readonly status: number, public readonly code: string, message: string) { super(message); }
 }
-const mutation = (): MutationContext => ({ actor: { kind: "human" }, correlationId: crypto.randomUUID() });
+const mutation = (expectedRevision?: number): MutationContext => ({ actor: { kind: "human" }, correlationId: crypto.randomUUID(), ...(expectedRevision !== undefined ? { expectedRevision } : {}) });
 const sameRef = (a: ConversationRef, b: ConversationRef) => a.harness === b.harness && a.authorityId === b.authorityId && a.nativeId === b.nativeId;
 /** Repository-scoped synchronous adapter. No ambient or singleton domain selection. */
 export class WorkstreamAdapter {
@@ -28,9 +28,9 @@ export class WorkstreamAdapter {
   }
   list() { return this.domain.listWorkstreams(); }
   lifecycleStatus(id: string) { return this.domain.getLifecycleStatus(id); }
-  provide(id: string, phase: string, refreshTemplates = false) { return this.domain.providePhase(id, phase, { refreshTemplates }, mutation()); }
+  provide(id: string, phase: string, refreshTemplates = false, expectedRevision?: number) { return this.domain.providePhase(id, phase, { refreshTemplates }, mutation(expectedRevision)); }
   validate(id: string, phase: string, reportId?: string) { return this.domain.validatePhase(id, phase, { reportId }); }
-  approve(id: string, phase: string, approvalRef: string) { return this.domain.approvePhase(id, phase, approvalRef, mutation()); }
+  approve(id: string, phase: string, approvalRef: string, expectedRevision?: number) { return this.domain.approvePhase(id, phase, approvalRef, mutation(expectedRevision)); }
   registerJobs(id: string) { return this.domain.registerJobs(id, mutation()); }
   updateJob(id: string, jobId: string, status: "running" | "completed") { return this.domain.updateJob(id, jobId, status, mutation()); }
   job(id: string, jobId: string, session?: AppConversation) { return this.domain.getJobContext(id, jobId, session ? this.reference(session) : null); }
@@ -131,6 +131,19 @@ export function validateWorkstreamInput(operation: string, input: unknown): asse
   if (!object(input)) return invalid("request object");
   const string = (field: string) => { if (typeof input[field] !== "string" || !input[field]) invalid(field); };
   switch (operation) {
+    case "validate": case "approve": case "provide": {
+      const fields = ["id", "phase", "repositoryId", "expectedRevision", "sessionId", "approvalRef"];
+      if (Object.keys(input).some(field => !fields.includes(field))) invalid("action field");
+      if (typeof input.id !== "string" || !/^[a-z0-9][a-z0-9_-]{0,95}$/.test(input.id)) invalid("id");
+      if (!["design", "engineering", "planning", "execution"].includes(input.phase as string)) invalid("phase");
+      if (!uuid(input.repositoryId)) invalid("repositoryId");
+      if (!Number.isSafeInteger(input.expectedRevision) || (input.expectedRevision as number) < 0) invalid("expectedRevision");
+      if ("sessionId" in input && !uuid(input.sessionId)) invalid("sessionId");
+      if (operation === "approve" || "approvalRef" in input) {
+        if (typeof input.approvalRef !== "string" || !input.approvalRef.trim() || input.approvalRef.includes("\0")) invalid("approvalRef");
+      }
+      break;
+    }
     case "create": string("id"); string("title"); if (!["feature", "foundation", "issue", "maintenance"].includes(input.type as string)) invalid("type"); break;
     case "default-checkout": string("id"); if (input.checkout !== null) string("checkout"); break;
     case "target": string("id"); string("phase"); if ("target" in input && (!object(input.target) || !["cc", "oc"].includes(input.target.harness as string) || typeof input.target.authorityId !== "string" || typeof input.target.nativeId !== "string")) invalid("qualified target"); break;

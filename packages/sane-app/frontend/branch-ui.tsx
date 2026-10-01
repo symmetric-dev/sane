@@ -8,7 +8,7 @@ import "./branch.css";
 
 export function BranchAction({ sessionId, harness, runId, messageId }: { sessionId: string; harness: Harness; runId?: string; messageId?: string }) {
   const [open, setOpen] = useState(false);
-  return <><button type="button" className="text-button branch-action" aria-haspopup="dialog" onClick={() => setOpen(true)}><FiGitBranch size={13} aria-hidden="true" />Branch from here</button>{open && <BranchDialog key={`${sessionId}:${runId ?? messageId}`} {...{ sessionId, harness, runId, messageId }} close={() => setOpen(false)} />}</>;
+  return <><button type="button" className="text-button branch-action" aria-haspopup="dialog" onClick={() => setOpen(true)}><FiGitBranch size={13} aria-hidden="true" />Branch</button>{open && <BranchDialog key={`${sessionId}:${runId ?? messageId}`} {...{ sessionId, harness, runId, messageId }} close={() => setOpen(false)} />}</>;
 }
 function BranchDialog({ sessionId, harness, runId, messageId, close }: { sessionId: string; harness: Harness; runId?: string; messageId?: string; close: () => void }) {
   const [requestId] = useState(() => crypto.randomUUID());

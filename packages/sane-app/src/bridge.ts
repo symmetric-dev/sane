@@ -12,6 +12,7 @@ import { WorkspaceService, WorkspaceError, workspaceError } from "./workspace";
 import { CatalogService } from "./catalog";
 import { TerminalService, type TerminalSocketData } from "./terminal";
 import { RepositoryRouter, WorkstreamAdapterError, authenticatedWorkstreamRoute, validateWorkstreamInput, flushAndCloseWorkstreams } from "./workstreams";
+import type { WorkstreamAction, WorkstreamActionInput, WorkstreamActionResult } from "./workstreams-contract";
 import { validateAppStore, assertSourceConfiguration, atomicAppRecord, atomicNativeHistory, loadAgentProfiles, validateAgentProfiles, AppStoreError, type SourceConfiguration } from "./app-store";
 import { builtinProfiles, canAssign, legacyProfileId, templateProfileId, resolveAgentLaunch, resolveAssistantProfile, BASE_PROFILE_IDS, type AgentProfile, type AgentProfiles } from "./agent-profiles-contract";
 import { AdmissionService } from "./admission";
@@ -215,6 +216,31 @@ async function startOwned(options: Options, assetsDir: string, packageDir: strin
   const handoffReservations = new Set<string>();
   const handoffAcknowledgements = new Set<string>();
   const handoffDispatches = new Map<string, Promise<void>>();
+  const lifecycleReservations = new Map<string, string>(); // repository UUID -> workspace
+  function lifecycleReserved(sessionId: string) {
+    const admission = admissions.get(sessionId), workspaceId = catalog.association(sessionId).workspaceId;
+    if (admission?.binding.domain.mode === "repository" && lifecycleReservations.has(admission.binding.domain.repositoryId)) return true;
+    if (workspaceId && [...lifecycleReservations.values()].includes(workspaceId)) return true;
+    // A new/unresolved admission cannot yet prove it belongs to an unrelated repo.
+    return !admission && !workspaceId && lifecycleReservations.size > 0;
+  }
+  function assertLifecycleIdle(workspaceId: string, repositoryId: string) {
+    const available = availability(undefined, false);
+    if (!available.canSend || retainOwner) throw new WorkstreamAdapterError(409, "bridge-busy", available.reason ?? "App execution ownership is unconfirmed");
+    if (lifecycleReservations.has(repositoryId)) throw new WorkstreamAdapterError(409, "bridge-busy", "A repository phase action is already in progress");
+    const relevant = (sessionId: string, unknownIsBusy = true) => {
+      const admission = admissions.get(sessionId), association = catalog.association(sessionId);
+      return admission?.binding.workspaceId === workspaceId || admission?.binding.domain.mode === "repository" && admission.binding.domain.repositoryId === repositoryId || association.workspaceId === workspaceId || unknownIsBusy && !admission && !association.workspaceId;
+    };
+    const busy = new Set([
+      ...owners.keys(), ...admitting, ...handoffReservations, ...handoffDispatches.keys(),
+      ...meta.runs.filter(run => run.status === "running").map(run => run.sessionId),
+      ...workerStore.deliveries().filter(delivery => ["claimed", "acceptance-unknown"].includes(delivery.state)).map(delivery => delivery.parentSessionId),
+      ...branches.list().filter(branch => !["completed", "failed"].includes(branch.state)).map(branch => branch.sourceId),
+    ]);
+    // Workers inherit their parent's repository even before child admission exists.
+    if ([...busy].some(sessionId => relevant(sessionId)) || workers.active().some(worker => relevant(worker.parent.sessionId) || relevant(worker.sessionId, false))) throw new WorkstreamAdapterError(409, "bridge-busy", "Repository has active or unconfirmed App execution; wait for runs and workers to finish");
+  }
   function releaseOwner(owner: Owner) {
     // A delayed native interrupt must finish before a replacement can acquire
     // this conversation, even if terminal observation arrived first.
@@ -307,6 +333,7 @@ async function startOwned(options: Options, assetsDir: string, packageDir: strin
     return handoff;
   }
   function availability(sessionId?: string, capacity = true, delivery = false, preparation = false): { canSend: boolean; reason?: string; code?: string } {
+    if (sessionId && lifecycleReserved(sessionId)) return { canSend: false, reason: "A repository phase action is in progress", code: "workstream-action-pending" };
     if (sessionId && branches.list().some(op => op.state !== "failed" && (op.state !== "completed" || op.replace) && workers.tree(op.sourceId).some(w => w.sessionId === sessionId))) return { canSend: false, reason: "Ancestor conversation has a pending branch or was replaced", code: "branch-parent" };
     if (sessionId && branches.replaced(sessionId)) return { canSend: false, reason: "Replaced conversation · read-only. Open its replacement to continue.", code: "replaced" };
     if (sessionId && branches.pending(sessionId)) {
@@ -1279,6 +1306,34 @@ async function startOwned(options: Options, assetsDir: string, packageDir: strin
             return workstreams.manage(input.ref, input.operation, input);
           }
           validateWorkstreamInput(path === "/api/workstreams" ? "create" : operation, input);
+          if (operation === "validate" || operation === "approve" || operation === "provide") {
+            const action: WorkstreamAction = operation, actionInput = input as WorkstreamActionInput;
+            let adapter = await router!.forWorkspace(workspaceId, actionInput.repositoryId);
+            if (actionInput.sessionId !== undefined) {
+              const session = meta.sessions.find(candidate => candidate.sessionId === actionInput.sessionId);
+              if (!session) throw new WorkstreamAdapterError(404, "not-found", "Unknown App conversation");
+              const admission = admissions.get(session.sessionId);
+              if (!admission || admission.binding.workspaceId !== workspaceId || admission.binding.domain.mode !== "repository" || admission.binding.domain.repositoryId !== actionInput.repositoryId) throw new WorkstreamAdapterError(409, "repository-mismatch", "Conversation and requested repository differ");
+              if (session.nativeSessionId !== admission.nativeId || session.authorityId !== admission.source.authorityId || adapter.reference(session).harness !== admission.source.descriptor.harness) throw new WorkstreamAdapterError(409, "invalid-app-reference", "Conversation native identity differs from its admission");
+              await router!.execution(admission);
+              adapter = await router!.forWorkspace(workspaceId, actionInput.repositoryId);
+              if (adapter.invocation(session).workstream?.id !== actionInput.id) throw new WorkstreamAdapterError(409, "workstream-mismatch", "Conversation belongs to another workstream");
+            }
+            if (adapter.status(actionInput.id).workstream.revision !== actionInput.expectedRevision) throw new DomainError("CONFLICT", "Workstream changed; refresh its current state before retrying");
+            if (action === "validate") {
+              const result = await adapter.validate(actionInput.id, actionInput.phase);
+              return { action, phase: actionInput.phase, ok: result.ok } satisfies WorkstreamActionResult;
+            }
+            // Gate and reserve synchronously: no run may start in this repository
+            // while the existing core operation awaits validation/provisioning.
+            assertLifecycleIdle(workspaceId, actionInput.repositoryId);
+            lifecycleReservations.set(actionInput.repositoryId, workspaceId);
+            try {
+              if (action === "approve") await adapter.approve(actionInput.id, actionInput.phase, actionInput.approvalRef!, actionInput.expectedRevision);
+              else await adapter.provide(actionInput.id, actionInput.phase, false, actionInput.expectedRevision);
+              return { action, phase: actionInput.phase, ok: true } satisfies WorkstreamActionResult;
+            } finally { lifecycleReservations.delete(actionInput.repositoryId); }
+          }
            if (path === "/api/workstreams") return workstreams.create({ id: input.id, title: input.title, type: input.type, defaultCheckout: input.defaultCheckout });
           if (operation === "default-checkout") return workstreams.setDefaultCheckout(input.id, input.checkout);
           if (operation === "target") return workstreams.resolveTarget(input.id, input.phase, input.target);
@@ -1654,6 +1709,7 @@ async function startOwned(options: Options, assetsDir: string, packageDir: strin
           admissions.ready(conversationId);
         }
         if (session?.harness === "opencode") await oc.assertIdle(session.nativeSessionId!, cwd);
+        if (lifecycleReserved(conversationId)) throw new WorkstreamAdapterError(409, "workstream-action-pending", "A repository phase action is in progress");
         if (closing || storageFailed || meta.reconciliationRequired) return json({ error: "Bridge unavailable" }, 409);
         // Update stored defaults on every send carrying them; an omitted
         // follow-up never erases them (the run below inherits them instead).
