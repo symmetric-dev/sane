@@ -12,6 +12,7 @@ import type { Availability, Config, Conversation, ConversationClient, Harness, I
 import type { ReconciledHistory } from "../src/reconcile";
 import type { CompactRequest, CompactState, CompactionRecord } from "../src/oc-contract";
 import { compactCommand, compactionsFor } from "./compaction";
+import { ConversationCache, cloneRunForConsume, conversationKey } from "./conversation-cache";
 
 /** Composer draft. New conversations pick `profileId` ("" = profiles.defaultId);
  * selected Base conversations may stage `upgradeId` (assistant profile, same harness). */
@@ -42,6 +43,9 @@ export class ChatStore {
   private timer?: ReturnType<typeof setTimeout>;
   private controller?: AbortController;
   private runMap = new Map<string, Run>();
+  private conversationCache = new ConversationCache();
+  private transcriptKey = "";
+  private cacheable = false;
   private started = false;
   private modelRequest = 0;
   private replied = new Set<string>();
@@ -51,6 +55,28 @@ export class ChatStore {
   private submissionSerial = 0;
   private compactInFlight = new Set<string>();
   private compactReadSerial = 0;
+  private cacheConversation() {
+    const conversation = this.state.conversations.find(c => c.id === this.state.selected);
+    if (this.state.phase !== "ready" || !this.cacheable || !conversation || this.compactInFlight.has(conversation.id) || conversationKey(conversation) !== this.transcriptKey) return;
+    // pendingTurn is presentation only, never recorded transcript evidence.
+    this.conversationCache.put(conversation, { runs: this.runMap, messages: this.state.messages, nativeHistory: this.state.nativeHistory, nativeHistoryLoaded: this.nativeHistoryLoaded });
+  }
+  private invalidateConversationCache(id: string) {
+    this.conversationCache.invalidate(id);
+    if (id === this.state.selected) this.cacheable = false;
+  }
+  private invalidateCompactReadiness(id: string) {
+    this.invalidateConversationCache(id);
+    if (id !== this.state.selected) return;
+    // Fence even while hidden: reconnect may defer its GET, but an outstanding
+    // revisit poll/eligibility read must not publish pre-compaction readiness.
+    this.stop(); this.compactReadSerial++; this.nativeHistoryLoaded = false;
+    this.update({ connected: false, loading: true, availability: { canSend: false }, compactState: null, contextUsage: null, interactions: [] });
+  }
+  private clearCachedHistory() {
+    this.conversationCache.clear(); this.runMap = new Map();
+    this.transcriptKey = ""; this.cacheable = false; this.nativeHistoryLoaded = false;
+  }
   private beginAction() {
     const selection = this.selectionEpoch, auth = this.authEpoch, operation = ++this.actionSerial;
     this.update({ actionBusy: true, interactionError: "", actionNotice: "" });
@@ -167,10 +193,10 @@ export class ChatStore {
   }
   refreshCompact = async () => {
     const id = this.state.selected, selection = this.selectionEpoch, auth = this.authEpoch, read = ++this.compactReadSerial;
-    if (!id || !this.client.compactState) return false;
+    if (!id || !this.client.compactState || this.compactInFlight.has(id)) return false;
     try {
       const state = await this.client.compactState(id);
-      if (selection !== this.selectionEpoch || auth !== this.authEpoch || read !== this.compactReadSerial) return false;
+      if (selection !== this.selectionEpoch || auth !== this.authEpoch || read !== this.compactReadSerial || this.compactInFlight.has(id)) return false;
       this.applyCompactState(state);
       return true;
     } catch (error) {
@@ -179,7 +205,7 @@ export class ChatStore {
     }
   };
   private applyCompactState(compactState: CompactState) {
-    if (compactState.nativeHistoryImportedAt && compactState.nativeHistoryImportedAt !== this.state.nativeHistory?.importedAt) this.nativeHistoryLoaded = false;
+    if (compactState.nativeHistoryImportedAt && compactState.nativeHistoryImportedAt !== this.state.nativeHistory?.importedAt) { this.nativeHistoryLoaded = false; this.invalidateConversationCache(compactState.sessionId); }
     const conversation = this.state.conversations.find(c => c.id === compactState.sessionId);
     const pending = this.state.pendingCompacts?.[compactState.sessionId];
     const recovered = pending && compactState.operations.find(r => r.requestId === pending.payload.requestId);
@@ -188,6 +214,12 @@ export class ChatStore {
   }
   compact = async (nativeStopped = false) => {
     const id = this.state.selected, selection = this.selectionEpoch, auth = this.authEpoch;
+    const conversation = this.state.conversations.find(c => c.id === id);
+    const identity = conversation ? conversationKey(conversation) : "";
+    const sameIdentity = () => {
+      const current = this.state.conversations.find(c => c.id === id);
+      return !!current && conversationKey(current) === identity;
+    };
     const old = this.state.pendingCompacts?.[id];
     if (this.compactInFlight.has(id) || old?.phase === "sending" || !id || !this.client.compact) return;
     this.update({ compactError: "" });
@@ -207,24 +239,30 @@ export class ChatStore {
     const payload = old?.phase === "unconfirmed" ? old.payload : { requestId: crypto.randomUUID(), ...(instructions ? { instructions } : {}), ...(nativeStopped ? { nativeStopped: true } : {}) };
     const pending: PendingCompact = { payload, phase: "sending" };
     this.compactInFlight.add(id);
+    this.invalidateCompactReadiness(id);
     this.update({ pendingCompacts: { ...this.state.pendingCompacts, [id]: pending }, compactError: "", availability: { canSend: false, reason: "Requesting compaction…" } });
     try {
       const response = await this.client.compact(id, payload);
-      if (auth !== this.authEpoch) return;
+      if (auth !== this.authEpoch || !sameIdentity()) return;
+      this.invalidateCompactReadiness(id);
       this.update({ pendingCompacts: { ...this.state.pendingCompacts, [id]: { payload, phase: "accepted", runId: response.runId } } });
       if (selection === this.selectionEpoch) {
         this.nativeHistoryLoaded = false;
         const existing = this.state.compactions?.find(r => r.requestId === payload.requestId);
         const operation = existing && (existing.contextReset || existing.observedAt && existing.observedAt > (response.operation.observedAt ?? "")) ? existing : response.operation;
         this.update({ compactions: [...(this.state.compactions ?? []).filter(r => r.requestId !== payload.requestId), operation], compactState: null, availability: { canSend: false, reason: "Compaction requested. Waiting for native state." } });
-        this.reconnect();
       }
     } catch (error) {
-      if (auth !== this.authEpoch || this.expired(error)) return;
+      if (auth !== this.authEpoch || !sameIdentity() || this.expired(error)) return;
       const definite = error instanceof ApiError && error.status >= 400 && error.status < 500;
+      this.invalidateCompactReadiness(id);
       this.update({ pendingCompacts: { ...this.state.pendingCompacts, [id]: { payload, phase: definite ? "rejected" : "unconfirmed" } }, ...(selection === this.selectionEpoch ? { ...(!definite ? { compactState: null } : {}), compactError: `${error instanceof Error ? error.message : "Compaction request unavailable."}${definite ? "" : " Acceptance is unconfirmed. Check status or explicitly resume this same request; no automatic retry will occur."}` } : {}) });
-      if (selection === this.selectionEpoch) this.reconnect();
-    } finally { this.compactInFlight.delete(id); }
+    } finally {
+      this.compactInFlight.delete(id);
+      // Readiness belongs to the currently selected identity, not the originating
+      // selection epoch. Only operation-specific presentation above uses that epoch.
+      if (auth === this.authEpoch && sameIdentity() && this.state.selected === id) this.reconnect();
+    }
   };
   loadModels = async () => {
     const cwd = this.workspace();
@@ -265,8 +303,7 @@ export class ChatStore {
    * last run's values for pre-migration sessions that predate Session fields. */
   storedDefaults = (id: string): { model: string; effort: string; agent: string } => {
     const conversation = this.state.conversations.find(c => c.id === id);
-    // runMap holds only the selected conversation's runs (cleared on choose),
-    // so filtering by id is exact at both choose-time (empty) and poll-time.
+    // runMap holds only the selected conversation's committed or restored runs.
     const last = [...this.runMap.values()].filter(r => r.conversationId === id).sort((a, b) => a.createdAt.localeCompare(b.createdAt)).at(-1);
     return { model: conversation?.model || last?.model || "", effort: conversation?.effort || last?.effort || "", agent: conversation?.agent || last?.agent || "" };
   };
@@ -328,7 +365,8 @@ export class ChatStore {
       if (current()) {
         // Invalidate older reads even if reconnect is deferred while hidden.
         this.stop(); this.nativeHistoryLoaded = true;
-        this.update({ nativeHistory: history, actionNotice: "Conversation history refreshed." });
+        this.invalidateConversationCache(id);
+        this.update({ nativeHistory: history, messages: transcriptMessages(history, this.state.runs), contextUsage: null, compactState: null, compactions: [], actionNotice: "Conversation history refreshed." });
         this.reconnect();
       }
     } catch (error) {
@@ -361,8 +399,7 @@ export class ChatStore {
   };
   private stop() { this.generation++; clearTimeout(this.timer); this.controller?.abort(); }
   private loginRequired() {
-    this.stop(); this.authEpoch++; this.runMap.clear();
-    this.nativeHistoryLoaded = false;
+    this.stop(); this.authEpoch++; this.clearCachedHistory();
     catalog.invalidate(); invalidateWorkspaceRequests();
     this.replied.clear();
     this.update({ pendingCompacts: {}, compactState: null, compactions: [], compactDialog: "", compactError: "", compactInstructions: {} });
@@ -390,13 +427,16 @@ export class ChatStore {
   }
   login = async (password: string) => {
     this.stop(); const auth = ++this.authEpoch;
-    this.nativeHistoryLoaded = false;
-    this.update({ authError: "" });
+    this.clearCachedHistory();
+    this.update({ authError: "", runs: [], messages: [], pendingTurn: null, nativeHistory: null, contextUsage: null, compactState: null, compactions: [], interactions: [], interactionError: "", actionBusy: false, actionNotice: "", connected: false, availability: { canSend: false } });
     try { await this.client.login(password); if (auth !== this.authEpoch) return; this.update({ phase: "connecting" }); await this.boot(); }
     catch (error) { if (auth === this.authEpoch) this.update({ authError: error instanceof Error ? error.message : "Sign-in failed." }); }
   };
   logout = async () => {
     this.stop(); const auth = ++this.authEpoch;
+    // Even an ambiguous logout must not retain authenticated transcript snapshots.
+    this.clearCachedHistory(); this.replied.clear();
+    this.update({ runs: [], messages: [], pendingTurn: null, nativeHistory: null, contextUsage: null, compactState: null, compactions: [], compactDialog: "", interactions: [], interactionError: "", actionBusy: false, actionNotice: "", connected: false, loading: true, availability: { canSend: false } });
     catalog.invalidate(); invalidateWorkspaceRequests();
     try { await this.client.logout(); if (auth === this.authEpoch) this.loginRequired(); }
     catch (error) { if (auth !== this.authEpoch || this.expired(error)) return; this.update({ submissionError: `Sign-out failed: ${error instanceof Error ? error.message : "connection error"}` }); void this.poll(); }
@@ -411,54 +451,99 @@ export class ChatStore {
     if (this.state.sending) return;
     if (selected === this.state.selected) return;
     this.selectionEpoch++;
-    this.stop(); this.runMap.clear();
-    this.nativeHistoryLoaded = false;
+    this.stop(); this.cacheConversation();
+    const conversation = this.state.conversations.find(c => c.id === selected);
+    const cached = conversation ? this.conversationCache.take(conversation) : undefined;
+    this.runMap = cached?.runs ?? new Map();
+    this.transcriptKey = cached && conversation ? conversationKey(conversation) : "";
+    this.cacheable = !!cached && !this.compactInFlight.has(selected);
+    this.nativeHistoryLoaded = cached?.nativeHistoryLoaded ?? false;
     this.replied.clear();
     this.update({ compactState: null, compactions: [], compactDialog: "", compactError: "" });
+    const runs = [...this.runMap.values()].sort((a, b) => a.createdAt.localeCompare(b.createdAt));
+    const compactions = cached && conversation ? compactionsFor(conversation, runs, cached.nativeHistory).filter(record => record.lifecycle === "completed" || record.lifecycle === "failed" || record.lifecycle === "skipped") : [];
     // Never show the source's turns or actions under a newly selected branch.
     // Same-id sends do not reach here; their transcript remains mounted.
     this.update(selected
-      ? { selected, runs: [], messages: [], pendingTurn, availability: { canSend: false }, nativeHistory: null, contextUsage: null, interactions: [], interactionError: "", actionBusy: false, actionNotice: "", loading: true, connected: false, connectionError: "", submissionError: "" }
-      : { selected, runs: [], messages: [], pendingTurn, nativeHistory: null, contextUsage: null, interactions: [], interactionError: "", actionBusy: false, actionNotice: "", loading: false, connected: false, connectionError: "", submissionError: "" });
+      ? { selected, runs, messages: cached?.messages ?? [], compactions, pendingTurn, availability: { canSend: false }, nativeHistory: cached?.nativeHistory ?? null, contextUsage: null, interactions: [], interactionError: "", actionBusy: false, actionNotice: "", loading: true, connected: false, connectionError: "", submissionError: "" }
+      : { selected, runs: [], messages: [], pendingTurn, availability: { canSend: false }, nativeHistory: null, contextUsage: null, interactions: [], interactionError: "", actionBusy: false, actionNotice: "", loading: false, connected: false, connectionError: "", submissionError: "" });
     void this.poll();
   };
   private async poll() {
     if (this.state.phase !== "ready") return;
-    const generation = this.generation, auth = this.authEpoch, selected = this.state.selected;
+    const generation = this.generation, auth = this.authEpoch, selected = this.state.selected, selection = this.selectionEpoch;
     const controller = this.controller = new AbortController();
     const deadline = setTimeout(() => controller.abort(), 25000);
-    const current = () => generation === this.generation && auth === this.authEpoch;
+    const current = () => generation === this.generation && auth === this.authEpoch && selection === this.selectionEpoch && selected === this.state.selected;
     try {
       const listing = await this.client.conversations(controller.signal);
       if (!current()) return;
+      controller.signal.throwIfAborted();
+      this.conversationCache.prune(listing.conversations);
       registerWorkerSessions(listing.conversations);
+      const currentConversation = listing.conversations.find(c => c.id === selected);
+      if (selected && (!currentConversation || this.transcriptKey && this.transcriptKey !== conversationKey(currentConversation))) {
+        // A listing can remove or rebind an App id even while its history GET
+        // fails. Never keep the old native transcript/actions under that id.
+        this.runMap = new Map(); this.transcriptKey = ""; this.cacheable = false; this.nativeHistoryLoaded = false;
+        this.replied.clear(); this.selectionEpoch++; this.actionSerial++; this.compactReadSerial++;
+        this.stop();
+        const pendingCompacts = { ...this.state.pendingCompacts }, compactInstructions = { ...this.state.compactInstructions };
+        delete pendingCompacts[selected]; delete compactInstructions[selected];
+        this.update({ conversations: listing.conversations, runs: [], messages: [], pendingTurn: null, nativeHistory: null, contextUsage: null, compactState: null, compactions: [], compactDialog: "", compactError: "", pendingCompacts, compactInstructions, interactions: [], interactionError: "", actionBusy: false, actionNotice: "", availability: { canSend: false }, connected: false, loading: !!currentConversation, connectionError: currentConversation ? "" : "Conversation is no longer available. History will reconnect automatically." });
+        // Restart with a fresh action/selection fence and the new identity.
+        if (currentConversation) void this.poll();
+        else this.timer = setTimeout(() => void this.poll(), 5000);
+        return;
+      }
       // Safe GET also notices reconciliation by another view/client. Reuse the
       // snapshot identity when the backend refresh timestamp has not changed.
       const historyRead = selected && this.client.nativeHistory ? (await this.client.nativeHistory(selected, controller.signal)).history : null;
+      if (!current()) return;
+      controller.signal.throwIfAborted();
+      if (historyRead && (historyRead.sessionId !== selected || historyRead.nativeSessionId !== (currentConversation?.nativeSessionId ?? selected))) throw new Error("Native history identity changed. Waiting for the conversation listing to refresh.");
+      if (historyRead?.importedAt !== this.state.nativeHistory?.importedAt) this.invalidateConversationCache(selected);
       const nativeHistory = this.nativeHistoryLoaded && historyRead?.importedAt === this.state.nativeHistory?.importedAt ? this.state.nativeHistory : historyRead;
       if (selected && this.client.workers) {
         try { const projection = await this.client.workers(selected, controller.signal); if (current()) publishWorkers(selected, projection); }
-        catch (error) { if (current()) publishWorkers(selected, { ...workersFor(selected), error: error instanceof Error ? error.message : "Worker status unavailable" }); }
+        catch (error) { if (!current() || this.expired(error)) return; publishWorkers(selected, { ...workersFor(selected), error: error instanceof Error ? error.message : "Worker status unavailable" }); }
       }
       if (!current()) return;
+      controller.signal.throwIfAborted();
+      // Only commit reducer state alongside the transcript at the end. Failed
+      // or aborted reads must not advance published cursors, buffers, or Sets.
+      const runMap = new Map<string, Run>();
       if (selected) {
         const metadata = await this.client.runs(selected, controller.signal);
         if (!current()) return;
+        controller.signal.throwIfAborted();
         const ordered = [...metadata].sort((a, b) => a.createdAt.localeCompare(b.createdAt));
         for (const meta of ordered) {
-          const conversation = listing.conversations.find(c => c.id === selected);
-          meta.harness = conversation?.harness ?? "claude-code";
-          meta.nativeSessionId = conversation?.nativeSessionId;
-          const run = this.runMap.get(meta.id) ?? createRun(meta);
+          if (meta.conversationId !== selected) throw new Error("Run identity does not match the selected conversation.");
+          meta.harness = currentConversation?.harness ?? "claude-code";
+          meta.nativeSessionId = currentConversation?.nativeSessionId;
+          const previous = this.runMap.get(meta.id);
+          let run = previous ?? createRun(meta);
+          // The client uses only id/cursor for this GET; it never consumes events.
           const page = await this.client.events(run, controller.signal);
           if (!current()) return;
-          Object.assign(run, meta, { status: page.status || meta.status });
-          consume(run, page.events ?? []);
-          if (Number.isFinite(page.nextCursor)) run.cursor = Math.max(run.cursor, page.nextCursor);
-          this.runMap.set(run.id, run);
+          controller.signal.throwIfAborted();
+          const status = page.status || meta.status;
+          const cursor = Number.isFinite(page.nextCursor) ? Math.max(run.cursor, page.nextCursor) : run.cursor;
+          const changed = !previous || status !== run.status || cursor !== run.cursor ||
+            (page.events ?? []).some(event => event.runId === run.id && event.sessionId === selected && !run.seen.has(event.seq)) ||
+            (Object.keys(meta) as (keyof typeof meta)[]).some(key => key !== "status" && (key === "compact" ? JSON.stringify(meta[key]) !== JSON.stringify(run[key]) : meta[key] !== run[key]));
+          if (changed) {
+            // Own mutable reducer containers without deep-copying diagnostic payloads.
+            if (previous) run = cloneRunForConsume(previous);
+            Object.assign(run, meta, { status });
+            consume(run, page.events ?? []);
+            run.cursor = cursor;
+          }
+          runMap.set(run.id, run);
         }
       }
-      const runs = [...this.runMap.values()].sort((a, b) => a.createdAt.localeCompare(b.createdAt));
+      const runs = [...runMap.values()].sort((a, b) => a.createdAt.localeCompare(b.createdAt));
       const messages = transcriptMessages(nativeHistory, runs);
       const pending = this.state.pendingTurn;
       const pendingTurn = pending && messages.some(message => message.runId === pending.runId && message.role === "user") ? null : pending;
@@ -472,10 +557,9 @@ export class ChatStore {
         const old = this.state.conversations.find(prev => prev.id === c.id)?.title;
         return old ? { ...c, title: old } : c;
       });
-      this.nativeHistoryLoaded = true;
       const branchDraft = conversations.find(c => c.id === selected)?.branchDraft;
-      if (branchDraft && !runs.some(run => run.operation !== "compact") && !this.state.drafts[this.draftKey(selected)]) this.setDraft({ text: branchDraft }, selected);
-      const availability = conversations.find(c => c.id === selected)?.availability ?? listing.availability;
+      const awaitingCompact = this.compactInFlight.has(selected);
+      const availability = awaitingCompact ? { canSend: false } : conversations.find(c => c.id === selected)?.availability ?? listing.availability;
       const conversation = conversations.find(c => c.id === selected);
       const models = this.state.modelsLoaded && !this.state.modelsError && this.state.modelsCwd === conversation?.cwd ? this.state.models : [];
       let compactState = this.state.compactState, compactError = this.state.compactError;
@@ -491,9 +575,11 @@ export class ChatStore {
         catch (error) { if (!current() || this.expired(error)) return; compactState = this.state.compactState; compactError = read === this.compactReadSerial ? this.compactReadFeedback(error) : this.state.compactError; }
       }
       if (!current()) return;
-      if (compactState?.nativeHistoryImportedAt && compactState.nativeHistoryImportedAt !== nativeHistory?.importedAt) this.nativeHistoryLoaded = false;
+      controller.signal.throwIfAborted();
+      if (awaitingCompact) compactState = null;
+      this.nativeHistoryLoaded = !awaitingCompact && !(compactState?.nativeHistoryImportedAt && compactState.nativeHistoryImportedAt !== nativeHistory?.importedAt);
       const compactions = conversation ? compactionsFor(conversation, runs, nativeHistory, compactState?.operations) : [];
-      const contextUsage = conversation ? contextUsageFor(conversation.harness, runs, models, nativeHistory, compactions) : null;
+      const contextUsage = conversation && !awaitingCompact ? contextUsageFor(conversation.harness, runs, models, nativeHistory, compactions) : null;
       const pendingCompact = this.state.pendingCompacts?.[selected];
       const recovered = pendingCompact && compactState?.operations.find(r => r.requestId === pendingCompact.payload.requestId);
       const pendingCompacts = recovered && pendingCompact.phase !== "accepted" && pendingCompact.phase !== "sending" ? { ...this.state.pendingCompacts, [selected]: { ...pendingCompact, phase: "accepted" as const, runId: recovered.runId } } : this.state.pendingCompacts;
@@ -508,10 +594,16 @@ export class ChatStore {
         JSON.stringify(prev.availability) === JSON.stringify(availability) &&
         JSON.stringify(prev.contextUsage) === JSON.stringify(contextUsage) &&
         JSON.stringify(prev.compactState) === JSON.stringify(compactState) && JSON.stringify(prev.compactions) === JSON.stringify(compactions) && prev.compactError === compactError && prev.pendingCompacts === pendingCompacts &&
-        prev.runs.length === runs.length && runs.every((run, index) => prev.runs[index]?.id === run.id && prev.runs[index]?.status === run.status && prev.runs[index]?.cursor === run.cursor) &&
+        prev.runs.length === runs.length && runs.every((run, index) => prev.runs[index] === run) &&
         JSON.stringify(prev.messages) === JSON.stringify(messages);
-      if (!quiet) this.update({ ...listing, availability, nativeHistory, contextUsage, compactState, compactions, compactError, pendingCompacts, conversations, runs, messages, pendingTurn, connected: true, loading: false, connectionError: "" });
-      if (selected && conversations.find(c => c.id === selected)?.harness === "opencode") {
+      this.runMap = runMap;
+      this.transcriptKey = conversation ? conversationKey(conversation) : "";
+      this.cacheable = !!conversation && this.nativeHistoryLoaded && !awaitingCompact;
+      if (!quiet) this.update({ ...listing, availability, nativeHistory, contextUsage, compactState, compactions, compactError, pendingCompacts, conversations, runs, messages, pendingTurn, connected: !awaitingCompact, loading: awaitingCompact, connectionError: "" });
+      if (!current()) return;
+      if (branchDraft && !runs.some(run => run.operation !== "compact") && !this.state.drafts[this.draftKey(selected)]) this.setDraft({ text: branchDraft }, selected);
+      if (!current()) return;
+      if (selected && !awaitingCompact && conversations.find(c => c.id === selected)?.harness === "opencode") {
         try {
           const interactions = await this.client.interactions(selected, controller.signal);
           if (current()) this.update({ interactions: interactions.filter(i => !this.replied.has(i.id)), ...(this.state.interactionError.startsWith("Pending requests unavailable:") ? { interactionError: "" } : {}) });
