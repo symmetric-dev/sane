@@ -1,6 +1,6 @@
 import { useEffect, useId, useRef, useState, type ReactNode } from "react";
 import { createPortal, flushSync } from "react-dom";
-import { FiArrowUpRight, FiChevronRight, FiGitBranch, FiInfo, FiSquare, FiUsers, FiX } from "react-icons/fi";
+import { FiArrowLeft, FiArrowRight, FiArrowUpRight, FiChevronRight, FiGitBranch, FiInfo, FiSquare, FiUsers, FiX } from "react-icons/fi";
 import type { WorkerDelivery, WorkerRecord, WorkerResult } from "../src/worker-contract";
 import { workerResults } from "../src/worker-contract";
 import { builtinProfiles, type AgentProfile } from "../src/agent-profiles-contract";
@@ -71,7 +71,7 @@ export function WorkerCard({ worker: w, workers = [], runs = [], open = openWork
   const status = execution.executionState;
   const statusClass = `${moving ? " is-active" : ""}${status === "failed" ? " is-error" : ""}${status === "uncertain" || status === "unknown" ? " is-uncertain" : ""}`;
   return <section className={`worker-card${moving ? " is-active" : ""}`}>
-    <header><WorkerIcon profile={profile} /><div className="worker-card-heading"><strong>{profile.label || WORKER_AGENT_CATALOG[w.input.worker].label}</strong><span className="worker-card-timing">{timestamp && <time dateTime={timestamp} title={new Date(timestamp).toLocaleString()}>{new Date(timestamp).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}</time>}{duration && <span>{duration}</span>}</span></div><span className={`worker-status${statusClass}`} role="status">{`${execution.continuation ? "Continuation · " : ""}${status}`}</span></header>
+    <header><FiArrowLeft className="worker-direction" size={16} aria-hidden="true" /><WorkerIcon profile={profile} /><div className="worker-card-heading"><strong>{profile.label || WORKER_AGENT_CATALOG[w.input.worker].label}</strong><span className="worker-card-timing">{timestamp && <time dateTime={timestamp} title={new Date(timestamp).toLocaleString()}>{new Date(timestamp).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}</time>}{duration && <span>{duration}</span>}</span></div><span className={`worker-status${statusClass}`} role="status">{`${execution.continuation ? "Continuation · " : ""}${status}`}</span></header>
     <div className="worker-card-controls">
       <div className="worker-actions">
         <button type="button" className="worker-action" aria-label="Open worker" disabled={sending} onClick={() => open(w)}><FiArrowUpRight size={13} aria-hidden="true" />Open</button>
@@ -105,6 +105,7 @@ function WorkerReceipt({ worker: w, revision }: { worker: WorkerRecord; revision
   const [history, setHistory] = useState(false);
   const trigger = useRef<HTMLButtonElement | null>(null);
   return <div className="worker-receipt">
+    <FiArrowRight className="worker-direction" size={16} aria-hidden="true" />
     <WorkerIcon profile={profile} size={18} />
     <div className="worker-receipt-summary">
       <strong>{profile.label || WORKER_AGENT_CATALOG[w.input.worker].label}</strong>
@@ -121,7 +122,7 @@ export function WorkerOutcomeReport({ delivery, workers }: { delivery: WorkerDel
   const refs = delivery.resultRefs ?? delivery.workerIds.map(workerId => ({ workerId, revision: 1 }));
   return <section className="worker-outcome-report" aria-label="Worker outcome report">{refs.map(ref => {
     const worker = workers.find(w => w.id === ref.workerId);
-    return worker ? <WorkerReceipt key={`${ref.workerId}:${ref.revision}`} worker={worker} revision={ref.revision} /> : <div key={`${ref.workerId}:${ref.revision}`} className="worker-receipt"><FiUsers className="worker-glyph" size={18} aria-hidden="true" /><div className="worker-receipt-summary"><strong>Worker</strong><span aria-hidden="true">·</span><span>Result {ref.revision}</span><span aria-hidden="true">·</span><span className="worker-status is-uncertain">Status unavailable</span></div></div>;
+    return worker ? <WorkerReceipt key={`${ref.workerId}:${ref.revision}`} worker={worker} revision={ref.revision} /> : <div key={`${ref.workerId}:${ref.revision}`} className="worker-receipt"><FiArrowRight className="worker-direction" size={16} aria-hidden="true" /><FiUsers className="worker-glyph" size={18} aria-hidden="true" /><div className="worker-receipt-summary"><strong>Worker</strong><span aria-hidden="true">·</span><span>Result {ref.revision}</span><span aria-hidden="true">·</span><span className="worker-status is-uncertain">Status unavailable</span></div></div>;
   })}</section>;
 }
 

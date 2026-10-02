@@ -1,6 +1,6 @@
 import { useEffect, useId, useRef, useState, type ReactNode } from "react";
 import { createPortal } from "react-dom";
-import { FiArrowDownLeft, FiArrowUpRight, FiChevronRight, FiInfo, FiX } from "react-icons/fi";
+import { FiArrowLeft, FiArrowRight, FiArrowUpRight, FiChevronRight, FiInfo, FiX } from "react-icons/fi";
 import type { Phase } from "sane-core/contracts";
 import type { HandoffParty, HandoffPresentation } from "../src/handoff-contract";
 import type { ToolPart } from "./types";
@@ -62,7 +62,7 @@ export function HandoffCard({ presentation: p, direction, renderMessage, stale }
   const label = target.phases[0] ? phaseLabel(target.phases[0]) : "sender";
   const moving = !stale && ["queued", "accepted", "running"].includes(h.status);
   return <section className={`handoff-card${h.status === "failed" || p.problem ? " has-issue" : ""}`} aria-label={`Assistant handoff ${direction}`}>
-    <header>{direction === "sent" ? <FiArrowUpRight size={16} aria-hidden="true" /> : <FiArrowDownLeft size={16} aria-hidden="true" />}<span className="handoff-heading">Assistant handoff · {direction}</span><span className={`handoff-status${moving ? " is-active" : ""}${h.status === "failed" ? " is-error" : ""}`} role="status">{direction === "received" ? "Received" : handoffStatusLabel[h.status]}{direction === "sent" && stale ? " · last known" : ""}</span></header>
+    <header>{direction === "sent" ? <FiArrowLeft size={16} aria-hidden="true" /> : <FiArrowRight size={16} aria-hidden="true" />}<span className="handoff-heading">Assistant handoff · {direction}</span><span className={`handoff-status${moving ? " is-active" : ""}${h.status === "failed" ? " is-error" : ""}`} role="status">{direction === "received" ? "Received" : handoffStatusLabel[h.status]}{direction === "sent" && stale ? " · last known" : ""}</span></header>
     <div className="handoff-correspondents"><Party label="From" party={p.sender} /><Party label="To" party={p.recipient} /></div>
     <div className="handoff-context"><span>Workstream · {p.workstreamTitle}</span><time dateTime={h.createdAt} title={new Date(h.createdAt).toLocaleString()}>{new Date(h.createdAt).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}</time></div>
     <MessageAccordion message={h.input.message} renderMessage={renderMessage} />
@@ -77,7 +77,7 @@ export function HandoffCard({ presentation: p, direction, renderMessage, stale }
 export function PendingHandoffCard({ tool, running, renderMessage }: { tool: ToolPart; running: boolean; renderMessage: MessageRenderer }) {
   const input = tool.input && typeof tool.input === "object" && !Array.isArray(tool.input) ? tool.input as Record<string, unknown> : {};
   const phase = typeof input.to === "string" && /^(design|engineering|planning|execution|research(?::[a-z0-9_-]+)?)$/.test(input.to) ? input.to as Phase : null;
-  return <section className="handoff-card" aria-label="Assistant handoff sent"><header><FiArrowUpRight size={16} aria-hidden="true" /><span className="handoff-heading">Assistant handoff · sent</span><span className={`handoff-status${tool.error ? " is-error" : ""}`} role="status">{tool.error ? "Admission unconfirmed" : running && tool.output === undefined ? "Sending" : "Status unavailable"}</span></header>
+  return <section className="handoff-card" aria-label="Assistant handoff sent"><header><FiArrowLeft size={16} aria-hidden="true" /><span className="handoff-heading">Assistant handoff · sent</span><span className={`handoff-status${tool.error ? " is-error" : ""}`} role="status">{tool.error ? "Admission unconfirmed" : running && tool.output === undefined ? "Sending" : "Status unavailable"}</span></header>
     <div className="handoff-correspondents"><div className="handoff-party"><span className="handoff-party-label">To</span><strong>{phase ? `${phaseLabel(phase)} assistant` : "Recipient unavailable"}</strong>{phase && <PhaseBadges phases={[phase]} />}</div></div>
     {typeof input.message === "string" && <MessageAccordion message={input.message} renderMessage={renderMessage} />}
     {tool.error && <p className="handoff-warning" role="alert">Handoff admission could not be confirmed. Inspect run details before retrying.</p>}

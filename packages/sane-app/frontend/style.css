@@ -987,8 +987,8 @@ h3 {
 }
 .activity-collapse:hover { color:var(--foreground); background:none; }
 .activity-icon {
-  width:18px;
-  height:18px;
+  width:20px;
+  height:20px;
   flex-shrink:0;
   color:var(--primary);
   transform-origin:center;
@@ -999,6 +999,7 @@ h3 {
 .activity-pencil.activity-arriving { animation:activity-pencil-shake var(--activity-animation-duration) ease-in-out var(--activity-animation-cycles); }
 .activity-document.activity-arriving { animation:activity-document-bob var(--activity-animation-duration) ease-in-out var(--activity-animation-cycles); }
 .activity-briefcase.activity-arriving { animation:activity-briefcase-turn var(--activity-animation-duration) steps(4, end) var(--activity-animation-cycles); }
+.activity-sparkles.activity-arriving { animation:activity-sparkles-twinkle var(--activity-animation-duration) ease-in-out var(--activity-animation-cycles); }
 @keyframes activity-wave-pulse {
   0%,100% { opacity:1; transform:scaleY(1); }
   50% { opacity:.35; transform:scaleY(.5); }
@@ -1019,9 +1020,13 @@ h3 {
   from { transform:rotate(0deg); }
   to { transform:rotate(360deg); }
 }
+@keyframes activity-sparkles-twinkle {
+  0%,100% { opacity:1; transform:scale(1); }
+  50% { opacity:.5; transform:scale(.8); }
+}
 .activity-body {
   min-width:0;
-  padding:8px 0 12px 25px;
+  padding:8px 0 12px 27px;
 }
 .activity-body pre {
   max-height:360px;

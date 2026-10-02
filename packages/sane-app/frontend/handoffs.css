@@ -1,5 +1,6 @@
 .handoff-card { min-width:0; margin:10px 0; border:1px solid var(--border); border-radius:6px; background:transparent; }
 .handoff-card > header { display:flex; align-items:center; flex-wrap:wrap; gap:8px; padding:12px 14px; border-bottom:1px solid var(--border); color:var(--muted-foreground); }
+.handoff-card > header > svg { flex-shrink:0; }
 .handoff-heading { flex:1; font-size:10px; font-weight:600; letter-spacing:.08em; text-transform:uppercase; }
 .handoff-status { font-size:11px; overflow-wrap:anywhere; }
 .handoff-status.is-active { color:var(--primary); }

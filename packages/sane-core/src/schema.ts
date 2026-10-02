@@ -1,5 +1,5 @@
-/** Fresh-only relational domain. SQL is private; adapters use RepositoryDomain. */
-export const SCHEMA_VERSION = 1 as const
+/** Relational domain. Upgrades are explicit; adapters use RepositoryDomain. */
+export const SCHEMA_VERSION = 2 as const
 // BEFORE INSERT runs even when REPLACE's implicit DELETE triggers are disabled.
 // Cover every identity/unique conflict, including the partial active indexes.
 const protectedInsertConflicts: Record<string, string> = {
@@ -18,7 +18,8 @@ const protectedInsertConflicts: Record<string, string> = {
   handoffs: "id=NEW.id OR (sender_id=NEW.sender_id AND request_id=NEW.request_id)",
   handoff_attempts: "id=NEW.id OR native_command_id=NEW.native_command_id OR run_id=NEW.run_id",
 }
-export const SCHEMA = `
+/** Frozen v1 definition used to refuse altered/unsupported upgrade sources. */
+export const SCHEMA_V1 = `
 CREATE TABLE store_metadata (
  id INTEGER PRIMARY KEY CHECK(id=1), format TEXT NOT NULL CHECK(format='sane-domain'), version INTEGER NOT NULL CHECK(version=1),
  repository_id TEXT NOT NULL UNIQUE, primary_checkout TEXT NOT NULL, common_dir TEXT NOT NULL, primary_pin TEXT NOT NULL CHECK(json_valid(primary_pin)), created_at TEXT NOT NULL
@@ -142,3 +143,7 @@ ${["store_metadata", "checkout_pins", "native_authorities", "conversations", "ap
 ${["store_metadata", "checkout_pins", "native_authorities", "conversations", "workstreams", "memberships", "phase_assignments", "phase_states", "approvals", "approval_files", "audit_events", "jobs"].map(table => `CREATE TRIGGER ${table}_no_delete BEFORE DELETE ON ${table} BEGIN SELECT RAISE(ABORT,'${table} history cannot be deleted'); END;`).join("\n")}
 ${Object.entries(protectedInsertConflicts).map(([table, predicate]) => `CREATE TRIGGER ${table}_no_replace BEFORE INSERT ON ${table} WHEN EXISTS(SELECT 1 FROM ${table} WHERE ${predicate}) BEGIN SELECT RAISE(ABORT,'UNIQUE ${table} identity/history cannot be replaced'); END;`).join("\n")}
 `
+/** Only assignment capability and metadata version change in v2. */
+export const SCHEMA = SCHEMA_V1
+  .replace("CHECK(version=1)", "CHECK(version=2)")
+  .replace("phase IN ('design','engineering','planning','execution','research')", "phase IN ('design','engineering','planning','execution','research','knowledge','prototype')")

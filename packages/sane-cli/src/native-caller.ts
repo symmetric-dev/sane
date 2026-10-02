@@ -1,6 +1,7 @@
 import { discoverRepository, inspectRepositoryStore, normalizeNativeSource, openRepositoryDomain, DomainError, type RepositoryDomain } from "../../sane-core/src/server.ts"
 import type { ConversationRef, Harness, InvocationContext, NativeSourceDescriptor, Phase, MutationContext } from "../../sane-core/src/contracts.ts"
 import type { CallerBootstrap, CallerEnvelope, CallerReference } from "./cli-arguments.ts"
+import { isSlot, SLOT_PATTERN, type Slot } from "../../sane-core/src/slots.ts"
 
 export interface NativeCaller {
   source: NativeSourceDescriptor
@@ -48,10 +49,10 @@ export function openNativeCaller(caller: NativeCaller, enroll = false) {
   } catch (error) { domain.close(); throw error }
 }
 
-export interface NativeLinkInput { slot?: Phase; workstream?: string; reassign?: boolean }
+export interface NativeLinkInput { slot?: Slot; workstream?: string; reassign?: boolean }
 export const nativeLinkSchema = {
   type: "object", properties: {
-    slot: { type: "string", pattern: "^(design|engineering|planning|execution|research|research:[a-z0-9][a-z0-9_-]{0,95})$" },
+    slot: { type: "string", pattern: SLOT_PATTERN },
     workstream: { type: "string", pattern: "^[a-z0-9][a-z0-9_-]{0,95}$" },
     reassign: { type: "boolean" },
   }, required: [], additionalProperties: false,
@@ -60,7 +61,7 @@ export const nativeLinkSchema = {
 export function nativeLinkInput(input: unknown): NativeLinkInput {
   if (!input || typeof input !== "object" || Array.isArray(input)) throw new DomainError("INVALID_INPUT", "Expected link arguments.")
   const value = input as Record<string, unknown>
-  if (Object.keys(value).some(key => !["slot", "workstream", "reassign"].includes(key)) || (value.slot !== undefined && (typeof value.slot !== "string" || !/^(design|engineering|planning|execution|research|research:[a-z0-9][a-z0-9_-]{0,95})$/.test(value.slot))) || (value.workstream !== undefined && (typeof value.workstream !== "string" || !/^[a-z0-9][a-z0-9_-]{0,95}$/.test(value.workstream))) || (value.reassign !== undefined && typeof value.reassign !== "boolean")) throw new DomainError("INVALID_INPUT", "Invalid link arguments.")
+  if (Object.keys(value).some(key => !["slot", "workstream", "reassign"].includes(key)) || (value.slot !== undefined && !isSlot(value.slot)) || (value.workstream !== undefined && (typeof value.workstream !== "string" || !/^[a-z0-9][a-z0-9_-]{0,95}$/.test(value.workstream))) || (value.reassign !== undefined && typeof value.reassign !== "boolean")) throw new DomainError("INVALID_INPUT", "Invalid link arguments.")
   return value as unknown as NativeLinkInput
 }
 
@@ -71,7 +72,7 @@ export interface NativeContextSummary {
   context: string
   harness: Harness
   workstream: string | null
-  phase: Phase | null
+  phase: Slot | null
 }
 
 export function formatNativeContextSummary(snapshot: InvocationContext, phase: Phase | null): NativeContextSummary {

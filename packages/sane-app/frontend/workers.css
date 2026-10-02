@@ -6,6 +6,7 @@
 .worker-card-heading strong { font-size:13px; font-weight:550; overflow-wrap:anywhere; }
 .worker-card-timing { display:flex; flex-wrap:wrap; gap:6px; font-size:11px; color:var(--muted-foreground); font-variant-numeric:tabular-nums; }
 .worker-glyph { flex-shrink:0; }
+.worker-direction { flex-shrink:0; color:var(--muted-foreground); }
 .worker-status { display:inline-flex; align-items:center; gap:6px; color:var(--muted-foreground); font-size:11px; overflow-wrap:anywhere; }
 .worker-status.is-active { color:var(--primary); }
 .worker-status.is-error { color:var(--error); }

@@ -23,7 +23,7 @@ export const ASSISTANT_AGENT_DESCRIPTIONS: Record<AssistantAgentId, string> = {
   design: "Helps the user develop the typed root doc and SDD for one single-scope workstream.",
   engineering: "Helps the user turn the approved SDD into comprehensive solution specs.",
   execution: "Coordinates authorized SANE job execution, read-only reviews, and bounded fixes.",
-  knowledge: "Reviews completed workstreams for reusable operational lessons and refreshes repository skills against current evidence.",
+  knowledge: "Creates and updates repository skills from verified files, documentation, and session evidence.",
   planning: "Helps the user confirm a compact Execution Plan, then drafts Job Specs and delegates bounded repository grounding before final package approval.",
   research: "Supports one workstream with topic evidence.",
 }

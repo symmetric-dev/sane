@@ -1,4 +1,7 @@
-/** Pure syntax boundary. No ambient environment, filesystem, or core access.
+import { isSlot } from "../../sane-core/src/slots.ts"
+import { LIFECYCLE_PHASES } from "../../sane-core/src/lifecycle.ts"
+
+/** Pure syntax boundary. No ambient environment, filesystem, or native core access.
  * SANE_CALLER_CONTEXT is JSON: either the full envelope {version:1,
  * repository:string, source:SourceInput, authorityId:string, nativeId:string}
  * or the C11 Phase 4 compact shell reference {version:1, harness, nativeId}.
@@ -112,14 +115,14 @@ export function classifyCaller(signals: CallerSignals, flags: Readonly<Record<st
 }
 
 const retired = new Set(["candidate", "link", "handoff", "worktree", "merge", "delete", "archive", "purge", "rename"])
-const phases = ["design", "engineering", "planning", "execution"]
+const phases: readonly string[] = LIFECYCLE_PHASES
 const flagsBoolean = new Set(["json", "verbose", "refresh-templates", "register", "clear", "dry-run"])
 const managed = ["harness", "authority", "native-id"]
 const parent = ["parent-harness", "parent-authority", "parent-native-id"]
 const common = ["repo", "workstream", "json", "verbose", ...callerFlags]
 const commandFlags: Record<string, string[]> = {
   "native-config": ["plugin-directory", "registration-file", "profile-root", "binding-root", "bun-executable", "app-connection-file", "format"],
-  init: ["dry-run"], inspect: [], create: ["name", "title", "type", "dry-run"], list: [], detail: [], status: [], view: [], select: ["dry-run"],
+  init: ["dry-run"], upgrade: ["dry-run"], inspect: [], create: ["name", "title", "type", "dry-run"], list: [], detail: [], status: [], view: [], select: ["dry-run"],
   provide: ["refresh-templates"], validate: ["id"], approve: ["ref"], job: ["register"], research: ["topic", "path"],
   sessions: ["slot"], audit: [], "default-checkout": ["checkout", "clear"],
   authority: ["source"], conversation: [...managed, ...parent, "checkout"], phase: [...managed, "assignment-id"],
@@ -180,7 +183,8 @@ export function parseCliCommand(args: readonly string[], signals: CallerSignals 
         break
       case "create": count(0); requireFlags("name", "type"); safeId(options.name as string); if (options.workstream) fail("Use --name, not --workstream, for creation."); if (!["feature", "foundation", "issue", "maintenance"].includes(options.type as string)) fail("Invalid workstream type."); break
       case "select": count(0); requireFlags("workstream"); if (caller.actorKind !== "local") fail("Selection is only for local invocations."); break
-      case "sessions": count(0); if (options.slot && ![...phases, "research"].includes(options.slot as string) && !/^research:[a-z0-9][a-z0-9_-]{0,95}$/.test(options.slot as string)) fail("Invalid phase slot."); break
+      case "upgrade": count(0); if (caller.actorKind !== "local") throw new ParseFailure("NATIVE_CONTEXT_UNAVAILABLE", "Schema upgrade requires an explicit local/human invocation outside enrolled native tools and shells."); break
+      case "sessions": count(0); if (options.slot && !isSlot(options.slot)) fail("Invalid phase/support slot."); break
       case "provide": case "approve": case "validate":
         count(1, command === "validate" ? 2 : 1)
         if (!phases.includes(positionals[0]!)) fail("Invalid approval phase.")
@@ -218,13 +222,13 @@ export function parseCliCommand(args: readonly string[], signals: CallerSignals 
         requireFlags("repo")
         const action = positionals[0]
         if (action === "end") { count(1); requireFlags("assignment-id"); only("assignment-id"); if (options.workstream) fail("End uses the exact assignment ID only.") }
-        else if (action === "assign" || action === "target") { count(2); if (![...phases, "research"].includes(positionals[1]!) && !/^research:[a-z0-9][a-z0-9_-]{0,95}$/.test(positionals[1]!)) fail("Invalid phase slot."); only(...managed); if (action === "assign" || managed.some(key => options[key] !== undefined)) ref(); if (action === "target") requireFlags("workstream"); else if (options.workstream) fail("Assignment uses persisted membership.") }
+        else if (action === "assign" || action === "target") { count(2); if (!isSlot(positionals[1])) fail("Invalid phase/support slot."); only(...managed); if (action === "assign" || managed.some(key => options[key] !== undefined)) ref(); if (action === "target") requireFlags("workstream"); else if (options.workstream) fail("Assignment uses persisted membership.") }
         else fail("Invalid phase subcommand.")
         operation = `phase.${action}`; break
       }
       default: count(0)
     }
-    if (["init", "inspect", "list", "authority", "sessions"].includes(command) && options.workstream && command !== "sessions") fail("Unexpected workstream selector.")
+    if (["init", "upgrade", "inspect", "list", "authority", "sessions"].includes(command) && options.workstream && command !== "sessions") fail("Unexpected workstream selector.")
     return { kind: "command", intent: { operation, repository: options.repo as string | undefined, workstream: options.workstream as string | undefined, caller, options, positionals } }
   } catch (error) {
     if (error instanceof ParseFailure) return { kind: "error", code: error.code, message: error.message }

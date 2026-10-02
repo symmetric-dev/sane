@@ -19,10 +19,14 @@ import { assertJobProgress, registerPlannedJobs } from "./job-policy.ts"
 import type { Handoff, HandoffRecipient, HandoffStatus } from "./contracts.ts"
 import { handoffInput } from "./handoff.ts"
 import { documentDescriptors } from "./document-catalog.ts"
+import { isSlot } from "./slots.ts"
+import { SCHEMA_VERSION } from "./schema.ts"
+import { assertSchemaCapabilities } from "./schema-upgrade.ts"
 
 export type * from "./contracts.ts"
 export { DomainError } from "./errors.ts"
-export { discoverRepository, inspectRepositoryStore, initializeRepository, revalidateCheckout } from "./repository.ts"
+export { discoverRepository, inspectRepositoryStore, initializeRepository, upgradeRepository, revalidateCheckout } from "./repository.ts"
+export { SLOT_REGISTRY, SLOT_PATTERN, SUPPORT_TRACKS, isSlot, validateSlot, parseSlot } from "./slots.ts"
 export { normalizeNativeSource } from "./native-source.ts"
 export { handoffInput, handoffSchema } from "./handoff.ts"
 
@@ -30,7 +34,7 @@ const now = () => new Date().toISOString()
 const hash = (bytes: string | Buffer) => createHash("sha256").update(bytes).digest("hex")
 function lifecyclePhase(value: string) { try { return policyPhase(value) } catch (error) { return fail("INVALID_INPUT", (error as Error).message) } }
 function id(value: string): void { if (typeof value !== "string" || !/^[a-z0-9][a-z0-9_-]{0,95}$/.test(value)) fail("INVALID_INPUT", "Expected a lowercase safe ID of 1–96 characters.") }
-function phaseName(value: Phase): void { if (typeof value !== "string" || !/^(design|engineering|planning|execution|research|research:[a-z0-9][a-z0-9_-]{0,95})$/.test(value)) fail("INVALID_INPUT", "Invalid phase/support slot.") }
+function phaseName(value: Phase): void { if (!isSlot(value)) fail("INVALID_INPUT", "Invalid phase/support slot.") }
 function qualified(ref: ConversationRef): void {
   if (!ref || (ref.harness !== "cc" && ref.harness !== "oc")) fail("INVALID_INPUT", "Expected qualified native reference.")
   text(ref.authorityId, "authorityId"); text(ref.nativeId, "nativeId")
@@ -54,7 +58,7 @@ export class RepositoryDomain {
   static open(context: RepositoryContext): RepositoryDomain {
     const state = inspectRepositoryStore(context)
     if (state.state !== "ready") fail(state.code, state.message)
-    if (state.context.repositoryId !== context.repositoryId || context.schemaVersion !== 1) fail("STALE_BINDING", "Repository domain UUID changed.")
+    if (state.context.repositoryId !== context.repositoryId || context.schemaVersion !== SCHEMA_VERSION) fail("STALE_BINDING", "Repository domain UUID/schema version changed; reopen after an explicit upgrade.")
     const db = new Database(context.databasePath, { create: false, strict: true })
     try { db.exec("PRAGMA foreign_keys=ON; PRAGMA recursive_triggers=ON; PRAGMA busy_timeout=1000"); const domain = new RepositoryDomain(db, state.context); domain.guard(); return domain }
     catch (error) { db.close(); return storageError(error) }
@@ -66,6 +70,7 @@ export class RepositoryDomain {
   private guard(): void {
     if (this.closed) fail("INVALID_CONTEXT", "Repository handle is closed.")
     checkDiscovery(this.context); safeStoreFiles(this.context)
+    if (existsSync(join(this.stateRoot, "upgrading.json")) || existsSync(join(this.stateRoot, ".complete-upgrade.json"))) fail("UNSUPPORTED_SCHEMA", "Explicit store upgrade is pending; close and reopen this handle after local recovery.")
     const stat = lstatSync(this.context.databasePath)
     if (stat.dev !== this.databaseIdentity.dev || stat.ino !== this.databaseIdentity.ino) fail("STALE_BINDING", "Domain database file was replaced.")
     let verifier: Database | undefined
@@ -74,6 +79,8 @@ export class RepositoryDomain {
       // inode-preserving overwrite. Check a fresh reader as well as this handle.
       verifier = new Database(this.context.databasePath, { readonly: true, create: false, strict: true })
       verifier.exec("PRAGMA foreign_keys=ON; PRAGMA recursive_triggers=ON; PRAGMA busy_timeout=1000")
+      assertSchemaCapabilities(verifier, SCHEMA_VERSION)
+      assertSchemaCapabilities(this.db, SCHEMA_VERSION)
       const metadataRows = [verifier.query("SELECT * FROM store_metadata WHERE id=1").get() as any, this.row("SELECT * FROM store_metadata WHERE id=1")]
       const marker = JSON.parse(readFileSync(join(this.stateRoot, "complete.json"), "utf8"))
       for (const metadata of metadataRows) {
@@ -102,7 +109,7 @@ export class RepositoryDomain {
   }
   private transaction<T>(context: MutationContext, fn: () => T): T {
     this.mutationContext(context)
-    try { return this.db.transaction(() => { if (context.actor.kind === "native") this.assertConversationWritable(context.actor.ref); return fn() }).immediate() } catch (error) { return storageError(error) }
+    try { return this.db.transaction(() => { this.guard(); if (context.actor.kind === "native") this.assertConversationWritable(context.actor.ref); return fn() }).immediate() } catch (error) { return storageError(error) }
   }
   private event(context: MutationContext, operation: string, workstreamId: string | null = null, entityId: string | null = null, details: Record<string, unknown> = {}): number {
     const actor = context.actor.kind === "native" ? this.conversationRow(context.actor.ref).id : null

@@ -1,6 +1,9 @@
 /** Browser-safe public repository-domain contracts. No native or filesystem imports. */
 import type { WorkstreamType } from "./workstream-type.ts"
 import type { Lifecycle } from "./lifecycle.ts"
+import type { Slot } from "./slots.ts"
+export { SLOT_REGISTRY, SLOT_PATTERN, SUPPORT_TRACKS, isSlot, validateSlot, parseSlot } from "./slots.ts"
+export type { Slot, SupportTrack, ParsedSlot } from "./slots.ts"
 export type * from "./lifecycle.ts"
 export { SUPPORTED_WORKSTREAM_TYPES, isSupportedWorkstreamType } from "./workstream-type.ts"
 export type { WorkstreamType } from "./workstream-type.ts"
@@ -16,10 +19,11 @@ export interface HandoffRecipient { ownerId: string; sessionId: string; ref: Con
 export interface Handoff { id: string; repositoryId: string; sender: ConversationRef; workstreamId: string; input: HandoffInput; recipient: HandoffRecipient; status: HandoffStatus; revision: number; attemptId: string | null; nativeCommandId: string | null; runId: string | null; evidence: string | null; createdAt: string; updatedAt: string; origin?: { kind: "kickoff"; sender: ConversationRef; requestId: string } }
 export type NativeSourceDescriptor = { version: 1; harness: "cc"; kind: "local-profile"; profileRoot: string } | { version: 1; harness: "oc"; kind: "local-registration"; registrationFile: string }
 export interface NativeAuthority { descriptor: NativeSourceDescriptor; authorityId: string }
-export type Phase = "design" | "engineering" | "planning" | "execution" | "research" | `research:${string}`
+/** Compatibility name for conversation assignments, not lifecycle approval phases. */
+export type Phase = Slot
 export interface CheckoutPin { path: string; commonDir: string; gitDir: string; device: number; inode: number; commonDevice: number; commonInode: number; gitDevice: number; gitInode: number }
 export interface RepositoryDiscovery { primaryCheckout: string; commonDir: string; stateRoot: string; databasePath: string; primaryPin: CheckoutPin; invocationCheckout: CheckoutPin }
-export interface RepositoryContext extends RepositoryDiscovery { repositoryId: string; schemaVersion: 1 }
+export interface RepositoryContext extends RepositoryDiscovery { repositoryId: string; schemaVersion: 1 | 2 }
 export type StoreAvailability = { state: "ready"; context: RepositoryContext } | { state: "uninitialized" | "unsupported" | "corrupt" | "unavailable" | "stale-binding"; code: DomainErrorCode; message: string; path: string }
 export type MutationActor = { kind: "local" | "human" | "system" } | { kind: "native"; repositoryId: string; ref: ConversationRef }
 export interface MutationContext { actor: MutationActor; correlationId: string; expectedRevision?: number }

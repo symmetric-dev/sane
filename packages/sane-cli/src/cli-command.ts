@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto"
 import { resolve } from "node:path"
 import { existsSync } from "node:fs"
-import { discoverRepository, inspectRepositoryStore, initializeRepository, openRepositoryDomain, normalizeNativeSource, DomainError } from "../../sane-core/src/server.ts"
+import { discoverRepository, inspectRepositoryStore, initializeRepository, upgradeRepository, openRepositoryDomain, normalizeNativeSource, DomainError } from "../../sane-core/src/server.ts"
 import type { RepositoryDomain } from "../../sane-core/src/server.ts"
 import type { ConversationRef, MutationContext, Phase, RepositoryContext, WorkstreamType } from "../../sane-core/src/contracts.ts"
 import { parseCliCommand, type CallerSignals, type CliIntent } from "./cli-arguments.ts"
@@ -16,7 +16,9 @@ export const USAGE = `Usage: sane <command> [--repo PATH] [--workstream ID] [--j
     Prints configuration JSON only; paths must be absolute. Use the installed plugin directory,
     the App's configured native sources, and APP_DATA_DIR/native-handoff.json.
     Merge opencode output into opencode.json; Claude uses both MCP and settings outputs.
-  init [--dry-run] | inspect | list
+  init [--dry-run] | upgrade [--dry-run] | inspect | list
+    upgrade is local/human only: back up the store and stop other SANE processes first.
+    Upgrades sane-domain v1 to v2 explicitly; rerun locally to finish an interrupted upgrade.
   create --name ID --type feature|foundation|issue|maintenance [--title TEXT] [--dry-run]
   select --workstream ID [--dry-run]
   view|detail|status [ID] | audit | sessions [--slot SLOT]
@@ -34,6 +36,10 @@ export const USAGE = `Usage: sane <command> [--repo PATH] [--workstream ID] [--j
   phase assign SLOT --repo PATH --harness cc|oc --authority ID --native-id ID
   phase target SLOT --repo PATH --workstream ID [--harness cc|oc --authority ID --native-id ID]
   phase end --repo PATH --assignment-id ID
+Slots: design, engineering, planning, execution (lifecycle);
+  research, research:<safe-topic>, knowledge, prototype (support tracks).
+  Safe topics: 1–96 lowercase a-z/0-9/_/- characters, starting with a-z/0-9.
+  provide/validate/approve accept lifecycle phases only.
 Caller envelope: SANE_CALLER_CONTEXT v1 full envelope or compact shell
   reference {version,harness,nativeId} (authority + paths resolve server-side);
   explicit equivalent requires all of
@@ -133,6 +139,10 @@ async function executeCliFull(args: readonly string[], runtime: CliRuntime = {})
       throw new DomainError("INVALID_CONTEXT", "Native caller cannot read or mutate a different repository.")
     }
     if (intent.operation === "inspect") return inspectRepositoryStore(discovery)
+    if (intent.operation === "upgrade") {
+      if (intent.caller.actorKind !== "local" || callerDomain) throw new DomainError("INVALID_CONTEXT", "Only a local/human caller can upgrade the store.")
+      return upgradeRepository(discovery, { dryRun: Boolean(o["dry-run"]) })
+    }
     if (intent.operation === "init") {
       if (o["dry-run"]) {
         const availability = inspectRepositoryStore(discovery)

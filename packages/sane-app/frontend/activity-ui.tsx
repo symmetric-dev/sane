@@ -35,7 +35,7 @@ function ActivityIcon({ glyph, entrance, owner }: { glyph: ActivityGlyph; entran
   }, [entrance, owner, glyph]);
   return <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"
     className={`activity-icon activity-${glyph}${animation ? " activity-arriving" : ""}`} style={animation ? { animationDelay: `${animation.delay}ms`, "--activity-animation-duration": `${ACTIVITY_ANIMATION_MS[glyph]}ms`, "--activity-animation-cycles": ACTIVITY_ANIMATION_CYCLES } as CSSProperties : undefined} onAnimationEnd={() => setAnimation(null)}>
-    {glyph === "wave" ? <path d="M2 12c2.5 0 2.5-7 5-7s2.5 14 5 14 2.5-14 5-14 2.5 7 5 7" /> : glyph === "pencil" ? <><path d="m16 3 5 5L8 21H3v-5Z" /><path d="m13 6 5 5M3 16l5 5" /></> : glyph === "document" ? <><path d="M14 3H6a1 1 0 0 0-1 1v16a1 1 0 0 0 1 1h12a1 1 0 0 0 1-1V8Z" /><path d="M14 3v5h5M8 12h8M8 16h8" /></> : glyph === "briefcase" ? <><rect x="2" y="7" width="20" height="14" rx="2" /><path d="M8 7V5a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2M2 12h20M10 12v3h4v-3" /></> : <PenroseTriangle />}
+    {glyph === "wave" ? <path d="M2 12c2.5 0 2.5-7 5-7s2.5 14 5 14 2.5-14 5-14 2.5 7 5 7" /> : glyph === "pencil" ? <><path d="m16 3 5 5L8 21H3v-5Z" /><path d="m13 6 5 5M3 16l5 5" /></> : glyph === "document" ? <><path d="M14 3H6a1 1 0 0 0-1 1v16a1 1 0 0 0 1 1h12a1 1 0 0 0 1-1V8Z" /><path d="M14 3v5h5M8 12h8M8 16h8" /></> : glyph === "briefcase" ? <><rect x="2" y="7" width="20" height="14" rx="2" /><path d="M8 7V5a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2M2 12h20M10 12v3h4v-3" /></> : glyph === "sparkles" ? <><path d="m12 5 2 6 6 2-6 2-2 6-2-6-6-2 6-2Z" /><path d="M20 2v4M18 4h4M4 3v4M2 5h4" /></> : <PenroseTriangle />}
   </svg>;
 }
 

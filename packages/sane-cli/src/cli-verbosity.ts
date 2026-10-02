@@ -309,6 +309,8 @@ export function compactSummary(operation: string, result: unknown, intent: CliIn
     case "init":
       if (r.dryRun) return { dryRun: true, operation: "init", state: str(rec(r.availability).state) }
       return { repositoryId: str(r.repositoryId), primaryCheckout: str(r.primaryCheckout) }
+    case "upgrade":
+      return { dryRun: Boolean(r.dryRun), repositoryId: str(r.repositoryId), fromVersion: r.fromVersion, toVersion: r.toVersion, changed: Boolean(r.changed), recovery: Boolean(r.recovery) }
     case "inspect": {
       const ctx = rec(r.context)
       return r.state === "ready"
@@ -455,6 +457,8 @@ export function formatCompactLines(operation: string, compact: unknown): string[
       return [`Ended assignment ${str(c.ended)}`]
     case "init":
       return c.dryRun ? [`init dry run: ${str(c.state)}`] : [`Initialized repository ${str(c.repositoryId)} at ${str(c.primaryCheckout)}`]
+    case "upgrade":
+      return [`${c.dryRun ? "Would upgrade" : c.changed ? "Upgraded" : "Already current"} repository ${str(c.repositoryId)}: sane-domain v${String(c.fromVersion)} → v${String(c.toVersion)}${c.recovery ? " (interrupted publication recovery)" : ""}${c.dryRun ? " (dry run; no store writes)" : ""}`]
     case "inspect":
       return c.state === "ready"
         ? [`Repository ${str(c.repositoryId)} ready (${str(c.primaryCheckout)})`]
