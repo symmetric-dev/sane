@@ -7,8 +7,8 @@ import { themeSettings } from "./theme-settings";
 import { terminalTheme } from "./terminal-theme";
 
 export type TerminalSelection = { workspaceId: string; worktreeId: string; bindingRevision: string; root: string };
-export type TerminalPresentation = { state: TerminalState | null; geometry: { cols: number; rows: number } | null; connected: boolean; ready: boolean; controlling: boolean; busy: boolean; error: string };
-export const emptyTerminal = (): TerminalPresentation => ({ state: null, geometry: null, connected: false, ready: false, controlling: false, busy: false, error: "" });
+export type TerminalPresentation = { state: TerminalState | null; geometry: { cols: number; rows: number } | null; connected: boolean; ready: boolean; controlling: boolean; busy: boolean; hasSelection: boolean; copyFeedback: string; error: string };
+export const emptyTerminal = (): TerminalPresentation => ({ state: null, geometry: null, connected: false, ready: false, controlling: false, busy: false, hasSelection: false, copyFeedback: "", error: "" });
 type ScreenMessage = Extract<TerminalServerMessage, { type: "snapshot" | "output" | "resize" }>;
 
 /** One imperative owner of the emulator, attachment, rendering queue and input fence. */
@@ -35,6 +35,7 @@ export class TerminalSession {
   private unsubscribeTheme: () => void;
   private dataSubscription: { dispose(): void };
   private binarySubscription: { dispose(): void };
+  private selectionSubscription: { dispose(): void };
   private pendingSize = "";
   private inputWindow = 0;
   private inputBytes = 0;
@@ -59,6 +60,9 @@ export class TerminalSession {
     this.dataSubscription = this.terminal.onData(data => this.input(data));
     // onBinary contains byte-valued characters, not a UTF-8 string.
     this.binarySubscription = this.terminal.onBinary(data => this.sendBytes(Uint8Array.from(data, char => char.charCodeAt(0) & 255)));
+    this.selectionSubscription = this.terminal.onSelectionChange(() => {
+      this.update({ hasSelection: this.terminal.hasSelection(), copyFeedback: "" });
+    });
     this.observer = new ResizeObserver(this.scheduleFit);
     this.observer.observe(host.parentElement!);
     window.visualViewport?.addEventListener("resize", this.scheduleFit);
@@ -244,6 +248,21 @@ export class TerminalSession {
     this.send({ type: "input", generation: this.presentation.state!.generation, data: btoa(data) });
   }
   input = (data: string) => this.sendBytes(new TextEncoder().encode(data));
+  copySelection = async () => {
+    if (!this.current()) return;
+    const text = this.terminal.getSelection();
+    if (!text) return;
+    this.update({ copyFeedback: "" });
+    let copyFeedback: string;
+    try {
+      // Invoke directly from the button gesture so iPad retains clipboard permission.
+      await navigator.clipboard.writeText(text);
+      copyFeedback = "Copied";
+    } catch {
+      copyFeedback = "Copy unavailable. Check browser clipboard access.";
+    }
+    if (this.current() && this.terminal.getSelection() === text) this.update({ copyFeedback });
+  };
   focus = () => { if (this.current() && this.presentation.controlling) this.terminal.focus(); };
   key = (data: string) => { this.input(data); if (this.presentation.controlling) this.terminal.focus(); };
   interrupt = () => { if (this.presentation.controlling && !this.restoring) { this.send({ type: "interrupt", generation: this.presentation.state!.generation }); this.terminal.focus(); } };
@@ -281,7 +300,7 @@ export class TerminalSession {
     if (this.disposed) return;
     this.detach(); this.disposed = true; this.abort.abort();
     this.observer.disconnect(); this.unsubscribe(); this.unsubscribeTheme();
-    this.dataSubscription.dispose(); this.binarySubscription.dispose();
+    this.dataSubscription.dispose(); this.binarySubscription.dispose(); this.selectionSubscription.dispose();
     window.visualViewport?.removeEventListener("resize", this.scheduleFit);
     window.removeEventListener("resize", this.scheduleFit); window.removeEventListener("pagehide", this.leave);
     window.removeEventListener("pageshow", this.resume);

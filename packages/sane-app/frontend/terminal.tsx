@@ -67,6 +67,8 @@ export function TerminalView({ navigation }: { navigation?: ReactNode }) {
       </div>
       <div className="terminal-footer-controls">
         <div className="terminal-footer-actions">
+          {exists && <button type="button" disabled={!p.hasSelection} onClick={() => void session.current?.copySelection()}>Copy selection</button>}
+          {p.copyFeedback && <span role="status">{p.copyFeedback}</span>}
           {acceptingInput && p.ready && (p.controlling ? <button type="button" onClick={() => session.current?.release()}>Release keyboard</button> : <button type="button" className="primary-button" onClick={() => session.current?.claim()}>{state.controllerId ? "Take control here" : "Interact"}</button>)}
           {exists && !acceptingInput && <button type="button" disabled={!canAct} onClick={() => void session.current?.action("restart")}>Restart terminal</button>}
           {exists && <button type="button" disabled={!canAct} onClick={() => { if (window.confirm("Close this worktree’s terminal for everyone? The shell will be stopped.")) void session.current?.action("close"); }}>Close terminal</button>}

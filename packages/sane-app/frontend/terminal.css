@@ -56,6 +56,7 @@
 .terminal-footer-actions {
   display:flex;
   flex-wrap:wrap;
+  align-items:center;
   gap:4px;
   margin-left:auto;
 }
@@ -152,6 +153,9 @@
 
 /* === at-rule @media(pointer:coarse) === */
 @media(pointer:coarse) {
+  .terminal-footer-actions button {
+    min-height:40px;
+  }
   .terminal-touch-keys {
     display:flex;
   }
