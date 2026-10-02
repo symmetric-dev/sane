@@ -25,6 +25,10 @@ import type { DocumentReviewRequest } from "./document-review-launch";
 import { compactCommand, compactionPositions } from "./compaction";
 import { CompactionMarkers } from "./compaction-ui";
 import type { CompactionRecord } from "../src/oc-contract";
+import type { HandoffProjection } from "../src/handoff-contract";
+import { useHandoffs } from "./handoff-client";
+import { isHandoffTool, receivedHandoff, sentHandoffs } from "./handoff-presentation";
+import { HandoffCard, PendingHandoffCard } from "./handoff-ui";
 
 const json = (value: unknown) => typeof value === "string" ? value : JSON.stringify(value, null, 2) ?? "Unavailable";
 const number = (value: unknown, suffix = "") => typeof value === "number" && Number.isFinite(value) && value >= 0 ? `${value.toLocaleString(undefined, { maximumFractionDigits: 6 })}${suffix}` : "Unavailable";
@@ -42,15 +46,19 @@ function Markdown({ text }: { text: string }) {
   return <div className="prose"><ReactMarkdown remarkPlugins={[remarkGfm]} skipHtml components={{ pre: CodeBlock, a: ({ children, href }) => <a href={href} target="_blank" rel="noopener noreferrer">{children}</a>, img: ({ alt }) => <span className="muted">[Image: {alt || "image omitted"}]</span> }}>{text}</ReactMarkdown></div>;
 }
 
-export type TranscriptContextValue = { sessionId: string; harness: Harness; messages: Message[]; runs: Run[]; workers: WorkerRecord[]; deliveries?: WorkerDelivery[]; openWorker: (worker: WorkerRecord) => void; branchEnabled?: boolean; pendingTurn?: PendingTurn | null; activities?: ActivityPresentation; compactionPositions?: Map<string, CompactionRecord[]> };
+export type TranscriptContextValue = { sessionId: string; harness: Harness; messages: Message[]; runs: Run[]; workers: WorkerRecord[]; deliveries?: WorkerDelivery[]; handoffs?: HandoffProjection; openWorker: (worker: WorkerRecord) => void; branchEnabled?: boolean; pendingTurn?: PendingTurn | null; activities?: ActivityPresentation; compactionPositions?: Map<string, CompactionRecord[]> };
 export const TranscriptContext = createContext<TranscriptContextValue | null>(null);
 const isActivityMessage = (message: Message) => message.role === "assistant" && message.parts.some(part => part.type !== "text") && !message.parts.some(part => part.type === "text" && part.text.trim()) && message.error === undefined && message.status !== "failed" && message.status !== "interrupted";
 function ActivityBody({ part }: ActivityEntry) {
   return part.type === "reasoning" ? <Markdown text={part.text} /> : <><p className="eyebrow">Input</p><pre>{json(part.input)}</pre>{part.output !== undefined && <><p className="eyebrow">{part.error ? "Error" : "Output"}</p><pre>{json(part.output)}</pre></>}</>;
 }
 const renderActivityBody = (entry: ActivityEntry) => <ActivityBody {...entry} />;
+const renderHandoffMessage = (text: string) => <Markdown text={text} />;
 function TranscriptTool({ part, source }: { part: ToolPart; source: Message }) {
   const context = useContext(TranscriptContext)!;
+  const handoffs = sentHandoffs(part, context.sessionId, context.handoffs?.handoffs ?? []);
+  if (handoffs.length) return <>{handoffs.map(handoff => <HandoffCard key={handoff.handoff.id} presentation={handoff} direction="sent" stale={context.handoffs?.error} renderMessage={renderHandoffMessage} />)}{part.error && <p className="notice error" role="alert">The handoff tool reported an error. See run details for the original evidence before retrying.</p>}</>;
+  if (isHandoffTool(part)) return <PendingHandoffCard tool={part} running={active(source.status)} renderMessage={renderHandoffMessage} />;
   const workers = dispatchedWorkers(context.sessionId, source, part, context.workers);
   // Open worker already contains the assignment. Keep raw tool evidence in run
   // diagnostics rather than duplicating the instructions in the parent thread.
@@ -81,6 +89,8 @@ function ChatMessageBody() {
   const canBranch = context.branchEnabled && source?.role === "assistant" && lastInTurn && (source.runId === "native-import" ? harness === "opencode" && source.status === "completed" : context.runs.some(r => r.operation !== "compact" && r.id === source.runId && r.status === "completed"));
   const delivery = source && workerReportDelivery(source, context.deliveries ?? []);
   if (delivery) return <MessagePrimitive.Root className="message worker-report-message"><WorkerOutcomeReport delivery={delivery} workers={context.workers} /></MessagePrimitive.Root>;
+  const handoff = source && receivedHandoff(source, context.sessionId, context.handoffs?.handoffs ?? []);
+  if (handoff) return <MessagePrimitive.Root className="message handoff-received-message"><HandoffCard presentation={handoff} direction="received" stale={context.handoffs?.error} renderMessage={renderHandoffMessage} />{source?.error !== undefined && <details className="run-warning"><summary>Reported error</summary><pre>{json(source.error)}</pre></details>}</MessagePrimitive.Root>;
   const warning = source?.error !== undefined || !isUser && source?.runId !== "native-import" && message.status?.type === "incomplete";
   const consumed = source?.parts.length && source.parts.every((_, index) => context.activities?.plan.positions.get(activityPosition(source.id, index)) === null);
    if (consumed && !showSystemLabel && !warning && !plain && !canBranch) return null;
@@ -121,6 +131,7 @@ export function convertMessage(message: Message): ThreadMessageLike {
 
 export function Thread({ state, active: isActive = true, navigation, reviewRequest, reviewRequestHandled }: { state: State; active?: boolean; navigation?: ReactNode; reviewRequest?: DocumentReviewRequest | null; reviewRequestHandled?: (requestId: number) => void }) {
   const projection = useWorkers(state.selected);
+  const handoffs = useHandoffs(state.selected, isActive && state.connected);
   const workers = projection.workers;
   const parentId = workerReference(state.selected)?.parent.sessionId;
   const [ack, setAck] = useState("");
@@ -142,7 +153,7 @@ export function Thread({ state, active: isActive = true, navigation, reviewReque
   const pendingTurn = state.pendingTurn?.conversationId === state.selected ? state.pendingTurn : null;
   const messages = useMemo(() => messagesWithPendingTurn(state.messages, pendingTurn), [state.messages, pendingTurn]);
   const positions = useMemo(() => compactionPositions(state.compactions ?? [], messages, state.nativeHistory), [state.compactions, messages, state.nativeHistory]);
-  const activities = useActivityPresentation({ sessionId: state.selected, messages, workers, deliveries: projection.deliveries, loading: state.loading, animate: isActive && state.connected && !state.actionBusy });
+  const activities = useActivityPresentation({ sessionId: state.selected, messages, workers, deliveries: projection.deliveries, handoffs: handoffs.handoffs, loading: state.loading, animate: isActive && state.connected && !state.actionBusy });
   const runtime = useExternalStoreRuntime({ messages, convertMessage, isRunning: running,
     isSendDisabled: !isActive || running || compactBlocked || state.actionBusy || state.loading || state.sending || !state.connected || !state.availability.canSend || modelUnavailable || !!store.executionUnavailable() || (needsAck && ack !== state.selected),
     onNew: async message => { const text = message.content.filter(p => p.type === "text").map(p => p.text).join("\n"); await send(text); },
@@ -163,6 +174,7 @@ export function Thread({ state, active: isActive = true, navigation, reviewReque
     reviewRequestHandled?.(reviewRequest.requestId);
   }, [isActive, reviewRequest, state.selected, review, reviewRequestHandled]);
   const safety = <>
+    {handoffs.error && <p className="notice" role="status">Handoff status unavailable: {handoffs.error}</p>}
     <CompactionMarkers records={review.flow?.path ? state.compactions : undefined} />
     {pendingCompact && !state.compactions?.some(record => record.requestId === pendingCompact.payload.requestId) && (pendingCompact.phase === "sending" || pendingCompact.phase === "unconfirmed") && <p className="compaction-marker" role="status">Manual context compaction · {pendingCompact.phase === "sending" ? "requested" : "acceptance unconfirmed"}</p>}
     {(running || compacting) && <p className="working" role="status"><span className="pulse" />{!state.connected ? "Connection unavailable. The run’s current state is not yet known." : compacting ? "Compacting context…" : latestRun?.operation === "compact" ? "Waiting for the compaction run’s native state to settle." : nativeIssue ? nativeIssue.nativeReason || "Assistant connection unavailable; execution state remains unconfirmed." : "Assistant is working. New output will appear here."}{running && store.capabilities()?.cancelRun && <button type="button" className="text-button" disabled={state.actionBusy || !state.connected} onClick={() => void store.cancel()}>Stop run</button>}</p>}
@@ -170,7 +182,7 @@ export function Thread({ state, active: isActive = true, navigation, reviewReque
     {harness === "opencode" && !conversation?.replacedBy ? <Interactions state={state} /> : <>{state.actionNotice && <p role="status" className="notice">{state.actionNotice}</p>}{state.interactionError && <p role="alert" className="notice error">{state.interactionError}</p>}</>}
   </>;
   const footer = <div className="thread-footer"><div className="thread-safety">{safety}</div><div className="thread-composer"><ChatComposer state={state} active={isActive} navigation={navigation} ack={ack} onAckChange={setAck} send={send} sendDisabled={sendDisabled} parentId={parentId} review={review} /></div></div>;
-  return <TranscriptContext.Provider value={{ sessionId: state.selected, harness, messages, runs: state.runs, workers, deliveries: projection.deliveries, openWorker, pendingTurn, activities, compactionPositions: positions, branchEnabled: !state.loading && !state.sending && !state.actionBusy && !compactBlocked && !running && !parentId && !conversation?.worker && !conversation?.replacedBy && !(conversation?.attachment && harness === "claude-code") }}><AssistantRuntimeProvider runtime={runtime}><ThreadPrimitive.Root className={`thread${review.flow ? " is-document-review" : ""}`}>
+  return <TranscriptContext.Provider value={{ sessionId: state.selected, harness, messages, runs: state.runs, workers, deliveries: projection.deliveries, handoffs: state.connected ? handoffs : { ...handoffs, error: "Connection unavailable" }, openWorker, pendingTurn, activities, compactionPositions: positions, branchEnabled: !state.loading && !state.sending && !state.actionBusy && !compactBlocked && !running && !parentId && !conversation?.worker && !conversation?.replacedBy && !(conversation?.attachment && harness === "claude-code") }}><AssistantRuntimeProvider runtime={runtime}><ThreadPrimitive.Root className={`thread${review.flow ? " is-document-review" : ""}`}>
     <BranchLinks key={state.selected} conversation={conversation} />
     {parentId && <nav className="worker-parent-nav" aria-label="Worker navigation"><button type="button" className="text-button" disabled={state.sending} onClick={() => store.openConversation(parentId)}><FiArrowLeft size={14} aria-hidden="true" />Back to parent</button><span className="muted">Worker conversation</span></nav>}
     <ChatScroll active={isActive} resetKey={state.selected || `new:${repository.navigation.worktreeId}`} footer={footer} replacement={review.flow?.path ? <div className="document-review-reading"><DocumentReviewReader review={review} /></div> : undefined}>

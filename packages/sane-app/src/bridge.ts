@@ -1684,6 +1684,11 @@ async function startOwned(options: Options, assetsDir: string, packageDir: strin
           return json(projectNativeWorkerReply({ workers: await workers.cancelForSession(parentSessionId, args.ids, args.includeDescendants) }));
         } catch { return json({ error: "Cancellation requires {ids, includeDescendants?} within this parent's worker tree, or {all:true}. Inspect worker status before retrying.", code: "worker-cancel" }, 409); }
       }
+      const handoffList = /^\/api\/sessions\/([^/]+)\/handoffs$/.exec(path);
+      if (handoffList && req.method === "GET") {
+        const listed = await handoffs.forSession(decodeURIComponent(handoffList[1]!));
+        return json({ handoffs: listed.map(presentation => ({ ...presentation, ...(handoffProblems.has(presentation.handoff.id) ? { problem: handoffProblems.get(presentation.handoff.id) } : {}) })) });
+      }
       const workerList = /^\/api\/sessions\/([^/]+)\/workers$/.exec(path);
       if (workerList && req.method === "GET") {
         if (!meta.sessions.some(s => s.sessionId === workerList[1])) return json({ error: "Unknown parent session" }, 404);

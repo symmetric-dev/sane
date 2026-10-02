@@ -1,8 +1,10 @@
 import { useLayoutEffect, useMemo, useRef, useState } from "react";
 import type { WorkerDelivery, WorkerRecord } from "../src/worker-contract";
+import type { HandoffPresentation } from "../src/handoff-contract";
 import type { Message, TextPart, ToolPart } from "./types";
 import { dispatchedWorkers, workerReportDelivery } from "./worker-presentation";
 import { ACTIVITY_ANIMATION_MAX_MS } from "./activity-visuals";
+import { isHandoffTool, sentHandoffs } from "./handoff-presentation";
 
 export type ActivityEntry = { id: string; source: Message; index: number; part: Extract<TextPart, { type: "reasoning" }> | ToolPart };
 export type ActivityGroup = { id: string; entries: ActivityEntry[] };
@@ -13,7 +15,7 @@ export type ActivityPresentation = { plan: ActivityPlan; entrances: Map<string, 
 export const activityPosition = (messageId: string, index: number) => JSON.stringify([messageId, index]);
 
 /** Presentation only: preserve native messages and break at every text part. */
-export function planTranscriptActivities(sessionId: string, messages: Message[], workers: WorkerRecord[], deliveries: WorkerDelivery[] = []): ActivityPlan {
+export function planTranscriptActivities(sessionId: string, messages: Message[], workers: WorkerRecord[], deliveries: WorkerDelivery[] = [], handoffs: HandoffPresentation[] = []): ActivityPlan {
   const positions = new Map<string, ActivityGroup | null>();
   const entries: ActivityEntry[] = [];
   let sequence: ActivityEntry[] = [];
@@ -29,7 +31,7 @@ export function planTranscriptActivities(sessionId: string, messages: Message[],
     if (sequence.length && sequence[0]!.source.runId !== source.runId) flush();
     let reasoning = 0;
     source.parts.forEach((part, index) => {
-      if (part.type === "text" || part.type === "tool" && dispatchedWorkers(sessionId, source, part, workers).length) { flush(); return; }
+      if (part.type === "text" || part.type === "tool" && (isHandoffTool(part) || sentHandoffs(part, sessionId, handoffs).length || dispatchedWorkers(sessionId, source, part, workers).length)) { flush(); return; }
       const ordinal = part.type === "reasoning" ? reasoning++ : undefined;
       const identity = part.type === "tool" ? part.toolCallId ?? part.id : part.id ?? ordinal;
       const entry: ActivityEntry = { id: JSON.stringify([source.id, part.type, identity]), source, index, part };
@@ -43,10 +45,10 @@ export function planTranscriptActivities(sessionId: string, messages: Message[],
 }
 
 /** Seed loaded history; only later arrivals get a single, consumable entrance. */
-export function useActivityPresentation({ sessionId, messages, workers, deliveries, loading, animate }: {
-  sessionId: string; messages: Message[]; workers: WorkerRecord[]; deliveries?: WorkerDelivery[]; loading: boolean; animate: boolean;
+export function useActivityPresentation({ sessionId, messages, workers, deliveries, handoffs, loading, animate }: {
+  sessionId: string; messages: Message[]; workers: WorkerRecord[]; deliveries?: WorkerDelivery[]; handoffs?: HandoffPresentation[]; loading: boolean; animate: boolean;
 }): ActivityPresentation {
-  const plan = useMemo(() => planTranscriptActivities(sessionId, messages, workers, deliveries), [sessionId, messages, workers, deliveries]);
+  const plan = useMemo(() => planTranscriptActivities(sessionId, messages, workers, deliveries, handoffs), [sessionId, messages, workers, deliveries, handoffs]);
   const observed = useRef<{ sessionId: string; seen: Set<string>; tail?: string } | null>(null);
   const [entrances, setEntrances] = useState(new Map<string, ActivityEntrance>());
   useLayoutEffect(() => {

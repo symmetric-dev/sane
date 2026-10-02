@@ -12,6 +12,7 @@ import { useActivityPresentation } from "./transcript-activity";
 import { compactionsFor, compactionPositions } from "./compaction";
 import { CompactionMarkers } from "./compaction-ui";
 import type { CompactionRecord } from "../src/oc-contract";
+import { useHandoffs } from "./handoff-client";
 
 function Viewer({ root }: { root: WorkerRecord }) {
   const [trail, setTrail] = useState([root]);
@@ -19,6 +20,7 @@ function Viewer({ root }: { root: WorkerRecord }) {
   const selected = trail.at(-1)!;
   const [view, setView] = useState<{ sessionId: string; runs: Run[]; messages: Message[]; compactions: CompactionRecord[]; error: string; loading: boolean }>({ sessionId: selected.sessionId, runs: [], messages: [], compactions: [], error: "", loading: true });
   const projection = useWorkers(selected.sessionId);
+  const handoffs = useHandoffs(selected.sessionId);
   const parent = useWorkers(selected.parent.sessionId);
   const worker = parent.workers.find(w => w.id === selected.id) ?? selected;
   useEffect(() => {
@@ -70,14 +72,14 @@ function Viewer({ root }: { root: WorkerRecord }) {
   const runs = view.sessionId === selected.sessionId ? view.runs : [];
   const compactions = view.sessionId === selected.sessionId ? view.compactions : [];
   const positions = useMemo(() => compactionPositions(compactions, messages), [compactions, messages]);
-  const activities = useActivityPresentation({ sessionId: selected.sessionId, messages, workers: projection.workers, deliveries: projection.deliveries, loading: view.loading || view.sessionId !== selected.sessionId, animate: !view.error });
+  const activities = useActivityPresentation({ sessionId: selected.sessionId, messages, workers: projection.workers, deliveries: projection.deliveries, handoffs: handoffs.handoffs, loading: view.loading || view.sessionId !== selected.sessionId, animate: !view.error });
   const open = (w: WorkerRecord) => setTrail(t => t.at(-1)?.id === w.id ? t : [...t, w]);
   const runtime = useExternalStoreRuntime({ messages, convertMessage, isRunning: runs.some(r => active(r.status)), isSendDisabled: true, onNew: async () => {} });
   return <ShellDialog title="Worker conversation · read-only" close={closeWorker}><nav className="worker-actions" aria-label="Worker breadcrumbs"><button type="button" onClick={closeWorker}>Close worker viewer</button>{trail.map((w, i) => <button key={w.id} type="button" aria-current={i === trail.length - 1 ? "page" : undefined} onClick={() => setTrail(t => t.slice(0, i + 1))}>{w.input.worker}</button>)}{trail.length === 1 && workerReference(root.parent.sessionId) && <button type="button" onClick={() => void openWorkerSession(root.parent.sessionId)}>Show worker parent</button>}</nav>
     <WorkerCard worker={worker} workers={projection.workers} runs={runs} open={open} />
     {waiting > 0 && <p className="notice" role="status">Waiting on {waiting} permission/question request(s). This viewer cannot answer worker prompts.</p>}
     {view.loading && <p role="status">Loading worker transcript…</p>}{view.error && <p className="notice error" role="alert">{view.error}</p>}
-    <TranscriptContext.Provider value={{ sessionId: selected.sessionId, harness: worker.launch.harness, messages, runs, workers: projection.workers, deliveries: projection.deliveries, activities, compactionPositions: positions, openWorker: open }}><AssistantRuntimeProvider runtime={runtime}><ThreadPrimitive.Root className="worker-transcript"><ThreadPrimitive.Messages components={{ Message: ChatMessage }} /><CompactionMarkers records={positions.get("")} />{compactions.some(record => record.lifecycle === "running") && <p className="working" role="status">{view.error ? "Compaction state unavailable; waiting for worker evidence to reconnect." : "Compacting context…"}</p>}</ThreadPrimitive.Root></AssistantRuntimeProvider></TranscriptContext.Provider>
+    <TranscriptContext.Provider value={{ sessionId: selected.sessionId, harness: worker.launch.harness, messages, runs, workers: projection.workers, deliveries: projection.deliveries, handoffs, activities, compactionPositions: positions, openWorker: open }}><AssistantRuntimeProvider runtime={runtime}><ThreadPrimitive.Root className="worker-transcript"><ThreadPrimitive.Messages components={{ Message: ChatMessage }} /><CompactionMarkers records={positions.get("")} />{compactions.some(record => record.lifecycle === "running") && <p className="working" role="status">{view.error ? "Compaction state unavailable; waiting for worker evidence to reconnect." : "Compacting context…"}</p>}</ThreadPrimitive.Root></AssistantRuntimeProvider></TranscriptContext.Provider>
     <WorkerSection sessionId={selected.sessionId} open={open} />
   </ShellDialog>;
 }

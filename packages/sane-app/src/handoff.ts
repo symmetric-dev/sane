@@ -5,6 +5,7 @@ import type { AdmissionService } from "./admission";
 import type { CatalogService } from "./catalog";
 import type { SourceRecords } from "./app-store";
 import type { Session } from "./history";
+import type { HandoffPresentation, HandoffParty } from "./handoff-contract";
 import { RepositoryRouter, WorkstreamAdapterError } from "./workstreams";
 
 const same = (a: ConversationRef, b: ConversationRef) => a.harness === b.harness && a.authorityId === b.authorityId && a.nativeId === b.nativeId;
@@ -111,6 +112,44 @@ export class HandoffService {
     return adapter.domain.findHandoff(ref, requestId);
   }
   async list(workspaceId: string) { return (await this.router.forWorkspace(workspaceId)).domain.listHandoffs(); }
+  async forSession(sessionId: string): Promise<HandoffPresentation[]> {
+    const session = this.sessions().find(s => s.sessionId === sessionId);
+    if (!session) throw new WorkstreamAdapterError(404, "session-not-found", "Unknown conversation");
+    const admission = this.admissions.get(sessionId);
+    if (!admission) throw new WorkstreamAdapterError(409, "admission-missing", "Conversation admission is unavailable");
+    const adapter = await this.router.forAdmission(admission);
+    if (!adapter) return [];
+    const ref = adapter.reference(session), domain = adapter.domain;
+    const listed = domain.listHandoffs().filter(h => same(h.sender, ref) || h.recipient.ownerId === this.ownerId && h.recipient.sessionId === sessionId);
+    if (!listed.length) return [];
+    const admissions = new Map(this.admissions.list().map(a => [a.sessionId, a]));
+    const sessions = this.sessions().filter(s => {
+      const binding = admissions.get(s.sessionId)?.binding;
+      return binding?.workspaceId === admission.binding.workspaceId && binding.domain.mode === "repository" && binding.domain.repositoryId === domain.repositoryId;
+    });
+    const statuses = new Map([...new Set(listed.map(h => h.workstreamId))].map(id => [id, domain.getWorkstreamStatus(id)]));
+    const audit = [...statuses.keys()].flatMap(id => domain.readAudit(id));
+    return listed.map(h => {
+      const status = statuses.get(h.workstreamId)!, assignments = [...status.phaseHistory, ...status.activePhases];
+      const senderAssignments = assignments.filter(a => same(a.ref, h.sender) && a.startedAt <= h.createdAt && (!a.endedAt || a.endedAt >= h.createdAt));
+      const party = (ref: ConversationRef | null, phases: HandoffParty["phases"], preferredSessionId?: string): HandoffParty => {
+        const local = ref && sessions.find(s => same(adapter.reference(s), ref));
+        const assignment = ref && assignments.find(a => same(a.ref, ref) && a.phase === phases[0]);
+        const title = local?.title || (phases[0] ? assignment ? handoffRecipientTitle(phases[0], slotSessionIndex(assignments, phases[0], assignment.id)) : `${slotDisplayName(phases[0])} assistant` : "Unassigned sender");
+        return { ref, phases, title, sessionId: local?.sessionId ?? (preferredSessionId && this.sessions().some(s => s.sessionId === preferredSessionId) ? preferredSessionId : null) };
+      };
+      const events = audit.filter(e => e.entityId === h.id && ["handoff_queued", "handoff_state_changed"].includes(e.operation));
+      const history = events.map(e => ({ id: e.id, status: e.operation === "handoff_queued" ? "queued" as const : e.details.status as Handoff["status"], at: e.timestamp, ...(typeof e.details.evidence === "string" ? { evidence: e.details.evidence } : {}) }));
+      const deliveries = events.flatMap(e => typeof e.details.runId === "string" ? [{ runId: e.details.runId, commandId: typeof e.details.nativeCommandId === "string" ? e.details.nativeCommandId : null }] : []);
+      if (h.runId && !deliveries.some(d => d.runId === h.runId)) deliveries.push({ runId: h.runId, commandId: h.nativeCommandId });
+      return {
+        handoff: h, workstreamTitle: status.workstream.title,
+        sender: party(h.sender, [...new Set(senderAssignments.map(a => a.phase))]),
+        recipient: party(h.recipient.ref, [h.input.to], h.recipient.ownerId === this.ownerId ? h.recipient.sessionId : undefined),
+        history, deliveries,
+      };
+    });
+  }
   async prepareRecipient(workspaceId: string, handoffId: string, create: (handoff: Handoff) => Promise<void>) {
     const domain = (await this.router.forWorkspace(workspaceId)).domain, h = domain.getHandoff(handoffId);
     this.assertAvailable();
