@@ -54,7 +54,31 @@ export class WorkerStore {
     for (const w of r.workers) for (const result of w.results ?? []) if (["claimed", "acceptance-unknown", "delivered"].includes(result.notification.state) && !deliveryIds.has(result.notification.deliveryId!)) fail();
   }
   list() { return structuredClone(this.records.workers); }
-  get(id: string) { return this.list().find(w => w.id === id); }
+  get(id: string) {
+    const w = this.records.workers.find(w => w.id === id);
+    return w ? structuredClone(w) : undefined;
+  }
+  /** Historical reservation identity, independent of the current parent run or worker state. */
+  getByRequest(parentSessionId: string, requestId: string) {
+    const w = this.records.workers.find(w => w.parent.sessionId === parentSessionId && w.input.requestId === requestId);
+    return w ? structuredClone(w) : undefined;
+  }
+  getBySession(sessionId: string) {
+    const w = this.records.workers.find(w => w.sessionId === sessionId);
+    return w ? structuredClone(w) : undefined;
+  }
+  hasSession(sessionId: string) { return this.records.workers.some(w => w.sessionId === sessionId); }
+  /** Match only the recorded worker run, not continuation runs or historical result runs. */
+  getByRun(runId: string) {
+    const w = this.records.workers.find(w => w.runId === runId);
+    return w ? structuredClone(w) : undefined;
+  }
+  hasRun(runId: string) { return this.records.workers.some(w => w.runId === runId); }
+  /** Preserve store order and complete result histories for exact delivery-revision rendering. */
+  listForDelivery(delivery: Pick<WorkerDelivery, "workerIds">) {
+    const ids = new Set(delivery.workerIds);
+    return structuredClone(this.records.workers.filter(w => ids.has(w.id)));
+  }
   private commit(next: WorkerRecords) { this.normalize(next); this.validate(next); atomicAppRecord(this.dataDir, "workers.json", next); this.records = next; }
   insert(w: WorkerRecord) { this.commit({ ...this.records, workers: [...this.records.workers, structuredClone(w)] }); }
   update(id: string, change: Partial<WorkerRecord>) {

@@ -531,7 +531,7 @@ async function startOwned(options: Options, assetsDir: string, packageDir: strin
   }
   function assertBranchIdle(source: Session) {
     if (closing || storageFailed || meta.reconciliationRequired || owners.has(source.sessionId) || admitting.has(source.sessionId) || handoffReservations.has(source.sessionId) || handoffDispatches.has(source.sessionId)) throw new Error("Source must be idle, with no pending admission or handoff");
-    if (source.agentKind === "worker" || workerStore.list().some(w => w.sessionId === source.sessionId)) throw new Error("Worker conversations cannot be branched");
+    if (source.agentKind === "worker" || workerStore.hasSession(source.sessionId)) throw new Error("Worker conversations cannot be branched");
     if (workers.tree(source.sessionId).some(w => !w.outcome || w.continuation && !["completed", "failed", "interrupted"].includes(w.continuation.state) || workerResults(w).some(r => ["pending", "claimed", "acceptance-unknown"].includes(r.notification.state))) || workerStore.deliveries().some(d => d.parentSessionId === source.sessionId && ["claimed", "acceptance-unknown"].includes(d.state))) throw new Error("Finish outstanding workers and worker report deliveries before branching");
     if (branches.replaced(source.sessionId)) throw new Error("Replaced conversations are read-only");
     if (source.harness === "claude-code" && source.attachment) throw new Error("This imported conversation lacks trustworthy complete-turn and idle evidence; branching is unavailable");
@@ -643,7 +643,7 @@ async function startOwned(options: Options, assetsDir: string, packageDir: strin
     try { await task; } finally { branchFinishing.delete(opId); }
   }
   function compactBlocked(session: Session): string | undefined {
-    if (session.agentKind === "worker" || workerStore.list().some(w => w.sessionId === session.sessionId)) return "Worker conversations cannot be compacted manually";
+    if (session.agentKind === "worker" || workerStore.hasSession(session.sessionId)) return "Worker conversations cannot be compacted manually";
     if (workers.tree(session.sessionId).some(w => !w.outcome || w.continuation && !["completed", "failed", "interrupted"].includes(w.continuation.state) || workerResults(w).some(r => ["pending", "claimed", "acceptance-unknown"].includes(r.notification.state))) || workerStore.deliveries().some(d => d.parentSessionId === session.sessionId && ["claimed", "acceptance-unknown"].includes(d.state))) return "Finish outstanding workers and worker report deliveries before compacting";
     if (!session.nativeSessionId || !session.harness) return "Compaction requires an existing native conversation";
     if (session.harness === "claude-code" && !session.lastRunId && !session.attachment && !branches.list().some(op => op.destinationId === session.sessionId && op.state === "completed")) return "Start the native conversation before compacting";
@@ -841,7 +841,7 @@ async function startOwned(options: Options, assetsDir: string, packageDir: strin
         if (snapshot.outcome && ["succeeded", "failed", "interrupted"].includes(snapshot.outcome)) {
           await finishNative(owner, snapshot.outcome === "succeeded" ? "completed" : snapshot.outcome as Status); break;
         }
-        if (workerStore.list().some(w => w.runId === run.runId)) {
+        if (workerStore.hasRun(run.runId)) {
           const waiting = (await oc.interactions(session.nativeSessionId!)).length > 0;
           if (workerWaiting !== waiting) { workerWaiting = waiting; await emit(run, "status", { status: "running", workerWaiting: waiting }); }
         }
@@ -1006,7 +1006,7 @@ async function startOwned(options: Options, assetsDir: string, packageDir: strin
     const session = meta.sessions.find(s => s.sessionId === admission.sessionId)!;
     if (branches.pending(session.sessionId) || branches.replaced(session.sessionId)) return reject();
     const owner = owners.get(session.sessionId);
-    const old = request.operation === "start" ? workerStore.list().find(w => w.parent.sessionId === session.sessionId && w.input.requestId === request.input.requestId) : undefined;
+    const old = request.operation === "start" ? workerStore.getByRequest(session.sessionId, request.input.requestId) : undefined;
     // A durable reservation is the original binding, even after parent completion.
     if (old && request.operation === "start") {
       if (old.parent.native.harness !== e.source.harness || old.parent.native.authorityId !== e.authorityId || old.parent.native.nativeId !== e.nativeId || old.parent.toolCallId !== request.invocation.toolCallId || old.input.worker !== request.input.worker || old.input.prompt !== request.input.prompt || old.input.context !== request.input.context) return reject();
@@ -1243,7 +1243,7 @@ async function startOwned(options: Options, assetsDir: string, packageDir: strin
     available = availability(parentSessionId);
     if (!available.canSend) return problem(available.reason ?? "Parent became unavailable");
     if (session.hidden || workerStore.suppressed(parentSessionId)) return problem("Parent hidden or stopped during preparation; outcomes remain pending");
-    const workerParent = workerStore.list().find(w => w.sessionId === parentSessionId);
+    const workerParent = workerStore.getBySession(parentSessionId);
     if (workerParent && workers.active().filter(w => w.checkout === cwd && w.sessionId !== parentSessionId).length >= maxWorkersPerCheckout) return problem(`Checkout worker capacity reached (${maxWorkersPerCheckout}); continuation remains pending`);
     const now = new Date().toISOString();
     const run: Run = { runId: crypto.randomUUID(), sessionId: parentSessionId, cwd, status: "running", createdAt: now, agent: session.agent, agentKind: session.agentKind, nativeAgentSelected: session.nativeAgentSelected, profileId: session.profileId, model: session.model, effort: session.effort };
@@ -1256,7 +1256,7 @@ async function startOwned(options: Options, assetsDir: string, packageDir: strin
     const owner: Owner = { run, native: session.harness === "opencode", workerDeliveryId: d.id, done: finished.promise, settled: false };
     owners.set(parentSessionId, owner); session.lastRunId = run.runId; session.lastStatus = "running"; meta.runs.push(run); events.set(run.runId, []);
     if (workerParent) workerStore.update(workerParent.id, { state: "running", continuation: { runId: run.runId, state: "running" }, continuationCancellation: undefined });
-    const prompt = workerReportPrompt(d, workerStore.list());
+    const prompt = workerReportPrompt(d, workerStore.listForDelivery(d));
     void (owner.native ? executeNative(owner, prompt, true, () => {}) : execute(owner, prompt, true, () => {})).catch(async () => { failClosed(); await terminate(owner); }).finally(async () => {
       owner.settled = true; releaseOwner(owner); finished.resolve();
       try { if (!storageFailed) { await reconcileWorkerDelivery(d); if (workerParent) await workers.refresh(workerStore.get(workerParent.id)!); } } catch { failClosed(); }
@@ -1379,7 +1379,7 @@ async function startOwned(options: Options, assetsDir: string, packageDir: strin
     for (const w of (await catalog.list()).workspaces.filter(w => w.kind === "repository")) {
       if (closing || storageFailed) return;
       let deliveries;
-      try { deliveries = await handoffs.list(w.workspaceId); } catch { continue; }
+      try { deliveries = await handoffs.listForPolling(w.workspaceId); } catch { continue; }
       for (const h of deliveries.filter(h => h.recipient.ownerId === store.manifest.storeId && !["queued", "completed", "failed"].includes(h.status))) handoffReservations.add(h.recipient.sessionId);
       for (const h of deliveries.filter(h => h.recipient.ownerId === store.manifest.storeId && !["completed", "failed"].includes(h.status))) {
         if (closing || storageFailed) return;
@@ -2063,8 +2063,8 @@ async function startOwned(options: Options, assetsDir: string, packageDir: strin
         if (cancelMatch && req.method === "POST") {
           if (closing || storageFailed) return json({ error: "Bridge unavailable; cancellation state must be checked in the native harness" }, 503);
           workerStore.suppress(session.sessionId, true); // Persist even when the parent is already idle. Never cascade.
-          const worker = workerStore.list().find(w => w.sessionId === session.sessionId && !w.outcome);
-          if (worker) workerStore.update(worker.id, { state: "cancelling", cancelRequestedAt: worker.cancelRequestedAt ?? new Date().toISOString() });
+          const worker = workerStore.getBySession(session.sessionId);
+          if (worker && !worker.outcome) workerStore.update(worker.id, { state: "cancelling", cancelRequestedAt: worker.cancelRequestedAt ?? new Date().toISOString() });
           const owner = owners.get(session.sessionId);
           if (!owner) return json({ interrupted: false, status: session.lastStatus, reason: "No active App-owned run; external execution must be stopped in its native harness" });
           if (!owner.cancel) {
@@ -2250,7 +2250,7 @@ async function startOwned(options: Options, assetsDir: string, packageDir: strin
     const finished = Promise.withResolvers<void>();
     const owner: Owner = { run: recovering, native: true, done: finished.promise, settled: false }; owners.set(recovering.sessionId, owner);
     void (recovering.operation === "compact" ? recoverNativeCompact(owner) : recovering.nativePhase === "preparing" ? finishNative(owner, "failed", "Bridge restarted before native submission") : monitorNative(owner))
-      .catch(() => { failClosed(); }).finally(async () => { owner.settled = true; releaseOwner(owner); finished.resolve(); const w = workerStore.list().find(w => w.runId === recovering.runId); if (w && !storageFailed) { try { await workers.refresh(w); } catch { failClosed(); } } });
+      .catch(() => { failClosed(); }).finally(async () => { owner.settled = true; releaseOwner(owner); finished.resolve(); const w = workerStore.getByRun(recovering.runId); if (w && !storageFailed) { try { await workers.refresh(w); } catch { failClosed(); } } });
   }
   // Recover selection only from the native identity recorded by admission. Never replay a creation or prompt.
   for (const w of workers.active()) {
@@ -2265,7 +2265,7 @@ async function startOwned(options: Options, assetsDir: string, packageDir: strin
   }
   let closePromise: Promise<void> | undefined;
   for (const w of (await catalog.list()).workspaces.filter(w => w.kind === "repository")) {
-    try { for (const h of await handoffs.list(w.workspaceId)) if (h.recipient.ownerId === store.manifest.storeId && !["queued", "completed", "failed"].includes(h.status)) handoffReservations.add(h.recipient.sessionId); } catch {}
+    try { for (const h of await handoffs.listForPolling(w.workspaceId)) if (h.recipient.ownerId === store.manifest.storeId && !["queued", "completed", "failed"].includes(h.status)) handoffReservations.add(h.recipient.sessionId); } catch {}
   }
   // Startup-only reconciliation, after run ownership and worker recovery are known.
   // The admission locks and attachment task set also coordinate request/shutdown races.

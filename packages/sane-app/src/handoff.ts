@@ -115,6 +115,7 @@ export class HandoffService {
     return adapter.domain.findHandoff(ref, requestId);
   }
   async list(workspaceId: string) { return (await this.router.forWorkspace(workspaceId)).domain.listHandoffs(); }
+  async listForPolling(workspaceId: string) { return (await this.router.forWorkspace(workspaceId)).domain.listHandoffsForPolling(); }
   async forSession(sessionId: string): Promise<HandoffPresentation[]> {
     const session = this.sessions().find(s => s.sessionId === sessionId);
     if (!session) throw new WorkstreamAdapterError(404, "session-not-found", "Unknown conversation");

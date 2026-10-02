@@ -41,13 +41,13 @@ export class WorkerService {
     if (!input || !isWorkerAgentId(input.worker) || typeof input.requestId !== "string" || !input.requestId || input.requestId.length > 200 || typeof input.prompt !== "string" || !input.prompt.trim() || input.prompt.length > 100000 || input.context !== undefined && (typeof input.context !== "string" || input.context.length > 100000)) error("invalid-worker-input", "Worker role, request ID and bounded prompt/context text required");
     let parent = await this.executor.parent(caller, false);
     const payload: WorkerStart = { requestId: input.requestId, worker: input.worker, prompt: input.prompt, ...(input.context !== undefined ? { context: input.context } : {}) };
-    const old = this.store.list().find(w => w.parent.sessionId === parent.sessionId && w.input.requestId === input.requestId);
+    const old = this.store.getByRequest(parent.sessionId, input.requestId);
     if (old) {
       if (JSON.stringify(old.input) !== JSON.stringify(payload) || old.parent.runId !== parent.runId || old.parent.toolCallId !== caller.toolCallId || JSON.stringify(old.parent.invocation?.opencode) !== JSON.stringify(caller.invocation?.opencode)) error("worker-request-conflict", "Request ID already bound to another invocation/payload");
       return old;
     }
     parent = await this.executor.parent(caller, true);
-    const concurrent = this.store.list().find(w => w.parent.sessionId === parent.sessionId && w.input.requestId === input.requestId);
+    const concurrent = this.store.getByRequest(parent.sessionId, input.requestId);
     if (concurrent) {
       if (JSON.stringify(concurrent.input) !== JSON.stringify(payload) || concurrent.parent.runId !== parent.runId || concurrent.parent.toolCallId !== caller.toolCallId || JSON.stringify(concurrent.parent.invocation?.opencode) !== JSON.stringify(caller.invocation?.opencode)) error("worker-request-conflict", "Request ID already bound to another invocation/payload");
       return concurrent;

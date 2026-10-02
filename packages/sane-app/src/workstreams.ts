@@ -98,7 +98,7 @@ export class RepositoryRouter {
     const key = JSON.stringify([context.repositoryId, context.schemaVersion, context.primaryPin, context.stateRoot]);
     let adapter = this.cache.get(key);
     if (!adapter) { adapter = new WorkstreamAdapter(openRepositoryDomain(context), this.sources); this.cache.set(key, adapter); }
-    try { adapter.domain.getOverview(); return adapter; }
+    try { adapter.domain.validateHandle(); return adapter; }
     catch (error) { adapter.close(); this.cache.delete(key); throw error; }
   }
   async forWorkspace(workspaceId: string, expectedRepositoryId?: string) {

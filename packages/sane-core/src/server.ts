@@ -67,6 +67,8 @@ export class RepositoryDomain {
   get repositoryId(): string { return this.context.repositoryId }
   get primaryCheckout(): string { return this.context.primaryCheckout }
   get stateRoot(): string { return this.context.stateRoot }
+  /** Validate live-handle validity only, not execution eligibility or writability. */
+  validateHandle(): void { this.guard() }
   private guard(): void {
     if (this.closed) fail("INVALID_CONTEXT", "Repository handle is closed.")
     checkDiscovery(this.context); safeStoreFiles(this.context)
@@ -252,6 +254,11 @@ export class RepositoryDomain {
     return this.createWorkstream({ id: kickoff.workstream, title: kickoff.title, type: kickoff.type, defaultCheckout: args.checkout ?? invocation.executionCheckout }, context)
   }
   listHandoffs(): Handoff[] { this.guard(); return this.rows("SELECT * FROM handoffs ORDER BY created_at,id").map(row => this.handoffDTO(row)) }
+  /** Polling/recovery only: retain every queued or active delivery, including uncertain attempts. */
+  listHandoffsForPolling(): Handoff[] {
+    this.guard()
+    return this.rows("SELECT * FROM handoffs WHERE status IN ('queued','acceptance_unknown','accepted','running') ORDER BY created_at,id").map(row => this.handoffDTO(row))
+  }
   admitHandoff(sender: ConversationRef, input: unknown, recipient: HandoffRecipient, context: MutationContext): Handoff {
     const args = handoffInput(input)
     return this.transaction(context, () => {
