@@ -71,6 +71,35 @@ conversations' execution checkout; existing conversations retain their recorded
 checkout. Finish external work in a conversation before sending from the App.
 Native linking and handoffs are separate work, not part of App setup.
 
+### Compact conversation context
+
+SANE never initiates automatic compaction or changes the harness's compaction
+threshold. When Claude Code or OpenCode compacts during an App-owned run, SANE
+shows the native lifecycle and retains a compaction marker. Compaction performed
+outside the App appears after **Refresh native history**; external sessions are
+not continuously monitored.
+
+For explicit manual compaction, open an existing idle conversation and use
+**Compact now** beside its context indicator, or send `/compact`. Claude Code
+also accepts `/compact <instructions>`; OpenCode does not accept custom
+compaction instructions. Compaction uses the same native conversation and
+checkout without applying a pending agent upgrade. The button preserves your
+message draft. Attached Claude conversations require confirmation that external
+execution has stopped. Managed worker conversations cannot be compacted manually
+from the App.
+
+Request acceptance is not completion. If acceptance or the outcome is
+unconfirmed, inspect the operation and native history before starting another
+request. Reconnecting or repeating the same recorded request never automatically
+resends a native compaction. A successful compaction can remain successful even
+if the containing assistant run is later interrupted.
+
+Context percentage is the last reported usage of the full model window, not the
+harness's auto-compaction threshold. A running compaction makes that reading
+stale; after confirmed completion, SANE waits for new usage rather than displaying
+an invented zero percent. Skipped or failed compaction does not prove a context
+reset.
+
 ### Search files
 
 In Files or Git view, press **Cmd+Shift+F** on macOS or **Ctrl+Shift+F** on Windows/Linux,

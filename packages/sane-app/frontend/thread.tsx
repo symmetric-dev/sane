@@ -22,6 +22,9 @@ import { TranscriptActivity } from "./activity-ui";
 import { DocumentReviewReader } from "./document-review";
 import { useDocumentReview } from "./document-review-model";
 import type { DocumentReviewRequest } from "./document-review-launch";
+import { compactCommand, compactionPositions } from "./compaction";
+import { CompactionMarkers } from "./compaction-ui";
+import type { CompactionRecord } from "../src/oc-contract";
 
 const json = (value: unknown) => typeof value === "string" ? value : JSON.stringify(value, null, 2) ?? "Unavailable";
 const number = (value: unknown, suffix = "") => typeof value === "number" && Number.isFinite(value) && value >= 0 ? `${value.toLocaleString(undefined, { maximumFractionDigits: 6 })}${suffix}` : "Unavailable";
@@ -39,7 +42,7 @@ function Markdown({ text }: { text: string }) {
   return <div className="prose"><ReactMarkdown remarkPlugins={[remarkGfm]} skipHtml components={{ pre: CodeBlock, a: ({ children, href }) => <a href={href} target="_blank" rel="noopener noreferrer">{children}</a>, img: ({ alt }) => <span className="muted">[Image: {alt || "image omitted"}]</span> }}>{text}</ReactMarkdown></div>;
 }
 
-export type TranscriptContextValue = { sessionId: string; harness: Harness; messages: Message[]; runs: Run[]; workers: WorkerRecord[]; deliveries?: WorkerDelivery[]; openWorker: (worker: WorkerRecord) => void; branchEnabled?: boolean; pendingTurn?: PendingTurn | null; activities?: ActivityPresentation };
+export type TranscriptContextValue = { sessionId: string; harness: Harness; messages: Message[]; runs: Run[]; workers: WorkerRecord[]; deliveries?: WorkerDelivery[]; openWorker: (worker: WorkerRecord) => void; branchEnabled?: boolean; pendingTurn?: PendingTurn | null; activities?: ActivityPresentation; compactionPositions?: Map<string, CompactionRecord[]> };
 export const TranscriptContext = createContext<TranscriptContextValue | null>(null);
 const isActivityMessage = (message: Message) => message.role === "assistant" && message.parts.some(part => part.type !== "text") && !message.parts.some(part => part.type === "text" && part.text.trim()) && message.error === undefined && message.status !== "failed" && message.status !== "interrupted";
 function ActivityBody({ part }: ActivityEntry) {
@@ -56,6 +59,11 @@ function TranscriptTool({ part, source }: { part: ToolPart; source: Message }) {
   return <TranscriptActivity group={{ id: entry.id, entries: [entry] }} renderBody={renderActivityBody} />;
 }
 export function ChatMessage() {
+  const id = useAuiState(s => s.message.id);
+  const context = useContext(TranscriptContext)!;
+  return <><CompactionMarkers records={context.compactionPositions?.get(id)} /><ChatMessageBody /></>;
+}
+function ChatMessageBody() {
   const message = useAuiState(s => s.message);
   const context = useContext(TranscriptContext)!;
   const harness = context.harness;
@@ -70,7 +78,7 @@ export function ChatMessage() {
   const activityContinued = continued && activity && isActivityMessage(next) && !next.parts.every((_, index) => context.activities?.plan.positions.get(activityPosition(next.id, index)) === null);
   const plain = message.content.filter(p => p.type === "text").map(p => p.text).join("\n\n");
   const lastInTurn = source && (source.runId === "native-import" ? context.messages.slice(context.messages.indexOf(source) + 1).find(m => m.role === "assistant" || m.role === "user")?.role !== "assistant" : !context.messages.slice(context.messages.indexOf(source) + 1).some(m => m.runId === source.runId && m.role === "assistant"));
-  const canBranch = context.branchEnabled && source?.role === "assistant" && lastInTurn && (source.runId === "native-import" ? harness === "opencode" && source.status === "completed" : context.runs.some(r => r.id === source.runId && r.status === "completed"));
+  const canBranch = context.branchEnabled && source?.role === "assistant" && lastInTurn && (source.runId === "native-import" ? harness === "opencode" && source.status === "completed" : context.runs.some(r => r.operation !== "compact" && r.id === source.runId && r.status === "completed"));
   const delivery = source && workerReportDelivery(source, context.deliveries ?? []);
   if (delivery) return <MessagePrimitive.Root className="message worker-report-message"><WorkerOutcomeReport delivery={delivery} workers={context.workers} /></MessagePrimitive.Root>;
   const warning = source?.error !== undefined || !isUser && source?.runId !== "native-import" && message.status?.type === "incomplete";
@@ -119,23 +127,27 @@ export function Thread({ state, active: isActive = true, navigation, reviewReque
   const needsAck = !!state.conversations.find(c => c.id === state.selected && c.harness === "claude-code")?.attachment;
   const conversation = state.conversations.find(c => c.id === state.selected);
   useEffect(() => setAck(""), [state.selected, isActive]);
-  const send = (text: string) => { const stopped = ack === state.selected && !!ack; setAck(""); return store.send(text, stopped); };
+  const send = (text: string) => { if (compactCommand(text)) return store.send(text); const stopped = ack === state.selected && !!ack; setAck(""); return store.send(text, stopped); };
   const repository = useSyncExternalStore(catalog.subscribe, catalog.snapshot);
   const harness = store.harness();
   const workspace = store.workspace();
   const modelUnavailable = store.modelUnavailable();
   useEffect(() => { if (harness === "opencode" && (state.modelsCwd !== workspace || (!state.modelsLoaded && !state.modelsLoading && !state.modelsError))) { const timer = setTimeout(() => void store.loadModels(), 300); return () => clearTimeout(timer); } }, [harness, workspace, state.modelsCwd, state.modelsLoaded, state.modelsLoading, state.modelsError]);
   const running = state.runs.some(run => active(run.status));
+  const compacting = state.compactions?.some(record => record.lifecycle === "running");
+  const compactBlocked = !!store.compactBlocked();
+  const pendingCompact = state.pendingCompacts?.[state.selected];
   const nativeIssue = [...state.runs].reverse().find(run => active(run.status) && run.nativeConnection && run.nativeConnection !== "connected");
   const latestRun = state.runs.at(-1);
   const pendingTurn = state.pendingTurn?.conversationId === state.selected ? state.pendingTurn : null;
   const messages = useMemo(() => messagesWithPendingTurn(state.messages, pendingTurn), [state.messages, pendingTurn]);
+  const positions = useMemo(() => compactionPositions(state.compactions ?? [], messages, state.nativeHistory), [state.compactions, messages, state.nativeHistory]);
   const activities = useActivityPresentation({ sessionId: state.selected, messages, workers, deliveries: projection.deliveries, loading: state.loading, animate: isActive && state.connected && !state.actionBusy });
   const runtime = useExternalStoreRuntime({ messages, convertMessage, isRunning: running,
-    isSendDisabled: !isActive || running || state.loading || state.sending || !state.connected || !state.availability.canSend || modelUnavailable || !!store.executionUnavailable() || (needsAck && ack !== state.selected),
+    isSendDisabled: !isActive || running || compactBlocked || state.actionBusy || state.loading || state.sending || !state.connected || !state.availability.canSend || modelUnavailable || !!store.executionUnavailable() || (needsAck && ack !== state.selected),
     onNew: async message => { const text = message.content.filter(p => p.type === "text").map(p => p.text).join("\n"); await send(text); },
   });
-  const sendDisabled = !isActive || running || state.loading || state.sending || !state.connected || !state.availability.canSend || modelUnavailable || !!store.executionUnavailable() || (needsAck && ack !== state.selected);
+  const sendDisabled = !isActive || running || compactBlocked || state.actionBusy || state.loading || state.sending || !state.connected || !state.availability.canSend || modelUnavailable || !!store.executionUnavailable() || (needsAck && ack !== state.selected);
   const sendReview = (text: string) => { const stopped = ack === state.selected && !!ack; setAck(""); return store.send(text, stopped, { preserveDraft: true }); };
   const review = useDocumentReview(state, isActive, sendDisabled, sendReview);
   const handledReviewRequest = useRef<number | null>(null);
@@ -151,18 +163,21 @@ export function Thread({ state, active: isActive = true, navigation, reviewReque
     reviewRequestHandled?.(reviewRequest.requestId);
   }, [isActive, reviewRequest, state.selected, review, reviewRequestHandled]);
   const safety = <>
-    {running && <p className="working" role="status"><span className="pulse" />{!state.connected ? "Connection unavailable. The run’s current state is not yet known." : nativeIssue ? nativeIssue.nativeReason || "Assistant connection unavailable; execution state remains unconfirmed." : "Assistant is working. New output will appear here."}{store.capabilities()?.cancelRun && <button type="button" className="text-button" disabled={state.actionBusy || !state.connected} onClick={() => void store.cancel()}>Stop run</button>}</p>}
-    {latestRun?.status === "failed" && <p className="notice error" role="alert">Run failed{latestRun.nativeReason ? `: ${latestRun.nativeReason}` : ". See the conversation for details."}</p>}
+    <CompactionMarkers records={review.flow?.path ? state.compactions : undefined} />
+    {pendingCompact && !state.compactions?.some(record => record.requestId === pendingCompact.payload.requestId) && (pendingCompact.phase === "sending" || pendingCompact.phase === "unconfirmed") && <p className="compaction-marker" role="status">Manual context compaction · {pendingCompact.phase === "sending" ? "requested" : "acceptance unconfirmed"}</p>}
+    {(running || compacting) && <p className="working" role="status"><span className="pulse" />{!state.connected ? "Connection unavailable. The run’s current state is not yet known." : compacting ? "Compacting context…" : latestRun?.operation === "compact" ? "Waiting for the compaction run’s native state to settle." : nativeIssue ? nativeIssue.nativeReason || "Assistant connection unavailable; execution state remains unconfirmed." : "Assistant is working. New output will appear here."}{running && store.capabilities()?.cancelRun && <button type="button" className="text-button" disabled={state.actionBusy || !state.connected} onClick={() => void store.cancel()}>Stop run</button>}</p>}
+    {latestRun?.operation !== "compact" && latestRun?.status === "failed" && <p className="notice error" role="alert">Run failed{latestRun.nativeReason ? `: ${latestRun.nativeReason}` : ". See the conversation for details."}</p>}
     {harness === "opencode" && !conversation?.replacedBy ? <Interactions state={state} /> : <>{state.actionNotice && <p role="status" className="notice">{state.actionNotice}</p>}{state.interactionError && <p role="alert" className="notice error">{state.interactionError}</p>}</>}
   </>;
   const footer = <div className="thread-footer"><div className="thread-safety">{safety}</div><div className="thread-composer"><ChatComposer state={state} active={isActive} navigation={navigation} ack={ack} onAckChange={setAck} send={send} sendDisabled={sendDisabled} parentId={parentId} review={review} /></div></div>;
-  return <TranscriptContext.Provider value={{ sessionId: state.selected, harness, messages, runs: state.runs, workers, deliveries: projection.deliveries, openWorker, pendingTurn, activities, branchEnabled: !state.loading && !state.sending && !running && !parentId && !conversation?.worker && !conversation?.replacedBy && !(conversation?.attachment && harness === "claude-code") }}><AssistantRuntimeProvider runtime={runtime}><ThreadPrimitive.Root className={`thread${review.flow ? " is-document-review" : ""}`}>
+  return <TranscriptContext.Provider value={{ sessionId: state.selected, harness, messages, runs: state.runs, workers, deliveries: projection.deliveries, openWorker, pendingTurn, activities, compactionPositions: positions, branchEnabled: !state.loading && !state.sending && !state.actionBusy && !compactBlocked && !running && !parentId && !conversation?.worker && !conversation?.replacedBy && !(conversation?.attachment && harness === "claude-code") }}><AssistantRuntimeProvider runtime={runtime}><ThreadPrimitive.Root className={`thread${review.flow ? " is-document-review" : ""}`}>
     <BranchLinks key={state.selected} conversation={conversation} />
     {parentId && <nav className="worker-parent-nav" aria-label="Worker navigation"><button type="button" className="text-button" disabled={state.sending} onClick={() => store.openConversation(parentId)}><FiArrowLeft size={14} aria-hidden="true" />Back to parent</button><span className="muted">Worker conversation</span></nav>}
     <ChatScroll active={isActive} resetKey={state.selected || `new:${repository.navigation.worktreeId}`} footer={footer} replacement={review.flow?.path ? <div className="document-review-reading"><DocumentReviewReader review={review} /></div> : undefined}>
       <div className="transcript">
         {!messages.length && (state.loading || !repository.ready || (state.selected && state.connectionError) ? <ConversationLoading label={state.selected ? state.connectionError ? "Reconnecting to your conversation…" : "Opening conversation…" : "Preparing your workspace…"} /> : !state.selected ? <div className="welcome"><span className="welcome-mark" aria-hidden="true"><FiZap size={44} aria-hidden="true" /></span><p className="eyebrow">YOUR LOCAL WORKSPACE</p><h1>What shall we work on?</h1><p>Explore an idea, untangle a problem, or build something useful with SANE.</p><div className="suggestions">{["Help me understand this project", "Plan a thoughtful next step", "Review my recent changes"].map(text => <button key={text} type="button" onClick={() => store.setDraft({ text })}>{text}<FiArrowUpRight size={13} aria-hidden="true" /></button>)}</div></div> : <div className="chat-empty"><FiZap size={24} aria-hidden="true" /><p>No messages yet.</p><span>Send a message to begin.</span></div>)}
         <ThreadPrimitive.Messages components={{ Message: ChatMessage }} />
+        <CompactionMarkers records={positions.get("")} />
       </div>
     </ChatScroll>
   </ThreadPrimitive.Root></AssistantRuntimeProvider></TranscriptContext.Provider>;
@@ -173,7 +188,7 @@ export function Facts({ values }: { values: [string, ReactNode][] }) { return <d
 export function NativeHistoryDetails({ state }: { state: State }) {
   if (!state.selected) return null;
   const conversation = state.conversations.find(c => c.id === state.selected);
-  return <section className="detail-section"><h3>Conversation history</h3><p className="muted">Refresh messages recorded outside the App. This does not send a message or stop a run.</p><button type="button" className="text-button" disabled={state.actionBusy || state.sending || state.loading || state.runs.some(run => active(run.status)) || !state.connected} onClick={() => void store.reconcile()}>{state.actionBusy ? "Refreshing…" : "Refresh native history"}</button>{state.nativeHistory && <p className="muted">Last refreshed {new Date(state.nativeHistory.importedAt).toLocaleString()}</p>}{conversation?.attachment && conversation.harness === "claude-code" && <p className="muted">This imported conversation cannot be branched because a completed turn cannot be verified.</p>}{state.interactionError && <p className="notice error" role="alert">{state.interactionError}</p>}</section>;
+  return <section className="detail-section"><h3>Conversation history</h3><p className="muted">Refresh messages recorded outside the App. This does not send a message or stop a run.</p><button type="button" className="text-button" disabled={state.actionBusy || !!store.compactBlocked() || state.sending || state.loading || state.runs.some(run => active(run.status)) || !state.connected} onClick={() => void store.reconcile()}>{state.actionBusy ? "Refreshing…" : "Refresh native history"}</button>{state.nativeHistory && <p className="muted">Last refreshed {new Date(state.nativeHistory.importedAt).toLocaleString()}</p>}{conversation?.attachment && conversation.harness === "claude-code" && <p className="muted">This imported conversation cannot be branched because a completed turn cannot be verified.</p>}{state.interactionError && <p className="notice error" role="alert">{state.interactionError}</p>}</section>;
 }
 
 export function Usage({ snapshot }: { snapshot?: UsageSnapshot }) {
@@ -192,5 +207,5 @@ export function RunDetails({ run }: { run: Run }) {
 }
 function RunDiagnostics({ run }: { run: Run }) {
   const hooks = run.events.filter(e => e.kind === "hook");
-  return <details className="run-detail"><summary><span>{new Date(run.createdAt).toLocaleString()}</span><span className={`status ${run.status}`}>{run.status}</span></summary><Facts values={[["Run ID", run.id], ["Conversation ID", run.conversationId], ["Native session ID", run.nativeSessionId], ["Launch directory", run.cwd], ["Agent", run.profileId ? store.profile(run.profileId)?.label ?? run.profileId : run.agent || undefined], ["Requested model", run.model || "Native default / unchanged"], ["Observed model", run.observedModel], ["Requested effort / variant", run.effort || "Native default / unchanged"], ["Observed effort / variant", run.observedEfforts.join(", ") || "Unavailable"], ["Native connection", run.nativeConnection], ["Status detail", run.nativeReason]]} />{!run.messages.some(m => m.role === "user") && <p className="muted">Original prompt unavailable in this older log.</p>}<details><summary>Reported usage</summary>{run.harness === "opencode" ? <NativeUsage run={run} /> : <>{run.resultCount > 1 && <p className="run-warning">Multiple terminal results: only the first associated snapshot is displayed.</p>}<Usage snapshot={run.usage} /></>}</details>{run.harness !== "opencode" && <details><summary>Hooks · {hooks.length}</summary>{hooks.map(e => <pre key={e.seq}>{json(e)}</pre>)}</details>}<details><summary>Raw events · {run.events.length}</summary>{run.events.map(e => <pre key={e.seq}>{json(e)}</pre>)}</details></details>;
+  return <details className="run-detail"><summary><span>{new Date(run.createdAt).toLocaleString()}{run.operation === "compact" ? " · Context compaction" : ""}</span><span className={`status ${run.status}`}>{run.status}</span></summary><Facts values={[["Run ID", run.id], ["Operation", run.operation ?? "prompt"], ["Compaction request ID", run.compact?.requestId], ["Conversation ID", run.conversationId], ["Native session ID", run.nativeSessionId], ["Launch directory", run.cwd], ["Agent", run.profileId ? store.profile(run.profileId)?.label ?? run.profileId : run.agent || undefined], ["Requested model", run.model || "Native default / unchanged"], ["Observed model", run.observedModel], ["Requested effort / variant", run.effort || "Native default / unchanged"], ["Observed effort / variant", run.observedEfforts.join(", ") || "Unavailable"], ["Native connection", run.nativeConnection], ["Status detail", run.nativeReason]]} />{run.operation === "compact" ? <p className="muted">Run status and compaction completion are independent. See the lifecycle marker for confirmed native evidence.</p> : <>{!run.messages.some(m => m.role === "user") && <p className="muted">Original prompt unavailable in this older log.</p>}<details><summary>Reported usage</summary>{run.harness === "opencode" ? <NativeUsage run={run} /> : <>{run.resultCount > 1 && <p className="run-warning">Multiple terminal results: only the first associated snapshot is displayed.</p>}<Usage snapshot={run.usage} /></>}</details></>}{run.harness !== "opencode" && <details><summary>Hooks · {hooks.length}</summary>{hooks.map(e => <pre key={e.seq}>{json(e)}</pre>)}</details>}<details><summary>Raw events · {run.events.length}</summary>{run.events.map(e => <pre key={e.seq}>{json(e)}</pre>)}</details></details>;
 }

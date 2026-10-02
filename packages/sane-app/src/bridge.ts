@@ -6,7 +6,9 @@ import { resolveAppConfig } from "./app-config";
 import { buildAssets, validateAssets } from "./asset-build";
 import { acquireInstallation, acquireData, validateOwnershipPaths, type OwnershipHandle } from "./installation-ownership";
 import { claudeSourceRoot } from "./claude-source";
-import { decodeLog, validModel, validEffort, validVariant, uuid, efforts, type Status, type Session, type Run, type Event, type Metadata } from "./history";
+import { decodeLog, validModel, validEffort, validVariant, validCompactRequest, uuid, efforts, type Status, type Session, type Run, type Event, type Metadata } from "./history";
+import { projectCompactions } from "./compaction";
+import type { CompactEligibility, CompactRequest, CompactResponse } from "./oc-contract";
 import { OpenCodeAdapter, OpenCodeError, normalizeMessage } from "./opencode";
 import { WorkspaceService, WorkspaceError, workspaceError } from "./workspace";
 import { CatalogService } from "./catalog";
@@ -56,6 +58,7 @@ export function startupSummary(o: Options): string {
 const loopback = (host: string) => ["127.0.0.1", "::1", "localhost", "[::1]", "::ffff:127.0.0.1"].includes(host);
 const equal = (a: string, b: string) => { const x = Buffer.from(a), y = Buffer.from(b); return x.length === y.length && timingSafeEqual(x, y); };
 const quote = (s: string) => `'${s.replaceAll("'", "'\\''")}'`;
+const compactCommand = (text: string) => /^\s*\/compact(?:\s|$)/i.test(text);
 const json = (data: unknown, status = 200, headers: Record<string, string> = {}) => Response.json(data, { status, headers: { "cache-control": "no-store", ...headers } });
 async function body(req: Request): Promise<any> {
   if (Number(req.headers.get("content-length")) > 1024 * 1024) throw new Error("Body too large");
@@ -206,7 +209,7 @@ async function startOwned(options: Options, assetsDir: string, packageDir: strin
   });
   const events = new Map<string, Event[]>();
   const secrets = new Map<string, string>();
-  type Owner = { run: Run; native?: boolean; launchError?: string; workerDeliveryId?: string; child?: Bun.Subprocess<"pipe", "pipe", "pipe">; done: Promise<void>; settled: boolean; stopping?: Promise<boolean>; cancel?: Promise<{ interrupted: boolean }>; cancelling?: boolean; stopRequested?: boolean; submission?: Promise<unknown> };
+  type Owner = { run: Run; native?: boolean; nativeDispatched?: boolean; launchError?: string; workerDeliveryId?: string; child?: Bun.Subprocess<"pipe", "pipe", "pipe">; done: Promise<void>; settled: boolean; stopping?: Promise<boolean>; cancel?: Promise<{ interrupted: boolean }>; cancelling?: boolean; stopRequested?: boolean; submission?: Promise<unknown> };
   // Durable validation forbids aliases for a qualified native ID. New IDs are
   // reserved before awaits, then retained until the selected owner's lifecycle ends.
   const owners = new Map<string, Owner>();
@@ -403,10 +406,12 @@ async function startOwned(options: Options, assetsDir: string, packageDir: strin
   }
   function terminate(owner: Owner): Promise<boolean> {
     if (owner.stopping) return owner.stopping;
+    const child = owner.child;
+    // Preparation can be stopped before spawn; do not cache a no-child result.
+    if (!child) return Promise.resolve(true);
     owner.stopping = (async () => {
-      if (!owner.child) return true;
       let exited = false;
-      void owner.child.exited.then(() => { exited = true; }, () => {});
+      void child.exited.then(() => { exited = true; }, () => {});
       for (const value of ["SIGTERM", "SIGKILL"] as const) {
         signal(owner, value);
         for (let i = 0; i < 50; i++) { if (exited && !groupAlive(owner)) return true; await Bun.sleep(20); }
@@ -433,7 +438,7 @@ async function startOwned(options: Options, assetsDir: string, packageDir: strin
   };
   const displayTitle = (session: Session): string | undefined => {
     if (session.title) return session.title;
-    const runs = meta.runs.filter(r => r.sessionId === session.sessionId).sort((a, b) => a.createdAt.localeCompare(b.createdAt));
+    const runs = meta.runs.filter(r => r.sessionId === session.sessionId && r.operation !== "compact").sort((a, b) => a.createdAt.localeCompare(b.createdAt));
     for (const run of runs) {
       for (const event of events.get(run.runId) ?? []) {
         if (event.kind !== "submission") continue;
@@ -531,7 +536,7 @@ async function startOwned(options: Options, assetsDir: string, packageDir: strin
     if (source.harness === "claude-code" && source.attachment) throw new Error("This imported conversation lacks trustworthy complete-turn and idle evidence; branching is unavailable");
   }
   async function branchBoundary(source: Session, runId?: string, messageId?: string) {
-    const run = runId ? meta.runs.find(r => r.runId === runId && r.sessionId === source.sessionId && r.status === "completed") : undefined;
+    const run = runId ? meta.runs.find(r => r.runId === runId && r.sessionId === source.sessionId && r.status === "completed" && r.operation !== "compact") : undefined;
     if (runId && !run) throw new Error("Select a completed turn from this conversation");
     if (source.harness === "opencode") {
       const history = await oc.history(source.nativeSessionId!, source.cwd);
@@ -636,18 +641,122 @@ async function startOwned(options: Options, assetsDir: string, packageDir: strin
     branchFinishing.set(opId, task);
     try { await task; } finally { branchFinishing.delete(opId); }
   }
+  function compactBlocked(session: Session): string | undefined {
+    if (session.agentKind === "worker" || workerStore.list().some(w => w.sessionId === session.sessionId)) return "Worker conversations cannot be compacted manually";
+    if (workers.tree(session.sessionId).some(w => !w.outcome || w.continuation && !["completed", "failed", "interrupted"].includes(w.continuation.state) || workerResults(w).some(r => ["pending", "claimed", "acceptance-unknown"].includes(r.notification.state))) || workerStore.deliveries().some(d => d.parentSessionId === session.sessionId && ["claimed", "acceptance-unknown"].includes(d.state))) return "Finish outstanding workers and worker report deliveries before compacting";
+    if (!session.nativeSessionId || !session.harness) return "Compaction requires an existing native conversation";
+    if (session.harness === "claude-code" && !session.lastRunId && !session.attachment && !branches.list().some(op => op.destinationId === session.sessionId && op.state === "completed")) return "Start the native conversation before compacting";
+    return undefined;
+  }
+  async function compactExecution(session: Session) {
+    const a = admissions.get(session.sessionId);
+    if (!a || a.state !== "ready" || a.nativeId !== session.nativeSessionId || a.source.authorityId !== session.authorityId || session.authorityId !== nativeSource(session.harness) || a.source.descriptor.harness !== (session.harness === "opencode" ? "oc" : "cc") || a.binding.executionCheckout !== session.cwd) throw new WorkstreamAdapterError(409, "compact-identity", "Native identity, authority or execution pin differs from the admitted conversation");
+    const cwd = await execution(session.sessionId);
+    if (cwd !== session.cwd) throw new WorkstreamAdapterError(409, "compact-identity", "Compaction cannot change the execution checkout");
+    return cwd;
+  }
+  async function compactEligibility(session: Session): Promise<CompactEligibility> {
+    const eligibility: CompactEligibility = { eligible: false, supportsInstructions: session.harness === "claude-code", nativeActivity: owners.has(session.sessionId) ? "active" : "unknown", ...(session.harness === "claude-code" && session.attachment ? { requiresNativeStopped: true } : {}) };
+    const available = availability(session.sessionId), blocked = compactBlocked(session);
+    if (!available.canSend || blocked) return { ...eligibility, reason: available.reason ?? blocked };
+    try {
+      await compactExecution(session);
+      if (session.harness === "opencode") {
+        const state = await oc.activity(session.nativeSessionId!, session.cwd);
+        eligibility.nativeActivity = state.active || state.pending ? "active" : "idle";
+        if (eligibility.nativeActivity === "active") return { ...eligibility, reason: "Native conversation is active or has pending input" };
+      }
+      const current = availability(session.sessionId), reason = compactBlocked(session);
+      return current.canSend && !reason ? { ...eligibility, eligible: true } : { ...eligibility, reason: current.reason ?? reason };
+    } catch (error) { return { ...eligibility, reason: error instanceof Error ? error.message : "Compaction eligibility is unavailable" }; }
+  }
+  async function storedNativeHistory(session: Session): Promise<ReconciledHistory | undefined> {
+    try { return JSON.parse(await readFile(join(options.dataDir, `${session.sessionId}.native-history.json`), "utf8")); }
+    catch (error) { if ((error as NodeJS.ErrnoException).code === "ENOENT") return undefined; throw error; }
+  }
+  async function compactOperations(session: Session) {
+    const history = await storedNativeHistory(session);
+    const logs = meta.runs.filter(r => r.sessionId === session.sessionId).flatMap(r => events.get(r.runId) ?? []);
+    // A cached pre-compaction snapshot must not regress newer live evidence if
+    // the optional history refresh fails. A newer explicit reconciliation can
+    // still improve an older live snapshot; importedAt is App observation time.
+    const observedAt = new Map<string, string>();
+    for (const event of logs) if (event.kind === "message" && (event.data as any)?.compaction) {
+      const id = (event.data as any).messageId as string;
+      if (!observedAt.has(id) || event.time > observedAt.get(id)!) observedAt.set(id, event.time);
+    }
+    const importedAt = history?.importedAt ?? "";
+    const messages = history?.messages.filter(message => !message.compaction || !observedAt.has(message.messageId) || importedAt > observedAt.get(message.messageId)!);
+    return { operations: projectCompactions(session, meta.runs, logs, messages), ...(history ? { nativeHistoryImportedAt: history.importedAt } : {}) };
+  }
+  async function refreshCompactHistory(owner: Owner) {
+    const run = owner.run, session = meta.sessions.find(s => s.sessionId === run.sessionId)!;
+    try {
+      if (owners.get(session.sessionId) !== owner || closing || storageFailed) return;
+      await compactExecution(session);
+      const native = session.harness === "opencode" ? await oc.history(session.nativeSessionId!, session.cwd) : { messages: await readClaudeHistory(session.nativeSessionId!, session.cwd, claudeRoot), activity: "unknown" as const };
+      if (closing || storageFailed) return;
+      if (session.harness === "opencode" && native.activity !== "idle") throw new Error("Native history became active; previous snapshot preserved");
+      // Only newly timed main-thread CC boundaries can belong to this run. Old
+      // imported boundaries remain history, never confirmation of a new request.
+      if (session.harness === "claude-code") for (const message of native.messages) {
+        if (message.compaction && message.createdAt && Date.parse(message.createdAt) >= Date.parse(run.createdAt) && (!run.endedAt || Date.parse(message.createdAt) <= Date.parse(run.endedAt))) await emit(run, "message", message);
+      }
+      const history: ReconciledHistory = { sessionId: session.sessionId, nativeSessionId: session.nativeSessionId!, importedAt: new Date().toISOString(), messages: native.messages, activity: native.activity, coveredRunIds: coveredNativeRuns(session, meta.runs, native.messages), reason: "Read-only history refresh after the owned compaction process settled; native compaction evidence is separate from process outcome" };
+      await enqueue(async () => atomicNativeHistory(options.dataDir, history));
+      await emit(run, "status", { status: run.status, nativeHistoryImportedAt: history.importedAt });
+    } catch (error) {
+      if (storageFailed) return;
+      await emit(run, "status", { status: run.status, historyRefreshFailed: true, reason: error instanceof Error ? error.message : "Read-only history refresh failed; previous snapshot and confirmed compaction evidence preserved" });
+    }
+  }
+  const compactAdmissions = new Map<string, { instructions?: string; promise: Promise<CompactResponse> }>();
+  async function admitCompact(session: Session, input: CompactRequest): Promise<CompactResponse> {
+    const available = availability(session.sessionId), blocked = compactBlocked(session);
+    if (!available.canSend || blocked) throw new WorkstreamAdapterError(available.code === "capacity" ? 429 : 409, available.code ?? "compact-unavailable", available.reason ?? blocked!);
+    if (session.harness === "opencode" && input.instructions !== undefined) throw new WorkstreamAdapterError(400, "compact-instructions", "OpenCode compaction does not support custom instructions");
+    if (session.harness === "claude-code" && session.attachment && input.nativeStopped !== true) throw new WorkstreamAdapterError(409, "native-acknowledgement-required", "Explicitly acknowledge external Claude execution is stopped before each new compaction request");
+    // Acquire App arbitration before any awaited preflight. Other prompt,
+    // handoff, branch and worker-report admissions use the same reservation.
+    admitting.add(session.sessionId);
+    try {
+      const cwd = await compactExecution(session);
+      if (session.harness === "opencode") await oc.assertIdle(session.nativeSessionId!, cwd);
+      // Recheck synchronously without counting our own preflight reservation.
+      admitting.delete(session.sessionId);
+      const current = availability(session.sessionId, false), reason = compactBlocked(session);
+      admitting.add(session.sessionId);
+      if (!current.canSend || reason) throw new WorkstreamAdapterError(409, current.code ?? "compact-unavailable", current.reason ?? reason!);
+      const run: Run = { runId: crypto.randomUUID(), sessionId: session.sessionId, cwd, status: "running", createdAt: new Date().toISOString(), operation: "compact", compact: { requestId: input.requestId, ...(input.instructions !== undefined ? { instructions: input.instructions } : {}) }, model: session.model, effort: session.effort, agent: session.agent, agentKind: session.agentKind, nativeAgentSelected: session.nativeAgentSelected, profileId: session.profileId };
+      if (session.harness === "opencode") {
+        run.nativeCommandId = `msg_${crypto.randomUUID().replaceAll("-", "")}`;
+        run.nativePhase = "preparing"; run.compact!.nativeRequestId = run.nativeCommandId;
+      }
+      const finished = Promise.withResolvers<void>();
+      const owner: Owner = { run, native: session.harness === "opencode", nativeDispatched: false, done: finished.promise, settled: false };
+      owners.set(session.sessionId, owner); session.lastRunId = run.runId; session.lastStatus = "running"; meta.runs.push(run); events.set(run.runId, []);
+      // Stable App and native request IDs reach disk before any native mutation.
+      try {
+        await emit(run, "status", { status: "running", operation: "compact", compactionLifecycle: "requested" });
+        await persist();
+      } catch (error) { owner.settled = true; finished.resolve(); throw error; }
+      void (owner.native ? executeNativeCompact(owner) : execute(owner, `/compact${input.instructions ? ` ${input.instructions}` : ""}`, true, () => {})).catch(async () => { failClosed(); await terminate(owner); }).finally(() => { owner.settled = true; releaseOwner(owner); finished.resolve(); });
+      return { sessionId: session.sessionId, runId: run.runId, operation: projectCompactions(session, [run], events.get(run.runId) ?? [])[0]! };
+    } finally { admitting.delete(session.sessionId); }
+  }
   async function execute(owner: Owner, prompt: string, resume: boolean, ready: (accepted: boolean) => void) {
     const run = owner.run;
     const result: { seen: boolean; error: boolean; diagnostic?: string } = { seen: false, error: false };
     let streams: Promise<unknown>[] = [];
     try {
+      if (run.operation !== "compact" && compactCommand(prompt)) throw new Error("Use the dedicated Compact action; compaction cannot be submitted as an ordinary prompt");
       // Write the first log record before publishing its metadata reference.
       await emit(run, "status", { status: "running" });
-      await emit(run, "submission", { messageId: `${run.runId}:user`, text: prompt });
+      if (run.operation !== "compact") await emit(run, "submission", { messageId: `${run.runId}:user`, text: prompt });
       await persist();
       if (closing) throw new Error("Closing before launch");
       const session = meta.sessions.find(s => s.sessionId === run.sessionId)!;
-      run.cwd = await execution(session.sessionId);
+      run.cwd = run.operation === "compact" ? await compactExecution(session) : await execution(session.sessionId);
       const secret = crypto.randomUUID() + crypto.randomUUID(); secrets.set(run.runId, secret);
       const hooks = Object.fromEntries(hookEvents.map(event => [event, [{ hooks: [{ type: "command", command: `${quote(process.execPath)} ${quote(join(root, "hooks/forward.ts"))} ${quote(event)}`, timeout: 3 }] }]]));
       const identity = snapshotIdentity(run);
@@ -663,8 +772,9 @@ async function startOwned(options: Options, assetsDir: string, packageDir: strin
       // Do not carry the launching shell's bridge credentials or SANE/native
       // session context into a fresh app-owned invocation. Native HOME/hooks stay shared.
       const env = Object.fromEntries(Object.entries(process.env).filter(([name, value]) => value !== undefined && !/^(CC_WEB_|OPENCODE_SERVER_|OPENCODE_SESSION_ID$|OPENCODE_TOKEN$|SANE_|BUN_INSPECT|NODE_OPTIONS$)/i.test(name))) as Record<string, string>;
-      run.cwd = await execution(session.sessionId);
+      run.cwd = run.operation === "compact" ? await compactExecution(session) : await execution(session.sessionId);
       assertWorkerDeliverySubmission(owner);
+      if (closing || storageFailed || owner.stopRequested || owners.get(run.sessionId) !== owner) throw new Error("Execution unavailable before launch");
       const child = Bun.spawn(args, {
         cwd: run.cwd, detached: true, stdin: "pipe", stdout: "pipe", stderr: "pipe", env: { ...env, CLAUDE_CONFIG_DIR: claudeRoot, CLAUDE_CODE_PROJECT_DIR_NAME: "", CC_WEB_HOOK_URL: `http://127.0.0.1:${hookServer.port}`, CC_WEB_RUN_ID: run.runId, CC_WEB_HOOK_SECRET: secret },
       });
@@ -681,13 +791,14 @@ async function startOwned(options: Options, assetsDir: string, packageDir: strin
       if (groupAlive(owner) && !(await terminate(owner))) throw new Error("Process group termination unconfirmed");
       run.status = closing || owner.stopRequested ? "interrupted" : !storageFailed && exit === 0 && result.seen && !result.error ? "completed" : "failed";
       run.endedAt = new Date().toISOString(); meta.sessions.find(s => s.sessionId === run.sessionId)!.lastStatus = run.status;
-      await emit(run, "status", { status: run.status, exitCode: exit, resultSeen: result.seen, ...(result.diagnostic ? { reason: result.diagnostic } : {}) });
+      const compact = run.operation === "compact" ? projectCompactions(session, [run], events.get(run.runId) ?? [])[0] : undefined;
+      await emit(run, "status", { status: run.status, exitCode: exit, resultSeen: result.seen, ...(compact ? { compactionLifecycle: compact.lifecycle, reason: compact.lifecycle === "unconfirmed" ? "CLI ended without native compaction outcome evidence; do not automatically resend" : "CLI process ended; compaction outcome is reported separately by native evidence" } : result.diagnostic ? { reason: result.diagnostic } : {}) });
     } catch (error) {
       if (error instanceof AgentLaunchConfigurationError) owner.launchError = error.message;
       const stopped = await terminate(owner);
       run.status = stopped && (closing || owner.stopRequested) ? "interrupted" : "failed";
       run.endedAt = new Date().toISOString(); meta.sessions.find(s => s.sessionId === run.sessionId)!.lastStatus = run.status;
-      try { await emit(run, "status", { status: run.status, reason: !stopped ? "Process termination unconfirmed; operator reconciliation required" : storageFailed ? "Storage failure; operator reconciliation required" : owner.launchError ?? "CLI launch, stream, or shutdown failure" }); } catch { failClosed(); }
+      try { await emit(run, "status", { status: run.status, ...(run.operation === "compact" && !owner.child ? { operation: "compact", compactNotSubmitted: true } : {}), reason: !stopped ? "Process termination unconfirmed; operator reconciliation required" : storageFailed ? "Storage failure; operator reconciliation required" : owner.launchError ?? "CLI launch, stream, or shutdown failure" }); } catch { failClosed(); }
       ready(false);
     } finally {
       ready(false);
@@ -695,6 +806,7 @@ async function startOwned(options: Options, assetsDir: string, packageDir: strin
       // until both finish; a timeout keeps the ownership sentinel in place.
       const drained = await Promise.race([Promise.allSettled(streams).then(() => true), Bun.sleep(2200).then(() => false)]);
       if (!drained) { retainOwner = true; meta.reconciliationRequired = true; }
+      if (run.operation === "compact" && owner.child && drained && !retainOwner && !closing && !storageFailed) await refreshCompactHistory(owner);
       run.endedAt = new Date().toISOString(); meta.sessions.find(s => s.sessionId === run.sessionId)!.lastStatus = run.status;
       try { if (owner.workerDeliveryId && !owner.child) await emit(run, "status", { status: run.status, workerDeliveryNotSubmitted: owner.workerDeliveryId }); await persist(); } catch { failClosed(); }
        secrets.delete(run.runId);
@@ -744,10 +856,108 @@ async function startOwned(options: Options, assetsDir: string, packageDir: strin
       await Bun.sleep(1000);
     }
   }
+  async function monitorNativeCompact(owner: Owner) {
+    const run = owner.run, session = meta.sessions.find(s => s.sessionId === run.sessionId)!;
+    const snapshots = new Map<string, string>();
+    for (const event of events.get(run.runId) ?? []) if (event.kind === "message") {
+      const data = event.data as { messageId: string }; snapshots.set(data.messageId, JSON.stringify(data));
+    }
+    let lastDiagnostic = "", historyRefreshAttempted = false;
+    while (!closing && !storageFailed && run.status === "running") {
+      try {
+        await compactExecution(session);
+        // Lost acknowledgement can hide a coalesced ID. An absent requested ID
+        // never proves rejection; never substitute the latest session message.
+        const id = run.compact!.nativeAdmittedId ?? run.compact!.nativeRequestId ?? run.nativeCommandId!;
+        const snapshot = await oc.compactionSnapshot(session.nativeSessionId!, id, session.cwd);
+        if (closing || storageFailed) break;
+        if (snapshot.observed && run.nativePhase !== "accepted") { run.nativePhase = "accepted"; await persist(); }
+        for (const message of snapshot.messages) {
+          const normalized = normalizeMessage(message); if (!normalized) continue;
+          const encoded = JSON.stringify(normalized);
+          if (snapshots.get(normalized.messageId) !== encoded) { await emit(run, "message", normalized); snapshots.set(normalized.messageId, encoded); }
+        }
+        if (snapshot.outcome && !snapshot.pending && !snapshot.active) {
+          // Exact input outcome is independent of idle/activity. Check ALL
+          // pending inputs before freeing the App slot, not only our compact ID.
+          const activity = await oc.activity(session.nativeSessionId!, session.cwd);
+          if (!activity.active && !activity.pending) {
+            if (!historyRefreshAttempted) { historyRefreshAttempted = true; await refreshCompactHistory(owner); }
+            if (closing || storageFailed) break;
+            const settled = await oc.activity(session.nativeSessionId!, session.cwd);
+            if (!settled.active && !settled.pending) {
+              await finishNative(owner, owner.stopRequested ? "interrupted" : "completed", "Native compaction settled and conversation is idle; compaction outcome is reported separately");
+              break;
+            }
+          }
+        }
+        const diagnostic = snapshot.outcome ? "Native compaction outcome recorded; waiting for native activity and pending input to settle" : !snapshot.observed ? "Compaction admission or outcome remains unconfirmed; retaining ownership and observing the exact request without resending" : "Native compaction observed; waiting for exact native outcome";
+        if (lastDiagnostic !== diagnostic) { await emit(run, "status", { status: "running", operation: "compact", connection: snapshot.observed ? "connected" : "unconfirmed", reason: diagnostic }); lastDiagnostic = diagnostic; }
+      } catch (error) {
+        if (closing || storageFailed) break;
+        const reason = error instanceof Error ? error.message : "Native compaction observation unavailable";
+        if (lastDiagnostic !== reason) { await emit(run, "status", { status: "running", operation: "compact", connection: "unconfirmed", reason }); lastDiagnostic = reason; }
+      }
+      await Bun.sleep(1000);
+    }
+  }
+  async function executeNativeCompact(owner: Owner) {
+    const run = owner.run, session = meta.sessions.find(s => s.sessionId === run.sessionId)!;
+    let attempted = false;
+    try {
+      if (closing || owner.stopRequested) throw new Error("Stopped before native compaction submission");
+      await compactExecution(session);
+      await oc.assertIdle(session.nativeSessionId!, session.cwd);
+      if (closing || storageFailed || owner.stopRequested) throw new Error("Bridge unavailable before native compaction submission");
+      run.nativePhase = "sending"; await persist();
+      await compactExecution(session);
+      // Recheck idle immediately before dispatch. No agent/model selection,
+      // synthetic user message or ordinary prompt endpoint participates.
+      await oc.assertIdle(session.nativeSessionId!, session.cwd);
+      const submission = oc.compact(session.nativeSessionId!, run.compact!.nativeRequestId!, () => {
+        if (closing || storageFailed || owner.stopRequested || owners.get(session.sessionId) !== owner) throw new Error("Compaction withheld before native dispatch");
+        attempted = true; owner.nativeDispatched = true;
+      });
+      owner.submission = submission;
+      try {
+        const admitted = await submission;
+        // Native may coalesce our request into a DIFFERENT pending compaction.
+        // Its ID must be durable before any lifecycle observation or release.
+        run.compact!.nativeAdmittedId = admitted.id; run.nativePhase = "accepted"; run.nativeAcceptedAt = admitted.time.created;
+        await persist();
+      } catch (error) {
+        if (!attempted) throw error;
+        if (error instanceof OpenCodeError && [400, 401, 403, 404, 409].includes(error.status)) {
+          await emit(run, "status", { status: "running", operation: "compact", compactAdmissionRejected: true, nativeStatus: error.status, reason: error.message });
+          await finishNative(owner, "failed", "Native compaction admission rejected; request will not be replayed"); return;
+        }
+        if (storageFailed) return;
+        await emit(run, "status", { status: "running", operation: "compact", connection: "unconfirmed", reason: error instanceof Error ? error.message : "Compaction acknowledgement unavailable; do not resend" });
+      }
+      await monitorNativeCompact(owner);
+    } catch (error) {
+      if (storageFailed) return;
+      if (!attempted) {
+        await emit(run, "status", { status: "running", operation: "compact", compactNotSubmitted: true });
+        await finishNative(owner, owner.stopRequested || closing ? "interrupted" : "failed", error instanceof Error ? error.message : "Compaction preparation failed");
+      } else throw error;
+    }
+  }
+  async function recoverNativeCompact(owner: Owner) {
+    const run = owner.run;
+    const negative = (events.get(run.runId) ?? []).some(event => event.kind === "status" && ((event.data as any)?.compactNotSubmitted === true || (event.data as any)?.compactAdmissionRejected === true && [400, 401, 403, 404, 409].includes((event.data as any)?.nativeStatus)));
+    if (run.nativePhase === "preparing" || negative) {
+      if (run.nativePhase === "preparing") await emit(run, "status", { status: "running", operation: "compact", compactNotSubmitted: true });
+      await finishNative(owner, "failed", negative ? "Recovered definitive compaction non-admission evidence; request will not be replayed" : "Bridge restarted before native compaction submission; request will not be replayed");
+      return;
+    }
+    await monitorNativeCompact(owner);
+  }
   async function executeNative(owner: Owner, prompt: string, resume: boolean, ready: (accepted: boolean) => void) {
     const run = owner.run; const session = meta.sessions.find(s => s.sessionId === run.sessionId)!;
     let promptAttempted = false;
     try {
+      if (compactCommand(prompt)) throw new Error("Use the dedicated Compact action; compaction cannot be submitted as an ordinary prompt");
       await emit(run, "status", { status: "running" });
       await emit(run, "submission", { messageId: run.nativeCommandId, text: prompt });
       await persist();
@@ -804,7 +1014,7 @@ async function startOwned(options: Options, assetsDir: string, packageDir: strin
     }
     const current = () => {
       context.assertActive();
-      if (!owner || owners.get(session.sessionId) !== owner || owner.settled || owner.stopRequested || owner.cancelling || owner.run.status !== "running" || closing || storageFailed) reject();
+      if (!owner || owners.get(session.sessionId) !== owner || owner.settled || owner.stopRequested || owner.cancelling || owner.run.status !== "running" || owner.run.operation === "compact" || closing || storageFailed) reject();
     };
     current();
     const run = owner!.run;
@@ -865,7 +1075,7 @@ async function startOwned(options: Options, assetsDir: string, packageDir: strin
       const a = candidates.length === 1 ? candidates[0] : undefined;
       const session = a && meta.sessions.find(s => s.sessionId === a.sessionId && !s.attachment);
       const run = session && meta.runs.find(r => r.sessionId === session.sessionId && r.runId === caller.runId);
-      if (!a || !session || !run || typeof caller.toolCallId !== "string" || !caller.toolCallId || caller.toolCallId.length > 300 || starting && owners.get(session.sessionId)?.run !== run) throw new WorkstreamAdapterError(409, "worker-parent", "Worker operations require an App-owned repository parent and a known run; starts require its current owned run");
+      if (!a || !session || !run || run.operation === "compact" || typeof caller.toolCallId !== "string" || !caller.toolCallId || caller.toolCallId.length > 300 || starting && owners.get(session.sessionId)?.run !== run) throw new WorkstreamAdapterError(409, "worker-parent", "Worker operations require an App-owned repository parent and a known prompt run; starts require its current owned run");
       const checkout = await execution(session.sessionId);
       const native = { harness: e.source.harness, authorityId: e.authorityId, nativeId: e.nativeId };
       (await router!.forAdmission(a))!.domain.resolveContext(native);
@@ -873,7 +1083,7 @@ async function startOwned(options: Options, assetsDir: string, packageDir: strin
     },
     assertCurrentParent(parent) {
       const owner = owners.get(parent.sessionId);
-      if (!owner || owner.run.runId !== parent.runId || owner.run.status !== "running" || owner.settled || owner.stopRequested || owner.cancelling) throw new WorkstreamAdapterError(409, "worker-parent", "Parent run ended or stopped during worker qualification; no worker was reserved");
+      if (!owner || owner.run.runId !== parent.runId || owner.run.status !== "running" || owner.run.operation === "compact" || owner.settled || owner.stopRequested || owner.cancelling) throw new WorkstreamAdapterError(409, "worker-parent", "Parent prompt run ended or stopped during worker qualification; no worker was reserved");
     },
     hasActiveExecution(w) { return owners.has(w.sessionId) || workerStore.deliveries().some(d => d.parentSessionId === w.sessionId && ["claimed", "acceptance-unknown"].includes(d.state)); },
     assertCapacity() {
@@ -930,7 +1140,7 @@ async function startOwned(options: Options, assetsDir: string, packageDir: strin
       // Durable delivery run identity recovers continuations after restart without replay.
       const continuationDeliveries = workerStore.deliveries().filter(d => d.parentSessionId === w.sessionId);
       const continuationIds = new Set(continuationDeliveries.filter(d => d.state !== "not-submitted" && workerDeliveryEvidence(d, meta.runs.find(r => r.runId === d.run.runId), events.get(d.run.runId) ?? []) !== "not-submitted").map(d => d.run.runId));
-      const candidates = meta.runs.filter(r => r.sessionId === w.sessionId && (!continuationDeliveries.some(d => d.run.runId === r.runId) || continuationIds.has(r.runId)));
+      const candidates = meta.runs.filter(r => r.sessionId === w.sessionId && r.operation !== "compact" && (!continuationDeliveries.some(d => d.run.runId === r.runId) || continuationIds.has(r.runId)));
       const run = candidates.find(r => !results.some(result => result.runId === r.runId)) ?? candidates.at(-1);
       if (run && results.some(result => result.runId === run.runId)) {
         const skipped = continuationDeliveries.find(d => d.run.runId === w.continuation?.runId && !continuationIds.has(d.run.runId));
@@ -1070,8 +1280,10 @@ async function startOwned(options: Options, assetsDir: string, packageDir: strin
         if (owner.run.status !== "running") return { interrupted: false };
         await emit(owner.run, "status", { status: "running", connection: "stopping", reason: "Stop requested; waiting for terminal evidence" });
         if (owner.native) {
+          if (owner.run.operation === "compact" && !owner.submission && owner.nativeDispatched === false) return { interrupted: false };
           if (!owner.submission && owner.run.nativePhase === "preparing") return { interrupted: false };
           await owner.submission?.catch(() => {});
+          if (owner.run.operation === "compact" && owner.nativeDispatched === false) return { interrupted: false };
           if (owner.run.status !== "running") return { interrupted: false };
           return oc.cancel(meta.sessions.find(s => s.sessionId === owner.run.sessionId)!.nativeSessionId!);
         }
@@ -1087,7 +1299,7 @@ async function startOwned(options: Options, assetsDir: string, packageDir: strin
     let h = domain.getHandoff(id);
     if (h.recipient.ownerId !== store.manifest.storeId || !h.runId || ["queued", "completed", "failed"].includes(h.status)) return h;
     const run = meta.runs.find(r => r.runId === h.runId && r.sessionId === h.recipient.sessionId);
-    if (!run) return h;
+    if (!run || run.operation === "compact") return h;
     const records = events.get(run.runId) ?? [];
     const accepted = h.recipient.harness === "oc" ? run.nativeCommandId === h.nativeCommandId && run.nativePhase === "accepted" : records.some(e => e.kind === "stdout" && (e.data as any)?.session_id === h.recipient.ref?.nativeId && ((e.data as any)?.type === "result" || (e.data as any)?.type === "system" && (e.data as any)?.subtype === "init"));
     const advance = (status: typeof h.status, evidence: string) => { h = domain.advanceHandoff(h.id, h.revision, { status, evidence }, { actor: { kind: "system" }, correlationId: h.id }); };
@@ -1263,7 +1475,7 @@ async function startOwned(options: Options, assetsDir: string, packageDir: strin
         if (h.recipient.ownerId !== store.manifest.storeId) return json({ error: "Handoff belongs to another App store" }, 409);
         if (handoffAction[2] === "reconcile") {
           const run = meta.runs.find(r => r.runId === h.runId && r.sessionId === h.recipient.sessionId);
-          if (h.recipient.harness !== "cc" || !run || run.status !== "interrupted" || !["acceptance_unknown", "accepted", "running"].includes(h.status) || input.nativeStopped !== true || owners.has(h.recipient.sessionId) || !availability(undefined, false).canSend) return json({ error: "Interrupted assistant run, reconciled SANE ownership, and explicit nativeStopped acknowledgement required" }, 409);
+          if (h.recipient.harness !== "cc" || !run || run.operation === "compact" || run.status !== "interrupted" || !["acceptance_unknown", "accepted", "running"].includes(h.status) || input.nativeStopped !== true || owners.has(h.recipient.sessionId) || !availability(undefined, false).canSend) return json({ error: "Interrupted assistant prompt run, reconciled SANE ownership, and explicit nativeStopped acknowledgement required" }, 409);
           const result = domain.advanceHandoff(h.id, h.revision, { status: "failed", evidence: `Operator confirmed interrupted assistant run ${run.runId} stopped; delivery outcome not claimed successful` }, { actor: { kind: "system" }, correlationId: h.id });
           handoffReservations.delete(h.recipient.sessionId); handoffProblems.delete(h.id);
           return json({ handoff: result });
@@ -1482,8 +1694,8 @@ async function startOwned(options: Options, assetsDir: string, packageDir: strin
         const workerCounts = new Map<string, number>();
         for (const worker of workerStore.list()) workerCounts.set(worker.parent.sessionId, (workerCounts.get(worker.parent.sessionId) ?? 0) + 1);
         // Recovery never auto-sends a reserved prompt. Offer it as a composer
-        // draft only while no first run (including failed submissions) exists.
-        const branchDrafts = new Map(branches.list().filter(op => op.state === "completed" && op.firstMessage && !op.firstRunId && !meta.runs.some(run => run.sessionId === op.destinationId)).map(op => [op.destinationId, op.firstMessage]));
+        // draft only while no first prompt run (including failed submissions) exists.
+        const branchDrafts = new Map(branches.list().filter(op => op.state === "completed" && op.firstMessage && !op.firstRunId && !meta.runs.some(run => run.sessionId === op.destinationId && run.operation !== "compact")).map(op => [op.destinationId, op.firstMessage]));
         return json({ sessions: meta.sessions.map(s => ({ ...s, branchDraft: branchDrafts.get(s.sessionId), branchOrigin: branches.list().find(op => op.destinationId === s.sessionId && op.state !== "failed")?.sourceId, replacedBy: branches.replaced(s.sessionId)?.destinationId, ...(branches.replaced(s.sessionId) ? { hidden: true } : {}), ...(workerSessions.has(s.sessionId) ? { worker: workerSessions.get(s.sessionId) } : {}), directWorkerCount: workerCounts.get(s.sessionId) ?? 0, profileId: sessionProfileId(s), title: displayTitle(s), admission: admissions.get(s.sessionId), ...catalog.association(s.sessionId), availability: availability(s.sessionId) })), admissions: admissions.list(), availability: availability() });
       }
       const branchRoute = /^\/api\/sessions\/([^/]+)\/branch$/.exec(path);
@@ -1643,9 +1855,38 @@ async function startOwned(options: Options, assetsDir: string, packageDir: strin
           return json({ error: error instanceof Error ? error.message : "Attachment unavailable", ...(session ? { sessionId, attachment: "pending", recovery: "Retry Attach with the same identity and cwd after resolving the error. No prompt was sent." } : {}) }, error instanceof OpenCodeError || error instanceof WorkstreamAdapterError || error instanceof WorkspaceError ? error.status : error instanceof DomainError && error.code !== "STORAGE_ERROR" ? 409 : 503);
         } finally { attaching.delete(key); admitting.delete(sessionId); attachmentDone.resolve(); attachmentTasks.delete(attachmentDone.promise); }
       }
+      const compactRoute = /^\/api\/sessions\/([^/]+)\/compact$/.exec(path);
+      if (compactRoute) {
+        const session = meta.sessions.find(s => s.sessionId === compactRoute[1]);
+        if (!session) return json({ error: "Unknown session" }, 404);
+        if (req.method === "GET") return json({ sessionId: session.sessionId, eligibility: await compactEligibility(session), ...await compactOperations(session) });
+        if (req.method !== "POST") return json({ error: "Method not allowed" }, 405);
+        const input = await body(req);
+        if (!validCompactRequest(input)) return json({ error: "Provide a UUID requestId and optional compaction instructions/nativeStopped acknowledgement only" }, 400);
+        const previous = meta.runs.find(r => r.sessionId === session.sessionId && r.operation === "compact" && r.compact?.requestId === input.requestId);
+        if (previous) {
+          if (previous.compact!.instructions !== input.instructions) return json({ error: "This compaction request ID is already bound to different instructions" }, 409);
+          // Repeated requests do not recheck idle/acknowledgement or dispatch.
+          // This also closes the publication window of an in-flight admission.
+          await serial;
+          if (storageFailed) return json({ error: "Storage unavailable; original request must be reconciled without resending" }, 503);
+          const state = await compactOperations(session);
+          return json({ sessionId: session.sessionId, runId: previous.runId, operation: state.operations.find(op => op.runId === previous.runId && op.requestId === input.requestId)! } satisfies CompactResponse);
+        }
+        const key = `${session.sessionId}:${input.requestId}`, pending = compactAdmissions.get(key);
+        if (pending) {
+          if (pending.instructions !== input.instructions) return json({ error: "This compaction request ID is already bound to different instructions" }, 409);
+          return json(await pending.promise, 202);
+        }
+        const promise = admitCompact(session, input);
+        compactAdmissions.set(key, { instructions: input.instructions, promise });
+        try { return json(await promise, 202); }
+        finally { if (compactAdmissions.get(key)?.promise === promise) compactAdmissions.delete(key); }
+      }
       if (path === "/api/sessions" && req.method === "POST") {
         const input = await body(req);
         if (!input || typeof input.prompt !== "string" || !input.prompt.trim() || (input.cwd !== undefined && typeof input.cwd !== "string") || (input.sessionId !== undefined && typeof input.sessionId !== "string")) return json({ error: "Invalid request" }, 400);
+        if (compactCommand(input.prompt)) return json({ error: "Use the dedicated Compact action for /compact; it requires an existing idle conversation and a durable request ID", code: "compact-action-required" }, 400);
         let session = input.sessionId ? meta.sessions.find(s => s.sessionId === input.sessionId) : undefined;
         if (input.sessionId !== undefined && !session) return json({ error: "Unknown session" }, 404);
         // Agent profile selection: resolves harness/model/effort/agent and wins
@@ -1804,9 +2045,11 @@ async function startOwned(options: Options, assetsDir: string, packageDir: strin
             if (owner.run.status === "running") await emit(owner.run, "status", { status: "running", connection: "stopping", reason: "Stop requested; waiting for terminal evidence" });
             if (owners.get(session.sessionId) !== owner || owner.run.status !== "running") return { interrupted: false };
             if (owner.native) {
+              if (owner.run.operation === "compact" && !owner.submission && owner.nativeDispatched === false) return { interrupted: true };
               if (!owner.submission && owner.run.nativePhase === "preparing") return { interrupted: true };
               // Do not interrupt before an in-flight prompt has been admitted.
               await owner.submission?.catch(() => {});
+              if (owner.run.operation === "compact" && owner.nativeDispatched === false) return { interrupted: true };
               if (owners.get(session.sessionId) !== owner || owner.run.status !== "running") return { interrupted: false };
               return await oc.cancel(session.nativeSessionId!);
             }
@@ -1977,7 +2220,7 @@ async function startOwned(options: Options, assetsDir: string, packageDir: strin
   for (const recovering of meta.runs.filter(r => r.status === "running" && meta.sessions.find(s => s.sessionId === r.sessionId)?.harness === "opencode")) {
     const finished = Promise.withResolvers<void>();
     const owner: Owner = { run: recovering, native: true, done: finished.promise, settled: false }; owners.set(recovering.sessionId, owner);
-    void (recovering.nativePhase === "preparing" ? finishNative(owner, "failed", "Bridge restarted before native submission") : monitorNative(owner))
+    void (recovering.operation === "compact" ? recoverNativeCompact(owner) : recovering.nativePhase === "preparing" ? finishNative(owner, "failed", "Bridge restarted before native submission") : monitorNative(owner))
       .catch(() => { failClosed(); }).finally(async () => { owner.settled = true; releaseOwner(owner); finished.resolve(); const w = workerStore.list().find(w => w.runId === recovering.runId); if (w && !storageFailed) { try { await workers.refresh(w); } catch { failClosed(); } } });
   }
   // Recover selection only from the native identity recorded by admission. Never replay a creation or prompt.

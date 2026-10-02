@@ -14,7 +14,7 @@ export function messagesWithPendingTurn(messages: Message[], turn?: PendingTurn 
 
 /** Keep native order and identity. Text alone never establishes run ownership. */
 export function transcriptMessages(history: ReconciledHistory | null | undefined, runs: Run[]): Message[] {
-  const native: Message[] = (history?.messages ?? []).filter(m => m.role !== "system" || m.parts.length).map(m => ({
+  const native: Message[] = (history?.messages ?? []).filter(m => !m.compaction && (m.role !== "system" || m.parts.length)).map(m => ({
     id: m.messageId, runId: "native-import", role: m.role, time: m.createdAt,
     status: m.status, normalized: true, error: m.error,
     parts: m.parts.map(p => p.type === "tool" ? { type: "tool", id: p.id, toolCallId: p.id, name: p.name, input: p.input, toolStatus: p.status, output: p.output ?? p.error, error: p.error !== undefined } : { type: p.type, text: p.text, ...(p.type === "reasoning" ? { id: p.id } : {}) }),
@@ -32,7 +32,7 @@ export function transcriptMessages(history: ReconciledHistory | null | undefined
     while (end < native.length && native[end]!.role !== "user") end++;
     const turn = native.slice(start, end);
     const owners = new Set(turn.map(m => byNativeId.get(m.id)?.runId).filter((id): id is string => !!id));
-    const commandRun = runs.find(r => r.harness === "opencode" && r.nativeCommandId === turn[0]?.id);
+    const commandRun = runs.find(r => r.operation !== "compact" && r.harness === "opencode" && r.nativeCommandId === turn[0]?.id);
     if (commandRun) owners.add(commandRun.id);
     const runId = owners.size === 1 ? [...owners][0] : undefined;
     // Failed submissions can have no native message at all. Keep them before
@@ -67,6 +67,7 @@ export function transcriptMessages(history: ReconciledHistory | null | undefined
   }
   for (const message of app) append(message);
   for (const run of runs) {
+    if (run.operation === "compact") continue;
     if (run.status !== "failed" && run.status !== "interrupted") continue;
     if (result.some(m => m.runId === run.id && m.role === "assistant" && m.status === run.status)) continue;
     const index = result.findLastIndex(m => m.runId === run.id);

@@ -22,7 +22,7 @@ export const conversationClient: ConversationClient = {
   },
   async runs(id, signal): Promise<RunMetadata[]> {
     const data = await request(`/api/sessions/${encodeURIComponent(id)}/runs`, { signal });
-    return (data.runs ?? []).map((r: any) => ({ id: r.runId, conversationId: r.sessionId, harness: r.harness ?? "claude-code", nativeSessionId: r.nativeSessionId, nativeCommandId: r.nativeCommandId, cwd: r.cwd, status: r.status, createdAt: r.createdAt, endedAt: r.endedAt, model: r.model, effort: r.effort, agent: r.agent, profileId: r.profileId }));
+    return (data.runs ?? []).map((r: any) => ({ id: r.runId, conversationId: r.sessionId, harness: r.harness ?? "claude-code", nativeSessionId: r.nativeSessionId, nativeCommandId: r.nativeCommandId, operation: r.operation, compact: r.compact, cwd: r.cwd, status: r.status, createdAt: r.createdAt, endedAt: r.endedAt, model: r.model, effort: r.effort, agent: r.agent, profileId: r.profileId }));
   },
   events: (run, signal) => request(`/api/runs/${encodeURIComponent(run.id)}/events?after=${run.cursor}`, { signal }),
   workers: (id, signal) => request(`/api/sessions/${encodeURIComponent(id)}/workers`, { signal }),
@@ -33,6 +33,8 @@ export const conversationClient: ConversationClient = {
   async interactions(id, signal) { return (await request(`/api/sessions/${encodeURIComponent(id)}/interactions`, { signal })).interactions ?? []; },
   reply: (id, interactionId, reply) => request(`/api/sessions/${encodeURIComponent(id)}/interactions/${encodeURIComponent(interactionId)}/reply`, { method: "POST", body: JSON.stringify(reply) }),
   cancel: id => request(`/api/sessions/${encodeURIComponent(id)}/cancel`, { method: "POST", body: "{}" }),
+  compactState: (id, signal) => request(`/api/sessions/${encodeURIComponent(id)}/compact`, { signal }),
+  compact: (id, input) => request(`/api/sessions/${encodeURIComponent(id)}/compact`, { method: "POST", body: JSON.stringify(input) }),
   hide: id => request(`/api/sessions/${encodeURIComponent(id)}/hide`, { method: "POST", body: "{}" }),
   unhide: id => request(`/api/sessions/${encodeURIComponent(id)}/unhide`, { method: "POST", body: "{}" }),
   search: async (query, opts) => {

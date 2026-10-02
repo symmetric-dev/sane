@@ -10,6 +10,7 @@ import { WorkersButton } from "./worker-ui";
 import { ChatWorkstreamActions } from "./workstream-actions";
 import { DocumentReviewComposer } from "./document-review";
 import type { DocumentReviewController } from "./document-review-model";
+import { compactCommand } from "./compaction";
 
 /** Kept mounted with Thread: only the draft identity may replace the DOM input. */
 export function ChatComposer({ state, active = true, navigation, ack, onAckChange, send, sendDisabled, parentId, review }: {
@@ -52,7 +53,11 @@ export function ChatComposer({ state, active = true, navigation, ack, onAckChang
   const infoError = state.submissionError || (harness === "opencode" ? state.modelsError : "");
   const infoStatus = (state.sending ? "Sending your message…" : "") || (state.loading ? "Loading your conversation…" : "") || store.executionUnavailable() || (!state.connected ? "Reconnecting to the bridge…" : "") || (!state.availability.canSend && state.availability.reason) || (store.modelUnavailable() ? "Waiting for the OpenCode model catalog for this directory." : "");
   const infoText = infoError || infoStatus;
-  const blocked = !active || sendDisabled || (needsAck && ack !== state.selected);
+  const command = compactCommand(draft.text);
+  // A standalone /compact opens the same explicit dialog before ordinary-send
+  // gates (including the separate composer acknowledgment or staged model).
+  const blocked = !active || (command ? state.sending : sendDisabled || (needsAck && ack !== state.selected));
+  const reviewBlocked = !active || sendDisabled || (needsAck && ack !== state.selected);
   const submit = () => { if (!blocked) void send(store.draft().text); };
 
   return <>
@@ -61,7 +66,7 @@ export function ChatComposer({ state, active = true, navigation, ack, onAckChang
     {needsAck && !conversation?.replacedBy && <label className="notice"><input type="checkbox" checked={ack === state.selected} onChange={e => onAckChange(e.target.checked ? state.selected : "")} />I confirm external assistant execution for this conversation is stopped before this send.</label>}
     {missingModel && <p className="notice" role="status">Model {missingModel} is not in the current OpenCode catalog for this directory. Sending will still use this selection.</p>}
     {conversation?.attachment?.state === "pending" && <p className="notice error">Attachment incomplete. Use Attach native conversation with the same ID and checkout to retry. {conversation.attachment.error}</p>}
-    {!conversation?.replacedBy && review?.flow && <DocumentReviewComposer review={review} active={active} disabled={blocked} navigation={navigation} />}
+    {!conversation?.replacedBy && review?.flow && <DocumentReviewComposer review={review} active={active} disabled={reviewBlocked} navigation={navigation} />}
     {!conversation?.replacedBy ? <form ref={normalComposer} className="composer" hidden={!!review?.flow} style={review?.flow ? { display: "none" } : undefined} onSubmit={event => { event.preventDefault(); submit(); }}>
       <ChatInput key={store.draftKey()} text={draft.text} save={text => store.setDraft({ text })} submit={submit} className="composer-input" placeholder={state.selected ? "Continue the conversation…" : "Ask SANE anything…"} aria-label="Message" />
       <div className="composer-toolbar"><div className="composer-options">
