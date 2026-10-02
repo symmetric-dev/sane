@@ -2,6 +2,7 @@ import { useEffect, useId, useRef, useState } from "react";
 import type { WorkstreamConversation, WorkstreamOverview } from "../src/workstreams-contract";
 import { refKey, workstreamRequest } from "./workstreams-client";
 import { ShellDialog } from "./shell-dialog";
+import { assignmentAcceptsTopic, assignmentChoice, assignmentFilterChoices, assignmentGroups, assignmentLabel as phaseLabel, sameAssignment } from "./assignment-semantics";
 import "./workstream-conversations.css";
 
 type Props = {
@@ -26,10 +27,8 @@ type Issue = { message: string; details: string; recovery?: "retry-admission" | 
 class ActionError extends Error {
   constructor(readonly issue: Issue) { super(issue.message); }
 }
-const phaseChoices = ["design", "engineering", "planning", "execution", "research"];
 const rowKey = (row: WorkstreamConversation) => row.sessionId ?? refKey(row.ref);
 const rawError = (error: unknown) => error instanceof Error ? error.message : String(error);
-const phaseLabel = (phase: string) => phase.startsWith("research:") ? `Research · ${phase.slice(9)}` : phase.charAt(0).toUpperCase() + phase.slice(1);
 function harnessLabel(row: WorkstreamConversation, metadata?: SessionMetadata) {
   const harness = row.ref?.harness ?? row.conversation?.ref.harness ?? metadata?.admission?.source.descriptor.harness ?? metadata?.harness;
   return harness === "cc" || harness === "claude-code" ? "Claude Code" : harness === "oc" || harness === "opencode" ? "OpenCode" : "Harness unavailable";
@@ -109,8 +108,8 @@ function ConversationOrganizer({ overview, workstreamId, workspaceId, openConver
   const workstreamTitle = (id: string) => overview.workstreams.find(item => item.workstream.id === id)?.workstream.title || "another workstream";
   const membershipLabel = (row: WorkstreamConversation) => !row.conversation ? "Not connected" : row.conversation.workstreamId ? `Assigned to ${workstreamTitle(row.conversation.workstreamId)}` : "Unassigned";
   const members = overview.conversations.filter(row => workstreamId === null ? !row.conversation?.workstreamId : row.conversation?.workstreamId === workstreamId);
-  const availablePhases = [...new Set(members.flatMap(row => phasesFor(row).map(assignment => assignment.phase)))];
-  const visible = members.filter(row => titleFor(row).toLowerCase().includes(search.trim().toLowerCase()) && (!phaseFilter || phasesFor(row).some(assignment => assignment.phase === phaseFilter)));
+  const availablePhases = assignmentFilterChoices(members.flatMap(row => phasesFor(row).map(assignment => assignment.phase)));
+  const visible = members.filter(row => titleFor(row).toLowerCase().includes(search.trim().toLowerCase()) && (!phaseFilter || phasesFor(row).some(assignment => sameAssignment(assignment.phase, phaseFilter))));
   const candidates = modal?.kind === "picker" ? overview.conversations.filter(row => row.conversation?.workstreamId !== modal.target) : [];
   const pickerRows = candidates.filter(row => titleFor(row).toLowerCase().includes(pickerSearch.trim().toLowerCase()));
   const snapshotRow = modal?.kind === "picker" ? chosen : modal?.row;
@@ -118,9 +117,9 @@ function ConversationOrganizer({ overview, workstreamId, workspaceId, openConver
   const target = modal?.kind === "picker" ? modal.target : destination;
   const moving = !!target && !!selectedRow?.conversation?.workstreamId && selectedRow.conversation.workstreamId !== target;
   const needsEnrollment = !!selectedRow && !selectedRow.conversation && !(selectedRow.sessionId && connected.current.has(selectedRow.sessionId));
-  const requestedPhase = phase === "research" && topic.trim() ? `research:${topic.trim()}` : phase;
-  const validTopic = !topic.trim() || /^[a-z0-9][a-z0-9_-]{0,95}$/.test(topic.trim());
-  const alreadyHasPhase = !!selectedRow && phasesFor(selectedRow).some(assignment => assignment.phase === requestedPhase);
+  const acceptsTopic = assignmentAcceptsTopic(phase);
+  const requestedPhase = assignmentChoice(phase, acceptsTopic ? topic : "");
+  const alreadyHasPhase = !!selectedRow && requestedPhase !== null && phasesFor(selectedRow).some(assignment => sameAssignment(assignment.phase, requestedPhase));
   const admission = selectedRow?.sessionId ? metadata[selectedRow.sessionId]?.admission : undefined;
 
   function openModal(next: Modal) {
@@ -249,28 +248,28 @@ function ConversationOrganizer({ overview, workstreamId, workspaceId, openConver
     void mutate(async current => {
       await workstreamRequest(workspaceId, "manage", { operation, ref, ...fields });
       await refresh(current);
-      if (current()) { setEnding(null); if (!close) setNotice("Phase assignments updated."); }
+      if (current()) { setEnding(null); if (!close) setNotice("Assignments updated."); }
       return close;
     }, "Could not save this change. Check the conversation’s availability, then retry.");
   }
 
-  const modalTitle = modal?.kind === "picker" ? "Add existing conversation" : modal?.kind === "destination" ? selectedRow?.conversation?.workstreamId ? "Move to workstream" : "Add to workstream" : modal?.kind === "remove" ? "Remove from workstream" : modal?.kind === "phase" ? "Change phase" : "Conversation details";
+  const modalTitle = modal?.kind === "picker" ? "Add existing conversation" : modal?.kind === "destination" ? selectedRow?.conversation?.workstreamId ? "Move to workstream" : "Add to workstream" : modal?.kind === "remove" ? "Remove from workstream" : modal?.kind === "phase" ? "Change assignments" : "Conversation details";
   return <section className="workstream-conversations" aria-label="Workstream conversations">
     <header className="workstream-conversations-header"><h3>Conversations <span className="workstream-conversations-count">{members.length}</span></h3>{workstreamId && <button type="button" disabled={busy} onClick={() => openModal({ kind: "picker", target: workstreamId })}>Add existing conversation</button>}</header>
     <div className="workstream-conversations-filters">
       <label>Search conversations<input type="search" value={search} placeholder="Search by title" onChange={event => setSearch(event.target.value)} /></label>
-      <label>Active phase<select value={phaseFilter} onChange={event => setPhaseFilter(event.target.value)}><option value="">All phases</option>{availablePhases.map(item => <option key={item} value={item}>{phaseLabel(item)}</option>)}</select></label>
+      <label>Active assignment<select value={phaseFilter} onChange={event => setPhaseFilter(event.target.value)}><option value="">All assignments</option>{availablePhases.map(item => <option key={item} value={item}>{phaseLabel(item)}</option>)}</select></label>
     </div>
     {!visible.length && <p className="workstream-conversations-empty">{members.length ? "No conversations match these filters." : workstreamId ? "No conversations yet. Add an existing conversation to this workstream." : "No unassigned conversations."}</p>}
     <ul className="workstream-conversations-list">{visible.map(row => <li key={rowKey(row)} className="workstream-conversations-row">
       <div className="workstream-conversations-summary"><h4>{titleFor(row)}</h4><p>{harnessFor(row)}{!row.conversation && " · Not connected"}{!row.sessionId && " · Native conversation"}</p>
-        <div className="workstream-conversations-phases" aria-label="Active phase assignments">{phasesFor(row).length ? phasesFor(row).map(assignment => <span key={assignment.id}>{phaseLabel(assignment.phase)}</span>) : <span className="workstream-conversations-no-phase">No active phase</span>}</div>
+        <div className="workstream-conversations-phases" aria-label="Active assignments">{phasesFor(row).length ? phasesFor(row).map(assignment => <span key={assignment.id} title={assignment.phase}>{phaseLabel(assignment.phase)}</span>) : <span className="workstream-conversations-no-phase">No active assignment</span>}</div>
       </div>
       <div className="workstream-conversations-row-actions">
         <button type="button" disabled={disabled || !row.sessionId || !openConversation} title={!row.sessionId ? "This conversation has no App session to open" : !openConversation ? "Conversation navigation is unavailable" : disabled ? "Finish sending before opening another conversation" : undefined} onClick={() => { if (!disabled && row.sessionId) openConversation?.(row.sessionId); }}>Open</button>
         {!row.conversation?.workstreamId && <button type="button" disabled={busy || !overview.workstreams.length || (!row.conversation && !row.sessionId)} onClick={() => openModal({ kind: "destination", row })}>{row.conversation ? "Add to workstream" : "Connect and add"}</button>}
         <details className="workstream-conversations-actions"><summary>Actions<span className="workstream-conversations-sr-only"> for {titleFor(row)}</span></summary><div>
-          {row.conversation?.workstreamId && <><button type="button" disabled={busy || !row.ref} onClick={() => openModal({ kind: "phase", row })}>Change phase</button><button type="button" disabled={busy || overview.workstreams.length < 2} onClick={() => openModal({ kind: "destination", row })}>Move to workstream</button><button type="button" disabled={busy || !row.ref} onClick={() => openModal({ kind: "remove", row })}>Remove from workstream</button></>}
+          {row.conversation?.workstreamId && <><button type="button" disabled={busy || !row.ref} onClick={() => openModal({ kind: "phase", row })}>Change assignments</button><button type="button" disabled={busy || overview.workstreams.length < 2} onClick={() => openModal({ kind: "destination", row })}>Move to workstream</button><button type="button" disabled={busy || !row.ref} onClick={() => openModal({ kind: "remove", row })}>Remove from workstream</button></>}
           <button type="button" disabled={busy} onClick={() => openModal({ kind: "details", row })}>Details</button>
         </div></details>
       </div>
@@ -287,31 +286,31 @@ function ConversationOrganizer({ overview, workstreamId, workspaceId, openConver
       {modal.kind === "destination" && <label>Destination workstream<select value={destination} disabled={busy} onChange={event => { setDestination(event.target.value); selectionChanged(); }}><option value="">Choose a workstream</option>{overview.workstreams.filter(item => item.workstream.id !== selectedRow?.conversation?.workstreamId).map(item => <option key={item.workstream.id} value={item.workstream.id}>{item.workstream.title}</option>)}</select></label>}
       {(modal.kind === "picker" || modal.kind === "destination") && selectedRow && <>
         {needsEnrollment && <p className="workstream-conversation-warning">Adding connects this conversation to the repository first. Connection and workstream assignment are separate steps: if adding fails, it may remain connected. Its execution checkout will not change.</p>}
-        {moving && <p className="workstream-conversation-warning">Move from {workstreamTitle(selectedRow.conversation!.workstreamId!)} to {workstreamTitle(target)}? This ends its current phase assignments and preserves its execution checkout. It does not complete or approve lifecycle phases.</p>}
+        {moving && <p className="workstream-conversation-warning">Move from {workstreamTitle(selectedRow.conversation!.workstreamId!)} to {workstreamTitle(target)}? This ends its current assignments and preserves its execution checkout. It does not complete or approve lifecycle phases.</p>}
         {issue?.recovery === "retry-admission" && <button type="button" disabled={busy || !target} onClick={() => addToWorkstream(true)}>Retry connection and add</button>}
         {issue?.recovery === "check" && <button type="button" disabled={busy} onClick={checkConnection}>Check connection status</button>}
         {issue?.recovery === "inspect" && <p>Open the native harness to inspect the conversation and its connection. After resolving it, <button type="button" disabled={busy} onClick={checkConnection}>Check connection status</button>.</p>}
       </>}
-      {modal.kind === "remove" && <p className="workstream-conversation-warning">Remove this conversation from {selectedRow?.conversation?.workstreamId ? workstreamTitle(selectedRow.conversation.workstreamId) : "the workstream"}? This does not delete the conversation. It ends current phase assignments and preserves its execution checkout. It does not complete or approve lifecycle phases.</p>}
+      {modal.kind === "remove" && <p className="workstream-conversation-warning">Remove this conversation from {selectedRow?.conversation?.workstreamId ? workstreamTitle(selectedRow.conversation.workstreamId) : "the workstream"}? This does not delete the conversation. It ends current assignments and preserves its execution checkout. It does not complete or approve lifecycle phases.</p>}
       {modal.kind === "phase" && selectedRow && <>
-        <h3>Current phase assignments</h3><ul className="workstream-conversation-phase-list">{phasesFor(selectedRow).map(assignment => <li key={assignment.id}><span>{phaseLabel(assignment.phase)}</span><button type="button" disabled={busy} onClick={() => { setEnding(assignment); selectionChanged(); }}>End assignment<span className="workstream-conversations-sr-only"> for {phaseLabel(assignment.phase)}</span></button></li>)}</ul>
-        {!phasesFor(selectedRow).length && <p>No active phase assignments.</p>}
+        <h3>Current assignments</h3><ul className="workstream-conversation-phase-list">{phasesFor(selectedRow).map(assignment => <li key={assignment.id}><span title={assignment.phase}>{phaseLabel(assignment.phase)}</span><button type="button" disabled={busy} onClick={() => { setEnding(assignment); selectionChanged(); }}>End assignment<span className="workstream-conversations-sr-only"> for {phaseLabel(assignment.phase)}</span></button></li>)}</ul>
+        {!phasesFor(selectedRow).length && <p>No active assignments.</p>}
         {ending && <div className="workstream-conversation-warning"><p>End the {phaseLabel(ending.phase)} assignment? Other assignments remain active. This does not complete or approve the lifecycle phase.</p><button type="button" disabled={busy} onClick={() => manage("phase/end", { assignmentId: ending.id }, false)}>Confirm end assignment</button><button type="button" disabled={busy} onClick={() => setEnding(null)}>Keep assignment</button></div>}
-        <form onSubmit={event => { event.preventDefault(); if ((phase !== "research" || validTopic) && !alreadyHasPhase && !ending) manage("phase/assign", { phase: requestedPhase }, false); }}>
-          <h3>Add phase</h3><p>A conversation can have multiple active phase assignments. Adding one does not complete or approve a lifecycle phase.</p>
-          <label>Phase<select value={phase} disabled={busy} onChange={event => { setPhase(event.target.value); selectionChanged(); }}>{phaseChoices.map(item => <option key={item} value={item}>{phaseLabel(item)}</option>)}</select></label>
-          {phase === "research" && <label>Research topic (optional)<input value={topic} disabled={busy} maxLength={96} pattern="[a-z0-9][a-z0-9_\-]{0,95}" placeholder="e.g. deployment-options" onChange={event => { setTopic(event.target.value); selectionChanged(); }} /><small>Use 1–96 lowercase letters, numbers, hyphens or underscores; start with a letter or number. Leave empty for general Research.</small></label>}
-          {!validTopic && phase === "research" && <p role="alert">Use a valid topic slug, such as deployment-options.</p>}
-          {alreadyHasPhase && <p>This phase is already assigned to this conversation.</p>}
-          <button disabled={busy || ending !== null || (phase === "research" && !validTopic) || alreadyHasPhase}>Add phase</button>
+        <form onSubmit={event => { event.preventDefault(); if (requestedPhase && !alreadyHasPhase && !ending) manage("phase/assign", { phase: requestedPhase }, false); }}>
+          <h3>Add assignment</h3><p>A conversation can have multiple active assignments. Adding one does not complete or approve a lifecycle phase.</p>
+          <label>Assignment<select value={phase} disabled={busy} onChange={event => { setPhase(event.target.value); selectionChanged(); }}>{assignmentGroups.map(group => <optgroup key={group.label} label={group.label}>{group.choices.map(item => <option key={item.name} value={item.name}>{phaseLabel(item.name)}</option>)}</optgroup>)}</select></label>
+          {acceptsTopic && <label>{phaseLabel(phase)} topic (optional)<input value={topic} disabled={busy} maxLength={96} placeholder="e.g. deployment-options" onChange={event => { setTopic(event.target.value); selectionChanged(); }} /><small>Use 1–96 lowercase letters, numbers, hyphens or underscores; start with a letter or number. Leave empty for general {phaseLabel(phase)}.</small></label>}
+          {!requestedPhase && acceptsTopic && <p role="alert">Use a valid topic slug, such as deployment-options.</p>}
+          {alreadyHasPhase && <p>This assignment is already active for this conversation.</p>}
+          <button disabled={busy || ending !== null || !requestedPhase || alreadyHasPhase}>Add assignment</button>
         </form>
       </>}
       {modal.kind === "details" && selectedRow && <>
         <h3>Identities</h3><dl><dt>App conversation</dt><dd>{selectedRow.sessionId || "No App session"}</dd><dt>Native conversation</dt><dd>{selectedRow.ref?.nativeId || selectedRow.conversation?.ref.nativeId || "Unavailable"}</dd><dt>Native authority</dt><dd>{selectedRow.ref?.authorityId || selectedRow.conversation?.ref.authorityId || "Unavailable"}</dd><dt>Repository</dt><dd>{overview.repositoryId}</dd><dt>Enrollment</dt><dd>{membershipLabel(selectedRow)}</dd><dt>Registered</dt><dd>{selectedRow.conversation?.createdAt || "Not registered in this repository"}</dd></dl>
         <h3>Pinned execution checkout</h3><p className="workstream-conversation-identity">{selectedRow.conversation?.executionCheckout.path || admission?.binding.executionCheckout || "Unavailable"}</p>
         {selectedRow.conversation && <details><summary>Checkout pin details</summary><pre>{JSON.stringify(selectedRow.conversation.executionCheckout, null, 2)}</pre></details>}
-        <h3>Assignment history</h3><ul className="workstream-conversation-history">{overview.workstreams.flatMap(item => item.phaseHistory).filter(item => selectedRow.ref && refKey(item.ref) === refKey(selectedRow.ref)).map(item => <li key={item.id}><strong>{phaseLabel(item.phase)}</strong> · {workstreamTitle(item.workstreamId)}<small>{item.startedAt} → {item.endedAt || "Active"}</small></li>)}</ul>
-        {!overview.workstreams.some(item => item.phaseHistory.some(assignment => selectedRow.ref && refKey(assignment.ref) === refKey(selectedRow.ref))) && <p>No phase assignment history.</p>}
+        <h3>Assignment history</h3><ul className="workstream-conversation-history">{overview.workstreams.flatMap(item => item.phaseHistory).filter(item => selectedRow.ref && refKey(item.ref) === refKey(selectedRow.ref)).map(item => <li key={item.id}><strong>{item.phase}</strong> · {workstreamTitle(item.workstreamId)}<small>{item.startedAt} → {item.endedAt || "Active"}</small></li>)}</ul>
+        {!overview.workstreams.some(item => item.phaseHistory.some(assignment => selectedRow.ref && refKey(assignment.ref) === refKey(selectedRow.ref))) && <p>No assignment history.</p>}
         <h3>Enrollment metadata</h3>{metadataLoading ? <p role="status">Loading connection metadata…</p> : admission ? <pre>{JSON.stringify(admission, null, 2)}</pre> : <p>{selectedRow.sessionId ? "No App admission metadata available." : "Connected through the native harness; no App admission record."}</p>}
         {metadataError && <details><summary>Connection metadata unavailable · Details</summary><pre>{metadataError}</pre></details>}
       </>}

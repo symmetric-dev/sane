@@ -17,12 +17,12 @@ export const conversationClient: ConversationClient = {
   logout: () => request("/api/logout", { method: "POST" }),
   async conversations(signal) {
     const data = await request("/api/sessions", { signal });
-    return { conversations: (data.sessions ?? []).map((s: any) => ({ id: s.sessionId, harness: s.harness ?? "claude-code", nativeSessionId: s.nativeSessionId, cwd: s.cwd, lastRunId: s.lastRunId, status: s.lastStatus as RunStatus, title: s.title, hidden: s.hidden, model: s.model, effort: s.effort, agent: s.agent, profileId: s.profileId, workspaceId: s.workspaceId, worktreeId: s.worktreeId, association: s.association, associationReason: s.associationReason, availability: s.availability, attachment: s.attachment, worker: s.worker, directWorkerCount: s.directWorkerCount, branchOrigin: s.branchOrigin, branchDraft: s.branchDraft, replacedBy: s.replacedBy })),
+    return { conversations: (data.sessions ?? []).map((s: any) => ({ id: s.sessionId, harness: s.harness ?? "claude-code", nativeSessionId: s.nativeSessionId, cwd: s.cwd, lastRunId: s.lastRunId, status: s.lastStatus as RunStatus, title: s.title, hidden: s.hidden, model: s.model, effort: s.effort, agent: s.agent, agentKind: s.agentKind, nativeAgentSelected: s.nativeAgentSelected, profileId: s.profileId, workspaceId: s.workspaceId, worktreeId: s.worktreeId, association: s.association, associationReason: s.associationReason, availability: s.availability, attachment: s.attachment, worker: s.worker, directWorkerCount: s.directWorkerCount, branchOrigin: s.branchOrigin, branchDraft: s.branchDraft, replacedBy: s.replacedBy })),
       availability: data.availability ?? { canSend: false, reason: "Waiting for bridge availability." } };
   },
   async runs(id, signal): Promise<RunMetadata[]> {
     const data = await request(`/api/sessions/${encodeURIComponent(id)}/runs`, { signal });
-    return (data.runs ?? []).map((r: any) => ({ id: r.runId, conversationId: r.sessionId, harness: r.harness ?? "claude-code", nativeSessionId: r.nativeSessionId, nativeCommandId: r.nativeCommandId, operation: r.operation, compact: r.compact, cwd: r.cwd, status: r.status, createdAt: r.createdAt, endedAt: r.endedAt, model: r.model, effort: r.effort, agent: r.agent, profileId: r.profileId }));
+    return (data.runs ?? []).map((r: any) => ({ id: r.runId, conversationId: r.sessionId, harness: r.harness ?? "claude-code", nativeSessionId: r.nativeSessionId, nativeCommandId: r.nativeCommandId, operation: r.operation, compact: r.compact, cwd: r.cwd, status: r.status, createdAt: r.createdAt, endedAt: r.endedAt, model: r.model, effort: r.effort, agent: r.agent, agentKind: r.agentKind, nativeAgentSelected: r.nativeAgentSelected, profileId: r.profileId }));
   },
   events: (run, signal) => request(`/api/runs/${encodeURIComponent(run.id)}/events?after=${run.cursor}`, { signal }),
   workers: (id, signal) => request(`/api/sessions/${encodeURIComponent(id)}/workers`, { signal }),

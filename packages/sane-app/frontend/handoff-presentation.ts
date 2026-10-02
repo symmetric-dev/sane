@@ -1,9 +1,9 @@
-import type { HandoffStatus, Phase } from "sane-core/contracts";
+import type { HandoffStatus } from "sane-core/contracts";
+export { assignmentLabel as phaseLabel } from "./assignment-semantics";
 import type { HandoffPresentation } from "../src/handoff-contract";
 import type { Message, ToolPart } from "./types";
 
 export const handoffStatusLabel: Record<HandoffStatus, string> = { queued: "Queued", acceptance_unknown: "Acceptance unconfirmed", accepted: "Accepted", running: "Running", completed: "Completed", failed: "Failed" };
-export const phaseLabel = (phase: Phase) => phase.split(":").map(value => value ? `${value[0]!.toUpperCase()}${value.slice(1)}` : "").join(" · ");
 export const isHandoffTool = (tool: ToolPart) => /(?:^|[_.])sane_handoff$/.test(tool.name);
 const object = (value: unknown): value is Record<string, unknown> => !!value && typeof value === "object" && !Array.isArray(value);
 

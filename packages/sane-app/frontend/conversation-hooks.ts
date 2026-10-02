@@ -2,6 +2,7 @@ import { useEffect, useState } from "react";
 import type { SearchHit } from "./types";
 import { loadWorkstreams } from "./workstreams-client";
 import type { WorkstreamOverview } from "../src/workstreams-contract";
+import type { ProfileSnapshot } from "./profile-presentation";
 
 /** Results are keyed by scope so a render cannot expose the previous workspace. */
 export function useWorkstreamOverview(workspaceId: string | null, active = true): WorkstreamOverview | null {
@@ -61,7 +62,7 @@ export function useMessageHits(query: string, workspaceId: string | null | "all"
   return trimmed.length >= 2 && result?.key === key ? result.hits : [];
 }
 
-export type PreviewRun = { id: string; status: string; createdAt: string; endedAt?: string; model?: string; effort?: string; cwd?: string };
+export type PreviewRun = ProfileSnapshot & { id: string; status: string; createdAt: string; endedAt?: string; cwd?: string };
 type PreviewResult = { previewId: string; runs: PreviewRun[]; loading: boolean; error: string };
 
 /** Never reuse another session's runs (including model/effort fallbacks) while loading. */
@@ -79,13 +80,17 @@ export function usePreviewRuns(previewId: string | null): { runs: PreviewRun[]; 
         if (!response.ok) throw new Error((data as { error?: string }).error || `Request failed (${response.status})`);
         if (!current) return;
         const list = Array.isArray((data as { runs?: unknown }).runs) ? (data as { runs: Record<string, unknown>[] }).runs : [];
-        const runs: PreviewRun[] = list.map(r => ({
+        const runs: PreviewRun[] = list.filter(r => r.sessionId === undefined || r.sessionId === previewId).map((r): PreviewRun => ({
           id: String(r.runId ?? r.id ?? ""),
           status: String(r.status ?? "unknown"),
           createdAt: String(r.createdAt ?? ""),
           endedAt: r.endedAt !== undefined ? String(r.endedAt) : undefined,
           model: r.model !== undefined ? String(r.model) : undefined,
           effort: r.effort !== undefined ? String(r.effort) : undefined,
+          agent: typeof r.agent === "string" ? r.agent : undefined,
+          agentKind: r.agentKind === "assistant" || r.agentKind === "worker" ? r.agentKind : undefined,
+          nativeAgentSelected: typeof r.nativeAgentSelected === "boolean" ? r.nativeAgentSelected : undefined,
+          profileId: typeof r.profileId === "string" ? r.profileId : undefined,
           cwd: r.cwd !== undefined ? String(r.cwd) : undefined,
         })).filter(r => r.id);
         runs.sort((a, b) => b.createdAt.localeCompare(a.createdAt));

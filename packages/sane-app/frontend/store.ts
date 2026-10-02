@@ -7,7 +7,7 @@ import { contextUsageFor, type ContextUsageSnapshot } from "./context-usage";
 import { catalog } from "./catalog";
 import { invalidateWorkspaceRequests, onWorkspaceAuthExpired } from "./workspace-store";
 import { BASE_PROFILE_IDS, builtinProfiles, canAssign, legacyProfileId, type AgentProfile, type AgentProfileInput, type AgentProfiles } from "../src/agent-profiles-contract";
-import type { AssistantAgentId } from "sane-core/agent-catalog";
+import { displayProfile, profileDisplayLabel, savedProfileSnapshot, validatedAgentSnapshot, type DisplayProfile, type ProfileSnapshot } from "./profile-presentation";
 import type { Availability, Config, Conversation, ConversationClient, Harness, Interaction, InteractionReply, Message, ModelChoice, PendingTurn, Run } from "./types";
 import type { ReconciledHistory } from "../src/reconcile";
 import type { CompactRequest, CompactState, CompactionRecord } from "../src/oc-contract";
@@ -122,12 +122,18 @@ export class ChatStore {
   /** New-conversation profile: the draft pick when still visible, else the default. */
   draftProfile = (): AgentProfile => { const picked = this.profile(this.draft("").profileId); return picked && !picked.hidden && picked.kind !== "worker" ? picked : this.defaultProfile(); };
   conversationProfileId = (id: string): string => {
-    const conversation = this.state.conversations.find(c => c.id === id);
-    return conversation?.profileId || legacyProfileId(conversation?.harness ?? "claude-code", (this.storedDefaults(id).agent || undefined) as AssistantAgentId | undefined);
+    const snapshot = this.conversationSnapshot(id);
+    return snapshot.profileId ?? legacyProfileId(snapshot.harness ?? "claude-code", validatedAgentSnapshot(snapshot)?.agent);
   };
-  /** Listing-only lookup (no run fallback): rows and previews. */
-  profileFor = (c: Conversation): AgentProfile | undefined => this.profile(c.profileId || legacyProfileId(c.harness, (c.agent || undefined) as AssistantAgentId | undefined));
-  conversationProfile = (id: string): AgentProfile | undefined => this.profile(this.conversationProfileId(id));
+  /** Listing-only lookup: never guess archival identity from migrated configuration. */
+  profileFor = (c: Conversation): DisplayProfile | undefined => displayProfile(this.profileSet(), c);
+  private latestStoredRun = (id: string): Run | undefined => [...this.runMap.values()].filter(r => r.conversationId === id).sort((a, b) => a.createdAt.localeCompare(b.createdAt)).at(-1);
+  conversationSnapshot = (id: string): ProfileSnapshot => {
+    const conversation = this.state.conversations.find(c => c.id === id);
+    return savedProfileSnapshot(conversation ?? { harness: "claude-code" }, id === this.state.selected ? this.latestStoredRun(id) : undefined);
+  };
+  conversationProfile = (id: string): DisplayProfile | undefined => displayProfile(this.profileSet(), this.conversationSnapshot(id));
+  conversationProfileLabel = (id: string): string => profileDisplayLabel(this.conversationProfile(id), this.conversationSnapshot(id));
   /** kind/harness of the selected conversation even when its profile was deleted. */
   private currentShape = (): Pick<AgentProfile, "kind" | "harness"> | undefined => {
     if (!this.state.selected) return undefined;
@@ -139,7 +145,7 @@ export class ChatStore {
   conversationKind = () => this.currentShape()?.kind;
   pendingUpgrade = (): AgentProfile | undefined => this.state.selected ? this.profile(this.draft().upgradeId) : undefined;
   /** Profile the next send runs with: pending upgrade, else the conversation's, else the draft's. */
-  effectiveProfile = (): AgentProfile | undefined => this.state.selected ? this.pendingUpgrade() ?? this.conversationProfile(this.state.selected) : this.draftProfile();
+  effectiveProfile = (): DisplayProfile | undefined => this.state.selected ? this.pendingUpgrade() ?? this.conversationProfile(this.state.selected) : this.draftProfile();
   assignable = (profile: AgentProfile) => canAssign(this.currentShape(), profile);
   pickProfile = (id: string) => {
     const next = this.profile(id);
@@ -304,7 +310,7 @@ export class ChatStore {
   storedDefaults = (id: string): { model: string; effort: string; agent: string } => {
     const conversation = this.state.conversations.find(c => c.id === id);
     // runMap holds only the selected conversation's committed or restored runs.
-    const last = [...this.runMap.values()].filter(r => r.conversationId === id).sort((a, b) => a.createdAt.localeCompare(b.createdAt)).at(-1);
+    const last = this.latestStoredRun(id);
     return { model: conversation?.model || last?.model || "", effort: conversation?.effort || last?.effort || "", agent: conversation?.agent || last?.agent || "" };
   };
   /** Assistant role of the selected conversation (stored) or of the new-conversation profile. */

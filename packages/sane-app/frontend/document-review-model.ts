@@ -3,6 +3,7 @@ import type { WorkstreamDocument, WorkstreamDocumentCatalog, WorkstreamDocumentP
 import { catalog } from "./catalog";
 import { store, type SendOutcome, type State } from "./store";
 import { loadWorkstreams, refKey, workstreamRequest } from "./workstreams-client";
+import { assignmentDocumentDefault } from "./assignment-semantics";
 
 export const reviewPhases: WorkstreamDocumentPhase[] = ["design", "engineering", "planning", "execution", "research", "resources"];
 export type ReviewPhase = WorkstreamDocumentPhase | "all";
@@ -56,7 +57,7 @@ export function useDocumentReview(state: State, active: boolean, sendDisabled: b
     if (!valid(epoch)) throw new Error("Conversation changed; reopen Documents.");
     if (result.repositoryId !== identity.repositoryId || result.workstreamId !== identity.workstreamId) throw new Error("Document catalog belongs to another workstream.");
     const assignments = overview.workstreams.find(row => row.workstream.id === identity.workstreamId)!.activePhases.filter(assignment => refKey(assignment.ref) === refKey(members[0].conversation!.ref));
-    const phase: ReviewPhase = assignments.length === 1 ? assignments[0].phase.startsWith("research") ? "research" : assignments[0].phase as ReviewPhase : "all";
+    const phase = assignmentDocumentDefault(assignments);
     return { documents: result.documents, phase };
   }
 

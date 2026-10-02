@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { FiCheck, FiMoreHorizontal, FiPause, FiX } from "react-icons/fi";
 import { store } from "./store";
+import { assignmentClass, assignmentLabel } from "./assignment-semantics";
 
 /** Accent-tinted pill matching .harness-badge sizing; full `id · phases` in the tooltip. */
 export function WorkstreamBadge({ workstreamId, phases }: { workstreamId: string; phases: string[] }) {
@@ -9,17 +10,9 @@ export function WorkstreamBadge({ workstreamId, phases }: { workstreamId: string
   return <span className="harness-badge workstream-badge" title={full}>{workstreamId}</span>;
 }
 
-/** Phase pill tinted per workstream phase; `research:*` subtags share the research tint. */
-const phaseClass = (phase: string): string => {
-  switch (phase.split(":")[0]!.toLowerCase()) {
-    case "design": case "engineering": case "planning": case "execution":
-    case "knowledge": case "research": case "prototype":
-      return `phase-${phase.split(":")[0]!.toLowerCase()}`;
-    default: return "";
-  }
-};
+/** Active assignment presentation is canonical; tooltip retains stored evidence. */
 export function PhaseBadge({ phase }: { phase: string }) {
-  return <span className={`harness-badge phase-badge ${phaseClass(phase)}`.trim()} title={`Phase · ${phase}`}>{phase}</span>;
+  return <span className={`harness-badge phase-badge ${assignmentClass(phase)}`.trim()} title={`Assignment · ${phase}`}>{assignmentLabel(phase)}</span>;
 }
 
 /** Status icon replacing the running/completed text; full state in the tooltip. */

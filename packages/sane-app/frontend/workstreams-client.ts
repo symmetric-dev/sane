@@ -1,4 +1,5 @@
 import type { WorkstreamOverview } from "../src/workstreams-contract";
+import { sameAssignment } from "./assignment-semantics";
 export async function workstreamRequest<T>(workspaceId: string, operation: string, input?: unknown): Promise<T> {
   const response = await fetch(`/api/workstreams${operation ? `/${operation}` : ""}?workspaceId=${encodeURIComponent(workspaceId)}`, {
     credentials: "same-origin", cache: "no-store", signal: AbortSignal.timeout(25000),
@@ -15,7 +16,7 @@ export function filterWorkstreamConversations(data: WorkstreamOverview, filter: 
   return data.conversations.filter(row => {
     const member = row.conversation ? row.conversation.workstreamId === null ? "unassigned" : `workstream:${row.conversation.workstreamId}` : "unknown";
     return (filter.membership === "all" || member === filter.membership)
-      && (!filter.phase || assignments.some(p => refKey(p.ref) === refKey(row.ref) && p.phase === filter.phase))
+      && (!filter.phase || assignments.some(p => refKey(p.ref) === refKey(row.ref) && sameAssignment(p.phase, filter.phase)))
       && `${row.title} ${row.ref?.nativeId ?? ""} ${row.conversation?.executionCheckout.path ?? ""}`.toLowerCase().includes(filter.search.toLowerCase());
   });
 }

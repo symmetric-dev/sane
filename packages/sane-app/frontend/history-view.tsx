@@ -11,6 +11,8 @@ import { WorkerCard, WorkerSection } from "./worker-ui";
 import { BranchLinks } from "./branch-ui";
 import { usePreviewRuns, useWorkstreamOverview } from "./conversation-hooks";
 import { ConversationSidebarList, useConversationSidebarModel } from "./conversation-sidebar";
+import { displayProfile, profileDisplayLabel, savedProfileSnapshot } from "./profile-presentation";
+import { assignmentLabel } from "./assignment-semantics";
 
 // Compatibility for callers that previously imported the neutral data hooks here.
 export { useMessageHits, useWorkstreamOverview } from "./conversation-hooks";
@@ -39,6 +41,9 @@ export function HistoryDetail({ state, previewId, onOpen }: { state: State; prev
   const workspace = repository.workspaces.find(w => w.workspaceId === conversation.workspaceId);
   const worktree = workspace?.worktrees.find(t => t.worktreeId === conversation.worktreeId);
   const lastActivity = runs[0]?.endedAt || runs[0]?.createdAt || "";
+  // Only this preview's fenced runs may provide legacy identity evidence.
+  const snapshot = savedProfileSnapshot(conversation, runs[0]);
+  const profile = displayProfile(store.profileSet(), snapshot);
   return <section className="history-detail" aria-label="Session preview">
     <p className="eyebrow">{worker ? "WORKER SESSION · READ-ONLY" : "SESSION PREVIEW"}</p>
     {worker && <p><button type="button" onClick={() => { if (knownWorker(worker.parent.sessionId)) void openWorkerSession(worker.parent.sessionId); else onOpen(worker.parent.sessionId); }}>Parent conversation</button> · Parent run {worker.parent.runId}</p>}
@@ -57,8 +62,12 @@ export function HistoryDetail({ state, previewId, onOpen }: { state: State; prev
       ["Worktree state", worktree?.state],
       ["Saved model", conversation.model || runs[0]?.model || "No override saved"],
       ["Saved effort / variant", conversation.effort || runs[0]?.effort || "No override saved"],
-      ["Saved conversation role", conversation.agent || "Base"],
-      ["Workstream", membership?.workstreamId ? `${membership.workstreamId}${membership.phases.length ? ` · ${membership.phases.join(", ")}` : ""}` : "Unassigned"],
+      ["Agent", profileDisplayLabel(profile, snapshot)],
+      ["Saved conversation role", snapshot.agent || "Base"],
+      ["Saved profile ID", snapshot.profileId],
+      ["Native agent selected", snapshot.nativeAgentSelected === undefined ? undefined : String(snapshot.nativeAgentSelected)],
+      ["Workstream", membership?.workstreamId ? `${membership.workstreamId}${membership.phases.length ? ` · ${membership.phases.map(assignmentLabel).join(", ")}` : ""}` : "Unassigned"],
+      ["Stored assignments", membership?.phases.join(", ")],
       ["Association", conversation.association ?? "Unavailable"],
       ["Last run ID", conversation.lastRunId],
       ["Attachment", conversation.attachment ? `${conversation.attachment.state}${conversation.attachment.error ? ` · ${conversation.attachment.error}` : ""}` : "None"],

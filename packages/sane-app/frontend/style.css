@@ -60,15 +60,15 @@
   --phase-execution-background:#f2c9c4;
   --phase-execution-border:#dd9a93;
   --phase-execution-foreground:#8f2f28;
-  --phase-knowledge-background:#cfe8f7;
-  --phase-knowledge-border:#9ccbe8;
-  --phase-knowledge-foreground:#1f5a7d;
+  --phase-curation-background:#cfe8f7;
+  --phase-curation-border:#9ccbe8;
+  --phase-curation-foreground:#1f5a7d;
   --phase-research-background:#d9e8d3;
   --phase-research-border:#aec9a4;
   --phase-research-foreground:#3c6238;
-  --phase-prototype-background:#e4dcf3;
-  --phase-prototype-border:#c2b3e2;
-  --phase-prototype-foreground:#57417f;
+  --phase-experimentation-background:#e4dcf3;
+  --phase-experimentation-border:#c2b3e2;
+  --phase-experimentation-foreground:#57417f;
   --review-gradient-start:#77b9f2;
   --review-gradient-middle:#647ada;
   --review-gradient-end:#a6c8ef;
@@ -152,15 +152,15 @@
   --phase-execution-background:#42292d;
   --phase-execution-border:#7e484c;
   --phase-execution-foreground:#f0a9a1;
-  --phase-knowledge-background:#243540;
-  --phase-knowledge-border:#3c6279;
-  --phase-knowledge-foreground:#9fcee9;
+  --phase-curation-background:#243540;
+  --phase-curation-border:#3c6279;
+  --phase-curation-foreground:#9fcee9;
   --phase-research-background:#29392a;
   --phase-research-border:#4a6847;
   --phase-research-foreground:#afcfa4;
-  --phase-prototype-background:#342b43;
-  --phase-prototype-border:#63517d;
-  --phase-prototype-foreground:#cbb3ee;
+  --phase-experimentation-background:#342b43;
+  --phase-experimentation-border:#63517d;
+  --phase-experimentation-foreground:#cbb3ee;
   --review-gradient-start:#628eb7;
   --review-gradient-middle:#8174c0;
   --review-gradient-end:#93b4d6;
@@ -1589,9 +1589,9 @@ h3 {
 .phase-engineering { --phase-background:var(--phase-engineering-background); --phase-border:var(--phase-engineering-border); --phase-foreground:var(--phase-engineering-foreground); }
 .phase-planning { --phase-background:var(--phase-planning-background); --phase-border:var(--phase-planning-border); --phase-foreground:var(--phase-planning-foreground); }
 .phase-execution { --phase-background:var(--phase-execution-background); --phase-border:var(--phase-execution-border); --phase-foreground:var(--phase-execution-foreground); }
-.phase-knowledge { --phase-background:var(--phase-knowledge-background); --phase-border:var(--phase-knowledge-border); --phase-foreground:var(--phase-knowledge-foreground); }
+.phase-curation { --phase-background:var(--phase-curation-background); --phase-border:var(--phase-curation-border); --phase-foreground:var(--phase-curation-foreground); }
 .phase-research { --phase-background:var(--phase-research-background); --phase-border:var(--phase-research-border); --phase-foreground:var(--phase-research-foreground); }
-.phase-prototype { --phase-background:var(--phase-prototype-background); --phase-border:var(--phase-prototype-border); --phase-foreground:var(--phase-prototype-foreground); }
+.phase-experimentation { --phase-background:var(--phase-experimentation-background); --phase-border:var(--phase-experimentation-border); --phase-foreground:var(--phase-experimentation-foreground); }
 .harness-badge.phase-badge { background:var(--phase-background, transparent); border-color:var(--phase-border, var(--border)); color:var(--phase-foreground, var(--muted-foreground)); }
 .history-line {
   flex-wrap:wrap;

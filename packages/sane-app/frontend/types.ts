@@ -11,7 +11,7 @@ export const harnessName = (harness: Harness) => harness === "opencode" ? "OpenC
 export const harnessShort = (harness: Harness): "OC" | "CC" => harness === "opencode" ? "OC" : "CC";
 export type ModelChoice = { id: string; name: string; efforts: { id: string; name: string }[]; contextWindow?: number };
 export type AgentChoice = { id: string; label: string; description: string };
-export type Conversation = { id: string; harness: Harness; nativeSessionId?: string; cwd: string; lastRunId: string | null; status: RunStatus; title?: string; hidden?: boolean; model?: string; effort?: string; agent?: string; profileId?: string; availability?: Availability; attachment?: { state: "pending" | "ready"; error?: string }; worker?: WorkerSessionMetadata; directWorkerCount?: number; branchOrigin?: string; branchDraft?: string; replacedBy?: string } & Partial<Association>;
+export type Conversation = { id: string; harness: Harness; nativeSessionId?: string; cwd: string; lastRunId: string | null; status: RunStatus; title?: string; hidden?: boolean; model?: string; effort?: string; agent?: string; agentKind?: "assistant" | "worker"; nativeAgentSelected?: boolean; profileId?: string; availability?: Availability; attachment?: { state: "pending" | "ready"; error?: string }; worker?: WorkerSessionMetadata; directWorkerCount?: number; branchOrigin?: string; branchDraft?: string; replacedBy?: string } & Partial<Association>;
 export type Capabilities = {
   concurrency: { scope: "bridge" | "conversation"; limit: number; perConversation?: number; sharedCheckoutWrites?: boolean };
   cancelRun: boolean; midRunInput: boolean; permissionReplies: boolean;
@@ -31,7 +31,7 @@ export type Run = {
   operation?: "prompt" | "compact";
   compact?: { requestId: string; instructions?: string; nativeRequestId?: string; nativeAdmittedId?: string };
   nativeConnection?: string; nativeReason?: string; nativeUsage?: { cost?: number; tokens?: unknown }; nativeUsageTime?: string;
-  model?: string; effort?: string; agent?: string; profileId?: string; observedModel?: string; observedEfforts: string[];
+  model?: string; effort?: string; agent?: string; agentKind?: "assistant" | "worker"; nativeAgentSelected?: boolean; profileId?: string; observedModel?: string; observedEfforts: string[];
   messages: Message[]; events: DiagnosticEvent[]; cursor: number; seen: Set<number>;
   buffer: string; usage?: UsageSnapshot; result?: string; resultCount: number; resultKeys: Set<string>;
   toolResults: Map<string, { output: unknown; error?: boolean }>;
@@ -39,7 +39,7 @@ export type Run = {
 export type HarnessInfo = { id: Harness; available: boolean; connected: boolean; state: string; reason?: string; capabilities: { cancelRun?: boolean; permissionReplies?: boolean; questionReplies?: boolean; modelSelection?: boolean; effortValues?: string[] } };
 export type Config = { authRequired: boolean; authenticated: boolean; cwd?: string; capabilities?: Capabilities; agents?: AgentChoice[]; agentProfiles?: AgentProfiles; harnesses?: HarnessInfo[] };
 export type Availability = { canSend: boolean; reason?: string };
-export type RunMetadata = Pick<Run, "id" | "conversationId" | "cwd" | "status" | "createdAt" | "endedAt" | "model" | "effort" | "agent" | "profileId" | "harness" | "nativeSessionId" | "nativeCommandId" | "operation" | "compact">;
+export type RunMetadata = Pick<Run, "id" | "conversationId" | "cwd" | "status" | "createdAt" | "endedAt" | "model" | "effort" | "agent" | "agentKind" | "nativeAgentSelected" | "profileId" | "harness" | "nativeSessionId" | "nativeCommandId" | "operation" | "compact">;
 export type SearchHit = { sessionId: string; runId?: string; snippet: string; score: number };
 export interface ConversationClient {
   config(signal?: AbortSignal): Promise<Config>;

@@ -1,4 +1,5 @@
 import Fuse from "fuse.js";
+import { sameAssignment } from "./assignment-semantics";
 import { harnessName, harnessShort, type Conversation, type Harness, type RunStatus } from "./types";
 
 export type ConversationFilterState = {
@@ -103,7 +104,7 @@ export function filterConversations(
       }
       if (phaseActive) {
         const phases = entry?.phases ?? [];
-        if (!phases.includes(filter.phase as string)) return false;
+        if (!phases.some(phase => sameAssignment(phase, filter.phase))) return false;
       }
     }
 

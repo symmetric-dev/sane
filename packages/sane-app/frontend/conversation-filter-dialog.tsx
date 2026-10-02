@@ -5,6 +5,7 @@ import { ShellDialog } from "./shell-dialog";
 import { defaultFilterFor, type ConversationFilterState, type WorkstreamMembership } from "./conversation-filter";
 import { refKey } from "./workstreams-client";
 import type { Conversation } from "./types";
+import { assignmentFilterChoices, assignmentLabel, assignmentValue } from "./assignment-semantics";
 
 /** Join App conversations to repository workstream membership via native refs. */
 export function buildWorkstreamMap(
@@ -34,7 +35,7 @@ export function workstreamOptions(overview: WorkstreamOverview | null): { value:
 }
 
 export function phaseOptions(overview: WorkstreamOverview | null): string[] {
-  return [...new Set((overview?.workstreams ?? []).flatMap(w => w.activePhases.map(p => p.phase)))].sort();
+  return assignmentFilterChoices((overview?.workstreams ?? []).flatMap(w => w.activePhases.map(p => p.phase)));
 }
 
 type Props = {
@@ -97,9 +98,9 @@ export function ConversationFilterDialog({ value, onChange, workspaces, navigati
       <label>Workstream<select value={value.workstreamId} onChange={e => set({ workstreamId: e.target.value as ConversationFilterState["workstreamId"] })}>
         {workstreamOptions(overview).map(o => <option key={o.value} value={o.value}>{o.label}</option>)}
       </select></label>
-      <label>Phase<select value={value.phase} onChange={e => set({ phase: e.target.value })}>
-        <option value="all">All phases</option>
-        {phaseOptions(overview).map(p => <option key={p} value={p}>{p}</option>)}
+      <label>Assignment<select value={assignmentValue(value.phase)} onChange={e => set({ phase: e.target.value })}>
+        <option value="all">All assignments</option>
+        {phaseOptions(overview).map(p => <option key={p} value={p}>{assignmentLabel(p)}</option>)}
       </select></label>
       <button type="button" role="switch" aria-checked={!!value.showDeleted} className="filter-switch" onClick={() => set({ showDeleted: !value.showDeleted })}><span className="filter-switch-track" aria-hidden="true"><span className="filter-switch-thumb" /></span>Show hidden</button>
       {typeof resultCount === "number" && <p className="muted" role="status">{resultCount} match{resultCount === 1 ? "" : "es"}</p>}
