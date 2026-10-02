@@ -1,4 +1,4 @@
-import { isSlot } from "../../sane-core/src/slots.ts"
+import { isStoredSlot } from "../../sane-core/src/slots.ts"
 import { LIFECYCLE_PHASES } from "../../sane-core/src/lifecycle.ts"
 
 /** Pure syntax boundary. No ambient environment, filesystem, or native core access.
@@ -184,7 +184,7 @@ export function parseCliCommand(args: readonly string[], signals: CallerSignals 
       case "create": count(0); requireFlags("name", "type"); safeId(options.name as string); if (options.workstream) fail("Use --name, not --workstream, for creation."); if (!["feature", "foundation", "issue", "maintenance"].includes(options.type as string)) fail("Invalid workstream type."); break
       case "select": count(0); requireFlags("workstream"); if (caller.actorKind !== "local") fail("Selection is only for local invocations."); break
       case "upgrade": count(0); if (caller.actorKind !== "local") throw new ParseFailure("NATIVE_CONTEXT_UNAVAILABLE", "Schema upgrade requires an explicit local/human invocation outside enrolled native tools and shells."); break
-      case "sessions": count(0); if (options.slot && !isSlot(options.slot)) fail("Invalid phase/support slot."); break
+      case "sessions": count(0); if (options.slot && !isStoredSlot(options.slot)) fail("Invalid phase/support slot."); break
       case "provide": case "approve": case "validate":
         count(1, command === "validate" ? 2 : 1)
         if (!phases.includes(positionals[0]!)) fail("Invalid approval phase.")
@@ -222,7 +222,7 @@ export function parseCliCommand(args: readonly string[], signals: CallerSignals 
         requireFlags("repo")
         const action = positionals[0]
         if (action === "end") { count(1); requireFlags("assignment-id"); only("assignment-id"); if (options.workstream) fail("End uses the exact assignment ID only.") }
-        else if (action === "assign" || action === "target") { count(2); if (!isSlot(positionals[1])) fail("Invalid phase/support slot."); only(...managed); if (action === "assign" || managed.some(key => options[key] !== undefined)) ref(); if (action === "target") requireFlags("workstream"); else if (options.workstream) fail("Assignment uses persisted membership.") }
+        else if (action === "assign" || action === "target") { count(2); if (!isStoredSlot(positionals[1])) fail("Invalid phase/support slot."); only(...managed); if (action === "assign" || managed.some(key => options[key] !== undefined)) ref(); if (action === "target") requireFlags("workstream"); else if (options.workstream) fail("Assignment uses persisted membership.") }
         else fail("Invalid phase subcommand.")
         operation = `phase.${action}`; break
       }

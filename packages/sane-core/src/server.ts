@@ -17,24 +17,24 @@ import { providePhase as provision } from "./provision.ts"
 import { validatePhaseDocs } from "./validation.ts"
 import { assertJobProgress, registerPlannedJobs } from "./job-policy.ts"
 import type { Handoff, HandoffRecipient, HandoffStatus } from "./contracts.ts"
-import { handoffInput } from "./handoff.ts"
+import { handoffInput, equivalentHandoffInputs } from "./handoff.ts"
 import { documentDescriptors } from "./document-catalog.ts"
-import { isSlot } from "./slots.ts"
+import { isStoredSlot, canonicalSlot, equivalentSlots } from "./slots.ts"
 import { SCHEMA_VERSION } from "./schema.ts"
 import { assertSchemaCapabilities } from "./schema-upgrade.ts"
 
 export type * from "./contracts.ts"
 export { DomainError } from "./errors.ts"
 export { discoverRepository, inspectRepositoryStore, initializeRepository, upgradeRepository, revalidateCheckout } from "./repository.ts"
-export { SLOT_REGISTRY, SLOT_PATTERN, SUPPORT_TRACKS, isSlot, validateSlot, parseSlot } from "./slots.ts"
+export { SLOT_REGISTRY, SLOT_PATTERN, STORED_SLOT_PATTERN, SUPPORT_TRACKS, isSlot, isStoredSlot, canonicalSlot, equivalentSlots, validateSlot, parseSlot } from "./slots.ts"
 export { normalizeNativeSource } from "./native-source.ts"
-export { handoffInput, handoffSchema } from "./handoff.ts"
+export { handoffInput, handoffSchema, equivalentHandoffInputs } from "./handoff.ts"
 
 const now = () => new Date().toISOString()
 const hash = (bytes: string | Buffer) => createHash("sha256").update(bytes).digest("hex")
 function lifecyclePhase(value: string) { try { return policyPhase(value) } catch (error) { return fail("INVALID_INPUT", (error as Error).message) } }
 function id(value: string): void { if (typeof value !== "string" || !/^[a-z0-9][a-z0-9_-]{0,95}$/.test(value)) fail("INVALID_INPUT", "Expected a lowercase safe ID of 1–96 characters.") }
-function phaseName(value: Phase): void { if (!isSlot(value)) fail("INVALID_INPUT", "Invalid phase/support slot.") }
+function phaseName(value: Phase): void { if (!isStoredSlot(value)) fail("INVALID_INPUT", "Invalid phase/support slot.") }
 function qualified(ref: ConversationRef): void {
   if (!ref || (ref.harness !== "cc" && ref.harness !== "oc")) fail("INVALID_INPUT", "Expected qualified native reference.")
   text(ref.authorityId, "authorityId"); text(ref.nativeId, "nativeId")
@@ -257,7 +257,7 @@ export class RepositoryDomain {
     return this.transaction(context, () => {
       if (context.actor.kind === "native" && JSON.stringify(context.actor.ref) !== JSON.stringify(sender)) fail("INVALID_CONTEXT", "Handoff sender differs from actor.")
       const old = this.findHandoff(sender, args.requestId)
-      if (old) { if (JSON.stringify(old.input) !== JSON.stringify(args)) fail("CONFLICT", "Request ID is already bound to another handoff payload."); return old }
+      if (old) { if (!equivalentHandoffInputs(old.input, args)) fail("CONFLICT", "Request ID is already bound to another handoff payload."); return old }
       const invocation = this.resolveContext(sender)
       let workstreamId: string
       if (args.kickoff) {
@@ -291,7 +291,21 @@ export class RepositoryDomain {
       return this.getHandoff(id)
     })
   }
-  advanceHandoff(id: string, expectedRevision: number, change: { status: HandoffStatus; attemptId?: string; nativeCommandId?: string; runId?: string; evidence?: string; retry?: boolean }, context: MutationContext): Handoff {
+  /** Revalidate a bound delivery without reapplying membership or assignments. */
+  assertHandoffRecipientEligible(h: Handoff): void {
+    this.guard()
+    const ref = h.recipient.ref ?? fail("CONFLICT", "Queued recipient must be bound before dispatch.")
+    const c = this.getConversation(ref)
+    if (h.repositoryId !== this.repositoryId || !c || c.workstreamId !== h.workstreamId) fail("CONFLICT", "Queued recipient no longer belongs to the selected workstream; restore its eligibility before delivery.")
+    if (ref.harness !== h.recipient.harness || ref.authorityId !== h.recipient.authorityId || !samePin(c.executionCheckout, h.recipient.checkout)) fail("CONFLICT", "Queued recipient identity or checkout changed.")
+    if (h.input.target && (ref.harness !== h.input.target.harness || ref.authorityId !== h.input.target.authorityId || ref.nativeId !== h.input.target.nativeId)) fail("CONFLICT", "Queued recipient differs from the explicit qualified target.")
+    if (!this.assignments(h.workstreamId).some(a => a.endedAt === null && equivalentSlots(a.phase, h.input.to) && a.ref.harness === ref.harness && a.ref.authorityId === ref.authorityId && a.ref.nativeId === ref.nativeId)) fail("CONFLICT", "Queued recipient no longer has the destination assignment; restore its eligibility before delivery.")
+    revalidateCheckout(this.context, h.recipient.checkout)
+    this.assertConversationWritable(ref)
+  }
+  /** The App guard is synchronous: admission revalidation and domain eligibility
+   * share the definitive reservation, before any attempt identities persist. */
+  advanceHandoff(id: string, expectedRevision: number, change: { status: HandoffStatus; attemptId?: string; nativeCommandId?: string; runId?: string; evidence?: string; retry?: boolean }, context: MutationContext, assertAppRecipientReady?: (handoff: Handoff) => void): Handoff {
     return this.transaction(context, () => {
       if (context.actor.kind !== "system") fail("INVALID_CONTEXT", "App execution owner required.")
       const h = this.getHandoff(id)
@@ -302,6 +316,8 @@ export class RepositoryDomain {
       if (change.status === "acceptance_unknown") {
         if (!h.recipient.ref || !change.attemptId || !change.nativeCommandId || !change.runId) fail("INVALID_INPUT", "Persist recipient, attempt, native command and run identities before dispatch.")
         text(change.attemptId, "attempt ID"); text(change.nativeCommandId, "native command ID"); text(change.runId, "run ID")
+        this.assertHandoffRecipientEligible(h)
+        if (assertAppRecipientReady?.(h) !== undefined) fail("INVALID_INPUT", "Dispatch admission guard must be synchronous.")
         const active = this.rows("SELECT id,recipient FROM handoffs WHERE status IN ('acceptance_unknown','accepted','running')").some(row => { const ref = JSON.parse(row.recipient).ref; return ref && ref.harness === h.recipient.ref!.harness && ref.authorityId === h.recipient.ref!.authorityId && ref.nativeId === h.recipient.ref!.nativeId })
         if (active) fail("BUSY", "Recipient already has an active or uncertain delivery.")
         this.run("INSERT INTO handoff_attempts VALUES(?,?,?,?,?)", change.attemptId, id, change.nativeCommandId, change.runId, now())
@@ -373,10 +389,12 @@ export class RepositoryDomain {
         if (membership && membership.workstream_id !== old?.workstream_id) fail("CONFLICT", "Destination membership differs.")
         if (old && !membership) { const key = randomUUID(); this.run("INSERT INTO memberships VALUES(?,?,?,?,NULL)", key, target.id, old.workstream_id, time); membership = { id: key } }
         if (old && intent.replace) {
-          const phases = this.rows("SELECT phase FROM phase_assignments WHERE membership_id=? AND ended_at IS NULL", old.id)
+          const phases = this.rows("SELECT phase FROM phase_assignments WHERE membership_id=? AND ended_at IS NULL", old.id).map(a => canonicalSlot(a.phase))
+          const existing = this.rows("SELECT phase FROM phase_assignments WHERE membership_id=? AND ended_at IS NULL", membership.id).map(a => canonicalSlot(a.phase))
+          if (new Set(phases).size !== phases.length || phases.some(phase => existing.includes(phase))) fail("CONFLICT", "Branch destination has a conflicting equivalent active assignment; no history was replaced.")
           this.run("UPDATE phase_assignments SET ended_at=? WHERE membership_id=? AND ended_at IS NULL", time, old.id)
           this.run("UPDATE memberships SET ended_at=? WHERE id=?", time, old.id)
-          for (const a of phases) this.run("INSERT INTO phase_assignments VALUES(?,?,?,?,NULL)", randomUUID(), membership.id, a.phase, time)
+          for (const phase of phases) this.run("INSERT INTO phase_assignments VALUES(?,?,?,?,NULL)", randomUUID(), membership.id, phase, time)
         }
         if (old) this.touch(old.workstream_id)
       }
@@ -433,13 +451,15 @@ export class RepositoryDomain {
   }
   assignPhase(ref: ConversationRef, phase: Phase, context: MutationContext): PhaseAssignment {
     phaseName(phase)
+    phase = canonicalSlot(phase)
     return this.transaction(context, () => {
       this.assertConversationWritable(ref)
       const c = this.conversationRow(ref), membership = this.row("SELECT * FROM memberships WHERE conversation_id=? AND ended_at IS NULL", c.id)
       if (!membership) fail("CONFLICT", "Associate the conversation before assigning a phase.")
       this.revision(membership.workstream_id, context)
-      const old = this.assignments(membership.workstream_id).find(a => a.membershipId === membership.id && a.phase === phase && a.endedAt === null)
-      if (old) return old
+      const old = this.assignments(membership.workstream_id).filter(a => a.membershipId === membership.id && equivalentSlots(a.phase, phase) && a.endedAt === null)
+      if (old.length > 1) fail("CONFLICT", "Membership has conflicting equivalent active assignments; no history was selected.")
+      if (old.length) return old[0]!
       const assignment: PhaseAssignment = { id: randomUUID(), membershipId: membership.id, ref, workstreamId: membership.workstream_id, phase, startedAt: now(), endedAt: null }
       this.run("INSERT INTO phase_assignments VALUES(?,?,?,?,NULL)", assignment.id, membership.id, phase, assignment.startedAt)
       this.touch(membership.workstream_id); this.event(context, "phase_assigned", membership.workstream_id, assignment.id, { ref, phase })
@@ -460,7 +480,8 @@ export class RepositoryDomain {
   }
   resolvePhaseTarget(workstreamId: string, phase: Phase, explicit?: ConversationRef): Conversation {
     this.guard(); phaseName(phase); this.workstreamRow(workstreamId); if (explicit !== undefined) qualified(explicit)
-    const targets = this.assignments(workstreamId).filter(a => a.endedAt === null && a.phase === phase && (!explicit || (a.ref.harness === explicit.harness && a.ref.authorityId === explicit.authorityId && a.ref.nativeId === explicit.nativeId)))
+    const eligible = this.assignments(workstreamId).filter(a => a.endedAt === null && equivalentSlots(a.phase, phase) && (!explicit || (a.ref.harness === explicit.harness && a.ref.authorityId === explicit.authorityId && a.ref.nativeId === explicit.nativeId)) && this.getConversation(a.ref)?.workstreamId === workstreamId)
+    const targets = [...new Map(eligible.map(a => [JSON.stringify([a.ref.harness, a.ref.authorityId, a.ref.nativeId]), a])).values()]
     if (targets.length > 1) fail("AMBIGUOUS_TARGET", "Several eligible conversations; supply an explicit qualified reference.")
     if (!targets.length) fail("NOT_FOUND", "No eligible conversation in this phase.")
     this.assertConversationWritable(targets[0]!.ref)

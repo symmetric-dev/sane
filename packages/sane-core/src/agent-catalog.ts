@@ -3,7 +3,8 @@ export const ASSISTANT_AGENT_IDS = [
   "design",
   "engineering",
   "execution",
-  "knowledge",
+  "curation",
+  "experimentation",
   "planning",
   "research",
 ] as const
@@ -14,7 +15,8 @@ export const ASSISTANT_AGENT_LABELS: Record<AssistantAgentId, string> = {
   design: "Design",
   engineering: "Engineering",
   execution: "Execution",
-  knowledge: "Knowledge",
+  curation: "Curation",
+  experimentation: "Experimentation",
   planning: "Planning",
   research: "Research",
 }
@@ -23,13 +25,20 @@ export const ASSISTANT_AGENT_DESCRIPTIONS: Record<AssistantAgentId, string> = {
   design: "Helps the user develop the typed root doc and SDD for one single-scope workstream.",
   engineering: "Helps the user turn the approved SDD into comprehensive solution specs.",
   execution: "Coordinates authorized SANE job execution, read-only reviews, and bounded fixes.",
-  knowledge: "Helps the user improve repository skills, development scripts, documentation, and tooling from verified evidence.",
+  curation: "Works with the user to review repository and SANE session evidence, preserve useful knowledge, and address operational gaps.",
+  experimentation: "Works with the user to test hypotheses, develop proofs of concept, and create prototypes.",
   planning: "Helps the user confirm a compact Execution Plan, then drafts Job Specs and delegates bounded repository grounding before final package approval.",
   research: "Supports one workstream with topic evidence.",
 }
 
 export function isAssistantAgentId(value: unknown): value is AssistantAgentId {
   return typeof value === "string" && (ASSISTANT_AGENT_IDS as readonly string[]).includes(value)
+}
+
+/** Archival identity evidence, never new picker choices. Prototype was only a slot. */
+export type StoredAssistantAgentId = AssistantAgentId | "knowledge"
+export function isStoredAssistantAgentId(value: unknown): value is StoredAssistantAgentId {
+  return value === "knowledge" || isAssistantAgentId(value)
 }
 
 export function validAgent(value: unknown): value is AssistantAgentId {
@@ -53,6 +62,8 @@ export function isWorkerAgentId(value: unknown): value is WorkerAgentId {
   return typeof value === "string" && (WORKER_AGENT_IDS as readonly string[]).includes(value)
 }
 export type SaneAgentIdentity = { kind: "assistant"; role: AssistantAgentId } | { kind: "worker"; role: WorkerAgentId }
-export function nativeAgentId(identity: SaneAgentIdentity, harness: "claude-code" | "opencode"): string {
+export type StoredSaneAgentIdentity = { kind: "assistant"; role: StoredAssistantAgentId } | { kind: "worker"; role: WorkerAgentId }
+/** Do not canonicalize archival selections: native instructions are identity-specific. */
+export function nativeAgentId(identity: StoredSaneAgentIdentity, harness: "claude-code" | "opencode"): string {
   return harness === "opencode" ? `sane/${identity.kind}/${identity.role}` : `sane-${identity.kind}-${identity.role}`
 }

@@ -16,10 +16,10 @@ import { TerminalService, type TerminalSocketData } from "./terminal";
 import { RepositoryRouter, WorkstreamAdapterError, authenticatedWorkstreamRoute, validateWorkstreamInput, flushAndCloseWorkstreams } from "./workstreams";
 import type { WorkstreamAction, WorkstreamActionInput, WorkstreamActionResult } from "./workstreams-contract";
 import { validateAppStore, assertSourceConfiguration, atomicAppRecord, atomicNativeHistory, loadAgentProfiles, validateAgentProfiles, AppStoreError, type SourceConfiguration } from "./app-store";
-import { builtinProfiles, canAssign, legacyProfileId, templateProfileId, resolveAgentLaunch, resolveAssistantProfile, BASE_PROFILE_IDS, type AgentProfile, type AgentProfiles } from "./agent-profiles-contract";
+import { builtinProfiles, canAssign, historicalAgentProfile, legacyProfileId, storedAssistantLabel, templateProfileId, resolveAgentLaunch, resolveAssistantProfile, BASE_PROFILE_IDS, type AgentProfile, type AgentProfiles } from "./agent-profiles-contract";
 import { AdmissionService } from "./admission";
 import { HandoffService, handoffRecipientTitle, projectHandoffEnqueue, projectHandoffStatus, slotSessionIndex } from "./handoff";
-import { DomainError, normalizeNativeSource, revalidateCheckout } from "sane-core/server";
+import { DomainError, canonicalSlot, equivalentSlots, normalizeNativeSource, revalidateCheckout } from "sane-core/server";
 import { classifyCaller } from "../../sane-cli/src/cli-arguments";
 import { WorkerStore } from "./worker-store";
 import { WorkerService } from "./workers";
@@ -29,7 +29,7 @@ import { workerTerminationUncertainty } from "./worker-recovery";
 import { workerDeliveryEvidence, workerReportPrompt } from "./worker-outbox";
 import { restoreWorkerOutput, workerOutput } from "./worker-output";
 import { DEFAULT_MAX_WORKERS_PER_CHECKOUT, workerResults, type WorkerDelivery } from "./worker-contract";
-import { ASSISTANT_AGENT_DESCRIPTIONS, ASSISTANT_AGENT_IDS, ASSISTANT_AGENT_LABELS, isAssistantAgentId, nativeAgentId } from "sane-core/agent-catalog";
+import { ASSISTANT_AGENT_DESCRIPTIONS, ASSISTANT_AGENT_IDS, ASSISTANT_AGENT_LABELS, isAssistantAgentId, isStoredAssistantAgentId, nativeAgentId } from "sane-core/agent-catalog";
 import { AgentLaunchConfigurationError, agentLaunchSnapshot, claudeAgentSettings, snapshotIdentity } from "./agent-launch";
 import { readClaudeHistory, forkClaudeHistory, verifyClaudeFork, coveredNativeRuns, type ReconciledHistory } from "./reconcile";
 import { BranchStore, type BranchOperation } from "./branches";
@@ -291,11 +291,13 @@ async function startOwned(options: Options, assetsDir: string, packageDir: strin
         }
         if (a.source.authorityId !== h.recipient.authorityId || a.binding.executionCheckout !== cwd || a.binding.domain.mode !== "repository" || a.binding.domain.repositoryId !== h.repositoryId) throw new WorkstreamAdapterError(409, "recipient-mismatch", "Reserved recipient binding changed");
         if (closing || storageFailed) throw new WorkstreamAdapterError(503, "recipient-unavailable", "App execution owner unavailable");
-        const role = h.input.to.split(":")[0];
-        if (!isAssistantAgentId(role)) throw new Error("Unknown handoff assistant role");
         // New admissions snapshot destination configuration before queueing. Legacy
-        // rows keep their reserved harness; recovery uses the native session itself.
+        // rows keep their exact reserved agent/profile, not the assignment alias.
         const config = h.recipient.executionConfig;
+        const requestedRole = h.input.to.split(":")[0];
+        const role = config ? config.agent.replace(harness === "opencode" ? /^sane\/assistant\// : /^sane-assistant-/, "")
+          : isStoredAssistantAgentId(requestedRole) ? requestedRole : canonicalSlot(h.input.to).split(":")[0];
+        if (!isStoredAssistantAgentId(role) || config && config.agent !== nativeAgentId({ kind: "assistant", role }, harness)) throw new DomainError("CONFLICT", "Reserved handoff assistant identity is invalid; reconcile its original configuration.");
         let launch = a.state === "intent" && harness === "opencode"
           ? config ? { agent: config.agent, ...(config.model ? { model: oc.model(config.model, config.effort) } : {}) }
             : await oc.resolveLaunch(cwd, { agent: nativeAgentId({ kind: "assistant", role }, harness) })
@@ -325,11 +327,10 @@ async function startOwned(options: Options, assetsDir: string, packageDir: strin
       if (session && !session.title && handoff.recipient.ref) {
         const ref = handoff.recipient.ref;
         const status = (await router!.forWorkspace(workspaceId)).domain.getWorkstreamStatus(handoff.workstreamId);
-        const assignment = status.activePhases.find(a => a.phase === handoff.input.to && a.ref.harness === ref.harness && a.ref.authorityId === ref.authorityId && a.ref.nativeId === ref.nativeId);
+        const assignment = status.activePhases.find(a => equivalentSlots(a.phase, handoff.input.to) && a.ref.harness === ref.harness && a.ref.authorityId === ref.authorityId && a.ref.nativeId === ref.nativeId);
         session.title = handoffRecipientTitle(handoff.input.to, slotSessionIndex([...status.phaseHistory, ...status.activePhases], handoff.input.to, assignment?.id ?? ""));
         // Legacy/recovered recipients may only have this display/lock profile.
-        const role = handoff.input.to.split(":")[0];
-        if (!session.profileId && isAssistantAgentId(role)) session.profileId = templateProfileId(role);
+        if (!session.profileId && isStoredAssistantAgentId(session.agent)) session.profileId = legacyProfileId(session.harness ?? "claude-code", session.agent);
         await persist();
       }
     }
@@ -1306,7 +1307,7 @@ async function startOwned(options: Options, assetsDir: string, packageDir: strin
     if (h.status === "acceptance_unknown" && accepted) advance("accepted", `Native acceptance recorded in App run ${run.runId}`);
     const executing = h.recipient.harness === "cc" ? accepted : records.some(e => e.kind === "message" && (e.data as any)?.role === "assistant");
     if (h.status === "accepted" && run.status === "running" && executing) advance("running", `Native execution observed in App run ${run.runId}`);
-    if (run.status === "completed" && accepted) advance("completed", `Correlated native terminal success in App run ${run.runId}`);
+    if (run.status === "completed" && accepted) advance("completed", `Correlated native delivery-run success in App run ${run.runId}; not task completion or user approval`);
     else if (run.status === "failed") advance("failed", `Terminal failure recorded in App run ${run.runId}`);
     else if (run.status === "interrupted" && h.recipient.harness === "oc") advance("failed", `Native interruption recorded in App run ${run.runId}`);
     else if (run.status === "interrupted") handoffProblems.set(h.id, "Execution interrupted; inspect native state and acknowledge termination with the handoff reconcile endpoint");
@@ -1327,10 +1328,14 @@ async function startOwned(options: Options, assetsDir: string, packageDir: strin
       if (closing || storageFailed || meta.reconciliationRequired) return;
       const domain = (await router!.forWorkspace(workspaceId)).domain;
       const recipientContext = domain.resolveContext(h.recipient.ref!);
-      const senderSlots = domain.getStatus(h.workstreamId).activePhases.filter(a => a.ref.harness === h.sender.harness && a.ref.authorityId === h.sender.authorityId && a.ref.nativeId === h.sender.nativeId).map(a => a.phase);
+      const status = domain.getWorkstreamStatus(h.workstreamId);
+      const fromSender = (a: (typeof status.activePhases)[number]) => a.ref.harness === h.sender.harness && a.ref.authorityId === h.sender.authorityId && a.ref.nativeId === h.sender.nativeId;
+      const senderSlots = [...new Set(status.activePhases.filter(fromSender).map(a => a.phase))];
+      const originalSenderSlots = [...new Set([...status.phaseHistory, ...status.activePhases].filter(a => fromSender(a) && a.startedAt <= h.createdAt && (!a.endedAt || a.endedAt >= h.createdAt)).map(a => a.phase))];
+      const replySlots = domain.getConversation(h.sender)?.workstreamId === h.workstreamId ? originalSenderSlots.filter(slot => senderSlots.some(current => equivalentSlots(slot, current))) : [];
       const run: Run = { runId: crypto.randomUUID(), sessionId: session.sessionId, cwd, status: "running", createdAt: new Date().toISOString(), agent: session.agent, agentKind: session.agentKind, nativeAgentSelected: session.nativeAgentSelected, model: session.model, effort: session.effort, profileId: session.profileId };
       const commandId = session.harness === "opencode" ? `msg_${crypto.randomUUID().replaceAll("-", "")}` : `${run.runId}:user`;
-      h = domain.advanceHandoff(h.id, h.revision, { status: "acceptance_unknown", attemptId: crypto.randomUUID(), nativeCommandId: commandId, runId: run.runId }, { actor: { kind: "system" }, correlationId: h.id });
+      h = domain.advanceHandoff(h.id, h.revision, { status: "acceptance_unknown", attemptId: crypto.randomUUID(), nativeCommandId: commandId, runId: run.runId }, { actor: { kind: "system" }, correlationId: h.id }, current => { handoffs.assertRecipientReady(current); });
       handoffReservations.add(session.sessionId);
       if (process.env.SANE_TEST_FAULT === "handoff-drop-run") {
         // Test-only crash simulation (C9): the handoff row above is persisted
@@ -1347,7 +1352,21 @@ async function startOwned(options: Options, assetsDir: string, packageDir: strin
       const owner: Owner = { run, native: session.harness === "opencode", done: finished.promise, settled: false };
       owners.set(session.sessionId, owner);
       session.lastRunId = run.runId; session.lastStatus = "running"; meta.runs.push(run); events.set(run.runId, []);
-      const prompt = [`SANE handoff ${h.id}`, `Repository: ${domain.primaryCheckout}`, `Workstream: ${h.workstreamId}`, `Artifacts: ${recipientContext.artifactsRoot}`, `Destination: ${h.input.to}`, `From: ${JSON.stringify(h.sender)}`, `Sender slots: ${senderSlots.length ? JSON.stringify(senderSlots) : "(none)"}`, ...(h.input.kickoff ? ["Origin: kickoff; the sender created this workstream and is not a member."] : []), `Recipient: ${JSON.stringify(h.recipient.ref)}`, `Execution checkout: ${cwd}`, h.input.createNew ? "Begin pickup for the assigned role using repository context and the references below." : "Continue this conversation using the request and references below.", "This delivery does not approve artifacts or lifecycle changes. Work independently; any reply is a separate optional asynchronous handoff to the qualified sender. Do not wait for a reply after sending.", "", h.input.message].join("\n");
+      const prompt = [
+        `SANE handoff ${h.id}`, `Request ID: ${h.input.requestId}`, `Repository: ${domain.primaryCheckout}`, `Workstream: ${h.workstreamId}`,
+        `Artifacts: ${recipientContext.artifactsRoot}`, `Destination: ${h.input.to}`, `From: ${JSON.stringify(h.sender)}`,
+        `Sender slots at request: ${originalSenderSlots.length ? JSON.stringify(originalSenderSlots) : "(none recorded)"}`,
+        `Sender slots now: ${senderSlots.length ? JSON.stringify(senderSlots) : "(none)"}`,
+        ...(h.input.kickoff ? ["Origin: kickoff; the sender created this workstream and is not a member."] : []),
+        `Recipient: ${JSON.stringify(h.recipient.ref)}`, `Execution checkout: ${cwd}`,
+        h.input.createNew ? "Perform the assigned assistant's mandatory Pickup and ask the user to confirm scope before proceeding."
+          : "Continue within this conversation's confirmed scope and user decisions; confirm any scope change with the user.",
+        "A successful delivery run may only establish Pickup readiness; it does not mean request/task completion, user acceptance, or approval.",
+        "For a reply, use a separate sane_handoff with a new requestId and target exactly the qualified From identity above. Include this handoff ID, request ID, workstream, and original request scope in its message.",
+        replySlots.length ? `Reply destination slots from the original scope still assigned now: ${JSON.stringify(replySlots)}. Select the relevant exact slot and recheck eligibility when sending.`
+          : "The sender has no eligible original reply slot in this workstream now. Report this membership/assignment authority restriction; an exact reply cannot bypass it or be redirected to another conversation.",
+        "", h.input.message,
+      ].join("\n");
       void (owner.native ? executeNative(owner, prompt, resume, () => {}) : execute(owner, prompt, resume, () => {})).catch(async () => { failClosed(); await terminate(owner); }).finally(async () => {
         try { if (!storageFailed) await reconcileHandoff(workspaceId, h.id); } catch { failClosed(); }
         owner.settled = true; releaseOwner(owner); finished.resolve();
@@ -1761,7 +1780,7 @@ async function startOwned(options: Options, assetsDir: string, packageDir: strin
             owners.set(destination.sessionId, owner);
             if (owner.native) { run.nativeCommandId = `msg_${crypto.randomUUID().replaceAll("-", "")}`; run.nativePhase = "preparing"; }
             destination.lastRunId = run.runId; destination.lastStatus = "running"; meta.runs.push(run); events.set(run.runId, []);
-            const effectivePrompt = owner.native && isAssistantAgentId(destination.agent) && !destination.nativeAgentSelected ? `[SANE role: ${ASSISTANT_AGENT_LABELS[destination.agent]} assistant. Follow the SANE ${ASSISTANT_AGENT_LABELS[destination.agent]} assistant procedures for this conversation.]\n\n${input.prompt}` : input.prompt;
+            const effectivePrompt = owner.native && isStoredAssistantAgentId(destination.agent) && !destination.nativeAgentSelected ? `[SANE role: ${storedAssistantLabel(destination.agent)} assistant. Follow the SANE ${storedAssistantLabel(destination.agent)} assistant procedures for this conversation.]\n\n${input.prompt}` : input.prompt;
             void (owner.native ? executeNative(owner, effectivePrompt, true, accepted.resolve) : execute(owner, effectivePrompt, true, accepted.resolve)).catch(() => { failClosed(); accepted.resolve(false); }).finally(() => { owner.settled = true; releaseOwner(owner); done.resolve(); });
             await accepted.promise;
           }
@@ -1898,9 +1917,12 @@ async function startOwned(options: Options, assetsDir: string, packageDir: strin
         // over the legacy fields. Existing sessions only accept a Base -> assistant upgrade.
         // Legacy `agent` on a follow-up goes through the same transition rules as its template.
         if (session && input.profileId === undefined && isAssistantAgentId(input.agent)) input.profileId = templateProfileId(input.agent);
+        if (session?.agent === "knowledge" && input.profileId === undefined && input.agent === "knowledge") input.profileId = sessionProfileId(session);
         if (input.profileId !== undefined && typeof input.profileId !== "string") return json({ error: "Invalid request" }, 400);
         const profile = input.profileId !== undefined ? agentProfiles.profiles.find(p => p.id === input.profileId) : undefined;
-        if (input.profileId !== undefined && !profile) return json({ error: "Unknown agent profile" }, 400);
+        // An unchanged archival reference is a resume, never a selectable profile.
+        const historical = session && input.profileId === sessionProfileId(session) ? historicalAgentProfile(session) : undefined;
+        if (input.profileId !== undefined && !profile && !historical) return json({ error: "Unknown agent profile" }, 400);
         let upgrade: AgentProfile | undefined;
         if (profile && !session) {
           const check = canAssign(undefined, profile); if (!check.ok) return json({ error: check.reason }, 400);
@@ -1914,6 +1936,8 @@ async function startOwned(options: Options, assetsDir: string, packageDir: strin
             if (!check.ok) return json({ error: check.reason === "Different harness" ? "Session harness cannot change" : "Session agent cannot change", reason: check.reason }, 400);
             upgrade = profile;
           }
+          Object.assign(input, { harness: undefined, model: undefined, effort: undefined, agent: undefined });
+        } else if (historical) {
           Object.assign(input, { harness: undefined, model: undefined, effort: undefined, agent: undefined });
         }
         const harness = input.harness ?? session?.harness ?? "claude-code";
@@ -1993,8 +2017,8 @@ async function startOwned(options: Options, assetsDir: string, packageDir: strin
         }
         session.lastRunId = run.runId; session.lastStatus = "running"; meta.runs.push(run); events.set(run.runId, []);
         // Preserve legacy OC framing only where real agent selection was not established.
-        const effectivePrompt = isAssistantAgentId(agent) && harness === "opencode" && !session.nativeAgentSelected
-          ? `[SANE role: ${ASSISTANT_AGENT_LABELS[agent]} assistant. Follow the SANE ${ASSISTANT_AGENT_LABELS[agent]} assistant procedures for this conversation.]\n\n${input.prompt}`
+        const effectivePrompt = isStoredAssistantAgentId(agent) && harness === "opencode" && !session.nativeAgentSelected
+          ? `[SANE role: ${storedAssistantLabel(agent)} assistant. Follow the SANE ${storedAssistantLabel(agent)} assistant procedures for this conversation.]\n\n${input.prompt}`
           : input.prompt;
         // Install the complete lifecycle promise before any asynchronous work.
         void (harness === "opencode" ? executeNative(owner, effectivePrompt, resume, accepted.resolve) : execute(owner, effectivePrompt, resume, accepted.resolve)).catch(async () => {

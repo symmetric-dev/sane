@@ -7,7 +7,7 @@ import { isAbsolute, join, resolve } from "node:path"
 import type { CheckoutPin, RepositoryContext, RepositoryDiscovery, StoreAvailability } from "./contracts.ts"
 import { DomainError, fail, storageError } from "./errors.ts"
 import { SCHEMA, SCHEMA_VERSION } from "./schema.ts"
-import { assertSchemaCapabilities, assertStoreIntegrity, migrateV1ToV2 } from "./schema-upgrade.ts"
+import { assertSchemaCapabilities, assertStoreIntegrity, migrateV1ToV2, migrateToCurrent } from "./schema-upgrade.ts"
 
 export function git(cwd: string, ...args: string[]): string {
   const env = Object.fromEntries(Object.entries(process.env).filter(([name]) => !name.startsWith("GIT_")))
@@ -72,11 +72,11 @@ function validateStore(db: Database, discovery: RepositoryDiscovery, recovery = 
   checkDiscovery(discovery); safeStoreFiles(discovery)
   if (!db.query("SELECT name FROM sqlite_master WHERE type='table' AND name='store_metadata'").get()) fail("UNSUPPORTED_SCHEMA", `Unsupported schema at ${discovery.databasePath}. Expected sane-domain.`)
   const row = db.query<any, []>("SELECT * FROM store_metadata WHERE id=1").get()
-  if (!row || row.format !== "sane-domain" || ![1, SCHEMA_VERSION].includes(row.version)) fail("UNSUPPORTED_SCHEMA", `Unsupported sane-domain version at ${discovery.databasePath}.`)
+  if (!row || row.format !== "sane-domain" || ![1, 2, SCHEMA_VERSION].includes(row.version)) fail("UNSUPPORTED_SCHEMA", `Unsupported sane-domain version at ${discovery.databasePath}.`)
   assertSchemaCapabilities(db, row.version)
   if (!existsSync(join(discovery.stateRoot, "complete.json"))) fail("INCOMPLETE_INITIALIZATION", "Missing domain completion marker; upgrade cannot adopt a partial initialization.")
   const marker = JSON.parse(readFileSync(join(discovery.stateRoot, "complete.json"), "utf8"))
-  if (marker.format !== "sane-domain" || marker.repositoryId !== row.repository_id || ![1, SCHEMA_VERSION].includes(marker.version) || (!recovery && marker.version !== row.version)) fail("CORRUPT_STORE", "Domain completion marker does not match metadata.")
+  if (marker.format !== "sane-domain" || marker.repositoryId !== row.repository_id || ![1, 2, SCHEMA_VERSION].includes(marker.version) || (!recovery && marker.version !== row.version)) fail("CORRUPT_STORE", "Domain completion marker does not match metadata.")
   if (row.primary_checkout !== discovery.primaryCheckout || row.common_dir !== discovery.commonDir || !samePin(JSON.parse(row.primary_pin), discovery.primaryPin)) fail("STALE_BINDING", "Domain database belongs to different repository filesystem evidence; relocation/adoption is unsupported.")
   assertStoreIntegrity(db)
   for (const name of ["workstreams", "locks"]) if (!existsSync(join(discovery.stateRoot, name))) fail("CORRUPT_STORE", `Missing domain directory ${name}.`)
@@ -92,7 +92,7 @@ export function inspectRepositoryStore(discovery: RepositoryDiscovery): StoreAva
     db = new Database(discovery.databasePath, { readonly: true, create: false, strict: true })
     db.exec("PRAGMA foreign_keys=ON; PRAGMA recursive_triggers=ON; PRAGMA busy_timeout=1000")
     const { row } = validateStore(db, discovery)
-    if (row.version !== SCHEMA_VERSION) fail("UNSUPPORTED_SCHEMA", "sane-domain v1 requires an explicit local sane upgrade (or sane upgrade --dry-run); no implicit migration is supported.")
+    if (row.version !== SCHEMA_VERSION) fail("UNSUPPORTED_SCHEMA", `sane-domain v${row.version} requires an explicit local sane upgrade to v${SCHEMA_VERSION} (or sane upgrade --dry-run); no implicit migration is supported.`)
     return { state: "ready", context: { ...discovery, repositoryId: row.repository_id, schemaVersion: SCHEMA_VERSION } }
   } catch (error) {
     const code = error instanceof DomainError ? error.code : /busy|locked/i.test(String(error)) ? "BUSY" : /permission|EACCES|EPERM/i.test(String(error)) ? "UNAVAILABLE" : "CORRUPT_STORE"
@@ -126,8 +126,8 @@ export function initializeRepository(discovery: RepositoryDiscovery): Repository
     return { ...discovery, repositoryId, schemaVersion: SCHEMA_VERSION }
   } catch (error) { return storageError(error) } finally { db?.close() }
 }
-interface UpgradeJournal { format: "sane-domain-upgrade"; version: 1; repositoryId: string; fromVersion: 1; toVersion: 2; token: string; pid: number; host: string; processStart: string; bootId: string }
-export interface RepositoryUpgrade { operation: "upgrade"; dryRun: boolean; repositoryId: string; fromVersion: 1 | 2; toVersion: 2; changed: boolean; recovery: boolean; context?: RepositoryContext }
+interface UpgradeJournal { format: "sane-domain-upgrade"; version: 1; repositoryId: string; fromVersion: 1 | 2; toVersion: 2 | 3; token: string; pid: number; host: string; processStart: string; bootId: string }
+export interface RepositoryUpgrade { operation: "upgrade"; dryRun: boolean; repositoryId: string; fromVersion: 1 | 2 | 3; toVersion: 3; changed: boolean; recovery: boolean; context?: RepositoryContext }
 function syncPath(path: string): void { const fd = openSync(path, "r"); try { fsyncSync(fd) } finally { closeSync(fd) } }
 function bootIdentity(): string {
   try {
@@ -149,7 +149,8 @@ function processStart(pid: number): string {
 }
 function journalAt(path: string): UpgradeJournal {
   const value = JSON.parse(readFileSync(path, "utf8"))
-  if (!value || value.format !== "sane-domain-upgrade" || value.version !== 1 || value.fromVersion !== 1 || value.toVersion !== 2 || typeof value.repositoryId !== "string" || typeof value.token !== "string" || !/^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/.test(value.token) || !Number.isSafeInteger(value.pid) || value.pid < 1 || value.host !== hostname() || typeof value.processStart !== "string" || !value.processStart || typeof value.bootId !== "string" || !value.bootId) fail("CORRUPT_STORE", "Invalid or foreign-host upgrade journal; automatic recovery is unsafe.")
+  const supportedPath = value && ((value.fromVersion === 1 && value.toVersion === 2) || ([1, 2].includes(value.fromVersion) && value.toVersion === 3))
+  if (!value || value.format !== "sane-domain-upgrade" || value.version !== 1 || !supportedPath || typeof value.repositoryId !== "string" || typeof value.token !== "string" || !/^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/.test(value.token) || !Number.isSafeInteger(value.pid) || value.pid < 1 || value.host !== hostname() || typeof value.processStart !== "string" || !value.processStart || typeof value.bootId !== "string" || !value.bootId) fail("CORRUPT_STORE", "Invalid or foreign-host upgrade journal; automatic recovery is unsafe.")
   return value
 }
 function assertOwnerStopped(journal: UpgradeJournal): void {
@@ -213,13 +214,13 @@ export function upgradeRepository(discovery: RepositoryDiscovery, options: { dry
     const before = validateStore(db, discovery, recovery)
     const checkRecovery = (database: Database, row: any, marker: any) => {
       if (!journal) { if (row.version !== marker.version) fail("CORRUPT_STORE", "Version disagreement without an upgrade journal."); return }
-      if (journal.repositoryId !== row.repository_id || marker.version > row.version) fail("CORRUPT_STORE", "Upgrade journal/marker/metadata disagreement.")
+      if (journal.repositoryId !== row.repository_id || ![journal.fromVersion, journal.toVersion].includes(row.version) || ![journal.fromVersion, journal.toVersion].includes(marker.version) || marker.version > row.version) fail("CORRUPT_STORE", "Upgrade journal/marker/metadata disagreement.")
       const events = database.query<any, [string]>("SELECT * FROM audit_events WHERE correlation_id=? AND operation='schema_upgraded'").all(journal.token)
-      if (row.version === 2 && (events.length !== 1 || events[0].actor_kind !== "local" || events[0].entity_id !== row.repository_id || events[0].details !== JSON.stringify({ fromVersion: 1, toVersion: 2 }))) fail("CORRUPT_STORE", "Committed upgrade is missing its transactional audit evidence.")
-      if (row.version === 1 && (events.length || marker.version !== 1 || existsSync(stagedPath))) fail("CORRUPT_STORE", "Uncommitted upgrade has inconsistent publication evidence.")
+      if (row.version === journal.toVersion && (events.length !== 1 || events[0].actor_kind !== "local" || events[0].entity_id !== row.repository_id || events[0].details !== JSON.stringify({ fromVersion: journal.fromVersion, toVersion: journal.toVersion }))) fail("CORRUPT_STORE", "Committed upgrade is missing its transactional audit evidence.")
+      if (row.version === journal.fromVersion && (events.length || marker.version !== journal.fromVersion || existsSync(stagedPath))) fail("CORRUPT_STORE", "Uncommitted upgrade has inconsistent publication evidence.")
     }
     checkRecovery(db, before.row, before.marker)
-    const result: RepositoryUpgrade = { operation: "upgrade", dryRun: Boolean(options.dryRun), repositoryId: before.row.repository_id, fromVersion: before.row.version, toVersion: 2, changed: before.row.version === 1 || recovery, recovery }
+    const result: RepositoryUpgrade = { operation: "upgrade", dryRun: Boolean(options.dryRun), repositoryId: before.row.repository_id, fromVersion: before.row.version, toVersion: SCHEMA_VERSION, changed: before.row.version !== SCHEMA_VERSION || recovery, recovery }
     if (options.dryRun) return result
     if (!result.changed) return { ...result, context: { ...discovery, repositoryId: result.repositoryId, schemaVersion: SCHEMA_VERSION } }
     db.close(); db = undefined
@@ -242,7 +243,8 @@ export function upgradeRepository(discovery: RepositoryDiscovery, options: { dry
       checkRecovery(db!, current.row, current.marker)
       if (!journal) {
         if (current.row.version !== before.row.version || existsSync(stagedPath)) fail("CONFLICT", "Store changed before upgrade admission; retry explicitly.")
-        const owner: UpgradeJournal = { format: "sane-domain-upgrade", version: 1, repositoryId: result.repositoryId, fromVersion: 1, toVersion: 2, token: randomUUID(), pid: process.pid, host: hostname(), processStart: processStart(process.pid), bootId: bootIdentity() }
+        if (current.row.version !== 1 && current.row.version !== 2) fail("CONFLICT", "Store no longer requires upgrade; retry explicitly.")
+        const owner: UpgradeJournal = { format: "sane-domain-upgrade", version: 1, repositoryId: result.repositoryId, fromVersion: current.row.version, toVersion: SCHEMA_VERSION, token: randomUUID(), pid: process.pid, host: hostname(), processStart: processStart(process.pid), bootId: bootIdentity() }
         const temporary = join(discovery.stateRoot, `.upgrading-${owner.token}.json`)
         // Publication is atomic, and admission is serialized by SQLite IMMEDIATE.
         // A crash before rename leaves only an inert private temp and rolls back the DB.
@@ -250,17 +252,20 @@ export function upgradeRepository(discovery: RepositoryDiscovery, options: { dry
         checkBinding(); renameSync(temporary, journalPath); syncPath(discovery.stateRoot)
         journal = owner
       }
-      if (current.row.version === 1) {
-        migrateV1ToV2(db!)
-        db!.query("INSERT INTO audit_events(correlation_id,actor_kind,operation,entity_id,details,timestamp) VALUES(?,'local','schema_upgraded',?,?,?)").run(journal!.token, result.repositoryId, JSON.stringify({ fromVersion: 1, toVersion: 2 }), new Date().toISOString())
+      if (current.row.version === journal!.fromVersion) {
+        // Complete an interrupted old 1 -> 2 operation exactly as journaled.
+        // Only after its publication may a separate, new 2 -> 3 operation begin.
+        if (journal!.toVersion === 2) migrateV1ToV2(db!)
+        else migrateToCurrent(db!, journal!.fromVersion)
+        db!.query("INSERT INTO audit_events(correlation_id,actor_kind,operation,entity_id,details,timestamp) VALUES(?,'local','schema_upgraded',?,?,?)").run(journal!.token, result.repositoryId, JSON.stringify({ fromVersion: journal!.fromVersion, toVersion: journal!.toVersion }), new Date().toISOString())
       }
     }).immediate()
     // DB commit precedes publication. A crash here leaves a recoverable, unavailable store.
     db.transaction(() => {
       checkBinding()
       const current = validateStore(db!, discovery, true); checkRecovery(db!, current.row, current.marker)
-      if (current.row.version !== 2) fail("CORRUPT_STORE", "Upgrade did not commit v2 metadata.")
-      const marker = JSON.stringify({ ...current.marker, version: SCHEMA_VERSION })
+      if (current.row.version !== journal!.toVersion) fail("CORRUPT_STORE", "Upgrade did not commit its journaled metadata version.")
+      const marker = JSON.stringify({ ...current.marker, version: journal!.toVersion })
       // Staging has no authority: reconstruct even a truncated interrupted write from
       // the validated journal, transactional audit token, metadata and original marker.
       if (existsSync(stagedPath)) unlinkSync(stagedPath)
@@ -269,6 +274,11 @@ export function upgradeRepository(discovery: RepositoryDiscovery, options: { dry
       validateStore(db!, discovery)
       unlinkSync(journalPath); syncPath(discovery.stateRoot)
     }).immediate()
+    if (journal!.toVersion === 2) {
+      db.close(); db = undefined
+      const next = upgradeRepository(discovery)
+      return { ...next, fromVersion: result.fromVersion, changed: true, recovery: true }
+    }
     const state = inspectRepositoryStore(discovery)
     if (state.state !== "ready") fail(state.code, state.message)
     return { ...result, context: state.context }

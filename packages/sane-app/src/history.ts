@@ -1,14 +1,17 @@
 import { isAbsolute } from "node:path";
 import type { CompactRequest, CompactionMetadata, Harness } from "./oc-contract";
-import { isAssistantAgentId, isWorkerAgentId, type AssistantAgentId, type WorkerAgentId } from "sane-core/agent-catalog";
+import { isStoredAssistantAgentId, isWorkerAgentId, type AssistantAgentId, type StoredAssistantAgentId, type WorkerAgentId } from "sane-core/agent-catalog";
 
-/** Missing kind is a legacy assistant; workers always persist their kind. */
-export type AgentSnapshot = { agent?: AssistantAgentId | WorkerAgentId; agentKind?: "assistant" | "worker"; nativeAgentSelected?: boolean };
+/** Historical identity is immutable, including archived Knowledge conversations.
+ * Missing kind is a legacy assistant; workers always persist their kind. */
+export type AgentSnapshot = { agent?: StoredAssistantAgentId | WorkerAgentId; agentKind?: "assistant" | "worker"; nativeAgentSelected?: boolean };
+/** Newly resolved profiles cannot introduce archival identities. */
+export type CanonicalAgentSnapshot = Omit<AgentSnapshot, "agent"> & { agent?: AssistantAgentId | WorkerAgentId };
 export function validAgentSnapshot(value: AgentSnapshot): boolean {
   if (value.nativeAgentSelected !== undefined && typeof value.nativeAgentSelected !== "boolean") return false;
   if (value.agentKind !== undefined && value.agentKind !== "assistant" && value.agentKind !== "worker") return false;
   if (value.agent === undefined) return value.agentKind === undefined && value.nativeAgentSelected === undefined;
-  return value.agentKind === "worker" ? isWorkerAgentId(value.agent) : isAssistantAgentId(value.agent);
+  return value.agentKind === "worker" ? isWorkerAgentId(value.agent) : isStoredAssistantAgentId(value.agent);
 }
 
 export type Status = "running" | "completed" | "failed" | "interrupted";
@@ -26,8 +29,8 @@ export type Metadata = { sessions: Session[]; runs: Run[]; reconciliationRequire
 
 const object = (v: unknown): v is Record<string, any> => !!v && typeof v === "object" && !Array.isArray(v);
 export const uuid = (v: unknown): v is string => typeof v === "string" && /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(v);
-/** Agent profile id: builtin ("base:cc" | "base:oc" | "template:<role>") or custom uuid. */
-export const validProfileId = (v: unknown): v is string => typeof v === "string" && (/^base:(cc|oc)$/.test(v) || v.startsWith("template:") && isAssistantAgentId(v.slice(9)) || v.startsWith("worker:") && isWorkerAgentId(v.slice(7)) || uuid(v));
+/** Stored profile reference, including template:knowledge; not a selectable profile validator. */
+export const validProfileId = (v: unknown): v is string => typeof v === "string" && (/^base:(cc|oc)$/.test(v) || v.startsWith("template:") && isStoredAssistantAgentId(v.slice(9)) || v.startsWith("worker:") && isWorkerAgentId(v.slice(7)) || uuid(v));
 export const validVariant = (v: unknown): v is string => typeof v === "string" && v.length > 0 && v.length <= 200 && !/[\x00-\x1f]/.test(v);
 const status = (v: unknown): v is Status => typeof v === "string" && ["running", "completed", "failed", "interrupted"].includes(v);
 const timestamp = (v: unknown) => typeof v === "string" && Number.isFinite(Date.parse(v));

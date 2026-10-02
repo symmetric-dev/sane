@@ -92,7 +92,10 @@ export class RepositoryRouter {
   async inspect(workspaceId: string) { return inspectRepositoryStore(await this.discovery(workspaceId)); }
   async initialize(workspaceId: string) { initializeRepository(await this.discovery(workspaceId)); return this.inspect(workspaceId); }
   private open(context: RepositoryContext) {
-    const key = JSON.stringify([context.repositoryId, context.primaryPin, context.stateRoot]);
+    // An explicit local upgrade invalidates old handles even when UUID/inode stay
+    // stable. Evict them before reopening the freshly inspected capability.
+    for (const [cachedKey, cached] of this.cache) if (cached.repositoryId === context.repositoryId && cached.domain.context.schemaVersion !== context.schemaVersion) { cached.close(); this.cache.delete(cachedKey); }
+    const key = JSON.stringify([context.repositoryId, context.schemaVersion, context.primaryPin, context.stateRoot]);
     let adapter = this.cache.get(key);
     if (!adapter) { adapter = new WorkstreamAdapter(openRepositoryDomain(context), this.sources); this.cache.set(key, adapter); }
     try { adapter.domain.getOverview(); return adapter; }

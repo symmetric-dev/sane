@@ -9,8 +9,10 @@
  * role/model/effort at creation (or on Base -> assistant upgrade); later profile
  * edits only affect new conversations.
  */
-import { ASSISTANT_AGENT_DESCRIPTIONS, ASSISTANT_AGENT_IDS, ASSISTANT_AGENT_LABELS, WORKER_AGENT_IDS, WORKER_AGENT_CATALOG, isWorkerAgentId, isAssistantAgentId, nativeAgentId, type SaneAgentIdentity, type WorkerAgentId, type AssistantAgentId } from "sane-core/agent-catalog";
+import { ASSISTANT_AGENT_DESCRIPTIONS, ASSISTANT_AGENT_IDS, ASSISTANT_AGENT_LABELS, WORKER_AGENT_IDS, WORKER_AGENT_CATALOG, isWorkerAgentId, isAssistantAgentId, nativeAgentId, type SaneAgentIdentity, type WorkerAgentId, type AssistantAgentId, type StoredAssistantAgentId } from "sane-core/agent-catalog";
+import { canonicalSlot, isStoredSlot } from "sane-core/contracts";
 import type { Harness } from "./oc-contract";
+import type { AgentSnapshot } from "./history";
 
 export const AGENT_ICON_IDS = [
   "circle", "compass", "pen-tool", "layers", "cpu", "zap", "book-open", "clipboard", "search", "code", "terminal", "tool",
@@ -46,11 +48,39 @@ export type AgentProfile = {
 
 export type AgentProfiles = { version: 1; defaultId: string; profiles: AgentProfile[]; workerDefaults?: WorkerProfileMappings };
 
+/** Display-only fallback. Never insert archival profiles into AgentProfiles. */
+export type HistoricalAgentProfile = Readonly<Omit<AgentProfile, "role"> & { role: StoredAssistantAgentId | WorkerAgentId | null; readOnly: true }>;
+export const LEGACY_KNOWLEDGE_PROFILE = {
+  id: "template:knowledge",
+  label: "Knowledge",
+  description: "Helps the user improve repository skills, development scripts, documentation, and tooling from verified evidence.",
+} as const;
+export const storedAssistantLabel = (role: StoredAssistantAgentId): string => role === "knowledge" ? LEGACY_KNOWLEDGE_PROFILE.label : ASSISTANT_AGENT_LABELS[role];
+
+/** A migrated mutable profile must not relabel a historical Knowledge snapshot. */
+export function historicalAgentProfile(snapshot: AgentSnapshot & { profileId?: string; harness?: Harness; model?: string; effort?: string }): HistoricalAgentProfile | undefined {
+  if (snapshot.agent !== "knowledge" || snapshot.agentKind === "worker") return;
+  return Object.freeze({
+    ...LEGACY_KNOWLEDGE_PROFILE, id: snapshot.profileId ?? LEGACY_KNOWLEDGE_PROFILE.id,
+    kind: "assistant", role: "knowledge", harness: snapshot.harness ?? "claude-code",
+    model: snapshot.model ?? "", effort: snapshot.effort ?? "", icon: "book-open", color: "green",
+    builtin: snapshot.profileId === undefined || snapshot.profileId === LEGACY_KNOWLEDGE_PROFILE.id,
+    locked: false, hidden: true, order: 0, updatedAt: "1970-01-01T00:00:00.000Z", readOnly: true,
+  });
+}
+
+/** Historical identity wins over any migrated custom profile with the same UUID. */
+export function profileForSnapshot(profiles: AgentProfiles, snapshot: AgentSnapshot & { profileId?: string; harness?: Harness; model?: string; effort?: string }): AgentProfile | HistoricalAgentProfile | undefined {
+  return historicalAgentProfile(snapshot) ?? profiles.profiles.find(p => p.id === (snapshot.profileId ?? legacyProfileId(snapshot.harness ?? "claude-code", snapshot.agent)));
+}
+
 /** Editable fields accepted by POST/PUT /api/agents. */
 export type AgentProfileInput = Partial<Pick<AgentProfile, "label" | "description" | "harness" | "model" | "effort" | "icon" | "color" | "hidden" | "workerProfiles">>;
 
 export const BASE_PROFILE_IDS: Record<Harness, string> = { "claude-code": "base:cc", opencode: "base:oc" };
 export const templateProfileId = (role: AssistantAgentId) => `template:${role}`;
+/** Current configuration reference only; never apply to historical snapshots or native identity. */
+export const currentConfigProfileId = (id: string): string => id === LEGACY_KNOWLEDGE_PROFILE.id ? templateProfileId("curation") : id;
 export const workerTemplateProfileId = (role: WorkerAgentId) => `worker:${role}`;
 export const builtinWorkerDefaults = (): WorkerProfileMappings => Object.fromEntries(WORKER_AGENT_IDS.map(role => [role, workerTemplateProfileId(role)]));
 
@@ -58,7 +88,8 @@ const TEMPLATE_VISUALS: Record<AssistantAgentId, { icon: AgentIconId; color: Age
   design: { icon: "pen-tool", color: "violet" },
   engineering: { icon: "cpu", color: "blue" },
   execution: { icon: "zap", color: "orange" },
-  knowledge: { icon: "book-open", color: "green" },
+  curation: { icon: "book-open", color: "green" },
+  experimentation: { icon: "compass", color: "rose" },
   planning: { icon: "clipboard", color: "amber" },
   research: { icon: "search", color: "teal" },
 };
@@ -91,8 +122,8 @@ export function seedAgentProfiles(now?: string): AgentProfiles {
 }
 
 /** Profile a legacy session (no profileId) maps to. */
-export function legacyProfileId(harness: Harness, agent: AssistantAgentId | WorkerAgentId | undefined): string {
-  return agent ? isWorkerAgentId(agent) ? workerTemplateProfileId(agent) : templateProfileId(agent) : BASE_PROFILE_IDS[harness];
+export function legacyProfileId(harness: Harness, agent: StoredAssistantAgentId | WorkerAgentId | undefined): string {
+  return agent ? isWorkerAgentId(agent) ? workerTemplateProfileId(agent) : `template:${agent}` : BASE_PROFILE_IDS[harness];
 }
 
 export type AssignCheck = { ok: true } | { ok: false; reason: string };
@@ -118,9 +149,10 @@ export type ResolvedAgentLaunch = {
   effort?: string;
 };
 export class AgentProfileResolutionError extends Error {}
-/** Phase-addressed handoffs use the configured assistant template for that role. */
+/** New handoff recipients select current configuration, never archival identity. */
 export function resolveAssistantProfile(profiles: AgentProfiles, destination: string): ResolvedAgentLaunch {
-  const role = destination.split(":")[0];
+  if (!isStoredSlot(destination)) throw new AgentProfileResolutionError(`Unknown assistant destination: ${destination}`);
+  const role = canonicalSlot(destination).split(":")[0];
   if (!isAssistantAgentId(role)) throw new AgentProfileResolutionError(`Unknown assistant role: ${role}`);
   const id = templateProfileId(role);
   const profile = profiles.profiles.find(p => p.id === id);
@@ -139,7 +171,7 @@ export function resolveAgentLaunch(profile: AgentProfile): ResolvedAgentLaunch {
 /** Caller mapping wins by presence. An invalid mapping never falls back. */
 export function resolveWorkerProfile(profiles: AgentProfiles, role: WorkerAgentId, callerProfileId?: string): ResolvedAgentLaunch {
   if (!isWorkerAgentId(role)) throw new AgentProfileResolutionError(`Unknown worker role: ${role}`);
-  const caller = callerProfileId === undefined ? undefined : profiles.profiles.find(p => p.id === callerProfileId);
+  const caller = callerProfileId === undefined ? undefined : profiles.profiles.find(p => p.id === currentConfigProfileId(callerProfileId));
   if (callerProfileId !== undefined && !caller) throw new AgentProfileResolutionError(`Caller profile ${callerProfileId} is missing; configure its worker mappings`);
   const id = caller?.workerProfiles && Object.hasOwn(caller.workerProfiles, role) ? caller.workerProfiles[role] : profiles.workerDefaults?.[role];
   if (!id) throw new AgentProfileResolutionError(`No profile mapped for worker ${role}; configure workerDefaults or the caller's workerProfiles`);

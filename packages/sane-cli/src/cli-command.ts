@@ -8,6 +8,7 @@ import { parseCliCommand, type CallerSignals, type CliIntent } from "./cli-argum
 import { capEvidence, compactSummary, formatCompactLines } from "./cli-verbosity.ts"
 import { openCompactCaller } from "./native-caller.ts"
 import { nativeIntegrationConfiguration } from "./native-configuration.ts"
+import { equivalentSlots } from "../../sane-core/src/slots.ts"
 
 export const USAGE = `Usage: sane <command> [--repo PATH] [--workstream ID] [--json|--verbose]
   native-config --plugin-directory PATH --registration-file PATH --profile-root PATH
@@ -18,7 +19,7 @@ export const USAGE = `Usage: sane <command> [--repo PATH] [--workstream ID] [--j
     Merge opencode output into opencode.json; Claude uses both MCP and settings outputs.
   init [--dry-run] | upgrade [--dry-run] | inspect | list
     upgrade is local/human only: back up the store and stop other SANE processes first.
-    Upgrades sane-domain v1 to v2 explicitly; rerun locally to finish an interrupted upgrade.
+    Upgrades sane-domain v1/v2 to v3 explicitly; rerun locally to finish an interrupted upgrade.
   create --name ID --type feature|foundation|issue|maintenance [--title TEXT] [--dry-run]
   select --workstream ID [--dry-run]
   view|detail|status [ID] | audit | sessions [--slot SLOT]
@@ -37,7 +38,8 @@ export const USAGE = `Usage: sane <command> [--repo PATH] [--workstream ID] [--j
   phase target SLOT --repo PATH --workstream ID [--harness cc|oc --authority ID --native-id ID]
   phase end --repo PATH --assignment-id ID
 Slots: design, engineering, planning, execution (lifecycle);
-  research, research:<safe-topic>, knowledge, prototype (support tracks).
+  research, research:<safe-topic>, curation, experimentation (support tracks).
+  Legacy knowledge/prototype inputs match aliases; new assignments use canonical slots.
   Safe topics: 1–96 lowercase a-z/0-9/_/- characters, starting with a-z/0-9.
   provide/validate/approve accept lifecycle phases only.
 Caller envelope: SANE_CALLER_CONTEXT v1 full envelope or compact shell
@@ -180,7 +182,7 @@ async function executeCliFull(args: readonly string[], runtime: CliRuntime = {})
       case "audit": return { repositoryId: domain.repositoryId, events: domain.readAudit(intent.workstream) }
       case "sessions": {
         const id = intent.workstream ?? (nativeRef ? member : undefined)
-        const assignments = (id ? [domain.getWorkstreamStatus(id)] : domain.listWorkstreams().map(w => domain!.getWorkstreamStatus(w.id))).flatMap(w => w.activePhases).filter(a => !o.slot || a.phase === o.slot)
+        const assignments = (id ? [domain.getWorkstreamStatus(id)] : domain.listWorkstreams().map(w => domain!.getWorkstreamStatus(w.id))).flatMap(w => w.activePhases).filter(a => !o.slot || equivalentSlots(a.phase, o.slot as Phase))
         const conversations = domain.listConversations().filter(c => (!id || c.workstreamId === id) && (!o.slot || assignments.some(a => a.ref.harness === c.ref.harness && a.ref.authorityId === c.ref.authorityId && a.ref.nativeId === c.ref.nativeId)))
         return { repositoryId: domain.repositoryId, conversations, assignments }
       }

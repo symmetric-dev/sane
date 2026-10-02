@@ -3,8 +3,8 @@ import { isAbsolute, join } from "node:path";
 import { normalizeNativeSource } from "sane-core/server";
 import type { NativeSourceDescriptor, NativeAuthority, ConversationRef, CheckoutPin } from "sane-core/contracts";
 import { uuid, validateMetadata, validModel, validEffort, validVariant, validProfileId } from "./history";
-import { isAssistantAgentId, ASSISTANT_AGENT_IDS, isWorkerAgentId, WORKER_AGENT_IDS } from "sane-core/agent-catalog";
-import { AGENT_COLOR_IDS, AGENT_ICON_IDS, BASE_PROFILE_IDS, builtinProfiles, builtinWorkerDefaults, seedAgentProfiles, templateProfileId, workerTemplateProfileId, type AgentProfiles } from "./agent-profiles-contract";
+import { isAssistantAgentId, ASSISTANT_AGENT_IDS, ASSISTANT_AGENT_LABELS, ASSISTANT_AGENT_DESCRIPTIONS, isWorkerAgentId, WORKER_AGENT_IDS } from "sane-core/agent-catalog";
+import { AGENT_COLOR_IDS, AGENT_ICON_IDS, BASE_PROFILE_IDS, LEGACY_KNOWLEDGE_PROFILE, builtinProfiles, builtinWorkerDefaults, seedAgentProfiles, templateProfileId, workerTemplateProfileId, type AgentProfiles } from "./agent-profiles-contract";
 
 /** Fresh format only. Callers hold installation ownership, then data ownership. */
 export type AppManifest = { format: "sane-app-store"; version: 1; storeId: string; createdAt: string };
@@ -87,6 +87,23 @@ export function validateAdmissions(value: unknown): AdmissionRecords {
   return value as AdmissionRecords;
 }
 const PROFILE_KEYS = ["id", "kind", "role", "harness", "model", "effort", "label", "description", "icon", "color", "builtin", "locked", "order", "updatedAt"] as const;
+/** Validate relationships before normalization; only the original Knowledge
+ * builtin or a custom UUID may carry the legitimate legacy assistant role. */
+function validateProfileIdentity(p: Record<string, any>, allowLegacyKnowledge = false): void {
+  const invalid = (): never => corrupt(`Invalid id/kind/role/builtin relationship for agent profile ${String(p.id)}; reconcile agents.json before restarting the App. No profile was written.`);
+  const legacy = p.id === LEGACY_KNOWLEDGE_PROFILE.id;
+  if (!validProfileId(p.id) || legacy && !allowLegacyKnowledge) invalid();
+  const base = Object.values(BASE_PROFILE_IDS).includes(p.id);
+  const template = ASSISTANT_AGENT_IDS.some(role => templateProfileId(role) === p.id);
+  const worker = WORKER_AGENT_IDS.some(role => workerTemplateProfileId(role) === p.id);
+  if (p.builtin !== (base || template || worker || legacy)) invalid();
+  if (p.kind === "base" ? p.role !== null : p.kind === "worker" ? !isWorkerAgentId(p.role) : p.kind !== "assistant" || !(isAssistantAgentId(p.role) || allowLegacyKnowledge && p.role === "knowledge")) invalid();
+  if (p.role === "knowledge" && (!allowLegacyKnowledge || p.kind !== "assistant" || !(legacy || uuid(p.id)))) invalid();
+  if (legacy && (p.kind !== "assistant" || p.role !== "knowledge")) invalid();
+  if (base && (p.kind !== "base" || BASE_PROFILE_IDS[p.harness as "claude-code" | "opencode"] !== p.id)) invalid();
+  if (template && (p.kind !== "assistant" || templateProfileId(p.role) !== p.id)) invalid();
+  if (worker && (p.kind !== "worker" || workerTemplateProfileId(p.role) !== p.id)) invalid();
+}
 /** Strict agents.json validation; messages double as API 400 errors. */
 export function validateAgentProfiles(value: unknown): AgentProfiles {
   exact(value, ["version", "defaultId", "profiles"], ["workerDefaults"]);
@@ -94,15 +111,11 @@ export function validateAgentProfiles(value: unknown): AgentProfiles {
   const ids = new Set<string>(), bases = Object.values(BASE_PROFILE_IDS), templates = ASSISTANT_AGENT_IDS.map(templateProfileId), workers = WORKER_AGENT_IDS.map(workerTemplateProfileId);
   for (const p of value.profiles) {
     exact(p, PROFILE_KEYS, ["hidden", "workerProfiles"]);
-    if (!validProfileId(p.id) || ids.has(p.id)) corrupt("Invalid or duplicate agent profile id");
+    if (!validProfileId(p.id) || p.id === LEGACY_KNOWLEDGE_PROFILE.id || ids.has(p.id)) corrupt("Invalid or duplicate selectable agent profile id");
     ids.add(p.id);
-    const base = bases.includes(p.id), template = templates.includes(p.id), worker = workers.includes(p.id);
-    if (p.builtin !== (base || template || worker) || p.locked !== false) corrupt("Invalid agent profile builtin/locked flags");
-    if (p.kind === "base" ? p.role !== null : p.kind === "worker" ? !isWorkerAgentId(p.role) : p.kind !== "assistant" || !isAssistantAgentId(p.role)) corrupt("Agent profile kind and role disagree");
+    validateProfileIdentity(p);
+    if (p.locked !== false) corrupt("Invalid agent profile locked flag");
     if (p.harness !== "claude-code" && p.harness !== "opencode") corrupt("Unknown harness");
-    if (base && (p.kind !== "base" || BASE_PROFILE_IDS[p.harness as "claude-code" | "opencode"] !== p.id)) corrupt("Base profile harness is fixed");
-    if (template && (p.kind !== "assistant" || templateProfileId(p.role) !== p.id)) corrupt("Template profile role is fixed");
-    if (worker && (p.kind !== "worker" || workerTemplateProfileId(p.role) !== p.id)) corrupt("Worker template profile role is fixed");
     if (p.model !== "" && !validModel(p.model)) corrupt("Invalid model ID");
     if (p.effort !== "" && (p.harness === "opencode" ? !validVariant(p.effort) : !validEffort(p.effort))) corrupt(p.harness === "opencode" ? "Invalid native variant ID" : "effort must be low, medium, high, xhigh, or max");
     if (p.kind === "base" && p.harness === "opencode" && p.effort !== "" && p.model === "") corrupt("Select a model before selecting a variant");
@@ -128,18 +141,47 @@ export function validateAgentProfiles(value: unknown): AgentProfiles {
   if (!fallback || fallback.hidden || fallback.kind === "worker") corrupt("Default agent must be an existing visible Base or assistant profile");
   return value as AgentProfiles;
 }
-/** Optional record: seeded when absent; missing builtins (e.g. new templates) are merged in; legacy locked Base flags are cleared. */
+/** Migrate mutable configuration only; historical snapshot references stay untouched. */
+function migrateKnowledgeProfiles(raw: Record<string, any>): boolean {
+  exact(raw, ["version", "defaultId", "profiles"], ["workerDefaults"]);
+  if (raw.version !== 1 || !Array.isArray(raw.profiles) || typeof raw.defaultId !== "string") corrupt("Invalid agent profiles file; reconcile agents.json before restarting the App");
+  // Complete the original-identity preflight before converting even one record.
+  const ids = new Set<string>();
+  for (const p of raw.profiles) {
+    exact(p, PROFILE_KEYS, ["hidden", "workerProfiles"]);
+    validateProfileIdentity(p, true);
+    if (ids.has(p.id)) corrupt(`Duplicate original agent profile id ${p.id}; reconcile agents.json before restarting the App. No profile was written.`);
+    ids.add(p.id);
+  }
+  const oldId = LEGACY_KNOWLEDGE_PROFILE.id, newId = templateProfileId("curation");
+  const legacy = raw.profiles.find((p: any) => p?.id === oldId);
+  if (legacy && raw.profiles.some((p: any) => p?.id === newId)) corrupt("Both template:knowledge and template:curation exist in agents.json; reconcile these builtin configurations explicitly before restarting the App. Neither profile was overwritten.");
+  let changed = false;
+  for (const p of raw.profiles) {
+    if (p?.id === oldId) {
+      p.id = newId;
+      if (p.label === LEGACY_KNOWLEDGE_PROFILE.label) p.label = ASSISTANT_AGENT_LABELS.curation;
+      if (p.description === LEGACY_KNOWLEDGE_PROFILE.description) p.description = ASSISTANT_AGENT_DESCRIPTIONS.curation;
+      changed = true;
+    }
+    if (p?.kind === "assistant" && p.role === "knowledge") { p.role = "curation"; changed = true; }
+  }
+  if (raw.defaultId === oldId) { raw.defaultId = newId; changed = true; }
+  return changed;
+}
+/** Optional record: migrate Knowledge configuration, merge missing builtins, and clear legacy locked Base flags. */
 export function loadAgentProfiles(root: string): AgentProfiles {
   try { lstatSync(join(root, "agents.json")); }
   catch (e) { if ((e as NodeJS.ErrnoException).code !== "ENOENT") throw e; const seeded = seedAgentProfiles(); atomicAppRecord(root, "agents.json", seeded); return seeded; }
   const raw = readRecord(root, "agents.json") as any;
   if (!raw || typeof raw !== "object" || Array.isArray(raw)) corrupt("Invalid agent profiles file");
+  const migrated = migrateKnowledgeProfiles(raw);
   const missing = Array.isArray(raw?.profiles) ? builtinProfiles().filter(b => !raw.profiles.some((p: any) => p?.id === b.id)) : [];
   const legacy = Array.isArray(raw?.profiles) ? raw.profiles.filter((p: any) => p?.locked === true && Object.values(BASE_PROFILE_IDS).includes(p.id)) : [];
   for (const p of legacy) p.locked = false;
   const seedWorkers = raw?.workerDefaults === undefined;
   if (seedWorkers) raw.workerDefaults = builtinWorkerDefaults();
-  if (!missing.length && !legacy.length && !seedWorkers) return validateAgentProfiles(raw);
+  if (!missing.length && !legacy.length && !seedWorkers && !migrated) return validateAgentProfiles(raw);
   let order = Math.max(-1, ...raw.profiles.map((p: any) => Number.isSafeInteger(p?.order) ? p.order : -1));
   raw.profiles.push(...missing.map(b => ({ ...b, order: ++order })));
   const merged = validateAgentProfiles(raw); atomicAppRecord(root, "agents.json", merged); return merged;

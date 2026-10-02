@@ -1,5 +1,5 @@
 /** Relational domain. Upgrades are explicit; adapters use RepositoryDomain. */
-export const SCHEMA_VERSION = 2 as const
+export const SCHEMA_VERSION = 3 as const
 // BEFORE INSERT runs even when REPLACE's implicit DELETE triggers are disabled.
 // Cover every identity/unique conflict, including the partial active indexes.
 const protectedInsertConflicts: Record<string, string> = {
@@ -144,6 +144,18 @@ ${["store_metadata", "checkout_pins", "native_authorities", "conversations", "wo
 ${Object.entries(protectedInsertConflicts).map(([table, predicate]) => `CREATE TRIGGER ${table}_no_replace BEFORE INSERT ON ${table} WHEN EXISTS(SELECT 1 FROM ${table} WHERE ${predicate}) BEGIN SELECT RAISE(ABORT,'UNIQUE ${table} identity/history cannot be replaced'); END;`).join("\n")}
 `
 /** Only assignment capability and metadata version change in v2. */
-export const SCHEMA = SCHEMA_V1
+export const SCHEMA_V2 = SCHEMA_V1
   .replace("CHECK(version=1)", "CHECK(version=2)")
   .replace("phase IN ('design','engineering','planning','execution','research')", "phase IN ('design','engineering','planning','execution','research','knowledge','prototype')")
+
+/** v3 retains raw historical aliases while making active assignment equivalence unique.
+ * The BEFORE INSERT safeguard covers expression-index conflicts even for OR REPLACE
+ * with recursive delete triggers disabled. v1/v2 definitions above remain frozen. */
+export const CANONICAL_PHASE_SQL = "CASE phase WHEN 'knowledge' THEN 'curation' WHEN 'prototype' THEN 'experimentation' ELSE phase END"
+const canonicalNewPhaseSQL = CANONICAL_PHASE_SQL.replaceAll("phase", "NEW.phase")
+export const SCHEMA_V3 = SCHEMA_V2
+  .replace("CHECK(version=2)", "CHECK(version=3)")
+  .replace("phase IN ('design','engineering','planning','execution','research','knowledge','prototype')", "phase IN ('design','engineering','planning','execution','research','knowledge','prototype','curation','experimentation')")
+  .replace("ON phase_assignments(membership_id,phase) WHERE ended_at IS NULL", `ON phase_assignments(membership_id,(${CANONICAL_PHASE_SQL})) WHERE ended_at IS NULL`)
+  .replace(protectedInsertConflicts.phase_assignments!, `id=NEW.id OR (membership_id=NEW.membership_id AND (${CANONICAL_PHASE_SQL})=(${canonicalNewPhaseSQL}) AND ended_at IS NULL AND NEW.ended_at IS NULL)`)
+export const SCHEMA = SCHEMA_V3
