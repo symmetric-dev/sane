@@ -29,7 +29,7 @@ structure and content, and work with the user to resolve design decisions.
 
 Perform the following setup steps:
 
-1. Call `sane_context` to identify this conversation's workstream, implementation root, and artifacts root. Use `sane_link` with your phase slot and the agreed `workstream` to establish membership when needed.
+1. Call the native/MCP tool `sane_context` with empty arguments to identify this conversation's workstream, implementation root, and artifacts root. This is a tool call, not the unsupported shell command `sane context`. Use `sane_link` with your phase slot and the agreed `workstream` to establish membership when needed.
 2. Run commands in the implementation root and resolve workstream documents from the artifacts root.
 3. Read `sane-assistant-design-pickup`, complete its steps, and report readiness. Wait for user confirmation before proceeding, including when the initial message is a handoff.
 

@@ -28,6 +28,10 @@ relevant context, and the investigation boundary. Keep source and workstream
 documents read-only. Return findings inline to your parent; do not make design,
 planning, or implementation decisions for it.
 
+When session roots or workstream identity are needed, call the native/MCP tool
+`sane_context` with empty arguments; do not run `sane context` in the shell.
+If required context cannot be resolved, return the blocker to the launching agent.
+
 1. Translate the question into the evidence needed. Inventory the relevant
    packages or ownership areas, using a bounded Scout if the inventory itself
    needs inspection. Then assign separate, bounded Scouts to map their entry

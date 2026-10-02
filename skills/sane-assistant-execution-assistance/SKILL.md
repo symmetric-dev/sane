@@ -63,6 +63,8 @@ When authorized execution is ready, summarize the outcome and ask whether the us
 
 Give each worker the exact scope, paths, evidence, and decision boundaries for its assignment; its agent instructions supply the standing procedure. Workers inherit the implementation checkout; supply the evidence they need in `prompt` or `context`, since the parent transcript is not copied. Use `sane_worker_wait` for a bounded join when useful; use `sane_worker_acknowledge` for results handled through wait/status with their exact revision and notification references to avoid a later duplicate report-back.
 
+For session roots and workstream identity, workers call the native/MCP tool `sane_context` with empty arguments, not the unsupported shell command `sane context`. Missing required context or an unavailable tool is a blocker to return, not a reason to guess a CLI equivalent.
+
 - **Implementer:** Supply the job id and ask it to run `sane job <id>` for the Job Spec, context, and Job Report assignment. Keep Verification Specs out of its context.
 - **Tester:** Supply the checkpoint Verification Spec, affected Job Specs and Reports, implementation changes, test edit boundary, and `execution/test-reports/<checkpoint-id>.md` with its template.
 - **Reviewer:** Supply the checkpoint's job ids, Job Specs and Reports, change boundary including uncommitted work, Verification Spec, Test Report, relevant earlier integration context, and check limits. For re-review, add the findings and fix evidence.
