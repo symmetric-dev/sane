@@ -21,6 +21,7 @@ import { harnessName } from "./types";
 import { ApplicationCommandProvider } from "./application-commands";
 import { WorkspaceSearchButton, WorkspaceSearchFeature } from "./workspace-search";
 import { WorkspaceFileShortcuts } from "./workspace-file-shortcuts";
+import { CompactControl, CompactDialog } from "./compaction-ui";
 
 // Restore selection without replacing the independently bookmarked browsing pair.
 const hydrateCatalog = () => void catalog.hydrate(bookmark => store.choose(bookmark.conversationId ?? ""));
@@ -110,6 +111,7 @@ function ReadyWorkspace({ state, signOut }: { state: State; signOut: () => void 
     </WorkspaceShell>
     {drawer === "application" && <ApplicationDialog state={state} signOut={signOut} close={() => setDrawer(null)} />}
     {drawer === "details" && <ConversationDetails state={state} close={() => setDrawer(null)} />}
+    {view === "chat" && <CompactDialog state={state} />}
   </TerminalProvider></WorkspaceFileShortcuts></WorkspaceSearchFeature></WorkspaceProvider></ApplicationCommandProvider>;
 }
 
@@ -120,12 +122,14 @@ function ShellHeader({ state, view, artifact, overview, overviewWorkspaceId, ope
   const conversation = state.conversations.find(item => item.id === state.selected);
   let heading: ReactNode;
   const usage = state.contextUsage;
-  const contextLabel = usage ? `${Math.round(usage.percentage)}% context` : "— context";
-  const contextHint = usage ? `Last reported input context: ${usage.tokens.toLocaleString()} / ${usage.capacity.toLocaleString()} tokens · ${usage.model} · Received ${new Date(usage.time).toLocaleString()}. Excludes output tokens; pending input and tool results may not be included. This is the model window, not the auto-compaction threshold.` : "Context usage unavailable. Waiting for reported input tokens and a matching model-window capacity.";
+  const awaitingUsage = !usage && state.compactions?.some(record => record.contextReset);
+  const contextLabel = usage ? `${Math.round(usage.percentage)}% context${usage.stale ? " (stale)" : ""}` : awaitingUsage ? "Awaiting updated context usage" : "— context";
+  const contextHint = usage ? `${usage.stale ? "Compaction is running; this reading is stale. " : ""}Last reported input context: ${usage.tokens.toLocaleString()} / ${usage.capacity.toLocaleString()} tokens · ${usage.model} · Received ${new Date(usage.time).toLocaleString()}. Excludes output tokens; pending input and tool results may not be included. This is the model window, not the auto-compaction threshold.` : awaitingUsage ? "Awaiting updated context usage from a genuine later assistant response. Compaction does not imply zero context usage." : "Context usage unavailable. Waiting for reported input tokens and a matching model-window capacity.";
   if (view === "chat") heading = <>
     <ConversationHeading conversation={conversation} selectedId={state.selected} overview={overview} overviewWorkspaceId={overviewWorkspaceId} />
     <span className="harness-badge">{harnessName(store.harness())}</span>
     <span className="context-usage" title={contextHint} aria-label={`${contextLabel}. ${contextHint}`} tabIndex={0}>{contextLabel}</span>
+    <CompactControl state={state} />
     <button type="button" className="details-button" aria-label="Conversation details" onClick={openDetails}><Icon name="details" /><span>Details</span></button>
   </>;
   else if (view === "terminal") heading = <TerminalHeader />;
@@ -179,8 +183,8 @@ function ApplicationDialog({ state, signOut, close }: { state: State; signOut: (
 
 function ConversationDetails({ state, close }: { state: State; close: () => void }) {
   const conversation = state.conversations.find(item => item.id === state.selected);
-  const latestUsage = [...state.runs].reverse().find(run => run.usage)?.usage;
-  const nativeUsageRun = [...state.runs].reverse().find(run => run.nativeUsage);
+  const latestUsage = [...state.runs].reverse().find(run => run.operation !== "compact" && run.usage)?.usage;
+  const nativeUsageRun = [...state.runs].reverse().find(run => run.operation !== "compact" && run.nativeUsage);
   return <Drawer title="Conversation details" close={close}>
     <section className="detail-section"><p className="eyebrow">EXECUTION WORKTREE</p>
       {!state.selected ? <label className="directory-label">Launch directory<input value={store.draft().cwd} placeholder="Selected worktree root or a subdirectory" onChange={event => store.setDraft({ cwd: event.target.value })} /><small>Defaults to the selected worktree root. Optionally choose a directory inside that worktree.</small></label> : <Facts values={[["Conversation ID", state.selected], ["Harness", harnessName(store.harness())], ["Agent", store.conversationProfile(state.selected)?.label ?? (store.agent() || "Base")], ["Native session ID", conversation?.nativeSessionId], ["Launch directory", conversation?.cwd], ["Workspace", conversation?.workspaceId || "Unavailable"], ["Worktree", conversation?.worktreeId || "Unavailable"]]} />}

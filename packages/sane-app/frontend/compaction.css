@@ -1,0 +1,13 @@
+.compact-control { white-space: nowrap; font-size: 12px; }
+.topbar .context-usage { max-width: 220px; overflow: hidden; text-overflow: ellipsis; }
+.compaction-marker { margin: 12px 0; padding: 8px 12px; border-left: 2px solid var(--border); color: var(--muted-foreground); font-size: 12px; }
+.compaction-marker details { margin-top: 4px; }
+.compaction-marker details span { display: block; }
+.compaction-marker pre { white-space: pre-wrap; overflow-wrap: anywhere; }
+.compact-form { display: grid; gap: 12px; }
+.compact-form p { margin: 0; }
+.compact-form textarea { display: block; width: 100%; margin-top: 6px; padding: 8px 10px; border: 1px solid var(--border); border-radius: 6px; color: inherit; background: var(--card); resize: vertical; }
+.compact-ack { display: flex; gap: 8px; align-items: flex-start; }
+.compact-actions { display: flex; gap: 12px; justify-content: flex-end; flex-wrap: wrap; }
+.compact-hint { font-size: 12px; }
+@media (max-width: 600px) { .topbar .context-usage { max-width: 100px; } }

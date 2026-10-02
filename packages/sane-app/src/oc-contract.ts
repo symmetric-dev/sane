@@ -4,6 +4,44 @@
  * effort is the exact native variant ID, omitted means native default.
  */
 export type Harness = "claude-code" | "opencode";
+export type CompactionTrigger = "auto" | "manual" | "unknown";
+export type CompactionLifecycle = "requested" | "running" | "completed" | "failed" | "skipped" | "unconfirmed";
+/** Native evidence only. A completed run, idle session, or disappearing inbox
+ * item is not compaction completion. Times are absent when native lacks them. */
+export type CompactionMetadata = {
+  trigger: CompactionTrigger; lifecycle: CompactionLifecycle;
+  nativeId?: string; startedAt?: string; endedAt?: string;
+  preTokens?: number; postTokens?: number; durationMs?: number;
+  instructions?: string; summary?: string; error?: unknown;
+  /** Summarizer usage is evidence, never conversational context usage. */
+  summaryUsage?: { cost?: number; tokens?: unknown };
+  /** Original native boundary metadata, including unmodeled native fields. */
+  nativeMetadata?: Record<string, unknown>;
+};
+/** One attempt, not a conversation turn. id is stable during replay; nativeId
+ * is retained separately so imported boundaries can merge with live evidence. */
+export type CompactionRecord = CompactionMetadata & {
+  id: string; sessionId: string; harness: Harness; runId?: string;
+  requestId?: string; nativeRequestId?: string; nativeAdmittedId?: string;
+  requestedAt?: string; observedAt?: string; contextReset: boolean;
+};
+/** POST /api/sessions/:id/compact. Request ID is a client-generated UUID and
+ * MUST be persisted before native submission. Retries return the existing run;
+ * they never resend an uncertain native mutation. Instructions are CC-only.
+ * nativeStopped is operator confirmation for CC, not permission to interrupt. */
+export type CompactRequest = { requestId: string; instructions?: string; nativeStopped?: boolean };
+export type CompactEligibility = {
+  eligible: boolean; reason?: string; supportsInstructions: boolean;
+  nativeActivity: "active" | "idle" | "unknown"; requiresNativeStopped?: boolean;
+};
+/** GET /api/sessions/:id/compact observes only; it never initiates compaction. */
+export type CompactState = {
+  sessionId: string; eligibility: CompactEligibility; operations: CompactionRecord[];
+  /** Atomic native-history snapshot revision for UI invalidation, not outcome evidence. */
+  nativeHistoryImportedAt?: string;
+};
+/** HTTP acceptance describes admission, NOT completion. */
+export type CompactResponse = { sessionId: string; runId: string; operation: CompactionRecord };
 export type MessagePart =
   | { id: string; type: "text" | "reasoning"; text: string }
   | { id: string; type: "tool"; name: string; status: string; input?: unknown; output?: unknown; error?: unknown };
@@ -12,6 +50,7 @@ export type MessageSnapshot = {
   status: "running" | "completed" | "failed" | "unknown"; createdAt: string;
   model?: string; contextReset?: boolean;
   usage?: { cost?: number; tokens?: unknown }; error?: unknown;
+  compaction?: CompactionMetadata;
 };
 export type HarnessModel = { id: string; name: string; efforts: { id: string; name: string }[]; contextWindow?: number };
 export type FormOption = { value: string; label: string; description?: string };

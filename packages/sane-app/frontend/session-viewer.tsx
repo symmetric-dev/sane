@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { AssistantRuntimeProvider, ThreadPrimitive, useExternalStoreRuntime } from "@assistant-ui/react";
 import type { WorkerRecord } from "../src/worker-contract";
 import { conversationClient } from "./cc-client";
@@ -9,12 +9,15 @@ import { ShellDialog } from "./shell-dialog";
 import { WorkerCard, WorkerSection } from "./worker-ui";
 import { closeWorker, workerReference, openWorkerSession, publishWorkers, useWorkers, useWorkerViewer, useWorkerOpening, workerClient } from "./worker-client";
 import { useActivityPresentation } from "./transcript-activity";
+import { compactionsFor, compactionPositions } from "./compaction";
+import { CompactionMarkers } from "./compaction-ui";
+import type { CompactionRecord } from "../src/oc-contract";
 
 function Viewer({ root }: { root: WorkerRecord }) {
   const [trail, setTrail] = useState([root]);
   const [waiting, setWaiting] = useState(0);
   const selected = trail.at(-1)!;
-  const [view, setView] = useState<{ sessionId: string; runs: Run[]; messages: Message[]; error: string; loading: boolean }>({ sessionId: selected.sessionId, runs: [], messages: [], error: "", loading: true });
+  const [view, setView] = useState<{ sessionId: string; runs: Run[]; messages: Message[]; compactions: CompactionRecord[]; error: string; loading: boolean }>({ sessionId: selected.sessionId, runs: [], messages: [], compactions: [], error: "", loading: true });
   const projection = useWorkers(selected.sessionId);
   const parent = useWorkers(selected.parent.sessionId);
   const worker = parent.workers.find(w => w.id === selected.id) ?? selected;
@@ -22,7 +25,7 @@ function Viewer({ root }: { root: WorkerRecord }) {
     let current = true;
     const controller = new AbortController(), map = new Map<string, Run>();
     let timer: ReturnType<typeof setTimeout>;
-    setView({ sessionId: selected.sessionId, runs: [], messages: [], error: "", loading: true });
+    setView({ sessionId: selected.sessionId, runs: [], messages: [], compactions: [], error: "", loading: true });
     setWaiting(0);
     const poll = async () => {
       try {
@@ -30,8 +33,24 @@ function Viewer({ root }: { root: WorkerRecord }) {
         if (!current) return;
         setWaiting(interactions.length);
         publishWorkers(selected.sessionId, children); publishWorkers(selected.parent.sessionId, parents);
+        const currentWorker = parents.workers.find(record => record.id === selected.id) ?? selected;
+        const childHarness = selected.launch.harness === "opencode" ? "oc" : "cc";
+        const nativeSessionId = currentWorker.child?.harness === childHarness ? currentWorker.child.nativeId : undefined;
         for (const meta of metadata.sort((a, b) => a.createdAt.localeCompare(b.createdAt))) {
-          const run = map.get(meta.id) ?? createRun(meta);
+          meta.harness = selected.launch.harness;
+          // Only the admitted child's identity (or explicit run metadata) scopes
+          // CLI evidence. Never substitute the parent's native conversation.
+          if (nativeSessionId) meta.nativeSessionId = nativeSessionId;
+          const previous = map.get(meta.id);
+          const identityChanged = previous && nativeSessionId && previous.nativeSessionId !== nativeSessionId;
+          const run = !previous || identityChanged ? createRun(meta) : previous;
+          if (previous && identityChanged) {
+            // If admission identity arrived after the first read, replay the
+            // retained diagnostics under that proven identity, without refetching
+            // or treating the history as a newly observed compaction.
+            consume(run, previous.events);
+            run.cursor = previous.cursor;
+          }
           const page = await conversationClient.events(run, controller.signal);
           if (!current) return;
           Object.assign(run, meta, { status: page.status || meta.status }); consume(run, page.events ?? []);
@@ -39,7 +58,8 @@ function Viewer({ root }: { root: WorkerRecord }) {
           map.set(run.id, run);
         }
         const runs = [...map.values()].sort((a, b) => a.createdAt.localeCompare(b.createdAt));
-        if (current) setView({ sessionId: selected.sessionId, runs, messages: runs.flatMap(messagesForRun), error: "", loading: false });
+        const compactions = nativeSessionId ? compactionsFor({ id: selected.sessionId, harness: selected.launch.harness, nativeSessionId }, runs) : [];
+        if (current) setView({ sessionId: selected.sessionId, runs, messages: runs.flatMap(messagesForRun), compactions, error: "", loading: false });
       } catch (e) { if (current) setView(v => ({ ...v, loading: false, error: e instanceof Error ? e.message : "Worker transcript unavailable" })); }
       finally { if (current) timer = setTimeout(() => void poll(), 1500); }
     };
@@ -48,6 +68,8 @@ function Viewer({ root }: { root: WorkerRecord }) {
   }, [selected.sessionId, selected.parent.sessionId]);
   const messages = view.sessionId === selected.sessionId ? view.messages : [];
   const runs = view.sessionId === selected.sessionId ? view.runs : [];
+  const compactions = view.sessionId === selected.sessionId ? view.compactions : [];
+  const positions = useMemo(() => compactionPositions(compactions, messages), [compactions, messages]);
   const activities = useActivityPresentation({ sessionId: selected.sessionId, messages, workers: projection.workers, deliveries: projection.deliveries, loading: view.loading || view.sessionId !== selected.sessionId, animate: !view.error });
   const open = (w: WorkerRecord) => setTrail(t => t.at(-1)?.id === w.id ? t : [...t, w]);
   const runtime = useExternalStoreRuntime({ messages, convertMessage, isRunning: runs.some(r => active(r.status)), isSendDisabled: true, onNew: async () => {} });
@@ -55,7 +77,7 @@ function Viewer({ root }: { root: WorkerRecord }) {
     <WorkerCard worker={worker} workers={projection.workers} runs={runs} open={open} />
     {waiting > 0 && <p className="notice" role="status">Waiting on {waiting} permission/question request(s). This viewer cannot answer worker prompts.</p>}
     {view.loading && <p role="status">Loading worker transcript…</p>}{view.error && <p className="notice error" role="alert">{view.error}</p>}
-    <TranscriptContext.Provider value={{ sessionId: selected.sessionId, harness: worker.launch.harness, messages, runs, workers: projection.workers, deliveries: projection.deliveries, activities, openWorker: open }}><AssistantRuntimeProvider runtime={runtime}><ThreadPrimitive.Root className="worker-transcript"><ThreadPrimitive.Messages components={{ Message: ChatMessage }} /></ThreadPrimitive.Root></AssistantRuntimeProvider></TranscriptContext.Provider>
+    <TranscriptContext.Provider value={{ sessionId: selected.sessionId, harness: worker.launch.harness, messages, runs, workers: projection.workers, deliveries: projection.deliveries, activities, compactionPositions: positions, openWorker: open }}><AssistantRuntimeProvider runtime={runtime}><ThreadPrimitive.Root className="worker-transcript"><ThreadPrimitive.Messages components={{ Message: ChatMessage }} /><CompactionMarkers records={positions.get("")} />{compactions.some(record => record.lifecycle === "running") && <p className="working" role="status">{view.error ? "Compaction state unavailable; waiting for worker evidence to reconnect." : "Compacting context…"}</p>}</ThreadPrimitive.Root></AssistantRuntimeProvider></TranscriptContext.Provider>
     <WorkerSection sessionId={selected.sessionId} open={open} />
   </ShellDialog>;
 }

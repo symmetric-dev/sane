@@ -6,11 +6,15 @@ import { open, realpath } from "node:fs/promises";
 import { constants } from "node:fs";
 import { isAbsolute, join, relative, sep } from "node:path";
 import { assertClaudeSource, claudeSourceRoot } from "./claude-source";
+import { normalizeClaudeCompactionBoundary } from "./compaction";
 
 export function coveredNativeRuns(session: Session, runs: Run[], messages: MessageSnapshot[]) {
   if (session.harness !== "opencode") return [];
   const nativeUsers = new Set(messages.filter(m => m.role === "user").map(m => m.messageId));
-  return runs.filter(r => r.sessionId === session.sessionId && r.nativeCommandId && nativeUsers.has(r.nativeCommandId)).map(r => r.runId);
+  const nativeCompacts = new Set(messages.filter(m => m.compaction).map(m => m.compaction!.nativeId ?? m.messageId));
+  return runs.filter(r => r.sessionId === session.sessionId && (r.operation === "compact"
+    ? nativeCompacts.has(r.compact?.nativeAdmittedId ?? r.compact?.nativeRequestId ?? r.nativeCommandId ?? "")
+    : !!r.nativeCommandId && nativeUsers.has(r.nativeCommandId))).map(r => r.runId);
 }
 
 export type ReconciledHistory = {
@@ -38,13 +42,28 @@ async function claudeCwdEvidence(id: string, cwd: string, root: string, fork?: {
     const after = await file.stat();
     if (length !== before.size || before.size !== after.size || before.mtimeMs !== after.mtimeMs || before.ctimeMs !== after.ctimeMs) throw new Error("Native transcript changed while checking native cwd evidence");
     let found = false, forkFound = false;
-    const directories = new Set<string>();
+    const directories = new Set<string>(), order: string[] = [];
+    const boundaries = new Map<string, MessageSnapshot>();
     for (const line of bytes.subarray(0, length).toString("utf8").split("\n")) {
       if (!line.trim()) continue;
       const row = JSON.parse(line);
       if (row.type === "relocated") throw new Error("Relocated native transcript requires unsupported locator verification; no cwd inferred");
-      if (row.isSidechain || (row.type !== "user" && row.type !== "assistant")) continue;
+      if (row.isSidechain || row.parent_tool_use_id || row.parent_agent_id || row.subagent_type || row.agent_id) continue;
+      if (row.type === "system" && row.subtype === "compact_boundary") {
+        // SDK getSessionMessages omits these records and their metadata. Retain
+        // only actual main-session system boundaries from the bounded raw read.
+        if (row.sessionId !== id) throw new Error("Native raw compaction boundary session identity mismatch");
+        const boundary = normalizeClaudeCompactionBoundary(row, id);
+        if (!boundary) throw new Error("Invalid native raw compaction boundary");
+        const previous = boundaries.get(boundary.messageId);
+        if (previous && JSON.stringify(previous) !== JSON.stringify(boundary)) throw new Error("Conflicting native raw compaction boundary UUID");
+        if (!previous) { boundaries.set(boundary.messageId, boundary); order.push(boundary.messageId); }
+        if (boundaries.size > 10000) throw new Error("Native transcript exceeds 10,000-boundary import budget");
+        continue;
+      }
+      if (row.type !== "user" && row.type !== "assistant") continue;
       if (row.sessionId !== id) throw new Error("Native raw transcript session identity mismatch");
+      if (typeof row.uuid === "string") order.push(row.uuid);
       if (row.cwd !== undefined && !directories.has(row.cwd)) {
         if (typeof row.cwd !== "string" || !isAbsolute(row.cwd)) throw new Error("Native raw transcript execution directory is not an absolute path");
         const child = relative(cwd, row.cwd);
@@ -58,7 +77,7 @@ async function claudeCwdEvidence(id: string, cwd: string, root: string, fork?: {
     }
     if (!found) throw new Error("Native transcript has no genuine native cwd evidence; SDK project-path fallback is insufficient");
     if (fork && !forkFound) throw new Error("Native fork provenance does not contain the selected source boundary");
-    return { size: before.size, mtime: before.mtimeMs, ctime: before.ctimeMs, ino: before.ino, dev: before.dev, directories: [...directories] };
+    return { size: before.size, mtime: before.mtimeMs, ctime: before.ctimeMs, ino: before.ino, dev: before.dev, directories: [...directories], boundaries: [...boundaries.values()], order };
   } finally { await file.close(); }
 }
 
@@ -90,7 +109,18 @@ export async function readClaudeHistory(id: string, cwd: string, sourceRoot = cl
   const finalEvidence = await claudeCwdEvidence(id, cwd, sourceRoot);
   if (JSON.stringify(evidence) !== JSON.stringify(finalEvidence)) throw new Error("Native transcript changed during reconciliation; previous history preserved");
   assertClaudeSource(sourceRoot);
-  return normalizeClaudeHistory(id, records);
+  const messages = normalizeClaudeHistory(id, records);
+  const byId = new Map([...messages, ...evidence.boundaries].map(m => [m.messageId, m]));
+  const ordered: MessageSnapshot[] = [];
+  for (const messageId of evidence.order) {
+    const message = byId.get(messageId);
+    if (message) { ordered.push(message); byId.delete(messageId); }
+  }
+  // Never guess the placement of a native message outside the verified raw
+  // transcript. Keeping order matters for context resets and usage projection.
+  if (byId.size) throw new Error("SDK history contains messages absent from the verified native transcript");
+  if (ordered.length > 10000) throw new Error("Native transcript exceeds 10,000-message import budget");
+  return ordered;
 }
 
 export function normalizeClaudeHistory(id: string, records: SessionMessage[]): MessageSnapshot[] {

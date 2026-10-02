@@ -1,6 +1,6 @@
 import { Service } from "@opencode/client/service";
-import type { FormField, HarnessModel, Interaction, InteractionReply, MessagePart, MessageSnapshot } from "./oc-contract";
-import { validModel, validVariant } from "./history";
+import type { CompactionLifecycle, CompactionMetadata, FormField, HarnessModel, Interaction, InteractionReply, MessagePart, MessageSnapshot } from "./oc-contract";
+import { nativeMessageId, validModel, validVariant } from "./history";
 
 // HTTP shapes from https://opencode.ai/v2/openapi.json and the V2 client guide.
 // Discovery connects to a registered service; this adapter never manages its process.
@@ -10,7 +10,10 @@ export type NativeAgent = { id: string; model?: ModelRef };
 export type OpenCodeLaunch = { agent?: string; model?: ModelRef };
 type NativeSession = { id: string; location?: { directory?: string }; agent?: string; model?: ModelRef; outcome?: "succeeded" | "failed" | "interrupted"; time: { created: number; updated: number; idle?: number } };
 type NativePart = { type: string; id?: string; name?: string; text?: string; state?: { status: string; input?: unknown; content?: unknown; error?: unknown } };
-export type NativeMessage = { id: string; type: string; time: { created: number; completed?: number }; model?: ModelRef; text?: string; content?: NativePart[]; error?: unknown; cost?: number; tokens?: unknown; outcome?: string };
+export type NativeMessage = { id: string; type: string; time: { created: number; completed?: number }; model?: ModelRef; text?: string; content?: NativePart[]; error?: unknown; cost?: number; tokens?: unknown; outcome?: string; status?: string; reason?: string; summary?: string; preTokens?: number; postTokens?: number; durationMs?: number };
+export type NativeCompactAdmission = { id: string; sessionID: string; type: "compaction"; time: { created: number }; delivery: "queue" | "steer"; payload?: unknown };
+export type NativeCompactionProjection = { messages: NativeMessage[]; compaction?: CompactionMetadata; outcome?: "succeeded" | "failed" | "skipped" };
+export type NativeCompactionObservation = NativeCompactionProjection & { pending: boolean; active: boolean; observed: boolean };
 type Page = { data: NativeMessage[]; cursor: { next?: string | null } };
 export class OpenCodeError extends Error {
   constructor(message: string, public status = 503) { super(message); }
@@ -141,6 +144,16 @@ export class OpenCodeAdapter {
     if (data?.id !== commandId || !Number.isFinite(data.time?.created)) throw new OpenCodeError("OpenCode prompt acknowledgement mismatch; execution state unconfirmed");
     return data;
   }
+  /** Explicit user-requested, idle-only admission. Caller owns the idle gate and
+   * persists request ID before this mutation and returned ID before observation.
+   * Native may coalesce into a different pending ID; this is not rejection.
+   * Never automatically retry, including after an invalid acknowledgement. */
+  async compact(id: string, requestId: string, beforeSubmit?: () => void): Promise<NativeCompactAdmission> {
+    if (!/^ses[a-zA-Z0-9_-]+$/.test(id) || !nativeMessageId(requestId)) throw new OpenCodeError("Invalid native compaction identity", 400);
+    const { data } = await this.request<{ data: NativeCompactAdmission }>(this.path(id) + "/compact", "POST", { id: requestId, delivery: "queue" }, beforeSubmit);
+    if (!data || !nativeMessageId(data.id) || data.sessionID !== id || data.type !== "compaction" || !["queue", "steer"].includes(data.delivery) || typeof data.time?.created !== "number" || !Number.isFinite(data.time.created) || data.time.created < 0 || !Number.isFinite(new Date(data.time.created).getTime())) throw new OpenCodeError("OpenCode compaction acknowledgement mismatch; admission remains unconfirmed; do not resend");
+    return data;
+  }
   async session(id: string) { return (await this.request<{ data: NativeSession }>(this.path(id))).data; }
   async fork(id: string, cwd: string, boundary: string, before?: string, beforeSend?: () => void) {
     const { data } = await this.request<{ data: NativeSession & { fork?: { sessionID: string; boundary: { type: string; messageID: string } } } }>(this.path(id) + "/fork", "POST", before ? { before } : {}, beforeSend);
@@ -221,6 +234,35 @@ export class OpenCodeAdapter {
     // Later external activity cannot overwrite a recorded command boundary.
     return { messages: bounded.messages, outcome: pending ? undefined : bounded.outcome, pending };
   }
+  /** Observe only the exact admitted compact input. No user-message anchor,
+   * session outcome, idle heuristic, or resend. Activity is reported separately
+   * from ownership of this input; pending disappearance is never success. */
+  async compactionSnapshot(id: string, admittedId: string, cwd?: string): Promise<NativeCompactionObservation> {
+    if (!nativeMessageId(admittedId)) throw new OpenCodeError("Invalid admitted compaction identity", 400);
+    const messages: NativeMessage[] = []; let cursor: string | undefined;
+    const deadline = Date.now() + 15000;
+    for (let page = 0; page < 100; page++) {
+      if (Date.now() > deadline) throw new OpenCodeError("Compaction observation exceeded its page budget; state remains unconfirmed");
+      const result = await this.request<Page>(this.path(id) + `/message?limit=100&${cursor ? `cursor=${encodeURIComponent(cursor)}` : "order=desc"}`);
+      if (!Array.isArray(result.data) || !result.cursor) throw new OpenCodeError("Unsupported native compaction history response");
+      messages.push(...result.data);
+      if (JSON.stringify(messages).length > 16 * 1024 * 1024) throw new OpenCodeError("Compaction history exceeds 16 MiB observation budget");
+      if (result.data.some(m => m.id === admittedId)) break;
+      cursor = result.cursor.next ?? undefined;
+      if (!cursor) break;
+      if (page === 99) throw new OpenCodeError("Compaction observation exceeded its page budget; state remains unconfirmed");
+    }
+    const [session, active, inbox] = await Promise.all([
+      this.session(id), this.request<{ data: Record<string, { type: string }> }>("/api/session/active"),
+      this.request<{ data: { id: string; sessionID?: string; type?: string }[] }>(this.path(id) + "/inbox"),
+    ]);
+    if (!session?.time || !active.data || !Array.isArray(inbox.data)) throw new OpenCodeError("Unsupported native compaction activity response");
+    if (session.id !== id || cwd !== undefined && session.location?.directory !== cwd) throw new OpenCodeError("Native compaction session identity or directory changed; state remains unconfirmed", 409);
+    const input = inbox.data.find(m => m.id === admittedId);
+    if (input && (input.type !== "compaction" || input.sessionID !== id)) throw new OpenCodeError("Exact admitted input is not this session's compaction; state remains unconfirmed");
+    const exact = compactionSnapshot(messages, admittedId);
+    return { ...exact, pending: !!input, active: !!active.data[id], observed: !!input || exact.messages.length > 0 };
+  }
   async cancel(id: string) { return this.request<{ interrupted: boolean }>(this.path(id) + "/interrupt?resume=false", "POST"); }
   async interactions(id: string): Promise<Interaction[]> {
     const [permissions, forms] = await Promise.all([
@@ -255,11 +297,40 @@ export function commandSnapshot(history: NativeMessage[], commandId: string) {
   return { messages, outcome: undefined };
 }
 
+/** Pure exact-ID reconciliation, also usable with a bounded imported history.
+ * Different admitted and requested IDs must already have been persisted by the
+ * caller. A conflicting repeated native ID is ambiguous, never completion. */
+export function compactionSnapshot(history: readonly NativeMessage[], admittedId: string): NativeCompactionProjection {
+  const matches = history.filter(m => m.id === admittedId);
+  if (matches.some(m => m.type !== "compaction") || matches.some(m => JSON.stringify(m) !== JSON.stringify(matches[0]))) throw new OpenCodeError("Conflicting native compaction identity; state remains unconfirmed");
+  const message = matches[0];
+  if (!message) return { messages: [] };
+  const compaction = normalizeMessage(message)?.compaction;
+  const outcome = compaction?.lifecycle === "completed" ? "succeeded" : compaction?.lifecycle === "failed" ? "failed" : compaction?.lifecycle === "skipped" ? "skipped" : undefined;
+  return { messages: [message], compaction, outcome };
+}
+
 export function normalizeMessage(message: NativeMessage): MessageSnapshot | undefined {
   const model = message.model?.providerID && message.model.id ? `${message.model.providerID}/${message.model.id}` : undefined;
   // Preserve context boundaries for the usage indicator without rendering them
   // as conversation turns or counting the compaction request's token usage.
-  if (message.type === "compaction" || message.type === "model-switched") return { messageId: message.id, role: "system", parts: [], status: "completed", createdAt: new Date(message.time.created).toISOString(), ...(model ? { model } : {}), ...(message.type === "compaction" ? { contextReset: true } : {}) };
+  if (message.type === "compaction") {
+    if (!nativeMessageId(message.id) || typeof message.time?.created !== "number" || !Number.isFinite(message.time.created) || message.time.created < 0 || !Number.isFinite(new Date(message.time.created).getTime())) throw new OpenCodeError("Invalid native compaction message identity or timestamp");
+    if (message.time.completed !== undefined && (typeof message.time.completed !== "number" || !Number.isFinite(message.time.completed) || message.time.completed < message.time.created || !Number.isFinite(new Date(message.time.completed).getTime()))) throw new OpenCodeError("Invalid native compaction completion timestamp");
+    if (message.cost !== undefined && (typeof message.cost !== "number" || !Number.isFinite(message.cost) || message.cost < 0)) throw new OpenCodeError("Invalid native compaction summarizer cost");
+    for (const value of [message.preTokens, message.postTokens, message.durationMs]) if (value !== undefined && (typeof value !== "number" || !Number.isFinite(value) || value < 0)) throw new OpenCodeError("Invalid native compaction metric");
+    const lifecycle: CompactionLifecycle = message.status === "failed" || message.error !== undefined ? "failed" : ["requested", "running", "completed", "skipped"].includes(message.status ?? "") ? message.status as CompactionLifecycle : "unconfirmed";
+    const createdAt = new Date(message.time.created).toISOString();
+    const compaction: CompactionMetadata = { nativeId: message.id, trigger: message.reason === "auto" || message.reason === "manual" ? message.reason : "unknown", lifecycle, startedAt: createdAt,
+      ...(message.time.completed !== undefined && message.time.completed >= message.time.created ? { endedAt: new Date(message.time.completed).toISOString() } : {}),
+      ...(typeof message.summary === "string" ? { summary: message.summary } : {}),
+      ...(message.error !== undefined ? { error: message.error } : {}),
+      ...(message.cost !== undefined || message.tokens !== undefined ? { summaryUsage: { cost: message.cost, tokens: message.tokens } } : {}),
+      ...Object.fromEntries(["preTokens", "postTokens", "durationMs"].flatMap(key => { const v = message[key as "preTokens" | "postTokens" | "durationMs"]; return typeof v === "number" && Number.isFinite(v) && v >= 0 ? [[key, v]] : []; })),
+    };
+    return { messageId: message.id, role: "system", parts: [], status: lifecycle === "completed" ? "completed" : lifecycle === "failed" ? "failed" : lifecycle === "running" || lifecycle === "requested" ? "running" : "unknown", createdAt, ...(model ? { model } : {}), ...(lifecycle === "completed" ? { contextReset: true } : {}), compaction, ...(message.error !== undefined ? { error: message.error } : {}) };
+  }
+  if (message.type === "model-switched") return { messageId: message.id, role: "system", parts: [], status: "completed", createdAt: new Date(message.time.created).toISOString(), ...(model ? { model } : {}) };
   if (!["user", "assistant", "system", "synthetic"].includes(message.type)) return;
   const parts: MessagePart[] = message.type === "assistant" ? (message.content ?? []).flatMap((part, i): MessagePart[] => {
     const id = part.id ?? `${message.id}:part:${i}`;

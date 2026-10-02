@@ -8,6 +8,7 @@ import { ShellDialog } from "./shell-dialog";
 import { store, type State } from "./store";
 import { WorkersButton } from "./worker-ui";
 import { ChatWorkstreamActions } from "./workstream-actions";
+import { compactCommand } from "./compaction";
 
 /** Kept mounted with Thread: only the draft identity may replace the DOM input. */
 export function ChatComposer({ state, active = true, navigation, ack, onAckChange, send, sendDisabled, parentId }: {
@@ -43,7 +44,10 @@ export function ChatComposer({ state, active = true, navigation, ack, onAckChang
   const infoError = state.submissionError || (harness === "opencode" ? state.modelsError : "");
   const infoStatus = (state.sending ? "Sending your message…" : "") || (state.loading ? "Loading your conversation…" : "") || store.executionUnavailable() || (!state.connected ? "Reconnecting to the bridge…" : "") || (!state.availability.canSend && state.availability.reason) || (store.modelUnavailable() ? "Waiting for the OpenCode model catalog for this directory." : "");
   const infoText = infoError || infoStatus;
-  const blocked = !active || sendDisabled || (needsAck && ack !== state.selected);
+  const command = compactCommand(draft.text);
+  // A standalone /compact opens the same explicit dialog before ordinary-send
+  // gates (including the separate composer acknowledgment or staged model).
+  const blocked = !active || (command ? state.sending : sendDisabled || (needsAck && ack !== state.selected));
   const submit = () => { if (!blocked) void send(store.draft().text); };
 
   return <>

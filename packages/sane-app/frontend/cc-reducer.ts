@@ -15,6 +15,7 @@ function tool(run: Run, id: string): ToolPart | undefined {
 }
 function record(run: Run, value: unknown, event: DiagnosticEvent) {
   if (!object(value)) return;
+  if (run.operation === "compact") return;
   const r = value;
   if (r.session_id && r.session_id !== (run.nativeSessionId ?? run.conversationId)) return;
   if (r.type === "system" && r.subtype === "init" && typeof r.model === "string") run.observedModel = r.model;
@@ -66,9 +67,10 @@ export function consume(run: Run, events: DiagnosticEvent[]) {
   for (const event of events) {
     if (event.runId !== run.id || event.sessionId !== run.conversationId || run.seen.has(event.seq)) continue;
     run.seen.add(event.seq); run.events.push(event);
-    if (event.kind === "submission" && object(event.data) && typeof event.data.text === "string") user(run, event.data.text, event.time, event.data.messageId);
+    if (run.operation !== "compact" && event.kind === "submission" && object(event.data) && typeof event.data.text === "string") user(run, event.data.text, event.time, event.data.messageId);
     if (event.kind === "message" && object(event.data)) {
       const snapshot = event.data as MessageSnapshot;
+      if (snapshot.compaction || run.operation === "compact") continue;
       if (snapshot.role === "system" && !snapshot.parts.length) continue;
       const message: Message = { id: snapshot.messageId, runId: run.id, role: snapshot.role, time: snapshot.createdAt, status: snapshot.status, normalized: true, error: snapshot.error,
         parts: snapshot.parts.map(p => p.type === "tool" ? { type: "tool", id: p.id, toolCallId: p.id, name: p.name, input: p.input, toolStatus: p.status, output: p.output ?? p.error, error: p.error !== undefined } : { type: p.type, text: p.text, ...(p.type === "reasoning" ? { id: p.id } : {}) }) };
@@ -86,7 +88,7 @@ export function consume(run: Run, events: DiagnosticEvent[]) {
       if (typeof data === "string") { try { data = JSON.parse(data); } catch { continue; } }
       const p = object(data) ? data.payload ?? data : undefined;
       if (!object(p) || p.session_id !== (run.nativeSessionId ?? run.conversationId) || p.agent_id) continue;
-      if (p.hook_event_name === "UserPromptSubmit" && typeof p.prompt === "string" && !run.messages.some(m => m.role === "user")) user(run, p.prompt, event.time);
+      if (run.operation !== "compact" && p.hook_event_name === "UserPromptSubmit" && typeof p.prompt === "string" && !run.messages.some(m => m.role === "user")) user(run, p.prompt, event.time);
       if (typeof p.effort?.level === "string" && !run.observedEfforts.includes(p.effort.level)) run.observedEfforts.push(p.effort.level);
       if (typeof p.tool_use_id === "string") {
         const match = tool(run, p.tool_use_id);
@@ -99,6 +101,7 @@ export function consume(run: Run, events: DiagnosticEvent[]) {
   }
 }
 export function messagesForRun(run: Run): Message[] {
+  if (run.operation === "compact") return [];
   const messages = run.messages.map(m => ({ ...m, parts: m.parts.map(p => ({ ...p })), status: m.role === "assistant" && (!m.normalized || (active(m.status) && !active(run.status))) ? run.status : m.status }));
   // Result is a fallback only: assistant records are the canonical transcript.
   if (run.result && !messages.some(m => m.role === "assistant" && m.parts.some(p => p.type === "text" && p.text.trim()))) {

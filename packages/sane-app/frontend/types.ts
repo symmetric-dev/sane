@@ -1,5 +1,5 @@
 /** UI contract. Harness-specific records stay behind ConversationClient. */
-import type { Interaction, InteractionReply } from "../src/oc-contract";
+import type { CompactRequest, CompactResponse, CompactState, Interaction, InteractionReply } from "../src/oc-contract";
 import type { Association } from "../src/catalog-contract";
 import type { AgentProfile, AgentProfileInput, AgentProfiles } from "../src/agent-profiles-contract";
 export type { AgentProfile, AgentProfileInput, AgentProfiles } from "../src/agent-profiles-contract";
@@ -28,6 +28,8 @@ export type Run = {
   id: string; conversationId: string; cwd: string; status: RunStatus; createdAt: string; endedAt?: string;
   harness?: Harness; nativeSessionId?: string;
   nativeCommandId?: string;
+  operation?: "prompt" | "compact";
+  compact?: { requestId: string; instructions?: string; nativeRequestId?: string; nativeAdmittedId?: string };
   nativeConnection?: string; nativeReason?: string; nativeUsage?: { cost?: number; tokens?: unknown }; nativeUsageTime?: string;
   model?: string; effort?: string; agent?: string; profileId?: string; observedModel?: string; observedEfforts: string[];
   messages: Message[]; events: DiagnosticEvent[]; cursor: number; seen: Set<number>;
@@ -37,7 +39,7 @@ export type Run = {
 export type HarnessInfo = { id: Harness; available: boolean; connected: boolean; state: string; reason?: string; capabilities: { cancelRun?: boolean; permissionReplies?: boolean; questionReplies?: boolean; modelSelection?: boolean; effortValues?: string[] } };
 export type Config = { authRequired: boolean; authenticated: boolean; cwd?: string; capabilities?: Capabilities; agents?: AgentChoice[]; agentProfiles?: AgentProfiles; harnesses?: HarnessInfo[] };
 export type Availability = { canSend: boolean; reason?: string };
-export type RunMetadata = Pick<Run, "id" | "conversationId" | "cwd" | "status" | "createdAt" | "endedAt" | "model" | "effort" | "agent" | "profileId" | "harness" | "nativeSessionId" | "nativeCommandId">;
+export type RunMetadata = Pick<Run, "id" | "conversationId" | "cwd" | "status" | "createdAt" | "endedAt" | "model" | "effort" | "agent" | "profileId" | "harness" | "nativeSessionId" | "nativeCommandId" | "operation" | "compact">;
 export type SearchHit = { sessionId: string; runId?: string; snippet: string; score: number };
 export interface ConversationClient {
   config(signal?: AbortSignal): Promise<Config>;
@@ -45,6 +47,8 @@ export interface ConversationClient {
   logout(): Promise<void>;
   conversations(signal?: AbortSignal): Promise<{ conversations: Conversation[]; availability: Availability }>;
   runs(id: string, signal?: AbortSignal): Promise<RunMetadata[]>;
+  compactState?(id: string, signal?: AbortSignal): Promise<CompactState>;
+  compact?(id: string, input: CompactRequest): Promise<CompactResponse>;
   workers?(id: string, signal?: AbortSignal): Promise<import("./worker-client").WorkerProjection>;
   events(run: Run, signal?: AbortSignal): Promise<{ events: DiagnosticEvent[]; nextCursor: number; status: RunStatus }>;
    models(cwd: string, signal?: AbortSignal): Promise<ModelChoice[]>;
