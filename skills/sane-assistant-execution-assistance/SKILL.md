@@ -41,11 +41,15 @@ description: Use after Execution Pickup confirmation to coordinate jobs, reviews
 1. After each accepted checkpoint, call `sane_handoff` (`requestId: "<my-readable-unique-id-01>"`, `to: "planning"`, `message: "<Job Reports, Test Report, reviewer findings, and upcoming jobs for reassessment>"`). Reference the evidence rather than restating it.
 2. End your turn while Planning reviews the evidence. On its reply, read amended documents and confirm the next assignment before starting the next checkpoint.
 
-## Requesting Research
+## Requesting Support
 
-1. For deeper or more extensive research, propose the question and scope to the user and ask whether to perform a Support Handoff to Research.
-2. When requested, call `sane_handoff` (`requestId: "<my-readable-unique-id-01>"`, `to: "research"`, `createNew: true`, `message: "<question, scope, relevant evidence>"`). Summarize the dispatched request.
-3. Read returned findings and reconcile their implications with the affected assignment or the user.
+You can request support to specialized Support Tracks. When sending handoffs back to Planning, consider recommending Curation support if Operational Gaps are discovered during execution. Then, at the end of the Execution lifecycle, recommend Curation to the user to synthesize execution learnings into reusable Context Artifacts like skills or documentation.
+
+Here is how to request a Support Handoff:
+
+1. Propose the support question and scope to the user and ask whether to perform a Support Handoff.
+2. When requested, call `sane_handoff` (`requestId: "<my-readable-unique-id-01>"`, `to: "<support track>"`, `createNew: true`, `message: "<question, scope, relevant evidence>"`). Summarize the dispatched request.
+3. Read returned evidence and discuss its implications with the user before applying changes within the authorized scope.
 
 ## Stop and Escalation Conditions
 

@@ -20,11 +20,15 @@ description: Use after Planning Pickup confirmation for Execution Plan and Job S
 2. Update the affected Planning documents as authorized, including upcoming Job Specs' Operational Readiness when predecessor evidence changes a prerequisite. Flag reusable skill corrections for separate maintenance rather than silently refreshing skills here. Ask the user to decide matters outside the approved scope. Run `sane validate planning` after changes and `sane job --register` for added jobs.
 3. Reply using `sane_handoff` (`requestId: "<my-readable-unique-id-01>"`, `to: "execution"`, `target: <sender identity>`, `message: "<readiness and changed documents, or no change>"`).
 
-## Requesting Research
+## Requesting Support
 
-1. For deeper or more extensive research, propose a question and scope to the user and ask whether to perform a Support Handoff to Research.
-2. When requested, call `sane_handoff` (`requestId: "<my-readable-unique-id-01>"`, `to: "research"`, `createNew: true`, `message: "<question, scope, relevant documents>"`). Summarize the dispatched request.
-3. Read returned evidence and use it to ground the Execution Plan; ask the user about decisions affecting approved scope.
+You can request support to specialized Support Tracks. Use Curation to solve Operational Gaps or reduce operational friction in the development environment of the implementation repository, as well as help abstract repeated work into reusable Context Artifacts like skills or documentation. Consider a handoff back to Engineering when new Knowledge Gaps are discovered during planning.
+
+Here is how to request a Support Handoff:
+
+1. Propose the support question and scope to the user and ask whether to perform a Support Handoff.
+2. When requested, call `sane_handoff` (`requestId: "<my-readable-unique-id-01>"`, `to: "<support track>"`, `createNew: true`, `message: "<question, scope, relevant evidence>"`). Summarize the dispatched request.
+3. Read returned evidence and discuss its implications with the user before applying changes within the authorized scope.
 
 ## Readiness for Delivery
 
