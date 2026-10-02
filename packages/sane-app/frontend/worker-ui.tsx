@@ -9,6 +9,7 @@ import { AGENT_ICONS, agentColor } from "./agent-visuals";
 import { workerClient, useWorkers, openWorker, type WorkerStop } from "./worker-client";
 import { harnessName, type Conversation, type Run } from "./types";
 import { useStore } from "./store";
+import { goToSend } from "./send-navigation";
 
 function Stop({ parent, input, children, disabled = false, className = "worker-action", label, icon = <FiSquare size={13} aria-hidden="true" /> }: { parent: string; input: WorkerStop; children: string; disabled?: boolean; className?: string; label?: string; icon?: ReactNode }) {
   const [busy, setBusy] = useState(false), [notice, setNotice] = useState("");
@@ -53,7 +54,7 @@ function WorkerDetails({ worker: w, view, close, trigger }: { worker: WorkerReco
     </>}</div>
   </dialog>, document.body);
 }
-export function WorkerCard({ worker: w, workers = [], runs = [], open = openWorker }: { worker: WorkerRecord; workers?: WorkerRecord[]; runs?: Run[]; open?: (worker: WorkerRecord) => void }) {
+export function WorkerCard({ worker: w, workers = [], runs = [], open = openWorker, sendAnchor = false }: { worker: WorkerRecord; workers?: WorkerRecord[]; runs?: Run[]; open?: (worker: WorkerRecord) => void; sendAnchor?: boolean }) {
   const conversation = useStore(state => state.conversations.find(c => c.id === w.sessionId));
   const sending = useStore(state => state.sending);
   const execution = workerExecution(w, runs, conversation);
@@ -70,7 +71,7 @@ export function WorkerCard({ worker: w, workers = [], runs = [], open = openWork
   const duration = elapsed(w, execution, now);
   const status = execution.executionState;
   const statusClass = `${moving ? " is-active" : ""}${status === "failed" ? " is-error" : ""}${status === "uncertain" || status === "unknown" ? " is-uncertain" : ""}`;
-  return <section className={`worker-card${moving ? " is-active" : ""}`}>
+  return <section className={`worker-card${moving ? " is-active" : ""}`} data-send-kind={sendAnchor ? "worker" : undefined} data-send-id={sendAnchor ? w.id : undefined} tabIndex={sendAnchor ? -1 : undefined} aria-label={sendAnchor ? "Worker send" : undefined}>
     <header><FiArrowLeft className="worker-direction" size={16} aria-hidden="true" /><WorkerIcon profile={profile} /><div className="worker-card-heading"><strong>{profile.label || WORKER_AGENT_CATALOG[w.input.worker].label}</strong><span className="worker-card-timing">{timestamp && <time dateTime={timestamp} title={new Date(timestamp).toLocaleString()}>{new Date(timestamp).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}</time>}{duration && <span>{duration}</span>}</span></div><span className={`worker-status${statusClass}`} role="status">{`${execution.continuation ? "Continuation · " : ""}${status}`}</span></header>
     <div className="worker-card-controls">
       <div className="worker-actions">
@@ -99,6 +100,7 @@ function elapsed(w: WorkerRecord, execution: ReturnType<typeof workerExecution>,
 
 function WorkerReceipt({ worker: w, revision }: { worker: WorkerRecord; revision: number }) {
   const profile = useWorkerVisual(w);
+  const sending = useStore(state => state.sending);
   const results = workerResults(w);
   // A receipt describes this delivered revision, never a later continuation.
   const result = results.find(record => record.revision === revision);
@@ -113,7 +115,7 @@ function WorkerReceipt({ worker: w, revision }: { worker: WorkerRecord; revision
       <span aria-hidden="true">·</span><span className={`worker-status${result?.outcome.status === "failed" ? " is-error" : !result ? " is-uncertain" : ""}`}>{result?.outcome.status ?? "Status unavailable"}</span>
       {result && <><span aria-hidden="true">·</span><time dateTime={result.outcome.at} title={new Date(result.outcome.at).toLocaleString()}>{new Date(result.outcome.at).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}</time></>}
     </div>
-    <button ref={trigger} type="button" className="worker-action worker-receipt-history" aria-haspopup="dialog" disabled={!results.length} onClick={() => setHistory(true)}>History</button>
+    <div className="worker-actions worker-receipt-actions"><button type="button" className="worker-action" disabled={sending || !w.parent.sessionId} onClick={() => goToSend({ kind: "worker", id: w.id, sessionId: w.parent.sessionId })}><FiArrowUpRight size={13} aria-hidden="true" />Go to send</button><button ref={trigger} type="button" className="worker-action" aria-haspopup="dialog" disabled={!results.length} onClick={() => setHistory(true)}>History</button></div>
     {history && <WorkerDetails worker={w} view="history" trigger={trigger.current} close={() => setHistory(false)} />}
   </div>;
 }

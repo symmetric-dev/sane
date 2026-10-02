@@ -62,7 +62,7 @@ function TranscriptTool({ part, source }: { part: ToolPart; source: Message }) {
   const workers = dispatchedWorkers(context.sessionId, source, part, context.workers);
   // Open worker already contains the assignment. Keep raw tool evidence in run
   // diagnostics rather than duplicating the instructions in the parent thread.
-  if (workers.length) return <>{workers.map(worker => <WorkerCard key={worker.id} worker={worker} workers={context.workers} runs={context.runs} open={context.openWorker} />)}{part.error && <p className="notice error" role="alert">Worker tool reported an error. Open run details for the recorded evidence.</p>}</>;
+  if (workers.length) return <>{workers.map(worker => <WorkerCard key={worker.id} worker={worker} workers={context.workers} runs={context.runs} open={context.openWorker} sendAnchor />)}{part.error && <p className="notice error" role="alert">Worker tool reported an error. Open run details for the recorded evidence.</p>}</>;
   const entry: ActivityEntry = { id: JSON.stringify([source.id, "tool", part.id]), source, index: source.parts.indexOf(part), part };
   return <TranscriptActivity group={{ id: entry.id, entries: [entry] }} renderBody={renderActivityBody} />;
 }
@@ -129,6 +129,13 @@ export function convertMessage(message: Message): ThreadMessageLike {
   return { id: message.id, role: message.role === "system" ? "assistant" : message.role, content, ...(message.time ? { createdAt: new Date(message.time) } : {}), ...(message.role !== "user" ? { status: active(message.status) ? { type: "running" as const } : message.status === "completed" ? { type: "complete" as const, reason: "stop" as const } : { type: "incomplete" as const, reason: message.status === "failed" ? "error" as const : "other" as const } } : {}) };
 }
 
+/** The external runtime can lag the store by a render during session changes. */
+function SendTranscriptReady({ sessionId, messages }: { sessionId: string; messages: Message[] }) {
+  const rendered = useAuiState(state => state.thread.messages);
+  const ready = rendered.length === messages.length && rendered.every((message, index) => message.id === messages[index]?.id);
+  return <span hidden data-send-transcript-ready={ready ? sessionId : undefined} />;
+}
+
 export function Thread({ state, active: isActive = true, navigation, reviewRequest, reviewRequestHandled }: { state: State; active?: boolean; navigation?: ReactNode; reviewRequest?: DocumentReviewRequest | null; reviewRequestHandled?: (requestId: number) => void }) {
   const projection = useWorkers(state.selected);
   const handoffs = useHandoffs(state.selected, isActive && state.connected);
@@ -185,10 +192,11 @@ export function Thread({ state, active: isActive = true, navigation, reviewReque
   return <TranscriptContext.Provider value={{ sessionId: state.selected, harness, messages, runs: state.runs, workers, deliveries: projection.deliveries, handoffs: state.connected ? handoffs : { ...handoffs, error: "Connection unavailable" }, openWorker, pendingTurn, activities, compactionPositions: positions, branchEnabled: !state.loading && !state.sending && !state.actionBusy && !compactBlocked && !running && !parentId && !conversation?.worker && !conversation?.replacedBy && !(conversation?.attachment && harness === "claude-code") }}><AssistantRuntimeProvider runtime={runtime}><ThreadPrimitive.Root className={`thread${review.flow ? " is-document-review" : ""}`}>
     <BranchLinks key={state.selected} conversation={conversation} />
     {parentId && <nav className="worker-parent-nav" aria-label="Worker navigation"><button type="button" className="text-button" disabled={state.sending} onClick={() => store.openConversation(parentId)}><FiArrowLeft size={14} aria-hidden="true" />Back to parent</button><span className="muted">Worker conversation</span></nav>}
-    <ChatScroll active={isActive} resetKey={state.selected || `new:${repository.navigation.worktreeId}`} footer={footer} replacement={review.flow?.path ? <div className="document-review-reading"><DocumentReviewReader review={review} /></div> : undefined}>
+    <ChatScroll active={isActive} resetKey={state.selected || `new:${repository.navigation.worktreeId}`} footer={footer} sendNavigation={{ sessionId: state.selected, loading: state.loading, connected: state.connected, connectionError: state.connectionError, workerError: projection.error, handoffLoading: handoffs.loading, handoffError: handoffs.error }} replacement={review.flow?.path ? <div className="document-review-reading"><DocumentReviewReader review={review} /></div> : undefined}>
       <div className="transcript">
         {!messages.length && (state.loading || !repository.ready || (state.selected && state.connectionError) ? <ConversationLoading label={state.selected ? state.connectionError ? "Reconnecting to your conversation…" : "Opening conversation…" : "Preparing your workspace…"} /> : !state.selected ? <div className="welcome"><span className="welcome-mark" aria-hidden="true"><FiZap size={44} aria-hidden="true" /></span><p className="eyebrow">YOUR LOCAL WORKSPACE</p><h1>What shall we work on?</h1><p>Explore an idea, untangle a problem, or build something useful with SANE.</p><div className="suggestions">{["Help me understand this project", "Plan a thoughtful next step", "Review my recent changes"].map(text => <button key={text} type="button" onClick={() => store.setDraft({ text })}>{text}<FiArrowUpRight size={13} aria-hidden="true" /></button>)}</div></div> : <div className="chat-empty"><FiZap size={24} aria-hidden="true" /><p>No messages yet.</p><span>Send a message to begin.</span></div>)}
         <ThreadPrimitive.Messages components={{ Message: ChatMessage }} />
+        <SendTranscriptReady sessionId={state.selected} messages={messages} />
         <CompactionMarkers records={positions.get("")} />
       </div>
     </ChatScroll>

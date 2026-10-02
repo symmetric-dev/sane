@@ -29,7 +29,7 @@
 .worker-receipt-summary { display:flex; flex:1; align-items:center; flex-wrap:wrap; gap:4px 8px; min-width:0; }
 .worker-receipt-summary strong { color:var(--foreground); font-weight:550; overflow-wrap:anywhere; }
 .worker-receipt-summary time { font-size:11px; font-variant-numeric:tabular-nums; }
-.worker-receipt-history { flex-shrink:0; margin-left:auto; }
+.worker-receipt-actions { flex-shrink:0; margin-left:auto; }
 .worker-report-message { align-self:stretch; width:100%; }
 .worker-details-dialog { width:min(760px,calc(100vw - 32px)); max-width:none; max-height:85dvh; padding:0; border:1px solid var(--border); border-radius:16px; color:var(--foreground); background:var(--card); box-shadow:0 24px 80px var(--shadow-panel); }
 .worker-details-dialog[open] { display:flex; flex-direction:column; }
@@ -75,6 +75,9 @@
 .workers-empty h3 { margin:12px 0 6px; color:var(--foreground); font-size:14px; }
 .workers-empty p { margin:0; font-size:13px; line-height:1.6; }
 .composer-workers:focus-visible,.workers-panel button:focus-visible,.worker-card button:focus-visible,.worker-receipt button:focus-visible,.worker-details-dialog button:focus-visible,.worker-result > summary:focus-visible { outline:2px solid var(--focus-ring); outline-offset:3px; }
+.viewport [data-send-kind]:focus-visible,.viewport .send-target-highlight { outline:2px solid var(--focus-ring); outline-offset:3px; }
+.viewport .send-target-highlight { background:var(--accent); }
+.send-navigation-notice { margin:4px 20px; font-size:12px; }
 @media (max-width:768px) {
   .worker-card button,.worker-receipt button { min-height:36px; }
 }
@@ -84,6 +87,7 @@
   .workers-panel-footer { padding-bottom:max(16px, env(safe-area-inset-bottom)); }
   .workers-panel button { min-height:36px; }
   .worker-card > header { flex-wrap:wrap; }
+  .worker-receipt { flex-wrap:wrap; gap:4px 8px; }
   .worker-details-dialog { max-height:90dvh; }
   .worker-result time { margin-left:0; }
 }

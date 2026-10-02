@@ -6,6 +6,7 @@ import type { HandoffParty, HandoffPresentation } from "../src/handoff-contract"
 import type { ToolPart } from "./types";
 import { store, useStore } from "./store";
 import { handoffStatusLabel, phaseLabel } from "./handoff-presentation";
+import { goToSend } from "./send-navigation";
 
 type MessageRenderer = (text: string) => ReactNode;
 function MessageAccordion({ message, renderMessage }: { message: string; renderMessage: MessageRenderer }) {
@@ -61,14 +62,18 @@ export function HandoffCard({ presentation: p, direction, renderMessage, stale }
   const h = p.handoff, target = direction === "sent" ? p.recipient : p.sender;
   const label = target.phases[0] ? phaseLabel(target.phases[0]) : "sender";
   const moving = !stale && ["queued", "accepted", "running"].includes(h.status);
-  return <section className={`handoff-card${h.status === "failed" || p.problem ? " has-issue" : ""}`} aria-label={`Assistant handoff ${direction}`}>
-    <header>{direction === "sent" ? <FiArrowLeft size={16} aria-hidden="true" /> : <FiArrowRight size={16} aria-hidden="true" />}<span className="handoff-heading">Assistant handoff · {direction}</span><span className={`handoff-status${moving ? " is-active" : ""}${h.status === "failed" ? " is-error" : ""}`} role="status">{direction === "received" ? "Received" : handoffStatusLabel[h.status]}{direction === "sent" && stale ? " · last known" : ""}</span></header>
-    <div className="handoff-correspondents"><Party label="From" party={p.sender} /><Party label="To" party={p.recipient} /></div>
-    <div className="handoff-context"><span>Workstream · {p.workstreamTitle}</span><time dateTime={h.createdAt} title={new Date(h.createdAt).toLocaleString()}>{new Date(h.createdAt).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}</time></div>
+  const received = direction === "received";
+  const time = <time dateTime={h.createdAt} title={new Date(h.createdAt).toLocaleString()}>{new Date(h.createdAt).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}</time>;
+  return <section className={`handoff-card${received ? " handoff-receipt" : ""}${h.status === "failed" || p.problem ? " has-issue" : ""}`} aria-label={`Assistant handoff ${direction}`} data-send-kind={received ? undefined : "handoff"} data-send-id={received ? undefined : h.id} tabIndex={received ? undefined : -1}>
+    {received ? <header><FiArrowRight size={16} aria-hidden="true" /><strong className="handoff-receipt-title">{p.sender.title}</strong><PhaseBadges phases={p.sender.phases} /><span className="handoff-status">Received</span>{time}</header> : <>
+      <header><FiArrowLeft size={16} aria-hidden="true" /><span className="handoff-heading">Assistant handoff · sent</span><span className={`handoff-status${moving ? " is-active" : ""}${h.status === "failed" ? " is-error" : ""}`} role="status">{handoffStatusLabel[h.status]}{stale ? " · last known" : ""}</span></header>
+      <div className="handoff-correspondents"><Party label="From" party={p.sender} /><Party label="To" party={p.recipient} /></div>
+    </>}
+    <div className="handoff-context"><span>Workstream · {p.workstreamTitle}</span>{!received && time}</div>
     <MessageAccordion message={h.input.message} renderMessage={renderMessage} />
     {(p.problem || h.status === "failed") && <p className="handoff-warning" role="alert">{p.problem || "Recipient execution failed. See Details for the recorded evidence."}</p>}
     {stale && <p className="handoff-warning" role="status">Live handoff status unavailable. Details show the last recorded state.</p>}
-    <footer><button type="button" className="handoff-action" disabled={sending || !target.sessionId} title={!target.sessionId ? "This assistant has no local conversation to open" : undefined} onClick={() => store.openConversation(target.sessionId!)}><FiArrowUpRight size={13} aria-hidden="true" />Open {label}</button><button ref={trigger} type="button" className="handoff-action" aria-haspopup="dialog" aria-label="Handoff details" onClick={() => setDetails(true)}><FiInfo size={13} aria-hidden="true" />Details</button></footer>
+    <footer><button type="button" className="handoff-action" disabled={sending || !target.sessionId} title={!target.sessionId ? "This assistant has no local conversation to open" : undefined} onClick={() => received ? goToSend({ kind: "handoff", id: h.id, sessionId: p.sender.sessionId! }) : store.openConversation(target.sessionId!)}><FiArrowUpRight size={13} aria-hidden="true" />{received ? "Go to send" : `Open ${label}`}</button><button ref={trigger} type="button" className="handoff-action" aria-haspopup="dialog" aria-label="Handoff details" onClick={() => setDetails(true)}><FiInfo size={13} aria-hidden="true" />Details</button></footer>
     {details && <HandoffDetails presentation={p} stale={stale} trigger={trigger.current} close={() => setDetails(false)} openDisabled={sending} />}
   </section>;
 }

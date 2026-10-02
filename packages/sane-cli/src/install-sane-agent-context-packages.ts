@@ -7,10 +7,11 @@ import { ccAgentFilename, parseSaneAgent, serializeCcAgent, serializeCcSettings 
 import { CLAUDE_PRE_TOOL_USE_MATCHER } from "./native-configuration.ts"
 
 export const AGENT_FILENAMES = [
+  "sane/assistant/curation.md",
   "sane/assistant/design.md",
   "sane/assistant/engineering.md",
+  "sane/assistant/experimentation.md",
   "sane/assistant/execution.md",
-  "sane/assistant/knowledge.md",
   "sane/assistant/planning.md",
   "sane/assistant/research.md",
   "sane/worker/fixer.md",
@@ -24,18 +25,21 @@ export const AGENT_FILENAMES = [
 ] as const
 
 export const ROLE_SKILL_NAMES = [
+  "sane-assistant-curation-pickup",
+  "sane-assistant-curation-assistance",
+  "sane-assistant-curation-delivery",
   "sane-assistant-design-pickup",
   "sane-assistant-design-assistance",
   "sane-assistant-design-delivery",
   "sane-assistant-engineering-pickup",
   "sane-assistant-engineering-assistance",
   "sane-assistant-engineering-delivery",
+  "sane-assistant-experimentation-pickup",
+  "sane-assistant-experimentation-assistance",
+  "sane-assistant-experimentation-delivery",
   "sane-assistant-execution-pickup",
   "sane-assistant-execution-assistance",
   "sane-assistant-execution-delivery",
-  "sane-assistant-knowledge-pickup",
-  "sane-assistant-knowledge-assistance",
-  "sane-assistant-knowledge-delivery",
   "sane-assistant-planning-pickup",
   "sane-assistant-planning-assistance",
   "sane-assistant-planning-delivery",

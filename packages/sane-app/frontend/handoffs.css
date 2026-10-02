@@ -28,6 +28,15 @@
 .handoff-action:hover:not(:disabled) { color:var(--foreground); background:var(--muted); }
 .handoff-warning { padding:0 14px; margin:8px 0 12px; color:var(--muted-foreground); font-size:12px; overflow-wrap:anywhere; }
 .handoff-received-message { align-self:stretch; width:100%; }
+.handoff-receipt > header { padding:8px 12px 4px; border:0; gap:6px 8px; }
+.handoff-receipt-title { flex:1; min-width:0; color:var(--foreground); font-size:13px; font-weight:550; overflow-wrap:anywhere; }
+.handoff-receipt .handoff-phases { margin-left:0; flex-basis:auto; }
+.handoff-receipt > header time { color:var(--muted-foreground); font-size:11px; font-variant-numeric:tabular-nums; }
+.handoff-receipt .handoff-context { padding:0 12px 6px; }
+.handoff-receipt .handoff-message { border:0; }
+.handoff-receipt .handoff-message > summary { padding:5px 12px; }
+.handoff-receipt > footer { padding:3px 6px; border:0; }
+.handoff-receipt .handoff-warning { padding-inline:12px; margin-block:4px 6px; }
 .handoff-details-dialog { width:min(700px,calc(100vw - 32px)); max-width:none; max-height:85dvh; padding:0; border:1px solid var(--border); border-radius:10px; color:var(--foreground); background:var(--card); box-shadow:0 24px 80px var(--shadow-panel); }
 .handoff-details-dialog[open] { display:flex; flex-direction:column; }
 .handoff-details-dialog::backdrop { background:var(--backdrop-dialog); }
