@@ -1,0 +1,12 @@
+.composer-flows { display:inline-flex; align-items:center; gap:5px; flex-shrink:0; white-space:nowrap; font-size:11px; padding:5px; border:1px solid transparent; border-radius:8px; background:transparent; color:var(--muted-foreground); }
+.composer-flows:hover:not(:disabled),.composer-flows[aria-expanded="true"] { background:var(--muted); border-color:var(--border); color:var(--foreground); }
+.composer-flows:disabled { opacity:.45; cursor:not-allowed; }
+.composer-flows:focus-visible,.flow-launcher-card:focus-visible { outline:2px solid var(--focus-ring); outline-offset:2px; }
+.shell-dialog.flow-launcher-dialog { width:min(480px, calc(100vw - 24px)); }
+.flow-launcher-dialog .shell-dialog-heading { flex:1; min-width:0; }
+.flow-launcher-dialog .shell-dialog-subtitle { margin:4px 0 0; font-size:13px; color:var(--muted-foreground); overflow-wrap:anywhere; }
+.flow-launcher-grid { display:grid; grid-template-columns:repeat(auto-fill, minmax(0, min(160px, 100%))); gap:12px; }
+.flow-launcher-card { display:flex; flex-direction:column; align-items:center; justify-content:center; gap:14px; aspect-ratio:1; min-width:0; padding:16px; border:1px solid var(--border); border-radius:12px; background:var(--card); color:var(--foreground); font-size:13px; text-align:center; }
+.flow-launcher-card svg { flex-shrink:0; color:var(--muted-foreground); }
+.flow-launcher-card span { overflow-wrap:anywhere; }
+.flow-launcher-card:hover { background:var(--accent); }

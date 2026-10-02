@@ -67,7 +67,7 @@ export function DocumentReviewReader({ review }: { review: DocumentReviewControl
     if (flow.documents.some(item => item.path === path && item.exists)) void review.open(path, fragment);
   };
   return <div className="document-review-reader" ref={viewport} tabIndex={0} aria-busy={flow.reading} aria-label={`Document reader: ${document?.title ?? flow.path}`} onScroll={event => { if (review.active && !flow.reading) positions.current.set(key, event.currentTarget.scrollTop); }}>
-    <article className="document-review-paper"><header><p className="eyebrow">{document ? label(document.phase) : "Document"}</p><h1>{document?.title ?? flow.path}</h1><p className="document-review-path">{flow.path}</p>{entry?.changed && <p className="notice" role="status">This document changed. Read the new revision and decide again. Your feedback is preserved.</p>}</header>
+    <article className="document-review-paper"><header><p className="eyebrow">{document ? label(document.phase) : "Document"}</p>{entry?.changed && <p className="notice" role="status">This document changed. Read the new revision and decide again. Your feedback is preserved.</p>}</header>
       {flow.reading && <p role="status" className="muted">Opening document…</p>}
       {entry?.content !== undefined ? <DocumentMarkdown text={entry.content} path={flow.path!} fragment={flow.reading ? undefined : flow.fragment} onOpenDocument={openLink} /> : !flow.reading && <p role={flow.error ? "alert" : "status"} className="muted">{flow.error || "Document not loaded."} <button type="button" className="text-button" disabled={flow.busy} onClick={() => void review.open(flow.path!, flow.fragment)}>Retry</button></p>}
     </article>
