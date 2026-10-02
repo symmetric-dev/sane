@@ -17,6 +17,7 @@
 .workstream-content .workstream-document-expected { margin-top:6px; font-size:12px; color:var(--muted-foreground); }
 .workstream-content-badge { display:inline-flex; padding:2px 7px; border-radius:5px; font-size:11px; border:1px solid var(--border); }
 .workstream-content-badge.warning { color:var(--foreground); background:var(--accent); border-style:dashed; }
+:root[data-theme="dark"] .workstream-content-badge.warning { color:var(--warning); background:var(--warning-background); }
 .workstream-document-diagnostics { margin-top:4px; color:var(--muted-foreground); font-size:12px; }
 .workstream-document-diagnostics summary { width:fit-content; cursor:pointer; padding:4px 0; }
 .workstream-content-path,.workstream-content pre,.workstream-content-facts dd { overflow-wrap:anywhere; word-break:break-word; }
@@ -26,6 +27,7 @@
 .workstream-content-disclosure>summary { cursor:pointer; font-size:13px; font-weight:500; padding:4px 0; }
 .workstream-content-disclosure[open]>*:not(summary) { margin-top:12px; }
 .workstream-research-warning { display:flex; flex-direction:column; gap:6px; padding:12px; border:1px dashed var(--border); border-radius:7px; background:var(--muted); font-size:12px; }
+:root[data-theme="dark"] .workstream-research-warning { color:var(--warning); background:var(--warning-background); }
 .workstream-research-warning summary { cursor:pointer; }
 .workstream-research-warning details[open]>p { margin-top:8px; }
 .workstream-content-error { display:flex; flex-direction:column; align-items:flex-start; gap:8px; padding:12px; border:1px solid var(--error); border-radius:7px; font-size:13px; }

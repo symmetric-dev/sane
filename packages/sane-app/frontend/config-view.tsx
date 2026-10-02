@@ -55,7 +55,7 @@ export const configSection = {
 const SECTIONS = [
   { id: "agents", label: "Agents", hint: "Conversation and worker profiles", Icon: FiUsers },
   { id: "workstreams", label: "Workstreams", hint: "Repository workstreams and associations", Icon: FiGitBranch },
-  { id: "application", label: "Application", hint: "Connection, harnesses, account", Icon: FiSliders },
+  { id: "application", label: "Application", hint: "Appearance, connection, harnesses, account", Icon: FiSliders },
   { id: "hotkeys", label: "Shortcuts", hint: "Global and view-local keyboard shortcuts", Icon: FiCommand },
 ] as const;
 

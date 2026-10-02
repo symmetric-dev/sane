@@ -5,6 +5,18 @@
     <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
     <meta name="theme-color" content="#fcfbf9" />
     <title>SANE · Local workspace</title>
+    <script>
+      // Shared with frontend/theme-settings.ts: sane.theme stores system/light/dark; invalid values follow the OS.
+      (() => {
+        let preference = "system", dark = false;
+        try { const saved = localStorage.getItem("sane.theme"); if (saved === "light" || saved === "dark") preference = saved; } catch {}
+        try { dark = typeof matchMedia === "function" && matchMedia("(prefers-color-scheme: dark)").matches; } catch {}
+        const resolved = preference === "system" ? dark ? "dark" : "light" : preference;
+        document.documentElement.dataset.theme = resolved;
+        document.documentElement.style.colorScheme = resolved;
+        document.querySelector('meta[name="theme-color"]').setAttribute("content", resolved === "dark" ? "#1d1b20" : "#fcfbf9");
+      })();
+    </script>
     <link rel="stylesheet" href="/assets/app.css" />
     <script type="module" src="/assets/app.js"></script>
   </head>

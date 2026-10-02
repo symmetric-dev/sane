@@ -3,7 +3,7 @@
 .model-picker-trigger > svg { flex-shrink:0; }
 .model-picker-trigger small { display:block; overflow-wrap:anywhere; color:var(--muted-foreground); font-size:10px; }
 .model-picker-trigger:focus-visible,.model-picker-popover button:focus-visible { outline:2px solid var(--focus-ring); outline-offset:-2px; }
-.model-picker-popover { position:fixed; inset:auto; margin:0; padding:0; border:1px solid var(--border); border-radius:10px; background:var(--card); color:var(--foreground); box-shadow:0 8px 28px #29282d26; overflow:hidden; font-size:12px; }
+.model-picker-popover { position:fixed; inset:auto; margin:0; padding:0; border:1px solid var(--border); border-radius:10px; background:var(--card); color:var(--foreground); box-shadow:0 8px 28px var(--shadow-popover); overflow:hidden; font-size:12px; }
 .model-picker-popover:popover-open { display:flex; flex-direction:column; }
 .model-picker-defaults { flex-shrink:0; padding:6px; border-bottom:1px solid var(--border); }
 .model-picker-popover button { display:flex; align-items:center; gap:8px; width:100%; padding:8px; border-radius:5px; text-align:left; }

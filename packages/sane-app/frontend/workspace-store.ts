@@ -1,10 +1,12 @@
-import type { EditorState } from "@codemirror/state";
+import type { EditorState, StateEffect } from "@codemirror/state";
 import type { EditorView } from "@codemirror/view";
 import type { WorkspaceFile, WorkspaceGit, GitComparison } from "../src/workspace-contract";
 import type { WorktreeResolution as Workspace } from "../src/catalog-contract";
 import { workspaceClient, WorkspaceError } from "./workspace-client";
 import { bufferLanguage, createBufferState, language, wrapping, wrappingExtension } from "./workspace-editor";
 import { codeSettings } from "./code-settings";
+import { editorTheme, resolvedEditorTheme } from "./workspace-theme";
+import { themeSettings } from "./theme-settings";
 
 export type Buffer = {
   path: string; state: EditorState; baseText: string; file: WorkspaceFile; disk?: WorkspaceFile;
@@ -14,10 +16,27 @@ export type Buffer = {
 export type TreePresentation = { expandedItems: string[]; focusedItem: string | null };
 export type RootState = { root: string; workspace: Workspace; generation: number; selected: string; buffers: Map<string, Buffer>; pathVersions: Map<string, number>; mutations: Set<string>; gitVersion: number; git?: WorkspaceGit; comparison: GitComparison; codeTree: TreePresentation; gitTree: TreePresentation };
 const roots = new Map<string, RootState>();
+function reconfigureBuffer(buffer: Buffer, effects: StateEffect<unknown> | readonly StateEffect<unknown>[]) {
+  if (buffer.view) {
+    // The live view is authoritative, including transactions with no doc/selection
+    // change. Dispatch preserves its viewport; publish that exact state afterward.
+    buffer.view.dispatch({ effects });
+    buffer.state = buffer.view.state;
+  } else buffer.state = buffer.state.update({ effects }).state;
+}
 codeSettings.subscribe(() => {
   for (const root of roots.values()) for (const buffer of root.buffers.values()) {
-    buffer.state = buffer.state.update({ effects: wrapping.reconfigure(wrappingExtension(buffer.path)) }).state;
-    buffer.view?.setState(buffer.state);
+    reconfigureBuffer(buffer, wrapping.reconfigure(wrappingExtension(buffer.path)));
+  }
+  notifyWorkspace();
+});
+let resolvedTheme = themeSettings.snapshot().resolved;
+themeSettings.subscribe(() => {
+  const next = themeSettings.snapshot().resolved;
+  if (next === resolvedTheme) return;
+  resolvedTheme = next;
+  for (const root of roots.values()) for (const buffer of root.buffers.values()) {
+    reconfigureBuffer(buffer, editorTheme.reconfigure(resolvedEditorTheme(next)));
   }
   notifyWorkspace();
 });
@@ -78,8 +97,7 @@ export function renameBuffer(root: RootState, buffer: Buffer, destination: strin
   buffer.path = destination;
   buffer.file = { ...buffer.file, ...file, text: buffer.file.text };
   if (buffer.disk) buffer.disk = { ...buffer.disk, path: destination, workspaceId: file.workspaceId };
-  buffer.state = buffer.state.update({ effects: [bufferLanguage.reconfigure(language(destination)), wrapping.reconfigure(wrappingExtension(destination))] }).state;
-  buffer.view?.setState(buffer.state);
+  reconfigureBuffer(buffer, [bufferLanguage.reconfigure(language(destination)), wrapping.reconfigure(wrappingExtension(destination))]);
   root.buffers.set(destination, buffer);
 }
 // Acquisition never changes canonical selection. Navigation belongs to the controller.

@@ -1,8 +1,10 @@
+import { Compartment, type Extension } from "@codemirror/state";
 import { EditorView } from "@codemirror/view";
 import { HighlightStyle, syntaxHighlighting } from "@codemirror/language";
 import { tags } from "@lezer/highlight";
+import { themeSettings, type ResolvedTheme } from "./theme-settings";
 
-// Semantic variables live in workspace.css so additional palettes need no editor changes.
+// Semantic variables are global so artifacts outside the workspace inherit them too.
 export const workspaceEditorTheme = [EditorView.theme({
   "&": { color: "var(--foreground)", backgroundColor: "var(--background)", height: "100%", fontSize: "13px" },
   ".cm-scroller": { fontFamily: "ui-monospace, SFMono-Regular, Menlo, monospace", overflow: "auto", lineHeight: "1.65" },
@@ -28,3 +30,11 @@ export const workspaceEditorTheme = [EditorView.theme({
   { tag: [tags.heading, tags.strong], fontWeight: "bold" },
   { tag: tags.link, color: "var(--primary)", textDecoration: "underline" },
 ]))];
+
+export const editorTheme = new Compartment();
+const themeMode = {
+  light: EditorView.theme({}, { dark: false }),
+  dark: EditorView.theme({}, { dark: true }),
+};
+export const resolvedEditorTheme = (resolved: ResolvedTheme): Extension => [workspaceEditorTheme, themeMode[resolved]];
+export const workspaceThemeExtension = () => editorTheme.of(resolvedEditorTheme(themeSettings.snapshot().resolved));

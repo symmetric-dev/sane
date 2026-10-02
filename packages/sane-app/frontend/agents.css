@@ -1,5 +1,5 @@
 /* === agent tokens === */
-/* Desaturated to sit beside --primary (#635877); the app is light-only today. */
+/* Desaturated named colors; custom --agent-color values are left untouched. */
 :root {
   --agent-slate:#6f6b78;
   --agent-violet:#76649a;
@@ -9,6 +9,17 @@
   --agent-amber:#9c7a36;
   --agent-orange:#a8683f;
   --agent-rose:#a05a6f;
+}
+
+:root[data-theme="dark"] {
+  --agent-slate:#beb4c8;
+  --agent-violet:#bba2de;
+  --agent-blue:#9abce6;
+  --agent-teal:#8fcac5;
+  --agent-green:#a0c9a2;
+  --agent-amber:#d9bf80;
+  --agent-orange:#e2b08a;
+  --agent-rose:#dda1b5;
 }
 
 /* === avatar === */
@@ -290,7 +301,7 @@ button.agent-chip:hover:not(:disabled) {
   width:22px;
   height:22px;
   border-radius:50%;
-  box-shadow:inset 0 0 0 1px #29282d1a;
+  box-shadow:inset 0 0 0 1px var(--swatch-border);
   transition:box-shadow 120ms ease;
 }
 .agent-swatch[aria-pressed="true"],.agent-swatch[data-selected] {

@@ -8,7 +8,7 @@
 .workstream-conversations input, .workstream-conversations select, .workstream-conversation-dialog input:not([type="radio"]), .workstream-conversation-dialog select { width: 100%; min-width: 0; padding: 8px 10px; border: 1px solid var(--border); border-radius: 6px; color: inherit; background: var(--card); }
 .workstream-conversations button, .workstream-conversation-dialog button:not(.icon-button) { padding: 6px 10px; border: 1px solid var(--border); border-radius: 6px; color: inherit; background: var(--card); }
 .workstream-conversations button:disabled, .workstream-conversation-dialog button:disabled { opacity: .5; cursor: not-allowed; }
-.workstream-conversations :is(button, input, select, summary):focus-visible, .workstream-conversation-dialog :is(button, input, select, summary):focus-visible { outline: 2px solid var(--accent); outline-offset: 3px; }
+.workstream-conversations :is(button, input, select, summary):focus-visible, .workstream-conversation-dialog :is(button, input, select, summary):focus-visible { outline: 2px solid var(--conversation-focus-ring); outline-offset: 3px; }
 .workstream-conversations-list { list-style: none; margin: 0; padding: 0; }
 .workstream-conversations-row { display: flex; justify-content: space-between; align-items: flex-start; gap: 16px; padding: 16px 0; border-top: 1px solid var(--border); }
 .workstream-conversations-summary { flex: 1; min-width: 0; }
@@ -32,6 +32,8 @@
 .workstream-conversation-dialog form > button { align-self: flex-start; }
 .workstream-conversation-dialog footer { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 8px; margin-top: 20px; }
 .workstream-conversation-warning, .workstream-conversation-error { padding: 12px; margin: 14px 0; background: var(--muted); border: 1px solid var(--border); border-radius: 6px; }
+:root[data-theme="dark"] .workstream-conversation-warning { color: var(--warning); background: var(--warning-background); }
+:root[data-theme="dark"] .workstream-conversation-error { color: var(--error); background: var(--error-background); }
 .workstream-conversation-warning p:first-child, .workstream-conversation-error p:first-child { margin-top: 0; }
 .workstream-conversation-warning button + button { margin-left: 8px; }
 .workstream-conversation-error details, .workstream-conversation-dialog > details { margin-top: 8px; }

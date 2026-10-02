@@ -1,4 +1,4 @@
-import { useEffect, useRef, useSyncExternalStore, type RefObject } from "react";
+import { useEffect, useRef, type RefObject } from "react";
 import { Compartment, EditorState, type Extension } from "@codemirror/state";
 import { EditorView, lineNumbers, highlightActiveLine, highlightActiveLineGutter, drawSelection, keymap } from "@codemirror/view";
 import { defaultKeymap, history, historyKeymap, indentWithTab } from "@codemirror/commands";
@@ -10,8 +10,9 @@ import { json } from "@codemirror/lang-json";
 import { css } from "@codemirror/lang-css";
 import { html } from "@codemirror/lang-html";
 import { markdown } from "@codemirror/lang-markdown";
-import { workspaceEditorTheme } from "./workspace-theme";
+import { editorTheme, resolvedEditorTheme, workspaceThemeExtension } from "./workspace-theme";
 import { codeSettings, shouldWrap } from "./code-settings";
+import { themeSettings } from "./theme-settings";
 
 export const wrapping = new Compartment();
 export const bufferLanguage = new Compartment();
@@ -28,10 +29,23 @@ export function language(path: string): Extension {
   return [];
 }
 export function createBufferState(path: string, text: string, update: (state: EditorState) => void, save: () => void) {
-  return EditorState.create({ doc: text, extensions: [workspaceEditorTheme, bufferLanguage.of(language(path)), wrapping.of(wrappingExtension(path)), lineNumbers(), history(), drawSelection(), highlightActiveLine(), highlightActiveLineGutter(), indentOnInput(), bracketMatching(),
+  return EditorState.create({ doc: text, extensions: [workspaceThemeExtension(), bufferLanguage.of(language(path)), wrapping.of(wrappingExtension(path)), lineNumbers(), history(), drawSelection(), highlightActiveLine(), highlightActiveLineGutter(), indentOnInput(), bracketMatching(),
     keymap.of([{ key: "Mod-s", run: () => { save(); return true; } }, ...defaultKeymap, ...historyKeymap, ...searchKeymap, indentWithTab]),
     EditorView.updateListener.of(transaction => { if (transaction.docChanged || transaction.selectionSet) update(transaction.state); }),
   ] });
+}
+// Standalone artifacts/diffs have no canonical buffer owner. Reconfigure their
+// existing views so theme/wrapping changes preserve selection and scroll position.
+function subscribeEditorSettings(editor: EditorView, path: string) {
+  let resolved = themeSettings.snapshot().resolved;
+  const unsubscribeTheme = themeSettings.subscribe(() => {
+    const next = themeSettings.snapshot().resolved;
+    if (next === resolved) return;
+    resolved = next;
+    editor.dispatch({ effects: editorTheme.reconfigure(resolvedEditorTheme(next)) });
+  });
+  const unsubscribeWrapping = codeSettings.subscribe(() => editor.dispatch({ effects: wrapping.reconfigure(wrappingExtension(path)) }));
+  return () => { unsubscribeTheme(); unsubscribeWrapping(); };
 }
 export function WorkspaceEditor({ state, onView }: { state: EditorState; onView: (view: EditorView | null) => void }) {
   const host = useRef<HTMLDivElement>(null), view = useRef<EditorView | null>(null);
@@ -44,21 +58,21 @@ export function WorkspaceEditor({ state, onView }: { state: EditorState; onView:
   return <div className="workspace-editor" ref={host} />;
 }
 export function ReadOnlyDocument({ path, text }: { path: string; text: string }) {
-  const extensions = useSyncExternalStore(codeSettings.subscribe, codeSettings.snapshot);
   const host = useRef<HTMLDivElement>(null);
   useEffect(() => {
-    const editor = new EditorView({ parent: host.current!, state: EditorState.create({ doc: text, extensions: [workspaceEditorTheme, language(path), wrappingExtension(path), lineNumbers(), EditorState.readOnly.of(true), EditorView.editable.of(false), keymap.of(searchKeymap)] }) });
-    return () => editor.destroy();
-  }, [path, text, extensions]);
+    const editor = new EditorView({ parent: host.current!, state: EditorState.create({ doc: text, extensions: [workspaceThemeExtension(), language(path), wrapping.of(wrappingExtension(path)), lineNumbers(), EditorState.readOnly.of(true), EditorView.editable.of(false), keymap.of(searchKeymap)] }) });
+    const unsubscribe = subscribeEditorSettings(editor, path);
+    return () => { unsubscribe(); editor.destroy(); };
+  }, [path, text]);
   return <div className="workspace-editor" ref={host} aria-label="Read-only workstream artifact" />;
 }
 export function WorkspaceDiffEditor({ path, before, after, label = "Before → After", viewRef }: { path: string; before: string; after: string; label?: string; viewRef: RefObject<EditorView | null> }) {
-  const extensions = useSyncExternalStore(codeSettings.subscribe, codeSettings.snapshot);
   const host = useRef<HTMLDivElement>(null);
   useEffect(() => {
-    const instance = new EditorView({ parent: host.current!, state: EditorState.create({ doc: after, extensions: [workspaceEditorTheme, language(path), wrappingExtension(path), lineNumbers(), drawSelection(), EditorState.readOnly.of(true), EditorView.editable.of(false), keymap.of(searchKeymap), unifiedMergeView({ original: before, mergeControls: false, collapseUnchanged: { margin: 3, minSize: 8 } })] }) });
+    const instance = new EditorView({ parent: host.current!, state: EditorState.create({ doc: after, extensions: [workspaceThemeExtension(), language(path), wrapping.of(wrappingExtension(path)), lineNumbers(), drawSelection(), EditorState.readOnly.of(true), EditorView.editable.of(false), keymap.of(searchKeymap), unifiedMergeView({ original: before, mergeControls: false, collapseUnchanged: { margin: 3, minSize: 8 } })] }) });
     viewRef.current = instance;
-    return () => { instance.destroy(); if (viewRef.current === instance) viewRef.current = null; };
-  }, [path, before, after, viewRef, extensions]);
+    const unsubscribe = subscribeEditorSettings(instance, path);
+    return () => { unsubscribe(); instance.destroy(); if (viewRef.current === instance) viewRef.current = null; };
+  }, [path, before, after, viewRef]);
   return <div className="workspace-diff" role="region" aria-label={label}><div ref={host} className="workspace-editor" /></div>;
 }

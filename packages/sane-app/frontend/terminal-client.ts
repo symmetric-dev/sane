@@ -3,6 +3,8 @@ import { FitAddon } from "@xterm/addon-fit";
 import { TERMINAL_LIMITS, type TerminalClientMessage, type TerminalServerMessage, type TerminalStart, type TerminalState } from "../src/terminal-contract";
 import { WorkspaceError } from "./workspace-client";
 import { subscribeWorkspace, workspaceEpoch, workspaceFailure } from "./workspace-store";
+import { themeSettings } from "./theme-settings";
+import { terminalTheme } from "./terminal-theme";
 
 export type TerminalSelection = { workspaceId: string; worktreeId: string; bindingRevision: string; root: string };
 export type TerminalPresentation = { state: TerminalState | null; geometry: { cols: number; rows: number } | null; connected: boolean; ready: boolean; controlling: boolean; busy: boolean; error: string };
@@ -30,6 +32,7 @@ export class TerminalSession {
   private retryDelay = 1000;
   private observer: ResizeObserver;
   private unsubscribe: () => void;
+  private unsubscribeTheme: () => void;
   private dataSubscription: { dispose(): void };
   private binarySubscription: { dispose(): void };
   private pendingSize = "";
@@ -40,15 +43,19 @@ export class TerminalSession {
   private base: string;
   constructor(private host: HTMLElement, private selection: TerminalSelection, private publish: (state: TerminalPresentation) => void, private selected: () => boolean) {
     this.base = `/api/workspaces/${encodeURIComponent(selection.workspaceId)}/worktrees/${encodeURIComponent(selection.worktreeId)}/terminal`;
-    const tokens = getComputedStyle(host);
     this.terminal = new Terminal({
       cols: 80, rows: 24, scrollback: TERMINAL_LIMITS.scrollback, fontSize: 13,
       fontFamily: "ui-monospace, SFMono-Regular, Menlo, monospace", cursorBlink: false,
       disableStdin: true, convertEol: false, allowProposedApi: false,
-      theme: { background: tokens.getPropertyValue("--background").trim() || "#fcfbf9", foreground: tokens.getPropertyValue("--foreground").trim() || "#29282d", cursor: "#635877", cursorAccent: "#fcfbf9", selectionBackground: "#ddd5e9", black: "#29282d", red: "#a74238", green: "#4b8066", yellow: "#946b29", blue: "#426c97", magenta: "#796090", cyan: "#367f83", white: "#ded9d3", brightBlack: "#747078", brightRed: "#bc5147", brightGreen: "#548867", brightYellow: "#a87b31", brightBlue: "#4d7faf", brightMagenta: "#906ea7", brightCyan: "#459295", brightWhite: "#fcfbf9" },
+      theme: terminalTheme(host),
     });
     this.terminal.loadAddon(this.fit);
     this.terminal.open(host);
+    // Theme changes affect rendering only, including dormant/closed terminals.
+    // They must not reconnect, reset the screen, resize, or restart the shell.
+    this.unsubscribeTheme = themeSettings.subscribe(() => {
+      if (!this.disposed) this.terminal.options.theme = terminalTheme(this.host);
+    });
     this.dataSubscription = this.terminal.onData(data => this.input(data));
     // onBinary contains byte-valued characters, not a UTF-8 string.
     this.binarySubscription = this.terminal.onBinary(data => this.sendBytes(Uint8Array.from(data, char => char.charCodeAt(0) & 255)));
@@ -273,7 +280,7 @@ export class TerminalSession {
   dispose = () => {
     if (this.disposed) return;
     this.detach(); this.disposed = true; this.abort.abort();
-    this.observer.disconnect(); this.unsubscribe();
+    this.observer.disconnect(); this.unsubscribe(); this.unsubscribeTheme();
     this.dataSubscription.dispose(); this.binarySubscription.dispose();
     window.visualViewport?.removeEventListener("resize", this.scheduleFit);
     window.removeEventListener("resize", this.scheduleFit); window.removeEventListener("pagehide", this.leave);

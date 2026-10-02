@@ -1,14 +1,5 @@
 /* === workspace === */
 .workspace-view {
-  --ws-selection:#e4deed;
-  --ws-added:#eaf3e9;
-  --ws-removed:#faeae6;
-  --ws-added-text:#cee6cc;
-  --ws-removed-text:#f2ccc2;
-  --ws-keyword:#765283;
-  --ws-string:#4e7656;
-  --ws-number:#946333;
-  --ws-function:#426b83;
   display:flex;
   flex-direction:column;
   flex:1;

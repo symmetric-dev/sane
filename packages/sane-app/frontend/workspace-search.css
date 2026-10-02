@@ -11,6 +11,7 @@
 .workspace-search-query { flex: 1; min-width: 180px; font-size: 12px; }
 .workspace-search-query, .workspace-search-paths label { display: flex; flex-direction: column; gap: 6px; }
 .workspace-search-query input, .workspace-search-paths input { width: 100%; min-width: 0; padding: 8px 10px; border: 1px solid var(--border); border-radius: 4px; }
+:root[data-theme="dark"] :is(.workspace-search-query, .workspace-search-paths) input { color: var(--foreground); background: var(--card); }
 .workspace-search-options { display: flex; align-items: center; flex-wrap: wrap; gap: 12px; font-size: 12px; padding-bottom: 6px; }
 .workspace-search-options label { display: flex; align-items: center; gap: 5px; }
 .workspace-search-paths { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; font-size: 12px; margin-top: 12px; }
