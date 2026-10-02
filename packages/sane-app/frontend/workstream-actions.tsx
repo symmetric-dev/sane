@@ -1,11 +1,12 @@
 import { Fragment, useEffect, useId, useRef, useState, useSyncExternalStore } from "react";
-import { FiCompass, FiCopy, FiGlobe, FiHexagon, FiLayers, FiSettings, FiTool } from "react-icons/fi";
+import { FiBookOpen, FiCompass, FiCopy, FiGlobe, FiHexagon, FiLayers, FiSettings, FiTool } from "react-icons/fi";
 import type { LifecyclePhase } from "sane-core/contracts";
 import type { WorkstreamAction, WorkstreamActionInput, WorkstreamActionResult, WorkstreamOverview } from "../src/workstreams-contract";
 import { catalog } from "./catalog";
 import { ShellDialog } from "./shell-dialog";
 import type { Conversation } from "./types";
-import { loadWorkstreams, workstreamRequest } from "./workstreams-client";
+import { loadWorkstreams, refKey, workstreamRequest } from "./workstreams-client";
+import type { DocumentReviewStart, ReviewPhase } from "./document-review-model";
 import "./workstream-actions.css";
 
 type Detail = WorkstreamOverview["workstreams"][number];
@@ -50,7 +51,7 @@ function useActionMembership(workspaceId: string | null, sessionId: string | nul
   return { overview: active ? current?.overview ?? null : null, loading: active && (!current || current.loading), failed: active && !!current?.failed, retry: () => setRetry(value => value + 1), refresh };
 }
 
-export function ChatWorkstreamActions({ conversation, active }: { conversation?: Conversation; active: boolean }) {
+export function ChatWorkstreamActions({ conversation, active, onDocuments }: { conversation?: Conversation; active: boolean; onDocuments?: (identity: DocumentReviewStart) => void }) {
   const { workspaces } = useSyncExternalStore(catalog.subscribe, catalog.snapshot);
   // Chat association, never the workspace currently being browsed in Settings.
   const workspaceId = conversation?.workspaceId ?? null;
@@ -66,14 +67,21 @@ export function ChatWorkstreamActions({ conversation, active }: { conversation?:
   const [opened, setOpened] = useState<{ scope: string; detail: Detail } | null>(null);
   useEffect(() => { setOpened(null); }, [scope]);
   const reason = !active ? "Open this chat to use Actions" : !conversation ? "Select an existing conversation" : conversation.replacedBy ? "This chat was replaced" : !workspaceId ? "This chat has no workspace" : workspace?.kind === "directory" ? "Actions require a repository" : !workspace ? "Chat workspace is unavailable" : membership.loading ? "Loading workstream membership…" : membership.failed ? "Workstream membership unavailable; retry loading" : !rows.length || !rows[0].conversation ? "This chat is not enrolled" : !workstreamId ? "This chat is unassigned" : !detail ? "Workstream unavailable" : "Workstream actions";
+  const assignments = detail?.activePhases.filter(assignment => refKey(assignment.ref) === refKey(rows[0]?.ref ?? null)) ?? [];
+  const defaultPhase: ReviewPhase = assignments.length === 1 ? assignments[0].phase.startsWith("research") ? "research" : assignments[0].phase as ReviewPhase : "all";
+  const documents = (phase: ReviewPhase = defaultPhase) => {
+    if (!eligible || !workspaceId || !conversation || !detail || !onDocuments) return;
+    onDocuments({ sessionId: conversation.id, workspaceId, repositoryId: detail.workstream.repositoryId, workstreamId: detail.workstream.id, phase });
+  };
   return <>
     <button ref={trigger} type="button" className="composer-workstream-actions" disabled={!eligible || !detail || membership.loading || membership.failed} title={reason} aria-label={`Actions: ${reason}`} aria-haspopup="dialog" aria-expanded={!!opened && opened.scope === scope} onClick={() => { if (detail && eligible) setOpened({ scope, detail }); }}><FiCompass size={16} aria-hidden="true" /></button>
+    {onDocuments && <button type="button" className="document-review-shortcut" disabled={!eligible || !detail || membership.loading || membership.failed} title={!eligible || !detail ? reason : "Review workstream documents"} onClick={() => documents()}><FiBookOpen size={14} aria-hidden="true" />Documents</button>}
     {eligible && membership.failed && <button type="button" className="text-button composer-actions-retry" title="Retry workstream membership" aria-label="Retry workstream membership" onClick={membership.retry}>Retry</button>}
-    {eligible && workspaceId && conversation && opened?.scope === scope && <WorkstreamActionsDialog key={scope} workspaceId={workspaceId} detail={opened.detail} sessionId={conversation.id} close={() => setOpened(null)} restoreFocus={() => currentScope.current === scope && trigger.current?.isConnected && !trigger.current.disabled ? trigger.current : document.body} isCurrent={() => currentScope.current === scope} onChanged={membership.refresh} />}
+    {eligible && workspaceId && conversation && opened?.scope === scope && <WorkstreamActionsDialog key={scope} workspaceId={workspaceId} detail={opened.detail} sessionId={conversation.id} close={() => setOpened(null)} restoreFocus={() => currentScope.current === scope && trigger.current?.isConnected && !trigger.current.disabled ? trigger.current : document.body} isCurrent={() => currentScope.current === scope} onChanged={membership.refresh} onDocuments={onDocuments ? phase => { setOpened(null); documents(phase); } : undefined} />}
   </>;
 }
 
-export function WorkstreamActionsDialog({ workspaceId, detail: initialDetail, sessionId, close, restoreFocus, onChanged, isCurrent = () => true }: {
+export function WorkstreamActionsDialog({ workspaceId, detail: initialDetail, sessionId, close, restoreFocus, onChanged, isCurrent = () => true, onDocuments }: {
   workspaceId: string;
   detail: Detail;
   sessionId?: string;
@@ -81,6 +89,7 @@ export function WorkstreamActionsDialog({ workspaceId, detail: initialDetail, se
   restoreFocus?: () => HTMLElement | null;
   onChanged: () => Promise<void>;
   isCurrent?: () => boolean;
+  onDocuments?: (phase: ReviewPhase) => void;
 }) {
   const id = useId();
   const [tab, setTab] = useState<Tab>("root");
@@ -201,6 +210,7 @@ export function WorkstreamActionsDialog({ workspaceId, detail: initialDetail, se
         </>}
         {outcome && <p className="workstream-actions-outcome" role="status">{outcome}</p>}
         {(readFailed || refreshFailed) && <div className="workstream-actions-read-error"><span role="status">{refreshFailed ? "Refresh failed; action was not retried." : outcome === "Action failed" ? "Refresh before trying another action." : "Couldn't load current state."}</span><button type="button" className="text-button" disabled={busy} onClick={() => void refresh()}>Refresh</button></div>}
+        {onDocuments && <button type="button" className="text-button" disabled={blocked || confirm} onClick={() => onDocuments(isPhase(tab) ? tab : tab === "support" ? "research" : "all")}><FiBookOpen size={14} aria-hidden="true" />Read documents</button>}
         {isPhase(tab) && <footer className="workstream-actions-footer">
           {confirm && <div role="group" aria-label="Approval confirmation" className="workstream-actions-confirm">
             <label htmlFor={`${id}-approval`}>Approval reference</label><input autoFocus id={`${id}-approval`} value={approvalRef} required disabled={busy} placeholder="Approval reference" onChange={event => setApprovalRef(event.target.value)} onKeyDown={event => {

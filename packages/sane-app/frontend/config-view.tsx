@@ -11,6 +11,7 @@ import { harnessName, type AgentProfile, type Harness } from "./types";
 import { ApplicationSettings } from "./application-settings";
 import { HotkeysSettings } from "./hotkeys-settings";
 import { WorkstreamsView, type ArtifactSelection } from "./workstreams";
+import type { DocumentReviewLaunch } from "./document-review-launch";
 
 // Client-side mirrors of src/history.ts validModel/validEffort/validVariant and
 // src/bridge.ts submit validation (model always, effort per harness, variant
@@ -69,10 +70,10 @@ export function ConfigMenu({ onSelect }: { onSelect?: () => void }) {
   }}><span className="history-line"><item.Icon size={15} aria-hidden="true" /><span className="history-title">{item.label}</span></span><small className="muted config-menu-hint">{item.hint}</small></button>)}</nav>;
 }
 
-export function ConfigView({ state, signOut, workspaceId = null, openArtifact, openConversation }: { state: State; signOut: () => void; workspaceId?: string | null; openArtifact?: (artifact: ArtifactSelection) => void; openConversation?: (id: string) => void }) {
+export function ConfigView({ state, signOut, workspaceId = null, openArtifact, openConversation, startDocumentReview }: { state: State; signOut: () => void; workspaceId?: string | null; openArtifact?: (artifact: ArtifactSelection) => void; openConversation?: (id: string) => void; startDocumentReview?: (launch: DocumentReviewLaunch) => void }) {
   const current = useSyncExternalStore(configSection.subscribe, configSection.snapshot);
   const { navigation } = useSyncExternalStore(catalog.subscribe, catalog.snapshot);
-  if (navigation.view === "workstreams") return <WorkstreamsView workspaceId={workspaceId} openArtifact={openArtifact} openConversation={openConversation} disabled={state.sending} />;
+  if (navigation.view === "workstreams") return <WorkstreamsView workspaceId={workspaceId} openArtifact={openArtifact} openConversation={openConversation} startDocumentReview={startDocumentReview} disabled={state.sending} />;
   if (current === "hotkeys") return <HotkeysSettings />;
   return current === "application" ? <ApplicationSettings state={state} signOut={signOut} /> : <AgentSettings state={state} />;
 }

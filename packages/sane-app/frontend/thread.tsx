@@ -19,6 +19,9 @@ import { BranchAction, BranchLinks } from "./branch-ui";
 import { active, type Message, type Run, type UsageSnapshot } from "./types";
 import { activityPosition, useActivityPresentation, type ActivityEntry, type ActivityPresentation } from "./transcript-activity";
 import { TranscriptActivity } from "./activity-ui";
+import { DocumentReviewReader } from "./document-review";
+import { useDocumentReview } from "./document-review-model";
+import type { DocumentReviewRequest } from "./document-review-launch";
 
 const json = (value: unknown) => typeof value === "string" ? value : JSON.stringify(value, null, 2) ?? "Unavailable";
 const number = (value: unknown, suffix = "") => typeof value === "number" && Number.isFinite(value) && value >= 0 ? `${value.toLocaleString(undefined, { maximumFractionDigits: 6 })}${suffix}` : "Unavailable";
@@ -108,7 +111,7 @@ export function convertMessage(message: Message): ThreadMessageLike {
   return { id: message.id, role: message.role === "system" ? "assistant" : message.role, content, ...(message.time ? { createdAt: new Date(message.time) } : {}), ...(message.role !== "user" ? { status: active(message.status) ? { type: "running" as const } : message.status === "completed" ? { type: "complete" as const, reason: "stop" as const } : { type: "incomplete" as const, reason: message.status === "failed" ? "error" as const : "other" as const } } : {}) };
 }
 
-export function Thread({ state, active: isActive = true, navigation }: { state: State; active?: boolean; navigation?: ReactNode }) {
+export function Thread({ state, active: isActive = true, navigation, reviewRequest, reviewRequestHandled }: { state: State; active?: boolean; navigation?: ReactNode; reviewRequest?: DocumentReviewRequest | null; reviewRequestHandled?: (requestId: number) => void }) {
   const projection = useWorkers(state.selected);
   const workers = projection.workers;
   const parentId = workerReference(state.selected)?.parent.sessionId;
@@ -133,17 +136,33 @@ export function Thread({ state, active: isActive = true, navigation }: { state: 
     onNew: async message => { const text = message.content.filter(p => p.type === "text").map(p => p.text).join("\n"); await send(text); },
   });
   const sendDisabled = !isActive || running || state.loading || state.sending || !state.connected || !state.availability.canSend || modelUnavailable || !!store.executionUnavailable() || (needsAck && ack !== state.selected);
-  const footer = <ChatComposer state={state} active={isActive} navigation={navigation} ack={ack} onAckChange={setAck} send={send} sendDisabled={sendDisabled} parentId={parentId} />;
-  return <TranscriptContext.Provider value={{ sessionId: state.selected, harness, messages, runs: state.runs, workers, deliveries: projection.deliveries, openWorker, pendingTurn, activities, branchEnabled: !state.loading && !state.sending && !running && !parentId && !conversation?.worker && !conversation?.replacedBy && !(conversation?.attachment && harness === "claude-code") }}><AssistantRuntimeProvider runtime={runtime}><ThreadPrimitive.Root className="thread">
+  const sendReview = (text: string) => { const stopped = ack === state.selected && !!ack; setAck(""); return store.send(text, stopped, { preserveDraft: true }); };
+  const review = useDocumentReview(state, isActive, sendDisabled, sendReview);
+  const handledReviewRequest = useRef<number | null>(null);
+  useEffect(() => {
+    if (!reviewRequest || handledReviewRequest.current === reviewRequest.requestId) return;
+    const current = store.snapshot();
+    const target = current.conversations.find(item => item.id === reviewRequest.sessionId);
+    if (catalog.snapshot().navigation.view !== "chat" || current.selected !== reviewRequest.sessionId || !target || target.replacedBy || target.workspaceId !== reviewRequest.workspaceId) { reviewRequestHandled?.(reviewRequest.requestId); return; }
+    if (!isActive || state.selected !== reviewRequest.sessionId) return;
+    handledReviewRequest.current = reviewRequest.requestId;
+    if (review.flow?.identity.sessionId === reviewRequest.sessionId && review.flow.identity.workspaceId === reviewRequest.workspaceId && review.flow.identity.repositoryId === reviewRequest.repositoryId && review.flow.identity.workstreamId === reviewRequest.workstreamId) review.picker();
+    else void review.start(reviewRequest);
+    reviewRequestHandled?.(reviewRequest.requestId);
+  }, [isActive, reviewRequest, state.selected, review, reviewRequestHandled]);
+  const safety = <>
+    {running && <p className="working" role="status"><span className="pulse" />{!state.connected ? "Connection unavailable. The run’s current state is not yet known." : nativeIssue ? nativeIssue.nativeReason || "Assistant connection unavailable; execution state remains unconfirmed." : "Assistant is working. New output will appear here."}{store.capabilities()?.cancelRun && <button type="button" className="text-button" disabled={state.actionBusy || !state.connected} onClick={() => void store.cancel()}>Stop run</button>}</p>}
+    {latestRun?.status === "failed" && <p className="notice error" role="alert">Run failed{latestRun.nativeReason ? `: ${latestRun.nativeReason}` : ". See the conversation for details."}</p>}
+    {harness === "opencode" && !conversation?.replacedBy ? <Interactions state={state} /> : <>{state.actionNotice && <p role="status" className="notice">{state.actionNotice}</p>}{state.interactionError && <p role="alert" className="notice error">{state.interactionError}</p>}</>}
+  </>;
+  const footer = <div className="thread-footer"><div className="thread-safety">{safety}</div><div className="thread-composer"><ChatComposer state={state} active={isActive} navigation={navigation} ack={ack} onAckChange={setAck} send={send} sendDisabled={sendDisabled} parentId={parentId} review={review} /></div></div>;
+  return <TranscriptContext.Provider value={{ sessionId: state.selected, harness, messages, runs: state.runs, workers, deliveries: projection.deliveries, openWorker, pendingTurn, activities, branchEnabled: !state.loading && !state.sending && !running && !parentId && !conversation?.worker && !conversation?.replacedBy && !(conversation?.attachment && harness === "claude-code") }}><AssistantRuntimeProvider runtime={runtime}><ThreadPrimitive.Root className={`thread${review.flow ? " is-document-review" : ""}`}>
     <BranchLinks key={state.selected} conversation={conversation} />
     {parentId && <nav className="worker-parent-nav" aria-label="Worker navigation"><button type="button" className="text-button" disabled={state.sending} onClick={() => store.openConversation(parentId)}><FiArrowLeft size={14} aria-hidden="true" />Back to parent</button><span className="muted">Worker conversation</span></nav>}
-    <ChatScroll resetKey={state.selected || `new:${repository.navigation.worktreeId}`} footer={footer}>
+    <ChatScroll active={isActive} resetKey={state.selected || `new:${repository.navigation.worktreeId}`} footer={footer} replacement={review.flow?.path ? <div className="document-review-reading"><DocumentReviewReader review={review} /></div> : undefined}>
       <div className="transcript">
         {!messages.length && (state.loading || !repository.ready || (state.selected && state.connectionError) ? <ConversationLoading label={state.selected ? state.connectionError ? "Reconnecting to your conversation…" : "Opening conversation…" : "Preparing your workspace…"} /> : !state.selected ? <div className="welcome"><span className="welcome-mark" aria-hidden="true"><FiZap size={44} aria-hidden="true" /></span><p className="eyebrow">YOUR LOCAL WORKSPACE</p><h1>What shall we work on?</h1><p>Explore an idea, untangle a problem, or build something useful with SANE.</p><div className="suggestions">{["Help me understand this project", "Plan a thoughtful next step", "Review my recent changes"].map(text => <button key={text} type="button" onClick={() => store.setDraft({ text })}>{text}<FiArrowUpRight size={13} aria-hidden="true" /></button>)}</div></div> : <div className="chat-empty"><FiZap size={24} aria-hidden="true" /><p>No messages yet.</p><span>Send a message to begin.</span></div>)}
         <ThreadPrimitive.Messages components={{ Message: ChatMessage }} />
-        {running && <p className="working" role="status"><span className="pulse" />{!state.connected ? "Connection unavailable. The run’s current state is not yet known." : nativeIssue ? nativeIssue.nativeReason || "Assistant connection unavailable; execution state remains unconfirmed." : "Assistant is working. New output will appear here."}{store.capabilities()?.cancelRun && <button type="button" className="text-button" disabled={state.actionBusy || !state.connected} onClick={() => void store.cancel()}>Stop run</button>}</p>}
-        {latestRun?.status === "failed" && latestRun.nativeReason && <p className="notice error" role="alert">Run failed: {latestRun.nativeReason}</p>}
-        {harness === "opencode" && !conversation?.replacedBy ? <Interactions state={state} /> : <>{state.actionNotice && <p role="status" className="notice">{state.actionNotice}</p>}{state.interactionError && <p role="alert" className="notice error">{state.interactionError}</p>}</>}
       </div>
     </ChatScroll>
   </ThreadPrimitive.Root></AssistantRuntimeProvider></TranscriptContext.Provider>;

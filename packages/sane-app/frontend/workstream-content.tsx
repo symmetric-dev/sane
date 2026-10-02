@@ -1,7 +1,7 @@
 import { useEffect, useId, useRef, useState, useSyncExternalStore } from "react";
 import { SUPPORTED_WORKSTREAM_TYPES, type CheckoutPin, type WorkstreamType } from "sane-core/contracts";
 import type { WorktreeRecord } from "../src/catalog-contract";
-import type { WorkstreamOverview } from "../src/workstreams-contract";
+import type { WorkstreamDocument, WorkstreamDocumentCatalog, WorkstreamDocumentPhase, WorkstreamOverview } from "../src/workstreams-contract";
 import type { ArtifactSelection } from "./workstreams";
 import { catalog } from "./catalog";
 import { ShellDialog } from "./shell-dialog";
@@ -53,55 +53,55 @@ function useCompletionGuard() {
 }
 
 export function WorkstreamDocuments({ workspaceId, detail, openArtifact }: { workspaceId: string; detail: WorkstreamDetail; openArtifact?: (artifact: ArtifactSelection) => void }) {
-  const [result, setResult] = useState<{ scope: string; paths: string[]; loading: boolean; failure: ContentFailure | null }>({ scope: "", paths: [], loading: true, failure: null });
+  const [result, setResult] = useState<{ scope: string; documents: WorkstreamDocument[]; loading: boolean; failure: ContentFailure | null }>({ scope: "", documents: [], loading: true, failure: null });
   const [retry, setRetry] = useState(0);
-  const scope = JSON.stringify([workspaceId, detail.workstream.repositoryId, detail.workstream.id]);
+  const { repositoryId, id: workstreamId } = detail.workstream;
+  const scope = JSON.stringify([workspaceId, repositoryId, workstreamId]);
   useEffect(() => {
     let current = true;
-    setResult({ scope, paths: [], loading: true, failure: null });
-    void workstreamRequest<string[]>(workspaceId, "artifacts/list", { id: detail.workstream.id }).then(paths => {
-      if (current) setResult({ scope, paths, loading: false, failure: null });
+    setResult({ scope, documents: [], loading: true, failure: null });
+    void workstreamRequest<WorkstreamDocumentCatalog>(workspaceId, "artifacts/catalog", { id: workstreamId, repositoryId }).then(catalog => {
+      if (catalog.repositoryId !== repositoryId || catalog.workstreamId !== workstreamId) throw new Error("The document catalog does not match the selected workstream.");
+      if (current) setResult({ scope, documents: catalog.documents, loading: false, failure: null });
     }).catch(error => {
-      if (current) setResult({ scope, paths: [], loading: false, failure: { message: "Documents couldn't be loaded. Try again; the repository files have not been changed.", diagnostic: errorText(error) } });
+      if (current) setResult({ scope, documents: [], loading: false, failure: { message: "Documents couldn't be loaded. Try again; the repository files have not been changed.", diagnostic: errorText(error) } });
     });
     return () => { current = false; };
-  }, [scope, detail, retry]);
-  const paths = result.scope === scope ? result.paths : [];
+  }, [scope, workspaceId, repositoryId, workstreamId, detail, retry]);
+  const documents = result.scope === scope ? result.documents : [];
   const loading = result.scope !== scope || result.loading;
   const failure = result.scope === scope ? result.failure : null;
-  // Missing registered reports must remain visible even when the file listing omits them.
-  const allPaths = [...new Set([...paths, ...detail.research.registered.map(report => report.reportPath)])];
-  const design = allPaths.filter(path => ["PRD.md", "FOUNDATION.md", "ISSUE.md", "MAINTENANCE.md"].includes(path) || path.startsWith("design/") && !path.startsWith("design/solutions/"));
-  const engineering = allPaths.filter(path => path.startsWith("design/solutions/"));
-  const execution = allPaths.filter(path => path.startsWith("execution/") && !path.startsWith("execution/jobs/") && !path.startsWith("execution/reports/"));
-  const jobs = allPaths.filter(path => path.startsWith("execution/jobs/"));
-  const reports = allPaths.filter(path => path.startsWith("execution/reports/"));
-  const research = allPaths.filter(path => path.startsWith("research/") || detail.research.registered.some(report => report.reportPath === path));
-  const grouped = new Set([...design, ...engineering, ...execution, ...jobs, ...reports, ...research]);
-  const supporting = allPaths.filter(path => !grouped.has(path));
+  const phases: { phase: WorkstreamDocumentPhase; title: string }[] = [
+    { phase: "design", title: "Design" }, { phase: "engineering", title: "Engineering" },
+    { phase: "planning", title: "Planning" }, { phase: "execution", title: "Execution" },
+    { phase: "research", title: "Research" }, { phase: "resources", title: "Resources" },
+  ];
   const missingCount = detail.research.registered.filter(report => report.missing).length;
   const modifiedCount = detail.research.registered.filter(report => report.modified).length;
   const warningCounts = [missingCount && `${missingCount} missing`, modifiedCount && `${modifiedCount} modified`, detail.research.unregistered.length && `${detail.research.unregistered.length} unregistered`].filter(Boolean).join(" · ");
   const hasWarnings = !!(warningCounts || detail.research.warnings.length);
-  const list = (files: string[]) => <ul className="workstream-document-list">{files.map(path => {
+  const list = (files: WorkstreamDocument[]) => <ul className="workstream-document-list">{files.map(document => {
+    const { path } = document;
     const registered = detail.research.registered.filter(report => report.reportPath === path);
-    const missing = registered.some(report => report.missing);
+    const missing = !document.exists || registered.some(report => report.missing);
     const modified = registered.some(report => report.modified);
     const unregistered = detail.research.unregistered.includes(path);
-    const label = documentLabel(path, registered.map(report => report.topic));
-    return <li key={path}>
+    const label = registered.length ? documentLabel(path, registered.map(report => report.topic)) : document.title;
+    return <li key={path} className={missing ? "workstream-document-missing" : undefined}>
       <div className="workstream-document-row"><span className="workstream-document-name">{label}</span>
+        {document.kind === "supporting" && <span className="workstream-content-badge">Supporting</span>}
         {missing && <span className="workstream-content-badge warning">Missing</span>}
         {modified && <span className="workstream-content-badge warning">Modified</span>}
         {unregistered && <span className="workstream-content-badge warning">Unregistered</span>}
-        {!missing && <button type="button" className="text-button" disabled={!openArtifact || !paths.includes(path)} aria-label={`Open ${label} in Files`} onClick={() => openArtifact?.({ workspaceId, workstreamId: detail.workstream.id, repositoryId: detail.workstream.repositoryId, path })}>Open in Files</button>}
+        {!missing && <button type="button" className="text-button" disabled={!openArtifact} aria-label={`Read ${label}`} onClick={() => openArtifact?.({ workspaceId, workstreamId, repositoryId, path })}>Read</button>}
       </div>
+      {missing && <p className="workstream-document-expected">{document.required ? "Expected document · not created yet or unavailable." : "This document is unavailable."}</p>}
       <details className="workstream-document-diagnostics"><summary>File details</summary><p className="workstream-content-path">{path}</p>
+        <dl className="workstream-content-facts"><dt>Document role</dt><dd>{document.kind}</dd><dt>Required</dt><dd>{document.required ? "Yes" : "No"}</dd><dt>Revision</dt><dd>{document.revision ?? "Not available"}</dd></dl>
         {registered.map(report => <dl className="workstream-content-facts" key={report.topic}><dt>Research topic</dt><dd>{report.topic}</dd><dt>Registered</dt><dd>{report.createdAt}</dd><dt>Updated</dt><dd>{report.updatedAt}</dd><dt>Registered content hash</dt><dd>{report.contentHash}</dd></dl>)}
       </details>
     </li>;
   })}</ul>;
-  const group = (title: string, files: string[]) => <section className="workstream-document-group" aria-label={`${title} documents`}><h4>{title}</h4>{files.length ? list(files) : !loading && !failure && <p className="muted">No {title.toLowerCase()} documents yet.</p>}</section>;
   return <section className="workstream-content workstream-documents" aria-label="Workstream documents">
     <header className="workstream-content-heading"><h3>Documents</h3><span className="muted">Read only</span></header>
     {loading && <p role="status">Loading documents…</p>}
@@ -111,16 +111,11 @@ export function WorkstreamDocuments({ workspaceId, detail, openArtifact }: { wor
       {detail.research.registered.filter(report => report.missing || report.modified).map(report => <p key={report.topic}>{documentLabel(report.reportPath, [report.topic])}: {[report.missing && "Missing", report.modified && "Modified"].filter(Boolean).join(" · ")}</p>)}
       {detail.research.unregistered.map(path => <p key={path}>{documentLabel(path)}: Unregistered</p>)}
     </details></div>}
-    {!openArtifact && allPaths.length > 0 && <p className="muted">File navigation is unavailable in this view.</p>}
-    {group("Design", design)}
-    {group("Engineering", engineering)}
-    <section className="workstream-document-group" aria-label="Execution documents"><h4>Execution</h4>{execution.length > 0 && list(execution)}
-      {jobs.length > 0 && <><h5>Job specifications</h5>{list(jobs)}</>}
-      {reports.length > 0 && <details className="workstream-content-disclosure"><summary>Job reports · {reports.length}</summary>{list(reports)}</details>}
-      {!execution.length && !jobs.length && !reports.length && !loading && !failure && <p className="muted">No execution documents yet.</p>}
-    </section>
-    {group("Research", research)}
-    {supporting.length > 0 && <details className="workstream-content-disclosure"><summary>Supporting files · {supporting.length}</summary>{list(supporting)}</details>}
+    {!openArtifact && documents.length > 0 && <p className="muted">Document navigation is unavailable in this view.</p>}
+    {phases.map(({ phase, title }) => {
+      const files = documents.filter(document => document.phase === phase);
+      return <section className="workstream-document-group" aria-label={`${title} documents`} key={phase}><h4>{title}</h4>{files.length ? list(files) : !loading && !failure && <p className="muted">No {title.toLowerCase()} documents yet.</p>}</section>;
+    })}
   </section>;
 }
 

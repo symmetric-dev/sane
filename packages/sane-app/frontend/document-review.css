@@ -1,0 +1,69 @@
+.document-review-composer {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  max-height: min(50dvh, 560px);
+  border: 1px solid transparent;
+  border-radius: 22px;
+  background: linear-gradient(var(--card), var(--card)) padding-box, linear-gradient(125deg, #77b9f2, #647ada, #a6c8ef) border-box;
+  box-shadow: 0 7px 28px #4769b315;
+  overflow: auto;
+}
+.document-review-body { min-height:48px; overflow:auto; overscroll-behavior:contain; }
+.document-review-heading { display:flex; flex-shrink:0; align-items:center; justify-content:space-between; gap:12px; padding:14px 18px 8px; }
+.document-review-heading > div { display:flex; align-items:center; flex-wrap:wrap; gap:8px; min-width:0; color:#557db3; font-size:12px; }
+.document-review-heading strong { letter-spacing:.02em; }
+.document-review-heading > div > span { color:var(--foreground); overflow-wrap:anywhere; font-size:13px; width:100%; }
+.document-review-heading .text-button { display:inline-flex; align-items:center; gap:4px; font-size:12px; }
+.document-review-filters { display:flex; align-items:end; gap:10px; padding:8px 18px 12px; }
+.document-review-filters label { display:flex; flex-direction:column; gap:4px; color:var(--muted-foreground); font-size:11px; }
+.document-review-filters select, .document-review-filters input { background:var(--background); color:var(--foreground); border:1px solid var(--border); border-radius:9px; padding:7px 9px; min-width:0; font-size:12px; }
+.document-review-filters input { flex:1; }
+.document-review-catalog { max-height:min(32vh, 310px); overflow:auto; padding:0 18px 6px; overscroll-behavior:contain; }
+.document-review-group { display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:6px; margin-bottom:10px; }
+.document-review-group h3 { grid-column:1 / -1; display:flex; align-items:center; gap:8px; font-size:11px; font-weight:600; color:var(--muted-foreground); margin:8px 0 2px; }
+.document-review-group h3 span { font-weight:400; }
+.document-review-card { display:flex; align-items:center; min-width:0; gap:9px; border:1px solid var(--border); border-radius:11px; padding:0 10px; background:var(--background); }
+.document-review-card.is-decided { border-color:#829ccb60; }
+.document-review-card > input { flex-shrink:0; accent-color:#547fbf; }
+.document-review-card > button { display:flex; align-items:center; gap:9px; text-align:left; width:100%; min-width:0; padding:10px 0; border:0; background:transparent; color:var(--foreground); }
+.document-review-card > button > svg { flex-shrink:0; color:#6c8bb4; }
+.document-review-card > button > span:first-of-type { flex:1; min-width:0; }
+.document-review-card strong { display:block; font-size:12px; font-weight:500; overflow-wrap:anywhere; }
+.document-review-card small { display:block; font-size:10px; color:var(--muted-foreground); text-overflow:ellipsis; overflow:hidden; white-space:nowrap; margin-top:3px; }
+.document-review-card-status { color:var(--muted-foreground); font-size:10px; max-width:115px; }
+.document-review-toolbar { display:flex; flex-shrink:0; align-items:center; justify-content:space-between; gap:10px; padding:10px 16px; }
+.document-review-toolbar > div { display:flex; align-items:center; flex-wrap:wrap; gap:8px; }
+.document-review-toolbar button:not(.text-button), .document-review-confirm button { display:inline-flex; align-items:center; gap:5px; font-size:12px; padding:8px 11px; border:1px solid var(--border); border-radius:9px; background:var(--background); color:var(--foreground); }
+.document-review-toolbar button.document-review-primary { color:#fff; border-color:#557fbf; background:#557fbf; }
+.document-review-composer button:disabled { opacity:.45; cursor:not-allowed; }
+.document-review-status { font-size:11px; color:var(--muted-foreground); }
+.document-review-notice, .document-review-footnote { margin:5px 18px 10px; font-size:11px; color:var(--muted-foreground); line-height:1.5; overflow-wrap:anywhere; }
+.document-review-notice.error { color:var(--destructive, #b24f58); }
+.document-review-confirm { display:flex; flex-wrap:wrap; align-items:center; gap:8px; padding:12px 18px; background:#8da9d115; font-size:12px; }
+.document-review-confirm > span { width:100%; }
+.document-review-reading { flex:1; min-height:0; display:flex; flex-direction:column; }
+.document-review-reader { flex:1; min-height:0; overflow:auto; overscroll-behavior:contain; scrollbar-gutter:stable; padding:28px 32px; background:linear-gradient(160deg,#789dc106,transparent 50%); }
+.document-review-paper { max-width:820px; margin:0 auto; padding:36px 42px 60px; background:var(--card); border:1px solid var(--border); border-radius:16px; box-shadow:0 8px 35px #33334c06; }
+.document-review-paper > header { padding-bottom:24px; margin-bottom:26px; border-bottom:1px solid var(--border); }
+.document-review-paper > header h1 { font-size:clamp(22px,3vw,32px); letter-spacing:-.035em; font-weight:600; line-height:1.25; margin:10px 0; overflow-wrap:anywhere; }
+.document-review-path { font-family:monospace; font-size:11px; color:var(--muted-foreground); overflow-wrap:anywhere; }
+.thread-footer { display:flex; flex-direction:column; min-height:0; }
+.thread-safety { min-height:0; max-height:25dvh; overflow:auto; overscroll-behavior:contain; }
+.thread-safety:empty { display:none; }
+.thread.is-document-review > .composer-dock { display:flex; flex-direction:column; min-height:0; max-height:65%; }
+.thread.is-document-review .thread-composer { display:flex; flex-direction:column; min-height:0; overflow:auto; overscroll-behavior:contain; }
+.thread.is-document-review .thread-composer > :not(.document-review-composer) { flex-shrink:0; }
+.document-review-shortcut { display:inline-flex; align-items:center; gap:5px; font-size:11px; border:0; background:transparent; color:var(--muted-foreground); padding:5px; }
+.document-review-shortcut:disabled { opacity:.45; cursor:not-allowed; }
+@media (max-width:640px) {
+  .document-review-group { grid-template-columns:minmax(0,1fr); }
+  .document-review-heading, .document-review-filters { padding-left:12px; padding-right:12px; }
+  .document-review-catalog { padding-left:12px; padding-right:12px; max-height:28vh; }
+  .document-review-reader { padding:12px; }
+  .document-review-paper { padding:24px 18px 40px; border-radius:12px; }
+  .document-review-toolbar { flex-wrap:wrap; padding:10px 12px; }
+  .document-review-toolbar > div:last-child { margin-left:auto; }
+  .document-review-toolbar button:not(.text-button) { padding:8px; font-size:11px; }
+  .document-review-card-status { max-width:85px; }
+}

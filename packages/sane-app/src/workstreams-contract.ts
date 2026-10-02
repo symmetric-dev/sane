@@ -1,4 +1,5 @@
 import type { Conversation, ConversationRef, WorkstreamStatus, ResearchIndex, LifecyclePhase } from "sane-core/contracts";
+export type { WorkstreamDocumentPhase, WorkstreamDocument, WorkstreamDocumentCatalog } from "sane-core/contracts";
 
 export type WorkstreamAction = 'validate' | 'approve' | 'provide';
 export type WorkstreamActionInput = { id: string; phase: LifecyclePhase; repositoryId: string; expectedRevision: number; sessionId?: string; approvalRef?: string };

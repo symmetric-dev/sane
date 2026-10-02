@@ -5,6 +5,8 @@ import { catalog } from "./catalog";
 import { WorkstreamConversations } from "./workstream-conversations";
 import { CreateWorkstreamDialog, WorkstreamDetails, WorkstreamDocuments } from "./workstream-content";
 import { WorkstreamActionsDialog } from "./workstream-actions";
+import { WorkstreamReviewEntry } from "./workstream-review-entry";
+import type { DocumentReviewLaunch } from "./document-review-launch";
 import "./workstreams.css";
 
 export type ArtifactSelection = { workspaceId: string; workstreamId: string; path: string; repositoryId: string };
@@ -12,18 +14,19 @@ type WorkstreamsProps = {
   workspaceId: string | null;
   openArtifact?: (artifact: ArtifactSelection) => void;
   openConversation?: (id: string) => void;
+  startDocumentReview?: (launch: DocumentReviewLaunch) => void;
   disabled?: boolean;
 };
-export function WorkstreamsView({ workspaceId, openArtifact, openConversation, disabled = false }: WorkstreamsProps) {
+export function WorkstreamsView({ workspaceId, openArtifact, openConversation, startDocumentReview, disabled = false }: WorkstreamsProps) {
   const { workspaces } = useSyncExternalStore(catalog.subscribe, catalog.snapshot);
   const workspace = workspaces.find(item => item.workspaceId === workspaceId);
   if (!workspaceId) return <section className="workspace-empty"><h2>Select a repository workspace</h2><p>Each repository owns its workstreams.</p></section>;
   if (workspace?.kind === "directory") return <section className="workspace-empty"><h2>Workstreams require a repository</h2><p>This workspace is a plain directory. Select a repository workspace to manage workstreams.</p></section>;
-  return <RepositoryWorkstreams key={workspaceId} workspaceId={workspaceId} workspaceName={workspace?.name ?? "Repository workspace"} openArtifact={openArtifact} openConversation={openConversation} disabled={disabled} />;
+  return <RepositoryWorkstreams key={workspaceId} workspaceId={workspaceId} workspaceName={workspace?.name ?? "Repository workspace"} openArtifact={openArtifact} openConversation={openConversation} startDocumentReview={startDocumentReview} disabled={disabled} />;
 }
 
 const TABS = ["conversations", "documents"] as const;
-function RepositoryWorkstreams({ workspaceId, workspaceName, openArtifact, openConversation, disabled }: WorkstreamsProps & { workspaceId: string; workspaceName: string }) {
+function RepositoryWorkstreams({ workspaceId, workspaceName, openArtifact, openConversation, startDocumentReview, disabled }: WorkstreamsProps & { workspaceId: string; workspaceName: string }) {
   const [data, setData] = useState<WorkstreamOverview | null>(null), [error, setError] = useState("");
   const [loading, setLoading] = useState(true);
   const [availability, setAvailability] = useState<{ state: string; message?: string } | null>(null);
@@ -145,6 +148,7 @@ function RepositoryWorkstreams({ workspaceId, workspaceName, openArtifact, openC
           <WorkstreamConversations overview={data} workstreamId={detail?.workstream.id ?? null} workspaceId={workspaceId} openConversation={openConversation} onChanged={() => refresh({ strict: true })} disabled={disabled} />
         </div>
         <div role="tabpanel" id={`${viewId}-panel-documents`} aria-labelledby={`${viewId}-tab-documents`} hidden={activeTab !== "documents"}>
+          {detail && activeTab === "documents" && startDocumentReview && <WorkstreamReviewEntry key={detail.workstream.id} overview={data} workspaceId={workspaceId} workstreamId={detail.workstream.id} onReview={startDocumentReview} disabled={disabled} />}
           {detail && activeTab === "documents" && <WorkstreamDocuments workspaceId={workspaceId} detail={detail} openArtifact={openArtifact} />}
         </div>
       </section>

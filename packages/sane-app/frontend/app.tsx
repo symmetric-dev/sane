@@ -1,4 +1,4 @@
-import { useEffect, useState, useSyncExternalStore, type ReactNode } from "react";
+import { useCallback, useEffect, useRef, useState, useSyncExternalStore, type ReactNode } from "react";
 import { FiMoreHorizontal, FiZap } from "react-icons/fi";
 import { store, type State } from "./store";
 import { catalog } from "./catalog";
@@ -21,6 +21,7 @@ import { harnessName } from "./types";
 import { ApplicationCommandProvider } from "./application-commands";
 import { WorkspaceSearchButton, WorkspaceSearchFeature } from "./workspace-search";
 import { WorkspaceFileShortcuts } from "./workspace-file-shortcuts";
+import type { DocumentReviewLaunch, DocumentReviewRequest } from "./document-review-launch";
 
 // Restore selection without replacing the independently bookmarked browsing pair.
 const hydrateCatalog = () => void catalog.hydrate(bookmark => store.choose(bookmark.conversationId ?? ""));
@@ -71,6 +72,9 @@ function ReadyWorkspace({ state, signOut }: { state: State; signOut: () => void 
   const [drawer, setDrawer] = useState<"sidebar" | "details" | "application" | null>(null);
   const [artifact, setArtifact] = useState<ArtifactSelection | null>(null);
   const [historyPreview, setHistoryPreview] = useState<string | null>(null);
+  const [reviewRequest, setReviewRequest] = useState<DocumentReviewRequest | null>(null);
+  const reviewSerial = useRef(0);
+  const reviewRequestHandled = useCallback((requestId: number) => setReviewRequest(current => current?.requestId === requestId ? null : current), []);
   const mode = view === "history" ? "history" : "chat";
   // The desktop sidebar and mobile drawer share one filter/search state owner.
   const sidebarModel = useConversationSidebarModel(state, mode);
@@ -83,12 +87,28 @@ function ReadyWorkspace({ state, signOut }: { state: State; signOut: () => void 
     setHistoryPreview(scoped.find(conversation => conversation.id === state.selected)?.id ?? scoped.at(-1)?.id ?? null);
   }, [view, workspaceId, worktreeId, state.selected, state.conversations, historyPreview]);
   useEffect(() => { setDrawer(null); }, [state.selected]);
-  const navigate = (next: ActiveView) => { setArtifact(null); catalog.navigate({ view: next }); setDrawer(null); };
+  useEffect(() => {
+    if (!reviewRequest) return;
+    // Read the settled stores: starting a review also selects its chat in this turn.
+    const current = store.snapshot();
+    const target = current.conversations.find(conversation => conversation.id === reviewRequest.sessionId);
+    if (catalog.snapshot().navigation.view !== "chat" || current.selected !== reviewRequest.sessionId || !target || target.replacedBy || target.workspaceId !== reviewRequest.workspaceId) reviewRequestHandled(reviewRequest.requestId);
+  }, [reviewRequest, view, state.selected, state.conversations, reviewRequestHandled]);
+  const navigate = (next: ActiveView) => { if (next !== "chat") setReviewRequest(null); setArtifact(null); catalog.navigate({ view: next }); setDrawer(null); };
   const choose = (id: string) => {
     if (state.sending) return;
+    if (id !== reviewRequest?.sessionId) setReviewRequest(null);
     store.openConversation(id); setDrawer(null);
   };
-  const openArtifact = (selection: ArtifactSelection) => { setArtifact(selection); catalog.navigate({ view: "code" }); setDrawer(null); };
+  const openArtifact = (selection: ArtifactSelection) => { setReviewRequest(null); setArtifact(selection); catalog.navigate({ view: "code" }); setDrawer(null); };
+  const startDocumentReview = (launch: DocumentReviewLaunch) => {
+    const current = store.snapshot();
+    const target = current.conversations.find(conversation => conversation.id === launch.sessionId);
+    if (current.sending || !target || target.replacedBy || target.workspaceId !== launch.workspaceId) return;
+    setReviewRequest({ ...launch, requestId: ++reviewSerial.current });
+    setArtifact(null); setDrawer(null);
+    store.openConversation(launch.sessionId);
+  };
   const navigation = <ContextualNavigation state={state} activeView={view} onNavigate={navigate} />;
   const group = viewGroup(view);
   const sidebar = group === "chat" ? <ConversationSidebar
@@ -106,7 +126,7 @@ function ReadyWorkspace({ state, signOut }: { state: State; signOut: () => void 
       notices={<ShellNotices state={state} view={view} openDetails={() => setDrawer("details")} />}
     >
       <ShellContent state={state} view={view} workspaceId={workspaceId} artifact={artifact} closeArtifact={() => setArtifact(null)} openArtifact={openArtifact}
-        historyPreview={historyPreview} choose={choose} signOut={signOut} navigation={navigation} />
+        historyPreview={historyPreview} choose={choose} signOut={signOut} navigation={navigation} startDocumentReview={startDocumentReview} reviewRequest={reviewRequest} reviewRequestHandled={reviewRequestHandled} />
     </WorkspaceShell>
     {drawer === "application" && <ApplicationDialog state={state} signOut={signOut} close={() => setDrawer(null)} />}
     {drawer === "details" && <ConversationDetails state={state} close={() => setDrawer(null)} />}
@@ -152,16 +172,17 @@ function ShellNotices({ state, view, openDetails }: { state: State; view: Active
 }
 
 /** Hidden chat stays mounted: switching views must not destroy native input state. */
-function ShellContent({ state, view, workspaceId, artifact, closeArtifact, openArtifact, historyPreview, choose, signOut, navigation }: {
+function ShellContent({ state, view, workspaceId, artifact, closeArtifact, openArtifact, historyPreview, choose, signOut, navigation, startDocumentReview, reviewRequest, reviewRequestHandled }: {
   state: State; view: ActiveView; workspaceId: string | null; artifact: ArtifactSelection | null;
   closeArtifact: () => void; openArtifact: (selection: ArtifactSelection) => void;
   historyPreview: string | null; choose: (id: string) => void; signOut: () => void; navigation: ReactNode;
+  startDocumentReview: (launch: DocumentReviewLaunch) => void; reviewRequest: DocumentReviewRequest | null; reviewRequestHandled: (requestId: number) => void;
 }) {
   return <>
-    <div className="chat-surface" hidden={view !== "chat"} inert={view !== "chat"}><Thread state={state} active={view === "chat"} navigation={navigation} /></div>
+    <div className="chat-surface" hidden={view !== "chat"} inert={view !== "chat"}><Thread state={state} active={view === "chat"} navigation={navigation} reviewRequest={reviewRequest} reviewRequestHandled={reviewRequestHandled} /></div>
     {view !== "chat" && view !== "terminal" && <div className="shell-content">
       {view === "history" && <HistoryDetail state={state} previewId={historyPreview} onOpen={choose} />}
-      {viewGroup(view) === "settings" && <ConfigView state={state} signOut={signOut} workspaceId={workspaceId} openArtifact={openArtifact} openConversation={choose} />}
+      {viewGroup(view) === "settings" && <ConfigView state={state} signOut={signOut} workspaceId={workspaceId} openArtifact={openArtifact} openConversation={choose} startDocumentReview={startDocumentReview} />}
       {view === "code" && artifact && artifact.workspaceId === workspaceId ? <WorkstreamArtifact artifact={artifact} close={closeArtifact} /> : (view === "code" || view === "git") && <WorkspaceView />}
     </div>}
     {view === "terminal" && <TerminalView navigation={navigation} />}

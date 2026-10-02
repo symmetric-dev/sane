@@ -63,6 +63,8 @@ export class WorkstreamAdapter {
   resolveTarget(workstreamId: string, phase: Phase, target?: ConversationRef) { return this.domain.resolvePhaseTarget(workstreamId, phase, target); }
   listArtifacts(id: string) { return this.domain.listArtifacts(id); }
   readArtifact(id: string, path: string) { return this.domain.readArtifact(id, path); }
+  readArtifactSnapshot(id: string, path: string) { return this.domain.readArtifactSnapshot(id, path); }
+  documentCatalog(id: string) { return this.domain.getDocumentCatalog(id); }
   invocation(session: AppConversation) {
     const context = this.domain.resolveContext(this.reference(session));
     if (session.cwd !== context.executionCheckout) throw new WorkstreamAdapterError(409, "app-checkout-mismatch", "App execution differs from its domain pin");
@@ -147,8 +149,13 @@ export function validateWorkstreamInput(operation: string, input: unknown): asse
     case "create": string("id"); string("title"); if (!["feature", "foundation", "issue", "maintenance"].includes(input.type as string)) invalid("type"); break;
     case "default-checkout": string("id"); if (input.checkout !== null) string("checkout"); break;
     case "target": string("id"); string("phase"); if ("target" in input && (!object(input.target) || !["cc", "oc"].includes(input.target.harness as string) || typeof input.target.authorityId !== "string" || typeof input.target.nativeId !== "string")) invalid("qualified target"); break;
-    case "artifacts/list": string("id"); break;
-    case "artifacts/read": string("id"); string("path"); break;
+    case "artifacts/catalog": case "artifacts/list": case "artifacts/read":
+      string("id");
+      if (operation === "artifacts/read") string("path");
+      if (operation === "artifacts/catalog" || "repositoryId" in input) {
+        if (!uuid(input.repositoryId)) invalid("repositoryId");
+      }
+      break;
     case "conversation": case "context": case "enroll": string("sessionId"); break;
     case "associate": string("sessionId"); if (input.workstreamId !== null) string("workstreamId"); break;
     case "phase/assign": string("sessionId"); string("phase"); break;

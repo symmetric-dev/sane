@@ -2,7 +2,7 @@ import { Database, type SQLQueryBindings } from "bun:sqlite"
 import { createHash, randomUUID } from "node:crypto"
 import { existsSync, lstatSync, mkdirSync, readFileSync } from "node:fs"
 import { basename, isAbsolute, join } from "node:path"
-import type { AuditEvent, CheckoutPin, Conversation, ConversationRef, CreateWorkstreamInput, InvocationContext, MutationContext, NativeSourceDescriptor, Phase, PhaseAssignment, RegisterConversationInput, RepositoryContext, Workstream, WorkstreamStatus } from "./contracts.ts"
+import type { AuditEvent, CheckoutPin, Conversation, ConversationRef, CreateWorkstreamInput, InvocationContext, MutationContext, NativeSourceDescriptor, Phase, PhaseAssignment, RegisterConversationInput, RepositoryContext, Workstream, WorkstreamStatus, WorkstreamDocumentCatalog } from "./contracts.ts"
 import { DomainError, fail, storageError, text } from "./errors.ts"
 import { checkDiscovery, inspectRepositoryStore, pinCheckout, revalidateCheckout, safeStoreFiles, samePin } from "./repository.ts"
 import { normalizeNativeSource } from "./native-source.ts"
@@ -18,6 +18,7 @@ import { validatePhaseDocs } from "./validation.ts"
 import { assertJobProgress, registerPlannedJobs } from "./job-policy.ts"
 import type { Handoff, HandoffRecipient, HandoffStatus } from "./contracts.ts"
 import { handoffInput } from "./handoff.ts"
+import { documentDescriptors } from "./document-catalog.ts"
 
 export type * from "./contracts.ts"
 export { DomainError } from "./errors.ts"
@@ -498,6 +499,51 @@ export class RepositoryDomain {
   readArtifact(workstreamId: string, path: string): string {
     artifactRelative(path); const { root, fs } = this.filesystem(workstreamId)
     try { return fs.readText(join(root, path)) } catch (error) { return artifactError(error) }
+  }
+  /** Hash and decode the very same confined read, never a second file read. */
+  readArtifactSnapshot(workstreamId: string, path: string): { content: string; revision: string } {
+    artifactRelative(path); const { root, fs } = this.filesystem(workstreamId)
+    try { const bytes = fs.readBytes(join(root, path)); return { content: bytes.toString("utf8"), revision: hash(bytes) } } catch (error) { return artifactError(error) }
+  }
+  getDocumentCatalog(workstreamId: string): WorkstreamDocumentCatalog {
+    const { root, fs } = this.filesystem(workstreamId), workstream = this.workstreamRow(workstreamId)
+    const paths: string[] = [], revisions = new Map<string, string>()
+    let plan: string | null = null
+    const visit = (directory: string) => {
+      for (const name of fs.listNames(join(root, directory)).sort()) {
+        const path = directory ? `${directory}/${name}` : name
+        if (fs.stat(join(root, path)).isDirectory()) visit(path)
+        else if (name.endsWith(".md")) {
+          artifactRelative(path)
+          // Exactly one byte read per present document, including the Plan.
+          // Titles are path-derived so large resources need no extra text reads.
+          const bytes = fs.readBytes(join(root, path))
+          paths.push(path); revisions.set(path, hash(bytes))
+          if (path === "execution/PLAN.md") plan = bytes.toString("utf8")
+        }
+      }
+    }
+    try {
+      visit("")
+      const descriptors = documentDescriptors({ type: workstream.type, paths, jobs: this.jobs(workstreamId), researchPaths: this.rows("SELECT report_path FROM research_reports WHERE workstream_id=? ORDER BY topic", workstreamId).map(row => row.report_path as string), plan })
+      const documents = descriptors.map(descriptor => {
+        artifactRelative(descriptor.path)
+        const revision = revisions.get(descriptor.path)
+        if (revision !== undefined) return { ...descriptor, exists: true, revision }
+        // Only a genuinely absent known file is missing; directories, unsafe
+        // access and storage failures must not masquerade as missing documents.
+        try {
+          if (!fs.stat(join(root, descriptor.path)).isFile()) throw new LifecycleAccessError(`Expected a document file: ${descriptor.path}`)
+        }
+        catch (error) {
+          if ((error as NodeJS.ErrnoException).code === "ENOENT") return { ...descriptor, exists: false, revision: null }
+          throw error
+        }
+        return fail("CONFLICT", `Document appeared while cataloging: ${descriptor.path}; refresh the catalog.`)
+      })
+      fs.assertTree(); this.guard()
+      return { repositoryId: this.repositoryId, workstreamId, documents }
+    } catch (error) { return artifactError(error) }
   }
   private manifest(workstreamId: string): { path: string; hash: string }[] {
     const { root, fs } = this.filesystem(workstreamId), files: { path: string; hash: string }[] = []

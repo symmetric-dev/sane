@@ -14,6 +14,7 @@ import type { ReconciledHistory } from "../src/reconcile";
 /** Composer draft. New conversations pick `profileId` ("" = profiles.defaultId);
  * selected Base conversations may stage `upgradeId` (assistant profile, same harness). */
 export type Draft = { text: string; cwd: string; profileId: string; upgradeId: string };
+export type SendOutcome = { status: "accepted"; conversationId: string; runId: string } | { status: "blocked" | "rejected" | "unknown" };
 export type State = {
   phase: "connecting" | "login" | "ready"; config?: Config; conversations: Conversation[];
   selected: string; runs: Run[]; messages: Message[]; drafts: Record<string, Draft>;
@@ -395,22 +396,26 @@ export class ChatStore {
       if (current() && this.state.phase === "ready") this.timer = setTimeout(() => void this.poll(), this.state.connected ? 1500 : 5000);
     }
   }
-  send = async (text: string, nativeStopped = false) => {
+  send = async (text: string, nativeStopped = false, options: { preserveDraft?: boolean } = {}): Promise<SendOutcome> => {
+    if (options.preserveDraft && !this.state.selected) return { status: "blocked" };
     const conversation = this.state.conversations.find(c => c.id === this.state.selected);
-    if (conversation?.attachment && conversation.harness === "claude-code" && !nativeStopped) { this.update({ submissionError: "Confirm external assistant execution is stopped before sending." }); return; }
-    if (!text.trim() || this.state.loading || this.state.runs.some(r => r.status === "starting" || r.status === "running") || this.state.sending || !this.state.connected || !this.state.availability.canSend || this.modelUnavailable() || this.executionUnavailable()) return;
+    if (conversation?.attachment && conversation.harness === "claude-code" && !nativeStopped) { this.update({ submissionError: "Confirm external assistant execution is stopped before sending." }); return { status: "blocked" }; }
+    if (!text.trim() || this.state.loading || this.state.runs.some(r => r.status === "starting" || r.status === "running") || this.state.sending || !this.state.connected || !this.state.availability.canSend || this.modelUnavailable() || this.executionUnavailable()) return { status: "blocked" };
     const selected = this.state.selected, draft = this.draft(), draftKey = this.draftKey();
+    // Flow submissions are independent of the ordinary chat draft and any
+    // staged agent upgrade. They never consume or replace that draft.
+    const preserveDraft = !!options.preserveDraft;
     const pendingTurn: PendingTurn = { id: `pending:${++this.submissionSerial}`, conversationId: selected, text, time: new Date().toISOString() };
-    const upgrade = selected ? this.pendingUpgrade() : undefined;
+    const upgrade = selected && !preserveDraft ? this.pendingUpgrade() : undefined;
     const profileId = selected ? upgrade && this.assignable(upgrade).ok ? upgrade.id : "" : this.draftProfile().id;
     this.stop(); const generation = this.generation, auth = this.authEpoch;
     // Move text into a local bubble immediately; retain it here for failure recovery.
     // This is presentation, not acceptance evidence. Never auto-retry POST.
-    this.update({ drafts: { ...this.state.drafts, [draftKey]: { ...draft, text: "" } }, pendingTurn, sending: true, submissionError: "", availability: { canSend: false, reason: "Submitting…" } });
+    this.update({ ...(!preserveDraft ? { drafts: { ...this.state.drafts, [draftKey]: { ...draft, text: "" } } } : {}), pendingTurn, sending: true, submissionError: "", availability: { canSend: false, reason: "Submitting…" } });
     try {
       const navigation = catalog.state.navigation;
       const result = await this.client.submit({ text, ...(nativeStopped ? { nativeStopped: true } : {}), ...(selected ? { conversationId: selected } : { ...(draft.cwd.trim() ? { cwd: draft.cwd.trim() } : {}), workspaceId: navigation.workspaceId!, worktreeId: navigation.worktreeId! }), ...(profileId ? { profileId } : {}) });
-      if (generation !== this.generation || auth !== this.authEpoch) return;
+      if (generation !== this.generation || auth !== this.authEpoch) return { status: "unknown" };
       if (selected && profileId) this.setDraft({ upgradeId: "" }, selected);
       if (!selected) {
         const nextDraft = this.state.drafts[draftKey] ?? { ...draft, text: "" };
@@ -425,23 +430,25 @@ export class ChatStore {
         // next poll merge the new run as a delta. choose() would wipe
         // runs/messages and flash the welcome empty-state.
         void this.poll();
-        return;
+        return { status: "accepted", conversationId: result.conversationId, runId: result.runId };
       }
       this.choose(result.conversationId, acceptedTurn);
       if (!selected) catalog.navigate({ conversationId: result.conversationId });
+      return { status: "accepted", conversationId: result.conversationId, runId: result.runId };
     } catch (error) {
-      if (generation !== this.generation || auth !== this.authEpoch) return;
+      if (generation !== this.generation || auth !== this.authEpoch) return { status: "unknown" };
       const definite = error instanceof ApiError && error.status >= 400 && error.status < 500;
       // Do not overwrite a new draft typed while this submission was in flight.
       const currentDraft = this.state.drafts[draftKey] ?? draft;
-      const restored = !currentDraft.text;
+      const restored = !preserveDraft && !currentDraft.text;
       if (error instanceof ApiError && error.status === 401) {
         if (restored) this.update({ drafts: { ...this.state.drafts, [draftKey]: { ...currentDraft, text } } });
         this.expired(error);
-        return;
+        return { status: "rejected" };
       }
-      this.update({ sending: false, pendingTurn: null, ...(restored ? { drafts: { ...this.state.drafts, [draftKey]: { ...currentDraft, text } } } : {}), submissionError: `${error instanceof Error ? error.message : "Submission failed."} ${definite ? "" : "Acceptance is unknown. Check history before sending again; this request will not be retried automatically. "}${restored ? "Your draft is restored." : `Your new draft is preserved. Submitted message: ${text}`}` });
+      this.update({ sending: false, pendingTurn: null, ...(restored ? { drafts: { ...this.state.drafts, [draftKey]: { ...currentDraft, text } } } : {}), submissionError: `${error instanceof Error ? error.message : "Submission failed."} ${definite ? "" : "Acceptance is unknown. Check history before sending again; this request will not be retried automatically. "}${preserveDraft ? "Your chat draft and review feedback are preserved." : restored ? "Your draft is restored." : `Your new draft is preserved. Submitted message: ${text}`}` });
       void this.poll();
+      return { status: definite ? "rejected" : "unknown" };
     }
   };
 }

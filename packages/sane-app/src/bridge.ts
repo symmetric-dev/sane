@@ -1285,13 +1285,22 @@ async function startOwned(options: Options, assetsDir: string, packageDir: strin
           if (!workspaceId) throw new WorkstreamAdapterError(400, "workspace-required", "Select a repository workspace");
           if (path === "/api/workstreams/inspect" && req.method === "GET") return router!.inspect(workspaceId);
           if (path === "/api/workstreams/init" && req.method === "POST") return router!.initialize(workspaceId);
+          const operation = path.slice("/api/workstreams/".length);
+          if (operation === "artifacts/catalog" || operation === "artifacts/list" || operation === "artifacts/read") {
+            if (req.method !== "POST") throw new WorkstreamAdapterError(405, "method-not-allowed", "Method not allowed");
+            const input = await body(req);
+            validateWorkstreamInput(operation, input);
+            const adapter = await router!.forWorkspace(workspaceId, input.repositoryId);
+            if (operation === "artifacts/catalog") return adapter.documentCatalog(input.id);
+            if (operation === "artifacts/list") return adapter.listArtifacts(input.id);
+            return adapter.readArtifactSnapshot(input.id, input.path);
+          }
           const workstreams = await router!.forWorkspace(workspaceId);
           if (path === "/api/workstreams/overview" && req.method === "GET") {
             if (!workspaceId) throw new WorkstreamAdapterError(400, "workspace-required", "Select a repository workspace");
             return workstreams.overview(meta.sessions.filter(s => catalog.association(s.sessionId).workspaceId === workspaceId));
           }
           if (path === "/api/workstreams" && req.method === "GET") return workstreams.list();
-          const operation = path.slice("/api/workstreams/".length);
           if (req.method === "GET" && operation === "status") return workstreams.status(url.searchParams.get("id") ?? "");
           if (req.method !== "POST") throw new WorkstreamAdapterError(405, "method-not-allowed", "Method not allowed");
           const input = await body(req);
@@ -1337,8 +1346,6 @@ async function startOwned(options: Options, assetsDir: string, packageDir: strin
            if (path === "/api/workstreams") return workstreams.create({ id: input.id, title: input.title, type: input.type, defaultCheckout: input.defaultCheckout });
           if (operation === "default-checkout") return workstreams.setDefaultCheckout(input.id, input.checkout);
           if (operation === "target") return workstreams.resolveTarget(input.id, input.phase, input.target);
-          if (operation === "artifacts/list") return workstreams.listArtifacts(input.id);
-          if (operation === "artifacts/read") return { content: workstreams.readArtifact(input.id, input.path) };
           if (!["conversation", "associate", "phase/assign", "phase/end", "context"].includes(operation)) throw new WorkstreamAdapterError(404, "not-found", "Unknown workstream operation");
           const session = meta.sessions.find(s => s.sessionId === input.sessionId);
           if (!session) throw new WorkstreamAdapterError(404, "not-found", "Unknown App conversation");

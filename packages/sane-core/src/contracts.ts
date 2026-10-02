@@ -32,5 +32,9 @@ export interface RegisterConversationInput { ref: ConversationRef; executionChec
 export interface CreateWorkstreamInput { id: string; title: string; type: WorkstreamType; defaultCheckout?: string | null }
 export interface AuditEvent { id: number; correlationId: string; actor: MutationActor; operation: string; workstreamId: string | null; entityId: string | null; details: Record<string, unknown>; timestamp: string }
 export interface ResearchIndex { registered: { topic: string; reportPath: string; contentHash: string; createdAt: string; updatedAt: string; missing: boolean; modified: boolean }[]; unregistered: string[]; warnings: string[] }
+/** Read-only document ownership; independent of lifecycle approval/progress. */
+export type WorkstreamDocumentPhase = "design" | "engineering" | "planning" | "execution" | "research" | "resources"
+export interface WorkstreamDocument { path: string; title: string; phase: WorkstreamDocumentPhase; kind: "primary" | "supporting" | "resource"; required: boolean; exists: boolean; revision: string | null }
+export interface WorkstreamDocumentCatalog { repositoryId: string; workstreamId: string; documents: WorkstreamDocument[] }
 export interface ApprovalEvidence { id: string; workstreamId: string; phase: "design" | "engineering" | "planning" | "execution"; userReference: string; hashVersion: number; snapshotHash: string; createdAt: string; actorEventId: number; gitCommit: string | null; files: { path: string; hash: string }[] }
 export type DomainErrorCode = "INVALID_INPUT" | "NOT_INITIALIZED" | "ALREADY_INITIALIZED" | "UNSUPPORTED_SCHEMA" | "INCOMPLETE_INITIALIZATION" | "CORRUPT_STORE" | "UNAVAILABLE" | "INVALID_CONTEXT" | "STALE_BINDING" | "NOT_FOUND" | "CONFLICT" | "BUSY" | "INVALID_CHECKOUT" | "AMBIGUOUS_TARGET" | "INVALID_ARTIFACT" | "STORAGE_ERROR" | "FEATURE_UNAVAILABLE" | "NATIVE_CONTEXT_UNAVAILABLE" | "SOURCE_UNAVAILABLE"
