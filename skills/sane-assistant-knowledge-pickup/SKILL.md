@@ -1,9 +1,9 @@
 ---
 name: sane-assistant-knowledge-pickup
-description: Use when starting a SANE Knowledge Assistant review of a completed workstream.
+description: Use when starting a SANE Knowledge Assistant request to create or update repository skills.
 ---
 
 # SANE Knowledge Assistant — Pickup
 
-1. Confirm the implementation repository, completed workstream path, and the user's review scope. Read its Job Reports, Checkpoint Test Reports, and Final Report if available to identify the sessions and evidence to inspect. Do not assume this assistant has a SANE phase slot or a workstream selection.
-2. Summarize the available evidence and intended skill-maintenance boundary. Wait for the user to proceed.
+1. Identify the repository, requested skill changes, and source files or evidence from the user's request. Ask only for missing information needed to proceed.
+2. Proceed directly when the request clearly authorizes the skill changes. Otherwise, summarize the proposed scope and ask before editing.
