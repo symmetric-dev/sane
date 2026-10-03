@@ -6,7 +6,6 @@ export const ROOT_DOC_BY_TYPE: Record<WorkstreamType, string> = { feature: "PRD.
 export interface TemplateMapping { source: string; destination: string }
 export type TemplateRegistry = readonly TemplateMapping[]
 const SHARED_INITIAL_TEMPLATE_REGISTRY = [
-  { source: "shared/README.md", destination: "README.md" },
   { source: "shared/sdd/SDD.md", destination: "design/SDD.md" },
   { source: "shared/sdd/SDD.md", destination: "resources/SDD_TEMPLATE.md" },
   { source: "shared/solutions/SOLUTION.md", destination: "resources/SOLUTION_SPEC_TEMPLATE.md" },

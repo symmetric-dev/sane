@@ -3,7 +3,7 @@ import { join } from "node:path"
 import { ROOT_DOC_BY_TYPE } from "./bootstrap-registry.ts"
 import type { WorkstreamType } from "./workstream-type.ts"
 
-export const REQUIRED_WORKSTREAM_FILES = ["README.md", "design/SDD.md", "resources/SDD_TEMPLATE.md", "resources/SOLUTION_SPEC_TEMPLATE.md", "resources/RESEARCH_REPORT_TEMPLATE.md", "resources/PLAN_TEMPLATE.md", "resources/JOB_TEMPLATE.md", "resources/EXECUTION_REPORT_TEMPLATE.md", "resources/EXECUTION_FINAL_REPORT_TEMPLATE.md"] as const
+export const REQUIRED_WORKSTREAM_FILES = ["design/SDD.md", "resources/SDD_TEMPLATE.md", "resources/SOLUTION_SPEC_TEMPLATE.md", "resources/RESEARCH_REPORT_TEMPLATE.md", "resources/PLAN_TEMPLATE.md", "resources/JOB_TEMPLATE.md", "resources/EXECUTION_REPORT_TEMPLATE.md", "resources/EXECUTION_FINAL_REPORT_TEMPLATE.md"] as const
 export const ROOT_DOC_CANDIDATES = ["PRD.md", "FOUNDATION.md", "ISSUE.md", "MAINTENANCE.md"] as const
 export const OLD_WORKSTREAM_FILES = ["SANE_CONTEXT.md", "SDD.md", "execution/BRIEF.md"] as const
 export const OLD_WORKSTREAM_DIRS = ["solutions", "plan", "planning"] as const
@@ -13,7 +13,7 @@ export function inspectBootstrappedWorkstream(path: string, inspect: typeof lsta
   const stat = (path: string) => { try { return inspect(path) } catch (error) { if ((error as NodeJS.ErrnoException).code === "ENOENT") return undefined; throw error } }
   if (!stat(path)?.isDirectory()) throw new Error(`Workstream is not an existing directory: ${path}`)
   for (const filename of RETIRED_WORKSTREAM_FILES) if (stat(join(path, filename))?.isFile()) throw new Error(`Workstream contains retired Stage artifact and is not a current workstream: ${join(path, filename)}`)
-  for (const filename of OLD_WORKSTREAM_FILES) if (stat(join(path, filename))?.isFile()) throw new Error(`Workstream contains old-layout file ${filename} at ${join(path, filename)}; expected new layout with README.md, design/SDD.md, design/solutions/, execution/PLAN.md, execution/jobs/, execution/FINAL_REPORT.md, execution/reports/. Re-create the workstream with the current bootstrap.`)
+  for (const filename of OLD_WORKSTREAM_FILES) if (stat(join(path, filename))?.isFile()) throw new Error(`Workstream contains old-layout file ${filename} at ${join(path, filename)}; expected new layout with design/SDD.md, design/solutions/, execution/PLAN.md, execution/jobs/, execution/FINAL_REPORT.md, execution/reports/. Re-create the workstream with the current bootstrap.`)
   for (const dirname of OLD_WORKSTREAM_DIRS) if (stat(join(path, dirname))) throw new Error(`Workstream contains old-layout directory ${dirname}/ at ${join(path, dirname)}; expected new layout with top-level dirs exactly design/, execution/, research/, resources/. Re-create the workstream with the current bootstrap.`)
   for (const filename of REQUIRED_WORKSTREAM_FILES) if (!stat(join(path, filename))?.isFile()) throw new Error(`Workstream is not bootstrapped; missing regular file: ${join(path, filename)}`)
   const present = ROOT_DOC_CANDIDATES.filter(candidate => stat(join(path, candidate))?.isFile())

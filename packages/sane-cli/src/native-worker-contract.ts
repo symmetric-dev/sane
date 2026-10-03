@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto"
-import { WORKER_AGENT_IDS, isWorkerAgentId, type WorkerAgentId } from "../../sane-core/src/agent-catalog.ts"
+import { MAX_WORKER_JOBS, WORKER_AGENT_IDS, WORKER_JOB_ID_PATTERN, isWorkerAgentId, workerJobsProblem, type WorkerAgentId } from "../../sane-core/src/agent-catalog.ts"
 import { classifyCaller, type CallerEnvelope } from "./cli-arguments.ts"
 
 export const nativeWorkerOperations = ["start", "status", "wait", "acknowledge", "cancel", "cancel_all"] as const
@@ -8,7 +8,7 @@ export type NativeWorkerInvocation = { toolCallId: string; messageId?: string; o
 export type NativeWorkerResultRef = { workerId: string; revision: number; notificationId: string }
 export type NativeWorkerAcknowledgement = NativeWorkerResultRef & { state: "pending" | "wait-consumed" | "claimed" | "acceptance-unknown" | "delivered"; acknowledged: boolean }
 export type NativeWorkerInputs = {
-  start: { worker: WorkerAgentId; prompt: string; context?: string }
+  start: { worker: WorkerAgentId; prompt: string; context?: string; jobs?: string[] }
   status: { ids?: string[] }
   wait: { ids: string[]; timeoutSec: number }
   acknowledge: { refs: NativeWorkerResultRef[] }
@@ -24,7 +24,7 @@ const uuidPattern = "^[a-fA-F0-9]{8}-[a-fA-F0-9]{4}-[a-fA-F0-9]{4}-[a-fA-F0-9]{4
 const idsSchema = { type: "array", minItems: 1, maxItems: 256, items: { type: "string", pattern: uuidPattern } } as const
 const resultRefSchema = { type: "object", properties: { workerId: { type: "string", pattern: uuidPattern }, revision: { type: "integer", minimum: 1, maximum: Number.MAX_SAFE_INTEGER }, notificationId: { type: "string", minLength: 1, maxLength: 2048, pattern: "^[^\\s\\u0000-\\u001f\\u007f]+$" } }, required: ["workerId", "revision", "notificationId"], additionalProperties: false } as const
 export const nativeWorkerSchemas = {
-  start: { type: "object", properties: { worker: { type: "string", enum: WORKER_AGENT_IDS }, prompt: { type: "string", minLength: 1, maxLength: 100000, pattern: "\\S" }, context: { type: "string", maxLength: 100000 } }, required: ["worker", "prompt"], additionalProperties: false },
+  start: { type: "object", properties: { worker: { type: "string", enum: WORKER_AGENT_IDS }, prompt: { type: "string", minLength: 1, maxLength: 100000, pattern: "\\S" }, context: { type: "string", maxLength: 100000 }, jobs: { type: "array", minItems: 1, maxItems: MAX_WORKER_JOBS, items: { type: "string", pattern: WORKER_JOB_ID_PATTERN } } }, required: ["worker", "prompt"], additionalProperties: false },
   status: { type: "object", properties: { ids: idsSchema }, required: [], additionalProperties: false },
   wait: { type: "object", properties: { ids: idsSchema, timeoutSec: { type: "number", minimum: 0, maximum: 10, default: 0 } }, required: ["ids"], additionalProperties: false },
   acknowledge: { type: "object", properties: { refs: { type: "array", minItems: 1, maxItems: 256, items: resultRefSchema } }, required: ["refs"], additionalProperties: false },
@@ -32,7 +32,7 @@ export const nativeWorkerSchemas = {
   cancel_all: { type: "object", properties: {}, required: [], additionalProperties: false },
 } as const
 export const nativeWorkerDescriptions: Record<NativeWorkerOperation, string> = {
-  start: "Launch an App-managed worker in the background. Continue useful work, then end your turn; terminal outcomes report back automatically. Waiting is optional. context is explicit supplemental text, not inherited conversation history. Workers continue independently when the parent stops.",
+  start: "Launch an App-managed worker in the background. Continue useful work, then end your turn; terminal outcomes report back automatically. Waiting is optional. context is explicit supplemental text, not inherited conversation history. jobs assigns registered job IDs and SANE supplies their paths: implementer requires exactly one; fixer, tester and reviewer accept one or more; other roles reject jobs. Workers continue independently when the parent stops.",
   status: "Inspect background workers in this caller's worker tree; omit ids to list them. Background outcomes report back automatically; polling is unnecessary.",
   wait: "Optionally join selected background workers for 0–10 seconds (default 0). A timeout or cancelled wait leaves workers running independently; normally end your turn and await automatic report-back.",
   acknowledge: "Optional: only after receiving and handling results via wait/status, consume your own pending notifications before ending your turn. Copy workerId from worker.id and exact revision/notificationId from latestResult or resultHistory. Only the immediate parent may acknowledge. Receipts report arbitration: claimed, acceptance-unknown or delivered notifications are not consumed. Background report-back remains the default; wait/status never automatically acknowledge.",
@@ -52,6 +52,8 @@ export function nativeWorkerInput<O extends NativeWorkerOperation>(operation: O,
   keys(value, Object.keys(nativeWorkerSchemas[operation].properties))
   if (operation === "start") {
     if (!isWorkerAgentId(value.worker) || typeof value.prompt !== "string" || !value.prompt.trim() || value.prompt.length > 100000 || (value.context !== undefined && (typeof value.context !== "string" || value.context.length > 100000))) invalid("Expected a worker role, nonblank prompt (max 100000 characters), and optional context (max 100000 characters).")
+    const jobs = workerJobsProblem(value.worker as WorkerAgentId, value.jobs)
+    if (jobs) invalid(jobs)
   } else if (operation === "acknowledge") {
     if (!Array.isArray(value.refs) || !value.refs.length || value.refs.length > 256) invalid("refs must contain 1–256 exact worker result references.")
     for (const input of value.refs as unknown[]) {

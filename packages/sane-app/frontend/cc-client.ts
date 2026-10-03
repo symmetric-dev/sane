@@ -26,7 +26,7 @@ export const conversationClient: ConversationClient = {
   },
   async runs(id, signal): Promise<RunMetadata[]> {
     const data = await request(`/api/sessions/${encodeURIComponent(id)}/runs`, { signal });
-    return (data.runs ?? []).map((r: any) => ({ id: r.runId, conversationId: r.sessionId, harness: r.harness ?? "claude-code", nativeSessionId: r.nativeSessionId, nativeCommandId: r.nativeCommandId, operation: r.operation, compact: r.compact, cwd: r.cwd, status: r.status, createdAt: r.createdAt, endedAt: r.endedAt, model: r.model, effort: r.effort, agent: r.agent, agentKind: r.agentKind, nativeAgentSelected: r.nativeAgentSelected, profileId: r.profileId }));
+    return (data.runs ?? []).map((r: any) => ({ id: r.runId, conversationId: r.sessionId, harness: r.harness ?? "claude-code", nativeSessionId: r.nativeSessionId, nativeCommandId: r.nativeCommandId, operation: r.operation, compact: r.compact, cwd: r.cwd, status: r.status, createdAt: r.createdAt, endedAt: r.endedAt, model: r.model, effort: r.effort, agent: r.agent, agentKind: r.agentKind, nativeAgentSelected: r.nativeAgentSelected, profileId: r.profileId, saneContextVersion: r.saneContextVersion }));
   },
   events: (run, signal) => request(`/api/runs/${encodeURIComponent(run.id)}/events?after=${run.cursor}`, { signal }),
   workers: (id, signal) => request(`/api/sessions/${encodeURIComponent(id)}/workers`, { signal }),

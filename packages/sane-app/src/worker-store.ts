@@ -2,7 +2,7 @@ import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { atomicAppRecord } from "./app-store";
 import { uuid } from "./history";
-import { isWorkerAgentId } from "sane-core/agent-catalog";
+import { isWorkerAgentId, workerJobsProblem } from "sane-core/agent-catalog";
 import type { WorkerRecord, WorkerRecords, WorkerDelivery } from "./worker-contract";
 
 /** Synchronous publication makes reservations and consumption atomic within the App owner. */
@@ -33,7 +33,9 @@ export class WorkerStore {
     const ids = new Set<string>(), sessions = new Set<string>(), requests = new Set<string>();
     for (const w of r.workers) {
       const key = JSON.stringify([w.parent?.sessionId, w.input?.requestId]);
-      if (!uuid(w.id) || !uuid(w.sessionId) || ids.has(w.id) || sessions.has(w.sessionId) || requests.has(key) || !uuid(w.parent?.sessionId) || !uuid(w.parent?.runId) || !w.parent.toolCallId || !w.parent.native?.nativeId || !w.parent.native.authorityId || !["cc", "oc"].includes(w.parent.native.harness) || !isWorkerAgentId(w.input?.worker) || typeof w.input.prompt !== "string" || !w.input.requestId || !w.checkout?.startsWith("/") || !w.launch?.agent || !["claude-code", "opencode"].includes(w.launch.harness) || !["reserved", "launching", "running", "waiting", "uncertain", "cancelling", "completed", "failed", "interrupted"].includes(w.state) || !Number.isFinite(Date.parse(w.createdAt)) || !Number.isFinite(Date.parse(w.updatedAt)) || w.runId !== null && !uuid(w.runId)) fail();
+      // Older v1 records predate jobs. Validate assignments when present;
+      // WorkerService.start still requires them for new Implementer launches.
+      if (!uuid(w.id) || !uuid(w.sessionId) || ids.has(w.id) || sessions.has(w.sessionId) || requests.has(key) || !uuid(w.parent?.sessionId) || !uuid(w.parent?.runId) || !w.parent.toolCallId || !w.parent.native?.nativeId || !w.parent.native.authorityId || !["cc", "oc"].includes(w.parent.native.harness) || !isWorkerAgentId(w.input?.worker) || typeof w.input.prompt !== "string" || !w.input.requestId || w.input.jobs !== undefined && workerJobsProblem(w.input.worker, w.input.jobs) !== undefined || !w.checkout?.startsWith("/") || !w.launch?.agent || !["claude-code", "opencode"].includes(w.launch.harness) || !["reserved", "launching", "running", "waiting", "uncertain", "cancelling", "completed", "failed", "interrupted"].includes(w.state) || !Number.isFinite(Date.parse(w.createdAt)) || !Number.isFinite(Date.parse(w.updatedAt)) || w.runId !== null && !uuid(w.runId)) fail();
       if (w.outcome && (!["completed", "failed", "interrupted"].includes(w.outcome.status) || !w.notification?.id)) fail();
       const runs = new Set<string | null>(), notifications = new Set<string>();
       for (const [index, result] of (w.results ?? []).entries()) {

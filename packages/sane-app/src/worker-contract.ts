@@ -7,7 +7,7 @@ export const DEFAULT_MAX_WORKERS_PER_CHECKOUT = 8;
 
 /** Supplied by the authenticated integration, never by tool arguments. */
 export type WorkerCaller = { envelope: unknown; runId: string; toolCallId: string; invocation?: import("../../sane-cli/src/native-worker-contract").NativeWorkerInvocation };
-export type WorkerStart = { requestId: string; worker: WorkerAgentId; prompt: string; context?: string };
+export type WorkerStart = { requestId: string; worker: WorkerAgentId; prompt: string; context?: string; jobs?: string[] };
 export type WorkerState = "reserved" | "launching" | "running" | "waiting" | "uncertain" | "cancelling" | "completed" | "failed" | "interrupted";
 export type WorkerRecord = {
   id: string; sessionId: string; runId: string | null;

@@ -15,10 +15,10 @@ export type Run = {
   operation?: "prompt" | "compact";
   compact?: { requestId: string; instructions?: string; nativeRequestId?: string; nativeAdmittedId?: string };
   nativeConnection?: string; nativeReason?: string; nativeUsage?: { cost?: number; tokens?: unknown }; nativeUsageTime?: string;
-  model?: string; effort?: string; agent?: string; agentKind?: "assistant" | "worker"; nativeAgentSelected?: boolean; profileId?: string; observedModel?: string; observedEfforts: string[];
+  model?: string; effort?: string; agent?: string; agentKind?: "assistant" | "worker"; nativeAgentSelected?: boolean; profileId?: string; saneContextVersion?: number; observedModel?: string; observedEfforts: string[];
   messages: Message[]; events: DiagnosticEvent[]; cursor: number; seen: Set<number>;
   buffer: string; usage?: UsageSnapshot; result?: string; resultCount: number; resultKeys: Set<string>;
   toolResults: Map<string, { output: unknown; error?: boolean }>;
 };
-export type RunMetadata = Pick<Run, "id" | "conversationId" | "cwd" | "status" | "createdAt" | "endedAt" | "model" | "effort" | "agent" | "agentKind" | "nativeAgentSelected" | "profileId" | "harness" | "nativeSessionId" | "nativeCommandId" | "operation" | "compact">;
+export type RunMetadata = Pick<Run, "id" | "conversationId" | "cwd" | "status" | "createdAt" | "endedAt" | "model" | "effort" | "agent" | "agentKind" | "nativeAgentSelected" | "profileId" | "saneContextVersion" | "harness" | "nativeSessionId" | "nativeCommandId" | "operation" | "compact">;
 export const active = (status: RunStatus) => status === "running" || status === "starting";

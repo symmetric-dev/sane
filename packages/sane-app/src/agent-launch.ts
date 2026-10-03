@@ -1,7 +1,10 @@
 import { readFile } from "node:fs/promises";
 import { join } from "node:path";
-import { isStoredAssistantAgentId, isWorkerAgentId, nativeAgentId, type StoredSaneAgentIdentity } from "sane-core/agent-catalog";
-import type { AgentSnapshot, CanonicalAgentSnapshot } from "./history";
+import { isStoredAssistantAgentId, isWorkerAgentId, nativeAgentId, type StoredSaneAgentIdentity, type WorkerAgentId } from "sane-core/agent-catalog";
+import { frameworkContext, workerContext } from "sane-core/sane-context";
+import type { RepositoryDomain } from "sane-core/server";
+import type { ConversationRef } from "sane-core/contracts";
+import type { AgentSnapshot, CanonicalAgentSnapshot, Run, SaneSessionContext, Session } from "./history";
 import type { ResolvedAgentLaunch } from "./agent-profiles-contract";
 
 /** Safe to persist/display: messages contain only our diagnostic and exact native agent ID. */
@@ -11,6 +14,36 @@ export class AgentLaunchConfigurationError extends Error {}
  * OC callers should overlay the effective model/variant returned by resolveLaunch. */
 export function agentLaunchSnapshot(launch: ResolvedAgentLaunch): CanonicalAgentSnapshot & Pick<ResolvedAgentLaunch, "profileId" | "model" | "effort"> {
   return { profileId: launch.profileId, ...(launch.model ? { model: launch.model } : {}), ...(launch.effort ? { effort: launch.effort } : {}), ...(launch.identity ? { agent: launch.identity.role, agentKind: launch.identity.kind, nativeAgentSelected: true } : {}) };
+}
+
+/** Only SANE session creation records context; allowlisted identities only. */
+export function saneSessionContext(identity: StoredSaneAgentIdentity | undefined, assignment?: string): Pick<Session, "saneContext"> {
+  const framework = frameworkContext(identity);
+  return framework ? { saneContext: { version: framework.version, framework: framework.text, ...(assignment !== undefined ? { assignment } : {}) } } : {};
+}
+/** Resolve a new worker's procedure, roots and assigned jobs from its enrolled identity. An
+ * implementer starts its planned job; other roles never change job state. Throws when unusable. */
+export function workerAssignment(domain: RepositoryDomain, child: ConversationRef, parent: ConversationRef, role: WorkerAgentId, jobIds: readonly string[], correlationId: string): string {
+  const context = domain.resolveContext(child);
+  const roots = { workstreamId: context.workstream?.id ?? null, workstreamRoot: context.artifactsRoot, implementationRoot: context.executionCheckout, managementRepository: context.primaryCheckout };
+  const workstream = context.workstream;
+  if (jobIds.length && !workstream) throw new Error(`Jobs ${jobIds.join(", ")} require a workstream; the worker has none`);
+  const jobs = jobIds.map(jobId => {
+    const job = domain.getJobContext(workstream!.id, jobId, child);
+    if (!job.job.specExists) throw new Error(`Job ${jobId} spec is missing: ${job.job.specPath}`);
+    if (!job.reportTemplateExists) throw new Error(`Job ${jobId} report template is missing: ${job.reportTemplate}`);
+    return { jobId, status: job.job.status, specPath: job.job.specPath, reportPath: job.job.reportPath, reportTemplatePath: job.reportTemplate };
+  });
+  if (role === "implementer") for (const job of jobs) if (job.status === "planned") domain.updateJob(workstream!.id, job.jobId, "running", { actor: { kind: "native", repositoryId: domain.repositoryId, ref: parent }, correlationId });
+  return workerContext(role, roots, jobs.map(({ status: _, ...job }) => job));
+}
+/** The text every run of the session applies. */
+export function saneContextText(context: SaneSessionContext): string {
+  return context.assignment === undefined ? context.framework : `${context.framework}\n\n${context.assignment}`;
+}
+/** Runs record which recorded context version they re-applied. */
+export function saneContextSnapshot(session: Pick<Session, "saneContext">): Pick<Run, "saneContextVersion"> {
+  return session.saneContext ? { saneContextVersion: session.saneContext.version } : {};
 }
 
 /** Legacy assistant records retain their meaning; worker identity is explicit. */

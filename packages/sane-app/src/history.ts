@@ -16,7 +16,9 @@ export function validAgentSnapshot(value: AgentSnapshot): boolean {
 }
 
 export type Status = "running" | "completed" | "failed" | "interrupted";
-export type Session = AgentSnapshot & { sessionId: string; harness?: Harness; nativeSessionId?: string; authorityId?: string; cwd: string; lastStatus: Status | "unknown"; lastRunId: string | null; title?: string; hidden?: boolean; model?: string; effort?: string; profileId?: string; attachment?: { state: "pending" | "ready"; source: string; error?: string } };
+export type Session = AgentSnapshot & { sessionId: string; harness?: Harness; nativeSessionId?: string; authorityId?: string; cwd: string; lastStatus: Status | "unknown"; lastRunId: string | null; title?: string; hidden?: boolean; model?: string; effort?: string; profileId?: string; attachment?: { state: "pending" | "ready"; source: string; error?: string }; saneContext?: SaneSessionContext };
+/** Recorded once when SANE creates the session; every later run re-applies it unchanged. */
+export type SaneSessionContext = { version: number; framework: string; assignment?: string };
 export const efforts = FIXED_EFFORT_VALUES;
 export type Effort = typeof efforts[number];
 export const validModel = (v: unknown): v is string => typeof v === "string" && v.length <= 200 && /^[a-zA-Z0-9][a-zA-Z0-9._:/\[\]-]*$/.test(v);
@@ -24,7 +26,7 @@ export const validEffort = (v: unknown): v is Effort => typeof v === "string" &&
 /** Missing operation is a legacy prompt. nativeCommandId remains the requested
  * OC input ID; compact.nativeAdmittedId may differ after native coalescing. */
 export type CompactRunMetadata = { requestId: string; instructions?: string; nativeRequestId?: string; nativeAdmittedId?: string };
-export type Run = AgentSnapshot & { runId: string; sessionId: string; cwd: string; status: Status; createdAt: string; endedAt?: string; model?: string; effort?: string; profileId?: string; nativeCommandId?: string; nativePhase?: "preparing" | "sending" | "accepted"; nativeAcceptedAt?: number; operation?: "prompt" | "compact"; compact?: CompactRunMetadata };
+export type Run = AgentSnapshot & { runId: string; sessionId: string; cwd: string; status: Status; createdAt: string; endedAt?: string; model?: string; effort?: string; profileId?: string; nativeCommandId?: string; nativePhase?: "preparing" | "sending" | "accepted"; nativeAcceptedAt?: number; operation?: "prompt" | "compact"; compact?: CompactRunMetadata; saneContextVersion?: number };
 export type Event = { seq: number; time: string; runId: string; sessionId: string; kind: "stdout" | "stderr" | "hook" | "status" | "submission" | "message"; data: unknown };
 export type Metadata = { sessions: Session[]; runs: Run[]; reconciliationRequired: boolean };
 
@@ -81,6 +83,7 @@ export function validateMetadata(value: unknown): Metadata {
     // as empty. Immutable per conversation once set (like harness/cwd).
     if (!validAgentSnapshot(s)) return fail();
     if (s.profileId !== undefined && !validProfileId(s.profileId)) return fail();
+    if (s.saneContext !== undefined && (!object(s.saneContext) || !Object.keys(s.saneContext).every(k => ["version", "framework", "assignment"].includes(k)) || !Number.isSafeInteger(s.saneContext.version) || s.saneContext.version < 1 || typeof s.saneContext.framework !== "string" || !s.saneContext.framework || s.saneContext.assignment !== undefined && (typeof s.saneContext.assignment !== "string" || !s.saneContext.assignment || s.agentKind !== "worker"))) return fail();
     const key = JSON.stringify([s.harness, s.authorityId, s.nativeSessionId]);
     if (nativeIds.has(key)) return fail();
     nativeIds.add(key);
@@ -93,6 +96,7 @@ export function validateMetadata(value: unknown): Metadata {
     if ((r.model !== undefined && !validModel(r.model)) || (r.effort !== undefined && !(sessions.get(r.sessionId)?.harness === "opencode" ? validVariant(r.effort) : validEffort(r.effort)))) return fail();
     if (!validAgentSnapshot(r)) return fail();
     if (r.profileId !== undefined && !validProfileId(r.profileId)) return fail();
+    if (r.saneContextVersion !== undefined && r.saneContextVersion !== sessions.get(r.sessionId)?.saneContext?.version) return fail();
     if (r.operation !== undefined && r.operation !== "prompt" && r.operation !== "compact") return fail();
     if (r.operation === "compact") {
       if (!object(r.compact) || !uuid(r.compact.requestId) || (r.compact.instructions !== undefined && (!validCompactInstructions(r.compact.instructions) || sessions.get(r.sessionId)?.harness !== "claude-code"))) return fail();

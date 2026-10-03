@@ -61,6 +61,19 @@ export const WORKER_AGENT_CATALOG: Record<WorkerAgentId, { label: string; descri
 export function isWorkerAgentId(value: unknown): value is WorkerAgentId {
   return typeof value === "string" && (WORKER_AGENT_IDS as readonly string[]).includes(value)
 }
+/** Jobs a role may be assigned; SANE resolves their paths when it creates the worker. */
+export const WORKER_JOB_ASSIGNMENT: Record<WorkerAgentId, "one" | "some" | "none"> = { implementer: "one", fixer: "some", tester: "some", reviewer: "some", grounder: "none", researcher: "none", scout: "none", "scout-crew": "none" }
+export const MAX_WORKER_JOBS = 64
+export const WORKER_JOB_ID_PATTERN = "^[a-z0-9][a-z0-9_-]{0,95}$"
+const workerJobId = new RegExp(WORKER_JOB_ID_PATTERN)
+/** Returns why jobs are invalid for the role, or undefined when acceptable (absent jobs included). */
+export function workerJobsProblem(worker: WorkerAgentId, jobs: unknown): string | undefined {
+  const rule = WORKER_JOB_ASSIGNMENT[worker]
+  if (jobs === undefined) return rule === "one" ? `${worker} requires jobs with exactly one job ID.` : undefined
+  if (rule === "none") return `jobs is not allowed for ${worker} workers.`
+  if (!Array.isArray(jobs) || !jobs.length || jobs.length > (rule === "one" ? 1 : MAX_WORKER_JOBS) || !jobs.every(job => typeof job === "string" && workerJobId.test(job)) || new Set(jobs).size !== jobs.length) return rule === "one" ? `${worker} requires jobs with exactly one safe lowercase job ID.` : `jobs must list 1–${MAX_WORKER_JOBS} unique safe lowercase job IDs.`
+  return undefined
+}
 export type SaneAgentIdentity = { kind: "assistant"; role: AssistantAgentId } | { kind: "worker"; role: WorkerAgentId }
 export type StoredSaneAgentIdentity = { kind: "assistant"; role: StoredAssistantAgentId } | { kind: "worker"; role: WorkerAgentId }
 /** Do not canonicalize archival selections: native instructions are identity-specific. */

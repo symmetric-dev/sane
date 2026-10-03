@@ -15,7 +15,7 @@ const basename = (path: string) => path.split("/").filter(Boolean).at(-1) || pat
 const readable = (value: string) => value.replace(/_/g, " ");
 const typeLabels: Record<WorkstreamType, string> = { feature: "Feature", foundation: "Foundation", issue: "Issue", maintenance: "Maintenance" };
 const fileLabels: Record<string, string> = {
-  "README.md": "Workstream overview", "PRD.md": "Product requirements", "FOUNDATION.md": "Foundation brief",
+  "PRD.md": "Product requirements", "FOUNDATION.md": "Foundation brief",
   "ISSUE.md": "Issue brief", "MAINTENANCE.md": "Maintenance brief", "SDD.md": "Software design",
   "PLAN.md": "Execution plan", "FINAL_REPORT.md": "Final report", "SOLUTION.md": "Solution specification",
   "VERIFICATION.md": "Verification specification", "SDD_TEMPLATE.md": "Software design template",

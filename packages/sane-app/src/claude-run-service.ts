@@ -1,7 +1,7 @@
 import { writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { timingSafeEqual } from "node:crypto";
-import { AgentLaunchConfigurationError, claudeAgentSettings, snapshotIdentity } from "./agent-launch";
+import { AgentLaunchConfigurationError, claudeAgentSettings, saneContextText, snapshotIdentity } from "./agent-launch";
 import { projectCompactions } from "./compaction";
 import type { Event, Run, Session } from "./history";
 import type { RunOwner } from "./run-owner";
@@ -64,7 +64,7 @@ export type ClaudeRunRuntime = {
 
 export type ClaudeHookInput = { runId?: unknown; payload?: unknown };
 export type ClaudeHookReply = { status: 200; body: { ok: true } } | { status: 400 | 403; body: { error: string } };
-type Result = { seen: boolean; error: boolean; diagnostic?: string };
+type Result = { seen: boolean; error: boolean; indices: Set<number>; diagnostic?: string };
 const quote = (s: string) => `'${s.replaceAll("'", "'\\''")}'`;
 const compactCommand = (text: string) => /^\s*\/compact(?:\s|$)/i.test(text);
 const equal = (a: string, b: string) => { const x = Buffer.from(a), y = Buffer.from(b); return x.length === y.length && timingSafeEqual(x, y); };
@@ -140,7 +140,12 @@ export class ClaudeRunService {
           if (data.session_id !== nativeSessionId) { result.error = true; result.diagnostic = "CLI session identity mismatch or missing session_id"; }
         }
         if (data?.type === "result") {
-          if (result.seen) { result.error = true; result.diagnostic = "Duplicate CLI result"; }
+          // Background task notifications can finish additional turns in the
+          // same process. Claude distinguishes their results with result_index.
+          const indexed = Number.isSafeInteger(data.result_index) && data.result_index >= 0;
+          if (data.result_index !== undefined && !indexed) { result.error = true; result.diagnostic ??= "Invalid CLI result_index"; }
+          if (result.seen && (!indexed || !result.indices.size || result.indices.has(data.result_index))) { result.error = true; result.diagnostic = "Duplicate CLI result"; }
+          if (indexed) result.indices.add(data.result_index);
           result.seen = true;
           if (data.subtype !== "success" || data.is_error !== false) { result.error = true; result.diagnostic ??= "CLI result is not an explicit success"; }
         }
@@ -153,7 +158,7 @@ export class ClaudeRunService {
 
   async execute(owner: RunOwner, prompt: string, resume: boolean, ready: (accepted: boolean) => void): Promise<void> {
     const run = owner.run, deps = this.deps, runtime = this.runtime;
-    const result: Result = { seen: false, error: false };
+    const result: Result = { seen: false, error: false, indices: new Set() };
     let streams: Promise<unknown>[] = [];
     try {
       if (run.operation !== "compact" && compactCommand(prompt)) throw new Error("Use the dedicated Compact action; compaction cannot be submitted as an ordinary prompt");
@@ -171,9 +176,12 @@ export class ClaudeRunService {
       const ccAgent = installed?.agent, permissions = installed?.permissions;
       const settingsPath = join(this.options.dataDir, `${run.runId}.settings.json`);
       await deps.enqueue(() => runtime.writeSettings(settingsPath, JSON.stringify({ hooks, ...(permissions ? { permissions } : {}) })));
+      const systemPromptPath = session.saneContext && join(this.options.dataDir, `${run.runId}.system-prompt.md`);
+      if (systemPromptPath) await deps.enqueue(() => runtime.writeSettings(systemPromptPath, saneContextText(session.saneContext!)));
       if (deps.closing() || deps.storageFailed() || owner.stopRequested) throw new Error("Closing before launch");
       const args = [this.options.claudeBin, "-p", "--permission-mode", "bypassPermissions", "--output-format", "stream-json", "--verbose", resume ? "--resume" : "--session-id", session.nativeSessionId!, "--settings", settingsPath];
       if (ccAgent !== undefined) args.push("--agent", ccAgent);
+      if (systemPromptPath) args.push("--append-system-prompt-file", systemPromptPath);
       if (run.model !== undefined) args.push("--model", run.model);
       if (run.effort !== undefined) args.push("--effort", run.effort);
       // Native HOME/hooks stay shared, but bridge credentials/context do not.

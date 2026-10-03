@@ -155,6 +155,10 @@ export class OpenCodeAdapter {
     return data;
   }
   async session(id: string) { return (await this.request<{ data: NativeSession }>(this.path(id))).data; }
+  /** Bound to this exact native session: forks and subagents inherit metadata, and the plugin ignores a foreign sessionID. */
+  async bindSaneContext(id: string, version: number, text: string) {
+    await this.request(this.path(id), "PATCH", { metadata: { saneContext: { sessionID: id, version, text } } });
+  }
   async fork(id: string, cwd: string, boundary: string, before?: string, beforeSend?: () => void) {
     const { data } = await this.request<{ data: NativeSession & { fork?: { sessionID: string; boundary: { type: string; messageID: string } } } }>(this.path(id) + "/fork", "POST", before ? { before } : {}, beforeSend);
     if (!data || !/^ses[a-zA-Z0-9_-]+$/.test(data.id) || data.id === id || data.location?.directory !== cwd || data.fork?.sessionID !== id || data.fork.boundary.type !== (before ? "before" : "through") || data.fork.boundary.messageID !== (before ?? boundary)) throw new OpenCodeError("Native fork acknowledgement mismatch; do not retry creation", 409);

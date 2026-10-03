@@ -35,7 +35,7 @@ import { workerDeliveryEvidence, workerReportPrompt } from "./worker-outbox";
 import { restoreWorkerOutput, workerOutput } from "./worker-output";
 import { DEFAULT_MAX_WORKERS_PER_CHECKOUT, workerResults, type WorkerDelivery } from "./worker-contract";
 import { ASSISTANT_AGENT_DESCRIPTIONS, ASSISTANT_AGENT_IDS, ASSISTANT_AGENT_LABELS, isAssistantAgentId, isStoredAssistantAgentId, nativeAgentId } from "sane-core/agent-catalog";
-import { agentLaunchSnapshot, claudeAgentSettings } from "./agent-launch";
+import { agentLaunchSnapshot, claudeAgentSettings, saneContextSnapshot, saneContextText, saneSessionContext, workerAssignment } from "./agent-launch";
 import { readClaudeHistory, forkClaudeHistory, verifyClaudeFork, coveredNativeRuns, type ReconciledHistory } from "./reconcile";
 import { BranchStore, type BranchOperation } from "./branches";
 import { NativeHistoryCache, TranscriptError, TranscriptService } from "./transcript-service";
@@ -336,9 +336,11 @@ async function startOwned(options: Options, assetsDir: string, packageDir: strin
         if (!a.nativeId || a.state === "native_creation_unknown") throw new WorkstreamAdapterError(409, "native_creation_unknown", "Reconcile recipient creation before retry");
         if (!meta.sessions.some(s => s.sessionId === sessionId)) {
           if (harness === "opencode" && !launch) launch = await oc.recoverLaunch(a.nativeId, cwd, config?.agent ?? nativeAgentId({ kind: "assistant", role }, harness));
+          const sane = harness === "claude-code" || launch ? saneSessionContext({ kind: "assistant", role }) : {};
+          if (harness === "opencode" && sane.saneContext) await oc.bindSaneContext(a.nativeId, sane.saneContext.version, saneContextText(sane.saneContext));
           meta.sessions.push({ sessionId, nativeSessionId: a.nativeId, harness, authorityId: a.source.authorityId, cwd, lastStatus: "unknown", lastRunId: null,
             ...(config ? { profileId: config.profileId, ...(harness === "claude-code" ? { ...(config.model ? { model: config.model } : {}), ...(config.effort ? { effort: config.effort } : {}) } : {}) } : {}),
-            ...(harness === "claude-code" || launch ? { agent: role, agentKind: "assistant", nativeAgentSelected: true } : {}),
+            ...(harness === "claude-code" || launch ? { agent: role, agentKind: "assistant", nativeAgentSelected: true, ...sane } : {}),
             ...(launch?.model ? { model: `${launch.model.providerID}/${launch.model.id}`, ...(launch.model.variant ? { effort: launch.model.variant } : {}) } : {}),
           });
           await persist();
@@ -569,6 +571,8 @@ async function startOwned(options: Options, assetsDir: string, packageDir: strin
     if (sourceDomain.mode !== destinationDomain.mode || sourceDomain.mode === "repository" && (destinationDomain.mode !== "repository" || sourceDomain.repositoryId !== destinationDomain.repositoryId || sourceDomain.primaryCheckout !== destinationDomain.primaryCheckout) || admission.source.authorityId !== original.source.authorityId || admission.source.descriptor.harness !== original.source.descriptor.harness || admission.binding.executionCheckout !== original.binding.executionCheckout || admission.binding.workspaceId !== original.binding.workspaceId || admission.binding.worktreeId !== original.binding.worktreeId) throw new Error("Branch source and destination admission domains or execution bindings differ");
     let destination = meta.sessions.find(s => s.sessionId === op.destinationId);
     if (!destination) {
+      // Forks inherit the source's bound metadata; rebind it to the fork's own native ID.
+      if (source.harness === "opencode" && source.saneContext) await oc.bindSaneContext(op.nativeId, source.saneContext.version, saneContextText(source.saneContext));
       destination = { ...source, sessionId: op.destinationId, nativeSessionId: op.nativeId, lastStatus: "unknown", lastRunId: null, title: `${(displayTitle(source) ?? "Conversation").slice(0, 185)} · Branch` };
       delete destination.attachment; delete destination.hidden;
       meta.sessions.push(destination);
@@ -727,7 +731,7 @@ async function startOwned(options: Options, assetsDir: string, packageDir: strin
       const current = availability(session.sessionId, false), reason = compactBlocked(session);
       admitting.add(session.sessionId);
       if (!current.canSend || reason) throw new WorkstreamAdapterError(409, current.code ?? "compact-unavailable", current.reason ?? reason!);
-      const run: Run = { runId: crypto.randomUUID(), sessionId: session.sessionId, cwd, status: "running", createdAt: new Date().toISOString(), operation: "compact", compact: { requestId: input.requestId, ...(input.instructions !== undefined ? { instructions: input.instructions } : {}) }, model: session.model, effort: session.effort, agent: session.agent, agentKind: session.agentKind, nativeAgentSelected: session.nativeAgentSelected, profileId: session.profileId };
+      const run: Run = { runId: crypto.randomUUID(), sessionId: session.sessionId, cwd, status: "running", createdAt: new Date().toISOString(), operation: "compact", compact: { requestId: input.requestId, ...(input.instructions !== undefined ? { instructions: input.instructions } : {}) }, model: session.model, effort: session.effort, agent: session.agent, agentKind: session.agentKind, nativeAgentSelected: session.nativeAgentSelected, profileId: session.profileId, ...saneContextSnapshot(session) };
       if (session.harness === "opencode") {
         run.nativeCommandId = `msg_${crypto.randomUUID().replaceAll("-", "")}`;
         run.nativePhase = "preparing"; run.compact!.nativeRequestId = run.nativeCommandId;
@@ -783,7 +787,7 @@ async function startOwned(options: Options, assetsDir: string, packageDir: strin
     const old = request.operation === "start" ? workerStore.getByRequest(session.sessionId, request.input.requestId) : undefined;
     // A durable reservation is the original binding, even after parent completion.
     if (old && request.operation === "start") {
-      if (old.parent.native.harness !== e.source.harness || old.parent.native.authorityId !== e.authorityId || old.parent.native.nativeId !== e.nativeId || old.parent.toolCallId !== request.invocation.toolCallId || old.input.worker !== request.input.worker || old.input.prompt !== request.input.prompt || old.input.context !== request.input.context) return reject();
+      if (old.parent.native.harness !== e.source.harness || old.parent.native.authorityId !== e.authorityId || old.parent.native.nativeId !== e.nativeId || old.parent.toolCallId !== request.invocation.toolCallId || old.input.worker !== request.input.worker || old.input.prompt !== request.input.prompt || old.input.context !== request.input.context || JSON.stringify(old.input.jobs) !== JSON.stringify(request.input.jobs)) return reject();
       if (JSON.stringify(old.parent.invocation?.opencode) !== JSON.stringify(request.invocation.opencode)) return reject();
       return { sessionId: session.sessionId, caller: { envelope: e, runId: old.parent.runId, toolCallId: old.parent.toolCallId, invocation: old.parent.invocation } };
     }
@@ -890,7 +894,19 @@ async function startOwned(options: Options, assetsDir: string, packageDir: strin
         if (workerStore.get(w.id)!.cancelRequestedAt) {
           const at = new Date().toISOString(); workerStore.update(w.id, { state: "interrupted", outcome: { status: "interrupted", at, summary: "Cancelled before submission", log: null }, notification: { id: `worker-outcome:${w.id}`, state: "pending" } }); return;
         }
-        const run: Run = { runId: crypto.randomUUID(), sessionId: w.sessionId, cwd: w.checkout, status: "running", createdAt: new Date().toISOString(), ...agentLaunchSnapshot(launch), ...(harness === "opencode" ? { nativeCommandId: `msg_${crypto.randomUUID().replaceAll("-", "")}`, nativePhase: "preparing" as const } : {}) };
+        try {
+          const child = { harness: a.source.descriptor.harness, authorityId: a.source.authorityId, nativeId: a.nativeId! };
+          const { saneContext } = saneSessionContext(w.launch.identity, workerAssignment((await router!.forAdmission(a))!.domain, child, w.parent.native, w.input.worker, w.input.jobs ?? [], w.id));
+          if (!saneContext) throw new Error("Worker launch has no SANE worker identity");
+          if (harness === "opencode") await oc.bindSaneContext(a.nativeId!, saneContext.version, saneContextText(saneContext));
+          session.saneContext = saneContext;
+        } catch (e) {
+          const summary = `Worker assignment unavailable: ${e instanceof Error ? e.message : "context resolution failed"}`;
+          workerStore.update(w.id, { state: "failed", error: summary, outcome: { status: "failed", at: new Date().toISOString(), summary, log: null }, notification: { id: `worker-outcome:${w.id}`, state: "pending" } });
+          throw e;
+        }
+        await persist();
+        const run: Run = { runId: crypto.randomUUID(), sessionId: w.sessionId, cwd: w.checkout, status: "running", createdAt: new Date().toISOString(), ...agentLaunchSnapshot(launch), ...saneContextSnapshot(session), ...(harness === "opencode" ? { nativeCommandId: `msg_${crypto.randomUUID().replaceAll("-", "")}`, nativePhase: "preparing" as const } : {}) };
         workerStore.update(w.id, { runId: run.runId, state: "running" });
         const finished = Promise.withResolvers<void>();
         const owner: Owner = { run, native: harness === "opencode", done: finished.promise, settled: false };
@@ -1022,7 +1038,7 @@ async function startOwned(options: Options, assetsDir: string, packageDir: strin
     const workerParent = workerStore.getBySession(parentSessionId);
     if (workerParent && workers.active().filter(w => w.checkout === cwd && w.sessionId !== parentSessionId).length >= maxWorkersPerCheckout) return problem(`Checkout worker capacity reached (${maxWorkersPerCheckout}); continuation remains pending`);
     const now = new Date().toISOString();
-    const run: Run = { runId: crypto.randomUUID(), sessionId: parentSessionId, cwd, status: "running", createdAt: now, agent: session.agent, agentKind: session.agentKind, nativeAgentSelected: session.nativeAgentSelected, profileId: session.profileId, model: session.model, effort: session.effort };
+    const run: Run = { runId: crypto.randomUUID(), sessionId: parentSessionId, cwd, status: "running", createdAt: now, agent: session.agent, agentKind: session.agentKind, nativeAgentSelected: session.nativeAgentSelected, profileId: session.profileId, model: session.model, effort: session.effort, ...saneContextSnapshot(session) };
     const commandId = session.harness === "opencode" ? `msg_${crypto.randomUUID().replaceAll("-", "")}` : `${run.runId}:user`;
     if (session.harness === "opencode") { run.nativeCommandId = commandId; run.nativePhase = "preparing"; }
     const d = workerStore.claimDelivery({ id: crypto.randomUUID(), parentSessionId, native: { harness: a.source.descriptor.harness, authorityId: a.source.authorityId, nativeId: session.nativeSessionId }, run, commandId, createdAt: now, updatedAt: now });
@@ -1104,7 +1120,7 @@ async function startOwned(options: Options, assetsDir: string, packageDir: strin
       const senderSlots = [...new Set(status.activePhases.filter(fromSender).map(a => a.phase))];
       const originalSenderSlots = [...new Set([...status.phaseHistory, ...status.activePhases].filter(a => fromSender(a) && a.startedAt <= h.createdAt && (!a.endedAt || a.endedAt >= h.createdAt)).map(a => a.phase))];
       const replySlots = domain.getConversation(h.sender)?.workstreamId === h.workstreamId ? originalSenderSlots.filter(slot => senderSlots.some(current => equivalentSlots(slot, current))) : [];
-      const run: Run = { runId: crypto.randomUUID(), sessionId: session.sessionId, cwd, status: "running", createdAt: new Date().toISOString(), agent: session.agent, agentKind: session.agentKind, nativeAgentSelected: session.nativeAgentSelected, model: session.model, effort: session.effort, profileId: session.profileId };
+      const run: Run = { runId: crypto.randomUUID(), sessionId: session.sessionId, cwd, status: "running", createdAt: new Date().toISOString(), agent: session.agent, agentKind: session.agentKind, nativeAgentSelected: session.nativeAgentSelected, model: session.model, effort: session.effort, profileId: session.profileId, ...saneContextSnapshot(session) };
       const commandId = session.harness === "opencode" ? `msg_${crypto.randomUUID().replaceAll("-", "")}` : `${run.runId}:user`;
       h = domain.advanceHandoff(h.id, h.revision, { status: "acceptance_unknown", attemptId: crypto.randomUUID(), nativeCommandId: commandId, runId: run.runId }, { actor: { kind: "system" }, correlationId: h.id }, current => { handoffs.assertRecipientReady(current); });
       handoffReservations.add(session.sessionId);
@@ -1539,7 +1555,7 @@ async function startOwned(options: Options, assetsDir: string, packageDir: strin
           const destination = await enrollBranch(op, source);
           await finishBranch(op.id);
           if (input.prompt.trim()) {
-            const run: Run = { runId: crypto.randomUUID(), sessionId: destination.sessionId, cwd: destination.cwd, status: "running", createdAt: new Date().toISOString(), model: destination.model, effort: destination.effort, agent: destination.agent, agentKind: destination.agentKind, nativeAgentSelected: destination.nativeAgentSelected, profileId: sessionProfileId(destination) };
+            const run: Run = { runId: crypto.randomUUID(), sessionId: destination.sessionId, cwd: destination.cwd, status: "running", createdAt: new Date().toISOString(), model: destination.model, effort: destination.effort, agent: destination.agent, agentKind: destination.agentKind, nativeAgentSelected: destination.nativeAgentSelected, profileId: sessionProfileId(destination), ...saneContextSnapshot(destination) };
             branches.save({ ...branches.get(op.id)!, firstRunId: run.runId });
             const done = Promise.withResolvers<void>(), accepted = Promise.withResolvers<boolean>();
             const owner: Owner = { run, native: sessionHarness(destination) === "opencode", done: done.promise, settled: false };
@@ -1750,7 +1766,9 @@ async function startOwned(options: Options, assetsDir: string, packageDir: strin
           await admissions.begin({ sessionId: conversationId, operation: "create", harness: harness === "opencode" ? "oc" : "cc", cwd, nativeId: harness === "opencode" ? null : crypto.randomUUID(), workspaceId: association.workspaceId, worktreeId: association.worktreeId });
           if (harness === "opencode") await admissions.createNative(conversationId, async () => (await oc.createResolved(cwd, nativeLaunch!)).id);
           const a = admissions.get(conversationId)!;
-          session = { sessionId: conversationId, harness, nativeSessionId: a.nativeId!, authorityId: a.source.authorityId, cwd, lastStatus: "unknown", lastRunId: null, ...(input.model !== undefined ? { model: input.model } : {}), ...(input.effort !== undefined ? { effort: input.effort } : {}), ...(input.agent !== undefined ? { agent: input.agent, agentKind: "assistant", nativeAgentSelected: true } : {}), ...(profile ? { profileId: profile.id } : {}) };
+          const sane = input.agent !== undefined ? saneSessionContext({ kind: "assistant", role: input.agent }) : {};
+          if (harness === "opencode" && sane.saneContext) await oc.bindSaneContext(a.nativeId!, sane.saneContext.version, saneContextText(sane.saneContext));
+          session = { sessionId: conversationId, harness, nativeSessionId: a.nativeId!, authorityId: a.source.authorityId, cwd, lastStatus: "unknown", lastRunId: null, ...(input.model !== undefined ? { model: input.model } : {}), ...(input.effort !== undefined ? { effort: input.effort } : {}), ...(input.agent !== undefined ? { agent: input.agent, agentKind: "assistant", nativeAgentSelected: true, ...sane } : {}), ...(profile ? { profileId: profile.id } : {}) };
           meta.sessions.push(session); await persist();
           await admissions.register(conversationId);
           admissions.ready(conversationId);
@@ -1777,7 +1795,7 @@ async function startOwned(options: Options, assetsDir: string, packageDir: strin
           if (firstTitle) { session.title = firstTitle; await persist(); }
         }
         workerStore.suppress(conversationId, false); // Explicit user submission resumes automatic continuation eligibility.
-        const run: Run = { runId: crypto.randomUUID(), sessionId: conversationId, cwd, status: "running", createdAt: new Date().toISOString(), ...(model !== undefined ? { model } : {}), ...(effort !== undefined ? { effort } : {}), ...(agent !== undefined ? { agent, agentKind: session.agentKind, nativeAgentSelected: session.nativeAgentSelected } : {}), profileId: sessionProfileId(session) };
+        const run: Run = { runId: crypto.randomUUID(), sessionId: conversationId, cwd, status: "running", createdAt: new Date().toISOString(), ...(model !== undefined ? { model } : {}), ...(effort !== undefined ? { effort } : {}), ...(agent !== undefined ? { agent, agentKind: session.agentKind, nativeAgentSelected: session.nativeAgentSelected } : {}), profileId: sessionProfileId(session), ...saneContextSnapshot(session) };
         const finished = Promise.withResolvers<void>();
         const accepted = Promise.withResolvers<boolean>();
         const owner: Owner = { run, native: harness === "opencode", done: finished.promise, settled: false };

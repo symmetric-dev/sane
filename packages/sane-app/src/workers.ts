@@ -1,4 +1,4 @@
-import { isWorkerAgentId } from "sane-core/agent-catalog";
+import { isWorkerAgentId, workerJobsProblem } from "sane-core/agent-catalog";
 import type { ConversationRef } from "sane-core/contracts";
 import { resolveWorkerProfile, type AgentProfiles } from "./agent-profiles-contract";
 import { WorkerStore } from "./worker-store";
@@ -39,8 +39,10 @@ export class WorkerService {
   }
   async start(caller: WorkerCaller, input: WorkerStart, assertActive: () => void = () => {}) {
     if (!input || !isWorkerAgentId(input.worker) || typeof input.requestId !== "string" || !input.requestId || input.requestId.length > 200 || typeof input.prompt !== "string" || !input.prompt.trim() || input.prompt.length > 100000 || input.context !== undefined && (typeof input.context !== "string" || input.context.length > 100000)) error("invalid-worker-input", "Worker role, request ID and bounded prompt/context text required");
+    const jobs = workerJobsProblem(input.worker, input.jobs);
+    if (jobs) error("invalid-worker-input", jobs);
     let parent = await this.executor.parent(caller, false);
-    const payload: WorkerStart = { requestId: input.requestId, worker: input.worker, prompt: input.prompt, ...(input.context !== undefined ? { context: input.context } : {}) };
+    const payload: WorkerStart = { requestId: input.requestId, worker: input.worker, prompt: input.prompt, ...(input.context !== undefined ? { context: input.context } : {}), ...(input.jobs !== undefined ? { jobs: [...input.jobs] } : {}) };
     const old = this.store.getByRequest(parent.sessionId, input.requestId);
     if (old) {
       if (JSON.stringify(old.input) !== JSON.stringify(payload) || old.parent.runId !== parent.runId || old.parent.toolCallId !== caller.toolCallId || JSON.stringify(old.parent.invocation?.opencode) !== JSON.stringify(caller.invocation?.opencode)) error("worker-request-conflict", "Request ID already bound to another invocation/payload");
