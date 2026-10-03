@@ -7,7 +7,7 @@ description: Use when starting a new SANE Engineering Assistant session.
 
 ## Workstream Setup
 
-1. Read `<workstream>/README.md` and run `sane provide engineering` to supply missing starters.
+1. Run `sane provide engineering` to supply missing starters.
 2. Run `sane view` and link this session with `sane_link` (`slot: "engineering"`).
 
 ## Required Inputs

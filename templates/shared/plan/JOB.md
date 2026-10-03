@@ -9,9 +9,9 @@ requirements, interfaces, and boundaries; keep scheduling and cross-job
 coordination in the Execution Plan. Adapt the pattern items to the assignment; their count
 does not prescribe the number of requirements or checks.-->
 
-Directory convention: resolve these prefixes using `sane job <id>`.
-- `<implementation>/...` is relative to the command's **Implementation root**.
-- `<workstream>/...` is relative to the command's **Workstream root**.
+Directory convention:
+- `<implementation>/...` is relative to the **Implementation root**.
+- `<workstream>/...` is relative to the **Workstream root**.
 
 ## Goal
 
@@ -41,12 +41,13 @@ Conditional reference:
 <!-- Before implementation, name only the job-specific operational prerequisites:
 applicable repository skills or procedures, safe non-test preflight checks,
 required starting state, and when to stop with evidence for Execution. Reference
-reusable procedures instead of copying them. Do not assume that a skill proves
+reusable procedures instead of copying them. When a skill provides a script for
+the operation, name the script with the skill. Do not assume that a skill proves
 the current environment state or authorizes a mutation. If no additional
 preflight is needed, state that explicitly. Keep tests and Verification Spec
 references out of this Job Spec. -->
 
-- Consult {{relevant repository skill or procedure}} for {{applicable operation}}; confirm {{required starting state}} using {{safe, non-test evidence}}.
+- Consult `<implementation>/.agents/skills/`{{name}}`/SKILL.md` for {{applicable operation}}; confirm {{required starting state}} using {{safe, non-test evidence}}.
 - If {{specific prerequisite is missing or an operational decision is required}}, stop before implementation and report {{observed state and decision needed}} to Execution.
 
 ## Instructions
@@ -78,7 +79,7 @@ Keep test work in the Verification Spec, not in this Job Spec. -->
 
 <!-- List only evidence specific to evaluating this assignment's outcome.
 Reference authoritative source or artifacts for detail rather than duplicating
-logs. The report destination and template are supplied by `sane job <id>`. -->
+logs. The report destination and template are supplied with the job assignment. -->
 
 - {{Assignment-specific result to report}}, linking {{authoritative source or artifact}} for detailed evidence.
 - {{Verification evidence needed to evaluate this outcome, including relevant command results or environment identity.}}

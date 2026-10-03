@@ -3,16 +3,16 @@
 <!-- Replace every {{...}} slot with authored content and remove
 guidance comments before delivery. Retain the directory convention and exactly
 these three H2 sections, once each and in order. H3–H6 grouping is optional.
-Use the report destination supplied by `sane job <id>`.
+Use the report destination supplied with the job assignment.
 Report the current outcome, including partial implementation, failure, or a
 discovered prerequisite gap. Apply the Job's Report Requirements. Update findings
 and results in place after fixes or new verification; retain history only when
 it explains the current outcome. Link authoritative evidence rather than copying
 logs or other reports. Adapt the number of items to the actual evidence. -->
 
-Directory convention: resolve these prefixes using `sane job <id>`.
-- `<implementation>/...` is relative to the command's **Implementation root**.
-- `<workstream>/...` is relative to the command's **Workstream root**.
+Directory convention:
+- `<implementation>/...` is relative to the **Implementation root**.
+- `<workstream>/...` is relative to the **Workstream root**.
 
 ## Outcome
 

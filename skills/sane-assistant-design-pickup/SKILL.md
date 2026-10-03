@@ -7,7 +7,7 @@ description: Use when starting a new SANE Design Assistant session.
 
 ## Workstream Setup
 
-1. Read `<workstream>/README.md`, run `sane view`, and run `sane provide design` to supply missing starters.
+1. Run `sane view` and `sane provide design` to supply missing starters.
 2. Link this session with `sane_link` (`slot: "design"`).
 
 ## Required Inputs

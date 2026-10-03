@@ -7,7 +7,7 @@ description: Use when starting a new SANE Planning Assistant session.
 
 ## Workstream Setup
 
-1. Read `<workstream>/README.md` and run `sane provide planning` to supply starters.
+1. Run `sane provide planning` to supply starters.
 2. Run `sane view` and link this session with `sane_link` (`slot: "planning"`).
 
 ## Required Inputs

@@ -15,7 +15,7 @@ permissions:
     resource: "*"
     effect: ask
   - action: edit
-    resource: ".opencode/skills/*"
+    resource: ".agents/skills/*"
     effect: allow
   - action: shell
     resource: "*"
