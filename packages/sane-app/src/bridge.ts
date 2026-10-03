@@ -1,15 +1,20 @@
 import { readFile, writeFile, rename, appendFile, stat, readdir, realpath } from "node:fs/promises";
 import { resolve, dirname, join, isAbsolute } from "node:path";
 import { fileURLToPath } from "node:url";
-import { createHash, timingSafeEqual } from "node:crypto";
+import { createHash } from "node:crypto";
+import { BridgeAuth, validateBridgeAuthOptions } from "./bridge-auth";
+import { body, equal, json, loopback } from "./bridge-http";
+import { ClaudeRunService, hookEvents } from "./claude-run-service";
 import { resolveAppConfig } from "./app-config";
 import { buildAssets, validateAssets } from "./asset-build";
 import { acquireInstallation, acquireData, validateOwnershipPaths, type OwnershipHandle } from "./installation-ownership";
 import { claudeSourceRoot } from "./claude-source";
-import { decodeLog, validModel, validEffort, validVariant, validCompactRequest, uuid, efforts, type Status, type Session, type Run, type Event, type Metadata } from "./history";
+import { decodeLog, validModel, validEffort, validVariant, validCompactRequest, uuid, efforts, type Session, type Run, type Event, type Metadata } from "./history";
 import { projectCompactions } from "./compaction";
 import type { CompactEligibility, CompactRequest, CompactResponse } from "./oc-contract";
-import { OpenCodeAdapter, OpenCodeError, normalizeMessage } from "./opencode";
+import { OpenCodeAdapter, OpenCodeError } from "./opencode";
+import { OpenCodeRunService } from "./opencode-run-service";
+import type { RunOwner as Owner } from "./run-owner";
 import { WorkspaceService, WorkspaceError, workspaceError } from "./workspace";
 import { CatalogService } from "./catalog";
 import { TerminalService, type TerminalSocketData } from "./terminal";
@@ -30,13 +35,13 @@ import { workerDeliveryEvidence, workerReportPrompt } from "./worker-outbox";
 import { restoreWorkerOutput, workerOutput } from "./worker-output";
 import { DEFAULT_MAX_WORKERS_PER_CHECKOUT, workerResults, type WorkerDelivery } from "./worker-contract";
 import { ASSISTANT_AGENT_DESCRIPTIONS, ASSISTANT_AGENT_IDS, ASSISTANT_AGENT_LABELS, isAssistantAgentId, isStoredAssistantAgentId, nativeAgentId } from "sane-core/agent-catalog";
-import { AgentLaunchConfigurationError, agentLaunchSnapshot, claudeAgentSettings, snapshotIdentity } from "./agent-launch";
+import { agentLaunchSnapshot, claudeAgentSettings } from "./agent-launch";
 import { readClaudeHistory, forkClaudeHistory, verifyClaudeFork, coveredNativeRuns, type ReconciledHistory } from "./reconcile";
 import { BranchStore, type BranchOperation } from "./branches";
 import { NativeHistoryCache, TranscriptError, TranscriptService } from "./transcript-service";
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
-export const hookEvents = ["SessionStart", "SessionEnd", "UserPromptSubmit", "Stop", "PreToolUse", "PostToolUse", "PermissionRequest", "Notification", "SubagentStart", "SubagentStop", "PreCompact", "PostCompact", "CwdChanged"] as const;
+export { hookEvents };
 export type Options = { host: string; port: number; cwd: string; dataDir: string; claudeBin: string; nativeSources: SourceConfiguration; allowRemote: boolean; publicOrigin?: string; reconcileInterrupted: boolean; maxConcurrentRuns?: number; maxWorkersPerCheckout?: number; packageDir?: string; noBuild?: boolean };
 export function parseOptions(args: string[]): Options {
   return runtimeOptions(resolveAppConfig(args, { packageDir: root, invocationCwd: process.cwd() }));
@@ -56,18 +61,7 @@ export function startupSummary(o: Options): string {
     "  Workstreams: explicit per-workspace inspect/init; no implicit project initialization",
   ].join("\n");
 }
-const loopback = (host: string) => ["127.0.0.1", "::1", "localhost", "[::1]", "::ffff:127.0.0.1"].includes(host);
-const equal = (a: string, b: string) => { const x = Buffer.from(a), y = Buffer.from(b); return x.length === y.length && timingSafeEqual(x, y); };
-const quote = (s: string) => `'${s.replaceAll("'", "'\\''")}'`;
 const compactCommand = (text: string) => /^\s*\/compact(?:\s|$)/i.test(text);
-const json = (data: unknown, status = 200, headers: Record<string, string> = {}) => Response.json(data, { status, headers: { "cache-control": "no-store", ...headers } });
-async function body(req: Request): Promise<any> {
-  if (Number(req.headers.get("content-length")) > 1024 * 1024) throw new Error("Body too large");
-  const reader = req.body?.getReader(); if (!reader) throw new Error("Missing body");
-  let size = 0; const parts: Uint8Array[] = [];
-  while (true) { const { value, done } = await reader.read(); if (done) break; size += value.length; if (size > 1024 * 1024) { await reader.cancel(); throw new Error("Body too large"); } parts.push(value); }
-  return JSON.parse(Buffer.concat(parts).toString());
-}
 /** Both Code search routes share the host's read-only request lifetime. A
  * completion enters the registry before action starts and leaves only after
  * WorkspaceService.search has awaited its descriptor/evaluator cleanup. */
@@ -150,10 +144,9 @@ async function startOwned(options: Options, assetsDir: string, packageDir: strin
   if (forbidden.length) throw new Error(`Remove API/provider overrides: ${forbidden.join(", ")}`);
   try { if (!(await stat(options.cwd)).isDirectory()) throw new Error(); }
   catch { throw new Error(`Execution cwd must be an existing directory: ${options.cwd}. Set --cwd to the intended checkout.`); }
-  const remote = !loopback(options.host); const password = process.env.SANE_APP_PASSWORD;
-  if (options.publicOrigin && !loopback(new URL(options.publicOrigin).hostname) && !password) throw new Error("A non-loopback public origin requires SANE_APP_PASSWORD");
-  if (remote && (!options.allowRemote || !password || !options.publicOrigin)) throw new Error("Remote host requires --allow-remote, SANE_APP_PASSWORD and --public-origin https://...");
-  if (options.publicOrigin) { const u = new URL(options.publicOrigin); if ((u.protocol !== "https:" && !(u.protocol === "http:" && loopback(u.hostname) && !remote)) || u.origin !== options.publicOrigin || u.username || u.password) throw new Error("public-origin must be an exact HTTPS origin (or HTTP loopback origin for a local SSH forward)"); }
+  const password = process.env.SANE_APP_PASSWORD;
+  const authOptions = { ...options, password };
+  validateBridgeAuthOptions(authOptions);
   let retainOwner = false;
   let router: RepositoryRouter | undefined;
   const searches = createWorkspaceSearchLifecycle();
@@ -222,8 +215,6 @@ async function startOwned(options: Options, assetsDir: string, packageDir: strin
     atomicNativeHistory(options.dataDir, history);
     nativeHistories.invalidate(history.sessionId);
   }
-  const secrets = new Map<string, string>();
-  type Owner = { run: Run; native?: boolean; nativeDispatched?: boolean; launchError?: string; workerDeliveryId?: string; child?: Bun.Subprocess<"pipe", "pipe", "pipe">; done: Promise<void>; settled: boolean; stopping?: Promise<boolean>; cancel?: Promise<{ interrupted: boolean }>; cancelling?: boolean; stopRequested?: boolean; submission?: Promise<unknown> };
   // Durable validation forbids aliases for a qualified native ID. New IDs are
   // reserved before awaits, then retained until the selected owner's lifecycle ends.
   const owners = new Map<string, Owner>();
@@ -264,6 +255,19 @@ async function startOwned(options: Options, assetsDir: string, packageDir: strin
     if (!retainOwner && owner.settled && !owner.cancelling && owners.get(owner.run.sessionId) === owner) owners.delete(owner.run.sessionId);
   }
   let closing = false, storageFailed = false;
+  const claudeRuns = new ClaudeRunService({
+    dataDir: options.dataDir, claudeBin: options.claudeBin, claudeRoot,
+    packageRoot: root, hookUrl: () => `http://127.0.0.1:${hookServer.port}`,
+  }, {
+    session: id => meta.sessions.find(s => s.sessionId === id),
+    run: id => meta.runs.find(r => r.runId === id),
+    events: id => events.get(id) ?? [],
+    owns: owner => owners.get(owner.run.sessionId) === owner,
+    closing: () => closing, storageFailed: () => storageFailed, retained: () => retainOwner,
+    requireReconciliation: () => { retainOwner = true; meta.reconciliationRequired = true; },
+    failClosed, emit, persist, enqueue, execution, compactExecution,
+    refreshCompactHistory, assertWorkerDeliverySubmission,
+  });
   const handoffs = new HandoffService(admissions, catalog, router, store.sources, () => meta.sessions, () => {
     if (closing || storageFailed || meta.reconciliationRequired) throw new WorkstreamAdapterError(503, "handoff-owner-unavailable", "App execution owner is unavailable");
   }, store.manifest.storeId, async (to, cwd) => {
@@ -410,31 +414,10 @@ async function startOwned(options: Options, assetsDir: string, packageDir: strin
     return next;
   }
   function groupAlive(owner: Owner): boolean {
-    if (!owner.child) return false;
-    try { process.kill(-owner.child.pid, 0); return true; } catch (e: any) { return e.code !== "ESRCH"; }
-  }
-  function signal(owner: Owner, value: NodeJS.Signals) {
-    if (!owner.child) return;
-    // Only the process group created by this live bridge is ever signalled.
-    try { process.kill(-owner.child.pid, value); } catch { /* It may already have exited. */ }
-    try { owner.child.kill(value); } catch { /* Also cover the direct child. */ }
+    return claudeRuns.groupAlive(owner);
   }
   function terminate(owner: Owner): Promise<boolean> {
-    if (owner.stopping) return owner.stopping;
-    const child = owner.child;
-    // Preparation can be stopped before spawn; do not cache a no-child result.
-    if (!child) return Promise.resolve(true);
-    owner.stopping = (async () => {
-      let exited = false;
-      void child.exited.then(() => { exited = true; }, () => {});
-      for (const value of ["SIGTERM", "SIGKILL"] as const) {
-        signal(owner, value);
-        for (let i = 0; i < 50; i++) { if (exited && !groupAlive(owner)) return true; await Bun.sleep(20); }
-      }
-      retainOwner = true; meta.reconciliationRequired = true;
-      return false;
-    })().catch(() => { retainOwner = true; meta.reconciliationRequired = true; return false; });
-    return owner.stopping;
+    return claudeRuns.terminate(owner);
   }
   function emit(run: Run, kind: Event["kind"], data: unknown) {
     const list = events.get(run.runId)!;
@@ -484,36 +467,11 @@ async function startOwned(options: Options, assetsDir: string, packageDir: strin
   }
   if (options.reconcileInterrupted) meta.reconciliationRequired = false;
   await persist();
-  const cookies = new Set<string>();
-  let localTerminalToken = crypto.randomUUID();
-  const terminalToken = (req: Request) => {
-    for (const item of (req.headers.get("cookie") ?? "").split(";")) { const [key, value] = item.trim().split("="); if (key === "sane_app" && value && cookies.has(value)) return value; }
-    return password ? undefined : localTerminalToken;
-  };
-  const terminals = new TerminalService(catalog, token => cookies.has(token) || !password && token === localTerminalToken);
   let origin = "";
-  const authenticated = (req: Request) => !password || (req.headers.get("cookie") ?? "").split(";").some(s => { const [k, v] = s.trim().split("="); return k === "sane_app" && !!v && cookies.has(v); });
-  async function consume(run: Run, nativeSessionId: string, stream: ReadableStream<Uint8Array>, kind: "stdout" | "stderr", result: { seen: boolean; error: boolean; diagnostic?: string }) {
-    const reader = stream.getReader(); const decoder = new TextDecoder(); let pending = "";
-    async function line(text: string) {
-      if (!text) return;
-      let data: any = text;
-      if (kind === "stdout") {
-        try { data = JSON.parse(text); } catch {}
-        if ((data?.type === "system" && data.subtype === "init") || data?.type === "result") {
-          if (data.session_id !== nativeSessionId) { result.error = true; result.diagnostic = "CLI session identity mismatch or missing session_id"; }
-        }
-        if (data?.type === "result") {
-          if (result.seen) { result.error = true; result.diagnostic = "Duplicate CLI result"; }
-          result.seen = true;
-          if (data.subtype !== "success" || data.is_error !== false) { result.error = true; result.diagnostic ??= "CLI result is not an explicit success"; }
-        }
-      }
-      await emit(run, kind, data);
-    }
-    while (true) { const { value, done } = await reader.read(); if (done) break; pending += decoder.decode(value, { stream: true }); let at: number; while ((at = pending.indexOf("\n")) >= 0) { await line(pending.slice(0, at)); pending = pending.slice(at + 1); } if (pending.length > 1024 * 1024) { await line(pending); pending = ""; } }
-    pending += decoder.decode(); await line(pending);
-  }
+  const auth = new BridgeAuth(authOptions, {
+    getOrigin: () => origin, revokeTerminal: token => terminals.revoke(token),
+  });
+  const terminals = new TerminalService(catalog, token => auth.validTerminalToken(token));
   const branchContext = (id: string) => ({ actor: { kind: "system" as const }, correlationId: id });
   const branchFingerprint = (value: unknown) => createHash("sha256").update(JSON.stringify(value)).digest("hex");
   async function branchDomain(source: Session, enroll = false) {
@@ -756,260 +714,21 @@ async function startOwned(options: Options, assetsDir: string, packageDir: strin
         await emit(run, "status", { status: "running", operation: "compact", compactionLifecycle: "requested" });
         await persist();
       } catch (error) { owner.settled = true; finished.resolve(); throw error; }
-      void (owner.native ? executeNativeCompact(owner) : execute(owner, `/compact${input.instructions ? ` ${input.instructions}` : ""}`, true, () => {})).catch(async () => { failClosed(); await terminate(owner); }).finally(() => { owner.settled = true; releaseOwner(owner); finished.resolve(); });
+      void (owner.native ? ocRuns.executeNativeCompact(owner) : execute(owner, `/compact${input.instructions ? ` ${input.instructions}` : ""}`, true, () => {})).catch(async () => { failClosed(); await terminate(owner); }).finally(() => { owner.settled = true; releaseOwner(owner); finished.resolve(); });
       return { sessionId: session.sessionId, runId: run.runId, operation: projectCompactions(session, [run], events.get(run.runId) ?? [])[0]! };
     } finally { admitting.delete(session.sessionId); }
   }
-  async function execute(owner: Owner, prompt: string, resume: boolean, ready: (accepted: boolean) => void) {
-    const run = owner.run;
-    const result: { seen: boolean; error: boolean; diagnostic?: string } = { seen: false, error: false };
-    let streams: Promise<unknown>[] = [];
-    try {
-      if (run.operation !== "compact" && compactCommand(prompt)) throw new Error("Use the dedicated Compact action; compaction cannot be submitted as an ordinary prompt");
-      // Write the first log record before publishing its metadata reference.
-      await emit(run, "status", { status: "running" });
-      if (run.operation !== "compact") await emit(run, "submission", { messageId: `${run.runId}:user`, text: prompt });
-      await persist();
-      if (closing) throw new Error("Closing before launch");
-      const session = meta.sessions.find(s => s.sessionId === run.sessionId)!;
-      run.cwd = run.operation === "compact" ? await compactExecution(session) : await execution(session.sessionId);
-      const secret = crypto.randomUUID() + crypto.randomUUID(); secrets.set(run.runId, secret);
-      const hooks = Object.fromEntries(hookEvents.map(event => [event, [{ hooks: [{ type: "command", command: `${quote(process.execPath)} ${quote(join(root, "hooks/forward.ts"))} ${quote(event)}`, timeout: 3 }] }]]));
-      const identity = snapshotIdentity(run);
-      const installed = identity ? await claudeAgentSettings(claudeRoot, identity) : undefined;
-      const ccAgent = installed?.agent, permissions = installed?.permissions;
-      const settingsPath = join(options.dataDir, `${run.runId}.settings.json`);
-      await enqueue(() => writeFile(settingsPath, JSON.stringify({ hooks, ...(permissions ? { permissions } : {}) }), { mode: 0o600 }));
-      if (closing || storageFailed || owner.stopRequested) throw new Error("Closing before launch");
-      const args = [options.claudeBin, "-p", "--permission-mode", "bypassPermissions", "--output-format", "stream-json", "--verbose", resume ? "--resume" : "--session-id", session.nativeSessionId!, "--settings", settingsPath];
-      if (ccAgent !== undefined) args.push("--agent", ccAgent);
-      if (run.model !== undefined) args.push("--model", run.model);
-      if (run.effort !== undefined) args.push("--effort", run.effort);
-      // Do not carry the launching shell's bridge credentials or SANE/native
-      // session context into a fresh app-owned invocation. Native HOME/hooks stay shared.
-      const env = Object.fromEntries(Object.entries(process.env).filter(([name, value]) => value !== undefined && !/^(CC_WEB_|OPENCODE_SERVER_|OPENCODE_SESSION_ID$|OPENCODE_TOKEN$|SANE_|BUN_INSPECT|NODE_OPTIONS$)/i.test(name))) as Record<string, string>;
-      run.cwd = run.operation === "compact" ? await compactExecution(session) : await execution(session.sessionId);
-      assertWorkerDeliverySubmission(owner);
-      if (closing || storageFailed || owner.stopRequested || owners.get(run.sessionId) !== owner) throw new Error("Execution unavailable before launch");
-      const child = Bun.spawn(args, {
-        cwd: run.cwd, detached: true, stdin: "pipe", stdout: "pipe", stderr: "pipe", env: { ...env, CLAUDE_CONFIG_DIR: claudeRoot, CLAUDE_CODE_PROJECT_DIR_NAME: "", CC_WEB_HOOK_URL: `http://127.0.0.1:${hookServer.port}`, CC_WEB_RUN_ID: run.runId, CC_WEB_HOOK_SECRET: secret },
-      });
-      owner.child = child;
-      ready(true);
-      streams = [consume(run, session.nativeSessionId!, child.stdout, "stdout", result), consume(run, session.nativeSessionId!, child.stderr, "stderr", result)];
-      // Observe both consumers immediately, including the loser on rejection.
-      const output = Promise.all([child.exited, ...streams]);
-      // Attach the observer before writing, since a synchronous stdin failure
-      // must not leave an independently rejecting stream promise behind.
-      void output.catch(() => {});
-      child.stdin.write(prompt);
-      const [exit] = await Promise.all([output.then(values => values[0] as number), child.stdin.end()]);
-      if (groupAlive(owner) && !(await terminate(owner))) throw new Error("Process group termination unconfirmed");
-      run.status = closing || owner.stopRequested ? "interrupted" : !storageFailed && exit === 0 && result.seen && !result.error ? "completed" : "failed";
-      run.endedAt = new Date().toISOString(); meta.sessions.find(s => s.sessionId === run.sessionId)!.lastStatus = run.status;
-      const compact = run.operation === "compact" ? projectCompactions(session, [run], events.get(run.runId) ?? [])[0] : undefined;
-      await emit(run, "status", { status: run.status, exitCode: exit, resultSeen: result.seen, ...(compact ? { compactionLifecycle: compact.lifecycle, reason: compact.lifecycle === "unconfirmed" ? "CLI ended without native compaction outcome evidence; do not automatically resend" : "CLI process ended; compaction outcome is reported separately by native evidence" } : result.diagnostic ? { reason: result.diagnostic } : {}) });
-    } catch (error) {
-      if (error instanceof AgentLaunchConfigurationError) owner.launchError = error.message;
-      const stopped = await terminate(owner);
-      run.status = stopped && (closing || owner.stopRequested) ? "interrupted" : "failed";
-      run.endedAt = new Date().toISOString(); meta.sessions.find(s => s.sessionId === run.sessionId)!.lastStatus = run.status;
-      try { await emit(run, "status", { status: run.status, ...(run.operation === "compact" && !owner.child ? { operation: "compact", compactNotSubmitted: true } : {}), reason: !stopped ? "Process termination unconfirmed; operator reconciliation required" : storageFailed ? "Storage failure; operator reconciliation required" : owner.launchError ?? "CLI launch, stream, or shutdown failure" }); } catch { failClosed(); }
-      ready(false);
-    } finally {
-      ready(false);
-      // Consumers can still be unwinding after a failure. Do not free the slot
-      // until both finish; a timeout keeps the ownership sentinel in place.
-      const drained = await Promise.race([Promise.allSettled(streams).then(() => true), Bun.sleep(2200).then(() => false)]);
-      if (!drained) { retainOwner = true; meta.reconciliationRequired = true; }
-      if (run.operation === "compact" && owner.child && drained && !retainOwner && !closing && !storageFailed) await refreshCompactHistory(owner);
-      run.endedAt = new Date().toISOString(); meta.sessions.find(s => s.sessionId === run.sessionId)!.lastStatus = run.status;
-      try { if (owner.workerDeliveryId && !owner.child) await emit(run, "status", { status: run.status, workerDeliveryNotSubmitted: owner.workerDeliveryId }); await persist(); } catch { failClosed(); }
-       secrets.delete(run.runId);
-    }
+  function execute(owner: Owner, prompt: string, resume: boolean, ready: (accepted: boolean) => void) {
+    return claudeRuns.execute(owner, prompt, resume, ready);
   }
-  async function finishNative(owner: Owner, status: Status, reason?: string) {
-    owner.run.status = status; owner.run.endedAt = new Date().toISOString();
-    meta.sessions.find(s => s.sessionId === owner.run.sessionId)!.lastStatus = status;
-    await emit(owner.run, "status", { status, ...(reason ? { reason } : {}) });
-    await persist();
-  }
-  async function monitorNative(owner: Owner) {
-    const run = owner.run;
-    const session = meta.sessions.find(s => s.sessionId === run.sessionId)!;
-    const snapshots = new Map<string, string>();
-    for (const event of events.get(run.runId) ?? []) if (event.kind === "message") {
-      const data = event.data as { messageId: string }; snapshots.set(data.messageId, JSON.stringify(data));
-    }
-    let lastError = "", workerWaiting: boolean | undefined;
-    while (!closing && !storageFailed && run.status === "running") {
-      try {
-        const snapshot = await oc.snapshot(session.nativeSessionId!, run.nativeCommandId!, session.cwd);
-        if (closing || storageFailed) break;
-        if (run.nativePhase !== "accepted" && (snapshot.pending || snapshot.messages.some(m => m.id === run.nativeCommandId))) { run.nativePhase = "accepted"; await persist(); }
-        for (const message of snapshot.messages) {
-          const normalized = normalizeMessage(message); if (!normalized) continue;
-          const encoded = JSON.stringify(normalized);
-          if (snapshots.get(normalized.messageId) !== encoded) { await emit(run, "message", normalized); snapshots.set(normalized.messageId, encoded); }
-        }
-        if (lastError && (snapshot.messages.length || snapshot.pending)) { await emit(run, "status", { status: "running", connection: "connected", reason: "Native state reconnected" }); lastError = ""; }
-        if (snapshot.outcome && ["succeeded", "failed", "interrupted"].includes(snapshot.outcome)) {
-          await finishNative(owner, snapshot.outcome === "succeeded" ? "completed" : snapshot.outcome as Status); break;
-        }
-        if (workerStore.hasRun(run.runId)) {
-          const waiting = (await oc.interactions(session.nativeSessionId!)).length > 0;
-          if (workerWaiting !== waiting) { workerWaiting = waiting; await emit(run, "status", { status: "running", workerWaiting: waiting }); }
-        }
-        if (!snapshot.messages.length && !snapshot.pending && run.nativePhase === "sending" && !lastError) {
-          lastError = "Prompt acceptance remains unconfirmed; reconnecting to native history without resending";
-          await emit(run, "status", { status: "running", connection: "unconfirmed", reason: lastError });
-        }
-      } catch (error) {
-        if (storageFailed || closing) break;
-        const reason = error instanceof Error ? error.message : "Native reconciliation unavailable";
-        if (lastError !== reason) { await emit(run, "status", { status: "running", connection: "unavailable", reason }); lastError = reason; }
-      }
-      await Bun.sleep(1000);
-    }
-  }
-  async function monitorNativeCompact(owner: Owner) {
-    const run = owner.run, session = meta.sessions.find(s => s.sessionId === run.sessionId)!;
-    const snapshots = new Map<string, string>();
-    for (const event of events.get(run.runId) ?? []) if (event.kind === "message") {
-      const data = event.data as { messageId: string }; snapshots.set(data.messageId, JSON.stringify(data));
-    }
-    let lastDiagnostic = "", historyRefreshAttempted = false;
-    while (!closing && !storageFailed && run.status === "running") {
-      try {
-        await compactExecution(session);
-        // Lost acknowledgement can hide a coalesced ID. An absent requested ID
-        // never proves rejection; never substitute the latest session message.
-        const id = run.compact!.nativeAdmittedId ?? run.compact!.nativeRequestId ?? run.nativeCommandId!;
-        const snapshot = await oc.compactionSnapshot(session.nativeSessionId!, id, session.cwd);
-        if (closing || storageFailed) break;
-        if (snapshot.observed && run.nativePhase !== "accepted") { run.nativePhase = "accepted"; await persist(); }
-        for (const message of snapshot.messages) {
-          const normalized = normalizeMessage(message); if (!normalized) continue;
-          const encoded = JSON.stringify(normalized);
-          if (snapshots.get(normalized.messageId) !== encoded) { await emit(run, "message", normalized); snapshots.set(normalized.messageId, encoded); }
-        }
-        if (snapshot.outcome && !snapshot.pending && !snapshot.active) {
-          // Exact input outcome is independent of idle/activity. Check ALL
-          // pending inputs before freeing the App slot, not only our compact ID.
-          const activity = await oc.activity(session.nativeSessionId!, session.cwd);
-          if (!activity.active && !activity.pending) {
-            if (!historyRefreshAttempted) { historyRefreshAttempted = true; await refreshCompactHistory(owner); }
-            if (closing || storageFailed) break;
-            const settled = await oc.activity(session.nativeSessionId!, session.cwd);
-            if (!settled.active && !settled.pending) {
-              await finishNative(owner, owner.stopRequested ? "interrupted" : "completed", "Native compaction settled and conversation is idle; compaction outcome is reported separately");
-              break;
-            }
-          }
-        }
-        const diagnostic = snapshot.outcome ? "Native compaction outcome recorded; waiting for native activity and pending input to settle" : !snapshot.observed ? "Compaction admission or outcome remains unconfirmed; retaining ownership and observing the exact request without resending" : "Native compaction observed; waiting for exact native outcome";
-        if (lastDiagnostic !== diagnostic) { await emit(run, "status", { status: "running", operation: "compact", connection: snapshot.observed ? "connected" : "unconfirmed", reason: diagnostic }); lastDiagnostic = diagnostic; }
-      } catch (error) {
-        if (closing || storageFailed) break;
-        const reason = error instanceof Error ? error.message : "Native compaction observation unavailable";
-        if (lastDiagnostic !== reason) { await emit(run, "status", { status: "running", operation: "compact", connection: "unconfirmed", reason }); lastDiagnostic = reason; }
-      }
-      await Bun.sleep(1000);
-    }
-  }
-  async function executeNativeCompact(owner: Owner) {
-    const run = owner.run, session = meta.sessions.find(s => s.sessionId === run.sessionId)!;
-    let attempted = false;
-    try {
-      if (closing || owner.stopRequested) throw new Error("Stopped before native compaction submission");
-      await compactExecution(session);
-      await oc.assertIdle(session.nativeSessionId!, session.cwd);
-      if (closing || storageFailed || owner.stopRequested) throw new Error("Bridge unavailable before native compaction submission");
-      run.nativePhase = "sending"; await persist();
-      await compactExecution(session);
-      // Recheck idle immediately before dispatch. No agent/model selection,
-      // synthetic user message or ordinary prompt endpoint participates.
-      await oc.assertIdle(session.nativeSessionId!, session.cwd);
-      const submission = oc.compact(session.nativeSessionId!, run.compact!.nativeRequestId!, () => {
-        if (closing || storageFailed || owner.stopRequested || owners.get(session.sessionId) !== owner) throw new Error("Compaction withheld before native dispatch");
-        attempted = true; owner.nativeDispatched = true;
-      });
-      owner.submission = submission;
-      try {
-        const admitted = await submission;
-        // Native may coalesce our request into a DIFFERENT pending compaction.
-        // Its ID must be durable before any lifecycle observation or release.
-        run.compact!.nativeAdmittedId = admitted.id; run.nativePhase = "accepted"; run.nativeAcceptedAt = admitted.time.created;
-        await persist();
-      } catch (error) {
-        if (!attempted) throw error;
-        if (error instanceof OpenCodeError && [400, 401, 403, 404, 409].includes(error.status)) {
-          await emit(run, "status", { status: "running", operation: "compact", compactAdmissionRejected: true, nativeStatus: error.status, reason: error.message });
-          await finishNative(owner, "failed", "Native compaction admission rejected; request will not be replayed"); return;
-        }
-        if (storageFailed) return;
-        await emit(run, "status", { status: "running", operation: "compact", connection: "unconfirmed", reason: error instanceof Error ? error.message : "Compaction acknowledgement unavailable; do not resend" });
-      }
-      await monitorNativeCompact(owner);
-    } catch (error) {
-      if (storageFailed) return;
-      if (!attempted) {
-        await emit(run, "status", { status: "running", operation: "compact", compactNotSubmitted: true });
-        await finishNative(owner, owner.stopRequested || closing ? "interrupted" : "failed", error instanceof Error ? error.message : "Compaction preparation failed");
-      } else throw error;
-    }
-  }
-  async function recoverNativeCompact(owner: Owner) {
-    const run = owner.run;
-    const negative = (events.get(run.runId) ?? []).some(event => event.kind === "status" && ((event.data as any)?.compactNotSubmitted === true || (event.data as any)?.compactAdmissionRejected === true && [400, 401, 403, 404, 409].includes((event.data as any)?.nativeStatus)));
-    if (run.nativePhase === "preparing" || negative) {
-      if (run.nativePhase === "preparing") await emit(run, "status", { status: "running", operation: "compact", compactNotSubmitted: true });
-      await finishNative(owner, "failed", negative ? "Recovered definitive compaction non-admission evidence; request will not be replayed" : "Bridge restarted before native compaction submission; request will not be replayed");
-      return;
-    }
-    await monitorNativeCompact(owner);
-  }
-  async function executeNative(owner: Owner, prompt: string, resume: boolean, ready: (accepted: boolean) => void) {
-    const run = owner.run; const session = meta.sessions.find(s => s.sessionId === run.sessionId)!;
-    let promptAttempted = false;
-    try {
-      if (compactCommand(prompt)) throw new Error("Use the dedicated Compact action; compaction cannot be submitted as an ordinary prompt");
-      await emit(run, "status", { status: "running" });
-      await emit(run, "submission", { messageId: run.nativeCommandId, text: prompt });
-      await persist();
-      if (closing || owner.stopRequested) { await finishNative(owner, "interrupted", "Stopped before native submission"); ready(false); return; }
-      run.cwd = await execution(session.sessionId);
-      await oc.assertIdle(session.nativeSessionId!, run.cwd);
-      await oc.select(session.nativeSessionId!, run.model, run.effort);
-      if (closing || owner.stopRequested) { await finishNative(owner, "interrupted", "Stopped before native submission"); ready(false); return; }
-      run.nativePhase = "sending"; await persist();
-      if (closing || storageFailed || owner.stopRequested) throw new Error("Bridge unavailable before native submission");
-      run.cwd = await execution(session.sessionId);
-      // Native command ID is durable before the request. A timeout is ambiguous:
-      // keep this conversation's slot and reconcile, never replay automatically.
-      assertWorkerDeliverySubmission(owner);
-      ready(true);
-      try {
-        promptAttempted = !owner.workerDeliveryId;
-        const submission = oc.prompt(session.nativeSessionId!, run.nativeCommandId!, prompt, owner.workerDeliveryId ? () => { assertWorkerDeliverySubmission(owner); promptAttempted = true; } : undefined);
-        owner.submission = submission;
-        const admitted = await submission;
-        run.nativePhase = "accepted"; run.nativeAcceptedAt = admitted.time.created; await persist();
-      } catch (error) {
-        if (!promptAttempted) throw error; // Delivery was withheld before HTTP submission, including discovery failure.
-        if (error instanceof OpenCodeError && [400, 401, 403, 404, 409].includes(error.status)) {
-          await finishNative(owner, "failed", error.message); return;
-        }
-        await emit(run, "status", { status: "running", connection: "unconfirmed", reason: error instanceof Error ? error.message : "Native submission unconfirmed" });
-      }
-      await monitorNative(owner);
-    } catch (error) {
-      ready(false);
-      if (storageFailed) return;
-      if (!promptAttempted) await finishNative(owner, owner.stopRequested ? "interrupted" : "failed", error instanceof Error ? error.message : "Native preparation failed");
-      else throw error;
-    } finally { if (owner.workerDeliveryId && !promptAttempted && !storageFailed) await emit(run, "status", { status: run.status, workerDeliveryNotSubmitted: owner.workerDeliveryId }); ready(false); }
-  }
+  const ocRuns = new OpenCodeRunService({
+    oc, closing: () => closing, storageFailed: () => storageFailed,
+    currentOwner: sessionId => owners.get(sessionId),
+    session: sessionId => meta.sessions.find(s => s.sessionId === sessionId)!,
+    events: runId => events.get(runId) ?? [], emit, persist, execution,
+    compactExecution, refreshCompactHistory, assertWorkerDeliverySubmission,
+    workerHasRun: runId => workerStore.hasRun(runId), sleep: ms => Bun.sleep(ms),
+  });
   const resolveTrustedWorkerInvocation: NativeWorkerCallerResolver = async (request, context) => {
     const reject = (): never => { throw new NativeWorkerRequestError(409, "worker-identity", "Worker invocation is not evidenced in its App-owned run. Ensure this conversation is repository-enrolled and retry only the same native tool invocation after its tool evidence is persisted."); };
     context.assertActive();
@@ -1136,7 +855,7 @@ async function startOwned(options: Options, assetsDir: string, packageDir: strin
         const owner: Owner = { run, native: harness === "opencode", done: finished.promise, settled: false };
         owners.set(w.sessionId, owner); session.lastRunId = run.runId; session.lastStatus = "running"; meta.runs.push(run); events.set(run.runId, []);
         const prompt = w.input.context === undefined ? w.input.prompt : `${w.input.prompt}\n\nSupplied context:\n${w.input.context}`;
-        void (owner.native ? executeNative(owner, prompt, false, () => {}) : execute(owner, prompt, false, () => {})).catch(async () => { failClosed(); await terminate(owner); }).finally(async () => {
+        void (owner.native ? ocRuns.executeNative(owner, prompt, false, () => {}) : execute(owner, prompt, false, () => {})).catch(async () => { failClosed(); await terminate(owner); }).finally(async () => {
           owner.settled = true; releaseOwner(owner); finished.resolve();
           try { if (!storageFailed) await workers.refresh(workerStore.get(w.id)!); } catch { failClosed(); }
         });
@@ -1272,7 +991,7 @@ async function startOwned(options: Options, assetsDir: string, packageDir: strin
     owners.set(parentSessionId, owner); session.lastRunId = run.runId; session.lastStatus = "running"; meta.runs.push(run); events.set(run.runId, []);
     if (workerParent) workerStore.update(workerParent.id, { state: "running", continuation: { runId: run.runId, state: "running" }, continuationCancellation: undefined });
     const prompt = workerReportPrompt(d, workerStore.listForDelivery(d));
-    void (owner.native ? executeNative(owner, prompt, true, () => {}) : execute(owner, prompt, true, () => {})).catch(async () => { failClosed(); await terminate(owner); }).finally(async () => {
+    void (owner.native ? ocRuns.executeNative(owner, prompt, true, () => {}) : execute(owner, prompt, true, () => {})).catch(async () => { failClosed(); await terminate(owner); }).finally(async () => {
       owner.settled = true; releaseOwner(owner); finished.resolve();
       try { if (!storageFailed) { await reconcileWorkerDelivery(d); if (workerParent) await workers.refresh(workerStore.get(workerParent.id)!); } } catch { failClosed(); }
     });
@@ -1295,14 +1014,7 @@ async function startOwned(options: Options, assetsDir: string, packageDir: strin
       owner.cancel = (async () => {
         if (owner.run.status !== "running") return { interrupted: false };
         await emit(owner.run, "status", { status: "running", connection: "stopping", reason: "Stop requested; waiting for terminal evidence" });
-        if (owner.native) {
-          if (owner.run.operation === "compact" && !owner.submission && owner.nativeDispatched === false) return { interrupted: false };
-          if (!owner.submission && owner.run.nativePhase === "preparing") return { interrupted: false };
-          await owner.submission?.catch(() => {});
-          if (owner.run.operation === "compact" && owner.nativeDispatched === false) return { interrupted: false };
-          if (owner.run.status !== "running") return { interrupted: false };
-          return oc.cancel(meta.sessions.find(s => s.sessionId === owner.run.sessionId)!.nativeSessionId!);
-        }
+        if (owner.native) return ocRuns.interrupt(owner);
         return { interrupted: await terminate(owner) };
       })().finally(() => { owner.cancelling = false; releaseOwner(owner); });
     }
@@ -1382,7 +1094,7 @@ async function startOwned(options: Options, assetsDir: string, packageDir: strin
           : "The sender has no eligible original reply slot in this workstream now. Report this membership/assignment authority restriction; an exact reply cannot bypass it or be redirected to another conversation.",
         "", h.input.message,
       ].join("\n");
-      void (owner.native ? executeNative(owner, prompt, resume, () => {}) : execute(owner, prompt, resume, () => {})).catch(async () => { failClosed(); await terminate(owner); }).finally(async () => {
+      void (owner.native ? ocRuns.executeNative(owner, prompt, resume, () => {}) : execute(owner, prompt, resume, () => {})).catch(async () => { failClosed(); await terminate(owner); }).finally(async () => {
         try { if (!storageFailed) await reconcileHandoff(workspaceId, h.id); } catch { failClosed(); }
         owner.settled = true; releaseOwner(owner); finished.resolve();
       });
@@ -1418,36 +1130,21 @@ async function startOwned(options: Options, assetsDir: string, packageDir: strin
       if (path.startsWith("/hooks/")) {
         if (req.method !== "POST" || !loopback(srv.requestIP(req)?.address ?? "")) return json({ error: "Forbidden" }, 403);
         const event = decodeURIComponent(path.slice(7)); if (!(hookEvents as readonly string[]).includes(event)) return json({ error: "Unknown hook" }, 400);
-        const input = await body(req); const run = meta.runs.find(r => r.runId === input.runId); const secret = secrets.get(input.runId);
-        if (!run || !secret || !equal(req.headers.get("x-cc-web-secret") ?? "", secret)) return json({ error: "Forbidden" }, 403);
-        const payload = input.payload;
-        const session = meta.sessions.find(s => s.sessionId === run.sessionId);
-        if (!session?.nativeSessionId || session.harness !== "claude-code" || !payload || typeof payload !== "object" || payload.hook_event_name !== event || payload.session_id !== session.nativeSessionId) return json({ error: "Hook association mismatch" }, 400);
-        await emit(run, "hook", { event, payload }); return json({ ok: true });
+        const reply = await claudeRuns.ingestHook(event, await body(req), req.headers.get("x-cc-web-secret") ?? "");
+        return json(reply.body, reply.status);
       }
-      const expected = new URL(origin);
-      // A same-machine HTTPS proxy may preserve the public Host or rewrite it
-      // to its loopback upstream. Trust only the configured origin or this
-      // listener's concrete loopback authorities, never forwarded headers.
-      const host = req.headers.get("host");
-      const loopbackProxy = !!options.publicOrigin && !remote && loopback(srv.requestIP(req)?.address ?? "") &&
-        [`localhost:${srv.port}`, `127.0.0.1:${srv.port}`, `[::1]:${srv.port}`].includes(host ?? "");
-      if (host !== expected.host && !loopbackProxy) return json({ error: "Host rejected" }, 403);
-      if (!["GET", "HEAD"].includes(req.method) && req.headers.get("origin") !== origin) return json({ error: "Origin rejected" }, 403);
+      const expected = auth.browserBoundary(req, srv);
+      if (expected instanceof Response) return expected;
       if (path === "/api/config" && req.method === "GET") {
-        const signedIn = authenticated(req);
+        const signedIn = auth.authenticated(req);
         return json({ authRequired: !!password, authenticated: signedIn, cwd: signedIn ? options.cwd : null, oneShot: true, ...(signedIn ? { capabilities: { concurrency: { scope: "conversation", limit: maxConcurrentRuns, perConversation: 1, sharedCheckoutWrites: true }, cancelRun: true, midRunInput: false, permissionReplies: true, attachments: false, modelSelection: true, effortValues: efforts, terminal: terminals.capability }, agents: ASSISTANT_AGENT_IDS.map(id => ({ id, label: ASSISTANT_AGENT_LABELS[id], description: ASSISTANT_AGENT_DESCRIPTIONS[id] })), agentProfiles, harnesses: [
           { id: "claude-code", name: "Claude Code", available: true, connected: true, state: "available", capabilities: { cancelRun: true, permissionReplies: false, questionReplies: false, modelSelection: true, effortValues: efforts } },
           { id: "opencode", name: "OpenCode", ...await oc.connection(options.cwd), capabilities: { cancelRun: true, permissionReplies: true, questionReplies: true, modelSelection: true } },
         ] } : {}) });
       }
-      if (path === "/api/login" && req.method === "POST") { const input = await body(req); if (password && (typeof input.password !== "string" || !equal(input.password, password))) return json({ error: "Invalid password" }, 401); const token = crypto.randomUUID(); cookies.add(token); return json({ authenticated: true }, 200, { "set-cookie": `sane_app=${token}; HttpOnly; SameSite=Strict; Path=/${expected.protocol === "https:" ? "; Secure" : ""}` }); }
-      if (path === "/api/logout" && req.method === "POST") {
-        for (const s of (req.headers.get("cookie") ?? "").split(";")) { const [k,v] = s.trim().split("="); if (k === "sane_app" && v) { cookies.delete(v); terminals.revoke(v); } }
-        if (!password) { const old = localTerminalToken; localTerminalToken = crypto.randomUUID(); terminals.revoke(old); }
-        return json({ authenticated: false }, 200, { "set-cookie": "sane_app=; HttpOnly; SameSite=Strict; Path=/; Max-Age=0" });
-      }
-      if (path.startsWith("/api/") && !authenticated(req)) return json({ error: "Authentication required" }, 401);
+      if (path === "/api/login" && req.method === "POST") return await auth.login(req, expected);
+      if (path === "/api/logout" && req.method === "POST") return auth.logout(req);
+      if (path.startsWith("/api/") && !auth.authenticated(req)) return json({ error: "Authentication required" }, 401);
       const mutatingSession = /^\/api\/sessions\/([^/]+)(?:\/|$)/.exec(path)?.[1];
       const readOnlyTranscriptRefresh = req.method === "POST" && /^\/api\/sessions\/[^/]+\/transcript\/refresh$/.test(path);
       if (!["GET", "HEAD"].includes(req.method) && !readOnlyTranscriptRefresh && mutatingSession && !path.endsWith("/branch") && (branches.replaced(mutatingSession) || branches.pending(mutatingSession) && !path.endsWith("/cancel"))) return json({ error: branches.replaced(mutatingSession) ? "Replaced conversation is read-only; open its replacement" : "The branch is not ready yet. Changes are paused to protect this conversation." }, 409);
@@ -1527,7 +1224,7 @@ async function startOwned(options: Options, assetsDir: string, packageDir: strin
       }
       if (path === "/api/workstreams" || path.startsWith("/api/workstreams/")) {
         // Host/Origin checks above have already accepted this exact request.
-        return await authenticatedWorkstreamRoute(req, request => authenticated(request) ? null : json({ error: "Authentication required" }, 401), async () => {
+        return await authenticatedWorkstreamRoute(req, request => auth.authenticated(request) ? null : json({ error: "Authentication required" }, 401), async () => {
           const workspaceId = url.searchParams.get("workspaceId");
           if (!workspaceId) throw new WorkstreamAdapterError(400, "workspace-required", "Select a repository workspace");
           if (path === "/api/workstreams/inspect" && req.method === "GET") return router!.inspect(workspaceId);
@@ -1617,21 +1314,21 @@ async function startOwned(options: Options, assetsDir: string, packageDir: strin
           if (req.method !== "GET") return json({ error: "Method not allowed" }, 405);
           if (req.headers.get("origin") !== origin) return json({ error: "Origin rejected" }, 403);
           if (!upgrade || req.headers.get("upgrade")?.toLowerCase() !== "websocket") return json({ error: "WebSocket upgrade required" }, 426);
-          const token = terminalToken(req);
+          const token = auth.terminalToken(req);
           if (!token) return json({ error: "Authentication required" }, 401);
           const data = await terminals.prepare(workspaceId, worktreeId, token);
-          if (closing || terminalToken(req) !== token) { terminals.cancelUpgrade(data); return json({ error: "Attachment authorization changed" }, 401); }
+          if (closing || auth.terminalToken(req) !== token) { terminals.cancelUpgrade(data); return json({ error: "Attachment authorization changed" }, 401); }
           try { if (upgrade(req, data)) return undefined; } catch { terminals.cancelUpgrade(data); return json({ error: "WebSocket upgrade failed" }, 400); }
           terminals.cancelUpgrade(data); return json({ error: "WebSocket upgrade failed" }, 400);
         }
         if (!operation && req.method === "GET") {
-          const token = terminalToken(req), state = await terminals.get(workspaceId, worktreeId);
-          if (!token || terminalToken(req) !== token) return json({ error: "Authentication revoked" }, 401);
+          const token = auth.terminalToken(req), state = await terminals.get(workspaceId, worktreeId);
+          if (!token || auth.terminalToken(req) !== token) return json({ error: "Authentication revoked" }, 401);
           return json(state);
         }
         if (req.method === "POST") {
-          const token = terminalToken(req), input = await body(req);
-          return json(await terminals.change(workspaceId, worktreeId, operation === "close" ? "close" : operation === "restart" ? "restart" : "start", input, () => !closing && !!token && terminalToken(req) === token));
+          const token = auth.terminalToken(req), input = await body(req);
+          return json(await terminals.change(workspaceId, worktreeId, operation === "close" ? "close" : operation === "restart" ? "restart" : "start", input, () => !closing && !!token && auth.terminalToken(req) === token));
         }
         return json({ error: "Method not allowed" }, 405);
       }
@@ -1797,7 +1494,7 @@ async function startOwned(options: Options, assetsDir: string, packageDir: strin
             if (owner.native) { run.nativeCommandId = `msg_${crypto.randomUUID().replaceAll("-", "")}`; run.nativePhase = "preparing"; }
             destination.lastRunId = run.runId; destination.lastStatus = "running"; meta.runs.push(run); events.set(run.runId, []);
             const effectivePrompt = owner.native && isStoredAssistantAgentId(destination.agent) && !destination.nativeAgentSelected ? `[SANE role: ${storedAssistantLabel(destination.agent)} assistant. Follow the SANE ${storedAssistantLabel(destination.agent)} assistant procedures for this conversation.]\n\n${input.prompt}` : input.prompt;
-            void (owner.native ? executeNative(owner, effectivePrompt, true, accepted.resolve) : execute(owner, effectivePrompt, true, accepted.resolve)).catch(() => { failClosed(); accepted.resolve(false); }).finally(() => { owner.settled = true; releaseOwner(owner); done.resolve(); });
+            void (owner.native ? ocRuns.executeNative(owner, effectivePrompt, true, accepted.resolve) : execute(owner, effectivePrompt, true, accepted.resolve)).catch(() => { failClosed(); accepted.resolve(false); }).finally(() => { owner.settled = true; releaseOwner(owner); done.resolve(); });
             await accepted.promise;
           }
           return json({ sessionId: destination.sessionId, operation: branches.get(op.id) }, 201);
@@ -2037,7 +1734,7 @@ async function startOwned(options: Options, assetsDir: string, packageDir: strin
           ? `[SANE role: ${storedAssistantLabel(agent)} assistant. Follow the SANE ${storedAssistantLabel(agent)} assistant procedures for this conversation.]\n\n${input.prompt}`
           : input.prompt;
         // Install the complete lifecycle promise before any asynchronous work.
-        void (harness === "opencode" ? executeNative(owner, effectivePrompt, resume, accepted.resolve) : execute(owner, effectivePrompt, resume, accepted.resolve)).catch(async () => {
+        void (harness === "opencode" ? ocRuns.executeNative(owner, effectivePrompt, resume, accepted.resolve) : execute(owner, effectivePrompt, resume, accepted.resolve)).catch(async () => {
           failClosed(); await terminate(owner); accepted.resolve(false);
         }).finally(() => { owner.settled = true; releaseOwner(owner); finished.resolve(); });
         if (!(await accepted.promise)) return json({ error: owner.launchError ?? "Run could not start; operator reconciliation may be required" }, 503);
@@ -2106,15 +1803,7 @@ async function startOwned(options: Options, assetsDir: string, packageDir: strin
             owner.stopRequested = true;
             if (owner.run.status === "running") await emit(owner.run, "status", { status: "running", connection: "stopping", reason: "Stop requested; waiting for terminal evidence" });
             if (owners.get(session.sessionId) !== owner || owner.run.status !== "running") return { interrupted: false };
-            if (owner.native) {
-              if (owner.run.operation === "compact" && !owner.submission && owner.nativeDispatched === false) return { interrupted: true };
-              if (!owner.submission && owner.run.nativePhase === "preparing") return { interrupted: true };
-              // Do not interrupt before an in-flight prompt has been admitted.
-              await owner.submission?.catch(() => {});
-              if (owner.run.operation === "compact" && owner.nativeDispatched === false) return { interrupted: true };
-              if (owners.get(session.sessionId) !== owner || owner.run.status !== "running") return { interrupted: false };
-              return await oc.cancel(session.nativeSessionId!);
-            }
+            if (owner.native) return ocRuns.interruptCurrent(owner);
             const stopped = await terminate(owner);
             return { interrupted: stopped };
           })().finally(() => { owner.cancelling = false; releaseOwner(owner); });
@@ -2281,7 +1970,7 @@ async function startOwned(options: Options, assetsDir: string, packageDir: strin
   for (const recovering of meta.runs.filter(r => r.status === "running" && meta.sessions.find(s => s.sessionId === r.sessionId)?.harness === "opencode")) {
     const finished = Promise.withResolvers<void>();
     const owner: Owner = { run: recovering, native: true, done: finished.promise, settled: false }; owners.set(recovering.sessionId, owner);
-    void (recovering.operation === "compact" ? recoverNativeCompact(owner) : recovering.nativePhase === "preparing" ? finishNative(owner, "failed", "Bridge restarted before native submission") : monitorNative(owner))
+    void (recovering.operation === "compact" ? ocRuns.recoverNativeCompact(owner) : recovering.nativePhase === "preparing" ? ocRuns.finishNative(owner, "failed", "Bridge restarted before native submission") : ocRuns.monitorNative(owner))
       .catch(() => { failClosed(); }).finally(async () => { owner.settled = true; releaseOwner(owner); finished.resolve(); const w = workerStore.getByRun(recovering.runId); if (w && !storageFailed) { try { await workers.refresh(w); } catch { failClosed(); } } });
   }
   // Recover selection only from the native identity recorded by admission. Never replay a creation or prompt.
