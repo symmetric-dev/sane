@@ -1,4 +1,4 @@
-import type { WorkspaceList, WorkspaceFile, WorkspaceGit, WorkspaceDiff, GitComparison, WorkspaceSearch, WorkspaceSearchInput } from "../src/workspace-contract";
+import type { WorkspaceList, WorkspaceFile, WorkspaceGit, WorkspaceDiff, GitComparison, WorkspaceSearch, WorkspaceSearchInput, WorkspacePaths, WorkspacePathsInput } from "../src/workspace-contract";
 import type { WorktreeResolution } from "../src/catalog-contract";
 
 export class WorkspaceError extends Error {
@@ -15,6 +15,26 @@ async function request<T>(conversationId: string, route = "", init: RequestInit 
   return body as T;
 }
 const query = (workspaceId: string, path?: string) => new URLSearchParams({ workspaceId, ...(path !== undefined ? { path } : {}) });
+type WorkspaceMutation = { scopeId: string; workspaceId: string; paths: readonly string[] };
+const mutationListeners = new Set<(mutation: WorkspaceMutation) => void>();
+/** Metadata owners observe committed writes, including .gitignore content saves. */
+export function subscribeWorkspaceMutations(listener: (mutation: WorkspaceMutation) => void) {
+  mutationListeners.add(listener);
+  return () => { mutationListeners.delete(listener); };
+}
+async function mutation<T>(scopeId: string, workspaceId: string, paths: string[], write: () => Promise<T>): Promise<T> {
+  const notify = () => {
+    for (const listener of mutationListeners) {
+      // Metadata reconciliation must never turn a committed write into a failure.
+      try { listener({ scopeId, workspaceId, paths }); } catch { /* Independent owner. */ }
+    }
+  };
+  try { const result = await write(); notify(); return result; }
+  catch (error) {
+    if (error instanceof WorkspaceError && error.code === "rename-committed") notify();
+    throw error;
+  }
+}
 export const workspaceClient = {
   resolve: async (id: string): Promise<WorktreeResolution> => {
     const workspace = await request<WorktreeResolution>(id);
@@ -22,12 +42,13 @@ export const workspaceClient = {
   },
   list: (id: string, workspaceId: string, path: string) => request<WorkspaceList>(id, `/list?${query(workspaceId, path)}`),
   search: (id: string, input: WorkspaceSearchInput, signal: AbortSignal) => request<WorkspaceSearch>(id, "/search", { method: "POST", body: JSON.stringify(input), signal }),
+  paths: (id: string, input: WorkspacePathsInput, signal: AbortSignal) => request<WorkspacePaths>(id, "/paths", { method: "POST", body: JSON.stringify(input), signal }),
   file: (id: string, workspaceId: string, path: string) => request<WorkspaceFile>(id, `/file?${query(workspaceId, path)}`),
-  save: (id: string, workspaceId: string, path: string, text: string, expectedRevision: string) => request<WorkspaceFile>(id, "/file", { method: "PUT", body: JSON.stringify({ workspaceId, path, text, expectedRevision }) }),
-  create: (id: string, workspaceId: string, path: string) => request<WorkspaceFile>(id, "/file", { method: "POST", body: JSON.stringify({ workspaceId, path }) }),
-  copy: (id: string, workspaceId: string, path: string, destination: string, expectedRevision: string) => request<WorkspaceFile>(id, "/copy", { method: "POST", body: JSON.stringify({ workspaceId, path, destination, expectedRevision }) }),
-  rename: (id: string, workspaceId: string, path: string, destination: string, expectedRevision: string) => request<WorkspaceFile>(id, "/rename", { method: "POST", body: JSON.stringify({ workspaceId, path, destination, expectedRevision }) }),
-  delete: (id: string, workspaceId: string, path: string, expectedRevision: string) => request<{ workspaceId: string; path: string }>(id, "/file", { method: "DELETE", body: JSON.stringify({ workspaceId, path, expectedRevision }) }),
+  save: (id: string, workspaceId: string, path: string, text: string, expectedRevision: string) => mutation(id, workspaceId, [path], () => request<WorkspaceFile>(id, "/file", { method: "PUT", body: JSON.stringify({ workspaceId, path, text, expectedRevision }) })),
+  create: (id: string, workspaceId: string, path: string) => mutation(id, workspaceId, [path], () => request<WorkspaceFile>(id, "/file", { method: "POST", body: JSON.stringify({ workspaceId, path }) })),
+  copy: (id: string, workspaceId: string, path: string, destination: string, expectedRevision: string) => mutation(id, workspaceId, [destination], () => request<WorkspaceFile>(id, "/copy", { method: "POST", body: JSON.stringify({ workspaceId, path, destination, expectedRevision }) })),
+  rename: (id: string, workspaceId: string, path: string, destination: string, expectedRevision: string) => mutation(id, workspaceId, [path, destination], () => request<WorkspaceFile>(id, "/rename", { method: "POST", body: JSON.stringify({ workspaceId, path, destination, expectedRevision }) })),
+  delete: (id: string, workspaceId: string, path: string, expectedRevision: string) => mutation(id, workspaceId, [path], () => request<{ workspaceId: string; path: string }>(id, "/file", { method: "DELETE", body: JSON.stringify({ workspaceId, path, expectedRevision }) })),
   git: (id: string, workspaceId: string) => request<WorkspaceGit>(id, `/git?${query(workspaceId)}`),
   diff: (id: string, workspaceId: string, path: string, comparison: GitComparison) => request<WorkspaceDiff>(id, `/diff?${query(workspaceId, path)}&comparison=${comparison}`),
 };

@@ -1411,7 +1411,7 @@ async function startOwned(options: Options, assetsDir: string, packageDir: strin
           return json({ workspace: await catalog.setAlias(workspaceId, worktreeId, input?.alias ?? null) });
         } catch (error) { const failure = workspaceError(error); return json({ error: failure.message, code: failure.code }, failure.status); }
       }
-      const catalogMatch = /^\/api\/workspaces\/([^/]+)(?:\/worktrees\/([^/]+)(?:\/(list|file|copy|rename|git|diff|search))?)?$/.exec(path);
+      const catalogMatch = /^\/api\/workspaces\/([^/]+)(?:\/worktrees\/([^/]+)(?:\/(list|file|copy|rename|git|diff|search|paths))?)?$/.exec(path);
       if (catalogMatch) {
         try {
           const workspaceId = decodeURIComponent(catalogMatch[1]!), worktreeId = catalogMatch[2] && decodeURIComponent(catalogMatch[2]), operation = catalogMatch[3];
@@ -1426,6 +1426,13 @@ async function startOwned(options: Options, assetsDir: string, packageDir: strin
             const input = await body(req);
             return json(await searches.run(req.signal, signal => worktrees.search(key, { ...input, workspaceId: input?.bindingRevision ?? input?.workspaceId }, signal)));
           }
+          if (operation === "paths" && req.method === "POST") {
+            searches.assertOpen();
+            const input = await body(req);
+            const result = await searches.run(req.signal, signal => worktrees.paths(key, { ...input, workspaceId: input?.bindingRevision ?? input?.workspaceId }, signal));
+            if (!auth.authenticated(req)) return json({ error: "Authentication revoked" }, 401);
+            return json(result);
+          }
           if ((operation === "file" && ["POST", "DELETE"].includes(req.method)) || (["copy", "rename"].includes(operation ?? "") && req.method === "POST")) {
             const input = await body(req), boundInput = { ...input, workspaceId: input?.bindingRevision ?? input?.workspaceId };
             if (operation === "copy") return json(await worktrees.copy(key, boundInput), 201);
@@ -1438,7 +1445,7 @@ async function startOwned(options: Options, assetsDir: string, packageDir: strin
           return json({ error: "Method not allowed" }, 405);
         } catch (error) { const failure = workspaceError(error); return json({ error: failure.message, code: failure.code }, failure.status); }
       }
-      const workspaceMatch = /^\/api\/sessions\/([^/]+)\/workspace(?:\/(list|file|copy|rename|git|diff|search))?$/.exec(path);
+      const workspaceMatch = /^\/api\/sessions\/([^/]+)\/workspace(?:\/(list|file|copy|rename|git|diff|search|paths))?$/.exec(path);
       if (workspaceMatch) {
         try {
           const sessionId = decodeURIComponent(workspaceMatch[1]!);
@@ -1451,6 +1458,13 @@ async function startOwned(options: Options, assetsDir: string, packageDir: strin
             searches.assertOpen();
             const input = await body(req);
             return json(await searches.run(req.signal, signal => workspace.search(sessionId, { ...input, workspaceId: input?.bindingRevision ?? input?.workspaceId }, signal)));
+          }
+          if (operation === "paths" && req.method === "POST") {
+            searches.assertOpen();
+            const input = await body(req);
+            const result = await searches.run(req.signal, signal => workspace.paths(sessionId, { ...input, workspaceId: input?.bindingRevision ?? input?.workspaceId }, signal));
+            if (!auth.authenticated(req)) return json({ error: "Authentication revoked" }, 401);
+            return json(result);
           }
           if (operation === "file" && req.method === "POST") return json(await workspace.create(sessionId, await body(req)), 201);
           if (operation === "file" && req.method === "DELETE") return json(await workspace.delete(sessionId, await body(req)));

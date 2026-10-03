@@ -1,0 +1,20 @@
+.workspace-quick-open-opener { display: flex; align-items: center; gap: 8px; white-space: nowrap; }
+.workspace-quick-open-opener kbd { font-size: 11px; opacity: .65; }
+.shell-dialog.workspace-quick-open-dialog { width: min(560px, calc(100vw - 24px)); }
+.workspace-quick-open-dialog .shell-dialog-content { padding: 14px; }
+.workspace-quick-open-dialog header { margin-bottom: 10px; }
+.workspace-quick-open-panel { min-width: 0; }
+.workspace-quick-open-panel > input { width: 100%; padding: 9px 10px; color: var(--foreground); background: var(--card); border: 1px solid var(--border); border-radius: 4px; }
+.workspace-quick-open-list { height: min(320px, 45dvh); overflow: auto; margin-top: 8px; }
+.workspace-quick-open-option { display: flex; align-items: baseline; gap: 12px; padding: 8px 10px; border-radius: 3px; cursor: pointer; }
+.workspace-quick-open-option[aria-selected="true"] { background: var(--muted); outline: 1px solid var(--border); outline-offset: -1px; }
+.workspace-quick-open-option[aria-disabled="true"] { opacity: .55; cursor: default; }
+.workspace-quick-open-name { flex: none; max-width: 55%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 13px; }
+.workspace-quick-open-parent { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--muted-foreground); font-size: 11px; }
+.workspace-quick-open-footer { display: flex; align-items: center; gap: 8px; min-height: 28px; padding-top: 8px; font-size: 11px; color: var(--muted-foreground); }
+.workspace-quick-open-footer > span { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.workspace-quick-open-footer button { flex: none; padding: 4px 8px; }
+@media (max-width: 600px) {
+  .workspace-quick-open-opener kbd { display: none; }
+  .workspace-quick-open-option { gap: 8px; }
+}

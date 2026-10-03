@@ -8,7 +8,8 @@
  * POST /rename (WorkspaceRename) -> WorkspaceFile at destination (also on worktree base);
  * DELETE /file (WorkspaceDelete) -> { workspaceId, path };
  * GET /git -> WorkspaceGit; GET /diff?path=&comparison= -> WorkspaceDiff;
- * POST /search (WorkspaceSearchInput) -> WorkspaceSearch (also on worktree base).
+ * POST /search (WorkspaceSearchInput) -> WorkspaceSearch (also on worktree base);
+ * POST /paths (WorkspacePathsInput) -> WorkspacePaths (also on worktree base).
  * File and diff text is BOM-free and LF-normalized. A null text/before/after
  * means unsupported content, not an empty file. Diff absence is the empty string.
  * Save sends normalized text plus the last raw-byte revision, preserving the
@@ -18,6 +19,19 @@ export const WORKSPACE_MAX_BYTES = 256 * 1024;
 export type Workspace = { workspaceId: string; sessionId: string; root: string; maxFileBytes: number };
 export type WorkspaceEntry = { name: string; path: string; kind: "file" | "directory" | "symlink" | "other" };
 export type WorkspaceList = { workspaceId: string; path: string; entries: WorkspaceEntry[]; truncated: boolean };
+/** Filename-only recursive inventory, independent of query. path defaults to ""
+ * and must be an exact safe workspace-relative directory prefix. Entries exclude
+ * that prefix itself, have basename names and workspace-relative paths, and are
+ * only regular single-link files or directories (never symlinks/special files).
+ * Uses the search protection, dependency/build exclusions and nested .gitignore
+ * policy, including workspace ancestors of a nonempty prefix. No file contents
+ * are read except bounded ignore metadata. Limits: 10,000 visited entries, depth
+ * 32 from the workspace root, 512 KiB JSON output, 256 ignore files/512 KiB/2,000
+ * rules, and five seconds including fences/cleanup. truncated indicates a partial
+ * inventory; unsafe prefixes fail closed. Cancellation/fence errors match search.
+ */
+export type WorkspacePathsInput = { workspaceId: string; path?: string };
+export type WorkspacePaths = { workspaceId: string; path: string; entries: WorkspaceEntry[]; truncated: boolean };
 export type FileReason = "binary" | "oversize" | "invalid-utf8" | "mixed-eol" | "not-writable";
 export type WorkspaceFile = { workspaceId: string; path: string; text: string | null; revision: string | null; editable: boolean; reason?: FileReason; eol: "lf" | "crlf" | "cr" | "none" | "mixed"; bom: boolean; bytes: number };
 export type WorkspaceWrite = { workspaceId: string; path: string; text: string; expectedRevision: string };

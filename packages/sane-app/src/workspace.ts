@@ -1,4 +1,4 @@
-import { constants, lstatSync, fstatSync } from "node:fs";
+import { constants, lstatSync, fstatSync, type Stats } from "node:fs";
 import { open, lstat, realpath, opendir, access, unlink } from "node:fs/promises";
 import { resolve, join, relative, isAbsolute, sep, posix } from "node:path";
 import { createHash } from "node:crypto";
@@ -6,7 +6,7 @@ import type { WorkspaceSearchLeaseProvider, WorkspaceSearchLease } from "./works
 import { WorkspaceIgnoreEvaluator, WorkspaceIgnoreError, validateIgnoreSnapshot } from "./workspace-ignore";
 import { admitWorkspaceSearch } from "./workspace-search-admission";
 import { ExclusiveRenameError, loadExclusiveRename } from "./workspace-safe-rename";
-import { WORKSPACE_MAX_BYTES, type Workspace, type WorkspaceList, type WorkspaceFile, type WorkspaceWrite, type WorkspaceCreate, type WorkspaceCopy, type WorkspaceRename, type WorkspaceDelete, type WorkspaceGit, type GitEntry, type GitComparison, type WorkspaceDiff, type DiffReason, type WorkspaceSearchInput, type WorkspaceSearch } from "./workspace-contract";
+import { WORKSPACE_MAX_BYTES, type Workspace, type WorkspaceList, type WorkspacePathsInput, type WorkspacePaths, type WorkspaceFile, type WorkspaceWrite, type WorkspaceCreate, type WorkspaceCopy, type WorkspaceRename, type WorkspaceDelete, type WorkspaceGit, type GitEntry, type GitComparison, type WorkspaceDiff, type DiffReason, type WorkspaceSearchInput, type WorkspaceSearch } from "./workspace-contract";
 import { WORKSPACE_SEARCH_LIMITS as SEARCH, SEARCH_IGNORED_DIRECTORIES, searchPatterns, searchFilter, literalMatcher, searchWholeWord, searchPreview } from "./workspace-search";
 
 export class WorkspaceError extends Error {
@@ -444,6 +444,204 @@ export class WorkspaceService {
           // successful response. Late cancellation/deadline still fails closed.
           workspaceOperationCheck(operation);
         }
+        finally { signal?.removeEventListener("abort", abort); release(); }
+      }
+    }
+  }
+  /** Query-independent inventory. Keep content search's coordinator unchanged;
+   * only its readonly guards, ignore evaluator and fixed budgets are reused. */
+  async paths(sessionId: string, input: WorkspacePathsInput, signal?: AbortSignal): Promise<WorkspacePaths> {
+    if (!input || (input.path !== undefined && typeof input.path !== "string")) fail(400, "invalid-path", "Use an exact workspace-relative directory path");
+    const prefix = input.path ?? "";
+    workspaceOperationCheck({ signal });
+    const release = admitWorkspaceSearch();
+    if (!release) fail(503, "search-busy", "Workspace search is busy; try again shortly");
+    const deadline = Date.now() + SEARCH.milliseconds, operation = { signal, deadline };
+    const controller = new AbortController(), abort = () => controller.abort();
+    signal?.addEventListener("abort", abort, { once: true });
+    if (signal?.aborted) abort();
+    const scanOperation = { signal: controller.signal, deadline };
+    let scanExpired = false;
+    const scanTimer = setTimeout(() => { scanExpired = true; controller.abort(); }, Math.max(0, deadline - 500 - Date.now()));
+    const checkpoint = () => {
+      if (scanExpired) fail(504, "search-time-limit", "Search time budget reached");
+      workspaceOperationCheck(scanOperation);
+      if (Date.now() >= deadline - 500) fail(504, "search-time-limit", "Search time budget reached");
+    };
+    let lease: WorkspaceSearchLease | undefined, evaluator: WorkspaceIgnoreEvaluator | undefined;
+    const skippable = (error: any) => error instanceof WorkspaceError
+      ? ["invalid-path", "path-forbidden", "symlink", "hardlink", "not-file", "file-changed"].includes(error.code)
+      : ["ENOENT", "ENOTDIR", "EACCES", "EPERM", "ELOOP"].includes(error?.code);
+    const same = (a: Stats, b: Stats) => a.dev === b.dev && a.ino === b.ino;
+    try {
+      checkpoint();
+      if (typeof input.workspaceId !== "string" || !input.workspaceId) fail(400, "workspace-required", "Resolve the conversation workspace first");
+      if (this.searchLeaseProvider) lease = await this.searchLeaseProvider(sessionId, scanOperation);
+      const bound = lease ? await this.boundBinding(sessionId, lease.binding, scanOperation) : await this.bind(sessionId, input.workspaceId, scanOperation);
+      if (bound.workspaceId !== input.workspaceId) fail(409, "workspace-changed", "Conversation workspace changed; resolve it again");
+      this.lexical(bound, prefix, true);
+      const parts = prefix ? prefix.split("/") : [];
+      if (parts.length > SEARCH.depth) fail(400, "invalid-path", "Directory prefix exceeds the workspace depth limit");
+      const check = async (path: string, rootAllowed = false, missing = false) => {
+        checkpoint();
+        return this.searchChecked(bound, lease, path, rootAllowed, missing);
+      };
+      // Validate the exact prefix even when an ignore rule would prune it. Never
+      // turn a symlink, missing path or file prefix into a successful inventory.
+      const prefixTarget = await check(prefix, true);
+      const prefixInfo = await workspaceOperationWait(() => lstat(prefixTarget), scanOperation);
+      if (!prefixInfo.isDirectory() || prefixInfo.isSymbolicLink()) fail(400, "not-directory", "Path must be a directory");
+      const result: WorkspacePaths = { workspaceId: bound.workspaceId, path: prefix, entries: [], truncated: false };
+      let visited = 0, outputBytes = Buffer.byteLength(JSON.stringify(result)), ignoreFiles = 0, ignoreBytes = 0, ignoreRules = 0;
+      const identities = new Map<string, Stats>(), directoriesSeen = new Map<string, Stats>([[prefix, prefixInfo]]);
+      const loadIgnore = async (path: string, inherited: string[]) => {
+        const scopes = [...inherited], ignorePath = path ? `${path}/.gitignore` : ".gitignore";
+        try {
+          const target = await check(ignorePath, false, true), info = await workspaceOperationWait(() => lstat(target), scanOperation);
+          if (info.isFile() && info.nlink === 1 && info.size <= WORKSPACE_MAX_BYTES) {
+            if (ignoreFiles >= SEARCH.ignoreFiles || ignoreBytes + info.size > SEARCH.ignoreBytes) { result.truncated = true; return scopes; }
+            ignoreFiles++; ignoreBytes += info.size;
+            const disk = await this.searchDisk(bound, ignorePath, path => check(path), info.size);
+            ignoreBytes += disk.bytes.length - info.size;
+            if (disk.info.size > info.size && !disk.oversize) { result.truncated = true; return scopes; }
+            const text = disk.oversize ? null : decode(disk.bytes).text;
+            if (text !== null) {
+              const rules = validateIgnoreSnapshot(text).rules;
+              if (ignoreRules + rules > SEARCH.ignoreRules) { result.truncated = true; return scopes; }
+              ignoreRules += rules;
+              if (rules) {
+                evaluator ??= new WorkspaceIgnoreEvaluator(scanOperation);
+                await evaluator.register(path, text);
+                scopes.push(path);
+              }
+            }
+          }
+        } catch (error) { if (!skippable(error)) throw error; }
+        return scopes;
+      };
+      try {
+        // Walk ancestry without listing siblings. A pruned ancestor cannot be
+        // resurrected by a nested negation, just as in root content discovery.
+        let scopes: string[] = [], ancestor = "", excluded = false;
+        for (const part of parts) {
+          scopes = await loadIgnore(ancestor, scopes);
+          if (result.truncated) break;
+          ancestor = ancestor ? `${ancestor}/${part}` : part;
+          if (SEARCH_IGNORED_DIRECTORIES.has(part.toLowerCase()) || (scopes.length && (await evaluator!.test(scopes, [{ path: ancestor, directory: true }]))[0])) { excluded = true; break; }
+        }
+        const directories = excluded || result.truncated ? [] : [{ path: prefix, depth: parts.length, scopes }];
+        while (directories.length && !result.truncated) {
+          checkpoint();
+          const directory = directories.pop()!;
+          const target = await check(directory.path, true), info = await workspaceOperationWait(() => lstat(target), scanOperation);
+          if (!info.isDirectory() || info.isSymbolicLink()) fail(409, "file-changed", "Directory changed during discovery");
+          const expected = identities.get(directory.path) ?? directoriesSeen.get(directory.path);
+          if (expected && !same(info, expected)) fail(409, "file-changed", "Directory changed during discovery");
+          directoriesSeen.set(directory.path, info);
+          if (directory.depth >= SEARCH.depth) { result.truncated = true; break; }
+          const scopes = await loadIgnore(directory.path, directory.scopes);
+          if (result.truncated) break;
+          // Resource-producing I/O is owned, never raced against cancellation.
+          // NOFOLLOW/NONBLOCK also fence the directory identity before listing.
+          const handle = await open(target, constants.O_RDONLY | constants.O_DIRECTORY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
+          let dir: Awaited<ReturnType<typeof opendir>> | undefined;
+          try {
+            checkpoint();
+            if (!same(await handle.stat(), info)) fail(409, "file-changed", "Directory changed while opening");
+            await check(directory.path, true);
+            dir = await opendir(target);
+            const fence = async () => {
+              await check(directory.path, true);
+              const current = await workspaceOperationWait(() => lstat(target), scanOperation);
+              if (!current.isDirectory() || current.isSymbolicLink() || !same(current, info)) fail(409, "file-changed", "Directory changed during discovery");
+            };
+            await fence();
+            type Candidate = { path: string; directory: boolean; info: Stats };
+            let candidates: Candidate[] = [];
+            const flush = async () => {
+              checkpoint();
+              await fence();
+              const ignored = scopes.length ? await evaluator!.test(scopes, candidates) : candidates.map(() => false);
+              if (ignored.length !== candidates.length) fail(503, "search-ignore-failed", "Ignore evaluation failed");
+              for (let index = 0; index < candidates.length; index++) {
+                checkpoint();
+                if (ignored[index]) continue;
+                const candidate = candidates[index]!;
+                const entry = { name: posix.basename(candidate.path), path: candidate.path, kind: candidate.directory ? "directory" as const : "file" as const };
+                const size = Buffer.byteLength(JSON.stringify(entry)) + 1;
+                if (outputBytes + size > SEARCH.outputBytes) { result.truncated = true; break; }
+                outputBytes += size; result.entries.push(entry); identities.set(candidate.path, candidate.info);
+                if (candidate.directory) {
+                  directories.push({ path: candidate.path, depth: directory.depth + 1, scopes });
+                }
+              }
+              candidates = [];
+            };
+            while (visited < SEARCH.entries) {
+              checkpoint();
+              const entry = await dir.read();
+              if (!entry) break;
+              checkpoint();
+              visited++;
+              const path = directory.path ? `${directory.path}/${entry.name}` : entry.name;
+              if (entry.isSymbolicLink() || (!entry.isDirectory() && !entry.isFile()) || (entry.isDirectory() && SEARCH_IGNORED_DIRECTORIES.has(entry.name.toLowerCase()))) continue;
+              try {
+                const child = await check(path), current = await workspaceOperationWait(() => lstat(child), scanOperation);
+                if (current.isSymbolicLink() || (!current.isDirectory() && (!current.isFile() || current.nlink !== 1)) || (current.isDirectory() && SEARCH_IGNORED_DIRECTORIES.has(entry.name.toLowerCase()))) continue;
+                await workspaceOperationWait(() => access(child, current.isDirectory() ? constants.R_OK | constants.X_OK : constants.R_OK), scanOperation);
+                candidates.push({ path, directory: current.isDirectory(), info: current });
+              } catch (error) { if (!skippable(error)) throw error; }
+              if (candidates.length >= 128) { await flush(); if (result.truncated) break; }
+            }
+            if (visited >= SEARCH.entries) result.truncated = true;
+            await fence();
+            // Preserve the last safely evaluated batch when the visited cap hits.
+            if (candidates.length) await flush();
+          } finally {
+            try { if (dir) try { await dir.close(); } catch (error: any) { if (error?.code !== "ERR_DIR_CLOSED") throw error; } }
+            finally { await handle.close(); }
+          }
+        }
+      } catch (error) {
+        if (signal?.aborted) fail(499, "search-aborted", "Search cancelled");
+        if ((error instanceof WorkspaceError || error instanceof WorkspaceIgnoreError) && (["search-time-limit", "git-timeout", "ignore-limit"].includes(error.code) || (scanExpired && error.code === "search-aborted"))) result.truncated = true;
+        else throw error;
+      } finally {
+        clearTimeout(scanTimer); controller.abort();
+        await evaluator?.close(); evaluator = undefined;
+      }
+      // Full binding/policy fence after discovery resources settle. Revalidate
+      // every published identity/type/link count and traversed directory, not
+      // merely lexical result paths, using the original total request deadline.
+      const final = await this.bind(sessionId, input.workspaceId, operation);
+      const policy = (value: Bound) => JSON.stringify([...new Set(value.protectedPaths)].sort());
+      if (final.root !== bound.root || final.data !== bound.data || final.dev !== bound.dev || final.ino !== bound.ino || policy(final) !== policy(bound)) fail(409, "workspace-changed", "Conversation workspace changed; resolve it again");
+      if (lease) await workspaceOperationWait(() => lease!.validate(operation), operation);
+      const validate = async (path: string, info: Stats) => {
+        const target = this.lexical(final, path, path === "");
+        await this.checkedComponents(final, path, target);
+        const current = await workspaceOperationWait(() => lstat(target), operation);
+        if (current.isSymbolicLink() || !same(current, info) || (info.isDirectory() ? !current.isDirectory() : !current.isFile() || current.nlink !== 1)) fail(409, "file-changed", "Path changed during discovery; refresh the inventory");
+        await workspaceOperationWait(() => access(target, current.isDirectory() ? constants.R_OK | constants.X_OK : constants.R_OK), operation);
+      };
+      for (const [path, info] of directoriesSeen) await validate(path, info);
+      for (const [path, info] of identities) if (!directoriesSeen.has(path)) await validate(path, info);
+      // Revalidation has awaits of its own; do not let a binding/protection
+      // change during that phase escape the final authoritative fence.
+      const settled = await this.bind(sessionId, input.workspaceId, operation);
+      if (settled.root !== bound.root || settled.data !== bound.data || settled.dev !== bound.dev || settled.ino !== bound.ino || policy(settled) !== policy(bound)) fail(409, "workspace-changed", "Conversation workspace changed; resolve it again");
+      if (lease) await workspaceOperationWait(() => lease!.validate(operation), operation);
+      workspaceOperationCheck(operation);
+      return result;
+    } catch (error) {
+      if (signal?.aborted) fail(499, "search-aborted", "Search cancelled");
+      if (scanExpired && (error instanceof WorkspaceError || error instanceof WorkspaceIgnoreError) && error.code === "search-aborted") fail(504, "search-time-limit", "Search time budget reached");
+      throw error;
+    } finally {
+      clearTimeout(scanTimer); controller.abort();
+      try { await evaluator?.close(); }
+      finally {
+        try { await lease?.dispose?.(); workspaceOperationCheck(operation); }
         finally { signal?.removeEventListener("abort", abort); release(); }
       }
     }

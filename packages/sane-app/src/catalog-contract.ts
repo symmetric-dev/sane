@@ -7,9 +7,9 @@ import type { Session } from "./history";
  * GET /api/workspaces/:workspaceId -> WorkspaceRecord
  * GET /api/workspaces/:workspaceId/worktrees/:worktreeId -> WorktreeResolution
  * PUT /api/workspaces/:workspaceId/worktrees/:worktreeId/alias {alias: string | null} -> WorkspaceRecord (per-worktree display name, trimmed 1-80 chars, no controls; empty/null clears; duplicates allowed)
- * Same base + /list /file /git /diff /search use workspace-contract shapes and paths
+ * Same base + /list /file /git /diff /search /paths use workspace-contract shapes and paths
  * relative to the FULL worktree root. GET accepts workspaceId=<revision> or
- * bindingRevision=<revision>; PUT /file and POST /search accept either token field.
+ * bindingRevision=<revision>; PUT /file and POST /search /paths accept either token field.
  * GET /api/navigation -> NavigationBookmark
  * PUT /api/navigation NavigationWrite -> NavigationBookmark; conflict is 409.
  * Navigation workspaceId/worktreeId select the browsing root independently of
@@ -29,7 +29,7 @@ export type CatalogResponse = { version: 1; workspaces: WorkspaceRecord[] };
 export type RegistrationResponse = { workspace: WorkspaceRecord; workspaceId: string; worktreeId: string };
 // The legacy operation shapes retain workspaceId as their filesystem revision
 // token. The URL selects stable catalog IDs; bindingRevision is passed as the
-// workspaceId query/body field for list/file/git/diff/search, as in the legacy API.
+// workspaceId query/body field for list/file/git/diff/search/paths, as in the legacy API.
 export type WorktreeResolution = Workspace & { catalogWorkspaceId: string; worktreeId: string; bindingRevision: string };
 export type NavigationBookmark = { revision: number; workspaceId: string | null; worktreeId: string | null; conversationId: string | null; view: "chat" | "code" | "git" | "terminal" | "workstreams" | "history" | "config"; filePath: string | null; comparison: GitComparison | null };
 export type NavigationWrite = Omit<NavigationBookmark, "revision"> & { expectedRevision: number };

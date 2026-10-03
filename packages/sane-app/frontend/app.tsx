@@ -20,6 +20,7 @@ import { ContextualNavigation, Drawer, FilesModeControl, Icon, ViewNavigationCom
 import { harnessName } from "./types";
 import { ApplicationCommandProvider } from "./application-commands";
 import { WorkspaceSearchButton, WorkspaceSearchFeature } from "./workspace-search";
+import { WorkspaceQuickOpenFeature } from "./workspace-quick-open";
 import { WorkspaceFileShortcuts } from "./workspace-file-shortcuts";
 import type { DocumentReviewLaunch, DocumentReviewRequest } from "./document-review-launch";
 import { CompactControl, CompactDialog } from "./compaction-ui";
@@ -118,7 +119,7 @@ function ReadyWorkspace({ state, signOut }: { state: State; signOut: () => void 
     onHistory={() => navigate(view === "history" ? "chat" : "history")}
   /> : group === "files" ? <><FilesModeControl activeView={view} onNavigate={navigate} /><WorkspaceSidebar /></>
     : <ConfigMenu onSelect={() => { setArtifact(null); setDrawer(null); }} />;
-  return <ApplicationCommandProvider><WorkspaceProvider view={view} navigate={navigate}><WorkspaceSearchFeature><WorkspaceFileShortcuts><TerminalProvider view={view}>
+  return <ApplicationCommandProvider><WorkspaceProvider view={view} navigate={navigate}><WorkspaceQuickOpenFeature><WorkspaceSearchFeature><WorkspaceFileShortcuts><TerminalProvider view={view}>
     <ViewNavigationCommands onNavigate={navigate} />
     <WorkspaceShell view={view} sidebar={sidebar}
       retryCatalog={hydrateCatalog} sidebarOpen={drawer === "sidebar"}
@@ -132,7 +133,7 @@ function ReadyWorkspace({ state, signOut }: { state: State; signOut: () => void 
     {drawer === "application" && <ApplicationDialog state={state} signOut={signOut} close={() => setDrawer(null)} />}
     {drawer === "details" && <ConversationDetails state={state} close={() => setDrawer(null)} />}
     {view === "chat" && <CompactDialog state={state} />}
-  </TerminalProvider></WorkspaceFileShortcuts></WorkspaceSearchFeature></WorkspaceProvider></ApplicationCommandProvider>;
+  </TerminalProvider></WorkspaceFileShortcuts></WorkspaceSearchFeature></WorkspaceQuickOpenFeature></WorkspaceProvider></ApplicationCommandProvider>;
 }
 
 function ShellHeader({ state, view, artifact, overview, overviewWorkspaceId, openDetails, openApplication }: {

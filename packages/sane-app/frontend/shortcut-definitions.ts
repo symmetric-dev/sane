@@ -23,6 +23,12 @@ export const GLOBAL_SHORTCUTS: readonly ShortcutDefinition[] = NAVIGATION_HOTKEY
 }));
 
 export const FILE_SHORTCUTS = {
+  quickOpen: {
+    id: "workspace.quick-open", label: "Quick Open",
+    scope: { kind: "view", view: "files", region: "view" }, owner: "application",
+    binding: { key: "p", mod: true },
+    description: "Open a file by its name or path in the active workspace.",
+  },
   search: {
     id: "workspace.search", label: "Search saved files",
     scope: { kind: "view", view: "files", region: "view" }, owner: "application",

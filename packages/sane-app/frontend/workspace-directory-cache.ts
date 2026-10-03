@@ -1,15 +1,16 @@
 import type { WorktreeResolution } from "../src/catalog-contract";
 import type { WorkspaceList } from "../src/workspace-contract";
 import { catalog } from "./catalog";
-import { workspaceClient, WorkspaceError } from "./workspace-client";
+import { subscribeWorkspaceMutations, workspaceClient, WorkspaceError } from "./workspace-client";
 import { workspaceEpoch, workspaceFailure } from "./workspace-store";
+import { createWorktreePathInventories, type WorktreePathInventories } from "./workspace-path-cache";
 
 export type DirectoryResult = { listing?: WorkspaceList; error?: string };
 export type DirectoryRequest = {
   result?: DirectoryResult; promise?: Promise<DirectoryResult>;
   freshness?: { revision: number; resultRevision: number; settledAt: number };
 };
-export type WorktreeDirectories = {
+export type WorktreeDirectories = WorktreePathInventories & {
   workspace: WorktreeResolution;
   directories: Map<string, DirectoryRequest>;
   listDirectory: (path: string) => Promise<DirectoryResult>;
@@ -17,7 +18,7 @@ export type WorktreeDirectories = {
   invalidate: (paths: Iterable<string>, mutation?: boolean) => void;
   current: () => boolean;
 };
-const registry = new Map<string, { leases: number; ready: Promise<WorktreeDirectories> }>();
+const registry = new Map<string, { leases: number; ready: Promise<WorktreeDirectories>; reader?: WorktreeDirectories; dispose?: () => void }>();
 export const DIRECTORY_SUCCESS_FRESH_MS = 30_000;
 const DIRECTORY_ERROR_FRESH_MS = 5_000;
 const unavailable = () => ({ error: "Workspace changed or unavailable. Reopen its files or choose an available worktree." });
@@ -50,7 +51,7 @@ export function acquireWorktreeDirectories(scopeId: string, expectedBindingRevis
     // fallback for a ready catalog, and autocomplete cannot acquire it pre-ready.
     const bootstrap = !catalog.state.ready && !source;
     let resolvedSource: Readonly<{ root: string; revision: string }> | undefined;
-    const owner = { leases: 0, ready: null! as Promise<WorktreeDirectories> };
+    const owner = { leases: 0, ready: null! as Promise<WorktreeDirectories>, reader: undefined as WorktreeDirectories | undefined, dispose: undefined as (() => void) | undefined };
     const valid = () => {
       const live = catalogWorktree(), identity = source ?? resolvedSource;
       if (!owner.leases || auth !== workspaceEpoch() || !identity) return false;
@@ -70,11 +71,21 @@ export function acquireWorktreeDirectories(scopeId: string, expectedBindingRevis
         throw new WorkspaceError(unavailable().error, 409, "workspace-changed");
       }
       const directories = new Map<string, DirectoryRequest>();
+      const inventories = createWorktreePathInventories({ workspaceId: workspace.workspaceId, current: valid,
+        fetch: (path, signal) => workspaceClient.paths(scopeId, { workspaceId: workspace.workspaceId, path }, signal),
+        failure: error => auth === workspaceEpoch() ? workspaceFailure(error) : unavailable().error });
+      const unsubscribe = subscribeWorkspaceMutations(mutation => {
+        if (valid() && mutation.scopeId === scopeId && mutation.workspaceId === workspace.workspaceId) inventories.invalidate(mutation.paths, true);
+      });
+      owner.dispose = () => { unsubscribe(); inventories.dispose(); };
       const service: WorktreeDirectories = {
         workspace, directories, current: valid,
+        readPaths: inventories.readPaths, listPaths: inventories.listPaths, pathsNeedsRefresh: inventories.pathsNeedsRefresh,
         directoryNeedsRefresh: (path, result) => valid() && (!result || directories.get(path)?.result !== result || !fresh(directories.get(path))),
         invalidate: (paths, mutation = false) => {
-          for (const path of paths) {
+          const values = [...paths];
+          inventories.invalidate(values, mutation);
+          for (const path of values) {
             const request = directories.get(path);
             if (!request) continue;
             const state = freshness(request);
@@ -107,6 +118,7 @@ export function acquireWorktreeDirectories(scopeId: string, expectedBindingRevis
           return record.promise;
         },
       };
+      owner.reader = service;
       return service;
     }).catch(error => {
       // A failed resolve owns no metadata map. New acquisitions may retry without
@@ -119,7 +131,7 @@ export function acquireWorktreeDirectories(scopeId: string, expectedBindingRevis
   entry.leases++;
   const owner = entry;
   let released = false;
-  return { ready: owner.ready.then(reader => {
+  return { get reader() { return owner.reader?.current() ? owner.reader : undefined; }, ready: owner.ready.then(reader => {
     // A previously resolved bootstrap lease may now face an authoritative
     // catalog. Do not reacquire it as successful metadata after revocation.
     if (!reader.current()) throw new Error(unavailable().error);
@@ -127,6 +139,9 @@ export function acquireWorktreeDirectories(scopeId: string, expectedBindingRevis
   }), release: () => {
     if (released) return;
     released = true;
-    if (--owner.leases === 0 && registry.get(key) === owner) registry.delete(key);
+    if (--owner.leases === 0) {
+      owner.dispose?.();
+      if (registry.get(key) === owner) registry.delete(key);
+    }
   } };
 }

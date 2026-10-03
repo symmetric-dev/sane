@@ -8,6 +8,7 @@ import { ShellDialog } from "./shell-dialog";
 import { FileOperationDialog, type FileOperation } from "./workspace-file-actions";
 import { WorkspaceSearchPanel, useWorkspaceSearchContext } from "./workspace-search";
 import { useWorkspaceFileOperations } from "./workspace-file-shortcuts";
+import { WorkspaceQuickOpenButton } from "./workspace-quick-open";
 import "./workspace.css";
 export { WorkspaceProvider } from "./workspace-controller";
 export { WorkspaceSidebar } from "./workspace-tree";
@@ -34,6 +35,7 @@ export function WorkspaceHeader() {
   const openOperation = (kind: FileOperation, source: string) => { setActionsOpen(false); if (operations) operations.open(kind, source); else setOperation({ kind, source }); };
   return <>
     <div className="conversation-heading workspace-heading"><span title={selected || undefined}>{view === "code" ? search?.mode === "search" ? "Search" : "Files" : "Git"}{selected && (search?.mode !== "search" || search.showingFile || view !== "code") ? ` · ${selected}` : ""}{buffer && dirty(buffer) ? " •" : ""}</span>{(view === "git" && selected || localCompare) && <small>{localCompare ? "Disk → Local unsaved buffer" : root?.comparison}</small>}</div>
+    {view === "code" && <WorkspaceQuickOpenButton />}
     {!searchResults && (textDiff || view === "code" && scope || view === "git" && canOpenInCode(controller)) && <button type="button" className="file-actions-opener" aria-haspopup="dialog" aria-label={view === "code" ? "File actions" : "Change actions"} onClick={() => setActionsOpen(true)}><span>{view === "code" ? "File actions" : "Change actions"}</span><FiChevronDown size={13} aria-hidden="true" /></button>}
     {operation && scope && view === "code" && <FileOperationDialog key={`${scope.generation}:${scope.workspace.workspaceId}:${operation.kind}:${operation.source}`} operation={operation.kind} source={operation.source} close={() => setOperation(null)} />}
     {actionsOpen && <ShellDialog title={view === "code" ? "File actions" : "Change actions"} close={() => setActionsOpen(false)}><p className="context-path">{selected}</p><div className="workspace-header-actions">
