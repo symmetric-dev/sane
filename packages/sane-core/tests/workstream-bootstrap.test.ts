@@ -68,7 +68,7 @@ test("deferred COMMIT failure rolls back all domain rows; published bytes remain
 })
 test("template preflight failure publishes nothing; initial-audit failure publishes nothing",()=>{
   const {domain,stateRoot,destination}=setup();const original=ConfinedLifecycleFileSystem.prototype.readBytes
-  const spy=spyOn(ConfinedLifecycleFileSystem.prototype,"readBytes").mockImplementation(function(this: ConfinedLifecycleFileSystem,path){if(path.endsWith("shared/README.md"))throw new Error("unavailable template");return original.call(this,path)})
+  const spy=spyOn(ConfinedLifecycleFileSystem.prototype,"readBytes").mockImplementation(function(this: ConfinedLifecycleFileSystem,path){if(path.endsWith("shared/sdd/SDD.md"))throw new Error("unavailable template");return original.call(this,path)})
   try{expect(()=>domain.createWorkstream({id:"new",title:"New",type:"issue"},mutation)).toThrow("unavailable template")}finally{spy.mockRestore()}
   expect(existsSync(destination("new"))).toBe(false)
   const db=new Database(join(stateRoot,"sane.db"));try{db.exec("CREATE TRIGGER no_audit BEFORE INSERT ON audit_events BEGIN SELECT RAISE(ABORT,'audit refused'); END")

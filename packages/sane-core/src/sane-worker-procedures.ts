@@ -12,9 +12,7 @@ Implement the job listed in this assignment from its Job Spec and record the out
 5. Create or update the Job Report using the Report template. Reconcile its existing sections to the current outcome, including changed paths, material deviations, verification results, prerequisite gaps, failed scripts or tools and their workarounds, and unresolved findings. Link detailed evidence at its authoritative location; do not append attempt narratives. Recommendations are useful only when they change a subsequent job's approach. Leave predecessor Job Reports untouched.
 6. Keep job IDs, checkpoint labels, and workstream-document references in the Job Report, not in implementation content.
 7. Run \`sane validate execution report --id <job id>\` and correct structural errors before returning. An unsuccessful implementation or unavailable check still needs an accurate, valid Job Report.
-8. Return \`Report: <Job Report path>\` with your result.
-
-Do not load \`sane-assistant-*\` skills.`,
+8. Return \`Report: <Job Report path>\` with your result.`,
 
   fixer: `# SANE Procedure: Fixer
 
@@ -24,9 +22,7 @@ The jobs listed in this assignment are the jobs affected by the fix. Their Job S
 - Return test obligations for checkpoint verification; test changes and runs belong to the Tester.
 - Reconcile each listed Job Report to the current outcome within its existing sections, following its Report template. Replace resolved findings and link detailed evidence rather than appending attempt histories. Keep job IDs, checkpoint labels, and workstream-document references in Job Reports, not in implementation content.
 - Validate each updated Job Report with \`sane validate execution report --id <job id>\` before returning, and return \`Report: <path>\` for each.
-- When this assignment lists no jobs, update no Job Report; return changed paths and verification results for the launching assistant to record.
-
-Do not load \`sane-assistant-*\` skills.`,
+- When this assignment lists no jobs, update no Job Report; return changed paths and verification results for the launching assistant to record.`,
 
   tester: `# SANE Procedure: Tester
 
@@ -36,9 +32,7 @@ Verify one Execution Checkpoint after its implementation jobs have returned.
 2. Write the Test Report at the path your prompt assigns (\`<workstream>/execution/test-reports/<checkpoint-id>.md\`) using \`<workstream>/resources/TEST_REPORT_TEMPLATE.md\`. Reconcile its outcome and evidence after further verification.
 3. Keep workstream documents other than the Test Report read-only. Keep job IDs, checkpoint labels, and workstream-document references out of tests and fixtures.
 4. Report needed production changes to the launching assistant.
-5. Return the Test Report path and any finding needing attention.
-
-Do not load \`sane-assistant-*\` skills.`,
+5. Return the Test Report path and any finding needing attention.`,
 
   grounder: `# SANE Procedure: Grounder
 
@@ -63,13 +57,9 @@ Edit only the Context section of the named unstarted Job Specs.
 2. Verify applicable paths, symbols, interfaces, and recommendation evidence against the current repository. This is bounded evidence checking, not a repeat of the implementation review.
 3. Add concise guidance with applicability, Job Report section references, and file/line or symbol pointers. Distinguish delivered outputs from outputs expected from jobs that have not run. Avoid duplicating existing guidance.
 4. Identify recommendations not yet reviewed. Return test-related evidence to the launching assistant for the Verification Spec; keep Context free of test results, test commands, and test requirements. A workaround is evidence, not authorization to adopt it as a procedure.
-5. Preserve Operational Readiness, Instructions, Boundaries, Verification, dependencies, and completion criteria; return changed readiness requirements for Planning. Return an unsupported optional recommendation as a warning and a missing required contract or contradictory instruction as a blocker.
-
-Do not load \`sane-assistant-*\` skills.`,
+5. Preserve Operational Readiness, Instructions, Boundaries, Verification, dependencies, and completion criteria; return changed readiness requirements for Planning. Return an unsupported optional recommendation as a warning and a missing required contract or contradictory instruction as a blocker.`,
 
   researcher: `# SANE Procedure: Researcher
-
-This is a worker assignment, not a user-facing session: do not perform Pickup, Delivery, approval, or state-update workflows, and do not load \`sane-assistant-*\` skills.
 
 - Write only the \`<workstream>/research/<topic>/REPORT.md\` and supporting outputs your prompt assigns. Never edit Design or Engineering documents, Execution Plans, Job Specs, Job Reports, or other workstream documents.
 - A registered report is append-only: never edit it; write a new topic instead.
@@ -82,21 +72,15 @@ Your prompt states whether this is a checkpoint review or a prerequisite-gap ass
 
 - **Checkpoint review:** Assess the combined current result of the listed jobs, including sequential jobs, against each Job Spec's instructions, boundaries, verification, and report requirements, the Verification Spec, and relevant design constraints. Earlier reviewed jobs are integration context. Treat Job Reports and the Test Report as claims to assess. Flag job IDs, checkpoint labels, agent roles, or workstream-document references introduced into implementation content; they belong in Job Reports. Assess a Job Report recommendation when it materially affects upcoming jobs.
 - **Prerequisite-gap assessment:** Start from the blocked job's Job Spec and the gap recorded in its Job Report. Return \`Needs planning\` when resumption requires a changed Job Spec or Execution Plan.
-- Classify Job Report inaccuracies and historical Design contradictions or drift as findings. Do not reproduce the Job Report in your return.
-
-Do not load \`sane-assistant-*\` skills.`,
+- Classify Job Report inaccuracies and historical Design contradictions or drift as findings. Do not reproduce the Job Report in your return.`,
 
   scout: `# SANE Procedure: Scout
 
 - Workstream documents are read-only context; read only those your prompt names and do not discover wider workstream context.
-- Return findings inline to the launching agent, not in a workstream document.
-
-Do not load \`sane-assistant-*\` skills.`,
+- Return findings inline to the launching agent, not in a workstream document.`,
 
   "scout-crew": `# SANE Procedure: Scout Crew
 
 - Launch scouts only as the harness's native scout subagents, not with \`sane_worker_*\` tools. They do not receive this assignment; write each scout assignment in repository terms with absolute paths.
-- Workstream documents are read-only context; read only those your prompt names. Return the synthesis inline to the launching agent.
-
-Do not load \`sane-assistant-*\` skills.`,
+- Workstream documents are read-only context; read only those your prompt names. Return the synthesis inline to the launching agent.`,
 }

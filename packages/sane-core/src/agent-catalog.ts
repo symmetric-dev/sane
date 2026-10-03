@@ -49,14 +49,14 @@ export const WORKER_AGENT_IDS = ["implementer", "fixer", "tester", "grounder", "
 export type WorkerAgentId = (typeof WORKER_AGENT_IDS)[number]
 /** Descriptive metadata only; access is never an admission or permissions policy. */
 export const WORKER_AGENT_CATALOG: Record<WorkerAgentId, { label: string; description: string; access: "code" | "artifacts" | "read" }> = {
-  implementer: { label: "Implementer", description: "Implements one bounded job and reports its outcome or prerequisite gap.", access: "code" },
-  fixer: { label: "Fixer", description: "Applies a bounded correction and reports the outcome.", access: "code" },
-  tester: { label: "Tester", description: "Writes and runs focused tests for an execution checkpoint.", access: "code" },
-  grounder: { label: "Grounder", description: "Grounds job specifications and enriches execution context with repository evidence.", access: "artifacts" },
-  researcher: { label: "Researcher", description: "Investigates a bounded external-evidence question and records findings.", access: "artifacts" },
-  reviewer: { label: "Reviewer", description: "Reviews implementation or assesses prerequisites without modifying files.", access: "read" },
-  scout: { label: "Scout", description: "Inspects a bounded repository scope and returns findings without modifying files.", access: "read" },
-  "scout-crew": { label: "Scout Crew", description: "Coordinates repository scouts and synthesizes their findings.", access: "read" },
+  implementer: { label: "Implementer", description: "Implements one bounded assignment and reports its outcome or an evidenced prerequisite gap.", access: "code" },
+  fixer: { label: "Fixer", description: "Applies a bounded correction and reports the verified outcome or remaining obstacle.", access: "code" },
+  tester: { label: "Tester", description: "Writes and runs focused tests for specified behavior and reports the verified results.", access: "code" },
+  grounder: { label: "Grounder", description: "Verifies a bounded repository scope and enriches assigned specification documents in place with evidence.", access: "artifacts" },
+  researcher: { label: "Researcher", description: "Investigates one bounded external-evidence question and writes findings only to its assigned outputs.", access: "artifacts" },
+  reviewer: { label: "Reviewer", description: "Reviews implemented work or assesses the prerequisites preventing an assignment from proceeding, read-only.", access: "read" },
+  scout: { label: "Scout", description: "Inspects a bounded repository scope and returns findings or blockers inline to its parent without changing files.", access: "read" },
+  "scout-crew": { label: "Scout Crew", description: "Coordinates parallel scouts to map a bounded repository question breadth-first and synthesize their findings.", access: "read" },
 }
 export function isWorkerAgentId(value: unknown): value is WorkerAgentId {
   return typeof value === "string" && (WORKER_AGENT_IDS as readonly string[]).includes(value)

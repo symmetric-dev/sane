@@ -2,7 +2,7 @@ import { isAssistantAgentId, isWorkerAgentId, type StoredSaneAgentIdentity, type
 import { SANE_WORKER_PROCEDURES } from "./sane-worker-procedures.ts"
 
 /** Bump whenever framework or assignment text changes; sessions keep the version they were created with. */
-export const SANE_CONTEXT_VERSION = 1
+export const SANE_CONTEXT_VERSION = 2
 
 export const SANE_CORE_CONTEXT = `# SANE Context
 
@@ -12,8 +12,7 @@ SANE means **Sane Agentic Noesis Edifice**. It is a structured, reasonable, and 
 
 A **workstream** groups the documents and state for an undertaking. Its documents describe current requirements, solutions, and outcomes; the CLI and sessions hold progress, approvals, and collaboration history. Implementation happens in the target repository, not in a separate duplicate tree.
 
-The user directs the work and makes decisions with the assistant. Follow your
-role's skills for the assigned work and coordination with other sessions.
+The user directs the work and makes decisions with the assistant.
 
 There are 2 types of agents: **Assistants**, and **Workers**. Assistants work directly with the user while workers can be run by assistants to perform tasks.
 
@@ -45,6 +44,8 @@ The Main Track follows four phases: Design → Engineering → Planning → Exec
 Support Tracks may run alongside the Main Track to help resolve Knowledge Gaps and Operational Gaps along the way.`
 
 export const SANE_ASSISTANT_CONTEXT = `## State
+
+Follow your role's skills for the assigned work and coordination with other sessions.
 
 View current status with \`sane view\` and use the CLI to record state.
 

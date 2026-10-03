@@ -86,7 +86,7 @@ test("missing and replaced execution roots fail without blocking valid artifact/
   domain.registerConversation({ref:ref("a"),executionCheckout:checkout},mutation)
   renameSync(checkout,checkout+"-saved")
   code(()=>domain.resolveContext(ref("a")),"INVALID_CHECKOUT")
-  expect(domain.readArtifact("alpha","README.md")).toBeTruthy()
+  expect(domain.readArtifact("alpha","PRD.md")).toBeTruthy()
   mkdirSync(checkout); renameSync(join(checkout+"-saved",".git"),join(checkout,".git"))
   code(()=>domain.resolveContext(ref("a")),"STALE_BINDING")
   expect(domain.getConversation(ref("a"))!.executionCheckout.path).toBe(checkout)

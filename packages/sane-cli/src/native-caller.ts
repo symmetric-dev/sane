@@ -81,9 +81,9 @@ export function formatNativeContextSummary(snapshot: InvocationContext, phase: P
     "SANE session context:",
     `Workstream: ${workstream ?? "(none)"}`,
     `Management repository: ${snapshot.primaryCheckout}`,
-    `Artifacts root: ${snapshot.artifactsRoot ?? "(none)"}`,
+    `Workstream root: ${snapshot.artifactsRoot ?? "(none)"}`,
     `Implementation root: ${snapshot.executionCheckout}`,
-    "Run commands in the implementation root; keep documents at the artifacts root.",
+    "Run commands in the implementation root; keep workstream documents in the workstream root.",
     "Shell calls carry the caller reference automatically.",
   ].join("\n")
   // Keep the actual assignment evidence; targeting compares aliases in core.

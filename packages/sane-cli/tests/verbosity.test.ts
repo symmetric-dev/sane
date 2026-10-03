@@ -35,7 +35,7 @@ describe("context/link verbosity", () => {
         expect(reply.harness).toBe("cc")
         expect(text).toContain("native")
         expect(text).toContain("cc")
-        expect(reply.context).toContain("Artifacts root: ")
+        expect(reply.context).toContain("Workstream root: ")
         expect(reply.context).toContain("Implementation root: ")
         for (const heavy of ["assignment", "caller", "conversation", "lifecycle", "repositoryId", "authorityId", "nativeId", "executionCheckout", "artifactsRoot"]) expect(reply).not.toHaveProperty(heavy)
       }

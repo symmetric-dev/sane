@@ -6,6 +6,7 @@ export type SaneAgentKind = "assistant" | "worker"
 export interface CcPermissions {
   allow: string[]
   ask: string[]
+  deny: string[]
 }
 
 /** Harness-neutral view of one SANE agent file. OC stays the source of body text. */
@@ -47,7 +48,7 @@ export function parseSaneAgent(content: string, agentName: string): SaneAgentSpe
   const shortId = kind === "assistant" ? agentName.slice("sane/assistant/".length) : agentName
   const description = typeof metadata.description === "string" ? metadata.description : ""
   const temperature = typeof metadata.temperature === "number" ? metadata.temperature : undefined
-  return { name: agentName, kind, shortId, description, ...(temperature === undefined ? {} : { temperature }), body, ccPermissions: deriveCcPermissions(metadata) }
+  return { name: agentName, kind, shortId, description, ...(temperature === undefined ? {} : { temperature }), body, ccPermissions: deriveCcPermissions(metadata, agentName) }
 }
 
 /**
@@ -55,18 +56,24 @@ export function parseSaneAgent(content: string, agentName: string): SaneAgentSpe
  * Mapping: read→Read, glob→Glob, grep→Grep, edit→Edit+Write, bash/shell→Bash,
  * ask/question→AskUserQuestion, skill→Skill, task/subagent entries→Agent(name).
  * `list` is covered by Glob; `external_directory` has no CC equivalent.
- * Deny rules are intentionally dropped: CC evaluates deny with precedence, so
- * a deny would also block the specifically named workers.
+ * Deny is emitted only for named skill and task/subagent entries:
+ * `name`→Skill(name), `prefix*`→Skill(prefix:*), worker→Agent(name).
+ * Wildcard and tool-level denies are dropped: CC evaluates deny with
+ * precedence, so a `"*"` deny would also block the specifically allowed ones.
  */
-function deriveCcPermissions(metadata: Record<string, unknown>): CcPermissions {
+function deriveCcPermissions(metadata: Record<string, unknown>, agentName: string): CcPermissions {
   const allow: string[] = []
   const ask: string[] = []
+  const deny: string[] = []
   const push = (list: string[], ...tools: string[]) => {
     for (const tool of tools) if (!allow.includes(tool) && !ask.includes(tool) && !list.includes(tool)) list.push(tool)
   }
   const applyDecision = (ccTools: string[], decision: unknown) => {
     if (decision === "allow") push(allow, ...ccTools)
     else if (decision === "ask") push(ask, ...ccTools)
+  }
+  const denyNamed = (rule: () => string, decision: unknown) => {
+    if (decision === "deny" && !deny.includes(rule())) deny.push(rule())
   }
   const TOOL_MAP: Record<string, string[]> = {
     ask: ["AskUserQuestion"],
@@ -84,6 +91,10 @@ function deriveCcPermissions(metadata: Record<string, unknown>): CcPermissions {
     for (const [tool, decision] of Object.entries(permission)) {
       if (tool === "task") continue
       if (tool === "list" || tool === "external_directory") continue
+      if (tool === "skill" && isMapping(decision)) {
+        for (const [pattern, skillDecision] of Object.entries(decision)) if (pattern !== "*") denyNamed(() => ccSkillRule(pattern, agentName), skillDecision)
+        continue
+      }
       const ccTools = TOOL_MAP[tool]
       if (ccTools) applyDecision(ccTools, decision)
     }
@@ -92,12 +103,14 @@ function deriveCcPermissions(metadata: Record<string, unknown>): CcPermissions {
       for (const [worker, decision] of Object.entries(task)) {
         if (worker === "*") continue
         applyDecision([`Agent(${ccAgentName(worker)})`], decision)
+        denyNamed(() => `Agent(${ccAgentName(worker)})`, decision)
       }
     }
   }
   const permissions = metadata.permissions
   if (Array.isArray(permissions)) {
     for (const rule of permissions) {
+      if (isMapping(rule) && rule.action === "skill" && typeof rule.resource === "string" && rule.resource !== "*") denyNamed(() => ccSkillRule(rule.resource as string, agentName), rule.effect)
       if (!isMapping(rule) || rule.resource !== "*" || rule.action === "subagent") continue
       const ccTools = typeof rule.action === "string" ? TOOL_MAP[rule.action] : undefined
       if (ccTools) applyDecision(ccTools, rule.effect)
@@ -105,19 +118,26 @@ function deriveCcPermissions(metadata: Record<string, unknown>): CcPermissions {
     for (const rule of permissions) {
       if (!isMapping(rule) || rule.action !== "subagent" || typeof rule.resource !== "string" || rule.resource === "*") continue
       applyDecision([`Agent(${ccAgentName(rule.resource)})`], rule.effect)
+      denyNamed(() => `Agent(${ccAgentName(rule.resource as string)})`, rule.effect)
     }
   }
-  return { allow, ask }
+  return { allow, ask, deny }
 }
 
-/**
- * Serialize the CC settings profile for one agent. Only allow/ask are
- * emitted; deny is never emitted (precedence trap, see above).
- */
+/** CC skill rule: exact name, or a trailing-`*` prefix as CC's `prefix:*` match. */
+function ccSkillRule(pattern: string, agentName: string): string {
+  const wildcard = pattern.indexOf("*")
+  if (wildcard === -1) return `Skill(${pattern})`
+  if (wildcard === pattern.length - 1 && wildcard > 0) return `Skill(${pattern.slice(0, -1)}:*)`
+  throw new Error(`Agent ${agentName} has unsupported skill permission pattern ${JSON.stringify(pattern)}: only exact names or a trailing * are translatable to CC.`)
+}
+
+/** Serialize the CC settings profile for one agent (empty lists omitted). */
 export function serializeCcSettings(spec: SaneAgentSpec): string {
   const permissions: Record<string, string[]> = {}
   if (spec.ccPermissions.allow.length) permissions.allow = spec.ccPermissions.allow
   if (spec.ccPermissions.ask.length) permissions.ask = spec.ccPermissions.ask
+  if (spec.ccPermissions.deny.length) permissions.deny = spec.ccPermissions.deny
   return `${JSON.stringify({ permissions }, null, 2)}\n`
 }
 

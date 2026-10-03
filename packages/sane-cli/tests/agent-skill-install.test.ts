@@ -34,7 +34,7 @@ describe("agent-skill-install", () => {
   test("real-source CC package loads agents, settings, and skills with source parity", async () => {
     try {
       await freshHome()
-      expect(AGENT_FILENAMES).toHaveLength(14)
+      expect(AGENT_FILENAMES).toHaveLength(15)
       for (const filename of AGENT_FILENAMES) {
         const agentName = filename.slice(0, -3)
         const ccName = ccAgentFilename(agentName)
@@ -60,7 +60,7 @@ describe("agent-skill-install", () => {
         const raw = await readFile(join(homeDirectory, ".claude", "sane-agent-settings", settingsName), "utf8")
         const parsed = JSON.parse(raw) as { permissions?: Record<string, string[]> }
         expect(parsed.permissions, settingsName).toBeDefined()
-        expect(parsed.permissions!.deny).toBeUndefined()
+        expect(parsed.permissions!.deny, settingsName).toEqual(filename.startsWith("sane/worker/") ? ["Skill(sane-assistant-:*)"] : undefined)
         for (const list of Object.values(parsed.permissions!)) {
           expect(Array.isArray(list)).toBe(true)
         }

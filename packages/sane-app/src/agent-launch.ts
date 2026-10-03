@@ -70,7 +70,7 @@ export async function claudeAgentSettings(claudeRoot: string, identity: StoredSa
   const installed = (settings as { permissions?: unknown }).permissions;
   if (!installed || typeof installed !== "object" || Array.isArray(installed)) throw new AgentLaunchConfigurationError(`Missing or invalid installed permissions for ${agent}; ${recovery}`);
   const { ask, ...permissions } = installed as Record<string, unknown>;
-  for (const rules of [permissions.allow, ask]) {
+  for (const rules of [permissions.allow, ask, permissions.deny]) {
     if (rules !== undefined && (!Array.isArray(rules) || !rules.every(rule => typeof rule === "string"))) throw new AgentLaunchConfigurationError(`Invalid installed permission rules for ${agent}; ${recovery}`);
   }
   if (Array.isArray(ask) && ask.length) permissions.allow = [...new Set([...((permissions.allow as string[] | undefined) ?? []), ...ask])];

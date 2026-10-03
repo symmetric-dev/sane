@@ -1141,7 +1141,7 @@ async function startOwned(options: Options, assetsDir: string, packageDir: strin
       session.lastRunId = run.runId; session.lastStatus = "running"; meta.runs.push(run); events.set(run.runId, []);
       const prompt = [
         `SANE handoff ${h.id}`, `Request ID: ${h.input.requestId}`, `Repository: ${domain.primaryCheckout}`, `Workstream: ${h.workstreamId}`,
-        `Artifacts: ${recipientContext.artifactsRoot}`, `Destination: ${h.input.to}`, `From: ${JSON.stringify(h.sender)}`,
+        `Workstream root: ${recipientContext.artifactsRoot}`, `Destination: ${h.input.to}`, `From: ${JSON.stringify(h.sender)}`,
         `Sender slots at request: ${originalSenderSlots.length ? JSON.stringify(originalSenderSlots) : "(none recorded)"}`,
         `Sender slots now: ${senderSlots.length ? JSON.stringify(senderSlots) : "(none)"}`,
         ...(h.input.kickoff ? ["Origin: kickoff; the sender created this workstream and is not a member."] : []),
