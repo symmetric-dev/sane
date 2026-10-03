@@ -1,0 +1,9 @@
+.chat-path-popover {
+  position: fixed; inset: auto; margin: 0; padding: 6px; box-sizing: border-box;
+  overflow: auto; border: 1px solid var(--border, #555); border-radius: 8px;
+  background: var(--card); color: var(--foreground);
+  box-shadow: 0 8px 28px var(--shadow-popover); font-size: 13px;
+}
+.chat-path-option { display: flex; gap: 8px; padding: 7px 8px; border-radius: 4px; cursor: pointer; overflow-wrap: anywhere; }
+.chat-path-option:hover, .chat-path-option[aria-selected="true"] { background: var(--accent); }
+.chat-path-popover p { margin: 6px 8px; font-size: 12px; color: var(--muted-foreground); }

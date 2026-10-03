@@ -1,20 +1,26 @@
 import { createContext, useContext, useEffect, useRef, useState, useSyncExternalStore, type ReactNode } from "react";
-import type { GitComparison, WorkspaceDiff, WorkspaceFile, WorkspaceList } from "../src/workspace-contract";
+import type { GitComparison, WorkspaceDiff, WorkspaceFile } from "../src/workspace-contract";
 import type { NavigationBookmark, WorktreeResolution as Workspace } from "../src/catalog-contract";
 import type { EditorView } from "@codemirror/view";
 import { EditorView as CodeMirrorView } from "@codemirror/view";
 import { searchSelection, type WorkspaceLocation } from "./workspace-location";
 import { workspaceClient, WorkspaceError } from "./workspace-client";
 import { catalog, worktreeScope } from "./catalog";
+import { acquireWorktreeDirectories, type DirectoryResult, type DirectoryRequest, type WorktreeDirectories } from "./workspace-directory-cache";
+export type { DirectoryResult } from "./workspace-directory-cache";
 import { fencePath, notifyWorkspace, openBuffer, pathFence, refreshBuffer, renameBuffer, requestFence, rootState, subscribeWorkspace, workspaceEpoch, workspaceFailure, workspaceSnapshot, type Buffer, type TreePresentation } from "./workspace-store";
 
 export type ActiveView = NavigationBookmark["view"];
 export type WorkspaceActivation = { view: "code"; path: string; location?: WorkspaceLocation; source?: "files" | "search" } | { view: "git"; path: string; comparison: GitComparison };
-type DirectoryResult = { listing?: WorkspaceList; error?: string };
-type DirectoryRequest = { result?: DirectoryResult; promise?: Promise<DirectoryResult> };
+const DIRECTORY_SWEEP_MS = 5_000;
+const WORKSPACE_SOURCE_UNAVAILABLE = "Workspace source changed or is unavailable. Retry workspace resolution or choose an available worktree; unsaved buffers remain in memory.";
+const WORKSPACE_AUTH_EXPIRED = "Sign-in expired. Reconnect or sign in again; unsaved buffers remain in memory.";
 type Scope = {
   id: string; workspace: Workspace; auth: number; generation: number; bindingRevision?: string;
-  directories: Map<string, DirectoryRequest>; invalidators: Set<(path: string) => void>;
+  reader: WorktreeDirectories;
+  // Accept existing synchronous subscribers as well as awaited tree refreshes.
+  directories: Map<string, DirectoryRequest>; invalidators: Set<(path: string) => unknown>;
+  directoryRevalidators: Set<() => Promise<void>>;
 };
 
 function useController(conversationId: string | null, view: ActiveView, navigate: (view: ActiveView) => void, bindingRevision?: string) {
@@ -35,33 +41,57 @@ function useController(conversationId: string | null, view: ActiveView, navigate
   // Render-time identity prevents previous-conversation callbacks from landing before effect cleanup.
   const identity = useRef({ conversationId, view, bindingRevision });
   identity.current = { conversationId, view, bindingRevision };
-  const scope = resolved?.id === conversationId && resolved.bindingRevision === bindingRevision && resolved.auth === workspaceEpoch() ? resolved : undefined;
+  const resolvedSelection = resolved?.id === conversationId && resolved.bindingRevision === bindingRevision ? resolved : undefined;
+  const scope = resolvedSelection?.auth === workspaceEpoch() && resolvedSelection.reader.current() ? resolvedSelection : undefined;
+  const revoked = !!resolvedSelection && !scope;
+  const scopeError = revoked ? resolvedSelection.auth !== workspaceEpoch() ? WORKSPACE_AUTH_EXPIRED : WORKSPACE_SOURCE_UNAVAILABLE : "";
   const latestScope = useRef<Scope | undefined>(scope); latestScope.current = scope;
   const workspace = scope?.workspace;
   const root = workspace ? rootState(workspace) : undefined;
   const selected = root?.selected ?? "", comparisonKind = root?.comparison ?? "unstaged";
   const buffer = root?.buffers.get(selected);
   const selectionKey = scope ? JSON.stringify([scope.generation, workspace!.workspaceId, view, selected, comparisonKind, openAttempt]) : "";
-  const currentScope = (candidate: Scope) => candidate.id === identity.current.conversationId && candidate.bindingRevision === identity.current.bindingRevision && candidate.generation === generation.current && candidate.auth === workspaceEpoch();
+  const currentScope = (candidate: Scope) => candidate.id === identity.current.conversationId && candidate.bindingRevision === identity.current.bindingRevision && candidate.generation === generation.current && candidate.auth === workspaceEpoch() && candidate.reader.current();
 
   useEffect(() => {
     const request = ++generation.current, auth = workspaceEpoch();
     let active = true;
-    const current = () => active && request === generation.current && auth === workspaceEpoch() && identity.current.conversationId === conversationId && identity.current.bindingRevision === bindingRevision;
+    const owns = () => active && request === generation.current && identity.current.conversationId === conversationId && identity.current.bindingRevision === bindingRevision;
+    const current = () => owns() && auth === workspaceEpoch();
     setResolved(null); setError(""); setDiff(null); setLocalCompare(null); setOpening(null); pendingLocation.current = null; setLocationNotice("");
     setResolving(!!conversationId);
-    if (conversationId) void workspaceClient.resolve(conversationId).then(workspace => {
+    const lease = conversationId ? acquireWorktreeDirectories(conversationId, bindingRevision) : undefined;
+    if (lease) void lease.ready.then(reader => {
+      const workspace = reader.workspace;
       if (current()) {
+        if (!reader.current()) throw new Error(WORKSPACE_SOURCE_UNAVAILABLE);
         const root = rootState(workspace), bookmark = catalog.state.navigation;
         if (bookmark.filePath !== null) root.selected = bookmark.filePath;
         if (bookmark.comparison !== null) root.comparison = bookmark.comparison;
-        setResolved({ id: conversationId, workspace, auth, generation: request, bindingRevision, directories: new Map(), invalidators: new Set() });
+        setResolved({ id: conversationId!, workspace, auth, generation: request, bindingRevision, reader, directories: reader.directories, invalidators: new Set(), directoryRevalidators: new Set() });
       }
     }).catch(error => {
-      if (current()) { setResolving(false); setError(workspaceFailure(error)); }
-    }).finally(() => { if (current()) setResolving(false); });
-    return () => { active = false; generation.current++; selectionRequest.current++; };
+      // The shared service handles 401 before rejecting. Still settle this
+      // consumer's loading/error state, but never publish stale resolved metadata.
+      if (owns()) { setResolving(false); setError(workspaceFailure(error)); }
+    }).finally(() => { if (owns()) setResolving(false); });
+    return () => { active = false; lease?.release(); generation.current++; selectionRequest.current++; };
   }, [conversationId, bindingRevision, resolveAttempt]);
+
+  useEffect(() => {
+    if (!resolvedSelection) return;
+    if (!revoked) {
+      setError(previous => previous === WORKSPACE_SOURCE_UNAVAILABLE ? "" : previous);
+      return;
+    }
+    // Retire presentation/read continuations, not the original mutation owner.
+    // Its root and lease remain available for already committed disk results to
+    // reconcile buffers and dirty original/current directory maps independently.
+    selectionRequest.current++; pendingLocation.current = null;
+    setResolving(false); setOpening(null); setDiffLoading(null); setDiff(null);
+    setLocalCompare(null); setCodeActivation(undefined); setLocationNotice("");
+    setError(scopeError);
+  }, [resolvedSelection, revoked, scopeError]);
 
   useEffect(() => {
     if (view !== "code" || !scope || !selected || buffer) return;
@@ -111,6 +141,24 @@ function useController(conversationId: string | null, view: ActiveView, navigate
     return () => { active = false; clearInterval(timer); window.removeEventListener("focus", refresh); document.removeEventListener("visibilitychange", refresh); };
   }, [scope, view, selected, comparisonKind, openAttempt]);
 
+  // One directory freshness owner for both desktop/mobile trees. HT retains its
+  // own children cache, so the subscribers reconcile only loaded, reachable rows;
+  // expiring the HTTP cache alone would never cause HT to call its loader again.
+  useEffect(() => {
+    if (!scope || view !== "code") return;
+    let active = true, busy = false;
+    const refresh = async () => {
+      if (!active || busy || document.hidden || !currentScope(scope)) return;
+      busy = true;
+      try { await runDirectoryCallbacks(scope, [...scope.directoryRevalidators]); }
+      finally { busy = false; }
+    };
+    void refresh();
+    const timer = setInterval(() => void refresh(), DIRECTORY_SWEEP_MS);
+    window.addEventListener("focus", refresh); document.addEventListener("visibilitychange", refresh);
+    return () => { active = false; clearInterval(timer); window.removeEventListener("focus", refresh); document.removeEventListener("visibilitychange", refresh); };
+  }, [scope, view]);
+
   // Mount notification from buffer.attach covers artifact previews, same-file navigation,
   // and file loads that finish before the editor exists. Latest activation wins.
   useEffect(() => {
@@ -152,38 +200,37 @@ function useController(conversationId: string | null, view: ActiveView, navigate
 
   async function listDirectory(path: string): Promise<DirectoryResult> {
     if (!scope || !currentScope(scope)) return { error: "Workspace changed. Reopen its files." };
-    const cached = scope.directories.get(path);
-    if (cached?.result) return cached.result;
-    if (cached?.promise) return cached.promise;
-    const request: DirectoryRequest = {};
-    scope.directories.set(path, request);
-    const current = () => currentScope(scope) && scope.directories.get(path) === request;
-    request.promise = (async () => {
-      try {
-        const listing = await workspaceClient.list(scope.id, scope.workspace.workspaceId, path);
-        if (!current()) return {};
-        request.result = { listing };
-        return request.result;
-      } catch (error) {
-        if (!current()) return {};
-        const result = { error: workspaceFailure(error) };
-        if (current()) {
-          request.result = result;
-          if (error instanceof WorkspaceError && error.code === "workspace-changed") setError(result.error);
-        }
-        return result; // Never reject into Headless Tree: rejected loaders leave loading state stuck.
-      } finally { if (current()) request.promise = undefined; }
-    })();
-    return request.promise;
+    const result = await scope.reader.listDirectory(path);
+    if (!currentScope(scope)) return { error: "Workspace changed. Reopen its files." };
+    return result;
   }
-  function retryDirectory(path: string) {
+  function directoryNeedsRefresh(path: string, result: DirectoryResult | undefined) {
+    return !!scope && currentScope(scope) && scope.reader.directoryNeedsRefresh(path, result);
+  }
+  async function runDirectoryCallbacks(target: Scope, callbacks: (() => unknown)[]) {
+    // Wait for every tree, even if one fails; don't let a rejected HT refresh
+    // turn a committed disk mutation into a failed file operation.
+    const results = await Promise.allSettled(callbacks.map(callback => Promise.resolve().then(callback)));
+    if (currentScope(target) && results.some(result => result.status === "rejected")) {
+      setError("Could not refresh workspace files. Use Refresh to try again.");
+    }
+  }
+  async function invalidateDirectories(target: Scope, paths: Iterable<string>, mutation = false, dirty = true) {
+    const callbacks: (() => unknown)[] = [];
+    const values = [...paths];
+    if (dirty) target.reader.invalidate(values, mutation);
+    for (const path of values) {
+      for (const invalidate of target.invalidators) callbacks.push(() => invalidate(path));
+    }
+    await runDirectoryCallbacks(target, callbacks);
+  }
+  async function retryDirectory(path: string) {
     if (!scope || !currentScope(scope)) return;
-    scope.directories.delete(path);
-    scope.invalidators.forEach(invalidate => invalidate(path));
+    await invalidateDirectories(scope, [path]);
   }
-  function refreshDirectories() {
-    if (!scope) return;
-    for (const path of [...scope.directories.keys()]) retryDirectory(path);
+  async function refreshDirectories() {
+    if (!scope || !currentScope(scope)) return;
+    await invalidateDirectories(scope, scope.directories.keys());
   }
   function updateTree(mode: "code" | "git", update: Partial<TreePresentation>) {
     if (!scope || !root || !currentScope(scope)) return;
@@ -191,7 +238,7 @@ function useController(conversationId: string | null, view: ActiveView, navigate
     notifyWorkspace();
   }
   async function compareDisk(reload = false) {
-    if (!scope || !root || !buffer || buffer.checking || buffer.saving) return;
+    if (!scope || !root || !currentScope(scope) || !buffer || buffer.checking || buffer.saving) return;
     const request = selectionRequest.current, path = selected;
     const current = () => currentScope(scope) && request === selectionRequest.current && root.selected === path && identity.current.view === "code";
     await refreshBuffer(scope.id, scope.workspace, buffer, reload, current);
@@ -236,13 +283,22 @@ function useController(conversationId: string | null, view: ActiveView, navigate
       return active && navigation.workspaceId && navigation.worktreeId && active.id === worktreeScope(navigation.workspaceId, navigation.worktreeId)
         && currentScope(active) && rootState(active.workspace) === root ? active : undefined;
     };
-    const invalidateDirectories = (directories: Set<string>) => {
+    const invalidateMutationDirectories = (directories: Set<string>) => {
       // Returning to this worktree may have installed fresh tree/cache owners
       // while the request still holds its initiating scope.
       const scopes = new Set([scope, visibleOwner()].filter((value): value is Scope => !!value));
-      for (const target of scopes) for (const directory of directories) {
-        target.directories.delete(directory);
-        target.invalidators.forEach(invalidate => invalidate(directory));
+      const dirtied = new Set<Map<string, DirectoryRequest>>();
+      for (const target of scopes) {
+        // invalidateDirectories dirties records synchronously before its first
+        // await. Its task owns/awaits tree reconciliation, independently of the
+        // committed mutation: slow listings must not hold file reservations,
+        // sourceBuffer.saving, dialog completion, or navigation hostage.
+        const dirty = !dirtied.has(target.directories); dirtied.add(target.directories);
+        void invalidateDirectories(target, directories, true, dirty).catch(() => {
+          // Expected callback failures are handled inside runDirectoryCallbacks;
+          // retain a fenced fallback for unexpected task failures as well.
+          if (currentScope(target)) setError("Could not refresh workspace files. Use Refresh to try again.");
+        });
       }
     };
     const reconcileBookmark = (destination: string) => {
@@ -278,7 +334,7 @@ function useController(conversationId: string | null, view: ActiveView, navigate
       if (!owned()) return false;
       for (const value of paths) fencePath(root, value);
       root.git = undefined; root.gitVersion++;
-      invalidateDirectories(new Set(operation === "delete" ? [parent(source)] : operation === "create" ? [parent(path)] : [parent(source), parent(path)]));
+      invalidateMutationDirectories(new Set(operation === "delete" ? [parent(source)] : operation === "create" ? [parent(path)] : [parent(source), parent(path)]));
       const selectedSource = root.selected === source;
       const focusedComparison = (["staged", "unstaged", "untracked"] as const).find(comparison => root.gitTree.focusedItem === `file:${comparison}:${source}`);
       if (operation === "delete") {
@@ -312,7 +368,7 @@ function useController(conversationId: string | null, view: ActiveView, navigate
         // pointing at an old basename that another process could recreate.
         for (const value of paths) fencePath(root, value);
         root.git = undefined; root.gitVersion++;
-        invalidateDirectories(new Set([parent(source)]));
+        invalidateMutationDirectories(new Set([parent(source)]));
         if (sourceBuffer) {
           renameBuffer(root, sourceBuffer, path, { ...sourceBuffer.file, path });
           sourceBuffer.error = failure;
@@ -337,12 +393,12 @@ function useController(conversationId: string | null, view: ActiveView, navigate
       }
     }
   }
-  return { conversationId, view, scope, workspace, root, buffer, selected, error: error || (resolved && resolved.auth !== workspaceEpoch() ? "Sign-in expired. Reconnect or sign in again; unsaved buffers remain in memory." : ""), resolving, diffEditor,
-    opening: opening === selectionKey, diffLoading: diffLoading === selectionKey,
-    comparison: diff?.key === selectionKey ? diff.value : null,
-    localCompare: localCompare === selectionKey, closeCompare: () => setLocalCompare(null),
+  return { conversationId, view, scope, workspace, root, buffer, selected, error: scopeError || error, resolving: !revoked && resolving, diffEditor,
+    opening: !!scope && opening === selectionKey, diffLoading: !!scope && diffLoading === selectionKey,
+    comparison: scope && diff?.key === selectionKey ? diff.value : null,
+    localCompare: !!scope && localCompare === selectionKey, closeCompare: () => setLocalCompare(null),
     activate, navigateView, codeActivation: codeActivation?.scope === scope ? codeActivation : undefined,
-    locationNotice, listDirectory, retryDirectory, refreshDirectories, compareDisk, updateTree, prepareFile, mutateFile,
+    locationNotice: scope ? locationNotice : "", listDirectory, directoryNeedsRefresh, retryDirectory, refreshDirectories, compareDisk, updateTree, prepareFile, mutateFile,
     retryResolve: () => setResolveAttempt(value => value + 1), retrySelection: () => setOpenAttempt(value => value + 1),
   };
 }

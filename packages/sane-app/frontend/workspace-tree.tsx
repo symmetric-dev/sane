@@ -4,7 +4,7 @@ import { asyncDataLoaderFeature, hotkeysCoreFeature, syncDataLoaderFeature, type
 import { useTree } from "@headless-tree/react";
 import type { GitComparison, GitEntry, WorkspaceEntry } from "../src/workspace-contract";
 import { dirty } from "./workspace-store";
-import { useWorkspace } from "./workspace-controller";
+import { useWorkspace, type DirectoryResult } from "./workspace-controller";
 import { FileOperationDialog } from "./workspace-file-actions";
 import { WorkspaceSearchFiles, useWorkspaceSearchContext } from "./workspace-search";
 import { useWorkspaceFileOperations, workspaceFileScopeKey } from "./workspace-file-shortcuts";
@@ -20,6 +20,11 @@ const groups = ["staged", "unstaged", "untracked"] as const;
 const isFolder = (node: TreeNode) => node.kind === "directory" || node.kind === "group";
 const loadingNode: TreeNode = { kind: "notice", path: "", name: "Loading…" };
 const apply = <T,>(value: SetStateAction<T>, previous: T) => typeof value === "function" ? (value as (previous: T) => T)(previous) : value;
+type LoadedDirectory = {
+  loaded: boolean; result?: DirectoryResult; nextResult?: DirectoryResult;
+  loading?: { promise: Promise<void>; resolve: () => void };
+  refresh?: Promise<void>;
+};
 
 function usePresentation(mode: "code" | "git") {
   const controller = useWorkspace(), presentation = controller.root![mode === "code" ? "codeTree" : "gitTree"];
@@ -68,6 +73,9 @@ function TreeRows({ tree, mode }: { tree: TreeInstance<TreeNode>; mode: "code" |
 function CodeTree() {
   const controller = useWorkspace(), presentation = usePresentation("code");
   const [refreshError, setRefreshError] = useState("");
+  const directories = useRef(new Map<string, LoadedDirectory>());
+  const owner = useRef(controller); owner.current = controller;
+  const active = useRef(true);
   const tree = useTree<TreeNode>({
     rootItemId: codeId("directory", ""), ...presentation,
     getItemName: item => item.getItemData().name,
@@ -78,13 +86,33 @@ function CodeTree() {
       if (node.kind === "file") controller.activate({ view: "code", path: node.path });
       if (node.kind === "error") controller.retryDirectory(node.path);
     },
+    onLoadedChildren: id => {
+      const directory = directories.current.get(id)!;
+      directory.loaded = true; directory.result = directory.nextResult;
+      // This hook runs after HT writes the cache, but before its synchronous
+      // rebuild/loading cleanup. Promise continuations run after that cleanup.
+      directory.loading?.resolve(); directory.loading = undefined;
+    },
     dataLoader: {
       getItem: (id): TreeNode => ({ kind: "directory", path: id.slice(id.indexOf(":") + 1), name: "Workspace" }),
       getChildrenWithData: async id => {
+        let directory = directories.current.get(id);
+        if (!directory) {
+          directory = { loaded: false };
+          directories.current.set(id, directory);
+        }
+        // Track actual initial AND optimistic loads. HT's loadChildrenIds()
+        // returns cached ids immediately during optimistic refresh, so it is
+        // not an adequate completion fence. Resolve only in onLoadedChildren.
+        let resolve!: () => void;
+        const promise = new Promise<void>(done => { resolve = done; });
+        directory.loading = { promise, resolve };
         const path = id.slice(id.indexOf(":") + 1);
-        const { listing, error } = await controller.listDirectory(path);
+        const result = await controller.listDirectory(path);
+        directory.nextResult = result;
+        const { listing, error } = result;
         if (error) return [{ id: codeId("error", path), data: { kind: "error" as const, path, name: "Could not load folder · Retry", detail: error } }];
-        if (!listing) return [];
+        if (!listing) return [{ id: codeId("error", path), data: { kind: "error" as const, path, name: "Could not load folder · Retry", detail: "Workspace changed. Reopen its files." } }];
         const nodes: { id: string; data: TreeNode }[] = listing.entries.map(entry => ({ id: codeId(entry.kind, entry.path), data: { ...entry, detail: entry.kind === "symlink" ? "Symlink · unavailable" : entry.kind === "other" ? "Unsupported" : undefined } }));
         if (listing.truncated) nodes.push({ id: codeId("notice", path), data: { kind: "notice", path, name: "Folder listing truncated", detail: "Open a subfolder to narrow the list." } });
         else if (!nodes.length) nodes.push({ id: codeId("notice", path), data: { kind: "notice", path, name: "Empty folder" } });
@@ -93,19 +121,56 @@ function CodeTree() {
     },
     features: [asyncDataLoaderFeature, hotkeysCoreFeature],
   });
+
+  function reachable(id: string) {
+    return id === codeId("directory", "") || tree.getItems().some(item => item.getId() === id && item.isExpanded());
+  }
+  function refreshDirectory(id: string): Promise<void> {
+    const directory = directories.current.get(id);
+    // Never invalidation-load unseen directories. Collapsed/hidden descendants
+    // retain their children and reconcile on reachable expansion instead.
+    if (!directory || !reachable(id) || (!directory.loaded && !directory.loading)) return Promise.resolve();
+    if (directory.refresh) return directory.refresh;
+    const path = id.slice(id.indexOf(":") + 1);
+    if (!directory.loading && !owner.current.directoryNeedsRefresh(path, directory.result)) return Promise.resolve();
+    // Assign ownership before starting, including the no-work completion path.
+    directory.refresh = Promise.resolve().then(async () => {
+      try {
+        if (directory.loading) await directory.loading.promise;
+        while (active.current && reachable(id) && owner.current.directoryNeedsRefresh(path, directory.result)) {
+          setRefreshError("");
+          // Retain cached rows, focus, and expansion. One owned optimistic
+          // refresh per directory; shared controller records coalesce HTTP.
+          await tree.getItemInstance(id).invalidateChildrenIds(true);
+          // Recheck the latest revision: another mutation may land after the
+          // loader resolved but before HT applied its children. No duplicate
+          // mapping pass is needed when the initial read already caught up.
+        }
+      } catch (error) {
+        if (active.current) setRefreshError("Could not refresh this folder. Use Refresh to try again.");
+        throw error;
+      } finally { directory.refresh = undefined; }
+    });
+    return directory.refresh;
+  }
+  async function revalidateVisible() {
+    if (document.hidden) return;
+    const ids = [codeId("directory", ""), ...tree.getItems().filter(item => item.isExpanded() && item.getId().startsWith("directory:")).map(item => item.getId())];
+    const results = await Promise.allSettled(ids.map(id => refreshDirectory(id)));
+    const failure = results.find(result => result.status === "rejected");
+    if (failure?.status === "rejected") throw failure.reason;
+  }
   useEffect(() => {
     const scope = controller.scope!;
-    let active = true;
-    const invalidate = (path: string) => {
-      const id = codeId("directory", path);
-      setRefreshError("");
-      // Let any in-flight loader settle before invalidating; HT coalesces invalidation while loading.
-      void tree.loadChildrenIds(id).then(() => { if (active) tree.getItemInstance(id).invalidateChildrenIds(); })
-        .catch(() => { if (active) setRefreshError("Could not refresh this folder. Use Refresh to try again."); });
-    };
+    active.current = true;
+    const invalidate = (path: string) => refreshDirectory(codeId("directory", path));
     scope.invalidators.add(invalidate);
-    return () => { active = false; scope.invalidators.delete(invalidate); };
+    scope.directoryRevalidators.add(revalidateVisible);
+    return () => { active.current = false; scope.invalidators.delete(invalidate); scope.directoryRevalidators.delete(revalidateVisible); };
   }, [controller.scope, tree]);
+  // Also covers entering Files, expansion and parent hydration. It does not
+  // notify shared workspace/editor state and starts work only for stale caches.
+  useEffect(() => { void revalidateVisible().catch(() => {}); });
   return <>{refreshError && <p className="workspace-tree-status workspace-error" role="alert">{refreshError}</p>}{tree.getState().loadingItemChildrens.includes(codeId("directory", "")) && <p className="workspace-tree-status" role="status">Loading files…</p>}<TreeRows tree={tree} mode="code" /></>;
 }
 

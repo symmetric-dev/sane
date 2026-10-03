@@ -267,7 +267,10 @@ for (const operation of ["rename", "delete"] as const) test(`pending ${operation
       await act(async () => { catalog.navigate({ worktreeId: "tree", filePath: "open.md", view: returningView }); });
       const returnedScope = f.controller().scope!;
       expect(returnedScope).not.toBe(oldScope); expect(f.controller().root).toBe(root);
-      returnedScope.directories.set("", { result: { listing: { workspaceId: "binding", path: "", entries: [], truncated: false } } });
+      const result = { listing: { workspaceId: "binding", path: "", entries: [], truncated: false } };
+      const record = { result, freshness: { revision: 0, resultRevision: 0, settledAt: Date.now() } };
+      returnedScope.directories.set("", record);
+      expect(f.controller().directoryNeedsRefresh("", record.result)).toBe(false);
       returnedScope.invalidators.add(path => newInvalidations.push(path));
       const destination = operation === "rename" ? "renamed.md" : "";
       if (operation === "rename") f.files.set(destination, f.files.get("open.md")!);
@@ -279,7 +282,10 @@ for (const operation of ["rename", "delete"] as const) test(`pending ${operation
         expect(await mutation).toBe(false); // The initiating scope is stale, although this root is visible again.
       });
       expect(oldInvalidations).toEqual([""]); expect(newInvalidations).toEqual([""]);
-      expect(returnedScope.directories.has("")).toBe(false);
+      expect(returnedScope.directories.get("")).toBe(record);
+      expect(record.result).toBe(result);
+      expect(record.freshness.revision).toBe(1); expect(record.freshness.resultRevision).toBe(0);
+      expect(f.controller().directoryNeedsRefresh("", record.result)).toBe(true);
       expect(f.controller().scope).toBe(returnedScope); expect(f.controller().selected).toBe(destination);
       expect(catalog.state.navigation).toMatchObject({ worktreeId: "tree", filePath: destination, view: returningView });
       expect(f.controller().view).toBe(returningView); expect(f.navigations).toEqual([]);
