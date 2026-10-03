@@ -15,6 +15,7 @@ import { compactCommand, compactionsFor } from "./compaction";
 import { ConversationCache, cloneRunForConsume, conversationKey } from "./conversation-cache";
 import { canonicalCount, equalValue, mergePage, pageMessages, pagedUsage, refreshPages, sameRunMetadata, TranscriptCoverageError, type PagedTranscript, type PageRequest } from "./transcript-pages";
 import type { TranscriptMetadataItem, TranscriptPage } from "../src/transcript-contract";
+import { capabilitiesFor, getHarnessDescriptor, type HarnessCapabilities } from "../shared/conversation/harness-capabilities";
 
 /** Composer draft. New conversations pick `profileId` ("" = profiles.defaultId);
  * selected Base conversations may stage `upgradeId` (assistant profile, same harness). */
@@ -247,7 +248,8 @@ export class ChatStore {
   draftProfile = (): AgentProfile => { const picked = this.profile(this.draft("").profileId); return picked && !picked.hidden && picked.kind !== "worker" ? picked : this.defaultProfile(); };
   conversationProfileId = (id: string): string => {
     const snapshot = this.conversationSnapshot(id);
-    return snapshot.profileId ?? legacyProfileId(snapshot.harness ?? "claude-code", validatedAgentSnapshot(snapshot)?.agent);
+    const harness = snapshot.harness ?? "claude-code";
+    return snapshot.profileId ?? (getHarnessDescriptor(harness) ? legacyProfileId(harness, validatedAgentSnapshot(snapshot)?.agent) : "");
   };
   /** Listing-only lookup: never guess archival identity from migrated configuration. */
   profileFor = (c: Conversation): DisplayProfile | undefined => displayProfile(this.profileSet(), c);
@@ -282,10 +284,14 @@ export class ChatStore {
     const navigation = catalog.state.navigation;
     return this.draft().cwd.trim() || catalog.state.workspaces.find(w => w.workspaceId === navigation.workspaceId)?.worktrees.find(w => w.worktreeId === navigation.worktreeId)?.root || "";
   };
-  capabilities = () => this.state.config?.harnesses?.find(h => h.id === this.harness())?.capabilities;
+  capabilities = (harness: unknown = this.harness()): Partial<HarnessCapabilities> => capabilitiesFor(harness, this.state.config?.harnesses?.find(h => h.id === harness)?.capabilities);
+  // Older callers override only one advertised flag (notably cancelRun).
+  // Keep omitted flags on their known static defaults; explicit false still narrows.
+  private supportedCapabilities = (harness: unknown = this.harness()) => capabilitiesFor(harness, this.capabilities(harness));
   compactUnavailable = () => {
     const conversation = this.state.conversations.find(c => c.id === this.state.selected);
     if (!conversation) return "Choose an existing conversation to compact.";
+    if (!this.supportedCapabilities(conversation.harness).compaction) return "Context compaction is unavailable for this harness.";
     if (!this.client.compact || !this.client.compactState) return "Context compaction is unavailable on this bridge.";
     if (conversation.worker || workerReference(conversation.id) || this.conversationKind() === "worker") return "Managed worker conversations cannot be compacted here.";
     if (conversation.replacedBy) return "This conversation has been replaced and is read-only.";
@@ -308,7 +314,8 @@ export class ChatStore {
   };
   openCompact = (instructions?: string) => {
     if (!this.state.selected) { this.update({ submissionError: "Choose an existing conversation before using /compact." }); return; }
-    if (instructions && this.harness() !== "claude-code") { this.update({ submissionError: "OpenCode /compact does not support instructions. Your draft is unchanged." }); return; }
+    if (!this.supportedCapabilities().compaction) { this.update({ submissionError: "Context compaction is unavailable for this harness. Your draft is unchanged." }); return; }
+    if (instructions && !this.supportedCapabilities().compactionInstructions) { this.update({ submissionError: "OpenCode /compact does not support instructions. Your draft is unchanged." }); return; }
     this.update({ compactDialog: this.state.selected, compactError: "", ...(instructions !== undefined ? { compactInstructions: { ...this.state.compactInstructions, [this.state.selected]: instructions } } : {}) });
     void this.refreshCompact();
   };
@@ -323,7 +330,7 @@ export class ChatStore {
   }
   refreshCompact = async () => {
     const id = this.state.selected, selection = this.selectionEpoch, auth = this.authEpoch, read = ++this.compactReadSerial;
-    if (!id || !this.client.compactState || this.compactInFlight.has(id)) return false;
+    if (!id || !this.supportedCapabilities().compaction || !this.client.compactState || this.compactInFlight.has(id)) return false;
     try {
       const state = await this.client.compactState(id);
       if (selection !== this.selectionEpoch || auth !== this.authEpoch || read !== this.compactReadSerial || this.compactInFlight.has(id)) return false;
@@ -371,9 +378,9 @@ export class ChatStore {
     const unavailable = this.compactUnavailable();
     if (unavailable) { this.update({ compactError: unavailable }); return; }
     const instructions = this.state.compactInstructions?.[id]?.trim();
-    if (instructions && !this.state.compactState?.eligibility.supportsInstructions) { this.update({ compactError: "This harness does not support compaction instructions." }); return; }
+    if (instructions && (!this.supportedCapabilities().compactionInstructions || !this.state.compactState?.eligibility.supportsInstructions)) { this.update({ compactError: "This harness does not support compaction instructions." }); return; }
     const resuming = old?.phase === "unconfirmed";
-    if (this.state.compactState?.eligibility.requiresNativeStopped && !nativeStopped && !(resuming && old?.payload.nativeStopped)) { this.update({ compactError: "Confirm external assistant execution is stopped before compacting." }); return; }
+    if ((this.state.compactState?.eligibility.requiresNativeStopped || conversation?.attachment && this.supportedCapabilities().attachedSendRequiresNativeStopped) && !nativeStopped && !(resuming && old?.payload.nativeStopped)) { this.update({ compactError: "Confirm external assistant execution is stopped before compacting." }); return; }
     const payload = old?.phase === "unconfirmed" ? old.payload : { requestId: crypto.randomUUID(), ...(instructions ? { instructions } : {}), ...(nativeStopped ? { nativeStopped: true } : {}) };
     const pending: PendingCompact = { payload, phase: "sending" };
     this.compactInFlight.add(id);
@@ -402,7 +409,8 @@ export class ChatStore {
       if (auth === this.authEpoch && sameIdentity() && this.state.selected === id) this.reconnect();
     }
   };
-  loadModels = async () => {
+  loadModels = async (harness: unknown = this.harness()) => {
+    if (!this.supportedCapabilities(harness).listModels || !this.client.models) return;
     const cwd = this.workspace();
     if (this.state.modelsLoading && this.state.modelsCwd === cwd) return;
     const auth = this.authEpoch, request = ++this.modelRequest;
@@ -420,7 +428,7 @@ export class ChatStore {
   /** OpenCode gate: sending waits for the live per-cwd catalog. An empty profile
    * model means the OC native default and is allowed. */
   modelUnavailable = () => {
-    if (this.harness() !== "opencode") return false;
+    if (!this.supportedCapabilities().catalogRequiredForSend) return false;
     return !this.state.modelsLoaded || this.state.modelsCwd !== this.workspace() || Boolean(this.state.modelsError);
   };
   /** Model/variant the next OC send resolves (profile first, then saved session values). */
@@ -432,7 +440,7 @@ export class ChatStore {
   };
   /** Warn-not-fail: a model absent from the live catalog still sends for native resolution. */
   missingModel = (): string => {
-    if (this.harness() !== "opencode" || this.modelUnavailable()) return "";
+    if (getHarnessDescriptor(this.harness())?.policies.modelInput !== "live-catalog" || this.modelUnavailable()) return "";
     const { model, effort } = this.effectiveModel();
     if (!model) return "";
     const entry = this.state.models.find(m => m.id === model);
@@ -477,7 +485,8 @@ export class ChatStore {
   reorderProfiles = (order: string[]) => this.profileAction(c => c.orderAgents?.({ order })).then(r => !!r);
   clearProfileError = () => this.update({ profileError: "" });
   reply = async (interactionId: string, reply: InteractionReply) => {
-    if (this.state.actionBusy || !this.state.selected) return;
+    const capabilities = this.supportedCapabilities();
+    if (this.state.actionBusy || !this.state.selected || !this.client.reply || !(reply.type === "permission" ? capabilities.permissionReplies : reply.type === "question" ? capabilities.questionReplies : false)) return;
     const id = this.state.selected, current = this.beginAction();
     try {
       await this.client.reply(id, interactionId, reply);
@@ -487,7 +496,7 @@ export class ChatStore {
     } finally { if (current()) this.update({ actionBusy: false }); }
   };
   cancel = async () => {
-    if (this.state.actionBusy || !this.state.selected || !this.capabilities()?.cancelRun) return;
+    if (this.state.actionBusy || !this.state.selected || !this.supportedCapabilities().cancelRun || !this.client.cancel) return;
     const id = this.state.selected, current = this.beginAction();
     try {
       const result = await this.client.cancel(id);
@@ -497,7 +506,7 @@ export class ChatStore {
     } finally { if (current()) this.update({ actionBusy: false }); }
   };
   reconcile = async () => {
-    if (this.state.actionBusy || this.compactBlocked() || !this.state.selected || !this.client.reconcile) return;
+    if (this.state.actionBusy || this.compactBlocked() || !this.state.selected || !this.supportedCapabilities().nativeHistoryRefresh || !this.client.reconcile) return;
     const id = this.state.selected, current = this.beginAction();
     try {
       const { history } = await this.client.reconcile(id);
@@ -724,7 +733,7 @@ export class ChatStore {
       }
     };
     const eligibility = async () => {
-      if (!this.client.compactState || awaitingCompact) return;
+      if (!this.supportedCapabilities(conversation?.harness).compaction || !this.client.compactState || awaitingCompact) return;
       const read = ++this.compactReadSerial;
       try {
         const compactState = await this.client.compactState(id, signal);
@@ -749,7 +758,7 @@ export class ChatStore {
     this.update({ connected: ready, loading: awaitingCompact, connectionError: ready ? "" : this.state.metadataError ?? "", ...(ready ? {} : { availability: { canSend: false } }) });
     const branchDraft = conversation?.branchDraft;
     if (branchDraft && !this.state.runs.some(run => run.operation !== "compact") && !this.state.drafts[this.draftKey(id)]) this.setDraft({ text: branchDraft }, id);
-    if (conversation?.harness === "opencode" && ready) {
+    if (this.supportedCapabilities(conversation?.harness).listInteractions && this.client.interactions && ready) {
       try { const interactions = await this.client.interactions(id, signal); if (current()) this.update({ interactions: interactions.filter(item => !this.replied.has(item.id)), ...(this.state.interactionError.startsWith("Pending requests unavailable:") ? { interactionError: "" } : {}) }); }
       catch (error) { if (current() && !this.expired(error)) this.update({ interactionError: `Pending requests unavailable: ${error instanceof Error ? error.message : "connection error"}` }); }
     }
@@ -851,7 +860,7 @@ export class ChatStore {
       const conversation = conversations.find(c => c.id === selected);
       const models = this.state.modelsLoaded && !this.state.modelsError && this.state.modelsCwd === conversation?.cwd ? this.state.models : [];
       let compactState = this.state.compactState, compactError = this.state.compactError;
-      if (selected && this.client.compactState) {
+      if (selected && this.supportedCapabilities(conversation?.harness).compaction && this.client.compactState) {
         const read = ++this.compactReadSerial;
         try {
           const result = await this.client.compactState(selected, controller.signal);
@@ -891,7 +900,7 @@ export class ChatStore {
       if (!current()) return;
       if (branchDraft && !runs.some(run => run.operation !== "compact") && !this.state.drafts[this.draftKey(selected)]) this.setDraft({ text: branchDraft }, selected);
       if (!current()) return;
-      if (selected && !awaitingCompact && conversations.find(c => c.id === selected)?.harness === "opencode") {
+      if (selected && !awaitingCompact && this.supportedCapabilities(conversation?.harness).listInteractions && this.client.interactions) {
         try {
           const interactions = await this.client.interactions(selected, controller.signal);
           if (current()) this.update({ interactions: interactions.filter(i => !this.replied.has(i.id)), ...(this.state.interactionError.startsWith("Pending requests unavailable:") ? { interactionError: "" } : {}) });
@@ -913,7 +922,8 @@ export class ChatStore {
     if (command) { this.openCompact(command.instructions); return { status: "blocked" }; }
     if (this.compactBlocked() || this.state.actionBusy) return { status: "blocked" };
     const conversation = this.state.conversations.find(c => c.id === this.state.selected);
-    if (conversation?.attachment && conversation.harness === "claude-code" && !nativeStopped) { this.update({ submissionError: "Confirm external assistant execution is stopped before sending." }); return { status: "blocked" }; }
+    if (!this.supportedCapabilities().prompt) return { status: "blocked" };
+    if (conversation?.attachment && this.supportedCapabilities(conversation.harness).attachedSendRequiresNativeStopped && !nativeStopped) { this.update({ submissionError: "Confirm external assistant execution is stopped before sending." }); return { status: "blocked" }; }
     if (!text.trim() || this.state.loading || conversation?.status === "starting" || conversation?.status === "running" || this.state.runs.some(r => r.status === "starting" || r.status === "running") || this.state.sending || !this.state.connected || !this.state.availability.canSend || this.modelUnavailable() || this.executionUnavailable()) return { status: "blocked" };
     const selected = this.state.selected, draft = this.draft(), draftKey = this.draftKey();
     // Flow submissions are independent of the ordinary chat draft and any

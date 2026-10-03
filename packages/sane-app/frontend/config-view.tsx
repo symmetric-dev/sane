@@ -12,14 +12,14 @@ import { ApplicationSettings } from "./application-settings";
 import { HotkeysSettings } from "./hotkeys-settings";
 import { WorkstreamsView, type ArtifactSelection } from "./workstreams";
 import type { DocumentReviewLaunch } from "./document-review-launch";
+import { FIXED_EFFORT_VALUES, getHarnessDescriptor } from "../shared/conversation/harness-capabilities";
 
 // Client-side mirrors of src/history.ts validModel/validEffort/validVariant and
 // src/bridge.ts submit validation (model always, effort per harness, variant
 // only with a resolvable model). Empty preserves agent/native defaults. Kept as
 // local copies so the browser bundle never imports node:path via src/history.
-const ccEffortIds = ["low", "medium", "high", "xhigh", "max"];
 const validModel = (v: string) => v.length <= 200 && /^[a-zA-Z0-9][a-zA-Z0-9._:/\[\]-]*$/.test(v);
-const validEffort = (v: string) => ccEffortIds.includes(v);
+const validEffort = (v: string) => FIXED_EFFORT_VALUES.some(value => value === v);
 const validVariant = (v: string) => v.length > 0 && v.length <= 200 && !/[\x00-\x1f]/.test(v);
 
 type Pair = { model: string; effort: string };
@@ -34,7 +34,13 @@ const ocError = (pair: Pair, kind: AgentProfile["kind"]) => {
   if (pair.effort && !validVariant(pair.effort)) return "Invalid native variant ID.";
   return "";
 };
-const errorFor = (harness: Harness, pair: Pair, kind: AgentProfile["kind"]) => harness === "opencode" ? ocError(pair, kind) : ccError(pair);
+const errorFor = (harness: Harness, pair: Pair, kind: AgentProfile["kind"]) => {
+  switch (getHarnessDescriptor(harness)?.policies.effortMode) {
+    case "model-variant": return ocError(pair, kind);
+    case "fixed": return ccError(pair);
+    default: return "Unsupported harness.";
+  }
+};
 
 type Form = { label: string; description: string; harness: Harness; model: string; effort: string; icon: AgentIconId; color: AgentColor; hidden: boolean };
 const toForm = (p: AgentProfile): Form => ({ label: p.label, description: p.description, harness: p.harness, model: p.model, effort: p.effort, icon: p.icon, color: p.color, hidden: !!p.hidden });
@@ -142,26 +148,27 @@ function AgentEditor({ profile, state, close, created, restoreFocus }: { profile
     else if (returnFocus.current) (returnFocus.current.isConnected ? returnFocus.current : document.getElementById("agent-label"))?.focus();
   }, [confirmation]);
   const workspace = store.workspace();
+  const descriptor = getHarnessDescriptor(form.harness);
+  const capabilities = store.capabilities(form.harness);
   // Keep the OpenCode catalog fresh per worktree root, like the chat composer.
   useEffect(() => {
-    if (form.harness === "opencode" && (state.modelsCwd !== workspace || (!state.modelsLoaded && !state.modelsLoading && !state.modelsError))) {
-      const timer = setTimeout(() => void store.loadModels(), 300);
+    if (descriptor?.policies.modelInput === "live-catalog" && capabilities.listModels && (state.modelsCwd !== workspace || (!state.modelsLoaded && !state.modelsLoading && !state.modelsError))) {
+      const timer = setTimeout(() => void store.loadModels(form.harness), 300);
       return () => clearTimeout(timer);
     }
-  }, [form.harness, workspace, state.modelsCwd, state.modelsLoaded, state.modelsLoading, state.modelsError]);
+  }, [form.harness, descriptor?.policies.modelInput, capabilities.listModels, workspace, state.modelsCwd, state.modelsLoaded, state.modelsLoading, state.modelsError]);
 
   const fixedHarness = profile.builtin && profile.kind === "base", busy = state.profileBusy;
   const patch = (next: Partial<Form>) => setForm(previous => ({ ...previous, ...next }));
   const problem = formError(form, profile.kind);
   const dirty = (Object.keys(form) as (keyof Form)[]).some(key => form[key] !== toForm(profile)[key]);
   const isDefault = set.defaultId === profile.id;
-  const reported = state.config?.harnesses?.find(h => h.id === "claude-code")?.capabilities?.effortValues ?? state.config?.capabilities?.effortValues ?? [];
-  const ccOptions = (reported.length ? reported : ccEffortIds).map(id => ({ id, name: `${id[0]?.toUpperCase()}${id.slice(1)} effort` }));
+  const ccOptions = (capabilities.effortValues ?? []).map(id => ({ id, name: `${id[0]?.toUpperCase()}${id.slice(1)} effort` }));
   const ocModels = state.modelsCwd === workspace ? state.models : [];
   const ocEfforts = ocModels.find(m => m.id === form.model)?.efforts ?? [];
   // Warn-not-fail, like the composer: a selection absent from the live per-cwd
   // catalog still sends with the saved value for native resolution.
-  const ocMissing = form.harness === "opencode" && !!form.model && state.modelsLoaded && state.modelsCwd === workspace && !state.modelsError && !state.models.some(m => m.id === form.model);
+  const ocMissing = descriptor?.policies.modelInput === "live-catalog" && !!form.model && state.modelsLoaded && state.modelsCwd === workspace && !state.modelsError && !state.models.some(m => m.id === form.model);
   const customHex = /^#[0-9a-f]{6}$/i.test(form.color) ? form.color : "#635877";
   const ask = (action: NonNullable<typeof confirmation>) => { returnFocus.current = document.activeElement instanceof HTMLElement ? document.activeElement : null; setConfirmation(action); };
   const dismiss = () => { if (busy) return; if (confirmation) { setConfirmation(null); return; } if (dirty) ask("discard"); else close(); };
@@ -187,18 +194,18 @@ function AgentEditor({ profile, state, close, created, restoreFocus }: { profile
           <div className="interaction-field"><label htmlFor="agent-description">Description</label><textarea id="agent-description" rows={2} value={form.description} maxLength={400} onChange={event => patch({ description: event.target.value })} /></div>
           <div className="interaction-field"><span className="agent-field-label">Fixed role</span><span className="agent-readonly">{profile.kind === "base" ? "None (harness defaults, no instructions)" : isWorkerAgentId(profile.role) ? `Worker · ${WORKER_AGENT_CATALOG[profile.role].label}` : isAssistantAgentId(profile.role) ? `Assistant · ${ASSISTANT_AGENT_LABELS[profile.role]}` : profile.role}</span></div>
           <div className="interaction-field"><span className="agent-field-label" id="agent-harness">Harness</span><div className="agent-segmented" role="group" aria-labelledby="agent-harness">{(["claude-code", "opencode"] as const).map(h => <button type="button" key={h} aria-pressed={form.harness === h} disabled={fixedHarness} onClick={() => { if (form.harness !== h) patch({ harness: h, model: "", effort: "" }); }}>{harnessName(h)}</button>)}</div><small>{fixedHarness ? "Fixed for built-in Base." : "Changing harness clears the model and effort selection."}</small></div>
-          {form.harness === "opencode" ? <>
+          {capabilities.modelSelection && descriptor?.policies.modelInput === "live-catalog" && descriptor.policies.effortMode === "model-variant" ? <>
              <div className="interaction-field"><label htmlFor="agent-oc-model">Model</label><ModelPicker id="agent-oc-model" models={ocModels} value={form.model} defaultLabel={profile.kind === "base" ? "Native default" : "Agent default model"} disabled={busy || (state.modelsLoading && !ocModels.length)} loading={state.modelsLoading} onChange={model => patch({ model, effort: "" })} /><small>{state.modelsLoading ? "Loading the live catalog…" : profile.kind === "base" ? "Live catalog for the current directory. Empty means the native default." : "Empty uses the agent's configured model, then the native default."}</small></div>
             <div className="interaction-field"><label htmlFor="agent-oc-variant">Model variant</label>{!form.model && profile.kind !== "base" ? <><input id="agent-oc-variant" value={form.effort} maxLength={200} placeholder="Agent default variant" onChange={event => patch({ effort: event.target.value })} /><small>Variant ID for the agent's configured model. Its variants are not listed here. Launch requires a resolvable agent model; empty preserves its default variant.</small></> : <select id="agent-oc-variant" value={form.effort} disabled={!form.model || (!ocEfforts.length && !form.effort)} onChange={event => patch({ effort: event.target.value })} title={!form.model ? "Select a model before selecting a variant" : undefined}><option value="">Default variant</option>{form.effort && !ocEfforts.some(e => e.id === form.effort) && <option value={form.effort}>{form.effort}</option>}{ocEfforts.map(value => <option key={value.id} value={value.id}>{value.name}</option>)}</select>}</div>
-          </> : <>
+          </> : capabilities.modelSelection && descriptor?.policies.modelInput === "free-text" && descriptor.policies.effortMode === "fixed" ? <>
             <div className="interaction-field"><label htmlFor="agent-cc-model">Model</label><input id="agent-cc-model" list="agent-cc-models" value={form.model} onChange={event => patch({ model: event.target.value.trim() })} placeholder="Default model" maxLength={200} /><datalist id="agent-cc-models"><option value="sonnet" /><option value="opus" /><option value="haiku" /></datalist><small>Empty means the native default. Custom IDs supported.</small></div>
              <div className="interaction-field"><label htmlFor="agent-cc-effort">Reasoning effort</label><select id="agent-cc-effort" value={form.effort} onChange={event => patch({ effort: event.target.value })}><option value="">Native default effort</option>{form.effort && !ccOptions.some(value => value.id === form.effort) && <option value={form.effort}>{form.effort}</option>}{ccOptions.map(value => <option key={value.id} value={value.id}>{value.name}</option>)}</select></div>
-          </>}
+          </> : null}
           <details className="agent-appearance"><summary>Appearance</summary><div className="interaction-field"><span className="agent-field-label" id="agent-icon">Icon</span><div className="agent-icon-grid" role="group" aria-labelledby="agent-icon">{AGENT_ICON_IDS.map(id => { const Glyph = AGENT_ICONS[id]; return <button type="button" key={id} aria-pressed={form.icon === id} aria-label={id} title={id} onClick={() => patch({ icon: id })}><Glyph size={15} aria-hidden="true" /></button>; })}</div></div>
           <div className="interaction-field"><span className="agent-field-label" id="agent-color">Color</span><div className="agent-swatches" role="group" aria-labelledby="agent-color">{AGENT_COLOR_IDS.map(id => <button type="button" key={id} className="agent-swatch" aria-pressed={form.color === id} aria-label={id} title={id} style={{ background: agentColor(id) }} onClick={() => patch({ color: id })} />)}<label className="agent-swatch agent-swatch-custom" data-selected={form.color.startsWith("#") || undefined} title="Custom color" style={{ background: form.color.startsWith("#") ? form.color : undefined }}><span className="sr-only">Custom color</span><input type="color" value={customHex} onChange={event => patch({ color: event.target.value as AgentColor })} /></label></div></div>
           </details>
         </fieldset>
-        {state.modelsError && form.harness === "opencode" && <p className="notice" role="status">{state.modelsError} <button type="button" className="text-button" disabled={state.modelsLoading} onClick={() => void store.loadModels()}>Retry connection</button></p>}
+        {state.modelsError && descriptor?.policies.modelInput === "live-catalog" && <p className="notice" role="status">{state.modelsError} <button type="button" className="text-button" disabled={state.modelsLoading || !capabilities.listModels} onClick={() => void store.loadModels(form.harness)}>Retry connection</button></p>}
         {ocMissing && <p className="notice" role="status">Model {form.model} is not in the current OpenCode catalog for this directory. Sending will still use the selection.</p>}
         {problem && <p className="notice error" role="alert">{problem}</p>}
         {profile.kind !== "worker" && <div className="agent-toggles">

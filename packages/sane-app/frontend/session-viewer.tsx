@@ -13,6 +13,8 @@ import { compactionsFor, compactionPositions } from "./compaction";
 import { CompactionMarkers } from "./compaction-ui";
 import type { CompactionRecord } from "../src/oc-contract";
 import { useHandoffs } from "./handoff-client";
+import { store } from "./store";
+import { getHarnessDescriptor } from "../shared/conversation/harness-capabilities";
 
 function Viewer({ root }: { root: WorkerRecord }) {
   const [trail, setTrail] = useState([root]);
@@ -31,13 +33,13 @@ function Viewer({ root }: { root: WorkerRecord }) {
     setWaiting(0);
     const poll = async () => {
       try {
-        const [metadata, children, parents, interactions] = await Promise.all([conversationClient.runs(selected.sessionId, controller.signal), workerClient.list(selected.sessionId, controller.signal), workerClient.list(selected.parent.sessionId, controller.signal), selected.launch.harness === "opencode" ? conversationClient.interactions(selected.sessionId, controller.signal) : Promise.resolve([])]);
+        const [metadata, children, parents, interactions] = await Promise.all([conversationClient.runs(selected.sessionId, controller.signal), workerClient.list(selected.sessionId, controller.signal), workerClient.list(selected.parent.sessionId, controller.signal), store.capabilities(selected.launch.harness).listInteractions && conversationClient.interactions ? conversationClient.interactions(selected.sessionId, controller.signal) : Promise.resolve([])]);
         if (!current) return;
         setWaiting(interactions.length);
         publishWorkers(selected.sessionId, children); publishWorkers(selected.parent.sessionId, parents);
         const currentWorker = parents.workers.find(record => record.id === selected.id) ?? selected;
-        const childHarness = selected.launch.harness === "opencode" ? "oc" : "cc";
-        const nativeSessionId = currentWorker.child?.harness === childHarness ? currentWorker.child.nativeId : undefined;
+        const childHarness = getHarnessDescriptor(selected.launch.harness)?.nativeHarness;
+        const nativeSessionId = childHarness && currentWorker.child?.harness === childHarness ? currentWorker.child.nativeId : undefined;
         for (const meta of metadata.sort((a, b) => a.createdAt.localeCompare(b.createdAt))) {
           meta.harness = selected.launch.harness;
           // Only the admitted child's identity (or explicit run metadata) scopes
@@ -67,7 +69,7 @@ function Viewer({ root }: { root: WorkerRecord }) {
     };
     void poll();
     return () => { current = false; controller.abort(); clearTimeout(timer); };
-  }, [selected.sessionId, selected.parent.sessionId]);
+  }, [selected.sessionId, selected.parent.sessionId, selected.launch.harness]);
   const messages = view.sessionId === selected.sessionId ? view.messages : [];
   const runs = view.sessionId === selected.sessionId ? view.runs : [];
   const compactions = view.sessionId === selected.sessionId ? view.compactions : [];

@@ -1,0 +1,24 @@
+export type RunStatus = "starting" | "running" | "completed" | "failed" | "interrupted" | "unknown";
+import type { Harness } from "./harness-capabilities";
+export type { Harness } from "./harness-capabilities";
+export type ModelChoice = { id: string; name: string; efforts: { id: string; name: string }[]; contextWindow?: number };
+export type TextPart = { type: "text"; text: string } | { type: "reasoning"; id?: string; text: string };
+export type ToolPart = { type: "tool"; id: string; toolCallId?: string; name: string; input: unknown; output?: unknown; error?: boolean; toolStatus?: string };
+export type Message = { id: string; nativeIds?: string[]; runId: string; role: "user" | "assistant" | "system"; parts: (TextPart | ToolPart)[]; time: string; status: RunStatus; normalized?: boolean; error?: unknown; version?: string };
+export type UsageSnapshot = { runId: string; time: string; record: Record<string, any> };
+export type DiagnosticEvent = { seq: number; time: string; runId: string; sessionId: string; kind: string; data: unknown };
+export type Run = {
+  summaryOnly?: true;
+  id: string; conversationId: string; cwd: string; status: RunStatus; createdAt: string; endedAt?: string;
+  harness?: Harness; nativeSessionId?: string;
+  nativeCommandId?: string;
+  operation?: "prompt" | "compact";
+  compact?: { requestId: string; instructions?: string; nativeRequestId?: string; nativeAdmittedId?: string };
+  nativeConnection?: string; nativeReason?: string; nativeUsage?: { cost?: number; tokens?: unknown }; nativeUsageTime?: string;
+  model?: string; effort?: string; agent?: string; agentKind?: "assistant" | "worker"; nativeAgentSelected?: boolean; profileId?: string; observedModel?: string; observedEfforts: string[];
+  messages: Message[]; events: DiagnosticEvent[]; cursor: number; seen: Set<number>;
+  buffer: string; usage?: UsageSnapshot; result?: string; resultCount: number; resultKeys: Set<string>;
+  toolResults: Map<string, { output: unknown; error?: boolean }>;
+};
+export type RunMetadata = Pick<Run, "id" | "conversationId" | "cwd" | "status" | "createdAt" | "endedAt" | "model" | "effort" | "agent" | "agentKind" | "nativeAgentSelected" | "profileId" | "harness" | "nativeSessionId" | "nativeCommandId" | "operation" | "compact">;
+export const active = (status: RunStatus) => status === "running" || status === "starting";

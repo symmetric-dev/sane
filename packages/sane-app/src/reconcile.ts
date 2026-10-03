@@ -1,5 +1,7 @@
 import { forkSession, getSessionInfo, getSessionMessages, type SessionMessage } from "@anthropic-ai/claude-agent-sdk";
 import type { MessagePart, MessageSnapshot } from "./oc-contract";
+import type { ReconciledHistory } from "../shared/conversation/native-history-contract";
+export type { ReconciledHistory } from "../shared/conversation/native-history-contract";
 import type { Run, Session } from "./history";
 import { uuid } from "./history";
 import { open, realpath } from "node:fs/promises";
@@ -16,12 +18,6 @@ export function coveredNativeRuns(session: Session, runs: Run[], messages: Messa
     ? nativeCompacts.has(r.compact?.nativeAdmittedId ?? r.compact?.nativeRequestId ?? r.nativeCommandId ?? "")
     : !!r.nativeCommandId && nativeUsers.has(r.nativeCommandId))).map(r => r.runId);
 }
-
-export type ReconciledHistory = {
-  sessionId: string; nativeSessionId: string; importedAt: string;
-  activity: "active" | "idle" | "unknown"; reason: string;
-  coveredRunIds: string[]; messages: MessageSnapshot[];
-};
 
 /** Fail closed outside the verified local JSONL layout. SDKSessionInfo.cwd alone
  * is NOT evidence: installed SDK Ia falls back to the requested project path. */

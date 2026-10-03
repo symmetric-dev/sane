@@ -1,4 +1,5 @@
 import { isAbsolute } from "node:path";
+import { FIXED_EFFORT_VALUES } from "../shared/conversation/harness-capabilities";
 import type { CompactRequest, CompactionMetadata, Harness } from "./oc-contract";
 import { isStoredAssistantAgentId, isWorkerAgentId, type AssistantAgentId, type StoredAssistantAgentId, type WorkerAgentId } from "sane-core/agent-catalog";
 
@@ -16,7 +17,7 @@ export function validAgentSnapshot(value: AgentSnapshot): boolean {
 
 export type Status = "running" | "completed" | "failed" | "interrupted";
 export type Session = AgentSnapshot & { sessionId: string; harness?: Harness; nativeSessionId?: string; authorityId?: string; cwd: string; lastStatus: Status | "unknown"; lastRunId: string | null; title?: string; hidden?: boolean; model?: string; effort?: string; profileId?: string; attachment?: { state: "pending" | "ready"; source: string; error?: string } };
-export const efforts = ["low", "medium", "high", "xhigh", "max"] as const;
+export const efforts = FIXED_EFFORT_VALUES;
 export type Effort = typeof efforts[number];
 export const validModel = (v: unknown): v is string => typeof v === "string" && v.length <= 200 && /^[a-zA-Z0-9][a-zA-Z0-9._:/\[\]-]*$/.test(v);
 export const validEffort = (v: unknown): v is Effort => typeof v === "string" && (efforts as readonly string[]).includes(v);

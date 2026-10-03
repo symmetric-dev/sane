@@ -11,6 +11,7 @@ import { start, type Options } from "../src/bridge";
 import { initializeAppStore } from "../src/app-store";
 import { acquireData, acquireInstallation, validateOwnershipPaths, type OwnershipHandle } from "../src/installation-ownership";
 import type { NativeMessage } from "../src/opencode";
+import { capabilitiesFor, getHarnessDescriptor, type Harness } from "../shared/conversation/harness-capabilities";
 
 const TEMP = "/private/var/folders/6v/wnsbl7cj5w96s83lszq3454w0000gn/T/opencode";
 const TIMEOUT = 30000;
@@ -25,6 +26,8 @@ type Call = { path: string; method: string; body?: any; authorization: string | 
 type FakeSession = { info: any; messages: NativeMessage[]; active: boolean };
 const calls: Call[] = [];
 const sessions = new Map<string, FakeSession>();
+const pendingInteractions = new Map<string, { permissions: any[]; forms: any[] }>();
+let nativeAvailable = true;
 const nativePassword = "fixture-native-password";
 const nativeAuthorization = `Basic ${Buffer.from(`opencode:${nativePassword}`).toString("base64")}`;
 
@@ -62,7 +65,7 @@ async function fakeNative(req: Request) {
   calls.push({ path: path + url.search, method: req.method, body: input, authorization: req.headers.get("authorization") });
   if (req.headers.get("authorization") !== nativeAuthorization) return Response.json({ error: "fixture credentials required" }, { status: 401 });
   if (path === "/api/info") return Response.json({ version: "2.0.18", pid: process.pid });
-  if (path === "/api/model") return Response.json({ data: [{ id: "offline", providerID: "fixture", name: "Offline fixture", enabled: true, variants: [{ id: "bounded" }] }] });
+  if (path === "/api/model") return nativeAvailable ? Response.json({ data: [{ id: "offline", providerID: "fixture", name: "Offline fixture", enabled: true, variants: [{ id: "bounded" }] }] }) : Response.json({ error: "offline fixture disconnected" }, { status: 503 });
   if (path === "/api/agent") return Response.json({ data: [{ id: "sane/assistant/engineering", model: { providerID: "fixture", id: "offline", variant: "bounded" } }] });
   if (path === "/api/session/active") return Response.json({ data: Object.fromEntries([...sessions].filter(([, s]) => s.active).map(([id]) => [id, { type: "running" }])) });
   if (path === "/api/session" && req.method === "POST") {
@@ -77,7 +80,9 @@ async function fakeNative(req: Request) {
   switch (match![2]) {
     case undefined: return Response.json({ data: session.info });
     case "model": session.info.model = input.model; return Response.json({ data: session.info });
-    case "inbox": case "permission": case "form": return Response.json({ data: [] });
+    case "inbox": return Response.json({ data: [] });
+    case "permission": return Response.json({ data: pendingInteractions.get(match![1]!)?.permissions ?? [] });
+    case "form": return Response.json({ data: pendingInteractions.get(match![1]!)?.forms ?? [] });
     case "message": return Response.json({ data: [...session.messages].reverse(), cursor: { next: null } });
     case "prompt": {
       const time = session.info.time.updated + 10;
@@ -87,7 +92,15 @@ async function fakeNative(req: Request) {
       return Response.json({ data: { id: input.id, time: { created: time } } });
     }
     case "interrupt": complete(match![1]!, "interrupted"); return Response.json({ interrupted: true });
-    default: return Response.json({ error: `Unexpected fixture route: ${path}` }, { status: 404 });
+    default: {
+      const reply = /^(permission|form)\/([^/]+)\/reply$/.exec(match![2]!);
+      if (reply && req.method === "POST") {
+        const state = pendingInteractions.get(match![1]!)!, key = reply[1] === "permission" ? "permissions" : "forms";
+        state[key] = state[key].filter(item => item.id !== decodeURIComponent(reply[2]!));
+        return new Response(null, { status: 204 });
+      }
+      return Response.json({ error: `Unexpected fixture route: ${path}` }, { status: 404 });
+    }
   }
 }
 
@@ -120,6 +133,31 @@ const prompts = () => calls.filter(c => c.path.endsWith("/prompt"));
 const invocations = (): any[] => existsSync(cliLog) ? readFileSync(cliLog, "utf8").trim().split("\n").filter(Boolean).map(line => JSON.parse(line)) : [];
 const disk = (name: string) => JSON.parse(readFileSync(join(dataDir, name), "utf8"));
 const flag = (args: string[], name: string) => args[args.indexOf(name) + 1];
+async function fixtureSession(harness: Harness) {
+  const response = await api("/api/sessions");
+  expect(response.status).toBe(200);
+  const session = response.body.sessions.find((s: any) => s.harness === harness && !s.attachment && s.lastStatus === "completed");
+  expect(session).toBeDefined();
+  return session;
+}
+function interactionFixture(nativeId: string) {
+  // IDs deliberately overlap: only the explicit discriminant may select a route.
+  pendingInteractions.set(nativeId, {
+    permissions: [{ id: "fixture-input", action: "Read fixture", resources: [repoDir], message: "Offline permission" }],
+    forms: [{ id: "fixture-input", title: "Offline question", fields: [{ id: "choice", type: "text", label: "Choice" }] }],
+  });
+}
+const sideEffects = () => ({ nativeMutations: mutations().length, claudeInvocations: invocations().length, sessions: disk("metadata.json").sessions.length, runs: disk("metadata.json").runs.length });
+function claudeHistoryFixture() {
+  const id = crypto.randomUUID(), userId = crypto.randomUUID(), assistantId = crypto.randomUUID();
+  const project = join(root, "claude-profile", "projects", repoDir.replace(/[^a-zA-Z0-9]/g, "-"));
+  mkdirSync(project, { recursive: true });
+  writeFileSync(join(project, `${id}.jsonl`), [
+    { type: "user", uuid: userId, parentUuid: null, sessionId: id, cwd: repoDir, isSidechain: false, timestamp: "2026-01-01T00:00:00Z", message: { role: "user", content: "offline imported Claude turn" } },
+    { type: "assistant", uuid: assistantId, parentUuid: userId, sessionId: id, cwd: repoDir, isSidechain: false, timestamp: "2026-01-01T00:00:01Z", message: { role: "assistant", content: [{ type: "text", text: "offline imported Claude answer" }] } },
+  ].map(row => JSON.stringify(row)).join("\n") + "\n");
+  return id;
+}
 
 describe.serial("bridge runtime (isolated offline HTTP native fixtures)", () => {
   beforeAll(async () => {
@@ -305,5 +343,196 @@ describe.serial("bridge runtime (isolated offline HTTP native fixtures)", () => 
     expect(flag(second.args, "--model")).toBe("opus"); expect(flag(second.args, "--effort")).toBe("high");
     expect(second.hookStatuses).toEqual([403, 400, 400, 200]);
     expect(mutations()).toHaveLength(nativeMutations);
+  }, TIMEOUT);
+
+  test("config advertises the complete registry matrix even when OpenCode is disconnected", async () => {
+    const connected = await api("/api/config");
+    expect(connected.status).toBe(200);
+    expect(connected.body.harnesses.map((h: any) => h.id).sort()).toEqual(["claude-code", "opencode"]);
+    const cc = connected.body.harnesses.find((h: any) => h.id === "claude-code");
+    const oc = connected.body.harnesses.find((h: any) => h.id === "opencode");
+    // Existing wire flags must retain their values as the registry adds policies.
+    expect(cc.capabilities).toMatchObject({ cancelRun: true, permissionReplies: false, questionReplies: false, modelSelection: true, effortValues: ["low", "medium", "high", "xhigh", "max"] });
+    expect(oc.capabilities).toMatchObject({ cancelRun: true, permissionReplies: true, questionReplies: true, modelSelection: true });
+    expect(cc).toMatchObject({ available: true, connected: true });
+    expect(oc).toMatchObject({ available: true, connected: true });
+    const before = sideEffects();
+    let disconnected: any;
+    try {
+      nativeAvailable = false;
+      const response = await api("/api/config");
+      expect(response.status).toBe(200);
+      disconnected = response.body.harnesses.find((h: any) => h.id === "opencode");
+      expect(disconnected).toMatchObject({ available: false, connected: false, state: "unavailable" });
+      expect(disconnected.capabilities).toEqual(oc.capabilities);
+      expect(sideEffects()).toEqual(before);
+    } finally {
+      nativeAvailable = true;
+      await until("OpenCode config reconnected", async () => (await api("/api/config")).body.harnesses.find((h: any) => h.id === "opencode")?.connected ? true : undefined);
+    }
+    for (const harness of [cc, oc, disconnected]) {
+      expect(getHarnessDescriptor(harness.id)).toBeDefined();
+      expect(harness.capabilities).toEqual(capabilitiesFor(harness.id));
+    }
+  }, TIMEOUT);
+
+  test("unknown explicit harnesses cannot create, resume, override a profile, or attach", async () => {
+    const cc = await fixtureSession("claude-code");
+    const config = await api("/api/config");
+    const profile = config.body.agentProfiles.profiles.find((p: any) => p.harness === "claude-code" && p.kind === "base");
+    expect(profile).toBeDefined();
+    const before = sideEffects(), statuses: number[] = [];
+    for (const harness of ["future-harness", "", 42, {}, null]) {
+      const reply = await api("/api/sessions", { harness, prompt: "must not create a native session", cwd: repoDir });
+      statuses.push(reply.status);
+      // Keep a pre-hardening baseline failure isolated from subsequent cases.
+      if (reply.status === 202) await waitIdle(reply.body.sessionId);
+    }
+    for (const extra of [{ sessionId: cc.sessionId }, { profileId: profile.id }]) {
+      const reply = await api("/api/sessions", { harness: "future-harness", prompt: "must not override native identity", ...extra });
+      statuses.push(reply.status);
+      if (reply.status === 202) await waitIdle(reply.body.sessionId);
+    }
+    for (const harness of ["future-harness", "", 42, {}, null]) statuses.push((await api("/api/sessions/attach", { harness, nativeSessionId: "ses_fixture_unknown", cwd: repoDir })).status);
+    expect(statuses).toEqual(Array(12).fill(400));
+    expect(sideEffects()).toEqual(before);
+  }, TIMEOUT);
+
+  test("Claude interactions are an empty GET and unsupported replies without native dispatch", async () => {
+    const cc = await fixtureSession("claude-code"), before = sideEffects(), nativeReads = calls.length;
+    const inbox = await api(`/api/sessions/${cc.sessionId}/interactions`);
+    expect(inbox.status).toBe(200); expect(inbox.body).toEqual({ interactions: [] });
+    for (const reply of [{ type: "permission", decision: "once" }, { type: "question", answer: { choice: "offline" } }]) {
+      const response = await api(`/api/sessions/${cc.sessionId}/interactions/fixture-input/reply`, reply);
+      expect(response.status).toBe(501); expect(response.body.error).toBeTruthy();
+    }
+    expect(calls).toHaveLength(nativeReads);
+    expect(sideEffects()).toEqual(before);
+  }, TIMEOUT);
+
+  test("OpenCode lists native permissions/questions and routes same-ID replies by type", async () => {
+    const oc = await fixtureSession("opencode"), before = mutations().length, ccBefore = invocations().length;
+    interactionFixture(oc.nativeSessionId);
+    try {
+      const inbox = await api(`/api/sessions/${oc.sessionId}/interactions`);
+      expect(inbox.status).toBe(200);
+      expect(inbox.body.interactions).toMatchObject([
+        { id: "fixture-input", type: "permission", title: "Read fixture", options: [{ id: "once" }, { id: "always" }, { id: "reject" }] },
+        { id: "fixture-input", type: "question", title: "Offline question", fields: [{ id: "choice" }] },
+      ]);
+      const path = `/api/sessions/${oc.sessionId}/interactions/fixture-input/reply`;
+      expect((await api(path, { type: "permission", decision: "once", message: "offline permission reply" })).body).toEqual({ ok: true });
+      expect((await api(path, { type: "question", answer: { choice: "offline question reply" } })).body).toEqual({ ok: true });
+      expect(mutations().slice(before).map(({ path, body }) => ({ path, body }))).toEqual([
+        { path: `/api/session/${oc.nativeSessionId}/permission/fixture-input/reply`, body: { decision: "once", message: "offline permission reply" } },
+        { path: `/api/session/${oc.nativeSessionId}/form/fixture-input/reply`, body: { answer: { choice: "offline question reply" } } },
+      ]);
+      expect((await api(`/api/sessions/${oc.sessionId}/interactions`)).body).toEqual({ interactions: [] });
+      expect(invocations()).toHaveLength(ccBefore);
+    } finally { pendingInteractions.delete(oc.nativeSessionId); }
+  }, TIMEOUT);
+
+  test("OpenCode explicitly rejects invalid reply discriminants/payloads before native mutations", async () => {
+    const oc = await fixtureSession("opencode"), before = sideEffects();
+    interactionFixture(oc.nativeSessionId);
+    try {
+      const path = `/api/sessions/${oc.sessionId}/interactions/fixture-input/reply`, statuses: number[] = [];
+      for (const reply of [
+        { type: "form", answer: { choice: "must not route as question" } },
+        { type: "future-interaction", decision: "once", answer: {} },
+        { decision: "once" }, { type: null, answer: {} }, null,
+        { type: "permission", decision: "invalid" }, { type: "permission", decision: "once", message: 42 },
+        { type: "question", answer: [] }, { type: "question", answer: "invalid" },
+      ]) statuses.push((await api(path, reply)).status);
+      expect(sideEffects()).toEqual(before);
+      expect(pendingInteractions.get(oc.nativeSessionId)!.permissions).toHaveLength(1);
+      expect(pendingInteractions.get(oc.nativeSessionId)!.forms).toHaveLength(1);
+      expect(statuses).toEqual(Array(9).fill(400));
+    } finally { pendingInteractions.delete(oc.nativeSessionId); }
+  }, TIMEOUT);
+
+  test("OpenCode custom compaction instructions and /compact prompts reject without submitting", async () => {
+    const oc = await fixtureSession("opencode"), before = sideEffects();
+    const response = await api(`/api/sessions/${oc.sessionId}/compact`, { requestId: crypto.randomUUID(), instructions: "unsupported custom instructions" });
+    expect(response.status).toBe(400);
+    expect(response.body.error).toContain("instructions");
+    const command = await api("/api/sessions", { sessionId: oc.sessionId, prompt: "/compact unsupported custom instructions" });
+    expect(command.status).toBe(400); expect(command.body.code).toBe("compact-action-required");
+    expect(sideEffects()).toEqual(before);
+  }, TIMEOUT);
+
+  test("cancel never interrupts externally active attached OpenCode without an App-owned run", async () => {
+    const nativeId = "ses_fixture_external_cancel", time = 1700000200000;
+    sessions.set(nativeId, { info: { id: nativeId, location: { directory: repoDir }, time: { created: time, updated: time } }, active: false,
+      messages: [{ id: "msg_fixture_external_user", type: "user", text: "offline external turn", time: { created: time } }] });
+    complete(nativeId);
+    const before = sideEffects();
+    const attached = await api("/api/sessions/attach", { harness: "opencode", nativeSessionId: nativeId, cwd: repoDir });
+    expect(attached.status).toBe(201);
+    expect(sideEffects()).toEqual({ ...before, sessions: before.sessions + 1 });
+    sessions.get(nativeId)!.active = true;
+    try {
+      const cancel = await api(`/api/sessions/${attached.body.sessionId}/cancel`, {});
+      expect(cancel.status).toBe(200);
+      expect(cancel.body).toMatchObject({ interrupted: false });
+      expect(cancel.body.reason).toContain("No active App-owned run");
+      expect(sessions.get(nativeId)!.active).toBe(true);
+      expect(mutations()).toHaveLength(before.nativeMutations);
+      expect(invocations()).toHaveLength(before.claudeInvocations);
+      expect((await api(`/api/sessions/${attached.body.sessionId}/runs`)).body.runs).toEqual([]);
+    } finally { sessions.get(nativeId)!.active = false; }
+  }, TIMEOUT);
+
+  test("Claude branches require a first prompt and reject imported history/native-message selection", async () => {
+    const cc = await fixtureSession("claude-code"), before = sideEffects();
+    const blank = await api(`/api/sessions/${cc.sessionId}/branch`, { requestId: crypto.randomUUID(), runId: cc.lastRunId, replace: false, prompt: "   " });
+    expect(blank.status).toBe(400); expect(blank.body.error).toContain("first message");
+    const nativeSelection = await api(`/api/sessions/${cc.sessionId}/branch?messageId=msg_fixture_answer`);
+    expect(nativeSelection.status).toBe(200); expect(nativeSelection.body).toMatchObject({ eligible: false });
+    expect(nativeSelection.body.reason).toContain("completed run");
+    const attached = await api("/api/sessions/attach", { harness: "claude-code", nativeSessionId: claudeHistoryFixture(), cwd: repoDir });
+    expect(attached.status).toBe(201);
+    const unavailable = await api(`/api/sessions/${attached.body.sessionId}/branch`);
+    expect(unavailable.status).toBe(200); expect(unavailable.body).toMatchObject({ eligible: false });
+    expect(unavailable.body.reason).toContain("imported");
+    const submit = await api(`/api/sessions/${attached.body.sessionId}/branch`, { requestId: crypto.randomUUID(), replace: false, prompt: "must not fork imported Claude" });
+    expect(submit.status).toBe(400); expect(submit.body.error).toBeTruthy();
+    expect(sideEffects()).toEqual({ ...before, sessions: before.sessions + 1 });
+  }, TIMEOUT);
+
+  test("OpenCode model catalog rejection stays inside the bridge JSON error boundary", async () => {
+    const before = sideEffects(), nativeReads = calls.length;
+    const path = `/api/harnesses/opencode/models?cwd=${encodeURIComponent(repoDir)}`;
+    try {
+      nativeAvailable = false;
+      const response = await api(path);
+      expect(response.status).toBe(503);
+      expect(response.headers.get("content-type")).toContain("application/json");
+      expect(response.headers.get("cache-control")).toBe("no-store");
+      expect(response.body).toEqual({ error: "OpenCode API returned HTTP 503" });
+      expect(calls.slice(nativeReads).some(c => c.method === "GET" && c.path === `/api/model?location%5Bdirectory%5D=${encodeURIComponent(repoDir)}`)).toBe(true);
+      expect(sideEffects()).toEqual(before);
+    } finally {
+      nativeAvailable = true;
+      const recovered = await until("OpenCode model catalog recovered", async () => {
+        const response = await api(path);
+        return response.status === 200 ? response : undefined;
+      });
+      expect(recovered.body).toEqual({ models: [{ id: "fixture/offline", name: "Offline fixture", efforts: [{ id: "bounded", name: "bounded" }] }] });
+      expect(sideEffects()).toEqual(before);
+    }
+  }, TIMEOUT);
+
+  test("unknown and Claude model catalogs reject explicitly without native fallback", async () => {
+    const before = sideEffects(), nativeReads = calls.length;
+    for (const [harness, status, code] of [["future-harness", 400, "unknown-harness"], ["claude-code", 501, "unsupported-harness-operation"]] as const) {
+      const response = await api(`/api/harnesses/${harness}/models?cwd=${encodeURIComponent(repoDir)}`);
+      expect(response.status).toBe(status);
+      expect(response.headers.get("content-type")).toContain("application/json");
+      expect(response.headers.get("cache-control")).toBe("no-store");
+      expect(response.body).toEqual({ error: harness === "claude-code" ? getHarnessDescriptor(harness)!.operations.listModels.reason : "Unknown harness", code });
+    }
+    expect(calls).toHaveLength(nativeReads);
+    expect(sideEffects()).toEqual(before);
   }, TIMEOUT);
 });

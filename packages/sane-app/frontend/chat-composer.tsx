@@ -43,26 +43,27 @@ export function ChatComposer({ state, active = true, navigation, ack, onAckChang
   }, [active, !!review?.flow]);
 
   const conversation = state.conversations.find(c => c.id === state.selected);
-  const needsAck = conversation?.harness === "claude-code" && !!conversation.attachment;
+  const capabilities = store.capabilities();
+  const needsAck = !!capabilities.attachedSendRequiresNativeStopped && !!conversation?.attachment;
   const draft = store.draft();
   const harness = store.harness();
   const profile = store.effectiveProfile();
   // New conversations pick freely; a Base may upgrade once; an assistant is fixed.
   const fixed = !!state.selected && (store.conversationKind() === "assistant" || !!parentId);
   const missingModel = store.missingModel();
-  const infoError = state.submissionError || (harness === "opencode" ? state.modelsError : "");
+  const infoError = state.submissionError || (capabilities.catalogRequiredForSend ? state.modelsError : "");
   const infoStatus = (state.sending ? "Sending your message…" : "") || (state.loading ? "Loading your conversation…" : "") || store.executionUnavailable() || (!state.connected ? "Reconnecting to the bridge…" : "") || (!state.availability.canSend && state.availability.reason) || (store.modelUnavailable() ? "Waiting for the OpenCode model catalog for this directory." : "");
   const infoText = infoError || infoStatus;
   const command = compactCommand(draft.text);
   // A standalone /compact opens the same explicit dialog before ordinary-send
   // gates (including the separate composer acknowledgment or staged model).
-  const blocked = !active || (command ? state.sending : sendDisabled || (needsAck && ack !== state.selected));
-  const reviewBlocked = !active || sendDisabled || (needsAck && ack !== state.selected);
+  const blocked = !active || (command ? state.sending || !capabilities.compaction : !capabilities.prompt || sendDisabled || (needsAck && ack !== state.selected));
+  const reviewBlocked = !active || !capabilities.prompt || sendDisabled || (needsAck && ack !== state.selected);
   const submit = () => { if (!blocked) void send(store.draft().text); };
 
   return <>
     {state.submissionError && <p className="notice error" role="alert">{state.submissionError}</p>}
-    {harness === "opencode" && state.modelsError && <p className="notice" role="status">{state.modelsError} <button type="button" className="text-button" disabled={state.modelsLoading} onClick={() => void store.loadModels()}>Retry connection</button></p>}
+    {capabilities.catalogRequiredForSend && state.modelsError && <p className="notice" role="status">{state.modelsError} <button type="button" className="text-button" disabled={state.modelsLoading || !capabilities.listModels} onClick={() => void store.loadModels(harness)}>Retry connection</button></p>}
     {needsAck && !conversation?.replacedBy && <label className="notice"><input type="checkbox" checked={ack === state.selected} onChange={e => onAckChange(e.target.checked ? state.selected : "")} />I confirm external assistant execution for this conversation is stopped before this send.</label>}
     {missingModel && <p className="notice" role="status">Model {missingModel} is not in the current OpenCode catalog for this directory. Sending will still use this selection.</p>}
     {conversation?.attachment?.state === "pending" && <p className="notice error">Attachment incomplete. Use Attach native conversation with the same ID and checkout to retry. {conversation.attachment.error}</p>}
@@ -85,6 +86,6 @@ export function ChatComposer({ state, active = true, navigation, ack, onAckChang
       </div></div>
     </form> : navigation ? <footer className="composer-toolbar composer-navigation-only"><div className="composer-actions">{navigation}</div></footer> : null}
     {active && pickerOpen && <AgentPicker close={() => setPickerOpen(false)} restoreFocus={restoreAgentFocus} />}
-    {active && helpOpen && <ShellDialog title="Sending messages" close={() => setHelpOpen(false)} restoreFocus={restoreHelpFocus}><div className="composer-help-notes">{infoText ? <p className={`notice${infoError ? " error" : ""}`} role={infoError ? "alert" : "status"}>{infoText}{harness === "opencode" && state.modelsError ? <> <button type="button" className="text-button" disabled={state.modelsLoading} onClick={() => void store.loadModels()}>Retry connection</button></> : null}</p> : null}<p className="muted">Enter inserts a newline · Ctrl/Cmd+Enter sends. Other conversations can run concurrently.</p><p className="muted">Type @ for paths in the execution directory. Arrow keys choose; Enter inserts text, not an attachment. Escape dismisses.</p><p className="muted">Concurrent conversations in this checkout share files; their edits can overlap.</p>{needsAck && <p className="muted">External assistant activity cannot be detected here. Stop it in its native harness before sending to this same conversation.</p>}</div></ShellDialog>}
+    {active && helpOpen && <ShellDialog title="Sending messages" close={() => setHelpOpen(false)} restoreFocus={restoreHelpFocus}><div className="composer-help-notes">{infoText ? <p className={`notice${infoError ? " error" : ""}`} role={infoError ? "alert" : "status"}>{infoText}{capabilities.catalogRequiredForSend && state.modelsError ? <> <button type="button" className="text-button" disabled={state.modelsLoading || !capabilities.listModels} onClick={() => void store.loadModels(harness)}>Retry connection</button></> : null}</p> : null}<p className="muted">Enter inserts a newline · Ctrl/Cmd+Enter sends. Other conversations can run concurrently.</p><p className="muted">Type @ for paths in the execution directory. Arrow keys choose; Enter inserts text, not an attachment. Escape dismisses.</p><p className="muted">Concurrent conversations in this checkout share files; their edits can overlap.</p>{needsAck && <p className="muted">External assistant activity cannot be detected here. Stop it in its native harness before sending to this same conversation.</p>}</div></ShellDialog>}
   </>;
 }

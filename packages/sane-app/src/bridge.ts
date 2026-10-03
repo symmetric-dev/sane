@@ -39,6 +39,8 @@ import { agentLaunchSnapshot, claudeAgentSettings } from "./agent-launch";
 import { readClaudeHistory, forkClaudeHistory, verifyClaudeFork, coveredNativeRuns, type ReconciledHistory } from "./reconcile";
 import { BranchStore, type BranchOperation } from "./branches";
 import { NativeHistoryCache, TranscriptError, TranscriptService } from "./transcript-service";
+import { capabilitiesFor, getHarnessDescriptor, isHarness } from "../shared/conversation/harness-capabilities";
+import { HarnessOperationError, dispatchHarness, dispatchOwnedOperation, requireOperation, requireOwnedOperation, validateHarness } from "./harness-operations";
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 export { hookEvents };
@@ -139,7 +141,16 @@ async function startOwned(options: Options, assetsDir: string, packageDir: strin
   if (process.env.CLAUDE_CONFIG_DIR !== undefined && claudeSourceRoot() !== claudeRoot) throw new Error("Contradictory native selector: CLAUDE_CONFIG_DIR");
   if (process.env.CLAUDE_CODE_PROJECT_DIR_NAME) throw new Error("Unsupported native selector: CLAUDE_CODE_PROJECT_DIR_NAME");
   const oc = new OpenCodeAdapter(undefined, undefined, options.nativeSources.oc.registrationFile);
-  const nativeSource = (harness?: string) => store.sources[harness === "opencode" ? "oc" : "cc"].authorityId ?? "unavailable";
+  // Historical App sessions may omit the harness; no unknown value defaults.
+  const sessionHarness = (session: Session) => validateHarness(session.harness, { defaultHarness: "claude-code" });
+  const nativeSource = (harness?: string) => store.sources[getHarnessDescriptor(validateHarness(harness, { defaultHarness: "claude-code" }))!.nativeHarness].authorityId ?? "unavailable";
+  function readNativeHistory(harness: unknown, nativeId: string, cwd: string) {
+    const descriptor = requireOperation(harness, "readHistory");
+    return dispatchHarness(descriptor.id, {
+      "claude-code": async () => ({ messages: await readClaudeHistory(nativeId, cwd, claudeRoot), activity: "unknown" as const }),
+      opencode: () => oc.history(nativeId, cwd),
+    });
+  }
   const forbidden = Object.keys(process.env).filter(k => /^(ANTHROPIC_|CLAUDE_CODE_USE_|CLAUDE_CODE_OAUTH_TOKEN|CLAUDE_CODE_API_KEY|CLAUDE_CODE_BASE_URL|CLAUDE_CODE_CUSTOM_MODEL_OPTION|AWS_BEARER_TOKEN_BEDROCK|OPENAI_API_KEY|OPENAI_BASE_URL)/.test(k));
   if (forbidden.length) throw new Error(`Remove API/provider overrides: ${forbidden.join(", ")}`);
   try { if (!(await stat(options.cwd)).isDirectory()) throw new Error(); }
@@ -272,11 +283,12 @@ async function startOwned(options: Options, assetsDir: string, packageDir: strin
     if (closing || storageFailed || meta.reconciliationRequired) throw new WorkstreamAdapterError(503, "handoff-owner-unavailable", "App execution owner is unavailable");
   }, store.manifest.storeId, async (to, cwd) => {
     const launch = resolveAssistantProfile(agentProfiles, to);
+    const descriptor = requireOperation(launch.harness, "prompt");
     const native = launch.harness === "opencode" ? await oc.resolveLaunch(cwd, launch) : undefined;
     const model = native ? native.model ? `${native.model.providerID}/${native.model.id}` : undefined : launch.model;
     const effort = native ? native.model?.variant : launch.effort;
     return {
-      harness: launch.harness === "opencode" ? "oc" : "cc",
+      harness: descriptor.nativeHarness,
       executionConfig: { profileId: launch.profileId, agent: launch.agent!, ...(model ? { model } : {}), ...(effort ? { effort } : {}) },
     };
   });
@@ -455,7 +467,7 @@ async function startOwned(options: Options, assetsDir: string, packageDir: strin
     if (decoded.repaired !== undefined) await enqueue(() => writeFile(logPath, decoded.repaired!, { mode: 0o600 }));
     events.set(run.runId, list);
     transcripts.ingest(run, list);
-    if (run.status === "running" && meta.sessions.find(s => s.sessionId === run.sessionId)?.harness !== "opencode") {
+    if (run.status === "running" && !getHarnessDescriptor(sessionHarness(meta.sessions.find(s => s.sessionId === run.sessionId)!))!.operations.recoverRun.supported) {
       run.status = "interrupted"; run.endedAt = new Date().toISOString(); meta.reconciliationRequired = true;
       const session = meta.sessions.find(s => s.sessionId === run.sessionId)!; session.lastStatus = "interrupted";
       await emit(run, "status", { status: "interrupted", reason: "server restarted; verify old CLI process has stopped" });
@@ -504,39 +516,47 @@ async function startOwned(options: Options, assetsDir: string, packageDir: strin
     return router!.forAdmission(admission);
   }
   function assertBranchIdle(source: Session) {
+    const descriptor = requireOperation(sessionHarness(source), "branch");
     if (closing || storageFailed || meta.reconciliationRequired || owners.has(source.sessionId) || admitting.has(source.sessionId) || handoffReservations.has(source.sessionId) || handoffDispatches.has(source.sessionId)) throw new Error("Source must be idle, with no pending admission or handoff");
     if (source.agentKind === "worker" || workerStore.hasSession(source.sessionId)) throw new Error("Worker conversations cannot be branched");
     if (workers.tree(source.sessionId).some(w => !w.outcome || w.continuation && !["completed", "failed", "interrupted"].includes(w.continuation.state) || workerResults(w).some(r => ["pending", "claimed", "acceptance-unknown"].includes(r.notification.state))) || workerStore.deliveries().some(d => d.parentSessionId === source.sessionId && ["claimed", "acceptance-unknown"].includes(d.state))) throw new Error("Finish outstanding workers and worker report deliveries before branching");
     if (branches.replaced(source.sessionId)) throw new Error("Replaced conversations are read-only");
-    if (source.harness === "claude-code" && source.attachment) throw new Error("This imported conversation lacks trustworthy complete-turn and idle evidence; branching is unavailable");
+    if (!descriptor.policies.branchAttachedConversation && source.attachment) throw new Error("This imported conversation lacks trustworthy complete-turn and idle evidence; branching is unavailable");
   }
   async function branchBoundary(source: Session, runId?: string, messageId?: string) {
+    const descriptor = requireOperation(sessionHarness(source), "branch");
+    if (messageId !== undefined && !descriptor.policies.branchFromNativeMessage) throw new Error("Branching on this harness requires a SANE-recorded completed run");
     const run = runId ? meta.runs.find(r => r.runId === runId && r.sessionId === source.sessionId && r.status === "completed" && r.operation !== "compact") : undefined;
     if (runId && !run) throw new Error("Select a completed turn from this conversation");
-    if (source.harness === "opencode") {
-      const history = await oc.history(source.nativeSessionId!, source.cwd);
-      if (history.activity !== "idle") throw new Error("Native OpenCode conversation is active or has pending input");
-      const raw = history.rawMessages;
-      let start = raw.findIndex(m => m.id === (run?.nativeCommandId ?? messageId));
-      if (start < 0) throw new Error("Selected native turn is unavailable");
-      if (!run && raw[start]!.type !== "assistant") throw new Error("Select the final assistant response of a complete turn");
-      let boundary = -1;
-      for (let i = start + 1; i < raw.length; i++) {
-        const m = raw[i]!;
-        if (m.type === "user" || m.type === "synthetic") break;
-        if (!run && m.type === "assistant") throw new Error("This response is a tool fragment, not the complete turn boundary");
-        if (m.type === "idle") { if (m.outcome === "succeeded") boundary = i; break; }
-      }
-      if (boundary < 0) throw new Error("No successful native complete-turn boundary was found");
-      return { boundary: raw[boundary]!.id, before: raw[boundary + 1]?.id, sourceFingerprint: branchFingerprint(raw) };
-    }
-    if (!run) throw new Error("Branching on this harness requires a SANE-recorded completed run");
-    const assistant = (id: string) => (events.get(id) ?? []).filter(e => e.kind === "stdout" && (e.data as any)?.type === "assistant" && !(e.data as any)?.parent_tool_use_id).at(-1)?.data as any;
-    const selected = assistant(run.runId), latest = source.lastRunId && assistant(source.lastRunId);
-    if (source.lastStatus !== "completed" || !uuid(selected?.uuid) || !uuid(latest?.uuid) || selected.message?.content?.some((p: any) => p.type === "tool_use")) throw new Error("Complete-turn/idle evidence is unavailable for this harness");
-    const native = await readClaudeHistory(source.nativeSessionId!, source.cwd, claudeRoot);
-    if (native.at(-1)?.messageId !== latest.uuid || !native.some(m => m.messageId === selected.uuid)) throw new Error("Native history differs from SANE's completed run evidence; external activity must be reconciled");
-    return { boundary: selected.uuid as string, before: undefined, sourceFingerprint: branchFingerprint(native) };
+    requireOperation(descriptor.id, "readHistory");
+    return dispatchHarness(descriptor.id, {
+      opencode: async () => {
+        const history = await oc.history(source.nativeSessionId!, source.cwd);
+        if (history.activity !== "idle") throw new Error("Native OpenCode conversation is active or has pending input");
+        const raw = history.rawMessages;
+        const start = raw.findIndex(m => m.id === (run?.nativeCommandId ?? messageId));
+        if (start < 0) throw new Error("Selected native turn is unavailable");
+        if (!run && raw[start]!.type !== "assistant") throw new Error("Select the final assistant response of a complete turn");
+        let boundary = -1;
+        for (let i = start + 1; i < raw.length; i++) {
+          const m = raw[i]!;
+          if (m.type === "user" || m.type === "synthetic") break;
+          if (!run && m.type === "assistant") throw new Error("This response is a tool fragment, not the complete turn boundary");
+          if (m.type === "idle") { if (m.outcome === "succeeded") boundary = i; break; }
+        }
+        if (boundary < 0) throw new Error("No successful native complete-turn boundary was found");
+        return { boundary: raw[boundary]!.id, before: raw[boundary + 1]?.id, sourceFingerprint: branchFingerprint(raw) };
+      },
+      "claude-code": async () => {
+        if (!run) throw new Error("Branching on this harness requires a SANE-recorded completed run");
+        const assistant = (id: string) => (events.get(id) ?? []).filter(e => e.kind === "stdout" && (e.data as any)?.type === "assistant" && !(e.data as any)?.parent_tool_use_id).at(-1)?.data as any;
+        const selected = assistant(run.runId), latest = source.lastRunId && assistant(source.lastRunId);
+        if (source.lastStatus !== "completed" || !uuid(selected?.uuid) || !uuid(latest?.uuid) || selected.message?.content?.some((p: any) => p.type === "tool_use")) throw new Error("Complete-turn/idle evidence is unavailable for this harness");
+        const native = await readClaudeHistory(source.nativeSessionId!, source.cwd, claudeRoot);
+        if (native.at(-1)?.messageId !== latest.uuid || !native.some(m => m.messageId === selected.uuid)) throw new Error("Native history differs from SANE's completed run evidence; external activity must be reconciled");
+        return { boundary: selected.uuid as string, before: undefined, sourceFingerprint: branchFingerprint(native) };
+      },
+    });
   }
   async function enrollBranch(op: BranchOperation, source: Session) {
     if (!op.nativeId) throw new Error("Native destination identity is unknown; no creation retry is permitted");
@@ -596,11 +616,11 @@ async function startOwned(options: Options, assetsDir: string, packageDir: strin
       if (!op.nativeId) throw new Error("Fork creation is uncertain. Destination is unknown; creation will not be retried. Original memberships are unchanged.");
       const adapter = await branchDomain(source);
       if (!adapter?.domain.branchCompleted(adapter.reference(source), op.id)) {
-        const sourceHistory = source.harness === "opencode" ? await oc.history(source.nativeSessionId!, source.cwd) : { messages: await readClaudeHistory(source.nativeSessionId!, source.cwd, claudeRoot) };
+        const sourceHistory = await dispatchHarness(sessionHarness(source), { opencode: () => oc.history(source.nativeSessionId!, source.cwd), "claude-code": async () => ({ messages: await readClaudeHistory(source.nativeSessionId!, source.cwd, claudeRoot) }) });
         if ("activity" in sourceHistory && sourceHistory.activity !== "idle" || branchFingerprint("rawMessages" in sourceHistory ? sourceHistory.rawMessages : sourceHistory.messages) !== op.sourceFingerprint) throw new Error("Source native history changed or became active during branching. Transfer is blocked; the confirmed native destination is retained for inspection.");
       }
       if (source.harness === "claude-code") await verifyClaudeFork(op.nativeId, source.cwd, source.nativeSessionId!, op.boundary, claudeRoot);
-      const native = source.harness === "opencode" ? await oc.history(op.nativeId, source.cwd) : { messages: await readClaudeHistory(op.nativeId, source.cwd, claudeRoot), activity: "unknown" as const };
+      const native = await readNativeHistory(sessionHarness(source), op.nativeId, source.cwd);
       if (source.harness === "opencode" && native.activity !== "idle") throw new Error("The branch destination is active or has pending input. Wait for it to finish before restarting the App.");
       if (closing || storageFailed) throw new Error("Branch completion paused while the App shuts down");
       op = { ...op, state: "confirmed", error: undefined }; branches.save(op);
@@ -617,6 +637,9 @@ async function startOwned(options: Options, assetsDir: string, packageDir: strin
     try { await task; } finally { branchFinishing.delete(opId); }
   }
   function compactBlocked(session: Session): string | undefined {
+    const descriptor = getHarnessDescriptor(session.harness);
+    if (!descriptor) return "Compaction requires a known native harness";
+    if (!descriptor.operations.compact.supported) return descriptor.operations.compact.reason;
     if (session.agentKind === "worker" || workerStore.hasSession(session.sessionId)) return "Worker conversations cannot be compacted manually";
     if (workers.tree(session.sessionId).some(w => !w.outcome || w.continuation && !["completed", "failed", "interrupted"].includes(w.continuation.state) || workerResults(w).some(r => ["pending", "claimed", "acceptance-unknown"].includes(r.notification.state))) || workerStore.deliveries().some(d => d.parentSessionId === session.sessionId && ["claimed", "acceptance-unknown"].includes(d.state))) return "Finish outstanding workers and worker report deliveries before compacting";
     if (!session.nativeSessionId || !session.harness) return "Compaction requires an existing native conversation";
@@ -624,14 +647,16 @@ async function startOwned(options: Options, assetsDir: string, packageDir: strin
     return undefined;
   }
   async function compactExecution(session: Session) {
+    const descriptor = requireOperation(session.harness, "compact");
     const a = admissions.get(session.sessionId);
-    if (!a || a.state !== "ready" || a.nativeId !== session.nativeSessionId || a.source.authorityId !== session.authorityId || session.authorityId !== nativeSource(session.harness) || a.source.descriptor.harness !== (session.harness === "opencode" ? "oc" : "cc") || a.binding.executionCheckout !== session.cwd) throw new WorkstreamAdapterError(409, "compact-identity", "Native identity, authority or execution pin differs from the admitted conversation");
+    if (!a || a.state !== "ready" || a.nativeId !== session.nativeSessionId || a.source.authorityId !== session.authorityId || session.authorityId !== nativeSource(session.harness) || a.source.descriptor.harness !== descriptor.nativeHarness || a.binding.executionCheckout !== session.cwd) throw new WorkstreamAdapterError(409, "compact-identity", "Native identity, authority or execution pin differs from the admitted conversation");
     const cwd = await execution(session.sessionId);
     if (cwd !== session.cwd) throw new WorkstreamAdapterError(409, "compact-identity", "Compaction cannot change the execution checkout");
     return cwd;
   }
   async function compactEligibility(session: Session): Promise<CompactEligibility> {
-    const eligibility: CompactEligibility = { eligible: false, supportsInstructions: session.harness === "claude-code", nativeActivity: owners.has(session.sessionId) ? "active" : "unknown", ...(session.harness === "claude-code" && session.attachment ? { requiresNativeStopped: true } : {}) };
+    const policies = getHarnessDescriptor(session.harness)?.policies;
+    const eligibility: CompactEligibility = { eligible: false, supportsInstructions: policies?.compactionInstructions ?? false, nativeActivity: owners.has(session.sessionId) ? "active" : "unknown", ...(policies?.attachedSendRequiresNativeStopped && session.attachment ? { requiresNativeStopped: true } : {}) };
     const available = availability(session.sessionId), blocked = compactBlocked(session);
     if (!available.canSend || blocked) return { ...eligibility, reason: available.reason ?? blocked };
     try {
@@ -668,7 +693,7 @@ async function startOwned(options: Options, assetsDir: string, packageDir: strin
     try {
       if (owners.get(session.sessionId) !== owner || closing || storageFailed) return;
       await compactExecution(session);
-      const native = session.harness === "opencode" ? await oc.history(session.nativeSessionId!, session.cwd) : { messages: await readClaudeHistory(session.nativeSessionId!, session.cwd, claudeRoot), activity: "unknown" as const };
+      const native = await readNativeHistory(sessionHarness(session), session.nativeSessionId!, session.cwd);
       if (closing || storageFailed) return;
       if (session.harness === "opencode" && native.activity !== "idle") throw new Error("Native history became active; previous snapshot preserved");
       // Only newly timed main-thread CC boundaries can belong to this run. Old
@@ -686,10 +711,11 @@ async function startOwned(options: Options, assetsDir: string, packageDir: strin
   }
   const compactAdmissions = new Map<string, { instructions?: string; promise: Promise<CompactResponse> }>();
   async function admitCompact(session: Session, input: CompactRequest): Promise<CompactResponse> {
+    const descriptor = requireOperation(session.harness, "compact");
     const available = availability(session.sessionId), blocked = compactBlocked(session);
     if (!available.canSend || blocked) throw new WorkstreamAdapterError(available.code === "capacity" ? 429 : 409, available.code ?? "compact-unavailable", available.reason ?? blocked!);
-    if (session.harness === "opencode" && input.instructions !== undefined) throw new WorkstreamAdapterError(400, "compact-instructions", "OpenCode compaction does not support custom instructions");
-    if (session.harness === "claude-code" && session.attachment && input.nativeStopped !== true) throw new WorkstreamAdapterError(409, "native-acknowledgement-required", "Explicitly acknowledge external Claude execution is stopped before each new compaction request");
+    if (!descriptor.policies.compactionInstructions && input.instructions !== undefined) throw new WorkstreamAdapterError(400, "compact-instructions", "OpenCode compaction does not support custom instructions");
+    if (descriptor.policies.attachedSendRequiresNativeStopped && session.attachment && input.nativeStopped !== true) throw new WorkstreamAdapterError(409, "native-acknowledgement-required", "Explicitly acknowledge external Claude execution is stopped before each new compaction request");
     // Acquire App arbitration before any awaited preflight. Other prompt,
     // handoff, branch and worker-report admissions use the same reservation.
     admitting.add(session.sessionId);
@@ -714,12 +740,26 @@ async function startOwned(options: Options, assetsDir: string, packageDir: strin
         await emit(run, "status", { status: "running", operation: "compact", compactionLifecycle: "requested" });
         await persist();
       } catch (error) { owner.settled = true; finished.resolve(); throw error; }
-      void (owner.native ? ocRuns.executeNativeCompact(owner) : execute(owner, `/compact${input.instructions ? ` ${input.instructions}` : ""}`, true, () => {})).catch(async () => { failClosed(); await terminate(owner); }).finally(() => { owner.settled = true; releaseOwner(owner); finished.resolve(); });
+      void executeCompact(owner, input.instructions).catch(async () => { failClosed(); await terminate(owner); }).finally(() => { owner.settled = true; releaseOwner(owner); finished.resolve(); });
       return { sessionId: session.sessionId, runId: run.runId, operation: projectCompactions(session, [run], events.get(run.runId) ?? [])[0]! };
     } finally { admitting.delete(session.sessionId); }
   }
-  function execute(owner: Owner, prompt: string, resume: boolean, ready: (accepted: boolean) => void) {
-    return claudeRuns.execute(owner, prompt, resume, ready);
+  function ownedSession(owner: Owner) {
+    const session = meta.sessions.find(s => s.sessionId === owner.run.sessionId);
+    if (!session) throw new HarnessOperationError("Run owner conversation is unavailable", 409, "owner-harness-mismatch");
+    return { sessionId: session.sessionId, harness: sessionHarness(session) };
+  }
+  async function executePrompt(owner: Owner, prompt: string, resume: boolean, ready: (accepted: boolean) => void) {
+    return dispatchOwnedOperation(ownedSession(owner), owner, "prompt", {
+      "claude-code": () => claudeRuns.execute(owner, prompt, resume, ready),
+      opencode: () => ocRuns.executeNative(owner, prompt, resume, ready),
+    });
+  }
+  async function executeCompact(owner: Owner, instructions?: string) {
+    return dispatchOwnedOperation(ownedSession(owner), owner, "compact", {
+      "claude-code": () => claudeRuns.execute(owner, `/compact${instructions ? ` ${instructions}` : ""}`, true, () => {}),
+      opencode: () => ocRuns.executeNativeCompact(owner),
+    });
   }
   const ocRuns = new OpenCodeRunService({
     oc, closing: () => closing, storageFailed: () => storageFailed,
@@ -829,9 +869,10 @@ async function startOwned(options: Options, assetsDir: string, packageDir: strin
       }
     },
     async launch(w) {
+      const harness = validateHarness(w.launch.harness);
+      requireOperation(harness, "prompt");
       workerStore.update(w.id, { state: "launching" });
       const parentAdmission = admissions.get(w.parent.sessionId)!;
-      const harness = w.launch.harness;
       admitting.add(w.sessionId);
       try {
         if (closing || storageFailed) throw new Error("App unavailable before worker creation");
@@ -855,7 +896,7 @@ async function startOwned(options: Options, assetsDir: string, packageDir: strin
         const owner: Owner = { run, native: harness === "opencode", done: finished.promise, settled: false };
         owners.set(w.sessionId, owner); session.lastRunId = run.runId; session.lastStatus = "running"; meta.runs.push(run); events.set(run.runId, []);
         const prompt = w.input.context === undefined ? w.input.prompt : `${w.input.prompt}\n\nSupplied context:\n${w.input.context}`;
-        void (owner.native ? ocRuns.executeNative(owner, prompt, false, () => {}) : execute(owner, prompt, false, () => {})).catch(async () => { failClosed(); await terminate(owner); }).finally(async () => {
+        void executePrompt(owner, prompt, false, () => {}).catch(async () => { failClosed(); await terminate(owner); }).finally(async () => {
           owner.settled = true; releaseOwner(owner); finished.resolve();
           try { if (!storageFailed) await workers.refresh(workerStore.get(w.id)!); } catch { failClosed(); }
         });
@@ -961,6 +1002,7 @@ async function startOwned(options: Options, assetsDir: string, packageDir: strin
     const problem = (message: string) => workerStore.pendingProblem(parentSessionId, message);
     const session = meta.sessions.find(s => s.sessionId === parentSessionId);
     if (!session) return problem("Parent session unavailable; outcomes retained for inspection");
+    requireOperation(sessionHarness(session), "prompt");
     // Hidden is a reversible soft-hide: retain outcomes and pause automatic turns.
     if (session.hidden) return problem("Parent is soft-hidden; unhide to restore report eligibility. Explicit stop suppression still requires user submission.");
     if (workerStore.suppressed(parentSessionId)) return problem("Automatic continuation stopped; explicit user submission resumes report eligibility");
@@ -991,7 +1033,7 @@ async function startOwned(options: Options, assetsDir: string, packageDir: strin
     owners.set(parentSessionId, owner); session.lastRunId = run.runId; session.lastStatus = "running"; meta.runs.push(run); events.set(run.runId, []);
     if (workerParent) workerStore.update(workerParent.id, { state: "running", continuation: { runId: run.runId, state: "running" }, continuationCancellation: undefined });
     const prompt = workerReportPrompt(d, workerStore.listForDelivery(d));
-    void (owner.native ? ocRuns.executeNative(owner, prompt, true, () => {}) : execute(owner, prompt, true, () => {})).catch(async () => { failClosed(); await terminate(owner); }).finally(async () => {
+    void executePrompt(owner, prompt, true, () => {}).catch(async () => { failClosed(); await terminate(owner); }).finally(async () => {
       owner.settled = true; releaseOwner(owner); finished.resolve();
       try { if (!storageFailed) { await reconcileWorkerDelivery(d); if (workerParent) await workers.refresh(workerStore.get(workerParent.id)!); } } catch { failClosed(); }
     });
@@ -1009,6 +1051,7 @@ async function startOwned(options: Options, assetsDir: string, packageDir: strin
   const workerOutbox = { list: () => workerStore.deliveries(), reconcile: async (id: string) => { const d = workerStore.deliveries().find(d => d.id === id); if (!d) throw new WorkstreamAdapterError(404, "worker-delivery-missing", "Unknown worker delivery"); return reconcileWorkerDelivery(d); } };
 
   async function cancelOwner(owner: Owner) {
+    requireOwnedOperation(ownedSession(owner), owner, "cancelOwnedRun");
     if (!owner.cancel) {
       owner.cancelling = true; owner.stopRequested = true;
       owner.cancel = (async () => {
@@ -1046,7 +1089,8 @@ async function startOwned(options: Options, assetsDir: string, packageDir: strin
     if (!availability(h.recipient.sessionId, true, true, true).canSend || handoffReservations.has(h.recipient.sessionId)) return;
     h = await prepareHandoffRecipient(workspaceId, id);
     const session = meta.sessions.find(s => s.sessionId === h.recipient.sessionId)!;
-    if (session.attachment && session.harness !== "opencode" && !handoffAcknowledgements.has(h.id)) throw new WorkstreamAdapterError(409, "native-acknowledgement-required", "Confirm external assistant execution is stopped with the handoff acknowledge endpoint before delivery");
+    const descriptor = requireOperation(sessionHarness(session), "prompt");
+    if (session.attachment && descriptor.policies.attachedSendRequiresNativeStopped && !handoffAcknowledgements.has(h.id)) throw new WorkstreamAdapterError(409, "native-acknowledgement-required", "Confirm external assistant execution is stopped with the handoff acknowledge endpoint before delivery");
     if (!availability(session.sessionId, true, true).canSend || handoffReservations.has(session.sessionId)) return;
     admitting.add(session.sessionId);
     try {
@@ -1094,7 +1138,7 @@ async function startOwned(options: Options, assetsDir: string, packageDir: strin
           : "The sender has no eligible original reply slot in this workstream now. Report this membership/assignment authority restriction; an exact reply cannot bypass it or be redirected to another conversation.",
         "", h.input.message,
       ].join("\n");
-      void (owner.native ? ocRuns.executeNative(owner, prompt, resume, () => {}) : execute(owner, prompt, resume, () => {})).catch(async () => { failClosed(); await terminate(owner); }).finally(async () => {
+      void executePrompt(owner, prompt, resume, () => {}).catch(async () => { failClosed(); await terminate(owner); }).finally(async () => {
         try { if (!storageFailed) await reconcileHandoff(workspaceId, h.id); } catch { failClosed(); }
         owner.settled = true; releaseOwner(owner); finished.resolve();
       });
@@ -1138,8 +1182,8 @@ async function startOwned(options: Options, assetsDir: string, packageDir: strin
       if (path === "/api/config" && req.method === "GET") {
         const signedIn = auth.authenticated(req);
         return json({ authRequired: !!password, authenticated: signedIn, cwd: signedIn ? options.cwd : null, oneShot: true, ...(signedIn ? { capabilities: { concurrency: { scope: "conversation", limit: maxConcurrentRuns, perConversation: 1, sharedCheckoutWrites: true }, cancelRun: true, midRunInput: false, permissionReplies: true, attachments: false, modelSelection: true, effortValues: efforts, terminal: terminals.capability }, agents: ASSISTANT_AGENT_IDS.map(id => ({ id, label: ASSISTANT_AGENT_LABELS[id], description: ASSISTANT_AGENT_DESCRIPTIONS[id] })), agentProfiles, harnesses: [
-          { id: "claude-code", name: "Claude Code", available: true, connected: true, state: "available", capabilities: { cancelRun: true, permissionReplies: false, questionReplies: false, modelSelection: true, effortValues: efforts } },
-          { id: "opencode", name: "OpenCode", ...await oc.connection(options.cwd), capabilities: { cancelRun: true, permissionReplies: true, questionReplies: true, modelSelection: true } },
+          { id: "claude-code", name: getHarnessDescriptor("claude-code")!.label, available: true, connected: true, state: "available", capabilities: capabilitiesFor("claude-code") },
+          { id: "opencode", name: getHarnessDescriptor("opencode")!.label, ...await oc.connection(options.cwd), capabilities: capabilitiesFor("opencode") },
         ] } : {}) });
       }
       if (path === "/api/login" && req.method === "POST") return await auth.login(req, expected);
@@ -1401,9 +1445,14 @@ async function startOwned(options: Options, assetsDir: string, packageDir: strin
           return json({ error: "Method not allowed", code: "method-not-allowed" }, 405);
         } catch (error) { const failure = workspaceError(error); return json({ error: failure.message, code: failure.code }, failure.status); }
       }
-      if (path === "/api/harnesses/opencode/models" && req.method === "GET") {
+      const modelsRoute = /^\/api\/harnesses\/([^/]+)\/models$/.exec(path);
+      if (modelsRoute && req.method === "GET") {
+        const descriptor = requireOperation(modelsRoute[1], "listModels");
         const cwd = resolve(url.searchParams.get("cwd") ?? options.cwd);
-        return json({ models: await oc.models(cwd) });
+        return await dispatchHarness(descriptor.id, {
+          "claude-code": () => { throw new HarnessOperationError("This harness has no live model catalog", 501, "unsupported-harness-operation"); },
+          opencode: async () => json({ models: await oc.models(cwd) }),
+        });
       }
       const workerCancel = /^\/api\/sessions\/([^/]+)\/workers\/cancel$/.exec(path);
       if (workerCancel && req.method === "POST") {
@@ -1453,7 +1502,8 @@ async function startOwned(options: Options, assetsDir: string, packageDir: strin
         const input = await body(req);
         if (!input || !uuid(input.requestId)) return json({ error: "A durable branch request ID is required" }, 400);
         if (input.runId !== undefined && !uuid(input.runId) || input.messageId !== undefined && (typeof input.messageId !== "string" || !/^msg_[a-zA-Z0-9_-]+$/.test(input.messageId))) return json({ error: "Invalid complete-turn selector" }, 400);
-        if (typeof input.prompt !== "string" || input.prompt.length > 100000 || typeof input.replace !== "boolean" || source.harness === "claude-code" && !input.prompt.trim()) return json({ error: "Provide Replace original and a first message (required for this harness)" }, 400);
+        const descriptor = requireOperation(sessionHarness(source), "branch");
+        if (typeof input.prompt !== "string" || input.prompt.length > 100000 || typeof input.replace !== "boolean" || descriptor.policies.branchRequiresPrompt && !input.prompt.trim()) return json({ error: "Provide Replace original and a first message (required for this harness)" }, 400);
         const selector = input.runId ? `run:${input.runId}` : `message:${input.messageId ?? ""}`;
         const previous = branches.get(input.requestId);
         if (previous) {
@@ -1481,7 +1531,10 @@ async function startOwned(options: Options, assetsDir: string, packageDir: strin
           // Recheck the exact native cutoff after the durable domain reservation.
           if (JSON.stringify(await branchBoundary(source, input.runId, input.messageId)) !== JSON.stringify(boundary)) throw new Error("Native history changed while reserving the branch");
           const beforeFork = () => { if (closing || storageFailed) throw new Error("Bridge unavailable before native fork"); op = { ...op!, state: "creation_unknown" }; branches.save(op); };
-          const nativeId = source.harness === "opencode" ? (await oc.fork(source.nativeSessionId!, source.cwd, op.boundary, op.before, beforeFork)).id : (await forkClaudeHistory(source.nativeSessionId!, source.cwd, op.boundary, claudeRoot, beforeFork)).sessionId;
+          const nativeId = await dispatchHarness(descriptor.id, {
+            opencode: async () => (await oc.fork(source.nativeSessionId!, source.cwd, op!.boundary, op!.before, beforeFork)).id,
+            "claude-code": async () => (await forkClaudeHistory(source.nativeSessionId!, source.cwd, op!.boundary, claudeRoot, beforeFork)).sessionId,
+          });
           op = { ...op, nativeId, state: "confirmed" }; branches.save(op);
           const destination = await enrollBranch(op, source);
           await finishBranch(op.id);
@@ -1489,12 +1542,12 @@ async function startOwned(options: Options, assetsDir: string, packageDir: strin
             const run: Run = { runId: crypto.randomUUID(), sessionId: destination.sessionId, cwd: destination.cwd, status: "running", createdAt: new Date().toISOString(), model: destination.model, effort: destination.effort, agent: destination.agent, agentKind: destination.agentKind, nativeAgentSelected: destination.nativeAgentSelected, profileId: sessionProfileId(destination) };
             branches.save({ ...branches.get(op.id)!, firstRunId: run.runId });
             const done = Promise.withResolvers<void>(), accepted = Promise.withResolvers<boolean>();
-            const owner: Owner = { run, native: source.harness === "opencode", done: done.promise, settled: false };
+            const owner: Owner = { run, native: sessionHarness(destination) === "opencode", done: done.promise, settled: false };
             owners.set(destination.sessionId, owner);
             if (owner.native) { run.nativeCommandId = `msg_${crypto.randomUUID().replaceAll("-", "")}`; run.nativePhase = "preparing"; }
             destination.lastRunId = run.runId; destination.lastStatus = "running"; meta.runs.push(run); events.set(run.runId, []);
             const effectivePrompt = owner.native && isStoredAssistantAgentId(destination.agent) && !destination.nativeAgentSelected ? `[SANE role: ${storedAssistantLabel(destination.agent)} assistant. Follow the SANE ${storedAssistantLabel(destination.agent)} assistant procedures for this conversation.]\n\n${input.prompt}` : input.prompt;
-            void (owner.native ? ocRuns.executeNative(owner, effectivePrompt, true, accepted.resolve) : execute(owner, effectivePrompt, true, accepted.resolve)).catch(() => { failClosed(); accepted.resolve(false); }).finally(() => { owner.settled = true; releaseOwner(owner); done.resolve(); });
+            void executePrompt(owner, effectivePrompt, true, accepted.resolve).catch(() => { failClosed(); accepted.resolve(false); }).finally(() => { owner.settled = true; releaseOwner(owner); done.resolve(); });
             await accepted.promise;
           }
           return json({ sessionId: destination.sessionId, operation: branches.get(op.id) }, 201);
@@ -1549,7 +1602,8 @@ async function startOwned(options: Options, assetsDir: string, packageDir: strin
       if (path === "/api/sessions/attach" && req.method === "POST") {
         const input = await body(req);
         const harness = input?.harness, nativeSessionId = input?.nativeSessionId, cwd = input?.cwd;
-        if (!["claude-code", "opencode"].includes(harness) || (harness === "claude-code" ? !uuid(nativeSessionId) : typeof nativeSessionId !== "string" || !/^ses[a-zA-Z0-9_-]{1,200}$/.test(nativeSessionId)) || typeof cwd !== "string" || !isAbsolute(cwd) || cwd.includes("\0")) return json({ error: "Provide harness, valid native session ID and absolute execution directory" }, 400);
+        if (!isHarness(harness) || (harness === "claude-code" ? !uuid(nativeSessionId) : typeof nativeSessionId !== "string" || !/^ses[a-zA-Z0-9_-]{1,200}$/.test(nativeSessionId)) || typeof cwd !== "string" || !isAbsolute(cwd) || cwd.includes("\0")) return json({ error: "Provide harness, valid native session ID and absolute execution directory" }, 400);
+        requireOperation(harness, "attachHistory");
         const key = `${harness}:${nativeSessionId}`;
         let session = meta.sessions.find(s => (s.harness ?? "claude-code") === harness && (s.nativeSessionId ?? s.sessionId) === nativeSessionId);
         if (session && session.attachment?.state !== "pending") return json({ error: "Native conversation is already attached", sessionId: session.sessionId }, 409);
@@ -1571,7 +1625,7 @@ async function startOwned(options: Options, assetsDir: string, packageDir: strin
           const catalogSelection = await catalog.register(cwd);
           if (!admissions.get(sessionId)) await admissions.begin({ sessionId, operation: "attach", harness: harness === "opencode" ? "oc" : "cc", nativeId: nativeSessionId, cwd, workspaceId: catalogSelection.workspaceId, worktreeId: catalogSelection.worktreeId });
           const candidate: Session = session ?? { sessionId, nativeSessionId, authorityId: nativeSource(harness), harness, cwd, lastStatus: "unknown", lastRunId: null, attachment: { state: "pending", source: nativeSource(harness) } };
-          const native = harness === "opencode" ? await oc.history(nativeSessionId, cwd) : { messages: await readClaudeHistory(nativeSessionId, cwd, claudeRoot), activity: "unknown" as const };
+          const native = await readNativeHistory(harness, nativeSessionId, cwd);
           if (!native.messages.length) throw new OpenCodeError("Native transcript is empty; nothing attached", 409);
           if (native.activity === "active") throw new OpenCodeError("Native conversation is active or has pending input; finish it in OpenCode before attaching", 409);
           if (closing || storageFailed) throw new OpenCodeError("Bridge unavailable", 503);
@@ -1624,6 +1678,9 @@ async function startOwned(options: Options, assetsDir: string, packageDir: strin
         const input = await body(req);
         if (!input || typeof input.prompt !== "string" || !input.prompt.trim() || (input.cwd !== undefined && typeof input.cwd !== "string") || (input.sessionId !== undefined && typeof input.sessionId !== "string")) return json({ error: "Invalid request" }, 400);
         if (compactCommand(input.prompt)) return json({ error: "Use the dedicated Compact action for /compact; it requires an existing idle conversation and a durable request ID", code: "compact-action-required" }, 400);
+        // Reject a supplied unknown/null harness even when a profile subsequently
+        // overrides legacy selection fields. Only actual omission is compatible.
+        if (input.harness !== undefined) validateHarness(input.harness);
         let session = input.sessionId ? meta.sessions.find(s => s.sessionId === input.sessionId) : undefined;
         if (input.sessionId !== undefined && !session) return json({ error: "Unknown session" }, 404);
         // Agent profile selection: resolves harness/model/effort/agent and wins
@@ -1653,12 +1710,12 @@ async function startOwned(options: Options, assetsDir: string, packageDir: strin
         } else if (historical) {
           Object.assign(input, { harness: undefined, model: undefined, effort: undefined, agent: undefined });
         }
-        const harness = input.harness ?? session?.harness ?? "claude-code";
-        if (!["claude-code", "opencode"].includes(harness)) return json({ error: "Unknown harness" }, 400);
-        if (session && (session.harness ?? "claude-code") !== harness) return json({ error: "Session harness cannot change" }, 400);
-        if (session?.attachment && harness === "claude-code" && input.nativeStopped !== true) return json({ error: "External assistant activity is unknown. Explicitly acknowledge external execution is stopped before each SANE submission.", code: "native-acknowledgement-required" }, 409);
+        const harness = validateHarness(input.harness !== undefined ? input.harness : session?.harness, { defaultHarness: "claude-code" });
+        const descriptor = requireOperation(harness, "prompt");
+        if (session && sessionHarness(session) !== harness) return json({ error: "Session harness cannot change" }, 400);
+        if (session?.attachment && descriptor.policies.attachedSendRequiresNativeStopped && input.nativeStopped !== true) return json({ error: "External assistant activity is unknown. Explicitly acknowledge external execution is stopped before each SANE submission.", code: "native-acknowledgement-required" }, 409);
         if (input.model !== undefined && !validModel(input.model)) return json({ error: "Invalid model ID" }, 400);
-        if (input.effort !== undefined && !(harness === "opencode" ? validVariant(input.effort) : validEffort(input.effort))) return json({ error: harness === "opencode" ? "Invalid native variant ID" : "effort must be low, medium, high, xhigh, or max" }, 400);
+        if (input.effort !== undefined && !(descriptor.policies.effortMode === "model-variant" ? validVariant(input.effort) : validEffort(input.effort))) return json({ error: descriptor.policies.effortMode === "model-variant" ? "Invalid native variant ID" : "effort must be low, medium, high, xhigh, or max" }, 400);
         if (input.agent !== undefined && !isAssistantAgentId(input.agent)) return json({ error: "Unknown agent" }, 400);
         if (session && session.agent !== undefined && input.agent !== undefined && session.agent !== input.agent) return json({ error: "Session agent cannot change" }, 400);
         if (harness === "opencode" && input.model !== undefined) oc.model(input.model, input.effort);
@@ -1734,7 +1791,7 @@ async function startOwned(options: Options, assetsDir: string, packageDir: strin
           ? `[SANE role: ${storedAssistantLabel(agent)} assistant. Follow the SANE ${storedAssistantLabel(agent)} assistant procedures for this conversation.]\n\n${input.prompt}`
           : input.prompt;
         // Install the complete lifecycle promise before any asynchronous work.
-        void (harness === "opencode" ? ocRuns.executeNative(owner, effectivePrompt, resume, accepted.resolve) : execute(owner, effectivePrompt, resume, accepted.resolve)).catch(async () => {
+        void executePrompt(owner, effectivePrompt, resume, accepted.resolve).catch(async () => {
           failClosed(); await terminate(owner); accepted.resolve(false);
         }).finally(() => { owner.settled = true; releaseOwner(owner); finished.resolve(); });
         if (!(await accepted.promise)) return json({ error: owner.launchError ?? "Run could not start; operator reconciliation may be required" }, 503);
@@ -1764,6 +1821,7 @@ async function startOwned(options: Options, assetsDir: string, packageDir: strin
       if (reconciliation) {
         const session = meta.sessions.find(s => s.sessionId === reconciliation[1]);
         if (!session) return json({ error: "Unknown session" }, 404);
+        requireOperation(sessionHarness(session), "readHistory");
         if (reconciliation[2] === "native-history" && req.method === "GET") {
           return json({ history: await storedNativeHistory(session) ?? null });
         }
@@ -1774,7 +1832,7 @@ async function startOwned(options: Options, assetsDir: string, packageDir: strin
         try {
           await execution(session.sessionId);
           const nativeSessionId = session.nativeSessionId ?? session.sessionId;
-          const native = session.harness === "opencode" ? await oc.history(nativeSessionId, session.cwd) : { messages: await readClaudeHistory(nativeSessionId, session.cwd, claudeRoot), activity: "unknown" as const };
+          const native = await readNativeHistory(sessionHarness(session), nativeSessionId, session.cwd);
           if (!native.messages.length) return json({ error: "Native transcript is empty; previous history preserved" }, 409);
           if (closing || storageFailed) return json({ error: "Bridge unavailable" }, 503);
           const history: ReconciledHistory = { sessionId: session.sessionId, nativeSessionId, importedAt: new Date().toISOString(), ...native,
@@ -1791,6 +1849,9 @@ async function startOwned(options: Options, assetsDir: string, packageDir: strin
         const session = meta.sessions.find(s => s.sessionId === (interactionMatch ?? cancelMatch)![1]);
         if (!session) return json({ error: "Unknown session" }, 404);
         if (cancelMatch && req.method === "POST") {
+          requireOperation(sessionHarness(session), "cancelOwnedRun");
+          const currentOwner = owners.get(session.sessionId);
+          if (currentOwner) requireOwnedOperation({ sessionId: session.sessionId, harness: sessionHarness(session) }, currentOwner, "cancelOwnedRun");
           if (closing || storageFailed) return json({ error: "Bridge unavailable; cancellation state must be checked in the native harness" }, 503);
           workerStore.suppress(session.sessionId, true); // Persist even when the parent is already idle. Never cascade.
           const worker = workerStore.getBySession(session.sessionId);
@@ -1818,9 +1879,18 @@ async function startOwned(options: Options, assetsDir: string, packageDir: strin
             throw error;
           }
         }
-        if (session.harness !== "opencode") return interactionMatch && req.method === "GET" ? json({ interactions: [] }) : json({ error: "This harness's one-shot mode does not support this operation" }, 501);
-        if (interactionMatch && !interactionMatch[2] && req.method === "GET") return json({ interactions: await oc.interactions(session.nativeSessionId!) });
-        if (interactionMatch?.[2] && req.method === "POST") { await oc.reply(session.nativeSessionId!, decodeURIComponent(interactionMatch[2]), await body(req)); return json({ ok: true }); }
+        const descriptor = getHarnessDescriptor(sessionHarness(session))!;
+        if (!descriptor.operations.listInteractions.supported) return interactionMatch && req.method === "GET" ? json({ interactions: [] }) : json({ error: "This harness's one-shot mode does not support this operation" }, 501);
+        if (interactionMatch && !interactionMatch[2] && req.method === "GET") {
+          requireOperation(descriptor.id, "listInteractions");
+          return json({ interactions: await oc.interactions(session.nativeSessionId!) });
+        }
+        if (interactionMatch?.[2] && req.method === "POST") {
+          const reply = await body(req);
+          if (!reply || (reply.type !== "permission" && reply.type !== "question")) return json({ error: "Invalid interaction reply type" }, 400);
+          requireOperation(descriptor.id, reply.type === "permission" ? "permissionReply" : "questionReply");
+          await oc.reply(session.nativeSessionId!, decodeURIComponent(interactionMatch[2]), reply); return json({ ok: true });
+        }
         return json({ error: "Method not allowed" }, 405);
       }
       const visibilityMatch = /^\/api\/sessions\/([^/]+)\/(hide|unhide)$/.exec(path);
@@ -1956,7 +2026,7 @@ async function startOwned(options: Options, assetsDir: string, packageDir: strin
       catch { return json({ error: "Not found" }, 404); }
       const asset = Bun.file(file);
       return new Response(req.method === "HEAD" ? null : asset, { headers: { "content-type": asset.type, "cache-control": "no-store", "x-content-type-options": "nosniff" } });
-    } catch (error) { return error instanceof WorkstreamAdapterError ? json({ error: error.message, code: error.code }, error.status) : error instanceof DomainError ? json({ error: error.message, code: error.code }, error.code === "NOT_FOUND" ? 404 : 409) : error instanceof WorkspaceError ? json({ error: error.message, code: error.code }, error.status) : error instanceof OpenCodeError ? json({ error: error.message }, [400, 404, 409].includes(error.status) ? error.status : 503) : json({ error: "Invalid request" }, 400); }
+    } catch (error) { return error instanceof HarnessOperationError || error instanceof WorkstreamAdapterError ? json({ error: error.message, code: error.code }, error.status) : error instanceof DomainError ? json({ error: error.message, code: error.code }, error.code === "NOT_FOUND" ? 404 : 409) : error instanceof WorkspaceError ? json({ error: error.message, code: error.code }, error.status) : error instanceof OpenCodeError ? json({ error: error.message }, [400, 404, 409].includes(error.status) ? error.status : 503) : json({ error: "Invalid request" }, 400); }
   }
   const server = Bun.serve<TerminalSocketData>({ hostname: options.host, port: options.port, maxRequestBodySize: 1024 * 1024, websocket: terminals.websocket, fetch: (req, srv) => handle(req, srv, (request, data) => srv.upgrade(request, { data })) });
   let hookServer: Bun.Server<undefined>;
@@ -1967,10 +2037,14 @@ async function startOwned(options: Options, assetsDir: string, packageDir: strin
   catch (error) { await server.stop(true); await hookServer.stop(true); throw error; }
   // Start recovery only after both listeners are acquired. A port-bind failure
   // must not leave observers writing after startup releases the ownership lock.
-  for (const recovering of meta.runs.filter(r => r.status === "running" && meta.sessions.find(s => s.sessionId === r.sessionId)?.harness === "opencode")) {
+  for (const recovering of meta.runs.filter(r => r.status === "running" && getHarnessDescriptor(sessionHarness(meta.sessions.find(s => s.sessionId === r.sessionId)!))!.operations.recoverRun.supported)) {
+    const descriptor = requireOperation(sessionHarness(meta.sessions.find(s => s.sessionId === recovering.sessionId)!), "recoverRun");
     const finished = Promise.withResolvers<void>();
-    const owner: Owner = { run: recovering, native: true, done: finished.promise, settled: false }; owners.set(recovering.sessionId, owner);
-    void (recovering.operation === "compact" ? ocRuns.recoverNativeCompact(owner) : recovering.nativePhase === "preparing" ? ocRuns.finishNative(owner, "failed", "Bridge restarted before native submission") : ocRuns.monitorNative(owner))
+    const owner: Owner = { run: recovering, native: descriptor.nativeHarness === "oc", done: finished.promise, settled: false }; owners.set(recovering.sessionId, owner);
+    void Promise.resolve().then(() => dispatchOwnedOperation(ownedSession(owner), owner, "recoverRun", {
+      "claude-code": () => { throw new HarnessOperationError("Claude process ownership cannot be recovered", 501, "unsupported-harness-operation"); },
+      opencode: () => recovering.operation === "compact" ? ocRuns.recoverNativeCompact(owner) : recovering.nativePhase === "preparing" ? ocRuns.finishNative(owner, "failed", "Bridge restarted before native submission") : ocRuns.monitorNative(owner),
+    }))
       .catch(() => { failClosed(); }).finally(async () => { owner.settled = true; releaseOwner(owner); finished.resolve(); const w = workerStore.getByRun(recovering.runId); if (w && !storageFailed) { try { await workers.refresh(w); } catch { failClosed(); } } });
   }
   // Recover selection only from the native identity recorded by admission. Never replay a creation or prompt.

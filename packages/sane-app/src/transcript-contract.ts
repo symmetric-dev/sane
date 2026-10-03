@@ -62,8 +62,8 @@
  * Messages always contain the full recorded text, reasoning, and tool payloads.
  * Lazy loading applies to older messages, never to parts of a message.
  */
-import type { Message, RunMetadata } from "../frontend/types";
-import type { CompactionRecord } from "./oc-contract";
+import type { Message, RunMetadata } from "../shared/conversation/types";
+import type { CompactionRecord } from "../shared/conversation/native-contract";
 
 export type TranscriptMessage = Message & {
   version: string;

@@ -11,5 +11,5 @@
     "types": ["bun"],
     "allowImportingTsExtensions": true
   },
-  "include": ["start.ts", "setup.ts", "server.ts", "build.ts", "src/**/*.ts", "hooks/**/*.ts", "frontend/**/*.ts", "frontend/**/*.tsx", "tests/**/*.ts"]
+  "include": ["start.ts", "setup.ts", "server.ts", "build.ts", "src/**/*.ts", "shared/**/*.ts", "hooks/**/*.ts", "frontend/**/*.ts", "frontend/**/*.tsx", "tests/**/*.ts"]
 }

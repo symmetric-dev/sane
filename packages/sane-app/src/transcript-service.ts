@@ -1,14 +1,14 @@
 import { createHash, createHmac, randomBytes, timingSafeEqual } from "node:crypto";
 import { readFile, stat } from "node:fs/promises";
 import { join } from "node:path";
-import { consume, createRun } from "../frontend/cc-reducer";
-import { transcriptMessages } from "../frontend/transcript";
-import { contextUsageFor } from "../frontend/context-usage";
-import { compactionsFor, compactionPositions } from "../frontend/compaction";
-import { sentHandoffs } from "../frontend/handoff-presentation";
-import type { Message, Run as DisplayRun, RunMetadata } from "../frontend/types";
+import { consume, createRun } from "../shared/conversation/cc-reducer";
+import { transcriptMessages } from "../shared/conversation/transcript";
+import { contextUsageFor } from "../shared/conversation/context-usage";
+import { compactionsFor, compactionPositions } from "../shared/conversation/compaction";
+import { sentHandoffs } from "../shared/conversation/handoff-matching";
+import type { Message, Run as DisplayRun, RunMetadata } from "../shared/conversation/types";
 import type { Event, Run, Session } from "./history";
-import type { ReconciledHistory } from "./reconcile";
+import type { ReconciledHistory } from "../shared/conversation/native-history-contract";
 import { TRANSCRIPT_MAX_MESSAGES, TRANSCRIPT_PAGE_BYTES, type TranscriptCompaction, type TranscriptMessage, type TranscriptMetadataItem, type TranscriptMetadataPage, type TranscriptPage, type TranscriptRefresh, type TranscriptRefreshRequest, type TranscriptRunMetadata, type TranscriptSendAnchor, type TranscriptSummary, type TranscriptUsage } from "./transcript-contract";
 
 export class TranscriptError extends Error {

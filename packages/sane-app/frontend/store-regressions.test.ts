@@ -36,6 +36,9 @@ for (const action of ["reply", "cancel", "reconcile"] as const) for (const stale
   test(`${action}: A→B→A ignores stale ${staleFails ? "failure" : "success"}, old settles ${oldFirst ? "first" : "last"}`, async () => {
     const old = Promise.withResolvers<any>(), fresh = Promise.withResolvers<any>(); let calls = 0;
     const f = fixture({ [action]: () => (++calls === 1 ? old.promise : fresh.promise) });
+    if (action === "reply" && (staleFails || oldFirst)) {
+      f.store.state.conversations = ["A", "B"].map(id => ({ id, nativeSessionId: `ses_${id}`, harness: "opencode", cwd: "/fixture", lastRunId: null, status: "completed" }));
+    }
     const run = () => action === "reply" ? f.store.reply("permission", { type: "permission", decision: "once" }) : f.store[action]();
     const result = (marker: string) => action === "reconcile" ? { history: history(marker) } : { interrupted: true };
     try {

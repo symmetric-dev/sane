@@ -21,11 +21,12 @@ export function CompactionMarkers({ records = [] }: { records?: CompactionRecord
 
 export function CompactControl({ state }: { state: State }) {
   const reason = store.compactUnavailable();
+  if (!store.capabilities().compaction) return null;
   return <button type="button" className="text-button compact-control" aria-haspopup="dialog" disabled={!state.selected} title={reason || "Summarize this conversation’s context without sending a message."} onClick={() => store.openCompact()}>Compact now</button>;
 }
 
 export function CompactDialog({ state }: { state: State }) {
-  return state.compactDialog && state.compactDialog === state.selected ? <CompactDialogBody key={state.selected} state={state} /> : null;
+  return store.capabilities().compaction && state.compactDialog && state.compactDialog === state.selected ? <CompactDialogBody key={state.selected} state={state} /> : null;
 }
 
 function CompactDialogBody({ state }: { state: State }) {
@@ -38,7 +39,8 @@ function CompactDialogBody({ state }: { state: State }) {
   const locked = busy || uncertain;
   const eligibility = state.compactState?.eligibility;
   const reason = store.compactUnavailable();
-  const needsAck = eligibility?.requiresNativeStopped;
+  const capabilities = store.capabilities();
+  const needsAck = eligibility?.requiresNativeStopped || capabilities.attachedSendRequiresNativeStopped && !!state.conversations.find(c => c.id === state.selected)?.attachment;
   const instructions = locked ? pending?.payload.instructions ?? "" : state.compactInstructions?.[state.selected] ?? "";
   const visibleOperations = state.compactions?.slice(-3);
   return <ShellDialog title="Compact context" className="compact-dialog" close={store.closeCompact}>
@@ -50,7 +52,7 @@ function CompactDialogBody({ state }: { state: State }) {
     }}>
       <p className="muted">Summarize the existing context in the native harness. This is not a conversation turn. Your message draft and pending agent upgrade are preserved.</p>
       {reason && <p className="notice" role="status">{reason}</p>}
-      {store.harness() === "claude-code" && eligibility?.supportsInstructions && <label htmlFor={instructionsId}>Instructions <span className="muted">(optional)</span><textarea id={instructionsId} rows={4} maxLength={100000} value={instructions} readOnly={locked} placeholder="What should the summary preserve?" onChange={event => store.setCompactInstructions(event.target.value)} /></label>}
+      {capabilities.compactionInstructions && eligibility?.supportsInstructions && <label htmlFor={instructionsId}>Instructions <span className="muted">(optional)</span><textarea id={instructionsId} rows={4} maxLength={100000} value={instructions} readOnly={locked} placeholder="What should the summary preserve?" onChange={event => store.setCompactInstructions(event.target.value)} /></label>}
       {needsAck && <label className="notice compact-ack"><input type="checkbox" checked={nativeStopped} disabled={busy} onChange={event => setNativeStopped(event.target.checked)} />I confirm external assistant execution for this conversation is stopped before compacting.</label>}
       {busy && <p role="status" className="notice">Requesting compaction…</p>}
       {uncertain && <p role="status" className="notice">Acceptance is unconfirmed. This request will not be retried automatically. Check status or explicitly resume the same request.</p>}

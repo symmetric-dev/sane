@@ -272,12 +272,13 @@ export class OpenCodeAdapter {
     return [...permissions.data.map(p => ({ id: p.id, type: "permission" as const, title: p.action, description: [p.message, ...p.resources].filter(Boolean).join("\n"), options: [{ id: "once", name: "Allow once" }, { id: "always", name: "Always allow" }, { id: "reject", name: "Reject" }] })), ...forms.data.map(f => ({ id: f.id, type: "question" as const, title: f.title, fields: f.fields }))];
   }
   async reply(id: string, interactionId: string, reply: InteractionReply) {
+    if (!reply || (reply.type !== "permission" && reply.type !== "question")) throw new OpenCodeError("Invalid interaction reply type", 400);
     const pending = (await this.interactions(id)).find(i => i.id === interactionId && i.type === reply.type);
     if (!pending) throw new OpenCodeError("Unknown pending interaction", 404);
     if (reply.type === "permission") {
       if (!["once", "always", "reject"].includes(reply.decision) || (reply.message !== undefined && typeof reply.message !== "string")) throw new OpenCodeError("Invalid permission decision", 400);
       await this.request(this.path(id) + `/permission/${encodeURIComponent(interactionId)}/reply`, "POST", { decision: reply.decision, ...(reply.message === undefined ? {} : { message: reply.message }) });
-    } else {
+    } else if (reply.type === "question") {
       if (!reply.answer || typeof reply.answer !== "object" || Array.isArray(reply.answer)) throw new OpenCodeError("Invalid form answer", 400);
       await this.request(this.path(id) + `/form/${encodeURIComponent(interactionId)}/reply`, "POST", { answer: reply.answer });
     }
