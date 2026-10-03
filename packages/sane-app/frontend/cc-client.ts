@@ -1,17 +1,21 @@
 import type { ConversationClient, RunMetadata, RunStatus } from "./types";
 
 export class ApiError extends Error {
-  constructor(message: string, readonly status: number) { super(message); }
+  constructor(message: string, readonly status: number, readonly code?: string) { super(message); }
 }
 export async function request(path: string, init: RequestInit = {}) {
   const response = await fetch(path, { credentials: "same-origin", cache: "no-store", ...init,
     headers: { "Content-Type": "application/json", ...init.headers },
     signal: init.signal ?? AbortSignal.timeout(25000) });
   const body = await response.json().catch(() => ({}));
-  if (!response.ok) throw new ApiError(body.error || `Request failed (${response.status}).`, response.status);
+  if (!response.ok) throw new ApiError(body.error || `Request failed (${response.status}).`, response.status, body.code);
   return body;
 }
+const transcriptSignal = (signal?: AbortSignal) => signal ? AbortSignal.any([signal, AbortSignal.timeout(25000)]) : undefined;
 export const conversationClient: ConversationClient = {
+  transcriptPage: (id, query = {}, signal) => request(`/api/sessions/${encodeURIComponent(id)}/transcript?${new URLSearchParams({ limit: "100", ...query })}`, { signal: transcriptSignal(signal) }),
+  transcriptMeta: (id, cursor, signal) => request(`/api/sessions/${encodeURIComponent(id)}/transcript/meta?${new URLSearchParams({ limit: "100", ...(cursor ? { cursor } : {}) })}`, { signal: transcriptSignal(signal) }),
+  transcriptRefresh: (id, input, signal) => request(`/api/sessions/${encodeURIComponent(id)}/transcript/refresh`, { method: "POST", body: JSON.stringify(input), signal: transcriptSignal(signal) }),
   config: (signal) => request("/api/config", { signal }),
   login: (password) => request("/api/login", { method: "POST", body: JSON.stringify({ password }) }),
   logout: () => request("/api/logout", { method: "POST" }),

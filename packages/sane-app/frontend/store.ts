@@ -13,6 +13,8 @@ import type { ReconciledHistory } from "../src/reconcile";
 import type { CompactRequest, CompactState, CompactionRecord } from "../src/oc-contract";
 import { compactCommand, compactionsFor } from "./compaction";
 import { ConversationCache, cloneRunForConsume, conversationKey } from "./conversation-cache";
+import { canonicalCount, equalValue, mergePage, pageMessages, pagedUsage, refreshPages, sameRunMetadata, TranscriptCoverageError, type PagedTranscript, type PageRequest } from "./transcript-pages";
+import type { TranscriptMetadataItem, TranscriptPage } from "../src/transcript-contract";
 
 /** Composer draft. New conversations pick `profileId` ("" = profiles.defaultId);
  * selected Base conversations may stage `upgradeId` (assistant profile, same harness). */
@@ -33,6 +35,11 @@ export type State = {
   compactError?: string; compactDialog?: string; compactInstructions?: Record<string, string>;
   pendingCompacts?: Record<string, PendingCompact>;
   profiles: AgentProfiles | null; profileError: string; profileBusy: boolean;
+  transcript?: PagedTranscript | null;
+  transcriptPaged?: boolean;
+  transcriptInitialLoading?: boolean; transcriptRefreshing?: boolean; transcriptError?: string; metadataError?: string;
+  pageBusy?: string; pageErrors?: Record<string, string>;
+  workerLoading?: boolean;
 };
 const emptyDraft = (): Draft => ({ text: "", cwd: "", profileId: "", upgradeId: "" });
 const fallbackProfiles: AgentProfiles = { version: 1, defaultId: BASE_PROFILE_IDS["claude-code"], profiles: builtinProfiles("") };
@@ -55,11 +62,21 @@ export class ChatStore {
   private submissionSerial = 0;
   private compactInFlight = new Set<string>();
   private compactReadSerial = 0;
+  private pageFence = 0;
+  private pageValidated = false;
+  private refreshedRevision = "";
+  private coverageSerial = 0;
+  private publicationSerial = 0;
+  private summarySerial = 0;
+  private envelopeReceipts = new Map<string, number>();
+  private workerReady = false;
+  private pageRequests = new Set<AbortController>();
+  private get paged() { return !!(this.client.transcriptPage && this.client.transcriptMeta && this.client.transcriptRefresh); }
   private cacheConversation() {
     const conversation = this.state.conversations.find(c => c.id === this.state.selected);
     if (this.state.phase !== "ready" || !this.cacheable || !conversation || this.compactInFlight.has(conversation.id) || conversationKey(conversation) !== this.transcriptKey) return;
     // pendingTurn is presentation only, never recorded transcript evidence.
-    this.conversationCache.put(conversation, { runs: this.runMap, messages: this.state.messages, nativeHistory: this.state.nativeHistory, nativeHistoryLoaded: this.nativeHistoryLoaded });
+    this.conversationCache.put(conversation, { runs: this.runMap, messages: this.state.messages, nativeHistory: this.state.nativeHistory, nativeHistoryLoaded: this.nativeHistoryLoaded, transcript: this.state.transcript });
   }
   private invalidateConversationCache(id: string) {
     this.conversationCache.invalidate(id);
@@ -71,22 +88,129 @@ export class ChatStore {
     // Fence even while hidden: reconnect may defer its GET, but an outstanding
     // revisit poll/eligibility read must not publish pre-compaction readiness.
     this.stop(); this.compactReadSerial++; this.nativeHistoryLoaded = false;
+    if (this.paged) this.resetPages();
     this.update({ connected: false, loading: true, availability: { canSend: false }, compactState: null, contextUsage: null, interactions: [] });
   }
   private clearCachedHistory() {
     this.conversationCache.clear(); this.runMap = new Map();
+    this.workerReady = false;
     this.transcriptKey = ""; this.cacheable = false; this.nativeHistoryLoaded = false;
+    this.resetPages();
   }
+  private resetPages(owner?: AbortController) {
+    this.pageFence++; this.pageRequests.forEach(request => { if (request !== owner) { request.abort(); this.pageRequests.delete(request); } }); this.pageValidated = false; this.refreshedRevision = "";
+    this.coverageSerial++; this.envelopeReceipts.clear(); this.summarySerial = ++this.publicationSerial;
+    this.update({ transcript: null, compactions: [], contextUsage: null, transcriptInitialLoading: !!this.state.selected, transcriptRefreshing: false, transcriptError: "", metadataError: "", pageBusy: "", pageErrors: {} });
+  }
+  private publishPages(transcript: PagedTranscript) {
+    const conversation = this.state.conversations.find(item => item.id === this.state.selected);
+    const previous = this.state.transcript;
+    if (previous && previous.islands !== transcript.islands && previous.islands.length === transcript.islands.length && previous.islands.every((island, index) => {
+      const next = transcript.islands[index]!;
+      return island.key === next.key && island.scope === next.scope && island.observedEndBoundary === next.observedEndBoundary && island.endRevision === next.endRevision && equalValue(island.coverage, next.coverage) && equalValue(island.continuation, next.continuation) && island.messages.length === next.messages.length && island.messages.every((message, offset) => message === next.messages[offset]);
+    })) transcript = { ...transcript, islands: previous.islands };
+    if (previous && transcript.islands === previous.islands && transcript.compactions === previous.compactions && transcript.metadataRevision === previous.metadataRevision && equalValue(transcript.summary, previous.summary) && equalValue(transcript.target, previous.target)) transcript = previous;
+    const loaded = transcript.islands === previous?.islands ? this.state.messages : pageMessages(transcript), pending = this.state.pendingTurn;
+    const messages = loaded === this.state.messages || loaded.length === this.state.messages.length && loaded.every((message, index) => message === this.state.messages[index]) ? this.state.messages : loaded;
+    const summaryChanged = !equalValue(previous?.summary, transcript.summary);
+    if (summaryChanged || messages !== this.state.messages) {
+      const receipt = ++this.publicationSerial;
+      if (summaryChanged) this.summarySerial = receipt;
+      if (messages !== this.state.messages) {
+        const previousMessages = new Map(this.state.messages.map(message => [message.id, message]));
+        const versions = new Map(messages.map(message => [message.id, message.version]));
+        // Only canonical version changes fence older independent reads.
+        for (const message of messages) if (message.version !== previousMessages.get(message.id)?.version) this.envelopeReceipts.set(message.id, receipt);
+        for (const id of this.envelopeReceipts.keys()) if (!versions.has(id)) this.envelopeReceipts.delete(id);
+      }
+    }
+    const usage = conversation ? pagedUsage(transcript, conversation.harness, this.state.modelsCwd === conversation.cwd && this.state.modelsLoaded ? this.state.models : []) : null;
+    const contextUsage = equalValue(usage, this.state.contextUsage) ? this.state.contextUsage : usage;
+    this.update({ transcript, messages, transcriptInitialLoading: false, contextUsage,
+      pendingTurn: pending && messages.some(message => message.runId === pending.runId && message.role === "user") ? null : pending });
+  }
+  private protectedAfter(serial: number, messages: { id: string }[]) {
+    return new Set(messages.filter(message => (this.envelopeReceipts.get(message.id) ?? 0) > serial).map(message => message.id));
+  }
+  private acceptPage(page: TranscriptPage, edge?: PageRequest, latest = false, owner?: AbortController, readSerial = this.publicationSerial) {
+    if (page.sessionId !== this.state.selected) throw new Error("Transcript session identity mismatch.");
+    if (this.state.transcript && this.state.transcript.summary.epoch !== page.epoch) this.resetPages(owner);
+    const independent = !latest;
+    const transcript = mergePage(this.state.transcript, page, edge, latest, independent, this.protectedAfter(readSerial, page.messages), independent || this.summarySerial > readSerial);
+    // Even a same-epoch delayed response can introduce R1-only coverage after a
+    // completed R2 refresh. A concurrent refresh pass cannot certify that island.
+    if (independent) { this.coverageSerial++; this.refreshedRevision = ""; }
+    this.publishPages(transcript);
+  }
+  private cursorExpired(error: unknown) { return error instanceof TranscriptCoverageError || error instanceof ApiError && (error.code === "transcript-reset" || error.code === "invalid-cursor" || error.status === 400 && /cursor/i.test(error.message)); }
+  loadTranscriptPage = async (edge: PageRequest) => {
+    if (!this.paged || this.state.pageBusy || !this.pageValidated) return;
+    const island = this.state.transcript?.islands.find(island => island.key === edge.island);
+    const cursor = edge.direction === "older" ? island?.coverage.olderCursor : island?.coverage.newerCursor;
+    const probe = !cursor && edge.direction === "newer" && island?.coverage.lastId && this.state.transcript && island.coverage.lastIndex! < canonicalCount(this.state.transcript) - 1 ? island.coverage.lastId : undefined;
+    if (!cursor && !probe) return;
+    const id = this.state.selected, selection = this.selectionEpoch, auth = this.authEpoch, fence = this.pageFence, readSerial = this.publicationSerial;
+    const controller = new AbortController(); this.pageRequests.add(controller);
+    const current = () => id === this.state.selected && selection === this.selectionEpoch && auth === this.authEpoch && fence === this.pageFence && !controller.signal.aborted;
+    const key = `${edge.island}:${edge.direction}`;
+    this.update({ pageBusy: key, pageErrors: { ...this.state.pageErrors, [key]: "" } });
+    try {
+      const page = await this.client.transcriptPage!(id, cursor ? { cursor } : { targetMessageId: probe }, controller.signal);
+      if (current()) this.acceptPage({ ...page, target: undefined }, edge, false, controller, readSerial);
+    } catch (error) {
+      if (!current() || this.expired(error)) return;
+      if (this.cursorExpired(error) || probe && error instanceof ApiError && error.status === 404) { this.resetPages(); this.update({ messages: [], transcriptError: "History changed or the bridge restarted. Reopening latest history…" }); this.reconnect(); }
+      else this.update({ pageErrors: { ...this.state.pageErrors, [key]: error instanceof Error ? error.message : "History page unavailable. Try again." } });
+    } finally { this.pageRequests.delete(controller); if (current()) this.update({ pageBusy: "" }); }
+  };
+  /** Explicit Go-to-send loads its target page; caller cancellation aborts it. */
+  loadSendTarget = async (target: { kind: "worker" | "handoff"; id: string; sessionId: string }, signal: AbortSignal): Promise<"loaded" | "missing" | "legacy"> => {
+    if (!this.paged) return "legacy";
+    const selection = this.selectionEpoch, auth = this.authEpoch;
+    let fence = this.pageFence;
+    const controller = new AbortController(); this.pageRequests.add(controller);
+    const abort = () => controller.abort(); signal.addEventListener("abort", abort, { once: true });
+    const current = () => !signal.aborted && !controller.signal.aborted && selection === this.selectionEpoch && auth === this.authEpoch && target.sessionId === this.state.selected && fence === this.pageFence;
+    try {
+      if (!current()) throw new DOMException("Navigation cancelled", "AbortError");
+      let page: TranscriptPage | undefined;
+      let readSerial = this.publicationSerial;
+      for (let attempt = 0; attempt < 2; attempt++) {
+        readSerial = this.publicationSerial;
+        try { page = await this.client.transcriptPage!(target.sessionId, { targetKind: target.kind, targetId: target.id }, controller.signal); break; }
+        catch (error) {
+          if (!current()) throw error;
+          if (error instanceof ApiError && error.status === 404) return "missing";
+          if (this.expired(error)) throw error;
+          if (!attempt && this.cursorExpired(error)) { this.resetPages(controller); fence = this.pageFence; this.update({ messages: [] }); continue; }
+          throw error;
+        }
+      }
+      if (!current() || !page) throw new DOMException("Navigation cancelled", "AbortError");
+      this.acceptPage(page, undefined, false, controller, readSerial);
+      const message = page.target && pageMessages(this.state.transcript).find(message => message.id === page.target!.messageId);
+      if (!message) throw new Error("Target page did not identify its original send.");
+      return "loaded";
+    } catch (error) {
+      if (current() && this.cursorExpired(error)) { this.resetPages(controller); this.update({ messages: [] }); this.reconnect(); }
+      throw error;
+    } finally { signal.removeEventListener("abort", abort); this.pageRequests.delete(controller); }
+  };
   private beginAction() {
     const selection = this.selectionEpoch, auth = this.authEpoch, operation = ++this.actionSerial;
     this.update({ actionBusy: true, interactionError: "", actionNotice: "" });
     return () => selection === this.selectionEpoch && auth === this.authEpoch && operation === this.actionSerial;
   }
   state: State = { phase: "connecting", conversations: [], selected: "", runs: [], messages: [], drafts: {}, connected: false, loading: true, sending: false, availability: { canSend: false }, connectionError: "", submissionError: "", authError: "", models: [], modelsLoading: false, modelsError: "", modelsLoaded: false, modelsCwd: "", interactions: [], interactionError: "", actionBusy: false, actionNotice: "", profiles: null, profileError: "", profileBusy: false };
-  constructor(private client: ConversationClient) { onWorkspaceAuthExpired(() => this.loginRequired()); }
+  constructor(private client: ConversationClient) { this.state = { ...this.state, transcriptPaged: this.paged }; onWorkspaceAuthExpired(() => this.loginRequired()); }
   subscribe = (listener: () => void) => { this.listeners.add(listener); return () => { this.listeners.delete(listener); }; };
   snapshot = () => this.state;
   private update(patch: Partial<State>) {
+    // Stabilize lightweight API projections, never serialize or deep-walk the
+    // loaded transcript parts or reducer diagnostics on idle polls.
+    if (this.paged) for (const key of ["conversations", "availability", "compactState", "compactions", "contextUsage", "interactions", "pendingCompacts"] as const) {
+      if (Object.hasOwn(patch, key) && equalValue(this.state[key], patch[key])) (patch as Record<string, unknown>)[key] = this.state[key];
+    }
     let changed = false;
     for (const key of Object.keys(patch) as (keyof State)[]) {
       if (!Object.is(this.state[key], patch[key])) { changed = true; break; }
@@ -168,7 +292,7 @@ export class ChatStore {
     if (conversation.attachment?.state === "pending") return "Complete the native attachment before compacting.";
     if (this.state.loading || this.state.sending || this.state.actionBusy || !this.state.connected) return "Wait for the bridge and current action to settle.";
     if (this.executionUnavailable()) return this.executionUnavailable();
-    if (this.state.runs.some(r => r.status === "running" || r.status === "starting")) return "Wait until the current run is idle.";
+    if (conversation.status === "running" || conversation.status === "starting" || this.state.runs.some(r => r.status === "running" || r.status === "starting")) return "Wait until the current run is idle.";
     if (!this.state.compactState) return "Waiting for compaction eligibility.";
     return this.state.compactState.eligibility.eligible ? "" : this.state.compactState.eligibility.reason || "Native session is not eligible for compaction.";
   };
@@ -211,6 +335,14 @@ export class ChatStore {
     }
   };
   private applyCompactState(compactState: CompactState) {
+    if (this.paged) {
+      const pending = this.state.pendingCompacts?.[compactState.sessionId];
+      const recovered = pending && compactState.operations.find(record => record.requestId === pending.payload.requestId);
+      const records = new Map<string, CompactionRecord>((this.state.transcript?.compactions ?? []).map(record => [record.id, record]));
+      for (const record of compactState.operations) records.set(record.id, { ...records.get(record.id), ...record });
+      this.update({ compactState, compactions: [...records.values()], compactError: this.compactReadFeedback(undefined, !!recovered && pending?.phase === "unconfirmed"), ...(recovered && pending!.phase !== "sending" ? { pendingCompacts: { ...this.state.pendingCompacts, [compactState.sessionId]: { ...pending!, phase: "accepted", runId: recovered.runId } } } : {}) });
+      return;
+    }
     if (compactState.nativeHistoryImportedAt && compactState.nativeHistoryImportedAt !== this.state.nativeHistory?.importedAt) { this.nativeHistoryLoaded = false; this.invalidateConversationCache(compactState.sessionId); }
     const conversation = this.state.conversations.find(c => c.id === compactState.sessionId);
     const pending = this.state.pendingCompacts?.[compactState.sessionId];
@@ -279,6 +411,7 @@ export class ChatStore {
       const models = await this.client.models(cwd);
       if (auth !== this.authEpoch || request !== this.modelRequest) return;
       this.update({ models, modelsLoaded: true, modelsLoading: false, modelsError: models.length ? "" : "OpenCode has no available models." });
+      if (this.paged && this.state.transcript && this.harness() === "opencode" && cwd === this.workspace()) this.update({ contextUsage: pagedUsage(this.state.transcript, "opencode", models) });
     } catch (error) {
       if (auth !== this.authEpoch || request !== this.modelRequest || this.expired(error)) return;
       this.update({ modelsLoading: false, modelsLoaded: false, modelsError: `OpenCode unavailable: ${error instanceof Error ? error.message : "Could not load models."}` });
@@ -372,7 +505,8 @@ export class ChatStore {
         // Invalidate older reads even if reconnect is deferred while hidden.
         this.stop(); this.nativeHistoryLoaded = true;
         this.invalidateConversationCache(id);
-        this.update({ nativeHistory: history, messages: transcriptMessages(history, this.state.runs), contextUsage: null, compactState: null, compactions: [], actionNotice: "Conversation history refreshed." });
+        if (this.paged) { this.resetPages(); this.update({ messages: [], nativeHistory: null, contextUsage: null, compactState: null, compactions: [], loading: true, connected: false, availability: { canSend: false }, actionNotice: "Conversation history refreshed." }); }
+        else this.update({ nativeHistory: history, messages: transcriptMessages(history, this.state.runs), contextUsage: null, compactState: null, compactions: [], actionNotice: "Conversation history refreshed." });
         this.reconnect();
       }
     } catch (error) {
@@ -403,7 +537,11 @@ export class ChatStore {
       if (current()) this.update({ actionBusy: false });
     }
   };
-  private stop() { this.generation++; clearTimeout(this.timer); this.controller?.abort(); }
+  private stop() {
+    this.generation++; clearTimeout(this.timer); this.controller?.abort();
+    this.pageFence++; this.pageRequests.forEach(request => request.abort()); this.pageRequests.clear();
+    if (this.paged) this.update({ pageBusy: "", transcriptRefreshing: false });
+  }
   private loginRequired() {
     this.stop(); this.authEpoch++; this.clearCachedHistory();
     catalog.invalidate(); invalidateWorkspaceRequests();
@@ -464,6 +602,9 @@ export class ChatStore {
     this.transcriptKey = cached && conversation ? conversationKey(conversation) : "";
     this.cacheable = !!cached && !this.compactInFlight.has(selected);
     this.nativeHistoryLoaded = cached?.nativeHistoryLoaded ?? false;
+    this.pageValidated = false;
+    this.refreshedRevision = "";
+    this.coverageSerial++; this.envelopeReceipts.clear(); this.summarySerial = ++this.publicationSerial; this.workerReady = false;
     this.replied.clear();
     this.update({ compactState: null, compactions: [], compactDialog: "", compactError: "" });
     const runs = [...this.runMap.values()].sort((a, b) => a.createdAt.localeCompare(b.createdAt));
@@ -472,9 +613,148 @@ export class ChatStore {
     // Same-id sends do not reach here; their transcript remains mounted.
     this.update(selected
       ? { selected, runs, messages: cached?.messages ?? [], compactions, pendingTurn, availability: { canSend: false }, nativeHistory: cached?.nativeHistory ?? null, contextUsage: null, interactions: [], interactionError: "", actionBusy: false, actionNotice: "", loading: true, connected: false, connectionError: "", submissionError: "" }
-      : { selected, runs: [], messages: [], pendingTurn, availability: { canSend: false }, nativeHistory: null, contextUsage: null, interactions: [], interactionError: "", actionBusy: false, actionNotice: "", loading: false, connected: false, connectionError: "", submissionError: "" });
+       : { selected, runs: [], messages: [], pendingTurn, availability: { canSend: false }, nativeHistory: null, contextUsage: null, interactions: [], interactionError: "", actionBusy: false, actionNotice: "", loading: false, connected: false, connectionError: "", submissionError: "" });
+    if (this.paged) this.update({ transcript: cached?.transcript ?? null, transcriptInitialLoading: !!selected && !cached?.messages.length, transcriptError: "", metadataError: "", pageBusy: "", pageErrors: {}, workerLoading: !!selected && !!this.client.workers, compactions: cached?.transcript?.compactions ?? [] });
     void this.poll();
   };
+  private async pollPaged(listing: { conversations: Conversation[]; availability: Availability }, current: () => boolean, signal: AbortSignal) {
+    const id = this.state.selected, conversation = listing.conversations.find(item => item.id === id);
+    const awaitingCompact = this.compactInFlight.has(id);
+    this.update({ conversations: listing.conversations, availability: awaitingCompact ? { canSend: false } : conversation?.availability ?? listing.availability });
+    if (!id) { this.update({ connected: true, loading: false, connectionError: "", transcriptInitialLoading: false }); return; }
+    this.update({ transcriptRefreshing: !this.pageValidated || !!this.state.transcriptError });
+    let opened!: () => void;
+    const initialPage = new Promise<void>(resolve => { opened = resolve; });
+    const historyRead = (async () => {
+      try {
+        const readFence = this.pageFence, readSerial = this.publicationSerial;
+        const latest = await this.client.transcriptPage!(id, {}, signal);
+        if (!current() || readFence !== this.pageFence) return;
+        signal.throwIfAborted();
+        const reopen = !this.pageValidated || this.state.transcript?.summary.epoch !== latest.epoch;
+        this.acceptPage(latest, undefined, true, undefined, readSerial);
+        this.pageValidated = true; this.transcriptKey = conversation ? conversationKey(conversation) : "";
+        // Render latest first. ALL loaded-island refreshes can then continue
+        // independently of live-status/eligibility readiness.
+        this.update({ transcriptError: "", transcriptRefreshing: false }); opened();
+        const pending = this.state.pendingTurn;
+        if (pending?.runId && !pageMessages(this.state.transcript).some(message => message.runId === pending.runId && message.role === "user")) {
+          try {
+            const submittedFence = this.pageFence, submittedSerial = this.publicationSerial;
+            const submitted = await this.client.transcriptPage!(id, { targetRunId: pending.runId }, signal);
+            if (!current() || submittedFence !== this.pageFence) return;
+            this.acceptPage({ ...submitted, target: undefined }, undefined, false, undefined, submittedSerial);
+          } catch (error) { if (!current() || this.expired(error)) return; if (!(error instanceof ApiError && error.status === 404)) throw error; }
+        }
+        if (reopen || this.refreshedRevision !== latest.revision) {
+          const requested = pageMessages(this.state.transcript).map(message => ({ id: message.id, version: message.version }));
+          const epoch = this.state.transcript!.summary.epoch;
+          const coverageSerial = this.coverageSerial;
+          let stableRevision = latest.revision;
+          this.update({ transcriptRefreshing: true });
+          for (let offset = 0; offset < requested.length;) {
+            const batch = requested.slice(offset, offset + 100);
+            const refreshSerial = this.publicationSerial;
+            const refresh = await this.client.transcriptRefresh!(id, { epoch, messages: batch }, signal);
+            if (!current() || this.state.transcript?.summary.epoch !== epoch) return;
+            signal.throwIfAborted();
+            if (refresh.sessionId !== id || refresh.epoch !== epoch || !Number.isInteger(refresh.processed) || refresh.processed < 1 || refresh.processed > batch.length) throw new Error("Invalid transcript refresh response.");
+            if (refresh.removedIds.length) throw new ApiError("Canonical messages were removed; reopen transcript coverage.", 409, "transcript-reset");
+            const protectedIds = this.protectedAfter(refreshSerial, refresh.upserts), protectedSummary = this.summarySerial > refreshSerial;
+            this.publishPages(refreshPages(this.state.transcript, refresh, protectedIds, protectedSummary));
+            if (protectedIds.size || protectedSummary) stableRevision = "";
+            if (refresh.revision !== latest.revision) stableRevision = "";
+            offset += refresh.processed;
+          }
+          this.refreshedRevision = coverageSerial === this.coverageSerial ? stableRevision : "";
+        }
+        this.pageValidated = true; this.transcriptKey = conversation ? conversationKey(conversation) : ""; this.cacheable = !!conversation && !awaitingCompact;
+      } catch (error) {
+        if (!current() || this.expired(error)) return;
+        if (this.cursorExpired(error)) { this.resetPages(); this.update({ messages: [] }); }
+        this.update({ transcriptInitialLoading: false, transcriptError: `${error instanceof Error ? error.message : "History unavailable."} History will retry automatically.` });
+      } finally { opened(); if (current()) this.update({ transcriptRefreshing: false }); }
+    })();
+    await initialPage;
+    if (!current()) return;
+    // Listing + ALL lightweight run summaries, not the displayed history window,
+    // are the active-run authority. No per-run event cursor is seeded here.
+    const metadata = async () => {
+      try {
+        let items: TranscriptMetadataItem[] = [], revision = "";
+        for (let attempt = 0; attempt < 3; attempt++) {
+          try {
+            let cursor: string | undefined; items = [];
+            do {
+              const readFence = this.pageFence;
+              const page = await this.client.transcriptMeta!(id, cursor, signal);
+              if (!current()) return false;
+              signal.throwIfAborted();
+              if (readFence !== this.pageFence) throw new ApiError("Transcript changed while reading metadata.", 409, "transcript-reset");
+              if (page.sessionId !== id) throw new Error("Run metadata session identity mismatch.");
+              if (this.state.transcript && page.epoch !== this.state.transcript.summary.epoch) { this.resetPages(); this.update({ messages: [] }); }
+              if (!cursor) revision = page.metadataRevision;
+              else if (revision !== page.metadataRevision) throw new ApiError("Metadata changed; retrying traversal.", 409, "transcript-reset");
+              if (!cursor && this.state.transcript?.metadataRevision === revision && !this.state.metadataError) return true;
+              items.push(...page.items); cursor = page.nextCursor ?? undefined;
+            } while (cursor);
+            break;
+          } catch (error) { if (attempt === 2 || !this.cursorExpired(error)) throw error; }
+        }
+        if (!current()) return false;
+        const runMap = new Map<string, Run>();
+        for (const item of items) if (item.kind === "run") {
+          if (item.run.conversationId !== id) throw new Error("Run identity does not match the selected conversation.");
+          const previous = this.runMap.get(item.run.id);
+          const same = previous && sameRunMetadata(previous, item.run);
+          runMap.set(item.run.id, same ? previous : { ...createRun(item.run), summaryOnly: true });
+        }
+        this.runMap = runMap;
+        const proposed = items.flatMap(item => item.kind === "compaction" ? [item.compaction] : []);
+        const transcript = this.state.transcript;
+        const compactions = transcript && equalValue(transcript.compactions, proposed) ? transcript.compactions : proposed;
+        if (transcript) this.update({ transcript: { ...transcript, metadataRevision: revision, compactions } });
+        const ordered = [...runMap.values()].sort((a, b) => a.createdAt.localeCompare(b.createdAt));
+        const runs = ordered.length === this.state.runs.length && ordered.every((run, index) => run === this.state.runs[index]) ? this.state.runs : ordered;
+        this.update({ runs, compactions, metadataError: "" });
+        return true;
+      } catch (error) {
+        if (current() && !this.expired(error)) this.update({ metadataError: `Run status unavailable: ${error instanceof Error ? error.message : "connection error"}` });
+        return false;
+      }
+    };
+    const eligibility = async () => {
+      if (!this.client.compactState || awaitingCompact) return;
+      const read = ++this.compactReadSerial;
+      try {
+        const compactState = await this.client.compactState(id, signal);
+        if (current() && read === this.compactReadSerial) this.applyCompactState(compactState);
+      } catch (error) { if (current() && !this.expired(error) && read === this.compactReadSerial) this.update({ compactState: null, compactError: this.compactReadFeedback(error) }); }
+    };
+    const workers = async () => {
+      if (!this.client.workers) return;
+      if (!this.workerReady) this.update({ workerLoading: true });
+      try { const projection = await this.client.workers(id, signal); if (current()) publishWorkers(id, projection); }
+      catch (error) { if (current() && !this.expired(error)) publishWorkers(id, { ...workersFor(id), error: error instanceof Error ? error.message : "Worker status unavailable" }); }
+      finally { if (current()) { this.workerReady = true; this.update({ workerLoading: false }); } }
+    };
+    const eligibilityRead = eligibility(), workerRead = workers();
+    const metadataReady = await metadata();
+    if (!current()) return;
+    signal.throwIfAborted();
+    // Merge lifecycle detail after parallel reads; metadata never overwrites an
+    // eligibility response just because it happened to finish later.
+    if (this.state.compactState) this.applyCompactState(this.state.compactState);
+    const ready = metadataReady && !awaitingCompact;
+    this.update({ connected: ready, loading: awaitingCompact, connectionError: ready ? "" : this.state.metadataError ?? "", ...(ready ? {} : { availability: { canSend: false } }) });
+    const branchDraft = conversation?.branchDraft;
+    if (branchDraft && !this.state.runs.some(run => run.operation !== "compact") && !this.state.drafts[this.draftKey(id)]) this.setDraft({ text: branchDraft }, id);
+    if (conversation?.harness === "opencode" && ready) {
+      try { const interactions = await this.client.interactions(id, signal); if (current()) this.update({ interactions: interactions.filter(item => !this.replied.has(item.id)), ...(this.state.interactionError.startsWith("Pending requests unavailable:") ? { interactionError: "" } : {}) }); }
+      catch (error) { if (current() && !this.expired(error)) this.update({ interactionError: `Pending requests unavailable: ${error instanceof Error ? error.message : "connection error"}` }); }
+    }
+    await Promise.all([historyRead, eligibilityRead, workerRead]);
+  }
   private async poll() {
     if (this.state.phase !== "ready") return;
     const generation = this.generation, auth = this.authEpoch, selected = this.state.selected, selection = this.selectionEpoch;
@@ -491,7 +771,8 @@ export class ChatStore {
       if (selected && (!currentConversation || this.transcriptKey && this.transcriptKey !== conversationKey(currentConversation))) {
         // A listing can remove or rebind an App id even while its history GET
         // fails. Never keep the old native transcript/actions under that id.
-        this.runMap = new Map(); this.transcriptKey = ""; this.cacheable = false; this.nativeHistoryLoaded = false;
+        this.runMap = new Map(); this.transcriptKey = ""; this.cacheable = false; this.nativeHistoryLoaded = false; this.workerReady = false;
+        if (this.paged) this.resetPages();
         this.replied.clear(); this.selectionEpoch++; this.actionSerial++; this.compactReadSerial++;
         this.stop();
         const pendingCompacts = { ...this.state.pendingCompacts }, compactInstructions = { ...this.state.compactInstructions };
@@ -502,6 +783,7 @@ export class ChatStore {
         else this.timer = setTimeout(() => void this.poll(), 5000);
         return;
       }
+      if (this.paged) { await this.pollPaged(listing, current, controller.signal); return; }
       // Safe GET also notices reconciliation by another view/client. Reuse the
       // snapshot identity when the backend refresh timestamp has not changed.
       const historyRead = selected && this.client.nativeHistory ? (await this.client.nativeHistory(selected, controller.signal)).history : null;
@@ -632,7 +914,7 @@ export class ChatStore {
     if (this.compactBlocked() || this.state.actionBusy) return { status: "blocked" };
     const conversation = this.state.conversations.find(c => c.id === this.state.selected);
     if (conversation?.attachment && conversation.harness === "claude-code" && !nativeStopped) { this.update({ submissionError: "Confirm external assistant execution is stopped before sending." }); return { status: "blocked" }; }
-    if (!text.trim() || this.state.loading || this.state.runs.some(r => r.status === "starting" || r.status === "running") || this.state.sending || !this.state.connected || !this.state.availability.canSend || this.modelUnavailable() || this.executionUnavailable()) return { status: "blocked" };
+    if (!text.trim() || this.state.loading || conversation?.status === "starting" || conversation?.status === "running" || this.state.runs.some(r => r.status === "starting" || r.status === "running") || this.state.sending || !this.state.connected || !this.state.availability.canSend || this.modelUnavailable() || this.executionUnavailable()) return { status: "blocked" };
     const selected = this.state.selected, draft = this.draft(), draftKey = this.draftKey();
     // Flow submissions are independent of the ordinary chat draft and any
     // staged agent upgrade. They never consume or replace that draft.

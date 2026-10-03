@@ -1,3 +1,7 @@
+/* Loaded history edges and uncovered ranges. */
+.transcript-page-control { margin:12px 0; }
+.transcript-gap { margin:24px 0; padding:16px; border-block:1px dashed var(--border); }
+[data-transcript-message]:focus { outline:none; }
 /* === design tokens === */
 :root {
   color-scheme:light;

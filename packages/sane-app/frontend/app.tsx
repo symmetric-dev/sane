@@ -15,7 +15,7 @@ import { ConfigMenu, ConfigView } from "./config-view";
 import { ConversationSidebar, useConversationSidebarModel } from "./conversation-sidebar";
 import { ConversationHeading } from "./conversation-heading";
 import type { WorkstreamOverview } from "../src/workstreams-contract";
-import { Facts, NativeHistoryDetails, NativeUsage, RunDetails, Thread, Usage } from "./thread";
+import { Facts, LoadedTranscriptDiagnostics, NativeHistoryDetails, NativeUsage, RunDetails, Thread, Usage } from "./thread";
 import { ContextualNavigation, Drawer, FilesModeControl, Icon, ViewNavigationCommands, viewGroup } from "./nav";
 import { harnessName } from "./types";
 import { ApplicationCommandProvider } from "./application-commands";
@@ -212,8 +212,8 @@ function ConversationDetails({ state, close }: { state: State; close: () => void
       <p className="muted">Each follow-up uses this conversation’s fixed execution directory and harness. Browsing another worktree does not retarget it.</p>
       {conversation?.association !== "resolved" && state.selected && <p className="notice" role="status">Execution workspace unavailable. Recorded history remains accessible.</p>}
     </section>
-    <section className="detail-section"><h3>Latest reported usage</h3>{store.harness() === "opencode" ? <>{nativeUsageRun && nativeUsageRun.id !== state.runs.at(-1)?.id && <p className="muted">Showing an earlier run’s snapshot; the latest run has no reported usage yet.</p>}<NativeUsage run={nativeUsageRun} /></> : <>{latestUsage && latestUsage.runId !== state.runs.at(-1)?.id && <p className="muted">A newer run has no result snapshot yet. Showing an earlier run.</p>}<Usage snapshot={latestUsage} /></>}</section>
+    {state.transcriptPaged ? <section className="detail-section"><h3>Current context snapshot</h3>{state.transcript?.summary.usage ? <Facts values={[["Input context tokens", state.transcript.summary.usage.tokens.toLocaleString()], ["Reported model", state.transcript.summary.usage.model], ["Model window capacity", state.contextUsage?.capacity.toLocaleString() ?? "Unavailable"], ["Reported at", new Date(state.transcript.summary.usage.time).toLocaleString()], ["Snapshot", state.transcript.summary.usage.stale ? "Stale while compacting" : "Last reported"]]} /> : <p className="muted">Unavailable</p>}</section> : <section className="detail-section"><h3>Latest reported usage</h3>{store.harness() === "opencode" ? <>{nativeUsageRun && nativeUsageRun.id !== state.runs.at(-1)?.id && <p className="muted">Showing an earlier run’s snapshot; the latest run has no reported usage yet.</p>}<NativeUsage run={nativeUsageRun} /></> : <>{latestUsage && latestUsage.runId !== state.runs.at(-1)?.id && <p className="muted">A newer run has no result snapshot yet. Showing an earlier run.</p>}<Usage snapshot={latestUsage} /></>}</section>}
     <NativeHistoryDetails state={state} />
-    <section className="detail-section"><h3>Runs & diagnostics <span className="muted">{state.runs.length}</span></h3>{state.runs.length ? [...state.runs].reverse().map(run => <RunDetails key={run.id} run={run} />) : <p className="muted">Run IDs and raw events will appear here.</p>}</section>
+    <section className="detail-section"><h3>{state.transcriptPaged ? "Run summaries" : "Runs & diagnostics"} <span className="muted">{state.runs.length}</span></h3>{state.runs.length ? [...state.runs].reverse().map(run => <RunDetails key={run.id} run={run} loadedMessages={state.messages} />) : <p className="muted">{state.transcriptPaged ? "No recorded runs." : "Run IDs and raw events will appear here."}</p>}{state.transcriptPaged && <LoadedTranscriptDiagnostics messages={state.messages} runs={state.runs} />}</section>
   </Drawer>;
 }

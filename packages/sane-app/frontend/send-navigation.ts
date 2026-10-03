@@ -6,7 +6,7 @@ export type SendTarget = { kind: "worker" | "handoff"; id: string; sessionId: st
 type Jump = SendTarget & { serial: number };
 export type SendNavigationState = {
   sessionId: string; active: boolean; loading: boolean; connected: boolean; connectionError: string;
-  workerError?: string; handoffLoading: boolean; handoffError?: string;
+  workerError?: string; workerLoading?: boolean; handoffLoading: boolean; handoffError?: string;
 };
 
 // Only the mounted chat viewport owns navigation. Panels/history never become
@@ -17,6 +17,7 @@ export const goToSend = (target: SendTarget) => navigator?.(target) ?? false;
 export function useSendNavigation(viewport: RefObject<HTMLDivElement | null>, state: SendNavigationState, pause: () => void) {
   const [jump, setJump] = useState<Jump | null>(null);
   const [notice, setNotice] = useState<{ sessionId: string; text: string } | null>(null);
+  const [loaded, setLoaded] = useState<{ serial: number; outcome: "loaded" | "missing" | "legacy" | "error" } | null>(null);
   const current = useRef({ state, pause }); current.current = { state, pause };
   const pending = useRef<Jump | null>(null), serial = useRef(0);
   const cleanup = useRef<() => void>(() => {});
@@ -44,8 +45,12 @@ export function useSendNavigation(viewport: RefObject<HTMLDivElement | null>, st
         if (chat.selected !== target.sessionId || chat.sending || chat.phase !== "ready" || next.view !== "chat" || next.conversationId !== navigation.conversationId || next.workspaceId !== navigation.workspaceId || next.worktreeId !== navigation.worktreeId) { cancel(); setNotice(null); }
       };
       const unstore = store.subscribe(fence), uncatalog = catalog.subscribe(fence);
+      const controller = new AbortController();
       let removeGestures = () => {};
-      cleanup.current = () => { unstore(); uncatalog(); removeGestures(); };
+      cleanup.current = () => { controller.abort(); unstore(); uncatalog(); removeGestures(); };
+      void store.loadSendTarget(target, controller.signal).then(outcome => {
+        if (pending.current === request && !controller.signal.aborted) setLoaded({ serial: request.serial, outcome });
+      }, () => { if (pending.current === request && !controller.signal.aborted) setLoaded({ serial: request.serial, outcome: "error" }); });
       // Defer past the initiating Go to send event. Capture subsequent input
       // throughout the app, including the composer/header outside our viewport.
       // Focus itself is not a gesture: navigation/remounts may focus controls.
@@ -79,23 +84,31 @@ export function useSendNavigation(viewport: RefObject<HTMLDivElement | null>, st
 
   useLayoutEffect(() => {
     if (!jump || pending.current !== jump || !state.active || state.sessionId !== jump.sessionId) return;
+    if (loaded?.serial !== jump.serial) return;
+    if (loaded.outcome === "missing") { finish(jump, "Original send unavailable"); return; }
+    if (loaded.outcome === "error") { finish(jump, "Could not load original send. Try again."); return; }
     if (state.connectionError) { finish(jump, "Could not load original send. Try again."); return; }
-    if (state.loading || !state.connected || jump.kind === "handoff" && state.handoffLoading) return;
+    if (state.loading || !state.connected || jump.kind === "handoff" && state.handoffLoading || jump.kind === "worker" && state.workerLoading) return;
     const root = viewport.current;
     if (!root) return;
     let frame = 0;
     const scan = () => {
       const live = store.snapshot();
-      if (pending.current !== jump || live.selected !== jump.sessionId || live.loading || !live.connected) return;
+      if (pending.current !== jump || live.selected !== jump.sessionId || live.loading || !live.connected || jump.kind === "worker" && live.workerLoading) return;
       // assistant-ui publishes its external transcript separately from the
       // projection. Do not declare a miss against an earlier runtime render.
       const ready = root.querySelector<HTMLElement>("[data-send-transcript-ready]");
       if (ready?.dataset.sendTranscriptReady !== jump.sessionId) return;
-      const card = [...root.querySelectorAll<HTMLElement>("[data-send-kind][data-send-id]")].find(element => element.dataset.sendKind === jump.kind && element.dataset.sendId === jump.id);
+      let card = [...root.querySelectorAll<HTMLElement>("[data-send-kind][data-send-id]")].find(element => element.dataset.sendKind === jump.kind && element.dataset.sendId === jump.id);
+      let statusError: string | undefined;
       if (!card) {
         const error = jump.kind === "handoff" ? state.handoffError : state.workerError;
-        finish(jump, error ? "Could not load original send. Try again." : "Original send unavailable");
-        return;
+        if (loaded.outcome === "loaded") {
+          const messageId = store.snapshot().transcript?.target?.messageId;
+          card = [...root.querySelectorAll<HTMLElement>("[data-transcript-message]")].find(element => element.dataset.transcriptMessage === messageId);
+          if (error) statusError = "Original send status unavailable. Try again.";
+        }
+        if (!card) { finish(jump, error || loaded.outcome === "loaded" ? "Could not show original send. Try again." : "Original send unavailable"); return; }
       }
       current.current.pause();
       highlightCleanup.current();
@@ -105,14 +118,14 @@ export function useSendNavigation(viewport: RefObject<HTMLDivElement | null>, st
       card.classList.add("send-target-highlight");
       const timer = setTimeout(() => card.classList.remove("send-target-highlight"), 1800);
       highlightCleanup.current = () => { clearTimeout(timer); card.classList.remove("send-target-highlight"); };
-      finish(jump);
+      finish(jump, statusError);
     };
     const schedule = () => { cancelAnimationFrame(frame); frame = requestAnimationFrame(scan); };
     const observer = new MutationObserver(schedule);
     observer.observe(root, { childList: true, subtree: true, attributes: true, attributeFilter: ["data-send-transcript-ready", "data-send-id"] });
     schedule();
     return () => { observer.disconnect(); cancelAnimationFrame(frame); };
-  }, [jump, state.sessionId, state.active, state.loading, state.connected, state.connectionError, state.workerError, state.handoffLoading, state.handoffError]);
+  }, [jump, loaded, state.sessionId, state.active, state.loading, state.connected, state.connectionError, state.workerError, state.workerLoading, state.handoffLoading, state.handoffError]);
 
   return { targeting: pending.current?.sessionId === state.sessionId, notice: notice?.sessionId === state.sessionId ? notice.text : "", cancel };
 }

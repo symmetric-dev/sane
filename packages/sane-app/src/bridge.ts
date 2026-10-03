@@ -33,6 +33,7 @@ import { ASSISTANT_AGENT_DESCRIPTIONS, ASSISTANT_AGENT_IDS, ASSISTANT_AGENT_LABE
 import { AgentLaunchConfigurationError, agentLaunchSnapshot, claudeAgentSettings, snapshotIdentity } from "./agent-launch";
 import { readClaudeHistory, forkClaudeHistory, verifyClaudeFork, coveredNativeRuns, type ReconciledHistory } from "./reconcile";
 import { BranchStore, type BranchOperation } from "./branches";
+import { NativeHistoryCache, TranscriptError, TranscriptService } from "./transcript-service";
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 export const hookEvents = ["SessionStart", "SessionEnd", "UserPromptSubmit", "Stop", "PreToolUse", "PostToolUse", "PermissionRequest", "Notification", "SubagentStart", "SubagentStop", "PreCompact", "PostCompact", "CwdChanged"] as const;
@@ -208,6 +209,19 @@ async function startOwned(options: Options, assetsDir: string, packageDir: strin
     return { binding, validate, dispose: lease.dispose };
   });
   const events = new Map<string, Event[]>();
+  const nativeHistories = new NativeHistoryCache(options.dataDir);
+  const transcripts = new TranscriptService(() => meta.sessions, () => meta.runs, nativeHistories, async (session, kind, id) => {
+    if (kind === "worker") {
+      const worker = workerStore.get(id);
+      return worker?.parent.sessionId === session.sessionId ? { kind, runId: worker.parent.runId, toolCallId: worker.parent.toolCallId } : undefined;
+    }
+    const presentation = (await handoffs.forSession(session.sessionId)).find(p => p.handoff.id === id && p.sender.sessionId === session.sessionId);
+    return presentation ? { kind, presentation } : undefined;
+  });
+  function saveNativeHistory(history: ReconciledHistory) {
+    atomicNativeHistory(options.dataDir, history);
+    nativeHistories.invalidate(history.sessionId);
+  }
   const secrets = new Map<string, string>();
   type Owner = { run: Run; native?: boolean; nativeDispatched?: boolean; launchError?: string; workerDeliveryId?: string; child?: Bun.Subprocess<"pipe", "pipe", "pipe">; done: Promise<void>; settled: boolean; stopping?: Promise<boolean>; cancel?: Promise<{ interrupted: boolean }>; cancelling?: boolean; stopRequested?: boolean; submission?: Promise<unknown> };
   // Durable validation forbids aliases for a qualified native ID. New IDs are
@@ -426,6 +440,7 @@ async function startOwned(options: Options, assetsDir: string, packageDir: strin
     const list = events.get(run.runId)!;
     const event: Event = { seq: (list.at(-1)?.seq ?? 0) + 1, time: new Date().toISOString(), runId: run.runId, sessionId: run.sessionId, kind, data };
     list.push(event);
+    transcripts.ingest(run, [event]);
     return enqueue(() => appendFile(join(options.dataDir, `${run.runId}.jsonl`), JSON.stringify(event) + "\n", { mode: 0o600 }));
   }
   // Display title for list responses: stored title wins (handoff `<Role> #<n>`
@@ -456,6 +471,7 @@ async function startOwned(options: Options, assetsDir: string, packageDir: strin
     const decoded = decodeLog(raw, run); const list = decoded.events;
     if (decoded.repaired !== undefined) await enqueue(() => writeFile(logPath, decoded.repaired!, { mode: 0o600 }));
     events.set(run.runId, list);
+    transcripts.ingest(run, list);
     if (run.status === "running" && meta.sessions.find(s => s.sessionId === run.sessionId)?.harness !== "opencode") {
       run.status = "interrupted"; run.endedAt = new Date().toISOString(); meta.reconciliationRequired = true;
       const session = meta.sessions.find(s => s.sessionId === run.sessionId)!; session.lastStatus = "interrupted";
@@ -634,7 +650,7 @@ async function startOwned(options: Options, assetsDir: string, packageDir: strin
       const history: ReconciledHistory = { sessionId: destination.sessionId, nativeSessionId: destination.nativeSessionId!, importedAt: new Date().toISOString(), messages: native.messages, activity: native.activity, coveredRunIds: [], reason: "Genuine native branch history. Branching did not rewind or restore files." };
       // Prepare the durable snapshot before committing the membership transfer.
       // A previously committed domain transfer is still idempotently recoverable.
-      atomicNativeHistory(options.dataDir, history);
+      saveNativeHistory(history);
       if (adapter) adapter.domain.finishBranch(adapter.reference(source), adapter.reference(destination), op.id, branchContext(op.id));
       if (op.replace) source.hidden = true;
       await persist(); branches.save({ ...op, state: "completed", error: undefined });
@@ -672,8 +688,7 @@ async function startOwned(options: Options, assetsDir: string, packageDir: strin
     } catch (error) { return { ...eligibility, reason: error instanceof Error ? error.message : "Compaction eligibility is unavailable" }; }
   }
   async function storedNativeHistory(session: Session): Promise<ReconciledHistory | undefined> {
-    try { return JSON.parse(await readFile(join(options.dataDir, `${session.sessionId}.native-history.json`), "utf8")); }
-    catch (error) { if ((error as NodeJS.ErrnoException).code === "ENOENT") return undefined; throw error; }
+    return nativeHistories.get(session);
   }
   async function compactOperations(session: Session) {
     const history = await storedNativeHistory(session);
@@ -704,7 +719,7 @@ async function startOwned(options: Options, assetsDir: string, packageDir: strin
         if (message.compaction && message.createdAt && Date.parse(message.createdAt) >= Date.parse(run.createdAt) && (!run.endedAt || Date.parse(message.createdAt) <= Date.parse(run.endedAt))) await emit(run, "message", message);
       }
       const history: ReconciledHistory = { sessionId: session.sessionId, nativeSessionId: session.nativeSessionId!, importedAt: new Date().toISOString(), messages: native.messages, activity: native.activity, coveredRunIds: coveredNativeRuns(session, meta.runs, native.messages), reason: "Read-only history refresh after the owned compaction process settled; native compaction evidence is separate from process outcome" };
-      await enqueue(async () => atomicNativeHistory(options.dataDir, history));
+      await enqueue(async () => saveNativeHistory(history));
       await emit(run, "status", { status: run.status, nativeHistoryImportedAt: history.importedAt });
     } catch (error) {
       if (storageFailed) return;
@@ -1434,7 +1449,8 @@ async function startOwned(options: Options, assetsDir: string, packageDir: strin
       }
       if (path.startsWith("/api/") && !authenticated(req)) return json({ error: "Authentication required" }, 401);
       const mutatingSession = /^\/api\/sessions\/([^/]+)(?:\/|$)/.exec(path)?.[1];
-      if (!["GET", "HEAD"].includes(req.method) && mutatingSession && !path.endsWith("/branch") && (branches.replaced(mutatingSession) || branches.pending(mutatingSession) && !path.endsWith("/cancel"))) return json({ error: branches.replaced(mutatingSession) ? "Replaced conversation is read-only; open its replacement" : "The branch is not ready yet. Changes are paused to protect this conversation." }, 409);
+      const readOnlyTranscriptRefresh = req.method === "POST" && /^\/api\/sessions\/[^/]+\/transcript\/refresh$/.test(path);
+      if (!["GET", "HEAD"].includes(req.method) && !readOnlyTranscriptRefresh && mutatingSession && !path.endsWith("/branch") && (branches.replaced(mutatingSession) || branches.pending(mutatingSession) && !path.endsWith("/cancel"))) return json({ error: branches.replaced(mutatingSession) ? "Replaced conversation is read-only; open its replacement" : "The branch is not ready yet. Changes are paused to protect this conversation." }, 409);
       if (path === "/api/agents" || path.startsWith("/api/agents/")) {
         try {
           if (path === "/api/agents" && req.method === "GET") return json(agentProfiles);
@@ -1867,7 +1883,7 @@ async function startOwned(options: Options, assetsDir: string, packageDir: strin
           if (!session) { session = candidate; meta.sessions.push(session); }
           session.attachment = { state: "pending", source: nativeSource(harness) }; await persist();
           const history: ReconciledHistory = { sessionId, nativeSessionId, importedAt: new Date().toISOString(), ...native, coveredRunIds: [], reason: harness === "opencode" ? "Attached read-only native snapshot; activity is a point-in-time observation. Reconcile after external work." : "Attached read-only native transcript; active execution and run outcome are unknown. Confirm external assistant execution is stopped before each SANE submission." };
-          await enqueue(async () => atomicNativeHistory(options.dataDir, history));
+          await enqueue(async () => saveNativeHistory(history));
           const association = await catalog.associate(sessionId, cwd, input.workspaceId, input.worktreeId);
           if (closing || storageFailed) throw new OpenCodeError("Attachment interrupted by shutdown; retry explicitly", 503);
           await admissions.register(sessionId);
@@ -2028,14 +2044,31 @@ async function startOwned(options: Options, assetsDir: string, packageDir: strin
         return json({ sessionId: run.sessionId, runId: run.runId, harness, nativeSessionId: session.nativeSessionId, ...association }, 202);
         } finally { admitting.delete(conversationId); }
       }
+      const transcript = /^\/api\/sessions\/([^/]+)\/transcript(?:\/(meta|refresh))?$/.exec(path);
+      if (transcript) {
+        const session = meta.sessions.find(s => s.sessionId === transcript[1]);
+        if (!session) return json({ error: "Unknown session" }, 404);
+        try {
+          if (!transcript[2] && req.method === "GET") return json(await transcripts.page(session, url.searchParams));
+          if (transcript[2] === "meta" && req.method === "GET") return json(await transcripts.metadataPage(session, url.searchParams));
+          if (transcript[2] === "refresh" && req.method === "POST") {
+            if (url.searchParams.size) return json({ error: "Refresh does not accept query selectors", code: "transcript-input" }, 400);
+            let input: unknown;
+            try { input = await body(req); } catch { return json({ error: "Invalid refresh body", code: "transcript-input" }, 400); }
+            return json(await transcripts.refresh(session, input as import("./transcript-contract").TranscriptRefreshRequest));
+          }
+          return json({ error: "Method not allowed" }, 405);
+        } catch (error) {
+          if (error instanceof TranscriptError) return json({ error: error.message, code: error.code }, error.status);
+          throw error;
+        }
+      }
       const reconciliation = /^\/api\/sessions\/([^/]+)\/(reconcile|native-history)$/.exec(path);
       if (reconciliation) {
         const session = meta.sessions.find(s => s.sessionId === reconciliation[1]);
         if (!session) return json({ error: "Unknown session" }, 404);
-        const historyPath = join(options.dataDir, `${session.sessionId}.native-history.json`);
         if (reconciliation[2] === "native-history" && req.method === "GET") {
-          try { return json({ history: JSON.parse(await readFile(historyPath, "utf8")) }); }
-          catch (error) { if ((error as NodeJS.ErrnoException).code === "ENOENT") return json({ history: null }); throw error; }
+          return json({ history: await storedNativeHistory(session) ?? null });
         }
         if (reconciliation[2] !== "reconcile" || req.method !== "POST") return json({ error: "Method not allowed" }, 405);
         const available = availability(session.sessionId);
@@ -2050,7 +2083,7 @@ async function startOwned(options: Options, assetsDir: string, packageDir: strin
           const history: ReconciledHistory = { sessionId: session.sessionId, nativeSessionId, importedAt: new Date().toISOString(), ...native,
             coveredRunIds: coveredNativeRuns(session, meta.runs, native.messages),
             reason: session.harness === "opencode" ? "Read-only native history snapshot. Activity is a point-in-time observation; Reconcile again for later changes. Stop external work in OpenCode." : "Read-only native transcript. Active execution, message timestamps and run outcome are not exposed by the SDK history API. Ensure external assistant execution is stopped before sending here." };
-          await enqueue(async () => atomicNativeHistory(options.dataDir, history));
+          await enqueue(async () => saveNativeHistory(history));
           return json({ history });
         } catch (error) { return json({ error: error instanceof Error ? error.message : "Native reconciliation unavailable" }, error instanceof OpenCodeError && error.status === 409 ? 409 : 503); }
         finally { admitting.delete(session.sessionId); }
@@ -2198,9 +2231,8 @@ async function startOwned(options: Options, assetsDir: string, packageDir: strin
           if (results.length >= limit) break;
           // Attached/reconciled native snapshots not yet covered by run events.
           try {
-            const raw = await readFile(join(options.dataDir, `${session.sessionId}.native-history.json`), "utf8");
-            const parsed = JSON.parse(raw);
-            const messages = Array.isArray(parsed?.messages) ? parsed.messages.slice(-100) : [];
+            const history = await storedNativeHistory(session);
+            const messages = history?.messages.slice(-100) ?? [];
             for (const message of messages) {
               if (results.length >= limit) break;
               for (const text of textOf(message)) {

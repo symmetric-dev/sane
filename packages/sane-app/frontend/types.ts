@@ -2,6 +2,7 @@
 import type { CompactRequest, CompactResponse, CompactState, Interaction, InteractionReply } from "../src/oc-contract";
 import type { Association } from "../src/catalog-contract";
 import type { AgentProfile, AgentProfileInput, AgentProfiles } from "../src/agent-profiles-contract";
+import type { TranscriptPage, TranscriptMetadataPage, TranscriptRefresh, TranscriptRefreshRequest } from "../src/transcript-contract";
 export type { AgentProfile, AgentProfileInput, AgentProfiles } from "../src/agent-profiles-contract";
 export type { Interaction, InteractionReply, FormField } from "../src/oc-contract";
 export type RunStatus = "starting" | "running" | "completed" | "failed" | "interrupted" | "unknown";
@@ -19,12 +20,13 @@ export type Capabilities = {
 };
 export type TextPart = { type: "text"; text: string } | { type: "reasoning"; id?: string; text: string };
 export type ToolPart = { type: "tool"; id: string; toolCallId?: string; name: string; input: unknown; output?: unknown; error?: boolean; toolStatus?: string };
-export type Message = { id: string; nativeIds?: string[]; runId: string; role: "user" | "assistant" | "system"; parts: (TextPart | ToolPart)[]; time: string; status: RunStatus; normalized?: boolean; error?: unknown };
+export type Message = { id: string; nativeIds?: string[]; runId: string; role: "user" | "assistant" | "system"; parts: (TextPart | ToolPart)[]; time: string; status: RunStatus; normalized?: boolean; error?: unknown; version?: string };
 /** Local submission, retained after acknowledgement only until its recorded user turn arrives. */
 export type PendingTurn = { id: string; conversationId: string; runId?: string; text: string; time: string };
 export type UsageSnapshot = { runId: string; time: string; record: Record<string, any> };
 export type DiagnosticEvent = { seq: number; time: string; runId: string; sessionId: string; kind: string; data: unknown };
 export type Run = {
+  summaryOnly?: true;
   id: string; conversationId: string; cwd: string; status: RunStatus; createdAt: string; endedAt?: string;
   harness?: Harness; nativeSessionId?: string;
   nativeCommandId?: string;
@@ -42,6 +44,9 @@ export type Availability = { canSend: boolean; reason?: string };
 export type RunMetadata = Pick<Run, "id" | "conversationId" | "cwd" | "status" | "createdAt" | "endedAt" | "model" | "effort" | "agent" | "agentKind" | "nativeAgentSelected" | "profileId" | "harness" | "nativeSessionId" | "nativeCommandId" | "operation" | "compact">;
 export type SearchHit = { sessionId: string; runId?: string; snippet: string; score: number };
 export interface ConversationClient {
+  transcriptPage?(id: string, query?: TranscriptQuery, signal?: AbortSignal): Promise<TranscriptPage>;
+  transcriptMeta?(id: string, cursor?: string, signal?: AbortSignal): Promise<TranscriptMetadataPage>;
+  transcriptRefresh?(id: string, input: TranscriptRefreshRequest, signal?: AbortSignal): Promise<TranscriptRefresh>;
   config(signal?: AbortSignal): Promise<Config>;
   login(password: string): Promise<void>;
   logout(): Promise<void>;
@@ -68,4 +73,5 @@ export interface ConversationClient {
     orderAgents?(input: { order?: string[]; defaultId?: string }): Promise<AgentProfiles>;
    submit(input: { text: string; conversationId?: string; nativeStopped?: boolean; harness?: Harness; cwd?: string; workspaceId?: string; worktreeId?: string; model?: string; effort?: string; agent?: string; profileId?: string }): Promise<{ conversationId: string; runId: string }>;
 }
+export type TranscriptQuery = { cursor?: string; targetKind?: "worker" | "handoff"; targetId?: string; targetMessageId?: string; targetRunId?: string; toolCallId?: string };
 export const active = (status: RunStatus) => status === "running" || status === "starting";
