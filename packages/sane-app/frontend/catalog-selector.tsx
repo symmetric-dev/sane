@@ -79,7 +79,7 @@ export function CatalogSelector({ retry, selection }: { retry: () => void; selec
   };
   const display = worktree ? worktreeDisplay(worktree) : null;
   const fullRef = worktree ? worktreeLabel(worktree) : null;
-  const openerLabel = workspace ? `${workspace.name}: ${display ?? "Choose worktree"}` : navigation.workspaceId ? "Unavailable workspace" : "Open workspace";
+  const openerLabel = workspace?.name ?? (navigation.workspaceId ? "Unavailable workspace" : "Open workspace");
   const openerTitle = worktree ? `${fullRef} · ${worktree.root}` : workspace?.worktrees[0] ? `${workspace.worktrees[0].root}` : undefined;
   const openerAria = workspace ? (worktree ? `Workspace ${workspace.name}, worktree ${display}: ${fullRef} · ${worktree.root}` : `Workspace ${workspace.name}: Choose worktree`) : "Open workspace";
   const selectedStream = selection?.overview?.workstreams.find(w => w.workstream.id === selection.workstreamId)?.workstream;
@@ -122,7 +122,7 @@ export function CatalogSelector({ retry, selection }: { retry: () => void; selec
     {state.error && <p className="notice error" role="status">{state.error}{!state.ready && <button type="button" onClick={retry}>Retry</button>}</p>}
   </>;
   return <div className="context-switcher" ref={container}>
-    <button type="button" className="workspace-opener" aria-haspopup="dialog" aria-label={openerAria} aria-keyshortcuts={navigationKeyShortcuts("ArrowDown")} title={[openerTitle, `Toggle workspace selection (${shortcutHint(WORKSPACE_SELECTOR_SHORTCUT)})`].filter(Boolean).join(" · ")} onClick={show}><span>{openerLabel}</span><FiChevronDown size={13} aria-hidden="true" /></button>
+    <button type="button" className="workspace-opener" aria-haspopup="dialog" aria-label={openerAria} aria-keyshortcuts={navigationKeyShortcuts("ArrowDown")} title={[openerTitle, `Toggle workspace selection (${shortcutHint(WORKSPACE_SELECTOR_SHORTCUT)})`].filter(Boolean).join(" · ")} onClick={show}><span className="workspace-opener-label"><span className="workspace-opener-title">{openerLabel}</span>{workspace && <span className="workspace-opener-checkout">{display ?? "Choose worktree"}</span>}</span><FiChevronDown size={13} aria-hidden="true" /></button>
     {panel && <ShellDialog title={panel === "directory" ? "Open directory" : "Workspace"} bare={panel === "context"} className={panel === "context" ? "workspace-context-dialog" : ""} close={close}>
       {panel === "directory" ? <form className="open-directory" onSubmit={async event => {
         event.preventDefault();

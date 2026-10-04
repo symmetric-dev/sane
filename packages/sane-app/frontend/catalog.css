@@ -23,10 +23,31 @@
   line-height:1.3;
   overflow:hidden;
 }
-.workspace-opener>span:first-child {
+.workspace-opener-label {
+  display:flex;
+  flex-direction:column;
+  gap:1px;
+  flex:1;
+  min-width:0;
+  overflow:hidden;
+}
+.workspace-opener-title,.workspace-opener-checkout {
+  display:block;
   overflow:hidden;
   text-overflow:ellipsis;
   white-space:nowrap;
+}
+.workspace-opener-title {
+  color:var(--foreground);
+  font-size:12px;
+  font-weight:600;
+  line-height:16px;
+}
+.workspace-opener-checkout {
+  color:var(--muted-foreground);
+  font-size:11px;
+  font-weight:400;
+  line-height:14px;
 }
 .workspace-opener:hover,.file-actions-opener:hover {
   background:var(--muted);

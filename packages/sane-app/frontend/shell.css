@@ -14,11 +14,20 @@
 .shell-sidebar-header {
   display:flex;
   align-items:center;
+  gap:8px;
   flex-shrink:0;
   height:var(--shell-header-height, 52px);
   min-height:var(--shell-header-height, 52px);
   padding:0 12px;
   border-bottom:1px solid var(--border);
+}
+.shell-logo {
+  --penrose-background:var(--muted);
+  flex-shrink:0;
+  color:var(--primary);
+}
+.drawer .shell-logo {
+  --penrose-background:var(--background);
 }
 .shell-sidebar-header .workspace-opener {
   flex:1;

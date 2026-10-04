@@ -3,6 +3,7 @@ import { CatalogSelector } from "./catalog-selector";
 import { Drawer, Icon, viewGroup } from "./nav";
 import type { ActiveView } from "./workspace-controller";
 import type { WorkspaceSelectionModel } from "./conversation-sidebar-model";
+import { PenroseTriangle } from "./penrose-triangle";
 
 type ShellProps = {
   view: ActiveView;
@@ -20,7 +21,7 @@ type ShellProps = {
 /** One sidebar composition for both desktop and the mobile drawer. */
 export function ShellSidebar({ children, retryCatalog, workspaceSelection }: { children: ReactNode; retryCatalog: () => void; workspaceSelection?: WorkspaceSelectionModel }) {
   return <>
-    <div className="shell-sidebar-header"><CatalogSelector retry={retryCatalog} selection={workspaceSelection} /></div>
+    <div className="shell-sidebar-header"><PenroseTriangle size={28} className="shell-logo" /><CatalogSelector retry={retryCatalog} selection={workspaceSelection} /></div>
     <div className="sidebar-body">{children}</div>
   </>;
 }
