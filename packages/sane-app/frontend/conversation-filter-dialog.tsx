@@ -6,6 +6,7 @@ import { defaultFilterFor, type ConversationFilterState, type WorkstreamMembersh
 import { refKey } from "./workstreams-client";
 import type { Conversation } from "./types";
 import { assignmentFilterChoices, assignmentLabel, assignmentValue } from "./assignment-semantics";
+import { FilterDropdown } from "./filter-dropdown";
 
 /** Join App conversations to repository workstream membership via native refs. */
 export function buildWorkstreamMap(
@@ -83,33 +84,29 @@ export function ConversationFilterDialog({ value, onChange, workspaces, navigati
   return <ShellDialog title="Filter conversations" close={onClose}>
     <div className="filter-dialog" aria-label="Conversation filters">
       <label>Search<input value={draftQuery} onChange={e => setDraftQuery(e.target.value)} placeholder="Fuzzy title, path, harness, ID…" maxLength={200} /></label>
-      <label>Workspace<select value={value.workspaceId ?? "all"} onChange={e => {
-        const next = e.target.value as ConversationFilterState["workspaceId"];
+      <FilterDropdown label="Workspace" value={value.workspaceId ?? "all"} onChange={next => {
         set({ workspaceId: next, worktreeId: next === "all" || next === "unavailable" ? "all" : value.worktreeId });
-      }}>
-        <option value="all">All recorded history</option>
-        {workspaces.map(w => <option key={w.workspaceId} value={w.workspaceId}>{w.name}</option>)}
-        <option value="unavailable">Unavailable workspace history</option>
-      </select></label>
-      <label>Worktree<select value={value.worktreeId ?? "all"} disabled={!worktreeChoices.length} onChange={e => set({ worktreeId: e.target.value })}>
-        <option value="all">{selectedWorkspace ? "All worktrees in workspace" : "All worktrees"}</option>
-        {worktreeChoices.map(t => <option key={t.worktreeId} value={t.worktreeId}>{t.alias || t.branch || t.root}</option>)}
-      </select></label>
-      <label>Harness<select value={value.harness} onChange={e => set({ harness: e.target.value as ConversationFilterState["harness"] })}>
-        <option value="all">All harnesses</option><option value="claude-code">Claude Code</option><option value="opencode">OpenCode</option>
-      </select></label>
-      <label>Status<select value={value.status} onChange={e => set({ status: e.target.value as ConversationFilterState["status"] })}>
-        <option value="all">All statuses</option>
-        <option value="starting">starting</option><option value="running">running</option><option value="completed">completed</option>
-        <option value="failed">failed</option><option value="interrupted">interrupted</option><option value="unknown">unknown</option>
-      </select></label>
-      <label>Workstream<select value={value.workstreamId} onChange={e => set({ workstreamId: e.target.value as ConversationFilterState["workstreamId"] })}>
-        {workstreamOptions(overview).map(o => <option key={o.value} value={o.value}>{o.label}</option>)}
-      </select></label>
-      <label>Assignment<select value={assignmentValue(value.phase)} onChange={e => set({ phase: e.target.value })}>
-        <option value="all">All assignments</option>
-        {phaseOptions(overview).map(p => <option key={p} value={p}>{assignmentLabel(p)}</option>)}
-      </select></label>
+      }} options={[
+        { value: "all", label: "All recorded history" },
+        ...workspaces.map(w => ({ value: w.workspaceId, label: w.name })),
+        { value: "unavailable", label: "Unavailable workspace history" },
+      ]} />
+      <FilterDropdown label="Workstream" value={value.workstreamId} onChange={next => set({ workstreamId: next })} options={workstreamOptions(overview)} />
+      <FilterDropdown label="Worktree" value={value.worktreeId ?? "all"} disabled={!worktreeChoices.length} onChange={next => set({ worktreeId: next })} options={[
+        { value: "all", label: selectedWorkspace ? "All worktrees in workspace" : "All worktrees" },
+        ...worktreeChoices.map(t => ({ value: t.worktreeId, label: t.alias || t.branch || t.root })),
+      ]} />
+      <FilterDropdown label="Harness" value={value.harness} onChange={next => set({ harness: next as ConversationFilterState["harness"] })} options={[
+        { value: "all", label: "All harnesses" }, { value: "claude-code", label: "Claude Code" }, { value: "opencode", label: "OpenCode" },
+      ]} />
+      <FilterDropdown label="Phase" value={assignmentValue(value.phase)} onChange={next => set({ phase: next })} options={[
+        { value: "all", label: "All phases" },
+        ...phaseOptions(overview).map(p => ({ value: p, label: assignmentLabel(p) })),
+      ]} />
+      <FilterDropdown label="Status" value={value.status} onChange={next => set({ status: next as ConversationFilterState["status"] })} options={[
+        { value: "all", label: "All statuses" },
+        ...["starting", "running", "completed", "failed", "interrupted", "unknown"].map(status => ({ value: status, label: status })),
+      ]} />
       <button type="button" role="switch" aria-checked={!!value.showDeleted} className="filter-switch" onClick={() => set({ showDeleted: !value.showDeleted })}><span className="filter-switch-track" aria-hidden="true"><span className="filter-switch-thumb" /></span>Show hidden</button>
       {typeof resultCount === "number" && <p className="muted" role="status">{resultCount} match{resultCount === 1 ? "" : "es"}</p>}
       {!overview && <p className="muted">Workstream membership needs a repository workspace; unknown rows stay grouped as unknown.</p>}
