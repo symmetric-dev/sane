@@ -21,7 +21,7 @@ export const conversationClient: ConversationClient = {
   logout: () => request("/api/logout", { method: "POST" }),
   async conversations(signal) {
     const data = await request("/api/sessions", { signal });
-    return { conversations: (data.sessions ?? []).map((s: any) => ({ id: s.sessionId, harness: s.harness ?? "claude-code", nativeSessionId: s.nativeSessionId, cwd: s.cwd, lastRunId: s.lastRunId, status: s.lastStatus as RunStatus, title: s.title, hidden: s.hidden, model: s.model, effort: s.effort, agent: s.agent, agentKind: s.agentKind, nativeAgentSelected: s.nativeAgentSelected, profileId: s.profileId, workspaceId: s.workspaceId, worktreeId: s.worktreeId, association: s.association, associationReason: s.associationReason, availability: s.availability, attachment: s.attachment, worker: s.worker, directWorkerCount: s.directWorkerCount, branchOrigin: s.branchOrigin, branchDraft: s.branchDraft, replacedBy: s.replacedBy })),
+    return { conversations: (data.sessions ?? []).map((s: any) => ({ id: s.sessionId, harness: s.harness ?? "claude-code", nativeSessionId: s.nativeSessionId, cwd: s.cwd, lastRunId: s.lastRunId, status: s.lastStatus as RunStatus, title: s.title, hidden: s.hidden, model: s.model, effort: s.effort, agent: s.agent, agentKind: s.agentKind, nativeAgentSelected: s.nativeAgentSelected, profileId: s.profileId, workspaceId: s.workspaceId, worktreeId: s.worktreeId, association: s.association, associationReason: s.associationReason, availability: s.availability, queuedFollowups: s.queuedFollowups, attachment: s.attachment, worker: s.worker, directWorkerCount: s.directWorkerCount, branchOrigin: s.branchOrigin, branchDraft: s.branchDraft, replacedBy: s.replacedBy })),
       availability: data.availability ?? { canSend: false, reason: "Waiting for bridge availability." } };
   },
   async runs(id, signal): Promise<RunMetadata[]> {
@@ -59,6 +59,11 @@ export const conversationClient: ConversationClient = {
   orderAgents: input => request("/api/agents/order", { method: "PUT", body: JSON.stringify(input) }),
   async submit({ text, conversationId, ...options }) {
     const data = await request("/api/sessions", { method: "POST", body: JSON.stringify({ prompt: text, ...(conversationId ? { sessionId: conversationId } : {}), ...options }) });
+    if (data.queued === true) {
+      if (data.sessionId !== conversationId || !data.receipt || typeof data.receipt.requestId !== "string" || data.receipt.sessionId !== conversationId || data.receipt.prompt !== text) throw new Error("Invalid queue acknowledgement; check conversation history before retrying");
+      return { conversationId: data.sessionId, queued: true, receipt: data.receipt };
+    }
+    if (typeof data.runId !== "string") throw new Error("Invalid run acknowledgement; check conversation history before retrying");
     return { conversationId: data.sessionId, runId: data.runId };
   },
 };

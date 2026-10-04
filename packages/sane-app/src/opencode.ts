@@ -19,6 +19,14 @@ type Page = { data: NativeMessage[]; cursor: { next?: string | null } };
 /** Marks the App-delivered framework synthetic, which is model context and never a transcript turn. */
 const saneFrameworkMetadata = { sane: "framework" } as const;
 const saneFramework = (metadata: Record<string, unknown> | undefined) => metadata?.sane === saneFrameworkMetadata.sane;
+// SessionRestart in native V2 publishes this notice while preserving the same
+// execution claim. Shutdown interruptions deliberately have no idle boundary.
+// Do not treat arbitrary synthetics (including other notices) as continuations.
+const restartContinuation = (message: NativeMessage, command: NativeMessage) => message.type === "synthetic"
+  && message.metadata?.notice === "restart"
+  && message.text === "The server restarted while you were working. Continue from where you left off without repeating completed work."
+  && nativeMessageId(message.id) && Number.isFinite(message.time?.created)
+  && message.time.created >= command.time.created;
 export class OpenCodeError extends Error {
   constructor(message: string, public status = 503) { super(message); }
 }
@@ -318,8 +326,10 @@ export function commandSnapshot(history: NativeMessage[], commandId: string) {
   if (start < 0) return { messages: [] as NativeMessage[], outcome: undefined as string | undefined };
   const messages = [history[start]!];
   for (const message of history.slice(start + 1)) {
-    // Another admitted input before an idle boundary makes attribution ambiguous.
-    if (message.type === "user" || message.type === "synthetic") break;
+    // Only the evidenced native restart notice preserves this command's claim.
+    // Another admitted input still makes attribution ambiguous; never cross it
+    // to borrow an unrelated turn's assistant activity or terminal outcome.
+    if (message.type === "user" || message.type === "synthetic" && !restartContinuation(message, history[start]!)) break;
     messages.push(message);
     if (message.type === "idle") return { messages, outcome: ["succeeded", "failed", "interrupted"].includes(message.outcome ?? "") ? message.outcome : undefined };
   }

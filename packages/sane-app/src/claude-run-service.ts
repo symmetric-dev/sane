@@ -7,6 +7,7 @@ import type { Event, Run, Session } from "./history";
 import type { RunOwner } from "./run-owner";
 import type { ExecutionContext } from "./workstreams";
 import { isClaudeRootRecord } from "../shared/conversation/cc-scope";
+import type { QueuedSendConfiguration } from "../shared/conversation/queued-followup";
 
 export const hookEvents = ["SessionStart", "SessionEnd", "UserPromptSubmit", "Stop", "PreToolUse", "PostToolUse", "PermissionRequest", "Notification", "SubagentStart", "SubagentStop", "PreCompact", "PostCompact", "CwdChanged"] as const;
 
@@ -70,6 +71,8 @@ export type ClaudeRunRuntime = {
 
 export type ClaudeHookInput = { runId?: unknown; payload?: unknown };
 export type ClaudeHookReply = { status: 200; body: { ok: true } } | { status: 400 | 403; body: { error: string } };
+export type ClaudeQueuedFollowup = { requestId: string; afterRunId: string; sessionId: string; prompt: string; configuration?: QueuedSendConfiguration };
+type QueuedFollowup = { owner: RunOwner; input: ClaudeQueuedFollowup; cancelled?: boolean; persisted: Promise<void>; draining?: Promise<void> };
 /** failure: the first non-success result record; framework: the SessionStart text this run must deliver. */
 type Result = { seen: boolean; error: boolean; indices: Set<number>; diagnostic?: string; failure?: Record<string, unknown>; stderr: string;
   framework?: { text: string; delivered: boolean; rejected: boolean; failures: { outcome: unknown; exitCode: unknown; stderr: unknown }[] } };
@@ -83,6 +86,9 @@ const equal = (a: string, b: string) => { const x = Buffer.from(a), y = Buffer.f
 
 export class ClaudeRunService {
   private readonly secrets = new Map<string, string>();
+  private readonly stoppedTurns = new Set<string>();
+  private readonly turnHooks = new Map<string, symbol | undefined>();
+  private readonly followups = new Map<string, QueuedFollowup>();
   private readonly runtime: ClaudeRunRuntime;
 
   constructor(private readonly options: ClaudeRunOptions, private readonly deps: ClaudeRunDependencies, runtime: Partial<ClaudeRunRuntime> = {}) {
@@ -102,6 +108,78 @@ export class ClaudeRunService {
   groupAlive(owner: RunOwner): boolean {
     if (!owner.child) return false;
     try { this.runtime.kill(-owner.child.pid, 0); return true; } catch (e: any) { return e.code !== "ESRCH"; }
+  }
+
+  /** Input admission is not process ownership. The one-shot CLI cannot receive
+   * another prompt after stdin EOF; accept at most one journaled follow-up and
+   * let bridge admit a fresh run only after this owner's entire lifecycle ends.
+   * This capability is for explicit user prompts, never compact/worker/handoff
+   * deliveries or any operation that requires an idle conversation. */
+  canQueueFollowup(owner: RunOwner): boolean {
+    return this.deps.owns(owner) && this.deps.session(owner.run.sessionId)?.harness === "claude-code"
+      && !owner.native && !owner.workerDeliveryId && !!owner.child && owner.run.operation !== "compact"
+      && owner.run.status === "running" && !owner.settled && !owner.stopRequested && !owner.cancelling && !owner.stopping
+      && !this.deps.closing() && !this.deps.storageFailed() && !this.deps.retained()
+      && this.stoppedTurns.has(owner.run.runId) && !this.followups.has(owner.run.sessionId);
+  }
+
+  hasQueuedFollowup(sessionId: string): boolean { return this.followups.has(sessionId); }
+  followupPending(requestId: string): boolean { return [...this.followups.values()].some(queued => queued.input.requestId === requestId && !queued.cancelled); }
+  cancelFollowup(sessionId: string): void { const queued = this.followups.get(sessionId); if (queued) queued.cancelled = true; }
+
+  async queueFollowup(owner: RunOwner, prompt: string, configuration?: QueuedSendConfiguration): Promise<ClaudeQueuedFollowup> {
+    if (!prompt.trim() || compactCommand(prompt)) throw new Error("Only ordinary nonempty prompts can be queued");
+    if (!this.canQueueFollowup(owner)) throw new Error("Claude follow-up admission unavailable");
+    const input: ClaudeQueuedFollowup = { requestId: this.runtime.randomUUID(), afterRunId: owner.run.runId, sessionId: owner.run.sessionId, prompt, ...(configuration ? { configuration: structuredClone(configuration) } : {}) };
+    const queued: QueuedFollowup = { owner, input, persisted: Promise.resolve() };
+    // Reserve synchronously, before journal I/O, so concurrent requests cannot
+    // accept a second prompt. Do not project this as a submitted native turn.
+    this.followups.set(input.sessionId, queued);
+    try {
+      queued.persisted = this.deps.emit(owner.run, "context", { source: "claude-followup", state: "queued", ...input });
+      await queued.persisted; return { ...input };
+    }
+    catch (error) { if (this.followups.get(input.sessionId) === queued) this.followups.delete(input.sessionId); throw error; }
+  }
+
+  /** Bridge must keep a queued-input admission reservation until this promise
+   * settles. `dispatch` must use normal launch/configuration validation, create
+   * a NEW Run, and install its owner before native submission. Never call this
+   * from execute's finally: owner.done also covers bridge release/cancellation.
+   * Queued journal evidence is not a durable auto-retry instruction on restart. */
+  drainQueuedFollowup(owner: RunOwner, dispatch: (input: ClaudeQueuedFollowup) => Promise<{ runId: string } | { notSubmitted: true }>): Promise<void> {
+    const queued = this.followups.get(owner.run.sessionId);
+    if (!queued || queued.owner !== owner) return Promise.resolve();
+    if (queued.draining) return queued.draining;
+    queued.draining = (async () => {
+      await queued.persisted;
+      await owner.done;
+      // A Stop/result, child exit alone, or a cancelled/unconfirmed owner never
+      // permits resume. Do not signal children here to make the queue eligible.
+      if (queued.cancelled || !owner.settled || owner.cancelling || owner.stopRequested || owner.stopping || owner.run.status !== "completed"
+        || !owner.child || owner.child.exitCode !== 0 || this.groupAlive(owner) || this.deps.owns(owner)
+        || this.deps.closing() || this.deps.storageFailed() || this.deps.retained()) {
+        if (!this.deps.storageFailed()) await this.deps.emit(owner.run, "context", { source: "claude-followup", state: "not-submitted", requestId: queued.input.requestId });
+        return;
+      }
+      await this.deps.emit(owner.run, "context", { source: "claude-followup", state: "admitting", requestId: queued.input.requestId });
+      if (queued.cancelled || this.deps.closing() || this.deps.storageFailed() || this.deps.retained()) {
+        if (!this.deps.storageFailed()) await this.deps.emit(owner.run, "context", { source: "claude-followup", state: "not-submitted", requestId: queued.input.requestId });
+        return;
+      }
+      try {
+        const run = await dispatch({ ...queued.input });
+        await this.deps.emit(owner.run, "context", "notSubmitted" in run
+          ? { source: "claude-followup", state: "not-submitted", requestId: queued.input.requestId }
+          : { source: "claude-followup", state: "dispatched", requestId: queued.input.requestId, runId: run.runId });
+      } catch (error) {
+        // Admission may have reached native submission before throwing. Never
+        // silently retry this prompt; the normal launch journal is authoritative.
+        if (!this.deps.storageFailed()) await this.deps.emit(owner.run, "context", { source: "claude-followup", state: "admission-unconfirmed", requestId: queued.input.requestId, error: message(error) });
+        throw error;
+      }
+    })().finally(() => { if (this.followups.get(owner.run.sessionId) === queued) this.followups.delete(owner.run.sessionId); });
+    return queued.draining;
   }
 
   private signal(owner: RunOwner, value: NodeJS.Signals) {
@@ -137,7 +215,15 @@ export class ClaudeRunService {
     const payload = input.payload;
     const session = this.deps.session(run.sessionId);
     if (!session?.nativeSessionId || session.harness !== "claude-code" || !payload || typeof payload !== "object" || (payload as Record<string, unknown>).hook_event_name !== event || (payload as Record<string, unknown>).session_id !== session.nativeSessionId) return { status: 400, body: { error: "Hook association mismatch" } };
+    // Publish root hook state in receipt order before starting journal I/O.
+    // Stop becomes queueable only after its own durable write finishes; a later
+    // activity hook invalidates that publication even while Stop is persisting.
+    const root = isClaudeRootRecord(payload);
+    if (root && (event === "UserPromptSubmit" || event === "PreToolUse")) this.stoppedTurns.delete(run.runId);
+    const stop = root && event === "Stop" ? Symbol() : undefined;
+    if (root && (stop || event === "UserPromptSubmit" || event === "PreToolUse")) this.turnHooks.set(run.runId, stop);
     await this.deps.emit(run, "hook", { event, payload });
+    if (stop && this.turnHooks.get(run.runId) === stop && run.status === "running") this.stoppedTurns.add(run.runId);
     return { status: 200, body: { ok: true } };
   }
 
@@ -148,6 +234,12 @@ export class ClaudeRunService {
       let data: any = text;
       if (kind === "stdout") {
         try { data = JSON.parse(text); } catch {}
+        // stdout and hook HTTP have independent delivery ordering. An assistant
+        // record can be the final reply preceding an already-received Stop, so
+        // do not revoke that hook based on stdout text. Root activity hooks do.
+        if (isClaudeRootRecord(data) && data?.session_id === nativeSessionId && data?.type === "system" && data.subtype === "task_notification") {
+          this.stoppedTurns.delete(run.runId); this.turnHooks.set(run.runId, undefined);
+        }
         if (isClaudeRootRecord(data) && ((data?.type === "system" && data.subtype === "init") || data?.type === "result")) {
           if (data.session_id !== nativeSessionId) { result.error = true; result.diagnostic = "CLI session identity mismatch or missing session_id"; }
         }
@@ -198,7 +290,7 @@ export class ClaudeRunService {
       if (run.operation !== "compact" && compactCommand(prompt)) throw new Error("Use the dedicated Compact action; compaction cannot be submitted as an ordinary prompt");
       // Write the first log record before publishing its metadata reference.
       await deps.emit(run, "status", { status: "running" });
-      if (run.operation !== "compact") await deps.emit(run, "submission", { messageId: `${run.runId}:user`, text: prompt });
+      if (run.operation !== "compact") await deps.emit(run, "submission", { messageId: `${run.runId}:user`, text: prompt, ...(run.queuedFollowupId ? { queuedFollowupId: run.queuedFollowupId } : {}) });
       await deps.persist();
       if (deps.closing()) throw new Error("Closing before launch");
       const session = deps.session(run.sessionId)!;
@@ -277,6 +369,8 @@ export class ClaudeRunService {
       run.endedAt = new Date().toISOString(); deps.session(run.sessionId)!.lastStatus = run.status;
       try { if (owner.workerDeliveryId && !owner.child) await deps.emit(run, "status", { status: run.status, workerDeliveryNotSubmitted: owner.workerDeliveryId }); await deps.persist(); } catch { deps.failClosed(); }
       this.secrets.delete(run.runId);
+      this.stoppedTurns.delete(run.runId);
+      this.turnHooks.delete(run.runId);
     }
   }
 }

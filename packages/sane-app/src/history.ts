@@ -26,7 +26,7 @@ export const validEffort = (v: unknown): v is Effort => typeof v === "string" &&
 /** Missing operation is a legacy prompt. nativeCommandId remains the requested
  * OC input ID; compact.nativeAdmittedId may differ after native coalescing. */
 export type CompactRunMetadata = { requestId: string; instructions?: string; nativeRequestId?: string; nativeAdmittedId?: string };
-export type Run = AgentSnapshot & { runId: string; sessionId: string; cwd: string; status: Status; createdAt: string; endedAt?: string; model?: string; effort?: string; profileId?: string; nativeCommandId?: string; nativePhase?: "preparing" | "sending" | "accepted"; nativeAcceptedAt?: number; operation?: "prompt" | "compact"; compact?: CompactRunMetadata; saneContextVersion?: number };
+export type Run = AgentSnapshot & { runId: string; sessionId: string; cwd: string; status: Status; createdAt: string; endedAt?: string; model?: string; effort?: string; profileId?: string; nativeCommandId?: string; nativePhase?: "preparing" | "sending" | "accepted"; nativeAcceptedAt?: number; operation?: "prompt" | "compact"; compact?: CompactRunMetadata; saneContextVersion?: number; queuedFollowupId?: string };
 export type Event = { seq: number; time: string; runId: string; sessionId: string; kind: "stdout" | "stderr" | "hook" | "status" | "submission" | "message" | "launch" | "context"; data: unknown };
 export type Metadata = { sessions: Session[]; runs: Run[]; reconciliationRequired: boolean };
 
@@ -64,7 +64,7 @@ export function validateMetadata(value: unknown): Metadata {
   const fail = (): never => { throw new Error("Corrupt metadata: invalid schema or session/run relationship"); };
   if (!object(value) || !Array.isArray(value.sessions) || !Array.isArray(value.runs) || typeof value.reconciliationRequired !== "boolean") return fail();
   const sessions = new Map<string, Session>(), runs = new Map<string, Run>();
-  const nativeIds = new Set<string>(), compactRequests = new Set<string>();
+  const nativeIds = new Set<string>(), compactRequests = new Set<string>(), queuedFollowups = new Set<string>();
   for (const s of value.sessions) {
     if (!object(s) || !uuid(s.sessionId) || !cwd(s.cwd) || sessions.has(s.sessionId)) return fail();
     if (s.attachment !== undefined && (!object(s.attachment) || !["pending", "ready"].includes(s.attachment.state) || typeof s.attachment.source !== "string" || !s.attachment.source || (s.attachment.error !== undefined && typeof s.attachment.error !== "string"))) return fail();
@@ -98,6 +98,11 @@ export function validateMetadata(value: unknown): Metadata {
     if (r.profileId !== undefined && !validProfileId(r.profileId)) return fail();
     if (r.saneContextVersion !== undefined && r.saneContextVersion !== sessions.get(r.sessionId)?.saneContext?.version) return fail();
     if (r.operation !== undefined && r.operation !== "prompt" && r.operation !== "compact") return fail();
+    if (r.queuedFollowupId !== undefined && (!uuid(r.queuedFollowupId) || sessions.get(r.sessionId)?.harness !== "claude-code" || r.operation === "compact")) return fail();
+    if (r.queuedFollowupId !== undefined) {
+      if (queuedFollowups.has(r.queuedFollowupId)) return fail();
+      queuedFollowups.add(r.queuedFollowupId);
+    }
     if (r.operation === "compact") {
       if (!object(r.compact) || !uuid(r.compact.requestId) || (r.compact.instructions !== undefined && (!validCompactInstructions(r.compact.instructions) || sessions.get(r.sessionId)?.harness !== "claude-code"))) return fail();
       if ([r.compact.nativeRequestId, r.compact.nativeAdmittedId].some(v => v !== undefined && (!nativeMessageId(v) || sessions.get(r.sessionId)?.harness !== "opencode"))) return fail();

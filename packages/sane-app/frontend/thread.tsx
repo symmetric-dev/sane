@@ -8,7 +8,7 @@ import { AssistantRuntimeProvider, MessagePrimitive, ThreadPrimitive, useAuiStat
 import { ChatComposer } from "./chat-composer";
 import { ChatScroll } from "./chat-scroll";
 import { ConversationLoading, PendingUserText } from "./chat-loading";
-import { messagesWithPendingTurn } from "./transcript";
+import { messagesWithPendingTurn, messagesWithQueuedFollowups } from "./transcript";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import { FiArrowLeft, FiArrowUpRight, FiCopy, FiZap } from "react-icons/fi";
@@ -136,11 +136,13 @@ function ChatMessageBody() {
         }
         return null;
       })}
+      {source?.queuedFollowup && <span className="muted">{source.queuedFollowup.state === "queued" ? "Queued" : source.queuedFollowup.state === "not-submitted" ? "Not sent" : source.queuedFollowup.state === "dispatched" ? "Run created" : "Unconfirmed"}</span>}
       {source?.error !== undefined && <details className="run-warning"><summary>Reported error</summary><pre>{json(source.error)}</pre></details>}
       {!isUser && source?.runId !== "native-import" && message.status?.type === "incomplete" && <p className="run-warning" role="status">{message.status.reason === "error" ? "This run failed. The response may be incomplete." : "This run was interrupted or its completion is unknown."} {context.readOnly ? "Only recorded evidence is shown." : "See details for the recorded evidence."}</p>}
     </div>
     {!isUser && (plain || canBranch) && <div className="message-actions">{plain && <Copy text={plain} label="Copy" />}
     {canBranch && source && <BranchAction sessionId={context.sessionId} harness={harness} {...(source.runId === "native-import" ? { messageId: source.id } : { runId: source.runId })} />}</div>}
+    {isUser && source?.queuedFollowup && <div className="message-actions"><Copy text={plain} />{source.queuedFollowup.state === "not-submitted" && !context.readOnly && <button type="button" className="text-button" disabled={!!store.draft().text} onClick={() => { if (store.snapshot().selected === context.sessionId && !store.draft().text) store.setDraft({ text: plain }); }}>Use as draft</button>}</div>}
   </MessagePrimitive.Root>;
 }
 
@@ -174,13 +176,14 @@ export function Thread({ state, active: isActive = true, navigation, reviewReque
   const modelUnavailable = store.modelUnavailable();
   useEffect(() => { if (capabilities.listModels && (state.modelsCwd !== workspace || (!state.modelsLoaded && !state.modelsLoading && !state.modelsError))) { const timer = setTimeout(() => void store.loadModels(harness), 300); return () => clearTimeout(timer); } }, [harness, capabilities.listModels, workspace, state.modelsCwd, state.modelsLoaded, state.modelsLoading, state.modelsError]);
    const running = state.runs.some(run => active(run.status)) || active(conversation?.status ?? "completed");
+   const queueable = store.canQueueInput(state);
   const compacting = state.compactions?.some(record => record.lifecycle === "running");
   const compactBlocked = !!store.compactBlocked();
   const pendingCompact = state.pendingCompacts?.[state.selected];
   const nativeIssue = [...state.runs].reverse().find(run => active(run.status) && run.nativeConnection && run.nativeConnection !== "connected");
   const latestRun = state.runs.at(-1);
   const pendingTurn = state.pendingTurn?.conversationId === state.selected ? state.pendingTurn : null;
-  const messages = useMemo(() => withCoverageGaps(messagesWithPendingTurn(state.messages, pendingTurn), state.transcript), [state.messages, pendingTurn, state.transcript?.islands]);
+  const messages = useMemo(() => withCoverageGaps(messagesWithQueuedFollowups(messagesWithPendingTurn(state.messages, pendingTurn), conversation), state.transcript), [state.messages, pendingTurn, conversation?.queuedFollowups, conversation?.lastRunId, state.transcript?.islands]);
    const positions = useMemo(() => {
       if (!state.transcript) return state.transcriptPaged ? new Map<string, CompactionRecord[]>() : compactionPositions(state.compactions ?? [], messages, state.nativeHistory);
      const positions = new Map<string, CompactionRecord[]>();
@@ -195,11 +198,11 @@ export function Thread({ state, active: isActive = true, navigation, reviewReque
     const key = part.type === "tool" ? nativeSubagentKey(state.selected, source, part, state.runs, harness) : null;
     return key ? [nativeSubagentId(key)] : [];
   }))), [messages, state.selected, state.runs, harness]);
-  const runtime = useExternalStoreRuntime({ messages, convertMessage, isRunning: running,
-    isSendDisabled: !isActive || !capabilities.prompt || running || compactBlocked || state.actionBusy || state.loading || state.sending || !state.connected || !state.availability.canSend || modelUnavailable || !!store.executionUnavailable() || (needsAck && ack !== state.selected),
+  const runtime = useExternalStoreRuntime({ messages, convertMessage, isRunning: running && !queueable,
+    isSendDisabled: !isActive || !capabilities.prompt || running && !queueable || compactBlocked || state.actionBusy || state.loading || state.sending || !state.connected || !state.availability.canSend || modelUnavailable || !!store.executionUnavailable() || (needsAck && ack !== state.selected),
     onNew: async message => { const text = message.content.filter(p => p.type === "text").map(p => p.text).join("\n"); await send(text); },
   });
-  const sendDisabled = !isActive || !capabilities.prompt || running || compactBlocked || state.actionBusy || state.loading || state.sending || !state.connected || !state.availability.canSend || modelUnavailable || !!store.executionUnavailable() || (needsAck && ack !== state.selected);
+  const sendDisabled = !isActive || !capabilities.prompt || running && !queueable || compactBlocked || state.actionBusy || state.loading || state.sending || !state.connected || !state.availability.canSend || modelUnavailable || !!store.executionUnavailable() || (needsAck && ack !== state.selected);
   const sendReview = (text: string) => { const stopped = ack === state.selected && !!ack; setAck(""); return store.send(text, stopped, { preserveDraft: true }); };
   const review = useDocumentReview(state, isActive, sendDisabled, sendReview);
   const handledReviewRequest = useRef<number | null>(null);

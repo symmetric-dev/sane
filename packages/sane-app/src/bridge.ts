@@ -5,6 +5,7 @@ import { createHash } from "node:crypto";
 import { BridgeAuth, validateBridgeAuthOptions } from "./bridge-auth";
 import { body, equal, json, loopback } from "./bridge-http";
 import { ClaudeRunService, hookEvents } from "./claude-run-service";
+import { projectClaudeFollowups } from "./claude-followup-projection";
 import { resolveAppConfig } from "./app-config";
 import { buildAssets, validateAssets } from "./asset-build";
 import { acquireInstallation, acquireData, validateOwnershipPaths, type OwnershipHandle } from "./installation-ownership";
@@ -244,6 +245,7 @@ async function startOwned(options: Options, assetsDir: string, packageDir: strin
   const admitting = new Set<string>();
   const attaching = new Set<string>();
   const attachmentTasks = new Set<Promise<void>>();
+  const queuedInputTasks = new Set<Promise<void>>();
   const handoffReservations = new Set<string>();
   const handoffAcknowledgements = new Set<string>();
   const handoffDispatches = new Map<string, Promise<void>>();
@@ -380,7 +382,7 @@ async function startOwned(options: Options, assetsDir: string, packageDir: strin
     }
     return handoff;
   }
-  function availability(sessionId?: string, capacity = true, delivery = false, preparation = false): { canSend: boolean; reason?: string; code?: string } {
+  function availability(sessionId?: string, capacity = true, delivery = false, preparation = false, inputMode?: "user" | "queued-dispatch"): { canSend: boolean; reason?: string; code?: string; queueAfterRunId?: string } {
     if (sessionId && lifecycleReserved(sessionId)) return { canSend: false, reason: "A repository phase action is in progress", code: "workstream-action-pending" };
     if (sessionId && branches.list().some(op => op.state !== "failed" && (op.state !== "completed" || op.replace) && workers.tree(op.sourceId).some(w => w.sessionId === sessionId))) return { canSend: false, reason: "Ancestor conversation has a pending branch or was replaced", code: "branch-parent" };
     if (sessionId && branches.replaced(sessionId)) return { canSend: false, reason: "Replaced conversation · read-only. Open its replacement to continue.", code: "replaced" };
@@ -399,9 +401,13 @@ async function startOwned(options: Options, assetsDir: string, packageDir: strin
     const admission = sessionId ? admissions.get(sessionId) : undefined;
     if (admission && admission.state !== "ready" && !(preparation && admission.state === "identity_known" && admission.nativeId)) return { canSend: false, reason: "Admission pending; explicit known-identity retry is required", code: "admission-pending" };
     if (sessionId && meta.sessions.find(s => s.sessionId === sessionId)?.attachment?.state === "pending") return { canSend: false, reason: "Attachment incomplete. Retry Attach with the same harness, native ID and execution directory; no run is permitted.", code: "attachment-pending" };
-    if (sessionId && (owners.has(sessionId) || admitting.has(sessionId))) return { canSend: false, reason: "This conversation already has an active run or reconciliation", code: "conversation-busy" };
+    const owner = sessionId ? owners.get(sessionId) : undefined;
+    // Only ordinary user input may occupy the existing owner's one queue slot.
+    // No idle-only operation inherits this exception, including at full capacity.
+    if (inputMode === "user" && owner && !admitting.has(sessionId!) && claudeRuns.canQueueFollowup(owner)) return { canSend: true, queueAfterRunId: owner.run.runId };
+    if (sessionId && (owner || inputMode !== "queued-dispatch" && (admitting.has(sessionId) || claudeRuns.hasQueuedFollowup(sessionId)))) return { canSend: false, reason: "This conversation already has an active run or reconciliation", code: "conversation-busy" };
     const occupied = new Set([...owners.keys(), ...admitting, ...handoffDispatches.keys(), ...workerStore.list().filter(w => !w.outcome).map(w => w.sessionId), ...workerStore.deliveries().filter(d => ["claimed", "acceptance-unknown"].includes(d.state)).map(d => d.parentSessionId)]);
-    if (capacity && !(delivery && sessionId && handoffDispatches.has(sessionId)) && occupied.size >= maxConcurrentRuns) return { canSend: false, reason: `Bridge capacity reached (${maxConcurrentRuns} concurrent runs/requests); retry when a slot is free`, code: "capacity" };
+    if (capacity && inputMode !== "queued-dispatch" && !(delivery && sessionId && handoffDispatches.has(sessionId)) && occupied.size >= maxConcurrentRuns) return { canSend: false, reason: `Bridge capacity reached (${maxConcurrentRuns} concurrent runs/requests); retry when a slot is free`, code: "capacity" };
     return { canSend: true };
   }
   let serial = Promise.resolve();
@@ -1091,7 +1097,13 @@ async function startOwned(options: Options, assetsDir: string, packageDir: strin
         await emit(owner.run, "status", { status: "running", connection: "stopping", reason: "Stop requested; waiting for terminal evidence" });
         if (owner.native) return ocRuns.interrupt(owner);
         return { interrupted: await terminate(owner) };
-      })().finally(() => { owner.cancelling = false; releaseOwner(owner); });
+      })().finally(() => {
+        // Native interruption acknowledges one execution, not future restart
+        // continuations. Coalesce only in-flight requests; an explicit later
+        // Stop must be able to interrupt the still-owned native run again.
+        if (owner.native) owner.cancel = undefined;
+        owner.cancelling = false; releaseOwner(owner);
+      });
     }
     const attempt = owner.cancel;
     try { return await attempt; } catch (e) { if (owner.cancel === attempt) owner.cancel = undefined; throw e; }
@@ -1535,7 +1547,7 @@ async function startOwned(options: Options, assetsDir: string, packageDir: strin
         // Recovery never auto-sends a reserved prompt. Offer it as a composer
         // draft only while no first prompt run (including failed submissions) exists.
         const branchDrafts = new Map(branches.list().filter(op => op.state === "completed" && op.firstMessage && !op.firstRunId && !meta.runs.some(run => run.sessionId === op.destinationId && run.operation !== "compact")).map(op => [op.destinationId, op.firstMessage]));
-        return json({ sessions: meta.sessions.map(s => ({ ...s, branchDraft: branchDrafts.get(s.sessionId), branchOrigin: branches.list().find(op => op.destinationId === s.sessionId && op.state !== "failed")?.sourceId, replacedBy: branches.replaced(s.sessionId)?.destinationId, ...(branches.replaced(s.sessionId) ? { hidden: true } : {}), ...(workerSessions.has(s.sessionId) ? { worker: workerSessions.get(s.sessionId) } : {}), directWorkerCount: workerCounts.get(s.sessionId) ?? 0, profileId: sessionProfileId(s), title: displayTitle(s), admission: admissions.get(s.sessionId), ...catalog.association(s.sessionId), availability: availability(s.sessionId) })), admissions: admissions.list(), availability: availability() });
+        return json({ sessions: meta.sessions.map(s => ({ ...s, branchDraft: branchDrafts.get(s.sessionId), branchOrigin: branches.list().find(op => op.destinationId === s.sessionId && op.state !== "failed")?.sourceId, replacedBy: branches.replaced(s.sessionId)?.destinationId, ...(branches.replaced(s.sessionId) ? { hidden: true } : {}), ...(workerSessions.has(s.sessionId) ? { worker: workerSessions.get(s.sessionId) } : {}), directWorkerCount: workerCounts.get(s.sessionId) ?? 0, profileId: sessionProfileId(s), title: displayTitle(s), admission: admissions.get(s.sessionId), ...catalog.association(s.sessionId), availability: availability(s.sessionId, true, false, false, "user"), ...(s.harness === "claude-code" ? { queuedFollowups: projectClaudeFollowups(s.sessionId, meta.runs, id => events.get(id) ?? [], id => claudeRuns.followupPending(id)) } : {}) })), admissions: admissions.list(), availability: availability() });
       }
       const branchRoute = /^\/api\/sessions\/([^/]+)\/branch$/.exec(path);
       if (branchRoute) {
@@ -1791,10 +1803,23 @@ async function startOwned(options: Options, assetsDir: string, packageDir: strin
           effort = input.effort = nativeLaunch.model.variant;
         }
         const conversationId = session?.sessionId ?? crypto.randomUUID();
-        const available = availability(conversationId);
+        const available = availability(conversationId, true, false, false, "user");
         if (!available.canSend) return json({ error: available.reason, code: available.code }, available.code === "capacity" ? 429 : 409);
-        admitting.add(conversationId);
-        try {
+        // Reuse the same validated admission path for immediate and queued sends.
+        // The queue captures these selections; a later profile edit must not
+        // silently change the launch that the user requested.
+        const expectedSession = session && { nativeSessionId: session.nativeSessionId, agent: session.agent, profileId: sessionProfileId(session), cwd: session.cwd };
+        const expectedUpgrade = upgrade && JSON.stringify(upgrade);
+        const submit = async (queuedFollowupId?: string) => {
+        if (queuedFollowupId) {
+          if (!admitting.has(conversationId) || !claudeRuns.followupPending(queuedFollowupId)) throw new Error("Queued input cancelled or reservation lost before admission");
+          const current = availability(conversationId, true, false, false, "queued-dispatch");
+          if (!current.canSend) throw new Error(current.reason ?? "Queued admission unavailable");
+          if (!session || !expectedSession || meta.sessions.find(s => s.sessionId === conversationId) !== session || session.nativeSessionId !== expectedSession.nativeSessionId || session.agent !== expectedSession.agent || sessionProfileId(session) !== expectedSession.profileId || session.cwd !== expectedSession.cwd) throw new Error("Conversation configuration changed before queued admission");
+          if (upgrade && JSON.stringify(agentProfiles.profiles.find(p => p.id === upgrade!.id)) !== expectedUpgrade) throw new Error("Selected profile changed before queued admission");
+          if (model !== undefined && !validModel(model) || effort !== undefined && !validEffort(effort)) throw new Error("Queued launch configuration is invalid");
+          if (!(await stat(cwd)).isDirectory()) throw new Error("Queued execution directory unavailable");
+        }
         if (session) await execution(session.sessionId);
         const association = await catalog.associate(conversationId, cwd, input.workspaceId, input.worktreeId);
         const resume = !!session;
@@ -1812,6 +1837,7 @@ async function startOwned(options: Options, assetsDir: string, packageDir: strin
         }
         if (session?.harness === "opencode") await oc.assertIdle(session.nativeSessionId!, cwd);
         if (lifecycleReserved(conversationId)) throw new WorkstreamAdapterError(409, "workstream-action-pending", "A repository phase action is in progress");
+        if (queuedFollowupId && !claudeRuns.followupPending(queuedFollowupId)) throw new Error("Queued input cancelled before launch");
         if (closing || storageFailed || meta.reconciliationRequired) return json({ error: "Bridge unavailable" }, 409);
         // Update stored defaults on every send carrying them; an omitted
         // follow-up never erases them (the run below inherits them instead).
@@ -1832,7 +1858,8 @@ async function startOwned(options: Options, assetsDir: string, packageDir: strin
           if (firstTitle) { session.title = firstTitle; await persist(); }
         }
         workerStore.suppress(conversationId, false); // Explicit user submission resumes automatic continuation eligibility.
-        const run: Run = { runId: crypto.randomUUID(), sessionId: conversationId, cwd, status: "running", createdAt: new Date().toISOString(), ...(model !== undefined ? { model } : {}), ...(effort !== undefined ? { effort } : {}), ...(agent !== undefined ? { agent, agentKind: session.agentKind, nativeAgentSelected: session.nativeAgentSelected } : {}), profileId: sessionProfileId(session), ...saneContextSnapshot(session) };
+        if (queuedFollowupId && (!claudeRuns.followupPending(queuedFollowupId) || closing || storageFailed || meta.reconciliationRequired || owners.has(conversationId))) throw new Error("Queued admission unavailable before owner installation");
+        const run: Run = { runId: crypto.randomUUID(), sessionId: conversationId, cwd, status: "running", createdAt: new Date().toISOString(), ...(model !== undefined ? { model } : {}), ...(effort !== undefined ? { effort } : {}), ...(agent !== undefined ? { agent, agentKind: session.agentKind, nativeAgentSelected: session.nativeAgentSelected } : {}), profileId: sessionProfileId(session), ...saneContextSnapshot(session), ...(queuedFollowupId ? { queuedFollowupId } : {}) };
         const finished = Promise.withResolvers<void>();
         const accepted = Promise.withResolvers<boolean>();
         const owner: Owner = { run, native: harness === "opencode", done: finished.promise, settled: false };
@@ -1851,7 +1878,42 @@ async function startOwned(options: Options, assetsDir: string, packageDir: strin
         }).finally(() => { owner.settled = true; releaseOwner(owner); finished.resolve(); });
         if (!(await accepted.promise)) return json({ error: owner.launchError ?? "Run could not start; operator reconciliation may be required" }, 503);
         return json({ sessionId: run.sessionId, runId: run.runId, harness, nativeSessionId: session.nativeSessionId, ...association }, 202);
-        } finally { admitting.delete(conversationId); }
+        };
+        // Reserve admission through old-owner settlement and new-owner creation.
+        // This exact reservation belongs only to this send, never another task.
+        admitting.add(conversationId);
+        if (available.queueAfterRunId) {
+          const oldOwner = owners.get(conversationId)!;
+          const task = Promise.withResolvers<void>();
+          queuedInputTasks.add(task.promise);
+          let queued;
+          try {
+            queued = await claudeRuns.queueFollowup(oldOwner, input.prompt, { cwd, profileId: upgrade?.id ?? sessionProfileId(session!), ...(model !== undefined ? { model } : {}), ...(effort !== undefined ? { effort } : {}), ...(agent !== undefined ? { agent } : {}) });
+          } catch (error) {
+            admitting.delete(conversationId); task.resolve(); queuedInputTasks.delete(task.promise);
+            throw error;
+          }
+          void claudeRuns.drainQueuedFollowup(oldOwner, async receipt => {
+            try {
+              const response = await submit(receipt.requestId);
+              const result = await response.json();
+              if (!response.ok || typeof result.runId !== "string") throw new Error(result.error ?? "Queued run was not admitted");
+              return { runId: result.runId };
+            } catch (error) {
+              // No new owner/run means definite non-submission. The queue keeps
+              // its text, and this validation failure is not a storage failure.
+              if (!meta.runs.some(r => r.queuedFollowupId === receipt.requestId)) {
+                return { notSubmitted: true };
+              }
+              throw error;
+            }
+          }).catch(() => { /* Queue/launch journals retain the outcome; never auto-retry. */ }).finally(() => {
+            admitting.delete(conversationId); task.resolve(); queuedInputTasks.delete(task.promise);
+          });
+          const receipt = projectClaudeFollowups(conversationId, meta.runs, id => events.get(id) ?? [], id => claudeRuns.followupPending(id)).find(r => r.requestId === queued.requestId)!;
+          return json({ sessionId: conversationId, queued: true, receipt }, 202);
+        }
+        try { return await submit(); } finally { admitting.delete(conversationId); }
       }
       const nativeSubagent = /^\/api\/sessions\/([^/]+)\/native-subagents(?:\/([^/]+)\/([^/]+))?$/.exec(path);
       if (nativeSubagent) {
@@ -1921,6 +1983,7 @@ async function startOwned(options: Options, assetsDir: string, packageDir: strin
           const currentOwner = owners.get(session.sessionId);
           if (currentOwner) requireOwnedOperation({ sessionId: session.sessionId, harness: sessionHarness(session) }, currentOwner, "cancelOwnedRun");
           if (closing || storageFailed) return json({ error: "Bridge unavailable; cancellation state must be checked in the native harness" }, 503);
+          claudeRuns.cancelFollowup(session.sessionId);
           workerStore.suppress(session.sessionId, true); // Persist even when the parent is already idle. Never cascade.
           const worker = workerStore.getBySession(session.sessionId);
           if (worker && !worker.outcome) workerStore.update(worker.id, { state: "cancelling", cancelRequestedAt: worker.cancelRequestedAt ?? new Date().toISOString() });
@@ -1935,7 +1998,13 @@ async function startOwned(options: Options, assetsDir: string, packageDir: strin
             if (owner.native) return ocRuns.interruptCurrent(owner);
             const stopped = await terminate(owner);
             return { interrupted: stopped };
-          })().finally(() => { owner.cancelling = false; releaseOwner(owner); });
+          })().finally(() => {
+            // A native restart can resume execution after this acknowledgement.
+            // Keep ownership until terminal evidence, but do not cache a settled
+            // interrupt forever. Concurrent Stops still share this attempt.
+            if (owner.native) owner.cancel = undefined;
+            owner.cancelling = false; releaseOwner(owner);
+          });
           }
           const attempt = owner.cancel;
           try { return json(await attempt); }
@@ -2174,6 +2243,13 @@ async function startOwned(options: Options, assetsDir: string, packageDir: strin
       if (!done || (owner.child && groupAlive(owner))) { retainOwner = true; meta.reconciliationRequired = true; }
     }
     }));
+    // Queue drains wait for owner.done, so supervise/stop owners FIRST. They
+    // cannot launch after closing, and must journal their non-submission before
+    // storage is flushed. Never put them in the pre-termination attachment wait.
+    if (queuedInputTasks.size) {
+      const drained = await Promise.race([Promise.all([...queuedInputTasks]).then(() => true), Bun.sleep(3000).then(() => false)]);
+      if (!drained) { retainOwner = true; meta.reconciliationRequired = true; }
+    }
     if (retainOwner && !storageFailed) {
       // Best effort only: ownership remains if storage is broken or blocked.
       await Promise.race([persist().catch(() => { failClosed(); }), Bun.sleep(500)]);

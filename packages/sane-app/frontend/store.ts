@@ -20,7 +20,7 @@ import { capabilitiesFor, getHarnessDescriptor, type HarnessCapabilities } from 
 /** Composer draft. New conversations pick `profileId` ("" = profiles.defaultId);
  * selected Base conversations may stage `upgradeId` (assistant profile, same harness). */
 export type Draft = { text: string; cwd: string; profileId: string; upgradeId: string };
-export type SendOutcome = { status: "accepted"; conversationId: string; runId: string } | { status: "blocked" | "rejected" | "unknown" };
+export type SendOutcome = { status: "accepted"; conversationId: string; runId: string } | { status: "queued"; conversationId: string; requestId: string } | { status: "blocked" | "rejected" | "unknown" };
 export type PendingCompact = { payload: CompactRequest; phase: "sending" | "unconfirmed" | "accepted" | "rejected"; runId?: string };
 export type State = {
   phase: "connecting" | "login" | "ready"; config?: Config; conversations: Conversation[];
@@ -310,7 +310,7 @@ export class ChatStore {
     // the compaction GET is unavailable. It cannot release a new requested run.
     if (pending?.phase === "unconfirmed" && !this.state.compactions?.some(r => r.requestId === pending.payload.requestId)) return this.state.compactState?.eligibility.eligible !== true;
     if (this.state.compactions?.some(r => r.lifecycle === "requested")) return this.state.compactState?.eligibility.eligible !== true;
-    return Boolean(this.state.compactions?.some(r => r.lifecycle === "unconfirmed") && this.state.compactState?.eligibility.eligible !== true && !this.state.availability.canSend);
+    return Boolean(this.state.compactions?.some(r => r.lifecycle === "unconfirmed") && this.state.compactState?.eligibility.eligible !== true && (!this.state.availability.canSend || !!this.state.availability.queueAfterRunId));
   };
   openCompact = (instructions?: string) => {
     if (!this.state.selected) { this.update({ submissionError: "Choose an existing conversation before using /compact." }); return; }
@@ -916,6 +916,15 @@ export class ChatStore {
       if (current() && this.state.phase === "ready") this.timer = setTimeout(() => void this.poll(), this.state.connected ? 1500 : 5000);
     }
   }
+  canQueueInput = (state: State = this.state): boolean => {
+    const conversation = state.conversations.find(c => c.id === state.selected);
+    const after = state.availability.queueAfterRunId;
+    // An old backend, another conversation's availability, or stale ownership
+    // cannot opt into mid-run input. This is a receipt-bound CC queue, not steering.
+    return !!after && state.availability.canSend && conversation?.harness === "claude-code"
+      && conversation.lastRunId === after && conversation.availability?.queueAfterRunId === after
+      && state.runs.some(run => run.id === after && run.conversationId === conversation.id && run.status === "running");
+  };
   send = async (text: string, nativeStopped = false, options: { preserveDraft?: boolean } = {}): Promise<SendOutcome> => {
     if (options.preserveDraft && !this.state.selected) return { status: "blocked" };
     const command = compactCommand(text);
@@ -924,7 +933,8 @@ export class ChatStore {
     const conversation = this.state.conversations.find(c => c.id === this.state.selected);
     if (!this.supportedCapabilities().prompt) return { status: "blocked" };
     if (conversation?.attachment && this.supportedCapabilities(conversation.harness).attachedSendRequiresNativeStopped && !nativeStopped) { this.update({ submissionError: "Confirm external assistant execution is stopped before sending." }); return { status: "blocked" }; }
-    if (!text.trim() || this.state.loading || conversation?.status === "starting" || conversation?.status === "running" || this.state.runs.some(r => r.status === "starting" || r.status === "running") || this.state.sending || !this.state.connected || !this.state.availability.canSend || this.modelUnavailable() || this.executionUnavailable()) return { status: "blocked" };
+    const running = conversation?.status === "starting" || conversation?.status === "running" || this.state.runs.some(r => r.status === "starting" || r.status === "running");
+    if (!text.trim() || this.state.loading || running && !this.canQueueInput() || this.state.sending || !this.state.connected || !this.state.availability.canSend || this.modelUnavailable() || this.executionUnavailable()) return { status: "blocked" };
     const selected = this.state.selected, draft = this.draft(), draftKey = this.draftKey();
     // Flow submissions are independent of the ordinary chat draft and any
     // staged agent upgrade. They never consume or replace that draft.
@@ -940,6 +950,14 @@ export class ChatStore {
       const navigation = catalog.state.navigation;
       const result = await this.client.submit({ text, ...(nativeStopped ? { nativeStopped: true } : {}), ...(selected ? { conversationId: selected } : { ...(draft.cwd.trim() ? { cwd: draft.cwd.trim() } : {}), workspaceId: navigation.workspaceId!, worktreeId: navigation.worktreeId! }), ...(profileId ? { profileId } : {}) });
       if (generation !== this.generation || auth !== this.authEpoch) return { status: "unknown" };
+      if (result.queued) {
+        // Replace the Sending bubble with the durable receipt, not the old run
+        // ID. Listing reloads/selection changes reconstruct it from the journal.
+        this.update({ sending: false, pendingTurn: null, conversations: this.state.conversations.map(c => c.id !== result.conversationId ? c : { ...c, queuedFollowups: [...(c.queuedFollowups ?? []).filter(r => r.requestId !== result.receipt.requestId), result.receipt], availability: { canSend: false } }), availability: { canSend: false } });
+        if (selected && profileId) this.setDraft({ upgradeId: "" }, selected);
+        void this.poll();
+        return { status: "queued", conversationId: result.conversationId, requestId: result.receipt.requestId };
+      }
       if (selected && profileId) this.setDraft({ upgradeId: "" }, selected);
       if (!selected) {
         const nextDraft = this.state.drafts[draftKey] ?? { ...draft, text: "" };
