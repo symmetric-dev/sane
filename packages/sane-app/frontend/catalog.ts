@@ -32,9 +32,10 @@ class CatalogStore {
       const [catalog, navigation] = await Promise.all([request<CatalogResponse>("/api/workspaces"), request<NavigationBookmark>("/api/navigation")]);
       if (epoch !== this.epoch) return;
       this.revision = navigation.revision;
-      this.update({ workspaces: catalog.workspaces, ready: true, loading: false });
-      if (intent === this.intent) { this.update({ navigation }); restore(navigation); }
-      else if (this.pending) this.schedule();
+      // Publish readiness with the restored bookmark, never with a stale browsing
+      // pair that could erase client-side context while hydration is in progress.
+      if (intent === this.intent) { this.update({ workspaces: catalog.workspaces, ready: true, loading: false, navigation }); restore(navigation); }
+      else { this.update({ workspaces: catalog.workspaces, ready: true, loading: false }); if (this.pending) this.schedule(); }
     } catch (error) { if (epoch === this.epoch) this.update({ loading: false, error: workspaceFailure(error) }); }
   };
   navigate = (patch: Partial<Omit<NavigationBookmark, "revision">>) => {

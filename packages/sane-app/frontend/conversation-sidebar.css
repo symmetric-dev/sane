@@ -8,6 +8,7 @@
 
 .conversation-sidebar-row .history-line.conversation-sidebar-workstream {
   display:block;
+  margin-top:2px;
   padding-right:0;
   color:var(--muted-foreground);
   font-size:12px;
@@ -75,5 +76,5 @@
 }
 
 .view-chat>.sidebar .conversation-sidebar-row>button:focus-visible {
-  outline-offset:-3px;
+  outline:none;
 }

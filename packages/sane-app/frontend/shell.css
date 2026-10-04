@@ -36,10 +36,26 @@
   padding:12px;
   overflow:hidden;
 }
-/* Paint the Chat divider behind the rows so the selected tab can cover it. */
+/* Keep the Chat divider in a separate layer behind the scrollable rows, so
+   the selected tab joins the main panel in both filtered and full lists. */
 .view-chat>.sidebar {
+  position:relative;
+  isolation:isolate;
   border-right:0;
-  box-shadow:inset -1px 0 var(--border);
+}
+.view-chat>.sidebar::before {
+  content:"";
+  position:absolute;
+  inset:0 0 0 auto;
+  width:1px;
+  background:var(--border);
+  pointer-events:none;
+  z-index:0;
+}
+.view-chat>.sidebar>.sidebar-body {
+  /* Keep the entire scrolling layer above the divider, not just its rows. */
+  position:relative;
+  z-index:1;
 }
 .view-chat>.sidebar .sidebar-body>.history-list {
   margin-right:-12px;

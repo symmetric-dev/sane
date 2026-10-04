@@ -15,9 +15,16 @@ export function buildWorkstreamMap(
   const map = new Map<string, WorkstreamMembership>();
   if (!overview) return map;
   const assignments = overview.workstreams.flatMap(w => w.activePhases);
+  const phasesByRef = new Map<string, string[]>();
+  for (const assignment of assignments) {
+    const key = refKey(assignment.ref);
+    const phases = phasesByRef.get(key) ?? [];
+    phases.push(assignment.phase);
+    phasesByRef.set(key, phases);
+  }
   for (const row of overview.conversations) {
     if (!row.sessionId) continue;
-    const phases = assignments.filter(p => refKey(p.ref) === refKey(row.ref)).map(p => p.phase);
+    const phases = phasesByRef.get(refKey(row.ref)) ?? [];
     map.set(row.sessionId, { workstreamId: row.conversation?.workstreamId ?? null, phases });
   }
   void conversations;
@@ -44,11 +51,12 @@ type Props = {
   workspaces: WorkspaceRecord[];
   navigation: { workspaceId: string | null; worktreeId: string | null };
   overview: WorkstreamOverview | null;
+  defaults?: ConversationFilterState;
   resultCount?: number;
   onClose: () => void;
 };
 
-export function ConversationFilterDialog({ value, onChange, workspaces, navigation, overview, resultCount, onClose }: Props) {
+export function ConversationFilterDialog({ value, onChange, workspaces, navigation, overview, defaults, resultCount, onClose }: Props) {
   const [draftQuery, setDraftQuery] = useState(value.query);
   useEffect(() => setDraftQuery(value.query), [value.query]);
   useEffect(() => {
@@ -70,7 +78,7 @@ export function ConversationFilterDialog({ value, onChange, workspaces, navigati
   }, [workspaces, value.workspaceId]);
 
   const set = (patch: Partial<ConversationFilterState>) => onChange({ ...value, ...patch });
-  const reset = () => onChange(defaultFilterFor(navigation.workspaceId, navigation.worktreeId));
+  const reset = () => onChange(defaults ?? defaultFilterFor(navigation.workspaceId, navigation.worktreeId));
 
   return <ShellDialog title="Filter conversations" close={onClose}>
     <div className="filter-dialog" aria-label="Conversation filters">

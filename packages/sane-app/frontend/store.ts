@@ -5,6 +5,8 @@ import { consume, createRun } from "./cc-reducer";
 import { transcriptMessages } from "./transcript";
 import { contextUsageFor, type ContextUsageSnapshot } from "./context-usage";
 import { catalog } from "./catalog";
+import { clearWorkstreamSelection } from "./workstream-selection-storage";
+import { clearWorkstreamMembership } from "./workstream-membership-storage";
 import { invalidateWorkspaceRequests, onWorkspaceAuthExpired } from "./workspace-store";
 import { BASE_PROFILE_IDS, builtinProfiles, canAssign, legacyProfileId, type AgentProfile, type AgentProfileInput, type AgentProfiles } from "../src/agent-profiles-contract";
 import { displayProfile, profileDisplayLabel, savedProfileSnapshot, validatedAgentSnapshot, type DisplayProfile, type ProfileSnapshot } from "./profile-presentation";
@@ -554,6 +556,8 @@ export class ChatStore {
   private loginRequired() {
     this.stop(); this.authEpoch++; this.clearCachedHistory();
     catalog.invalidate(); invalidateWorkspaceRequests();
+    clearWorkstreamSelection();
+    clearWorkstreamMembership();
     this.replied.clear();
     this.update({ pendingCompacts: {}, compactState: null, compactions: [], compactDialog: "", compactError: "", compactInstructions: {} });
     this.update({ phase: "login", config: undefined, conversations: [], runs: [], messages: [], pendingTurn: null, nativeHistory: null, contextUsage: null, connected: false, loading: false, sending: false, availability: { canSend: false }, connectionError: "", submissionError: "", models: [], modelsLoading: false, modelsLoaded: false, modelsError: "", modelsCwd: "", interactions: [], interactionError: "", actionBusy: false, actionNotice: "", profiles: null, profileError: "", profileBusy: false });
@@ -591,6 +595,8 @@ export class ChatStore {
     this.clearCachedHistory(); this.replied.clear();
     this.update({ runs: [], messages: [], pendingTurn: null, nativeHistory: null, contextUsage: null, compactState: null, compactions: [], compactDialog: "", interactions: [], interactionError: "", actionBusy: false, actionNotice: "", connected: false, loading: true, availability: { canSend: false } });
     catalog.invalidate(); invalidateWorkspaceRequests();
+    clearWorkstreamSelection();
+    clearWorkstreamMembership();
     try { await this.client.logout(); if (auth === this.authEpoch) this.loginRequired(); }
     catch (error) { if (auth !== this.authEpoch || this.expired(error)) return; this.update({ submissionError: `Sign-out failed: ${error instanceof Error ? error.message : "connection error"}` }); void this.poll(); }
   };

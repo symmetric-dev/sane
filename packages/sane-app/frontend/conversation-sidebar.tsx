@@ -40,7 +40,7 @@ export function ConversationSidebar({ state, model, mode, selectedId, onChoose, 
 export function ConversationSidebarList({ state, model, mode, selectedId, onSelect }: {
   state: State; model: ConversationSidebarModel; mode: ConversationSidebarMode; selectedId: string | null; onSelect: (id: string) => void;
 }) {
-  const { repository, nav, filter, setFilter, overview, workstreamMap, visible, hits, workerCounts, groups, scoped, activeFilterCount } = model;
+  const { repository, nav, filter, setFilter, overview, workstreamMap, membershipPending, membershipError, visible, hits, workerCounts, groups, scoped, activeFilterCount } = model;
   // Dialog visibility is presentation-local: opening the drawer must not create two modal dialogs.
   const [dialogOpen, setDialogOpen] = useState(false);
   const history = mode === "history";
@@ -49,12 +49,12 @@ export function ConversationSidebarList({ state, model, mode, selectedId, onSele
       <label className="history-search"><span className="sr-only">{history ? "Search sessions" : "Search conversations"}</span><input value={filter.query} onChange={e => setFilter({ ...filter, query: e.target.value })} placeholder={history ? "Search sessions" : "Search conversations"} maxLength={200} /></label>
       <button type="button" className="history-filter-button" aria-label={history ? "Open session filters" : "Open conversation filters"} title={history ? "Filter sessions" : "Filter conversations"} onClick={() => setDialogOpen(true)}>Filter{activeFilterCount ? ` · ${activeFilterCount}` : ""}</button>
     </div>
-    {dialogOpen && <ConversationFilterDialog value={filter} onChange={setFilter} workspaces={repository.workspaces} navigation={nav} overview={overview} resultCount={visible.length} onClose={() => setDialogOpen(false)} />}
+    {dialogOpen && <ConversationFilterDialog value={filter} onChange={setFilter} defaults={model.defaults} workspaces={repository.workspaces} navigation={nav} overview={overview} resultCount={visible.length} onClose={() => setDialogOpen(false)} />}
     {!!hits.length && <div className="history-hits" aria-label="Message matches"><p className="muted">Message matches · best effort</p>{hits.slice(0, 3).map((hit, index) => {
       const conversation = state.conversations.find(c => c.id === hit.sessionId);
       return <button key={`${hit.sessionId}:${hit.runId ?? "title"}:${index}`} type="button" className="history-hit" disabled={!history && state.sending} onClick={() => onSelect(hit.sessionId)} title={conversation?.title ? `${conversation.title}\n${conversation.cwd}` : conversation?.cwd || hit.sessionId}><span>{formatTitle(conversation?.title, basename(conversation?.cwd))}</span><small className="muted"> {hit.snippet}</small></button>;
     })}</div>}
-    <nav className="history-list" aria-label={history ? "Sessions" : "Conversation history"}>{groups.map(group => {
+    <nav className="history-list" aria-label={history ? "Sessions" : "Conversation history"} aria-busy={membershipPending && !membershipError}>{groups.map(group => {
       const conversations = visible.filter(c => group.id ? c.workspaceId === group.id : !c.workspaceId || !repository.workspaces.some(w => w.workspaceId === c.workspaceId));
       if (!conversations.length) return null;
       return <section className="history-group" key={group.id ?? "unavailable"}>
@@ -87,6 +87,8 @@ export function ConversationSidebarList({ state, model, mode, selectedId, onSele
           </div>;
         })}
       </section>;
-    })}{!visible.length && <p className="muted history-empty">{history ? "No sessions in this selection." : "No conversations in this selection."}</p>}</nav>
+    })}{!visible.length && <p className="muted history-empty" role="status">{membershipPending
+      ? membershipError ? "Workstream membership is unavailable. Retrying…" : "Loading workstream membership…"
+      : history ? "No sessions in this selection." : "No conversations in this selection."}</p>}</nav>
   </>;
 }

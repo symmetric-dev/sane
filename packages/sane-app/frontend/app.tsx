@@ -127,6 +127,7 @@ function ReadyWorkspace({ state, signOut }: { state: State; signOut: () => void 
   return <NativeSubagentContext.Provider value={nativeSubagents}><ApplicationCommandProvider><WorkspaceProvider view={view} navigate={navigate}><WorkspaceQuickOpenFeature><WorkspaceSearchFeature><WorkspaceFileShortcuts><TerminalProvider view={view}>
     <ViewNavigationCommands onNavigate={navigate} />
     <WorkspaceShell view={view} sidebar={sidebar}
+      workspaceSelection={sidebarModel.workspaceSelection}
       retryCatalog={hydrateCatalog} sidebarOpen={drawer === "sidebar"}
       openSidebar={() => setDrawer("sidebar")} closeSidebar={() => setDrawer(null)}
       header={<ShellHeader state={state} view={view} artifact={artifact} overview={sidebarModel.overview} overviewWorkspaceId={workspaceId} openDetails={() => setDrawer("details")} openApplication={() => setDrawer("application")} />}
