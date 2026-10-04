@@ -5,7 +5,7 @@
 .shell-dialog.flow-launcher-dialog { width:min(480px, calc(100vw - 24px)); }
 .flow-launcher-dialog .shell-dialog-heading { flex:1; min-width:0; }
 .flow-launcher-dialog .shell-dialog-subtitle { margin:4px 0 0; font-size:13px; color:var(--muted-foreground); overflow-wrap:anywhere; }
-.flow-launcher-grid { display:grid; grid-template-columns:repeat(auto-fill, minmax(0, min(160px, 100%))); gap:12px; }
+.flow-launcher-grid { display:grid; grid-template-columns:repeat(auto-fit, minmax(min(120px, 100%), 1fr)); gap:12px; }
 .flow-launcher-card { display:flex; flex-direction:column; align-items:center; justify-content:center; gap:14px; aspect-ratio:1; min-width:0; padding:16px; border:1px solid var(--border); border-radius:12px; background:var(--card); color:var(--foreground); font-size:13px; text-align:center; }
 .flow-launcher-card svg { flex-shrink:0; color:var(--muted-foreground); }
 .flow-launcher-card span { overflow-wrap:anywhere; }

@@ -8,17 +8,18 @@ import { assignmentDocumentDefault } from "./assignment-semantics";
 
 export const reviewPhases: WorkstreamDocumentPhase[] = ["design", "engineering", "planning", "execution", "research", "resources"];
 export type ReviewPhase = WorkstreamDocumentPhase | "all";
-export type DocumentReviewStart = { sessionId: string; workspaceId: string; repositoryId: string; workstreamId: string; phase?: ReviewPhase };
+export type DocumentReviewStart = { sessionId: string; workspaceId: string; repositoryId: string; workstreamId: string; phase?: ReviewPhase; mode?: "review" | "search" };
+type DocumentScope = ReviewPhase | "none";
 type Entry = { feedback: string; savedFeedback: string; decision?: "accepted" | "needs-changes"; revision?: string; content?: string; readRevision?: string; changed?: boolean };
-type Flow = { identity: DocumentReviewStart; phase: ReviewPhase; documents: WorkstreamDocument[]; selected: string[]; entries: Record<string, Entry>; path: string | null; fragment?: string; loading: boolean; reading: boolean; busy: boolean; error: string; confirmCancel: boolean; unknown: boolean };
+type Flow = { identity: DocumentReviewStart; mode: "review" | "search"; phase: DocumentScope; documents: WorkstreamDocument[]; selected: string[]; entries: Record<string, Entry>; path: string | null; fragment?: string; loading: boolean; reading: boolean; busy: boolean; error: string; confirmCancel: boolean; unknown: boolean };
 const emptyEntry = (): Entry => ({ feedback: "", savedFeedback: "" });
 const scopeOf = (state: State) => {
   const conversation = state.conversations.find(item => item.id === state.selected);
   const workspace = catalog.state.workspaces.find(item => item.workspaceId === conversation?.workspaceId);
   return JSON.stringify([state.selected, conversation?.workspaceId, conversation?.worktreeId, conversation?.replacedBy, workspace?.commonDir, workspace?.kind, state.phase]);
 };
-const eligible = (document: WorkstreamDocument, phase: ReviewPhase) => document.exists && document.kind !== "resource" && document.phase !== "resources" && (phase === "all" || document.phase === phase);
-const initialSelection = (documents: WorkstreamDocument[], phase: ReviewPhase) => documents.filter(document => eligible(document, phase)).map(document => document.path);
+const eligible = (document: WorkstreamDocument, phase: DocumentScope) => document.exists && document.kind !== "resource" && document.phase !== "resources" && (phase === "all" || document.phase === phase);
+const initialSelection = (documents: WorkstreamDocument[], phase: DocumentScope) => documents.filter(document => eligible(document, phase)).map(document => document.path);
 const reconcileSelection = (value: Flow, documents: WorkstreamDocument[]) => [...new Set([...value.selected.filter(path => documents.some(document => document.path === path && eligible(document, value.phase))), ...documents.filter(document => eligible(document, value.phase) && document.required).map(document => document.path)])];
 const failure = (error: unknown) => error instanceof Error ? error.message : "Documents are unavailable. Try again.";
 
@@ -58,8 +59,10 @@ export function useDocumentReview(state: State, active: boolean, sendDisabled: b
     if (!valid(epoch)) throw new Error("Conversation changed; reopen Documents.");
     if (result.repositoryId !== identity.repositoryId || result.workstreamId !== identity.workstreamId) throw new Error("Document catalog belongs to another workstream.");
     const assignments = overview.workstreams.find(row => row.workstream.id === identity.workstreamId)!.activePhases.filter(assignment => refKey(assignment.ref) === refKey(members[0].conversation!.ref));
-    const phase = assignmentDocumentDefault(assignments);
-    return { documents: result.documents, phase };
+    const assignedPhase = assignmentDocumentDefault(assignments);
+    const phase: DocumentScope = identity.mode === "search" ? "all" : assignedPhase === "all" ? "none" : assignedPhase;
+    const documents = identity.mode === "search" ? result.documents : result.documents.filter(document => document.phase === phase);
+    return { documents, phase };
   }
 
   async function start(identity: DocumentReviewStart) {
@@ -67,11 +70,11 @@ export function useDocumentReview(state: State, active: boolean, sendDisabled: b
     const conversation = store.state.conversations.find(item => item.id === identity.sessionId);
     if (conversation?.workspaceId !== identity.workspaceId || conversation.replacedBy) return;
     openedScope.current = scope;
-    const epoch = ++guard.current.epoch, phase = identity.phase ?? "all";
-    const next: Flow = { identity, phase, documents: [], selected: [], entries: {}, path: null, loading: true, reading: false, busy: false, error: "", confirmCancel: false, unknown: false };
+    const epoch = ++guard.current.epoch, mode = identity.mode ?? "review", phase = mode === "search" ? "all" : "none";
+    const next: Flow = { identity, mode, phase, documents: [], selected: [], entries: {}, path: null, loading: true, reading: false, busy: false, error: "", confirmCancel: false, unknown: false };
     currentFlow.current = next; setFlow(next);
     try {
-      const result = await readCatalog(identity, epoch), resolvedPhase = identity.phase ?? result.phase;
+      const result = await readCatalog(identity, epoch), resolvedPhase = result.phase;
       if (valid(epoch)) update({ documents: result.documents, phase: resolvedPhase, selected: initialSelection(result.documents, resolvedPhase), loading: false });
     } catch (error) { if (valid(epoch)) update({ error: failure(error), loading: false }); }
   }
@@ -84,20 +87,27 @@ export function useDocumentReview(state: State, active: boolean, sendDisabled: b
     }));
   }
 
+  function resetPhase(value: Flow, documents: WorkstreamDocument[], phase: DocumentScope) {
+    const entries = Object.fromEntries(Object.entries(value.entries).map(([path, entry]) => [path, { ...entry, decision: undefined, revision: undefined, content: undefined, readRevision: undefined, changed: false }]));
+    update({ phase, documents, entries, selected: initialSelection(documents, phase), path: null, fragment: undefined, loading: false, reading: false, confirmCancel: false, error: "Your assignment changed. Decisions were reset; your feedback is preserved." });
+  }
+
   async function refresh() {
     const value = currentFlow.current;
     if (!value || guard.current.locked || !active) return;
     const epoch = ++guard.current.epoch; update({ loading: true, error: "" });
     try {
-      const { documents } = await readCatalog(value.identity, epoch);
-      if (valid(epoch)) update({ documents, entries: reconciledEntries(value, documents), selected: value.documents.length ? reconcileSelection(value, documents) : initialSelection(documents, value.phase), loading: false });
+      const { documents, phase } = await readCatalog(value.identity, epoch);
+      if (!valid(epoch)) return;
+      if (value.mode === "review" && phase !== value.phase) { resetPhase(value, documents, phase); return; }
+      update({ documents, entries: reconciledEntries(value, documents), selected: value.documents.length ? reconcileSelection(value, documents) : initialSelection(documents, value.phase), loading: false, ...(value.path && !documents.some(document => document.path === value.path && document.exists) ? { path: null, fragment: undefined, reading: false } : {}) });
     } catch (error) { if (valid(epoch)) update({ loading: false, error: failure(error) }); }
   }
 
   async function open(path: string, fragment?: string) {
     const value = currentFlow.current;
     const document = value?.documents.find(item => item.path === path);
-    if (!value || !document?.exists || guard.current.locked || !active) return;
+    if (!value || !document?.exists || value.loading || guard.current.locked || !active || value.mode === "review" && document.phase !== value.phase) return;
     const epoch = ++guard.current.epoch;
     update({ path, fragment, reading: true, error: "", confirmCancel: false });
     try {
@@ -124,7 +134,7 @@ export function useDocumentReview(state: State, active: boolean, sendDisabled: b
     const value = currentFlow.current;
     const document = value?.documents.find(item => item.path === value.path);
     const entry = value?.path ? value.entries[value.path] : undefined;
-    if (!active || !value?.path || value.reading || value.loading || guard.current.locked || value.error || !document || !eligible(document, "all") || !entry?.readRevision || decision === "needs-changes" && !entry.feedback.trim()) return;
+    if (!active || !value?.path || value.reading || value.loading || guard.current.locked || value.error || !document || !eligible(document, value.mode === "review" ? value.phase : "all") || !entry?.readRevision || decision === "needs-changes" && !entry.feedback.trim()) return;
     update({ entries: { ...value.entries, [value.path]: { ...entry, decision, savedFeedback: entry.feedback, revision: entry.readRevision, changed: false } }, path: null, fragment: undefined });
   }
   function picker() {
@@ -133,12 +143,13 @@ export function useDocumentReview(state: State, active: boolean, sendDisabled: b
   }
   function phase(phase: ReviewPhase) {
     const value = currentFlow.current;
-    if (!value || guard.current.locked) return;
+    if (!value || value.mode !== "search" || value.loading || guard.current.locked) return;
     update({ phase, selected: initialSelection(value.documents, phase), confirmCancel: false });
   }
   function select(path: string, checked: boolean) {
     const value = currentFlow.current;
-    if (!value || guard.current.locked) return;
+    const document = value?.documents.find(item => item.path === path);
+    if (!value || value.loading || guard.current.locked || !document || !eligible(document, value.phase) || !checked && document.required) return;
     update({ selected: checked ? [...new Set([...value.selected, path])] : value.selected.filter(item => item !== path) });
   }
   function cancel(force = false) {
@@ -160,8 +171,9 @@ export function useDocumentReview(state: State, active: boolean, sendDisabled: b
     let sendAttempted = false;
     update({ busy: true, error: "" });
     try {
-      const { documents } = await readCatalog(value.identity, epoch);
+      const { documents, phase } = await readCatalog(value.identity, epoch);
       if (!valid(epoch)) return;
+      if (value.mode === "review" && phase !== value.phase) { resetPhase(value, documents, phase); return; }
       const entries = reconciledEntries(value, documents);
       // Recheck both catalog hashes and actual read hashes. No changed document is accepted implicitly.
       let changed = false;
@@ -183,8 +195,9 @@ export function useDocumentReview(state: State, active: boolean, sendDisabled: b
         return;
       }
       // Membership can change during individual reads; validate again immediately before send.
-      const { documents: finalDocuments } = await readCatalog(value.identity, epoch);
+      const { documents: finalDocuments, phase: finalPhase } = await readCatalog(value.identity, epoch);
       if (!valid(epoch) || current.current.sendDisabled || scopeOf(store.state) !== openedScope.current) return;
+      if (value.mode === "review" && finalPhase !== value.phase) { resetPhase(value, finalDocuments, finalPhase); return; }
       const finalAdded = finalDocuments.filter(document => eligible(document, value.phase) && document.required && !value.selected.includes(document.path));
       if (finalAdded.length || value.selected.some(path => {
         const document = finalDocuments.find(document => document.path === path);

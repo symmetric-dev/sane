@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState, type ReactNode } from "react";
+import { useEffect, useRef, useState, useSyncExternalStore, type ReactNode } from "react";
 import { FiChevronDown, FiInfo } from "react-icons/fi";
 import { AgentAvatar } from "./agent-visuals";
 import { AgentPicker } from "./agent-picker";
@@ -10,6 +10,8 @@ import { WorkersButton } from "./worker-ui";
 import { ChatWorkstreamActions } from "./workstream-actions";
 import { DocumentReviewComposer } from "./document-review";
 import type { DocumentReviewController } from "./document-review-model";
+import { WorkstreamStatusComposer, type WorkstreamStatusStart } from "./workstream-status";
+import { catalog } from "./catalog";
 import { compactCommand } from "./compaction";
 
 /** Kept mounted with Thread: only the draft identity may replace the DOM input. */
@@ -29,20 +31,28 @@ export function ChatComposer({ state, active = true, navigation, ack, onAckChang
   const agentTrigger = useRef<HTMLButtonElement>(null);
   const helpTrigger = useRef<HTMLButtonElement>(null);
   const normalComposer = useRef<HTMLFormElement>(null);
-  const wasReviewing = useRef(!!review?.flow);
+  const conversation = state.conversations.find(c => c.id === state.selected);
+  const { workspaces } = useSyncExternalStore(catalog.subscribe, catalog.snapshot);
+  const workspace = workspaces.find(item => item.workspaceId === conversation?.workspaceId);
+  const flowScope = JSON.stringify([state.selected, conversation?.workspaceId, conversation?.worktreeId, conversation?.replacedBy, workspace?.commonDir, workspace?.kind, state.phase]);
+  const [status, setStatus] = useState<{ scope: string; identity: WorkstreamStatusStart } | null>(null);
+  const statusFlow = status?.scope === flowScope && !review?.flow ? status : null;
+  const flowOpen = !!review?.flow || !!statusFlow;
+  const wasFlowOpen = useRef(flowOpen);
+  useEffect(() => { setStatus(null); }, [flowScope]);
+  useEffect(() => { if (review?.flow) setStatus(null); }, [!!review?.flow]);
   // Dialog cleanup runs after a navigation render; consult the current activity,
   // not the value captured when the modal was opened. Body is an explicit safe
   // target because ShellDialog falls back to its old trigger for a null target.
-  const activity = useRef(active); activity.current = active && !review?.flow;
+  const activity = useRef(active); activity.current = active && !flowOpen;
   const restoreAgentFocus = () => activity.current ? agentTrigger.current : document.body;
   const restoreHelpFocus = () => activity.current ? helpTrigger.current : document.body;
-  useEffect(() => { if (!active || review?.flow) { setHelpOpen(false); setPickerOpen(false); } }, [active, !!review?.flow]);
+  useEffect(() => { if (!active || flowOpen) { setHelpOpen(false); setPickerOpen(false); } }, [active, flowOpen]);
   useEffect(() => {
-    if (active && wasReviewing.current && !review?.flow) normalComposer.current?.querySelector("textarea")?.focus({ preventScroll: true });
-    wasReviewing.current = !!review?.flow;
-  }, [active, !!review?.flow]);
+    if (active && wasFlowOpen.current && !flowOpen) normalComposer.current?.querySelector("textarea")?.focus({ preventScroll: true });
+    wasFlowOpen.current = flowOpen;
+  }, [active, flowOpen]);
 
-  const conversation = state.conversations.find(c => c.id === state.selected);
   const capabilities = store.capabilities();
   const needsAck = !!capabilities.attachedSendRequiresNativeStopped && !!conversation?.attachment;
   const draft = store.draft();
@@ -68,8 +78,9 @@ export function ChatComposer({ state, active = true, navigation, ack, onAckChang
     {missingModel && <p className="notice" role="status">Model {missingModel} is not in the current OpenCode catalog for this directory. Sending will still use this selection.</p>}
     {conversation?.attachment?.state === "pending" && <p className="notice error">Attachment incomplete. Use Attach native conversation with the same ID and checkout to retry. {conversation.attachment.error}</p>}
     {!conversation?.replacedBy && review?.flow && <DocumentReviewComposer review={review} active={active} disabled={reviewBlocked} navigation={navigation} />}
-    {!conversation?.replacedBy ? <form ref={normalComposer} className="composer" hidden={!!review?.flow} style={review?.flow ? { display: "none" } : undefined} onSubmit={event => { event.preventDefault(); submit(); }}>
-      <ChatInput key={store.draftKey()} text={draft.text} save={text => store.setDraft({ text })} submit={submit} pathsActive={active && !review?.flow} className="composer-input" placeholder={state.selected ? "Go on..." : "Ask SANE anything… (@ for paths)"} aria-label="Message" />
+    {!conversation?.replacedBy && statusFlow && <WorkstreamStatusComposer key={JSON.stringify([statusFlow.scope, statusFlow.identity])} identity={statusFlow.identity} active={active} close={() => setStatus(null)} navigation={navigation} />}
+    {!conversation?.replacedBy ? <form ref={normalComposer} className="composer" hidden={flowOpen} style={flowOpen ? { display: "none" } : undefined} onSubmit={event => { event.preventDefault(); submit(); }}>
+      <ChatInput key={store.draftKey()} text={draft.text} save={text => store.setDraft({ text })} submit={submit} pathsActive={active && !flowOpen} className="composer-input" placeholder={state.selected ? "Go on..." : "Ask SANE anything… (@ for paths)"} aria-label="Message" />
       <div className="composer-toolbar"><div className="composer-options">
         {profile ? fixed
           ? <span className="agent-chip fixed" role="status" title={profile.label}><AgentAvatar profile={profile} size={20} /><span className="agent-chip-label">{profile.label}</span></span>
@@ -77,7 +88,7 @@ export function ChatComposer({ state, active = true, navigation, ack, onAckChang
           : <span className="agent-chip fixed" role="status" title={store.conversationProfileLabel(state.selected)}><span className="agent-chip-label">{store.conversationProfileLabel(state.selected)}</span></span>}
         <div className="composer-utilities">
           <WorkersButton key={state.selected} sessionId={state.selected} active={active} />
-          <ChatWorkstreamActions conversation={conversation} active={active && !review?.flow} onDocuments={review ? identity => void review.start(identity) : undefined} />
+          <ChatWorkstreamActions conversation={conversation} active={active && !flowOpen} onDocuments={review ? identity => { setStatus(null); void review.start(identity); } : undefined} onStatus={identity => setStatus({ scope: flowScope, identity })} />
         </div>
       </div><div className="composer-actions">
         {navigation}

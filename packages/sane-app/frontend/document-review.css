@@ -1,7 +1,7 @@
 .document-review-composer {
   display: flex;
   flex-direction: column;
-  min-height: 0;
+  min-height: min(32.5dvh, 364px);
   max-height: min(50dvh, 560px);
   border: 1px solid transparent;
   border-radius: 22px;
@@ -9,13 +9,14 @@
   box-shadow: 0 7px 28px var(--review-shadow);
   overflow: auto;
 }
-.document-review-body { min-height:48px; overflow:auto; overscroll-behavior:contain; }
+.document-review-body { flex:1; min-height:48px; overflow:auto; overscroll-behavior:contain; }
 .document-review-heading { display:flex; flex-shrink:0; align-items:center; justify-content:space-between; gap:12px; padding:14px 18px 8px; }
 .document-review-heading > div { display:flex; align-items:center; flex-wrap:wrap; gap:8px; min-width:0; color:var(--review-heading); font-size:12px; }
 .document-review-heading strong { letter-spacing:.02em; }
 .document-review-heading > div > span { color:var(--foreground); overflow-wrap:anywhere; font-size:13px; width:100%; }
 .document-review-heading .text-button { display:inline-flex; align-items:center; gap:4px; font-size:12px; }
 .document-review-filters { display:flex; align-items:end; gap:10px; padding:8px 18px 12px; }
+.document-review-filters.is-review { justify-content:flex-end; padding-top:0; padding-bottom:0; }
 .document-review-filters label { display:flex; flex-direction:column; gap:4px; color:var(--muted-foreground); font-size:11px; }
 .document-review-filters select, .document-review-filters input { background:var(--background); color:var(--foreground); border:1px solid var(--border); border-radius:9px; padding:7px 9px; min-width:0; font-size:12px; }
 .document-review-filters input { flex:1; }
@@ -38,7 +39,7 @@
 .document-review-toolbar button.document-review-primary { color:var(--review-primary-foreground); border-color:var(--review-primary); background:var(--review-primary); }
 .document-review-composer button:disabled { opacity:.45; cursor:not-allowed; }
 .document-review-status { font-size:11px; color:var(--muted-foreground); }
-.document-review-notice, .document-review-footnote { margin:5px 18px 10px; font-size:11px; color:var(--muted-foreground); line-height:1.5; overflow-wrap:anywhere; }
+.document-review-notice { margin:5px 18px 10px; font-size:11px; color:var(--muted-foreground); line-height:1.5; overflow-wrap:anywhere; }
 .document-review-notice.error { color:var(--destructive, var(--review-error)); }
 .document-review-confirm { display:flex; flex-wrap:wrap; align-items:center; gap:8px; padding:12px 18px; background:var(--review-confirm-background); font-size:12px; }
 .document-review-confirm > span { width:100%; }

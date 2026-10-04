@@ -1,9 +1,13 @@
-import { FiBookOpen } from "react-icons/fi";
+import { FiBookOpen, FiCompass, FiSearch } from "react-icons/fi";
 import { ShellDialog } from "./shell-dialog";
 import "./flow-launcher.css";
 
 // UI catalog only: each selection launches its existing, independently scoped flow.
-const flows = [{ id: "review-documents", title: "Review Documents", icon: FiBookOpen }] as const;
+const flows = [
+  { id: "view-status", title: "View Status", icon: FiCompass },
+  { id: "review-documents", title: "Review Documents", icon: FiBookOpen },
+  { id: "search-documents", title: "Search Documents", icon: FiSearch },
+] as const;
 type FlowId = typeof flows[number]["id"];
 
 export function FlowLauncher({ subtitle, close, restoreFocus, onSelect }: {

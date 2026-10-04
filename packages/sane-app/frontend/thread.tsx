@@ -214,7 +214,7 @@ export function Thread({ state, active: isActive = true, navigation, reviewReque
     if (catalog.snapshot().navigation.view !== "chat" || current.selected !== reviewRequest.sessionId || !target || target.replacedBy || target.workspaceId !== reviewRequest.workspaceId) { reviewRequestHandled?.(reviewRequest.requestId); return; }
     if (!isActive || state.selected !== reviewRequest.sessionId) return;
     handledReviewRequest.current = reviewRequest.requestId;
-    if (review.flow?.identity.sessionId === reviewRequest.sessionId && review.flow.identity.workspaceId === reviewRequest.workspaceId && review.flow.identity.repositoryId === reviewRequest.repositoryId && review.flow.identity.workstreamId === reviewRequest.workstreamId) review.picker();
+    if (review.flow?.mode === "review" && review.flow.identity.sessionId === reviewRequest.sessionId && review.flow.identity.workspaceId === reviewRequest.workspaceId && review.flow.identity.repositoryId === reviewRequest.repositoryId && review.flow.identity.workstreamId === reviewRequest.workstreamId) review.picker();
     else void review.start(reviewRequest);
     reviewRequestHandled?.(reviewRequest.requestId);
   }, [isActive, reviewRequest, state.selected, review, reviewRequestHandled]);
