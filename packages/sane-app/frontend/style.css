@@ -692,6 +692,7 @@ h3 {
   font-size:12px;
 }
 .conversation-loading-mark {
+  --penrose-background:var(--accent);
   display:grid;
   place-items:center;
   width:48px;

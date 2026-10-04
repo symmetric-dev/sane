@@ -1,4 +1,4 @@
-import { FiZap } from "react-icons/fi";
+import { PenroseTriangle } from "./penrose-triangle";
 
 /** Submission status ends at server acknowledgement, not at assistant output. */
 export function PendingUserText({ text, sending }: { text: string; sending: boolean }) {
@@ -7,7 +7,7 @@ export function PendingUserText({ text, sending }: { text: string; sending: bool
 
 export function ConversationLoading({ label = "Opening conversation…" }: { label?: string }) {
   return <div className="conversation-loading" role="status">
-    <span className="conversation-loading-mark" aria-hidden="true"><FiZap size={22} /></span>
+    <span className="conversation-loading-mark" aria-hidden="true"><PenroseTriangle size={22} /></span>
     <p>{label}</p>
     <div className="conversation-loading-lines" aria-hidden="true"><span /><span /><span /></div>
   </div>;

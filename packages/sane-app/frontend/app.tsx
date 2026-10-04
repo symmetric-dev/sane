@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef, useState, useSyncExternalStore, type ReactNode } from "react";
-import { FiMoreHorizontal, FiZap } from "react-icons/fi";
+import { FiMoreHorizontal } from "react-icons/fi";
+import { PenroseTriangle } from "./penrose-triangle";
 import { store, type State } from "./store";
 import { catalog } from "./catalog";
 import { worktreeDisplay, worktreeLabel } from "./catalog-selector";
@@ -55,7 +56,7 @@ function AuthScreen({ state }: { state: State }) {
   const [password, setPassword] = useState("");
   const [loggingIn, setLoggingIn] = useState(false);
   return <main className="auth-screen"><div className="auth-card">
-    <span className="welcome-mark" aria-hidden="true"><FiZap size={44} /></span>
+    <span className="welcome-mark" aria-hidden="true"><PenroseTriangle size={44} /></span>
     <p className="eyebrow">YOUR LOCAL BRIDGE</p>
     <h1>{state.phase === "login" ? "Welcome back." : "Connecting your workspace."}</h1>
     <p className="muted">{state.phase === "login" ? "Enter your bridge password to pick up where you left off." : "A quiet place to work with your local coding assistants."}</p>
