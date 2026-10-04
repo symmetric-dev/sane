@@ -26,7 +26,7 @@ export function saneSessionContext(identity: StoredSaneAgentIdentity | undefined
   return framework ? { saneContext: { version: framework.version, framework: framework.text, ...(assignment !== undefined ? { assignment } : {}) } } : {};
 }
 /** Resolve a new worker's procedure, roots and assigned jobs from its enrolled identity. An
- * implementer starts its planned job; other roles never change job state. Throws when unusable. */
+ * implementer starts its planned job (a free-mode implementer has none); other roles never change job state. Throws when unusable. */
 export function workerAssignment(domain: RepositoryDomain, child: ConversationRef, parent: ConversationRef, role: WorkerAgentId, jobIds: readonly string[], correlationId: string): string {
   const context = domain.resolveContext(child);
   const roots = { workstreamRoot: context.artifactsRoot, implementationRoot: context.executionCheckout };

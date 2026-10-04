@@ -21,7 +21,7 @@ const now = "2026-09-29T10:00:00.000Z";
 function fixture(limit = 4) {
   const dir = mkdtempSync(join(tmpdir(), "sane-worker-unit-")); dirs.push(dir);
   const store = new WorkerStore(dir);
-  const parent: WorkerParent = { sessionId: id(), runId: id(), native: { harness: "oc", authorityId: "test-authority", nativeId: "parent-native" }, checkout: dir };
+  const parent: WorkerParent = { sessionId: id(), runId: id(), native: { harness: "oc", authorityId: "test-authority", nativeId: "parent-native" }, checkout: dir, holdsExecution: false };
   const caller: WorkerCaller = { envelope: {}, runId: parent.runId, toolCallId: "tool-start" };
   const launched: string[] = [], cancelled: string[] = [];
   const observations = new Map<string, Partial<WorkerRecord>>();

@@ -106,7 +106,9 @@ export function assignmentContext(roots: SaneAssignmentRoots, jobs: readonly San
     ]),
   ].join("\n")
 }
-/** A worker's assignment: its role procedure, then its roots and jobs. */
+/** A worker's assignment: its role procedure, then its roots and jobs. The implementer procedure
+ * is Job-Spec specific, so a free-mode implementer (no job) receives only its roots. */
 export function workerContext(role: WorkerAgentId, roots: SaneAssignmentRoots, jobs: readonly SaneAssignmentJob[]): string {
+  if (role === "implementer" && !jobs.length) return assignmentContext(roots, jobs)
   return `${SANE_WORKER_PROCEDURES[role]}\n\n${assignmentContext(roots, jobs)}`
 }

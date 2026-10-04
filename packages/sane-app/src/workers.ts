@@ -5,7 +5,8 @@ import { WorkerStore } from "./worker-store";
 import { DEFAULT_MAX_WORKERS_PER_CHECKOUT, workerResults, workerTerminal, type WorkerCaller, type WorkerRecord, type WorkerStart } from "./worker-contract";
 import { WorkstreamAdapterError } from "./workstreams";
 
-export type WorkerParent = { sessionId: string; runId: string; native: ConversationRef; checkout: string; profileId?: string };
+/** holdsExecution: the parent currently holds its workstream's execution slot. */
+export type WorkerParent = { sessionId: string; runId: string; native: ConversationRef; checkout: string; profileId?: string; holdsExecution: boolean };
 export type WorkerExecutor = {
   parent(caller: WorkerCaller, starting: boolean): Promise<WorkerParent>;
   assertCurrentParent(parent: WorkerParent): void;
@@ -54,6 +55,7 @@ export class WorkerService {
       if (JSON.stringify(concurrent.input) !== JSON.stringify(payload) || concurrent.parent.runId !== parent.runId || concurrent.parent.toolCallId !== caller.toolCallId || JSON.stringify(concurrent.parent.invocation?.opencode) !== JSON.stringify(caller.invocation?.opencode)) error("worker-request-conflict", "Request ID already bound to another invocation/payload");
       return concurrent;
     }
+    if (input.worker === "implementer" && input.jobs === undefined && parent.holdsExecution) error("invalid-worker-input", "Execution must assign the implementer exactly one job ID.");
     const launch = resolveWorkerProfile(this.profiles(), input.worker, parent.profileId);
     this.executor.assertCapacity();
     const activeCount = this.active().filter(w => w.checkout === parent.checkout).length;

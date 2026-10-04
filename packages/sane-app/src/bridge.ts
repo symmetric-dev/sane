@@ -872,8 +872,9 @@ async function startOwned(options: Options, assetsDir: string, packageDir: strin
       if (!a || !session || !run || run.operation === "compact" || typeof caller.toolCallId !== "string" || !caller.toolCallId || caller.toolCallId.length > 300 || starting && owners.get(session.sessionId)?.run !== run) throw new WorkstreamAdapterError(409, "worker-parent", "Worker operations require an App-owned repository parent and a known prompt run; starts require its current owned run");
       const checkout = await execution(session.sessionId);
       const native = { harness: e.source.harness, authorityId: e.authorityId, nativeId: e.nativeId };
-      (await router!.forAdmission(a))!.domain.resolveContext(native);
-      return { sessionId: session.sessionId, runId: run.runId, native, checkout, profileId: sessionProfileId(session) };
+      const domain = (await router!.forAdmission(a))!.domain, workstream = domain.resolveContext(native).workstream;
+      const holdsExecution = !!workstream && domain.getWorkstreamStatus(workstream.id).activePhases.some(p => equivalentSlots(p.phase, "execution") && p.ref.harness === native.harness && p.ref.authorityId === native.authorityId && p.ref.nativeId === native.nativeId);
+      return { sessionId: session.sessionId, runId: run.runId, native, checkout, profileId: sessionProfileId(session), holdsExecution };
     },
     assertCurrentParent(parent) {
       const owner = owners.get(parent.sessionId);

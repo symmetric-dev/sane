@@ -66,10 +66,11 @@ export const WORKER_JOB_ASSIGNMENT: Record<WorkerAgentId, "one" | "some" | "none
 export const MAX_WORKER_JOBS = 64
 export const WORKER_JOB_ID_PATTERN = "^[a-z0-9][a-z0-9_-]{0,95}$"
 const workerJobId = new RegExp(WORKER_JOB_ID_PATTERN)
-/** Returns why jobs are invalid for the role, or undefined when acceptable (absent jobs included). */
+/** Returns why jobs are invalid for the role, or undefined when acceptable (absent jobs included).
+ * Execution's implementer job requirement depends on the parent's slot and is enforced at admission. */
 export function workerJobsProblem(worker: WorkerAgentId, jobs: unknown): string | undefined {
   const rule = WORKER_JOB_ASSIGNMENT[worker]
-  if (jobs === undefined) return rule === "one" ? `${worker} requires jobs with exactly one job ID.` : undefined
+  if (jobs === undefined) return undefined
   if (rule === "none") return `jobs is not allowed for ${worker} workers.`
   if (!Array.isArray(jobs) || !jobs.length || jobs.length > (rule === "one" ? 1 : MAX_WORKER_JOBS) || !jobs.every(job => typeof job === "string" && workerJobId.test(job)) || new Set(jobs).size !== jobs.length) return rule === "one" ? `${worker} requires jobs with exactly one safe lowercase job ID.` : `jobs must list 1–${MAX_WORKER_JOBS} unique safe lowercase job IDs.`
   return undefined
