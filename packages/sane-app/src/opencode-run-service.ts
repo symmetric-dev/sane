@@ -3,7 +3,7 @@ import { OpenCodeError, normalizeMessage, type OpenCodeAdapter } from "./opencod
 import type { RunOwner } from "./run-owner";
 
 /** Native transport only; owner arbitration and durable writes remain in the bridge. */
-export type OpenCodeRunAdapter = Pick<OpenCodeAdapter, "assertIdle" | "select" | "prompt" | "snapshot" | "interactions" | "compact" | "compactionSnapshot" | "activity" | "cancel">;
+export type OpenCodeRunAdapter = Pick<OpenCodeAdapter, "assertIdle" | "select" | "bindSaneSession" | "prompt" | "snapshot" | "interactions" | "compact" | "compactionSnapshot" | "activity" | "cancel">;
 export type OpenCodeRunDependencies = {
   oc: OpenCodeRunAdapter;
   closing: () => boolean;
@@ -18,6 +18,8 @@ export type OpenCodeRunDependencies = {
   refreshCompactHistory: (owner: RunOwner) => Promise<void>;
   assertWorkerDeliverySubmission: (owner: RunOwner) => void;
   workerHasRun: (runId: string) => boolean;
+  /** The SANE Session block from current membership, or null. */
+  saneSession: (sessionId: string) => Promise<string | null>;
   sleep: (ms: number) => Promise<unknown>;
 };
 
@@ -124,6 +126,7 @@ export class OpenCodeRunService {
       if (this.deps.closing() || owner.stopRequested) throw new Error("Stopped before native compaction submission");
       await this.deps.compactExecution(session);
       await this.deps.oc.assertIdle(session.nativeSessionId!, session.cwd);
+      await this.deps.oc.bindSaneSession(session.nativeSessionId!, await this.deps.saneSession(session.sessionId));
       if (this.deps.closing() || this.deps.storageFailed() || owner.stopRequested) throw new Error("Bridge unavailable before native compaction submission");
       run.nativePhase = "sending"; await this.deps.persist();
       await this.deps.compactExecution(session);
@@ -181,6 +184,7 @@ export class OpenCodeRunService {
       run.cwd = await this.deps.execution(session.sessionId);
       await this.deps.oc.assertIdle(session.nativeSessionId!, run.cwd);
       await this.deps.oc.select(session.nativeSessionId!, run.model, run.effort);
+      await this.deps.oc.bindSaneSession(session.nativeSessionId!, await this.deps.saneSession(session.sessionId));
       if (this.deps.closing() || owner.stopRequested) { await this.finishNative(owner, "interrupted", "Stopped before native submission"); ready(false); return; }
       run.nativePhase = "sending"; await this.deps.persist();
       if (this.deps.closing() || this.deps.storageFailed() || owner.stopRequested) throw new Error("Bridge unavailable before native submission");

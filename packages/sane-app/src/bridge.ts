@@ -35,7 +35,7 @@ import { workerDeliveryEvidence, workerReportPrompt } from "./worker-outbox";
 import { restoreWorkerOutput, workerOutput } from "./worker-output";
 import { DEFAULT_MAX_WORKERS_PER_CHECKOUT, workerResults, type WorkerDelivery } from "./worker-contract";
 import { ASSISTANT_AGENT_DESCRIPTIONS, ASSISTANT_AGENT_IDS, ASSISTANT_AGENT_LABELS, isAssistantAgentId, isStoredAssistantAgentId, nativeAgentId } from "sane-core/agent-catalog";
-import { agentLaunchSnapshot, claudeAgentSettings, saneContextSnapshot, saneContextText, saneSessionContext, workerAssignment } from "./agent-launch";
+import { agentLaunchSnapshot, claudeAgentSettings, saneContextSnapshot, saneContextText, saneFrameworkMessageId, saneSessionContext, saneSessionText, workerAssignment } from "./agent-launch";
 import { readClaudeHistory, forkClaudeHistory, verifyClaudeFork, coveredNativeRuns, type ReconciledHistory } from "./reconcile";
 import { BranchStore, type BranchOperation } from "./branches";
 import { NativeHistoryCache, TranscriptError, TranscriptService } from "./transcript-service";
@@ -175,7 +175,9 @@ async function startOwned(options: Options, assetsDir: string, packageDir: strin
   const workerStore = new WorkerStore(options.dataDir);
   const branches = new BranchStore(options.dataDir);
   const branchRequests = new Set<string>();
-  const execution = async (sessionId: string) => { const a = admissions.get(sessionId); if (!a) throw new WorkstreamAdapterError(409, "admission-missing", "Conversation has no durable admission"); return router!.execution(a); };
+  const executionContext = async (sessionId: string) => { const a = admissions.get(sessionId); if (!a) throw new WorkstreamAdapterError(409, "admission-missing", "Conversation has no durable admission"); return router!.execution(a); };
+  const execution = async (sessionId: string) => (await executionContext(sessionId)).executionCheckout;
+  const saneSession = async (sessionId: string) => saneSessionText(meta.sessions.find(s => s.sessionId === sessionId)!, await executionContext(sessionId));
   const domainProtectedPaths: string[] = [];
   const workspace = new WorkspaceService(async (id, operation) => {
     const session = meta.sessions.find(session => session.sessionId === id);
@@ -277,7 +279,7 @@ async function startOwned(options: Options, assetsDir: string, packageDir: strin
     closing: () => closing, storageFailed: () => storageFailed, retained: () => retainOwner,
     requireReconciliation: () => { retainOwner = true; meta.reconciliationRequired = true; },
     failClosed, emit, persist, enqueue, execution, compactExecution,
-    refreshCompactHistory, assertWorkerDeliverySubmission,
+    refreshCompactHistory, assertWorkerDeliverySubmission, saneSession,
   });
   const handoffs = new HandoffService(admissions, catalog, router, store.sources, () => meta.sessions, () => {
     if (closing || storageFailed || meta.reconciliationRequired) throw new WorkstreamAdapterError(503, "handoff-owner-unavailable", "App execution owner is unavailable");
@@ -337,7 +339,7 @@ async function startOwned(options: Options, assetsDir: string, packageDir: strin
         if (!meta.sessions.some(s => s.sessionId === sessionId)) {
           if (harness === "opencode" && !launch) launch = await oc.recoverLaunch(a.nativeId, cwd, config?.agent ?? nativeAgentId({ kind: "assistant", role }, harness));
           const sane = harness === "claude-code" || launch ? saneSessionContext({ kind: "assistant", role }) : {};
-          if (harness === "opencode" && sane.saneContext) await oc.bindSaneContext(a.nativeId, sane.saneContext.version, saneContextText(sane.saneContext));
+          if (harness === "opencode" && sane.saneContext) await oc.deliverSaneFramework(a.nativeId, saneFrameworkMessageId(sessionId), saneContextText(sane.saneContext));
           meta.sessions.push({ sessionId, nativeSessionId: a.nativeId, harness, authorityId: a.source.authorityId, cwd, lastStatus: "unknown", lastRunId: null,
             ...(config ? { profileId: config.profileId, ...(harness === "claude-code" ? { ...(config.model ? { model: config.model } : {}), ...(config.effort ? { effort: config.effort } : {}) } : {}) } : {}),
             ...(harness === "claude-code" || launch ? { agent: role, agentKind: "assistant", nativeAgentSelected: true, ...sane } : {}),
@@ -571,8 +573,8 @@ async function startOwned(options: Options, assetsDir: string, packageDir: strin
     if (sourceDomain.mode !== destinationDomain.mode || sourceDomain.mode === "repository" && (destinationDomain.mode !== "repository" || sourceDomain.repositoryId !== destinationDomain.repositoryId || sourceDomain.primaryCheckout !== destinationDomain.primaryCheckout) || admission.source.authorityId !== original.source.authorityId || admission.source.descriptor.harness !== original.source.descriptor.harness || admission.binding.executionCheckout !== original.binding.executionCheckout || admission.binding.workspaceId !== original.binding.workspaceId || admission.binding.worktreeId !== original.binding.worktreeId) throw new Error("Branch source and destination admission domains or execution bindings differ");
     let destination = meta.sessions.find(s => s.sessionId === op.destinationId);
     if (!destination) {
-      // Forks inherit the source's bound metadata; rebind it to the fork's own native ID.
-      if (source.harness === "opencode" && source.saneContext) await oc.bindSaneContext(op.nativeId, source.saneContext.version, saneContextText(source.saneContext));
+      // Forks inherit the framework in history and the source's bound metadata; rebind it to the fork's own native ID.
+      if (source.harness === "opencode" && source.saneContext) await oc.rebindSaneSession(op.nativeId);
       destination = { ...source, sessionId: op.destinationId, nativeSessionId: op.nativeId, lastStatus: "unknown", lastRunId: null, title: `${(displayTitle(source) ?? "Conversation").slice(0, 185)} · Branch` };
       delete destination.attachment; delete destination.hidden;
       meta.sessions.push(destination);
@@ -771,7 +773,7 @@ async function startOwned(options: Options, assetsDir: string, packageDir: strin
     session: sessionId => meta.sessions.find(s => s.sessionId === sessionId)!,
     events: runId => events.get(runId) ?? [], emit, persist, execution,
     compactExecution, refreshCompactHistory, assertWorkerDeliverySubmission,
-    workerHasRun: runId => workerStore.hasRun(runId), sleep: ms => Bun.sleep(ms),
+    workerHasRun: runId => workerStore.hasRun(runId), sleep: ms => Bun.sleep(ms), saneSession,
   });
   const resolveTrustedWorkerInvocation: NativeWorkerCallerResolver = async (request, context) => {
     const reject = (): never => { throw new NativeWorkerRequestError(409, "worker-identity", "Worker invocation is not evidenced in its App-owned run. Ensure this conversation is repository-enrolled and retry only the same native tool invocation after its tool evidence is persisted."); };
@@ -898,7 +900,7 @@ async function startOwned(options: Options, assetsDir: string, packageDir: strin
           const child = { harness: a.source.descriptor.harness, authorityId: a.source.authorityId, nativeId: a.nativeId! };
           const { saneContext } = saneSessionContext(w.launch.identity, workerAssignment((await router!.forAdmission(a))!.domain, child, w.parent.native, w.input.worker, w.input.jobs ?? [], w.id));
           if (!saneContext) throw new Error("Worker launch has no SANE worker identity");
-          if (harness === "opencode") await oc.bindSaneContext(a.nativeId!, saneContext.version, saneContextText(saneContext));
+          if (harness === "opencode") await oc.deliverSaneFramework(a.nativeId!, saneFrameworkMessageId(w.sessionId), saneContextText(saneContext));
           session.saneContext = saneContext;
         } catch (e) {
           const summary = `Worker assignment unavailable: ${e instanceof Error ? e.message : "context resolution failed"}`;
@@ -1114,7 +1116,6 @@ async function startOwned(options: Options, assetsDir: string, packageDir: strin
       if (session.harness === "opencode") await oc.assertIdle(session.nativeSessionId!, cwd);
       if (closing || storageFailed || meta.reconciliationRequired) return;
       const domain = (await router!.forWorkspace(workspaceId)).domain;
-      const recipientContext = domain.resolveContext(h.recipient.ref!);
       const status = domain.getWorkstreamStatus(h.workstreamId);
       const fromSender = (a: (typeof status.activePhases)[number]) => a.ref.harness === h.sender.harness && a.ref.authorityId === h.sender.authorityId && a.ref.nativeId === h.sender.nativeId;
       const senderSlots = [...new Set(status.activePhases.filter(fromSender).map(a => a.phase))];
@@ -1141,11 +1142,11 @@ async function startOwned(options: Options, assetsDir: string, packageDir: strin
       session.lastRunId = run.runId; session.lastStatus = "running"; meta.runs.push(run); events.set(run.runId, []);
       const prompt = [
         `SANE handoff ${h.id}`, `Request ID: ${h.input.requestId}`, `Repository: ${domain.primaryCheckout}`, `Workstream: ${h.workstreamId}`,
-        `Workstream root: ${recipientContext.artifactsRoot}`, `Destination: ${h.input.to}`, `From: ${JSON.stringify(h.sender)}`,
+        `Destination: ${h.input.to}`, `From: ${JSON.stringify(h.sender)}`,
         `Sender slots at request: ${originalSenderSlots.length ? JSON.stringify(originalSenderSlots) : "(none recorded)"}`,
         `Sender slots now: ${senderSlots.length ? JSON.stringify(senderSlots) : "(none)"}`,
         ...(h.input.kickoff ? ["Origin: kickoff; the sender created this workstream and is not a member."] : []),
-        `Recipient: ${JSON.stringify(h.recipient.ref)}`, `Execution checkout: ${cwd}`,
+        `Recipient: ${JSON.stringify(h.recipient.ref)}`,
         h.input.createNew ? "Perform the assigned assistant's mandatory Pickup and ask the user to confirm scope before proceeding."
           : "Continue within this conversation's confirmed scope and user decisions; confirm any scope change with the user.",
         "A successful delivery run may only establish Pickup readiness; it does not mean request/task completion, user acceptance, or approval.",
@@ -1781,7 +1782,7 @@ async function startOwned(options: Options, assetsDir: string, packageDir: strin
           if (harness === "opencode") await admissions.createNative(conversationId, async () => (await oc.createResolved(cwd, nativeLaunch!)).id);
           const a = admissions.get(conversationId)!;
           const sane = input.agent !== undefined ? saneSessionContext({ kind: "assistant", role: input.agent }) : {};
-          if (harness === "opencode" && sane.saneContext) await oc.bindSaneContext(a.nativeId!, sane.saneContext.version, saneContextText(sane.saneContext));
+          if (harness === "opencode" && sane.saneContext) await oc.deliverSaneFramework(a.nativeId!, saneFrameworkMessageId(conversationId), saneContextText(sane.saneContext));
           session = { sessionId: conversationId, harness, nativeSessionId: a.nativeId!, authorityId: a.source.authorityId, cwd, lastStatus: "unknown", lastRunId: null, ...(input.model !== undefined ? { model: input.model } : {}), ...(input.effort !== undefined ? { effort: input.effort } : {}), ...(input.agent !== undefined ? { agent: input.agent, agentKind: "assistant", nativeAgentSelected: true, ...sane } : {}), ...(profile ? { profileId: profile.id } : {}) };
           meta.sessions.push(session); await persist();
           await admissions.register(conversationId);

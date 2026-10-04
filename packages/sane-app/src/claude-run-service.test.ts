@@ -44,6 +44,7 @@ function fixture(stdout = bytes([wire(success)]), stderr = bytes()) {
     compactExecution: async () => { calls.push("compactExecution"); return "/checkout"; },
     refreshCompactHistory: async () => { state.refreshed++; },
     assertWorkerDeliverySubmission: () => { calls.push("workerGate"); },
+    saneSession: async () => null,
   };
   const runtime: ClaudeRunRuntime = {
     spawn: (args, options) => { calls.push("spawn"); spawned = { args, options }; return child; },

@@ -1,11 +1,12 @@
 import { RepositoryDomain, DomainError, discoverRepository, inspectRepositoryStore, initializeRepository, openRepositoryDomain, normalizeNativeSource, revalidateCheckout } from "sane-core/server";
-import type { ConversationRef, CreateWorkstreamInput, Phase, MutationContext, RepositoryContext } from "sane-core/contracts";
+import type { ConversationRef, CreateWorkstreamInput, InvocationContext, Phase, MutationContext, RepositoryContext } from "sane-core/contracts";
 import { uuid, type Session } from "./history";
 import type { WorkstreamOverview } from "./workstreams-contract";
 import type { CatalogService } from "./catalog";
 import type { Admission, SourceRecords } from "./app-store";
 
 export type AppConversation = Pick<Session, "sessionId" | "harness" | "nativeSessionId" | "authorityId" | "cwd">;
+export type ExecutionContext = Pick<InvocationContext, "executionCheckout" | "artifactsRoot"> & { workstreamId: string | null };
 export class WorkstreamAdapterError extends Error {
   constructor(public readonly status: number, public readonly code: string, message: string) { super(message); }
 }
@@ -114,7 +115,8 @@ export class RepositoryRouter {
     if (adapter.domain.primaryCheckout !== admission.binding.domain.primaryCheckout) throw new WorkstreamAdapterError(409, "domain-mismatch", "The intended primary checkout changed");
     return adapter;
   }
-  async execution(admission: Admission) {
+  /** Current execution pin and membership; App-only domains have no workstream. */
+  async execution(admission: Admission): Promise<ExecutionContext> {
     if (admission.state !== "ready" || !admission.nativeId) throw new WorkstreamAdapterError(409, "admission-pending", "Conversation admission is not ready");
     if (normalizeNativeSource(admission.source.descriptor).authorityId !== admission.source.authorityId) throw new WorkstreamAdapterError(409, "source-mismatch", "Source pin changed");
     const b = admission.binding, binding = await this.catalog.binding(b.workspaceId, b.worktreeId);
@@ -122,9 +124,10 @@ export class RepositoryRouter {
     const adapter = await this.forAdmission(admission);
     if (adapter) {
       revalidateCheckout(adapter.domain.context, b.checkoutPin!);
-      return adapter.domain.resolveContext({ harness: admission.source.descriptor.harness, authorityId: admission.source.authorityId, nativeId: admission.nativeId }).executionCheckout;
+      const context = adapter.domain.resolveContext({ harness: admission.source.descriptor.harness, authorityId: admission.source.authorityId, nativeId: admission.nativeId });
+      return { executionCheckout: context.executionCheckout, workstreamId: context.workstream?.id ?? null, artifactsRoot: context.artifactsRoot };
     }
-    return binding.cwd;
+    return { executionCheckout: binding.cwd, workstreamId: null, artifactsRoot: null };
   }
   close() { for (const adapter of this.cache.values()) adapter.close(); this.cache.clear(); }
 }

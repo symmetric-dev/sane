@@ -21,6 +21,7 @@ function fixture(compact = false) {
   const oc: OpenCodeRunAdapter = {
     async assertIdle() { trace.push("idle"); },
     async select() { trace.push("select"); },
+    async bindSaneSession() {},
     async prompt(id, commandId, text, beforeSend) { trace.push("prompt"); beforeSend?.(); return { id: commandId, time: { created: 5 } }; },
     async snapshot(id, commandId, cwd) { trace.push(`snapshot:${commandId}`); return { messages: [message(commandId)], outcome: "succeeded", pending: false }; },
     async interactions() { trace.push("interactions"); return []; },
@@ -39,6 +40,7 @@ function fixture(compact = false) {
     async refreshCompactHistory() { trace.push("refresh"); },
     assertWorkerDeliverySubmission() { trace.push("workerGate"); if (owner.workerDeliveryId && (owner.stopRequested || state.closing || state.storageFailed || state.currentOwner !== owner || session.hidden)) throw new Error("worker withheld"); },
     workerHasRun: () => state.worker,
+    saneSession: async () => null,
     async sleep(ms) { trace.push(`sleep:${ms}`); if (++state.sleeps > 12) throw new Error("unexpected endless monitor"); state.onSleep?.(); },
   };
   const service = new OpenCodeRunService(deps);

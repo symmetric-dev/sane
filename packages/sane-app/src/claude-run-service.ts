@@ -38,6 +38,8 @@ export type ClaudeRunDependencies = {
   compactExecution: (session: Session) => Promise<string>;
   refreshCompactHistory: (owner: RunOwner) => Promise<void>;
   assertWorkerDeliverySubmission: (owner: RunOwner) => void;
+  /** The SANE Session block from current membership, or null. */
+  saneSession: (sessionId: string) => Promise<string | null>;
 };
 
 type SpawnOptions = {
@@ -67,6 +69,8 @@ export type ClaudeHookReply = { status: 200; body: { ok: true } } | { status: 40
 type Result = { seen: boolean; error: boolean; indices: Set<number>; diagnostic?: string };
 const quote = (s: string) => `'${s.replaceAll("'", "'\\''")}'`;
 const compactCommand = (text: string) => /^\s*\/compact(?:\s|$)/i.test(text);
+/** Claude replaces larger hook context with a file preview; the framework must arrive whole. */
+const hookContextLimit = 10000;
 const equal = (a: string, b: string) => { const x = Buffer.from(a), y = Buffer.from(b); return x.length === y.length && timingSafeEqual(x, y); };
 
 export class ClaudeRunService {
@@ -170,18 +174,27 @@ export class ClaudeRunService {
       const session = deps.session(run.sessionId)!;
       run.cwd = run.operation === "compact" ? await deps.compactExecution(session) : await deps.execution(session.sessionId);
       const secret = runtime.randomUUID() + runtime.randomUUID(); this.secrets.set(run.runId, secret);
-      const hooks = Object.fromEntries(hookEvents.map(event => [event, [{ hooks: [{ type: "command", command: `${quote(runtime.execPath)} ${quote(join(this.options.packageRoot, "hooks/forward.ts"))} ${quote(event)}`, timeout: 3 }] }]]));
+      const hooks: Record<string, { hooks: { type: "command"; command: string; timeout: number }[] }[]> = Object.fromEntries(hookEvents.map(event => [event, [{ hooks: [{ type: "command", command: `${quote(runtime.execPath)} ${quote(join(this.options.packageRoot, "hooks/forward.ts"))} ${quote(event)}`, timeout: 3 }] }]]));
+      // The framework enters native history once, from the run that creates the native session.
+      const frameworkPath = !resume && session.saneContext ? join(this.options.dataDir, `${run.runId}.session-start.md`) : undefined;
+      if (frameworkPath) {
+        const framework = saneContextText(session.saneContext!);
+        if (framework.length > hookContextLimit) throw new AgentLaunchConfigurationError(`SANE framework exceeds the ${hookContextLimit}-character SessionStart context limit`);
+        await deps.enqueue(() => runtime.writeSettings(frameworkPath, framework));
+        hooks.SessionStart!.push({ hooks: [{ type: "command", command: `${quote(runtime.execPath)} ${quote(join(this.options.packageRoot, "hooks/session-start.ts"))} ${quote(frameworkPath)}`, timeout: 10 }] });
+      }
       const identity = snapshotIdentity(run);
       const installed = identity ? await runtime.agentSettings(this.options.claudeRoot, identity) : undefined;
       const ccAgent = installed?.agent, permissions = installed?.permissions;
       const settingsPath = join(this.options.dataDir, `${run.runId}.settings.json`);
       await deps.enqueue(() => runtime.writeSettings(settingsPath, JSON.stringify({ hooks, ...(permissions ? { permissions } : {}) })));
-      const systemPromptPath = session.saneContext && join(this.options.dataDir, `${run.runId}.system-prompt.md`);
-      if (systemPromptPath) await deps.enqueue(() => runtime.writeSettings(systemPromptPath, saneContextText(session.saneContext!)));
+      const saneSession = await deps.saneSession(session.sessionId);
+      const sessionPath = saneSession === null ? undefined : join(this.options.dataDir, `${run.runId}.sane-session.md`);
+      if (sessionPath) await deps.enqueue(() => runtime.writeSettings(sessionPath, saneSession!));
       if (deps.closing() || deps.storageFailed() || owner.stopRequested) throw new Error("Closing before launch");
       const args = [this.options.claudeBin, "-p", "--permission-mode", "bypassPermissions", "--output-format", "stream-json", "--verbose", resume ? "--resume" : "--session-id", session.nativeSessionId!, "--settings", settingsPath];
       if (ccAgent !== undefined) args.push("--agent", ccAgent);
-      if (systemPromptPath) args.push("--append-system-prompt-file", systemPromptPath);
+      if (sessionPath) args.push("--append-system-prompt-file", sessionPath);
       if (run.model !== undefined) args.push("--model", run.model);
       if (run.effort !== undefined) args.push("--effort", run.effort);
       // Native HOME/hooks stay shared, but bridge credentials/context do not.

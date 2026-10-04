@@ -23,7 +23,7 @@ let options: Options;
 let app: Awaited<ReturnType<typeof start>> | undefined;
 let native: Bun.Server<undefined> | undefined;
 type Call = { path: string; method: string; body?: any; authorization: string | null };
-type FakeSession = { info: any; messages: NativeMessage[]; active: boolean };
+type FakeSession = { info: any; messages: NativeMessage[]; inbox: any[]; active: boolean };
 const calls: Call[] = [];
 const sessions = new Map<string, FakeSession>();
 const pendingInteractions = new Map<string, { permissions: any[]; forms: any[] }>();
@@ -71,7 +71,7 @@ async function fakeNative(req: Request) {
   if (path === "/api/session" && req.method === "POST") {
     const id = `ses_fixture_${sessions.size + 1}`, time = 1700000000000 + sessions.size * 1000;
     const info = { id, ...input, time: { created: time, updated: time } };
-    sessions.set(id, { info, messages: [], active: false });
+    sessions.set(id, { info, messages: [], inbox: [], active: false });
     return Response.json({ data: info });
   }
   const match = /^\/api\/session\/([^/]+)(?:\/(.+))?$/.exec(path);
@@ -80,12 +80,19 @@ async function fakeNative(req: Request) {
   switch (match![2]) {
     case undefined: return Response.json({ data: session.info });
     case "model": session.info.model = input.model; return Response.json({ data: session.info });
-    case "inbox": return Response.json({ data: [] });
+    case "inbox": return Response.json({ data: session.inbox });
+    case "synthetic": {
+      // Held without a run until the next prompt commits it ahead of that prompt.
+      const pending = { id: input.id, sessionID: match![1], time: { created: session.info.time.updated + 1 }, type: "synthetic", payload: { text: input.text, description: input.description, metadata: input.metadata }, delivery: "steer" };
+      session.inbox.push(pending);
+      return Response.json({ data: pending });
+    }
     case "permission": return Response.json({ data: pendingInteractions.get(match![1]!)?.permissions ?? [] });
     case "form": return Response.json({ data: pendingInteractions.get(match![1]!)?.forms ?? [] });
     case "message": return Response.json({ data: [...session.messages].reverse(), cursor: { next: null } });
     case "prompt": {
       const time = session.info.time.updated + 10;
+      for (const pending of session.inbox.splice(0)) session.messages.push({ id: pending.id, type: "synthetic", text: pending.payload.text, description: pending.payload.description, metadata: pending.payload.metadata, time: { created: time - 1 } } as NativeMessage);
       session.messages.push({ id: input.id, type: "user", text: input.text, time: { created: time } });
       session.active = true; session.info.time.updated = time;
       if (!input.text.startsWith("hold for ")) complete(match![1]!);
@@ -463,7 +470,7 @@ describe.serial("bridge runtime (isolated offline HTTP native fixtures)", () => 
 
   test("cancel never interrupts externally active attached OpenCode without an App-owned run", async () => {
     const nativeId = "ses_fixture_external_cancel", time = 1700000200000;
-    sessions.set(nativeId, { info: { id: nativeId, location: { directory: repoDir }, time: { created: time, updated: time } }, active: false,
+    sessions.set(nativeId, { info: { id: nativeId, location: { directory: repoDir }, time: { created: time, updated: time } }, active: false, inbox: [],
       messages: [{ id: "msg_fixture_external_user", type: "user", text: "offline external turn", time: { created: time } }] });
     complete(nativeId);
     const before = sideEffects();

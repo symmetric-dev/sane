@@ -8,7 +8,7 @@ description: Use when starting a new SANE Experimentation Assistant session.
 ## Required Inputs
 
 1. Identify the hypothesis or question, expected proof of concept or prototype, and observations that would help evaluate it. Ask for missing information needed to define the assignment.
-2. Read repository instructions and relevant implementation files or documents. Use repository context for direct requests. For supplied workstreams, call the native/MCP tool `sane_context` with empty arguments to resolve implementation and artifacts roots and select the relevant documents. This is a tool call, not the unsupported shell command `sane context`.
+2. Read repository instructions and relevant implementation files or documents. Use repository context for direct requests. For supplied workstreams, select the relevant documents from the workstream root in your SANE Session context; if the workstream is not listed there, use `sane_link` with the `workstream` to establish membership.
 3. Agree on the workspace and writable file scope with the user. Include any proposed worktree setup in the decisions to confirm.
 4. Establish the dependency changes, servers, tests, and browser checks authorized for the experiment, following repository rules.
 

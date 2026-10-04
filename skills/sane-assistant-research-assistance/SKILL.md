@@ -7,7 +7,7 @@ description: Use after Research Pickup confirmation for investigations and follo
 
 ## User Assistance Workflow
 
-1. Confirm the question and scope with the user. Perform research directly or delegate bounded questions to `sane_worker_start` (`worker: "researcher"`). Native subagents remain available for suitable assignments. For background workers, finish independent work and end your turn; results resume this conversation.
+1. Confirm the question and scope with the user. Perform research directly or delegate bounded questions to `sane_worker_start` (`worker: "researcher"`). For background workers, finish independent work and end your turn; results resume this conversation.
 2. Write reports using the supplied template at `research/<topic>/REPORT.md`. Review worker evidence and correct reports within the current assignment.
 3. Discuss findings and unresolved questions with the user. Confirm before expanding the scope or extending an investigation substantially.
 4. Keep reports focused on the implementation repository and preserve their historical scope. Use a new topic/report for a distinct later investigation.

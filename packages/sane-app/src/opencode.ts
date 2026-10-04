@@ -8,13 +8,17 @@ type Connection = { base: string; headers: Record<string, string> };
 export type ModelRef = { id: string; providerID: string; variant?: string };
 export type NativeAgent = { id: string; model?: ModelRef };
 export type OpenCodeLaunch = { agent?: string; model?: ModelRef };
-type NativeSession = { id: string; location?: { directory?: string }; agent?: string; model?: ModelRef; outcome?: "succeeded" | "failed" | "interrupted"; time: { created: number; updated: number; idle?: number } };
+type NativeSession = { id: string; location?: { directory?: string }; agent?: string; model?: ModelRef; outcome?: "succeeded" | "failed" | "interrupted"; metadata?: Record<string, unknown>; time: { created: number; updated: number; idle?: number } };
+type NativeInput = { id: string; sessionID?: string; type?: string; payload?: { metadata?: Record<string, unknown> } };
 type NativePart = { type: string; id?: string; name?: string; text?: string; state?: { status: string; input?: unknown; content?: unknown; error?: unknown } };
-export type NativeMessage = { id: string; type: string; time: { created: number; completed?: number }; model?: ModelRef; text?: string; content?: NativePart[]; error?: unknown; cost?: number; tokens?: unknown; outcome?: string; status?: string; reason?: string; summary?: string; preTokens?: number; postTokens?: number; durationMs?: number };
+export type NativeMessage = { id: string; type: string; metadata?: Record<string, unknown>; time: { created: number; completed?: number }; model?: ModelRef; text?: string; content?: NativePart[]; error?: unknown; cost?: number; tokens?: unknown; outcome?: string; status?: string; reason?: string; summary?: string; preTokens?: number; postTokens?: number; durationMs?: number };
 export type NativeCompactAdmission = { id: string; sessionID: string; type: "compaction"; time: { created: number }; delivery: "queue" | "steer"; payload?: unknown };
 export type NativeCompactionProjection = { messages: NativeMessage[]; compaction?: CompactionMetadata; outcome?: "succeeded" | "failed" | "skipped" };
 export type NativeCompactionObservation = NativeCompactionProjection & { pending: boolean; active: boolean; observed: boolean };
 type Page = { data: NativeMessage[]; cursor: { next?: string | null } };
+/** Marks the App-delivered framework synthetic, which is model context and never a transcript turn. */
+const saneFrameworkMetadata = { sane: "framework" } as const;
+const saneFramework = (metadata: Record<string, unknown> | undefined) => metadata?.sane === saneFrameworkMetadata.sane;
 export class OpenCodeError extends Error {
   constructor(message: string, public status = 503) { super(message); }
 }
@@ -144,6 +148,12 @@ export class OpenCodeAdapter {
     if (data?.id !== commandId || !Number.isFinite(data.time?.created)) throw new OpenCodeError("OpenCode prompt acknowledgement mismatch; execution state unconfirmed");
     return data;
   }
+  /** Once, at creation and before the first prompt. Native holds it pending without a run and commits
+   * it ahead of that prompt; the caller's stable ID makes a retried creation deliver it once. */
+  async deliverSaneFramework(id: string, messageId: string, text: string) {
+    const { data } = await this.request<{ data: NativeInput }>(this.path(id) + "/synthetic", "POST", { id: messageId, text, description: "SANE framework", metadata: saneFrameworkMetadata, resume: false });
+    if (data?.id !== messageId || data.sessionID !== id || data.type !== "synthetic") throw new OpenCodeError("OpenCode SANE framework acknowledgement mismatch; delivery unconfirmed");
+  }
   /** Explicit user-requested, idle-only admission. Caller owns the idle gate and
    * persists request ID before this mutation and returned ID before observation.
    * Native may coalesce into a different pending ID; this is not rejection.
@@ -155,9 +165,21 @@ export class OpenCodeAdapter {
     return data;
   }
   async session(id: string) { return (await this.request<{ data: NativeSession }>(this.path(id))).data; }
-  /** Bound to this exact native session: forks and subagents inherit metadata, and the plugin ignores a foreign sessionID. */
-  async bindSaneContext(id: string, version: number, text: string) {
-    await this.request(this.path(id), "PATCH", { metadata: { saneContext: { sessionID: id, version, text } } });
+  /** The per-turn SANE Session block, bound to this exact native session: forks and subagents inherit
+   * metadata, and the plugin ignores a foreign sessionID. PATCH replaces metadata wholesale, so other
+   * keys are kept; null removes the binding. Unchanged bindings are not rewritten. */
+  async bindSaneSession(id: string, text: string | null) {
+    const { saneContext: current, ...metadata } = (await this.session(id)).metadata ?? {};
+    const next = text === null ? undefined : { sessionID: id, text };
+    if (JSON.stringify(current) === JSON.stringify(next)) return;
+    await this.request(this.path(id), "PATCH", { metadata: { ...metadata, ...(next ? { saneContext: next } : {}) } });
+  }
+  /** A fork inherits its source's binding; rebind it to the fork until its first run renders its own. */
+  async rebindSaneSession(id: string) {
+    const current = (await this.session(id)).metadata?.saneContext as { text?: unknown } | undefined;
+    if (current === undefined) return;
+    if (typeof current?.text !== "string") throw new OpenCodeError("Inherited SANE session binding is malformed", 409);
+    await this.bindSaneSession(id, current.text);
   }
   async fork(id: string, cwd: string, boundary: string, before?: string, beforeSend?: () => void) {
     const { data } = await this.request<{ data: NativeSession & { fork?: { sessionID: string; boundary: { type: string; messageID: string } } } }>(this.path(id) + "/fork", "POST", before ? { before } : {}, beforeSend);
@@ -178,11 +200,12 @@ export class OpenCodeAdapter {
   async activity(id: string, cwd: string) {
     const [session, active, inbox] = await Promise.all([
       this.session(id), this.request<{ data: Record<string, { type: string }> }>("/api/session/active"),
-      this.request<{ data: { id: string }[] }>(this.path(id) + "/inbox"),
+      this.request<{ data: NativeInput[] }>(this.path(id) + "/inbox"),
     ]);
     if (session?.id !== id || session.location?.directory !== cwd) throw new OpenCodeError("Native session identity or execution directory differs from the pinned conversation", 409);
     if (!active.data || !Array.isArray(inbox.data)) throw new OpenCodeError("Unsupported native activity response");
-    return { session, active: !!active.data[id], pending: inbox.data.length > 0 };
+    // The framework synthetic waits, by design, for the first prompt; it is not foreign input.
+    return { session, active: !!active.data[id], pending: inbox.data.some(m => !(m.type === "synthetic" && saneFramework(m.payload?.metadata))) };
   }
   async assertIdle(id: string, cwd: string) {
     const state = await this.activity(id, cwd);
@@ -337,6 +360,7 @@ export function normalizeMessage(message: NativeMessage): MessageSnapshot | unde
   }
   if (message.type === "model-switched") return { messageId: message.id, role: "system", parts: [], status: "completed", createdAt: new Date(message.time.created).toISOString(), ...(model ? { model } : {}) };
   if (!["user", "assistant", "system", "synthetic"].includes(message.type)) return;
+  if (message.type === "synthetic" && saneFramework(message.metadata)) return;
   const parts: MessagePart[] = message.type === "assistant" ? (message.content ?? []).flatMap((part, i): MessagePart[] => {
     const id = part.id ?? `${message.id}:part:${i}`;
     if (part.type === "text" || part.type === "reasoning") return [{ id, type: part.type, text: part.text ?? "" }];

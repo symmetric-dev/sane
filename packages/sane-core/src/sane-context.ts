@@ -2,7 +2,7 @@ import { isAssistantAgentId, isWorkerAgentId, type StoredSaneAgentIdentity, type
 import { SANE_WORKER_PROCEDURES } from "./sane-worker-procedures.ts"
 
 /** Bump whenever framework or assignment text changes; sessions keep the version they were created with. */
-export const SANE_CONTEXT_VERSION = 2
+export const SANE_CONTEXT_VERSION = 3
 
 export const SANE_CORE_CONTEXT = `# SANE Context
 
@@ -73,17 +73,26 @@ export function frameworkContext(agent: StoredSaneAgentIdentity | undefined): Sa
   return null
 }
 
-export type SaneAssignmentRoots = { workstreamId: string | null; workstreamRoot: string | null; implementationRoot: string; managementRepository: string }
+export type SaneSessionRoots = { workstreamId: string | null; workstreamRoot: string | null; implementationRoot: string }
+/** Current membership, applied every turn; null when the conversation has no workstream. */
+export function sessionContext(roots: SaneSessionRoots): string | null {
+  if (roots.workstreamId === null) return null
+  if (roots.workstreamRoot === null) throw new Error(`Workstream ${roots.workstreamId} has no workstream root`)
+  return [
+    "# SANE Session",
+    "",
+    `Workstream: ${roots.workstreamId}`,
+    `Workstream root: ${roots.workstreamRoot}`,
+    `Implementation root: ${roots.implementationRoot}`,
+  ].join("\n")
+}
+
+export type SaneAssignmentRoots = { workstreamRoot: string | null; implementationRoot: string }
 export type SaneAssignmentJob = { jobId: string; specPath: string; reportPath: string; reportTemplatePath: string }
-/** Paths only, never file contents. */
+/** Paths only, never file contents. Roots themselves arrive through the SANE Session block. */
 export function assignmentContext(roots: SaneAssignmentRoots, jobs: readonly SaneAssignmentJob[]): string {
   return [
     "# SANE Assignment",
-    "",
-    `Workstream: ${roots.workstreamId ?? "(none)"}`,
-    `Workstream root: ${roots.workstreamRoot ?? "(none)"}`,
-    `Implementation root: ${roots.implementationRoot}`,
-    `Management repository: ${roots.managementRepository}`,
     "",
     "Directory conventions:",
     `- \`<implementation>/\` = ${roots.implementationRoot}`,

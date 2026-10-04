@@ -11,7 +11,7 @@ description: Use after Execution Pickup confirmation to coordinate jobs, reviews
 2. Confirm coordination mode unless already supplied:
    - **User-directed:** return at each review checkpoint for the user's next instruction.
    - **Delegated cycle:** coordinate work within the agreed scope and attempt limit until accepted or a stop condition applies.
-3. For each job, start one Implementer per attempt with `sane_worker_start` (`worker: "implementer"`, `jobs: ["<id>"]`). Use the configured worker profile, or a native subagent for a suitable assignment; collect its result and Job Report.
+3. For each job, start one Implementer per attempt with `sane_worker_start` (`worker: "implementer"`, `jobs: ["<id>"]`). Use the configured worker profile; collect its result and Job Report.
 4. Finish independent coordination and end your turn while the batch runs. Assess returned outcomes before dispatching dependent work; ask the user about interrupted assignments.
 5. Continue through the checkpoint's jobs, then follow Checkpoint Review and Commit before starting the next checkpoint. Track implemented jobs awaiting review separately from accepted jobs in the execution evidence. Mark accepted jobs with `sane job <id> completed`.
 

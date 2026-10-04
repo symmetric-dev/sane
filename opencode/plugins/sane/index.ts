@@ -11,6 +11,7 @@ export const SanePlugin = Plugin.define({
   async setup(ctx) {
     const registration = ctx.options.registrationFile
     const workerInvocations = new OpenCodeWorkerInvocations()
+    // The App delivers the framework once into history and binds the per-turn SANE Session block here.
     // Children and forks inherit metadata, so apply only context bound to this exact session.
     const applySaneContext = async (input: SessionContext) => {
       const context = (await ctx.session.get({ sessionID: input.sessionID })).metadata?.saneContext
@@ -20,7 +21,6 @@ export const SanePlugin = Plugin.define({
       if (bound.sessionID === input.sessionID) input.system.push({ type: "text", text: bound.text })
     }
     await ctx.session.hook("context", applySaneContext)
-    await ctx.session.hook("compaction", applySaneContext)
     await ctx.tool.hook("execute.before", event => { workerInvocations.before(event) })
     await ctx.tool.hook("execute.after", event => { workerInvocations.after(event) })
     const qualify = (tool: OpenCodeToolCaller) => {

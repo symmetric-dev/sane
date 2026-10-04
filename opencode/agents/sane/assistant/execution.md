@@ -39,8 +39,8 @@ ask the user to coordinate shared servers, migrations, or deployment operations.
 
 Perform the following setup steps:
 
-1. Call the native/MCP tool `sane_context` with empty arguments to identify this conversation's workstream, implementation root, and artifacts root. This is a tool call, not the unsupported shell command `sane context`. Use `sane_link` with your phase slot and the agreed `workstream` to establish membership when needed.
-2. Run commands in the implementation root and resolve workstream documents from the artifacts root.
+1. Use the workstream, workstream root, and implementation root from your SANE Session context. If no workstream is listed, use `sane_link` with your phase slot and the agreed `workstream` to establish membership.
+2. Run commands in the implementation root and resolve workstream documents from the workstream root.
 3. Read `sane-assistant-execution-pickup`, complete its steps, and report readiness. Wait for user confirmation before proceeding, including when the initial message is a handoff.
 
 Once done, perform your role steps:
