@@ -1849,13 +1849,15 @@ async function startOwned(options: Options, assetsDir: string, packageDir: strin
           session.profileId = upgrade.id; session.agent = upgrade.role ?? undefined;
           if (upgrade.model) session.model = upgrade.model; else delete session.model;
           if (upgrade.effort) session.effort = upgrade.effort; else delete session.effort;
-          await persist();
+          // For a queued dispatch, publish defaults together with its new run,
+          // without a cancellable I/O gap between this mutation and installation.
+          if (!queuedFollowupId) await persist();
         }
         // First prompt becomes the durable list title for untitled sessions
         // (handoff `<Role> #<n>` titles already set stay untouched).
         if (!session.title) {
           const firstTitle = titleFromPrompt(input.prompt);
-          if (firstTitle) { session.title = firstTitle; await persist(); }
+          if (firstTitle) { session.title = firstTitle; if (!queuedFollowupId) await persist(); }
         }
         workerStore.suppress(conversationId, false); // Explicit user submission resumes automatic continuation eligibility.
         if (queuedFollowupId && (!claudeRuns.followupPending(queuedFollowupId) || closing || storageFailed || meta.reconciliationRequired || owners.has(conversationId))) throw new Error("Queued admission unavailable before owner installation");

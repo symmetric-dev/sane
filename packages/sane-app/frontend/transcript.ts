@@ -18,7 +18,7 @@ export function messagesWithQueuedFollowups(messages: Message[], conversation?: 
     if (receipt.sessionId !== conversation?.id) return false;
     if (receipt.state !== "dispatched") return true;
     return receipt.runId === conversation.lastRunId && !messages.some(message => message.runId === receipt.runId && message.role === "user");
-  }).map((receipt): Message => ({ id: `queued:${receipt.requestId}`, runId: receipt.runId ?? receipt.afterRunId,
+  }).map((receipt): Message => ({ id: `queued:${receipt.requestId}`, runId: `queued:${receipt.requestId}`,
     role: "user", parts: [{ type: "text", text: receipt.prompt }], time: receipt.time, status: "completed", queuedFollowup: receipt,
     version: `${receipt.requestId}:${receipt.state}:${receipt.runId ?? ""}` }));
   return queued.length ? [...messages, ...queued] : messages;
