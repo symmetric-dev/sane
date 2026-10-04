@@ -1,7 +1,7 @@
 .document-review-composer {
   display: flex;
   flex-direction: column;
-  min-height: min(32.5dvh, 364px);
+  min-height: 0;
   max-height: min(50dvh, 560px);
   border: 1px solid transparent;
   border-radius: 22px;

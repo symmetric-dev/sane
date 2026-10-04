@@ -1,4 +1,4 @@
-.workstream-status-composer { display:flex; flex-direction:column; min-height:min(32.5dvh,364px); max-height:min(50dvh,560px); border:1px solid var(--border); border-radius:22px; background:var(--card); overflow:hidden; }
+.workstream-status-composer { display:flex; flex-direction:column; min-height:0; max-height:min(50dvh,560px); border:1px solid var(--border); border-radius:22px; background:var(--card); overflow:hidden; }
 .workstream-status-heading { display:flex; flex-shrink:0; align-items:center; justify-content:space-between; gap:12px; padding:14px 18px 10px; }
 .workstream-status-heading>div { display:flex; align-items:center; flex-wrap:wrap; gap:8px; min-width:0; font-size:12px; }
 .workstream-status-heading strong { letter-spacing:.02em; }
