@@ -2,8 +2,34 @@
 .topbar .context-usage { max-width: 220px; overflow: hidden; text-overflow: ellipsis; }
 .compaction-marker { margin: 12px 0; padding: 8px 12px; border-left: 2px solid var(--border); color: var(--muted-foreground); font-size: 12px; }
 .compaction-marker details { margin-top: 4px; }
-.compaction-marker details span { display: block; }
 .compaction-marker pre { white-space: pre-wrap; overflow-wrap: anywhere; }
+.compaction-card { min-width: 0; padding: 0; border: 1px solid var(--border); border-radius: 6px; background: transparent; }
+.compaction-card > header { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; padding: 10px 12px; }
+.compaction-heading { flex: 1; font-size: 10px; font-weight: 600; letter-spacing: .08em; text-transform: uppercase; }
+.compaction-status { font-size: 11px; overflow-wrap: anywhere; }
+.compaction-card.running .compaction-status { color: var(--primary); }
+.compaction-card.failed .compaction-status,.compaction-warning { color: var(--error); }
+.compaction-metrics { display: flex; flex-wrap: wrap; gap: 8px 24px; margin: 0; padding: 0 12px 10px; font-size: 11px; }
+.compaction-metrics > div { display: flex; flex-wrap: wrap; gap: 6px; }
+.compaction-metrics dt { color: var(--muted-foreground); }
+.compaction-metrics dd { margin: 0; color: var(--foreground); font-variant-numeric: tabular-nums; }
+.compaction-card .compaction-summary { margin: 0; border-top: 1px solid var(--border); }
+.compaction-summary > summary { display: flex; align-items: center; gap: 6px; padding: 10px 12px; list-style: none; cursor: pointer; }
+.compaction-summary > summary::-webkit-details-marker { display: none; }
+.compaction-summary > summary:hover { color: var(--foreground); background: var(--muted); }
+.compaction-summary[open] > summary > svg { transform: rotate(90deg); }
+.compaction-summary-body { min-width: 0; padding: 4px 12px 12px; color: var(--foreground); overflow-wrap: anywhere; }
+.compaction-summary-body .prose > :first-child { margin-top: 0; }
+.compaction-summary-body .prose > :last-child { margin-bottom: 0; }
+.compaction-summary-body pre { max-width: 100%; overflow-x: auto; }
+.compaction-warning { padding: 0 12px; }
+.compaction-details-dialog { width: min(700px, calc(100vw - 32px)); }
+.compaction-details-dialog pre { white-space: pre-wrap; overflow-wrap: anywhere; font-size: 12px; }
+.compaction-details-dialog .facts dd { white-space: pre-wrap; overflow-wrap: anywhere; }
+.compaction-details-dialog .muted { font-size: 12px; }
+.compaction-details-dialog details > summary { padding: 10px 0; cursor: pointer; font-size: 12px; }
+.compaction-card button:focus-visible,.compaction-card summary:focus-visible { outline: 2px solid var(--focus-ring); outline-offset: 3px; }
+@media (max-width: 768px) { .compaction-card button,.compaction-card summary { min-height: 36px; } }
 .compact-form { display: grid; gap: 12px; }
 .compact-form p { margin: 0; }
 .compact-form textarea { display: block; width: 100%; margin-top: 6px; padding: 8px 10px; border: 1px solid var(--border); border-radius: 6px; color: inherit; background: var(--card); resize: vertical; }

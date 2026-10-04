@@ -24,6 +24,8 @@ import { WorkspaceQuickOpenFeature } from "./workspace-quick-open";
 import { WorkspaceFileShortcuts } from "./workspace-file-shortcuts";
 import type { DocumentReviewLaunch, DocumentReviewRequest } from "./document-review-launch";
 import { CompactControl, CompactDialog } from "./compaction-ui";
+import { NativeSubagentContext, nativeSubagentVirtualKey, useNativeSubagentFeature, useNativeSubagents } from "./native-subagent-feature";
+import { NativeSubagentView } from "./native-subagent-view";
 
 // Restore selection without replacing the independently bookmarked browsing pair.
 const hydrateCatalog = () => void catalog.hydrate(bookmark => store.choose(bookmark.conversationId ?? ""));
@@ -71,6 +73,9 @@ function AuthScreen({ state }: { state: State }) {
 function ReadyWorkspace({ state, signOut }: { state: State; signOut: () => void }) {
   const repository = useSyncExternalStore(catalog.subscribe, catalog.snapshot);
   const { view, workspaceId, worktreeId } = repository.navigation;
+  const nativeParent = state.conversations.find(conversation => conversation.id === state.selected);
+  const nativeParentSessionId = nativeParent?.id ?? "";
+  const nativeSubagents = useNativeSubagentFeature(nativeParentSessionId, !!nativeParentSessionId && nativeParent?.harness === "claude-code", view === "chat", JSON.stringify([nativeParentSessionId, nativeParent?.nativeSessionId, nativeParent?.harness]));
   const [drawer, setDrawer] = useState<"sidebar" | "details" | "application" | null>(null);
   const [artifact, setArtifact] = useState<ArtifactSelection | null>(null);
   const [historyPreview, setHistoryPreview] = useState<string | null>(null);
@@ -119,7 +124,7 @@ function ReadyWorkspace({ state, signOut }: { state: State; signOut: () => void 
     onHistory={() => navigate(view === "history" ? "chat" : "history")}
   /> : group === "files" ? <><FilesModeControl activeView={view} onNavigate={navigate} /><WorkspaceSidebar /></>
     : <ConfigMenu onSelect={() => { setArtifact(null); setDrawer(null); }} />;
-  return <ApplicationCommandProvider><WorkspaceProvider view={view} navigate={navigate}><WorkspaceQuickOpenFeature><WorkspaceSearchFeature><WorkspaceFileShortcuts><TerminalProvider view={view}>
+  return <NativeSubagentContext.Provider value={nativeSubagents}><ApplicationCommandProvider><WorkspaceProvider view={view} navigate={navigate}><WorkspaceQuickOpenFeature><WorkspaceSearchFeature><WorkspaceFileShortcuts><TerminalProvider view={view}>
     <ViewNavigationCommands onNavigate={navigate} />
     <WorkspaceShell view={view} sidebar={sidebar}
       retryCatalog={hydrateCatalog} sidebarOpen={drawer === "sidebar"}
@@ -131,9 +136,9 @@ function ReadyWorkspace({ state, signOut }: { state: State; signOut: () => void 
         historyPreview={historyPreview} choose={choose} signOut={signOut} navigation={navigation} startDocumentReview={startDocumentReview} reviewRequest={reviewRequest} reviewRequestHandled={reviewRequestHandled} />
     </WorkspaceShell>
     {drawer === "application" && <ApplicationDialog state={state} signOut={signOut} close={() => setDrawer(null)} />}
-    {drawer === "details" && <ConversationDetails state={state} close={() => setDrawer(null)} />}
-    {view === "chat" && <CompactDialog state={state} />}
-  </TerminalProvider></WorkspaceFileShortcuts></WorkspaceSearchFeature></WorkspaceQuickOpenFeature></WorkspaceProvider></ApplicationCommandProvider>;
+    {drawer === "details" && !nativeSubagents.active && <ConversationDetails state={state} close={() => setDrawer(null)} />}
+    {view === "chat" && !nativeSubagents.active && <CompactDialog state={state} />}
+  </TerminalProvider></WorkspaceFileShortcuts></WorkspaceSearchFeature></WorkspaceQuickOpenFeature></WorkspaceProvider></ApplicationCommandProvider></NativeSubagentContext.Provider>;
 }
 
 function ShellHeader({ state, view, artifact, overview, overviewWorkspaceId, openDetails, openApplication }: {
@@ -141,12 +146,14 @@ function ShellHeader({ state, view, artifact, overview, overviewWorkspaceId, ope
   overview: WorkstreamOverview | null; overviewWorkspaceId: string | null;
 }) {
   const conversation = state.conversations.find(item => item.id === state.selected);
+  const nativeSubagents = useNativeSubagents();
   let heading: ReactNode;
   const usage = state.contextUsage;
   const awaitingUsage = !usage && state.compactions?.some(record => record.contextReset);
   const contextLabel = usage ? `${Math.round(usage.percentage)}% context${usage.stale ? " (stale)" : ""}` : awaitingUsage ? "Awaiting updated context usage" : "— context";
   const contextHint = usage ? `${usage.stale ? "Compaction is running; this reading is stale. " : ""}Last reported input context: ${usage.tokens.toLocaleString()} / ${usage.capacity.toLocaleString()} tokens · ${usage.model} · Received ${new Date(usage.time).toLocaleString()}. Excludes output tokens; pending input and tool results may not be included. This is the model window, not the auto-compaction threshold.` : awaitingUsage ? "Awaiting updated context usage from a genuine later assistant response. Compaction does not imply zero context usage." : "Context usage unavailable. Waiting for reported input tokens and a matching model-window capacity.";
-  if (view === "chat") heading = <>
+   if (view === "chat" && nativeSubagents?.active) heading = <><div className="conversation-heading">Native subagent · {nativeSubagents.summary?.name ?? nativeSubagents.summary?.toolName}</div><span className="harness-badge">Read-only activity</span></>;
+   else if (view === "chat") heading = <>
     <ConversationHeading conversation={conversation} selectedId={state.selected} overview={overview} overviewWorkspaceId={overviewWorkspaceId} />
     <span className="harness-badge">{harnessName(store.harness())}</span>
     <span className="context-usage" title={contextHint} aria-label={`${contextLabel}. ${contextHint}`} tabIndex={0}>{contextLabel}</span>
@@ -163,13 +170,14 @@ function ShellHeader({ state, view, artifact, overview, overviewWorkspaceId, ope
 
 function ShellNotices({ state, view, openDetails }: { state: State; view: ActiveView; openDetails: () => void }) {
   const repository = useSyncExternalStore(catalog.subscribe, catalog.snapshot);
+  const nativeSubagents = useNativeSubagents();
   const conversation = state.conversations.find(item => item.id === state.selected);
   const workspace = repository.workspaces.find(item => item.workspaceId === conversation?.workspaceId);
   const worktree = workspace?.worktrees.find(item => item.worktreeId === conversation?.worktreeId);
   const mismatch = conversation && (conversation.workspaceId !== repository.navigation.workspaceId || conversation.worktreeId !== repository.navigation.worktreeId);
   return <>
     {state.connectionError && <div className="connection-notice" role="status">{state.connectionError}<button type="button" onClick={store.reconnect}>Reconnect</button></div>}
-    {mismatch && view !== "terminal" && <div className="execution-context" role="status">
+    {mismatch && view !== "terminal" && !(view === "chat" && nativeSubagents?.active) && <div className="execution-context" role="status">
       <span title={worktree ? `${worktreeLabel(worktree)} · ${worktree.root}` : conversation.cwd}>Runs in: {worktree ? worktreeDisplay(worktree) : conversation.cwd || "Unavailable worktree"}</span>
       {conversation.workspaceId && conversation.worktreeId ? <button type="button" disabled={state.sending} onClick={() => catalog.navigate({ workspaceId: conversation.workspaceId, worktreeId: conversation.worktreeId, filePath: null, comparison: null })}>Browse execution worktree</button> : <button type="button" onClick={openDetails}>Execution details</button>}
     </div>}
@@ -183,8 +191,11 @@ function ShellContent({ state, view, workspaceId, artifact, closeArtifact, openA
   historyPreview: string | null; choose: (id: string) => void; signOut: () => void; navigation: ReactNode;
   startDocumentReview: (launch: DocumentReviewLaunch) => void; reviewRequest: DocumentReviewRequest | null; reviewRequestHandled: (requestId: number) => void;
 }) {
+  const nativeSubagents = useNativeSubagents();
+  const child = nativeSubagents?.active;
   return <>
-    <div className="chat-surface" hidden={view !== "chat"} inert={view !== "chat"}><Thread state={state} active={view === "chat"} navigation={navigation} reviewRequest={reviewRequest} reviewRequestHandled={reviewRequestHandled} /></div>
+    <div className="chat-surface" hidden={view !== "chat" || !!child} inert={view !== "chat" || !!child}><Thread state={state} active={view === "chat" && !child} navigation={navigation} reviewRequest={reviewRequest} reviewRequestHandled={reviewRequestHandled} /></div>
+    {view === "chat" && child && <div className="chat-surface"><NativeSubagentView key={nativeSubagentVirtualKey(child.summary)} /></div>}
     {view !== "chat" && view !== "terminal" && <div className="shell-content">
       {view === "history" && <HistoryDetail state={state} previewId={historyPreview} onOpen={choose} />}
       {viewGroup(view) === "settings" && <ConfigView state={state} signOut={signOut} workspaceId={workspaceId} openArtifact={openArtifact} openConversation={choose} startDocumentReview={startDocumentReview} />}

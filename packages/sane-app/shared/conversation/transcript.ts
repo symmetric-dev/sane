@@ -1,10 +1,12 @@
 import type { ReconciledHistory } from "./native-history-contract";
 import { messagesForRun } from "./cc-reducer";
 import type { Message, Run } from "./types";
+import { claudeCompactionHistory } from "./claude-compaction-history";
 
 /** Keep native order and identity. Text alone never establishes run ownership. */
 export function transcriptMessages(history: ReconciledHistory | null | undefined, runs: Run[]): Message[] {
-  const native: Message[] = (history?.messages ?? []).filter(m => !m.compaction && (m.role !== "system" || m.parts.length)).map(m => ({
+  const imported = claudeCompactionHistory(history?.messages ?? []);
+  const native: Message[] = imported.filter(m => !m.compaction && (m.role !== "system" || m.parts.length)).map(m => ({
     id: m.messageId, runId: "native-import", role: m.role, time: m.createdAt,
     status: m.status, normalized: true, error: m.error,
     parts: m.parts.map(p => p.type === "tool" ? { type: "tool", id: p.id, toolCallId: p.id, name: p.name, input: p.input, toolStatus: p.status, output: p.output ?? p.error, error: p.error !== undefined } : { type: p.type, text: p.text, ...(p.type === "reasoning" ? { id: p.id } : {}) }),

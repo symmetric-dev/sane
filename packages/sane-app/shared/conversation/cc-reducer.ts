@@ -1,5 +1,6 @@
 import { active, type DiagnosticEvent, type Message, type Run, type RunMetadata, type ToolPart } from "./types";
 import type { MessageSnapshot } from "./native-contract";
+import { isClaudeRootRecord } from "./cc-scope";
 
 export function createRun(meta: RunMetadata): Run {
   return { ...meta, messages: [], events: [], seen: new Set(), cursor: 0, buffer: "", observedEfforts: [], resultCount: 0, resultKeys: new Set(), toolResults: new Map() };
@@ -14,7 +15,7 @@ function tool(run: Run, id: string): ToolPart | undefined {
   return run.messages.flatMap(m => m.parts).find((p): p is ToolPart => p.type === "tool" && p.id === `${run.id}:${id}`);
 }
 function record(run: Run, value: unknown, event: DiagnosticEvent) {
-  if (!object(value)) return;
+  if (!object(value) || !isClaudeRootRecord(value)) return;
   if (run.operation === "compact") return;
   const r = value;
   if (r.session_id && r.session_id !== (run.nativeSessionId ?? run.conversationId)) return;
@@ -69,6 +70,7 @@ export function consume(run: Run, events: DiagnosticEvent[]) {
     run.seen.add(event.seq); run.events.push(event);
     if (run.operation !== "compact" && event.kind === "submission" && object(event.data) && typeof event.data.text === "string") user(run, event.data.text, event.time, event.data.messageId);
     if (event.kind === "message" && object(event.data)) {
+      if (run.harness !== "opencode" && !isClaudeRootRecord(event.data)) continue;
       const snapshot = event.data as MessageSnapshot;
       if (snapshot.compaction || run.operation === "compact") continue;
       if (snapshot.role === "system" && !snapshot.parts.length) continue;
@@ -87,7 +89,7 @@ export function consume(run: Run, events: DiagnosticEvent[]) {
       let data = event.data;
       if (typeof data === "string") { try { data = JSON.parse(data); } catch { continue; } }
       const p = object(data) ? data.payload ?? data : undefined;
-      if (!object(p) || p.session_id !== (run.nativeSessionId ?? run.conversationId) || p.agent_id) continue;
+      if (!object(p) || !isClaudeRootRecord(p) || p.session_id !== (run.nativeSessionId ?? run.conversationId)) continue;
       if (run.operation !== "compact" && p.hook_event_name === "UserPromptSubmit" && typeof p.prompt === "string" && !run.messages.some(m => m.role === "user")) user(run, p.prompt, event.time);
       if (typeof p.effort?.level === "string" && !run.observedEfforts.includes(p.effort.level)) run.observedEfforts.push(p.effort.level);
       if (typeof p.tool_use_id === "string") {

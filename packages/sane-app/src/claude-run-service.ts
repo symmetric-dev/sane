@@ -5,6 +5,7 @@ import { AgentLaunchConfigurationError, claudeAgentSettings, saneContextText, sn
 import { projectCompactions } from "./compaction";
 import type { Event, Run, Session } from "./history";
 import type { RunOwner } from "./run-owner";
+import { isClaudeRootRecord } from "../shared/conversation/cc-scope";
 
 export const hookEvents = ["SessionStart", "SessionEnd", "UserPromptSubmit", "Stop", "PreToolUse", "PostToolUse", "PermissionRequest", "Notification", "SubagentStart", "SubagentStop", "PreCompact", "PostCompact", "CwdChanged"] as const;
 
@@ -140,10 +141,10 @@ export class ClaudeRunService {
       let data: any = text;
       if (kind === "stdout") {
         try { data = JSON.parse(text); } catch {}
-        if ((data?.type === "system" && data.subtype === "init") || data?.type === "result") {
+        if (isClaudeRootRecord(data) && ((data?.type === "system" && data.subtype === "init") || data?.type === "result")) {
           if (data.session_id !== nativeSessionId) { result.error = true; result.diagnostic = "CLI session identity mismatch or missing session_id"; }
         }
-        if (data?.type === "result") {
+        if (isClaudeRootRecord(data) && data?.type === "result") {
           // Background task notifications can finish additional turns in the
           // same process. Claude distinguishes their results with result_index.
           const indexed = Number.isSafeInteger(data.result_index) && data.result_index >= 0;

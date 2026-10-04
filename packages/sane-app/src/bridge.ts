@@ -39,7 +39,9 @@ import { agentLaunchSnapshot, claudeAgentSettings, saneContextSnapshot, saneCont
 import { readClaudeHistory, forkClaudeHistory, verifyClaudeFork, coveredNativeRuns, type ReconciledHistory } from "./reconcile";
 import { BranchStore, type BranchOperation } from "./branches";
 import { NativeHistoryCache, TranscriptError, TranscriptService } from "./transcript-service";
+import { NativeSubagentError, NativeSubagentService } from "./native-subagent-service";
 import { capabilitiesFor, getHarnessDescriptor, isHarness } from "../shared/conversation/harness-capabilities";
+import { isClaudeRootRecord } from "../shared/conversation/cc-scope";
 import { HarnessOperationError, dispatchHarness, dispatchOwnedOperation, requireOperation, requireOwnedOperation, validateHarness } from "./harness-operations";
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
@@ -215,6 +217,7 @@ async function startOwned(options: Options, assetsDir: string, packageDir: strin
     return { binding, validate, dispose: lease.dispose };
   });
   const events = new Map<string, Event[]>();
+  const nativeSubagents = new NativeSubagentService(() => meta.sessions, () => meta.runs, id => events.get(id) ?? []);
   const nativeHistories = new NativeHistoryCache(options.dataDir);
   const transcripts = new TranscriptService(() => meta.sessions, () => meta.runs, nativeHistories, async (session, kind, id) => {
     if (kind === "worker") {
@@ -553,7 +556,7 @@ async function startOwned(options: Options, assetsDir: string, packageDir: strin
       },
       "claude-code": async () => {
         if (!run) throw new Error("Branching on this harness requires a SANE-recorded completed run");
-        const assistant = (id: string) => (events.get(id) ?? []).filter(e => e.kind === "stdout" && (e.data as any)?.type === "assistant" && !(e.data as any)?.parent_tool_use_id).at(-1)?.data as any;
+        const assistant = (id: string) => (events.get(id) ?? []).filter(e => e.kind === "stdout" && isClaudeRootRecord(e.data) && (e.data as any)?.session_id === source.nativeSessionId && (e.data as any)?.type === "assistant").at(-1)?.data as any;
         const selected = assistant(run.runId), latest = source.lastRunId && assistant(source.lastRunId);
         if (source.lastStatus !== "completed" || !uuid(selected?.uuid) || !uuid(latest?.uuid) || selected.message?.content?.some((p: any) => p.type === "tool_use")) throw new Error("Complete-turn/idle evidence is unavailable for this harness");
         const native = await readClaudeHistory(source.nativeSessionId!, source.cwd, claudeRoot);
@@ -691,7 +694,9 @@ async function startOwned(options: Options, assetsDir: string, packageDir: strin
       if (!observedAt.has(id) || event.time > observedAt.get(id)!) observedAt.set(id, event.time);
     }
     const importedAt = history?.importedAt ?? "";
-    const messages = history?.messages.filter(message => !message.compaction || !observedAt.has(message.messageId) || importedAt > observedAt.get(message.messageId)!);
+    // Completed CC boundaries are immutable; retain them for grouping their
+    // continuation summary/command envelopes, including live/import overlaps.
+    const messages = history?.messages.filter(message => session.harness === "claude-code" && message.compaction?.lifecycle === "completed" && message.contextReset || !message.compaction || !observedAt.has(message.messageId) || importedAt > observedAt.get(message.messageId)!);
     return { operations: projectCompactions(session, meta.runs, logs, messages), ...(history ? { nativeHistoryImportedAt: history.importedAt } : {}) };
   }
   async function refreshCompactHistory(owner: Owner) {
@@ -810,8 +815,8 @@ async function startOwned(options: Options, assetsDir: string, packageDir: strin
       if (e.source.harness === "cc") {
         evidenced = (events.get(run.runId) ?? []).some(event => {
           const data = event.data as any;
-          if (event.kind === "hook") return data?.event === "PreToolUse" && data.payload?.session_id === e.nativeId && data.payload?.tool_use_id === request.invocation.toolCallId && matchesName(data.payload?.tool_name);
-          return event.kind === "stdout" && data?.type === "assistant" && !data.parent_tool_use_id && data.session_id === e.nativeId && Array.isArray(data.message?.content) && data.message.content.some((part: any) => part.type === "tool_use" && part.id === request.invocation.toolCallId && matchesName(part.name));
+          if (event.kind === "hook") return data?.event === "PreToolUse" && isClaudeRootRecord(data.payload) && data.payload?.session_id === e.nativeId && data.payload?.tool_use_id === request.invocation.toolCallId && matchesName(data.payload?.tool_name);
+          return event.kind === "stdout" && isClaudeRootRecord(data) && data?.type === "assistant" && data.session_id === e.nativeId && Array.isArray(data.message?.content) && data.message.content.some((part: any) => part.type === "tool_use" && part.id === request.invocation.toolCallId && matchesName(part.name));
         });
       } else {
         if (!run.nativeCommandId) return reject();
@@ -978,7 +983,7 @@ async function startOwned(options: Options, assetsDir: string, packageDir: strin
       if (w.cancelRequestedAt) return { state: "cancelling" };
       const observed = records.filter(e => e.kind === "status" && typeof (e.data as any)?.workerWaiting === "boolean").at(-1);
       if (observed) return { state: (observed.data as any).workerWaiting ? "waiting" : "running" };
-      const hook = records.filter(e => e.kind === "hook" && ["PermissionRequest", "PostToolUse"].includes((e.data as any)?.event)).at(-1);
+      const hook = records.filter(e => e.kind === "hook" && isClaudeRootRecord((e.data as any)?.payload) && ["PermissionRequest", "PostToolUse"].includes((e.data as any)?.event)).at(-1);
       if (hook) return { state: (hook.data as any).event === "PermissionRequest" ? "waiting" : "running" };
       return {};
     },
@@ -1090,7 +1095,7 @@ async function startOwned(options: Options, assetsDir: string, packageDir: strin
     const run = meta.runs.find(r => r.runId === h.runId && r.sessionId === h.recipient.sessionId);
     if (!run || run.operation === "compact") return h;
     const records = events.get(run.runId) ?? [];
-    const accepted = h.recipient.harness === "oc" ? run.nativeCommandId === h.nativeCommandId && run.nativePhase === "accepted" : records.some(e => e.kind === "stdout" && (e.data as any)?.session_id === h.recipient.ref?.nativeId && ((e.data as any)?.type === "result" || (e.data as any)?.type === "system" && (e.data as any)?.subtype === "init"));
+    const accepted = h.recipient.harness === "oc" ? run.nativeCommandId === h.nativeCommandId && run.nativePhase === "accepted" : records.some(e => e.kind === "stdout" && isClaudeRootRecord(e.data) && (e.data as any)?.session_id === h.recipient.ref?.nativeId && ((e.data as any)?.type === "result" || (e.data as any)?.type === "system" && (e.data as any)?.subtype === "init"));
     const advance = (status: typeof h.status, evidence: string) => { h = domain.advanceHandoff(h.id, h.revision, { status, evidence }, { actor: { kind: "system" }, correlationId: h.id }); };
     if (h.status === "acceptance_unknown" && accepted) advance("accepted", `Native acceptance recorded in App run ${run.runId}`);
     const executing = h.recipient.harness === "cc" ? accepted : records.some(e => e.kind === "message" && (e.data as any)?.role === "assistant");
@@ -1830,6 +1835,19 @@ async function startOwned(options: Options, assetsDir: string, packageDir: strin
         if (!(await accepted.promise)) return json({ error: owner.launchError ?? "Run could not start; operator reconciliation may be required" }, 503);
         return json({ sessionId: run.sessionId, runId: run.runId, harness, nativeSessionId: session.nativeSessionId, ...association }, 202);
         } finally { admitting.delete(conversationId); }
+      }
+      const nativeSubagent = /^\/api\/sessions\/([^/]+)\/native-subagents(?:\/([^/]+)\/([^/]+))?$/.exec(path);
+      if (nativeSubagent) {
+        if (req.method !== "GET") return json({ error: "Method not allowed" }, 405);
+        try {
+          const selectors = nativeSubagent.slice(1).map(value => value === undefined ? undefined : decodeURIComponent(value));
+          return json(selectors[1] === undefined ? nativeSubagents.list(selectors[0]!, url.searchParams)
+            : nativeSubagents.page(selectors[0]!, selectors[1], selectors[2]!, url.searchParams));
+        } catch (error) {
+          if (error instanceof URIError) return json({ error: "Invalid native subagent selector", code: "native-subagent-input" }, 400);
+          if (error instanceof NativeSubagentError) return json({ error: error.message, code: error.code }, error.status);
+          throw error;
+        }
       }
       const transcript = /^\/api\/sessions\/([^/]+)\/transcript(?:\/(meta|refresh))?$/.exec(path);
       if (transcript) {

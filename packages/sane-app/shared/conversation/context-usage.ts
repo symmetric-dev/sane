@@ -1,6 +1,7 @@
 import type { CompactionRecord, MessageSnapshot } from "./native-contract";
 import type { ReconciledHistory } from "./native-history-contract";
 import type { Harness, ModelChoice, Run } from "./types";
+import { isClaudeRootRecord } from "./cc-scope";
 
 export type ContextUsageSnapshot = { tokens: number; capacity: number; percentage: number; model: string; time: string; stale?: boolean };
 type InputUsage = { tokens: number; model: string; time: string };
@@ -47,7 +48,7 @@ function claudeUsage(runs: Run[], history?: ReconciledHistory | null): ContextUs
   const boundaries = new Set<string>();
   let input: InputUsage | undefined, model: string | undefined, inputId: string | undefined;
   for (const run of runs) for (const { record: r, time } of claudeRecords(run)) {
-    if (r.session_id !== (run.nativeSessionId ?? run.conversationId) || r.parent_tool_use_id || r.parent_agent_id || r.subagent_type || r.agent_id || r.isSidechain) continue;
+    if (!isClaudeRootRecord(r) || r.session_id !== (run.nativeSessionId ?? run.conversationId)) continue;
     const boundary = r.type === "system" && (r.subtype === "compact_boundary" || r.subtype === "status" && r.compact_result === "success" && r.compact_error === undefined);
     if (boundary && (typeof r.uuid !== "string" || !boundaries.has(r.uuid))) { input = undefined; if (typeof r.uuid === "string") boundaries.add(r.uuid); }
     if (run.operation === "compact") continue;
@@ -122,7 +123,7 @@ export function contextUsageFor(harness: Harness, runs: Run[], models: ModelChoi
   // observation (including a repeated import/UPSERT) is not a new reset clock.
   const snapshotIds = new Set([...(history?.messages ?? []), ...runs.flatMap(run => run.events.filter(event => event.kind === "message" && object(event.data)).map(event => event.data as MessageSnapshot))].filter(message => message.compaction).map(message => message.compaction?.nativeId ?? message.messageId));
   if (harness === "claude-code") for (const run of runs) for (const { record } of claudeRecords(run)) {
-    if (record.type === "system" && record.subtype === "compact_boundary" && typeof record.uuid === "string") snapshotIds.add(record.uuid);
+    if (isClaudeRootRecord(record) && record.session_id === (run.nativeSessionId ?? run.conversationId) && record.type === "system" && record.subtype === "compact_boundary" && typeof record.uuid === "string") snapshotIds.add(record.uuid);
   }
   if (usage && compactions.some(record => record.contextReset && (!record.nativeId || !snapshotIds.has(record.nativeId)) && (record.endedAt ?? record.observedAt ?? "") > usage!.time)) usage = null;
   return usage && compactions.some(record => record.lifecycle === "running") ? { ...usage, stale: true } : usage;

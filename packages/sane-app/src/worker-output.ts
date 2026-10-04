@@ -1,5 +1,6 @@
 import type { Event } from "./history";
 import type { WorkerRecord } from "./worker-contract";
+import { isClaudeRootRecord } from "../shared/conversation/cc-scope";
 
 /** Final response, not the run's reasoning, tools, or intermediate commentary.
  * OC events are replaceable message snapshots; CC results already contain the
@@ -17,13 +18,13 @@ export function workerOutput(events: Event[]): string | undefined {
       buffer += data;
       try { data = JSON.parse(buffer); buffer = ""; } catch { continue; }
     } else if (event.kind === "stdout") buffer = "";
-    if (event.kind === "stdout" && data?.type === "result" && typeof data.result === "string") result = data.result;
-    if (event.kind === "message" && data?.role === "assistant") {
+    if (event.kind === "stdout" && isClaudeRootRecord(data) && data?.type === "result" && typeof data.result === "string") result = data.result;
+    if (event.kind === "message" && isClaudeRootRecord(data) && data?.role === "assistant") {
       messages.set(data.messageId ?? String(event.seq), (data.parts ?? []).filter((p: any) => p.type === "text" && typeof p.text === "string").map((p: any) => p.text));
     }
     // Preserve a failed/interrupted CC run's final assistant response even when
     // it did not emit a terminal result. CLI blocks may share a message ID.
-    if (event.kind === "stdout" && data?.type === "assistant" && !data.parent_tool_use_id) {
+    if (event.kind === "stdout" && isClaudeRootRecord(data) && data?.type === "assistant") {
       const key = data.message?.id ?? data.uuid ?? String(event.seq);
       const content = data.message?.content ?? data.content;
       const parts: string[] = typeof content === "string" ? [content] : Array.isArray(content) ? content.filter((p: any) => p.type === "text" && typeof p.text === "string").map((p: any) => p.text) : [];

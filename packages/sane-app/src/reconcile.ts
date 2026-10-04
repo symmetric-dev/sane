@@ -9,6 +9,7 @@ import { constants } from "node:fs";
 import { isAbsolute, join, relative, sep } from "node:path";
 import { assertClaudeSource, claudeSourceRoot } from "./claude-source";
 import { normalizeClaudeCompactionBoundary } from "./compaction";
+import { isClaudeRootRecord } from "../shared/conversation/cc-scope";
 
 export function coveredNativeRuns(session: Session, runs: Run[], messages: MessageSnapshot[]) {
   if (session.harness !== "opencode") return [];
@@ -40,11 +41,12 @@ async function claudeCwdEvidence(id: string, cwd: string, root: string, fork?: {
     let found = false, forkFound = false;
     const directories = new Set<string>(), order: string[] = [];
     const boundaries = new Map<string, MessageSnapshot>();
+    const summaries = new Map<string, MessageSnapshot>();
     for (const line of bytes.subarray(0, length).toString("utf8").split("\n")) {
       if (!line.trim()) continue;
       const row = JSON.parse(line);
       if (row.type === "relocated") throw new Error("Relocated native transcript requires unsupported locator verification; no cwd inferred");
-      if (row.isSidechain || row.parent_tool_use_id || row.parent_agent_id || row.subagent_type || row.agent_id) continue;
+      if (!isClaudeRootRecord(row)) continue;
       if (row.type === "system" && row.subtype === "compact_boundary") {
         // SDK getSessionMessages omits these records and their metadata. Retain
         // only actual main-session system boundaries from the bounded raw read.
@@ -60,6 +62,13 @@ async function claudeCwdEvidence(id: string, cwd: string, root: string, fork?: {
       if (row.type !== "user" && row.type !== "assistant") continue;
       if (row.sessionId !== id) throw new Error("Native raw transcript session identity mismatch");
       if (typeof row.uuid === "string") order.push(row.uuid);
+      if (row.type === "user" && row.isCompactSummary === true && uuid(row.uuid)) {
+        // This native flag and sometimes the summary itself are omitted by SDK
+        // history reads. Retain the original text, not a guessed user turn.
+        const summary = normalizeClaudeHistory(id, [{ type: "user", uuid: row.uuid, session_id: id, message: row.message, parent_tool_use_id: null, parent_agent_id: null }])[0];
+        if (summary) summaries.set(row.uuid, { ...summary, compactionSummary: true });
+        if (summaries.size > 10000) throw new Error("Native transcript exceeds 10,000-summary import budget");
+      }
       if (row.cwd !== undefined && !directories.has(row.cwd)) {
         if (typeof row.cwd !== "string" || !isAbsolute(row.cwd)) throw new Error("Native raw transcript execution directory is not an absolute path");
         const child = relative(cwd, row.cwd);
@@ -73,7 +82,7 @@ async function claudeCwdEvidence(id: string, cwd: string, root: string, fork?: {
     }
     if (!found) throw new Error("Native transcript has no genuine native cwd evidence; SDK project-path fallback is insufficient");
     if (fork && !forkFound) throw new Error("Native fork provenance does not contain the selected source boundary");
-    return { size: before.size, mtime: before.mtimeMs, ctime: before.ctimeMs, ino: before.ino, dev: before.dev, directories: [...directories], boundaries: [...boundaries.values()], order };
+    return { size: before.size, mtime: before.mtimeMs, ctime: before.ctimeMs, ino: before.ino, dev: before.dev, directories: [...directories], boundaries: [...boundaries.values()], summaries: [...summaries.values()], order };
   } finally { await file.close(); }
 }
 
@@ -106,7 +115,7 @@ export async function readClaudeHistory(id: string, cwd: string, sourceRoot = cl
   if (JSON.stringify(evidence) !== JSON.stringify(finalEvidence)) throw new Error("Native transcript changed during reconciliation; previous history preserved");
   assertClaudeSource(sourceRoot);
   const messages = normalizeClaudeHistory(id, records);
-  const byId = new Map([...messages, ...evidence.boundaries].map(m => [m.messageId, m]));
+  const byId = new Map([...messages, ...evidence.boundaries, ...evidence.summaries].map(m => [m.messageId, m]));
   const ordered: MessageSnapshot[] = [];
   for (const messageId of evidence.order) {
     const message = byId.get(messageId);
@@ -124,7 +133,7 @@ export function normalizeClaudeHistory(id: string, records: SessionMessage[]): M
   const tools = new Map<string, Extract<MessagePart, { type: "tool" }>>();
   for (const record of records) {
     if (record.session_id !== id) throw new Error("Native transcript session identity mismatch");
-    if (record.parent_tool_use_id || record.parent_agent_id) continue;
+    if (!isClaudeRootRecord(record)) continue;
     const raw = record.message as { content?: unknown };
     const content = raw?.content;
     const parts: MessagePart[] = [];

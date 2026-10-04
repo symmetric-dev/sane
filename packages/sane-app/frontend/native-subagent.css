@@ -1,0 +1,40 @@
+.native-subagent-card { border: 1px solid var(--border); border-radius: 8px; padding: 10px 12px; margin: 10px 0; background: transparent; min-width: 0; }
+.native-subagent-card-heading { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+.native-subagent-card > header { display: flex; align-items: center; gap: 8px; }
+.native-subagent-card .native-subagent-card-heading { flex: 1; min-width: 0; justify-content: flex-start; flex-wrap: wrap; gap: 4px 8px; }
+.native-subagent-card h3 { margin: 0; font-size: 13px; font-weight: 550; overflow-wrap: anywhere; }
+.native-subagent-glyph { flex-shrink: 0; color: var(--muted-foreground); }
+.native-subagent-badge { padding: 1px 5px; border: 1px solid var(--border); border-radius: 5px; color: var(--muted-foreground); font-size: 10px; }
+.native-subagent-card-actions { display: flex; align-items: center; flex-wrap: wrap; gap: 4px 12px; margin-top: 8px; }
+.native-subagent-card-actions > .worker-actions { min-width: 0; max-width: 100%; }
+.native-subagent-count { color: var(--muted-foreground); font-size: 11px; font-variant-numeric: tabular-nums; }
+.native-subagent-attention { width: 5px; height: 5px; border-radius: 50%; background: var(--error); flex-shrink: 0; }
+.native-subagent-disclosure { margin-top: 10px; padding-top: 10px; border-top: 1px solid var(--border); font-size: 12px; overflow-wrap: anywhere; }
+.native-subagent-disclosure h4 { margin: 12px 0 6px; font-size: 12px; font-weight: 550; }
+.native-subagent-disclosure > h4:first-child { margin-top: 0; }
+.native-subagent-disclosure p { margin: 6px 0; }
+.native-subagent-card .native-subagent-disclosure pre { margin: 6px 0; font: 12px/1.8 var(--font-mono, monospace); white-space: pre-wrap; overflow-wrap: anywhere; max-height: none; overflow: visible; }
+.native-subagent-card button:focus-visible { outline: 2px solid var(--focus-ring); outline-offset: 3px; }
+.native-subagent-card .muted, .native-subagent-header .muted { font-size: 12px; }
+.native-subagent-returned-report pre { white-space: pre-wrap; overflow-wrap: anywhere; max-height: 420px; overflow: auto; }
+.native-subagent-view { display: flex; flex-direction: column; min-height: 0; height: 100%; }
+.native-subagent-header { border-bottom: 1px solid var(--border); max-height: 35%; overflow: auto; flex-shrink: 0; }
+.native-subagent-nav { display: flex; align-items: center; flex-wrap: wrap; gap: 4px 12px; padding: 10px 20px; font-size: 12px; }
+.native-subagent-nav-heading { display: flex; align-items: center; flex-wrap: wrap; gap: 4px 8px; min-width: 0; max-width: 100%; }
+.native-subagent-header h2 { font-size: 12px; font-weight: 550; margin: 0; overflow-wrap: anywhere; min-width: 0; }
+.native-subagent-nav .native-subagent-badge { white-space: nowrap; }
+.native-subagent-nav-summary { display: inline-flex; align-items: center; gap: 6px; white-space: nowrap; color: var(--muted-foreground); }
+.native-subagent-nav .status, .native-subagent-nav .native-subagent-count { font-size: inherit; }
+.native-subagent-header .text-button { display: inline-flex; align-items: center; gap: 6px; font-size: inherit; white-space: nowrap; }
+.native-subagent-header > .native-subagent-disclosure { margin: 0 20px 10px; }
+.native-subagent-header button:focus-visible { outline: 2px solid var(--focus-ring); outline-offset: 3px; }
+.native-subagent-full-assignment { white-space: pre-wrap; overflow-wrap: anywhere; }
+.native-subagent-viewport { flex: 1; min-height: 0; }
+.native-subagent-footer { padding: 8px 24px; border-top: 1px solid var(--border); }
+.native-subagent-discovery { margin-bottom: 24px; }
+@media (max-width: 768px) {
+  .native-subagent-card button { min-height: 36px; }
+}
+@media (max-width: 640px) {
+  .native-subagent-card > header { flex-wrap: wrap; }
+}

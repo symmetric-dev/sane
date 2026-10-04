@@ -14,6 +14,7 @@ export type CompactionMetadata = {
   nativeId?: string; startedAt?: string; endedAt?: string;
   preTokens?: number; postTokens?: number; durationMs?: number;
   instructions?: string; summary?: string; error?: unknown;
+  command?: { name: string; args?: string; message?: string; output?: string; notice?: string };
   /** Summarizer usage is evidence, never conversational context usage. */
   summaryUsage?: { cost?: number; tokens?: unknown };
   /** Original native boundary metadata, including unmodeled native fields. */
@@ -52,6 +53,8 @@ export type MessageSnapshot = {
   model?: string; contextReset?: boolean;
   usage?: { cost?: number; tokens?: unknown }; error?: unknown;
   compaction?: CompactionMetadata;
+  /** Raw Claude transcript flag; the SDK's history helper omits it. */
+  compactionSummary?: true;
 };
 export type HarnessModel = { id: string; name: string; efforts: { id: string; name: string }[]; contextWindow?: number };
 export type FormOption = { value: string; label: string; description?: string };

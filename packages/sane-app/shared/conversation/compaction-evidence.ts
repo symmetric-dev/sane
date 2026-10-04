@@ -1,5 +1,7 @@
 import type { Event, Run, Session } from "../../src/history";
 import type { CompactionLifecycle, CompactionMetadata, CompactionRecord, CompactionTrigger, MessageSnapshot } from "./native-contract";
+import { claudeCompactionHistory } from "./claude-compaction-history";
+import { isClaudeRootRecord } from "./cc-scope";
 
 // Browser-safe: no native SDK, filesystem, clock, mutation, or submission path.
 const object = (v: unknown): v is Record<string, unknown> => !!v && typeof v === "object" && !Array.isArray(v);
@@ -8,7 +10,7 @@ const trigger = (v: unknown): CompactionTrigger => v === "auto" || v === "manual
 const time = (v: unknown): v is string => typeof v === "string" && Number.isFinite(Date.parse(v));
 const terminal = (v: CompactionLifecycle) => v === "completed" || v === "failed" || v === "skipped" || v === "unconfirmed";
 function main(row: Record<string, unknown>, nativeId: string, rawTranscript = false) {
-  return (rawTranscript ? row.sessionId : row.session_id) === nativeId && !row.parent_tool_use_id && !row.parent_agent_id && !row.subagent_type && !row.agent_id && !row.isSidechain;
+  return isClaudeRootRecord(row) && (rawTranscript ? row.sessionId : row.session_id) === nativeId;
 }
 function metrics(row: Record<string, unknown>): Pick<CompactionMetadata, "preTokens" | "postTokens" | "durationMs"> {
   const result: Pick<CompactionMetadata, "preTokens" | "postTokens" | "durationMs"> = {};
@@ -121,8 +123,8 @@ export function projectCompactions(
       // instructions, and retain the existing map entry rather than downgrading
       // terminal evidence to this registration's initial requested state.
       if (existing && existing.nativeId === exactId) {
-        const { trigger, lifecycle, nativeId, startedAt, endedAt, preTokens, postTokens, durationMs, summary, error, summaryUsage, nativeMetadata } = existing;
-        update(record, { trigger, lifecycle, nativeId, startedAt, endedAt, preTokens, postTokens, durationMs, summary, error, summaryUsage, nativeMetadata }, existing.observedAt);
+        const { trigger, lifecycle, nativeId, startedAt, endedAt, preTokens, postTokens, durationMs, summary, command, error, summaryUsage, nativeMetadata } = existing;
+        update(record, { trigger, lifecycle, nativeId, startedAt, endedAt, preTokens, postTokens, durationMs, summary, command, error, summaryUsage, nativeMetadata }, existing.observedAt);
       }
       if (exactId) native.set(exactId, existing ?? record);
       requested.set(run.runId, record);
@@ -186,6 +188,7 @@ export function projectCompactions(
         const instructions = row.custom_instructions;
         const summary = row.compact_summary ?? row.summary;
         update(record, { trigger: t === "unknown" ? record.trigger : t, lifecycle,
+          ...metrics(row),
           ...(typeof instructions === "string" && instructions.length <= 100000 && !instructions.includes("\0") ? { instructions } : {}),
           ...(typeof summary === "string" ? { summary } : {}),
           ...(row.compact_error !== undefined ? { error: row.compact_error } : {}),
@@ -195,7 +198,7 @@ export function projectCompactions(
   }
   // Reconciliation is native evidence, not a fabricated run/turn. Native UUIDs
   // join boundaries already observed in the durable live event log.
-  for (const message of messages) snapshot(message);
+  for (const message of harness === "claude-code" ? claudeCompactionHistory(messages) : messages) snapshot(message);
   // Apply definitive non-admission only after all native evidence is replayed:
   // a committed boundary wins even if its containing run was later stopped.
   // Rejection is failed; withholding is skipped unless explicit failure/status

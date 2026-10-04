@@ -31,6 +31,8 @@ import { isHandoffTool, receivedHandoff, sentHandoffs } from "./handoff-presenta
 import { HandoffCard, PendingHandoffCard } from "./handoff-ui";
 import { gapId, HistoryEdge, HistoryGap, withCoverageGaps } from "./transcript-page-ui";
 import { canonicalCount, turnBoundaryKnown } from "./transcript-pages";
+import { nativeSubagentFallback, nativeSubagentId, nativeSubagentKey } from "./native-subagent-presentation";
+import { NativeSubagentCard, NativeSubagentDiscovery, useNativeSubagents } from "./native-subagent-feature";
 
 const json = (value: unknown) => typeof value === "string" ? value : JSON.stringify(value, null, 2) ?? "Unavailable";
 const number = (value: unknown, suffix = "") => typeof value === "number" && Number.isFinite(value) && value >= 0 ? `${value.toLocaleString(undefined, { maximumFractionDigits: 6 })}${suffix}` : "Unavailable";
@@ -48,7 +50,7 @@ function Markdown({ text }: { text: string }) {
   return <div className="prose"><ReactMarkdown remarkPlugins={[remarkGfm]} skipHtml components={{ pre: CodeBlock, a: ({ children, href }) => <a href={href} target="_blank" rel="noopener noreferrer">{children}</a>, img: ({ alt }) => <span className="muted">[Image: {alt || "image omitted"}]</span> }}>{text}</ReactMarkdown></div>;
 }
 
-export type TranscriptContextValue = { sessionId: string; harness: Harness; messages: Message[]; runs: Run[]; workers: WorkerRecord[]; deliveries?: WorkerDelivery[]; handoffs?: HandoffProjection; openWorker: (worker: WorkerRecord) => void; branchEnabled?: boolean; pendingTurn?: PendingTurn | null; activities?: ActivityPresentation; compactionPositions?: Map<string, CompactionRecord[]>; pageState?: State };
+export type TranscriptContextValue = { sessionId: string; harness: Harness; messages: Message[]; runs: Run[]; workers: WorkerRecord[]; deliveries?: WorkerDelivery[]; handoffs?: HandoffProjection; openWorker: (worker: WorkerRecord) => void; branchEnabled?: boolean; pendingTurn?: PendingTurn | null; activities?: ActivityPresentation; compactionPositions?: Map<string, CompactionRecord[]>; pageState?: State; readOnly?: boolean };
 export const TranscriptContext = createContext<TranscriptContextValue | null>(null);
 const isActivityMessage = (message: Message) => message.role === "assistant" && message.parts.some(part => part.type !== "text") && !message.parts.some(part => part.type === "text" && part.text.trim()) && message.error === undefined && message.status !== "failed" && message.status !== "interrupted";
 function ActivityBody({ part }: ActivityEntry) {
@@ -58,6 +60,14 @@ const renderActivityBody = (entry: ActivityEntry) => <ActivityBody {...entry} />
 const renderHandoffMessage = (text: string) => <Markdown text={text} />;
 function TranscriptTool({ part, source }: { part: ToolPart; source: Message }) {
   const context = useContext(TranscriptContext)!;
+  const native = useNativeSubagents();
+  const entry: ActivityEntry = { id: JSON.stringify([source.id, "tool", part.id]), source, index: source.parts.indexOf(part), part };
+  if (context.readOnly) return <TranscriptActivity group={{ id: entry.id, entries: [entry] }} renderBody={renderActivityBody} />;
+  const key = nativeSubagentKey(context.sessionId, source, part, context.runs, context.harness);
+  if (key) {
+    const summary = native?.summaries.get(nativeSubagentId(key));
+    return <NativeSubagentCard summary={summary ?? nativeSubagentFallback(key, part)} recorded={!!summary} tool={part} />;
+  }
   const handoffs = sentHandoffs(part, context.sessionId, context.handoffs?.handoffs ?? []);
   if (handoffs.length) return <>{handoffs.map(handoff => <HandoffCard key={handoff.handoff.id} presentation={handoff} direction="sent" stale={context.handoffs?.error} renderMessage={renderHandoffMessage} />)}{part.error && <p className="notice error" role="alert">The handoff tool reported an error. See run details for the original evidence before retrying.</p>}</>;
   if (isHandoffTool(part)) return <PendingHandoffCard tool={part} running={active(source.status)} renderMessage={renderHandoffMessage} />;
@@ -65,7 +75,6 @@ function TranscriptTool({ part, source }: { part: ToolPart; source: Message }) {
   // Open worker already contains the assignment. Keep raw tool evidence in run
   // diagnostics rather than duplicating the instructions in the parent thread.
   if (workers.length) return <>{workers.map(worker => <WorkerCard key={worker.id} worker={worker} workers={context.workers} runs={context.runs} open={context.openWorker} sendAnchor />)}{part.error && <p className="notice error" role="alert">Worker tool reported an error. Open run details for the recorded evidence.</p>}</>;
-  const entry: ActivityEntry = { id: JSON.stringify([source.id, "tool", part.id]), source, index: source.parts.indexOf(part), part };
   return <TranscriptActivity group={{ id: entry.id, entries: [entry] }} renderBody={renderActivityBody} />;
 }
 export function ChatMessage() {
@@ -98,10 +107,10 @@ function ChatMessageBody() {
   const lastInTurn = source && (source.runId === "native-import" ? laterInIsland.find(message => message.role === "assistant" || message.role === "user")?.role !== "assistant" : !laterInIsland.some(message => message.runId === source.runId && message.role === "assistant"));
   const turnEndKnown = island && context.pageState?.transcript && source ? turnBoundaryKnown(context.pageState.transcript, island, source) : !island;
   const capabilities = store.capabilities(harness);
-  const canBranch = capabilities.branch && context.branchEnabled && turnEndKnown && source?.role === "assistant" && lastInTurn && (source.runId === "native-import" ? capabilities.branchFromNativeMessage && source.status === "completed" : context.runs.some(r => r.operation !== "compact" && r.id === source.runId && r.status === "completed"));
-  const delivery = source && workerReportDelivery(source, context.deliveries ?? []);
+   const canBranch = !context.readOnly && capabilities.branch && context.branchEnabled && turnEndKnown && source?.role === "assistant" && lastInTurn && (source.runId === "native-import" ? capabilities.branchFromNativeMessage && source.status === "completed" : context.runs.some(r => r.operation !== "compact" && r.id === source.runId && r.status === "completed"));
+  const delivery = !context.readOnly && source && workerReportDelivery(source, context.deliveries ?? []);
   if (delivery) return <MessagePrimitive.Root className="message worker-report-message"><WorkerOutcomeReport delivery={delivery} workers={context.workers} /></MessagePrimitive.Root>;
-  const handoff = source && receivedHandoff(source, context.sessionId, context.handoffs?.handoffs ?? []);
+  const handoff = !context.readOnly && source && receivedHandoff(source, context.sessionId, context.handoffs?.handoffs ?? []);
   if (handoff) return <MessagePrimitive.Root className="message handoff-received-message"><HandoffCard presentation={handoff} direction="received" stale={context.handoffs?.error} renderMessage={renderHandoffMessage} />{source?.error !== undefined && <details className="run-warning"><summary>Reported error</summary><pre>{json(source.error)}</pre></details>}</MessagePrimitive.Root>;
   const warning = source?.error !== undefined || !isUser && source?.runId !== "native-import" && message.status?.type === "incomplete";
   const consumed = source?.parts.length && source.parts.every((_, index) => context.activities?.plan.positions.get(activityPosition(source.id, index)) === null);
@@ -128,7 +137,7 @@ function ChatMessageBody() {
         return null;
       })}
       {source?.error !== undefined && <details className="run-warning"><summary>Reported error</summary><pre>{json(source.error)}</pre></details>}
-      {!isUser && source?.runId !== "native-import" && message.status?.type === "incomplete" && <p className="run-warning" role="status">{message.status.reason === "error" ? "This run failed. The response may be incomplete." : "This run was interrupted or its completion is unknown."} See details for the recorded evidence.</p>}
+      {!isUser && source?.runId !== "native-import" && message.status?.type === "incomplete" && <p className="run-warning" role="status">{message.status.reason === "error" ? "This run failed. The response may be incomplete." : "This run was interrupted or its completion is unknown."} {context.readOnly ? "Only recorded evidence is shown." : "See details for the recorded evidence."}</p>}
     </div>
     {!isUser && (plain || canBranch) && <div className="message-actions">{plain && <Copy text={plain} label="Copy" />}
     {canBranch && source && <BranchAction sessionId={context.sessionId} harness={harness} {...(source.runId === "native-import" ? { messageId: source.id } : { runId: source.runId })} />}</div>}
@@ -181,7 +190,11 @@ export function Thread({ state, active: isActive = true, navigation, reviewReque
      }
      return positions;
     }, [state.transcript, state.transcriptPaged, state.compactions, messages, state.nativeHistory]);
-  const activities = useActivityPresentation({ sessionId: state.selected, messages, workers, deliveries: projection.deliveries, handoffs: handoffs.handoffs, loading: state.loading, animate: isActive && state.connected && !state.actionBusy });
+  const activities = useActivityPresentation({ sessionId: state.selected, messages, workers, deliveries: projection.deliveries, handoffs: handoffs.handoffs, loading: state.loading, animate: isActive && state.connected && !state.actionBusy, nativeRuns: state.runs, nativeHarness: harness });
+  const loadedNativeSubagents = useMemo(() => new Set(messages.flatMap(source => source.parts.flatMap(part => {
+    const key = part.type === "tool" ? nativeSubagentKey(state.selected, source, part, state.runs, harness) : null;
+    return key ? [nativeSubagentId(key)] : [];
+  }))), [messages, state.selected, state.runs, harness]);
   const runtime = useExternalStoreRuntime({ messages, convertMessage, isRunning: running,
     isSendDisabled: !isActive || !capabilities.prompt || running || compactBlocked || state.actionBusy || state.loading || state.sending || !state.connected || !state.availability.canSend || modelUnavailable || !!store.executionUnavailable() || (needsAck && ack !== state.selected),
     onNew: async message => { const text = message.content.filter(p => p.type === "text").map(p => p.text).join("\n"); await send(text); },
@@ -217,6 +230,7 @@ export function Thread({ state, active: isActive = true, navigation, reviewReque
     {parentId && <nav className="worker-parent-nav" aria-label="Worker navigation"><button type="button" className="text-button" disabled={state.sending} onClick={() => store.openConversation(parentId)}><FiArrowLeft size={14} aria-hidden="true" />Back to parent</button><span className="muted">Worker conversation</span></nav>}
     <ChatScroll active={isActive} resetKey={state.selected || `new:${repository.navigation.worktreeId}`} footer={footer} history={{ key: state.transcript?.islands[0]?.key ?? "", canLoad: !!state.transcript?.islands[0]?.coverage.olderCursor && !state.pageBusy && !state.pageErrors?.[`${state.transcript.islands[0].key}:older`], load: () => { const island = state.transcript?.islands[0]; if (island) void store.loadTranscriptPage({ island: island.key, direction: "older" }); } }} sendNavigation={{ sessionId: state.selected, loading: state.loading, connected: state.connected, connectionError: state.connectionError, workerError: projection.error, workerLoading: state.workerLoading, handoffLoading: handoffs.loading, handoffError: handoffs.error }} replacement={review.flow?.path ? <div className="document-review-reading"><DocumentReviewReader review={review} /></div> : undefined}>
       <div className="transcript">
+        <NativeSubagentDiscovery loaded={loadedNativeSubagents} />
         {!messages.length && (state.transcriptInitialLoading || state.loading || !repository.ready || (state.selected && state.connectionError) ? <ConversationLoading label={state.selected ? state.connectionError ? "Reconnecting to your conversation…" : "Opening conversation…" : "Preparing your workspace…"} /> : !state.selected ? <div className="welcome"><span className="welcome-mark" aria-hidden="true"><FiZap size={44} aria-hidden="true" /></span><p className="eyebrow">YOUR LOCAL WORKSPACE</p><h1>What shall we work on?</h1><p>Explore an idea, untangle a problem, or build something useful with SANE.</p><div className="suggestions">{["Help me understand this project", "Plan a thoughtful next step", "Review my recent changes"].map(text => <button key={text} type="button" onClick={() => store.setDraft({ text })}>{text}<FiArrowUpRight size={13} aria-hidden="true" /></button>)}</div></div> : <div className="chat-empty"><FiZap size={24} aria-hidden="true" /><p>No messages yet.</p><span>Send a message to begin.</span></div>)}
         <ThreadPrimitive.Messages components={{ Message: ChatMessage }} />
         <SendTranscriptReady sessionId={state.selected} messages={messages} />

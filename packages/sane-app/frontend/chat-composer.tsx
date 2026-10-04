@@ -69,7 +69,7 @@ export function ChatComposer({ state, active = true, navigation, ack, onAckChang
     {conversation?.attachment?.state === "pending" && <p className="notice error">Attachment incomplete. Use Attach native conversation with the same ID and checkout to retry. {conversation.attachment.error}</p>}
     {!conversation?.replacedBy && review?.flow && <DocumentReviewComposer review={review} active={active} disabled={reviewBlocked} navigation={navigation} />}
     {!conversation?.replacedBy ? <form ref={normalComposer} className="composer" hidden={!!review?.flow} style={review?.flow ? { display: "none" } : undefined} onSubmit={event => { event.preventDefault(); submit(); }}>
-      <ChatInput key={store.draftKey()} text={draft.text} save={text => store.setDraft({ text })} submit={submit} pathsActive={active && !review?.flow} className="composer-input" placeholder={state.selected ? "Continue the conversation… (@ for paths)" : "Ask SANE anything… (@ for paths)"} aria-label="Message" />
+      <ChatInput key={store.draftKey()} text={draft.text} save={text => store.setDraft({ text })} submit={submit} pathsActive={active && !review?.flow} className="composer-input" placeholder={state.selected ? "Go on..." : "Ask SANE anything… (@ for paths)"} aria-label="Message" />
       <div className="composer-toolbar"><div className="composer-options">
         {profile ? fixed
           ? <span className="agent-chip fixed" role="status" title={profile.label}><AgentAvatar profile={profile} size={20} /><span className="agent-chip-label">{profile.label}</span></span>

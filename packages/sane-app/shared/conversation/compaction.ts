@@ -8,7 +8,9 @@ export function compactionsFor(conversation: { id: string; harness: Harness; nat
   const stored = runs.map(r => ({ ...r, runId: r.id, sessionId: r.conversationId, status: r.status === "starting" ? "running" : r.status === "unknown" ? "interrupted" : r.status })) as StoredRun[];
   const events = runs.flatMap(r => r.events) as Event[];
   const superseded = new Set(events.filter(event => event.kind === "message" && (!history || event.time > history.importedAt)).map(event => (event.data as { messageId?: string } | null)?.messageId));
-  const imported = history?.messages.filter(message => !superseded.has(message.messageId));
+  // CC boundaries are immutable completed resets. Keep their neighboring native
+  // presentation artifacts available even when the same UUID was seen live.
+  const imported = history?.messages.filter(message => conversation.harness === "claude-code" && message.compaction?.lifecycle === "completed" && message.contextReset || !superseded.has(message.messageId));
   const local = projectCompactions({ sessionId: conversation.id, harness: conversation.harness, nativeSessionId: conversation.nativeSessionId }, stored, events, imported);
   const result = [...remote];
   for (const record of local) {
