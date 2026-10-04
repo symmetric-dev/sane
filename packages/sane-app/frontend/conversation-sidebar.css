@@ -6,38 +6,47 @@
   flex:0 1 auto;
 }
 
-.conversation-sidebar-separator,
-.conversation-sidebar-workstream {
+.conversation-sidebar-row .history-line.conversation-sidebar-workstream {
+  display:block;
+  padding-right:0;
   color:var(--muted-foreground);
   font-size:12px;
-}
-
-.conversation-sidebar-separator {
-  flex-shrink:0;
-}
-
-.conversation-sidebar-workstream {
-  flex:0 1 auto;
-  min-width:0;
-  max-width:45%;
   overflow:hidden;
   text-overflow:ellipsis;
   white-space:nowrap;
 }
 
-.conversation-sidebar-row .history-line.conversation-sidebar-metadata {
-  padding-right:0;
-}
-
 .conversation-sidebar-row .history-line.conversation-sidebar-footer {
   flex-wrap:nowrap;
+  min-height:22px;
   padding-right:26px;
 }
 
-.conversation-sidebar-row .conversation-sidebar-footer .workspace-badge {
+.conversation-sidebar-metadata {
+  display:flex;
+  align-items:center;
+  gap:6px;
+  flex:1;
+  min-width:0;
+  overflow:hidden;
+}
+
+.conversation-sidebar-metadata .agent-row-avatar {
+  flex-shrink:0;
+}
+
+.conversation-sidebar-metadata .phase-badge {
   flex-shrink:1;
   min-width:0;
-  max-width:calc(100% - 20px);
+}
+
+.conversation-sidebar-row>.history-menu {
+  bottom:9px;
+}
+
+.conversation-sidebar-row>.history-menu>.history-menu-button {
+  width:28px;
+  height:28px;
 }
 
 /* Desktop Chat tabs reach the main panel; History and drawers stay contained. */

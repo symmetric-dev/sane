@@ -1,7 +1,6 @@
 import { useState } from "react";
 import { FiUsers } from "react-icons/fi";
 import { store, type State } from "./store";
-import { harnessName, harnessShort } from "./types";
 import { AgentAvatar } from "./agent-visuals";
 import { formatTitle } from "./conversation-filter";
 import { ConversationFilterDialog } from "./conversation-filter-dialog";
@@ -62,12 +61,6 @@ export function ConversationSidebarList({ state, model, mode, selectedId, onSele
         {(history || !scoped) && <h3>{group.name}</h3>}
         {conversations.map(c => {
           const membership = workstreamMap.get(c.id);
-          const workspaceName = repository.workspaces.find(w => w.workspaceId === c.workspaceId)?.name;
-          const rootLabel = c.cwd ? basename(c.cwd) : workspaceName ?? "Unavailable";
-          const workstream = overview?.workstreams.find(w => w.workstream.id === membership?.workstreamId)?.workstream;
-          const enrolled = overview?.conversations.some(row => row.sessionId === c.id && !!row.conversation);
-          const workstreamLabel = membership?.workstreamId ? workstream?.title || membership.workstreamId : enrolled ? "Free" : "Unknown";
-          const workstreamTitle = membership?.workstreamId ? `${workstreamLabel} · ${membership.workstreamId}` : enrolled ? "No workstream assigned" : "Workstream association unavailable";
           const selected = selectedId === c.id;
           const phases = membership?.phases ?? [];
           const workerCount = workerCounts.get(c.id) ?? 0;
@@ -76,20 +69,17 @@ export function ConversationSidebarList({ state, model, mode, selectedId, onSele
             <button type="button" className={selected ? "selected" : ""} aria-current={selected ? "page" : undefined} disabled={!history && state.sending} onClick={() => onSelect(c.id)} title={c.title ? `${c.title}\n${c.cwd}` : c.cwd}>
               <span className="history-line conversation-sidebar-heading">
                 <span className="history-title">{formatTitle(c.title, basename(c.cwd))}</span>
-                <span className="conversation-sidebar-separator" aria-hidden="true">-</span>
-                <span className="conversation-sidebar-workstream" title={workstreamTitle}>{workstreamLabel}</span>
               </span>
-              <span className="history-line conversation-sidebar-metadata">
-                {profile?.kind === "assistant" && <span className="agent-row-avatar" title={profile.label}><AgentAvatar profile={profile} size={16} /></span>}
-                <span className="harness-badge" title={harnessName(c.harness)}>{harnessShort(c.harness)}</span>
-                {phases.map(phase => <PhaseBadge key={phase} phase={phase} />)}
-                {!history && workerCount > 0 && <span className="history-workers" title={`${workerCount} direct workers`}><FiUsers size={12} aria-hidden="true" /><span aria-hidden="true">{workerCount}</span><span className="sr-only">{workerCount} direct workers</span></span>}
-                {history && knownWorker(c.id) && <span className="harness-badge">Worker</span>}
-                {history && c.replacedBy ? <span className="harness-badge">Replaced</span> : c.hidden && <span className="harness-badge">Hidden</span>}
-                {history && c.branchOrigin && <span className="harness-badge">Branch</span>}
-              </span>
+              {membership?.workstreamId && <span className="history-line conversation-sidebar-workstream" title={membership.workstreamId}>{membership.workstreamId}</span>}
               <span className="history-line conversation-sidebar-footer">
-                <span className="harness-badge workspace-badge" title={c.cwd || undefined}>{rootLabel}</span>
+                <span className="conversation-sidebar-metadata">
+                  {profile?.kind === "assistant" && <span className="agent-row-avatar" title={profile.label}><AgentAvatar profile={profile} size={16} /></span>}
+                  {phases.map(phase => <PhaseBadge key={phase} phase={phase} />)}
+                  {!history && workerCount > 0 && <span className="history-workers" title={`${workerCount} direct workers`}><FiUsers size={12} aria-hidden="true" /><span aria-hidden="true">{workerCount}</span><span className="sr-only">{workerCount} direct workers</span></span>}
+                  {history && knownWorker(c.id) && <span className="harness-badge">Worker</span>}
+                  {history && c.replacedBy ? <span className="harness-badge">Replaced</span> : c.hidden && <span className="harness-badge">Hidden</span>}
+                  {history && c.branchOrigin && <span className="harness-badge">Branch</span>}
+                </span>
                 <StatusIcon status={c.status} />
               </span>
             </button>
