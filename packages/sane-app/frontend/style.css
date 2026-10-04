@@ -1597,7 +1597,7 @@ h3 {
 .phase-curation { --phase-background:var(--phase-curation-background); --phase-border:var(--phase-curation-border); --phase-foreground:var(--phase-curation-foreground); }
 .phase-research { --phase-background:var(--phase-research-background); --phase-border:var(--phase-research-border); --phase-foreground:var(--phase-research-foreground); }
 .phase-experimentation { --phase-background:var(--phase-experimentation-background); --phase-border:var(--phase-experimentation-border); --phase-foreground:var(--phase-experimentation-foreground); }
-.harness-badge.phase-badge { background:var(--phase-background, transparent); border-color:var(--phase-border, var(--border)); color:var(--phase-foreground, var(--muted-foreground)); }
+.harness-badge.phase-badge { background:transparent; border-color:var(--border); color:var(--muted-foreground); }
 .history-line {
   flex-wrap:wrap;
 }

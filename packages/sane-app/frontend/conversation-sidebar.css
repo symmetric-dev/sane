@@ -1,5 +1,24 @@
+.history-list .conversation-sidebar-row>button:first-child {
+  padding-block:9px;
+}
+
+.conversation-sidebar-row:not(:has(>button.selected))::before {
+  content:"";
+  position:absolute;
+  top:10%;
+  bottom:10%;
+  left:0;
+  width:1px;
+  border-radius:1px;
+  background:var(--border);
+  opacity:.7;
+  pointer-events:none;
+}
+
 .conversation-sidebar-row .conversation-sidebar-heading {
   flex-wrap:nowrap;
+  height:20px;
+  line-height:20px;
 }
 
 .conversation-sidebar-row .conversation-sidebar-heading .history-title {
@@ -8,7 +27,9 @@
 
 .conversation-sidebar-row .history-line.conversation-sidebar-workstream {
   display:block;
-  margin-top:2px;
+  margin-top:1px;
+  height:18px;
+  line-height:18px;
   padding-right:0;
   color:var(--muted-foreground);
   font-size:12px;
@@ -17,8 +38,14 @@
   white-space:nowrap;
 }
 
+.conversation-sidebar-loading-dots {
+  animation:pulse 1.6s ease-in-out infinite;
+}
+
 .conversation-sidebar-row .history-line.conversation-sidebar-footer {
   flex-wrap:nowrap;
+  margin-top:4px;
+  height:22px;
   min-height:22px;
   padding-right:26px;
 }
@@ -32,7 +59,7 @@
   overflow:hidden;
 }
 
-.conversation-sidebar-metadata .agent-row-avatar {
+.conversation-sidebar-heading .agent-row-avatar {
   flex-shrink:0;
 }
 
@@ -42,7 +69,7 @@
 }
 
 .conversation-sidebar-row>.history-menu {
-  bottom:9px;
+  bottom:7px;
 }
 
 .conversation-sidebar-row>.history-menu>.history-menu-button {

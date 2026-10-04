@@ -85,7 +85,9 @@ export function CatalogSelector({ retry, selection }: { retry: () => void; selec
   const selectedStream = selection?.overview?.workstreams.find(w => w.workstream.id === selection.workstreamId)?.workstream;
   const streamTree = workstreamCheckout(workspace, selectedStream);
   const workspaces = state.workspaces.filter(w => `${w.name} ${w.worktrees.map(t => t.root).join(" ")}`.toLowerCase().includes(search.toLowerCase()));
-  const streams = selection?.overview?.workstreams.filter(({ workstream: w }) => `${w.title} ${w.id} ${w.defaultCheckout?.path ?? ""}`.toLowerCase().includes(streamSearch.toLowerCase())) ?? [];
+  const streams = selection?.overview?.workstreams
+    .filter(({ workstream: w }) => `${w.title} ${w.id} ${w.defaultCheckout?.path ?? ""}`.toLowerCase().includes(streamSearch.toLowerCase()))
+    .sort((a, b) => Date.parse(b.workstream.createdAt) - Date.parse(a.workstream.createdAt) || a.workstream.id.localeCompare(b.workstream.id)) ?? [];
   const refreshWorktrees = workspace && <button type="button" className="text-button" disabled={locked || !workspace.worktrees.length} onClick={async () => {
       const root = worktree?.root ?? workspace.worktrees[0]?.root;
       if (!root) return;
@@ -170,7 +172,6 @@ export function CatalogSelector({ retry, selection }: { retry: () => void; selec
               {selection?.error && <p className="notice error" role="status">Workstreams could not refresh. {selection.error} Retrying automatically.</p>}
               {!selection?.loading && !selection?.error && !streams.length && <p className="muted">{streamSearch ? "No matching workstreams." : "No workstreams yet. Manage workstreams in Settings."}</p>}
               {selection?.workstreamId && <div className="context-workstream-scope">
-                <p className="muted">Sessions: {selectedStream?.title || selection.workstreamId} · all worktrees in this workspace.</p>
                 {selectedStream && !streamTree && <p className="notice" role="status">{selectedStream.defaultCheckout ? `The default checkout (${selectedStream.defaultCheckout.path}) is unavailable. Browsing remains unchanged.` : "No default checkout is configured. Browsing remains unchanged."}</p>}
                 {!selection?.loading && selection?.overview && !selectedStream && <p className="notice" role="status">The selected workstream is no longer listed. Clear the selection to show other sessions.</p>}
                 <button type="button" className="text-button" disabled={locked} onClick={() => selection?.selectWorkstream(null)}>Clear workstream selection</button>

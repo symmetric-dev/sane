@@ -40,7 +40,7 @@ export function ConversationSidebar({ state, model, mode, selectedId, onChoose, 
 export function ConversationSidebarList({ state, model, mode, selectedId, onSelect }: {
   state: State; model: ConversationSidebarModel; mode: ConversationSidebarMode; selectedId: string | null; onSelect: (id: string) => void;
 }) {
-  const { repository, nav, filter, setFilter, overview, workstreamMap, membershipPending, membershipError, visible, hits, workerCounts, groups, scoped, activeFilterCount } = model;
+  const { repository, nav, filter, setFilter, overview, workstreamMap, membershipLoading, membershipPending, membershipError, visible, hits, workerCounts, groups, scoped, activeFilterCount } = model;
   // Dialog visibility is presentation-local: opening the drawer must not create two modal dialogs.
   const [dialogOpen, setDialogOpen] = useState(false);
   const history = mode === "history";
@@ -61,6 +61,7 @@ export function ConversationSidebarList({ state, model, mode, selectedId, onSele
         {(history || !scoped) && <h3>{group.name}</h3>}
         {conversations.map(c => {
           const membership = workstreamMap.get(c.id);
+          const workstreamLoading = membershipLoading && c.workspaceId === nav.workspaceId;
           const selected = selectedId === c.id;
           const phases = membership?.phases ?? [];
           const workerCount = workerCounts.get(c.id) ?? 0;
@@ -68,12 +69,12 @@ export function ConversationSidebarList({ state, model, mode, selectedId, onSele
           return <div className="history-row conversation-sidebar-row" key={c.id}>
             <button type="button" className={selected ? "selected" : ""} aria-current={selected ? "page" : undefined} disabled={!history && state.sending} onClick={() => onSelect(c.id)} title={c.title ? `${c.title}\n${c.cwd}` : c.cwd}>
               <span className="history-line conversation-sidebar-heading">
+                {profile && <span className="agent-row-avatar" title={profile.label}><AgentAvatar profile={profile} size={16} /></span>}
                 <span className="history-title">{formatTitle(c.title, basename(c.cwd))}</span>
               </span>
-              {membership?.workstreamId && <span className="history-line conversation-sidebar-workstream" title={membership.workstreamId}>{membership.workstreamId}</span>}
+              <span className="history-line conversation-sidebar-workstream" title={workstreamLoading ? "Loading workstream…" : membership?.workstreamId} aria-busy={workstreamLoading}>{workstreamLoading ? <><span className="conversation-sidebar-loading-dots" aria-hidden="true">…</span><span className="sr-only">Loading workstream</span></> : membership?.workstreamId || "-"}</span>
               <span className="history-line conversation-sidebar-footer">
                 <span className="conversation-sidebar-metadata">
-                  {profile?.kind === "assistant" && <span className="agent-row-avatar" title={profile.label}><AgentAvatar profile={profile} size={16} /></span>}
                   {phases.map(phase => <PhaseBadge key={phase} phase={phase} />)}
                   {!history && workerCount > 0 && <span className="history-workers" title={`${workerCount} direct workers`}><FiUsers size={12} aria-hidden="true" /><span aria-hidden="true">{workerCount}</span><span className="sr-only">{workerCount} direct workers</span></span>}
                   {history && knownWorker(c.id) && <span className="harness-badge">Worker</span>}

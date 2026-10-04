@@ -133,6 +133,7 @@ export function useConversationSidebarModel(state: State, mode: ConversationSide
     const current = catalog.snapshot();
     if (auth === workspaceEpoch() && repository.ready && current.ready && current.navigation.workspaceId === nav.workspaceId && nav.workspaceId && overview && !overviewState.error) saveWorkstreamMembership(nav.workspaceId, workstreamMap);
   }, [auth, repository.ready, nav.workspaceId, overview, overviewState.error, workstreamMap]);
+  const membershipLoading = overviewState.loading && !overview && !cachedMembership;
   const membershipPending = (deferred.workstreamId !== "all" || deferred.phase !== "all") && !overview && !cachedMembership;
   const membershipError = membershipPending ? overviewState.error : "";
   const visible = useMemo(() => membershipPending ? [] : filterConversations(
@@ -159,7 +160,7 @@ export function useConversationSidebarModel(state: State, mode: ConversationSide
   const activeFilterCount = (filter.harness !== "all" ? 1 : 0) + (filter.status !== "all" ? 1 : 0) + (filter.workstreamId !== "all" ? 1 : 0) + (filter.phase !== "all" ? 1 : 0) + (filter.showDeleted ? 1 : 0)
     + (filter.workspaceId === defaults.workspaceId && filter.worktreeId === defaults.worktreeId ? 0 : 1);
   const scoped = deferred.workspaceId !== "all" && deferred.workspaceId !== "unavailable";
-  return { repository, nav, filter, setFilter, defaults, workspaceSelection, overview, workstreamMap, membershipPending, membershipError, visible, hits, workerCounts, groups, scoped, activeFilterCount };
+  return { repository, nav, filter, setFilter, defaults, workspaceSelection, overview, workstreamMap, membershipLoading, membershipPending, membershipError, visible, hits, workerCounts, groups, scoped, activeFilterCount };
 }
 
 export type ConversationSidebarModel = ReturnType<typeof useConversationSidebarModel>;
