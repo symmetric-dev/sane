@@ -50,16 +50,35 @@
   height:28px;
 }
 
-/* Desktop Chat tabs reach the main panel; History and drawers stay contained. */
+/* Main Chat sidebar tabs reach the panel, including on wide iPad layouts.
+   shell.css widens the scrollport by --chat-panel-overlap for the Safari seam
+   workaround; compensate here to preserve unselected row/content alignment.
+   History and mobile drawers stay contained. */
 .view-chat>.sidebar .conversation-sidebar-row {
-  margin-right:12px;
+  margin-right:calc(12px + var(--chat-panel-overlap));
 }
 
 .view-chat>.sidebar .conversation-sidebar-row:has(>button.selected) {
-  margin-right:0;
+  /* Stop the actual button/borders at the panel edge; only ::after overlaps. */
+  margin-right:var(--chat-panel-overlap);
   /* Keep the panel connection opaque even while the selection is disabled. */
   background:var(--background);
   border-radius:9px 0 0 9px;
+}
+
+.view-chat>.sidebar .conversation-sidebar-row:has(>button.selected)::after {
+  /* Extend only the opaque background into the panel. Widening the button
+     itself caused visible 1px top/bottom border protrusions on iPad Safari.
+     Inset this non-interactive bridge by the button's 1px border thickness
+     so both border endpoints remain flush with the panel boundary. */
+  content:"";
+  position:absolute;
+  top:1px;
+  bottom:1px;
+  right:calc(-1 * var(--chat-panel-overlap));
+  width:var(--chat-panel-overlap);
+  background:var(--background);
+  pointer-events:none;
 }
 
 .view-chat>.sidebar .conversation-sidebar-row>button.selected {

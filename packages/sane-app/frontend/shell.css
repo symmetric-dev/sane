@@ -36,11 +36,19 @@
   padding:12px;
   overflow:hidden;
 }
-/* Keep the Chat divider in a separate layer behind the scrollable rows, so
-   the selected tab joins the main panel in both filtered and full lists. */
+/* Chat panel connection: iPad Safari showed a hairline at the selected row's
+   right edge in the longer, unfiltered list. Layering the divider behind the
+   rows alone was insufficient; the scrollport must extend 1px into the panel.
+   conversation-sidebar.css bridges that pixel with the selected background.
+   These rules intentionally apply across browsers, not via Safari detection,
+   and only to the main Chat sidebar (not History or mobile drawers). */
 .view-chat>.sidebar {
+  --chat-panel-overlap:1px;
   position:relative;
   isolation:isolate;
+  /* Keep the bridge above the main panel and do not clip it at this boundary. */
+  z-index:1;
+  overflow:visible;
   border-right:0;
 }
 .view-chat>.sidebar::before {
@@ -53,12 +61,16 @@
   z-index:0;
 }
 .view-chat>.sidebar>.sidebar-body {
-  /* Keep the entire scrolling layer above the divider, not just its rows. */
+  /* Keep the scrolling layer above the divider. This parent must also allow
+     overflow; otherwise it clips the bridge despite the wider scrollport. */
   position:relative;
   z-index:1;
+  overflow:visible;
 }
 .view-chat>.sidebar .sidebar-body>.history-list {
-  margin-right:-12px;
+  /* Put the scrollport edge past the divider to avoid a Safari clipping seam.
+     Only this list clips its contents; its parents allow the panel overlap. */
+  margin-right:calc(-12px - var(--chat-panel-overlap));
   /* A native scrollbar gutter would separate the tab from the main panel. */
   scrollbar-width:none;
 }
