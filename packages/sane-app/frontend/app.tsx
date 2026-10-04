@@ -26,6 +26,7 @@ import type { DocumentReviewLaunch, DocumentReviewRequest } from "./document-rev
 import { CompactControl, CompactDialog } from "./compaction-ui";
 import { NativeSubagentContext, nativeSubagentVirtualKey, useNativeSubagentFeature, useNativeSubagents } from "./native-subagent-feature";
 import { NativeSubagentView } from "./native-subagent-view";
+import { InstallApp } from "./pwa-install-view";
 
 // Restore selection without replacing the independently bookmarked browsing pair.
 const hydrateCatalog = () => void catalog.hydrate(bookmark => store.choose(bookmark.conversationId ?? ""));
@@ -211,6 +212,7 @@ function ApplicationDialog({ state, signOut, close }: { state: State; signOut: (
   return <ShellDialog title="Application" close={close}>
     <div className="application-status"><span className={`connection-dot ${state.connected ? "online" : ""}`} /><span>{state.connected ? "Local bridge connected" : "Connecting to bridge"}</span></div>
     <details className="application-connection"><summary>Connection details</summary><p className="muted">{state.connectionError || (state.connected ? "Connected to the local bridge." : "Waiting for the local bridge.")}</p><button type="button" className="text-button" onClick={store.reconnect}>Reconnect</button></details>
+    <InstallApp />
     {state.config?.authRequired && <button type="button" className="application-signout" disabled={state.sending} onClick={signOut}>Sign out</button>}
   </ShellDialog>;
 }

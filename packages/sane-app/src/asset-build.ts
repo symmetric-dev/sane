@@ -1,5 +1,5 @@
 import { createHash, randomUUID } from "node:crypto";
-import { existsSync, lstatSync, mkdirSync, readFileSync, readdirSync, renameSync, rmSync, writeFileSync } from "node:fs";
+import { copyFileSync, existsSync, lstatSync, mkdirSync, readFileSync, readdirSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { dirname, join, relative, resolve, sep } from "node:path";
 import { acquireInstallation, assertInstallationOwnership, validateOwnershipPaths, type OwnershipHandle } from "./installation-ownership";
 
@@ -83,6 +83,16 @@ export async function buildAssets(options: AssetBuildOptions): Promise<{ assetsD
     stage = join(outdir, `.stage-${generation}`); mkdirSync(stage, { mode: 0o700 });
     const result = await Bun.build({ entrypoints: [join(pkg, "frontend/main.tsx")], outdir: stage, target: recipe.target, format: recipe.format, naming: recipe.naming, minify: recipe.minify, define: recipe.define });
     if (!result.success) throw new AssetBuildError(`Asset compilation failed: ${result.logs.map(String).join("\n")}`);
+    // Publish install metadata/icons with the same immutable, validated generation.
+    const pwaDir = join(pkg, "public", "pwa");
+    if (existsSync(pwaDir)) {
+      safeDirectory(pwaDir);
+      mkdirSync(join(stage, "pwa"), { mode: 0o700 });
+      for (const name of ["manifest.webmanifest", "icon.svg", "icon-192.png", "icon-512.png", "icon-maskable-512.png", "apple-touch-icon.png"]) {
+        const source = join(pwaDir, name); regular(source);
+        copyFileSync(source, join(stage, "pwa", name));
+      }
+    }
     const outputs = outputHashes(stage);
     if (!outputs["app.js"]) throw new AssetBuildError("Build did not produce app.js");
     if (fingerprint(inputs(pkg, outdir)) !== fingerprint(before)) throw new AssetBuildError("Build inputs changed during compilation");

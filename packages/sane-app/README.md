@@ -20,6 +20,18 @@ repository cwd, and a fresh absolute data path. `start` builds package-local
 `public/assets/app.js` and `app.css` before launching source `server.ts`;
 `build` builds assets only; `typecheck` checks backend, hooks and frontend.
 
+## Install the browser interface
+
+Open the App at a stable localhost/loopback URL or a trusted HTTPS origin. Use
+**Install SANE** in the Application menu or Settings → Application when the browser
+offers an install prompt. Otherwise use the browser's installation menu, Safari's
+**File → Add to Dock** on Mac, or **Share → Add to Home Screen** on iPhone/iPad.
+
+Installation creates a standalone frontend window, not a background App server or
+native services. The bridge must remain running and reachable. No service worker,
+offline cache, or queued offline mutations are installed. After updating, restart
+the bridge and reload the installed app just as you would a browser tab.
+
 ## Resource and identity boundaries
 
 - Fresh app catalog UUIDs, conversation/run history, navigation, settings and locks

@@ -3,6 +3,7 @@ import { harnessName } from "./types";
 import { Facts } from "./thread";
 import { CodeSettings } from "./code-settings-view";
 import { ThemeSettings } from "./theme-settings-view";
+import { InstallApp } from "./pwa-install-view";
 
 const CAPABILITIES = [["cancelRun", "Cancel run"], ["permissionReplies", "Permission replies"], ["modelSelection", "Model selection"]] as const;
 
@@ -11,6 +12,7 @@ export function ApplicationSettings({ state, signOut }: { state: State; signOut:
   return <section className="history-view app-settings" aria-label="Application settings">
     <header className="history-view-header"><h2>Application</h2></header>
     <ThemeSettings />
+    <InstallApp />
     <CodeSettings />
     <section className="interaction" aria-labelledby="app-connection">
       <h3 id="app-connection">Connection</h3>
