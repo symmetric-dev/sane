@@ -1,43 +1,7 @@
 import { useEffect, useState } from "react";
 import type { SearchHit } from "./types";
-import { loadWorkstreams } from "./workstreams-client";
-import type { WorkstreamOverview } from "../src/workstreams-contract";
 import type { ProfileSnapshot } from "./profile-presentation";
-import { workspaceEpoch } from "./workspace-store";
-
-/** Results are keyed by scope so a render cannot expose the previous workspace. */
-export function useWorkstreamOverview(workspaceId: string | null, active = true): WorkstreamOverview | null {
-  return useWorkstreamOverviewState(workspaceId, active).overview;
-}
-
-export function useWorkstreamOverviewState(workspaceId: string | null, active = true) {
-  const auth = workspaceEpoch();
-  const [result, setResult] = useState<{ workspaceId: string; auth: number; overview: WorkstreamOverview | null; loading: boolean; error: string } | null>(null);
-  useEffect(() => {
-    // Membership can change through handoff/linking without changing the chat
-    // listing. Refresh independently while active, just like conversation polling.
-    if (!workspaceId || !active) { setResult(null); return; }
-    let current = true;
-    let timer: ReturnType<typeof setTimeout> | undefined;
-    setResult({ workspaceId, auth, overview: null, loading: true, error: "" });
-    const refresh = async () => {
-      try {
-        const overview = await loadWorkstreams(workspaceId);
-        if (current && auth === workspaceEpoch()) setResult(previous => previous?.workspaceId === workspaceId && previous.auth === auth && !previous.error && !previous.loading && JSON.stringify(previous.overview) === JSON.stringify(overview) ? previous : { workspaceId, auth, overview, loading: false, error: "" });
-      } catch (error) {
-        // Keep the last successful overview during transient failures; retry below.
-        if (current && auth === workspaceEpoch()) setResult(previous => ({ workspaceId, auth, overview: previous?.workspaceId === workspaceId && previous.auth === auth ? previous.overview : null, loading: false, error: error instanceof Error ? error.message : "Workstreams are unavailable." }));
-      } finally {
-        if (current && auth === workspaceEpoch()) timer = setTimeout(() => void refresh(), 1500);
-      }
-    };
-    void refresh();
-    // Fence late responses and stop polling when unmounted, inactive or re-scoped.
-    return () => { current = false; clearTimeout(timer); };
-  }, [workspaceId, active, auth]);
-  if (!active || !workspaceId) return { overview: null, loading: false, error: "" };
-  return result?.workspaceId === workspaceId && result.auth === auth ? result : { overview: null, loading: true, error: "" };
-}
+export { useWorkstreamOverview, useWorkstreamOverviewState } from "./workstream-overview";
 
 export function useMessageHits(query: string, workspaceId: string | null | "all" | "unavailable", worktreeId: string | null | "all"): SearchHit[] {
   const trimmed = query.trim();

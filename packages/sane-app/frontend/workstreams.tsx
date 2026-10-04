@@ -1,6 +1,8 @@
 import { useEffect, useId, useRef, useState, useSyncExternalStore } from "react";
 import type { WorkstreamOverview } from "../src/workstreams-contract";
-import { loadWorkstreams, workstreamRequest } from "./workstreams-client";
+import { workstreamRequest } from "./workstreams-client";
+import { refreshWorkstreamOverview, useWorkstreamOverviewState } from "./workstream-overview";
+import { subscribeWorkspace, workspaceEpoch } from "./workspace-store";
 import { catalog } from "./catalog";
 import { WorkstreamConversations } from "./workstream-conversations";
 import { CreateWorkstreamDialog, WorkstreamDetails, WorkstreamDocuments } from "./workstream-content";
@@ -27,9 +29,13 @@ export function WorkstreamsView({ workspaceId, openArtifact, openConversation, s
 
 const TABS = ["conversations", "documents"] as const;
 function RepositoryWorkstreams({ workspaceId, workspaceName, openArtifact, openConversation, startDocumentReview, disabled }: WorkstreamsProps & { workspaceId: string; workspaceName: string }) {
-  const [data, setData] = useState<WorkstreamOverview | null>(null), [error, setError] = useState("");
-  const [loading, setLoading] = useState(true);
-  const [availability, setAvailability] = useState<{ state: string; message?: string } | null>(null);
+  const auth = useSyncExternalStore(subscribeWorkspace, workspaceEpoch);
+  const [readError, setError] = useState(""), [refreshing, setRefreshing] = useState(true);
+  const [inspection, setInspection] = useState<{ auth: number; availability: { state: string; message?: string } } | null>(null);
+  const availability = inspection?.auth === auth ? inspection.availability : null;
+  const overview = useWorkstreamOverviewState(workspaceId, availability?.state === "ready");
+  const data = availability?.state === "ready" ? overview.overview : null;
+  const loading = refreshing || overview.loading, error = readError || overview.error;
   const [enableError, setEnableError] = useState(""), [enabling, setEnabling] = useState(false);
   // Undefined is the initial selection; null is an intentional Unassigned selection.
   const [selected, setSelected] = useState<string | null | undefined>(undefined);
@@ -38,54 +44,72 @@ function RepositoryWorkstreams({ workspaceId, workspaceName, openArtifact, openC
   const [actionsId, setActionsId] = useState<string | null>(null);
   const alive = useRef(true), request = useRef(0), enablePending = useRef(false);
   const viewId = useId();
-  useEffect(() => { alive.current = true; void refresh(); return () => { alive.current = false; request.current++; }; }, []);
+  useEffect(() => {
+    alive.current = true;
+    setError(""); setEnableError(""); setEnabling(false); setRefreshing(false);
+    void refresh();
+    return () => { alive.current = false; request.current++; };
+  }, [auth]);
+  useEffect(() => {
+    if (!data) return;
+    reconcile(data);
+  }, [data]);
+
+  function reconcile(next: WorkstreamOverview) {
+    setSelected(current => current === null || next.workstreams.some(item => item.workstream.id === current) ? current : next.workstreams[0]?.workstream.id ?? null);
+    setDetailsId(current => next.workstreams.some(item => item.workstream.id === current) ? current : null);
+    setActionsId(current => next.workstreams.some(item => item.workstream.id === current) ? current : null);
+  }
 
   async function refresh({ strict = false, selectId }: { strict?: boolean; selectId?: string } = {}): Promise<void> {
     if (!alive.current) return;
     const generation = ++request.current;
+    const epoch = workspaceEpoch();
     const current = () => {
       if (!alive.current) return false;
+      if (epoch !== workspaceEpoch()) {
+        if (strict) throw new Error("Sign-in changed during refresh. Retry refresh after signing in.");
+        return false;
+      }
       if (generation === request.current) return true;
       if (strict) throw new Error("A newer refresh replaced this read. Retry refresh.");
       return false;
     };
-    setLoading(true); setError("");
+    setRefreshing(true); setError("");
     try {
       const nextAvailability = await workstreamRequest<{ state: string; message?: string }>(workspaceId, "inspect");
       if (!current()) return;
       if ((strict || data) && nextAvailability.state !== "ready") throw new Error(nextAvailability.message ?? `Workstreams are not available (${nextAvailability.state}).`);
-      setAvailability(nextAvailability);
-      if (nextAvailability.state !== "ready") { setData(null); return; }
+      setInspection({ auth: epoch, availability: nextAvailability });
+      if (nextAvailability.state !== "ready") return;
       // Keep the existing organizer and child mutation state mounted during reads.
-      const next = await loadWorkstreams(workspaceId);
+      const next = await refreshWorkstreamOverview(workspaceId, { force: true });
       if (!current()) return;
       if (selectId && !next.workstreams.some(item => item.workstream.id === selectId)) throw new Error("The created workstream is not available in the refreshed view yet. Retry opening it.");
-      setData(next);
-      setSelected(current => selectId ?? (current === null || next.workstreams.some(item => item.workstream.id === current) ? current : next.workstreams[0]?.workstream.id ?? null));
-      if (selectId) { setSearch(""); setTab("conversations"); setDetailsId(null); setActionsId(null); }
-      else setDetailsId(current => next.workstreams.some(item => item.workstream.id === current) ? current : null);
+      if (selectId) { setSelected(selectId); setSearch(""); setTab("conversations"); setDetailsId(null); setActionsId(null); }
     }
     catch (e) {
-      if (alive.current && generation === request.current) {
+      if (alive.current && epoch === workspaceEpoch() && generation === request.current) {
         setError(e instanceof Error ? e.message : String(e));
       }
       // Mutation dialogs must distinguish a committed write from a failed read.
       // Initial, manual and post-enable reads still consume their own failures.
       if (strict && alive.current) throw e;
     }
-    finally { if (alive.current && generation === request.current) setLoading(false); }
+    finally { if (alive.current && epoch === workspaceEpoch() && generation === request.current) setRefreshing(false); }
   }
   async function enable() {
     if (enablePending.current) return;
     enablePending.current = true;
+    const epoch = workspaceEpoch(), current = () => alive.current && epoch === workspaceEpoch();
     request.current++; // A pre-enable read cannot overwrite this mutation's outcome.
-    setLoading(false); setEnabling(true); setEnableError("");
+    setRefreshing(false); setEnabling(true); setEnableError("");
     try {
       await workstreamRequest(workspaceId, "init", {});
-      if (alive.current) await refresh();
+      if (current()) await refresh();
     }
-    catch (e) { if (alive.current) setEnableError(e instanceof Error ? e.message : String(e)); }
-    finally { enablePending.current = false; if (alive.current) setEnabling(false); }
+    catch (e) { if (current()) setEnableError(e instanceof Error ? e.message : String(e)); }
+    finally { enablePending.current = false; if (current()) setEnabling(false); }
   }
   function select(id: string | null) {
     if (id !== selected) { setDetailsId(null); setActionsId(null); }
@@ -153,7 +177,7 @@ function RepositoryWorkstreams({ workspaceId, workspaceName, openArtifact, openC
         </div>
       </section>
     </div>}
-    {creating && <CreateWorkstreamDialog workspaceId={workspaceId} close={() => setCreating(false)} onCreated={created} />}
+    {creating && <CreateWorkstreamDialog key={auth} workspaceId={workspaceId} close={() => setCreating(false)} onCreated={created} />}
     {detail && detailsId === detail.workstream.id && <WorkstreamDetails key={detail.workstream.id} workspaceId={workspaceId} detail={detail} close={() => setDetailsId(null)} onChanged={() => refresh({ strict: true })} />}
     {detail && actionsId === detail.workstream.id && <WorkstreamActionsDialog key={detail.workstream.id} workspaceId={workspaceId} detail={detail} close={() => setActionsId(null)} onChanged={() => refresh({ strict: true })} />}
   </section>;

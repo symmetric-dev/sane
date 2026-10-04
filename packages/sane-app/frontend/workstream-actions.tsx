@@ -6,7 +6,8 @@ import { catalog } from "./catalog";
 import { ShellDialog } from "./shell-dialog";
 import { FlowLauncher } from "./flow-launcher";
 import type { Conversation } from "./types";
-import { loadWorkstreams, refKey, workstreamRequest } from "./workstreams-client";
+import { refKey, workstreamRequest } from "./workstreams-client";
+import { refreshWorkstreamOverview, useWorkstreamOverviewState } from "./workstream-overview";
 import type { DocumentReviewStart, ReviewPhase } from "./document-review-model";
 import { assignmentClass, assignmentDocumentDefault, assignmentLabel, assignmentStats, supportAssignments } from "./assignment-semantics";
 import "./workstream-actions.css";
@@ -18,39 +19,22 @@ const icons = { root: FiGlobe, support: FiLayers, design: FiHexagon, engineering
 const label = (value: string) => value.charAt(0).toUpperCase() + value.slice(1).replace(/_/g, " ");
 const isPhase = (tab: Tab): tab is LifecyclePhase => tab !== "root" && tab !== "support";
 
-/** Dedicated chat membership read: loading, failure and unassigned are distinct. */
+/** Shared workspace read, with imperative refreshes fenced to the current chat. */
 function useActionMembership(workspaceId: string | null, sessionId: string | null, active: boolean) {
   const scope = JSON.stringify([workspaceId, sessionId, active]);
   const fence = useRef({ scope, epoch: 0 });
   if (fence.current.scope !== scope) fence.current = { scope, epoch: fence.current.epoch + 1 };
-  const [result, setResult] = useState<{ scope: string; overview: WorkstreamOverview | null; loading: boolean; failed: boolean } | null>(null);
-  const [retry, setRetry] = useState(0);
+  const state = useWorkstreamOverviewState(workspaceId, active && !!sessionId);
   useEffect(() => {
-    if (!workspaceId || !sessionId || !active) return;
-    const epoch = ++fence.current.epoch;
-    let mounted = true;
-    setResult({ scope, overview: null, loading: true, failed: false });
-    loadWorkstreams(workspaceId).then(overview => {
-      if (mounted && fence.current.epoch === epoch) setResult({ scope, overview, loading: false, failed: false });
-    }).catch(() => {
-      if (mounted && fence.current.epoch === epoch) setResult({ scope, overview: null, loading: false, failed: true });
-    });
-    return () => { mounted = false; fence.current.epoch++; };
-  }, [scope, retry, workspaceId, sessionId, active]);
-  const current = result?.scope === scope ? result : null;
+    return () => { fence.current.epoch++; };
+  }, [scope]);
   async function refresh() {
     if (!workspaceId || !sessionId || !active) throw new Error("Chat is inactive");
     const epoch = ++fence.current.epoch;
-    try {
-      const overview = await loadWorkstreams(workspaceId);
-      if (fence.current.scope !== scope || fence.current.epoch !== epoch) throw new Error("Chat changed");
-      setResult({ scope, overview, loading: false, failed: false });
-    } catch (error) {
-      if (fence.current.scope === scope && fence.current.epoch === epoch) setResult({ scope, overview: null, loading: false, failed: true });
-      throw error;
-    }
+    await refreshWorkstreamOverview(workspaceId, { force: true });
+    if (fence.current.scope !== scope || fence.current.epoch !== epoch) throw new Error("Chat changed");
   }
-  return { overview: active ? current?.overview ?? null : null, loading: active && (!current || current.loading), failed: active && !!current?.failed, retry: () => setRetry(value => value + 1), refresh };
+  return { overview: state.overview, loading: active && !state.overview && state.loading, failed: active && !!state.error, retry: () => { void refresh().catch(() => {}); }, refresh };
 }
 
 export function ChatWorkstreamActions({ conversation, active, onDocuments }: { conversation?: Conversation; active: boolean; onDocuments?: (identity: DocumentReviewStart) => void }) {
@@ -130,7 +114,7 @@ export function WorkstreamActionsDialog({ workspaceId, detail: initialDetail, se
   const current = (epoch: number) => guard.current.mounted && guard.current.epoch === epoch && callbacks.current.isCurrent();
 
   async function read(epoch: number) {
-    const overview = await loadWorkstreams(identity.workspaceId);
+    const overview = await refreshWorkstreamOverview(identity.workspaceId, { force: true });
     if (!current(epoch)) throw new Error("Scope changed");
     if (overview.repositoryId !== identity.repositoryId) throw new Error("Repository changed");
     const fresh = overview.workstreams.find(item => item.workstream.id === identity.id);

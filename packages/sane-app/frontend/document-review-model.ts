@@ -2,7 +2,8 @@ import { useEffect, useRef, useState } from "react";
 import type { WorkstreamDocument, WorkstreamDocumentCatalog, WorkstreamDocumentPhase } from "../src/workstreams-contract";
 import { catalog } from "./catalog";
 import { store, type SendOutcome, type State } from "./store";
-import { loadWorkstreams, refKey, workstreamRequest } from "./workstreams-client";
+import { refKey, workstreamRequest } from "./workstreams-client";
+import { refreshWorkstreamOverview } from "./workstream-overview";
 import { assignmentDocumentDefault } from "./assignment-semantics";
 
 export const reviewPhases: WorkstreamDocumentPhase[] = ["design", "engineering", "planning", "execution", "research", "resources"];
@@ -49,7 +50,7 @@ export function useDocumentReview(state: State, active: boolean, sendDisabled: b
   };
 
   async function readCatalog(identity: DocumentReviewStart, epoch: number) {
-    const overview = await loadWorkstreams(identity.workspaceId);
+    const overview = await refreshWorkstreamOverview(identity.workspaceId, { force: true });
     if (!valid(epoch)) throw new Error("Conversation changed; reopen Documents.");
     const members = overview.conversations.filter(row => row.sessionId === identity.sessionId);
     if (overview.repositoryId !== identity.repositoryId || members.length !== 1 || members[0].conversation?.repositoryId !== identity.repositoryId || members[0].conversation.workstreamId !== identity.workstreamId || !overview.workstreams.some(row => row.workstream.id === identity.workstreamId && row.workstream.repositoryId === identity.repositoryId)) throw new Error("Repository or workstream membership changed. Cancel and reopen Documents.");

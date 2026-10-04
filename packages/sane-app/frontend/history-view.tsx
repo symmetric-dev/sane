@@ -35,7 +35,8 @@ export function HistoryDetail({ state, previewId, onOpen }: { state: State; prev
   const repository = useSyncExternalStore(catalog.subscribe, catalog.snapshot);
   const conversation = state.conversations.find(c => c.id === previewId) ?? null;
   const overview = useWorkstreamOverview(conversation?.workspaceId ?? null);
-  const membership = useMemo(() => (conversation ? buildWorkstreamMap(overview, state.conversations).get(conversation.id) : undefined), [overview, state.conversations, conversation]);
+  const membershipMap = useMemo(() => buildWorkstreamMap(overview, []), [overview]);
+  const membership = conversation ? membershipMap.get(conversation.id) : undefined;
   const { runs, loading, error } = usePreviewRuns(previewId);
   if (!conversation) return <section className="history-detail" aria-label="Session preview"><p className="eyebrow">SESSION PREVIEW</p><h2>No session selected</h2><p className="muted">Choose a session on the left to preview its metadata. Opening chat only happens via Open in Chat.</p></section>;
   const workspace = repository.workspaces.find(w => w.workspaceId === conversation.workspaceId);
