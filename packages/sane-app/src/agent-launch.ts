@@ -1,5 +1,6 @@
 import { readFile } from "node:fs/promises";
 import { join } from "node:path";
+import { createHash } from "node:crypto";
 import { isStoredAssistantAgentId, isWorkerAgentId, nativeAgentId, type StoredSaneAgentIdentity, type WorkerAgentId } from "sane-core/agent-catalog";
 import { frameworkContext, sessionContext, workerContext } from "sane-core/sane-context";
 import type { RepositoryDomain } from "sane-core/server";
@@ -7,6 +8,8 @@ import type { ConversationRef } from "sane-core/contracts";
 import type { AgentSnapshot, CanonicalAgentSnapshot, Run, SaneSessionContext, Session } from "./history";
 import type { ResolvedAgentLaunch } from "./agent-profiles-contract";
 import type { ExecutionContext } from "./workstreams";
+
+export const sha256 = (content: string | Uint8Array) => createHash("sha256").update(content).digest("hex");
 
 /** Safe to persist/display: messages contain only our diagnostic and exact native agent ID. */
 export class AgentLaunchConfigurationError extends Error {}
@@ -83,5 +86,10 @@ export async function claudeAgentSettings(claudeRoot: string, identity: StoredSa
     if (rules !== undefined && (!Array.isArray(rules) || !rules.every(rule => typeof rule === "string"))) throw new AgentLaunchConfigurationError(`Invalid installed permission rules for ${agent}; ${recovery}`);
   }
   if (Array.isArray(ask) && ask.length) permissions.allow = [...new Set([...((permissions.allow as string[] | undefined) ?? []), ...ask])];
-  return { agent, permissions };
+  // `--agent` resolves the installed definition under CLAUDE_CONFIG_DIR; record exactly which bytes launch.
+  const agentPath = join(claudeRoot, "agents", `${agent}.md`);
+  let definition: Buffer;
+  try { definition = await readFile(agentPath); }
+  catch { throw new AgentLaunchConfigurationError(`Missing installed agent definition for ${agent}; ${recovery}`); }
+  return { agent, permissions, agentFile: { path: agentPath, sha256: sha256(definition) } };
 }

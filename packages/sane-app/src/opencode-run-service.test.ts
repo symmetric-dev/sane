@@ -21,7 +21,7 @@ function fixture(compact = false) {
   const oc: OpenCodeRunAdapter = {
     async assertIdle() { trace.push("idle"); },
     async select() { trace.push("select"); },
-    async bindSaneSession() {},
+    async bindSaneSession() { return false; },
     async prompt(id, commandId, text, beforeSend) { trace.push("prompt"); beforeSend?.(); return { id: commandId, time: { created: 5 } }; },
     async snapshot(id, commandId, cwd) { trace.push(`snapshot:${commandId}`); return { messages: [message(commandId)], outcome: "succeeded", pending: false }; },
     async interactions() { trace.push("interactions"); return []; },
@@ -36,6 +36,8 @@ function fixture(compact = false) {
     async emit(run, kind, data) { trace.push(`emit:${kind}`); records.push({ runId: run.runId, sessionId: run.sessionId, seq: records.length + 1, time: run.createdAt, kind, data }); },
     async persist() { trace.push(`persist:${run.nativePhase}:${run.status}`); persisted.push(structuredClone(run)); },
     async execution() { trace.push("execution"); return "/fixture"; },
+    async executionContext() { return { executionCheckout: "/fixture", workstreamId: null, artifactsRoot: null }; },
+    takeFrameworkDelivery: () => undefined,
     async compactExecution() { trace.push("compactExecution"); return "/fixture"; },
     async refreshCompactHistory() { trace.push("refresh"); },
     assertWorkerDeliverySubmission() { trace.push("workerGate"); if (owner.workerDeliveryId && (owner.stopRequested || state.closing || state.storageFailed || state.currentOwner !== owner || session.hidden)) throw new Error("worker withheld"); },
@@ -52,7 +54,7 @@ function fixture(compact = false) {
 test("prompt publishes preparing, sending and accepted in the original event order", async () => {
   const f = fixture();
   await f.service.executeNative(f.owner, "hello", true, f.accepted);
-  expect(f.trace).toEqual(["emit:status", "emit:submission", "persist:preparing:running", "execution", "idle", "select", "persist:sending:running", "execution", "workerGate", "ready:true", "prompt", "persist:accepted:running", "snapshot:msg_request", "emit:message", "emit:status", "persist:accepted:completed", "ready:false"]);
+  expect(f.trace).toEqual(["emit:status", "emit:submission", "persist:preparing:running", "execution", "idle", "select", "emit:launch", "emit:context", "persist:sending:running", "execution", "workerGate", "ready:true", "prompt", "persist:accepted:running", "snapshot:msg_request", "emit:message", "emit:status", "persist:accepted:completed", "ready:false"]);
   expect(f.persisted.map(r => [r.nativePhase, r.status])).toEqual([["preparing", "running"], ["sending", "running"], ["accepted", "running"], ["accepted", "completed"]]);
   expect(f.run.nativeAcceptedAt).toBe(5); expect(f.session.lastStatus).toBe("completed");
   expect(f.state.currentOwner).toBe(f.owner); expect(f.owner.settled).toBe(false);
@@ -218,7 +220,7 @@ test("direct stop waits for native submission and returns its cancellation ackno
 
 test("coalesced compact admitted ID is durable before observation and idle is checked after refresh", async () => {
   const f = fixture(true); await f.service.executeNativeCompact(f.owner);
-  expect(f.trace).toEqual(["compactExecution", "idle", "persist:sending:running", "compactExecution", "idle", "compact", "persist:accepted:running", "compactExecution", "compactSnapshot:msg_coalesced", "emit:message", "activity", "refresh", "activity", "emit:status", "persist:accepted:completed"]);
+  expect(f.trace).toEqual(["compactExecution", "idle", "emit:launch", "emit:context", "persist:sending:running", "compactExecution", "idle", "compact", "persist:accepted:running", "compactExecution", "compactSnapshot:msg_coalesced", "emit:message", "activity", "refresh", "activity", "emit:status", "persist:accepted:completed"]);
   expect(f.persisted[1]?.compact?.nativeAdmittedId).toBe("msg_coalesced");
   expect(f.run.nativeCommandId).toBe("msg_request"); expect(f.owner.nativeDispatched).toBe(true); expect(f.run.status).toBe("completed");
   expect(f.records.some(e => e.kind === "submission")).toBe(false);

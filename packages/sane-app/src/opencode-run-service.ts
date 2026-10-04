@@ -1,6 +1,9 @@
 import type { Event, Run, Session, Status } from "./history";
 import { OpenCodeError, normalizeMessage, type OpenCodeAdapter } from "./opencode";
 import type { RunOwner } from "./run-owner";
+import type { ExecutionContext } from "./workstreams";
+import { snapshotIdentity } from "./agent-launch";
+import { nativeAgentId } from "sane-core/agent-catalog";
 
 /** Native transport only; owner arbitration and durable writes remain in the bridge. */
 export type OpenCodeRunAdapter = Pick<OpenCodeAdapter, "assertIdle" | "select" | "bindSaneSession" | "prompt" | "snapshot" | "interactions" | "compact" | "compactionSnapshot" | "activity" | "cancel">;
@@ -14,6 +17,10 @@ export type OpenCodeRunDependencies = {
   emit: (run: Run, kind: Event["kind"], data: unknown) => Promise<void>;
   persist: () => Promise<void>;
   execution: (sessionId: string) => Promise<string>;
+  /** Workstream membership and roots recorded in launch evidence. */
+  executionContext: (sessionId: string) => Promise<ExecutionContext>;
+  /** The acknowledged creation-time framework delivery not yet journaled; removed on read. */
+  takeFrameworkDelivery: (sessionId: string) => FrameworkDelivery | undefined;
   compactExecution: (session: Session) => Promise<string>;
   refreshCompactHistory: (owner: RunOwner) => Promise<void>;
   assertWorkerDeliverySubmission: (owner: RunOwner) => void;
@@ -23,6 +30,7 @@ export type OpenCodeRunDependencies = {
   sleep: (ms: number) => Promise<unknown>;
 };
 
+export type FrameworkDelivery = { messageId: string; sha256: string; chars: number };
 const compactCommand = (text: string) => /^\s*\/compact(?:\s|$)/i.test(text);
 const record = (value: unknown): value is Record<string, unknown> => value !== null && typeof value === "object";
 
@@ -35,6 +43,19 @@ export class OpenCodeRunService {
     this.deps.session(owner.run.sessionId).lastStatus = status;
     await this.deps.emit(owner.run, "status", { status, ...(reason ? { reason } : {}) });
     await this.deps.persist();
+  }
+  /** Launch inputs as journal evidence, after selection and binding and before native submission. */
+  private async launchEvidence(owner: RunOwner, resume: boolean, block: string | null, changed: boolean) {
+    const run = owner.run, session = this.deps.session(run.sessionId), compact = run.operation === "compact";
+    const delivery = this.deps.takeFrameworkDelivery(session.sessionId);
+    if (delivery) await this.deps.emit(run, "context", { type: "framework-delivered", ...delivery });
+    const context = await this.deps.executionContext(session.sessionId), identity = snapshotIdentity(run);
+    await this.deps.emit(run, "launch", {
+      harness: "opencode", resume, operation: run.operation ?? "prompt", workstreamId: context.workstreamId, workstreamRoot: context.artifactsRoot, implementationRoot: run.cwd,
+      agent: run.agent ?? null, saneContextVersion: run.saneContextVersion ?? null,
+      nativeAgent: run.nativeAgentSelected && identity ? nativeAgentId(identity, "opencode") : null, model: compact ? null : run.model ?? null, variant: compact ? null : run.effort ?? null,
+    });
+    await this.deps.emit(run, "context", { type: "session-block", changed, text: block });
   }
   async monitorNative(owner: RunOwner) {
     const run = owner.run;
@@ -126,7 +147,8 @@ export class OpenCodeRunService {
       if (this.deps.closing() || owner.stopRequested) throw new Error("Stopped before native compaction submission");
       await this.deps.compactExecution(session);
       await this.deps.oc.assertIdle(session.nativeSessionId!, session.cwd);
-      await this.deps.oc.bindSaneSession(session.nativeSessionId!, await this.deps.saneSession(session.sessionId));
+      const block = await this.deps.saneSession(session.sessionId);
+      await this.launchEvidence(owner, true, block, await this.deps.oc.bindSaneSession(session.nativeSessionId!, block));
       if (this.deps.closing() || this.deps.storageFailed() || owner.stopRequested) throw new Error("Bridge unavailable before native compaction submission");
       run.nativePhase = "sending"; await this.deps.persist();
       await this.deps.compactExecution(session);
@@ -184,7 +206,8 @@ export class OpenCodeRunService {
       run.cwd = await this.deps.execution(session.sessionId);
       await this.deps.oc.assertIdle(session.nativeSessionId!, run.cwd);
       await this.deps.oc.select(session.nativeSessionId!, run.model, run.effort);
-      await this.deps.oc.bindSaneSession(session.nativeSessionId!, await this.deps.saneSession(session.sessionId));
+      const block = await this.deps.saneSession(session.sessionId);
+      await this.launchEvidence(owner, resume, block, await this.deps.oc.bindSaneSession(session.nativeSessionId!, block));
       if (this.deps.closing() || owner.stopRequested) { await this.finishNative(owner, "interrupted", "Stopped before native submission"); ready(false); return; }
       run.nativePhase = "sending"; await this.deps.persist();
       if (this.deps.closing() || this.deps.storageFailed() || owner.stopRequested) throw new Error("Bridge unavailable before native submission");

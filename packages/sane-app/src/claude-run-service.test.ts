@@ -41,6 +41,7 @@ function fixture(stdout = bytes([wire(success)]), stderr = bytes()) {
     persist: async () => { calls.push("persist"); },
     enqueue: async action => { calls.push("enqueue"); await action(); },
     execution: async () => { calls.push("execution"); return "/checkout"; },
+    executionContext: async () => ({ executionCheckout: "/checkout", workstreamId: null, artifactsRoot: null }),
     compactExecution: async () => { calls.push("compactExecution"); return "/checkout"; },
     refreshCompactHistory: async () => { state.refreshed++; },
     assertWorkerDeliverySubmission: () => { calls.push("workerGate"); },
@@ -54,7 +55,7 @@ function fixture(stdout = bytes([wire(success)]), stderr = bytes()) {
     execPath: "/runtime's bun",
     env: { HOME: "/home", PATH: "/bin", CLAUDE_CONFIG_DIR: "/old", CC_WEB_HOOK_SECRET: "old-secret", OPENCODE_SERVER_URL: "old", OPENCODE_SESSION_ID: "old", OPENCODE_TOKEN: "old", SANE_CALLER_CONTEXT: "old", BUN_INSPECT: "old", NODE_OPTIONS: "old", UNRELATED: "kept", OMITTED: undefined },
     writeSettings: async (path, content) => { writes.push([path, content]); },
-    agentSettings: async () => ({ agent: "sane-design", permissions: { allow: ["Read"], deny: ["Bash"] } }),
+    agentSettings: async () => ({ agent: "sane-design", permissions: { allow: ["Read"], deny: ["Bash"] }, agentFile: { path: "/claude/agents/sane-design.md", sha256: "0".repeat(64) } }),
   };
   // Construct after tests have customized callbacks/primitives. This also makes
   // every test's runtime independent, with no global Bun/process mocks.
@@ -72,10 +73,10 @@ test("successful owned launch preserves journal order, flags, settings, credenti
   await f.service().execute(f.owner, "hello", true, f.accepted);
   expect(f.run.status).toBe("completed"); expect(f.session.lastStatus).toBe("completed"); expect(f.run.endedAt).toBeString();
   expect(f.ready).toEqual([true, false]);
-  expect(f.calls.slice(0, 8)).toEqual(["emit:status", "emit:submission", "persist", "execution", "enqueue", "execution", "workerGate", "spawn"]);
+  expect(f.calls.slice(0, 9)).toEqual(["emit:status", "emit:submission", "persist", "execution", "enqueue", "emit:launch", "execution", "workerGate", "spawn"]);
   expect(f.calls.indexOf("ready:true")).toBeLessThan(f.calls.indexOf("stdin:hello"));
   expect(f.spawned()?.args).toEqual(["/fake-claude", "-p", "--permission-mode", "bypassPermissions", "--output-format", "stream-json", "--verbose", "--resume", nativeId, "--settings", `/app/${f.run.runId}.settings.json`, "--agent", "sane-design", "--model", "model", "--effort", "high"]);
-  expect(f.spawned()?.options).toEqual({ cwd: "/checkout", detached: true, stdin: "pipe", stdout: "pipe", stderr: "pipe", env: { HOME: "/home", PATH: "/bin", UNRELATED: "kept", CLAUDE_CONFIG_DIR: "/claude", CLAUDE_CODE_PROJECT_DIR_NAME: "", CC_WEB_HOOK_URL: "http://127.0.0.1:4567", CC_WEB_RUN_ID: f.run.runId, CC_WEB_HOOK_SECRET: secret } });
+  expect(f.spawned()?.options).toEqual({ cwd: "/checkout", detached: true, stdin: "pipe", stdout: "pipe", stderr: "pipe", env: { HOME: "/home", PATH: "/bin", UNRELATED: "kept", CLAUDE_CONFIG_DIR: "/claude", CLAUDE_CODE_PROJECT_DIR_NAME: "", CC_WEB_HOOK_URL: "http://127.0.0.1:4567", CC_WEB_RUN_ID: f.run.runId, CC_WEB_HOOK_SECRET: secret, CC_WEB_HOOK_ERRORS: `/app/${f.run.runId}.hook-errors.jsonl` } });
   const settings = JSON.parse(f.writes[0]![1]);
   expect(Object.keys(settings.hooks)).toEqual([...hookEvents]);
   expect(settings.hooks.Stop[0].hooks[0]).toEqual({ type: "command", command: "'/runtime'\\''s bun' '/package'\\''s root/hooks/forward.ts' 'Stop'", timeout: 3 });
@@ -146,7 +147,7 @@ test("ordinary /compact is rejected; dedicated compact uses compact preflight an
 test("compact prelaunch failure and worker delivery record explicit non-submission", async () => {
   const f = fixture(); f.run.operation = "compact"; f.owner.workerDeliveryId = "delivery"; f.owner.stopRequested = true;
   await f.service().execute(f.owner, "/compact", true, f.accepted);
-  expect(statusData(f)).toContainEqual({ status: "interrupted", operation: "compact", compactNotSubmitted: true, reason: "CLI launch, stream, or shutdown failure" });
+  expect(statusData(f)).toContainEqual({ status: "interrupted", operation: "compact", compactNotSubmitted: true, reason: "CLI launch, stream, or shutdown failure", error: "Closing before launch" });
   expect(statusData(f).at(-1)).toEqual({ status: "interrupted", workerDeliveryNotSubmitted: "delivery" });
   expect(f.state.refreshed).toBe(0);
 });

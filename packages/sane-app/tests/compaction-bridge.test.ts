@@ -61,18 +61,22 @@ describe.serial("compaction bridge (isolated installation, offline fake Claude C
     const packageDir = join(root, "installation"), profileRoot = join(root, "claude-profile");
     dataDir = join(root, "appdata"); repoDir = join(root, "repo"); log = join(root, "invocations.jsonl");
     fixtureAssets(packageDir);
-    mkdirSync(repoDir); mkdirSync(join(profileRoot, "sane-agent-settings"), { recursive: true }); mkdirSync(join(root, "oc"));
+    mkdirSync(repoDir); mkdirSync(join(profileRoot, "sane-agent-settings"), { recursive: true }); mkdirSync(join(profileRoot, "agents")); mkdirSync(join(root, "oc"));
     process.env.CLAUDE_CONFIG_DIR = profileRoot;
     writeFileSync(join(profileRoot, "sane-agent-settings", "sane-assistant-engineering.settings.json"), JSON.stringify({ permissions: { allow: ["Bash(ls:*)"] } }));
+    writeFileSync(join(profileRoot, "agents", "sane-assistant-engineering.md"), "---\nname: sane-assistant-engineering\n---\n");
     const git = Bun.spawn(["git", "init", repoDir], { stdout: "ignore", stderr: "ignore" });
     if (await git.exited !== 0) throw new Error("fixture git init failed");
     const stub = join(root, "claude-stub.mjs");
     writeFileSync(stub, [
       `#!${process.execPath}`,
-      `import { appendFileSync } from "node:fs";`,
+      `import { appendFileSync, readFileSync } from "node:fs";`,
       `const args = process.argv.slice(2), prompt = await Bun.stdin.text();`,
       `appendFileSync(${JSON.stringify(log)}, JSON.stringify({ args, prompt, cwd: process.cwd() }) + "\\n");`,
       `const i = args.findIndex(a => a === "--session-id" || a === "--resume"), session_id = args[i + 1];`,
+      // Emulate Claude's SessionStart response for the App's framework hook.
+      `const start = JSON.parse(readFileSync(args[args.indexOf("--settings") + 1], "utf8")).hooks.SessionStart.flatMap(e => e.hooks).find(h => h.command.includes("session-start.ts"));`,
+      `if (start) console.log(JSON.stringify({ type: "system", subtype: "hook_response", hook_name: "SessionStart:startup", hook_event: "SessionStart", stdout: JSON.stringify({ hookSpecificOutput: { hookEventName: "SessionStart", additionalContext: readFileSync(start.command.split(" ").at(-1).slice(1, -1), "utf8") } }), exit_code: 0, outcome: "success", session_id }));`,
       `console.log(JSON.stringify({ type: "system", subtype: "init", session_id }));`,
       `if (prompt.startsWith("/compact")) console.log(JSON.stringify({ type: "system", subtype: "compact_boundary", session_id, uuid: crypto.randomUUID(), compact_metadata: { trigger: "manual", pre_tokens: 90000, post_tokens: 12000 } }));`,
       `console.log(JSON.stringify({ type: "result", subtype: "success", is_error: false, session_id, result: "fixture OK" }));`,

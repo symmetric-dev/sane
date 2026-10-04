@@ -167,12 +167,13 @@ export class OpenCodeAdapter {
   async session(id: string) { return (await this.request<{ data: NativeSession }>(this.path(id))).data; }
   /** The per-turn SANE Session block, bound to this exact native session: forks and subagents inherit
    * metadata, and the plugin ignores a foreign sessionID. PATCH replaces metadata wholesale, so other
-   * keys are kept; null removes the binding. Unchanged bindings are not rewritten. */
-  async bindSaneSession(id: string, text: string | null) {
+   * keys are kept; null removes the binding. Unchanged bindings are not rewritten; returns whether it changed. */
+  async bindSaneSession(id: string, text: string | null): Promise<boolean> {
     const { saneContext: current, ...metadata } = (await this.session(id)).metadata ?? {};
     const next = text === null ? undefined : { sessionID: id, text };
-    if (JSON.stringify(current) === JSON.stringify(next)) return;
+    if (JSON.stringify(current) === JSON.stringify(next)) return false;
     await this.request(this.path(id), "PATCH", { metadata: { ...metadata, ...(next ? { saneContext: next } : {}) } });
+    return true;
   }
   /** A fork inherits its source's binding; rebind it to the fork until its first run renders its own. */
   async rebindSaneSession(id: string) {

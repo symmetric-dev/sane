@@ -103,23 +103,28 @@ describe.serial("agent profiles (in-process bridge, stubbed Claude CLI)", () => 
     const profileRoot = join(root, "claude-profile");
     mkdirSync(repoDir, { recursive: true });
     mkdirSync(join(profileRoot, "sane-agent-settings"), { recursive: true });
+    mkdirSync(join(profileRoot, "agents"), { recursive: true });
     mkdirSync(join(root, "oc"), { recursive: true });
     const git = Bun.spawn(["git", "init", repoDir], { stdout: "ignore", stderr: "ignore" });
     if ((await git.exited) !== 0) throw new Error("git init failed");
     // Installed permission profiles for the assistants this suite launches.
     for (const role of ["research", "engineering", "design"]) {
       writeFileSync(join(profileRoot, "sane-agent-settings", `sane-assistant-${role}.settings.json`), JSON.stringify({ permissions: { allow: ["Bash(ls:*)"] } }));
+      writeFileSync(join(profileRoot, "agents", `sane-assistant-${role}.md`), `---\nname: sane-assistant-${role}\n---\n`);
     }
     argvLog = join(root, "claude-argv.jsonl");
     stubPath = join(root, "claude-stub.mjs");
     writeFileSync(stubPath, [
       `#!${process.execPath}`,
-      `import { appendFileSync } from "node:fs";`,
+      `import { appendFileSync, readFileSync } from "node:fs";`,
       `const args = process.argv.slice(2);`,
       `appendFileSync(${JSON.stringify(argvLog)}, JSON.stringify(args) + "\\n");`,
       `await Bun.stdin.text();`,
       `const i = args.findIndex(a => a === "--session-id" || a === "--resume");`,
       `const session_id = args[i + 1];`,
+      // Emulate Claude's SessionStart response for the App's framework hook.
+      `const start = JSON.parse(readFileSync(args[args.indexOf("--settings") + 1], "utf8")).hooks.SessionStart.flatMap(e => e.hooks).find(h => h.command.includes("session-start.ts"));`,
+      `if (start) console.log(JSON.stringify({ type: "system", subtype: "hook_response", hook_name: "SessionStart:startup", hook_event: "SessionStart", stdout: JSON.stringify({ hookSpecificOutput: { hookEventName: "SessionStart", additionalContext: readFileSync(start.command.split(" ").at(-1).slice(1, -1), "utf8") } }), exit_code: 0, outcome: "success", session_id }));`,
       `console.log(JSON.stringify({ type: "system", subtype: "init", session_id }));`,
       `console.log(JSON.stringify({ type: "result", subtype: "success", is_error: false, session_id, result: "OK" }));`,
       "",
@@ -194,7 +199,7 @@ describe.serial("agent profiles (in-process bridge, stubbed Claude CLI)", () => 
     expect(builtinDelete.body.error).toBe("Builtin profiles cannot be deleted");
 
     // Assistant variants may resolve against the installed agent's model.
-    const agentDefault = await put("/api/agents/template:knowledge", { harness: "opencode", effort: "high" });
+    const agentDefault = await put("/api/agents/template:curation", { harness: "opencode", effort: "high" });
     expect(agentDefault.status).toBe(200);
     expect(agentDefault.body.profile).toMatchObject({ model: "", effort: "high" });
     const before = diskAgents();

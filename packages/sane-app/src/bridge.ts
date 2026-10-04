@@ -9,11 +9,11 @@ import { resolveAppConfig } from "./app-config";
 import { buildAssets, validateAssets } from "./asset-build";
 import { acquireInstallation, acquireData, validateOwnershipPaths, type OwnershipHandle } from "./installation-ownership";
 import { claudeSourceRoot } from "./claude-source";
-import { decodeLog, validModel, validEffort, validVariant, validCompactRequest, uuid, efforts, type Session, type Run, type Event, type Metadata } from "./history";
+import { decodeLog, validModel, validEffort, validVariant, validCompactRequest, uuid, efforts, type SaneSessionContext, type Session, type Run, type Event, type Metadata } from "./history";
 import { projectCompactions } from "./compaction";
 import type { CompactEligibility, CompactRequest, CompactResponse } from "./oc-contract";
 import { OpenCodeAdapter, OpenCodeError } from "./opencode";
-import { OpenCodeRunService } from "./opencode-run-service";
+import { OpenCodeRunService, type FrameworkDelivery } from "./opencode-run-service";
 import type { RunOwner as Owner } from "./run-owner";
 import { WorkspaceService, WorkspaceError, workspaceError } from "./workspace";
 import { CatalogService } from "./catalog";
@@ -35,7 +35,7 @@ import { workerDeliveryEvidence, workerReportPrompt } from "./worker-outbox";
 import { restoreWorkerOutput, workerOutput } from "./worker-output";
 import { DEFAULT_MAX_WORKERS_PER_CHECKOUT, workerResults, type WorkerDelivery } from "./worker-contract";
 import { ASSISTANT_AGENT_DESCRIPTIONS, ASSISTANT_AGENT_IDS, ASSISTANT_AGENT_LABELS, isAssistantAgentId, isStoredAssistantAgentId, nativeAgentId } from "sane-core/agent-catalog";
-import { agentLaunchSnapshot, claudeAgentSettings, saneContextSnapshot, saneContextText, saneFrameworkMessageId, saneSessionContext, saneSessionText, workerAssignment } from "./agent-launch";
+import { agentLaunchSnapshot, claudeAgentSettings, saneContextSnapshot, saneContextText, saneFrameworkMessageId, saneSessionContext, saneSessionText, sha256, workerAssignment } from "./agent-launch";
 import { readClaudeHistory, forkClaudeHistory, verifyClaudeFork, coveredNativeRuns, type ReconciledHistory } from "./reconcile";
 import { BranchStore, type BranchOperation } from "./branches";
 import { NativeHistoryCache, TranscriptError, TranscriptService } from "./transcript-service";
@@ -180,6 +180,13 @@ async function startOwned(options: Options, assetsDir: string, packageDir: strin
   const executionContext = async (sessionId: string) => { const a = admissions.get(sessionId); if (!a) throw new WorkstreamAdapterError(409, "admission-missing", "Conversation has no durable admission"); return router!.execution(a); };
   const execution = async (sessionId: string) => (await executionContext(sessionId)).executionCheckout;
   const saneSession = async (sessionId: string) => saneSessionText(meta.sessions.find(s => s.sessionId === sessionId)!, await executionContext(sessionId));
+  // Acknowledged at OC creation, before any run exists; the session's first run journals it.
+  const frameworkDeliveries = new Map<string, FrameworkDelivery>();
+  const deliverSaneFramework = async (nativeId: string, sessionId: string, context: SaneSessionContext) => {
+    const messageId = saneFrameworkMessageId(sessionId), text = saneContextText(context);
+    await oc.deliverSaneFramework(nativeId, messageId, text);
+    frameworkDeliveries.set(sessionId, { messageId, sha256: sha256(text), chars: text.length });
+  };
   const domainProtectedPaths: string[] = [];
   const workspace = new WorkspaceService(async (id, operation) => {
     const session = meta.sessions.find(session => session.sessionId === id);
@@ -281,7 +288,7 @@ async function startOwned(options: Options, assetsDir: string, packageDir: strin
     owns: owner => owners.get(owner.run.sessionId) === owner,
     closing: () => closing, storageFailed: () => storageFailed, retained: () => retainOwner,
     requireReconciliation: () => { retainOwner = true; meta.reconciliationRequired = true; },
-    failClosed, emit, persist, enqueue, execution, compactExecution,
+    failClosed, emit, persist, enqueue, execution, executionContext, compactExecution,
     refreshCompactHistory, assertWorkerDeliverySubmission, saneSession,
   });
   const handoffs = new HandoffService(admissions, catalog, router, store.sources, () => meta.sessions, () => {
@@ -342,7 +349,7 @@ async function startOwned(options: Options, assetsDir: string, packageDir: strin
         if (!meta.sessions.some(s => s.sessionId === sessionId)) {
           if (harness === "opencode" && !launch) launch = await oc.recoverLaunch(a.nativeId, cwd, config?.agent ?? nativeAgentId({ kind: "assistant", role }, harness));
           const sane = harness === "claude-code" || launch ? saneSessionContext({ kind: "assistant", role }) : {};
-          if (harness === "opencode" && sane.saneContext) await oc.deliverSaneFramework(a.nativeId, saneFrameworkMessageId(sessionId), saneContextText(sane.saneContext));
+          if (harness === "opencode" && sane.saneContext) await deliverSaneFramework(a.nativeId, sessionId, sane.saneContext);
           meta.sessions.push({ sessionId, nativeSessionId: a.nativeId, harness, authorityId: a.source.authorityId, cwd, lastStatus: "unknown", lastRunId: null,
             ...(config ? { profileId: config.profileId, ...(harness === "claude-code" ? { ...(config.model ? { model: config.model } : {}), ...(config.effort ? { effort: config.effort } : {}) } : {}) } : {}),
             ...(harness === "claude-code" || launch ? { agent: role, agentKind: "assistant", nativeAgentSelected: true, ...sane } : {}),
@@ -776,7 +783,8 @@ async function startOwned(options: Options, assetsDir: string, packageDir: strin
     oc, closing: () => closing, storageFailed: () => storageFailed,
     currentOwner: sessionId => owners.get(sessionId),
     session: sessionId => meta.sessions.find(s => s.sessionId === sessionId)!,
-    events: runId => events.get(runId) ?? [], emit, persist, execution,
+    events: runId => events.get(runId) ?? [], emit, persist, execution, executionContext,
+    takeFrameworkDelivery: sessionId => { const delivery = frameworkDeliveries.get(sessionId); frameworkDeliveries.delete(sessionId); return delivery; },
     compactExecution, refreshCompactHistory, assertWorkerDeliverySubmission,
     workerHasRun: runId => workerStore.hasRun(runId), sleep: ms => Bun.sleep(ms), saneSession,
   });
@@ -905,7 +913,7 @@ async function startOwned(options: Options, assetsDir: string, packageDir: strin
           const child = { harness: a.source.descriptor.harness, authorityId: a.source.authorityId, nativeId: a.nativeId! };
           const { saneContext } = saneSessionContext(w.launch.identity, workerAssignment((await router!.forAdmission(a))!.domain, child, w.parent.native, w.input.worker, w.input.jobs ?? [], w.id));
           if (!saneContext) throw new Error("Worker launch has no SANE worker identity");
-          if (harness === "opencode") await oc.deliverSaneFramework(a.nativeId!, saneFrameworkMessageId(w.sessionId), saneContextText(saneContext));
+          if (harness === "opencode") await deliverSaneFramework(a.nativeId!, w.sessionId, saneContext);
           session.saneContext = saneContext;
         } catch (e) {
           const summary = `Worker assignment unavailable: ${e instanceof Error ? e.message : "context resolution failed"}`;
@@ -1088,6 +1096,14 @@ async function startOwned(options: Options, assetsDir: string, packageDir: strin
     try { return await attempt; } catch (e) { if (owner.cancel === attempt) owner.cancel = undefined; throw e; }
   }
   const handoffProblems = new Map<string, string>();
+  /** The Map is the live projection; each new problem is also durable handoff audit evidence. */
+  async function recordHandoffProblem(workspaceId: string, id: string, problem: string) {
+    if (handoffProblems.get(id) === problem) return;
+    try {
+      (await router!.forWorkspace(workspaceId)).domain.recordHandoffProblem(id, problem.slice(0, 8000), { actor: { kind: "system" }, correlationId: id });
+      handoffProblems.set(id, problem);
+    } catch (error) { handoffProblems.set(id, `${problem}; durable problem record failed: ${error instanceof Error ? error.message : String(error)}`); }
+  }
   async function reconcileHandoff(workspaceId: string, id: string) {
     const domain = (await router!.forWorkspace(workspaceId)).domain;
     let h = domain.getHandoff(id);
@@ -1103,7 +1119,7 @@ async function startOwned(options: Options, assetsDir: string, packageDir: strin
     if (run.status === "completed" && accepted) advance("completed", `Correlated native delivery-run success in App run ${run.runId}; not task completion or user approval`);
     else if (run.status === "failed") advance("failed", `Terminal failure recorded in App run ${run.runId}`);
     else if (run.status === "interrupted" && h.recipient.harness === "oc") advance("failed", `Native interruption recorded in App run ${run.runId}`);
-    else if (run.status === "interrupted") handoffProblems.set(h.id, "Execution interrupted; inspect native state and acknowledge termination with the handoff reconcile endpoint");
+    else if (run.status === "interrupted") await recordHandoffProblem(workspaceId, h.id, "Execution interrupted; inspect native state and acknowledge termination with the handoff reconcile endpoint");
     if (["completed", "failed"].includes(h.status)) handoffReservations.delete(h.recipient.sessionId);
     return h;
   }
@@ -1181,12 +1197,12 @@ async function startOwned(options: Options, assetsDir: string, packageDir: strin
             const sessionId = h.recipient.sessionId;
             if (handoffDispatches.has(sessionId) || handoffReservations.has(sessionId) || !availability(sessionId, true, true, true).canSend) continue;
             const task = Promise.resolve().then(() => dispatchHandoff(w.workspaceId, h.id))
-              .catch(error => { handoffProblems.set(h.id, error instanceof Error ? error.message : "Handoff execution unavailable"); })
+              .catch(error => recordHandoffProblem(w.workspaceId, h.id, error instanceof Error ? error.message : "Handoff execution unavailable"))
               .finally(() => { handoffDispatches.delete(sessionId); });
             handoffDispatches.set(sessionId, task);
           } else await reconcileHandoff(w.workspaceId, h.id);
         }
-        catch (error) { handoffProblems.set(h.id, error instanceof Error ? error.message : "Handoff execution unavailable"); }
+        catch (error) { await recordHandoffProblem(w.workspaceId, h.id, error instanceof Error ? error.message : "Handoff execution unavailable"); }
       }
     }
   }
@@ -1787,7 +1803,7 @@ async function startOwned(options: Options, assetsDir: string, packageDir: strin
           if (harness === "opencode") await admissions.createNative(conversationId, async () => (await oc.createResolved(cwd, nativeLaunch!)).id);
           const a = admissions.get(conversationId)!;
           const sane = input.agent !== undefined ? saneSessionContext({ kind: "assistant", role: input.agent }) : {};
-          if (harness === "opencode" && sane.saneContext) await oc.deliverSaneFramework(a.nativeId!, saneFrameworkMessageId(conversationId), saneContextText(sane.saneContext));
+          if (harness === "opencode" && sane.saneContext) await deliverSaneFramework(a.nativeId!, conversationId, sane.saneContext);
           session = { sessionId: conversationId, harness, nativeSessionId: a.nativeId!, authorityId: a.source.authorityId, cwd, lastStatus: "unknown", lastRunId: null, ...(input.model !== undefined ? { model: input.model } : {}), ...(input.effort !== undefined ? { effort: input.effort } : {}), ...(input.agent !== undefined ? { agent: input.agent, agentKind: "assistant", nativeAgentSelected: true, ...sane } : {}), ...(profile ? { profileId: profile.id } : {}) };
           meta.sessions.push(session); await persist();
           await admissions.register(conversationId);

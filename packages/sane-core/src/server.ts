@@ -335,6 +335,15 @@ export class RepositoryDomain {
       return this.getHandoff(id)
     })
   }
+  /** Durable App delivery diagnostic; audit evidence only, never a state transition. */
+  recordHandoffProblem(id: string, problem: string, context: MutationContext): void {
+    this.transaction(context, () => {
+      if (context.actor.kind !== "system") fail("INVALID_CONTEXT", "App execution owner required.")
+      const h = this.getHandoff(id)
+      text(problem, "handoff problem")
+      this.event(context, "handoff_problem", h.workstreamId, id, { problem, status: h.status, revision: h.revision, runId: h.runId })
+    })
+  }
   getConversation(ref: ConversationRef): Conversation | null { this.guard(); qualified(ref); const row = this.row("SELECT * FROM conversations WHERE harness=? AND authority_id=? AND native_id=?", ref.harness, ref.authorityId, ref.nativeId); return row ? this.conversationDTO(row) : null }
   /** The append-only audit journal is also the durable branch reservation. No
    * existing identities or historical intervals are rewritten. */
