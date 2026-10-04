@@ -16,9 +16,9 @@ const readable = (value: string) => value.replace(/_/g, " ");
 const typeLabels: Record<WorkstreamType, string> = { feature: "Feature", foundation: "Foundation", issue: "Issue", maintenance: "Maintenance" };
 const fileLabels: Record<string, string> = {
   "PRD.md": "Product requirements", "FOUNDATION.md": "Foundation brief",
-  "ISSUE.md": "Issue brief", "MAINTENANCE.md": "Maintenance brief", "SDD.md": "Software design",
+  "ISSUE.md": "Issue brief", "MAINTENANCE.md": "Maintenance brief", "SDD.md": "Solution Design Document",
   "PLAN.md": "Execution plan", "FINAL_REPORT.md": "Final report", "SOLUTION.md": "Solution specification",
-  "VERIFICATION.md": "Verification specification", "SDD_TEMPLATE.md": "Software design template",
+  "VERIFICATION.md": "Verification specification", "SDD_TEMPLATE.md": "Solution Design Document template",
   "SOLUTION_SPEC_TEMPLATE.md": "Solution specification template", "RESEARCH_REPORT_TEMPLATE.md": "Research report template",
   "PLAN_TEMPLATE.md": "Execution plan template", "JOB_TEMPLATE.md": "Job specification template",
   "VERIFICATION_SPEC_TEMPLATE.md": "Verification specification template", "EXECUTION_REPORT_TEMPLATE.md": "Job report template",

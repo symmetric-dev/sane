@@ -7,9 +7,9 @@ type Descriptor = Omit<WorkstreamDocument, "exists" | "revision">
 const PHASES: WorkstreamDocumentPhase[] = ["design", "engineering", "planning", "execution", "research", "resources"]
 const TITLES: Record<string, string> = {
   "PRD.md": "Product Requirements", "FOUNDATION.md": "Foundation", "ISSUE.md": "Issue", "MAINTENANCE.md": "Maintenance",
-  "design/SDD.md": "Software Design", "execution/PLAN.md": "Execution Plan", "execution/FINAL_REPORT.md": "Final Report",
+  "design/SDD.md": "Solution Design Document", "execution/PLAN.md": "Execution Plan", "execution/FINAL_REPORT.md": "Final Report",
   "design/solutions/SOLUTION.md": "Solution Specification",
-  "resources/SDD_TEMPLATE.md": "Software design template", "resources/SOLUTION_SPEC_TEMPLATE.md": "Solution specification template",
+  "resources/SDD_TEMPLATE.md": "Solution Design Document template", "resources/SOLUTION_SPEC_TEMPLATE.md": "Solution specification template",
   "resources/RESEARCH_REPORT_TEMPLATE.md": "Research report template", "resources/PLAN_TEMPLATE.md": "Execution plan template",
   "resources/JOB_TEMPLATE.md": "Job specification template", "resources/VERIFICATION_SPEC_TEMPLATE.md": "Verification specification template",
   "resources/EXECUTION_REPORT_TEMPLATE.md": "Job report template", "resources/TEST_REPORT_TEMPLATE.md": "Test report template",
