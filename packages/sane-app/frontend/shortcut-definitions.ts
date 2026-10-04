@@ -11,7 +11,17 @@ export type ShortcutDefinition = CommandBindings & {
   description?: string;
 };
 
-export const GLOBAL_SHORTCUTS: readonly ShortcutDefinition[] = NAVIGATION_HOTKEYS.map(item => ({
+export const WORKSPACE_SELECTOR_SHORTCUT = {
+  id: "workspace.toggle-selector", label: "Toggle workspace selection",
+  scope: { kind: "global" }, owner: "application",
+  bindings: [
+    { ...navigationBinding("ArrowDown", true), platform: "mac" },
+    { ...navigationBinding("ArrowDown", false), platform: "windows-linux" },
+  ],
+  description: "Open or close the workspace selection dialog.",
+} as const satisfies ShortcutDefinition;
+
+export const GLOBAL_SHORTCUTS: readonly ShortcutDefinition[] = [...NAVIGATION_HOTKEYS.map<ShortcutDefinition>(item => ({
   id: `navigation.${item.id}`,
   label: item.label,
   scope: { kind: "global" },
@@ -20,7 +30,7 @@ export const GLOBAL_SHORTCUTS: readonly ShortcutDefinition[] = NAVIGATION_HOTKEY
     { ...navigationBinding(item.key, true), platform: "mac" },
     { ...navigationBinding(item.key, false), platform: "windows-linux" },
   ],
-}));
+})), WORKSPACE_SELECTOR_SHORTCUT];
 
 export const FILE_SHORTCUTS = {
   quickOpen: {

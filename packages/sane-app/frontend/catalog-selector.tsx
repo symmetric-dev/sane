@@ -1,9 +1,12 @@
-import { useEffect, useRef, useState, useSyncExternalStore } from "react";
+import { useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
 import { FiChevronDown } from "react-icons/fi";
 import type { WorktreeRecord } from "../src/catalog-contract";
 import { catalog } from "./catalog";
 import { useStore } from "./store";
 import { ShellDialog } from "./shell-dialog";
+import { useRegisterCommand, type CommandContext } from "./application-commands";
+import { navigationKeyShortcuts } from "./navigation-hotkeys";
+import { WORKSPACE_SELECTOR_SHORTCUT, shortcutHint } from "./shortcut-definitions";
 
 export const worktreeLabel = (worktree: WorktreeRecord) => worktree.branch || (worktree.detached ? "Detached HEAD" : worktree.root.split("/").filter(Boolean).at(-1) || worktree.root);
 
@@ -26,11 +29,22 @@ export function CatalogSelector({ retry }: { retry: () => void }) {
   const [search, setSearch] = useState(""), [cwd, setCwd] = useState(""), [busy, setBusy] = useState(false), [feedback, setFeedback] = useState("");
   const [aliasDraft, setAliasDraft] = useState(""), [aliasBusy, setAliasBusy] = useState(false);
   const dialogIntent = useRef(0);
+  const container = useRef<HTMLDivElement>(null);
   const { navigation } = state;
   const workspace = state.workspaces.find(w => w.workspaceId === navigation.workspaceId);
   const worktree = workspace?.worktrees.find(w => w.worktreeId === navigation.worktreeId);
   const close = () => { dialogIntent.current++; setPanel(null); };
   const show = () => { dialogIntent.current++; setSearch(""); setFeedback(""); setPanel("context"); };
+  useRegisterCommand(useMemo(() => ({
+    ...WORKSPACE_SELECTOR_SHORTCUT,
+    contexts: ["application", "input", "editor", "terminal", "modal"] as const,
+    keyboardEligible: (event: KeyboardEvent, context: CommandContext) => {
+      if (context !== "modal") return true;
+      const dialog = event.target instanceof Element ? event.target.closest('dialog[open], [role="dialog"][aria-modal="true"]') : null;
+      return !!panel && !!dialog && !!container.current?.contains(dialog);
+    },
+    available: () => true, action: () => panel ? close() : show(),
+  }), [panel]));
   useEffect(() => { setAliasDraft(worktree?.alias ?? ""); }, [worktree?.worktreeId, worktree?.alias, panel]);
   const display = worktree ? worktreeDisplay(worktree) : null;
   const fullRef = worktree ? worktreeLabel(worktree) : null;
@@ -74,8 +88,8 @@ export function CatalogSelector({ retry }: { retry: () => void }) {
     </div>
     <small className="muted">Short name for this worktree. Defaults to the short branch name.</small>
   </section>;
-  return <div className="context-switcher">
-    <button type="button" className="workspace-opener" aria-haspopup="dialog" aria-label={openerAria} title={openerTitle} onClick={show}><span>{openerLabel}</span><FiChevronDown size={13} aria-hidden="true" /></button>
+  return <div className="context-switcher" ref={container}>
+    <button type="button" className="workspace-opener" aria-haspopup="dialog" aria-label={openerAria} aria-keyshortcuts={navigationKeyShortcuts("ArrowDown")} title={[openerTitle, `Toggle workspace selection (${shortcutHint(WORKSPACE_SELECTOR_SHORTCUT)})`].filter(Boolean).join(" · ")} onClick={show}><span>{openerLabel}</span><FiChevronDown size={13} aria-hidden="true" /></button>
     {panel && <ShellDialog title={panel === "directory" ? "Open directory" : "Workspace"} close={close}>
       {panel === "directory" ? <form className="open-directory" onSubmit={async event => {
         event.preventDefault();

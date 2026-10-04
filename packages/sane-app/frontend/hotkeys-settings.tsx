@@ -37,10 +37,10 @@ export function HotkeysSettings() {
     <div role="tabpanel" id="hotkeys-panel-global" aria-labelledby="hotkeys-tab-global" hidden={tab !== "global"} tabIndex={0}>
       <section className="interaction" aria-labelledby="hotkeys-navigation">
         <h3 id="hotkeys-navigation">Navigation</h3>
-        <p className="muted">Hold Cmd + Ctrl on Mac, or Ctrl + Alt on Windows and Linux, then press the view’s letter.</p>
+        <p className="muted">Hold Cmd + Ctrl on Mac, or Ctrl + Alt on Windows and Linux, then press the view’s letter or Down Arrow to toggle workspace selection.</p>
         <p className="muted">Use the left Alt key. Right Alt (AltGr) stays available for typing special characters.</p>
         <ShortcutTable definitions={GLOBAL_SHORTCUTS} labelledBy="hotkeys-navigation" />
-        <p className="muted">These shortcuts work in chat inputs, file editors, and the terminal. They pause while a dialog is open and never submit a message. Opening Terminal starts a shell if the selected worktree has none.</p>
+        <p className="muted">These shortcuts work in chat inputs, file editors, and the terminal. They pause while a dialog is open, except workspace selection can be toggled closed with its shortcut. They never submit a message. Opening Terminal starts a shell if the selected worktree has none.</p>
       </section>
     </div>
     <div role="tabpanel" id="hotkeys-panel-files" aria-labelledby="hotkeys-tab-files" hidden={tab !== "files"} tabIndex={0}>
