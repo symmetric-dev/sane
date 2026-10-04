@@ -21,7 +21,7 @@ description: Use after Research Pickup confirmation for investigations and follo
 
 1. Retain the requesting slot and qualified sender identity from `From:` and read the question and referenced evidence.
 2. Investigate within the authorized scope. Ask the user about required scope decisions.
-3. Check the report and registration, then send a Support Reply using `sane_handoff` (`requestId: "<my-readable-unique-id-01>"`, `to: "<requesting slot>"`, `target: <sender identity>`, `message: "<findings, report paths, and limitations>"`). Report blockers when the question cannot be answered.
+3. When the user approves the report and its registration is current, send a Support Reply using `sane_handoff` (`requestId: "<my-readable-unique-id-01>"`, `to: "<requesting slot>"`, `target: <sender identity>`, `message: "<findings, report paths, and limitations>"`). Report blockers to the user when the question cannot be answered.
 
 ## Readiness for Delivery
 

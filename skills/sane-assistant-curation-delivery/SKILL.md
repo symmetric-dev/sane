@@ -17,3 +17,9 @@ remaining questions and recommended improvements. Explain when the review
 supports retaining the current setup.
 
 Discuss the result and remaining questions with the user. Return to Assistance for requested revisions or further development-experience fixes; confirm before expanding the assignment's scope.
+
+## Support Reply
+
+1. Ask whether the user wants the findings returned to the requesting session, unless that return was already requested.
+2. When requested, call `sane_handoff` (`requestId: "<my-readable-unique-id-01>"`, `to: "<requesting slot>"`, `target: <sender identity>`, `message: "<findings, changed paths, and remaining gaps>"`). If the assignment has no originating session, ask the user which session should receive the findings and use their selected target.
+3. Summarize delivery and the next action for the user.

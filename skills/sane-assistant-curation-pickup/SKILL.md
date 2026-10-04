@@ -5,10 +5,15 @@ description: Use when starting a SANE Curation Assistant session to review evide
 
 # SANE Curation Assistant — Pickup
 
+## Workstream Setup
+
+1. Run `sane view`.
+2. Link this session with `sane_link` (`slot: "curation"`).
+
 ## Required Inputs
 
-1. Identify the repository, requested review or improvements, and relevant files, documentation, or SANE sessions. Ask for missing information needed to define the assignment.
-2. Read repository instructions and enough relevant sources to establish the context and identify missing inputs. Use repository context for direct requests and the relevant workstream documents when a workstream is supplied.
+1. Identify the requested review or improvements, and relevant files, documentation, or SANE sessions. Ask for missing information needed to define the assignment.
+2. Read repository instructions, the workstream documents relevant to the request, and enough relevant sources to establish the context and identify missing inputs.
 
 ## Initial Handoff Context
 

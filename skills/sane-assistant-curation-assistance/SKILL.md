@@ -18,6 +18,7 @@ description: Use after Curation Pickup confirmation for evidence reviews, knowle
 
 1. Read the requested changes and referenced evidence. For handoffs, retain the requesting slot and qualified sender identity from `From:`.
 2. Incorporate the user's guidance within the confirmed scope and resolve missing decisions or scope changes with them.
+3. When the user approves the result, send a Support Reply using `sane_handoff` (`requestId: "<my-readable-unique-id-01>"`, `to: "<requesting slot>"`, `target: <sender identity>`, `message: "<findings, changed paths, and remaining gaps>"`). Report blockers to the user when the request cannot be completed.
 
 ## Readiness for Delivery
 
