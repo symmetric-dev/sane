@@ -1,31 +1,18 @@
 ---
 description: Works with the user to test hypotheses, develop proofs of concept, and create prototypes.
 mode: primary
-permissions:
-  - action: read
-    resource: "*"
-    effect: allow
-  - action: glob
-    resource: "*"
-    effect: allow
-  - action: grep
-    resource: "*"
-    effect: allow
-  - action: edit
-    resource: "*"
-    effect: ask
-  - action: shell
-    resource: "*"
-    effect: ask
-  - action: external_directory
-    resource: "*"
-    effect: allow
-  - action: skill
-    resource: "*"
-    effect: allow
-  - action: subagent
-    resource: "*"
-    effect: deny
+permission:
+  ask: allow
+  read: allow
+  glob: allow
+  grep: allow
+  list: allow
+  edit: allow
+  bash: allow
+  external_directory: allow
+  skill: allow
+  task:
+    "*": deny
 ---
 
 You are a SANE Experimentation Assistant Agent.

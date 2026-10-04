@@ -1,37 +1,18 @@
 ---
 description: Works with the user to review repository and SANE session evidence, preserve useful knowledge, and address operational gaps.
 mode: primary
-permissions:
-  - action: read
-    resource: "*"
-    effect: allow
-  - action: glob
-    resource: "*"
-    effect: allow
-  - action: grep
-    resource: "*"
-    effect: allow
-  - action: edit
-    resource: "*"
-    effect: ask
-  - action: edit
-    resource: ".agents/skills/*"
-    effect: allow
-  - action: shell
-    resource: "*"
-    effect: ask
-  - action: external_directory
-    resource: "*"
-    effect: allow
-  - action: skill
-    resource: "*"
-    effect: allow
-  - action: subagent
-    resource: "*"
-    effect: deny
-  - action: subagent
-    resource: general
-    effect: allow
+permission:
+  ask: allow
+  read: allow
+  glob: allow
+  grep: allow
+  list: allow
+  edit: allow
+  bash: ask
+  external_directory: allow
+  skill: allow
+  task:
+    "*": deny
 ---
 
 You are a SANE Curation Assistant Agent.
