@@ -1,5 +1,9 @@
 .compact-control { white-space: nowrap; font-size: 12px; }
-.topbar .context-usage { max-width: 220px; overflow: hidden; text-overflow: ellipsis; }
+.topbar .context-usage { padding: 6px 8px; border-radius: 5px; text-decoration: none; }
+.topbar .context-usage:hover { color: var(--foreground); background: var(--muted); }
+.topbar .context-usage:focus-visible { outline: 2px solid var(--focus-ring); outline-offset: 3px; }
+.context-details-dialog .facts dd { overflow-wrap: anywhere; }
+.context-details-dialog .muted { font-size: 12px; }
 .compaction-marker { margin: 12px 0; padding: 8px 12px; border-left: 2px solid var(--border); color: var(--muted-foreground); font-size: 12px; }
 .compaction-marker details { margin-top: 4px; }
 .compaction-marker pre { white-space: pre-wrap; overflow-wrap: anywhere; }
@@ -36,4 +40,3 @@
 .compact-ack { display: flex; gap: 8px; align-items: flex-start; }
 .compact-actions { display: flex; gap: 12px; justify-content: flex-end; flex-wrap: wrap; }
 .compact-hint { font-size: 12px; }
-@media (max-width: 600px) { .topbar .context-usage { max-width: 100px; } }

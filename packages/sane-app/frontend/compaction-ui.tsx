@@ -54,10 +54,34 @@ export function CompactionMarkers({ records = [] }: { records?: CompactionRecord
   return <>{records.map(record => <CompactionCard key={record.id} record={record} />)}</>;
 }
 
-export function CompactControl({ state }: { state: State }) {
+export function ContextControl({ state, open }: { state: State; open: () => void }) {
+  const usage = state.contextUsage;
+  const label = usage ? `${Math.round(usage.percentage)}%` : "—";
+  return <button type="button" className="text-button context-usage" aria-haspopup="dialog" aria-label={`Context usage: ${usage ? `${label}${usage.stale ? " (stale)" : ""}` : "unavailable"}. Show context details.`} title="Context details" onClick={open}>{label}</button>;
+}
+
+export function ContextDialog({ state, close }: { state: State; close: () => void }) {
+  const usage = state.contextUsage;
+  const awaitingUsage = !usage && state.compactions?.some(record => record.contextReset);
+  const reason = store.compactUnavailable();
+  return <ShellDialog title="Context details" className="context-details-dialog" close={close}>
+    {usage ? <>
+      <CompactionFacts values={[
+        ["Context used", `${Math.round(usage.percentage)}%`], ["Input context", tokens(usage.tokens)], ["Model window", tokens(usage.capacity)],
+        ["Model", usage.model], ["Received", new Date(usage.time).toLocaleString()], ["Snapshot", usage.stale ? "Stale while compacting" : "Last reported"],
+      ]} />
+      {usage.stale && <p className="notice" role="status">Compaction is running; this reading is stale.</p>}
+    </> : <p className="notice" role="status">{awaitingUsage ? "Awaiting updated context usage from a later assistant response. Compaction does not imply zero context usage." : "Context usage unavailable. Waiting for reported input tokens and a matching model-window capacity."}</p>}
+    <p className="muted">This is the last reported input context, not a live token counter. It excludes output tokens; pending input and tool results may not be included. The percentage uses the model window, not the auto-compaction threshold.</p>
+    {reason && <p className="muted">{reason}</p>}
+    <div className="compact-actions"><button type="button" className="text-button" onClick={close}>Close</button><CompactControl state={state} beforeOpen={close} /></div>
+  </ShellDialog>;
+}
+
+export function CompactControl({ state, beforeOpen }: { state: State; beforeOpen?: () => void }) {
   const reason = store.compactUnavailable();
   if (!store.capabilities().compaction) return null;
-  return <button type="button" className="text-button compact-control" aria-haspopup="dialog" disabled={!state.selected} title={reason || "Summarize this conversation’s context without sending a message."} onClick={() => store.openCompact()}>Compact now</button>;
+  return <button type="button" className="text-button compact-control" aria-haspopup="dialog" disabled={!state.selected} title={reason || "Summarize this conversation’s context without sending a message."} onClick={() => { beforeOpen?.(); store.openCompact(); }}>Compact now</button>;
 }
 
 export function CompactDialog({ state }: { state: State }) {

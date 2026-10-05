@@ -24,7 +24,7 @@ import { WorkspaceSearchButton, WorkspaceSearchFeature } from "./workspace-searc
 import { WorkspaceQuickOpenFeature } from "./workspace-quick-open";
 import { WorkspaceFileShortcuts } from "./workspace-file-shortcuts";
 import type { DocumentReviewLaunch, DocumentReviewRequest } from "./document-review-launch";
-import { CompactControl, CompactDialog } from "./compaction-ui";
+import { CompactDialog, ContextControl, ContextDialog } from "./compaction-ui";
 import { NativeSubagentContext, nativeSubagentVirtualKey, useNativeSubagentFeature, useNativeSubagents } from "./native-subagent-feature";
 import { NativeSubagentView } from "./native-subagent-view";
 import { InstallApp } from "./pwa-install-view";
@@ -78,7 +78,7 @@ function ReadyWorkspace({ state, signOut }: { state: State; signOut: () => void 
   const nativeParent = state.conversations.find(conversation => conversation.id === state.selected);
   const nativeParentSessionId = nativeParent?.id ?? "";
   const nativeSubagents = useNativeSubagentFeature(nativeParentSessionId, !!nativeParentSessionId && nativeParent?.harness === "claude-code", view === "chat", JSON.stringify([nativeParentSessionId, nativeParent?.nativeSessionId, nativeParent?.harness]));
-  const [drawer, setDrawer] = useState<"sidebar" | "details" | "application" | null>(null);
+  const [drawer, setDrawer] = useState<"sidebar" | "details" | "context" | "application" | null>(null);
   const [artifact, setArtifact] = useState<ArtifactSelection | null>(null);
   const [historyPreview, setHistoryPreview] = useState<string | null>(null);
   const [reviewRequest, setReviewRequest] = useState<DocumentReviewRequest | null>(null);
@@ -96,6 +96,9 @@ function ReadyWorkspace({ state, signOut }: { state: State; signOut: () => void 
     setHistoryPreview(scoped.find(conversation => conversation.id === state.selected)?.id ?? scoped.at(-1)?.id ?? null);
   }, [view, workspaceId, worktreeId, state.selected, state.conversations, historyPreview]);
   useEffect(() => { setDrawer(null); }, [state.selected]);
+  useEffect(() => {
+    if (view !== "chat" || nativeSubagents.active || state.compactDialog) setDrawer(current => current === "context" ? null : current);
+  }, [view, nativeSubagents.active, state.compactDialog]);
   useEffect(() => {
     if (!reviewRequest) return;
     // Read the settled stores: starting a review also selects its chat in this turn.
@@ -132,7 +135,7 @@ function ReadyWorkspace({ state, signOut }: { state: State; signOut: () => void 
       workspaceSelection={sidebarModel.workspaceSelection}
       retryCatalog={hydrateCatalog} sidebarOpen={drawer === "sidebar"}
       openSidebar={() => setDrawer("sidebar")} closeSidebar={() => setDrawer(null)}
-      header={<ShellHeader state={state} view={view} artifact={artifact} overview={sidebarModel.overview} overviewWorkspaceId={workspaceId} openDetails={() => setDrawer("details")} openApplication={() => setDrawer("application")} />}
+      header={<ShellHeader state={state} view={view} artifact={artifact} overview={sidebarModel.overview} overviewWorkspaceId={workspaceId} openDetails={() => setDrawer("details")} openContext={() => setDrawer("context")} openApplication={() => setDrawer("application")} />}
       notices={<ShellNotices state={state} view={view} openDetails={() => setDrawer("details")} />}
     >
       <ShellContent state={state} view={view} workspaceId={workspaceId} artifact={artifact} closeArtifact={() => setArtifact(null)} openArtifact={openArtifact}
@@ -140,27 +143,23 @@ function ReadyWorkspace({ state, signOut }: { state: State; signOut: () => void 
     </WorkspaceShell>
     {drawer === "application" && <ApplicationDialog state={state} signOut={signOut} close={() => setDrawer(null)} />}
     {drawer === "details" && !nativeSubagents.active && <ConversationDetails state={state} close={() => setDrawer(null)} />}
+    {drawer === "context" && view === "chat" && !nativeSubagents.active && !state.compactDialog && <ContextDialog state={state} close={() => setDrawer(null)} />}
     {view === "chat" && !nativeSubagents.active && <CompactDialog state={state} />}
   </TerminalProvider></WorkspaceFileShortcuts></WorkspaceSearchFeature></WorkspaceQuickOpenFeature></WorkspaceProvider></ApplicationCommandProvider></NativeSubagentContext.Provider>;
 }
 
-function ShellHeader({ state, view, artifact, overview, overviewWorkspaceId, openDetails, openApplication }: {
-  state: State; view: ActiveView; artifact: ArtifactSelection | null; openDetails: () => void; openApplication: () => void;
+function ShellHeader({ state, view, artifact, overview, overviewWorkspaceId, openDetails, openContext, openApplication }: {
+  state: State; view: ActiveView; artifact: ArtifactSelection | null; openDetails: () => void; openContext: () => void; openApplication: () => void;
   overview: WorkstreamOverview | null; overviewWorkspaceId: string | null;
 }) {
   const conversation = state.conversations.find(item => item.id === state.selected);
   const nativeSubagents = useNativeSubagents();
   let heading: ReactNode;
-  const usage = state.contextUsage;
-  const awaitingUsage = !usage && state.compactions?.some(record => record.contextReset);
-  const contextLabel = usage ? `${Math.round(usage.percentage)}% context${usage.stale ? " (stale)" : ""}` : awaitingUsage ? "Awaiting updated context usage" : "— context";
-  const contextHint = usage ? `${usage.stale ? "Compaction is running; this reading is stale. " : ""}Last reported input context: ${usage.tokens.toLocaleString()} / ${usage.capacity.toLocaleString()} tokens · ${usage.model} · Received ${new Date(usage.time).toLocaleString()}. Excludes output tokens; pending input and tool results may not be included. This is the model window, not the auto-compaction threshold.` : awaitingUsage ? "Awaiting updated context usage from a genuine later assistant response. Compaction does not imply zero context usage." : "Context usage unavailable. Waiting for reported input tokens and a matching model-window capacity.";
    if (view === "chat" && nativeSubagents?.active) heading = <><div className="conversation-heading">Native subagent · {nativeSubagents.summary?.name ?? nativeSubagents.summary?.toolName}</div><span className="harness-badge">Read-only activity</span></>;
    else if (view === "chat") heading = <>
     <ConversationHeading conversation={conversation} selectedId={state.selected} overview={overview} overviewWorkspaceId={overviewWorkspaceId} />
     <span className="harness-badge">{harnessName(store.harness())}</span>
-    <span className="context-usage" title={contextHint} aria-label={`${contextLabel}. ${contextHint}`} tabIndex={0}>{contextLabel}</span>
-    <CompactControl state={state} />
+    <ContextControl state={state} open={openContext} />
     <button type="button" className="details-button" aria-label="Conversation details" onClick={openDetails}><Icon name="details" /><span>Details</span></button>
   </>;
   else if (view === "terminal") heading = <TerminalHeader />;

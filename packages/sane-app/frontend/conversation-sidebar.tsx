@@ -72,7 +72,7 @@ export function ConversationSidebarList({ state, model, mode, selectedId, onSele
                 {profile && <span className="agent-row-avatar" title={profile.label}><AgentAvatar profile={profile} size={16} /></span>}
                 <span className="history-title">{formatTitle(c.title, basename(c.cwd))}</span>
               </span>
-              <span className="history-line conversation-sidebar-workstream" title={workstreamLoading ? "Loading workstream…" : membership?.workstreamId} aria-busy={workstreamLoading}>{workstreamLoading ? <><span className="conversation-sidebar-loading-dots" aria-hidden="true">…</span><span className="sr-only">Loading workstream</span></> : membership?.workstreamId || "-"}</span>
+              <span className="history-line conversation-sidebar-workstream" title={workstreamLoading ? "Loading workstream…" : membership?.workstreamId ?? undefined} aria-busy={workstreamLoading}>{workstreamLoading ? <><span className="conversation-sidebar-loading-dots" aria-hidden="true">…</span><span className="sr-only">Loading workstream</span></> : membership?.workstreamId || "-"}</span>
               <span className="history-line conversation-sidebar-footer">
                 <span className="conversation-sidebar-metadata">
                   {phases.map(phase => <PhaseBadge key={phase} phase={phase} />)}
