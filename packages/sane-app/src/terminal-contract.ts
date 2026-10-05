@@ -6,6 +6,10 @@
  * Every attachment begins with hello then snapshot. Apply snapshot to a reset
  * xterm at its dimensions; acknowledge ONLY from xterm.write's completion callback.
  * Thereafter apply sequenced output/resize in order, acknowledging each completion.
+ * Multiple deltas may be in flight within bounded frame/serialized-byte windows.
+ * ACK exactly the oldest pending frame (not cumulative); the initial snapshot
+ * must complete and be acknowledged before any delta is sent. Later sends do
+ * not extend the oldest pending frame's acknowledgement deadline.
  * Output is base64 of original PTY bytes; pass decoded Uint8Array to xterm.write.
  * Snapshot data is a serialized ANSI string (NOT base64). Input data is base64
  * bytes too. Snapshot seq may be zero; subsequent output/resize seq increases by
@@ -19,7 +23,7 @@
  * exitCode comes only from Subprocess.exited, never from the PTY exit callback.
  * Config capability: GET /api/config -> capabilities.terminal.
  */
-export const TERMINAL_LIMITS = { terminals: 8, attachments: 8, cols: 240, rows: 100, minCols: 20, minRows: 5, inputBytes: 8192, chunkBytes: 16384, backlogBytes: 1048576, snapshotBytes: 2097152, scrollback: 500 } as const;
+export const TERMINAL_LIMITS = { terminals: 8, attachments: 8, cols: 240, rows: 100, minCols: 20, minRows: 5, inputBytes: 8192, chunkBytes: 16384, backlogBytes: 1048576, snapshotBytes: 2097152, outputWindowFrames: 32, outputWindowBytes: 262144, scrollback: 500 } as const;
 export type TerminalCapability = { available: boolean; reason?: string };
 export type TerminalStart = { bindingRevision: string; cols?: number; rows?: number };
 export type TerminalState = {

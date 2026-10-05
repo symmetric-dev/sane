@@ -4,6 +4,7 @@ import { WorkspaceError, WorkspaceService, workspaceOperationCheck, workspaceOpe
 import { uuid, type Session } from "./history";
 import type { Association, WorkspaceRecord, WorktreeRecord, NavigationBookmark, NavigationWrite } from "./catalog-contract";
 import { createWorkspaceSearchLease, type WorkspaceSearchLease } from "./workspace-search-scope";
+import { createTerminalBindingLease, type TerminalBindingLease } from "./terminal-binding";
 
 type Identity = { dev: number; ino: number };
 type Tree = WorktreeRecord & { identity: Identity; gitIdentity: Identity | null };
@@ -175,6 +176,32 @@ export class CatalogService {
       binding, dataDir: this.dataDir, rootIdentity: { ...t.identity }, gitDir: t.gitDir, gitIdentity: t.gitIdentity && { ...t.gitIdentity }, commonDir: w.commonDir, commonIdentity: { ...w.identity },
       validateBinding: () => { if (token() !== pinned) error(409, "binding-invalid", "Search worktree binding changed"); },
     }, operation);
+  }
+  /** Acquire once per terminal resource, after lifecycle discovery. Stable input
+   * validation has no Git subprocesses; mapping/config changes remain fenced.
+   * This is not a replacement for full binding checks at lifecycle boundaries. */
+  async terminalLease(workspaceId: string, worktreeId: string): Promise<TerminalBindingLease> {
+    await this.serial;
+    if (this.failed) error(503, "catalog-storage", "Catalog storage unavailable; restart required");
+    const w = this.find(workspaceId), t = w.worktrees.find(t => t.worktreeId === worktreeId) ?? error(404, "unknown-worktree", "Unknown worktree");
+    // Preserve explicit acquisition's repair check for an invalid catalog entry.
+    // Available entries need just one discovery, fenced inside lease creation.
+    if (t.state !== "available") await this.binding(workspaceId, worktreeId);
+    const binding = { cwd: t.root, bindingRevision: t.bindingRevision, protectedPaths: [w.commonDir, t.gitDir].filter((path): path is string => !!path) };
+    const token = () => {
+      if (this.failed) error(503, "catalog-storage", "Catalog storage unavailable; restart required");
+      const currentWorkspace = this.find(workspaceId), currentTree = currentWorkspace.worktrees.find(tree => tree.worktreeId === worktreeId) ?? error(409, "binding-invalid", "Terminal worktree binding changed");
+      return JSON.stringify([currentWorkspace.kind, currentWorkspace.commonDir, currentWorkspace.identity, currentTree.root, currentTree.gitDir, currentTree.identity, currentTree.gitIdentity, currentTree.bindingRevision, currentTree.state]);
+    };
+    const pinned = token();
+    if (t.state !== "available" || binding.cwd !== t.root || binding.bindingRevision !== t.bindingRevision || JSON.stringify(binding.protectedPaths) !== JSON.stringify([w.commonDir, t.gitDir].filter((path): path is string => !!path))) error(409, "binding-invalid", "Terminal worktree binding changed");
+    try {
+      return await createTerminalBindingLease({
+        binding, dataDir: this.dataDir, rootIdentity: { ...t.identity }, gitDir: t.gitDir, gitIdentity: t.gitIdentity && { ...t.gitIdentity }, commonDir: w.commonDir, commonIdentity: { ...w.identity },
+        validateBinding: () => { if (token() !== pinned) error(409, "binding-invalid", "Terminal worktree binding changed"); },
+        rediscover: () => this.binding(workspaceId, worktreeId),
+      });
+    } catch (e) { throw e instanceof WorkspaceError ? e : new WorkspaceError(409, "binding-invalid", "Terminal worktree path unavailable"); }
   }
   /** Selection metadata only, not a filesystem capability. Cached domain readers must revalidate their own pins. */
   async registered(id: string) {

@@ -4,6 +4,7 @@ import { isAbsolute } from "node:path";
 import { Terminal as HeadlessTerminal, type ITerminalAddon } from "@xterm/headless";
 import { SerializeAddon } from "@xterm/addon-serialize";
 import { CatalogService } from "./catalog";
+import type { TerminalBindingLease } from "./terminal-binding";
 import { WorkspaceError } from "./workspace";
 import { TERMINAL_LIMITS as L, type TerminalCapability, type TerminalState, type TerminalStart, type TerminalClientMessage, type TerminalServerMessage } from "./terminal-contract";
 
@@ -12,11 +13,14 @@ export type TerminalSocketData = { attachment: Attachment };
 type Delta = Extract<TerminalServerMessage, { type: "output" | "resize" }>;
 type Attachment = {
   id: string; token: string; resource: Resource; socket?: Socket; dead: boolean;
-  ready: boolean; next: number; awaiting: number | null; timer?: ReturnType<typeof setTimeout>;
+  ready: boolean; next: number; snapshotPending: boolean;
+  pending: { seq: number; bytes: number; deadline: number }[]; pendingBytes: number;
+  timer?: ReturnType<typeof setTimeout>;
   window: number; messages: number; input: number;
 };
 type Resource = {
   state: TerminalState; cwd: string; screen: HeadlessTerminal; serializer: SerializeAddon;
+  bindingLease: TerminalBindingLease;
   pty?: Bun.Terminal; process?: Bun.Subprocess; processExited: boolean; stopping?: Promise<void>;
   seq: number; ring: { message: Delta; bytes: number }[]; ringBytes: number;
   tail: Promise<void>; queuedBytes: number; queuedTasks: number; disposed: boolean;
@@ -130,7 +134,8 @@ export class TerminalService {
         if (!previous.processExited) fail(503, "terminal-cleanup", "Previous shell has not exited; restart refused");
       }
       // Recheck after all asynchronous preparation, immediately before spawn.
-      const current = await this.catalog.binding(workspaceId, worktreeId);
+      const bindingLease = await this.catalog.terminalLease(workspaceId, worktreeId);
+      const current = bindingLease.binding;
       if (current.cwd !== binding.cwd || current.bindingRevision !== binding.bindingRevision) fail(409, "terminal-binding", "Worktree binding changed");
       if (!authorized()) fail(401, "terminal-auth", "Authentication revoked");
       if (this.closing) fail(503, "terminal-shutdown", "Bridge is shutting down");
@@ -141,7 +146,7 @@ export class TerminalService {
       // Serialize 0.13 targets xterm 5.5's shared core; its public declaration
       // names the browser Terminal, while the implementation supports headless.
       screen.loadAddon(serializer as unknown as ITerminalAddon);
-      const r: Resource = { state: { ...this.absent(workspaceId, worktreeId, binding.bindingRevision), terminalId: crypto.randomUUID(), status: "running", cols, rows }, cwd: binding.cwd, screen, serializer, processExited: false, seq: 0, ring: [], ringBytes: 0, tail: Promise.resolve(), queuedBytes: 0, queuedTasks: 0, disposed: false, boundary: new SnapshotBoundary(), attachments: new Set(), inputBudget: 0, screenBudget: 0, partialBytes: 0, lastOutputAt: Date.now() };
+      const r: Resource = { state: { ...this.absent(workspaceId, worktreeId, binding.bindingRevision), terminalId: crypto.randomUUID(), status: "running", cols, rows }, cwd: binding.cwd, bindingLease, screen, serializer, processExited: false, seq: 0, ring: [], ringBytes: 0, tail: Promise.resolve(), queuedBytes: 0, queuedTasks: 0, disposed: false, boundary: new SnapshotBoundary(), attachments: new Set(), inputBudget: 0, screenBudget: 0, partialBytes: 0, lastOutputAt: Date.now() };
       this.resources.set(key, r);
       const env = Object.fromEntries(Object.entries(process.env).filter(([name, value]) => value !== undefined && !/^(CC_WEB_|OPENCODE_SERVER_|OPENCODE_SESSION_ID$|SANE_|BUN_INSPECT|NODE_OPTIONS$)/i.test(name))) as Record<string, string>;
       env.TERM = "xterm-256color"; env.SHELL = shell;
@@ -220,27 +225,40 @@ export class TerminalService {
     if (a.dead || !a.socket) return false;
     if (!this.validToken(a.token)) { this.disconnect(a, 4401, "Authentication revoked"); return false; }
     try {
-      // Bun queues -1 sends; they are accepted and must never be resent. Only
-      // one screen frame is outstanding, gated by application-level completion.
+      // Bun queues -1 sends; they are accepted and must never be resent.
+      // Application-level parser ACKs bound the independent screen window.
       if (a.socket.getBufferedAmount() > L.snapshotBytes + 65536) { this.disconnect(a, 1013, "Slow connection; attach again for a snapshot"); return false; }
       if (a.socket.send(JSON.stringify(message)) === 0 || a.socket.getBufferedAmount() > L.snapshotBytes + 65536) { this.disconnect(a, 1013, "Slow connection; attach again for a snapshot"); return false; }
       return true;
     } catch { this.disconnect(a, 1011, "Socket send failed"); return false; }
   }
-  private waitAck(a: Attachment, seq: number) {
+  private ackTimer(a: Attachment) {
     if (a.timer) clearTimeout(a.timer);
-    a.awaiting = seq;
-    a.timer = setTimeout(() => this.disconnect(a, 1013, "Screen acknowledgement timeout; attach again"), 15000);
+    a.timer = undefined;
+    const oldest = a.pending[0];
+    if (!oldest || a.dead) return;
+    a.timer = setTimeout(() => this.disconnect(a, 1013, "Screen acknowledgement timeout; attach again"), Math.max(0, oldest.deadline - Date.now()));
     a.timer.unref();
   }
+  private waitAck(a: Attachment, seq: number, bytes: number) {
+    a.pending.push({ seq, bytes, deadline: Date.now() + 15000 });
+    a.pendingBytes += bytes;
+    // Only the oldest frame owns the timer. New output cannot keep it alive.
+    if (a.pending.length === 1) this.ackTimer(a);
+  }
   private pump(a: Attachment) {
-    if (a.dead || !a.ready || a.awaiting !== null) return;
+    if (a.dead || !a.ready || a.snapshotPending) return;
     const r = a.resource;
-    if (a.next > r.seq) return;
-    const item = r.ring.find(item => item.message.seq === a.next);
-    if (!item) { this.disconnect(a, 1013, "Output retention gap; attach again for a snapshot"); return; }
-    this.waitAck(a, item.message.seq);
-    this.send(a, item.message);
+    // Drain adjacent frames immediately, without an output-coalescing delay.
+    // Keep exact per-frame sequencing/ACKs, including resize parser fences.
+    while (!a.dead && a.next <= r.seq && a.pending.length < L.outputWindowFrames) {
+      const item = r.ring.find(item => item.message.seq === a.next);
+      if (!item) { this.disconnect(a, 1013, "Output retention gap; attach again for a snapshot"); return; }
+      if (a.pendingBytes + item.bytes > L.outputWindowBytes) return;
+      if (!this.send(a, item.message)) return;
+      this.waitAck(a, item.message.seq, item.bytes);
+      a.next++;
+    }
   }
   private snapshots(r: Resource) {
     if (!r.boundary.safe || r.disposed) return;
@@ -249,10 +267,12 @@ export class TerminalService {
     const data = r.serializer.serialize({ scrollback: L.scrollback });
     // JSON escaping can expand serialized control characters; bound wire size.
     const message: TerminalServerMessage = { type: "snapshot", seq: r.seq, data, cols: r.state.cols, rows: r.state.rows };
-    if (Buffer.byteLength(JSON.stringify(message)) > L.snapshotBytes) { for (const a of waiting) this.disconnect(a, 1013, "Screen snapshot limit exceeded"); return; }
+    const bytes = Buffer.byteLength(JSON.stringify(message));
+    if (bytes > L.snapshotBytes) { for (const a of waiting) this.disconnect(a, 1013, "Screen snapshot limit exceeded"); return; }
     for (const a of waiting) {
-      a.ready = true; a.next = r.seq + 1;
-      this.waitAck(a, r.seq); this.send(a, message);
+      if (!this.send(a, message)) continue;
+      a.ready = true; a.next = r.seq + 1; a.snapshotPending = true;
+      this.waitAck(a, r.seq, bytes);
     }
   }
   private release(r: Resource) {
@@ -267,6 +287,7 @@ export class TerminalService {
   private detach(a: Attachment) {
     if (a.dead) return;
     a.dead = true; if (a.timer) clearTimeout(a.timer);
+    a.timer = undefined; a.pending = []; a.pendingBytes = 0; a.snapshotPending = false;
     const r = a.resource; r.attachments.delete(a);
     if (r.state.controllerId === a.id) { this.release(r); this.broadcast(r); }
   }
@@ -280,7 +301,7 @@ export class TerminalService {
     if (!this.validToken(token)) fail(401, "terminal-auth", "Authentication revoked");
     if (this.closing || r.disposed || this.resources.get(key) !== r || this.transitions.has(key)) fail(409, "terminal-busy", "Terminal lifecycle changed; reload its state");
     if (r.attachments.size >= L.attachments) fail(429, "terminal-attachments", "Terminal attachment limit reached");
-    const attachment: Attachment = { id: crypto.randomUUID(), token, resource: r, dead: false, ready: false, next: 0, awaiting: null, window: Date.now(), messages: 0, input: 0 };
+    const attachment: Attachment = { id: crypto.randomUUID(), token, resource: r, dead: false, ready: false, next: 0, snapshotPending: false, pending: [], pendingBytes: 0, window: Date.now(), messages: 0, input: 0 };
     r.attachments.add(attachment);
     attachment.timer = setTimeout(() => this.disconnect(attachment, 1013, "Attach or parser boundary timeout"), 5000);
     attachment.timer.unref();
@@ -311,19 +332,20 @@ export class TerminalService {
     if (Date.now() - a.window > 1000) { a.window = Date.now(); a.messages = 0; a.input = 0; }
     let message: TerminalClientMessage;
     try { message = JSON.parse(raw); if (!message || typeof message !== "object") throw 0; } catch { this.disconnect(a, 1008, "Invalid terminal message"); return; }
-    // Acks are bounded by the single outstanding frame; exempt them from the
+    // Acks are bounded by the outstanding window; exempt them from the
     // interactive rate limit so fast output cannot evict a healthy viewer.
     if (message.type === "ack") {
-      if (!Number.isSafeInteger(message.seq) || a.awaiting === null || message.seq !== a.awaiting) { this.disconnect(a, 1008, "Unexpected screen acknowledgement"); return; }
-      if (a.timer) clearTimeout(a.timer);
-      a.next = message.seq + 1; a.awaiting = null; this.pump(a); return;
+      if (!Number.isSafeInteger(message.seq) || !a.pending.length || message.seq !== a.pending[0]!.seq) { this.disconnect(a, 1008, "Unexpected screen acknowledgement"); return; }
+      a.pendingBytes -= a.pending.shift()!.bytes;
+      if (a.snapshotPending) a.snapshotPending = false;
+      this.ackTimer(a); this.pump(a); return;
     }
     if (++a.messages > 120) { this.disconnect(a, 1013, "Input message rate exceeded"); return; }
     const r = a.resource;
     if (!this.enqueue(r, Buffer.byteLength(raw), async () => {
       if (a.dead) return;
       try {
-        await this.binding(r);
+        await r.bindingLease.validate();
         if (a.dead || !this.validToken(a.token)) { this.disconnect(a, 4401, "Authentication revoked"); return; }
         if (r.state.status !== "running" || r.state.ptyClosed || r.stopping) fail(409, "terminal-not-running", "Terminal is not accepting input");
         if (!a.ready) fail(409, "terminal-not-ready", "Wait for the initial screen snapshot");
@@ -359,7 +381,7 @@ export class TerminalService {
       } catch (error) {
         const known = error instanceof WorkspaceError;
         this.send(a, { type: "error", code: known ? error.code : "terminal-operation", message: known ? error.message : "Terminal operation failed" });
-        if (known && ["binding-invalid", "terminal-binding", "directory-unavailable", "unknown-worktree", "unknown-workspace"].includes(error.code)) void this.stop(r, "closed", "Worktree binding is unavailable");
+        if (known && ["binding-invalid", "terminal-binding", "directory-unavailable", "unknown-worktree", "unknown-workspace", "catalog-storage"].includes(error.code)) void this.stop(r, "closed", "Worktree binding is unavailable");
       }
     })) this.disconnect(a, 1013, "Terminal operation backlog exceeded");
   }
