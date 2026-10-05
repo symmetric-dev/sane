@@ -2,6 +2,8 @@ import { isConversationUpdateSource, type ConversationUpdateSource } from "./con
 
 export const PUSH_PAYLOAD_MAX_BYTES = 3072;
 export const PUSH_SESSION_TITLE_MAX_CHARACTERS = 200;
+// Keep the wire limit compatible with queued payloads and notification data.
+export const PUSH_DISPLAY_SESSION_TITLE_MAX_CHARACTERS = 20;
 export const PUSH_WORKSPACE_NAME_MAX_CHARACTERS = 120;
 const PUSH_LABEL_MAX_BYTES = 1024;
 const encoder = new TextEncoder();
@@ -60,19 +62,18 @@ export function parsePushNotificationFragment(hash: string): PushPayload | null 
 }
 
 export function pushNotificationTitle(payload: PushPayload): string {
-  if (payload.kind === "test") return "Test notification";
-  return normalizePushNotificationLabel(payload.sessionTitle, PUSH_SESSION_TITLE_MAX_CHARACTERS) ?? "Session update";
+  switch (payload.kind) {
+    case "reply":
+    case "completed": return "Response";
+    case "failed": return "Run failed";
+    case "interrupted": return "Run interrupted";
+    case "test": return "Test notification";
+  }
 }
 
-export function pushNotificationBody(kind: PushPayload["kind"], workspaceName?: string): string {
+export function pushNotificationBody(kind: PushPayload["kind"], workspaceName?: string, sessionTitle?: string): string {
   if (kind === "test") return "Device notifications are working.";
-  const workspace = normalizePushNotificationLabel(workspaceName, PUSH_WORKSPACE_NAME_MAX_CHARACTERS);
-  let activity: string;
-  switch (kind) {
-    case "reply": activity = "Reply ready"; break;
-    case "completed": activity = "Run completed"; break;
-    case "failed": activity = "Run failed"; break;
-    case "interrupted": activity = "Run interrupted"; break;
-  }
-  return workspace ? `${activity} · ${workspace}` : activity;
+  const workspace = normalizePushNotificationLabel(workspaceName, PUSH_WORKSPACE_NAME_MAX_CHARACTERS) ?? "Workspace unavailable";
+  const session = normalizePushNotificationLabel(sessionTitle, PUSH_DISPLAY_SESSION_TITLE_MAX_CHARACTERS) ?? "Untitled session";
+  return `${workspace} · ${session}`;
 }

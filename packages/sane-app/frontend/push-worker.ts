@@ -46,7 +46,7 @@ worker.addEventListener("push", event => {
       return;
     }
     const options: NotificationOptions & { renotify: boolean } = {
-      body: pushNotificationBody(payload.kind, payload.workspaceName),
+      body: pushNotificationBody(payload.kind, payload.workspaceName, payload.sessionTitle),
       icon: "/assets/pwa/icon-192.png",
       tag: JSON.stringify(["sane", payload.storeId, payload.id]),
       renotify: false,
