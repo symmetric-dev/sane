@@ -2,6 +2,7 @@ import { useCallback, useId, useLayoutEffect, useRef, useState, useSyncExternalS
 import { FiCheckCircle, FiPauseCircle, FiX, FiXCircle } from "react-icons/fi";
 import { catalog } from "./catalog";
 import { notificationStore, type NotificationItem } from "./notifications";
+import { notificationDeliveryMessage, notificationLocation } from "./notification-presentation";
 import type { Conversation } from "./types";
 import { notificationContextKey, notificationSourceMatches } from "./notification-source";
 import { PenroseTriangle } from "./penrose-triangle";
@@ -46,6 +47,7 @@ export function NotificationCenter({ onOpen, className = "", size = 28 }: {
   const notifications = useSyncExternalStore(notificationStore.subscribe, notificationStore.snapshot);
   const catalogState = useSyncExternalStore(catalog.subscribe, catalog.snapshot);
   const state = useShellState();
+  const deliveryNotice = notificationDeliveryMessage(notifications.deliveryIssues, state.selected, notifications.feedError);
   const available = state.phase === "ready" && state.conversationsReady;
   // Occurrence order is source-qualified; different sources use their observation times.
   const items = notifications.items;
@@ -173,13 +175,14 @@ export function NotificationCenter({ onOpen, className = "", size = 28 }: {
         </div>
         {notifications.storageError && <p className="notification-center-notice" role="status">{notifications.storageError}</p>}
         {notifications.feedError && <p className="notification-center-notice" role="status">{notifications.feedError}</p>}
+        {deliveryNotice && <p className="notification-center-notice" role="status">{deliveryNotice}</p>}
         {state.sending && <p className="notification-center-notice">Session navigation is unavailable while sending.</p>}
         {notice && <p className="notification-center-notice" role="status">{notice}</p>}
         <div className="notification-center-list">
           {items.length ? <ul>{items.map(item => {
             const workspace = catalogState.workspaces.find(workspace => workspace.workspaceId === item.workspaceId);
             const worktree = workspace?.worktrees.find(worktree => worktree.worktreeId === item.worktreeId);
-            const location = [workspace?.name || item.workspaceId, worktree?.alias || worktree?.branch].filter(Boolean).join(" · ") || "Unassociated workspace";
+            const location = notificationLocation(item.workspaceId, workspace?.name, worktree?.alias || worktree?.branch);
             const valid = matchesDestination(item, state.conversations.find(conversation => conversation.id === item.conversationId));
             const disabled = state.sending || !valid;
             const time = timeLabel(item.time);

@@ -8,6 +8,7 @@ import {
 import { NotificationDatabase, type NotificationRows } from "./notification-db";
 import { appNotificationSource, nativeNotificationSource,
   notificationContextKey, notificationSourceMatches } from "./notification-source";
+import { notificationFeedMessage, type NotificationFeedStatus } from "./notification-presentation";
 import {
   LEGACY_PREFIX, freshLegacy, decodeLegacy, mergeLegacy, serializeLegacy, observeLegacy,
   legacyIdentity, legacyKey, parseLegacyKey, receiptKey, text, integer, object, date,
@@ -18,7 +19,7 @@ export type NotificationItem = LegacyItem & {
   kind?: "reply" | "failed" | "interrupted" | "legacy";
   sourceKey?: string; groupId?: string; contextKey?: string; occurrenceSequence?: number; observedAt?: string;
 };
-export type NotificationSnapshot = { items: NotificationItem[]; unreadCount: number; storageError: string; feedError?: string };
+export type NotificationSnapshot = { items: NotificationItem[]; unreadCount: number; storageError: string; feedError?: string; deliveryIssues?: readonly string[] };
 export type NotificationCapture = Readonly<{
   owner: string; binding: number; conversationId: string;
   sources: readonly string[]; ids: readonly string[]; legacyIds: readonly string[];
@@ -162,7 +163,7 @@ class NotificationStore {
     ...(this.memory.resume.through !== undefined ? { through: this.memory.resume.through } : {}), seeding: this.memory.resume.seeding,
   };
   setFeedEnabled = (enabled: boolean): void => { this.feedEnabled = enabled; this.publish(); };
-  setFeedError = (error: string | null): void => { this.feedError = error ?? ""; this.publish(); };
+  setFeedError = (status: NotificationFeedStatus | null): void => { this.feedError = notificationFeedMessage(status); this.publish(); };
 
   private current(owner: string, binding: number) { return this.scope === owner && this.binding === binding; }
   private enqueue<T>(work: () => Promise<T>): Promise<T> {
@@ -215,19 +216,16 @@ class NotificationStore {
       }
     }
     const items = [...grouped.values()].sort((a, b) => compareItems(b, a));
-    const currentConversations = [...this.catalog?.values() ?? []].filter(eligible);
-    const missingNativeCoverage = this.feedEnabled ? currentConversations.flatMap(c => {
-      const source = nativeNotificationSource(c);
-      // Neither another incarnation's coverage nor the incarnationless App
-      // producer can certify coverage of this canonical native identity.
-      return source && !this.memory.resume.coverage.some(coverage => coverage.sourceKey === updateSourceKey(source))
-        ? ["Native reply coverage is missing for a current session identity; App run notifications remain available."] : [];
+    // Preserve full coverage evidence privately for replay/diagnostics. Routine
+    // qualification/initialization and unrelated session problems are not copy.
+    const deliveryIssues = this.scope !== null && this.feedEnabled ? [...this.catalog?.values() ?? []].filter(eligible).flatMap(c => {
+      const native = nativeNotificationSource(c), source = c.harness === "opencode" ? native : appNotificationSource(c);
+      if (!source) return [];
+      const coverage = this.memory.resume.coverage.find(row => row.sourceKey === updateSourceKey(source));
+      return (!coverage && !!native) || coverage?.state === "degraded" || coverage?.state === "unavailable" ? [c.id] : [];
     }) : [];
-    const coverageNotices = [...new Set([...missingNativeCoverage, ...this.memory.resume.coverage.filter(coverage => this.feedEnabled && coverage.state !== "ready"
-      && currentConversations.some(c => notificationSourceMatches(c, coverage.sourceKey)))
-      .map(coverage => coverage.reason || `Conversation update coverage is ${coverage.state}.`)])].slice(0, 3);
     const next = { items, unreadCount: items.length, storageError: this.scope === null ? "" : this.memory.storageError,
-      feedError: this.scope === null ? "" : [this.feedError, ...coverageNotices].filter(Boolean).join(" ") };
+      feedError: this.scope === null ? "" : this.feedError, deliveryIssues: Object.freeze(deliveryIssues) };
     if (JSON.stringify(next) === JSON.stringify(this.state)) return;
     items.forEach(i => Object.freeze(i)); Object.freeze(items); this.state = Object.freeze(next);
     this.listeners.forEach(fn => fn());
@@ -405,7 +403,7 @@ class NotificationStore {
     if (owner === null) return Promise.resolve(false);
     // Clone at admission so callers cannot change an in-flight page/cursor.
     let wire: unknown, captured = expected ? { ...expected } : null;
-    try { wire = structuredClone(page); } catch { this.setFeedError("Invalid conversation update page."); return Promise.resolve(false); }
+    try { wire = structuredClone(page); } catch { this.setFeedError("refresh-error"); return Promise.resolve(false); }
     return this.enqueue(async () => {
       if (!this.current(owner, binding)) return false;
       await this.hydration;
@@ -466,7 +464,7 @@ class NotificationStore {
         // still allow the full feed to function, without claiming durability.
         const message = error instanceof Error ? error.message : "";
         if (message === "Invalid conversation update page." || message === "Conversation occurrence identity changed.") {
-          this.setFeedError(message); return false;
+          this.setFeedError("refresh-error"); return false;
         }
         this.memory.storageError = STORAGE_ERROR; this.importLegacy(this.memory, owner);
         try {
@@ -475,7 +473,7 @@ class NotificationStore {
           const applied = apply(m);
           if (applied) { this.memory = m; this.scopes.set(owner, m); }
           this.publish(); return applied;
-        } catch { this.setFeedError("Invalid conversation update page."); this.publish(); return false; }
+        } catch { this.setFeedError("refresh-error"); this.publish(); return false; }
       }
     });
   };

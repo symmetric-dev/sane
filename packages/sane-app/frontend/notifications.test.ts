@@ -295,8 +295,8 @@ describe("notification store with happy-dom", () => {
     expect(await store.applyPage(page([], { bootstrap: { activeRunIds: [], sourceBaselines: [] }, coverage: rows }), null, true)).toBe(true);
     expect(store.captureOpen("A")!.legacyIds).toEqual(capturedLegacy);
     expect(store.snapshot().items[0]?.kind).toBe("legacy");
-    expect(store.snapshot().feedError).toMatch(/coverage/i);
-    expect(store.snapshot().feedError).toMatch(/missing|stale|unavailable|initializ|waiting/i);
+    expect(store.snapshot().feedError).toBe("");
+    expect(store.snapshot().deliveryIssues).toEqual(["A"]);
   });
 
   test("healthy current native coverage ignores stale and unrelated source notices", async () => {
@@ -308,6 +308,7 @@ describe("notification store with happy-dom", () => {
       { sourceKey: updateSourceKey({ ...i2, nativeSessionId: "unrelated" }), state: "unavailable", reason: "unrelated source warning must not leak" },
     ] }), null, true)).toBe(true);
     expect(store.snapshot().feedError).toBe("");
+    expect(store.snapshot().deliveryIssues).toEqual([]);
   });
 
   test("disabling the feed removes missing-native-coverage notices without reading fallback", async () => {
@@ -318,8 +319,32 @@ describe("notification store with happy-dom", () => {
     expect(fallback).toHaveLength(1);
     store.setFeedEnabled(false);
     expect(store.snapshot().feedError).toBe("");
+    expect(store.snapshot().deliveryIssues).toEqual([]);
     expect(store.captureOpen("A")!.legacyIds).toEqual(fallback);
     expect(store.snapshot().unreadCount).toBe(1);
+  });
+
+  for (const state of ["ready", "initializing", "unqualified"] as const) test(`routine ${state} coverage is not user-facing copy`, async () => {
+    await start(); store.observe([ocConversation()]); await drain();
+    const reason = "OpenCode reply activation is disabled: native 2.0.21 replay returned empty logs at positive watermarks; durable replay support and runtime qualification remain outstanding. App run alerts remain available";
+    expect(await store.applyPage(page([], { bootstrap: { activeRunIds: [], sourceBaselines: [] }, coverage: [{ sourceKey: updateSourceKey(ocNative), state, reason }] }), null, true)).toBe(true);
+    expect(store.snapshot().feedError).toBe(""); expect(store.snapshot().deliveryIssues).toEqual([]);
+    expect(JSON.stringify(store.snapshot())).not.toContain(reason);
+    expect(idb.rows("resume", owner)[0].value.coverage[0].reason).toBe(reason);
+  });
+
+  for (const state of ["degraded", "unavailable"] as const) test(`${state} delivery health exposes session context, not backend reasons`, async () => {
+    await start(); const reason = "Conversation update projection requires replay or reconciliation";
+    expect(await store.applyPage(page([], { bootstrap: { activeRunIds: [], sourceBaselines: [] }, coverage: [{ sourceKey: updateSourceKey(source), state, reason }] }), null, true)).toBe(true);
+    expect(store.snapshot().deliveryIssues).toEqual(["A"]); expect(store.snapshot().feedError).toBe("");
+    expect(JSON.stringify(store.snapshot())).not.toContain(reason);
+    expect(idb.rows("resume", owner)[0].value.coverage[0].reason).toBe(reason);
+  });
+
+  test("disabled optional OpenCode binding health does not warn about working App-run notifications", async () => {
+    await start(); store.observe([ocConversation({ updateSource: undefined })]); await drain();
+    expect(await store.applyPage(page([], { bootstrap: { activeRunIds: [], sourceBaselines: [] }, coverage: [{ sourceKey: updateSourceKey(ocBase), state: "unavailable", reason: "Optional OpenCode reply binding storage is unavailable" }] }), null, true)).toBe(true);
+    expect(store.snapshot().deliveryIssues).toEqual([]); expect(store.snapshot().feedError).toBe("");
   });
 
   for (const state of ["ready", "initializing", "degraded", "unavailable"] as const) test(`OC legacy fallback survives ${state} coverage until an exact allowed-source alias`, async () => {
@@ -452,7 +477,8 @@ describe("notification store with happy-dom", () => {
     if (mismatch === "through") invalid.through = 4;
     if (mismatch === "changed occurrence identity") invalid.updates[0] = { ...revised, conversationId: "different" };
     expect(await apply(invalid)).toBe(false); expect(store.resume()?.cursor?.after).toBe(1);
-    expect(idb.rows("resume", owner)[0].value.cursor.after).toBe(1); expect(store.snapshot().feedError).toBeTruthy();
+    expect(idb.rows("resume", owner)[0].value.cursor.after).toBe(1);
+    expect(store.snapshot().feedError).toBe("Notifications couldn’t refresh. Retrying automatically.");
     expect(await apply(page([revised], { through: 3, hasMore: true }))).toBe(true); expect(store.resume()?.cursor?.after).toBe(2);
   });
 

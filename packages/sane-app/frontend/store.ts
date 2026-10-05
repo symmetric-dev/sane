@@ -20,6 +20,7 @@ import type { TranscriptMetadataItem, TranscriptPage } from "../src/transcript-c
 import { capabilitiesFor, getHarnessDescriptor, type HarnessCapabilities } from "../shared/conversation/harness-capabilities";
 import { notificationStore } from "./notifications";
 import { notificationContextKey } from "./notification-source";
+import type { NotificationFeedStatus } from "./notification-presentation";
 import { isConversationUpdatePage, type ConversationUpdateFeedRequest } from "../shared/conversation/conversation-updates";
 
 /** Composer draft. New conversations pick `profileId` ("" = profiles.defaultId);
@@ -614,8 +615,8 @@ export class ChatStore {
     const controller = this.notificationController = new AbortController();
     const current = () => !controller.signal.aborted && fence === this.notificationFence && auth === this.authEpoch
       && scope === this.notificationScope && scope === this.state.config?.storeId && this.state.config?.authenticated === true && this.state.phase === "ready";
-    let healthy = false, listingError = "", feedError = "";
-    const publishError = () => notificationStore.setFeedError([feedError, listingError].filter(Boolean).join(" "));
+    let healthy = false, listingFailed = false, feedStatus: NotificationFeedStatus | null = null;
+    const publishError = () => notificationStore.setFeedError(feedStatus ?? (listingFailed ? "session-error" : null));
     try {
       await notificationStore.ready();
       if (!current()) return;
@@ -629,7 +630,7 @@ export class ChatStore {
           this.observeNotifications(data.conversations); healthy = true;
         } catch (error) {
           if (!current() || this.expired(error)) return;
-          listingError = `Notification session metadata unavailable: ${error instanceof Error ? error.message : "connection error"}`; publishError();
+          listingFailed = true; publishError();
         }
       };
       const drain = async () => {
@@ -655,15 +656,15 @@ export class ChatStore {
         } catch (error) {
           if (!current() || this.expired(error)) return;
           if (error instanceof ApiError && (error.status === 410 || error.code === "conversation-update-gap" || error.code === "update-gap")) {
-            feedError = "Notification coverage expired or changed. Recovering coverage; existing read marks are preserved."; publishError();
+            feedStatus = "refreshing"; publishError();
             await notificationStore.resetResume();
-          } else { feedError = `Notification updates unavailable: ${error instanceof Error ? error.message : "connection error"}`; publishError(); }
+          } else { feedStatus = "refresh-error"; publishError(); }
         }
       };
       await Promise.all([listing(), drain()]);
       if (current()) publishError();
     } catch (error) {
-      if (current() && !this.expired(error)) notificationStore.setFeedError(`Notification storage unavailable: ${error instanceof Error ? error.message : "connection error"}`);
+      if (current() && !this.expired(error)) notificationStore.setFeedError("storage-error");
     } finally {
       if (this.notificationController === controller) this.notificationController = undefined;
       if (current()) this.notificationTimer = setTimeout(() => { this.notificationTimer = undefined; void this.pollNotifications(); }, healthy ? 1500 : 5000);

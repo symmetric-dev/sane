@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, test } from "bun:test";
 import { conversationClient, ApiError } from "./cc-client";
+import { SESSION_REFRESH_ERROR } from "./notification-presentation";
 import { updateOccurrenceId, type ConversationUpdatePage } from "../shared/conversation/conversation-updates";
 
 const originalFetch = globalThis.fetch;
@@ -81,6 +82,17 @@ describe("conversation update API client validation", () => {
     ["unknown fields", { ...source, incarnation: "creation", conversationId: "A" }],
   ] as const) test(`listing rejects ${label} canonical source instead of silently falling back`, async () => {
     globalThis.fetch = (async () => Response.json({ sessions: [{ sessionId: "A", ...source, updateSource }] })) as unknown as typeof fetch;
-    await expect(conversationClient.conversations()).rejects.toThrow("Invalid conversation update source in listing.");
+    await expect(conversationClient.conversations()).rejects.toThrow(SESSION_REFRESH_ERROR);
+    try { await conversationClient.conversations(); }
+    catch (error) { expect((error as Error).cause).toEqual(new Error("Invalid conversation update source in listing.")); }
+  });
+
+  test("invalid listing uses public refresh copy while retaining diagnostic evidence", async () => {
+    globalThis.fetch = (async () => Response.json({ sessions: [{ sessionId: "" }] })) as unknown as typeof fetch;
+    try { await conversationClient.conversations(); throw new Error("must reject"); }
+    catch (error) {
+      expect((error as Error).message).toBe(SESSION_REFRESH_ERROR);
+      expect((error as Error).cause).toEqual(new Error("Invalid conversation listing."));
+    }
   });
 });
