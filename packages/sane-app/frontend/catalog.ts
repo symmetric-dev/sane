@@ -1,4 +1,4 @@
-import type { CatalogResponse, NavigationBookmark, RegistrationResponse, WorkspaceRecord } from "../src/catalog-contract";
+import type { CatalogResponse, NavigationBookmark, RegistrationResponse, WorkspaceRecord, WorkspaceCreationInput } from "../src/catalog-contract";
 import { WorkspaceError } from "./workspace-client";
 import { workspaceEpoch, workspaceFailure } from "./workspace-store";
 
@@ -75,6 +75,23 @@ class CatalogStore {
       this.navigate({ workspaceId: result.workspaceId, worktreeId: result.worktreeId, filePath: null, comparison: null });
       return true;
     } catch (error) { if (epoch === this.epoch && registration === this.registration) this.update({ error: workspaceFailure(error) }); return false; }
+  };
+  create = async (input: WorkspaceCreationInput, canActivate: () => boolean, activate?: (result: RegistrationResponse) => boolean): Promise<"activated" | "created" | "failed" | "unconfirmed"> => {
+    const epoch = this.epoch, intent = ++this.intent, registration = ++this.registration, auth = workspaceEpoch();
+    const current = () => epoch === this.epoch && registration === this.registration && auth === workspaceEpoch();
+    try {
+      const result = await request<RegistrationResponse>("/api/workspaces/create", { method: "POST", body: JSON.stringify(input) });
+      if (!current()) return "created";
+      this.update({ workspaces: [...this.state.workspaces.filter(w => w.workspaceId !== result.workspaceId), result.workspace], error: "" });
+      if (intent !== this.intent || !canActivate() || !current()) return "created";
+      if (activate) return activate(result) ? "activated" : "created";
+      this.navigate({ workspaceId: result.workspaceId, worktreeId: result.worktreeId, filePath: null, comparison: null });
+      return "activated";
+    } catch (error) {
+      const unconfirmed = !(error instanceof WorkspaceError);
+      if (current()) this.update({ error: unconfirmed ? "Creation outcome is unconfirmed. Check creation using the same request before trying another destination." : workspaceFailure(error) });
+      return unconfirmed ? "unconfirmed" : "failed";
+    }
   };
   refresh = async (workspaceId: string, cwd: string) => {
     const epoch = this.epoch, registration = ++this.registration;

@@ -109,17 +109,19 @@ export class CatalogService {
     if (!tree) { tree = { worktreeId: crypto.randomUUID(), root: d.root, gitDir: d.gitDir, bindingRevision: crypto.randomUUID(), identity: d.identity, gitIdentity: d.gitIdentity, state: "available" }; workspace.worktrees.push(tree); }
     return { workspace, tree };
   }
-  private async registerInternal(cwd: string): Promise<Association & { association: "resolved" }> {
-    const d = await this.discover(cwd), { workspace, tree } = this.add(d);
+  private async registerInternal(cwd: string, operation?: WorkspaceOperationOptions): Promise<Association & { association: "resolved" }> {
+    const d = await this.discover(cwd, operation), { workspace, tree } = this.add(d);
     if (d.commonDir) {
-      const result = await this.git.git(d.root, ["worktree", "list", "--porcelain", "-z"]);
+      workspaceOperationCheck(operation);
+      const result = await this.git.git(d.root, ["worktree", "list", "--porcelain", "-z"], undefined, { signal: operation?.signal, timeoutMs: operation?.deadline === undefined ? undefined : Math.max(1, operation.deadline - Date.now()) });
+      workspaceOperationCheck(operation);
       if (result.code) error(503, "git-worktrees", "Git worktree discovery failed");
       let text: string; try { text = new TextDecoder("utf-8", { fatal: true }).decode(result.bytes); } catch { return error(422, "git-path-encoding", "Unsupported Git worktree path encoding"); }
       for (const record of text.split("\0\0")) {
         const fields = record.split("\0"), path = fields.find(f => f.startsWith("worktree "))?.slice(9);
         if (!path || fields.includes("bare")) continue;
         try {
-          const other = await this.discover(path);
+          const other = await this.discover(path, operation);
           if (other.commonDir !== d.commonDir) error(409, "binding-invalid", "Native worktree repository mismatch");
           const found = this.add(other).tree; found.branch = fields.find(f => f.startsWith("branch "))?.slice(7); found.detached = fields.includes("detached");
         } catch (e: any) {
@@ -131,7 +133,7 @@ export class CatalogService {
     }
     return { workspaceId: workspace.workspaceId, worktreeId: tree.worktreeId, association: "resolved" };
   }
-  async register(cwd: string) { return this.queue(async () => { const a = await this.registerInternal(cwd); await this.save("catalog.json", this.catalog); return { workspace: this.publicWorkspace(this.find(a.workspaceId)), workspaceId: a.workspaceId, worktreeId: a.worktreeId }; }); }
+  async register(cwd: string, operation?: WorkspaceOperationOptions) { return this.queue(async () => { const a = await this.registerInternal(cwd, operation); workspaceOperationCheck(operation); await this.save("catalog.json", this.catalog); return { workspace: this.publicWorkspace(this.find(a.workspaceId)), workspaceId: a.workspaceId, worktreeId: a.worktreeId }; }); }
   async setAlias(workspaceId: string, worktreeId: string, alias: unknown) {
     return this.queue(async () => {
       const w = this.find(workspaceId), t = w.worktrees.find(t => t.worktreeId === worktreeId) ?? error(404, "unknown-worktree", "Unknown worktree");

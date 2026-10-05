@@ -27,6 +27,7 @@ import { updateSourceKey } from "../shared/conversation/conversation-updates";
 import type { RunOwner as Owner } from "./run-owner";
 import { WorkspaceService, WorkspaceError, workspaceError } from "./workspace";
 import { CatalogService } from "./catalog";
+import { WorkspaceCreationService } from "./workspace-creation";
 import { TerminalService, type TerminalSocketData } from "./terminal";
 import { RepositoryRouter, WorkstreamAdapterError, authenticatedWorkstreamRoute, validateWorkstreamInput, flushAndCloseWorkstreams } from "./workstreams";
 import type { WorkstreamAction, WorkstreamActionInput, WorkstreamActionResult } from "./workstreams-contract";
@@ -175,6 +176,7 @@ async function startOwned(options: Options, assetsDir: string, packageDir: strin
   let updateService: ConversationUpdates<ClaudeConversationUpdateState> | undefined;
   let replyIntegration: OpenCodeReplyIntegration | undefined;
   const searches = createWorkspaceSearchLifecycle();
+  let workspaceCreations: WorkspaceCreationService | undefined;
   try {
   const metadataPath = join(options.dataDir, "metadata.json");
   const meta: Metadata = store.metadata;
@@ -185,6 +187,7 @@ async function startOwned(options: Options, assetsDir: string, packageDir: strin
   const catalog = new CatalogService(options.dataDir, () => meta.sessions);
   for (const session of meta.sessions) if (session.attachment && session.attachment.source !== nativeSource(session.harness)) throw new Error("Attached native authority source changed; restore the original native store/service configuration");
   await catalog.load();
+  workspaceCreations = await WorkspaceCreationService.open(options.dataDir, catalog, [options.dataDir, join(packageDir, ".runtime"), claudeRoot]);
   // Artifacts are readable only through the domain API, even when its state is
   // outside App data. Use a canonical root for both ordinary Code entry points.
   router = new RepositoryRouter(catalog, store.sources);
@@ -1516,6 +1519,10 @@ async function startOwned(options: Options, assetsDir: string, packageDir: strin
         if (req.method === "PUT") return json(await catalog.putNavigation(await body(req)));
         return json({ error: "Method not allowed" }, 405);
       }
+      if (path === "/api/workspaces/create") {
+        if (req.method !== "POST") return json({ error: "Method not allowed" }, 405);
+        return json(await workspaceCreations!.create(await body(req), () => !closing && auth.authenticated(req)), 201);
+      }
       if (path === "/api/workspaces") {
         if (req.method === "GET") return json(await catalog.list());
         if (req.method === "POST") { const input = await body(req); return json(await catalog.register(input?.cwd), 201); }
@@ -2343,9 +2350,11 @@ async function startOwned(options: Options, assetsDir: string, packageDir: strin
     closing = true;
     const replyDrain = replyIntegration?.close(); // Abort immediately, before any shutdown awaits.
     const searchDrain = searches.close();
+    const creationDrain = workspaceCreations?.close();
     clearInterval(handoffTimer);
     clearInterval(workerOutboxTimer);
     closePromise = (async () => {
+    await creationDrain;
     try { await workers.drainLaunches(); } catch { failClosed(); }
     await workerOutboxTask;
     await handoffTask;
@@ -2398,6 +2407,7 @@ async function startOwned(options: Options, assetsDir: string, packageDir: strin
     return closePromise;
   } };
   } catch (error) {
+    await workspaceCreations?.close();
     await replyIntegration?.close();
     await updateService?.close();
     if (!await drainWorkspaceSearches(searches.close())) retainOwner = true;

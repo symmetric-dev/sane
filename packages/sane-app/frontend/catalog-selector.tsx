@@ -1,6 +1,6 @@
 import { useEffect, useId, useMemo, useRef, useState, useSyncExternalStore } from "react";
 import { FiArrowRight, FiCheck, FiChevronDown, FiFolder, FiGitBranch } from "react-icons/fi";
-import type { WorktreeRecord } from "../src/catalog-contract";
+import type { WorktreeRecord, WorkspaceCreationInput } from "../src/catalog-contract";
 import { catalog } from "./catalog";
 import { useStore } from "./store";
 import { ShellDialog } from "./shell-dialog";
@@ -11,6 +11,7 @@ import type { WorkspaceSelectionModel } from "./conversation-sidebar-model";
 import { workstreamCheckout } from "./workstream-checkout";
 
 export const worktreeLabel = (worktree: WorktreeRecord) => worktree.branch || (worktree.detached ? "Detached HEAD" : worktree.root.split("/").filter(Boolean).at(-1) || worktree.root);
+const parentDirectory = (path: string) => { const clean = path.replace(/\/+$/, ""); return path ? clean.slice(0, clean.lastIndexOf("/")) || "/" : ""; };
 
 export const worktreeShort = (worktree: WorktreeRecord): string => {
   const label = worktreeLabel(worktree);
@@ -27,12 +28,16 @@ export const worktreeDisplay = (worktree: WorktreeRecord): string => {
 export function CatalogSelector({ retry, selection, onGo }: { retry: () => void; selection?: WorkspaceSelectionModel; onGo?: () => void }) {
   const state = useSyncExternalStore(catalog.subscribe, catalog.snapshot);
   const chatCwd = useStore(s => s.config?.cwd ?? "");
-  const [panel, setPanel] = useState<"context" | "directory" | null>(null);
+  const [panel, setPanel] = useState<"context" | "directory" | "create" | null>(null);
   const [search, setSearch] = useState(""), [cwd, setCwd] = useState(""), [busy, setBusy] = useState(false), [feedback, setFeedback] = useState("");
   const [aliasDraft, setAliasDraft] = useState(""), [aliasBusy, setAliasBusy] = useState(false);
   const [selectionMode, setSelectionMode] = useState<"worktree" | "workstream">("workstream");
   const [streamSearch, setStreamSearch] = useState("");
   const [detailsOpen, setDetailsOpen] = useState(false);
+  const [parent, setParent] = useState(""), [name, setName] = useState(""), [unconfirmed, setUnconfirmed] = useState(false);
+  const creationRequest = useRef<WorkspaceCreationInput | null>(null);
+  const creationPending = useRef(false);
+  const parentInput = useRef<HTMLInputElement>(null);
   const [mobile, setMobile] = useState(() => window.matchMedia("(max-width:700px)").matches);
   const detailsId = useId();
   const dialogIntent = useRef(0);
@@ -60,7 +65,7 @@ export function CatalogSelector({ retry, selection, onGo }: { retry: () => void;
       const dialog = event.target instanceof Element ? event.target.closest('dialog[open], [role="dialog"][aria-modal="true"]') : null;
       return !!panel && !!dialog && !!container.current?.contains(dialog);
     },
-    available: () => true, action: () => panel ? close() : show(),
+    available: () => true, action: () => { if (!creationPending.current) panel ? close() : show(); },
   }), [panel]));
   useEffect(() => { setAliasDraft(worktree?.alias ?? ""); }, [workspace?.workspaceId, worktree?.worktreeId, worktree?.alias, panel]);
   useEffect(() => { setStreamSearch(""); }, [navigation.workspaceId]);
@@ -78,6 +83,7 @@ export function CatalogSelector({ retry, selection, onGo }: { retry: () => void;
     return () => query.removeEventListener("change", update);
   }, []);
   useEffect(() => { setFeedback(""); }, [navigation.workspaceId, navigation.worktreeId]);
+  useEffect(() => { if (panel === "create") parentInput.current?.focus(); }, [panel]);
   const mode = workspace?.kind === "repository" && selection ? selectionMode : "worktree";
   const locked = busy || aliasBusy || !!selection?.blocked;
   const currentIntent = (intent: number, workspaceId: string, worktreeId?: string) => {
@@ -154,8 +160,30 @@ export function CatalogSelector({ retry, selection, onGo }: { retry: () => void;
   </>;
   return <div className="context-switcher" ref={container}>
     <button type="button" className="workspace-opener" aria-haspopup="dialog" aria-label={openerAria} aria-keyshortcuts={navigationKeyShortcuts("ArrowDown")} title={[openerTitle, `Toggle workspace selection (${shortcutHint(WORKSPACE_SELECTOR_SHORTCUT)})`].filter(Boolean).join(" · ")} onClick={show}><span className="workspace-opener-label"><span className="workspace-opener-title">{openerLabel}</span>{workspace && <span className="workspace-opener-checkout">{display ?? "Choose worktree"}</span>}</span><FiChevronDown size={13} aria-hidden="true" /></button>
-    {panel && <ShellDialog title={panel === "directory" ? "Open directory" : "Workspace"} bare={panel === "context"} className={panel === "context" ? "workspace-context-dialog" : ""} initialFocus={panel === "context" ? () => mobile ? workspaceChoices.current : workspaceSearch.current : undefined} close={close}>
-      {panel === "directory" ? <form className="open-directory" aria-busy={busy} onSubmit={async event => {
+    {panel && <ShellDialog title={panel === "create" ? "New workspace" : panel === "directory" ? "Open directory" : "Workspace"} bare={panel === "context"} className={panel === "context" ? "workspace-context-dialog" : ""} initialFocus={panel === "context" ? () => mobile ? workspaceChoices.current : workspaceSearch.current : undefined} closeDisabled={panel === "create" && busy} close={close}>
+      {panel === "create" ? <form className="open-directory" aria-busy={busy} onSubmit={async event => {
+        event.preventDefault();
+        if (locked || creationPending.current || !parent.trim() || !name.trim()) return;
+        const intent = dialogIntent.current;
+        const input = creationRequest.current ?? { requestId: crypto.randomUUID(), parent: parent.trim(), name: name.trim() };
+        creationRequest.current = input; creationPending.current = true;
+        setBusy(true); setFeedback("");
+        try {
+          const outcome = await catalog.create(input, () => intent === dialogIntent.current && !selectionRef.current?.blocked, selection ? result => selectionRef.current?.selectWorkspace(result.workspaceId, result.worktreeId) ?? false : undefined);
+          if (intent !== dialogIntent.current) return;
+          setUnconfirmed(outcome === "unconfirmed");
+          if (outcome === "activated" || outcome === "created") { creationRequest.current = null; setParent(""); setName(""); }
+          if (outcome === "activated") close();
+          else if (outcome === "created") { dialogIntent.current++; setPanel("context"); setFeedback("Workspace created. Select it from the workspace list to open it."); }
+        } finally { creationPending.current = false; setBusy(false); }
+      }}>
+        <label>Parent directory<input ref={parentInput} autoFocus required value={parent} placeholder="/absolute/path/to/projects" disabled={busy || unconfirmed} onChange={event => { setParent(event.target.value); creationRequest.current = null; }} /></label>
+        <label>Folder name<input required value={name} maxLength={200} placeholder="my-project" disabled={busy || unconfirmed} onChange={event => { setName(event.target.value); creationRequest.current = null; }} /></label>
+        {parent.trim() && name.trim() && <p className="context-path">Destination: {parent.trim().replace(/\/$/, "")}/{name.trim()}</p>}
+        <p className="muted">Creates a new folder, a Git repository on main, and SANE workstream state. Adds /.sane/ to .gitignore. No initial commit is made. Choose an existing parent outside other Git repositories.</p>
+        {unconfirmed && <p className="notice" role="status">The request may already have completed. Check creation to retrieve its outcome without creating the folder again.</p>}
+        <div className="dialog-actions"><button type="button" disabled={busy} onClick={() => { dialogIntent.current++; setPanel("context"); }}>Back</button><button type="submit" disabled={locked || !parent.trim() || !name.trim()}>{busy ? "Creating…" : unconfirmed ? "Check creation" : "Create workspace"}</button></div>
+      </form> : panel === "directory" ? <form className="open-directory" aria-busy={busy} onSubmit={async event => {
         event.preventDefault();
         if (locked || !cwd.trim()) return;
         const intent = dialogIntent.current;
@@ -180,7 +208,10 @@ export function CatalogSelector({ retry, selection, onGo }: { retry: () => void;
             </button>
             {selection && <button type="button" className="workspace-choice-go" aria-label={`Open ${w.name} in Chat`} title={`Open ${w.name} in Chat`} disabled={locked || !w.worktrees.length} onClick={() => goWorkspace(w.workspaceId)}><FiArrowRight size={18} aria-hidden="true" /></button>}
           </div>)}{state.loading && <p className="muted" role="status">Loading workspaces…</p>}{!state.loading && !workspaces.length && <p className="muted" role="status">{search ? "No matching workspaces." : "No workspaces yet."}</p>}</nav>
-          <button type="button" className="secondary-directory" disabled={locked} onClick={() => { setCwd(worktree?.root || chatCwd || ""); setPanel("directory"); }}>Open directory…</button>
+          <div className="workspace-directory-actions">
+            <button type="button" className="secondary-directory" disabled={locked} onClick={() => { dialogIntent.current++; if (!creationRequest.current) { setParent(parentDirectory(worktree?.root || chatCwd || "")); setName(""); } setFeedback(""); setPanel("create"); }}>New workspace…</button>
+            <button type="button" className="secondary-directory" disabled={locked} onClick={() => { dialogIntent.current++; setCwd(worktree?.root || chatCwd || ""); setPanel("directory"); }}>Open directory…</button>
+          </div>
         </aside>
         <div className="workspace-context-detail">
           {notices}
@@ -229,7 +260,7 @@ export function CatalogSelector({ retry, selection, onGo }: { retry: () => void;
         </div>
         </div>
       </>}
-      {panel === "directory" && notices}
+      {panel !== "context" && notices}
     </ShellDialog>}
     {state.error && !panel && <button type="button" className="context-error" aria-label={`Workspace or navigation error: ${state.error}`} title={state.error} onClick={show}>!</button>}
   </div>;

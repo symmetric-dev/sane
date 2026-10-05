@@ -4,6 +4,7 @@ import type { Session } from "./history";
 /** Authenticated owner-scoped APIs (existing Host/Origin/cookie seam):
  * GET /api/workspaces -> CatalogResponse
  * POST /api/workspaces {cwd: absolutePath} -> RegistrationResponse (201)
+ * POST /api/workspaces/create {requestId: UUID, parent: absolutePath, name: basename} -> RegistrationResponse (201); creates Git and SANE at the final path. Same request may be checked again, never blindly recreated.
  * GET /api/workspaces/:workspaceId -> WorkspaceRecord
  * GET /api/workspaces/:workspaceId/worktrees/:worktreeId -> WorktreeResolution
  * PUT /api/workspaces/:workspaceId/worktrees/:worktreeId/alias {alias: string | null} -> WorkspaceRecord (per-worktree display name, trimmed 1-80 chars, no controls; empty/null clears; duplicates allowed)
@@ -27,6 +28,7 @@ export type WorktreeRecord = { worktreeId: string; root: string; gitDir: string 
 export type WorkspaceRecord = { workspaceId: string; kind: "repository" | "directory"; name: string; commonDir: string | null; worktrees: WorktreeRecord[] };
 export type CatalogResponse = { version: 1; workspaces: WorkspaceRecord[] };
 export type RegistrationResponse = { workspace: WorkspaceRecord; workspaceId: string; worktreeId: string };
+export type WorkspaceCreationInput = { requestId: string; parent: string; name: string };
 // The legacy operation shapes retain workspaceId as their filesystem revision
 // token. The URL selects stable catalog IDs; bindingRevision is passed as the
 // workspaceId query/body field for list/file/git/diff/search/paths, as in the legacy API.

@@ -71,6 +71,20 @@ conversations' execution checkout; existing conversations retain their recorded
 checkout. Finish external work in a conversation before sending from the App.
 Native linking and handoffs are separate work, not part of App setup.
 
+In the workspace selector, **New workspace…** (above **Open directory…**) asks
+for an existing absolute parent directory and a new folder name. It creates that
+folder, initializes Git on `main`, writes `/.sane/` to `.gitignore`, initializes
+SANE workstream state, and selects the workspace. No initial commit, remote,
+workstream, or global agent configuration is created. The parent must be outside
+existing Git repositories and protected App/Git/SANE data; existing destinations
+are never overwritten.
+
+If the request times out or loses its response, **Check creation** retrieves the
+same request's outcome without recreating the folder. Failed or interrupted
+creation retains any partial folder for inspection; SANE does not automatically
+delete or adopt it. A successfully initialized folder can be opened with
+**Open directory…** if catalog registration failed.
+
 ### Compact conversation context
 
 SANE never initiates automatic compaction or changes the harness's compaction
