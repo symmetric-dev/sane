@@ -53,4 +53,34 @@ describe("conversation update API client validation", () => {
       catch (error) { expect(error).toBeInstanceOf(ApiError); expect(error).toMatchObject({ status, code: "epoch_changed" }); }
     }
   });
+
+  test("listing preserves canonical App ID and explicit immutable native creation", async () => {
+    const updateSource = { ...source, harness: "opencode" as const, incarnation: "creation-1" };
+    globalThis.fetch = (async () => Response.json({ sessions: [{ sessionId: "canonical-app-id", ...updateSource, updateSource, cwd: "/fixture", lastRunId: "run", lastStatus: "completed" }] })) as unknown as typeof fetch;
+    const { conversations } = await conversationClient.conversations();
+    expect(conversations[0]).toMatchObject({ id: "canonical-app-id", harness: "opencode", authorityId: "authority", nativeSessionId: "native", updateSource });
+    expect(conversations[0]?.id).not.toBe(conversations[0]?.nativeSessionId);
+  });
+
+  test("listing without optional source never invents an incarnation from metadata", async () => {
+    globalThis.fetch = (async () => Response.json({ sessions: [{ sessionId: "A", ...source, createdAt: "2026-10-05T00:00:00Z", updatedAt: "2026-10-05T00:00:00Z", version: 99, lastRunId: "creation-looking-run", cwd: "/fixture", lastStatus: "completed" }] })) as unknown as typeof fetch;
+    const { conversations } = await conversationClient.conversations();
+    expect(conversations[0]).not.toHaveProperty("updateSource");
+    expect(conversations[0]).toMatchObject({ id: "A", authorityId: "authority", nativeSessionId: "native" });
+  });
+
+  test("listing preserves explicit incarnationless historical evidence without upgrading it", async () => {
+    globalThis.fetch = (async () => Response.json({ sessions: [{ sessionId: "A", ...source, updateSource: source, createdAt: "2026-10-05T00:00:00Z", lastRunId: "run" }] })) as unknown as typeof fetch;
+    expect((await conversationClient.conversations()).conversations[0]?.updateSource).toEqual(source);
+  });
+
+  for (const [label, updateSource] of [
+    ["null", null], ["malformed incarnation", { ...source, incarnation: 123 }],
+    ["empty incarnation", { ...source, incarnation: "" }], ["wrong authority", { ...source, authorityId: "other" }],
+    ["wrong native session", { ...source, nativeSessionId: "other" }], ["wrong harness", { ...source, harness: "opencode" }],
+    ["unknown fields", { ...source, incarnation: "creation", conversationId: "A" }],
+  ] as const) test(`listing rejects ${label} canonical source instead of silently falling back`, async () => {
+    globalThis.fetch = (async () => Response.json({ sessions: [{ sessionId: "A", ...source, updateSource }] })) as unknown as typeof fetch;
+    await expect(conversationClient.conversations()).rejects.toThrow("Invalid conversation update source in listing.");
+  });
 });

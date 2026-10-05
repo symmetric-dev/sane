@@ -2,28 +2,31 @@ import type { Conversation } from "./types";
 import {
   isConversationUpdate, isConversationUpdateCursor, isConversationUpdatePage, isConversationUpdateSource,
   updateSourceKey, isConversationUpdateCoverage,
-  type ConversationUpdate, type ConversationUpdateCursor, type ConversationUpdateSource,
+  type ConversationUpdate, type ConversationUpdateCursor,
   type ConversationUpdateCoverage,
 } from "../shared/conversation/conversation-updates";
 import { NotificationDatabase, type NotificationRows } from "./notification-db";
+import { appNotificationSource, nativeNotificationSource,
+  notificationContextKey, notificationSourceMatches } from "./notification-source";
 import {
   LEGACY_PREFIX, freshLegacy, decodeLegacy, mergeLegacy, serializeLegacy, observeLegacy,
-  legacyIdentity, legacyKey, parseLegacyKey, receiptKey, text, integer, object,
+  legacyIdentity, legacyKey, parseLegacyKey, receiptKey, text, integer, object, date,
   type LegacyItem, type LegacyState,
 } from "./notifications-legacy";
 
 export type NotificationItem = LegacyItem & {
   kind?: "reply" | "failed" | "interrupted" | "legacy";
-  sourceKey?: string; groupId?: string; occurrenceSequence?: number;
+  sourceKey?: string; groupId?: string; contextKey?: string; occurrenceSequence?: number; observedAt?: string;
 };
 export type NotificationSnapshot = { items: NotificationItem[]; unreadCount: number; storageError: string; feedError?: string };
 export type NotificationCapture = Readonly<{
   owner: string; binding: number; conversationId: string;
   sources: readonly string[]; ids: readonly string[]; legacyIds: readonly string[];
+  contextKey?: string; contextRevision?: number;
 }>;
 export type NotificationResume = { cursor?: ConversationUpdateCursor; through?: number; seeding: boolean };
-type EventRecord = { update: ConversationUpdate; eligible: boolean };
-type Accepted = { conversationId: string; runId: string; sourceKey?: string; acceptedAt: number };
+type EventRecord = { update: ConversationUpdate; eligible: boolean; attentionAt?: string };
+type Accepted = { conversationId: string; runId: string; sourceKey?: string; nativeSourceKey?: string; acceptedAt: number };
 type ResumeState = NotificationResume & {
   storeId?: string; baselines: [string, number][]; activeRunIds: string[]; activeBindings: [string, string][];
   coverage: ConversationUpdateCoverage[];
@@ -41,13 +44,13 @@ const sameCursor = (a?: ConversationUpdateCursor | null, b?: ConversationUpdateC
 const acceptedKey = (r: Pick<Accepted, "conversationId" | "runId">) => JSON.stringify([r.conversationId, r.runId]);
 const eligible = (c: Conversation) => !c.worker && c.agentKind !== "worker" && !c.hidden && !c.replacedBy;
 
-/** Only catalog-evidenced authority/native identity is used for qualification. */
-function catalogSource(c: Conversation): ConversationUpdateSource | undefined {
-  const row = c as Conversation & { updateSource?: unknown; authorityId?: string; incarnation?: string };
-  if (isConversationUpdateSource(row.updateSource)) return row.updateSource;
-  const source = { harness: c.harness, authorityId: row.authorityId, nativeSessionId: c.nativeSessionId,
-    ...(row.incarnation !== undefined ? { incarnation: row.incarnation } : {}) };
-  return isConversationUpdateSource(source) ? source : undefined;
+/** Different sources have no shared source-sequence clock. Revisions do not move attention. */
+function compareItems(a: NotificationItem, b: NotificationItem): number {
+  return (a.observedAt ?? a.time).localeCompare(b.observedAt ?? b.time)
+    // On equal observations, both of these are immutable transport occurrence
+    // positions, NOT native sourceSequence or a source coverage checkpoint.
+    || (a.occurrenceSequence !== undefined && b.occurrenceSequence !== undefined ? a.occurrenceSequence - b.occurrenceSequence : 0)
+    || a.id.localeCompare(b.id);
 }
 function validSourceKey(value: unknown): value is string {
   if (!text(value, 16384)) return false;
@@ -75,8 +78,9 @@ function decode(rows: NotificationRows): Memory {
     m.resume = meta as ResumeState;
   }
   for (const [id, value] of rows.events) {
-    if (!object(value) || !isConversationUpdate(value.update) || value.update.id !== id || typeof value.eligible !== "boolean") throw new Error("Invalid notification event");
-    m.events.set(id, { update: value.update, eligible: value.eligible });
+    if (!object(value) || !isConversationUpdate(value.update) || value.update.id !== id || typeof value.eligible !== "boolean"
+      || value.attentionAt !== undefined && !date(value.attentionAt)) throw new Error("Invalid notification event");
+    m.events.set(id, { update: value.update, eligible: value.eligible, attentionAt: (value.attentionAt as string | undefined) ?? value.update.observedAt });
   }
   for (const [id, at] of rows.reads) {
     if (!text(id, 16384) || !integer(at) || !at) throw new Error("Invalid notification read marker");
@@ -84,7 +88,8 @@ function decode(rows: NotificationRows): Memory {
   }
   for (const [key, value] of rows.accepted) {
     if (!object(value) || !text(value.conversationId) || !text(value.runId) || !integer(value.acceptedAt)
-      || value.sourceKey !== undefined && !validSourceKey(value.sourceKey)) throw new Error("Invalid notification accepted receipt");
+      || value.sourceKey !== undefined && !validSourceKey(value.sourceKey)
+      || value.nativeSourceKey !== undefined && !validSourceKey(value.nativeSourceKey)) throw new Error("Invalid notification accepted receipt");
     const r = value as Accepted;
     if (acceptedKey(r) !== key) throw new Error("Invalid notification receipt identity");
     m.accepted.set(key, r);
@@ -94,7 +99,7 @@ function decode(rows: NotificationRows): Memory {
   for (const [key, id] of m.legacy.mappings) {
     const old = parseLegacyKey(key), event = m.events.get(id);
     if (!old || !event || event.update.conversationId !== old.conversationId
-      || event.update.legacyRunId !== undefined && event.update.legacyRunId !== old.runId) throw new Error("Invalid legacy notification mapping");
+      || event.update.legacyRunId !== old.runId) throw new Error("Invalid legacy notification mapping");
     const tuple = JSON.parse(old.identity) as [string, string, string, string];
     if (tuple[1] !== event.update.source.harness || tuple[2] !== event.update.source.nativeSessionId) throw new Error("Invalid legacy notification source mapping");
   }
@@ -118,6 +123,7 @@ function union(m: Memory, other: Memory): void {
   for (const [key, receipt] of other.accepted) {
     const previous = m.accepted.get(key);
     m.accepted.set(key, { ...receipt, ...(previous?.sourceKey ? { sourceKey: previous.sourceKey } : {}),
+      ...(previous?.nativeSourceKey ? { nativeSourceKey: previous.nativeSourceKey } : {}),
       acceptedAt: Math.min(receipt.acceptedAt, previous?.acceptedAt ?? receipt.acceptedAt) });
   }
   for (const [id, record] of other.events) {
@@ -125,7 +131,8 @@ function union(m: Memory, other: Memory): void {
     if (previous && (updateSourceKey(previous.update.source) !== updateSourceKey(record.update.source)
       || previous.update.conversationId !== record.update.conversationId || previous.update.occurrenceSequence !== record.update.occurrenceSequence)) continue;
     const update = previous && previous.update.revision >= record.update.revision ? previous.update : record.update;
-    m.events.set(id, { update, eligible: !!previous?.eligible || record.eligible });
+    m.events.set(id, { update, eligible: !!previous?.eligible || record.eligible,
+      attentionAt: previous?.attentionAt ?? previous?.update.observedAt ?? record.attentionAt ?? record.update.observedAt });
   }
   mergeLegacy(m.legacy, other.legacy);
 }
@@ -142,6 +149,8 @@ class NotificationStore {
   private queue: Promise<unknown> = Promise.resolve();
   private channel: BroadcastChannel | null = null;
   private catalog: Map<string, Conversation> | null = null;
+  private contexts = new Map<string, { key: string; revision: number }>();
+  private contextRevision = 0;
   private feedEnabled = false;
   private feedError = "";
   private state: NotificationSnapshot = Object.freeze({ items: Object.freeze([]) as unknown as NotificationItem[], unreadCount: 0, storageError: "", feedError: "" });
@@ -160,19 +169,11 @@ class NotificationStore {
     const result = this.queue.then(work, work); this.queue = result.catch(() => undefined); return result;
   }
   private sourceVisible(conversationId: string, sourceKey?: string, identity?: string): boolean {
-    if (!this.catalog) return true;
+    if (!this.catalog) return false;
     const c = this.catalog.get(conversationId);
     if (!c || !eligible(c)) return false;
     if (identity) return identity === legacyIdentity(c);
-    const source = catalogSource(c);
-    if (source) return sourceKey === updateSourceKey(source);
-    if (sourceKey) {
-      try {
-        const parts: unknown = JSON.parse(sourceKey);
-        return Array.isArray(parts) && parts[0] === c.harness && parts[2] === (c.nativeSessionId ?? c.id);
-      } catch { return false; }
-    }
-    return true;
+    return !!sourceKey && notificationSourceMatches(c, sourceKey);
   }
   private unreadEvents() {
     return [...this.memory.events.values()].filter(r => r.eligible && !this.memory.reads.has(r.update.id)
@@ -186,29 +187,45 @@ class NotificationStore {
   private publish(): void {
     const grouped = new Map<string, NotificationItem>();
     if (this.scope !== null) {
+      const sources = new Map<string, NotificationItem>();
       for (const r of this.unreadEvents()) {
-        const u = r.update, sourceKey = updateSourceKey(u.source), c = this.catalog?.get(u.conversationId);
+        const u = r.update, sourceKey = updateSourceKey(u.source), c = this.catalog!.get(u.conversationId)!;
+        const groupId = notificationContextKey(c);
         const item: NotificationItem = { id: u.id, conversationId: u.conversationId, runId: u.runId ?? u.id,
           title: c?.title?.trim().slice(0, 256) || "Conversation", kind: u.kind,
           status: u.kind === "reply" ? "completed" : u.kind, time: u.occurredAt ?? u.observedAt,
-          sourceKey, groupId: sourceKey, occurrenceSequence: u.occurrenceSequence,
+          sourceKey, groupId, contextKey: groupId, occurrenceSequence: u.occurrenceSequence, observedAt: r.attentionAt ?? u.observedAt,
           ...(c?.workspaceId !== undefined ? { workspaceId: c.workspaceId } : {}),
           ...(c?.worktreeId !== undefined ? { worktreeId: c.worktreeId } : {}) };
-        const old = grouped.get(sourceKey);
-        if (!old || (old.occurrenceSequence ?? 0) < u.occurrenceSequence) grouped.set(sourceKey, item);
+        // First choose the latest actual occurrence within each exact source.
+        // Never compare a native sourceSequence with a transport/feed sequence.
+        const key = JSON.stringify([u.conversationId, sourceKey]), old = sources.get(key);
+        if (!old || old.occurrenceSequence! < u.occurrenceSequence) sources.set(key, item);
+      }
+      for (const item of sources.values()) {
+        const old = grouped.get(item.groupId!);
+        if (!old || compareItems(item, old) > 0) grouped.set(item.groupId!, item);
       }
       for (const r of this.unreadLegacy()) {
-        const c = this.catalog?.get(r.conversationId), source = c && catalogSource(c);
-        const groupId = source ? updateSourceKey(source) : r.identity;
-        const item: NotificationItem = { ...r.item!, kind: "legacy", groupId };
+        const c = this.catalog!.get(r.conversationId)!;
+        const groupId = notificationContextKey(c);
+        const item: NotificationItem = { ...r.item!, kind: "legacy", groupId, contextKey: groupId };
         const old = grouped.get(groupId);
-        if (!old || old.kind === "legacy" && (item.time > old.time || item.time === old.time && item.id > old.id)) grouped.set(groupId, item);
+        if (!old || compareItems(item, old) > 0) grouped.set(groupId, item);
       }
     }
-    const items = [...grouped.values()].sort((a, b) =>
-      (b.occurrenceSequence ?? 0) - (a.occurrenceSequence ?? 0) || b.time.localeCompare(a.time) || b.id.localeCompare(a.id));
-    const coverageNotices = [...new Set(this.memory.resume.coverage.filter(coverage => coverage.state !== "ready")
-      .map(coverage => coverage.reason || `Conversation update coverage is ${coverage.state}.`))].slice(0, 3);
+    const items = [...grouped.values()].sort((a, b) => compareItems(b, a));
+    const currentConversations = [...this.catalog?.values() ?? []].filter(eligible);
+    const missingNativeCoverage = this.feedEnabled ? currentConversations.flatMap(c => {
+      const source = nativeNotificationSource(c);
+      // Neither another incarnation's coverage nor the incarnationless App
+      // producer can certify coverage of this canonical native identity.
+      return source && !this.memory.resume.coverage.some(coverage => coverage.sourceKey === updateSourceKey(source))
+        ? ["Native reply coverage is missing for a current session identity; App run notifications remain available."] : [];
+    }) : [];
+    const coverageNotices = [...new Set([...missingNativeCoverage, ...this.memory.resume.coverage.filter(coverage => this.feedEnabled && coverage.state !== "ready"
+      && currentConversations.some(c => notificationSourceMatches(c, coverage.sourceKey)))
+      .map(coverage => coverage.reason || `Conversation update coverage is ${coverage.state}.`)])].slice(0, 3);
     const next = { items, unreadCount: items.length, storageError: this.scope === null ? "" : this.memory.storageError,
       feedError: this.scope === null ? "" : [this.feedError, ...coverageNotices].filter(Boolean).join(" ") };
     if (JSON.stringify(next) === JSON.stringify(this.state)) return;
@@ -229,22 +246,22 @@ class NotificationStore {
     // memory-only recovery, and bind it to a listed exact native run when possible.
     const activeBindings = new Map(m.resume.activeBindings);
     for (const c of this.catalog?.values() ?? []) {
-      const source = catalogSource(c);
+      const source = appNotificationSource(c);
       if (!source || !text(c.lastRunId) || !m.resume.activeRunIds.includes(c.lastRunId)) continue;
       const sourceKey = updateSourceKey(source), bound = activeBindings.get(c.lastRunId);
-      if (bound && bound !== sourceKey) continue;
-      activeBindings.set(c.lastRunId, sourceKey);
-      const receipt: Accepted = { conversationId: c.id, runId: c.lastRunId, sourceKey, acceptedAt: Math.max(1, Date.now()) };
+      if (bound && !notificationSourceMatches(c, bound)) continue;
+      if (!bound) activeBindings.set(c.lastRunId, sourceKey);
+      const receipt: Accepted = { conversationId: c.id, runId: c.lastRunId, sourceKey: bound ?? sourceKey, acceptedAt: Math.max(1, Date.now()) };
       if (!m.accepted.has(acceptedKey(receipt))) m.accepted.set(acceptedKey(receipt), receipt);
       if (!m.legacy.accepted.has(acceptedKey(receipt))) m.legacy.accepted.set(acceptedKey(receipt), {
         conversationId: c.id, runId: c.lastRunId, acceptedAt: receipt.acceptedAt, identity: legacyIdentity(c),
       });
     }
     for (const [key, receipt] of m.legacy.accepted) {
-      const c = this.catalog?.get(receipt.conversationId), source = c && catalogSource(c);
+      const c = this.catalog?.get(receipt.conversationId);
       if (c && !receipt.identity && text(c.nativeSessionId)) receipt.identity = legacyIdentity(c);
-      if (c && source && receipt.identity === legacyIdentity(c) && !m.accepted.has(key)) m.accepted.set(key, {
-        conversationId: receipt.conversationId, runId: receipt.runId, acceptedAt: receipt.acceptedAt, sourceKey: updateSourceKey(source),
+      if (c && receipt.identity === legacyIdentity(c) && !m.accepted.has(key)) m.accepted.set(key, {
+        conversationId: receipt.conversationId, runId: receipt.runId, acceptedAt: receipt.acceptedAt,
       });
     }
     for (const r of m.legacy.records.values()) {
@@ -255,23 +272,25 @@ class NotificationStore {
       const at = m.legacy.reads.get(key);
       if (at) m.reads.set(id, Math.max(at, m.reads.get(id) ?? 0));
     }
-    for (const receipt of m.accepted.values()) {
-      const c = this.catalog?.get(receipt.conversationId), source = c && catalogSource(c);
-      if (!receipt.sourceKey && source) receipt.sourceKey = updateSourceKey(source);
-    }
     for (const r of m.events.values()) {
       const u = r.update, sourceKey = updateSourceKey(u.source);
       if (u.runId) {
         const receipt = m.accepted.get(acceptedKey({ conversationId: u.conversationId, runId: u.runId }));
         const c = this.catalog?.get(u.conversationId);
-        // A candidate may bind a pending receipt only when its source agrees
-        // with the current catalog's native identity (if a catalog is known).
-        if (receipt && !receipt.sourceKey && (!c || c.harness === u.source.harness && (c.nativeSessionId ?? c.id) === u.source.nativeSessionId)) receipt.sourceKey = sourceKey;
-        if (receipt?.sourceKey === sourceKey) r.eligible = true;
-        const currentSource = c && catalogSource(c);
-        const sourceMatches = !c || (currentSource ? updateSourceKey(currentSource) === sourceKey
-          : c.harness === u.source.harness && (c.nativeSessionId ?? c.id) === u.source.nativeSessionId);
-        if (sourceMatches && m.resume.activeRunIds.includes(u.runId)) {
+        // Only an exact run-bearing candidate in the admitted context can rescue
+        // bootstrap history. Keep the receipt's original source immutable.
+        if (!c || !notificationSourceMatches(c, sourceKey)) continue;
+        const base = appNotificationSource(c), native = nativeNotificationSource(c);
+        const baseKey = base && updateSourceKey(base), nativeKey = native && updateSourceKey(native);
+        if (receipt && !receipt.sourceKey && baseKey) receipt.sourceKey = baseKey;
+        if (receipt?.sourceKey && notificationSourceMatches(c, receipt.sourceKey)) {
+          if (receipt.sourceKey === sourceKey) r.eligible = true;
+          else if (receipt.sourceKey === baseKey && sourceKey === nativeKey
+            && (!receipt.nativeSourceKey || receipt.nativeSourceKey === nativeKey)) {
+            receipt.nativeSourceKey = sourceKey; r.eligible = true;
+          } else if (receipt.sourceKey === nativeKey && sourceKey === baseKey) r.eligible = true;
+        }
+        if (m.resume.activeRunIds.includes(u.runId)) {
           const bound = activeBindings.get(u.runId);
           if (!bound) activeBindings.set(u.runId, sourceKey);
           if (!bound || bound === sourceKey) r.eligible = true;
@@ -280,19 +299,20 @@ class NotificationStore {
     }
     m.resume.activeBindings = [...activeBindings];
     // Canonical alias migration is exact, source-confirmed, and one-to-one
-    // across all retained occurrences, not just the incoming page.
+    // across all retained occurrences and incarnations, not just the incoming
+    // page or currently visible source. Old-source aliases still make it ambiguous.
     for (const key of new Set([...m.legacy.records.keys(), ...m.legacy.reads.keys()])) {
       if (m.legacy.tombstones.has(key)) continue;
       const legacy = parseLegacyKey(key);
       if (!legacy) continue;
       const old = m.legacy.records.get(key);
-      const c = this.catalog?.get(legacy.conversationId), source = c && catalogSource(c);
-      if (!c || !source || legacy.identity !== legacyIdentity(c)) continue;
-      const sourceKey = updateSourceKey(source);
-      const matches = [...m.events.values()].filter(r => r.update.legacyRunId === legacy.runId);
+      const c = this.catalog?.get(legacy.conversationId);
+      if (!c || legacy.identity !== legacyIdentity(c)) continue;
+      const matches = [...m.events.values()].filter(r => r.update.legacyRunId === legacy.runId
+        && r.update.conversationId === legacy.conversationId);
       if (matches.length !== 1) continue;
       const r = matches[0]!;
-      if (r.update.conversationId !== legacy.conversationId || updateSourceKey(r.update.source) !== sourceKey) continue;
+      if (!notificationSourceMatches(c, updateSourceKey(r.update.source))) continue;
       if (old?.observedActive) r.eligible = true;
       const readAt = Math.max(old?.readAt ?? 0, m.legacy.reads.get(key) ?? 0);
       if (readAt) m.reads.set(r.update.id, Math.max(readAt, m.reads.get(r.update.id) ?? 0));
@@ -346,6 +366,7 @@ class NotificationStore {
   };
   suspend = (): void => {
     this.binding++; this.scope = null; this.legacyScope = null; this.catalog = null; this.feedEnabled = false; this.feedError = "";
+    this.contexts.clear();
     this.channel?.close(); this.channel = null; this.db.close();
     if (typeof window !== "undefined") {
       window.removeEventListener("storage", this.onStorage); window.removeEventListener("focus", this.onRefresh);
@@ -419,6 +440,7 @@ class NotificationStore {
           const historical = m.resume.seeding || u.historical === true
             || baseline !== undefined && (u.sourceSequence === undefined || u.sourceSequence <= baseline);
           m.events.set(u.id, { update: old && old.update.revision === u.revision ? old.update : u,
+            attentionAt: old?.attentionAt ?? old?.update.observedAt ?? u.observedAt,
             eligible: old ? old.eligible : !historical });
         }
         m.resume.baselines = [...baselines]; m.resume.cursor = { ...wire.nextCursor };
@@ -468,17 +490,21 @@ class NotificationStore {
   observe = (conversations: readonly Conversation[]): void => {
     if (this.scope === null) return;
     this.catalog = new Map(conversations.map(c => [c.id, c]));
+    for (const id of this.contexts.keys()) if (!this.catalog.has(id)) this.contexts.delete(id);
     for (const c of conversations) {
-      // In feed mode only unqualified OpenCode retains the legacy run fallback.
-      const source = catalogSource(c);
-      const unqualified = !source || this.memory.resume.coverage.some(row => row.sourceKey === updateSourceKey(source) && row.state === "unqualified");
-      if (!this.feedEnabled || c.harness === "opencode" && unqualified) observeLegacy(this.memory.legacy, c);
+      const key = notificationContextKey(c);
+      if (this.contexts.get(c.id)?.key !== key) this.contexts.set(c.id, { key, revision: ++this.contextRevision });
+      // Coverage is not a run alias. OC retains fallback until this exact run
+      // has an evidenced legacyRunId mapping; sidecar tombstones retire it.
+      if (!this.feedEnabled || c.harness === "opencode") observeLegacy(this.memory.legacy, c);
     }
     this.reconcile(this.memory); this.publish(); this.writeEvidence(this.scope, this.binding);
   };
   acceptRun = (conversationId: string, runId: string): void => {
     if (this.scope === null || !text(conversationId) || !text(runId)) return;
-    const c = this.catalog?.get(conversationId), source = c && catalogSource(c);
+    // App acceptance proves the exact App run, not a native creation. Bind
+    // nativeSourceKey only when reconciliation sees an exact run candidate.
+    const c = this.catalog?.get(conversationId), source = c && appNotificationSource(c);
     const receipt: Accepted = { conversationId, runId, acceptedAt: Math.max(1, Date.now()), ...(source ? { sourceKey: updateSourceKey(source) } : {}) };
     const key = acceptedKey(receipt), old = this.memory.accepted.get(key);
     if (!old) this.memory.accepted.set(key, receipt);
@@ -488,14 +514,20 @@ class NotificationStore {
   };
   captureOpen = (conversationId: string): NotificationCapture | null => {
     if (this.scope === null) return null;
+    const c = this.catalog?.get(conversationId), context = this.contexts.get(conversationId);
+    if (!c || !eligible(c) || !context || context.key !== notificationContextKey(c)) return null;
     const events = this.unreadEvents().filter(r => r.update.conversationId === conversationId);
     const legacy = this.unreadLegacy().filter(r => r.conversationId === conversationId);
     return Object.freeze({ owner: this.scope, binding: this.binding, conversationId,
+      contextKey: context.key, contextRevision: context.revision,
       sources: Object.freeze([...new Set([...events.map(r => updateSourceKey(r.update.source)), ...legacy.map(r => r.identity)])]),
       ids: Object.freeze(events.map(r => r.update.id)), legacyIds: Object.freeze(legacy.map(legacyKey)) });
   };
   acknowledgeCaptured = (capture: NotificationCapture | null): void => {
     if (!capture || !this.current(capture.owner, capture.binding)) return;
+    const c = this.catalog?.get(capture.conversationId), context = this.contexts.get(capture.conversationId);
+    if (!c || !eligible(c) || !context || capture.contextKey !== context.key
+      || capture.contextKey !== notificationContextKey(c) || capture.contextRevision !== context.revision) return;
     const at = Math.max(1, Date.now());
     for (const id of capture.ids) {
       const r = this.memory.events.get(id);

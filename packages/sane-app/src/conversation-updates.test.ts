@@ -1,15 +1,16 @@
 import { afterEach, describe, expect, test } from "bun:test";
 import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { join } from "node:path";
+import { runInNewContext } from "node:vm";
 import { atomicAppRecord } from "./app-store";
-import { CONVERSATION_UPDATE_MAX_ROWS, ConversationUpdateServiceError, ConversationUpdateStore, isConversationUpdateCheckpoint } from "./conversation-update-store";
+import { CONVERSATION_UPDATE_MAX_ROWS, CONVERSATION_UPDATE_STORE_BYTES, ConversationUpdateServiceError, ConversationUpdateStore, isConversationUpdateCheckpoint, type ConversationUpdateCommitGuard, type UpdateJson } from "./conversation-update-store";
 import {
   ConversationUpdates, appRunUpdateCheckpointKey, nativeUpdateCheckpointKey,
   type ConversationUpdateProjector, type NativeConversationUpdateBatch,
 } from "./conversation-updates";
 import { createClaudeUpdateState, projectClaudeCommittedEvent } from "./claude-conversation-updates";
-import { validateOpenCodeReplyCheckpoint } from "./opencode-reply-observer";
-import { initialOpenCodeReplyState, openCodeIncarnation, type OpenCodeReplyBinding } from "../shared/conversation/oc-reply-reducer";
+import { validateOpenCodeReplyCheckpoint, type OpenCodeReplyCheckpoint, type OpenCodeReplyRegistration } from "./opencode-reply-observer";
+import { initialOpenCodeReplyState, openCodeIncarnation } from "../shared/conversation/oc-reply-reducer";
 import {
   updateOccurrenceId, updateSourceKey, type ConversationUpdateCandidate, type ConversationUpdateSource,
 } from "../shared/conversation/conversation-updates";
@@ -39,6 +40,410 @@ function fixture(options: ConstructorParameters<typeof ConversationUpdateStore>[
   return { dir, store, path: join(dir, "conversation-updates.json") };
 }
 afterEach(() => { for (const dir of dirs.splice(0)) rmSync(dir, { recursive: true, force: true }); });
+
+function deferred() {
+  let resolve!: () => void;
+  const promise = new Promise<void>(done => { resolve = done; });
+  return { promise, resolve };
+}
+function gateUpdateQueue(owner: ConversationUpdates | ConversationUpdateStore) {
+  const entered = deferred(), release = deferred();
+  // Queue-only white-box seam on a test-owned instance: production save remains
+  // synchronous, and the guarded operation still executes on its actual queue.
+  const queued = owner as unknown as { queue: Promise<unknown> };
+  queued.queue = queued.queue.then(async () => { entered.resolve(); await release.promise; });
+  return { entered: entered.promise, release: release.resolve };
+}
+function updateSnapshot(f: ReturnType<typeof fixture>, service: ConversationUpdates) {
+  return { disk: readFileSync(f.path, "utf8"), head: service.getHead(), checkpoints: f.store.getCheckpoints(),
+    coverage: service.getCoverage(), storeCoverage: f.store.getCoverage(), health: service.getHealth(), page: f.store.page() };
+}
+
+describe("native service runtime guard validation", () => {
+  for (const operation of ["batch", "correlation"] as const) {
+    test(`${operation} malformed runtime guards return benign false before invoking the transaction body`, async () => {
+      let writes = 0, bodyCalls = 0;
+      const f = fixture({ save: (root, name, value) => { writes++; atomicAppRecord(root, name, value); } });
+      const service = new ConversationUpdates(f.store), original = candidate("old", { sourceSequence: 1 }), sourceKey = updateSourceKey(ocSource);
+      expect(await service.upsertNativeBatch(nativeBatch(1, [original], { messageIds: ["msg_old"] }))).toBe(true);
+      const before = updateSnapshot(f, service), beforeWrites = writes;
+      const commit = f.store.commitCandidates.bind(f.store), getCheckpoint = f.store.getCheckpoint.bind(f.store), getUpdate = f.store.getUpdate.bind(f.store);
+      f.store.commitCandidates = (rows, cp, guard, extras) => { bodyCalls++; return commit(rows, cp, guard, extras); };
+      f.store.getCheckpoint = key => { bodyCalls++; return getCheckpoint(key); };
+      f.store.getUpdate = id => { bodyCalls++; return getUpdate(id); };
+      const listener = () => {};
+      const invalid: unknown[] = [null, [], 7, { isCurrent: false }, { isCurrent: null }, { isCurrent: "current" },
+        { isCurrent: () => false }, { isCurrent: () => { throw new Error("fixture registration failure"); } },
+        { signal: {} }, { signal: null }, { signal: [] },
+        { signal: { aborted: "false", addEventListener: listener, removeEventListener: listener } },
+        { signal: { aborted: 0, addEventListener: listener, removeEventListener: listener } },
+        { signal: { aborted: false } }, { signal: { aborted: false, addEventListener: listener } },
+        { signal: { aborted: false, removeEventListener: listener } },
+        { signal: { aborted: false, addEventListener: "listener", removeEventListener: listener } },
+        { signal: { aborted: false, addEventListener: listener, removeEventListener: null } },
+        { expectedCheckpoint: null }, { expectedCheckpoint: [] },
+        { expectedCheckpoint: { key: "not-json", through: null } },
+        { expectedCheckpoint: { key: "bad\nkey", through: null } },
+        { expectedCheckpoint: { key: nativeUpdateCheckpointKey(ocSource), through: null, extra: true } }];
+      for (const value of invalid) {
+        const guard = value as unknown as ConversationUpdateCommitGuard;
+        expect(await (operation === "batch"
+          ? service.upsertNativeBatch(nativeBatch(2, [candidate("reject", { sourceSequence: 2 })], { messageIds: ["msg_reject"] }), guard)
+          : service.correlate([{ id: original.id, source: ocSource, conversationId: "conversation", runId: "rejected-run" }], guard))).toBe(false);
+        expect(bodyCalls).toBe(0); expect(updateSnapshot(f, service)).toEqual(before); expect(writes).toBe(beforeWrites);
+        expect(f.store.hasNativeMessage(sourceKey, "msg_old")).toBe(true); expect(f.store.hasNativeMessage(sourceKey, "msg_reject")).toBe(false);
+      }
+    });
+  }
+
+  test("cross-realm structural signal and undefined default guard are accepted without instanceof restrictions", async () => {
+    const f = fixture(), service = new ConversationUpdates(f.store), sourceKey = updateSourceKey(ocSource);
+    const structural = runInNewContext("({ aborted: false, addEventListener() {}, removeEventListener() {} })") as unknown as AbortSignal;
+    expect(structural instanceof AbortSignal).toBe(false);
+    const guard: ConversationUpdateCommitGuard = { signal: structural, isCurrent() { return this === guard; } };
+    const original = candidate("structural", { sourceSequence: 1 });
+    expect(await service.upsertNativeBatch(nativeBatch(1, [original], { messageIds: ["msg_structural"] }), guard)).toBe(true);
+    expect(await service.upsertNativeBatch(nativeBatch(2, [candidate("default", { sourceSequence: 2 })], { messageIds: ["msg_default"] }), undefined)).toBe(true);
+    expect(await service.correlate([{ id: original.id, source: ocSource, conversationId: "conversation", runId: "exact-run" }], guard)).toBe(true);
+    expect(f.store.hasNativeMessage(sourceKey, "msg_structural")).toBe(true); expect(f.store.hasNativeMessage(sourceKey, "msg_default")).toBe(true);
+    expect(f.store.getUpdate(original.id)).toMatchObject({ runId: "exact-run", occurrenceSequence: 1, revision: 2 });
+    const before = updateSnapshot(f, service);
+    (structural as unknown as { aborted: boolean }).aborted = true;
+    expect(await service.correlate([{ id: original.id, source: ocSource, conversationId: "conversation", legacyRunId: "exact-run" }], guard)).toBe(false);
+    expect(updateSnapshot(f, service)).toEqual(before);
+  });
+
+  for (const layer of ["service", "store"] as const) {
+    test(`guards becoming malformed while queued at ${layer} leave ledger and ready coverage unchanged`, async () => {
+      for (const mutation of ["callback", "aborted-type", "missing-listener"] as const) {
+        const f = fixture(), service = new ConversationUpdates(f.store), sourceKey = updateSourceKey(ocSource);
+        expect(await service.upsertNativeBatch(nativeBatch(1, [], { messageIds: ["msg_old"] }))).toBe(true);
+        const before = updateSnapshot(f, service);
+        const gate = gateUpdateQueue(layer === "service" ? service : f.store); await gate.entered;
+        const submitted = deferred(), commit = f.store.commitCandidates.bind(f.store); let bodyCalls = 0;
+        f.store.commitCandidates = (rows, cp, guard, extras) => { bodyCalls++; const task = commit(rows, cp, guard, extras); submitted.resolve(); return task; };
+        const signal: Record<string, unknown> = { aborted: false, addEventListener() {}, removeEventListener() {} };
+        const value: Record<string, unknown> = { signal, isCurrent: () => true };
+        const pending = service.upsertNativeBatch(nativeBatch(2, [candidate("reject", { sourceSequence: 2 })], { messageIds: ["msg_reject"] }), value as unknown as ConversationUpdateCommitGuard);
+        try {
+          if (layer === "store") await submitted.promise;
+          if (mutation === "callback") value.isCurrent = false;
+          else if (mutation === "aborted-type") signal.aborted = "false";
+          else delete signal.removeEventListener;
+          gate.release(); expect(await pending).toBe(false);
+          expect(bodyCalls).toBe(layer === "store" ? 1 : 0);
+          expect(updateSnapshot(f, service)).toEqual(before); expect(f.store.hasNativeMessage(sourceKey, "msg_reject")).toBe(false);
+        } finally { gate.release(); await pending; }
+      }
+    });
+  }
+
+  test("native CAS requires the precise transaction key even when another source has identical committed progress", async () => {
+    const f = fixture(), service = new ConversationUpdates(f.store), foreign = { ...ocSource, authorityId: "foreign" };
+    const sourceKey = updateSourceKey(ocSource), foreignKey = updateSourceKey(foreign);
+    const original = candidate("original", { sourceSequence: 1 });
+    expect(await service.upsertNativeBatch(nativeBatch(1, [original], { messageIds: ["msg_old"] }))).toBe(true);
+    expect(await service.upsertNativeBatch(nativeBatch(1, [], { source: foreign, messageIds: ["msg_foreign"] }))).toBe(true);
+    const before = updateSnapshot(f, service); let bodyCalls = 0;
+    const commit = f.store.commitCandidates.bind(f.store);
+    f.store.commitCandidates = (rows, cp, guard, extras) => { bodyCalls++; return commit(rows, cp, guard, extras); };
+    const guards: ConversationUpdateCommitGuard[] = [
+      { expectedCheckpoint: { key: nativeUpdateCheckpointKey(foreign), through: 1 } },
+      { expectedCheckpoint: { key: appRunUpdateCheckpointKey(ocSource, "run"), through: null } },
+      { expectedCheckpoint: { key: JSON.stringify(["native", sourceKey, "extra-key-component"]), through: null } },
+    ];
+    for (const guard of guards) {
+      expect(await service.upsertNativeBatch(nativeBatch(2, [candidate("reject", { sourceSequence: 2 })], { messageIds: ["msg_reject"] }), guard)).toBe(false);
+      expect(bodyCalls).toBe(0); expect(updateSnapshot(f, service)).toEqual(before);
+    }
+    // Correlation has no new checkpoint; the store must still bind its candidates
+    // to the source encoded in the expected checkpoint, not merely its watermark.
+    expect(await service.correlate([{ id: original.id, source: ocSource, conversationId: "conversation", runId: "rejected-run" }], guards[0])).toBe(false);
+    expect(bodyCalls).toBe(1); expect(updateSnapshot(f, service)).toEqual(before);
+    expect(f.store.hasNativeMessage(sourceKey, "msg_reject")).toBe(false); expect(f.store.hasNativeMessage(foreignKey, "msg_reject")).toBe(false);
+  });
+});
+
+describe("native service and actual store queue commit guards", () => {
+  for (const operation of ["batch", "correlation"] as const) {
+    for (const layer of ["service", "store"] as const) {
+      for (const mode of ["aborted", "rebound", "throwing"] as const) {
+        test(`${operation} ${mode} while queued at ${layer} publishes nothing and preserves diagnostics`, async () => {
+          let writes = 0, currentRegistration = "registered";
+          const controller = new AbortController();
+          const f = fixture({ save: (root, name, value) => { writes++; atomicAppRecord(root, name, value); } });
+          const service = new ConversationUpdates(f.store), original = candidate("original", { sourceSequence: 1 });
+          expect(await service.upsertNativeBatch(nativeBatch(1, [original], { baselineThrough: 0, state: { pending: "old" }, messageIds: ["msg_old"] }))).toBe(true);
+          const before = updateSnapshot(f, service), beforeWrites = writes;
+          const gate = gateUpdateQueue(layer === "service" ? service : f.store);
+          await gate.entered;
+          const submitted = deferred(), originalCommit = f.store.commitCandidates.bind(f.store);
+          let submittedGuard: ConversationUpdateCommitGuard | undefined;
+          f.store.commitCandidates = (rows, cp, guard, extras) => {
+            const pending = originalCommit(rows, cp, guard, extras);
+            submittedGuard = guard; submitted.resolve(); return pending;
+          };
+          const guard = { signal: controller.signal, isCurrent: () => {
+            if (currentRegistration !== "registered" && mode === "throwing") throw new Error("registration unavailable");
+            return currentRegistration === "registered";
+          } };
+          const next = candidate("next", { sourceSequence: 2 });
+          const pending = operation === "batch"
+            ? service.upsertNativeBatch(nativeBatch(2, [next], { state: { pending: "next" }, messageIds: ["msg_next"] }), guard)
+            : service.correlate([{ id: original.id, source: ocSource, conversationId: "conversation", runId: "exact-run", legacyRunId: "exact-run" }], guard);
+          try {
+            if (layer === "store") {
+              await submitted.promise;
+              expect(submittedGuard).toBeDefined();
+              expect(submittedGuard!.isCurrent!()).toBe(true);
+            }
+            if (mode === "aborted") controller.abort(); else currentRegistration = "rebound";
+            gate.release();
+            expect(await pending).toBe(false);
+            expect(f.store.getUpdate(next.id)).toBeUndefined();
+            expect(f.store.hasNativeMessage(updateSourceKey(ocSource), "msg_old")).toBe(true);
+            expect(f.store.hasNativeMessage(updateSourceKey(ocSource), "msg_next")).toBe(false);
+            expect(f.store.getUpdate(original.id)?.runId).toBeUndefined();
+            expect(updateSnapshot(f, service)).toEqual(before);
+            expect(writes).toBe(beforeWrites);
+            if (layer === "service") expect(submittedGuard).toBeUndefined();
+          } finally { gate.release(); await pending; }
+        });
+      }
+    }
+
+    test(`${operation} successful synchronous save followed by abort returns true and persists`, async () => {
+      const controller = new AbortController(); let current = true, cancelAfterSave = false;
+      const f = fixture({ save: (root, name, value) => {
+        atomicAppRecord(root, name, value);
+        if (cancelAfterSave) { controller.abort(); current = false; }
+      } });
+      const service = new ConversationUpdates(f.store), original = candidate("saved", { sourceSequence: 1 });
+      expect(await service.upsertNativeBatch(nativeBatch(1, [original]))).toBe(true);
+      cancelAfterSave = true;
+      const guard = { signal: controller.signal, isCurrent: () => current };
+      expect(await (operation === "batch"
+        ? service.upsertNativeBatch(nativeBatch(2, [candidate("later", { sourceSequence: 2 })], { state: { pending: null } }), guard)
+        : service.correlate([{ id: original.id, source: ocSource, conversationId: "conversation", runId: "exact-run" }], guard))).toBe(true);
+      expect(controller.signal.aborted).toBe(true);
+      expect(service.getHealth()).toEqual({ state: "ready" });
+      expect(service.getCoverage().every(item => item.state === "ready")).toBe(true);
+      expect(service.getHead()?.through).toBe(2);
+      const reloaded = new ConversationUpdateStore(f.dir, "store"); expect(reloaded.load()).toBe(true);
+      expect(reloaded.getHead()).toEqual(service.getHead());
+      expect(reloaded.getCheckpoints()).toEqual(f.store.getCheckpoints());
+      expect(reloaded.page()).toEqual(f.store.page());
+      if (operation === "batch") expect(reloaded.getUpdate(candidate("later").id)).toMatchObject({ occurrenceSequence: 2, revision: 1 });
+      else expect(reloaded.getUpdate(original.id)).toMatchObject({ runId: "exact-run", occurrenceSequence: 1, revision: 2 });
+    });
+  }
+
+  test("rejected guarded recovery cannot clear an existing degraded native producer", async () => {
+    const f = fixture(), service = new ConversationUpdates(f.store);
+    expect(await service.upsertNativeBatch(nativeBatch(1, [candidate("invalid")]))).toBe(false);
+    const before = updateSnapshot(f, service);
+    expect(before.coverage[0]?.state).toBe("degraded");
+    for (const isCurrent of [() => false, () => { throw new Error("registration lookup failed"); }]) {
+      expect(await service.upsertNativeBatch(nativeBatch(1, [candidate("valid", { sourceSequence: 1 })]), { isCurrent })).toBe(false);
+      expect(updateSnapshot(f, service)).toEqual(before);
+    }
+    expect(await service.upsertNativeBatch(nativeBatch(1, [candidate("valid", { sourceSequence: 1 })]))).toBe(true);
+    expect(service.getCoverage()[0]?.state).toBe("ready");
+  });
+
+  for (const mode of ["aborted", "rebound", "throwing"] as const) {
+    test(`native batch ${mode} during store preparation does not degrade the service`, async () => {
+      const controller = new AbortController(); let invalidate = false, current = true, writes = 0;
+      const f = fixture({ now: () => {
+        if (invalidate) { current = false; if (mode === "aborted") controller.abort(); }
+        return now;
+      }, save: (root, name, value) => { writes++; atomicAppRecord(root, name, value); } });
+      const service = new ConversationUpdates(f.store);
+      expect(await service.upsertNativeBatch(nativeBatch(1, [], { state: { pending: "old" } }))).toBe(true);
+      const before = updateSnapshot(f, service), beforeWrites = writes; invalidate = true;
+      expect(await service.upsertNativeBatch(nativeBatch(2, [candidate("prepared", { sourceSequence: 2 })], { state: { pending: null } }), {
+        signal: controller.signal, isCurrent: () => {
+          if (!current && mode === "throwing") throw new Error("registration lookup failed");
+          return current;
+        },
+      })).toBe(false);
+      expect(updateSnapshot(f, service)).toEqual(before);
+      expect(writes).toBe(beforeWrites);
+    });
+  }
+});
+
+describe("native service ledger, CAS and explicit replay coverage", () => {
+  test("messageIds are captured and committed atomically through service, reload and same-value CAS replay", async () => {
+    let writes = 0;
+    const f = fixture({ save: (root, name, value) => { writes++; atomicAppRecord(root, name, value); } });
+    const service = new ConversationUpdates(f.store), key = nativeUpdateCheckpointKey(ocSource), sourceKey = updateSourceKey(ocSource);
+    const messageIds = ["msg_exact", "msg_intermediate"];
+    const batch = nativeBatch(0, [], { messageIds });
+    const pending = service.upsertNativeBatch(batch, { expectedCheckpoint: { key, through: null } });
+    messageIds.push("msg_mutated");
+    expect(f.store.hasNativeMessage(sourceKey, "msg_exact")).toBe(false); expect(await pending).toBe(true);
+    expect(f.store.hasNativeMessage(sourceKey, "msg_exact")).toBe(true); expect(f.store.hasNativeMessage(sourceKey, "msg_mutated")).toBe(false);
+    expect(f.store.getCheckpoint(key)?.through).toBe(0); expect(service.getHead()?.through).toBe(0);
+    const before = updateSnapshot(f, service), beforeWrites = writes;
+    expect(await service.upsertNativeBatch(nativeBatch(0, [], { messageIds: ["msg_exact", "msg_intermediate"] }), { expectedCheckpoint: { key, through: 0 } })).toBe(true);
+    expect(updateSnapshot(f, service)).toEqual(before); expect(writes).toBe(beforeWrites);
+    expect(await service.upsertNativeBatch(nativeBatch(1, [candidate("stale", { sourceSequence: 1 })], { messageIds: ["msg_stale"] }), { expectedCheckpoint: { key, through: null } })).toBe(false);
+    expect(updateSnapshot(f, service)).toEqual(before); expect(f.store.hasNativeMessage(sourceKey, "msg_stale")).toBe(false);
+    expect(await service.upsertNativeBatch(nativeBatch(1, [candidate("reply", { sourceSequence: 1, messageId: "msg_reply" })], { messageIds: ["msg_reply"] }), { expectedCheckpoint: { key, through: 0 } })).toBe(true);
+    const restarted = new ConversationUpdateStore(f.dir, "store"); expect(restarted.load()).toBe(true);
+    expect(restarted.getCheckpoints()).toEqual(f.store.getCheckpoints()); expect(restarted.page()).toEqual(f.store.page());
+    for (const id of ["msg_exact", "msg_intermediate", "msg_reply"]) expect(restarted.hasNativeMessage(sourceKey, id)).toBe(true);
+    expect(restarted.hasNativeMessage(updateSourceKey({ ...ocSource, incarnation: "foreign" }), "msg_reply")).toBe(false);
+  });
+
+  for (const layer of ["service", "store"] as const) {
+    for (const operation of ["batch", "correlation"] as const) {
+      test(`${operation} stale CAS at ${layer} queue preserves winner and never degrades coverage`, async () => {
+        const f = fixture(), service = new ConversationUpdates(f.store), key = nativeUpdateCheckpointKey(ocSource), sourceKey = updateSourceKey(ocSource);
+        const original = candidate("original", { sourceSequence: 1 });
+        expect(await service.upsertNativeBatch(nativeBatch(1, [original], { state: { pending: "old" }, messageIds: ["msg_old"] }))).toBe(true);
+        const gate = gateUpdateQueue(layer === "service" ? service : f.store); await gate.entered;
+        const guard = { expectedCheckpoint: { key, through: 1 } }, winner = candidate("winner", { sourceSequence: 2 });
+        const winnerCheckpoint = { key, sourceKey, through: 2, state: { pending: "winner" }, coverage: { sourceKey, state: "ready" as const, through: 2 } };
+        const first = layer === "service"
+          ? service.upsertNativeBatch(nativeBatch(2, [winner], { state: { pending: "winner" }, messageIds: ["msg_winner"] }), guard)
+          : f.store.commitCandidates([winner], winnerCheckpoint, guard, { nativeMessages: { sourceKey, ids: ["msg_winner"] } });
+        const submitted = deferred(), originalCommit = f.store.commitCandidates.bind(f.store);
+        if (layer === "store") f.store.commitCandidates = (rows, cp, liveGuard, extras) => {
+          const task = originalCommit(rows, cp, liveGuard, extras); submitted.resolve(); return task;
+        };
+        const stale = candidate("stale", { sourceSequence: 3 });
+        const second = operation === "batch"
+          ? service.upsertNativeBatch(nativeBatch(3, [stale], { state: { pending: "stale" }, messageIds: ["msg_stale"] }), guard)
+          : service.correlate([{ id: original.id, source: ocSource, conversationId: "conversation", runId: "stale-run" }], guard);
+        try {
+          if (layer === "store") await submitted.promise;
+          gate.release(); expect(await first).toBe(true); expect(await second).toBe(false);
+          expect(f.store.getCheckpoint(key)).toEqual(winnerCheckpoint);
+          expect(service.getHead()?.through).toBe(2); expect(f.store.getUpdate(stale.id)).toBeUndefined();
+          expect(f.store.getUpdate(original.id)?.runId).toBeUndefined();
+          expect(f.store.hasNativeMessage(sourceKey, "msg_winner")).toBe(true); expect(f.store.hasNativeMessage(sourceKey, "msg_stale")).toBe(false);
+          expect(service.getCoverage()).toEqual([winnerCheckpoint.coverage]); expect(service.getHealth()).toEqual({ state: "ready" });
+          expect(JSON.parse(readFileSync(f.path, "utf8"))).toMatchObject({ head: 2, checkpoints: [winnerCheckpoint], nativeMessages: [{ sourceKey, ids: ["msg_old", "msg_winner"] }] });
+        } finally { gate.release(); await Promise.all([first, second]); }
+      });
+    }
+  }
+
+  for (const [name, expectedCheckpoint] of [
+    ["absent instead of existing", { key: nativeUpdateCheckpointKey(ocSource), through: null }],
+    ["wrong source key", { key: nativeUpdateCheckpointKey({ ...ocSource, authorityId: "foreign" }), through: 1 }],
+    ["empty key", { key: "", through: null }],
+    ["control character key", { key: "bad\nkey", through: null }],
+    ["negative expected progress", { key: nativeUpdateCheckpointKey(ocSource), through: -1 }],
+    ["fractional expected progress", { key: nativeUpdateCheckpointKey(ocSource), through: 1.5 }],
+  ] as const) {
+    test(`CAS ${name} rejects without changing native coverage or ledger`, async () => {
+      const f = fixture(), service = new ConversationUpdates(f.store);
+      expect(await service.upsertNativeBatch(nativeBatch(1, [], { messageIds: ["msg_old"] }))).toBe(true);
+      const before = updateSnapshot(f, service);
+      expect(await service.upsertNativeBatch(nativeBatch(2, [candidate("reject", { sourceSequence: 2 })], { messageIds: ["msg_reject"] }), { expectedCheckpoint })).toBe(false);
+      expect(updateSnapshot(f, service)).toEqual(before);
+      expect(f.store.hasNativeMessage(updateSourceKey(ocSource), "msg_reject")).toBe(false);
+    });
+  }
+
+  test("save failure rolls back service messageIds together with native rows and checkpoint", async () => {
+    let fail = false;
+    const f = fixture({ save: (root, name, value) => { if (fail) throw new Error("fixture save failure"); atomicAppRecord(root, name, value); } });
+    const service = new ConversationUpdates(f.store), sourceKey = updateSourceKey(ocSource);
+    expect(await service.upsertNativeBatch(nativeBatch(1, [], { messageIds: ["msg_old"] }))).toBe(true);
+    const disk = readFileSync(f.path, "utf8"), cp = f.store.getCheckpoint(nativeUpdateCheckpointKey(ocSource)); fail = true;
+    expect(await service.upsertNativeBatch(nativeBatch(2, [candidate("reply", { sourceSequence: 2 })], { messageIds: ["msg_new"] }))).toBe(false);
+    expect(f.store.hasNativeMessage(sourceKey, "msg_new")).toBe(false); expect(f.store.hasNativeMessage(sourceKey, "msg_old")).toBe(true);
+    expect(f.store.getUpdate(candidate("reply").id)).toBeUndefined(); expect(f.store.getCheckpoint(nativeUpdateCheckpointKey(ocSource))).toEqual(cp);
+    expect(readFileSync(f.path, "utf8")).toBe(disk); expect(service.getHealth().state).toBe("unavailable");
+  });
+
+  test("whole-record ledger capacity rejection isolates the native producer and keeps App feed writable", async () => {
+    const f = fixture(), service = new ConversationUpdates(f.store, { projector: ccProjector }), r = records();
+    expect(await service.ingestCommitted(r.session, r.run, r.event(1, "stdout", success(0)))).toBe(true);
+    const disk = readFileSync(f.path, "utf8"), head = service.getHead();
+    const messageIds = Array.from({ length: 1024 }, (_, i) => `message-${i}-`.padEnd(16 * 1024, "x"));
+    expect(Buffer.byteLength(JSON.stringify(messageIds))).toBeGreaterThan(CONVERSATION_UPDATE_STORE_BYTES);
+    expect(await service.upsertNativeBatch(nativeBatch(1, [candidate("reject", { sourceSequence: 1 })], { messageIds }))).toBe(false);
+    expect(service.getHealth()).toEqual({ state: "ready" }); expect(service.getHead()).toEqual(head);
+    expect(readFileSync(f.path, "utf8")).toBe(disk); expect(f.store.getCheckpoint(nativeUpdateCheckpointKey(ocSource))).toBeUndefined();
+    expect(f.store.hasNativeMessage(updateSourceKey(ocSource), messageIds[0]!)).toBe(false);
+    expect(service.getCoverage().find(item => item.sourceKey === updateSourceKey(ccSource))?.state).toBe("ready");
+    expect(service.getCoverage().find(item => item.sourceKey === updateSourceKey(ocSource))?.state).toBe("degraded");
+    expect(await service.ingestCommitted(r.session, r.run, r.event(2, "stdout", success(1)))).toBe(true);
+    expect((await service.page()).updates.map(row => row.runId)).toEqual([r.run.runId, r.run.runId]);
+  });
+
+  test("private V2 progress persists without inventing ready coverage or a certified baseline", async () => {
+    const f = fixture(), sourceKey = updateSourceKey(ocSource);
+    const service = new ConversationUpdates(f.store, { bootstrap: () => ({ activeRunIds: [], sourceBaselines: [] }) });
+    const state = { checkpoint: { version: 2, progressThrough: 0, certifiedThrough: null, initialBaselineThrough: 0, state: { private: "adapter-owned" } } };
+    const coverage = { sourceKey, state: "initializing" as const, reason: "uncertified initial replay" };
+    expect(await service.upsertNativeBatch(nativeBatch(0, [], { state, coverage, messageIds: [] }))).toBe(true);
+    expect(f.store.getCheckpoint(nativeUpdateCheckpointKey(ocSource))).toMatchObject({ through: 0, state, coverage });
+    expect(service.getCoverage()).toEqual([coverage]); expect(service.getHead()?.through).toBe(0);
+    const partialState = { checkpoint: { ...state.checkpoint, progressThrough: 5 } };
+    expect(await service.upsertNativeBatch(nativeBatch(5, [], { state: partialState, coverage, messageIds: ["msg_partial"] }))).toBe(true);
+    expect(service.getCoverage()).toEqual([coverage]);
+    const page = await service.page({}, true);
+    expect(page.coverage).toEqual([coverage]); expect(page.bootstrap?.sourceBaselines).toEqual([]);
+    expect(page).not.toHaveProperty("checkpoint"); expect(page).not.toHaveProperty("nativeMessages"); expect(page).not.toHaveProperty("messageIds");
+    const restarted = new ConversationUpdateStore(f.dir, "store"); expect(restarted.load()).toBe(true);
+    expect(restarted.getCoverage()).toEqual([coverage]); expect(restarted.hasNativeMessage(sourceKey, "msg_partial")).toBe(true);
+  });
+
+  test("certified coverage may trail replay progress while a certified baseline stays fixed", async () => {
+    const f = fixture(), service = new ConversationUpdates(f.store), sourceKey = updateSourceKey(ocSource);
+    const state = { checkpoint: { version: 2, progressThrough: 5, certifiedThrough: 2, initialBaselineThrough: 2, state: { private: true } } };
+    const coverage = { sourceKey, state: "degraded" as const, reason: "catch-up in progress", through: 2, baselineThrough: 2 };
+    expect(await service.upsertNativeBatch(nativeBatch(5, [], { baselineThrough: 2, state, coverage, messageIds: ["msg_seen"] }))).toBe(true);
+    expect(f.store.getCheckpoint(nativeUpdateCheckpointKey(ocSource))).toMatchObject({ through: 5, baselineThrough: 2, state, coverage });
+    expect(service.getCoverage()).toEqual([coverage]);
+    const ready = { sourceKey, state: "ready" as const, through: 6, baselineThrough: 2 };
+    expect(await service.upsertNativeBatch(nativeBatch(6, [candidate("live", { sourceSequence: 6 })], {
+      state: { checkpoint: { ...state.checkpoint, progressThrough: 6, certifiedThrough: 6 } }, coverage: ready,
+    }))).toBe(true);
+    expect(service.getCoverage()).toEqual([ready]);
+    expect(f.store.getCheckpoint(nativeUpdateCheckpointKey(ocSource))?.baselineThrough).toBe(2);
+  });
+
+  for (const shape of ["direct-v2", "wrapped-v2", "progress-only"] as const) {
+    test(`${shape} cannot default missing explicit coverage to ready`, async () => {
+      const f = fixture(), service = new ConversationUpdates(f.store), sourceKey = updateSourceKey(ocSource);
+      const checkpoint = { version: 2, progressThrough: 1, certifiedThrough: null };
+      const states: Record<typeof shape, UpdateJson> = {
+        "direct-v2": checkpoint, "wrapped-v2": { checkpoint }, "progress-only": { progressThrough: 1 },
+      };
+      const state = states[shape];
+      const disk = readFileSync(f.path, "utf8"), head = service.getHead();
+      expect(await service.upsertNativeBatch(nativeBatch(1, [candidate("reject", { sourceSequence: 1 })], { state, messageIds: ["msg_reject"] }))).toBe(false);
+      expect(readFileSync(f.path, "utf8")).toBe(disk); expect(service.getHead()).toEqual(head);
+      expect(f.store.getCheckpoints()).toEqual([]); expect(f.store.hasNativeMessage(sourceKey, "msg_reject")).toBe(false);
+      expect(service.getCoverage()).toEqual([expect.objectContaining({ sourceKey, state: "degraded" })]);
+      expect(service.getHealth()).toEqual({ state: "ready" });
+    });
+  }
+
+  for (const mode of ["negative-progress", "mismatched-progress", "negative-certified", "certified-ahead", "baseline-ahead", "baseline-uncertified", "baseline-state-mismatch", "wrong-source"] as const) {
+    test(`explicit V2 ${mode} rejects without persisting rows, checkpoint or exact identities`, async () => {
+      const f = fixture(), service = new ConversationUpdates(f.store), sourceKey = updateSourceKey(ocSource);
+      const state = { checkpoint: { version: 2, progressThrough: mode === "negative-progress" ? -1 : mode === "mismatched-progress" ? 4 : 5,
+        certifiedThrough: 2, baselineThrough: mode === "baseline-state-mismatch" ? 1 : 2 } };
+      const coverage = { sourceKey: mode === "wrong-source" ? updateSourceKey({ ...ocSource, authorityId: "foreign" }) : sourceKey,
+        state: "degraded" as const, ...(mode === "baseline-uncertified" ? {} : { through: mode === "negative-certified" ? -1 : mode === "certified-ahead" ? 6 : 2 }),
+        baselineThrough: mode === "baseline-ahead" ? 3 : 2 };
+      const disk = readFileSync(f.path, "utf8"), head = service.getHead();
+      expect(await service.upsertNativeBatch(nativeBatch(5, [candidate("reject", { sourceSequence: 5 })], {
+        baselineThrough: mode === "baseline-ahead" ? 3 : 2, state, coverage, messageIds: ["msg_reject"],
+      }))).toBe(false);
+      expect(readFileSync(f.path, "utf8")).toBe(disk); expect(service.getHead()).toEqual(head); expect(f.store.getCheckpoints()).toEqual([]);
+      expect(f.store.hasNativeMessage(sourceKey, "msg_reject")).toBe(false); expect(service.getHealth()).toEqual({ state: "ready" });
+    });
+  }
+});
 
 describe("conversation updates separate committed-record ingest queue", () => {
   test("primary callbacks return before projection and a throwing projector cannot escape or block another source", async () => {
@@ -379,21 +784,89 @@ describe("native batches, exact correlation and source checkpoint boundaries", (
     expect(f.store.getUpdate(second.id)?.legacyRunId).toBeUndefined(); expect(readFileSync(f.path, "utf8")).toBe(disk);
   });
 
+  for (const invalid of ["conversation", "incarnation", "alias-collision"] as const) {
+    for (const order of ["valid-first", "invalid-first"] as const) {
+      test(`mixed correlation ${invalid} is atomic with ${order}`, async () => {
+        const f = fixture(), service = new ConversationUpdates(f.store), source = { ...ocSource, incarnation: "creation-A" };
+        const first = candidate("first", { sourceSequence: 1 }, source), second = candidate("second", { sourceSequence: 2 }, source);
+        const owner = candidate("alias-owner", { sourceSequence: 3, legacyRunId: "occupied-run" }, source);
+        expect(await service.upsertNativeBatch(nativeBatch(3, [first, second, owner], { source }))).toBe(true);
+        const before = updateSnapshot(f, service);
+        const valid = { id: first.id, source, conversationId: "conversation", runId: "exact-run" };
+        const bad = { id: second.id, source: invalid === "incarnation" ? { ...source, incarnation: "creation-B" } : source,
+          conversationId: invalid === "conversation" ? "foreign" : "conversation",
+          ...(invalid === "alias-collision" ? { legacyRunId: "occupied-run" } : { runId: "second-run" }) };
+        expect(await service.correlate(order === "valid-first" ? [valid, bad] : [bad, valid])).toBe(false);
+        expect(updateSnapshot(f, service)).toEqual(before);
+        expect(f.store.getUpdate(first.id)?.runId).toBeUndefined();
+        expect(f.store.getUpdate(second.id)?.runId).toBeUndefined();
+        expect(f.store.getUpdate(second.id)?.legacyRunId).toBeUndefined();
+        expect(await service.correlate([valid])).toBe(true);
+        expect(f.store.getUpdate(first.id)).toMatchObject({ occurrenceSequence: 1, revision: 2, runId: "exact-run" });
+      });
+    }
+  }
+
+  test("exact correlation remains idempotent across repeated test-store reloads and preserves occurrence order", async () => {
+    const f = fixture(), source = { ...ocSource, incarnation: "creation-A" };
+    let store = f.store, service = new ConversationUpdates(store);
+    const original = candidate("reply", { sourceSequence: 1, nativeBoundaryId: "terminal-1" }, source);
+    expect(await service.upsertNativeBatch(nativeBatch(1, [original], { source, baselineThrough: 0, state: { pending: null } }))).toBe(true);
+    const selector = { id: original.id, source, conversationId: "conversation", runId: "exact-run", legacyRunId: "exact-run" };
+    expect(await service.correlate([selector])).toBe(true);
+    const before = updateSnapshot(f, service), row = store.getUpdate(original.id);
+    expect(row).toMatchObject({ id: original.id, occurrenceSequence: 1, sequence: 2, revision: 2, nativeBoundaryId: "terminal-1" });
+    for (let i = 0; i < 2; i++) {
+      expect(await service.correlate([selector, selector])).toBe(true);
+      expect(updateSnapshot({ ...f, store }, service)).toEqual(before);
+      await service.close();
+      store = new ConversationUpdateStore(f.dir, "store"); expect(store.load()).toBe(true);
+      service = new ConversationUpdates(store);
+      expect(await service.correlate([selector])).toBe(true);
+      expect(store.getUpdate(original.id)).toEqual(row);
+      expect(updateSnapshot({ ...f, store }, service)).toEqual(before);
+    }
+    await service.close();
+  });
+
+  test("App completion and missing exact selectors never guess a mapping for autonomous native replies", async () => {
+    const f = fixture(), service = new ConversationUpdates(f.store), r = records(ocSource, "app-run");
+    const first = candidate("first", { sourceSequence: 1 }), autonomous = candidate("autonomous", { sourceSequence: 2 });
+    expect(await service.upsertNativeBatch(nativeBatch(2, [first, autonomous]))).toBe(true);
+    expect(await service.ingestCommitted(r.session, r.run, r.event(1, "status", { status: "completed" }))).toBe(true);
+    expect(f.store.getUpdate(first.id)?.runId).toBeUndefined();
+    const beforeMissing = updateSnapshot(f, service);
+    expect(await service.correlate([{ id: candidate("unknown-terminal").id, source: ocSource, conversationId: "conversation", runId: r.run.runId, legacyRunId: r.run.runId }])).toBe(true);
+    expect(updateSnapshot(f, service)).toEqual(beforeMissing);
+    expect(await service.correlate([{ id: first.id, source: ocSource, conversationId: "conversation", runId: r.run.runId }])).toBe(true);
+    expect(await service.ingestCommitted(r.session, r.run, r.event(2, "status", { status: "completed" }))).toBe(true);
+    expect(f.store.getUpdate(first.id)).toMatchObject({ runId: r.run.runId, occurrenceSequence: 1, revision: 2 });
+    expect(f.store.getUpdate(first.id)?.legacyRunId).toBeUndefined();
+    expect(f.store.getUpdate(autonomous.id)).toMatchObject({ occurrenceSequence: 2, revision: 1 });
+    expect(f.store.getUpdate(autonomous.id)?.runId).toBeUndefined();
+    expect(f.store.getUpdate(autonomous.id)?.legacyRunId).toBeUndefined();
+    expect(service.getHead()?.through).toBe(3);
+  });
+
   test("oversized OC checkpoints are rejected upstream and malformed native submission cannot disable the App feed", async () => {
     const creation = { eventId: "created", createdAt: 1 };
     const source = { ...ocSource, incarnation: openCodeIncarnation(creation) };
-    const binding: OpenCodeReplyBinding = { conversationId: "conversation", source, creation };
+    const binding: OpenCodeReplyRegistration = { conversationId: "conversation", source, creation,
+      initialBaselineThrough: 5000, registrationRevision: "fixture-registration" };
     const state = initialOpenCodeReplyState(binding); state.created = true; state.parent = true; state.seq = 5000;
     state.seenMessages = Array.from({ length: 1000 }, (_, i) => `msg_${i}_${"x".repeat(300)}`);
-    const checkpoint = { version: 1 as const, sourceKey: updateSourceKey(source), through: 5000, baselineThrough: 5000, state };
+    const checkpoint: OpenCodeReplyCheckpoint = { version: 2, sourceKey: updateSourceKey(source), nativeVersion: "mock-native",
+      progressThrough: 5000, certifiedThrough: 5000, initialBaselineThrough: binding.initialBaselineThrough, state };
     const stateBytes = Buffer.byteLength(JSON.stringify(state)), observerBytes = Buffer.byteLength(JSON.stringify(checkpoint));
     expect(stateBytes).toBeGreaterThan(256 * 1024); expect(observerBytes).toBeGreaterThan(256 * 1024);
+    expect(validateOpenCodeReplyCheckpoint({ ...checkpoint, state: { ...state, seenMessages: [] } }, binding)).toBe(true);
     expect(validateOpenCodeReplyCheckpoint(checkpoint, binding)).toBe(false);
     expect(isConversationUpdateCheckpoint({ key: nativeUpdateCheckpointKey(source), sourceKey: checkpoint.sourceKey, through: 5000, baselineThrough: 5000, state })).toBe(false);
     const f = fixture(), service = new ConversationUpdates(f.store, { projector: ccProjector }), r = records();
     expect(await service.ingestCommitted(r.session, r.run, r.event(1, "stdout", success(0)))).toBe(true);
     const disk = readFileSync(f.path, "utf8"), head = service.getHead();
-    expect(await service.upsertNativeBatch({ source, candidates: [], through: 5000, baselineThrough: 5000, state })).toBe(false);
+    expect(await service.upsertNativeBatch({ source, candidates: [], through: 5000, baselineThrough: 5000, state: { checkpoint },
+      coverage: { sourceKey: checkpoint.sourceKey, state: "ready", through: 5000, baselineThrough: 5000 } })).toBe(false);
     expect(readFileSync(f.path, "utf8")).toBe(disk);
     expect(f.store.getCheckpoint(nativeUpdateCheckpointKey(source))).toBeUndefined();
     expect(f.store.getHealth().state).toBe("ready"); expect(service.getHead()).toEqual(head);

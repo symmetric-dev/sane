@@ -18,7 +18,7 @@ function fixture(parentID?: string) {
   const events: SessionEventDurable[] = [], candidates: ConversationUpdateCandidate[] = [];
   function emit<K extends SessionEventDurable["type"]>(type: K, data: Omit<Native<K>["data"], "sessionID">, historical = false) {
     const seq = state.seq + 1;
-    const event = { type, id: seq === 1 ? creation.eventId : `evt_${seq}`, created: createdAt + (seq === 1 ? 0 : seq),
+    const event = { type, id: seq === 0 ? creation.eventId : `evt_${seq}`, created: createdAt + seq,
       durable: { aggregateID: binding.source.nativeSessionId, seq, version: type === "session.deleted" || type === "session.forked" || type === "session.tool.success" || type === "session.tool.failed" || type === "session.instructions.updated" ? 2 : 1 },
       data: { sessionID: binding.source.nativeSessionId, ...data } } as unknown as Native<K>;
     events.push(event);
@@ -27,7 +27,7 @@ function fixture(parentID?: string) {
     if (result.candidate) candidates.push(result.candidate);
     return result;
   }
-  emit("session.created", { projectID: "project_fixture", location: { directory: "/fixture" }, slug: "fixture", version: "2.0.18", ...(parentID ? { parentID } : {}) });
+  emit("session.created", { projectID: "project_fixture", location: { directory: "/fixture" }, slug: "fixture", version: "2.0.21", ...(parentID ? { parentID } : {}) });
   const start = () => emit("session.execution.started", {});
   const step = (assistantMessageID = "msg_final") => emit("session.step.started", { assistantMessageID, agent: "build", model: { providerID: "mock", id: "mock" }, started: createdAt });
   const text = (assistantMessageID = "msg_final", value = "Actual parent reply", ordinal = 0) => {
@@ -200,4 +200,50 @@ test("sequence replay and creation incarnation are stable, gaps/duplicate/foreig
   const rebound = { ...f.binding, creation, source: { ...f.binding.source, incarnation: openCodeIncarnation(creation) } };
   expect(updateOccurrenceId(rebound.source, f.events.at(-1)!.id)).not.toBe(replay[0]!.id);
   expect(() => reduceOpenCodeReply(initialOpenCodeReplyState(rebound), f.events[0], rebound)).toThrow();
+});
+
+test("uninitialized v2 state is private -1 and only matching native creation at zero initializes it", () => {
+  const f = fixture(), initial = initialOpenCodeReplyState(f.binding), event = f.events[0]!;
+  expect(initial).toMatchObject({ version: 2, seq: -1, created: false });
+  expect(event.durable.seq).toBe(0);
+  expect(reduceOpenCodeReply(initial, event, f.binding).state).toMatchObject({ seq: 0, created: true, parent: true });
+  for (const bad of [
+    { ...event, durable: { ...event.durable, seq: 1 } },
+    { ...event, id: "wrong_creation" },
+    { ...event, created: createdAt + 1 },
+  ]) expect(() => reduceOpenCodeReply(initial, bad, f.binding)).toThrow();
+  expect(() => reduceOpenCodeReply({ ...initial, version: 1 } as never, event, f.binding)).toThrow();
+  expect(() => reduceOpenCodeReply({ ...initial, seq: 0 }, event, f.binding)).toThrow();
+  expect(() => reduceOpenCodeReply(f.state(), { ...event, durable: { ...event.durable, seq: 1 } }, f.binding)).toThrow();
+});
+
+test("persisted exact old identity stays identityUnsafe after failure and evidenced retry", () => {
+  const f = fixture(); f.start();
+  const start = f.emit("session.step.started", { assistantMessageID: "msg_old", agent: "build", model: { providerID: "mock", id: "mock" }, started: createdAt });
+  const before = initialOpenCodeReplyState(f.binding);
+  let state = before;
+  const ids: string[] = [];
+  for (const event of f.events) state = reduceOpenCodeReply(state, event, f.binding, false, id => { ids.push(id); return id === "msg_old"; }).state;
+  expect(start.state.seq).toBe(state.seq);
+  expect(ids).toEqual(["msg_old"]);
+  expect(state.window?.step).toMatchObject({ identityUnsafe: true, unsafe: true });
+  f.emit("session.step.failed", { assistantMessageID: "msg_old", error });
+  f.emit("session.retry.scheduled", { assistantMessageID: "msg_old", attempt: 1, at: createdAt, error });
+  f.step("msg_old"); f.text("msg_old"); f.end("msg_old"); f.success();
+  let candidate: ConversationUpdateCandidate | undefined;
+  for (const event of f.events.filter(e => e.durable.seq > state.seq)) {
+    const result = reduceOpenCodeReply(state, event, f.binding, false, id => id === "msg_old"); state = result.state; candidate = result.candidate;
+    if (event.type === "session.step.started") expect(state.window?.step).toMatchObject({ generation: 2, identityUnsafe: true, unsafe: true });
+  }
+  expect(candidate).toBeUndefined();
+});
+
+test("message IDs permit 1024 bytes but reject oversized identities without mutating state", () => {
+  const f = fixture(); f.start(); f.step("m".repeat(1024));
+  expect(f.state().window?.step?.messageId.length).toBe(1024);
+  const prior = structuredClone(f.state());
+  expect(() => f.step("m".repeat(1025))).toThrow();
+  expect(f.state()).toEqual(prior);
+  expect(() => f.step("é".repeat(600))).toThrow();
+  expect(f.state()).toEqual(prior);
 });

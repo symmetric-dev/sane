@@ -33,22 +33,28 @@ type Step = {
   texts: { complete: boolean; nonempty: boolean }[];
   tool: boolean;
   unsafe: boolean;
+  /** Exact prior identity reuse cannot be rehabilitated by a later retry. */
+  identityUnsafe: boolean;
   retryAllowed: boolean;
 };
 /** JSON-serializable, bounded reconstruction, not a transcript/text cache. */
-export type OpenCodeReplyState = {
-  version: 1;
+export type OpenCodeReplyStateV2 = {
+  version: 2;
   sourceKey: string;
   creation: OpenCodeCreationIdentity;
+  /** Private -1 sentinel until the native session.created at sequence 0. */
   seq: number;
   created: boolean;
   parent: boolean;
   deleted: boolean;
   seenMessages: string[];
+  /** Compacted checkpoints require their exact external durable ledger. */
+  identityLedger?: "external";
   pending: Record<string, OpenCodeReplyInputKind>;
   delivered?: OpenCodeReplyInputKind;
   window?: { id: string; eligible: boolean; compacting: boolean; input?: OpenCodeReplyInputKind; step?: Step };
 };
+export type OpenCodeReplyState = OpenCodeReplyStateV2;
 export type OpenCodeReplyBinding = {
   conversationId: string;
   source: ConversationUpdateSource;
@@ -56,10 +62,12 @@ export type OpenCodeReplyBinding = {
 };
 export function initialOpenCodeReplyState(binding: OpenCodeReplyBinding): OpenCodeReplyState {
   if (binding.source.harness !== "opencode" || binding.source.incarnation !== openCodeIncarnation(binding.creation)) throw new TypeError("OpenCode source must include its native creation identity");
-  return { version: 1, sourceKey: updateSourceKey(binding.source), creation: { ...binding.creation }, seq: 0, created: false, parent: false, deleted: false, seenMessages: [], pending: {} };
+  return { version: 2, sourceKey: updateSourceKey(binding.source), creation: { ...binding.creation }, seq: -1, created: false, parent: false, deleted: false, seenMessages: [], pending: {} };
 }
 const object = (v: unknown): v is Record<string, unknown> => !!v && typeof v === "object" && !Array.isArray(v);
-const id = (v: unknown): v is string => typeof v === "string" && v.length > 0 && v.length <= 1024 && !/[\u0000-\u001f\u007f]/.test(v);
+const encoder = new TextEncoder();
+const id = (v: unknown): v is string => typeof v === "string" && v.length > 0 && v.length <= 1024
+  && encoder.encode(v).byteLength <= 1024 && !/[\u0000-\u001f\u007f]/.test(v);
 const integer = (v: unknown): v is number => typeof v === "number" && Number.isSafeInteger(v) && v >= 0;
 const time = (v: unknown): v is number => typeof v === "number" && v >= 0 && Number.isFinite(new Date(v).getTime());
 function requireShape(ok: unknown): asserts ok { if (!ok) throw new TypeError("Unsupported or incomplete OpenCode durable reply log"); }
@@ -85,14 +93,14 @@ const versions: Record<string, number> = {
 };
 /** SDK Promise streams parse JSON but do not validate native event schemas. */
 export function openCodeLogItem(raw: unknown, nativeSessionId: string): SessionLogOutput {
-  requireShape(object(raw));
+  requireShape(object(raw) && id(nativeSessionId));
   if (raw.type === "log.synced") {
     requireShape(raw.aggregateID === nativeSessionId && (raw.seq === undefined || integer(raw.seq)));
     return raw as SessionLogOutput;
   }
   requireShape(typeof raw.type === "string" && Object.hasOwn(versions, raw.type) && id(raw.id) && time(raw.created)
     && object(raw.durable) && raw.durable.aggregateID === nativeSessionId
-    && integer(raw.durable.seq) && raw.durable.seq > 0 && raw.durable.version === versions[raw.type]
+    && integer(raw.durable.seq) && raw.durable.version === versions[raw.type]
     && object(raw.data) && raw.data.sessionID === nativeSessionId);
   const d = raw.data, type = raw.type;
   if (type.startsWith("session.step.") || type.startsWith("session.text.") || type.startsWith("session.reasoning.") || type.startsWith("session.tool.") || type === "session.retry.scheduled") requireShape(id(d.assistantMessageID));
@@ -116,9 +124,14 @@ export function openCodeLogItem(raw: unknown, nativeSessionId: string): SessionL
 
 /** Pure event-time reduction. No message GET can supply text for a past terminal.
  * A terminal consumes its window even when suppressed, so later edits cannot
- * revise it by borrowing current mutable content. */
-export function reduceOpenCodeReply(previous: OpenCodeReplyState, raw: unknown, binding: OpenCodeReplyBinding, historical = false): { state: OpenCodeReplyState; candidate?: ConversationUpdateCandidate } {
-  requireShape(previous.version === 1 && previous.sourceKey === updateSourceKey(binding.source)
+ * revise it by borrowing current mutable content.
+ * hasSeenMessage returns EXACT durable membership for this source, not a
+ * probabilistic/tombstone guess. Local identities remain intact until an atomic
+ * ledger + checkpoint commit succeeds. Omit it for bounded standalone replay. */
+export function reduceOpenCodeReply(previous: OpenCodeReplyState, raw: unknown, binding: OpenCodeReplyBinding, historical = false, hasSeenMessage?: (messageId: string) => boolean): { state: OpenCodeReplyState; candidate?: ConversationUpdateCandidate } {
+  requireShape(previous.version === 2 && previous.sourceKey === updateSourceKey(binding.source)
+    && (previous.created ? integer(previous.seq) : previous.seq === -1)
+    && (previous.identityLedger === undefined || previous.identityLedger === "external" && typeof hasSeenMessage === "function")
     && openCodeIncarnation(previous.creation) === openCodeIncarnation(binding.creation)
     && binding.source.incarnation === openCodeIncarnation(binding.creation));
   const event = openCodeLogItem(raw, binding.source.nativeSessionId);
@@ -127,7 +140,7 @@ export function reduceOpenCodeReply(previous: OpenCodeReplyState, raw: unknown, 
   const state = structuredClone(previous);
   state.seq = event.durable.seq;
   if (event.type === "session.created") {
-    requireShape(!state.created && previous.seq === 0 && event.id === binding.creation.eventId && event.created === binding.creation.createdAt);
+    requireShape(!state.created && previous.seq === -1 && event.id === binding.creation.eventId && event.created === binding.creation.createdAt);
     state.created = true;
     state.parent = event.data.parentID === undefined;
     return { state };
@@ -156,16 +169,18 @@ export function reduceOpenCodeReply(previous: OpenCodeReplyState, raw: unknown, 
     const kind = openCodeSyntheticKind(event.data);
     if (window) { window.input = kind; window.step = undefined; }
     else state.delivered = kind;
-  } else if (event.type === "session.step.started" && window) {
-    const reused = state.seenMessages.includes(event.data.assistantMessageID);
+  } else if (event.type === "session.step.started") {
+    const local = state.seenMessages.includes(event.data.assistantMessageID);
+    const reused = local || hasSeenMessage?.(event.data.assistantMessageID) === true;
     const retry = reused && step?.messageId === event.data.assistantMessageID && step.status === "failed" && step.retryAllowed;
-    if (!reused) {
+    if (!local) {
       if (state.seenMessages.length >= OC_REPLY_MAX_MESSAGES) throw new OpenCodeReplyReconstructionLimitError("message-identities");
       state.seenMessages.push(event.data.assistantMessageID);
     }
-    window.step = { messageId: event.data.assistantMessageID, generationId: event.id,
+    const identityUnsafe = retry ? step!.identityUnsafe : reused;
+    if (window) window.step = { messageId: event.data.assistantMessageID, generationId: event.id,
       generation: retry ? step!.generation + 1 : 1, status: "running", texts: [], tool: false,
-      unsafe: window.compacting || reused && !retry || !!step && step.status === "running", retryAllowed: false };
+      identityUnsafe, unsafe: identityUnsafe || window.compacting || !!step && step.status === "running", retryAllowed: false };
   } else if (event.type === "session.message.content.updated") {
     if (step && step.messageId === event.data.messageID) {
       // Replacement, never append; array order is the installed content ordinal.

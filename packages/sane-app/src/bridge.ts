@@ -16,6 +16,8 @@ import type { CompactEligibility, CompactRequest, CompactResponse } from "./oc-c
 import { OpenCodeAdapter, OpenCodeError } from "./opencode";
 import { OpenCodeRunService, type FrameworkDelivery } from "./opencode-run-service";
 import { OpenCodeObservationService } from "./opencode-observation-service";
+import { OC_REPLY_ACTIVATION_BLOCKED, OpenCodeReplyIntegration } from "./opencode-reply-integration";
+import type { OpenCodeReplyQualification } from "./opencode-reply-observer";
 import { conversationRecency } from "./conversation-recency";
 import { ConversationUpdateStore } from "./conversation-update-store";
 import { ConversationUpdates } from "./conversation-updates";
@@ -54,7 +56,7 @@ import { HarnessOperationError, dispatchHarness, dispatchOwnedOperation, require
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 export { hookEvents };
-export type Options = { host: string; port: number; cwd: string; dataDir: string; claudeBin: string; nativeSources: SourceConfiguration; allowRemote: boolean; publicOrigin?: string; reconcileInterrupted: boolean; maxConcurrentRuns?: number; maxWorkersPerCheckout?: number; packageDir?: string; noBuild?: boolean };
+export type Options = { host: string; port: number; cwd: string; dataDir: string; claudeBin: string; nativeSources: SourceConfiguration; allowRemote: boolean; publicOrigin?: string; reconcileInterrupted: boolean; maxConcurrentRuns?: number; maxWorkersPerCheckout?: number; packageDir?: string; noBuild?: boolean; /** Trusted backend evidence; activation remains disabled in this preparation phase. */ openCodeReplyQualifications?: readonly OpenCodeReplyQualification[] };
 export function parseOptions(args: string[]): Options {
   return runtimeOptions(resolveAppConfig(args, { packageDir: root, invocationCwd: process.cwd() }));
 }
@@ -171,10 +173,14 @@ async function startOwned(options: Options, assetsDir: string, packageDir: strin
   let retainOwner = false;
   let router: RepositoryRouter | undefined;
   let updateService: ConversationUpdates<ClaudeConversationUpdateState> | undefined;
+  let replyIntegration: OpenCodeReplyIntegration | undefined;
   const searches = createWorkspaceSearchLifecycle();
   try {
   const metadataPath = join(options.dataDir, "metadata.json");
   const meta: Metadata = store.metadata;
+  // Qualified reply evidence captures durable metadata on its own coalesced
+  // queue. Disabled production reads the live catalog only for default coverage.
+  const replyJournalThrough = new Map<string, number>();
   let agentProfiles: AgentProfiles = loadAgentProfiles(options.dataDir);
   const catalog = new CatalogService(options.dataDir, () => meta.sessions);
   for (const session of meta.sessions) if (session.attachment && session.attachment.source !== nativeSource(session.harness)) throw new Error("Attached native authority source changed; restore the original native store/service configuration");
@@ -238,12 +244,12 @@ async function startOwned(options: Options, assetsDir: string, packageDir: strin
   const updateEligible = (session: Session, run?: Run) => session.agentKind !== "worker" && !workerStore.getBySession(session.sessionId) && run?.operation !== "compact";
   const updates = updateService = new ConversationUpdates(updateStore, {
     projector: { createState: createClaudeUpdateState, project: projectClaudeCommittedEvent },
-    bootstrap: () => ({ activeRunIds: meta.runs.filter(run => run.status === "running" && updateEligible(meta.sessions.find(session => session.sessionId === run.sessionId)!, run)).map(run => run.runId), sourceBaselines: [] }),
-    coverage: () => meta.sessions.filter(session => updateEligible(session)).map(session => ({
+    bootstrap: () => ({ activeRunIds: meta.runs.filter(run => run.status === "running" && updateEligible(meta.sessions.find(session => session.sessionId === run.sessionId)!, run)).map(run => run.runId), sourceBaselines: replyIntegration?.sourceBaselines() ?? [] }),
+    coverage: () => [...meta.sessions.filter(session => updateEligible(session) && session.harness !== "opencode").map(session => ({
       sourceKey: updateSourceKey({ harness: session.harness!, authorityId: session.authorityId!, nativeSessionId: session.nativeSessionId! }),
-      state: session.harness === "opencode" ? "unqualified" as const : "ready" as const,
-      reason: session.harness === "opencode" ? "OpenCode parent-reply semantics require runtime qualification; App run alerts remain available" : "App-owned Claude Code results only; external activity is not observed",
-    })),
+      state: "ready" as const,
+      reason: "App-owned Claude Code results only; external activity is not observed",
+    })), ...(replyIntegration?.coverage() ?? [])],
   });
   const nativeSubagents = new NativeSubagentService(() => meta.sessions, () => meta.runs, id => events.get(id) ?? []);
   const nativeHistories = new NativeHistoryCache(options.dataDir);
@@ -302,6 +308,38 @@ async function startOwned(options: Options, assetsDir: string, packageDir: strin
     if (!retainOwner && owner.settled && !owner.cancelling && owners.get(owner.run.sessionId) === owner) owners.delete(owner.run.sessionId);
   }
   let closing = false, storageFailed = false;
+  let replyIndexedSessionCount = -1;
+  let replyLiveSessions = new Map<string, Session>();
+  replyIntegration = new OpenCodeReplyIntegration({
+    dataDir: options.dataDir,
+    authorities: store.sources.oc.authorityId ? [{ authorityId: store.sources.oc.authorityId, adapter: oc,
+      qualification: options.openCodeReplyQualifications?.find(value => value.authorityId === store.sources.oc.authorityId) }] : [],
+    // Native 2.0.21 returned empty replay logs at positive heads. Operator
+    // descriptors cannot bypass the outstanding durable-replay qualification.
+    allowQualifiedActivation: false, disabledReason: OC_REPLY_ACTIVATION_BLOCKED, capturePublishedMetadata: true,
+    sessions: () => meta.sessions,
+    runs: () => meta.runs,
+    events: id => (events.get(id) ?? []).filter(event => event.seq <= (replyJournalThrough.get(id) ?? 0)),
+    admission: id => admissions.get(id), admissions: () => admissions.list(), isWorker: id => !!workerStore.getBySession(id),
+    isClosing: () => closing || storageFailed,
+    isCurrent: (id, source, admissionSnapshot) => {
+      // Sessions are appended, not replaced, in this bridge. Rebuild once per
+      // catalog growth; mutable fields remain visible through their live refs.
+      if (replyIndexedSessionCount !== meta.sessions.length) {
+        replyLiveSessions = new Map(meta.sessions.map(session => [session.sessionId, session]));
+        replyIndexedSessionCount = meta.sessions.length;
+      }
+      const session = replyLiveSessions.get(id), admission = admissionSnapshot ?? admissions.get(id);
+      return !closing && !storageFailed && source.harness === "opencode" && !!session && updateEligible(session)
+        && session.attachment?.state !== "pending" && session.harness === source.harness
+        && session.authorityId === source.authorityId && session.nativeSessionId === source.nativeSessionId
+        && source.authorityId === store.sources.oc.authorityId && admission?.state === "ready"
+        && admission.source.descriptor.harness === "oc" && admission.source.authorityId === source.authorityId
+        && admission.nativeId === source.nativeSessionId && admission.binding.executionCheckout === session.cwd
+        && JSON.stringify(admission.source.descriptor) === JSON.stringify(store.sources.oc.descriptor);
+    },
+    store: updateStore, updates,
+  });
   const claudeRuns = new ClaudeRunService({
     dataDir: options.dataDir, claudeBin: options.claudeBin, claudeRoot,
     packageRoot: root, hookUrl: () => `http://127.0.0.1:${hookServer.port}`,
@@ -384,6 +422,7 @@ async function startOwned(options: Options, assetsDir: string, packageDir: strin
         await catalog.associate(sessionId, cwd, a.binding.workspaceId, a.binding.worktreeId);
         await admissions.register(sessionId);
         if (a.state !== "ready") admissions.ready(sessionId);
+        replyIntegration?.requestRefresh();
       } finally { admitting.delete(sessionId); }
     });
     if (created) {
@@ -437,7 +476,9 @@ async function startOwned(options: Options, assetsDir: string, packageDir: strin
     // Capture at enqueue time. A later concurrent admission must not leak into
     // an earlier metadata write before its first log record reaches the queue.
     const snapshot = JSON.stringify(meta);
-    return enqueue(async () => { await writeFile(`${metadataPath}.tmp`, snapshot, { mode: 0o600 }); await rename(`${metadataPath}.tmp`, metadataPath); });
+    return enqueue(async () => { await writeFile(`${metadataPath}.tmp`, snapshot, { mode: 0o600 }); await rename(`${metadataPath}.tmp`, metadataPath); }).then(() => {
+      try { replyIntegration?.metadataPublished(snapshot); } catch { /* Optional capture never delays or fails primary publication. */ }
+    });
   }
   // Validate a candidate profile set, then publish and persist it through the store queue.
   function commitAgents(next: AgentProfiles) {
@@ -484,8 +525,12 @@ async function startOwned(options: Options, assetsDir: string, packageDir: strin
     catch { /* Optional evidence indexing cannot interfere with journal ownership. */ }
     return enqueue(async () => {
       await appendFile(join(options.dataDir, `${run.runId}.jsonl`), JSON.stringify(event) + "\n", { mode: 0o600 });
+      replyJournalThrough.set(run.runId, event.seq);
       // Derived storage/projection must never escape into execution failClosed.
-      if (captured) { try { updates.primaryJournalCommitted(captured.session, captured.run, captured.event); } catch { /* optional update coverage */ } }
+      if (captured) { try {
+        updates.primaryJournalCommitted(captured.session, captured.run, captured.event);
+        replyIntegration?.correlateCommitted(captured.session, captured.run, captured.event);
+      } catch { /* optional update coverage */ } }
     });
   }
   // Display title for list responses: stored title wins (handoff `<Role> #<n>`
@@ -516,6 +561,7 @@ async function startOwned(options: Options, assetsDir: string, packageDir: strin
     const decoded = decodeLog(raw, run); const list = decoded.events;
     if (decoded.repaired !== undefined) await enqueue(() => writeFile(logPath, decoded.repaired!, { mode: 0o600 }));
     events.set(run.runId, list);
+    replyJournalThrough.set(run.runId, list.at(-1)?.seq ?? 0);
     transcripts.ingest(run, list);
     const updateSession = meta.sessions.find(session => session.sessionId === run.sessionId)!;
     if (updateEligible(updateSession, run)) await updates.replayRun(updateSession, run, list);
@@ -560,6 +606,7 @@ async function startOwned(options: Options, assetsDir: string, packageDir: strin
           revalidateCheckout(promoted.domain.context, admission.binding.checkoutPin);
           await admissions.register(source.sessionId);
           admissions.ready(source.sessionId);
+          replyIntegration?.requestRefresh();
           return router!.forAdmission(admissions.get(source.sessionId)!);
         }
         return adapter;
@@ -630,6 +677,7 @@ async function startOwned(options: Options, assetsDir: string, packageDir: strin
     await catalog.associate(destination.sessionId, source.cwd, original.binding.workspaceId, original.binding.worktreeId);
     await persist(); await admissions.register(destination.sessionId);
     if (admissions.get(destination.sessionId)!.state !== "ready") admissions.ready(destination.sessionId);
+    replyIntegration?.requestRefresh();
     return destination;
   }
   const branchFinishing = new Map<string, Promise<void>>();
@@ -944,6 +992,7 @@ async function startOwned(options: Options, assetsDir: string, packageDir: strin
         meta.sessions.push(session); await persist();
         await catalog.associate(w.sessionId, w.checkout, a.binding.workspaceId, a.binding.worktreeId);
         await admissions.register(w.sessionId); admissions.ready(w.sessionId);
+        replyIntegration?.requestRefresh();
         if (closing || storageFailed || meta.reconciliationRequired) throw new Error("App unavailable before worker submission; launch remains reserved");
         if (workerStore.get(w.id)!.cancelRequestedAt) {
           const at = new Date().toISOString(); workerStore.update(w.id, { state: "interrupted", outcome: { status: "interrupted", at, summary: "Cancelled before submission", log: null }, notification: { id: `worker-outcome:${w.id}`, state: "pending" } }); return;
@@ -1607,7 +1656,11 @@ async function startOwned(options: Options, assetsDir: string, packageDir: strin
           // Lifecycle notifications use the App-owned run, never projected native idleness/activity.
           return run?.sessionId === session.sessionId ? { lastRunStatus: run.status, lastRunOperation: run.operation ?? "prompt", lastRunEndedAt: run.endedAt } : {};
         };
-        return json({ sessions: meta.sessions.map(s => ({ ...s, ...lastRunMetadata(s), updatedAt: updatedAt.get(s.sessionId) ?? null, branchDraft: branchDrafts.get(s.sessionId), branchOrigin: branches.list().find(op => op.destinationId === s.sessionId && op.state !== "failed")?.sourceId, replacedBy: branches.replaced(s.sessionId)?.destinationId, ...(branches.replaced(s.sessionId) ? { hidden: true } : {}), ...(workerSessions.has(s.sessionId) ? { worker: workerSessions.get(s.sessionId) } : {}), directWorkerCount: workerCounts.get(s.sessionId) ?? 0, profileId: sessionProfileId(s), title: displayTitle(s), admission: admissions.get(s.sessionId), ...catalog.association(s.sessionId), availability: availability(s.sessionId, true, false, false, "user"), ...nativeState(s), ...(s.harness === "claude-code" ? { queuedFollowups: projectClaudeFollowups(s.sessionId, meta.runs, id => events.get(id) ?? [], id => claudeRuns.followupPending(id)) } : {}) })), admissions: admissions.list(), availability: availability() });
+        const replySourceMetadata = (session: Session) => {
+          const updateSource = replyIntegration?.updateSource(session.sessionId);
+          return updateSource ? { updateSource } : {};
+        };
+        return json({ sessions: meta.sessions.map(s => ({ ...s, ...lastRunMetadata(s), ...replySourceMetadata(s), updatedAt: updatedAt.get(s.sessionId) ?? null, branchDraft: branchDrafts.get(s.sessionId), branchOrigin: branches.list().find(op => op.destinationId === s.sessionId && op.state !== "failed")?.sourceId, replacedBy: branches.replaced(s.sessionId)?.destinationId, ...(branches.replaced(s.sessionId) ? { hidden: true } : {}), ...(workerSessions.has(s.sessionId) ? { worker: workerSessions.get(s.sessionId) } : {}), directWorkerCount: workerCounts.get(s.sessionId) ?? 0, profileId: sessionProfileId(s), title: displayTitle(s), admission: admissions.get(s.sessionId), ...catalog.association(s.sessionId), availability: availability(s.sessionId, true, false, false, "user"), ...nativeState(s), ...(s.harness === "claude-code" ? { queuedFollowups: projectClaudeFollowups(s.sessionId, meta.runs, id => events.get(id) ?? [], id => claudeRuns.followupPending(id)) } : {}) })), admissions: admissions.list(), availability: availability() });
       }
       const branchRoute = /^\/api\/sessions\/([^/]+)\/branch$/.exec(path);
       if (branchRoute) {
@@ -1721,6 +1774,7 @@ async function startOwned(options: Options, assetsDir: string, packageDir: strin
           if (session.harness === "opencode") await oc.assertIdle(pending.nativeId, pending.binding.executionCheckout);
           else if (!(await readClaudeHistory(pending.nativeId, pending.binding.executionCheckout, claudeRoot)).length && pending.operation !== "create") return json({ error: "Native history unavailable" }, 409);
           await admissions.register(sessionId); await persist(); admissions.ready(sessionId);
+          replyIntegration?.requestRefresh();
           return json({ admission: admissions.get(sessionId) });
         } finally { admitting.delete(sessionId); }
       }
@@ -1765,6 +1819,7 @@ async function startOwned(options: Options, assetsDir: string, packageDir: strin
           await admissions.register(sessionId);
           session.attachment = { state: "ready", source: nativeSource(harness) }; await persist();
           admissions.ready(sessionId);
+          replyIntegration?.requestRefresh();
           return json({ sessionId, nativeSessionId, harness, ...association, history }, 201);
         } catch (error) {
           if (session?.attachment) { session.attachment = { ...session.attachment, state: "pending", error: error instanceof Error ? error.message : "Attachment failed" }; if (!storageFailed) await persist().catch(() => {}); }
@@ -1894,6 +1949,7 @@ async function startOwned(options: Options, assetsDir: string, packageDir: strin
           meta.sessions.push(session); await persist();
           await admissions.register(conversationId);
           admissions.ready(conversationId);
+          replyIntegration?.requestRefresh();
         }
         let nativeDelivery: "queue" | undefined;
         if (session?.harness === "opencode") {
@@ -2245,6 +2301,7 @@ async function startOwned(options: Options, assetsDir: string, packageDir: strin
   catch (error) { await server.stop(true); await hookServer.stop(true); throw error; }
   // Start recovery only after both listeners are acquired. A port-bind failure
   // must not leave observers writing after startup releases the ownership lock.
+  replyIntegration.start();
   for (const recovering of meta.runs.filter(r => r.status === "running" && getHarnessDescriptor(sessionHarness(meta.sessions.find(s => s.sessionId === r.sessionId)!))!.operations.recoverRun.supported)) {
     const descriptor = requireOperation(sessionHarness(meta.sessions.find(s => s.sessionId === recovering.sessionId)!), "recoverRun");
     const finished = Promise.withResolvers<void>();
@@ -2284,6 +2341,7 @@ async function startOwned(options: Options, assetsDir: string, packageDir: strin
   return { origin, port: server.port, workers, workerOutbox, handoffs, prepareHandoffRecipient, close() {
     if (closePromise) return closePromise;
     closing = true;
+    const replyDrain = replyIntegration?.close(); // Abort immediately, before any shutdown awaits.
     const searchDrain = searches.close();
     clearInterval(handoffTimer);
     clearInterval(workerOutboxTimer);
@@ -2332,6 +2390,7 @@ async function startOwned(options: Options, assetsDir: string, packageDir: strin
     // read-only cancellation as a catalog/metadata storage failure.
     if (!await drainWorkspaceSearches(searchDrain)) retainOwner = true;
     await server.stop(true); await hookServer.stop(true);
+    await replyDrain;
     await updates.close();
     await flushAndCloseWorkstreams(() => catalog.flush(), () => router?.close(), () => { retainOwner = true; });
     if (retainOwner) throw new Error("Shutdown did not drain safely; ownership retained. Explicit reconciliation required after process exit.");
@@ -2339,6 +2398,7 @@ async function startOwned(options: Options, assetsDir: string, packageDir: strin
     return closePromise;
   } };
   } catch (error) {
+    await replyIntegration?.close();
     await updateService?.close();
     if (!await drainWorkspaceSearches(searches.close())) retainOwner = true;
     try { await router?.close(); } catch { retainOwner = true; }

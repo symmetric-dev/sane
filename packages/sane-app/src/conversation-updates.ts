@@ -5,7 +5,10 @@ import {
   type ConversationUpdateBootstrap, type ConversationUpdateCandidate, type ConversationUpdateCoverage,
   type ConversationUpdateFeedRequest, type ConversationUpdateSource,
 } from "../shared/conversation/conversation-updates";
-import { ConversationUpdateServiceError, ConversationUpdateStore, type UpdateJson } from "./conversation-update-store";
+import {
+  ConversationUpdateServiceError, ConversationUpdateStore, isConversationUpdateCommitCurrent, isConversationUpdateExpectedCheckpoint,
+  type ConversationUpdateCommitGuard, type UpdateJson,
+} from "./conversation-update-store";
 
 /** The harness adapter owns qualification and its bounded JSON reducer state.
  * A native failure suppresses an App failure ONLY when it is exactly mapped to this run. */
@@ -38,6 +41,8 @@ export type NativeConversationUpdateBatch = {
   baselineThrough?: number;
   state?: UpdateJson;
   coverage?: ConversationUpdateCoverage;
+  /** Exact assistant identities newly encountered in this native replay slice. */
+  messageIds?: string[];
 };
 /** Correlation only amends an exact known occurrence. Never infer alias evidence from runId. */
 export type ConversationUpdateCorrelation = {
@@ -78,21 +83,43 @@ export class ConversationUpdates<State = UpdateJson> {
   private closed = false;
   constructor(readonly store: ConversationUpdateStore, private readonly options: ConversationUpdateServiceOptions<State> = {}) {}
 
-  private enqueue(work: () => Promise<boolean>, source?: ConversationUpdateSource, producerKey?: string, recovery = false): Promise<boolean> {
+  private enqueue(work: (guard?: ConversationUpdateCommitGuard) => Promise<boolean>, source?: ConversationUpdateSource,
+    producerKey?: string, recovery = false, guard?: ConversationUpdateCommitGuard): Promise<boolean> {
     if (this.closed) return Promise.resolve(false);
     const key = source && (producerKey ?? nativeUpdateCheckpointKey(source));
+    // Latch deliberate rejection at the actual guard check, not after persistence:
+    // a registration can become stale after a successful synchronous save.
+    let cancelled = false;
+    const expectedCheckpoint = guard?.expectedCheckpoint;
+    const liveGuard = guard === undefined ? undefined : {
+      get expectedCheckpoint() {
+        // Store-side shape validation can reject before invoking isCurrent;
+        // latch that rejection here as well, without any post-save recheck.
+        if (expectedCheckpoint !== undefined && !isConversationUpdateExpectedCheckpoint(expectedCheckpoint)) cancelled = true;
+        return expectedCheckpoint;
+      },
+      isCurrent: () => {
+        try {
+          if (!isConversationUpdateCommitCurrent(guard) || expectedCheckpoint !== undefined
+            && (!isConversationUpdateExpectedCheckpoint(expectedCheckpoint) || key !== undefined && expectedCheckpoint.key !== key
+              || (this.store.getCheckpoint(expectedCheckpoint.key)?.through ?? null) !== expectedCheckpoint.through)) cancelled = true;
+        } catch { cancelled = true; }
+        return !cancelled;
+      },
+    };
     const task = this.queue.then(async () => {
+      if (!isConversationUpdateCommitCurrent(liveGuard)) return false;
       if (!recovery && key && this.producerProblems.has(key)) return false;
       try {
-        const committed = await work();
+        const committed = await work(liveGuard);
         if (committed && recovery && key) this.producerProblems.delete(key);
-        if (!committed && source && key && this.store.getHealth().state === "ready") this.producerProblems.set(key, {
+        if (!committed && !cancelled && source && key && this.store.getHealth().state === "ready") this.producerProblems.set(key, {
           sourceKey: updateSourceKey(source), state: "degraded", reason: "Conversation update evidence or checkpoint exceeded its validated bounds",
         });
         return committed;
       }
       catch {
-        if (source && key) this.producerProblems.set(key, { sourceKey: updateSourceKey(source), state: "degraded", reason: "Conversation update projection requires replay or reconciliation" });
+        if (!cancelled && source && key) this.producerProblems.set(key, { sourceKey: updateSourceKey(source), state: "degraded", reason: "Conversation update projection requires replay or reconciliation" });
         return false;
       }
     });
@@ -198,18 +225,34 @@ export class ConversationUpdates<State = UpdateJson> {
     } catch { return Promise.resolve(false); }
   }
   /** Native adapters must establish/advance the checkpoint in the SAME transaction
-   * as their candidates and pending reducer state. Old source positions never resurrect. */
-  upsertNativeBatch(batch: NativeConversationUpdateBatch): Promise<boolean> {
+   * as their candidates and pending reducer state. Old source positions never resurrect.
+   * An optional live guard rejects stale registrations without degrading the source. */
+  upsertNativeBatch(batch: NativeConversationUpdateBatch, guard?: ConversationUpdateCommitGuard): Promise<boolean> {
     try {
       const captured = structuredClone(batch);
       if (!isConversationUpdateSource(captured.source)) return Promise.resolve(false);
-      return this.enqueue(async () => {
+      return this.enqueue(async liveGuard => {
         const sourceKey = updateSourceKey(captured.source), key = nativeUpdateCheckpointKey(captured.source), prior = this.store.getCheckpoint(key);
         if (!Number.isSafeInteger(captured.through) || captured.through < 0
           || captured.baselineThrough !== undefined && (!Number.isSafeInteger(captured.baselineThrough) || captured.baselineThrough < 0 || captured.baselineThrough > captured.through)
-          || captured.coverage && (!isConversationUpdateCoverage(captured.coverage) || captured.coverage.sourceKey !== sourceKey)) throw new Error("Invalid native checkpoint");
+          || captured.coverage && (!isConversationUpdateCoverage(captured.coverage) || captured.coverage.sourceKey !== sourceKey
+            || captured.coverage.through !== undefined && captured.coverage.through > captured.through)) throw new Error("Invalid native checkpoint");
         if (prior && captured.through < prior.through) return !this.producerProblems.has(key);
         const baselineThrough = prior?.baselineThrough ?? captured.baselineThrough;
+        const state = captured.state === undefined ? prior?.state : captured.state;
+        // Only inspect the generic envelope, not the adapter's reducer internals.
+        const envelope = state && typeof state === "object" && !Array.isArray(state) ? state : undefined;
+        const checkpointState = envelope?.checkpoint && typeof envelope.checkpoint === "object" && !Array.isArray(envelope.checkpoint)
+          ? envelope.checkpoint : envelope;
+        const progressThrough = checkpointState && "progressThrough" in checkpointState ? checkpointState.progressThrough : envelope?.progressThrough;
+        const explicitCoverage = checkpointState?.version === 2 || checkpointState !== undefined && "progressThrough" in checkpointState
+          || envelope !== undefined && "progressThrough" in envelope;
+        if (explicitCoverage) {
+          if (!captured.coverage) throw new Error("Native replay progress requires explicit certified coverage");
+          if (progressThrough !== undefined && progressThrough !== captured.through) throw new Error("Native replay progress differs from its checkpoint");
+          if (baselineThrough !== undefined && (captured.coverage.through === undefined || baselineThrough > captured.coverage.through)
+            || baselineThrough !== undefined && checkpointState!.baselineThrough !== undefined && baselineThrough !== checkpointState!.baselineThrough) throw new Error("Native baseline is not certified");
+        }
         const candidates = captured.candidates.filter(candidate => {
           if (!isConversationUpdateCandidate(candidate) || updateSourceKey(candidate.source) !== sourceKey
             || candidate.sourceSequence === undefined || candidate.sourceSequence > captured.through) throw new Error("Native occurrence requires qualified source position");
@@ -219,19 +262,20 @@ export class ConversationUpdates<State = UpdateJson> {
         });
         return this.store.commitCandidates(candidates, { key, sourceKey, through: captured.through,
           ...(baselineThrough === undefined ? {} : { baselineThrough }),
-          ...(captured.state === undefined ? prior?.state === undefined ? {} : { state: prior.state } : { state: captured.state }),
+          ...(state === undefined ? {} : { state }),
           coverage: captured.coverage ?? { sourceKey, state: "ready", through: captured.through,
-            ...(baselineThrough === undefined ? {} : { baselineThrough }) } });
-      }, captured.source, nativeUpdateCheckpointKey(captured.source), true);
+            ...(baselineThrough === undefined ? {} : { baselineThrough }) } }, liveGuard,
+          captured.messageIds === undefined ? undefined : { nativeMessages: { sourceKey, ids: captured.messageIds } });
+      }, captured.source, nativeUpdateCheckpointKey(captured.source), true, guard);
     } catch { return Promise.resolve(false); }
   }
   /** At most 64 EXACT selectors per request. A missing/pruned occurrence is a no-op;
    * correlation cannot create a new unread occurrence or move its first-observed order. */
-  correlate(selectors: readonly ConversationUpdateCorrelation[]): Promise<boolean> {
+  correlate(selectors: readonly ConversationUpdateCorrelation[], guard?: ConversationUpdateCommitGuard): Promise<boolean> {
     try {
       if (selectors.length > 64) return Promise.resolve(false);
       const captured = structuredClone([...selectors]);
-      return this.enqueue(async () => {
+      return this.enqueue(async liveGuard => {
         const candidates = new Map<string, ConversationUpdateCandidate>();
         for (const selector of captured) {
           if (!isConversationUpdateSource(selector.source)) throw new Error("Invalid correlation source");
@@ -245,8 +289,8 @@ export class ConversationUpdates<State = UpdateJson> {
           candidates.set(selector.id, { ...original, ...candidates.get(selector.id), ...(selector.runId === undefined ? {} : { runId: selector.runId }),
             ...(selector.legacyRunId === undefined ? {} : { legacyRunId: selector.legacyRunId }) });
         }
-        return this.store.commitCandidates([...candidates.values()]);
-      });
+        return this.store.commitCandidates([...candidates.values()], undefined, liveGuard);
+      }, undefined, undefined, false, guard);
     } catch { return Promise.resolve(false); }
   }
   getCoverage(): ConversationUpdateCoverage[] {

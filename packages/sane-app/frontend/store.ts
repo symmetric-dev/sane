@@ -19,6 +19,7 @@ import { canonicalCount, equalValue, mergePage, pageMessages, pagedUsage, refres
 import type { TranscriptMetadataItem, TranscriptPage } from "../src/transcript-contract";
 import { capabilitiesFor, getHarnessDescriptor, type HarnessCapabilities } from "../shared/conversation/harness-capabilities";
 import { notificationStore } from "./notifications";
+import { notificationContextKey } from "./notification-source";
 import { isConversationUpdatePage, type ConversationUpdateFeedRequest } from "../shared/conversation/conversation-updates";
 
 /** Composer draft. New conversations pick `profileId` ("" = profiles.defaultId);
@@ -588,7 +589,7 @@ export class ChatStore {
     void this.pollNotifications();
   }
   private notificationSource(conversation: Conversation) {
-    return JSON.stringify([conversation.harness, conversation.authorityId, conversation.nativeSessionId]);
+    return notificationContextKey(conversation);
   }
   private observeNotifications(conversations: Conversation[]) {
     this.notificationSources = new Map(conversations.map(conversation => [conversation.id, this.notificationSource(conversation)]));
@@ -729,7 +730,8 @@ export class ChatStore {
     // Optional notification metadata must not block ordinary navigation. When
     // it is stale/missing, navigate normally but leave notification reads alone.
     const canAcknowledge = !conversation || !this.notificationScope || this.notificationSources.get(id) === this.notificationSource(conversation);
-    const capture = options.deferAck || !canAcknowledge ? null : notificationStore.captureOpen(id);
+    const candidate = options.deferAck || !canAcknowledge ? null : notificationStore.captureOpen(id);
+    const capture = conversation && candidate?.contextKey === this.notificationSource(conversation) ? candidate : null;
     const auth = this.authEpoch, config = this.state.config;
     const identity = (item?: Conversation) => item ? this.notificationSource(item) : "";
     const source = identity(conversation);

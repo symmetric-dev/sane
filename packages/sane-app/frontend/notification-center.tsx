@@ -3,7 +3,7 @@ import { FiCheckCircle, FiPauseCircle, FiX, FiXCircle } from "react-icons/fi";
 import { catalog } from "./catalog";
 import { notificationStore, type NotificationItem } from "./notifications";
 import type { Conversation } from "./types";
-import { isConversationUpdateSource, updateSourceKey } from "../shared/conversation/conversation-updates";
+import { notificationContextKey, notificationSourceMatches } from "./notification-source";
 import { PenroseTriangle } from "./penrose-triangle";
 import { store, useShellState } from "./store";
 import "./notification-center.css";
@@ -13,10 +13,9 @@ let activeCenter: { id: string; dismiss: (restore?: boolean) => void } | null = 
 
 function matchesDestination(item: NotificationItem, conversation?: Conversation): boolean {
   if (!conversation) return false;
-  const source = { harness: conversation.harness, authorityId: conversation.authorityId, nativeSessionId: conversation.nativeSessionId };
-  const key = isConversationUpdateSource(source) ? updateSourceKey(source) : undefined;
-  if (item.sourceKey) return item.sourceKey === key;
-  return !key || !item.groupId || item.groupId === key;
+  if (item.contextKey && item.contextKey !== notificationContextKey(conversation)) return false;
+  if (item.sourceKey) return notificationSourceMatches(conversation, item.sourceKey);
+  return !item.groupId || item.groupId === notificationContextKey(conversation);
 }
 
 function timeLabel(time: string | number | null | undefined) {
@@ -48,7 +47,7 @@ export function NotificationCenter({ onOpen, className = "", size = 28 }: {
   const catalogState = useSyncExternalStore(catalog.subscribe, catalog.snapshot);
   const state = useShellState();
   const available = state.phase === "ready" && state.conversationsReady;
-  // Store order is immutable occurrence order, not an optional native timestamp.
+  // Occurrence order is source-qualified; different sources use their observation times.
   const items = notifications.items;
   const unread = notifications.unreadCount;
   const dismiss = useCallback((restore = true) => {

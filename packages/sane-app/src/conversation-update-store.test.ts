@@ -1,10 +1,12 @@
 import { afterEach, describe, expect, test } from "bun:test";
 import { mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
+import { runInNewContext } from "node:vm";
 import { atomicAppRecord } from "./app-store";
 import {
-  CONVERSATION_UPDATE_MAX_ROWS, ConversationUpdateServiceError, ConversationUpdateStore,
-  isConversationUpdateCheckpoint, type ConversationUpdateCheckpoint,
+  CONVERSATION_UPDATE_MAX_ROWS, CONVERSATION_UPDATE_STORE_BYTES, ConversationUpdateServiceError, ConversationUpdateStore,
+  isConversationUpdateCheckpoint, isConversationUpdateCommitCurrent, isConversationUpdateExpectedCheckpoint, type ConversationUpdateCheckpoint,
+  type ConversationUpdateCommitGuard, type ConversationUpdateCommitExtras,
 } from "./conversation-update-store";
 import {
   CONVERSATION_UPDATE_MAX_BYTES, isConversationUpdatePage, updateOccurrenceId, updateSourceKey,
@@ -136,6 +138,366 @@ describe("conversation update store persistence and isolation", () => {
     const loadedRow = f.store.getUpdate(row.id)!; loadedRow.conversationId = "mutated";
     expect(f.store.getUpdate(row.id)?.conversationId).toBe("conversation");
     expect(f.store.getCheckpoint(cp.key)?.state).toEqual({ pending: "original" });
+  });
+});
+
+describe("conversation update store live commit guards", () => {
+  test("runtime malformed guards fail closed before reading transaction inputs or saving", async () => {
+    let writes = 0, bodyCalls = 0;
+    const f = fixture({ now: () => { bodyCalls++; return now; }, save: (root, name, value) => { writes++; atomicAppRecord(root, name, value); } });
+    expect(f.store.load()).toBe(true);
+    expect(await f.store.commitCandidates([candidate("old", { sourceSequence: 1 })], checkpoint(1), undefined,
+      { nativeMessages: { sourceKey, ids: ["msg_old"] } })).toBe(true);
+    const snapshot = () => ({ disk: readFileSync(f.path, "utf8"), head: f.store.getHead(), checkpoints: f.store.getCheckpoints(),
+      coverage: f.store.getCoverage(), health: f.store.getHealth(), page: f.store.page(), writes });
+    const before = snapshot(); bodyCalls = 0;
+    const row = candidate("reject", { sourceSequence: 2 });
+    Object.defineProperty(row, "messageId", { enumerable: true, get: () => { bodyCalls++; return "msg_reject"; } });
+    const listener = () => {};
+    const invalid: unknown[] = [null, [], 7, { isCurrent: false }, { isCurrent: null }, { isCurrent: "current" },
+      { isCurrent: () => false }, { isCurrent: () => { throw new Error("fixture registration failure"); } },
+      { signal: {} }, { signal: null }, { signal: [] },
+      { signal: { aborted: "false", addEventListener: listener, removeEventListener: listener } },
+      { signal: { aborted: 0, addEventListener: listener, removeEventListener: listener } },
+      { signal: { aborted: false } }, { signal: { aborted: false, addEventListener: listener } },
+      { signal: { aborted: false, removeEventListener: listener } },
+      { signal: { aborted: false, addEventListener: "listener", removeEventListener: listener } },
+      { signal: { aborted: false, addEventListener: listener, removeEventListener: null } }];
+    for (const value of invalid) {
+      const guard = value as unknown as ConversationUpdateCommitGuard;
+      expect(isConversationUpdateCommitCurrent(guard)).toBe(false);
+      expect(await f.store.commitCandidates([row], checkpoint(2), guard, { nativeMessages: { sourceKey, ids: ["msg_reject"] } })).toBe(false);
+      expect(bodyCalls).toBe(0); expect(snapshot()).toEqual(before);
+      expect(f.store.hasNativeMessage(sourceKey, "msg_old")).toBe(true); expect(f.store.hasNativeMessage(sourceKey, "msg_reject")).toBe(false);
+    }
+    let callbackCalls = 0;
+    expect(isConversationUpdateCommitCurrent({ signal: {} as unknown as AbortSignal, isCurrent: () => { callbackCalls++; return true; } })).toBe(false);
+    expect(callbackCalls).toBe(0);
+  });
+
+  test("undefined guard and cross-realm structural signal remain supported", async () => {
+    const f = fixture(); expect(f.store.load()).toBe(true);
+    const signal = runInNewContext("({ aborted: false, addEventListener() {}, removeEventListener() {} })") as unknown as AbortSignal;
+    expect(signal instanceof AbortSignal).toBe(false);
+    const guard: ConversationUpdateCommitGuard = { signal, isCurrent() { return this === guard; } };
+    expect(isConversationUpdateCommitCurrent(undefined)).toBe(true); expect(isConversationUpdateCommitCurrent(guard)).toBe(true);
+    expect(await f.store.commitCandidates([candidate("default", { sourceSequence: 1 })], checkpoint(1), undefined,
+      { nativeMessages: { sourceKey, ids: ["msg_default"] } })).toBe(true);
+    expect(await f.store.commitCandidates([candidate("structural", { sourceSequence: 2 })], checkpoint(2), guard,
+      { nativeMessages: { sourceKey, ids: ["msg_structural"] } })).toBe(true);
+    expect(f.store.hasNativeMessage(sourceKey, "msg_default")).toBe(true); expect(f.store.hasNativeMessage(sourceKey, "msg_structural")).toBe(true);
+    expect(f.store.getHead()?.through).toBe(2); expect(f.store.getHealth()).toEqual({ state: "ready" });
+  });
+
+  test("queued guards that become malformed are rejected at the real store boundary", async () => {
+    for (const mutation of ["callback", "aborted-type", "missing-listener"] as const) {
+      const f = fixture(); expect(f.store.load()).toBe(true);
+      const before = readFileSync(f.path, "utf8"), head = f.store.getHead();
+      let release!: () => void;
+      const gate = new Promise<void>(resolve => { release = resolve; });
+      const queued = f.store as unknown as { queue: Promise<unknown> }; queued.queue = queued.queue.then(() => gate);
+      const signal: Record<string, unknown> = { aborted: false, addEventListener() {}, removeEventListener() {} };
+      const value: Record<string, unknown> = { signal, isCurrent: () => true };
+      const pending = f.store.commitCandidates([candidate("reject", { sourceSequence: 1 })], checkpoint(1), value as unknown as ConversationUpdateCommitGuard,
+        { nativeMessages: { sourceKey, ids: ["msg_reject"] } });
+      if (mutation === "callback") value.isCurrent = false;
+      else if (mutation === "aborted-type") signal.aborted = "false";
+      else delete signal.removeEventListener;
+      release(); expect(await pending).toBe(false);
+      expect(readFileSync(f.path, "utf8")).toBe(before); expect(f.store.getHead()).toEqual(head);
+      expect(f.store.getCheckpoints()).toEqual([]); expect(f.store.getCoverage()).toEqual([]);
+      expect(f.store.hasNativeMessage(sourceKey, "msg_reject")).toBe(false); expect(f.store.getHealth()).toEqual({ state: "ready" });
+    }
+  });
+
+  test("guard helper fails closed, short-circuits aborted signals and detects abort inside callback", () => {
+    expect(isConversationUpdateCommitCurrent()).toBe(true);
+    expect(isConversationUpdateCommitCurrent({ isCurrent: () => true })).toBe(true);
+    expect(isConversationUpdateCommitCurrent({ isCurrent: () => false })).toBe(false);
+    expect(isConversationUpdateCommitCurrent({ isCurrent: () => { throw new Error("stale registration"); } })).toBe(false);
+    const aborted = new AbortController(); aborted.abort(); let calls = 0;
+    expect(isConversationUpdateCommitCurrent({ signal: aborted.signal, isCurrent: () => { calls++; return true; } })).toBe(false);
+    expect(calls).toBe(0);
+    const during = new AbortController();
+    expect(isConversationUpdateCommitCurrent({ signal: during.signal, isCurrent: () => { during.abort(); return true; } })).toBe(false);
+  });
+
+  for (const phase of ["admission", "queued", "prepared"] as const) {
+    for (const mode of ["aborted", "rebound", "throwing"] as const) {
+      test(`${mode} guard at ${phase} rejects without changing persisted state or health`, async () => {
+        let stale = false, writes = 0;
+        const controller = new AbortController();
+        const invalidate = () => { stale = true; if (mode === "aborted") controller.abort(); };
+        const f = fixture({
+          now: () => { if (phase === "prepared") invalidate(); return now; },
+          save: (root, name, value) => { writes++; atomicAppRecord(root, name, value); },
+        });
+        expect(f.store.load()).toBe(true);
+        const before = { disk: readFileSync(f.path, "utf8"), head: f.store.getHead(), checkpoints: f.store.getCheckpoints(),
+          coverage: f.store.getCoverage(), health: f.store.getHealth(), page: f.store.page(), writes };
+        // A deferred predecessor on this test-owned queue isolates the real store
+        // transaction boundary without pretending synchronous persistence is async.
+        let release!: () => void;
+        const gate = new Promise<void>(resolve => { release = resolve; });
+        if (phase === "queued") {
+          const queued = f.store as unknown as { queue: Promise<unknown> };
+          queued.queue = queued.queue.then(() => gate);
+        }
+        if (phase === "admission") invalidate();
+        const row = candidate("guarded", { sourceSequence: 1 });
+        const cp = checkpoint(1, { baselineThrough: 0, state: { pending: "guarded" },
+          coverage: { sourceKey, state: "ready", through: 1, baselineThrough: 0 } });
+        const pending = f.store.commitCandidates([row], cp, { signal: controller.signal, isCurrent: () => {
+          if (stale && mode === "throwing") throw new Error("registration lookup failed");
+          return !stale;
+        } });
+        if (phase === "queued") invalidate();
+        release();
+        expect(await pending).toBe(false);
+        expect(f.store.getUpdate(row.id)).toBeUndefined();
+        expect({ disk: readFileSync(f.path, "utf8"), head: f.store.getHead(), checkpoints: f.store.getCheckpoints(),
+          coverage: f.store.getCoverage(), health: f.store.getHealth(), page: f.store.page(), writes }).toEqual(before);
+      });
+    }
+  }
+
+  test("successful synchronous save followed by abort and rebinding truthfully returns true", async () => {
+    const controller = new AbortController(); let current = true, cancelAfterSave = false;
+    const f = fixture({ save: (root, name, value) => {
+      atomicAppRecord(root, name, value);
+      if (cancelAfterSave) { controller.abort(); current = false; }
+    } });
+    expect(f.store.load()).toBe(true); cancelAfterSave = true;
+    const row = candidate("saved", { sourceSequence: 1 }), cp = checkpoint(1, { state: { pending: null } });
+    expect(await f.store.commitCandidates([row], cp, { signal: controller.signal, isCurrent: () => current })).toBe(true);
+    expect(controller.signal.aborted).toBe(true);
+    expect(f.store.getUpdate(row.id)).toMatchObject({ occurrenceSequence: 1, revision: 1 });
+    expect(f.store.getCheckpoint(cp.key)).toEqual(cp);
+    expect(JSON.parse(readFileSync(f.path, "utf8"))).toMatchObject({ head: 1, rows: [{ id: row.id }], checkpoints: [cp] });
+    expect(f.store.getHealth()).toEqual({ state: "ready" });
+  });
+});
+
+describe("conversation update store exact ledger and checkpoint CAS", () => {
+  test("native ledger extras require a matching native checkpoint even for empty ids", async () => {
+    let writes = 0;
+    const f = fixture({ save: (root, name, value) => { writes++; atomicAppRecord(root, name, value); } });
+    expect(f.store.load()).toBe(true);
+    expect(await f.store.commitCandidates([candidate("old", { sourceSequence: 1 })], checkpoint(1), undefined,
+      { nativeMessages: { sourceKey, ids: ["msg_old"] } })).toBe(true);
+    const foreign = { ...source, authorityId: "foreign" }, foreignKey = updateSourceKey(foreign);
+    const a = candidate("reject-A", { sourceSequence: 2 });
+    const b = candidate("reject-B", { id: updateOccurrenceId(foreign, "reject-B"), source: foreign, sourceSequence: 2 });
+    const cases: { rows: ConversationUpdateCandidate[]; cp?: ConversationUpdateCheckpoint; extras: ConversationUpdateCommitExtras }[] = [
+      { rows: [], extras: { nativeMessages: { sourceKey, ids: ["msg_reject"] } } },
+      { rows: [a], extras: { nativeMessages: { sourceKey: foreignKey, ids: ["msg_reject"] } } },
+      { rows: [], extras: { nativeMessages: { sourceKey, ids: [] } } },
+      { rows: [a], cp: checkpoint(2), extras: { nativeMessages: { sourceKey: foreignKey, ids: [] } } },
+      { rows: [a], cp: checkpoint(2, { key: JSON.stringify(["app-run", sourceKey, "run"]) }), extras: { nativeMessages: { sourceKey, ids: ["msg_reject"] } } },
+      { rows: [a, b], cp: checkpoint(2), extras: { nativeMessages: { sourceKey, ids: ["msg_reject"] } } },
+      { rows: [a], cp: checkpoint(2), extras: { nativeMessages: { sourceKey: foreignKey, ids: ["msg_reject"] } } },
+    ];
+    const snapshot = () => ({ disk: readFileSync(f.path, "utf8"), head: f.store.getHead(), checkpoints: f.store.getCheckpoints(),
+      coverage: f.store.getCoverage(), health: f.store.getHealth(), page: f.store.page(), writes });
+    const before = snapshot();
+    for (const { rows, cp, extras } of cases) {
+      expect(await f.store.commitCandidates(rows, cp, undefined, extras)).toBe(false);
+      expect(snapshot()).toEqual(before);
+      expect(f.store.getUpdate(a.id)).toBeUndefined(); expect(f.store.getUpdate(b.id)).toBeUndefined();
+      expect(f.store.hasNativeMessage(sourceKey, "msg_old")).toBe(true);
+      expect(f.store.hasNativeMessage(sourceKey, "msg_reject")).toBe(false); expect(f.store.hasNativeMessage(foreignKey, "msg_reject")).toBe(false);
+    }
+    expect(await f.store.commitCandidates([a], checkpoint(2), undefined, { nativeMessages: { sourceKey, ids: ["msg_valid"] } })).toBe(true);
+    expect(writes).toBe(before.writes + 1);
+    expect(JSON.parse(readFileSync(f.path, "utf8"))).toMatchObject({ head: 2, rows: [{ id: candidate("old").id }, { id: a.id }],
+      checkpoints: [checkpoint(2)], nativeMessages: [{ sourceKey, ids: ["msg_old", "msg_valid"] }] });
+    expect(await f.store.commitCandidates([], checkpoint(3), undefined, { nativeMessages: { sourceKey, ids: [] } })).toBe(true);
+    expect(f.store.hasNativeMessage(sourceKey, "msg_old")).toBe(true); expect(f.store.hasNativeMessage(sourceKey, "msg_valid")).toBe(true);
+  });
+
+  test("CAS validates canonical key shape and binds the exact checkpoint, not only matching progress", async () => {
+    const f = fixture(); expect(f.store.load()).toBe(true);
+    const foreignKey = updateSourceKey({ ...source, authorityId: "foreign" });
+    const wrong = [JSON.stringify(["native", foreignKey]), JSON.stringify(["app-run", sourceKey, "run"]), JSON.stringify(["native", sourceKey, "other"] )];
+    for (const key of wrong) {
+      expect(isConversationUpdateExpectedCheckpoint({ key, through: null })).toBe(true);
+      expect(await f.store.commitCandidates([candidate("reject", { sourceSequence: 1 })], checkpoint(1), { expectedCheckpoint: { key, through: null } },
+        { nativeMessages: { sourceKey, ids: ["msg_reject"] } })).toBe(false);
+    }
+    const invalid: unknown[] = [null, [], { key: "not-json", through: null }, { key: "bad\nkey", through: null },
+      { key: JSON.stringify(["native", sourceKey], null, 2), through: null }, { key: JSON.stringify(["native", "foreign"]), through: null },
+      { key: checkpoint(1).key, through: null, extra: true }, { key: checkpoint(1).key }, { key: checkpoint(1).key, through: "0" }];
+    for (const expectedCheckpoint of invalid) {
+      expect(isConversationUpdateExpectedCheckpoint(expectedCheckpoint)).toBe(false);
+      expect(isConversationUpdateCommitCurrent({ expectedCheckpoint } as unknown as ConversationUpdateCommitGuard)).toBe(false);
+    }
+    expect(await f.store.commitCandidates([candidate("reject", { sourceSequence: 1 })], undefined,
+      { expectedCheckpoint: { key: wrong[0]!, through: null } })).toBe(false);
+    expect(f.store.getHead()?.through).toBe(0); expect(f.store.getCheckpoints()).toEqual([]); expect(f.store.getCoverage()).toEqual([]);
+    expect(f.store.hasNativeMessage(sourceKey, "msg_reject")).toBe(false); expect(f.store.getHealth()).toEqual({ state: "ready" });
+  });
+
+  test("serial CAS distinguishes absent/null from zero and same-value replay is idempotent", async () => {
+    let writes = 0;
+    const f = fixture({ save: (root, name, value) => { writes++; atomicAppRecord(root, name, value); } });
+    expect(f.store.load()).toBe(true);
+    const cp = checkpoint(0, { state: { pending: "original" } });
+    const expectedCheckpoint = { key: cp.key, through: null };
+    const first = f.store.commitCandidates([], cp, { expectedCheckpoint }, { nativeMessages: { sourceKey, ids: ["msg_original"] } });
+    const stale = f.store.commitCandidates([], { ...cp, state: { pending: "stale" } }, { expectedCheckpoint }, { nativeMessages: { sourceKey, ids: ["msg_stale"] } });
+    expect(await first).toBe(true); expect(await stale).toBe(false);
+    expect(f.store.getCheckpoint(cp.key)).toEqual(cp);
+    expect(f.store.hasNativeMessage(sourceKey, "msg_original")).toBe(true);
+    expect(f.store.hasNativeMessage(sourceKey, "msg_stale")).toBe(false);
+    const disk = readFileSync(f.path, "utf8"), head = f.store.getHead(), health = f.store.getHealth(), coverage = f.store.getCoverage(), beforeWrites = writes;
+    expect(await f.store.commitCandidates([], cp, { expectedCheckpoint: { key: cp.key, through: 0 } }, { nativeMessages: { sourceKey, ids: ["msg_original"] } })).toBe(true);
+    expect(readFileSync(f.path, "utf8")).toBe(disk); expect(writes).toBe(beforeWrites);
+    expect(f.store.getHead()).toEqual(head); expect(f.store.getHealth()).toEqual(health); expect(f.store.getCoverage()).toEqual(coverage);
+    expect(await f.store.commitCandidates([], checkpoint(1), { expectedCheckpoint })).toBe(false);
+    expect(readFileSync(f.path, "utf8")).toBe(disk);
+  });
+
+  test("queued winner advances rows, checkpoint and ledger; stale CAS cannot overwrite any part", async () => {
+    const f = fixture(); expect(f.store.load()).toBe(true);
+    expect(await f.store.commitCandidates([], checkpoint(1), undefined, { nativeMessages: { sourceKey, ids: ["msg_old"] } })).toBe(true);
+    let release!: () => void;
+    const gate = new Promise<void>(resolve => { release = resolve; });
+    const queued = f.store as unknown as { queue: Promise<unknown> }; queued.queue = queued.queue.then(() => gate);
+    const guard = { expectedCheckpoint: { key: checkpoint(1).key, through: 1 } };
+    const winner = candidate("winner", { sourceSequence: 2 }), stale = candidate("stale", { sourceSequence: 2 });
+    const first = f.store.commitCandidates([winner], checkpoint(2, { state: { pending: "winner" } }), guard, { nativeMessages: { sourceKey, ids: ["msg_winner"] } });
+    const second = f.store.commitCandidates([stale], checkpoint(2, { state: { pending: "stale" } }), guard, { nativeMessages: { sourceKey, ids: ["msg_stale"] } });
+    expect(f.store.hasNativeMessage(sourceKey, "msg_winner")).toBe(false);
+    release(); expect(await first).toBe(true);
+    const disk = readFileSync(f.path, "utf8"), head = f.store.getHead(), coverage = f.store.getCoverage();
+    expect(await second).toBe(false);
+    expect(f.store.getCheckpoint(checkpoint(2).key)?.state).toEqual({ pending: "winner" });
+    expect(f.store.getUpdate(winner.id)).toBeDefined(); expect(f.store.getUpdate(stale.id)).toBeUndefined();
+    expect(f.store.hasNativeMessage(sourceKey, "msg_winner")).toBe(true); expect(f.store.hasNativeMessage(sourceKey, "msg_stale")).toBe(false);
+    expect(readFileSync(f.path, "utf8")).toBe(disk); expect(f.store.getHead()).toEqual(head);
+    expect(f.store.getCoverage()).toEqual(coverage); expect(f.store.getHealth()).toEqual({ state: "ready" });
+  });
+
+  test("invalid or unmatched CAS and wrong-source transactions publish neither ledger nor rows", async () => {
+    const f = fixture(); expect(f.store.load()).toBe(true);
+    expect(await f.store.commitCandidates([], checkpoint(1))).toBe(true);
+    const foreignKey = updateSourceKey({ ...source, authorityId: "foreign" });
+    const disk = readFileSync(f.path, "utf8"), cp = f.store.getCheckpoints(), coverage = f.store.getCoverage(), head = f.store.getHead();
+    const invalid: ConversationUpdateCommitGuard[] = [
+      { expectedCheckpoint: { key: checkpoint(1).key, through: null } },
+      { expectedCheckpoint: { key: JSON.stringify(["native", foreignKey]), through: 1 } },
+      { expectedCheckpoint: { key: "", through: null } },
+      { expectedCheckpoint: { key: "bad\nkey", through: null } },
+      { expectedCheckpoint: { key: checkpoint(1).key, through: -1 } },
+      { expectedCheckpoint: { key: checkpoint(1).key, through: Number.NaN } },
+      { expectedCheckpoint: { key: checkpoint(1).key, through: 1.5 } },
+    ];
+    const row = candidate("reject", { sourceSequence: 2 });
+    const extras = { nativeMessages: { sourceKey, ids: ["msg_reject"] } };
+    for (const guard of invalid) expect(await f.store.commitCandidates([row], checkpoint(2), guard, extras)).toBe(false);
+    expect(await f.store.commitCandidates([row], checkpoint(2), undefined, { nativeMessages: { sourceKey: foreignKey, ids: ["msg_reject"] } })).toBe(false);
+    expect(await f.store.commitCandidates([row], checkpoint(2, { sourceKey: foreignKey }), undefined, extras)).toBe(false);
+    expect(readFileSync(f.path, "utf8")).toBe(disk); expect(f.store.getCheckpoints()).toEqual(cp);
+    expect(f.store.getCoverage()).toEqual(coverage); expect(f.store.getHead()).toEqual(head); expect(f.store.getHealth()).toEqual({ state: "ready" });
+    expect(f.store.hasNativeMessage(sourceKey, "msg_reject")).toBe(false); expect(f.store.hasNativeMessage(foreignKey, "msg_reject")).toBe(false);
+  });
+
+  test("ledger, candidate and checkpoint publish once atomically, capture ids, and reload source-scoped identities", async () => {
+    const saves: unknown[] = [];
+    const f = fixture({ save: (root, name, value) => { saves.push(structuredClone(value)); atomicAppRecord(root, name, value); } });
+    expect(f.store.load()).toBe(true);
+    const row = candidate("reply", { sourceSequence: 1, messageId: "msg_exact" }), cp = checkpoint(1, { state: { pending: null } });
+    const ids = ["msg_exact", "msg_intermediate"];
+    const pending = f.store.commitCandidates([row], cp, { expectedCheckpoint: { key: cp.key, through: null } }, { nativeMessages: { sourceKey, ids } });
+    ids.push("msg_mutated");
+    expect(f.store.hasNativeMessage(sourceKey, "msg_exact")).toBe(false); expect(await pending).toBe(true);
+    expect(saves).toHaveLength(2);
+    expect(saves[1]).toMatchObject({ head: 1, rows: [{ id: row.id }], checkpoints: [cp], nativeMessages: [{ sourceKey, ids: ["msg_exact", "msg_intermediate"] }] });
+    expect(f.store.hasNativeMessage(sourceKey, "msg_mutated")).toBe(false);
+    const restarted = new ConversationUpdateStore(f.dir, "store"); expect(restarted.load()).toBe(true);
+    expect(restarted.getUpdate(row.id)).toEqual(f.store.getUpdate(row.id)); expect(restarted.getCheckpoint(cp.key)).toEqual(cp);
+    expect(restarted.hasNativeMessage(sourceKey, "msg_exact")).toBe(true); expect(restarted.hasNativeMessage(sourceKey, "msg_intermediate")).toBe(true);
+    const foreignKey = updateSourceKey({ ...source, incarnation: "recreated" });
+    expect(restarted.hasNativeMessage(foreignKey, "msg_exact")).toBe(false);
+    expect(await restarted.commitCandidates([], checkpoint(0, { key: JSON.stringify(["native", foreignKey]), sourceKey: foreignKey }), undefined,
+      { nativeMessages: { sourceKey: foreignKey, ids: ["msg_exact"] } })).toBe(true);
+    expect(restarted.hasNativeMessage(foreignKey, "msg_exact")).toBe(true);
+    expect(restarted.hasNativeMessage(sourceKey, "msg_exact")).toBe(true);
+  });
+
+  for (const mode of ["aborted", "rebound", "save-failed"] as const) {
+    test(`${mode} leaves the previously committed exact ledger unchanged`, async () => {
+      let fail = false;
+      const f = fixture({ save: (root, name, value) => { if (fail) throw new Error("fixture disk failure"); atomicAppRecord(root, name, value); } });
+      expect(f.store.load()).toBe(true);
+      expect(await f.store.commitCandidates([], checkpoint(1), undefined, { nativeMessages: { sourceKey, ids: ["msg_old"] } })).toBe(true);
+      const disk = readFileSync(f.path, "utf8"), oldCheckpoint = f.store.getCheckpoint(checkpoint(1).key);
+      const controller = new AbortController(); let current = true, release!: () => void;
+      const gate = new Promise<void>(resolve => { release = resolve; });
+      const queued = f.store as unknown as { queue: Promise<unknown> }; queued.queue = queued.queue.then(() => gate);
+      const row = candidate("pending", { sourceSequence: 2 });
+      const pending = f.store.commitCandidates([row], checkpoint(2), { signal: controller.signal, isCurrent: () => current }, { nativeMessages: { sourceKey, ids: ["msg_new"] } });
+      expect(f.store.hasNativeMessage(sourceKey, "msg_new")).toBe(false);
+      if (mode === "aborted") controller.abort(); else if (mode === "rebound") current = false; else fail = true;
+      release(); expect(await pending).toBe(false);
+      expect(f.store.hasNativeMessage(sourceKey, "msg_old")).toBe(true); expect(f.store.hasNativeMessage(sourceKey, "msg_new")).toBe(false);
+      expect(f.store.getCheckpoint(checkpoint(1).key)).toEqual(oldCheckpoint); expect(f.store.getUpdate(row.id)).toBeUndefined();
+      expect(readFileSync(f.path, "utf8")).toBe(disk);
+      expect(f.store.getHealth().state).toBe(mode === "save-failed" ? "unavailable" : "ready");
+    });
+  }
+
+  test("pruning old feed rows never prunes the exact ledger, including intermediate-only identities", async () => {
+    const f = fixture(); expect(f.store.load()).toBe(true);
+    const old = candidate("retired", { sourceSequence: 1 });
+    expect(await f.store.commitCandidates([old], checkpoint(1), undefined, { nativeMessages: { sourceKey, ids: ["msg_retired", "msg_no_reply"] } })).toBe(true);
+    expect(await f.store.commitCandidates(Array.from({ length: CONVERSATION_UPDATE_MAX_ROWS }, (_, i) => candidate(`new-${i}`, { sourceSequence: i + 2 })), checkpoint(CONVERSATION_UPDATE_MAX_ROWS + 1))).toBe(true);
+    expect(f.store.getUpdate(old.id)).toBeUndefined(); expect(f.store.getHead()?.retainedAfter).toBe(1);
+    const restarted = new ConversationUpdateStore(f.dir, "store"); expect(restarted.load()).toBe(true);
+    expect(restarted.hasNativeMessage(sourceKey, "msg_retired")).toBe(true); expect(restarted.hasNativeMessage(sourceKey, "msg_no_reply")).toBe(true);
+    expect(restarted.getUpdate(old.id)).toBeUndefined();
+  });
+
+  test("duplicate or malformed persisted ledgers fail load without resetting the file or epoch", async () => {
+    const entry = { sourceKey, ids: ["msg_exact"] };
+    for (const nativeMessages of [null, {}, [entry, entry], [{ sourceKey, ids: ["duplicate", "duplicate"] }],
+      [{ sourceKey: "foreign", ids: ["msg_exact"] }], [{ sourceKey, ids: [""] }], [{ sourceKey, ids: ["bad\nmessage"] }],
+      [{ sourceKey, ids: [1] }], [{ ...entry, extra: true }], [{ sourceKey, ids: "not-array" }]]) {
+      const f = fixture(); expect(f.store.load()).toBe(true);
+      const record = JSON.parse(readFileSync(f.path, "utf8")); record.nativeMessages = nativeMessages;
+      const disk = JSON.stringify(record); writeFileSync(f.path, disk); let writes = 0;
+      const restarted = new ConversationUpdateStore(f.dir, "store", { save: () => { writes++; } });
+      expect(restarted.load()).toBe(false); expect(restarted.load()).toBe(false);
+      expect(restarted.getHead()).toBeUndefined(); expect(restarted.getHealth().state).toBe("unavailable");
+      expect(restarted.hasNativeMessage(sourceKey, "msg_exact")).toBe(false);
+      expect(writes).toBe(0); expect(readFileSync(f.path, "utf8")).toBe(disk);
+    }
+  });
+
+  test("invalid submitted ledgers reject the complete transaction without poisoning storage", async () => {
+    const f = fixture(); expect(f.store.load()).toBe(true); const disk = readFileSync(f.path, "utf8");
+    for (const extras of [{ nativeMessages: { sourceKey, ids: ["duplicate", "duplicate"] } },
+      { nativeMessages: { sourceKey, ids: ["bad\nmessage"] } }, { nativeMessages: { sourceKey, ids: ["x".repeat(16 * 1024 + 1)] } },
+      { nativeMessages: { sourceKey, ids: [1] } }, { nativeMessages: { sourceKey: "foreign", ids: ["msg"] } }, { unknown: true }]) {
+      expect(await f.store.commitCandidates([candidate("reject", { sourceSequence: 1 })], checkpoint(1), undefined, extras as ConversationUpdateCommitExtras)).toBe(false);
+      expect(f.store.hasNativeMessage(sourceKey, "duplicate")).toBe(false);
+      expect(f.store.getCheckpoints()).toEqual([]); expect(f.store.getHead()?.through).toBe(0);
+      expect(f.store.getHealth()).toEqual({ state: "ready" }); expect(readFileSync(f.path, "utf8")).toBe(disk);
+    }
+  });
+
+  test("whole-record ledger capacity rejects a batch atomically and leaves healthy App rows writable", async () => {
+    const f = fixture(); expect(f.store.load()).toBe(true);
+    expect(await f.store.commitCandidates([candidate("app-old")])).toBe(true);
+    const disk = readFileSync(f.path, "utf8"), beforeHead = f.store.getHead();
+    const ids = Array.from({ length: 1024 }, (_, i) => `message-${i}-`.padEnd(16 * 1024, "x"));
+    expect(Buffer.byteLength(JSON.stringify({ nativeMessages: [{ sourceKey, ids }] }))).toBeGreaterThan(CONVERSATION_UPDATE_STORE_BYTES);
+    expect(await f.store.commitCandidates([candidate("native-reject", { sourceSequence: 1 })], checkpoint(1), undefined, { nativeMessages: { sourceKey, ids } })).toBe(false);
+    expect(readFileSync(f.path, "utf8")).toBe(disk); expect(f.store.getHead()).toEqual(beforeHead);
+    expect(f.store.getCheckpoints()).toEqual([]); expect(f.store.hasNativeMessage(sourceKey, ids[0]!)).toBe(false);
+    expect(f.store.getHealth()).toEqual({ state: "ready" }); expect(f.store.getUpdate(candidate("app-old").id)).toBeDefined();
+    expect(await f.store.commitCandidates([candidate("app-next")])).toBe(true);
+    expect(f.store.getHead()?.through).toBe(2);
   });
 });
 

@@ -16,6 +16,31 @@ export const CONVERSATION_UPDATE_STORE_BYTES = 16 * 1024 * 1024;
 const STATE_BYTES = 256 * 1024;
 const encoder = new TextEncoder();
 export type UpdateJson = null | boolean | number | string | UpdateJson[] | { [key: string]: UpdateJson };
+/** Live cancellation/registration evidence; never cloned or persisted with a transaction. */
+export type ConversationUpdateCommitGuard = {
+  signal?: AbortSignal;
+  isCurrent?: () => boolean;
+  /** Compare against committed source progress inside the serial store transaction. */
+  expectedCheckpoint?: { key: string; through: number | null };
+};
+/** Native identities require a matching native checkpoint in the same transaction. */
+export type ConversationUpdateCommitExtras = { nativeMessages?: { sourceKey: string; ids: readonly string[] } };
+export function isConversationUpdateCommitCurrent(guard?: ConversationUpdateCommitGuard): boolean {
+  try {
+    if (guard === undefined) return true;
+    if (!guard || typeof guard !== "object" || Array.isArray(guard)) return false;
+    const { signal, isCurrent, expectedCheckpoint } = guard;
+    // Structural evidence permits real signals from another realm without
+    // accepting arbitrary truthy objects as cancellation protection.
+    const validSignal = () => signal === undefined || !!signal && typeof signal === "object" && !Array.isArray(signal)
+      && typeof signal.aborted === "boolean" && typeof signal.addEventListener === "function" && typeof signal.removeEventListener === "function";
+    if (!validSignal() || isCurrent !== undefined && typeof isCurrent !== "function"
+      || expectedCheckpoint !== undefined && !isConversationUpdateExpectedCheckpoint(expectedCheckpoint)) return false;
+    if (signal?.aborted || isCurrent !== undefined && !isCurrent.call(guard)) return false;
+    return validSignal() && !signal?.aborted;
+  }
+  catch { return false; }
+}
 /** Keys must include the qualified source, e.g. JSON.stringify(["app-run", sourceKey, runId]).
  * Checkpoints are NOT retained-row caches: never discard them when pruning rows. */
 export type ConversationUpdateCheckpoint = {
@@ -34,6 +59,8 @@ type RecordValue = {
   retainedAfter: number;
   rows: ConversationUpdate[];
   checkpoints: ConversationUpdateCheckpoint[];
+  /** Exact identities outlive retained feed rows; never reducer-state tombstones. */
+  nativeMessages?: { sourceKey: string; ids: string[] }[];
 };
 export type ConversationUpdateHealth = { state: "initializing" | "ready" | "unavailable"; reason?: string };
 export class ConversationUpdateServiceError extends Error {
@@ -50,6 +77,20 @@ function text(value: unknown): value is string {
     && !/[\u0000-\u001f\u007f]/.test(value);
 }
 function integer(value: unknown): value is number { return Number.isSafeInteger(value) && (value as number) >= 0; }
+function checkpointSourceKey(value: unknown): string | undefined {
+  if (!text(value)) return undefined;
+  try {
+    const key: unknown = JSON.parse(value);
+    return Array.isArray(key) && key.length >= 2 && key.length <= 4 && key.every(text)
+      && isConversationUpdateCoverage({ sourceKey: key[1], state: "ready" }) && JSON.stringify(key) === value ? key[1] : undefined;
+  } catch { return undefined; }
+}
+export function isConversationUpdateExpectedCheckpoint(value: unknown): value is NonNullable<ConversationUpdateCommitGuard["expectedCheckpoint"]> {
+  try {
+    return object(value) && exact(value, ["key", "through"]) && checkpointSourceKey(value.key) !== undefined
+      && (value.through === null || integer(value.through));
+  } catch { return false; }
+}
 function bytes(value: unknown) { return encoder.encode(JSON.stringify(value)).byteLength; }
 function json(value: unknown, depth = 0): value is UpdateJson {
   if (depth > 32) return false;
@@ -65,16 +106,14 @@ export function isConversationUpdateCheckpoint(value: unknown): value is Convers
     || value.baselineThrough !== undefined && (!integer(value.baselineThrough) || value.baselineThrough > value.through)
     || value.state !== undefined && (!json(value.state) || bytes(value.state) > STATE_BYTES)
     || value.coverage !== undefined && (!isConversationUpdateCoverage(value.coverage) || value.coverage.sourceKey !== value.sourceKey
-      || value.coverage.through !== undefined && value.coverage.through !== value.through
-      || value.coverage.baselineThrough !== undefined && value.coverage.baselineThrough !== value.baselineThrough)) return false;
-  try {
-    const key: unknown = JSON.parse(value.key);
-    return Array.isArray(key) && key.length >= 2 && key.length <= 4 && key.every(text)
-      && key[1] === value.sourceKey && JSON.stringify(key) === value.key;
-  } catch { return false; }
+       || value.coverage.through !== undefined && value.coverage.through > value.through
+       || value.baselineThrough !== undefined && (value.coverage.through === undefined || value.baselineThrough > value.coverage.through)
+       || value.coverage.baselineThrough !== undefined && (value.coverage.baselineThrough !== value.baselineThrough
+         || value.coverage.through === undefined))) return false;
+  return checkpointSourceKey(value.key) === value.sourceKey;
 }
 function validRecord(value: unknown, storeId: string): value is RecordValue {
-  if (!object(value) || !exact(value, ["version", "storeId", "epoch", "head", "retainedAfter", "rows", "checkpoints"])
+  if (!object(value) || !exact(value, ["version", "storeId", "epoch", "head", "retainedAfter", "rows", "checkpoints", "nativeMessages"])
     || value.version !== 1 || value.storeId !== storeId || !text(value.storeId) || !text(value.epoch)
     || encoder.encode(value.storeId).byteLength > 1024 || encoder.encode(value.epoch).byteLength > 1024
     || !integer(value.head) || !integer(value.retainedAfter) || value.retainedAfter > value.head
@@ -103,6 +142,25 @@ function validRecord(value: unknown, storeId: string): value is RecordValue {
   for (const checkpoint of value.checkpoints) {
     if (!isConversationUpdateCheckpoint(checkpoint) || keys.has(checkpoint.key)) return false;
     keys.add(checkpoint.key);
+  }
+  if (value.nativeMessages !== undefined) {
+    if (!Array.isArray(value.nativeMessages)) return false;
+    const sources = new Set<string>();
+    for (const messages of value.nativeMessages) {
+      if (!isNativeMessages(messages) || sources.has(messages.sourceKey)) return false;
+      sources.add(messages.sourceKey);
+    }
+  }
+  return true;
+}
+function isNativeMessages(value: unknown): value is { sourceKey: string; ids: string[] } {
+  if (!object(value) || !exact(value, ["sourceKey", "ids"])
+    || !isConversationUpdateCoverage({ sourceKey: value.sourceKey, state: "ready" })
+    || !Array.isArray(value.ids) || value.ids.length > CONVERSATION_UPDATE_STORE_BYTES) return false;
+  const ids = new Set<string>();
+  for (const id of value.ids) {
+    if (!text(id) || ids.has(id)) return false;
+    ids.add(id);
   }
   return true;
 }
@@ -159,6 +217,23 @@ export class ConversationUpdateStore {
     return found && structuredClone(found);
   }
   getCheckpoints(): ConversationUpdateCheckpoint[] { return structuredClone(this.record?.checkpoints ?? []); }
+  hasNativeMessage(sourceKey: string, messageId: string): boolean {
+    return this.record?.nativeMessages?.find(messages => messages.sourceKey === sourceKey)?.ids.includes(messageId) ?? false;
+  }
+  private commitGuardCurrent(guard?: ConversationUpdateCommitGuard, checkpoint?: ConversationUpdateCheckpoint,
+    candidates: readonly ConversationUpdateCandidate[] = [], extras?: ConversationUpdateCommitExtras): boolean {
+    if (!isConversationUpdateCommitCurrent(guard)) return false;
+    try {
+      const expected = guard?.expectedCheckpoint;
+      if (expected === undefined) return true;
+      if (!isConversationUpdateExpectedCheckpoint(expected)) return false;
+      const sourceKey = checkpointSourceKey(expected.key);
+      return (!checkpoint || expected.key === checkpoint.key)
+        && (checkpoint !== undefined || candidates.every(candidate => updateSourceKey(candidate.source) === sourceKey))
+        && (!extras?.nativeMessages || extras.nativeMessages.sourceKey === sourceKey)
+        && (this.record?.checkpoints.find(checkpoint => checkpoint.key === expected.key)?.through ?? null) === expected.through;
+    } catch { return false; }
+  }
   getUpdate(id: string): ConversationUpdate | undefined {
     const row = this.record?.rows.findLast(row => row.id === id);
     return row && structuredClone(row);
@@ -180,17 +255,28 @@ export class ConversationUpdateStore {
     return [...sources.values()];
   }
   /** Atomic rows + reducer state + source progress. False means no usable publication;
-   * on ambiguous I/O failure stop, rather than overwrite possibly committed disk state. */
-  commitCandidates(candidates: readonly ConversationUpdateCandidate[], checkpoint?: ConversationUpdateCheckpoint): Promise<boolean> {
-    if (this.closed || this.closing) return Promise.resolve(false);
-    let captured: ConversationUpdateCandidate[], capturedCheckpoint: ConversationUpdateCheckpoint | undefined;
-    try { captured = structuredClone([...candidates]); capturedCheckpoint = checkpoint && structuredClone(checkpoint); }
+   * on ambiguous I/O failure stop, rather than overwrite possibly committed disk state.
+   * Guard rejection leaves committed state and health untouched. Once synchronous
+   * persistence succeeds, later cancellation cannot undo it or change the result. */
+  commitCandidates(candidates: readonly ConversationUpdateCandidate[], checkpoint?: ConversationUpdateCheckpoint,
+    guard?: ConversationUpdateCommitGuard, extras?: ConversationUpdateCommitExtras): Promise<boolean> {
+    if (this.closed || this.closing || !isConversationUpdateCommitCurrent(guard)) return Promise.resolve(false);
+    let captured: ConversationUpdateCandidate[], capturedCheckpoint: ConversationUpdateCheckpoint | undefined,
+      capturedExtras: ConversationUpdateCommitExtras | undefined;
+    try {
+      captured = structuredClone([...candidates]); capturedCheckpoint = checkpoint && structuredClone(checkpoint);
+      capturedExtras = extras && structuredClone(extras);
+    }
     catch { return Promise.resolve(false); }
     const task = this.queue.then(() => {
-      if (this.closed || this.health.state !== "ready" || !this.record) return false;
+      if (this.closed || !this.commitGuardCurrent(guard, capturedCheckpoint, captured, capturedExtras) || this.health.state !== "ready" || !this.record) return false;
       let persistenceStarted = false;
       try {
         if (!captured.every(isConversationUpdateCandidate) || capturedCheckpoint && !isConversationUpdateCheckpoint(capturedCheckpoint)) throw new Error("Invalid update transaction");
+        if (capturedExtras && (!object(capturedExtras) || !exact(capturedExtras, ["nativeMessages"])
+           || capturedExtras.nativeMessages !== undefined && (!isNativeMessages(capturedExtras.nativeMessages)
+             || !capturedCheckpoint || JSON.parse(capturedCheckpoint.key)[0] !== "native"
+             || capturedExtras.nativeMessages.sourceKey !== capturedCheckpoint.sourceKey))) throw new Error("Invalid native message identities");
         const next = structuredClone(this.record);
         const priorCheckpoint = capturedCheckpoint && next.checkpoints.find(value => value.key === capturedCheckpoint.key);
         if (capturedCheckpoint && priorCheckpoint && (capturedCheckpoint.sourceKey !== priorCheckpoint.sourceKey
@@ -224,6 +310,14 @@ export class ConversationUpdateStore {
           const index = next.checkpoints.findIndex(value => value.key === capturedCheckpoint.key);
           if (index < 0) next.checkpoints.push(capturedCheckpoint); else next.checkpoints[index] = capturedCheckpoint;
         }
+        if (capturedExtras?.nativeMessages) {
+          const { sourceKey, ids } = capturedExtras.nativeMessages;
+          const ledger = next.nativeMessages ??= [];
+          let messages = ledger.find(messages => messages.sourceKey === sourceKey);
+          if (!messages) { messages = { sourceKey, ids: [] }; ledger.push(messages); }
+          const known = new Set(messages.ids);
+          for (const id of ids) if (!known.has(id)) { messages.ids.push(id); known.add(id); }
+        }
         // Keep change versions so fixed-through traversals remain genuine snapshots.
         // Pruning advances an explicit floor; expired traversals must re-bootstrap.
         let size = bytes(next), removed = 0;
@@ -235,7 +329,9 @@ export class ConversationUpdateStore {
         }
         if (removed) next.rows = next.rows.slice(removed);
         if (!validRecord(next, this.storeId)) throw new Error("Update checkpoint capacity exhausted or invalid transaction");
-        if (JSON.stringify(next) !== JSON.stringify(this.record)) {
+        const changed = JSON.stringify(next) !== JSON.stringify(this.record);
+        if (!this.commitGuardCurrent(guard, capturedCheckpoint, captured, capturedExtras)) return false;
+        if (changed) {
           persistenceStarted = true;
           (this.options.save ?? atomicAppRecord)(this.dataDir, "conversation-updates.json", next);
         }

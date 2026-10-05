@@ -1,5 +1,6 @@
 import type { ConversationClient, RunMetadata, RunStatus } from "./types";
 import { isConversationUpdateFeedRequest, isConversationUpdatePage } from "../shared/conversation/conversation-updates";
+import { nativeNotificationSource } from "./notification-source";
 
 export class ApiError extends Error {
   constructor(message: string, readonly status: number, readonly code?: string) { super(message); }
@@ -33,7 +34,9 @@ export const conversationClient: ConversationClient = {
   async conversations(signal) {
     const data = await request("/api/sessions", { signal });
     if (!Array.isArray(data?.sessions) || data.sessions.some((session: any) => !session || typeof session.sessionId !== "string" || !session.sessionId)) throw new Error("Invalid conversation listing.");
-    return { conversations: data.sessions.map((s: any) => ({ id: s.sessionId, harness: s.harness ?? "claude-code", authorityId: s.authorityId, nativeSessionId: s.nativeSessionId, nativeActivity: s.nativeActivity, nativeActivityReason: s.nativeActivityReason, updatedAt: s.updatedAt, cwd: s.cwd, lastRunId: s.lastRunId, lastRunStatus: s.lastRunStatus, lastRunOperation: s.lastRunOperation, lastRunEndedAt: s.lastRunEndedAt, status: s.lastStatus as RunStatus, title: s.title, hidden: s.hidden, model: s.model, effort: s.effort, agent: s.agent, agentKind: s.agentKind, nativeAgentSelected: s.nativeAgentSelected, profileId: s.profileId, workspaceId: s.workspaceId, worktreeId: s.worktreeId, association: s.association, associationReason: s.associationReason, availability: s.availability, queuedFollowups: s.queuedFollowups, attachment: s.attachment, worker: s.worker, directWorkerCount: s.directWorkerCount, branchOrigin: s.branchOrigin, branchDraft: s.branchDraft, replacedBy: s.replacedBy })),
+    const conversations = data.sessions.map((s: any) => ({ id: s.sessionId, harness: s.harness ?? "claude-code", authorityId: s.authorityId, nativeSessionId: s.nativeSessionId, ...(s.updateSource !== undefined ? { updateSource: s.updateSource } : {}), nativeActivity: s.nativeActivity, nativeActivityReason: s.nativeActivityReason, updatedAt: s.updatedAt, cwd: s.cwd, lastRunId: s.lastRunId, lastRunStatus: s.lastRunStatus, lastRunOperation: s.lastRunOperation, lastRunEndedAt: s.lastRunEndedAt, status: s.lastStatus as RunStatus, title: s.title, hidden: s.hidden, model: s.model, effort: s.effort, agent: s.agent, agentKind: s.agentKind, nativeAgentSelected: s.nativeAgentSelected, profileId: s.profileId, workspaceId: s.workspaceId, worktreeId: s.worktreeId, association: s.association, associationReason: s.associationReason, availability: s.availability, queuedFollowups: s.queuedFollowups, attachment: s.attachment, worker: s.worker, directWorkerCount: s.directWorkerCount, branchOrigin: s.branchOrigin, branchDraft: s.branchDraft, replacedBy: s.replacedBy }));
+    if (conversations.some((c: any) => c.updateSource !== undefined && !nativeNotificationSource(c))) throw new Error("Invalid conversation update source in listing.");
+    return { conversations,
       availability: data.availability ?? { canSend: false, reason: "Waiting for bridge availability." } };
   },
   async runs(id, signal): Promise<RunMetadata[]> {

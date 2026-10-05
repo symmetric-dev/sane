@@ -2,12 +2,16 @@
  * No build, real model, native service, or browser is used. Restarts below affect
  * only this ephemeral replica, after its fake CLI processes have finished.
  */
-import { afterAll, beforeAll, describe, expect, test } from "bun:test";
+import { afterAll, beforeAll, describe, expect, spyOn, test } from "bun:test";
 import { createHash } from "node:crypto";
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { start, type Options } from "../src/bridge";
 import { initializeAppStore } from "../src/app-store";
+import { OpenCodeAdapter } from "../src/opencode";
+import { OC_REPLY_ACTIVATION_BLOCKED, OpenCodeReplyIntegration } from "../src/opencode-reply-integration";
+import { OC_REPLY_QUALIFICATION_CHECKS, type OpenCodeReplyQualification } from "../src/opencode-reply-observer";
+import { ConversationUpdateStore } from "../src/conversation-update-store";
 import { acquireData, acquireInstallation, validateOwnershipPaths, type OwnershipHandle } from "../src/installation-ownership";
 import { isConversationUpdatePage, type ConversationUpdate, type ConversationUpdatePage } from "../shared/conversation/conversation-updates";
 
@@ -104,6 +108,7 @@ describe.serial("conversation-update bridge (isolated offline App replica)", () 
       `if (prompt.startsWith("/compact")) { emit({ type: "system", subtype: "compact_boundary", uuid: crypto.randomUUID(), compact_metadata: { trigger: "manual", pre_tokens: 90000, post_tokens: 12000 } }); result(0, "compact fixture text"); }`,
       `else if (prompt === "multi-result fixture") { result(0, "same useful reply"); await gate("release-second"); result(1, "same useful reply"); await gate("release-exit"); }`,
       `else if (prompt === "noise-only fixture") { result(0, "child reply", { session_id: "foreign-child", parent_tool_use_id: "child-tool" }); emit({ type: "user", content: [{ type: "tool_result", tool_use_id: "tool", content: "tool output" }] }); emit({ type: "assistant", message: { id: "tool-call", content: [{ type: "tool_use", id: "tool", name: "fixture", input: {} }] } }); result(0, " "); }`,
+      `else if (prompt === "hard gate callback fixture") { for (let index = 0; index < 32; index++) emit({ type: "assistant", message: { id: "callback_" + index, content: [{ type: "text", text: "offline journal checkpoint " + index }] } }); result(0, "ordinary fixture reply"); }`,
       `else result(0, "ordinary fixture reply");`,
       `appendFileSync(${JSON.stringify(log)}, JSON.stringify({ finished: true, session_id, cwd: process.cwd() }) + "\\n");`,
       "",
@@ -218,6 +223,103 @@ describe.serial("conversation-update bridge (isolated offline App replica)", () 
     expect((await api(path)).body.updates).toEqual(before.updates); expect((await api(path)).body.updates).toEqual(before.updates);
     expect((await api(feedPath(after))).body.updates).toEqual([]);
     expect(existsSync(join(root, "oc", "missing-service.json"))).toBe(false);
+  }, TIMEOUT);
+
+  test("disabled reply hooks do no duplicate metadata parse or catalog refresh while fake CLI metadata and 32 journal checkpoints persist", async () => {
+    const marker = "hard gate callback fixture", before = await bootstrap(), parse = JSON.parse, published = OpenCodeReplyIntegration.prototype.metadataPublished;
+    let duplicateParses = 0, publicationCallbacks = 0;
+    const parsing = spyOn(JSON, "parse").mockImplementation((raw, reviver) => {
+      if (raw.startsWith('{"version":1,') && raw.includes('"sessions":[') && raw.includes('"runs":[') && raw.includes(marker)) duplicateParses++;
+      return parse(raw, reviver);
+    });
+    const capture = spyOn(OpenCodeReplyIntegration.prototype, "metadataPublished").mockImplementation(function (this: OpenCodeReplyIntegration, snapshot: string) { if (snapshot.includes(marker)) publicationCallbacks++; return published.call(this, snapshot); });
+    const refresh = spyOn(OpenCodeReplyIntegration.prototype, "refresh");
+    let created: Awaited<ReturnType<typeof create>> | undefined;
+    try {
+      created = await create(marker); const completed = await waitIdle(created.sessionId); expect(completed.lastRunStatus).toBe("completed");
+      expect(publicationCallbacks).toBeGreaterThan(0); expect(duplicateParses).toBe(0); expect(refresh).not.toHaveBeenCalled();
+    } finally { parsing.mockRestore(); capture.mockRestore(); refresh.mockRestore(); }
+    expect(disk("metadata.json").runs.find((r: any) => r.runId === created!.runId).status).toBe("completed");
+    const journal = readFileSync(join(dataDir, `${created!.runId}.jsonl`), "utf8").trim().split("\n").map(line => JSON.parse(line));
+    expect(journal.filter(e => e.kind === "stdout" && e.data?.type === "assistant" && e.data.message?.id?.startsWith("callback_"))).toHaveLength(32);
+    const after = await bootstrap(); expect(after.updates.filter(row => row.runId === created!.runId).some(row => row.legacyRunId === created!.runId)).toBe(true);
+    expect(after.through).toBeGreaterThan(before.through); expect(after.bootstrap?.sourceBaselines).toEqual([]);
+  }, TIMEOUT);
+
+  test("production hard gate ignores trusted fake descriptor, keeps OC legacy lifecycle/feed semantics and tolerates corrupt optional binding storage", async () => {
+    const before = await bootstrap(), launches = invocations();
+    await app!.close(); app = undefined;
+    const metadata = disk("metadata.json"), source = disk("sources.json").oc, admissions = disk("admissions.json"), catalog = disk("catalog.json");
+    const originalAdmission = admissions.admissions.find((a: any) => a.binding.executionCheckout === repoDir && a.state === "ready");
+    expect(originalAdmission).toBeDefined();
+    expect(typeof source.authorityId).toBe("string");
+    const endedAt = "2026-10-01T00:00:00.000Z";
+    const seeded = (["completed", "failed"] as const).map((status, index) => {
+      const id = crypto.randomUUID(), runId = crypto.randomUUID(), nativeSessionId = `ses_offline_gate_${index}`;
+      const session = { sessionId: id, harness: "opencode", authorityId: source.authorityId, nativeSessionId, cwd: repoDir, lastStatus: status, lastRunId: runId, profileId: "base:oc" };
+      const run = { runId, sessionId: id, cwd: repoDir, status, createdAt: endedAt, endedAt, nativeCommandId: `msg_offline_command_${index}`, nativePhase: "accepted", nativeAcceptedAt: Date.parse(endedAt) };
+      metadata.sessions.push(session); metadata.runs.push(run);
+      admissions.admissions.push({ ...structuredClone(originalAdmission), sessionId: id, requestId: crypto.randomUUID(), operation: "enroll", source, nativeId: nativeSessionId });
+      catalog.associations[id] = structuredClone(catalog.associations[originalAdmission.sessionId]);
+      writeFileSync(join(dataDir, `${runId}.jsonl`), [
+        { seq: 1, time: endedAt, runId, sessionId: id, kind: "message", data: { role: "assistant", messageId: `msg_offline_reply_${index}`, createdAt: endedAt, parts: [{ type: "text", text: "Historical fixture reply, not native replay" }] } },
+        { seq: 2, time: endedAt, runId, sessionId: id, kind: "status", data: { status } },
+      ].map(e => JSON.stringify(e) + "\n").join(""));
+      return { session, run };
+    });
+    writeFileSync(join(dataDir, "metadata.json"), JSON.stringify(metadata));
+    writeFileSync(join(dataDir, "admissions.json"), JSON.stringify(admissions));
+    writeFileSync(join(dataDir, "catalog.json"), JSON.stringify(catalog));
+    const bindingFile = join(dataDir, "opencode-reply-bindings.json"), corrupt = "{offline-optional-binding-corruption";
+    writeFileSync(bindingFile, corrupt);
+    const descriptor: OpenCodeReplyQualification = { authorityId: source.authorityId, clientVersion: "2.0.18", nativeVersion: "2.0.21", verifiedAt: endedAt, evidenceRef: "fake-only:not-runtime-qualification",
+      checks: Object.fromEntries(OC_REPLY_QUALIFICATION_CHECKS.map(k => [k, { passed: true, evidenceRef: `fake-only:${k}` }])) as OpenCodeReplyQualification["checks"] };
+    options.openCodeReplyQualifications = [descriptor];
+    const transport = spyOn(OpenCodeAdapter.prototype, "replyTransport").mockImplementation(async () => { throw new Error("Production disabled gate must not open native transport"); });
+    try {
+      app = await start(options);
+      const after = await bootstrap(); expect(after.epoch).toBe(before.epoch); expect(after.bootstrap?.sourceBaselines).toEqual([]);
+      const ocRows = after.updates.filter(row => row.source.harness === "opencode");
+      expect(ocRows).toHaveLength(1); expect(ocRows[0]).toMatchObject({ kind: "failed", conversationId: seeded[1]!.session.sessionId, runId: seeded[1]!.run.runId, legacyRunId: seeded[1]!.run.runId });
+      expect(after.updates.filter(row => row.source.harness === "claude-code")).toEqual(before.updates);
+      for (const item of seeded) {
+        const coverage = after.coverage.find(c => c.sourceKey.includes(item.session.nativeSessionId));
+        expect(coverage).toMatchObject({ state: "unavailable" }); expect(coverage?.reason).toContain("Optional OpenCode reply binding storage");
+        expect(coverage?.through).toBeUndefined(); expect(coverage?.baselineThrough).toBeUndefined();
+      }
+      const listed = (await api("/api/sessions")).body.sessions;
+      for (const item of seeded) {
+        const session = listed.find((s: any) => s.sessionId === item.session.sessionId);
+        expect(session.lastRunStatus).toBe(item.run.status); expect(session.updateSource).toBeUndefined();
+      }
+      expect(disk("conversation-updates.json").checkpoints.every((cp: any) => JSON.parse(cp.key)[0] !== "native")).toBe(true);
+      expect(readFileSync(bindingFile, "utf8")).toBe(corrupt); expect(transport).not.toHaveBeenCalled(); expect(invocations()).toEqual(launches);
+      // Repair only the test-owned optional file. The gate still reports honest
+      // unqualified native coverage with a descriptor and leaves the feed unchanged.
+      await app.close(); app = undefined; rmSync(bindingFile); app = await start(options);
+      const healthy = await bootstrap(); expect(healthy.updates).toEqual(after.updates);
+      for (const item of seeded) expect(healthy.coverage.find(c => c.sourceKey.includes(item.session.nativeSessionId))).toMatchObject({ state: "unqualified", reason: OC_REPLY_ACTIVATION_BLOCKED });
+      expect(healthy.bootstrap?.sourceBaselines).toEqual([]); expect(transport).not.toHaveBeenCalled();
+    } finally { transport.mockRestore(); }
+  }, TIMEOUT);
+
+  test("bridge shutdown joins optional reply coordinator before closing derived store", async () => {
+    const lifecycle: string[] = [];
+    let release!: () => void; const joined = new Promise<void>(resolve => { release = resolve; });
+    const closeIntegration = OpenCodeReplyIntegration.prototype.close, closeStore = ConversationUpdateStore.prototype.close;
+    const integration = spyOn(OpenCodeReplyIntegration.prototype, "close").mockImplementation(function (this: OpenCodeReplyIntegration) {
+      lifecycle.push("reply-close-called");
+      return closeIntegration.call(this).then(async () => { await joined; lifecycle.push("reply-joined"); });
+    });
+    const store = spyOn(ConversationUpdateStore.prototype, "close").mockImplementation(function (this: ConversationUpdateStore) { lifecycle.push("store-close"); return closeStore.call(this); });
+    const closing = app!.close();
+    try {
+      expect(lifecycle).toEqual(["reply-close-called"]);
+      await new Promise<void>(resolve => setImmediate(resolve)); expect(lifecycle).not.toContain("store-close");
+      release(); await closing; app = undefined;
+      expect(lifecycle.indexOf("reply-joined")).toBeLessThan(lifecycle.indexOf("store-close"));
+    } finally { release(); await closing; integration.mockRestore(); store.mockRestore(); }
+    app = await start(options);
   }, TIMEOUT);
 
   test("password boundary hides store and feed capability until cookie login and rejects foreign Host/Origin", async () => {
