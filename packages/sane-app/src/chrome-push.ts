@@ -332,7 +332,7 @@ export class ChromePushService {
     this.assertFiles();
     // Attach the handle immediately so every subsequent initialization failure
     // is closed by start(), including malformed schemas or VAPID material.
-    const db = this.db = new Database(path, { create: false, strict: true });
+    const db = this.db = new Database(path, { readwrite: true, create: false, strict: true });
     db.exec("PRAGMA busy_timeout = 250; PRAGMA foreign_keys = ON; PRAGMA trusted_schema = OFF;");
     if (!fresh) {
       if (db.query<{ application_id: number }, []>("PRAGMA application_id").get()?.application_id !== APPLICATION_ID
@@ -388,15 +388,28 @@ export class ChromePushService {
         || !/^[0-9a-f-]{36}$/.test(device.id) || !/^[A-Za-z0-9_-]{43}$/.test(device.owner)
         || device.expiration !== null && (!Number.isSafeInteger(device.expiration) || device.expiration <= 0)) throw new Error("Invalid stored push device");
     }
-    for (const row of db.query<Delivery & { state: number; next_attempt: number }, []>("SELECT * FROM deliveries").all()) {
+    const retryTimestamps: { rowid: string; original: number; next: number }[] = [];
+    for (const row of db.query<Delivery & { retry_rowid: string; state: number; next_attempt: number }, []>("SELECT CAST(rowid AS TEXT) AS retry_rowid, * FROM deliveries").all()) {
       const payload: unknown = JSON.parse(row.payload);
+      // Older senders persisted fractional jitter, including on finished rows.
+      // Only retry timestamps from an attempted send qualify for reconciliation.
+      const nextAttempt = typeof row.next_attempt === "number" && Number.isFinite(row.next_attempt) && row.next_attempt >= 0
+        ? Math.ceil(row.next_attempt) : NaN;
       if (!isPushPayload(payload) || payload.storeId !== this.options.storeId
         || !/^[A-Za-z0-9_-]{43}$/.test(row.id) || !Number.isSafeInteger(row.attempts) || row.attempts < 0 || row.attempts > MAX_ATTEMPTS
-        || !Number.isSafeInteger(row.next_attempt) || row.next_attempt < 0 || row.state !== 0 && row.state !== 1
+        || !Number.isSafeInteger(nextAttempt) || nextAttempt !== row.next_attempt && row.attempts < 1 || row.state !== 0 && row.state !== 1
         || !Number.isSafeInteger(row.expires) || row.expires !== payload.createdAt + LIFETIME) throw new Error("Invalid stored push delivery");
+      if (nextAttempt !== row.next_attempt) retryTimestamps.push({ rowid: row.retry_rowid, original: row.next_attempt, next: nextAttempt });
     }
     const foreign = db.query("PRAGMA foreign_key_check").get();
     if (foreign) throw new Error("Invalid push device relationship");
+    // Validate every device, delivery and relationship before changing any row.
+    if (retryTimestamps.length) db.transaction(() => {
+      const update = db.query("UPDATE deliveries SET next_attempt = ? WHERE rowid = ? AND next_attempt = ?");
+      for (const timestamp of retryTimestamps) {
+        if (update.run(timestamp.next, timestamp.rowid, timestamp.original).changes !== 1) throw new Error("Push retry timestamp changed");
+      }
+    }).immediate();
   }
 
   private subject(): string {
@@ -708,7 +721,7 @@ export class ChromePushService {
     this.db!.query("UPDATE deliveries SET state = 1 WHERE id = ?").run(id);
   }
   private backoff(attempt: number): number {
-    return Math.min(MAX_BACKOFF, 5000 * 2 ** (attempt - 1)) * (0.75 + Math.random() * 0.25);
+    return Math.ceil(Math.min(MAX_BACKOFF, 5000 * 2 ** (attempt - 1)) * (0.75 + Math.random() * 0.25));
   }
   private retryAfter(value: string | null): number {
     if (!value || value.length > 128) return 0;

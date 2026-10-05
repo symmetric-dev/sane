@@ -135,6 +135,8 @@ class ChromePush {
     if (error instanceof ApiError && error.status === 401) {
       this.suspend(); store.reconnect();
       this.update({ error: "Sign-in expired. Reconnect or sign in again to manage device notifications." });
+    } else if (error instanceof ApiError && error.status === 503) {
+      this.update({ error: `${action} Device notifications are unavailable on this bridge. Reconnect and retry when it is available.` });
     } else this.update({ permission: permission(), error: `${action} Check the bridge connection and notification permissions, then retry.` });
   }
   private finishMutation(current: () => boolean) {
@@ -152,7 +154,9 @@ class ChromePush {
       if (!config || typeof config.available !== "boolean" || config.storeId !== store.snapshot().config?.storeId
         || config.available && typeof config.publicKey !== "string") throw new Error("Invalid push configuration.");
       this.update({ config, ...(!config.available ? { enabled: false } : {}) });
-      if (!this.state.supported) return;
+      // Unavailable configs intentionally omit the key; that is not key rotation.
+      // Keep the browser subscription and binding untouched until recovery.
+      if (!config.available || !this.state.supported) return;
       const worker = await registration();
       if (!current()) return;
       const subscription = await worker.pushManager.getSubscription();
