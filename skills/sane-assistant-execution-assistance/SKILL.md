@@ -19,7 +19,7 @@ description: Use after Execution Pickup confirmation to coordinate jobs, reviews
 
 1. Present missing prerequisites to the user for direction.
 2. For a bounded production fix, start a Fixer with `sane_worker_start` (`worker: "fixer"`, `jobs` set to the affected job ids) with the findings, edit boundary, and non-test checks. Route test changes to the Tester at the checkpoint.
-3. Have the assigned worker reconcile affected Job Reports to the current outcome and validate them. Keep material evidence and accepted limitations in the existing sections; replace resolved findings rather than appending another attempt narrative.
+3. Have the assigned worker reconcile the Job Reports for its current, non-completed assignments to their implementation outcomes and validate them. Changes following a completed job belong to the subsequent job's report; do not rewrite predecessor reports merely to match later implementation. Keep material evidence and accepted limitations in the existing sections; replace resolved findings rather than appending another attempt narrative.
 4. After a checkpoint fix, have the Tester verify affected behavior and update the Test Report; ask the Reviewer to reassess the findings and checkpoint scope.
 
 ## Checkpoint Review and Commit
@@ -37,6 +37,8 @@ description: Use after Execution Pickup confirmation to coordinate jobs, reviews
 3. Check the returned edits and warnings. Route assignment gaps or contradictory recommendations through Planning Review and Corrections; factual enrichment keeps the assignment intact.
 
 ## Planning Review and Corrections
+
+**Never edit or request edits to completed Job Specs. Never recommend retrospective spec corrections merely to make earlier specifications match delivered implementation.** Job Reports supersede earlier specifications as evidence of the implemented outcome. Route findings to Planning for amendments to non-completed assignments or new jobs.
 
 1. After each accepted checkpoint, call `sane_handoff` (`requestId: "<my-readable-unique-id-01>"`, `to: "planning"`, `message: "<Job Reports, Test Report, reviewer findings, and upcoming jobs for reassessment>"`). Reference the evidence rather than restating it.
 2. End your turn while Planning reviews the evidence. On its reply, read amended documents and confirm the next assignment before starting the next checkpoint.

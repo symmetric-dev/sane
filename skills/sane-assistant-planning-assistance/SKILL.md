@@ -17,8 +17,9 @@ description: Use after Planning Pickup confirmation for Execution Plan and Job S
 ## Receiving Execution Feedback
 
 1. Retain the Execution qualified sender identity from `From:`. Read the referenced Job Reports, Test Report, and reviewer findings, and reassess upcoming Job Specs, Verification Specs, and checkpoint order.
-2. Update the affected Planning documents as authorized, including upcoming Job Specs' Operational Readiness when predecessor evidence changes a prerequisite. Flag reusable skill corrections for separate maintenance rather than silently refreshing skills here. Ask the user to decide matters outside the approved scope. Run `sane validate planning` after changes and `sane job --register` for added jobs.
-3. Reply using `sane_handoff` (`requestId: "<my-readable-unique-id-01>"`, `to: "execution"`, `target: <sender identity>`, `message: "<readiness and changed documents, or no change>"`).
+2. Update affected Planning documents within the authorized scope. Job Specs may be amended before or during implementation; coordinate amendments to active assignments with Execution. **Editing a Job Spec after its job is completed is forbidden, including its Context and Operational Readiness.** Subsequent revisions require new jobs or amendments to existing non-completed jobs. Flag reusable skill corrections for separate maintenance rather than silently refreshing skills here. Ask the user to decide matters outside the approved scope. Run `sane validate planning` after changes and `sane job --register` for added jobs.
+3. When a shared Solution Spec needs correction to support current or future assignments, coordinate the authorized correction with Engineering through the existing handoff procedure. After Engineering returns, update only affected non-completed Job Specs or author new jobs. Differences between completed assignments and revised Solution Specs do not require retrospective reconciliation.
+4. Reply using `sane_handoff` (`requestId: "<my-readable-unique-id-01>"`, `to: "execution"`, `target: <sender identity>`, `message: "<readiness and changed documents, or no change>"`).
 
 ## Requesting Support
 
