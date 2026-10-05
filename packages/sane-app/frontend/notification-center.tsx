@@ -159,6 +159,13 @@ export function NotificationCenter({ onOpen, className = "", size = 28 }: {
     // Keep focus on the destination selected by the shell, not the old drawer trigger.
     dismiss(false);
   };
+  const clearAll = () => {
+    const current = store.snapshot();
+    if (current.phase !== "ready" || !current.conversationsReady || !notificationStore.snapshot().unreadCount) return;
+    notificationStore.clearAll();
+    setNotice("Notifications cleared.");
+    panel.current?.querySelector<HTMLButtonElement>(".notification-center-close")?.focus({ preventScroll: true });
+  };
 
   return <>
     <button ref={trigger} type="button" className={`notification-center-trigger ${className}`} disabled={!available} data-unread={unread > 0 ? "true" : undefined} aria-label={`SANE notifications, ${unread} unread ${unread === 1 ? "session" : "sessions"}`} title={`Notifications · ${unread} unread`} aria-haspopup="dialog" aria-expanded={open} aria-controls={panelId} onClick={() => open ? dismiss() : show()} onKeyDown={event => {
@@ -171,7 +178,10 @@ export function NotificationCenter({ onOpen, className = "", size = 28 }: {
       {open && <>
         <div className="notification-center-header">
           <div><h2 id={headingId}>Notifications</h2><p>{unread} unread {unread === 1 ? "session" : "sessions"}</p></div>
-          <button type="button" className="notification-center-close" aria-label="Close notifications" onClick={() => dismiss()}><FiX aria-hidden="true" /></button>
+          <div className="notification-center-actions">
+            <button type="button" className="notification-center-clear" title="Clear all notifications" aria-label="Clear all notifications" disabled={!available || unread === 0} onClick={clearAll}>Clear all</button>
+            <button type="button" className="notification-center-close" aria-label="Close notifications" onClick={() => dismiss()}><FiX aria-hidden="true" /></button>
+          </div>
         </div>
         {notifications.storageError && <p className="notification-center-notice" role="status">{notifications.storageError}</p>}
         {notifications.feedError && <p className="notification-center-notice" role="status">{notifications.feedError}</p>}
@@ -199,7 +209,7 @@ export function NotificationCenter({ onOpen, className = "", size = 28 }: {
                 </span>
               </button>
             </li>;
-          })}</ul> : <p className="notification-center-empty">No session notifications yet.</p>}
+          })}</ul> : <p className="notification-center-empty">No unread notifications.</p>}
         </div>
       </>}
     </div>

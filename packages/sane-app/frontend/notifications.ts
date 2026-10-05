@@ -521,12 +521,11 @@ class NotificationStore {
       sources: Object.freeze([...new Set([...events.map(r => updateSourceKey(r.update.source)), ...legacy.map(r => r.identity)])]),
       ids: Object.freeze(events.map(r => r.update.id)), legacyIds: Object.freeze(legacy.map(legacyKey)) });
   };
-  acknowledgeCaptured = (capture: NotificationCapture | null): void => {
-    if (!capture || !this.current(capture.owner, capture.binding)) return;
+  private acknowledgeInMemory(capture: NotificationCapture | null, at: number): boolean {
+    if (!capture || !this.current(capture.owner, capture.binding)) return false;
     const c = this.catalog?.get(capture.conversationId), context = this.contexts.get(capture.conversationId);
     if (!c || !eligible(c) || !context || capture.contextKey !== context.key
-      || capture.contextKey !== notificationContextKey(c) || capture.contextRevision !== context.revision) return;
-    const at = Math.max(1, Date.now());
+      || capture.contextKey !== notificationContextKey(c) || capture.contextRevision !== context.revision) return false;
     for (const id of capture.ids) {
       const r = this.memory.events.get(id);
       if (r && r.update.conversationId === capture.conversationId && capture.sources.includes(updateSourceKey(r.update.source))
@@ -541,8 +540,28 @@ class NotificationStore {
         this.memory.legacy.reads.set(id, Math.max(at, this.memory.legacy.reads.get(id) ?? 0));
       }
     }
+    return true;
+  }
+  acknowledgeCaptured = (capture: NotificationCapture | null): void => {
+    if (!capture || !this.acknowledgeInMemory(capture, Math.max(1, Date.now()))) return;
     this.reconcile(this.memory);
     this.publish(); this.writeEvidence(capture.owner, capture.binding);
+  };
+  clearAll = (): void => {
+    const owner = this.scope, binding = this.binding;
+    if (owner === null || !this.state.unreadCount) return;
+    // Capture every exact occurrence behind the grouped rows before changing
+    // memory or queuing persistence. Later arrivals are never part of this read.
+    const captures = [...new Set(this.state.items.map(item => item.conversationId))]
+      .map(id => this.captureOpen(id)).filter((capture): capture is NotificationCapture => capture !== null);
+    const at = Math.max(1, Date.now());
+    let acknowledged = false;
+    for (const capture of captures) {
+      if (this.acknowledgeInMemory(capture, at)) acknowledged = true;
+    }
+    if (!acknowledged) return;
+    this.reconcile(this.memory);
+    this.publish(); this.writeEvidence(owner, binding);
   };
   markRead = (conversationId: string): void => this.acknowledgeCaptured(this.captureOpen(conversationId));
 }

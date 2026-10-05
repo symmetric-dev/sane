@@ -27,8 +27,11 @@
 .notification-center-header { display:flex; align-items:center; justify-content:space-between; gap:8px; flex-shrink:0; padding:7px 8px 10px; border-bottom:1px solid var(--border); }
 .notification-center-header h2 { margin:0; font-size:13px; font-weight:600; }
 .notification-center-header p { margin:3px 0 0; color:var(--muted-foreground); font-size:11px; }
+.notification-center-actions { display:flex; align-items:center; gap:4px; flex-shrink:0; }
+.notification-center-clear { min-width:32px; min-height:32px; padding:6px 8px; border:0; border-radius:4px; background:transparent; color:var(--foreground); font-size:11px; white-space:nowrap; cursor:pointer; }
+.notification-center-clear:disabled { opacity:.55; cursor:default; }
 .notification-center-close { display:flex; align-items:center; justify-content:center; flex-shrink:0; width:32px; height:32px; padding:7px; border:0; border-radius:4px; background:transparent; color:var(--foreground); }
-.notification-center-close:hover,.notification-center-entry:not(:disabled):hover { background:var(--accent); }
+.notification-center-close:hover,.notification-center-clear:not(:disabled):hover,.notification-center-entry:not(:disabled):hover { background:var(--accent); }
 .notification-center-list { min-height:0; overflow:auto; overflow-anchor:none; overscroll-behavior:contain; padding-top:4px; }
 .notification-center-list ul { list-style:none; margin:0; padding:0; }
 .notification-center-entry { display:flex; gap:8px; width:100%; padding:7px 8px; border:0; border-radius:4px; background:transparent; color:var(--foreground); text-align:left; font-size:13px; cursor:pointer; overflow-wrap:anywhere; }
