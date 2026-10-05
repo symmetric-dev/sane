@@ -25,6 +25,15 @@
   flex:0 1 auto;
 }
 
+.conversation-sidebar-unread {
+  display:inline-flex;
+  align-items:center;
+  flex-shrink:0;
+  margin-left:auto;
+  color:var(--primary);
+  pointer-events:none;
+}
+
 .conversation-sidebar-row .history-line.conversation-sidebar-workstream {
   display:block;
   margin-top:1px;

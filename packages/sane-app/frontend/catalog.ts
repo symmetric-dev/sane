@@ -1,6 +1,6 @@
 import type { CatalogResponse, NavigationBookmark, RegistrationResponse, WorkspaceRecord } from "../src/catalog-contract";
 import { WorkspaceError } from "./workspace-client";
-import { workspaceFailure } from "./workspace-store";
+import { workspaceEpoch, workspaceFailure } from "./workspace-store";
 
 const empty = (): NavigationBookmark => ({ revision: 0, workspaceId: null, worktreeId: null, conversationId: null, view: "chat", filePath: null, comparison: null });
 type CatalogState = { workspaces: WorkspaceRecord[]; navigation: NavigationBookmark; ready: boolean; loading: boolean; error: string };
@@ -63,13 +63,16 @@ class CatalogStore {
       if (epoch === this.epoch) this.update({ error: `Navigation was not saved. Your local selection is preserved. ${workspaceFailure(error)}` });
     } finally { if (epoch === this.epoch) { this.busy = false; if (this.pending) this.schedule(); } }
   }
-  open = async (cwd: string, canActivate: () => boolean = () => true) => {
-    const epoch = this.epoch, intent = ++this.intent, registration = ++this.registration;
+  open = async (cwd: string, canActivate: () => boolean = () => true, activate?: (result: RegistrationResponse) => boolean) => {
+    const epoch = this.epoch, intent = ++this.intent, registration = ++this.registration, auth = workspaceEpoch();
     try {
       const result = await request<RegistrationResponse>("/api/workspaces", { method: "POST", body: JSON.stringify({ cwd }) });
-      if (epoch !== this.epoch || registration !== this.registration) return false;
+      if (epoch !== this.epoch || registration !== this.registration || auth !== workspaceEpoch()) return false;
       this.update({ workspaces: [...this.state.workspaces.filter(w => w.workspaceId !== result.workspaceId), result.workspace], error: "" });
-      if (intent === this.intent && canActivate()) this.navigate({ workspaceId: result.workspaceId, worktreeId: result.worktreeId, filePath: null, comparison: null });
+      if (intent !== this.intent || !canActivate()) return false;
+      if (epoch !== this.epoch || registration !== this.registration || auth !== workspaceEpoch() || intent !== this.intent) return false;
+      if (activate) return activate(result);
+      this.navigate({ workspaceId: result.workspaceId, worktreeId: result.worktreeId, filePath: null, comparison: null });
       return true;
     } catch (error) { if (epoch === this.epoch && registration === this.registration) this.update({ error: workspaceFailure(error) }); return false; }
   };

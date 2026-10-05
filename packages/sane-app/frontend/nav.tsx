@@ -12,7 +12,7 @@ export function Icon({ name }: { name: "menu" | "plus" | "close" | "send" | "det
   return <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d={paths[name]} /></svg>;
 }
 
-export function Drawer({ title, children, close }: { title: string; children: ReactNode; close: () => void }) {
+export function Drawer({ title, children, close, bare = false }: { title: string; children: ReactNode; close: () => void; bare?: boolean }) {
   const ref = useRef<HTMLDialogElement>(null);
   const titleId = useId();
   useEffect(() => {
@@ -24,7 +24,7 @@ export function Drawer({ title, children, close }: { title: string; children: Re
       if (previous?.isConnected && !previous.closest("[hidden], [inert]")) previous.focus();
     };
   }, []);
-  return <dialog ref={ref} className="drawer" aria-modal="true" aria-labelledby={titleId} onCancel={event => { event.preventDefault(); close(); }} onClick={event => { if (event.target === event.currentTarget) close(); }}><div className="drawer-content"><header><h2 id={titleId}>{title}</h2><button type="button" className="icon-button" aria-label={`Close ${title.toLowerCase()}`} onClick={close}><Icon name="close" /></button></header>{children}</div></dialog>;
+  return <dialog ref={ref} className="drawer" aria-modal="true" aria-labelledby={titleId} onCancel={event => { event.preventDefault(); close(); }} onClick={event => { if (event.target === event.currentTarget) close(); }}><div className="drawer-content">{bare ? <h2 id={titleId} className="sr-only">{title}</h2> : <header><h2 id={titleId}>{title}</h2><button type="button" className="icon-button" aria-label={`Close ${title.toLowerCase()}`} onClick={close}><Icon name="close" /></button></header>}{children}</div></dialog>;
 }
 
 export type ViewGroup = "chat" | "files" | "settings";

@@ -3,7 +3,7 @@ import { CatalogSelector } from "./catalog-selector";
 import { Drawer, Icon, viewGroup } from "./nav";
 import type { ActiveView } from "./workspace-controller";
 import type { WorkspaceSelectionModel } from "./conversation-sidebar-model";
-import { PenroseTriangle } from "./penrose-triangle";
+import { NotificationCenter } from "./notification-center";
 
 type ShellProps = {
   view: ActiveView;
@@ -16,26 +16,27 @@ type ShellProps = {
   sidebarOpen: boolean;
   openSidebar: () => void;
   closeSidebar: () => void;
+  onOpenNotification?: (id: string) => boolean;
 };
 
 /** One sidebar composition for both desktop and the mobile drawer. */
-export function ShellSidebar({ children, retryCatalog, workspaceSelection }: { children: ReactNode; retryCatalog: () => void; workspaceSelection?: WorkspaceSelectionModel }) {
+export function ShellSidebar({ children, retryCatalog, workspaceSelection, onOpenNotification, onGo, close }: { children: ReactNode; retryCatalog: () => void; workspaceSelection?: WorkspaceSelectionModel; onOpenNotification: (id: string) => boolean; onGo?: () => void; close?: () => void }) {
   return <>
-    <div className="shell-sidebar-header"><PenroseTriangle size={28} className="shell-logo" /><CatalogSelector retry={retryCatalog} selection={workspaceSelection} /></div>
+    <div className="shell-sidebar-header"><NotificationCenter size={28} className="shell-logo" onOpen={onOpenNotification} /><CatalogSelector retry={retryCatalog} selection={workspaceSelection} onGo={onGo} />{close && <button type="button" className="icon-button" aria-label="Close workspace navigation" onClick={close}><Icon name="close" /></button>}</div>
     <div className="sidebar-body">{children}</div>
   </>;
 }
 
 /** Feature providers and their state owners remain above these layout regions. */
-export function WorkspaceShell({ view, sidebar, header, notices, children, retryCatalog, workspaceSelection, sidebarOpen, openSidebar, closeSidebar }: ShellProps) {
+export function WorkspaceShell({ view, sidebar, header, notices, children, retryCatalog, workspaceSelection, sidebarOpen, openSidebar, closeSidebar, onOpenNotification = () => false }: ShellProps) {
   const group = viewGroup(view);
   return <div className={`app-shell view-${view} group-${group}`}>
-    <aside className="sidebar" aria-label="Workspace sidebar"><ShellSidebar retryCatalog={retryCatalog} workspaceSelection={workspaceSelection}>{sidebar}</ShellSidebar></aside>
+    <aside className="sidebar" aria-label="Workspace sidebar"><ShellSidebar retryCatalog={retryCatalog} workspaceSelection={workspaceSelection} onOpenNotification={onOpenNotification} onGo={closeSidebar}>{sidebar}</ShellSidebar></aside>
     <main className="main">
-      <header className="topbar"><button type="button" className="icon-button mobile-menu" aria-label="Open workspace navigation" aria-haspopup="dialog" onClick={openSidebar}><Icon name="menu" /></button>{header}</header>
+      <header className="topbar"><button type="button" className="icon-button mobile-menu" aria-label="Open workspace navigation" aria-haspopup="dialog" onClick={openSidebar}><Icon name="menu" /></button><NotificationCenter size={24} className="mobile-shell-logo" onOpen={onOpenNotification} />{header}</header>
       {notices}
       {children}
     </main>
-    {sidebarOpen && <Drawer title={group === "files" ? "Files" : group === "settings" ? "Settings" : "Conversations"} close={closeSidebar}><ShellSidebar retryCatalog={retryCatalog} workspaceSelection={workspaceSelection}>{sidebar}</ShellSidebar></Drawer>}
+    {sidebarOpen && <Drawer title={group === "files" ? "Files" : group === "settings" ? "Settings" : "Conversations"} bare close={closeSidebar}><ShellSidebar retryCatalog={retryCatalog} workspaceSelection={workspaceSelection} onOpenNotification={onOpenNotification} onGo={closeSidebar} close={closeSidebar}>{sidebar}</ShellSidebar></Drawer>}
   </div>;
 }

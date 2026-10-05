@@ -18,6 +18,7 @@ import { ConversationCache, cloneRunForConsume, conversationKey } from "./conver
 import { canonicalCount, equalValue, mergePage, pageMessages, pagedUsage, refreshPages, sameRunMetadata, TranscriptCoverageError, type PagedTranscript, type PageRequest } from "./transcript-pages";
 import type { TranscriptMetadataItem, TranscriptPage } from "../src/transcript-contract";
 import { capabilitiesFor, getHarnessDescriptor, type HarnessCapabilities } from "../shared/conversation/harness-capabilities";
+import { notificationStore } from "./notifications";
 
 /** Composer draft. New conversations pick `profileId` ("" = profiles.defaultId);
  * selected Base conversations may stage `upgradeId` (assistant profile, same harness). */
@@ -25,7 +26,7 @@ export type Draft = { text: string; cwd: string; profileId: string; upgradeId: s
 export type SendOutcome = { status: "accepted"; conversationId: string; runId: string } | { status: "queued"; conversationId: string; requestId: string } | { status: "blocked" | "rejected" | "unknown" };
 export type PendingCompact = { payload: CompactRequest; phase: "sending" | "unconfirmed" | "accepted" | "rejected"; runId?: string };
 export type State = {
-  phase: "connecting" | "login" | "ready"; config?: Config; conversations: Conversation[];
+  phase: "connecting" | "login" | "ready"; config?: Config; conversations: Conversation[]; conversationsReady: boolean;
   selected: string; runs: Run[]; messages: Message[]; drafts: Record<string, Draft>;
   connected: boolean; loading: boolean; sending: boolean; availability: Availability;
   connectionError: string; submissionError: string; authError: string;
@@ -205,7 +206,7 @@ export class ChatStore {
     this.update({ actionBusy: true, interactionError: "", actionNotice: "" });
     return () => selection === this.selectionEpoch && auth === this.authEpoch && operation === this.actionSerial;
   }
-  state: State = { phase: "connecting", conversations: [], selected: "", runs: [], messages: [], drafts: {}, connected: false, loading: true, sending: false, availability: { canSend: false }, connectionError: "", submissionError: "", authError: "", models: [], modelsLoading: false, modelsError: "", modelsLoaded: false, modelsCwd: "", interactions: [], interactionError: "", actionBusy: false, actionNotice: "", profiles: null, profileError: "", profileBusy: false };
+  state: State = { phase: "connecting", conversations: [], conversationsReady: false, selected: "", runs: [], messages: [], drafts: {}, connected: false, loading: true, sending: false, availability: { canSend: false }, connectionError: "", submissionError: "", authError: "", models: [], modelsLoading: false, modelsError: "", modelsLoaded: false, modelsCwd: "", interactions: [], interactionError: "", actionBusy: false, actionNotice: "", profiles: null, profileError: "", profileBusy: false };
   constructor(private client: ConversationClient) { this.state = { ...this.state, transcriptPaged: this.paged }; onWorkspaceAuthExpired(() => this.loginRequired()); }
   subscribe = (listener: () => void) => { this.listeners.add(listener); return () => { this.listeners.delete(listener); }; };
   snapshot = () => this.state;
@@ -560,13 +561,14 @@ export class ChatStore {
     if (this.paged) this.update({ pageBusy: "", transcriptRefreshing: false });
   }
   private loginRequired() {
+    notificationStore.suspend();
     this.stop(); this.authEpoch++; this.clearCachedHistory();
     catalog.invalidate(); invalidateWorkspaceRequests();
     clearWorkstreamSelection();
     clearWorkstreamMembership();
     this.replied.clear();
     this.update({ pendingCompacts: {}, compactState: null, compactions: [], compactDialog: "", compactError: "", compactInstructions: {} });
-    this.update({ phase: "login", config: undefined, conversations: [], runs: [], messages: [], pendingTurn: null, nativeHistory: null, contextUsage: null, connected: false, loading: false, sending: false, availability: { canSend: false }, connectionError: "", submissionError: "", models: [], modelsLoading: false, modelsLoaded: false, modelsError: "", modelsCwd: "", interactions: [], interactionError: "", actionBusy: false, actionNotice: "", profiles: null, profileError: "", profileBusy: false });
+    this.update({ phase: "login", config: undefined, conversations: [], conversationsReady: false, runs: [], messages: [], pendingTurn: null, nativeHistory: null, contextUsage: null, connected: false, loading: false, sending: false, availability: { canSend: false }, connectionError: "", submissionError: "", models: [], modelsLoading: false, modelsLoaded: false, modelsError: "", modelsCwd: "", interactions: [], interactionError: "", actionBusy: false, actionNotice: "", profiles: null, profileError: "", profileBusy: false });
   }
   private expired(error: unknown) { if (error instanceof ApiError && error.status === 401) { this.loginRequired(); return true; } return false; }
   start = () => { if (this.started) return; this.started = true; void this.boot(); };
@@ -579,6 +581,7 @@ export class ChatStore {
       const config = await this.client.config(controller.signal);
       if (generation !== this.generation || auth !== this.authEpoch) return;
       if (config.authRequired && !config.authenticated) { this.loginRequired(); return; }
+      notificationStore.activate(config.storeId ?? config.cwd ?? "default");
       this.update({ config, phase: "ready", authError: "", connectionError: "", ...(config.agentProfiles ? { profiles: config.agentProfiles } : {}) });
       if (!config.agentProfiles) void this.refreshProfiles();
       void this.poll();
@@ -589,26 +592,30 @@ export class ChatStore {
     } finally { clearTimeout(deadline); }
   }
   login = async (password: string) => {
+    notificationStore.suspend();
     this.stop(); const auth = ++this.authEpoch;
     this.clearCachedHistory();
-    this.update({ authError: "", runs: [], messages: [], pendingTurn: null, nativeHistory: null, contextUsage: null, compactState: null, compactions: [], interactions: [], interactionError: "", actionBusy: false, actionNotice: "", connected: false, availability: { canSend: false } });
+    this.update({ authError: "", conversationsReady: false, runs: [], messages: [], pendingTurn: null, nativeHistory: null, contextUsage: null, compactState: null, compactions: [], interactions: [], interactionError: "", actionBusy: false, actionNotice: "", connected: false, availability: { canSend: false } });
     try { await this.client.login(password); if (auth !== this.authEpoch) return; this.update({ phase: "connecting" }); await this.boot(); }
     catch (error) { if (auth === this.authEpoch) this.update({ authError: error instanceof Error ? error.message : "Sign-in failed." }); }
   };
   logout = async () => {
+    notificationStore.suspend();
     this.stop(); const auth = ++this.authEpoch;
     // Even an ambiguous logout must not retain authenticated transcript snapshots.
     this.clearCachedHistory(); this.replied.clear();
-    this.update({ runs: [], messages: [], pendingTurn: null, nativeHistory: null, contextUsage: null, compactState: null, compactions: [], compactDialog: "", interactions: [], interactionError: "", actionBusy: false, actionNotice: "", connected: false, loading: true, availability: { canSend: false } });
+    this.update({ conversationsReady: false, runs: [], messages: [], pendingTurn: null, nativeHistory: null, contextUsage: null, compactState: null, compactions: [], compactDialog: "", interactions: [], interactionError: "", actionBusy: false, actionNotice: "", connected: false, loading: true, availability: { canSend: false } });
     catalog.invalidate(); invalidateWorkspaceRequests();
     clearWorkstreamSelection();
     clearWorkstreamMembership();
     try { await this.client.logout(); if (auth === this.authEpoch) this.loginRequired(); }
-    catch (error) { if (auth !== this.authEpoch || this.expired(error)) return; this.update({ submissionError: `Sign-out failed: ${error instanceof Error ? error.message : "connection error"}` }); void this.poll(); }
+    catch (error) { if (auth !== this.authEpoch || this.expired(error)) return; this.update({ submissionError: `Sign-out failed: ${error instanceof Error ? error.message : "connection error"}` }); void this.boot(); }
   };
   openConversation = (id: string) => {
     if (this.state.sending) return;
     const conversation = this.state.conversations.find(c => c.id === id);
+    if (id && !conversation) return;
+    if (conversation && this.state.phase === "ready") notificationStore.markRead(id);
     this.choose(id);
     catalog.navigate({ conversationId: id || null, view: "chat", ...(conversation ? { workspaceId: conversation.workspaceId ?? null, worktreeId: conversation.worktreeId ?? null, filePath: null, comparison: null } : {}) });
   };
@@ -786,6 +793,9 @@ export class ChatStore {
       const listing = await this.client.conversations(controller.signal);
       if (!current()) return;
       controller.signal.throwIfAborted();
+      if (!Array.isArray(listing.conversations) || listing.conversations.some(conversation => !conversation || typeof conversation.id !== "string" || !conversation.id)) throw new Error("Invalid conversation listing.");
+      notificationStore.observe(listing.conversations);
+      if (!current()) return;
       this.conversationCache.prune(listing.conversations);
       registerWorkerSessions(listing.conversations);
       const currentConversation = listing.conversations.find(c => c.id === selected);
@@ -798,12 +808,18 @@ export class ChatStore {
         this.stop();
         const pendingCompacts = { ...this.state.pendingCompacts }, compactInstructions = { ...this.state.compactInstructions };
         delete pendingCompacts[selected]; delete compactInstructions[selected];
-        this.update({ conversations: listing.conversations, runs: [], messages: [], pendingTurn: null, nativeHistory: null, contextUsage: null, compactState: null, compactions: [], compactDialog: "", compactError: "", pendingCompacts, compactInstructions, interactions: [], interactionError: "", actionBusy: false, actionNotice: "", availability: { canSend: false }, connected: false, loading: !!currentConversation, connectionError: currentConversation ? "" : "Conversation is no longer available. History will reconnect automatically." });
+        this.update({ conversations: listing.conversations, conversationsReady: true, runs: [], messages: [], pendingTurn: null, nativeHistory: null, contextUsage: null, compactState: null, compactions: [], compactDialog: "", compactError: "", pendingCompacts, compactInstructions, interactions: [], interactionError: "", actionBusy: false, actionNotice: "", availability: { canSend: false }, connected: false, loading: !!currentConversation, connectionError: currentConversation ? "" : "Conversation is no longer available. History will reconnect automatically." });
         // Restart with a fresh action/selection fence and the new identity.
         if (currentConversation) void this.poll();
         else this.timer = setTimeout(() => void this.poll(), 5000);
         return;
       }
+      const conversations = listing.conversations.map(conversation => {
+        const title = this.state.conversations.find(previous => previous.id === conversation.id)?.title;
+        return !conversation.title && title ? { ...conversation, title } : conversation;
+      });
+      this.update({ conversations: equalValue(this.state.conversations, conversations) ? this.state.conversations : conversations, conversationsReady: true });
+      if (!current()) return;
       if (this.paged) { await this.pollPaged(listing, current, controller.signal); return; }
       // Safe GET also notices reconciliation by another view/client. Reuse the
       // snapshot identity when the backend refresh timestamp has not changed.
@@ -860,16 +876,16 @@ export class ChatStore {
       // Backend titles win (persisted first prompt or handoff `<Role> #<n>`).
       // Otherwise the open conversation derives from its transcript and other
       // rows keep their previous derived value until the backend backfills.
-      const conversations = listing.conversations.map(c => {
+      const titledConversations = listing.conversations.map(c => {
         if (c.title) return c;
         if (c.id === selected && title?.type === "text") return { ...c, title: title.text };
         const old = this.state.conversations.find(prev => prev.id === c.id)?.title;
         return old ? { ...c, title: old } : c;
       });
-      const branchDraft = conversations.find(c => c.id === selected)?.branchDraft;
+      const branchDraft = titledConversations.find(c => c.id === selected)?.branchDraft;
       const awaitingCompact = this.compactInFlight.has(selected);
-      const availability = awaitingCompact ? { canSend: false } : conversations.find(c => c.id === selected)?.availability ?? listing.availability;
-      const conversation = conversations.find(c => c.id === selected);
+      const availability = awaitingCompact ? { canSend: false } : titledConversations.find(c => c.id === selected)?.availability ?? listing.availability;
+      const conversation = titledConversations.find(c => c.id === selected);
       const models = this.state.modelsLoaded && !this.state.modelsError && this.state.modelsCwd === conversation?.cwd ? this.state.models : [];
       let compactState = this.state.compactState, compactError = this.state.compactError;
       if (selected && this.supportedCapabilities(conversation?.harness).compaction && this.client.compactState) {
@@ -899,7 +915,7 @@ export class ChatStore {
       const quiet = prev.connected && !prev.loading && !prev.connectionError &&
         prev.pendingTurn === pendingTurn &&
         prev.nativeHistory === nativeHistory &&
-        JSON.stringify(prev.conversations) === JSON.stringify(conversations) &&
+        JSON.stringify(prev.conversations) === JSON.stringify(titledConversations) &&
         JSON.stringify(prev.availability) === JSON.stringify(availability) &&
         JSON.stringify(prev.contextUsage) === JSON.stringify(contextUsage) &&
         JSON.stringify(prev.compactState) === JSON.stringify(compactState) && JSON.stringify(prev.compactions) === JSON.stringify(compactions) && prev.compactError === compactError && prev.pendingCompacts === pendingCompacts &&
@@ -908,7 +924,7 @@ export class ChatStore {
       this.runMap = runMap;
       this.transcriptKey = conversation ? conversationKey(conversation) : "";
       this.cacheable = !!conversation && this.nativeHistoryLoaded && !awaitingCompact;
-      if (!quiet) this.update({ ...listing, availability, nativeHistory, contextUsage, compactState, compactions, compactError, pendingCompacts, conversations, runs, messages, pendingTurn, connected: !awaitingCompact, loading: awaitingCompact, connectionError: "" });
+      if (!quiet) this.update({ ...listing, availability, nativeHistory, contextUsage, compactState, compactions, compactError, pendingCompacts, conversations: titledConversations, runs, messages, pendingTurn, connected: !awaitingCompact, loading: awaitingCompact, connectionError: "" });
       if (!current()) return;
       if (branchDraft && !runs.some(run => run.operation !== "compact") && !this.state.drafts[this.draftKey(selected)]) this.setDraft({ text: branchDraft }, selected);
       if (!current()) return;
@@ -975,6 +991,10 @@ export class ChatStore {
         void this.poll();
         return { status: "queued", conversationId: result.conversationId, requestId: result.receipt.requestId };
       }
+      // A successful prompt receipt is trusted run evidence for both existing
+      // and new conversations. The notification store binds it to the actual
+      // native identity from a subsequent listing, never a placeholder.
+      notificationStore.acceptRun(result.conversationId, result.runId);
       if (selected && profileId) this.setDraft({ upgradeId: "" }, selected);
       if (!selected) {
         const nextDraft = this.state.drafts[draftKey] ?? { ...draft, text: "" };

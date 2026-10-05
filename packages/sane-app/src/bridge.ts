@@ -16,6 +16,7 @@ import type { CompactEligibility, CompactRequest, CompactResponse } from "./oc-c
 import { OpenCodeAdapter, OpenCodeError } from "./opencode";
 import { OpenCodeRunService, type FrameworkDelivery } from "./opencode-run-service";
 import { OpenCodeObservationService } from "./opencode-observation-service";
+import { conversationRecency } from "./conversation-recency";
 import type { RunOwner as Owner } from "./run-owner";
 import { WorkspaceService, WorkspaceError, workspaceError } from "./workspace";
 import { CatalogService } from "./catalog";
@@ -1235,7 +1236,7 @@ async function startOwned(options: Options, assetsDir: string, packageDir: strin
       if (expected instanceof Response) return expected;
       if (path === "/api/config" && req.method === "GET") {
         const signedIn = auth.authenticated(req);
-        return json({ authRequired: !!password, authenticated: signedIn, cwd: signedIn ? options.cwd : null, oneShot: true, ...(signedIn ? { capabilities: { concurrency: { scope: "conversation", limit: maxConcurrentRuns, perConversation: 1, sharedCheckoutWrites: true }, cancelRun: true, midRunInput: false, permissionReplies: true, attachments: false, modelSelection: true, effortValues: efforts, terminal: terminals.capability }, agents: ASSISTANT_AGENT_IDS.map(id => ({ id, label: ASSISTANT_AGENT_LABELS[id], description: ASSISTANT_AGENT_DESCRIPTIONS[id] })), agentProfiles, harnesses: [
+        return json({ authRequired: !!password, authenticated: signedIn, cwd: signedIn ? options.cwd : null, oneShot: true, ...(signedIn ? { storeId: store.manifest.storeId, capabilities: { concurrency: { scope: "conversation", limit: maxConcurrentRuns, perConversation: 1, sharedCheckoutWrites: true }, cancelRun: true, midRunInput: false, permissionReplies: true, attachments: false, modelSelection: true, effortValues: efforts, terminal: terminals.capability }, agents: ASSISTANT_AGENT_IDS.map(id => ({ id, label: ASSISTANT_AGENT_LABELS[id], description: ASSISTANT_AGENT_DESCRIPTIONS[id] })), agentProfiles, harnesses: [
           { id: "claude-code", name: getHarnessDescriptor("claude-code")!.label, available: true, connected: true, state: "available", capabilities: capabilitiesFor("claude-code") },
           { id: "opencode", name: getHarnessDescriptor("opencode")!.label, ...await oc.connection(options.cwd), capabilities: capabilitiesFor("opencode") },
         ] } : {}) });
@@ -1568,7 +1569,14 @@ async function startOwned(options: Options, assetsDir: string, packageDir: strin
         // Recovery never auto-sends a reserved prompt. Offer it as a composer
         // draft only while no first prompt run (including failed submissions) exists.
         const branchDrafts = new Map(branches.list().filter(op => op.state === "completed" && op.firstMessage && !op.firstRunId && !meta.runs.some(run => run.sessionId === op.destinationId && run.operation !== "compact")).map(op => [op.destinationId, op.firstMessage]));
-        return json({ sessions: meta.sessions.map(s => ({ ...s, branchDraft: branchDrafts.get(s.sessionId), branchOrigin: branches.list().find(op => op.destinationId === s.sessionId && op.state !== "failed")?.sourceId, replacedBy: branches.replaced(s.sessionId)?.destinationId, ...(branches.replaced(s.sessionId) ? { hidden: true } : {}), ...(workerSessions.has(s.sessionId) ? { worker: workerSessions.get(s.sessionId) } : {}), directWorkerCount: workerCounts.get(s.sessionId) ?? 0, profileId: sessionProfileId(s), title: displayTitle(s), admission: admissions.get(s.sessionId), ...catalog.association(s.sessionId), availability: availability(s.sessionId, true, false, false, "user"), ...nativeState(s), ...(s.harness === "claude-code" ? { queuedFollowups: projectClaudeFollowups(s.sessionId, meta.runs, id => events.get(id) ?? [], id => claudeRuns.followupPending(id)) } : {}) })), admissions: admissions.list(), availability: availability() });
+        const updatedAt = conversationRecency(meta.runs, events);
+        const runsById = new Map(meta.runs.map(run => [run.runId, run]));
+        const lastRunMetadata = (session: Session) => {
+          const run = session.lastRunId ? runsById.get(session.lastRunId) : undefined;
+          // Lifecycle notifications use the App-owned run, never projected native idleness/activity.
+          return run?.sessionId === session.sessionId ? { lastRunStatus: run.status, lastRunOperation: run.operation ?? "prompt", lastRunEndedAt: run.endedAt } : {};
+        };
+        return json({ sessions: meta.sessions.map(s => ({ ...s, ...lastRunMetadata(s), updatedAt: updatedAt.get(s.sessionId) ?? null, branchDraft: branchDrafts.get(s.sessionId), branchOrigin: branches.list().find(op => op.destinationId === s.sessionId && op.state !== "failed")?.sourceId, replacedBy: branches.replaced(s.sessionId)?.destinationId, ...(branches.replaced(s.sessionId) ? { hidden: true } : {}), ...(workerSessions.has(s.sessionId) ? { worker: workerSessions.get(s.sessionId) } : {}), directWorkerCount: workerCounts.get(s.sessionId) ?? 0, profileId: sessionProfileId(s), title: displayTitle(s), admission: admissions.get(s.sessionId), ...catalog.association(s.sessionId), availability: availability(s.sessionId, true, false, false, "user"), ...nativeState(s), ...(s.harness === "claude-code" ? { queuedFollowups: projectClaudeFollowups(s.sessionId, meta.runs, id => events.get(id) ?? [], id => claudeRuns.followupPending(id)) } : {}) })), admissions: admissions.list(), availability: availability() });
       }
       const branchRoute = /^\/api\/sessions\/([^/]+)\/branch$/.exec(path);
       if (branchRoute) {

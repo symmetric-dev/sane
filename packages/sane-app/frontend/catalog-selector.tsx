@@ -1,5 +1,5 @@
-import { useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
-import { FiCheck, FiChevronDown, FiFolder, FiGitBranch } from "react-icons/fi";
+import { useEffect, useId, useMemo, useRef, useState, useSyncExternalStore } from "react";
+import { FiArrowRight, FiCheck, FiChevronDown, FiFolder, FiGitBranch } from "react-icons/fi";
 import type { WorktreeRecord } from "../src/catalog-contract";
 import { catalog } from "./catalog";
 import { useStore } from "./store";
@@ -24,7 +24,7 @@ export const worktreeDisplay = (worktree: WorktreeRecord): string => {
   return alias || worktreeShort(worktree);
 };
 
-export function CatalogSelector({ retry, selection }: { retry: () => void; selection?: WorkspaceSelectionModel }) {
+export function CatalogSelector({ retry, selection, onGo }: { retry: () => void; selection?: WorkspaceSelectionModel; onGo?: () => void }) {
   const state = useSyncExternalStore(catalog.subscribe, catalog.snapshot);
   const chatCwd = useStore(s => s.config?.cwd ?? "");
   const [panel, setPanel] = useState<"context" | "directory" | null>(null);
@@ -32,13 +32,20 @@ export function CatalogSelector({ retry, selection }: { retry: () => void; selec
   const [aliasDraft, setAliasDraft] = useState(""), [aliasBusy, setAliasBusy] = useState(false);
   const [selectionMode, setSelectionMode] = useState<"worktree" | "workstream">("workstream");
   const [streamSearch, setStreamSearch] = useState("");
+  const [detailsOpen, setDetailsOpen] = useState(false);
+  const [mobile, setMobile] = useState(() => window.matchMedia("(max-width:700px)").matches);
+  const detailsId = useId();
   const dialogIntent = useRef(0);
   const container = useRef<HTMLDivElement>(null);
+  const workspaceChoices = useRef<HTMLElement>(null);
+  const workspaceSearch = useRef<HTMLInputElement>(null);
+  const selectionRef = useRef(selection);
+  selectionRef.current = selection;
   const { navigation } = state;
   const workspace = state.workspaces.find(w => w.workspaceId === navigation.workspaceId);
   const worktree = workspace?.worktrees.find(w => w.worktreeId === navigation.worktreeId);
   const close = () => { dialogIntent.current++; setPanel(null); };
-  const show = () => { dialogIntent.current++; setSearch(""); setStreamSearch(""); setSelectionMode("workstream"); setFeedback(""); setPanel("context"); };
+  const show = () => { dialogIntent.current++; setSearch(""); setStreamSearch(""); setSelectionMode("workstream"); setDetailsOpen(false); setFeedback(""); setPanel("context"); };
   const onOpenChange = selection?.setOpen;
   useEffect(() => {
     if (!panel) return;
@@ -57,20 +64,39 @@ export function CatalogSelector({ retry, selection }: { retry: () => void; selec
   }), [panel]));
   useEffect(() => { setAliasDraft(worktree?.alias ?? ""); }, [workspace?.workspaceId, worktree?.worktreeId, worktree?.alias, panel]);
   useEffect(() => { setStreamSearch(""); }, [navigation.workspaceId]);
+  useEffect(() => { setDetailsOpen(false); }, [navigation.workspaceId]);
+  useEffect(() => {
+    if (panel === "context") {
+      setDetailsOpen(false);
+      (mobile ? workspaceChoices.current : workspaceSearch.current)?.focus();
+    }
+  }, [panel, mobile]);
+  useEffect(() => {
+    const query = window.matchMedia("(max-width:700px)");
+    const update = () => setMobile(query.matches);
+    query.addEventListener("change", update);
+    return () => query.removeEventListener("change", update);
+  }, []);
   useEffect(() => { setFeedback(""); }, [navigation.workspaceId, navigation.worktreeId]);
   const mode = workspace?.kind === "repository" && selection ? selectionMode : "worktree";
-  const locked = busy || aliasBusy;
+  const locked = busy || aliasBusy || !!selection?.blocked;
   const currentIntent = (intent: number, workspaceId: string, worktreeId?: string) => {
     const nav = catalog.snapshot().navigation;
     return intent === dialogIntent.current && nav.workspaceId === workspaceId && (!worktreeId || nav.worktreeId === worktreeId);
   };
   const chooseWorkspace = (workspaceId: string) => {
+    if (locked) return;
     if (selection) selection.selectWorkspace(workspaceId);
     else {
       const target = state.workspaces.find(w => w.workspaceId === workspaceId);
       if (target && workspaceId !== navigation.workspaceId) catalog.navigate({ workspaceId, worktreeId: target.worktrees.find(t => t.state === "available")?.worktreeId ?? target.worktrees[0]?.worktreeId ?? null, filePath: null, comparison: null });
     }
     setFeedback("");
+  };
+  const goWorkspace = (workspaceId: string) => {
+    if (locked || !selection?.goWorkspace(workspaceId)) return;
+    close();
+    onGo?.();
   };
   const chooseWorktree = (worktreeId: string) => {
     if (selection) selection.selectWorktree(worktreeId);
@@ -121,38 +147,46 @@ export function CatalogSelector({ retry, selection }: { retry: () => void; selec
   </section>;
   const notices = <>
     {feedback && <p className="context-feedback" role="status">{feedback}</p>}
+    {selection?.selectionError && <p className="notice error" role="alert">{selection.selectionError}</p>}
     {state.error && <p className="notice error" role="status">{state.error}{!state.ready && <button type="button" onClick={retry}>Retry</button>}</p>}
+    {panel === "context" && workspace?.kind === "repository" && selection?.loading && <p className="muted" role="status">Loading workstreams…</p>}
+    {panel === "context" && workspace?.kind === "repository" && selection?.error && <p className="notice error" role="status">Workstreams could not refresh. {selection.error} Retrying automatically.</p>}
   </>;
   return <div className="context-switcher" ref={container}>
     <button type="button" className="workspace-opener" aria-haspopup="dialog" aria-label={openerAria} aria-keyshortcuts={navigationKeyShortcuts("ArrowDown")} title={[openerTitle, `Toggle workspace selection (${shortcutHint(WORKSPACE_SELECTOR_SHORTCUT)})`].filter(Boolean).join(" · ")} onClick={show}><span className="workspace-opener-label"><span className="workspace-opener-title">{openerLabel}</span>{workspace && <span className="workspace-opener-checkout">{display ?? "Choose worktree"}</span>}</span><FiChevronDown size={13} aria-hidden="true" /></button>
-    {panel && <ShellDialog title={panel === "directory" ? "Open directory" : "Workspace"} bare={panel === "context"} className={panel === "context" ? "workspace-context-dialog" : ""} close={close}>
-      {panel === "directory" ? <form className="open-directory" onSubmit={async event => {
+    {panel && <ShellDialog title={panel === "directory" ? "Open directory" : "Workspace"} bare={panel === "context"} className={panel === "context" ? "workspace-context-dialog" : ""} initialFocus={panel === "context" ? () => mobile ? workspaceChoices.current : workspaceSearch.current : undefined} close={close}>
+      {panel === "directory" ? <form className="open-directory" aria-busy={busy} onSubmit={async event => {
         event.preventDefault();
         if (locked || !cwd.trim()) return;
         const intent = dialogIntent.current;
         setBusy(true);
-        const opened = await catalog.open(cwd.trim(), () => intent === dialogIntent.current);
+        const opened = await catalog.open(cwd.trim(), () => intent === dialogIntent.current && !selectionRef.current?.blocked, selection ? result => selectionRef.current?.selectWorkspace(result.workspaceId, result.worktreeId) ?? false : undefined);
         setBusy(false);
         if (opened && intent === dialogIntent.current) {
-          const worktreeId = catalog.snapshot().navigation.worktreeId;
-          if (worktreeId) selection?.selectWorktree(worktreeId);
           close();
         }
       }}><label>Directory path<input autoFocus required value={cwd} placeholder="/absolute/path/to/project" onChange={event => setCwd(event.target.value)} /></label><p className="muted">Open a local repository or folder. Repositories include their main and linked worktrees; other folders open as directory workspaces.</p><div className="dialog-actions"><button type="button" disabled={locked} onClick={() => { dialogIntent.current++; setPanel("context"); }}>Back</button><button type="submit" disabled={locked || !cwd.trim()}>{busy ? "Opening…" : "Open directory"}</button></div></form> : <>
+        <div className="workspace-context-heading">
+          <div>{workspace && <><h3>{workspace.name}</h3><p className="muted">{workspace.kind === "repository" ? "Repository workspace" : "Directory workspace"}</p></>}</div>
+          <button type="button" className="icon-button" aria-label="Close workspace" onClick={close}>×</button>
+        </div>
+        <div className="workspace-context-panel">
         <aside className="workspace-context-sidebar" aria-label="Workspace selection">
-          <label className="workspace-search"><span className="sr-only">Search workspace names and paths</span><input autoFocus value={search} onChange={event => setSearch(event.target.value)} placeholder="Search workspaces…" /></label>
-          <nav className="workspace-choices" aria-label="Existing workspaces">{workspaces.map(w => <button type="button" key={w.workspaceId} aria-current={w.workspaceId === navigation.workspaceId ? "true" : undefined} disabled={locked} onClick={() => chooseWorkspace(w.workspaceId)} title={w.worktrees[0]?.root}>
+          <label className="workspace-search"><span className="sr-only">Search workspace names and paths</span><input ref={workspaceSearch} autoFocus={!mobile} value={search} onChange={event => setSearch(event.target.value)} placeholder="Search workspaces…" /></label>
+          <nav ref={workspaceChoices} tabIndex={-1} className="workspace-choices" aria-label="Existing workspaces" aria-busy={state.loading}>{workspaces.map(w => <div className="workspace-choice-row" key={w.workspaceId}>
+            <button type="button" className="workspace-choice-select" aria-current={w.workspaceId === navigation.workspaceId ? "true" : undefined} disabled={locked} onClick={() => chooseWorkspace(w.workspaceId)} title={w.worktrees[0]?.root}>
             <span className="workspace-choice-heading"><FiFolder size={14} aria-hidden="true" /><span>{w.name}</span>{w.workspaceId === navigation.workspaceId && <FiCheck size={14} aria-hidden="true" />}</span>
             <small>{w.worktrees[0]?.root || "Unavailable directory"}</small>
-          </button>)}{!workspaces.length && <p className="muted">{state.loading ? "Loading workspaces…" : search ? "No matching workspaces." : "No workspaces yet."}</p>}</nav>
+            </button>
+            {selection && <button type="button" className="workspace-choice-go" aria-label={`Open ${w.name} in Chat`} title={`Open ${w.name} in Chat`} disabled={locked || !w.worktrees.length} onClick={() => goWorkspace(w.workspaceId)}><FiArrowRight size={18} aria-hidden="true" /></button>}
+          </div>)}{state.loading && <p className="muted" role="status">Loading workspaces…</p>}{!state.loading && !workspaces.length && <p className="muted" role="status">{search ? "No matching workspaces." : "No workspaces yet."}</p>}</nav>
           <button type="button" className="secondary-directory" disabled={locked} onClick={() => { setCwd(worktree?.root || chatCwd || ""); setPanel("directory"); }}>Open directory…</button>
         </aside>
         <div className="workspace-context-detail">
-          <div className="workspace-context-heading">
-            <div>{workspace && <><h3>{workspace.name}</h3><p className="muted">{workspace.kind === "repository" ? "Repository workspace" : "Directory workspace"}</p></>}</div>
-            <button type="button" className="icon-button" aria-label="Close workspace" onClick={close}>×</button>
-          </div>
+          {notices}
           {workspace ? <>
+            {mobile && <button type="button" className="context-detail-toggle" aria-expanded={detailsOpen} aria-controls={detailsId} onClick={() => setDetailsOpen(open => !open)}>Worktrees and workstreams<FiChevronDown size={16} aria-hidden="true" /></button>}
+            <div id={detailsId} className="context-detail-content" hidden={mobile && !detailsOpen}>
             <div className="context-selection-modes" role="group" aria-label="Select checkout via">
               <button type="button" aria-pressed={mode === "worktree"} disabled={locked} onClick={() => { setSelectionMode("worktree"); if (selection?.workstreamId) selection.selectWorkstream(null); }}>Worktree</button>
               <button type="button" aria-pressed={mode === "workstream"} disabled={locked || workspace.kind !== "repository" || !selection} onClick={() => setSelectionMode("workstream")}>Workstream</button>
@@ -168,8 +202,6 @@ export function CatalogSelector({ retry, selection }: { retry: () => void; selec
                   <small title={stream.defaultCheckout?.path}>{tree ? `Checkout: ${worktreeDisplay(tree)}` : stream.defaultCheckout ? "Default checkout unavailable · browsing unchanged" : "No default checkout · browsing unchanged"}</small>
                 </button>;
               })}</div>
-              {selection?.loading && <p className="muted" role="status">Loading workstreams…</p>}
-              {selection?.error && <p className="notice error" role="status">Workstreams could not refresh. {selection.error} Retrying automatically.</p>}
               {!selection?.loading && !selection?.error && !streams.length && <p className="muted">{streamSearch ? "No matching workstreams." : "No workstreams yet. Manage workstreams in Settings."}</p>}
               {selection?.workstreamId && <div className="context-workstream-scope">
                 {selectedStream && !streamTree && <p className="notice" role="status">{selectedStream.defaultCheckout ? `The default checkout (${selectedStream.defaultCheckout.path}) is unavailable. Browsing remains unchanged.` : "No default checkout is configured. Browsing remains unchanged."}</p>}
@@ -192,8 +224,9 @@ export function CatalogSelector({ retry, selection }: { retry: () => void; selec
               <p className="muted">The open conversation keeps its execution directory and membership.</p>
             </section>
             <section className="context-worktree-config" aria-label="Worktree configuration"><h4>Worktree configuration</h4>{aliasEditor}{refreshWorktrees}</section>
+            </div>
           </> : <p className="muted">{navigation.workspaceId ? "This workspace is unavailable. Choose another workspace or open a directory." : "Choose a workspace or open a directory to get started."}</p>}
-          {notices}
+        </div>
         </div>
       </>}
       {panel === "directory" && notices}

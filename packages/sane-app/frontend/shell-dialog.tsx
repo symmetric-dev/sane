@@ -2,14 +2,19 @@ import { useEffect, useId, useRef, type ReactNode } from "react";
 
 /** Native modal containment supplies focus trapping and Escape handling.
  * Bare layouts provide their own close button; title remains the accessible name. */
-export function ShellDialog({ title, subtitle, close, children, className = "", restoreFocus, closeDisabled = false, bare = false }: { title: string; subtitle?: string; close: () => void; children: ReactNode; className?: string; restoreFocus?: () => HTMLElement | null; closeDisabled?: boolean; bare?: boolean }) {
+export function ShellDialog({ title, subtitle, close, children, className = "", restoreFocus, initialFocus, closeDisabled = false, bare = false }: { title: string; subtitle?: string; close: () => void; children: ReactNode; className?: string; restoreFocus?: () => HTMLElement | null; initialFocus?: () => HTMLElement | null; closeDisabled?: boolean; bare?: boolean }) {
   const ref = useRef<HTMLDialogElement>(null);
   const titleId = useId();
   const subtitleId = useId();
   useEffect(() => {
     const previous = document.activeElement instanceof HTMLElement ? document.activeElement : null;
     const dialog = ref.current!;
+    const initial = initialFocus?.();
+    const autofocus = initial?.hasAttribute("autofocus");
+    initial?.setAttribute("autofocus", "");
     dialog.showModal();
+    initial?.focus();
+    if (initial && !autofocus) initial.removeAttribute("autofocus");
     return () => { dialog.close(); const target = restoreFocus?.() ?? previous; if (target?.isConnected) target.focus(); };
   }, []);
   return <dialog ref={ref} className={`shell-dialog ${className}`} role="dialog" aria-modal="true" aria-label={bare ? title : undefined} aria-labelledby={bare ? undefined : titleId} aria-describedby={!bare && subtitle !== undefined ? subtitleId : undefined} onCancel={event => { event.preventDefault(); if (!closeDisabled) close(); }} onClick={event => { if (event.target === event.currentTarget && !closeDisabled) close(); }}>

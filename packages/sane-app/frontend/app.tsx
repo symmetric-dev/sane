@@ -87,6 +87,7 @@ function ReadyWorkspace({ state, signOut }: { state: State; signOut: () => void 
   const mode = view === "history" ? "history" : "chat";
   // The desktop sidebar and mobile drawer share one filter/search state owner.
   const sidebarModel = useConversationSidebarModel(state, mode);
+  const selectorIsOpen = sidebarModel.workspaceSelection.isOpen;
   useEffect(() => { setArtifact(null); }, [workspaceId, worktreeId, repository.navigation.filePath]);
   useEffect(() => { setHistoryPreview(null); }, [workspaceId, worktreeId]);
   useEffect(() => {
@@ -95,7 +96,7 @@ function ReadyWorkspace({ state, signOut }: { state: State; signOut: () => void 
     const scoped = state.conversations.filter(conversation => conversation.workspaceId === workspaceId && conversation.worktreeId === worktreeId);
     setHistoryPreview(scoped.find(conversation => conversation.id === state.selected)?.id ?? scoped.at(-1)?.id ?? null);
   }, [view, workspaceId, worktreeId, state.selected, state.conversations, historyPreview]);
-  useEffect(() => { setDrawer(null); }, [state.selected]);
+  useEffect(() => { if (!selectorIsOpen()) setDrawer(null); }, [state.selected, selectorIsOpen]);
   useEffect(() => {
     if (view !== "chat" || nativeSubagents.active || state.compactDialog) setDrawer(current => current === "context" ? null : current);
   }, [view, nativeSubagents.active, state.compactDialog]);
@@ -108,9 +109,21 @@ function ReadyWorkspace({ state, signOut }: { state: State; signOut: () => void 
   }, [reviewRequest, view, state.selected, state.conversations, reviewRequestHandled]);
   const navigate = (next: ActiveView) => { if (next !== "chat") setReviewRequest(null); setArtifact(null); catalog.navigate({ view: next }); setDrawer(null); };
   const choose = (id: string) => {
-    if (state.sending) return;
+    if (store.snapshot().sending) return;
     if (id !== reviewRequest?.sessionId) setReviewRequest(null);
     store.openConversation(id); setDrawer(null);
+  };
+  const openNotification = (id: string) => {
+    const current = store.snapshot();
+    const target = current.conversations.find(conversation => conversation.id === id);
+    if (current.phase !== "ready" || current.sending || !current.conversationsReady || !catalog.snapshot().ready || !target || target.replacedBy) return false;
+    store.openConversation(id);
+    if (store.snapshot().selected !== id || catalog.snapshot().navigation.view !== "chat") return false;
+    // Reset scope using the newly opened session's live browsing pair, without
+    // workspace activation choosing a different (more recent) conversation.
+    sidebarModel.workspaceSelection.selectWorkstream(null);
+    nativeSubagents.back(); setReviewRequest(null); setArtifact(null); setDrawer(null);
+    return true;
   };
   const openArtifact = (selection: ArtifactSelection) => { setReviewRequest(null); setArtifact(selection); catalog.navigate({ view: "code" }); setDrawer(null); };
   const startDocumentReview = (launch: DocumentReviewLaunch) => {
@@ -122,6 +135,14 @@ function ReadyWorkspace({ state, signOut }: { state: State; signOut: () => void 
     store.openConversation(launch.sessionId);
   };
   const navigation = <ContextualNavigation state={state} activeView={view} onNavigate={navigate} />;
+  const workspaceSelection = {
+    ...sidebarModel.workspaceSelection,
+    goWorkspace: (id: string) => {
+      if (!sidebarModel.workspaceSelection.goWorkspace(id)) return false;
+      nativeSubagents.back(); setReviewRequest(null); setArtifact(null);
+      return true;
+    },
+  };
   const group = viewGroup(view);
   const sidebar = group === "chat" ? <ConversationSidebar
     state={state} model={sidebarModel} mode={mode} selectedId={mode === "history" ? historyPreview : state.selected}
@@ -132,7 +153,8 @@ function ReadyWorkspace({ state, signOut }: { state: State; signOut: () => void 
   return <NativeSubagentContext.Provider value={nativeSubagents}><ApplicationCommandProvider><WorkspaceProvider view={view} navigate={navigate}><WorkspaceQuickOpenFeature><WorkspaceSearchFeature><WorkspaceFileShortcuts><TerminalProvider view={view}>
     <ViewNavigationCommands onNavigate={navigate} />
     <WorkspaceShell view={view} sidebar={sidebar}
-      workspaceSelection={sidebarModel.workspaceSelection}
+      onOpenNotification={openNotification}
+      workspaceSelection={workspaceSelection}
       retryCatalog={hydrateCatalog} sidebarOpen={drawer === "sidebar"}
       openSidebar={() => setDrawer("sidebar")} closeSidebar={() => setDrawer(null)}
       header={<ShellHeader state={state} view={view} artifact={artifact} overview={sidebarModel.overview} overviewWorkspaceId={workspaceId} openDetails={() => setDrawer("details")} openContext={() => setDrawer("context")} openApplication={() => setDrawer("application")} />}

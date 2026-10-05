@@ -1,6 +1,6 @@
-import { useCallback, useDeferredValue, useEffect, useMemo, useState, useSyncExternalStore } from "react";
+import { useCallback, useDeferredValue, useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
 import { catalog } from "./catalog";
-import type { State } from "./store";
+import { store, type State } from "./store";
 import { defaultFilterFor, filterConversations, type ConversationFilterState, type WorkstreamMembership } from "./conversation-filter";
 import { buildWorkstreamMap } from "./conversation-filter-dialog";
 import { useMessageHits, useWorkstreamOverviewState } from "./conversation-hooks";
@@ -10,6 +10,7 @@ import { workstreamCheckout } from "./workstream-checkout";
 import { readWorkstreamSelection, saveWorkstreamSelection } from "./workstream-selection-storage";
 import { readWorkstreamMembership, saveWorkstreamMembership } from "./workstream-membership-storage";
 import { workspaceEpoch } from "./workspace-store";
+import { resolveWorkspaceActivation, workspaceSelectionBlocked } from "./workspace-activation";
 
 export type ConversationSidebarMode = "chat" | "history";
 
@@ -18,8 +19,12 @@ export type WorkspaceSelectionModel = {
   overview: WorkstreamOverview | null;
   loading: boolean;
   error: string;
+  blocked: boolean;
+  selectionError: string;
   setOpen: (open: boolean) => void;
-  selectWorkspace: (workspaceId: string) => void;
+  isOpen: () => boolean;
+  selectWorkspace: (workspaceId: string, preferredWorktreeId?: string) => boolean;
+  goWorkspace: (workspaceId: string) => boolean;
   selectWorktree: (worktreeId: string) => void;
   selectWorkstream: (workstreamId: string | null) => void;
 };
@@ -69,6 +74,10 @@ export function useConversationSidebarModel(state: State, mode: ConversationSide
     setContext(next);
   }, [savedContext]);
   const [selectorOpen, setSelectorOpen] = useState(false);
+  const selectorOpenRef = useRef(false);
+  const [selectionError, setSelectionError] = useState("");
+  const setOpen = useCallback((open: boolean) => { selectorOpenRef.current = open; setSelectorOpen(open); if (open) setSelectionError(""); }, []);
+  const isOpen = useCallback(() => selectorOpenRef.current, []);
   const sidebarActive = nav.view === "chat" || nav.view === "history" || nav.view === "terminal";
   const workspace = repository.workspaces.find(w => w.workspaceId === nav.workspaceId);
   const overviewState = useWorkstreamOverviewState(nav.workspaceId, workspace?.kind === "repository" && (sidebarActive || selectorOpen || !!context.workstreamId));
@@ -95,6 +104,8 @@ export function useConversationSidebarModel(state: State, mode: ConversationSide
     saveWorkstreamSelection(context.workspaceId, context.workstreamId, context.filter);
   }, [auth, selectionRestored, repository.ready, context.workspaceId, context.worktreeId, context.workstreamId, context.filter, overview, overviewState.loading, overviewState.error]);
   const selectContext = (workspaceId: string | null, worktreeId: string | null, workstreamId: string | null) => {
+    if (auth !== workspaceEpoch() || workspaceSelectionBlocked() || !catalog.snapshot().ready) return;
+    setSelectionError("");
     // Explicit choices win over pending restoration and are saved synchronously.
     setSelectionRestored(true);
     const filter = contextDefaults(workspaceId, worktreeId, workstreamId);
@@ -102,19 +113,39 @@ export function useConversationSidebarModel(state: State, mode: ConversationSide
     catalog.navigate({ workspaceId, worktreeId, filePath: null, comparison: null });
     setContext({ workspaceId, worktreeId, workstreamId, filter });
   };
+  const activateWorkspace = (workspaceId: string, direct: boolean, preferredWorktreeId?: string) => {
+    if (auth !== workspaceEpoch()) return false;
+    const resolved = resolveWorkspaceActivation(workspaceId, preferredWorktreeId);
+    if ("error" in resolved) { setSelectionError(resolved.error); return false; }
+    setSelectionError("");
+    const current = catalog.snapshot();
+    const currentWorktreeAvailable = current.workspaces.find(workspace => workspace.workspaceId === workspaceId)?.worktrees
+      .some(worktree => worktree.worktreeId === current.navigation.worktreeId && worktree.state === "available");
+    if (!direct && preferredWorktreeId === undefined && current.navigation.workspaceId === workspaceId && currentWorktreeAvailable) return true;
+    if (workspaceSelectionBlocked()) return false;
+    const { target } = resolved;
+    const filter = contextDefaults(target.workspaceId, target.worktreeId, null);
+    setSelectionRestored(true);
+    store.choose(target.conversationId ?? "");
+    saveWorkstreamSelection(target.workspaceId, null, filter);
+    setContext({ workspaceId: target.workspaceId, worktreeId: target.worktreeId, workstreamId: null, filter });
+    catalog.navigate({ ...target, filePath: null, comparison: null, ...(direct ? { view: "chat" as const } : {}) });
+    return true;
+  };
   const workspaceSelection: WorkspaceSelectionModel = {
-    workstreamId: context.workstreamId, overview, loading: overviewState.loading, error: overviewState.error, setOpen: setSelectorOpen,
-    selectWorkspace: workspaceId => {
-      const target = catalog.snapshot().workspaces.find(w => w.workspaceId === workspaceId);
-      if (!target || workspaceId === catalog.snapshot().navigation.workspaceId) return;
-      selectContext(workspaceId, target.worktrees.find(t => t.state === "available")?.worktreeId ?? target.worktrees[0]?.worktreeId ?? null, null);
-    },
+    workstreamId: context.workstreamId, overview, loading: overviewState.loading, error: overviewState.error,
+    blocked: state.phase !== "ready" || state.sending || !state.conversationsReady,
+    selectionError, setOpen, isOpen,
+    selectWorkspace: (workspaceId, preferredWorktreeId) => activateWorkspace(workspaceId, false, preferredWorktreeId),
+    goWorkspace: workspaceId => activateWorkspace(workspaceId, true),
     selectWorktree: worktreeId => {
+      if (auth !== workspaceEpoch() || workspaceSelectionBlocked()) return;
       const current = catalog.snapshot();
       const workspace = current.workspaces.find(w => w.workspaceId === current.navigation.workspaceId);
       if (workspace?.worktrees.some(t => t.worktreeId === worktreeId && t.state === "available")) selectContext(current.navigation.workspaceId, worktreeId, null);
     },
     selectWorkstream: workstreamId => {
+      if (auth !== workspaceEpoch() || workspaceSelectionBlocked()) return;
       const current = catalog.snapshot();
       if (!workstreamId) { selectContext(current.navigation.workspaceId, current.navigation.worktreeId, null); return; }
       if (current.navigation.workspaceId !== nav.workspaceId) return;
@@ -125,7 +156,8 @@ export function useConversationSidebarModel(state: State, mode: ConversationSide
       selectContext(current.navigation.workspaceId, tree?.worktreeId ?? current.navigation.worktreeId, workstreamId);
     },
   };
-  const deferred = useDeferredValue(filter);
+  const deferredQuery = useDeferredValue(filter.query);
+  const deferred = useMemo(() => ({ ...filter, query: deferredQuery }), [filter, deferredQuery]);
   const cachedMembership = useMemo(() => repository.ready ? readWorkstreamMembership(nav.workspaceId) : null, [auth, repository.ready, nav.workspaceId, overview]);
   // Membership is derived solely from the overview, not the chat polling list.
   const workstreamMap = useMemo(() => overview ? buildWorkstreamMap(overview, []) : cachedMembership ?? new Map<string, WorkstreamMembership>(), [overview, cachedMembership]);

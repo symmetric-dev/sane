@@ -113,9 +113,15 @@
 .workspace-context-dialog[open] {
   display:grid;
   grid-template-columns:250px minmax(0,1fr);
+  grid-template-rows:auto minmax(0,1fr);
   min-height:0;
 }
+.workspace-context-panel {
+  display:contents;
+}
 .workspace-context-sidebar {
+  grid-column:1;
+  grid-row:1 / span 2;
   display:flex;
   flex-direction:column;
   min-height:0;
@@ -134,17 +140,43 @@
   max-height:none;
   padding:0;
 }
-.workspace-context-sidebar .workspace-choices>button {
+.workspace-choice-row {
+  display:flex;
+  align-items:stretch;
+  flex-shrink:0;
+  min-width:0;
+}
+.workspace-context-sidebar .workspace-choice-select {
+  flex:1;
+  display:flex;
+  flex-direction:column;
+  gap:4px;
+  min-width:0;
+  text-align:left;
   border:1px solid transparent;
   border-radius:9px;
   padding:11px 12px;
 }
-.workspace-context-sidebar .workspace-choices>button:hover:not(:disabled) {
+.workspace-context-sidebar .workspace-choice-select:hover:not(:disabled),.workspace-choice-go:hover:not(:disabled) {
   background:var(--history-hover);
 }
-.workspace-context-sidebar .workspace-choices>button[aria-current] {
+.workspace-context-sidebar .workspace-choice-select[aria-current] {
   background:var(--background);
   border-color:var(--binder-selected-border);
+}
+.workspace-choice-go {
+  display:flex;
+  align-items:center;
+  justify-content:center;
+  flex-shrink:0;
+  width:44px;
+  min-height:44px;
+  padding:0;
+  border-radius:9px;
+}
+.workspace-choice-select .workspace-choice-heading {
+  font-size:13px;
+  font-weight:550;
 }
 .workspace-context-sidebar .workspace-choices small {
   overflow:hidden;
@@ -177,18 +209,27 @@
   text-align:left;
 }
 .workspace-context-detail {
+  grid-column:2;
+  grid-row:2;
   min-width:0;
   min-height:0;
   overflow:auto;
   overflow-wrap:anywhere;
-  padding:20px;
+  padding:0 20px 20px;
 }
 .workspace-context-heading {
+  grid-column:2;
+  grid-row:1;
   display:flex;
+  min-width:0;
   align-items:flex-start;
   justify-content:space-between;
   gap:12px;
-  margin-bottom:18px;
+  padding:20px 20px 18px;
+  overflow-wrap:anywhere;
+}
+.workspace-context-heading>div {
+  min-width:0;
 }
 .workspace-context-heading .icon-button {
   flex-shrink:0;
@@ -216,6 +257,23 @@
   border-radius:8px;
   background:var(--muted);
   margin-bottom:16px;
+}
+.context-detail-toggle {
+  display:flex;
+  align-items:center;
+  justify-content:space-between;
+  gap:8px;
+  width:100%;
+  min-height:44px;
+  padding:10px 12px;
+  border:1px solid var(--border);
+  border-radius:8px;
+  margin-bottom:12px;
+  text-align:left;
+  font-size:12px;
+}
+.context-detail-toggle[aria-expanded="true"] svg {
+  transform:rotate(180deg);
 }
 .context-selection-modes button {
   flex:1;
@@ -291,26 +349,57 @@
   padding:0;
   border:0;
 }
-@media (max-width:640px) {
+@media (max-width:700px) {
   .workspace-context-dialog[open] {
     grid-template-columns:minmax(0,1fr);
-    grid-template-rows:auto minmax(0,1fr);
+  }
+  .workspace-context-panel {
+    grid-column:1;
+    grid-row:2;
+    display:grid;
+    min-height:0;
+    overflow:auto;
+    /* Usable content excludes the fixed heading and search/directory controls.
+       List and details each get half, with usable 160px tracks. On short
+       viewports the panel scrolls instead of shrinking or clipping controls. */
+    grid-template-rows:auto minmax(160px,1fr) auto minmax(160px,1fr);
+  }
+  .workspace-context-heading {
+    grid-column:1;
+    padding:16px;
+  }
+  .workspace-context-heading h3 {
+    overflow:hidden;
+    text-overflow:ellipsis;
+    white-space:nowrap;
   }
   .workspace-context-sidebar {
-    max-height:min(210px,35dvh);
-    border-right:0;
-    border-bottom:1px solid var(--border);
+    display:contents;
+  }
+  .workspace-context-sidebar .workspace-search {
+    margin:0;
     padding:10px;
+    background:var(--muted);
   }
   .workspace-context-sidebar .workspace-choices {
-    flex:auto;
+    padding:0 10px;
+    background:var(--muted);
   }
   .workspace-context-sidebar .secondary-directory {
-    margin-top:6px;
-    padding:7px 12px;
+    margin:0;
+    min-height:44px;
+    padding:10px 12px;
+    background:var(--muted);
+    border-bottom:1px solid var(--border);
   }
   .workspace-context-detail {
+    grid-column:1;
+    grid-row:4;
     padding:16px;
+  }
+  .workspace-context-heading .icon-button {
+    width:44px;
+    height:44px;
   }
 }
 .workspace-search {
@@ -335,23 +424,6 @@
   max-height:35dvh;
   overflow:auto;
   padding:4px;
-}
-.workspace-choices>button {
-  text-align:left;
-  display:flex;
-  flex-direction:column;
-  gap:4px;
-  padding:11px;
-  border-radius:8px;
-  min-width:0;
-  flex-shrink:0;
-}
-.workspace-choices>button:hover,.workspace-choices>button[aria-current] {
-  background:var(--accent);
-}
-.workspace-choices>button>span {
-  font-size:13px;
-  font-weight:550;
 }
 .workspace-choices small {
   font-size:11px;

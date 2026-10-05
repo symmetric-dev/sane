@@ -15,7 +15,7 @@ export type WorkerSessionMetadata = { id: string; parent: { sessionId: string; r
 export const harnessName = (harness: Harness) => harness === "opencode" ? "OpenCode" : "Claude Code";
 export const harnessShort = (harness: Harness): "OC" | "CC" => harness === "opencode" ? "OC" : "CC";
 export type AgentChoice = { id: string; label: string; description: string };
-export type Conversation = { id: string; harness: Harness; nativeSessionId?: string; nativeActivity?: "active" | "idle" | "unknown"; nativeActivityReason?: string; cwd: string; lastRunId: string | null; status: RunStatus; title?: string; hidden?: boolean; model?: string; effort?: string; agent?: string; agentKind?: "assistant" | "worker"; nativeAgentSelected?: boolean; profileId?: string; availability?: Availability; queuedFollowups?: QueuedFollowup[]; attachment?: { state: "pending" | "ready"; error?: string }; worker?: WorkerSessionMetadata; directWorkerCount?: number; branchOrigin?: string; branchDraft?: string; replacedBy?: string } & Partial<Association>;
+export type Conversation = { id: string; harness: Harness; nativeSessionId?: string; nativeActivity?: "active" | "idle" | "unknown"; nativeActivityReason?: string; updatedAt?: string | null; cwd: string; lastRunId: string | null; lastRunStatus?: RunStatus; lastRunOperation?: "prompt" | "compact"; lastRunEndedAt?: string; status: RunStatus; title?: string; hidden?: boolean; model?: string; effort?: string; agent?: string; agentKind?: "assistant" | "worker"; nativeAgentSelected?: boolean; profileId?: string; availability?: Availability; queuedFollowups?: QueuedFollowup[]; attachment?: { state: "pending" | "ready"; error?: string }; worker?: WorkerSessionMetadata; directWorkerCount?: number; branchOrigin?: string; branchDraft?: string; replacedBy?: string } & Partial<Association>;
 export type Capabilities = {
   concurrency: { scope: "bridge" | "conversation"; limit: number; perConversation?: number; sharedCheckoutWrites?: boolean };
   cancelRun: boolean; midRunInput: boolean; permissionReplies: boolean;
@@ -24,7 +24,7 @@ export type Capabilities = {
 /** Local submission, retained after acknowledgement only until its recorded user turn arrives. */
 export type PendingTurn = { id: string; conversationId: string; runId?: string; text: string; time: string };
 export type HarnessInfo = { id: Harness; available: boolean; connected: boolean; state: string; reason?: string; capabilities: Partial<HarnessCapabilities> };
-export type Config = { authRequired: boolean; authenticated: boolean; cwd?: string; capabilities?: Capabilities; agents?: AgentChoice[]; agentProfiles?: AgentProfiles; harnesses?: HarnessInfo[] };
+export type Config = { authRequired: boolean; authenticated: boolean; storeId?: string; cwd?: string; capabilities?: Capabilities; agents?: AgentChoice[]; agentProfiles?: AgentProfiles; harnesses?: HarnessInfo[] };
 export type Availability = { canSend: boolean; reason?: string; queueAfterRunId?: string; nativeQueue?: boolean };
 export type SearchHit = { sessionId: string; runId?: string; snippet: string; score: number };
 export interface ConversationClient {

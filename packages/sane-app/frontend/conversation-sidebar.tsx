@@ -1,5 +1,5 @@
-import { useState } from "react";
-import { FiUsers } from "react-icons/fi";
+import { useState, useSyncExternalStore } from "react";
+import { FiBell, FiUsers } from "react-icons/fi";
 import { store, type State } from "./store";
 import { AgentAvatar } from "./agent-visuals";
 import { formatTitle } from "./conversation-filter";
@@ -7,6 +7,7 @@ import { ConversationFilterDialog } from "./conversation-filter-dialog";
 import { ConversationMenu, PhaseBadge, StatusIcon } from "./conversation-row";
 import { Icon } from "./nav";
 import { workerReference as knownWorker } from "./worker-client";
+import { notificationStore } from "./notifications";
 import type { ConversationSidebarMode, ConversationSidebarModel } from "./conversation-sidebar-model";
 import "./conversation-sidebar.css";
 
@@ -43,6 +44,8 @@ export function ConversationSidebarList({ state, model, mode, selectedId, onSele
   const { repository, nav, filter, setFilter, overview, workstreamMap, membershipLoading, membershipPending, membershipError, visible, hits, workerCounts, groups, scoped, activeFilterCount } = model;
   // Dialog visibility is presentation-local: opening the drawer must not create two modal dialogs.
   const [dialogOpen, setDialogOpen] = useState(false);
+  const notifications = useSyncExternalStore(notificationStore.subscribe, notificationStore.snapshot);
+  const unreadSessions = new Set(notifications.items.map(item => item.conversationId));
   const history = mode === "history";
   return <>
     <div className="history-search-row">
@@ -71,6 +74,7 @@ export function ConversationSidebarList({ state, model, mode, selectedId, onSele
               <span className="history-line conversation-sidebar-heading">
                 {profile && <span className="agent-row-avatar" title={profile.label}><AgentAvatar profile={profile} size={16} /></span>}
                 <span className="history-title">{formatTitle(c.title, basename(c.cwd))}</span>
+                {unreadSessions.has(c.id) && <span className="conversation-sidebar-unread"><FiBell size={13} aria-hidden="true" /><span className="sr-only">Unread update</span></span>}
               </span>
               <span className="history-line conversation-sidebar-workstream" title={workstreamLoading ? "Loading workstream…" : membership?.workstreamId ?? undefined} aria-busy={workstreamLoading}>{workstreamLoading ? <><span className="conversation-sidebar-loading-dots" aria-hidden="true">…</span><span className="sr-only">Loading workstream</span></> : membership?.workstreamId || "-"}</span>
               <span className="history-line conversation-sidebar-footer">

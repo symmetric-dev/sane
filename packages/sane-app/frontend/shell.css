@@ -21,14 +21,30 @@
   padding:0 12px;
   border-bottom:1px solid var(--border);
 }
-.shell-logo {
+.shell-sidebar-header .shell-logo {
   --penrose-background:var(--muted);
   flex-shrink:0;
   color:var(--primary);
 }
-.drawer .shell-logo {
+.drawer .shell-sidebar-header .shell-logo {
   --penrose-background:var(--background);
 }
+.topbar .mobile-shell-logo {
+  --penrose-background:var(--background);
+  display:none;
+  flex-shrink:0;
+  color:var(--primary);
+}
+.shell-sidebar-header .shell-logo>svg,.topbar .mobile-shell-logo>svg {
+  display:block;
+  flex-shrink:0;
+}
+.shell-sidebar-header>.context-switcher {
+  flex:1;
+  min-width:0;
+  width:auto;
+}
+.shell-sidebar-header>.icon-button { flex-shrink:0; }
 .shell-sidebar-header .workspace-opener {
   flex:1;
   justify-content:space-between;
@@ -217,9 +233,8 @@
 .conversation-sidebar-actions .history-sidebar-button { padding:10px 8px; font-size:12px; }
 .drawer-content>.sidebar-body { padding:12px 0; }
 .sidebar-body:has(>.sidebar-mode-control) { padding:0; gap:0; }
-.drawer-content>.shell-sidebar-header { height:auto; min-height:0; padding:12px 0; }
+.drawer-content>.shell-sidebar-header { height:var(--shell-header-height, 52px); min-height:var(--shell-header-height, 52px); padding:0; }
 .drawer-content:has(>.shell-sidebar-header) { height:100%; min-height:0; overflow:hidden; padding-bottom:max(16px,env(safe-area-inset-bottom)); }
-.drawer-content:has(>.shell-sidebar-header)>header { flex-shrink:0; }
 /* Follow DOM order: navigation, help, then Submit at the trailing edge. */
 .composer-actions .contextual-navigation { margin-right:4px; }
 .composer-toolbar { flex-wrap:wrap; row-gap:8px; }
@@ -239,7 +254,12 @@
 @media(max-width:700px) {
   .app-shell { --shell-header-height:44px; }
   .sidebar { display:none; }
-  .app-shell .topbar { padding:0 10px; gap:6px; }
+  .app-shell .topbar { height:calc(var(--shell-header-height) + env(safe-area-inset-top)); min-height:calc(var(--shell-header-height) + env(safe-area-inset-top)); padding:env(safe-area-inset-top) max(10px,env(safe-area-inset-right)) 0 max(10px,env(safe-area-inset-left)); gap:6px; }
+  .topbar .mobile-shell-logo { display:inline-flex; }
+  .drawer-content:has(>.shell-sidebar-header) { padding:env(safe-area-inset-top) max(12px,env(safe-area-inset-right)) max(16px,env(safe-area-inset-bottom)) max(12px,env(safe-area-inset-left)); }
+  .drawer-content>.shell-sidebar-header { min-height:52px; }
+  .drawer-content>.shell-sidebar-header>.icon-button { min-width:40px; min-height:40px; padding:8px; }
+  .drawer-content>.sidebar-body>.history-list { max-height:none; }
   .shell-content-footer { padding-right:10px; }
   .contextual-navigation button { min-width:40px; min-height:40px; }
   .composer-options { flex:1 1 100%; }

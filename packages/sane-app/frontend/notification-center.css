@@ -1,0 +1,43 @@
+.notification-center-trigger {
+  position:relative; display:inline-flex; align-items:center; justify-content:center;
+  flex-shrink:0; min-width:36px; min-height:36px; padding:4px;
+  border:0; border-radius:6px; background:transparent; color:var(--primary);
+}
+.notification-center-trigger:hover,.notification-center-trigger[aria-expanded="true"] { background:var(--accent); --penrose-background:var(--accent); }
+.shell-sidebar-header .notification-center-trigger.shell-logo:is(:hover,[aria-expanded="true"]),.topbar .notification-center-trigger.mobile-shell-logo:is(:hover,[aria-expanded="true"]) { --penrose-background:var(--accent); }
+.notification-center-trigger:disabled { opacity:.55; cursor:default; }
+.notification-center-trigger:focus-visible,.notification-center-popover button:focus-visible { outline:2px solid var(--focus-ring); outline-offset:-2px; }
+.notification-center-trigger > svg { flex-shrink:0; }
+.notification-center-trigger[data-unread="true"] > svg { animation:notification-center-unread 3s ease-in-out infinite; }
+.notification-center-badge {
+  position:absolute; top:-3px; right:-4px; display:flex; align-items:center; justify-content:center;
+  min-width:18px; height:18px; padding:0 4px; border:1px solid var(--background);
+  border-radius:10px; background:var(--primary); color:var(--primary-foreground);
+  font-size:10px; font-weight:650; line-height:1; font-variant-numeric:tabular-nums; pointer-events:none;
+}
+/* Match the chat @ popup's surface, padding, radius, shadow and text scale. */
+.notification-center-popover {
+  position:fixed; inset:auto; margin:0; padding:6px; box-sizing:border-box;
+  display:none; overflow:hidden; border:1px solid var(--border, #555); border-radius:8px;
+  background:var(--card); color:var(--foreground); box-shadow:0 8px 28px var(--shadow-popover); font-size:13px;
+}
+.notification-center-popover:popover-open,.notification-center-popover[data-open="true"][data-fallback="true"] { display:flex; flex-direction:column; }
+.notification-center-popover[data-fallback="true"] { z-index:1000; }
+.notification-center-popover[data-open="false"] { display:none; }
+.notification-center-header { display:flex; align-items:center; justify-content:space-between; gap:8px; flex-shrink:0; padding:7px 8px 10px; border-bottom:1px solid var(--border); }
+.notification-center-header h2 { margin:0; font-size:13px; font-weight:600; }
+.notification-center-header p { margin:3px 0 0; color:var(--muted-foreground); font-size:11px; }
+.notification-center-close { display:flex; align-items:center; justify-content:center; flex-shrink:0; width:32px; height:32px; padding:7px; border:0; border-radius:4px; background:transparent; color:var(--foreground); }
+.notification-center-close:hover,.notification-center-entry:not(:disabled):hover { background:var(--accent); }
+.notification-center-list { min-height:0; overflow:auto; overflow-anchor:none; overscroll-behavior:contain; padding-top:4px; }
+.notification-center-list ul { list-style:none; margin:0; padding:0; }
+.notification-center-entry { display:flex; gap:8px; width:100%; padding:7px 8px; border:0; border-radius:4px; background:transparent; color:var(--foreground); text-align:left; font-size:13px; cursor:pointer; overflow-wrap:anywhere; }
+.notification-center-entry > svg { flex-shrink:0; margin-top:2px; color:var(--muted-foreground); }
+.notification-center-entry:disabled { opacity:.55; cursor:default; }
+.notification-center-label { display:flex; flex-direction:column; gap:3px; min-width:0; }
+.notification-center-title { font-weight:550; }
+.notification-center-location,.notification-center-outcome,.notification-center-unavailable { color:var(--muted-foreground); font-size:11px; }
+.notification-center-notice,.notification-center-empty { margin:0; padding:10px 8px; color:var(--muted-foreground); font-size:12px; overflow-wrap:anywhere; }
+.notification-center-notice { flex-shrink:0; }
+@keyframes notification-center-unread { 0%,100% { opacity:1; } 50% { opacity:.72; } }
+@media (prefers-reduced-motion:reduce) { .notification-center-trigger[data-unread="true"] > svg { animation:none; } }
