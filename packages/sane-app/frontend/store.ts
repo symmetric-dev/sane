@@ -48,6 +48,7 @@ const emptyDraft = (): Draft => ({ text: "", cwd: "", profileId: "", upgradeId: 
 const fallbackProfiles: AgentProfiles = { version: 1, defaultId: BASE_PROFILE_IDS["claude-code"], profiles: builtinProfiles("") };
 export class ChatStore {
   private listeners = new Set<() => void>();
+  private shellRevision = 0;
   private generation = 0;
   private authEpoch = 0;
   private timer?: ReturnType<typeof setTimeout>;
@@ -208,7 +209,8 @@ export class ChatStore {
   constructor(private client: ConversationClient) { this.state = { ...this.state, transcriptPaged: this.paged }; onWorkspaceAuthExpired(() => this.loginRequired()); }
   subscribe = (listener: () => void) => { this.listeners.add(listener); return () => { this.listeners.delete(listener); }; };
   snapshot = () => this.state;
-  private update(patch: Partial<State>) {
+  shellSnapshot = () => this.shellRevision;
+  private update(patch: Partial<State>, publishShell = true) {
     // Stabilize lightweight API projections, never serialize or deep-walk the
     // loaded transcript parts or reducer diagnostics on idle polls.
     if (this.paged) for (const key of ["conversations", "availability", "compactState", "compactions", "contextUsage", "interactions", "pendingCompacts"] as const) {
@@ -220,6 +222,7 @@ export class ChatStore {
     }
     if (!changed) return;
     this.state = { ...this.state, ...patch };
+    if (publishShell) this.shellRevision++;
     this.listeners.forEach(fn => fn());
   }
   draftKey = (id = this.state.selected) => id || `draft:${catalog.state.navigation.workspaceId}:${catalog.state.navigation.worktreeId}`;
@@ -229,7 +232,10 @@ export class ChatStore {
     return this.state.drafts[this.draftKey(id)] ?? { ...emptyDraft(), cwd: id ? this.state.conversations.find(c => c.id === id)?.cwd ?? "" : worktree?.root ?? "" };
   };
   setDraft = (patch: Partial<Draft>, id = this.state.selected) => {
-    this.update({ drafts: { ...this.state.drafts, [this.draftKey(id)]: { ...this.draft(id), ...patch } } });
+    const key = this.draftKey(id), previous = this.draft(id), next = { ...previous, ...patch };
+    const textOnly = previous.cwd === next.cwd && previous.profileId === next.profileId && previous.upgradeId === next.upgradeId;
+    if (this.state.drafts[key] && textOnly && previous.text === next.text) return;
+    this.update({ drafts: { ...this.state.drafts, [key]: next } }, !textOnly);
   };
   executionUnavailable = () => {
     if (this.state.selected) {
@@ -1003,20 +1009,22 @@ export class ChatStore {
 export const store = new ChatStore(conversationClient);
 setWorkerNavigator(store.openConversation);
 
+export function useShellState(): State {
+  useSyncExternalStore(store.subscribe, store.shellSnapshot);
+  return store.snapshot();
+}
+
 /** Slice subscription with per-selector equality: rerenders only when the
  * selected value changes identity (or content, via Object.is fallback in the
  * caller). Replaces whole-store useSyncExternalStore for hot components. */
 export function useStore<T>(selector: (state: State) => T): T {
-  const selectorRef = useRef(selector);
-  selectorRef.current = selector;
-  const cache = useRef<{ state: State; value: T } | null>(null);
+  const cache = useRef<{ state: State; selector: (state: State) => T; value: T } | null>(null);
   const snapshot = () => {
     const current = store.snapshot();
     const cached = cache.current;
-    if (cached && cached.state === current) return cached.value;
-    const value = selectorRef.current(current);
-    if (cached && Object.is(cached.value, value)) return cached.value;
-    cache.current = { state: current, value };
+    if (cached && cached.state === current && cached.selector === selector) return cached.value;
+    const value = selector(current);
+    cache.current = { state: current, selector, value };
     return value;
   };
   return useSyncExternalStore(store.subscribe, snapshot);

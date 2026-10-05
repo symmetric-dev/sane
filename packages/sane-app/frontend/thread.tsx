@@ -13,7 +13,7 @@ import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import { FiArrowLeft, FiArrowUpRight, FiCopy } from "react-icons/fi";
 import { PenroseTriangle } from "./penrose-triangle";
-import { store, type State } from "./store";
+import { store, useStore, type State } from "./store";
 import { Interactions } from "./interactions";
 import { catalog } from "./catalog";
 import { BranchAction, BranchLinks } from "./branch-ui";
@@ -143,8 +143,13 @@ function ChatMessageBody() {
     </div>
     {!isUser && (plain || canBranch) && <div className="message-actions">{plain && <Copy text={plain} label="Copy" />}
     {canBranch && source && <BranchAction sessionId={context.sessionId} harness={harness} {...(source.runId === "native-import" ? { messageId: source.id } : { runId: source.runId })} />}</div>}
-    {isUser && source?.queuedFollowup && <div className="message-actions"><Copy text={plain} />{source.queuedFollowup.state === "not-submitted" && !context.readOnly && <button type="button" className="text-button" disabled={!!store.draft().text} onClick={() => { if (store.snapshot().selected === context.sessionId && !store.draft().text) store.setDraft({ text: plain }); }}>Use as draft</button>}</div>}
+    {isUser && source?.queuedFollowup && <div className="message-actions"><Copy text={plain} />{source.queuedFollowup.state === "not-submitted" && !context.readOnly && <UseAsDraft sessionId={context.sessionId} text={plain} />}</div>}
   </MessagePrimitive.Root>;
+}
+
+function UseAsDraft({ sessionId, text }: { sessionId: string; text: string }) {
+  const disabled = useStore(state => state.selected !== sessionId || !!state.drafts[store.draftKey(sessionId)]?.text);
+  return <button type="button" className="text-button" disabled={disabled} onClick={() => { if (store.snapshot().selected === sessionId && !store.draft().text) store.setDraft({ text }); }}>Use as draft</button>;
 }
 
 export function convertMessage(message: Message): ThreadMessageLike {

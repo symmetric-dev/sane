@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useRef, useState, useSyncExternalStore, type ReactNode } from "react";
 import { FiMoreHorizontal } from "react-icons/fi";
 import { PenroseTriangle } from "./penrose-triangle";
-import { store, type State } from "./store";
+import { store, useShellState, type State } from "./store";
 import { catalog } from "./catalog";
 import { worktreeDisplay, worktreeLabel } from "./catalog-selector";
 import { WorkspaceHeader, WorkspaceProvider, WorkspaceSidebar, WorkspaceView, workspaceHasDirtyBuffers, resetWorkspaceState } from "./workspace";
@@ -33,7 +33,7 @@ import { InstallApp } from "./pwa-install-view";
 const hydrateCatalog = () => void catalog.hydrate(bookmark => store.choose(bookmark.conversationId ?? ""));
 
 export function App() {
-  const state = useSyncExternalStore(store.subscribe, store.snapshot);
+  const state = useShellState();
   useEffect(() => {
     store.start();
     window.addEventListener("online", store.reconnect);

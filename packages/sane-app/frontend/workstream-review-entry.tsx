@@ -1,8 +1,8 @@
-import { useId, useState, useSyncExternalStore } from "react";
+import { useId, useState } from "react";
 import { FiMessageSquare } from "react-icons/fi";
 import type { WorkstreamOverview } from "../src/workstreams-contract";
 import type { DocumentReviewLaunch } from "./document-review-launch";
-import { store } from "./store";
+import { useShellState } from "./store";
 import "./workstream-review-entry.css";
 
 export function WorkstreamReviewEntry({ overview, workspaceId, workstreamId, onReview, disabled = false }: {
@@ -12,7 +12,7 @@ export function WorkstreamReviewEntry({ overview, workspaceId, workstreamId, onR
   onReview: (launch: DocumentReviewLaunch) => void;
   disabled?: boolean;
 }) {
-  const state = useSyncExternalStore(store.subscribe, store.snapshot);
+  const state = useShellState();
   const [recipient, setRecipient] = useState("");
   const id = useId();
   const candidates = overview.conversations.filter(row => row.sessionId && row.conversation?.workstreamId === workstreamId

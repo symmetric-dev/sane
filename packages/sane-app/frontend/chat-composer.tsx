@@ -5,7 +5,7 @@ import { AgentPicker } from "./agent-picker";
 import { ChatInput } from "./chat-input";
 import { Icon } from "./nav";
 import { ShellDialog } from "./shell-dialog";
-import { store, type State } from "./store";
+import { store, useStore, type State } from "./store";
 import { WorkersButton } from "./worker-ui";
 import { ChatWorkstreamActions } from "./workstream-actions";
 import { DocumentReviewComposer } from "./document-review";
@@ -55,7 +55,7 @@ export function ChatComposer({ state, active = true, navigation, ack, onAckChang
 
   const capabilities = store.capabilities();
   const needsAck = !!capabilities.attachedSendRequiresNativeStopped && !!conversation?.attachment;
-  const draft = store.draft();
+  const draft = useStore(current => current.drafts[store.draftKey()]) ?? store.draft();
   const harness = store.harness();
   const profile = store.effectiveProfile();
   // New conversations pick freely; a Base may upgrade once; an assistant is fixed.
