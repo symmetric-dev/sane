@@ -2,11 +2,11 @@ import type { Event, Run, Session, Status } from "./history";
 import { OpenCodeError, normalizeMessage, type OpenCodeAdapter } from "./opencode";
 import type { RunOwner } from "./run-owner";
 import type { ExecutionContext } from "./workstreams";
-import { snapshotIdentity } from "./agent-launch";
+import { saneSessionMessageId, snapshotIdentity } from "./agent-launch";
 import { nativeAgentId } from "sane-core/agent-catalog";
 
 /** Native transport only; owner arbitration and durable writes remain in the bridge. */
-export type OpenCodeRunAdapter = Pick<OpenCodeAdapter, "assertIdle" | "select" | "bindSaneSession" | "prompt" | "snapshot" | "interactions" | "compact" | "compactionSnapshot" | "activity" | "cancel"> & Partial<Pick<OpenCodeAdapter, "boundSaneSession" | "cancelInput">>;
+export type OpenCodeRunAdapter = Pick<OpenCodeAdapter, "assertIdle" | "select" | "prompt" | "snapshot" | "interactions" | "compact" | "compactionSnapshot" | "activity" | "cancel"> & Partial<Pick<OpenCodeAdapter, "deliverSaneSession" | "bindSaneSession" | "boundSaneSession" | "cancelInput">>;
 export type OpenCodeRunDependencies = {
   oc: OpenCodeRunAdapter;
   closing: () => boolean;
@@ -25,7 +25,7 @@ export type OpenCodeRunDependencies = {
   refreshCompactHistory: (owner: RunOwner) => Promise<void>;
   assertWorkerDeliverySubmission: (owner: RunOwner) => void;
   workerHasRun: (runId: string) => boolean;
-  /** The SANE Session block from current membership, or null. */
+  /** The startup SANE Session block from current membership, or null. */
   saneSession: (sessionId: string) => Promise<string | null>;
   sleep: (ms: number) => Promise<unknown>;
 };
@@ -48,8 +48,8 @@ export class OpenCodeRunService {
     await this.deps.emit(owner.run, "status", { status, ...(reason ? { reason } : {}) });
     await this.deps.persist();
   }
-  /** Launch inputs as journal evidence, after selection and binding and before native submission. */
-  private async launchEvidence(owner: RunOwner, resume: boolean, block: string | null, changed: boolean) {
+  /** Launch inputs as journal evidence, after selection and startup context delivery, before native submission. */
+  private async launchEvidence(owner: RunOwner, resume: boolean) {
     const run = owner.run, session = this.deps.session(run.sessionId), compact = run.operation === "compact";
     const delivery = this.deps.takeFrameworkDelivery(session.sessionId);
     if (delivery) await this.deps.emit(run, "context", { type: "framework-delivered", ...delivery });
@@ -60,8 +60,6 @@ export class OpenCodeRunService {
       agent: run.agent ?? null, saneContextVersion: run.saneContextVersion ?? null,
       nativeAgent: run.nativeAgentSelected && identity ? nativeAgentId(identity, "opencode") : null, model: compact ? null : run.model ?? null, variant: compact ? null : run.effort ?? null,
     });
-    if (run.nativeDelivery === "queue" && !this.currentNative(owner)) return;
-    await this.deps.emit(run, "context", { type: "session-block", changed, text: block });
   }
   async monitorNative(owner: RunOwner) {
     const run = owner.run;
@@ -164,8 +162,7 @@ export class OpenCodeRunService {
       if (this.deps.closing() || owner.stopRequested) throw new Error("Stopped before native compaction submission");
       await this.deps.compactExecution(session);
       await this.deps.oc.assertIdle(session.nativeSessionId!, session.cwd);
-      const block = await this.deps.saneSession(session.sessionId);
-      await this.launchEvidence(owner, true, block, await this.deps.oc.bindSaneSession(session.nativeSessionId!, block));
+      await this.launchEvidence(owner, true);
       if (this.deps.closing() || this.deps.storageFailed() || owner.stopRequested) throw new Error("Bridge unavailable before native compaction submission");
       run.nativePhase = "sending"; await this.deps.persist();
       await this.deps.compactExecution(session);
@@ -226,16 +223,20 @@ export class OpenCodeRunService {
       if (queued && (run.status !== "running" || this.deps.currentOwner(run.sessionId) !== owner)) return;
       run.cwd = cwd;
       if (queued) {
-        if (!this.deps.oc.boundSaneSession) throw new Error("Queued native delivery requires read-only SANE session binding observation");
-        const block = await this.deps.oc.boundSaneSession(session.nativeSessionId!);
         if (!this.currentNative(owner)) throw new Error("Queued prompt ownership changed before launch evidence");
-        await this.launchEvidence(owner, resume, block, false);
       } else {
         await this.deps.oc.assertIdle(session.nativeSessionId!, run.cwd);
         await this.deps.oc.select(session.nativeSessionId!, run.model, run.effort);
-        const block = await this.deps.saneSession(session.sessionId);
-        await this.launchEvidence(owner, resume, block, await this.deps.oc.bindSaneSession(session.nativeSessionId!, block));
+        if (!resume) {
+          const block = await this.deps.saneSession(session.sessionId);
+          if (block !== null) {
+            if (!this.deps.oc.deliverSaneSession) throw new Error("Native startup requires SANE Session context delivery");
+            await this.deps.oc.deliverSaneSession(session.nativeSessionId!, saneSessionMessageId(session.sessionId), block);
+            await this.deps.emit(run, "context", { type: "session-block", changed: true, text: block });
+          }
+        }
       }
+      await this.launchEvidence(owner, resume);
       if (queued && (run.status !== "running" || this.deps.currentOwner(run.sessionId) !== owner)) return;
       if (this.deps.closing() || owner.stopRequested) { await this.finishNative(owner, "interrupted", "Stopped before native submission"); ready(false); return; }
       run.nativePhase = "sending"; await this.deps.persist();

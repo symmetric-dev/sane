@@ -1,5 +1,4 @@
 import { Plugin } from "@opencode/plugin"
-import type { SessionContext } from "@opencode/plugin/promise/session"
 import { OpenCodeWorkerInvocations, qualifyOpenCodeCaller, type OpenCodeToolCaller } from "../../../packages/sane-cli/src/native-opencode.ts"
 import { linkNativeCaller, nativeCallerContext, nativeShellCaller, nativeLinkSchema } from "../../../packages/sane-cli/src/native-caller.ts"
 import { handoffNativeCaller, nativeHandoffSchema, nativeHandoffStatusSchema } from "../../../packages/sane-cli/src/native-handoff.ts"
@@ -11,16 +10,7 @@ export const SanePlugin = Plugin.define({
   async setup(ctx) {
     const registration = ctx.options.registrationFile
     const workerInvocations = new OpenCodeWorkerInvocations()
-    // The App delivers the framework once into history and binds the per-turn SANE Session block here.
-    // Children and forks inherit metadata, so apply only context bound to this exact session.
-    const applySaneContext = async (input: SessionContext) => {
-      const context = (await ctx.session.get({ sessionID: input.sessionID })).metadata?.saneContext
-      if (context === undefined) return
-      if (!context || typeof context !== "object" || Array.isArray(context) || typeof (context as Record<string, unknown>).sessionID !== "string" || typeof (context as Record<string, unknown>).text !== "string") throw new Error("SANE_CONTEXT_INVALID: session metadata saneContext is malformed.")
-      const bound = context as { sessionID: string; text: string }
-      if (bound.sessionID === input.sessionID) input.system.push({ type: "text", text: bound.text })
-    }
-    await ctx.session.hook("context", applySaneContext)
+    // The App delivers framework and Session context separately into startup history.
     await ctx.tool.hook("execute.before", event => { workerInvocations.before(event) })
     await ctx.tool.hook("execute.after", event => { workerInvocations.after(event) })
     const qualify = (tool: OpenCodeToolCaller) => {

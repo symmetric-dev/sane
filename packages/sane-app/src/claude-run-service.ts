@@ -44,7 +44,7 @@ export type ClaudeRunDependencies = {
   compactExecution: (session: Session) => Promise<string>;
   refreshCompactHistory: (owner: RunOwner) => Promise<void>;
   assertWorkerDeliverySubmission: (owner: RunOwner) => void;
-  /** The SANE Session block from current membership, or null. */
+  /** The startup SANE Session block from current membership, or null. */
   saneSession: (sessionId: string) => Promise<string | null>;
 };
 
@@ -283,17 +283,21 @@ export class ClaudeRunService {
       const identity = snapshotIdentity(run);
       const installed = identity ? await runtime.agentSettings(this.options.claudeRoot, identity) : undefined;
       const ccAgent = installed?.agent, permissions = installed?.permissions;
+      // Separate from SessionStart framework delivery: add the Session block only
+      // alongside the first prompt, never as a per-run system prompt override.
+      const saneSession = !resume ? await deps.saneSession(session.sessionId) : null;
+      const sessionPath = saneSession === null ? undefined : join(this.options.dataDir, `${run.runId}.sane-session.md`);
+      if (sessionPath) {
+        if (saneSession!.length > hookContextLimit) throw new AgentLaunchConfigurationError(`SANE Session context exceeds the ${hookContextLimit}-character hook context limit`);
+        await deps.enqueue(() => runtime.writeSettings(sessionPath, saneSession!));
+        hooks.UserPromptSubmit!.push({ hooks: [{ type: "command", command: `${quote(runtime.execPath)} ${quote(join(this.options.packageRoot, "hooks/session-context.ts"))} ${quote(sessionPath)}`, timeout: 10 }] });
+      }
       const settingsPath = join(this.options.dataDir, `${run.runId}.settings.json`);
       const settings = JSON.stringify({ hooks, ...(permissions ? { permissions } : {}) });
       await deps.enqueue(() => runtime.writeSettings(settingsPath, settings));
-      const saneSession = await deps.saneSession(session.sessionId);
-      const sessionPath = saneSession === null ? undefined : join(this.options.dataDir, `${run.runId}.sane-session.md`);
-      if (sessionPath) await deps.enqueue(() => runtime.writeSettings(sessionPath, saneSession!));
       if (deps.closing() || deps.storageFailed() || owner.stopRequested) throw new Error("Closing before launch");
       const args = [this.options.claudeBin, "-p", "--permission-mode", "bypassPermissions", "--output-format", "stream-json", "--verbose", resume ? "--resume" : "--session-id", session.nativeSessionId!, "--settings", settingsPath];
       if (ccAgent !== undefined) args.push("--agent", ccAgent);
-      // The default snapshot freezes the first run's Session block for every resume.
-      if (sessionPath) args.push("--append-system-prompt-file", sessionPath, "--system-prompt-snapshot", "off");
       if (run.model !== undefined) args.push("--model", run.model);
       if (run.effort !== undefined) args.push("--effort", run.effort);
       // Native HOME/hooks stay shared, but bridge credentials/context do not.

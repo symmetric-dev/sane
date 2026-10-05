@@ -17,7 +17,7 @@ export function validAgentSnapshot(value: AgentSnapshot): boolean {
 
 export type Status = "running" | "completed" | "failed" | "interrupted";
 export type Session = AgentSnapshot & { sessionId: string; harness?: Harness; nativeSessionId?: string; authorityId?: string; cwd: string; lastStatus: Status | "unknown"; lastRunId: string | null; title?: string; hidden?: boolean; model?: string; effort?: string; profileId?: string; attachment?: { state: "pending" | "ready"; source: string; error?: string }; saneContext?: SaneSessionContext };
-/** Recorded once when SANE creates the session; every later run re-applies it unchanged. */
+/** Recorded once when SANE creates the session; delivered into native history at startup. */
 export type SaneSessionContext = { version: number; framework: string; assignment?: string };
 export const efforts = FIXED_EFFORT_VALUES;
 export type Effort = typeof efforts[number];

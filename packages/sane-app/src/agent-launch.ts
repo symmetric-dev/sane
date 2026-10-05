@@ -49,7 +49,11 @@ export function saneContextText(context: SaneSessionContext): string {
 export function saneFrameworkMessageId(sessionId: string): string {
   return `msg_${sessionId.replaceAll("-", "")}`;
 }
-/** The SANE Session block every run applies, from current membership; SANE sessions only. */
+/** A separate, stable startup message, delivered after the framework and before the first prompt. */
+export function saneSessionMessageId(sessionId: string): string {
+  return `msg_${sessionId.replaceAll("-", "")}_session`;
+}
+/** The startup SANE Session block, resolved before the first prompt; SANE sessions only. */
 export function saneSessionText(session: Pick<Session, "saneContext">, context: ExecutionContext): string | null {
   return session.saneContext ? sessionContext({ workstreamId: context.workstreamId, workstreamRoot: context.artifactsRoot, implementationRoot: context.executionCheckout }) : null;
 }

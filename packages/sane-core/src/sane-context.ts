@@ -74,7 +74,7 @@ export function frameworkContext(agent: StoredSaneAgentIdentity | undefined): Sa
 }
 
 export type SaneSessionRoots = { workstreamId: string | null; workstreamRoot: string | null; implementationRoot: string }
-/** Current membership, applied every turn; null when the conversation has no workstream. */
+/** Startup membership; null when the conversation has no workstream. */
 export function sessionContext(roots: SaneSessionRoots): string | null {
   if (roots.workstreamId === null) return null
   if (roots.workstreamRoot === null) throw new Error(`Workstream ${roots.workstreamId} has no workstream root`)

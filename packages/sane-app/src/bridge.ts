@@ -671,8 +671,7 @@ async function startOwned(options: Options, assetsDir: string, packageDir: strin
     if (sourceDomain.mode !== destinationDomain.mode || sourceDomain.mode === "repository" && (destinationDomain.mode !== "repository" || sourceDomain.repositoryId !== destinationDomain.repositoryId || sourceDomain.primaryCheckout !== destinationDomain.primaryCheckout) || admission.source.authorityId !== original.source.authorityId || admission.source.descriptor.harness !== original.source.descriptor.harness || admission.binding.executionCheckout !== original.binding.executionCheckout || admission.binding.workspaceId !== original.binding.workspaceId || admission.binding.worktreeId !== original.binding.worktreeId) throw new Error("Branch source and destination admission domains or execution bindings differ");
     let destination = meta.sessions.find(s => s.sessionId === op.destinationId);
     if (!destination) {
-      // Forks inherit the framework in history and the source's bound metadata; rebind it to the fork's own native ID.
-      if (source.harness === "opencode" && source.saneContext) await oc.rebindSaneSession(op.nativeId);
+      // Forks inherit startup framework and Session context in native history.
       destination = { ...source, sessionId: op.destinationId, nativeSessionId: op.nativeId, lastStatus: "unknown", lastRunId: null, title: `${(displayTitle(source) ?? "Conversation").slice(0, 185)} · Branch` };
       delete destination.attachment; delete destination.hidden;
       meta.sessions.push(destination);

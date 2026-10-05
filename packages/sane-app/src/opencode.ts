@@ -24,9 +24,9 @@ export type NativeCompactAdmission = { id: string; sessionID: string; type: "com
 export type NativeCompactionProjection = { messages: NativeMessage[]; compaction?: CompactionMetadata; outcome?: "succeeded" | "failed" | "skipped" };
 export type NativeCompactionObservation = NativeCompactionProjection & { pending: boolean; active: boolean; observed: boolean };
 type Page = { data: NativeMessage[]; cursor: { next?: string | null } };
-/** Marks the App-delivered framework synthetic, which is model context and never a transcript turn. */
+/** App-delivered startup synthetics are model context, never transcript turns. */
 const saneFrameworkMetadata = { sane: "framework" } as const;
-const saneFramework = (metadata: Record<string, unknown> | undefined) => metadata?.sane === saneFrameworkMetadata.sane;
+const saneStartupContext = (metadata: Record<string, unknown> | undefined) => metadata?.sane === saneFrameworkMetadata.sane || metadata?.sane === "session";
 // SessionRestart in native V2 publishes this notice while preserving the same
 // execution claim. Shutdown interruptions deliberately have no idle boundary.
 // Do not treat arbitrary synthetics (including other notices) as continuations.
@@ -221,6 +221,11 @@ export class OpenCodeAdapter {
     const { data } = await this.request<{ data: NativeInput }>(this.path(id) + "/synthetic", "POST", { id: messageId, text, description: "SANE framework", metadata: saneFrameworkMetadata, resume: false });
     if (data?.id !== messageId || data.sessionID !== id || data.type !== "synthetic") throw new OpenCodeError("OpenCode SANE framework acknowledgement mismatch; delivery unconfirmed");
   }
+  /** Separate startup context, queued after the framework and immediately before the first prompt. */
+  async deliverSaneSession(id: string, messageId: string, text: string) {
+    const { data } = await this.request<{ data: NativeInput }>(this.path(id) + "/synthetic", "POST", { id: messageId, text, description: "SANE Session", metadata: { sane: "session" }, resume: false });
+    if (data?.id !== messageId || data.sessionID !== id || data.type !== "synthetic") throw new OpenCodeError("OpenCode SANE Session acknowledgement mismatch; delivery unconfirmed");
+  }
   /** Explicit user-requested, idle-only admission. Caller owns the idle gate and
    * persists request ID before this mutation and returned ID before observation.
    * Native may coalesce into a different pending ID; this is not rejection.
@@ -240,8 +245,7 @@ export class OpenCodeAdapter {
     if (!("text" in current) || typeof current.text !== "string") throw new OpenCodeError("Native SANE session binding is malformed", 409);
     return current.text;
   }
-  /** The per-turn SANE Session block, bound to this exact native session: forks and subagents inherit
-   * metadata, and the plugin ignores a foreign sessionID. PATCH replaces metadata wholesale, so other
+  /** Legacy metadata binding, no longer consumed by the plugin. PATCH replaces metadata wholesale, so other
    * keys are kept; null removes the binding. Unchanged bindings are not rewritten; returns whether it changed. */
   async bindSaneSession(id: string, text: string | null): Promise<boolean> {
     const { saneContext: current, ...metadata } = (await this.session(id)).metadata ?? {};
@@ -250,7 +254,7 @@ export class OpenCodeAdapter {
     await this.request(this.path(id), "PATCH", { metadata: { ...metadata, ...(next ? { saneContext: next } : {}) } });
     return true;
   }
-  /** A fork inherits its source's binding; rebind it to the fork until its first run renders its own. */
+  /** Legacy helper for inherited metadata; startup context now follows forked native history. */
   async rebindSaneSession(id: string) {
     const current = (await this.session(id)).metadata?.saneContext as { text?: unknown } | undefined;
     if (current === undefined) return;
@@ -280,8 +284,8 @@ export class OpenCodeAdapter {
     ]);
     if (session?.id !== id || session.location?.directory !== cwd) throw new OpenCodeError("Native session identity or execution directory differs from the pinned conversation", 409);
     if (!active.data || !Array.isArray(inbox.data)) throw new OpenCodeError("Unsupported native activity response");
-    // The framework synthetic waits, by design, for the first prompt; it is not foreign input.
-    return { session, active: !!active.data[id], pending: inbox.data.some(m => !(m.type === "synthetic" && saneFramework(m.payload?.metadata))) };
+    // Startup context waits for the first prompt; it is not foreign input.
+    return { session, active: !!active.data[id], pending: inbox.data.some(m => !(m.type === "synthetic" && saneStartupContext(m.payload?.metadata))) };
   }
   async assertIdle(id: string, cwd: string) {
     const state = await this.activity(id, cwd);
@@ -470,7 +474,7 @@ export function normalizeMessage(message: NativeMessage): MessageSnapshot | unde
   }
   if (message.type === "model-switched") return { messageId: message.id, role: "system", parts: [], status: "completed", createdAt: new Date(message.time.created).toISOString(), ...(model ? { model } : {}) };
   if (!["user", "assistant", "system", "synthetic"].includes(message.type)) return;
-  if (message.type === "synthetic" && saneFramework(message.metadata)) return;
+  if (message.type === "synthetic" && saneStartupContext(message.metadata)) return;
   const parts: MessagePart[] = message.type === "assistant" ? (message.content ?? []).flatMap((part, i): MessagePart[] => {
     const id = part.id ?? `${message.id}:part:${i}`;
     if (part.type === "text" || part.type === "reasoning") return [{ id, type: part.type, text: part.text ?? "" }];
