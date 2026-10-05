@@ -3,7 +3,7 @@
  * Never builds assets, ensures a managed service, or invokes installed CLIs/models.
  * Run this file alone: startup selectors/password are saved and restored below.
  */
-import { afterAll, beforeAll, describe, expect, test } from "bun:test";
+import { afterAll, beforeAll, describe, expect, spyOn, test } from "bun:test";
 import { createHash } from "node:crypto";
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
@@ -12,6 +12,9 @@ import { initializeAppStore } from "../src/app-store";
 import { acquireData, acquireInstallation, validateOwnershipPaths, type OwnershipHandle } from "../src/installation-ownership";
 import type { NativeMessage } from "../src/opencode";
 import { capabilitiesFor, getHarnessDescriptor, type Harness } from "../shared/conversation/harness-capabilities";
+import { RepositoryRouter, WorkstreamAdapterError } from "../src/workstreams";
+import { CatalogService } from "../src/catalog";
+import { discoverRepository, initializeRepository } from "sane-core/server";
 
 const TEMP = "/private/var/folders/6v/wnsbl7cj5w96s83lszq3454w0000gn/T/opencode";
 const TIMEOUT = 30000;
@@ -237,6 +240,130 @@ describe.serial("bridge runtime (isolated offline HTTP native fixtures)", () => 
     expect((await api("/api/sessions", undefined, { headers: { cookie: revoked } })).status).toBe(401);
     expect((await api("/api/logout", {}, { anonymous: true })).status).toBe(200);
     await login();
+  }, TIMEOUT);
+
+  // Can run independently with -t 'performance polling route wiring'; no native session or restart required.
+  test("performance polling route wiring keeps overview/list/status/handoffs read-only and inspect/create full", async () => {
+    await login();
+    // Keep the existing admission fixture's repository uninitialized/App-only.
+    const pollingRepo = join(root, "polling-repo"); mkdirSync(pollingRepo);
+    const git = Bun.spawnSync(["git", "init", "-q", pollingRepo]);
+    expect(git.exitCode).toBe(0);
+    const registration = await api("/api/workspaces", { cwd: pollingRepo });
+    expect(registration.status).toBe(201);
+    const workspaceId = registration.body.workspaceId, qs = new URLSearchParams({ workspaceId }).toString();
+    expect((await api(`/api/workstreams/init?${qs}`, {})).body.state).toBe("ready");
+    const created = await api(`/api/workstreams?${qs}`, { id: "polling-route-fixture", title: "Polling route fixture", type: "feature" });
+    expect(created.status).toBe(200);
+    expect((await api(`/api/workstreams/overview?${qs}`)).status).toBe(200); // warm the real adapter
+    const full = spyOn(RepositoryRouter.prototype, "forWorkspace").mockImplementation(async () => { throw new WorkstreamAdapterError(409, "full-route-sentinel", "Unexpected full adapter read"); });
+    try {
+      const overview = await api(`/api/workstreams/overview?${qs}`);
+      expect(overview.status).toBe(200); expect(overview.body.conversations).toEqual([]);
+      expect(overview.body.workstreams.map((s: any) => s.workstream.id)).toEqual(["polling-route-fixture"]);
+      const list = await api(`/api/workstreams?${qs}`);
+      expect(list.status).toBe(200); expect(list.body.map((w: any) => w.id)).toEqual(["polling-route-fixture"]);
+      const status = await api(`/api/workstreams/status?${qs}&id=polling-route-fixture`);
+      expect(status.status).toBe(200); expect(status.body).toEqual(overview.body.workstreams[0]);
+      const handoffs = await api(`/api/handoffs?${qs}`);
+      expect(handoffs.status).toBe(200); expect(handoffs.body).toEqual({ handoffs: [], problems: {} });
+      expect(full).not.toHaveBeenCalled();
+      // Inspect must not be silently replaced by a polling adapter lookup.
+      const inspect = spyOn(RepositoryRouter.prototype, "inspect").mockImplementation(async () => { throw new WorkstreamAdapterError(409, "inspect-route-sentinel", "Full inspection boundary"); });
+      try {
+        const response = await api(`/api/workstreams/inspect?${qs}`);
+        expect(response.status).toBe(409); expect(response.body.code).toBe("inspect-route-sentinel");
+      } finally { inspect.mockRestore(); }
+      const mutation = await api(`/api/workstreams?${qs}`, { id: "must-use-full", title: "Mutation boundary", type: "issue" });
+      expect(mutation.status).toBe(409); expect(mutation.body.code).toBe("full-route-sentinel");
+    } finally { full.mockRestore(); }
+    const polling = spyOn(RepositoryRouter.prototype, "forPolling").mockImplementation(async () => { throw new WorkstreamAdapterError(409, "polling-route-sentinel", "Polling boundary"); });
+    try {
+      const mutation = await api(`/api/workstreams?${qs}`, { id: "full-mutation-fixture", title: "Full mutation fixture", type: "issue" });
+      expect(mutation.status).toBe(200); expect(mutation.body.id).toBe("full-mutation-fixture");
+      const inspect = await api(`/api/workstreams/inspect?${qs}`);
+      expect(inspect.status).toBe(200); expect(inspect.body.state).toBe("ready");
+      const overview = await api(`/api/workstreams/overview?${qs}`);
+      expect(overview.status).toBe(409); expect(overview.body.code).toBe("polling-route-sentinel");
+    } finally { polling.mockRestore(); }
+  }, TIMEOUT);
+
+  test("performance handoff poller enumerates warm repositories without full catalog listing and retains handle validation", async () => {
+    await login();
+    const pollingRepo = join(root, "warm-handoff-polling-repo"); mkdirSync(pollingRepo);
+    expect(Bun.spawnSync(["git", "init", "-q", pollingRepo]).exitCode).toBe(0);
+    initializeRepository(discoverRepository(pollingRepo));
+    const registration = await api("/api/workspaces", { cwd: pollingRepo });
+    expect(registration.status).toBe(201);
+    const workspaceId = registration.body.workspaceId, qs = new URLSearchParams({ workspaceId }).toString();
+    const originalPolling = RepositoryRouter.prototype.forPolling;
+    let adapter: Awaited<ReturnType<typeof originalPolling>> | undefined;
+    const polling = spyOn(RepositoryRouter.prototype, "forPolling").mockImplementation(async function(this: RepositoryRouter, id: string) {
+      const result = await originalPolling.call(this, id);
+      if (id === workspaceId) adapter = result;
+      return result;
+    });
+    try {
+      expect((await api(`/api/workstreams/overview?${qs}`)).status).toBe(200);
+      expect(adapter).toBeDefined();
+      const list = spyOn(CatalogService.prototype, "list"), get = spyOn(CatalogService.prototype, "get"), binding = spyOn(CatalogService.prototype, "binding"), validation = spyOn(adapter!.domain, "validatePolling");
+      try {
+        polling.mockClear();
+        await until("two background handoff polls on the warm repository", async () => polling.mock.calls.filter(([id]) => id === workspaceId).length >= 2 && validation.mock.calls.length >= 2 ? true : undefined);
+        // No HTTP catalog/workstream calls occurred while waiting. These accesses
+        // therefore measure real consumeHandoffs ticks, not a fabricated poller.
+        expect(validation.mock.calls.length).toBeGreaterThanOrEqual(2);
+        expect(list).not.toHaveBeenCalled();
+        expect(get.mock.calls.filter(([id]) => id === workspaceId)).toEqual([]);
+        expect(binding.mock.calls.filter(([id]) => id === workspaceId)).toEqual([]);
+        // The browser workspace API still performs ordinary full catalog listing.
+        const browserList = await api("/api/workspaces");
+        expect(browserList.status).toBe(200);
+        expect(browserList.body.workspaces.some((w: any) => w.workspaceId === workspaceId)).toBe(true);
+        expect(list).toHaveBeenCalledTimes(1);
+        expect(get.mock.calls.some(([id]) => id === workspaceId)).toBe(true);
+        expect(binding.mock.calls.some(([id]) => id === workspaceId)).toBe(true);
+      } finally { for (const spy of [list, get, binding, validation]) spy.mockRestore(); }
+    } finally { polling.mockRestore(); }
+  }, TIMEOUT);
+
+  test("performance handoff poller routes new repositories and changed selections through full polling misses", async () => {
+    await login();
+    const pollingRepo = join(root, "new-handoff-polling-repo"); mkdirSync(pollingRepo);
+    expect(Bun.spawnSync(["git", "init", "-q", pollingRepo]).exitCode).toBe(0);
+    initializeRepository(discoverRepository(pollingRepo));
+    const originalPolling = RepositoryRouter.prototype.forPolling, originalGet = CatalogService.prototype.get;
+    const active = new Set<string>(), resolved = new Set<string>(), lookups: { workspaceId: string; insidePolling: boolean }[] = [];
+    let selectedCatalog: CatalogService | undefined;
+    const polling = spyOn(RepositoryRouter.prototype, "forPolling").mockImplementation(async function(this: RepositoryRouter, id: string) {
+      active.add(id);
+      try { const result = await originalPolling.call(this, id); resolved.add(id); return result; }
+      finally { active.delete(id); }
+    });
+    const get = spyOn(CatalogService.prototype, "get").mockImplementation(async function(this: CatalogService, id: string) {
+      selectedCatalog = this;
+      lookups.push({ workspaceId: id, insidePolling: active.has(id) });
+      return originalGet.call(this, id);
+    });
+    try {
+      // Do not warm via an HTTP overview: discovery must originate in the timer.
+      const registration = await api("/api/workspaces", { cwd: pollingRepo });
+      expect(registration.status).toBe(201);
+      const workspaceId = registration.body.workspaceId;
+      await until("new repository opened by background polling", async () => resolved.has(workspaceId) ? true : undefined);
+      const misses = lookups.filter(lookup => lookup.workspaceId === workspaceId);
+      expect(misses.length).toBeGreaterThan(0);
+      expect(misses.every(lookup => lookup.insidePolling)).toBe(true);
+      expect(polling.mock.calls.some(([id]) => id === workspaceId)).toBe(true);
+      const workspace = (selectedCatalog as any).catalog.workspaces.find((w: any) => w.workspaceId === workspaceId);
+      // Authoritative selection/revision changes cannot be treated as capabilities.
+      workspace.worktrees[0].bindingRevision = crypto.randomUUID();
+      lookups.length = 0; resolved.delete(workspaceId);
+      await until("changed selection validated by background polling", async () => resolved.has(workspaceId) ? true : undefined);
+      const changedSelection = lookups.filter(lookup => lookup.workspaceId === workspaceId);
+      expect(changedSelection.length).toBeGreaterThan(0);
+      expect(changedSelection.every(lookup => lookup.insidePolling)).toBe(true);
+    } finally { get.mockRestore(); polling.mockRestore(); }
   }, TIMEOUT);
 
   test("OpenCode admission, selected launch, prompt completion and normalized transcript survive restart", async () => {

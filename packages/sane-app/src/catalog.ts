@@ -176,6 +176,18 @@ export class CatalogService {
       validateBinding: () => { if (token() !== pinned) error(409, "binding-invalid", "Search worktree binding changed"); },
     }, operation);
   }
+  /** Selection metadata only, not a filesystem capability. Cached domain readers must revalidate their own pins. */
+  async registered(id: string) {
+    await this.serial;
+    if (this.failed) error(503, "catalog-storage", "Catalog storage unavailable; restart required");
+    return this.publicWorkspace(this.find(id));
+  }
+  /** Enumeration metadata only. Each polling reader still validates its repository handle before use. */
+  async registeredWorkspaces() {
+    await this.serial;
+    if (this.failed) error(503, "catalog-storage", "Catalog storage unavailable; restart required");
+    return { version: 1 as const, workspaces: this.catalog.workspaces.map(w => this.publicWorkspace(w)) };
+  }
   async get(id: string) { await this.serial; const w = this.find(id); for (const t of w.worktrees) { try { await this.binding(id, t.worktreeId); } catch {} } return this.publicWorkspace(w); }
   async list() { await this.serial; return { version: 1 as const, workspaces: await Promise.all(this.catalog.workspaces.map(w => this.get(w.workspaceId))) }; }
   association(id: string): Association { return this.catalog.associations[id] ?? { workspaceId: null, worktreeId: null, association: "unresolved", associationReason: "not-associated" }; }

@@ -1,9 +1,9 @@
 import { Database } from "bun:sqlite"
 import { execFileSync } from "node:child_process"
 import { randomUUID } from "node:crypto"
-import { closeSync, existsSync, fsyncSync, lstatSync, mkdirSync, mkdtempSync, openSync, readFileSync, readdirSync, realpathSync, renameSync, rmSync, statSync, unlinkSync, writeFileSync } from "node:fs"
+import { accessSync, closeSync, constants, existsSync, fstatSync, fsyncSync, lstatSync, mkdirSync, mkdtempSync, openSync, readFileSync, readSync, readdirSync, realpathSync, renameSync, rmSync, statSync, unlinkSync, writeFileSync, type BigIntStats } from "node:fs"
 import { hostname, tmpdir } from "node:os"
-import { isAbsolute, join, resolve } from "node:path"
+import { dirname, isAbsolute, join, resolve } from "node:path"
 import type { CheckoutPin, RepositoryContext, RepositoryDiscovery, StoreAvailability } from "./contracts.ts"
 import { DomainError, fail, storageError } from "./errors.ts"
 import { SCHEMA, SCHEMA_VERSION } from "./schema.ts"
@@ -54,10 +54,237 @@ export function discoverRepository(path: string): RepositoryDiscovery {
     return { primaryCheckout: primaryPin.path, commonDir: primaryPin.commonDir, stateRoot, databasePath: join(stateRoot, "sane.db"), primaryPin, invocationCheckout }
   } catch (error) { if (error instanceof DomainError) throw error; return fail("INVALID_CONTEXT", `Cannot discover repository: ${(error as Error).message}`) }
 }
+const checkoutInputs = new WeakMap<RepositoryDiscovery, { environment: string; paths: string[]; signatures: string[]; settled: boolean; selectors: string[]; selectorSignatures: string[]; selectorSettled: boolean; roots: string[] }>()
+const gitEnvironment = () => JSON.stringify(Object.entries(process.env).filter(([name]) => !name.startsWith("GIT_")).sort(([a], [b]) => a.localeCompare(b)))
+const mappingStat = (s: BigIntStats) => s.isDirectory() ? `${s.dev}:${s.ino}:${s.mode}` : `${s.dev}:${s.ino}:${s.mode}:${s.nlink}:${s.size}:${s.mtimeNs}:${s.ctimeNs}`
+function mappingSignature(path: string): string {
+  try { return `${mappingStat(lstatSync(path, { bigint: true }))}:${realpathSync(path)}` }
+  catch (error) { if ((error as NodeJS.ErrnoException).code === "ENOENT") return "absent"; throw error }
+}
+/** Not a Git config parser: includes, worktree overrides and extensions need
+ * full Git discovery, even when the file containing the directive is settled. */
+function simpleMappingConfig(text: string): boolean {
+  let section = ""
+  for (const raw of text.split(/\r?\n/)) {
+    const line = raw.trim()
+    if (!line || /^[#;]/.test(line)) continue
+    if (line.includes("\0") || line.endsWith("\\")) return false
+    if (line.startsWith("[")) {
+      const match = /^\[([a-z][a-z0-9-]*)(?:\s+"(?:[^"\\]|\\.)*"|\.[a-z0-9.-]+)?\]\s*(?:[#;].*)?$/i.exec(line)
+      if (!match) return false
+      section = match[1]!.toLowerCase()
+      if (["include", "includeif", "extensions"].includes(section)) return false
+      continue
+    }
+    const match = /^([a-z][a-z0-9-]*)\s*(?:=\s*(.*))?$/i.exec(line)
+    if (!section || !match) return false
+    if (section === "core" && (match[1]!.toLowerCase() === "worktree" || match[1]!.toLowerCase() === "bare" && !/^(false|no|off|0)\s*(?:[#;].*)?$/i.test(match[2] ?? ""))) return false
+  }
+  return true
+}
+/** Run only on full checkout admission. Git reports its configuration roots
+ * (including absent global/system files); origins also fence vendor config.
+ * Older Git or unsupported metadata shapes simply cannot reuse admission. */
+function captureCheckoutInputs(discovery: RepositoryDiscovery, filesystemOnly = false): void {
+  const previous = checkoutInputs.get(discovery), environment = gitEnvironment()
+  try {
+    if (previous?.settled && previous.environment === environment && previous.paths.every((path, i) => mappingSignature(path) === previous.signatures[i])) return
+  } catch { /* Changed or inaccessible inputs require full admission. */ }
+  checkoutInputs.delete(discovery)
+  const paths = new Map<string, string>()
+  const cutoff = BigInt(Date.now() - 2000) * 1_000_000n
+  let settled = true
+  const age = (info: BigIntStats) => { if (!info.isDirectory() && (info.mtimeNs >= cutoff || info.ctimeNs >= cutoff)) settled = false }
+  const unsupported = () => { throw new Error("Unsupported checkout evidence") }
+  const metadata = (path: string, optional = false): string | null => {
+    let info
+    try { info = lstatSync(path, { bigint: true }) } catch (error) { if (optional && (error as NodeJS.ErrnoException).code === "ENOENT") { paths.set(path, "absent"); return null }; throw error }
+    if (!info.isFile() || info.nlink !== 1n || info.size > 64n * 1024n || realpathSync(path) !== path) return unsupported()
+    age(info)
+    paths.set(path, `${mappingStat(info)}:${path}`)
+    const fd = openSync(path, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK)
+    try {
+      if (mappingStat(fstatSync(fd, { bigint: true })) !== mappingStat(info)) return unsupported()
+      const bytes = Buffer.alloc(Number(info.size) + 1)
+      let used = 0, count
+      while (used < bytes.length && (count = readSync(fd, bytes, used, bytes.length - used, used))) used += count
+      if (BigInt(used) !== info.size || mappingStat(fstatSync(fd, { bigint: true })) !== mappingStat(info) || mappingSignature(path) !== paths.get(path)) return unsupported()
+      return new TextDecoder("utf-8", { fatal: true }).decode(bytes.subarray(0, used))
+    } finally { closeSync(fd) }
+  }
+  const directory = (path: string, device?: number, inode?: number) => {
+    const info = lstatSync(path, { bigint: true })
+    if (!info.isDirectory() || realpathSync(path) !== path || device !== undefined && info.dev !== BigInt(device) || inode !== undefined && info.ino !== BigInt(inode)) unsupported()
+    paths.set(path, `${mappingStat(info)}:${path}`)
+  }
+  const selectors = new Map<string, string>()
+  let selectorSettled = true
+  const selector = (path: string) => {
+    // Ancestor modes can make a higher-priority candidate executable without
+    // changing the candidate itself. Canonical targets fence symlink selectors.
+    let cursor = path
+    for (let count = 0; ; count++) {
+      if (count > 256 || selectors.size > 4096) unsupported()
+      const signature = mappingSignature(cursor)
+      selectors.set(cursor, signature); paths.set(cursor, signature)
+      if (signature !== "absent") {
+        const info = lstatSync(cursor, { bigint: true })
+        age(info)
+        if (!info.isDirectory() && (info.mtimeNs >= cutoff || info.ctimeNs >= cutoff)) selectorSettled = false
+        const canonical = realpathSync(cursor), target = lstatSync(canonical, { bigint: true })
+        age(target)
+        if (!target.isDirectory() && (target.mtimeNs >= cutoff || target.ctimeNs >= cutoff)) selectorSettled = false
+        const targetSignature = `${mappingStat(target)}:${canonical}`
+        selectors.set(canonical, targetSignature); paths.set(canonical, targetSignature)
+      }
+      const parent = dirname(cursor)
+      if (parent === cursor) break
+      cursor = parent
+    }
+  }
+  const nativeExecutable = (path: string) => {
+    selector(path)
+    const canonical = realpathSync(path), info = lstatSync(canonical, { bigint: true })
+    if (!info.isFile()) unsupported()
+    accessSync(path, constants.X_OK)
+    const fd = openSync(canonical, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK)
+    try {
+      const bytes = Buffer.alloc(4)
+      if (mappingStat(fstatSync(fd, { bigint: true })) !== mappingStat(info) || readSync(fd, bytes, 0, 4, 0) !== 4
+        || ![0x7f454c46, 0xfeedface, 0xfeedfacf, 0xcefaedfe, 0xcffaedfe, 0xcafebabe, 0xbebafeca, 0xcafebabf, 0xbfbafeca].includes(bytes.readUInt32BE())
+        || mappingStat(fstatSync(fd, { bigint: true })) !== mappingStat(info)) unsupported()
+    } finally { closeSync(fd) }
+    return canonical
+  }
+  const selectedGit = (cwd: string) => {
+    // Node/Bun spawning can resolve relative PATH entries before or after the
+    // child cwd change. Neither that shape nor an unspecified default PATH has
+    // one independently verified selector here; retain full discovery for both.
+    const search = process.env.PATH?.split(":")
+    if (!search || search.length > 256 || search.some(dir => !isAbsolute(dir))) return unsupported()
+    for (const dir of search) {
+      const candidate = resolve(cwd, dir, "git")
+      selector(candidate)
+      try { if (!statSync(candidate).isFile()) continue; accessSync(candidate, constants.X_OK) }
+      catch (error) { if (["ENOENT", "ENOTDIR", "EACCES"].includes((error as NodeJS.ErrnoException).code ?? "")) continue; throw error }
+      // Scripts can select arbitrary installations/config outside these inputs.
+      return nativeExecutable(candidate)
+    }
+    return unsupported()
+  }
+  try {
+    for (const pin of [discovery.primaryPin, discovery.invocationCheckout]) {
+      directory(pin.path, pin.device, pin.inode); directory(pin.gitDir, pin.gitDevice, pin.gitInode); directory(pin.commonDir, pin.commonDevice, pin.commonInode)
+      const marker = join(pin.path, ".git"), info = lstatSync(marker)
+      if (info.isDirectory()) {
+        if (marker !== pin.gitDir || pin.gitDir !== pin.commonDir) unsupported()
+        directory(marker, pin.gitDevice, pin.gitInode)
+      } else {
+        const match = /^gitdir: ([^\0\r\n]+)\n?$/.exec(metadata(marker)!)
+        if (!match || resolve(pin.path, match[1]!) !== pin.gitDir) unsupported()
+      }
+      const common = metadata(join(pin.gitDir, "commondir"), true)
+      if (common === null ? pin.gitDir !== pin.commonDir : !/^[^\0\r\n]+\n?$/.test(common) || resolve(pin.gitDir, common.replace(/\n$/, "")) !== pin.commonDir) unsupported()
+      const reverse = metadata(join(pin.gitDir, "gitdir"), true)
+      if (reverse !== null && (!/^[^\0\r\n]+\n?$/.test(reverse) || resolve(pin.gitDir, reverse.replace(/\n$/, "")) !== marker)) unsupported()
+      metadata(join(pin.gitDir, "HEAD"))
+      for (const name of ["objects", "refs"]) directory(join(pin.commonDir, name))
+      for (const dir of new Set([pin.gitDir, pin.commonDir])) if (metadata(join(dir, "config.worktree"), true) !== null) unsupported()
+      if (!simpleMappingConfig(metadata(join(pin.commonDir, "config"))!)) unsupported()
+    }
+    const cwd = discovery.primaryCheckout
+    let roots: string[]
+    if (previous?.environment === environment && previous.selectorSettled && previous.selectors.every((path, i) => mappingSignature(path) === previous.selectorSignatures[i])) {
+      // Recent config classifications are reread above, but settled executable
+      // selection can still reuse its independently fenced configuration roots.
+      for (const path of previous.selectors) selector(path)
+      roots = previous.roots
+    } else {
+      if (filesystemOnly) unsupported()
+      const executable = selectedGit(cwd)
+      if (selectedGit(discovery.invocationCheckout.path) !== executable) unsupported()
+      let expectedExecPath: string | undefined
+      if (process.platform === "darwin" && executable === "/usr/bin/git") {
+        nativeExecutable("/usr/bin/xcode-select"); nativeExecutable("/usr/bin/xcrun")
+        const env = Object.fromEntries(Object.entries(process.env).filter(([name]) => !name.startsWith("GIT_")))
+        const tool = (path: string, args: string[]) => execFileSync(path, args, { cwd, env, encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] }).trim()
+        const developer = realpathSync(tool("/usr/bin/xcode-select", ["-p"]))
+        const selection = process.env.DEVELOPER_DIR ?? "/private/var/db/xcode_select_link"
+        // Implicit Apple fallback/search and app-bundle shorthand are not bounded.
+        if (!isAbsolute(selection) || realpathSync(selection) !== developer) unsupported()
+        selector(selection); selector(developer)
+        const actual = tool("/usr/bin/xcrun", ["--no-cache", "--find", "git"])
+        if (realpathSync(actual) !== realpathSync(join(developer, "usr/bin/git"))) unsupported()
+        nativeExecutable(actual)
+        expectedExecPath = realpathSync(join(developer, "usr/libexec/git-core"))
+      }
+      const execPath = git(cwd, "--exec-path")
+      if (!isAbsolute(execPath) || !statSync(execPath).isDirectory() || expectedExecPath && realpathSync(execPath) !== expectedExecPath) unsupported()
+      selector(execPath)
+      roots = [git(cwd, "var", "GIT_CONFIG_SYSTEM"), ...git(cwd, "var", "GIT_CONFIG_GLOBAL").split("\n")]
+      // Apple Git also consumes a toolchain config outside GIT_CONFIG_SYSTEM.
+      if (process.platform === "darwin") roots.push(resolve(execPath, "../../share/git-core/gitconfig"))
+      const origins = git(cwd, "config", "--null", "--list", "--show-origin").split("\0")
+      if (origins.pop() !== "" || origins.length % 2) unsupported()
+      for (let i = 0; i < origins.length; i += 2) {
+        if (!origins[i]!.startsWith("file:")) unsupported()
+        roots.push(resolve(cwd, origins[i]!.slice(5)))
+      }
+    }
+    for (const path of new Set(roots)) {
+      if (!isAbsolute(path) || path.includes("\0")) unsupported()
+      const config = metadata(path, true)
+      if (config !== null && !simpleMappingConfig(config)) unsupported()
+    }
+    if (environment !== gitEnvironment() || [...paths].some(([path, signature]) => mappingSignature(path) !== signature)) unsupported()
+    checkoutInputs.set(discovery, { environment, paths: [...paths.keys()], signatures: [...paths.values()], settled, selectors: [...selectors.keys()], selectorSignatures: [...selectors.values()], selectorSettled, roots })
+  } catch { /* Full checks remain authoritative for unsupported inputs. */ }
+}
+/** Filesystem-only (no Git/SQLite) evidence for the inputs of pins (checkout) or store validation (store).
+ * Equal evidence after a full check means those inputs are unchanged; any difference requires the full check.
+ * A timestamp within 2s of capture may hide a same-tick change, so that evidence never matches again. */
+export function repositoryEvidence(discovery: RepositoryDiscovery, part: "checkout" | "store"): string {
+  const settled = BigInt(Date.now() - 2000) * 1_000_000n
+  let recent = false
+  const entry = (path: string) => {
+    try {
+      // Directory and SQLite shared-memory timestamps churn with routine Git/SQLite activity.
+      const s = lstatSync(path, { bigint: true })
+      if (s.isDirectory()) return [path, s.dev, s.ino, s.mode]
+      if (path === discovery.databasePath + "-shm") return [path, s.dev, s.ino, s.mode, s.nlink]
+      if (s.mtimeNs >= settled || s.ctimeNs >= settled) recent = true
+      return [path, s.dev, s.ino, s.mode, s.nlink, s.size, s.mtimeNs, s.ctimeNs]
+    } catch (error) { return [path, (error as NodeJS.ErrnoException).code ?? String(error)] }
+  }
+  const real = (path: string) => { try { return realpathSync(path) } catch (error) { return (error as NodeJS.ErrnoException).code ?? String(error) } }
+  const checkout = (pin: CheckoutPin) => [real(pin.path), real(pin.gitDir), real(pin.commonDir), ...[pin.path, join(pin.path, ".git"), pin.gitDir, pin.commonDir, ...["HEAD", "commondir", "gitdir", "config.worktree"].map(n => join(pin.gitDir, n)), ...["config", "HEAD", "objects", "refs"].map(n => join(pin.commonDir, n))].map(entry)]
+  let inputs = checkoutInputs.get(discovery)
+  if (part === "checkout" && inputs && !inputs.settled && inputs.selectorSettled && inputs.environment === gitEnvironment()) {
+    try {
+      if (inputs.paths.every((path, i) => {
+        if (mappingSignature(path) !== inputs!.signatures[i]) return false
+        if (inputs!.signatures[i] === "absent") return true
+        const info = lstatSync(path, { bigint: true })
+        return info.isDirectory() || info.mtimeNs < settled && info.ctimeNs < settled
+      })) {
+        // Reclassify uncertain bytes before producing settled evidence. This is
+        // filesystem-only; a changed selector must wait for full Git admission.
+        // The previously recorded nonce still forces that first settled guard.
+        captureCheckoutInputs(discovery, true)
+        inputs = checkoutInputs.get(discovery)
+      }
+    } catch { recent = true }
+  }
+  if (part === "checkout" && (!inputs?.settled || inputs.environment !== gitEnvironment())) recent = true
+  const evidence = part === "checkout" ? [checkout(discovery.primaryPin), checkout(discovery.invocationCheckout), inputs?.environment, inputs?.paths.map(path => [entry(path), real(path)])]
+    : [discovery.stateRoot, join(discovery.stateRoot, "workstreams"), join(discovery.stateRoot, "locks"), ...["", "-wal", "-shm", "-journal"].map(s => discovery.databasePath + s), ...["complete.json", "upgrading.json", ".complete-upgrade.json"].map(n => join(discovery.stateRoot, n))].map(entry)
+  return JSON.stringify([evidence, recent ? randomUUID() : null], (_, v) => typeof v === "bigint" ? String(v) : v)
+}
 export function checkDiscovery(discovery: RepositoryDiscovery): void {
   const actual = pinCheckout(discovery.primaryCheckout)
   const stateRoot = join(actual.path, ".sane")
   if (!samePin(actual, discovery.primaryPin) || actual.gitDir !== actual.commonDir || stateRoot !== discovery.stateRoot || join(stateRoot,"sane.db") !== discovery.databasePath || actual.commonDir !== discovery.commonDir) fail("STALE_BINDING", "Repository primary/common-directory binding changed.")
+  captureCheckoutInputs(discovery)
 }
 export function safeStoreFiles(discovery: RepositoryDiscovery): void {
   for (const path of [discovery.stateRoot, join(discovery.stateRoot,"workstreams"), join(discovery.stateRoot,"locks"), ...["", "-wal", "-shm", "-journal"].map(s => discovery.databasePath + s), ...["complete.json", "upgrading.json", ".complete-upgrade.json"].map(name => join(discovery.stateRoot, name))]) {

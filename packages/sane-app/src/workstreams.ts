@@ -1,5 +1,5 @@
 import { RepositoryDomain, DomainError, discoverRepository, inspectRepositoryStore, initializeRepository, openRepositoryDomain, normalizeNativeSource, revalidateCheckout } from "sane-core/server";
-import type { ConversationRef, CreateWorkstreamInput, InvocationContext, Phase, MutationContext, RepositoryContext } from "sane-core/contracts";
+import type { ConversationRef, CreateWorkstreamInput, InvocationContext, Phase, MutationContext, RepositoryContext, RepositoryDiscovery } from "sane-core/contracts";
 import { uuid, type Session } from "./history";
 import type { WorkstreamOverview } from "./workstreams-contract";
 import type { CatalogService } from "./catalog";
@@ -37,9 +37,10 @@ export class WorkstreamAdapter {
   job(id: string, jobId: string, session?: AppConversation) { return this.domain.getJobContext(id, jobId, session ? this.reference(session) : null); }
   overview(sessions: readonly (AppConversation & { title?: string })[]): WorkstreamOverview {
     const registered = this.domain.listConversations();
-    const rows: WorkstreamOverview["conversations"] = sessions.map(session => { const ref = this.reference(session); return { ref, sessionId: session.sessionId, title: session.title || session.sessionId, conversation: this.domain.getConversation(ref) }; });
+    const byRef = new Map(registered.map(conversation => [JSON.stringify([conversation.ref.harness, conversation.ref.authorityId, conversation.ref.nativeId]), conversation]));
+    const rows: WorkstreamOverview["conversations"] = sessions.map(session => { const ref = this.reference(session); return { ref, sessionId: session.sessionId, title: session.title || session.sessionId, conversation: byRef.get(JSON.stringify([ref.harness, ref.authorityId, ref.nativeId])) ?? null }; });
     for (const conversation of registered) if (!rows.some(row => row.ref && sameRef(row.ref, conversation.ref))) rows.push({ ref: conversation.ref, sessionId: null, title: conversation.ref.nativeId, conversation });
-    return { repositoryId: this.repositoryId, workstreams: this.list().map(w => this.status(w.id)), conversations: rows };
+    return { repositoryId: this.repositoryId, workstreams: this.domain.listStatuses(), conversations: rows };
   }
   manage(ref: ConversationRef, operation: string, input: Record<string, any>) {
     if (operation === "associate") return this.domain.associateConversation(ref, input.workstreamId, mutation());
@@ -76,37 +77,64 @@ export class WorkstreamAdapter {
 /** Cache handles by immutable domain identity AND complete filesystem evidence. */
 export class RepositoryRouter {
   private cache = new Map<string, WorkstreamAdapter>();
+  /** Read-only reuse of a fully opened adapter; filesystem evidence is checked on every access. */
+  private polls = new Map<string, { root: string; commonDir: string; worktreeId: string; bindingRevision: string; adapter: WorkstreamAdapter }>();
   constructor(private catalog: CatalogService, private sources: SourceRecords) {}
-  private async discovery(workspaceId: string) {
+  private async checkout(workspaceId: string) {
     if (!workspaceId) throw new WorkstreamAdapterError(400, "workspace-required", "Select a repository workspace");
     const workspace = await this.catalog.get(workspaceId);
     if (workspace.kind !== "repository") throw new WorkstreamAdapterError(409, "not-repository", "Plain directory has no repository domain");
     for (const tree of workspace.worktrees) {
       if (tree.state !== "available") continue;
       await this.catalog.binding(workspaceId, tree.worktreeId);
-      const discovered = discoverRepository(tree.root);
-      if (discovered.commonDir !== workspace.commonDir) throw new WorkstreamAdapterError(409, "stale-binding", "Repository binding changed");
-      return discovered;
+      return { root: tree.root, commonDir: workspace.commonDir!, worktreeId: tree.worktreeId, bindingRevision: tree.bindingRevision };
     }
     throw new WorkstreamAdapterError(409, "unavailable", "No valid checkout is available");
   }
+  private discover(checkout: { root: string; commonDir: string }) {
+    const discovered = discoverRepository(checkout.root);
+    if (discovered.commonDir !== checkout.commonDir) throw new WorkstreamAdapterError(409, "stale-binding", "Repository binding changed");
+    return discovered;
+  }
+  private async discovery(workspaceId: string) { return this.discover(await this.checkout(workspaceId)); }
   async inspect(workspaceId: string) { return inspectRepositoryStore(await this.discovery(workspaceId)); }
   async initialize(workspaceId: string) { initializeRepository(await this.discovery(workspaceId)); return this.inspect(workspaceId); }
+  private key(context: RepositoryContext) { return JSON.stringify([context.repositoryId, context.schemaVersion, context.primaryPin, context.invocationCheckout, context.stateRoot]); }
   private open(context: RepositoryContext) {
     // An explicit local upgrade invalidates old handles even when UUID/inode stay
     // stable. Evict them before reopening the freshly inspected capability.
     for (const [cachedKey, cached] of this.cache) if (cached.repositoryId === context.repositoryId && cached.domain.context.schemaVersion !== context.schemaVersion) { cached.close(); this.cache.delete(cachedKey); }
-    const key = JSON.stringify([context.repositoryId, context.schemaVersion, context.primaryPin, context.stateRoot]);
+    const key = this.key(context);
     let adapter = this.cache.get(key);
     if (!adapter) { adapter = new WorkstreamAdapter(openRepositoryDomain(context), this.sources); this.cache.set(key, adapter); }
     try { adapter.domain.validateHandle(); return adapter; }
     catch (error) { adapter.close(); this.cache.delete(key); throw error; }
   }
-  async forWorkspace(workspaceId: string, expectedRepositoryId?: string) {
-    const store = await this.inspect(workspaceId);
+  private ready(discovery: RepositoryDiscovery, expectedRepositoryId?: string) {
+    const store = inspectRepositoryStore(discovery);
     if (store.state !== "ready") throw new WorkstreamAdapterError(409, store.code, store.message);
     if (expectedRepositoryId && store.context.repositoryId !== expectedRepositoryId) throw new WorkstreamAdapterError(409, "domain-mismatch", "The intended domain UUID changed");
     return this.open(store.context);
+  }
+  async forWorkspace(workspaceId: string, expectedRepositoryId?: string) { return this.ready(await this.discovery(workspaceId), expectedRepositoryId); }
+  /** Read-only requests only. Cache misses retain full catalog/Git/SQLite discovery. */
+  async forPolling(workspaceId: string) {
+    if (!workspaceId) throw new WorkstreamAdapterError(400, "workspace-required", "Select a repository workspace");
+    const entry = this.polls.get(workspaceId);
+    if (entry) {
+      const workspace = await this.catalog.registered(workspaceId);
+      const tree = workspace.worktrees.find(tree => tree.state === "available");
+      if (workspace.kind === "repository" && entry.commonDir === workspace.commonDir && entry.root === tree?.root && entry.worktreeId === tree.worktreeId && entry.bindingRevision === tree.bindingRevision && this.cache.get(this.key(entry.adapter.domain.context)) === entry.adapter) {
+        try { entry.adapter.domain.validatePolling(); }
+        catch (error) { this.polls.delete(workspaceId); this.cache.delete(this.key(entry.adapter.domain.context)); entry.adapter.close(); throw error; }
+        return entry.adapter;
+      }
+    }
+    this.polls.delete(workspaceId);
+    const checkout = await this.checkout(workspaceId);
+    const adapter = this.ready(this.discover(checkout));
+    this.polls.set(workspaceId, { ...checkout, adapter });
+    return adapter;
   }
   async forAdmission(admission: Admission, suppliedWorkspaceId?: string) {
     if (suppliedWorkspaceId && suppliedWorkspaceId !== admission.binding.workspaceId) throw new WorkstreamAdapterError(409, "repository-mismatch", "Conversation and requested workspace differ");
@@ -129,7 +157,7 @@ export class RepositoryRouter {
     }
     return { executionCheckout: binding.cwd, workstreamId: null, artifactsRoot: null };
   }
-  close() { for (const adapter of this.cache.values()) adapter.close(); this.cache.clear(); }
+  close() { for (const adapter of this.cache.values()) adapter.close(); this.cache.clear(); this.polls.clear(); }
 }
 
 export type WorkstreamAuthorization = (request: Request) => Response | null | Promise<Response | null>;

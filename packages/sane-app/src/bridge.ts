@@ -1198,7 +1198,7 @@ async function startOwned(options: Options, assetsDir: string, packageDir: strin
   }
   let handoffTask: Promise<void> | undefined;
   async function consumeHandoffs() {
-    for (const w of (await catalog.list()).workspaces.filter(w => w.kind === "repository")) {
+    for (const w of (await catalog.registeredWorkspaces()).workspaces.filter(w => w.kind === "repository")) {
       if (closing || storageFailed) return;
       let deliveries;
       try { deliveries = await handoffs.listForPolling(w.workspaceId); } catch { continue; }
@@ -1334,7 +1334,7 @@ async function startOwned(options: Options, assetsDir: string, packageDir: strin
             if (operation === "artifacts/list") return adapter.listArtifacts(input.id);
             return adapter.readArtifactSnapshot(input.id, input.path);
           }
-          const workstreams = await router!.forWorkspace(workspaceId);
+          const workstreams = await (req.method === "GET" ? router!.forPolling(workspaceId) : router!.forWorkspace(workspaceId));
           if (path === "/api/workstreams/overview" && req.method === "GET") {
             if (!workspaceId) throw new WorkstreamAdapterError(400, "workspace-required", "Select a repository workspace");
             return workstreams.overview(meta.sessions.filter(s => catalog.association(s.sessionId).workspaceId === workspaceId));

@@ -4,7 +4,7 @@ import { existsSync, lstatSync, mkdirSync, readFileSync } from "node:fs"
 import { basename, isAbsolute, join } from "node:path"
 import type { AuditEvent, CheckoutPin, Conversation, ConversationRef, CreateWorkstreamInput, InvocationContext, MutationContext, NativeSourceDescriptor, Phase, PhaseAssignment, RegisterConversationInput, RepositoryContext, Workstream, WorkstreamStatus, WorkstreamDocumentCatalog } from "./contracts.ts"
 import { DomainError, fail, storageError, text } from "./errors.ts"
-import { checkDiscovery, inspectRepositoryStore, pinCheckout, revalidateCheckout, safeStoreFiles, samePin } from "./repository.ts"
+import { checkDiscovery, inspectRepositoryStore, pinCheckout, repositoryEvidence, revalidateCheckout, safeStoreFiles, samePin } from "./repository.ts"
 import { normalizeNativeSource } from "./native-source.ts"
 import { acquireArtifactLock } from "./artifact-lock.ts"
 import { DEFAULT_TEMPLATE_ROOT, INITIAL_DIRECTORIES, initialTemplateRegistry } from "./bootstrap-registry.ts"
@@ -21,7 +21,7 @@ import { handoffInput, equivalentHandoffInputs } from "./handoff.ts"
 import { documentDescriptors } from "./document-catalog.ts"
 import { isStoredSlot, canonicalSlot, equivalentSlots } from "./slots.ts"
 import { SCHEMA_VERSION } from "./schema.ts"
-import { assertSchemaCapabilities } from "./schema-upgrade.ts"
+import { assertSchemaCapabilities, assertStoreIntegrity } from "./schema-upgrade.ts"
 
 export type * from "./contracts.ts"
 export { DomainError } from "./errors.ts"
@@ -50,6 +50,8 @@ function artifactError(error: unknown): never {
 /** Explicit lifetime, one validated primary-checkout authority, no ambient targeting. */
 export class RepositoryDomain {
   private closed = false
+  private verified: { checkout: string; store: string } | undefined
+  private pollingCheckout: string | undefined
   private readonly databaseIdentity: { dev: number; ino: number }
   private constructor(private readonly db: Database, public readonly context: RepositoryContext) {
     this.context = Object.freeze({ ...context, primaryPin: Object.freeze({ ...context.primaryPin }), invocationCheckout: Object.freeze({ ...context.invocationCheckout }) })
@@ -69,9 +71,32 @@ export class RepositoryDomain {
   get stateRoot(): string { return this.context.stateRoot }
   /** Validate live-handle validity only, not execution eligibility or writability. */
   validateHandle(): void { this.guard() }
-  private guard(): void {
+  /** Read-only access: reuse validation only while its filesystem inputs are unchanged. */
+  validateRead(): void {
     if (this.closed) fail("INVALID_CONTEXT", "Repository handle is closed.")
-    checkDiscovery(this.context); safeStoreFiles(this.context)
+    if (this.verified?.checkout !== repositoryEvidence(this.context, "checkout") || this.verified.store !== repositoryEvidence(this.context, "store")) this.guard(true)
+  }
+  validatePolling(): void {
+    this.validateRead()
+    // A catalog cache hit also depends on its selected invocation checkout.
+    // Ordinary history/artifact reads remain available if that checkout disappears.
+    if (samePin(this.context.invocationCheckout, this.context.primaryPin)) return
+    const evidence = repositoryEvidence(this.context, "checkout")
+    if (this.pollingCheckout !== evidence) {
+      if (!samePin(pinCheckout(this.context.invocationCheckout.path, this.context.commonDir), this.context.invocationCheckout)) fail("STALE_BINDING", "Repository invocation checkout binding changed.")
+      this.pollingCheckout = evidence
+    }
+  }
+  /** Reads may skip only the Git checkout binding check when its evidence is unchanged. Writes never skip it. */
+  private guard(readonly = false): void {
+    if (this.closed) fail("INVALID_CONTEXT", "Repository handle is closed.")
+    // Captured before checking, so any later change differs from the recorded evidence.
+    const evidence = { checkout: repositoryEvidence(this.context, "checkout"), store: repositoryEvidence(this.context, "store") }
+    const bound = readonly && this.verified?.checkout === evidence.checkout
+    this.verified = undefined
+    if (!bound) checkDiscovery(this.context)
+    safeStoreFiles(this.context)
+    for (const name of ["workstreams", "locks"]) if (!existsSync(join(this.stateRoot, name))) fail("CORRUPT_STORE", `Missing domain directory ${name}.`)
     if (existsSync(join(this.stateRoot, "upgrading.json")) || existsSync(join(this.stateRoot, ".complete-upgrade.json"))) fail("UNSUPPORTED_SCHEMA", "Explicit store upgrade is pending; close and reopen this handle after local recovery.")
     const stat = lstatSync(this.context.databasePath)
     if (stat.dev !== this.databaseIdentity.dev || stat.ino !== this.databaseIdentity.ino) fail("STALE_BINDING", "Domain database file was replaced.")
@@ -90,10 +115,12 @@ export class RepositoryDomain {
         || metadata.primary_checkout !== this.primaryCheckout || metadata.common_dir !== this.context.commonDir || !samePin(JSON.parse(metadata.primary_pin), this.context.primaryPin)
         || marker.format !== "sane-domain" || marker.version !== this.context.schemaVersion || marker.repositoryId !== this.repositoryId) fail("STALE_BINDING", "Opened domain metadata/completion binding changed.")
       }
+      assertStoreIntegrity(verifier)
     } catch (error) {
       if (error instanceof DomainError) throw error
       fail("STALE_BINDING", `Cannot revalidate opened domain metadata/completion evidence: ${(error as Error).message}`)
     } finally { verifier?.close() }
+    this.verified = evidence
   }
   private rows(sql: string, ...args: SQLQueryBindings[]): any[] { return this.db.query(sql).all(...args) }
   private row(sql: string, ...args: SQLQueryBindings[]): any { return this.db.query(sql).get(...args) }
@@ -149,8 +176,8 @@ export class RepositoryDomain {
   }
   private jobs(workstreamId: string): LifecycleJob[] { return this.rows("SELECT job_id,spec_path,report_path,status,updated_at FROM jobs WHERE workstream_id=? ORDER BY job_id", workstreamId) }
   private workstreamDTO(row: any): Workstream { return { repositoryId: this.repositoryId, id: row.id, title: row.title, type: row.type, defaultCheckout: this.readPin(row.default_pin_id), createdAt: row.created_at, updatedAt: row.updated_at, revision: row.revision, lifecycle: this.lifecycle(row.id) } }
-  listWorkstreams(): Workstream[] { this.guard(); return this.rows("SELECT * FROM workstreams ORDER BY created_at,id").map(w => this.workstreamDTO(w)) }
-  getWorkstream(workstreamId: string): Workstream { this.guard(); return this.workstreamDTO(this.workstreamRow(workstreamId)) }
+  listWorkstreams(): Workstream[] { this.validateRead(); return this.rows("SELECT * FROM workstreams ORDER BY created_at,id").map(w => this.workstreamDTO(w)) }
+  getWorkstream(workstreamId: string): Workstream { this.validateRead(); return this.workstreamDTO(this.workstreamRow(workstreamId)) }
   createWorkstream(input: CreateWorkstreamInput, context: MutationContext): Workstream {
     this.mutationContext(context); id(input.id); text(input.title, "title")
     let type: CreateWorkstreamInput["type"]
@@ -224,15 +251,16 @@ export class RepositoryDomain {
     const parent = row.parent_id ? this.row("SELECT * FROM conversations WHERE id=?", row.parent_id) : null
     return { id: row.id, repositoryId: this.repositoryId, ref: this.reference(row), executionCheckout: this.readPin(row.execution_pin_id)!, parent: parent ? this.reference(parent) : null, workstreamId: membership?.workstream_id ?? null, createdAt: row.created_at }
   }
-  listConversations(): Conversation[] { this.guard(); return this.rows("SELECT * FROM conversations ORDER BY created_at,id").map(c => this.conversationDTO(c)) }
+  private conversations(): Conversation[] { return this.rows("SELECT * FROM conversations ORDER BY created_at,id").map(c => this.conversationDTO(c)) }
+  listConversations(): Conversation[] { this.validateRead(); return this.conversations() }
   private handoffDTO(row: any): Handoff {
     const h: Handoff = { id: row.id, repositoryId: this.repositoryId, sender: this.reference(this.row("SELECT * FROM conversations WHERE id=?", row.sender_id)), workstreamId: row.workstream_id, input: JSON.parse(row.input), recipient: JSON.parse(row.recipient), status: row.status, revision: row.revision, attemptId: row.attempt_id, nativeCommandId: row.native_command_id, runId: row.run_id, evidence: row.evidence, createdAt: row.created_at, updatedAt: row.updated_at }
     const input = JSON.parse(row.input)
     return input.kickoff ? { ...h, origin: { kind: "kickoff", sender: h.sender, requestId: input.requestId } } : h
   }
-  getHandoff(id: string): Handoff { this.guard(); text(id, "handoff ID"); return this.handoffDTO(this.row("SELECT * FROM handoffs WHERE id=?", id) ?? fail("NOT_FOUND", "Unknown handoff.")) }
+  getHandoff(id: string): Handoff { this.validateRead(); text(id, "handoff ID"); return this.handoffDTO(this.row("SELECT * FROM handoffs WHERE id=?", id) ?? fail("NOT_FOUND", "Unknown handoff.")) }
   findHandoff(sender: ConversationRef, requestId: string): Handoff | null {
-    this.guard(); const c = this.conversationRow(sender), row = this.row("SELECT * FROM handoffs WHERE sender_id=? AND request_id=?", c.id, requestId)
+    this.validateRead(); const c = this.conversationRow(sender), row = this.row("SELECT * FROM handoffs WHERE sender_id=? AND request_id=?", c.id, requestId)
     return row ? this.handoffDTO(row) : null
   }
   /** True when `workstreamId` was created by the kickoff handoff (sender, requestId). */
@@ -253,10 +281,10 @@ export class RepositoryDomain {
     }
     return this.createWorkstream({ id: kickoff.workstream, title: kickoff.title, type: kickoff.type, defaultCheckout: args.checkout ?? invocation.executionCheckout }, context)
   }
-  listHandoffs(): Handoff[] { this.guard(); return this.rows("SELECT * FROM handoffs ORDER BY created_at,id").map(row => this.handoffDTO(row)) }
+  listHandoffs(): Handoff[] { this.validateRead(); return this.rows("SELECT * FROM handoffs ORDER BY created_at,id").map(row => this.handoffDTO(row)) }
   /** Polling/recovery only: retain every queued or active delivery, including uncertain attempts. */
   listHandoffsForPolling(): Handoff[] {
-    this.guard()
+    this.validatePolling()
     return this.rows("SELECT * FROM handoffs WHERE status IN ('queued','acceptance_unknown','accepted','running') ORDER BY created_at,id").map(row => this.handoffDTO(row))
   }
   admitHandoff(sender: ConversationRef, input: unknown, recipient: HandoffRecipient, context: MutationContext): Handoff {
@@ -344,7 +372,7 @@ export class RepositoryDomain {
       this.event(context, "handoff_problem", h.workstreamId, id, { problem, status: h.status, revision: h.revision, runId: h.runId })
     })
   }
-  getConversation(ref: ConversationRef): Conversation | null { this.guard(); qualified(ref); const row = this.row("SELECT * FROM conversations WHERE harness=? AND authority_id=? AND native_id=?", ref.harness, ref.authorityId, ref.nativeId); return row ? this.conversationDTO(row) : null }
+  getConversation(ref: ConversationRef): Conversation | null { this.validateRead(); qualified(ref); const row = this.row("SELECT * FROM conversations WHERE harness=? AND authority_id=? AND native_id=?", ref.harness, ref.authorityId, ref.nativeId); return row ? this.conversationDTO(row) : null }
   /** The append-only audit journal is also the durable branch reservation. No
    * existing identities or historical intervals are rewritten. */
   assertConversationWritable(ref: ConversationRef): void {
@@ -503,40 +531,61 @@ export class RepositoryDomain {
     this.assertConversationWritable(targets[0]!.ref)
     return this.getConversation(targets[0]!.ref)!
   }
-  getWorkstreamStatus(workstreamId: string): WorkstreamStatus {
-    const workstream = this.getWorkstream(workstreamId), phases = this.assignments(workstreamId)
-    return { workstream, conversations: this.listConversations().filter(c => c.workstreamId === workstreamId), activePhases: phases.filter(p => p.endedAt === null), phaseHistory: phases.filter(p => p.endedAt !== null) }
+  private workstreamStatus(workstream: Workstream, conversations = this.conversations()): WorkstreamStatus {
+    const phases = this.assignments(workstream.id)
+    return { workstream, conversations: conversations.filter(c => c.workstreamId === workstream.id), activePhases: phases.filter(p => p.endedAt === null), phaseHistory: phases.filter(p => p.endedAt !== null) }
   }
+  getWorkstreamStatus(workstreamId: string): WorkstreamStatus { this.validateRead(); return this.workstreamStatus(this.workstreamDTO(this.workstreamRow(workstreamId))) }
   getLifecycleStatus(workstreamId: string) { const w = this.getWorkstream(workstreamId); return { workstreamId, type: w.type, incomplete: false, lifecycle: w.lifecycle } }
   getApprovalHistory(workstreamId: string) {
-    this.guard(); this.workstreamRow(workstreamId)
+    this.validateRead(); this.workstreamRow(workstreamId)
     return this.rows("SELECT * FROM approvals WHERE workstream_id=? ORDER BY created_at,id", workstreamId).map(a => ({ id: a.id as string, workstreamId, phase: a.phase as (typeof LIFECYCLE_PHASES)[number], userReference: a.user_reference as string, hashVersion: a.hash_version as number, snapshotHash: a.snapshot_hash as string, createdAt: a.created_at as string, actorEventId: a.actor_event_id as number, gitCommit: a.git_commit as string | null, files: this.rows("SELECT relative_path,content_hash FROM approval_files WHERE approval_id=? ORDER BY relative_path", a.id).map(f => ({ path: f.relative_path as string, hash: f.content_hash as string })) }))
   }
-  getStatus(workstreamId: string) { return { ...this.getWorkstreamStatus(workstreamId), research: this.getResearchIndex(workstreamId), audit: this.readAudit(workstreamId), unresolvedArtifactOperations: this.unresolvedArtifactOperations(workstreamId) } }
+  private statusDTO(status: WorkstreamStatus) {
+    const audit = this.auditRows(status.workstream.id)
+    return { ...status, research: this.researchIndex(status.workstream.id), audit, unresolvedArtifactOperations: this.unresolvedOperations(audit) }
+  }
+  getStatus(workstreamId: string) { this.validateRead(); return this.statusDTO(this.workstreamStatus(this.workstreamDTO(this.workstreamRow(workstreamId)))) }
+  /** One validated bulk read, even while recent writes prevent cross-request validation reuse. */
+  listStatuses() {
+    this.validateRead()
+    const conversations = this.conversations()
+    return this.rows("SELECT * FROM workstreams ORDER BY created_at,id").map(row => this.statusDTO(this.workstreamStatus(this.workstreamDTO(row), conversations)))
+  }
   getOverview() { return { repositoryId: this.repositoryId, workstreams: this.listWorkstreams(), conversations: this.listConversations(), unresolvedArtifactOperations: this.unresolvedArtifactOperations(), capabilities: { lifecycle: true, research: true, nativeHandoff: false, archive: false, merge: false } } }
   selectWorkstream(workstreamId: string | null, context: MutationContext): void {
     if (context?.actor?.kind === "native") fail("INVALID_CONTEXT", "Native callers never mutate human selection.")
     this.transaction(context, () => { if (workstreamId !== null) this.workstreamRow(workstreamId); this.run("UPDATE cli_preferences SET selected_workstream_id=? WHERE id=1", workstreamId); this.event(context, "human_selection_changed", workstreamId) })
   }
-  getSelectedWorkstream(): Workstream | null { this.guard(); const row = this.row("SELECT selected_workstream_id FROM cli_preferences WHERE id=1"); return row.selected_workstream_id ? this.getWorkstream(row.selected_workstream_id) : null }
+  getSelectedWorkstream(): Workstream | null { this.validateRead(); const row = this.row("SELECT selected_workstream_id FROM cli_preferences WHERE id=1"); return row.selected_workstream_id ? this.getWorkstream(row.selected_workstream_id) : null }
   readAudit(workstreamId?: string): AuditEvent[] {
-    this.guard(); if (workstreamId !== undefined) id(workstreamId)
+    this.validateRead(); if (workstreamId !== undefined) id(workstreamId)
     return this.auditRows(workstreamId)
   }
   private auditRows(workstreamId?: string): AuditEvent[] {
     return this.rows(`SELECT a.*,c.harness,c.authority_id,c.native_id FROM audit_events a LEFT JOIN conversations c ON c.id=a.actor_conversation_id ${workstreamId === undefined ? "" : "WHERE a.workstream_id=? OR (a.operation='conversation_associated' AND json_extract(a.details,'$.from')=?)"} ORDER BY a.id`, ...(workstreamId === undefined ? [] : [workstreamId, workstreamId])).map(a => ({ id: a.id, correlationId: a.correlation_id, actor: a.actor_kind === "native" ? { kind: "native", repositoryId: this.repositoryId, ref: this.reference(a) } : { kind: a.actor_kind }, operation: a.operation, workstreamId: a.workstream_id, entityId: a.entity_id, details: JSON.parse(a.details), timestamp: a.timestamp }))
   }
   unresolvedArtifactOperations(workstreamId?: string): AuditEvent[] {
-    const events = this.readAudit(workstreamId)
-    return events.filter(e => e.operation === "artifact_operation_started" && !events.some(end => end.entityId === e.entityId && end.operation === "artifact_operation_completed"))
+    return this.unresolvedOperations(this.readAudit(workstreamId))
+  }
+  private unresolvedOperations(events: AuditEvent[]): AuditEvent[] {
+    const completed = new Set(events.filter(e => e.operation === "artifact_operation_completed").map(e => e.entityId))
+    return events.filter(e => e.operation === "artifact_operation_started" && !completed.has(e.entityId))
   }
   private filesystem(workstreamId: string): { root: string; fs: ConfinedLifecycleFileSystem } {
-    this.guard(); this.workstreamRow(workstreamId)
+    this.validateRead(); return this.confinedFilesystem(workstreamId)
+  }
+  private confinedFilesystem(workstreamId: string): { root: string; fs: ConfinedLifecycleFileSystem } {
+    this.workstreamRow(workstreamId)
     const root = join(this.stateRoot, "workstreams", workstreamId)
     try { return { root, fs: new ConfinedLifecycleFileSystem(root, [DEFAULT_TEMPLATE_ROOT]) } } catch (error) { return artifactError(error) }
   }
   listArtifacts(workstreamId: string): string[] {
-    const { root, fs } = this.filesystem(workstreamId), result: string[] = []
+    const { root, fs } = this.filesystem(workstreamId)
+    return this.artifactFiles(root, fs)
+  }
+  private artifactFiles(root: string, fs: ConfinedLifecycleFileSystem): string[] {
+    const result: string[] = []
     const visit = (path: string) => { for (const name of fs.listNames(join(root, path))) { const relative = path ? `${path}/${name}` : name; if (fs.stat(join(root, relative)).isDirectory()) visit(relative); else if (name.endsWith(".md")) result.push(relative) } }
     try { visit(""); return result.sort() } catch (error) { return artifactError(error) }
   }
@@ -585,7 +634,7 @@ export class RepositoryDomain {
         }
         return fail("CONFLICT", `Document appeared while cataloging: ${descriptor.path}; refresh the catalog.`)
       })
-      fs.assertTree(); this.guard()
+      fs.assertTree(); this.validateRead()
       return { repositoryId: this.repositoryId, workstreamId, documents }
     } catch (error) { return artifactError(error) }
   }
@@ -732,10 +781,18 @@ export class RepositoryDomain {
     this.transaction(context, () => { this.revision(workstreamId, context); const old = this.row("SELECT * FROM research_reports WHERE workstream_id=? AND topic=?", workstreamId, topic) ?? fail("NOT_FOUND", "Unknown research topic."); this.run("DELETE FROM research_reports WHERE workstream_id=? AND topic=?", workstreamId, topic); this.touch(workstreamId); this.event(context, "research_unregistered", workstreamId, topic, { reportPath: old.report_path, contentHash: old.content_hash }) })
   }
   getResearchIndex(workstreamId: string) {
-    this.guard(); this.workstreamRow(workstreamId)
-    const files = this.listArtifacts(workstreamId).filter(p => p.startsWith("research/")), warnings: string[] = []
+    this.validateRead(); return this.researchIndex(workstreamId)
+  }
+  private researchIndex(workstreamId: string) {
+    const { root, fs } = this.confinedFilesystem(workstreamId)
+    const files = this.artifactFiles(root, fs).filter(p => p.startsWith("research/")), warnings: string[] = []
     const registered = this.rows("SELECT * FROM research_reports WHERE workstream_id=? ORDER BY topic", workstreamId).map(r => {
-      const missing = !files.includes(r.report_path), modified = !missing && hash(this.readArtifact(workstreamId, r.report_path)) !== r.content_hash
+      const missing = !files.includes(r.report_path)
+      let modified = false
+      if (!missing) {
+        artifactRelative(r.report_path)
+        try { modified = hash(fs.readText(join(root, r.report_path))) !== r.content_hash } catch (error) { return artifactError(error) }
+      }
       if (missing || modified) warnings.push(`Research ${r.topic}: ${missing ? "missing" : "modified"} registered report ${r.report_path}`)
       return { topic: r.topic as string, reportPath: r.report_path as string, contentHash: r.content_hash as string, createdAt: r.created_at as string, updatedAt: r.updated_at as string, missing, modified }
     })
