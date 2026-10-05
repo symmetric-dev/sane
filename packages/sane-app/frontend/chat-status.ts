@@ -50,9 +50,12 @@ export function chatStatuses(state: State, context: ChatStatusContext): ChatStat
   const executionUnavailable = store.executionUnavailable();
   if (executionUnavailable) add("execution", "Execution workspace unavailable", executionUnavailable);
   if (!state.availability.canSend && state.availability.reason) add("availability", state.availability.reason);
-  if (!context.workspaceReady) add("workspace", "Preparing your workspace…", undefined, true);
-  if (state.loading || state.transcriptInitialLoading) add("conversation", "Loading your conversation…", undefined, true);
-  if (!state.connected || state.connectionError) add("connection", "Reconnecting to the bridge…", state.connectionError || "Waiting for the local bridge. The run’s current state may be unknown.", true, "reconnect");
+  // `connected` also gates conversation readiness. Selection clears it while
+  // revalidating history/run state; that alone is not a bridge connection failure.
+  const conversationLoading = state.loading || state.transcriptInitialLoading || (!state.connected && !state.connectionError);
+  if (!context.workspaceReady || (!state.selected && conversationLoading)) add("workspace", "Preparing your workspace…", undefined, true);
+  if (state.selected && conversationLoading) add("conversation", "Loading conversation…", undefined, true);
+  if (state.connectionError) add("connection", "Reconnecting to the bridge…", state.connectionError, true, "reconnect");
   if (state.sending) add("sending", "Sending your message…", undefined, true);
   return statuses;
 }
