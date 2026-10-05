@@ -1,4 +1,5 @@
 import type { ConversationClient, RunMetadata, RunStatus } from "./types";
+import { isConversationUpdateFeedRequest, isConversationUpdatePage } from "../shared/conversation/conversation-updates";
 
 export class ApiError extends Error {
   constructor(message: string, readonly status: number, readonly code?: string) { super(message); }
@@ -8,11 +9,21 @@ export async function request(path: string, init: RequestInit = {}) {
     headers: { "Content-Type": "application/json", ...init.headers },
     signal: init.signal ?? AbortSignal.timeout(25000) });
   const body = await response.json().catch(() => ({}));
-  if (!response.ok) throw new ApiError(body.error || `Request failed (${response.status}).`, response.status, body.code);
+  if (!response.ok) throw new ApiError(body.error || `Request failed (${response.status}).`, response.status, body.code ?? body.reason);
   return body;
 }
 const transcriptSignal = (signal?: AbortSignal) => signal ? AbortSignal.any([signal, AbortSignal.timeout(25000)]) : undefined;
 export const conversationClient: ConversationClient = {
+  async conversationUpdates(input = {}, signal, bootstrap = false) {
+    if (!isConversationUpdateFeedRequest(input) || bootstrap && (input.cursor || input.through !== undefined)) throw new Error("Invalid conversation update request.");
+    const params = new URLSearchParams({ limit: String(input.limit ?? 100) });
+    if (input.cursor) { params.set("epoch", input.cursor.epoch); params.set("after", String(input.cursor.after)); }
+    if (input.through !== undefined) params.set("through", String(input.through));
+    const page = await request(`/api/conversation-updates${bootstrap ? "/bootstrap" : ""}?${params}`, { signal: transcriptSignal(signal) });
+    if (!isConversationUpdatePage(page, { epoch: input.cursor?.epoch, cursor: input.cursor, through: input.through, limit: input.limit ?? 100 })
+      || bootstrap !== !!page.bootstrap) throw new Error("Invalid conversation update page.");
+    return page;
+  },
   transcriptPage: (id, query = {}, signal) => request(`/api/sessions/${encodeURIComponent(id)}/transcript?${new URLSearchParams({ limit: "100", ...query })}`, { signal: transcriptSignal(signal) }),
   transcriptMeta: (id, cursor, signal) => request(`/api/sessions/${encodeURIComponent(id)}/transcript/meta?${new URLSearchParams({ limit: "100", ...(cursor ? { cursor } : {}) })}`, { signal: transcriptSignal(signal) }),
   transcriptRefresh: (id, input, signal) => request(`/api/sessions/${encodeURIComponent(id)}/transcript/refresh`, { method: "POST", body: JSON.stringify(input), signal: transcriptSignal(signal) }),
@@ -22,7 +33,7 @@ export const conversationClient: ConversationClient = {
   async conversations(signal) {
     const data = await request("/api/sessions", { signal });
     if (!Array.isArray(data?.sessions) || data.sessions.some((session: any) => !session || typeof session.sessionId !== "string" || !session.sessionId)) throw new Error("Invalid conversation listing.");
-    return { conversations: data.sessions.map((s: any) => ({ id: s.sessionId, harness: s.harness ?? "claude-code", nativeSessionId: s.nativeSessionId, nativeActivity: s.nativeActivity, nativeActivityReason: s.nativeActivityReason, updatedAt: s.updatedAt, cwd: s.cwd, lastRunId: s.lastRunId, lastRunStatus: s.lastRunStatus, lastRunOperation: s.lastRunOperation, lastRunEndedAt: s.lastRunEndedAt, status: s.lastStatus as RunStatus, title: s.title, hidden: s.hidden, model: s.model, effort: s.effort, agent: s.agent, agentKind: s.agentKind, nativeAgentSelected: s.nativeAgentSelected, profileId: s.profileId, workspaceId: s.workspaceId, worktreeId: s.worktreeId, association: s.association, associationReason: s.associationReason, availability: s.availability, queuedFollowups: s.queuedFollowups, attachment: s.attachment, worker: s.worker, directWorkerCount: s.directWorkerCount, branchOrigin: s.branchOrigin, branchDraft: s.branchDraft, replacedBy: s.replacedBy })),
+    return { conversations: data.sessions.map((s: any) => ({ id: s.sessionId, harness: s.harness ?? "claude-code", authorityId: s.authorityId, nativeSessionId: s.nativeSessionId, nativeActivity: s.nativeActivity, nativeActivityReason: s.nativeActivityReason, updatedAt: s.updatedAt, cwd: s.cwd, lastRunId: s.lastRunId, lastRunStatus: s.lastRunStatus, lastRunOperation: s.lastRunOperation, lastRunEndedAt: s.lastRunEndedAt, status: s.lastStatus as RunStatus, title: s.title, hidden: s.hidden, model: s.model, effort: s.effort, agent: s.agent, agentKind: s.agentKind, nativeAgentSelected: s.nativeAgentSelected, profileId: s.profileId, workspaceId: s.workspaceId, worktreeId: s.worktreeId, association: s.association, associationReason: s.associationReason, availability: s.availability, queuedFollowups: s.queuedFollowups, attachment: s.attachment, worker: s.worker, directWorkerCount: s.directWorkerCount, branchOrigin: s.branchOrigin, branchDraft: s.branchDraft, replacedBy: s.replacedBy })),
       availability: data.availability ?? { canSend: false, reason: "Waiting for bridge availability." } };
   },
   async runs(id, signal): Promise<RunMetadata[]> {

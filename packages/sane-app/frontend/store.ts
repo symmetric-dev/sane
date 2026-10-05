@@ -19,6 +19,7 @@ import { canonicalCount, equalValue, mergePage, pageMessages, pagedUsage, refres
 import type { TranscriptMetadataItem, TranscriptPage } from "../src/transcript-contract";
 import { capabilitiesFor, getHarnessDescriptor, type HarnessCapabilities } from "../shared/conversation/harness-capabilities";
 import { notificationStore } from "./notifications";
+import { isConversationUpdatePage, type ConversationUpdateFeedRequest } from "../shared/conversation/conversation-updates";
 
 /** Composer draft. New conversations pick `profileId` ("" = profiles.defaultId);
  * selected Base conversations may stage `upgradeId` (assistant profile, same harness). */
@@ -52,6 +53,13 @@ export class ChatStore {
   private shellRevision = 0;
   private generation = 0;
   private authEpoch = 0;
+  // Parent-attention reads belong to auth, never the selected transcript generation.
+  private notificationFence = 0;
+  private notificationController?: AbortController;
+  private notificationTimer?: ReturnType<typeof setTimeout>;
+  private notificationScope = "";
+  private notificationSources = new Map<string, string>();
+  private queuedNotificationReceipts = new Map<string, Set<string>>();
   private timer?: ReturnType<typeof setTimeout>;
   private controller?: AbortController;
   private runMap = new Map<string, Run>();
@@ -560,7 +568,108 @@ export class ChatStore {
     this.pageFence++; this.pageRequests.forEach(request => request.abort()); this.pageRequests.clear();
     if (this.paged) this.update({ pageBusy: "", transcriptRefreshing: false });
   }
+  private stopNotifications() {
+    this.notificationFence++; clearTimeout(this.notificationTimer); this.notificationTimer = undefined;
+    this.notificationController?.abort(); this.notificationController = undefined;
+    this.notificationScope = ""; this.notificationSources.clear(); this.queuedNotificationReceipts.clear();
+  }
+  private configureNotifications(config: Config) {
+    this.stopNotifications();
+    const supported = config.conversationUpdates === true && !!this.client.conversationUpdates;
+    const scope = config.authenticated === true && typeof config.storeId === "string" && config.storeId.trim() ? config.storeId : "";
+    if (!scope) { notificationStore.suspend(); notificationStore.setFeedEnabled(supported); return; }
+    if (!supported) {
+      // Legacy delivery still requires an authenticated owner, never cwd/default.
+      notificationStore.activate(scope);
+      notificationStore.setFeedEnabled(false);
+      return;
+    }
+    notificationStore.activate(scope); notificationStore.setFeedEnabled(true); this.notificationScope = scope;
+    void this.pollNotifications();
+  }
+  private notificationSource(conversation: Conversation) {
+    return JSON.stringify([conversation.harness, conversation.authorityId, conversation.nativeSessionId]);
+  }
+  private observeNotifications(conversations: Conversation[]) {
+    this.notificationSources = new Map(conversations.map(conversation => [conversation.id, this.notificationSource(conversation)]));
+    for (const conversation of conversations) {
+      const pending = this.queuedNotificationReceipts.get(conversation.id);
+      if (!pending) continue;
+      for (const receipt of conversation.queuedFollowups ?? []) {
+        if (!pending.has(receipt.requestId)) continue;
+        // Queue admission is not native acceptance. Only the global listing's
+        // exact dispatched receipt can promote a send made in this auth session.
+        if (receipt.state === "dispatched" && receipt.runId) {
+          notificationStore.acceptRun(conversation.id, receipt.runId); pending.delete(receipt.requestId);
+        } else if (receipt.state === "not-submitted") pending.delete(receipt.requestId);
+      }
+      if (!pending.size) this.queuedNotificationReceipts.delete(conversation.id);
+    }
+    notificationStore.observe(conversations);
+  }
+  private async pollNotifications() {
+    const scope = this.notificationScope, fence = this.notificationFence, auth = this.authEpoch;
+    if (!scope || this.notificationController || !this.client.conversationUpdates || this.state.phase !== "ready") return;
+    const controller = this.notificationController = new AbortController();
+    const current = () => !controller.signal.aborted && fence === this.notificationFence && auth === this.authEpoch
+      && scope === this.notificationScope && scope === this.state.config?.storeId && this.state.config?.authenticated === true && this.state.phase === "ready";
+    let healthy = false, listingError = "", feedError = "";
+    const publishError = () => notificationStore.setFeedError([feedError, listingError].filter(Boolean).join(" "));
+    try {
+      await notificationStore.ready();
+      if (!current()) return;
+      const listing = async () => {
+        try {
+          const data = await this.client.conversations(AbortSignal.any([controller.signal, AbortSignal.timeout(25000)]));
+          if (!current()) return;
+          if (!Array.isArray(data.conversations) || data.conversations.some(conversation => !conversation || typeof conversation.id !== "string" || !conversation.id)) throw new Error("Invalid conversation listing.");
+          // Metadata/legacy OC fallback only. Selected-chat polling remains the
+          // sole publisher of main conversation/transcript state.
+          this.observeNotifications(data.conversations); healthy = true;
+        } catch (error) {
+          if (!current() || this.expired(error)) return;
+          listingError = `Notification session metadata unavailable: ${error instanceof Error ? error.message : "connection error"}`; publishError();
+        }
+      };
+      const drain = async () => {
+        try {
+          let resume = notificationStore.resume();
+          let bootstrap = !resume?.cursor;
+          const started = performance.now(); let pages = 0;
+          do {
+            const input: ConversationUpdateFeedRequest = bootstrap ? { limit: 100 }
+              : { cursor: resume!.cursor, ...(resume?.through !== undefined ? { through: resume.through } : {}), limit: 100 };
+            const page = await this.client.conversationUpdates!(input, AbortSignal.any([controller.signal, AbortSignal.timeout(25000)]), bootstrap);
+            if (!current()) return;
+            if (!isConversationUpdatePage(page, { storeId: scope, epoch: input.cursor?.epoch, cursor: input.cursor, through: input.through, limit: input.limit })
+              || bootstrap !== !!page.bootstrap) throw new Error("Invalid conversation update page or authenticated store identity.");
+            if (!await notificationStore.applyPage(page, input.cursor ?? null, bootstrap)) throw new Error("Notification updates could not be saved. The same page will retry.");
+            if (!current()) return;
+            healthy = true;
+            resume = notificationStore.resume(); bootstrap = false;
+            if (!page.hasMore) break;
+            if (!resume?.cursor || resume.cursor.epoch !== page.epoch || resume.cursor.after !== page.nextCursor.after || resume.through !== page.through) throw new Error("Notification update traversal did not preserve its cursor.");
+            if (++pages >= 5 || performance.now() - started >= 1000) break;
+          } while (current());
+        } catch (error) {
+          if (!current() || this.expired(error)) return;
+          if (error instanceof ApiError && (error.status === 410 || error.code === "conversation-update-gap" || error.code === "update-gap")) {
+            feedError = "Notification coverage expired or changed. Recovering coverage; existing read marks are preserved."; publishError();
+            await notificationStore.resetResume();
+          } else { feedError = `Notification updates unavailable: ${error instanceof Error ? error.message : "connection error"}`; publishError(); }
+        }
+      };
+      await Promise.all([listing(), drain()]);
+      if (current()) publishError();
+    } catch (error) {
+      if (current() && !this.expired(error)) notificationStore.setFeedError(`Notification storage unavailable: ${error instanceof Error ? error.message : "connection error"}`);
+    } finally {
+      if (this.notificationController === controller) this.notificationController = undefined;
+      if (current()) this.notificationTimer = setTimeout(() => { this.notificationTimer = undefined; void this.pollNotifications(); }, healthy ? 1500 : 5000);
+    }
+  }
   private loginRequired() {
+    this.stopNotifications();
     notificationStore.suspend();
     this.stop(); this.authEpoch++; this.clearCachedHistory();
     catalog.invalidate(); invalidateWorkspaceRequests();
@@ -581,8 +690,8 @@ export class ChatStore {
       const config = await this.client.config(controller.signal);
       if (generation !== this.generation || auth !== this.authEpoch) return;
       if (config.authRequired && !config.authenticated) { this.loginRequired(); return; }
-      notificationStore.activate(config.storeId ?? config.cwd ?? "default");
       this.update({ config, phase: "ready", authError: "", connectionError: "", ...(config.agentProfiles ? { profiles: config.agentProfiles } : {}) });
+      this.configureNotifications(config);
       if (!config.agentProfiles) void this.refreshProfiles();
       void this.poll();
     } catch (error) {
@@ -592,6 +701,7 @@ export class ChatStore {
     } finally { clearTimeout(deadline); }
   }
   login = async (password: string) => {
+    this.stopNotifications();
     notificationStore.suspend();
     this.stop(); const auth = ++this.authEpoch;
     this.clearCachedHistory();
@@ -600,6 +710,7 @@ export class ChatStore {
     catch (error) { if (auth === this.authEpoch) this.update({ authError: error instanceof Error ? error.message : "Sign-in failed." }); }
   };
   logout = async () => {
+    this.stopNotifications();
     notificationStore.suspend();
     this.stop(); const auth = ++this.authEpoch;
     // Even an ambiguous logout must not retain authenticated transcript snapshots.
@@ -611,13 +722,27 @@ export class ChatStore {
     try { await this.client.logout(); if (auth === this.authEpoch) this.loginRequired(); }
     catch (error) { if (auth !== this.authEpoch || this.expired(error)) return; this.update({ submissionError: `Sign-out failed: ${error instanceof Error ? error.message : "connection error"}` }); void this.boot(); }
   };
-  openConversation = (id: string) => {
-    if (this.state.sending) return;
+  openConversation = (id: string, options: { deferAck?: boolean } = {}): boolean => {
+    if (this.state.sending || this.state.phase !== "ready") return false;
     const conversation = this.state.conversations.find(c => c.id === id);
-    if (id && !conversation) return;
-    if (conversation && this.state.phase === "ready") notificationStore.markRead(id);
+    if (id && !conversation) return false;
+    // Optional notification metadata must not block ordinary navigation. When
+    // it is stale/missing, navigate normally but leave notification reads alone.
+    const canAcknowledge = !conversation || !this.notificationScope || this.notificationSources.get(id) === this.notificationSource(conversation);
+    const capture = options.deferAck || !canAcknowledge ? null : notificationStore.captureOpen(id);
+    const auth = this.authEpoch, config = this.state.config;
+    const identity = (item?: Conversation) => item ? this.notificationSource(item) : "";
+    const source = identity(conversation);
     this.choose(id);
+    if (auth !== this.authEpoch || this.state.phase !== "ready" || this.state.config !== config || this.state.selected !== id
+      || source !== identity(this.state.conversations.find(c => c.id === id))) return false;
     catalog.navigate({ conversationId: id || null, view: "chat", ...(conversation ? { workspaceId: conversation.workspaceId ?? null, worktreeId: conversation.worktreeId ?? null, filePath: null, comparison: null } : {}) });
+    const navigation = catalog.snapshot().navigation;
+    if (auth !== this.authEpoch || this.state.phase !== "ready" || this.state.config !== config || this.state.selected !== id
+      || navigation.view !== "chat" || navigation.conversationId !== (id || null)
+      || source !== identity(this.state.conversations.find(c => c.id === id))) return false;
+    if (capture) notificationStore.acknowledgeCaptured(capture);
+    return true;
   };
   choose = (selected: string, pendingTurn: PendingTurn | null = null) => {
     if (this.state.sending) return;
@@ -794,7 +919,7 @@ export class ChatStore {
       if (!current()) return;
       controller.signal.throwIfAborted();
       if (!Array.isArray(listing.conversations) || listing.conversations.some(conversation => !conversation || typeof conversation.id !== "string" || !conversation.id)) throw new Error("Invalid conversation listing.");
-      notificationStore.observe(listing.conversations);
+      if (!this.notificationScope && !(this.state.config?.conversationUpdates === true && this.client.conversationUpdates)) this.observeNotifications(listing.conversations);
       if (!current()) return;
       this.conversationCache.prune(listing.conversations);
       registerWorkerSessions(listing.conversations);
@@ -984,6 +1109,8 @@ export class ChatStore {
       const result = await this.client.submit({ text, ...(nativeStopped ? { nativeStopped: true } : {}), ...(selected ? { conversationId: selected } : { ...(draft.cwd.trim() ? { cwd: draft.cwd.trim() } : {}), workspaceId: navigation.workspaceId!, worktreeId: navigation.worktreeId! }), ...(profileId ? { profileId } : {}) });
       if (generation !== this.generation || auth !== this.authEpoch) return { status: "unknown" };
       if (result.queued) {
+        const receipts = this.queuedNotificationReceipts.get(result.conversationId) ?? new Set<string>();
+        receipts.add(result.receipt.requestId); this.queuedNotificationReceipts.set(result.conversationId, receipts);
         // Replace the Sending bubble with the durable receipt, not the old run
         // ID. Listing reloads/selection changes reconstruct it from the journal.
         this.update({ sending: false, pendingTurn: null, conversations: this.state.conversations.map(c => c.id !== result.conversationId ? c : { ...c, queuedFollowups: [...(c.queuedFollowups ?? []).filter(r => r.requestId !== result.receipt.requestId), result.receipt], availability: { canSend: false } }), availability: { canSend: false } });

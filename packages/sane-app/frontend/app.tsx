@@ -28,6 +28,7 @@ import { CompactDialog, ContextControl, ContextDialog } from "./compaction-ui";
 import { NativeSubagentContext, nativeSubagentVirtualKey, useNativeSubagentFeature, useNativeSubagents } from "./native-subagent-feature";
 import { NativeSubagentView } from "./native-subagent-view";
 import { InstallApp } from "./pwa-install-view";
+import { notificationStore } from "./notifications";
 
 // Restore selection without replacing the independently bookmarked browsing pair.
 const hydrateCatalog = () => void catalog.hydrate(bookmark => store.choose(bookmark.conversationId ?? ""));
@@ -117,12 +118,20 @@ function ReadyWorkspace({ state, signOut }: { state: State; signOut: () => void 
     const current = store.snapshot();
     const target = current.conversations.find(conversation => conversation.id === id);
     if (current.phase !== "ready" || current.sending || !current.conversationsReady || !catalog.snapshot().ready || !target || target.replacedBy) return false;
-    store.openConversation(id);
+    const capture = notificationStore.captureOpen(id);
+    if (!store.openConversation(id, { deferAck: true })) return false;
     if (store.snapshot().selected !== id || catalog.snapshot().navigation.view !== "chat") return false;
     // Reset scope using the newly opened session's live browsing pair, without
     // workspace activation choosing a different (more recent) conversation.
     sidebarModel.workspaceSelection.selectWorkstream(null);
     nativeSubagents.back(); setReviewRequest(null); setArtifact(null); setDrawer(null);
+    const opened = store.snapshot(), navigation = catalog.snapshot().navigation;
+    const destination = opened.conversations.find(conversation => conversation.id === id);
+    if (opened.phase !== "ready" || opened.config !== current.config || opened.selected !== id || !destination
+      || destination.harness !== target.harness || destination.authorityId !== target.authorityId || destination.nativeSessionId !== target.nativeSessionId
+      || navigation.view !== "chat" || navigation.conversationId !== id
+      || navigation.workspaceId !== (target.workspaceId ?? null) || navigation.worktreeId !== (target.worktreeId ?? null)) return false;
+    if (capture) notificationStore.acknowledgeCaptured(capture);
     return true;
   };
   const openArtifact = (selection: ArtifactSelection) => { setReviewRequest(null); setArtifact(selection); catalog.navigate({ view: "code" }); setDrawer(null); };

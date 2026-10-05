@@ -1,10 +1,18 @@
 import { Service } from "@opencode/client/service";
+import { OpenCode, type OpenCodeClient } from "@opencode/client";
 import type { CompactionLifecycle, CompactionMetadata, FormField, HarnessModel, Interaction, InteractionReply, MessagePart, MessageSnapshot } from "./oc-contract";
 import { nativeMessageId, validModel, validVariant } from "./history";
 
 // HTTP shapes from https://opencode.ai/v2/openapi.json and the V2 client guide.
 // Discovery connects to a registered service; this adapter never manages its process.
 type Connection = { base: string; headers: Record<string, string> };
+/** Read-only, endpoint-bound generation. No process management or message GETs. */
+export type OpenCodeReplyTransport = {
+  info: OpenCodeClient["server"]["info"];
+  events: OpenCodeClient["event"]["subscribe"];
+  log: OpenCodeClient["session"]["log"];
+  session: OpenCodeClient["session"]["get"];
+};
 export type ModelRef = { id: string; providerID: string; variant?: string };
 export type NativeAgent = { id: string; model?: ModelRef };
 export type OpenCodeLaunch = { agent?: string; model?: ModelRef };
@@ -29,6 +37,9 @@ const restartContinuation = (message: NativeMessage, command: NativeMessage) => 
   && message.time.created >= command.time.created;
 export class OpenCodeError extends Error {
   constructor(message: string, public status = 503) { super(message); }
+}
+export class OpenCodeReplyTransportLimitError extends OpenCodeError {
+  constructor() { super("OpenCode reply transport exceeded 16 MiB raw response budget"); }
 }
 export class OpenCodeAdapter {
   private explicit?: Connection;
@@ -71,6 +82,54 @@ export class OpenCodeAdapter {
   private invalidate(connection: Connection) {
     // An old in-flight request must not invalidate a newly discovered generation.
     if (this.managed === connection) { this.managed = undefined; this.expires = 0; }
+  }
+  async replyTransport(): Promise<OpenCodeReplyTransport> {
+    const connection = await this.endpoint();
+    const client = OpenCode.make({
+      baseUrl: connection.base,
+      headers: connection.headers,
+      // The generated SDK caps individual SSE frames, not total response bytes.
+      // Bound the raw body too, before JSON decoding; global streams rotate at
+      // this budget and reconnect/catch up through the authoritative log.
+      fetch: Object.assign(async (input: Parameters<typeof fetch>[0], init?: Parameters<typeof fetch>[1]) => {
+        let response: Response;
+        try { response = await fetch(input, { ...init, redirect: "error" }); }
+        catch { this.invalidate(connection); throw new OpenCodeError("OpenCode reply transport unavailable"); }
+        if (!response.ok) {
+          if (response.status === 401 || response.status === 403 || response.status >= 500) this.invalidate(connection);
+          await response.body?.cancel();
+          throw new OpenCodeError("OpenCode reply transport rejected", response.status);
+        }
+        if (!response.body) return response;
+        const reader = response.body.getReader();
+        let bytes = 0;
+        const body = new ReadableStream<Uint8Array>({
+          async pull(controller) {
+            try {
+              const next = await reader.read();
+              if (next.done) { controller.close(); reader.releaseLock(); return; }
+              bytes += next.value.byteLength;
+              if (bytes > 16 * 1024 * 1024) {
+                await reader.cancel();
+                throw new OpenCodeReplyTransportLimitError();
+              }
+              controller.enqueue(next.value);
+            } catch (error) {
+              try { await reader.cancel(); } catch { /* transport already failed */ }
+              try { reader.releaseLock(); } catch { /* cancellation may own the reader */ }
+              controller.error(error instanceof OpenCodeReplyTransportLimitError ? error : new OpenCodeError("OpenCode reply stream incomplete"));
+            }
+          },
+          async cancel(reason) {
+            try { await reader.cancel(reason); } finally {
+              try { reader.releaseLock(); } catch { /* pending pull owns the reader */ }
+            }
+          },
+        });
+        return new Response(body, { status: response.status, headers: response.headers });
+      }, { preconnect: fetch.preconnect }),
+    });
+    return { info: options => client.server.info(options), events: options => client.event.subscribe(options), log: (input, options) => client.session.log(input, options), session: (input, options) => client.session.get(input, options) };
   }
   async request<T>(path: string, method = "GET", data?: unknown, beforeSend?: () => void, timeoutMs = 10000): Promise<T> {
     const connection = await this.endpoint();

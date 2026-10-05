@@ -1,7 +1,9 @@
-import { useCallback, useId, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore, type KeyboardEvent } from "react";
+import { useCallback, useId, useLayoutEffect, useRef, useState, useSyncExternalStore, type KeyboardEvent } from "react";
 import { FiCheckCircle, FiPauseCircle, FiX, FiXCircle } from "react-icons/fi";
 import { catalog } from "./catalog";
-import { notificationStore } from "./notifications";
+import { notificationStore, type NotificationItem } from "./notifications";
+import type { Conversation } from "./types";
+import { isConversationUpdateSource, updateSourceKey } from "../shared/conversation/conversation-updates";
 import { PenroseTriangle } from "./penrose-triangle";
 import { store, useShellState } from "./store";
 import "./notification-center.css";
@@ -9,11 +11,16 @@ import "./notification-center.css";
 // Share opening ownership, not notification state, across shell/drawer triggers.
 let activeCenter: { id: string; dismiss: (restore?: boolean) => void } | null = null;
 
-function timestamp(time: string | number) {
-  return new Date(time).getTime();
+function matchesDestination(item: NotificationItem, conversation?: Conversation): boolean {
+  if (!conversation) return false;
+  const source = { harness: conversation.harness, authorityId: conversation.authorityId, nativeSessionId: conversation.nativeSessionId };
+  const key = isConversationUpdateSource(source) ? updateSourceKey(source) : undefined;
+  if (item.sourceKey) return item.sourceKey === key;
+  return !key || !item.groupId || item.groupId === key;
 }
 
-function timeLabel(time: string | number) {
+function timeLabel(time: string | number | null | undefined) {
+  if (time === null || time === undefined) return { label: "Time unavailable", iso: undefined };
   const date = new Date(time), value = date.getTime();
   if (!Number.isFinite(value)) return { label: "Time unavailable", iso: undefined };
   const seconds = Math.max(0, Math.floor((Date.now() - value) / 1000));
@@ -41,7 +48,8 @@ export function NotificationCenter({ onOpen, className = "", size = 28 }: {
   const catalogState = useSyncExternalStore(catalog.subscribe, catalog.snapshot);
   const state = useShellState();
   const available = state.phase === "ready" && state.conversationsReady;
-  const items = useMemo(() => [...notifications.items].sort((a, b) => (timestamp(b.time) || 0) - (timestamp(a.time) || 0)), [notifications.items]);
+  // Store order is immutable occurrence order, not an optional native timestamp.
+  const items = notifications.items;
   const unread = notifications.unreadCount;
   const dismiss = useCallback((restore = true) => {
     const element = panel.current;
@@ -140,13 +148,13 @@ export function NotificationCenter({ onOpen, className = "", size = 28 }: {
     };
   }, [open, available, dismiss, panelId]);
 
-  const choose = (conversationId: string) => {
+  const choose = (item: NotificationItem) => {
+    const conversationId = item.conversationId;
     const current = store.snapshot();
-    if (current.phase !== "ready" || !current.conversationsReady || current.sending || !current.conversations.some(item => item.id === conversationId)) {
+    if (current.phase !== "ready" || !current.conversationsReady || current.sending || !matchesDestination(item, current.conversations.find(conversation => conversation.id === conversationId))) {
       setNotice("This session cannot be opened right now."); return;
     }
     if (!onOpen(conversationId)) { setNotice("This session cannot be opened right now."); return; }
-    notificationStore.markRead(conversationId);
     // Keep focus on the destination selected by the shell, not the old drawer trigger.
     dismiss(false);
   };
@@ -165,6 +173,7 @@ export function NotificationCenter({ onOpen, className = "", size = 28 }: {
           <button type="button" className="notification-center-close" aria-label="Close notifications" onClick={() => dismiss()}><FiX aria-hidden="true" /></button>
         </div>
         {notifications.storageError && <p className="notification-center-notice" role="status">{notifications.storageError}</p>}
+        {notifications.feedError && <p className="notification-center-notice" role="status">{notifications.feedError}</p>}
         {state.sending && <p className="notification-center-notice">Session navigation is unavailable while sending.</p>}
         {notice && <p className="notification-center-notice" role="status">{notice}</p>}
         <div className="notification-center-list">
@@ -172,13 +181,13 @@ export function NotificationCenter({ onOpen, className = "", size = 28 }: {
             const workspace = catalogState.workspaces.find(workspace => workspace.workspaceId === item.workspaceId);
             const worktree = workspace?.worktrees.find(worktree => worktree.worktreeId === item.worktreeId);
             const location = [workspace?.name || item.workspaceId, worktree?.alias || worktree?.branch].filter(Boolean).join(" · ") || "Unassociated workspace";
-            const valid = state.conversations.some(conversation => conversation.id === item.conversationId);
+            const valid = matchesDestination(item, state.conversations.find(conversation => conversation.id === item.conversationId));
             const disabled = state.sending || !valid;
             const time = timeLabel(item.time);
-            const outcome = item.status === "completed" ? "Completed" : item.status === "failed" ? "Failed" : "Interrupted";
+            const outcome = item.status === "completed" ? item.kind === "reply" ? "Reply ready" : "Completed" : item.status === "failed" ? "Failed" : "Interrupted";
             const Icon = item.status === "completed" ? FiCheckCircle : item.status === "failed" ? FiXCircle : FiPauseCircle;
-            return <li key={item.id}>
-              <button type="button" className="notification-center-entry" disabled={disabled} onClick={() => choose(item.conversationId)}>
+            return <li key={item.groupId ?? item.conversationId}>
+              <button type="button" className="notification-center-entry" disabled={disabled} onClick={() => choose(item)}>
                 <Icon aria-hidden="true" />
                 <span className="notification-center-label">
                   <span className="notification-center-title">{item.title || "Untitled session"}</span>

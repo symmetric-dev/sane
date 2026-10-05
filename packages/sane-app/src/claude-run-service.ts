@@ -7,6 +7,7 @@ import type { Event, Run, Session } from "./history";
 import type { RunOwner } from "./run-owner";
 import type { ExecutionContext } from "./workstreams";
 import { isClaudeRootRecord } from "../shared/conversation/cc-scope";
+import { CLAUDE_RESULT_TEXT_LIMIT, consumeClaudeResultRecord, createClaudeResultSequenceState, rejectUndeliveredClaudeFramework, type ClaudeResultSequenceState } from "../shared/conversation/cc-result";
 import type { QueuedSendConfiguration } from "../shared/conversation/queued-followup";
 
 export const hookEvents = ["SessionStart", "SessionEnd", "UserPromptSubmit", "Stop", "PreToolUse", "PostToolUse", "PermissionRequest", "Notification", "SubagentStart", "SubagentStop", "PreCompact", "PostCompact", "CwdChanged"] as const;
@@ -74,9 +75,8 @@ export type ClaudeHookReply = { status: 200; body: { ok: true } } | { status: 40
 export type ClaudeQueuedFollowup = { requestId: string; afterRunId: string; sessionId: string; prompt: string; configuration?: QueuedSendConfiguration };
 type QueuedFollowup = { owner: RunOwner; input: ClaudeQueuedFollowup; cancelled?: boolean; persisted: Promise<void>; draining?: Promise<void> };
 /** failure: the first non-success result record; framework: the SessionStart text this run must deliver. */
-type Result = { seen: boolean; error: boolean; indices: Set<number>; diagnostic?: string; failure?: Record<string, unknown>; stderr: string;
-  framework?: { text: string; delivered: boolean; rejected: boolean; failures: { outcome: unknown; exitCode: unknown; stderr: unknown }[] } };
-const resultTextLimit = 2000;
+type Result = ClaudeResultSequenceState & { stderr: string };
+const resultTextLimit = CLAUDE_RESULT_TEXT_LIMIT;
 const message = (error: unknown) => error instanceof Error ? error.message : String(error);
 const quote = (s: string) => `'${s.replaceAll("'", "'\\''")}'`;
 const compactCommand = (text: string) => /^\s*\/compact(?:\s|$)/i.test(text);
@@ -240,35 +240,9 @@ export class ClaudeRunService {
         if (isClaudeRootRecord(data) && data?.session_id === nativeSessionId && data?.type === "system" && data.subtype === "task_notification") {
           this.stoppedTurns.delete(run.runId); this.turnHooks.set(run.runId, undefined);
         }
-        if (isClaudeRootRecord(data) && ((data?.type === "system" && data.subtype === "init") || data?.type === "result")) {
-          if (data.session_id !== nativeSessionId) { result.error = true; result.diagnostic = "CLI session identity mismatch or missing session_id"; }
-        }
-        // Claude continues without context when a SessionStart hook fails. Ours is the response
-        // carrying exactly this run's framework; the forward.ts observer prints nothing.
-        const framework = result.framework;
-        if (framework && isClaudeRootRecord(data) && data?.type === "system" && data.subtype === "hook_response" && data.hook_event === "SessionStart") {
-          let output: any; try { output = JSON.parse(data.stdout); } catch {}
-          if (data.outcome === "success" && output?.hookSpecificOutput?.hookEventName === "SessionStart" && output.hookSpecificOutput.additionalContext === framework.text) framework.delivered = true;
-          else if (data.outcome !== "success") framework.failures.push({ outcome: data.outcome ?? null, exitCode: data.exit_code ?? null, stderr: data.stderr ?? null });
-        }
-        if (framework && !framework.delivered && isClaudeRootRecord(data) && data?.type === "system" && data.subtype === "init") {
-          result.error = framework.rejected = true; result.diagnostic ??= "SANE framework SessionStart hook did not succeed";
-          // Fail fast: the agent must not proceed without its framework.
-          void this.terminate(owner);
-        }
-        if (isClaudeRootRecord(data) && data?.type === "result") {
-          // Background task notifications can finish additional turns in the
-          // same process. Claude distinguishes their results with result_index.
-          const indexed = Number.isSafeInteger(data.result_index) && data.result_index >= 0;
-          if (data.result_index !== undefined && !indexed) { result.error = true; result.diagnostic ??= "Invalid CLI result_index"; }
-          if (result.seen && (!indexed || !result.indices.size || result.indices.has(data.result_index))) { result.error = true; result.diagnostic = "Duplicate CLI result"; }
-          if (indexed) result.indices.add(data.result_index);
-          result.seen = true;
-          if (data.subtype !== "success" || data.is_error !== false) {
-            result.error = true; result.diagnostic ??= "CLI result is not an explicit success";
-            result.failure ??= { resultSubtype: data.subtype ?? null, isError: data.is_error ?? null, ...(data.api_error_status !== undefined ? { apiErrorStatus: data.api_error_status } : {}), result: typeof data.result === "string" ? data.result.slice(0, resultTextLimit) : data.result ?? null, ...(data.permission_denials !== undefined ? { permissionDenials: data.permission_denials } : {}) };
-          }
-        }
+        const observation = consumeClaudeResultRecord(result, data, nativeSessionId);
+        // Fail fast: Claude must not proceed without this run's framework.
+        if (observation.frameworkRejected) void this.terminate(owner);
       }
       else result.stderr = (result.stderr + text + "\n").slice(-resultTextLimit);
       await this.deps.emit(run, kind, data);
@@ -284,7 +258,7 @@ export class ClaudeRunService {
 
   async execute(owner: RunOwner, prompt: string, resume: boolean, ready: (accepted: boolean) => void): Promise<void> {
     const run = owner.run, deps = this.deps, runtime = this.runtime;
-    const result: Result = { seen: false, error: false, indices: new Set(), stderr: "" };
+    const result: Result = { ...createClaudeResultSequenceState(), stderr: "" };
     let streams: Promise<unknown>[] = [];
     try {
       if (run.operation !== "compact" && compactCommand(prompt)) throw new Error("Use the dedicated Compact action; compaction cannot be submitted as an ordinary prompt");
@@ -348,6 +322,7 @@ export class ClaudeRunService {
       child.stdin.write(prompt);
       const [exit] = await Promise.all([output.then(values => values[0] as number), child.stdin.end()]);
       if (this.groupAlive(owner) && !(await this.terminate(owner))) throw new Error("Process group termination unconfirmed");
+      rejectUndeliveredClaudeFramework(result);
       run.status = deps.closing() || owner.stopRequested ? "interrupted" : !deps.storageFailed() && exit === 0 && result.seen && !result.error ? "completed" : "failed";
       run.endedAt = new Date().toISOString(); deps.session(run.sessionId)!.lastStatus = run.status;
       const compact = run.operation === "compact" ? projectCompactions(session, [run], deps.events(run.runId))[0] : undefined;

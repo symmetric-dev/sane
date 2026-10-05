@@ -300,3 +300,64 @@ for (const blocked of ["retained", "closing", "storageFailed"] as const) test(`c
   await f.service().execute(f.owner, "/compact", true, f.accepted);
   expect(f.state.refreshed).toBe(0);
 });
+
+test("SDK indexed root results with gaps, missing UUIDs and identical text complete the same run", async () => {
+  const rows = [{ ...success, result_index: 2, result: "same" }, { ...success, result_index: 9, result: "same" }];
+  const f = fixture(bytes([wire(...rows)]));
+  await f.service().execute(f.owner, "hello", false, f.accepted);
+  expect(f.run.status).toBe("completed");
+  expect(f.records.filter(e => e.kind === "stdout").map(e => e.data)).toEqual(rows);
+  expect(statusData(f).at(-1)).toMatchObject({ status: "completed", resultSeen: true, exitCode: 0 });
+});
+
+for (const [name, rows, reason] of [
+  ["reused index", [{ ...success, result_index: 0, uuid: "first" }, { ...success, result_index: 0, uuid: "second" }], "Duplicate CLI result"],
+  ["invalid negative index", [{ ...success, result_index: -1 }], "Invalid CLI result_index"],
+  ["invalid string index", [{ ...success, result_index: "0" }], "Invalid CLI result_index"],
+  ["invalid fractional index", [{ ...success, result_index: 1.5 }], "Invalid CLI result_index"],
+  ["legacy then indexed", [success, { ...success, result_index: 1 }], "Duplicate CLI result"],
+  ["indexed then legacy", [{ ...success, result_index: 0 }, success], "Duplicate CLI result"],
+  ["mismatched indexed identity", [{ ...success, result_index: 0, session_id: "foreign" }], "CLI session identity mismatch or missing session_id"],
+] as const) test(`indexed supervision fails closed on ${name}`, async () => {
+  const f = fixture(bytes([wire(...rows)]));
+  await f.service().execute(f.owner, "hello", false, f.accepted);
+  expect(f.run.status).toBe("failed");
+  expect(statusData(f).at(-1)?.reason).toBe(reason);
+  expect(f.state.reconciliationRequired).toBe(false);
+});
+
+test("child indexed results cannot satisfy or poison root supervision", async () => {
+  const child = { ...success, session_id: "foreign", result_index: 0, parent_tool_use_id: "child", is_error: true };
+  const root = fixture(bytes([wire(child, { ...success, result_index: 0 }, child, { ...success, result_index: 4 })]));
+  await root.service().execute(root.owner, "hello", false, root.accepted);
+  expect(root.run.status).toBe("completed");
+  const onlyChild = fixture(bytes([wire(child)]));
+  await onlyChild.service().execute(onlyChild.owner, "hello", false, onlyChild.accepted);
+  expect(onlyChild.run.status).toBe("failed");
+  expect(statusData(onlyChild).at(-1)?.resultSeen).toBe(false);
+});
+
+test("native indexed failure remains authoritative even after a later successful reply", async () => {
+  const f = fixture(bytes([wire({ ...success, result_index: 0, subtype: "error_max_turns", is_error: true, result: "error text" }, { ...success, result_index: 4, result: "useful reply" })]));
+  await f.service().execute(f.owner, "hello", false, f.accepted);
+  expect(f.run.status).toBe("failed");
+  expect(statusData(f).at(-1)).toMatchObject({ reason: "CLI result is not an explicit success", resultSubtype: "error_max_turns", isError: true, result: "error text" });
+});
+
+for (const delivered of [false, true]) test(`framework indexed supervision requires exact SessionStart delivery: ${delivered}`, async () => {
+  const context = "framework\n\nassignment";
+  const hook = { type: "system", subtype: "hook_response", hook_event: "SessionStart", outcome: "success", stdout: JSON.stringify({ hookSpecificOutput: { hookEventName: "SessionStart", additionalContext: delivered ? context : "wrong" } }) };
+  const f = fixture(bytes([wire(hook, { type: "system", subtype: "init", session_id: nativeId }, { ...success, result_index: 0, result: "reply" })]));
+  f.session.saneContext = { version: 1, framework: "framework", assignment: "assignment" };
+  await f.service().execute(f.owner, "hello", false, f.accepted);
+  expect(f.run.status).toBe(delivered ? "completed" : "failed");
+  if (!delivered) expect(statusData(f).at(-1)?.reason).toBe("SANE framework SessionStart hook did not succeed");
+  expect(f.spawned()).toBeDefined();
+});
+
+test("required framework cannot complete on an indexed result without hook delivery or native init", async () => {
+  const f = fixture(bytes([wire({ ...success, result_index: 0, result: "reply" })]));
+  f.session.saneContext = { version: 1, framework: "framework" };
+  await f.service().execute(f.owner, "hello", false, f.accepted);
+  expect(f.run.status).toBe("failed");
+});

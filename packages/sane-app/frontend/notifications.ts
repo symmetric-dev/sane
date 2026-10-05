@@ -1,333 +1,520 @@
 import type { Conversation } from "./types";
+import {
+  isConversationUpdate, isConversationUpdateCursor, isConversationUpdatePage, isConversationUpdateSource,
+  updateSourceKey, isConversationUpdateCoverage,
+  type ConversationUpdate, type ConversationUpdateCursor, type ConversationUpdateSource,
+  type ConversationUpdateCoverage,
+} from "../shared/conversation/conversation-updates";
+import { NotificationDatabase, type NotificationRows } from "./notification-db";
+import {
+  LEGACY_PREFIX, freshLegacy, decodeLegacy, mergeLegacy, serializeLegacy, observeLegacy,
+  legacyIdentity, legacyKey, parseLegacyKey, receiptKey, text, integer, object,
+  type LegacyItem, type LegacyState,
+} from "./notifications-legacy";
 
-export type NotificationItem = {
-  id: string; conversationId: string; runId: string; title: string;
-  status: "completed" | "failed" | "interrupted"; time: string;
-  workspaceId?: string | null; worktreeId?: string | null;
+export type NotificationItem = LegacyItem & {
+  kind?: "reply" | "failed" | "interrupted" | "legacy";
+  sourceKey?: string; groupId?: string; occurrenceSequence?: number;
 };
-export type NotificationSnapshot = { items: NotificationItem[]; unreadCount: number; storageError: string };
-
-type Observation = {
-  identity: string; conversationId: string; runId: string;
-  phase: "active" | "other" | "settled";
-  observedActive: boolean;
-  bornAt: number; touchedAt: number; readAt: number; item?: NotificationItem;
+export type NotificationSnapshot = { items: NotificationItem[]; unreadCount: number; storageError: string; feedError?: string };
+export type NotificationCapture = Readonly<{
+  owner: string; binding: number; conversationId: string;
+  sources: readonly string[]; ids: readonly string[]; legacyIds: readonly string[];
+}>;
+export type NotificationResume = { cursor?: ConversationUpdateCursor; through?: number; seeding: boolean };
+type EventRecord = { update: ConversationUpdate; eligible: boolean };
+type Accepted = { conversationId: string; runId: string; sourceKey?: string; acceptedAt: number };
+type ResumeState = NotificationResume & {
+  storeId?: string; baselines: [string, number][]; activeRunIds: string[]; activeBindings: [string, string][];
+  coverage: ConversationUpdateCoverage[];
 };
-type AcceptedRun = { conversationId: string; runId: string; acceptedAt: number; identity?: string };
-type Saved = { version: 2; scope: string; floor: number; records: Observation[]; reads: [string, number][]; accepted: AcceptedRun[] };
-type Memory = { floor: number; records: Map<string, Observation>; reads: Map<string, number>; accepted: Map<string, AcceptedRun>; error: string };
-// Keep the existing storage key so v1 evidence migrates in place. The v2
-// payload separates terminal metadata (including seeds) from alert evidence.
-const PREFIX = "sane.notifications.v1:";
-const LIMIT = 1024, MAX_BYTES = 4 * 1024 * 1024;
-const RETENTION_ERROR = "Notification retention exceeds its normal limit. Unread, active, accepted-run and read evidence is preserved; persistence is best-effort up to the browser storage size and quota limits.";
-const emptySnapshot = (): NotificationSnapshot => {
-  const items: NotificationItem[] = [];
-  Object.freeze(items);
-  return Object.freeze({ items, unreadCount: 0, storageError: "" });
+type Memory = {
+  events: Map<string, EventRecord>; reads: Map<string, number>; accepted: Map<string, Accepted>;
+  legacy: LegacyState; resume: ResumeState; storageError: string;
 };
-const fresh = (): Memory => ({ floor: 0, records: new Map(), reads: new Map(), accepted: new Map(), error: "" });
-const text = (value: unknown, limit = 1024): value is string => typeof value === "string" && !!value && value.length <= limit;
-const timestamp = (value: unknown): value is number => typeof value === "number" && Number.isSafeInteger(value) && value >= 0;
-const date = (value: unknown): value is string => text(value, 64) && Number.isFinite(Date.parse(value));
-const object = (value: unknown): value is Record<string, unknown> => !!value && typeof value === "object" && !Array.isArray(value);
-const terminal = (value: unknown): value is NotificationItem["status"] => value === "completed" || value === "failed" || value === "interrupted";
-const active = (value: unknown) => value === "starting" || value === "running";
-const identityFor = (c: Conversation) => JSON.stringify([c.id, c.harness, c.nativeSessionId ?? c.id, c.cwd]);
-const occurrence = (record: Pick<Observation, "identity" | "runId">) => JSON.stringify([record.identity, record.runId]);
-const receiptKey = (record: Pick<AcceptedRun, "conversationId" | "runId">) => JSON.stringify([record.conversationId, record.runId]);
+const fresh = (): Memory => ({ events: new Map(), reads: new Map(), accepted: new Map(), legacy: freshLegacy(),
+  resume: { seeding: true, baselines: [], activeRunIds: [], activeBindings: [], coverage: [] }, storageError: "" });
+const STORAGE_ERROR = "Notifications are stored in memory only while browser storage is unavailable or invalid. They may not survive a reload or sync across tabs.";
+const LEGACY_ERROR = "Legacy notification history could not be imported. Its browser storage is unavailable or invalid.";
+const sameCursor = (a?: ConversationUpdateCursor | null, b?: ConversationUpdateCursor | null) =>
+  (a?.epoch ?? null) === (b?.epoch ?? null) && (a?.after ?? null) === (b?.after ?? null);
+const acceptedKey = (r: Pick<Accepted, "conversationId" | "runId">) => JSON.stringify([r.conversationId, r.runId]);
 const eligible = (c: Conversation) => !c.worker && c.agentKind !== "worker" && !c.hidden && !c.replacedBy;
 
-function validIdentity(value: unknown, conversationId?: string): value is string {
-  if (!text(value, 8192)) return false;
+/** Only catalog-evidenced authority/native identity is used for qualification. */
+function catalogSource(c: Conversation): ConversationUpdateSource | undefined {
+  const row = c as Conversation & { updateSource?: unknown; authorityId?: string; incarnation?: string };
+  if (isConversationUpdateSource(row.updateSource)) return row.updateSource;
+  const source = { harness: c.harness, authorityId: row.authorityId, nativeSessionId: c.nativeSessionId,
+    ...(row.incarnation !== undefined ? { incarnation: row.incarnation } : {}) };
+  return isConversationUpdateSource(source) ? source : undefined;
+}
+function validSourceKey(value: unknown): value is string {
+  if (!text(value, 16384)) return false;
   try {
-    const identity: unknown = JSON.parse(value);
-    return Array.isArray(identity) && identity.length === 4 && (conversationId === undefined || identity[0] === conversationId)
-      && text(identity[0]) && text(identity[1], 64) && text(identity[2]) && typeof identity[3] === "string" && identity[3].length <= 4096;
+    const tuple: unknown = JSON.parse(value);
+    if (!Array.isArray(tuple) || tuple.length !== 4) return false;
+    const source = { harness: tuple[0], authorityId: tuple[1], nativeSessionId: tuple[2], ...(tuple[3] === null ? {} : { incarnation: tuple[3] }) };
+    return isConversationUpdateSource(source) && updateSourceKey(source) === value;
   } catch { return false; }
 }
-function validOccurrence(value: unknown): value is string {
-  if (!text(value, 20000)) return false;
-  try {
-    const parts: unknown = JSON.parse(value);
-    return Array.isArray(parts) && parts.length === 2 && validIdentity(parts[0]) && text(parts[1])
-      && JSON.stringify(parts) === value;
-  } catch { return false; }
-}
-function validatedAccepted(value: unknown): AcceptedRun | null {
-  if (!object(value) || !text(value.conversationId) || !text(value.runId) || !timestamp(value.acceptedAt)
-    || value.identity !== undefined && !validIdentity(value.identity, value.conversationId)) return null;
-  return { conversationId: value.conversationId, runId: value.runId, acceptedAt: value.acceptedAt,
-    ...(value.identity !== undefined ? { identity: value.identity as string } : {}) };
-}
-function validatedRecord(value: unknown, legacy = false): Observation | null {
-  if (!object(value) || !text(value.identity, 8192) || !text(value.conversationId) || !text(value.runId)
-    || value.phase !== "active" && value.phase !== "other" && value.phase !== "settled"
-    || !legacy && typeof value.observedActive !== "boolean"
-    || !timestamp(value.bornAt) || !timestamp(value.touchedAt) || !timestamp(value.readAt)) return null;
-  if (!validIdentity(value.identity, value.conversationId)) return null;
-  const record: Observation = { identity: value.identity, conversationId: value.conversationId, runId: value.runId,
-    phase: value.phase, observedActive: legacy ? value.phase === "active" || value.item !== undefined : value.observedActive as boolean,
-    bornAt: value.bornAt, touchedAt: value.touchedAt, readAt: value.readAt };
-  if (value.item !== undefined) {
-    const item = value.item;
-    if (record.phase !== "settled" || !object(item) || item.id !== occurrence(record) || item.conversationId !== record.conversationId
-      || item.runId !== record.runId || !text(item.title, 256) || !terminal(item.status) || !date(item.time)
-      || ![item.workspaceId, item.worktreeId].every(id => id === undefined || id === null || text(id))) return null;
-    record.item = { id: item.id as string, conversationId: record.conversationId, runId: record.runId,
-      title: item.title, status: item.status, time: new Date(item.time).toISOString(),
-      ...(item.workspaceId !== undefined ? { workspaceId: item.workspaceId as string | null } : {}),
-      ...(item.worktreeId !== undefined ? { worktreeId: item.worktreeId as string | null } : {}) };
+function decode(rows: NotificationRows): Memory {
+  const m = fresh();
+  const meta = rows.resume.get("state");
+  if (meta !== undefined) {
+    if (!object(meta) || typeof meta.seeding !== "boolean"
+      || meta.cursor !== undefined && !isConversationUpdateCursor(meta.cursor)
+      || meta.through !== undefined && (!integer(meta.through) || !isConversationUpdateCursor(meta.cursor) || meta.through < meta.cursor.after)
+      || meta.storeId !== undefined && !text(meta.storeId)
+      || !Array.isArray(meta.activeRunIds) || !meta.activeRunIds.every(id => text(id)) || new Set(meta.activeRunIds).size !== meta.activeRunIds.length
+      || !Array.isArray(meta.baselines) || meta.baselines.some(p => !Array.isArray(p) || p.length !== 2 || !validSourceKey(p[0]) || !integer(p[1]))
+      || !Array.isArray(meta.activeBindings) || meta.activeBindings.some(p => !Array.isArray(p) || p.length !== 2 || !text(p[0]) || !validSourceKey(p[1]))
+      || !Array.isArray(meta.coverage) || !meta.coverage.every(isConversationUpdateCoverage)) {
+      throw new Error("Invalid notification resume state");
+    }
+    m.resume = meta as ResumeState;
   }
-  return record;
+  for (const [id, value] of rows.events) {
+    if (!object(value) || !isConversationUpdate(value.update) || value.update.id !== id || typeof value.eligible !== "boolean") throw new Error("Invalid notification event");
+    m.events.set(id, { update: value.update, eligible: value.eligible });
+  }
+  for (const [id, at] of rows.reads) {
+    if (!text(id, 16384) || !integer(at) || !at) throw new Error("Invalid notification read marker");
+    m.reads.set(id, at);
+  }
+  for (const [key, value] of rows.accepted) {
+    if (!object(value) || !text(value.conversationId) || !text(value.runId) || !integer(value.acceptedAt)
+      || value.sourceKey !== undefined && !validSourceKey(value.sourceKey)) throw new Error("Invalid notification accepted receipt");
+    const r = value as Accepted;
+    if (acceptedKey(r) !== key) throw new Error("Invalid notification receipt identity");
+    m.accepted.set(key, r);
+  }
+  const legacy = rows.legacy.get("sidecar");
+  if (legacy !== undefined) m.legacy = decodeLegacy(legacy);
+  for (const [key, id] of m.legacy.mappings) {
+    const old = parseLegacyKey(key), event = m.events.get(id);
+    if (!old || !event || event.update.conversationId !== old.conversationId
+      || event.update.legacyRunId !== undefined && event.update.legacyRunId !== old.runId) throw new Error("Invalid legacy notification mapping");
+    const tuple = JSON.parse(old.identity) as [string, string, string, string];
+    if (tuple[1] !== event.update.source.harness || tuple[2] !== event.update.source.nativeSessionId) throw new Error("Invalid legacy notification source mapping");
+  }
+  return m;
 }
-
-function decode(raw: string, scope: string): Saved {
-  if (raw.length > MAX_BYTES) throw new Error("Notification storage is too large.");
-  const saved: unknown = JSON.parse(raw);
-  if (!object(saved) || saved.version !== 1 && saved.version !== 2 || saved.scope !== scope || !timestamp(saved.floor)
-    || !Array.isArray(saved.records)) throw new Error("Invalid notification storage.");
-  const legacy = saved.version === 1;
-  const records = saved.records.map(value => validatedRecord(value, legacy));
-  if (records.some(record => !record)) throw new Error("Invalid notification records.");
-  const reads: unknown = legacy ? [] : saved.reads, receipts: unknown = legacy ? [] : saved.accepted;
-  if (!Array.isArray(reads) || reads.some(value => !Array.isArray(value) || value.length !== 2
-    || !validOccurrence(value[0]) || !timestamp(value[1]) || value[1] === 0) || !Array.isArray(receipts)) throw new Error("Invalid notification evidence.");
-  const accepted = receipts.map(validatedAccepted);
-  if (accepted.some(value => !value)) throw new Error("Invalid accepted runs.");
-  // LIMIT is a compaction target, not a decoder rejection threshold: protected
-  // evidence may exceed it. MAX_BYTES remains the hard persistence/decode cap.
-  return { version: 2, scope, floor: saved.floor, records: records as Observation[], reads: reads as [string, number][], accepted: accepted as AcceptedRun[] };
+function encode(m: Memory, rows: NotificationRows): void {
+  rows.resume.set("state", m.resume);
+  rows.events = new Map(m.events); rows.reads = new Map(m.reads); rows.accepted = new Map(m.accepted);
+  rows.legacy.set("sidecar", serializeLegacy(m.legacy));
 }
-
-/** Read acknowledgement is a grow-only marker on an occurrence, not deletion of
- * an array item. Activity evidence is independently grow-only, so a terminal
- * seed from one tab can combine with an active observation from another. */
-function mergeRecord(a: Observation, b: Observation): Observation {
-  const winner = a.phase === "settled" && b.phase !== "settled" ? a
-    : b.phase === "settled" && a.phase !== "settled" ? b
-      : a.touchedAt > b.touchedAt ? a : b.touchedAt > a.touchedAt ? b
-        : JSON.stringify(a).localeCompare(JSON.stringify(b)) >= 0 ? a : b;
-  const items = [a.item, b.item].filter((item): item is NotificationItem => !!item)
-    .sort((left, right) => right.time.localeCompare(left.time) || JSON.stringify(right).localeCompare(JSON.stringify(left)));
-  return { ...winner, bornAt: Math.min(a.bornAt, b.bornAt), touchedAt: Math.max(a.touchedAt, b.touchedAt),
-    observedActive: a.observedActive || b.observedActive,
-    readAt: Math.max(a.readAt, b.readAt), ...(items[0] ? { item: items[0], phase: "settled" } : {}) };
-}
-
-function mergeAccepted(a: AcceptedRun, b: AcceptedRun): AcceptedRun {
-  // A stale unbound receipt cannot undo a native binding. Conflicting bindings
-  // resolve deterministically; evidence already attached to records is retained.
-  const identity = [a.identity, b.identity].filter((value): value is string => value !== undefined).sort()[0];
-  return { conversationId: a.conversationId, runId: a.runId, acceptedAt: Math.min(a.acceptedAt, b.acceptedAt),
-    ...(identity !== undefined ? { identity } : {}) };
+/** Merge grow-only evidence, never merge a volatile cursor into a durable one. */
+function union(m: Memory, other: Memory): void {
+  const baselines = new Map(m.resume.baselines);
+  for (const [key, through] of other.resume.baselines) baselines.set(key, Math.max(through, baselines.get(key) ?? 0));
+  m.resume.baselines = [...baselines];
+  m.resume.activeRunIds = [...new Set([...m.resume.activeRunIds, ...other.resume.activeRunIds])];
+  const bindings = new Map(other.resume.activeBindings);
+  for (const [runId, sourceKey] of m.resume.activeBindings) bindings.set(runId, sourceKey);
+  m.resume.activeBindings = [...bindings];
+  for (const [id, at] of other.reads) m.reads.set(id, Math.max(at, m.reads.get(id) ?? 0));
+  for (const [key, receipt] of other.accepted) {
+    const previous = m.accepted.get(key);
+    m.accepted.set(key, { ...receipt, ...(previous?.sourceKey ? { sourceKey: previous.sourceKey } : {}),
+      acceptedAt: Math.min(receipt.acceptedAt, previous?.acceptedAt ?? receipt.acceptedAt) });
+  }
+  for (const [id, record] of other.events) {
+    const previous = m.events.get(id);
+    if (previous && (updateSourceKey(previous.update.source) !== updateSourceKey(record.update.source)
+      || previous.update.conversationId !== record.update.conversationId || previous.update.occurrenceSequence !== record.update.occurrenceSequence)) continue;
+    const update = previous && previous.update.revision >= record.update.revision ? previous.update : record.update;
+    m.events.set(id, { update, eligible: !!previous?.eligible || record.eligible });
+  }
+  mergeLegacy(m.legacy, other.legacy);
 }
 
 class NotificationStore {
   private listeners = new Set<() => void>();
   private scopes = new Map<string, Memory>();
   private scope: string | null = null;
+  private legacyScope: string | null = null;
+  private binding = 0;
   private memory = fresh();
-  private lastRaw: string | null | undefined;
-  private state = emptySnapshot();
-  private visible: Set<string> | null = null;
-  private identities = new Map<string, string>();
+  private db = new NotificationDatabase();
+  private hydration: Promise<void> = Promise.resolve();
+  private queue: Promise<unknown> = Promise.resolve();
+  private channel: BroadcastChannel | null = null;
+  private catalog: Map<string, Conversation> | null = null;
+  private feedEnabled = false;
+  private feedError = "";
+  private state: NotificationSnapshot = Object.freeze({ items: Object.freeze([]) as unknown as NotificationItem[], unreadCount: 0, storageError: "", feedError: "" });
   snapshot = () => this.state;
   subscribe = (fn: () => void) => { this.listeners.add(fn); return () => { this.listeners.delete(fn); }; };
-
-  private publish() {
-    const grouped = new Map<string, NotificationItem>();
-    if (this.scope !== null) for (const record of this.memory.records.values()) {
-      if (!record.observedActive || !record.item || record.readAt || this.memory.reads.has(occurrence(record))
-        || this.visible && !this.visible.has(record.identity)) continue;
-      const old = grouped.get(record.conversationId), item = record.item;
-      if (!old || item.time > old.time || item.time === old.time && item.id > old.id) grouped.set(record.conversationId, item);
-    }
-    const items = [...grouped.values()].sort((a, b) => b.time.localeCompare(a.time) || b.id.localeCompare(a.id));
-    const next = { items, unreadCount: items.length,
-      storageError: this.scope === null ? "" : this.memory.error || (this.retainedSize() > LIMIT ? RETENTION_ERROR : "") };
-    if (JSON.stringify(next) === JSON.stringify(this.state)) return;
-    items.forEach(item => Object.freeze(item)); Object.freeze(items);
-    this.state = Object.freeze(next); this.listeners.forEach(fn => fn());
-  }
-
-  private prune() {
-    for (const [key, record] of this.memory.records) {
-      if (record.readAt) this.memory.reads.set(key, Math.max(record.readAt, this.memory.reads.get(key) ?? 0));
-      if (this.memory.reads.has(key) || !record.observedActive && record.bornAt <= this.memory.floor) this.memory.records.delete(key);
-    }
-    const excess = this.retainedSize() - LIMIT;
-    if (excess <= 0) return;
-    const historical = [...this.memory.records.values()].filter(record => !record.observedActive)
-      .sort((a, b) => a.bornAt - b.bornAt || occurrence(a).localeCompare(occurrence(b)));
-    for (const record of historical.slice(0, excess)) {
-      this.memory.floor = Math.max(this.memory.floor, record.bornAt);
-      this.memory.records.delete(occurrence(record));
-    }
-    // Floors compact only historical seeds. They must never erase unread or
-    // observed-active runs, even when imported from an older tab. Read markers
-    // are minimal, permanent evidence preventing acknowledged runs resurfacing.
-    for (const [key, record] of this.memory.records) if (!record.observedActive && record.bornAt <= this.memory.floor) this.memory.records.delete(key);
-  }
-  private retainedSize() { return this.memory.records.size + this.memory.reads.size + this.memory.accepted.size; }
-  private applyAccepted() {
-    for (const [key, record] of this.memory.records) {
-      const accepted = this.memory.accepted.get(receiptKey(record));
-      if (accepted?.identity === record.identity && !record.observedActive) this.memory.records.set(key, { ...record, observedActive: true });
-    }
-  }
-  private merge(saved: Saved) {
-    this.memory.floor = Math.max(this.memory.floor, saved.floor);
-    for (const [key, readAt] of saved.reads) this.memory.reads.set(key, Math.max(readAt, this.memory.reads.get(key) ?? 0));
-    for (const accepted of saved.accepted) {
-      const key = receiptKey(accepted), previous = this.memory.accepted.get(key);
-      this.memory.accepted.set(key, previous ? mergeAccepted(previous, accepted) : accepted);
-    }
-    for (const record of saved.records) {
-      const key = occurrence(record), previous = this.memory.records.get(key);
-      this.memory.records.set(key, previous ? mergeRecord(previous, record) : record);
-    }
-    this.applyAccepted(); this.prune();
-  }
-  private serialized() {
-    if (this.scope === null) return "";
-    return JSON.stringify({ version: 2, scope: this.scope, floor: this.memory.floor,
-      records: [...this.memory.records.values()].sort((a, b) => occurrence(a).localeCompare(occurrence(b))),
-      reads: [...this.memory.reads].sort(([a], [b]) => a.localeCompare(b)),
-      accepted: [...this.memory.accepted.values()].sort((a, b) => receiptKey(a).localeCompare(receiptKey(b))) } satisfies Saved);
-  }
-  private storageFailure() {
-    this.memory.error = "Notifications are stored in memory only while browser storage is unavailable or invalid. They may not survive a reload or sync across tabs.";
-  }
-  private readStorage() {
-    if (this.scope === null) return;
-    try {
-      if (typeof window === "undefined") throw new Error("Browser storage unavailable.");
-      const raw = window.localStorage.getItem(PREFIX + this.scope);
-      if (raw !== this.lastRaw) {
-        if (raw !== null) this.merge(decode(raw, this.scope));
-        this.lastRaw = raw;
-      }
-    } catch { this.storageFailure(); }
-  }
-  private persist() {
-    if (this.scope === null) return;
-    // Every write unions the latest disk value; storage events also repair a
-    // concurrent stale write rather than replacing newer read markers.
-    this.readStorage(); this.prune();
-    try {
-      if (typeof window === "undefined") throw new Error("Browser storage unavailable.");
-      const key = PREFIX + this.scope, raw = this.serialized();
-      if (raw.length > MAX_BYTES) throw new Error("Notification storage is too large.");
-      if (window.localStorage.getItem(key) !== raw) window.localStorage.setItem(key, raw);
-      this.lastRaw = raw;
-      this.memory.error = "";
-    } catch { this.storageFailure(); }
-    this.publish();
-  }
-  private onStorage = (event: StorageEvent) => {
-    if (this.scope === null || event.key !== PREFIX + this.scope) return;
-    try {
-      if (event.storageArea !== window.localStorage) return;
-      if (event.newValue !== null) this.merge(decode(event.newValue, this.scope));
-    } catch { this.storageFailure(); this.publish(); return; }
-    this.persist();
+  ready = (): Promise<void> => this.hydration;
+  resume = (): NotificationResume | null => this.scope === null ? null : {
+    ...(this.memory.resume.cursor ? { cursor: { ...this.memory.resume.cursor } } : {}),
+    ...(this.memory.resume.through !== undefined ? { through: this.memory.resume.through } : {}), seeding: this.memory.resume.seeding,
   };
+  setFeedEnabled = (enabled: boolean): void => { this.feedEnabled = enabled; this.publish(); };
+  setFeedError = (error: string | null): void => { this.feedError = error ?? ""; this.publish(); };
 
-  activate = (scope: string): void => {
-    // No localStorage read, event listener or visible persisted data before the
-    // owner supplies an authenticated bridge scope.
-    if (this.scope === scope) return;
-    this.suspend(); this.scope = scope;
-    this.memory = this.scopes.get(scope) ?? fresh();
-    this.scopes.delete(scope); this.scopes.set(scope, this.memory);
-    while (this.scopes.size > 8) {
-      const historical = [...this.scopes].find(([key, memory]) => key !== scope && !memory.reads.size && !memory.accepted.size
-        && ![...memory.records.values()].some(record => record.observedActive || record.readAt));
-      if (!historical) break;
-      this.scopes.delete(historical[0]);
+  private current(owner: string, binding: number) { return this.scope === owner && this.binding === binding; }
+  private enqueue<T>(work: () => Promise<T>): Promise<T> {
+    const result = this.queue.then(work, work); this.queue = result.catch(() => undefined); return result;
+  }
+  private sourceVisible(conversationId: string, sourceKey?: string, identity?: string): boolean {
+    if (!this.catalog) return true;
+    const c = this.catalog.get(conversationId);
+    if (!c || !eligible(c)) return false;
+    if (identity) return identity === legacyIdentity(c);
+    const source = catalogSource(c);
+    if (source) return sourceKey === updateSourceKey(source);
+    if (sourceKey) {
+      try {
+        const parts: unknown = JSON.parse(sourceKey);
+        return Array.isArray(parts) && parts[0] === c.harness && parts[2] === (c.nativeSessionId ?? c.id);
+      } catch { return false; }
     }
-    this.readStorage();
-    if (typeof window !== "undefined") window.addEventListener("storage", this.onStorage);
+    return true;
+  }
+  private unreadEvents() {
+    return [...this.memory.events.values()].filter(r => r.eligible && !this.memory.reads.has(r.update.id)
+      && this.sourceVisible(r.update.conversationId, updateSourceKey(r.update.source)));
+  }
+  private unreadLegacy() {
+    return [...this.memory.legacy.records.values()].filter(r => r.item && r.observedActive && !r.readAt
+      && !this.memory.legacy.reads.has(legacyKey(r)) && !this.memory.legacy.tombstones.has(legacyKey(r))
+      && this.sourceVisible(r.conversationId, undefined, r.identity));
+  }
+  private publish(): void {
+    const grouped = new Map<string, NotificationItem>();
+    if (this.scope !== null) {
+      for (const r of this.unreadEvents()) {
+        const u = r.update, sourceKey = updateSourceKey(u.source), c = this.catalog?.get(u.conversationId);
+        const item: NotificationItem = { id: u.id, conversationId: u.conversationId, runId: u.runId ?? u.id,
+          title: c?.title?.trim().slice(0, 256) || "Conversation", kind: u.kind,
+          status: u.kind === "reply" ? "completed" : u.kind, time: u.occurredAt ?? u.observedAt,
+          sourceKey, groupId: sourceKey, occurrenceSequence: u.occurrenceSequence,
+          ...(c?.workspaceId !== undefined ? { workspaceId: c.workspaceId } : {}),
+          ...(c?.worktreeId !== undefined ? { worktreeId: c.worktreeId } : {}) };
+        const old = grouped.get(sourceKey);
+        if (!old || (old.occurrenceSequence ?? 0) < u.occurrenceSequence) grouped.set(sourceKey, item);
+      }
+      for (const r of this.unreadLegacy()) {
+        const c = this.catalog?.get(r.conversationId), source = c && catalogSource(c);
+        const groupId = source ? updateSourceKey(source) : r.identity;
+        const item: NotificationItem = { ...r.item!, kind: "legacy", groupId };
+        const old = grouped.get(groupId);
+        if (!old || old.kind === "legacy" && (item.time > old.time || item.time === old.time && item.id > old.id)) grouped.set(groupId, item);
+      }
+    }
+    const items = [...grouped.values()].sort((a, b) =>
+      (b.occurrenceSequence ?? 0) - (a.occurrenceSequence ?? 0) || b.time.localeCompare(a.time) || b.id.localeCompare(a.id));
+    const coverageNotices = [...new Set(this.memory.resume.coverage.filter(coverage => coverage.state !== "ready")
+      .map(coverage => coverage.reason || `Conversation update coverage is ${coverage.state}.`))].slice(0, 3);
+    const next = { items, unreadCount: items.length, storageError: this.scope === null ? "" : this.memory.storageError,
+      feedError: this.scope === null ? "" : [this.feedError, ...coverageNotices].filter(Boolean).join(" ") };
+    if (JSON.stringify(next) === JSON.stringify(this.state)) return;
+    items.forEach(i => Object.freeze(i)); Object.freeze(items); this.state = Object.freeze(next);
+    this.listeners.forEach(fn => fn());
+  }
+
+  private importLegacy(m: Memory, owner: string): void {
+    if (typeof window === "undefined") return;
+    try {
+      const legacyScope = this.legacyScope ?? owner;
+      const raw = window.localStorage.getItem(LEGACY_PREFIX + legacyScope);
+      if (raw !== null) mergeLegacy(m.legacy, decodeLegacy(raw, legacyScope));
+    } catch { if (!m.storageError) m.storageError = LEGACY_ERROR; }
+  }
+  private reconcile(m: Memory): void {
+    // Bootstrap activity is receipt evidence, not a cursor. Keep it across a
+    // memory-only recovery, and bind it to a listed exact native run when possible.
+    const activeBindings = new Map(m.resume.activeBindings);
+    for (const c of this.catalog?.values() ?? []) {
+      const source = catalogSource(c);
+      if (!source || !text(c.lastRunId) || !m.resume.activeRunIds.includes(c.lastRunId)) continue;
+      const sourceKey = updateSourceKey(source), bound = activeBindings.get(c.lastRunId);
+      if (bound && bound !== sourceKey) continue;
+      activeBindings.set(c.lastRunId, sourceKey);
+      const receipt: Accepted = { conversationId: c.id, runId: c.lastRunId, sourceKey, acceptedAt: Math.max(1, Date.now()) };
+      if (!m.accepted.has(acceptedKey(receipt))) m.accepted.set(acceptedKey(receipt), receipt);
+      if (!m.legacy.accepted.has(acceptedKey(receipt))) m.legacy.accepted.set(acceptedKey(receipt), {
+        conversationId: c.id, runId: c.lastRunId, acceptedAt: receipt.acceptedAt, identity: legacyIdentity(c),
+      });
+    }
+    for (const [key, receipt] of m.legacy.accepted) {
+      const c = this.catalog?.get(receipt.conversationId), source = c && catalogSource(c);
+      if (c && !receipt.identity && text(c.nativeSessionId)) receipt.identity = legacyIdentity(c);
+      if (c && source && receipt.identity === legacyIdentity(c) && !m.accepted.has(key)) m.accepted.set(key, {
+        conversationId: receipt.conversationId, runId: receipt.runId, acceptedAt: receipt.acceptedAt, sourceKey: updateSourceKey(source),
+      });
+    }
+    for (const r of m.legacy.records.values()) {
+      const receipt = m.legacy.accepted.get(receiptKey(r));
+      if (receipt?.identity === r.identity) r.observedActive = true;
+    }
+    for (const [key, id] of m.legacy.mappings) {
+      const at = m.legacy.reads.get(key);
+      if (at) m.reads.set(id, Math.max(at, m.reads.get(id) ?? 0));
+    }
+    for (const receipt of m.accepted.values()) {
+      const c = this.catalog?.get(receipt.conversationId), source = c && catalogSource(c);
+      if (!receipt.sourceKey && source) receipt.sourceKey = updateSourceKey(source);
+    }
+    for (const r of m.events.values()) {
+      const u = r.update, sourceKey = updateSourceKey(u.source);
+      if (u.runId) {
+        const receipt = m.accepted.get(acceptedKey({ conversationId: u.conversationId, runId: u.runId }));
+        const c = this.catalog?.get(u.conversationId);
+        // A candidate may bind a pending receipt only when its source agrees
+        // with the current catalog's native identity (if a catalog is known).
+        if (receipt && !receipt.sourceKey && (!c || c.harness === u.source.harness && (c.nativeSessionId ?? c.id) === u.source.nativeSessionId)) receipt.sourceKey = sourceKey;
+        if (receipt?.sourceKey === sourceKey) r.eligible = true;
+        const currentSource = c && catalogSource(c);
+        const sourceMatches = !c || (currentSource ? updateSourceKey(currentSource) === sourceKey
+          : c.harness === u.source.harness && (c.nativeSessionId ?? c.id) === u.source.nativeSessionId);
+        if (sourceMatches && m.resume.activeRunIds.includes(u.runId)) {
+          const bound = activeBindings.get(u.runId);
+          if (!bound) activeBindings.set(u.runId, sourceKey);
+          if (!bound || bound === sourceKey) r.eligible = true;
+        }
+      }
+    }
+    m.resume.activeBindings = [...activeBindings];
+    // Canonical alias migration is exact, source-confirmed, and one-to-one
+    // across all retained occurrences, not just the incoming page.
+    for (const key of new Set([...m.legacy.records.keys(), ...m.legacy.reads.keys()])) {
+      if (m.legacy.tombstones.has(key)) continue;
+      const legacy = parseLegacyKey(key);
+      if (!legacy) continue;
+      const old = m.legacy.records.get(key);
+      const c = this.catalog?.get(legacy.conversationId), source = c && catalogSource(c);
+      if (!c || !source || legacy.identity !== legacyIdentity(c)) continue;
+      const sourceKey = updateSourceKey(source);
+      const matches = [...m.events.values()].filter(r => r.update.legacyRunId === legacy.runId);
+      if (matches.length !== 1) continue;
+      const r = matches[0]!;
+      if (r.update.conversationId !== legacy.conversationId || updateSourceKey(r.update.source) !== sourceKey) continue;
+      if (old?.observedActive) r.eligible = true;
+      const readAt = Math.max(old?.readAt ?? 0, m.legacy.reads.get(key) ?? 0);
+      if (readAt) m.reads.set(r.update.id, Math.max(readAt, m.reads.get(r.update.id) ?? 0));
+      m.legacy.tombstones.add(key); m.legacy.mappings.set(key, r.update.id); m.legacy.records.delete(key);
+    }
+  }
+  /** Used by focus/storage/channel and feed loops; evidence is unioned inside
+   * the transaction. A recovery returns to the DB cursor for safe replay. */
+  private async refresh(owner: string, binding: number): Promise<void> {
+    if (!this.current(owner, binding)) return;
+    try {
+      const result = await this.db.transaction(owner, rows => {
+        const m = decode(rows); union(m, this.memory); m.storageError = "";
+        this.importLegacy(m, owner); this.reconcile(m); encode(m, rows); return m;
+      }, () => this.current(owner, binding));
+      if (!this.current(owner, binding)) return;
+      // A synchronous capture/receipt may arrive after the IDB callback but
+      // before oncomplete. Keep it visible; its queued write persists it next.
+      union(result, this.memory); this.reconcile(result);
+      this.memory = result; this.scopes.set(owner, result); this.publish();
+    } catch {
+      if (!this.current(owner, binding)) return;
+      this.memory.storageError = STORAGE_ERROR; this.importLegacy(this.memory, owner); this.reconcile(this.memory); this.publish();
+    }
+  }
+  private onRefresh = (): void => {
+    const owner = this.scope, binding = this.binding;
+    if (owner !== null) void this.enqueue(() => this.refresh(owner, binding));
+  };
+  private onStorage = (event: StorageEvent): void => {
+    if (this.scope !== null && event.key === LEGACY_PREFIX + this.legacyScope) this.onRefresh();
+  };
+  // The optional trusted alias lets the parent origin-qualify v3 ownership
+  // without losing the old storeId-only localStorage import key.
+  activate = (owner: string, legacyScope = owner): void => {
+    if (this.scope === owner && this.legacyScope === legacyScope) return;
+    this.suspend(); if (!text(owner, 16384) || !text(legacyScope, 16384)) return;
+    this.scope = owner; this.legacyScope = legacyScope; const binding = this.binding;
+    this.memory = this.scopes.get(owner) ?? fresh(); this.scopes.set(owner, this.memory);
+    this.hydration = this.enqueue(() => this.refresh(owner, binding));
+    if (typeof window !== "undefined") {
+      window.addEventListener("storage", this.onStorage); window.addEventListener("focus", this.onRefresh);
+      try {
+        if (typeof BroadcastChannel !== "undefined") {
+          this.channel = new BroadcastChannel("sane.notifications.v3:" + owner);
+          this.channel.onmessage = this.onRefresh;
+        }
+      } catch { /* optional invalidation; focus/feed transactions still refresh */ }
+    }
     this.publish();
   };
   suspend = (): void => {
-    if (typeof window !== "undefined") window.removeEventListener("storage", this.onStorage);
-    this.scope = null; this.lastRaw = undefined; this.visible = null; this.identities.clear(); this.publish();
+    this.binding++; this.scope = null; this.legacyScope = null; this.catalog = null; this.feedEnabled = false; this.feedError = "";
+    this.channel?.close(); this.channel = null; this.db.close();
+    if (typeof window !== "undefined") {
+      window.removeEventListener("storage", this.onStorage); window.removeEventListener("focus", this.onRefresh);
+    }
+    this.publish();
+  };
+  private notify(): void { try { this.channel?.postMessage("invalidate"); } catch { /* optional */ } }
+
+  /** Retention/epoch recovery clears traversal metadata only, never exact reads
+   * or attention evidence. A concurrent tab's newer cursor wins the comparison. */
+  resetResume = (): Promise<boolean> => {
+    const owner = this.scope, binding = this.binding, expected = this.memory.resume.cursor ? { ...this.memory.resume.cursor } : null;
+    if (owner === null) return Promise.resolve(false);
+    return this.enqueue(async () => {
+      if (!this.current(owner, binding)) return false;
+      try {
+        const result = await this.db.transaction(owner, rows => {
+          const m = decode(rows), matches = sameCursor(m.resume.cursor, expected);
+          union(m, this.memory); this.importLegacy(m, owner);
+          if (matches) m.resume = { ...m.resume, seeding: true, cursor: undefined, through: undefined };
+          this.reconcile(m); encode(m, rows); return { m, matches };
+        }, () => this.current(owner, binding));
+        if (!this.current(owner, binding)) return false;
+        union(result.m, this.memory); this.reconcile(result.m);
+        this.memory = result.m; this.scopes.set(owner, result.m); this.publish(); this.notify(); return result.matches;
+      } catch {
+        if (!this.current(owner, binding)) return false;
+        this.memory.resume = { ...this.memory.resume, seeding: true, cursor: undefined, through: undefined };
+        this.memory.storageError = STORAGE_ERROR; this.publish(); return true;
+      }
+    });
   };
 
-  acceptRun = (conversationId: string, runId: string): void => {
-    if (this.scope === null || !text(conversationId) || !text(runId)) return;
-    this.readStorage();
-    const receipt: AcceptedRun = { conversationId, runId, acceptedAt: Math.max(1, Date.now()) };
-    const key = receiptKey(receipt);
-    if (this.memory.accepted.has(key)) { this.publish(); return; }
-    // Receipts carry no native identity. Retain trusted App/run evidence until
-    // an actual listing supplies the matching stable binding, even after reload.
-    this.memory.accepted.set(key, receipt); this.persist();
+  applyPage = (page: unknown, expected: ConversationUpdateCursor | null = null, bootstrap = false): Promise<boolean> => {
+    const owner = this.scope, binding = this.binding;
+    if (owner === null) return Promise.resolve(false);
+    // Clone at admission so callers cannot change an in-flight page/cursor.
+    let wire: unknown, captured = expected ? { ...expected } : null;
+    try { wire = structuredClone(page); } catch { this.setFeedError("Invalid conversation update page."); return Promise.resolve(false); }
+    return this.enqueue(async () => {
+      if (!this.current(owner, binding)) return false;
+      await this.hydration;
+      if (!this.current(owner, binding)) return false;
+      const apply = (m: Memory): boolean => {
+        if (!sameCursor(m.resume.cursor, captured)) return false;
+        const reset = bootstrap && wire && object(wire) && wire.bootstrap !== undefined;
+        if (!isConversationUpdatePage(wire, {
+          ...(m.resume.storeId ? { storeId: m.resume.storeId } : {}),
+          ...(!reset && captured ? { cursor: captured } : {}),
+          ...(!reset && m.resume.through !== undefined ? { through: m.resume.through } : {}),
+        }) || bootstrap && !wire.bootstrap || !bootstrap && wire.bootstrap !== undefined
+          || !reset && !captured || !reset && captured?.epoch !== wire.epoch) throw new Error("Invalid conversation update page.");
+        if (reset) {
+          m.resume = { seeding: true, baselines: wire.bootstrap!.sourceBaselines.map(b => [b.sourceKey, b.through]),
+            activeRunIds: [...new Set([...m.resume.activeRunIds, ...wire.bootstrap!.activeRunIds])],
+            activeBindings: m.resume.activeBindings, storeId: wire.storeId, coverage: m.resume.coverage };
+        }
+        const coverage = new Map(m.resume.coverage.map(c => [c.sourceKey, c]));
+        for (const c of wire.coverage) coverage.set(c.sourceKey, c);
+        m.resume.coverage = [...coverage.values()];
+        const baselines = new Map(m.resume.baselines);
+        for (const coverage of wire.coverage) if (coverage.baselineThrough !== undefined) {
+          baselines.set(coverage.sourceKey, Math.max(coverage.baselineThrough, baselines.get(coverage.sourceKey) ?? 0));
+        }
+        for (const u of wire.updates) {
+          const old = m.events.get(u.id), sourceKey = updateSourceKey(u.source);
+          if (old && (old.update.conversationId !== u.conversationId || updateSourceKey(old.update.source) !== sourceKey
+            || old.update.occurrenceSequence !== u.occurrenceSequence)) throw new Error("Conversation occurrence identity changed.");
+          if (old && old.update.revision > u.revision) continue;
+          const baseline = baselines.get(sourceKey);
+          const historical = m.resume.seeding || u.historical === true
+            || baseline !== undefined && (u.sourceSequence === undefined || u.sourceSequence <= baseline);
+          m.events.set(u.id, { update: old && old.update.revision === u.revision ? old.update : u,
+            eligible: old ? old.eligible : !historical });
+        }
+        m.resume.baselines = [...baselines]; m.resume.cursor = { ...wire.nextCursor };
+        m.resume.storeId = wire.storeId; m.resume.through = wire.hasMore ? wire.through : undefined;
+        m.resume.seeding = m.resume.seeding && wire.hasMore;
+        this.reconcile(m); return true;
+      };
+      try {
+        const result = await this.db.transaction(owner, rows => {
+          const m = decode(rows);
+          // Cursor comparison is against disk BEFORE unioning volatile data.
+          const matches = sameCursor(m.resume.cursor, captured);
+          union(m, this.memory); m.storageError = ""; this.importLegacy(m, owner);
+          const applied = matches && apply(m); this.reconcile(m); encode(m, rows); return { m, applied };
+        }, () => this.current(owner, binding));
+        if (!this.current(owner, binding)) return false;
+        union(result.m, this.memory); this.reconcile(result.m);
+        this.memory = result.m; this.scopes.set(owner, result.m); this.publish(); this.notify();
+        return result.applied;
+      } catch (error) {
+        if (!this.current(owner, binding)) return false;
+        // Invalid pages never advance even a volatile cursor. Storage failures
+        // still allow the full feed to function, without claiming durability.
+        const message = error instanceof Error ? error.message : "";
+        if (message === "Invalid conversation update page." || message === "Conversation occurrence identity changed.") {
+          this.setFeedError(message); return false;
+        }
+        this.memory.storageError = STORAGE_ERROR; this.importLegacy(this.memory, owner);
+        try {
+          // Work on a copy: a failed validation cannot partially apply a page.
+          const m = fresh(); union(m, this.memory); m.resume = structuredClone(this.memory.resume); m.storageError = STORAGE_ERROR;
+          const applied = apply(m);
+          if (applied) { this.memory = m; this.scopes.set(owner, m); }
+          this.publish(); return applied;
+        } catch { this.setFeedError("Invalid conversation update page."); this.publish(); return false; }
+      }
+    });
   };
 
+  private writeEvidence(owner: string, binding: number): void {
+    void this.enqueue(async () => {
+      if (!this.current(owner, binding)) return;
+      await this.refresh(owner, binding);
+      if (this.current(owner, binding) && this.memory.storageError !== STORAGE_ERROR) this.notify();
+    });
+  }
   observe = (conversations: readonly Conversation[]): void => {
     if (this.scope === null) return;
-    this.readStorage();
-    this.visible = new Set(); this.identities.clear();
-    let changed = false;
-    const now = Math.max(Date.now(), this.memory.floor + 1);
-    // Distinct logical birth times avoid evicting an entire first-load batch
-    // when many observations arrive in the same millisecond.
-    let birth = now;
-    for (const record of this.memory.records.values()) birth = Math.max(birth, record.bornAt);
+    this.catalog = new Map(conversations.map(c => [c.id, c]));
     for (const c of conversations) {
-      const identity = identityFor(c);
-      this.identities.set(c.id, identity);
-      if (eligible(c)) this.visible.add(identity);
-      if (!text(c.lastRunId)) continue;
-      const acceptedKey = receiptKey({ conversationId: c.id, runId: c.lastRunId });
-      let accepted = this.memory.accepted.get(acceptedKey);
-      if (accepted && accepted.identity === undefined && text(c.nativeSessionId) && validIdentity(identity, c.id)) {
-        accepted = { ...accepted, identity };
-        this.memory.accepted.set(acceptedKey, accepted); changed = true;
-      }
-      const status = c.lastRunStatus ?? c.status;
-      const allowed = eligible(c) && c.lastRunOperation !== "compact";
-      const phase: Observation["phase"] = terminal(status) ? "settled" : allowed && active(status) ? "active" : "other";
-      const key = occurrence({ identity, runId: c.lastRunId }), previous = this.memory.records.get(key);
-      if (this.memory.reads.has(key)) continue;
-      const record: Observation = { identity, conversationId: c.id, runId: c.lastRunId, phase,
-        observedActive: !!previous?.observedActive || allowed && (active(status) || accepted?.identity === identity),
-        bornAt: previous?.bornAt ?? ++birth, touchedAt: Math.max(now, (previous?.touchedAt ?? 0) + 1), readAt: previous?.readAt ?? 0 };
-      // Always retain eligible terminal metadata, but publish it only with
-      // independent active/receipt evidence. A historical seed alone is silent.
-      if (allowed && terminal(status)) {
-        const time = date(c.lastRunEndedAt) ? c.lastRunEndedAt : date(c.updatedAt) ? c.updatedAt
-          : previous?.item?.status === status ? previous.item.time : new Date(now).toISOString();
-        record.item = { id: key, conversationId: c.id, runId: c.lastRunId, title: c.title?.trim().slice(0, 256) || "Conversation", status, time: new Date(time).toISOString(),
-          ...(c.workspaceId !== undefined ? { workspaceId: c.workspaceId } : {}), ...(c.worktreeId !== undefined ? { worktreeId: c.worktreeId } : {}) };
-      }
-      // Validate API-derived persistence too: a malformed projection must not
-      // poison all saved records or turn optional storage into a startup gate.
-      if (!validatedRecord(record)) continue;
-      const merged = previous ? mergeRecord(previous, record) : record;
-      if (previous && merged.phase === previous.phase && merged.observedActive === previous.observedActive
-        && merged.readAt === previous.readAt && JSON.stringify(merged.item) === JSON.stringify(previous.item)) continue;
-      this.memory.records.set(key, merged); changed = true;
+      // In feed mode only unqualified OpenCode retains the legacy run fallback.
+      const source = catalogSource(c);
+      const unqualified = !source || this.memory.resume.coverage.some(row => row.sourceKey === updateSourceKey(source) && row.state === "unqualified");
+      if (!this.feedEnabled || c.harness === "opencode" && unqualified) observeLegacy(this.memory.legacy, c);
     }
-    this.applyAccepted();
-    if (changed) this.persist(); else this.publish();
+    this.reconcile(this.memory); this.publish(); this.writeEvidence(this.scope, this.binding);
   };
-
-  markRead = (conversationId: string): void => {
-    if (this.scope === null) return;
-    this.readStorage();
-    const identity = this.identities.get(conversationId);
-    let changed = false;
-    for (const [key, record] of this.memory.records) {
-      if (record.conversationId !== conversationId || identity && record.identity !== identity
-        || !record.observedActive || !record.item || record.readAt || this.memory.reads.has(key)) continue;
-      this.memory.reads.set(key, Math.max(1, Date.now())); changed = true;
+  acceptRun = (conversationId: string, runId: string): void => {
+    if (this.scope === null || !text(conversationId) || !text(runId)) return;
+    const c = this.catalog?.get(conversationId), source = c && catalogSource(c);
+    const receipt: Accepted = { conversationId, runId, acceptedAt: Math.max(1, Date.now()), ...(source ? { sourceKey: updateSourceKey(source) } : {}) };
+    const key = acceptedKey(receipt), old = this.memory.accepted.get(key);
+    if (!old) this.memory.accepted.set(key, receipt);
+    if (!this.memory.legacy.accepted.has(key)) this.memory.legacy.accepted.set(key, { conversationId, runId, acceptedAt: receipt.acceptedAt,
+      ...(c?.nativeSessionId ? { identity: legacyIdentity(c) } : {}) });
+    this.reconcile(this.memory); this.publish(); this.writeEvidence(this.scope, this.binding);
+  };
+  captureOpen = (conversationId: string): NotificationCapture | null => {
+    if (this.scope === null) return null;
+    const events = this.unreadEvents().filter(r => r.update.conversationId === conversationId);
+    const legacy = this.unreadLegacy().filter(r => r.conversationId === conversationId);
+    return Object.freeze({ owner: this.scope, binding: this.binding, conversationId,
+      sources: Object.freeze([...new Set([...events.map(r => updateSourceKey(r.update.source)), ...legacy.map(r => r.identity)])]),
+      ids: Object.freeze(events.map(r => r.update.id)), legacyIds: Object.freeze(legacy.map(legacyKey)) });
+  };
+  acknowledgeCaptured = (capture: NotificationCapture | null): void => {
+    if (!capture || !this.current(capture.owner, capture.binding)) return;
+    const at = Math.max(1, Date.now());
+    for (const id of capture.ids) {
+      const r = this.memory.events.get(id);
+      if (r && r.update.conversationId === capture.conversationId && capture.sources.includes(updateSourceKey(r.update.source))
+        && this.sourceVisible(capture.conversationId, updateSourceKey(r.update.source))) this.memory.reads.set(id, Math.max(at, this.memory.reads.get(id) ?? 0));
     }
-    if (changed) this.persist(); else this.publish();
+    for (const id of capture.legacyIds) {
+      // The record may already have migrated to a canonical event since capture.
+      // Its exact old key remains valid; the private mapping transfers that read.
+      const legacy = parseLegacyKey(id);
+      if (legacy && legacy.conversationId === capture.conversationId && capture.sources.includes(legacy.identity)
+        && this.sourceVisible(capture.conversationId, undefined, legacy.identity)) {
+        this.memory.legacy.reads.set(id, Math.max(at, this.memory.legacy.reads.get(id) ?? 0));
+      }
+    }
+    this.reconcile(this.memory);
+    this.publish(); this.writeEvidence(capture.owner, capture.binding);
   };
+  markRead = (conversationId: string): void => this.acknowledgeCaptured(this.captureOpen(conversationId));
 }
 
 export const notificationStore = new NotificationStore();

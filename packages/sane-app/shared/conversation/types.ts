@@ -19,6 +19,9 @@ export type Run = {
   model?: string; effort?: string; agent?: string; agentKind?: "assistant" | "worker"; nativeAgentSelected?: boolean; profileId?: string; saneContextVersion?: number; observedModel?: string; observedEfforts: string[];
   messages: Message[]; events: DiagnosticEvent[]; cursor: number; seen: Set<number>;
   buffer: string; usage?: UsageSnapshot; result?: string; resultCount: number; resultKeys: Set<string>;
+  resultSequence?: import("./cc-result").ClaudeResultSequenceState;
+  /** Qualified native results retain their own completed status across run exit. */
+  resultMessages?: Message[];
   toolResults: Map<string, { output: unknown; error?: boolean }>;
 };
 export type RunMetadata = Pick<Run, "id" | "conversationId" | "cwd" | "status" | "createdAt" | "endedAt" | "model" | "effort" | "agent" | "agentKind" | "nativeAgentSelected" | "profileId" | "saneContextVersion" | "harness" | "nativeSessionId" | "nativeCommandId" | "nativeDelivery" | "operation" | "compact">;

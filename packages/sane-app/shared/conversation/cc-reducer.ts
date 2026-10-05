@@ -1,9 +1,10 @@
 import { active, type DiagnosticEvent, type Message, type Run, type RunMetadata, type ToolPart } from "./types";
 import type { MessageSnapshot } from "./native-contract";
 import { isClaudeRootRecord } from "./cc-scope";
+import { claudeResultMessageId, consumeClaudeResultRecord, createClaudeResultSequenceState } from "./cc-result";
 
 export function createRun(meta: RunMetadata): Run {
-  return { ...meta, messages: [], events: [], seen: new Set(), cursor: 0, buffer: "", observedEfforts: [], resultCount: 0, resultKeys: new Set(), toolResults: new Map() };
+  return { ...meta, messages: [], events: [], seen: new Set(), cursor: 0, buffer: "", observedEfforts: [], resultCount: 0, resultKeys: new Set(), resultSequence: createClaudeResultSequenceState(), resultMessages: [], toolResults: new Map() };
 }
 const object = (value: any): value is Record<string, any> => value !== null && typeof value === "object" && !Array.isArray(value);
 function user(run: Run, text: string, time: string, id = `${run.id}:user`) {
@@ -18,6 +19,7 @@ function record(run: Run, value: unknown, event: DiagnosticEvent) {
   if (!object(value) || !isClaudeRootRecord(value)) return;
   if (run.operation === "compact") return;
   const r = value;
+  const observation = consumeClaudeResultRecord(run.resultSequence ??= createClaudeResultSequenceState(), r, run.nativeSessionId ?? run.conversationId);
   if (r.session_id && r.session_id !== (run.nativeSessionId ?? run.conversationId)) return;
   if (r.type === "system" && r.subtype === "init" && typeof r.model === "string") run.observedModel = r.model;
   if (r.type === "result") {
@@ -25,6 +27,11 @@ function record(run: Run, value: unknown, event: DiagnosticEvent) {
     run.resultKeys.add(key); run.resultCount = run.resultKeys.size;
     if (r.session_id === (run.nativeSessionId ?? run.conversationId)) run.usage ??= { runId: run.id, time: event.time, record: r };
     if (typeof r.result === "string") run.result = r.result;
+    if (observation.eligible && observation.result?.text?.trim()) {
+      const id = claudeResultMessageId(run.id, observation.result, event.seq);
+      const resultMessage: Message = { id, runId: run.id, role: "assistant", parts: [{ type: "text", text: observation.result.text }], time: event.time, status: "completed", normalized: true };
+      (run.resultMessages ??= []).push(resultMessage);
+    }
   }
   const content = r.message?.content ?? r.content;
   if (r.type === "assistant") {
@@ -105,8 +112,16 @@ export function consume(run: Run, events: DiagnosticEvent[]) {
 export function messagesForRun(run: Run): Message[] {
   if (run.operation === "compact") return [];
   const messages = run.messages.map(m => ({ ...m, parts: m.parts.map(p => ({ ...p })), status: m.role === "assistant" && (!m.normalized || (active(m.status) && !active(run.status))) ? run.status : m.status }));
-  // Result is a fallback only: assistant records are the canonical transcript.
-  if (run.result && !messages.some(m => m.role === "assistant" && m.parts.some(p => p.type === "text" && p.text.trim()))) {
+  // Every qualified native result remains addressable. The installed result
+  // contract provides no assistant-message join; text equality or temporal
+  // proximity is never ownership evidence.
+  for (const result of run.resultMessages ?? []) {
+    const associated = messages.find(m => m.id === result.id);
+    if (associated) { associated.status = "completed"; associated.normalized = true; }
+    else messages.push({ ...result, parts: result.parts.map(p => ({ ...p })), status: "completed" });
+  }
+  // Preserve the historical unqualified single-result fallback API.
+  if (!run.resultMessages?.length && run.result && !messages.some(m => m.role === "assistant" && m.parts.some(p => p.type === "text" && p.text.trim()))) {
     messages.push({ id: `${run.id}:result`, runId: run.id, role: "assistant", parts: [{ type: "text", text: run.result }], time: run.createdAt, status: run.status });
   }
   if (!active(run.status) && !messages.some(m => m.role === "assistant")) {
