@@ -85,7 +85,6 @@ export function NativeSubagentDiscovery({ loaded }: { loaded: Set<string> }) {
   if (!feature) return null;
   const summaries = [...feature.summaries].filter(([id]) => !loaded.has(id));
   return <>{!!summaries.length && <section className="native-subagent-discovery" aria-label="Native subagents outside loaded parent history"><p className="eyebrow">Native subagents · recorded outside loaded parent history</p>{summaries.map(([id, summary]) => <NativeSubagentCard key={id} summary={summary} />)}</section>}
-    {feature.state.loading && !feature.state.revision && <p className="muted" role="status">Loading recorded native subagents…</p>}
     {feature.state.error && <p className="notice error" role="alert">Native subagent summaries unavailable: {feature.state.error}<button type="button" className="text-button" disabled={feature.state.loading} onClick={feature.client.retryList}>Retry</button></p>}
     {feature.state.nextCursor && <button type="button" className="text-button" disabled={feature.state.loading} onClick={feature.client.loadMoreSummaries}>Load more native subagents</button>}
   </>;

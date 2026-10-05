@@ -636,7 +636,7 @@ h3 {
   max-width:780px;
   margin:0 auto;
   flex:1;
-  padding:32px 12px 38px;
+  padding:32px 12px 12px;
 }
 .view-chat .transcript,
 .view-history .transcript {
@@ -767,6 +767,8 @@ h3 {
 .assistant-message.assistant-activity-continued {
   margin-bottom:4px;
 }
+/* Inter-message spacing should not become an extra spacer above the composer. */
+.transcript > [data-transcript-message]:not(:has(~ [data-transcript-message])) .message { margin-bottom:0; }
 
 /* === user === */
 .user-message {
@@ -1080,8 +1082,8 @@ h3 {
   width:100%;
   max-width:804px;
   margin:0 auto;
-  padding:16px 12px max(14px,env(safe-area-inset-bottom));
-  background:linear-gradient(transparent,var(--background) 14px);
+  padding:4px 12px max(8px,env(safe-area-inset-bottom));
+  background:var(--background);
   flex-shrink:0;
 }
 .view-chat .composer-dock,
@@ -1100,6 +1102,41 @@ h3 {
   border-color:var(--composer-focus-border);
   box-shadow:0 8px 28px var(--shadow-composer-focus);
 }
+.composer-surface { display:flex; flex-direction:column; min-width:0; min-height:0; }
+.composer-surface > .composer { flex-shrink:0; }
+.composer-status-lid {
+  display:flex;
+  align-items:center;
+  flex-shrink:0;
+  gap:8px;
+  height:34px;
+  min-width:0;
+  padding:0 13px;
+  border:1px solid var(--border);
+  border-bottom:0;
+  border-radius:22px 22px 0 0;
+  background:var(--card);
+  color:var(--muted-foreground);
+  font-size:12px;
+}
+.composer-status-lid .pulse { flex-shrink:0; animation:pulse 1.6s ease-in-out infinite; }
+.composer-status-dot { width:6px; height:6px; border-radius:50%; background:var(--muted-foreground); flex-shrink:0; }
+.composer-status-text { flex:1; min-width:0; overflow:hidden; white-space:nowrap; text-overflow:ellipsis; }
+.composer-status-info { display:grid; place-items:center; flex-shrink:0; width:26px; height:26px; padding:0; border-radius:7px; color:inherit; background:transparent; }
+.composer-status-info:hover:not(:disabled) { background:var(--muted); color:var(--foreground); }
+.composer-status-info:focus-visible { outline:2px solid var(--focus-ring); outline-offset:2px; }
+.composer-status-stop { flex-shrink:0; white-space:nowrap; font-size:11px; }
+.composer-surface:has(> .composer-status-lid) > :is(.composer,.document-review-composer,.workstream-status-composer) { border-top-left-radius:0; border-top-right-radius:0; }
+.composer-surface:focus-within > .composer-status-lid { border-color:var(--composer-focus-border); }
+.composer-status-details { max-height:60dvh; overflow:auto; overscroll-behavior:contain; }
+.composer-status-details h3 { margin:16px 0 10px; font-size:12px; }
+.composer-status-details ul,.composer-status-details ol { list-style:none; padding:0; margin:0; }
+.composer-status-details li { padding:10px 0; border-bottom:1px solid var(--border); font-size:12px; overflow-wrap:anywhere; }
+.composer-status-details strong { font-weight:500; }
+.composer-status-details p { margin:5px 0; color:var(--muted-foreground); line-height:1.6; }
+.composer-status-details ol li { display:flex; align-items:baseline; gap:12px; }
+.composer-status-details time { flex-shrink:0; color:var(--muted-foreground); font-size:10px; }
+.composer-status-actions { padding-top:12px; }
 .composer-input {
   display:block;
   width:100%;
@@ -1434,7 +1471,7 @@ h3 {
     scrollbar-gutter:auto;
   }
   .transcript {
-    padding:24px 10px 32px;
+    padding:24px 10px 10px;
   }
   .welcome {
     margin:45px auto 45px;
@@ -1462,11 +1499,12 @@ h3 {
     font-size:12px;
   }
   .composer-dock {
-    padding:12px 10px max(12px,env(safe-area-inset-bottom));
+    padding:4px 10px max(8px,env(safe-area-inset-bottom));
   }
   .composer {
     border-radius:19px;
   }
+  .composer-status-lid { border-radius:19px 19px 0 0; padding-inline:10px; }
   .composer-input {
     font-size:16px;
     padding:16px 17px 8px;

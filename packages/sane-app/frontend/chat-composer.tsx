@@ -13,9 +13,11 @@ import type { DocumentReviewController } from "./document-review-model";
 import { WorkstreamStatusComposer, type WorkstreamStatusStart } from "./workstream-status";
 import { catalog } from "./catalog";
 import { compactCommand } from "./compaction";
+import { chatStatuses, type ChatStatusContext } from "./chat-status";
+import { ComposerStatus } from "./composer-status";
 
 /** Kept mounted with Thread: only the draft identity may replace the DOM input. */
-export function ChatComposer({ state, active = true, navigation, ack, onAckChange, send, sendDisabled, parentId, review }: {
+export function ChatComposer({ state, active = true, navigation, ack, onAckChange, send, sendDisabled, parentId, review, statusContext, statusActions }: {
   state: State;
   active?: boolean;
   navigation?: ReactNode;
@@ -25,6 +27,8 @@ export function ChatComposer({ state, active = true, navigation, ack, onAckChang
   sendDisabled: boolean;
   parentId?: string;
   review?: DocumentReviewController;
+  statusContext?: ChatStatusContext;
+  statusActions?: ReactNode;
 }) {
   const [helpOpen, setHelpOpen] = useState(false);
   const [pickerOpen, setPickerOpen] = useState(false);
@@ -56,15 +60,12 @@ export function ChatComposer({ state, active = true, navigation, ack, onAckChang
   const capabilities = store.capabilities();
   const needsAck = !!capabilities.attachedSendRequiresNativeStopped && !!conversation?.attachment;
   const draft = useStore(current => current.drafts[store.draftKey()]) ?? store.draft();
-  const harness = store.harness();
   const profile = store.effectiveProfile();
   // New conversations pick freely; a Base may upgrade once; an assistant is fixed.
   const fixed = !!state.selected && (store.conversationKind() === "assistant" || !!parentId);
-  const missingModel = store.missingModel();
   const infoError = state.submissionError || (capabilities.catalogRequiredForSend ? state.modelsError : "");
-  const nativeQueueInfo = state.availability.nativeQueue === true ? "OpenCode is continuing in the background. Your next message will be queued for it." : "";
-  const infoStatus = (state.sending ? "Sending your message…" : "") || (state.loading ? "Loading your conversation…" : "") || store.executionUnavailable() || (!state.connected ? "Reconnecting to the bridge…" : "") || (!state.availability.canSend && state.availability.reason) || (store.modelUnavailable() ? "Waiting for the OpenCode model catalog for this directory." : "") || nativeQueueInfo;
-  const infoText = infoError || infoStatus;
+  const statuses = chatStatuses(state, statusContext ?? { workspaceReady: true });
+  const infoText = infoError || statuses.at(-1)?.text;
   const command = compactCommand(draft.text);
   // A standalone /compact opens the same explicit dialog before ordinary-send
   // gates (including the separate composer acknowledgment or staged model).
@@ -74,11 +75,10 @@ export function ChatComposer({ state, active = true, navigation, ack, onAckChang
 
   return <>
     {state.submissionError && <p className="notice error" role="alert">{state.submissionError}</p>}
-    {nativeQueueInfo && <p className="notice" role="status">{nativeQueueInfo}</p>}
-    {capabilities.catalogRequiredForSend && state.modelsError && <p className="notice" role="status">{state.modelsError} <button type="button" className="text-button" disabled={state.modelsLoading || !capabilities.listModels} onClick={() => void store.loadModels(harness)}>Retry connection</button></p>}
     {needsAck && !conversation?.replacedBy && <label className="notice"><input type="checkbox" checked={ack === state.selected} onChange={e => onAckChange(e.target.checked ? state.selected : "")} />I confirm external assistant execution for this conversation is stopped before this send.</label>}
-    {missingModel && <p className="notice" role="status">Model {missingModel} is not in the current OpenCode catalog for this directory. Sending will still use this selection.</p>}
     {conversation?.attachment?.state === "pending" && <p className="notice error">Attachment incomplete. Use Attach native conversation with the same ID and checkout to retry. {conversation.attachment.error}</p>}
+    <div className="composer-surface">
+    <ComposerStatus key={flowScope} statuses={statuses} active={active} actions={statusActions} restoreFocus={() => !flowOpen ? normalComposer.current?.querySelector("textarea") ?? document.body : document.body} />
     {!conversation?.replacedBy && review?.flow && <DocumentReviewComposer review={review} active={active} disabled={reviewBlocked} navigation={navigation} />}
     {!conversation?.replacedBy && statusFlow && <WorkstreamStatusComposer key={JSON.stringify([statusFlow.scope, statusFlow.identity])} identity={statusFlow.identity} active={active} close={() => setStatus(null)} navigation={navigation} />}
     {!conversation?.replacedBy ? <form ref={normalComposer} className="composer" hidden={flowOpen} style={flowOpen ? { display: "none" } : undefined} onSubmit={event => { event.preventDefault(); submit(); }}>
@@ -98,7 +98,8 @@ export function ChatComposer({ state, active = true, navigation, ack, onAckChang
         <button type="submit" className="send" disabled={blocked || !draft.text.trim()} aria-label="Send message" title="Send message"><Icon name="send" /></button>
       </div></div>
     </form> : navigation ? <footer className="composer-toolbar composer-navigation-only"><div className="composer-actions">{navigation}</div></footer> : null}
+    </div>
     {active && pickerOpen && <AgentPicker close={() => setPickerOpen(false)} restoreFocus={restoreAgentFocus} />}
-    {active && helpOpen && <ShellDialog title="Sending messages" close={() => setHelpOpen(false)} restoreFocus={restoreHelpFocus}><div className="composer-help-notes">{infoText ? <p className={`notice${infoError ? " error" : ""}`} role={infoError ? "alert" : "status"}>{infoText}{capabilities.catalogRequiredForSend && state.modelsError ? <> <button type="button" className="text-button" disabled={state.modelsLoading || !capabilities.listModels} onClick={() => void store.loadModels(harness)}>Retry connection</button></> : null}</p> : null}<p className="muted">Enter inserts a newline · Ctrl/Cmd+Enter sends. Other conversations can run concurrently.</p><p className="muted">Type @ for paths in the execution directory. Arrow keys choose; Enter inserts text, not an attachment. Escape dismisses.</p><p className="muted">Concurrent conversations in this checkout share files; their edits can overlap.</p>{needsAck && <p className="muted">External assistant activity cannot be detected here. Stop it in its native harness before sending to this same conversation.</p>}</div></ShellDialog>}
+    {active && helpOpen && <ShellDialog title="Sending messages" close={() => setHelpOpen(false)} restoreFocus={restoreHelpFocus}><div className="composer-help-notes">{state.submissionError && <p className="notice error" role="alert">{state.submissionError}</p>}<p className="muted">Background progress and connection details appear in the activity row above the composer.</p><p className="muted">Enter inserts a newline · Ctrl/Cmd+Enter sends. Other conversations can run concurrently.</p><p className="muted">Type @ for paths in the execution directory. Arrow keys choose; Enter inserts text, not an attachment. Escape dismisses.</p><p className="muted">Concurrent conversations in this checkout share files; their edits can overlap.</p>{needsAck && <p className="muted">External assistant activity cannot be detected here. Stop it in its native harness before sending to this same conversation.</p>}</div></ShellDialog>}
   </>;
 }

@@ -5,10 +5,10 @@ export function PendingUserText({ text, sending }: { text: string; sending: bool
   return <><p className="user-text">{text}</p>{sending && <span className="user-submission-status" role="status"><span className="pulse" aria-hidden="true" />Sending…</span>}</>;
 }
 
-export function ConversationLoading({ label = "Opening conversation…" }: { label?: string }) {
-  return <div className="conversation-loading" role="status">
+/** The composer activity lid supplies the loading text and live announcement. */
+export function ConversationLoading() {
+  return <div className="conversation-loading" aria-hidden="true">
     <span className="conversation-loading-mark" aria-hidden="true"><PenroseTriangle size={22} /></span>
-    <p>{label}</p>
     <div className="conversation-loading-lines" aria-hidden="true"><span /><span /><span /></div>
   </div>;
 }
