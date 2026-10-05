@@ -15,6 +15,6 @@ Present findings, limitations, and remaining questions. Revise within the assign
 
 ## Support Reply
 
-1. Ask whether the user wants the findings returned to the requesting session, unless that return was already requested.
-2. When requested, call `sane_handoff` (`requestId: "<my-readable-unique-id-01>"`, `to: "<requesting slot>"`, `target: <sender identity>`, `message: "<findings, report paths, and limitations>"`). If the assignment has no originating session, ask the user which session should receive the findings and use their selected target.
+1. Do not return findings without the user's approval, even when the requesting session asked for a reply.
+2. When approved, call `sane_handoff` (`requestId: "<my-readable-unique-id-01>"`, `to: "<requesting slot>"`, `target: <sender identity>`, `message: "<findings, report paths, and limitations>"`). If the assignment has no originating session, ask the user which session should receive the findings and use their selected target.
 3. Summarize delivery and the next action for the user.

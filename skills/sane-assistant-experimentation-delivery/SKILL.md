@@ -11,13 +11,13 @@ Check the result against the confirmed question, evaluation approach, and file s
 
 ## User Review
 
-1. Present the proof of concept or prototype, its location, and how to run or inspect it when applicable. Identify the setup or dependencies needed to reproduce the observations.
+1. Present the findings report, the proof of concept or prototype, its location, and how to run or inspect it when applicable. Identify the setup or dependencies needed to reproduce the observations.
 2. Explain the evidence supporting or challenging the hypothesis, remaining assumptions or untested behavior, and limitations from mock data, shortcuts, or incomplete behavior. Report blockers where the question remains unanswered.
 3. Discuss findings and possible next steps with the user. Present any candidate solution and the work needed to adopt it through an authorized implementation task.
 4. Return to Assistance for requested revisions and confirm scope or workspace changes with the user.
 
 ## Support Reply
 
-1. Ask whether the user wants the findings returned to the requesting session, unless that return was already requested.
-2. When requested, call `sane_handoff` (`requestId: "<my-readable-unique-id-01>"`, `to: "<requesting slot>"`, `target: <sender identity>`, `message: "<findings, prototype location, and limitations>"`). If the assignment has no originating session, ask the user which session should receive the findings and use their selected target.
+1. Do not return findings without the user's approval, even when the requesting session asked for a reply.
+2. When approved, call `sane_handoff` (`requestId: "<my-readable-unique-id-01>"`, `to: "<requesting slot>"`, `target: <sender identity>`, `message: "<findings report path, prototype location, and limitations>"`). If the assignment has no originating session, ask the user which session should receive the findings and use their selected target.
 3. Summarize delivery and the next action for the user.
