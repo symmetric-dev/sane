@@ -23,6 +23,7 @@ import { ConversationUpdateStore } from "./conversation-update-store";
 import { ConversationUpdates } from "./conversation-updates";
 import { createClaudeUpdateState, projectClaudeCommittedEvent, type ClaudeConversationUpdateState } from "./claude-conversation-updates";
 import { conversationUpdateRoute } from "./conversation-update-routes";
+import { ChromePushService } from "./chrome-push";
 import { updateSourceKey } from "../shared/conversation/conversation-updates";
 import type { RunOwner as Owner } from "./run-owner";
 import { WorkspaceService, WorkspaceError, workspaceError } from "./workspace";
@@ -175,6 +176,7 @@ async function startOwned(options: Options, assetsDir: string, packageDir: strin
   let router: RepositoryRouter | undefined;
   let updateService: ConversationUpdates<ClaudeConversationUpdateState> | undefined;
   let replyIntegration: OpenCodeReplyIntegration | undefined;
+  let chromePush: ChromePushService | undefined;
   const searches = createWorkspaceSearchLifecycle();
   let workspaceCreations: WorkspaceCreationService | undefined;
   try {
@@ -342,6 +344,45 @@ async function startOwned(options: Options, assetsDir: string, packageDir: strin
         && JSON.stringify(admission.source.descriptor) === JSON.stringify(store.sources.oc.descriptor);
     },
     store: updateStore, updates,
+  });
+  chromePush = new ChromePushService({
+    dataDir: options.dataDir, storeId: store.manifest.storeId, feed: updateStore,
+    subject: options.publicOrigin?.startsWith("https:") && !loopback(new URL(options.publicOrigin).hostname)
+      ? options.publicOrigin : "mailto:notifications@localhost",
+    eligible: (id, source) => {
+      const session = meta.sessions.find(session => session.sessionId === id);
+      if (closing || storageFailed || !session || session.hidden || !updateEligible(session) || branches.replaced(id)
+        || session.attachment?.state === "pending" || session.harness !== source.harness
+        || session.authorityId !== source.authorityId || session.nativeSessionId !== source.nativeSessionId) return false;
+      return source.incarnation === undefined || updateSourceKey(replyIntegration!.updateSource(id) ?? {
+        harness: session.harness, authorityId: session.authorityId!, nativeSessionId: session.nativeSessionId!,
+      }) === updateSourceKey(source);
+    },
+    presentation: (id, source) => {
+      const session = meta.sessions.find(session => session.sessionId === id);
+      if (!session || session.harness !== source.harness || session.authorityId !== source.authorityId
+        || session.nativeSessionId !== source.nativeSessionId) return {};
+      const workspaceId = catalog.association(id).workspaceId;
+      return { sessionTitle: displayTitle(session), workspaceName: workspaceId ? catalog.workspaceName(workspaceId) : undefined };
+    },
+    recoverCompletions: function* () {
+      // Startup-only recovery from committed journals, not mutable message
+      // projections or a per-device session/history polling loop.
+      // Progress markers charge skipped records to the dispatcher's turn budget.
+      // Index construction must be budgeted too, not hidden inside first next().
+      const sessions = new Map<string, Session>();
+      for (const session of meta.sessions) { sessions.set(session.sessionId, session); yield null; }
+      for (const run of meta.runs) {
+        yield null;
+        const session = sessions.get(run.sessionId);
+        if (!session || session.harness !== "opencode" || !updateEligible(session, run)) continue;
+        for (const event of events.get(run.runId) ?? []) {
+          if (event.seq <= (replyJournalThrough.get(run.runId) ?? 0) && event.kind === "status"
+            && (event.data as { status?: unknown } | null)?.status === "completed") yield { session, run, event };
+          else yield null;
+        }
+      }
+    },
   });
   const claudeRuns = new ClaudeRunService({
     dataDir: options.dataDir, claudeBin: options.claudeBin, claudeRoot,
@@ -534,6 +575,7 @@ async function startOwned(options: Options, assetsDir: string, packageDir: strin
         updates.primaryJournalCommitted(captured.session, captured.run, captured.event);
         replyIntegration?.correlateCommitted(captured.session, captured.run, captured.event);
       } catch { /* optional update coverage */ } }
+      if (captured) { try { chromePush?.journalCommitted(captured.session, captured.run, captured.event); } catch { /* optional device delivery */ } }
     });
   }
   // Display title for list responses: stored title wins (handoff `<Role> #<n>`
@@ -582,7 +624,7 @@ async function startOwned(options: Options, assetsDir: string, packageDir: strin
   await persist();
   let origin = "";
   const auth = new BridgeAuth(authOptions, {
-    getOrigin: () => origin, revokeTerminal: token => terminals.revoke(token),
+    getOrigin: () => origin, revokeTerminal: token => { terminals.revoke(token); chromePush?.revokeOwner(token); },
   });
   const terminals = new TerminalService(catalog, token => auth.validTerminalToken(token));
   const branchContext = (id: string) => ({ actor: { kind: "system" as const }, correlationId: id });
@@ -1321,8 +1363,17 @@ async function startOwned(options: Options, assetsDir: string, packageDir: strin
         ] } : {}) });
       }
       if (path === "/api/login" && req.method === "POST") return await auth.login(req, expected);
-      if (path === "/api/logout" && req.method === "POST") return auth.logout(req);
+      if (path === "/api/logout" && req.method === "POST") {
+        // BridgeAuth revokes every supplied token (and the local token), using
+        // the shared revocation callback for terminals and push enrollments.
+        return auth.logout(req);
+      }
       if (path.startsWith("/api/") && !auth.authenticated(req)) return json({ error: "Authentication required" }, 401);
+      if (path.startsWith("/api/push/")) {
+        const owner = auth.terminalToken(req) ?? "local";
+        return (await chromePush!.route(req, owner, () => !closing && auth.authenticated(req)
+          && (auth.terminalToken(req) ?? "local") === owner)) ?? json({ error: "Not found" }, 404);
+      }
       if (path === "/api/conversation-updates" || path === "/api/conversation-updates/bootstrap") {
         return (await conversationUpdateRoute(req, { bootstrap: limit => updates.page({ limit }, true), page: input => updates.page(input) }))!;
       }
@@ -2279,6 +2330,13 @@ async function startOwned(options: Options, assetsDir: string, packageDir: strin
       if (req.method !== "GET" && req.method !== "HEAD") return json({ error: "Method not allowed" }, 405);
       let file: string;
       if (path === "/") return new Response(req.method === "HEAD" ? null : indexHtml, { headers: { "content-type": "text/html; charset=utf-8", "cache-control": "no-store", "x-content-type-options": "nosniff" } });
+      else if (path === "/push-worker.js") {
+        const worker = Bun.file(join(assetsDir, "push-worker.js"));
+        if (!await worker.exists()) return json({ error: "Not found" }, 404);
+        return new Response(req.method === "HEAD" ? null : worker, { headers: {
+          "content-type": "text/javascript; charset=utf-8", "cache-control": "no-store", "x-content-type-options": "nosniff", "service-worker-allowed": "/",
+        } });
+      }
       else {
         let assetPath: string;
         try { assetPath = decodeURIComponent(path); } catch { return json({ error: "Not found" }, 404); }
@@ -2308,6 +2366,7 @@ async function startOwned(options: Options, assetsDir: string, packageDir: strin
   // Start recovery only after both listeners are acquired. A port-bind failure
   // must not leave observers writing after startup releases the ownership lock.
   replyIntegration.start();
+  chromePush.start();
   for (const recovering of meta.runs.filter(r => r.status === "running" && getHarnessDescriptor(sessionHarness(meta.sessions.find(s => s.sessionId === r.sessionId)!))!.operations.recoverRun.supported)) {
     const descriptor = requireOperation(sessionHarness(meta.sessions.find(s => s.sessionId === recovering.sessionId)!), "recoverRun");
     const finished = Promise.withResolvers<void>();
@@ -2348,6 +2407,7 @@ async function startOwned(options: Options, assetsDir: string, packageDir: strin
     if (closePromise) return closePromise;
     closing = true;
     const replyDrain = replyIntegration?.close(); // Abort immediately, before any shutdown awaits.
+    const pushDrain = chromePush?.close();
     const searchDrain = searches.close();
     const creationDrain = workspaceCreations?.close();
     clearInterval(handoffTimer);
@@ -2399,6 +2459,7 @@ async function startOwned(options: Options, assetsDir: string, packageDir: strin
     if (!await drainWorkspaceSearches(searchDrain)) retainOwner = true;
     await server.stop(true); await hookServer.stop(true);
     await replyDrain;
+    await pushDrain;
     await updates.close();
     await flushAndCloseWorkstreams(() => catalog.flush(), () => router?.close(), () => { retainOwner = true; });
     if (retainOwner) throw new Error("Shutdown did not drain safely; ownership retained. Explicit reconciliation required after process exit.");
@@ -2406,6 +2467,7 @@ async function startOwned(options: Options, assetsDir: string, packageDir: strin
     return closePromise;
   } };
   } catch (error) {
+    await chromePush?.close();
     await workspaceCreations?.close();
     await replyIntegration?.close();
     await updateService?.close();

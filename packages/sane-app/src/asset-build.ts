@@ -3,7 +3,7 @@ import { copyFileSync, existsSync, lstatSync, mkdirSync, readFileSync, readdirSy
 import { dirname, join, relative, resolve, sep } from "node:path";
 import { acquireInstallation, assertInstallationOwnership, validateOwnershipPaths, type OwnershipHandle } from "./installation-ownership";
 
-const recipe = { version: 1, target: "browser", format: "esm", naming: "app.[ext]", minify: true, define: { "process.env.NODE_ENV": '"production"' } } as const;
+const recipe = { version: 2, target: "browser", format: "esm", naming: "app.[ext]", minify: true, define: { "process.env.NODE_ENV": '"production"' } } as const;
 const hash = (bytes: string | Uint8Array) => createHash("sha256").update(bytes).digest("hex");
 export class AssetBuildError extends Error {}
 type Manifest = { format: "sane-app-assets"; version: 1; generation: string; fingerprint: string; inputs: Record<string, string>; outputs: Record<string, string> };
@@ -83,6 +83,8 @@ export async function buildAssets(options: AssetBuildOptions): Promise<{ assetsD
     stage = join(outdir, `.stage-${generation}`); mkdirSync(stage, { mode: 0o700 });
     const result = await Bun.build({ entrypoints: [join(pkg, "frontend/main.tsx")], outdir: stage, target: recipe.target, format: recipe.format, naming: recipe.naming, minify: recipe.minify, define: recipe.define });
     if (!result.success) throw new AssetBuildError(`Asset compilation failed: ${result.logs.map(String).join("\n")}`);
+    const worker = await Bun.build({ entrypoints: [join(pkg, "frontend/push-worker.ts")], outdir: stage, target: "browser", format: "iife", naming: "push-worker.[ext]", minify: recipe.minify });
+    if (!worker.success) throw new AssetBuildError(`Push worker compilation failed: ${worker.logs.map(String).join("\n")}`);
     // Publish install metadata/icons with the same immutable, validated generation.
     const pwaDir = join(pkg, "public", "pwa");
     if (existsSync(pwaDir)) {
@@ -95,6 +97,7 @@ export async function buildAssets(options: AssetBuildOptions): Promise<{ assetsD
     }
     const outputs = outputHashes(stage);
     if (!outputs["app.js"]) throw new AssetBuildError("Build did not produce app.js");
+    if (!outputs["push-worker.js"]) throw new AssetBuildError("Build did not produce push-worker.js");
     if (fingerprint(inputs(pkg, outdir)) !== fingerprint(before)) throw new AssetBuildError("Build inputs changed during compilation");
     const manifest: Manifest = { format: "sane-app-assets", version: 1, generation, fingerprint: fingerprint(before), inputs: before, outputs };
     writeFileSync(join(stage, "manifest.json"), JSON.stringify(manifest), { flag: "wx", mode: 0o600 });
@@ -124,7 +127,7 @@ export function validateAssets(options: Pick<AssetBuildOptions, "packageDir" | "
     const assetsDir = join(outdir, pointer.generation); safeDirectory(assetsDir);
     const manifestPath = join(assetsDir, "manifest.json"); regular(manifestPath);
     const manifest = JSON.parse(readFileSync(manifestPath, "utf8")) as Manifest;
-    if (manifest.format !== "sane-app-assets" || manifest.version !== 1 || manifest.generation !== pointer.generation || !manifest.outputs?.["app.js"] || manifest.fingerprint !== fingerprint(inputs(pkg, outdir))) throw new Error("Missing, invalid or stale build manifest");
+    if (manifest.format !== "sane-app-assets" || manifest.version !== 1 || manifest.generation !== pointer.generation || !manifest.outputs?.["app.js"] || !manifest.outputs?.["push-worker.js"] || manifest.fingerprint !== fingerprint(inputs(pkg, outdir))) throw new Error("Missing, invalid or stale build manifest");
     for (const [file, digest] of Object.entries(manifest.outputs)) {
       if (!file || file === "manifest.json" || file.startsWith(".") || file.split(/[\\/]/).some(s => s === "..") || resolve(assetsDir, file) !== join(assetsDir, file) || !resolve(assetsDir, file).startsWith(assetsDir + sep)) throw new Error("Invalid asset name");
       const path = join(assetsDir, file); safeDirectory(dirname(path)); regular(path);

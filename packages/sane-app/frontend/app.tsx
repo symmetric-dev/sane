@@ -28,6 +28,9 @@ import { CompactDialog, ContextControl, ContextDialog } from "./compaction-ui";
 import { NativeSubagentContext, nativeSubagentVirtualKey, useNativeSubagentFeature, useNativeSubagents } from "./native-subagent-feature";
 import { NativeSubagentView } from "./native-subagent-view";
 import { InstallApp } from "./pwa-install-view";
+import { DeviceNotifications } from "./chrome-push-view";
+import { chromePush } from "./chrome-push";
+import { PushNavigation, usePushInbox, type PushInbox } from "./push-navigation";
 import { notificationStore } from "./notifications";
 import { notificationContextKey } from "./notification-source";
 
@@ -36,6 +39,9 @@ const hydrateCatalog = () => void catalog.hydrate(bookmark => store.choose(bookm
 
 export function App() {
   const state = useShellState();
+  const inbox = usePushInbox();
+  const [hydratedConfig, setHydratedConfig] = useState<State["config"]>();
+  useEffect(() => chromePush.start(), []);
   useEffect(() => {
     store.start();
     window.addEventListener("online", store.reconnect);
@@ -45,13 +51,23 @@ export function App() {
       document.removeEventListener("visibilitychange", store.reconnect);
     };
   }, []);
-  useEffect(() => { if (state.phase === "ready") hydrateCatalog(); }, [state.phase]);
+  useEffect(() => {
+    if (state.phase !== "ready") { setHydratedConfig(undefined); return; }
+    const config = state.config;
+    let active = true;
+    void catalog.hydrate(bookmark => {
+      if (store.snapshot().phase === "ready" && store.snapshot().config === config) store.choose(bookmark.conversationId ?? "");
+    }).then(() => { if (active && store.snapshot().config === config) setHydratedConfig(config); });
+    return () => { active = false; };
+  }, [state.phase, state.config]);
   const signOut = () => {
     if (workspaceHasDirtyBuffers() && !window.confirm("Discard unsaved workspace changes and sign out?")) return;
+    chromePush.beginSignOut();
     resetWorkspaceState();
     void store.logout();
   };
-  return state.phase === "ready" ? <ReadyWorkspace state={state} signOut={signOut} /> : <AuthScreen state={state} />;
+  return <>{inbox.notice && <div className="connection-notice" role="status">{inbox.notice}<button type="button" onClick={inbox.dismiss}>Dismiss</button></div>}
+    {state.phase === "ready" ? <ReadyWorkspace state={state} signOut={signOut} inbox={inbox} hydrationReady={!!hydratedConfig && hydratedConfig === state.config} /> : <AuthScreen state={state} />}</>;
 }
 
 function AuthScreen({ state }: { state: State }) {
@@ -74,7 +90,7 @@ function AuthScreen({ state }: { state: State }) {
   </div></main>;
 }
 
-function ReadyWorkspace({ state, signOut }: { state: State; signOut: () => void }) {
+function ReadyWorkspace({ state, signOut, inbox, hydrationReady }: { state: State; signOut: () => void; inbox: PushInbox; hydrationReady: boolean }) {
   const repository = useSyncExternalStore(catalog.subscribe, catalog.snapshot);
   const { view, workspaceId, worktreeId } = repository.navigation;
   const nativeParent = state.conversations.find(conversation => conversation.id === state.selected);
@@ -162,6 +178,7 @@ function ReadyWorkspace({ state, signOut }: { state: State; signOut: () => void 
   /> : group === "files" ? <><FilesModeControl activeView={view} onNavigate={navigate} /><WorkspaceSidebar /></>
     : <ConfigMenu onSelect={() => { setArtifact(null); setDrawer(null); }} />;
   return <NativeSubagentContext.Provider value={nativeSubagents}><ApplicationCommandProvider><WorkspaceProvider view={view} navigate={navigate}><WorkspaceQuickOpenFeature><WorkspaceSearchFeature><WorkspaceFileShortcuts><TerminalProvider view={view}>
+    <PushNavigation state={state} inbox={inbox} hydrationReady={hydrationReady} openNotification={openNotification} />
     <ViewNavigationCommands onNavigate={navigate} />
     <WorkspaceShell view={view} sidebar={sidebar}
       onOpenNotification={openNotification}
@@ -246,6 +263,7 @@ function ApplicationDialog({ state, signOut, close }: { state: State; signOut: (
     <div className="application-status"><span className={`connection-dot ${state.connected ? "online" : ""}`} /><span>{state.connected ? "Local bridge connected" : "Connecting to bridge"}</span></div>
     <details className="application-connection"><summary>Connection details</summary><p className="muted">{state.connectionError || (state.connected ? "Connected to the local bridge." : "Waiting for the local bridge.")}</p><button type="button" className="text-button" onClick={store.reconnect}>Reconnect</button></details>
     <InstallApp />
+    <DeviceNotifications />
     {state.config?.authRequired && <button type="button" className="application-signout" disabled={state.sending} onClick={signOut}>Sign out</button>}
   </ShellDialog>;
 }

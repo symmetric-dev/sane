@@ -4,6 +4,7 @@ import { Facts } from "./thread";
 import { CodeSettings } from "./code-settings-view";
 import { ThemeSettings } from "./theme-settings-view";
 import { InstallApp } from "./pwa-install-view";
+import { DeviceNotifications } from "./chrome-push-view";
 
 const CAPABILITIES = [["cancelRun", "Cancel run"], ["permissionReplies", "Permission replies"], ["modelSelection", "Model selection"]] as const;
 
@@ -13,6 +14,7 @@ export function ApplicationSettings({ state, signOut }: { state: State; signOut:
     <header className="history-view-header"><h2>Application</h2></header>
     <ThemeSettings />
     <InstallApp />
+    <DeviceNotifications />
     <CodeSettings />
     <section className="interaction" aria-labelledby="app-connection">
       <h3 id="app-connection">Connection</h3>

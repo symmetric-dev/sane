@@ -220,6 +220,10 @@ export class CatalogService {
   async get(id: string) { await this.serial; const w = this.find(id); for (const t of w.worktrees) { try { await this.binding(id, t.worktreeId); } catch {} } return this.publicWorkspace(w); }
   async list() { await this.serial; return { version: 1 as const, workspaces: await Promise.all(this.catalog.workspaces.map(w => this.get(w.workspaceId))) }; }
   association(id: string): Association { return this.catalog.associations[id] ?? { workspaceId: null, worktreeId: null, association: "unresolved", associationReason: "not-associated" }; }
+  /** Presentation only: read the cached label without filesystem discovery. */
+  workspaceName(workspaceId: string): string | undefined {
+    return this.failed ? undefined : this.catalog.workspaces.find(workspace => workspace.workspaceId === workspaceId)?.name;
+  }
   async associate(id: string, cwd: string, workspaceId?: unknown, worktreeId?: unknown): Promise<Association> {
     return this.queue(async () => {
       const prior = this.catalog.associations[id];
