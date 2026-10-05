@@ -95,6 +95,11 @@ async function fakeNative(req: Request) {
     case "message": return Response.json({ data: [...session.messages].reverse(), cursor: { next: null } });
     case "prompt": {
       const time = session.info.time.updated + 10;
+      if (session.active && input.delivery === "queue") {
+        const pending = { id: input.id, sessionID: match![1], type: "user", time: { created: time }, delivery: "queue", payload: { text: input.text } };
+        session.inbox.push(pending);
+        return Response.json({ data: pending });
+      }
       for (const pending of session.inbox.splice(0)) session.messages.push({ id: pending.id, type: "synthetic", text: pending.payload.text, description: pending.payload.description, metadata: pending.payload.metadata, time: { created: time - 1 } } as NativeMessage);
       session.messages.push({ id: input.id, type: "user", text: input.text, time: { created: time } });
       session.active = true; session.info.time.updated = time;
@@ -103,6 +108,16 @@ async function fakeNative(req: Request) {
     }
     case "interrupt": complete(match![1]!, "interrupted"); return Response.json({ interrupted: true });
     default: {
+      const exactMessage = /^message\/([^/]+)$/.exec(match![2]!);
+      if (exactMessage && req.method === "GET") {
+        const message = session.messages.find(message => message.id === decodeURIComponent(exactMessage[1]!));
+        return message ? Response.json({ data: message }) : Response.json({ error: "Message not committed" }, { status: 404 });
+      }
+      const exactInput = /^inbox\/([^/]+)$/.exec(match![2]!);
+      if (exactInput && req.method === "DELETE") {
+        session.inbox = session.inbox.filter(input => input.id !== decodeURIComponent(exactInput[1]!));
+        return new Response(null, { status: 204 });
+      }
       const reply = /^(permission|form)\/([^/]+)\/reply$/.exec(match![2]!);
       if (reply && req.method === "POST") {
         const state = pendingInteractions.get(match![1]!)!, key = reply[1] === "permission" ? "permissions" : "forms";
@@ -143,6 +158,43 @@ const prompts = () => calls.filter(c => c.path.endsWith("/prompt"));
 const invocations = (): any[] => existsSync(cliLog) ? readFileSync(cliLog, "utf8").trim().split("\n").filter(Boolean).map(line => JSON.parse(line)) : [];
 const disk = (name: string) => JSON.parse(readFileSync(join(dataDir, name), "utf8"));
 const flag = (args: string[], name: string) => args[args.indexOf(name) + 1];
+const storedRun = (runId: string) => disk("metadata.json").runs.find((run: any) => run.runId === runId);
+async function nativeContinuationFixture() {
+  await login();
+  const created = await api("/api/sessions", { harness: "opencode", model: "fixture/offline", effort: "bounded", cwd: repoDir, prompt: "offline before native continuation" });
+  expect(created.status).toBe(202);
+  const { sessionId, nativeSessionId, runId } = created.body;
+  expect((await waitIdle(sessionId)).lastStatus).toBe("completed");
+  const original = storedRun(runId);
+  expect(original).toMatchObject({ runId, status: "completed", nativePhase: "accepted" });
+  const originalEvents = (await api(`/api/runs/${runId}/events`)).body.events;
+  // Warm live-history and activity caches while the exact App command is idle.
+  expect((await api(`/api/sessions/${sessionId}/transcript`)).status).toBe(200);
+  const fake = sessions.get(nativeSessionId)!;
+  const time = fake.info.time.updated + 10;
+  const report: NativeMessage = { id: `msg_report_${crypto.randomUUID().replaceAll("-", "")}`, type: "synthetic", text: "<subagent-completed>Offline child finished its assigned work.</subagent-completed>", metadata: { notice: "subagent-completed" }, time: { created: time } };
+  const assistant: NativeMessage = { id: `msg_continuation_${crypto.randomUUID().replaceAll("-", "")}`, type: "assistant", model: fake.info.model, time: { created: time + 1 }, content: [{ id: "continuation-text", type: "text", text: "offline native continuation streaming" }] };
+  fake.messages.push(report, assistant); fake.active = true; fake.info.time.updated = time + 1;
+  const listed = await until("native continuation activity cache refresh", async () => {
+    const response = await api("/api/sessions");
+    expect(response.status).toBe(200);
+    const row = response.body.sessions.find((row: any) => row.sessionId === sessionId);
+    return row?.nativeActivity === "active" ? row : undefined;
+  });
+  expect(listed).toMatchObject({ lastStatus: "running", nativeActivity: "active", availability: { canSend: true, nativeQueue: true } });
+  expect(disk("metadata.json").sessions.find((row: any) => row.sessionId === sessionId)).toMatchObject({ lastStatus: "completed", lastRunId: runId });
+  expect(storedRun(runId)).toEqual(original);
+  return { sessionId, nativeSessionId, runId, fake, report, assistant, original, originalEvents };
+}
+function consumeQueuedInput(nativeSessionId: string, commandId: string) {
+  const fake = sessions.get(nativeSessionId)!;
+  const index = fake.inbox.findIndex(input => input.id === commandId);
+  expect(index).toBeGreaterThanOrEqual(0);
+  const [input] = fake.inbox.splice(index, 1);
+  expect(input).toMatchObject({ id: commandId, sessionID: nativeSessionId, type: "user", delivery: "queue" });
+  fake.messages.push({ id: input.id, type: "user", text: input.payload.text, time: input.time });
+  fake.active = true; fake.info.time.updated = Math.max(fake.info.time.updated, input.time.created);
+}
 async function fixtureSession(harness: Harness) {
   const response = await api("/api/sessions");
   expect(response.status).toBe(200);
@@ -401,6 +453,125 @@ describe.serial("bridge runtime (isolated offline HTTP native fixtures)", () => 
     expect(calls.filter(c => c.path === "/api/session" && c.method === "POST")).toHaveLength(1);
     expect((await api(`/api/sessions/${sessionId}/transcript`)).body.messages.map((m: any) => m.role)).toEqual(["user", "assistant", "user", "assistant"]);
     expect(invocations()).toHaveLength(0);
+  }, TIMEOUT);
+
+  test("native continuation projects live synthetic and streaming transcript without reopening the completed exact run", async () => {
+    const fixture = await nativeContinuationFixture();
+    const { sessionId, runId, fake, report, assistant, original, originalEvents } = fixture;
+    const before = calls.length;
+    try {
+      const first = await until("native continuation transcript cache refresh", async () => {
+        const response = await api(`/api/sessions/${sessionId}/transcript`);
+        expect(response.status).toBe(200);
+        return response.body.messages.some((message: any) => message.id === assistant.id) ? response.body : undefined;
+      });
+      expect(first.messages.find((message: any) => message.id === report.id)).toMatchObject({ runId: "native-import", role: "system", parts: [{ type: "text", text: report.text }] });
+      const streaming = first.messages.find((message: any) => message.id === assistant.id);
+      expect(streaming).toMatchObject({ runId: "native-import", role: "assistant", status: "running", parts: [{ type: "text", text: "offline native continuation streaming" }] });
+      assistant.content![0]!.text = "offline native continuation updated live";
+      const updated = await until("same native continuation assistant live update", async () => {
+        const response = await api(`/api/sessions/${sessionId}/transcript`);
+        expect(response.status).toBe(200);
+        const message = response.body.messages.find((message: any) => message.id === assistant.id);
+        return message?.parts[0]?.text === "offline native continuation updated live" ? message : undefined;
+      });
+      expect(updated).toMatchObject({ id: streaming.id, runId: "native-import", status: "running" });
+      expect(updated.version).not.toBe(streaming.version);
+      assistant.time.completed = fake.info.time.updated + 1; fake.active = false; fake.info.time.updated++;
+      await until("native continuation transcript terminal update", async () => {
+        const response = await api(`/api/sessions/${sessionId}/transcript`);
+        expect(response.status).toBe(200);
+        const message = response.body.messages.find((message: any) => message.id === assistant.id);
+        return message?.status === "completed" && message.runId === "native-import" ? true : undefined;
+      });
+      expect((await waitIdle(sessionId)).nativeActivity).toBe("idle");
+      expect(storedRun(runId)).toEqual(original);
+      expect((await api(`/api/sessions/${sessionId}/runs`)).body.runs).toEqual([original]);
+      expect((await api(`/api/runs/${runId}/events`)).body.events).toEqual(originalEvents);
+      expect(calls.slice(before).every(call => call.method === "GET")).toBe(true);
+    } finally { fake.active = false; }
+  }, TIMEOUT);
+
+  test("native continuation queues a fresh durable exact user run without model selection and unlocks normal send after consumption", async () => {
+    const { sessionId, nativeSessionId, runId, fake, assistant, original, originalEvents } = await nativeContinuationFixture();
+    const before = calls.length;
+    try {
+      const queued = await api("/api/sessions", { sessionId, prompt: "offline queued behind native continuation" });
+      expect(queued.status).toBe(202);
+      expect(queued.body.runId).not.toBe(runId);
+      expect(queued.body.nativeSessionId).toBe(nativeSessionId);
+      const newRun = await until("native continuation queued exact prompt accepted", async () => {
+        const run = storedRun(queued.body.runId);
+        return run?.nativePhase === "accepted" && fake.inbox.some(input => input.id === run.nativeCommandId) ? run : undefined;
+      });
+      expect(newRun).toMatchObject({ sessionId, status: "running", nativeDelivery: "queue", model: "fixture/offline", effort: "bounded" });
+      expect(newRun.nativeCommandId).not.toBe(original.nativeCommandId);
+      expect(fake.messages.some(message => message.id === newRun.nativeCommandId)).toBe(false);
+      expect(calls.slice(before).filter(call => call.method === "POST")).toEqual([expect.objectContaining({ path: `/api/session/${nativeSessionId}/prompt`, body: { id: newRun.nativeCommandId, text: "offline queued behind native continuation", delivery: "queue" } })]);
+      const waiting = await until("native continuation exact queue waiting journal", async () => {
+        const response = await api(`/api/runs/${newRun.runId}/events`);
+        return response.body.events.some((event: any) => event.kind === "status" && event.data.reason?.includes("waiting for native continuation")) ? response.body.events : undefined;
+      });
+      expect(waiting.filter((event: any) => event.kind === "submission")).toHaveLength(1);
+      expect((await api("/api/sessions", { sessionId, prompt: "must not overtake the queued run" })).status).toBe(409);
+      // An unrelated continuation's idle boundary must not complete our pending input.
+      assistant.time.completed = fake.info.time.updated + 1;
+      fake.messages.push({ id: `msg_continuation_idle_${newRun.nativeCommandId}`, type: "idle", outcome: "succeeded", time: { created: fake.info.time.updated + 2 } });
+      fake.active = false; fake.info.time.updated += 2;
+      const reads = calls.filter(call => call.path === `/api/session/${nativeSessionId}/inbox`).length;
+      await until("pending exact queue observed after unrelated native idle", async () => calls.filter(call => call.path === `/api/session/${nativeSessionId}/inbox`).length > reads ? true : undefined);
+      expect(storedRun(newRun.runId).status).toBe("running");
+      expect(calls.slice(before).some(call => call.path.includes("/model") || call.method === "PATCH")).toBe(false);
+      consumeQueuedInput(nativeSessionId, newRun.nativeCommandId); complete(nativeSessionId);
+      const idle = await waitIdle(sessionId);
+      expect(idle).toMatchObject({ lastRunId: newRun.runId, lastStatus: "completed", nativeActivity: "idle", availability: { canSend: true } });
+      expect(idle.availability.nativeQueue).not.toBe(true);
+      expect(storedRun(newRun.runId)).toMatchObject({ status: "completed", nativeDelivery: "queue", nativeCommandId: newRun.nativeCommandId });
+      expect(storedRun(runId)).toEqual(original);
+      expect((await api(`/api/runs/${runId}/events`)).body.events).toEqual(originalEvents);
+      const events = (await api(`/api/runs/${newRun.runId}/events`)).body.events;
+      expect(events.filter((event: any) => event.kind === "message" && event.data.role === "user").map((event: any) => event.data.messageId)).toEqual([newRun.nativeCommandId]);
+      expect(events.some((event: any) => event.kind === "message" && event.data.messageId === assistant.id)).toBe(false);
+      expect(events.at(-1).data.status).toBe("completed");
+      const next = await api("/api/sessions", { sessionId, prompt: "offline ordinary send after native continuation" });
+      expect(next.status).toBe(202);
+      expect((await waitIdle(sessionId)).lastRunId).toBe(next.body.runId);
+      expect(storedRun(next.body.runId).nativeDelivery).toBeUndefined();
+      expect(prompts().at(-1)!.body).toEqual({ id: storedRun(next.body.runId).nativeCommandId, text: "offline ordinary send after native continuation" });
+    } finally { fake.active = false; }
+  }, TIMEOUT);
+
+  test("native continuation pending queued cancellation deletes only the exact inbox input without interrupting existing work", async () => {
+    const { sessionId, nativeSessionId, runId, fake, assistant, original, originalEvents } = await nativeContinuationFixture();
+    try {
+      const queued = await api("/api/sessions", { sessionId, prompt: "offline cancel pending native continuation queue" });
+      expect(queued.status).toBe(202);
+      const newRun = await until("native continuation cancellable pending queue", async () => {
+        const run = storedRun(queued.body.runId);
+        return run?.nativePhase === "accepted" && fake.inbox.some(input => input.id === run.nativeCommandId) ? run : undefined;
+      });
+      expect(newRun).toMatchObject({ status: "running", nativeDelivery: "queue" });
+      const other = { id: `msg_other_${crypto.randomUUID().replaceAll("-", "")}`, sessionID: nativeSessionId, type: "user", delivery: "queue", time: { created: fake.info.time.updated + 20 }, payload: { text: "unrelated native queued user" } };
+      fake.inbox.push(other);
+      const messages = structuredClone(fake.messages), before = calls.length;
+      const canceled = await api(`/api/sessions/${sessionId}/cancel`, {});
+      expect(canceled.status).toBe(200); expect(canceled.body).toEqual({ interrupted: true });
+      await until("native continuation exact queued run interrupted", async () => storedRun(newRun.runId).status === "interrupted" ? true : undefined);
+      const cancelCalls = calls.slice(before);
+      expect(cancelCalls.filter(call => call.method !== "GET")).toEqual([expect.objectContaining({ method: "DELETE", path: `/api/session/${nativeSessionId}/inbox/${newRun.nativeCommandId}` })]);
+      expect(cancelCalls.some(call => call.path.includes("/interrupt"))).toBe(false);
+      expect(cancelCalls.some(call => call.method === "GET" && call.path === `/api/session/${nativeSessionId}/message/${newRun.nativeCommandId}`)).toBe(true);
+      expect(fake.inbox).toEqual([other]); expect(fake.active).toBe(true); expect(fake.messages).toEqual(messages);
+      expect(assistant.time.completed).toBeUndefined();
+      expect(storedRun(runId)).toEqual(original);
+      expect((await api(`/api/runs/${runId}/events`)).body.events).toEqual(originalEvents);
+      const listed = await until("native continuation remains active after exact queue cancellation", async () => {
+        const row = (await api("/api/sessions")).body.sessions.find((row: any) => row.sessionId === sessionId);
+        return row?.availability.canSend ? row : undefined;
+      });
+      expect(listed).toMatchObject({ lastStatus: "running", nativeActivity: "active", availability: { canSend: true, nativeQueue: true } });
+      expect(storedRun(newRun.runId)).toMatchObject({ status: "interrupted", nativeDelivery: "queue" });
+    } finally { fake.active = false; fake.inbox = []; }
   }, TIMEOUT);
 
   test("OpenCode busy owner rejects a second prompt; Stop journals interruption and releases the slot", async () => {

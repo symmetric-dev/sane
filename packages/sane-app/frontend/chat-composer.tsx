@@ -62,7 +62,8 @@ export function ChatComposer({ state, active = true, navigation, ack, onAckChang
   const fixed = !!state.selected && (store.conversationKind() === "assistant" || !!parentId);
   const missingModel = store.missingModel();
   const infoError = state.submissionError || (capabilities.catalogRequiredForSend ? state.modelsError : "");
-  const infoStatus = (state.sending ? "Sending your message…" : "") || (state.loading ? "Loading your conversation…" : "") || store.executionUnavailable() || (!state.connected ? "Reconnecting to the bridge…" : "") || (!state.availability.canSend && state.availability.reason) || (store.modelUnavailable() ? "Waiting for the OpenCode model catalog for this directory." : "");
+  const nativeQueueInfo = state.availability.nativeQueue === true ? "OpenCode is continuing in the background. Your next message will be queued for it." : "";
+  const infoStatus = (state.sending ? "Sending your message…" : "") || (state.loading ? "Loading your conversation…" : "") || store.executionUnavailable() || (!state.connected ? "Reconnecting to the bridge…" : "") || (!state.availability.canSend && state.availability.reason) || (store.modelUnavailable() ? "Waiting for the OpenCode model catalog for this directory." : "") || nativeQueueInfo;
   const infoText = infoError || infoStatus;
   const command = compactCommand(draft.text);
   // A standalone /compact opens the same explicit dialog before ordinary-send
@@ -73,6 +74,7 @@ export function ChatComposer({ state, active = true, navigation, ack, onAckChang
 
   return <>
     {state.submissionError && <p className="notice error" role="alert">{state.submissionError}</p>}
+    {nativeQueueInfo && <p className="notice" role="status">{nativeQueueInfo}</p>}
     {capabilities.catalogRequiredForSend && state.modelsError && <p className="notice" role="status">{state.modelsError} <button type="button" className="text-button" disabled={state.modelsLoading || !capabilities.listModels} onClick={() => void store.loadModels(harness)}>Retry connection</button></p>}
     {needsAck && !conversation?.replacedBy && <label className="notice"><input type="checkbox" checked={ack === state.selected} onChange={e => onAckChange(e.target.checked ? state.selected : "")} />I confirm external assistant execution for this conversation is stopped before this send.</label>}
     {missingModel && <p className="notice" role="status">Model {missingModel} is not in the current OpenCode catalog for this directory. Sending will still use this selection.</p>}

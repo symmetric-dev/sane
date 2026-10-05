@@ -15,6 +15,7 @@ import { projectCompactions } from "./compaction";
 import type { CompactEligibility, CompactRequest, CompactResponse } from "./oc-contract";
 import { OpenCodeAdapter, OpenCodeError } from "./opencode";
 import { OpenCodeRunService, type FrameworkDelivery } from "./opencode-run-service";
+import { OpenCodeObservationService } from "./opencode-observation-service";
 import type { RunOwner as Owner } from "./run-owner";
 import { WorkspaceService, WorkspaceError, workspaceError } from "./workspace";
 import { CatalogService } from "./catalog";
@@ -227,7 +228,9 @@ async function startOwned(options: Options, assetsDir: string, packageDir: strin
   const events = new Map<string, Event[]>();
   const nativeSubagents = new NativeSubagentService(() => meta.sessions, () => meta.runs, id => events.get(id) ?? []);
   const nativeHistories = new NativeHistoryCache(options.dataDir);
-  const transcripts = new TranscriptService(() => meta.sessions, () => meta.runs, nativeHistories, async (session, kind, id) => {
+  const nativeObservations = new OpenCodeObservationService(oc);
+  const observedHistory = { get: (session: Session) => session.harness === "opencode" ? nativeObservations.get(session) : nativeHistories.get(session) };
+  const transcripts = new TranscriptService(() => meta.sessions, () => meta.runs, observedHistory, async (session, kind, id) => {
     if (kind === "worker") {
       const worker = workerStore.get(id);
       return worker?.parent.sessionId === session.sessionId ? { kind, runId: worker.parent.runId, toolCallId: worker.parent.toolCallId } : undefined;
@@ -696,7 +699,7 @@ async function startOwned(options: Options, assetsDir: string, packageDir: strin
     return nativeHistories.get(session);
   }
   async function compactOperations(session: Session) {
-    const history = await storedNativeHistory(session);
+    const history = session.harness === "opencode" ? nativeObservations.peek(session) ?? await storedNativeHistory(session) : await storedNativeHistory(session);
     const logs = meta.runs.filter(r => r.sessionId === session.sessionId).flatMap(r => events.get(r.runId) ?? []);
     // A cached pre-compaction snapshot must not regress newer live evidence if
     // the optional history refresh fails. A newer explicit reconciliation can
@@ -710,7 +713,7 @@ async function startOwned(options: Options, assetsDir: string, packageDir: strin
     // Completed CC boundaries are immutable; retain them for grouping their
     // continuation summary/command envelopes, including live/import overlaps.
     const messages = history?.messages.filter(message => session.harness === "claude-code" && message.compaction?.lifecycle === "completed" && message.contextReset || !message.compaction || !observedAt.has(message.messageId) || importedAt > observedAt.get(message.messageId)!);
-    return { operations: projectCompactions(session, meta.runs, logs, messages), ...(history ? { nativeHistoryImportedAt: history.importedAt } : {}) };
+    return { operations: projectCompactions(session, meta.runs, logs, messages), ...(history && !history.observation ? { nativeHistoryImportedAt: history.importedAt } : {}) };
   }
   async function refreshCompactHistory(owner: Owner) {
     const run = owner.run, session = meta.sessions.find(s => s.sessionId === run.sessionId)!;
@@ -1541,13 +1544,31 @@ async function startOwned(options: Options, assetsDir: string, packageDir: strin
         return json({ workers: await Promise.all(workers.tree(workerList[1]!).map(w => workers.refresh(w))), deliveries: workerStore.deliveries().filter(d => d.parentSessionId === workerList[1]), continuationSuppressed: workerStore.suppressed(workerList[1]!) });
       }
       if (path === "/api/sessions" && req.method === "GET") {
+        // Native continuations outlive the App's exact command run. Observe the
+        // shared activity catalog once, without rewriting any completed run.
+        let nativeActive: Record<string, { type: string }> = {}, nativeError = "";
+        if (meta.sessions.some(s => s.harness === "opencode")) {
+          try { nativeActive = await nativeObservations.active(); }
+          catch (error) { nativeError = error instanceof Error ? error.message : "OpenCode activity unavailable"; }
+        }
+        const nativeState = (s: Session) => {
+          if (s.harness !== "opencode") return {};
+          const active = !!nativeActive[s.nativeSessionId!];
+          const available = availability(s.sessionId, true, false, false, "user");
+          const nativeActivity = nativeError ? "unknown" as const : active ? "active" as const : "idle" as const;
+          return { nativeActivity, ...(nativeError ? { nativeActivityReason: nativeError } : {}),
+            ...(active ? { lastStatus: "running" } : {}),
+            availability: !available.canSend ? available : nativeError ? { canSend: false, reason: nativeError }
+              : active && s.agentKind === "worker" ? { canSend: false, reason: "OpenCode worker is still active" }
+              : active ? { ...available, nativeQueue: true } : available };
+        };
         const workerSessions = new Map(workerStore.list().map(w => [w.sessionId, { id: w.id, parent: { sessionId: w.parent.sessionId, runId: w.parent.runId, toolCallId: w.parent.toolCallId } }]));
         const workerCounts = new Map<string, number>();
         for (const worker of workerStore.list()) workerCounts.set(worker.parent.sessionId, (workerCounts.get(worker.parent.sessionId) ?? 0) + 1);
         // Recovery never auto-sends a reserved prompt. Offer it as a composer
         // draft only while no first prompt run (including failed submissions) exists.
         const branchDrafts = new Map(branches.list().filter(op => op.state === "completed" && op.firstMessage && !op.firstRunId && !meta.runs.some(run => run.sessionId === op.destinationId && run.operation !== "compact")).map(op => [op.destinationId, op.firstMessage]));
-        return json({ sessions: meta.sessions.map(s => ({ ...s, branchDraft: branchDrafts.get(s.sessionId), branchOrigin: branches.list().find(op => op.destinationId === s.sessionId && op.state !== "failed")?.sourceId, replacedBy: branches.replaced(s.sessionId)?.destinationId, ...(branches.replaced(s.sessionId) ? { hidden: true } : {}), ...(workerSessions.has(s.sessionId) ? { worker: workerSessions.get(s.sessionId) } : {}), directWorkerCount: workerCounts.get(s.sessionId) ?? 0, profileId: sessionProfileId(s), title: displayTitle(s), admission: admissions.get(s.sessionId), ...catalog.association(s.sessionId), availability: availability(s.sessionId, true, false, false, "user"), ...(s.harness === "claude-code" ? { queuedFollowups: projectClaudeFollowups(s.sessionId, meta.runs, id => events.get(id) ?? [], id => claudeRuns.followupPending(id)) } : {}) })), admissions: admissions.list(), availability: availability() });
+        return json({ sessions: meta.sessions.map(s => ({ ...s, branchDraft: branchDrafts.get(s.sessionId), branchOrigin: branches.list().find(op => op.destinationId === s.sessionId && op.state !== "failed")?.sourceId, replacedBy: branches.replaced(s.sessionId)?.destinationId, ...(branches.replaced(s.sessionId) ? { hidden: true } : {}), ...(workerSessions.has(s.sessionId) ? { worker: workerSessions.get(s.sessionId) } : {}), directWorkerCount: workerCounts.get(s.sessionId) ?? 0, profileId: sessionProfileId(s), title: displayTitle(s), admission: admissions.get(s.sessionId), ...catalog.association(s.sessionId), availability: availability(s.sessionId, true, false, false, "user"), ...nativeState(s), ...(s.harness === "claude-code" ? { queuedFollowups: projectClaudeFollowups(s.sessionId, meta.runs, id => events.get(id) ?? [], id => claudeRuns.followupPending(id)) } : {}) })), admissions: admissions.list(), availability: availability() });
       }
       const branchRoute = /^\/api\/sessions\/([^/]+)\/branch$/.exec(path);
       if (branchRoute) {
@@ -1835,7 +1856,16 @@ async function startOwned(options: Options, assetsDir: string, packageDir: strin
           await admissions.register(conversationId);
           admissions.ready(conversationId);
         }
-        if (session?.harness === "opencode") await oc.assertIdle(session.nativeSessionId!, cwd);
+        let nativeDelivery: "queue" | undefined;
+        if (session?.harness === "opencode") {
+          const native = await oc.activity(session.nativeSessionId!, cwd);
+          if (native.active || native.pending) {
+            if (session.agentKind === "worker" || upgrade || input.model !== undefined && input.model !== session.model || input.effort !== undefined && input.effort !== session.effort || input.agent !== undefined && input.agent !== session.agent) throw new OpenCodeError("Wait for OpenCode to finish before changing conversation configuration or sending worker input", 409);
+            // A new exact command queues behind native activity. No ownership
+            // of the existing continuation, agent/model change, or auto-replay.
+            nativeDelivery = "queue";
+          } else await oc.assertIdle(session.nativeSessionId!, cwd);
+        }
         if (lifecycleReserved(conversationId)) throw new WorkstreamAdapterError(409, "workstream-action-pending", "A repository phase action is in progress");
         if (queuedFollowupId && !claudeRuns.followupPending(queuedFollowupId)) throw new Error("Queued input cancelled before launch");
         if (closing || storageFailed || meta.reconciliationRequired) return json({ error: "Bridge unavailable" }, 409);
@@ -1861,7 +1891,7 @@ async function startOwned(options: Options, assetsDir: string, packageDir: strin
         }
         workerStore.suppress(conversationId, false); // Explicit user submission resumes automatic continuation eligibility.
         if (queuedFollowupId && (!claudeRuns.followupPending(queuedFollowupId) || closing || storageFailed || meta.reconciliationRequired || owners.has(conversationId))) throw new Error("Queued admission unavailable before owner installation");
-        const run: Run = { runId: crypto.randomUUID(), sessionId: conversationId, cwd, status: "running", createdAt: new Date().toISOString(), ...(model !== undefined ? { model } : {}), ...(effort !== undefined ? { effort } : {}), ...(agent !== undefined ? { agent, agentKind: session.agentKind, nativeAgentSelected: session.nativeAgentSelected } : {}), profileId: sessionProfileId(session), ...saneContextSnapshot(session), ...(queuedFollowupId ? { queuedFollowupId } : {}) };
+        const run: Run = { runId: crypto.randomUUID(), sessionId: conversationId, cwd, status: "running", createdAt: new Date().toISOString(), ...(nativeDelivery ? { nativeDelivery } : {}), ...(model !== undefined ? { model } : {}), ...(effort !== undefined ? { effort } : {}), ...(agent !== undefined ? { agent, agentKind: session.agentKind, nativeAgentSelected: session.nativeAgentSelected } : {}), profileId: sessionProfileId(session), ...saneContextSnapshot(session), ...(queuedFollowupId ? { queuedFollowupId } : {}) };
         const finished = Promise.withResolvers<void>();
         const accepted = Promise.withResolvers<boolean>();
         const owner: Owner = { run, native: harness === "opencode", done: finished.promise, settled: false };
@@ -1955,7 +1985,7 @@ async function startOwned(options: Options, assetsDir: string, packageDir: strin
         if (!session) return json({ error: "Unknown session" }, 404);
         requireOperation(sessionHarness(session), "readHistory");
         if (reconciliation[2] === "native-history" && req.method === "GET") {
-          return json({ history: await storedNativeHistory(session) ?? null });
+          return json({ history: await observedHistory.get(session) ?? null });
         }
         if (reconciliation[2] !== "reconcile" || req.method !== "POST") return json({ error: "Method not allowed" }, 405);
         const available = availability(session.sessionId);

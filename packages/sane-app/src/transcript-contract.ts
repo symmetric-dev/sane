@@ -1,5 +1,6 @@
-/** Authenticated, read-only unified transcript API. No GET reconciles or executes
- * native work. Listing + compactState remain execution/availability authority.
+/** Authenticated, read-only unified transcript API. GET may observe live native
+ * OpenCode history, but never persists reconciliation or executes native work.
+ * Listing + compactState remain execution/availability authority.
  *
  * GET /api/sessions/:id/transcript?limit=50[&cursor=...]
  *   Latest by default; messages are ALWAYS chronological. limit 1..100 is soft:

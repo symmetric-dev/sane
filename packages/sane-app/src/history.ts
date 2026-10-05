@@ -26,7 +26,7 @@ export const validEffort = (v: unknown): v is Effort => typeof v === "string" &&
 /** Missing operation is a legacy prompt. nativeCommandId remains the requested
  * OC input ID; compact.nativeAdmittedId may differ after native coalescing. */
 export type CompactRunMetadata = { requestId: string; instructions?: string; nativeRequestId?: string; nativeAdmittedId?: string };
-export type Run = AgentSnapshot & { runId: string; sessionId: string; cwd: string; status: Status; createdAt: string; endedAt?: string; model?: string; effort?: string; profileId?: string; nativeCommandId?: string; nativePhase?: "preparing" | "sending" | "accepted"; nativeAcceptedAt?: number; operation?: "prompt" | "compact"; compact?: CompactRunMetadata; saneContextVersion?: number; queuedFollowupId?: string };
+export type Run = AgentSnapshot & { runId: string; sessionId: string; cwd: string; status: Status; createdAt: string; endedAt?: string; model?: string; effort?: string; profileId?: string; nativeCommandId?: string; nativeDelivery?: "queue"; nativePhase?: "preparing" | "sending" | "accepted"; nativeAcceptedAt?: number; operation?: "prompt" | "compact"; compact?: CompactRunMetadata; saneContextVersion?: number; queuedFollowupId?: string };
 export type Event = { seq: number; time: string; runId: string; sessionId: string; kind: "stdout" | "stderr" | "hook" | "status" | "submission" | "message" | "launch" | "context"; data: unknown };
 export type Metadata = { sessions: Session[]; runs: Run[]; reconciliationRequired: boolean };
 
@@ -98,6 +98,7 @@ export function validateMetadata(value: unknown): Metadata {
     if (r.profileId !== undefined && !validProfileId(r.profileId)) return fail();
     if (r.saneContextVersion !== undefined && r.saneContextVersion !== sessions.get(r.sessionId)?.saneContext?.version) return fail();
     if (r.operation !== undefined && r.operation !== "prompt" && r.operation !== "compact") return fail();
+    if (r.nativeDelivery !== undefined && (r.nativeDelivery !== "queue" || sessions.get(r.sessionId)?.harness !== "opencode" || r.operation === "compact")) return fail();
     if (r.queuedFollowupId !== undefined && (!uuid(r.queuedFollowupId) || sessions.get(r.sessionId)?.harness !== "claude-code" || r.operation === "compact")) return fail();
     if (r.queuedFollowupId !== undefined) {
       if (queuedFollowups.has(r.queuedFollowupId)) return fail();

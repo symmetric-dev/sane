@@ -81,7 +81,7 @@ export class TranscriptService {
   private usageBuffers = new Map<string, string>();
   private generations = new Map<string, number>();
   private projections = new Map<string, Projection>();
-  constructor(private sessions: () => Session[], private storedRuns: () => Run[], private history: NativeHistoryCache,
+  constructor(private sessions: () => Session[], private storedRuns: () => Run[], private history: Pick<NativeHistoryCache, "get">,
     private resolveSend?: (session: Session, kind: "worker" | "handoff", id: string) => Promise<TranscriptSendAnchor | undefined>) {}
   private metadata(run: Run, session: Session): RunMetadata {
     // compact instructions are potentially huge; metadata remains lightweight.
@@ -193,7 +193,7 @@ export class TranscriptService {
       Object.assign(display, this.metadata(run, session)); return display;
     });
     const merged = transcriptMessages(history, runs);
-    const structural = !old || old.identity !== identity(session) || old.history !== history || old.messages.length > merged.length || old.messages.some((entry, index) => entry.message.id !== merged[index]?.id);
+    const structural = !old || old.identity !== identity(session) || old.history !== history && !history?.observation || old.messages.length > merged.length || old.messages.some((entry, index) => entry.message.id !== merged[index]?.id);
     const epoch = structural ? `${this.processId}:e${++this.serial}` : old.epoch;
     const messages = merged.map(message => this.materialize(message));
     const byId = new Map(messages.map(entry => [entry.message.id, entry]));
@@ -209,7 +209,7 @@ export class TranscriptService {
       // An imported final boundary is no longer the transcript tail once a new
       // App response arrives. App evidence observed after import is genuinely
       // later; importedAt is not used as a fabricated native boundary clock.
-      const afterImport = !id && knownNative && history ? merged.find(message => message.runId !== "native-import" && message.time > history.importedAt) : undefined;
+      const afterImport = !id && knownNative && history && !history.observation ? merged.find(message => message.runId !== "native-import" && message.time > history.importedAt) : undefined;
       placements.set(record.id, id ? { kind: "before-message", messageId: id } : afterImport ? { kind: "before-message", messageId: afterImport.id } : knownNative || knownTail ? { kind: "tail" } : { kind: "unplaced" });
     }
     const compactItems: TranscriptMetadataItem[] = compactions.map(record => {
@@ -228,7 +228,7 @@ export class TranscriptService {
     this.projections.set(session.sessionId, p); return p;
   }
   private summary(session: Session, p: Projection): TranscriptSummary {
-    return { sessionId: session.sessionId, revision: p.revision, epoch: p.epoch, usage: p.usage, ...(p.history ? { nativeHistoryImportedAt: p.history.importedAt } : {}) };
+    return { sessionId: session.sessionId, revision: p.revision, epoch: p.epoch, usage: p.usage, ...(p.history && !p.history.observation ? { nativeHistoryImportedAt: p.history.importedAt } : {}) };
   }
   private limit(query: URLSearchParams, fallback: number) {
     const value = query.get("limit");

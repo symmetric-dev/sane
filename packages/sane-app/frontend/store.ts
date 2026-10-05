@@ -930,6 +930,11 @@ export class ChatStore {
   }
   canQueueInput = (state: State = this.state): boolean => {
     const conversation = state.conversations.find(c => c.id === state.selected);
+    // Native continuation is not an App-owned run. Its queue gets a fresh exact
+    // command admission; it must never borrow the previous completed run ID.
+    if (conversation?.harness === "opencode" && conversation.nativeActivity === "active"
+      && state.availability.canSend && state.availability.nativeQueue === true && conversation.availability?.nativeQueue === true
+      && !state.runs.some(run => run.status === "running" || run.status === "starting")) return true;
     const after = state.availability.queueAfterRunId;
     // An old backend, another conversation's availability, or stale ownership
     // cannot opt into mid-run input. This is a receipt-bound CC queue, not steering.

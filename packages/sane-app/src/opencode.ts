@@ -151,8 +151,8 @@ export class OpenCodeAdapter {
     const ref = model ? this.model(model, effort) : { id: current!.id, providerID: current!.providerID, variant: effort };
     await this.request(this.path(id) + "/model", "POST", { model: ref });
   }
-  async prompt(id: string, commandId: string, text: string, beforeSubmit?: () => void) {
-    const { data } = await this.request<{ data: { id: string; time: { created: number } } }>(this.path(id) + "/prompt", "POST", { id: commandId, text }, beforeSubmit);
+  async prompt(id: string, commandId: string, text: string, beforeSubmit?: () => void, delivery?: "queue") {
+    const { data } = await this.request<{ data: { id: string; time: { created: number } } }>(this.path(id) + "/prompt", "POST", { id: commandId, text, ...(delivery === undefined ? {} : { delivery }) }, beforeSubmit);
     if (data?.id !== commandId || !Number.isFinite(data.time?.created)) throw new OpenCodeError("OpenCode prompt acknowledgement mismatch; execution state unconfirmed");
     return data;
   }
@@ -173,6 +173,14 @@ export class OpenCodeAdapter {
     return data;
   }
   async session(id: string) { return (await this.request<{ data: NativeSession }>(this.path(id))).data; }
+  async boundSaneSession(id: string): Promise<string | null> {
+    const session = await this.session(id);
+    if (session?.id !== id) throw new OpenCodeError("Native SANE session binding identity differs from the conversation", 409);
+    const current = session.metadata?.saneContext;
+    if (!current || typeof current !== "object" || !("sessionID" in current) || current.sessionID !== id) return null;
+    if (!("text" in current) || typeof current.text !== "string") throw new OpenCodeError("Native SANE session binding is malformed", 409);
+    return current.text;
+  }
   /** The per-turn SANE Session block, bound to this exact native session: forks and subagents inherit
    * metadata, and the plugin ignores a foreign sessionID. PATCH replaces metadata wholesale, so other
    * keys are kept; null removes the binding. Unchanged bindings are not rewritten; returns whether it changed. */
@@ -242,7 +250,15 @@ export class OpenCodeAdapter {
     }
     throw new OpenCodeError("History exceeds 10,000-message import budget; no partial import");
   }
-  async snapshot(id: string, commandId: string, cwd?: string) {
+  async snapshot(id: string, commandId: string, cwd?: string): Promise<{ messages: NativeMessage[]; outcome?: string; pending: boolean; currentInputId?: string }> {
+    // A queued command is not committed history yet. Check its exact inbox
+    // identity first, so waiting/cancellation never walks an unrelated backlog.
+    const [initialSession, initialInbox] = await Promise.all([
+      this.session(id), this.request<{ data: { id: string }[] }>(this.path(id) + "/inbox"),
+    ]);
+    if (!initialSession?.time || !Array.isArray(initialInbox.data)) throw new OpenCodeError("Unsupported OpenCode V2 execution response");
+    if (initialSession.id !== id || cwd !== undefined && initialSession.location?.directory !== cwd) throw new OpenCodeError("Native session identity or directory changed; execution remains unconfirmed", 409);
+    if (initialInbox.data.some(message => message.id === commandId)) return { messages: [], pending: true };
     // Newest first until the exact durable command is found. Bounded, with no
     // completion inference if the required history lies outside this budget.
     const messages: NativeMessage[] = []; let cursor: string | undefined; let found = false;
@@ -265,10 +281,13 @@ export class OpenCodeAdapter {
     if (!session?.time || !active.data || !Array.isArray(inbox.data)) throw new OpenCodeError("Unsupported OpenCode V2 execution response");
     if (session.id !== id || (cwd !== undefined && session.location?.directory !== cwd)) throw new OpenCodeError("Native session identity or directory changed; execution remains unconfirmed", 409);
     const pending = inbox.data.some(m => m.id === commandId);
-    const bounded = commandSnapshot(found ? messages.reverse() : [], commandId);
+    const ordered = found ? messages.reverse() : [];
+    const bounded = commandSnapshot(ordered, commandId);
+    const command = ordered.find(message => message.id === commandId);
+    const currentInputId = ordered.findLast(message => message.type === "user" || message.type === "synthetic" && !(command && restartContinuation(message, command)))?.id;
     // Session.outcome belongs to the latest turn, not necessarily this command.
     // Later external activity cannot overwrite a recorded command boundary.
-    return { messages: bounded.messages, outcome: pending ? undefined : bounded.outcome, pending };
+    return { messages: bounded.messages, outcome: pending ? undefined : bounded.outcome, pending, currentInputId };
   }
   /** Observe only the exact admitted compact input. No user-message anchor,
    * session outcome, idle heuristic, or resend. Activity is reported separately
@@ -299,7 +318,28 @@ export class OpenCodeAdapter {
     const exact = compactionSnapshot(messages, admittedId);
     return { ...exact, pending: !!input, active: !!active.data[id], observed: !!input || exact.messages.length > 0 };
   }
-  async cancel(id: string) { return this.request<{ interrupted: boolean }>(this.path(id) + "/interrupt?resume=false", "POST"); }
+  async cancelInput(id: string, commandId: string, beforeCancel?: () => void): Promise<boolean> {
+    if (!/^ses[a-zA-Z0-9_-]+$/.test(id) || !nativeMessageId(commandId)) throw new OpenCodeError("Invalid queued input identity", 400);
+    const { data } = await this.request<{ data: NativeInput[] }>(this.path(id) + "/inbox");
+    if (!Array.isArray(data)) throw new OpenCodeError("Unsupported native inbox response");
+    const input = data.find(value => value.id === commandId);
+    if (!input) return false;
+    if (input.sessionID !== id || input.type !== "user") throw new OpenCodeError("Exact queued input is not this session's prompt; cancellation remains unconfirmed");
+    await this.request(this.path(id) + `/inbox/${encodeURIComponent(commandId)}`, "DELETE", undefined, beforeCancel);
+    // DELETE is a no-op when consumption won the race. An exact message read
+    // distinguishes that case without searching thousands of older messages.
+    try {
+      const delivered = await this.request<{ data: NativeMessage }>(this.path(id) + `/message/${encodeURIComponent(commandId)}`);
+      if (delivered.data?.id !== commandId || delivered.data.type !== "user") throw new OpenCodeError("Queued input delivery identity is unconfirmed");
+      return false;
+    } catch (error) {
+      if (!(error instanceof OpenCodeError) || error.status !== 404) throw error;
+    }
+    const after = await this.request<{ data: NativeInput[] }>(this.path(id) + "/inbox");
+    if (!Array.isArray(after.data)) throw new OpenCodeError("Unsupported native inbox response");
+    return !after.data.some(value => value.id === commandId);
+  }
+  async cancel(id: string, beforeCancel?: () => void) { return this.request<{ interrupted: boolean }>(this.path(id) + "/interrupt?resume=false", "POST", undefined, beforeCancel); }
   async interactions(id: string): Promise<Interaction[]> {
     const [permissions, forms] = await Promise.all([
       this.request<{ data: { id: string; action: string; resources: string[]; message?: string }[] }>(this.path(id) + "/permission"),

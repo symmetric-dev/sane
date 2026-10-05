@@ -88,12 +88,12 @@ function openCodeUsage(runs: Run[], models: ModelChoice[], history?: ReconciledH
   // Message events are UPSERTs: replacing an older message must not move it after
   // newer responses or make a repeated compaction snapshot clear newer usage.
   const messages = new Map<string, { message: MessageSnapshot; time: string }>();
-  for (const message of history?.messages ?? []) messages.set(message.messageId, { message, time: history!.importedAt });
+  for (const message of history?.messages ?? []) messages.set(message.messageId, { message, time: history!.observation ? message.createdAt : history!.importedAt });
   for (const run of runs) for (const event of run.events) {
     if (event.kind !== "message" || !object(event.data)) continue;
     const message = event.data as MessageSnapshot;
     if (run.operation === "compact" && !message.compaction) continue;
-    if (history && event.time <= history.importedAt && messages.has(message.messageId)) continue;
+    if (history && (history.observation || event.time <= history.importedAt) && messages.has(message.messageId)) continue;
     messages.set(message.messageId, { message, time: event.time });
   }
   let input: InputUsage | undefined, model: string | undefined;

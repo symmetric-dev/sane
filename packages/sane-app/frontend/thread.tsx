@@ -181,13 +181,17 @@ export function Thread({ state, active: isActive = true, navigation, reviewReque
   const workspace = store.workspace();
   const modelUnavailable = store.modelUnavailable();
   useEffect(() => { if (capabilities.listModels && (state.modelsCwd !== workspace || (!state.modelsLoaded && !state.modelsLoading && !state.modelsError))) { const timer = setTimeout(() => void store.loadModels(harness), 300); return () => clearTimeout(timer); } }, [harness, capabilities.listModels, workspace, state.modelsCwd, state.modelsLoaded, state.modelsLoading, state.modelsError]);
-   const running = state.runs.some(run => active(run.status)) || active(conversation?.status ?? "completed");
+   const appRunning = state.runs.some(run => active(run.status));
+   const nativeContinuing = conversation?.nativeActivity === "active" && !appRunning;
+   const running = appRunning || active(conversation?.status ?? "completed");
    const queueable = store.canQueueInput(state);
   const compacting = state.compactions?.some(record => record.lifecycle === "running");
   const compactBlocked = !!store.compactBlocked();
   const pendingCompact = state.pendingCompacts?.[state.selected];
   const nativeIssue = [...state.runs].reverse().find(run => active(run.status) && run.nativeConnection && run.nativeConnection !== "connected");
   const latestRun = state.runs.at(-1);
+  const nativeQueueWaiting = active(latestRun?.status ?? "completed") && latestRun?.nativeDelivery === "queue"
+    && !state.messages.some(message => message.id === latestRun.nativeCommandId && message.normalized);
   const pendingTurn = state.pendingTurn?.conversationId === state.selected ? state.pendingTurn : null;
   const messages = useMemo(() => withCoverageGaps(messagesWithQueuedFollowups(messagesWithPendingTurn(state.messages, pendingTurn), conversation), state.transcript), [state.messages, pendingTurn, conversation?.queuedFollowups, conversation?.lastRunId, state.transcript?.islands]);
    const positions = useMemo(() => {
@@ -229,7 +233,8 @@ export function Thread({ state, active: isActive = true, navigation, reviewReque
     {handoffs.error && <p className="notice" role="status">Handoff status unavailable: {handoffs.error}</p>}
     <CompactionMarkers records={review.flow?.path ? state.transcript ? state.compactions?.filter(record => state.transcript!.compactions.some(item => item.id === record.id && item.placement.kind === "tail")) : state.transcriptPaged ? undefined : state.compactions : undefined} />
     {pendingCompact && !state.compactions?.some(record => record.requestId === pendingCompact.payload.requestId) && (pendingCompact.phase === "sending" || pendingCompact.phase === "unconfirmed") && <p className="compaction-marker" role="status">Manual context compaction · {pendingCompact.phase === "sending" ? "requested" : "acceptance unconfirmed"}</p>}
-    {(running || compacting) && <p className="working" role="status"><span className="pulse" />{!state.connected ? "Connection unavailable. The run’s current state is not yet known." : compacting ? "Compacting context…" : latestRun?.operation === "compact" ? "Waiting for the compaction run’s native state to settle." : nativeIssue ? nativeIssue.nativeReason || "Assistant connection unavailable; execution state remains unconfirmed." : "Assistant is working. New output will appear here."}{running && capabilities.cancelRun && <button type="button" className="text-button" disabled={state.actionBusy || !state.connected} onClick={() => void store.cancel()}>Stop run</button>}</p>}
+    {(running || compacting) && <p className="working" role="status"><span className="pulse" />{!state.connected ? "Connection unavailable. The run’s current state is not yet known." : compacting ? "Compacting context…" : nativeContinuing ? "OpenCode is continuing after background work; live output appears here." : latestRun?.operation === "compact" ? "Waiting for the compaction run’s native state to settle." : nativeIssue ? nativeIssue.nativeReason || "Assistant connection unavailable; execution state remains unconfirmed." : nativeQueueWaiting ? "Message queued. OpenCode is finishing its current continuation." : "Assistant is working. New output will appear here."}{appRunning && capabilities.cancelRun && <button type="button" className="text-button" disabled={state.actionBusy || !state.connected} onClick={() => void store.cancel()}>{nativeQueueWaiting ? "Cancel queued message" : "Stop run"}</button>}</p>}
+    {nativeContinuing && <p className="muted">To stop this continuation, use the native OpenCode harness.</p>}
     {latestRun?.operation !== "compact" && latestRun?.status === "failed" && <p className="notice error" role="alert">Run failed{latestRun.nativeReason ? `: ${latestRun.nativeReason}` : ". See the conversation for details."}</p>}
     {capabilities.listInteractions && !conversation?.replacedBy ? <Interactions state={state} /> : <>{state.actionNotice && <p role="status" className="notice">{state.actionNotice}</p>}{state.interactionError && <p role="alert" className="notice error">{state.interactionError}</p>}</>}
   </>;
