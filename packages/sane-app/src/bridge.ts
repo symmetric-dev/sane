@@ -1184,9 +1184,9 @@ async function startOwned(options: Options, assetsDir: string, packageDir: strin
         h.input.createNew ? "Perform the assigned assistant's mandatory Pickup and ask the user to confirm scope before proceeding."
           : "Continue within this conversation's confirmed scope and user decisions; confirm any scope change with the user.",
         "A successful delivery run may only establish Pickup readiness; it does not mean request/task completion, user acceptance, or approval.",
-        "For a reply, use a separate sane_handoff with a new requestId and target exactly the qualified From identity above. Include this handoff ID, request ID, workstream, and original request scope in its message.",
+        "If this request asks for a reply, use a separate sane_handoff with a new requestId and target exactly the qualified From identity above. Include this handoff ID, request ID, workstream, and original request scope in its message.",
         replySlots.length ? `Reply destination slots from the original scope still assigned now: ${JSON.stringify(replySlots)}. Select the relevant exact slot and recheck eligibility when sending.`
-          : "The sender has no eligible original reply slot in this workstream now. Report this membership/assignment authority restriction; an exact reply cannot bypass it or be redirected to another conversation.",
+          : "The sender has no eligible original reply slot in this workstream now. If this request asks for a reply, report this membership/assignment authority restriction; an exact reply cannot bypass it or be redirected to another conversation.",
         "", h.input.message,
       ].join("\n");
       void executePrompt(owner, prompt, resume, () => {}).catch(async () => { failClosed(); await terminate(owner); }).finally(async () => {
