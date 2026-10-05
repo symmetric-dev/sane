@@ -5,6 +5,7 @@ import { WorkspaceError } from "./workspace-client";
 import { subscribeWorkspace, workspaceEpoch, workspaceFailure } from "./workspace-store";
 import { themeSettings } from "./theme-settings";
 import { terminalTheme } from "./terminal-theme";
+import { TerminalDiagnostics } from "../shared/terminal-diagnostics";
 
 export type TerminalSelection = { workspaceId: string; worktreeId: string; bindingRevision: string; root: string };
 export type TerminalPresentation = { state: TerminalState | null; geometry: { cols: number; rows: number } | null; connected: boolean; ready: boolean; controlling: boolean; busy: boolean; hasSelection: boolean; copyFeedback: string; error: string };
@@ -42,7 +43,14 @@ export class TerminalSession {
   private inputMessages = 0;
   private presentation = emptyTerminal();
   private base: string;
+  private diagnostics?: TerminalDiagnostics;
+  private receivedAt = new WeakMap<ScreenMessage, number>();
   constructor(private host: HTMLElement, private selection: TerminalSelection, private publish: (state: TerminalPresentation) => void, private selected: () => boolean) {
+    try {
+      if (window.localStorage.getItem("sane.terminalDiagnostics") === "1") {
+        this.diagnostics = new TerminalDiagnostics("client", () => ({ terminalId: this.presentation.state?.terminalId ?? null }));
+      }
+    } catch { /* Optional diagnostics stay disabled when storage is unavailable. */ }
     this.base = `/api/workspaces/${encodeURIComponent(selection.workspaceId)}/worktrees/${encodeURIComponent(selection.worktreeId)}/terminal`;
     this.terminal = new Terminal({
       cols: 80, rows: 24, scrollback: TERMINAL_LIMITS.scrollback, fontSize: 13,
@@ -148,6 +156,7 @@ export class TerminalSession {
           this.attachment = message.attachmentId;
           this.released = false;
           this.accept(message.state);
+          this.diagnostics?.event("attached", { attachmentId: message.attachmentId });
           this.update({ connected: true, error: "" });
         } else if (message.type === "state") {
           const wasControlling = this.presentation.controlling;
@@ -155,6 +164,7 @@ export class TerminalSession {
           if (this.presentation.controlling && !wasControlling) { this.scheduleFit(); this.terminal.focus(); }
         } else if (message.type === "error") this.update({ error: message.message });
         else {
+          if (this.diagnostics) this.receivedAt.set(message, performance.now());
           this.queuedBytes += "data" in message ? message.data.length : 32;
           if (this.queuedBytes > TERMINAL_LIMITS.snapshotBytes * 2 + TERMINAL_LIMITS.backlogBytes * 2 || this.queue.length > 4096) throw new Error("Terminal output fell behind. Reconnecting from a fresh screen.");
           this.queue.push(message);
@@ -164,6 +174,8 @@ export class TerminalSession {
     };
     socket.onclose = event => {
       if (!current()) return;
+      this.diagnostics?.event("disconnected", { attachmentId: this.attachment, code: event.code, reason: event.reason });
+      this.diagnostics?.flush();
       this.socket = null; this.attachment = ""; this.restoring = true;
       this.connection++; this.seq = null; this.queue = []; this.queuedBytes = 0; this.writing = false;
       clearTimeout(this.resizeTimer);
@@ -181,8 +193,12 @@ export class TerminalSession {
     this.queuedBytes -= "data" in message ? message.data.length : 32;
     if (message.type !== "snapshot" && (this.seq === null || message.seq !== this.seq + 1)) { this.update({ error: "Terminal output sequence changed. Restoring a fresh screen." }); this.socket?.close(); return; }
     this.writing = true;
+    const parseAt = this.diagnostics ? performance.now() : undefined;
+    const receivedAt = this.diagnostics ? this.receivedAt.get(message) : undefined;
+    if (parseAt !== undefined && receivedAt !== undefined) this.diagnostics?.sample("clientQueueMs", parseAt - receivedAt);
     const complete = () => {
       if (!this.current() || connection !== this.connection) return;
+      if (parseAt !== undefined) this.diagnostics?.sample("clientParseMs", performance.now() - parseAt);
       this.seq = message.seq;
       this.writing = false;
       if (message.type === "snapshot" || message.type === "resize") this.update({ geometry: { cols: message.cols, rows: message.rows } });
@@ -204,6 +220,7 @@ export class TerminalSession {
       this.terminal.write("", complete);
     } else {
       const bytes = Uint8Array.from(atob(message.data), char => char.charCodeAt(0));
+      this.diagnostics?.sample("outputBytes", bytes.length);
       this.terminal.write(bytes, complete);
     }
   }
@@ -245,7 +262,7 @@ export class TerminalSession {
     this.inputBytes += bytes.length; this.inputMessages++;
     let data = "";
     for (const byte of bytes) data += String.fromCharCode(byte);
-    this.send({ type: "input", generation: this.presentation.state!.generation, data: btoa(data) });
+    if (this.send({ type: "input", generation: this.presentation.state!.generation, data: btoa(data) })) this.diagnostics?.sample("inputBytes", bytes.length);
   }
   input = (data: string) => this.sendBytes(new TextEncoder().encode(data));
   copySelection = async () => {
@@ -288,6 +305,7 @@ export class TerminalSession {
   private leave = () => this.detach();
   private resume = () => { if (this.current() && !this.socket && !this.presentation.busy) void this.load(); };
   private detach() {
+    this.diagnostics?.flush();
     this.release();
     clearTimeout(this.retry); clearTimeout(this.resizeTimer);
     this.connection++;
@@ -306,5 +324,6 @@ export class TerminalSession {
     window.removeEventListener("pageshow", this.resume);
     document.removeEventListener("visibilitychange", this.visibility);
     this.terminal.dispose();
+    this.diagnostics?.dispose();
   };
 }

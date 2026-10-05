@@ -5,6 +5,7 @@ import { Terminal as HeadlessTerminal, type ITerminalAddon } from "@xterm/headle
 import { SerializeAddon } from "@xterm/addon-serialize";
 import { CatalogService } from "./catalog";
 import type { TerminalBindingLease } from "./terminal-binding";
+import { TerminalDiagnostics } from "../shared/terminal-diagnostics";
 import { WorkspaceError } from "./workspace";
 import { TERMINAL_LIMITS as L, type TerminalCapability, type TerminalState, type TerminalStart, type TerminalClientMessage, type TerminalServerMessage } from "./terminal-contract";
 
@@ -14,13 +15,14 @@ type Delta = Extract<TerminalServerMessage, { type: "output" | "resize" }>;
 type Attachment = {
   id: string; token: string; resource: Resource; socket?: Socket; dead: boolean;
   ready: boolean; next: number; snapshotPending: boolean;
-  pending: { seq: number; bytes: number; deadline: number }[]; pendingBytes: number;
+  pending: { seq: number; bytes: number; deadline: number; sentAt?: number }[]; pendingBytes: number;
   timer?: ReturnType<typeof setTimeout>;
   window: number; messages: number; input: number;
 };
 type Resource = {
   state: TerminalState; cwd: string; screen: HeadlessTerminal; serializer: SerializeAddon;
   bindingLease: TerminalBindingLease;
+  diagnostics?: TerminalDiagnostics;
   pty?: Bun.Terminal; process?: Bun.Subprocess; processExited: boolean; stopping?: Promise<void>;
   seq: number; ring: { message: Delta; bytes: number }[]; ringBytes: number;
   tail: Promise<void>; queuedBytes: number; queuedTasks: number; disposed: boolean;
@@ -81,7 +83,7 @@ export class TerminalService {
   private transitions = new Set<string>();
   private pendingReads = 0;
   private closing = false;
-  constructor(private catalog: CatalogService, private validToken: (token: string) => boolean) {}
+  constructor(private catalog: CatalogService, private validToken: (token: string) => boolean, private diagnosticSink?: (line: string) => void) {}
   private key(workspaceId: string, worktreeId: string) { return `${workspaceId}/${worktreeId}`; }
   private state(r: Resource): TerminalState { return { ...r.state, capability: this.capability }; }
   private absent(workspaceId: string, worktreeId: string, bindingRevision: string): TerminalState {
@@ -148,6 +150,10 @@ export class TerminalService {
       screen.loadAddon(serializer as unknown as ITerminalAddon);
       const r: Resource = { state: { ...this.absent(workspaceId, worktreeId, binding.bindingRevision), terminalId: crypto.randomUUID(), status: "running", cols, rows }, cwd: binding.cwd, bindingLease, screen, serializer, processExited: false, seq: 0, ring: [], ringBytes: 0, tail: Promise.resolve(), queuedBytes: 0, queuedTasks: 0, disposed: false, boundary: new SnapshotBoundary(), attachments: new Set(), inputBudget: 0, screenBudget: 0, partialBytes: 0, lastOutputAt: Date.now() };
       this.resources.set(key, r);
+      if (process.env.SANE_TERMINAL_DIAGNOSTICS === "1") {
+        r.diagnostics = new TerminalDiagnostics("server", () => ({ terminalId: r.state.terminalId, bindingMode: r.bindingLease.mode }), this.diagnosticSink);
+        r.diagnostics.event("started");
+      }
       const env = Object.fromEntries(Object.entries(process.env).filter(([name, value]) => value !== undefined && !/^(CC_WEB_|OPENCODE_SERVER_|OPENCODE_SESSION_ID$|SANE_|BUN_INSPECT|NODE_OPTIONS$)/i.test(name))) as Record<string, string>;
       env.TERM = "xterm-256color"; env.SHELL = shell;
       try {
@@ -178,11 +184,18 @@ export class TerminalService {
     } finally { this.transitions.delete(key); }
   }
 
-  private enqueue(r: Resource, bytes: number, task: () => Promise<void> | void): boolean {
+  private enqueue(r: Resource, bytes: number, task: () => Promise<void> | void, kind?: "inputQueueMs" | "outputQueueMs"): boolean {
     if (r.disposed) return false;
     if (r.queuedBytes + bytes > L.backlogBytes || r.queuedTasks >= 256) { void this.stop(r, "overloaded", "Server terminal backlog exceeded; explicit restart required"); return false; }
     r.queuedBytes += bytes; r.queuedTasks++;
-    r.tail = r.tail.then(async () => { if (!r.disposed) await task(); }).catch(() => {
+    const queuedAt = r.diagnostics && kind ? performance.now() : undefined;
+    r.diagnostics?.sample("queuedTasks", r.queuedTasks);
+    r.diagnostics?.sample("queuedBytes", r.queuedBytes);
+    r.tail = r.tail.then(async () => {
+      if (r.disposed) return;
+      if (queuedAt !== undefined && kind) r.diagnostics?.sample(kind, performance.now() - queuedAt);
+      await task();
+    }).catch(() => {
       void this.stop(r, "overloaded", "Terminal processing failed; explicit restart required");
       this.dispose(r);
     }).finally(() => { r.queuedBytes -= bytes; r.queuedTasks--; });
@@ -195,10 +208,13 @@ export class TerminalService {
     for (let offset = 0; offset < data.byteLength; offset += L.chunkBytes) {
       const bytes = Buffer.from(data.subarray(offset, offset + L.chunkBytes));
       if (!this.enqueue(r, bytes.length, async () => {
+        const parseAt = r.diagnostics ? performance.now() : undefined;
         await new Promise<void>((resolve, reject) => {
           const timer = setTimeout(() => reject(new Error("Headless parser timeout")), 5000);
           try { r.screen.write(bytes, () => { clearTimeout(timer); resolve(); }); } catch (e) { clearTimeout(timer); reject(e); }
         });
+        if (parseAt !== undefined) r.diagnostics?.sample("outputParseMs", performance.now() - parseAt);
+        r.diagnostics?.sample("outputBytes", bytes.length);
         if (r.disposed) return;
         r.boundary.feed(bytes);
         r.partialBytes = r.boundary.safe ? 0 : r.partialBytes + bytes.length;
@@ -212,7 +228,7 @@ export class TerminalService {
         if (r.screenBudget >= 262144) r.screenBudget = 0;
         this.delta(r, { type: "output", seq: ++r.seq, data: bytes.toString("base64") });
         this.snapshots(r);
-      })) break;
+      }, "outputQueueMs")) break;
     }
   }
   private delta(r: Resource, message: Delta) {
@@ -241,7 +257,7 @@ export class TerminalService {
     a.timer.unref();
   }
   private waitAck(a: Attachment, seq: number, bytes: number) {
-    a.pending.push({ seq, bytes, deadline: Date.now() + 15000 });
+    a.pending.push({ seq, bytes, deadline: Date.now() + 15000, sentAt: a.resource.diagnostics ? performance.now() : undefined });
     a.pendingBytes += bytes;
     // Only the oldest frame owns the timer. New output cannot keep it alive.
     if (a.pending.length === 1) this.ackTimer(a);
@@ -281,6 +297,8 @@ export class TerminalService {
   private broadcast(r: Resource) { if (!r.disposed) for (const a of r.attachments) if (a.socket) this.send(a, { type: "state", state: this.state(r) }); }
   private disconnect(a: Attachment, code: number, reason: string) {
     if (a.dead) return;
+    a.resource.diagnostics?.event("disconnected", { attachmentId: a.id, code, reason });
+    a.resource.diagnostics?.flush();
     this.detach(a);
     try { a.socket?.close(code, reason); } catch {}
   }
@@ -320,10 +338,15 @@ export class TerminalService {
       const a = socket.data.attachment; a.socket = socket;
       if (a.dead || !this.validToken(a.token) || this.closing) { socket.close(4401, "Attachment unavailable"); this.detach(a); return; }
       this.send(a, { type: "hello", attachmentId: a.id, state: this.state(a.resource) });
+      if (!a.dead) a.resource.diagnostics?.event("attached", { attachmentId: a.id });
       this.enqueue(a.resource, 0, () => this.snapshots(a.resource));
     },
     message: (socket, raw) => this.message(socket.data.attachment, raw),
-    close: socket => this.detach(socket.data.attachment),
+    close: (socket, code, reason) => {
+      const a = socket.data.attachment;
+      if (!a.dead) { a.resource.diagnostics?.event("disconnected", { attachmentId: a.id, code, reason }); a.resource.diagnostics?.flush(); }
+      this.detach(a);
+    },
   };
   private message(a: Attachment, raw: string | Buffer) {
     if (a.dead) return;
@@ -336,7 +359,9 @@ export class TerminalService {
     // interactive rate limit so fast output cannot evict a healthy viewer.
     if (message.type === "ack") {
       if (!Number.isSafeInteger(message.seq) || !a.pending.length || message.seq !== a.pending[0]!.seq) { this.disconnect(a, 1008, "Unexpected screen acknowledgement"); return; }
-      a.pendingBytes -= a.pending.shift()!.bytes;
+      const pending = a.pending.shift()!;
+      a.pendingBytes -= pending.bytes;
+      if (pending.sentAt !== undefined) a.resource.diagnostics?.sample("ackMs", performance.now() - pending.sentAt);
       if (a.snapshotPending) a.snapshotPending = false;
       this.ackTimer(a); this.pump(a); return;
     }
@@ -345,7 +370,11 @@ export class TerminalService {
     if (!this.enqueue(r, Buffer.byteLength(raw), async () => {
       if (a.dead) return;
       try {
-        await r.bindingLease.validate();
+        const bindingAt = r.diagnostics ? performance.now() : undefined;
+        const mode = r.diagnostics ? r.bindingLease.mode : undefined;
+        try { await r.bindingLease.validate(); }
+        finally { if (bindingAt !== undefined) r.diagnostics?.sample("bindingMs", performance.now() - bindingAt); }
+        if (mode !== undefined && mode !== r.bindingLease.mode) r.diagnostics?.event("binding-mode", { bindingMode: r.bindingLease.mode });
         if (a.dead || !this.validToken(a.token)) { this.disconnect(a, 4401, "Authentication revoked"); return; }
         if (r.state.status !== "running" || r.state.ptyClosed || r.stopping) fail(409, "terminal-not-running", "Terminal is not accepting input");
         if (!a.ready) fail(409, "terminal-not-ready", "Wait for the initial screen snapshot");
@@ -377,17 +406,22 @@ export class TerminalService {
         // since the last documented drain callback, even on runtimes which do
         // not emit drain for immediately-flushed writes.
         if (r.inputBudget + bytes.length > L.backlogBytes) { void this.stop(r, "overloaded", "Native input drain budget exceeded; explicit restart required"); return; }
+        const writeAt = r.diagnostics ? performance.now() : undefined;
         r.inputBudget += bytes.length; r.pty!.write(bytes);
+        if (writeAt !== undefined) r.diagnostics?.sample("ptyWriteMs", performance.now() - writeAt);
+        r.diagnostics?.sample("inputBytes", bytes.length);
       } catch (error) {
         const known = error instanceof WorkspaceError;
+        r.diagnostics?.event("operation-error", { errorCode: known ? error.code : "terminal-operation" });
         this.send(a, { type: "error", code: known ? error.code : "terminal-operation", message: known ? error.message : "Terminal operation failed" });
         if (known && ["binding-invalid", "terminal-binding", "directory-unavailable", "unknown-worktree", "unknown-workspace", "catalog-storage"].includes(error.code)) void this.stop(r, "closed", "Worktree binding is unavailable");
       }
-    })) this.disconnect(a, 1013, "Terminal operation backlog exceeded");
+    }, "inputQueueMs")) this.disconnect(a, 1013, "Terminal operation backlog exceeded");
   }
 
   private stop(r: Resource, status: "closed" | "overloaded", reason: string): Promise<void> {
     if (r.stopping) return r.stopping;
+    r.diagnostics?.event("stopped", { reason }); r.diagnostics?.dispose();
     r.state.status = status; r.state.reason = reason; this.release(r); this.broadcast(r);
     r.stopping = (async () => {
       const child = r.process;
@@ -417,6 +451,7 @@ export class TerminalService {
     if (r.disposed) return;
     for (const a of r.attachments) this.disconnect(a, 1012, "Terminal replaced; attach again");
     r.disposed = true; r.ring = []; r.ringBytes = 0;
+    r.diagnostics?.dispose();
     // Let an in-flight write callback finish before disposing parser internals.
     void r.tail.finally(() => r.screen.dispose());
   }

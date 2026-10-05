@@ -626,7 +626,10 @@ async function startOwned(options: Options, assetsDir: string, packageDir: strin
   const auth = new BridgeAuth(authOptions, {
     getOrigin: () => origin, revokeTerminal: token => { terminals.revoke(token); chromePush?.revokeOwner(token); },
   });
-  const terminals = new TerminalService(catalog, token => auth.validTerminalToken(token));
+  const terminalLog = join(options.dataDir, "terminal-performance.log");
+  const terminals = new TerminalService(catalog, token => auth.validTerminalToken(token), line => {
+    void appendFile(terminalLog, `${line}\n`, { mode: 0o600 }).catch(() => {});
+  });
   const branchContext = (id: string) => ({ actor: { kind: "system" as const }, correlationId: id });
   const branchFingerprint = (value: unknown) => createHash("sha256").update(JSON.stringify(value)).digest("hex");
   async function branchDomain(source: Session, enroll = false) {
@@ -1322,11 +1325,30 @@ async function startOwned(options: Options, assetsDir: string, packageDir: strin
     } finally { admitting.delete(session.sessionId); }
   }
   let handoffTask: Promise<void> | undefined;
+  // Negative retry state only: never reuse domain authority or delay explicit requests.
+  const handoffPollFailures = new Map<string, { fingerprint: string; delay: number; retryAt: number }>();
   async function consumeHandoffs() {
-    for (const w of (await catalog.registeredWorkspaces()).workspaces.filter(w => w.kind === "repository")) {
+    const repositories = (await catalog.registeredWorkspaces()).workspaces.filter(w => w.kind === "repository");
+    const registered = new Set(repositories.map(w => w.workspaceId));
+    for (const id of handoffPollFailures.keys()) if (!registered.has(id)) handoffPollFailures.delete(id);
+    for (const w of repositories) {
       if (closing || storageFailed) return;
+      const fingerprint = JSON.stringify([w.commonDir, w.worktrees.map(t => [t.worktreeId, t.root, t.gitDir, t.bindingRevision, t.state])]);
+      let failure = handoffPollFailures.get(w.workspaceId);
+      if (failure && failure.fingerprint !== fingerprint) {
+        handoffPollFailures.delete(w.workspaceId);
+        failure = undefined;
+      }
+      if (failure && performance.now() < failure.retryAt) continue;
       let deliveries;
-      try { deliveries = await handoffs.listForPolling(w.workspaceId); } catch { continue; }
+      try {
+        deliveries = await handoffs.listForPolling(w.workspaceId);
+        handoffPollFailures.delete(w.workspaceId);
+      } catch {
+        const delay = Math.min((failure?.delay ?? 2500) * 2, 30000);
+        handoffPollFailures.set(w.workspaceId, { fingerprint, delay, retryAt: performance.now() + delay });
+        continue;
+      }
       for (const h of deliveries.filter(h => h.recipient.ownerId === store.manifest.storeId && !["queued", "completed", "failed"].includes(h.status))) handoffReservations.add(h.recipient.sessionId);
       for (const h of deliveries.filter(h => h.recipient.ownerId === store.manifest.storeId && !["completed", "failed"].includes(h.status))) {
         if (closing || storageFailed) return;
