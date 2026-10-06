@@ -1,0 +1,12 @@
+.activity-code-view { min-width:0; max-width:100%; border:1px solid var(--border); border-radius:7px; overflow:hidden; }
+.activity-code-view:focus-within { outline:2px solid var(--primary); outline-offset:2px; }
+.activity-code-view .cm-editor { height:auto; min-width:0; font-size:12px; }
+.activity-code-view .cm-editor .cm-scroller { max-height:360px; overflow:auto; overscroll-behavior:contain; line-height:1.6; }
+.activity-code-view .cm-editor .cm-content { padding:8px 0; }
+.activity-code-view .cm-editor .cm-line { padding:0 10px; }
+.activity-code-view .cm-editor .cm-gutterElement { padding:0 6px; }
+@media (max-width:600px) {
+  .activity-code-view .cm-editor { font-size:11px; }
+  .activity-code-view .cm-editor .cm-scroller { max-height:280px; }
+  .activity-code-view .cm-editor .cm-line { padding:0 8px; }
+}

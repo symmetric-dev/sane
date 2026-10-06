@@ -23,6 +23,7 @@ import { activityPosition, useActivityPresentation, type ActivityEntry, type Act
 import { TranscriptActivity } from "./activity-ui";
 import { classifyTranscriptTool, createActivityEntry, resolveActivityDetail } from "./activity-model";
 import { ActivityInspector, useActivityInspection } from "./activity-inspector";
+import { ActivityCodeView } from "./activity-code-view";
 import { convertTranscriptMessage, projectTranscriptMessages } from "./transcript-runtime";
 import { DocumentReviewReader } from "./document-review";
 import { useDocumentReview } from "./document-review-model";
@@ -76,7 +77,9 @@ function ActivityBody({ part }: ActivityDetail) {
 export function ActivityInspectorBody({ entry }: { entry: ActivityEntry }) {
   const context = useContext(TranscriptContext)!;
   const detail = resolveActivityDetail(entry, context.messagesById ?? new Map(context.messages.map(message => [message.id, message])));
-  return detail ? <ActivityBody {...detail} /> : <p className="muted" role="status">Activity details are no longer available in the loaded transcript.</p>;
+  if (!detail) return <p className="muted" role="status">Activity details are no longer available in the loaded transcript.</p>;
+  const { part } = detail;
+  return part.type === "reasoning" ? <ActivityBody {...detail} /> : <><p className="eyebrow">Input</p><ActivityCodeView value={part.input} label="Tool input" />{part.output !== undefined && <><p className="eyebrow">{part.error ? "Error" : "Output"}</p><ActivityCodeView value={part.output} label={part.error ? "Tool error" : "Tool output"} /></>}</>;
 }
 export const renderActivityInspectorBody = (entry: ActivityEntry) => <ActivityInspectorBody entry={entry} />;
 const noActivityInspection = () => {};
