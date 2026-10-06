@@ -101,7 +101,7 @@ export function ChatComposer({ state, active = true, navigation, ack, onAckChang
       {!conversation?.replacedBy && statusFlow && <WorkstreamStatusComposer key={JSON.stringify([statusFlow.scope, statusFlow.identity])} identity={statusFlow.identity} active={active && !hasRequests} close={() => setStatus(null)} navigation={navigation} />}
     </div>
     {!conversation?.replacedBy ? <form ref={normalComposer} className="composer" hidden={flowOpen} style={flowOpen ? { display: "none" } : undefined} onSubmit={event => { event.preventDefault(); submit(); }}>
-      <ChatInput key={store.draftKey()} text={draft.text} save={text => store.setDraft({ text })} submit={submit} pathsActive={active && !flowOpen} className="composer-input" placeholder={state.selected ? "Go on..." : "Ask SANE anything… (@ for paths)"} aria-label="Message" />
+      <ChatInput key={store.draftKey()} text={draft.text} save={text => store.setDraft({ text })} submit={submit} pathsActive={active && !flowOpen} className="composer-input" placeholder={state.selected ? "Go on..." : "Ask SANE anything… (@ for paths)"} aria-label="Message" sendButton={<button type="submit" className="send" disabled={blocked || !draft.text.trim()} aria-label="Send message" title={sendHelp}><Icon name="send" /></button>} />
       <div className="composer-toolbar"><div className="composer-options">
         {profile ? fixed
           ? <span className="agent-chip fixed" role="status" title={profile.label}><AgentAvatar profile={profile} size={20} /><span className="agent-chip-label">{profile.label}</span></span>
@@ -112,9 +112,8 @@ export function ChatComposer({ state, active = true, navigation, ack, onAckChang
           <ChatWorkstreamActions conversation={conversation} active={active && !flowOpen} onDocuments={review ? identity => { setStatus(null); void review.start(identity); } : undefined} onStatus={identity => setStatus({ scope: flowScope, identity })} />
         </div>
       </div><div className="composer-actions">
-        {navigation}
         <button ref={helpTrigger} type="button" className={`composer-help${infoError ? " has-issue" : ""}`} disabled={!active} aria-label={infoText ? `Sending messages help: ${infoText}` : "Sending messages help"} title="Sending messages" onClick={() => setHelpOpen(true)}><FiInfo size={14} aria-hidden="true" />{infoError ? <span className="composer-help-dot" aria-hidden="true" /> : null}</button>
-        <button type="submit" className="send" disabled={blocked || !draft.text.trim()} aria-label="Send message" title={sendHelp}><Icon name="send" /></button>
+        {navigation}
       </div></div>
     </form> : navigation ? <footer className="composer-toolbar composer-navigation-only"><div className="composer-actions">{navigation}</div></footer> : null}
     </div>

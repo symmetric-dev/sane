@@ -1,4 +1,4 @@
-import { useLayoutEffect, useRef, type TextareaHTMLAttributes } from "react";
+import { useLayoutEffect, useRef, type ReactNode, type TextareaHTMLAttributes } from "react";
 import { useChatPathAutocomplete } from "./chat-path-autocomplete";
 
 // Change to 3 for a shorter composer before the input starts scrolling.
@@ -62,7 +62,7 @@ function createInputSizer(element: HTMLTextAreaElement) {
 }
 
 /** DOM owns in-progress edits/IME. Polling must never rewrite the live buffer. */
-export function ChatInput({ text, save, submit, pathsActive = true, ...props }: Omit<TextareaHTMLAttributes<HTMLTextAreaElement>, "value" | "defaultValue" | "onChange" | "onInput"> & { text: string; save: (text: string) => void; submit: () => void; pathsActive?: boolean }) {
+export function ChatInput({ text, save, submit, pathsActive = true, sendButton, ...props }: Omit<TextareaHTMLAttributes<HTMLTextAreaElement>, "value" | "defaultValue" | "onChange" | "onInput"> & { text: string; save: (text: string) => void; submit: () => void; pathsActive?: boolean; sendButton?: ReactNode }) {
   const input = useRef<HTMLTextAreaElement>(null);
   const sizing = useRef<ReturnType<typeof createInputSizer> | null>(null);
   const composing = useRef(false);
@@ -108,7 +108,7 @@ export function ChatInput({ text, save, submit, pathsActive = true, ...props }: 
     }
   }, [text]);
   useLayoutEffect(() => { sizing.current?.resize(); }, [props.className, props.style, props.wrap, props.dir, props.lang]);
-  return <><textarea rows={1} {...props} {...paths.aria} ref={input} defaultValue={initialText.current}
+  const textarea = <textarea rows={1} {...props} {...paths.aria} ref={input} defaultValue={initialText.current}
     onInput={event => { sizing.current?.resize(); save(event.currentTarget.value); paths.onInput(!!(event.nativeEvent as InputEvent).isComposing); }}
     onSelect={() => paths.refresh()} onFocus={() => paths.onFocus()} onBlur={() => paths.dismiss()}
     onCompositionStart={() => { composing.current = true; paths.onCompositionStart(); }}
@@ -120,5 +120,6 @@ export function ChatInput({ text, save, submit, pathsActive = true, ...props }: 
       if (event.key === "Enter" && (event.ctrlKey || event.metaKey) && !event.shiftKey && !event.nativeEvent.isComposing && !composing.current && event.keyCode !== 229) {
         event.preventDefault(); submit();
       }
-    }} />{paths.popup}</>;
+    }} />;
+  return <>{sendButton ? <div className="chat-input-with-send">{textarea}{sendButton}</div> : textarea}{paths.popup}</>;
 }

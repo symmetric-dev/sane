@@ -237,8 +237,8 @@
 .sidebar-body:has(>.sidebar-mode-control) { padding:0; gap:0; }
 .drawer-content>.shell-sidebar-header { height:var(--shell-header-height, 52px); min-height:var(--shell-header-height, 52px); padding:0; }
 .drawer-content:has(>.shell-sidebar-header) { height:100%; min-height:0; overflow:hidden; padding-bottom:max(16px,env(safe-area-inset-bottom)); }
-/* Follow DOM order: navigation, help, then Submit at the trailing edge. */
-.composer-actions .contextual-navigation { margin-right:4px; }
+/* Composer actions precede navigation; Send floats in the input above. */
+.composer-actions .contextual-navigation { margin-left:4px; }
 .composer-toolbar { flex-wrap:wrap; row-gap:8px; }
 .composer-options { flex:1; flex-wrap:nowrap; align-items:center; min-width:0; }
 .composer-utilities { display:inline-flex; align-items:center; gap:4px; flex-shrink:0; }

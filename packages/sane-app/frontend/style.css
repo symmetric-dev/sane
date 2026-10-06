@@ -1089,6 +1089,18 @@ h3 {
 .composer-input::placeholder {
   color:var(--composer-placeholder);
 }
+.chat-input-with-send {
+  position:relative;
+  min-width:0;
+}
+.chat-input-with-send > textarea {
+  padding-right:62px;
+}
+.chat-input-with-send > .send {
+  position:absolute;
+  right:13px;
+  bottom:10px;
+}
 .composer-toolbar {
   display:flex;
   align-items:center;
@@ -1444,6 +1456,13 @@ h3 {
   .composer-input {
     font-size:16px;
     padding:16px 17px 8px;
+  }
+  .chat-input-with-send > textarea {
+    padding-right:60px;
+  }
+  .chat-input-with-send > .send {
+    right:10px;
+    bottom:8px;
   }
   .composer-toolbar {
     padding:5px 10px 6px;
