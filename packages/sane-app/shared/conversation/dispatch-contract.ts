@@ -20,6 +20,7 @@ export type DispatchSource = {
 export type DispatchReadiness = { readonly ready: true } | { readonly ready: false; readonly reason: string; readonly code?: string };
 export type PinnedDispatchReadiness = { readonly source: DispatchSource; readonly readiness: DispatchReadiness };
 export type HarnessDispatchRequest = {
+  readonly requestId?: string;
   readonly source: DispatchSource;
   readonly origin: DispatchOrigin;
   readonly prompt: string;
@@ -30,8 +31,25 @@ export type HarnessDispatchRequest = {
  * false is not proof of non-submission: a transport may have attempted delivery.
  * Neither result proves native acceptance, delivery success, or task completion. */
 export type DispatchAdmission = { readonly state: "admitted" } | { readonly state: "unconfirmed" };
-export type DispatchSubmission = "not-submitted" | "submitted" | "unknown";
+export type DispatchSubmission = "not-submitted" | "attempted" | "submitted" | "unknown";
 export type DispatchNativeAcceptance = "not-accepted" | "accepted" | "unknown";
+
+/** Correlated evidence, never inferred from App admission, HTTP failure, or done.
+ * attempted includes possible native execution (CC spawn), not prompt delivery.
+ * submitted proves transport delivery only; acceptance needs exact native ID proof. */
+export type DispatchIdentity = Readonly<{ source: DispatchSource; runId: string; nativeCommandId: string | null; requestId?: string }>;
+export type DispatchSubmissionEvidence = DispatchIdentity & Readonly<{
+  submission: DispatchSubmission;
+  nativeAcceptance: DispatchNativeAcceptance;
+}>;
+export type DispatchEvidenceHooks = {
+  /** Synchronous durable intent write immediately BEFORE possible native execution.
+   * Throw to withhold delivery. No native I/O or asynchronous writes here. */
+  beforeNative?: (attempt: DispatchSubmissionEvidence) => void;
+  /** Synchronous evidence write. Failure after possible submission fails closed;
+   * never automatically retries, even when HTTP returned an error. */
+  outcome?: (evidence: DispatchSubmissionEvidence) => void;
+};
 
 /** Read live, including after native I/O. Safe automatic wake requires BOTH
  * reconciliation completion (enforced by lifecycle ordering) and owner release. */

@@ -1,4 +1,5 @@
 import type { Run } from "./history";
+import type { DispatchSubmission, DispatchNativeAcceptance, DispatchIdentity } from "../shared/conversation/dispatch-contract";
 
 /** Shared execution ownership. The bridge coordinator retains the single registry;
  * harness services must not release or replace owners independently. */
@@ -10,6 +11,18 @@ export type RunOwner = {
   streamsDrained?: boolean;
   /** Immutable installed configuration/source gate, invoked after discovery. */
   beforeSend?: () => void;
+  /** Services explicitly mark the earliest possible native boundary. */
+  dispatchEvidence?: {
+    beforeNative: () => void;
+    outcome: (submission: DispatchSubmission, acceptance?: DispatchNativeAcceptance) => void;
+    withheld: () => void;
+  };
+  nativeDeliveryPolicy?: "idle-only" | "native-queued-handoff";
+  /** Explicit bridge-linked ordinary App head, never inferred from context.
+   * The bridge supplies durable evidence hooks and the final admission gate. */
+  nativeQueuedHandoff?: DispatchIdentity & { readonly origin: "queued-user"; readonly requestId: string; readonly nativeCommandId: string };
+  /** Sticky protocol refusal; also journaled for read-only recovery. */
+  nativeHandoffProtocolUnsafe?: boolean;
   launchError?: string;
   workerDeliveryId?: string;
   child?: Bun.Subprocess<"pipe", "pipe", "pipe">;

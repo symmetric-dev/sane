@@ -3,6 +3,7 @@ import type { Event, Run, Session } from "./history";
 import { OpenCodeError, normalizeMessage, type NativeMessage } from "./opencode";
 import { OpenCodeRunService, type OpenCodeRunAdapter, type OpenCodeRunDependencies } from "./opencode-run-service";
 import type { RunOwner } from "./run-owner";
+import { createDispatchEvidence } from "./dispatch-evidence";
 
 const message = (id: string, type = "user"): NativeMessage => ({ id, type, time: { created: 1 }, text: "fixture" });
 const completeCompact = (id: string): Awaited<ReturnType<OpenCodeRunAdapter["compactionSnapshot"]>> => ({
@@ -51,6 +52,45 @@ function fixture(compact = false) {
   const statuses = () => records.filter(e => e.kind === "status").map(e => e.data);
   return { service, deps, oc, run, session, owner, state, trace, records, persisted, ready, accepted, statuses };
 }
+
+function evidenceFor(f: ReturnType<typeof fixture>, refuse = false, failOutcome = false) {
+  const evidence = createDispatchEvidence({ runId: f.run.runId, nativeCommandId: f.run.nativeCommandId!, source: { harnessId: "opencode", sessionId: f.run.sessionId, authorityId: "fixture", nativeSessionId: f.session.nativeSessionId!, cwd: f.run.cwd } }, {
+    beforeNative: () => { f.trace.push("durable-intent"); if (refuse) throw new Error("intent refused"); },
+    outcome: () => { if (failOutcome) throw new Error("outcome write failed"); },
+  }, () => { f.state.storageFailed = true; });
+  f.owner.dispatchEvidence = evidence; return evidence;
+}
+
+for (const mode of ["discovery-failure", "intent-refusal", "http-rejection", "lost-ack", "wrong-ack", "accepted"] as const) test(`OC correlated submission evidence is honest after ${mode}`, async () => {
+  const f = fixture(), evidence = evidenceFor(f, mode === "intent-refusal"); let sends = 0;
+  f.oc.prompt = async (_id, commandId, _text, guard) => {
+    if (mode === "discovery-failure") throw new OpenCodeError("discovery unavailable");
+    guard?.(); sends++; expect(f.trace.at(-1)).toBe("durable-intent");
+    if (mode === "http-rejection" || mode === "lost-ack") throw new OpenCodeError("no acknowledgement", mode === "http-rejection" ? 409 : 503);
+    return { id: mode === "wrong-ack" ? "foreign-command" : commandId, time: { created: 5 } };
+  };
+  if (mode === "lost-ack" || mode === "wrong-ack") f.oc.snapshot = async () => ({ messages: [], outcome: "failed", pending: false });
+  await f.service.executeNative(f.owner, "hello", true, f.accepted); evidence.finish();
+  const withheld = mode === "discovery-failure" || mode === "intent-refusal";
+  expect(sends).toBe(withheld ? 0 : 1); expect(f.owner.nativeDispatched).toBe(!withheld);
+  expect(evidence.snapshot()).toMatchObject({ submission: withheld ? "not-submitted" : mode === "accepted" ? "submitted" : "unknown", nativeAcceptance: withheld ? "not-accepted" : mode === "accepted" ? "accepted" : "unknown" });
+  if (mode === "wrong-ack") expect(f.run.nativeAcceptedAt).toBeUndefined();
+});
+
+test("OC idle-only fresh pre-submit proof refuses new foreign activity without native inbox fallback", async () => {
+  const f = fixture(), evidence = evidenceFor(f); f.owner.nativeDeliveryPolicy = "idle-only"; let proofs = 0, sends = 0;
+  f.oc.assertIdle = async () => { if (++proofs === 2) throw new OpenCodeError("foreign activity", 409); };
+  f.oc.prompt = async () => { sends++; throw new Error("must not send"); };
+  await f.service.executeNative(f.owner, "hello", true, f.accepted); evidence.finish();
+  expect(proofs).toBe(2); expect(sends).toBe(0); expect(f.run.nativeDelivery).toBeUndefined(); expect(evidence.snapshot().submission).toBe("not-submitted");
+});
+
+test("OC evidence write failure after possible send fails closed with no observation/retry", async () => {
+  const f = fixture(); evidenceFor(f, false, true); let sends = 0;
+  f.oc.prompt = async (_id, commandId, _text, guard) => { guard?.(); sends++; return { id: commandId, time: { created: 5 } }; };
+  await f.service.executeNative(f.owner, "hello", true, f.accepted);
+  expect(sends).toBe(1); expect(f.state.storageFailed).toBe(true); expect(f.trace.some(t => t.startsWith("snapshot:"))).toBe(false);
+});
 
 test("prompt publishes preparing, sending and accepted in the original event order", async () => {
   const f = fixture();

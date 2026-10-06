@@ -490,6 +490,13 @@ export class RepositoryDomain {
     return { repositoryId: this.repositoryId, conversation: c, workstream, executionCheckout: checkout.path, primaryCheckout: this.primaryCheckout, artifactsRoot: workstream ? join(this.stateRoot, "workstreams", workstream.id) : null }
   }
   resolveInvocation(ref: ConversationRef): InvocationContext { return this.resolveContext(ref) }
+  /** Read-only identity proof for App queue chains, including membership changes
+   * when a conversation has no phase assignments. Never grants execution. */
+  getActiveMembership(ref: ConversationRef): { id: string; conversationId: string; workstreamId: string; startedAt: string; endedAt: null } | null {
+    this.validateRead(); const c = this.conversationRow(ref)
+    const m = this.row("SELECT * FROM memberships WHERE conversation_id=? AND ended_at IS NULL", c.id)
+    return m ? { id: m.id, conversationId: c.id, workstreamId: m.workstream_id, startedAt: m.started_at, endedAt: null } : null
+  }
   private assignments(workstreamId: string): PhaseAssignment[] {
     return this.rows("SELECT a.*,m.workstream_id,c.harness,c.authority_id,c.native_id FROM phase_assignments a JOIN memberships m ON m.id=a.membership_id JOIN conversations c ON c.id=m.conversation_id WHERE m.workstream_id=? ORDER BY a.started_at,a.id", workstreamId).map(a => ({ id: a.id, membershipId: a.membership_id, ref: this.reference(a), workstreamId: a.workstream_id, phase: a.phase, startedAt: a.started_at, endedAt: a.ended_at }))
   }

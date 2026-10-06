@@ -3,6 +3,7 @@ import type { DispatchSource, DispatchTerminalGuards, HarnessDispatchRequest } f
 import { isHarness } from "../shared/conversation/harness-capabilities";
 import {
   createClaudeDispatchAdapter, createOpenCodeDispatchAdapter, HarnessDispatchRegistry,
+  DispatchProofUnavailableError, HarnessDispatchError,
   terminalDispatchReadiness, type ClaudeSettlementEvidence, type DispatchLifecycleHooks,
   type HarnessDispatchAdapter, type OpenCodeSettlementEvidence,
 } from "./harness-dispatch";
@@ -15,6 +16,40 @@ const request = (patch: Partial<HarnessDispatchRequest> = {}): HarnessDispatchRe
 const pending = <T>() => Promise.withResolvers<T>();
 const safeGuards = (): DispatchTerminalGuards => ({ settled: true, released: true, status: "completed", cancelling: false, stopRequested: false, stopping: false, closing: false, storageFailed: false, reconciliationRequired: false });
 const completedOwner = (): RunOwner => ({ run: { runId: "run", sessionId: source.sessionId, cwd: source.cwd, status: "completed", createdAt: "now", nativeCommandId: "exact-command" }, settled: true, done: Promise.resolve() });
+
+test("unavailable read-only proof is coded, does not fail closed, and fresh proof succeeds", async () => {
+  const f = fixture(); let unavailable = true;
+  f.hooks.wake = undefined;
+  const registry = new HarnessDispatchRegistry(); registry.register({ ...f.adapter, successfulSettlement: async () => {
+    if (unavailable) throw new DispatchProofUnavailableError("offline timeout"); return { ready: true };
+  } });
+  const lifecycle = registry.start(request(), f.hooks); await lifecycle.admission; f.execution.resolve(); await lifecycle.done;
+  expect(await lifecycle.successfulSettlement()).toMatchObject({ ready: false, code: "dispatch-proof-unavailable" });
+  expect(f.state.failClosed).toBe(0); expect(f.state.storageFailed).toBe(false);
+  unavailable = false; expect(await lifecycle.successfulSettlement()).toEqual({ ready: true });
+});
+
+test("explicit source drift is a denial, while an invariant failure still poisons lifecycle", async () => {
+  const f = fixture(); f.hooks.wake = undefined; let drift = true;
+  const registry = new HarnessDispatchRegistry(); registry.register({ ...f.adapter, successfulSettlement: async () => {
+    if (drift) throw new HarnessDispatchError("dispatch-source-mismatch", "Source changed"); throw new Error("proof invariant failed");
+  } });
+  const lifecycle = registry.start(request(), f.hooks); await lifecycle.admission; f.execution.resolve(); await lifecycle.done;
+  expect(await lifecycle.successfulSettlement()).toMatchObject({ ready: false, code: "dispatch-source-mismatch" }); expect(f.state.failClosed).toBe(0);
+  drift = false; expect(await lifecycle.successfulSettlement()).toMatchObject({ ready: false, code: "reconciliation-required" }); expect(f.state.failClosed).toBe(1);
+});
+
+test("queued origin is independent of legacy receipt for a permitted adapter and ready does not prove submission", async () => {
+  const f = fixture(); f.hooks.wake = undefined;
+  const lifecycle = f.registry.start(request({ origin: "queued-user" }), f.hooks);
+  await lifecycle.admission;
+  expect(lifecycle.owner.run.queuedFollowupId).toBeUndefined();
+  expect(lifecycle.submissionEvidence()).toMatchObject({ runId: "run", nativeCommandId: "exact-command", source, submission: "not-submitted" });
+  f.execution.resolve(); await lifecycle.done;
+  // This legacy/injected adapter never supplied native boundary evidence;
+  // ready(true) alone is neither non-submission nor acceptance evidence.
+  expect(lifecycle.submissionEvidence()).toMatchObject({ submission: "unknown", nativeAcceptance: "unknown" });
+});
 
 function fixture() {
   const calls: string[] = [], execution = pending<void>(), reconciliation = pending<void>(), proof = pending<void>();
@@ -46,6 +81,242 @@ function fixture() {
   const registry = new HarnessDispatchRegistry(); registry.register(adapter);
   return { calls, adapter, hooks, state, registry, execution, reconciliation, proof, installed: () => installed };
 }
+
+function openCodeFixture(proofPhase: "command" | "native" = "command") {
+  const f = fixture(), registry = new HarnessDispatchRegistry(), entered = pending<void>(), commands: string[] = [];
+  const ocSource = { ...source, harnessId: "opencode" };
+  f.hooks.wake = undefined;
+  registry.register(createOpenCodeDispatchAdapter({ ...f.adapter,
+    exactCommand: async (_owner, expected, commandId) => {
+      expect(expected).toEqual(ocSource); commands.push(commandId);
+      if (proofPhase === "command") { entered.resolve(); await f.proof.promise; }
+      return { commandId, outcome: "succeeded" };
+    },
+    nativeReadiness: async expected => {
+      f.calls.push("native");
+      if (proofPhase === "native") { entered.resolve(); await f.proof.promise; }
+      return { source: expected, readiness: { ready: true } };
+    },
+  }));
+  return { ...f, registry, entered, commands, start: () => registry.start(request({ source: ocSource }), f.hooks) };
+}
+
+const identityChanges: readonly [string, Partial<RunOwner["run"]>][] = [
+  ["run ID", { runId: "replacement-run" }], ["session", { sessionId: "replacement-session" }],
+  ["checkout", { cwd: "/replacement" }], ["native command", { nativeCommandId: "replacement-command" }],
+];
+
+for (const [name, change] of identityChanges) test(`installed ${name} mutation before proof fails closed without observing a replacement command`, async () => {
+  const f = openCodeFixture(), lifecycle = f.start();
+  await lifecycle.admission; f.execution.resolve(); await lifecycle.done;
+  const installed = { ...lifecycle.owner.run };
+  Object.assign(lifecycle.owner.run, change);
+  expect(await lifecycle.successfulSettlement()).toMatchObject({ ready: false, code: "reconciliation-required" });
+  expect(f.state.failClosed).toBe(1); expect(f.state.storageFailed).toBe(true);
+  expect(f.commands).toEqual([]); expect(f.calls).not.toContain("native");
+  Object.assign(lifecycle.owner.run, installed);
+  expect((await lifecycle.successfulSettlement()).ready).toBe(false);
+  expect(f.state.failClosed).toBe(1); expect(f.commands).toEqual([]);
+  expect(lifecycle.submissionEvidence()).toMatchObject({ runId: "run", nativeCommandId: "exact-command", source: { ...source, harnessId: "opencode" } });
+});
+
+for (const phase of ["command", "native"] as const) {
+  for (const [name, change] of identityChanges) test(`installed ${name} mutation during async ${phase} proof poisons lifecycle`, async () => {
+    const f = openCodeFixture(phase), lifecycle = f.start();
+    await lifecycle.admission; f.execution.resolve(); await lifecycle.done;
+    const evaluation = lifecycle.successfulSettlement(); await f.entered.promise;
+    const installed = { ...lifecycle.owner.run };
+    Object.assign(lifecycle.owner.run, change); f.proof.resolve();
+    expect(await evaluation).toMatchObject({ ready: false, code: "reconciliation-required" });
+    expect(f.state.failClosed).toBe(1); expect(f.commands).toEqual(["exact-command"]);
+    if (phase === "command") expect(f.calls).not.toContain("native");
+    Object.assign(lifecycle.owner.run, installed);
+    expect((await lifecycle.successfulSettlement()).ready).toBe(false);
+    expect(f.commands).toEqual(["exact-command"]); expect(f.state.failClosed).toBe(1);
+  });
+}
+
+for (const timing of ["before", "during"] as const) {
+  for (const [name, change] of identityChanges) test(`installed ${name} mutation ${timing} execution cannot produce success proof`, async () => {
+    const f = openCodeFixture(), lifecycle = f.start();
+    if (timing === "during") await lifecycle.admission;
+    Object.assign(lifecycle.owner.run, change); f.execution.resolve(); await lifecycle.done;
+    expect(await lifecycle.admission).toEqual({ state: timing === "before" ? "unconfirmed" : "admitted" });
+    expect(f.calls.includes("execute")).toBe(timing === "during");
+    expect(f.state.failClosed).toBe(1); expect(f.calls).toContain("terminate");
+    expect((await lifecycle.successfulSettlement()).ready).toBe(false); expect(f.commands).toEqual([]);
+  });
+}
+
+test("unchanged installed OpenCode identity proves its exact command with live completed status", async () => {
+  const f = openCodeFixture(), lifecycle = f.start();
+  await lifecycle.admission; f.execution.resolve(); await lifecycle.done; f.proof.resolve();
+  expect(await lifecycle.successfulSettlement()).toEqual({ ready: true });
+  expect(f.commands).toEqual(["exact-command"]); expect(f.state.failClosed).toBe(0);
+});
+
+test("production command identity is established at installation: OpenCode present, Claude absent", async () => {
+  for (const harnessId of ["opencode", "claude-code"]) {
+    const f = fixture(), registry = new HarnessDispatchRegistry(), install = f.hooks.install;
+    registry.register({ ...f.adapter, id: harnessId });
+    f.hooks.install = done => {
+      const owner = install(done);
+      owner.run.nativeCommandId = harnessId === "opencode" ? undefined : "unexpected-command";
+      return owner;
+    };
+    expect(() => registry.start(request({ source: { ...source, harnessId } }), f.hooks)).toThrow("synchronously installed");
+    await Promise.resolve(); expect(f.calls).not.toContain("execute"); expect(f.state.failClosed).toBe(1);
+  }
+  const f = fixture(), registry = new HarnessDispatchRegistry(), install = f.hooks.install;
+  f.hooks.wake = undefined;
+  f.hooks.install = done => { const owner = install(done); owner.run.nativeCommandId = undefined; return owner; };
+  registry.register(createClaudeDispatchAdapter({ ...f.adapter, settlementEvidence: () => ({ childPresent: true, exitCode: 0, groupAlive: false, streamsDrained: true }) }));
+  const lifecycle = registry.start(request({ source: { ...source, harnessId: "claude-code" } }), f.hooks);
+  await lifecycle.admission; f.execution.resolve(); await lifecycle.done;
+  expect(lifecycle.submissionEvidence().nativeCommandId).toBeNull();
+  expect(await lifecycle.successfulSettlement()).toEqual({ ready: true });
+  lifecycle.owner.run.nativeCommandId = "unexpected-command";
+  expect(await lifecycle.successfulSettlement()).toMatchObject({ ready: false, code: "reconciliation-required" });
+  expect(f.state.failClosed).toBe(1);
+});
+
+test("released predecessor retains historical proof while a different owner is installed", async () => {
+  const f = fixture(), registry = new HarnessDispatchRegistry(), nextExecution = pending<void>(); let executions = 0;
+  f.hooks.wake = undefined;
+  registry.register({ ...f.adapter, execute: async (owner, prompt, resume, ready) => {
+    if (++executions === 2) { ready(true); await nextExecution.promise; owner.run.status = "completed"; }
+    else await f.adapter.execute(owner, prompt, resume, ready);
+  } });
+  const previous = registry.start(request(), f.hooks);
+  await previous.admission; f.execution.resolve(); await previous.done; f.proof.resolve();
+  const next = registry.start(request(), f.hooks); await next.admission;
+  expect(f.installed()).toBe(next.owner);
+  expect(await previous.successfulSettlement()).toEqual({ ready: true });
+  expect(f.installed()).toBe(next.owner); expect((await next.successfulSettlement()).ready).toBe(false);
+  expect(f.state.failClosed).toBe(0); nextExecution.resolve(); await next.done;
+});
+
+test("identity contradiction during an unavailable read still fails closed rather than allowing proof retry", async () => {
+  const f = fixture(), registry = new HarnessDispatchRegistry(), entered = pending<void>(); f.hooks.wake = undefined;
+  registry.register({ ...f.adapter, successfulSettlement: async () => { entered.resolve(); await f.proof.promise; throw new DispatchProofUnavailableError("offline"); } });
+  const lifecycle = registry.start(request(), f.hooks);
+  await lifecycle.admission; f.execution.resolve(); await lifecycle.done;
+  const evaluation = lifecycle.successfulSettlement(); await entered.promise;
+  lifecycle.owner.run.runId = "replacement"; f.proof.resolve();
+  expect(await evaluation).toMatchObject({ ready: false, code: "reconciliation-required" }); expect(f.state.failClosed).toBe(1);
+  lifecycle.owner.run.runId = "run";
+  expect((await lifecycle.successfulSettlement()).ready).toBe(false); expect(f.state.failClosed).toBe(1);
+});
+
+for (const [name, change] of identityChanges) test(`lifecycle rejects ${name} mutation even when an adapter returns success without reading live guards`, async () => {
+  const f = fixture(), registry = new HarnessDispatchRegistry(), entered = pending<void>(); f.hooks.wake = undefined;
+  registry.register({ ...f.adapter, successfulSettlement: async () => { entered.resolve(); await f.proof.promise; return { ready: true }; } });
+  const lifecycle = registry.start(request(), f.hooks);
+  await lifecycle.admission; f.execution.resolve(); await lifecycle.done;
+  const evaluation = lifecycle.successfulSettlement(); await entered.promise;
+  Object.assign(lifecycle.owner.run, change); f.proof.resolve();
+  expect(await evaluation).toMatchObject({ ready: false, code: "reconciliation-required" }); expect(f.state.failClosed).toBe(1);
+});
+
+for (const [name, change] of identityChanges) test(`restored ${name} after failed proof cannot enter deferred execution or native hooks`, async () => {
+  const f = fixture(), registry = new HarnessDispatchRegistry(); f.hooks.wake = undefined;
+  f.hooks.evidence = { beforeNative: () => { f.calls.push("native-intent"); } };
+  registry.register({ ...f.adapter, execute: async (owner, _prompt, _resume, ready) => {
+    f.calls.push("execute"); owner.dispatchEvidence!.beforeNative(); f.calls.push("submit"); ready(true);
+  } });
+  const lifecycle = registry.start(request({ requestId: "request" }), f.hooks), installed = { ...lifecycle.owner.run };
+  Object.assign(lifecycle.owner.run, change);
+  const evaluation = lifecycle.successfulSettlement();
+  // Restore synchronously, before the deferred execute microtask gets a turn.
+  Object.assign(lifecycle.owner.run, installed);
+  expect(await evaluation).toMatchObject({ ready: false, code: "reconciliation-required" });
+  await lifecycle.done;
+  expect(await lifecycle.admission).toEqual({ state: "unconfirmed" });
+  expect(f.calls).not.toContain("execute"); expect(f.calls).not.toContain("native-intent"); expect(f.calls).not.toContain("submit");
+  expect(f.state.failClosed).toBe(1); expect(f.calls).toContain("terminate");
+  expect((await lifecycle.successfulSettlement()).ready).toBe(false);
+  expect(lifecycle.submissionEvidence()).toMatchObject({ requestId: "request", runId: "run", nativeCommandId: "exact-command", source });
+});
+
+test("caught native-boundary identity contradiction refuses fresh retries even after identity is restored", async () => {
+  const f = fixture(), registry = new HarnessDispatchRegistry(); f.hooks.wake = undefined;
+  f.hooks.evidence = { beforeNative: () => { f.calls.push("native-intent"); } };
+  registry.register({ ...f.adapter, execute: async (owner, _prompt, _resume, ready) => {
+    const submit = () => { owner.dispatchEvidence!.beforeNative(); f.calls.push("submit"); };
+    ready(true); owner.run.nativeCommandId = "replacement-command";
+    expect(submit).toThrow("Installed dispatch run identity changed");
+    owner.run.nativeCommandId = "exact-command";
+    expect(submit).toThrow("Dispatch native admission closed");
+    expect(submit).toThrow("Dispatch native admission closed");
+    owner.run.status = "completed";
+  } });
+  const lifecycle = registry.start(request({ requestId: "request" }), f.hooks); await lifecycle.admission; await lifecycle.done;
+  expect(f.state.failClosed).toBe(1); expect(f.state.storageFailed).toBe(true);
+  expect(f.calls).not.toContain("native-intent"); expect(f.calls).not.toContain("submit");
+  expect((await lifecycle.successfulSettlement()).ready).toBe(false); expect(f.calls).not.toContain("proof");
+  expect(lifecycle.submissionEvidence()).toMatchObject({ requestId: "request", runId: "run", nativeCommandId: "exact-command", source });
+});
+
+test("synchronous durable hook that fails closed then restores identity cannot authorize native effects", async () => {
+  const f = fixture(), registry = new HarnessDispatchRegistry(); f.hooks.wake = undefined;
+  let evaluation: ReturnType<ReturnType<typeof registry.start>["successfulSettlement"]> | undefined;
+  f.hooks.evidence = { beforeNative: () => {
+    f.calls.push("native-intent"); lifecycle.owner.run.nativeCommandId = "replacement-command";
+    evaluation = lifecycle.successfulSettlement();
+    lifecycle.owner.run.nativeCommandId = "exact-command";
+  } };
+  registry.register({ ...f.adapter, execute: async (owner, _prompt, _resume, ready) => {
+    const submit = () => { owner.dispatchEvidence!.beforeNative(); f.calls.push("submit"); };
+    ready(true);
+    expect(submit).toThrow("Dispatch native admission closed");
+    expect(submit).toThrow("Dispatch native admission closed");
+    owner.run.status = "completed";
+  } });
+  const lifecycle = registry.start(request({ requestId: "request" }), f.hooks); await lifecycle.done;
+  expect(await evaluation).toMatchObject({ ready: false, code: "reconciliation-required" });
+  expect(f.calls.filter(call => call === "native-intent")).toHaveLength(1); expect(f.calls).not.toContain("submit");
+  expect(f.state.failClosed).toBe(1); expect((await lifecycle.successfulSettlement()).ready).toBe(false);
+  expect(lifecycle.submissionEvidence()).toMatchObject({ requestId: "request", runId: "run", nativeCommandId: "exact-command", source, submission: "unknown" });
+});
+
+test("evidence storage failure before deferred execution permanently closes native entry", async () => {
+  const f = fixture(), registry = new HarnessDispatchRegistry(); f.hooks.wake = undefined;
+  let outcomes = 0;
+  f.hooks.evidence = {
+    beforeNative: () => { f.calls.push("native-intent"); },
+    outcome: () => { if (++outcomes === 1) throw new Error("evidence storage failed"); },
+  };
+  registry.register({ ...f.adapter, execute: async (owner, _prompt, _resume, ready) => {
+    f.calls.push("execute"); owner.dispatchEvidence!.beforeNative(); f.calls.push("submit"); ready(true);
+  } });
+  const lifecycle = registry.start(request({ requestId: "request" }), f.hooks);
+  expect(() => lifecycle.owner.dispatchEvidence!.outcome("not-submitted", "not-accepted")).toThrow("evidence storage failed");
+  await lifecycle.done;
+  expect(f.calls).not.toContain("execute"); expect(f.calls).not.toContain("native-intent"); expect(f.calls).not.toContain("submit");
+  expect(f.state.failClosed).toBe(1); expect(await lifecycle.admission).toEqual({ state: "unconfirmed" });
+  expect((await lifecycle.successfulSettlement()).ready).toBe(false);
+  expect(lifecycle.submissionEvidence()).toMatchObject({ requestId: "request", runId: "run", nativeCommandId: "exact-command", source, submission: "not-submitted" });
+});
+
+test("failed-closed storage after possible submission still records later accepted evidence without replay", async () => {
+  const f = fixture(), registry = new HarnessDispatchRegistry(); f.hooks.wake = undefined;
+  let outcomes = 0;
+  f.hooks.evidence = {
+    beforeNative: () => { f.calls.push("native-intent"); },
+    outcome: value => { f.calls.push(`outcome:${value.nativeAcceptance}`); if (++outcomes === 1) throw new Error("evidence storage failed"); },
+  };
+  registry.register({ ...f.adapter, execute: async (owner, _prompt, _resume, ready) => {
+    ready(true); owner.dispatchEvidence!.beforeNative(); f.calls.push("submit");
+    expect(() => owner.dispatchEvidence!.outcome("unknown", "unknown")).toThrow("evidence storage failed");
+    expect(() => owner.dispatchEvidence!.beforeNative()).toThrow("Dispatch native admission closed");
+    owner.dispatchEvidence!.outcome("submitted", "accepted"); owner.run.status = "completed";
+  } });
+  const lifecycle = registry.start(request({ requestId: "request" }), f.hooks); await lifecycle.done;
+  expect(await lifecycle.admission).toEqual({ state: "admitted" }); expect(f.state.failClosed).toBe(1);
+  expect(f.calls.filter(call => call === "native-intent")).toHaveLength(1); expect(f.calls.filter(call => call === "submit")).toHaveLength(1);
+  expect(f.calls).toContain("outcome:accepted"); expect((await lifecycle.successfulSettlement()).ready).toBe(false);
+  expect(lifecycle.submissionEvidence()).toMatchObject({ requestId: "request", runId: "run", nativeCommandId: "exact-command", source, submission: "submitted", nativeAcceptance: "accepted" });
+});
 
 /** Compose the real lifecycle and arbitration, with no domain policy masking a
  * reconciliation gap and no native transport or timers. */

@@ -17,7 +17,16 @@ export type ModelRef = { id: string; providerID: string; variant?: string };
 export type NativeAgent = { id: string; model?: ModelRef };
 export type OpenCodeLaunch = { agent?: string; model?: ModelRef };
 type NativeSession = { id: string; location?: { directory?: string }; agent?: string; model?: ModelRef; outcome?: "succeeded" | "failed" | "interrupted"; metadata?: Record<string, unknown>; time: { created: number; updated: number; idle?: number } };
-type NativeInput = { id: string; sessionID?: string; type?: string; payload?: { metadata?: Record<string, unknown> } };
+type NativeInput = { id: string; sessionID?: string; type?: string; delivery?: string; time?: { created: number }; payload?: { metadata?: Record<string, unknown> } };
+export type NativeQueuedHandoffAdmission = { id: string; sessionID: string; type: "user"; delivery: "queue"; time: { created: number } };
+/** Only the actual inbox/ack DTO proves delivery policy. Committed User messages
+ * omit sessionID/delivery in V2 and cannot reconstruct a lost queue receipt. */
+export function isQueuedHandoffAdmission(value: unknown, sessionId: string, commandId: string): value is NativeQueuedHandoffAdmission {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return false;
+  const input = value as NativeInput;
+  return input.id === commandId && input.sessionID === sessionId && input.type === "user" && input.delivery === "queue"
+    && !!input.time && typeof input.time === "object" && !Array.isArray(input.time) && Number.isFinite(input.time.created);
+}
 type NativePart = { type: string; id?: string; name?: string; text?: string; state?: { status: string; input?: unknown; content?: unknown; error?: unknown } };
 export type NativeMessage = { id: string; type: string; metadata?: Record<string, unknown>; time: { created: number; completed?: number }; model?: ModelRef; text?: string; content?: NativePart[]; error?: unknown; cost?: number; tokens?: unknown; outcome?: string; status?: string; reason?: string; summary?: string; preTokens?: number; postTokens?: number; durationMs?: number };
 export type NativeCompactAdmission = { id: string; sessionID: string; type: "compaction"; time: { created: number }; delivery: "queue" | "steer"; payload?: unknown };
@@ -58,6 +67,15 @@ const commandBoundary = (message: NativeMessage, command: NativeMessage): Native
 export class OpenCodeError extends Error {
   constructor(message: string, public status = 503) { super(message); }
 }
+/** A successful observation contradicted the immutable native identity pin. */
+export class OpenCodeSourceMismatchError extends OpenCodeError {
+  constructor(message: string) { super(message, 409); }
+}
+/** Read-only proof may be retried after transport/service availability recovers. */
+export class OpenCodeUnavailableError extends OpenCodeError {}
+/** A returned native DTO conflicts with the promised queue handoff. Acceptance
+ * may already have happened; never turn a later user anchor into policy proof. */
+export class OpenCodeQueuedHandoffProtocolError extends OpenCodeError {}
 export class OpenCodeReplyTransportLimitError extends OpenCodeError {
   constructor() { super("OpenCode reply transport exceeded 16 MiB raw response budget"); }
 }
@@ -77,7 +95,7 @@ export class OpenCodeAdapter {
     if (this.explicit) return this.explicit;
     if (this.discovery) return this.discovery;
     if (this.managed && Date.now() < this.expires) return this.managed;
-    const unavailable = () => new OpenCodeError("OpenCode managed service unavailable; verify the intended existing service and its registered source with the operator before proceeding");
+    const unavailable = () => new OpenCodeUnavailableError("OpenCode managed service unavailable; verify the intended existing service and its registered source with the operator before proceeding");
     if (Date.now() < this.retryAfter) throw unavailable();
     this.discovery = (async () => {
       try {
@@ -156,15 +174,21 @@ export class OpenCodeAdapter {
     beforeSend?.(); // Synchronous admission gate after discovery, immediately before the HTTP mutation.
     let response: Response;
     try { response = await fetch(connection.base + path, { method, headers: connection.headers, ...(data === undefined ? {} : { body: JSON.stringify(data) }), signal: AbortSignal.timeout(timeoutMs), redirect: "error" }); }
-    catch { this.invalidate(connection); throw new OpenCodeError("OpenCode connection unavailable; execution state remains unconfirmed"); }
+    catch { this.invalidate(connection); throw new OpenCodeUnavailableError("OpenCode connection unavailable; execution state remains unconfirmed"); }
     // Refresh on the next request only. In particular, never replay mutations.
     if (!response.ok) {
       const auth = response.status === 401 || response.status === 403;
       if (auth || response.status >= 500) this.invalidate(connection);
-      throw new OpenCodeError(auth ? this.explicit ? "OpenCode authentication rejected; configure OPENCODE_TOKEN for the explicit URL" : "OpenCode managed authentication rejected; discovery will refresh on the next request" : `OpenCode API returned HTTP ${response.status}`, response.status);
+      const Failure = auth || response.status >= 500 || response.status === 408 || response.status === 429 ? OpenCodeUnavailableError : OpenCodeError;
+      throw new Failure(auth ? this.explicit ? "OpenCode authentication rejected; configure OPENCODE_TOKEN for the explicit URL" : "OpenCode managed authentication rejected; discovery will refresh on the next request" : `OpenCode API returned HTTP ${response.status}`, response.status);
     }
     if (response.status === 204) return undefined as T;
-    try { return await response.json() as T; } catch { this.invalidate(connection); throw new OpenCodeError("OpenCode returned an invalid JSON response"); }
+    // Headers do not prove that the body arrived. A failed read is unavailable
+    // observation (or an uncertain mutation), not successfully observed bad JSON.
+    let body: string;
+    try { body = await response.text(); }
+    catch { this.invalidate(connection); throw new OpenCodeUnavailableError("OpenCode response body unavailable; execution state remains unconfirmed"); }
+    try { return JSON.parse(body) as T; } catch { this.invalidate(connection); throw new OpenCodeError("OpenCode returned an invalid JSON response"); }
   }
   path(id: string) { return `/api/session/${encodeURIComponent(id)}`; }
   async connection(cwd: string) {
@@ -235,6 +259,22 @@ export class OpenCodeAdapter {
     if (data?.id !== commandId || !Number.isFinite(data.time?.created)) throw new OpenCodeError("OpenCode prompt acknowledgement mismatch; execution state unconfirmed");
     return data;
   }
+  /** Existing prompt endpoint, once, with explicit delivery. No idle lease,
+   * selection, synthetic context, fallback or mutation retry. */
+  async promptQueuedHandoff(id: string, commandId: string, text: string, beforeSubmit?: () => void): Promise<NativeQueuedHandoffAdmission> {
+    const response = await this.request<unknown>(this.path(id) + "/prompt", "POST", { id: commandId, text, delivery: "queue" }, beforeSubmit);
+    // Validate the complete received envelope, including an empty 204 result.
+    // Transport/body-read failures escape unchanged as uncertain availability.
+    if (!response || typeof response !== "object" || Array.isArray(response) || !("data" in response)
+      || !isQueuedHandoffAdmission(response.data, id, commandId)) throw new OpenCodeQueuedHandoffProtocolError("Native queue acknowledgement protocol mismatch; retain ownership for operator reconciliation; do not resend");
+    return response.data;
+  }
+  /** Fresh binding read only: foreign activity after claim is allowed, but a
+   * different identity/checkout is not. Native preference freezing is not claimed. */
+  async preflightNativeSession(id: string, cwd: string) {
+    const session = await this.session(id);
+    if (session?.id !== id || session.location?.directory !== cwd) throw new OpenCodeSourceMismatchError("Native session identity or execution directory differs from the claimed conversation");
+  }
   /** Once, at creation and before the first prompt. Native holds it pending without a run and commits
    * it ahead of that prompt; the caller's stable ID makes a retried creation deliver it once. */
   async deliverSaneFramework(id: string, messageId: string, text: string) {
@@ -290,7 +330,7 @@ export class OpenCodeAdapter {
    * Reusable for assistant/worker admissions whose App metadata was not committed. */
   async recoverLaunch(id: string, cwd: string, expectedAgent: string): Promise<OpenCodeLaunch> {
     const session = await this.session(id);
-    if (!session || session.id !== id || session.location?.directory !== cwd) throw new OpenCodeError("Cannot recover launch: native session identity or checkout differs from the admission", 409);
+    if (!session || session.id !== id || session.location?.directory !== cwd) throw new OpenCodeSourceMismatchError("Cannot recover launch: native session identity or checkout differs from the admission");
     if (session.agent !== expectedAgent) throw new OpenCodeError("Cannot recover launch: native selected agent is missing or differs from the requested agent; reconcile the admission", 409);
     const model = session.model;
     if (!model || typeof model.id !== "string" || !model.id || typeof model.providerID !== "string" || !model.providerID || model.variant !== undefined && (typeof model.variant !== "string" || !model.variant)) throw new OpenCodeError("Cannot recover launch: native selected model/variant is unavailable or invalid; reconcile the admission", 409);
@@ -302,7 +342,7 @@ export class OpenCodeAdapter {
       this.session(id), this.request<{ data: Record<string, { type: string }> }>("/api/session/active"),
       this.request<{ data: NativeInput[] }>(this.path(id) + "/inbox"),
     ]);
-    if (session?.id !== id || session.location?.directory !== cwd) throw new OpenCodeError("Native session identity or execution directory differs from the pinned conversation", 409);
+    if (session?.id !== id || session.location?.directory !== cwd) throw new OpenCodeSourceMismatchError("Native session identity or execution directory differs from the pinned conversation");
     if (!active.data || !Array.isArray(inbox.data)) throw new OpenCodeError("Unsupported native activity response");
     // Startup context waits for the first prompt; it is not foreign input.
     return { session, active: !!active.data[id], pending: inbox.data.some(m => !(m.type === "synthetic" && saneStartupContext(m.payload?.metadata))) };
@@ -333,21 +373,22 @@ export class OpenCodeAdapter {
     }
     throw new OpenCodeError("History exceeds 10,000-message import budget; no partial import");
   }
-  async snapshot(id: string, commandId: string, cwd?: string): Promise<{ messages: NativeMessage[]; outcome?: string; pending: boolean; currentInputId?: string; boundary?: NativeCommandBoundary }> {
+  async snapshot(id: string, commandId: string, cwd?: string, policy?: "native-queued-handoff"): Promise<{ messages: NativeMessage[]; outcome?: string; pending: boolean; pendingInput?: unknown; currentInputId?: string; boundary?: NativeCommandBoundary }> {
     // A queued command is not committed history yet. Check its exact inbox
     // identity first, so waiting/cancellation never walks an unrelated backlog.
     const [initialSession, initialInbox] = await Promise.all([
-      this.session(id), this.request<{ data: { id: string }[] }>(this.path(id) + "/inbox"),
+      this.session(id), this.request<{ data: NativeInput[] }>(this.path(id) + "/inbox"),
     ]);
     if (!initialSession?.time || !Array.isArray(initialInbox.data)) throw new OpenCodeError("Unsupported OpenCode V2 execution response");
-    if (initialSession.id !== id || cwd !== undefined && initialSession.location?.directory !== cwd) throw new OpenCodeError("Native session identity or directory changed; execution remains unconfirmed", 409);
-    if (initialInbox.data.some(message => message.id === commandId)) return { messages: [], pending: true };
+    if (initialSession.id !== id || cwd !== undefined && initialSession.location?.directory !== cwd) throw new OpenCodeSourceMismatchError("Native session identity or directory changed; execution remains unconfirmed");
+    const initialInput = initialInbox.data.find(message => message.id === commandId);
+    if (initialInput) return { messages: [], pending: true, ...(policy ? { pendingInput: initialInput } : {}) };
     // Newest first until the exact durable command is found. Bounded, with no
     // completion inference if the required history lies outside this budget.
     const messages: NativeMessage[] = []; let cursor: string | undefined; let found = false;
     const deadline = Date.now() + 15000;
     for (let page = 0; page < 100; page++) {
-      if (Date.now() > deadline) throw new OpenCodeError("Native observation exceeded its 15-second page budget; state remains unconfirmed");
+      if (Date.now() > deadline) throw new OpenCodeUnavailableError("Native observation exceeded its 15-second page budget; state remains unconfirmed");
       const result = await this.request<Page>(this.path(id) + `/message?limit=100&${cursor ? `cursor=${encodeURIComponent(cursor)}` : "order=desc"}`);
       if (!Array.isArray(result.data) || !result.cursor) throw new OpenCodeError("Unsupported OpenCode V2 message response");
       const index = result.data.findIndex(m => m.id === commandId);
@@ -355,22 +396,22 @@ export class OpenCodeAdapter {
       if (index >= 0) { found = true; break; }
       cursor = result.cursor.next ?? undefined;
       if (!cursor) break;
-      if (page === 99) throw new OpenCodeError("OpenCode history reconciliation exceeded its page budget");
+      if (page === 99) throw new OpenCodeUnavailableError("OpenCode history reconciliation exceeded its page budget");
     }
     const [session, active, inbox] = await Promise.all([
       this.session(id), this.request<{ data: Record<string, { type: "running" }> }>("/api/session/active"),
-      this.request<{ data: { id: string }[] }>(this.path(id) + "/inbox"),
+      this.request<{ data: NativeInput[] }>(this.path(id) + "/inbox"),
     ]);
     if (!session?.time || !active.data || !Array.isArray(inbox.data)) throw new OpenCodeError("Unsupported OpenCode V2 execution response");
-    if (session.id !== id || (cwd !== undefined && session.location?.directory !== cwd)) throw new OpenCodeError("Native session identity or directory changed; execution remains unconfirmed", 409);
-    const pending = inbox.data.some(m => m.id === commandId);
+    if (session.id !== id || (cwd !== undefined && session.location?.directory !== cwd)) throw new OpenCodeSourceMismatchError("Native session identity or directory changed; execution remains unconfirmed");
+    const input = inbox.data.find(m => m.id === commandId), pending = !!input;
     const ordered = found ? messages.reverse() : [];
     const bounded = commandSnapshot(ordered, commandId);
     const command = ordered.find(message => message.id === commandId);
     const currentInputId = command ? ordered.findLast(message => commandBoundary(message, command))?.id : undefined;
     // Session.outcome belongs to the latest turn, not necessarily this command.
     // Later external activity cannot overwrite a recorded command boundary.
-    return { messages: bounded.messages, outcome: pending ? undefined : bounded.outcome, pending, currentInputId, ...(bounded.boundary ? { boundary: bounded.boundary } : {}) };
+    return { messages: bounded.messages, outcome: pending ? undefined : bounded.outcome, pending, currentInputId, ...(policy && input ? { pendingInput: input } : {}), ...(bounded.boundary ? { boundary: bounded.boundary } : {}) };
   }
   /** Observe only the exact admitted compact input. No user-message anchor,
    * session outcome, idle heuristic, or resend. Activity is reported separately
@@ -395,7 +436,7 @@ export class OpenCodeAdapter {
       this.request<{ data: { id: string; sessionID?: string; type?: string }[] }>(this.path(id) + "/inbox"),
     ]);
     if (!session?.time || !active.data || !Array.isArray(inbox.data)) throw new OpenCodeError("Unsupported native compaction activity response");
-    if (session.id !== id || cwd !== undefined && session.location?.directory !== cwd) throw new OpenCodeError("Native compaction session identity or directory changed; state remains unconfirmed", 409);
+    if (session.id !== id || cwd !== undefined && session.location?.directory !== cwd) throw new OpenCodeSourceMismatchError("Native compaction session identity or directory changed; state remains unconfirmed");
     const input = inbox.data.find(m => m.id === admittedId);
     if (input && (input.type !== "compaction" || input.sessionID !== id)) throw new OpenCodeError("Exact admitted input is not this session's compaction; state remains unconfirmed");
     const exact = compactionSnapshot(messages, admittedId);

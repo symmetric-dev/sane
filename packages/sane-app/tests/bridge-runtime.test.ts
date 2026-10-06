@@ -10,14 +10,28 @@ import { join } from "node:path";
 import { start, type Options } from "../src/bridge";
 import { initializeAppStore } from "../src/app-store";
 import { acquireData, acquireInstallation, validateOwnershipPaths, OwnershipHandle } from "../src/installation-ownership";
-import { OpenCodeAdapter, type NativeMessage } from "../src/opencode";
+import { OpenCodeAdapter, OpenCodeError, OpenCodeSourceMismatchError, OpenCodeUnavailableError, type NativeMessage } from "../src/opencode";
 import { ChromePushService } from "../src/chrome-push";
 import { capabilitiesFor, getHarnessDescriptor, type Harness } from "../shared/conversation/harness-capabilities";
 import { RepositoryRouter, WorkstreamAdapterError } from "../src/workstreams";
 import { CatalogService } from "../src/catalog";
 import { OpenCodeRunService, type OpenCodeRunDependencies } from "../src/opencode-run-service";
+import { ClaudeRunService } from "../src/claude-run-service";
+import { WorkerService } from "../src/workers";
+import { WorkerStore } from "../src/worker-store";
+import { prepareUserInput } from "../src/user-input-preparation";
+import { PendingInputStore } from "../src/pending-input-store";
+import { PendingInputStorageError } from "../src/pending-input-contract";
+import { dispatchSource } from "../src/pending-input-codec";
+import { isPendingInputSnapshot } from "../shared/conversation/pending-input-contract";
+import { legacyProfileId } from "../src/agent-profiles-contract";
+import { WorkspaceError } from "../src/workspace";
+import type { NativeQueuedHandoffAdmissionContext, PreparedAdmissionContext, PreparedAdmissionOptions, PreparedAdmissionResult } from "../src/prepared-input-admission";
+import type { DispatchIdentity, DispatchSubmissionEvidence } from "../shared/conversation/dispatch-contract";
+import type { DispatchLifecycle } from "../src/harness-dispatch";
 import type { Session } from "../src/history";
 import { discoverRepository, initializeRepository } from "sane-core/server";
+import * as repository from "sane-core/server";
 
 const TEMP = "/private/var/folders/6v/wnsbl7cj5w96s83lszq3454w0000gn/T/opencode";
 const TIMEOUT = 30000;
@@ -120,7 +134,7 @@ async function fakeNative(req: Request) {
       session.messages.push({ id: input.id, type: "user", text: input.text, time: { created: time } });
       session.active = true; session.info.time.updated = time;
       if (!input.text.startsWith("hold for ")) complete(match![1]!);
-      return Response.json({ data: { id: input.id, time: { created: time } } });
+      return Response.json({ data: { id: input.id, time: { created: time }, ...(input.delivery === "queue" ? { sessionID: match![1], type: "user", delivery: "queue" } : {}) } });
     }
     case "interrupt": complete(match![1]!, "interrupted"); return Response.json({ interrupted: true });
     default: {
@@ -175,6 +189,81 @@ const invocations = (): any[] => existsSync(cliLog) ? readFileSync(cliLog, "utf8
 const disk = (name: string) => JSON.parse(readFileSync(join(dataDir, name), "utf8"));
 const flag = (args: string[], name: string) => args[args.indexOf(name) + 1];
 const storedRun = (runId: string) => disk("metadata.json").runs.find((run: any) => run.runId === runId);
+function queueWire(session: Session, text = "phase3 waiting input", requestId = crypto.randomUUID()) {
+  return { version: 1, requestId, conversationId: session.sessionId, text,
+    source: { harnessId: session.harness!, conversationId: session.sessionId, authorityId: session.authorityId!, nativeSessionId: session.nativeSessionId!, cwd: session.cwd },
+    configuration: { cwd: session.cwd, profileId: session.profileId ?? legacyProfileId(session.harness!, session.agent), ...(session.model === undefined ? {} : { model: session.model }), ...(session.effort === undefined ? {} : { effort: session.effort }), ...(session.agent === undefined ? {} : { agent: session.agent }) } };
+}
+async function queueSession(harness: Harness = "claude-code", initialized = false) {
+  await login();
+  let cwd: string | undefined;
+  if (initialized) {
+    cwd = join(root, `fifo-repo-${crypto.randomUUID()}`); mkdirSync(cwd);
+    expect(Bun.spawnSync(["git", "init", "-q", cwd]).exitCode).toBe(0);
+    const registered = await api("/api/workspaces", { cwd }); expect(registered.status).toBe(201);
+    expect((await api(`/api/workstreams/init?workspaceId=${registered.body.workspaceId}`, {})).body.state).toBe("ready");
+  }
+  const created = await api("/api/sessions", { prompt: "phase3 offline queue seed", harness, ...(cwd ? { cwd } : {}) }); expect(created.status).toBe(202); await waitIdle(created.body.sessionId);
+  return disk("metadata.json").sessions.find((s: Session) => s.sessionId === created.body.sessionId) as Session;
+}
+const queuePath = (id: string) => `/api/sessions/${id}/pending-inputs`;
+async function isolatedApi(running: Awaited<ReturnType<typeof start>>, path: string, input?: unknown, token = "") {
+  const res = await fetch(`${running.origin}${path}`, { method: input === undefined ? "GET" : "POST", headers: { origin: running.origin, "content-type": "application/json", ...(token ? { cookie: token } : {}) }, ...(input === undefined ? {} : { body: JSON.stringify(input) }), signal: AbortSignal.timeout(5000) });
+  return { status: res.status, body: await res.json() as any, cookie: res.headers.get("set-cookie")?.split(";")[0] };
+}
+async function isolatedLogin(running: Awaited<ReturnType<typeof start>>) { return (await isolatedApi(running, "/api/login", { password: PASSWORD })).cookie!; }
+async function isolatedQueueSeed(name: string, initialized: boolean, harness: Harness = "claude-code") {
+  const selected = startupFixture(name), cwd = join(root, `${name}-repository`); mkdirSync(cwd);
+  expect(Bun.spawnSync(["git", "init", "-q", cwd]).exitCode).toBe(0);
+  const running = await start({ ...selected, cwd }), token = await isolatedLogin(running);
+  const registered = await isolatedApi(running, "/api/workspaces", { cwd }, token);
+  if (initialized) expect((await isolatedApi(running, `/api/workstreams/init?workspaceId=${registered.body.workspaceId}`, {}, token)).body.state).toBe("ready");
+  const created = await isolatedApi(running, "/api/sessions", { prompt: "offline repository queue classification seed", cwd, harness }, token);
+  expect(created.status).toBe(202);
+  await until("repository queue seed settled", async () => JSON.parse(readFileSync(join(selected.dataDir, "metadata.json"), "utf8")).runs.find((r: any) => r.runId === created.body.runId)?.status === "completed" || undefined);
+  const session = JSON.parse(readFileSync(join(selected.dataDir, "metadata.json"), "utf8")).sessions[0] as Session;
+  return { selected, running, token, session, discovery: discoverRepository(cwd) };
+}
+async function closeStorageFailedFixture(f: Awaited<ReturnType<typeof isolatedQueueSeed>>) {
+  await expect(f.running.close()).rejects.toThrow("ownership retained");
+  const paths = validateOwnershipPaths(f.selected.packageDir!, f.selected.dataDir);
+  for (const lock of [paths.installationLock, paths.dataLock!]) expect(JSON.parse(readFileSync(join(lock, "owner.json"), "utf8")).phase).toBe("retained");
+  // No automatic reconciliation/restart. These test-owned sentinels survive
+  // until afterAll explicitly disposes the entire closed, isolated fixture.
+}
+async function preparedFor(sessionId: string, prompt = "offline explicit prepared input", selectedDataDir = dataDir, selectedCwd = repoDir) {
+  const read = (name: string) => JSON.parse(readFileSync(join(selectedDataDir, name), "utf8"));
+  const metadata = read("metadata.json"), session = metadata.sessions.find((s: Session) => s.sessionId === sessionId);
+  return prepareUserInput({ sessionId, prompt }, {
+    profiles: read("agents.json"), getSession: id => metadata.sessions.find((s: Session) => s.sessionId === id), defaultCwd: selectedCwd,
+    conversationId: () => crypto.randomUUID(), sourceAuthorityId: () => session.authorityId,
+    selectedDirectory: async () => selectedCwd, ensureDirectory: async () => {}, validateOpenCodeModel: () => {},
+    resolveOpenCodeLaunch: async () => { throw new Error("Resume must not resolve native launch"); },
+  });
+}
+function admissionContext(patch: Partial<PreparedAdmissionContext> = {}): PreparedAdmissionContext {
+  return { intent: { kind: "user-prompt", requestId: crypto.randomUUID() }, origin: "user", runId: crypto.randomUUID(), nativeCommandId: `msg_${crypto.randomUUID().replaceAll("-", "")}`, delivery: "idle-only", ...patch };
+}
+/** Live in-memory claimed-head capability, independent of the unwired durable
+ * consumer. Wire values alone do not authorize the native boundary. */
+function handoffClaim(session: Session) {
+  const expected: DispatchIdentity = Object.freeze({ runId: crypto.randomUUID(), nativeCommandId: `msg_${crypto.randomUUID().replaceAll("-", "")}`,
+    requestId: crypto.randomUUID(), source: Object.freeze({ harnessId: session.harness!, sessionId: session.sessionId, authorityId: session.authorityId!, nativeSessionId: session.nativeSessionId!, cwd: session.cwd }) });
+  let valid = true, linked = false;
+  const hooks: string[] = [], outcomes: DispatchSubmissionEvidence[] = [];
+  const assertIdentity = (identity: DispatchIdentity) => { expect(identity).toEqual(expected); if (!valid) throw new WorkstreamAdapterError(409, "claim-invalidated", "Claim invalidated"); };
+  const context: NativeQueuedHandoffAdmissionContext = {
+    intent: { kind: "user-prompt", requestId: expected.requestId! }, origin: "queued-user", delivery: "native-queued-handoff",
+    runId: expected.runId, nativeCommandId: expected.nativeCommandId!,
+    validate: identity => { assertIdentity(identity); hooks.push("validate"); },
+    link: identity => { assertIdentity(identity); expect(linked).toBe(false); linked = true; hooks.push("link"); },
+    evidence: {
+      beforeNative: evidence => { const { submission, nativeAcceptance, ...identity } = evidence; assertIdentity(identity); expect(linked).toBe(true); expect(hooks).toContain("publish"); hooks.push("native"); },
+      outcome: evidence => { const { submission, nativeAcceptance, ...identity } = evidence; assertIdentity(identity); outcomes.push(evidence); },
+    },
+  };
+  return { context, expected, hooks, outcomes, invalidate: () => { valid = false; } };
+}
 async function nativeContinuationFixture() {
   await login();
   const created = await api("/api/sessions", { harness: "opencode", model: "fixture/offline", effort: "bounded", cwd: repoDir, prompt: "offline before native continuation" });
@@ -245,6 +334,10 @@ describe.serial("bridge runtime (isolated offline HTTP native fixtures)", () => 
     const packageDir = join(root, "installation"), profileRoot = join(root, "claude-profile"), registrationFile = join(root, "oc", "service.json");
     repoDir = join(root, "repo"); dataDir = join(root, "appdata"); cliLog = join(root, "claude-invocations.jsonl");
     fixtureAssets(packageDir); mkdirSync(repoDir); mkdirSync(profileRoot); mkdirSync(join(root, "oc"));
+    // Test-owned launch artifacts only; never reads or edits installed context.
+    mkdirSync(join(profileRoot, "sane-agent-settings")); mkdirSync(join(profileRoot, "agents"));
+    writeFileSync(join(profileRoot, "sane-agent-settings", "sane-assistant-engineering.settings.json"), JSON.stringify({ permissions: { allow: [], deny: [], ask: [] } }));
+    writeFileSync(join(profileRoot, "agents", "sane-assistant-engineering.md"), "Offline fake engineering fixture; no installed/native model is invoked.\n");
     if (await Bun.spawn(["git", "init", repoDir], { stdout: "ignore", stderr: "ignore" }).exited !== 0) throw new Error("fixture git init failed");
     process.env.CLAUDE_CONFIG_DIR = profileRoot; process.env.SANE_APP_PASSWORD = PASSWORD;
     // An ambient explicit token must never override registration credentials.
@@ -631,6 +724,345 @@ describe.serial("bridge runtime (isolated offline HTTP native fixtures)", () => 
     await waitIdle(session.sessionId);
   }, TIMEOUT);
 
+  for (const harness of ["claude-code", "opencode"] as const) test(`prepared backend admission exposes stable IDs, exact request lease and independent origin (${harness})`, async () => {
+    if (harness === "claude-code") {
+      const baseline = await api("/api/sessions", { harness, prompt: "offline explicit prepared baseline" }); expect(baseline.status).toBe(202); await waitIdle(baseline.body.sessionId);
+    }
+    const session = await fixtureSession(harness), prepared = await preparedFor(session.sessionId), outcomes: DispatchSubmissionEvidence[] = [], hooks: string[] = [];
+    const context = admissionContext({ origin: harness === "claude-code" ? "queued-user" : "user", ...(harness === "claude-code" ? { nativeCommandId: undefined } : {}),
+      validate: identity => { expect(identity.runId).toBe(context.runId); expect(identity.requestId).toBe(context.intent.requestId); hooks.push("validate"); },
+      link: identity => { hooks.push("link"); expect(identity.runId).toBe(context.runId); expect(disk("metadata.json").runs.some((r: any) => r.runId === context.runId)).toBe(false); },
+      evidence: { beforeNative: value => { hooks.push("native"); expect(hooks).toContain("link"); expect(hooks).toContain("publish"); expect(value.submission).toBe("attempted"); }, outcome: value => outcomes.push(value) },
+    });
+    const wrong = app!.preparedInput.reserve({ ...context.intent, requestId: "wrong-request" }, session.sessionId);
+    try { await expect(app!.preparedInput.admit(prepared, wrong, { context })).rejects.toThrow("different operation"); }
+    finally { app!.preparedInput.release(wrong); }
+    const lease = app!.preparedInput.reserve(context.intent, session.sessionId);
+    let result, published: DispatchLifecycle | undefined;
+    const service = harness === "opencode" ? OpenCodeRunService.prototype : ClaudeRunService.prototype;
+    const method = harness === "opencode" ? "executeNative" : "execute";
+    const execute = (service as any)[method];
+    const monitor = spyOn(service as any, method).mockImplementation(function(this: unknown, ...args: any[]) { expect(published?.owner).toBe(args[0]); return execute.apply(this, args); });
+    try { result = await app!.preparedInput.admit(prepared, lease, { context, publish: lifecycle => { expect(published).toBeUndefined(); published = lifecycle; hooks.push("publish"); expect(lifecycle.owner.run.runId).toBe(context.runId); } }); }
+    finally { app!.preparedInput.release(lease); }
+    expect(result.runId).toBe(context.runId); expect(result.lifecycle.owner.run.queuedFollowupId).toBeUndefined();
+    await result.lifecycle.done;
+    monitor.mockRestore(); expect(result.lifecycle).toBe(published!); expect(hooks.filter(h => h === "publish")).toHaveLength(1);
+    expect(result.lifecycle.submissionEvidence()).toMatchObject({ runId: context.runId, requestId: context.intent.requestId, submission: "submitted", nativeAcceptance: harness === "opencode" ? "accepted" : "unknown" });
+    expect(hooks.filter(h => h === "link")).toHaveLength(1); expect(hooks.filter(h => h === "native")).toHaveLength(1);
+    expect(outcomes.every(o => o.runId === context.runId && o.source.sessionId === session.sessionId && o.nativeCommandId === (context.nativeCommandId ?? null))).toBe(true);
+    expect(await result.lifecycle.successfulSettlement()).toEqual({ ready: true });
+    const count = prompts().length, repeat = app!.preparedInput.reserve(context.intent, session.sessionId);
+    try { await expect(app!.preparedInput.admit(prepared, repeat, { context })).rejects.toThrow("identity is already in use"); }
+    finally { app!.preparedInput.release(repeat); }
+    expect(prompts()).toHaveLength(count);
+  }, TIMEOUT);
+
+  for (const boundary of ["preflight", "link", "native"] as const) test(`invalidated prepared claim at ${boundary} never sends or creates an extra owner`, async () => {
+    const session = await fixtureSession("opencode"), prepared = await preparedFor(session.sessionId), before = sideEffects(), promptCount = prompts().length; let valid = true;
+    const context = admissionContext({ validate: () => { if (!valid) throw new WorkstreamAdapterError(409, "claim-invalidated", "Claim invalidated"); }, link: () => { if (boundary === "link") throw new WorkstreamAdapterError(409, "claim-invalidated", "Claim invalidated"); } });
+    const lease = app!.preparedInput.reserve(context.intent, session.sessionId);
+    const associate = CatalogService.prototype.associate, execute = OpenCodeRunService.prototype.executeNative;
+    const preflight = boundary === "preflight" ? spyOn(CatalogService.prototype, "associate").mockImplementation(async function(this: CatalogService, ...args) { const result = await associate.apply(this, args); if (args[0] === session.sessionId) valid = false; return result; }) : undefined;
+    const nativeGate = boundary === "native" ? spyOn(OpenCodeRunService.prototype, "executeNative").mockImplementation(async function(this: OpenCodeRunService, ...args) { if (args[0].run.runId === context.runId) valid = false; return execute.apply(this, args); }) : undefined;
+    try {
+      if (boundary !== "native") await expect(app!.preparedInput.admit(prepared, lease, { context })).rejects.toThrow("Claim invalidated");
+      else {
+        const result = await app!.preparedInput.admit(prepared, lease, { context }); await result.lifecycle.done;
+        expect(result.lifecycle.submissionEvidence().submission).toBe("not-submitted"); expect(result.lifecycle.owner.nativeDispatched).toBe(false);
+      }
+    } finally { app!.preparedInput.release(lease); preflight?.mockRestore(); nativeGate?.mockRestore(); }
+    expect(prompts()).toHaveLength(promptCount);
+    expect(disk("metadata.json").runs.length).toBe(before.runs + (boundary === "native" ? 1 : 0));
+    expect((await api("/api/sessions")).body.sessions.find((s: any) => s.sessionId === session.sessionId).availability.canSend).toBe(true);
+  }, TIMEOUT);
+
+  test("bare OC queued-user is refused and idle-only prepared input refuses native activity without fallback", async () => {
+    const session = await fixtureSession("opencode"), prepared = await preparedFor(session.sessionId), before = sideEffects(), fake = sessions.get(session.nativeSessionId)!;
+    for (const queued of [true, false]) {
+      const context = admissionContext({ origin: queued ? "queued-user" : "user" }), lease = app!.preparedInput.reserve(context.intent, session.sessionId);
+      fake.active = true;
+      try { await expect(app!.preparedInput.admit(prepared, lease, { context })).rejects.toThrow(queued ? "explicit native-queued-handoff policy" : "Idle-only"); }
+      finally { fake.active = false; app!.preparedInput.release(lease); }
+    }
+    expect(sideEffects()).toEqual(before);
+  }, TIMEOUT);
+
+  for (const foreignRace of [false, true]) test(`strict prepared OC handoff queues on idle and permits foreign activity after linked claim (${foreignRace})`, async () => {
+    const session = await queueSession("opencode"), prepared = await preparedFor(session.sessionId), claim = handoffClaim(session);
+    const fake = sessions.get(session.nativeSessionId!)!, before = mutations().length, link = claim.context.link;
+    const context = { ...claim.context, link: (identity: DispatchIdentity) => { link(identity); if (foreignRace) fake.active = true; } };
+    const lease = app!.preparedInput.reserve(context.intent, session.sessionId);
+    let published: DispatchLifecycle | undefined, result!: PreparedAdmissionResult;
+    const activity = OpenCodeAdapter.prototype.activity, idle = OpenCodeAdapter.prototype.assertIdle;
+    const activityGuard = spyOn(OpenCodeAdapter.prototype, "activity").mockImplementation(function(this: OpenCodeAdapter, ...args) { if (args[0] === session.nativeSessionId) throw new Error("Post-claim activity guard is forbidden"); return activity.apply(this, args); });
+    const idleGuard = spyOn(OpenCodeAdapter.prototype, "assertIdle").mockImplementation(function(this: OpenCodeAdapter, ...args) { if (args[0] === session.nativeSessionId) throw new Error("Post-claim idle guard is forbidden"); return idle.apply(this, args); });
+    try {
+      result = await app!.preparedInput.admit(prepared, lease, { context, publish: lifecycle => {
+        expect(published).toBeUndefined(); published = lifecycle; claim.hooks.push("publish");
+        expect(mutations()).toHaveLength(before);
+        expect(lifecycle.owner).toMatchObject({ nativeDeliveryPolicy: "native-queued-handoff", nativeQueuedHandoff: { ...claim.expected, origin: "queued-user" }, run: { runId: context.runId, nativeCommandId: context.nativeCommandId, nativeDelivery: "queue" } });
+      } });
+      expect(result.lifecycle).toBe(published!);
+      await until("strict queue acknowledgement", async () => storedRun(result.runId)?.nativePhase === "accepted" || undefined);
+      const ownedMutations = mutations().slice(before).filter(call => call.path.startsWith(`/api/session/${session.nativeSessionId}/`));
+      expect(ownedMutations).toHaveLength(1); expect(ownedMutations[0]).toMatchObject({ method: "POST", body: { id: context.nativeCommandId, delivery: "queue", text: prepared.prompt } });
+      if (foreignRace) {
+        expect(fake.inbox.some(input => input.id === context.nativeCommandId)).toBe(true);
+        expect(result.lifecycle.owner.run.status).toBe("running");
+        consumeQueuedInput(session.nativeSessionId!, context.nativeCommandId); complete(session.nativeSessionId!);
+      }
+      await result.lifecycle.done;
+      expect(result.lifecycle.submissionEvidence()).toMatchObject({ ...claim.expected, submission: "submitted", nativeAcceptance: "accepted" });
+      expect(claim.hooks.filter(hook => hook === "link")).toHaveLength(1); expect(claim.hooks.filter(hook => hook === "publish")).toHaveLength(1); expect(claim.hooks.filter(hook => hook === "native")).toHaveLength(1);
+    } finally { app!.preparedInput.release(lease); activityGuard.mockRestore(); idleGuard.mockRestore(); fake.active = false; }
+    expect(await result!.lifecycle.successfulSettlement()).toEqual({ ready: true });
+  }, TIMEOUT);
+
+  test("strict prepared handoff rejects incomplete capabilities, policy, origin and configuration before native preparation/publication", async () => {
+    const session = await queueSession("opencode"), prepared = await preparedFor(session.sessionId), before = sideEffects();
+    const patches = [
+      { delivery: undefined }, { delivery: "unrecognized" }, { origin: "user" }, { origin: "invalid" },
+      { intent: { kind: "compact", requestId: crypto.randomUUID() } }, { intent: { kind: "user-prompt" } },
+      { runId: undefined }, { nativeCommandId: undefined }, { validate: undefined }, { link: undefined },
+      { evidence: undefined }, { evidence: { beforeNative: () => {} } }, { evidence: { outcome: () => {} } },
+    ];
+    const preflight = spyOn(OpenCodeAdapter.prototype, "preflightNativeSession");
+    let publications = 0;
+    try {
+      for (const patch of patches) {
+        const claim = handoffClaim(session), context = { ...claim.context, ...patch } as PreparedAdmissionContext;
+        const lease = app!.preparedInput.reserve(claim.context.intent, session.sessionId);
+        try { await expect(app!.preparedInput.admit(prepared, lease, { context, publish: () => { publications++; } })).rejects.toMatchObject({ status: 409 }); }
+        finally { app!.preparedInput.release(lease); }
+        expect(claim.hooks).toEqual([]);
+      }
+      for (const changed of [
+        { ...prepared, configuration: { ...prepared.configuration, model: "fixture/changed" } },
+        { ...prepared, normalized: { ...prepared.normalized, effort: "changed" } },
+        { ...prepared, stagedUpgrade: { id: "different-profile" } },
+        { ...prepared, resume: false },
+        { ...prepared, binding: { ...prepared.binding, harness: "claude-code" } },
+      ]) {
+        const claim = handoffClaim(session), lease = app!.preparedInput.reserve(claim.context.intent, session.sessionId);
+        try { await expect(app!.preparedInput.admit(changed as typeof prepared, lease, { context: claim.context, publish: () => { publications++; } })).rejects.toMatchObject({ status: 409 }); }
+        finally { app!.preparedInput.release(lease); }
+      }
+      expect(publications).toBe(0); expect(preflight).not.toHaveBeenCalled(); expect(sideEffects()).toEqual(before);
+    } finally { preflight.mockRestore(); }
+    expect((await api("/api/sessions")).body.availability.canSend).toBe(true);
+  }, TIMEOUT);
+
+  test("strict handoff copies IDs, intent, policy, hooks and synchronous publisher before awaited preflight", async () => {
+    const session = await queueSession("opencode"), prepared = await preparedFor(session.sessionId), claim = handoffClaim(session);
+    const context = structuredClone({ ...claim.context, validate: undefined, link: undefined, evidence: undefined });
+    Object.assign(context, { validate: claim.context.validate, link: claim.context.link, evidence: { ...claim.context.evidence } });
+    let published: DispatchLifecycle | undefined;
+    const inputOptions: PreparedAdmissionOptions = { context: context as PreparedAdmissionContext, publish: lifecycle => { published = lifecycle; claim.hooks.push("publish"); } };
+    const entered = Promise.withResolvers<void>(), gate = Promise.withResolvers<void>(), associate = CatalogService.prototype.associate;
+    const wait = spyOn(CatalogService.prototype, "associate").mockImplementation(async function(this: CatalogService, ...args) { if (args[0] === session.sessionId) { entered.resolve(); await gate.promise; } return associate.apply(this, args); });
+    const lease = app!.preparedInput.reserve(claim.context.intent, session.sessionId), pending = app!.preparedInput.admit(prepared, lease, inputOptions);
+    try {
+      await entered.promise;
+      Object.assign(context, { runId: crypto.randomUUID(), nativeCommandId: "msg_mutated", delivery: "idle-only", origin: "user", validate: () => { throw new Error("Mutable validation used"); }, link: () => { throw new Error("Mutable link used"); } });
+      (context.intent as { requestId: string }).requestId = "mutated-request";
+      (context as any).evidence.beforeNative = () => { throw new Error("Mutable evidence used"); };
+      inputOptions.publish = () => { throw new Error("Mutable publisher used"); };
+      gate.resolve(); const result = await pending;
+      expect(result.lifecycle).toBe(published!); await result.lifecycle.done;
+      expect(result.lifecycle.submissionEvidence()).toMatchObject({ ...claim.expected, submission: "submitted", nativeAcceptance: "accepted" });
+    } finally { gate.resolve(); wait.mockRestore(); app!.preparedInput.release(lease); }
+  }, TIMEOUT);
+
+  for (const boundary of ["source", "claim", "link"] as const) test(`strict handoff ${boundary} refusal before installation remains a domain error without storage poison`, async () => {
+    const session = await queueSession("opencode"), prepared = await preparedFor(session.sessionId), claim = handoffClaim(session);
+    const before = sideEffects(), fake = sessions.get(session.nativeSessionId!)!, location = fake.info.location;
+    const preflight = OpenCodeAdapter.prototype.preflightNativeSession;
+    const gate = spyOn(OpenCodeAdapter.prototype, "preflightNativeSession").mockImplementation(async function(this: OpenCodeAdapter, ...args) {
+      await preflight.apply(this, args); if (args[0] === session.nativeSessionId && boundary === "claim") claim.invalidate();
+    });
+    const context = { ...claim.context, ...(boundary === "link" ? { link: () => { throw new WorkstreamAdapterError(409, "claim-invalidated", "Claim invalidated before link"); } } : {}) };
+    const lease = app!.preparedInput.reserve(context.intent, session.sessionId); let publications = 0;
+    if (boundary === "source") fake.info.location = { directory: join(root, "wrong-claimed-directory") };
+    try {
+      await expect(app!.preparedInput.admit(prepared, lease, { context, publish: () => { publications++; } })).rejects.toMatchObject({ status: 409, code: boundary === "source" ? "dispatch-source-mismatch" : "claim-invalidated" });
+      expect(publications).toBe(0); expect(sideEffects()).toEqual(before); expect(claim.hooks).not.toContain("link");
+    } finally { app!.preparedInput.release(lease); gate.mockRestore(); fake.info.location = location; }
+    expect((await api("/api/sessions")).body.availability.canSend).toBe(true);
+  }, TIMEOUT);
+
+  test("published strict handoff survives ready(false) and lost ACK without replay, accepting only exact native inbox evidence", async () => {
+    const session = await queueSession("opencode"), prepared = await preparedFor(session.sessionId), claim = handoffClaim(session), fake = sessions.get(session.nativeSessionId!)!;
+    const context = { ...claim.context, link: (identity: DispatchIdentity) => { claim.context.link(identity); fake.active = true; } };
+    const execute = OpenCodeRunService.prototype.executeNative, prompt = OpenCodeAdapter.prototype.promptQueuedHandoff;
+    let published: DispatchLifecycle | undefined;
+    const unconfirmed = spyOn(OpenCodeRunService.prototype, "executeNative").mockImplementation(function(this: OpenCodeRunService, owner, text, resume, ready) { expect(published?.owner).toBe(owner); ready(false); return execute.call(this, owner, text, resume, ready); });
+    const lostAck = spyOn(OpenCodeAdapter.prototype, "promptQueuedHandoff").mockImplementation(async function(this: OpenCodeAdapter, ...args) { await prompt.apply(this, args); throw new OpenCodeUnavailableError("Offline lost queue ACK"); });
+    const lease = app!.preparedInput.reserve(context.intent, session.sessionId), before = prompts().length;
+    try {
+      const result = await app!.preparedInput.admit(prepared, lease, { context, publish: lifecycle => { published = lifecycle; claim.hooks.push("publish"); } });
+      expect(result.lifecycle).toBe(published!); expect(await result.lifecycle.admission).toEqual({ state: "unconfirmed" });
+      await until("exact queue evidence recovered read-only", async () => result.lifecycle.submissionEvidence().nativeAcceptance === "accepted" || undefined);
+      expect(prompts()).toHaveLength(before + 1);
+      consumeQueuedInput(session.nativeSessionId!, context.nativeCommandId); complete(session.nativeSessionId!);
+      await result.lifecycle.done; expect(prompts()).toHaveLength(before + 1);
+      expect(result.lifecycle.submissionEvidence()).toMatchObject({ submission: "submitted", nativeAcceptance: "accepted" });
+      expect(await result.lifecycle.successfulSettlement()).toMatchObject({ ready: false });
+      expect(claim.outcomes.some(evidence => evidence.submission === "unknown")).toBe(true);
+    } finally { app!.preparedInput.release(lease); unconfirmed.mockRestore(); lostAck.mockRestore(); fake.active = false; }
+  }, TIMEOUT);
+
+  for (const harness of ["opencode", "claude-code"] as const) for (const asyncPublisher of [false, true]) test(`publisher ${asyncPublisher ? "Promise" : "throw"} withholds ${harness} execution and retains installed owner/global locks`, async () => {
+    const f = await isolatedQueueSeed(`publisher-${harness}-${asyncPublisher}`, false, harness), prepared = await preparedFor(f.session.sessionId, "offline publication refusal", f.selected.dataDir, f.session.cwd);
+    const claim = harness === "opencode" ? handoffClaim(f.session) : undefined;
+    const context = claim?.context ?? admissionContext({ nativeCommandId: undefined, origin: "queued-user" });
+    const lease = f.running.preparedInput.reserve(context.intent, f.session.sessionId), before = mutations().length, cliBefore = invocations().length;
+    const nativeExecute = spyOn(OpenCodeRunService.prototype, "executeNative"), claudeExecute = spyOn(ClaudeRunService.prototype, "execute");
+    let published: DispatchLifecycle | undefined, count = 0;
+    try {
+      await expect(f.running.preparedInput.admit(prepared, lease, { context, publish: lifecycle => {
+        published = lifecycle; count++; claim?.hooks.push("publish");
+        if (asyncPublisher) return Promise.resolve();
+        throw new Error("Offline publisher partial failure");
+      } })).rejects.toThrow(asyncPublisher ? "synchronously" : "publisher partial failure");
+      expect(published).toBeDefined(); expect(count).toBe(1); await published!.done;
+      expect(published!.owner.settled).toBe(true); expect(published!.owner.nativeDispatched).toBe(false);
+      expect(published!.submissionEvidence().submission).toBe("not-submitted");
+      expect(nativeExecute).not.toHaveBeenCalled(); expect(claudeExecute).not.toHaveBeenCalled();
+      expect(mutations()).toHaveLength(before); expect(invocations()).toHaveLength(cliBefore);
+      expect((await isolatedApi(f.running, "/api/sessions", { sessionId: f.session.sessionId, prompt: "must retain lock" }, f.token)).body.code).toBe("storage-unavailable");
+      expect(await published!.successfulSettlement()).toMatchObject({ ready: false });
+    } finally { f.running.preparedInput.release(lease); nativeExecute.mockRestore(); claudeExecute.mockRestore(); await closeStorageFailedFixture(f); }
+  }, TIMEOUT);
+
+  test("read-only OC settlement timeout does not poison bridge storage and fresh exact proof works", async () => {
+    const session = await queueSession("opencode"), prepared = await preparedFor(session.sessionId), context = admissionContext(), lease = app!.preparedInput.reserve(context.intent, session.sessionId);
+    let result;
+    try { result = await app!.preparedInput.admit(prepared, lease, { context }); } finally { app!.preparedInput.release(lease); }
+    await result.lifecycle.done;
+    const claude = await api("/api/sessions", { harness: "claude-code", prompt: "hold for Claude followup read-only OC proof timeout" }); expect(claude.status).toBe(202);
+    const snapshot = OpenCodeAdapter.prototype.snapshot;
+    const timeout = spyOn(OpenCodeAdapter.prototype, "snapshot").mockImplementation(async () => { throw new OpenCodeUnavailableError("offline read-only timeout"); });
+    try {
+      expect(await result.lifecycle.successfulSettlement()).toMatchObject({ ready: false, code: "dispatch-proof-unavailable" });
+      timeout.mockRestore();
+      expect(await result.lifecycle.successfulSettlement()).toEqual({ ready: true });
+      expect((await api("/api/sessions")).body.availability.canSend).toBe(true);
+      expect(storedRun(claude.body.runId).status).toBe("running");
+      expect(OpenCodeAdapter.prototype.snapshot).toBe(snapshot);
+    } finally { timeout.mockRestore(); writeFileSync(join(root, `claude-release-${claude.body.runId}`), "release"); await waitIdle(claude.body.sessionId); }
+  }, TIMEOUT);
+
+  test("read-only OC exact proof denies native directory drift as source mismatch without poisoning storage", async () => {
+    const session = await queueSession("opencode"), prepared = await preparedFor(session.sessionId), context = admissionContext(), lease = app!.preparedInput.reserve(context.intent, session.sessionId);
+    let result;
+    try { result = await app!.preparedInput.admit(prepared, lease, { context }); } finally { app!.preparedInput.release(lease); }
+    await result.lifecycle.done;
+    const fake = sessions.get(session.nativeSessionId!)!, location = fake.info.location, before = mutations().length;
+    fake.info.location = { directory: join(root, "different-native-source") };
+    try {
+      expect(await result.lifecycle.successfulSettlement()).toMatchObject({ ready: false, code: "dispatch-source-mismatch" });
+      const source = options.nativeSources!.oc;
+      if (source.harness !== "oc" || source.kind !== "local-registration") throw new Error("Expected local OpenCode registration source");
+      await expect(new OpenCodeAdapter(undefined, undefined, source.registrationFile).activity(session.nativeSessionId!, session.cwd)).rejects.toBeInstanceOf(OpenCodeSourceMismatchError);
+      expect((await api("/api/sessions")).body.availability.canSend).toBe(true);
+      expect(mutations()).toHaveLength(before);
+    } finally { fake.info.location = location; }
+    expect(await result.lifecycle.successfulSettlement()).toEqual({ ready: true });
+  }, TIMEOUT);
+
+  for (const status of [409, 503]) test(`generic OC observation error ${status} remains an invariant failure, not source mismatch or proof unavailability`, async () => {
+    const f = await isolatedQueueSeed(`oc-proof-invariant-${status}`, false, "opencode"), prepared = await preparedFor(f.session.sessionId, "offline invariant proof", f.selected.dataDir, f.session.cwd);
+    const context = admissionContext(), lease = f.running.preparedInput.reserve(context.intent, f.session.sessionId);
+    let result;
+    try { result = await f.running.preparedInput.admit(prepared, lease, { context }); } finally { f.running.preparedInput.release(lease); }
+    await result.lifecycle.done;
+    const observation = spyOn(OpenCodeAdapter.prototype, "snapshot").mockImplementation(async () => { throw new OpenCodeError("Offline unexpected observation contract", status); });
+    try {
+      expect(await result.lifecycle.successfulSettlement()).toMatchObject({ ready: false, code: "reconciliation-required" });
+      expect((await isolatedApi(f.running, "/api/sessions", { prompt: "must not bypass proof invariant" }, f.token)).body.code).toBe("storage-unavailable");
+    } finally { observation.mockRestore(); await closeStorageFailedFixture(f); }
+  }, TIMEOUT);
+
+  test("listeners reject user and native admission while startup worker classification is suspended", async () => {
+    const selected = startupFixture("classification-gate"), entered = Promise.withResolvers<void>(), gate = Promise.withResolvers<void>(), bound: Bun.Server<any>[] = [];
+    const serve = Bun.serve, capture = spyOn(Bun, "serve").mockImplementation(((input: any) => { const server = serve(input); bound.push(server); return server; }) as typeof Bun.serve);
+    const active = spyOn(WorkerService.prototype, "active").mockImplementation(() => [{ id: "classification-fixture", sessionId: "unknown-worker", runId: "unknown-run", launch: { harness: "opencode" } }] as any);
+    const refresh = spyOn(WorkerService.prototype, "refresh").mockImplementation(async value => { entered.resolve(); await gate.promise; return value; });
+    const pending = start(selected); let isolated: Awaited<ReturnType<typeof start>> | undefined;
+    try {
+      await entered.promise;
+      const origin = `http://127.0.0.1:${bound[0]!.port}`;
+      const loggedIn = await fetch(`${origin}/api/login`, { method: "POST", headers: { origin, "content-type": "application/json" }, body: JSON.stringify({ password: PASSWORD }) });
+      const localCookie = loggedIn.headers.get("set-cookie")!.split(";")[0]!;
+      const before = mutations().length;
+      const response = await fetch(`${origin}/api/sessions`, { method: "POST", headers: { origin, cookie: localCookie, "content-type": "application/json" }, body: JSON.stringify({ harness: "opencode", prompt: "must not launch" }) });
+      expect(response.status).toBe(503); expect(await response.json()).toMatchObject({ code: "startup-classifying" });
+      const nativeRecord = JSON.parse(readFileSync(join(selected.dataDir, "native-handoff.json"), "utf8"));
+      const nativeResponse = await fetch(nativeRecord.url.replace("/handoffs", "/workers"), { method: "POST", headers: { authorization: `Bearer ${nativeRecord.token}`, "content-type": "application/json" }, body: JSON.stringify({ operation: "start" }) });
+      expect(nativeResponse.status).toBe(503); expect(await nativeResponse.json()).toMatchObject({ code: "startup-classifying" });
+      expect(mutations()).toHaveLength(before);
+      gate.resolve(); isolated = await pending;
+      const after = await fetch(`${origin}/api/sessions`, { headers: { cookie: localCookie } });
+      expect((await after.json() as any).availability.canSend).toBe(true);
+    } finally { gate.resolve(); await pending.then(value => { isolated = value; }, () => {}); await isolated?.close(); refresh.mockRestore(); active.mockRestore(); capture.mockRestore(); }
+  }, TIMEOUT);
+
+  test("recovered owner keeps an after-release barrier throughout asynchronous worker refresh, including capacity", async () => {
+    const created = await api("/api/sessions", { harness: "opencode", prompt: "hold for recovered worker barrier", cwd: repoDir }); expect(created.status).toBe(202);
+    const { sessionId, nativeSessionId, runId } = created.body;
+    await until("accepted recovery fixture", async () => storedRun(runId).nativePhase === "accepted" ? true : undefined);
+    await app!.close(); app = undefined; complete(nativeSessionId);
+    const entered = Promise.withResolvers<void>(), gate = Promise.withResolvers<void>(), refreshed = { id: "barrier-worker", runId } as any;
+    const getByRun = WorkerStore.prototype.getByRun;
+    const worker = spyOn(WorkerStore.prototype, "getByRun").mockImplementation(function(this: WorkerStore, id) { return id === runId ? refreshed : getByRun.call(this, id); });
+    const refresh = spyOn(WorkerService.prototype, "refresh").mockImplementation(async value => { expect(value).toBe(refreshed); entered.resolve(); await gate.promise; return value; });
+    try {
+      app = await start({ ...options, maxConcurrentRuns: 1 }); await login(); await entered.promise;
+      const before = mutations().length;
+      const same = await api("/api/sessions", { sessionId, prompt: "offline cannot race recovered refresh" });
+      expect(same.status).toBe(409); expect(same.body.code).toBe("reconciliation-pending");
+      const other = await api("/api/sessions", { harness: "opencode", prompt: "offline no capacity during recovered refresh" });
+      expect(other.status).toBe(429); expect(other.body.code).toBe("capacity"); expect(mutations()).toHaveLength(before);
+      gate.resolve(); expect((await waitIdle(sessionId)).lastStatus).toBe("completed");
+      const next = await api("/api/sessions", { sessionId, prompt: "offline fresh after recovery reconciliation" });
+      expect(next.status).toBe(202); await waitIdle(sessionId);
+    } finally { gate.resolve(); refresh.mockRestore(); worker.mockRestore(); await app?.close(); app = await start(options); await login(); }
+  }, TIMEOUT);
+
+  test("failed recovered-worker refresh retains its barrier and disposable installation/data ownership locks", async () => {
+    const selected = startupFixture("failed-recovery-barrier"), paths = validateOwnershipPaths(selected.packageDir!, selected.dataDir);
+    let isolated = await start({ ...selected, maxConcurrentRuns: 1 }), localCookie = "";
+    const request = async (path: string, input?: unknown) => {
+      const response = await fetch(`${isolated.origin}${path}`, { method: input === undefined ? "GET" : "POST", headers: { origin: isolated.origin, cookie: localCookie, "content-type": "application/json" }, ...(input === undefined ? {} : { body: JSON.stringify(input) }) });
+      return { status: response.status, body: await response.json() as any, cookie: response.headers.get("set-cookie")?.split(";")[0] };
+    };
+    localCookie = (await request("/api/login", { password: PASSWORD })).cookie!;
+    const created = await request("/api/sessions", { harness: "opencode", prompt: "hold for failed recovered worker", cwd: repoDir }); expect(created.status).toBe(202);
+    const { sessionId, nativeSessionId, runId } = created.body;
+    const metadata = () => JSON.parse(readFileSync(join(selected.dataDir, "metadata.json"), "utf8"));
+    await until("isolated accepted recovery fixture", async () => metadata().runs.find((r: any) => r.runId === runId)?.nativePhase === "accepted" ? true : undefined);
+    await isolated.close(); complete(nativeSessionId);
+    const entered = Promise.withResolvers<void>(), gate = Promise.withResolvers<void>(), recoveredWorker = { id: "failed-barrier-worker", runId } as any;
+    const getByRun = WorkerStore.prototype.getByRun, refreshWorker = WorkerService.prototype.refresh;
+    const worker = spyOn(WorkerStore.prototype, "getByRun").mockImplementation(function(this: WorkerStore, id) { return id === runId ? recoveredWorker : getByRun.call(this, id); });
+    const refresh = spyOn(WorkerService.prototype, "refresh").mockImplementation(async function(this: WorkerService, value) {
+      if (value !== recoveredWorker) return refreshWorker.call(this, value);
+      entered.resolve(); await gate.promise; throw new Error("offline worker domain reconciliation failed");
+    });
+    try {
+      isolated = await start({ ...selected, maxConcurrentRuns: 1 }); localCookie = (await request("/api/login", { password: PASSWORD })).cookie!; await entered.promise;
+      expect((await request("/api/sessions")).body.sessions.find((s: any) => s.sessionId === sessionId).availability.code).toBe("reconciliation-pending");
+      gate.resolve();
+      await until("failed recovered reconciliation closed admission", async () => (await request("/api/sessions")).body.availability.code === "storage-unavailable" ? true : undefined);
+      expect((await request("/api/sessions", { sessionId, prompt: "must not replay after refresh failure" })).status).toBe(409);
+      await expect(isolated.close()).rejects.toThrow("ownership retained");
+      expect(() => acquireInstallation(paths, { phase: "starting" })).toThrow();
+      expect(JSON.parse(readFileSync(join(paths.installationLock, "owner.json"), "utf8")).phase).toBe("retained");
+      expect(JSON.parse(readFileSync(join(paths.dataLock!, "owner.json"), "utf8")).phase).toBe("retained");
+    } finally { gate.resolve(); refresh.mockRestore(); worker.mockRestore(); await isolated.close().catch(() => {}); }
+  }, TIMEOUT);
+
   for (const field of ["model", "authorityId"] as const) test(`prepared user admission rejects pinned ${field} edits after async catalog preflight without dispatch`, async () => {
     let live: Session | undefined;
     const execute = OpenCodeRunService.prototype.executeNative;
@@ -721,6 +1153,21 @@ describe.serial("bridge runtime (isolated offline HTTP native fixtures)", () => 
       gate.resolve(); mock.mockRestore(); await app!.close(); app = await start(options); await login();
     }
     expect((await api("/api/sessions")).body.sessions.find((s: any) => s.sessionId === session.sessionId).availability.canSend).toBe(true);
+  }, TIMEOUT);
+
+  test("backend prepared admission is shutdown-supervised even without an HTTP request task", async () => {
+    const session = await fixtureSession("opencode"), prepared = await preparedFor(session.sessionId), context = admissionContext(), lease = app!.preparedInput.reserve(context.intent, session.sessionId);
+    const entered = Promise.withResolvers<void>(), gate = Promise.withResolvers<void>(), associate = CatalogService.prototype.associate;
+    const preflight = spyOn(CatalogService.prototype, "associate").mockImplementation(async function(this: CatalogService, ...args) {
+      if (args[0] === session.sessionId) { entered.resolve(); await gate.promise; }
+      return associate.apply(this, args);
+    });
+    const before = sideEffects(), consumer = app!.preparedInput, pending = consumer.admit(prepared, lease, { context });
+    try {
+      await entered.promise; const close = app!.close(); gate.resolve();
+      await expect(pending).rejects.toThrow("admission unavailable"); consumer.release(lease); await close;
+      expect(sideEffects()).toEqual(before);
+    } finally { gate.resolve(); consumer.release(lease); preflight.mockRestore(); await app!.close(); app = await start(options); await login(); }
   }, TIMEOUT);
 
   test("shutdown preserves a pending legacy followup as non-submitted rather than launching after owner exit", async () => {
@@ -945,6 +1392,285 @@ describe.serial("bridge runtime (isolated offline HTTP native fixtures)", () => 
     expect(existsSync(paths.installationLock)).toBe(false); expect(existsSync(paths.dataLock!)).toBe(false);
     const restarted = await start({ ...selected, port: ports[0]! });
     try { expect(restarted.port).toBe(ports[0]!); } finally { await restarted.close(); }
+  }, TIMEOUT);
+
+  test("Phase3 FIFO HTTP admission is dormant, concurrent three-max, unadvertised and cannot bypass ordinary prompt", async () => {
+    const session = await queueSession(), path = queuePath(session.sessionId), beforeNative = mutations().length, beforeCli = invocations().length, beforeRuns = disk("metadata.json").runs.length;
+    const inputs = [queueWire(session), queueWire(session), queueWire(session)], results = await Promise.all(inputs.map(input => api(path, input)));
+    expect(results.map(r => r.status)).toEqual([202, 202, 202]); expect(new Set(results.map(r => r.body.itemId)).size).toBe(3);
+    expect((await api(path, queueWire(session))).status).toBe(429);
+    const read = await api(path); expect(isPendingInputSnapshot(read.body.snapshot)).toBe(true);
+    expect(read.body.snapshot.items.map((i: any) => i.sequence)).toEqual([1, 2, 3]); expect(read.body.snapshot.revision).toBe(3);
+    expect(read.body.presentation).toMatchObject({ waitingCount: 3, maxWaiting: 3, chainLocked: true, unresolved: null, automation: { supported: false }, enqueue: { allowed: false, code: "pending-input-full" } });
+    const bypass = await api("/api/sessions", { sessionId: session.sessionId, prompt: "must not overtake", profileId: "template:engineering", requestId: crypto.randomUUID() });
+    expect(bypass.status).toBe(409); expect(bypass.body.code).toBe("pending-input-chain-active");
+    expect((await api(path, inputs[0], { anonymous: true })).status).toBe(401);
+    expect(mutations()).toHaveLength(beforeNative); expect(invocations()).toHaveLength(beforeCli); expect(disk("metadata.json").runs).toHaveLength(beforeRuns);
+    expect((await api(`/api/sessions/${session.sessionId}/runs`)).body.runs).toHaveLength(1);
+    expect((await api("/api/config")).body).not.toHaveProperty("pendingInputCapability");
+  }, TIMEOUT);
+
+  test("Phase3 busy OpenCode accepts only App waiters without touching its distinct native inbox", async () => {
+    const session = await queueSession("opencode"), path = queuePath(session.sessionId), held = await api("/api/sessions", { sessionId: session.sessionId, prompt: "hold for phase3 App-only waiters" }); expect(held.status).toBe(202);
+    const before = mutations().length, beforeRuns = disk("metadata.json").runs.length;
+    try {
+      for (let n = 0; n < 3; n++) expect((await api(path, queueWire(session, `App waiter ${n}`))).status).toBe(202);
+      expect((await api(path, queueWire(session))).status).toBe(429); expect(sessions.get(session.nativeSessionId!)!.inbox).toEqual([]);
+      expect(mutations()).toHaveLength(before); expect(disk("metadata.json").runs).toHaveLength(beforeRuns);
+      expect((await api("/api/sessions", { sessionId: session.sessionId, prompt: "cannot use native inbox to bypass App chain" })).status).toBe(409);
+    } finally { complete(session.nativeSessionId!); await until("busy seed completes without draining", async () => storedRun(held.body.runId)?.status === "completed" || undefined); }
+  }, TIMEOUT);
+
+  test("Phase3 excludes an active exact-predecessor legacy reservation until its historical followup settles", async () => {
+    await login();
+    const held = await api("/api/sessions", { harness: "claude-code", prompt: "hold for Claude followup FIFO exclusion" }); expect(held.status).toBe(202);
+    const session = disk("metadata.json").sessions.find((s: Session) => s.sessionId === held.body.sessionId), path = queuePath(session.sessionId), input = queueWire(session);
+    try {
+      await until("legacy predecessor ready", async () => (await api("/api/sessions")).body.sessions.find((s: any) => s.sessionId === session.sessionId)?.availability.queueAfterRunId === held.body.runId || undefined);
+      const legacy = await api("/api/sessions", { sessionId: session.sessionId, prompt: "offline prior legacy followup" }); expect(legacy.status).toBe(202); expect(legacy.body.queued).toBe(true);
+      const refused = await api(path, input); expect(refused.status).toBe(409); expect(refused.body.code).toBe("pending-input-legacy-reservation");
+      expect((await api(path)).body.snapshot.items).toEqual([]);
+      writeFileSync(join(root, `claude-release-${held.body.runId}`), "release");
+      await until("legacy run journaled", async () => disk("metadata.json").runs.find((r: any) => r.queuedFollowupId === legacy.body.receipt.requestId && r.status === "completed") || undefined);
+      await waitIdle(session.sessionId); expect((await api(path, input)).status).toBe(202);
+      const legacyRead = await api("/api/sessions"); expect(legacyRead.body.sessions.find((s: any) => s.sessionId === session.sessionId).queuedFollowups.find((r: any) => r.requestId === legacy.body.receipt.requestId).state).toBe("dispatched");
+    } finally { writeFileSync(join(root, `claude-release-${held.body.runId}`), "release"); }
+  }, TIMEOUT);
+
+  test("Phase3 attached Claude read eligibility is honest and automation cannot reuse an external-stopped acknowledgement", async () => {
+    await login(); const nativeSessionId = claudeHistoryFixture(), attached = await api("/api/sessions/attach", { harness: "claude-code", nativeSessionId, cwd: repoDir }); expect(attached.status).toBe(201);
+    const session = disk("metadata.json").sessions.find((s: Session) => s.nativeSessionId === nativeSessionId), path = queuePath(session.sessionId), before = invocations().length;
+    const read = await api(path); expect(read.body.presentation.enqueue).toMatchObject({ allowed: false, code: "pending-input-attached-cc" }); expect(read.body.presentation.automation.supported).toBe(false);
+    expect((await api(path, queueWire(session))).status).toBe(409); expect((await api(path, { ...queueWire(session), nativeStopped: true })).status).toBe(400); expect(invocations()).toHaveLength(before);
+  }, TIMEOUT);
+
+  test("Phase3 original wire receipts dedup before full capacity/hidden/profile/catalog drift; conflicts and tombstones remain exact", async () => {
+    const session = await queueSession(), path = queuePath(session.sessionId), input = queueWire(session), receipt = (await api(path, input)).body;
+    await api(path, queueWire(session)); await api(path, queueWire(session)); await api(`/api/sessions/${session.sessionId}/hide`, {});
+    const spy = spyOn(CatalogService.prototype, "assertBinding").mockImplementation(() => { throw new WorkspaceError(409, "binding-invalid", "Injected current catalog drift"); });
+    try {
+      expect((await api(path, input)).body).toEqual(receipt);
+      const reordered = { ...input, source: Object.fromEntries(Object.entries(input.source).reverse()) };
+      expect((await api(path, reordered)).body).toEqual(receipt);
+      expect((await api(path, { ...input, configuration: { ...input.configuration, model: "different-model" } })).status).toBe(409);
+      expect((await api(path, { ...input, text: "different original intent" })).status).toBe(409);
+      const remove = { version: 1, conversationId: session.sessionId, requestId: crypto.randomUUID(), inputRequestId: input.requestId, itemId: receipt.itemId };
+      const removed = await api(`${path}/${receipt.itemId}/remove`, remove); expect(removed.status).toBe(200);
+      const revision = removed.body.revision; expect((await api(`${path}/${receipt.itemId}/remove`, remove)).body.revision).toBe(revision);
+      expect((await api(path, input)).body).toEqual(receipt);
+      expect((await api(`${path}/inputs/${input.requestId}`)).body).toMatchObject({ receipt, classification: "removed" });
+      expect(spy).not.toHaveBeenCalled();
+    } finally { spy.mockRestore(); }
+  }, TIMEOUT);
+
+  test("Phase3 exact wire validators reject malformed/current source and configuration assertions without native calls", async () => {
+    const session = await queueSession("opencode"), path = queuePath(session.sessionId), input = queueWire(session), before = mutations().length;
+    for (const value of [{ ...input, version: 2 }, { ...input, unknown: true }, { ...input, configuration: { ...input.configuration, effort: "bad\nvariant" } }, { ...input, source: { ...input.source, harnessId: "oc" } }]) expect((await api(path, value)).status).toBe(400);
+    for (const value of [{ ...input, source: { ...input.source, nativeSessionId: null } }, { ...input, source: { ...input.source, nativeSessionId: "ses_wrong" } }, { ...input, configuration: { ...input.configuration, model: "fixture/other" } }]) expect((await api(path, value)).status).toBe(409);
+    const accepted = await api(path, input); expect(accepted.status).toBe(202);
+    expect((await api(path)).body.presentation.automation.supported).toBe(false);
+    expect((await api(`/api/sessions/${crypto.randomUUID()}/pending-inputs`, { ...input, conversationId: crypto.randomUUID() })).status).toBe(400);
+    expect((await api(`/api/sessions/${crypto.randomUUID()}/pending-inputs`)).status).toBe(404);
+    expect(mutations()).toHaveLength(before);
+  }, TIMEOUT);
+
+  for (const position of [0, 1, 2]) test(`Phase3 paused HTTP removal position ${position} preserves independent siblings and releases chain only at last removal`, async () => {
+    const session = await queueSession("claude-code", true), path = queuePath(session.sessionId), inputs = [queueWire(session, "head"), queueWire(session, "middle"), queueWire(session, "tail")];
+    const receipts: Array<{ itemId: string }> = []; for (const input of inputs) receipts.push((await api(path, input)).body);
+    app!.pendingInputs.store.pause(session.sessionId, { code: "source-changed", reason: "Operator safety pause" });
+    const remove = async (n: number) => api(`${path}/${receipts[n].itemId}/remove`, { version: 1, conversationId: session.sessionId, requestId: crypto.randomUUID(), itemId: receipts[n].itemId, inputRequestId: inputs[n]!.requestId });
+    expect((await remove(position)).status).toBe(200); const read = (await api(path)).body;
+    expect(read.snapshot.items.map((i: any) => i.text)).toEqual(inputs.filter((_, n) => n !== position).map(i => i.text)); expect(read.snapshot.paused).toBe(true); expect(read.presentation.chainLocked).toBe(true);
+    for (const n of [0, 1, 2].filter(n => n !== position)) expect((await remove(n)).status).toBe(200);
+    expect((await api(path)).body.presentation.chainLocked).toBe(false);
+    const upgraded = await api("/api/sessions", { sessionId: session.sessionId, prompt: "existing immediate profile upgrade", profileId: "template:engineering" }); expect(upgraded).toMatchObject({ status: 202 }); await waitIdle(session.sessionId);
+    expect(disk("metadata.json").sessions.find((s: Session) => s.sessionId === session.sessionId).agent).toBe("engineering");
+  }, TIMEOUT);
+
+  test("Phase3 resume is revision-CAS/idempotent and global profile edits cannot rewrite the historical prepared launch", async () => {
+    const session = await queueSession(), path = queuePath(session.sessionId), input = queueWire(session); await api(path, input);
+    app!.pendingInputs.store.pause(session.sessionId, { code: "restart", reason: "Resume explicitly" });
+    const revision = (await api(path)).body.snapshot.revision, resume = { version: 1, requestId: crypto.randomUUID(), conversationId: session.sessionId, action: "resume", expectedRevision: revision };
+    expect((await api(`${path}/resume`, { ...resume, expectedRevision: revision - 1 })).status).toBe(409);
+    const savedProfile = disk("agents.json").profiles.find((p: any) => p.id === "base:cc");
+    try {
+      expect((await api("/api/agents/base:cc", { model: "phase3-profile-edit", effort: "high" }, { method: "PUT" })).status).toBe(200);
+      const resumed = await api(`${path}/resume`, resume); expect(resumed.status).toBe(200);
+      app!.pendingInputs.store.pause(session.sessionId, { code: "hidden", reason: "A later pause" }); const paused = (await api(path)).body.snapshot;
+      expect((await api(`${path}/resume`, resume)).body).toEqual(resumed.body); expect((await api(path)).body.snapshot).toEqual(paused);
+      const prepared = app!.pendingInputs.store.lookup(session.sessionId, input.requestId)!.item.snapshot.prepared;
+      expect(prepared.configuration.model).toBeUndefined(); expect(prepared.expectedPrior!.configuration).toEqual(prepared.configuration);
+    } finally { await api("/api/agents/base:cc", { model: savedProfile.model, effort: savedProfile.effort }, { method: "PUT" }); }
+  }, TIMEOUT);
+
+  test("Phase3 catalog/context drift blocks new enqueue and resume while waiting removal remains independent", async () => {
+    const session = await queueSession("claude-code", true), path = queuePath(session.sessionId), input = queueWire(session), receipt = (await api(path, input)).body;
+    const association = (await api("/api/sessions")).body.sessions.find((s: any) => s.sessionId === session.sessionId), workspaceId = association.workspaceId;
+    const created = await api(`/api/workstreams?workspaceId=${workspaceId}`, { id: "phase3-queue-context", title: "Offline queue context", type: "feature" }); expect(created.status).toBe(200);
+    expect((await api(`/api/workstreams/associate?workspaceId=${workspaceId}`, { sessionId: session.sessionId, workstreamId: "phase3-queue-context" })).status).toBe(200);
+    expect((await api(path, queueWire(session))).status).toBe(409);
+    expect((await api(`${path}/resume`, { version: 1, requestId: crypto.randomUUID(), conversationId: session.sessionId, action: "resume", expectedRevision: (await api(path)).body.snapshot.revision })).status).toBe(409);
+    expect((await api(path, input)).body).toEqual(receipt);
+    const drift = spyOn(CatalogService.prototype, "assertBinding").mockImplementation(() => { throw new WorkspaceError(409, "binding-invalid", "Catalog binding drift"); });
+    try {
+      expect((await api(path, queueWire(session))).status).toBe(409);
+      expect((await api(`${path}/${receipt.itemId}/remove`, { version: 1, requestId: crypto.randomUUID(), conversationId: session.sessionId, itemId: receipt.itemId, inputRequestId: input.requestId })).status).toBe(200);
+    } finally { drift.mockRestore(); }
+  }, TIMEOUT);
+
+  test("Phase3 restart retains waiting paused, config drift refuses new work, and original receipt wins before preparation", async () => {
+    const selected = startupFixture("fifo-restart"), dir = selected.dataDir; let running = await start(selected), token = await isolatedLogin(running);
+    try {
+      const created = await isolatedApi(running, "/api/sessions", { prompt: "offline queue restart seed" }, token);
+      await until("isolated Claude seed settled", async () => { const meta = JSON.parse(readFileSync(join(dir, "metadata.json"), "utf8")); return meta.runs.find((r: any) => r.runId === created.body.runId)?.status === "completed" || undefined; });
+      const meta = JSON.parse(readFileSync(join(dir, "metadata.json"), "utf8")), session = meta.sessions[0], input = queueWire(session), path = queuePath(session.sessionId), receipt = (await isolatedApi(running, path, input, token)).body;
+      await running.close(); meta.sessions[0].model = "persisted-default-drift"; writeFileSync(join(dir, "metadata.json"), JSON.stringify(meta));
+      const before = invocations().length; running = await start(selected); token = await isolatedLogin(running);
+      const state = await isolatedApi(running, path, undefined, token); expect(state.body.snapshot).toMatchObject({ paused: true, items: [{ state: "waiting", requestId: input.requestId }] }); expect(state.body.presentation.pauseCode).toBe("restart");
+      expect((await isolatedApi(running, path, input, token)).body).toEqual(receipt);
+      expect((await isolatedApi(running, path, queueWire({ ...session, model: "persisted-default-drift" }), token)).status).toBe(409);
+      expect((await isolatedApi(running, `${path}/resume`, { version: 1, requestId: crypto.randomUUID(), conversationId: session.sessionId, action: "resume", expectedRevision: state.body.snapshot.revision }, token)).status).toBe(409);
+      expect(invocations()).toHaveLength(before); expect(JSON.parse(readFileSync(join(dir, "metadata.json"), "utf8")).runs).toHaveLength(1);
+    } finally { await running.close(); }
+  }, TIMEOUT);
+
+  for (const action of ["enqueue", "resume"] as const) test(`Phase3 asynchronous repository corruption on ${action} fails storage closed and retains ownership`, async () => {
+    const f = await isolatedQueueSeed(`fifo-router-corrupt-${action}`, true), path = queuePath(f.session.sessionId), marker = join(f.discovery.stateRoot, "complete.json");
+    const original = readFileSync(marker, "utf8");
+    if (action === "resume") expect((await isolatedApi(f.running, path, queueWire(f.session), f.token)).status).toBe(202);
+    const beforeNative = mutations().length, beforeCli = invocations().length;
+    // INCOMPLETE_INITIALIZATION is an actual corrupt inspection state, not one
+    // of the two storage codes the old asynchronous classifier recognized.
+    rmSync(marker);
+    try {
+      const input = action === "enqueue" ? queueWire(f.session) : { version: 1, requestId: crypto.randomUUID(), conversationId: f.session.sessionId, action: "resume", expectedRevision: f.running.pendingInputs.store.get(f.session.sessionId).revision };
+      const failed = await isolatedApi(f.running, action === "resume" ? `${path}/resume` : path, input, f.token);
+      expect(failed.status).toBe(503); expect(failed.body).toMatchObject({ code: "pending-input-storage", reconciliationRequired: true });
+      writeFileSync(marker, original);
+      expect((await isolatedApi(f.running, "/api/sessions", { prompt: "no unrelated corruption bypass" }, f.token)).body.code).toBe("storage-unavailable");
+      expect(mutations()).toHaveLength(beforeNative); expect(invocations()).toHaveLength(beforeCli);
+    } finally { writeFileSync(marker, original); await closeStorageFailedFixture(f); }
+  }, TIMEOUT);
+
+  for (const code of ["BUSY", "UNAVAILABLE"] as const) test(`Phase3 asynchronous repository ${code} is scoped 503 and permits a fresh queue retry`, async () => {
+    const f = await isolatedQueueSeed(`fifo-router-${code}`, true), inspect = repository.inspectRepositoryStore;
+    const unavailable = spyOn(repository, "inspectRepositoryStore").mockImplementation(discovery => discovery.stateRoot === f.discovery.stateRoot ? { state: "unavailable", code, message: "Offline local reader unavailable", path: discovery.databasePath } : inspect(discovery));
+    try {
+      const response = await isolatedApi(f.running, queuePath(f.session.sessionId), queueWire(f.session), f.token);
+      expect(response.status).toBe(503); expect(response.body.code).toBe("pending-input-pin-unavailable"); expect(response.body.reconciliationRequired).not.toBe(true);
+      expect((await isolatedApi(f.running, "/api/sessions", undefined, f.token)).body.availability.canSend).toBe(true);
+      unavailable.mockRestore();
+      expect((await isolatedApi(f.running, queuePath(f.session.sessionId), queueWire(f.session), f.token)).status).toBe(202);
+    } finally { unavailable.mockRestore(); await f.running.close(); }
+  }, TIMEOUT);
+
+  for (const code of ["STORAGE_ERROR", "CORRUPT_STORE"]) test(`Phase3 coded asynchronous repository ${code} exception is storage-fatal even with status 409`, async () => {
+    const f = await isolatedQueueSeed(`fifo-router-code-${code}`, true), forAdmission = RepositoryRouter.prototype.forAdmission;
+    const failure = spyOn(RepositoryRouter.prototype, "forAdmission").mockImplementation(function(this: RepositoryRouter, admission, workspaceId) {
+      if (admission.sessionId === f.session.sessionId) throw new WorkstreamAdapterError(409, code, "Offline coded authority failure");
+      return forAdmission.call(this, admission, workspaceId);
+    });
+    try {
+      const response = await isolatedApi(f.running, queuePath(f.session.sessionId), queueWire(f.session), f.token);
+      expect(response.status).toBe(503); expect(response.body).toMatchObject({ code: "pending-input-storage", reconciliationRequired: true });
+    } finally { failure.mockRestore(); await closeStorageFailedFixture(f); }
+  }, TIMEOUT);
+
+  for (const initialized of [false, true]) for (const change of ["corrupt", "BUSY", "UNAVAILABLE"] as const) test(`Phase3 final synchronous ${initialized ? "repository" : "App-only"} fence classifies ${change} after successful preflight`, async () => {
+    const f = await isolatedQueueSeed(`fifo-final-${initialized}-${change}`, initialized), assertBinding = CatalogService.prototype.assertBinding, inspect = repository.inspectRepositoryStore;
+    let fences = 0, armed = false;
+    const inspection = spyOn(repository, "inspectRepositoryStore").mockImplementation(discovery => armed && change !== "corrupt" && discovery.stateRoot === f.discovery.stateRoot ? { state: "unavailable", code: change, message: "Offline final reader unavailable", path: discovery.databasePath } : inspect(discovery));
+    const fence = spyOn(CatalogService.prototype, "assertBinding").mockImplementation(function(this: CatalogService, ...args) {
+      assertBinding.apply(this, args);
+      if (args[2] !== f.session.cwd || ++fences !== 2) return;
+      // First validate already succeeded; this is the real service commit fence.
+      armed = true;
+      if (change === "corrupt") writeFileSync(join(f.discovery.stateRoot, "complete.json"), "{broken");
+    });
+    if (!initialized && change === "corrupt") mkdirSync(f.discovery.stateRoot, { recursive: true });
+    const beforeNative = mutations().length, beforeCli = invocations().length;
+    try {
+      const response = await isolatedApi(f.running, queuePath(f.session.sessionId), queueWire(f.session), f.token);
+      expect(fences).toBe(2); expect(response.status).toBe(503);
+      expect(response.body.code).toBe(change === "corrupt" ? "pending-input-storage" : "pending-input-pin-unavailable");
+      expect(response.body.reconciliationRequired).toBe(change === "corrupt" ? true : undefined);
+      expect(f.running.pendingInputs.store.get(f.session.sessionId).items).toHaveLength(0);
+      expect(mutations()).toHaveLength(beforeNative); expect(invocations()).toHaveLength(beforeCli);
+      if (change !== "corrupt") expect((await isolatedApi(f.running, "/api/sessions", undefined, f.token)).body.availability.canSend).toBe(true);
+    } finally {
+      fence.mockRestore(); inspection.mockRestore();
+      if (change === "corrupt") await closeStorageFailedFixture(f); else await f.running.close();
+    }
+  }, TIMEOUT);
+
+  test("Phase3 final App-only fence refuses newly initialized valid repository as 409 without poisoning storage", async () => {
+    const f = await isolatedQueueSeed("fifo-final-new-domain", false), assertBinding = CatalogService.prototype.assertBinding;
+    let fences = 0;
+    const fence = spyOn(CatalogService.prototype, "assertBinding").mockImplementation(function(this: CatalogService, ...args) {
+      assertBinding.apply(this, args);
+      if (args[2] === f.session.cwd && ++fences === 2) initializeRepository(f.discovery);
+    });
+    try {
+      const response = await isolatedApi(f.running, queuePath(f.session.sessionId), queueWire(f.session), f.token);
+      expect(fences).toBe(2); expect(response.status).toBe(409); expect(response.body.code).toBe("pending-input-domain-changed");
+      expect((await isolatedApi(f.running, "/api/sessions", undefined, f.token)).body.availability.canSend).toBe(true);
+      expect(f.running.pendingInputs.store.get(f.session.sessionId).items).toHaveLength(0);
+    } finally { fence.mockRestore(); await f.running.close(); }
+  }, TIMEOUT);
+
+  test("Phase3 startup recovery permits explicit resume/new waiting mutations after classification without any replay", async () => {
+    const selected = startupFixture("fifo-valid-resume"), dir = selected.dataDir; let running = await start(selected), token = await isolatedLogin(running);
+    try {
+      const created = await isolatedApi(running, "/api/sessions", { prompt: "offline waiting recovery seed" }, token);
+      await until("resume seed settled", async () => JSON.parse(readFileSync(join(dir, "metadata.json"), "utf8")).runs.find((r: any) => r.runId === created.body.runId)?.status === "completed" || undefined);
+      const session = JSON.parse(readFileSync(join(dir, "metadata.json"), "utf8")).sessions[0], path = queuePath(session.sessionId), input = queueWire(session), receipt = (await isolatedApi(running, path, input, token)).body;
+      await running.close(); const before = invocations().length; running = await start(selected); token = await isolatedLogin(running);
+      const state = (await isolatedApi(running, path, undefined, token)).body; expect(state.snapshot.paused).toBe(true);
+      expect((await isolatedApi(running, `${path}/resume`, { version: 1, requestId: crypto.randomUUID(), conversationId: session.sessionId, action: "resume", expectedRevision: state.snapshot.revision }, token)).status).toBe(200);
+      expect((await isolatedApi(running, path, queueWire(session, "second recovered App waiter"), token)).status).toBe(202);
+      const read = (await isolatedApi(running, path, undefined, token)).body; expect(read.snapshot.paused).toBe(false); expect(read.presentation.waitingCount).toBe(2);
+      expect(read.snapshot.items[0].itemId).toBe(receipt.itemId); expect(read.snapshot.items[1].sequence).toBeGreaterThan(receipt.sequence);
+      expect(invocations()).toHaveLength(before); expect(JSON.parse(readFileSync(join(dir, "metadata.json"), "utf8")).runs).toHaveLength(1);
+    } finally { await running.close(); }
+  }, TIMEOUT);
+
+  test("Phase3 recovered claim without run metadata is uncertain, not replayed, not removable or resumable", async () => {
+    const selected = startupFixture("fifo-claim"), dir = selected.dataDir; let running = await start(selected), token = await isolatedLogin(running);
+    try {
+      const created = await isolatedApi(running, "/api/sessions", { prompt: "offline claim recovery seed" }, token);
+      await until("claim seed settled", async () => JSON.parse(readFileSync(join(dir, "metadata.json"), "utf8")).runs.find((r: any) => r.runId === created.body.runId)?.status === "completed" || undefined);
+      const session = JSON.parse(readFileSync(join(dir, "metadata.json"), "utf8")).sessions[0], input = queueWire(session), path = queuePath(session.sessionId), receipt = (await isolatedApi(running, path, input, token)).body;
+      await running.close(); const storeId = JSON.parse(readFileSync(join(dir, "manifest.json"), "utf8")).storeId, queued = new PendingInputStore(dir, storeId, { validateLive: () => {} }); queued.recover();
+      queued.resume({ version: 1, requestId: crypto.randomUUID(), conversationId: session.sessionId, action: "resume", expectedRevision: queued.get(session.sessionId).revision });
+      const item = queued.lookup(session.sessionId, input.requestId)!.item, identity = queued.claim({ conversationId: session.sessionId, inputRequestId: input.requestId, itemId: receipt.itemId, expectedRevision: queued.get(session.sessionId).revision, attemptId: crypto.randomUUID(), runId: crypto.randomUUID(), nativeCommandId: null,
+        authorization: { kind: "dispatch", authorizationId: crypto.randomUUID(), chainId: item.chainId, predecessorRunId: null, source: dispatchSource(item.snapshot) } }).claim!.identity;
+      queued.link(identity); const before = invocations().length; running = await start(selected); token = await isolatedLogin(running);
+      expect((await isolatedApi(running, `${path}/inputs/${input.requestId}`, undefined, token)).body).toMatchObject({ receipt, classification: "uncertain", runId: identity.runId });
+      const remove = { version: 1, requestId: crypto.randomUUID(), conversationId: session.sessionId, inputRequestId: input.requestId, itemId: receipt.itemId }, removed = await isolatedApi(running, `${path}/${receipt.itemId}/remove`, remove, token);
+      expect(removed.status).toBe(409); expect(removed.body).toMatchObject({ outcome: "claimed", runId: identity.runId }); expect((await isolatedApi(running, `${path}/${receipt.itemId}/remove`, remove, token)).body).toEqual(removed.body);
+      expect((await isolatedApi(running, `${path}/resume`, { version: 1, requestId: crypto.randomUUID(), conversationId: session.sessionId, action: "resume", expectedRevision: running.pendingInputs.store.get(session.sessionId).revision }, token)).status).toBe(409);
+      expect((await isolatedApi(running, "/api/sessions", { sessionId: session.sessionId, prompt: "no bypass" }, token)).status).toBe(409); expect(invocations()).toHaveLength(before);
+    } finally { await running.close(); }
+  }, TIMEOUT);
+
+  test("Phase3 corrupt optional queue fails startup closed and retains disposable ownership locks", async () => {
+    const selected = startupFixture("fifo-corrupt"), paths = validateOwnershipPaths(selected.packageDir!, selected.dataDir);
+    writeFileSync(join(selected.dataDir, "pending-inputs.json"), "{broken");
+    await expect(start(selected)).rejects.toThrow("Pending input store unavailable or corrupt");
+    expect(() => acquireInstallation(paths, { phase: "starting" })).toThrow();
+  }, TIMEOUT);
+
+  test("Phase3 queue storage errors map 503 and invoke bridge failClosed, never a retryable generic 400", async () => {
+    const selected = startupFixture("fifo-storage-failure"), running = await start(selected), token = await isolatedLogin(running);
+    let spy: ReturnType<typeof spyOn> | undefined;
+    try {
+      const created = await isolatedApi(running, "/api/sessions", { prompt: "offline storage failure seed" }, token);
+      await until("failure seed settled", async () => JSON.parse(readFileSync(join(selected.dataDir, "metadata.json"), "utf8")).runs.find((r: any) => r.runId === created.body.runId)?.status === "completed" || undefined);
+      const session = JSON.parse(readFileSync(join(selected.dataDir, "metadata.json"), "utf8")).sessions[0];
+      spy = spyOn(PendingInputStore.prototype, "enqueue").mockImplementation(() => { throw new PendingInputStorageError("Injected durability failure after native intent record boundary"); });
+      const input = queueWire(session), failed = await isolatedApi(running, queuePath(session.sessionId), input, token); expect(failed.status).toBe(503); expect(failed.body).toMatchObject({ code: "pending-input-storage", conversationId: session.sessionId, requestId: input.requestId, reconciliationRequired: true });
+      const bypass = await isolatedApi(running, "/api/sessions", { sessionId: session.sessionId, prompt: "must fail closed" }, token); expect(bypass.body.code).toBe("storage-unavailable");
+    } finally { spy?.mockRestore(); await expect(running.close()).rejects.toThrow("ownership retained"); }
   }, TIMEOUT);
 
   test("fake Claude ordinary prompt/resume uses selected source, stdout and native hook-secret boundary", async () => {

@@ -1,5 +1,5 @@
 import { RepositoryDomain, DomainError, discoverRepository, inspectRepositoryStore, initializeRepository, openRepositoryDomain, normalizeNativeSource, revalidateCheckout } from "sane-core/server";
-import type { ConversationRef, CreateWorkstreamInput, InvocationContext, Phase, MutationContext, RepositoryContext, RepositoryDiscovery } from "sane-core/contracts";
+import type { ConversationRef, CreateWorkstreamInput, InvocationContext, Phase, MutationContext, RepositoryContext, RepositoryDiscovery, StoreAvailability } from "sane-core/contracts";
 import { uuid, type Session } from "./history";
 import type { WorkstreamOverview } from "./workstreams-contract";
 import type { CatalogService } from "./catalog";
@@ -9,6 +9,14 @@ export type AppConversation = Pick<Session, "sessionId" | "harness" | "nativeSes
 export type ExecutionContext = Pick<InvocationContext, "executionCheckout" | "artifactsRoot"> & { workstreamId: string | null };
 export class WorkstreamAdapterError extends Error {
   constructor(public readonly status: number, public readonly code: string, message: string) { super(message); }
+}
+/** Preserve read-only inspection classification across the asynchronous router. */
+export class RepositoryStoreError extends WorkstreamAdapterError {
+  readonly state: Exclude<StoreAvailability["state"], "ready">;
+  constructor(store: Exclude<StoreAvailability, { state: "ready" }>) {
+    super(store.state === "corrupt" || store.state === "unavailable" ? 503 : 409, store.code, store.message);
+    this.state = store.state;
+  }
 }
 const mutation = (expectedRevision?: number): MutationContext => ({ actor: { kind: "human" }, correlationId: crypto.randomUUID(), ...(expectedRevision !== undefined ? { expectedRevision } : {}) });
 const sameRef = (a: ConversationRef, b: ConversationRef) => a.harness === b.harness && a.authorityId === b.authorityId && a.nativeId === b.nativeId;
@@ -112,7 +120,7 @@ export class RepositoryRouter {
   }
   private ready(discovery: RepositoryDiscovery, expectedRepositoryId?: string) {
     const store = inspectRepositoryStore(discovery);
-    if (store.state !== "ready") throw new WorkstreamAdapterError(409, store.code, store.message);
+    if (store.state !== "ready") throw new RepositoryStoreError(store);
     if (expectedRepositoryId && store.context.repositoryId !== expectedRepositoryId) throw new WorkstreamAdapterError(409, "domain-mismatch", "The intended domain UUID changed");
     return this.open(store.context);
   }

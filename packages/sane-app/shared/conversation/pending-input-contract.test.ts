@@ -45,6 +45,12 @@ describe("dormant pending input wire contract", () => {
     expect(isPendingInputSnapshot(mixed, future)).toBe(true);
     expect(isPendingInputSnapshot(mixed, { validateHarnessId: () => false })).toBe(false);
     expect(isPendingInputSnapshot(mixed, { validateHarnessId: () => "true" as unknown as boolean })).toBe(false);
+    for (const harnessId of ["claude-code", "opencode"]) {
+      const active = item(1, harnessId), rejectingRegistry = { validateHarnessId: () => false };
+      expect(isPendingInputItem(active, rejectingRegistry)).toBe(true);
+      expect(isPendingInputRequest({ ...request(), source: active.source }, rejectingRegistry)).toBe(true);
+      expect(isPendingInputSnapshot(snapshot([active]), rejectingRegistry)).toBe(true);
+    }
     for (const harness of ["cc", "oc", "", " opencode "]) {
       expect(isPendingInputItem(item(1, harness), { validateHarnessId: () => true })).toBe(false);
     }
@@ -93,17 +99,90 @@ describe("dormant pending input wire contract", () => {
     expect(isPendingInputItem({ ...valid, itemId: "item with spaces", sequence: 1, state: "waiting" }, future)).toBe(true);
   });
 
+  test("native efforts preserve exact whitespace and the native 1–200 character boundary", () => {
+    for (const harnessId of ["opencode", "future-harness"]) {
+      for (const effort of [" native balanced variant / v2 ", " ", " ".repeat(200), "v".repeat(200)]) {
+        const active = item(1, harnessId);
+        const input = { ...request(), source: active.source, configuration: { ...active.configuration, effort } };
+        const wire: unknown = JSON.parse(JSON.stringify(input));
+        expect(isPendingInputRequest(wire, future)).toBe(true);
+        if (!isPendingInputRequest(wire, future)) throw new Error("Native effort rejected");
+        expect(wire.configuration.effort).toBe(effort);
+        expect(JSON.stringify(wire)).toBe(JSON.stringify(input));
+        const queued = { ...active, configuration: wire.configuration };
+        expect(isPendingInputItem(queued, future)).toBe(true);
+        expect(isPendingInputSnapshot(snapshot([queued]), future)).toBe(true);
+      }
+      for (const effort of ["", "v".repeat(201), " ".repeat(201), undefined, null, 1]) {
+        const active = item(1, harnessId);
+        const configuration = { ...active.configuration, effort };
+        expect(isPendingInputRequest({ ...request(), source: active.source, configuration }, future)).toBe(false);
+        expect(isPendingInputItem({ ...active, configuration }, future)).toBe(false);
+        expect(isPendingInputSnapshot({ ...snapshot(), items: [{ ...active, configuration }] }, future)).toBe(false);
+      }
+    }
+  });
+
+  test("effort controls fail across harnesses without loosening other configuration tokens", () => {
+    const controls = [...Array.from({ length: 32 }, (_, code) => String.fromCharCode(code)), "\u007f"];
+    for (const harnessId of ["claude-code", "opencode", "future-harness"]) {
+      const active = item(1, harnessId);
+      for (const control of controls) {
+        const configuration = { ...active.configuration, effort: `before${control}after` };
+        expect(isPendingInputRequest({ ...request(), source: active.source, configuration }, future)).toBe(false);
+        expect(isPendingInputItem({ ...active, configuration }, future)).toBe(false);
+        expect(isPendingInputSnapshot({ ...snapshot(), items: [{ ...active, configuration }] }, future)).toBe(false);
+      }
+      for (const key of ["profileId", "model", "agent"]) {
+        expect(isPendingInputRequest({ ...request(), source: active.source,
+          configuration: { ...active.configuration, [key]: " padded token " } }, future)).toBe(false);
+      }
+      expect(isPendingInputRequest({ ...request(), source: { ...active.source, cwd: " /repo " },
+        configuration: { ...active.configuration, cwd: " /repo " } }, future)).toBe(false);
+      const { effort, ...configuration } = active.configuration;
+      expect(isPendingInputRequest({ ...request(), source: active.source, configuration }, future)).toBe(true);
+    }
+    for (const effort of ["low", "medium", "high", "xhigh", "max", "native internal spaces"]) {
+      const input = request();
+      expect(isPendingInputRequest({ ...input, configuration: { ...input.configuration, effort } })).toBe(true);
+    }
+    for (const effort of [" high ", " ", ""]) {
+      const input = request();
+      expect(isPendingInputRequest({ ...input, configuration: { ...input.configuration, effort } })).toBe(false);
+    }
+  });
+
   test("repeated text remains distinct; only WAITING consumes the three slots", () => {
-    const active: PendingInputItem[] = [item(1), item(2), item(3), { ...item(4), state: "claimed" },
-      { ...item(5), state: "claimed", runId: "run-5" }, { ...item(6), state: "run-linked", runId: "run-6" }];
+    const active: PendingInputItem[] = [{ ...item(1), state: "claimed" }, item(2), item(3), item(4)];
     expect(isPendingInputSnapshot(snapshot(active))).toBe(true);
-    expect(isPendingInputSnapshot(snapshot([...active, item(7)]))).toBe(false);
+    expect(isPendingInputSnapshot(snapshot([...active, item(5)]))).toBe(false);
+    expect(isPendingInputSnapshot(snapshot([item(1), item(2), item(3), { ...item(4), state: "claimed" },
+      { ...item(5), state: "claimed", runId: "run-5" }, { ...item(6), state: "run-linked", runId: "run-6" }]))).toBe(false);
     const tombstones = Array.from({ length: 8 }, (_, index) => ({
       conversationId: "conversation-1", requestId: `removed-request-${index}`, itemId: `removed-item-${index}`, sequence: index + 7, state: "removed" as const,
     }));
     expect(isPendingInputSnapshot({ ...snapshot(active), tombstones })).toBe(true);
     expect(isPendingInputTombstone(tombstones[0])).toBe(true);
     expect(isPendingInputSnapshot({ ...snapshot(), items: [tombstones[0]] })).toBe(false);
+  });
+
+  test("one unresolved claim precedes every waiter regardless of retained tombstones", () => {
+    const claims: Extract<PendingInputItem, { state: "claimed" | "run-linked" }>[] = [{ ...item(2), state: "claimed" }, { ...item(2), state: "claimed", runId: "run-2" },
+      { ...item(2), state: "run-linked", runId: "run-2" }];
+    const tombstones = [1, 3, 7].map(sequence => ({ conversationId: "conversation-1", requestId: `request-${sequence}`,
+      itemId: `item-${sequence}`, sequence, state: "removed" as const }));
+    for (const claim of claims) {
+      expect(isPendingInputSnapshot(snapshot([claim]))).toBe(true);
+      expect(isPendingInputSnapshot(snapshot([claim, item(4), item(5), item(6)]))).toBe(true);
+      expect(isPendingInputSnapshot({ ...snapshot([claim, item(4), item(5), item(6)]), tombstones })).toBe(true);
+      expect(isPendingInputSnapshot(snapshot([item(1), claim]))).toBe(false);
+      expect(isPendingInputSnapshot({ ...snapshot([item(1), { ...claim, sequence: 4, itemId: "item-4", requestId: "request-4" }]),
+        tombstones: [tombstones[1]] })).toBe(false);
+      for (const later of claims) {
+        const second = { ...later, sequence: 4, itemId: "item-4", requestId: "request-4", ...(later.runId ? { runId: "run-4" } : {}) };
+        expect(isPendingInputSnapshot(snapshot([claim, second]))).toBe(false);
+      }
+    }
   });
 
   test("invalid associations, duplicate identities, noncanonical order and unsafe revisions fail", () => {

@@ -1,8 +1,9 @@
-import { expect, test } from "bun:test";
+import { expect, spyOn, test } from "bun:test";
 import { validateMetadata, type Event, type Run, type Session } from "./history";
-import { OpenCodeAdapter, OpenCodeError, type NativeMessage } from "./opencode";
+import { OpenCodeAdapter, OpenCodeError, OpenCodeQueuedHandoffProtocolError, OpenCodeSourceMismatchError, type NativeMessage, type NativeQueuedHandoffAdmission } from "./opencode";
 import { OpenCodeRunService, type OpenCodeRunAdapter, type OpenCodeRunDependencies } from "./opencode-run-service";
 import type { RunOwner } from "./run-owner";
+import { createDispatchEvidence } from "./dispatch-evidence";
 
 const sessionId = "11111111-1111-4111-8111-111111111111";
 const runId = "22222222-2222-4222-8222-222222222222";
@@ -39,6 +40,24 @@ function fixture() {
   };
   const service = new OpenCodeRunService(deps);
   return { run, session, owner, state, calls, records, persisted, ready, oc, deps, service, accepted: (value: boolean) => ready.push(value) };
+}
+
+const queueReceipt = (): NativeQueuedHandoffAdmission => ({ id: commandId, sessionID: nativeId, type: "user", delivery: "queue", time: { created: 7 } });
+function handoffFixture() {
+  const f = fixture(); Object.assign(f.session, { model: f.run.model, effort: f.run.effort });
+  f.owner.nativeDeliveryPolicy = "native-queued-handoff";
+  f.owner.nativeQueuedHandoff = { origin: "queued-user", requestId: "request_fixture", runId, nativeCommandId: commandId,
+    source: { harnessId: "opencode", sessionId, authorityId: null, nativeSessionId: nativeId, cwd } };
+  f.owner.beforeSend = () => { f.calls.push("claim-gate"); };
+  const evidence = createDispatchEvidence(f.owner.nativeQueuedHandoff, { beforeNative: () => { f.calls.push("durable-intent"); } }, () => { f.state.storageFailed = true; });
+  f.owner.dispatchEvidence = evidence;
+  f.oc.preflightNativeSession = async (id, directory) => { expect([id, directory]).toEqual([nativeId, cwd]); f.calls.push("binding-read"); };
+  f.oc.promptQueuedHandoff = async (id, inputId, text, guard) => {
+    expect([id, inputId, text]).toEqual([nativeId, commandId, "followup"]); guard?.();
+    expect(f.persisted.at(-1)).toMatchObject({ nativeDelivery: "queue", nativePhase: "sending", nativeCommandId: commandId });
+    f.calls.push("handoff-prompt"); return queueReceipt();
+  };
+  return { ...f, evidence };
 }
 
 /** The only HTTP boundary is replaced. DELETE/POST alter fixture memory only. */
@@ -258,4 +277,456 @@ for (const consumed of [false, true]) test(`queued cancellation gate prevents na
   f.oc.cancel = async (_id, beforeCancel) => { f.state.current = undefined; beforeCancel?.(); f.calls.push("unexpected-interrupt"); return { interrupted: true }; };
   await expect(f.service.interruptCurrent(f.owner)).rejects.toThrow("withheld after ownership changed");
   expect(f.calls).toEqual([]); expect(f.run.status).toBe("running"); expect(f.records).toHaveLength(0);
+});
+
+test("explicit handoff keeps captured App launch settings and never selects/idles/delivers startup context", async () => {
+  const f = handoffFixture();
+  await f.service.executeNative(f.owner, "followup", false, f.accepted);
+  expect(f.calls).toEqual(["binding-read", "claim-gate", "durable-intent", "handoff-prompt"]);
+  expect(f.records.filter(event => event.kind === "context")).toEqual([]);
+  expect(f.records.find(event => event.kind === "launch")?.data).toMatchObject({ model: f.session.model, variant: f.session.effort });
+  expect(f.evidence.snapshot()).toMatchObject({ submission: "submitted", nativeAcceptance: "accepted" });
+  expect(f.run.status).toBe("completed"); expect(f.state.current).toBe(f.owner); expect(f.owner.settled).toBe(false);
+});
+
+for (const invalid of ["delivery", "harness", "origin", "request", "run", "command", "source", "settings", "hooks", "gate", "api", "compact", "worker"] as const) test(`explicit handoff withholds inconsistent ${invalid} before HTTP`, async () => {
+  const f = handoffFixture();
+  if (invalid === "delivery") f.run.nativeDelivery = undefined;
+  if (invalid === "harness") f.session.harness = "claude-code";
+  if (invalid === "origin") (f.owner.nativeQueuedHandoff as any).origin = "worker-report";
+  if (invalid === "request") f.owner.nativeQueuedHandoff = { ...f.owner.nativeQueuedHandoff!, requestId: "" };
+  if (invalid === "run") f.owner.nativeQueuedHandoff = { ...f.owner.nativeQueuedHandoff!, runId: "foreign" };
+  if (invalid === "command") f.owner.nativeQueuedHandoff = { ...f.owner.nativeQueuedHandoff!, nativeCommandId: "msg_foreign" };
+  if (invalid === "source") f.session.cwd = "/foreign";
+  if (invalid === "settings") f.run.model = "provider/changed";
+  if (invalid === "hooks") f.owner.dispatchEvidence = undefined;
+  if (invalid === "gate") f.owner.beforeSend = undefined;
+  if (invalid === "api") f.oc.promptQueuedHandoff = undefined;
+  if (invalid === "compact") f.run.operation = "compact";
+  if (invalid === "worker") f.owner.workerDeliveryId = "worker";
+  await f.service.executeNative(f.owner, "followup", true, f.accepted);
+  expect(f.calls).toEqual([]); expect(f.owner.nativeDispatched).toBe(false); expect(f.run.status).toBe("failed");
+  expect(f.evidence.snapshot().submission).toBe("not-submitted");
+});
+
+test("post-claim foreign busy race retains the one exact native head until consumption and terminal, without steer/fallback/replay", async () => {
+  const f = handoffFixture(); let reads = 0;
+  f.oc.preflightNativeSession = async () => { f.calls.push("foreign-busy-binding-valid"); };
+  f.oc.snapshot = async (id, exact, directory, policy) => {
+    expect([id, exact, directory, policy]).toEqual([nativeId, commandId, cwd, "native-queued-handoff"]);
+    expect(f.run.status).toBe("running"); expect(f.state.current).toBe(f.owner);
+    return ++reads === 1 ? { messages: [], pending: true, pendingInput: queueReceipt() }
+      : { messages: [message(commandId), message("msg_terminal", "idle", "succeeded")], pending: false, outcome: "succeeded" };
+  };
+  await f.service.executeNative(f.owner, "followup", true, f.accepted);
+  expect(reads).toBe(2); expect(f.calls.filter(call => call === "handoff-prompt")).toHaveLength(1);
+  expect(f.run.status).toBe("completed"); expect(f.state.current).toBe(f.owner);
+});
+
+const badReceipts = [
+  { id: "msg_foreign" }, { sessionID: "ses_foreign" }, { type: "synthetic" }, { delivery: "steer" },
+  { time: { created: NaN } }, { time: { created: Infinity } }, { sessionID: undefined }, { delivery: undefined },
+];
+for (const bad of badReceipts) test(`injected handoff ack mismatch ${JSON.stringify(bad)} stays unknown even with a later exact terminal`, async () => {
+  const f = handoffFixture(); let sends = 0;
+  f.oc.promptQueuedHandoff = async (_id, _exact, _text, guard) => { guard?.(); sends++; return { ...queueReceipt(), ...bad } as NativeQueuedHandoffAdmission; };
+  f.state.onSleep = () => { f.state.closing = true; };
+  await f.service.executeNative(f.owner, "followup", true, f.accepted);
+  expect(f.run.status).toBe("running"); expect(f.run.nativePhase).toBe("sending"); expect(f.run.nativeAcceptedAt).toBeUndefined();
+  expect(f.evidence.snapshot()).toMatchObject({ submission: "unknown", nativeAcceptance: "unknown" });
+  expect(f.owner.nativeHandoffProtocolUnsafe).toBe(true);
+  // Recovered observation uses the journaled refusal even without its transient flag.
+  f.owner.nativeHandoffProtocolUnsafe = undefined; f.state.closing = false;
+  await f.service.executeNative(f.owner, "followup", true, f.accepted);
+  expect(sends).toBe(1); expect(f.run.status).toBe("running");
+});
+
+for (const status of [400, 401, 403, 404, 409]) test(`handoff HTTP ${status} alone is not definitive native non-acceptance`, async () => {
+  const f = handoffFixture(); let sends = 0;
+  f.oc.promptQueuedHandoff = async (_id, _exact, _text, guard) => { guard?.(); sends++; throw new OpenCodeError("unknown native receipt", status); };
+  f.oc.snapshot = async () => ({ messages: [], pending: false, outcome: "succeeded" });
+  f.state.onSleep = () => { f.state.closing = true; };
+  await f.service.executeNative(f.owner, "followup", true, f.accepted);
+  expect(sends).toBe(1); expect(f.owner.nativeDispatched).toBe(true); expect(f.run.status).toBe("running");
+  expect(f.evidence.snapshot()).toMatchObject({ submission: "unknown", nativeAcceptance: "unknown" });
+});
+
+for (const pendingInput of [undefined, { id: commandId }, queueReceipt()]) test(`only typed exact queue pending DTO proves acceptance (${JSON.stringify(pendingInput)})`, async () => {
+  const f = handoffFixture();
+  f.oc.promptQueuedHandoff = async (_id, _exact, _text, guard) => { guard?.(); throw new OpenCodeError("missing ack"); };
+  f.oc.snapshot = async () => ({ messages: [], pending: true, pendingInput });
+  f.state.onSleep = () => { f.state.closing = true; };
+  await f.service.executeNative(f.owner, "followup", true, f.accepted);
+  const accepted = pendingInput !== undefined && "delivery" in pendingInput;
+  expect(f.run.nativePhase).toBe(accepted ? "accepted" : "sending");
+  expect(f.evidence.snapshot().nativeAcceptance).toBe(accepted ? "accepted" : "unknown");
+  expect(f.run.status).toBe("running"); expect(f.records.filter(event => event.kind === "message")).toEqual([]);
+});
+
+for (const wrong of [{ sessionID: "ses_foreign" }, { type: "compaction" }, { delivery: "steer" }]) test(`pending handoff contradiction ${JSON.stringify(wrong)} is sticky and cannot borrow completion`, async () => {
+  const f = handoffFixture(); let reads = 0;
+  f.oc.promptQueuedHandoff = async (_id, _exact, _text, guard) => { guard?.(); throw new OpenCodeError("lost ack"); };
+  f.oc.snapshot = async () => ++reads === 1 ? { messages: [], pending: true, pendingInput: { ...queueReceipt(), ...wrong } }
+    : { messages: [message(commandId)], pending: false, outcome: "succeeded" };
+  f.state.onSleep = () => { if (f.state.sleeps === 2) f.state.closing = true; };
+  await f.service.executeNative(f.owner, "followup", true, f.accepted);
+  expect(f.run.status).toBe("running"); expect(f.evidence.snapshot().nativeAcceptance).toBe("unknown");
+  expect(f.owner.nativeHandoffProtocolUnsafe).toBe(true);
+});
+
+test("lost handoff ack plus consumed user anchor cannot reconstruct actual delivery policy", async () => {
+  const f = handoffFixture();
+  f.oc.promptQueuedHandoff = async (_id, _exact, _text, guard) => { guard?.(); throw new OpenCodeError("lost ack"); };
+  f.state.onSleep = () => { f.state.closing = true; };
+  await f.service.executeNative(f.owner, "followup", true, f.accepted);
+  expect(f.run.status).toBe("running"); expect(f.run.nativePhase).toBe("sending"); expect(f.evidence.snapshot().nativeAcceptance).toBe("unknown");
+});
+
+test("fresh handoff binding source mismatch is withheld, without native mutation or queue fallback", async () => {
+  const f = handoffFixture(); f.oc.preflightNativeSession = async () => { throw new OpenCodeSourceMismatchError("native directory changed"); };
+  await f.service.executeNative(f.owner, "followup", true, f.accepted);
+  expect(f.calls).toEqual([]); expect(f.evidence.snapshot().submission).toBe("not-submitted"); expect(f.owner.nativeDispatched).toBe(false);
+});
+
+for (const bad of badReceipts) test(`typed adapter checks actual handoff ack fields ${JSON.stringify(bad)} after exactly one POST`, async () => {
+  const adapter = new OpenCodeAdapter("http://127.0.0.1:1"); let sends = 0;
+  adapter.request = async <T>(path: string, method = "GET", body?: unknown, guard?: () => void): Promise<T> => {
+    expect([path, method, body]).toEqual([`/api/session/${nativeId}/prompt`, "POST", { id: commandId, text: "followup", delivery: "queue" }]);
+    guard?.(); sends++; return { data: { ...queueReceipt(), ...bad } } as T;
+  };
+  await expect(adapter.promptQueuedHandoff(nativeId, commandId, "followup")).rejects.toBeInstanceOf(OpenCodeQueuedHandoffProtocolError);
+  expect(sends).toBe(1);
+});
+
+test("typed adapter valid handoff receipt is checked before acceptance evidence", async () => {
+  const adapter = new OpenCodeAdapter("http://127.0.0.1:1");
+  adapter.request = async <T>(): Promise<T> => ({ data: queueReceipt() } as T);
+  expect(await adapter.promptQueuedHandoff(nativeId, commandId, "followup")).toEqual(queueReceipt());
+});
+
+test("strict snapshot preserves exact pending DTO without inferring missing delivery", async () => {
+  const f = httpFixture();
+  expect(await f.adapter.snapshot(nativeId, commandId, cwd, "native-queued-handoff")).toMatchObject({ pending: true, pendingInput: { id: commandId, sessionID: nativeId, type: "user" } });
+  expect(f.calls.filter(call => call.path.includes("/message?"))).toHaveLength(0);
+});
+
+for (const mode of ["disconnect", "timeout"] as const) test(`handoff post-headers body ${mode} retains unknown original ID and never replays after inbox disappearance`, async () => {
+  const f = handoffFixture(), adapter = new OpenCodeAdapter("http://127.0.0.1:1"); let sends = 0, observations = 0;
+  f.oc.promptQueuedHandoff = (id, exact, text, guard) => adapter.promptQueuedHandoff(id, exact, text, guard);
+  const request = adapter.request.bind(adapter);
+  adapter.request = <T>(path: string, method = "GET", body?: unknown, guard?: () => void) => request<T>(path, method, body, guard, 20);
+  const transport = spyOn(globalThis, "fetch").mockImplementation(Object.assign(async (_input: Parameters<typeof fetch>[0], init?: Parameters<typeof fetch>[1]) => {
+    expect(JSON.parse(init?.body as string)).toEqual({ id: commandId, text: "followup", delivery: "queue" });
+    sends++; return new Response(new ReadableStream<Uint8Array>({
+      start(controller) { controller.enqueue(new TextEncoder().encode('{"data":')); if (mode === "timeout") init?.signal?.addEventListener("abort", () => controller.error(init.signal?.reason), { once: true }); },
+      pull(controller) { if (mode === "disconnect") controller.error(new Error("offline body disconnected")); },
+    }));
+  }, { preconnect: fetch.preconnect }));
+  f.oc.snapshot = async (_id, exact) => { expect(exact).toBe(commandId); return ++observations === 1 ? { messages: [], pending: true } : { messages: [], pending: false, outcome: "succeeded" }; };
+  f.state.onSleep = () => { if (f.state.sleeps === 2) f.state.closing = true; };
+  try {
+    await f.service.executeNative(f.owner, "followup", true, f.accepted);
+    expect(sends).toBe(1); expect(observations).toBe(2); expect(f.run.status).toBe("running"); expect(f.owner.nativeDispatched).toBe(true);
+    expect(f.evidence.snapshot()).toMatchObject({ submission: "unknown", nativeAcceptance: "unknown" });
+    f.state.closing = false; f.state.onSleep = () => { f.state.closing = true; };
+    await f.service.executeNative(f.owner, "followup", true, f.accepted); expect(sends).toBe(1);
+  } finally { transport.mockRestore(); }
+});
+
+for (const race of ["pending-delete", "consumed", "foreign-after-consumption"] as const) test(`explicit handoff Stop remains exact and does not advance/replay (${race})`, async () => {
+  const f = handoffFixture(); f.run.nativePhase = "accepted"; f.owner.nativeDispatched = true; f.owner.submission = Promise.resolve(); let reads = 0;
+  f.oc.snapshot = async () => ++reads === 1 ? { messages: [], pending: true } : { messages: [message(commandId)], pending: false, currentInputId: race === "consumed" ? commandId : "msg_foreign" };
+  f.oc.cancelInput = async (_id, exact, guard) => { expect(exact).toBe(commandId); guard?.(); f.calls.push("delete-exact"); return race === "pending-delete"; };
+  f.oc.cancel = async (_id, guard) => { guard?.(); f.calls.push("explicit-interrupt"); return { interrupted: true }; };
+  expect(await f.service.interruptCurrent(f.owner)).toEqual({ interrupted: race !== "foreign-after-consumption" });
+  expect(f.calls).toEqual(race === "consumed" ? ["delete-exact", "explicit-interrupt"] : ["delete-exact"]);
+  expect(f.state.current).toBe(f.owner); expect(f.calls).not.toContain("handoff-prompt");
+});
+
+for (const change of ["owner", "stop", "cancel", "source", "authority", "settings", "policy", "command", "claim", "storage"] as const) test(`handoff final gate withholds post-discovery ${change} without any native mutation`, async () => {
+  const f = handoffFixture(); let sends = 0;
+  f.oc.promptQueuedHandoff = async (_id, _exact, _text, guard) => {
+    if (change === "owner") f.state.current = undefined;
+    if (change === "stop") f.owner.stopRequested = true;
+    if (change === "cancel") f.owner.cancelling = true;
+    if (change === "source") f.session.nativeSessionId = "ses_other";
+    if (change === "authority") f.session.authorityId = "foreign";
+    if (change === "settings") f.session.model = "provider/foreign";
+    if (change === "policy") f.owner.nativeDeliveryPolicy = "idle-only";
+    if (change === "command") f.run.nativeCommandId = "msg_other";
+    if (change === "claim") f.owner.beforeSend = () => { throw new Error("claim removed"); };
+    if (change === "storage") f.state.storageFailed = true;
+    guard?.(); sends++; return queueReceipt();
+  };
+  await f.service.executeNative(f.owner, "followup", true, f.accepted);
+  expect(sends).toBe(0); expect(f.owner.nativeDispatched).toBe(false); expect(f.evidence.snapshot().submission).toBe("not-submitted");
+  expect(f.run.nativeAcceptedAt).toBeUndefined();
+});
+
+test("known wrong-policy native input cannot become an accepted handoff via operator Stop's consumed anchor", async () => {
+  const f = handoffFixture(); f.run.nativePhase = "sending"; f.owner.nativeDispatched = true; f.owner.nativeHandoffProtocolUnsafe = true;
+  f.oc.snapshot = async () => ({ messages: [message(commandId)], pending: false, currentInputId: commandId });
+  expect(await f.service.interruptCurrent(f.owner)).toEqual({ interrupted: false }); expect(f.calls).toEqual([]);
+});
+
+test("fresh native binding is read-only even if foreign preferences changed", async () => {
+  const f = httpFixture();
+  const request = f.adapter.request.bind(f.adapter);
+  f.adapter.request = async <T>(path: string, method = "GET"): Promise<T> => {
+    const result = await request<{ data: Record<string, unknown> }>(path, method);
+    result.data.agent = "foreign-selected-agent"; result.data.model = { providerID: "foreign", id: "model", variant: "foreign" };
+    return result as T;
+  };
+  await f.adapter.preflightNativeSession(nativeId, cwd);
+  expect(f.calls).toEqual([{ path: `/api/session/${nativeId}`, method: "GET", body: undefined }]);
+  await expect(f.adapter.preflightNativeSession(nativeId, "/different")).rejects.toBeInstanceOf(OpenCodeSourceMismatchError);
+  expect(f.calls.every(call => call.method === "GET")).toBe(true);
+});
+
+test("handoff eligibility is ordinary queued-user origin, not a broad conversation-role exclusion", async () => {
+  const f = handoffFixture(); f.session.agentKind = f.run.agentKind = "worker"; f.session.agent = f.run.agent = "scout";
+  await f.service.executeNative(f.owner, "followup", true, f.accepted);
+  expect(f.run.status).toBe("completed"); expect(f.evidence.snapshot().nativeAcceptance).toBe("accepted");
+});
+
+for (const change of ["command", "source", "authority", "directory"] as const) test(`handoff monitoring retains original ownership on claimed ${change} drift without borrowing a terminal`, async () => {
+  const f = handoffFixture(); f.run.nativePhase = "accepted"; let reads = 0;
+  if (change === "command") f.run.nativeCommandId = "msg_previous";
+  if (change === "source") f.session.nativeSessionId = "ses_foreign";
+  if (change === "authority") f.session.authorityId = "foreign";
+  if (change === "directory") f.session.cwd = "/foreign";
+  f.oc.snapshot = async () => { reads++; return { messages: [message("msg_previous")], pending: false, outcome: "succeeded" }; };
+  f.state.onSleep = () => { f.state.closing = true; };
+  await f.service.monitorNative(f.owner);
+  expect(reads).toBe(0); expect(f.run.status).toBe("running"); expect(f.state.current).toBe(f.owner);
+  expect(f.records.filter(event => event.kind === "message")).toHaveLength(0);
+});
+
+function driftSession(f: ReturnType<typeof handoffFixture>, replacement: boolean, change: "source" | "settings" | "authority" | "directory") {
+  const session = replacement ? { ...f.session } : f.session;
+  if (change === "source") session.nativeSessionId = "ses_unrelated_B";
+  if (change === "settings") session.model = "provider/changed";
+  if (change === "authority") session.authorityId = "authority_B";
+  if (change === "directory") session.cwd = "/unrelated_B";
+  if (replacement) f.deps.session = () => session;
+}
+
+for (const replacement of [false, true]) for (const change of ["source", "settings", "authority", "directory"] as const) {
+  test(`suspended handoff terminal discards fresh ${replacement ? "replacement" : "mutable"} session ${change} drift`, async () => {
+    const f = handoffFixture(), observed = Promise.withResolvers<Snapshot>(), entered = Promise.withResolvers<void>();
+    f.run.nativePhase = "accepted"; f.owner.nativeDispatched = true;
+    let reads = 0;
+    f.oc.snapshot = async (id, exact, directory, policy) => {
+      expect([id, exact, directory, policy]).toEqual([nativeId, commandId, cwd, "native-queued-handoff"]);
+      reads++; entered.resolve(); return observed.promise;
+    };
+    f.state.onSleep = () => { f.state.closing = true; };
+    const monitor = f.service.monitorNative(f.owner);
+    await entered.promise; driftSession(f, replacement, change);
+    observed.resolve({ messages: [message(commandId), message("msg_exact_terminal", "idle", "succeeded")], pending: false, outcome: "succeeded" });
+    await monitor;
+    expect(reads).toBe(1); expect(f.run.status).toBe("running"); expect(f.run.endedAt).toBeUndefined();
+    expect(f.state.current).toBe(f.owner); expect(f.records.filter(event => event.kind === "message")).toEqual([]);
+    expect(f.records.filter(event => event.kind === "status").every(event => (event.data as { status: string }).status === "running")).toBe(true);
+    expect(f.persisted).toEqual([]); expect(f.calls).toEqual([]);
+    f.state.closing = false;
+    await expect(f.service.executeNative(f.owner, "followup", true, f.accepted)).rejects.toBeInstanceOf(OpenCodeSourceMismatchError);
+    expect(await f.service.interruptCurrent(f.owner)).toEqual({ interrupted: false });
+    expect(reads).toBe(1); expect(f.calls).toEqual([]);
+  });
+}
+
+for (const replacement of [false, true]) for (const change of ["source", "settings"] as const) for (const stage of ["pending", "consumed", "repeek"] as const) {
+  test(`Stop discards suspended ${stage} proof on ${replacement ? "replacement" : "mutable"} session ${change} drift`, async () => {
+    const f = handoffFixture(), observed = Promise.withResolvers<Snapshot>(), entered = Promise.withResolvers<void>();
+    f.run.nativePhase = "accepted"; f.owner.nativeDispatched = true; f.owner.submission = Promise.resolve();
+    let reads = 0;
+    f.oc.snapshot = async (id, exact, directory, policy) => {
+      expect([id, exact, directory, policy]).toEqual([nativeId, commandId, cwd, "native-queued-handoff"]);
+      if (++reads === (stage === "repeek" ? 2 : 1)) { entered.resolve(); return observed.promise; }
+      return { messages: [], pending: true, pendingInput: queueReceipt() };
+    };
+    f.oc.cancelInput = async (id, exact, guard) => { expect([id, exact]).toEqual([nativeId, commandId]); guard?.(); f.calls.push(`delete:${id}`); return false; };
+    f.oc.cancel = async (id, guard) => { guard?.(); f.calls.push(`interrupt:${id}`); return { interrupted: true }; };
+    const stop = f.service.interruptCurrent(f.owner);
+    await entered.promise; driftSession(f, replacement, change);
+    observed.resolve(stage === "pending" ? { messages: [], pending: true, pendingInput: queueReceipt() }
+      : { messages: [message(commandId)], pending: false, currentInputId: commandId });
+    expect(await stop).toEqual({ interrupted: false });
+    expect(f.calls).toEqual(stage === "repeek" ? [`delete:${nativeId}`] : []);
+    expect(f.run.status).toBe("running"); expect(f.state.current).toBe(f.owner); expect(f.records).toEqual([]); expect(f.persisted).toEqual([]);
+  });
+}
+
+for (const replacement of [false, true]) for (const change of ["source", "settings"] as const) for (const consumed of [false, true]) {
+  test(`Stop callback after discovery denies ${replacement ? "replacement" : "mutable"} ${change} drift (consumed=${consumed})`, async () => {
+    const f = handoffFixture(), discovery = Promise.withResolvers<void>(), entered = Promise.withResolvers<void>();
+    f.run.nativePhase = "accepted"; f.owner.nativeDispatched = true;
+    f.oc.snapshot = async () => ({ messages: consumed ? [message(commandId)] : [], pending: !consumed, currentInputId: consumed ? commandId : undefined });
+    f.oc.cancelInput = async (id, exact, guard) => {
+      expect([id, exact]).toEqual([nativeId, commandId]); entered.resolve(); await discovery.promise;
+      guard?.(); f.calls.push(`delete:${id}`); return true;
+    };
+    f.oc.cancel = async (id, guard) => {
+      expect(id).toBe(nativeId); entered.resolve(); await discovery.promise;
+      guard?.(); f.calls.push(`interrupt:${id}`); return { interrupted: true };
+    };
+    const stop = f.service.interruptCurrent(f.owner);
+    await entered.promise; driftSession(f, replacement, change); discovery.resolve();
+    await expect(stop).rejects.toBeInstanceOf(OpenCodeSourceMismatchError);
+    expect(f.calls).toEqual([]); expect(f.run.status).toBe("running"); expect(f.records).toEqual([]); expect(f.persisted).toEqual([]);
+  });
+}
+
+for (const consumed of [false, true]) test(`Stop does not finalize cancellation proof returned after fresh session drift (consumed=${consumed})`, async () => {
+  const f = handoffFixture(), result = Promise.withResolvers<void>(), entered = Promise.withResolvers<void>();
+  f.run.nativePhase = "accepted"; f.owner.nativeDispatched = true;
+  f.oc.snapshot = async () => ({ messages: consumed ? [message(commandId)] : [], pending: !consumed, currentInputId: consumed ? commandId : undefined });
+  f.oc.cancelInput = async (id, exact, guard) => { expect([id, exact]).toEqual([nativeId, commandId]); guard?.(); f.calls.push(`delete:${id}`); entered.resolve(); await result.promise; return true; };
+  f.oc.cancel = async (id, guard) => { expect(id).toBe(nativeId); guard?.(); f.calls.push(`interrupt:${id}`); entered.resolve(); await result.promise; return { interrupted: true }; };
+  const stop = f.service.interruptCurrent(f.owner);
+  await entered.promise; driftSession(f, true, "source"); result.resolve();
+  expect(await stop).toEqual({ interrupted: false }); expect(f.run.status).toBe("running"); expect(f.persisted).toEqual([]); expect(f.records).toEqual([]);
+  expect(f.calls).toEqual([`${consumed ? "interrupt" : "delete"}:${nativeId}`]);
+});
+
+const invalidPolicies = [undefined, "idle-only", "future-policy", null, {}, 7] as const;
+for (const policy of invalidPolicies) test(`handoff association rejects missing or invalid explicit policy ${JSON.stringify(policy)} before preparation`, async () => {
+  const f = handoffFixture(); (f.owner as any).nativeDeliveryPolicy = policy;
+  let preparations = 0;
+  f.deps.execution = async () => { preparations++; return cwd; };
+  await f.service.executeNative(f.owner, "followup", false, f.accepted);
+  expect(f.run.status).toBe("failed"); expect(preparations).toBe(0); expect(f.calls).toEqual([]);
+  expect(f.records.filter(event => event.kind === "submission" || event.kind === "launch" || event.kind === "context")).toEqual([]);
+  expect(f.owner.nativeDispatched).toBe(false); expect(f.evidence.snapshot().submission).toBe("not-submitted");
+});
+
+for (const policy of ["future-policy", null, {}, 7] as const) test(`unassociated unknown policy ${JSON.stringify(policy)} cannot select, deliver startup, or submit a legacy prompt`, async () => {
+  const f = fixture(); f.run.nativeDelivery = undefined; (f.owner as any).nativeDeliveryPolicy = policy;
+  let nativeEffects = 0;
+  f.oc.assertIdle = f.oc.select = async () => { nativeEffects++; };
+  f.oc.prompt = async () => { nativeEffects++; throw new Error("Unexpected prompt"); };
+  f.oc.deliverSaneSession = async () => { nativeEffects++; };
+  f.deps.saneSession = async () => "startup";
+  await f.service.executeNative(f.owner, "followup", false, f.accepted);
+  expect(nativeEffects).toBe(0); expect(f.calls).toEqual([]); expect(f.run.status).toBe("failed");
+});
+
+for (const stage of ["execution", "preflight"] as const) for (const eraseAssociation of [false, true]) for (const policy of [undefined, "idle-only", "future-policy", null, {}] as const) {
+  test(`policy ${JSON.stringify(policy)} changed during suspended ${stage}, association erased=${eraseAssociation}, never falls back`, async () => {
+    const f = handoffFixture(), wait = Promise.withResolvers<void>(), entered = Promise.withResolvers<void>();
+    if (stage === "execution") f.deps.execution = async () => { entered.resolve(); await wait.promise; return cwd; };
+    else f.oc.preflightNativeSession = async () => { entered.resolve(); await wait.promise; };
+    const execution = f.service.executeNative(f.owner, "followup", false, f.accepted);
+    await entered.promise; (f.owner as any).nativeDeliveryPolicy = policy;
+    if (eraseAssociation) f.owner.nativeQueuedHandoff = undefined;
+    wait.resolve(); await execution;
+    expect(f.calls).toEqual([]); expect(f.owner.nativeDispatched).toBe(false); expect(f.run.status).toBe("failed");
+    expect(f.evidence.snapshot().submission).toBe("not-submitted"); expect(f.records.filter(event => event.kind === "context")).toEqual([]);
+    expect(f.ready).not.toContain(true);
+  });
+}
+
+for (const operation of ["monitor", "stop"] as const) test(`accepted immutable handoff ${operation} cannot escape strict pins by removing both association and policy`, async () => {
+  const f = handoffFixture(), snapshot = Promise.withResolvers<Snapshot>(), entered = Promise.withResolvers<void>();
+  f.run.nativePhase = "accepted"; f.owner.nativeDispatched = true;
+  let reads = 0;
+  f.oc.snapshot = async () => { reads++; entered.resolve(); return snapshot.promise; };
+  f.state.onSleep = () => { f.state.closing = true; };
+  const observing = operation === "monitor" ? f.service.monitorNative(f.owner) : f.service.interruptCurrent(f.owner);
+  await entered.promise; f.owner.nativeQueuedHandoff = undefined; f.owner.nativeDeliveryPolicy = undefined;
+  snapshot.resolve({ messages: [message(commandId)], pending: false, currentInputId: commandId, ...(operation === "monitor" ? { outcome: "succeeded" as const } : {}) });
+  await observing;
+  expect(f.run.status).toBe("running"); expect(f.calls).toEqual([]); expect(f.persisted).toEqual([]);
+  f.state.closing = false;
+  await expect(f.service.executeNative(f.owner, "followup", false, f.accepted)).rejects.toThrow("explicit native-queued-handoff policy");
+  expect(reads).toBe(1); expect(f.calls).toEqual([]);
+});
+
+test("frozen first-entry command and claim cannot be coherently repinned to a prior completed command during a snapshot", async () => {
+  const f = handoffFixture(), snapshot = Promise.withResolvers<Snapshot>(), entered = Promise.withResolvers<void>();
+  f.run.nativePhase = "accepted"; f.owner.nativeDispatched = true;
+  f.oc.snapshot = async (id, exact) => { expect([id, exact]).toEqual([nativeId, commandId]); entered.resolve(); return snapshot.promise; };
+  f.state.onSleep = () => { f.state.closing = true; };
+  const monitor = f.service.monitorNative(f.owner);
+  await entered.promise;
+  f.run.nativeCommandId = "msg_prior_completed";
+  f.owner.nativeQueuedHandoff = { ...f.owner.nativeQueuedHandoff!, nativeCommandId: "msg_prior_completed" };
+  snapshot.resolve({ messages: [message("msg_prior_completed")], pending: false, outcome: "succeeded" });
+  await monitor;
+  expect(f.run.status).toBe("running"); expect(f.run.endedAt).toBeUndefined(); expect(f.records.filter(event => event.kind === "message")).toEqual([]);
+  expect(f.calls).toEqual([]); expect(f.persisted).toEqual([]);
+});
+
+for (const change of ["source", "settings"] as const) test(`Stop pins survive suspended submission settlement and deny fresh ${change} drift before any observation`, async () => {
+  const f = handoffFixture(), submission = Promise.withResolvers<void>();
+  f.run.nativePhase = "sending"; f.owner.nativeDispatched = true; f.owner.submission = submission.promise;
+  let reads = 0; f.oc.snapshot = async () => { reads++; return { messages: [message(commandId)], pending: false, currentInputId: commandId }; };
+  const stop = f.service.interruptCurrent(f.owner);
+  driftSession(f, true, change); submission.resolve();
+  expect(await stop).toEqual({ interrupted: false }); expect(reads).toBe(0); expect(f.calls).toEqual([]); expect(f.run.status).toBe("running");
+});
+
+for (const change of ["source", "settings"] as const) test(`handoff acknowledgement cannot mark accepted after suspended ${change} drift`, async () => {
+  const f = handoffFixture(), receipt = Promise.withResolvers<NativeQueuedHandoffAdmission>(), entered = Promise.withResolvers<void>();
+  f.oc.promptQueuedHandoff = async (id, exact, _text, guard) => {
+    expect([id, exact]).toEqual([nativeId, commandId]); guard?.(); f.calls.push("handoff-prompt"); entered.resolve(); return receipt.promise;
+  };
+  let reads = 0; f.oc.snapshot = async () => { reads++; return { messages: [message(commandId)], pending: false, outcome: "succeeded" }; };
+  f.state.onSleep = () => { f.state.closing = true; };
+  const execution = f.service.executeNative(f.owner, "followup", true, f.accepted);
+  await entered.promise; driftSession(f, true, change); receipt.resolve(queueReceipt()); await execution;
+  expect(f.run.status).toBe("running"); expect(f.run.nativePhase).toBe("sending"); expect(f.run.nativeAcceptedAt).toBeUndefined(); expect(reads).toBe(0);
+  expect(f.evidence.snapshot()).toMatchObject({ submission: "unknown", nativeAcceptance: "unknown" });
+  expect(f.calls).toEqual(["binding-read", "claim-gate", "durable-intent", "handoff-prompt"]);
+});
+
+for (const change of ["current-run", "run-object", "run-status", "settled", "cancelling"] as const) test(`handoff suspended terminal respects live ${change} guard`, async () => {
+  const f = handoffFixture(), snapshot = Promise.withResolvers<Snapshot>(), entered = Promise.withResolvers<void>();
+  f.run.nativePhase = "accepted"; f.owner.nativeDispatched = true;
+  f.oc.snapshot = async () => { entered.resolve(); return snapshot.promise; };
+  f.state.onSleep = () => { f.state.closing = true; };
+  const monitor = f.service.monitorNative(f.owner);
+  await entered.promise;
+  if (change === "current-run") f.session.lastRunId = "run_unrelated";
+  if (change === "run-object") f.owner.run = { ...f.run, runId: "run_unrelated" };
+  if (change === "run-status") f.run.status = "interrupted";
+  if (change === "settled") f.owner.settled = true;
+  if (change === "cancelling") f.owner.cancelling = true;
+  snapshot.resolve({ messages: [message(commandId)], pending: false, outcome: "succeeded" }); await monitor;
+  expect(f.run.status).toBe(change === "run-status" ? "interrupted" : "running"); expect(f.owner.run.status).not.toBe("completed");
+  expect(f.run.endedAt).toBeUndefined(); expect(f.calls).toEqual([]); expect(f.persisted).toEqual([]); expect(f.records.filter(event => event.kind === "message")).toEqual([]);
+});
+
+test("handoff configuration cannot be repinned by changing the run and replacement session together during observation", async () => {
+  const f = handoffFixture(), snapshot = Promise.withResolvers<Snapshot>(), entered = Promise.withResolvers<void>();
+  f.run.nativePhase = "accepted"; f.owner.nativeDispatched = true;
+  f.oc.snapshot = async () => { entered.resolve(); return snapshot.promise; };
+  f.state.onSleep = () => { f.state.closing = true; };
+  const monitor = f.service.monitorNative(f.owner);
+  await entered.promise; driftSession(f, true, "settings"); f.run.model = "provider/changed";
+  snapshot.resolve({ messages: [message(commandId)], pending: false, outcome: "succeeded" }); await monitor;
+  expect(f.run.status).toBe("running"); expect(f.persisted).toEqual([]); expect(f.calls).toEqual([]); expect(f.records.filter(event => event.kind === "message")).toEqual([]);
+});
+
+for (const operation of ["monitor", "stop"] as const) test(`native observed-source mismatch during ${operation} retains local ownership without global storage failure`, async () => {
+  const f = handoffFixture(); f.run.nativePhase = "accepted"; f.owner.nativeDispatched = true;
+  f.oc.snapshot = async () => { throw new OpenCodeSourceMismatchError("Native observed source differs from pinned A"); };
+  f.state.onSleep = () => { f.state.closing = true; };
+  if (operation === "monitor") await f.service.monitorNative(f.owner);
+  else await expect(f.service.interruptCurrent(f.owner)).rejects.toBeInstanceOf(OpenCodeSourceMismatchError);
+  expect(f.state.storageFailed).toBe(false); expect(f.owner.nativeHandoffProtocolUnsafe).toBeUndefined();
+  expect(f.run.status).toBe("running"); expect(f.state.current).toBe(f.owner); expect(f.calls).toEqual([]); expect(f.persisted).toEqual([]);
+});
+
+test("queued Stop cannot escape to session-wide legacy cancellation by erasing delivery, policy, and claim while submission settles", async () => {
+  const f = handoffFixture(), submission = Promise.withResolvers<void>();
+  f.run.nativePhase = "sending"; f.owner.nativeDispatched = true; f.owner.submission = submission.promise;
+  f.oc.cancel = async id => { f.calls.push(`unexpected-interrupt:${id}`); return { interrupted: true }; };
+  let reads = 0; f.oc.snapshot = async () => { reads++; return { messages: [], pending: true }; };
+  const stop = f.service.interruptCurrent(f.owner);
+  f.run.nativeDelivery = undefined; f.owner.nativeDeliveryPolicy = undefined; f.owner.nativeQueuedHandoff = undefined;
+  driftSession(f, true, "source"); submission.resolve();
+  expect(await stop).toEqual({ interrupted: false }); expect(f.calls).toEqual([]); expect(reads).toBe(0);
+  expect(f.run.status).toBe("running"); expect(f.persisted).toEqual([]);
 });

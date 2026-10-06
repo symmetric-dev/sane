@@ -44,6 +44,9 @@ export type ConversationCoordinatorOptions<O extends ConversationOwner = RunOwne
   externalOccupancy?: () => Iterable<string>;
   isClosing?: () => boolean;
   retained?: () => boolean;
+  /** Startup classification is not execution completion. Observation adoption
+   * deliberately bypasses this gate; ordinary reservations/installations do not. */
+  startupReady?: () => boolean;
   /** Explicit observation-only startup proof for an exact already-journaled
    * owner. Must check current storage/source binding and a private startup
    * capability. Never used by readiness, admission leases, or dispatch install. */
@@ -144,6 +147,7 @@ export class ConversationCoordinator<O extends ConversationOwner = RunOwner> {
 
   private unavailable(): ConversationBlocked | undefined {
     if (this.closed || this.options.isClosing?.()) return blocked("bridge-closing", "Bridge is shutting down");
+    if (this.options.startupReady?.() === false) return blocked("startup-classifying", "Startup execution classification is incomplete; retry after startup");
     if (this.options.retained?.()) return blocked("reconciliation-required", "App execution ownership is unconfirmed; operator reconciliation required");
   }
 
@@ -153,7 +157,7 @@ export class ConversationCoordinator<O extends ConversationOwner = RunOwner> {
 
   private inspect(options: ConversationReadinessOptions<O>, capacityTargets: readonly string[]): ConversationReadiness {
     const unavailable = this.unavailable();
-    if (unavailable?.code === "bridge-closing") return unavailable;
+    if (unavailable?.code === "bridge-closing" || unavailable?.code === "startup-classifying") return unavailable;
     const denial = this.options.policy?.(options);
     if (denial) return denial;
     // A domain's more specific storage/reconciliation evidence keeps its exact

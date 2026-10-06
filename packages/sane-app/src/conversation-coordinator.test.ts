@@ -30,6 +30,16 @@ function deferred() {
 }
 
 describe("identity-bound conversation arbitration", () => {
+  test("startup classification blocks every ordinary intent and install but permits exact observation adoption", async () => {
+    let ready = true;
+    const value = owner("observed"), coordinator = fixture({ startupReady: () => ready, externalOccupancy: () => ["observed"], observationAdmission: candidate => candidate === value ? { ready: true } : { ready: false, code: "observation-unproven", reason: "wrong owner" } });
+    const lease = reserve(coordinator); ready = false;
+    for (const kind of ["user-prompt", "worker-launch", "worker-report", "handoff", "branch-recovery", "prepare-recipient"] as const) expect(coordinator.reserveAdmission({ conversationIds: ["b"], intent: { kind } })).toMatchObject({ ready: false, code: "startup-classifying" });
+    expect(coordinator.installOwner(lease, owner())).toMatchObject({ ready: false, code: "startup-classifying" });
+    expect(coordinator.adoptObservedOwner(value)).toEqual({ ready: true });
+    ready = true; expect(coordinator.installOwner(lease, owner())).toEqual({ ready: true });
+    await coordinator.close(); expect(coordinator.reserveAdmission({ conversationIds: ["b"], intent: prompt })).toMatchObject({ ready: false, code: "bridge-closing" });
+  });
   test("observation adoption is denied by default and never weakens retained-state admission", () => {
     const coordinator = fixture({ retained: () => true, externalOccupancy: () => ["a"] });
     expect(coordinator.adoptObservedOwner(owner())).toMatchObject({ ready: false, code: "observation-unproven" });

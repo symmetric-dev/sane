@@ -275,7 +275,7 @@ export class ClaudeRunService {
     const result: Result = { ...createClaudeResultSequenceState(), stderr: "" };
     const activity = new ClaudeActivity(run.runId, run.createdAt);
     this.activities.set(run.runId, activity);
-    let streams: Promise<unknown>[] = [];
+    let streams: Promise<unknown>[] = [], nativeAttempted = false;
     try {
       if (run.operation !== "compact" && compactCommand(prompt)) throw new Error("Use the dedicated Compact action; compaction cannot be submitted as an ordinary prompt");
       // Write the first log record before publishing its metadata reference.
@@ -331,6 +331,10 @@ export class ClaudeRunService {
       deps.assertWorkerDeliverySubmission(owner);
       if (deps.closing() || deps.storageFailed() || owner.stopRequested || owner.cancelling || owner.settled || !deps.owns(owner)) throw new Error("Execution unavailable before launch");
       owner.beforeSend?.();
+      // spawn can execute SessionStart hooks before stdin receives the prompt.
+      // Durable intent must precede spawn, not ready(true) or stdin.write.
+      owner.dispatchEvidence?.beforeNative();
+      nativeAttempted = true;
       const child = runtime.spawn(args, {
         cwd: run.cwd, detached: true, stdin: "pipe", stdout: "pipe", stderr: "pipe", env: { ...env, CLAUDE_CONFIG_DIR: this.options.claudeRoot, CLAUDE_CODE_PROJECT_DIR_NAME: "", CC_WEB_HOOK_URL: this.options.hookUrl(), CC_WEB_RUN_ID: run.runId, CC_WEB_HOOK_SECRET: secret, CC_WEB_HOOK_ERRORS: join(this.options.dataDir, `${run.runId}.hook-errors.jsonl`) },
       });
@@ -342,7 +346,10 @@ export class ClaudeRunService {
       const output = Promise.all([child.exited, ...streams]);
       void output.catch(() => {});
       child.stdin.write(prompt);
-      const [exit] = await Promise.all([output.then(values => values[0] as number), child.stdin.end()]);
+      const [exit] = await Promise.all([output.then(values => values[0] as number), Promise.resolve(child.stdin.end()).then(() => {
+        // Pipe completion proves submission only, never native acceptance.
+        owner.dispatchEvidence?.outcome("submitted");
+      })]);
       activity.finishing();
       if (this.groupAlive(owner) && !(await this.terminate(owner))) throw new Error("Process group termination unconfirmed");
       rejectUndeliveredClaudeFramework(result);
@@ -352,6 +359,7 @@ export class ClaudeRunService {
       const failure = run.status !== "failed" ? {} : { ...this.failure(result), ...(exit !== 0 ? { error: result.stderr.trim() || `CLI exited with code ${exit}` } : {}) };
       await deps.emit(run, "status", { status: run.status, exitCode: exit, resultSeen: result.seen, ...(compact ? { compactionLifecycle: compact.lifecycle, reason: compact.lifecycle === "unconfirmed" ? "CLI ended without native compaction outcome evidence; do not automatically resend" : "CLI process ended; compaction outcome is reported separately by native evidence" } : result.diagnostic ? { reason: result.diagnostic } : {}), ...failure });
     } catch (error) {
+      if (owner.dispatchEvidence && owner.child) owner.dispatchEvidence.outcome("unknown");
       if (error instanceof AgentLaunchConfigurationError) owner.launchError = error.message;
       const stopped = await this.terminate(owner);
       run.status = stopped && (deps.closing() || owner.stopRequested) ? "interrupted" : "failed";
@@ -360,6 +368,7 @@ export class ClaudeRunService {
       ready(false);
     } finally {
       ready(false);
+      if (!nativeAttempted) owner.dispatchEvidence?.withheld();
       // Retain the sentinel if either consumer cannot finish within the bound.
       const drained = await Promise.race([Promise.allSettled(streams).then(() => true), runtime.sleep(2200).then(() => false)]);
       owner.streamsDrained = drained;

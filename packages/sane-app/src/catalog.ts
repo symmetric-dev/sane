@@ -1,4 +1,5 @@
 import { readFile, writeFile, rename, realpath, lstat, open } from "node:fs/promises";
+import { lstatSync, realpathSync } from "node:fs";
 import { basename, isAbsolute, join, relative, sep } from "node:path";
 import { WorkspaceError, WorkspaceService, workspaceOperationCheck, workspaceOperationWait, type WorkspaceOperationOptions } from "./workspace";
 import { uuid, type Session } from "./history";
@@ -220,6 +221,21 @@ export class CatalogService {
   async get(id: string) { await this.serial; const w = this.find(id); for (const t of w.worktrees) { try { await this.binding(id, t.worktreeId); } catch {} } return this.publicWorkspace(w); }
   async list() { await this.serial; return { version: 1 as const, workspaces: await Promise.all(this.catalog.workspaces.map(w => this.get(w.workspaceId))) }; }
   association(id: string): Association { return this.catalog.associations[id] ?? { workspaceId: null, worktreeId: null, association: "unresolved", associationReason: "not-associated" }; }
+  /** Final synchronous publication fence after full async binding preflight.
+   * Cached catalog authority plus live inode/canonical-path checks; repository
+   * callers additionally revalidate their core checkout/domain pins. No working
+   * file contents, branch HEAD, profile defaults or worker mappings are frozen. */
+  assertBinding(workspaceId: string, worktreeId: string, cwd: string, bindingRevision: string): void {
+    if (this.failed) error(503, "catalog-storage", "Catalog storage unavailable; restart required");
+    const w = this.find(workspaceId), t = w.worktrees.find(t => t.worktreeId === worktreeId) ?? error(409, "binding-invalid", "Pinned worktree is missing");
+    if (t.state !== "available" || t.root !== cwd || t.bindingRevision !== bindingRevision) error(409, "binding-invalid", "Pinned catalog binding changed");
+    const directory = (path: string, identity: Identity) => {
+      try { const s = lstatSync(path); if (!s.isDirectory() || s.isSymbolicLink() || realpathSync(path) !== path || !same(s, identity)) throw new Error(); }
+      catch { error(409, "binding-invalid", "Pinned filesystem binding changed"); }
+    };
+    directory(t.root, t.identity);
+    if (t.gitDir && t.gitIdentity && w.commonDir) { directory(t.gitDir, t.gitIdentity); directory(w.commonDir, w.identity); }
+  }
   /** Presentation only: read the cached label without filesystem discovery. */
   workspaceName(workspaceId: string): string | undefined {
     return this.failed ? undefined : this.catalog.workspaces.find(workspace => workspace.workspaceId === workspaceId)?.name;

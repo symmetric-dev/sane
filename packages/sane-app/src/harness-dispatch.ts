@@ -1,8 +1,13 @@
 import type {
   AutomationDispatchOrigin, DispatchAdmission, DispatchOrigin, DispatchReadiness,
-  DispatchSource, DispatchSupport, DispatchTerminalGuards, HarnessDispatchRequest, PinnedDispatchReadiness,
+  DispatchSource, DispatchSupport, DispatchTerminalGuards, HarnessDispatchRequest, PinnedDispatchReadiness, DispatchEvidenceHooks, DispatchSubmissionEvidence,
 } from "../shared/conversation/dispatch-contract";
 import type { RunOwner } from "./run-owner";
+import { createDispatchEvidence } from "./dispatch-evidence";
+
+/** Explicit read-only transport failure. Other exceptions remain invariant or
+ * storage failures; source drift is a coded denial, not transport unavailability. */
+export class DispatchProofUnavailableError extends Error {}
 
 /** Registration selects behavior, never owner storage. The bridge continues to
  * own its one RunOwner registry and all admission/journal/domain mutations. */
@@ -18,7 +23,7 @@ export class HarnessDispatchError extends Error {
   constructor(readonly code: "unknown-dispatch-harness" | "duplicate-dispatch-harness" | "unsupported-automation" | "dispatch-source-mismatch" | "invalid-dispatch-installation", message: string) { super(message); }
 }
 
-const denied = (reason: string, code?: string): DispatchReadiness => ({ ready: false, reason, ...(code ? { code } : {}) });
+const denied = (reason: string, code = "dispatch-proof-unproven"): DispatchReadiness => ({ ready: false, reason, code });
 const pin = (source: DispatchSource): DispatchSource => Object.freeze({ ...source });
 
 export function sameDispatchSource(a: DispatchSource, b: DispatchSource): boolean {
@@ -53,12 +58,19 @@ export class HarnessDispatchRegistry<O extends RunOwner = RunOwner> {
     if (!adapter) throw new HarnessDispatchError("unknown-dispatch-harness", `Unknown dispatch harness: ${String(id)}`);
     return adapter;
   }
+  assertSupport(source: DispatchSource, origin: DispatchOrigin): void { assertSupport(this.require(source.harnessId), { source, origin }); }
 
   async readiness(source: DispatchSource, origin: DispatchOrigin): Promise<DispatchReadiness> {
     const adapter = this.require(source.harnessId), expected = pin(source);
     assertSupport(adapter, { source: expected, origin });
-    const result = await adapter.readiness(expected, origin);
-    return sameDispatchSource(expected, result.source) ? result.readiness : denied("Conversation native source changed during readiness evaluation", "dispatch-source-mismatch");
+    try {
+      const result = await adapter.readiness(expected, origin);
+      return sameDispatchSource(expected, result.source) ? result.readiness : denied("Conversation native source changed during readiness evaluation", "dispatch-source-mismatch");
+    } catch (error) {
+      if (error instanceof DispatchProofUnavailableError) return denied(error.message, "dispatch-proof-unavailable");
+      if (error instanceof HarnessDispatchError && error.code === "dispatch-source-mismatch") return denied(error.message, error.code);
+      throw error;
+    }
   }
 
   start(request: HarnessDispatchRequest, hooks: DispatchLifecycleHooks<O>): DispatchLifecycle<O> {
@@ -67,13 +79,14 @@ export class HarnessDispatchRegistry<O extends RunOwner = RunOwner> {
 }
 
 export function terminalDispatchReadiness(state: DispatchTerminalGuards): DispatchReadiness {
-  if (!state.settled || !state.released) return denied("Dispatch lifecycle or ownership has not settled");
-  if (state.cancelling || state.stopRequested || state.stopping) return denied("Dispatch was stopped or cancellation is in progress");
-  if (state.closing || state.storageFailed || state.reconciliationRequired) return denied("Bridge shutdown, storage failure or reconciliation prevents automatic dispatch");
-  return state.status === "completed" ? { ready: true } : denied("Dispatch did not complete successfully");
+  if (!state.settled || !state.released) return denied("Dispatch lifecycle or ownership has not settled", "dispatch-unsettled");
+  if (state.cancelling || state.stopRequested || state.stopping) return denied("Dispatch was stopped or cancellation is in progress", "dispatch-stopped");
+  if (state.closing || state.storageFailed || state.reconciliationRequired) return denied("Bridge shutdown, storage failure or reconciliation prevents automatic dispatch", "dispatch-unavailable");
+  return state.status === "completed" ? { ready: true } : denied("Dispatch did not complete successfully", "dispatch-unsuccessful");
 }
 
 export type DispatchLifecycleHooks<O extends RunOwner = RunOwner> = {
+  evidence?: DispatchEvidenceHooks;
   /** Final live validation/claim, owner acquisition, session/run/event publication
    * in ONE synchronous callback. No awaits or native execution here. On failure
    * failClosed retains any partially installed owner; there is no rollback. */
@@ -107,6 +120,7 @@ export type DispatchLifecycle<O extends RunOwner = RunOwner> = {
   /** Fresh proof independent of optional wake. Denied until source-specific
    * reconciliation and release finish; never submits or replays a prompt. */
   readonly successfulSettlement: () => Promise<DispatchReadiness>;
+  readonly submissionEvidence: () => DispatchSubmissionEvidence;
 };
 
 export function startDispatchLifecycle<O extends RunOwner>(adapter: HarnessDispatchAdapter<O>, request: HarnessDispatchRequest, hooks: DispatchLifecycleHooks<O>): DispatchLifecycle<O> {
@@ -116,41 +130,79 @@ export function startDispatchLifecycle<O extends RunOwner>(adapter: HarnessDispa
   let owner: O;
   try {
     owner = hooks.install(finished.promise);
-    if (!owner || owner.done !== finished.promise || owner.settled || owner.run.sessionId !== source.sessionId || owner.run.cwd !== source.cwd || !hooks.owns(owner)) {
+    if (!owner || owner.done !== finished.promise || owner.settled || !owner.run.runId || owner.run.sessionId !== source.sessionId || owner.run.cwd !== source.cwd
+      || source.harnessId === "opencode" && !owner.run.nativeCommandId
+      || source.harnessId === "claude-code" && owner.run.nativeCommandId != null || !hooks.owns(owner)) {
       throw new HarnessDispatchError("invalid-dispatch-installation", "Complete run and owner lifecycle must be synchronously installed before execution");
     }
   } catch (error) { hooks.failClosed(error); finished.resolve(); throw error; }
+  let healthy = true, reconciled = false;
+  const identity = Object.freeze({ source, runId: owner.run.runId, nativeCommandId: owner.run.nativeCommandId ?? null, ...(request.requestId !== undefined ? { requestId: request.requestId } : {}) });
+  const identityFailure = new Error("Installed dispatch run identity changed; reconciliation required");
+  const nativeAdmissionFailure = new Error("Dispatch native admission closed; reconciliation required");
+  const failClosed = (error: unknown) => {
+    if (!healthy && (error === identityFailure || error === nativeAdmissionFailure)) return;
+    healthy = false; hooks.failClosed(error);
+  };
+  const assertIdentity = () => {
+    if (owner.run.runId !== identity.runId || owner.run.sessionId !== source.sessionId || owner.run.cwd !== source.cwd
+      || (owner.run.nativeCommandId ?? null) !== identity.nativeCommandId) { failClosed(identityFailure); throw identityFailure; }
+  };
+  // Restoring mutable run identity cannot reopen a failed-closed lifecycle.
+  // Apply this latch only to effects, not later outcome observations.
+  const assertNativeAdmission = () => {
+    if (!healthy) throw nativeAdmissionFailure;
+    assertIdentity();
+  };
+  const evidence = createDispatchEvidence(identity, hooks.evidence ?? {}, failClosed);
+  owner.dispatchEvidence = {
+    beforeNative: () => { assertNativeAdmission(); evidence.beforeNative(); assertNativeAdmission(); },
+    outcome: (submission, acceptance) => { assertIdentity(); evidence.outcome(submission, acceptance); },
+    withheld: evidence.withheld,
+  };
   let admitted: boolean | undefined;
   const ready = (value: boolean) => {
     if (admitted !== undefined) return;
     admitted = value;
     admission.resolve(value ? { state: "admitted" } : { state: "unconfirmed" });
   };
-  const guards = (): DispatchTerminalGuards => ({ ...hooks.guards(owner), settled: owner.settled, released: !hooks.owns(owner),
-    status: owner.run.status, cancelling: !!owner.cancelling, stopRequested: !!owner.stopRequested, stopping: !!owner.stopping });
-  let healthy = true, reconciled = false;
+  // Identity belongs to this installed run, not whichever owner now occupies the
+  // conversation. Status/cancellation and this owner's release remain live.
+  const guards = (): DispatchTerminalGuards => {
+    assertIdentity();
+    return { ...hooks.guards(owner), settled: owner.settled, released: !hooks.owns(owner),
+      status: owner.run.status, cancelling: !!owner.cancelling, stopRequested: !!owner.stopRequested, stopping: !!owner.stopping };
+  };
   const successfulSettlement = async (): Promise<DispatchReadiness> => {
-    if (!healthy || !reconciled || admitted !== true) return denied("Dispatch admission or reconciled lifecycle success is not proven");
-    const gate = terminalDispatchReadiness(guards()); if (!gate.ready) return gate;
+    if (!healthy) return denied("Dispatch admission or reconciled lifecycle success is not proven");
     try {
-      const proof = await adapter.successfulSettlement(owner, source, guards);
+      assertIdentity();
+      if (!reconciled || admitted !== true) return denied("Dispatch admission or reconciled lifecycle success is not proven");
+      const gate = terminalDispatchReadiness(guards()); if (!gate.ready) return gate;
+      let proof: DispatchReadiness;
+      try { proof = await adapter.successfulSettlement(owner, source, guards); }
+      finally { assertIdentity(); }
       // Native I/O can overlap cancellation/shutdown. Recheck live.
+      if (!healthy) return denied("Dispatch settlement invariant failed; reconciliation required", "reconciliation-required");
       const current = terminalDispatchReadiness(guards());
       return current.ready ? proof : current;
     } catch (error) {
-      healthy = false; hooks.failClosed(error);
-      return denied("Dispatch settlement proof unavailable; reconciliation required");
+      if (error instanceof DispatchProofUnavailableError) return denied(error.message, "dispatch-proof-unavailable");
+      if (error instanceof HarnessDispatchError && error.code === "dispatch-source-mismatch") return denied(error.message, error.code);
+      failClosed(error);
+      return denied("Dispatch settlement invariant failed; reconciliation required", "reconciliation-required");
     }
   };
   // Defer invocation so even synchronous execute/ready callbacks cannot run
   // before installation and return of the fully observable lifecycle handle.
   void Promise.resolve().then(async () => {
-    try { await adapter.execute(owner, prompt, resume, ready); }
+    try { assertNativeAdmission(); await adapter.execute(owner, prompt, resume, ready); assertIdentity(); }
     catch (error) {
-      healthy = false; hooks.failClosed(error);
-      try { await hooks.terminate(owner); } catch (failure) { hooks.failClosed(failure); }
+      failClosed(error);
+      try { await hooks.terminate(owner); } catch (failure) { failClosed(failure); }
     } finally {
       ready(false);
+      try { evidence.finish(); } catch (error) { failClosed(error); }
       let barrier: { readonly end: () => void } | undefined;
       let barrierReady = !hooks.reconciliation, sourceReconciled = !hooks.reconciliation;
       if (hooks.reconciliation) {
@@ -158,30 +210,30 @@ export function startDispatchLifecycle<O extends RunOwner>(adapter: HarnessDispa
           barrier = hooks.reconciliation.begin(owner);
           if (!barrier || typeof barrier.end !== "function") throw new Error("Source reconciliation did not acquire a completion barrier");
           barrierReady = true;
-        } catch (error) { healthy = false; hooks.failClosed(error); }
+        } catch (error) { failClosed(error); }
       }
       const reconcile = async () => {
         if (!barrierReady) return;
         try { await hooks.reconciliation?.run(owner); sourceReconciled = true; }
-        catch (error) { healthy = false; hooks.failClosed(error); }
+        catch (error) { failClosed(error); }
       };
       if (hooks.reconciliation?.order === "before-release") await reconcile();
-      try { hooks.settle(owner); if (barrierReady) hooks.release(owner); } catch (error) { healthy = false; hooks.failClosed(error); }
+      try { hooks.settle(owner); if (barrierReady) hooks.release(owner); } catch (error) { failClosed(error); }
       if (hooks.reconciliation?.order === "after-release") await reconcile();
       if (healthy && sourceReconciled) {
         try { barrier?.end(); reconciled = true; }
-        catch (error) { healthy = false; hooks.failClosed(error); }
+        catch (error) { failClosed(error); }
       }
       try {
         if (hooks.wake) {
           const proof = await successfulSettlement();
           if (proof.ready && terminalDispatchReadiness(guards()).ready) hooks.wake(owner);
         }
-      } catch (error) { healthy = false; hooks.failClosed(error); }
+      } catch (error) { failClosed(error); }
       finally { finished.resolve(); }
     }
-  }).catch(error => { healthy = false; hooks.failClosed(error); admission.resolve({ state: "unconfirmed" }); finished.resolve(); });
-  return { owner, admission: admission.promise, done: finished.promise, successfulSettlement };
+  }).catch(error => { failClosed(error); admission.resolve({ state: "unconfirmed" }); finished.resolve(); });
+  return { owner, admission: admission.promise, done: finished.promise, successfulSettlement, submissionEvidence: evidence.snapshot };
 }
 
 type AdapterCallbacks<O extends RunOwner> = Pick<HarnessDispatchAdapter<O>, "automation" | "readiness" | "execute">;

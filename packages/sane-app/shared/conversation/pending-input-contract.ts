@@ -55,6 +55,7 @@ export type PendingInputTombstone = PendingInputItemIdentity & {
 /** Future queue read/update projection: both arrays are ascending by sequence.
  * sequence is positive and never reused; revision is a nonnegative safe integer.
  * Only waiting items consume the three slots, not claimed or run-linked items.
+ * At most one claimed or run-linked item remains unresolved, before all waiters.
  * paused requires a reason; an unpaused queue has reason:null. */
 export type PendingInputSnapshot = {
   readonly version: 1;
@@ -116,12 +117,15 @@ export type PendingInputValidation = {
 type WireObject = Record<string, unknown>;
 const object = (value: unknown): value is WireObject => value !== null && typeof value === "object" && !Array.isArray(value);
 // Identity/config tokens allow internal spaces, but never ASCII controls.
+// Native effort variants preserve whitespace and have their own length bound.
 // Prompt text has its own validator and remains multiline/harness-neutral.
 const id = (value: unknown): value is string => typeof value === "string" && value.length > 0 && value.trim() === value && !/[\u0000-\u001f\u007f]/.test(value);
 const text = (value: unknown): value is string => typeof value === "string" && value.trim().length > 0;
 const integer = (value: unknown, minimum = 0): value is number => typeof value === "number" && Number.isSafeInteger(value) && value >= minimum;
 const keys = (value: WireObject, allowed: readonly string[]) => Object.keys(value).every(key => allowed.includes(key));
 const optionalId = (value: WireObject, key: string) => !(key in value) || id(value[key]);
+const effort = (value: unknown, harnessId: string): value is string => harnessId === "claude-code" ? id(value)
+  : typeof value === "string" && value.length > 0 && value.length <= 200 && !/[\u0000-\u001f\u007f]/.test(value);
 const nullableId = (value: unknown) => value === null || id(value);
 const envelope = (value: WireObject, expected: PendingInputValidation) => value.version === 1 && id(value.conversationId) && id(value.requestId)
   && (["conversationId", "requestId", "itemId", "inputRequestId"] as const).every(key => expected[key] === undefined || value[key] === expected[key]);
@@ -144,12 +148,13 @@ function source(value: unknown, expected: PendingInputValidation): value is Pend
   if (value.harnessId === "claude-code" || value.harnessId === "opencode") return true;
   return expected.validateHarnessId?.(value.harnessId) === true;
 }
-function configuration(value: unknown): value is PendingInputConfiguration {
+function configuration(value: unknown, harnessId: string): value is PendingInputConfiguration {
   return object(value) && keys(value, ["cwd", "profileId", "model", "effort", "agent"])
-    && id(value.cwd) && id(value.profileId) && ["model", "effort", "agent"].every(key => optionalId(value, key));
+    && id(value.cwd) && id(value.profileId) && ["model", "agent"].every(key => optionalId(value, key))
+    && (!("effort" in value) || effort(value.effort, harnessId));
 }
 function request(value: WireObject, expected: PendingInputValidation): boolean {
-  return envelope(value, expected) && text(value.text) && source(value.source, expected) && configuration(value.configuration)
+  return envelope(value, expected) && text(value.text) && source(value.source, expected) && configuration(value.configuration, value.source.harnessId)
     && value.source.conversationId === value.conversationId && value.source.cwd === value.configuration.cwd;
 }
 export function isPendingInputRequest(value: unknown, expected: PendingInputValidation = {}): value is PendingInputRequest {
@@ -176,7 +181,9 @@ export function isPendingInputSnapshot(value: unknown, expected: PendingInputVal
   const scope = { ...expected, conversationId: value.conversationId };
   if (!value.items.every(item => isPendingInputItem(item, scope)) || !value.tombstones.every(item => isPendingInputTombstone(item, scope))) return false;
   const items = value.items as PendingInputItem[], tombstones = value.tombstones as PendingInputTombstone[];
-  if (items.filter(item => item.state === "waiting").length > 3) return false;
+  const waiting = items.filter(item => item.state === "waiting"), unresolved = items.filter(item => item.state !== "waiting");
+  if (waiting.length > 3 || unresolved.length > 1
+    || unresolved.some(claim => waiting.some(item => item.sequence <= claim.sequence))) return false;
   const ordered = (entries: readonly PendingInputItemIdentity[]) => entries.every((item, index) => index === 0 || entries[index - 1]!.sequence < item.sequence);
   const all = [...items, ...tombstones];
   const unique = (values: readonly unknown[]) => new Set(values).size === values.length;

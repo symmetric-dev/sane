@@ -3,6 +3,7 @@ import { AgentLaunchConfigurationError } from "./agent-launch";
 import { ClaudeRunService, hookEvents, type ClaudeRunDependencies, type ClaudeRunRuntime } from "./claude-run-service";
 import type { Event, Run, Session } from "./history";
 import type { RunOwner } from "./run-owner";
+import { createDispatchEvidence } from "./dispatch-evidence";
 
 const nativeId = "11111111-1111-4111-8111-111111111111";
 const success = { type: "result", session_id: nativeId, subtype: "success", is_error: false };
@@ -67,6 +68,26 @@ function fixture(stdout = bytes([wire(success)]), stderr = bytes()) {
 const statusData = (f: ReturnType<typeof fixture>) => f.records.filter(record => record.kind === "status").map(record => record.data as Record<string, unknown>);
 const hookInput = (f: ReturnType<typeof fixture>, event = "Stop") => ({ runId: f.run.runId, payload: { hook_event_name: event, session_id: nativeId } });
 const secret = "secret-uuidsecret-uuid";
+
+for (const refuse of [false, true]) test(`CC durable submission hook runs before spawn and cannot fabricate native acceptance (refuse=${refuse})`, async () => {
+  const f = fixture();
+  const evidence = createDispatchEvidence({ runId: f.run.runId, nativeCommandId: null, source: { harnessId: "claude-code", sessionId: f.run.sessionId, authorityId: "fixture", nativeSessionId: nativeId, cwd: f.run.cwd } }, {
+    beforeNative: () => { f.calls.push("durable-intent"); if (refuse) throw new Error("disk refused"); }, outcome: () => {},
+  }, f.deps.failClosed);
+  f.owner.dispatchEvidence = evidence;
+  await f.service().execute(f.owner, "hello", true, f.accepted); evidence.finish();
+  if (refuse) { expect(f.calls).not.toContain("spawn"); expect(evidence.snapshot().submission).toBe("not-submitted"); }
+  else { expect(f.calls.indexOf("durable-intent")).toBeLessThan(f.calls.indexOf("spawn")); expect(evidence.snapshot()).toMatchObject({ submission: "submitted", nativeAcceptance: "unknown" }); }
+});
+
+test("CC spawn/admission before failed stdin is possible submission, not definite non-submission", async () => {
+  const f = fixture(); f.child.stdin.write = () => { throw new Error("stdin failed"); };
+  const evidence = createDispatchEvidence({ runId: f.run.runId, nativeCommandId: null, source: { harnessId: "claude-code", sessionId: f.run.sessionId, authorityId: "fixture", nativeSessionId: nativeId, cwd: f.run.cwd } }, {}, f.deps.failClosed);
+  f.owner.dispatchEvidence = evidence;
+  await f.service().execute(f.owner, "hello", true, f.accepted); evidence.finish();
+  expect(f.ready[0]).toBe(true); expect(evidence.snapshot()).toMatchObject({ submission: "unknown", nativeAcceptance: "unknown" });
+  expect(f.calls.filter(call => call === "spawn")).toHaveLength(1);
+});
 
 test("successful owned launch preserves journal order, flags, settings, credentials and ready callbacks", async () => {
   const f = fixture(); f.run.agent = "design"; f.run.model = "model"; f.run.effort = "high";
