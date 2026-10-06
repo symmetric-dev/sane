@@ -55,7 +55,7 @@ export type NativeWorkerOperations = {
 export type NativeWorkerHandlerDependencies = {
   resolveCaller: NativeWorkerCallerResolver;
   operations: NativeWorkerOperations;
-  /** Absolute deadline established at bridge ingress; always capped to 15s. */
+  /** Absolute deadline established at bridge ingress; always capped to 16s. */
   deadline?: (request: Request) => number;
 };
 
@@ -114,9 +114,9 @@ export function createNativeWorkerHandler(deps: NativeWorkerHandlerDependencies)
     let timer: ReturnType<typeof setTimeout> | undefined;
     let qualificationTimer: ReturnType<typeof setTimeout> | undefined;
     try {
-      const requestedDeadline = deps.deadline?.(request) ?? started + 15000;
+      const requestedDeadline = deps.deadline?.(request) ?? started + 16000;
       if (!Number.isFinite(requestedDeadline)) throw new NativeWorkerRequestError(503, "worker-deadline", "App worker request deadline is unavailable.");
-      const deadline = Math.min(started + 15000, requestedDeadline);
+      const deadline = Math.min(started + 16000, requestedDeadline);
       const controller = new AbortController();
       timer = setTimeout(() => controller.abort(), Math.max(0, deadline - Date.now()));
       const ctx = context(AbortSignal.any([request.signal, controller.signal]), deadline);
@@ -127,7 +127,7 @@ export function createNativeWorkerHandler(deps: NativeWorkerHandlerDependencies)
         throw new NativeWorkerRequestError(400, "invalid-worker-input", "Invalid worker request. Supply a qualified caller, trusted invocation, supported operation and its bounded arguments; cancel requires explicit worker IDs.");
       }
       const qualification = new AbortController();
-      const qualificationDeadline = Math.min(deadline, started + 4000);
+      const qualificationDeadline = Math.min(deadline, started + 8000);
       qualificationTimer = setTimeout(() => qualification.abort(), Math.max(0, qualificationDeadline - Date.now()));
       const qualificationContext = context(AbortSignal.any([ctx.signal, qualification.signal]), qualificationDeadline);
       const resolved = await bounded(qualificationContext, () => deps.resolveCaller(input, qualificationContext));

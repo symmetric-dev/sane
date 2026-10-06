@@ -19,7 +19,7 @@ export async function workerNativeCaller(caller: NativeCaller, operation: Native
     // OC V2 Promise executors expose context.signal. Interrupting this HTTP wait
     // never requests worker cancellation. No transport retry or automatic acknowledgement;
     // only an explicit acknowledge operation requests notification consumption.
-    const timeout = AbortSignal.timeout(15000)
+    const timeout = AbortSignal.timeout(20000)
     const transportSignal = signal ? AbortSignal.any([signal, timeout]) : timeout
     let response: Response, result: unknown
     try {

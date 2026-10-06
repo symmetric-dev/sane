@@ -1337,8 +1337,8 @@ async function startOwned(options: Options, assetsDir: string, packageDir: strin
     const run = owner!.run;
     const name = `sane_worker_${request.operation}`;
     const matchesName = (value: unknown) => value === name || e.source.harness === "cc" && value === `mcp__sane__${name}`;
+    // execution already validates the repository admission and resolves its context.
     await execution(session.sessionId);
-    (await router!.forAdmission(admission))!.domain.resolveContext({ harness: e.source.harness, authorityId: e.authorityId, nativeId: e.nativeId });
     current();
     let evidenced = false;
     for (let attempt = 0; attempt < 3 && !evidenced; attempt++) {
