@@ -84,6 +84,16 @@ test("successful owned launch preserves journal order, flags, settings, credenti
   expect(f.owner.child).toBe(f.child); expect(f.owner.settled).toBe(false); // bridge releases ownership
 });
 
+test("installed source gate can withhold a Claude launch after final asynchronous execution preflight", async () => {
+  const f = fixture(); let executions = 0;
+  f.deps.execution = async () => { executions++; return "/checkout"; };
+  f.owner.beforeSend = () => { expect(executions).toBe(2); throw new Error("installed source changed"); };
+  await f.service().execute(f.owner, "immutable input", true, f.accepted);
+  expect(f.calls).not.toContain("spawn"); expect(f.owner.child).toBeUndefined();
+  expect(f.run.status).toBe("failed"); expect(f.ready).not.toContain(true);
+  expect(f.owner.streamsDrained).toBe(true); expect(f.state.failClosed).toBe(0);
+});
+
 test("stream decoding preserves UTF-8, EOF partial lines, plain stderr and large pending chunks", async () => {
   const encoded = new TextEncoder().encode(`\n${JSON.stringify({ text: "é" })}\n${wire(success)}`), at = encoded.indexOf(0xc3) + 1;
   const stdout = new ReadableStream<Uint8Array>({ start(c) { c.enqueue(encoded.slice(0, at)); c.enqueue(encoded.slice(at)); c.close(); } });

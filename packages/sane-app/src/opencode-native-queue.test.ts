@@ -21,7 +21,7 @@ function fixture() {
   const forbidden = async () => { throw new Error("Queue must not change native configuration or interrupt unrelated work"); };
   const oc: OpenCodeRunAdapter = {
     assertIdle: forbidden, select: forbidden, bindSaneSession: forbidden,
-    async boundSaneSession(id) { expect(id).toBe(nativeId); calls.push("bound"); return "Existing native Session block"; },
+    boundSaneSession: forbidden,
     async prompt(id, inputId, text, beforeSend, delivery) { expect([id, inputId, text, delivery]).toEqual([nativeId, commandId, "followup", "queue"]); beforeSend?.(); calls.push("prompt"); return { id: inputId, time: { created: 7 } }; },
     async snapshot() { return { messages: [message(commandId), message("msg_idle_queue", "idle", "succeeded")], outcome: "succeeded", pending: false }; },
     async interactions() { return []; }, compact: forbidden, compactionSnapshot: forbidden, activity: forbidden, cancel: forbidden,
@@ -93,11 +93,11 @@ test("adapter prompt queues the caller's stable ID exactly once and does not add
   expect(requests[1]).toEqual([`/api/session/${nativeId}/prompt`, "POST", { id: commandId, text: "ordinary" }]);
 });
 
-test("queue launch reads existing binding, never idle/select/bind, and durably dispatches exactly once", async () => {
+test("queue launch never reads/binds Session metadata or selects/idles and durably dispatches exactly once", async () => {
   const f = fixture();
   await f.service.executeNative(f.owner, "followup", true, f.accepted);
-  expect(f.calls).toEqual(["bound", "prompt"]);
-  expect(f.records.filter(event => event.kind === "context").map(event => event.data)).toEqual([{ type: "session-block", changed: false, text: "Existing native Session block" }]);
+  expect(f.calls).toEqual(["prompt"]);
+  expect(f.records.filter(event => event.kind === "context")).toEqual([]);
   expect(f.records.filter(event => event.kind === "submission").map(event => event.data)).toEqual([{ messageId: commandId, text: "followup" }]);
   expect(f.persisted.map(run => [run.nativeDelivery, run.nativeCommandId, run.nativePhase, run.status])).toEqual([
     ["queue", commandId, "preparing", "running"], ["queue", commandId, "sending", "running"], ["queue", commandId, "accepted", "running"], ["queue", commandId, "accepted", "completed"],
@@ -241,7 +241,7 @@ test("queue submission admission gate withholds after discovery changes ownershi
   const f = fixture();
   f.oc.prompt = async (_id, _input, _text, beforeSend) => { f.state.current = undefined; beforeSend?.(); f.calls.push("unexpected-dispatch"); throw new Error("unreachable"); };
   await f.service.executeNative(f.owner, "followup", true, f.accepted);
-  expect(f.calls).toEqual(["bound"]); expect(f.owner.nativeDispatched).toBe(false); expect(f.run.status).toBe("running");
+  expect(f.calls).toEqual([]); expect(f.owner.nativeDispatched).toBe(false); expect(f.run.status).toBe("running");
   expect(f.records.filter(event => event.kind === "status").map(event => event.data)).not.toContainEqual({ status: "failed" });
 });
 

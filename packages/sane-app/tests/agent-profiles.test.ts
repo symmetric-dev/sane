@@ -5,23 +5,37 @@
  * turn, so the suite runs offline with no real agent turns. OpenCode coverage
  * is limited to rejections that happen before any native contact.
  *
- * Prerequisites: no other SANE App instance holding this package's
- * installation lock; no ANTHROPIC_ or other provider override env vars (the bridge
- * refuses to start with them). CLAUDE_CONFIG_DIR / CLAUDE_CODE_PROJECT_DIR_NAME
- * are unset for the duration of this file and restored afterwards.
+ * Uses an isolated installation with validated fixture assets; never builds or
+ * acquires the live package's installation lock. Run this file alone: native
+ * selectors, bridge password and provider credentials are saved/unset/restored.
  */
 import { describe, test, expect, beforeAll, afterAll } from "bun:test";
+import { createHash } from "node:crypto";
 import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, rmSync, realpathSync, chmodSync, existsSync } from "node:fs";
-import { tmpdir } from "node:os";
-import { join, dirname } from "node:path";
-import { fileURLToPath } from "node:url";
+import { join } from "node:path";
 import { start, type Options } from "../src/bridge";
 import { validateOwnershipPaths, acquireInstallation, acquireData, type OwnershipHandle } from "../src/installation-ownership";
 import { initializeAppStore, loadAgentProfiles, AppStoreError } from "../src/app-store";
 import { builtinProfiles, seedAgentProfiles, type AgentProfile, type AgentProfiles } from "../src/agent-profiles-contract";
 
-const PKG_DIR = realpathSync(join(dirname(fileURLToPath(import.meta.url)), ".."));
+const TEMP = "/private/var/folders/6v/wnsbl7cj5w96s83lszq3454w0000gn/T/opencode";
 const TIMEOUT_MS = 120000;
+const hash = (value: string) => createHash("sha256").update(value).digest("hex");
+
+/** Minimal regular-file asset closure, validated by start with noBuild. */
+function fixtureAssets(packageDir: string) {
+  const files = { "bun.lock": "", "public/index.html": "<!doctype html><html><body>offline agent profiles fixture</body></html>" };
+  mkdirSync(join(packageDir, "public"), { recursive: true });
+  for (const [name, value] of Object.entries(files)) writeFileSync(join(packageDir, name), value);
+  const recipe = { version: 2, target: "browser", format: "esm", naming: "app.[ext]", minify: true, define: { "process.env.NODE_ENV": '"production"' } };
+  const inputs = Object.fromEntries(Object.entries({ ...Object.fromEntries(Object.entries(files).map(([name, value]) => [name, hash(value)])), $recipe: hash(JSON.stringify(recipe)), $bun: hash(Bun.version) }).sort(([a], [b]) => a.localeCompare(b)));
+  const generation = crypto.randomUUID(), assets = join(packageDir, "public", "assets"), dir = join(assets, generation);
+  mkdirSync(dir, { recursive: true });
+  const outputs = { "app.js": "// offline agent profiles fixture\n", "push-worker.js": "// offline push worker fixture\n" };
+  for (const [name, value] of Object.entries(outputs)) writeFileSync(join(dir, name), value);
+  writeFileSync(join(dir, "manifest.json"), JSON.stringify({ format: "sane-app-assets", version: 1, generation, fingerprint: hash(JSON.stringify(inputs)), inputs, outputs: Object.fromEntries(Object.entries(outputs).map(([name, value]) => [name, hash(value)])) }));
+  writeFileSync(join(assets, "current.json"), JSON.stringify({ format: "sane-app-assets-current", version: 1, generation }));
+}
 
 const savedEnv: Record<string, string | undefined> = {};
 const roots: string[] = [];
@@ -30,7 +44,7 @@ let options: Options;
 let app: { origin: string; close: () => Promise<void> } | undefined;
 
 function tmpRoot(): string {
-  const dir = realpathSync(mkdtempSync(join(tmpdir(), "agent-profiles-")));
+  const dir = realpathSync(mkdtempSync(join(TEMP, "agent-profiles-")));
   roots.push(dir);
   return dir;
 }
@@ -89,15 +103,18 @@ const runSettings = (args: string[]) => JSON.parse(readFileSync(flag(args, "--se
 const diskAgents = () => JSON.parse(readFileSync(join(dataDir, "agents.json"), "utf8")) as AgentProfiles;
 const diskSession = (sessionId: string) => (JSON.parse(readFileSync(join(dataDir, "metadata.json"), "utf8")).sessions as any[]).find(s => s.sessionId === sessionId);
 
-async function boot(noBuild: boolean): Promise<void> {
-  const handle = await start({ ...options, noBuild });
+async function boot(): Promise<void> {
+  const handle = await start(options);
   app = { origin: handle.origin, close: () => handle.close() };
 }
 
 describe.serial("agent profiles (in-process bridge, stubbed Claude CLI)", () => {
   beforeAll(async () => {
-    for (const name of ["CLAUDE_CONFIG_DIR", "CLAUDE_CODE_PROJECT_DIR_NAME"]) { savedEnv[name] = process.env[name]; delete process.env[name]; }
+    const credentials = Object.keys(process.env).filter(name => /^(ANTHROPIC_|CLAUDE_CODE_USE_|CLAUDE_CODE_OAUTH_TOKEN|CLAUDE_CODE_API_KEY|CLAUDE_CODE_BASE_URL|CLAUDE_CODE_CUSTOM_MODEL_OPTION|AWS_BEARER_TOKEN_BEDROCK|OPENAI_API_KEY|OPENAI_BASE_URL)/.test(name));
+    for (const name of [...credentials, "CLAUDE_CONFIG_DIR", "CLAUDE_CODE_PROJECT_DIR_NAME", "SANE_APP_PASSWORD", "OPENCODE_TOKEN"]) { savedEnv[name] = process.env[name]; delete process.env[name]; }
     root = tmpRoot();
+    const packageDir = join(root, "installation");
+    fixtureAssets(packageDir);
     dataDir = join(root, "appdata");
     repoDir = join(root, "repo");
     const profileRoot = join(root, "claude-profile");
@@ -132,20 +149,20 @@ describe.serial("agent profiles (in-process bridge, stubbed Claude CLI)", () => 
     chmodSync(stubPath, 0o755);
     options = {
       host: "127.0.0.1", port: 0, cwd: repoDir, dataDir, claudeBin: stubPath, allowRemote: false, reconcileInterrupted: false,
-      maxConcurrentRuns: 4, packageDir: PKG_DIR,
+      maxConcurrentRuns: 4, packageDir, noBuild: true,
       nativeSources: {
         cc: { version: 1, harness: "cc", kind: "local-profile", profileRoot: realpathSync(profileRoot) },
         oc: { version: 1, harness: "oc", kind: "local-registration", registrationFile: join(root, "oc", "service.json") },
       },
     };
-    const paths = validateOwnershipPaths(PKG_DIR, dataDir);
+    const paths = validateOwnershipPaths(packageDir, dataDir);
     const installation = acquireInstallation(paths, { phase: "setup" });
     let dataHandle: OwnershipHandle | undefined;
     try {
       dataHandle = acquireData(installation, { phase: "setup", createDataParent: true });
       initializeAppStore(paths.dataDir!, options.nativeSources);
     } finally { try { dataHandle?.release(); } finally { installation.release(); } }
-    await boot(false);
+    await boot();
   }, TIMEOUT_MS);
 
   afterAll(async () => {
@@ -351,7 +368,7 @@ describe.serial("agent profiles (in-process bridge, stubbed Claude CLI)", () => 
 
     await app!.close();
     app = undefined;
-    await boot(true);
+    await boot();
 
     const after = (await api("/api/agents")).body as AgentProfiles;
     expect(after).toEqual(before);

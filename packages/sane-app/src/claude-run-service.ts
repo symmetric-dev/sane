@@ -329,7 +329,8 @@ export class ClaudeRunService {
       });
       run.cwd = run.operation === "compact" ? await deps.compactExecution(session) : await deps.execution(session.sessionId);
       deps.assertWorkerDeliverySubmission(owner);
-      if (deps.closing() || deps.storageFailed() || owner.stopRequested || !deps.owns(owner)) throw new Error("Execution unavailable before launch");
+      if (deps.closing() || deps.storageFailed() || owner.stopRequested || owner.cancelling || owner.settled || !deps.owns(owner)) throw new Error("Execution unavailable before launch");
+      owner.beforeSend?.();
       const child = runtime.spawn(args, {
         cwd: run.cwd, detached: true, stdin: "pipe", stdout: "pipe", stderr: "pipe", env: { ...env, CLAUDE_CONFIG_DIR: this.options.claudeRoot, CLAUDE_CODE_PROJECT_DIR_NAME: "", CC_WEB_HOOK_URL: this.options.hookUrl(), CC_WEB_RUN_ID: run.runId, CC_WEB_HOOK_SECRET: secret, CC_WEB_HOOK_ERRORS: join(this.options.dataDir, `${run.runId}.hook-errors.jsonl`) },
       });
@@ -361,6 +362,7 @@ export class ClaudeRunService {
       ready(false);
       // Retain the sentinel if either consumer cannot finish within the bound.
       const drained = await Promise.race([Promise.allSettled(streams).then(() => true), runtime.sleep(2200).then(() => false)]);
+      owner.streamsDrained = drained;
       if (!drained) deps.requireReconciliation();
       if (run.operation === "compact" && owner.child && drained && !deps.retained() && !deps.closing() && !deps.storageFailed()) await deps.refreshCompactHistory(owner);
       run.endedAt = new Date().toISOString(); deps.session(run.sessionId)!.lastStatus = run.status;

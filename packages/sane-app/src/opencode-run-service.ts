@@ -44,7 +44,7 @@ export class OpenCodeRunService {
   async finishNative(owner: RunOwner, status: Status, reason?: string) {
     if (owner.run.nativeDelivery === "queue" && (owner.run.status !== "running" || this.deps.currentOwner(owner.run.sessionId) !== owner)) return;
     owner.run.status = status; owner.run.endedAt = new Date().toISOString();
-    this.deps.session(owner.run.sessionId).lastStatus = status;
+    if (this.deps.currentOwner(owner.run.sessionId) === owner) this.deps.session(owner.run.sessionId).lastStatus = status;
     await this.deps.emit(owner.run, "status", { status, ...(reason ? { reason } : {}) });
     await this.deps.persist();
   }
@@ -220,6 +220,15 @@ export class OpenCodeRunService {
   }
   async executeNative(owner: RunOwner, prompt: string, resume: boolean, ready: (accepted: boolean) => void) {
     const run = owner.run; const session = this.deps.session(run.sessionId), queued = run.nativeDelivery === "queue";
+    const configuration = (value: Session) => JSON.stringify([value.harness, value.authorityId, value.nativeSessionId, value.cwd,
+      value.profileId, value.model, value.effort, value.agent, value.agentKind, value.nativeAgentSelected, value.saneContext, value.attachment]);
+    const expectedConfiguration = configuration(session), nativeSessionId = session.nativeSessionId!;
+    const assertBeforeSend = () => {
+      if (!this.currentNative(owner) || owner.settled || owner.stopRequested || owner.cancelling || owner.stopping
+        || configuration(this.deps.session(run.sessionId)) !== expectedConfiguration) throw new Error("Prompt withheld before native dispatch: ownership, cancellation, or conversation configuration changed");
+      owner.beforeSend?.();
+      this.deps.assertWorkerDeliverySubmission(owner);
+    };
     let promptAttempted = false;
     try {
       if (compactCommand(prompt)) throw new Error("Use the dedicated Compact action; compaction cannot be submitted as an ordinary prompt");
@@ -260,12 +269,11 @@ export class OpenCodeRunService {
       this.deps.assertWorkerDeliverySubmission(owner);
       ready(true);
       try {
-        promptAttempted = !owner.workerDeliveryId && !queued;
-        const beforeSubmit = queued ? () => {
-          if (!this.currentNative(owner) || owner.stopRequested) throw new Error("Queued prompt withheld before native dispatch");
+        const beforeSubmit = () => {
+          assertBeforeSend();
           promptAttempted = true; owner.nativeDispatched = true;
-        } : owner.workerDeliveryId ? () => { this.deps.assertWorkerDeliverySubmission(owner); promptAttempted = true; } : undefined;
-        const submission = queued ? this.deps.oc.prompt(session.nativeSessionId!, run.nativeCommandId!, prompt, beforeSubmit, "queue") : this.deps.oc.prompt(session.nativeSessionId!, run.nativeCommandId!, prompt, beforeSubmit);
+        };
+        const submission = queued ? this.deps.oc.prompt(nativeSessionId, run.nativeCommandId!, prompt, beforeSubmit, "queue") : this.deps.oc.prompt(nativeSessionId, run.nativeCommandId!, prompt, beforeSubmit);
         owner.submission = submission;
         const admitted = await submission;
         if (queued && !this.currentNative(owner)) return;
@@ -282,7 +290,7 @@ export class OpenCodeRunService {
     } catch (error) {
       ready(false);
       if (this.deps.storageFailed()) return;
-      if (!promptAttempted) await this.finishNative(owner, owner.stopRequested ? "interrupted" : "failed", error instanceof Error ? error.message : "Native preparation failed");
+       if (!promptAttempted) await this.finishNative(owner, owner.stopRequested || owner.cancelling || this.deps.closing() ? "interrupted" : "failed", error instanceof Error ? error.message : "Native preparation failed");
       else throw error;
     } finally { if (owner.workerDeliveryId && !promptAttempted && !this.deps.storageFailed()) await this.deps.emit(run, "status", { status: run.status, workerDeliveryNotSubmitted: owner.workerDeliveryId }); ready(false); }
   }
@@ -300,9 +308,9 @@ export class OpenCodeRunService {
   private async interruptSubmission(owner: RunOwner, withheld: boolean, checkOwner: boolean): Promise<{ interrupted: boolean }> {
     if (owner.run.nativeDelivery === "queue" && !this.currentNative(owner)) return { interrupted: false };
     if (owner.run.operation === "compact" && !owner.submission && owner.nativeDispatched === false) return { interrupted: withheld };
-    if (!owner.submission && owner.run.nativePhase === "preparing") return { interrupted: withheld };
+    if (!owner.submission && (owner.run.nativePhase === "preparing" || owner.run.nativeDelivery !== "queue" && owner.nativeDispatched === false)) return { interrupted: withheld };
     await owner.submission?.catch(() => {});
-    if (owner.run.operation === "compact" && owner.nativeDispatched === false) return { interrupted: withheld };
+    if (owner.run.nativeDelivery !== "queue" && owner.nativeDispatched === false) return { interrupted: withheld };
     if (checkOwner && this.deps.currentOwner(owner.run.sessionId) !== owner || owner.run.status !== "running") return { interrupted: false };
     if (owner.run.nativeDelivery === "queue") {
       const run = owner.run, session = this.deps.session(run.sessionId);

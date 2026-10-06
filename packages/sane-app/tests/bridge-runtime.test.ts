@@ -9,11 +9,14 @@ import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSy
 import { join } from "node:path";
 import { start, type Options } from "../src/bridge";
 import { initializeAppStore } from "../src/app-store";
-import { acquireData, acquireInstallation, validateOwnershipPaths, type OwnershipHandle } from "../src/installation-ownership";
-import type { NativeMessage } from "../src/opencode";
+import { acquireData, acquireInstallation, validateOwnershipPaths, OwnershipHandle } from "../src/installation-ownership";
+import { OpenCodeAdapter, type NativeMessage } from "../src/opencode";
+import { ChromePushService } from "../src/chrome-push";
 import { capabilitiesFor, getHarnessDescriptor, type Harness } from "../shared/conversation/harness-capabilities";
 import { RepositoryRouter, WorkstreamAdapterError } from "../src/workstreams";
 import { CatalogService } from "../src/catalog";
+import { OpenCodeRunService, type OpenCodeRunDependencies } from "../src/opencode-run-service";
+import type { Session } from "../src/history";
 import { discoverRepository, initializeRepository } from "sane-core/server";
 
 const TEMP = "/private/var/folders/6v/wnsbl7cj5w96s83lszq3454w0000gn/T/opencode";
@@ -40,12 +43,25 @@ function fixtureAssets(packageDir: string) {
   const files = { "bun.lock": "", "public/index.html": "<!doctype html><html><body>offline runtime fixture</body></html>" };
   mkdirSync(join(packageDir, "public"), { recursive: true });
   for (const [name, value] of Object.entries(files)) writeFileSync(join(packageDir, name), value);
-  const recipe = { version: 1, target: "browser", format: "esm", naming: "app.[ext]", minify: true, define: { "process.env.NODE_ENV": '"production"' } };
+  const recipe = { version: 2, target: "browser", format: "esm", naming: "app.[ext]", minify: true, define: { "process.env.NODE_ENV": '"production"' } };
   const inputs = Object.fromEntries(Object.entries({ ...Object.fromEntries(Object.entries(files).map(([name, value]) => [name, hash(value)])), $recipe: hash(JSON.stringify(recipe)), $bun: hash(Bun.version) }).sort(([a], [b]) => a.localeCompare(b)));
   const generation = crypto.randomUUID(), assets = join(packageDir, "public", "assets"), dir = join(assets, generation), js = "// offline runtime fixture\n";
-  mkdirSync(dir, { recursive: true }); writeFileSync(join(dir, "app.js"), js);
-  writeFileSync(join(dir, "manifest.json"), JSON.stringify({ format: "sane-app-assets", version: 1, generation, fingerprint: hash(JSON.stringify(inputs)), inputs, outputs: { "app.js": hash(js) } }));
+  mkdirSync(dir, { recursive: true });
+  const outputs = { "app.js": js, "push-worker.js": "// offline push worker fixture\n" };
+  for (const [name, value] of Object.entries(outputs)) writeFileSync(join(dir, name), value);
+  writeFileSync(join(dir, "manifest.json"), JSON.stringify({ format: "sane-app-assets", version: 1, generation, fingerprint: hash(JSON.stringify(inputs)), inputs, outputs: Object.fromEntries(Object.entries(outputs).map(([name, value]) => [name, hash(value)])) }));
   writeFileSync(join(assets, "current.json"), JSON.stringify({ format: "sane-app-assets-current", version: 1, generation }));
+}
+
+function startupFixture(name: string): Options {
+  const packageDir = join(root, `startup-${name}-installation`), isolatedDataDir = join(root, `startup-${name}-data`);
+  fixtureAssets(packageDir);
+  const selected = { ...options, packageDir, dataDir: isolatedDataDir, port: 0 };
+  const installation = acquireInstallation(validateOwnershipPaths(packageDir, isolatedDataDir), { phase: "setup" });
+  let data: OwnershipHandle | undefined;
+  try { data = acquireData(installation, { phase: "setup", createDataParent: true }); initializeAppStore(isolatedDataDir, selected.nativeSources); }
+  finally { try { data?.release(); } finally { installation.release(); } }
+  return selected;
 }
 
 function complete(id: string, outcome = "succeeded") {
@@ -238,7 +254,7 @@ describe.serial("bridge runtime (isolated offline HTTP native fixtures)", () => 
     const stub = join(root, "claude-stub.mjs");
     writeFileSync(stub, [
       `#!${process.execPath}`,
-      `import { appendFileSync } from "node:fs";`,
+      `import { appendFileSync, existsSync } from "node:fs";`,
       `const args = process.argv.slice(2), prompt = await Bun.stdin.text();`,
       `const i = args.findIndex(a => a === "--session-id" || a === "--resume"), session_id = args[i + 1];`,
       `const payload = { hook_event_name: "UserPromptSubmit", session_id, prompt };`,
@@ -248,6 +264,7 @@ describe.serial("bridge runtime (isolated offline HTTP native fixtures)", () => 
       `console.log(JSON.stringify({ type: "system", subtype: "init", session_id }));`,
       `console.log(JSON.stringify({ type: "assistant", uuid: crypto.randomUUID(), session_id, message: { role: "assistant", content: [{ type: "text", text: "offline Claude answer: " + prompt }] } }));`,
       `console.log(JSON.stringify({ type: "result", subtype: "success", is_error: false, session_id, result: "offline Claude OK" }));`,
+      `if (prompt.startsWith("hold for Claude followup")) { await probe(process.env.CC_WEB_HOOK_SECRET, { hook_event_name: "Stop", session_id }, "Stop"); while (!existsSync(${JSON.stringify(join(root, "claude-release-"))} + process.env.CC_WEB_RUN_ID)) await Bun.sleep(20); }`,
       "",
     ].join("\n")); chmodSync(stub, 0o755);
     options = { host: "127.0.0.1", port: 0, cwd: repoDir, dataDir, claudeBin: stub, packageDir, noBuild: true, allowRemote: false, reconcileInterrupted: false,
@@ -593,6 +610,142 @@ describe.serial("bridge runtime (isolated offline HTTP native fixtures)", () => 
     expect(next.status).toBe(202); expect((await waitIdle(sessionId)).lastStatus).toBe("completed");
   }, TIMEOUT);
 
+  test("coordinator arbitrates awaited user admission against another user and idle-only operations", async () => {
+    const session = await fixtureSession("opencode"), entered = Promise.withResolvers<void>(), gate = Promise.withResolvers<void>();
+    const associate = CatalogService.prototype.associate;
+    const mock = spyOn(CatalogService.prototype, "associate").mockImplementation(async function(this: CatalogService, id, cwd, workspaceId, worktreeId) {
+      if (id === session.sessionId) { entered.resolve(); await gate.promise; }
+      return associate.call(this, id, cwd, workspaceId, worktreeId);
+    });
+    const before = sideEffects();
+    const first = api("/api/sessions", { sessionId: session.sessionId, prompt: "offline lease winner" });
+    try {
+      await entered.promise;
+      const other = await api("/api/sessions", { sessionId: session.sessionId, prompt: "offline lease loser" });
+      expect(other.status).toBe(409); expect(other.body.code).toBe("conversation-busy");
+      expect((await api(`/api/sessions/${session.sessionId}/compact`, { requestId: crypto.randomUUID() })).status).toBe(409);
+      expect((await api(`/api/sessions/${session.sessionId}/enroll`, {})).status).toBe(409);
+      expect(sideEffects()).toEqual(before);
+    } finally { gate.resolve(); mock.mockRestore(); }
+    expect((await first).status).toBe(202);
+    await waitIdle(session.sessionId);
+  }, TIMEOUT);
+
+  for (const field of ["model", "authorityId"] as const) test(`prepared user admission rejects pinned ${field} edits after async catalog preflight without dispatch`, async () => {
+    let live: Session | undefined;
+    const execute = OpenCodeRunService.prototype.executeNative;
+    const capture = spyOn(OpenCodeRunService.prototype, "executeNative").mockImplementation(async function(this: OpenCodeRunService, ...args) {
+      live = (this as unknown as { deps: OpenCodeRunDependencies }).deps.session(args[0].run.sessionId);
+      return execute.apply(this, args);
+    });
+    let created;
+    try { created = await api("/api/sessions", { harness: "opencode", prompt: "offline pin baseline" }); await waitIdle(created.body.sessionId); }
+    finally { capture.mockRestore(); }
+    expect(created.status).toBe(202); expect(live).toBeDefined();
+    const entered = Promise.withResolvers<void>(), gate = Promise.withResolvers<void>(), prior = live![field];
+    const associate = CatalogService.prototype.associate;
+    const mock = spyOn(CatalogService.prototype, "associate").mockImplementation(async function(this: CatalogService, id, cwd, workspaceId, worktreeId) {
+      if (id === live!.sessionId) { entered.resolve(); await gate.promise; }
+      return associate.call(this, id, cwd, workspaceId, worktreeId);
+    });
+    const before = sideEffects(), pending = api("/api/sessions", { sessionId: live!.sessionId, prompt: "offline must remain unsent" });
+    try {
+      await entered.promise; live![field] = "changed-during-preflight"; gate.resolve();
+      const response = await pending;
+      expect(response.status).toBe(409); expect(response.body.error).toContain("configuration changed");
+      expect(sideEffects()).toEqual(before);
+    } finally { gate.resolve(); mock.mockRestore(); if (prior === undefined) delete live![field]; else live![field] = prior; }
+    // The validation refusal did not fail closed or arrange an automatic retry.
+    const explicit = await api("/api/sessions", { sessionId: live!.sessionId, prompt: "offline explicit retry" });
+    expect(explicit.status).toBe(202); await waitIdle(live!.sessionId);
+  }, TIMEOUT);
+
+  test("capacity is deduplicated and the exact predecessor lease preserves only one legacy Claude followup", async () => {
+    await app!.close(); app = await start({ ...options, maxConcurrentRuns: 1 }); await login();
+    let first: any;
+    try {
+      const initial = await api("/api/sessions", { harness: "claude-code", prompt: "hold for Claude followup at capacity", model: "offline-claude", effort: "high" });
+      expect(initial.status).toBe(202); first = initial.body;
+      await until("Claude predecessor stopped turn with live process", async () => {
+        const row = (await api("/api/sessions")).body.sessions.find((s: any) => s.sessionId === first.sessionId);
+        return row?.availability.queueAfterRunId === first.runId ? row : undefined;
+      });
+      expect((await api("/api/sessions", { harness: "opencode", prompt: "offline no spare slot" })).status).toBe(429);
+      const queued = await api("/api/sessions", { sessionId: first.sessionId, prompt: "offline exact immutable followup" });
+      expect(queued.status).toBe(202); expect(queued.body.queued).toBe(true);
+      expect((await api("/api/sessions", { sessionId: first.sessionId, prompt: "offline forbidden second followup" })).status).toBe(409);
+      expect((await api(`/api/sessions/${first.sessionId}/compact`, { requestId: crypto.randomUUID() })).status).toBe(409);
+      expect((await api("/api/sessions", { harness: "opencode", prompt: "offline reservation still counts once" })).status).toBe(429);
+      writeFileSync(join(root, `claude-release-${first.runId}`), "release");
+      const settled = await waitIdle(first.sessionId);
+      expect(settled.lastStatus).toBe("completed"); expect(settled.lastRunId).not.toBe(first.runId);
+      const resumed = invocations().find(row => row.runId === settled.lastRunId);
+      expect(resumed.prompt).toBe("offline exact immutable followup");
+      expect(flag(resumed.args, "--resume")).toBe(first.nativeSessionId);
+      expect(storedRun(settled.lastRunId)).toMatchObject({ model: "offline-claude", effort: "high", queuedFollowupId: queued.body.receipt.requestId });
+      expect((await api("/api/sessions", { harness: "opencode", prompt: "offline released capacity" })).status).toBe(202);
+    } finally {
+      if (first) writeFileSync(join(root, `claude-release-${first.runId}`), "release");
+      await app!.close(); app = await start(options); await login();
+    }
+  }, TIMEOUT);
+
+  test("branch extension reserves both conversations atomically and enforces capacity before native fork", async () => {
+    await app!.close(); app = await start({ ...options, maxConcurrentRuns: 1 }); await login();
+    try {
+      const created = await api("/api/sessions", { harness: "opencode", prompt: "offline branch capacity source" });
+      expect(created.status).toBe(202); await waitIdle(created.body.sessionId);
+      const before = sideEffects();
+      const branch = await api(`/api/sessions/${created.body.sessionId}/branch`, { requestId: crypto.randomUUID(), runId: created.body.runId, prompt: "offline branch must not dispatch", replace: false });
+      expect(branch.status).toBe(409); expect(branch.body.error).toContain("capacity reached");
+      expect(sideEffects()).toEqual(before);
+      expect(branch.body.operation.state).toBe("failed");
+      const explicit = await api("/api/sessions", { sessionId: created.body.sessionId, prompt: "offline source reservation released" });
+      expect(explicit.status).toBe(202); await waitIdle(created.body.sessionId);
+    } finally { await app!.close(); app = await start(options); await login(); }
+  }, TIMEOUT);
+
+  test("shutdown closes coordinator admission before awaited preparation can install or submit", async () => {
+    const session = await fixtureSession("opencode"), entered = Promise.withResolvers<void>(), gate = Promise.withResolvers<void>();
+    const associate = CatalogService.prototype.associate;
+    const mock = spyOn(CatalogService.prototype, "associate").mockImplementation(async function(this: CatalogService, id, cwd, workspaceId, worktreeId) {
+      if (id === session.sessionId) { entered.resolve(); await gate.promise; }
+      return associate.call(this, id, cwd, workspaceId, worktreeId);
+    });
+    const before = sideEffects(), pending = api("/api/sessions", { sessionId: session.sessionId, prompt: "offline shutdown must withhold" });
+    try {
+      await entered.promise; const close = app!.close(); gate.resolve();
+      expect((await pending).status).toBe(409); await close;
+      expect(sideEffects()).toEqual(before);
+    } finally {
+      gate.resolve(); mock.mockRestore(); await app!.close(); app = await start(options); await login();
+    }
+    expect((await api("/api/sessions")).body.sessions.find((s: any) => s.sessionId === session.sessionId).availability.canSend).toBe(true);
+  }, TIMEOUT);
+
+  test("shutdown preserves a pending legacy followup as non-submitted rather than launching after owner exit", async () => {
+    let first: any;
+    try {
+      const initial = await api("/api/sessions", { harness: "claude-code", prompt: "hold for Claude followup at shutdown" });
+      expect(initial.status).toBe(202); first = initial.body;
+      await until("Claude stopped predecessor turn", async () => {
+        const row = (await api("/api/sessions")).body.sessions.find((s: any) => s.sessionId === first.sessionId);
+        return row?.availability.queueAfterRunId === first.runId ? row : undefined;
+      });
+      const queued = await api("/api/sessions", { sessionId: first.sessionId, prompt: "offline must not resume after shutdown" });
+      expect(queued.status).toBe(202); expect(queued.body.queued).toBe(true);
+      const close = app!.close(); writeFileSync(join(root, `claude-release-${first.runId}`), "release"); await close;
+      const metadata = disk("metadata.json");
+      expect(metadata.runs.some((run: any) => run.queuedFollowupId === queued.body.receipt.requestId)).toBe(false);
+      expect(invocations().some(row => row.prompt === "offline must not resume after shutdown")).toBe(false);
+    } finally {
+      if (first) writeFileSync(join(root, `claude-release-${first.runId}`), "release");
+      await app!.close(); app = await start(options); await login();
+    }
+    const row = (await api("/api/sessions")).body.sessions.find((s: any) => s.sessionId === first.sessionId);
+    expect(row.queuedFollowups.at(-1).state).toBe("not-submitted"); expect(row.availability.canSend).toBe(true);
+  }, TIMEOUT);
+
   test("closing detaches OpenCode; restart observes the exact command without creation, replay or interrupt", async () => {
     const created = await api("/api/sessions", { harness: "opencode", prompt: "hold for restart", cwd: repoDir });
     expect(created.status).toBe(202);
@@ -618,13 +771,189 @@ describe.serial("bridge runtime (isolated offline HTTP native fixtures)", () => 
     expect((await api(`/api/sessions/${sessionId}/transcript`)).body.messages.map((m: any) => m.role)).toEqual(["user", "assistant"]);
   }, TIMEOUT);
 
+  for (const mixedClaude of [false, true]) test(`startup observes an exact existing OpenCode command while reconciliation blocks all new sends (mixedClaude=${mixedClaude})`, async () => {
+    const created = await api("/api/sessions", { harness: "opencode", prompt: "hold for flagged startup", cwd: repoDir });
+    expect(created.status).toBe(202);
+    const { sessionId, nativeSessionId, runId } = created.body;
+    await until("accepted exact command before flagged restart", async () => storedRun(runId).nativePhase === "accepted" ? true : undefined);
+    await app!.close(); app = undefined;
+    const metadata = disk("metadata.json"), nativeRun = metadata.runs.find((r: any) => r.runId === runId);
+    metadata.reconciliationRequired = !mixedClaude;
+    let claudeRun: any;
+    if (mixedClaude) {
+      claudeRun = metadata.runs.find((r: any) => r.status === "completed" && metadata.sessions.some((s: any) => s.sessionId === r.sessionId && s.harness === "claude-code" && s.lastRunId === r.runId));
+      expect(claudeRun).toBeDefined();
+      claudeRun.status = "running"; delete claudeRun.endedAt;
+      const session = metadata.sessions.find((s: any) => s.sessionId === claudeRun.sessionId);
+      session.lastStatus = "running"; session.lastRunId = claudeRun.runId;
+    }
+    writeFileSync(join(dataDir, "metadata.json"), JSON.stringify(metadata));
+    const before = mutations().length, invocationCount = invocations().length, observations: [string, string, string | undefined][] = [];
+    const snapshot = OpenCodeAdapter.prototype.snapshot;
+    const observe = spyOn(OpenCodeAdapter.prototype, "snapshot").mockImplementation(async function(this: OpenCodeAdapter, id, commandId, cwd) {
+      observations.push([id, commandId, cwd]); return snapshot.call(this, id, commandId, cwd);
+    });
+    try {
+      app = await start(options); await login();
+      await until("startup exact-command observer", async () => observations.some(([id, command]) => id === nativeSessionId && command === nativeRun.nativeCommandId) ? true : undefined);
+      const config = await api("/api/config"); expect(config.status).toBe(200); expect(config.body.authenticated).toBe(true);
+      const listing = await api("/api/sessions"); expect(listing.status).toBe(200);
+      expect(listing.body.availability).toMatchObject({ canSend: false, code: "reconciliation-required" });
+      expect(listing.body.sessions.find((s: any) => s.sessionId === sessionId).availability).toMatchObject({ canSend: false, code: "reconciliation-required" });
+      for (const input of [{ sessionId, operation: "recover-run", requestId: runId, prompt: "offline arbitrary recovery must not dispatch" }, { harness: "opencode", prompt: "offline fresh creation must not dispatch" }]) {
+        const rejection = await api("/api/sessions", input);
+        expect(rejection.status).toBe(409); expect(rejection.body.code).toBe("reconciliation-required");
+      }
+      if (mixedClaude) expect(storedRun(claudeRun.runId).status).toBe("interrupted");
+      complete(nativeSessionId);
+      await until("exact observed input completion under blocked admission", async () => storedRun(runId).status === "completed" ? true : undefined);
+      expect(disk("metadata.json").reconciliationRequired).toBe(true);
+      expect(observations.filter(([id]) => id === nativeSessionId).every(([, command, cwd]) => command === nativeRun.nativeCommandId && cwd === repoDir)).toBe(true);
+      expect(mutations()).toHaveLength(before); expect(invocations()).toHaveLength(invocationCount);
+    } finally {
+      observe.mockRestore(); if (sessions.get(nativeSessionId)!.active) complete(nativeSessionId);
+      await app?.close(); app = undefined;
+      // Only this disposable fixture's synthetic CLI state is acknowledged.
+      app = await start({ ...options, reconcileInterrupted: true }); await login();
+    }
+  }, TIMEOUT);
+
+  for (const publicationFailure of [false, true]) test(`post-bind startup failure closes both listeners before releasing either lock and permits a clean same-port restart (publicationFailure=${publicationFailure})`, async () => {
+    const selected = startupFixture(`post-bind-${publicationFailure}`), paths = validateOwnershipPaths(selected.packageDir!, selected.dataDir);
+    const bound: Bun.Server<any>[] = [], ports: number[] = [], probeDrains: Promise<void>[] = [];
+    const serve = Bun.serve, release = OwnershipHandle.prototype.release;
+    let checkedBeforeRelease = false;
+    const capture = spyOn(Bun, "serve").mockImplementation(((input: any) => { const server = serve(input); bound.push(server); ports.push(server.port!); return server; }) as typeof Bun.serve);
+    const releaseSpy = spyOn(OwnershipHandle.prototype, "release").mockImplementation(function(this: OwnershipHandle) {
+      if (this.owner.packageDir === selected.packageDir && !checkedBeforeRelease) {
+        expect(bound).toHaveLength(2); expect(existsSync(paths.installationLock)).toBe(true); expect(existsSync(paths.dataLock!)).toBe(true);
+        // Rebinding synchronously proves neither original socket can still serve
+        // at the precise first lock-release boundary, not just after rejection.
+        for (const port of ports) {
+          const probe = serve({ hostname: "127.0.0.1", port, reusePort: false, fetch: () => new Response("offline closed-listener probe") });
+          probeDrains.push(probe.stop(true));
+        }
+        checkedBeforeRelease = true;
+      }
+      return release.call(this);
+    });
+    const failureMessage = "offline post-bind startup failure", update = OwnershipHandle.prototype.update;
+    const fault = publicationFailure
+      ? spyOn(OwnershipHandle.prototype, "update").mockImplementation(function(this: OwnershipHandle, phase, listener) {
+        if (this.owner.packageDir === selected.packageDir && this.owner.kind === "data" && phase === "serving") throw new Error(failureMessage);
+        return update.call(this, phase, listener);
+      })
+      : spyOn(ChromePushService.prototype, "start").mockImplementation(() => { throw new Error(failureMessage); });
+    let firstPort = 0;
+    try {
+      await expect(start(selected)).rejects.toThrow(failureMessage);
+      expect(checkedBeforeRelease).toBe(true); expect(bound).toHaveLength(2); firstPort = ports[0]!;
+      expect(existsSync(paths.installationLock)).toBe(false); expect(existsSync(paths.dataLock!)).toBe(false);
+      await Promise.all(probeDrains);
+    } finally { fault.mockRestore(); releaseSpy.mockRestore(); capture.mockRestore(); await Promise.all(bound.map(server => server.stop(true))); await Promise.all(probeDrains); }
+    expect(firstPort).toBeGreaterThan(0);
+    const restarted = await start({ ...selected, port: firstPort });
+    try {
+      expect(restarted.port).toBe(firstPort);
+      expect((await fetch(`${restarted.origin}/api/config`, { headers: { origin: restarted.origin } })).status).toBe(200);
+    } finally { await restarted.close(); }
+  }, TIMEOUT);
+
+  test("a rejecting post-bind listener cleanup still stops both listeners and retains ownership instead of serving unlocked", async () => {
+    const selected = startupFixture("cleanup-rejection"), paths = validateOwnershipPaths(selected.packageDir!, selected.dataDir);
+    const bound: Bun.Server<any>[] = [], ports: number[] = [], stops: number[] = [], serve = Bun.serve;
+    const capture = spyOn(Bun, "serve").mockImplementation(((input: any) => {
+      const server = serve(input), index = bound.length, stop = server.stop.bind(server); bound.push(server); ports.push(server.port!);
+      if (index === 0) spyOn(server, "stop").mockImplementation(async force => { stops.push(index); await stop(force); throw new Error("offline cleanup acknowledgement rejected"); });
+      else spyOn(server, "stop").mockImplementation(async force => { stops.push(index); await stop(force); });
+      return server;
+    }) as typeof Bun.serve);
+    const fault = spyOn(ChromePushService.prototype, "start").mockImplementation(() => { throw new Error("offline startup failure with cleanup rejection"); });
+    try {
+      await expect(start(selected)).rejects.toThrow("offline startup failure with cleanup rejection");
+      expect(stops).toEqual([0, 1]);
+      for (const lock of [paths.installationLock, paths.dataLock!]) expect(JSON.parse(readFileSync(join(lock, "owner.json"), "utf8")).phase).toBe("retained");
+      for (const port of ports) {
+        const probe = serve({ hostname: "127.0.0.1", port, reusePort: false, fetch: () => new Response("offline stopped cleanup probe") });
+        await probe.stop(true);
+      }
+      await expect(start(selected)).rejects.toMatchObject({ code: "OWNER_BUSY" });
+    } finally { fault.mockRestore(); capture.mockRestore(); for (const server of bound) { (server.stop as any).mockRestore?.(); await server.stop(true); } }
+    // Retained records live only under the disposable fixture root and are
+    // removed by afterAll. Never force-clear a production ownership sentinel.
+  }, TIMEOUT);
+
+  for (const publicationFailure of [false, true]) test(`a still-bound listener plus BOTH failed retention writes never releases either lock (publicationFailure=${publicationFailure})`, async () => {
+    const selected = startupFixture(`retention-write-failure-${publicationFailure}`), paths = validateOwnershipPaths(selected.packageDir!, selected.dataDir);
+    const bound: Bun.Server<any>[] = [], ports: number[] = [], stops: number[] = [], retainAttempts: string[] = [], releases: string[] = [];
+    const handles = new Map<string, OwnershipHandle>(), sentinels = new Map<string, string>();
+    const serve = Bun.serve, update = OwnershipHandle.prototype.update, release = OwnershipHandle.prototype.release;
+    const capture = spyOn(Bun, "serve").mockImplementation(((input: any) => {
+      const server = serve(input), index = bound.length, stop = server.stop.bind(server);
+      bound.push(server); ports.push(server.port!);
+      // Unlike the earlier rejection test, the HTTP listener never closes.
+      spyOn(server, "stop").mockImplementation(async force => {
+        stops.push(index);
+        if (index === 0) throw new Error("offline listener stop refused BEFORE closure");
+        await stop(force);
+      });
+      return server;
+    }) as typeof Bun.serve);
+    const updateFault = spyOn(OwnershipHandle.prototype, "update").mockImplementation(function(this: OwnershipHandle, phase, listener) {
+      if (this.owner.packageDir === selected.packageDir) {
+        handles.set(this.owner.kind, this);
+        if (phase === "retained") {
+          retainAttempts.push(this.owner.kind);
+          const path = join(this.lock, "owner.json");
+          if (!sentinels.has(path)) sentinels.set(path, readFileSync(path, "utf8"));
+          throw new Error(`offline ${this.owner.kind} retention write refused BEFORE publication`);
+        }
+        if (publicationFailure && this.owner.kind === "data" && phase === "serving") throw new Error("offline serving publication refused");
+      }
+      return update.call(this, phase, listener);
+    });
+    const releaseSpy = spyOn(OwnershipHandle.prototype, "release").mockImplementation(function(this: OwnershipHandle) {
+      if (this.owner.packageDir === selected.packageDir) releases.push(this.owner.kind);
+      return release.call(this);
+    });
+    const startupFault = publicationFailure ? undefined : spyOn(ChromePushService.prototype, "start").mockImplementation(() => { throw new Error("offline inner post-bind startup refused"); });
+    try {
+      await expect(start(selected)).rejects.toThrow("offline installation retention write refused BEFORE publication");
+      expect(bound).toHaveLength(2); expect(stops).toEqual([0, 1]);
+      // Outer ownership-publication failure retries retention after abortStartup
+      // throws; neither retry nor any final release may remove either sentinel.
+      expect(retainAttempts).toEqual(publicationFailure ? ["data", "installation", "data", "installation"] : ["data", "installation"]);
+      expect(releases).toEqual([]); expect(sentinels.size).toBe(2);
+      for (const [path, before] of sentinels) expect(readFileSync(path, "utf8")).toBe(before);
+      expect(existsSync(paths.installationLock)).toBe(true); expect(existsSync(paths.dataLock!)).toBe(true);
+      expect(() => serve({ hostname: "127.0.0.1", port: ports[0]!, reusePort: false, fetch: () => new Response("must not bind") })).toThrow();
+      const origin = `http://127.0.0.1:${ports[0]}`;
+      expect((await fetch(`${origin}/api/config`, { headers: { origin } })).status).toBe(200);
+      expect(() => acquireInstallation(paths, { phase: "starting", reconcileInterrupted: true })).toThrow("Live installation owner");
+      expect(() => acquireData(handles.get("installation")!, { phase: "starting", reconcileInterrupted: true })).toThrow("Live data owner");
+      await expect(start(selected)).rejects.toMatchObject({ code: "OWNER_BUSY" });
+      expect(releases).toEqual([]);
+      for (const [path, before] of sentinels) expect(readFileSync(path, "utf8")).toBe(before);
+    } finally {
+      startupFault?.mockRestore(); capture.mockRestore(); updateFault.mockRestore(); releaseSpy.mockRestore();
+      // Only this disposable fixture: restore stop, close both actual sockets,
+      // then release the captured handles whose failed retain writes never set
+      // their internal flags. Never remove live production locks or sentinels.
+      for (const server of bound) { (server.stop as any).mockRestore?.(); await server.stop(true); }
+      handles.get("data")?.release(); handles.get("installation")?.release();
+    }
+    expect(existsSync(paths.installationLock)).toBe(false); expect(existsSync(paths.dataLock!)).toBe(false);
+    const restarted = await start({ ...selected, port: ports[0]! });
+    try { expect(restarted.port).toBe(ports[0]!); } finally { await restarted.close(); }
+  }, TIMEOUT);
+
   test("fake Claude ordinary prompt/resume uses selected source, stdout and native hook-secret boundary", async () => {
     const nativeMutations = mutations().length;
     const created = await api("/api/sessions", { harness: "claude-code", prompt: "offline CC first turn", cwd: repoDir, model: "opus", effort: "high" });
     expect(created.status).toBe(202);
     const { sessionId, nativeSessionId, runId } = created.body;
     expect((await waitIdle(sessionId)).lastStatus).toBe("completed");
-    const first = invocations()[0];
+    const first = invocations().find(row => row.runId === runId);
     expect(first).toMatchObject({ prompt: "offline CC first turn", cwd: repoDir, profileRoot: join(root, "claude-profile"), runId, hookStatuses: [403, 400, 400, 200], leakedPassword: null, leakedToken: null });
     expect(flag(first.args, "--session-id")).toBe(nativeSessionId);
     expect(flag(first.args, "--model")).toBe("opus"); expect(flag(first.args, "--effort")).toBe("high");
@@ -635,15 +964,20 @@ describe.serial("bridge runtime (isolated offline HTTP native fixtures)", () => 
     expect(events.find((e: any) => e.kind === "hook").data).toMatchObject({ event: "UserPromptSubmit", payload: { session_id: nativeSessionId, prompt: "offline CC first turn" } });
     expect(events.at(-1).data).toMatchObject({ status: "completed", exitCode: 0, resultSeen: true });
     const transcript = (await api(`/api/sessions/${sessionId}/transcript`)).body;
-    expect(transcript.messages.map((m: any) => m.role)).toEqual(["user", "assistant"]);
+    // The successful result is a separate native record, not an alias of the
+    // assistant UUID. The stub deliberately emits distinct text for each.
+    expect(transcript.messages.map((m: any) => m.role)).toEqual(["user", "assistant", "assistant"]);
     expect(transcript.messages[1].parts[0].text).toBe("offline Claude answer: offline CC first turn");
+    expect(transcript.messages[2]).toMatchObject({ runId, role: "assistant", status: "completed", parts: [{ type: "text", text: "offline Claude OK" }] });
+    expect(transcript.messages[2].id).toStartWith(`${runId}:result:legacy:seq:`);
+    expect(new Set(transcript.messages.map((m: any) => m.id)).size).toBe(3);
     // Hooks route before browser auth/Host/Origin, but still require a live secret.
     expect((await api("/hooks/Stop", { runId, payload: {} }, { anonymous: true, headers: { host: "untrusted.invalid", origin: "https://untrusted.invalid" } })).status).toBe(403);
     expect((await api("/hooks/Stop", undefined, { anonymous: true })).status).toBe(403);
     expect((await api("/hooks/NotAHook", {}, { anonymous: true })).status).toBe(400);
     const resumed = await api("/api/sessions", { sessionId, prompt: "offline CC resumed turn" });
     expect(resumed.status).toBe(202); expect((await waitIdle(sessionId)).lastStatus).toBe("completed");
-    const second = invocations()[1];
+    const second = invocations().find(row => row.runId === resumed.body.runId);
     expect(flag(second.args, "--resume")).toBe(nativeSessionId); expect(second.args).not.toContain("--session-id");
     expect(flag(second.args, "--model")).toBe("opus"); expect(flag(second.args, "--effort")).toBe("high");
     expect(second.hookStatuses).toEqual([403, 400, 400, 200]);

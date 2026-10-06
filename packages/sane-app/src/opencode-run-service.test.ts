@@ -21,7 +21,8 @@ function fixture(compact = false) {
   const oc: OpenCodeRunAdapter = {
     async assertIdle() { trace.push("idle"); },
     async select() { trace.push("select"); },
-    async bindSaneSession() { return false; },
+    async bindSaneSession() { throw new Error("Runs must not bind native Session metadata"); },
+    async boundSaneSession() { throw new Error("Runs must not read a legacy native Session binding"); },
     async prompt(id, commandId, text, beforeSend) { trace.push("prompt"); beforeSend?.(); return { id: commandId, time: { created: 5 } }; },
     async snapshot(id, commandId, cwd) { trace.push(`snapshot:${commandId}`); return { messages: [message(commandId)], outcome: "succeeded", pending: false }; },
     async interactions() { trace.push("interactions"); return []; },
@@ -54,15 +55,32 @@ function fixture(compact = false) {
 test("prompt publishes preparing, sending and accepted in the original event order", async () => {
   const f = fixture();
   await f.service.executeNative(f.owner, "hello", true, f.accepted);
-  expect(f.trace).toEqual(["emit:status", "emit:submission", "persist:preparing:running", "execution", "idle", "select", "emit:launch", "emit:context", "persist:sending:running", "execution", "workerGate", "ready:true", "prompt", "persist:accepted:running", "snapshot:msg_request", "emit:message", "emit:status", "persist:accepted:completed", "ready:false"]);
+  expect(f.trace).toEqual(["emit:status", "emit:submission", "persist:preparing:running", "execution", "idle", "select", "emit:launch", "persist:sending:running", "execution", "workerGate", "ready:true", "prompt", "workerGate", "persist:accepted:running", "snapshot:msg_request", "emit:message", "emit:status", "persist:accepted:completed", "ready:false"]);
   expect(f.persisted.map(r => [r.nativePhase, r.status])).toEqual([["preparing", "running"], ["sending", "running"], ["accepted", "running"], ["accepted", "completed"]]);
   expect(f.run.nativeAcceptedAt).toBe(5); expect(f.session.lastStatus).toBe("completed");
   expect(f.state.currentOwner).toBe(f.owner); expect(f.owner.settled).toBe(false);
 });
 
+for (const compact of [false, true]) test(`acknowledged creation framework delivery is journaled before launch (compact=${compact})`, async () => {
+  const f = fixture(compact);
+  const delivery = { messageId: "msg_framework", sha256: "a".repeat(64), chars: 42 };
+  let pending: typeof delivery | undefined = delivery, takes = 0;
+  f.deps.takeFrameworkDelivery = id => {
+    expect(id).toBe(f.session.sessionId); takes++;
+    const acknowledged = pending; pending = undefined; return acknowledged;
+  };
+  if (compact) await f.service.executeNativeCompact(f.owner);
+  else await f.service.executeNative(f.owner, "hello", true, f.accepted);
+  expect(takes).toBe(1); expect(pending).toBeUndefined();
+  expect(f.records.filter(event => event.kind === "context").map(event => event.data)).toEqual([{ type: "framework-delivered", ...delivery }]);
+  expect(f.trace.indexOf("emit:context")).toBeLessThan(f.trace.indexOf("emit:launch"));
+  expect(f.trace.indexOf("emit:launch")).toBeLessThan(f.trace.indexOf(compact ? "compact" : "prompt"));
+  expect(f.run.status).toBe("completed");
+});
+
 test("uncertain prompt is observed once without replay and acceptance precedes message publication", async () => {
   const f = fixture(); let observations = 0;
-  f.oc.prompt = async () => { f.trace.push("prompt"); throw new OpenCodeError("lost acknowledgement"); };
+  f.oc.prompt = async (_id, _commandId, _text, beforeSend) => { f.trace.push("prompt"); beforeSend?.(); throw new OpenCodeError("lost acknowledgement"); };
   f.oc.snapshot = async () => {
     f.trace.push("snapshot");
     return ++observations === 1 ? { messages: [], outcome: undefined, pending: false } : { messages: [message("msg_request")], outcome: "succeeded", pending: false };
@@ -76,7 +94,7 @@ test("uncertain prompt is observed once without replay and acceptance precedes m
 });
 
 for (const status of [400, 401, 403, 404, 409]) test(`definitive prompt HTTP ${status} rejection fails without observation or retry`, async () => {
-  const f = fixture(); f.oc.prompt = async () => { f.trace.push("prompt"); throw new OpenCodeError("rejected", status); };
+  const f = fixture(); f.oc.prompt = async (_id, _commandId, _text, beforeSend) => { f.trace.push("prompt"); beforeSend?.(); throw new OpenCodeError("rejected", status); };
   await f.service.executeNative(f.owner, "hello", true, f.accepted);
   expect(f.run.status).toBe("failed"); expect(f.run.nativePhase).toBe("sending");
   expect(f.trace.filter(t => t === "prompt")).toHaveLength(1); expect(f.trace.some(t => t.startsWith("snapshot"))).toBe(false);
@@ -111,6 +129,43 @@ test("worker discovery failure before beforeSend is definitive non-submission", 
   await f.service.executeNative(f.owner, "worker report", true, f.accepted);
   expect(f.run.status).toBe("failed");
   expect(f.statuses().at(-1)).toEqual({ status: "failed", workerDeliveryNotSubmitted: "delivery_fixture" });
+});
+
+for (const change of ["owner", "stop", "cancel", "closing", "storage", "source", "authority", "profile", "defaults", "installed-gate"] as const) {
+  test(`ordinary final beforeSend withholds after discovery changes ${change}`, async () => {
+    const f = fixture(); let dispatched = 0;
+    const gate = Promise.withResolvers<void>(), discovered = Promise.withResolvers<void>();
+    f.oc.prompt = async (_id, commandId, _text, beforeSend) => {
+      discovered.resolve(); await gate.promise; beforeSend?.(); dispatched++;
+      return { id: commandId, time: { created: 5 } };
+    };
+    const execution = f.service.executeNative(f.owner, "ordinary pinned input", true, f.accepted);
+    await discovered.promise;
+    if (change === "owner") f.state.currentOwner = { ...f.owner, run: { ...f.run, runId: "replacement" } };
+    if (change === "stop") f.owner.stopRequested = true;
+    if (change === "cancel") f.owner.cancelling = true;
+    if (change === "closing") f.state.closing = true;
+    if (change === "storage") f.state.storageFailed = true;
+    if (change === "source") f.session.nativeSessionId = "ses_changed";
+    if (change === "authority") f.session.authorityId = "changed";
+    if (change === "profile") f.session.profileId = "changed";
+    if (change === "defaults") f.session.model = "changed";
+    if (change === "installed-gate") f.owner.beforeSend = () => { throw new Error("installed profile changed"); };
+    gate.resolve(); await execution;
+    expect(dispatched).toBe(0); expect(f.owner.nativeDispatched).toBe(false);
+    expect(f.run.nativePhase).toBe("sending"); expect(f.run.nativeAcceptedAt).toBeUndefined();
+    expect(f.statuses().some(s => typeof s === "object" && s !== null && "connection" in s)).toBe(false);
+    expect(f.trace.some(t => t.startsWith("snapshot"))).toBe(false);
+    if (change === "owner") expect(f.session.lastStatus).toBe("running");
+  });
+}
+
+test("ordinary discovery failure remains definite non-submission, not uncertain attempted mutation", async () => {
+  const f = fixture(); f.oc.prompt = async () => { throw new OpenCodeError("discovery unavailable"); };
+  await f.service.executeNative(f.owner, "ordinary", true, f.accepted);
+  expect(f.owner.nativeDispatched).toBe(false); expect(f.run.status).toBe("failed");
+  expect(f.statuses()).toContainEqual({ status: "failed", reason: "discovery unavailable" });
+  expect(f.trace.some(t => t.startsWith("snapshot"))).toBe(false);
 });
 
 test("worker accepted beforeSend follows ordinary correlated observation", async () => {
@@ -158,6 +213,7 @@ test("ordinary /compact text fails before prompt publication", async () => {
 
 test("interrupt waits for submission before issuing interrupt and waits for its acknowledgement", async () => {
   const f = fixture(); f.run.nativePhase = "sending";
+  f.owner.nativeDispatched = true;
   const submission = Promise.withResolvers<void>(), interrupt = Promise.withResolvers<{ interrupted: boolean }>();
   f.owner.submission = submission.promise;
   f.oc.cancel = async id => { f.trace.push(`interrupt:${id}`); return interrupt.promise; };
@@ -172,6 +228,7 @@ test("interrupt waits for submission before issuing interrupt and waits for its 
 
 test("interrupt awaits rejected submission and does not release on native cancellation error", async () => {
   const f = fixture(); const submission = Promise.withResolvers<void>(); f.owner.submission = submission.promise;
+  f.owner.nativeDispatched = true;
   f.oc.cancel = async () => { f.trace.push("interrupt"); throw new OpenCodeError("interrupt unavailable"); };
   const stop = f.service.interrupt(f.owner);
   submission.reject(new OpenCodeError("uncertain submission"));
@@ -180,6 +237,7 @@ test("interrupt awaits rejected submission and does not release on native cancel
 
 test("terminal evidence arriving before submission settles prevents a redundant interrupt", async () => {
   const f = fixture(); const submission = Promise.withResolvers<void>(); f.owner.submission = submission.promise;
+  f.owner.nativeDispatched = true;
   const stop = f.service.interrupt(f.owner); f.run.status = "completed"; submission.resolve();
   expect(await stop).toEqual({ interrupted: false }); expect(f.trace).toEqual([]);
 });
@@ -204,6 +262,7 @@ test("direct stop acknowledges withheld preparation without interrupting native 
 
 test("direct stop rechecks the current owner after waiting for submission", async () => {
   const f = fixture(); f.run.nativePhase = "sending";
+  f.owner.nativeDispatched = true;
   const submission = Promise.withResolvers<void>(); f.owner.submission = submission.promise;
   const stop = f.service.interruptCurrent(f.owner);
   f.state.currentOwner = undefined; submission.resolve();
@@ -212,6 +271,7 @@ test("direct stop rechecks the current owner after waiting for submission", asyn
 
 test("direct stop waits for native submission and returns its cancellation acknowledgement", async () => {
   const f = fixture(); f.run.nativePhase = "sending";
+  f.owner.nativeDispatched = true;
   const submission = Promise.withResolvers<void>(); f.owner.submission = submission.promise;
   const stop = f.service.interruptCurrent(f.owner);
   expect(f.trace).toEqual([]); submission.resolve();
@@ -220,7 +280,7 @@ test("direct stop waits for native submission and returns its cancellation ackno
 
 test("coalesced compact admitted ID is durable before observation and idle is checked after refresh", async () => {
   const f = fixture(true); await f.service.executeNativeCompact(f.owner);
-  expect(f.trace).toEqual(["compactExecution", "idle", "emit:launch", "emit:context", "persist:sending:running", "compactExecution", "idle", "compact", "persist:accepted:running", "compactExecution", "compactSnapshot:msg_coalesced", "emit:message", "activity", "refresh", "activity", "emit:status", "persist:accepted:completed"]);
+  expect(f.trace).toEqual(["compactExecution", "idle", "emit:launch", "persist:sending:running", "compactExecution", "idle", "compact", "persist:accepted:running", "compactExecution", "compactSnapshot:msg_coalesced", "emit:message", "activity", "refresh", "activity", "emit:status", "persist:accepted:completed"]);
   expect(f.persisted[1]?.compact?.nativeAdmittedId).toBe("msg_coalesced");
   expect(f.run.nativeCommandId).toBe("msg_request"); expect(f.owner.nativeDispatched).toBe(true); expect(f.run.status).toBe("completed");
   expect(f.records.some(e => e.kind === "submission")).toBe(false);

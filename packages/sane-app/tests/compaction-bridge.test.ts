@@ -26,11 +26,13 @@ function fixtureAssets(packageDir: string) {
   const files = { "bun.lock": "", "public/index.html": "<!doctype html><html><body>offline fixture</body></html>" };
   mkdirSync(join(packageDir, "public"), { recursive: true });
   for (const [name, value] of Object.entries(files)) writeFileSync(join(packageDir, name), value);
-  const recipe = { version: 1, target: "browser", format: "esm", naming: "app.[ext]", minify: true, define: { "process.env.NODE_ENV": '"production"' } };
+  const recipe = { version: 2, target: "browser", format: "esm", naming: "app.[ext]", minify: true, define: { "process.env.NODE_ENV": '"production"' } };
   const inputs = Object.fromEntries(Object.entries({ ...Object.fromEntries(Object.entries(files).map(([name, value]) => [name, hash(value)])), $recipe: hash(JSON.stringify(recipe)), $bun: hash(Bun.version) }).sort(([a], [b]) => a.localeCompare(b)));
   const generation = crypto.randomUUID(), assets = join(packageDir, "public", "assets"), dir = join(assets, generation), js = "// offline fixture\n";
-  mkdirSync(dir, { recursive: true }); writeFileSync(join(dir, "app.js"), js);
-  writeFileSync(join(dir, "manifest.json"), JSON.stringify({ format: "sane-app-assets", version: 1, generation, fingerprint: hash(JSON.stringify(inputs)), inputs, outputs: { "app.js": hash(js) } }));
+  mkdirSync(dir, { recursive: true });
+  const outputs = { "app.js": js, "push-worker.js": "// offline push worker fixture\n" };
+  for (const [name, value] of Object.entries(outputs)) writeFileSync(join(dir, name), value);
+  writeFileSync(join(dir, "manifest.json"), JSON.stringify({ format: "sane-app-assets", version: 1, generation, fingerprint: hash(JSON.stringify(inputs)), inputs, outputs: Object.fromEntries(Object.entries(outputs).map(([name, value]) => [name, hash(value)])) }));
   writeFileSync(join(assets, "current.json"), JSON.stringify({ format: "sane-app-assets-current", version: 1, generation }));
 }
 
