@@ -51,16 +51,9 @@
   animation:framework-center-shine 900ms ease-in-out 1200ms both;
 }
 .framework-mark-particle {
-  opacity:.8;
+  /* Keep the base opaque so center-to-center links disappear under squares. */
+  opacity:1;
   animation:framework-particle-appear 400ms ease-out both;
-}
-.framework-mark-particle:not([data-intro]) { animation-duration:700ms; }
-.framework-mark-particle[data-leaving] {
-  opacity:0;
-  animation:framework-particle-disappear 700ms ease-in both;
-}
-.framework-mark-float {
-  animation:framework-particle-float 7s ease-in-out infinite;
 }
 /* Hidden chat stays mounted; pause the timeline rather than restart it. */
 .framework-mark[data-paused] * { animation-play-state:paused; }
@@ -80,21 +73,12 @@
 }
 @keyframes framework-particle-appear {
   from { opacity:0; }
-  to { opacity:.8; }
-}
-@keyframes framework-particle-disappear {
-  from { opacity:.8; }
-  to { opacity:0; }
-}
-@keyframes framework-particle-float {
-  0%,100% { transform:translate(0,0); }
-  25% { transform:translate(var(--framework-float-x1),var(--framework-float-y1)); }
-  50% { transform:translate(var(--framework-float-x2),var(--framework-float-y2)); }
-  75% { transform:translate(var(--framework-float-x3),var(--framework-float-y3)); }
+  to { opacity:1; }
 }
 @media(max-width:700px) {
   .framework-mark { width:96px; }
 }
 @media(prefers-reduced-motion:reduce) {
   .framework-mark * { animation:none!important; }
+  .framework-mark-mesh { display:none; }
 }

@@ -1,60 +1,17 @@
-import { useEffect, useId, useRef, useState, type CSSProperties } from "react";
+import { useEffect, useId, useRef, useState } from "react";
 import { PenroseTriangleFaces } from "./penrose-triangle";
+import { chooseFrameworkConnections, createFrameworkConnections, createFrameworkFormation, createFrameworkParticles, frameworkPositions, type FrameworkFormation } from "./framework-mark-motion";
 import "./framework-mark.css";
-
-const supportSpawnPoints = [
-  { x: -2, y: 8 },
-  { x: -3, y: 14 },
-  { x: -3, y: 20.5 },
-  { x: 26, y: 8 },
-  { x: 27, y: 14 },
-  { x: 27, y: 20.5 },
-  { x: 3, y: -2.5 },
-  { x: 9, y: -2.5 },
-  { x: 15, y: -2.5 },
-  { x: 21, y: -2.5 },
-] as const;
-
-type SupportParticle = { point: number; motion: CSSProperties; introOrder?: number; leaving?: boolean };
-const minParticles = 3;
-const maxParticles = 5;
-
-function particleMotion(): CSSProperties {
-  const duration = 6 + Math.random() * 4;
-  const rangeX = .6 + Math.random() * .6;
-  // With a 1-unit half-size and lowest anchor at 20.5, even the top edge
-  // at maximum downward drift stays above the triangle baseline at 20.66.
-  const rangeY = .4 + Math.random() * .5;
-  const offsets = Object.fromEntries(Array.from({ length: 3 }, (_, index) => {
-    const angle = Math.random() * Math.PI * 2;
-    return [
-      [`--framework-float-x${index + 1}`, `${Math.cos(angle) * rangeX}px`],
-      [`--framework-float-y${index + 1}`, `${Math.sin(angle) * rangeY}px`],
-    ];
-  }).flat());
-  return {
-    ...offsets,
-    animationDuration: `${duration}s`,
-    // Start each drift at its own phase; the parent still controls visibility.
-    animationDelay: `${-Math.random() * duration}s`,
-  } as CSSProperties;
-}
-
-function initialParticles(): SupportParticle[] {
-  const available = supportSpawnPoints.map((_, point) => point);
-  return Array.from({ length: minParticles }, (_, introOrder) => ({
-    point: available.splice(Math.floor(Math.random() * available.length), 1)[0],
-    motion: particleMotion(),
-    introOrder,
-  }));
-}
 
 /** Decorative framework metaphor, not a loading or live phase indicator. */
 export function FrameworkMark({ active = true }: { active?: boolean }) {
   const id = useId();
-  const [particles, setParticles] = useState(initialParticles);
-  const [ambientReady, setAmbientReady] = useState(false);
-  const lastRetiredPoint = useRef<number | null>(null);
+  const [particles] = useState(createFrameworkParticles);
+  const [connections] = useState(() => createFrameworkConnections(particles.length));
+  const particleNodes = useRef<(SVGGElement | null)[]>([]);
+  const connectionNodes = useRef<(SVGLineElement | null)[]>([]);
+  const formation = useRef<FrameworkFormation | null>(null);
+  const timeline = useRef({ elapsed: 0, nextSelection: 3300, selected: new Set<number>(), opacity: connections.map(() => 0) });
   const [hidden, setHidden] = useState(() => typeof document !== "undefined" && document.hidden);
   const [reducedMotion, setReducedMotion] = useState(() => typeof window !== "undefined" && window.matchMedia("(prefers-reduced-motion: reduce)").matches);
   useEffect(() => {
@@ -72,32 +29,55 @@ export function FrameworkMark({ active = true }: { active?: boolean }) {
   }, []);
 
   useEffect(() => {
-    // A preference change can cancel a fade-out before its animationend event.
     if (reducedMotion) {
-      const retiring = particles.find(particle => particle.leaving);
-      if (retiring) {
-        lastRetiredPoint.current = retiring.point;
-        setParticles(current => current.filter(particle => !particle.leaving));
-      }
+      // CSS disables the reveal too: leave a complete, static scattered mark.
+      particles.forEach(({ home }, index) => particleNodes.current[index]?.setAttribute("transform", `translate(${home.x} ${home.y})`));
+      connectionNodes.current.forEach(node => node?.setAttribute("opacity", "0"));
+      timeline.current = { elapsed: 0, nextSelection: 3300, selected: new Set<number>(), opacity: connections.map(() => 0) };
+      formation.current = null;
       return;
     }
-    if (!active || hidden || !ambientReady || particles.some(particle => particle.leaving)) return;
-    const timer = window.setTimeout(() => {
-      const direction = Math.random();
-      const selection = Math.random();
-      const motion = particleMotion();
-      setParticles(current => {
-        if (current.length === minParticles || current.length < maxParticles && direction < .5) {
-          const available = supportSpawnPoints.map((_, point) => point).filter(point =>
-            point !== lastRetiredPoint.current && !current.some(particle => particle.point === point));
-          return [...current, { point: available[Math.floor(selection * available.length)], motion }];
+    if (!active || hidden) return;
+    let frame = 0;
+    let previous: number | null = null;
+    const animate = (timestamp: number) => {
+      const delta = previous === null ? 0 : Math.min(timestamp - previous, 100);
+      previous = timestamp;
+      const current = timeline.current;
+      current.elapsed += delta;
+      if (current.elapsed >= 3300 && (!formation.current || current.elapsed >= formation.current.next)) {
+        formation.current = createFrameworkFormation(current.elapsed, formation.current);
+      }
+      const { positions, strength } = frameworkPositions(particles, current.elapsed, formation.current);
+      // Squares and lines share coordinates; no layout reads or React renders
+      // are needed per frame. Paused time never advances the formation clock.
+      positions.forEach(({ x, y }, index) => particleNodes.current[index]?.setAttribute("transform", `translate(${x} ${y})`));
+      if (current.elapsed >= current.nextSelection) {
+        current.selected = chooseFrameworkConnections(connections, positions, current.selected);
+        current.nextSelection = current.elapsed + 4000 + Math.random() * 3000;
+      }
+      const fade = 1 - Math.exp(-delta / 650);
+      connections.forEach(({ from, to }, index) => {
+        if (!current.selected.has(index) && current.opacity[index] === 0) return;
+        const node = connectionNodes.current[index];
+        if (!node) return;
+        current.opacity[index] += ((current.selected.has(index) ? 1 : 0) - current.opacity[index]) * fade;
+        const opacity = current.opacity[index] * .4 * (1 - strength * .25);
+        node.setAttribute("opacity", opacity < .002 ? "0" : String(opacity));
+        if (opacity < .002) {
+          if (!current.selected.has(index)) current.opacity[index] = 0;
+          return;
         }
-        const retiring = Math.floor(selection * current.length);
-        return current.map((particle, index) => index === retiring ? { ...particle, leaving: true } : particle);
+        node.setAttribute("x1", String(positions[from].x));
+        node.setAttribute("y1", String(positions[from].y));
+        node.setAttribute("x2", String(positions[to].x));
+        node.setAttribute("y2", String(positions[to].y));
       });
-    }, 4000 + Math.random() * 3000);
-    return () => window.clearTimeout(timer);
-  }, [active, hidden, reducedMotion, ambientReady, particles]);
+      frame = window.requestAnimationFrame(animate);
+    };
+    frame = window.requestAnimationFrame(animate);
+    return () => window.cancelAnimationFrame(frame);
+  }, [active, hidden, reducedMotion, particles, connections]);
 
   return <svg className="framework-mark" width="480" height="372" viewBox="-8 -6 40 31"
     fill="none" stroke="currentColor" strokeLinecap="round" strokeLinejoin="round"
@@ -112,31 +92,26 @@ export function FrameworkMark({ active = true }: { active?: boolean }) {
         <stop offset="1" stopColor="currentColor" stopOpacity="0" />
       </radialGradient>
     </defs>
+    <g className="framework-mark-mesh" strokeWidth=".08">
+      {connections.map(({ from, to }, index) => <line key={`${from}-${to}`} opacity="0"
+        ref={node => { connectionNodes.current[index] = node; }}
+        x1={particles[from].home.x} y1={particles[from].home.y}
+        x2={particles[to].home.x} y2={particles[to].home.y} />)}
+    </g>
     <path className="framework-mark-glow" d="M12 3.34 22 20.66H2Z"
       strokeWidth="2.3" filter={`url(#${id}-glow)`} />
     <PenroseTriangleFaces faceClassName="framework-mark-face" />
     <path className="framework-mark-center" d="M12 10.27 16 17.2H8Z"
       fill={`url(#${id}-center)`} stroke="none" />
-    {particles.map(({ point, motion, introOrder, leaving }) => <g key={point}
-      transform={`translate(${supportSpawnPoints[point].x} ${supportSpawnPoints[point].y})`}>
-      <g className="framework-mark-particle" data-intro={introOrder !== undefined ? true : undefined}
-        data-leaving={leaving ? true : undefined}
-        style={{ animationDelay: `${!leaving && introOrder !== undefined ? 2100 + introOrder * 100 : 0}ms` }}
-        onAnimationEnd={event => {
-          if (event.target !== event.currentTarget) return;
-          if (event.animationName === "framework-particle-disappear") {
-            lastRetiredPoint.current = point;
-            setParticles(current => current.filter(particle => particle.point !== point));
-          } else if (event.animationName === "framework-particle-appear" && introOrder === minParticles - 1) {
-            setAmbientReady(true);
-          }
-        }}>
-        <g className="framework-mark-float" style={motion}>
-          <rect x="-1" y="-1" width="2" height="2"
-            fill="var(--penrose-background, var(--background))" stroke="none" />
-          <rect x="-1" y="-1" width="2" height="2" fill="currentColor" fillOpacity=".2"
-            stroke="currentColor" strokeWidth=".3" strokeLinejoin="miter" />
-        </g>
+    {particles.map(({ home }, index) => <g key={index}
+      ref={node => { particleNodes.current[index] = node; }}
+      transform={`translate(${home.x} ${home.y})`}>
+      <g className="framework-mark-particle"
+        style={{ animationDelay: `${2100 + index * 40}ms` }}>
+        <rect x="-.45" y="-.45" width=".9" height=".9"
+          fill="var(--penrose-background, var(--background))" stroke="none" />
+        <rect x="-.45" y="-.45" width=".9" height=".9" fill="currentColor" fillOpacity=".2" opacity=".8"
+          stroke="currentColor" strokeWidth=".14" strokeLinejoin="miter" />
       </g>
     </g>)}
   </svg>;
