@@ -12,7 +12,7 @@ description: Use when starting a new SANE Engineering Assistant session.
 
 ## Required Inputs
 
-Read `design/SDD.md`, `resources/SOLUTION_SPEC_TEMPLATE.md`, and any existing solution specs relevant to the assignment. Ask the user about missing or unclear inputs.
+Read `design/SDD.md`, `<workstream>/resources/SOLUTION_SPEC_TEMPLATE.md`, and any existing solution specs relevant to the assignment. Ask the user about missing or unclear inputs.
 
 ## Initial Handoff Context
 

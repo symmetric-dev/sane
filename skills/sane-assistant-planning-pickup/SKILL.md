@@ -12,7 +12,7 @@ description: Use when starting a new SANE Planning Assistant session.
 
 ## Required Inputs
 
-Read `design/SDD.md`, `design/solutions/*.md`, `resources/PLAN_TEMPLATE.md`, `resources/JOB_TEMPLATE.md`, `resources/VERIFICATION_SPEC_TEMPLATE.md`, and the existing Execution Plan, Job Specs, and Verification Specs. Ask the user to clarify missing or unclear solution decisions.
+Read `design/SDD.md`, `design/solutions/*.md`, `<workstream>/resources/PLAN_TEMPLATE.md`, `<workstream>/resources/JOB_TEMPLATE.md`, `<workstream>/resources/VERIFICATION_SPEC_TEMPLATE.md`, and the existing Execution Plan, Job Specs, and Verification Specs. Ask the user to clarify missing or unclear solution decisions.
 
 ## Initial Handoff Context
 
