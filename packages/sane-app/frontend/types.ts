@@ -8,6 +8,7 @@ export { active } from "../shared/conversation/types";
 import type { Association } from "../src/catalog-contract";
 import type { QueuedFollowup, SendReceipt } from "../shared/conversation/queued-followup";
 import type { AgentProfile, AgentProfileInput, AgentProfiles } from "../src/agent-profiles-contract";
+import type { ConversationActivity } from "../shared/conversation/activity";
 import type { TranscriptPage, TranscriptMetadataPage, TranscriptRefresh, TranscriptRefreshRequest } from "../src/transcript-contract";
 import type { ConversationUpdateFeedRequest, ConversationUpdatePage, ConversationUpdateSource } from "../shared/conversation/conversation-updates";
 export type { ConversationUpdateCursor, ConversationUpdateFeedRequest, ConversationUpdatePage, ConversationUpdateSource } from "../shared/conversation/conversation-updates";
@@ -17,7 +18,7 @@ export type WorkerSessionMetadata = { id: string; parent: { sessionId: string; r
 export const harnessName = (harness: Harness) => harness === "opencode" ? "OpenCode" : "Claude Code";
 export const harnessShort = (harness: Harness): "OC" | "CC" => harness === "opencode" ? "OC" : "CC";
 export type AgentChoice = { id: string; label: string; description: string };
-export type Conversation = { id: string; harness: Harness; authorityId?: string; nativeSessionId?: string; updateSource?: ConversationUpdateSource; nativeActivity?: "active" | "idle" | "unknown"; nativeActivityReason?: string; updatedAt?: string | null; cwd: string; lastRunId: string | null; lastRunStatus?: RunStatus; lastRunOperation?: "prompt" | "compact"; lastRunEndedAt?: string; status: RunStatus; title?: string; hidden?: boolean; model?: string; effort?: string; agent?: string; agentKind?: "assistant" | "worker"; nativeAgentSelected?: boolean; profileId?: string; availability?: Availability; queuedFollowups?: QueuedFollowup[]; attachment?: { state: "pending" | "ready"; error?: string }; worker?: WorkerSessionMetadata; directWorkerCount?: number; branchOrigin?: string; branchDraft?: string; replacedBy?: string } & Partial<Association>;
+export type Conversation = { id: string; harness: Harness; authorityId?: string; nativeSessionId?: string; updateSource?: ConversationUpdateSource; activity?: ConversationActivity; nativeActivity?: "active" | "idle" | "unknown"; nativeActivityReason?: string; updatedAt?: string | null; cwd: string; lastRunId: string | null; lastRunStatus?: RunStatus; lastRunOperation?: "prompt" | "compact"; lastRunEndedAt?: string; status: RunStatus; title?: string; hidden?: boolean; model?: string; effort?: string; agent?: string; agentKind?: "assistant" | "worker"; nativeAgentSelected?: boolean; profileId?: string; availability?: Availability; queuedFollowups?: QueuedFollowup[]; attachment?: { state: "pending" | "ready"; error?: string }; worker?: WorkerSessionMetadata; directWorkerCount?: number; branchOrigin?: string; branchDraft?: string; replacedBy?: string } & Partial<Association>;
 export type Capabilities = {
   concurrency: { scope: "bridge" | "conversation"; limit: number; perConversation?: number; sharedCheckoutWrites?: boolean };
   cancelRun: boolean; midRunInput: boolean; permissionReplies: boolean;
@@ -27,7 +28,7 @@ export type Capabilities = {
 export type PendingTurn = { id: string; conversationId: string; runId?: string; text: string; time: string };
 export type HarnessInfo = { id: Harness; available: boolean; connected: boolean; state: string; reason?: string; capabilities: Partial<HarnessCapabilities> };
 export type Config = { authRequired: boolean; authenticated: boolean; storeId?: string; conversationUpdates?: boolean; cwd?: string; capabilities?: Capabilities; agents?: AgentChoice[]; agentProfiles?: AgentProfiles; harnesses?: HarnessInfo[] };
-export type Availability = { canSend: boolean; reason?: string; queueAfterRunId?: string; nativeQueue?: boolean };
+export type Availability = { canSend: boolean; reason?: string; code?: string; queueAfterRunId?: string; nativeQueue?: boolean };
 export type SearchHit = { sessionId: string; runId?: string; snippet: string; score: number };
 export interface ConversationClient {
   conversationUpdates?(request: ConversationUpdateFeedRequest, signal?: AbortSignal, bootstrap?: boolean): Promise<ConversationUpdatePage>;

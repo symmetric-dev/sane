@@ -101,10 +101,15 @@ vary the population between **three and five squares** across **ten fixed spawn
 points**. The count is a visual composition choice, not an enumeration of Support
 Track phases.
 
-- Place squares around the outside of the bottom, left, and right regions,
-  with room between their borders and the triangle.
+- Place squares above and beside the triangle, never directly beneath it.
+  Low side positions may align the square's top-left corner with the triangle's
+  bottom baseline, so the square can extend below the baseline off to the side.
+  Keep its top edge at or above that line throughout its drift (SVG Y increases
+  downward). Reserve only the padding needed for these positions and the glow.
 - Each particle stays near its own anchor on a short 2D path: a gentle arc,
-  small ellipse, or back-and-forth drift.
+  small ellipse, or back-and-forth drift. Give each newly spawned square its own
+  random bounded control points, duration, and starting phase; do not synchronize
+  the initial squares or assign them a small set of repeated motion presets.
 - Every 4–7 seconds, randomly add a square at an unoccupied point or retire one.
   At three squares, the next change must add one; at five, it must retire one.
   Never retire a square if doing so would leave fewer than three.

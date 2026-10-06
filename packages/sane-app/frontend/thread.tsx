@@ -15,7 +15,7 @@ import { FiArrowLeft, FiCopy } from "react-icons/fi";
 import { PenroseTriangle } from "./penrose-triangle";
 import { FrameworkMark } from "./framework-mark";
 import { store, useStore, type State } from "./store";
-import { Interactions } from "./interactions";
+import { pendingInteractions } from "./interaction-presentation";
 import { catalog } from "./catalog";
 import { BranchAction, BranchLinks } from "./branch-ui";
 import { active, type Message, type Run, type UsageSnapshot } from "./types";
@@ -35,6 +35,8 @@ import { gapId, HistoryEdge, HistoryGap, withCoverageGaps } from "./transcript-p
 import { canonicalCount, turnBoundaryKnown } from "./transcript-pages";
 import { nativeSubagentFallback, nativeSubagentId, nativeSubagentKey } from "./native-subagent-presentation";
 import { NativeSubagentCard, NativeSubagentDiscovery, useNativeSubagents } from "./native-subagent-feature";
+import { claudeReplyPresentation } from "./claude-reply-presentation";
+import { ChatFileLink } from "./chat-file-link";
 
 const json = (value: unknown) => typeof value === "string" ? value : JSON.stringify(value, null, 2) ?? "Unavailable";
 const number = (value: unknown, suffix = "") => typeof value === "number" && Number.isFinite(value) && value >= 0 ? `${value.toLocaleString(undefined, { maximumFractionDigits: 6 })}${suffix}` : "Unavailable";
@@ -49,7 +51,8 @@ function CodeBlock({ children }: { children?: ReactNode }) {
   return <div className="code-block"><button className="copy" type="button" onClick={async () => { try { await navigator.clipboard.writeText(ref.current?.textContent || ""); setCopied("Copied"); } catch { setCopied("Copy unavailable"); } }}>{copied || "Copy code"}</button><pre ref={ref}>{children}</pre></div>;
 }
 function Markdown({ text }: { text: string }) {
-  return <div className="prose"><ReactMarkdown remarkPlugins={[remarkGfm]} skipHtml components={{ pre: CodeBlock, a: ({ children, href }) => <a href={href} target="_blank" rel="noopener noreferrer">{children}</a>, img: ({ alt }) => <span className="muted">[Image: {alt || "image omitted"}]</span> }}>{text}</ReactMarkdown></div>;
+  const context = useContext(TranscriptContext);
+  return <div className="prose"><ReactMarkdown remarkPlugins={[remarkGfm]} skipHtml components={{ pre: CodeBlock, a: ({ children, href, title }) => <ChatFileLink href={href} title={title} sessionId={context?.sessionId ?? ""}>{children}</ChatFileLink>, img: ({ alt }) => <span className="muted">[Image: {alt || "image omitted"}]</span> }}>{text}</ReactMarkdown></div>;
 }
 
 export type TranscriptContextValue = { sessionId: string; harness: Harness; messages: Message[]; runs: Run[]; workers: WorkerRecord[]; deliveries?: WorkerDelivery[]; handoffs?: HandoffProjection; openWorker: (worker: WorkerRecord) => void; branchEnabled?: boolean; pendingTurn?: PendingTurn | null; activities?: ActivityPresentation; compactionPositions?: Map<string, CompactionRecord[]>; pageState?: State; readOnly?: boolean };
@@ -117,6 +120,7 @@ function ChatMessageBody() {
   const warning = source?.error !== undefined || !isUser && source?.runId !== "native-import" && message.status?.type === "incomplete";
   const consumed = source?.parts.length && source.parts.every((_, index) => context.activities?.plan.positions.get(activityPosition(source.id, index)) === null);
    if (consumed && !showSystemLabel && !warning && !plain && !canBranch) return null;
+   if (source && !source.parts.length && !showSystemLabel && !warning && !canBranch) return null;
   return <MessagePrimitive.Root className={`message ${isUser ? "user-message" : "assistant-message"}${continued ? " assistant-continued" : ""}${activity ? " activity-message" : ""}${activityContinued ? " assistant-activity-continued" : ""}`}>
      {showSystemLabel && <div className="assistant-label"><PenroseTriangle size={13} aria-hidden="true" /> System</div>}
     <div className={isUser ? "user-bubble" : "assistant-body"}>
@@ -175,6 +179,7 @@ export function Thread({ state, active: isActive = true, navigation, reviewReque
   const [ack, setAck] = useState("");
   const conversation = state.conversations.find(c => c.id === state.selected);
   const capabilities = store.capabilities();
+  const hasRequests = pendingInteractions(state, capabilities).length > 0;
   const needsAck = !!capabilities.attachedSendRequiresNativeStopped && !!conversation?.attachment;
   useEffect(() => setAck(""), [state.selected, isActive]);
   const send = (text: string) => { if (compactCommand(text)) return store.send(text); const stopped = ack === state.selected && !!ack; setAck(""); return store.send(text, stopped); };
@@ -191,7 +196,7 @@ export function Thread({ state, active: isActive = true, navigation, reviewReque
   const nativeQueueWaiting = active(latestRun?.status ?? "completed") && latestRun?.nativeDelivery === "queue"
     && !state.messages.some(message => message.id === latestRun.nativeCommandId && message.normalized);
   const pendingTurn = state.pendingTurn?.conversationId === state.selected ? state.pendingTurn : null;
-  const messages = useMemo(() => withCoverageGaps(messagesWithQueuedFollowups(messagesWithPendingTurn(state.messages, pendingTurn), conversation), state.transcript), [state.messages, pendingTurn, conversation?.queuedFollowups, conversation?.lastRunId, state.transcript?.islands]);
+  const messages = useMemo(() => claudeReplyPresentation(withCoverageGaps(messagesWithQueuedFollowups(messagesWithPendingTurn(state.messages, pendingTurn), conversation), state.transcript), harness), [state.messages, pendingTurn, conversation?.queuedFollowups, conversation?.lastRunId, state.transcript?.islands, harness]);
    const positions = useMemo(() => {
       if (!state.transcript) return state.transcriptPaged ? new Map<string, CompactionRecord[]>() : compactionPositions(state.compactions ?? [], messages, state.nativeHistory);
      const positions = new Map<string, CompactionRecord[]>();
@@ -207,37 +212,36 @@ export function Thread({ state, active: isActive = true, navigation, reviewReque
     return key ? [nativeSubagentId(key)] : [];
   }))), [messages, state.selected, state.runs, harness]);
   const runtime = useExternalStoreRuntime({ messages, convertMessage, isRunning: running && !queueable,
-    isSendDisabled: !isActive || !capabilities.prompt || running && !queueable || compactBlocked || state.actionBusy || state.loading || state.sending || !state.connected || !state.availability.canSend || modelUnavailable || !!store.executionUnavailable() || (needsAck && ack !== state.selected),
+    isSendDisabled: !isActive || hasRequests || !capabilities.prompt || running && !queueable || compactBlocked || state.actionBusy || state.loading || state.sending || !state.connected || !state.availability.canSend || modelUnavailable || !!store.executionUnavailable() || (needsAck && ack !== state.selected),
     onNew: async message => { const text = message.content.filter(p => p.type === "text").map(p => p.text).join("\n"); await send(text); },
   });
-  const sendDisabled = !isActive || !capabilities.prompt || running && !queueable || compactBlocked || state.actionBusy || state.loading || state.sending || !state.connected || !state.availability.canSend || modelUnavailable || !!store.executionUnavailable() || (needsAck && ack !== state.selected);
+  const sendDisabled = !isActive || hasRequests || !capabilities.prompt || running && !queueable || compactBlocked || state.actionBusy || state.loading || state.sending || !state.connected || !state.availability.canSend || modelUnavailable || !!store.executionUnavailable() || (needsAck && ack !== state.selected);
   const sendReview = (text: string) => { const stopped = ack === state.selected && !!ack; setAck(""); return store.send(text, stopped, { preserveDraft: true }); };
-  const review = useDocumentReview(state, isActive, sendDisabled, sendReview);
+  const review = useDocumentReview(state, isActive && !hasRequests, sendDisabled, sendReview);
   const handledReviewRequest = useRef<number | null>(null);
   useEffect(() => {
     if (!reviewRequest || handledReviewRequest.current === reviewRequest.requestId) return;
     const current = store.snapshot();
     const target = current.conversations.find(item => item.id === reviewRequest.sessionId);
     if (catalog.snapshot().navigation.view !== "chat" || current.selected !== reviewRequest.sessionId || !target || target.replacedBy || target.workspaceId !== reviewRequest.workspaceId) { reviewRequestHandled?.(reviewRequest.requestId); return; }
-    if (!isActive || state.selected !== reviewRequest.sessionId) return;
+    if (!isActive || hasRequests || state.selected !== reviewRequest.sessionId) return;
     handledReviewRequest.current = reviewRequest.requestId;
     if (review.flow?.mode === "review" && review.flow.identity.sessionId === reviewRequest.sessionId && review.flow.identity.workspaceId === reviewRequest.workspaceId && review.flow.identity.repositoryId === reviewRequest.repositoryId && review.flow.identity.workstreamId === reviewRequest.workstreamId) review.picker();
     else void review.start(reviewRequest);
     reviewRequestHandled?.(reviewRequest.requestId);
-  }, [isActive, reviewRequest, state.selected, review, reviewRequestHandled]);
+  }, [isActive, hasRequests, reviewRequest, state.selected, review, reviewRequestHandled]);
   const safety = <>
     {state.transcriptError && <p className="notice error" role="alert">{state.transcriptError}<button type="button" className="text-button" onClick={() => store.reconnect()}>Retry history</button></p>}
     {state.transcript && (state.compactions ?? []).some(record => !state.transcript!.compactions.some(item => item.id === record.id && item.placement.kind !== "unplaced")) && <section aria-label="Compaction lifecycle without a transcript position"><CompactionMarkers records={(state.compactions ?? []).filter(record => !state.transcript!.compactions.some(item => item.id === record.id && item.placement.kind !== "unplaced"))} /></section>}
-    <CompactionMarkers records={review.flow?.path ? state.transcript ? state.compactions?.filter(record => state.transcript!.compactions.some(item => item.id === record.id && item.placement.kind === "tail")) : state.transcriptPaged ? undefined : state.compactions : undefined} />
+    <CompactionMarkers records={!hasRequests && review.flow?.path ? state.transcript ? state.compactions?.filter(record => state.transcript!.compactions.some(item => item.id === record.id && item.placement.kind === "tail")) : state.transcriptPaged ? undefined : state.compactions : undefined} />
     {latestRun?.operation !== "compact" && latestRun?.status === "failed" && <p className="notice error" role="alert">Run failed{latestRun.nativeReason ? `: ${latestRun.nativeReason}` : ". See the conversation for details."}</p>}
-    {capabilities.listInteractions && !conversation?.replacedBy ? <Interactions state={state} showNotice={false} /> : <>{state.interactionError && <p role="alert" className="notice error">{state.interactionError}</p>}</>}
   </>;
   const statusActions = appRunning && capabilities.cancelRun ? <button type="button" className="text-button composer-status-stop" disabled={!isActive || state.actionBusy || !state.connected} onClick={() => void store.cancel()}>{nativeQueueWaiting ? "Cancel queued message" : "Stop run"}</button> : null;
   const footer = <div className="thread-footer"><div className="thread-safety">{safety}</div><div className="thread-composer"><ChatComposer state={state} active={isActive} navigation={navigation} ack={ack} onAckChange={setAck} send={send} sendDisabled={sendDisabled} parentId={parentId} review={review} statusContext={{ workspaceReady: repository.ready, handoffLoading: handoffs.loading, handoffError: handoffs.error, workerError: projection.error, nativeSubagentLoading: nativeSubagents?.state.loading && !nativeSubagents.state.revision }} statusActions={statusActions} /></div></div>;
-   return <TranscriptContext.Provider value={{ sessionId: state.selected, harness, messages, runs: state.runs, workers, deliveries: projection.deliveries, handoffs: state.connected ? handoffs : { ...handoffs, error: "Connection unavailable" }, openWorker, pendingTurn, activities, compactionPositions: positions, pageState: state, branchEnabled: !!capabilities.branch && state.connected && !state.loading && !state.sending && !state.actionBusy && !compactBlocked && !running && !parentId && !conversation?.worker && store.conversationKind() !== "worker" && !conversation?.replacedBy && !(conversation?.attachment && !capabilities.branchAttachedConversation) }}><AssistantRuntimeProvider runtime={runtime}><ThreadPrimitive.Root className={`thread${review.flow ? " is-document-review" : ""}`}>
+   return <TranscriptContext.Provider value={{ sessionId: state.selected, harness, messages, runs: state.runs, workers, deliveries: projection.deliveries, handoffs: state.connected ? handoffs : { ...handoffs, error: "Connection unavailable" }, openWorker, pendingTurn, activities, compactionPositions: positions, pageState: state, branchEnabled: !!capabilities.branch && state.connected && !state.loading && !state.sending && !state.actionBusy && !compactBlocked && !running && !parentId && !conversation?.worker && store.conversationKind() !== "worker" && !conversation?.replacedBy && !(conversation?.attachment && !capabilities.branchAttachedConversation) }}><AssistantRuntimeProvider runtime={runtime}><ThreadPrimitive.Root className={`thread${review.flow && !hasRequests ? " is-document-review" : ""}`}>
     <BranchLinks key={state.selected} conversation={conversation} />
     {parentId && <nav className="worker-parent-nav" aria-label="Worker navigation"><button type="button" className="text-button" disabled={state.sending} onClick={() => store.openConversation(parentId)}><FiArrowLeft size={14} aria-hidden="true" />Back to parent</button><span className="muted">Worker conversation</span></nav>}
-    <ChatScroll active={isActive} resetKey={state.selected || `new:${repository.navigation.worktreeId}`} footer={footer} history={{ key: state.transcript?.islands[0]?.key ?? "", canLoad: !!state.transcript?.islands[0]?.coverage.olderCursor && !state.pageBusy && !state.pageErrors?.[`${state.transcript.islands[0].key}:older`], load: () => { const island = state.transcript?.islands[0]; if (island) void store.loadTranscriptPage({ island: island.key, direction: "older" }); } }} sendNavigation={{ sessionId: state.selected, loading: state.loading, connected: state.connected, connectionError: state.connectionError, workerError: projection.error, workerLoading: state.workerLoading, handoffLoading: handoffs.loading, handoffError: handoffs.error }} replacement={review.flow?.path ? <div className="document-review-reading"><DocumentReviewReader review={review} /></div> : undefined}>
+    <ChatScroll active={isActive} resetKey={state.selected || `new:${repository.navigation.worktreeId}`} footer={footer} history={{ key: state.transcript?.islands[0]?.key ?? "", canLoad: !!state.transcript?.islands[0]?.coverage.olderCursor && !state.pageBusy && !state.pageErrors?.[`${state.transcript.islands[0].key}:older`], load: () => { const island = state.transcript?.islands[0]; if (island) void store.loadTranscriptPage({ island: island.key, direction: "older" }); } }} sendNavigation={{ sessionId: state.selected, loading: state.loading, connected: state.connected, connectionError: state.connectionError, workerError: projection.error, workerLoading: state.workerLoading, handoffLoading: handoffs.loading, handoffError: handoffs.error }} replacement={!hasRequests && review.flow?.path ? <div className="document-review-reading"><DocumentReviewReader review={review} /></div> : undefined}>
       <div className="transcript">
         <NativeSubagentDiscovery loaded={loadedNativeSubagents} />
         {!messages.length && (state.transcriptInitialLoading || state.loading || !repository.ready || (state.selected && state.connectionError) ? <ConversationLoading /> : !state.selected ? <div className="welcome framework-welcome"><span className="welcome-mark" aria-hidden="true"><FrameworkMark active={isActive} /></span>{/* <h1>SANE</h1> */}<p className="eyebrow">Design | Engineer | Plan | Execute</p></div> : <div className="chat-empty"><PenroseTriangle size={24} aria-hidden="true" /><p>No messages yet.</p><span>Send a message to begin.</span></div>)}

@@ -276,6 +276,7 @@ async function startOwned(options: Options, assetsDir: string, packageDir: strin
   // reserved before awaits, then retained until the selected owner's lifecycle ends.
   const owners = new Map<string, Owner>();
   const admitting = new Set<string>();
+  const historyRefreshes = new Map<string, string>();
   const attaching = new Set<string>();
   const attachmentTasks = new Set<Promise<void>>();
   const queuedInputTasks = new Set<Promise<void>>();
@@ -498,9 +499,9 @@ async function startOwned(options: Options, assetsDir: string, packageDir: strin
         : pending.error ? "The branch could not be finished. Sending is paused to protect the conversation; restart the App to recheck it."
         : "Finishing branch… Sending will be available when it is ready.", code: "branch-pending" };
     }
-    if (storageFailed) return { canSend: false, reason: "Storage unavailable; operator reconciliation required" };
-    if (meta.reconciliationRequired) return { canSend: false, reason: "Operator reconciliation required: restart with --reconcile-interrupted after verifying previous CLI processes are stopped" };
-    if (closing) return { canSend: false, reason: "Bridge is shutting down" };
+    if (storageFailed) return { canSend: false, reason: "Storage unavailable; operator reconciliation required", code: "storage-unavailable" };
+    if (meta.reconciliationRequired) return { canSend: false, reason: "Operator reconciliation required: restart with --reconcile-interrupted after verifying previous CLI processes are stopped", code: "reconciliation-required" };
+    if (closing) return { canSend: false, reason: "Bridge is shutting down", code: "bridge-closing" };
     if (sessionId && workerStore.deliveries().some(d => d.parentSessionId === sessionId && ["claimed", "acceptance-unknown"].includes(d.state))) return { canSend: false, reason: "Worker report continuation is reserved or acceptance is unconfirmed; inspect worker delivery evidence", code: "worker-delivery-pending" };
     if (sessionId && !delivery && (handoffReservations.has(sessionId) || handoffDispatches.has(sessionId))) return { canSend: false, reason: "Recipient has an active or uncertain handoff", code: "handoff-pending" };
     const admission = sessionId ? admissions.get(sessionId) : undefined;
@@ -1739,7 +1740,14 @@ async function startOwned(options: Options, assetsDir: string, packageDir: strin
           const updateSource = replyIntegration?.updateSource(session.sessionId);
           return updateSource ? { updateSource } : {};
         };
-        return json({ sessions: meta.sessions.map(s => ({ ...s, ...lastRunMetadata(s), ...replySourceMetadata(s), updatedAt: updatedAt.get(s.sessionId) ?? null, branchDraft: branchDrafts.get(s.sessionId), branchOrigin: branches.list().find(op => op.destinationId === s.sessionId && op.state !== "failed")?.sourceId, replacedBy: branches.replaced(s.sessionId)?.destinationId, ...(branches.replaced(s.sessionId) ? { hidden: true } : {}), ...(workerSessions.has(s.sessionId) ? { worker: workerSessions.get(s.sessionId) } : {}), directWorkerCount: workerCounts.get(s.sessionId) ?? 0, profileId: sessionProfileId(s), title: displayTitle(s), admission: admissions.get(s.sessionId), ...catalog.association(s.sessionId), availability: availability(s.sessionId, true, false, false, "user"), ...nativeState(s), ...(s.harness === "claude-code" ? { queuedFollowups: projectClaudeFollowups(s.sessionId, meta.runs, id => events.get(id) ?? [], id => claudeRuns.followupPending(id)) } : {}) })), admissions: admissions.list(), availability: availability() });
+        const activityMetadata = (session: Session) => {
+          const observedAt = historyRefreshes.get(session.sessionId);
+          if (observedAt) return { activity: { phase: "refreshing", observedAt } };
+          const owner = owners.get(session.sessionId);
+          const activity = owner && session.harness === "claude-code" ? claudeRuns.activity(owner) : undefined;
+          return activity ? { activity } : {};
+        };
+        return json({ sessions: meta.sessions.map(s => ({ ...s, ...lastRunMetadata(s), ...replySourceMetadata(s), ...activityMetadata(s), updatedAt: updatedAt.get(s.sessionId) ?? null, branchDraft: branchDrafts.get(s.sessionId), branchOrigin: branches.list().find(op => op.destinationId === s.sessionId && op.state !== "failed")?.sourceId, replacedBy: branches.replaced(s.sessionId)?.destinationId, ...(branches.replaced(s.sessionId) ? { hidden: true } : {}), ...(workerSessions.has(s.sessionId) ? { worker: workerSessions.get(s.sessionId) } : {}), directWorkerCount: workerCounts.get(s.sessionId) ?? 0, profileId: sessionProfileId(s), title: displayTitle(s), admission: admissions.get(s.sessionId), ...catalog.association(s.sessionId), availability: availability(s.sessionId, true, false, false, "user"), ...nativeState(s), ...(s.harness === "claude-code" ? { queuedFollowups: projectClaudeFollowups(s.sessionId, meta.runs, id => events.get(id) ?? [], id => claudeRuns.followupPending(id)) } : {}) })), admissions: admissions.list(), availability: availability() });
       }
       const branchRoute = /^\/api\/sessions\/([^/]+)\/branch$/.exec(path);
       if (branchRoute) {
@@ -2165,6 +2173,7 @@ async function startOwned(options: Options, assetsDir: string, packageDir: strin
         const available = availability(session.sessionId);
         if (!available.canSend) return json({ error: available.reason }, available.code === "capacity" ? 429 : 409);
         admitting.add(session.sessionId);
+        historyRefreshes.set(session.sessionId, new Date().toISOString());
         try {
           await execution(session.sessionId);
           const nativeSessionId = session.nativeSessionId ?? session.sessionId;
@@ -2177,7 +2186,7 @@ async function startOwned(options: Options, assetsDir: string, packageDir: strin
           await enqueue(async () => saveNativeHistory(history));
           return json({ history });
         } catch (error) { return json({ error: error instanceof Error ? error.message : "Native reconciliation unavailable" }, error instanceof OpenCodeError && error.status === 409 ? 409 : 503); }
-        finally { admitting.delete(session.sessionId); }
+        finally { historyRefreshes.delete(session.sessionId); admitting.delete(session.sessionId); }
       }
       const interactionMatch = /^\/api\/sessions\/([^/]+)\/interactions(?:\/([^/]+)\/reply)?$/.exec(path);
       const cancelMatch = /^\/api\/sessions\/([^/]+)\/cancel$/.exec(path);

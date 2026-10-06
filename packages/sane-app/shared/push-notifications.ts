@@ -3,7 +3,7 @@ import { isConversationUpdateSource, type ConversationUpdateSource } from "./con
 export const PUSH_PAYLOAD_MAX_BYTES = 3072;
 export const PUSH_SESSION_TITLE_MAX_CHARACTERS = 200;
 // Keep the wire limit compatible with queued payloads and notification data.
-export const PUSH_DISPLAY_SESSION_TITLE_MAX_CHARACTERS = 20;
+export const PUSH_DISPLAY_SESSION_TITLE_MAX_CHARACTERS = 30;
 export const PUSH_WORKSPACE_NAME_MAX_CHARACTERS = 120;
 const PUSH_LABEL_MAX_BYTES = 1024;
 const encoder = new TextEncoder();

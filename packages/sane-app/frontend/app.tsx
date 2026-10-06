@@ -33,6 +33,7 @@ import { chromePush } from "./chrome-push";
 import { PushNavigation, usePushInbox, type PushInbox } from "./push-navigation";
 import { notificationStore } from "./notifications";
 import { notificationContextKey } from "./notification-source";
+import { ChatFileNavigationProvider } from "./chat-file-link";
 
 // Restore selection without replacing the independently bookmarked browsing pair.
 const hydrateCatalog = () => void catalog.hydrate(bookmark => store.choose(bookmark.conversationId ?? ""));
@@ -177,7 +178,7 @@ function ReadyWorkspace({ state, signOut, inbox, hydrationReady }: { state: Stat
     onHistory={() => navigate(view === "history" ? "chat" : "history")}
   /> : group === "files" ? <><FilesModeControl activeView={view} onNavigate={navigate} /><WorkspaceSidebar /></>
     : <ConfigMenu onSelect={() => { setArtifact(null); setDrawer(null); }} />;
-  return <NativeSubagentContext.Provider value={nativeSubagents}><ApplicationCommandProvider><WorkspaceProvider view={view} navigate={navigate}><WorkspaceQuickOpenFeature><WorkspaceSearchFeature><WorkspaceFileShortcuts><TerminalProvider view={view}>
+  return <NativeSubagentContext.Provider value={nativeSubagents}><ApplicationCommandProvider><WorkspaceProvider view={view} navigate={navigate}><ChatFileNavigationProvider navigate={navigate}><WorkspaceQuickOpenFeature><WorkspaceSearchFeature><WorkspaceFileShortcuts><TerminalProvider view={view}>
     <PushNavigation state={state} inbox={inbox} hydrationReady={hydrationReady} openNotification={openNotification} />
     <ViewNavigationCommands onNavigate={navigate} />
     <WorkspaceShell view={view} sidebar={sidebar}
@@ -195,7 +196,7 @@ function ReadyWorkspace({ state, signOut, inbox, hydrationReady }: { state: Stat
     {drawer === "details" && !nativeSubagents.active && <ConversationDetails state={state} close={() => setDrawer(null)} />}
     {drawer === "context" && view === "chat" && !nativeSubagents.active && !state.compactDialog && <ContextDialog state={state} close={() => setDrawer(null)} />}
     {view === "chat" && !nativeSubagents.active && <CompactDialog state={state} />}
-  </TerminalProvider></WorkspaceFileShortcuts></WorkspaceSearchFeature></WorkspaceQuickOpenFeature></WorkspaceProvider></ApplicationCommandProvider></NativeSubagentContext.Provider>;
+  </TerminalProvider></WorkspaceFileShortcuts></WorkspaceSearchFeature></WorkspaceQuickOpenFeature></ChatFileNavigationProvider></WorkspaceProvider></ApplicationCommandProvider></NativeSubagentContext.Provider>;
 }
 
 function ShellHeader({ state, view, artifact, overview, overviewWorkspaceId, openDetails, openContext, openApplication }: {

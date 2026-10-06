@@ -60,19 +60,7 @@
   animation:framework-particle-disappear 700ms ease-in both;
 }
 .framework-mark-float {
-  --framework-float-x:1px;
-  --framework-float-y:-.7px;
   animation:framework-particle-float 7s ease-in-out infinite;
-}
-.framework-mark-float[data-motion="1"] {
-  --framework-float-x:-.8px;
-  --framework-float-y:1px;
-  animation-duration:9s;
-}
-.framework-mark-float[data-motion="2"] {
-  --framework-float-x:1.2px;
-  --framework-float-y:.5px;
-  animation-duration:8.5s;
 }
 /* Hidden chat stays mounted; pause the timeline rather than restart it. */
 .framework-mark[data-paused] * { animation-play-state:paused; }
@@ -100,8 +88,9 @@
 }
 @keyframes framework-particle-float {
   0%,100% { transform:translate(0,0); }
-  35% { transform:translate(var(--framework-float-x),var(--framework-float-y)); }
-  70% { transform:translate(calc(var(--framework-float-x) * -.6),calc(var(--framework-float-y) * .5)); }
+  25% { transform:translate(var(--framework-float-x1),var(--framework-float-y1)); }
+  50% { transform:translate(var(--framework-float-x2),var(--framework-float-y2)); }
+  75% { transform:translate(var(--framework-float-x3),var(--framework-float-y3)); }
 }
 @media(max-width:700px) {
   .framework-mark { width:96px; }

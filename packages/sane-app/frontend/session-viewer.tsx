@@ -15,6 +15,7 @@ import type { CompactionRecord } from "../src/oc-contract";
 import { useHandoffs } from "./handoff-client";
 import { store } from "./store";
 import { getHarnessDescriptor } from "../shared/conversation/harness-capabilities";
+import { claudeReplyPresentation } from "./claude-reply-presentation";
 
 function Viewer({ root }: { root: WorkerRecord }) {
   const [trail, setTrail] = useState([root]);
@@ -70,7 +71,7 @@ function Viewer({ root }: { root: WorkerRecord }) {
     void poll();
     return () => { current = false; controller.abort(); clearTimeout(timer); };
   }, [selected.sessionId, selected.parent.sessionId, selected.launch.harness]);
-  const messages = view.sessionId === selected.sessionId ? view.messages : [];
+  const messages = useMemo(() => claudeReplyPresentation(view.sessionId === selected.sessionId ? view.messages : [], selected.launch.harness), [view.sessionId, view.messages, selected.sessionId, selected.launch.harness]);
   const runs = view.sessionId === selected.sessionId ? view.runs : [];
   const compactions = view.sessionId === selected.sessionId ? view.compactions : [];
   const positions = useMemo(() => compactionPositions(compactions, messages), [compactions, messages]);

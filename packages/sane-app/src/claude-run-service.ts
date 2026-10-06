@@ -9,6 +9,8 @@ import type { ExecutionContext } from "./workstreams";
 import { isClaudeRootRecord } from "../shared/conversation/cc-scope";
 import { CLAUDE_RESULT_TEXT_LIMIT, consumeClaudeResultRecord, createClaudeResultSequenceState, rejectUndeliveredClaudeFramework, type ClaudeResultSequenceState } from "../shared/conversation/cc-result";
 import type { QueuedSendConfiguration } from "../shared/conversation/queued-followup";
+import type { ConversationActivity } from "../shared/conversation/activity";
+import { ClaudeActivity } from "./claude-activity";
 
 export const hookEvents = ["SessionStart", "SessionEnd", "UserPromptSubmit", "Stop", "PreToolUse", "PostToolUse", "PermissionRequest", "Notification", "SubagentStart", "SubagentStop", "PreCompact", "PostCompact", "CwdChanged"] as const;
 
@@ -89,6 +91,7 @@ export class ClaudeRunService {
   private readonly stoppedTurns = new Set<string>();
   private readonly turnHooks = new Map<string, symbol | undefined>();
   private readonly followups = new Map<string, QueuedFollowup>();
+  private readonly activities = new Map<string, ClaudeActivity>();
   private readonly runtime: ClaudeRunRuntime;
 
   constructor(private readonly options: ClaudeRunOptions, private readonly deps: ClaudeRunDependencies, runtime: Partial<ClaudeRunRuntime> = {}) {
@@ -124,6 +127,15 @@ export class ClaudeRunService {
   }
 
   hasQueuedFollowup(sessionId: string): boolean { return this.followups.has(sessionId); }
+  activity(owner: RunOwner): ConversationActivity | undefined {
+    if (!this.deps.owns(owner)) return;
+    const activity = this.activities.get(owner.run.runId)?.get()
+      ?? { phase: owner.child ? "running" as const : "starting" as const, runId: owner.run.runId, startedAt: owner.run.createdAt, observedAt: owner.run.createdAt };
+    if (this.deps.retained()) return { ...activity, phase: "unconfirmed" };
+    if (owner.stopRequested || owner.cancelling || owner.stopping) return { ...activity, phase: "stopping" };
+    if (owner.run.status !== "running" || owner.child?.exitCode != null) return { ...activity, phase: "finishing" };
+    return activity;
+  }
   followupPending(requestId: string): boolean { return [...this.followups.values()].some(queued => queued.input.requestId === requestId && !queued.cancelled); }
   cancelFollowup(sessionId: string): void { const queued = this.followups.get(sessionId); if (queued) queued.cancelled = true; }
 
@@ -223,6 +235,7 @@ export class ClaudeRunService {
     const stop = root && event === "Stop" ? Symbol() : undefined;
     if (root && (stop || event === "UserPromptSubmit" || event === "PreToolUse")) this.turnHooks.set(run.runId, stop);
     await this.deps.emit(run, "hook", { event, payload });
+    this.activities.get(run.runId)?.hook(event, payload);
     if (stop && this.turnHooks.get(run.runId) === stop && run.status === "running") this.stoppedTurns.add(run.runId);
     return { status: 200, body: { ok: true } };
   }
@@ -246,6 +259,7 @@ export class ClaudeRunService {
       }
       else result.stderr = (result.stderr + text + "\n").slice(-resultTextLimit);
       await this.deps.emit(run, kind, data);
+      if (kind === "stdout") this.activities.get(run.runId)?.stdout(data, nativeSessionId);
     };
     while (true) { const { value, done } = await reader.read(); if (done) break; pending += decoder.decode(value, { stream: true }); let at: number; while ((at = pending.indexOf("\n")) >= 0) { await line(pending.slice(0, at)); pending = pending.slice(at + 1); } if (pending.length > 1024 * 1024) { await line(pending); pending = ""; } }
     pending += decoder.decode(); await line(pending);
@@ -259,6 +273,8 @@ export class ClaudeRunService {
   async execute(owner: RunOwner, prompt: string, resume: boolean, ready: (accepted: boolean) => void): Promise<void> {
     const run = owner.run, deps = this.deps, runtime = this.runtime;
     const result: Result = { ...createClaudeResultSequenceState(), stderr: "" };
+    const activity = new ClaudeActivity(run.runId, run.createdAt);
+    this.activities.set(run.runId, activity);
     let streams: Promise<unknown>[] = [];
     try {
       if (run.operation !== "compact" && compactCommand(prompt)) throw new Error("Use the dedicated Compact action; compaction cannot be submitted as an ordinary prompt");
@@ -318,6 +334,7 @@ export class ClaudeRunService {
         cwd: run.cwd, detached: true, stdin: "pipe", stdout: "pipe", stderr: "pipe", env: { ...env, CLAUDE_CONFIG_DIR: this.options.claudeRoot, CLAUDE_CODE_PROJECT_DIR_NAME: "", CC_WEB_HOOK_URL: this.options.hookUrl(), CC_WEB_RUN_ID: run.runId, CC_WEB_HOOK_SECRET: secret, CC_WEB_HOOK_ERRORS: join(this.options.dataDir, `${run.runId}.hook-errors.jsonl`) },
       });
       owner.child = child;
+      activity.running();
       ready(true);
       streams = [this.consume(owner, session.nativeSessionId!, child.stdout, "stdout", result), this.consume(owner, session.nativeSessionId!, child.stderr, "stderr", result)];
       // Observe both consumers before a synchronous stdin failure can occur.
@@ -325,6 +342,7 @@ export class ClaudeRunService {
       void output.catch(() => {});
       child.stdin.write(prompt);
       const [exit] = await Promise.all([output.then(values => values[0] as number), child.stdin.end()]);
+      activity.finishing();
       if (this.groupAlive(owner) && !(await this.terminate(owner))) throw new Error("Process group termination unconfirmed");
       rejectUndeliveredClaudeFramework(result);
       run.status = deps.closing() || owner.stopRequested ? "interrupted" : !deps.storageFailed() && exit === 0 && result.seen && !result.error ? "completed" : "failed";
@@ -350,6 +368,7 @@ export class ClaudeRunService {
       this.secrets.delete(run.runId);
       this.stoppedTurns.delete(run.runId);
       this.turnHooks.delete(run.runId);
+      this.activities.delete(run.runId);
     }
   }
 }

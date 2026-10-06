@@ -1,0 +1,51 @@
+.interaction.interaction-composer {
+  display:flex;
+  flex-direction:column;
+  min-height:0;
+  max-height:min(50dvh, 560px);
+  margin:0;
+  padding:0;
+  border:1px solid var(--border);
+  border-radius:22px;
+  background:var(--card);
+  box-shadow:0 8px 28px var(--shadow-composer);
+}
+.interaction-composer:focus-within { border-color:var(--composer-focus-border); }
+.interaction-composer-heading { flex-shrink:0; padding:14px 18px 8px; }
+.interaction-composer-heading > div:first-child { display:flex; align-items:center; gap:8px; color:var(--muted-foreground); font-size:12px; }
+.interaction-composer-heading h3 { margin:8px 0; font-size:14px; font-weight:500; overflow-wrap:anywhere; }
+.interaction-composer-heading .filter-dropdown { margin:10px 0 4px; }
+.interaction-request,.interaction-answer-form { display:flex; flex:1; flex-direction:column; min-height:0; }
+.interaction-request > .interaction-description { flex-shrink:0; margin:0; padding:0 18px 12px; max-height:14dvh; overflow:auto; white-space:pre-wrap; overflow-wrap:anywhere; }
+.interaction-composer-body { flex:1; min-height:0; overflow:auto; overscroll-behavior:contain; padding:6px 18px 12px; }
+.interaction-composer .interaction-fields { min-width:0; padding:0; margin:0; border:0; gap:16px; }
+.interaction-composer .interaction-field { min-width:0; }
+.interaction-composer .interaction-field-label { font-weight:500; }
+.interaction-composer .interaction-field textarea { display:block; width:100%; min-height:64px; max-height:20dvh; resize:vertical; line-height:1.6; }
+.interaction-composer .interaction-field input { width:100%; }
+.interaction-composer .interaction-field label:has(textarea) { display:flex; flex-direction:column; gap:6px; font-size:12px; }
+.interaction-choices { display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:8px; }
+.interaction-choices + textarea,.interaction-choices + input,.interaction-choices + label { margin-top:10px; }
+.interaction-choice { display:flex; align-items:flex-start; gap:9px; min-width:0; padding:10px 12px; text-align:left; border:1px solid var(--border); border-radius:11px; background:var(--background); color:var(--foreground); }
+.interaction-choice:hover:not(:disabled) { background:var(--accent); }
+.interaction-choice[aria-pressed="true"] { border-color:var(--composer-focus-border); background:var(--accent); }
+.interaction-choice > span:last-child { min-width:0; overflow-wrap:anywhere; }
+.interaction-choice strong { font-size:12px; font-weight:500; }
+.interaction-choice small { display:block; margin-top:4px; line-height:1.5; }
+.interaction-choice-mark { display:grid; place-items:center; width:16px; height:16px; margin-top:1px; border:1px solid var(--border); border-radius:50%; flex-shrink:0; }
+.interaction-choice-mark.is-multiple { border-radius:4px; }
+.interaction-choice[aria-pressed="true"] .interaction-choice-mark { border-color:currentColor; }
+.interaction-composer-toolbar { display:flex; flex-shrink:0; align-items:center; justify-content:space-between; flex-wrap:wrap; gap:10px; padding:10px 16px; }
+.interaction-composer-toolbar > span { font-size:11px; color:var(--muted-foreground); }
+.interaction-composer-toolbar > div { display:flex; align-items:center; justify-content:flex-end; flex-wrap:wrap; gap:8px; margin-left:auto; }
+.interaction-composer-toolbar button { display:inline-flex; align-items:center; gap:5px; font-size:12px; padding:8px 11px; border:1px solid var(--border); border-radius:9px; background:var(--background); color:var(--foreground); }
+.interaction-composer-toolbar .interaction-primary { background:var(--foreground); color:var(--background); border-color:var(--foreground); }
+.interaction-composer-toolbar .interaction-reject { color:var(--destructive); }
+.interaction-composer button:disabled { opacity:.45; cursor:not-allowed; }
+.interaction-composer button:focus-visible,.interaction-composer textarea:focus-visible,.interaction-composer input:focus-visible { outline:2px solid var(--focus-ring); outline-offset:2px; }
+@media (max-width:640px) {
+  .interaction-choices { grid-template-columns:minmax(0,1fr); }
+  .interaction-composer-heading,.interaction-composer-body { padding-left:12px; padding-right:12px; }
+  .interaction-request > .interaction-description { padding-left:12px; padding-right:12px; }
+  .interaction-composer-toolbar { padding:10px 12px; }
+}

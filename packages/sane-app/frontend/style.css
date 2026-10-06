@@ -1126,7 +1126,8 @@ h3 {
 .composer-status-info:hover:not(:disabled) { background:var(--muted); color:var(--foreground); }
 .composer-status-info:focus-visible { outline:2px solid var(--focus-ring); outline-offset:2px; }
 .composer-status-stop { flex-shrink:0; white-space:nowrap; font-size:11px; }
-.composer-surface:has(> .composer-status-lid) > :is(.composer,.document-review-composer,.workstream-status-composer) { border-top-left-radius:0; border-top-right-radius:0; }
+.composer-surface:has(> .composer-status-lid) > :is(.composer,.document-review-composer,.workstream-status-composer,.interaction-composer),
+.composer-surface:has(> .composer-status-lid) > .composer-flow-slot > :is(.document-review-composer,.workstream-status-composer) { border-top-left-radius:0; border-top-right-radius:0; }
 .composer-surface:focus-within > .composer-status-lid { border-color:var(--composer-focus-border); }
 .composer-status-details { max-height:60dvh; overflow:auto; overscroll-behavior:contain; }
 .composer-status-details h3 { margin:16px 0 10px; font-size:12px; }

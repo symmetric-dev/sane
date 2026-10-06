@@ -1,28 +1,50 @@
-import { useEffect, useId, useRef, useState } from "react";
+import { useEffect, useId, useRef, useState, type CSSProperties } from "react";
 import { PenroseTriangleFaces } from "./penrose-triangle";
 import "./framework-mark.css";
 
 const supportSpawnPoints = [
   { x: -2, y: 8 },
   { x: -3, y: 14 },
-  { x: -3, y: 21 },
+  { x: -3, y: 20.5 },
   { x: 26, y: 8 },
   { x: 27, y: 14 },
-  { x: 27, y: 21 },
-  { x: 6, y: 0 },
-  { x: 18, y: 0 },
-  { x: 8, y: 25 },
-  { x: 18, y: 25 },
+  { x: 27, y: 20.5 },
+  { x: 3, y: -2.5 },
+  { x: 9, y: -2.5 },
+  { x: 15, y: -2.5 },
+  { x: 21, y: -2.5 },
 ] as const;
 
-type SupportParticle = { point: number; introOrder?: number; leaving?: boolean };
+type SupportParticle = { point: number; motion: CSSProperties; introOrder?: number; leaving?: boolean };
 const minParticles = 3;
 const maxParticles = 5;
+
+function particleMotion(): CSSProperties {
+  const duration = 6 + Math.random() * 4;
+  const rangeX = .6 + Math.random() * .6;
+  // With a 1-unit half-size and lowest anchor at 20.5, even the top edge
+  // at maximum downward drift stays above the triangle baseline at 20.66.
+  const rangeY = .4 + Math.random() * .5;
+  const offsets = Object.fromEntries(Array.from({ length: 3 }, (_, index) => {
+    const angle = Math.random() * Math.PI * 2;
+    return [
+      [`--framework-float-x${index + 1}`, `${Math.cos(angle) * rangeX}px`],
+      [`--framework-float-y${index + 1}`, `${Math.sin(angle) * rangeY}px`],
+    ];
+  }).flat());
+  return {
+    ...offsets,
+    animationDuration: `${duration}s`,
+    // Start each drift at its own phase; the parent still controls visibility.
+    animationDelay: `${-Math.random() * duration}s`,
+  } as CSSProperties;
+}
 
 function initialParticles(): SupportParticle[] {
   const available = supportSpawnPoints.map((_, point) => point);
   return Array.from({ length: minParticles }, (_, introOrder) => ({
     point: available.splice(Math.floor(Math.random() * available.length), 1)[0],
+    motion: particleMotion(),
     introOrder,
   }));
 }
@@ -63,11 +85,12 @@ export function FrameworkMark({ active = true }: { active?: boolean }) {
     const timer = window.setTimeout(() => {
       const direction = Math.random();
       const selection = Math.random();
+      const motion = particleMotion();
       setParticles(current => {
         if (current.length === minParticles || current.length < maxParticles && direction < .5) {
           const available = supportSpawnPoints.map((_, point) => point).filter(point =>
             point !== lastRetiredPoint.current && !current.some(particle => particle.point === point));
-          return [...current, { point: available[Math.floor(selection * available.length)] }];
+          return [...current, { point: available[Math.floor(selection * available.length)], motion }];
         }
         const retiring = Math.floor(selection * current.length);
         return current.map((particle, index) => index === retiring ? { ...particle, leaving: true } : particle);
@@ -76,7 +99,7 @@ export function FrameworkMark({ active = true }: { active?: boolean }) {
     return () => window.clearTimeout(timer);
   }, [active, hidden, reducedMotion, ambientReady, particles]);
 
-  return <svg className="framework-mark" width="480" height="408" viewBox="-8 -6 40 34"
+  return <svg className="framework-mark" width="480" height="372" viewBox="-8 -6 40 31"
     fill="none" stroke="currentColor" strokeLinecap="round" strokeLinejoin="round"
     aria-hidden="true" focusable="false" data-paused={!active || hidden ? true : undefined}>
     <defs>
@@ -94,7 +117,7 @@ export function FrameworkMark({ active = true }: { active?: boolean }) {
     <PenroseTriangleFaces faceClassName="framework-mark-face" />
     <path className="framework-mark-center" d="M12 10.27 16 17.2H8Z"
       fill={`url(#${id}-center)`} stroke="none" />
-    {particles.map(({ point, introOrder, leaving }) => <g key={point}
+    {particles.map(({ point, motion, introOrder, leaving }) => <g key={point}
       transform={`translate(${supportSpawnPoints[point].x} ${supportSpawnPoints[point].y})`}>
       <g className="framework-mark-particle" data-intro={introOrder !== undefined ? true : undefined}
         data-leaving={leaving ? true : undefined}
@@ -108,8 +131,7 @@ export function FrameworkMark({ active = true }: { active?: boolean }) {
             setAmbientReady(true);
           }
         }}>
-        <g className="framework-mark-float" data-motion={point % 3}
-          style={{ animationDelay: introOrder !== undefined ? "2700ms" : "700ms" }}>
+        <g className="framework-mark-float" style={motion}>
           <rect x="-1" y="-1" width="2" height="2"
             fill="var(--penrose-background, var(--background))" stroke="none" />
           <rect x="-1" y="-1" width="2" height="2" fill="currentColor" fillOpacity=".2"
