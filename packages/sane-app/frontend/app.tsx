@@ -17,7 +17,7 @@ import { ConversationSidebar, useConversationSidebarModel } from "./conversation
 import { ConversationHeading } from "./conversation-heading";
 import type { WorkstreamOverview } from "../src/workstreams-contract";
 import { Facts, LoadedTranscriptDiagnostics, NativeHistoryDetails, NativeUsage, RunDetails, Thread, Usage } from "./thread";
-import { ContextualNavigation, Drawer, FilesModeControl, Icon, ViewNavigationCommands, viewGroup } from "./nav";
+import { ContextualNavigation, Drawer, FilesModeControl, Icon, SidebarToggleCommand, ViewNavigationCommands, viewGroup } from "./nav";
 import { harnessName } from "./types";
 import { ApplicationCommandProvider } from "./application-commands";
 import { WorkspaceSearchButton, WorkspaceSearchFeature } from "./workspace-search";
@@ -99,6 +99,15 @@ function ReadyWorkspace({ state, signOut, inbox, hydrationReady }: { state: Stat
   const nativeParentSessionId = nativeParent?.id ?? "";
   const nativeSubagents = useNativeSubagentFeature(nativeParentSessionId, !!nativeParentSessionId && nativeParent?.harness === "claude-code", view === "chat", JSON.stringify([nativeParentSessionId, nativeParent?.nativeSessionId, nativeParent?.harness]));
   const [drawer, setDrawer] = useState<"sidebar" | "details" | "context" | "application" | null>(null);
+  const [sidebarHidden, setSidebarHidden] = useState(false);
+  const toggleSidebar = useCallback(() => {
+    if (window.matchMedia("(max-width:700px)").matches) setDrawer(current => current === "sidebar" ? null : "sidebar");
+    else {
+      // Do not leave keyboard focus in a sidebar that is about to become inert.
+      if (document.activeElement?.closest(".sidebar")) document.querySelector<HTMLButtonElement>(".sidebar-toggle")?.focus();
+      setSidebarHidden(current => !current);
+    }
+  }, []);
   const [artifact, setArtifact] = useState<ArtifactSelection | null>(null);
   const [historyPreview, setHistoryPreview] = useState<string | null>(null);
   const [reviewRequest, setReviewRequest] = useState<DocumentReviewRequest | null>(null);
@@ -184,10 +193,12 @@ function ReadyWorkspace({ state, signOut, inbox, hydrationReady }: { state: Stat
   return <NativeSubagentContext.Provider value={nativeSubagents}><ApplicationCommandProvider><WorkspaceProvider view={view} navigate={navigate}><ChatFileNavigationProvider navigate={navigate}><WorkspaceQuickOpenFeature><WorkspaceSearchFeature><WorkspaceFileShortcuts><TerminalProvider view={view}><BrowserProvider workspaceId={browserWorkspaceId}>
     <PushNavigation state={state} inbox={inbox} hydrationReady={hydrationReady} openNotification={openNotification} />
     <ViewNavigationCommands onNavigate={navigate} />
+    <SidebarToggleCommand onToggle={toggleSidebar} />
     <WorkspaceShell view={view} sidebar={sidebar}
       onOpenNotification={openNotification}
       workspaceSelection={workspaceSelection}
       retryCatalog={hydrateCatalog} sidebarOpen={drawer === "sidebar"}
+      sidebarHidden={sidebarHidden} toggleSidebar={toggleSidebar}
       openSidebar={() => setDrawer("sidebar")} closeSidebar={() => setDrawer(null)}
       header={<ShellHeader state={state} view={view} artifact={artifact} overview={sidebarModel.overview} overviewWorkspaceId={workspaceId} openDetails={() => setDrawer("details")} openContext={() => setDrawer("context")} openApplication={() => setDrawer("application")} />}
       notices={<ShellNotices state={state} view={view} openDetails={() => setDrawer("details")} />}

@@ -11,6 +11,8 @@
   background:var(--muted);
   border-right:1px solid var(--border);
 }
+.app-shell>.sidebar[hidden] { display:none; }
+.sidebar-toggle { flex-shrink:0; }
 .shell-sidebar-header {
   display:flex;
   align-items:center;

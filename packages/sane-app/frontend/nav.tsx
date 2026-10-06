@@ -6,13 +6,14 @@ import { active } from "./types";
 import { useWorkspaceSearchContext } from "./workspace-search";
 import { commandHint, useRegisterCommand } from "./application-commands";
 import { NAVIGATION_HOTKEYS, navigationBinding, navigationKeyShortcuts } from "./navigation-hotkeys";
+import { SIDEBAR_TOGGLE_SHORTCUT } from "./shortcut-definitions";
 
 export function Icon({ name }: { name: "menu" | "plus" | "close" | "send" | "details" | "down" }) {
   const paths = { menu: "M4 6h16M4 12h16M4 18h16", plus: "M12 5v14M5 12h14", close: "m6 6 12 12M6 18 18 6", send: "M12 19V5m-6 6 6-6 6 6", details: "M12 11v6M12 7h.01M21 12a9 9 0 1 1-18 0 9 9 0 0 1 18 0", down: "M12 5v14m-6-6 6 6 6-6" };
   return <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d={paths[name]} /></svg>;
 }
 
-export function Drawer({ title, children, close, bare = false }: { title: string; children: ReactNode; close: () => void; bare?: boolean }) {
+export function Drawer({ title, children, close, bare = false, className = "", id }: { title: string; children: ReactNode; close: () => void; bare?: boolean; className?: string; id?: string }) {
   const ref = useRef<HTMLDialogElement>(null);
   const titleId = useId();
   useEffect(() => {
@@ -24,7 +25,22 @@ export function Drawer({ title, children, close, bare = false }: { title: string
       if (previous?.isConnected && !previous.closest("[hidden], [inert]")) previous.focus();
     };
   }, []);
-  return <dialog ref={ref} className="drawer" aria-modal="true" aria-labelledby={titleId} onCancel={event => { event.preventDefault(); close(); }} onClick={event => { if (event.target === event.currentTarget) close(); }}><div className="drawer-content">{bare ? <h2 id={titleId} className="sr-only">{title}</h2> : <header><h2 id={titleId}>{title}</h2><button type="button" className="icon-button" aria-label={`Close ${title.toLowerCase()}`} onClick={close}><Icon name="close" /></button></header>}{children}</div></dialog>;
+  return <dialog ref={ref} id={id} className={`drawer ${className}`} aria-modal="true" aria-labelledby={titleId} onCancel={event => { event.preventDefault(); close(); }} onClick={event => { if (event.target === event.currentTarget) close(); }}><div className="drawer-content">{bare ? <h2 id={titleId} className="sr-only">{title}</h2> : <header><h2 id={titleId}>{title}</h2><button type="button" className="icon-button" aria-label={`Close ${title.toLowerCase()}`} onClick={close}><Icon name="close" /></button></header>}{children}</div></dialog>;
+}
+
+export function SidebarToggleCommand({ onToggle }: { onToggle: () => void }) {
+  useRegisterCommand(useMemo(() => ({
+    ...SIDEBAR_TOGGLE_SHORTCUT,
+    contexts: ["application", "input", "editor", "terminal", "modal"] as const,
+    keyboardEligible: (event: KeyboardEvent, context: string) => {
+      if (context !== "modal") return true;
+      const target = event.target && "closest" in event.target ? event.target as Element : null;
+      // Close our own drawer with the same chord, but leave other modals alone.
+      return !!target?.closest("dialog")?.classList.contains("workspace-sidebar-drawer");
+    },
+    available: () => true, action: onToggle,
+  }), [onToggle]));
+  return null;
 }
 
 export type ViewGroup = "chat" | "files" | "settings" | "browser";

@@ -21,6 +21,13 @@ export const WORKSPACE_SELECTOR_SHORTCUT = {
   description: "Open or close the workspace selection dialog.",
 } as const satisfies ShortcutDefinition;
 
+export const SIDEBAR_TOGGLE_SHORTCUT = {
+  id: "workspace.toggle-sidebar", label: "Toggle sidebar",
+  scope: { kind: "global" }, owner: "application",
+  binding: { key: "b", mod: true },
+  description: "Hide or show the desktop sidebar, or open or close the mobile navigation drawer. Focus a SANE control first when using an embedded preview.",
+} as const satisfies ShortcutDefinition;
+
 export const GLOBAL_SHORTCUTS: readonly ShortcutDefinition[] = [...NAVIGATION_HOTKEYS.map<ShortcutDefinition>(item => ({
   id: `navigation.${item.id}`,
   label: item.label,
@@ -30,7 +37,7 @@ export const GLOBAL_SHORTCUTS: readonly ShortcutDefinition[] = [...NAVIGATION_HO
     { ...navigationBinding(item.key, true), platform: "mac" },
     { ...navigationBinding(item.key, false), platform: "windows-linux" },
   ],
-})), WORKSPACE_SELECTOR_SHORTCUT];
+})), WORKSPACE_SELECTOR_SHORTCUT, SIDEBAR_TOGGLE_SHORTCUT];
 
 export const FILE_SHORTCUTS = {
   quickOpen: {
