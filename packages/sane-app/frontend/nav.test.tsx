@@ -12,14 +12,16 @@ test("existing bookmark leaves map to the three presentation groups", () => {
   for (const view of ["chat", "history", "terminal"] as const) expect(viewGroup(view)).toBe("chat");
   for (const view of ["code", "git"] as const) expect(viewGroup(view)).toBe("files");
   for (const view of ["config", "workstreams"] as const) expect(viewGroup(view)).toBe("settings");
+  expect(viewGroup("browser")).toBe("browser");
 });
 
 test("contextual destinations retain leaf IDs and exclude the current destination", () => {
-  const expected: Record<ActiveView, Array<"chat" | "terminal" | "code" | "config">> = {
-    chat: ["terminal", "code", "config"], terminal: ["chat", "code", "config"],
-    history: ["chat", "terminal", "code", "config"],
-    code: ["chat", "terminal", "config"], git: ["chat", "terminal", "config"],
-    config: ["chat", "terminal", "code"], workstreams: ["chat", "terminal", "code"],
+  const expected: Record<ActiveView, Array<"chat" | "terminal" | "code" | "browser" | "config">> = {
+    chat: ["terminal", "code", "browser", "config"], terminal: ["chat", "code", "browser", "config"],
+    history: ["chat", "terminal", "code", "browser", "config"],
+    code: ["chat", "terminal", "browser", "config"], git: ["chat", "terminal", "browser", "config"],
+    browser: ["chat", "terminal", "code", "config"],
+    config: ["chat", "terminal", "code", "browser"], workstreams: ["chat", "terminal", "code", "browser"],
   };
   for (const [view, destinations] of Object.entries(expected)) {
     expect(contextualDestinations(view as ActiveView).map(item => item.id)).toEqual(destinations);
@@ -54,12 +56,12 @@ test("navigation is accessible, view-only, and never submits a surrounding compo
     const state = { ...store.snapshot(), sending: true };
     await act(async () => { root.render(<form onSubmit={event => { event.preventDefault(); submits++; }}><ContextualNavigation state={state} activeView="chat" onNavigate={view => chosen.push(view)} /></form>); });
     const buttons = [...host.querySelectorAll("button")];
-    expect(buttons.map(button => button.getAttribute("aria-label"))).toEqual(["Terminal", "Files", "Settings"]);
+    expect(buttons.map(button => button.getAttribute("aria-label"))).toEqual(["Terminal", "Files", "Browser", "Settings"]);
     expect(buttons.every(button => button.type === "button" && !button.disabled)).toBe(true);
-    expect(buttons.map(button => button.getAttribute("aria-keyshortcuts"))).toEqual(["Control+Meta+t", "Control+Meta+f", "Control+Meta+s"]);
+    expect(buttons.map(button => button.getAttribute("aria-keyshortcuts"))).toEqual(["Control+Meta+t", "Control+Meta+f", "Control+Meta+b", "Control+Meta+p"]);
     expect(buttons.every(button => button.title.startsWith(`${button.getAttribute("aria-label")} (`))).toBe(true);
     await act(async () => { buttons.forEach(button => button.click()); });
-    expect(chosen).toEqual(["terminal", "code", "config"]);
+    expect(chosen).toEqual(["terminal", "code", "browser", "config"]);
     expect(submits).toBe(0);
     await act(async () => { root.render(<ContextualNavigation state={state} activeView="terminal" onNavigate={view => chosen.push(view)} />); });
     expect(host.querySelector('[aria-label="Open Chat"]')?.textContent).toContain("Open Chat");
@@ -85,9 +87,9 @@ for (const mac of [true, false]) test(`${mac ? "Mac" : "Windows"} view hotkeys c
       return event.defaultPrevented;
     };
     for (const target of targets) {
-      for (const key of ["C", "t", "s", "f"]) expect(await emit(target, key)).toBe(true);
+      for (const key of ["C", "t", "p", "f", "b"]) expect(await emit(target, key)).toBe(true);
     }
-    expect(chosen).toEqual(targets.flatMap(() => ["chat", "terminal", "config", "code"]));
+    expect(chosen).toEqual(targets.flatMap(() => ["chat", "terminal", "config", "code", "browser"]));
     const count = chosen.length;
     for (const options of [{ metaKey: !mac }, { ctrlKey: false }, { shiftKey: true }, { altKey: mac }, { repeat: true }, { isComposing: true }]) {
       expect(await emit(targets[1]!, "c", options)).toBe(false);
@@ -113,8 +115,8 @@ test("Windows navigation hints match Ctrl+Alt bindings", async () => {
   await withDom(async (host, root) => {
     await act(async () => root.render(<ContextualNavigation state={store.snapshot()} activeView="history" onNavigate={() => {}} />));
     const buttons = [...host.querySelectorAll("button")];
-    expect(buttons.map(button => button.getAttribute("aria-keyshortcuts"))).toEqual(["Control+Alt+c", "Control+Alt+t", "Control+Alt+f", "Control+Alt+s"]);
-    expect(buttons.map(button => button.title)).toEqual(["Open Chat (Ctrl+Alt+C)", "Terminal (Ctrl+Alt+T)", "Files (Ctrl+Alt+F)", "Settings (Ctrl+Alt+S)"]);
+    expect(buttons.map(button => button.getAttribute("aria-keyshortcuts"))).toEqual(["Control+Alt+c", "Control+Alt+t", "Control+Alt+f", "Control+Alt+b", "Control+Alt+p"]);
+    expect(buttons.map(button => button.title)).toEqual(["Open Chat (Ctrl+Alt+C)", "Terminal (Ctrl+Alt+T)", "Files (Ctrl+Alt+F)", "Browser (Ctrl+Alt+B)", "Settings (Ctrl+Alt+P)"]);
   }, false);
 });
 
@@ -132,7 +134,7 @@ test("Files and Git controls navigate without requiring or mutating a file targe
 
 test("every shell view puts the catalog before sidebar content and never in the topbar", async () => {
   await withDom(async (host, root) => {
-    for (const view of ["chat", "history", "terminal", "code", "git", "config", "workstreams"] as const) {
+    for (const view of ["chat", "history", "terminal", "code", "git", "browser", "config", "workstreams"] as const) {
       await act(async () => { root.render(<WorkspaceShell view={view} sidebar={<div data-testid="sidebar-content">Content</div>} header={<span>Heading</span>}
         retryCatalog={() => {}} sidebarOpen={false} openSidebar={() => {}} closeSidebar={() => {}}><div>View</div></WorkspaceShell>); });
       const sidebar = host.querySelector("aside")!;
