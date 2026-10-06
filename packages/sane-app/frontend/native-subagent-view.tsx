@@ -1,7 +1,9 @@
 import { useId, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { AssistantRuntimeProvider, ThreadPrimitive, useExternalStoreRuntime } from "@assistant-ui/react";
 import { FiArrowLeft } from "react-icons/fi";
-import { ChatMessage, convertMessage, TranscriptContext } from "./thread";
+import { ChatMessage, renderActivityInspectorBody, TranscriptContext, useTranscriptIndex } from "./thread";
+import { ActivityInspector, useActivityInspection } from "./activity-inspector";
+import { convertTranscriptMessage, projectTranscriptMessages } from "./transcript-runtime";
 import { useActivityPresentation } from "./transcript-activity";
 import { useNativeSubagents } from "./native-subagent-feature";
 
@@ -16,8 +18,11 @@ export function NativeSubagentView() {
   const detailsLabel = `Native subagent details (${name})${attention ? `, attention needed: ${attention}` : ""}`;
   const countLabel = feature.summaryKnown ? `Recorded child tool calls: ${summary.toolCallCount}` : "Recorded child tool calls unavailable";
   const messages = useMemo(() => snapshot?.messages.map(message => ({ ...message, version: `${snapshot.revision}:${message.version ?? ""}` })) ?? [], [snapshot]);
-  const activities = useActivityPresentation({ sessionId: summary.parentSessionId, messages, workers: [], loading: !snapshot, animate: false });
-  const runtime = useExternalStoreRuntime({ messages, convertMessage, isRunning: false, isSendDisabled: true, onNew: async () => { throw new Error("Native subagent activity is read-only."); } });
+  const transcriptIndex = useTranscriptIndex(messages);
+  const runtimeMessages = useMemo(() => projectTranscriptMessages(messages), [messages]);
+  const activities = useActivityPresentation({ sessionId: summary.parentSessionId, messages, workers: [], loading: !snapshot, animate: false, readOnly: true });
+  const inspection = useActivityInspection({ scope: JSON.stringify(["native-subagent", summary.parentSessionId, summary.runId, summary.parentToolUseId]), active: !!snapshot, plan: activities.plan });
+  const runtime = useExternalStoreRuntime({ messages: runtimeMessages, convertMessage: convertTranscriptMessage, isRunning: false, isSendDisabled: true, onNew: async () => { throw new Error("Native subagent activity is read-only."); } });
   const viewport = useRef<HTMLDivElement>(null), content = useRef<HTMLDivElement>(null), back = useRef<HTMLButtonElement>(null);
   const anchor = useRef<{ id: string; offset: number } | null>(null);
   const following = useRef(true);
@@ -47,7 +52,7 @@ export function NativeSubagentView() {
     return () => { resize.disconnect(); mutations.disconnect(); };
   }, []);
   const pause = () => { following.current = false; capture(); };
-  return <section className="native-subagent-view" aria-label="Read-only native subagent activity">
+  return <TranscriptContext.Provider value={{ sessionId: summary.parentSessionId, harness: "claude-code", messages, ...transcriptIndex, runs: [], workers: [], openWorker: () => {}, activities, activityScope: inspection.scope, inspectActivity: inspection.open, readOnly: true }}><section className="native-subagent-view" aria-label="Read-only native subagent activity">
     <header className="native-subagent-header">
       <nav className="native-subagent-nav" aria-label="Native subagent navigation">
         <button ref={back} type="button" className="text-button" onClick={feature.back}><FiArrowLeft aria-hidden="true" />Back to parent</button>
@@ -74,10 +79,10 @@ export function NativeSubagentView() {
         {snapshot?.nextCursor && <button type="button" className="text-button" disabled={feature.state.detailLoading} onClick={() => { pause(); feature.client.loadEarlier(); }}>Load earlier activity</button>}
         {feature.state.detailLoading && <p className="muted" role="status">{snapshot ? "Refreshing recorded activity…" : "Loading recorded activity…"}</p>}
         {!messages.length && snapshot && <p className="muted">No child messages have been recorded.{summary.returnedReport && " The returned report does not imply recorded child activity."}</p>}
-        <TranscriptContext.Provider value={{ sessionId: summary.parentSessionId, harness: "claude-code", messages, runs: [], workers: [], openWorker: () => {}, activities, readOnly: true }}><AssistantRuntimeProvider runtime={runtime}><ThreadPrimitive.Root className="native-subagent-thread"><ThreadPrimitive.Messages components={{ Message: ChatMessage }} /></ThreadPrimitive.Root></AssistantRuntimeProvider></TranscriptContext.Provider>
+        <AssistantRuntimeProvider runtime={runtime}><ThreadPrimitive.Root className="native-subagent-thread"><ThreadPrimitive.Messages components={{ Message: ChatMessage }} /></ThreadPrimitive.Root></AssistantRuntimeProvider>
         {summary.returnedReport && <details className="native-subagent-returned-report"><summary>Returned report</summary><pre>{summary.returnedReport}</pre></details>}
       </div>
     </div>
     <footer className="native-subagent-footer"><button type="button" className="text-button" onClick={() => { following.current = true; anchor.current = null; if (viewport.current) { viewport.current.scrollTop = viewport.current.scrollHeight; programmedTop.current = viewport.current.scrollTop; } }}>Latest activity</button></footer>
-  </section>;
+  </section><ActivityInspector inspection={inspection} renderBody={renderActivityInspectorBody} /></TranscriptContext.Provider>;
 }

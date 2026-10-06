@@ -15,9 +15,9 @@ export function ShellDialog({ title, subtitle, close, children, className = "", 
     dialog.showModal();
     initial?.focus();
     if (initial && !autofocus) initial.removeAttribute("autofocus");
-    return () => { dialog.close(); const target = restoreFocus?.() ?? previous; if (target?.isConnected) target.focus(); };
+    return () => { dialog.close(); const target = restoreFocus?.() ?? previous; if (target?.isConnected) target.focus({ preventScroll: true }); };
   }, []);
-  return <dialog ref={ref} className={`shell-dialog ${className}`} role="dialog" aria-modal="true" aria-label={bare ? title : undefined} aria-labelledby={bare ? undefined : titleId} aria-describedby={!bare && subtitle !== undefined ? subtitleId : undefined} onCancel={event => { event.preventDefault(); if (!closeDisabled) close(); }} onClick={event => { if (event.target === event.currentTarget && !closeDisabled) close(); }}>
+  return <dialog ref={ref} className={`shell-dialog ${className}`} role="dialog" aria-modal="true" aria-label={bare ? title : undefined} aria-labelledby={bare ? undefined : titleId} aria-describedby={!bare && subtitle !== undefined ? subtitleId : undefined} onCancel={event => { event.preventDefault(); event.stopPropagation(); if (!closeDisabled) close(); }} onClick={event => { if (event.target === event.currentTarget && !closeDisabled) close(); }}>
     {bare ? children : <div className="shell-dialog-content"><header>{subtitle !== undefined ? <div className="shell-dialog-heading"><h2 id={titleId}>{title}</h2><p id={subtitleId} className="shell-dialog-subtitle">{subtitle}</p></div> : <h2 id={titleId}>{title}</h2>}<button type="button" className="icon-button" disabled={closeDisabled} aria-label={`Close ${title.toLowerCase()}`} onClick={close}>×</button></header>{children}</div>}
   </dialog>;
 }
