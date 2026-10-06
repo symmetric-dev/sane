@@ -1,17 +1,16 @@
 import { store, type State } from "./store";
 import { active } from "./types";
 import { pendingInteractions } from "./interaction-presentation";
-import type { WorkerRecord } from "../src/worker-contract";
 
 export type ChatStatus = { id: string; text: string; detail?: string; busy?: boolean; action?: "reconnect" | "models"; priority?: number; observedAt?: string; startedAt?: string };
-export type ChatStatusContext = { workspaceReady: boolean; handoffLoading?: boolean; handoffError?: string; workerError?: string; workers?: readonly WorkerRecord[]; nativeSubagentLoading?: boolean };
+export type ChatStatusContext = { workspaceReady: boolean; handoffLoading?: boolean; handoffError?: string; workerError?: string; nativeSubagentLoading?: boolean };
 
 const priorities: Record<string, number> = {
   connection: 100, "submission-error": 95, "interaction-error": 95,
   "handoffs-error": 85, "workers-error": 85, execution: 85, models: 80,
   availability: 80, "input-request": 88, "compact-request": 75, sending: 70, "followup-queue": 65,
   run: 60, "native-queue": 55, "history-refresh": 45, action: 40,
-  "worker-activity": 30, conversation: 25, workspace: 25, "history-page": 20,
+  conversation: 25, workspace: 25, "history-page": 20,
   handoffs: 15, workers: 15, "native-subagents": 15, "missing-model": 10, "action-notice": 5,
 };
 
@@ -38,7 +37,6 @@ export function chatStatuses(state: State, context: ChatStatusContext): ChatStat
     && !state.messages.some(message => message.id === latestRun.nativeCommandId && message.normalized);
   const nativeIssue = [...state.runs].reverse().find(run => active(run.status) && run.nativeConnection && run.nativeConnection !== "connected");
   const completionBoundary = [...state.runs].reverse().find(run => active(run.status) && run.nativeCompletionBoundary)?.nativeCompletionBoundary;
-  const runningWorkers = !context.workerError && state.connected ? context.workers?.filter(worker => (worker.continuation?.state ?? worker.state) === "running").length ?? 0 : 0;
   const compacting = state.compactions?.some(record => record.lifecycle === "running");
   const pendingCompact = state.pendingCompacts?.[state.selected];
   const queuedFollowup = conversation?.queuedFollowups?.find(receipt => receipt.state === "queued" && receipt.sessionId === state.selected);
@@ -50,7 +48,6 @@ export function chatStatuses(state: State, context: ChatStatusContext): ChatStat
   if (context.nativeSubagentLoading) add("native-subagents", "Loading recorded native subagents…", undefined, true);
   if (context.handoffError) add("handoffs-error", "Handoff status unavailable", context.handoffError);
   if (context.workerError) add("workers-error", "Background worker status unavailable", context.workerError);
-  if (runningWorkers) add("worker-activity", `${runningWorkers} background worker${runningWorkers === 1 ? "" : "s"} running…`, "Worker activity is separate from the main assistant turn. Open Workers for details.", true);
   if (state.actionNotice) add("action-notice", state.actionNotice);
   if (state.actionBusy) add("action", "Updating conversation…", undefined, true);
   if (requests.length) add("input-request", state.actionBusy ? "Sending your reply…" : requests.some(item => item.type === "permission") ? "Waiting for your permission" : "Waiting for your answer", `${requests.length} pending request${requests.length === 1 ? "" : "s"}. Respond in the composer to continue.`, state.actionBusy);
