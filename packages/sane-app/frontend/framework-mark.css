@@ -1,0 +1,111 @@
+.welcome.framework-welcome {
+  margin:clamp(12px,4vh,40px) auto 36px;
+}
+.framework-welcome .welcome-mark {
+  display:block;
+  width:min(100%,480px,55dvh);
+  margin:0 auto 4px;
+}
+.framework-welcome .framework-mark { width:100%; }
+.framework-welcome h1 {
+  font-family:inherit;
+  letter-spacing:normal;
+}
+.welcome.framework-welcome .eyebrow {
+  font-size:14px;
+  margin:0;
+  line-height:1.8;
+}
+
+/* Complete composition is the baseline, including when animation is disabled. */
+.framework-mark {
+  display:block;
+  width:112px;
+  height:auto;
+  color:var(--primary);
+  pointer-events:none;
+}
+.framework-mark-face {
+  animation:framework-face-reveal 400ms cubic-bezier(.22,1,.36,1) both;
+}
+.framework-mark-face[data-phase="design"] {
+  --framework-slide-x:0px;
+  --framework-slide-y:1.2px;
+}
+.framework-mark-face[data-phase="engineering"] {
+  --framework-slide-x:-1px;
+  --framework-slide-y:-.6px;
+  animation-delay:400ms;
+}
+.framework-mark-face[data-phase="planning"] {
+  --framework-slide-x:1px;
+  --framework-slide-y:-.6px;
+  animation-delay:800ms;
+}
+.framework-mark-glow {
+  opacity:.12;
+  animation:framework-perimeter-glow 900ms ease-in-out 1200ms both;
+}
+.framework-mark-center {
+  opacity:0;
+  animation:framework-center-shine 900ms ease-in-out 1200ms both;
+}
+.framework-mark-particle {
+  opacity:.8;
+  animation:framework-particle-appear 400ms ease-out both;
+}
+.framework-mark-particle:not([data-intro]) { animation-duration:700ms; }
+.framework-mark-particle[data-leaving] {
+  opacity:0;
+  animation:framework-particle-disappear 700ms ease-in both;
+}
+.framework-mark-float {
+  --framework-float-x:1px;
+  --framework-float-y:-.7px;
+  animation:framework-particle-float 7s ease-in-out infinite;
+}
+.framework-mark-float[data-motion="1"] {
+  --framework-float-x:-.8px;
+  --framework-float-y:1px;
+  animation-duration:9s;
+}
+.framework-mark-float[data-motion="2"] {
+  --framework-float-x:1.2px;
+  --framework-float-y:.5px;
+  animation-duration:8.5s;
+}
+/* Hidden chat stays mounted; pause the timeline rather than restart it. */
+.framework-mark[data-paused] * { animation-play-state:paused; }
+
+@keyframes framework-face-reveal {
+  from { opacity:0; transform:translate(var(--framework-slide-x),var(--framework-slide-y)); }
+  to { opacity:1; transform:translate(0,0); }
+}
+@keyframes framework-perimeter-glow {
+  0% { opacity:0; }
+  45% { opacity:.45; }
+  100% { opacity:.12; }
+}
+@keyframes framework-center-shine {
+  0%,100% { opacity:0; }
+  45% { opacity:.65; }
+}
+@keyframes framework-particle-appear {
+  from { opacity:0; }
+  to { opacity:.8; }
+}
+@keyframes framework-particle-disappear {
+  from { opacity:.8; }
+  to { opacity:0; }
+}
+@keyframes framework-particle-float {
+  0%,100% { transform:translate(0,0); }
+  35% { transform:translate(var(--framework-float-x),var(--framework-float-y)); }
+  70% { transform:translate(calc(var(--framework-float-x) * -.6),calc(var(--framework-float-y) * .5)); }
+}
+@media(max-width:700px) {
+  .framework-mark { width:96px; }
+}
+@media(prefers-reduced-motion:reduce) {
+  .framework-mark * { animation:none!important; }
+}

@@ -9,6 +9,8 @@ Design, Engineering, Planning, and Execution, with Research available throughout
 - [Agent definitions](../opencode/agents/sane/) — assistant and worker configurations.
 - [Templates](../templates/) — source templates for workstream documents.
 - [SANE App](sane-app/README.md) — current state, operator references and ongoing work.
+- [Framework animation pattern](animation/README.md) — triangle phase mapping,
+  motion language, and the New Conversation implementation contract.
 - [Archive](_legacy/README.md) — historical designs and older guides.
 
 ## Proposals
