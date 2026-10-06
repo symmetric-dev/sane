@@ -3,7 +3,9 @@ import { WorkspaceError } from "./workspace-client";
 import { workspaceEpoch, workspaceFailure } from "./workspace-store";
 
 const empty = (): NavigationBookmark => ({ revision: 0, workspaceId: null, worktreeId: null, conversationId: null, view: "chat", filePath: null, comparison: null });
-type CatalogState = { workspaces: WorkspaceRecord[]; navigation: NavigationBookmark; ready: boolean; loading: boolean; error: string };
+/** Browser is client-only until the backend gains a preview navigation contract. */
+export type CatalogNavigation = Omit<NavigationBookmark, "view"> & { view: NavigationBookmark["view"] | "browser" };
+type CatalogState = { workspaces: WorkspaceRecord[]; navigation: CatalogNavigation; ready: boolean; loading: boolean; error: string };
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
   const response = await fetch(path, { credentials: "same-origin", cache: "no-store", signal: AbortSignal.timeout(25000), ...init, headers: { "Content-Type": "application/json" } });
   const body = await response.json().catch(() => ({}));
@@ -16,6 +18,7 @@ class CatalogStore {
   private intent = 0;
   private registration = 0;
   private revision = 0;
+  private persistedView: NavigationBookmark["view"] = "chat";
   private pending: NavigationBookmark | null = null;
   private busy = false;
   private timer?: ReturnType<typeof setTimeout>;
@@ -32,16 +35,22 @@ class CatalogStore {
       const [catalog, navigation] = await Promise.all([request<CatalogResponse>("/api/workspaces"), request<NavigationBookmark>("/api/navigation")]);
       if (epoch !== this.epoch) return;
       this.revision = navigation.revision;
+      this.persistedView = navigation.view;
       // Publish readiness with the restored bookmark, never with a stale browsing
       // pair that could erase client-side context while hydration is in progress.
       if (intent === this.intent) { this.update({ workspaces: catalog.workspaces, ready: true, loading: false, navigation }); restore(navigation); }
       else { this.update({ workspaces: catalog.workspaces, ready: true, loading: false }); if (this.pending) this.schedule(); }
     } catch (error) { if (epoch === this.epoch) this.update({ loading: false, error: workspaceFailure(error) }); }
   };
-  navigate = (patch: Partial<Omit<NavigationBookmark, "revision">>) => {
+  navigate = (patch: Partial<Omit<CatalogNavigation, "revision">>) => {
     this.intent++;
     const navigation = { ...this.state.navigation, ...patch };
-    this.update({ navigation }); this.pending = navigation;
+    this.update({ navigation });
+    // Never send the frontend-only leaf to the existing backend validator.
+    // Workspace/file/conversation changes still persist while Browser is open.
+    if (navigation.view !== "browser") this.persistedView = navigation.view;
+    if (patch.view === "browser" && Object.keys(patch).length === 1) return;
+    this.pending = { ...navigation, view: this.persistedView };
     if (this.state.ready) this.schedule();
   };
   private schedule() { clearTimeout(this.timer); this.timer = setTimeout(() => void this.flush(), 300); }

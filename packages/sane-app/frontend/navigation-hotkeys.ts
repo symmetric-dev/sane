@@ -5,7 +5,8 @@ export const NAVIGATION_HOTKEYS = [
   { id: "chat", label: "Chat", key: "c" },
   { id: "terminal", label: "Terminal", key: "t" },
   { id: "code", label: "Files", key: "f" },
-  { id: "config", label: "Settings", key: "s" },
+  { id: "browser", label: "Browser", key: "b" },
+  { id: "config", label: "Settings", key: "p" },
 ] as const;
 
 export function navigationBinding(key: string, mac = isMacPlatform()): CommandBinding {

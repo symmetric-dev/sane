@@ -1,5 +1,5 @@
 import { useEffect, useId, useMemo, useRef, type ReactNode } from "react";
-import { FiFileText, FiGitBranch, FiMessageSquare, FiSearch, FiSettings, FiTerminal } from "react-icons/fi";
+import { FiFileText, FiGitBranch, FiGlobe, FiMessageSquare, FiSearch, FiSettings, FiTerminal } from "react-icons/fi";
 import type { State } from "./store";
 import type { ActiveView } from "./workspace-controller";
 import { active } from "./types";
@@ -27,16 +27,17 @@ export function Drawer({ title, children, close, bare = false }: { title: string
   return <dialog ref={ref} className="drawer" aria-modal="true" aria-labelledby={titleId} onCancel={event => { event.preventDefault(); close(); }} onClick={event => { if (event.target === event.currentTarget) close(); }}><div className="drawer-content">{bare ? <h2 id={titleId} className="sr-only">{title}</h2> : <header><h2 id={titleId}>{title}</h2><button type="button" className="icon-button" aria-label={`Close ${title.toLowerCase()}`} onClick={close}><Icon name="close" /></button></header>}{children}</div></dialog>;
 }
 
-export type ViewGroup = "chat" | "files" | "settings";
+export type ViewGroup = "chat" | "files" | "settings" | "browser";
 export function viewGroup(view: ActiveView): ViewGroup {
   switch (view) {
     case "code": case "git": return "files";
     case "config": case "workstreams": return "settings";
+    case "browser": return "browser";
     default: return "chat";
   }
 }
 
-const DESTINATION_ICONS = { chat: FiMessageSquare, terminal: FiTerminal, code: FiFileText, config: FiSettings };
+const DESTINATION_ICONS = { chat: FiMessageSquare, terminal: FiTerminal, code: FiFileText, browser: FiGlobe, config: FiSettings };
 const DESTINATIONS = NAVIGATION_HOTKEYS.map(item => ({ ...item, Icon: DESTINATION_ICONS[item.id] }));
 
 /** Register once at the shell level, including destinations whose button is hidden. */

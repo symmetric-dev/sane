@@ -34,6 +34,7 @@ import { PushNavigation, usePushInbox, type PushInbox } from "./push-navigation"
 import { notificationStore } from "./notifications";
 import { notificationContextKey } from "./notification-source";
 import { ChatFileNavigationProvider } from "./chat-file-link";
+import { BrowserFooter, BrowserHeader, BrowserProvider, BrowserSidebar, BrowserView } from "./browser-view";
 
 // Restore selection without replacing the independently bookmarked browsing pair.
 const hydrateCatalog = () => void catalog.hydrate(bookmark => store.choose(bookmark.conversationId ?? ""));
@@ -177,8 +178,10 @@ function ReadyWorkspace({ state, signOut, inbox, hydrationReady }: { state: Stat
     onChoose={choose} onPreview={id => { setHistoryPreview(id); setDrawer(null); }}
     onHistory={() => navigate(view === "history" ? "chat" : "history")}
   /> : group === "files" ? <><FilesModeControl activeView={view} onNavigate={navigate} /><WorkspaceSidebar /></>
+    : group === "browser" ? <BrowserSidebar onSelect={() => setDrawer(null)} />
     : <ConfigMenu onSelect={() => { setArtifact(null); setDrawer(null); }} />;
-  return <NativeSubagentContext.Provider value={nativeSubagents}><ApplicationCommandProvider><WorkspaceProvider view={view} navigate={navigate}><ChatFileNavigationProvider navigate={navigate}><WorkspaceQuickOpenFeature><WorkspaceSearchFeature><WorkspaceFileShortcuts><TerminalProvider view={view}>
+  const browserWorkspaceId = repository.ready && repository.workspaces.some(item => item.workspaceId === workspaceId) ? workspaceId : null;
+  return <NativeSubagentContext.Provider value={nativeSubagents}><ApplicationCommandProvider><WorkspaceProvider view={view} navigate={navigate}><ChatFileNavigationProvider navigate={navigate}><WorkspaceQuickOpenFeature><WorkspaceSearchFeature><WorkspaceFileShortcuts><TerminalProvider view={view}><BrowserProvider workspaceId={browserWorkspaceId}>
     <PushNavigation state={state} inbox={inbox} hydrationReady={hydrationReady} openNotification={openNotification} />
     <ViewNavigationCommands onNavigate={navigate} />
     <WorkspaceShell view={view} sidebar={sidebar}
@@ -196,7 +199,7 @@ function ReadyWorkspace({ state, signOut, inbox, hydrationReady }: { state: Stat
     {drawer === "details" && !nativeSubagents.active && <ConversationDetails state={state} close={() => setDrawer(null)} />}
     {drawer === "context" && view === "chat" && !nativeSubagents.active && !state.compactDialog && <ContextDialog state={state} close={() => setDrawer(null)} />}
     {view === "chat" && !nativeSubagents.active && <CompactDialog state={state} />}
-  </TerminalProvider></WorkspaceFileShortcuts></WorkspaceSearchFeature></WorkspaceQuickOpenFeature></ChatFileNavigationProvider></WorkspaceProvider></ApplicationCommandProvider></NativeSubagentContext.Provider>;
+  </BrowserProvider></TerminalProvider></WorkspaceFileShortcuts></WorkspaceSearchFeature></WorkspaceQuickOpenFeature></ChatFileNavigationProvider></WorkspaceProvider></ApplicationCommandProvider></NativeSubagentContext.Provider>;
 }
 
 function ShellHeader({ state, view, artifact, overview, overviewWorkspaceId, openDetails, openContext, openApplication }: {
@@ -214,6 +217,7 @@ function ShellHeader({ state, view, artifact, overview, overviewWorkspaceId, ope
     <button type="button" className="details-button" aria-label="Conversation details" onClick={openDetails}><Icon name="details" /><span>Details</span></button>
   </>;
   else if (view === "terminal") heading = <TerminalHeader />;
+  else if (view === "browser") heading = <BrowserHeader />;
   else if (view === "history") heading = <div className="conversation-heading">History</div>;
   else if (viewGroup(view) === "settings") heading = <div className="conversation-heading">{view === "workstreams" ? "Settings · Workstreams" : "Settings"}</div>;
   else if (artifact && view === "code") heading = <div className="conversation-heading">Files · Read-only workstream artifact</div>;
@@ -230,7 +234,7 @@ function ShellNotices({ state, view, openDetails }: { state: State; view: Active
   const mismatch = conversation && (conversation.workspaceId !== repository.navigation.workspaceId || conversation.worktreeId !== repository.navigation.worktreeId);
   return <>
     {state.connectionError && (view !== "chat" || nativeSubagents?.active) && <div className="connection-notice" role="status">{state.connectionError}<button type="button" onClick={store.reconnect}>Reconnect</button></div>}
-    {mismatch && view !== "terminal" && !(view === "chat" && nativeSubagents?.active) && <div className="execution-context" role="status">
+    {mismatch && view !== "terminal" && view !== "browser" && !(view === "chat" && nativeSubagents?.active) && <div className="execution-context" role="status">
       <span title={worktree ? `${worktreeLabel(worktree)} · ${worktree.root}` : conversation.cwd}>Runs in: {worktree ? worktreeDisplay(worktree) : conversation.cwd || "Unavailable worktree"}</span>
       {conversation.workspaceId && conversation.worktreeId ? <button type="button" disabled={state.sending} onClick={() => catalog.navigate({ workspaceId: conversation.workspaceId, worktreeId: conversation.worktreeId, filePath: null, comparison: null })}>Browse execution worktree</button> : <button type="button" onClick={openDetails}>Execution details</button>}
     </div>}
@@ -249,13 +253,14 @@ function ShellContent({ state, view, workspaceId, artifact, closeArtifact, openA
   return <>
     <div className="chat-surface" hidden={view !== "chat" || !!child} inert={view !== "chat" || !!child}><Thread state={state} active={view === "chat" && !child} navigation={navigation} reviewRequest={reviewRequest} reviewRequestHandled={reviewRequestHandled} /></div>
     {view === "chat" && child && <div className="chat-surface"><NativeSubagentView key={nativeSubagentVirtualKey(child.summary)} /></div>}
-    {view !== "chat" && view !== "terminal" && <div className="shell-content">
+    {view !== "chat" && view !== "terminal" && view !== "browser" && <div className="shell-content">
       {view === "history" && <HistoryDetail state={state} previewId={historyPreview} onOpen={choose} />}
       {viewGroup(view) === "settings" && <ConfigView state={state} signOut={signOut} workspaceId={workspaceId} openArtifact={openArtifact} openConversation={choose} startDocumentReview={startDocumentReview} />}
       {view === "code" && artifact && artifact.workspaceId === workspaceId ? <WorkstreamArtifact artifact={artifact} close={closeArtifact} /> : (view === "code" || view === "git") && <WorkspaceView />}
     </div>}
     {view === "terminal" && <TerminalView navigation={navigation} />}
-    {view !== "chat" && view !== "terminal" && <footer className="shell-content-footer">{navigation}</footer>}
+    <BrowserView key={workspaceId ?? "no-workspace"} active={view === "browser"} />
+    {view === "browser" ? <BrowserFooter navigation={navigation} /> : view !== "chat" && view !== "terminal" && <footer className="shell-content-footer">{navigation}</footer>}
   </>;
 }
 

@@ -1,16 +1,16 @@
 import { createContext, useContext, useEffect, useRef, useState, useSyncExternalStore, type ReactNode } from "react";
 import type { GitComparison, WorkspaceDiff, WorkspaceFile } from "../src/workspace-contract";
-import type { NavigationBookmark, WorktreeResolution as Workspace } from "../src/catalog-contract";
+import type { WorktreeResolution as Workspace } from "../src/catalog-contract";
 import type { EditorView } from "@codemirror/view";
 import { EditorView as CodeMirrorView } from "@codemirror/view";
 import { searchSelection, type WorkspaceLocation } from "./workspace-location";
 import { workspaceClient, WorkspaceError } from "./workspace-client";
-import { catalog, worktreeScope } from "./catalog";
+import { catalog, worktreeScope, type CatalogNavigation } from "./catalog";
 import { acquireWorktreeDirectories, type DirectoryResult, type DirectoryRequest, type WorktreeDirectories } from "./workspace-directory-cache";
 export type { DirectoryResult } from "./workspace-directory-cache";
 import { fencePath, notifyWorkspace, openBuffer, pathFence, refreshBuffer, renameBuffer, requestFence, rootState, subscribeWorkspace, workspaceEpoch, workspaceFailure, workspaceSnapshot, type Buffer, type TreePresentation } from "./workspace-store";
 
-export type ActiveView = NavigationBookmark["view"];
+export type ActiveView = CatalogNavigation["view"];
 export type WorkspaceActivation = { view: "code"; path: string; location?: WorkspaceLocation; source?: "files" | "search" } | { view: "git"; path: string; comparison: GitComparison };
 const DIRECTORY_SWEEP_MS = 5_000;
 const WORKSPACE_SOURCE_UNAVAILABLE = "Workspace source changed or is unavailable. Retry workspace resolution or choose an available worktree; unsaved buffers remain in memory.";

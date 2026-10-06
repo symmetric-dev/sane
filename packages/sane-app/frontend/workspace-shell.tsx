@@ -37,6 +37,6 @@ export function WorkspaceShell({ view, sidebar, header, notices, children, retry
       {notices}
       {children}
     </main>
-    {sidebarOpen && <Drawer title={group === "files" ? "Files" : group === "settings" ? "Settings" : "Conversations"} bare close={closeSidebar}><ShellSidebar retryCatalog={retryCatalog} workspaceSelection={workspaceSelection} onOpenNotification={onOpenNotification} onGo={closeSidebar} close={closeSidebar}>{sidebar}</ShellSidebar></Drawer>}
+    {sidebarOpen && <Drawer title={group === "files" ? "Files" : group === "settings" ? "Settings" : group === "browser" ? "Browser tabs" : "Conversations"} bare close={closeSidebar}><ShellSidebar retryCatalog={retryCatalog} workspaceSelection={workspaceSelection} onOpenNotification={onOpenNotification} onGo={closeSidebar} close={closeSidebar}>{sidebar}</ShellSidebar></Drawer>}
   </div>;
 }

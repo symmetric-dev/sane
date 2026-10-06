@@ -1,0 +1,48 @@
+.browser-sidebar { display:flex; flex-direction:column; gap:10px; min-height:0; }
+.browser-sidebar>header { display:flex; align-items:center; justify-content:space-between; gap:8px; }
+.browser-sidebar h2 { font-size:14px; margin:0; }
+.browser-sidebar p { margin:0; font-size:12px; }
+.browser-sidebar small { color:var(--muted-foreground); }
+.browser-tab-list { display:flex; flex-direction:column; gap:4px; overflow:auto; }
+.browser-tab-row { display:flex; align-items:center; border-radius:8px; }
+.browser-tab-row.selected { background:var(--accent); color:var(--primary); }
+.browser-tab-row>[role="tab"] { display:flex; align-items:center; gap:8px; text-align:left; min-width:0; flex:1; min-height:40px; padding:8px; }
+.browser-tab-row>[role="tab"] span { overflow:hidden; white-space:nowrap; text-overflow:ellipsis; }
+.browser-tab-row svg { flex-shrink:0; }
+.browser-tab-row .icon-button { flex-shrink:0; }
+.browser-new-tab,.browser-layout-toggle { display:flex; align-items:center; gap:8px; padding:10px 8px; text-align:left; font-size:12px; }
+.browser-new-tab:hover:not(:disabled),.browser-layout-toggle:hover:not(:disabled) { background:var(--accent); }
+.browser-layout-toggle { border-top:1px solid var(--border); border-radius:0; }
+.browser-view { flex:1; display:flex; flex-direction:column; min-height:0; min-width:0; overflow:hidden; }
+.browser-view[hidden],.browser-frame[hidden] { display:none; }
+.browser-address { position:relative; display:flex; flex:1; min-width:0; align-items:center; gap:6px; }
+.browser-address input { flex:1; min-width:0; width:0; padding:6px 10px; border:1px solid var(--border); border-radius:8px; background:var(--background); color:var(--foreground); font:inherit; font-size:13px; }
+.browser-address .primary-button { flex-shrink:0; padding:6px 12px; }
+.browser-external { display:flex; align-items:center; justify-content:center; flex-shrink:0; min-width:32px; min-height:32px; color:var(--muted-foreground); }
+.browser-address .browser-refresh { flex-shrink:0; min-width:32px; min-height:32px; color:var(--muted-foreground); }
+.browser-address-error { position:absolute; top:calc(100% + 8px); left:0; right:0; z-index:2; margin:0; padding:8px 10px; border:1px solid var(--error); border-radius:8px; background:var(--error-background); font-size:12px; color:var(--error); }
+.browser-frames { flex:1; display:flex; min-height:0; min-width:0; overflow:hidden; }
+.browser-frames-grid { display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); grid-auto-rows:minmax(0,1fr); gap:1px; background:var(--border); }
+.browser-frame { display:flex; flex-direction:column; flex:1; min-width:0; min-height:0; background:var(--background); }
+.browser-frame>header { display:flex; align-items:center; gap:8px; padding:4px 10px; border-bottom:1px solid var(--border); flex-shrink:0; font-size:12px; color:var(--muted-foreground); }
+.browser-pane-select { flex:1; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; min-width:0; text-align:left; }
+.browser-pane-select { padding:4px 0; font-size:12px; }
+.browser-frames-grid .browser-frame.selected>header { background:var(--accent); color:var(--primary); }
+.browser-frame iframe { border:0; width:100%; flex:1; min-height:0; background:white; color-scheme:normal; }
+.browser-empty { display:flex; flex:1; min-height:0; flex-direction:column; align-items:center; justify-content:center; gap:12px; padding:24px; text-align:center; overflow:auto; }
+.browser-empty h2 { font-size:18px; margin:0; }
+.browser-empty p { max-width:480px; margin:0; color:var(--muted-foreground); }
+.browser-footer { align-items:center; justify-content:space-between; gap:12px; }
+.browser-help-button { display:flex; align-items:center; gap:6px; padding:8px 0; text-align:left; font-size:11px; color:var(--muted-foreground); }
+.browser-help-button svg { flex-shrink:0; }
+.browser-help-button:hover { color:var(--foreground); }
+.browser-limitations { padding-left:20px; color:var(--muted-foreground); }
+.browser-limitations li+li { margin-top:12px; }
+.browser-notice { flex-shrink:0; margin:0; padding:6px 16px; font-size:12px; color:var(--warning); }
+@media(max-width:700px) {
+  .browser-address { gap:4px; }
+  .browser-address .primary-button { padding:6px 8px; }
+  .browser-address input { font-size:16px; }
+  .browser-frames-grid { grid-template-columns:minmax(0,1fr); }
+  .browser-tab-row .icon-button { min-width:40px; min-height:40px; }
+}
