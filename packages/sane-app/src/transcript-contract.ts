@@ -54,7 +54,7 @@
  *   together as discriminated items. No logs or reducer state. Drain nextCursor
  *   for all metadata, restart traversal if metadataRevision changes (409).
  *   Message-only streaming updates do not invalidate metadata traversal.
- *   Run items include bounded nativeConnection/nativeReason warnings from the
+ *   Run items include nativeCompletionBoundary and bounded connection warnings from the
  *   materialized reducer; warning changes invalidate metadataRevision. Empty
  *   strings explicitly clear warnings so existing metadata merges cannot stale.
  *   Compaction payload excludes large summary/instructions/nativeMetadata;
@@ -96,6 +96,8 @@ export type TranscriptCompaction = Pick<CompactionRecord, "id" | "sessionId" | "
   placement: { kind: "before-message"; messageId: string } | { kind: "tail" } | { kind: "unplaced" };
 };
 export type TranscriptRunMetadata = RunMetadata & {
+  /** Diagnostic only; null explicitly clears a previous attribution boundary. */
+  nativeCompletionBoundary?: import("../shared/conversation/native-contract").NativeCommandBoundary | null;
   /** UTF-8 <=64 bytes; empty string clears a previous connection warning. */
   nativeConnection?: string;
   /** UTF-8 <=2048 bytes; empty string clears a previous status detail. */

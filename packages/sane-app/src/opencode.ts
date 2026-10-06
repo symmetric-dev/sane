@@ -1,6 +1,6 @@
 import { Service } from "@opencode/client/service";
 import { OpenCode, type OpenCodeClient } from "@opencode/client";
-import type { CompactionLifecycle, CompactionMetadata, FormField, HarnessModel, Interaction, InteractionReply, MessagePart, MessageSnapshot } from "./oc-contract";
+import type { CompactionLifecycle, CompactionMetadata, FormField, HarnessModel, Interaction, InteractionReply, MessagePart, MessageSnapshot, NativeCommandBoundary } from "./oc-contract";
 import { nativeMessageId, validModel, validVariant } from "./history";
 
 // HTTP shapes from https://opencode.ai/v2/openapi.json and the V2 client guide.
@@ -35,6 +35,26 @@ const restartContinuation = (message: NativeMessage, command: NativeMessage) => 
   && message.text === "The server restarted while you were working. Continue from where you left off without repeating completed work."
   && nativeMessageId(message.id) && Number.isFinite(message.time?.created)
   && message.time.created >= command.time.created;
+/** Native instruction discovery inserts context during a turn, not a new inbox
+ * input. Recognize only the evidenced metadata shape; prose and filenames are
+ * never lifecycle evidence. Unknown/malformed synthetics still fence ownership. */
+const instructionContext = (message: NativeMessage, command: NativeMessage) => {
+  if (message.type !== "synthetic" || !nativeMessageId(message.id) || !Number.isFinite(message.time?.created)
+    || message.time.created < command.time.created) return false;
+  const metadata = message.metadata, instruction = metadata?.instruction;
+  if (!metadata || Object.keys(metadata).some(key => key !== "instruction")
+    || !instruction || typeof instruction !== "object" || Array.isArray(instruction)) return false;
+  const value = instruction as Record<string, unknown>;
+  return Object.keys(value).every(key => key === "paths") && Array.isArray(value.paths) && value.paths.length > 0
+    && value.paths.every(path => typeof path === "string" && !!path.trim() && !path.includes("\0"));
+};
+/** Completion attribution and queued-input cancellation must agree on which
+ * messages are new inputs. Do not exempt all synthetic messages. */
+const commandBoundary = (message: NativeMessage, command: NativeMessage): NativeCommandBoundary | undefined => {
+  if (message.type === "user" || message.type === "synthetic" && !restartContinuation(message, command) && !instructionContext(message, command)) {
+    return { messageId: message.id, type: message.type };
+  }
+};
 export class OpenCodeError extends Error {
   constructor(message: string, public status = 503) { super(message); }
 }
@@ -313,7 +333,7 @@ export class OpenCodeAdapter {
     }
     throw new OpenCodeError("History exceeds 10,000-message import budget; no partial import");
   }
-  async snapshot(id: string, commandId: string, cwd?: string): Promise<{ messages: NativeMessage[]; outcome?: string; pending: boolean; currentInputId?: string }> {
+  async snapshot(id: string, commandId: string, cwd?: string): Promise<{ messages: NativeMessage[]; outcome?: string; pending: boolean; currentInputId?: string; boundary?: NativeCommandBoundary }> {
     // A queued command is not committed history yet. Check its exact inbox
     // identity first, so waiting/cancellation never walks an unrelated backlog.
     const [initialSession, initialInbox] = await Promise.all([
@@ -347,10 +367,10 @@ export class OpenCodeAdapter {
     const ordered = found ? messages.reverse() : [];
     const bounded = commandSnapshot(ordered, commandId);
     const command = ordered.find(message => message.id === commandId);
-    const currentInputId = ordered.findLast(message => message.type === "user" || message.type === "synthetic" && !(command && restartContinuation(message, command)))?.id;
+    const currentInputId = command ? ordered.findLast(message => commandBoundary(message, command))?.id : undefined;
     // Session.outcome belongs to the latest turn, not necessarily this command.
     // Later external activity cannot overwrite a recorded command boundary.
-    return { messages: bounded.messages, outcome: pending ? undefined : bounded.outcome, pending, currentInputId };
+    return { messages: bounded.messages, outcome: pending ? undefined : bounded.outcome, pending, currentInputId, ...(bounded.boundary ? { boundary: bounded.boundary } : {}) };
   }
   /** Observe only the exact admitted compact input. No user-message anchor,
    * session outcome, idle heuristic, or resend. Activity is reported separately
@@ -424,15 +444,15 @@ export class OpenCodeAdapter {
   }
 }
 
-export function commandSnapshot(history: NativeMessage[], commandId: string) {
+export function commandSnapshot(history: NativeMessage[], commandId: string): { messages: NativeMessage[]; outcome?: string; boundary?: NativeCommandBoundary } {
   const start = history.findIndex(m => m.id === commandId && m.type === "user");
   if (start < 0) return { messages: [] as NativeMessage[], outcome: undefined as string | undefined };
   const messages = [history[start]!];
   for (const message of history.slice(start + 1)) {
-    // Only the evidenced native restart notice preserves this command's claim.
-    // Another admitted input still makes attribution ambiguous; never cross it
-    // to borrow an unrelated turn's assistant activity or terminal outcome.
-    if (message.type === "user" || message.type === "synthetic" && !restartContinuation(message, history[start]!)) break;
+    // Instruction context and an evidenced restart preserve this claim. Another
+    // input still makes attribution ambiguous; never borrow its terminal outcome.
+    const boundary = commandBoundary(message, history[start]!);
+    if (boundary) return { messages, boundary };
     messages.push(message);
     if (message.type === "idle") return { messages, outcome: ["succeeded", "failed", "interrupted"].includes(message.outcome ?? "") ? message.outcome : undefined };
   }

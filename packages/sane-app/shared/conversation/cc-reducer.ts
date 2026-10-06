@@ -89,7 +89,12 @@ export function consume(run: Run, events: DiagnosticEvent[]) {
     }
     if (event.kind === "status" && object(event.data)) {
       if (typeof event.data.connection === "string") { run.nativeConnection = event.data.connection; run.nativeReason = event.data.reason; }
-      if (event.data.status && !active(event.data.status)) { run.nativeConnection = undefined; run.nativeReason = event.data.reason; }
+      if (event.data.completionBoundary === null) run.nativeCompletionBoundary = undefined;
+      else if (object(event.data.completionBoundary) && typeof event.data.completionBoundary.messageId === "string"
+        && (event.data.completionBoundary.type === "user" || event.data.completionBoundary.type === "synthetic")) {
+        run.nativeCompletionBoundary = { messageId: event.data.completionBoundary.messageId, type: event.data.completionBoundary.type };
+      }
+      if (event.data.status && !active(event.data.status)) { run.nativeConnection = undefined; run.nativeCompletionBoundary = undefined; run.nativeReason = event.data.reason; }
     }
     if (event.kind === "stdout" && run.harness !== "opencode") stdout(run, event.data, event);
     if (event.kind === "hook" && run.harness !== "opencode") {

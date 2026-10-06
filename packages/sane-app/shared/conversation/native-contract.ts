@@ -5,6 +5,8 @@
  */
 import type { Harness } from "./harness-capabilities";
 export type { Harness } from "./harness-capabilities";
+/** A later input that prevents attributing native completion to an App command. */
+export type NativeCommandBoundary = { messageId: string; type: "user" | "synthetic" };
 export type CompactionTrigger = "auto" | "manual" | "unknown";
 export type CompactionLifecycle = "requested" | "running" | "completed" | "failed" | "skipped" | "unconfirmed";
 /** Native evidence only. A completed run, idle session, or disappearing inbox

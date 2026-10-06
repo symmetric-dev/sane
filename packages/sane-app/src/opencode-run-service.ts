@@ -68,7 +68,10 @@ export class OpenCodeRunService {
     for (const event of this.deps.events(run.runId)) if (event.kind === "message") {
       const data = event.data; if (record(data) && typeof data.messageId === "string") snapshots.set(data.messageId, JSON.stringify(data));
     }
-    let lastError = "", workerWaiting: boolean | undefined, queueWaiting: boolean | undefined;
+    let lastError = "", lastBoundary = "", workerWaiting: boolean | undefined, queueWaiting: boolean | undefined;
+    for (const event of this.deps.events(run.runId)) if (event.kind === "status" && record(event.data) && "completionBoundary" in event.data) {
+      lastBoundary = event.data.completionBoundary ? JSON.stringify(event.data.completionBoundary) : "";
+    }
     while (!this.deps.closing() && !this.deps.storageFailed() && run.status === "running") {
       try {
         const snapshot = await this.deps.oc.snapshot(session.nativeSessionId!, run.nativeCommandId!, session.cwd);
@@ -92,6 +95,13 @@ export class OpenCodeRunService {
         if (snapshot.outcome === "succeeded" || snapshot.outcome === "failed" || snapshot.outcome === "interrupted") {
           await this.finishNative(owner, snapshot.outcome === "succeeded" ? "completed" : snapshot.outcome); break;
         }
+        const boundary = snapshot.boundary ? JSON.stringify(snapshot.boundary) : "";
+        if (lastBoundary !== boundary) {
+          await this.deps.emit(run, "status", { status: "running", completionBoundary: snapshot.boundary ?? null,
+            ...(snapshot.boundary ? { reason: `A later ${snapshot.boundary.type} message prevents attributing completion to this command; retaining ownership without resending` } : {}) });
+          lastBoundary = boundary;
+        }
+        if (!this.currentNative(owner)) break;
         if (this.deps.workerHasRun(run.runId)) {
           const waiting = (await this.deps.oc.interactions(session.nativeSessionId!)).length > 0;
           if (!this.currentNative(owner)) break;

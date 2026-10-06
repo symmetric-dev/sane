@@ -91,7 +91,7 @@ export class TranscriptService {
   }
   private projectedMetadata(run: Run, session: Session): TranscriptRunMetadata {
     const display = this.runs.get(run.runId);
-    return { ...this.metadata(run, session), nativeConnection: warningText(display?.nativeConnection, 64), nativeReason: warningText(display?.nativeReason, 2048) };
+    return { ...this.metadata(run, session), nativeConnection: warningText(display?.nativeConnection, 64), nativeReason: warningText(display?.nativeReason, 2048), nativeCompletionBoundary: display?.nativeCompletionBoundary ?? null };
   }
   ingest(run: Run, events: Event[]) {
     const session = this.sessions().find(s => s.sessionId === run.sessionId);

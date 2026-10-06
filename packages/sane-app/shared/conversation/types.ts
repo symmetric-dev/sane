@@ -16,6 +16,7 @@ export type Run = {
   operation?: "prompt" | "compact";
   compact?: { requestId: string; instructions?: string; nativeRequestId?: string; nativeAdmittedId?: string };
   nativeConnection?: string; nativeReason?: string; nativeUsage?: { cost?: number; tokens?: unknown }; nativeUsageTime?: string;
+  nativeCompletionBoundary?: import("./native-contract").NativeCommandBoundary | null;
   model?: string; effort?: string; agent?: string; agentKind?: "assistant" | "worker"; nativeAgentSelected?: boolean; profileId?: string; saneContextVersion?: number; observedModel?: string; observedEfforts: string[];
   messages: Message[]; events: DiagnosticEvent[]; cursor: number; seen: Set<number>;
   buffer: string; usage?: UsageSnapshot; result?: string; resultCount: number; resultKeys: Set<string>;

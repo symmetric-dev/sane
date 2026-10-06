@@ -95,7 +95,7 @@ export function turnBoundaryKnown(pages: PagedTranscript, island: TranscriptIsla
   return !island.continuation.newer && (island.observedEndBoundary || island.coverage.lastIndex === canonicalCount(pages) - 1 && island.endRevision === pages.summary.revision);
 }
 
-const metadataFields = ["id", "conversationId", "cwd", "status", "createdAt", "endedAt", "model", "effort", "agent", "agentKind", "nativeAgentSelected", "profileId", "saneContextVersion", "harness", "nativeSessionId", "nativeCommandId", "operation", "compact", "nativeConnection", "nativeReason"] as const satisfies readonly (keyof TranscriptRunMetadata)[];
+const metadataFields = ["id", "conversationId", "cwd", "status", "createdAt", "endedAt", "model", "effort", "agent", "agentKind", "nativeAgentSelected", "profileId", "saneContextVersion", "harness", "nativeSessionId", "nativeCommandId", "operation", "compact", "nativeConnection", "nativeReason", "nativeCompletionBoundary"] as const satisfies readonly (keyof TranscriptRunMetadata)[];
 export function sameRunMetadata(previous: Run, next: TranscriptRunMetadata): boolean {
   return metadataFields.every(key => Object.hasOwn(previous, key) === Object.hasOwn(next, key) && equalValue(previous[key], next[key]));
 }
