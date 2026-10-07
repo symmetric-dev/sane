@@ -6,6 +6,7 @@ import "./flow-launcher.css";
 const flows = [
   { id: "view-status", title: "View Status", icon: FiCompass },
   { id: "review-documents", title: "Review Documents", icon: FiBookOpen },
+  { id: "review-research", title: "Review Research", icon: FiBookOpen },
   { id: "search-documents", title: "Search Documents", icon: FiSearch },
 ] as const;
 type FlowId = typeof flows[number]["id"];

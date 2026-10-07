@@ -2,6 +2,7 @@ import { useEffect, useLayoutEffect, useRef, useState, type ReactNode } from "re
 import { FiArrowLeft, FiBookOpen, FiCheck, FiFileText, FiRefreshCw, FiX } from "react-icons/fi";
 import { ChatInput } from "./chat-input";
 import { DocumentMarkdown } from "./document-markdown";
+import { DocumentToc } from "./document-toc";
 import { reviewPhases, type DocumentReviewController, type ReviewPhase } from "./document-review-model";
 import "./document-review.css";
 
@@ -13,7 +14,7 @@ export function DocumentReviewComposer({ review, disabled, active, navigation }:
   const cancelButton = useRef<HTMLButtonElement>(null), searchInput = useRef<HTMLInputElement>(null);
   useEffect(() => setSearch(""), [flow.identity]);
   const searching = flow.mode === "search";
-  const title = searching ? "Search Documents" : "Review Documents";
+  const title = searching ? "Search Documents" : flow.identity.phase === "research" ? "Review Research" : "Review Documents";
   const documents = flow.documents.filter(document => (flow.phase === "all" || document.phase === flow.phase) && (!searching || `${document.title} ${document.path}`.toLowerCase().includes(search.toLowerCase())));
   const document = flow.documents.find(item => item.path === flow.path);
   const entry = document ? flow.entries[document.path] : undefined;
@@ -52,7 +53,7 @@ export function DocumentReviewComposer({ review, disabled, active, navigation }:
             </div>;
           })}</section> : null;
         })}
-        {!flow.loading && !documents.length && <p className="muted" role="status">{flow.phase === "none" ? "No matching review phase for this session." : searching ? "No documents found in this scope." : "No documents for your current phase."}</p>}
+        {!flow.loading && !documents.length && <p className="muted" role="status">{flow.phase === "none" ? "No matching review phase for this session." : searching ? "No documents found in this scope." : flow.phase === "research" ? "No registered research documents in this workstream." : "No documents for your current phase."}</p>}
       </div>
     </>}
     </div>
@@ -74,12 +75,12 @@ export function DocumentReviewReader({ review }: { review: DocumentReviewControl
     element.scrollTop = positions.current.get(key) ?? 0;
   }, [key, review.active, flow.reading]);
   const openLink = (path: string, fragment?: string) => {
-    if (flow.documents.some(item => item.path === path && item.exists)) void review.open(path, fragment);
+    if (flow.documents.some(item => item.path === path && item.exists)) review.navigate(path, fragment);
   };
-  return <div className="document-review-reader" ref={viewport} tabIndex={0} aria-busy={flow.reading} aria-label={`Document reader: ${document?.title ?? flow.path}`} onScroll={event => { if (review.active && !flow.reading) positions.current.set(key, event.currentTarget.scrollTop); }}>
+  return <div className="document-review-layout"><DocumentToc review={review} /><div className="document-review-reader" ref={viewport} tabIndex={0} aria-busy={flow.reading} aria-label={`Document reader: ${document?.title ?? flow.path}`} onScroll={event => { if (review.active && !flow.reading) positions.current.set(key, event.currentTarget.scrollTop); }}>
     <article className="document-review-paper"><header><p className="eyebrow">{document ? label(document.phase) : "Document"}</p>{entry?.changed && <p className="notice" role="status">This document changed. Read the new revision and decide again. Your feedback is preserved.</p>}</header>
       {flow.reading && <p role="status" className="muted">Opening document…</p>}
-      {entry?.content !== undefined ? <DocumentMarkdown text={entry.content} path={flow.path!} fragment={flow.reading ? undefined : flow.fragment} onOpenDocument={openLink} /> : !flow.reading && <p role={flow.error ? "alert" : "status"} className="muted">{flow.error || "Document not loaded."} <button type="button" className="text-button" disabled={flow.busy} onClick={() => void review.open(flow.path!, flow.fragment)}>Retry</button></p>}
+      {entry?.content !== undefined ? <DocumentMarkdown text={entry.content} path={flow.path!} fragment={flow.reading ? undefined : flow.fragment} navigation={flow.navigation} onOpenDocument={openLink} /> : !flow.reading && <p role={flow.error ? "alert" : "status"} className="muted">{flow.error || "Document not loaded."} <button type="button" className="text-button" disabled={flow.busy} onClick={() => void review.open(flow.path!, flow.fragment)}>Retry</button></p>}
     </article>
-  </div>;
+  </div></div>;
 }

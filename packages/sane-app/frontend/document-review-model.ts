@@ -5,13 +5,14 @@ import { store, type SendOutcome, type State } from "./store";
 import { refKey, workstreamRequest } from "./workstreams-client";
 import { refreshWorkstreamOverview } from "./workstream-overview";
 import { assignmentDocumentDefault } from "./assignment-semantics";
+import type { DocumentHeading } from "./document-outline";
 
 export const reviewPhases: WorkstreamDocumentPhase[] = ["design", "engineering", "planning", "execution", "research", "resources"];
 export type ReviewPhase = WorkstreamDocumentPhase | "all";
 export type DocumentReviewStart = { sessionId: string; workspaceId: string; repositoryId: string; workstreamId: string; phase?: ReviewPhase; mode?: "review" | "search" };
 type DocumentScope = ReviewPhase | "none";
 type Entry = { feedback: string; savedFeedback: string; decision?: "accepted" | "needs-changes"; revision?: string; content?: string; readRevision?: string; changed?: boolean };
-type Flow = { identity: DocumentReviewStart; mode: "review" | "search"; phase: DocumentScope; documents: WorkstreamDocument[]; selected: string[]; entries: Record<string, Entry>; path: string | null; fragment?: string; loading: boolean; reading: boolean; busy: boolean; error: string; confirmCancel: boolean; unknown: boolean };
+type Flow = { identity: DocumentReviewStart; mode: "review" | "search"; phase: DocumentScope; documents: WorkstreamDocument[]; selected: string[]; entries: Record<string, Entry>; path: string | null; fragment?: string; navigation: number; loading: boolean; reading: boolean; busy: boolean; error: string; confirmCancel: boolean; unknown: boolean };
 const emptyEntry = (): Entry => ({ feedback: "", savedFeedback: "" });
 const scopeOf = (state: State) => {
   const conversation = state.conversations.find(item => item.id === state.selected);
@@ -34,6 +35,9 @@ export function useDocumentReview(state: State, active: boolean, sendDisabled: b
   const openedScope = useRef("");
   const submitting = useRef(false);
   const readerPositions = useRef(new Map<string, number>());
+  const outlineCache = useRef(new Map<string, DocumentHeading[]>());
+  const [tocExpanded, setTocExpanded] = useState<Record<string, boolean>>({});
+  const [tocVisible, setTocVisible] = useState(true);
   useEffect(() => { if (openedScope.current !== scope) setFlow(null); }, [scope]);
   useEffect(() => () => { guard.current.epoch++; }, []);
   // Suspended flows retain edits, but any in-flight read must be retried on return.
@@ -58,10 +62,15 @@ export function useDocumentReview(state: State, active: boolean, sendDisabled: b
     const result = await workstreamRequest<WorkstreamDocumentCatalog>(identity.workspaceId, "artifacts/catalog", { id: identity.workstreamId, repositoryId: identity.repositoryId });
     if (!valid(epoch)) throw new Error("Conversation changed; reopen Documents.");
     if (result.repositoryId !== identity.repositoryId || result.workstreamId !== identity.workstreamId) throw new Error("Document catalog belongs to another workstream.");
-    const assignments = overview.workstreams.find(row => row.workstream.id === identity.workstreamId)!.activePhases.filter(assignment => refKey(assignment.ref) === refKey(members[0].conversation!.ref));
+    const detail = overview.workstreams.find(row => row.workstream.id === identity.workstreamId)!;
+    const assignments = detail.activePhases.filter(assignment => refKey(assignment.ref) === refKey(members[0].conversation!.ref));
     const assignedPhase = assignmentDocumentDefault(assignments);
-    const phase: DocumentScope = identity.mode === "search" ? "all" : assignedPhase === "all" ? "none" : assignedPhase;
-    const documents = identity.mode === "search" ? result.documents : result.documents.filter(document => document.phase === phase);
+    const phase: DocumentScope = identity.mode === "search" ? "all" : identity.phase === "research" ? "research" : assignedPhase === "all" ? "none" : assignedPhase;
+    const registered = new Map(detail.research.registered.map(report => [report.reportPath, report]));
+    const documents = identity.mode === "search" ? result.documents : result.documents.filter(document => document.phase === phase && (phase !== "research" || registered.has(document.path) && !/(^|\/)README\.md$/i.test(document.path))).map(document => {
+      const report = phase === "research" ? registered.get(document.path) : undefined;
+      return report ? { ...document, title: report.topic.replace(/[-_]+/g, " ") } : document;
+    });
     return { documents, phase };
   }
 
@@ -71,7 +80,8 @@ export function useDocumentReview(state: State, active: boolean, sendDisabled: b
     if (conversation?.workspaceId !== identity.workspaceId || conversation.replacedBy) return;
     openedScope.current = scope;
     const epoch = ++guard.current.epoch, mode = identity.mode ?? "review", phase = mode === "search" ? "all" : "none";
-    const next: Flow = { identity, mode, phase, documents: [], selected: [], entries: {}, path: null, loading: true, reading: false, busy: false, error: "", confirmCancel: false, unknown: false };
+    outlineCache.current.clear(); setTocExpanded({}); setTocVisible(true);
+    const next: Flow = { identity, mode, phase, documents: [], selected: [], entries: {}, path: null, navigation: 0, loading: true, reading: false, busy: false, error: "", confirmCancel: false, unknown: false };
     currentFlow.current = next; setFlow(next);
     try {
       const result = await readCatalog(identity, epoch), resolvedPhase = result.phase;
@@ -94,7 +104,7 @@ export function useDocumentReview(state: State, active: boolean, sendDisabled: b
 
   async function refresh() {
     const value = currentFlow.current;
-    if (!value || guard.current.locked || !active) return;
+    if (!value || value.reading || guard.current.locked || !active) return;
     const epoch = ++guard.current.epoch; update({ loading: true, error: "" });
     try {
       const { documents, phase } = await readCatalog(value.identity, epoch);
@@ -117,7 +127,7 @@ export function useDocumentReview(state: State, active: boolean, sendDisabled: b
         if (!latest || !valid(epoch) || latest.identity !== value.identity) return latest;
         const entry = latest.entries[path] ?? emptyEntry();
         const changed = !!entry.revision && entry.revision !== result.revision;
-        return { ...latest, reading: false, documents: latest.documents.map(item => item.path === path ? { ...item, revision: result.revision } : item), entries: { ...latest.entries, [path]: { ...entry, content: result.content, readRevision: result.revision, ...(changed ? { decision: undefined, revision: undefined, changed: true } : {}) } } };
+        return { ...latest, reading: false, navigation: latest.navigation + 1, documents: latest.documents.map(item => item.path === path ? { ...item, revision: result.revision } : item), entries: { ...latest.entries, [path]: { ...entry, content: result.content, readRevision: result.revision, ...(changed ? { decision: undefined, revision: undefined, changed: true } : {}) } } };
       });
     } catch (error) { if (valid(epoch)) update({ reading: false, error: failure(error) }); }
   }
@@ -228,6 +238,12 @@ export function useDocumentReview(state: State, active: boolean, sendDisabled: b
     }
     finally { if (guard.current.epoch === epoch && current.current.scope === openedScope.current) { guard.current.locked = false; update({ busy: false }); } }
   }
-  return { flow: visible, active, ready, readerPositions, start, refresh, open, edit, decide, picker, phase, select, cancel, submit, dismissCancel: () => update({ confirmCancel: false }), allowRetry: () => update({ unknown: false, error: "" }) };
+  function navigate(path: string, fragment?: string) {
+    const value = currentFlow.current;
+    if (!value || !active || value.loading || guard.current.locked) return;
+    if (value.path === path && !value.reading && !value.error && value.entries[path]?.content !== undefined) update({ fragment, navigation: value.navigation + 1 });
+    else void open(path, fragment);
+  }
+  return { flow: visible, active, ready, readerPositions, outlineCache, tocExpanded, setTocExpanded, tocVisible, setTocVisible, navigate, start, refresh, open, edit, decide, picker, phase, select, cancel, submit, dismissCancel: () => update({ confirmCancel: false }), allowRetry: () => update({ unknown: false, error: "" }) };
 }
 export type DocumentReviewController = ReturnType<typeof useDocumentReview>;

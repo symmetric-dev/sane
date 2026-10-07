@@ -1,12 +1,10 @@
 import { useEffect, useId, useMemo, useRef, useState, type ReactNode } from "react";
 import ReactMarkdown, { defaultUrlTransform, type Components } from "react-markdown";
 import remarkGfm from "remark-gfm";
+import { nodeText, visitDocumentHeadings, type MarkdownNode } from "./document-outline";
 import "./document-markdown.css";
 
-type DocumentMarkdownProps = { text: string; path: string; fragment?: string; onOpenDocument?: (path: string, fragment?: string) => void };
-type MarkdownNode = { type: string; value?: string; children?: MarkdownNode[]; data?: { hProperties?: Record<string, unknown> } };
-const nodeText = (node: MarkdownNode): string => node.value ?? node.children?.map(nodeText).join("") ?? "";
-const headingSlug = (text: string) => text.normalize("NFC").toLowerCase().trim().replace(/[^\p{L}\p{N}\s_-]/gu, "").replace(/\s/g, "-") || "section";
+type DocumentMarkdownProps = { text: string; path: string; fragment?: string; navigation?: number; onOpenDocument?: (path: string, fragment?: string) => void };
 const normalizeFragment = (fragment: string) => /[\u0000-\u001f\u007f]/.test(fragment) ? null : fragment.normalize("NFC");
 function scrollToHeading(root: HTMLDivElement | null, fragment: string) {
   const normalized = normalizeFragment(fragment);
@@ -51,24 +49,15 @@ function DocumentCodeBlock({ children }: { children?: ReactNode }) {
 }
 
 /** Shared read-only document prose. Raw HTML and image requests are deliberately omitted. */
-export function DocumentMarkdown({ text, path, fragment, onOpenDocument }: DocumentMarkdownProps) {
+export function DocumentMarkdown({ text, path, fragment, navigation, onOpenDocument }: DocumentMarkdownProps) {
   const instance = useId().replace(/[^a-zA-Z0-9_-]/g, "");
   const root = useRef<HTMLDivElement>(null);
   const headingAnchors = useMemo(() => () => (tree: MarkdownNode) => {
-    const used = new Set<string>();
-    const visit = (node: MarkdownNode) => {
-      if (node.type === "heading") {
-        const base = headingSlug(nodeText(node));
-        let slug = base, suffix = 0;
-        while (used.has(slug)) slug = `${base}-${++suffix}`;
-        used.add(slug);
-        node.data = { ...node.data, hProperties: { ...node.data?.hProperties, id: `document-${instance}-${slug}`, "data-document-heading": slug } };
-      }
-      node.children?.forEach(visit);
-    };
-    visit(tree);
+    visitDocumentHeadings(tree, (node, slug) => {
+      node.data = { ...node.data, hProperties: { ...node.data?.hProperties, id: `document-${instance}-${slug}`, "data-document-heading": slug } };
+    });
   }, [instance]);
-  useEffect(() => { if (fragment) scrollToHeading(root.current, fragment); }, [path, text, fragment]);
+  useEffect(() => { if (fragment) scrollToHeading(root.current, fragment); }, [path, text, fragment, navigation]);
   const components: Components = {
     pre: DocumentCodeBlock,
     table: ({ children }) => <div className="document-markdown-table" role="region" aria-label="Document table" tabIndex={0}><table>{children}</table></div>,

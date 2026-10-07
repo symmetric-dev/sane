@@ -75,7 +75,7 @@ export function ChatWorkstreamActions({ conversation, active, onDocuments, onSta
       if (currentFlowsScope.current !== flowsOpened.scope || !flowsAvailable) return;
       setFlowsOpened(null);
       if (flow === "view-status") onStatus?.(flowsOpened.identity);
-      else onDocuments?.({ ...flowsOpened.identity, mode: flow === "search-documents" ? "search" : "review" });
+      else onDocuments?.({ ...flowsOpened.identity, mode: flow === "search-documents" ? "search" : "review", ...(flow === "review-research" ? { phase: "research" } : {}) });
     }} />}
   </>;
 }
