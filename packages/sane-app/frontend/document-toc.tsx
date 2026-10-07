@@ -5,9 +5,6 @@ import type { DocumentReviewController } from "./document-review-model";
 import { documentOutline, type DocumentHeading } from "./document-outline";
 import { workstreamRequest } from "./workstreams-client";
 
-const label = (value: string) => value.replace(/[-_]+/g, " ").replace(/^./, character => character.toUpperCase());
-const documentKey = (path: string) => JSON.stringify(["document", path]);
-
 function Disclosure({ expanded, title, disabled, toggle }: { expanded: boolean; title: string; disabled?: boolean; toggle: () => void }) {
   return <button type="button" className="document-toc-disclosure" aria-label={`${expanded ? "Collapse" : "Expand"} ${title}`} aria-expanded={expanded} disabled={disabled} onClick={toggle}>{expanded ? <FiChevronDown aria-hidden="true" /> : <FiChevronRight aria-hidden="true" />}</button>;
 }
@@ -15,22 +12,21 @@ function Disclosure({ expanded, title, disabled, toggle }: { expanded: boolean; 
 function HeadingList({ headings, path, review }: { headings: DocumentHeading[]; path: string; review: DocumentReviewController }) {
   const flow = review.flow!;
   const disabled = !review.active || flow.busy || flow.loading;
-  return <ul>{headings.map(heading => {
+  return <>{headings.map(heading => {
     const key = JSON.stringify(["heading", path, heading.fragment]);
     const expanded = review.tocExpanded[key] ?? heading.level === 1;
     return <li key={heading.fragment}>
       <div className="document-toc-row">
         {heading.children.length > 0 ? <Disclosure expanded={expanded} title={heading.text} disabled={disabled} toggle={() => review.setTocExpanded(value => ({ ...value, [key]: !expanded }))} /> : <span className="document-toc-spacer" />}
-        <button type="button" className="document-toc-link" disabled={disabled} aria-current={flow.path === path && flow.fragment === heading.fragment ? "location" : undefined} onClick={() => review.navigate(path, heading.fragment)}>{heading.text || "Untitled section"}</button>
+        <button type="button" className="document-toc-link" disabled={disabled} aria-current={flow.path === path ? flow.fragment === heading.fragment ? "location" : !flow.fragment && heading.level === 1 && heading === headings[0] ? "page" : undefined : undefined} onClick={() => review.navigate(path, heading.fragment)}>{heading.text || "Untitled section"}</button>
       </div>
-      {expanded && heading.children.length > 0 && <HeadingList headings={heading.children} path={path} review={review} />}
+      {expanded && heading.children.length > 0 && <ul><HeadingList headings={heading.children} path={path} review={review} /></ul>}
     </li>;
-  })}</ul>;
+  })}</>;
 }
 
 function DocumentBranch({ document, review }: { document: WorkstreamDocument; review: DocumentReviewController }) {
   const flow = review.flow!, identity = flow.identity;
-  const key = documentKey(document.path), expanded = review.tocExpanded[key] ?? false;
   const cache = review.outlineCache.current;
   const cacheKey = JSON.stringify([identity.workspaceId, identity.repositoryId, identity.workstreamId, document.path, document.revision]);
   const entry = flow.entries[document.path];
@@ -41,7 +37,7 @@ function DocumentBranch({ document, review }: { document: WorkstreamDocument; re
   const error = result?.key === cacheKey ? result.error : undefined;
   const disabled = !review.active || flow.busy || flow.loading;
   useEffect(() => {
-    if (!expanded || !document.exists || !review.active) return;
+    if (!review.tocVisible || !document.exists || !review.active) return;
     let current = true;
     setResult(null);
     // Outline reads never enter the review controller's read/decision state.
@@ -58,42 +54,24 @@ function DocumentBranch({ document, review }: { document: WorkstreamDocument; re
       }).catch(error => { if (current) setResult({ key: cacheKey, error: error instanceof Error ? error.message : "Couldn't load headings." }); });
     }
     return () => { current = false; };
-  }, [expanded, document.exists, cacheKey, content, review.active, identity, document.path, cache, attempt]);
-  const title = headings?.find(heading => heading.level === 1)?.text || document.title;
-  return <li>
-    <div className="document-toc-row">
-      <Disclosure expanded={expanded} title={title} disabled={disabled || !document.exists} toggle={() => review.setTocExpanded(value => ({ ...value, [key]: !expanded }))} />
-      <button type="button" className="document-toc-link" title={document.path} aria-current={flow.path === document.path ? "page" : undefined} disabled={disabled || !document.exists} onClick={() => review.navigate(document.path)}>{title}{!document.exists && <small>Missing</small>}</button>
-    </div>
-    {expanded && document.exists && (headings ? headings.length ? <HeadingList headings={headings} path={document.path} review={review} /> : <p className="document-toc-notice">No headings through H4.</p> : error ? <div className="document-toc-notice" role="alert">{error} <button type="button" className="text-button" disabled={disabled} onClick={() => setAttempt(value => value + 1)}>Retry</button></div> : <p className="document-toc-notice" role="status">Loading headings…</p>)}
-  </li>;
+  }, [review.tocVisible, document.exists, cacheKey, content, review.active, identity, document.path, cache, attempt]);
+  // Each file contributes only its Markdown headings: no extra file/title level.
+  if (!document.exists) return <li className="document-toc-notice">A registered document is missing.</li>;
+  if (headings?.length) return <HeadingList headings={headings} path={document.path} review={review} />;
+  if (headings) return <li><button type="button" className="document-toc-link" disabled={disabled} onClick={() => review.navigate(document.path)}>Document without headings</button></li>;
+  if (error) return <li className="document-toc-notice" role="alert">Couldn't load document headings. <button type="button" className="text-button" disabled={disabled} onClick={() => setAttempt(value => value + 1)}>Retry</button></li>;
+  return <li className="document-toc-notice" role="status">Loading headings…</li>;
 }
 
 export function DocumentToc({ review }: { review: DocumentReviewController }) {
   const flow = review.flow!;
   const id = useId();
-  useEffect(() => {
-    if (flow.path) review.setTocExpanded(value => ({ ...value, [documentKey(flow.path!)]: true }));
-  }, [flow.path, review.setTocExpanded]);
-  const groups = new Map<string, WorkstreamDocument[]>();
-  for (const document of flow.documents) {
-    if (flow.phase !== "all" && document.phase !== flow.phase) continue;
-    if (document.path.startsWith("research/") && /(^|\/)README\.md$/i.test(document.path)) continue;
-    const group = document.phase === "research" ? document.path.split("/").slice(0, -1).join("/") : document.phase;
-    groups.set(group, [...(groups.get(group) ?? []), document]);
-  }
+  const documents = flow.documents.filter(document => (flow.phase === "all" || document.phase === flow.phase) && !(document.path.startsWith("research/") && /(^|\/)README\.md$/i.test(document.path)));
   const disabled = !review.active || flow.busy || flow.loading;
   return <aside className={`document-toc${review.tocVisible ? " is-open" : ""}`}>
     <div className="document-toc-toolbar"><button type="button" className="text-button" aria-expanded={review.tocVisible} aria-controls={id} onClick={() => review.setTocVisible(value => !value)}>Contents</button>{review.tocVisible && <button type="button" className="text-button" aria-label="Refresh table of contents" title="Refresh documents and headings" disabled={disabled || flow.reading} onClick={() => void review.refresh()}><FiRefreshCw aria-hidden="true" /></button>}</div>
     <nav id={id} aria-label="Document table of contents" hidden={!review.tocVisible}>
-      <ul>{[...groups].map(([group, documents]) => {
-        const key = JSON.stringify(["group", group]), expanded = review.tocExpanded[key] ?? true;
-        const title = label(group.replace(/^research\//, ""));
-        return <li key={group}>
-          <div className="document-toc-row"><Disclosure expanded={expanded} title={title} disabled={disabled} toggle={() => review.setTocExpanded(value => ({ ...value, [key]: !expanded }))} /><span className="document-toc-group">{title}</span></div>
-          {expanded && <ul>{documents.map(document => <DocumentBranch key={document.path} document={document} review={review} />)}</ul>}
-        </li>;
-      })}</ul>
+      <ul>{documents.map(document => <DocumentBranch key={document.path} document={document} review={review} />)}</ul>
     </nav>
   </aside>;
 }
