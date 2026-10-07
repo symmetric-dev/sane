@@ -67,11 +67,28 @@ export function DocumentToc({ review }: { review: DocumentReviewController }) {
   const flow = review.flow!;
   const id = useId();
   const documents = flow.documents.filter(document => (flow.phase === "all" || document.phase === flow.phase) && !(document.path.startsWith("research/") && /(^|\/)README\.md$/i.test(document.path)));
+  const directories = new Map<string, WorkstreamDocument[]>();
+  for (const document of documents) {
+    const directory = document.path.split("/").slice(0, -1).join("/");
+    directories.set(directory, [...(directories.get(directory) ?? []), document]);
+  }
   const disabled = !review.active || flow.busy || flow.loading;
   return <aside className={`document-toc${review.tocVisible ? " is-open" : ""}`}>
     <div className="document-toc-toolbar"><button type="button" className="text-button" aria-expanded={review.tocVisible} aria-controls={id} onClick={() => review.setTocVisible(value => !value)}>Contents</button>{review.tocVisible && <button type="button" className="text-button" aria-label="Refresh table of contents" title="Refresh documents and headings" disabled={disabled || flow.reading} onClick={() => void review.refresh()}><FiRefreshCw aria-hidden="true" /></button>}</div>
     <nav id={id} aria-label="Document table of contents" hidden={!review.tocVisible}>
-      <ul>{documents.map(document => <DocumentBranch key={document.path} document={document} review={review} />)}</ul>
+      <ul>{[...directories].map(([directory, documents]) => {
+        const key = JSON.stringify(["directory", directory]);
+        const expanded = review.tocExpanded[key] ?? true;
+        const title = directory || "Workstream root";
+        const toggle = () => review.setTocExpanded(value => ({ ...value, [key]: !expanded }));
+        return <li className="document-toc-directory" key={directory}>
+          <div className="document-toc-row">
+            <Disclosure expanded={expanded} title={title} disabled={disabled} toggle={toggle} />
+            <button type="button" className="document-toc-link document-toc-directory-label" aria-expanded={expanded} disabled={disabled} onClick={toggle}>{title}</button>
+          </div>
+          {expanded && <ul>{documents.map(document => <DocumentBranch key={document.path} document={document} review={review} />)}</ul>}
+        </li>;
+      })}</ul>
     </nav>
   </aside>;
 }
