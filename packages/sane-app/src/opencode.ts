@@ -16,7 +16,7 @@ export type OpenCodeReplyTransport = {
 export type ModelRef = { id: string; providerID: string; variant?: string };
 export type NativeAgent = { id: string; model?: ModelRef };
 export type OpenCodeLaunch = { agent?: string; model?: ModelRef };
-type NativeSession = { id: string; location?: { directory?: string }; agent?: string; model?: ModelRef; outcome?: "succeeded" | "failed" | "interrupted"; metadata?: Record<string, unknown>; time: { created: number; updated: number; idle?: number } };
+type NativeSession = { id: string; parentID?: string; location?: { directory?: string }; agent?: string; model?: ModelRef; outcome?: "succeeded" | "failed" | "interrupted"; metadata?: Record<string, unknown>; time: { created: number; updated: number; idle?: number } };
 type NativeInput = { id: string; sessionID?: string; type?: string; delivery?: string; time?: { created: number }; payload?: { metadata?: Record<string, unknown> } };
 export type NativeQueuedHandoffAdmission = { id: string; sessionID: string; type: "user"; delivery: "queue"; time: { created: number } };
 /** Only the actual inbox/ack DTO proves delivery policy. Committed User messages
@@ -27,7 +27,7 @@ export function isQueuedHandoffAdmission(value: unknown, sessionId: string, comm
   return input.id === commandId && input.sessionID === sessionId && input.type === "user" && input.delivery === "queue"
     && !!input.time && typeof input.time === "object" && !Array.isArray(input.time) && Number.isFinite(input.time.created);
 }
-type NativePart = { type: string; id?: string; name?: string; text?: string; state?: { status: string; input?: unknown; content?: unknown; error?: unknown } };
+type NativePart = { type: string; id?: string; name?: string; text?: string; state?: { status: string; input?: unknown; content?: unknown; error?: unknown; metadata?: Record<string, unknown> } };
 export type NativeMessage = { id: string; type: string; metadata?: Record<string, unknown>; time: { created: number; completed?: number }; model?: ModelRef; text?: string; content?: NativePart[]; error?: unknown; cost?: number; tokens?: unknown; outcome?: string; status?: string; reason?: string; summary?: string; preTokens?: number; postTokens?: number; durationMs?: number };
 export type NativeCompactAdmission = { id: string; sessionID: string; type: "compaction"; time: { created: number }; delivery: "queue" | "steer"; payload?: unknown };
 export type NativeCompactionProjection = { messages: NativeMessage[]; compaction?: CompactionMetadata; outcome?: "succeeded" | "failed" | "skipped" };
@@ -536,10 +536,23 @@ export function normalizeMessage(message: NativeMessage): MessageSnapshot | unde
   if (message.type === "model-switched") return { messageId: message.id, role: "system", parts: [], status: "completed", createdAt: new Date(message.time.created).toISOString(), ...(model ? { model } : {}) };
   if (!["user", "assistant", "system", "synthetic"].includes(message.type)) return;
   if (message.type === "synthetic" && saneStartupContext(message.metadata)) return;
+  if (message.type === "synthetic" && message.metadata?.source === "shell" && typeof message.metadata.shellID === "string" && typeof message.metadata.state === "string") {
+    return { messageId: message.id, role: "system", parts: [{ id: `${message.id}:text`, type: "text", text: message.text ?? "" }], status: "completed", createdAt: new Date(message.time.created).toISOString(),
+      nativeShellResult: { shellId: message.metadata.shellID, state: message.metadata.state,
+        ...(typeof message.metadata.exit === "number" ? { exit: message.metadata.exit } : {}), ...(message.metadata.truncated === true ? { truncated: true } : {}) } };
+  }
+  if (message.type === "synthetic" && message.metadata?.source === "subagent" && typeof message.metadata.childID === "string" && /^ses[a-zA-Z0-9_-]+$/.test(message.metadata.childID) && typeof message.metadata.state === "string") {
+    return { messageId: message.id, role: "system", parts: [{ id: `${message.id}:text`, type: "text", text: message.text ?? "" }], status: "completed", createdAt: new Date(message.time.created).toISOString(),
+      nativeSubagentResult: { sessionId: message.metadata.childID, state: message.metadata.state, ...(typeof message.metadata.agent === "string" ? { agent: message.metadata.agent } : {}) } };
+  }
   const parts: MessagePart[] = message.type === "assistant" ? (message.content ?? []).flatMap((part, i): MessagePart[] => {
     const id = part.id ?? `${message.id}:part:${i}`;
     if (part.type === "text" || part.type === "reasoning") return [{ id, type: part.type, text: part.text ?? "" }];
-    if (part.type === "tool") return [{ id, type: "tool", name: part.name ?? "tool", status: part.state?.status ?? "streaming", input: part.state?.input, output: part.state?.content, error: part.state?.error }];
+    if (part.type === "tool") {
+      const child = part.name === "subagent" ? part.state?.metadata?.sessionID : undefined;
+      return [{ id, type: "tool", name: part.name ?? "tool", status: part.state?.status ?? "streaming", input: part.state?.input, output: part.state?.content, error: part.state?.error,
+        ...(typeof child === "string" && /^ses[a-zA-Z0-9_-]+$/.test(child) ? { nativeSubagentSessionId: child } : {}) }];
+    }
     return [];
   }) : [{ id: `${message.id}:text`, type: "text", text: message.text ?? "" }];
   return { messageId: message.id, role: message.type === "assistant" ? "assistant" : message.type === "user" ? "user" : "system", parts, status: message.error ? "failed" : message.type !== "assistant" || message.time.completed !== undefined ? "completed" : "running", createdAt: new Date(message.time.created).toISOString(), ...(model ? { model } : {}), ...(message.cost !== undefined || message.tokens !== undefined ? { usage: { cost: message.cost, tokens: message.tokens } } : {}), ...(message.error ? { error: message.error } : {}) };

@@ -10,7 +10,9 @@ export type NativeSubagentKey = {
 export type NativeSubagentStatus = "unknown" | "running" | "completed" | "failed" | "interrupted";
 
 export type NativeSubagentSummary = NativeSubagentKey & {
-  toolName: "Agent" | "Task";
+  toolName: "Agent" | "Task" | "subagent";
+  harness?: "claude-code" | "opencode";
+  nativeSessionId?: string;
   name?: string;
   assignment?: string;
   parentMessageId?: string;

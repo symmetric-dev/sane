@@ -38,6 +38,8 @@ import { HandoffCard, PendingHandoffCard } from "./handoff-ui";
 import { gapId, HistoryEdge, HistoryGap, withCoverageGaps } from "./transcript-page-ui";
 import { canonicalCount, turnBoundaryKnown } from "./transcript-pages";
 import { nativeSubagentFallback, nativeSubagentId, nativeSubagentKey } from "./native-subagent-presentation";
+import { NativeSubagentResult } from "./native-subagent-result";
+import { NativeShellResult } from "./native-shell-result";
 import { NativeSubagentCard, NativeSubagentDiscovery, useNativeSubagents } from "./native-subagent-feature";
 import { claudeReplyPresentation } from "./claude-reply-presentation";
 import { ChatFileLink } from "./chat-file-link";
@@ -137,6 +139,8 @@ function ChatMessageBody() {
   const capabilities = store.capabilities(harness);
    const canBranch = !context.readOnly && capabilities.branch && context.branchEnabled && turnEndKnown && source?.role === "assistant" && lastInTurn && (source.runId === "native-import" ? capabilities.branchFromNativeMessage && source.status === "completed" : context.runs.some(r => r.operation !== "compact" && r.id === source.runId && r.status === "completed"));
   const delivery = !context.readOnly && source && workerReportDelivery(source, context.deliveries ?? []);
+  if (harness === "opencode" && source?.role === "system" && source.nativeSubagentResult) return <MessagePrimitive.Root className="message native-subagent-result-message"><NativeSubagentResult source={source} /></MessagePrimitive.Root>;
+  if (harness === "opencode" && source?.role === "system" && source.nativeShellResult) return <MessagePrimitive.Root className="message native-shell-result-message"><NativeShellResult source={source} /></MessagePrimitive.Root>;
   if (delivery) return <MessagePrimitive.Root className="message worker-report-message"><WorkerOutcomeReport delivery={delivery} workers={context.workers} /></MessagePrimitive.Root>;
   const handoff = !context.readOnly && source && receivedHandoff(source, context.sessionId, context.handoffs?.handoffs ?? []);
   if (handoff) return <MessagePrimitive.Root className="message handoff-received-message"><HandoffCard presentation={handoff} direction="received" stale={context.handoffs?.error} renderMessage={renderHandoffMessage} />{source?.error !== undefined && <details className="run-warning"><summary>Reported error</summary><pre>{json(source.error)}</pre></details>}</MessagePrimitive.Root>;

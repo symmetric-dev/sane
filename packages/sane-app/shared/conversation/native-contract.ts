@@ -48,8 +48,10 @@ export type CompactState = {
 export type CompactResponse = { sessionId: string; runId: string; operation: CompactionRecord };
 export type MessagePart =
   | { id: string; type: "text" | "reasoning"; text: string }
-  | { id: string; type: "tool"; name: string; status: string; input?: unknown; output?: unknown; error?: unknown };
+  | { id: string; type: "tool"; name: string; status: string; input?: unknown; output?: unknown; error?: unknown; nativeSubagentSessionId?: string };
 export type MessageSnapshot = {
+  nativeShellResult?: { shellId: string; state: string; exit?: number; truncated?: boolean };
+  nativeSubagentResult?: { sessionId: string; agent?: string; state: string };
   messageId: string; role: "user" | "assistant" | "system"; parts: MessagePart[];
   status: "running" | "completed" | "failed" | "unknown"; createdAt: string;
   model?: string; contextReset?: boolean;

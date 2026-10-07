@@ -70,6 +70,7 @@ import { readClaudeHistory, forkClaudeHistory, verifyClaudeFork, coveredNativeRu
 import { BranchStore, type BranchOperation } from "./branches";
 import { NativeHistoryCache, TranscriptError, TranscriptService } from "./transcript-service";
 import { NativeSubagentError, NativeSubagentService } from "./native-subagent-service";
+import { OpenCodeSubagentRecorder } from "./opencode-subagent-recorder";
 import { capabilitiesFor, getHarnessDescriptor, isHarness } from "../shared/conversation/harness-capabilities";
 import { isClaudeRootRecord } from "../shared/conversation/cc-scope";
 import { HarnessOperationError, dispatchHarness, dispatchOwnedOperation, requireOperation, requireOwnedOperation, validateHarness } from "./harness-operations";
@@ -387,6 +388,7 @@ async function startOwned(options: Options, assetsDir: string, packageDir: strin
   const nativeSubagents = new NativeSubagentService(() => meta.sessions, () => meta.runs, id => events.get(id) ?? []);
   const nativeHistories = new NativeHistoryCache(options.dataDir);
   const nativeObservations = new OpenCodeObservationService(oc);
+  const nativeSubagentRecorder = new OpenCodeSubagentRecorder(oc, id => events.get(id) ?? [], emit, () => closing || storageFailed);
   const observedHistory = { get: (session: Session) => session.harness === "opencode" ? nativeObservations.get(session) : nativeHistories.get(session) };
   const transcripts = new TranscriptService(() => meta.sessions, () => meta.runs, observedHistory, async (session, kind, id) => {
     if (kind === "worker") {
@@ -832,6 +834,7 @@ async function startOwned(options: Options, assetsDir: string, packageDir: strin
         replyIntegration?.correlateCommitted(captured.session, captured.run, captured.event);
       } catch { /* optional update coverage */ } }
       if (captured) { try { chromePush?.journalCommitted(captured.session, captured.run, captured.event); } catch { /* optional device delivery */ } }
+      if (session && kind === "message") nativeSubagentRecorder.refresh(session, run);
     });
   }
   // Display title for list responses: stored title wins (handoff `<Role> #<n>`
@@ -2780,8 +2783,15 @@ async function startOwned(options: Options, assetsDir: string, packageDir: strin
         if (req.method !== "GET") return json({ error: "Method not allowed" }, 405);
         try {
           const selectors = nativeSubagent.slice(1).map(value => value === undefined ? undefined : decodeURIComponent(value));
-          return json(selectors[1] === undefined ? nativeSubagents.list(selectors[0]!, url.searchParams)
-            : nativeSubagents.page(selectors[0]!, selectors[1], selectors[2]!, url.searchParams));
+          const result = selectors[1] === undefined ? nativeSubagents.list(selectors[0]!, url.searchParams)
+            : nativeSubagents.page(selectors[0]!, selectors[1], selectors[2]!, url.searchParams);
+          const parent = meta.sessions.find(session => session.sessionId === selectors[0])!;
+          const summaries = "subagents" in result ? result.subagents : [result.subagent];
+          for (const summary of summaries) {
+            const run = meta.runs.find(run => run.runId === summary.runId && run.sessionId === parent.sessionId);
+            if (run) nativeSubagentRecorder.refresh(parent, run, summary.parentToolUseId);
+          }
+          return json(result);
         } catch (error) {
           if (error instanceof URIError) return json({ error: "Invalid native subagent selector", code: "native-subagent-input" }, 400);
           if (error instanceof NativeSubagentError) return json({ error: error.message, code: error.code }, error.status);
@@ -3055,7 +3065,7 @@ async function startOwned(options: Options, assetsDir: string, packageDir: strin
       if (!owner.native && owner.child && !await terminate(owner)) retainOwner = true;
       await Promise.all([owner.done, owner.submission?.catch(() => {}), owner.cancel?.catch(() => {})]);
     }));
-    await Promise.all([...dispatchTasks, ...attachmentTasks, ...queuedInputTasks, ...handoffDispatches.values(), workerOutboxTask, handoffTask]);
+    await Promise.all([...dispatchTasks, ...attachmentTasks, ...queuedInputTasks, ...handoffDispatches.values(), workerOutboxTask, handoffTask, nativeSubagentRecorder.drain()]);
     await serial;
     await catalog.flush();
     if (!coordinator.reconciliationSessionIds().next().done) retainOwner = true;
@@ -3228,6 +3238,9 @@ async function startOwned(options: Options, assetsDir: string, packageDir: strin
   // before legacy observation; waiting-only chains occupy no running capacity.
   if (closing || storageFailed) throw new Error("Startup classification did not complete safely");
   startupReady = true;
+  for (const session of meta.sessions) if (session.harness === "opencode") {
+    for (const run of meta.runs.filter(run => run.sessionId === session.sessionId)) nativeSubagentRecorder.resume(session, run);
+  }
   // Startup-only reconciliation, after run ownership and worker recovery are known.
   // The admission locks and attachment task set also coordinate request/shutdown races.
   for (const op of branches.list()) void reconcileBranch(op).catch(() => { failClosed(); });
@@ -3263,6 +3276,7 @@ async function startOwned(options: Options, assetsDir: string, packageDir: strin
     const pushDrain = chromePush?.close();
     const searchDrain = searches.close();
     const creationDrain = workspaceCreations?.close();
+    const nativeSubagentDrain = nativeSubagentRecorder.drain();
     clearInterval(handoffTimer);
     clearInterval(workerOutboxTimer);
     closePromise = (async () => {
@@ -3270,6 +3284,7 @@ async function startOwned(options: Options, assetsDir: string, packageDir: strin
     await boundedStartupCleanup(() => Promise.all([...queueServiceTasks]));
     await coordinatorDrain;
     await creationDrain;
+    await nativeSubagentDrain;
     try { await workers.drainLaunches(); } catch { failClosed(); }
     await workerOutboxTask;
     await handoffTask;

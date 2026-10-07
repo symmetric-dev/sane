@@ -4,7 +4,7 @@ export type { Harness } from "./harness-capabilities";
 export type ModelChoice = { id: string; name: string; efforts: { id: string; name: string }[]; contextWindow?: number };
 export type TextPart = { type: "text"; text: string } | { type: "reasoning"; id?: string; text: string };
 export type ToolPart = { type: "tool"; id: string; toolCallId?: string; name: string; input: unknown; output?: unknown; error?: boolean; toolStatus?: string };
-export type Message = { id: string; nativeIds?: string[]; runId: string; role: "user" | "assistant" | "system"; parts: (TextPart | ToolPart)[]; time: string; status: RunStatus; normalized?: boolean; error?: unknown; version?: string; queuedFollowup?: import("./queued-followup").QueuedFollowup };
+export type Message = { id: string; nativeIds?: string[]; runId: string; role: "user" | "assistant" | "system"; parts: (TextPart | ToolPart)[]; time: string; status: RunStatus; normalized?: boolean; error?: unknown; version?: string; queuedFollowup?: import("./queued-followup").QueuedFollowup; nativeSubagentResult?: import("./native-contract").MessageSnapshot["nativeSubagentResult"]; nativeShellResult?: import("./native-contract").MessageSnapshot["nativeShellResult"] };
 export type UsageSnapshot = { runId: string; time: string; record: Record<string, any> };
 export type DiagnosticEvent = { seq: number; time: string; runId: string; sessionId: string; kind: string; data: unknown };
 export type Run = {

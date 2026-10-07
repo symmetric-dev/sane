@@ -3,6 +3,7 @@ import type { Message, ToolPart } from "../shared/conversation/types";
 import { isClaudeRootRecord } from "../shared/conversation/cc-scope";
 import type { Event, Run, Session } from "./history";
 import type { NativeSubagentStatus, NativeSubagentSummary } from "./native-subagent-contract";
+import type { MessageSnapshot } from "./oc-contract";
 
 type RecordValue = Record<string, any>;
 type Child = { summary: NativeSubagentSummary; messages: Message[]; revision: string; seq: number };
@@ -13,6 +14,7 @@ const blocks = (value: unknown): RecordValue[] => Array.isArray(value) ? value.f
 export const nativeSubagentRevision = (value: unknown) => createHash("sha256").update(JSON.stringify(value)).digest("base64url");
 
 export function projectNativeSubagents(session: Session, run: Run, events: readonly Event[]): Child[] {
+  if (session.harness === "opencode") return projectOpenCodeSubagents(session, run, events);
   if (session.harness !== "claude-code" && session.harness !== undefined || !session.nativeSessionId) return [];
   const records = events.filter(event => event.runId === run.runId && event.sessionId === session.sessionId).flatMap(event => {
     const data = event.kind === "hook" && object(event.data) ? event.data.payload : event.kind === "stdout" ? event.data : undefined;
@@ -173,6 +175,76 @@ export function projectNativeSubagents(session: Session, run: Run, events: reado
       warning(child, "The parent run ended without confirmed terminal child evidence.");
     }
     for (const message of child.messages) message.status = message.role === "user" ? "completed" : child.summary.status;
+    child.revision = nativeSubagentRevision({ subagent: child.summary, messages: child.messages });
+  }
+  return [...children.values()];
+}
+
+/** Native child snapshots never enter the parent transcript reducer. */
+export type OpenCodeSubagentEvidence = {
+  parentNativeSessionId: string; parentToolUseId: string; nativeSessionId: string;
+  messages?: MessageSnapshot[]; messageIds?: string[];
+  status?: NativeSubagentStatus; warning?: string;
+};
+
+function projectOpenCodeSubagents(session: Session, run: Run, events: readonly Event[]): Child[] {
+  if (!session.nativeSessionId) return [];
+  const records = events.filter(event => event.runId === run.runId && event.sessionId === session.sessionId);
+  const parents = new Map<string, { snapshot: MessageSnapshot; event: Event }>();
+  for (const event of records) if (event.kind === "message" && object(event.data) && Array.isArray(event.data.parts)) {
+    parents.set(event.data.messageId, { snapshot: event.data as MessageSnapshot, event });
+  }
+  const children = new Map<string, Child>();
+  for (const { snapshot, event } of parents.values()) {
+    if (snapshot.role !== "assistant") continue;
+    for (const part of snapshot.parts) {
+      if (part.type !== "tool" || part.name !== "subagent") continue;
+      const input = object(part.input) ? part.input : {};
+      children.set(part.id, { summary: { parentSessionId: session.sessionId, runId: run.runId, parentToolUseId: part.id,
+        harness: "opencode", toolName: "subagent", nativeSessionId: part.nativeSubagentSessionId,
+        name: text(input.agent) ?? text(input.description), assignment: text(input.prompt), parentMessageId: snapshot.messageId,
+        status: "unknown", activityObserved: false, toolCallCount: 0,
+        ...(part.error !== undefined ? { warnings: ["The delegation tool reported an error; child completion is unconfirmed."] } : {}),
+      }, messages: [], revision: "", seq: event.seq });
+    }
+  }
+  const snapshots = new Map<Child, Map<string, MessageSnapshot>>();
+  for (const event of records) {
+    if (event.kind !== "native-subagent" || !object(event.data)) continue;
+    const data = event.data as OpenCodeSubagentEvidence, child = children.get(data.parentToolUseId);
+    if (!child || data.parentNativeSessionId !== session.nativeSessionId || data.nativeSessionId !== child.summary.nativeSessionId) continue;
+    if (data.warning) child.summary.warnings = [data.warning];
+    if (data.status) {
+      child.summary.status = data.status;
+      child.summary.statusEvidence = { kind: "native-child-observation", seq: event.seq, time: event.time };
+      child.summary.warnings = undefined;
+    }
+    let messages = snapshots.get(child);
+    if (!messages) snapshots.set(child, messages = new Map());
+    for (const message of data.messages ?? []) messages.set(message.messageId, message);
+    if (data.messageIds) {
+      const ordered = new Map<string, MessageSnapshot>();
+      for (const id of data.messageIds) { const message = messages.get(id); if (message) ordered.set(id, message); }
+      snapshots.set(child, ordered);
+    }
+  }
+  for (const child of children.values()) {
+    const namespace = (kind: string, id: string) => `native-subagent:${Buffer.from(JSON.stringify([session.sessionId, run.runId, child.summary.parentToolUseId, kind, id])).toString("base64url")}`;
+    child.messages = [...(snapshots.get(child)?.values() ?? [])].filter(message => !message.compaction && (message.role !== "system" || message.parts.length)).map(message => ({
+      id: namespace("message", message.messageId), nativeIds: [message.messageId], runId: run.runId, role: message.role,
+      time: message.createdAt, status: message.status, normalized: true, error: message.error, nativeSubagentResult: message.nativeSubagentResult, nativeShellResult: message.nativeShellResult,
+      parts: message.parts.map(part => part.type === "tool" ? { type: "tool", id: namespace("tool", part.id), toolCallId: part.id,
+        name: part.name, input: part.input, output: part.output ?? part.error, error: part.error !== undefined, toolStatus: part.status }
+        : { type: part.type, text: part.text, ...(part.type === "reasoning" ? { id: namespace("reasoning", part.id) } : {}) }),
+    }));
+    child.summary.activityObserved = child.messages.length > 0;
+    child.summary.toolCallCount = new Set(child.messages.flatMap(message => message.parts.flatMap(part => part.type === "tool" ? [part.id] : []))).size;
+    if (!child.summary.activityObserved) (child.summary.warnings ??= []).push("No associated child text or tools were recorded; coverage is recorded-only.");
+    if (child.summary.status === "completed") {
+      const last = child.messages.findLast(message => message.role === "assistant");
+      const report = last?.parts.flatMap(part => part.type === "text" ? [part.text] : []).join("\n");
+      if (report) child.summary.returnedReport = report;
+    }
     child.revision = nativeSubagentRevision({ subagent: child.summary, messages: child.messages });
   }
   return [...children.values()];

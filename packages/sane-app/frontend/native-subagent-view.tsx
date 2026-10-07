@@ -52,7 +52,7 @@ export function NativeSubagentView() {
     return () => { resize.disconnect(); mutations.disconnect(); };
   }, []);
   const pause = () => { following.current = false; capture(); };
-  return <TranscriptContext.Provider value={{ sessionId: summary.parentSessionId, harness: "claude-code", messages, ...transcriptIndex, runs: [], workers: [], openWorker: () => {}, activities, activityScope: inspection.scope, inspectActivity: inspection.open, readOnly: true }}><section className="native-subagent-view" aria-label="Read-only native subagent activity">
+  return <TranscriptContext.Provider value={{ sessionId: summary.parentSessionId, harness: summary.harness ?? "claude-code", messages, ...transcriptIndex, runs: [], workers: [], openWorker: () => {}, activities, activityScope: inspection.scope, inspectActivity: inspection.open, readOnly: true }}><section className="native-subagent-view" aria-label="Read-only native subagent activity">
     <header className="native-subagent-header">
       <nav className="native-subagent-nav" aria-label="Native subagent navigation">
         <button ref={back} type="button" className="text-button" onClick={feature.back}><FiArrowLeft aria-hidden="true" />Back to parent</button>

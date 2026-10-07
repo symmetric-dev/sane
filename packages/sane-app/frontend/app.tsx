@@ -97,7 +97,7 @@ function ReadyWorkspace({ state, signOut, inbox, hydrationReady }: { state: Stat
   const { view, workspaceId, worktreeId } = repository.navigation;
   const nativeParent = state.conversations.find(conversation => conversation.id === state.selected);
   const nativeParentSessionId = nativeParent?.id ?? "";
-  const nativeSubagents = useNativeSubagentFeature(nativeParentSessionId, !!nativeParentSessionId && nativeParent?.harness === "claude-code", view === "chat", JSON.stringify([nativeParentSessionId, nativeParent?.nativeSessionId, nativeParent?.harness]));
+  const nativeSubagents = useNativeSubagentFeature(nativeParentSessionId, !!nativeParentSessionId && !!nativeParent, view === "chat", JSON.stringify([nativeParentSessionId, nativeParent?.nativeSessionId, nativeParent?.harness]));
   const [drawer, setDrawer] = useState<"sidebar" | "details" | "context" | "application" | null>(null);
   const [sidebarHidden, setSidebarHidden] = useState(false);
   const toggleSidebar = useCallback(() => {

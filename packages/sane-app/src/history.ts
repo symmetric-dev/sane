@@ -27,7 +27,7 @@ export const validEffort = (v: unknown): v is Effort => typeof v === "string" &&
  * OC input ID; compact.nativeAdmittedId may differ after native coalescing. */
 export type CompactRunMetadata = { requestId: string; instructions?: string; nativeRequestId?: string; nativeAdmittedId?: string };
 export type Run = AgentSnapshot & { runId: string; sessionId: string; cwd: string; status: Status; createdAt: string; endedAt?: string; model?: string; effort?: string; profileId?: string; nativeCommandId?: string; nativeDelivery?: "queue"; nativePhase?: "preparing" | "sending" | "accepted"; nativeAcceptedAt?: number; operation?: "prompt" | "compact"; compact?: CompactRunMetadata; saneContextVersion?: number; queuedFollowupId?: string };
-export type Event = { seq: number; time: string; runId: string; sessionId: string; kind: "stdout" | "stderr" | "hook" | "status" | "submission" | "message" | "launch" | "context"; data: unknown };
+export type Event = { seq: number; time: string; runId: string; sessionId: string; kind: "stdout" | "stderr" | "hook" | "status" | "submission" | "message" | "launch" | "context" | "native-subagent"; data: unknown };
 export type Metadata = { sessions: Session[]; runs: Run[]; reconciliationRequired: boolean };
 
 const object = (v: unknown): v is Record<string, any> => !!v && typeof v === "object" && !Array.isArray(v);
@@ -146,7 +146,7 @@ export function decodeLog(raw: string, run: Run): { events: Event[]; repaired?: 
       if (i === lines.length - 1 && line.trimStart().startsWith("{") && incompleteObject(line)) { repaired = true; break; }
       throw new Error(`Corrupt event log for ${run.runId}: invalid JSON at line ${i + 1}`);
     }
-    if (!object(event) || !Number.isSafeInteger(event.seq) || event.seq <= (events.at(-1)?.seq ?? 0) || !timestamp(event.time) || event.runId !== run.runId || event.sessionId !== run.sessionId || !["stdout", "stderr", "hook", "status", "submission", "message", "launch", "context"].includes(event.kind) || !("data" in event)) throw new Error(`Corrupt event log for ${run.runId}: invalid record at line ${i + 1}`);
+    if (!object(event) || !Number.isSafeInteger(event.seq) || event.seq <= (events.at(-1)?.seq ?? 0) || !timestamp(event.time) || event.runId !== run.runId || event.sessionId !== run.sessionId || !["stdout", "stderr", "hook", "status", "submission", "message", "launch", "context", "native-subagent"].includes(event.kind) || !("data" in event)) throw new Error(`Corrupt event log for ${run.runId}: invalid record at line ${i + 1}`);
     if (event.kind === "message" && object(event.data) && event.data.compaction !== undefined && (!validCompactionMetadata(event.data.compaction)
       || !uuid(event.data.messageId) && !nativeMessageId(event.data.messageId) || event.data.role !== "system" || !Array.isArray(event.data.parts) || event.data.parts.length !== 0
       || event.data.compaction.nativeId !== undefined && event.data.compaction.nativeId !== event.data.messageId
