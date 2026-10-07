@@ -1,12 +1,20 @@
-import { isPendingInputRequest, isPendingInputRemovalRequest, isPendingInputResumeRequest, type PendingInputRequest } from "../shared/conversation/pending-input-contract";
+import { isPendingInputRequest, isPendingInputRemovalRequest, isPendingInputResumeRequest, type PendingInputRequest, type PendingInputResumeRequest } from "../shared/conversation/pending-input-contract";
 import { PendingInputStore } from "./pending-input-store";
-import { PendingInputCodecError, PendingInputDomainError, PendingInputStorageError, type PendingInputLiveValidation, type PendingInputPins } from "./pending-input-contract";
+import { PendingInputCodecError, PendingInputDomainError, PendingInputStorageError, type PendingInputLiveValidation, type PendingInputPins, type PendingInputResumeResult, type PendingInputStoredItem } from "./pending-input-contract";
+import { synchronousDispatchHook } from "./dispatch-evidence";
 import { equal, immutable } from "./prepared-input-codec";
 import { validateRequest } from "./pending-input-codec";
 import { uuid, type Session } from "./history";
 import type { PreparedUserInput } from "./user-input-preparation";
 
 export type PendingInputPreflight = { pins: PendingInputPins; validate: () => void };
+/** Internal live capability, never returned through the wire receipt. Only a new
+ * successful durable commit calls this hook; historical/deduplicated receipts do
+ * not renew consent. The original head and observed revision survived all awaits. */
+export type PendingInputResumeCommit = Readonly<{
+  request: Readonly<PendingInputResumeRequest>; receipt: Readonly<PendingInputResumeResult>;
+  chainId: string; head: Readonly<PendingInputStoredItem>; preflight: Readonly<PendingInputPreflight>;
+}>;
 export type PendingInputServiceDependencies = {
   dataDir: string; storeId: string;
   session: (id: string) => Session | undefined;
@@ -23,6 +31,9 @@ export type PendingInputServiceDependencies = {
    * source/config/context pins. Persisted authorization DTOs are not sufficient.
    * Without it the internal store refuses every dispatch journal mutation. */
   validateDispatch?: (input: PendingInputLiveValidation) => void;
+  resumeCommitted?: (commit: PendingInputResumeCommit) => void;
+  committed?: (kind: "enqueue" | "remove" | "resume") => void;
+  automationStarted?: () => boolean;
 };
 function refused(code: string, reason: string, status: 400 | 404 | 409 = 409): never { throw new PendingInputDomainError(code, reason, status); }
 const copy = <T>(v: T): T => immutable(structuredClone(v));
@@ -48,6 +59,10 @@ export class PendingInputService {
     } catch (error) { this.storageError(error); throw error; }
   }
   private storageError(error: unknown) { if (error instanceof PendingInputStorageError) this.deps.failClosed(error); }
+  private committed(kind: "enqueue" | "remove" | "resume") {
+    try { synchronousDispatchHook(() => this.deps.committed?.(kind)); }
+    catch (error) { throw new PendingInputStorageError("Pending input commit notification failed; reconcile original receipt", error); }
+  }
   private async protect<T>(action: () => T | Promise<T>): Promise<T> {
     return this.deps.supervise(async () => {
       try { return await action(); }
@@ -105,7 +120,12 @@ export class PendingInputService {
         configuration: { cwd: b.cwd, profileId: c.profileId, ...(c.model === undefined ? {} : { model: c.model }), ...(c.effort === undefined ? {} : { effort: c.effort }), ...(c.agent === undefined ? {} : { agent: c.agent }) } };
       if (!equal(request, asserted)) refused("pending-input-assertion-conflict", "Queue source/configuration assertions differ from server-owned preparation");
       // All awaits finish before synchronous authoritative validation + commit.
-      return this.during(preflight, () => this.store.enqueue({ request, snapshot: { prepared, pins: preflight.pins } }));
+      return this.during(preflight, () => {
+        const revision = this.store.get(id).revision;
+        const receipt = this.store.enqueue({ request, snapshot: { prepared, pins: preflight.pins } });
+        if (receipt.revision > revision) this.committed("enqueue");
+        return receipt;
+      });
     });
   }
   async remove(id: string, itemId: string, value: unknown) {
@@ -113,7 +133,10 @@ export class PendingInputService {
       if (!isPendingInputRemovalRequest(value) || ![value.conversationId, value.requestId, value.inputRequestId, value.itemId].every(uuid)) refused("invalid-pending-input-removal", "Invalid removal request", 400);
       if (value.conversationId !== id || value.itemId !== itemId) refused("pending-input-route-conflict", "Route and body removal identities differ");
       this.known(id); this.deps.guard("remove", id);
-      return this.store.remove(value);
+      const before = this.store.lookup(id, value.inputRequestId)?.item;
+      const receipt = this.store.remove(value);
+      if (before?.state === "waiting" && receipt.outcome === "removed") this.committed("remove");
+      return receipt;
     });
   }
   async resume(id: string, value: unknown) {
@@ -128,8 +151,8 @@ export class PendingInputService {
       if (c?.operations.some(o => o.request.requestId === request.requestId)) return this.store.resume(request);
       if (c?.items.some(i => i.requestId === request.requestId || i.claim?.attemptId === request.requestId)) refused("pending-input-id-conflict", "Request ID already belongs to another operation");
       if (c && request.expectedRevision !== c.revision) refused("pending-input-stale", "Resume revision is stale");
-      this.deps.guard("resume", id);
       if (c?.items.some(i => ["claimed", "run-linked"].includes(i.state))) refused("pending-input-claimed", "Resume cannot clear or retry unresolved claims");
+      this.deps.guard("resume", id);
       const head = c?.items.find(i => i.state === "waiting");
       if (!head) refused("pending-input-no-chain", "Resume requires the existing waiting chain");
       let preflight: PendingInputPreflight;
@@ -140,7 +163,25 @@ export class PendingInputService {
       }
       this.deps.guard("remove", id);
       if (this.store.readRecords().conversations.find(c => c.conversationId === id)?.operations.some(o => o.request.requestId === request.requestId)) return this.store.resume(request);
-      return this.during(preflight, () => this.store.resume(request));
+      const current = this.store.readRecords().conversations.find(c => c.conversationId === id);
+      if (!current || current.revision !== request.expectedRevision || current.chain?.chainId !== c!.chain?.chainId
+        || current.items.find(i => i.state === "waiting")?.itemId !== head!.itemId
+        || !equal(current.items.find(i => i.state === "waiting")?.request, head!.request)) refused("pending-input-stale", "Resume chain/head changed during preflight");
+      if (!equal(preflight.pins, head!.snapshot.pins)) refused("pending-input-chain-conflict", "Resume pins differ from the original waiting chain");
+      return this.during(preflight, () => {
+        const revision = this.store.get(id).revision;
+        const receipt = this.store.resume(request);
+        if (receipt.revision <= revision) return receipt;
+        // The store never publishes a post-rename failure. A callback failure
+        // after durability is also uncertainty, not a retryable/silent resend.
+        try {
+          synchronousDispatchHook(() => this.deps.resumeCommitted?.(Object.freeze({ request, receipt,
+            chainId: current.chain!.chainId, head: copy(head!),
+            preflight: Object.freeze({ pins: copy(preflight.pins), validate: preflight.validate }) })));
+        } catch (error) { throw new PendingInputStorageError("Pending input resume capability publication failed; reconcile original receipt", error); }
+        this.committed("resume");
+        return receipt;
+      });
     });
   }
   async get(id: string) {
@@ -167,6 +208,11 @@ export class PendingInputService {
       const pinnedRequest = state.chain ? this.store.lookup(id, state.snapshot.items[0]!.requestId)!.item.request : null;
       if (enqueue.allowed && state.chain && !equal(state.chain.pins, pins)) enqueue = { allowed: false, code: "pending-input-chain-conflict", reason: "Current source/config/context differs from the pinned chain" };
       const resumeEligible = enqueue.allowed && !unresolved && waitingCount > 0;
+      let automationStarted = false;
+      try {
+        synchronousDispatchHook(() => automationStarted = this.deps.automationStarted?.() ?? false);
+        if (typeof automationStarted !== "boolean") throw new Error("Queue automation availability must be synchronous boolean");
+      } catch (error) { throw new PendingInputStorageError("Pending input automation availability failed", error); }
       if (enqueue.allowed && waitingCount >= 3) enqueue = { allowed: false, code: "pending-input-full", reason: "At most three waiting inputs are allowed" };
       // Keep exact dormant wire v1 snapshot separate from presentation metadata.
       return { snapshot: state.snapshot, presentation: { maxWaiting: 3, waitingCount,
@@ -175,7 +221,7 @@ export class PendingInputService {
         removals: state.snapshot.items.map(i => ({ itemId: i.itemId, allowed: removalAllowed && i.state === "waiting", code: i.state === "waiting" ? removalAllowed ? null : "pending-input-owner-unavailable" : "pending-input-claimed" })),
         unresolved: unresolved ? { itemId: unresolved.itemId, requestId: unresolved.requestId, runId: unresolved.runId, classification: this.store.lookup(id, unresolved.requestId)!.classification } : null,
         pauseCode: state.pause?.code ?? (state.recoveryRequired ? "restart" : null), enqueue, removalAllowed,
-        resumeAllowed: removalAllowed && resumeEligible, automation: { supported: false, reason: "Queue execution is not integrated in this phase" }, hidden: !!session.hidden } };
+        resumeAllowed: removalAllowed && resumeEligible, automation: { supported: automationStarted, reason: automationStarted ? null : "Queue automation has not been activated" }, hidden: !!session.hidden } };
     });
   }
   async status(id: string, requestId: string) {

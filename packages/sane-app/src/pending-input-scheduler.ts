@@ -16,6 +16,10 @@ export type PendingInputSelection<O extends RunOwner = RunOwner> = Readonly<{
   item: PendingInputStoredItem;
   revision: number;
   predecessor: DispatchLifecycle<O> | null;
+  /** Original identity only, NOT release/success/resume authority. Always set by
+   * the scheduler; optional for existing bridge-owned selection constructors.
+   * With no live handle, only this chain's durable predecessor may supply it. */
+  predecessorRunId?: string | null;
 }>;
 export type PendingInputObservation = { kind: "wait" } | { kind: "pause"; pause: PendingInputPause };
 /** This object is a LIVE bridge capability, never a persisted DTO. validate must
@@ -35,8 +39,9 @@ export type PendingInputSchedulerDependencies<O extends RunOwner = RunOwner> = {
   /** Bridge's current chain predecessor (including ordinary non-queue runs).
    * Return the SAME handle after release while this chain depends on it. A
    * replacement handle invalidates outstanding preflight and old success proof.
-   * null explicitly means no predecessor; serialized lastAuthorization is NOT
-   * a fallback. The bridge owns lifecycle collection/startup/domain controls. */
+   * null means no LIVE lifecycle. Current-chain durable metadata may bind an
+   * identity, never permission; only fresh live user-resume can use that binding
+   * without a handle. The bridge owns lifecycle/startup/domain controls. */
   predecessor: (conversationId: string) => DispatchLifecycle<O> | null;
   /** Read-only async source/config/context + fresh idle proof. No leases, native
    * submission, capability activation or configuration mutation. Abort promptly.
@@ -68,9 +73,10 @@ export type PendingInputSchedulerDependencies<O extends RunOwner = RunOwner> = {
   maxConversationsPerPass?: number;
 };
 
+type CapturedSelection<O extends RunOwner> = PendingInputSelection<O> & Readonly<{ predecessorRunId: string | null }>;
 type Attempt<O extends RunOwner> = {
-  selection: PendingInputSelection<O>; identity: DispatchIdentity;
-  lease: ConversationAdmissionLease; proof: PendingInputLiveProof;
+  selection: CapturedSelection<O>; identity: DispatchIdentity;
+  lease: ConversationAdmissionLease; readonly proof: PendingInputDispatchProof;
   lifecycle?: DispatchLifecycle<O>; done: boolean; resultFinished: boolean;
 };
 type Authority<O extends RunOwner> = { attempt: Attempt<O>; stage: PendingInputLiveValidation["stage"]; proof: PendingInputLiveProof };
@@ -107,34 +113,56 @@ export class PendingInputScheduler<O extends RunOwner = RunOwner> {
   validateLive(input: PendingInputLiveValidation): void {
     const scope = this.authority;
     if (!scope || scope.stage !== input.stage) throw new PendingInputDomainError("scheduler-authority", "No synchronous scheduler authority for this mutation");
-    const { attempt, proof } = scope, { identity, selection, lease } = attempt;
+    const { attempt, proof } = scope, { identity, selection } = attempt;
     if (!equal(input.identity, identity) || input.chainId !== selection.item.chainId || !equal(input.snapshot, selection.item.snapshot)
       || input.authorization && !equal(input.authorization, proof.authorization)) throw new PendingInputDomainError("scheduler-identity", "Live mutation differs from exact scheduler identity");
     this.checkAuthorization(proof.authorization, input.stage === "settlement" ? "settlement" : "dispatch", selection, identity);
-    if (submissionStages.has(input.stage)) {
-      if (this.closed || this.shutdown.signal.aborted) throw new PendingInputDomainError("bridge-closing", "Scheduler is closed");
-      if (!attempt.lifecycle && this.deps.predecessor(identity.source.sessionId) !== selection.predecessor) throw new PendingInputDomainError("pending-input-stale", "Predecessor changed before installation");
-      const predecessor = selection.predecessor?.owner;
-      if (predecessor && (predecessor.cancelling || predecessor.stopRequested || predecessor.stopping || this.deps.coordinator.owns(predecessor))) throw new PendingInputDomainError("conversation-busy", "Predecessor release/cancellation is not proven");
-      const owner = this.deps.coordinator.getOwner(identity.source.sessionId);
-      if (!owner && !this.deps.coordinator.holdsAdmission(lease, identity.source.sessionId)) throw new PendingInputDomainError("admission-stale", "Exact scheduler lease is no longer held");
-      if (owner && (owner !== attempt.lifecycle?.owner || !this.sameOwner(identity, owner))) throw new PendingInputDomainError("scheduler-owner", "A different owner occupies this conversation");
-      if (input.stage === "before-native" && (!attempt.lifecycle || owner !== attempt.lifecycle.owner)) throw new PendingInputDomainError("scheduler-owner", "Native boundary requires the published exact installed owner");
-      if (owner && (owner.stopRequested || owner.cancelling || owner.stopping || owner.settled || owner.run.status !== "running"))
-        throw new PendingInputDomainError("conversation-busy", "Installed owner is stopped, cancelling or no longer running");
-      // Prior to installation, inspect the SAME intent and lease. Afterwards
-      // ownership itself is expected; live bridge validation checks install pins.
-      if (!owner) {
-        const ready = this.deps.coordinator.inspectReadiness({ conversationId: identity.source.sessionId, intent: { kind: "user-prompt", requestId: identity.requestId }, phase: "dispatch", lease });
-        if (!ready.ready) throw new PendingInputDomainError(ready.code, ready.reason);
-      }
-    }
+    if (submissionStages.has(input.stage)) this.checkSubmission(attempt, input.stage);
     synchronousDispatchHook(() => proof.validate(input, submissionStages.has(input.stage) ? "submission" : "observation"));
+    // Authority is pinned from trusted preflight, not the authorization DTO.
+    // A live callback cannot change the queue/identity, revive the predecessor,
+    // or stop the installed owner and still authorize this boundary.
+    if (submissionStages.has(input.stage)) {
+      this.checkAuthorization(proof.authorization, "dispatch", selection, identity);
+      this.checkSubmission(attempt, input.stage);
+    }
   }
 
-  private checkAuthorization(auth: PendingInputAuthorization, kind: "dispatch" | "settlement", selection: PendingInputSelection<O>, identity?: DispatchIdentity) {
+  private checkSubmission(attempt: Attempt<O>, stage: PendingInputLiveValidation["stage"]): void {
+    const { identity, selection, lease } = attempt;
+    if (this.closed || this.shutdown.signal.aborted) throw new PendingInputDomainError("bridge-closing", "Scheduler is closed");
+    const view = this.deps.store.inspect(identity.source.sessionId);
+    if (view.recoveryRequired || view.chain?.chainId !== selection.item.chainId
+      || this.predecessorRunId(view, selection.predecessor) !== selection.predecessorRunId
+      || stage === "claim" && !this.current(selection)) throw new PendingInputDomainError("pending-input-stale", "Original predecessor or queue selection changed");
+    // Publication legitimately replaces the selected predecessor, but every
+    // submission boundary must still hold the SAME current lifecycle handle.
+    if (this.deps.predecessor(identity.source.sessionId) !== (attempt.lifecycle ?? selection.predecessor)) throw new PendingInputDomainError("pending-input-stale", "Current lifecycle handle changed");
+    const predecessor = selection.predecessor?.owner;
+    // Stop requests and completed termination promises are sticky history.
+    // Only explicit live resume may bypass them, never unsettled/owned work,
+    // an in-flight cancellation (cleared by the service), or reconciliation.
+    if (predecessor && (attempt.proof.basis === "user-resume"
+      ? !predecessor.settled || predecessor.cancelling || this.deps.coordinator.owns(predecessor) || this.deps.coordinator.hasReconciliation(identity.source.sessionId)
+      : predecessor.cancelling || predecessor.stopRequested || predecessor.stopping || this.deps.coordinator.owns(predecessor))) throw new PendingInputDomainError("conversation-busy", "Predecessor release/cancellation is not proven");
+    const owner = this.deps.coordinator.getOwner(identity.source.sessionId);
+    if (this.deps.coordinator.hasReconciliation(identity.source.sessionId)) throw new PendingInputDomainError("conversation-busy", "Conversation reconciliation is outstanding");
+    if (!owner && !this.deps.coordinator.holdsAdmission(lease, identity.source.sessionId)) throw new PendingInputDomainError("admission-stale", "Exact scheduler lease is no longer held");
+    if (owner && (owner !== attempt.lifecycle?.owner || !this.sameOwner(identity, owner))) throw new PendingInputDomainError("scheduler-owner", "A different owner occupies this conversation");
+    if (stage === "before-native" && (!attempt.lifecycle || owner !== attempt.lifecycle.owner)) throw new PendingInputDomainError("scheduler-owner", "Native boundary requires the published exact installed owner");
+    if (owner && (owner.stopRequested || owner.cancelling || owner.stopping || owner.settled || owner.run.status !== "running"))
+      throw new PendingInputDomainError("conversation-busy", "Installed owner is stopped, cancelling or no longer running");
+    // Prior to installation, inspect the SAME intent and lease. Afterwards
+    // ownership itself is expected; live bridge validation checks install pins.
+    if (!owner) {
+      const ready = this.deps.coordinator.inspectReadiness({ conversationId: identity.source.sessionId, intent: { kind: "user-prompt", requestId: identity.requestId }, phase: "dispatch", lease });
+      if (!ready.ready) throw new PendingInputDomainError(ready.code, ready.reason);
+    }
+  }
+
+  private checkAuthorization(auth: PendingInputAuthorization, kind: "dispatch" | "settlement", selection: CapturedSelection<O>, identity?: DispatchIdentity) {
     validateAuthorization(auth);
-    const predecessor = kind === "settlement" ? identity!.runId : selection.predecessor?.owner.run.runId ?? null;
+    const predecessor = kind === "settlement" ? identity!.runId : selection.predecessorRunId;
     if (auth.kind !== kind || auth.chainId !== selection.item.chainId || !equal(auth.source, dispatchSource(selection.item.snapshot)) || auth.predecessorRunId !== predecessor)
       throw new PendingInputDomainError("pending-input-authorization", "Live proof is not bound to exact source, chain and predecessor");
   }
@@ -142,7 +170,7 @@ export class PendingInputScheduler<O extends RunOwner = RunOwner> {
     return owner.run.sessionId === identity.source.sessionId && owner.run.runId === identity.runId && owner.run.cwd === identity.source.cwd
       && (owner.run.nativeCommandId ?? null) === identity.nativeCommandId;
   }
-  private scoped<T>(attempt: Attempt<O>, stage: Authority<O>["stage"], action: () => T, proof = attempt.proof): T {
+  private scoped<T>(attempt: Attempt<O>, stage: Authority<O>["stage"], action: () => T, proof: PendingInputLiveProof = attempt.proof): T {
     if (this.authority) throw new Error("Reentrant scheduler validation scope");
     this.authority = { attempt, stage, proof };
     try { return action(); }
@@ -174,12 +202,22 @@ export class PendingInputScheduler<O extends RunOwner = RunOwner> {
     try { return await Promise.race([work, cancelled]); }
     finally { signal.removeEventListener("abort", abort); }
   }
-  private current(selection: PendingInputSelection<O>): boolean {
+  /** Reading history binds identity only. A live handle cannot contradict this
+   * chain's durable binding, and foreign-chain history is never a fallback. */
+  private predecessorRunId(view: ReturnType<PendingInputStore["inspect"]>, predecessor: DispatchLifecycle<O> | null): string | null {
+    const sameChain = view.chain !== null && view.lastAuthorization?.chainId === view.chain.chainId;
+    const runId = predecessor?.owner.run.runId ?? null;
+    if (predecessor && sameChain && runId !== view.lastPredecessorRunId)
+      throw new PendingInputDomainError("pending-input-authorization", "Live predecessor differs from current-chain durable identity");
+    return predecessor ? runId : sameChain ? view.lastPredecessorRunId : null;
+  }
+  private current(selection: CapturedSelection<O>): boolean {
     const cid = selection.item.request.conversationId, view = this.deps.store.inspect(cid);
     const head = view.snapshot.items.find(i => i.state === "waiting");
     return !this.closed && !view.recoveryRequired && !view.pause && view.snapshot.revision === selection.revision
       && head?.itemId === selection.item.itemId && view.chain?.chainId === selection.item.chainId
-      && !view.snapshot.items.some(i => i.state !== "waiting") && this.deps.predecessor(cid) === selection.predecessor;
+      && !view.snapshot.items.some(i => i.state !== "waiting") && this.deps.predecessor(cid) === selection.predecessor
+      && this.predecessorRunId(view, selection.predecessor) === selection.predecessorRunId;
   }
 
   notifyEnqueue(): void { this.wake(); }
@@ -243,14 +281,17 @@ export class PendingInputScheduler<O extends RunOwner = RunOwner> {
     const item = this.deps.store.lookup(cid, head.requestId)!.item;
     const intent = { kind: "user-prompt" as const, requestId: item.requestId };
     if (!this.deps.coordinator.inspectReadiness({ conversationId: cid, intent, phase: "dispatch" }).ready) return;
-    const selection: PendingInputSelection<O> = Object.freeze({ item, revision: view.snapshot.revision, predecessor: this.deps.predecessor(cid) });
+    const predecessor = this.deps.predecessor(cid);
+    const selection: CapturedSelection<O> = Object.freeze({ item, revision: view.snapshot.revision, predecessor,
+      predecessorRunId: this.predecessorRunId(view, predecessor) });
     const result = await this.observe(this.deps.preflight(selection, this.shutdown.signal));
     if (!this.current(selection)) return;
     if (result.kind === "pause") { this.deps.store.pause(cid, result.pause); return; }
     if (result.kind === "wait") return;
     const proof: PendingInputDispatchProof = Object.freeze({ ...result.proof, authorization: immutable(structuredClone(result.proof.authorization)) });
     this.checkAuthorization(proof.authorization, "dispatch", selection);
-    if (proof.basis === "successful-predecessor" && !selection.predecessor || proof.basis === "new-idle-chain" && selection.predecessor
+    if (proof.basis === "successful-predecessor" && !selection.predecessor
+      || proof.basis === "new-idle-chain" && (selection.predecessor || selection.predecessorRunId !== null)
       || !["successful-predecessor", "new-idle-chain", "user-resume"].includes(proof.basis))
       throw new PendingInputDomainError("pending-input-authorization", "An explicit live idle-chain/resume or successful predecessor capability is required");
     // Reobserve success AFTER other async preflight; cancellation/source drift
@@ -353,10 +394,15 @@ export class PendingInputScheduler<O extends RunOwner = RunOwner> {
       if (item.claim?.evidence?.submission !== "unknown") this.scoped(attempt, "outcome", () => this.deps.store.outcome({ ...identity, submission: "unknown", nativeAcceptance: "unknown" }));
       return;
     }
-    // Failure/stop is a pause signal, NEVER completion or permission to replay.
-    if (lifecycle.owner.stopRequested || lifecycle.owner.cancelling || lifecycle.owner.stopping || lifecycle.owner.run.status === "interrupted")
-      this.deps.store.pause(cid, { code: "stopped", reason: "Queued run stopped or cancellation remains outstanding" });
-    else if (lifecycle.owner.run.status === "failed") this.deps.store.pause(cid, { code: "failed", reason: "Queued run failed; waiting text preserved" });
+    // Failure/stop is a safety block, not an independent terminal classification.
+    // Preserve any existing pause (including explicit stop's audit text), but
+    // still obtain independent settlement proof below while waiters stay paused.
+    const stopping = lifecycle.owner.stopRequested || lifecycle.owner.cancelling || lifecycle.owner.stopping || lifecycle.owner.run.status === "interrupted";
+    if ((stopping || lifecycle.owner.run.status === "failed") && !this.deps.store.get(cid).paused) {
+      if (stopping)
+        this.deps.store.pause(cid, { code: "stopped", reason: "Queued run stopped or cancellation remains outstanding" });
+      else this.deps.store.pause(cid, { code: "failed", reason: "Queued run failed; waiting text preserved" });
+    }
     if (!lifecycle.owner.settled || this.deps.coordinator.owns(lifecycle.owner) || this.deps.coordinator.hasOwner(cid) || this.deps.coordinator.hasReconciliation(cid)) return;
     const success = await this.observe(lifecycle.successfulSettlement());
     if (!success.ready && success.code !== "dispatch-proof-unavailable" && success.code !== "dispatch-unsettled"

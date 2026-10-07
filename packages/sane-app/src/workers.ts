@@ -4,6 +4,8 @@ import { resolveWorkerProfile, type AgentProfiles } from "./agent-profiles-contr
 import { WorkerStore } from "./worker-store";
 import { DEFAULT_MAX_WORKERS_PER_CHECKOUT, workerResults, workerTerminal, type WorkerCaller, type WorkerRecord, type WorkerStart } from "./worker-contract";
 import { WorkstreamAdapterError } from "./workstreams";
+import { synchronousDispatchHook } from "./dispatch-evidence";
+import { PendingInputStorageError } from "./pending-input-contract";
 
 /** holdsExecution: the parent currently holds its workstream's execution slot. */
 export type WorkerParent = { sessionId: string; runId: string; native: ConversationRef; checkout: string; profileId?: string; holdsExecution: boolean };
@@ -15,6 +17,10 @@ export type WorkerExecutor = {
   launch(worker: WorkerRecord): Promise<void>;
   observe(worker: WorkerRecord): Promise<Partial<WorkerRecord>>;
   cancel(worker: WorkerRecord): Promise<void>;
+  /** Synchronous control fence for the entire selected set, before refresh.
+   * The returned callback pins cancellation to this attempt's original owners. */
+  beforeCancel?(workers: readonly WorkerRecord[]): (worker: WorkerRecord) => Promise<void>;
+  suppressCancellation?(sessionId: string): void;
 };
 const error = (code: string, message: string): never => { throw new WorkstreamAdapterError(409, code, message); };
 
@@ -125,18 +131,36 @@ export class WorkerService {
   }
   private async cancelSelected(selected: WorkerRecord[], includeDescendants: boolean) {
     if (includeDescendants) selected = [...new Map(selected.flatMap(w => [w, ...this.tree(w.sessionId)]).map(w => [w.id, w])).values()];
+    let pinned: ReturnType<NonNullable<WorkerExecutor["beforeCancel"]>> | undefined;
+    let returned = false;
+    try {
+      synchronousDispatchHook(() => { pinned = this.executor.beforeCancel?.(selected); returned = true; return pinned; });
+    } catch (error) {
+      // Preserve ordinary synchronous read/availability refusals. A returned
+      // asynchronous fence, however, cannot establish durable control safety.
+      if (returned && !(error instanceof PendingInputStorageError)) throw new PendingInputStorageError("Cancellation control fence must complete synchronously", error);
+      throw error;
+    }
+    const cancel = pinned ?? (w => this.executor.cancel(w));
+    // Fence ALL explicit targets before any refresh or native cancellation.
+    for (const row of selected) {
+      try {
+        synchronousDispatchHook(() => this.executor.suppressCancellation ? this.executor.suppressCancellation(row.sessionId) : this.store.suppress(row.sessionId, true));
+      } catch (error) {
+        throw error instanceof PendingInputStorageError ? error : new PendingInputStorageError("Cancellation suppression storage failed", error);
+      }
+    }
     return Promise.all(selected.map(async row => {
       let w = await this.refresh(row);
-      this.store.suppress(w.sessionId, true);
       if (w.outcome) {
         if (!this.executor.hasActiveExecution(w)) return w;
         const requestedAt = new Date().toISOString();
         w = this.store.update(w.id, { state: "cancelling", continuation: w.continuation ? { ...w.continuation, state: "cancelling" } : undefined, continuationCancellation: { requestedAt } });
-        try { await this.executor.cancel(w); } catch (e) { return this.store.update(w.id, { continuationCancellation: { requestedAt, error: e instanceof Error ? e.message : "Continuation cancellation unconfirmed" } }); }
+        try { await cancel(w); } catch (e) { return this.store.update(w.id, { continuationCancellation: { requestedAt, error: e instanceof Error ? e.message : "Continuation cancellation unconfirmed" } }); }
         return w; // Requested only; actual continuation termination remains in its ordinary run log.
       }
       w = this.store.update(w.id, { state: "cancelling", cancelRequestedAt: w.cancelRequestedAt ?? new Date().toISOString() });
-      try { await this.executor.cancel(w); } catch (e) { return this.store.update(w.id, { error: e instanceof Error ? e.message : "Cancellation unconfirmed" }); }
+      try { await cancel(w); } catch (e) { return this.store.update(w.id, { error: e instanceof Error ? e.message : "Cancellation unconfirmed" }); }
       return this.refresh(this.store.get(w.id)!);
     }));
   }

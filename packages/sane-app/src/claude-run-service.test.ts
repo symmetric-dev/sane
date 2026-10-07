@@ -298,7 +298,8 @@ test("synchronous stdin failure observes independently rejecting consumers and s
   const f = fixture(new ReadableStream({ start(c) { c.error(new Error("stdout failure")); } }), new ReadableStream({ start(c) { c.error(new Error("stderr failure")); } }));
   Object.assign(f.child.stdin, { write: () => { throw new Error("stdin failure"); } });
   await f.service().execute(f.owner, "hello", false, f.accepted);
-  expect(f.run.status).toBe("failed"); expect(f.direct).toEqual(["SIGTERM"]); expect(f.state.retained).toBe(false);
+  expect(f.run.status).toBe("failed"); expect(f.direct).toEqual(["SIGTERM"]); expect(f.state.retained).toBe(true);
+  expect(f.owner.streamsDrained).toBe(false); expect(f.state.reconciliationRequired).toBe(true);
   expect(f.ready).toEqual([true, false, false]);
 });
 
@@ -391,4 +392,461 @@ test("required framework cannot complete on an indexed result without hook deliv
   f.session.saneContext = { version: 1, framework: "framework" };
   await f.service().execute(f.owner, "hello", false, f.accepted);
   expect(f.run.status).toBe("failed");
+});
+
+test("local proof binds the original child, group, observed exit and successfully consumed EOF", async () => {
+  const f = fixture(), service = f.service();
+  expect(service.readLocalSettlement(f.owner).ready).toBe(false);
+  await service.execute(f.owner, "hello", false, f.accepted);
+  const proof = service.readLocalSettlement(f.owner);
+  expect(proof).toMatchObject({ ready: true, kind: "terminated", evidence: { runId: f.run.runId, sessionId: f.run.sessionId,
+    nativeSessionId: nativeId, childPid: f.child.pid, groupPid: -f.child.pid, exitObserved: true, exitCode: 0,
+    exitSignal: null, termination: "not-requested", streamsDrained: true, lifecycleFinished: true, terminal: { status: "completed", cause: "result-success" } } });
+  expect(proof.evidence && Object.isFrozen(proof.evidence)).toBe(true);
+  expect(proof.evidence && Object.isFrozen(proof.evidence.terminal)).toBe(true);
+  expect(service.readLocalIdle(f.run.sessionId)).toEqual({ ready: true });
+  // No metadata field can mint a capability for a copied/imported owner.
+  expect(service.readLocalSettlement({ ...f.owner, run: { ...f.run }, streamsDrained: true }).ready).toBe(false);
+});
+
+for (const mutation of ["status", "run", "child", "pid", "identity"] as const) test(`local proof refuses ${mutation} replacement and remains latched`, async () => {
+  const f = fixture(), service = f.service(); await service.execute(f.owner, "hello", false, f.accepted);
+  const originalRun = f.owner.run, originalPid = f.child.pid;
+  if (mutation === "status") f.run.status = "failed";
+  if (mutation === "run") f.owner.run = { ...f.run };
+  if (mutation === "child") f.owner.child = { ...f.child } as typeof f.child;
+  if (mutation === "pid") Object.assign(f.child, { pid: 555555 });
+  if (mutation === "identity") f.run.runId = "replacement";
+  expect(service.readLocalSettlement(f.owner).ready).toBe(false);
+  f.owner.run = originalRun; f.run.status = "completed"; f.run.runId = "22222222-2222-4222-8222-222222222222";
+  f.owner.child = f.child; Object.assign(f.child, { pid: originalPid });
+  expect(service.readLocalSettlement(f.owner).ready).toBe(false);
+});
+
+test("exit-zero result failure is runtime failed evidence, never inferred as success", async () => {
+  const f = fixture(bytes([wire({ ...success, is_error: true, subtype: "error_max_turns" })])), service = f.service();
+  await service.execute(f.owner, "hello", false, f.accepted);
+  expect(service.readLocalSettlement(f.owner)).toMatchObject({ ready: true, evidence: { exitCode: 0, terminal: { status: "failed", cause: "result-failure" } } });
+  f.run.status = "completed"; f.owner.streamsDrained = true;
+  expect(service.readLocalSettlement(f.owner).ready).toBe(false);
+});
+
+test("framework rejection is captured as its own exit-zero runtime failure", async () => {
+  const f = fixture(), service = f.service(); f.session.saneContext = { version: 1, framework: "framework" };
+  await service.execute(f.owner, "hello", false, f.accepted);
+  expect(service.readLocalSettlement(f.owner)).toMatchObject({ ready: true, evidence: { exitCode: 0, terminal: { status: "failed", cause: "framework-rejected" } } });
+});
+
+for (const cause of ["stop-requested", "service-closing"] as const) test(`signaled child interruption records actual service cause ${cause}`, async () => {
+  const f = fixture(), exit = pending<number>(), launched = pending<void>(); Object.assign(f.child, { exited: exit.promise, signalCode: "SIGTERM" });
+  const service = f.service(), execution = service.execute(f.owner, "hello", false, accepted => { if (accepted) launched.resolve(); });
+  await launched.promise;
+  if (cause === "stop-requested") f.owner.stopRequested = true; else f.state.closing = true;
+  exit.resolve(143); await execution;
+  expect(service.readLocalSettlement(f.owner)).toMatchObject({ ready: true, evidence: { exitObserved: true, exitCode: 143, exitSignal: "SIGTERM", terminal: { status: "interrupted", cause } } });
+});
+
+test("stop during preparation produces exact local withheld evidence without a created child", async () => {
+  const f = fixture(), preparing = pending<void>(), continuePreparation = pending<string>();
+  f.deps.execution = () => { preparing.resolve(); return continuePreparation.promise; };
+  const service = f.service(), execution = service.execute(f.owner, "hello", false, f.accepted);
+  await preparing.promise; expect(service.readLocalIdle(f.run.sessionId).ready).toBe(false);
+  f.owner.stopRequested = true; expect(await service.terminate(f.owner)).toBe(true);
+  continuePreparation.resolve("/checkout"); await execution;
+  expect(f.owner.nativeDispatched).toBe(false);
+  expect(service.readLocalSettlement(f.owner)).toMatchObject({ ready: true, kind: "withheld", evidence: { childPid: null, nativeAttempted: false, exitObserved: false, streamsDrained: true, terminal: { status: "interrupted", cause: "stop-requested" } } });
+  expect(service.readLocalIdle(f.run.sessionId)).toEqual({ ready: true });
+});
+
+for (const mode of ["stream-error", "emit-rejection", "emit-throw"] as const) test(`successful EOF proof is blocked by ${mode}, even with exited child and forged drain`, async () => {
+  const f = fixture(mode === "stream-error" ? new ReadableStream({ start(c) { c.error(new Error("reader failed")); } }) : bytes([wire(success)]));
+  const emit = f.deps.emit;
+  if (mode === "emit-rejection") f.deps.emit = (run, kind, data) => kind === "stdout" ? Promise.reject(new Error("journal rejected")) : emit(run, kind, data);
+  if (mode === "emit-throw") f.deps.emit = (run, kind, data) => { if (kind === "stdout") throw new Error("journal threw"); return emit(run, kind, data); };
+  const service = f.service(); await service.execute(f.owner, "hello", false, f.accepted);
+  expect(f.owner.streamsDrained).toBe(false); expect(f.state.reconciliationRequired).toBe(true);
+  f.owner.streamsDrained = true;
+  expect(service.readLocalSettlement(f.owner)).toMatchObject({ ready: false, evidence: { streamsDrained: false, exitObserved: true } });
+  expect(service.readLocalIdle(f.run.sessionId).ready).toBe(false);
+});
+
+test("stream timeout cannot certify local drainage even when late EOF eventually arrives", async () => {
+  let controller!: ReadableStreamDefaultController<Uint8Array>;
+  const f = fixture(new ReadableStream({ start(c) { controller = c; } })), draining = pending<void>();
+  f.child.stdin.write = () => { throw new Error("stdin failed"); };
+  const sleep = f.runtime.sleep; f.runtime.sleep = ms => { if (ms === 2200) draining.resolve(); return sleep(ms); };
+  const service = f.service(), execution = service.execute(f.owner, "hello", false, f.accepted);
+  await draining.promise; f.drainTimeout.resolve(); await execution;
+  expect(service.readLocalSettlement(f.owner)).toMatchObject({ ready: false, evidence: { streamsDrained: false } });
+  controller.close(); await Promise.resolve(); await Promise.resolve();
+  expect(service.readLocalIdle(f.run.sessionId).ready).toBe(false);
+});
+
+test("termination acknowledgement is pending until the service promise resolves true", async () => {
+  const f = fixture(), exit = pending<number>(), launched = pending<void>(), sleeping = pending<void>(), step = pending<void>();
+  Object.assign(f.child, { exited: exit.promise }); f.runtime.sleep = ms => ms === 20 ? (sleeping.resolve(), step.promise) : f.drainTimeout.promise;
+  const service = f.service(), execution = service.execute(f.owner, "hello", false, accepted => { if (accepted) launched.resolve(); });
+  await launched.promise; f.owner.stopRequested = true; const stopping = service.terminate(f.owner); await sleeping.promise;
+  expect(service.readLocalSettlement(f.owner)).toMatchObject({ ready: false, evidence: { termination: "pending", exitObserved: false } });
+  exit.resolve(143); step.resolve(); expect(await stopping).toBe(true); await execution;
+  expect(service.readLocalSettlement(f.owner)).toMatchObject({ ready: true, evidence: { termination: "confirmed", terminal: { status: "interrupted", cause: "stop-requested" } } });
+  // A newly assigned Promise is not the observed service acknowledgement.
+  f.owner.stopping = Promise.resolve(true); expect(service.readLocalSettlement(f.owner).ready).toBe(false);
+});
+
+test("false termination and permission-error group probes never certify local release", async () => {
+  const f = fixture(); f.runtime.kill = () => { throw Object.assign(new Error("not permitted"), { code: "EPERM" }); };
+  const service = f.service(); await service.execute(f.owner, "hello", false, f.accepted);
+  expect(service.readLocalSettlement(f.owner)).toMatchObject({ ready: false, evidence: { termination: "unconfirmed", terminal: { status: "failed", cause: "termination-unconfirmed" } } });
+  expect(service.readLocalIdle(f.run.sessionId).ready).toBe(false);
+});
+
+for (const mode of ["hook-refusal", "async-hook", "spawn", "spawn-throw", "legacy"] as const) test(`nativeDispatched truthfully marks the earliest possible native boundary: ${mode}`, async () => {
+  const f = fixture(); let hooks = 0;
+  if (mode !== "legacy") f.owner.dispatchEvidence = { beforeNative: mode === "async-hook" ? async () => { hooks++; throw new Error("async refusal"); } : () => { hooks++; expect(f.owner.nativeDispatched).toBe(false); if (mode === "hook-refusal") throw new Error("refused"); }, outcome: () => {}, withheld: () => {} };
+  const spawn = f.runtime.spawn; f.runtime.spawn = (args, options) => { expect(f.owner.nativeDispatched).toBe(true); if (mode === "spawn-throw") throw new Error("spawn unknown"); return spawn(args, options); };
+  const service = f.service(); await service.execute(f.owner, "hello", false, f.accepted);
+  expect(hooks).toBe(mode === "legacy" ? 0 : 1);
+  expect(f.owner.nativeDispatched).toBe(mode !== "hook-refusal" && mode !== "async-hook");
+  if (mode === "spawn-throw") { expect(service.readLocalSettlement(f.owner).ready).toBe(false); expect(service.readLocalIdle(f.run.sessionId).ready).toBe(false); }
+});
+
+test("preparing idle capability rechecks the exact held owner through both pre-intent validations", async () => {
+  const f = fixture(), preparing = pending<void>(), proceed = pending<string>();
+  f.deps.execution = () => { preparing.resolve(); return proceed.promise; };
+  let validations = 0;
+  const spawn = f.runtime.spawn;
+  f.runtime.spawn = (args, options) => {
+    expect(f.owner.nativeDispatched).toBe(true);
+    expect(service.readLocalIdle(f.run.sessionId, f.owner).ready).toBe(false);
+    return spawn(args, options);
+  };
+  const service = f.service();
+  const validate = () => {
+    expect(f.owner.child).toBeUndefined(); expect(f.owner.nativeDispatched).toBe(false);
+    expect(service.readLocalIdle(f.run.sessionId, f.owner)).toEqual({ ready: true });
+    // An exempt preparation is never removed from aggregate supervision.
+    expect(service.readLocalIdle(f.run.sessionId).ready).toBe(false); validations++;
+  };
+  f.owner.beforeSend = validate;
+  f.owner.dispatchEvidence = { beforeNative: validate, outcome: () => {}, withheld: () => {} };
+  const execution = service.execute(f.owner, "hello", false, f.accepted);
+  await preparing.promise;
+  expect(f.owner.child).toBeUndefined(); expect(f.owner.nativeDispatched).toBe(false);
+  expect(service.readLocalIdle(f.run.sessionId, f.owner)).toEqual({ ready: true });
+  for (const flag of ["stopRequested", "cancelling", "settled"] as const) {
+    f.owner[flag] = true; expect(service.readLocalIdle(f.run.sessionId, f.owner).ready).toBe(false); f.owner[flag] = false;
+  }
+  f.owner.stopping = Promise.resolve(true); expect(service.readLocalIdle(f.run.sessionId, f.owner).ready).toBe(false); f.owner.stopping = undefined;
+  f.run.status = "failed"; expect(service.readLocalIdle(f.run.sessionId, f.owner).ready).toBe(false); f.run.status = "running";
+  f.state.owns = false; expect(service.readLocalIdle(f.run.sessionId, f.owner).ready).toBe(false); f.state.owns = true;
+  for (const flag of ["closing", "storageFailed", "retained"] as const) {
+    f.state[flag] = true; expect(service.readLocalIdle(f.run.sessionId, f.owner).ready).toBe(false); f.state[flag] = false;
+  }
+  expect(service.readLocalIdle(f.run.sessionId, f.owner)).toEqual({ ready: true });
+  expect(service.readLocalIdle(f.run.sessionId).ready).toBe(false);
+  proceed.resolve("/checkout"); await execution;
+  expect(validations).toBe(2); expect(f.run).toMatchObject({ status: "completed" });
+  expect(service.readLocalIdle(f.run.sessionId)).toEqual({ ready: true });
+});
+
+test("preparing idle capability denies clones, foreign sessions and every other preparation or unknown attempt", async () => {
+  const f = fixture(), firstHeld = pending<void>(), secondHeld = pending<void>(), firstProceed = pending<string>(), secondProceed = pending<string>();
+  const second: RunOwner = { run: { ...f.run, runId: "second" }, done: Promise.resolve(), settled: false };
+  let executions = 0;
+  f.deps.owns = owner => owner === f.owner || owner === second;
+  f.deps.execution = () => {
+    if (++executions === 1) { firstHeld.resolve(); return firstProceed.promise; }
+    if (executions === 2) { secondHeld.resolve(); return secondProceed.promise; }
+    return Promise.resolve("/checkout");
+  };
+  f.runtime.spawn = () => { throw new Error("spawn unknown"); };
+  const service = f.service(), firstExecution = service.execute(f.owner, "first", false, f.accepted);
+  await firstHeld.promise;
+  expect(service.readLocalIdle(f.run.sessionId, f.owner)).toEqual({ ready: true });
+  expect(service.readLocalIdle(f.run.sessionId, { ...f.owner, run: { ...f.run } }).ready).toBe(false);
+  expect(service.readLocalIdle(f.run.sessionId, { ...f.owner, run: { ...f.run, sessionId: "foreign" } }).ready).toBe(false);
+  expect(service.readLocalIdle("foreign", f.owner).ready).toBe(false);
+  const secondExecution = service.execute(second, "second", false, () => {});
+  await secondHeld.promise;
+  expect(service.readLocalIdle(f.run.sessionId, second).ready).toBe(false);
+  expect(service.readLocalIdle(f.run.sessionId, f.owner).ready).toBe(false);
+  firstProceed.resolve("/checkout"); await firstExecution;
+  expect(service.readLocalSettlement(f.owner)).toMatchObject({ ready: false, evidence: { nativeAttempted: true, childPid: null, lifecycleFinished: true } });
+  expect(service.readLocalIdle(f.run.sessionId, second).ready).toBe(false);
+  second.stopRequested = true; secondProceed.resolve("/checkout"); await secondExecution;
+  expect(service.readLocalSettlement(second).ready).toBe(true);
+  expect(service.readLocalIdle(f.run.sessionId).ready).toBe(false);
+});
+
+test("preparing idle capability closes immediately after durable intent without upgrading unresolved claims", async () => {
+  for (const mode of ["source-change", "spawn-throw"] as const) {
+    const f = fixture(); let intentReturned = false, gapChecked = false, spawnChecked = false;
+    const evidence = dispatchEvidence(f, () => {
+      expect(service.readLocalIdle(f.run.sessionId, f.owner)).toEqual({ ready: true });
+    });
+    f.owner.dispatchEvidence = { ...evidence, beforeNative: () => { evidence.beforeNative(); intentReturned = true; } };
+    f.deps.session = id => {
+      if (intentReturned && !gapChecked) {
+        gapChecked = true;
+        expect(f.owner.nativeDispatched).toBe(false); expect(f.owner.child).toBeUndefined();
+        expect(service.readLocalIdle(f.run.sessionId, f.owner).ready).toBe(false);
+        expect(service.readLocalIdle(f.run.sessionId).ready).toBe(false);
+        if (mode === "source-change") f.session.nativeSessionId = foreignNativeId;
+      }
+      return id === f.session.sessionId ? f.session : undefined;
+    };
+    f.runtime.spawn = () => {
+      expect(f.owner.nativeDispatched).toBe(true); expect(f.owner.child).toBeUndefined();
+      expect(service.readLocalIdle(f.run.sessionId, f.owner).ready).toBe(false);
+      spawnChecked = true;
+      throw new Error("spawn unknown");
+    };
+    const service = f.service(); await service.execute(f.owner, "hello", false, f.accepted); evidence.finish();
+    expect(gapChecked).toBe(true); expect(f.owner.child).toBeUndefined();
+    expect(spawnChecked).toBe(mode === "spawn-throw");
+    expect(f.owner.nativeDispatched).toBe(mode === "spawn-throw");
+    expect(service.readLocalIdle(f.run.sessionId, f.owner).ready).toBe(false);
+    expect(service.readLocalSettlement(f.owner).ready).toBe(false);
+    // Known no-child completion can retire local supervision, never a durable
+    // unresolved claim. A spawn throw cannot even prove local aggregate idle.
+    expect(service.readLocalIdle(f.run.sessionId).ready).toBe(mode === "source-change");
+    expect(evidence.snapshot()).toMatchObject({ submission: "unknown", nativeAcceptance: "unknown" });
+  }
+});
+
+test("all original groups per conversation must be absent, not only the last owner", async () => {
+  const f = fixture(), launched = pending<void>(), exit = pending<number>();
+  const first = f.owner, second: RunOwner = { ...f.owner, run: { ...f.run, runId: "second" }, done: Promise.resolve() };
+  const secondChild = { ...f.child, pid: 123456, exited: Promise.resolve(0), stdout: bytes([wire(success)]), stderr: bytes() } as typeof f.child;
+  Object.assign(f.child, { exited: exit.promise });
+  let alive = true, spawns = 0;
+  f.deps.owns = () => true;
+  f.runtime.spawn = () => ++spawns === 1 ? f.child : secondChild;
+  f.runtime.kill = (pid, signal) => { if (pid === -f.child.pid && alive) { if (signal === 0) throw Object.assign(new Error("permission"), { code: "EPERM" }); return; } gone(); };
+  const service = f.service(), execution = service.execute(first, "hello", false, accepted => { if (accepted) launched.resolve(); });
+  await launched.promise;
+  expect(service.readLocalIdle(f.run.sessionId).ready).toBe(false);
+  await service.execute(second, "hello", false, () => {});
+  expect(service.readLocalSettlement(second).ready).toBe(true);
+  expect(service.readLocalIdle(f.run.sessionId).ready).toBe(false);
+  exit.resolve(0); await execution;
+  expect(service.readLocalIdle(f.run.sessionId).ready).toBe(false);
+  alive = false; expect(service.readLocalIdle(f.run.sessionId)).toEqual({ ready: true });
+  expect(service.readLocalSettlement(first).ready).toBe(false); // Failed termination is not upgraded by idle.
+});
+
+for (const mode of ["result", "framework", "exit", "missing-result", "launch"] as const) test(`terminal DTO setter cannot relabel runtime ${mode} failure as completed`, async () => {
+  const f = fixture(mode === "result" ? bytes([wire({ ...success, is_error: true })]) : mode === "missing-result" ? bytes() : bytes([wire(success)]));
+  if (mode === "framework") f.session.saneContext = { version: 1, framework: "required framework" };
+  if (mode === "exit") Object.assign(f.child, { exited: Promise.resolve(7) });
+  if (mode === "launch") f.runtime.spawn = () => { throw new Error("spawn uncertain"); };
+  let status: Run["status"] = "running";
+  Object.defineProperty(f.run, "status", { configurable: true, get: () => status, set: value => { status = value === "failed" ? "completed" : value; } });
+  // Wire-looking DTO fields/getters are not runtime observations either.
+  for (const property of ["cause", "result", "exitCode"]) Object.defineProperty(f.run, property, { get: () => { throw new Error(`DTO ${property} must not be read`); } });
+  const service = f.service(); await service.execute(f.owner, "hello", mode !== "framework", f.accepted);
+  expect(f.run.status).toBe("completed");
+  const cause = mode === "result" ? "result-failure" : mode === "framework" ? "framework-rejected" : mode === "exit" ? "nonzero-exit" : mode === "missing-result" ? "missing-result" : "launch-stream-shutdown-failure";
+  expect(service.readLocalSettlement(f.owner)).toMatchObject({ ready: false, evidence: { terminal: { status: "failed", cause } } });
+  expect(statusData(f).at(-1)?.status).toBe("failed"); expect(f.session.lastStatus).toBe("failed");
+  // Immediate DTO disagreement is latched, even if repaired before proof read.
+  Object.defineProperty(f.run, "status", { value: "failed", writable: true });
+  expect(service.readLocalSettlement(f.owner).ready).toBe(false);
+});
+
+for (const initial of ["result-failure", "service-closing", "stop-requested"] as const) test(`classification captures ${initial} before DTO setter changes service flags`, async () => {
+  const f = fixture(initial === "result-failure" ? bytes([wire({ ...success, is_error: true })]) : bytes([wire(success)]));
+  const accepted = (value: boolean) => {
+    f.accepted(value);
+    if (value && initial === "service-closing") f.state.closing = true;
+    if (value && initial === "stop-requested") f.owner.stopRequested = true;
+  };
+  let status: Run["status"] = "running";
+  Object.defineProperty(f.run, "status", { get: () => status, set: value => {
+    status = value;
+    if (value !== "running") { f.state.closing = false; f.owner.stopRequested = initial === "result-failure"; }
+  } });
+  const service = f.service(); await service.execute(f.owner, "hello", true, accepted);
+  expect(service.readLocalSettlement(f.owner)).toMatchObject({ ready: true, evidence: { terminal: { status: initial === "result-failure" ? "failed" : "interrupted", cause: initial } } });
+});
+
+test("observed signal cannot produce completed runtime proof even with exit-zero success", async () => {
+  const f = fixture(); Object.assign(f.child, { signalCode: "SIGTERM" });
+  const service = f.service(); await service.execute(f.owner, "hello", true, f.accepted);
+  expect(f.run.status).toBe("failed");
+  expect(service.readLocalSettlement(f.owner)).toMatchObject({ ready: true, evidence: { exitCode: 0, exitSignal: "SIGTERM", terminal: { status: "failed", cause: "signal-exit" } } });
+  expect(statusData(f).at(-1)?.error).toBe("CLI terminated by signal SIGTERM");
+});
+
+const dispatchEvidence = (f: ReturnType<typeof fixture>, beforeNative?: () => void) => createDispatchEvidence({ runId: f.run.runId, nativeCommandId: null,
+  source: { harnessId: "claude-code", sessionId: f.run.sessionId, authorityId: "fixture", nativeSessionId: nativeId, cwd: f.run.cwd } }, { beforeNative }, f.deps.failClosed);
+const foreignNativeId = "44444444-4444-4444-8444-444444444444";
+
+for (const drift of ["mutable-native", "replacement-native", "session-cwd", "run-cwd", "run-id", "session-id", "authority", "harness"] as const) test(`suspended persist source pin denies ${drift} before native intent or spawn`, async () => {
+  const f = fixture(bytes([wire({ ...success, session_id: foreignNativeId })])), persisting = pending<void>(), proceed = pending<void>();
+  let persists = 0;
+  f.deps.persist = async () => { if (++persists === 1) { persisting.resolve(); await proceed.promise; } };
+  f.owner.beforeSend = () => {}; // No injected guard is necessary for source safety.
+  const evidence = dispatchEvidence(f); f.owner.dispatchEvidence = evidence;
+  const service = f.service(), execution = service.execute(f.owner, "original prompt", true, f.accepted);
+  await persisting.promise;
+  if (drift === "mutable-native") f.session.nativeSessionId = foreignNativeId;
+  if (drift === "replacement-native") { const replacement = { ...f.session, nativeSessionId: foreignNativeId }; f.deps.session = () => replacement; }
+  if (drift === "session-cwd") f.session.cwd = "/foreign";
+  if (drift === "run-cwd") f.run.cwd = "/foreign";
+  if (drift === "run-id") f.run.runId = "foreign-run";
+  if (drift === "session-id") f.run.sessionId = "foreign-session";
+  if (drift === "authority") f.session.authorityId = "foreign-authority";
+  if (drift === "harness") f.session.harness = "opencode";
+  proceed.resolve(); await execution; evidence.finish();
+  expect(f.calls).not.toContain("spawn"); expect(f.ready).not.toContain(true); expect(f.owner.nativeDispatched).toBe(false);
+  expect(statusData(f).at(-1)).toMatchObject({ status: "failed", code: "dispatch-source-mismatch" });
+  expect(evidence.snapshot()).toMatchObject({ submission: "not-submitted", nativeAcceptance: "not-accepted" });
+  expect(service.readLocalSettlement(f.owner)).toMatchObject({ ready: false, evidence: { nativeSessionId: nativeId, cwd: "/checkout", nativeAttempted: false } });
+});
+
+for (const stage of ["status", "submission", "execution", "framework-file", "agent", "session-context", "session-file", "settings", "execution-context", "launch", "final-execution"] as const) test(`fresh source validation after asynchronous ${stage} prevents cross-source spawn`, async () => {
+  const f = fixture(); f.run.agent = "design";
+  f.session.saneContext = { version: 1, framework: "framework" };
+  const change = () => { f.session.nativeSessionId = foreignNativeId; };
+  const emit = f.deps.emit; f.deps.emit = async (run, kind, data) => { await emit(run, kind, data); if (kind === stage) change(); };
+  if (stage === "execution" || stage === "final-execution") {
+    let checks = 0; f.deps.execution = async () => { if (++checks === (stage === "execution" ? 1 : 2)) change(); return "/checkout"; };
+  }
+  const write = f.runtime.writeSettings; f.runtime.writeSettings = async (path, text) => {
+    await write(path, text);
+    if (stage === "framework-file" && path.endsWith(".session-start.md") || stage === "session-file" && path.endsWith(".sane-session.md") || stage === "settings" && path.endsWith(".settings.json")) change();
+  };
+  if (stage === "agent") { const settings = f.runtime.agentSettings; f.runtime.agentSettings = async (...args) => { change(); return settings(...args); }; }
+  f.deps.saneSession = async () => { if (stage === "session-context") change(); return "session context"; };
+  if (stage === "execution-context") f.deps.executionContext = async () => { change(); return { executionCheckout: "/checkout", workstreamId: null, artifactsRoot: null }; };
+  const service = f.service(); await service.execute(f.owner, "original prompt", false, f.accepted);
+  expect(f.calls).not.toContain("spawn"); expect(f.ready).not.toContain(true);
+  expect(statusData(f).at(-1)?.code).toBe("dispatch-source-mismatch"); expect(service.readLocalSettlement(f.owner).ready).toBe(false);
+});
+
+for (const boundary of ["beforeSend", "beforeNative"] as const) test(`synchronous ${boundary} source mutation is refused without false dispatch evidence`, async () => {
+  const f = fixture(); let intentCalls = 0;
+  const evidence = dispatchEvidence(f, () => { intentCalls++; if (boundary === "beforeNative") f.session.nativeSessionId = foreignNativeId; });
+  f.owner.dispatchEvidence = evidence;
+  f.owner.beforeSend = () => { if (boundary === "beforeSend") f.session.nativeSessionId = foreignNativeId; };
+  const service = f.service(); await service.execute(f.owner, "hello", true, f.accepted); evidence.finish();
+  expect(f.calls).not.toContain("spawn"); expect(f.owner.nativeDispatched).toBe(false); expect(f.ready).not.toContain(true);
+  expect(intentCalls).toBe(boundary === "beforeNative" ? 1 : 0);
+  expect(evidence.snapshot()).toMatchObject({ submission: boundary === "beforeNative" ? "unknown" : "not-submitted", nativeAcceptance: boundary === "beforeNative" ? "unknown" : "not-accepted" });
+  expect(statusData(f).at(-1)?.code).toBe("dispatch-source-mismatch"); expect(service.readLocalSettlement(f.owner).ready).toBe(false);
+  f.session.nativeSessionId = nativeId;
+  expect(service.readLocalSettlement(f.owner).ready).toBe(false);
+  await expect(service.execute(f.owner, "do not replay", true, f.accepted)).rejects.toThrow("cannot be replaced or replayed");
+});
+
+test("spawn exception after durable intent remains unknown and nativeDispatched stays true", async () => {
+  const f = fixture(), evidence = dispatchEvidence(f); f.owner.dispatchEvidence = evidence;
+  f.runtime.spawn = () => { throw new Error("spawn effect uncertain"); };
+  const service = f.service(); await service.execute(f.owner, "hello", true, f.accepted); evidence.finish();
+  expect(evidence.snapshot()).toMatchObject({ submission: "unknown", nativeAcceptance: "unknown" });
+  expect(f.owner.nativeDispatched).toBe(true); expect(service.readLocalSettlement(f.owner).ready).toBe(false);
+});
+
+test("result consumers retain launched native pin when the current Session replaces the captured object", async () => {
+  const foreign = { ...success, session_id: foreignNativeId };
+  const f = fixture(bytes([wire(foreign)])), replacement = { ...f.session };
+  const spawn = f.runtime.spawn; f.runtime.spawn = (args, options) => {
+    // The stale entry object no longer represents the live Session. Using it
+    // here would wrongly authorize B's result for the originally launched A.
+    f.session.nativeSessionId = foreignNativeId;
+    f.deps.session = () => replacement;
+    return spawn(args, options);
+  };
+  const service = f.service(); await service.execute(f.owner, "original text", true, f.accepted);
+  expect(f.spawned()?.args[f.spawned()!.args.indexOf("--resume") + 1]).toBe(nativeId);
+  expect(f.run.status).toBe("failed"); expect(statusData(f).at(-1)?.reason).toBe("CLI session identity mismatch or missing session_id");
+  expect(f.records.find(record => record.kind === "stdout")?.data).toEqual(foreign);
+  expect(service.readLocalSettlement(f.owner)).toMatchObject({ ready: true, evidence: { nativeSessionId: nativeId, terminal: { status: "failed", cause: "result-failure" } } });
+});
+
+test("live source mutation after spawn cannot certify original-source success", async () => {
+  const f = fixture(bytes([wire({ ...success, session_id: foreignNativeId })])), evidence = dispatchEvidence(f); f.owner.dispatchEvidence = evidence;
+  const service = f.service(); await service.execute(f.owner, "original prompt", true, accepted => { f.accepted(accepted); if (accepted) f.session.nativeSessionId = foreignNativeId; }); evidence.finish();
+  expect(f.spawned()?.args).toContain(nativeId); expect(f.spawned()?.args).not.toContain(foreignNativeId);
+  expect(f.calls).toContain("stdin:original prompt"); expect(f.run.status).toBe("failed");
+  expect(evidence.snapshot()).toMatchObject({ submission: "submitted", nativeAcceptance: "unknown" });
+  expect(service.readLocalSettlement(f.owner)).toMatchObject({ ready: false, evidence: { nativeSessionId: nativeId, nativeAttempted: true } });
+});
+
+test("source change during final metadata persist invalidates otherwise completed local proof", async () => {
+  const f = fixture(); let persists = 0;
+  f.deps.persist = async () => { if (++persists === 2) f.deps.session = () => ({ ...f.session, nativeSessionId: foreignNativeId }); };
+  const service = f.service(); await service.execute(f.owner, "hello", true, f.accepted);
+  expect(f.run.status).toBe("completed");
+  expect(service.readLocalSettlement(f.owner)).toMatchObject({ ready: false, evidence: { nativeSessionId: nativeId, terminal: { status: "completed", cause: "result-success" } } });
+});
+
+test("matching Session replacement and immutable entry launch flags preserve ordinary resume", async () => {
+  const f = fixture(); f.run.model = "original-model"; f.run.effort = "high";
+  f.deps.persist = async () => { f.deps.session = () => ({ ...f.session }); f.run.model = "later-model"; f.run.effort = "low"; };
+  const service = f.service(); await service.execute(f.owner, "hello", true, f.accepted);
+  expect(f.run.status).toBe("completed");
+  expect(f.spawned()?.args).toContain("original-model"); expect(f.spawned()?.args).not.toContain("later-model"); expect(f.spawned()?.args).toContain("high");
+  expect(service.readLocalSettlement(f.owner)).toMatchObject({ ready: true, evidence: { nativeSessionId: nativeId } });
+});
+
+for (const foreign of [false, true]) test(`legacy new session pins a preselected CLI ID rather than borrowing result identity (foreign=${foreign})`, async () => {
+  const f = fixture(); delete f.session.nativeSessionId;
+  Object.assign(f.child, { stdout: bytes([wire({ ...success, session_id: foreign ? foreignNativeId : f.run.runId })]) });
+  const service = f.service(); await service.execute(f.owner, "first prompt only", false, f.accepted);
+  expect(f.spawned()?.args[f.spawned()!.args.indexOf("--session-id") + 1]).toBe(f.run.runId);
+  expect(f.spawned()?.args).not.toContain("--resume"); expect(f.calls).toContain("stdin:first prompt only");
+  expect(f.run.status).toBe(foreign ? "failed" : "completed"); expect(f.deps.session(f.run.sessionId)?.nativeSessionId).toBe(foreign ? undefined : f.run.runId);
+  expect(service.readLocalSettlement(f.owner)).toMatchObject({ ready: true, evidence: { nativeSessionId: f.run.runId, terminal: { status: foreign ? "failed" : "completed", cause: foreign ? "result-failure" : "result-success" } } });
+});
+
+test("resume with no established native source is withheld, never treated as a new session", async () => {
+  const f = fixture(); delete f.session.nativeSessionId;
+  await f.service().execute(f.owner, "do not create a replacement", true, f.accepted);
+  expect(f.spawned()).toBeUndefined(); expect(f.owner.nativeDispatched).toBe(false); expect(statusData(f).at(-1)?.code).toBe("dispatch-source-mismatch");
+});
+
+test("native source accessor is captured once, not separately for supervision and launch", async () => {
+  const f = fixture(); let reads = 0;
+  Object.defineProperty(f.session, "nativeSessionId", { get: () => ++reads === 1 ? nativeId : foreignNativeId });
+  const service = f.service(); await service.execute(f.owner, "do not borrow another source", true, f.accepted);
+  expect(f.spawned()).toBeUndefined(); expect(statusData(f).at(-1)?.code).toBe("dispatch-source-mismatch");
+  expect(service.readLocalSettlement(f.owner)).toMatchObject({ ready: false, evidence: { nativeSessionId: nativeId } });
+});
+
+test("post-intent source mutation cannot hide its original evidence hook by replacing the owner field", async () => {
+  const f = fixture(), evidence = dispatchEvidence(f, () => { f.session.nativeSessionId = foreignNativeId; f.owner.dispatchEvidence = undefined; });
+  f.owner.dispatchEvidence = evidence;
+  await f.service().execute(f.owner, "hello", true, f.accepted); evidence.finish();
+  expect(f.spawned()).toBeUndefined(); expect(f.owner.nativeDispatched).toBe(false);
+  expect(evidence.snapshot()).toMatchObject({ submission: "unknown", nativeAcceptance: "unknown" });
+});
+
+for (const preflight of [1, 2]) test(`execution checkout discovery ${preflight} cannot rebind the entry cwd`, async () => {
+  const f = fixture(); let executions = 0;
+  f.deps.execution = async () => ++executions === preflight ? "/foreign-checkout" : "/checkout";
+  const service = f.service(); await service.execute(f.owner, "keep original checkout", true, f.accepted);
+  expect(f.spawned()).toBeUndefined(); expect(f.run.cwd).toBe("/checkout");
+  expect(statusData(f).at(-1)?.code).toBe("dispatch-source-mismatch"); expect(service.readLocalSettlement(f.owner).ready).toBe(false);
+});
+
+test("hook credentials cannot be borrowed by a changed native source", async () => {
+  const f = fixture(), exit = pending<number>(), launched = pending<void>(); Object.assign(f.child, { exited: exit.promise });
+  const service = f.service(), execution = service.execute(f.owner, "original prompt", true, value => { if (value) launched.resolve(); });
+  await launched.promise; f.session.nativeSessionId = foreignNativeId;
+  expect(await service.ingestHook("Stop", { runId: f.run.runId, payload: { hook_event_name: "Stop", session_id: foreignNativeId } }, secret)).toMatchObject({ status: 400 });
+  expect(f.records.some(record => record.kind === "hook")).toBe(false);
+  exit.resolve(0); await execution; expect(service.readLocalSettlement(f.owner).ready).toBe(false);
+});
+
+test("legacy new-session hooks use the preselected launch ID before result delivery assigns metadata", async () => {
+  const f = fixture(), exit = pending<number>(), launched = pending<void>(); delete f.session.nativeSessionId;
+  Object.assign(f.child, { exited: exit.promise, stdout: bytes([wire({ ...success, session_id: f.run.runId })]) });
+  const service = f.service(), execution = service.execute(f.owner, "first prompt", false, value => { if (value) launched.resolve(); });
+  await launched.promise;
+  expect(await service.ingestHook("Stop", { runId: f.run.runId, payload: { hook_event_name: "Stop", session_id: f.run.runId } }, secret)).toMatchObject({ status: 200 });
+  exit.resolve(0); await execution;
+  expect(service.readLocalSettlement(f.owner)).toMatchObject({ ready: true, evidence: { nativeSessionId: f.run.runId, terminal: { status: "completed", cause: "result-success" } } });
 });

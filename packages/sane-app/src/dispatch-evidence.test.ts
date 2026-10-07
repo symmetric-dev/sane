@@ -1,8 +1,58 @@
 import { expect, test } from "bun:test";
-import { createDispatchEvidence } from "./dispatch-evidence";
+import { createDispatchEvidence, DispatchPreNativeRefusal } from "./dispatch-evidence";
 import type { DispatchSubmissionEvidence } from "../shared/conversation/dispatch-contract";
 
 const identity = { source: { harnessId: "fixture", sessionId: "conversation", authorityId: "authority", nativeSessionId: "native", cwd: "/fixture" }, runId: "stable-run", nativeCommandId: "stable-command" };
+
+test("certified synchronous fresh refusal is exact, permanently withheld and records honest finish while paused", () => {
+  const cause = new Error("durably paused drift"), refusal = new DispatchPreNativeRefusal(cause);
+  const outcomes: DispatchSubmissionEvidence[] = []; let paused = false, failures = 0, attempts = 0;
+  const evidence = createDispatchEvidence(identity, { beforeNative: () => { attempts++; paused = true; throw refusal; }, outcome: value => {
+    expect(paused).toBe(true); outcomes.push(value);
+  } }, () => failures++);
+  expect(evidence.recognizesRefusal(refusal)).toBe(false);
+  expect(() => evidence.beforeNative()).toThrow(refusal);
+  expect(refusal.cause).toBe(cause); expect(evidence.recognizesRefusal(refusal)).toBe(true);
+  expect(evidence.recognizesRefusal(new DispatchPreNativeRefusal(cause))).toBe(false);
+  expect(evidence.recognizesRefusal(undefined)).toBe(false);
+  expect(() => evidence.beforeNative()).toThrow("replay forbidden");
+  evidence.finish(); evidence.finish();
+  expect(attempts).toBe(1); expect(failures).toBe(0);
+  expect(outcomes).toEqual([{ ...identity, submission: "not-submitted", nativeAcceptance: "not-accepted" }]);
+});
+
+for (const error of [new Error("unknown"), Object.assign(new Error("impostor"), { code: "context-changed" }),
+  Object.assign(new Error("marker impostor"), { name: "DispatchPreNativeRefusal" })]) test(`uncertified boundary ${error.message} remains fatal`, () => {
+  let failures = 0;
+  const evidence = createDispatchEvidence(identity, { beforeNative: () => { throw error; } }, () => failures++);
+  expect(() => evidence.beforeNative()).toThrow(error); expect(evidence.recognizesRefusal(error)).toBe(false);
+  evidence.finish(); expect(failures).toBe(1);
+});
+
+for (const possibleNative of [false, true]) test(`nominal marker from outcome is fatal ${possibleNative ? "after possible native" : "outside fresh boundary"}`, () => {
+  const refusal = new DispatchPreNativeRefusal(new Error("not a certified outcome")); let failures = 0;
+  const evidence = createDispatchEvidence(identity, { outcome: () => { throw refusal; } }, () => failures++);
+  if (possibleNative) evidence.beforeNative(); else evidence.withheld();
+  expect(() => evidence.finish()).toThrow(refusal); expect(failures).toBe(1);
+  expect(evidence.recognizesRefusal(refusal)).toBe(false);
+});
+
+test("even the exact recognized refusal from a later outcome hook is fatal", () => {
+  const refusal = new DispatchPreNativeRefusal(new Error("paused")); let failures = 0;
+  const evidence = createDispatchEvidence(identity, { beforeNative: () => { throw refusal; }, outcome: () => { throw refusal; } }, () => failures++);
+  expect(() => evidence.beforeNative()).toThrow(refusal); expect(failures).toBe(0);
+  expect(() => evidence.finish()).toThrow(refusal); expect(failures).toBe(1);
+});
+
+test("async rejection or thenable inspection cannot certify a nominal refusal", () => {
+  const refusal = new DispatchPreNativeRefusal(new Error("async refusal"));
+  for (const hook of [async () => { throw refusal; }, () => ({ get then() { throw refusal; } })]) {
+    let failures = 0;
+    const evidence = createDispatchEvidence(identity, { beforeNative: hook }, () => failures++);
+    expect(() => evidence.beforeNative()).toThrow(); expect(evidence.recognizesRefusal(refusal)).toBe(false);
+    evidence.finish(); expect(failures).toBe(1);
+  }
+});
 
 test("durable intent precedes possible submission and a refused write remains definitely not submitted", () => {
   const outcomes: DispatchSubmissionEvidence[] = []; let failures = 0;
@@ -42,11 +92,14 @@ test("async durable hooks are rejected synchronously rather than racing native d
 test("withholding closes native admission immediately and repeated finish cannot reopen it", () => {
   const outcomes: DispatchSubmissionEvidence[] = []; let attempts = 0, failures = 0;
   const evidence = createDispatchEvidence(identity, { beforeNative: () => { attempts++; }, outcome: value => outcomes.push(value) }, () => failures++);
+  expect(evidence.boundaryState()).toEqual({ phase: "fresh", withholdingObserved: false });
   evidence.withheld(); const withheld = evidence.snapshot();
+  expect(evidence.boundaryState()).toEqual({ phase: "withheld", withholdingObserved: false });
   expect(() => evidence.beforeNative()).toThrow("replay forbidden");
   expect(() => evidence.outcome("unknown")).toThrow("contradicts native boundary");
   expect(evidence.snapshot()).toBe(withheld); expect(outcomes).toEqual([]);
   evidence.finish(); const finished = evidence.snapshot(); evidence.finish(); evidence.withheld();
+  expect(evidence.boundaryState()).toEqual({ phase: "withheld", withholdingObserved: true });
   expect(() => evidence.beforeNative()).toThrow("replay forbidden");
   expect(evidence.snapshot()).toBe(finished); expect(attempts).toBe(0); expect(failures).toBe(0);
   expect(outcomes).toEqual([{ ...identity, submission: "not-submitted", nativeAcceptance: "not-accepted" }]);

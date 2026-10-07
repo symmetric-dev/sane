@@ -9,6 +9,7 @@ import {
 } from "./harness-dispatch";
 import type { RunOwner } from "./run-owner";
 import { ConversationCoordinator, type ConversationAdmissionLease } from "./conversation-coordinator";
+import { DispatchPreNativeRefusal } from "./dispatch-evidence";
 
 const automation = { "queued-user": { supported: true }, "worker-report": { supported: true }, handoff: { supported: true } } as const;
 const source: DispatchSource = { harnessId: "third-harness", sessionId: "conversation", authorityId: "authority", nativeSessionId: "native", cwd: "/checkout" };
@@ -81,6 +82,63 @@ function fixture() {
   const registry = new HarnessDispatchRegistry(); registry.register(adapter);
   return { calls, adapter, hooks, state, registry, execution, reconciliation, proof, installed: () => installed };
 }
+
+for (const propagated of [false, true]) test(`certified boundary refusal ${propagated ? "propagates" : "is caught by adapter"} without global poison or false success`, async () => {
+  const f = fixture(), registry = new HarnessDispatchRegistry(), refusal = new DispatchPreNativeRefusal(new Error("durably paused"));
+  const observations: unknown[] = [];
+  f.hooks.evidence = { beforeNative: () => { throw refusal; }, outcome: value => { observations.push(value); expect(f.state.closing).toBe(true); } };
+  registry.register({ ...f.adapter, execute: async (owner, _prompt, _resume, ready) => {
+    ready(true); owner.run.status = "completed"; // A lying adapter must not prove success.
+    f.state.closing = true;
+    if (propagated) owner.dispatchEvidence!.beforeNative();
+    else {
+      expect(() => owner.dispatchEvidence!.beforeNative()).toThrow(refusal);
+      expect(() => owner.dispatchEvidence!.beforeNative()).toThrow("replay forbidden");
+    }
+  } });
+  const lifecycle = registry.start(request({ requestId: "request" }), f.hooks); await lifecycle.done;
+  expect(f.state.failClosed).toBe(0); expect(f.installed()).toBeUndefined();
+  expect(f.calls).not.toContain("terminate"); expect(f.calls).not.toContain("proof"); expect(f.calls).not.toContain("wake");
+  expect(observations).toEqual([lifecycle.submissionEvidence()]);
+  expect(lifecycle.submissionEvidence()).toMatchObject({ requestId: "request", runId: "run", source, submission: "not-submitted", nativeAcceptance: "not-accepted" });
+  f.state.closing = false;
+  expect(await lifecycle.successfulSettlement()).toMatchObject({ ready: false, code: "dispatch-native-withheld" });
+  lifecycle.owner.run.runId = "replacement";
+  expect((await lifecycle.successfulSettlement()).ready).toBe(false); expect(f.state.failClosed).toBe(1);
+  lifecycle.owner.run.runId = "run"; expect((await lifecycle.successfulSettlement()).ready).toBe(false);
+});
+
+for (const mode of ["outside-boundary", "different-marker", "later-unknown", "outcome-same-marker", "outcome-after-native", "async-hook"] as const)
+  test(`refusal classification does not suppress ${mode}`, async () => {
+    const f = fixture(), registry = new HarnessDispatchRegistry(), refusal = new DispatchPreNativeRefusal(new Error("paused"));
+    f.hooks.evidence = {
+      beforeNative: mode === "async-hook" ? async () => { throw refusal; } : () => { if (mode !== "outcome-after-native") throw refusal; },
+      outcome: () => { if (mode === "outcome-same-marker" || mode === "outcome-after-native") throw refusal; },
+    };
+    registry.register({ ...f.adapter, execute: async (owner, _prompt, _resume, ready) => {
+      ready(true);
+      if (mode === "outside-boundary") throw refusal;
+      if (mode === "outcome-after-native" || mode === "async-hook") { owner.dispatchEvidence!.beforeNative(); return; }
+      expect(() => owner.dispatchEvidence!.beforeNative()).toThrow(refusal);
+      if (mode === "different-marker") throw new DispatchPreNativeRefusal(new Error("paused"));
+      if (mode === "later-unknown") throw new Error("later invariant");
+    } });
+    const lifecycle = registry.start(request(), f.hooks); await lifecycle.done;
+    expect(f.state.failClosed).toBeGreaterThan(0); expect(f.installed()).toBe(lifecycle.owner);
+    expect((await lifecycle.successfulSettlement()).ready).toBe(false); expect(f.calls).not.toContain("wake");
+  });
+
+test("certified propagated refusal still revalidates original owner identity", async () => {
+  const f = fixture(), registry = new HarnessDispatchRegistry(), refusal = new DispatchPreNativeRefusal(new Error("paused"));
+  f.hooks.evidence = { beforeNative: () => { throw refusal; } };
+  registry.register({ ...f.adapter, execute: async owner => {
+    try { owner.dispatchEvidence!.beforeNative(); }
+    catch (error) { owner.run.runId = "replacement"; throw error; }
+  } });
+  const lifecycle = registry.start(request(), f.hooks); await lifecycle.done;
+  expect(f.state.failClosed).toBeGreaterThan(0); expect(f.installed()).toBe(lifecycle.owner);
+  expect((await lifecycle.successfulSettlement()).ready).toBe(false);
+});
 
 function openCodeFixture(proofPhase: "command" | "native" = "command") {
   const f = fixture(), registry = new HarnessDispatchRegistry(), entered = pending<void>(), commands: string[] = [];
@@ -669,3 +727,421 @@ for (const order of ["before-release", "after-release"] as const) test(`independ
   f.reconciliation.resolve(); await lifecycle.done; f.proof.resolve();
   expect(await lifecycle.successfulSettlement()).toEqual({ ready: true });
 });
+
+function releaseFixture(status: "completed" | "failed" | "interrupted" = "completed") {
+  const f = fixture(), registry = new HarnessDispatchRegistry(); f.hooks.wake = undefined;
+  const current = { source: { ...source }, installation: "installed-config", ownerPresent: false, admissionPending: false, reconciliationPending: false, capacityAvailable: true };
+  f.hooks.releasedGuards = () => ({ ...current, ownerPresent: current.ownerPresent || !!f.installed() });
+  registry.register({ ...f.adapter, execute: async (owner, prompt, resume, ready) => {
+    owner.dispatchEvidence!.beforeNative();
+    await f.adapter.execute(owner, prompt, resume, ready);
+    owner.dispatchEvidence!.outcome("submitted"); owner.run.status = status;
+  } });
+  const start = () => registry.start(request(), f.hooks);
+  return { ...f, registry, current, start };
+}
+
+for (const status of ["completed", "failed", "interrupted"] as const) test(`healthy ${status} release is distinct from successful settlement and never observes native success/idle`, async () => {
+  const f = releaseFixture(status), lifecycle = f.start();
+  expect((await lifecycle.releasedSettlement()).ready).toBe(false);
+  await lifecycle.admission; f.execution.resolve(); await lifecycle.done;
+  if (status === "interrupted") lifecycle.owner.stopRequested = true;
+  expect(await lifecycle.releasedSettlement()).toEqual({ ready: true });
+  expect(f.calls).not.toContain("proof"); expect(f.calls).not.toContain("wake");
+  if (status !== "completed") expect((await lifecycle.successfulSettlement()).ready).toBe(false);
+  else { f.proof.resolve(); expect(await lifecycle.successfulSettlement()).toEqual({ ready: true }); }
+});
+
+test("certified boundary refusal can prove healthy release but never successful completion", async () => {
+  const f = releaseFixture(), registry = new HarnessDispatchRegistry(), refusal = new DispatchPreNativeRefusal(new Error("paused"));
+  f.hooks.evidence = { beforeNative: () => { throw refusal; } };
+  registry.register({ ...f.adapter, execute: async owner => { owner.run.status = "failed"; owner.dispatchEvidence!.beforeNative(); } });
+  const lifecycle = registry.start(request(), f.hooks); await lifecycle.done;
+  expect(await lifecycle.admission).toEqual({ state: "unconfirmed" });
+  expect(await lifecycle.releasedSettlement()).toEqual({ ready: true });
+  expect(await lifecycle.successfulSettlement()).toMatchObject({ ready: false, code: "dispatch-native-withheld" });
+  expect(f.state.failClosed).toBe(0); expect(f.calls).not.toContain("proof"); expect(f.calls).not.toContain("wake");
+});
+
+for (const accessor of ["successfulSettlement", "releasedSettlement"] as const)
+  test(`queued pre-intent ${accessor} peek leaves original durable guard in control`, async () => {
+    const f = releaseFixture(), registry = new HarnessDispatchRegistry(), install = f.hooks.install;
+    const refusal = new DispatchPreNativeRefusal(new Error("durably paused launch drift"));
+    let paused = false, observations = 0, proofReads = 0;
+    f.hooks.wake = () => { f.calls.push("wake"); };
+    f.hooks.install = done => {
+      const owner = install(done);
+      owner.beforeSend = () => {
+        f.calls.push("original-queue-guard");
+        if (owner.run.model !== undefined) { paused = true; throw refusal; }
+      };
+      return owner;
+    };
+    f.hooks.evidence = {
+      beforeNative: () => { f.installed()!.beforeSend!(); },
+      outcome: value => {
+        expect(paused).toBe(true); expect(Object.isFrozen(value.source)).toBe(true);
+        expect(value).toMatchObject({ submission: "not-submitted", nativeAcceptance: "not-accepted" });
+        observations++;
+      },
+    };
+    registry.register({ ...f.adapter, execute: async (owner, _prompt, _resume, ready) => {
+      f.calls.push("execute"); owner.run.status = "failed";
+      owner.dispatchEvidence!.beforeNative(); f.calls.push("native-effect"); ready(true);
+    } });
+    const lifecycle = registry.start(request({ origin: "queued-user", requestId: "queued-request" }), f.hooks);
+    lifecycle.owner.run.model = "changed";
+    const peek = accessor === "releasedSettlement"
+      ? lifecycle.releasedSettlement(async () => { proofReads++; return { ready: true }; })
+      : lifecycle.successfulSettlement();
+    // No await: observe the read before the deferred execution microtask.
+    expect(f.state.failClosed).toBe(0); expect(paused).toBe(false); expect(observations).toBe(0);
+    expect(f.calls).toEqual(["install"]); expect(proofReads).toBe(0);
+    expect(await peek).toMatchObject({ ready: false, code: "dispatch-unsettled" });
+    await lifecycle.done;
+    expect(f.calls.filter(call => call === "original-queue-guard")).toHaveLength(1);
+    expect(f.calls.filter(call => call === "execute")).toHaveLength(1);
+    expect(paused).toBe(true); expect(observations).toBe(1);
+    expect(lifecycle.submissionEvidence()).toMatchObject({ source, requestId: "queued-request", submission: "not-submitted", nativeAcceptance: "not-accepted" });
+    expect(await lifecycle.admission).toEqual({ state: "unconfirmed" });
+    expect(await lifecycle.releasedSettlement()).toEqual({ ready: true });
+    expect(await lifecycle.successfulSettlement()).toMatchObject({ ready: false, code: "dispatch-native-withheld" });
+    expect(f.state.failClosed).toBe(0); expect(f.state.storageFailed).toBe(false); expect(f.installed()).toBeUndefined();
+    for (const call of ["native-effect", "proof", "wake", "terminate"]) expect(f.calls).not.toContain(call);
+    // Restoration cannot replace the actual durably observed withheld snapshot.
+    lifecycle.owner.run.model = undefined;
+    expect(await lifecycle.releasedSettlement()).toMatchObject({ ready: false, code: "reconciliation-required" });
+    lifecycle.owner.run.model = "changed";
+    expect((await lifecycle.releasedSettlement()).ready).toBe(false); expect(observations).toBe(1);
+  });
+
+for (const phase of ["published", "final-boundary"] as const) test(`queued launch drift at ${phase} requires durable withholding, releases locally and never proves success`, async () => {
+  const f = releaseFixture(), registry = new HarnessDispatchRegistry(), install = f.hooks.install;
+  const refusal = new DispatchPreNativeRefusal(new Error("durably paused launch drift"));
+  let paused = false, observations = 0;
+  f.hooks.install = done => { const owner = install(done); owner.beforeSend = () => {
+    if (owner.run.model !== undefined) { paused = true; throw new Error("original queued configuration guard"); }
+  }; return owner; };
+  f.hooks.evidence = {
+    beforeNative: () => { paused = true; throw refusal; },
+    outcome: value => { expect(paused).toBe(true); expect(value.submission).toBe("not-submitted"); observations++; },
+  };
+  registry.register({ ...f.adapter, execute: async owner => {
+    f.calls.push("execute"); owner.run.status = "failed";
+    if (phase === "published") {
+      expect(() => owner.beforeSend!()).toThrow("original queued configuration guard"); owner.dispatchEvidence!.withheld();
+    } else {
+      owner.beforeSend!(); owner.run.model = "changed";
+      expect(() => owner.dispatchEvidence!.beforeNative()).toThrow(refusal);
+    }
+  } });
+  const lifecycle = registry.start(request({ origin: "queued-user", requestId: "queued-request" }), f.hooks);
+  if (phase === "published") lifecycle.owner.run.model = "changed";
+  await lifecycle.done;
+  expect(observations).toBe(1); expect(f.state.failClosed).toBe(0); expect(f.calls).toContain("execute");
+  expect(lifecycle.submissionEvidence()).toMatchObject({ runId: "run", requestId: "queued-request", submission: "not-submitted", nativeAcceptance: "not-accepted" });
+  expect(await lifecycle.releasedSettlement()).toEqual({ ready: true });
+  expect(await lifecycle.successfulSettlement()).toMatchObject({ ready: false, code: "dispatch-native-withheld" });
+  lifecycle.owner.run.status = "completed";
+  expect((await lifecycle.releasedSettlement()).ready).toBe(false);
+  expect((await lifecycle.successfulSettlement()).ready).toBe(false);
+  expect(() => lifecycle.owner.dispatchEvidence!.beforeNative()).toThrow("replay forbidden");
+  expect(f.calls).not.toContain("proof"); expect(f.calls).not.toContain("wake"); expect(f.calls).not.toContain("terminate");
+  lifecycle.owner.run.model = "later-tamper";
+  expect(await lifecycle.releasedSettlement()).toMatchObject({ ready: false, code: "reconciliation-required" });
+});
+
+for (const mode of ["successful-hook", "unknown", "accepted"] as const) test(`queued ${mode} launch tampering cannot borrow initial non-submission and original outcomes remain recordable`, async () => {
+  const f = releaseFixture(), registry = new HarnessDispatchRegistry(), install = f.hooks.install;
+  const outcomes: string[] = [];
+  f.hooks.install = done => { const owner = install(done); owner.beforeSend = () => {}; return owner; };
+  f.hooks.evidence = {
+    beforeNative: () => { if (mode === "successful-hook") lifecycle.owner.run.model = "changed"; },
+    outcome: value => { outcomes.push(value.nativeAcceptance); },
+  };
+  registry.register({ ...f.adapter, execute: async owner => {
+    if (mode === "successful-hook") {
+      expect(() => owner.dispatchEvidence!.beforeNative()).toThrow("Installed dispatch run identity changed");
+    } else {
+      owner.dispatchEvidence!.beforeNative(); owner.run.model = "changed";
+      owner.dispatchEvidence!.outcome(mode === "accepted" ? "submitted" : "unknown", mode === "accepted" ? "accepted" : "unknown");
+    }
+    owner.run.status = "completed";
+  } });
+  const lifecycle = registry.start(request({ origin: "queued-user", requestId: "queued-request" }), f.hooks);
+  await lifecycle.done;
+  expect(outcomes).toContain(mode === "accepted" ? "accepted" : "unknown");
+  expect(lifecycle.submissionEvidence()).toMatchObject({ runId: "run", submission: mode === "accepted" ? "submitted" : "unknown", nativeAcceptance: mode === "accepted" ? "accepted" : "unknown" });
+  expect(f.state.failClosed).toBeGreaterThan(0); expect((await lifecycle.releasedSettlement()).ready).toBe(false);
+  expect((await lifecycle.successfulSettlement()).ready).toBe(false); expect(f.calls).not.toContain("proof"); expect(f.calls).not.toContain("wake");
+});
+
+test("explicit stop in preparation can prove released non-submission without false success", async () => {
+  const f = releaseFixture(), registry = new HarnessDispatchRegistry();
+  registry.register({ ...f.adapter, execute: async (owner, _prompt, _resume, ready) => {
+    owner.stopRequested = true; owner.run.status = "interrupted"; owner.dispatchEvidence!.withheld(); ready(false);
+  } });
+  const lifecycle = registry.start(request(), f.hooks); await lifecycle.done;
+  expect(await lifecycle.releasedSettlement()).toEqual({ ready: true });
+  expect((await lifecycle.successfulSettlement()).ready).toBe(false);
+  expect(lifecycle.submissionEvidence()).toMatchObject({ submission: "not-submitted", nativeAcceptance: "not-accepted" });
+});
+
+for (const flag of ["ownerPresent", "admissionPending", "reconciliationPending", "capacityAvailable", "closing", "storageFailed", "reconciliationRequired", "cancelling", "unsettled"] as const)
+  test(`release proof requires current ${flag} guard`, async () => {
+    const f = releaseFixture("failed"), lifecycle = f.start(); await lifecycle.admission; f.execution.resolve(); await lifecycle.done;
+    if (flag === "capacityAvailable") f.current.capacityAvailable = false;
+    else if (flag === "ownerPresent" || flag === "admissionPending" || flag === "reconciliationPending") f.current[flag] = true;
+    else if (flag === "cancelling") lifecycle.owner.cancelling = true;
+    else if (flag === "unsettled") lifecycle.owner.settled = false;
+    else f.state[flag] = true;
+    expect((await lifecycle.releasedSettlement()).ready).toBe(false); expect(f.calls).not.toContain("proof"); expect(f.calls).not.toContain("wake");
+  });
+
+test("release proof checks actual retained ownership, not a forged released DTO", async () => {
+  const f = releaseFixture("failed"); f.hooks.release = () => {};
+  f.hooks.releasedGuards = () => ({ ...f.current, ownerPresent: false });
+  const lifecycle = f.start(); await lifecycle.admission; f.execution.resolve(); await lifecycle.done;
+  expect(f.installed()).toBe(lifecycle.owner);
+  expect((await lifecycle.releasedSettlement()).ready).toBe(false);
+});
+
+test("release capability refuses unknown legacy submission and missing current guards", async () => {
+  for (const missing of [false, true]) {
+    const f = releaseFixture(); if (missing) f.hooks.releasedGuards = undefined;
+    // The original legacy adapter deliberately never certifies its boundary.
+    const registry = new HarnessDispatchRegistry(); registry.register(f.adapter);
+    const lifecycle = registry.start(request(), f.hooks); await lifecycle.admission; f.execution.resolve(); await lifecycle.done;
+    expect(lifecycle.submissionEvidence().submission).toBe("unknown");
+    expect((await lifecycle.releasedSettlement()).ready).toBe(false);
+  }
+});
+
+for (const order of ["before-release", "after-release"] as const) test(`release proof waits for ${order} reconciliation and retains fatal latches`, async () => {
+  for (const fails of [false, true]) {
+    const f = releaseFixture("failed"), entered = pending<void>();
+    f.hooks.reconciliation = { order, begin: () => ({ end: () => {} }), run: async () => { entered.resolve(); await f.reconciliation.promise; if (fails) throw new Error("reconcile failed"); } };
+    const lifecycle = f.start(); await lifecycle.admission; f.execution.resolve(); await entered.promise;
+    expect((await lifecycle.releasedSettlement()).ready).toBe(false);
+    f.reconciliation.resolve(); await lifecycle.done;
+    expect((await lifecycle.releasedSettlement()).ready).toBe(!fails);
+    if (fails) { f.state.storageFailed = f.state.reconciliationRequired = false; expect((await lifecycle.releasedSettlement()).ready).toBe(false); }
+  }
+});
+
+for (const timing of ["before", "during"] as const) for (const field of ["nativeSessionId", "authorityId", "cwd", "installation", "ownerPresent", "admissionPending", "reconciliationPending", "capacityAvailable"] as const)
+  test(`release checks CURRENT ${field} ${timing} optional awaited read-only proof`, async () => {
+    const f = releaseFixture("failed"), lifecycle = f.start(), entered = pending<void>();
+    await lifecycle.admission; f.execution.resolve(); await lifecycle.done;
+    const change = () => {
+      if (field === "nativeSessionId" || field === "authorityId" || field === "cwd") f.current.source[field] = "replacement";
+      else if (field === "installation") f.current.installation = "replacement";
+      else f.current[field] = field !== "capacityAvailable";
+    };
+    let reads = 0;
+    if (timing === "before") change();
+    const evaluation = lifecycle.releasedSettlement(async () => { reads++; entered.resolve(); await f.proof.promise; return { ready: true }; });
+    if (timing === "during") { await entered.promise; change(); }
+    f.proof.resolve(); expect((await evaluation).ready).toBe(false);
+    expect(reads).toBe(timing === "before" ? 0 : 1); expect(f.state.failClosed).toBe(0);
+  });
+
+test("replacement run object/installation gate cannot forge a release or reopen a fatal identity latch", async () => {
+  for (const replacement of ["run", "done", "beforeSend"] as const) {
+    const f = releaseFixture(), lifecycle = f.start(); await lifecycle.admission; f.execution.resolve(); await lifecycle.done;
+    const run = lifecycle.owner.run, done = lifecycle.owner.done, beforeSend = lifecycle.owner.beforeSend;
+    if (replacement === "run") lifecycle.owner.run = { ...run };
+    if (replacement === "done") lifecycle.owner.done = Promise.resolve();
+    if (replacement === "beforeSend") lifecycle.owner.beforeSend = () => {};
+    expect(await lifecycle.releasedSettlement()).toMatchObject({ ready: false, code: "reconciliation-required" });
+    lifecycle.owner.run = run; lifecycle.owner.done = done; lifecycle.owner.beforeSend = beforeSend;
+    expect((await lifecycle.releasedSettlement()).ready).toBe(false); expect(f.state.failClosed).toBe(1);
+  }
+});
+
+test("optional unavailable release observation stays retryable but cannot hide concurrent identity drift", async () => {
+  const f = releaseFixture("failed"), lifecycle = f.start(); await lifecycle.admission; f.execution.resolve(); await lifecycle.done;
+  expect(await lifecycle.releasedSettlement(async () => { throw new DispatchProofUnavailableError("offline"); })).toMatchObject({ ready: false, code: "dispatch-proof-unavailable" });
+  expect(await lifecycle.releasedSettlement()).toEqual({ ready: true }); expect(f.state.failClosed).toBe(0);
+  expect(await lifecycle.releasedSettlement(async () => { lifecycle.owner.run.runId = "replacement"; throw new DispatchProofUnavailableError("offline"); })).toMatchObject({ ready: false, code: "reconciliation-required" });
+  lifecycle.owner.run.runId = "run"; expect((await lifecycle.releasedSettlement()).ready).toBe(false);
+});
+
+for (const field of ["model", "effort", "agent", "profileId", "createdAt"] as const) test(`installed run ${field} is immutable even when current session release guards claim unchanged configuration`, async () => {
+  const f = releaseFixture("failed"), lifecycle = f.start(); await lifecycle.admission; f.execution.resolve(); await lifecycle.done;
+  const original = lifecycle.owner.run[field];
+  Object.assign(lifecycle.owner.run, { [field]: "replacement" });
+  expect(await lifecycle.releasedSettlement()).toMatchObject({ ready: false, code: "reconciliation-required" });
+  Object.assign(lifecycle.owner.run, { [field]: original });
+  expect((await lifecycle.releasedSettlement()).ready).toBe(false);
+});
+
+test("fatal optional release proof stays latched even when concurrent source drift is restored", async () => {
+  const f = releaseFixture("failed"), lifecycle = f.start(); await lifecycle.admission; f.execution.resolve(); await lifecycle.done;
+  expect(await lifecycle.releasedSettlement(async () => { f.current.installation = "replacement"; throw new Error("invariant"); })).toMatchObject({ ready: false, code: "reconciliation-required" });
+  f.current.installation = "installed-config"; f.state.storageFailed = f.state.reconciliationRequired = false;
+  expect((await lifecycle.releasedSettlement()).ready).toBe(false); expect(f.state.failClosed).toBe(1);
+});
+
+test("released predecessor cannot claim current conversation release while a different owner is installed", async () => {
+  const f = releaseFixture("failed"), previous = f.start(); await previous.admission; f.execution.resolve(); await previous.done;
+  expect(await previous.releasedSettlement()).toEqual({ ready: true });
+  const next = f.start(); await next.admission;
+  expect(f.installed()).toBe(next.owner);
+  expect((await previous.releasedSettlement()).ready).toBe(false);
+  await next.done; expect(await previous.releasedSettlement()).toEqual({ ready: true });
+});
+
+for (const phase of ["first", "final"] as const) for (const code of ["dispatch-proof-unavailable", "dispatch-source-mismatch"] as const)
+  test(`typed ${code} from ${phase} release guard denies only that observation and fresh retry succeeds`, async () => {
+    const f = releaseFixture("failed"), original = f.hooks.releasedGuards!;
+    let checks = 0, failAt = 0, reads = 0;
+    f.hooks.releasedGuards = owner => {
+      if (++checks === failAt) throw code === "dispatch-proof-unavailable"
+        ? new DispatchProofUnavailableError("offline") : new HarnessDispatchError(code, "source changed");
+      return original(owner);
+    };
+    const lifecycle = f.start(); await lifecycle.admission; f.execution.resolve(); await lifecycle.done;
+    checks = 0; failAt = phase === "first" ? 1 : 2;
+    expect(await lifecycle.releasedSettlement(async () => { reads++; return { ready: true }; })).toMatchObject({ ready: false, code });
+    expect(checks).toBe(failAt); expect(reads).toBe(phase === "first" ? 0 : 1);
+    expect(f.state.failClosed).toBe(0); expect(f.state.storageFailed).toBe(false); expect(f.state.reconciliationRequired).toBe(false);
+    failAt = 0; checks = 0;
+    expect(await lifecycle.releasedSettlement()).toEqual({ ready: true }); expect(checks).toBe(2);
+    expect(f.state.failClosed).toBe(0); expect(f.calls).not.toContain("wake");
+  });
+
+for (const refresh of ["unavailable", "source-mismatch", "unknown"] as const)
+  test(`unavailable optional release proof refresh independently classifies ${refresh} guard failure`, async () => {
+    const f = releaseFixture("failed"), original = f.hooks.releasedGuards!; let checks = 0, failAt = 0;
+    f.hooks.releasedGuards = owner => {
+      if (++checks === failAt) {
+        if (refresh === "unavailable") throw new DispatchProofUnavailableError("guard offline");
+        if (refresh === "source-mismatch") throw new HarnessDispatchError("dispatch-source-mismatch", "fresh source changed");
+        throw new Error("guard invariant");
+      }
+      return original(owner);
+    };
+    const lifecycle = f.start(); await lifecycle.admission; f.execution.resolve(); await lifecycle.done;
+    checks = 0; failAt = 2;
+    expect(await lifecycle.releasedSettlement(async () => { throw new DispatchProofUnavailableError("proof offline"); })).toMatchObject({
+      ready: false, code: refresh === "unavailable" ? "dispatch-proof-unavailable" : refresh === "source-mismatch" ? "dispatch-source-mismatch" : "reconciliation-required",
+      ...(refresh === "unavailable" ? { reason: "guard offline" } : {}),
+    });
+    expect(checks).toBe(2); expect(f.state.failClosed).toBe(refresh === "unknown" ? 1 : 0);
+    failAt = 0; f.state.storageFailed = f.state.reconciliationRequired = false;
+    expect((await lifecycle.releasedSettlement()).ready).toBe(refresh !== "unknown");
+    expect(f.state.failClosed).toBe(refresh === "unknown" ? 1 : 0);
+  });
+
+for (const field of ["nativeSessionId", "installation", "ownerPresent", "admissionPending", "reconciliationPending", "capacityAvailable"] as const)
+  test(`unavailable optional release proof rechecks fresh ${field} without cached readiness`, async () => {
+    const f = releaseFixture("failed"), lifecycle = f.start(), entered = pending<void>();
+    await lifecycle.admission; f.execution.resolve(); await lifecycle.done;
+    const evaluation = lifecycle.releasedSettlement(async () => { entered.resolve(); await f.proof.promise; throw new DispatchProofUnavailableError("offline"); });
+    await entered.promise;
+    if (field === "nativeSessionId") f.current.source.nativeSessionId = "replacement";
+    else if (field === "installation") f.current.installation = "replacement";
+    else f.current[field] = field !== "capacityAvailable";
+    f.proof.resolve();
+    expect(await evaluation).toMatchObject({ ready: false, code: field === "nativeSessionId" || field === "installation" ? "dispatch-source-mismatch" : field === "ownerPresent" ? "dispatch-unsettled" : "dispatch-unavailable" });
+    expect(f.state.failClosed).toBe(0); expect(f.state.storageFailed).toBe(false);
+  });
+
+for (const [name, change] of [...identityChanges, ["configuration", { model: "replacement" }]] as readonly [string, Partial<RunOwner["run"]>][])
+  test(`unavailable release proof cannot hide concurrent installed ${name} mutation`, async () => {
+    const f = releaseFixture(), lifecycle = f.start(), entered = pending<void>();
+    await lifecycle.admission; f.execution.resolve(); await lifecycle.done;
+    const installed = { ...lifecycle.owner.run };
+    const evaluation = lifecycle.releasedSettlement(async () => { entered.resolve(); await f.proof.promise; throw new DispatchProofUnavailableError("offline"); });
+    await entered.promise; Object.assign(lifecycle.owner.run, change); f.proof.resolve();
+    expect(await evaluation).toMatchObject({ ready: false, code: "reconciliation-required" }); expect(f.state.failClosed).toBe(1);
+    Object.assign(lifecycle.owner.run, installed); f.state.storageFailed = f.state.reconciliationRequired = false;
+    expect((await lifecycle.releasedSettlement()).ready).toBe(false); expect(f.state.failClosed).toBe(1);
+  });
+
+for (const code of ["dispatch-proof-unavailable", "dispatch-source-mismatch"] as const)
+  test(`release guard ${code} cannot mask its own installed identity mutation`, async () => {
+    const f = releaseFixture(), original = f.hooks.releasedGuards!; let mutate = false;
+    f.hooks.releasedGuards = owner => {
+      if (mutate) {
+        owner.run.runId = "replacement";
+        throw code === "dispatch-proof-unavailable" ? new DispatchProofUnavailableError("offline") : new HarnessDispatchError(code, "source changed");
+      }
+      return original(owner);
+    };
+    const lifecycle = f.start(); await lifecycle.admission; f.execution.resolve(); await lifecycle.done; mutate = true;
+    expect(await lifecycle.releasedSettlement()).toMatchObject({ ready: false, code: "reconciliation-required" });
+    expect(f.state.failClosed).toBe(1); mutate = false; lifecycle.owner.run.runId = "run";
+    expect((await lifecycle.releasedSettlement()).ready).toBe(false); expect(f.state.failClosed).toBe(1);
+  });
+
+for (const mode of ["code-shaped", "message-shaped", "other-typed", "unknown-proof"] as const)
+  test(`release denial classification remains nominal for ${mode}`, async () => {
+    const f = releaseFixture(), original = f.hooks.releasedGuards!; let fail = false;
+    f.hooks.releasedGuards = owner => {
+      if (fail) {
+        if (mode === "code-shaped") throw Object.assign(new Error("offline"), { code: "dispatch-source-mismatch" });
+        if (mode === "message-shaped") throw new Error("DispatchProofUnavailableError: offline");
+        if (mode === "other-typed") throw new HarnessDispatchError("invalid-dispatch-installation", "invalid");
+        throw new DispatchProofUnavailableError("guard offline");
+      }
+      return original(owner);
+    };
+    const lifecycle = f.start(); await lifecycle.admission; f.execution.resolve(); await lifecycle.done;
+    const evaluation = mode === "unknown-proof"
+      ? lifecycle.releasedSettlement(async () => { fail = true; throw new Error("proof invariant"); })
+      : (fail = true, lifecycle.releasedSettlement());
+    expect(await evaluation).toMatchObject({ ready: false, code: "reconciliation-required" }); expect(f.state.failClosed).toBe(1);
+    fail = false; f.state.storageFailed = f.state.reconciliationRequired = false;
+    expect((await lifecycle.releasedSettlement()).ready).toBe(false); expect(f.state.failClosed).toBe(1);
+  });
+
+for (const phase of ["installation", "first", "final", "error-refresh"] as const) for (const kind of ["promise", "thenable"] as const)
+  test(`${kind} returned by ${phase} release guard is fatal and consumes late rejection`, async () => {
+    const f = releaseFixture(), original = f.hooks.releasedGuards!, late = pending<never>();
+    let checks = 0, failAt = phase === "installation" ? 1 : 0, assimilated = false;
+    f.hooks.releasedGuards = owner => {
+      if (++checks !== failAt) return original(owner);
+      const result = kind === "promise" ? late.promise : { ...original(owner), then: (resolve: (value: never) => void, reject: (error: unknown) => void) => {
+        assimilated = true; return late.promise.then(resolve, reject);
+      } };
+      return result as unknown as ReturnType<typeof original>;
+    };
+    if (phase === "installation") expect(() => f.start()).toThrow("must complete synchronously");
+    else {
+      const lifecycle = f.start(); await lifecycle.admission; f.execution.resolve(); await lifecycle.done;
+      checks = 0; failAt = phase === "first" ? 1 : 2;
+      expect(await lifecycle.releasedSettlement(async () => {
+        if (phase === "error-refresh") throw new DispatchProofUnavailableError("proof offline");
+        return { ready: true };
+      })).toMatchObject({ ready: false, code: "reconciliation-required" });
+      expect(checks).toBe(failAt); failAt = 0; f.state.storageFailed = f.state.reconciliationRequired = false;
+      expect((await lifecycle.releasedSettlement()).ready).toBe(false);
+    }
+    expect(f.state.failClosed).toBe(1); expect(f.calls).not.toContain("wake");
+    await Promise.resolve(); if (kind === "thenable") expect(assimilated).toBe(true);
+    late.reject(new Error("late guard rejection")); await Promise.resolve(); await Promise.resolve();
+  });
+
+for (const mode of ["stopped", "certified-refusal", "unknown-submission", "fatal"] as const)
+  test(`released proof does not authorize successful settlement or wake for ${mode}`, async () => {
+    const f = releaseFixture(), registry = new HarnessDispatchRegistry(); let reads = 0;
+    f.hooks.wake = () => { f.calls.push("wake"); };
+    if (mode === "certified-refusal") f.hooks.evidence = { beforeNative: () => { throw new DispatchPreNativeRefusal(new Error("paused")); } };
+    registry.register({ ...f.adapter, execute: async (owner, _prompt, _resume, ready) => {
+      owner.run.status = "failed";
+      if (mode === "fatal") throw new Error("execution invariant");
+      if (mode === "certified-refusal") { owner.dispatchEvidence!.beforeNative(); return; }
+      if (mode === "stopped") {
+        owner.run.status = "interrupted"; owner.stopRequested = true; owner.dispatchEvidence!.withheld(); ready(false); return;
+      }
+      ready(true); // Without boundary evidence admission alone cannot prove release.
+    } });
+    f.proof.resolve(); const lifecycle = registry.start(request(), f.hooks); await lifecycle.done;
+    expect((await lifecycle.releasedSettlement(async () => { reads++; return { ready: true }; })).ready).toBe(mode === "stopped" || mode === "certified-refusal");
+    expect(reads).toBe(mode === "stopped" || mode === "certified-refusal" ? 1 : 0);
+    expect((await lifecycle.successfulSettlement()).ready).toBe(false);
+    expect(f.calls).not.toContain("proof"); expect(f.calls).not.toContain("wake");
+    expect(f.state.failClosed).toBe(mode === "fatal" ? 1 : 0);
+  });

@@ -10,6 +10,8 @@ import { workerReportPrompt } from "../src/worker-outbox";
 import { nativeWorkerRequestId, projectNativeWorkerReply } from "../../sane-cli/src/native-worker-contract";
 import { OpenCodeWorkerInvocations } from "../../sane-cli/src/native-opencode";
 import { createNativeWorkerHandler, type NativeWorkerOperations } from "../src/native-workers";
+import { createPendingInputControls } from "../src/pending-input-controls";
+import { PendingInputDomainError, PendingInputStorageError } from "../src/pending-input-contract";
 
 const dirs: string[] = [];
 afterEach(() => { for (const dir of dirs.splice(0)) rmSync(dir, { recursive: true, force: true }); });
@@ -130,6 +132,89 @@ describe("App-managed worker service and durable outbox", () => {
     expect(new Set(f.cancelled)).toEqual(new Set([a.id, sibling.id, child.id]));
     expect(f.store.get(unrelated.id)!.state).toBe("reserved");
     await expect(f.service.cancelAll(f.caller, { parentSessionId: unrelated.sessionId })).rejects.toMatchObject({ code: "worker-scope" });
+  });
+  test("beforeCancel fences the whole explicit set before refresh and pins this attempt's cancellation callback", async () => {
+    const f = fixture(8), root = f.parent.sessionId, a = await f.start(), b = await f.start();
+    f.parent.sessionId = a.sessionId; const child = await f.start(); f.parent.sessionId = root;
+    const entered = Promise.withResolvers<void>(), gate = Promise.withResolvers<void>(), order: string[] = [], captured: string[] = [];
+    f.executor.beforeCancel = rows => {
+      captured.push(...rows.map(w => w.id)); order.push("fence");
+      return async w => { order.push(`pinned:${w.id}`); };
+    };
+    f.executor.observe = async w => { order.push(`refresh:${w.id}`); entered.resolve(); await gate.promise; return {}; };
+    const pending = f.service.cancelForSession(root, [a.id, b.id]); await entered.promise;
+    expect(captured).toEqual([a.id, b.id]); expect(order[0]).toBe("fence");
+    expect(f.store.suppressed(a.sessionId)).toBe(true); expect(f.store.suppressed(b.sessionId)).toBe(true); expect(f.store.suppressed(child.sessionId)).toBe(false);
+    f.executor.cancel = async () => { throw new Error("Replacement callback must never be used"); };
+    gate.resolve(); await pending;
+    expect(order).toContain(`pinned:${a.id}`); expect(order).toContain(`pinned:${b.id}`); expect(f.store.get(child.id)!.cancelRequestedAt).toBeUndefined();
+  });
+
+  for (const wrapped of [false, true]) for (const mode of ["reject-later", "never", "getter", "async-domain", "impostor"] as const)
+    test(`cancellation rejects ${wrapped ? "bridge-wrapped" : "void-typed"} ${mode} suppression before any target refresh`, async () => {
+      const f = fixture(), a = await f.start(), b = await f.start(), gate = Promise.withResolvers<void>();
+      let closed = false, writes = 0, reads = 0;
+      const controls = createPendingInputControls({ store: () => undefined, owner: () => undefined, available: () => !closed, failClosed: () => { closed = true; } });
+      const action = () => {
+        writes++;
+        if (mode === "getter") return Object.defineProperty({}, "then", { get() { throw new PendingInputDomainError("worker-scope", "Misleading then getter refusal"); } });
+        if (mode === "async-domain") return Promise.reject(new PendingInputDomainError("worker-scope", "Asynchronous writes are not ordinary domain refusals"));
+        if (mode === "impostor") return { code: "worker-scope", then: (_resolve: unknown, reject: (error: unknown) => void) => reject({ code: "worker-scope", message: "Not a synchronous domain refusal" }) };
+        return gate.promise;
+      };
+      // Async functions are assignable to void hooks; runtime enforcement must
+      // see the actual returned value, not a wrapper that discards it.
+      f.executor.suppressCancellation = wrapped ? () => controls.cancellationWrite(action) : action;
+      f.executor.observe = async () => { reads++; return {}; };
+      await expect(f.service.cancelForSession(f.parent.sessionId, "all")).rejects.toBeInstanceOf(PendingInputStorageError);
+      expect(closed).toBe(wrapped); expect(writes).toBe(1); expect(reads).toBe(0); expect(f.cancelled).toEqual([]);
+      for (const row of [a, b]) expect(f.store.get(row.id)!.cancelRequestedAt).toBeUndefined();
+      if (mode === "reject-later") { gate.reject(new Error("Late suppression rejection")); await Promise.resolve(); await Promise.resolve(); }
+      expect(reads).toBe(0); expect(f.cancelled).toEqual([]);
+    });
+
+  test("an async beforeCancel fence fails closed immediately without suppression, refresh or native effects", async () => {
+    const f = fixture(), w = await f.start(), gate = Promise.withResolvers<(worker: WorkerRecord) => Promise<void>>();
+    let reads = 0, writes = 0;
+    f.executor.beforeCancel = (() => gate.promise) as unknown as NonNullable<WorkerExecutor["beforeCancel"]>;
+    f.executor.suppressCancellation = () => { writes++; };
+    f.executor.observe = async () => { reads++; return {}; };
+    await expect(f.service.cancelForSession(f.parent.sessionId, [w.id])).rejects.toBeInstanceOf(PendingInputStorageError);
+    gate.reject(new Error("Late control fence rejection")); await Promise.resolve(); await Promise.resolve();
+    expect(writes).toBe(0); expect(reads).toBe(0); expect(f.cancelled).toEqual([]);
+  });
+
+  test("failure fencing a later cancel-all target cannot partially refresh or cancel the earlier target", async () => {
+    const f = fixture(), a = await f.start(), b = await f.start(), error = new PendingInputStorageError("Later target uncertain write");
+    let reads = 0;
+    f.executor.suppressCancellation = sessionId => { if (sessionId === b.sessionId) throw error; f.store.suppress(sessionId, true); };
+    f.executor.observe = async () => { reads++; return {}; };
+    await expect(f.service.cancelForSession(f.parent.sessionId, "all")).rejects.toBe(error);
+    expect(f.store.suppressed(a.sessionId)).toBe(true); expect(reads).toBe(0); expect(f.cancelled).toEqual([]);
+    for (const row of [a, b]) expect(f.store.get(row.id)!.cancelRequestedAt).toBeUndefined();
+  });
+
+  test("synchronous cancellation helper returns values and preserves storage error identity with one failure hook", () => {
+    let failures = 0;
+    const controls = createPendingInputControls({ store: () => undefined, owner: () => undefined, available: () => true, failClosed: () => { failures++; } });
+    const value = { done: true }, error = new PendingInputStorageError("Original uncertain post-rename failure");
+    expect(controls.cancellationWrite(() => value)).toBe(value); expect(failures).toBe(0);
+    try { controls.cancellationWrite(() => { throw error; }); throw new Error("Expected storage failure"); }
+    catch (actual) { expect(actual).toBe(error); }
+    expect(failures).toBe(1);
+  });
+
+  test("ordinary synchronous fences and native observation errors remain retryable, not storage failures", async () => {
+    const f = fixture(), w = await f.start(), refusal = new PendingInputDomainError("pending-input-owner-unavailable", "Read availability refusal", 503);
+    f.executor.beforeCancel = () => { throw refusal; };
+    await expect(f.service.cancelForSession(f.parent.sessionId, [w.id])).rejects.toBe(refusal);
+    f.executor.beforeCancel = () => undefined as unknown as (worker: WorkerRecord) => Promise<void>;
+    f.executor.suppressCancellation = () => ({ legacy: "ordinary synchronous return" });
+    f.executor.observe = async () => { throw refusal; };
+    await expect(f.service.cancelForSession(f.parent.sessionId, [w.id])).rejects.toBe(refusal);
+    f.executor.observe = async () => ({});
+    await f.service.cancelForSession(f.parent.sessionId, [w.id]);
+    expect(f.cancelled).toEqual([w.id]);
   });
 
   test("nested continuation publishes durable per-run revisions without rewriting the initial outcome", async () => {

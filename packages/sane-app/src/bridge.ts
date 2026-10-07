@@ -1,4 +1,5 @@
-import { readFile, writeFile, rename, appendFile, stat, readdir, realpath } from "node:fs/promises";
+import { readFile, writeFile, rename, appendFile, stat, readdir, realpath, open } from "node:fs/promises";
+import { constants } from "node:fs";
 import { resolve, dirname, join, isAbsolute } from "node:path";
 import { fileURLToPath } from "node:url";
 import { createHash } from "node:crypto";
@@ -32,7 +33,12 @@ import type { DispatchOrigin, DispatchSource, DispatchIdentity, DispatchEvidence
 import type { PreparedAdmissionContext, PreparedAdmissionOptions, PreparedInputAdmission } from "./prepared-input-admission";
 import { synchronousDispatchHook } from "./dispatch-evidence";
 import { PendingInputService, pendingInputRoute, type PendingInputPreflight } from "./pending-input-service";
-import { PendingInputDomainError, PendingInputStorageError, type PendingInputPins } from "./pending-input-contract";
+import { createPendingInputRecovery, createOriginalRecoveryJournal, type PendingInputRecovery } from "./pending-input-recovery";
+import { PendingInputDomainError, PendingInputStorageError, type PendingInputPins, type PendingInputStoredItem } from "./pending-input-contract";
+import { createPendingInputBridge, type PendingInputBridge } from "./pending-input-bridge";
+import { createPendingInputWake, type PendingInputWake, type PendingInputWakeClock, type PendingInputWakeKind } from "./pending-input-wake";
+import { createPendingInputControls } from "./pending-input-controls";
+import { assertPendingInputDomainMutation, assertDomainInitializationIdle, chainInRepository } from "./pending-input-domain-guard";
 import { equal as equalPendingPin } from "./prepared-input-codec";
 import { decodePendingInputPins } from "./pending-input-codec";
 import { prepareUserInput, revalidatePreparedUserInput, assertPreparedUserInputCurrent, UserInputPreparationError, type PreparedUserInput } from "./user-input-preparation";
@@ -68,7 +74,7 @@ import { HarnessOperationError, dispatchHarness, dispatchOwnedOperation, require
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 export { hookEvents };
-export type Options = { host: string; port: number; cwd: string; dataDir: string; claudeBin: string; nativeSources: SourceConfiguration; allowRemote: boolean; publicOrigin?: string; reconcileInterrupted: boolean; maxConcurrentRuns?: number; maxWorkersPerCheckout?: number; packageDir?: string; noBuild?: boolean; /** Trusted backend evidence; activation remains disabled in this preparation phase. */ openCodeReplyQualifications?: readonly OpenCodeReplyQualification[] };
+export type Options = { host: string; port: number; cwd: string; dataDir: string; claudeBin: string; nativeSources: SourceConfiguration; allowRemote: boolean; publicOrigin?: string; reconcileInterrupted: boolean; maxConcurrentRuns?: number; maxWorkersPerCheckout?: number; packageDir?: string; noBuild?: boolean; /** Internal deterministic fixture dependency; never parsed from CLI/config/HTTP. */ pendingInputWakeClock?: PendingInputWakeClock; /** Trusted backend evidence; activation remains disabled in this preparation phase. */ openCodeReplyQualifications?: readonly OpenCodeReplyQualification[] };
 export function parseOptions(args: string[]): Options {
   return runtimeOptions(resolveAppConfig(args, { packageDir: root, invocationCwd: process.cwd() }));
 }
@@ -129,30 +135,52 @@ export async function start(options: Options) {
   // writes fail. Latch before either write; handle.retain() alone only guards
   // release after a successful write. No later cleanup attempt may unlatch it.
   let retentionRequired = false;
+  let storageOwnershipHeld = false;
   const retain = () => {
     retentionRequired = true;
     try { data?.retain(); } finally { installation.retain(); }
   };
   const release = () => {
     if (retentionRequired) return;
+    storageOwnershipHeld = false;
     data?.release(); installation.release();
+  };
+  const failOwnershipPublication = () => {
+    // Fence the actual inner writer before cleanup; neither a broken fence hook
+    // nor failed retained-state writes may clear the outer ownership latch.
+    try { bridge?.failOwnershipPublication(); } catch { /* Preserve the publication error. */ }
+    try { retain(); } catch { /* Both handles were attempted; the latch survives. */ }
+  };
+  const publishOwnership = (phase: "serving" | "draining", listener?: { host: string; port: number }) => {
+    try {
+      synchronousDispatchHook(() => installation.update(phase, listener));
+      synchronousDispatchHook(() => data!.update(phase, listener));
+    } catch (error) { failOwnershipPublication(); throw error; }
   };
   try {
     data = acquireData(installation, { phase: "starting", reconcileInterrupted: options.reconcileInterrupted });
+    storageOwnershipHeld = true;
     options = { ...options, dataDir: paths.dataDir! };
     assertSourceConfiguration(validateAppStore(options.dataDir).sources, options.nativeSources);
     installation.update("build");
     const assets = options.noBuild ? validateAssets({ packageDir: paths.packageDir }) : await buildAssets({ packageDir: paths.packageDir, ownership: installation });
     installation.update("starting");
-    bridge = await startOwned(options, assets.assetsDir, paths.packageDir, retain);
+    bridge = await startOwned(options, assets.assetsDir, paths.packageDir, retain, () => storageOwnershipHeld && !retentionRequired);
     const listener = { host: options.host, port: bridge.port! };
-    installation.update("serving", listener); data.update("serving", listener);
+    publishOwnership("serving", listener);
+    // Trusted activation only after classification, dependencies, timers and BOTH
+    // listener-bound ownership records have been installed. Never an HTTP toggle.
+    bridge.startPendingInputWake();
     const running = bridge;
     let closing: Promise<void> | undefined;
-    return { origin: running.origin, port: running.port, workers: running.workers, workerOutbox: running.workerOutbox, preparedInput: running.preparedInput, pendingInputs: running.pendingInputs, close() {
+    return { origin: running.origin, port: running.port, workers: running.workers, workerOutbox: running.workerOutbox, preparedInput: running.preparedInput, pendingInputs: running.pendingInputs, pendingInputConsumer: running.pendingInputConsumer, pendingInputWake: running.pendingInputWake, close() {
       return closing ??= (async () => {
-        try { installation.update("draining"); data!.update("draining"); await running.close(); }
-        catch (error) { retain(); throw error; }
+        try { publishOwnership("draining"); await running.close(); }
+        catch (error) {
+          if (retentionRequired) { try { await running.abortStartup(); } catch { /* Already latched. */ } }
+          else { try { retain(); } catch { /* Preserve the original shutdown error. */ } }
+          throw error;
+        }
         release();
       })();
     } };
@@ -160,17 +188,19 @@ export async function start(options: Options) {
     // Publication of the serving ownership records can fail after startOwned
     // returns. Use the same bounded listener-first abort as inner startup errors,
     // not normal shutdown (which may reject before reaching listener teardown).
-    if (bridge) { try { await bridge.abortStartup(); } catch { retain(); } }
+    if (bridge) { try { await bridge.abortStartup(); } catch { if (!retentionRequired) { try { retain(); } catch { /* Preserve the original startup error. */ } } } }
     release(); throw error;
   }
 }
-async function startOwned(options: Options, assetsDir: string, packageDir: string, retainOwnership: () => void) {
+async function startOwned(options: Options, assetsDir: string, packageDir: string, retainOwnership: () => void, ownsStorage: () => boolean) {
   const indexHtml = await readFile(join(packageDir, "public", "index.html"), "utf8");
   const maxConcurrentRuns = options.maxConcurrentRuns ?? 24;
   if (!Number.isSafeInteger(maxConcurrentRuns) || maxConcurrentRuns < 1 || maxConcurrentRuns > 256) throw new Error("max-concurrent-runs must be an integer from 1 to 256");
   const maxWorkersPerCheckout = options.maxWorkersPerCheckout ?? DEFAULT_MAX_WORKERS_PER_CHECKOUT;
   if (!Number.isSafeInteger(maxWorkersPerCheckout) || maxWorkersPerCheckout < 1 || maxWorkersPerCheckout > 256) throw new Error("maxWorkersPerCheckout must be an integer from 1 to 256");
   const store = validateAppStore(options.dataDir);
+  // Capture the original lock-owned App directory/manifest before startup awaits.
+  const originalJournals = createOriginalRecoveryJournal(options.dataDir, store.manifest.storeId);
   assertSourceConfiguration(store.sources, options.nativeSources);
   if (options.nativeSources.cc.harness !== "cc" || options.nativeSources.oc.harness !== "oc") throw new Error("Invalid configured native harnesses");
   const claudeRoot = options.nativeSources.cc.profileRoot;
@@ -197,6 +227,22 @@ async function startOwned(options: Options, assetsDir: string, packageDir: strin
   let retainOwner = false;
   let closing = false, storageFailed = false, startupReady = false;
   let pendingInputs: PendingInputService | undefined;
+  let pendingInputBridge: PendingInputBridge | undefined;
+  let pendingInputRecovery: PendingInputRecovery | undefined;
+  let pendingInputWake: PendingInputWake | undefined;
+  const queueServiceTasks = new Set<Promise<void>>();
+  const queueAdmissionTasks = new Set<Promise<void>>();
+  let classifyingPendingInputs = false;
+  // Original strict store records, never reconstructed from mutable run metadata.
+  // No ordinary owner release, native idle or operator CLI acknowledgement clears
+  // this process's recovered uncertainty. Original-identity reconciliation is separate.
+  let recoveredInputClaims: readonly PendingInputStoredItem[] = [];
+  const recoveredInputConversations = new Set<string>();
+  function classifyPendingInputMutation<T>(action: () => T): T {
+    if (classifyingPendingInputs || startupReady || closing || storageFailed) throw new PendingInputDomainError("pending-input-owner-unavailable", "Startup queue classification ownership unavailable", 503);
+    classifyingPendingInputs = true;
+    try { return action(); } finally { classifyingPendingInputs = false; }
+  }
   function assertStartupReady() {
     if (!startupReady || closing) throw new WorkstreamAdapterError(503, "startup-classifying", "Startup execution classification is incomplete; no mutation was admitted");
   }
@@ -220,17 +266,24 @@ async function startOwned(options: Options, assetsDir: string, packageDir: strin
   let workspaceCreations: WorkspaceCreationService | undefined;
   async function abortStartup() {
     closing = true;
+    pendingInputWake?.close();
+    pendingInputRecovery?.close();
+    const queueDrain = pendingInputBridge?.close();
     stopStartupConsumers?.();
     // Stop EVERY acquired listener first, even if one stop rejects. Cleanup is
     // bounded and failures retain both locks; nothing may serve unlocked after
     // post-bind recovery, publication, or observer startup fails.
     await Promise.all(boundListenerStops.map(stop => boundedStartupCleanup(stop)));
     await boundedStartupCleanup(() => drainStartupExecution?.());
+    await boundedStartupCleanup(() => queueDrain);
     await Promise.all([
       () => chromePush?.close(), () => workspaceCreations?.close(),
       () => replyIntegration?.close(), () => updateService?.close(), () => searches.close(),
     ].map(cleanup => boundedStartupCleanup(cleanup)));
     await boundedStartupCleanup(() => router?.close());
+    await boundedStartupCleanup(() => Promise.all([...queueServiceTasks, ...queueAdmissionTasks]));
+    pendingInputBridge?.closeObservations();
+    pendingInputRecovery?.closeObservations();
     if (retainOwner) retainOwnership();
   }
   try {
@@ -246,7 +299,26 @@ async function startOwned(options: Options, assetsDir: string, packageDir: strin
   workspaceCreations = await WorkspaceCreationService.open(options.dataDir, catalog, [options.dataDir, join(packageDir, ".runtime"), claudeRoot]);
   // Artifacts are readable only through the domain API, even when its state is
   // outside App data. Use a canonical root for both ordinary Code entry points.
-  router = new RepositoryRouter(catalog, store.sources);
+  router = new RepositoryRouter(catalog, store.sources, {
+    beforeMutation: (domain, input) => {
+      assertDomainMutationOpen();
+      assertPendingInputDomainMutation(pendingInputs?.store.readRecords().conversations ?? [], domain, input);
+      if (input.kind !== "create" && lifecycleReservations.has(domain.repositoryId)) throw new WorkstreamAdapterError(409, "workstream-action-pending", "A repository phase action is in progress");
+    },
+    beforeInitialize: (workspaceId, discovery) => {
+      assertDomainMutationOpen();
+      assertDomainInitializationIdle(pendingInputs?.store.readRecords().conversations ?? [], workspaceId, discovery);
+      if ([...lifecycleReservations.values()].some(scope => scope.commonDir === discovery.commonDir)) throw new WorkstreamAdapterError(409, "workstream-action-pending", "A repository phase action is in progress");
+    },
+    beforeLifecycle: domain => {
+      assertDomainMutationOpen();
+      const scope = { workspaceId: "", commonDir: domain.context.commonDir, roots: [domain.primaryCheckout, domain.context.invocationCheckout.path] };
+      assertLifecycleIdle(scope.workspaceId, domain.repositoryId, scope);
+      lifecycleReservations.set(domain.repositoryId, scope);
+      return () => { if (lifecycleReservations.delete(domain.repositoryId)) notifyPendingInput("domain"); };
+    },
+    mutationFailed: failClosed,
+  });
   const admissions = new AdmissionService(options.dataDir, store.admissions, store.sources, catalog, router);
   const workerStore = new WorkerStore(options.dataDir);
   const branches = new BranchStore(options.dataDir);
@@ -347,6 +419,7 @@ async function startOwned(options: Options, assetsDir: string, packageDir: strin
       return { ready: true };
     },
     externalOccupancy: () => [
+      ...recoveredInputConversations,
       ...handoffDispatches.keys(),
       ...meta.runs.filter(run => run.status === "running").map(run => run.sessionId),
       ...workerStore.list().filter(w => !w.outcome).map(w => w.sessionId),
@@ -354,6 +427,12 @@ async function startOwned(options: Options, assetsDir: string, packageDir: strin
     ],
     policy: readinessPolicy,
     canRetainPredecessor: owner => claudeRuns.canQueueFollowup(owner),
+    wake: { dispatch: () => {
+      // A failed private queue claim releases its transient lease. Do not feed
+      // that notification back into its own scheduler. Foreign changes during
+      // this bounded pass are reconsidered by lifecycle hints/the 15s backstop.
+      if (!pendingInputBridge?.isReconsidering()) notifyPendingInput("capacity");
+    }, onError: failClosed },
   });
   // Read-only projections for existing domain observers; all mutation authority
   // belongs to the coordinator and exact admission leases below.
@@ -377,21 +456,29 @@ async function startOwned(options: Options, assetsDir: string, packageDir: strin
   const handoffReservations = new Set<string>();
   const handoffAcknowledgements = new Set<string>();
   const handoffDispatches = new Map<string, Promise<void>>();
-  const lifecycleReservations = new Map<string, string>(); // repository UUID -> workspace
+  const lifecycleReservations = new Map<string, { workspaceId: string; commonDir: string; roots: readonly string[] }>();
+  function assertDomainMutationOpen() {
+    assertStartupReady();
+    if (storageFailed || retainOwner || meta.reconciliationRequired) throw new WorkstreamAdapterError(503, "storage-unavailable", "App mutation ownership is unavailable");
+  }
   function lifecycleReserved(sessionId: string) {
     const admission = admissions.get(sessionId), workspaceId = catalog.association(sessionId).workspaceId;
     if (admission?.binding.domain.mode === "repository" && lifecycleReservations.has(admission.binding.domain.repositoryId)) return true;
-    if (workspaceId && [...lifecycleReservations.values()].includes(workspaceId)) return true;
+    if ([...lifecycleReservations.values()].some(scope => workspaceId && workspaceId === scope.workspaceId
+      || admission?.binding.checkoutPin?.commonDir === scope.commonDir
+      || scope.roots.includes(admission?.binding.executionCheckout ?? meta.sessions.find(s => s.sessionId === sessionId)?.cwd ?? ""))) return true;
     // A new/unresolved admission cannot yet prove it belongs to an unrelated repo.
     return !admission && !workspaceId && lifecycleReservations.size > 0;
   }
-  function assertLifecycleIdle(workspaceId: string, repositoryId: string) {
+  function assertLifecycleIdle(workspaceId: string, repositoryId: string, scope: { commonDir: string; roots: readonly string[] }) {
+    if (pendingInputs?.store.readRecords().conversations.some(c => c.chain && chainInRepository(c.chain.pins, { ...scope, workspaceId, repositoryId }))) throw new WorkstreamAdapterError(409, "pending-input-chain-active", "Repository has an affected durable input chain");
     const available = availability(undefined, false);
     if (!available.canSend || retainOwner) throw new WorkstreamAdapterError(409, "bridge-busy", available.reason ?? "App execution ownership is unconfirmed");
     if (lifecycleReservations.has(repositoryId)) throw new WorkstreamAdapterError(409, "bridge-busy", "A repository phase action is already in progress");
     const relevant = (sessionId: string, unknownIsBusy = true) => {
       const admission = admissions.get(sessionId), association = catalog.association(sessionId);
-      return admission?.binding.workspaceId === workspaceId || admission?.binding.domain.mode === "repository" && admission.binding.domain.repositoryId === repositoryId || association.workspaceId === workspaceId || unknownIsBusy && !admission && !association.workspaceId;
+      return admission?.binding.workspaceId === workspaceId || admission?.binding.domain.mode === "repository" && admission.binding.domain.repositoryId === repositoryId || association.workspaceId === workspaceId
+        || admission?.binding.checkoutPin?.commonDir === scope.commonDir || scope.roots.includes(admission?.binding.executionCheckout ?? meta.sessions.find(s => s.sessionId === sessionId)?.cwd ?? "") || unknownIsBusy && !admission && !association.workspaceId;
     };
     const busy = new Set([
       ...owners.keys(), ...admitting, ...coordinator.reconciliationSessionIds(), ...handoffReservations, ...handoffDispatches.keys(),
@@ -518,16 +605,21 @@ async function startOwned(options: Options, assetsDir: string, packageDir: strin
   }
   async function prepareHandoffRecipient(workspaceId: string, handoffId: string) {
     assertStartupReady();
-    // Only the createNew path below runs `create`; reply/attach deliveries
-    // (already-bound recipients) never reach it, so only handoff-created
-    // sessions get auto-titles and existing sessions are never renamed.
-    let created = false;
-    const handoff = await handoffs.prepareRecipient(workspaceId, handoffId, async h => {
-      created = true;
-      const sessionId = h.recipient.sessionId, cwd = h.recipient.checkout.path, harness = h.recipient.harness === "oc" ? "opencode" : "claude-code";
-      if (closing || storageFailed || admitting.has(sessionId) || owners.has(sessionId)) throw new WorkstreamAdapterError(409, "recipient-unavailable", "Recipient admission unavailable");
-      const lease = reserve({ kind: "prepare-recipient" }, sessionId);
-      try {
+    const finished = Promise.withResolvers<void>(); attachmentTasks.add(finished.promise);
+    let lease: ConversationAdmissionLease | undefined;
+    try {
+      const selected = (await router!.forWorkspace(workspaceId)).domain.getHandoff(handoffId);
+      // Cover existing recipients too, and keep the SAME reservation through the
+      // service's awaited execution validation and synchronous membership/binding.
+      lease = reserve({ kind: "prepare-recipient" }, selected.recipient.sessionId);
+      // Only the createNew path below runs `create`; reply/attach deliveries
+      // (already-bound recipients) never reach it, so only handoff-created
+      // sessions get auto-titles and existing sessions are never renamed.
+      let created = false;
+      const handoff = await handoffs.prepareRecipient(workspaceId, handoffId, async h => {
+        created = true;
+        const sessionId = h.recipient.sessionId, cwd = h.recipient.checkout.path, harness = h.recipient.harness === "oc" ? "opencode" : "claude-code";
+        if (sessionId !== selected.recipient.sessionId || !coordinator.holdsAdmission(lease!, sessionId)) throw new WorkstreamAdapterError(409, "recipient-unavailable", "Recipient admission changed");
         let a = admissions.get(sessionId);
         if (!a) {
           const association = await catalog.register(cwd);
@@ -563,28 +655,35 @@ async function startOwned(options: Options, assetsDir: string, packageDir: strin
         await admissions.register(sessionId);
         if (a.state !== "ready") admissions.ready(sessionId);
         replyIntegration?.requestRefresh();
-      } finally { coordinator.releaseAdmission(lease); }
-    });
-    if (created) {
-      // Title the new recipient `<Role> #<n>` (legacy counting, minus the
-      // `[workstream]` prefix): n is the 1-based position among this
-      // workstream's assignments for the same phase, oldest first, counting
-      // ended assignments. Untitled-only: a retried preparation never renames.
-      const session = meta.sessions.find(s => s.sessionId === handoff.recipient.sessionId);
-      if (session && !session.title && handoff.recipient.ref) {
-        const ref = handoff.recipient.ref;
-        const status = (await router!.forWorkspace(workspaceId)).domain.getWorkstreamStatus(handoff.workstreamId);
-        const assignment = status.activePhases.find(a => equivalentSlots(a.phase, handoff.input.to) && a.ref.harness === ref.harness && a.ref.authorityId === ref.authorityId && a.ref.nativeId === ref.nativeId);
-        session.title = handoffRecipientTitle(handoff.input.to, slotSessionIndex([...status.phaseHistory, ...status.activePhases], handoff.input.to, assignment?.id ?? ""));
-        // Legacy/recovered recipients may only have this display/lock profile.
-        if (!session.profileId && isStoredAssistantAgentId(session.agent)) session.profileId = legacyProfileId(session.harness ?? "claude-code", session.agent);
-        await persist();
+      });
+      if (created) {
+        // Title the new recipient `<Role> #<n>` (legacy counting, minus the
+        // `[workstream]` prefix): n is the 1-based position among this
+        // workstream's assignments for the same phase, oldest first, counting
+        // ended assignments. Untitled-only: a retried preparation never renames.
+        const session = meta.sessions.find(s => s.sessionId === handoff.recipient.sessionId);
+        if (session && !session.title && handoff.recipient.ref) {
+          const ref = handoff.recipient.ref;
+          const status = (await router!.forWorkspace(workspaceId)).domain.getWorkstreamStatus(handoff.workstreamId);
+          const assignment = status.activePhases.find(a => equivalentSlots(a.phase, handoff.input.to) && a.ref.harness === ref.harness && a.ref.authorityId === ref.authorityId && a.ref.nativeId === ref.nativeId);
+          session.title = handoffRecipientTitle(handoff.input.to, slotSessionIndex([...status.phaseHistory, ...status.activePhases], handoff.input.to, assignment?.id ?? ""));
+          // Legacy/recovered recipients may only have this display/lock profile.
+          if (!session.profileId && isStoredAssistantAgentId(session.agent)) session.profileId = legacyProfileId(session.harness ?? "claude-code", session.agent);
+          await persist();
+        }
       }
+      return handoff;
+    } finally {
+      if (lease) coordinator.releaseAdmission(lease);
+      finished.resolve(); attachmentTasks.delete(finished.promise);
     }
-    return handoff;
   }
   function readinessPolicy(options: Readonly<ConversationReadinessOptions<Owner>>) {
     const { conversationId: sessionId, intent, phase, lease } = options;
+    // Enqueue refills waiting text only; it is not an execution exemption. In
+    // particular inspect-idle must deny BEFORE the coordinator's early idle return.
+    if (sessionId && recoveredInputConversations.has(sessionId) && !(phase === "enqueue" && intent.kind === "user-prompt"))
+      return { ready: false as const, code: "pending-input-reconciliation-required", reason: "Original queued execution is uncertain after restart; reconcile its original identity before further execution" };
     // Startup adoption observes an already occupied exact native command; it
     // does not submit around branch, handoff, or worker delivery reservations.
     if (intent.kind === "recover-run") {
@@ -615,9 +714,13 @@ async function startOwned(options: Options, assetsDir: string, packageDir: strin
     const admission = sessionId ? admissions.get(sessionId) : undefined;
     if (admission && admission.state !== "ready" && !(preparation && (["retry-admission", "enroll", "attach"].includes(intent.kind) || admission.state === "identity_known" && admission.nativeId))) return { ready: false as const, reason: "Admission pending; explicit known-identity retry is required", code: "admission-pending" };
     if (sessionId && intent.kind !== "attach" && meta.sessions.find(s => s.sessionId === sessionId)?.attachment?.state === "pending") return { ready: false as const, reason: "Attachment incomplete. Retry Attach with the same harness, native ID and execution directory; no run is permitted.", code: "attachment-pending" };
-    // Ordinary prompt/configuration admission cannot overtake a durable FIFO
-    // chain. Phase 4 will add the exact claimed-head dispatch exemption only.
-    if (sessionId && phase !== "enqueue" && ["user-prompt", "enroll", "retry-admission", "attach"].includes(intent.kind) && pendingInputs?.hasChain(sessionId)) return { ready: false as const, reason: "A durable input chain is active; use the explicit pending-inputs API", code: "pending-input-chain-active" };
+    // Request IDs/origins are not capabilities. Keep every other policy above,
+    // and ordinary callers, unchanged even when they copy the head request ID.
+    // Read-only inspection and a source-owned child launch do not compete for
+    // this recipient's turn. Every mutating recipient intent does, independently
+    // of delivery origin or a copied queue request ID.
+    if (sessionId && phase !== "enqueue" && ["user-prompt", "worker-report", "handoff", "prepare-recipient", "branch", "compact", "branch-recovery", "enroll", "retry-admission", "attach"].includes(intent.kind) && pendingInputs?.hasChain(sessionId)
+      && !pendingInputBridge?.allowsReadiness(options)) return { ready: false as const, reason: "A durable input chain is active; use the explicit pending-inputs API", code: "pending-input-chain-active" };
     return undefined;
   }
   function availability(sessionId?: string, capacity = true, delivery = false, preparation = false, inputMode?: "user"): { canSend: boolean; reason?: string; code?: string; queueAfterRunId?: string } {
@@ -654,10 +757,48 @@ async function startOwned(options: Options, assetsDir: string, packageDir: strin
   const sessionProfileId = (s: Session) => s.profileId ?? legacyProfileId(s.harness ?? "claude-code", s.agent);
   function failClosed() {
     storageFailed = true; retainOwner = true; meta.reconciliationRequired = true;
+    pendingInputWake?.close();
     // Ownership records are the durable sentinel even if every later disk
     // write fails. Reopening requires process exit and explicit reconciliation.
     for (const owner of owners.values()) if (owner.child) void terminate(owner);
   }
+  function startupStorageHealthy() {
+    return startupReady && ownsStorage() && !storageFailed && !closing && !retainOwner && !meta.reconciliationRequired;
+  }
+  function pendingInputAutomationHealthy() {
+    return startupStorageHealthy() && pendingInputWake?.isStarted() === true;
+  }
+  function startPendingInputWake() {
+    // An operator reconciliation pause remains a serving but unavailable state.
+    // A broken start/guard/timer hook instead retains ownership and aborts startup.
+    try {
+      if (startupStorageHealthy()) {
+        synchronousDispatchHook(() => pendingInputWake!.start());
+        if (!pendingInputAutomationHealthy()) throw new Error("Pending input wake did not start safely");
+      }
+      if (!ownsStorage() || storageFailed || closing || retainOwner) throw new Error("Pending input activation failed closed");
+    } catch (error) { failClosed(); throw error; }
+  }
+  function notifyPendingInput(kind: PendingInputWakeKind) {
+    try {
+      if (!pendingInputWake) {
+        if (startupReady) throw new Error("Queue wake was not constructed");
+        return;
+      }
+      synchronousDispatchHook(() => pendingInputWake!.notify(kind));
+      if (storageFailed) throw new Error("Queue wake failed closed");
+    } catch (error) {
+      failClosed();
+      throw new PendingInputStorageError("Pending input notification failed; reconcile original identities", error);
+    }
+  }
+  function queueDomainCommitted<T>(action: () => T): T {
+    const result = action();
+    notifyPendingInput("domain");
+    return result;
+  }
+  const pendingInputControls = createPendingInputControls({ store: () => pendingInputs?.store, owner: id => owners.get(id),
+    available: () => !closing && !storageFailed && startupReady, failClosed });
   function enqueue(fn: () => Promise<void>) {
     const next = serial.then(async () => { if (storageFailed) throw new Error("Storage unavailable; operator reconciliation required"); await fn(); });
     serial = next.catch(() => { failClosed(); });
@@ -846,7 +987,9 @@ async function startOwned(options: Options, assetsDir: string, packageDir: strin
     const source = meta.sessions.find(s => s.sessionId === op.sourceId);
     if (!source || handoffReservations.has(op.destinationId) || handoffDispatches.has(op.destinationId)) return;
     try { assertBranchIdle(source); } catch { return; }
-    const lease = reserve({ kind: "branch-recovery", requestId: op.id }, op.sourceId, op.destinationId);
+    const admission = coordinator.reserveAdmission({ intent: { kind: "branch-recovery", requestId: op.id }, conversationIds: [op.sourceId, op.destinationId] });
+    if (!admission.ready) return; // A retained chain defers recovery, not a storage fault.
+    const lease = admission.lease;
     const done = Promise.withResolvers<void>(); attachmentTasks.add(done.promise);
     try {
       // Only release an unstarted reservation or finish an already identified fork.
@@ -1118,7 +1261,7 @@ async function startOwned(options: Options, assetsDir: string, packageDir: strin
         session.lastRunId = run.runId; session.lastStatus = "running"; meta.runs.push(run); events.set(run.runId, []);
         return owner;
       },
-      evidence: options.evidence,
+      evidence: pendingInputControls.evidence(options.evidence),
       owns: owner => coordinator.owns(owner), settle: owner => { owner.settled = true; }, release: releaseOwner,
       failClosed: error => {
         // A final validation refusal before publication is definite non-launch,
@@ -1129,6 +1272,34 @@ async function startOwned(options: Options, assetsDir: string, packageDir: strin
       guards: owner => ({ settled: owner.settled, released: !coordinator.owns(owner), status: owner.run.status,
         cancelling: !!owner.cancelling, stopRequested: !!owner.stopRequested, stopping: !!owner.stopping,
         closing, storageFailed, reconciliationRequired: !!meta.reconciliationRequired || retainOwner }),
+      releasedGuards: owner => {
+        const current = meta.sessions.find(s => s.sessionId === session.sessionId);
+        if (!current) throw new HarnessDispatchError("dispatch-source-mismatch", "Released conversation is unavailable");
+        const admission = admissions.get(current.sessionId), association = catalog.association(current.sessionId);
+        const admittedSource = !!admission && admission.state === "ready" && admission.nativeId === current.nativeSessionId
+          && admission.source.authorityId === current.authorityId
+          && normalizeNativeSource(admission.source.descriptor).authorityId === admission.source.authorityId
+          && admission.binding.executionCheckout === current.cwd && association.association === "resolved"
+          && association.workspaceId === admission.binding.workspaceId && association.worktreeId === admission.binding.worktreeId;
+        let repository;
+        if (admission) {
+          catalog.assertBinding(admission.binding.workspaceId, admission.binding.worktreeId,
+            admission.binding.executionCheckout, admission.binding.bindingRevision);
+          if (admission.binding.checkoutPin) {
+            const discovered = discoverRepository(admission.binding.executionCheckout), inspected = inspectRepositoryStore(discovered);
+            if (inspected.state !== "ready" && inspected.state !== "uninitialized") throw new RepositoryStoreError(inspected);
+            repository = { checkout: discovered.invocationCheckout, store: inspected };
+          }
+        }
+        const ownLease = coordinator.holdsAdmission(lease, current.sessionId);
+        const intent: ConversationOperationIntent = { kind: origin === "handoff" ? "handoff" : origin === "worker-report" ? "worker-report" : "user-prompt", requestId: options.requestId };
+        const input = { conversationId: current.sessionId, intent, phase: "dispatch" as const, ...(ownLease ? { lease } : {}) };
+        const ready = pendingInputBridge!.releasedReadiness(owner, input);
+        return { source: dispatchSource(current), installation: JSON.stringify([dispatchSnapshot(current), admission, association, repository]),
+          ownerPresent: coordinator.hasOwner(current.sessionId),
+          admissionPending: coordinator.hasAdmission(current.sessionId) && !ownLease,
+          reconciliationPending: coordinator.hasReconciliation(current.sessionId), capacityAvailable: admittedSource && ready.ready };
+      },
       reconciliation: options.reconciliation && {
         order: options.reconciliation.order,
         begin: owner => {
@@ -1143,10 +1314,12 @@ async function startOwned(options: Options, assetsDir: string, packageDir: strin
           if (storageFailed || retainOwner || meta.reconciliationRequired) throw new Error("Source reconciliation requires operator recovery");
         },
       },
-      // No settlement probe without a pending-input consumer. Existing durable
-      // outboxes retain their source-specific evidence and polling backstop.
+      // Do not add native successful-settlement reads while production remains
+      // dormant. Once trusted activation starts it, this is a source-proven hint.
+      get wake() { return pendingInputWake?.isStarted() ? () => notifyPendingInput("lifecycle") : undefined; },
     });
     dispatchTasks.add(lifecycle.done);
+    pendingInputBridge!.recordLifecycle(session.sessionId, lifecycle);
     void lifecycle.done.finally(() => { dispatchTasks.delete(lifecycle.done); });
     try { synchronousDispatchHook(() => options.publish?.(lifecycle)); }
     catch (error) {
@@ -1519,6 +1692,15 @@ async function startOwned(options: Options, assetsDir: string, packageDir: strin
       if (hook) return { state: (hook.data as any).event === "PermissionRequest" ? "waiting" : "running" };
       return {};
     },
+    beforeCancel(selected) {
+      const captured = new Map(selected.map(w => [w.sessionId, pendingInputControls.stop(w.sessionId)]));
+      return async w => {
+        const owner = captured.get(w.sessionId);
+        if (!owner) { if (!w.runId && admitting.has(w.sessionId)) return; throw new Error("No active App owner; termination requires native reconciliation"); }
+        await cancelOwner(owner);
+      };
+    },
+    suppressCancellation: id => pendingInputControls.cancellationWrite(() => workerStore.suppress(id, true)),
     async cancel(w) {
       const owner = owners.get(w.sessionId);
       if (!owner) { if (!w.runId && admitting.has(w.sessionId)) return; throw new Error("No active App owner; termination requires native reconciliation"); }
@@ -1561,8 +1743,9 @@ async function startOwned(options: Options, assetsDir: string, packageDir: strin
     // Hidden is a reversible soft-hide: retain outcomes and pause automatic turns.
     if (session.hidden) return problem("Parent is soft-hidden; unhide to restore report eligibility. Explicit stop suppression still requires user submission.");
     if (workerStore.suppressed(parentSessionId)) return problem("Automatic continuation stopped; explicit user submission resumes report eligibility");
-    let available = availability(parentSessionId);
-    if (!available.canSend) return problem(available.reason ?? "Parent unavailable");
+    const reportReadiness = () => coordinator.inspectReadiness({ conversationId: parentSessionId, intent: { kind: "worker-report" }, phase: "admission" });
+    let available = reportReadiness();
+    if (!available.ready) return problem(available.reason);
     const a = admissions.get(parentSessionId);
     if (!a || a.state !== "ready" || a.binding.domain.mode !== "repository" || session.attachment || !session.nativeSessionId || !session.lastRunId) return problem("Report recipient must remain an enrolled App-owned conversation with a known native run");
     const pending = workerStore.list().filter(w => w.parent.sessionId === parentSessionId && workerResults(w).some(r => r.notification.state === "pending"));
@@ -1572,8 +1755,8 @@ async function startOwned(options: Options, assetsDir: string, packageDir: strin
     if (session.harness === "opencode") await oc.assertIdle(session.nativeSessionId, cwd);
     // Recheck after all asynchronous preparation. Claim and owner acquisition below
     // are synchronous, sharing arbitration with explicit wait acknowledgement.
-    available = availability(parentSessionId);
-    if (!available.canSend) return problem(available.reason ?? "Parent became unavailable");
+    available = reportReadiness();
+    if (!available.ready) return problem(available.reason);
     assertDispatchSnapshot(parentSessionId, snapshot);
     if (session.hidden || workerStore.suppressed(parentSessionId)) return problem("Parent hidden or stopped during preparation; outcomes remain pending");
     const workerParent = workerStore.getBySession(parentSessionId);
@@ -1584,9 +1767,13 @@ async function startOwned(options: Options, assetsDir: string, packageDir: strin
     if (session.harness === "opencode") { run.nativeCommandId = commandId; run.nativePhase = "preparing"; }
     const lease = reserve({ kind: "worker-report" }, parentSessionId);
     try {
-      const d = workerStore.claimDelivery({ id: crypto.randomUUID(), parentSessionId, native: { harness: a.source.descriptor.harness, authorityId: a.source.authorityId, nativeId: session.nativeSessionId }, run, commandId, createdAt: now, updatedAt: now });
+      // Claim writers are storage authority, never retryable readiness failures.
+      const d = (() => { try {
+        const claimed = workerStore.claimDelivery({ id: crypto.randomUUID(), parentSessionId, native: { harness: a.source.descriptor.harness, authorityId: a.source.authorityId, nativeId: session.nativeSessionId! }, run, commandId, createdAt: now, updatedAt: now });
+        if (claimed) workerStore.advanceDelivery(claimed.id, "acceptance-unknown");
+        return claimed;
+      } catch (error) { failClosed(); throw error; } })();
       if (!d) return;
-      workerStore.advanceDelivery(d.id, "acceptance-unknown");
       if (workerParent) workerStore.update(workerParent.id, { state: "running", continuation: { runId: run.runId, state: "running" }, continuationCancellation: undefined });
       const prompt = workerReportPrompt(d, workerStore.listForDelivery(d));
       executePrompt(lease, session, run, prompt, true, "worker-report", { workerDeliveryId: d.id,
@@ -1603,7 +1790,7 @@ async function startOwned(options: Options, assetsDir: string, packageDir: strin
     for (const d of workerStore.deliveries()) { if (closing || storageFailed) return; await reconcileWorkerDelivery(d); }
     for (const parent of new Set(workerStore.list().filter(w => workerResults(w).some(r => r.notification.state === "pending" && (!r.notification.retryAfter || Date.parse(r.notification.retryAfter) <= Date.now()))).map(w => w.parent.sessionId))) {
       if (closing || storageFailed) return;
-      try { await dispatchWorkerReport(parent); } catch (e) { workerStore.pendingProblem(parent, e instanceof Error ? e.message : "Worker report preparation unavailable"); }
+      try { await dispatchWorkerReport(parent); } catch (e) { if (storageFailed) throw e; workerStore.pendingProblem(parent, e instanceof Error ? e.message : "Worker report preparation unavailable"); }
     }
   }
   const workerOutbox = { list: () => workerStore.deliveries(), reconcile: async (id: string) => { const d = workerStore.deliveries().find(d => d.id === id); if (!d) throw new WorkstreamAdapterError(404, "worker-delivery-missing", "Unknown worker delivery"); return reconcileWorkerDelivery(d); } };
@@ -1629,13 +1816,28 @@ async function startOwned(options: Options, assetsDir: string, packageDir: strin
     try { return await attempt; } catch (e) { if (owner.cancel === attempt) owner.cancel = undefined; throw e; }
   }
   const handoffProblems = new Map<string, string>();
+  /** Only actual synchronous writers use this fence; read/native proof failures
+   * remain scoped. A thrown write may already have committed its intent. */
+  function handoffMutation<T>(write: () => T): T {
+    try { return write(); }
+    catch (error) {
+      const storage = error instanceof PendingInputStorageError || error instanceof AppStoreError && error.code !== "APP_SOURCE_MISMATCH"
+        || error instanceof RepositoryStoreError && error.state === "corrupt"
+        || (error instanceof DomainError || error instanceof WorkstreamAdapterError) && ["STORAGE_ERROR", "CORRUPT_STORE", "INCOMPLETE_INITIALIZATION"].includes(error.code);
+      const refusal = error instanceof DomainError || error instanceof WorkstreamAdapterError || error instanceof PendingInputDomainError
+        || error instanceof AppStoreError && error.code === "APP_SOURCE_MISMATCH";
+      if (storage || !refusal) failClosed();
+      throw error;
+    }
+  }
   /** The Map is the live projection; each new problem is also durable handoff audit evidence. */
   async function recordHandoffProblem(workspaceId: string, id: string, problem: string) {
     if (handoffProblems.get(id) === problem) return;
     try {
-      (await router!.forWorkspace(workspaceId)).domain.recordHandoffProblem(id, problem.slice(0, 8000), { actor: { kind: "system" }, correlationId: id });
+      const domain = (await router!.forWorkspace(workspaceId)).domain;
+      handoffMutation(() => domain.recordHandoffProblem(id, problem.slice(0, 8000), { actor: { kind: "system" }, correlationId: id }));
       handoffProblems.set(id, problem);
-    } catch (error) { handoffProblems.set(id, `${problem}; durable problem record failed: ${error instanceof Error ? error.message : String(error)}`); }
+    } catch { handoffProblems.set(id, `${problem}; durable problem record failed`); }
   }
   async function reconcileHandoff(workspaceId: string, id: string) {
     const domain = (await router!.forWorkspace(workspaceId)).domain;
@@ -1645,7 +1847,7 @@ async function startOwned(options: Options, assetsDir: string, packageDir: strin
     if (!run || run.operation === "compact") return h;
     const records = events.get(run.runId) ?? [];
     const accepted = h.recipient.harness === "oc" ? run.nativeCommandId === h.nativeCommandId && run.nativePhase === "accepted" : records.some(e => e.kind === "stdout" && isClaudeRootRecord(e.data) && (e.data as any)?.session_id === h.recipient.ref?.nativeId && ((e.data as any)?.type === "result" || (e.data as any)?.type === "system" && (e.data as any)?.subtype === "init"));
-    const advance = (status: typeof h.status, evidence: string) => { h = domain.advanceHandoff(h.id, h.revision, { status, evidence }, { actor: { kind: "system" }, correlationId: h.id }); };
+    const advance = (status: typeof h.status, evidence: string) => { h = handoffMutation(() => domain.advanceHandoff(h.id, h.revision, { status, evidence }, { actor: { kind: "system" }, correlationId: h.id })); };
     if (h.status === "acceptance_unknown" && accepted) advance("accepted", `Native acceptance recorded in App run ${run.runId}`);
     const executing = h.recipient.harness === "cc" ? accepted : records.some(e => e.kind === "message" && (e.data as any)?.role === "assistant");
     if (h.status === "accepted" && run.status === "running" && executing) advance("running", `Native execution observed in App run ${run.runId}`);
@@ -1676,10 +1878,15 @@ async function startOwned(options: Options, assetsDir: string, packageDir: strin
       const senderSlots = [...new Set(status.activePhases.filter(fromSender).map(a => a.phase))];
       const originalSenderSlots = [...new Set([...status.phaseHistory, ...status.activePhases].filter(a => fromSender(a) && a.startedAt <= h.createdAt && (!a.endedAt || a.endedAt >= h.createdAt)).map(a => a.phase))];
       const replySlots = domain.getConversation(h.sender)?.workstreamId === h.workstreamId ? originalSenderSlots.filter(slot => senderSlots.some(current => equivalentSlots(slot, current))) : [];
+      // All source/native/domain awaits precede the outbox claim. The exact
+      // lease serializes claim + owner installation; later legal enqueue behind
+      // that installed owner must not retroactively revoke its native send.
+      const ready = coordinator.inspectReadiness({ conversationId: session.sessionId, intent: { kind: "handoff", requestId: id }, phase: "dispatch", lease });
+      if (!ready.ready) return;
       assertDispatchSnapshot(session.sessionId, snapshot);
       const run: Run = { runId: crypto.randomUUID(), sessionId: session.sessionId, cwd, status: "running", createdAt: new Date().toISOString(), agent: session.agent, agentKind: session.agentKind, nativeAgentSelected: session.nativeAgentSelected, model: session.model, effort: session.effort, profileId: session.profileId, ...saneContextSnapshot(session) };
       const commandId = session.harness === "opencode" ? `msg_${crypto.randomUUID().replaceAll("-", "")}` : `${run.runId}:user`;
-      h = domain.advanceHandoff(h.id, h.revision, { status: "acceptance_unknown", attemptId: crypto.randomUUID(), nativeCommandId: commandId, runId: run.runId }, { actor: { kind: "system" }, correlationId: h.id }, current => { handoffs.assertRecipientReady(current); });
+      h = handoffMutation(() => domain.advanceHandoff(h.id, h.revision, { status: "acceptance_unknown", attemptId: crypto.randomUUID(), nativeCommandId: commandId, runId: run.runId }, { actor: { kind: "system" }, correlationId: h.id }, current => { handoffs.assertRecipientReady(current); }));
       handoffReservations.add(session.sessionId);
       if (process.env.SANE_TEST_FAULT === "handoff-drop-run") {
         // Test-only crash simulation (C9): the handoff row above is persisted
@@ -1770,26 +1977,42 @@ async function startOwned(options: Options, assetsDir: string, packageDir: strin
     if (!ready.ready) throw new PendingInputDomainError(ready.code, ready.reason, ["storage-unavailable", "startup-classifying", "bridge-closing"].includes(ready.code) ? 503 : 409);
   }
   async function queuePreflight(prepared: PreparedUserInput): Promise<PendingInputPreflight> {
+    return queuePins(prepared, true);
+  }
+  /** Fresh read-only pin validation, independent of enqueue contention policy.
+   * Consumer callers compare these pins to the ORIGINAL snapshot; never upgrade. */
+  async function queuePins(prepared: PreparedUserInput, enqueuePolicy: boolean, captured?: PendingInputPins, signal?: AbortSignal): Promise<PendingInputPreflight> {
     const id = prepared.binding.conversationId;
     const domainError = (error: unknown): never => {
       if (error instanceof PendingInputDomainError || error instanceof PendingInputStorageError) throw error;
       if (error instanceof RepositoryStoreError && error.state === "corrupt" || error instanceof WorkspaceError && error.code === "catalog-storage" || (error instanceof DomainError || error instanceof WorkstreamAdapterError) && ["STORAGE_ERROR", "CORRUPT_STORE"].includes(error.code)) throw new PendingInputStorageError("Queue authority storage unavailable", error);
       if (error instanceof RepositoryStoreError && error.state === "unavailable" || (error instanceof DomainError || error instanceof WorkstreamAdapterError) && ["SOURCE_UNAVAILABLE", "UNAVAILABLE", "BUSY", "NATIVE_CONTEXT_UNAVAILABLE", "unavailable"].includes(error.code) || (error instanceof WorkstreamAdapterError || error instanceof WorkspaceError) && error.status === 503) throw new PendingInputDomainError("pending-input-pin-unavailable", error.message, 503);
-      if (error instanceof UserInputPreparationError || error instanceof WorkstreamAdapterError || error instanceof WorkspaceError || error instanceof DomainError) throw new PendingInputDomainError("pending-input-pin-unavailable", error.message);
+      if (error instanceof UserInputPreparationError || error instanceof WorkstreamAdapterError || error instanceof WorkspaceError || error instanceof DomainError) throw new PendingInputDomainError(enqueuePolicy ? "pending-input-pin-unavailable" : error instanceof UserInputPreparationError ? "configuration-changed" : "context-changed", error.message);
       throw new PendingInputStorageError("Queue preflight invariant failed", error);
     };
     try {
-      queueGuard("enqueue", id); assertPreparedUserInputCurrent(prepared, preparationState());
+      const basic = () => {
+        if (signal?.aborted) throw new PendingInputDomainError("bridge-closing", "Queue preflight aborted");
+        if (enqueuePolicy) queueGuard("enqueue", id);
+        const session = meta.sessions.find(s => s.sessionId === id);
+        if (!enqueuePolicy && (!session || !sameDispatchSource(dispatchSource(session), { harnessId: prepared.binding.harness, sessionId: id, authorityId: prepared.binding.authorityId, nativeSessionId: prepared.binding.nativeSessionId ?? null, cwd: prepared.binding.cwd }))) throw new PendingInputDomainError("source-changed", "Queue source changed");
+        assertPreparedUserInputCurrent(prepared, preparationState());
+        if (captured && !equalPendingPin(admissions.get(id), captured.admission)) throw new PendingInputDomainError("source-changed", "Captured queue admission changed");
+      };
+      basic();
       const a = admissions.get(id);
       if (!a || a.state !== "ready" || !a.nativeId) throw new PendingInputDomainError("pending-input-source-unready", "Established ready admission is required");
       await router!.execution(a);
+      basic();
       const adapter = await router!.forAdmission(a);
+      basic();
       // App-only repository admissions must be explicitly enrolled when a domain
       // appears; do not silently promote/rebind an immutable queue authority.
       if (!adapter && a.binding.checkoutPin) {
         const inspected = await router!.inspect(a.binding.workspaceId);
+        basic();
         if (inspected.state !== "uninitialized" || inspected.code !== "NOT_INITIALIZED") {
-          if (inspected.state === "ready") throw new PendingInputDomainError("pending-input-domain-changed", "Repository domain changed; explicitly enroll before queuing");
+          if (inspected.state === "ready") throw new PendingInputDomainError(enqueuePolicy ? "pending-input-domain-changed" : "context-changed", "Repository domain changed; explicitly enroll before queuing");
           throw new RepositoryStoreError(inspected);
         }
       }
@@ -1804,32 +2027,133 @@ async function startOwned(options: Options, assetsDir: string, packageDir: strin
       };
       const pins = decodePendingInputPins({ admission: a, catalog: { workspaceId: a.binding.workspaceId, worktreeId: a.binding.worktreeId, bindingRevision: a.binding.bindingRevision, cwd: a.binding.executionCheckout },
         configuration: prepared.expectedPrior!.configuration, launch: prepared.configuration, context: context() });
+      if (captured && !equalPendingPin(pins, captured)) throw new PendingInputDomainError("context-changed", "Fresh queue pins differ from the captured chain");
       const validate = () => {
         try {
-          queueGuard("enqueue", id); assertPreparedUserInputCurrent(prepared, preparationState());
+          basic();
           const current = admissions.get(id), association = catalog.association(id);
-          if (!equalPendingPin(current, a) || association.association !== "resolved" || association.workspaceId !== a.binding.workspaceId || association.worktreeId !== a.binding.worktreeId) throw new PendingInputDomainError("pending-input-admission-changed", "Queue admission/catalog association changed");
+          if (!equalPendingPin(current, a) || association.association !== "resolved" || association.workspaceId !== a.binding.workspaceId || association.worktreeId !== a.binding.worktreeId) throw new PendingInputDomainError(enqueuePolicy ? "pending-input-admission-changed" : "source-changed", "Queue admission/catalog association changed");
           catalog.assertBinding(a.binding.workspaceId, a.binding.worktreeId, a.binding.executionCheckout, a.binding.bindingRevision);
-          if (normalizeNativeSource(a.source.descriptor).authorityId !== a.source.authorityId) throw new PendingInputDomainError("pending-input-source-changed", "Native authority changed");
+          if (normalizeNativeSource(a.source.descriptor).authorityId !== a.source.authorityId) throw new PendingInputDomainError(enqueuePolicy ? "pending-input-source-changed" : "source-changed", "Native authority changed");
           if (a.binding.checkoutPin) {
             const discovered = discoverRepository(a.binding.executionCheckout);
             const inspected = inspectRepositoryStore(discovered);
             if (inspected.state !== "ready" && inspected.state !== "uninitialized") throw new RepositoryStoreError(inspected);
-            if (!equalPendingPin(discovered.invocationCheckout, a.binding.checkoutPin) || (!adapter ? inspected.state !== "uninitialized" : inspected.state !== "ready" || inspected.context.repositoryId !== adapter.repositoryId)) throw new PendingInputDomainError("pending-input-domain-changed", "Queue repository source/domain changed");
+            if (!equalPendingPin(discovered.invocationCheckout, a.binding.checkoutPin) || (!adapter ? inspected.state !== "uninitialized" : inspected.state !== "ready" || inspected.context.repositoryId !== adapter.repositoryId)) throw new PendingInputDomainError(enqueuePolicy ? "pending-input-domain-changed" : "context-changed", "Queue repository source/domain changed");
             adapter?.domain.validateHandle();
           }
-          if (!equalPendingPin(context(), pins.context)) throw new PendingInputDomainError("pending-input-context-changed", "Queue membership/assignment/context changed");
+          if (!equalPendingPin(context(), pins.context)) throw new PendingInputDomainError(enqueuePolicy ? "pending-input-context-changed" : "context-changed", "Queue membership/assignment/context changed");
         } catch (error) { domainError(error); }
       };
       validate(); return { pins, validate };
     } catch (error) { return domainError(error); }
   }
   pendingInputs = new PendingInputService({ dataDir: options.dataDir, storeId: store.manifest.storeId, session: id => meta.sessions.find(s => s.sessionId === id), guard: queueGuard, preflight: queuePreflight, failClosed,
-    mutationGuard: () => { if (closing || storageFailed) throw new PendingInputDomainError("pending-input-owner-unavailable", "App storage ownership is unavailable", 503); },
+    committed: notifyPendingInput,
+    automationStarted: pendingInputAutomationHealthy,
+    resumeCommitted: commit => {
+      if (!pendingInputBridge) throw new Error("Resume consumer not constructed");
+      return pendingInputBridge.resumeCommitted(commit);
+    },
+    mutationGuard: () => {
+      // Private original-outcome scope only; neither caller IDs nor readiness
+      // can use this startup/closing exception to claim, link or submit.
+      if (pendingInputRecovery?.writing() && !storageFailed) return;
+      // Sole startup exception: synchronous lock-owned classification, not a
+      // general pre-readiness mutation capability or a dispatch authorization.
+      if (!startupReady) {
+        if (classifyingPendingInputs && !closing && !storageFailed) return;
+        throw new PendingInputDomainError("startup-classifying", "Startup queue classification is incomplete", 503);
+      }
+      if (!pendingInputBridge) throw new PendingInputDomainError("pending-input-dispatch-dormant", "Consumer not constructed");
+      pendingInputBridge.assertMutationOwned();
+    },
+    validateDispatch: input => {
+      if (pendingInputRecovery?.validateDispatch(input)) return;
+      if (!pendingInputBridge) throw new PendingInputDomainError("pending-input-dispatch-dormant", "Consumer not constructed");
+      pendingInputBridge.validateDispatch(input);
+    },
     prepare: (id, text) => prepareUserInput({ sessionId: id, prompt: text }, { ...preparationState(), defaultCwd: options.cwd, conversationId: () => crypto.randomUUID(), sourceAuthorityId: nativeSource,
       selectedDirectory: async (workspaceId, worktreeId) => (await catalog.binding(workspaceId, worktreeId)).cwd, ensureDirectory, validateOpenCodeModel: (model, effort) => oc.model(model, effort), resolveOpenCodeLaunch: (cwd, settings) => oc.resolveLaunch(cwd, settings) }),
-    supervise: async action => { const task = Promise.withResolvers<void>(); attachmentTasks.add(task.promise); try { return await action(); } finally { task.resolve(); attachmentTasks.delete(task.promise); } },
+    supervise: async action => { const task = Promise.withResolvers<void>(); queueServiceTasks.add(task.promise); try { return await action(); } finally { task.resolve(); queueServiceTasks.delete(task.promise); } },
   });
+  function queueSubmissionSafety(id: string) {
+    if (closing || storageFailed || !startupReady) throw new PendingInputDomainError("pending-input-owner-unavailable", "Queue submission ownership unavailable", 503);
+    const session = meta.sessions.find(s => s.sessionId === id);
+    if (!session || session.hidden || sessionHarness(session) === "claude-code" && session.attachment) throw new PendingInputDomainError("pending-input-unavailable", "Queue conversation is hidden, missing or requires an external-stopped acknowledgement");
+    const denied = readinessPolicy({ conversationId: id, intent: { kind: "user-prompt" }, phase: "enqueue" });
+    if (denied) throw new PendingInputDomainError(denied.code, denied.reason);
+  }
+  const queueCurrentAppIdle: Parameters<typeof createPendingInputBridge>[0]["currentAppIdle"] = (source, own) => {
+    const id = source.sessionId;
+    queueSubmissionSafety(id);
+    const session = meta.sessions.find(s => s.sessionId === id)!, admission = admissions.get(id);
+    if (source.harnessId !== "claude-code" || !sameDispatchSource(source, dispatchSource(session))) throw new PendingInputDomainError("source-changed", "Current App idle source differs from the captured queue source");
+    const blocked = (reason: string) => ({ ready: false as const, code: "claude-local-unproven" as const, reason });
+    const association = catalog.association(id);
+    if (!admission || admission.state !== "ready" || !source.nativeSessionId || admission.nativeId !== source.nativeSessionId
+      || admission.source.authorityId !== source.authorityId || normalizeNativeSource(admission.source.descriptor).authorityId !== source.authorityId
+      || admission.binding.executionCheckout !== source.cwd || association.association !== "resolved"
+      || association.workspaceId !== admission.binding.workspaceId || association.worktreeId !== admission.binding.worktreeId)
+      throw new PendingInputDomainError("source-changed", "Current App idle admission/catalog source changed");
+    catalog.assertBinding(admission.binding.workspaceId, admission.binding.worktreeId, source.cwd, admission.binding.bindingRevision);
+    if (retainOwner || meta.reconciliationRequired || coordinator.hasReconciliation(id)
+      || handoffReservations.has(id) || handoffDispatches.has(id)) return blocked("Current App admission, reconciliation or handoff remains held");
+    if (workers.tree(id).some(w => !w.outcome || w.continuation && !["completed", "failed", "interrupted"].includes(w.continuation.state)
+      || workerResults(w).some(r => ["pending", "claimed", "acceptance-unknown"].includes(r.notification.state)))
+      || workerStore.deliveries().some(d => d.parentSessionId === id && ["claimed", "acceptance-unknown"].includes(d.state)))
+      return blocked("Current App workers or pending reports remain unresolved");
+    if (own && (!coordinator.holdsAdmission(own.lease, id) || !sameDispatchSource(own.identity.source, source))) return blocked("Original queue reservation is no longer current");
+    const owner = coordinator.getOwner(id);
+    if (owner && owner !== own?.owner || coordinator.hasAdmission(id) && !own) return blocked("A foreign App owner or admission is present");
+    if (own?.owner) {
+      const run = own.owner.run, claim = pendingInputs!.store.lookup(id, own.identity.requestId!)?.item.claim;
+      if (owner !== own.owner || !coordinator.owns(own.owner) || meta.runs.find(r => r.runId === own.identity.runId) !== run
+        || run.runId !== own.identity.runId || run.sessionId !== id || run.cwd !== source.cwd || (run.nativeCommandId ?? null) !== own.identity.nativeCommandId
+        || run.status !== "running" || own.owner.nativeDispatched || own.owner.settled || own.owner.stopRequested || own.owner.cancelling || own.owner.stopping
+        || run.saneContextVersion !== session.saneContext?.version || !claim || claim.possibleNative || claim.uncertain || !equalPendingPin(claim.identity, own.identity))
+        return blocked("Only the exact published unattempted queue owner may exclude its preparation");
+    }
+    if (meta.runs.some(run => run.sessionId === id && (run.status === "running" && run !== own?.owner?.run
+      || claudeRuns.followupPending(run.queuedFollowupId ?? "")))) return blocked("Other App running metadata or followup remains unresolved");
+    if (pendingInputs!.store.readRecords().conversations.filter(c => c.conversationId === id).some(c => c.items.some(item =>
+      ["claimed", "run-linked"].includes(item.state) && (!own || !item.claim || item.claim.possibleNative || item.claim.uncertain || !equalPendingPin(item.claim.identity, own.identity)))))
+      return blocked("Another unresolved App queue claim remains held");
+    // Fresh aggregate service observation at EVERY boundary; no preclaim cache.
+    // Its sole exclusion is the exact private owner above, before intent writes.
+    return claudeRuns.readLocalIdle(id, own?.owner);
+  };
+  pendingInputBridge = createPendingInputBridge({ store: pendingInputs.store, coordinator,
+    wake: () => notifyPendingInput("lifecycle"),
+    run: id => meta.runs.find(run => run.runId === id),
+    isClosing: () => closing, storageFailed: () => storageFailed,
+    submissionSafety: queueSubmissionSafety,
+    pins: (prepared, captured, signal) => queuePins(prepared, false, captured, signal),
+    nativeReadiness: pinnedNativeReadiness,
+    terminalSnapshot: (source, commandId) => readOnlyDispatchProof(() => oc.snapshot(source.nativeSessionId!, commandId, source.cwd)),
+    readPendingCancellation: owner => ocRuns.readPendingCancellation(owner),
+    groupAlive, readLocalSettlement: owner => claudeRuns.readLocalSettlement(owner), currentAppIdle: queueCurrentAppIdle, failClosed,
+    // Resolve the existing supervised admission when the scheduler polls,
+    // after startup constructs it; do not capture an uninitialized service.
+    admit: async (prepared, lease, input) => {
+      const task = Promise.withResolvers<void>(); queueAdmissionTasks.add(task.promise);
+      try { return await preparedInput.admit(prepared, lease, input); }
+      catch (error) {
+        if (error instanceof WorkstreamAdapterError && ["STORAGE_ERROR", "CORRUPT_STORE"].includes(error.code)) throw new PendingInputStorageError("Queue admission authority storage failed", error);
+        if (error instanceof WorkstreamAdapterError) throw new PendingInputDomainError(error.code, error.message, error.status as 400 | 404 | 409 | 429 | 503);
+        if (error instanceof UserInputPreparationError) throw new PendingInputDomainError(error.code ?? "pending-input-admission-refused", error.reason ?? error.message, error.status);
+        throw error;
+      }
+      finally { task.resolve(); queueAdmissionTasks.delete(task.promise); }
+    },
+  });
+  pendingInputWake = createPendingInputWake({
+    canRun: startupStorageHealthy,
+    hasWork: () => pendingInputs!.store.hasPendingWork(),
+    poll: () => pendingInputBridge!.consumer.poll(), onError: failClosed,
+  }, options.pendingInputWakeClock);
+  // The outer owner starts this only after publishing both serving lock records.
+  const pendingInputConsumer = pendingInputBridge.consumer;
   async function handle(req: Request, srv: Pick<Bun.Server<undefined>, "requestIP" | "port">, upgrade?: (req: Request, data: TerminalSocketData) => boolean): Promise<Response | undefined> {
     try {
       const url = new URL(req.url); const path = url.pathname;
@@ -1843,9 +2167,11 @@ async function startOwned(options: Options, assetsDir: string, packageDir: strin
       if (expected instanceof Response) return expected;
       if (path === "/api/config" && req.method === "GET") {
         const signedIn = auth.authenticated(req);
-        return json({ authRequired: !!password, authenticated: signedIn, cwd: signedIn ? options.cwd : null, oneShot: true, ...(signedIn ? { storeId: store.manifest.storeId, conversationUpdates: true, capabilities: { concurrency: { scope: "conversation", limit: maxConcurrentRuns, perConversation: 1, sharedCheckoutWrites: true }, cancelRun: true, midRunInput: false, permissionReplies: true, attachments: false, modelSelection: true, effortValues: efforts, terminal: terminals.capability }, agents: ASSISTANT_AGENT_IDS.map(id => ({ id, label: ASSISTANT_AGENT_LABELS[id], description: ASSISTANT_AGENT_DESCRIPTIONS[id] })), agentProfiles, harnesses: [
+        // Evaluate automation health after native discovery's await, not before.
+        const nativeConnection = signedIn ? await oc.connection(options.cwd) : undefined;
+        return json({ authRequired: !!password, authenticated: signedIn, cwd: signedIn ? options.cwd : null, oneShot: true, ...(signedIn ? { storeId: store.manifest.storeId, conversationUpdates: true, ...(pendingInputAutomationHealthy() ? { pendingInputCapability: { protocol: "pending-input", version: 1, supported: true, maxWaiting: 3, removal: true, resume: true } } : {}), capabilities: { concurrency: { scope: "conversation", limit: maxConcurrentRuns, perConversation: 1, sharedCheckoutWrites: true }, cancelRun: true, midRunInput: false, permissionReplies: true, attachments: false, modelSelection: true, effortValues: efforts, terminal: terminals.capability }, agents: ASSISTANT_AGENT_IDS.map(id => ({ id, label: ASSISTANT_AGENT_LABELS[id], description: ASSISTANT_AGENT_DESCRIPTIONS[id] })), agentProfiles, harnesses: [
           { id: "claude-code", name: getHarnessDescriptor("claude-code")!.label, available: true, connected: true, state: "available", capabilities: capabilitiesFor("claude-code") },
-          { id: "opencode", name: getHarnessDescriptor("opencode")!.label, ...await oc.connection(options.cwd), capabilities: capabilitiesFor("opencode") },
+          { id: "opencode", name: getHarnessDescriptor("opencode")!.label, ...nativeConnection, capabilities: capabilitiesFor("opencode") },
         ] } : {}) });
       }
       if (path === "/api/login" && req.method === "POST") return await auth.login(req, expected);
@@ -1951,7 +2277,7 @@ async function startOwned(options: Options, assetsDir: string, packageDir: strin
           const workspaceId = url.searchParams.get("workspaceId");
           if (!workspaceId) throw new WorkstreamAdapterError(400, "workspace-required", "Select a repository workspace");
           if (path === "/api/workstreams/inspect" && req.method === "GET") return router!.inspect(workspaceId);
-          if (path === "/api/workstreams/init" && req.method === "POST") return router!.initialize(workspaceId);
+           if (path === "/api/workstreams/init" && req.method === "POST") { const result = await router!.initialize(workspaceId); notifyPendingInput("domain"); return result; }
           const operation = path.slice("/api/workstreams/".length);
           if (operation === "artifacts/catalog" || operation === "artifacts/list" || operation === "artifacts/read") {
             if (req.method !== "POST") throw new WorkstreamAdapterError(405, "method-not-allowed", "Method not allowed");
@@ -1977,9 +2303,12 @@ async function startOwned(options: Options, assetsDir: string, packageDir: strin
             if (!input || !["associate", "phase/assign", "phase/end"].includes(input.operation)) throw new WorkstreamAdapterError(400, "invalid-request", "Unknown management action");
             validateWorkstreamInput(input.operation, { ...input, sessionId: "qualified-native-reference" });
             const target = input.ref && workstreams.appSessionId(input.ref, meta.sessions);
+            assertPendingInputDomainMutation(pendingInputs!.store.readRecords().conversations, workstreams.domain,
+              input.operation === "phase/end" ? { kind: "phase/end", assignmentId: input.assignmentId }
+                : input.operation === "associate" ? { kind: "associate", ref: input.ref, workstreamId: input.workstreamId } : { kind: "phase/assign", ref: input.ref });
             const available = availability(target || undefined, false);
             if (!available.canSend) throw new WorkstreamAdapterError(409, "bridge-busy", available.reason!);
-            return workstreams.manage(input.ref, input.operation, input);
+             return queueDomainCommitted(() => workstreams.manage(input.ref, input.operation, input));
           }
           validateWorkstreamInput(path === "/api/workstreams" ? "create" : operation, input);
           if (operation === "validate" || operation === "approve" || operation === "provide") {
@@ -2000,18 +2329,14 @@ async function startOwned(options: Options, assetsDir: string, packageDir: strin
               const result = await adapter.validate(actionInput.id, actionInput.phase);
               return { action, phase: actionInput.phase, ok: result.ok } satisfies WorkstreamActionResult;
             }
-            // Gate and reserve synchronously: no run may start in this repository
-            // while the existing core operation awaits validation/provisioning.
-            assertLifecycleIdle(workspaceId, actionInput.repositoryId);
-            lifecycleReservations.set(actionInput.repositoryId, workspaceId);
-            try {
-              if (action === "approve") await adapter.approve(actionInput.id, actionInput.phase, actionInput.approvalRef!, actionInput.expectedRevision);
-              else await adapter.provide(actionInput.id, actionInput.phase, false, actionInput.expectedRevision);
-              return { action, phase: actionInput.phase, ok: true } satisfies WorkstreamActionResult;
-            } finally { lifecycleReservations.delete(actionInput.repositoryId); }
+            // The adapter reserves at the actual backend call, covering callers
+            // other than HTTP and enqueue/preflight throughout core's awaits.
+            if (action === "approve") await adapter.approve(actionInput.id, actionInput.phase, actionInput.approvalRef!, actionInput.expectedRevision);
+            else await adapter.provide(actionInput.id, actionInput.phase, false, actionInput.expectedRevision);
+            return { action, phase: actionInput.phase, ok: true } satisfies WorkstreamActionResult;
           }
-           if (path === "/api/workstreams") return workstreams.create({ id: input.id, title: input.title, type: input.type, defaultCheckout: input.defaultCheckout });
-          if (operation === "default-checkout") return workstreams.setDefaultCheckout(input.id, input.checkout);
+            if (path === "/api/workstreams") return queueDomainCommitted(() => workstreams.create({ id: input.id, title: input.title, type: input.type, defaultCheckout: input.defaultCheckout }));
+           if (operation === "default-checkout") return queueDomainCommitted(() => workstreams.setDefaultCheckout(input.id, input.checkout));
           if (operation === "target") return workstreams.resolveTarget(input.id, input.phase, input.target);
           if (!["conversation", "associate", "phase/assign", "phase/end", "context"].includes(operation)) throw new WorkstreamAdapterError(404, "not-found", "Unknown workstream operation");
           const session = meta.sessions.find(s => s.sessionId === input.sessionId);
@@ -2021,11 +2346,14 @@ async function startOwned(options: Options, assetsDir: string, packageDir: strin
           await router!.forAdmission(admission, workspaceId);
           if (operation === "conversation") return workstreams.conversation(session);
           if (operation === "context") return workstreams.invocation(session);
+          assertPendingInputDomainMutation(pendingInputs!.store.readRecords().conversations, workstreams.domain,
+            operation === "phase/end" ? { kind: "phase/end", assignmentId: input.assignmentId }
+              : operation === "associate" ? { kind: "associate", ref: workstreams.reference(session), workstreamId: input.workstreamId } : { kind: "phase/assign", ref: workstreams.reference(session) });
           const available = availability(session.sessionId, false);
           if (!available.canSend) throw new WorkstreamAdapterError(409, "bridge-busy", available.reason!);
-          if (operation === "associate") return workstreams.associate(session, input.workstreamId);
-          if (operation === "phase/assign") return workstreams.assignPhase(session, input.phase);
-          return workstreams.endPhase(session, input.assignmentId);
+           if (operation === "associate") return queueDomainCommitted(() => workstreams.associate(session, input.workstreamId));
+           if (operation === "phase/assign") return queueDomainCommitted(() => workstreams.assignPhase(session, input.phase));
+           return queueDomainCommitted(() => workstreams.endPhase(session, input.assignmentId));
         });
       }
       const terminalMatch = /^\/api\/workspaces\/([^/]+)\/worktrees\/([^/]+)\/terminal(?:\/(socket|close|restart))?$/.exec(path);
@@ -2160,7 +2488,10 @@ async function startOwned(options: Options, assetsDir: string, packageDir: strin
           if (input.all === true && Object.keys(input).length === 1) return json(projectNativeWorkerReply({ workers: await workers.cancelForSession(parentSessionId, "all") }));
           const args = nativeWorkerInput("cancel", input);
           return json(projectNativeWorkerReply({ workers: await workers.cancelForSession(parentSessionId, args.ids, args.includeDescendants) }));
-        } catch { return json({ error: "Cancellation requires {ids, includeDescendants?} within this parent's worker tree, or {all:true}. Inspect worker status before retrying.", code: "worker-cancel" }, 409); }
+        } catch (error) {
+          if (error instanceof PendingInputStorageError) throw error;
+          return json({ error: "Cancellation requires {ids, includeDescendants?} within this parent's worker tree, or {all:true}. Inspect worker status before retrying.", code: "worker-cancel" }, 409);
+        }
       }
       const handoffList = /^\/api\/sessions\/([^/]+)\/handoffs$/.exec(path);
       if (handoffList && req.method === "GET") {
@@ -2245,7 +2576,7 @@ async function startOwned(options: Options, assetsDir: string, packageDir: strin
           return json({ error: previous.error ?? "This branch is still being prepared. Close this dialog and check your conversations.", operation: previous }, 409);
         }
         const available = availability(source.sessionId);
-        if (!available.canSend) return json({ error: available.reason }, 409);
+        if (!available.canSend) return json({ error: available.reason, code: available.code }, 409);
         assertBranchIdle(source);
         if (branchRequests.has(input.requestId)) return json({ error: "This branch request is already in progress. Please wait." }, 409);
         branchRequests.add(input.requestId);
@@ -2523,12 +2854,19 @@ async function startOwned(options: Options, assetsDir: string, packageDir: strin
           const currentOwner = owners.get(session.sessionId);
           if (currentOwner) requireOwnedOperation({ sessionId: session.sessionId, harness: sessionHarness(session) }, currentOwner, "cancelOwnedRun");
           if (closing || storageFailed) return json({ error: "Bridge unavailable; cancellation state must be checked in the native harness" }, 503);
+          const owner = pendingInputControls.stop(session.sessionId);
           claudeRuns.cancelFollowup(session.sessionId);
-          workerStore.suppress(session.sessionId, true); // Persist even when the parent is already idle. Never cascade.
+          pendingInputControls.cancellationWrite(() => workerStore.suppress(session.sessionId, true)); // Idle too; never cascade.
           const worker = workerStore.getBySession(session.sessionId);
-          if (worker && !worker.outcome) workerStore.update(worker.id, { state: "cancelling", cancelRequestedAt: worker.cancelRequestedAt ?? new Date().toISOString() });
-          const owner = owners.get(session.sessionId);
-          if (!owner) return json({ interrupted: false, status: session.lastStatus, reason: "No active App-owned run; external execution must be stopped in its native harness" });
+          if (worker && !worker.outcome) pendingInputControls.cancellationWrite(() => workerStore.update(worker.id, { state: "cancelling", cancelRequestedAt: worker.cancelRequestedAt ?? new Date().toISOString() }));
+          if (recoveredInputConversations.has(session.sessionId)) {
+            const finished = Promise.withResolvers<void>(); attachmentTasks.add(finished.promise);
+            try { return json({ ...(await pendingInputRecovery!.stop(session.sessionId)), code: "pending-input-reconciliation-required" }); }
+            finally { finished.resolve(); attachmentTasks.delete(finished.promise); }
+          }
+          if (!owner) return json({ interrupted: false, status: session.lastStatus,
+            ...(recoveredInputConversations.has(session.sessionId) ? { code: "pending-input-reconciliation-required", reconciliationRequired: true } : {}),
+            reason: "No active App-owned run; external execution must be stopped in its native harness" });
           if (!owner.cancel) {
           owner.cancelling = true;
           owner.cancel = (async () => {
@@ -2563,6 +2901,7 @@ async function startOwned(options: Options, assetsDir: string, packageDir: strin
           return json({ interactions: await oc.interactions(session.nativeSessionId!) });
         }
         if (interactionMatch?.[2] && req.method === "POST") {
+          if (recoveredInputConversations.has(session.sessionId)) return json({ code: "pending-input-reconciliation-required", error: "Recovered queued execution is uncertain; native interaction mutation is unavailable" }, 409);
           const reply = await body(req);
           if (!reply || (reply.type !== "permission" && reply.type !== "question")) return json({ error: "Invalid interaction reply type" }, 400);
           requireOperation(descriptor.id, reply.type === "permission" ? "permissionReply" : "questionReply");
@@ -2577,7 +2916,9 @@ async function startOwned(options: Options, assetsDir: string, packageDir: strin
         // conversation stays fully usable (runs, handoffs, navigation).
         const session = meta.sessions.find(s => s.sessionId === visibilityMatch[1]);
         if (!session) return json({ error: "Unknown conversation" }, 404);
-        session.hidden = visibilityMatch[2] === "hide";
+        const hidden = visibilityMatch[2] === "hide";
+        if (hidden && !session.hidden) pendingInputControls.hide(session.sessionId);
+        session.hidden = hidden;
         await persist();
         return json({ ok: true, sessionId: session.sessionId, hidden: session.hidden });
       }
@@ -2710,7 +3051,11 @@ async function startOwned(options: Options, assetsDir: string, packageDir: strin
       catch { return json({ error: "Not found" }, 404); }
       const asset = Bun.file(file);
       return new Response(req.method === "HEAD" ? null : asset, { headers: { "content-type": asset.type, "cache-control": "no-store", "x-content-type-options": "nosniff" } });
-    } catch (error) { return error instanceof UserInputPreparationError ? json({ error: error.message, ...(error.code ? { code: error.code } : {}), ...(error.reason ? { reason: error.reason } : {}) }, error.status) : error instanceof HarnessOperationError || error instanceof WorkstreamAdapterError ? json({ error: error.message, code: error.code }, error.status) : error instanceof DomainError ? json({ error: error.message, code: error.code }, error.code === "NOT_FOUND" ? 404 : 409) : error instanceof WorkspaceError ? json({ error: error.message, code: error.code }, error.status) : error instanceof OpenCodeError ? json({ error: error.message }, [400, 404, 409].includes(error.status) ? error.status : 503) : json({ error: "Invalid request" }, 400); }
+    } catch (error) {
+      if (error instanceof PendingInputStorageError) { failClosed(); return json({ error: error.message, code: "storage-unavailable" }, 503); }
+      if (error instanceof PendingInputDomainError) return json({ error: error.message, code: error.code }, error.status);
+      return error instanceof UserInputPreparationError ? json({ error: error.message, ...(error.code ? { code: error.code } : {}), ...(error.reason ? { reason: error.reason } : {}) }, error.status) : error instanceof HarnessOperationError || error instanceof WorkstreamAdapterError ? json({ error: error.message, code: error.code }, error.status) : error instanceof DomainError ? json({ error: error.message, code: error.code }, error.code === "NOT_FOUND" ? 404 : 409) : error instanceof WorkspaceError ? json({ error: error.message, code: error.code }, error.status) : error instanceof OpenCodeError ? json({ error: error.message }, [400, 404, 409].includes(error.status) ? error.status : 503) : json({ error: "Invalid request" }, 400);
+    }
   }
   drainStartupExecution = async () => {
     await coordinator.close();
@@ -2733,9 +3078,103 @@ async function startOwned(options: Options, assetsDir: string, packageDir: strin
   atomicAppRecord(options.dataDir, "native-handoff.json", { version: 1, url: `http://127.0.0.1:${hookServer.port}/native/handoffs`, token: handoffToken, pid: process.pid });
   // Start recovery only after both listeners are acquired. A port-bind failure
   // must not leave observers writing after startup releases the ownership lock.
+  recoveredInputClaims = classifyPendingInputMutation(() => pendingInputs!.recover());
+  // Capture EVERY original synchronously before the first source/context await,
+  // including journals whose Run metadata is missing. Reads never lazily repin.
+  try { for (const item of recoveredInputClaims) originalJournals.capture(item); }
+  catch (error) { failClosed(); throw error; }
+  const originalJournal = (original: PendingInputStoredItem) => {
+    try { return originalJournals.read(original); }
+    catch (error) { failClosed(); throw error instanceof PendingInputStorageError ? error : new PendingInputStorageError("Original App journal authority lost", error); }
+  };
+  for (const item of recoveredInputClaims) recoveredInputConversations.add(item.claim!.identity.source.sessionId);
+  // Publish capacity/policy barriers before ANY native legacy owner adoption or
+  // automatic consumer. Current pin drift is scoped, never a non-submission proof.
+  for (const item of recoveredInputClaims) {
+    try {
+      originalJournal(item);
+      try { (await queuePins(item.snapshot.prepared, false, item.snapshot.pins)).validate(); }
+      finally { originalJournal(item); }
+    }
+    catch (error) {
+      if (!(error instanceof PendingInputDomainError)) throw error;
+      if (["source-changed", "configuration-changed", "context-changed"].includes(error.code))
+        classifyPendingInputMutation(() => pendingInputs!.store.pause(item.request.conversationId, { code: error.code as "source-changed" | "configuration-changed" | "context-changed", reason: error.message }));
+      // Unavailable current pins leave the original restart/strong pause intact.
+    }
+  }
+  const originalProtocolUnsafe = (original: PendingInputStoredItem) => originalJournal(original)?.records.some(event =>
+    event.kind === "status" && !!event.data && typeof event.data === "object" && (event.data as Record<string, unknown>).nativeQueuedHandoffProtocolMismatch === true) ?? false;
+  pendingInputRecovery = createPendingInputRecovery({ store: pendingInputs!.store, originals: recoveredInputClaims, service: ocRuns,
+    available: observationWrite => {
+      if (storageFailed || closing && !observationWrite) throw new PendingInputDomainError("pending-input-owner-unavailable", "Original lock-owned recovery observation unavailable", 503);
+    },
+    association: original => {
+      const identity = original.claim!.identity, source = identity.source, id = source.sessionId;
+      // Authorization is observation-only against the REAL coordinator and the
+      // already-installed ORIGINAL occupancy. No second ownership registry or
+      // fabricated Run is required when metadata has been lost. Ordinary gates
+      // still deny all admission, including before startupReady is published.
+      if (!recoveredInputClaims.includes(original) || !recoveredInputConversations.has(id)
+        || !coordinator.occupiedConversationIds().has(id) || coordinator.hasOwner(id) || coordinator.hasAdmission(id)
+        || coordinator.hasReconciliation(id) || retainOwner || meta.reconciliationRequired)
+        throw new PendingInputDomainError("pending-input-unproven", "Original recovered coordinator association is not available");
+      const session = meta.sessions.find(s => s.sessionId === id);
+      if (!session || !sameDispatchSource(dispatchSource(session), source) || nativeSource("opencode") !== source.authorityId)
+        throw new PendingInputDomainError("source-changed", "Original recovered native source changed");
+      const run = meta.runs.find(run => run.runId === identity.runId);
+      if (run && (run.sessionId !== id || run.cwd !== source.cwd || run.nativeCommandId !== identity.nativeCommandId))
+        throw new PendingInputDomainError("source-changed", "Original recovered run journal association changed");
+    },
+    pins: async (original, signal) => {
+      if (signal.aborted) throw new PendingInputDomainError("bridge-closing", "Recovery preflight closed");
+      // The acquired validator must still permit original evidence while the
+      // bounded drain retains locks; shutdown independently forbids new reads.
+      const pins = await queuePins(original.snapshot.prepared, false, original.snapshot.pins);
+      if (signal.aborted) throw new PendingInputDomainError("bridge-closing", "Recovery preflight closed");
+      return pins;
+    },
+    protocolUnsafe: originalProtocolUnsafe,
+    protocolMismatch: (original, reason, validate) => enqueue(async () => {
+      validate();
+      if (originalProtocolUnsafe(original)) return;
+      const journal = originalJournal(original);
+      if (!journal) throw new PendingInputStorageError("Original pending contradiction has no run journal");
+      // Open the existing pinned ORIGINAL file, never create a log or serialize
+      // fake Run metadata. This awaited queue participates in the bounded drain.
+      const file = await open(journal.path, constants.O_WRONLY | constants.O_APPEND | constants.O_NOFOLLOW);
+      try {
+        validate();
+        const opened = await file.stat();
+        validate();
+        const current = originalJournal(original)!;
+        if (!opened.isFile() || opened.nlink !== 1 || opened.dev !== current.dev || opened.ino !== current.ino)
+          throw new PendingInputStorageError("Original journal writer pin changed");
+        if (originalProtocolUnsafe(original)) return;
+        const identity = original.claim!.identity;
+        const event: Event = { seq: current.records.at(-1)!.seq + 1, time: new Date().toISOString(), runId: identity.runId,
+          sessionId: identity.source.sessionId, kind: "status", data: { connection: "unconfirmed", nativeQueuedHandoffProtocolMismatch: true, reason,
+            recoveryOriginal: { storeId: store.manifest.storeId, itemId: original.itemId, chainId: original.chainId, attemptId: original.claim!.attemptId, identity } } };
+        await file.appendFile(JSON.stringify(event) + "\n");
+        validate(); originalJournal(original);
+        await file.sync();
+        validate(); originalJournal(original);
+        // Publish only after the marker is durable. No transcript/lifecycle,
+        // completion, wake, accepted evidence or metadata repair is performed.
+        events.get(identity.runId)?.push(event);
+      } finally { await file.close(); }
+      validate(); originalJournal(original);
+    }), failClosed,
+  });
+  // One bounded strict observation per original. No timer, wake, dispatch,
+  // historical lifecycle, metadata repair, or automatic settlement is created.
+  await pendingInputRecovery.startup();
   replyIntegration.start();
   chromePush.start();
-  const recoveringRuns = meta.runs.filter(r => r.status === "running" && getHarnessDescriptor(sessionHarness(meta.sessions.find(s => s.sessionId === r.sessionId)!))!.operations.recoverRun.supported);
+  // Legacy monitor has neither strict queued-user association nor recovered
+  // observation fences. Do NOT pass queued originals (even "preparing") to it,
+  // borrow its weak ACK/history completion, or manufacture a lifecycle handle.
+  const recoveringRuns = meta.runs.filter(r => !recoveredInputConversations.has(r.sessionId) && r.status === "running" && getHarnessDescriptor(sessionHarness(meta.sessions.find(s => s.sessionId === r.sessionId)!))!.operations.recoverRun.supported);
   for (const run of recoveringRuns) startupObservations.set(run.sessionId, run);
   for (const recovering of recoveringRuns) {
     const descriptor = requireOperation(sessionHarness(meta.sessions.find(s => s.sessionId === recovering.sessionId)!), "recoverRun");
@@ -2795,8 +3234,8 @@ async function startOwned(options: Options, assetsDir: string, packageDir: strin
   }
   // Classification, not a wait for native completion. BranchStore already pins
   // its pending source/destination policy; reconciliation reserves synchronously
-  // below before any request callback can run. Future queue load belongs here.
-  pendingInputs.recover(); // Explicit lock-owned classification; never replay.
+  // below before any request callback can run. Queue barriers were installed
+  // before legacy observation; waiting-only chains occupy no running capacity.
   if (closing || storageFailed) throw new Error("Startup classification did not complete safely");
   startupReady = true;
   // Startup-only reconciliation, after run ownership and worker recovery are known.
@@ -2823,9 +3262,12 @@ async function startOwned(options: Options, assetsDir: string, packageDir: strin
       finally { finished.resolve(); attachmentTasks.delete(finished.promise); }
     },
   };
-  return { origin, port: server.port, workers, workerOutbox, handoffs, prepareHandoffRecipient, preparedInput, pendingInputs, abortStartup, close() {
+   return { origin, port: server.port, workers, workerOutbox, handoffs, prepareHandoffRecipient, preparedInput, pendingInputs, pendingInputConsumer, pendingInputWake, startPendingInputWake, failOwnershipPublication: failClosed, abortStartup, close() {
     if (closePromise) return closePromise;
     closing = true;
+    pendingInputWake!.close();
+    pendingInputRecovery!.close();
+    const queueDrain = pendingInputBridge!.close();
     const coordinatorDrain = coordinator.close();
     const replyDrain = replyIntegration?.close(); // Abort immediately, before any shutdown awaits.
     const pushDrain = chromePush?.close();
@@ -2834,6 +3276,8 @@ async function startOwned(options: Options, assetsDir: string, packageDir: strin
     clearInterval(handoffTimer);
     clearInterval(workerOutboxTimer);
     closePromise = (async () => {
+    await boundedStartupCleanup(() => queueDrain);
+    await boundedStartupCleanup(() => Promise.all([...queueServiceTasks]));
     await coordinatorDrain;
     await creationDrain;
     try { await workers.drainLaunches(); } catch { failClosed(); }
@@ -2868,6 +3312,11 @@ async function startOwned(options: Options, assetsDir: string, packageDir: strin
       const drained = await Promise.race([Promise.all([...dispatchTasks]).then(() => true), Bun.sleep(12000).then(() => false)]);
       if (!drained) { retainOwner = true; meta.reconciliationRequired = true; }
     }
+    // Only identity-bound evidence was permitted while locks were supervised.
+    await boundedStartupCleanup(() => Promise.all([...queueAdmissionTasks]));
+    // No late callback may mutate after the bounded observation drain ends.
+    pendingInputBridge!.closeObservations();
+    pendingInputRecovery!.closeObservations();
     // A failed source hook may finish done while retaining its safety barrier.
     // Do not wait for retained ownership; preserve the recovery sentinel instead.
     if (!coordinator.reconciliationSessionIds().next().done) { retainOwner = true; meta.reconciliationRequired = true; }

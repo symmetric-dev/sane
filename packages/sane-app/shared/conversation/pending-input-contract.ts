@@ -1,6 +1,6 @@
-/** Dormant future wire contract only: no routes, persistence, queue execution or
- * capability advertisement. Endpoint names are intentionally unspecified.
- * This protocol is separate from harness operation/capability flags. */
+/** App-origin pending-input wire protocol. Capability advertisement denotes a
+ * healthy startup-owned consumer, never per-conversation dispatch permission.
+ * This protocol is separate from native harness operation/capability flags. */
 export type PendingInputCapability = {
   readonly protocol: "pending-input";
   readonly version: 1;

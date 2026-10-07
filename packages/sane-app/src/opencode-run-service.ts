@@ -4,6 +4,19 @@ import type { RunOwner } from "./run-owner";
 import type { ExecutionContext } from "./workstreams";
 import { saneSessionMessageId, snapshotIdentity } from "./agent-launch";
 import { nativeAgentId } from "sane-core/agent-catalog";
+import type { DispatchIdentity } from "../shared/conversation/dispatch-contract";
+
+/** Private App recovery capability; no Run synthesis or submission hooks. */
+export type OpenCodeRecoveryObservation = Readonly<{
+  identity: DispatchIdentity;
+  validate: () => void;
+  accepted: () => boolean;
+  outcome: () => void;
+  protocolUnsafe: () => boolean;
+  protocolMismatch: (reason: string) => Promise<void>;
+  beforeNative: () => never;
+  execute: () => never;
+}>;
 
 /** Native transport only; owner arbitration and durable writes remain in the bridge. */
 export type OpenCodeRunAdapter = Pick<OpenCodeAdapter, "assertIdle" | "select" | "prompt" | "snapshot" | "interactions" | "compact" | "compactionSnapshot" | "activity" | "cancel"> & Partial<Pick<OpenCodeAdapter, "promptQueuedHandoff" | "preflightNativeSession" | "deliverSaneSession" | "bindSaneSession" | "boundSaneSession" | "cancelInput">>;
@@ -37,6 +50,11 @@ const configuration = (value: Session) => JSON.stringify([value.sessionId, value
   value.profileId, value.model, value.effort, value.agent, value.agentKind, value.nativeAgentSelected, value.saneContext, value.attachment]);
 const runConfiguration = (run: Run) => JSON.stringify([run.model, run.effort, run.profileId, run.agent, run.agentKind, run.nativeAgentSelected, run.operation, run.saneContextVersion]);
 type HandoffPins = Readonly<{ run: Run; runId: string; sessionId: string; commandId: string; nativeSessionId: string; cwd: string; claim: string; configuration: string; runConfiguration: string }>;
+export type OpenCodePendingCancellation = Readonly<{ ready: false }> | Readonly<{
+  ready: true;
+  kind: "pending-removed";
+  evidence: Readonly<DispatchIdentity & { requestId: string; nativeCommandId: string; pendingCreatedAt: number; canceledAt: number }>;
+}>;
 
 /** OpenCode command lifecycle. Reads live bridge state after awaited work; never
  * owns a second registry, replays a mutation, or cancels native work on detach. */
@@ -44,7 +62,67 @@ export class OpenCodeRunService {
   // Observation pins only, not an admission/token or ownership registry. The
   // bridge's real claim gate and durable dispatch evidence remain mandatory.
   private readonly handoffPins = new WeakMap<RunOwner, HandoffPins>();
+  private readonly pendingCancellations = new WeakMap<RunOwner, Readonly<{ pins: HandoffPins; proof: Extract<OpenCodePendingCancellation, { ready: true }> }>>();
   constructor(private readonly deps: OpenCodeRunDependencies) {}
+  /** Process-only receipt for the ORIGINAL live owner. Neither cloned DTOs,
+   * terminal Run metadata nor absent native history can reconstruct it. */
+  readPendingCancellation(owner: RunOwner): OpenCodePendingCancellation {
+    const original = this.pendingCancellations.get(owner);
+    if (!original || this.deps.closing() || this.deps.storageFailed() || this.handoffUnsafe(owner)
+      || this.handoffPins.get(owner) !== original.pins || owner.run !== original.pins.run
+      || this.deps.currentOwner(original.pins.sessionId) && this.deps.currentOwner(original.pins.sessionId) !== owner) return { ready: false };
+    try { if (this.assertHandoff(owner) !== original.pins) return { ready: false }; }
+    catch { return { ready: false }; }
+    return original.proof;
+  }
+  /** Bounded original-ID read / explicit Stop only. In particular, DTO Run phase
+   * and committed user history cannot reconstruct a lost native queue receipt. */
+  async observeRecoveredInput(scope: OpenCodeRecoveryObservation, stop = false): Promise<{ interrupted: boolean }> {
+    const { source, nativeCommandId: commandId } = scope.identity;
+    const validate = (mutation = false) => {
+      if (mutation && this.deps.closing() || this.deps.storageFailed() || source.harnessId !== "opencode" || !source.nativeSessionId || !commandId)
+        throw new OpenCodeError("Original native recovery observation unavailable", 503);
+      scope.validate();
+      if (mutation && scope.protocolUnsafe()) throw new OpenCodeError("Original queue protocol is unsafe; operator reconciliation required", 409);
+    };
+    validate();
+    const read = async () => {
+      if (this.deps.closing()) throw new OpenCodeError("Recovery read closed", 503);
+      validate();
+      const snapshot = await this.deps.oc.snapshot(source.nativeSessionId!, commandId!, source.cwd, "native-queued-handoff");
+      validate();
+      const pending = snapshot.pendingInput;
+      if (pending !== undefined && pending !== null && !isQueuedHandoffAdmission(pending, source.nativeSessionId!, commandId!)) {
+        await scope.protocolMismatch("Original pending input contradicts the strict native queue receipt protocol; operator reconciliation required; do not resend");
+        validate();
+      }
+      if (!scope.protocolUnsafe() && snapshot.pending && isQueuedHandoffAdmission(pending, source.nativeSessionId!, commandId!)) scope.outcome();
+      validate(); return snapshot;
+    };
+    let snapshot = await read();
+    // Conservatively refuse even exact pending DELETE under the unsafe overlay.
+    // Historical acceptance is retained, but cannot authorize any native effect.
+    if (!stop || this.deps.closing() || snapshot.outcome || scope.protocolUnsafe()) return { interrupted: false };
+    if (snapshot.pending) {
+      if (!isQueuedHandoffAdmission(snapshot.pendingInput, source.nativeSessionId!, commandId!) || !this.deps.oc.cancelInput) return { interrupted: false };
+      const canceled = await this.deps.oc.cancelInput(source.nativeSessionId!, commandId!, () => validate(true));
+      validate(true);
+      if (canceled) return { interrupted: true };
+      snapshot = await read();
+    }
+    if (scope.protocolUnsafe() || snapshot.pending || snapshot.outcome || snapshot.boundary || snapshot.currentInputId !== commandId || !scope.accepted()
+      || !snapshot.messages.some(message => message.id === commandId && message.type === "user")) return { interrupted: false };
+    const activity = await this.deps.oc.activity(source.nativeSessionId!, source.cwd);
+    validate();
+    if (scope.protocolUnsafe() || !activity.active || activity.pending) return { interrupted: false };
+    snapshot = await read();
+    if (scope.protocolUnsafe() || snapshot.pending || snapshot.outcome || snapshot.boundary || snapshot.currentInputId !== commandId || !scope.accepted()
+      || !snapshot.messages.some(message => message.id === commandId && message.type === "user")) return { interrupted: false };
+    // Session-wide interrupt still has the existing same-session foreign-activity
+    // race. This read grants neither native exclusivity nor a release proof.
+    const interrupted = await this.deps.oc.cancel(source.nativeSessionId!, () => validate(true));
+    validate(true); return interrupted;
+  }
   private currentNative(owner: RunOwner) {
     return !this.deps.closing() && !this.deps.storageFailed() && owner.run.status === "running" && this.deps.currentOwner(owner.run.sessionId) === owner;
   }
@@ -463,13 +541,31 @@ export class OpenCodeRunService {
       if (!cancellationCurrent() || snapshot.outcome) return { interrupted: false };
       if (snapshot.pending) {
         if (!this.deps.oc.cancelInput) return { interrupted: false };
+        // Pinned handoffs require the strict original receipt before any DELETE.
+        // Legacy deletion stays separate and cannot support live release proof.
+        if (pins && !isQueuedHandoffAdmission(snapshot.pendingInput, nativeSessionId, commandId)) return { interrupted: false };
+        const receipt = pins && !this.handoffUnsafe(owner) && isQueuedHandoffAdmission(snapshot.pendingInput, nativeSessionId, commandId)
+          ? Object.freeze({ createdAt: snapshot.pendingInput.time.created }) : undefined;
+        let proofSafe = !!receipt;
         const canceled = await this.deps.oc.cancelInput(nativeSessionId, commandId, () => {
           if (!this.currentNative(owner)) throw new Error("Queued input cancellation withheld after ownership changed");
           assertCancellation();
+          if (pins && this.handoffUnsafe(owner)) proofSafe = false;
         });
         if (!cancellationCurrent()) return { interrupted: false };
-        if (canceled) {
+        if (canceled === true) {
+          const canceledAt = Date.now();
           await this.finishNative(owner, "interrupted", "Explicitly canceled queued native input before consumption");
+          // Publish only after terminal metadata writes succeed. Storage health,
+          // source/configuration and original object pins are refreshed on read.
+          if (pins && receipt && proofSafe && !this.deps.storageFailed() && !this.deps.closing()
+            && !this.handoffUnsafe(owner) && owner.run === run && this.deps.currentOwner(sessionId) === owner
+            && this.assertHandoff(owner) === pins) {
+            const claim = owner.nativeQueuedHandoff!;
+            const evidence = Object.freeze({ source: Object.freeze({ ...claim.source }), runId: pins.runId,
+              nativeCommandId: pins.commandId, requestId: claim.requestId, pendingCreatedAt: receipt.createdAt, canceledAt });
+            this.pendingCancellations.set(owner, Object.freeze({ pins, proof: Object.freeze({ ready: true, kind: "pending-removed", evidence }) }));
+          }
           return { interrupted: true };
         }
         snapshot = await this.deps.oc.snapshot(nativeSessionId, commandId, cwd, pins ? "native-queued-handoff" : undefined);

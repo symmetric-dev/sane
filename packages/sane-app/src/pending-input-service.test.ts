@@ -1,7 +1,9 @@
 import { afterEach, expect, test } from "bun:test";
 import { mkdirSync, mkdtempSync, realpathSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { PendingInputService, pendingInputRoute, type PendingInputServiceDependencies } from "./pending-input-service";
+import { PendingInputService, pendingInputRoute, type PendingInputServiceDependencies, type PendingInputResumeCommit } from "./pending-input-service";
+import { atomicAppRecord } from "./app-store";
+import type { PendingInputStoreDependencies } from "./pending-input-store";
 import { PendingInputDomainError, PendingInputStorageError } from "./pending-input-contract";
 import { id, pendingFixture, sibling } from "./pending-input-fixtures";
 import { prepareUserInput } from "./user-input-preparation";
@@ -96,20 +98,68 @@ test("concurrent identical enqueue returns the original receipt even if second p
 test("concurrent identical resume dedups before a later failed live preflight", async () => {
   const f = await fixture(); await f.service.enqueue(f.cid, f.input.request); f.service.store.pause(f.cid, { code: "restart", reason: "Explicit resume" });
   const entered = Promise.withResolvers<void>(), release = Promise.withResolvers<void>(), preflight = f.deps.preflight;
-  let calls = 0;
+  let calls = 0, commits = 0;
+  f.deps.resumeCommitted = () => { commits++; };
   f.deps.preflight = async prepared => { if (++calls === 2) { entered.resolve(); await release.promise; throw new PendingInputDomainError("config-drift", "Live source changed"); } return preflight(prepared); };
   const input = { version: 1, requestId: id(), conversationId: f.cid, action: "resume", expectedRevision: f.service.store.get(f.cid).revision };
   const first = f.service.resume(f.cid, input), second = f.service.resume(f.cid, input);
   await entered.promise; const result = await first; f.unsafe(); release.resolve(); expect(await second).toEqual(result);
   expect(f.service.store.readRecords().conversations[0]!.operations).toHaveLength(1);
+  expect(commits).toBe(1);
 });
 test("resume freezes its original operation identity and observed revision before awaited preflight", async () => {
   const f = await fixture(); await f.service.enqueue(f.cid, f.input.request); f.service.store.pause(f.cid, { code: "restart", reason: "Resume" });
   const entered = Promise.withResolvers<void>(), release = Promise.withResolvers<void>(), preflight = f.deps.preflight;
   f.deps.preflight = async prepared => { entered.resolve(); await release.promise; return preflight(prepared); };
-  const value = { version: 1, requestId: id(), conversationId: f.cid, action: "resume", expectedRevision: f.service.store.get(f.cid).revision }, original = structuredClone(value);
+  const value = { version: 1 as const, requestId: id(), conversationId: f.cid, action: "resume" as const, expectedRevision: f.service.store.get(f.cid).revision }, original = structuredClone(value);
+  let commit: PendingInputResumeCommit | undefined;
+  f.deps.resumeCommitted = input => { commit = input; };
   const pending = f.service.resume(f.cid, value); await entered.promise; value.requestId = id(); value.expectedRevision = 0; release.resolve();
   expect(await pending).toMatchObject({ ...original, outcome: "resumed" });
+  expect(commit!.request).toEqual(original); expect(Object.isFrozen(commit)).toBe(true);
+  expect(Object.isFrozen(commit!.request)).toBe(true); expect(Object.isFrozen(commit!.head.snapshot)).toBe(true);
+  expect(commit!.head.request).toEqual(f.input.request); expect(commit!.preflight.pins).toEqual(f.input.snapshot.pins);
+  expect(commit!.receipt.revision).toBe(original.expectedRevision + 1);
+});
+test("new resume commits publish once, while duplicates after Stop and restart preserve the original receipt without consent", async () => {
+  const f = await fixture(); await f.service.enqueue(f.cid, f.input.request);
+  const request = { version: 1, requestId: id(), conversationId: f.cid, action: "resume", expectedRevision: f.service.store.get(f.cid).revision };
+  let commits = 0; f.deps.resumeCommitted = commit => { commits++; expect(f.service.store.get(f.cid).revision).toBe(commit.receipt.revision); commit.preflight.validate(); };
+  const receipt = await f.service.resume(f.cid, request); f.service.store.pause(f.cid, { code: "stopped", reason: "New Stop revokes consent" }); f.unsafe();
+  expect(await f.service.resume(f.cid, request)).toEqual(receipt); expect(commits).toBe(1); expect(f.service.store.get(f.cid).paused).toBe(true);
+  const restarted = new PendingInputService(f.deps); restarted.recover(); const revision = restarted.store.get(f.cid).revision;
+  expect(await restarted.resume(f.cid, request)).toEqual(receipt); expect(commits).toBe(1); expect(restarted.store.get(f.cid).revision).toBe(revision);
+});
+for (const change of ["head", "pins", "validation"] as const) test(`resume ${change} changed during awaited preflight never publishes consent`, async () => {
+  const f = await fixture(), receipt = await f.service.enqueue(f.cid, f.input.request);
+  await f.service.enqueue(f.cid, sibling(f.input).request);
+  const request = { version: 1, requestId: id(), conversationId: f.cid, action: "resume", expectedRevision: f.service.store.get(f.cid).revision };
+  const entered = Promise.withResolvers<void>(), release = Promise.withResolvers<void>(), preflight = f.deps.preflight;
+  let commits = 0; f.deps.resumeCommitted = () => { commits++; };
+  f.deps.preflight = async prepared => { const result = await preflight(prepared); entered.resolve(); await release.promise; return change === "pins" ? { ...result, pins: { ...result.pins, catalog: { ...result.pins.catalog, bindingRevision: id() } } } : result; };
+  const pending = f.service.resume(f.cid, request); await entered.promise;
+  if (change === "head") await f.service.remove(f.cid, receipt.itemId, { version: 1, requestId: id(), conversationId: f.cid, itemId: receipt.itemId, inputRequestId: f.input.request.requestId });
+  if (change === "validation") f.unsafe();
+  release.resolve(); await expect(pending).rejects.toBeInstanceOf(PendingInputDomainError); expect(commits).toBe(0);
+  expect(f.service.store.readRecords().conversations[0]!.operations.some(o => o.kind === "resume")).toBe(false);
+});
+for (const mode of ["throw", "thenable"] as const) test(`durable resume ${mode} callback fails storage closed rather than pretending consent was published`, async () => {
+  const f = await fixture(); await f.service.enqueue(f.cid, f.input.request);
+  const request = { version: 1, requestId: id(), conversationId: f.cid, action: "resume", expectedRevision: f.service.store.get(f.cid).revision };
+  let calls = 0;
+  f.deps.resumeCommitted = () => { calls++; if (mode === "throw") throw new PendingInputDomainError("callback-refused", "Unexpected postcommit refusal"); return Promise.reject(new Error("asynchronous hook")); };
+  await expect(f.service.resume(f.cid, request)).rejects.toBeInstanceOf(PendingInputStorageError);
+  expect(f.counters().closed).toBe(1); expect(f.service.store.readRecords().conversations[0]!.operations).toHaveLength(1);
+  expect((await f.service.resume(f.cid, request)).revision).toBe(request.expectedRevision + 1); expect(calls).toBe(1);
+});
+for (const postRename of [false, true]) test(`resume ${postRename ? "post-rename" : "pre-write"} storage failure never invokes live consent callback`, async () => {
+  const f = await fixture(); await f.service.enqueue(f.cid, f.input.request);
+  const request = { version: 1, requestId: id(), conversationId: f.cid, action: "resume", expectedRevision: f.service.store.get(f.cid).revision };
+  let commits = 0; f.deps.resumeCommitted = () => { commits++; };
+  const deps = (f.service.store as unknown as { deps: PendingInputStoreDependencies }).deps;
+  deps.write = (...args) => { if (postRename) atomicAppRecord(...args); throw new Error("offline write/fsync fault"); };
+  await expect(f.service.resume(f.cid, request)).rejects.toBeInstanceOf(PendingInputStorageError);
+  expect(commits).toBe(0); expect(f.counters().closed).toBe(1); expect(f.service.store.get(f.cid).revision).toBe(request.expectedRevision);
 });
 test("established worker input retains its inherited identity and operation constraints without a role exclusion", async () => {
   const f = await fixture(await pendingFixture("opencode", {}, { agent: "scout", agentKind: "worker", nativeAgentSelected: true, profileId: "worker:scout" }));

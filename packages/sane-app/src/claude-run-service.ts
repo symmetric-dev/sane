@@ -11,6 +11,8 @@ import { CLAUDE_RESULT_TEXT_LIMIT, consumeClaudeResultRecord, createClaudeResult
 import type { QueuedSendConfiguration } from "../shared/conversation/queued-followup";
 import type { ConversationActivity } from "../shared/conversation/activity";
 import { ClaudeActivity } from "./claude-activity";
+import { synchronousDispatchHook } from "./dispatch-evidence";
+import { HarnessDispatchError } from "./harness-dispatch";
 
 export const hookEvents = ["SessionStart", "SessionEnd", "UserPromptSubmit", "Stop", "PreToolUse", "PostToolUse", "PermissionRequest", "Notification", "SubagentStart", "SubagentStop", "PreCompact", "PostCompact", "CwdChanged"] as const;
 
@@ -75,6 +77,33 @@ export type ClaudeRunRuntime = {
 export type ClaudeHookInput = { runId?: unknown; payload?: unknown };
 export type ClaudeHookReply = { status: 200; body: { ok: true } } | { status: 400 | 403; body: { error: string } };
 export type ClaudeQueuedFollowup = { requestId: string; afterRunId: string; sessionId: string; prompt: string; configuration?: QueuedSendConfiguration };
+export type ClaudeTerminalCause = "result-success" | "service-closing" | "stop-requested" | "storage-failure" | "nonzero-exit" | "signal-exit" | "framework-rejected" | "result-failure" | "missing-result" | "termination-unconfirmed" | "launch-stream-shutdown-failure";
+/** Process-local observations, never reconstructed from mutable Run DTO fields. */
+export type ClaudeLocalSupervision = Readonly<{
+  runId: string; sessionId: string; nativeSessionId: string | null; cwd: string;
+  childPid: number | null; groupPid: number | null; nativeAttempted: boolean;
+  exitObserved: boolean; exitCode: number | null; exitSignal: string | number | null;
+  /** Observed service promise result: confirmed=true, unconfirmed=false.
+   * Neither a promise's presence nor signal delivery is an acknowledgement. */
+  termination: "not-requested" | "pending" | "confirmed" | "unconfirmed";
+  streamsDrained: boolean; lifecycleFinished: boolean;
+  terminal: Readonly<{ status: "completed" | "failed" | "interrupted"; cause: ClaudeTerminalCause }> | null;
+}>;
+export type ClaudeLocalSettlement =
+  | { readonly ready: true; readonly kind: "withheld" | "terminated"; readonly evidence: ClaudeLocalSupervision }
+  | { readonly ready: false; readonly reason: string; readonly code: "claude-local-unproven"; readonly evidence?: ClaudeLocalSupervision };
+export type ClaudeLocalIdle = { readonly ready: true } | { readonly ready: false; readonly reason: string; readonly code: "claude-local-unproven" };
+type Supervision = {
+  readonly owner: RunOwner; readonly run: Run; readonly identity: Readonly<{ runId: string; sessionId: string; nativeSessionId: string | null; cwd: string }>;
+  readonly source: Readonly<{ harness: Session["harness"]; authorityId: string | undefined; nativeSessionId: string | null; cwd: string | undefined }>;
+  newNativeAssigned: boolean;
+  /** Closed on return/throw from the synchronous intent hook, before spawn. */
+  preparing: boolean;
+  child?: Bun.Subprocess<"pipe", "pipe", "pipe">; pid?: number;
+  nativeAttempted: boolean; exitObserved: boolean; exitCode: number | null; exitSignal: string | number | null;
+  termination: ClaudeLocalSupervision["termination"]; terminationPromise?: Promise<boolean>;
+  streamsDrained: boolean; finished: boolean; valid: boolean; terminal: ClaudeLocalSupervision["terminal"];
+};
 type QueuedFollowup = { owner: RunOwner; input: ClaudeQueuedFollowup; cancelled?: boolean; persisted: Promise<void>; draining?: Promise<void> };
 /** failure: the first non-success result record; framework: the SessionStart text this run must deliver. */
 type Result = ClaudeResultSequenceState & { stderr: string };
@@ -87,11 +116,14 @@ const hookContextLimit = 10000;
 const equal = (a: string, b: string) => { const x = Buffer.from(a), y = Buffer.from(b); return x.length === y.length && timingSafeEqual(x, y); };
 
 export class ClaudeRunService {
-  private readonly secrets = new Map<string, string>();
+  private readonly secrets = new Map<string, { secret: string; supervised: Supervision }>();
   private readonly stoppedTurns = new Set<string>();
   private readonly turnHooks = new Map<string, symbol | undefined>();
   private readonly followups = new Map<string, QueuedFollowup>();
   private readonly activities = new Map<string, ClaudeActivity>();
+  private readonly supervision = new WeakMap<RunOwner, Supervision>();
+  /** All unretired local groups/attempts, not the bridge's execution owners. */
+  private readonly supervised = new Map<string, Set<Supervision>>();
   private readonly runtime: ClaudeRunRuntime;
 
   constructor(private readonly options: ClaudeRunOptions, private readonly deps: ClaudeRunDependencies, runtime: Partial<ClaudeRunRuntime> = {}) {
@@ -109,8 +141,80 @@ export class ClaudeRunService {
   }
 
   groupAlive(owner: RunOwner): boolean {
-    if (!owner.child) return false;
-    try { this.runtime.kill(-owner.child.pid, 0); return true; } catch (e: any) { return e.code !== "ESRCH"; }
+    const state = this.supervision.get(owner), pid = state ? state.pid : owner.child?.pid;
+    return pid === undefined ? false : this.localGroupAlive(pid);
+  }
+
+  private localGroupAlive(pid: number): boolean {
+    try { this.runtime.kill(-pid, 0); return true; } catch (e: any) { return e.code !== "ESRCH"; }
+  }
+
+  private validSupervision(state: Supervision): boolean {
+    const { owner, identity } = state;
+    if (owner.run !== state.run || owner.run.runId !== identity.runId || owner.run.sessionId !== identity.sessionId || owner.run.cwd !== identity.cwd
+      || owner.child !== state.child || state.child && state.child.pid !== state.pid
+      || !this.sameOriginalSource(state)
+      || state.terminal && owner.run.status !== state.terminal.status) state.valid = false;
+    return state.valid;
+  }
+
+  private sameOriginalSource(state: Supervision, session = this.deps.session(state.identity.sessionId)): boolean {
+    const source = state.source;
+    return !!session && session.sessionId === state.identity.sessionId && session.harness === source.harness
+      && session.authorityId === source.authorityId && session.cwd === source.cwd
+      && (session.nativeSessionId ?? null) === (state.newNativeAssigned ? state.identity.nativeSessionId : source.nativeSessionId);
+  }
+
+  /** Exact live service capability. Copied fields, forged status, exitCode and
+   * streamsDrained cannot manufacture runtime terminal/EOF observations. */
+  readLocalSettlement(owner: RunOwner): ClaudeLocalSettlement {
+    const state = this.supervision.get(owner);
+    const denied = (reason: string, evidence?: ClaudeLocalSupervision): ClaudeLocalSettlement => ({ ready: false, reason, code: "claude-local-unproven", ...(evidence ? { evidence } : {}) });
+    if (!state) return denied("No original local supervision capability");
+    const evidence: ClaudeLocalSupervision = Object.freeze({ ...state.identity,
+      childPid: state.pid ?? null, groupPid: state.pid === undefined ? null : -state.pid, nativeAttempted: state.nativeAttempted,
+      exitObserved: state.exitObserved, exitCode: state.exitCode, exitSignal: state.exitSignal, termination: state.termination,
+      streamsDrained: state.streamsDrained, lifecycleFinished: state.finished, terminal: state.terminal });
+    if (!this.validSupervision(state) || !state.finished || !state.terminal || !state.streamsDrained) return denied("Original local identity, terminal classification and successful EOF consumption are not all proven", evidence);
+    if (!state.nativeAttempted && !state.child) return { ready: true, kind: "withheld", evidence };
+    if (!state.child || state.pid === undefined || !state.exitObserved || this.localGroupAlive(state.pid)
+      || owner.stopping && owner.stopping !== state.terminationPromise
+      || state.termination === "pending" || state.termination === "unconfirmed") return denied("Original child exit and detached group absence are not proven", evidence);
+    return { ready: true, kind: "terminated", evidence };
+  }
+
+  /** App-created groups only, never foreign Claude/native exclusivity or restart
+   * safety. An optional original owner may exclude only its live, unattempted
+   * preparation (including validation inside beforeNative, BEFORE intent writes).
+   * This is a fresh observation, not an execution lease or settlement proof. */
+  readLocalIdle(sessionId: string, preparingOwner?: RunOwner): ClaudeLocalIdle {
+    const states = this.supervised.get(sessionId);
+    if (states) for (const state of states) this.retireSupervision(state);
+    const remaining = this.supervised.get(sessionId);
+    const preparing = preparingOwner ? this.supervision.get(preparingOwner) : undefined;
+    const denied: ClaudeLocalIdle = { ready: false, reason: "Local Claude preparation, group or stream supervision remains unproven", code: "claude-local-unproven" };
+    if (preparingOwner && (!preparing || !remaining?.has(preparing) || preparing.identity.sessionId !== sessionId
+      || !this.isPreparingOwner(preparing))) return denied;
+    if (remaining) for (const state of remaining) if (state !== preparing) return denied;
+    return { ready: true };
+  }
+
+  private isPreparingOwner(state: Supervision): boolean {
+    const { owner } = state;
+    return state.preparing && !state.nativeAttempted && !state.child && state.pid === undefined && !state.exitObserved
+      && !state.finished && !state.terminal && !state.newNativeAssigned && state.termination === "not-requested"
+      && !!state.identity.nativeSessionId && (state.source.harness === undefined || state.source.harness === "claude-code")
+      && this.validSupervision(state) && this.deps.owns(owner) && owner.run.status === "running"
+      && !owner.nativeDispatched && !owner.settled && !owner.stopRequested && !owner.cancelling && !owner.stopping
+      && !this.deps.closing() && !this.deps.storageFailed() && !this.deps.retained();
+  }
+
+  private retireSupervision(state: Supervision): void {
+    if (!state.finished || !state.streamsDrained) return;
+    if (state.nativeAttempted && (!state.child || state.pid === undefined || !state.exitObserved || this.localGroupAlive(state.pid))) return;
+    const states = this.supervised.get(state.identity.sessionId);
+    states?.delete(state);
+    if (!states?.size) this.supervised.delete(state.identity.sessionId);
   }
 
   /** Input admission is not process ownership. The one-shot CLI cannot receive
@@ -195,16 +299,18 @@ export class ClaudeRunService {
   }
 
   private signal(owner: RunOwner, value: NodeJS.Signals) {
-    if (!owner.child) return;
-    try { this.runtime.kill(-owner.child.pid, value); } catch { /* It may already have exited. */ }
-    try { owner.child.kill(value); } catch { /* Also cover the direct child. */ }
+    const state = this.supervision.get(owner), child = state ? state.child : owner.child;
+    if (!child) return;
+    try { this.runtime.kill(-(state?.pid ?? child.pid), value); } catch { /* Signal delivery is not proof. */ }
+    try { child.kill(value); } catch { /* Also cover the original direct child. */ }
   }
 
   terminate(owner: RunOwner): Promise<boolean> {
     if (owner.stopping) return owner.stopping;
-    const child = owner.child;
+    const state = this.supervision.get(owner), child = state ? state.child : owner.child;
     // Preparation can be stopped before spawn; do not cache a no-child result.
     if (!child) return Promise.resolve(true);
+    if (state) state.termination = "pending";
     owner.stopping = (async () => {
       let exited = false;
       void child.exited.then(() => { exited = true; }, () => {});
@@ -215,6 +321,10 @@ export class ClaudeRunService {
       this.deps.requireReconciliation();
       return false;
     })().catch(() => { this.deps.requireReconciliation(); return false; });
+    if (state) {
+      state.terminationPromise = owner.stopping;
+      void owner.stopping.then(confirmed => { state.termination = confirmed ? "confirmed" : "unconfirmed"; });
+    }
     return owner.stopping;
   }
 
@@ -223,10 +333,13 @@ export class ClaudeRunService {
   async ingestHook(event: string, input: ClaudeHookInput, secret: string): Promise<ClaudeHookReply> {
     if (!(hookEvents as readonly string[]).includes(event)) return { status: 400, body: { error: "Unknown hook" } };
     const run = this.deps.run(input.runId), expected = this.secrets.get(input.runId as string);
-    if (!run || !expected || !equal(secret, expected)) return { status: 403, body: { error: "Forbidden" } };
+    if (!run || !expected || run !== expected.supervised.run || run.runId !== expected.supervised.identity.runId
+      || run.sessionId !== expected.supervised.identity.sessionId || !equal(secret, expected.secret)) return { status: 403, body: { error: "Forbidden" } };
     const payload = input.payload;
     const session = this.deps.session(run.sessionId);
-    if (!session?.nativeSessionId || session.harness !== "claude-code" || !payload || typeof payload !== "object" || (payload as Record<string, unknown>).hook_event_name !== event || (payload as Record<string, unknown>).session_id !== session.nativeSessionId) return { status: 400, body: { error: "Hook association mismatch" } };
+    if (!session || session.harness !== "claude-code" && session.harness !== undefined || !this.sameOriginalSource(expected.supervised, session)
+      || run.cwd !== expected.supervised.identity.cwd || !payload || typeof payload !== "object" || (payload as Record<string, unknown>).hook_event_name !== event
+      || (payload as Record<string, unknown>).session_id !== expected.supervised.identity.nativeSessionId) return { status: 400, body: { error: "Hook association mismatch" } };
     // Publish root hook state in receipt order before starting journal I/O.
     // Stop becomes queueable only after its own durable write finishes; a later
     // activity hook invalidates that publication even while Stop is persisting.
@@ -240,8 +353,8 @@ export class ClaudeRunService {
     return { status: 200, body: { ok: true } };
   }
 
-  private async consume(owner: RunOwner, nativeSessionId: string, stream: ReadableStream<Uint8Array>, kind: "stdout" | "stderr", result: Result) {
-    const run = owner.run, reader = stream.getReader(); const decoder = new TextDecoder(); let pending = "";
+  private async consume(owner: RunOwner, run: Run, nativeSessionId: string, stream: ReadableStream<Uint8Array>, kind: "stdout" | "stderr", result: Result) {
+    const reader = stream.getReader(); const decoder = new TextDecoder(); let pending = "";
     const line = async (text: string) => {
       if (!text) return;
       let data: any = text;
@@ -272,114 +385,195 @@ export class ClaudeRunService {
 
   async execute(owner: RunOwner, prompt: string, resume: boolean, ready: (accepted: boolean) => void): Promise<void> {
     const run = owner.run, deps = this.deps, runtime = this.runtime;
+    if (this.supervision.has(owner)) throw new Error("Original Claude supervision cannot be replaced or replayed");
+    owner.nativeDispatched = false;
+    const runId = run.runId, sessionId = run.sessionId, cwd = run.cwd;
+    const sessionAtEntry = deps.session(sessionId), operation = run.operation, model = run.model, effort = run.effort, dispatchEvidence = owner.dispatchEvidence;
+    const source = Object.freeze({ harness: sessionAtEntry?.harness, authorityId: sessionAtEntry?.authorityId, nativeSessionId: sessionAtEntry?.nativeSessionId ?? null, cwd: sessionAtEntry?.cwd });
+    // Bridge creation normally preallocates the native UUID. Legacy new-session
+    // callers without one use this run's UUID, never an ID selected by stdout.
+    const nativeSessionId = source.nativeSessionId ?? (!resume ? runId : null);
+    const supervised: Supervision = { owner, run, identity: Object.freeze({ runId, sessionId, nativeSessionId, cwd }),
+      source, newNativeAssigned: false, preparing: true,
+      nativeAttempted: false, exitObserved: false, exitCode: null, exitSignal: null, termination: "not-requested", streamsDrained: false, finished: false, valid: true, terminal: null };
+    this.supervision.set(owner, supervised);
+    const states = this.supervised.get(sessionId) ?? new Set<Supervision>(); states.add(supervised); this.supervised.set(sessionId, states);
+    const assertSource = () => {
+      const session = deps.session(sessionId);
+      if (owner.run !== run || run.runId !== runId || run.sessionId !== sessionId || run.cwd !== cwd
+        || source.harness !== undefined && source.harness !== "claude-code"
+        || !nativeSessionId || !session || !this.sameOriginalSource(supervised, session)) {
+        supervised.valid = false;
+        throw new HarnessDispatchError("dispatch-source-mismatch", "Original Claude conversation source changed during execution");
+      }
+      return session;
+    };
+    // Every awaited preparation step is surrounded by a fresh lookup, including
+    // replacement Session objects. Optional bridge gates cannot replace this pin.
+    const prepare = async <T>(action: () => Promise<T>): Promise<T> => {
+      assertSource();
+      try { return await action(); } finally { assertSource(); }
+    };
+    const classify = (status: "completed" | "failed" | "interrupted", cause: ClaudeTerminalCause) => {
+      supervised.terminal = Object.freeze({ status, cause });
+      run.status = status;
+      this.validSupervision(supervised); // A contradictory DTO setter cannot mint proof.
+    };
+    const updateSession = () => {
+      const session = deps.session(sessionId);
+      if (session && this.sameOriginalSource(supervised, session)) session.lastStatus = supervised.terminal!.status;
+      else supervised.valid = false;
+    };
     const result: Result = { ...createClaudeResultSequenceState(), stderr: "" };
-    const activity = new ClaudeActivity(run.runId, run.createdAt);
-    this.activities.set(run.runId, activity);
-    let streams: Promise<unknown>[] = [], nativeAttempted = false;
+    const activity = new ClaudeActivity(runId, run.createdAt);
+    this.activities.set(runId, activity);
+    let streams: Promise<unknown>[] = [], intentWritten = false;
     try {
-      if (run.operation !== "compact" && compactCommand(prompt)) throw new Error("Use the dedicated Compact action; compaction cannot be submitted as an ordinary prompt");
+      assertSource();
+      const identity = snapshotIdentity(run), agent = run.agent, saneContextVersion = run.saneContextVersion;
+      const frameworkPath = !resume && sessionAtEntry?.saneContext ? join(this.options.dataDir, `${runId}.session-start.md`) : undefined;
+      const framework = frameworkPath ? saneContextText(sessionAtEntry!.saneContext!) : undefined;
+      if (operation !== "compact" && compactCommand(prompt)) throw new Error("Use the dedicated Compact action; compaction cannot be submitted as an ordinary prompt");
       // Write the first log record before publishing its metadata reference.
-      await deps.emit(run, "status", { status: "running" });
-      if (run.operation !== "compact") await deps.emit(run, "submission", { messageId: `${run.runId}:user`, text: prompt, ...(run.queuedFollowupId ? { queuedFollowupId: run.queuedFollowupId } : {}) });
-      await deps.persist();
+      await prepare(() => deps.emit(run, "status", { status: "running" }));
+      if (operation !== "compact") await prepare(() => deps.emit(run, "submission", { messageId: `${runId}:user`, text: prompt, ...(run.queuedFollowupId ? { queuedFollowupId: run.queuedFollowupId } : {}) }));
+      await prepare(() => deps.persist());
       if (deps.closing()) throw new Error("Closing before launch");
-      const session = deps.session(run.sessionId)!;
-      run.cwd = run.operation === "compact" ? await deps.compactExecution(session) : await deps.execution(session.sessionId);
-      const secret = runtime.randomUUID() + runtime.randomUUID(); this.secrets.set(run.runId, secret);
+      const execution = () => prepare(() => operation === "compact" ? deps.compactExecution(assertSource()) : deps.execution(sessionId));
+      const checkExecution = async () => {
+        if (await execution() !== cwd) {
+          supervised.valid = false;
+          throw new HarnessDispatchError("dispatch-source-mismatch", "Original Claude execution checkout changed during preparation");
+        }
+      };
+      await checkExecution();
+      const secret = runtime.randomUUID() + runtime.randomUUID(); this.secrets.set(runId, { secret, supervised });
       const hooks: Record<string, { hooks: { type: "command"; command: string; timeout: number }[] }[]> = Object.fromEntries(hookEvents.map(event => [event, [{ hooks: [{ type: "command", command: `${quote(runtime.execPath)} ${quote(join(this.options.packageRoot, "hooks/forward.ts"))} ${quote(event)}`, timeout: 3 }] }]]));
       // The framework enters native history once, from the run that creates the native session.
-      const frameworkPath = !resume && session.saneContext ? join(this.options.dataDir, `${run.runId}.session-start.md`) : undefined;
-      const framework = frameworkPath ? saneContextText(session.saneContext!) : undefined;
       if (frameworkPath) {
         if (framework!.length > hookContextLimit) throw new AgentLaunchConfigurationError(`SANE framework exceeds the ${hookContextLimit}-character SessionStart context limit`);
-        await deps.enqueue(() => runtime.writeSettings(frameworkPath, framework!));
+        await prepare(() => deps.enqueue(() => runtime.writeSettings(frameworkPath, framework!)));
         result.framework = { text: framework!, delivered: false, rejected: false, failures: [] };
         hooks.SessionStart!.push({ hooks: [{ type: "command", command: `${quote(runtime.execPath)} ${quote(join(this.options.packageRoot, "hooks/session-start.ts"))} ${quote(frameworkPath)}`, timeout: 10 }] });
       }
-      const identity = snapshotIdentity(run);
-      const installed = identity ? await runtime.agentSettings(this.options.claudeRoot, identity) : undefined;
+      const installed = identity ? await prepare(() => runtime.agentSettings(this.options.claudeRoot, identity)) : undefined;
       const ccAgent = installed?.agent, permissions = installed?.permissions;
       // Separate from SessionStart framework delivery: add the Session block only
       // alongside the first prompt, never as a per-run system prompt override.
-      const saneSession = !resume ? await deps.saneSession(session.sessionId) : null;
-      const sessionPath = saneSession === null ? undefined : join(this.options.dataDir, `${run.runId}.sane-session.md`);
+      const saneSession = !resume ? await prepare(() => deps.saneSession(sessionId)) : null;
+      const sessionPath = saneSession === null ? undefined : join(this.options.dataDir, `${runId}.sane-session.md`);
       if (sessionPath) {
         if (saneSession!.length > hookContextLimit) throw new AgentLaunchConfigurationError(`SANE Session context exceeds the ${hookContextLimit}-character hook context limit`);
-        await deps.enqueue(() => runtime.writeSettings(sessionPath, saneSession!));
+        await prepare(() => deps.enqueue(() => runtime.writeSettings(sessionPath, saneSession!)));
         hooks.UserPromptSubmit!.push({ hooks: [{ type: "command", command: `${quote(runtime.execPath)} ${quote(join(this.options.packageRoot, "hooks/session-context.ts"))} ${quote(sessionPath)}`, timeout: 10 }] });
       }
-      const settingsPath = join(this.options.dataDir, `${run.runId}.settings.json`);
+      const settingsPath = join(this.options.dataDir, `${runId}.settings.json`);
       const settings = JSON.stringify({ hooks, ...(permissions ? { permissions } : {}) });
-      await deps.enqueue(() => runtime.writeSettings(settingsPath, settings));
+      await prepare(() => deps.enqueue(() => runtime.writeSettings(settingsPath, settings)));
       if (deps.closing() || deps.storageFailed() || owner.stopRequested) throw new Error("Closing before launch");
-      const args = [this.options.claudeBin, "-p", "--permission-mode", "bypassPermissions", "--output-format", "stream-json", "--verbose", resume ? "--resume" : "--session-id", session.nativeSessionId!, "--settings", settingsPath];
+      const args = [this.options.claudeBin, "-p", "--permission-mode", "bypassPermissions", "--output-format", "stream-json", "--verbose", resume ? "--resume" : "--session-id", nativeSessionId!, "--settings", settingsPath];
       if (ccAgent !== undefined) args.push("--agent", ccAgent);
-      if (run.model !== undefined) args.push("--model", run.model);
-      if (run.effort !== undefined) args.push("--effort", run.effort);
+      if (model !== undefined) args.push("--model", model);
+      if (effort !== undefined) args.push("--effort", effort);
       // Native HOME/hooks stay shared, but bridge credentials/context do not.
       const env = Object.fromEntries(Object.entries(runtime.env).filter(([name, value]) => value !== undefined && !/^(CC_WEB_|OPENCODE_SERVER_|OPENCODE_SESSION_ID$|OPENCODE_TOKEN$|SANE_|BUN_INSPECT|NODE_OPTIONS$)/i.test(name))) as Record<string, string>;
       // Exact launch inputs as evidence; the prompt is the submission and the hook secret stays in env.
-      const context = await deps.executionContext(session.sessionId);
-      await deps.emit(run, "launch", {
-        harness: "claude-code", resume, operation: run.operation ?? "prompt", workstreamId: context.workstreamId, workstreamRoot: context.artifactsRoot, implementationRoot: run.cwd,
-        agent: run.agent ?? null, saneContextVersion: run.saneContextVersion ?? null, args, claudeVersion: null,
+      const context = await prepare(() => deps.executionContext(sessionId));
+      await prepare(() => deps.emit(run, "launch", {
+        harness: "claude-code", resume, operation: operation ?? "prompt", workstreamId: context.workstreamId, workstreamRoot: context.artifactsRoot, implementationRoot: cwd,
+        agent: agent ?? null, saneContextVersion: saneContextVersion ?? null, args: [...args], claudeVersion: null,
         agentFile: installed?.agentFile ?? null, settings: { path: settingsPath, sha256: sha256(settings) },
         framework: frameworkPath ? { path: frameworkPath, sha256: sha256(framework!) } : null,
         sessionBlock: sessionPath ? { path: sessionPath, sha256: sha256(saneSession!) } : null,
-      });
-      run.cwd = run.operation === "compact" ? await deps.compactExecution(session) : await deps.execution(session.sessionId);
+      }));
+      await checkExecution();
       deps.assertWorkerDeliverySubmission(owner);
       if (deps.closing() || deps.storageFailed() || owner.stopRequested || owner.cancelling || owner.settled || !deps.owns(owner)) throw new Error("Execution unavailable before launch");
-      owner.beforeSend?.();
+      assertSource();
+      synchronousDispatchHook(() => owner.beforeSend?.());
+      assertSource();
       // spawn can execute SessionStart hooks before stdin receives the prompt.
       // Durable intent must precede spawn, not ready(true) or stdin.write.
-      owner.dispatchEvidence?.beforeNative();
-      nativeAttempted = true;
-      const child = runtime.spawn(args, {
-        cwd: run.cwd, detached: true, stdin: "pipe", stdout: "pipe", stderr: "pipe", env: { ...env, CLAUDE_CONFIG_DIR: this.options.claudeRoot, CLAUDE_CODE_PROJECT_DIR_NAME: "", CC_WEB_HOOK_URL: this.options.hookUrl(), CC_WEB_RUN_ID: run.runId, CC_WEB_HOOK_SECRET: secret, CC_WEB_HOOK_ERRORS: join(this.options.dataDir, `${run.runId}.hook-errors.jsonl`) },
-      });
+      try { synchronousDispatchHook(() => dispatchEvidence?.beforeNative()); }
+      finally { supervised.preparing = false; }
+      intentWritten = !!dispatchEvidence;
+      assertSource();
+      const spawnOptions: SpawnOptions = {
+        cwd, detached: true, stdin: "pipe", stdout: "pipe", stderr: "pipe", env: { ...env, CLAUDE_CONFIG_DIR: this.options.claudeRoot, CLAUDE_CODE_PROJECT_DIR_NAME: "", CC_WEB_HOOK_URL: this.options.hookUrl(), CC_WEB_RUN_ID: runId, CC_WEB_HOOK_SECRET: secret, CC_WEB_HOOK_ERRORS: join(this.options.dataDir, `${runId}.hook-errors.jsonl`) },
+      };
+      assertSource();
+      supervised.nativeAttempted = true;
+      owner.nativeDispatched = true;
+      const child = runtime.spawn(args, spawnOptions);
       owner.child = child;
+      supervised.child = child; supervised.pid = child.pid;
+      void child.exited.then(exit => {
+        supervised.exitObserved = true; supervised.exitCode = exit;
+        supervised.exitSignal = (child as unknown as { signalCode?: string | number | null }).signalCode ?? null;
+      }, () => {});
       activity.running();
       ready(true);
-      streams = [this.consume(owner, session.nativeSessionId!, child.stdout, "stdout", result), this.consume(owner, session.nativeSessionId!, child.stderr, "stderr", result)];
+      streams = [this.consume(owner, run, nativeSessionId!, child.stdout, "stdout", result), this.consume(owner, run, nativeSessionId!, child.stderr, "stderr", result)];
       // Observe both consumers before a synchronous stdin failure can occur.
       const output = Promise.all([child.exited, ...streams]);
       void output.catch(() => {});
       child.stdin.write(prompt);
       const [exit] = await Promise.all([output.then(values => values[0] as number), Promise.resolve(child.stdin.end()).then(() => {
         // Pipe completion proves submission only, never native acceptance.
-        owner.dispatchEvidence?.outcome("submitted");
+        dispatchEvidence?.outcome("submitted");
       })]);
       activity.finishing();
       if (this.groupAlive(owner) && !(await this.terminate(owner))) throw new Error("Process group termination unconfirmed");
+      assertSource();
       rejectUndeliveredClaudeFramework(result);
-      run.status = deps.closing() || owner.stopRequested ? "interrupted" : !deps.storageFailed() && exit === 0 && result.seen && !result.error ? "completed" : "failed";
-      run.endedAt = new Date().toISOString(); deps.session(run.sessionId)!.lastStatus = run.status;
-      const compact = run.operation === "compact" ? projectCompactions(session, [run], deps.events(run.runId))[0] : undefined;
-      const failure = run.status !== "failed" ? {} : { ...this.failure(result), ...(exit !== 0 ? { error: result.stderr.trim() || `CLI exited with code ${exit}` } : {}) };
-      await deps.emit(run, "status", { status: run.status, exitCode: exit, resultSeen: result.seen, ...(compact ? { compactionLifecycle: compact.lifecycle, reason: compact.lifecycle === "unconfirmed" ? "CLI ended without native compaction outcome evidence; do not automatically resend" : "CLI process ended; compaction outcome is reported separately by native evidence" } : result.diagnostic ? { reason: result.diagnostic } : {}), ...failure });
+      const closing = deps.closing(), stopRequested = owner.stopRequested, storageFailed = deps.storageFailed();
+      const exitSignal = supervised.exitSignal, exitedNormally = exit === 0 && exitSignal === null;
+      const status = closing || stopRequested ? "interrupted" : !storageFailed && exitedNormally && result.seen && !result.error ? "completed" : "failed";
+      const cause = closing ? "service-closing" : stopRequested ? "stop-requested" : storageFailed ? "storage-failure" : exitSignal !== null ? "signal-exit" : exit !== 0 ? "nonzero-exit" : result.framework?.rejected ? "framework-rejected" : !result.seen ? "missing-result" : result.error ? "result-failure" : "result-success";
+      if (!resume && supervised.source.nativeSessionId === null && result.seen && !result.integrityRejected) {
+        assertSource().nativeSessionId = nativeSessionId!;
+        supervised.newNativeAssigned = true;
+      }
+      classify(status, cause);
+      run.endedAt = new Date().toISOString(); updateSession();
+      const compact = operation === "compact" ? projectCompactions(assertSource(), [run], deps.events(runId))[0] : undefined;
+      const failure = status !== "failed" ? {} : { ...this.failure(result), ...(!exitedNormally ? { error: result.stderr.trim() || (exitSignal !== null ? `CLI terminated by signal ${exitSignal}` : `CLI exited with code ${exit}`) } : {}) };
+      await prepare(() => deps.emit(run, "status", { status, exitCode: exit, resultSeen: result.seen, ...(compact ? { compactionLifecycle: compact.lifecycle, reason: compact.lifecycle === "unconfirmed" ? "CLI ended without native compaction outcome evidence; do not automatically resend" : "CLI process ended; compaction outcome is reported separately by native evidence" } : result.diagnostic ? { reason: result.diagnostic } : {}), ...failure }));
     } catch (error) {
-      if (owner.dispatchEvidence && owner.child) owner.dispatchEvidence.outcome("unknown");
+      supervised.preparing = false;
+      if (dispatchEvidence && (intentWritten || supervised.nativeAttempted)) dispatchEvidence.outcome("unknown");
       if (error instanceof AgentLaunchConfigurationError) owner.launchError = error.message;
       const stopped = await this.terminate(owner);
-      run.status = stopped && (deps.closing() || owner.stopRequested) ? "interrupted" : "failed";
-      run.endedAt = new Date().toISOString(); deps.session(run.sessionId)!.lastStatus = run.status;
-      try { await deps.emit(run, "status", { status: run.status, ...(run.operation === "compact" && !owner.child ? { operation: "compact", compactNotSubmitted: true } : {}), reason: !stopped ? "Process termination unconfirmed; operator reconciliation required" : deps.storageFailed() ? "Storage failure; operator reconciliation required" : owner.launchError ?? "CLI launch, stream, or shutdown failure", error: message(error), ...this.failure(result) }); } catch { deps.failClosed(); }
+      const closing = deps.closing(), stopRequested = owner.stopRequested, storageFailed = deps.storageFailed();
+      const status = stopped && (closing || stopRequested) ? "interrupted" : "failed";
+      classify(status, !stopped ? "termination-unconfirmed" : closing ? "service-closing" : stopRequested ? "stop-requested" : storageFailed ? "storage-failure" : "launch-stream-shutdown-failure");
+      run.endedAt = new Date().toISOString(); updateSession();
+      try { await deps.emit(run, "status", { status, ...(operation === "compact" && !supervised.child && !intentWritten && !supervised.nativeAttempted ? { operation: "compact", compactNotSubmitted: true } : {}), reason: !stopped ? "Process termination unconfirmed; operator reconciliation required" : storageFailed ? "Storage failure; operator reconciliation required" : owner.launchError ?? "CLI launch, stream, or shutdown failure", error: message(error), ...(error instanceof HarnessDispatchError ? { code: error.code } : {}), ...this.failure(result) }); } catch { deps.failClosed(); }
       ready(false);
     } finally {
       ready(false);
-      if (!nativeAttempted) owner.dispatchEvidence?.withheld();
+      if (!intentWritten && !supervised.nativeAttempted) dispatchEvidence?.withheld();
       // Retain the sentinel if either consumer cannot finish within the bound.
-      const drained = await Promise.race([Promise.allSettled(streams).then(() => true), runtime.sleep(2200).then(() => false)]);
+      const drained = await Promise.race([Promise.allSettled(streams).then(results => (!supervised.child || results.length === 2) && results.every(result => result.status === "fulfilled")), runtime.sleep(2200).then(() => false)]);
       owner.streamsDrained = drained;
+      supervised.streamsDrained = drained;
       if (!drained) deps.requireReconciliation();
-      if (run.operation === "compact" && owner.child && drained && !deps.retained() && !deps.closing() && !deps.storageFailed()) await deps.refreshCompactHistory(owner);
-      run.endedAt = new Date().toISOString(); deps.session(run.sessionId)!.lastStatus = run.status;
-      try { if (owner.workerDeliveryId && !owner.child) await deps.emit(run, "status", { status: run.status, workerDeliveryNotSubmitted: owner.workerDeliveryId }); await deps.persist(); } catch { deps.failClosed(); }
-      this.secrets.delete(run.runId);
-      this.stoppedTurns.delete(run.runId);
-      this.turnHooks.delete(run.runId);
-      this.activities.delete(run.runId);
+      run.endedAt = new Date().toISOString(); updateSession();
+      try {
+        if (operation === "compact" && supervised.child && drained && !deps.retained() && !deps.closing() && !deps.storageFailed() && this.validSupervision(supervised)) await prepare(() => deps.refreshCompactHistory(owner));
+        if (owner.workerDeliveryId && !supervised.child && !intentWritten && !supervised.nativeAttempted) await deps.emit(run, "status", { status: supervised.terminal!.status, workerDeliveryNotSubmitted: owner.workerDeliveryId });
+        // Persist cleanup even after a denied source, but never certify that
+        // replacement source as this lifecycle's original capability.
+        this.validSupervision(supervised);
+        await deps.persist();
+      } catch { deps.failClosed(); }
+      this.validSupervision(supervised);
+      this.secrets.delete(runId);
+      this.stoppedTurns.delete(runId);
+      this.turnHooks.delete(runId);
+      this.activities.delete(runId);
+      supervised.finished = true;
+      this.retireSupervision(supervised);
     }
   }
 }

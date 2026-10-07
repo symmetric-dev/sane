@@ -8,7 +8,7 @@ import type { Admission, SourceRecords } from "./app-store";
 export type AppConversation = Pick<Session, "sessionId" | "harness" | "nativeSessionId" | "authorityId" | "cwd">;
 export type ExecutionContext = Pick<InvocationContext, "executionCheckout" | "artifactsRoot"> & { workstreamId: string | null };
 export class WorkstreamAdapterError extends Error {
-  constructor(public readonly status: number, public readonly code: string, message: string) { super(message); }
+  constructor(public readonly status: number, public readonly code: string, message: string, options?: ErrorOptions) { super(message, options); }
 }
 /** Preserve read-only inspection classification across the asynchronous router. */
 export class RepositoryStoreError extends WorkstreamAdapterError {
@@ -20,9 +20,68 @@ export class RepositoryStoreError extends WorkstreamAdapterError {
 }
 const mutation = (expectedRevision?: number): MutationContext => ({ actor: { kind: "human" }, correlationId: crypto.randomUUID(), ...(expectedRevision !== undefined ? { expectedRevision } : {}) });
 const sameRef = (a: ConversationRef, b: ConversationRef) => a.harness === b.harness && a.authorityId === b.authorityId && a.nativeId === b.nativeId;
+export type WorkstreamMutation =
+  | { kind: "register" | "phase/assign"; ref: ConversationRef }
+  | { kind: "associate"; ref: ConversationRef; workstreamId: string | null }
+  | { kind: "create"; workstreamId: string }
+  | { kind: "phase/end"; assignmentId: string }
+  | { kind: "default-checkout"; workstreamId: string; checkout: string | null };
+export type WorkstreamMutationHooks = {
+  /** App-only occupancy fence. Core/native callers never receive this hook. */
+  beforeMutation?: (domain: RepositoryDomain, input: WorkstreamMutation) => void;
+  beforeInitialize?: (workspaceId: string, discovery: RepositoryDiscovery) => void;
+  /** Reserve the affected repository across core's asynchronous lifecycle write. */
+  beforeLifecycle?: (domain: RepositoryDomain) => (() => void);
+  mutationFailed?: (error: unknown) => void;
+};
+/** Only actual writers use this classifier; target/read proof failures stay scoped. */
+function mutationFailure(error: unknown, failed?: (error: unknown) => void, unsafeHook = false): never {
+  const nominal = error instanceof DomainError || error instanceof WorkstreamAdapterError;
+  const fatal = unsafeHook || !nominal || ["STORAGE_ERROR", "CORRUPT_STORE", "INCOMPLETE_INITIALIZATION", "UNSUPPORTED_SCHEMA", "storage-unavailable"].includes(error.code);
+  if (!fatal) throw error;
+  failed?.(error);
+  if (error instanceof WorkstreamAdapterError && error.status === 503 && error.code === "storage-unavailable") throw error;
+  throw new WorkstreamAdapterError(503, "storage-unavailable", "Domain mutation failed; operator reconciliation required", { cause: error });
+}
+function synchronousMutationHook(action: () => unknown, failed?: (error: unknown) => void) {
+  // The callback itself may refuse a read-only target proof. Inspection of its
+  // returned capability is different: an unsafe synchronous boundary is fatal.
+  const result = action();
+  let then: unknown;
+  try {
+    if (result && (typeof result === "object" || typeof result === "function") && "then" in result) then = result.then;
+  } catch (error) { mutationFailure(error, failed, true); }
+  if (typeof then === "function") {
+    const error = new Error("Domain mutation hooks must complete synchronously");
+    try { mutationFailure(error, failed, true); }
+    finally {
+      // Consume rejection using the captured method, never reread a then getter
+      // or assimilate a malicious thenable's fulfillment value.
+      void new Promise<void>((resolve, reject) => { Reflect.apply(then, result, [() => resolve(), reject]); }).catch(() => {});
+    }
+  }
+}
 /** Repository-scoped synchronous adapter. No ambient or singleton domain selection. */
 export class WorkstreamAdapter {
-  constructor(readonly domain: RepositoryDomain, private readonly sources: SourceRecords) {}
+  constructor(readonly domain: RepositoryDomain, private readonly sources: SourceRecords, private readonly hooks: WorkstreamMutationHooks = {}) {}
+  private mutate<T>(input: WorkstreamMutation, action: () => T): T {
+    // Read-only target proof failures are scoped refusals, not failed writes.
+    synchronousMutationHook(() => this.hooks.beforeMutation?.(this.domain, input), this.hooks.mutationFailed);
+    try {
+      return action();
+    } catch (error) {
+      mutationFailure(error, this.hooks.mutationFailed);
+    }
+  }
+  private async lifecycle<T>(action: () => Promise<T>): Promise<T> {
+    let release: (() => void) | undefined;
+    synchronousMutationHook(() => { const result = this.hooks.beforeLifecycle?.(this.domain); if (typeof result === "function") release = result; return result; }, this.hooks.mutationFailed);
+    try {
+      return await action();
+    } catch (error) {
+      return mutationFailure(error, this.hooks.mutationFailed);
+    } finally { release?.(); }
+  }
   close() { this.domain.close(); }
   get repositoryId() { return this.domain.repositoryId; }
   reference(session: AppConversation): ConversationRef {
@@ -37,9 +96,9 @@ export class WorkstreamAdapter {
   }
   list() { return this.domain.listWorkstreams(); }
   lifecycleStatus(id: string) { return this.domain.getLifecycleStatus(id); }
-  provide(id: string, phase: string, refreshTemplates = false, expectedRevision?: number) { return this.domain.providePhase(id, phase, { refreshTemplates }, mutation(expectedRevision)); }
+  provide(id: string, phase: string, refreshTemplates = false, expectedRevision?: number) { return this.lifecycle(() => this.domain.providePhase(id, phase, { refreshTemplates }, mutation(expectedRevision))); }
   validate(id: string, phase: string, reportId?: string) { return this.domain.validatePhase(id, phase, { reportId }); }
-  approve(id: string, phase: string, approvalRef: string, expectedRevision?: number) { return this.domain.approvePhase(id, phase, approvalRef, mutation(expectedRevision)); }
+  approve(id: string, phase: string, approvalRef: string, expectedRevision?: number) { return this.lifecycle(() => this.domain.approvePhase(id, phase, approvalRef, mutation(expectedRevision))); }
   registerJobs(id: string) { return this.domain.registerJobs(id, mutation()); }
   updateJob(id: string, jobId: string, status: "running" | "completed") { return this.domain.updateJob(id, jobId, status, mutation()); }
   job(id: string, jobId: string, session?: AppConversation) { return this.domain.getJobContext(id, jobId, session ? this.reference(session) : null); }
@@ -51,25 +110,27 @@ export class WorkstreamAdapter {
     return { repositoryId: this.repositoryId, workstreams: this.domain.listStatuses(), conversations: rows };
   }
   manage(ref: ConversationRef, operation: string, input: Record<string, any>) {
-    if (operation === "associate") return this.domain.associateConversation(ref, input.workstreamId, mutation());
-    if (operation === "phase/assign") return this.domain.assignPhase(ref, input.phase, mutation());
-    if (operation === "phase/end") return this.domain.endAssignment(input.assignmentId, mutation());
+    if (operation === "associate") return this.mutate({ kind: operation, ref, workstreamId: input.workstreamId }, () => this.domain.associateConversation(ref, input.workstreamId, mutation()));
+    if (operation === "phase/assign") return this.mutate({ kind: operation, ref }, () => this.domain.assignPhase(ref, input.phase, mutation()));
+    if (operation === "phase/end") return this.mutate({ kind: operation, assignmentId: input.assignmentId }, () => this.domain.endAssignment(input.assignmentId, mutation()));
     throw new WorkstreamAdapterError(400, "invalid-request", "Unknown management action");
   }
   status(id: string) { return this.domain.getStatus(id); }
-  create(input: CreateWorkstreamInput) { return this.domain.createWorkstream(input, mutation()); }
-  setDefaultCheckout(id: string, checkout: string | null) { return this.domain.setDefaultCheckout(id, checkout, mutation()); }
+  create(input: CreateWorkstreamInput) { return this.mutate({ kind: "create", workstreamId: input.id }, () => this.domain.createWorkstream(input, mutation())); }
+  setDefaultCheckout(id: string, checkout: string | null) { return this.mutate({ kind: "default-checkout", workstreamId: id, checkout }, () => this.domain.setDefaultCheckout(id, checkout, mutation())); }
   conversation(session: AppConversation) { return this.domain.getConversation(this.reference(session)); }
   preflight(executionCheckout: string) { return this.domain.validateExecutionCheckout(executionCheckout); }
   register(session: AppConversation, parent?: ConversationRef | null) {
     const ref = this.reference(session), source = this.sources[ref.harness];
     if (normalizeNativeSource(source.descriptor).authorityId !== ref.authorityId) throw new WorkstreamAdapterError(409, "source-mismatch", "Native source differs from persisted identity");
-    this.domain.declareNativeAuthority(source.descriptor, mutation());
-    return this.domain.registerConversation({ ref, executionCheckout: session.cwd, parent }, mutation());
+    return this.mutate({ kind: "register", ref }, () => {
+      this.domain.declareNativeAuthority(source.descriptor, mutation());
+      return this.domain.registerConversation({ ref, executionCheckout: session.cwd, parent }, mutation());
+    });
   }
-  associate(session: AppConversation, workstreamId: string | null) { return this.domain.associateConversation(this.reference(session), workstreamId, mutation()); }
-  assignPhase(session: AppConversation, phase: Phase) { return this.domain.assignPhase(this.reference(session), phase, mutation()); }
-  endPhase(_session: AppConversation, assignmentId: string) { this.domain.endAssignment(assignmentId, mutation()); }
+  associate(session: AppConversation, workstreamId: string | null) { const ref = this.reference(session); return this.mutate({ kind: "associate", ref, workstreamId }, () => this.domain.associateConversation(ref, workstreamId, mutation())); }
+  assignPhase(session: AppConversation, phase: Phase) { const ref = this.reference(session); return this.mutate({ kind: "phase/assign", ref }, () => this.domain.assignPhase(ref, phase, mutation())); }
+  endPhase(_session: AppConversation, assignmentId: string) { this.mutate({ kind: "phase/end", assignmentId }, () => this.domain.endAssignment(assignmentId, mutation())); }
   resolveTarget(workstreamId: string, phase: Phase, target?: ConversationRef) { return this.domain.resolvePhaseTarget(workstreamId, phase, target); }
   listArtifacts(id: string) { return this.domain.listArtifacts(id); }
   readArtifact(id: string, path: string) { return this.domain.readArtifact(id, path); }
@@ -87,7 +148,7 @@ export class RepositoryRouter {
   private cache = new Map<string, WorkstreamAdapter>();
   /** Read-only reuse of a fully opened adapter; filesystem evidence is checked on every access. */
   private polls = new Map<string, { root: string; commonDir: string; worktreeId: string; bindingRevision: string; adapter: WorkstreamAdapter }>();
-  constructor(private catalog: CatalogService, private sources: SourceRecords) {}
+  constructor(private catalog: CatalogService, private sources: SourceRecords, private readonly hooks: WorkstreamMutationHooks = {}) {}
   private async checkout(workspaceId: string) {
     if (!workspaceId) throw new WorkstreamAdapterError(400, "workspace-required", "Select a repository workspace");
     const workspace = await this.catalog.get(workspaceId);
@@ -106,7 +167,16 @@ export class RepositoryRouter {
   }
   private async discovery(workspaceId: string) { return this.discover(await this.checkout(workspaceId)); }
   async inspect(workspaceId: string) { return inspectRepositoryStore(await this.discovery(workspaceId)); }
-  async initialize(workspaceId: string) { initializeRepository(await this.discovery(workspaceId)); return this.inspect(workspaceId); }
+  async initialize(workspaceId: string) {
+    const discovery = await this.discovery(workspaceId);
+    synchronousMutationHook(() => this.hooks.beforeInitialize?.(workspaceId, discovery), this.hooks.mutationFailed);
+    try {
+      initializeRepository(discovery);
+    } catch (error) {
+      mutationFailure(error, this.hooks.mutationFailed);
+    }
+    return this.inspect(workspaceId);
+  }
   private key(context: RepositoryContext) { return JSON.stringify([context.repositoryId, context.schemaVersion, context.primaryPin, context.invocationCheckout, context.stateRoot]); }
   private open(context: RepositoryContext) {
     // An explicit local upgrade invalidates old handles even when UUID/inode stay
@@ -114,7 +184,7 @@ export class RepositoryRouter {
     for (const [cachedKey, cached] of this.cache) if (cached.repositoryId === context.repositoryId && cached.domain.context.schemaVersion !== context.schemaVersion) { cached.close(); this.cache.delete(cachedKey); }
     const key = this.key(context);
     let adapter = this.cache.get(key);
-    if (!adapter) { adapter = new WorkstreamAdapter(openRepositoryDomain(context), this.sources); this.cache.set(key, adapter); }
+    if (!adapter) { adapter = new WorkstreamAdapter(openRepositoryDomain(context), this.sources, this.hooks); this.cache.set(key, adapter); }
     try { adapter.domain.validateHandle(); return adapter; }
     catch (error) { adapter.close(); this.cache.delete(key); throw error; }
   }

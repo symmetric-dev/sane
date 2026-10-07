@@ -36,6 +36,7 @@ export class PendingInputStore {
   private recoveryRequired = false;
   private storageFailed = false;
   private changing = false;
+  private pendingWork = false;
   constructor(private readonly dataDir: string, readonly storeId: string, private readonly deps: PendingInputStoreDependencies) {
     if (!uuid(storeId)) deny("invalid-store-id", "A real App store identity is required", 400);
     try {
@@ -54,6 +55,7 @@ export class PendingInputStore {
         if (current.isSymbolicLink() || current.nlink !== 1 || current.dev !== opened.dev || current.ino !== opened.ino) throw new Error("Pending input file changed during load");
       } finally { closeSync(fd); }
       this.recoveryRequired = this.records.conversations.some(c => c.items.some(active));
+      this.pendingWork = this.records.conversations.some(c => c.chain !== null);
     } catch (error) { throw new PendingInputStorageError("Pending input store unavailable or corrupt; operator reconciliation required", error); }
   }
   private decode<T>(action: () => T): T {
@@ -79,6 +81,7 @@ export class PendingInputStore {
       try { synchronousDispatchHook(() => (this.deps.write ?? atomicAppRecord)(this.dataDir, "pending-inputs.json", validated)); }
       catch (error) { this.storageFailed = true; throw new PendingInputStorageError("Pending input durable write failed; publication withheld", error); }
       this.records = validated;
+      this.pendingWork = validated.conversations.some(c => c.chain !== null);
       return clone(result);
     } finally { this.changing = false; }
   }
@@ -111,6 +114,9 @@ export class PendingInputStore {
     if (c) this.namespace(c, id);
   }
   readRecords(): PendingInputRecords { return clone(this.records); }
+  /** Derived only from successfully published records, never historical items or
+   * an unpublished writer candidate. Wake ticks do not clone/scan the ledger. */
+  hasPendingWork(): boolean { return !this.storageFailed && this.pendingWork; }
   get(conversationId: string): PendingInputSnapshot {
     if (!uuid(conversationId)) deny("invalid-conversation-id", "Invalid conversation identity", 400);
     const c = this.records.conversations.find(c => c.conversationId === conversationId);
