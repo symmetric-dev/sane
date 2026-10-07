@@ -125,3 +125,64 @@ test("draft edited during an accepted submission survives; ambiguous rejection p
     expect(f.store.state.submissionError).toContain("Acceptance is unknown"); expect(calls).toBe(2);
   } finally { f.close(); }
 });
+
+test("post-send polling bypasses cached pre-mutation availability", async () => {
+  let reads = 0, submitted = false;
+  const f = fixture({ conversations: async () => {
+    reads++;
+    return { conversations: [{ id: "A", nativeSessionId: "ses_A", harness: "opencode", cwd: "/fixture", lastRunId: null, status: "completed", availability: { canSend: !submitted } }], availability: { canSend: !submitted } };
+  }, submit: async () => { submitted = true; return { conversationId: "A", runId: "next" }; } });
+  f.store.state.phase = "ready";
+  f.store.executionUnavailable = () => ""; f.store.modelUnavailable = () => false;
+  try {
+    await f.poll(); f.close();
+    expect(reads).toBe(1);
+    await f.store.send("next prompt");
+    // Join the post-send acquisition without waiting for its scheduled poll.
+    const acquired = await (f.store as any).conversationListing.read(new AbortController().signal);
+    expect(reads).toBe(2);
+    expect(acquired.value.availability.canSend).toBe(false);
+  } finally { f.close(); }
+});
+
+test("reconnect invalidates listing freshness even when hidden defers main polling", async () => {
+  let reads = 0;
+  const f = fixture({ conversations: async () => ({ conversations: [], availability: { canSend: ++reads === 1 } }) });
+  const chat = new ChatStore(f.client), source = (chat as any).conversationListing;
+  const previous = Object.getOwnPropertyDescriptor(globalThis, "document");
+  Object.defineProperty(globalThis, "document", { configurable: true, value: { hidden: true } });
+  try {
+    await source.read(new AbortController().signal);
+    chat.reconnect();
+    const acquired = await source.read(new AbortController().signal);
+    expect(reads).toBe(2); expect(acquired.value.availability.canSend).toBe(false);
+  } finally {
+    (chat as any).stop(); f.close();
+    if (previous) Object.defineProperty(globalThis, "document", previous);
+    else Reflect.deleteProperty(globalThis, "document");
+  }
+});
+
+test("mutation completion fences a main poll that already acquired old availability", async () => {
+  const historyRead = Promise.withResolvers<{ history: ReconciledHistory }>();
+  const entered = Promise.withResolvers<void>();
+  let historyReads = 0;
+  const f = fixture({ nativeHistory: async () => { historyReads++; entered.resolve(); return historyRead.promise; } });
+  f.store.state.phase = "ready";
+  f.store.state.availability = { canSend: false };
+  let unsubscribe: (() => void) | undefined, deadline: ReturnType<typeof setTimeout> | undefined;
+  try {
+    const poll = f.poll(); await entered.promise;
+    await f.store.cancel();
+    historyRead.resolve({ history: history() }); await poll;
+    expect(f.store.state.availability.canSend).toBe(false);
+    // Let the real scheduled callback run: a fenced publication must not stop
+    // acquisition or require a manual reconnect to publish fresh readiness.
+    const resumed = Promise.withResolvers<void>();
+    unsubscribe = f.store.subscribe(() => { if (f.store.state.availability.canSend) resumed.resolve(); });
+    deadline = setTimeout(() => resumed.reject(new Error("Polling did not resume after mutation fencing.")), 3000);
+    await resumed.promise;
+    expect(historyReads).toBe(2);
+    expect(f.store.state.connected).toBe(true);
+  } finally { clearTimeout(deadline); unsubscribe?.(); f.close(); }
+});

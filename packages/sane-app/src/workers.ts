@@ -1,7 +1,7 @@
 import { isWorkerAgentId, workerJobsProblem } from "sane-core/agent-catalog";
 import type { ConversationRef } from "sane-core/contracts";
 import { resolveWorkerProfile, type AgentProfiles } from "./agent-profiles-contract";
-import { WorkerStore } from "./worker-store";
+import { WorkerStore, workerSelection, type WorkerSelection } from "./worker-store";
 import { DEFAULT_MAX_WORKERS_PER_CHECKOUT, workerResults, workerTerminal, type WorkerCaller, type WorkerRecord, type WorkerStart } from "./worker-contract";
 import { WorkstreamAdapterError } from "./workstreams";
 import { synchronousDispatchHook } from "./dispatch-evidence";
@@ -12,10 +12,15 @@ export type WorkerParent = { sessionId: string; runId: string; native: Conversat
 export type WorkerExecutor = {
   parent(caller: WorkerCaller, starting: boolean): Promise<WorkerParent>;
   assertCurrentParent(parent: WorkerParent): void;
-  hasActiveExecution(worker: WorkerRecord): boolean;
+  hasActiveExecution(worker: WorkerSelection): boolean;
   assertCapacity(): void;
   launch(worker: WorkerRecord): Promise<void>;
   observe(worker: WorkerRecord): Promise<Partial<WorkerRecord>>;
+  /** Optional evidence fingerprint for terminal observation caching. Must change for
+   * every relevant run/log, continuation-delivery, or recovery/ownership change.
+   * Return undefined whenever those dependencies cannot be proven stable.
+   * Selection callbacks receive detached metadata without historical results. */
+  observationKey?(worker: WorkerSelection): string | undefined;
   cancel(worker: WorkerRecord): Promise<void>;
   /** Synchronous control fence for the entire selected set, before refresh.
    * The returned callback pins cancellation to this attempt's original owners. */
@@ -34,8 +39,19 @@ export class WorkerCapacityError extends WorkstreamAdapterError {
 /** Orchestration records only. Execution, logs and recovery belong to the existing bridge. */
 export class WorkerService {
   private launches = new Set<Promise<void>>();
+  private observed = new Map<string, { revision: number; key: string }>();
   constructor(readonly store: WorkerStore, private executor: WorkerExecutor, private profiles: () => AgentProfiles, readonly checkoutLimit = DEFAULT_MAX_WORKERS_PER_CHECKOUT) {}
-  active() { return this.store.list().filter(w => !workerTerminal(w) || this.executor.hasActiveExecution(w)); }
+  active() { return this.store.listMatching(w => !workerTerminal(w) || this.executor.hasActiveExecution(w)); }
+  private terminalObservationKey(w: WorkerSelection) {
+    if (!workerTerminal(w) || !w.outcome || w.continuation && !["completed", "failed", "interrupted"].includes(w.continuation.state) || this.executor.hasActiveExecution(w)) return;
+    return this.executor.observationKey?.(w);
+  }
+  private observationCurrent(w: WorkerSelection) {
+    const previous = this.observed.get(w.id);
+    return previous !== undefined && previous.revision === this.store.revision && previous.key === this.terminalObservationKey(w);
+  }
+  /** Select before cloning histories. Outbox reconciliation/dispatch remain separate. */
+  listForRefresh() { return this.store.listMatching(w => !this.observationCurrent(w)); }
   tree(parentSessionId: string) {
     const all = this.store.list(), parents = new Set([parentSessionId]), result: WorkerRecord[] = [];
     for (let changed = true; changed;) {
@@ -79,6 +95,9 @@ export class WorkerService {
   async drainLaunches() { await Promise.all(this.launches); }
   async refresh(w: WorkerRecord): Promise<WorkerRecord> {
     w = this.store.get(w.id)!;
+    if (this.observationCurrent(workerSelection(w))) return w;
+    this.observed.delete(w.id);
+    const revision = this.store.revision, key = this.terminalObservationKey(workerSelection(w));
     const change = await this.executor.observe(w);
     const latest = this.store.get(w.id)!;
     if (!latest.outcome && latest.cancelRequestedAt && !change.outcome && change.state !== "uncertain") change.state = "cancelling";
@@ -92,7 +111,13 @@ export class WorkerService {
       else change.notification = { id: `worker-outcome:${w.id}`, state: "pending" };
     }
     const changed = (Object.keys(change) as (keyof WorkerRecord)[]).some(key => JSON.stringify(change[key]) !== JSON.stringify(latest[key]));
-    if (!changed) return latest;
+    if (!changed) {
+      // Cache only a no-op observation with unchanged durable AND external evidence.
+      // Restoration writes, concurrent notifications and newly discovered results
+      // deliberately require another pass; an exception never marks a worker stable.
+      if (key !== undefined && revision === this.store.revision && key === this.terminalObservationKey(workerSelection(latest))) this.observed.set(w.id, { revision, key });
+      return latest;
+    }
     const updated = this.store.update(w.id, change);
     return change.results ? this.refresh(updated) : updated;
   }
@@ -153,7 +178,7 @@ export class WorkerService {
     return Promise.all(selected.map(async row => {
       let w = await this.refresh(row);
       if (w.outcome) {
-        if (!this.executor.hasActiveExecution(w)) return w;
+        if (!this.executor.hasActiveExecution(workerSelection(w))) return w;
         const requestedAt = new Date().toISOString();
         w = this.store.update(w.id, { state: "cancelling", continuation: w.continuation ? { ...w.continuation, state: "cancelling" } : undefined, continuationCancellation: { requestedAt } });
         try { await cancel(w); } catch (e) { return this.store.update(w.id, { continuationCancellation: { requestedAt, error: e instanceof Error ? e.message : "Continuation cancellation unconfirmed" } }); }

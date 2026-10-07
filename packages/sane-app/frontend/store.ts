@@ -15,6 +15,7 @@ import type { ReconciledHistory } from "../src/reconcile";
 import type { CompactRequest, CompactState, CompactionRecord } from "../src/oc-contract";
 import { compactCommand, compactionsFor } from "./compaction";
 import { ConversationCache, cloneRunForConsume, conversationKey } from "./conversation-cache";
+import { ConversationListing } from "./conversation-listing";
 import { canonicalCount, equalValue, mergePage, pageMessages, pagedUsage, refreshPages, sameRunMetadata, TranscriptCoverageError, type PagedTranscript, type PageRequest } from "./transcript-pages";
 import type { TranscriptMetadataItem, TranscriptPage } from "../src/transcript-contract";
 import { capabilitiesFor, getHarnessDescriptor, type HarnessCapabilities } from "../shared/conversation/harness-capabilities";
@@ -66,6 +67,13 @@ export class ChatStore {
   private controller?: AbortController;
   private runMap = new Map<string, Run>();
   private conversationCache = new ConversationCache();
+  private conversationListing = new ConversationListing(signal => this.client.conversations(signal));
+  private async listingMutation<T>(run: () => Promise<T>): Promise<T> {
+    const auth = this.authEpoch;
+    this.conversationListing.invalidate();
+    try { return await run(); }
+    finally { if (auth === this.authEpoch) this.conversationListing.invalidate(); }
+  }
   private transcriptKey = "";
   private cacheable = false;
   private started = false;
@@ -406,7 +414,7 @@ export class ChatStore {
     this.invalidateCompactReadiness(id);
     this.update({ pendingCompacts: { ...this.state.pendingCompacts, [id]: pending }, compactError: "", availability: { canSend: false, reason: "Requesting compaction…" } });
     try {
-      const response = await this.client.compact(id, payload);
+      const response = await this.listingMutation(() => this.client.compact!(id, payload));
       if (auth !== this.authEpoch || !sameIdentity()) return;
       this.invalidateCompactReadiness(id);
       this.update({ pendingCompacts: { ...this.state.pendingCompacts, [id]: { payload, phase: "accepted", runId: response.runId } } });
@@ -508,7 +516,7 @@ export class ChatStore {
     if (this.state.actionBusy || !this.state.selected || !this.client.reply || !(reply.type === "permission" ? capabilities.permissionReplies : reply.type === "question" ? capabilities.questionReplies : false)) return;
     const id = this.state.selected, current = this.beginAction();
     try {
-      await this.client.reply(id, interactionId, reply);
+      await this.listingMutation(() => this.client.reply!(id, interactionId, reply));
       if (current()) { this.replied.add(interactionId); this.update({ interactions: this.state.interactions.filter(i => i.id !== interactionId), actionNotice: "Reply sent. Waiting for native state to reconcile." }); }
     } catch (error) {
       if (current() && !this.expired(error)) this.update({ interactionError: `${error instanceof Error ? error.message : "Reply failed."} No automatic retry was made; check the pending request before replying again.` });
@@ -518,7 +526,7 @@ export class ChatStore {
     if (this.state.actionBusy || !this.state.selected || !this.supportedCapabilities().cancelRun || !this.client.cancel) return;
     const id = this.state.selected, current = this.beginAction();
     try {
-      const result = await this.client.cancel(id);
+      const result = await this.listingMutation(() => this.client.cancel!(id));
       if (current()) this.update({ actionNotice: result.interrupted ? "Interruption requested. Waiting for the run’s terminal state." : "No interruption was reported. Waiting for the run’s current state." });
     } catch (error) {
       if (current() && !this.expired(error)) this.update({ interactionError: `${error instanceof Error ? error.message : "Cancellation unavailable."} Run status will reconcile separately.` });
@@ -528,7 +536,7 @@ export class ChatStore {
     if (this.state.actionBusy || this.compactBlocked() || !this.state.selected || !this.supportedCapabilities().nativeHistoryRefresh || !this.client.reconcile) return;
     const id = this.state.selected, current = this.beginAction();
     try {
-      const { history } = await this.client.reconcile(id);
+      const { history } = await this.listingMutation(() => this.client.reconcile!(id));
       if (current()) {
         // Invalidate older reads even if reconnect is deferred while hidden.
         this.stop(); this.nativeHistoryLoaded = true;
@@ -549,7 +557,7 @@ export class ChatStore {
     const verb = hidden ? "Hidden" : "Restored";
     const current = this.beginAction();
     try {
-      await action.call(this.client, id);
+      await this.listingMutation(() => action.call(this.client, id));
       if (!current()) return;
       this.update({ conversations: this.state.conversations.map(c => c.id === id ? { ...c, hidden } : c), actionNotice: hidden ? "Conversation hidden from the sidebar. Nothing was deleted." : "Conversation restored to the sidebar." });
       this.reconnect();
@@ -622,9 +630,9 @@ export class ChatStore {
       if (!current()) return;
       const listing = async () => {
         try {
-          const data = await this.client.conversations(AbortSignal.any([controller.signal, AbortSignal.timeout(25000)]));
-          if (!current()) return;
-          if (!Array.isArray(data.conversations) || data.conversations.some(conversation => !conversation || typeof conversation.id !== "string" || !conversation.id)) throw new Error("Invalid conversation listing.");
+          const acquired = await this.conversationListing.read(AbortSignal.any([controller.signal, AbortSignal.timeout(25000)]));
+          if (!current() || acquired.revision !== this.conversationListing.revision) return;
+          const data = acquired.value;
           // Metadata/legacy OC fallback only. Selected-chat polling remains the
           // sole publisher of main conversation/transcript state.
           this.observeNotifications(data.conversations); healthy = true;
@@ -673,7 +681,7 @@ export class ChatStore {
   private loginRequired() {
     this.stopNotifications();
     notificationStore.suspend();
-    this.stop(); this.authEpoch++; this.clearCachedHistory();
+    this.stop(); this.authEpoch++; this.conversationListing.invalidate(); this.clearCachedHistory();
     catalog.invalidate(); invalidateWorkspaceRequests();
     clearWorkstreamSelection();
     clearWorkstreamMembership();
@@ -683,9 +691,9 @@ export class ChatStore {
   }
   private expired(error: unknown) { if (error instanceof ApiError && error.status === 401) { this.loginRequired(); return true; } return false; }
   start = () => { if (this.started) return; this.started = true; void this.boot(); };
-  reconnect = () => { if (document.hidden || this.state.sending) return; if (this.state.phase === "login") return; this.nativeHistoryLoaded = false; this.stop(); void (this.state.phase === "connecting" ? this.boot() : this.poll()); };
+  reconnect = () => { this.conversationListing.invalidate(); if (document.hidden || this.state.sending) return; if (this.state.phase === "login") return; this.nativeHistoryLoaded = false; this.stop(); void (this.state.phase === "connecting" ? this.boot() : this.poll()); };
   private async boot() {
-    this.stop(); const generation = this.generation, auth = this.authEpoch;
+    this.stop(); this.conversationListing.invalidate(); const generation = this.generation, auth = this.authEpoch;
     const controller = this.controller = new AbortController();
     const deadline = setTimeout(() => controller.abort(), 25000);
     try {
@@ -705,7 +713,7 @@ export class ChatStore {
   login = async (password: string) => {
     this.stopNotifications();
     notificationStore.suspend();
-    this.stop(); const auth = ++this.authEpoch;
+    this.stop(); this.conversationListing.invalidate(); const auth = ++this.authEpoch;
     this.clearCachedHistory();
     this.update({ authError: "", conversationsReady: false, runs: [], messages: [], pendingTurn: null, nativeHistory: null, contextUsage: null, compactState: null, compactions: [], interactions: [], interactionError: "", actionBusy: false, actionNotice: "", connected: false, availability: { canSend: false } });
     try { await this.client.login(password); if (auth !== this.authEpoch) return; this.update({ phase: "connecting" }); await this.boot(); }
@@ -714,7 +722,7 @@ export class ChatStore {
   logout = async () => {
     this.stopNotifications();
     notificationStore.suspend();
-    this.stop(); const auth = ++this.authEpoch;
+    this.stop(); this.conversationListing.invalidate(); const auth = ++this.authEpoch;
     // Even an ambiguous logout must not retain authenticated transcript snapshots.
     this.clearCachedHistory(); this.replied.clear();
     this.update({ conversationsReady: false, runs: [], messages: [], pendingTurn: null, nativeHistory: null, contextUsage: null, compactState: null, compactions: [], compactDialog: "", interactions: [], interactionError: "", actionBusy: false, actionNotice: "", connected: false, loading: true, availability: { canSend: false } });
@@ -751,7 +759,7 @@ export class ChatStore {
     if (this.state.sending) return;
     if (selected === this.state.selected) return;
     this.selectionEpoch++;
-    this.stop(); this.cacheConversation();
+    this.stop(); this.conversationListing.invalidate(); this.cacheConversation();
     const conversation = this.state.conversations.find(c => c.id === selected);
     const cached = conversation ? this.conversationCache.take(conversation) : undefined;
     this.runMap = cached?.runs ?? new Map();
@@ -916,12 +924,15 @@ export class ChatStore {
     const generation = this.generation, auth = this.authEpoch, selected = this.state.selected, selection = this.selectionEpoch;
     const controller = this.controller = new AbortController();
     const deadline = setTimeout(() => controller.abort(), 25000);
-    const current = () => generation === this.generation && auth === this.authEpoch && selection === this.selectionEpoch && selected === this.state.selected;
+    const lifecycleCurrent = () => generation === this.generation && auth === this.authEpoch && selection === this.selectionEpoch && selected === this.state.selected;
+    let listingRevision: number | undefined;
+    const current = () => lifecycleCurrent() && (listingRevision === undefined || listingRevision === this.conversationListing.revision);
     try {
-      const listing = await this.client.conversations(controller.signal);
+      const acquired = await this.conversationListing.read(controller.signal);
+      listingRevision = acquired.revision;
+      const listing = acquired.value;
       if (!current()) return;
       controller.signal.throwIfAborted();
-      if (!Array.isArray(listing.conversations) || listing.conversations.some(conversation => !conversation || typeof conversation.id !== "string" || !conversation.id)) throw new Error("Invalid conversation listing.");
       if (!this.notificationScope && !(this.state.config?.conversationUpdates === true && this.client.conversationUpdates)) this.observeNotifications(listing.conversations);
       if (!current()) return;
       this.conversationCache.prune(listing.conversations);
@@ -1069,7 +1080,7 @@ export class ChatStore {
       this.update({ connected: false, loading: false, connectionError: `${error instanceof Error ? error.message : "Connection lost."} History will reconnect automatically.` });
     } finally {
       clearTimeout(deadline);
-      if (current() && this.state.phase === "ready") this.timer = setTimeout(() => void this.poll(), this.state.connected ? 1500 : 5000);
+      if (lifecycleCurrent() && this.state.phase === "ready") this.timer = setTimeout(() => void this.poll(), this.state.connected ? 1500 : 5000);
     }
   }
   canQueueInput = (state: State = this.state): boolean => {
@@ -1109,7 +1120,7 @@ export class ChatStore {
     this.update({ ...(!preserveDraft ? { drafts: { ...this.state.drafts, [draftKey]: { ...draft, text: "" } } } : {}), pendingTurn, sending: true, submissionError: "", availability: { canSend: false, reason: "Submitting…" } });
     try {
       const navigation = catalog.state.navigation;
-      const result = await this.client.submit({ text, ...(nativeStopped ? { nativeStopped: true } : {}), ...(selected ? { conversationId: selected } : { ...(draft.cwd.trim() ? { cwd: draft.cwd.trim() } : {}), workspaceId: navigation.workspaceId!, worktreeId: navigation.worktreeId! }), ...(profileId ? { profileId } : {}) });
+      const result = await this.listingMutation(() => this.client.submit({ text, ...(nativeStopped ? { nativeStopped: true } : {}), ...(selected ? { conversationId: selected } : { ...(draft.cwd.trim() ? { cwd: draft.cwd.trim() } : {}), workspaceId: navigation.workspaceId!, worktreeId: navigation.worktreeId! }), ...(profileId ? { profileId } : {}) }));
       if (generation !== this.generation || auth !== this.authEpoch) return { status: "unknown" };
       if (result.queued) {
         const receipts = this.queuedNotificationReceipts.get(result.conversationId) ?? new Set<string>();

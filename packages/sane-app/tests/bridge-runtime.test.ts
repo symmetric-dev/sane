@@ -1132,6 +1132,46 @@ describe.serial("bridge runtime (isolated offline HTTP native fixtures)", () => 
     } finally { observation.mockRestore(); await closeStorageFailedFixture(f); }
   }, TIMEOUT);
 
+  test("terminal worker observation cache reopens for native phase and command evidence and retains legacy restoration", async () => {
+    const timers = holdOutboxTimers();
+    const f = await isolatedQueueSeed("worker-observation-key", false, "opencode");
+    try {
+      const prepared = await preparedFor(f.session.sessionId, "offline worker observation key", f.selected.dataDir, f.session.cwd);
+      const context = admissionContext(), lease = f.running.preparedInput.reserve(context.intent, f.session.sessionId);
+      let result;
+      try { result = await f.running.preparedInput.admit(prepared, lease, { context }); }
+      finally { f.running.preparedInput.release(lease); }
+      await result.lifecycle.done;
+      await until("worker observation fixture owner released", async () => (await isolatedApi(f.running, "/api/sessions", undefined, f.token)).body.sessions.find((s: any) => s.sessionId === f.session.sessionId)?.availability.canSend || undefined);
+      const workers = f.running.workers, id = pendingReport(f.running, f.session);
+      workers.store.suppress(f.session.sessionId, true);
+      let worker = workers.store.update(id, { sessionId: f.session.sessionId, runId: result.runId });
+      worker = await workers.refresh(worker);
+      expect(workers.listForRefresh()).toEqual([]);
+      // Change only metadata used by workerDeliveryEvidence: no event append or
+      // WorkerStore write may mask an incomplete external observation key.
+      const run = result.lifecycle.owner.run;
+      const previousPhase = run.nativePhase, previousCommand = run.nativeCommandId;
+      run.nativePhase = "preparing";
+      expect(workers.listForRefresh().map(w => w.id)).toEqual([id]);
+      worker = await workers.refresh(worker);
+      expect(workers.listForRefresh()).toEqual([]);
+      run.nativeCommandId = `msg_${crypto.randomUUID().replaceAll("-", "")}`;
+      expect(workers.listForRefresh().map(w => w.id)).toEqual([id]);
+      worker = await workers.refresh(worker);
+      expect(workers.listForRefresh()).toEqual([]);
+      run.nativePhase = previousPhase; run.nativeCommandId = previousCommand;
+      // A legacy tail in ANY revision keeps restoration eligible, not only the
+      // newest or original outcome. Remove this middle revision's log to keep
+      // the synthetic legacy tail unresolved by the restoration pass.
+      expect(worker.results!.length).toBeGreaterThanOrEqual(3);
+      worker.results![1]!.outcome = { ...worker.results![1]!.outcome, summary: "x".repeat(4000), log: null };
+      worker = workers.store.update(id, { results: worker.results });
+      await workers.refresh(worker);
+      expect(workers.listForRefresh().map(w => w.id)).toEqual([id]);
+    } finally { timers.restore(); await f.running.close(); }
+  }, TIMEOUT);
+
   test("listeners reject user and native admission while startup worker classification is suspended", async () => {
     const selected = startupFixture("classification-gate"), entered = Promise.withResolvers<void>(), gate = Promise.withResolvers<void>(), bound: Bun.Server<any>[] = [];
     const serve = Bun.serve, capture = spyOn(Bun, "serve").mockImplementation(((input: any) => { const server = serve(input); bound.push(server); return server; }) as typeof Bun.serve);

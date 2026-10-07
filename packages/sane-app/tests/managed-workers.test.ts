@@ -50,6 +50,180 @@ function ref(w: WorkerRecord, revision = 1) {
 }
 
 describe("App-managed worker service and durable outbox", () => {
+  test("selection predicates and executor callbacks cannot mutate durable worker snapshots", async () => {
+    const f = fixture(), w = await f.complete(await f.start());
+    const original = f.store.list(), revision = f.store.revision;
+    let retained: Parameters<NonNullable<WorkerExecutor["observationKey"]>>[0] | undefined;
+    const selected = f.store.listMatching((row, ...extra) => {
+      expect(extra).toEqual([]); // Array.filter's index and backing array must not escape.
+      expect("results" in row).toBe(false);
+      row.parent.native.nativeId = "predicate mutation";
+      row.latestResult!.notification.state = "delivered";
+      retained = row;
+      return true;
+    });
+    expect(selected).toEqual(original); // Selection returns full, unmodified histories.
+    retained!.latestResult!.outcome.summary = "retained mutation";
+    selected[0]!.results![0]!.outcome.summary = "returned mutation";
+
+    f.executor.observationKey = () => "stable";
+    f.executor.observe = async () => ({});
+    await f.service.refresh(w);
+    let activeCalls = 0, keyCalls = 0;
+    f.executor.hasActiveExecution = row => {
+      activeCalls++;
+      row.parent.native.nativeId = "executor mutation";
+      row.outcome!.summary = "executor outcome mutation";
+      return false;
+    };
+    f.executor.observationKey = row => {
+      keyCalls++;
+      expect("results" in row).toBe(false);
+      row.latestResult!.notification.state = "delivered";
+      retained = row;
+      return "stable";
+    };
+    expect(f.service.active()).toEqual([]);
+    expect(f.service.listForRefresh()).toEqual([]);
+    expect(await f.service.refresh(w)).toEqual(original[0]!);
+    retained!.input.prompt = "late mutation";
+    expect(activeCalls).toBe(3);
+    expect(keyCalls).toBe(2);
+    expect(f.store.revision).toBe(revision);
+    expect(f.store.list()).toEqual(original);
+    expect(new WorkerStore(f.dir).list()).toEqual(original);
+    // Ordinary committed mutations still advance the revision and invalidate selection.
+    f.store.update(w.id, { error: "committed change" });
+    expect(f.store.revision).toBe(revision + 1);
+    expect(f.service.listForRefresh()[0]!.error).toBe("committed change");
+  });
+
+  test("legacy output in a middle result prevents terminal observation caching", async () => {
+    const f = fixture();
+    let w = await f.complete(await f.start(), "initial output");
+    w = await f.complete(w, "x".repeat(4000));
+    w = await f.complete(w, "latest output");
+    expect(w.results).toHaveLength(3);
+    expect(w.outcome!.summary).toBe("initial output");
+    expect(w.latestResult!.outcome.summary).toBe("latest output");
+    let reads = 0;
+    const signals: boolean[] = [];
+    f.executor.observe = async () => { reads++; return {}; };
+    f.executor.observationKey = row => {
+      signals.push(row.requiresLegacyOutputObservation);
+      return row.requiresLegacyOutputObservation ? undefined : "stable";
+    };
+    await f.service.refresh(w);
+    await f.service.refresh(w);
+    expect(reads).toBe(2);
+    expect(signals).toEqual([true, true]);
+    expect(f.service.listForRefresh().map(row => row.id)).toEqual([w.id]);
+    f.store.listMatching(row => {
+      expect(row.requiresLegacyOutputObservation).toBe(true);
+      return false;
+    });
+
+    // Once restored, establish a cache entry so listForRefresh also invokes the key.
+    w.results![1]!.outcome.summary = "restored middle output";
+    w = f.store.update(w.id, { results: w.results });
+    signals.length = 0;
+    await f.service.refresh(w);
+    expect(f.service.listForRefresh()).toEqual([]);
+    expect(signals).toEqual([false, false, false]);
+  });
+
+  test("terminal refresh caching requires stable evidence and leaves pending outcomes dispatchable", async () => {
+    const f = fixture(), w = await f.complete(await f.start());
+    let reads = 0, key: string | undefined = "runs-and-logs:1";
+    f.executor.observe = async () => { reads++; return {}; };
+    f.executor.observationKey = () => key;
+    await f.service.refresh(w);
+    expect(f.service.listForRefresh()).toEqual([]);
+    await f.service.refresh(w);
+    expect(reads).toBe(1);
+    expect(f.store.pendingParents()).toEqual([f.parent.sessionId]);
+    key = "runs-and-logs:2";
+    expect(f.service.listForRefresh().map(row => row.id)).toEqual([w.id]);
+    await f.service.refresh(w);
+    expect(reads).toBe(2);
+    f.executing.add(w.id);
+    expect(f.service.listForRefresh().map(row => row.id)).toEqual([w.id]);
+    await f.service.refresh(w);
+    f.executing.delete(w.id);
+    key = undefined;
+    await f.service.refresh(w); await f.service.refresh(w);
+    expect(reads).toBe(5);
+    expect(f.store.claimDelivery(f.delivery())!.workerIds).toEqual([w.id]);
+  });
+
+  test("terminal refresh reopens on durable changes, restart restoration and recovered continuations", async () => {
+    const f = fixture(), w = await f.complete(await f.start());
+    let key = "original", reads = 0;
+    f.executor.observationKey = () => key;
+    f.executor.observe = async () => { reads++; return {}; };
+    await f.service.refresh(w);
+    f.store.acknowledgeResults([ref(w)], { runId: f.caller.runId, toolCallId: "ack" });
+    expect(f.service.listForRefresh()).toHaveLength(1);
+    await f.service.refresh(w);
+    const restarted = new WorkerService(f.store, f.executor, seedAgentProfiles);
+    expect(restarted.listForRefresh()).toHaveLength(1);
+    // The observer can restore legacy output by writing the store directly.
+    f.executor.observe = async () => {
+      reads++;
+      f.store.update(w.id, { error: "restored legacy output" });
+      return {};
+    };
+    await restarted.refresh(w);
+    expect(restarted.listForRefresh()).toHaveLength(1);
+    const runId = id(); key = "recovered-continuation";
+    f.executor.observe = async () => ({ state: "completed", continuation: { runId, state: "completed" }, outcome: { status: "completed", at: now, summary: "recovered result", log: { sessionId: w.sessionId, runId } } });
+    const recovered = await restarted.refresh(w);
+    expect(recovered.results).toHaveLength(2);
+    expect(recovered.latestResult!.outcome.summary).toBe("recovered result");
+    expect(recovered.results![0]!.notification.state).toBe("wait-consumed");
+    expect(restarted.listForRefresh()).toEqual([]);
+    f.store.update(w.id, { continuation: { runId: id(), state: "uncertain" } });
+    expect(restarted.listForRefresh()).toHaveLength(1);
+    expect(reads).toBe(3);
+  });
+
+  test("narrow delivery reads track claims, recovery, retries and restart without exposing store records", async () => {
+    const f = fixture(), w = await f.complete(await f.start());
+    const claim = f.store.claimDelivery(f.delivery())!;
+    expect(f.store.hasActiveDelivery(f.parent.sessionId)).toBe(true);
+    expect(f.store.pendingParents()).toEqual([]);
+    const rows = f.store.deliveriesForParent(f.parent.sessionId);
+    rows[0]!.state = "delivered";
+    expect(f.store.deliveriesToReconcile()[0]!.state).toBe("claimed");
+    const restarted = new WorkerStore(f.dir);
+    expect(restarted.deliveriesToReconcile()).toEqual([claim]);
+    restarted.advanceDelivery(claim.id, "acceptance-unknown");
+    expect(restarted.hasActiveDelivery(f.parent.sessionId)).toBe(true);
+    restarted.advanceDelivery(claim.id, "not-submitted", "retry later");
+    expect(restarted.hasActiveDelivery(f.parent.sessionId)).toBe(false);
+    expect(restarted.deliveriesToReconcile()).toEqual([]);
+    expect(restarted.pendingParents()).toEqual([]);
+    expect(restarted.pendingParents(Date.now() + 31000)).toEqual([f.parent.sessionId]);
+    expect(restarted.get(w.id)!.latestResult!.notification.state).toBe("pending");
+    expect(restarted.deliveriesForParent(f.parent.sessionId)[0]!.state).toBe("not-submitted");
+  });
+
+  test("observation failure and evidence changes during an await never establish terminal stability", async () => {
+    const f = fixture(), w = await f.complete(await f.start());
+    let key = "before";
+    f.executor.observationKey = () => key;
+    f.executor.observe = async () => { throw new Error("read unavailable"); };
+    await expect(f.service.refresh(w)).rejects.toThrow("read unavailable");
+    expect(f.service.listForRefresh()).toHaveLength(1);
+    const entered = Promise.withResolvers<void>(), release = Promise.withResolvers<void>();
+    f.executor.observe = async () => { entered.resolve(); await release.promise; return {}; };
+    const refreshing = f.service.refresh(w);
+    await entered.promise; key = "after"; release.resolve(); await refreshing;
+    expect(f.service.listForRefresh()).toHaveLength(1);
+    await f.service.refresh(w);
+    expect(f.service.listForRefresh()).toEqual([]);
+  });
+
   test("two callbacks sharing one execute card create separate durable workers and retry independently", async () => {
     const f = fixture(), tracker = new OpenCodeWorkerInvocations();
     const tool = { sessionID: f.parent.native.nativeId, messageID: "message", id: f.caller.toolCallId, agent: "build", tool: "execute" };

@@ -4,16 +4,44 @@ import { atomicAppRecord } from "./app-store";
 import { uuid } from "./history";
 import { isWorkerAgentId, workerJobsProblem } from "sane-core/agent-catalog";
 import type { WorkerRecord, WorkerRecords, WorkerDelivery } from "./worker-contract";
+import { workerResults } from "./worker-contract";
+
+/** Detached selection metadata; complete result history is only cloned after selection. */
+export type WorkerSelection = Omit<WorkerRecord, "results"> & {
+  /** Any historical result may still need restoration of legacy truncated output. */
+  requiresLegacyOutputObservation: boolean;
+};
+export function workerSelection(worker: WorkerRecord): WorkerSelection {
+  const { results, ...selection } = worker;
+  return { ...structuredClone(selection), requiresLegacyOutputObservation: workerResults(worker).some(result => result.outcome.summary.length === 4000) };
+}
 
 /** Synchronous publication makes reservations and consumption atomic within the App owner. */
 export class WorkerStore {
   private records: WorkerRecords;
+  private deliveriesByParent = new Map<string, WorkerDelivery[]>();
+  private activeDeliveries: WorkerDelivery[] = [];
+  private activeDeliveryParents = new Set<string>();
+  private generation = 0;
   constructor(private dataDir: string) {
     const path = join(dataDir, "workers.json");
     this.records = existsSync(path) ? JSON.parse(readFileSync(path, "utf8")) : { version: 1, workers: [], suppressedParents: [] };
     this.normalize(this.records);
     this.validate(this.records);
+    this.indexDeliveries();
   }
+  private indexDeliveries() {
+    this.deliveriesByParent.clear();
+    this.activeDeliveries = [];
+    this.activeDeliveryParents.clear();
+    for (const delivery of this.records.deliveries ?? []) {
+      const rows = this.deliveriesByParent.get(delivery.parentSessionId) ?? [];
+      rows.push(delivery); this.deliveriesByParent.set(delivery.parentSessionId, rows);
+      if (delivery.state === "claimed" || delivery.state === "acceptance-unknown") { this.activeDeliveries.push(delivery); this.activeDeliveryParents.add(delivery.parentSessionId); }
+    }
+  }
+  /** In-memory invalidation only; restart always requires fresh observation. */
+  get revision() { return this.generation; }
   /** Additive v1 migration: original outcome/notification IDs and delivery snapshots stay intact. */
   private normalize(r: WorkerRecords) {
     for (const w of r.workers ?? []) {
@@ -56,6 +84,10 @@ export class WorkerStore {
     for (const w of r.workers) for (const result of w.results ?? []) if (["claimed", "acceptance-unknown", "delivered"].includes(result.notification.state) && !deliveryIds.has(result.notification.deliveryId!)) fail();
   }
   list() { return structuredClone(this.records.workers); }
+  /** Predicates receive detached metadata, never stored records or the backing array. */
+  listMatching(matches: (worker: WorkerSelection) => boolean) {
+    return structuredClone(this.records.workers.filter(worker => matches(workerSelection(worker))));
+  }
   get(id: string) {
     const w = this.records.workers.find(w => w.id === id);
     return w ? structuredClone(w) : undefined;
@@ -81,7 +113,7 @@ export class WorkerStore {
     const ids = new Set(delivery.workerIds);
     return structuredClone(this.records.workers.filter(w => ids.has(w.id)));
   }
-  private commit(next: WorkerRecords) { this.normalize(next); this.validate(next); atomicAppRecord(this.dataDir, "workers.json", next); this.records = next; }
+  private commit(next: WorkerRecords) { this.normalize(next); this.validate(next); atomicAppRecord(this.dataDir, "workers.json", next); this.records = next; this.generation++; this.indexDeliveries(); }
   insert(w: WorkerRecord) { this.commit({ ...this.records, workers: [...this.records.workers, structuredClone(w)] }); }
   update(id: string, change: Partial<WorkerRecord>) {
     const next = structuredClone(this.records), w = next.workers.find(w => w.id === id);
@@ -109,6 +141,14 @@ export class WorkerStore {
   }
   suppressed(sessionId: string) { return this.records.suppressedParents.includes(sessionId); }
   deliveries() { return structuredClone(this.records.deliveries ?? []); }
+  deliveriesForParent(parentSessionId: string) { return structuredClone(this.deliveriesByParent.get(parentSessionId) ?? []); }
+  deliveriesToReconcile() { return structuredClone(this.activeDeliveries); }
+  hasActiveDelivery(parentSessionId: string) {
+    return this.activeDeliveryParents.has(parentSessionId);
+  }
+  pendingParents(now = Date.now()) {
+    return [...new Set(this.records.workers.filter(w => w.results?.some(r => r.notification.state === "pending" && (!r.notification.retryAfter || Date.parse(r.notification.retryAfter) <= now))).map(w => w.parent.sessionId))];
+  }
   pendingProblem(parentSessionId: string, error: string) {
     const next = structuredClone(this.records); let changed = false;
     for (const w of next.workers) for (const r of w.results ?? []) if (w.parent.sessionId === parentSessionId && r.notification.state === "pending" && r.notification.error !== error) { r.notification.error = error; changed = true; }
@@ -116,7 +156,7 @@ export class WorkerStore {
   }
   /** Same synchronous commit path as wait acknowledgement: the first publisher wins. */
   claimDelivery(input: Omit<WorkerDelivery, "workerIds" | "resultRefs" | "state">): WorkerDelivery | undefined {
-    if (this.suppressed(input.parentSessionId) || this.deliveries().some(d => d.parentSessionId === input.parentSessionId && ["claimed", "acceptance-unknown"].includes(d.state))) return;
+    if (this.suppressed(input.parentSessionId) || this.hasActiveDelivery(input.parentSessionId)) return;
     const next = structuredClone(this.records), now = Date.now();
     const selected = next.workers.filter(w => w.parent.sessionId === input.parentSessionId).flatMap(w => (w.results ?? []).map(result => ({ w, result }))).filter(({ result: r }) => r.notification.state === "pending" && (!r.notification.retryAfter || Date.parse(r.notification.retryAfter) <= now)).sort((a, b) => a.result.outcome.at.localeCompare(b.result.outcome.at) || a.w.id.localeCompare(b.w.id) || a.result.revision - b.result.revision).slice(0, 8);
     if (!selected.length) return;
