@@ -14,6 +14,7 @@ permission:
   skill: allow
   task:
     "*": deny
+    "sane/worker/critic": ask
     "sane/worker/scout-crew": ask
     "sane/worker/scout": ask
     "sane/worker/researcher": ask

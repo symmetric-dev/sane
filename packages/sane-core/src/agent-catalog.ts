@@ -45,7 +45,7 @@ export function validAgent(value: unknown): value is AssistantAgentId {
   return isAssistantAgentId(value)
 }
 
-export const WORKER_AGENT_IDS = ["implementer", "fixer", "tester", "grounder", "researcher", "reviewer", "scout", "scout-crew"] as const
+export const WORKER_AGENT_IDS = ["implementer", "fixer", "tester", "grounder", "researcher", "reviewer", "scout", "scout-crew", "critic"] as const
 export type WorkerAgentId = (typeof WORKER_AGENT_IDS)[number]
 /** Descriptive metadata only; access is never an admission or permissions policy. */
 export const WORKER_AGENT_CATALOG: Record<WorkerAgentId, { label: string; description: string; access: "code" | "artifacts" | "read" }> = {
@@ -57,12 +57,13 @@ export const WORKER_AGENT_CATALOG: Record<WorkerAgentId, { label: string; descri
   reviewer: { label: "Reviewer", description: "Reviews implemented work or assesses the prerequisites preventing an assignment from proceeding, read-only.", access: "read" },
   scout: { label: "Scout", description: "Inspects a bounded repository scope and returns findings or blockers inline to its parent without changing files.", access: "read" },
   "scout-crew": { label: "Scout Crew", description: "Coordinates parallel scouts to map a bounded repository question breadth-first and synthesize their findings.", access: "read" },
+  critic: { label: "Critic", description: "Performs a read-only adversarial review of assigned documents and their relationships, returning evidence-backed improvements inline.", access: "read" },
 }
 export function isWorkerAgentId(value: unknown): value is WorkerAgentId {
   return typeof value === "string" && (WORKER_AGENT_IDS as readonly string[]).includes(value)
 }
 /** Jobs a role may be assigned; SANE resolves their paths when it creates the worker. */
-export const WORKER_JOB_ASSIGNMENT: Record<WorkerAgentId, "one" | "some" | "none"> = { implementer: "one", fixer: "some", tester: "some", reviewer: "some", grounder: "none", researcher: "none", scout: "none", "scout-crew": "none" }
+export const WORKER_JOB_ASSIGNMENT: Record<WorkerAgentId, "one" | "some" | "none"> = { implementer: "one", fixer: "some", tester: "some", reviewer: "some", grounder: "none", researcher: "none", scout: "none", "scout-crew": "none", critic: "none" }
 export const MAX_WORKER_JOBS = 64
 export const WORKER_JOB_ID_PATTERN = "^[a-z0-9][a-z0-9_-]{0,95}$"
 const workerJobId = new RegExp(WORKER_JOB_ID_PATTERN)

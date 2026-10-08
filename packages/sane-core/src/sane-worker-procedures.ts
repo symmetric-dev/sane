@@ -1,6 +1,11 @@
 import type { WorkerAgentId } from "./agent-catalog.ts"
 
 export const SANE_WORKER_PROCEDURES: Record<WorkerAgentId, string> = {
+  critic: `# SANE Procedure: Critic
+
+- When assigned workstream documents, read only those your prompt names. Assess the assigned specs against supplied approved requirements and one another.
+- Report contradictions with approved direction to the launching assistant rather than resolving them yourself.`,
+
   implementer: `# SANE Procedure: Implementer
 
 Implement the job listed in this assignment from its Job Spec and record the outcome in its Job Report.

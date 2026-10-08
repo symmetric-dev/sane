@@ -9,6 +9,12 @@ description: Use when preparing Engineering solution specs for review, approval,
 
 Check assigned solution specs against their template and run `sane validate engineering`.
 
+## Suggested Adversarial Review
+
+1. Suggest that the user run critic workers to perform adversarial reviews of the specs. Recommend a few related specs per critic to focus on their relationships. Explain the proposed groupings and review focus, and wait for the user's agreement before launching.
+2. When agreed, launch `sane_worker_start` (`worker: "critic"`) for each group. Give each critic a self-contained assignment with absolute paths to its specs, the relevant approved SDD and other authoritative references, known decisions or deferrals, and the relationships to examine. Include shared boundary specs where needed to cover relationships across groups. Ask critics to return evidence-backed findings and suggested improvements inline. Finish independent work and end your turn; background results resume this conversation.
+3. Present returned findings to the user, distinguish supported corrections from optional suggestions or unresolved decisions, and return to Assistance for agreed revisions.
+
 ## User Review and Approval
 
 1. Present the completed solution areas and any remaining work. Return to Assistance for revisions.
