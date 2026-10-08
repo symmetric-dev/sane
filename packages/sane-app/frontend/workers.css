@@ -4,7 +4,10 @@
 .worker-card.is-active { border-color:color-mix(in srgb,var(--primary) 26%,var(--border)); }
 .worker-card-heading { display:flex; flex:1; min-width:0; align-items:baseline; flex-wrap:wrap; gap:4px 10px; }
 .worker-card-heading strong { font-size:13px; font-weight:550; overflow-wrap:anywhere; }
-.worker-card-timing { display:flex; flex-wrap:wrap; gap:6px; font-size:11px; color:var(--muted-foreground); font-variant-numeric:tabular-nums; }
+.worker-card-jobs { display:flex; flex-wrap:wrap; gap:4px 6px; min-width:0; }
+.worker-card-jobs code { padding:2px 5px; border-radius:4px; background:var(--muted); color:var(--muted-foreground); font-size:11px; overflow-wrap:anywhere; }
+.worker-card-timing,.worker-card-elapsed { font-size:11px; color:var(--muted-foreground); font-variant-numeric:tabular-nums; }
+.worker-card-timing { margin-left:auto; white-space:nowrap; }
 .worker-glyph { flex-shrink:0; }
 .worker-direction { flex-shrink:0; color:var(--muted-foreground); }
 .worker-status { display:inline-flex; align-items:center; gap:6px; color:var(--muted-foreground); font-size:11px; overflow-wrap:anywhere; }

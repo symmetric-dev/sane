@@ -1,6 +1,6 @@
 import { useEffect, useId, useRef, useState, type ReactNode } from "react";
 import { createPortal, flushSync } from "react-dom";
-import { FiArrowLeft, FiArrowRight, FiArrowUpRight, FiChevronRight, FiGitBranch, FiInfo, FiSquare, FiUsers, FiX } from "react-icons/fi";
+import { FiArrowRight, FiArrowUpRight, FiChevronRight, FiGitBranch, FiInfo, FiSquare, FiUsers, FiX } from "react-icons/fi";
 import type { WorkerDelivery, WorkerRecord, WorkerResult } from "../src/worker-contract";
 import { workerResults } from "../src/worker-contract";
 import { builtinProfiles, type AgentProfile } from "../src/agent-profiles-contract";
@@ -72,14 +72,16 @@ export function WorkerCard({ worker: w, workers = [], runs = [], open = openWork
   const status = execution.executionState;
   const statusClass = `${moving ? " is-active" : ""}${status === "failed" ? " is-error" : ""}${status === "uncertain" || status === "unknown" ? " is-uncertain" : ""}`;
   return <section className={`worker-card${moving ? " is-active" : ""}`} data-send-kind={sendAnchor ? "worker" : undefined} data-send-id={sendAnchor ? w.id : undefined} tabIndex={sendAnchor ? -1 : undefined} aria-label={sendAnchor ? "Worker send" : undefined}>
-    <header><FiArrowLeft className="worker-direction" size={16} aria-hidden="true" /><WorkerIcon profile={profile} /><div className="worker-card-heading"><strong>{profile.label || WORKER_AGENT_CATALOG[w.input.worker].label}</strong><span className="worker-card-timing">{timestamp && <time dateTime={timestamp} title={new Date(timestamp).toLocaleString()}>{new Date(timestamp).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}</time>}{duration && <span>{duration}</span>}</span></div><span className={`worker-status${statusClass}`} role="status">{`${execution.continuation ? "Continuation · " : ""}${status}`}</span></header>
+    <header><WorkerIcon profile={profile} /><div className="worker-card-heading"><strong>{profile.label || WORKER_AGENT_CATALOG[w.input.worker].label}</strong>{!!w.input.jobs?.length && <span className="worker-card-jobs"><span className="sr-only">{w.input.jobs.length === 1 ? "Job: " : "Jobs: "}</span>{w.input.jobs.map(job => <code key={job}>{job}</code>)}</span>}{timestamp && <time className="worker-card-timing" dateTime={timestamp} title={new Date(timestamp).toLocaleString()}>{new Date(timestamp).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}</time>}</div></header>
     <div className="worker-card-controls">
       <div className="worker-actions">
         <button type="button" className="worker-action" aria-label="Open worker" disabled={sending} onClick={() => open(w)}><FiArrowUpRight size={13} aria-hidden="true" />Open</button>
         <Stop parent={w.parent.sessionId} input={{ ids: [w.id] }} label="Stop worker" disabled={!execution.active && !["uncertain", "unknown"].includes(execution.executionState)}>Stop</Stop>
+        {duration && <span className="worker-card-elapsed" aria-label={`Elapsed: ${duration}`}>{duration}</span>}
         {workers.some(child => child.parent.sessionId === w.sessionId) && <Stop parent={w.parent.sessionId} input={{ ids: [w.id], includeDescendants: true }} label="Stop worker tree" icon={<FiGitBranch size={13} aria-hidden="true" />}>Stop Tree</Stop>}
       </div>
       <div className="worker-actions worker-secondary-actions">
+        <span className={`worker-status${statusClass}`} role="status">{`${execution.continuation ? "Continuation · " : ""}${status}`}</span>
         <button type="button" className="worker-action" aria-haspopup="dialog" disabled={!results.length} onClick={event => show("history", event.currentTarget)}>History <span className="worker-count">{results.length}</span></button>
         <button type="button" className={`worker-action worker-info${attention ? " has-issue" : ""}`} aria-haspopup="dialog" aria-label={attention ? "Worker details, attention needed" : "Worker details"} title={attention ? "Attention needed" : "Worker details"} onClick={event => show("details", event.currentTarget)}><FiInfo size={13} aria-hidden="true" />Details</button>
       </div>
