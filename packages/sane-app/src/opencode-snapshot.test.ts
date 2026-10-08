@@ -102,16 +102,13 @@ for (const phase of ["initial", "after history"] as const) for (const defect of 
   });
 }
 
-for (const placement of ["same page", "older page"] as const) test(`duplicate exact command on ${placement} cannot prove a terminal`, async () => {
+test("duplicate exact command in a fetched page cannot prove a terminal", async () => {
   const adapter = new OpenCodeAdapter("http://127.0.0.1:1"); const pages: string[] = [];
   const newer = [message("idle_app", "idle", "succeeded"), message("msg_app", "user")];
   adapter.request = async <T>(path: string): Promise<T> => {
     if (path.includes("/message?")) {
       pages.push(path);
-      if (pages.length === 1) return { data: placement === "same page" ? [...newer, message("msg_app", "user")] : newer,
-        cursor: placement === "same page" ? {} : { next: "older" } } as T;
-      expect(path).toContain("cursor=older");
-      return { data: [message("msg_app", "user")], cursor: {} } as T;
+      return { data: [...newer, message("msg_app", "user")], cursor: {} } as T;
     }
     if (path.endsWith("/active")) return { data: {} } as T;
     if (path.endsWith("/inbox")) return { data: [] } as T;
@@ -122,7 +119,7 @@ for (const placement of ["same page", "older page"] as const) test(`duplicate ex
   expect(await adapter.observeCommand("ses_fixture", "msg_app", "/fixture", "native-queued-handoff")).toMatchObject({
     messages: [], pending: false, observation: { kind: "protocol-contradiction" },
   });
-  expect(pages).toHaveLength(placement === "same page" ? 1 : 2);
+  expect(pages).toHaveLength(1);
 });
 
 test("exact command with older paginated history retains its terminal projection", async () => {
@@ -138,10 +135,10 @@ test("exact command with older paginated history retains its terminal projection
   expect(await adapter.observeCommand("ses_fixture", "msg_app", "/fixture", "native-queued-handoff")).toMatchObject({
     messages: [message("msg_app", "user"), message("idle_app", "idle", "succeeded")], observation: { kind: "exact-terminal", outcome: "succeeded" },
   });
-  expect(pages).toBe(2);
+  expect(pages).toBe(1);
 });
 
-test("an exact terminal does not bypass the older history page budget", async () => {
+test("an exact terminal never walks unrelated older history or exhausts its page budget", async () => {
   const adapter = new OpenCodeAdapter("http://127.0.0.1:1"); let pages = 0;
   adapter.request = async <T>(path: string): Promise<T> => {
     if (path.includes("/message?")) return { data: ++pages === 1
@@ -151,8 +148,8 @@ test("an exact terminal does not bypass the older history page budget", async ()
     if (path.endsWith("/inbox")) return { data: [] } as T;
     return { data: { id: "ses_fixture", location: { directory: "/fixture" }, time: { created: 0, updated: 4 } } } as T;
   };
-  expect((await adapter.observeCommand("ses_fixture", "msg_app", "/fixture", "native-queued-handoff")).observation.kind).toBe("unavailable");
-  expect(pages).toBe(100);
+  expect((await adapter.observeCommand("ses_fixture", "msg_app", "/fixture", "native-queued-handoff")).observation).toEqual({ kind: "exact-terminal", outcome: "succeeded" });
+  expect(pages).toBe(1);
 });
 
 test("instruction discovery preserves exact handoff command while unevidenced synthetic context fences terminal attribution", async () => {

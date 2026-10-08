@@ -2,6 +2,7 @@ import { Service } from "@opencode/client/service";
 import { OpenCode, type OpenCodeClient } from "@opencode/client";
 import type { CompactionLifecycle, CompactionMetadata, FormField, HarnessModel, Interaction, InteractionReply, MessagePart, MessageSnapshot, NativeCommandBoundary } from "./oc-contract";
 import { nativeMessageId, validModel, validVariant } from "./history";
+import { settleCommandInterval, type CommandSettlement } from "./opencode-command-settlement";
 
 // HTTP shapes from https://opencode.ai/v2/openapi.json and the V2 client guide.
 // Discovery connects to a registered service; this adapter never manages its process.
@@ -16,7 +17,7 @@ export type OpenCodeReplyTransport = {
 export type ModelRef = { id: string; providerID: string; variant?: string };
 export type NativeAgent = { id: string; model?: ModelRef };
 export type OpenCodeLaunch = { agent?: string; model?: ModelRef };
-type NativeSession = { id: string; parentID?: string; location?: { directory?: string }; agent?: string; model?: ModelRef; outcome?: "succeeded" | "failed" | "interrupted"; metadata?: Record<string, unknown>; time: { created: number; updated: number; idle?: number } };
+type NativeSession = { id: string; parentID?: string; location?: { directory?: string }; agent?: string; model?: ModelRef; outcome?: "succeeded" | "failed" | "interrupted"; revert?: unknown; metadata?: Record<string, unknown>; time: { created: number; updated: number; idle?: number } };
 type NativeInput = { id: string; sessionID?: string; type?: string; delivery?: string; time?: { created: number }; payload?: { metadata?: Record<string, unknown> } };
 export type NativeQueuedHandoffAdmission = { id: string; sessionID: string; type: "user"; delivery: "queue"; time: { created: number } };
 /** Only the actual inbox/ack DTO proves delivery policy. Committed User messages
@@ -39,7 +40,7 @@ export type NativeCommandObservation =
   | { kind: "protocol-contradiction"; reason: string }
   | { kind: "termination-uncertain" }
   | { kind: "unavailable"; reason: string };
-export type NativeCommandSnapshot = { messages: NativeMessage[]; outcome?: string; pending: boolean; pendingInput?: unknown; currentInputId?: string; boundary?: NativeCommandBoundary; observation?: NativeCommandObservation };
+export type NativeCommandSnapshot = { messages: NativeMessage[]; outcome?: string; pending: boolean; pendingInput?: unknown; currentInputId?: string; boundary?: NativeCommandBoundary; settlement?: CommandSettlement; observation?: NativeCommandObservation };
 type Page = { data: NativeMessage[]; cursor: { next?: string | null } };
 /** App-delivered startup synthetics are model context, never transcript turns. */
 const saneFrameworkMetadata = { sane: "framework" } as const;
@@ -408,9 +409,10 @@ export class OpenCodeAdapter {
     if (initialSession.id !== id || cwd !== undefined && initialSession.location?.directory !== cwd) throw new OpenCodeSourceMismatchError("Native session identity or directory changed; execution remains unconfirmed");
     const initialInput = policy ? strictInbox(initialInbox.data, id, commandId) : initialInbox.data.find(message => message.id === commandId);
     if (initialInput) return { messages: [], pending: true, ...(policy ? { pendingInput: initialInput } : {}) };
-    // Keep the transcript bounded at the exact command, but inspect whole
-    // fetched pages (including older pages) for conflicting exact identities.
-    // A page/time limit cannot prove that unseen history has no duplicate.
+    // Native message IDs are unique storage keys. Read through the exact anchor,
+    // checking fetched pages for contradictory identities, not all older turns.
+    // Scanning unrelated history makes long-lived sessions eventually hit the
+    // page budget even when their latest command and terminal fit in one page.
     const messages: NativeMessage[] = []; let cursor: string | undefined; let found = false;
     const deadline = Date.now() + 15000;
     for (let page = 0; page < 100; page++) {
@@ -425,7 +427,7 @@ export class OpenCodeAdapter {
         if (index >= 0) found = true;
       }
       cursor = result.cursor.next ?? undefined;
-      if (!cursor) break;
+      if (found || !cursor) break;
       if (page === 99) throw new OpenCodeUnavailableError("OpenCode history reconciliation exceeded its page budget");
     }
     const [session, active, inbox] = await Promise.all([
@@ -434,6 +436,9 @@ export class OpenCodeAdapter {
     ]);
     if (!session?.time || !active.data || !Array.isArray(inbox.data) || inbox.data.some(input => !input || typeof input !== "object" || typeof input.id !== "string")) throw new OpenCodeCommandProtocolError("Unsupported OpenCode V2 execution response");
     if (session.id !== id || (cwd !== undefined && session.location?.directory !== cwd)) throw new OpenCodeSourceMismatchError("Native session identity or directory changed; execution remains unconfirmed");
+    if (initialSession.time.created !== session.time.created || initialSession.time.updated !== session.time.updated)
+      throw new OpenCodeUnavailableError("Native history changed during command observation; retrying without resending");
+    if (initialSession.revert != null || session.revert != null) throw new OpenCodeUnavailableError("Native history is reverted; original command completion remains unconfirmed");
     const input = policy ? strictInbox(inbox.data, id, commandId) : inbox.data.find(m => m.id === commandId), pending = !!input;
     const ordered = found ? messages.reverse() : [];
     if (ordered.some(message => message.id === commandId && message.type !== "user")
@@ -441,6 +446,23 @@ export class OpenCodeAdapter {
     const bounded = commandSnapshot(ordered, commandId);
     const command = ordered.find(message => message.id === commandId);
     const currentInputId = command ? ordered.findLast(message => commandBoundary(message, command))?.id : undefined;
+    // Resolve unknown synthetic boundaries automatically only from a sealed,
+    // quiescent execution interval. This is stronger than notice allowlists and
+    // remains valid when retry/compaction/context wording changes upstream.
+    if (bounded.boundary?.type === "synthetic" && !active.data[id] && !inbox.data.length && !initialInbox.data.length) {
+      const settlement = settleCommandInterval(ordered, commandId, initialSession, session);
+      if (settlement) {
+        const [confirmed, confirmedActive, confirmedInbox] = await Promise.all([
+          this.session(id), this.request<{ data: Record<string, { type: string }> }>("/api/session/active"),
+          this.request<{ data: NativeInput[] }>(this.path(id) + "/inbox"),
+        ]);
+        if (!confirmed || !confirmedActive.data || !Array.isArray(confirmedInbox.data)) throw new OpenCodeUnavailableError("Native settlement confirmation unavailable");
+        if (confirmed.id !== id || cwd !== undefined && confirmed.location?.directory !== cwd) throw new OpenCodeSourceMismatchError("Native source changed during settlement");
+        if (!confirmedActive.data[id] && !confirmedInbox.data.length && settleCommandInterval(ordered, commandId, session, confirmed))
+          return { messages: ordered.slice(0, ordered.findIndex(message => message.id === settlement.terminalMessageId) + 1), outcome: settlement.outcome, pending: false, settlement };
+        throw new OpenCodeUnavailableError("Native execution changed during settlement; retrying without resending");
+      }
+    }
     // Session.outcome belongs to the latest turn, not necessarily this command.
     // Later external activity cannot overwrite a recorded command boundary.
     return { messages: bounded.messages, outcome: pending ? undefined : bounded.outcome, pending, currentInputId, ...(policy && input ? { pendingInput: input } : {}), ...(bounded.boundary ? { boundary: bounded.boundary } : {}) };

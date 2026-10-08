@@ -677,6 +677,7 @@ describe.serial("bridge runtime (isolated offline HTTP native fixtures)", () => 
   }, TIMEOUT);
 
   test("OpenCode admission, selected launch, prompt completion and normalized transcript survive restart", async () => {
+    await login();
     const created = await api("/api/sessions", { harness: "opencode", agent: "engineering", model: "fixture/offline", effort: "bounded", cwd: repoDir, prompt: "offline OC first turn" });
     expect(created.status).toBe(202);
     const { sessionId, nativeSessionId, runId } = created.body;
@@ -711,6 +712,38 @@ describe.serial("bridge runtime (isolated offline HTTP native fixtures)", () => 
     expect(calls.filter(c => c.path === "/api/session" && c.method === "POST")).toHaveLength(1);
     expect((await api(`/api/sessions/${sessionId}/transcript`)).body.messages.map((m: any) => m.role)).toEqual(["user", "assistant", "user", "assistant"]);
     expect(invocations()).toHaveLength(0);
+  }, TIMEOUT);
+
+  for (const restart of [false, true]) test(`automatic retry settlement restores sending${restart ? " after App restart" : " without operator action"}`, async () => {
+    await login();
+    const before = prompts().length;
+    const created = await api("/api/sessions", { harness: "opencode", agent: "engineering", model: "fixture/offline", effort: "bounded", cwd: repoDir, prompt: "hold for retry recovery" });
+    expect(created.status).toBe(202);
+    const { sessionId, nativeSessionId, runId } = created.body;
+    await until("retry command accepted", async () => storedRun(runId)?.nativePhase === "accepted" ? true : undefined);
+    const fake = sessions.get(nativeSessionId)!;
+    const time = fake.info.time.updated;
+    fake.messages.push(
+      { id: `msg_retry_${runId}`, type: "assistant", time: { created: time + 1, completed: time + 2 }, error: { type: "provider.transport", message: "WebSocket closed with code 1012" } },
+      { id: `msg_continue_${runId}`, type: "synthetic", time: { created: time + 3 }, text: "The previous response was interrupted. Continue from where you left off without repeating completed content." },
+    );
+    await until("synthetic boundary observed while running", async () => {
+      const events = (await api(`/api/runs/${runId}/events`)).body.events;
+      return events.some((event: any) => event.data?.completionBoundary) ? true : undefined;
+    });
+    if (restart) { await app!.close(); app = undefined; }
+    complete(nativeSessionId);
+    fake.info.time.idle = fake.messages.at(-1)!.time.created;
+    if (restart) { app = await start(options); await login(); }
+    expect((await waitIdle(sessionId)).lastStatus).toBe("completed");
+    const events = (await api(`/api/runs/${runId}/events`)).body.events;
+    expect(events.filter((event: any) => event.kind === "context" && event.data.type === "automatic-completion-reconciliation")).toHaveLength(1);
+    expect(events.filter((event: any) => event.kind === "status" && event.data.status === "completed")).toHaveLength(1);
+    expect(prompts().length - before).toBe(1);
+    const followup = await api("/api/sessions", { sessionId, prompt: "continue after automatic retry recovery" });
+    expect(followup.status).toBe(202);
+    expect((await waitIdle(sessionId)).lastStatus).toBe("completed");
+    expect(prompts().length - before).toBe(2);
   }, TIMEOUT);
 
   test("native continuation projects live synthetic and streaming transcript without reopening the completed exact run", async () => {
@@ -3824,16 +3857,21 @@ describe.serial("bridge runtime (isolated offline HTTP native fixtures)", () => 
     } finally { await running.close(); }
   }, TIMEOUT);
 
-  test("recovered accepted command settles after exact native terminal while preserving waiting text and pause", async () => {
+  for (const delayed of [false, true]) test(`recovered accepted command settles ${delayed ? "automatically after startup" : "after exact native terminal"} while preserving waiting text and pause`, async () => {
     const f = await recoveredOCSeed("recovered-exact-terminal"), id = f.session.sessionId, identity = f.original.claim!.identity;
     const path = join(f.selected.dataDir, "pending-inputs.json"), records = JSON.parse(readFileSync(path, "utf8"));
     records.conversations.find((conversation: any) => conversation.conversationId === id).items.find((item: any) => item.requestId === f.head.requestId).claim.evidence =
       { ...identity, submission: "submitted", nativeAcceptance: "accepted" };
     atomicAppRecord(f.selected.dataDir, "pending-inputs.json", records);
     consumeQueuedInput(identity.source.nativeSessionId!, identity.nativeCommandId!);
-    complete(identity.source.nativeSessionId!);
+    if (!delayed) complete(identity.source.nativeSessionId!);
     const before = mutations().length, running = await start({ ...f.selected, cwd: f.session.cwd, maxConcurrentRuns: 1 });
     try {
+      if (delayed) {
+        expect(running.pendingInputs.store.lookup(id, f.head.requestId)!.item.state).toBe("run-linked");
+        complete(identity.source.nativeSessionId!);
+        await until("automatic original recovery after startup", async () => running.pendingInputs.store.lookup(id, f.head.requestId)!.item.state === "settled" ? true : undefined);
+      }
       const store = running.pendingInputs.store, settled = store.lookup(id, f.head.requestId)!;
       expect(settled.item).toMatchObject({ state: "settled", history: { kind: "settled", status: "completed" } });
       expect(settled.classification).toBe("settled");

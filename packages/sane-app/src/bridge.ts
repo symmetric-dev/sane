@@ -3355,8 +3355,8 @@ async function startOwned(options: Options, assetsDir: string, packageDir: strin
       coordinator.requestWake();
     }, failClosed,
   });
-  // One bounded strict observation per original. No timer, wake, dispatch,
-  // historical lifecycle, metadata repair, or automatic settlement is created.
+  // Observe originals before admission opens. Unfinished/offline originals are
+  // revisited below through the same pinned, observation-only recovery scope.
   await pendingInputRecovery.startup();
   replyIntegration.start();
   chromePush.start();
@@ -3441,7 +3441,15 @@ async function startOwned(options: Options, assetsDir: string, packageDir: strin
     if (closing || storageFailed || workerOutboxTask) return;
     workerOutboxTask = consumeWorkerReports().catch(() => { failClosed(); }).finally(() => { workerOutboxTask = undefined; });
   }, 500);
-  stopStartupConsumers = () => { clearInterval(handoffTimer); clearInterval(workerOutboxTimer); };
+  let inputRecoveryTask: Promise<void> | undefined;
+  const inputRecoveryTimer = setInterval(() => {
+    if (closing || storageFailed || inputRecoveryTask || !recoveredInputConversations.size) return;
+    const task = pendingInputRecovery!.refresh().catch(() => { failClosed(); }).finally(() => {
+      dispatchTasks.delete(task); inputRecoveryTask = undefined;
+    });
+    inputRecoveryTask = task; dispatchTasks.add(task);
+  }, 2000);
+  stopStartupConsumers = () => { clearInterval(handoffTimer); clearInterval(workerOutboxTimer); clearInterval(inputRecoveryTimer); };
   const preparedInput: PreparedInputAdmission = {
     reserve: (intent, id) => reserve(intent, id), release: lease => coordinator.releaseAdmission(lease),
     async admit(prepared, lease, inputOptions) {
@@ -3468,6 +3476,7 @@ async function startOwned(options: Options, assetsDir: string, packageDir: strin
     const nativeSubagentDrain = nativeSubagentRecorder.drain();
     clearInterval(handoffTimer);
     clearInterval(workerOutboxTimer);
+    clearInterval(inputRecoveryTimer);
     closePromise = (async () => {
     await boundedStartupCleanup(() => queueDrain);
     await boundedStartupCleanup(() => Promise.all([...queueServiceTasks]));

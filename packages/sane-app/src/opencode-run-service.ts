@@ -354,6 +354,14 @@ export class OpenCodeRunService {
         if (!current()) break;
         if (handoff && (owner.cancelling || owner.stopping)) { await this.deps.sleep(1000); continue; }
         if (snapshot.observation.kind === "exact-terminal" && (!handoff || acceptanceReported && !this.handoffUnsafe(owner) && exactUser)) {
+          if (snapshot.settlement) {
+            await this.deps.emit(run, "context", { type: "automatic-completion-reconciliation", nativeSessionId, ...snapshot.settlement });
+            if (!current()) break;
+          }
+          if (lastBoundary) {
+            await this.deps.emit(run, "status", { status: "running", completionBoundary: null, reason: "Native completion verified automatically" });
+            if (!current()) break;
+          }
           await this.finishNative(owner, snapshot.observation.outcome === "succeeded" ? "completed" : snapshot.observation.outcome); break;
         }
         const observedBoundary = snapshot.observation.kind === "foreign-boundary" ? snapshot.observation.boundary : undefined;

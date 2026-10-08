@@ -77,6 +77,46 @@ function queued() {
   return f;
 }
 
+for (const role of ["ordinary", "worker-result", "worker", "queued-user"] as const) for (const stopped of [false, true]) {
+  test(`automatic retry recovery settles ${role}${stopped ? " after Stop" : ""} without resubmitting`, async () => {
+    const f = role === "queued-user" ? queued() : fixture();
+    f.run.nativePhase = "accepted";
+    if (role === "worker-result") f.owner.workerDeliveryId = "delivery_fixture";
+    if (role === "worker") { f.state.worker = true; f.run.agentKind = "worker"; f.session.agentKind = "worker"; }
+    f.owner.stopRequested = stopped;
+    const adapter = new OpenCodeAdapter("http://127.0.0.1:1");
+    const history: NativeMessage[] = [
+      { id: f.run.nativeCommandId!, type: "user", time: { created: 2 } },
+      { id: "msg_retry", type: "assistant", time: { created: 3, completed: 4 }, error: { type: "provider.transport", message: "WebSocket closed with code 1012" } },
+      { id: "msg_continue", type: "synthetic", text: "Native continuation", time: { created: 5 } },
+      { id: "msg_answer", type: "assistant", time: { created: 6, completed: 8 }, content: [{ type: "text", text: "Recovered" }] },
+      { id: "msg_idle", type: "idle", time: { created: 9 }, outcome: "succeeded" },
+    ];
+    adapter.request = async <T>(path: string, method = "GET"): Promise<T> => {
+      expect(method).toBe("GET");
+      if (path.includes("/message?")) return { data: [...history].reverse(), cursor: {} } as T;
+      if (path.endsWith("/active")) return { data: {} } as T;
+      if (path.endsWith("/inbox")) return { data: [] } as T;
+      return { data: { id: "ses_fixture", location: { directory: "/fixture" }, outcome: "succeeded", time: { created: 1, updated: 2, idle: 9 } } } as T;
+    };
+    f.oc.observeCommand = adapter.observeCommand.bind(adapter);
+    f.records.push({ runId: f.run.runId, sessionId: f.run.sessionId, time: f.run.createdAt, seq: 1, kind: "status",
+      data: { status: "running", completionBoundary: { messageId: "msg_continue", type: "synthetic" } } });
+    await f.service.monitorNative(f.owner);
+    expect(f.run.status).toBe("completed"); expect(f.session.lastStatus).toBe("completed");
+    expect(f.state.sleeps).toBe(0);
+    expect(f.records.find(e => e.kind === "context")?.data).toMatchObject({ type: "automatic-completion-reconciliation", commandId: f.run.nativeCommandId, terminalMessageId: "msg_idle" });
+    expect(f.statuses()).toContainEqual({ status: "running", completionBoundary: null, reason: "Native completion verified automatically" });
+    expect(f.statuses().filter((s: any) => s.status === "completed")).toHaveLength(1);
+    expect(f.persisted.at(-1)?.status).toBe("completed");
+    expect(f.trace).not.toContain("prompt"); expect(f.trace).not.toContain("interrupt:ses_fixture");
+    // Polling/recovery is idempotent once terminal; no second terminal write.
+    const count = f.records.length;
+    await f.service.monitorNative(f.owner);
+    expect(f.records).toHaveLength(count);
+  });
+}
+
 test("OC pinned pending cancellation refuses malformed delivery and nonfinite time before DELETE", async () => {
   for (const malformed of [{ delivery: "steer" }, { time: { created: Infinity } }]) {
     const f = queued(); let deletes = 0;

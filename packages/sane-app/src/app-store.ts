@@ -181,7 +181,10 @@ export function loadAgentProfiles(root: string): AgentProfiles {
   for (const p of legacy) p.locked = false;
   const seedWorkers = raw?.workerDefaults === undefined;
   if (seedWorkers) raw.workerDefaults = builtinWorkerDefaults();
-  if (!missing.length && !legacy.length && !seedWorkers && !migrated) return validateAgentProfiles(raw);
+  const missingWorkerDefaults = raw.workerDefaults && typeof raw.workerDefaults === "object" && !Array.isArray(raw.workerDefaults)
+    ? Object.entries(builtinWorkerDefaults()).filter(([role]) => !Object.hasOwn(raw.workerDefaults, role)) : [];
+  for (const [role, id] of missingWorkerDefaults) raw.workerDefaults[role] = id;
+  if (!missing.length && !legacy.length && !seedWorkers && !missingWorkerDefaults.length && !migrated) return validateAgentProfiles(raw);
   let order = Math.max(-1, ...raw.profiles.map((p: any) => Number.isSafeInteger(p?.order) ? p.order : -1));
   raw.profiles.push(...missing.map(b => ({ ...b, order: ++order })));
   const merged = validateAgentProfiles(raw); atomicAppRecord(root, "agents.json", merged); return merged;

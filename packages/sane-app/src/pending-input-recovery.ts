@@ -113,6 +113,11 @@ export function createPendingInputRecovery(deps: {
   let diagnosticWriting = false;
   const stopping = new Map<PendingInputStoredItem, Promise<{ interrupted: boolean; reconciliationRequired: true }>>();
   const stopFences = new Set<PendingInputStoredItem>();
+  const observing = new Map<PendingInputStoredItem, Promise<{ interrupted: boolean }>>();
+  function unresolved(original: PendingInputStoredItem) {
+    const live = deps.store.lookup(original.request.conversationId, original.requestId)?.item;
+    return !!live?.claim?.uncertain && ["claimed", "run-linked"].includes(live.state);
+  }
   const refuseSubmission = (): never => { throw new PendingInputDomainError("observation-only-recovery", "Recovered originals can never execute or submit again"); };
   function originalCurrent(original: PendingInputStoredItem) {
     deps.available(true);
@@ -244,13 +249,28 @@ export function createPendingInputRecovery(deps: {
       throw error instanceof PendingInputStorageError ? error : new PendingInputStorageError("Recovery observation failed", error);
     }
   }
+  function observeOnce(original: PendingInputStoredItem, stop: boolean): Promise<{ interrupted: boolean }> {
+    const prior = observing.get(original);
+    if (prior) return stop ? prior.then(() => observeOnce(original, true)) : prior;
+    if (shutdown.signal.aborted || !observationsOpen || !unresolved(original)) return Promise.resolve({ interrupted: false });
+    const task = observe(original, stop).finally(() => observing.delete(original));
+    observing.set(original, task);
+    return task;
+  }
+  async function refresh() {
+    for (const original of deps.originals) {
+      if (shutdown.signal.aborted || !observationsOpen) break;
+      if (original.claim?.identity.source.harnessId === "opencode"
+        || !original.claim?.possibleNative && original.claim?.evidence?.submission === "not-submitted") await observeOnce(original, false);
+    }
+  }
   return Object.freeze({
     writing: () => (!!writing || diagnosticWriting) && observationsOpen,
     validateDispatch,
-    async startup() {
-      for (const original of deps.originals) if (original.claim?.identity.source.harnessId === "opencode"
-        || !original.claim?.possibleNative && original.claim?.evidence?.submission === "not-submitted") await observe(original, false);
-    },
+    startup: refresh,
+    // Retry observation, never execution. A native run still active (or offline)
+    // during App startup must not become an operator-only permanent reservation.
+    refresh,
     stop(conversationId: string) {
       const original = deps.originals.find(item => item.claim?.identity.source.sessionId === conversationId);
       if (!original || original.claim!.identity.source.harnessId !== "opencode") return Promise.resolve({ interrupted: false, reconciliationRequired: true as const });
@@ -258,7 +278,7 @@ export function createPendingInputRecovery(deps: {
       // The bridge already durably paused waiting text and fenced any original
       // owner before entering here. Stop is intentional, not submission consent.
       stopFences.add(original); // Sticky original observation actor fence BEFORE the first await.
-      const task = observe(original, true).then(result => ({ ...result, reconciliationRequired: true as const })).finally(() => stopping.delete(original));
+      const task = observeOnce(original, true).then(result => ({ ...result, reconciliationRequired: true as const })).finally(() => stopping.delete(original));
       stopping.set(original, task); return task;
     },
     close: () => shutdown.abort(),

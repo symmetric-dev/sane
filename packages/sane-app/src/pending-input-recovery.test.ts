@@ -89,3 +89,33 @@ test("ambiguous claim remains blocking across restart and unsafe proof cannot se
   expect(f.store.get(f.cid).paused).toBe(true);
   expect(f.settled()).toBe(0);
 });
+
+test("original still running at startup automatically settles on a later observation", async () => {
+  const f = await fixture("opencode", "submitted");
+  let completed = false, observations = 0;
+  const recovery = f.create({ observeRecoveredInput: async () => {
+    observations++;
+    return { interrupted: false, ...(completed ? { terminal: { identity: f.identity, status: "completed" } } : {}) };
+  } } as unknown as OpenCodeRunService);
+  await recovery.startup();
+  expect(f.settled()).toBe(0);
+  completed = true;
+  await recovery.refresh();
+  expect(f.settled()).toBe(1); expect(f.store.reconciliationWork()).toHaveLength(0);
+  await recovery.refresh(); await recovery.stop(f.cid);
+  expect(observations).toBe(2); expect(f.settled()).toBe(1);
+});
+
+test("refresh and Stop serialize exact original observations and shutdown prevents further reads", async () => {
+  const f = await fixture("opencode", "submitted"), gate = Promise.withResolvers<void>();
+  let observations = 0, active = 0, maximum = 0;
+  const recovery = f.create({ observeRecoveredInput: async () => {
+    observations++; active++; maximum = Math.max(maximum, active);
+    await gate.promise; active--; return { interrupted: false };
+  } } as unknown as OpenCodeRunService);
+  const first = recovery.refresh(), second = recovery.refresh(), stop = recovery.stop(f.cid);
+  gate.resolve(); await Promise.all([first, second, stop]);
+  expect(maximum).toBe(1); expect(observations).toBe(2);
+  recovery.close(); await recovery.refresh(); await recovery.stop(f.cid);
+  expect(observations).toBe(2);
+});
