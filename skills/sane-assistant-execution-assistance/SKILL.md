@@ -56,7 +56,9 @@ When authorized execution is ready, summarize the outcome and ask whether the us
 
 ## Worker Assignments
 
-Give each worker the exact scope, paths, evidence, and decision boundaries for its assignment; its agent instructions supply the standing procedure. Workers inherit the implementation checkout; supply the evidence they need in `prompt` or `context`, since the parent transcript is not copied. Use `sane_worker_wait` for a bounded join when useful; use `sane_worker_acknowledge` for results handled through wait/status with their exact revision and notification references to avoid a later duplicate report-back.
+Limit each worker assignment to the contents listed for its role below.
+
+Use `sane_worker_wait` for a bounded join when useful; use `sane_worker_acknowledge` for results handled through wait/status with their exact revision and notification references to avoid a later duplicate report-back.
 
 Workers started with `sane_worker_start` receive the session roots, workstream identity, and the Job Spec, Job Report, and template paths of the jobs passed in `jobs`; do not restate them.
 
