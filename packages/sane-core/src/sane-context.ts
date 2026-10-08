@@ -2,7 +2,7 @@ import { isAssistantAgentId, isWorkerAgentId, type StoredSaneAgentIdentity, type
 import { SANE_WORKER_PROCEDURES } from "./sane-worker-procedures.ts"
 
 /** Bump whenever framework or assignment text changes; sessions keep the version they were created with. */
-export const SANE_CONTEXT_VERSION = 3
+export const SANE_CONTEXT_VERSION = 4
 
 export const SANE_CORE_CONTEXT = `# SANE Context
 
@@ -65,10 +65,44 @@ View current status with \`sane view\` and use the CLI to record state.
 - \`in_progress\` — Session is in progress.
 - \`approved\` — User explicitly approved the tracked outcome.`
 
+export const SANE_WORKER_ASSIGNMENT_DISCIPLINE = `## Worker Assignment Discipline
+
+### Concepts
+
+- **Prompt engineering:** Constructing a worker assignment that clearly identifies the task, authoritative references, and role-specific inputs.
+- **Meta-language:** Language about framework architecture, agent roles, coordination, or workflow procedures rather than the assigned work.
+- **Context leakage:** Passing parent-specific information—such as deliberation, coordination history, or workflow state—into a worker's context.
+- **Instruction duplication:** Repeating requirements or procedures instead of referencing their authoritative source.
+- **Requirement drift:** Introducing unapproved outcomes, restrictions, verification obligations, or acceptance criteria through a worker assignment.
+
+### Discipline
+
+During worker assignments, make the task clear and avoid unnecessary meta-language, context leakage, and instruction duplication.
+
+Examples of unnecessary additions:
+
+- **Meta-language**
+  - "Planning amended the Spec after Engineering reapproved the solution."
+  - "Execution is coordinating this checkpoint in delegated-cycle mode."
+- **Context leakage**
+  - "The previous worker failed due to timeout."
+  - "We discussed several approaches with the user before choosing this assignment."
+  - "This is our second correction round; the earlier round was an authorization correction."
+- **Instruction duplication**
+  - "Do not run tests from the root, as the Spec says."
+  - "Remember to write and validate the Job Report."
+  - Repeating the Job Spec's implementation steps in the dispatch prompt.
+
+These additions are unnecessary when they do not affect the assigned task. A timeout may matter when correcting a timeout-related problem; a specification amendment may matter when an earlier report describes requirements that have since changed.`
+
 export type SaneFrameworkContext = { version: number; text: string }
-/** Allowlist: current assistants get core + assistant, workers get core; everything else gets none. */
+/** Current assistants get core + assistant; Planning and Execution also get assignment discipline.
+ * Workers get core; everything else gets none. */
 export function frameworkContext(agent: StoredSaneAgentIdentity | undefined): SaneFrameworkContext | null {
-  if (agent?.kind === "assistant" && isAssistantAgentId(agent.role)) return { version: SANE_CONTEXT_VERSION, text: `${SANE_CORE_CONTEXT}\n\n${SANE_ASSISTANT_CONTEXT}` }
+  if (agent?.kind === "assistant" && isAssistantAgentId(agent.role)) {
+    const text = `${SANE_CORE_CONTEXT}\n\n${SANE_ASSISTANT_CONTEXT}`
+    return { version: SANE_CONTEXT_VERSION, text: agent.role === "planning" || agent.role === "execution" ? `${text}\n\n${SANE_WORKER_ASSIGNMENT_DISCIPLINE}` : text }
+  }
   if (agent?.kind === "worker" && isWorkerAgentId(agent.role)) return { version: SANE_CONTEXT_VERSION, text: SANE_CORE_CONTEXT }
   return null
 }

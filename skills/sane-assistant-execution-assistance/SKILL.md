@@ -17,10 +17,9 @@ description: Use after Execution Pickup confirmation to coordinate jobs, reviews
 
 ## Review and Fixes
 
-1. Present missing prerequisites to the user for direction.
-2. For a bounded production fix, start a Fixer with `sane_worker_start` (`worker: "fixer"`, `jobs` set to the affected job ids) with the findings, edit boundary, and non-test checks. Route test changes to the Tester at the checkpoint.
-3. Have the assigned worker reconcile the Job Reports for its current, non-completed assignments to their implementation outcomes and validate them. Changes following a completed job belong to the subsequent job's report; do not rewrite predecessor reports merely to match later implementation. Keep material evidence and accepted limitations in the existing sections; replace resolved findings rather than appending another attempt narrative.
-4. After a checkpoint fix, have the Tester verify affected behavior and update the Test Report; ask the Reviewer to reassess the findings and checkpoint scope.
+1. For a bounded production fix, start a Fixer with `sane_worker_start` (`worker: "fixer"`, `jobs` set to the affected job ids) with the findings, edit boundary, and non-test checks. Route test changes to the Tester at the checkpoint.
+2. Have the assigned worker reconcile the Job Reports for its current, non-completed assignments to their implementation outcomes and validate them. Changes following a completed job belong to the subsequent job's report; do not rewrite predecessor reports merely to match later implementation. Keep material evidence and accepted limitations in the existing sections; replace resolved findings rather than appending another attempt narrative.
+3. After a checkpoint fix, have the Tester verify affected behavior and update the Test Report; ask the Reviewer to reassess the findings and checkpoint scope.
 
 ## Checkpoint Review and Commit
 
@@ -29,12 +28,6 @@ description: Use after Execution Pickup confirmation to coordinate jobs, reviews
 3. When the review is Complete or Complete with non-blocking observations, commit the reviewed implementation unless the user specifies otherwise. Commit authorization is the default. Inspect the diff and stage the checkpoint's changes, preserving unrelated user work. Write commit messages in the repository's style and describe the implementation change in repository terms. Do not include workstream language, SANE job IDs, checkpoint labels, agent roles, or workstream-document references in commit messages; keep that coordination context in the session with the user. Pushing requires separate user instruction. If there are no changes to commit, communicate that outcome in the session.
 4. Communicate the checkpoint's review disposition, accepted limitations, and commit reference in the session with the user. Have the assigned worker reconcile its Job Report when review findings change the implementation outcome or evidence. Keep progress in job status; write the Final Report only when the user requests it.
 5. After each accepted checkpoint, send Planning the Job Reports, Test Report, and reviewer findings for a look-ahead at upcoming assignments, even when no gap is known. Commit accepted work first, then follow Planning Review and Corrections before advancing.
-
-## Enriching Upcoming Job Specs
-
-1. Between returned batches, optionally invoke `sane_worker_start` (`worker: "grounder"`) to enrich upcoming unstarted Job Spec Context with verified paths, symbols, interfaces, and applicable Job Report recommendations.
-2. After checkpoint review, optionally assign Grounder the completed-checkpoint Job Reports and upcoming-checkpoint Job Specs for light enrichment. Name the writable unstarted Job Specs and supply review evidence. Ask it to account for existing enrichment and dependencies among upcoming jobs as well as completed predecessors.
-3. Check the returned edits and warnings. Route assignment gaps or contradictory recommendations through Planning Review and Corrections; factual enrichment keeps the assignment intact.
 
 ## Planning Review and Corrections
 
@@ -71,4 +64,3 @@ Workers started with `sane_worker_start` receive the session roots, workstream i
 - **Tester:** Pass the checkpoint's job ids via `jobs`. Supply the checkpoint Verification Spec, implementation changes, test edit boundary, and `execution/test-reports/<checkpoint-id>.md` with its template.
 - **Reviewer:** Pass the checkpoint's job ids via `jobs`. Supply the change boundary including uncommitted work, Verification Spec, Test Report, relevant earlier integration context, and check limits. For re-review, add the findings and fix evidence.
 - **Fixer:** Pass the affected job ids via `jobs`; their Job Reports are its report assignment. Supply the findings, required outcome, allowed edits, non-test checks, and stop conditions.
-- **Grounder:** Supply the writable unstarted Job Specs, read-only reports and assessments, and bounded repository questions. Execution enrichment edits Context only.

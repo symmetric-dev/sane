@@ -30,12 +30,10 @@ worker per attempt, then a Tester and read-only Reviewer at each planned
 Execution Checkpoint.
 Workers record outcomes in Job Reports (`execution/reports/<job-id>-<job-slug>.md`).
 Write the Final Report (`execution/FINAL_REPORT.md`) only when the user requests it.
-Use the Assistance procedures for fixes and optional Grounder enrichment of
-upcoming Job Spec Context. Commit accepted checkpoint work by default unless
+Use the Assistance procedures for fixes. Commit accepted checkpoint work by default unless
 the user specifies otherwise. The user
 selects the working checkout or worktree. Route assignment changes to Planning
-under the user's coordination instructions. Use isolated checks in the worktree;
-ask the user to coordinate shared servers, migrations, or deployment operations.
+under the user's coordination instructions.
 
 Perform the following setup steps:
 
