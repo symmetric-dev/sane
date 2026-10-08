@@ -1,4 +1,6 @@
-/** Explicit Settings-to-chat entry. Reading a document never chooses a recipient. */
+/** Explicit Sane Review entry. The session assignment seeds the initial phase;
+ * phase/search filters belong to the controller, not the launch or recipient.
+ * Reading a document never chooses a recipient. */
 export type DocumentReviewLaunch = {
   sessionId: string;
   workspaceId: string;

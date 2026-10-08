@@ -27,6 +27,7 @@ export const validEffort = (v: unknown): v is Effort => typeof v === "string" &&
  * OC input ID; compact.nativeAdmittedId may differ after native coalescing. */
 export type CompactRunMetadata = { requestId: string; instructions?: string; nativeRequestId?: string; nativeAdmittedId?: string };
 export type Run = AgentSnapshot & { runId: string; sessionId: string; cwd: string; status: Status; createdAt: string; endedAt?: string; model?: string; effort?: string; profileId?: string; nativeCommandId?: string; nativeDelivery?: "queue"; nativePhase?: "preparing" | "sending" | "accepted"; nativeAcceptedAt?: number; operation?: "prompt" | "compact"; compact?: CompactRunMetadata; saneContextVersion?: number; queuedFollowupId?: string };
+export type TerminationUncertainty = { kind: "unconfirmed"; cause: "server-restart" | "process-group" };
 export type Event = { seq: number; time: string; runId: string; sessionId: string; kind: "stdout" | "stderr" | "hook" | "status" | "submission" | "message" | "launch" | "context" | "native-subagent"; data: unknown };
 export type Metadata = { sessions: Session[]; runs: Run[]; reconciliationRequired: boolean };
 

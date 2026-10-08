@@ -8,7 +8,7 @@ import { FlowLauncher } from "./flow-launcher";
 import type { Conversation } from "./types";
 import { workstreamRequest } from "./workstreams-client";
 import { refreshWorkstreamOverview, useWorkstreamOverviewState } from "./workstream-overview";
-import type { DocumentReviewStart, ReviewPhase } from "./document-review-model";
+import type { DocumentReviewStart } from "./document-review-model";
 import type { WorkstreamStatusStart } from "./workstream-status";
 import { assignmentClass, assignmentLabel, assignmentStats, supportAssignments } from "./assignment-semantics";
 import "./workstream-actions.css";
@@ -75,7 +75,7 @@ export function ChatWorkstreamActions({ conversation, active, onDocuments, onSta
       if (currentFlowsScope.current !== flowsOpened.scope || !flowsAvailable) return;
       setFlowsOpened(null);
       if (flow === "view-status") onStatus?.(flowsOpened.identity);
-      else onDocuments?.({ ...flowsOpened.identity, mode: flow === "search-documents" ? "search" : "review", ...(flow === "review-research" ? { phase: "research" } : {}) });
+      else onDocuments?.(flowsOpened.identity);
     }} />}
   </>;
 }
@@ -88,7 +88,7 @@ export function WorkstreamActionsDialog({ workspaceId, detail: initialDetail, se
   restoreFocus?: () => HTMLElement | null;
   onChanged: () => Promise<void>;
   isCurrent?: () => boolean;
-  onDocuments?: (phase: ReviewPhase) => void;
+  onDocuments?: () => void;
 }) {
   const id = useId();
   const [tab, setTab] = useState<Tab>("root");
@@ -210,8 +210,7 @@ export function WorkstreamActionsDialog({ workspaceId, detail: initialDetail, se
         </>}
         {outcome && <p className="workstream-actions-outcome" role="status">{outcome}</p>}
         {(readFailed || refreshFailed) && <div className="workstream-actions-read-error"><span role="status">{refreshFailed ? "Refresh failed; action was not retried." : outcome === "Action failed" ? "Refresh before trying another action." : "Couldn't load current state."}</span><button type="button" className="text-button" disabled={busy} onClick={() => void refresh()}>Refresh</button></div>}
-        {/* Overview tabs select workstream-wide scope, not the conversation's assignment default. */}
-        {onDocuments && <button type="button" className="text-button" disabled={blocked || confirm} onClick={() => onDocuments(isPhase(tab) ? tab : "all")}><FiBookOpen size={14} aria-hidden="true" />{isPhase(tab) ? "Read documents" : "Read all documents"}</button>}
+        {onDocuments && <button type="button" className="text-button" disabled={blocked || confirm} onClick={() => onDocuments()}><FiBookOpen size={14} aria-hidden="true" />Sane Review</button>}
         {isPhase(tab) && <footer className="workstream-actions-footer">
           {confirm && <div role="group" aria-label="Approval confirmation" className="workstream-actions-confirm">
             <label htmlFor={`${id}-approval`}>Approval reference</label><input autoFocus id={`${id}-approval`} value={approvalRef} required disabled={busy} placeholder="Approval reference" onChange={event => setApprovalRef(event.target.value)} onKeyDown={event => {

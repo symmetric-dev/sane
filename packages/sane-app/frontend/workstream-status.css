@@ -28,8 +28,8 @@
 .workstream-status-toolbar { display:flex; flex-shrink:0; align-items:center; justify-content:space-between; flex-wrap:wrap; gap:10px; padding:10px 16px; border-top:1px solid var(--border); }
 .workstream-status-toolbar>div,.workstream-status-confirm>div { display:flex; align-items:center; flex-wrap:wrap; gap:8px; }
 .workstream-status-toolbar>div:last-child { margin-left:auto; }
-.workstream-status-toolbar button:not(.text-button),.workstream-status-confirm button { display:inline-flex; align-items:center; gap:5px; font-size:12px; padding:8px 11px; border:1px solid var(--border); border-radius:9px; background:var(--background); color:var(--foreground); }
-.workstream-status-toolbar button:hover:not(:disabled),.workstream-status-confirm button:hover:not(:disabled) { background:var(--accent); }
+.workstream-status-toolbar > div > button:not(.text-button),.workstream-status-confirm button { display:inline-flex; align-items:center; gap:5px; font-size:12px; padding:8px 11px; border:1px solid var(--border); border-radius:9px; background:var(--background); color:var(--foreground); }
+.workstream-status-toolbar > div > button:hover:not(:disabled),.workstream-status-confirm button:hover:not(:disabled) { background:var(--accent); }
 .workstream-status-confirm { display:grid; gap:8px; margin-top:16px; padding-top:16px; border-top:1px solid var(--border); }
 .workstream-status-confirm label { font-size:12px; }
 .workstream-status-confirm input { min-width:0; width:100%; padding:8px 10px; border:1px solid var(--border); border-radius:9px; background:var(--background); color:var(--foreground); }
@@ -37,7 +37,7 @@
   .workstream-status-heading { padding-left:12px; padding-right:12px; }
   .workstream-status-body { padding-left:12px; padding-right:12px; }
   .workstream-status-toolbar { padding:10px 12px; }
-  .workstream-status-toolbar button:not(.text-button) { padding:8px; font-size:11px; }
+  .workstream-status-toolbar > div > button:not(.text-button) { padding:8px; font-size:11px; }
 }
 @media(max-width:380px) {
   .workstream-status-grid { grid-template-columns:minmax(0,1fr); }

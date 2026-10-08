@@ -2,6 +2,7 @@ import type { ConversationClient, RunMetadata, RunStatus } from "./types";
 import { isConversationUpdateFeedRequest, isConversationUpdatePage } from "../shared/conversation/conversation-updates";
 import { nativeNotificationSource } from "./notification-source";
 import { SESSION_REFRESH_ERROR } from "./notification-presentation";
+import { pendingInputClient } from "./pending-input-client";
 
 export class ApiError extends Error {
   constructor(message: string, readonly status: number, readonly code?: string) { super(message); }
@@ -16,6 +17,7 @@ export async function request(path: string, init: RequestInit = {}) {
 }
 const transcriptSignal = (signal?: AbortSignal) => signal ? AbortSignal.any([signal, AbortSignal.timeout(25000)]) : undefined;
 export const conversationClient: ConversationClient = {
+  ...pendingInputClient,
   async conversationUpdates(input = {}, signal, bootstrap = false) {
     if (!isConversationUpdateFeedRequest(input) || bootstrap && (input.cursor || input.through !== undefined)) throw new Error("Invalid conversation update request.");
     const params = new URLSearchParams({ limit: String(input.limit ?? 100) });
@@ -53,6 +55,11 @@ export const conversationClient: ConversationClient = {
   async interactions(id, signal) { return (await request(`/api/sessions/${encodeURIComponent(id)}/interactions`, { signal })).interactions ?? []; },
   reply: (id, interactionId, reply) => request(`/api/sessions/${encodeURIComponent(id)}/interactions/${encodeURIComponent(interactionId)}/reply`, { method: "POST", body: JSON.stringify(reply) }),
   cancel: id => request(`/api/sessions/${encodeURIComponent(id)}/cancel`, { method: "POST", body: "{}" }),
+  async verifyCompletion(id, runId, input) {
+    const result = await request(`/api/sessions/${encodeURIComponent(id)}/runs/${encodeURIComponent(runId)}/verify-completion`, { method: "POST", body: JSON.stringify(input) });
+    if (!["completed", "failed", "interrupted"].includes(result.status) || !result.evidence) throw new Error("Completion verification acknowledgement unavailable.");
+    return result;
+  },
   compactState: (id, signal) => request(`/api/sessions/${encodeURIComponent(id)}/compact`, { signal }),
   compact: (id, input) => request(`/api/sessions/${encodeURIComponent(id)}/compact`, { method: "POST", body: JSON.stringify(input) }),
   hide: id => request(`/api/sessions/${encodeURIComponent(id)}/hide`, { method: "POST", body: "{}" }),

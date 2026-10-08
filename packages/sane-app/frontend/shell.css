@@ -156,30 +156,44 @@
 .contextual-navigation {
   display:flex;
   align-items:center;
+  flex-wrap:wrap;
   gap:4px;
-  flex-shrink:0;
+  min-width:0;
+  max-width:100%;
+  padding:2px;
+  border-radius:11px;
+  background:var(--navigation-background);
+  color:var(--navigation-foreground);
 }
 .contextual-navigation button {
   position:relative;
   display:flex;
   align-items:center;
   justify-content:center;
-  gap:6px;
+  gap:5px;
   min-width:36px;
   min-height:36px;
-  padding:8px;
-  border-radius:8px;
-  color:var(--muted-foreground);
+  padding:8px 11px;
+  border:0;
+  border-radius:9px;
+  background:transparent;
+  color:var(--navigation-foreground);
+  font-size:12px;
 }
-.contextual-navigation button:hover { background:var(--accent); color:var(--foreground); }
-.navigation-label { font-size:11px; white-space:nowrap; }
+.contextual-navigation button:hover { background:var(--navigation-hover); }
+.contextual-navigation:focus-within > button:focus-visible { outline:2px solid var(--navigation-foreground); outline-offset:-2px; }
+.navigation-label { font-size:inherit; white-space:nowrap; }
 .contextual-navigation .chat-activity {
   position:absolute;
   right:1px;
   top:1px;
   gap:2px;
   font-size:9px;
+  color:var(--navigation-foreground);
+  background:var(--navigation-background);
+  border-radius:4px;
 }
+.contextual-navigation .chat-activity.pending .pulse { background:var(--navigation-foreground); }
 .sidebar-mode-control {
   display:flex;
   flex-shrink:0;

@@ -162,6 +162,8 @@ for (const stage of ["before preparation", "settings", "second execution", "owne
   const service = f.service(); await service.execute(f.owner, "hello", false, f.accepted);
   expect(f.spawned()).toBeUndefined(); expect(f.ready).toEqual([false, false]);
   expect(f.run.status).toBe(["before preparation", "settings", "second execution", "closing"].includes(stage) ? "interrupted" : "failed");
+  if (stage === "storage") expect(statusData(f).at(-1)).toMatchObject({ reason: "Storage failure; operator reconciliation required" });
+  expect(statusData(f).at(-1)).not.toHaveProperty("termination");
   expect(await service.ingestHook("Stop", hookInput(f), secret)).toMatchObject({ status: 403 });
 });
 
@@ -292,6 +294,7 @@ test("unconfirmed group termination fails the run and retains ownership", async 
   await f.service().execute(f.owner, "hello", false, f.accepted);
   expect(f.run.status).toBe("failed"); expect(f.state.reconciliationRequired).toBe(true);
   expect(statusData(f).at(-1)?.reason).toBe("Process termination unconfirmed; operator reconciliation required");
+  expect(statusData(f).at(-1)?.termination).toEqual({ kind: "unconfirmed", cause: "process-group" });
 });
 
 test("synchronous stdin failure observes independently rejecting consumers and stops the child", async () => {

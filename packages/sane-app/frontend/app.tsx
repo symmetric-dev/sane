@@ -8,6 +8,7 @@ import { WorkspaceHeader, WorkspaceProvider, WorkspaceSidebar, WorkspaceView, wo
 import type { ActiveView } from "./workspace-controller";
 import { TerminalHeader, TerminalProvider, TerminalView } from "./terminal";
 import { WorkspaceShell } from "./workspace-shell";
+import { ChatFlowLayoutProvider } from "./chat-flow-layout";
 import { ShellDialog } from "./shell-dialog";
 import type { ArtifactSelection } from "./workstreams";
 import { WorkstreamArtifact } from "./workstream-artifact";
@@ -194,6 +195,7 @@ function ReadyWorkspace({ state, signOut, inbox, hydrationReady }: { state: Stat
     <PushNavigation state={state} inbox={inbox} hydrationReady={hydrationReady} openNotification={openNotification} />
     <ViewNavigationCommands onNavigate={navigate} />
     <SidebarToggleCommand onToggle={toggleSidebar} />
+    <ChatFlowLayoutProvider scope={view === "chat" && !nativeSubagents.active ? { sessionId: state.selected, nativeSessionId: nativeParent?.nativeSessionId, harness: nativeParent?.harness, workspaceId, worktreeId } : null}>
     <WorkspaceShell view={view} sidebar={sidebar}
       onOpenNotification={openNotification}
       workspaceSelection={workspaceSelection}
@@ -206,6 +208,7 @@ function ReadyWorkspace({ state, signOut, inbox, hydrationReady }: { state: Stat
       <ShellContent state={state} view={view} workspaceId={workspaceId} artifact={artifact} closeArtifact={() => setArtifact(null)} openArtifact={openArtifact}
         historyPreview={historyPreview} choose={choose} signOut={signOut} navigation={navigation} startDocumentReview={startDocumentReview} reviewRequest={reviewRequest} reviewRequestHandled={reviewRequestHandled} />
     </WorkspaceShell>
+    </ChatFlowLayoutProvider>
     {drawer === "application" && <ApplicationDialog state={state} signOut={signOut} close={() => setDrawer(null)} />}
     {drawer === "details" && !nativeSubagents.active && <ConversationDetails state={state} close={() => setDrawer(null)} />}
     {drawer === "context" && view === "chat" && !nativeSubagents.active && !state.compactDialog && <ContextDialog state={state} close={() => setDrawer(null)} />}

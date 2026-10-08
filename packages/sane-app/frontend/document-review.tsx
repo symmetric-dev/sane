@@ -1,21 +1,17 @@
-import { useEffect, useLayoutEffect, useRef, useState, type ReactNode } from "react";
+import { useEffect, useLayoutEffect, useRef, type ReactNode } from "react";
 import { FiArrowLeft, FiBookOpen, FiCheck, FiFileText, FiRefreshCw, FiX } from "react-icons/fi";
 import { ChatInput } from "./chat-input";
 import { DocumentMarkdown } from "./document-markdown";
-import { DocumentToc } from "./document-toc";
-import { reviewPhases, type DocumentReviewController, type ReviewPhase } from "./document-review-model";
+import { reviewPhases, type DocumentReviewController } from "./document-review-model";
 import "./document-review.css";
 
 const label = (value: string) => value.charAt(0).toUpperCase() + value.slice(1);
 
 export function DocumentReviewComposer({ review, disabled, active, navigation }: { review: DocumentReviewController; disabled: boolean; active: boolean; navigation?: ReactNode }) {
   const flow = review.flow!;
-  const [search, setSearch] = useState("");
-  const cancelButton = useRef<HTMLButtonElement>(null), searchInput = useRef<HTMLInputElement>(null);
-  useEffect(() => setSearch(""), [flow.identity]);
-  const searching = flow.mode === "search";
-  const title = searching ? "Search Documents" : flow.identity.phase === "research" ? "Review Research" : "Review Documents";
-  const documents = flow.documents.filter(document => (flow.phase === "all" || document.phase === flow.phase) && (!searching || `${document.title} ${document.path}`.toLowerCase().includes(search.toLowerCase())));
+  const cancelButton = useRef<HTMLButtonElement>(null);
+  const title = "Sane Review";
+  const documents = review.filteredDocuments;
   const document = flow.documents.find(item => item.path === flow.path);
   const entry = document ? flow.entries[document.path] : undefined;
   const resource = document?.kind === "resource" || document?.phase === "resources";
@@ -25,15 +21,15 @@ export function DocumentReviewComposer({ review, disabled, active, navigation }:
   // Launch/relaunch focus follows dialog cleanup; reader feedback keeps its autoFocus.
   useEffect(() => {
     if (!active || flow.busy || flow.path !== null) return;
-    const target = searching ? searchInput.current : cancelButton.current;
+    const target = cancelButton.current;
     if (target && !target.disabled && target.getClientRects().length) target.focus({ preventScroll: true });
-  }, [flow.identity, flow.mode, active]);
+  }, [flow.identity, active]);
   const status = (path: string) => {
     const entry = flow.entries[path];
     return entry?.changed ? "Changed · review again" : entry?.decision === "accepted" ? "Accepted" : entry?.decision === "needs-changes" ? "Needs changes" : entry?.feedback.trim() ? "Unsaved feedback" : "Not reviewed";
   };
   return <section className="document-review-composer" aria-label={title}>
-    <header className="document-review-heading"><div><FiBookOpen size={16} aria-hidden="true" /><strong>{title}</strong>{document && <span title={document.title}>{document.title}</span>}</div><div>{!searching && !document && <button type="button" className="text-button" disabled={blocked || flow.loading} aria-label="Refresh documents" title="Refresh documents" onClick={() => void review.refresh()}><FiRefreshCw aria-hidden="true" /></button>}<button ref={cancelButton} type="button" className="text-button" disabled={blocked} onClick={() => review.cancel()} aria-label={`Cancel ${title.toLowerCase()}`}><FiX aria-hidden="true" />Cancel</button></div></header>
+    <header className="document-review-heading"><div><FiBookOpen size={16} aria-hidden="true" /><strong>{title}</strong></div><div>{!document && <button type="button" className="text-button" disabled={blocked || flow.loading} aria-label="Refresh documents" title="Refresh documents" onClick={() => void review.refresh()}><FiRefreshCw aria-hidden="true" /></button>}<button ref={cancelButton} type="button" className="text-button" disabled={blocked} onClick={() => review.cancel()} aria-label={`Cancel ${title}`}><FiX aria-hidden="true" />Cancel</button></div></header>
     <div className="document-review-body">
     {flow.error && <p className="document-review-notice error" role="alert">{flow.error} {!flow.unknown && <button type="button" className="text-button" disabled={blocked} onClick={() => document ? void review.open(document.path, flow.fragment) : void review.refresh()}>Retry</button>}</p>}
     {flow.unknown && <p className="document-review-notice"><button type="button" className="text-button" disabled={blocked} onClick={review.allowRetry}>I checked conversation history; allow retry</button></p>}
@@ -41,7 +37,6 @@ export function DocumentReviewComposer({ review, disabled, active, navigation }:
     {document ? <>
       {resource ? <p className="document-review-notice">Reference document · browse only. No review decision is required.</p> : <ChatInput key={`${flow.identity.sessionId}:${document.path}`} autoFocus text={entry?.feedback ?? ""} save={review.edit} submit={() => review.decide("needs-changes")} disabled={blocked} className="composer-input" aria-label={`Feedback for ${document.title}`} placeholder="What needs to change? Feedback stays with this document…" />}
     </> : <>
-      {searching && <div className="document-review-filters"><label>Scope<select value={flow.phase} disabled={blocked || flow.loading} onChange={event => review.phase(event.target.value as ReviewPhase)}><option value="all">All phases</option>{reviewPhases.map(phase => <option key={phase} value={phase}>{label(phase)}</option>)}</select></label><input ref={searchInput} type="search" value={search} onChange={event => setSearch(event.target.value)} disabled={blocked} aria-label="Find a document" placeholder="Find a document…" /><button type="button" className="text-button" disabled={blocked || flow.loading} aria-label="Refresh documents" title="Refresh documents" onClick={() => void review.refresh()}><FiRefreshCw aria-hidden="true" /></button></div>}
       <div className="document-review-catalog" aria-busy={flow.loading}>
         {flow.loading ? <p className="muted" role="status">Loading workstream documents…</p> : reviewPhases.filter(phase => flow.phase === "all" || flow.phase === phase).map(phase => {
           const group = documents.filter(document => document.phase === phase);
@@ -53,7 +48,7 @@ export function DocumentReviewComposer({ review, disabled, active, navigation }:
             </div>;
           })}</section> : null;
         })}
-        {!flow.loading && !documents.length && <p className="muted" role="status">{flow.phase === "none" ? "No matching review phase for this session." : searching ? "No documents found in this scope." : flow.phase === "research" ? "No registered research documents in this workstream." : "No documents for your current phase."}</p>}
+        {!flow.loading && !documents.length && <p className="muted" role="status">No documents found in this scope.</p>}
       </div>
     </>}
     </div>
@@ -77,10 +72,10 @@ export function DocumentReviewReader({ review }: { review: DocumentReviewControl
   const openLink = (path: string, fragment?: string) => {
     if (flow.documents.some(item => item.path === path && item.exists)) review.navigate(path, fragment);
   };
-  return <div className="document-review-layout"><DocumentToc review={review} /><div className="document-review-reader" ref={viewport} tabIndex={0} aria-busy={flow.reading} aria-label={`Document reader: ${document?.title ?? flow.path}`} onScroll={event => { if (review.active && !flow.reading) positions.current.set(key, event.currentTarget.scrollTop); }}>
+  return <div className="document-review-reader" ref={viewport} tabIndex={0} aria-busy={flow.reading} aria-label={`Document reader: ${document?.title ?? flow.path}`} onScroll={event => { if (review.active && !flow.reading) positions.current.set(key, event.currentTarget.scrollTop); }}>
     <article className="document-review-paper"><header><p className="eyebrow">{document ? label(document.phase) : "Document"}</p>{entry?.changed && <p className="notice" role="status">This document changed. Read the new revision and decide again. Your feedback is preserved.</p>}</header>
       {flow.reading && <p role="status" className="muted">Opening document…</p>}
       {entry?.content !== undefined ? <DocumentMarkdown text={entry.content} path={flow.path!} fragment={flow.reading ? undefined : flow.fragment} navigation={flow.navigation} onOpenDocument={openLink} /> : !flow.reading && <p role={flow.error ? "alert" : "status"} className="muted">{flow.error || "Document not loaded."} <button type="button" className="text-button" disabled={flow.busy} onClick={() => void review.open(flow.path!, flow.fragment)}>Retry</button></p>}
     </article>
-  </div></div>;
+  </div>;
 }

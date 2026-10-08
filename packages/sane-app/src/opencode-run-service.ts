@@ -1,10 +1,11 @@
 import type { Event, Run, Session, Status } from "./history";
-import { OpenCodeError, OpenCodeSourceMismatchError, OpenCodeQueuedHandoffProtocolError, isQueuedHandoffAdmission, normalizeMessage, type OpenCodeAdapter } from "./opencode";
+import { OpenCodeCommandProtocolError, OpenCodeError, OpenCodeSourceMismatchError, OpenCodeQueuedHandoffProtocolError, OpenCodeUnavailableError, isQueuedHandoffAdmission, normalizeMessage, type NativeCommandObservation, type NativeCommandSnapshot, type OpenCodeAdapter } from "./opencode";
 import type { RunOwner } from "./run-owner";
 import type { ExecutionContext } from "./workstreams";
 import { saneSessionMessageId, snapshotIdentity } from "./agent-launch";
 import { nativeAgentId } from "sane-core/agent-catalog";
 import type { DispatchIdentity } from "../shared/conversation/dispatch-contract";
+import { verifyOpenCodeCompletion, type OperatorCompletionEvidence } from "./opencode-completion-recovery";
 
 /** Private App recovery capability; no Run synthesis or submission hooks. */
 export type OpenCodeRecoveryObservation = Readonly<{
@@ -19,7 +20,7 @@ export type OpenCodeRecoveryObservation = Readonly<{
 }>;
 
 /** Native transport only; owner arbitration and durable writes remain in the bridge. */
-export type OpenCodeRunAdapter = Pick<OpenCodeAdapter, "assertIdle" | "select" | "prompt" | "snapshot" | "interactions" | "compact" | "compactionSnapshot" | "activity" | "cancel"> & Partial<Pick<OpenCodeAdapter, "promptQueuedHandoff" | "preflightNativeSession" | "deliverSaneSession" | "bindSaneSession" | "boundSaneSession" | "cancelInput">>;
+export type OpenCodeRunAdapter = Pick<OpenCodeAdapter, "assertIdle" | "select" | "prompt" | "snapshot" | "interactions" | "compact" | "compactionSnapshot" | "activity" | "cancel"> & Partial<Pick<OpenCodeAdapter, "history" | "observeCommand" | "promptQueuedHandoff" | "preflightNativeSession" | "deliverSaneSession" | "bindSaneSession" | "boundSaneSession" | "cancelInput">>;
 export type OpenCodeRunDependencies = {
   oc: OpenCodeRunAdapter;
   closing: () => boolean;
@@ -38,12 +39,19 @@ export type OpenCodeRunDependencies = {
   refreshCompactHistory: (owner: RunOwner) => Promise<void>;
   assertWorkerDeliverySubmission: (owner: RunOwner) => void;
   workerHasRun: (runId: string) => boolean;
+  /** Operator verification requires literal inbox emptiness, including startup synthetics. */
+  completionInboxEmpty?: (nativeSessionId: string) => Promise<boolean>;
   /** The startup SANE Session block from current membership, or null. */
   saneSession: (sessionId: string) => Promise<string | null>;
   sleep: (ms: number) => Promise<unknown>;
 };
 
 export type FrameworkDelivery = { messageId: string; sha256: string; chars: number };
+export type VerifyCompletionRequest = { requestId: string; nativeSessionId: string; nativeCommandId: string; confirm: true; reason: string };
+export type CompletionReconciliationEvidence = VerifyCompletionRequest & {
+  type: "completion-reconciliation"; proofKind: "operator-verified"; sessionId: string; runId: string;
+  authorityId: string | null; cwd: string; native: OperatorCompletionEvidence;
+};
 const compactCommand = (text: string) => /^\s*\/compact(?:\s|$)/i.test(text);
 const record = (value: unknown): value is Record<string, unknown> => value !== null && typeof value === "object";
 const configuration = (value: Session) => JSON.stringify([value.sessionId, value.harness, value.authorityId, value.nativeSessionId, value.cwd,
@@ -62,23 +70,115 @@ export class OpenCodeRunService {
   // Observation pins only, not an admission/token or ownership registry. The
   // bridge's real claim gate and durable dispatch evidence remain mandatory.
   private readonly handoffPins = new WeakMap<RunOwner, HandoffPins>();
-  private readonly pendingCancellations = new WeakMap<RunOwner, Readonly<{ pins: HandoffPins; proof: Extract<OpenCodePendingCancellation, { ready: true }> }>>();
+  private readonly completionChecks = new Set<string>();
   constructor(private readonly deps: OpenCodeRunDependencies) {}
-  /** Process-only receipt for the ORIGINAL live owner. Neither cloned DTOs,
-   * terminal Run metadata nor absent native history can reconstruct it. */
-  readPendingCancellation(owner: RunOwner): OpenCodePendingCancellation {
-    const original = this.pendingCancellations.get(owner);
-    if (!original || this.deps.closing() || this.deps.storageFailed() || this.handoffUnsafe(owner)
-      || this.handoffPins.get(owner) !== original.pins || owner.run !== original.pins.run
-      || this.deps.currentOwner(original.pins.sessionId) && this.deps.currentOwner(original.pins.sessionId) !== owner) return { ready: false };
-    try { if (this.assertHandoff(owner) !== original.pins) return { ready: false }; }
-    catch { return { ready: false }; }
-    return original.proof;
+  /** Explicit operator repair only. This evidence never certifies automatic continuation. */
+  async verifyCompletion(run: Run, request: VerifyCompletionRequest, assertScope: () => void = () => {}): Promise<{ status: Status; evidence: CompletionReconciliationEvidence }> {
+    if (!record(request) || request.confirm !== true || typeof request.requestId !== "string"
+      || !/^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/i.test(request.requestId)
+      || typeof request.reason !== "string" || !request.reason.trim() || request.reason.length > 4000
+      || typeof request.nativeSessionId !== "string" || typeof request.nativeCommandId !== "string") throw new OpenCodeError("Explicit confirmation, UUID requestId, pinned native IDs and reason are required", 400);
+    if (this.completionChecks.has(run.runId)) throw new OpenCodeError("Completion verification is already in progress", 409);
+    this.completionChecks.add(run.runId);
+    try {
+      const session = this.deps.session(run.sessionId), owner = this.deps.currentOwner(run.sessionId);
+      const source = configuration(session), runSource = runConfiguration(run), cwd = run.cwd, commandId = run.nativeCommandId, runId = run.runId, sessionId = run.sessionId;
+      const validate = (live = true) => {
+        assertScope();
+        if (this.deps.closing() || this.deps.storageFailed()) throw new OpenCodeError("Completion verification storage unavailable", 503);
+        if (run.runId !== runId || run.sessionId !== sessionId || this.deps.session(run.sessionId) !== session || configuration(session) !== source || runConfiguration(run) !== runSource
+          || run.cwd !== cwd || run.nativeCommandId !== commandId || session.harness !== "opencode" || session.cwd !== cwd
+          || session.nativeSessionId !== request.nativeSessionId || commandId !== request.nativeCommandId
+          || run.operation === "compact" || session.agentKind === "worker" || run.agentKind === "worker"
+          || this.deps.workerHasRun(run.runId) || run.nativeDelivery === "queue") throw new OpenCodeError("Completion verification source or run is ineligible", 409);
+        if (live && (!owner || this.deps.currentOwner(run.sessionId) !== owner || owner.run !== run || !owner.native || owner.settled
+          || owner.cancelling || owner.stopping || owner.workerDeliveryId || owner.nativeQueuedHandoff || owner.nativeDeliveryPolicy === "native-queued-handoff"
+          || run.status !== "running" || session.lastRunId !== run.runId)) throw new OpenCodeError("Completion verification requires the original live prompt owner", 409);
+      };
+      validate(false);
+      const audits = this.deps.events(run.runId).filter(event => event.kind === "context" && record(event.data) && event.data.type === "completion-reconciliation");
+      const prior = audits.at(-1)?.data as CompletionReconciliationEvidence | undefined;
+      if (prior && (prior.requestId !== request.requestId || prior.reason !== request.reason || prior.nativeSessionId !== request.nativeSessionId
+        || prior.nativeCommandId !== request.nativeCommandId || prior.authorityId !== (session.authorityId ?? null) || prior.cwd !== cwd
+        || prior.sessionId !== run.sessionId || prior.runId !== run.runId || prior.proofKind !== "operator-verified")) throw new OpenCodeError("Conflicting completion reconciliation request", 409);
+      if (run.status !== "running") {
+        if (!prior) throw new OpenCodeError("Terminal run has no matching operator reconciliation", 409);
+        if (run.status !== (prior.native.outcome === "succeeded" ? "completed" : prior.native.outcome)) throw new OpenCodeError("Terminal status conflicts with the audited reconciliation", 409);
+        if (owner?.run === run) {
+          await owner.completionTerminalization?.done;
+          await owner.done;
+          validate(false);
+          if (this.deps.currentOwner(run.sessionId) === owner) throw new OpenCodeError("Completion ownership release remains unconfirmed", 409);
+        }
+        return { status: run.status, evidence: prior };
+      }
+      validate();
+      if (!this.deps.events(run.runId).some(event => event.kind === "status" && record(event.data) && event.data.completionBoundary)) throw new OpenCodeError("Run has no unresolved completion boundary", 409);
+      const history = this.deps.oc.history;
+      if (!history || !this.deps.completionInboxEmpty) throw new OpenCodeError("Full native history or raw inbox verification unavailable", 503);
+      const native = await verifyOpenCodeCompletion({
+        activity: async (id, directory) => {
+          validate(); const empty = await this.deps.completionInboxEmpty!(id); validate();
+          if (!empty) throw new OpenCodeError("Native inbox is not empty", 409);
+          const result = await this.deps.oc.activity(id, directory); validate(); return result;
+        },
+        history: async (id, directory) => { validate(); const result = await history.call(this.deps.oc, id, directory); validate(); return result; },
+      }, { nativeSessionId: request.nativeSessionId, commandId: request.nativeCommandId, cwd });
+      validate();
+      const evidence: CompletionReconciliationEvidence = prior ?? { ...request, type: "completion-reconciliation", proofKind: "operator-verified",
+        sessionId: run.sessionId, runId: run.runId, authorityId: session.authorityId ?? null, cwd, native };
+      if (prior && JSON.stringify([prior.native.activityDigest, prior.native.terminalMessageId, prior.native.outcome]) !== JSON.stringify([native.activityDigest, native.terminalMessageId, native.outcome])) throw new OpenCodeError("Native evidence changed since the audited reconciliation", 409);
+      if (!prior) await this.deps.emit(run, "context", evidence);
+      validate();
+      await this.deps.persist();
+      validate();
+      const status = native.outcome === "succeeded" ? "completed" : native.outcome;
+      const committed = Promise.withResolvers<void>();
+      const terminalization: NonNullable<RunOwner["completionTerminalization"]> = { done: committed.promise, state: "pending" };
+      // Install before finishNative synchronously changes the visible status.
+      owner!.completionTerminalization = terminalization;
+      // Both the operator and monitor observe failure; handle it even if the
+      // monitor is still blocked in transport when persistence rejects.
+      void committed.promise.catch(() => {});
+      try {
+        await this.finishNative(owner!, status, `Operator-verified completion: ${request.reason}`);
+        if (this.deps.storageFailed()) throw new OpenCodeError("Completion terminal persistence failed", 503);
+        terminalization.state = "committed"; committed.resolve();
+      } catch (error) {
+        terminalization.state = "failed"; committed.reject(error); throw error;
+      }
+      // The monitor joins only committed.promise, never this verification task.
+      // Its existing finalizer releases the original owner and resolves done.
+      await owner!.done;
+      validate(false);
+      if (this.deps.currentOwner(run.sessionId) === owner) throw new OpenCodeError("Completion ownership release remains unconfirmed", 409);
+      return { status, evidence };
+    } finally { this.completionChecks.delete(run.runId); }
+  }
+  private async readCommand(id: string, commandId: string, cwd: string, handoff: boolean): Promise<NativeCommandSnapshot & { observation: NativeCommandObservation }> {
+    const policy = handoff ? "native-queued-handoff" as const : undefined;
+    if (this.deps.oc.observeCommand) return this.deps.oc.observeCommand(id, commandId, cwd, policy);
+    const snapshot = await this.deps.oc.snapshot(id, commandId, cwd, policy);
+    const observation: NativeCommandObservation = snapshot.observation ?? (snapshot.pending
+      ? handoff && !isQueuedHandoffAdmission(snapshot.pendingInput, id, commandId)
+        ? { kind: "protocol-contradiction", reason: "Original pending input contradicts the strict native queue receipt protocol; operator reconciliation required; do not resend" }
+        : { kind: "pending", input: snapshot.pendingInput }
+      : snapshot.boundary ? { kind: "foreign-boundary", boundary: snapshot.boundary }
+      : snapshot.outcome === "succeeded" || snapshot.outcome === "failed" || snapshot.outcome === "interrupted"
+        ? { kind: "exact-terminal", outcome: snapshot.outcome } : { kind: "termination-uncertain" });
+    return { ...snapshot, observation };
+  }
+  /** Native has no authoritative command-scoped cancellation receipt yet.
+   * Neither DELETE acknowledgement nor absent history can release the owner. */
+  readPendingCancellation(_owner: RunOwner): OpenCodePendingCancellation {
+    // Native DELETE has no command-scoped removal receipt. Even a successful
+    // DELETE followed by exact-message 404 and inbox absence is not proof.
+    return { ready: false };
   }
   /** Bounded original-ID read / explicit Stop only. In particular, DTO Run phase
    * and committed user history cannot reconstruct a lost native queue receipt. */
-  async observeRecoveredInput(scope: OpenCodeRecoveryObservation, stop = false): Promise<{ interrupted: boolean }> {
-    const { source, nativeCommandId: commandId } = scope.identity;
+  async observeRecoveredInput(scope: OpenCodeRecoveryObservation, stop = false): Promise<{ interrupted: boolean; terminal?: { identity: DispatchIdentity; status: "completed" | "failed" | "interrupted" } }> {
+    const identity = scope.identity, { source, nativeCommandId: commandId } = identity;
     const validate = (mutation = false) => {
       if (mutation && this.deps.closing() || this.deps.storageFailed() || source.harnessId !== "opencode" || !source.nativeSessionId || !commandId)
         throw new OpenCodeError("Original native recovery observation unavailable", 503);
@@ -89,39 +189,48 @@ export class OpenCodeRunService {
     const read = async () => {
       if (this.deps.closing()) throw new OpenCodeError("Recovery read closed", 503);
       validate();
-      const snapshot = await this.deps.oc.snapshot(source.nativeSessionId!, commandId!, source.cwd, "native-queued-handoff");
+      const snapshot = await this.readCommand(source.nativeSessionId!, commandId!, source.cwd, true);
       validate();
+      if (snapshot.observation.kind === "unavailable") return snapshot;
+      if (snapshot.observation.kind === "protocol-contradiction") {
+        await scope.protocolMismatch(snapshot.observation.reason);
+        validate(); return snapshot;
+      }
       const pending = snapshot.pendingInput;
       if (pending !== undefined && pending !== null && !isQueuedHandoffAdmission(pending, source.nativeSessionId!, commandId!)) {
         await scope.protocolMismatch("Original pending input contradicts the strict native queue receipt protocol; operator reconciliation required; do not resend");
         validate();
       }
-      if (!scope.protocolUnsafe() && snapshot.pending && isQueuedHandoffAdmission(pending, source.nativeSessionId!, commandId!)) scope.outcome();
+      if (!scope.protocolUnsafe() && !scope.accepted() && snapshot.pending && isQueuedHandoffAdmission(pending, source.nativeSessionId!, commandId!)) scope.outcome();
       validate(); return snapshot;
     };
     let snapshot = await read();
+    const terminal = () => {
+      validate();
+      if (this.deps.closing() || scope.protocolUnsafe() || !scope.accepted() || snapshot.pending || snapshot.boundary
+        || snapshot.observation.kind !== "exact-terminal"
+        || !snapshot.messages.some(message => message.id === commandId && message.type === "user")) return;
+      return { identity, status: snapshot.observation.outcome === "succeeded" ? "completed" as const : snapshot.observation.outcome };
+    };
     // Conservatively refuse even exact pending DELETE under the unsafe overlay.
     // Historical acceptance is retained, but cannot authorize any native effect.
-    if (!stop || this.deps.closing() || snapshot.outcome || scope.protocolUnsafe()) return { interrupted: false };
+    if (!stop || this.deps.closing() || snapshot.observation.kind === "exact-terminal" || snapshot.observation.kind === "unavailable" || snapshot.observation.kind === "protocol-contradiction" || scope.protocolUnsafe()) {
+      const proof = terminal();
+      return { interrupted: false, ...(proof ? { terminal: proof } : {}) };
+    }
     if (snapshot.pending) {
       if (!isQueuedHandoffAdmission(snapshot.pendingInput, source.nativeSessionId!, commandId!) || !this.deps.oc.cancelInput) return { interrupted: false };
-      const canceled = await this.deps.oc.cancelInput(source.nativeSessionId!, commandId!, () => validate(true));
+      try { await this.deps.oc.cancelInput(source.nativeSessionId!, commandId!, () => validate(true), "native-queued-handoff"); }
+      catch (error) {
+        if (!(error instanceof OpenCodeCommandProtocolError)) throw error;
+        await scope.protocolMismatch(error.message); validate(); return { interrupted: false };
+      }
       validate(true);
-      if (canceled) return { interrupted: true };
+      // A transport boolean is not a native cancellation receipt.
       snapshot = await read();
     }
-    if (scope.protocolUnsafe() || snapshot.pending || snapshot.outcome || snapshot.boundary || snapshot.currentInputId !== commandId || !scope.accepted()
-      || !snapshot.messages.some(message => message.id === commandId && message.type === "user")) return { interrupted: false };
-    const activity = await this.deps.oc.activity(source.nativeSessionId!, source.cwd);
-    validate();
-    if (scope.protocolUnsafe() || !activity.active || activity.pending) return { interrupted: false };
-    snapshot = await read();
-    if (scope.protocolUnsafe() || snapshot.pending || snapshot.outcome || snapshot.boundary || snapshot.currentInputId !== commandId || !scope.accepted()
-      || !snapshot.messages.some(message => message.id === commandId && message.type === "user")) return { interrupted: false };
-    // Session-wide interrupt still has the existing same-session foreign-activity
-    // race. This read grants neither native exclusivity nor a release proof.
-    const interrupted = await this.deps.oc.cancel(source.nativeSessionId!, () => validate(true));
-    validate(true); return interrupted;
+    const proof = terminal();
+    return { interrupted: false, ...(proof ? { terminal: proof } : {}) };
   }
   private currentNative(owner: RunOwner) {
     return !this.deps.closing() && !this.deps.storageFailed() && owner.run.status === "running" && this.deps.currentOwner(owner.run.sessionId) === owner;
@@ -204,23 +313,21 @@ export class OpenCodeRunService {
     for (const event of this.deps.events(run.runId)) if (event.kind === "status" && record(event.data) && "completionBoundary" in event.data) {
       lastBoundary = event.data.completionBoundary ? JSON.stringify(event.data.completionBoundary) : "";
     }
+    try {
     while (!this.deps.closing() && !this.deps.storageFailed() && run.status === "running") {
       try {
         if (!current()) break;
         const pins = this.handoffPins.get(owner);
         const nativeSessionId = pins?.nativeSessionId ?? session.nativeSessionId!, commandId = pins?.commandId ?? run.nativeCommandId!;
-        const snapshot = handoff ? await this.deps.oc.snapshot(nativeSessionId, commandId, pins!.cwd, "native-queued-handoff") : await this.deps.oc.snapshot(session.nativeSessionId!, run.nativeCommandId!, session.cwd);
+        const snapshot = await this.readCommand(nativeSessionId, commandId, pins?.cwd ?? session.cwd, handoff);
         if (!current()) break;
+        if (snapshot.observation.kind === "unavailable") throw new OpenCodeUnavailableError(snapshot.observation.reason);
         if (run.nativeDelivery === "queue" && (owner.cancelling || handoff && owner.stopping)) { await this.deps.sleep(1000); continue; }
         const exactUser = snapshot.messages.some(m => m.id === commandId && m.type === "user");
         const pending = snapshot.pendingInput;
-        if (handoff && record(pending) && (pending.id !== commandId
-          || pending.sessionID !== undefined && pending.sessionID !== nativeSessionId
-          || pending.type !== undefined && pending.type !== "user" || pending.delivery !== undefined && pending.delivery !== "queue")) {
-          await this.reportHandoffMismatch(owner, "Exact pending input contradicts native queued handoff policy; operator reconciliation required; do not resend");
-        }
+        if (handoff && snapshot.observation.kind === "protocol-contradiction") await this.reportHandoffMismatch(owner, snapshot.observation.reason);
         if (!current()) break;
-        const accepted = handoff ? !this.handoffUnsafe(owner) && snapshot.pending && isQueuedHandoffAdmission(pending, nativeSessionId, commandId) : exactUser;
+        const accepted = handoff ? !this.handoffUnsafe(owner) && snapshot.observation.kind === "pending" && isQueuedHandoffAdmission(pending, nativeSessionId, commandId) : exactUser;
         if (!acceptanceReported && accepted) {
           owner.dispatchEvidence?.outcome("submitted", "accepted");
           if (!current()) break;
@@ -246,13 +353,14 @@ export class OpenCodeRunService {
         if (lastError && (snapshot.messages.length || snapshot.pending)) { await this.deps.emit(run, "status", { status: "running", connection: "connected", reason: "Native state reconnected" }); lastError = ""; }
         if (!current()) break;
         if (handoff && (owner.cancelling || owner.stopping)) { await this.deps.sleep(1000); continue; }
-        if ((!handoff || acceptanceReported && !this.handoffUnsafe(owner) && exactUser && !snapshot.pending && !snapshot.boundary) && (snapshot.outcome === "succeeded" || snapshot.outcome === "failed" || snapshot.outcome === "interrupted")) {
-          await this.finishNative(owner, snapshot.outcome === "succeeded" ? "completed" : snapshot.outcome); break;
+        if (snapshot.observation.kind === "exact-terminal" && (!handoff || acceptanceReported && !this.handoffUnsafe(owner) && exactUser)) {
+          await this.finishNative(owner, snapshot.observation.outcome === "succeeded" ? "completed" : snapshot.observation.outcome); break;
         }
-        const boundary = snapshot.boundary ? JSON.stringify(snapshot.boundary) : "";
+        const observedBoundary = snapshot.observation.kind === "foreign-boundary" ? snapshot.observation.boundary : undefined;
+        const boundary = observedBoundary ? JSON.stringify(observedBoundary) : "";
         if (lastBoundary !== boundary) {
-          await this.deps.emit(run, "status", { status: "running", completionBoundary: snapshot.boundary ?? null,
-            ...(snapshot.boundary ? { reason: `A later ${snapshot.boundary.type} message prevents attributing completion to this command; retaining ownership without resending` } : {}) });
+          await this.deps.emit(run, "status", { status: "running", completionBoundary: observedBoundary ?? null,
+            ...(observedBoundary ? { reason: `A later ${observedBoundary.type} message prevents attributing completion to this command; retaining ownership without resending` } : {}) });
           lastBoundary = boundary;
         }
         if (!current()) break;
@@ -269,9 +377,15 @@ export class OpenCodeRunService {
       } catch (error) {
         if (!this.currentNative(owner)) break;
         const reason = error instanceof Error ? error.message : "Native reconciliation unavailable";
-        if (lastError !== reason) { await this.deps.emit(run, "status", { status: "running", connection: "unavailable", reason }); lastError = reason; }
+        if (handoff && error instanceof OpenCodeCommandProtocolError) await this.reportHandoffMismatch(owner, reason);
+        if (lastError !== reason) { await this.deps.emit(run, "status", { status: "running", connection: error instanceof OpenCodeError && !(error instanceof OpenCodeUnavailableError) ? "unconfirmed" : "unavailable", reason }); lastError = reason; }
       }
       await this.deps.sleep(1000);
+    }
+    } finally {
+      // A concurrent operator may have made status terminal before its journal
+      // and metadata writes complete. Lifecycle finalizers must join durability.
+      await owner.completionTerminalization?.done;
     }
   }
   async monitorNativeCompact(owner: RunOwner) {
@@ -537,49 +651,32 @@ export class OpenCodeRunService {
     if (checkOwner && this.deps.currentOwner(owner.run.sessionId) !== owner || owner.run.status !== "running") return { interrupted: false };
     if (queued) {
       if (!this.currentNative(owner) || owner.workerDeliveryId) return { interrupted: false };
-      let snapshot = await this.deps.oc.snapshot(nativeSessionId, commandId, cwd, pins ? "native-queued-handoff" : undefined);
-      if (!cancellationCurrent() || snapshot.outcome) return { interrupted: false };
+      const snapshot = await this.readCommand(nativeSessionId, commandId, cwd, !!pins);
+      if (!cancellationCurrent() || snapshot.observation.kind === "exact-terminal" || snapshot.observation.kind === "unavailable") return { interrupted: false };
+      if (pins && snapshot.observation.kind === "protocol-contradiction") {
+        await this.reportHandoffMismatch(owner, snapshot.observation.reason);
+        return { interrupted: false };
+      }
       if (snapshot.pending) {
         if (!this.deps.oc.cancelInput) return { interrupted: false };
         // Pinned handoffs require the strict original receipt before any DELETE.
         // Legacy deletion stays separate and cannot support live release proof.
         if (pins && !isQueuedHandoffAdmission(snapshot.pendingInput, nativeSessionId, commandId)) return { interrupted: false };
-        const receipt = pins && !this.handoffUnsafe(owner) && isQueuedHandoffAdmission(snapshot.pendingInput, nativeSessionId, commandId)
-          ? Object.freeze({ createdAt: snapshot.pendingInput.time.created }) : undefined;
-        let proofSafe = !!receipt;
-        const canceled = await this.deps.oc.cancelInput(nativeSessionId, commandId, () => {
+        try { await this.deps.oc.cancelInput(nativeSessionId, commandId, () => {
           if (!this.currentNative(owner)) throw new Error("Queued input cancellation withheld after ownership changed");
           assertCancellation();
-          if (pins && this.handoffUnsafe(owner)) proofSafe = false;
-        });
-        if (!cancellationCurrent()) return { interrupted: false };
-        if (canceled === true) {
-          const canceledAt = Date.now();
-          await this.finishNative(owner, "interrupted", "Explicitly canceled queued native input before consumption");
-          // Publish only after terminal metadata writes succeed. Storage health,
-          // source/configuration and original object pins are refreshed on read.
-          if (pins && receipt && proofSafe && !this.deps.storageFailed() && !this.deps.closing()
-            && !this.handoffUnsafe(owner) && owner.run === run && this.deps.currentOwner(sessionId) === owner
-            && this.assertHandoff(owner) === pins) {
-            const claim = owner.nativeQueuedHandoff!;
-            const evidence = Object.freeze({ source: Object.freeze({ ...claim.source }), runId: pins.runId,
-              nativeCommandId: pins.commandId, requestId: claim.requestId, pendingCreatedAt: receipt.createdAt, canceledAt });
-            this.pendingCancellations.set(owner, Object.freeze({ pins, proof: Object.freeze({ ready: true, kind: "pending-removed", evidence }) }));
-          }
-          return { interrupted: true };
+        }, pins ? "native-queued-handoff" : undefined); }
+        catch (error) {
+          if (!pins || !(error instanceof OpenCodeCommandProtocolError)) throw error;
+          await this.reportHandoffMismatch(owner, error.message);
+          return { interrupted: false };
         }
-        snapshot = await this.deps.oc.snapshot(nativeSessionId, commandId, cwd, pins ? "native-queued-handoff" : undefined);
-        if (!cancellationCurrent() || snapshot.outcome) return { interrupted: false };
+        if (!cancellationCurrent()) return { interrupted: false };
+        // No verified command-scoped cancellation receipt: keep the owner even
+        // if the adapter reports removal. The monitor observes exact terminal
+        // history independently; absence alone cannot settle this run.
       }
-      if (snapshot.pending || snapshot.currentInputId !== commandId || !snapshot.messages.some(message => message.id === commandId && message.type === "user")) return { interrupted: false };
-      if (pins && this.handoffUnsafe(owner)) return { interrupted: false };
-      // Native interrupt is session-wide, not atomic with this current-input read.
-      // Consumption/new foreign activity can still race this explicit Stop.
-      const interrupted = await this.deps.oc.cancel(nativeSessionId, () => {
-        if (!this.currentNative(owner)) throw new Error("Native prompt interruption withheld after ownership changed");
-        assertCancellation();
-      });
-      return cancellationCurrent() ? interrupted : { interrupted: false };
+      return { interrupted: false };
     }
     return this.deps.oc.cancel(this.deps.session(owner.run.sessionId).nativeSessionId!);
   }

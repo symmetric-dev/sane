@@ -7,12 +7,16 @@ import type { ReconciledHistory } from "./reconcile";
 
 type Observation = ReconciledHistory & { observation: true };
 type Activity = Awaited<ReturnType<OpenCodeAdapter["activity"]>>;
+type ObservedMessage = {
+  id: string; type: string; createdAt: number; unfinished: boolean;
+  snapshot?: MessageSnapshot;
+};
 type Cached = {
   identity: string; nativeCreatedAt: number; revert: string; checkedAt: number;
-  rawMessages: NativeMessage[]; history: Observation; fingerprint: string;
+  records: ObservedMessage[]; history: Observation; fingerprint: string;
 };
 type Flight = { identity: string; value: Promise<ReconciledHistory> };
-const freshness = 1000, maxMessages = 10000, maxBytes = 16 * 1024 * 1024;
+const freshness = 1000, maxMessages = 10000;
 const record = (value: unknown): value is Record<string, unknown> => !!value && typeof value === "object" && !Array.isArray(value);
 const identity = (session: Session) => JSON.stringify([session.sessionId, session.harness, session.authorityId, session.nativeSessionId, session.cwd]);
 const invalid = (message: string): never => { throw new OpenCodeError(message); };
@@ -20,7 +24,7 @@ const timestamp = (value: unknown): value is number => typeof value === "number"
 const canonical = (value: unknown): unknown => Array.isArray(value) ? value.map(canonical) : record(value) ? Object.fromEntries(Object.keys(value).sort().map(key => [key, canonical(value[key])])) : value;
 const encoded = (value: unknown) => JSON.stringify(canonical(value));
 const unfinished = (message: NativeMessage) => message.type === "assistant"
-  ? message.time.completed === undefined || (message.content ?? []).some(part => part.type === "tool" && (part.state === undefined || ["running", "streaming"].includes(part.state.status)))
+  ? message.time.completed === undefined || !!(message.error && message.retry) || (message.content ?? []).some(part => part.type === "tool" && (part.state === undefined || ["running", "streaming"].includes(part.state.status)))
   : message.type === "compaction" && ["requested", "running"].includes(message.status ?? "");
 
 export class OpenCodeObservationService {
@@ -92,9 +96,9 @@ export class OpenCodeObservationService {
     const revert = (state: Activity) => encoded((state.session as Activity["session"] & { revert?: unknown }).revert ?? null);
     const before = await activity(), revertFingerprint = revert(before);
     if (previous && previous.nativeCreatedAt !== before.session.time.created) throw new OpenCodeError("Native observation session creation identity changed", 409);
-    const oldById = new Map(previous?.rawMessages.map(message => [message.id, message]) ?? []);
-    let readCount = 0, normalizedBytes = 0, rawReadBytes = 0;
-    const validate = (value: unknown): NativeMessage => {
+    const oldById = new Map(previous?.records.map(message => [message.id, message]) ?? []);
+    let readCount = 0;
+    const validate = (value: unknown): ObservedMessage => {
       if (!record(value) || !nativeMessageId(value.id) || typeof value.type !== "string" || !value.type || !record(value.time) || !timestamp(value.time.created)
         || value.time.completed !== undefined && (!timestamp(value.time.completed) || value.time.completed < value.time.created)
         || value.sessionID !== undefined && value.sessionID !== session.nativeSessionId) return invalid("Invalid native observation message identity or timestamp");
@@ -103,17 +107,20 @@ export class OpenCodeObservationService {
       if (value.content !== undefined && (!Array.isArray(value.content) || value.content.some(part => !record(part) || typeof part.type !== "string" || !part.type || ["id", "name", "text"].some(key => part[key] !== undefined && typeof part[key] !== "string") || part.type === "tool" && part.state !== undefined && (!record(part.state) || typeof part.state.status !== "string" || !part.state.status)))) return invalid("Invalid native observation message parts");
       if (["cost", "preTokens", "postTokens", "durationMs"].some(key => value[key] !== undefined && (typeof value[key] !== "number" || !Number.isFinite(value[key]) || (value[key] as number) < 0))) return invalid("Invalid native observation message usage");
       const message = value as NativeMessage, old = oldById.get(message.id);
-      if (old && (old.type !== message.type || old.time.created !== message.time.created)) throw new OpenCodeError("Conflicting immutable native message identity", 409);
+      // Native retries reuse an assistant ID but reset its creation timestamp.
+      // Type and non-assistant creation timestamps remain immutable identities.
+      if (old && (old.type !== message.type || message.type !== "assistant" && old.createdAt !== message.time.created)) throw new OpenCodeError("Conflicting immutable native message identity", 409);
       if (++readCount > maxMessages) return invalid("Native observation exceeds its 10,000-message read budget");
-      rawReadBytes += Buffer.byteLength(JSON.stringify(message));
-      if (rawReadBytes > maxBytes) return invalid("Native observation exceeds its 16 MiB raw read budget");
-      const normalized = normalizeMessage(message);
-      normalizedBytes += normalized ? Buffer.byteLength(JSON.stringify(normalized)) : 0;
-      if (normalizedBytes > maxBytes) return invalid("Native observation exceeds its 16 MiB normalized read budget");
-      remaining(); return message;
+      // Provider state (including encrypted reasoning) is not display history.
+      // Release it with the fetched page instead of retaining raw native payloads.
+      // TranscriptService budgets response pages and admits oversized messages
+      // individually; a cumulative byte cap here would make pagination unreachable.
+      const observed = { id: message.id, type: message.type, createdAt: message.time.created,
+        unfinished: unfinished(message), snapshot: normalizeMessage(message) };
+      remaining(); return observed;
     };
-    const latest = previous?.revert === revertFingerprint ? previous.rawMessages.at(-1)?.id : undefined;
-    const fetched = new Map<string, NativeMessage>(), descending: NativeMessage[] = [], cursors = new Set<string>();
+    const latest = previous?.revert === revertFingerprint ? previous.records.at(-1)?.id : undefined;
+    const fetched = new Map<string, string>(), descending: ObservedMessage[] = [], cursors = new Set<string>();
     let cursor: string | undefined, found = false, complete = false;
     for (let page = 0; page < 100; page++) {
       const response = await request(this.oc.path(session.nativeSessionId!) + `/message?limit=100&${cursor ? `cursor=${encodeURIComponent(cursor)}` : "order=desc"}`);
@@ -121,13 +128,14 @@ export class OpenCodeObservationService {
         || response.cursor.next !== undefined && response.cursor.next !== null && (typeof response.cursor.next !== "string" || !response.cursor.next || response.cursor.next.length > 8192)) return invalid("Unsupported native observation history page");
       for (const value of response.data) {
         const message = validate(value), duplicate = fetched.get(message.id);
+        const digest = createHash("sha256").update(encoded(value)).digest("hex");
         if (duplicate) {
-          if (encoded(duplicate) !== encoded(message)) throw new OpenCodeError("Conflicting duplicate native observation message", 409);
+          if (duplicate !== digest) throw new OpenCodeError("Conflicting duplicate native observation message", 409);
           continue;
         }
         // Native sequence order, not creation clocks, is authoritative: queued
         // inputs can be admitted before the messages that precede their delivery.
-        fetched.set(message.id, message); descending.push(message);
+        fetched.set(message.id, digest); descending.push(message);
         if (message.id === latest) found = true;
       }
       const next = response.cursor.next as string | null | undefined;
@@ -137,20 +145,20 @@ export class OpenCodeObservationService {
       cursors.add(next); cursor = next;
     }
     if (!found && !complete) return invalid("Native observation exceeds its 10,000-message page budget; no partial history published");
-    let rawMessages = descending.reverse();
+    let records = descending.reverse();
     if (found && previous && !complete) {
-      const indices = new Map(previous.rawMessages.map((message, index) => [message.id, index]));
-      let first = previous.rawMessages.length, last = -1;
-      for (const message of rawMessages) {
+      const indices = new Map(previous.records.map((message, index) => [message.id, index]));
+      let first = previous.records.length, last = -1;
+      for (const message of records) {
         const index = indices.get(message.id);
         if (index === undefined) continue;
         if (index <= last) throw new OpenCodeError("Native observation overlap order changed", 409);
         first = Math.min(first, index); last = index;
       }
-      rawMessages = [...previous.rawMessages.slice(0, first), ...rawMessages];
+      records = [...previous.records.slice(0, first), ...records];
     }
-    const refresh = rawMessages.filter(message => !fetched.has(message.id) && unfinished(message));
-    const replacements = new Map<string, NativeMessage>();
+    const refresh = records.filter(message => !fetched.has(message.id) && message.unfinished);
+    const replacements = new Map<string, ObservedMessage>();
     for (let offset = 0; offset < refresh.length; offset += 8) {
       const batch = await Promise.all(refresh.slice(offset, offset + 8).map(async message => {
         const response = await request(this.oc.path(session.nativeSessionId!) + `/message/${encodeURIComponent(message.id)}`);
@@ -161,30 +169,29 @@ export class OpenCodeObservationService {
       }));
       for (const message of batch) replacements.set(message.id, message);
     }
-    rawMessages = rawMessages.map(message => replacements.get(message.id) ?? message);
-    if (rawMessages.length > maxMessages) return invalid("Native observation history exceeds 10,000 messages");
+    records = records.map(message => replacements.get(message.id) ?? message);
+    if (records.length > maxMessages) return invalid("Native observation history exceeds 10,000 messages");
     const messages: MessageSnapshot[] = [], ids = new Set<string>();
-    let projectionSize = 2, rawSize = 2;
-    for (const message of rawMessages) {
+    for (const message of records) {
       if (ids.has(message.id)) throw new OpenCodeError("Duplicate native observation history identity", 409);
       ids.add(message.id);
-      rawSize += Buffer.byteLength(JSON.stringify(message)) + 1;
-      if (rawSize > maxBytes) return invalid("Native observation history exceeds its 16 MiB raw budget");
-      const normalized = normalizeMessage(message);
-      if (normalized) { messages.push(normalized); projectionSize += Buffer.byteLength(JSON.stringify(normalized)) + 1; }
-      if (projectionSize > maxBytes) return invalid("Native observation history exceeds its 16 MiB normalized budget");
+      if (message.snapshot) messages.push(message.snapshot);
       remaining();
     }
     const after = await activity();
     if (before.session.time.created !== after.session.time.created || revert(after) !== revertFingerprint) throw new OpenCodeError("Native observation session identity or revert changed during the read", 409);
     const observedActivity = after.active || after.pending ? "active" as const : "idle" as const;
-    const fingerprint = createHash("sha256").update(encoded([messages, observedActivity])).digest("hex");
+    // Hash one message at a time rather than allocating another full-history JSON
+    // string. Newlines delimit JSON values (embedded newlines are escaped).
+    const fingerprintHash = createHash("sha256");
+    for (const message of messages) { fingerprintHash.update(encoded(message)).update("\n"); remaining(); }
+    const fingerprint = fingerprintHash.update(observedActivity).digest("hex");
     remaining();
     const history: Observation = previous?.fingerprint === fingerprint ? previous.history : {
       sessionId: session.sessionId, nativeSessionId: session.nativeSessionId!, importedAt: new Date().toISOString(),
       messages, activity: observedActivity, coveredRunIds: [], observation: true,
       reason: "Live read-only native observation; not persisted reconciliation or command ownership evidence",
     };
-    return { identity: signature, nativeCreatedAt: after.session.time.created, revert: revertFingerprint, checkedAt: Date.now(), rawMessages, history, fingerprint };
+    return { identity: signature, nativeCreatedAt: after.session.time.created, revert: revertFingerprint, checkedAt: Date.now(), records, history, fingerprint };
   }
 }

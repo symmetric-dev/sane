@@ -36,4 +36,7 @@ export type RunOwner = {
   cancelling?: boolean;
   stopRequested?: boolean;
   submission?: Promise<unknown>;
+  /** Ephemeral operator terminalization fence. Never persisted on Run. Failed
+   * durability retains ownership even when a lifecycle finalizer executes. */
+  completionTerminalization?: { done: Promise<void>; state: "pending" | "committed" | "failed" };
 };

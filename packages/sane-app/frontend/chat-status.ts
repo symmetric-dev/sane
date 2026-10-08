@@ -1,8 +1,8 @@
-import { store, type State } from "./store";
-import { active } from "./types";
+import { completionVerificationTarget, store, type State } from "./store";
+import { active, type CompletionVerificationTarget } from "./types";
 import { pendingInteractions } from "./interaction-presentation";
 
-export type ChatStatus = { id: string; text: string; detail?: string; busy?: boolean; action?: "reconnect" | "models"; priority?: number; observedAt?: string; startedAt?: string };
+export type ChatStatus = { id: string; text: string; detail?: string; busy?: boolean; action?: "reconnect" | "models" | "verify-completion"; verificationTarget?: CompletionVerificationTarget; priority?: number; observedAt?: string; startedAt?: string };
 export type ChatStatusContext = { workspaceReady: boolean; handoffLoading?: boolean; handoffError?: string; workerError?: string; nativeSubagentLoading?: boolean };
 
 const priorities: Record<string, number> = {
@@ -37,6 +37,13 @@ export function chatStatuses(state: State, context: ChatStatusContext): ChatStat
     && !state.messages.some(message => message.id === latestRun.nativeCommandId && message.normalized);
   const nativeIssue = [...state.runs].reverse().find(run => active(run.status) && run.nativeConnection && run.nativeConnection !== "connected");
   const completionBoundary = [...state.runs].reverse().find(run => active(run.status) && run.nativeCompletionBoundary)?.nativeCompletionBoundary;
+  // Retry metadata remains useful on historical failures. Only the current,
+  // running message in an active turn establishes live model recovery.
+  const latestMessage = state.messages.at(-1);
+  const liveRetry = state.connected && !nativeIssue && !completionBoundary
+    && latestMessage?.normalized && latestMessage.role === "assistant" && latestMessage.status === "running"
+    && (nativeContinuing || latestMessage.runId === latestRun?.id && active(latestRun?.status ?? "completed"))
+    ? latestMessage.retry : undefined;
   const compacting = state.compactions?.some(record => record.lifecycle === "running");
   const pendingCompact = state.pendingCompacts?.[state.selected];
   const queuedFollowup = conversation?.queuedFollowups?.find(receipt => receipt.state === "queued" && receipt.sessionId === state.selected);
@@ -54,13 +61,14 @@ export function chatStatuses(state: State, context: ChatStatusContext): ChatStat
   if (state.pageBusy) add("history-page", "Loading conversation history…", undefined, true);
   if (activity?.phase === "refreshing" || state.transcriptRefreshing) add("history-refresh", "Refreshing conversation history…", undefined, true, undefined, { observedAt: activity?.observedAt });
   if (state.availability.nativeQueue) add("native-queue", "OpenCode is continuing in the background…", "OpenCode is continuing in the background. Your next message will be queued for it.", true);
-  if (running || compacting) {
+  if (running || compacting || liveRetry) {
     if (state.connectionError) add("run", "Run status unknown", "The connection is unavailable. The assistant may still be running.", false, undefined, { priority: 90 });
     else if (activity?.phase === "unconfirmed") add("run", "Run state needs verification", "Process ownership or termination is unconfirmed. Check the original run before sending again.", false, undefined, { priority: 90 });
     else if (!state.connected && !activity) add("run", "Checking run status…", "Loading the current execution state. Previously recorded activity is not confirmation that the assistant is still running.", true);
     else if (activity?.phase === "stopping") add("run", "Stopping run…", "Stop was requested. Waiting for process termination to be confirmed.", true);
     else if (activity?.phase === "finishing") add("run", "Finishing run…", "The CLI is ending. Sending unlocks after output and storage finish settling.", true);
     else if (compacting) add("run", "Compacting context…", undefined, true);
+    else if (liveRetry) add("run", "Retrying model connection", `Native retry attempt ${liveRetry.attempt}. Waiting for the model connection to recover.`, true);
     else if (nativeContinuing) add("run", "OpenCode is continuing after background work…", "OpenCode is continuing after background work; live output appears here. To stop this continuation, use the native OpenCode harness.", true);
     else if (latestRun?.operation === "compact") add("run", "Waiting for compaction to settle…", "Waiting for the compaction run’s native state to settle.", true);
     else if (nativeIssue) add("run", "Assistant connection unavailable", nativeIssue.nativeReason || "Assistant connection unavailable; execution state remains unconfirmed.", false, undefined, { priority: 90 });
@@ -72,6 +80,8 @@ export function chatStatuses(state: State, context: ChatStatusContext): ChatStat
     else add("run", "Assistant is working…", "New output will appear in the conversation.", true);
     const runStatus = statuses.find(status => status.id === "run");
     if (runStatus) {
+      const target = completionVerificationTarget(state);
+      if (target) { runStatus.action = "verify-completion"; runStatus.verificationTarget = target; }
       runStatus.observedAt = activity?.observedAt;
       runStatus.startedAt = activity?.startedAt ?? (active(latestRun?.status ?? "completed") ? latestRun?.createdAt : undefined);
     }

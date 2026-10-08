@@ -1,5 +1,5 @@
 import { expect, spyOn, test } from "bun:test";
-import { isQueuedHandoffAdmission, OpenCodeAdapter, OpenCodeError, OpenCodeQueuedHandoffProtocolError, OpenCodeSourceMismatchError, OpenCodeUnavailableError, type NativeMessage } from "./opencode";
+import { isQueuedHandoffAdmission, OpenCodeAdapter, OpenCodeCommandProtocolError, OpenCodeError, OpenCodeQueuedHandoffProtocolError, OpenCodeSourceMismatchError, OpenCodeUnavailableError, type NativeMessage } from "./opencode";
 import { createDispatchEvidence } from "./dispatch-evidence";
 import { createOpenCodeDispatchAdapter, DispatchProofUnavailableError, HarnessDispatchRegistry, type DispatchLifecycleHooks } from "./harness-dispatch";
 import type { DispatchSource } from "../shared/conversation/dispatch-contract";
@@ -82,6 +82,79 @@ test("handoff pending projection preserves exact source, actual delivery, time a
   expect(inbox).toEqual(before); expect(historyReads).toBe(0);
 });
 
+for (const phase of ["initial", "after history"] as const) for (const defect of ["malformed", "duplicate"] as const) {
+  test(`strict snapshot refuses ${defect} inbox entry ${phase}`, async () => {
+    const adapter = new OpenCodeAdapter("http://127.0.0.1:1"); let reads = 0;
+    adapter.request = async <T>(path: string): Promise<T> => {
+      if (path.endsWith("/inbox")) {
+        const current = ++reads === (phase === "initial" ? 1 : 2);
+        const exact = { id: "msg_app", sessionID: "ses_fixture", type: "user", delivery: "queue", time: { created: 8 } };
+        return { data: current ? [exact, defect === "malformed" ? { id: 7 } : { ...exact }] : [] } as T;
+      }
+      if (path.includes("/message?")) return { data: [message("msg_app", "user"), message("idle_app", "idle", "succeeded")].reverse(), cursor: {} } as T;
+      if (path.endsWith("/active")) return { data: {} } as T;
+      return { data: { id: "ses_fixture", location: { directory: "/fixture" }, time: { created: 0, updated: 4 } } } as T;
+    };
+    await expect(adapter.snapshot("ses_fixture", "msg_app", "/fixture", "native-queued-handoff")).rejects.toBeInstanceOf(OpenCodeCommandProtocolError);
+    expect(reads).toBe(phase === "initial" ? 1 : 2);
+    reads = 0;
+    expect((await adapter.observeCommand("ses_fixture", "msg_app", "/fixture", "native-queued-handoff")).observation.kind).toBe("protocol-contradiction");
+  });
+}
+
+for (const placement of ["same page", "older page"] as const) test(`duplicate exact command on ${placement} cannot prove a terminal`, async () => {
+  const adapter = new OpenCodeAdapter("http://127.0.0.1:1"); const pages: string[] = [];
+  const newer = [message("idle_app", "idle", "succeeded"), message("msg_app", "user")];
+  adapter.request = async <T>(path: string): Promise<T> => {
+    if (path.includes("/message?")) {
+      pages.push(path);
+      if (pages.length === 1) return { data: placement === "same page" ? [...newer, message("msg_app", "user")] : newer,
+        cursor: placement === "same page" ? {} : { next: "older" } } as T;
+      expect(path).toContain("cursor=older");
+      return { data: [message("msg_app", "user")], cursor: {} } as T;
+    }
+    if (path.endsWith("/active")) return { data: {} } as T;
+    if (path.endsWith("/inbox")) return { data: [] } as T;
+    return { data: { id: "ses_fixture", location: { directory: "/fixture" }, time: { created: 0, updated: 4 } } } as T;
+  };
+  await expect(adapter.snapshot("ses_fixture", "msg_app", "/fixture", "native-queued-handoff")).rejects.toBeInstanceOf(OpenCodeCommandProtocolError);
+  pages.length = 0;
+  expect(await adapter.observeCommand("ses_fixture", "msg_app", "/fixture", "native-queued-handoff")).toMatchObject({
+    messages: [], pending: false, observation: { kind: "protocol-contradiction" },
+  });
+  expect(pages).toHaveLength(placement === "same page" ? 1 : 2);
+});
+
+test("exact command with older paginated history retains its terminal projection", async () => {
+  const adapter = new OpenCodeAdapter("http://127.0.0.1:1"); let pages = 0;
+  adapter.request = async <T>(path: string): Promise<T> => {
+    if (path.includes("/message?")) return ++pages === 1
+      ? { data: [message("idle_app", "idle", "succeeded"), message("msg_app", "user")], cursor: { next: "older" } } as T
+      : { data: [message("msg_previous", "user")], cursor: {} } as T;
+    if (path.endsWith("/active")) return { data: {} } as T;
+    if (path.endsWith("/inbox")) return { data: [] } as T;
+    return { data: { id: "ses_fixture", location: { directory: "/fixture" }, time: { created: 0, updated: 4 } } } as T;
+  };
+  expect(await adapter.observeCommand("ses_fixture", "msg_app", "/fixture", "native-queued-handoff")).toMatchObject({
+    messages: [message("msg_app", "user"), message("idle_app", "idle", "succeeded")], observation: { kind: "exact-terminal", outcome: "succeeded" },
+  });
+  expect(pages).toBe(2);
+});
+
+test("an exact terminal does not bypass the older history page budget", async () => {
+  const adapter = new OpenCodeAdapter("http://127.0.0.1:1"); let pages = 0;
+  adapter.request = async <T>(path: string): Promise<T> => {
+    if (path.includes("/message?")) return { data: ++pages === 1
+      ? [message("idle_app", "idle", "succeeded"), message("msg_app", "user")]
+      : [message(`msg_older_${pages}`, "assistant")], cursor: { next: `older_${pages}` } } as T;
+    if (path.endsWith("/active")) return { data: {} } as T;
+    if (path.endsWith("/inbox")) return { data: [] } as T;
+    return { data: { id: "ses_fixture", location: { directory: "/fixture" }, time: { created: 0, updated: 4 } } } as T;
+  };
+  expect((await adapter.observeCommand("ses_fixture", "msg_app", "/fixture", "native-queued-handoff")).observation.kind).toBe("unavailable");
+  expect(pages).toBe(100);
+});
+
 test("instruction discovery preserves exact handoff command while unevidenced synthetic context fences terminal attribution", async () => {
   const adapter = new OpenCodeAdapter("http://127.0.0.1:1");
   const command = message("msg_app", "user"), context = { ...message("msg_context", "synthetic"), metadata: { instruction: { paths: ["/fixture/AGENTS.md"] } } };
@@ -95,6 +168,44 @@ test("instruction discovery preserves exact handoff command while unevidenced sy
   expect((await adapter.snapshot("ses_fixture", "msg_app", "/fixture", "native-queued-handoff")).outcome).toBe("succeeded");
   history = [command, { ...context, metadata: { instruction: { paths: [] } } }, message("idle_app", "idle", "succeeded")];
   expect(await adapter.snapshot("ses_fixture", "msg_app", "/fixture", "native-queued-handoff")).toMatchObject({ outcome: undefined, boundary: { messageId: "msg_context", type: "synthetic" } });
+});
+
+test("typed command observations fence metadata-free synthetic before a later successful idle", async () => {
+  const adapter = new OpenCodeAdapter("http://127.0.0.1:1");
+  let history = [message("msg_app", "user"), message("msg_foreign", "synthetic"), message("msg_final", "assistant"), message("idle_foreign", "idle", "succeeded")];
+  adapter.request = async <T>(path: string): Promise<T> => {
+    if (path.includes("/message?")) return { data: [...history].reverse(), cursor: {} } as T;
+    if (path.endsWith("/active")) return { data: {} } as T;
+    if (path.endsWith("/inbox")) return { data: [] } as T;
+    return { data: { id: "ses_fixture", location: { directory: "/fixture" }, outcome: "succeeded", time: { created: 0, updated: 4, idle: 4 } } } as T;
+  };
+  expect((await adapter.observeCommand("ses_fixture", "msg_app", "/fixture", "native-queued-handoff")).observation).toEqual({ kind: "foreign-boundary", boundary: { messageId: "msg_foreign", type: "synthetic" } });
+  history = [message("msg_app", "user"), message("idle_app", "idle", "failed")];
+  expect((await adapter.observeCommand("ses_fixture", "msg_app", "/fixture", "native-queued-handoff")).observation).toEqual({ kind: "exact-terminal", outcome: "failed" });
+  history = [message("msg_app", "user"), message("idle_app", "idle")];
+  expect((await adapter.observeCommand("ses_fixture", "msg_app", "/fixture", "native-queued-handoff")).observation).toEqual({ kind: "termination-uncertain" });
+  history = [message("msg_app", "synthetic"), message("idle_app", "idle", "succeeded")];
+  expect((await adapter.observeCommand("ses_fixture", "msg_app", "/fixture", "native-queued-handoff")).observation).toMatchObject({ kind: "protocol-contradiction" });
+});
+
+test("typed observation distinguishes invalid original queue receipt from unavailable read", async () => {
+  const adapter = new OpenCodeAdapter("http://127.0.0.1:1");
+  adapter.request = async <T>(path: string): Promise<T> => path.endsWith("/inbox")
+    ? { data: [{ id: "msg_app", sessionID: "ses_fixture", type: "user", delivery: "steer", time: { created: 8 } }] } as T
+    : { data: { id: "ses_fixture", location: { directory: "/fixture" }, time: { created: 0, updated: 4 } } } as T;
+  expect((await adapter.observeCommand("ses_fixture", "msg_app", "/fixture", "native-queued-handoff")).observation).toMatchObject({ kind: "protocol-contradiction" });
+  adapter.request = async () => { throw new OpenCodeUnavailableError("Disconnected"); };
+  expect((await adapter.observeCommand("ses_fixture", "msg_app", "/fixture", "native-queued-handoff")).observation).toEqual({ kind: "unavailable", reason: "Disconnected" });
+});
+
+test("strict pending cancellation rechecks native queue receipt before DELETE", async () => {
+  const adapter = new OpenCodeAdapter("http://127.0.0.1:1"); let deletes = 0;
+  adapter.request = async <T>(_path: string, method = "GET"): Promise<T> => {
+    if (method === "DELETE") deletes++;
+    return { data: [{ id: "msg_app", sessionID: "ses_fixture", type: "user", delivery: "steer", time: { created: 8 } }] } as T;
+  };
+  await expect(adapter.cancelInput("ses_fixture", "msg_app", undefined, "native-queued-handoff")).rejects.toMatchObject({ status: 409 });
+  expect(deletes).toBe(0);
 });
 
 test("offline HTTP rejection preserves generic 409 but explicitly types service unavailability", async () => {

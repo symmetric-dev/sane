@@ -10,21 +10,33 @@ const isResult = (message: Message) => message.role === "assistant" && message.n
 export function claudeReplyPresentation(messages: Message[], harness: Harness): Message[] {
   if (harness !== "claude-code") return messages;
   const displayed = messages.slice();
-  let candidate: number | undefined;
+  const candidates = new Map<string, number[]>();
+  let runId: string | undefined;
   for (let index = 0; index < messages.length; index++) {
     const message = messages[index]!;
-    if (candidate !== undefined && messages[candidate]!.runId !== message.runId) candidate = undefined;
+    // Never match across runs, user turns or unloaded-history separators.
+    if (runId !== message.runId || message.role !== "assistant") candidates.clear();
+    runId = message.runId;
+    const reply = text(message);
     if (isResult(message)) {
+      // Background continuations can flush several results together, and the
+      // reducer retains them after the assistant rows. Match each echoed reply
+      // against its own preceding text, not just the last assistant message.
+      const matches = candidates.get(reply);
+      const candidate = matches?.shift();
       const previous = candidate === undefined ? undefined : messages[candidate];
-      if (previous && text(message).trim() && text(previous) === text(message)) {
+      if (previous && reply.trim()) {
         displayed[candidate!] = { ...previous,
           parts: previous.parts.filter(part => part.type === "tool" || part.type === "reasoning" && part.text.trim()),
           version: `${previous.version ?? ""}:reply-echo:${message.id}` };
       }
-      // Identical text at separate completion boundaries is still separate replies.
-      candidate = undefined;
-    } else if (message.role !== "assistant") candidate = undefined;
-    else if (text(message).trim()) candidate = message.id.startsWith(`${message.runId}:assistant:`) ? index : undefined;
+      // Consume at most one assistant row per result. Repeated result text
+      // remains separate replies; the same assistant cannot hide them all.
+      if (!matches?.length) candidates.delete(reply);
+    } else if (message.role === "assistant" && reply.trim() && message.id.startsWith(`${message.runId}:assistant:`)) {
+      const matches = candidates.get(reply) ?? [];
+      matches.push(index); candidates.set(reply, matches);
+    }
   }
   return displayed;
 }

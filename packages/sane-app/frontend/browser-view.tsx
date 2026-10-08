@@ -85,7 +85,7 @@ export function BrowserView({ active }: { active: boolean }) {
   const tab = state.tabs.find(item => item.id === state.activeId);
   const multiple = state.showAll && state.tabs.length > 1;
   return <section className="browser-view" aria-label="Workspace browser" hidden={!active} inert={!active}>
-    {!workspaceId ? <div className="browser-empty"><h2>Select a workspace</h2><p>Choose a workspace above to open and remember its browser tabs.</p></div> : !tab ? <div className="browser-empty"><FiGlobe size={32} aria-hidden="true" /><h2>A browser for this workspace</h2><p>Open a local app or Tailscale HTTPS URL. Up to four tabs can stay open.</p><button type="button" className="primary-button" onClick={() => browserTabs.add(workspaceId)}>New tab</button></div> : <>
+    {!workspaceId ? <div className="browser-empty"><h2>Select a workspace</h2><p>Choose a workspace above to open and remember its browser tabs.</p></div> : !tab ? <div className="browser-empty"><FiGlobe size={32} aria-hidden="true" /><h2>A browser for this workspace</h2><p>Open a local app or Tailscale HTTPS URL. Up to {MAX_BROWSER_TABS} tabs can stay open.</p><button type="button" className="primary-button" onClick={() => browserTabs.add(workspaceId)}>New tab</button></div> : <>
       <div className={`browser-frames${multiple ? " browser-frames-grid" : ""}`}>
         {state.tabs.map((item, index) => <BrowserFrame key={item.id} tab={item} label={browserTabLabel(item, index)} visible={multiple || item.id === tab.id} selected={item.id === tab.id} multiple={multiple} visited={visited} reload={reloads[item.id] ?? 0} select={() => browserTabs.update(workspaceId, current => ({ ...current, activeId: item.id }))} />)}
       </div>

@@ -38,7 +38,7 @@
 .interaction-composer-toolbar { display:flex; flex-shrink:0; align-items:center; justify-content:space-between; flex-wrap:wrap; gap:10px; padding:10px 16px; }
 .interaction-composer-toolbar > span { font-size:11px; color:var(--muted-foreground); }
 .interaction-composer-toolbar > div { display:flex; align-items:center; justify-content:flex-end; flex-wrap:wrap; gap:8px; margin-left:auto; }
-.interaction-composer-toolbar button { display:inline-flex; align-items:center; gap:5px; font-size:12px; padding:8px 11px; border:1px solid var(--border); border-radius:9px; background:var(--background); color:var(--foreground); }
+.interaction-composer-toolbar > div > button { display:inline-flex; align-items:center; gap:5px; font-size:12px; padding:8px 11px; border:1px solid var(--border); border-radius:9px; background:var(--background); color:var(--foreground); }
 .interaction-composer-toolbar .interaction-primary { background:var(--foreground); color:var(--background); border-color:var(--foreground); }
 .interaction-composer-toolbar .interaction-reject { color:var(--destructive); }
 .interaction-composer button:disabled { opacity:.45; cursor:not-allowed; }

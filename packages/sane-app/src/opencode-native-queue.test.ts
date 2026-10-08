@@ -1,6 +1,6 @@
 import { expect, spyOn, test } from "bun:test";
 import { validateMetadata, type Event, type Run, type Session } from "./history";
-import { OpenCodeAdapter, OpenCodeError, OpenCodeQueuedHandoffProtocolError, OpenCodeSourceMismatchError, type NativeMessage, type NativeQueuedHandoffAdmission } from "./opencode";
+import { OpenCodeAdapter, OpenCodeCommandProtocolError, OpenCodeError, OpenCodeQueuedHandoffProtocolError, OpenCodeSourceMismatchError, type NativeMessage, type NativeQueuedHandoffAdmission } from "./opencode";
 import { OpenCodeRunService, type OpenCodeRunAdapter, type OpenCodeRunDependencies } from "./opencode-run-service";
 import type { RunOwner } from "./run-owner";
 import { createDispatchEvidence } from "./dispatch-evidence";
@@ -64,7 +64,9 @@ function handoffFixture() {
 function httpFixture(history: NativeMessage[] = [], longHistory = false) {
   const adapter = new OpenCodeAdapter("http://127.0.0.1:1");
   const calls: { path: string; method: string; body?: unknown }[] = [];
-  const inbox = [{ id: "msg_foreign", sessionID: nativeId, type: "user" }, { id: commandId, sessionID: nativeId, type: "user" }, { id: "msg_compact", sessionID: nativeId, type: "compaction" }];
+  const inbox = [{ id: "msg_foreign", sessionID: nativeId, type: "user", delivery: "queue", time: { created: 1 } },
+    { id: commandId, sessionID: nativeId, type: "user", delivery: "queue", time: { created: 2 } },
+    { id: "msg_compact", sessionID: nativeId, type: "compaction", delivery: "queue", time: { created: 3 } }];
   adapter.request = async <T>(path: string, method = "GET", body?: unknown, beforeSend?: () => void): Promise<T> => {
     beforeSend?.(); calls.push({ path, method, body });
     let result: unknown;
@@ -175,18 +177,18 @@ test("disappearance from inbox without an exact command terminal boundary cannot
   expect(f.state.sleeps).toBe(3);
 });
 
-test("explicit pending cancel in long history deletes only the exact inbox user input before any pagination, never interrupts continuation", async () => {
+test("explicit pending cancel in long history requests exact deletion without terminal proof or pagination", async () => {
   const f = fixture(), http = httpFixture([], true);
   f.run.nativePhase = "accepted"; f.owner.submission = Promise.resolve(); f.owner.nativeDispatched = true;
   f.oc.snapshot = http.adapter.snapshot.bind(http.adapter); f.oc.cancelInput = http.adapter.cancelInput.bind(http.adapter); f.oc.cancel = http.adapter.cancel.bind(http.adapter);
-  expect(await f.service.interruptCurrent(f.owner)).toEqual({ interrupted: true });
+  expect(await f.service.interruptCurrent(f.owner)).toEqual({ interrupted: false });
   const deletion = http.calls.findIndex(call => call.method === "DELETE");
   expect(deletion).toBeGreaterThanOrEqual(0);
   expect(http.calls.slice(0, deletion).filter(call => call.path.includes("/message?"))).toHaveLength(0);
   expect(http.calls.filter(call => call.path.includes("/message?"))).toHaveLength(0);
   expect(http.calls.filter(call => call.method !== "GET")).toEqual([{ path: `/api/session/${nativeId}/inbox/${commandId}`, method: "DELETE", body: undefined }]);
   expect(http.inbox.map(input => input.id)).toEqual(["msg_foreign", "msg_compact"]);
-  expect(f.run.status).toBe("interrupted"); expect(f.session.lastStatus).toBe("interrupted");
+  expect(f.run.status).toBe("running"); expect(f.service.readPendingCancellation(f.owner)).toEqual({ ready: false });
 });
 
 for (const wrong of [{ type: "synthetic", sessionID: nativeId }, { type: "compaction", sessionID: nativeId }, { type: "user", sessionID: "ses_foreign" }]) {
@@ -210,6 +212,62 @@ test("cancelInput cannot claim cancellation if native consumption won the DELETE
   expect(f.calls.filter(call => call.path.includes("/message?"))).toHaveLength(0);
 });
 
+for (const phase of ["before", "after"] as const) for (const defect of ["malformed", "duplicate"] as const) {
+  test(`strict cancelInput refuses ${defect} inbox entry ${phase} DELETE`, async () => {
+    const f = httpFixture(); let reads = 0;
+    const request = f.adapter.request.bind(f.adapter);
+    f.adapter.request = async <T>(path: string, method = "GET", body?: unknown, beforeSend?: () => void): Promise<T> => {
+      const result = await request<T>(path, method, body, beforeSend);
+      if (path.endsWith("/inbox") && ++reads === (phase === "before" ? 1 : 2)) {
+        const data = (result as { data: unknown[] }).data;
+        data.push(defect === "malformed" ? { id: 7 } : { ...queueReceipt() });
+        if (defect === "duplicate" && phase === "after") data.push({ ...queueReceipt() });
+      }
+      return result;
+    };
+    await expect(f.adapter.cancelInput(nativeId, commandId, undefined, "native-queued-handoff")).rejects.toBeInstanceOf(OpenCodeCommandProtocolError);
+    expect(f.calls.filter(call => call.method === "DELETE")).toHaveLength(phase === "before" ? 0 : 1);
+    expect(f.calls.filter(call => call.path === `/api/session/${nativeId}/message/${commandId}`)).toHaveLength(phase === "before" ? 0 : 1);
+  });
+}
+
+test("strict cancelInput cannot certify valid-looking removal after DELETE and exact message 404", async () => {
+  const f = httpFixture();
+  expect(await f.adapter.cancelInput(nativeId, commandId, undefined, "native-queued-handoff")).toBe(false);
+  expect(f.calls.filter(call => call.method === "DELETE")).toHaveLength(1);
+  expect(f.inbox.some(input => input.id === commandId)).toBe(false);
+});
+
+test("strict Stop retains owner after disappearance and later exact terminal settles independently", async () => {
+  const f = handoffFixture(), history: NativeMessage[] = [], http = httpFixture(history);
+  f.run.nativePhase = "accepted"; f.owner.nativeDispatched = true; f.owner.submission = Promise.resolve(); f.owner.stopRequested = true;
+  f.oc.snapshot = http.adapter.snapshot.bind(http.adapter); f.oc.cancelInput = http.adapter.cancelInput.bind(http.adapter);
+  expect(await f.service.interruptCurrent(f.owner)).toEqual({ interrupted: false });
+  expect(f.run.status).toBe("running"); expect(f.service.readPendingCancellation(f.owner)).toEqual({ ready: false });
+  f.state.onSleep = () => { if (f.state.sleeps === 1) history.push(message(commandId), message("msg_terminal", "idle", "succeeded")); };
+  await f.service.monitorNative(f.owner);
+  expect(f.run.status).toBe("completed"); expect(f.service.readPendingCancellation(f.owner)).toEqual({ ready: false });
+});
+
+for (const defect of ["malformed", "duplicate"] as const) test(`strict Stop with ${defect} post-DELETE inbox cannot release ownership`, async () => {
+  const f = handoffFixture(), http = httpFixture(); let inboxReads = 0;
+  const request = http.adapter.request.bind(http.adapter);
+  http.adapter.request = async <T>(path: string, method = "GET", body?: unknown, beforeSend?: () => void): Promise<T> => {
+    const result = await request<T>(path, method, body, beforeSend);
+    if (path.endsWith("/inbox") && ++inboxReads === 3) {
+      const data = (result as { data: unknown[] }).data;
+      data.push(defect === "malformed" ? { id: 7 } : { ...queueReceipt() }, ...(defect === "duplicate" ? [{ ...queueReceipt() }] : []));
+    }
+    return result;
+  };
+  f.run.nativePhase = "accepted"; f.owner.nativeDispatched = true; f.owner.submission = Promise.resolve();
+  f.oc.snapshot = http.adapter.snapshot.bind(http.adapter); f.oc.cancelInput = http.adapter.cancelInput.bind(http.adapter);
+  expect(await f.service.interruptCurrent(f.owner)).toEqual({ interrupted: false });
+  expect(f.service.readPendingCancellation(f.owner)).toEqual({ ready: false });
+  expect(f.run.status).toBe("running"); expect(f.state.current).toBe(f.owner);
+  expect(http.calls.filter(call => call.method === "DELETE")).toHaveLength(1);
+});
+
 test("adapter currentInputId belongs to the latest committed input, not the queued command anchor", async () => {
   const f = httpFixture([message(commandId), message("msg_queue_answer", "assistant"), message("msg_foreign")]);
   f.inbox.splice(1, 1);
@@ -219,13 +277,12 @@ test("adapter currentInputId belongs to the latest committed input, not the queu
 });
 
 for (const currentInputId of [commandId, "msg_foreign", undefined]) {
-  test(`consumed queue command may interrupt only exact currentInputId (${currentInputId})`, async () => {
+  test(`consumed queue command refuses session-wide interrupt even for currentInputId (${currentInputId})`, async () => {
     const f = fixture(); f.run.nativePhase = "accepted"; f.owner.submission = Promise.resolve();
     f.oc.snapshot = async () => ({ messages: [message(commandId)], pending: false, currentInputId });
     f.oc.cancel = async (id, beforeCancel) => { beforeCancel?.(); f.calls.push(`interrupt:${id}`); return { interrupted: true }; };
-    const exact = currentInputId === commandId;
-    expect(await f.service.interruptCurrent(f.owner)).toEqual({ interrupted: exact });
-    expect(f.calls).toEqual(exact ? [`interrupt:${nativeId}`] : []);
+    expect(await f.service.interruptCurrent(f.owner)).toEqual({ interrupted: false });
+    expect(f.calls).toEqual([]);
     expect(f.run.status).toBe("running");
   });
 }
@@ -275,7 +332,8 @@ for (const consumed of [false, true]) test(`queued cancellation gate prevents na
   f.oc.snapshot = async (): Promise<Snapshot> => ({ messages: consumed ? [message(commandId)] : [], pending: !consumed, currentInputId: consumed ? commandId : undefined });
   f.oc.cancelInput = async (_id, _command, beforeCancel) => { f.state.current = undefined; beforeCancel?.(); f.calls.push("unexpected-delete"); return true; };
   f.oc.cancel = async (_id, beforeCancel) => { f.state.current = undefined; beforeCancel?.(); f.calls.push("unexpected-interrupt"); return { interrupted: true }; };
-  await expect(f.service.interruptCurrent(f.owner)).rejects.toThrow("withheld after ownership changed");
+  if (consumed) expect(await f.service.interruptCurrent(f.owner)).toEqual({ interrupted: false });
+  else await expect(f.service.interruptCurrent(f.owner)).rejects.toThrow("withheld after ownership changed");
   expect(f.calls).toEqual([]); expect(f.run.status).toBe("running"); expect(f.records).toHaveLength(0);
 });
 
@@ -435,11 +493,11 @@ for (const mode of ["disconnect", "timeout"] as const) test(`handoff post-header
 
 for (const race of ["pending-delete", "consumed", "foreign-after-consumption"] as const) test(`explicit handoff Stop remains exact and does not advance/replay (${race})`, async () => {
   const f = handoffFixture(); f.run.nativePhase = "accepted"; f.owner.nativeDispatched = true; f.owner.submission = Promise.resolve(); let reads = 0;
-  f.oc.snapshot = async () => ++reads === 1 ? { messages: [], pending: true } : { messages: [message(commandId)], pending: false, currentInputId: race === "consumed" ? commandId : "msg_foreign" };
+  f.oc.snapshot = async () => ++reads === 1 ? { messages: [], pending: true, pendingInput: queueReceipt() } : { messages: [message(commandId)], pending: false, currentInputId: race === "consumed" ? commandId : "msg_foreign" };
   f.oc.cancelInput = async (_id, exact, guard) => { expect(exact).toBe(commandId); guard?.(); f.calls.push("delete-exact"); return race === "pending-delete"; };
   f.oc.cancel = async (_id, guard) => { guard?.(); f.calls.push("explicit-interrupt"); return { interrupted: true }; };
-  expect(await f.service.interruptCurrent(f.owner)).toEqual({ interrupted: race !== "foreign-after-consumption" });
-  expect(f.calls).toEqual(race === "consumed" ? ["delete-exact", "explicit-interrupt"] : ["delete-exact"]);
+  expect(await f.service.interruptCurrent(f.owner)).toEqual({ interrupted: false });
+  expect(f.calls).toEqual(["delete-exact"]);
   expect(f.state.current).toBe(f.owner); expect(f.calls).not.toContain("handoff-prompt");
 });
 
@@ -536,14 +594,14 @@ for (const replacement of [false, true]) for (const change of ["source", "settin
   });
 }
 
-for (const replacement of [false, true]) for (const change of ["source", "settings"] as const) for (const stage of ["pending", "consumed", "repeek"] as const) {
+for (const replacement of [false, true]) for (const change of ["source", "settings"] as const) for (const stage of ["pending", "consumed"] as const) {
   test(`Stop discards suspended ${stage} proof on ${replacement ? "replacement" : "mutable"} session ${change} drift`, async () => {
     const f = handoffFixture(), observed = Promise.withResolvers<Snapshot>(), entered = Promise.withResolvers<void>();
     f.run.nativePhase = "accepted"; f.owner.nativeDispatched = true; f.owner.submission = Promise.resolve();
     let reads = 0;
     f.oc.snapshot = async (id, exact, directory, policy) => {
       expect([id, exact, directory, policy]).toEqual([nativeId, commandId, cwd, "native-queued-handoff"]);
-      if (++reads === (stage === "repeek" ? 2 : 1)) { entered.resolve(); return observed.promise; }
+      if (++reads === 1) { entered.resolve(); return observed.promise; }
       return { messages: [], pending: true, pendingInput: queueReceipt() };
     };
     f.oc.cancelInput = async (id, exact, guard) => { expect([id, exact]).toEqual([nativeId, commandId]); guard?.(); f.calls.push(`delete:${id}`); return false; };
@@ -553,7 +611,7 @@ for (const replacement of [false, true]) for (const change of ["source", "settin
     observed.resolve(stage === "pending" ? { messages: [], pending: true, pendingInput: queueReceipt() }
       : { messages: [message(commandId)], pending: false, currentInputId: commandId });
     expect(await stop).toEqual({ interrupted: false });
-    expect(f.calls).toEqual(stage === "repeek" ? [`delete:${nativeId}`] : []);
+    expect(f.calls).toEqual([]);
     expect(f.run.status).toBe("running"); expect(f.state.current).toBe(f.owner); expect(f.records).toEqual([]); expect(f.persisted).toEqual([]);
   });
 }
@@ -562,7 +620,7 @@ for (const replacement of [false, true]) for (const change of ["source", "settin
   test(`Stop callback after discovery denies ${replacement ? "replacement" : "mutable"} ${change} drift (consumed=${consumed})`, async () => {
     const f = handoffFixture(), discovery = Promise.withResolvers<void>(), entered = Promise.withResolvers<void>();
     f.run.nativePhase = "accepted"; f.owner.nativeDispatched = true;
-    f.oc.snapshot = async () => ({ messages: consumed ? [message(commandId)] : [], pending: !consumed, currentInputId: consumed ? commandId : undefined });
+    f.oc.snapshot = async () => ({ messages: consumed ? [message(commandId)] : [], pending: !consumed, currentInputId: consumed ? commandId : undefined, ...(!consumed ? { pendingInput: queueReceipt() } : {}) });
     f.oc.cancelInput = async (id, exact, guard) => {
       expect([id, exact]).toEqual([nativeId, commandId]); entered.resolve(); await discovery.promise;
       guard?.(); f.calls.push(`delete:${id}`); return true;
@@ -572,6 +630,10 @@ for (const replacement of [false, true]) for (const change of ["source", "settin
       guard?.(); f.calls.push(`interrupt:${id}`); return { interrupted: true };
     };
     const stop = f.service.interruptCurrent(f.owner);
+    if (consumed) {
+      expect(await stop).toEqual({ interrupted: false }); expect(f.calls).toEqual([]);
+      return;
+    }
     await entered.promise; driftSession(f, replacement, change); discovery.resolve();
     await expect(stop).rejects.toBeInstanceOf(OpenCodeSourceMismatchError);
     expect(f.calls).toEqual([]); expect(f.run.status).toBe("running"); expect(f.records).toEqual([]); expect(f.persisted).toEqual([]);
@@ -581,10 +643,14 @@ for (const replacement of [false, true]) for (const change of ["source", "settin
 for (const consumed of [false, true]) test(`Stop does not finalize cancellation proof returned after fresh session drift (consumed=${consumed})`, async () => {
   const f = handoffFixture(), result = Promise.withResolvers<void>(), entered = Promise.withResolvers<void>();
   f.run.nativePhase = "accepted"; f.owner.nativeDispatched = true;
-  f.oc.snapshot = async () => ({ messages: consumed ? [message(commandId)] : [], pending: !consumed, currentInputId: consumed ? commandId : undefined });
+  f.oc.snapshot = async () => ({ messages: consumed ? [message(commandId)] : [], pending: !consumed, currentInputId: consumed ? commandId : undefined, ...(!consumed ? { pendingInput: queueReceipt() } : {}) });
   f.oc.cancelInput = async (id, exact, guard) => { expect([id, exact]).toEqual([nativeId, commandId]); guard?.(); f.calls.push(`delete:${id}`); entered.resolve(); await result.promise; return true; };
   f.oc.cancel = async (id, guard) => { expect(id).toBe(nativeId); guard?.(); f.calls.push(`interrupt:${id}`); entered.resolve(); await result.promise; return { interrupted: true }; };
   const stop = f.service.interruptCurrent(f.owner);
+  if (consumed) {
+    expect(await stop).toEqual({ interrupted: false }); expect(f.calls).toEqual([]);
+    return;
+  }
   await entered.promise; driftSession(f, true, "source"); result.resolve();
   expect(await stop).toEqual({ interrupted: false }); expect(f.run.status).toBe("running"); expect(f.persisted).toEqual([]); expect(f.records).toEqual([]);
   expect(f.calls).toEqual([`${consumed ? "interrupt" : "delete"}:${nativeId}`]);

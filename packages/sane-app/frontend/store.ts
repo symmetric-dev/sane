@@ -10,7 +10,7 @@ import { clearWorkstreamMembership } from "./workstream-membership-storage";
 import { invalidateWorkspaceRequests, onWorkspaceAuthExpired } from "./workspace-store";
 import { BASE_PROFILE_IDS, builtinProfiles, canAssign, legacyProfileId, type AgentProfile, type AgentProfileInput, type AgentProfiles } from "../src/agent-profiles-contract";
 import { displayProfile, profileDisplayLabel, savedProfileSnapshot, validatedAgentSnapshot, type DisplayProfile, type ProfileSnapshot } from "./profile-presentation";
-import type { Availability, Config, Conversation, ConversationClient, Harness, Interaction, InteractionReply, Message, ModelChoice, PendingTurn, Run } from "./types";
+import type { Availability, CompletionVerificationRequest, CompletionVerificationTarget, Config, Conversation, ConversationClient, Harness, Interaction, InteractionReply, Message, ModelChoice, PendingTurn, Run } from "./types";
 import type { ReconciledHistory } from "../src/reconcile";
 import type { CompactRequest, CompactState, CompactionRecord } from "../src/oc-contract";
 import { compactCommand, compactionsFor } from "./compaction";
@@ -23,6 +23,11 @@ import { notificationStore } from "./notifications";
 import { notificationContextKey } from "./notification-source";
 import type { NotificationFeedStatus } from "./notification-presentation";
 import { isConversationUpdatePage, type ConversationUpdateFeedRequest } from "../shared/conversation/conversation-updates";
+import type { PendingInputOperation, PendingInputView } from "./pending-input-presentation";
+import { isPendingInputResumeResult, isPendingInputStatus, isPendingInputView } from "./pending-input-presentation";
+import { isPendingInputCapability, isPendingInputRemovalResult, isPendingInputSubmissionResult, type PendingInputRemovalRequest, type PendingInputRequest, type PendingInputResumeRequest } from "../shared/conversation/pending-input-contract";
+import { isDefinitePendingInputRefusal, PendingInputApiError } from "./pending-input-client";
+import { PendingInputLedger, pendingInputLedgerKey, type PendingInputRecord } from "./pending-input-ledger";
 
 /** Composer draft. New conversations pick `profileId` ("" = profiles.defaultId);
  * selected Base conversations may stage `upgradeId` (assistant profile, same harness). */
@@ -30,6 +35,8 @@ export type Draft = { text: string; cwd: string; profileId: string; upgradeId: s
 export type SendOutcome = { status: "accepted"; conversationId: string; runId: string } | { status: "queued"; conversationId: string; requestId: string } | { status: "blocked" | "rejected" | "unknown" };
 export type PendingCompact = { payload: CompactRequest; phase: "sending" | "unconfirmed" | "accepted" | "rejected"; runId?: string };
 export type State = {
+  pendingInputs?: PendingInputView | null; pendingInputLoading?: boolean; pendingInputError?: string;
+  pendingInputOperations?: Record<string, PendingInputOperation>;
   phase: "connecting" | "login" | "ready"; config?: Config; conversations: Conversation[]; conversationsReady: boolean;
   selected: string; runs: Run[]; messages: Message[]; drafts: Record<string, Draft>;
   connected: boolean; loading: boolean; sending: boolean; availability: Availability;
@@ -50,8 +57,423 @@ export type State = {
   workerLoading?: boolean;
 };
 const emptyDraft = (): Draft => ({ text: "", cwd: "", profileId: "", upgradeId: "" });
+/** UI eligibility only; the server verifies native ownership, idle state and outcome. */
+export function completionVerificationTarget(state: State): CompletionVerificationTarget | undefined {
+  const conversation = state.conversations.find(item => item.id === state.selected);
+  const run = state.runs.at(-1);
+  if (!state.connected || conversation?.harness !== "opencode" || conversation.worker || conversation.agentKind === "worker"
+    || !run || run.id !== conversation.lastRunId || run.conversationId !== conversation.id || run.harness !== "opencode"
+    || !/^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/i.test(run.id)
+    || run.status !== "running" || !run.nativeCompletionBoundary || run.operation === "compact" || run.compact
+    || run.nativeDelivery === "queue" || run.agentKind === "worker" || !run.nativeCommandId || !run.nativeSessionId
+    || run.nativeSessionId !== conversation.nativeSessionId || state.compactions?.some(record => record.lifecycle === "running")
+    || state.pendingInputs?.snapshot.conversationId === conversation.id && state.pendingInputs.presentation.chainLocked) return;
+  return { sessionId: conversation.id, runId: run.id, nativeSessionId: run.nativeSessionId, nativeCommandId: run.nativeCommandId };
+}
 const fallbackProfiles: AgentProfiles = { version: 1, defaultId: BASE_PROFILE_IDS["claude-code"], profiles: builtinProfiles("") };
 export class ChatStore {
+  private completionVerificationBusy = new Set<string>();
+  prepareCompletionVerification = (target: CompletionVerificationTarget): (() => Promise<void>) | undefined => {
+    if (!this.client.verifyCompletion || this.state.actionBusy || JSON.stringify(completionVerificationTarget(this.state)) !== JSON.stringify(target)) return;
+    const selection = this.selectionEpoch, auth = this.authEpoch, storeId = this.state.config?.storeId, source = this.pendingInputSource();
+    const key = JSON.stringify([storeId, source, target]);
+    const identityCurrent = () => selection === this.selectionEpoch && auth === this.authEpoch && storeId === this.state.config?.storeId
+      && source === this.pendingInputSource()
+      && JSON.stringify(completionVerificationTarget(this.state)) === JSON.stringify(target);
+    return async () => {
+      if (!identityCurrent() || this.state.actionBusy || this.completionVerificationBusy.has(key)) return;
+      // SANE run IDs are UUIDs. Reuse the run's identity for this route so an
+      // audited request can be retried after reload or from another client.
+      const input: CompletionVerificationRequest = { requestId: target.runId, nativeSessionId: target.nativeSessionId,
+        nativeCommandId: target.nativeCommandId, confirm: true, reason: "User requested reconciliation of the completed native execution" };
+      this.completionVerificationBusy.add(key);
+      const actionCurrent = this.beginAction();
+      const current = () => actionCurrent() && storeId === this.state.config?.storeId && source === this.pendingInputSource();
+      try {
+        await this.listingMutation(() => this.client.verifyCompletion!(target.sessionId, target.runId, input));
+        if (current()) {
+          this.invalidateConversationCache(target.sessionId);
+          this.update({ actionNotice: "Completion verification recorded. Refreshing native run status." });
+          this.reconnect();
+        }
+      } catch (error) {
+        if (current() && !this.expired(error)) this.update({ interactionError: `${error instanceof Error ? error.message : "Completion verification unavailable."} Retry verification to check the same request; no prompt was resent.` });
+      } finally {
+        this.completionVerificationBusy.delete(key);
+        if (current()) this.update({ actionBusy: false });
+      }
+    };
+  };
+  private pendingInputVisible = false;
+  private pendingInputRead?: { key: string; promise: Promise<boolean> };
+  private pendingInputLastRead = 0;
+  private pendingInputFresh = "";
+  private pendingInputNamespace = "";
+  private pendingInputRecords = new Map<string, PendingInputRecord>();
+  private pendingInputTerminals = new Map<string, { operation: PendingInputOperation; sourceScope: string }>();
+  private pendingInputViews = new Map<string, PendingInputView>();
+  private pendingInputConfirmedChains = new Set<string>();
+  private pendingInputReadSerial = 0;
+  private pendingInputAcknowledged = new Map<string, { revision: number; readSerial: number }>();
+  private pendingInputContextFailure = "";
+  private pendingInputMutations = new Set<string>();
+  private pendingInputSuspended = false;
+  private pendingInputStorageError = "";
+  private pendingInputConfig?: Config;
+  private pendingInputConfigEpoch = 0;
+  private pendingInputOrigin = () => typeof location === "undefined" ? "local" : location.origin;
+  private pendingInputSource = (id = this.state.selected) => {
+    const c = this.state.conversations.find(c => c.id === id);
+    return c ? JSON.stringify([c.harness, c.authorityId ?? null, c.nativeSessionId ?? null, c.cwd]) : "";
+  };
+  private pendingInputStoreId = (value: unknown): value is string => typeof value === "string" && value === value.trim() && /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(value);
+  private pendingInputKey = () => !this.pendingInputSuspended && this.state.phase === "ready" && this.state.config?.authenticated === true && this.pendingInputStoreId(this.state.config.storeId)
+    ? pendingInputLedgerKey(this.pendingInputOrigin(), this.state.config.storeId) : "";
+  private pendingInputFence = () => {
+    if (this.pendingInputConfig !== this.state.config) { this.pendingInputConfig = this.state.config; this.pendingInputConfigEpoch++; }
+    const c = this.state.conversations.find(c => c.id === this.state.selected);
+    return JSON.stringify([this.authEpoch, this.selectionEpoch, this.pendingInputConfigEpoch, this.pendingInputKey(), this.state.selected, this.pendingInputSource(), c?.profileId, c?.model, c?.effort, c?.agent, this.draft().upgradeId]);
+  };
+  private pendingInputLedger = () => {
+    const key = this.pendingInputKey();
+    if (!key) throw new Error("Sign in to an identified App store before queueing.");
+    try { return new PendingInputLedger(key, localStorage); }
+    catch { throw new Error("Durable browser recovery storage is unavailable. Your draft is unchanged."); }
+  };
+  private pendingInputSourceMatches(source: PendingInputRequest["source"] | null, id = this.state.selected, scope = this.pendingInputSource(id)) {
+    return !!source && source.authorityId !== null && source.nativeSessionId !== null && source.conversationId === id
+      && JSON.stringify([source.harnessId, source.authorityId, source.nativeSessionId, source.cwd]) === scope;
+  }
+  /** Boot config is a namespace selection, not permission to replay into whatever
+   * App later occupies the same origin. Never switch the original ledger here. */
+  private async verifyPendingInputContext(namespace: string, fence: string): Promise<boolean> {
+    try {
+      const config = await this.client.config();
+      if (fence !== this.pendingInputFence() || namespace !== this.pendingInputKey()) return false;
+      if (!config || config.authenticated !== true || !this.pendingInputStoreId(config.storeId)
+        || pendingInputLedgerKey(this.pendingInputOrigin(), config.storeId) !== namespace
+        || !isPendingInputCapability(config.pendingInputCapability)) throw new Error("The authenticated App store changed or queue support is unavailable. Original operations remain unconfirmed; nothing was redirected.");
+      this.pendingInputContextFailure = "";
+      return true;
+    } catch (cause) {
+      if (fence === this.pendingInputFence() && namespace === this.pendingInputKey()) {
+        this.invalidatePendingInputContext(namespace, cause instanceof Error ? cause.message : "Fresh App store identification is unavailable. Nothing was sent.");
+      }
+      return false;
+    }
+  }
+  private invalidatePendingInputContext(namespace: string, error: string) {
+    this.pendingInputContextFailure = namespace; this.pendingInputFresh = "";
+    for (const [id, view] of this.pendingInputViews) if (view.presentation.chainLocked) this.pendingInputConfirmedChains.add(id);
+    this.pendingInputViews.clear();
+    this.update({ pendingInputs: null, pendingInputOperations: {}, pendingInputError: error });
+  }
+  private acknowledgePendingInput(id: string, revision: number) {
+    const previous = this.pendingInputAcknowledged.get(id);
+    this.pendingInputAcknowledged.set(id, { revision: Math.max(previous?.revision ?? 0, revision), readSerial: this.pendingInputReadSerial });
+  }
+  private async freshPendingInputs(fence: string): Promise<boolean> {
+    // After an acknowledgement, settle every older read, then START a GET.
+    while (this.pendingInputRead) {
+      const read = this.pendingInputRead;
+      await read.promise;
+      if (this.pendingInputRead?.promise === read.promise) this.pendingInputRead = undefined;
+      if (fence !== this.pendingInputFence()) return false;
+    }
+    return fence === this.pendingInputFence() && this.refreshPendingInputs();
+  }
+  private loadPendingInputLedger(publish = true) {
+    const namespace = this.pendingInputKey();
+    if (namespace !== this.pendingInputNamespace) {
+      this.pendingInputNamespace = namespace; this.pendingInputRecords.clear(); this.pendingInputTerminals.clear(); this.pendingInputViews.clear(); this.pendingInputConfirmedChains.clear(); this.pendingInputAcknowledged.clear(); this.pendingInputContextFailure = ""; this.pendingInputFresh = "";
+      if (publish) this.update({ pendingInputs: null, pendingInputLoading: false, pendingInputError: "", pendingInputOperations: {} });
+    }
+    this.pendingInputStorageError = "";
+    if (namespace) try {
+      const records = this.pendingInputLedger().read(), next = new Map<string, PendingInputRecord>();
+      for (const record of records) {
+        const previous = this.pendingInputRecords.get(record.operation.requestId);
+        next.set(record.operation.requestId, previous ?? { ...record, operation: { ...record.operation, state: "unknown", error: "Original queue operation is unconfirmed. Check status or explicitly retransmit the same identity." } });
+      }
+      // A storage failure must not discard a locally known unconfirmed request.
+      for (const [id, record] of this.pendingInputRecords) if (!next.has(id)) next.set(id, record);
+      this.pendingInputRecords = next;
+    } catch (error) { this.pendingInputStorageError = error instanceof Error ? error.message : "Pending-input recovery storage is unavailable."; }
+    if (publish) this.publishPendingInputOperations();
+  }
+  private publishPendingInputOperations() {
+    if (this.pendingInputContextFailure && this.pendingInputContextFailure === this.pendingInputKey()) { this.update({ pendingInputOperations: {} }); return; }
+    const scope = this.pendingInputSource(), id = this.state.selected;
+    const operations: Record<string, PendingInputOperation> = {};
+    for (const { operation, sourceScope } of this.pendingInputTerminals.values()) if (operation.conversationId === id && sourceScope === scope) operations[operation.requestId] = operation;
+    for (const record of this.pendingInputRecords.values()) if (record.operation.conversationId === id && record.sourceScope === scope) operations[record.operation.requestId] = record.operation;
+    const drift = [...this.pendingInputRecords.values()].some(r => r.operation.conversationId === id && r.sourceScope !== scope);
+    this.update({ pendingInputOperations: equalValue(operations, this.state.pendingInputOperations) ? this.state.pendingInputOperations : operations, ...(this.pendingInputStorageError || drift ? { pendingInputError: this.pendingInputStorageError || "An unconfirmed queue operation belongs to the original native source. It cannot be redirected here." } : {}) });
+  }
+  private clearPendingInputDisplay() {
+    this.pendingInputSuspended = true;
+    this.pendingInputNamespace = ""; this.pendingInputRecords.clear(); this.pendingInputTerminals.clear(); this.pendingInputViews.clear(); this.pendingInputConfirmedChains.clear(); this.pendingInputAcknowledged.clear(); this.pendingInputContextFailure = ""; this.pendingInputFresh = "";
+    this.update({ pendingInputs: null, pendingInputLoading: false, pendingInputError: "", pendingInputOperations: {} });
+  }
+  pendingInputSupported = (): boolean => {
+    const p = this.state.pendingInputs?.presentation;
+    return !!this.pendingInputKey() && this.pendingInputContextFailure !== this.pendingInputKey() && isPendingInputCapability(this.state.config?.pendingInputCapability)
+      && (!p?.source || this.pendingInputSourceMatches(p.source)) && (!p?.currentAssertions || this.pendingInputSourceMatches(p.currentAssertions.source));
+  };
+  pendingInputChainLocked = (): boolean => {
+    if (!this.state.selected || this.state.phase !== "ready") return false;
+    this.loadPendingInputLedger(false);
+    return !!this.pendingInputContextFailure && this.pendingInputContextFailure === this.pendingInputKey() || !!this.pendingInputStorageError && this.pendingInputSupported() || [...this.pendingInputRecords.values()].some(r => r.operation.conversationId === this.state.selected)
+      || this.pendingInputMutations.has(`${this.pendingInputKey()}:${this.state.selected}`)
+      || this.pendingInputConfirmedChains.has(this.state.selected)
+      || !!this.pendingInputViews.get(this.state.selected)?.presentation.chainLocked
+      || this.state.pendingInputs?.snapshot.conversationId === this.state.selected && this.state.pendingInputs.presentation.chainLocked
+      || this.pendingInputSupported() && this.pendingInputFresh !== this.pendingInputFence();
+  };
+  pendingInputUnavailable = (): string => {
+    if (!this.pendingInputSupported()) return "App-owned input queue is unavailable on this bridge.";
+    if (!this.state.selected || this.state.phase !== "ready") return "Choose an authenticated conversation to queue an input.";
+    this.loadPendingInputLedger(false);
+    if (this.pendingInputStorageError) return this.pendingInputStorageError;
+    if ([...this.pendingInputRecords.values()].some(r => r.operation.conversationId === this.state.selected)) return "Resolve the original unconfirmed queue operation first.";
+    if (this.pendingInputRecords.size >= 32) return "Pending-input recovery ledger is full. Resolve an original operation first.";
+    if (this.draft().upgradeId) return "Assign the staged profile with an ordinary send before queueing. Your draft is unchanged.";
+    if (this.state.sending || this.state.actionBusy || this.compactBlocked()) return "Wait for the current action to settle.";
+    if (this.state.pendingInputLoading) return "Reading current queue eligibility…";
+    if (this.pendingInputFresh !== this.pendingInputFence() || !this.state.pendingInputs) return this.state.pendingInputError || "Read current queue eligibility before queueing.";
+    const p = this.state.pendingInputs.presentation;
+    if (!p.automation.supported) return p.automation.reason || "Queue automation is unavailable.";
+    if (!p.enqueue.allowed) return p.enqueue.reason || "Queue admission is unavailable.";
+    if (!p.currentAssertions) return "Current queue source and configuration are unavailable.";
+    if (p.chainLocked && !equalValue(p.configuration, p.currentAssertions.configuration)) return "Current configuration differs from the original waiting chain.";
+    return "";
+  };
+  setPendingInputVisible = (visible: boolean): void => {
+    this.pendingInputVisible = visible;
+    if (visible) { this.loadPendingInputLedger(); if (typeof document !== "undefined" && !document.hidden) void this.refreshPendingInputs(); }
+  };
+  refreshPendingInputs = async (): Promise<boolean> => {
+    const id = this.state.selected, key = this.pendingInputFence(), namespace = this.pendingInputKey();
+    if (!id || !namespace || !isPendingInputCapability(this.state.config?.pendingInputCapability) || !this.client.pendingInputs) { this.loadPendingInputLedger(); return false; }
+    if (this.pendingInputRead) {
+      if (this.pendingInputRead.key === key) return this.pendingInputRead.promise;
+      await this.pendingInputRead.promise;
+      return key === this.pendingInputFence() ? this.refreshPendingInputs() : false;
+    }
+    this.loadPendingInputLedger(); this.pendingInputLastRead = Date.now();
+    const readSerial = ++this.pendingInputReadSerial;
+    // The private read still fences every GET and mutation. Only initial or
+    // source-invalidated reads need visible loading; retries retain attention.
+    this.update({ pendingInputLoading: !this.state.pendingInputError
+      && (this.pendingInputFresh !== key || this.state.pendingInputs?.snapshot.conversationId !== id) });
+    const promise = (async () => {
+      try {
+        if (!await this.verifyPendingInputContext(namespace, key)) return false;
+        const view = await this.client.pendingInputs!(id);
+        if (!isPendingInputView(view, id)) throw new Error("Invalid queue projection. Queue state is stale.");
+        if (!await this.verifyPendingInputContext(namespace, key)) return false;
+        if (view.presentation.source && !this.pendingInputSourceMatches(view.presentation.source)) {
+          this.invalidatePendingInputContext(namespace, "The queue belongs to a different native source. Refresh the conversation before using it."); return false;
+        }
+        const acknowledged = this.pendingInputAcknowledged.get(id);
+        if (acknowledged && (readSerial <= acknowledged.readSerial || view.snapshot.revision < acknowledged.revision)) return false;
+        this.pendingInputFresh = key; this.pendingInputViews.set(id, view); this.pendingInputConfirmedChains.delete(id);
+        if (this.pendingInputViews.size > 32) {
+          const removable = [...this.pendingInputViews].find(([other]) => other !== id);
+          if (removable) {
+            // Bound cached text without silently forgetting a known chain lock.
+            if (removable[1].presentation.chainLocked) this.pendingInputConfirmedChains.add(removable[0]);
+            this.pendingInputViews.delete(removable[0]);
+          }
+        }
+        this.update({ pendingInputs: view, pendingInputError: "" }); this.publishPendingInputOperations();
+        return true;
+      } catch (error) {
+        if (key === this.pendingInputFence()) {
+          this.pendingInputFresh = "";
+          if (!this.expired(error)) this.update({ pendingInputError: `Queue state is stale: ${error instanceof Error ? error.message : "connection error"}. No input was retried.` });
+        }
+        return false;
+      } finally { if (key === this.pendingInputFence()) this.update({ pendingInputLoading: false }); }
+    })();
+    this.pendingInputRead = { key, promise };
+    try { return await promise; }
+    finally { if (this.pendingInputRead?.promise === promise) this.pendingInputRead = undefined; }
+  };
+  private pendingInputPolling() {
+    if (this.pendingInputVisible && typeof document !== "undefined" && !document.hidden && Date.now() - this.pendingInputLastRead >= 5000) void this.refreshPendingInputs();
+  }
+  private async newPendingInputOperation(kind: PendingInputOperation["kind"], text?: string, itemId?: string): Promise<SendOutcome> {
+    const id = this.state.selected, fence = this.pendingInputFence(), namespace = this.pendingInputKey(), lock = `${namespace}:${id}`;
+    if (!id || !namespace || !isPendingInputCapability(this.state.config?.pendingInputCapability) || this.pendingInputMutations.has(lock)) return { status: "blocked" };
+    this.loadPendingInputLedger();
+    if (this.pendingInputStorageError || [...this.pendingInputRecords.values()].some(r => r.operation.conversationId === id)) return { status: "blocked" };
+    if (kind === "enqueue" && (!text?.trim() || compactCommand(text) || this.draft().upgradeId || this.state.sending || this.state.actionBusy || this.compactBlocked())) {
+      this.update({ pendingInputError: compactCommand(text ?? "") ? "Use ordinary /compact; compaction cannot be queued." : this.pendingInputUnavailable() }); return { status: "blocked" };
+    }
+    const draftKey = this.draftKey(), draftText = this.draft().text, sourceScope = this.pendingInputSource();
+    this.pendingInputMutations.add(lock);
+    try {
+      // A mutation must observe a GET started for this explicit action, not
+      // borrow an earlier poll/Stop read that may already hold an old revision.
+      if (!await this.freshPendingInputs(fence) || fence !== this.pendingInputFence()) return { status: "blocked" };
+      // Another tab may have saved an unresolved intent during the GET.
+      this.loadPendingInputLedger();
+      if (this.pendingInputStorageError || [...this.pendingInputRecords.values()].some(r => r.operation.conversationId === id)) return { status: "blocked" };
+      const view = this.state.pendingInputs!, p = view.presentation;
+      let body: PendingInputRecord["body"];
+      if (kind === "enqueue") {
+        const unavailable = this.pendingInputUnavailable();
+        if (unavailable || !this.client.enqueuePendingInput) { this.update({ pendingInputError: unavailable || "Queue submission is unavailable." }); return { status: "blocked" }; }
+        const source = p.currentAssertions!.source;
+        if (!this.pendingInputSourceMatches(source, id, sourceScope)) { this.update({ pendingInputError: "The native source changed. Refresh the conversation before queueing; your draft is unchanged." }); return { status: "blocked" }; }
+        body = { version: 1, requestId: crypto.randomUUID(), conversationId: id, text: text!, source: structuredClone(p.currentAssertions!.source), configuration: structuredClone(p.currentAssertions!.configuration) };
+      } else if (kind === "remove") {
+        const item = view.snapshot.items.find(i => i.itemId === itemId);
+        if (!this.client.removePendingInput || !item || item.state !== "waiting" || !this.pendingInputSourceMatches(p.source, id, sourceScope)
+          || !this.pendingInputSourceMatches(item.source, id, sourceScope) || !p.removals.find(r => r.itemId === itemId)?.allowed) { this.update({ pendingInputError: "This input is no longer removable waiting work." }); return { status: "blocked" }; }
+        body = { version: 1, requestId: crypto.randomUUID(), conversationId: id, inputRequestId: item.requestId, itemId: item.itemId };
+      } else {
+        if (!this.client.resumePendingInputs || !p.resumeAllowed || p.unresolved || this.draft().upgradeId
+          || !this.pendingInputSourceMatches(p.source, id, sourceScope) || !this.pendingInputSourceMatches(p.currentAssertions?.source ?? null, id, sourceScope)
+          || !equalValue(p.configuration, p.currentAssertions?.configuration)
+          || !p.enqueue.allowed && p.enqueue.code !== "pending-input-full") { this.update({ pendingInputError: "The existing chain is not eligible to resume at its current revision and selected source." }); return { status: "blocked" }; }
+        body = { version: 1, requestId: crypto.randomUUID(), conversationId: id, action: "resume", expectedRevision: view.snapshot.revision };
+      }
+      const record: PendingInputRecord = { operation: { kind, requestId: body.requestId, conversationId: id, state: "pending", ...(text === undefined ? {} : { text }) }, body,
+        sourceScope, ...(kind === "enqueue" ? { draftKey, draftText } : {}) };
+      const ledger = this.pendingInputLedger();
+      ledger.reserve(record); // Durable immutable UUID/body BEFORE any POST.
+      this.pendingInputRecords.set(body.requestId, record); this.publishPendingInputOperations();
+      return await this.transmitPendingInput(record, ledger, fence);
+    } catch (error) {
+      if (fence === this.pendingInputFence()) this.update({ pendingInputError: `${error instanceof Error ? error.message : "Recovery storage unavailable"} Your draft is unchanged.` });
+      return { status: "blocked" };
+    } finally { this.pendingInputMutations.delete(lock); if (namespace === this.pendingInputKey() && id === this.state.selected) this.update({ pendingInputOperations: { ...this.state.pendingInputOperations } }); }
+  }
+  enqueuePendingInput = (text: string): Promise<SendOutcome> => this.newPendingInputOperation("enqueue", text);
+  removePendingInput = async (itemId: string): Promise<void> => { await this.newPendingInputOperation("remove", undefined, itemId); };
+  resumePendingInputs = async (): Promise<void> => { await this.newPendingInputOperation("resume"); };
+  private async transmitPendingInput(record: PendingInputRecord, ledger: PendingInputLedger, fence: string): Promise<SendOutcome> {
+    const { operation: o, body } = record, id = o.conversationId;
+    const current = () => fence === this.pendingInputFence() && ledger.key === this.pendingInputKey() && record.sourceScope === this.pendingInputSource();
+    let state: PendingInputOperation["state"] = "unknown", error = "", outcome: SendOutcome = { status: "unknown" };
+    try {
+      if (!current() || !await this.verifyPendingInputContext(ledger.key, fence) || !current()) throw new Error("Fresh original App store verification failed. No request was sent.");
+      // Give the client a copy; the persisted body remains the original intent.
+      if (o.kind === "enqueue") {
+        const result = await this.client.enqueuePendingInput!(id, structuredClone(body as PendingInputRequest));
+        if (!isPendingInputSubmissionResult(result, body)) throw new Error("Invalid queue acknowledgement.");
+        if (result.outcome !== "enqueued") throw new Error(result.outcome === "uncertain" ? result.reason : "Expected the original enqueue receipt, not run admission.");
+        if (!await this.verifyPendingInputContext(ledger.key, fence) || !current()) throw new Error("Queue acknowledgement could not be verified in the original App store.");
+        this.acknowledgePendingInput(id, result.revision);
+        state = "confirmed"; outcome = { status: "queued", conversationId: id, requestId: o.requestId };
+      } else if (o.kind === "remove") {
+        const result = await this.client.removePendingInput!(id, structuredClone(body as PendingInputRemovalRequest));
+        if (!isPendingInputRemovalResult(result, body)) throw new Error("Invalid removal acknowledgement.");
+        if (!await this.verifyPendingInputContext(ledger.key, fence) || !current()) throw new Error("Removal acknowledgement could not be verified in the original App store.");
+        this.acknowledgePendingInput(id, result.revision);
+        state = "confirmed"; error = result.outcome === "claimed" ? "This input is already claimed; it was not removed." : "";
+      } else {
+        const result = await this.client.resumePendingInputs!(id, structuredClone(body as PendingInputResumeRequest));
+        if (!isPendingInputResumeResult(result, body as PendingInputResumeRequest)) throw new Error("Invalid resume acknowledgement.");
+        if (!await this.verifyPendingInputContext(ledger.key, fence) || !current()) throw new Error("Resume acknowledgement could not be verified in the original App store.");
+        this.acknowledgePendingInput(id, result.revision);
+        state = "confirmed";
+      }
+    } catch (cause) {
+      const definite = isDefinitePendingInputRefusal(cause, o.kind) && current() && await this.verifyPendingInputContext(ledger.key, fence) && current();
+      state = definite ? "rejected" : "unknown"; outcome = { status: definite ? "rejected" : "unknown" };
+      error = `${cause instanceof Error ? cause.message : "Queue response unavailable."}${definite ? "" : " Acceptance is unconfirmed. Check status or explicitly retransmit the original UUID; no automatic retry occurs."}`;
+    }
+    const operation = { ...o, state, error }, next = { ...record, operation };
+    try { if (state === "unknown") ledger.unknown(next, error); else ledger.finish(o.requestId); }
+    catch (cause) { error += ` Recovery storage: ${cause instanceof Error ? cause.message : "unavailable"}.`; }
+    if (ledger.key === this.pendingInputNamespace) {
+      if (state === "confirmed" && o.kind === "enqueue") this.pendingInputConfirmedChains.add(id);
+      if (state === "unknown") this.pendingInputRecords.set(o.requestId, next);
+      else {
+        this.pendingInputRecords.delete(o.requestId); this.pendingInputTerminals.set(o.requestId, { operation: { ...operation, error }, sourceScope: record.sourceScope });
+        if (this.pendingInputTerminals.size > 32) this.pendingInputTerminals.delete(this.pendingInputTerminals.keys().next().value!);
+      }
+      if (current()) { this.update({ pendingInputError: error }); this.publishPendingInputOperations(); }
+    }
+    if (current()) {
+      if (state === "confirmed") {
+        const fresh = await this.freshPendingInputs(fence);
+        if (fresh && current() && o.kind === "enqueue" && record.draftKey === this.draftKey() && record.draftText === (body as PendingInputRequest).text && this.draft().text === record.draftText) this.setDraft({ text: "" });
+        if (current() && error) this.update({ pendingInputError: error });
+      }
+      if (state === "rejected") await this.freshPendingInputs(fence);
+    }
+    return outcome;
+  }
+  checkPendingInput = async (requestId: string): Promise<void> => {
+    this.loadPendingInputLedger();
+    const record = this.pendingInputRecords.get(requestId), fence = this.pendingInputFence();
+    if (!record || record.operation.conversationId !== this.state.selected || record.sourceScope !== this.pendingInputSource() || record.operation.state === "pending") return;
+    let ledger: PendingInputLedger;
+    try { ledger = this.pendingInputLedger(); }
+    catch (cause) { this.update({ pendingInputError: cause instanceof Error ? cause.message : "Recovery storage unavailable." }); return; }
+    const lock = `${ledger.key}:${record.operation.conversationId}`;
+    if (this.pendingInputMutations.has(lock)) return;
+    this.pendingInputMutations.add(lock);
+    try {
+      if (!await this.verifyPendingInputContext(ledger.key, fence)) return;
+      if (record.operation.kind !== "enqueue") {
+        await this.refreshPendingInputs();
+        if (fence !== this.pendingInputFence()) return;
+        let reason = "A queue GET cannot confirm the original resume consent. Explicit retransmission preserves its UUID and observed revision.";
+        if (record.operation.kind === "remove") {
+          const body = record.body as PendingInputRemovalRequest, s = this.state.pendingInputs?.snapshot;
+          reason = s?.tombstones.some(i => i.itemId === body.itemId && i.requestId === body.inputRequestId) ? "The original target is removed; GET cannot confirm this specific removal receipt."
+            : s?.items.some(i => i.itemId === body.itemId && i.state !== "waiting") ? "The original target is claimed and cannot be removed. Explicit retransmission will reconcile the same removal identity."
+            : "The original removal receipt is unconfirmed. A missing target is not proof; explicitly retransmit the original identity to reconcile.";
+        }
+        ledger.unknown(record, reason); this.pendingInputRecords.set(requestId, { ...record, operation: { ...record.operation, error: reason } });
+        this.update({ pendingInputError: reason }); this.publishPendingInputOperations(); return;
+      }
+      if (!this.client.pendingInputStatus) throw new Error("Original-input status is unavailable.");
+      const result = await this.client.pendingInputStatus(record.operation.conversationId, requestId);
+      if (!isPendingInputStatus(result, record.operation.conversationId, requestId)) throw new Error("Invalid original-input receipt.");
+      if (!await this.verifyPendingInputContext(ledger.key, fence)) return;
+      this.acknowledgePendingInput(record.operation.conversationId, result.receipt.revision);
+      ledger.finish(requestId);
+      if (ledger.key !== this.pendingInputNamespace) return;
+      this.pendingInputConfirmedChains.add(record.operation.conversationId);
+      this.pendingInputRecords.delete(requestId); this.pendingInputTerminals.set(requestId, { operation: { ...record.operation, state: "confirmed", error: "" }, sourceScope: record.sourceScope });
+      if (this.pendingInputTerminals.size > 32) this.pendingInputTerminals.delete(this.pendingInputTerminals.keys().next().value!);
+      if (fence === this.pendingInputFence()) {
+        this.publishPendingInputOperations();
+        if (await this.freshPendingInputs(fence) && fence === this.pendingInputFence() && record.draftKey === this.draftKey() && record.draftText === (record.body as PendingInputRequest).text && this.draft().text === record.draftText) this.setDraft({ text: "" });
+      }
+    } catch (cause) {
+      const reason = `${cause instanceof Error ? cause.message : "Status unavailable."} The original operation remains unconfirmed; missing/404 does not prove it cannot commit.`;
+      try { ledger.unknown(record, reason); } catch { /* Existing durable identity remains; never mint a replacement. */ }
+      if (ledger.key === this.pendingInputNamespace) this.pendingInputRecords.set(requestId, { ...record, operation: { ...record.operation, state: "unknown", error: reason } });
+      if (fence === this.pendingInputFence()) { this.update({ pendingInputError: reason }); this.publishPendingInputOperations(); }
+    } finally { this.pendingInputMutations.delete(lock); if (ledger.key === this.pendingInputKey() && record.operation.conversationId === this.state.selected) this.update({ pendingInputOperations: { ...this.state.pendingInputOperations } }); }
+  };
+  retransmitPendingInput = async (requestId: string): Promise<void> => {
+    this.loadPendingInputLedger();
+    const record = this.pendingInputRecords.get(requestId), fence = this.pendingInputFence();
+    if (!record || record.operation.conversationId !== this.state.selected || record.sourceScope !== this.pendingInputSource() || record.operation.state === "pending") return;
+    let ledger: PendingInputLedger;
+    try { ledger = this.pendingInputLedger(); }
+    catch (cause) { this.update({ pendingInputError: cause instanceof Error ? cause.message : "Recovery storage unavailable." }); return; }
+    const lock = `${ledger.key}:${record.operation.conversationId}`;
+    if (this.pendingInputMutations.has(lock)) return;
+    this.pendingInputMutations.add(lock);
+    try {
+      if (!await this.verifyPendingInputContext(ledger.key, fence)) return;
+      // This is explicit replay ONLY: no fresh assertions, UUID, or resume CAS.
+      ledger.unknown(record, "Explicitly retransmitting the original immutable request.");
+      const pending = { ...record, operation: { ...record.operation, state: "pending" as const } };
+      this.pendingInputRecords.set(requestId, pending); this.publishPendingInputOperations();
+      await this.transmitPendingInput(pending, ledger, fence);
+    } catch (cause) { if (fence === this.pendingInputFence()) this.update({ pendingInputError: cause instanceof Error ? cause.message : "Recovery unavailable. No request was sent." }); }
+    finally { this.pendingInputMutations.delete(lock); if (ledger.key === this.pendingInputKey() && record.operation.conversationId === this.state.selected) this.update({ pendingInputOperations: { ...this.state.pendingInputOperations } }); }
+  };
   private listeners = new Set<() => void>();
   private shellRevision = 0;
   private generation = 0;
@@ -225,7 +647,12 @@ export class ChatStore {
     return () => selection === this.selectionEpoch && auth === this.authEpoch && operation === this.actionSerial;
   }
   state: State = { phase: "connecting", conversations: [], conversationsReady: false, selected: "", runs: [], messages: [], drafts: {}, connected: false, loading: true, sending: false, availability: { canSend: false }, connectionError: "", submissionError: "", authError: "", models: [], modelsLoading: false, modelsError: "", modelsLoaded: false, modelsCwd: "", interactions: [], interactionError: "", actionBusy: false, actionNotice: "", profiles: null, profileError: "", profileBusy: false };
-  constructor(private client: ConversationClient) { this.state = { ...this.state, transcriptPaged: this.paged }; onWorkspaceAuthExpired(() => this.loginRequired()); }
+  constructor(private client: ConversationClient) {
+    this.state = { ...this.state, transcriptPaged: this.paged }; onWorkspaceAuthExpired(() => this.loginRequired());
+    if (typeof window !== "undefined") window.addEventListener("storage", event => {
+      if (event.key === this.pendingInputKey()) { this.loadPendingInputLedger(); if (this.pendingInputVisible) void this.refreshPendingInputs(); }
+    });
+  }
   subscribe = (listener: () => void) => { this.listeners.add(listener); return () => { this.listeners.delete(listener); }; };
   snapshot = () => this.state;
   shellSnapshot = () => this.shellRevision;
@@ -251,6 +678,7 @@ export class ChatStore {
     return this.state.drafts[this.draftKey(id)] ?? { ...emptyDraft(), cwd: id ? this.state.conversations.find(c => c.id === id)?.cwd ?? "" : worktree?.root ?? "" };
   };
   setDraft = (patch: Partial<Draft>, id = this.state.selected) => {
+    if (id === this.state.selected && (Object.hasOwn(patch, "profileId") || Object.hasOwn(patch, "upgradeId") || Object.hasOwn(patch, "cwd")) && this.pendingInputChainLocked()) return;
     const key = this.draftKey(id), previous = this.draft(id), next = { ...previous, ...patch };
     const textOnly = previous.cwd === next.cwd && previous.profileId === next.profileId && previous.upgradeId === next.upgradeId;
     if (this.state.drafts[key] && textOnly && previous.text === next.text) return;
@@ -301,11 +729,12 @@ export class ChatStore {
   effectiveProfile = (): DisplayProfile | undefined => this.state.selected ? this.pendingUpgrade() ?? this.conversationProfile(this.state.selected) : this.draftProfile();
   assignable = (profile: AgentProfile) => canAssign(this.currentShape(), profile);
   pickProfile = (id: string) => {
+    if (this.pendingInputChainLocked()) return;
     const next = this.profile(id);
     if (this.state.sending || !next || !this.assignable(next).ok) return;
     if (this.state.selected) this.setDraft({ upgradeId: id }); else this.setDraft({ profileId: id }, "");
   };
-  clearUpgrade = () => { if (this.state.selected && !this.state.sending) this.setDraft({ upgradeId: "" }); };
+  clearUpgrade = () => { if (this.state.selected && !this.state.sending && !this.pendingInputChainLocked()) this.setDraft({ upgradeId: "" }); };
   workspace = () => {
     if (this.state.selected) return this.state.conversations.find(c => c.id === this.state.selected)?.cwd ?? "";
     const navigation = catalog.state.navigation;
@@ -316,6 +745,7 @@ export class ChatStore {
   // Keep omitted flags on their known static defaults; explicit false still narrows.
   private supportedCapabilities = (harness: unknown = this.harness()) => capabilitiesFor(harness, this.capabilities(harness));
   compactUnavailable = () => {
+    if (this.pendingInputChainLocked()) return "Resolve the existing input chain before compacting.";
     const conversation = this.state.conversations.find(c => c.id === this.state.selected);
     if (!conversation) return "Choose an existing conversation to compact.";
     if (!this.supportedCapabilities(conversation.harness).compaction) return "Context compaction is unavailable for this harness.";
@@ -340,6 +770,7 @@ export class ChatStore {
     return Boolean(this.state.compactions?.some(r => r.lifecycle === "unconfirmed") && this.state.compactState?.eligibility.eligible !== true && (!this.state.availability.canSend || !!this.state.availability.queueAfterRunId));
   };
   openCompact = (instructions?: string) => {
+    if (this.pendingInputChainLocked()) { this.update({ compactError: "Resolve the existing input chain before compacting." }); return; }
     if (!this.state.selected) { this.update({ submissionError: "Choose an existing conversation before using /compact." }); return; }
     if (!this.supportedCapabilities().compaction) { this.update({ submissionError: "Context compaction is unavailable for this harness. Your draft is unchanged." }); return; }
     if (instructions && !this.supportedCapabilities().compactionInstructions) { this.update({ submissionError: "OpenCode /compact does not support instructions. Your draft is unchanged." }); return; }
@@ -385,6 +816,7 @@ export class ChatStore {
     this.update({ compactState, compactError: this.compactReadFeedback(undefined, !!recovered && pending?.phase === "unconfirmed"), compactions, ...(conversation ? { contextUsage: contextUsageFor(conversation.harness, this.state.runs, this.state.models, this.state.nativeHistory, compactions) } : {}), ...(recovered && pending!.phase !== "sending" ? { pendingCompacts: { ...this.state.pendingCompacts, [compactState.sessionId]: { ...pending!, phase: "accepted", runId: recovered.runId } } } : {}) });
   }
   compact = async (nativeStopped = false) => {
+    if (this.pendingInputChainLocked()) { this.update({ compactError: "Resolve the existing input chain before compacting." }); return; }
     const id = this.state.selected, selection = this.selectionEpoch, auth = this.authEpoch;
     const conversation = this.state.conversations.find(c => c.id === id);
     const identity = conversation ? conversationKey(conversation) : "";
@@ -523,14 +955,28 @@ export class ChatStore {
     } finally { if (current()) this.update({ actionBusy: false }); }
   };
   cancel = async () => {
-    if (this.state.actionBusy || !this.state.selected || !this.supportedCapabilities().cancelRun || !this.client.cancel) return;
-    const id = this.state.selected, current = this.beginAction();
+    if (this.state.actionBusy || !this.state.selected || !this.client.cancel) return;
+    this.loadPendingInputLedger();
+    const id = this.state.selected, source = this.pendingInputSource(), namespace = this.pendingInputKey(), fence = this.pendingInputFence();
+    const view = this.state.pendingInputs?.snapshot.conversationId === id ? this.state.pendingInputs : this.pendingInputViews.get(id);
+    const chain = !!view && isPendingInputView(view, id) && view.presentation.chainLocked;
+    const unknown = [...this.pendingInputRecords.values()].some(record => record.operation.conversationId === id);
+    const queueAware = chain || this.pendingInputConfirmedChains.has(id) || unknown;
+    if (!chain && !this.supportedCapabilities().cancelRun) {
+      if (unknown) this.update({ actionNotice: "Original queue admission remains unknown. No known waiting chain can be paused; check status or explicitly retransmit its original identity." });
+      return;
+    }
+    const actionCurrent = this.beginAction();
+    const current = () => actionCurrent() && namespace === this.pendingInputKey() && source === this.pendingInputSource();
     try {
+      // Canonical FIFO Pause also reaches cancel when native cancel is absent.
+      // That button must not pause a replacement App at the same origin.
+      if (queueAware && (chain && !this.pendingInputSourceMatches(view!.presentation.source, id, source) || !await this.verifyPendingInputContext(namespace, fence) || !current())) return;
       const result = await this.listingMutation(() => this.client.cancel!(id));
-      if (current()) this.update({ actionNotice: result.interrupted ? "Interruption requested. Waiting for the run’s terminal state." : "No interruption was reported. Waiting for the run’s current state." });
+      if (current()) this.update({ actionNotice: `${chain ? result.interrupted ? "Waiting messages paused; interruption requested. Waiting for the run’s terminal state." : "Waiting messages paused; native cancellation not confirmed." : result.interrupted ? "Interruption requested. Waiting for the run’s terminal state." : "No interruption was reported. Waiting for the run’s current state."}${unknown ? " Original queue admission/consent remains unknown: a late original POST may still commit. Check status or explicitly retransmit the same identity; no pause guarantee applies to that unconfirmed intent." : ""}` });
     } catch (error) {
       if (current() && !this.expired(error)) this.update({ interactionError: `${error instanceof Error ? error.message : "Cancellation unavailable."} Run status will reconcile separately.` });
-    } finally { if (current()) this.update({ actionBusy: false }); }
+    } finally { if (current()) { this.update({ actionBusy: false }); void this.refreshPendingInputs(); } }
   };
   reconcile = async () => {
     if (this.state.actionBusy || this.compactBlocked() || !this.state.selected || !this.supportedCapabilities().nativeHistoryRefresh || !this.client.reconcile) return;
@@ -555,8 +1001,13 @@ export class ChatStore {
     const action = hidden ? this.client.hide : this.client.unhide;
     if (this.state.actionBusy || !id || !action) return;
     const verb = hidden ? "Hidden" : "Restored";
+    this.loadPendingInputLedger(false);
+    const namespace = this.pendingInputKey(), fence = this.pendingInputFence();
+    const view = this.state.pendingInputs?.snapshot.conversationId === id ? this.state.pendingInputs : this.pendingInputViews.get(id);
+    const queueContext = !!view?.presentation.chainLocked || this.pendingInputConfirmedChains.has(id) || [...this.pendingInputRecords.values()].some(record => record.operation.conversationId === id);
     const current = this.beginAction();
     try {
+      if (queueContext && (!await this.verifyPendingInputContext(namespace, fence) || !current())) return;
       await this.listingMutation(() => action.call(this.client, id));
       if (!current()) return;
       this.update({ conversations: this.state.conversations.map(c => c.id === id ? { ...c, hidden } : c), actionNotice: hidden ? "Conversation hidden from the sidebar. Nothing was deleted." : "Conversation restored to the sidebar." });
@@ -571,6 +1022,7 @@ export class ChatStore {
       this.update({ interactionError: `${error instanceof Error ? error.message : "Visibility change unavailable."} No history was changed.` });
     } finally {
       if (current()) this.update({ actionBusy: false });
+      if (current() && id === this.state.selected) void this.refreshPendingInputs();
     }
   };
   private stop() {
@@ -679,6 +1131,7 @@ export class ChatStore {
     }
   }
   private loginRequired() {
+    this.clearPendingInputDisplay();
     this.stopNotifications();
     notificationStore.suspend();
     this.stop(); this.authEpoch++; this.conversationListing.invalidate(); this.clearCachedHistory();
@@ -689,9 +1142,9 @@ export class ChatStore {
     this.update({ pendingCompacts: {}, compactState: null, compactions: [], compactDialog: "", compactError: "", compactInstructions: {} });
     this.update({ phase: "login", config: undefined, conversations: [], conversationsReady: false, runs: [], messages: [], pendingTurn: null, nativeHistory: null, contextUsage: null, connected: false, loading: false, sending: false, availability: { canSend: false }, connectionError: "", submissionError: "", models: [], modelsLoading: false, modelsLoaded: false, modelsError: "", modelsCwd: "", interactions: [], interactionError: "", actionBusy: false, actionNotice: "", profiles: null, profileError: "", profileBusy: false });
   }
-  private expired(error: unknown) { if (error instanceof ApiError && error.status === 401) { this.loginRequired(); return true; } return false; }
+  private expired(error: unknown) { if ((error instanceof ApiError || error instanceof PendingInputApiError) && error.status === 401) { this.loginRequired(); return true; } return false; }
   start = () => { if (this.started) return; this.started = true; void this.boot(); };
-  reconnect = () => { this.conversationListing.invalidate(); if (document.hidden || this.state.sending) return; if (this.state.phase === "login") return; this.nativeHistoryLoaded = false; this.stop(); void (this.state.phase === "connecting" ? this.boot() : this.poll()); };
+  reconnect = () => { this.conversationListing.invalidate(); if (document.hidden || this.state.sending) return; if (this.state.phase === "login") return; this.pendingInputFresh = ""; void this.refreshPendingInputs(); this.nativeHistoryLoaded = false; this.stop(); void (this.state.phase === "connecting" ? this.boot() : this.poll()); };
   private async boot() {
     this.stop(); this.conversationListing.invalidate(); const generation = this.generation, auth = this.authEpoch;
     const controller = this.controller = new AbortController();
@@ -700,7 +1153,9 @@ export class ChatStore {
       const config = await this.client.config(controller.signal);
       if (generation !== this.generation || auth !== this.authEpoch) return;
       if (config.authRequired && !config.authenticated) { this.loginRequired(); return; }
+      this.pendingInputSuspended = false;
       this.update({ config, phase: "ready", authError: "", connectionError: "", ...(config.agentProfiles ? { profiles: config.agentProfiles } : {}) });
+      this.loadPendingInputLedger(); if (this.pendingInputVisible && !document.hidden) void this.refreshPendingInputs();
       this.configureNotifications(config);
       if (!config.agentProfiles) void this.refreshProfiles();
       void this.poll();
@@ -711,6 +1166,7 @@ export class ChatStore {
     } finally { clearTimeout(deadline); }
   }
   login = async (password: string) => {
+    this.clearPendingInputDisplay();
     this.stopNotifications();
     notificationStore.suspend();
     this.stop(); this.conversationListing.invalidate(); const auth = ++this.authEpoch;
@@ -720,6 +1176,7 @@ export class ChatStore {
     catch (error) { if (auth === this.authEpoch) this.update({ authError: error instanceof Error ? error.message : "Sign-in failed." }); }
   };
   logout = async () => {
+    this.clearPendingInputDisplay();
     this.stopNotifications();
     notificationStore.suspend();
     this.stop(); this.conversationListing.invalidate(); const auth = ++this.authEpoch;
@@ -778,6 +1235,9 @@ export class ChatStore {
     this.update(selected
       ? { selected, runs, messages: cached?.messages ?? [], compactions, pendingTurn, availability: { canSend: false }, nativeHistory: cached?.nativeHistory ?? null, contextUsage: null, interactions: [], interactionError: "", actionBusy: false, actionNotice: "", loading: true, connected: false, connectionError: "", submissionError: "" }
        : { selected, runs: [], messages: [], pendingTurn, availability: { canSend: false }, nativeHistory: null, contextUsage: null, interactions: [], interactionError: "", actionBusy: false, actionNotice: "", loading: false, connected: false, connectionError: "", submissionError: "" });
+    this.pendingInputFresh = ""; this.loadPendingInputLedger();
+    this.update({ pendingInputs: this.pendingInputViews.get(selected) ?? null, pendingInputLoading: false, pendingInputError: "" }); this.publishPendingInputOperations();
+    if (this.pendingInputVisible && !document.hidden) void this.refreshPendingInputs();
     if (this.paged) this.update({ transcript: cached?.transcript ?? null, transcriptInitialLoading: !!selected && !cached?.messages.length, transcriptError: "", metadataError: "", pageBusy: "", pageErrors: {}, workerLoading: !!selected && !!this.client.workers, compactions: cached?.transcript?.compactions ?? [] });
     void this.poll();
   };
@@ -921,6 +1381,7 @@ export class ChatStore {
   }
   private async poll() {
     if (this.state.phase !== "ready") return;
+    this.pendingInputPolling();
     const generation = this.generation, auth = this.authEpoch, selected = this.state.selected, selection = this.selectionEpoch;
     const controller = this.controller = new AbortController();
     const deadline = setTimeout(() => controller.abort(), 25000);
@@ -1084,6 +1545,7 @@ export class ChatStore {
     }
   }
   canQueueInput = (state: State = this.state): boolean => {
+    if (isPendingInputCapability(state.config?.pendingInputCapability)) return false;
     const conversation = state.conversations.find(c => c.id === state.selected);
     // Native continuation is not an App-owned run. Its queue gets a fresh exact
     // command admission; it must never borrow the previous completed run ID.
@@ -1098,6 +1560,10 @@ export class ChatStore {
       && state.runs.some(run => run.id === after && run.conversationId === conversation.id && run.status === "running");
   };
   send = async (text: string, nativeStopped = false, options: { preserveDraft?: boolean } = {}): Promise<SendOutcome> => {
+    const pendingFence = this.pendingInputFence();
+    if (this.pendingInputSupported() && this.state.selected && this.pendingInputFresh !== pendingFence && (!await this.refreshPendingInputs() || pendingFence !== this.pendingInputFence())) return { status: "blocked" };
+    if (this.pendingInputChainLocked()) { this.update({ submissionError: "Resolve the existing input chain before sending ordinary input." }); return { status: "blocked" }; }
+    if (this.pendingInputSupported() && (this.state.availability.queueAfterRunId || this.state.availability.nativeQueue)) { this.update({ submissionError: "Use the explicit App-owned queue for a future input." }); return { status: "blocked" }; }
     if (options.preserveDraft && !this.state.selected) return { status: "blocked" };
     const command = compactCommand(text);
     if (command) { this.openCompact(command.instructions); return { status: "blocked" }; }

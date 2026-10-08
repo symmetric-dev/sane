@@ -81,7 +81,7 @@ export function consume(run: Run, events: DiagnosticEvent[]) {
       const snapshot = event.data as MessageSnapshot;
       if (snapshot.compaction || run.operation === "compact") continue;
       if (snapshot.role === "system" && !snapshot.parts.length) continue;
-      const message: Message = { id: snapshot.messageId, runId: run.id, role: snapshot.role, time: snapshot.createdAt, status: snapshot.status, normalized: true, error: snapshot.error, nativeSubagentResult: snapshot.nativeSubagentResult, nativeShellResult: snapshot.nativeShellResult,
+      const message: Message = { id: snapshot.messageId, runId: run.id, role: snapshot.role, time: snapshot.createdAt, status: snapshot.status, normalized: true, error: snapshot.error, retry: snapshot.retry, nativeSubagentResult: snapshot.nativeSubagentResult, nativeShellResult: snapshot.nativeShellResult,
         parts: snapshot.parts.map(p => p.type === "tool" ? { type: "tool", id: p.id, toolCallId: p.id, name: p.name, input: p.input, toolStatus: p.status, output: p.output ?? p.error, error: p.error !== undefined } : { type: p.type, text: p.text, ...(p.type === "reasoning" ? { id: p.id } : {}) }) };
       const index = run.messages.findIndex(m => m.id === message.id);
       if (index < 0) run.messages.push(message); else run.messages[index] = message;

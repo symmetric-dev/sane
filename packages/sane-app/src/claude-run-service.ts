@@ -3,7 +3,7 @@ import { join } from "node:path";
 import { timingSafeEqual } from "node:crypto";
 import { AgentLaunchConfigurationError, claudeAgentSettings, saneContextText, sha256, snapshotIdentity } from "./agent-launch";
 import { projectCompactions } from "./compaction";
-import type { Event, Run, Session } from "./history";
+import type { Event, Run, Session, TerminationUncertainty } from "./history";
 import type { RunOwner } from "./run-owner";
 import type { ExecutionContext } from "./workstreams";
 import { isClaudeRootRecord } from "../shared/conversation/cc-scope";
@@ -548,7 +548,7 @@ export class ClaudeRunService {
       const status = stopped && (closing || stopRequested) ? "interrupted" : "failed";
       classify(status, !stopped ? "termination-unconfirmed" : closing ? "service-closing" : stopRequested ? "stop-requested" : storageFailed ? "storage-failure" : "launch-stream-shutdown-failure");
       run.endedAt = new Date().toISOString(); updateSession();
-      try { await deps.emit(run, "status", { status, ...(operation === "compact" && !supervised.child && !intentWritten && !supervised.nativeAttempted ? { operation: "compact", compactNotSubmitted: true } : {}), reason: !stopped ? "Process termination unconfirmed; operator reconciliation required" : storageFailed ? "Storage failure; operator reconciliation required" : owner.launchError ?? "CLI launch, stream, or shutdown failure", error: message(error), ...(error instanceof HarnessDispatchError ? { code: error.code } : {}), ...this.failure(result) }); } catch { deps.failClosed(); }
+      try { await deps.emit(run, "status", { status, ...(operation === "compact" && !supervised.child && !intentWritten && !supervised.nativeAttempted ? { operation: "compact", compactNotSubmitted: true } : {}), reason: !stopped ? "Process termination unconfirmed; operator reconciliation required" : storageFailed ? "Storage failure; operator reconciliation required" : owner.launchError ?? "CLI launch, stream, or shutdown failure", ...(!stopped ? { termination: { kind: "unconfirmed", cause: "process-group" } satisfies TerminationUncertainty } : {}), error: message(error), ...(error instanceof HarnessDispatchError ? { code: error.code } : {}), ...this.failure(result) }); } catch { deps.failClosed(); }
       ready(false);
     } finally {
       ready(false);

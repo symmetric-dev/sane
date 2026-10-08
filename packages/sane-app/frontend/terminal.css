@@ -45,12 +45,12 @@
   font-size:11px;
   flex-shrink:0;
 }
-.terminal-local-footer button,.terminal-empty button {
+.terminal-footer-actions > button,.terminal-touch-keys > button,.terminal-empty button {
   color:var(--primary);
   padding:5px 7px;
   border-radius:5px;
 }
-.terminal-local-footer button:hover,.terminal-empty button:hover {
+.terminal-footer-actions > button:hover,.terminal-touch-keys > button:hover,.terminal-empty button:hover {
   background:var(--accent);
 }
 .terminal-footer-actions {

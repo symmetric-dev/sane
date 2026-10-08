@@ -18,8 +18,8 @@ export function WorkstreamReviewEntry({ overview, workspaceId, workstreamId, onR
   const candidates = overview.conversations.filter(row => row.sessionId && row.conversation?.workstreamId === workstreamId
     && state.conversations.some(conversation => conversation.id === row.sessionId && conversation.workspaceId === workspaceId && !conversation.replacedBy));
   const selected = candidates.find(row => row.sessionId === recipient);
-  return <section className="workstream-review-entry" aria-label="Start document review in chat">
-    <div className="workstream-review-entry-heading"><FiMessageSquare size={15} aria-hidden="true" /><strong>Review in chat</strong></div>
+  return <section className="workstream-review-entry" aria-label="Sane Review in chat">
+    <div className="workstream-review-entry-heading"><FiMessageSquare size={15} aria-hidden="true" /><strong>Sane Review</strong></div>
     {candidates.length ? <div className="workstream-review-entry-controls">
       <label htmlFor={id}>Review recipient<select id={id} value={selected ? recipient : ""} disabled={disabled || state.sending} onChange={event => setRecipient(event.target.value)}>
         <option value="">Choose a conversation…</option>
@@ -27,7 +27,7 @@ export function WorkstreamReviewEntry({ overview, workspaceId, workstreamId, onR
       </select></label>
       <button type="button" className="primary-button" disabled={!selected || disabled || state.sending} onClick={() => {
         if (selected?.sessionId) onReview({ sessionId: selected.sessionId, workspaceId, repositoryId: overview.repositoryId, workstreamId });
-      }}>Start review</button>
+      }}>Sane Review</button>
     </div> : <p className="muted">Open or connect a conversation in this workstream to review its documents in chat.</p>}
   </section>;
 }

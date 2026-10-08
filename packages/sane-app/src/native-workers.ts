@@ -18,12 +18,18 @@ export type ResolvedNativeWorkerCaller = { caller: WorkerCaller; sessionId: stri
  * Resolve exactly one ready, repository-enrolled App session by normalized source,
  * authority, native ID and repository; exclude sessions with attachment metadata.
  * Capture its owner BEFORE awaiting enrollment or native evidence and recheck it
- * afterwards. Fresh invocations require a current, running, non-stopping owner.
+ * afterwards. Fresh invocations require a current, running, non-stopping owner
+ * or a request-local capability for an evidenced live OC continuation.
  * CC: match the authenticated run's hook/tool record and actual worker tool name.
  * OC: match messageId AND actual tool-part ID/name in the captured run's
  * nativeCommandId-bounded snapshot. Code Mode additionally requires private
  * plugin provenance from its active execute hooks; the callback UUID is an
  * independent retry identity, never a substitute for visible native evidence.
+ * OC background/retry continuations may outlive that command's owner. Require
+ * an active native session, the exact unfinished tool part, supported native
+ * continuation records and the actual preceding App command. Recheck this
+ * evidence before reservation; retain the original run/tool ancestry. This is
+ * not command-completion evidence and must not reopen a completed Run.
  * Never choose lastRunId/latest run or accept a run ID from the request.
  *
  * Bind retries to that evidenced run. For start recovery, consult the EXISTING
@@ -68,7 +74,7 @@ export class NativeWorkerRequestError extends Error {
 const publicWorkerErrors: Readonly<Record<string, string>> = {
   "invalid-worker-input": "Invalid worker arguments. Supply a supported worker role, bounded prompt/context and valid operation arguments.",
   "worker-request-conflict": "Worker request identity is already bound to another invocation or payload. Inspect sane_worker_status; do not create a replacement invocation for work that may already be admitted.",
-  "worker-parent": "Worker operation requires a repository-enrolled, App-owned parent conversation and an evidenced run; new starts require its current running, non-stopping run. Inspect sane_worker_status before replacing any uncertain start.",
+  "worker-parent": "Worker operation requires a repository-enrolled, App-owned parent conversation and an evidenced live invocation in its run or native continuation. Inspect sane_worker_status before replacing any uncertain start.",
   "worker-scope": "Requested workers must belong to this caller's descendant tree. Use sane_worker_status without IDs to discover visible workers; cancellation requires explicit worker IDs.",
   "worker-wait": "Worker wait requires IDs and a timeout from 0 to 10 seconds; acknowledgement requires exact worker ID, result revision and notification ID from status or wait.",
   "worker-notification-recipient": "Only a worker's immediate parent may acknowledge its result. Ancestors may inspect results without consuming that parent's notifications.",

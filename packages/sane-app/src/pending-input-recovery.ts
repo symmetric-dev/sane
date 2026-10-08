@@ -68,7 +68,7 @@ export function createOriginalRecoveryJournal(dataDir: string, storeId: string) 
     try { file = readPinned(path); }
     catch (error) {
       // An unlinked, never-attempted claim has no historical journal to consult.
-      if ((error as NodeJS.ErrnoException).code === "ENOENT" && !pin.file && original.state === "claimed" && !original.claim!.possibleNative) return undefined;
+      if ((error as NodeJS.ErrnoException).code === "ENOENT" && !pin.file && !original.claim!.possibleNative) return undefined;
       throw error;
     }
     if (!pin.file || file.dev !== pin.file.dev || file.ino !== pin.file.ino) throw new PendingInputStorageError("Original run journal was replaced");
@@ -99,6 +99,9 @@ export function createPendingInputRecovery(deps: {
   pins: (original: PendingInputStoredItem, signal: AbortSignal) => Promise<PendingInputPreflight>;
   protocolUnsafe: (original: PendingInputStoredItem) => boolean;
   protocolMismatch: (original: PendingInputStoredItem, reason: string, validate: () => void) => Promise<void>;
+  terminalProof: (original: PendingInputStoredItem) => { status: "completed" | "failed" | "interrupted"; basis: "exact-native-terminal" } | undefined;
+  terminalize: (original: PendingInputStoredItem, status: "completed" | "failed" | "interrupted", basis: "not-submitted" | "exact-native-terminal", validate: () => void) => Promise<void>;
+  settled: (original: PendingInputStoredItem) => void;
   failClosed: () => void;
 }) {
   const shutdown = new AbortController();
@@ -106,7 +109,7 @@ export function createPendingInputRecovery(deps: {
   let observationsOpen = true;
   // This exact object never leaves the synchronous journal closure. DTOs cannot
   // enter its scope, including during startup or the bounded closing drain.
-  let writing: { original: PendingInputStoredItem; identity: DispatchIdentity; validate: () => void } | undefined;
+  let writing: { original: PendingInputStoredItem; identity: DispatchIdentity; validate: () => void; stage: "outcome" | "not-submitted" | "settlement" } | undefined;
   let diagnosticWriting = false;
   const stopping = new Map<PendingInputStoredItem, Promise<{ interrupted: boolean; reconciliationRequired: true }>>();
   const stopFences = new Set<PendingInputStoredItem>();
@@ -125,10 +128,14 @@ export function createPendingInputRecovery(deps: {
   }
   function validateDispatch(input: PendingInputLiveValidation) {
     if (!writing) return false;
-    const { original, identity, validate } = writing;
-    if (input.stage !== "outcome" || input.authorization !== undefined || input.chainId !== original.chainId
+    const { original, identity, validate, stage } = writing;
+    if (input.stage !== stage || input.authorization !== undefined && stage !== "settlement" || input.chainId !== original.chainId
       || !equal(input.identity, identity) || !equal(input.snapshot, original.snapshot))
       throw new PendingInputDomainError("scheduler-identity", "Recovery scope permits only the exact original outcome");
+    if (stage === "settlement" && (!input.authorization || input.authorization.kind !== "settlement"
+      || input.authorization.chainId !== original.chainId || input.authorization.predecessorRunId !== identity.runId
+      || !equal(input.authorization.source, identity.source)))
+      throw new PendingInputDomainError("scheduler-identity", "Recovery settlement authorization changed");
     validate(); originalCurrent(original);
     return true;
   }
@@ -147,6 +154,29 @@ export function createPendingInputRecovery(deps: {
       };
       const identity = original.claim!.identity;
       const protocolUnsafe = () => { validate(); return deps.protocolUnsafe(original); };
+      const withheld = originalCurrent(original);
+      if (!withheld.claim!.possibleNative && withheld.claim!.evidence?.submission === "not-submitted"
+        && withheld.claim!.evidence?.nativeAcceptance === "not-accepted" && !protocolUnsafe()) {
+        await deps.terminalize(original, identity.source.harnessId === "claude-code" ? "interrupted" : "failed", "not-submitted", validate);
+        validate();
+        writing = { original, identity, validate, stage: "not-submitted" };
+        try { deps.store.archiveNotSubmitted(identity, { kind: "definitely-not-submitted", identity }); }
+        finally { writing = undefined; }
+        deps.settled(original);
+        return { interrupted: false };
+      }
+      const priorTerminal = deps.terminalProof(original);
+      if (priorTerminal && withheld.state === "run-linked" && withheld.claim!.possibleNative
+        && withheld.claim!.evidence?.submission === "submitted" && withheld.claim!.evidence?.nativeAcceptance === "accepted" && !protocolUnsafe()) {
+        await deps.terminalize(original, priorTerminal.status, priorTerminal.basis, validate);
+        validate();
+        writing = { original, identity, validate, stage: "settlement" };
+        try { deps.store.settle(identity, priorTerminal.status, { kind: "settlement", authorizationId: crypto.randomUUID(),
+          chainId: original.chainId, predecessorRunId: identity.runId, source: identity.source }); }
+        finally { writing = undefined; }
+        deps.settled(original);
+        return { interrupted: false };
+      }
       const scope: OpenCodeRecoveryObservation = Object.freeze({ identity, validate,
         beforeNative: refuseSubmission, execute: refuseSubmission,
         protocolUnsafe,
@@ -174,11 +204,28 @@ export function createPendingInputRecovery(deps: {
           const evidence: DispatchSubmissionEvidence = { ...identity, submission: "submitted", nativeAcceptance: "accepted" };
           if (equal(live.claim!.evidence, evidence)) return;
           if (writing) throw new Error("Reentrant recovery observation");
-          writing = { original, identity, validate };
+          writing = { original, identity, validate, stage: "outcome" };
           try { deps.store.hooks(identity).outcome!(evidence); } finally { writing = undefined; }
         },
       });
-      return await deps.service.observeRecoveredInput(scope, stop);
+      const result = await deps.service.observeRecoveredInput(scope, stop);
+      validate();
+      if (protocolUnsafe()) return result;
+      const live = originalCurrent(original);
+      const terminal = result.terminal;
+      if (terminal && live.state === "run-linked" && live.claim!.possibleNative && live.claim!.evidence?.submission === "submitted"
+        && live.claim!.evidence?.nativeAcceptance === "accepted" && equal(terminal.identity, identity)
+        && ["completed", "failed", "interrupted"].includes(terminal.status)) {
+        await deps.terminalize(original, terminal.status, "exact-native-terminal", validate);
+        validate();
+        const authorization = { kind: "settlement" as const, authorizationId: crypto.randomUUID(), chainId: original.chainId,
+          predecessorRunId: identity.runId, source: identity.source };
+        writing = { original, identity, validate, stage: "settlement" };
+        try { deps.store.settle(identity, terminal.status, authorization); }
+        finally { writing = undefined; }
+        deps.settled(original);
+      }
+      return result;
     } catch (error) {
       if (error instanceof OpenCodeSourceMismatchError) error = new PendingInputDomainError("source-changed", error.message);
       if (error instanceof PendingInputDomainError) {
@@ -201,7 +248,8 @@ export function createPendingInputRecovery(deps: {
     writing: () => (!!writing || diagnosticWriting) && observationsOpen,
     validateDispatch,
     async startup() {
-      for (const original of deps.originals) if (original.claim?.identity.source.harnessId === "opencode") await observe(original, false);
+      for (const original of deps.originals) if (original.claim?.identity.source.harnessId === "opencode"
+        || !original.claim?.possibleNative && original.claim?.evidence?.submission === "not-submitted") await observe(original, false);
     },
     stop(conversationId: string) {
       const original = deps.originals.find(item => item.claim?.identity.source.sessionId === conversationId);

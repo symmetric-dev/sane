@@ -11,6 +11,8 @@ import type { AgentProfile, AgentProfileInput, AgentProfiles } from "../src/agen
 import type { ConversationActivity } from "../shared/conversation/activity";
 import type { TranscriptPage, TranscriptMetadataPage, TranscriptRefresh, TranscriptRefreshRequest } from "../src/transcript-contract";
 import type { ConversationUpdateFeedRequest, ConversationUpdatePage, ConversationUpdateSource } from "../shared/conversation/conversation-updates";
+import type { PendingInputCapability, PendingInputRemovalRequest, PendingInputRemovalResult, PendingInputRequest, PendingInputResumeRequest, PendingInputSubmissionResult } from "../shared/conversation/pending-input-contract";
+import type { PendingInputResumeResult, PendingInputStatus, PendingInputView } from "./pending-input-presentation";
 export type { ConversationUpdateCursor, ConversationUpdateFeedRequest, ConversationUpdatePage, ConversationUpdateSource } from "../shared/conversation/conversation-updates";
 export type { AgentProfile, AgentProfileInput, AgentProfiles } from "../src/agent-profiles-contract";
 export type { Interaction, InteractionReply, FormField } from "../shared/conversation/native-contract";
@@ -27,10 +29,18 @@ export type Capabilities = {
 /** Local submission, retained after acknowledgement only until its recorded user turn arrives. */
 export type PendingTurn = { id: string; conversationId: string; runId?: string; text: string; time: string };
 export type HarnessInfo = { id: Harness; available: boolean; connected: boolean; state: string; reason?: string; capabilities: Partial<HarnessCapabilities> };
-export type Config = { authRequired: boolean; authenticated: boolean; storeId?: string; conversationUpdates?: boolean; cwd?: string; capabilities?: Capabilities; agents?: AgentChoice[]; agentProfiles?: AgentProfiles; harnesses?: HarnessInfo[] };
+export type Config = { authRequired: boolean; authenticated: boolean; storeId?: string; conversationUpdates?: boolean; pendingInputCapability?: PendingInputCapability; cwd?: string; capabilities?: Capabilities; agents?: AgentChoice[]; agentProfiles?: AgentProfiles; harnesses?: HarnessInfo[] };
 export type Availability = { canSend: boolean; reason?: string; code?: string; queueAfterRunId?: string; nativeQueue?: boolean };
 export type SearchHit = { sessionId: string; runId?: string; snippet: string; score: number };
+export type CompletionVerificationTarget = { sessionId: string; runId: string; nativeSessionId: string; nativeCommandId: string };
+export type CompletionVerificationRequest = { requestId: string; nativeSessionId: string; nativeCommandId: string; confirm: true; reason: string };
 export interface ConversationClient {
+  verifyCompletion?(id: string, runId: string, input: CompletionVerificationRequest): Promise<{ status: RunStatus; evidence?: unknown }>;
+  pendingInputs?(id: string, signal?: AbortSignal): Promise<PendingInputView>;
+  enqueuePendingInput?(id: string, input: PendingInputRequest): Promise<PendingInputSubmissionResult>;
+  removePendingInput?(id: string, input: PendingInputRemovalRequest): Promise<PendingInputRemovalResult>;
+  resumePendingInputs?(id: string, input: PendingInputResumeRequest): Promise<PendingInputResumeResult>;
+  pendingInputStatus?(id: string, requestId: string, signal?: AbortSignal): Promise<PendingInputStatus>;
   conversationUpdates?(request: ConversationUpdateFeedRequest, signal?: AbortSignal, bootstrap?: boolean): Promise<ConversationUpdatePage>;
   transcriptPage?(id: string, query?: TranscriptQuery, signal?: AbortSignal): Promise<TranscriptPage>;
   transcriptMeta?(id: string, cursor?: string, signal?: AbortSignal): Promise<TranscriptMetadataPage>;

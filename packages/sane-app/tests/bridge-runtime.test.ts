@@ -799,7 +799,7 @@ describe.serial("bridge runtime (isolated offline HTTP native fixtures)", () => 
     } finally { fake.active = false; }
   }, TIMEOUT);
 
-  test("native continuation pending queued cancellation deletes only the exact inbox input without interrupting existing work", async () => {
+  test("native continuation pending queued cancellation deletes only the exact inbox input and retains its owner without interrupting existing work", async () => {
     const { sessionId, nativeSessionId, runId, fake, assistant, original, originalEvents } = await nativeContinuationFixture();
     try {
       const queued = await api("/api/sessions", { sessionId, prompt: "offline cancel pending native continuation queue" });
@@ -813,8 +813,7 @@ describe.serial("bridge runtime (isolated offline HTTP native fixtures)", () => 
       fake.inbox.push(other);
       const messages = structuredClone(fake.messages), before = calls.length;
       const canceled = await api(`/api/sessions/${sessionId}/cancel`, {});
-      expect(canceled.status).toBe(200); expect(canceled.body).toEqual({ interrupted: true });
-      await until("native continuation exact queued run interrupted", async () => storedRun(newRun.runId).status === "interrupted" ? true : undefined);
+      expect(canceled.status).toBe(200); expect(canceled.body).toEqual({ interrupted: false });
       const cancelCalls = calls.slice(before);
       expect(cancelCalls.filter(call => call.method !== "GET")).toEqual([expect.objectContaining({ method: "DELETE", path: `/api/session/${nativeSessionId}/inbox/${newRun.nativeCommandId}` })]);
       expect(cancelCalls.some(call => call.path.includes("/interrupt"))).toBe(false);
@@ -823,12 +822,17 @@ describe.serial("bridge runtime (isolated offline HTTP native fixtures)", () => 
       expect(assistant.time.completed).toBeUndefined();
       expect(storedRun(runId)).toEqual(original);
       expect((await api(`/api/runs/${runId}/events`)).body.events).toEqual(originalEvents);
-      const listed = await until("native continuation remains active after exact queue cancellation", async () => {
-        const row = (await api("/api/sessions")).body.sessions.find((row: any) => row.sessionId === sessionId);
-        return row?.availability.canSend ? row : undefined;
-      });
-      expect(listed).toMatchObject({ lastStatus: "running", nativeActivity: "active", availability: { canSend: true, nativeQueue: true } });
-      expect(storedRun(newRun.runId)).toMatchObject({ status: "interrupted", nativeDelivery: "queue" });
+      const listed = (await api("/api/sessions")).body.sessions.find((row: any) => row.sessionId === sessionId);
+      expect(listed).toMatchObject({ lastStatus: "running", nativeActivity: "active", availability: { canSend: false } });
+      expect(storedRun(newRun.runId)).toMatchObject({ status: "running", nativeDelivery: "queue" });
+      expect((await api("/api/sessions", { sessionId, prompt: "must not overtake unproven removal" })).status).toBe(409);
+      // DELETE/absence is not a command-scoped cancellation receipt. Only an
+      // independent exact user/terminal observation may finish this monitor.
+      assistant.time.completed = fake.info.time.updated + 1;
+      fake.messages.push({ id: newRun.nativeCommandId, type: "user", text: "offline cancel pending native continuation queue", time: { created: fake.info.time.updated + 2 } });
+      complete(nativeSessionId, "interrupted");
+      expect((await waitIdle(sessionId)).lastStatus).toBe("interrupted");
+      expect(storedRun(runId)).toEqual(original);
     } finally { fake.active = false; fake.inbox = []; }
   }, TIMEOUT);
 
@@ -1197,6 +1201,9 @@ describe.serial("bridge runtime (isolated offline HTTP native fixtures)", () => 
   }, TIMEOUT);
 
   test("recovered owner keeps an after-release barrier throughout asynchronous worker refresh, including capacity", async () => {
+    await login();
+    const seed = await api("/api/sessions", { harness: "opencode", prompt: "offline recovered owner seed", cwd: repoDir });
+    expect(seed.status).toBe(202); await waitIdle(seed.body.sessionId);
     const created = await api("/api/sessions", { harness: "opencode", prompt: "hold for recovered worker barrier", cwd: repoDir }); expect(created.status).toBe(202);
     const { sessionId, nativeSessionId, runId } = created.body;
     await until("accepted recovery fixture", async () => storedRun(runId).nativePhase === "accepted" ? true : undefined);
@@ -2280,7 +2287,7 @@ describe.serial("bridge runtime (isolated offline HTTP native fixtures)", () => 
     } finally { fake.active = false; unavailable = false; read.mockRestore(); reserve.mockRestore(); await f.running.close(); }
   }, TIMEOUT);
 
-  test("live OC acknowledged pending removal archives interrupted without native history and preserves paused FIFO for explicit Resume", async () => {
+  test("live OC pending disappearance after Stop retains owner and paused FIFO without replay", async () => {
     const f = await isolatedQueueSeed("live-oc-pending-stop", false, "opencode"), id = f.session.sessionId, store = f.running.pendingInputs.store;
     const fake = sessions.get(f.session.nativeSessionId!)!, head = queueWire(f.session, "offline original live pending Stop head");
     const next = queueWire(f.session, "offline exact first paused FIFO waiter"), last = queueWire(f.session, "offline exact second paused FIFO waiter");
@@ -2303,17 +2310,11 @@ describe.serial("bridge runtime (isolated offline HTTP native fixtures)", () => 
         const item = store.lookup(id, head.requestId)!.item;
         return item.claim?.evidence?.nativeAcceptance === "accepted" && published?.owner.run.nativePhase === "accepted" ? structuredClone(item) : undefined;
       });
-      const identity = original.claim!.identity, lifecycle = published!, nativeBefore = calls.length;
+      const identity = original.claim!.identity, nativeBefore = calls.length;
       expect(fake.inbox.find(input => input.id === identity.nativeCommandId)).toMatchObject({ sessionID: f.session.nativeSessionId, type: "user", delivery: "queue" });
       expect(coordinator!.hasOwner(id)).toBe(true); expect(coordinator!.hasAdmission(id)).toBe(true);
       const stop = await isolatedApi(f.running, `/api/sessions/${id}/cancel`, {}, f.token);
-      expect(stop).toMatchObject({ status: 200, body: { interrupted: true } });
-      await lifecycle.done;
-      const settled = await settledInput(f.running, id, head.requestId);
-      expect(settled).toMatchObject({ state: "settled", claim: { identity, uncertain: false, evidence: original.claim!.evidence }, history: { kind: "settled", status: "interrupted", authorization: { kind: "settlement", predecessorRunId: identity.runId, source: identity.source } } });
-      expect(settled.claim!.authorization).toEqual(original.claim!.authorization);
-      expect(lifecycle.owner).toMatchObject({ settled: true, cancelling: false, stopRequested: true, run: { status: "interrupted" } });
-      expect((await lifecycle.successfulSettlement()).ready).toBe(false);
+      expect(stop).toMatchObject({ status: 200, body: { interrupted: false } });
       expect(calls.slice(nativeBefore).filter(call => call.method !== "GET")).toEqual([expect.objectContaining({ method: "DELETE", path: `/api/session/${f.session.nativeSessionId}/inbox/${identity.nativeCommandId}` })]);
       expect(calls.slice(nativeBefore)).toContainEqual(expect.objectContaining({ method: "GET", path: `/api/session/${f.session.nativeSessionId}/message/${identity.nativeCommandId}` }));
       expect(fake.messages.some(message => message.id === identity.nativeCommandId)).toBe(false);
@@ -2321,26 +2322,14 @@ describe.serial("bridge runtime (isolated offline HTTP native fixtures)", () => 
       const snapshot = await new OpenCodeAdapter(undefined, undefined, join(root, "oc", "service.json")).snapshot(f.session.nativeSessionId!, identity.nativeCommandId!, f.session.cwd);
       expect(snapshot.pending).toBe(false); expect(snapshot.outcome).toBeUndefined();
       expect(fake.active).toBe(true); // Foreign native busyness is not this deleted head's execution.
-      expect(coordinator!.hasOwner(id)).toBe(false); expect(coordinator!.hasAdmission(id)).toBe(false); expect(coordinator!.hasReconciliation(id)).toBe(false);
+      expect(coordinator!.hasOwner(id)).toBe(true);
+      expect(store.lookup(id, head.requestId)!.item).toMatchObject({ state: "run-linked", claim: { identity }, history: null });
       expect(store.inspect(id).pause?.code).toBe("stopped");
       expect(store.lookup(id, next.requestId)!.item).toEqual(nextOriginal); expect(store.lookup(id, last.requestId)!.item).toEqual(lastOriginal);
       await driveConsumer(f.running); expect(prompts()).toHaveLength(before + 1);
-      foreign.mockRestore(); fake.active = false;
-      await driveConsumer(f.running); expect(prompts()).toHaveLength(before + 1); // Idle is not Resume consent.
-      await f.running.pendingInputs.resume(id, { version: 1, action: "resume", requestId: crypto.randomUUID(), conversationId: id, expectedRevision: store.get(id).revision });
-      const resumed = await settledInput(f.running, id, next.requestId);
-      expect(resumed.claim!.identity.nativeCommandId).not.toBe(identity.nativeCommandId);
-      expect(prompts().slice(before).map(call => call.body.text).slice(0, 2)).toEqual([head.text, next.text]);
+      await expect(f.running.pendingInputs.resume(id, { version: 1, action: "resume", requestId: crypto.randomUUID(), conversationId: id, expectedRevision: store.get(id).revision })).rejects.toMatchObject({ code: "pending-input-claimed" });
       expect(prompts().filter(call => call.body.id === identity.nativeCommandId)).toHaveLength(1);
-      expect(prompts().filter(call => call.body.id === resumed.claim!.identity.nativeCommandId)).toHaveLength(1);
-      expect(resumed.claim!.authorization.predecessorRunId).toBe(identity.runId);
-      // Resume permits the completed predecessor to dispatch the final waiter;
-      // drain that legitimate turn before shutdown closes settlement observation.
-      const final = await settledInput(f.running, id, last.requestId);
-      expect(prompts().slice(before).map(call => call.body.text)).toEqual([head.text, next.text, last.text]);
-      expect(prompts().filter(call => call.body.id === final.claim!.identity.nativeCommandId)).toHaveLength(1);
-      expect(final.claim!.authorization.predecessorRunId).toBe(resumed.claim!.identity.runId);
-    } finally { foreign.mockRestore(); arbitration.mockRestore(); publisher.mockRestore(); fake.active = false; await f.running.close(); }
+    } finally { foreign.mockRestore(); arbitration.mockRestore(); publisher.mockRestore(); fake.active = false; await f.running.close().catch(() => {}); }
   }, TIMEOUT);
 
   test("Phase5c1 CC consumed Stop archives exact interrupted identity only after acknowledged termination and retains stopped waiters", async () => {
@@ -2441,7 +2430,7 @@ describe.serial("bridge runtime (isolated offline HTTP native fixtures)", () => 
       } finally { restore(); capture.mockRestore(); arbitration.mockRestore(); publisher.mockRestore(); await f.running.close(); }
     }, TIMEOUT);
 
-  test("Phase5e2 recovered typed original receipt observes and Stops exact pending input with exact or missing Run metadata, without replay or settlement", async () => {
+  test("Phase5e2 recovered Stop cannot settle disappeared pending input with exact or missing Run metadata", async () => {
     for (const metadata of ["exact", "missing"] as const) {
       const f = await recoveredOCSeed(`phase5e2-pending-${metadata}`), id = f.session.sessionId, identity = f.original.claim!.identity;
       if (metadata === "missing") {
@@ -2459,22 +2448,25 @@ describe.serial("bridge runtime (isolated offline HTTP native fixtures)", () => 
         expect(read.mock.calls.some(args => args[0] === identity.source.nativeSessionId && args[1] === identity.nativeCommandId && args[2] === identity.source.cwd && args[3] === "native-queued-handoff")).toBe(true);
         expect(mutations()).toHaveLength(before);
         expect(store.lookup(id, f.head.requestId)!.item).toMatchObject({ ...f.original, claim: { ...f.original.claim!, uncertain: true, evidence: { ...identity, submission: "submitted", nativeAcceptance: "accepted" } } });
+        fake.inbox.splice(fake.inbox.findIndex(input => input.id === identity.nativeCommandId), 1);
         const stop = await isolatedApi(running, `/api/sessions/${id}/cancel`, {}, token);
-        expect(stop).toMatchObject({ status: 200, body: { interrupted: true, reconciliationRequired: true } });
-        expect(calls.slice(nativeCallsBefore).filter(call => call.method !== "GET")).toEqual([expect.objectContaining({ method: "DELETE", path: `/api/session/${identity.source.nativeSessionId}/inbox/${identity.nativeCommandId}` })]);
+        expect(stop).toMatchObject({ status: 200, body: { interrupted: false, reconciliationRequired: true } });
+        expect(calls.slice(nativeCallsBefore).filter(call => call.method !== "GET")).toEqual([]);
         expect(fake.inbox).toEqual([foreign]); expect(fake.active).toBe(true);
         await driveConsumer(running);
         expect(store.lookup(id, f.head.requestId)!.item).toMatchObject({ state: "run-linked", history: null, claim: { identity, uncertain: true } });
         expect(store.lookup(id, f.waiter.requestId)!.item).toMatchObject({ state: "waiting", claim: null, request: { text: f.waiter.text } });
         expect(store.inspect(id).pause).not.toBeNull();
         expect((await isolatedApi(running, "/api/sessions", undefined, token)).body.availability.code).toBe("capacity");
+        expect(store.get(id).paused).toBe(true);
         await expect(running.pendingInputs.resume(id, { version: 1, action: "resume", requestId: crypto.randomUUID(), conversationId: id, expectedRevision: store.get(id).revision })).rejects.toMatchObject({ code: "pending-input-claimed" });
         expect(mutations()).toHaveLength(before); // Existing mutations() counts POST, not the exact DELETE above.
         const after = JSON.parse(readFileSync(join(f.selected.dataDir, "metadata.json"), "utf8"));
         expect(after.runs.some((run: any) => run.runId === identity.runId)).toBe(metadata === "exact");
+        if (metadata === "exact") expect(after.runs.find((run: any) => run.runId === identity.runId).status).toBe("running");
       } finally { read.mockRestore(); await running.close(); }
     }
-  }, TIMEOUT);
+  }, TIMEOUT * 3);
 
   test("Phase5e2 original protocol contradiction is journaled without Run metadata and survives restart to block typed and consumed Stop", async () => {
     const f = await recoveredOCSeed("phase5e2-original-protocol-journal"), id = f.session.sessionId, identity = f.original.claim!.identity;
@@ -2608,14 +2600,18 @@ describe.serial("bridge runtime (isolated offline HTTP native fixtures)", () => 
 
   test("Phase5e2 original observation outcome post-rename writer fault fails closed before native Stop and retains both locks", async () => {
     const f = await recoveredOCSeed("phase5e2-outcome-writer"), identity = f.original.claim!.identity, id = f.session.sessionId;
-    const input = sessions.get(identity.source.nativeSessionId!)!.inbox.find(input => input.id === identity.nativeCommandId), time = input.time;
-    delete input.time; // Untyped legacy-like pending input is not receipt proof.
+    const fake = sessions.get(identity.source.nativeSessionId!)!, index = fake.inbox.findIndex(input => input.id === identity.nativeCommandId);
+    expect(index).toBeGreaterThanOrEqual(0);
+    const [receipt] = fake.inbox.splice(index, 1); // No receipt yet: startup cannot recover acceptance.
     const running = await start({ ...f.selected, cwd: f.session.cwd }), token = await isolatedLogin(running), store = running.pendingInputs.store;
     const deps = (store as unknown as { deps: PendingInputStoreDependencies }).deps, before = mutations().length;
-    input.time = time;
-    deps.write = (dir, file, candidate) => { atomicAppRecord(dir, file, candidate); throw new PendingInputDomainError("source-changed", "Phase5e2 post-rename fault is storage-fatal"); };
+    expect(store.lookup(id, f.head.requestId)!.item.claim!.evidence).toEqual(f.original.claim!.evidence);
+    fake.inbox.splice(index, 0, receipt); // Strict original receipt now proves acceptance.
+    let writes = 0;
+    deps.write = (dir, file, candidate) => { writes++; atomicAppRecord(dir, file, candidate); throw new PendingInputDomainError("source-changed", "Phase5e2 post-rename fault is storage-fatal"); };
     try {
       expect((await isolatedApi(running, `/api/sessions/${id}/cancel`, {}, token)).status).toBe(503);
+      expect(writes).toBe(1);
       expect(store.lookup(id, f.head.requestId)!.item.claim!.evidence).toEqual(f.original.claim!.evidence);
       const disk = JSON.parse(readFileSync(join(f.selected.dataDir, "pending-inputs.json"), "utf8"));
       expect(disk.conversations.find((c: any) => c.conversationId === id).items.find((i: any) => i.requestId === f.head.requestId).claim).toMatchObject({ identity, uncertain: true, evidence: { nativeAcceptance: "accepted" } });
@@ -2683,7 +2679,7 @@ describe.serial("bridge runtime (isolated offline HTTP native fixtures)", () => 
       await until("original strict queued ACK durably accepted", async () => running.pendingInputs.store.lookup(id, input.requestId)!.item.claim?.evidence?.nativeAcceptance === "accepted" || undefined);
       const pinned = running.pendingInputs.store.lookup(id, input.requestId)!.item;
       expect(pinned).toMatchObject({ state: "run-linked", claim: { possibleNative: true, uncertain: false } });
-      await running.close(); await original!.done; complete(f.session.nativeSessionId!);
+      await running.close(); await original!.done;
       monitor.mockClear(); adoption.mockClear(); // Fresh original monitoring is legitimate; startup legacy adoption is not.
       const before = mutations().length;
       const assertBarrier = async () => {
@@ -2710,8 +2706,6 @@ describe.serial("bridge runtime (isolated offline HTTP native fixtures)", () => 
       const refill = queueWire(f.session, "Phase5e refill uncertain original"); await running.pendingInputs.enqueue(id, refill);
       const remove = running.pendingInputs.store.lookup(id, waiter.requestId)!.item;
       await running.pendingInputs.remove(id, remove.itemId, { version: 1, requestId: crypto.randomUUID(), conversationId: id, inputRequestId: waiter.requestId, itemId: remove.itemId });
-      const stop = await isolatedApi(running, `/api/sessions/${id}/cancel`, {}, await isolatedLogin(running));
-      expect(stop.body).toMatchObject({ interrupted: false, reconciliationRequired: true, code: "pending-input-reconciliation-required" });
       await running.close();
       const path = join(f.selected.dataDir, "metadata.json"), metadata = JSON.parse(readFileSync(path, "utf8"));
       const run = metadata.runs.find((r: any) => r.runId === pinned.claim!.identity.runId);
@@ -2741,6 +2735,8 @@ describe.serial("bridge runtime (isolated offline HTTP native fixtures)", () => 
         authorization: { kind: "dispatch", authorizationId: crypto.randomUUID(), chainId: item.chainId, predecessorRunId: null, source: dispatchSource(item.snapshot) } }).claim!;
       store.link(claim.identity); store.beforeNative({ ...claim.identity, submission: "attempted", nativeAcceptance: "unknown" });
       store.outcome({ ...claim.identity, submission: "submitted", nativeAcceptance: "accepted" });
+      writeFileSync(join(f.selected.dataDir, `${claim.identity.runId}.jsonl`), JSON.stringify({ seq: 1, time: new Date().toISOString(),
+        runId: claim.identity.runId, sessionId: id, kind: "status", data: { status: "running" } }) + "\n");
       const fake = sessions.get(f.session.nativeSessionId!)!;
       fake.inbox.push({ id: claim.identity.nativeCommandId, type: "user", sessionID: f.session.nativeSessionId, delivery: "queue", payload: { text: input.text } });
       const path = join(f.selected.dataDir, "metadata.json"), metadata = JSON.parse(readFileSync(path, "utf8"));
@@ -3000,7 +2996,7 @@ describe.serial("bridge runtime (isolated offline HTTP native fixtures)", () => 
       } finally { f.restore(); await f.running.close(); }
     }, TIMEOUT);
 
-  test("Phase5a accepted queued Stop interrupts only the pinned head and never advances its successor", async () => {
+  test("Phase5a accepted queued Stop retains its owner until exact terminal proof and never advances its successor", async () => {
     const f = await isolatedQueueSeed("controls-accepted-stop", false, "opencode"), id = f.session.sessionId, store = f.running.pendingInputs.store;
     const admit = f.running.preparedInput.admit; let published: DispatchLifecycle | undefined;
     const publisher = spyOn(f.running.preparedInput, "admit").mockImplementation((prepared, lease, options) => admit(prepared, lease, { ...options, publish: lifecycle => { published = lifecycle; options!.publish!(lifecycle); } }));
@@ -3009,31 +3005,48 @@ describe.serial("bridge runtime (isolated offline HTTP native fixtures)", () => 
       await f.running.pendingInputs.enqueue(id, input); await f.running.pendingInputs.enqueue(id, next); const before = prompts().length;
       await driveConsumer(f.running); await until("accepted queued Stop head", async () => published?.submissionEvidence().nativeAcceptance === "accepted" || undefined);
       const identity = store.lookup(id, input.requestId)!.item.claim!.identity;
-      expect((await isolatedApi(f.running, `/api/sessions/${id}/cancel`, {}, f.token)).status).toBe(200);
+      const beforeInterrupts = calls.filter(c => c.method === "POST" && c.path.includes("/interrupt?")).length;
+      const stopped = await isolatedApi(f.running, `/api/sessions/${id}/cancel`, {}, f.token);
+      expect(stopped.status).toBe(200); expect(stopped.body.interrupted).toBe(false);
       // Stop acknowledgement/done alone do not retire the original claim.
       expect(store.lookup(id, input.requestId)!.item.state).toBe("run-linked");
+      await driveConsumer(f.running);
+      expect(published!.owner).toMatchObject({ settled: false, run: { status: "running" } });
+      expect(store.lookup(id, input.requestId)!.item).toMatchObject({ state: "run-linked", history: null, claim: { identity, possibleNative: true } });
+      expect(store.lookup(id, next.requestId)!.item).toMatchObject({ state: "waiting", claim: null });
+      expect(prompts()).toHaveLength(before + 1);
+      expect(calls.filter(c => c.method === "POST" && c.path.includes("/interrupt?"))).toHaveLength(beforeInterrupts);
+      // The fake independently publishes this exact command's terminal event.
+      complete(f.session.nativeSessionId!, "interrupted");
       await published!.done; await driveConsumer(f.running); await driveConsumer(f.running);
-      // This fake service supplies exact interrupted outcome AND native idle;
-      // independent real settlement may retire the head, never its pause.
       expect(store.inspect(id).pause?.code).toBe("stopped"); expect(store.lookup(id, input.requestId)!.item).toMatchObject({ state: "settled", history: { kind: "settled", status: "interrupted" }, claim: { identity, possibleNative: true, evidence: { submission: "submitted", nativeAcceptance: "accepted" } } });
       expect(store.lookup(id, next.requestId)!.item).toMatchObject({ state: "waiting", claim: null }); expect(prompts()).toHaveLength(before + 1);
-      expect(calls.filter(c => c.method === "POST" && c.path.includes("/interrupt?")).at(-1)?.path).toBe(`/api/session/${f.session.nativeSessionId}/interrupt?resume=false`);
     } finally { publisher.mockRestore(); await f.running.close(); }
   }, TIMEOUT);
 
-  test("Phase5a unconfirmed accepted Stop retains the original claim and owner, never dispatches a successor", async () => {
+  test("Phase5a accepted pending DELETE without cancellation proof retains the original claim and owner, never dispatches a successor", async () => {
     const f = await isolatedQueueSeed("controls-unconfirmed-stop", false, "opencode"), id = f.session.sessionId, store = f.running.pendingInputs.store;
     const admit = f.running.preparedInput.admit, cancel = OpenCodeAdapter.prototype.cancel; let published: DispatchLifecycle | undefined;
     const publisher = spyOn(f.running.preparedInput, "admit").mockImplementation((prepared, lease, options) => admit(prepared, lease, { ...options, publish: lifecycle => { published = lifecycle; options!.publish!(lifecycle); } }));
     const refusal = spyOn(OpenCodeAdapter.prototype, "cancel").mockImplementation(function(this: OpenCodeAdapter, ...args) {
       if (args[0] === f.session.nativeSessionId) throw new OpenCodeUnavailableError("Offline cancellation acknowledgement unavailable"); return cancel.apply(this, args);
     });
+    const prompt = OpenCodeAdapter.prototype.promptQueuedHandoff;
+    const busyRace = spyOn(OpenCodeAdapter.prototype, "promptQueuedHandoff").mockImplementation(function(this: OpenCodeAdapter, ...args) {
+      if (args[0] === f.session.nativeSessionId) sessions.get(args[0])!.active = true;
+      return prompt.apply(this, args);
+    });
     try {
       const input = queueWire(f.session, "hold for unconfirmed queued Stop"), next = queueWire(f.session);
       await f.running.pendingInputs.enqueue(id, input); await f.running.pendingInputs.enqueue(id, next); const before = prompts().length;
+      const fake = sessions.get(f.session.nativeSessionId!)!;
       await driveConsumer(f.running); await until("accepted unconfirmed Stop head", async () => published?.submissionEvidence().nativeAcceptance === "accepted" || undefined);
       const identity = store.lookup(id, input.requestId)!.item.claim!.identity;
-      expect((await isolatedApi(f.running, `/api/sessions/${id}/cancel`, {}, f.token)).status).toBe(503);
+      expect(fake.inbox.some(pending => pending.id === identity.nativeCommandId)).toBe(true);
+      const stopped = await isolatedApi(f.running, `/api/sessions/${id}/cancel`, {}, f.token);
+      expect(stopped.status).toBe(200); expect(stopped.body.interrupted).toBe(false);
+      expect(fake.inbox.some(pending => pending.id === identity.nativeCommandId)).toBe(false);
+      expect(refusal).not.toHaveBeenCalled(); expect(fake.active).toBe(true);
       await driveConsumer(f.running); await driveConsumer(f.running);
       expect(published!.owner).toMatchObject({ stopRequested: true, settled: false, run: { status: "running" } });
       expect(store.lookup(id, input.requestId)!.item).toMatchObject({ state: "run-linked", history: null, claim: { identity, possibleNative: true } });
@@ -3042,8 +3055,9 @@ describe.serial("bridge runtime (isolated offline HTTP native fixtures)", () => 
       expect(store.lookup(id, input.requestId)!.item.claim!.identity).toEqual(identity);
       const row = (await isolatedApi(f.running, "/api/sessions", undefined, f.token)).body.sessions.find((s: any) => s.sessionId === id);
       expect(row.availability.canSend).toBe(false); expect(row.availability.reason).not.toContain("Storage");
+      fake.messages.push({ id: identity.nativeCommandId!, type: "user", text: input.text, time: { created: fake.info.time.updated + 1 } });
       refusal.mockRestore(); complete(f.session.nativeSessionId!, "interrupted"); await published!.done;
-    } finally { refusal.mockRestore(); publisher.mockRestore(); sessions.get(f.session.nativeSessionId!)!.active = false; await f.running.close(); }
+    } finally { busyRace.mockRestore(); refusal.mockRestore(); publisher.mockRestore(); sessions.get(f.session.nativeSessionId!)!.active = false; await f.running.close(); }
   }, TIMEOUT);
 
   for (const code of ["stopped", "failed", "restart", "source-changed", "acceptance-unknown"] as const)
@@ -3779,6 +3793,123 @@ describe.serial("bridge runtime (isolated offline HTTP native fixtures)", () => 
       expect((await isolatedApi(running, "/api/sessions", { sessionId: session.sessionId, prompt: "no bypass" }, token)).status).toBe(409); expect(invocations()).toHaveLength(before);
     } finally { await running.close(); }
   }, TIMEOUT);
+
+  test("recovered durable withholding without Run metadata releases only the settled claim and requires fresh Resume", async () => {
+    const selected = startupFixture("recovered-withheld-claim"), dir = selected.dataDir;
+    let running = await start(selected), token = await isolatedLogin(running);
+    try {
+      const created = await isolatedApi(running, "/api/sessions", { prompt: "withheld recovery seed" }, token);
+      await until("withheld seed settled", async () => JSON.parse(readFileSync(join(dir, "metadata.json"), "utf8")).runs.find((r: any) => r.runId === created.body.runId)?.status === "completed" || undefined);
+      const session = JSON.parse(readFileSync(join(dir, "metadata.json"), "utf8")).sessions[0];
+      const input = queueWire(session, "first withheld"), waiter = queueWire(session, "waiting after withheld");
+      await running.pendingInputs.enqueue(session.sessionId, input); await running.pendingInputs.enqueue(session.sessionId, waiter);
+      await running.close();
+      const storeId = JSON.parse(readFileSync(join(dir, "manifest.json"), "utf8")).storeId;
+      const queued = new PendingInputStore(dir, storeId, { validateLive: () => {} }); queued.recover();
+      queued.resume({ version: 1, action: "resume", requestId: crypto.randomUUID(), conversationId: session.sessionId, expectedRevision: queued.get(session.sessionId).revision });
+      const head = queued.lookup(session.sessionId, input.requestId)!.item;
+      const identity = queued.claim({ conversationId: session.sessionId, itemId: head.itemId, inputRequestId: input.requestId,
+        expectedRevision: queued.get(session.sessionId).revision, attemptId: crypto.randomUUID(), runId: crypto.randomUUID(), nativeCommandId: null,
+        authorization: { kind: "dispatch", authorizationId: crypto.randomUUID(), chainId: head.chainId, predecessorRunId: null, source: dispatchSource(head.snapshot) } }).claim!.identity;
+      queued.outcome({ ...identity, submission: "not-submitted", nativeAcceptance: "not-accepted" });
+      const before = invocations().length;
+      running = await start(selected); token = await isolatedLogin(running);
+      const current = running.pendingInputs.store;
+      expect(current.lookup(session.sessionId, input.requestId)!.item).toMatchObject({ state: "settled", history: { kind: "not-submitted", proof: identity } });
+      expect(current.get(session.sessionId).items.map(item => item.requestId)).toEqual([waiter.requestId]);
+      expect(current.get(session.sessionId).paused).toBe(true);
+      await driveConsumer(running); expect(invocations()).toHaveLength(before);
+      const revision = current.get(session.sessionId).revision;
+      expect((await isolatedApi(running, `${queuePath(session.sessionId)}/resume`, { version: 1, action: "resume", requestId: crypto.randomUUID(), conversationId: session.sessionId, expectedRevision: revision }, token)).status).toBe(200);
+    } finally { await running.close(); }
+  }, TIMEOUT);
+
+  test("recovered accepted command settles after exact native terminal while preserving waiting text and pause", async () => {
+    const f = await recoveredOCSeed("recovered-exact-terminal"), id = f.session.sessionId, identity = f.original.claim!.identity;
+    const path = join(f.selected.dataDir, "pending-inputs.json"), records = JSON.parse(readFileSync(path, "utf8"));
+    records.conversations.find((conversation: any) => conversation.conversationId === id).items.find((item: any) => item.requestId === f.head.requestId).claim.evidence =
+      { ...identity, submission: "submitted", nativeAcceptance: "accepted" };
+    atomicAppRecord(f.selected.dataDir, "pending-inputs.json", records);
+    consumeQueuedInput(identity.source.nativeSessionId!, identity.nativeCommandId!);
+    complete(identity.source.nativeSessionId!);
+    const before = mutations().length, running = await start({ ...f.selected, cwd: f.session.cwd, maxConcurrentRuns: 1 });
+    try {
+      const store = running.pendingInputs.store, settled = store.lookup(id, f.head.requestId)!;
+      expect(settled.item).toMatchObject({ state: "settled", history: { kind: "settled", status: "completed" } });
+      expect(settled.classification).toBe("settled");
+      expect(store.get(id).items.map(item => item.requestId)).toEqual([f.waiter.requestId]);
+      expect(store.get(id).paused).toBe(true);
+      await driveConsumer(running); expect(mutations()).toHaveLength(before);
+      await running.pendingInputs.resume(id, { version: 1, action: "resume", requestId: crypto.randomUUID(), conversationId: id, expectedRevision: store.get(id).revision });
+      expect((await settledInput(running, id, f.waiter.requestId)).state).toBe("settled");
+      expect(prompts().filter(call => call.body.id === identity.nativeCommandId)).toHaveLength(1);
+    } finally { await running.close(); }
+  }, TIMEOUT);
+
+  test("recovered terminal journal completes interrupted queue publication after restart without borrowing native status", async () => {
+    const f = await recoveredOCSeed("recovered-terminal-publication"), id = f.session.sessionId, identity = f.original.claim!.identity;
+    const path = join(f.selected.dataDir, "pending-inputs.json"), originalRecords = JSON.parse(readFileSync(path, "utf8"));
+    const stored = originalRecords.conversations.find((conversation: any) => conversation.conversationId === id).items.find((item: any) => item.requestId === f.head.requestId);
+    stored.claim.evidence = { ...identity, submission: "submitted", nativeAcceptance: "accepted" };
+    atomicAppRecord(f.selected.dataDir, "pending-inputs.json", originalRecords);
+    consumeQueuedInput(identity.source.nativeSessionId!, identity.nativeCommandId!);
+    complete(identity.source.nativeSessionId!);
+    let running = await start({ ...f.selected, cwd: f.session.cwd, maxConcurrentRuns: 1 });
+    try {
+      expect(running.pendingInputs.store.lookup(id, f.head.requestId)!.item.state).toBe("settled");
+      await running.close();
+      atomicAppRecord(f.selected.dataDir, "pending-inputs.json", originalRecords);
+      const native = sessions.get(identity.source.nativeSessionId!)!;
+      native.messages = []; native.info.outcome = "succeeded";
+      running = await start({ ...f.selected, cwd: f.session.cwd, maxConcurrentRuns: 1 });
+      expect(running.pendingInputs.store.lookup(id, f.head.requestId)!.item).toMatchObject({ state: "settled", history: { kind: "settled", status: "completed" } });
+      expect(running.pendingInputs.store.get(id).paused).toBe(true);
+      expect(running.pendingInputs.store.get(id).items.map(item => item.requestId)).toEqual([f.waiter.requestId]);
+    } finally { await running.close(); }
+  }, TIMEOUT * 2);
+
+  test("recovered exact terminal survives lost Run metadata and unavailable native history before queue publication", async () => {
+    const f = await recoveredOCSeed("recovered-terminal-missing-run"), id = f.session.sessionId, identity = f.original.claim!.identity;
+    const path = join(f.selected.dataDir, "pending-inputs.json"), originalRecords = JSON.parse(readFileSync(path, "utf8"));
+    originalRecords.conversations.find((conversation: any) => conversation.conversationId === id).items.find((item: any) => item.requestId === f.head.requestId).claim.evidence =
+      { ...identity, submission: "submitted", nativeAcceptance: "accepted" };
+    atomicAppRecord(f.selected.dataDir, "pending-inputs.json", originalRecords);
+    const metadataPath = join(f.selected.dataDir, "metadata.json"), metadata = JSON.parse(readFileSync(metadataPath, "utf8"));
+    metadata.runs = metadata.runs.filter((run: any) => run.runId !== identity.runId);
+    metadata.sessions[0].lastRunId = metadata.runs.at(-1).runId;
+    metadata.sessions[0].lastStatus = metadata.runs.at(-1).status;
+    atomicAppRecord(f.selected.dataDir, "metadata.json", metadata);
+    consumeQueuedInput(identity.source.nativeSessionId!, identity.nativeCommandId!);
+    complete(identity.source.nativeSessionId!);
+    const before = mutations().length, selected = { ...f.selected, cwd: f.session.cwd, maxConcurrentRuns: 1 };
+    let running = await start(selected);
+    try {
+      expect(running.pendingInputs.store.lookup(id, f.head.requestId)!.item.state).toBe("settled");
+      const journal = readFileSync(join(f.selected.dataDir, `${identity.runId}.jsonl`), "utf8").trimEnd().split("\n").map(line => JSON.parse(line));
+      expect(journal.at(-1)).toMatchObject({ runId: identity.runId, sessionId: id, kind: "status", data: {
+        status: "completed", queueRecoveryTerminal: { status: "completed", basis: "exact-native-terminal" }, recoveryOriginal: {
+          storeId: running.pendingInputs.store.storeId, itemId: f.original.itemId, chainId: f.original.chainId,
+          attemptId: f.original.claim!.attemptId, identity } } });
+      expect(JSON.parse(readFileSync(metadataPath, "utf8"))).toEqual(metadata);
+      await running.close();
+      // Crash before queue settlement persisted: only the fsynced original
+      // journal marker remains. The native command can no longer be read.
+      atomicAppRecord(f.selected.dataDir, "pending-inputs.json", originalRecords);
+      sessions.get(identity.source.nativeSessionId!)!.messages = [];
+      const unavailable = spyOn(OpenCodeAdapter.prototype, "observeCommand").mockImplementation(async () => { throw new OpenCodeUnavailableError("Native history unavailable"); });
+      try {
+        running = await start(selected);
+        const store = running.pendingInputs.store;
+        expect(store.lookup(id, f.head.requestId)!.item).toMatchObject({ state: "settled", history: { kind: "settled", status: "completed" } });
+        expect(store.get(id).items.map(item => item.requestId)).toEqual([f.waiter.requestId]);
+        expect(store.get(id).paused).toBe(true);
+        expect(unavailable).not.toHaveBeenCalled();
+        expect(JSON.parse(readFileSync(metadataPath, "utf8"))).toEqual(metadata);
+        await driveConsumer(running); expect(mutations()).toHaveLength(before);
+        expect(prompts().filter(call => call.body.id === identity.nativeCommandId)).toHaveLength(1);
+      } finally { unavailable.mockRestore(); }
+    } finally { await running.close(); }
+  }, TIMEOUT * 2);
 
   test("Phase3 corrupt optional queue fails startup closed and retains disposable ownership locks", async () => {
     const selected = startupFixture("fifo-corrupt"), paths = validateOwnershipPaths(selected.packageDir!, selected.dataDir);

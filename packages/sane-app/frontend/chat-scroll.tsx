@@ -79,6 +79,20 @@ export function ChatScroll({ children, footer, resetKey, replacement, active = t
     restoreFrame.current = requestAnimationFrame(restore);
   };
   useLayoutEffect(() => {
+    const root = viewport.current!;
+    const jump = (event: Event) => {
+      const range = (event as CustomEvent<Range>).detail;
+      target.cancel(); targetedPause.current = true; targeting.current = false;
+      policy.current.pause(); setFollowing(false); anchor.current = null;
+      const bounds = range.getBoundingClientRect();
+      root.scrollTop += bounds.top - root.getBoundingClientRect().top - root.clientHeight / 2;
+      programmedTop.current = root.scrollTop; transcriptTop.current = root.scrollTop;
+      policy.current.position(root.scrollTop); captureAnchor();
+    };
+    root.addEventListener("session-search-jump", jump);
+    return () => root.removeEventListener("session-search-jump", jump);
+  }, []);
+  useLayoutEffect(() => {
     const schedule = () => { restore(); scheduleRestore(); };
     // Mutation handles the runtime's delayed prepend; resize handles later
     // markdown/code layout. A visible message ID, not scrollHeight, is the anchor.

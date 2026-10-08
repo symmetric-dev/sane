@@ -28,10 +28,18 @@ export function isQueuedHandoffAdmission(value: unknown, sessionId: string, comm
     && !!input.time && typeof input.time === "object" && !Array.isArray(input.time) && Number.isFinite(input.time.created);
 }
 type NativePart = { type: string; id?: string; name?: string; text?: string; state?: { status: string; input?: unknown; content?: unknown; error?: unknown; metadata?: Record<string, unknown> } };
-export type NativeMessage = { id: string; type: string; metadata?: Record<string, unknown>; time: { created: number; completed?: number }; model?: ModelRef; text?: string; content?: NativePart[]; error?: unknown; cost?: number; tokens?: unknown; outcome?: string; status?: string; reason?: string; summary?: string; preTokens?: number; postTokens?: number; durationMs?: number };
+export type NativeMessage = { id: string; type: string; metadata?: Record<string, unknown>; time: { created: number; completed?: number }; model?: ModelRef; text?: string; content?: NativePart[]; error?: unknown; retry?: MessageSnapshot["retry"]; cost?: number; tokens?: unknown; outcome?: string; status?: string; reason?: string; summary?: string; preTokens?: number; postTokens?: number; durationMs?: number };
 export type NativeCompactAdmission = { id: string; sessionID: string; type: "compaction"; time: { created: number }; delivery: "queue" | "steer"; payload?: unknown };
 export type NativeCompactionProjection = { messages: NativeMessage[]; compaction?: CompactionMetadata; outcome?: "succeeded" | "failed" | "skipped" };
 export type NativeCompactionObservation = NativeCompactionProjection & { pending: boolean; active: boolean; observed: boolean };
+export type NativeCommandObservation =
+  | { kind: "pending"; input: unknown }
+  | { kind: "exact-terminal"; outcome: "succeeded" | "failed" | "interrupted" }
+  | { kind: "foreign-boundary"; boundary: NativeCommandBoundary }
+  | { kind: "protocol-contradiction"; reason: string }
+  | { kind: "termination-uncertain" }
+  | { kind: "unavailable"; reason: string };
+export type NativeCommandSnapshot = { messages: NativeMessage[]; outcome?: string; pending: boolean; pendingInput?: unknown; currentInputId?: string; boundary?: NativeCommandBoundary; observation?: NativeCommandObservation };
 type Page = { data: NativeMessage[]; cursor: { next?: string | null } };
 /** App-delivered startup synthetics are model context, never transcript turns. */
 const saneFrameworkMetadata = { sane: "framework" } as const;
@@ -59,8 +67,9 @@ const instructionContext = (message: NativeMessage, command: NativeMessage) => {
 };
 /** Completion attribution and queued-input cancellation must agree on which
  * messages are new inputs. Do not exempt all synthetic messages. */
+export const openCodeTurnContext = (message: NativeMessage, command: NativeMessage) => restartContinuation(message, command) || instructionContext(message, command);
 const commandBoundary = (message: NativeMessage, command: NativeMessage): NativeCommandBoundary | undefined => {
-  if (message.type === "user" || message.type === "synthetic" && !restartContinuation(message, command) && !instructionContext(message, command)) {
+  if (message.type === "user" || message.type === "synthetic" && !openCodeTurnContext(message, command)) {
     return { messageId: message.id, type: message.type };
   }
 };
@@ -76,6 +85,22 @@ export class OpenCodeUnavailableError extends OpenCodeError {}
 /** A returned native DTO conflicts with the promised queue handoff. Acceptance
  * may already have happened; never turn a later user anchor into policy proof. */
 export class OpenCodeQueuedHandoffProtocolError extends OpenCodeError {}
+export class OpenCodeCommandProtocolError extends OpenCodeError {
+  constructor(message: string) { super(message, 409); }
+}
+/** A strict inbox read must account for every entry before absence or an exact
+ * receipt can be used as proof. A duplicate exact ID is never a single input. */
+function strictInbox(data: unknown, sessionId: string, commandId: string): NativeInput | undefined {
+  if (!Array.isArray(data) || data.some(value => !value || typeof value !== "object" || Array.isArray(value)
+    || !nativeMessageId(value.id) || value.sessionID !== sessionId
+    || !["user", "synthetic", "compaction"].includes(value.type)
+    || !["queue", "steer"].includes(value.delivery)
+    || !value.time || typeof value.time !== "object" || Array.isArray(value.time) || !Number.isFinite(value.time.created)))
+    throw new OpenCodeCommandProtocolError("Malformed native inbox entry; cancellation and execution remain unconfirmed");
+  const matches = (data as NativeInput[]).filter(value => value.id === commandId);
+  if (matches.length > 1) throw new OpenCodeCommandProtocolError("Duplicate exact native inbox identity; operator reconciliation required");
+  return matches[0];
+}
 export class OpenCodeReplyTransportLimitError extends OpenCodeError {
   constructor() { super("OpenCode reply transport exceeded 16 MiB raw response budget"); }
 }
@@ -373,27 +398,32 @@ export class OpenCodeAdapter {
     }
     throw new OpenCodeError("History exceeds 10,000-message import budget; no partial import");
   }
-  async snapshot(id: string, commandId: string, cwd?: string, policy?: "native-queued-handoff"): Promise<{ messages: NativeMessage[]; outcome?: string; pending: boolean; pendingInput?: unknown; currentInputId?: string; boundary?: NativeCommandBoundary }> {
+  async snapshot(id: string, commandId: string, cwd?: string, policy?: "native-queued-handoff"): Promise<NativeCommandSnapshot> {
     // A queued command is not committed history yet. Check its exact inbox
     // identity first, so waiting/cancellation never walks an unrelated backlog.
     const [initialSession, initialInbox] = await Promise.all([
       this.session(id), this.request<{ data: NativeInput[] }>(this.path(id) + "/inbox"),
     ]);
-    if (!initialSession?.time || !Array.isArray(initialInbox.data)) throw new OpenCodeError("Unsupported OpenCode V2 execution response");
+    if (!initialSession?.time || !Array.isArray(initialInbox.data) || initialInbox.data.some(input => !input || typeof input !== "object" || typeof input.id !== "string")) throw new OpenCodeCommandProtocolError("Unsupported OpenCode V2 execution response");
     if (initialSession.id !== id || cwd !== undefined && initialSession.location?.directory !== cwd) throw new OpenCodeSourceMismatchError("Native session identity or directory changed; execution remains unconfirmed");
-    const initialInput = initialInbox.data.find(message => message.id === commandId);
+    const initialInput = policy ? strictInbox(initialInbox.data, id, commandId) : initialInbox.data.find(message => message.id === commandId);
     if (initialInput) return { messages: [], pending: true, ...(policy ? { pendingInput: initialInput } : {}) };
-    // Newest first until the exact durable command is found. Bounded, with no
-    // completion inference if the required history lies outside this budget.
+    // Keep the transcript bounded at the exact command, but inspect whole
+    // fetched pages (including older pages) for conflicting exact identities.
+    // A page/time limit cannot prove that unseen history has no duplicate.
     const messages: NativeMessage[] = []; let cursor: string | undefined; let found = false;
     const deadline = Date.now() + 15000;
     for (let page = 0; page < 100; page++) {
       if (Date.now() > deadline) throw new OpenCodeUnavailableError("Native observation exceeded its 15-second page budget; state remains unconfirmed");
       const result = await this.request<Page>(this.path(id) + `/message?limit=100&${cursor ? `cursor=${encodeURIComponent(cursor)}` : "order=desc"}`);
-      if (!Array.isArray(result.data) || !result.cursor) throw new OpenCodeError("Unsupported OpenCode V2 message response");
-      const index = result.data.findIndex(m => m.id === commandId);
-      messages.push(...(index < 0 ? result.data : result.data.slice(0, index + 1)));
-      if (index >= 0) { found = true; break; }
+      if (!Array.isArray(result.data) || !result.cursor || result.data.some(message => !message || typeof message !== "object" || typeof message.id !== "string" || typeof message.type !== "string" || !Number.isFinite(message.time?.created))) throw new OpenCodeCommandProtocolError("Unsupported OpenCode V2 message response");
+      const matches = result.data.filter(m => m.id === commandId);
+      if (matches.length > 1 || found && matches.length) throw new OpenCodeCommandProtocolError("Exact native command identity conflicts with native history; operator reconciliation required");
+      if (!found) {
+        const index = result.data.findIndex(m => m.id === commandId);
+        messages.push(...(index < 0 ? result.data : result.data.slice(0, index + 1)));
+        if (index >= 0) found = true;
+      }
       cursor = result.cursor.next ?? undefined;
       if (!cursor) break;
       if (page === 99) throw new OpenCodeUnavailableError("OpenCode history reconciliation exceeded its page budget");
@@ -402,16 +432,35 @@ export class OpenCodeAdapter {
       this.session(id), this.request<{ data: Record<string, { type: "running" }> }>("/api/session/active"),
       this.request<{ data: NativeInput[] }>(this.path(id) + "/inbox"),
     ]);
-    if (!session?.time || !active.data || !Array.isArray(inbox.data)) throw new OpenCodeError("Unsupported OpenCode V2 execution response");
+    if (!session?.time || !active.data || !Array.isArray(inbox.data) || inbox.data.some(input => !input || typeof input !== "object" || typeof input.id !== "string")) throw new OpenCodeCommandProtocolError("Unsupported OpenCode V2 execution response");
     if (session.id !== id || (cwd !== undefined && session.location?.directory !== cwd)) throw new OpenCodeSourceMismatchError("Native session identity or directory changed; execution remains unconfirmed");
-    const input = inbox.data.find(m => m.id === commandId), pending = !!input;
+    const input = policy ? strictInbox(inbox.data, id, commandId) : inbox.data.find(m => m.id === commandId), pending = !!input;
     const ordered = found ? messages.reverse() : [];
+    if (ordered.some(message => message.id === commandId && message.type !== "user")
+      || ordered.filter(message => message.id === commandId).length > 1) throw new OpenCodeCommandProtocolError("Exact native command identity conflicts with native history; operator reconciliation required");
     const bounded = commandSnapshot(ordered, commandId);
     const command = ordered.find(message => message.id === commandId);
     const currentInputId = command ? ordered.findLast(message => commandBoundary(message, command))?.id : undefined;
     // Session.outcome belongs to the latest turn, not necessarily this command.
     // Later external activity cannot overwrite a recorded command boundary.
     return { messages: bounded.messages, outcome: pending ? undefined : bounded.outcome, pending, currentInputId, ...(policy && input ? { pendingInput: input } : {}), ...(bounded.boundary ? { boundary: bounded.boundary } : {}) };
+  }
+  async observeCommand(id: string, commandId: string, cwd: string, policy?: "native-queued-handoff"): Promise<NativeCommandSnapshot & { observation: NativeCommandObservation }> {
+    let snapshot: NativeCommandSnapshot;
+    try { snapshot = await this.snapshot(id, commandId, cwd, policy); }
+    catch (error) {
+      if (error instanceof OpenCodeCommandProtocolError) return { messages: [], pending: false, observation: { kind: "protocol-contradiction", reason: error.message } };
+      if (!(error instanceof OpenCodeUnavailableError)) throw error;
+      return { messages: [], pending: false, observation: { kind: "unavailable", reason: error.message } };
+    }
+    let observation: NativeCommandObservation;
+    if (snapshot.pending) observation = policy && !isQueuedHandoffAdmission(snapshot.pendingInput, id, commandId)
+      ? { kind: "protocol-contradiction", reason: "Original pending input contradicts the strict native queue receipt protocol; operator reconciliation required; do not resend" }
+      : { kind: "pending", input: snapshot.pendingInput };
+    else if (snapshot.boundary) observation = { kind: "foreign-boundary", boundary: snapshot.boundary };
+    else if (snapshot.outcome === "succeeded" || snapshot.outcome === "failed" || snapshot.outcome === "interrupted") observation = { kind: "exact-terminal", outcome: snapshot.outcome };
+    else observation = { kind: "termination-uncertain" };
+    return { ...snapshot, observation };
   }
   /** Observe only the exact admitted compact input. No user-message anchor,
    * session outcome, idle heuristic, or resend. Activity is reported separately
@@ -442,16 +491,18 @@ export class OpenCodeAdapter {
     const exact = compactionSnapshot(messages, admittedId);
     return { ...exact, pending: !!input, active: !!active.data[id], observed: !!input || exact.messages.length > 0 };
   }
-  async cancelInput(id: string, commandId: string, beforeCancel?: () => void): Promise<boolean> {
+  async cancelInput(id: string, commandId: string, beforeCancel?: () => void, policy?: "native-queued-handoff"): Promise<boolean> {
     if (!/^ses[a-zA-Z0-9_-]+$/.test(id) || !nativeMessageId(commandId)) throw new OpenCodeError("Invalid queued input identity", 400);
     const { data } = await this.request<{ data: NativeInput[] }>(this.path(id) + "/inbox");
     if (!Array.isArray(data)) throw new OpenCodeError("Unsupported native inbox response");
-    const input = data.find(value => value.id === commandId);
+    const input = policy ? strictInbox(data, id, commandId) : data.find(value => value.id === commandId);
     if (!input) return false;
     if (input.sessionID !== id || input.type !== "user") throw new OpenCodeError("Exact queued input is not this session's prompt; cancellation remains unconfirmed");
+    if (policy && !isQueuedHandoffAdmission(input, id, commandId)) throw new OpenCodeCommandProtocolError("Exact pending input changed its native queue receipt before cancellation; operator reconciliation required");
     await this.request(this.path(id) + `/inbox/${encodeURIComponent(commandId)}`, "DELETE", undefined, beforeCancel);
-    // DELETE is a no-op when consumption won the race. An exact message read
-    // distinguishes that case without searching thousands of older messages.
+    // DELETE is a no-op when consumption won the race. Check exact history
+    // without walking the backlog; these separate reads are not an atomic
+    // inbox-to-history visibility guarantee.
     try {
       const delivered = await this.request<{ data: NativeMessage }>(this.path(id) + `/message/${encodeURIComponent(commandId)}`);
       if (delivered.data?.id !== commandId || delivered.data.type !== "user") throw new OpenCodeError("Queued input delivery identity is unconfirmed");
@@ -461,7 +512,11 @@ export class OpenCodeAdapter {
     }
     const after = await this.request<{ data: NativeInput[] }>(this.path(id) + "/inbox");
     if (!Array.isArray(after.data)) throw new OpenCodeError("Unsupported native inbox response");
-    return !after.data.some(value => value.id === commandId);
+    if (policy) strictInbox(after.data, id, commandId);
+    // Neither DELETE nor separate absence reads certify that this input was
+    // removed before native consumption. No command-scoped cancellation receipt
+    // exists on this endpoint, so retain ownership until exact terminal history.
+    return false;
   }
   async cancel(id: string, beforeCancel?: () => void) { return this.request<{ interrupted: boolean }>(this.path(id) + "/interrupt?resume=false", "POST", undefined, beforeCancel); }
   async interactions(id: string): Promise<Interaction[]> {
@@ -514,6 +569,12 @@ export function compactionSnapshot(history: readonly NativeMessage[], admittedId
 }
 
 export function normalizeMessage(message: NativeMessage): MessageSnapshot | undefined {
+  if (message.retry !== undefined && (!message.retry || typeof message.retry !== "object" || Array.isArray(message.retry)
+    || !Number.isSafeInteger(message.retry.attempt) || message.retry.attempt < 1
+    || !Number.isFinite(message.retry.at) || message.retry.at < 0 || !Number.isFinite(new Date(message.retry.at).getTime())
+    || !message.retry.error || typeof message.retry.error !== "object" || Array.isArray(message.retry.error)
+    || typeof (message.retry.error as Record<string, unknown>).type !== "string"
+    || typeof (message.retry.error as Record<string, unknown>).message !== "string")) throw new OpenCodeError("Invalid native retry metadata");
   const model = message.model?.providerID && message.model.id ? `${message.model.providerID}/${message.model.id}` : undefined;
   // Preserve context boundaries for the usage indicator without rendering them
   // as conversation turns or counting the compaction request's token usage.
@@ -555,5 +616,8 @@ export function normalizeMessage(message: NativeMessage): MessageSnapshot | unde
     }
     return [];
   }) : [{ id: `${message.id}:text`, type: "text", text: message.text ?? "" }];
-  return { messageId: message.id, role: message.type === "assistant" ? "assistant" : message.type === "user" ? "user" : "system", parts, status: message.error ? "failed" : message.type !== "assistant" || message.time.completed !== undefined ? "completed" : "running", createdAt: new Date(message.time.created).toISOString(), ...(model ? { model } : {}), ...(message.cost !== undefined || message.tokens !== undefined ? { usage: { cost: message.cost, tokens: message.tokens } } : {}), ...(message.error ? { error: message.error } : {}) };
+  // Retry errors are attempt diagnostics until the assistant message completes.
+  // Keep terminal retry evidence without projecting it as ongoing recovery.
+  const retrying = message.type === "assistant" && message.time.completed === undefined && !!message.retry;
+  return { messageId: message.id, role: message.type === "assistant" ? "assistant" : message.type === "user" ? "user" : "system", parts, status: retrying ? "running" : message.error ? "failed" : message.type !== "assistant" || message.time.completed !== undefined ? "completed" : "running", createdAt: new Date(message.time.created).toISOString(), ...(model ? { model } : {}), ...(message.cost !== undefined || message.tokens !== undefined ? { usage: { cost: message.cost, tokens: message.tokens } } : {}), ...(message.error ? { error: message.error } : {}), ...(message.retry ? { retry: message.retry } : {}) };
 }

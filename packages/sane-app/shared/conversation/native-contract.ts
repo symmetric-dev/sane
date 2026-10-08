@@ -49,6 +49,9 @@ export type CompactResponse = { sessionId: string; runId: string; operation: Com
 export type MessagePart =
   | { id: string; type: "text" | "reasoning"; text: string }
   | { id: string; type: "tool"; name: string; status: string; input?: unknown; output?: unknown; error?: unknown; nativeSubagentSessionId?: string };
+/** Latest observed native retry, not a complete attempt log. `at` is the native
+ * millisecond timestamp. Retained terminal metadata is not live retry activity. */
+export type NativeRetry = { attempt: number; at: number; error: unknown };
 export type MessageSnapshot = {
   nativeShellResult?: { shellId: string; state: string; exit?: number; truncated?: boolean };
   nativeSubagentResult?: { sessionId: string; agent?: string; state: string };
@@ -56,6 +59,7 @@ export type MessageSnapshot = {
   status: "running" | "completed" | "failed" | "unknown"; createdAt: string;
   model?: string; contextReset?: boolean;
   usage?: { cost?: number; tokens?: unknown }; error?: unknown;
+  retry?: NativeRetry;
   compaction?: CompactionMetadata;
   /** Raw Claude transcript flag; the SDK's history helper omits it. */
   compactionSummary?: true;

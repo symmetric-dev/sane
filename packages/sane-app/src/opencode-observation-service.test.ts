@@ -2,6 +2,7 @@ import { afterEach, beforeEach, expect, spyOn, test } from "bun:test";
 import type { Session } from "./history";
 import { OpenCodeError, type NativeMessage, type OpenCodeAdapter } from "./opencode";
 import { OpenCodeObservationService } from "./opencode-observation-service";
+import { TranscriptService } from "./transcript-service";
 
 let now = 10_000;
 let restoreClock: () => void;
@@ -113,6 +114,49 @@ test("unfinished old tool is reread outside the overlap while finished prefix is
   expect(f.requests.map(r => r.path).filter(path => /\/message\/msg_/.test(path))).toEqual(["/api/session/ses_A/message/msg_tool"]);
 });
 
+test("assistant retry can reset creation time in overlap without changing native order or duplicating its ID", async () => {
+  const f = fixture();
+  f.read(async () => page([message("answer", "assistant"), message("prompt")]));
+  const prior = await f.service.get(f.session); now += 1000;
+  const retry = { attempt: 2, at: 350, error: { type: "APIError", message: "overloaded", data: { statusCode: 503 } } };
+  f.read(async () => page([{ ...message("answer", "assistant"), time: { created: 300 }, error: retry.error, retry }], "older"));
+  const next = await f.service.get(f.session);
+  expect(next.messages.map(m => m.messageId)).toEqual(["msg_prompt", "msg_answer"]);
+  expect(next.messages[1]).toMatchObject({ createdAt: new Date(300).toISOString(), status: "running", retry, error: retry.error });
+  expect(prior.messages[1]).toMatchObject({ createdAt: new Date(100).toISOString(), status: "completed" });
+});
+
+for (const change of [
+  { name: "nonassistant creation", original: message("guard"), changed: message("guard", "user", 200), error: "Conflicting immutable native message identity" },
+  { name: "assistant type", original: message("guard", "assistant"), changed: message("guard", "user"), error: "Conflicting immutable native message identity" },
+  { name: "assistant session", original: message("guard", "assistant"), changed: { ...message("guard", "assistant", 200), sessionID: "ses_other" }, error: "Invalid native observation message identity or timestamp" },
+]) test(`retry timestamp relaxation preserves ${change.name} guard and prior projection`, async () => {
+  const f = fixture(); f.read(async () => page([change.original]));
+  const prior = await f.service.get(f.session); now += 1000;
+  f.read(async () => page([change.changed]));
+  await expect(f.service.get(f.session)).rejects.toThrow(change.error);
+  expect(f.service.peek(f.session)).toBe(prior);
+});
+
+test("completed error plus retry is refreshed outside overlap until recovered, while terminal neighbors are retained", async () => {
+  const f = fixture(), retry = { attempt: 1, at: 150, error: { type: "APIError", message: "overloaded" } };
+  const failed = { ...message("retry", "assistant"), error: retry.error, retry };
+  f.read(async () => page([message("tail"), failed, { ...message("failed", "assistant"), error: retry.error }, { ...message("done", "assistant"), retry }]));
+  const prior = await f.service.get(f.session); now += 1000;
+  expect(prior.messages[2]).toMatchObject({ status: "failed", retry });
+  f.read(async path => path.endsWith("/message/msg_retry")
+    ? { data: { ...message("retry", "assistant", 300), content: [{ type: "text", text: "recovered" }] } }
+    : page([message("new"), message("tail")], "older"));
+  const next = await f.service.get(f.session);
+  expect(next.messages.map(m => m.messageId)).toEqual(["msg_done", "msg_failed", "msg_retry", "msg_tail", "msg_new"]);
+  expect(next.messages[2]).toMatchObject({ status: "completed", createdAt: new Date(300).toISOString(), parts: [{ text: "recovered" }] });
+  expect(next.messages[2]!.retry).toBeUndefined(); expect(next.messages[2]!.error).toBeUndefined();
+  expect(f.requests.filter(r => /\/message\/msg_/.test(r.path)).map(r => r.path)).toEqual(["/api/session/ses_A/message/msg_retry"]);
+  now += 1000; f.read(async () => page([message("new")], "older"));
+  await f.service.get(f.session);
+  expect(f.requests.filter(r => /\/message\/msg_/.test(r.path))).toHaveLength(1);
+});
+
 test("native queued delivery order wins over creation timestamps, including incremental overlap", async () => {
   const f = fixture(); f.read(async () => page([message("answer", "assistant", 300), message("prompt", "user", 100)]));
   await f.service.get(f.session); now += 1000;
@@ -170,28 +214,70 @@ test("100-page/10,000-message budget never publishes a truncated history", async
   expect(pages).toBe(100); expect(f.service.peek(f.session)).toBe(prior);
 });
 
-test("16 MiB read budget rejects oversized raw content and retains prior projection", async () => {
-  const f = fixture(), prior = await f.service.get(f.session); now += 1000;
-  f.read(async () => page([{ ...message("huge"), text: "x".repeat(16 * 1024 * 1024) }]));
-  await expect(f.service.get(f.session)).rejects.toThrow("16 MiB raw read budget"); expect(f.service.peek(f.session)).toBe(prior);
+test("provider payloads larger than 16 MiB do not block display history or change its revision", async () => {
+  const f = fixture();
+  const native = { ...message("provider", "assistant"), content: [
+    { type: "reasoning", text: "", state: { reasoningEncryptedContent: "x".repeat(17 * 1024 * 1024) } },
+    { type: "text", text: "visible answer" },
+  ] };
+  f.read(async () => page([native as unknown as NativeMessage]));
+  const first = await f.service.get(f.session);
+  expect(first.messages[0]!.parts).toEqual([
+    { id: "msg_provider:part:0", type: "reasoning", text: "" },
+    { id: "msg_provider:part:1", type: "text", text: "visible answer" },
+  ]);
+  expect(JSON.stringify(first).length).toBeLessThan(2048);
+  now += 1000;
+  f.read(async () => page([{ ...native, content: [
+    { ...native.content[0]!, state: { reasoningEncryptedContent: "different provider state" } }, native.content[1]!,
+  ] } as unknown as NativeMessage]));
+  expect(await f.service.get(f.session)).toBe(first);
 });
 
-test("normalized-byte budget is enforced independently of the raw-byte budget", async () => {
-  const f = fixture(), prior = await f.service.get(f.session); now += 1000;
-  // A compaction failure is retained both on the message and on its context
-  // boundary. Raw input fits, but the complete public projection does not.
+test("compaction evidence remains complete when normalization exceeds 16 MiB", async () => {
+  const f = fixture();
   const oversized = { ...message("compaction", "compaction"), status: "failed", error: "x".repeat(8 * 1024 * 1024) };
   expect(Buffer.byteLength(JSON.stringify(oversized))).toBeLessThan(16 * 1024 * 1024);
   f.read(async () => page([oversized]));
-  await expect(f.service.get(f.session)).rejects.toThrow("16 MiB normalized read budget"); expect(f.service.peek(f.session)).toBe(prior);
+  const history = await f.service.get(f.session);
+  expect(history.messages[0]!.error).toBe(oversized.error);
+  expect(history.messages[0]!.compaction).toMatchObject({ lifecycle: "failed", error: oversized.error });
 });
 
-test("incremental cache plus new content must fit the total retained byte budget", async () => {
+test("incremental history can cross 16 MiB without losing its prefix or new content", async () => {
   const f = fixture(), large = "x".repeat(9 * 1024 * 1024);
   f.read(async () => page([message("tail"), { ...message("large_old"), text: large }]));
   const prior = await f.service.get(f.session); now += 1000;
   f.read(async () => page([{ ...message("large_new"), text: large }, message("tail")], "older"));
-  await expect(f.service.get(f.session)).rejects.toThrow("16 MiB raw budget"); expect(f.service.peek(f.session)).toBe(prior);
+  const next = await f.service.get(f.session);
+  expect(next.messages.map(m => m.messageId)).toEqual(["msg_large_old", "msg_tail", "msg_large_new"]);
+  expect(next.messages[0]).toBe(prior.messages[0]);
+  expect(next.messages[2]!.parts[0]).toMatchObject({ text: large });
+  expect(f.service.peek(f.session)).toBe(next);
+});
+
+test("cold oversized history supports latest, older, targeted pages and refresh without truncating messages", async () => {
+  const f = fixture(), large = "x".repeat(17 * 1024 * 1024);
+  f.read(async path => path.includes("cursor=")
+    ? page([{ ...message("large_old"), text: large }])
+    : page([message("latest")], "older"));
+  const transcripts = new TranscriptService(() => [f.session], () => [], f.service);
+  const latest = await transcripts.page(f.session, new URLSearchParams());
+  expect(latest.messages.map(m => m.id)).toEqual(["msg_latest"]);
+  expect(latest.coverage.totalMessages).toBe(2);
+  expect(f.requests).toHaveLength(2);
+  const older = await transcripts.page(f.session, new URLSearchParams({ cursor: latest.coverage.olderCursor! }));
+  expect(older.messages.map(m => m.id)).toEqual(["msg_large_old"]);
+  expect(older.messages[0]!.parts[0]).toMatchObject({ text: large });
+  expect(older.coverage.olderCursor).toBeNull();
+  const target = await transcripts.page(f.session, new URLSearchParams({ targetMessageId: "msg_large_old" }));
+  expect(target.messages).toEqual(older.messages);
+  now += 1000;
+  f.read(async () => page([{ ...message("latest"), text: "updated" }, { ...message("large_old"), text: large + "!" }]));
+  const refreshed = await transcripts.refresh(f.session, { epoch: latest.epoch, messages: older.messages.map(({ id, version }) => ({ id, version })) });
+  expect(refreshed.removedIds).toEqual([]);
+  expect(refreshed.upserts).toHaveLength(1);
+  expect(refreshed.upserts[0]!.parts[0]).toMatchObject({ text: large + "!" });
 });
 
 test("exactly 10,000 messages can publish, but incremental append beyond the retained-message budget cannot", async () => {

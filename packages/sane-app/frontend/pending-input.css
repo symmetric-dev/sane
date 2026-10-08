@@ -1,0 +1,75 @@
+.pending-input-panel {
+  font-size: 12px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  margin: 0 0 8px;
+  padding: 8px 10px;
+  max-height: 320px;
+  overflow: auto;
+}
+.pending-input-heading, .pending-input-row, .pending-input-operation-actions {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+.pending-input-list { list-style: none; margin: 6px 0; padding: 0; }
+.pending-input-list li, .pending-input-head, .pending-input-operation { padding: 5px 0; }
+.pending-input-panel p { margin: 4px 0; }
+.pending-input-text {
+  font: inherit;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  max-height: 80px;
+  overflow: auto;
+  margin: 4px 0;
+}
+.pending-input-queue-action { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
+.pending-input-queue-action button { font-size: 12px; white-space: nowrap; }
+.pending-input-queue-help { max-width: 260px; font-size: 11px; overflow-wrap: anywhere; }
+.pending-input-error { color: var(--error); }
+
+/* The labeled primary action stays inside ChatInput, with matching clearance.
+   These selectors never change other Send buttons or the reserved status slot. */
+.chat-input-with-send:has(> .pending-input-primary-input) {
+  --pending-input-primary-width: min(8rem, 40%);
+}
+.chat-input-with-send > textarea.pending-input-primary-input {
+  padding-right: calc(var(--pending-input-primary-width) + 32px);
+}
+.chat-input-with-send > .send.pending-input-primary {
+  display: grid;
+  width: var(--pending-input-primary-width);
+  min-width: min(5.5rem, 40%);
+  max-width: min(8rem, 40%);
+  height: 36px;
+  padding: 4px 6px;
+  border-radius: 10px;
+  font-size: 11px;
+  line-height: 13px;
+  white-space: normal;
+  overflow-wrap: anywhere;
+  text-align: center;
+}
+.chat-input-with-send > .send.pending-input-primary > svg { display: none; }
+.composer-status-lid > .pending-input-status-badge {
+  flex-shrink: 0;
+  font-size: 10px;
+  white-space: nowrap;
+}
+.composer-status-details .pending-input-details { font-size: 12px; }
+.composer-status-details .pending-input-list > li {
+  display: grid;
+  align-items: stretch;
+  gap: 4px;
+}
+.composer-status-details .pending-input-debug { margin-top: 16px; }
+.composer-status-details .pending-input-debug > summary { cursor: pointer; }
+.composer-status-details .pending-input-debug > pre {
+  max-height: 24rem;
+  overflow: auto;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  font-size: 11px;
+}

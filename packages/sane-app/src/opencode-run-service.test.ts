@@ -1,6 +1,6 @@
 import { expect, test } from "bun:test";
 import type { Event, Run, Session } from "./history";
-import { OpenCodeError, normalizeMessage, type NativeMessage } from "./opencode";
+import { OpenCodeAdapter, OpenCodeError, OpenCodeUnavailableError, normalizeMessage, type NativeMessage } from "./opencode";
 import { OpenCodeRunService, type OpenCodeRunAdapter, type OpenCodeRunDependencies } from "./opencode-run-service";
 import type { RunOwner } from "./run-owner";
 import { createDispatchEvidence } from "./dispatch-evidence";
@@ -87,26 +87,12 @@ test("OC pinned pending cancellation refuses malformed delivery and nonfinite ti
   }
 });
 
-test("OC live pending cancellation receipt belongs only to original owner and freshly pinned safe source", async () => {
+test("OC pending deletion without a native cancellation receipt retains the owner", async () => {
   const f = queued();
   expect(f.service.readPendingCancellation(f.owner).ready).toBe(false);
-  expect(await f.service.interruptCurrent(f.owner)).toEqual({ interrupted: true });
-  const proof = f.service.readPendingCancellation(f.owner);
-  expect(proof).toMatchObject({ ready: true, kind: "pending-removed", evidence: { runId: f.run.runId, requestId: "original-request", nativeCommandId: "msg_request", pendingCreatedAt: 5 } });
-  if (!proof.ready) throw new Error("Original removal proof missing");
-  expect(Object.isFrozen(proof)).toBe(true); expect(Object.isFrozen(proof.evidence)).toBe(true); expect(Object.isFrozen(proof.evidence.source)).toBe(true);
-  expect(f.service.readPendingCancellation({ ...f.owner }).ready).toBe(false);
-  expect(f.service.readPendingCancellation({ ...f.owner, run: structuredClone(f.run) }).ready).toBe(false);
-  f.state.currentOwner = undefined; f.owner.settled = true;
-  expect(f.service.readPendingCancellation(f.owner)).toBe(proof);
-  f.session.model = "changed"; expect(f.service.readPendingCancellation(f.owner).ready).toBe(false); delete f.session.model;
-  f.session.nativeSessionId = "ses_foreign"; expect(f.service.readPendingCancellation(f.owner).ready).toBe(false); f.session.nativeSessionId = "ses_fixture";
-  f.state.currentOwner = { ...f.owner }; expect(f.service.readPendingCancellation(f.owner).ready).toBe(false); f.state.currentOwner = undefined;
-  f.state.storageFailed = true; expect(f.service.readPendingCancellation(f.owner).ready).toBe(false); f.state.storageFailed = false;
-  f.records.push({ runId: "another-run", sessionId: f.run.sessionId, seq: 1, time: f.run.createdAt, kind: "status", data: { nativeQueuedHandoffProtocolMismatch: true } });
-  expect(f.service.readPendingCancellation(f.owner)).toBe(proof);
-  f.records.push({ runId: f.run.runId, sessionId: f.run.sessionId, seq: 2, time: f.run.createdAt, kind: "status", data: { nativeQueuedHandoffProtocolMismatch: true } });
-  expect(f.service.readPendingCancellation(f.owner).ready).toBe(false);
+  expect(await f.service.interruptCurrent(f.owner)).toEqual({ interrupted: false });
+  expect(f.service.readPendingCancellation(f.owner)).toEqual({ ready: false });
+  expect(f.run.status).toBe("running"); expect(f.state.currentOwner).toBe(f.owner);
   const absent = queued(); absent.oc.snapshot = async () => ({ pending: false, messages: [] });
   expect(await absent.service.interruptCurrent(absent.owner)).toEqual({ interrupted: false }); expect(absent.service.readPendingCancellation(absent.owner).ready).toBe(false);
   const uncertain = queued(); uncertain.oc.cancelInput = async () => { throw new OpenCodeError("Lost cancellation ACK"); };
@@ -114,12 +100,122 @@ test("OC live pending cancellation receipt belongs only to original owner and fr
   const raced = queued(); raced.oc.cancelInput = async (_id, _command, guard) => { raced.session.nativeSessionId = "ses_foreign"; guard?.(); return true; };
   await expect(raced.service.interruptCurrent(raced.owner)).rejects.toThrow("source"); expect(raced.service.readPendingCancellation(raced.owner).ready).toBe(false);
   const unsafe = queued(); unsafe.owner.nativeHandoffProtocolUnsafe = true;
-  expect(await unsafe.service.interruptCurrent(unsafe.owner)).toEqual({ interrupted: true }); expect(unsafe.service.readPendingCancellation(unsafe.owner).ready).toBe(false);
+  expect(await unsafe.service.interruptCurrent(unsafe.owner)).toEqual({ interrupted: false }); expect(unsafe.service.readPendingCancellation(unsafe.owner).ready).toBe(false);
 });
 
-test("OC recovered observation rechecks private original association after reads and inside discovered pending/consumed cancellation guards", async () => {
-  for (const stage of ["snapshot", "pending-guard", "activity", "interrupt-guard"] as const) {
-    const f = fixture(), pending = stage === "snapshot" || stage === "pending-guard";
+test("consumed queued Stop never sends a session-wide interrupt after a non-atomic read", async () => {
+  const f = queued(); let interrupts = 0;
+  f.oc.snapshot = async (_id, command) => ({ messages: [message(command)], pending: false, currentInputId: command });
+  f.oc.cancel = async () => { interrupts++; return { interrupted: true }; };
+  expect(await f.service.interruptCurrent(f.owner)).toEqual({ interrupted: false });
+  expect(interrupts).toBe(0);
+  f.state.currentOwner = undefined;
+  const scope = { identity: { runId: f.run.runId, requestId: "original-request", nativeCommandId: f.run.nativeCommandId!,
+    source: { harnessId: "opencode" as const, sessionId: f.run.sessionId, authorityId: null, nativeSessionId: f.session.nativeSessionId!, cwd: f.run.cwd } },
+    validate: () => {}, accepted: () => true, outcome: () => {}, protocolUnsafe: () => false, protocolMismatch: async () => {},
+    beforeNative: (): never => { throw new Error("No submit"); }, execute: (): never => { throw new Error("No execute"); } };
+  expect(await f.service.observeRecoveredInput(scope, true)).toEqual({ interrupted: false });
+  expect(interrupts).toBe(0);
+});
+
+test("recovered terminal proof requires an accepted original exact command, not a latest outcome or foreign boundary", async () => {
+  const f = queued(); f.state.currentOwner = undefined;
+  let accepted = true;
+  const identity = { runId: f.run.runId, requestId: "original-request", nativeCommandId: f.run.nativeCommandId!,
+    source: { harnessId: "opencode" as const, sessionId: f.run.sessionId, authorityId: null, nativeSessionId: f.session.nativeSessionId!, cwd: f.run.cwd } };
+  const scope = { identity, validate: () => {}, accepted: () => accepted, outcome: () => {}, protocolUnsafe: () => false,
+    protocolMismatch: async () => {}, beforeNative: (): never => { throw new Error("No submit"); }, execute: (): never => { throw new Error("No execute"); } };
+  for (const [outcome, status] of [["succeeded", "completed"], ["failed", "failed"], ["interrupted", "interrupted"]] as const) {
+    f.oc.observeCommand = async (id, command, cwd, policy) => {
+      expect([id, command, cwd, policy]).toEqual([identity.source.nativeSessionId, identity.nativeCommandId, identity.source.cwd, "native-queued-handoff"]);
+      return { messages: [message(command), { ...message("msg_idle", "idle"), outcome }], pending: false, outcome,
+        observation: { kind: "exact-terminal", outcome } };
+    };
+    expect(await f.service.observeRecoveredInput(scope)).toEqual({ interrupted: false, terminal: { identity, status } });
+  }
+  accepted = false;
+  expect(await f.service.observeRecoveredInput(scope)).toEqual({ interrupted: false });
+  accepted = true;
+  f.oc.observeCommand = async () => ({ messages: [message("msg_other")], pending: false, outcome: "succeeded", observation: { kind: "exact-terminal", outcome: "succeeded" } });
+  expect(await f.service.observeRecoveredInput(scope)).toEqual({ interrupted: false });
+  f.oc.observeCommand = async () => ({ messages: [message(identity.nativeCommandId)], pending: false, outcome: "succeeded",
+    observation: { kind: "foreign-boundary", boundary: { messageId: "msg_other", type: "synthetic" } } });
+  expect(await f.service.observeRecoveredInput(scope)).toEqual({ interrupted: false });
+});
+
+test("recovered accepted claim stays unconfirmed when older history repeats the exact command", async () => {
+  const f = queued(), adapter = new OpenCodeAdapter("http://127.0.0.1:1"); f.state.currentOwner = undefined;
+  let unsafe = false, mismatches = 0, cancellations = 0;
+  adapter.request = async <T>(path: string): Promise<T> => {
+    if (path.includes("/message?")) return { data: [{ ...message("msg_idle", "idle"), outcome: "succeeded" }, message("msg_request"), message("msg_request")], cursor: {} } as T;
+    if (path.endsWith("/inbox")) return { data: [] } as T;
+    if (path.endsWith("/active")) return { data: {} } as T;
+    return { data: { id: "ses_fixture", location: { directory: "/fixture" }, time: { created: 1, updated: 2 } } } as T;
+  };
+  f.oc.observeCommand = adapter.observeCommand.bind(adapter);
+  f.oc.cancelInput = async () => { cancellations++; return true; };
+  const identity = { runId: f.run.runId, requestId: "original-request", nativeCommandId: f.run.nativeCommandId!,
+    source: { harnessId: "opencode" as const, sessionId: f.run.sessionId, authorityId: null, nativeSessionId: f.session.nativeSessionId!, cwd: f.run.cwd } };
+  const scope = { identity, validate: () => {}, accepted: () => true, outcome: () => { throw new Error("Already accepted"); },
+    protocolUnsafe: () => unsafe, protocolMismatch: async () => { mismatches++; unsafe = true; },
+    beforeNative: (): never => { throw new Error("No submit"); }, execute: (): never => { throw new Error("No execute"); } };
+  expect(await f.service.observeRecoveredInput(scope, true)).toEqual({ interrupted: false });
+  expect([unsafe, mismatches, cancellations]).toEqual([true, 1, 0]);
+  expect(f.run.status).toBe("running"); expect(f.persisted).toEqual([]);
+});
+
+test("recovered queued Stop cannot infer interrupted terminal from deletion", async () => {
+  const f = queued(); f.state.currentOwner = undefined;
+  let accepted = false, unsafe = false, deletes = 0;
+  const identity = { runId: f.run.runId, requestId: "original-request", nativeCommandId: f.run.nativeCommandId!,
+    source: { harnessId: "opencode" as const, sessionId: f.run.sessionId, authorityId: null, nativeSessionId: f.session.nativeSessionId!, cwd: f.run.cwd } };
+  const scope = { identity, validate: () => {}, accepted: () => accepted, outcome: () => { accepted = true; }, protocolUnsafe: () => unsafe,
+    protocolMismatch: async () => { unsafe = true; }, beforeNative: (): never => { throw new Error("No submit"); }, execute: (): never => { throw new Error("No execute"); } };
+  f.oc.cancelInput = async (_id, _command, guard) => { guard?.(); deletes++; return true; };
+  expect(await f.service.observeRecoveredInput(scope, true)).toEqual({ interrupted: false });
+  expect(deletes).toBe(1);
+  accepted = false;
+  f.oc.cancelInput = async (_id, command, guard) => { guard?.(); deletes++;
+    f.oc.snapshot = async () => ({ messages: [message(command), { ...message("msg_idle", "idle"), outcome: "succeeded" }], pending: false, outcome: "succeeded" }); return false; };
+  expect(await f.service.observeRecoveredInput(scope, true)).toEqual({ interrupted: false, terminal: { identity, status: "completed" } });
+  expect(deletes).toBe(2);
+  unsafe = true;
+  expect(await f.service.observeRecoveredInput(scope, true)).toEqual({ interrupted: false });
+  expect(deletes).toBe(2);
+});
+
+test("restarted handoff records a typed original receipt contradiction and cannot upgrade from later terminal", async () => {
+  const f = queued(); f.state.currentOwner = undefined; let accepted = false, mismatches = 0, canceled = 0;
+  f.oc.observeCommand = async () => ({ messages: [], pending: true, pendingInput: { id: "msg_request", sessionID: "ses_fixture", type: "user", delivery: "steer", time: { created: 1 } }, observation: { kind: "protocol-contradiction", reason: "Wrong original queue delivery" } });
+  f.oc.cancelInput = async () => { canceled++; return true; };
+  const scope = { identity: { runId: f.run.runId, requestId: "original-request", nativeCommandId: f.run.nativeCommandId!,
+    source: { harnessId: "opencode" as const, sessionId: f.run.sessionId, authorityId: null, nativeSessionId: f.session.nativeSessionId!, cwd: f.run.cwd } },
+    validate: () => {}, accepted: () => accepted, outcome: () => { accepted = true; }, protocolUnsafe: () => mismatches > 0,
+    protocolMismatch: async () => { mismatches++; }, beforeNative: (): never => { throw new Error("No submit"); }, execute: (): never => { throw new Error("No execute"); } };
+  expect(await f.service.observeRecoveredInput(scope, true)).toEqual({ interrupted: false });
+  f.oc.observeCommand = async () => ({ messages: [message("msg_request")], pending: false, outcome: "succeeded", observation: { kind: "exact-terminal", outcome: "succeeded" } });
+  expect(await f.service.observeRecoveredInput(scope, true)).toEqual({ interrupted: false });
+  expect([accepted, mismatches, canceled]).toEqual([false, 1, 0]);
+});
+
+test("handoff monitor refuses typed foreign and protocol observations without terminal or unavailable flattening", async () => {
+  for (const kind of ["foreign-boundary", "protocol-contradiction"] as const) {
+    const f = queued(); f.state.onSleep = () => { f.state.closing = true; };
+    f.oc.observeCommand = async () => kind === "foreign-boundary"
+      ? { messages: [message("msg_request")], pending: false, outcome: "succeeded", observation: { kind, boundary: { messageId: "msg_other", type: "synthetic" } } }
+      : { messages: [], pending: true, observation: { kind, reason: "Original receipt conflicts" } };
+    await f.service.monitorNative(f.owner);
+    expect(f.run.status).toBe("running");
+    expect(f.statuses().some(status => (status as any).status === "completed")).toBe(false);
+    expect(f.statuses().some(status => (status as any).connection === "unavailable")).toBe(false);
+    if (kind === "protocol-contradiction") expect(f.owner.nativeHandoffProtocolUnsafe).toBe(true);
+    else expect(f.statuses()).toContainEqual({ status: "running", completionBoundary: { messageId: "msg_other", type: "synthetic" }, reason: "A later synthetic message prevents attributing completion to this command; retaining ownership without resending" });
+  }
+});
+
+test("OC recovered observation rechecks private original association after reads and inside pending cancellation guard", async () => {
+  for (const stage of ["snapshot", "pending-guard"] as const) {
+    const f = fixture(), pending = true;
     f.state.currentOwner = undefined;
     let mutations = 0;
     const replaced = () => { f.state.currentOwner = { ...f.owner, run: { ...f.run, runId: "foreign" } }; };
@@ -135,7 +231,7 @@ test("OC recovered observation rechecks private original association after reads
         : { messages: [message(command)], pending: false, currentInputId: command };
     };
     f.oc.cancelInput = async (_id, _command, guard) => { replaced(); guard?.(); mutations++; return true; };
-    f.oc.activity = async () => { if (stage === "activity") replaced(); return { session: { id: "ses_fixture", time: { created: 1, updated: 2 } }, active: true, pending: false }; };
+    f.oc.activity = async () => ({ session: { id: "ses_fixture", time: { created: 1, updated: 2 } }, active: true, pending: false });
     f.oc.cancel = async (_id, guard) => { replaced(); guard?.(); mutations++; return { interrupted: true }; };
     await expect(f.service.observeRecoveredInput(scope, true)).rejects.toThrow("Foreign App owner");
     expect(mutations).toBe(0); expect(f.persisted).toHaveLength(0); expect(f.records).toHaveLength(0);
@@ -143,8 +239,8 @@ test("OC recovered observation rechecks private original association after reads
   }
 });
 
-test("OC recovery original protocol overlay blocks upgrades and all cancellation without poisoning another run or reusing safety across awaits", async () => {
-  for (const mode of ["original-unknown", "original-accepted", "other-run", "activity-race", "cancel-discovery-race"] as const) {
+test("OC recovery original protocol overlay blocks upgrades and all cancellation without poisoning another run", async () => {
+  for (const mode of ["original-unknown", "original-accepted", "other-run"] as const) {
     const f = fixture(); f.state.currentOwner = undefined;
     let accepted = mode !== "original-unknown" && mode !== "other-run", upgrades = 0, effects = 0;
     const mark = (runId = f.run.runId) => f.records.push({ runId, sessionId: f.run.sessionId, seq: f.records.length + 1, time: f.run.createdAt,
@@ -156,15 +252,14 @@ test("OC recovery original protocol overlay blocks upgrades and all cancellation
       validate: () => {}, accepted: () => accepted, outcome: () => { upgrades++; accepted = true; },
       protocolUnsafe: () => f.records.some(event => event.runId === f.run.runId && event.sessionId === f.run.sessionId && (event.data as any).nativeQueuedHandoffProtocolMismatch === true),
       protocolMismatch: async () => { mark(); }, beforeNative: (): never => { throw new Error("No submit"); }, execute: (): never => { throw new Error("No execute"); } };
-    let pending = mode !== "activity-race" && mode !== "cancel-discovery-race";
+    let pending = true;
     f.oc.snapshot = async (id, command) => pending
       ? { messages: [], pending: true, pendingInput: { id: command, sessionID: id, type: "user", delivery: "queue", time: { created: 1 } } }
       : { messages: [message(command)], pending: false, currentInputId: command };
     f.oc.cancelInput = async (_id, _command, guard) => { guard?.(); effects++; return true; };
-    f.oc.activity = async () => { if (mode === "activity-race") mark(); return { session: { id: "ses_fixture", time: { created: 1, updated: 2 } }, active: true, pending: false }; };
-    f.oc.cancel = async (_id, guard) => { if (mode === "cancel-discovery-race") mark(); guard?.(); effects++; return { interrupted: true }; };
-    if (mode === "cancel-discovery-race") await expect(f.service.observeRecoveredInput(scope, true)).rejects.toThrow("protocol is unsafe");
-    else expect(await f.service.observeRecoveredInput(scope, true)).toEqual({ interrupted: mode === "other-run" });
+    f.oc.activity = async () => ({ session: { id: "ses_fixture", time: { created: 1, updated: 2 } }, active: true, pending: false });
+    f.oc.cancel = async (_id, guard) => { guard?.(); effects++; return { interrupted: true }; };
+    expect(await f.service.observeRecoveredInput(scope, true)).toEqual({ interrupted: false });
     if (mode.startsWith("original")) {
       pending = false; // Even exact committed user/current-active evidence cannot rehabilitate the receipt.
       expect(await f.service.observeRecoveredInput(scope, true)).toEqual({ interrupted: false });
@@ -334,7 +429,7 @@ test("worker waiting transitions and repeated snapshots/errors are deduplicated 
   const raw = message("msg_request");
   await f.deps.emit(f.run, "message", normalizeMessage(raw));
   f.oc.snapshot = async () => {
-    if (++step <= 2) throw new OpenCodeError("same read failure");
+    if (++step <= 2) throw new OpenCodeUnavailableError("same read failure");
     return { messages: [raw], outcome: step === 6 ? "succeeded" : undefined, pending: false };
   };
   f.oc.interactions = async () => ++interactions < 3 ? [{ id: "permission_fixture", type: "permission", title: "Allow?" }] : [];

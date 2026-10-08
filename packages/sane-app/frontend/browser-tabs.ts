@@ -1,4 +1,4 @@
-export const MAX_BROWSER_TABS = 4;
+export const MAX_BROWSER_TABS = 8;
 const STORAGE_PREFIX = "sane.browser.tabs.v1.";
 export type BrowserTab = { id: string; url: string };
 export type BrowserTabs = { tabs: BrowserTab[]; activeId: string | null; showAll: boolean; storageError: string };
