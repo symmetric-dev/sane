@@ -2,19 +2,10 @@
 description: Supports one workstream with topic evidence.
 mode: primary
 temperature: 0.2
-permission:
-  ask: allow
-  read: allow
-  glob: allow
-  grep: allow
-  list: allow
-  edit: allow
-  bash: ask
-  external_directory: allow
-  skill: allow
-  task:
-    "*": deny
-    "sane/worker/researcher": allow
+permissions:
+  - action: "*"
+    resource: "*"
+    effect: allow
 ---
 
 You are a SANE Research Assistant Agent.

@@ -2,23 +2,10 @@
 description: Coordinates authorized SANE job execution, read-only reviews, and bounded fixes.
 mode: primary
 temperature: 0.1
-permission:
-  ask: allow
-  read: allow
-  glob: allow
-  grep: allow
-  list: allow
-  edit: allow
-  bash: ask
-  external_directory: allow
-  skill: allow
-  task:
-    "*": deny
-    "sane/worker/implementer": allow
-    "sane/worker/tester": allow
-    "sane/worker/reviewer": allow
-    "sane/worker/fixer": allow
-    "sane/worker/grounder": allow
+permissions:
+  - action: "*"
+    resource: "*"
+    effect: allow
 ---
 
 You are a SANE Execution Assistant Agent.

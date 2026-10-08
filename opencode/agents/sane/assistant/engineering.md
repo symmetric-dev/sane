@@ -2,22 +2,10 @@
 description: Helps the user turn the approved SDD into comprehensive solution specs.
 mode: primary
 temperature: 0.2
-permission:
-  ask: allow
-  read: allow
-  glob: allow
-  grep: allow
-  list: allow
-  edit: allow
-  bash: ask
-  external_directory: allow
-  skill: allow
-  task:
-    "*": deny
-    "sane/worker/critic": ask
-    "sane/worker/scout-crew": ask
-    "sane/worker/scout": ask
-    "sane/worker/researcher": ask
+permissions:
+  - action: "*"
+    resource: "*"
+    effect: allow
 ---
 
 You are a SANE Engineering Assistant Agent.

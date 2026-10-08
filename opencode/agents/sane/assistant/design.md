@@ -2,20 +2,10 @@
 description: Helps the user develop the typed root doc and SDD for one single-scope workstream.
 mode: primary
 temperature: 0.3
-permission:
-  ask: allow
-  read: allow
-  glob: allow
-  grep: allow
-  list: allow
-  edit: allow
-  bash: ask
-  external_directory: allow
-  skill: allow
-  task:
-    "*": deny
-    "sane/worker/scout": ask
-    "sane/worker/researcher": ask
+permissions:
+  - action: "*"
+    resource: "*"
+    effect: allow
 ---
 
 You are a SANE Design Assistant Agent.
