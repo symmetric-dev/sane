@@ -1,0 +1,10 @@
+{
+  "name": "sane-science",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "setup:python": "uv sync --locked",
+    "lock:python": "uv lock"
+  }
+}

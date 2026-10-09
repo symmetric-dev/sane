@@ -1,0 +1,22 @@
+[project]
+name = "sane-science-runtime"
+version = "0.1.0"
+description = "Managed Marimo runtime for the SANE computational workspace"
+requires-python = ">=3.12,<3.13"
+dependencies = ["marimo==0.25.1"]
+
+[tool.uv]
+package = false
+required-version = ">=0.12.5"
+# Applies to direct and transitive registry artifacts at resolution time.
+exclude-newer = "1 week"
+prerelease = "disallow"
+index-strategy = "first-index"
+# Require wheels; do not execute dependency source-build backends.
+no-build = true
+no-sources = true
+
+[[tool.uv.index]]
+name = "pypi"
+url = "https://pypi.org/simple"
+default = true
