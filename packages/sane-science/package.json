@@ -6,6 +6,8 @@
   "exports": {
     "./contracts": "./src/contracts.ts",
     "./environment-paths": "./src/environment-paths.ts",
+    "./marimo-contracts": "./src/marimo-contracts.ts",
+    "./marimo-pair": "./src/marimo-pair.ts",
     "./environments": "./src/environments.ts"
   },
   "scripts": {

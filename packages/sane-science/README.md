@@ -1,8 +1,8 @@
 # SANE Science runtime
 
 Python dependency foundation and explicit workspace environment provisioning for
-the Marimo integration spike. The Bun supervisor, notebook adapter, agent tools,
-and UI are not implemented yet.
+the Marimo integration spike, with a pinned live-cell adapter. App integration,
+agent tool registration, and UI are not implemented yet.
 
 ## Setup
 
@@ -72,6 +72,36 @@ The workspace provisioner has been statically checked, not exercised against a
 workspace. Installation and lifecycle verification remain part of the integration
 spike. Package-local development setup above has been executed successfully.
 
+## Live cell adapter
+
+`sane-science/marimo-pair` exports `MarimoPair` and `marimoSourceHash`.
+Construct an adapter with a provisioned Python executable, token file, and cwd.
+Its public operations are `listSessions`, `inspectCells`, `createCell`,
+`editCell`, and `runCell`. DTOs are exported from `sane-science/marimo-contracts`.
+Edits require the SHA-256 source hash from the cell snapshot.
+
+The adapter targets Marimo 0.25.1 and its internal code-mode interface. The caller
+must bind the selected notebook session to its current owned server generation;
+the adapter cannot establish that ownership from an arbitrary generation string.
+Session-list warnings must be handled even when the CLI exits successfully.
+A headless server has no live notebook session until its frontend opens.
+
+Operations are serialized per adapter instance. They have bounded subprocess
+output and duration, with no automatic retries. An unconfirmed outcome requires
+inspection before further action. Source hashes provide conflict detection, not
+atomic compare-and-swap against simultaneous browser edits. Mutation acceptance,
+execution outcome, and persistence are separate: Marimo's background autosave is
+not acknowledged by a successful pair response.
+
+Snapshots preserve MIME output data and console outputs, plus the runtime graph
+(which may lag unexecuted source edits). Outputs are read in a separate request
+after mutation/execution because Marimo freezes scratchpad output snapshots at
+request start. Rich data is not automatically a portable artifact: rendering,
+referenced assets, durable capture, and agent sharing remain integration work.
+
+Only static typechecking has been performed; live adapter interoperability has
+not been verified through notebook execution.
+
 ## Planned Bun / Python boundary
 
 ```text
@@ -91,8 +121,8 @@ After setup, the supervisor should launch the environment's executable directly
 with argument arrays, without shell activation, dependency resolution, or
 installation on app startup. Runtime launch must bind loopback, configure
 authentication, and isolate notebook web content from the privileged App origin.
-The live pairing adapter must be qualified against the pinned version; it is not
-yet an implemented integration.
+The live pairing adapter must still be qualified through execution against the
+pinned version before it is wired into the App.
 
 This environment initially contains only Marimo and its dependencies. Add the
 dataframe, visualization, and SQL packages needed by the spike through this
