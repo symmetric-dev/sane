@@ -102,7 +102,33 @@ referenced assets, durable capture, and agent sharing remain integration work.
 Only static typechecking has been performed; live adapter interoperability has
 not been verified through notebook execution.
 
-## Planned Bun / Python boundary
+## Runtime supervisor
+
+`sane-science/marimo-runtime` exports `MarimoRuntimeService`, with `start`,
+`current`, `get`, `connection`, and `stop` operations. Its DTOs are in
+`sane-science/marimo-runtime-contracts`. Start requires an initialized workspace,
+ready environment evidence (rechecked at admission), an explicit port, and an
+existing regular Python notebook under the workspace's science notebooks path.
+It neither creates notebooks nor installs dependencies.
+
+The service owns a launch generation and private token file, uses loopback-only
+launch arguments, and drains/discards process output rather than exposing startup
+credentials. Credential-bearing connection information is backend-only and must
+not be serialized into ordinary status responses or logs.
+
+State `process-started` is not HTTP readiness or kernel readiness. Both remain
+explicitly unverified. Stop attempts bounded graceful termination and escalation;
+separate kernel descendants may survive, so descendant cleanup remains unverified.
+Ownership is in-memory and does not provide crash recovery or coordination across
+multiple SANE installations. App integration must address these lifecycle limits.
+
+The pinned internal configuration override disables startup cell execution.
+Other Marimo project/user configuration, including dotenv and runtime settings,
+remains inherited. Configuration policy must be completed before presenting this
+supervisor as the managed workspace experience. No server has been launched to
+verify lifecycle behavior.
+
+## Bun / Python boundary
 
 ```text
 SANE Bun bridge
