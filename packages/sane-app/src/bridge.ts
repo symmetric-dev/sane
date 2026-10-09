@@ -49,6 +49,7 @@ import { WorkspaceService, WorkspaceError, workspaceError } from "./workspace";
 import { CatalogService } from "./catalog";
 import { WorkspaceCreationService } from "./workspace-creation";
 import { TerminalService, type TerminalSocketData } from "./terminal";
+import { ScienceService, scienceRoute } from "./science";
 import { RepositoryRouter, RepositoryStoreError, WorkstreamAdapterError, authenticatedWorkstreamRoute, validateWorkstreamInput, flushAndCloseWorkstreams } from "./workstreams";
 import type { WorkstreamAction, WorkstreamActionInput, WorkstreamActionResult } from "./workstreams-contract";
 import { validateAppStore, assertSourceConfiguration, atomicAppRecord, atomicNativeHistory, loadAgentProfiles, validateAgentProfiles, AppStoreError, type SourceConfiguration } from "./app-store";
@@ -263,6 +264,7 @@ async function startOwned(options: Options, assetsDir: string, packageDir: strin
     if (!completed) retainOwner = true;
   }
   let router: RepositoryRouter | undefined;
+  let science: ScienceService | undefined;
   let updateService: ConversationUpdates<ClaudeConversationUpdateState> | undefined;
   let replyIntegration: OpenCodeReplyIntegration | undefined;
   let chromePush: ChromePushService | undefined;
@@ -281,7 +283,7 @@ async function startOwned(options: Options, assetsDir: string, packageDir: strin
     await boundedStartupCleanup(() => drainStartupExecution?.());
     await boundedStartupCleanup(() => queueDrain);
     await Promise.all([
-      () => chromePush?.close(), () => workspaceCreations?.close(),
+      () => chromePush?.close(), () => workspaceCreations?.close(), () => science?.close(),
       () => replyIntegration?.close(), () => updateService?.close(), () => searches.close(),
     ].map(cleanup => boundedStartupCleanup(cleanup)));
     await boundedStartupCleanup(() => router?.close());
@@ -338,6 +340,7 @@ async function startOwned(options: Options, assetsDir: string, packageDir: strin
     },
     mutationFailed: failClosed,
   });
+  science = new ScienceService(catalog, router);
   const admissions = new AdmissionService(options.dataDir, store.admissions, store.sources, catalog, router);
   const workerStore = new WorkerStore(options.dataDir);
   const branches = new BranchStore(options.dataDir);
@@ -2459,6 +2462,10 @@ async function startOwned(options: Options, assetsDir: string, packageDir: strin
            return queueDomainCommitted(() => workstreams.endPhase(session, input.assignmentId));
         });
       }
+      if (/^\/api\/workspaces\/[^/]+\/worktrees\/[^/]+\/science$/.test(path)) {
+        const token = auth.terminalToken(req);
+        return (await scienceRoute(req, science!, () => !closing && !storageFailed && !!token && auth.terminalToken(req) === token))!;
+      }
       const terminalMatch = /^\/api\/workspaces\/([^/]+)\/worktrees\/([^/]+)\/terminal(?:\/(socket|close|restart))?$/.exec(path);
       if (terminalMatch) {
         const workspaceId = decodeURIComponent(terminalMatch[1]!), worktreeId = decodeURIComponent(terminalMatch[2]!), operation = terminalMatch[3];
@@ -3473,6 +3480,9 @@ async function startOwned(options: Options, assetsDir: string, packageDir: strin
     const pushDrain = chromePush?.close();
     const searchDrain = searches.close();
     const creationDrain = workspaceCreations?.close();
+    const scienceDrain = science?.close();
+    // Observe immediately; later shutdown stages still supervise retained ownership.
+    void scienceDrain?.catch(() => { retainOwner = true; });
     const nativeSubagentDrain = nativeSubagentRecorder.drain();
     clearInterval(handoffTimer);
     clearInterval(workerOutboxTimer);
@@ -3482,6 +3492,7 @@ async function startOwned(options: Options, assetsDir: string, packageDir: strin
     await boundedStartupCleanup(() => Promise.all([...queueServiceTasks]));
     await coordinatorDrain;
     await creationDrain;
+    await boundedStartupCleanup(() => scienceDrain);
     await nativeSubagentDrain;
     try { await workers.drainLaunches(); } catch { failClosed(); }
     await workerOutboxTask;
