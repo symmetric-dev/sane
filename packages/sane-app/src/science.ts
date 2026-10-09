@@ -13,6 +13,7 @@ import { WorkspaceError } from "./workspace";
 import { body, json } from "./bridge-http";
 
 type Session = { generation: string; ref: ScienceSessionRef; port: number };
+export type ScienceChatNativeRequest = ScienceRequest | { action: "create-cell"; bindingRevision: string; notebook: string; generation: string; code: string; after?: string };
 type Runtime = { key: string; service: ScienceWorkspaceService; fs: EnvironmentFileSystem; bindings: Map<string, string>; sessions: Map<string, Session>; ports: Set<number>; invalidated?: boolean; stopping?: Promise<void> };
 const filename = /^[A-Za-z0-9][A-Za-z0-9_-]{0,119}\.py$/;
 function fail(status: number, code: string, message: string): never { throw new WorkspaceError(status, code, message); }
@@ -42,7 +43,20 @@ export class ScienceService {
   private busy = new Set<string>();
   private closing = false;
   private drain?: Promise<void>;
+  private chatNotebooks = new Set<string>();
+  /** Synchronous admission reservations cover resolve, native awaits and cleanup.
+   * Claims cannot overtake an already admitted legacy operation. */
+  private legacyAdmissions = new Map<string, number>();
   constructor(private catalog: CatalogService, private router: RepositoryRouter) {}
+  claimChatNotebook(workspaceId: string, notebook: string) {
+    const key = `${workspaceId}/${notebook}`;
+    if (this.chatNotebooks.has(key)) return;
+    if (this.legacyAdmissions.has(workspaceId)) fail(409, "science-busy", "Wait for the admitted legacy science operation before associating a notebook");
+    this.chatNotebooks.add(key);
+  }
+  async handleChat(workspaceId: string, worktreeId: string, input: ScienceChatNativeRequest | undefined, authorized: () => boolean) {
+    return this.handle(workspaceId, worktreeId, input, authorized, true);
+  }
 
   private stop(r: Runtime): Promise<void> {
     r.invalidated = true;
@@ -108,14 +122,27 @@ export class ScienceService {
     }
     return fail(503, "science-port", "No managed science port is available");
   }
-  async handle(workspaceId: string, worktreeId: string, input: ScienceRequest | undefined, authorized: () => boolean): Promise<ScienceResponse> {
+  async handle(workspaceId: string, worktreeId: string, input: ScienceChatNativeRequest | undefined, authorized: () => boolean, chat = false): Promise<ScienceResponse> {
+    const assertOwnership = () => {
+      if (!chat && input && "notebook" in input && this.chatNotebooks.has(`${workspaceId}/${input.notebook}`)) fail(409, "science-chat-owned", "Use the durable chat API for this notebook");
+    };
+    assertOwnership();
     if (this.closing) fail(503, "science-shutdown", "Bridge is shutting down");
     if (this.active.size >= 16) fail(429, "science-busy", "Too many science operations");
-    const task = this.perform(workspaceId, worktreeId, input, authorized);
+    // Reserve before perform can reach its first await. Claims and reservations
+    // are synchronous, so there is no check/await/mutation ownership gap.
+    if (!chat) this.legacyAdmissions.set(workspaceId, (this.legacyAdmissions.get(workspaceId) ?? 0) + 1);
+    const task = this.perform(workspaceId, worktreeId, input, authorized, assertOwnership);
     this.active.add(task);
-    try { return await task; } finally { this.active.delete(task); }
+    try { return await task; } finally {
+      this.active.delete(task);
+      if (!chat) {
+        const remaining = this.legacyAdmissions.get(workspaceId)! - 1;
+        if (remaining) this.legacyAdmissions.set(workspaceId, remaining); else this.legacyAdmissions.delete(workspaceId);
+      }
+    }
   }
-  private async perform(workspaceId: string, worktreeId: string, input: ScienceRequest | undefined, authorized: () => boolean): Promise<ScienceResponse> {
+  private async perform(workspaceId: string, worktreeId: string, input: ScienceChatNativeRequest | undefined, authorized: () => boolean, assertOwnership: () => void): Promise<ScienceResponse> {
     const resolved = await this.resolve(workspaceId, worktreeId), { r, binding } = resolved;
     const assertCurrent = async () => {
       if (r.invalidated) fail(409, "science-binding", "Science runtime was invalidated; reload status");
@@ -124,6 +151,7 @@ export class ScienceService {
       catch { await this.stop(r); fail(409, "science-binding", "Science repository binding is unavailable"); }
       if (current.cwd !== binding.cwd || current.bindingRevision !== binding.bindingRevision) { await this.stop(r); fail(409, "science-binding", "Science worktree binding changed"); }
       if (this.closing || !authorized()) fail(401, "science-auth", "Science authorization changed");
+      assertOwnership();
     };
     if (this.busy.has(r.key)) fail(409, "science-busy", "A science operation is already pending");
     this.busy.add(r.key);
@@ -168,7 +196,7 @@ export class ScienceService {
           this.ports.delete(s.port); r.ports.delete(s.port);
         } else if (input.action === "inspect") { await r.service.refreshNotebook(s.ref); inspected = snapshot(await r.service.inspectCells(s.ref)); }
         else {
-          const result = input.action === "edit" ? await r.service.editCell(s.ref, input.cellId, input.code, input.expectedSourceHash, false) : await r.service.runCell(s.ref, input.cellId);
+          const result = input.action === "create-cell" ? await r.service.createCell(s.ref, input.code, { after: input.after, run: false }) : input.action === "edit" ? await r.service.editCell(s.ref, input.cellId, input.code, input.expectedSourceHash, false) : await r.service.runCell(s.ref, input.cellId);
           operation = { cellId: result.cellId, mutation: result.mutation, execution: result.execution, durability: result.durability, ...(result.error ? { issue: "operation-error" as const } : result.snapshotError ? { issue: "snapshot-unavailable" as const } : {}) };
           if (result.snapshot) inspected = snapshot(result.snapshot);
         }

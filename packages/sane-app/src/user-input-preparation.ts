@@ -84,6 +84,10 @@ function launchValid(harness: Harness, model: unknown, effort: unknown): boolean
 export async function prepareUserInput(value: unknown, deps: UserInputPreparationDependencies): Promise<PreparedUserInput> {
   if (!value || typeof value !== "object" || Array.isArray(value)) throw new UserInputPreparationError("Invalid request", 400);
   const raw = value as Record<string, unknown>;
+  // Science references must be resolved by the ordinary-send authority before
+  // entering reusable preparation. Queue/review/internal callers cannot silently
+  // drop an attachment and send only its accompanying comment.
+  if (Object.hasOwn(raw, "scienceSnapshots")) throw new UserInputPreparationError("Science snapshots require authoritative ordinary-send capture", 400, "science-capture-required");
   if (typeof raw.prompt !== "string" || !raw.prompt.trim() || raw.cwd !== undefined && typeof raw.cwd !== "string" || raw.sessionId !== undefined && typeof raw.sessionId !== "string") throw new UserInputPreparationError("Invalid request", 400);
   if (/^\s*\/compact(?:\s|$)/i.test(raw.prompt)) throw new UserInputPreparationError("Use the dedicated Compact action for /compact; it requires an existing idle conversation and a durable request ID", 400, "compact-action-required");
   // Clone before the first await: neither callers nor callbacks can rewrite the request.

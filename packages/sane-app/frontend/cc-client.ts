@@ -17,6 +17,8 @@ export async function request(path: string, init: RequestInit = {}) {
 }
 const transcriptSignal = (signal?: AbortSignal) => signal ? AbortSignal.any([signal, AbortSignal.timeout(25000)]) : undefined;
 export const conversationClient: ConversationClient = {
+  scienceSubmissions: async (id, signal) => (await request(`/api/sessions/${encodeURIComponent(id)}/science-submissions`, { signal })).submissions,
+  scienceSubmission: async (id, requestId, signal) => (await request(`/api/sessions/${encodeURIComponent(id)}/science-submissions/${encodeURIComponent(requestId)}`, { signal })).submission,
   ...pendingInputClient,
   async conversationUpdates(input = {}, signal, bootstrap = false) {
     if (!isConversationUpdateFeedRequest(input) || bootstrap && (input.cursor || input.through !== undefined)) throw new Error("Invalid conversation update request.");
@@ -82,6 +84,9 @@ export const conversationClient: ConversationClient = {
   orderAgents: input => request("/api/agents/order", { method: "PUT", body: JSON.stringify(input) }),
   async submit({ text, conversationId, ...options }) {
     const data = await request("/api/sessions", { method: "POST", body: JSON.stringify({ prompt: text, ...(conversationId ? { sessionId: conversationId } : {}), ...options }) });
+    if (options.scienceSnapshots?.length && (data.queued || data.sessionId !== conversationId || data.scienceSubmission?.conversationId !== conversationId
+      || data.scienceSubmission?.requestId !== options.requestId || data.scienceSubmission?.state !== "submitted" || data.scienceSubmission?.runId !== data.runId
+      || JSON.stringify(data.scienceSubmission?.snapshots) !== JSON.stringify(options.scienceSnapshots))) throw new Error("Science send acknowledgement is unconfirmed; reconcile its original request without resending");
     if (data.queued === true) {
       if (data.sessionId !== conversationId || !data.receipt || typeof data.receipt.requestId !== "string" || data.receipt.sessionId !== conversationId || data.receipt.prompt !== text) throw new Error("Invalid queue acknowledgement; check conversation history before retrying");
       return { conversationId: data.sessionId, queued: true, receipt: data.receipt };

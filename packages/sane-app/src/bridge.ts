@@ -45,11 +45,16 @@ import { assertPendingInputDomainMutation, assertDomainInitializationIdle, chain
 import { equal as equalPendingPin } from "./prepared-input-codec";
 import { decodePendingInputPins } from "./pending-input-codec";
 import { prepareUserInput, revalidatePreparedUserInput, assertPreparedUserInputCurrent, UserInputPreparationError, type PreparedUserInput } from "./user-input-preparation";
+import { ScienceSubmissionStore, ScienceSubmissionError, ScienceSubmissionStorageError, type SciencePreparedSnapshotReference, type ScienceSubmissionReceipt } from "./science-submission-store";
+import { canonicalJSON } from "./prepared-input-codec";
+import type { ScienceSnapshotReference, ScienceSubmissionView } from "../shared/conversation/types";
 import { WorkspaceService, WorkspaceError, workspaceError } from "./workspace";
 import { CatalogService } from "./catalog";
 import { WorkspaceCreationService } from "./workspace-creation";
 import { TerminalService, type TerminalSocketData } from "./terminal";
 import { ScienceService, scienceRoute } from "./science";
+import { ScienceChatService, scienceChatRoute } from "./science-chat-service";
+import { ScienceStore } from "./science-store";
 import { RepositoryRouter, RepositoryStoreError, WorkstreamAdapterError, authenticatedWorkstreamRoute, validateWorkstreamInput, flushAndCloseWorkstreams } from "./workstreams";
 import type { WorkstreamAction, WorkstreamActionInput, WorkstreamActionResult } from "./workstreams-contract";
 import { validateAppStore, assertSourceConfiguration, atomicAppRecord, atomicNativeHistory, loadAgentProfiles, validateAgentProfiles, AppStoreError, type SourceConfiguration } from "./app-store";
@@ -342,6 +347,15 @@ async function startOwned(options: Options, assetsDir: string, packageDir: strin
   });
   science = new ScienceService(catalog, router);
   const admissions = new AdmissionService(options.dataDir, store.admissions, store.sources, catalog, router);
+  const scienceChats = new ScienceChatService(new ScienceStore(options.dataDir, store.manifest.storeId), science, catalog, admissions, id => meta.sessions.find(s => s.sessionId === id), async (id, messageId) => {
+    const session = meta.sessions.find(s => s.sessionId === id);
+    if (!session) return false;
+    try {
+      const page = await transcripts.page(session, new URLSearchParams({ targetMessageId: messageId, limit: "1" }));
+      // Native aliases may locate a page, but only its exact canonical ID is an anchor.
+      return page.target?.messageId === messageId;
+    } catch { return false; }
+  });
   const workerStore = new WorkerStore(options.dataDir);
   const branches = new BranchStore(options.dataDir);
   const branchRequests = new Set<string>();
@@ -1362,15 +1376,59 @@ async function startOwned(options: Options, assetsDir: string, packageDir: strin
     if (!(await stat(cwd)).isDirectory()) throw new Error("Execution directory unavailable");
   }
   const preparationState = () => ({ getSession: (id: string) => meta.sessions.find(s => s.sessionId === id), profiles: agentProfiles, sourceAuthorityId: nativeSource });
+  // Ordinary-send science authority. Preview data never enters this resolver.
+  function scienceReferences(conversationId: string, refs: ScienceSnapshotReference[], settings: Record<string, any>): SciencePreparedSnapshotReference[] {
+    const snapshots = scienceChats.resolveShareSnapshots(conversationId, refs.map(ref => ref.snapshotId));
+    const chat = scienceChats.store.get(conversationId)!;
+    return refs.map(ref => {
+      const saved = snapshots.find(s => s.id === ref.snapshotId && s.blockId === ref.blockId);
+      if (!saved) throw new ScienceSubmissionError("science-snapshot-not-found", "Frozen science snapshot not found in this conversation", 404);
+      return { snapshotId: saved.id, blockId: saved.blockId, source: saved.source, agentText: saved.agentText,
+        provenance: { workspaceId: chat.workspaceId, worktreeId: chat.worktreeId, admissionKey: chat.admissionKey, notebook: chat.notebook,
+          shareRequestId: saved.requestId, revision: saved.revision, operationId: saved.operationId, representation: saved.representation, createdAt: saved.createdAt, settings } };
+    });
+  }
+  const scienceOutcomeEvidence = new Map<string, import("../shared/conversation/dispatch-contract").DispatchSubmissionEvidence>();
+  const scienceSubmissions = new ScienceSubmissionStore(options.dataDir, store.manifest.storeId, {
+    beforeMutation: () => { if (closing || storageFailed || !startupReady) throw new ScienceSubmissionStorageError("Science submission ownership is unavailable"); },
+    validateLive: ({ stage, receipt }) => {
+      const { intent } = receipt;
+      const settings = intent.snapshots[0]?.provenance.settings as Record<string, any>;
+      if (canonicalJSON(scienceReferences(intent.conversationId, intent.snapshots, settings)) !== canonicalJSON(intent.snapshots)) throw new ScienceSubmissionError("science-snapshot-changed", "Frozen science snapshot authority changed");
+      if (stage === "outcome") {
+        const evidence = scienceOutcomeEvidence.get(`${intent.conversationId}/${intent.requestId}`);
+        if (!evidence || evidence.requestId !== intent.requestId || evidence.source.sessionId !== intent.conversationId
+          || evidence.runId !== receipt.association?.runId || evidence.nativeCommandId !== receipt.association?.nativeCommandId
+          || evidence.submission !== receipt.state || receipt.state === "not-submitted" && receipt.nativeAttempted) throw new Error("Science outcome lacks original dispatch evidence");
+      }
+    },
+  });
+  function scienceView(receipt: ScienceSubmissionReceipt): ScienceSubmissionView {
+    return { requestId: receipt.intent.requestId, conversationId: receipt.intent.conversationId, state: receipt.state,
+      runId: receipt.association?.runId ?? null, snapshots: receipt.intent.snapshots.map(({ snapshotId, blockId }) => ({ snapshotId, blockId })) };
+  }
+  function ordinaryRolePrefix(prepared: PreparedUserInput): string {
+    const { agent, nativeAgentSelected } = prepared.configuration;
+    return isStoredAssistantAgentId(agent) && prepared.binding.harness === "opencode" && !nativeAgentSelected
+      ? `[SANE role: ${storedAssistantLabel(agent)} assistant. Follow the SANE ${storedAssistantLabel(agent)} assistant procedures for this conversation.]\n\n` : "";
+  }
   /** Backend launch authority shared by immediate admission and the existing
    * single CC continuation. No HTTP closure or mutable request is retained. */
-  async function admitPreparedInput(prepared: PreparedUserInput, lease: ConversationAdmissionLease, options: PreparedAdmissionOptions = {}) {
+  async function admitPreparedInput(prepared: PreparedUserInput, lease: ConversationAdmissionLease, options: PreparedAdmissionOptions & { scienceSubmission?: { conversationId: string; requestId: string } } = {}) {
     const { conversationId, cwd, harness } = prepared.binding;
     const input = prepared.normalized, { model, effort, agent } = prepared.configuration;
     const { queuedFollowupId, publish } = options;
     // Copy explicit context before any await. Hooks are capabilities, not mutable
     // settings aliases; IDs, intent and origin cannot drift during preflight.
     const context = options.context && Object.freeze({ ...options.context, intent: Object.freeze({ ...options.context.intent }), evidence: options.context.evidence && Object.freeze({ ...options.context.evidence }) });
+    if (options.scienceSubmission) {
+      const receipt = scienceSubmissions.get(options.scienceSubmission);
+      if (!receipt || receipt.state !== "unknown" || receipt.nativeAttempted || receipt.dispatchText !== prepared.prompt
+        || receipt.intent.conversationId !== conversationId || context?.intent.requestId !== receipt.intent.requestId
+        || context?.runId !== receipt.association?.runId || (context?.nativeCommandId ?? null) !== receipt.association?.nativeCommandId
+        || context?.origin !== "user" || context.delivery !== "idle-only" || queuedFollowupId) throw new UserInputPreparationError("Science admission must use its exact reserved text and original dispatch identity", 409);
+      if ((receipt.intent.version === 2 ? receipt.intent.rolePrefix : "") !== ordinaryRolePrefix(prepared)) throw new UserInputPreparationError("Science dispatch role instructions changed", 409);
+    }
     if (context && (context.delivery !== "idle-only" && context.delivery !== "native-queued-handoff"
       || !["user", "queued-user", "worker-report", "handoff"].includes(context.origin))) throw new UserInputPreparationError("Explicit admission requires a known delivery policy and origin", 409);
     if (publish !== undefined && typeof publish !== "function") throw new UserInputPreparationError("Lifecycle publisher must be a function", 409);
@@ -1485,7 +1543,7 @@ async function startOwned(options: Options, assetsDir: string, packageDir: strin
       // it must not normalize preferences or upgrade metadata during a claim.
       profileId: nativeHandoff ? configured.profileId : sessionProfileId(configured), ...saneContextSnapshot(configured), ...(queuedFollowupId ? { queuedFollowupId } : {}) };
     if (harness === "opencode") { run.nativeCommandId = nativeCommandId!; run.nativePhase = "preparing"; }
-    const effectivePrompt = isStoredAssistantAgentId(agent) && harness === "opencode" && !session.nativeAgentSelected
+    const effectivePrompt = !options.scienceSubmission && isStoredAssistantAgentId(agent) && harness === "opencode" && !session.nativeAgentSelected
       ? `[SANE role: ${storedAssistantLabel(agent)} assistant. Follow the SANE ${storedAssistantLabel(agent)} assistant procedures for this conversation.]\n\n${prepared.prompt}` : prepared.prompt;
     const installedSnapshot = structuredClone(configured);
     const lifecycle = executePrompt(lease, session, run, effectivePrompt, prepared.resume, origin, {
@@ -2462,6 +2520,10 @@ async function startOwned(options: Options, assetsDir: string, packageDir: strin
            return queueDomainCommitted(() => workstreams.endPhase(session, input.assignmentId));
         });
       }
+      if (/^\/api\/workspaces\/[^/]+\/worktrees\/[^/]+\/science\/chats\/[^/]+$/.test(path)) {
+        const token = auth.terminalToken(req);
+        return (await scienceChatRoute(req, scienceChats, () => !closing && !storageFailed && !!token && auth.terminalToken(req) === token))!;
+      }
       if (/^\/api\/workspaces\/[^/]+\/worktrees\/[^/]+\/science$/.test(path)) {
         const token = auth.terminalToken(req);
         return (await scienceRoute(req, science!, () => !closing && !storageFailed && !!token && auth.terminalToken(req) === token))!;
@@ -2836,7 +2898,32 @@ async function startOwned(options: Options, assetsDir: string, packageDir: strin
         finally { if (compactAdmissions.get(key)?.promise === promise) compactAdmissions.delete(key); }
       }
       if (path === "/api/sessions" && req.method === "POST") {
-        const input = await body(req);
+        let input = await body(req);
+        let scienceReceipt: ScienceSubmissionReceipt | undefined;
+        if (input && Object.hasOwn(input, "scienceSnapshots")) {
+          const allowed = ["prompt", "sessionId", "requestId", "scienceSnapshots", "nativeStopped", "harness", "cwd", "workspaceId", "worktreeId", "model", "effort", "agent", "profileId"];
+          if (Object.keys(input).some(key => !allowed.includes(key)) || !uuid(input.sessionId) || !uuid(input.requestId)
+            || typeof input.prompt !== "string" || /^\s*\/compact(?:\s|$)/i.test(input.prompt)
+            || !Array.isArray(input.scienceSnapshots) || !input.scienceSnapshots.length || input.scienceSnapshots.length > 4
+            || input.scienceSnapshots.some((ref: any) => !ref || typeof ref !== "object" || Object.keys(ref).length !== 2 || typeof ref.snapshotId !== "string" || typeof ref.blockId !== "string")) return json({ error: "Science sends require an existing conversation, request ID, comment and frozen snapshot references", code: "science-send-invalid" }, 400);
+          const settings = Object.fromEntries(Object.entries(input).filter(([key]) => !["prompt", "sessionId", "requestId", "scienceSnapshots"].includes(key)));
+          const prior = scienceSubmissions.get({ conversationId: input.sessionId, requestId: input.requestId });
+          const { scienceSnapshots: _snapshots, requestId: _id, ...roleInput } = input;
+          const snapshots = scienceReferences(input.sessionId, input.scienceSnapshots, settings);
+          const rolePrepared = prior ? null : await prepareUserInput({ ...roleInput, prompt: [input.prompt, ...snapshots.map(snapshot => snapshot.agentText)].filter(Boolean).join("\n\n") }, { profiles: agentProfiles, getSession: id => meta.sessions.find(s => s.sessionId === id),
+            defaultCwd: options.cwd, conversationId: () => crypto.randomUUID(), sourceAuthorityId: nativeSource,
+            selectedDirectory: async (workspaceId, worktreeId) => (await catalog.binding(workspaceId, worktreeId)).cwd,
+            ensureDirectory, validateOpenCodeModel: (model, effort) => oc.model(model, effort), resolveOpenCodeLaunch: (cwd, settings) => oc.resolveLaunch(cwd, settings) });
+          scienceReceipt = scienceSubmissions.prepare({ ...(prior?.intent.version === 1 ? { version: 1 as const } : { version: 2 as const, rolePrefix: prior?.intent.version === 2 ? prior.intent.rolePrefix : ordinaryRolePrefix(rolePrepared!) }),
+            storeId: store.manifest.storeId, conversationId: input.sessionId, requestId: input.requestId,
+            text: input.prompt, snapshots });
+          if (scienceReceipt.state !== "prepared") {
+            if (scienceReceipt.state === "submitted" && scienceReceipt.association) return json({ sessionId: input.sessionId, runId: scienceReceipt.association.runId, scienceSubmission: scienceView(scienceReceipt) }, 202);
+            return json({ error: "Original science send outcome requires reconciliation; it will not be replayed", code: "science-submission-unknown", scienceSubmission: scienceView(scienceReceipt) }, 409);
+          }
+          const { scienceSnapshots: _refs, requestId: _requestId, ...ordinary } = input;
+          input = { ...ordinary, prompt: scienceReceipt.dispatchText };
+        }
         if (input?.sessionId && uuid(input.sessionId) && pendingInputs!.hasChain(input.sessionId)) return json({ error: "A durable input chain is active; use the explicit pending-inputs API", code: "pending-input-chain-active" }, 409);
         const prepared = await prepareUserInput(input, { profiles: agentProfiles, getSession: id => meta.sessions.find(s => s.sessionId === id),
           defaultCwd: options.cwd, conversationId: () => crypto.randomUUID(), sourceAuthorityId: nativeSource,
@@ -2845,9 +2932,10 @@ async function startOwned(options: Options, assetsDir: string, packageDir: strin
         const { conversationId, cwd } = prepared.binding;
         const oldOwner = owners.get(conversationId);
         const admission = coordinator.reserveAdmission({ conversationIds: [conversationId], intent: { kind: "user-prompt" },
-          ...(oldOwner && claudeRuns.canQueueFollowup(oldOwner) ? { predecessor: oldOwner } : {}) });
+          ...(!scienceReceipt && oldOwner && claudeRuns.canQueueFollowup(oldOwner) ? { predecessor: oldOwner } : {}) });
         if (!admission.ready) return json({ error: admission.reason, code: admission.code }, admission.code === "capacity" ? 429 : 409);
         const lease = admission.lease;
+        if (scienceReceipt && admission.queueAfterRunId) { coordinator.releaseAdmission(lease); return json({ error: "Science snapshots cannot be queued", code: "science-queue-unsupported" }, 409); }
         // Reserve admission through old-owner settlement and new-owner creation.
         // This exact reservation belongs only to this send, never another task.
         if (admission.queueAfterRunId) {
@@ -2880,8 +2968,73 @@ async function startOwned(options: Options, assetsDir: string, packageDir: strin
           return json({ sessionId: conversationId, queued: true, receipt }, 202);
         }
         const task = Promise.withResolvers<void>(); attachmentTasks.add(task.promise);
-        try { const { lifecycle: _lifecycle, ...response } = await admitPreparedInput(prepared, lease); return json(response, 202); }
+        try {
+          if (scienceReceipt) {
+            const key = { conversationId, requestId: scienceReceipt.intent.requestId };
+            try {
+            const reservation = scienceSubmissions.reserve(key);
+            if (!reservation.reserved) return json({ error: "Science submission already reserved; no replay", code: "science-submission-unknown" }, 409);
+            // All native identities and the exact text are durable before admission
+            // can mutate configuration, link a run or publish a native owner.
+            const runId = crypto.randomUUID(), nativeCommandId = prepared.binding.harness === "opencode" ? `msg_${crypto.randomUUID().replaceAll("-", "")}` : null;
+            const association = { runId, nativeCommandId };
+            scienceSubmissions.associate(key, association);
+            const validateIdentity = (identity: DispatchIdentity) => {
+              if (identity.runId !== runId || identity.nativeCommandId !== nativeCommandId || identity.requestId !== key.requestId
+                || identity.source.sessionId !== conversationId || identity.source.authorityId !== prepared.binding.authorityId
+                || identity.source.nativeSessionId !== prepared.binding.nativeSessionId || identity.source.harnessId !== prepared.binding.harness || identity.source.cwd !== cwd) throw new Error("Science dispatch identity changed");
+              const receipt = scienceSubmissions.get(key)!;
+              if (canonicalJSON(scienceReferences(conversationId, receipt.intent.snapshots, receipt.intent.snapshots[0].provenance.settings as Record<string, any>)) !== canonicalJSON(receipt.intent.snapshots)) throw new UserInputPreparationError("Science snapshot authority changed", 409);
+            };
+             const submission = Promise.withResolvers<void>();
+             const context: PreparedAdmissionContext = { origin: "user", delivery: "idle-only", intent: { kind: "user-prompt", requestId: key.requestId }, runId,
+              ...(nativeCommandId ? { nativeCommandId } : {}), validate: validateIdentity,
+              link: identity => { validateIdentity(identity); scienceSubmissions.associate(key, association); },
+              evidence: {
+                beforeNative: evidence => {
+                  validateIdentity(evidence);
+                  if (evidence.submission !== "attempted" || evidence.nativeAcceptance !== "unknown") throw new Error("Invalid science native boundary evidence");
+                  scienceSubmissions.beforeNative(key, association);
+                },
+                outcome: evidence => {
+                  validateIdentity(evidence);
+                  if (evidence.submission === "attempted") throw new Error("Unexpected science outcome");
+                  const evidenceKey = `${conversationId}/${key.requestId}`;
+                  scienceOutcomeEvidence.set(evidenceKey, evidence);
+                   try { scienceSubmissions.markOutcome(key, evidence.submission); }
+                   finally { scienceOutcomeEvidence.delete(evidenceKey); }
+                   submission.resolve();
+                },
+              } };
+              const { lifecycle, ...response } = await admitPreparedInput(prepared, lease, { context, scienceSubmission: key });
+               // Readiness precedes native acceptance in both harnesses. Only
+               // the durable outcome hook can release this submission barrier.
+               let timeout: ReturnType<typeof setTimeout> | undefined;
+               try { await Promise.race([submission.promise, new Promise<void>(resolve => { timeout = setTimeout(resolve, 10_000); })]); }
+               finally { if (timeout) clearTimeout(timeout); }
+               const receipt = scienceSubmissions.get(key)!;
+               if (receipt.state !== "submitted") return json({ ...response, error: "Science submission outcome is unconfirmed; no automatic resend", code: "science-submission-unknown", scienceSubmission: scienceView(receipt) }, receipt.state === "unknown" ? 202 : 409);
+              return json({ ...response, scienceSubmission: scienceView(receipt) }, 202);
+            } catch (error) {
+              if (error instanceof ScienceSubmissionStorageError) failClosed();
+              return json({ error: "Science submission is reserved; reconcile the original request without resending", code: "science-submission-unknown", scienceSubmission: scienceView(scienceSubmissions.get(key)!) }, 503);
+            }
+          }
+          const { lifecycle: _lifecycle, ...response } = await admitPreparedInput(prepared, lease); return json(response, 202);
+        }
         finally { coordinator.releaseAdmission(lease); task.resolve(); attachmentTasks.delete(task.promise); }
+      }
+      const scienceSubmissionRead = /^\/api\/sessions\/([^/]+)\/science-submissions(?:\/([^/]+))?$/.exec(path);
+      if (scienceSubmissionRead && req.method === "GET") {
+        const id = scienceSubmissionRead[1];
+        if (!uuid(id) || !meta.sessions.some(s => s.sessionId === id)) return json({ error: "Conversation not found" }, 404);
+        if (scienceSubmissionRead[2]) {
+          const receipt = scienceSubmissions.get({ conversationId: id, requestId: scienceSubmissionRead[2] });
+          if (!receipt) return json({ error: "Science submission not found" }, 404);
+          return json({ submission: { ...scienceView(receipt), text: receipt.intent.text,
+            snapshots: receipt.intent.snapshots.map(({ snapshotId, blockId, source, agentText }) => ({ snapshotId, blockId, source, agentText })) } });
+        }
+        return json({ submissions: scienceSubmissions.listConversation(id).map(scienceView) });
       }
       const nativeSubagent = /^\/api\/sessions\/([^/]+)\/native-subagents(?:\/([^/]+)\/([^/]+))?$/.exec(path);
       if (nativeSubagent) {
@@ -3170,6 +3323,8 @@ async function startOwned(options: Options, assetsDir: string, packageDir: strin
       const asset = Bun.file(file);
       return new Response(req.method === "HEAD" ? null : asset, { headers: { "content-type": asset.type, "cache-control": "no-store", "x-content-type-options": "nosniff" } });
     } catch (error) {
+      if (error instanceof ScienceSubmissionStorageError) { failClosed(); return json({ error: error.message, code: "science-submission-unknown" }, 503); }
+      if (error instanceof ScienceSubmissionError) return json({ error: error.message, code: error.code }, error.status);
       if (error instanceof PendingInputStorageError) { failClosed(); return json({ error: error.message, code: "storage-unavailable" }, 503); }
       if (error instanceof PendingInputDomainError) return json({ error: error.message, code: error.code }, error.status);
       return error instanceof UserInputPreparationError ? json({ error: error.message, ...(error.code ? { code: error.code } : {}), ...(error.reason ? { reason: error.reason } : {}) }, error.status) : error instanceof HarnessOperationError || error instanceof WorkstreamAdapterError ? json({ error: error.message, code: error.code }, error.status) : error instanceof DomainError ? json({ error: error.message, code: error.code }, error.code === "NOT_FOUND" ? 404 : 409) : error instanceof WorkspaceError ? json({ error: error.message, code: error.code }, error.status) : error instanceof OpenCodeError ? json({ error: error.message }, [400, 404, 409].includes(error.status) ? error.status : 503) : json({ error: "Invalid request" }, 400);

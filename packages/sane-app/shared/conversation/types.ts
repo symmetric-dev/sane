@@ -1,4 +1,8 @@
 export type RunStatus = "starting" | "running" | "completed" | "failed" | "interrupted" | "unknown";
+/** Wire references only; the server resolves frozen text from its owned store. */
+export type ScienceSnapshotReference = { snapshotId: string; blockId: string };
+export type ScienceSubmissionView = { requestId: string; conversationId: string; state: "prepared" | "unknown" | "submitted" | "not-submitted"; runId: string | null; snapshots: ScienceSnapshotReference[] };
+export type ScienceSubmissionDetail = Omit<ScienceSubmissionView, "snapshots"> & { text: string; snapshots: (ScienceSnapshotReference & { source: string; agentText: string })[] };
 import type { Harness } from "./harness-capabilities";
 export type { Harness } from "./harness-capabilities";
 export type ModelChoice = { id: string; name: string; efforts: { id: string; name: string }[]; contextWindow?: number };

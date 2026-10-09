@@ -28,13 +28,23 @@ import { isPendingInputResumeResult, isPendingInputStatus, isPendingInputView } 
 import { isPendingInputCapability, isPendingInputRemovalResult, isPendingInputSubmissionResult, type PendingInputRemovalRequest, type PendingInputRequest, type PendingInputResumeRequest } from "../shared/conversation/pending-input-contract";
 import { isDefinitePendingInputRefusal, PendingInputApiError } from "./pending-input-client";
 import { PendingInputLedger, pendingInputLedgerKey, type PendingInputRecord } from "./pending-input-ledger";
+import type { ScienceShareSnapshot } from "../shared/science-chat-contract";
+import type { ScienceSubmissionView } from "../shared/conversation/types";
 
 /** Composer draft. New conversations pick `profileId` ("" = profiles.defaultId);
  * selected Base conversations may stage `upgradeId` (assistant profile, same harness). */
-export type Draft = { text: string; cwd: string; profileId: string; upgradeId: string };
+export type ScienceStagedSnapshot = ScienceShareSnapshot & { snapshotId: string };
+export type SciencePendingSend = { version: 1; requestId: string; conversationId: string; text: string; snapshots: ScienceStagedSnapshot[] };
+export type ScienceRejectedRecovery = SciencePendingSend & { status: "rejected" };
+export type Draft = { text: string; cwd: string; profileId: string; upgradeId: string; scienceSnapshots?: ScienceStagedSnapshot[] };
 export type SendOutcome = { status: "accepted"; conversationId: string; runId: string } | { status: "queued"; conversationId: string; requestId: string } | { status: "blocked" | "rejected" | "unknown" };
 export type PendingCompact = { payload: CompactRequest; phase: "sending" | "unconfirmed" | "accepted" | "rejected"; runId?: string };
 export type State = {
+  /** Separate durable run-ID map, independent of transcript page versions. */
+  scienceSubmissions?: Record<string, ScienceSubmissionView[]>;
+  sciencePending?: Record<string, SciencePendingSend | null>;
+  scienceRecoveries?: Record<string, ScienceRejectedRecovery[]>;
+  scienceSubmissionError?: string;
   pendingInputs?: PendingInputView | null; pendingInputLoading?: boolean; pendingInputError?: string;
   pendingInputOperations?: Record<string, PendingInputOperation>;
   phase: "connecting" | "login" | "ready"; config?: Config; conversations: Conversation[]; conversationsReady: boolean;
@@ -304,6 +314,7 @@ export class ChatStore {
     if (this.pendingInputVisible && typeof document !== "undefined" && !document.hidden && Date.now() - this.pendingInputLastRead >= 5000) void this.refreshPendingInputs();
   }
   private async newPendingInputOperation(kind: PendingInputOperation["kind"], text?: string, itemId?: string): Promise<SendOutcome> {
+    if (kind === "enqueue" && this.draft().scienceSnapshots?.length) { this.update({ pendingInputError: "Science snapshots cannot be queued. Send them from an idle conversation." }); return { status: "blocked" }; }
     const id = this.state.selected, fence = this.pendingInputFence(), namespace = this.pendingInputKey(), lock = `${namespace}:${id}`;
     if (!id || !namespace || !isPendingInputCapability(this.state.config?.pendingInputCapability) || this.pendingInputMutations.has(lock)) return { status: "blocked" };
     this.loadPendingInputLedger();
@@ -323,6 +334,7 @@ export class ChatStore {
       const view = this.state.pendingInputs!, p = view.presentation;
       let body: PendingInputRecord["body"];
       if (kind === "enqueue") {
+        if (this.draft().scienceSnapshots?.length) { this.update({ pendingInputError: "Science snapshots cannot be queued." }); return { status: "blocked" }; }
         const unavailable = this.pendingInputUnavailable();
         if (unavailable || !this.client.enqueuePendingInput) { this.update({ pendingInputError: unavailable || "Queue submission is unavailable." }); return { status: "blocked" }; }
         const source = p.currentAssertions!.source;
@@ -680,10 +692,79 @@ export class ChatStore {
   setDraft = (patch: Partial<Draft>, id = this.state.selected) => {
     if (id === this.state.selected && (Object.hasOwn(patch, "profileId") || Object.hasOwn(patch, "upgradeId") || Object.hasOwn(patch, "cwd")) && this.pendingInputChainLocked()) return;
     const key = this.draftKey(id), previous = this.draft(id), next = { ...previous, ...patch };
-    const textOnly = previous.cwd === next.cwd && previous.profileId === next.profileId && previous.upgradeId === next.upgradeId;
+    const textOnly = previous.cwd === next.cwd && previous.profileId === next.profileId && previous.upgradeId === next.upgradeId && equalValue(previous.scienceSnapshots ?? [], next.scienceSnapshots ?? []);
     if (this.state.drafts[key] && textOnly && previous.text === next.text) return;
     this.update({ drafts: { ...this.state.drafts, [key]: next } }, !textOnly);
   };
+  /** Preview is advisory only: submit strips everything except immutable IDs. */
+  stageScienceSnapshot = (snapshot: ScienceShareSnapshot, conversationId = this.state.selected) => {
+    if (!conversationId || conversationId !== this.state.selected || this.state.sending || this.state.actionBusy || this.pendingInputChainLocked()) return;
+    const snapshots = this.draft(conversationId).scienceSnapshots ?? [];
+    if (snapshots.some(s => s.snapshotId === snapshot.id)) return;
+    if (snapshots.length >= 4) { this.update({ submissionError: "At most four science snapshots can be staged." }); return; }
+    this.setDraft({ scienceSnapshots: [...snapshots, { ...structuredClone(snapshot), snapshotId: snapshot.id }] }, conversationId);
+  };
+  removeScienceSnapshot = (snapshotId: string) => this.setDraft({ scienceSnapshots: (this.draft().scienceSnapshots ?? []).filter(s => s.snapshotId !== snapshotId) });
+  sciencePreview = () => this.draft().scienceSnapshots ?? [];
+  private scienceStorageKey(id = this.state.selected) {
+    if (!this.state.config?.storeId || !id) throw new Error("Science send storage identity unavailable");
+    return `sane:science-send:v1:${this.state.config.storeId}:${id}`;
+  }
+  private readSciencePending(id = this.state.selected): SciencePendingSend | null {
+    const raw = localStorage.getItem(this.scienceStorageKey(id));
+    if (!raw) return null;
+    const value = JSON.parse(raw) as SciencePendingSend;
+    if (value.version !== 1 || value.conversationId !== id || typeof value.requestId !== "string" || typeof value.text !== "string" || !Array.isArray(value.snapshots)) throw new Error("Stored science send cannot be read; original submission remains unresolved");
+    // Recover interruption between recording a definite refusal and removing
+    // its pending marker; rejected recovery is not a submission fence.
+    if (this.readScienceRecoveries(id).some(item => item.requestId === value.requestId)) {
+      localStorage.removeItem(this.scienceStorageKey(id));
+      return null;
+    }
+    return value;
+  }
+  private readScienceRecoveries(id: string): ScienceRejectedRecovery[] {
+    const items = JSON.parse(localStorage.getItem(`${this.scienceStorageKey(id)}:rejected`) ?? "[]") as ScienceRejectedRecovery[];
+    if (!Array.isArray(items) || items.some(item => item.version !== 1 || item.status !== "rejected" || item.conversationId !== id || typeof item.requestId !== "string" || typeof item.text !== "string" || !Array.isArray(item.snapshots))) throw new Error("Rejected science draft recovery cannot be read");
+    return items;
+  }
+  consumeScienceRecovery = (id: string, requestId: string, restore: boolean, storeId: string) => {
+    if (this.state.selected !== id || this.state.config?.storeId !== storeId || this.state.phase !== "ready" || !this.state.config.authenticated || this.state.sending || this.state.actionBusy || this.pendingInputChainLocked()) return;
+    try {
+      const items = this.readScienceRecoveries(id), item = items.find(item => item.requestId === requestId);
+      if (!item) return;
+      const draft = this.draft(id);
+      if (restore && (draft.text || draft.scienceSnapshots?.length)) { this.update({ scienceSubmissionError: "Keep or clear your current draft before restoring the rejected science draft." }); return; }
+      if (restore) this.setDraft({ text: item.text, scienceSnapshots: item.snapshots }, id);
+      const remaining = items.filter(item => item.requestId !== requestId);
+      localStorage.setItem(`${this.scienceStorageKey(id)}:rejected`, JSON.stringify(remaining));
+      this.update({ scienceRecoveries: { ...this.state.scienceRecoveries, [id]: remaining }, scienceSubmissionError: "" });
+    } catch (error) { this.update({ scienceSubmissionError: error instanceof Error ? error.message : "Science draft recovery unavailable" }); }
+  };
+  private async refreshScienceSubmissions(id: string, current: () => boolean, signal: AbortSignal) {
+    if (!this.client.scienceSubmissions || !this.state.config?.storeId) return;
+    try {
+      const recoveries = this.readScienceRecoveries(id);
+      if (current()) this.update({ scienceRecoveries: { ...this.state.scienceRecoveries, [id]: recoveries } });
+      const pending = this.readSciencePending(id), submissions = await this.client.scienceSubmissions(id, signal);
+      if (!current()) return;
+      if (!Array.isArray(submissions) || submissions.some(s => s.conversationId !== id || !["prepared", "unknown", "submitted", "not-submitted"].includes(s.state) || !Array.isArray(s.snapshots))) throw new Error("Science send evidence is unavailable");
+      const resolved = pending && submissions.find(s => s.requestId === pending.requestId && ["submitted", "not-submitted"].includes(s.state));
+      const draft = this.draft(id);
+      let consumed = resolved?.state === "submitted";
+      if (resolved?.state === "not-submitted" && pending) {
+        // Recover only an untouched composer; a newer draft keeps the durable
+        // recovery record until it can be consumed without losing either input.
+        if (!draft.text && !(draft.scienceSnapshots?.length)) {
+          this.setDraft({ text: pending.text, scienceSnapshots: pending.snapshots }, id);
+          consumed = true;
+        } else consumed = draft.text === pending.text && equalValue(draft.scienceSnapshots ?? [], pending.snapshots);
+      }
+      if (consumed && pending && this.readSciencePending(id)?.requestId === pending.requestId) localStorage.removeItem(this.scienceStorageKey(id));
+      if (resolved?.state === "submitted" && pending && draft.text === pending.text && equalValue(draft.scienceSnapshots ?? [], pending.snapshots)) this.setDraft({ text: "", scienceSnapshots: [] }, id);
+      this.update({ scienceSubmissions: { ...this.state.scienceSubmissions, [id]: submissions }, sciencePending: { ...this.state.sciencePending, [id]: consumed ? null : pending }, scienceSubmissionError: "" });
+    } catch (error) { if (current()) this.update({ scienceSubmissionError: error instanceof Error ? error.message : "Science submission evidence unavailable" }); }
+  }
   executionUnavailable = () => {
     if (this.state.selected) {
       const conversation = this.state.conversations.find(c => c.id === this.state.selected);
@@ -770,6 +851,7 @@ export class ChatStore {
     return Boolean(this.state.compactions?.some(r => r.lifecycle === "unconfirmed") && this.state.compactState?.eligibility.eligible !== true && (!this.state.availability.canSend || !!this.state.availability.queueAfterRunId));
   };
   openCompact = (instructions?: string) => {
+    if (this.draft().scienceSnapshots?.length) { this.update({ compactError: "Remove staged science snapshots before compacting; they cannot be compact instructions." }); return; }
     if (this.pendingInputChainLocked()) { this.update({ compactError: "Resolve the existing input chain before compacting." }); return; }
     if (!this.state.selected) { this.update({ submissionError: "Choose an existing conversation before using /compact." }); return; }
     if (!this.supportedCapabilities().compaction) { this.update({ submissionError: "Context compaction is unavailable for this harness. Your draft is unchanged." }); return; }
@@ -816,6 +898,7 @@ export class ChatStore {
     this.update({ compactState, compactError: this.compactReadFeedback(undefined, !!recovered && pending?.phase === "unconfirmed"), compactions, ...(conversation ? { contextUsage: contextUsageFor(conversation.harness, this.state.runs, this.state.models, this.state.nativeHistory, compactions) } : {}), ...(recovered && pending!.phase !== "sending" ? { pendingCompacts: { ...this.state.pendingCompacts, [compactState.sessionId]: { ...pending!, phase: "accepted", runId: recovered.runId } } } : {}) });
   }
   compact = async (nativeStopped = false) => {
+    if (this.draft().scienceSnapshots?.length) { this.update({ compactError: "Staged science snapshots cannot be compact instructions." }); return; }
     if (this.pendingInputChainLocked()) { this.update({ compactError: "Resolve the existing input chain before compacting." }); return; }
     const id = this.state.selected, selection = this.selectionEpoch, auth = this.authEpoch;
     const conversation = this.state.conversations.find(c => c.id === id);
@@ -1131,6 +1214,7 @@ export class ChatStore {
     }
   }
   private loginRequired() {
+    this.update({ scienceSubmissions: {}, sciencePending: {}, scienceRecoveries: {}, scienceSubmissionError: "" });
     this.clearPendingInputDisplay();
     this.stopNotifications();
     notificationStore.suspend();
@@ -1420,6 +1504,8 @@ export class ChatStore {
       });
       this.update({ conversations: equalValue(this.state.conversations, conversations) ? this.state.conversations : conversations, conversationsReady: true });
       if (!current()) return;
+      if (selected) await this.refreshScienceSubmissions(selected, current, controller.signal);
+      if (!current()) return;
       if (this.paged) { await this.pollPaged(listing, current, controller.signal); return; }
       // Safe GET also notices reconciliation by another view/client. Reuse the
       // snapshot identity when the backend refresh timestamp has not changed.
@@ -1545,6 +1631,7 @@ export class ChatStore {
     }
   }
   canQueueInput = (state: State = this.state): boolean => {
+    if (state.drafts[this.draftKey(state.selected)]?.scienceSnapshots?.length) return false;
     if (isPendingInputCapability(state.config?.pendingInputCapability)) return false;
     const conversation = state.conversations.find(c => c.id === state.selected);
     // Native continuation is not an App-owned run. Its queue gets a fresh exact
@@ -1560,19 +1647,24 @@ export class ChatStore {
       && state.runs.some(run => run.id === after && run.conversationId === conversation.id && run.status === "running");
   };
   send = async (text: string, nativeStopped = false, options: { preserveDraft?: boolean } = {}): Promise<SendOutcome> => {
+    const initialSelection = this.state.selected;
     const pendingFence = this.pendingInputFence();
     if (this.pendingInputSupported() && this.state.selected && this.pendingInputFresh !== pendingFence && (!await this.refreshPendingInputs() || pendingFence !== this.pendingInputFence())) return { status: "blocked" };
     if (this.pendingInputChainLocked()) { this.update({ submissionError: "Resolve the existing input chain before sending ordinary input." }); return { status: "blocked" }; }
     if (this.pendingInputSupported() && (this.state.availability.queueAfterRunId || this.state.availability.nativeQueue)) { this.update({ submissionError: "Use the explicit App-owned queue for a future input." }); return { status: "blocked" }; }
     if (options.preserveDraft && !this.state.selected) return { status: "blocked" };
+    if (this.state.selected !== initialSelection) return { status: "blocked" };
+    const scienceSnapshots = options.preserveDraft ? [] : structuredClone(this.draft().scienceSnapshots ?? []);
+    if (scienceSnapshots.length && (!this.state.selected || this.draft().text !== text || this.state.availability.queueAfterRunId || this.state.availability.nativeQueue)) { this.update({ submissionError: "Science snapshots require an ordinary idle-conversation send." }); return { status: "blocked" }; }
     const command = compactCommand(text);
+    if (scienceSnapshots.length && command) { this.update({ submissionError: "Science snapshots cannot be sent as compaction instructions." }); return { status: "blocked" }; }
     if (command) { this.openCompact(command.instructions); return { status: "blocked" }; }
     if (this.compactBlocked() || this.state.actionBusy) return { status: "blocked" };
     const conversation = this.state.conversations.find(c => c.id === this.state.selected);
     if (!this.supportedCapabilities().prompt) return { status: "blocked" };
     if (conversation?.attachment && this.supportedCapabilities(conversation.harness).attachedSendRequiresNativeStopped && !nativeStopped) { this.update({ submissionError: "Confirm external assistant execution is stopped before sending." }); return { status: "blocked" }; }
     const running = conversation?.status === "starting" || conversation?.status === "running" || this.state.runs.some(r => r.status === "starting" || r.status === "running");
-    if (!text.trim() || this.state.loading || running && !this.canQueueInput() || this.state.sending || !this.state.connected || !this.state.availability.canSend || this.modelUnavailable() || this.executionUnavailable()) return { status: "blocked" };
+    if (!text.trim() && !scienceSnapshots.length || this.state.loading || running && !this.canQueueInput() || this.state.sending || !this.state.connected || !this.state.availability.canSend || this.modelUnavailable() || this.executionUnavailable()) return { status: "blocked" };
     const selected = this.state.selected, draft = this.draft(), draftKey = this.draftKey();
     // Flow submissions are independent of the ordinary chat draft and any
     // staged agent upgrade. They never consume or replace that draft.
@@ -1580,14 +1672,32 @@ export class ChatStore {
     const pendingTurn: PendingTurn = { id: `pending:${++this.submissionSerial}`, conversationId: selected, text, time: new Date().toISOString() };
     const upgrade = selected && !preserveDraft ? this.pendingUpgrade() : undefined;
     const profileId = selected ? upgrade && this.assignable(upgrade).ok ? upgrade.id : "" : this.draftProfile().id;
+    let sciencePending: SciencePendingSend | undefined, scienceStorage: string | undefined;
+    if (scienceSnapshots.length) {
+      try {
+        const prior = this.readSciencePending(selected);
+        if (prior) { this.update({ sciencePending: { ...this.state.sciencePending, [selected]: prior }, submissionError: "A previous science send is unresolved. Check its original request; it will not be resent automatically." }); return { status: "blocked" }; }
+        sciencePending = { version: 1, requestId: crypto.randomUUID(), conversationId: selected, text, snapshots: scienceSnapshots };
+        scienceStorage = this.scienceStorageKey(selected);
+        // Persist before POST or clearing either part of the composer draft.
+        localStorage.setItem(scienceStorage, JSON.stringify(sciencePending));
+        this.update({ sciencePending: { ...this.state.sciencePending, [selected]: sciencePending } });
+      } catch (error) { this.update({ submissionError: error instanceof Error ? error.message : "Science send cannot be recorded durably" }); return { status: "blocked" }; }
+    }
     this.stop(); const generation = this.generation, auth = this.authEpoch;
     // Move text into a local bubble immediately; retain it here for failure recovery.
     // This is presentation, not acceptance evidence. Never auto-retry POST.
-    this.update({ ...(!preserveDraft ? { drafts: { ...this.state.drafts, [draftKey]: { ...draft, text: "" } } } : {}), pendingTurn, sending: true, submissionError: "", availability: { canSend: false, reason: "Submitting…" } });
+    this.update({ ...(!preserveDraft ? { drafts: { ...this.state.drafts, [draftKey]: { ...draft, text: "", ...(scienceSnapshots.length ? { scienceSnapshots: [] } : {}) } } } : {}), pendingTurn, sending: true, submissionError: "", availability: { canSend: false, reason: "Submitting…" } });
     try {
       const navigation = catalog.state.navigation;
-      const result = await this.listingMutation(() => this.client.submit({ text, ...(nativeStopped ? { nativeStopped: true } : {}), ...(selected ? { conversationId: selected } : { ...(draft.cwd.trim() ? { cwd: draft.cwd.trim() } : {}), workspaceId: navigation.workspaceId!, worktreeId: navigation.worktreeId! }), ...(profileId ? { profileId } : {}) }));
+      const result = await this.listingMutation(() => this.client.submit({ text, ...(sciencePending ? { requestId: sciencePending.requestId, scienceSnapshots: scienceSnapshots.map(({ snapshotId, blockId }) => ({ snapshotId, blockId })) } : {}), ...(nativeStopped ? { nativeStopped: true } : {}), ...(selected ? { conversationId: selected } : { ...(draft.cwd.trim() ? { cwd: draft.cwd.trim() } : {}), workspaceId: navigation.workspaceId!, worktreeId: navigation.worktreeId! }), ...(profileId ? { profileId } : {}) }));
       if (generation !== this.generation || auth !== this.authEpoch) return { status: "unknown" };
+      if (sciencePending) {
+        if (result.queued) throw new Error("Science queue receipt is unsupported; original request needs reconciliation");
+        if (scienceStorage && this.readSciencePending(selected)?.requestId === sciencePending.requestId) localStorage.removeItem(scienceStorage);
+        const receipt: ScienceSubmissionView = { requestId: sciencePending.requestId, conversationId: selected, state: "submitted", runId: result.runId, snapshots: scienceSnapshots.map(({ snapshotId, blockId }) => ({ snapshotId, blockId })) };
+        this.update({ sciencePending: { ...this.state.sciencePending, [selected]: null }, scienceSubmissions: { ...this.state.scienceSubmissions, [selected]: [...(this.state.scienceSubmissions?.[selected] ?? []).filter(s => s.requestId !== receipt.requestId), receipt] } });
+      }
       if (result.queued) {
         const receipts = this.queuedNotificationReceipts.get(result.conversationId) ?? new Set<string>();
         receipts.add(result.receipt.requestId); this.queuedNotificationReceipts.set(result.conversationId, receipts);
@@ -1623,16 +1733,27 @@ export class ChatStore {
       return { status: "accepted", conversationId: result.conversationId, runId: result.runId };
     } catch (error) {
       if (generation !== this.generation || auth !== this.authEpoch) return { status: "unknown" };
-      const definite = error instanceof ApiError && error.status >= 400 && error.status < 500;
+      const definite = error instanceof ApiError && error.status >= 400 && error.status < 500 && error.code !== "science-submission-unknown";
+      if (sciencePending && definite && scienceStorage) {
+        try {
+          // Persist recovery separately BEFORE releasing the no-replay fence.
+          // A later science send must not overwrite a rejected draft's snapshots.
+          const recoveries = this.readScienceRecoveries(selected);
+          if (!recoveries.some(item => item.requestId === sciencePending.requestId)) recoveries.push({ ...sciencePending, status: "rejected" });
+          localStorage.setItem(`${scienceStorage}:rejected`, JSON.stringify(recoveries));
+          if (this.readSciencePending(selected)?.requestId === sciencePending.requestId) localStorage.removeItem(scienceStorage);
+          this.update({ sciencePending: { ...this.state.sciencePending, [selected]: null }, scienceRecoveries: { ...this.state.scienceRecoveries, [selected]: recoveries } });
+        } catch { /* Storage uncertainty preserves the durable no-replay fence. */ }
+      }
       // Do not overwrite a new draft typed while this submission was in flight.
       const currentDraft = this.state.drafts[draftKey] ?? draft;
-      const restored = !preserveDraft && !currentDraft.text;
+      const restored = !preserveDraft && !currentDraft.text && !(currentDraft.scienceSnapshots?.length);
       if (error instanceof ApiError && error.status === 401) {
-        if (restored) this.update({ drafts: { ...this.state.drafts, [draftKey]: { ...currentDraft, text } } });
+        if (restored) this.update({ drafts: { ...this.state.drafts, [draftKey]: { ...currentDraft, text, ...(scienceSnapshots.length ? { scienceSnapshots } : {}) } } });
         this.expired(error);
         return { status: "rejected" };
       }
-      this.update({ sending: false, pendingTurn: null, ...(restored ? { drafts: { ...this.state.drafts, [draftKey]: { ...currentDraft, text } } } : {}), submissionError: `${error instanceof Error ? error.message : "Submission failed."} ${definite ? "" : "Acceptance is unknown. Check history before sending again; this request will not be retried automatically. "}${preserveDraft ? "Your chat draft and review feedback are preserved." : restored ? "Your draft is restored." : `Your new draft is preserved. Submitted message: ${text}`}` });
+      this.update({ sending: false, pendingTurn: null, ...(restored ? { drafts: { ...this.state.drafts, [draftKey]: { ...currentDraft, text, ...(scienceSnapshots.length ? { scienceSnapshots } : {}) } } } : {}), submissionError: `${error instanceof Error ? error.message : "Submission failed."} ${definite ? "" : "Acceptance is unknown. Check history before sending again; this request will not be retried automatically. "}${preserveDraft ? "Your chat draft and review feedback are preserved." : restored ? "Your draft is restored." : `Your new draft is preserved. Submitted message: ${text}`}` });
       void this.poll();
       return { status: definite ? "rejected" : "unknown" };
     }

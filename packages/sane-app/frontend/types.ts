@@ -1,6 +1,8 @@
 /** UI contract. Harness-specific records stay behind ConversationClient. */
 import type { CompactRequest, CompactResponse, CompactState, Interaction, InteractionReply } from "../shared/conversation/native-contract";
 import type { DiagnosticEvent, Harness, ModelChoice, Run, RunMetadata, RunStatus } from "../shared/conversation/types";
+import type { ScienceSnapshotReference, ScienceSubmissionView, ScienceSubmissionDetail } from "../shared/conversation/types";
+export type { ScienceSnapshotReference, ScienceSubmissionView, ScienceSubmissionDetail } from "../shared/conversation/types";
 import type { HarnessCapabilities } from "../shared/conversation/harness-capabilities";
 export type { HarnessCapabilities } from "../shared/conversation/harness-capabilities";
 export type { RunStatus, Harness, ModelChoice, TextPart, ToolPart, Message, UsageSnapshot, DiagnosticEvent, Run, RunMetadata } from "../shared/conversation/types";
@@ -35,6 +37,8 @@ export type SearchHit = { sessionId: string; runId?: string; snippet: string; sc
 export type CompletionVerificationTarget = { sessionId: string; runId: string; nativeSessionId: string; nativeCommandId: string };
 export type CompletionVerificationRequest = { requestId: string; nativeSessionId: string; nativeCommandId: string; confirm: true; reason: string };
 export interface ConversationClient {
+  scienceSubmissions?(id: string, signal?: AbortSignal): Promise<ScienceSubmissionView[]>;
+  scienceSubmission?(id: string, requestId: string, signal?: AbortSignal): Promise<ScienceSubmissionDetail>;
   verifyCompletion?(id: string, runId: string, input: CompletionVerificationRequest): Promise<{ status: RunStatus; evidence?: unknown }>;
   pendingInputs?(id: string, signal?: AbortSignal): Promise<PendingInputView>;
   enqueuePendingInput?(id: string, input: PendingInputRequest): Promise<PendingInputSubmissionResult>;
@@ -69,6 +73,6 @@ export interface ConversationClient {
     deleteAgent?(id: string): Promise<{ ok: true }>;
     resetAgent?(id: string): Promise<{ profile: AgentProfile }>;
     orderAgents?(input: { order?: string[]; defaultId?: string }): Promise<AgentProfiles>;
-   submit(input: { text: string; conversationId?: string; nativeStopped?: boolean; harness?: Harness; cwd?: string; workspaceId?: string; worktreeId?: string; model?: string; effort?: string; agent?: string; profileId?: string }): Promise<SendReceipt>;
+   submit(input: { text: string; conversationId?: string; nativeStopped?: boolean; harness?: Harness; cwd?: string; workspaceId?: string; worktreeId?: string; model?: string; effort?: string; agent?: string; profileId?: string; requestId?: string; scienceSnapshots?: ScienceSnapshotReference[] }): Promise<SendReceipt>;
 }
 export type TranscriptQuery = { cursor?: string; targetKind?: "worker" | "handoff"; targetId?: string; targetMessageId?: string; targetRunId?: string; toolCallId?: string };

@@ -5,3 +5,15 @@
 .science-composer label { display: inline-flex; gap: 8px; align-items: center; }
 .science-composer input, .science-composer select { max-width: 100%; min-width: 0; }
 .science-python-editor { height: 180px; overflow: auto; border: 1px solid var(--border); border-radius: 8px; }
+.science-local-block { display: grid; gap: 12px; border: 1px solid var(--border); border-radius: 10px; padding: 14px; min-width: 0; }
+.science-local-block > header, .science-local-operation > header { display: flex; gap: 8px; align-items: baseline; flex-wrap: wrap; }
+.science-local-block code { overflow-wrap: anywhere; font-size: 11px; }
+.science-local-label { font-size: 12px; color: var(--text-muted); }
+.science-local-operation { padding: 12px; border-inline-start: 2px solid var(--border); min-width: 0; }
+.science-chat-blocks pre { white-space: pre-wrap; overflow-wrap: anywhere; max-height: 400px; overflow: auto; font-size: 12px; }
+.science-local-note { border-inline-start: 2px solid var(--border); padding-inline-start: 12px; }
+.science-notebook-management { display: grid; gap: 12px; min-width: 0; }
+.science-notebook-management label { display: grid; gap: 6px; }
+.science-composer textarea { display: block; width: 100%; min-height: 72px; }
+.science-staged-snapshots { display: grid; gap: 8px; padding: 12px; border-bottom: 1px solid var(--border); min-width: 0; }
+.science-staged-snapshots pre { white-space: pre-wrap; overflow-wrap: anywhere; max-height: 240px; overflow: auto; }

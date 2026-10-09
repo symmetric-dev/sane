@@ -21,6 +21,7 @@ import { active as runtimeActive } from "./types";
 import { PendingInputDetails } from "./pending-input-ui";
 import { pendingInputContextReady, pendingInputLid, pendingInputPrimaryAction, unresolvedOperations } from "./pending-input-primary-action";
 import { ScienceComposer, type ScienceChatController } from "./science-chat";
+import { ScienceShareDraftPreview } from "./science-sharing";
 
 function pendingScopeFor(state: State) {
   const conversation = state.conversations.find(item => item.id === state.selected);
@@ -187,6 +188,18 @@ export function ChatComposer({ state, active = true, navigation, ack, onAckChang
       : ackMissing ? "Confirm external assistant execution is stopped before queueing."
       : store.executionUnavailable() || (store.modelUnavailable() ? "Waiting for the model catalog…" : "")
         || current.pendingInputError || (current.pendingInputLoading ? "Reading current queue eligibility…" : "") || store.pendingInputUnavailable() || null;
+    const snapshots = current.drafts[store.draftKey(current.selected)]?.scienceSnapshots ?? [];
+    if (current.sciencePending?.[current.selected]) {
+      return { mode: "send" as const, label: "Send" as const, disabled: true, reason: "The previous science send is unresolved. Refresh conversation history before sending again." };
+    }
+    if (snapshots.length) {
+      const unresolved = !!current.sciencePending?.[current.selected];
+      const reason = unresolved ? "The previous science send is unresolved. Refresh conversation history before sending again."
+        : command ? "Remove staged science snapshots before compacting."
+        : running || locked || current.availability.nativeQueue || current.availability.queueAfterRunId ? "Science snapshots require an idle conversation; they cannot be queued."
+        : ordinaryBlocked ? sendReason : null;
+      return { mode: "send" as const, label: "Send" as const, disabled: !active || flowOpen || !!currentConversation?.replacedBy || composingRef.current || composing || !!reason || unresolvedOperations(current).length > 0, reason };
+    }
     return pendingInputPrimaryAction({ state: current, supported, chainLocked: locked, command, text, sendBlocked: !!ordinaryBlocked,
       sendReason, queueReason, inactive: !active || flowOpen || !!currentConversation?.replacedBy, composing: composingRef.current || composing });
   };
@@ -224,9 +237,10 @@ export function ChatComposer({ state, active = true, navigation, ack, onAckChang
     <div ref={flowComposer} className="composer-flow-slot" hidden={hasRequests} style={{ display: hasRequests ? "none" : "contents" }}>
       {!conversation?.replacedBy && review?.flow && <DocumentReviewComposer review={review} active={active && !hasRequests} disabled={reviewBlocked} navigation={navigation} />}
       {!conversation?.replacedBy && statusFlow && <WorkstreamStatusComposer key={JSON.stringify([statusFlow.scope, statusFlow.identity])} identity={statusFlow.identity} active={active && !hasRequests} close={() => setStatus(null)} navigation={navigation} />}
-      {!conversation?.replacedBy && scienceFlow && science && !hasRequests && <ScienceComposer key={science.scope} science={science} />}
+      {!conversation?.replacedBy && scienceFlow && science && active && !hasRequests && <ScienceComposer key={science.scope} science={science} />}
     </div>
     {!conversation?.replacedBy ? <form ref={normalComposer} className="composer" hidden={flowOpen} style={flowOpen ? { display: "none" } : undefined} onCompositionStartCapture={() => { composingRef.current = true; setComposing(true); }} onCompositionEndCapture={() => { composingRef.current = false; setComposing(false); }} onSubmit={event => { event.preventDefault(); submit(); }}>
+      <ScienceShareDraftPreview />
       <ChatInput key={draftIdentity} text={draft.text} save={text => store.setDraft({ text })} submit={submit} pathsActive={active && !flowOpen} className="composer-input pending-input-primary-input" placeholder={state.selected ? "Go on..." : "Ask SANE anything… (@ for paths)"} aria-label="Message" sendButton={<button type="submit" className="send pending-input-primary" data-mode={primary.mode} disabled={primary.disabled} aria-label={primary.mode === "send" ? "Send message" : primary.label} title={primary.reason ?? (primary.mode === "add-paused" ? "Add using saved settings; waiting messages remain paused." : "Queue this message using the conversation's saved settings.")}><Icon name="send" /><span>{primary.label}</span></button>} />
       <div className="composer-toolbar"><div className="composer-options">
         {profile ? fixed

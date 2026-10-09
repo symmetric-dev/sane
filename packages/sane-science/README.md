@@ -90,7 +90,7 @@ The adapter targets Marimo 0.25.1 and its internal code-mode interface. The call
 must bind the selected notebook session to its current owned server generation;
 the adapter cannot establish that ownership from an arbitrary generation string.
 Session-list warnings must be handled even when the CLI exits successfully.
-A headless server has no live notebook session until its frontend opens.
+A server needs a session consumer; the workspace coordinator supplies a backend-owned consumer without a browser.
 
 Operations are serialized per adapter instance. They have bounded subprocess
 output and duration, with no automatic retries. An unconfirmed outcome requires
@@ -153,25 +153,37 @@ lock against subsequent browser configuration changes.
 
 ### Native App workflow
 
-The chat Composer's Python action opens the scientific workspace in the existing
-chat surface. Provisioning is explicit. Create a notebook, then open it to start
-its backend-owned session. Native output cards provide Edit, Run, and Share
-actions; selecting Edit moves source into a CodeMirror Composer with Run and
-Back controls. Ordinary chat draft text is retained separately.
+The chat Composer's Python action uses a notebook associated with that App
+conversation. Provisioning remains explicit; notebook controls live in a settings
+modal. Add-block actions persist stable block IDs and canonical message anchors.
+Local blocks stay outside agent context. Editing uses the CodeMirror Composer;
+drafts autosave with revision checks. Ordinary chat text remains separate.
 
 Authenticated App operations use
 `/api/workspaces/:workspaceId/worktrees/:worktreeId/science` with catalog binding
 revisions and App-owned generation IDs. Browser responses omit runtime tokens,
 server URLs, and managed filesystem paths.
 
-Share stages a fixed code/text/static-table excerpt into the chat draft rather
-than sending automatically. Images and interactive widgets are explicitly omitted
-from agent text context. Output cards can show inline PNG/JPEG and bounded static
-table previews, but do not implement Marimo's interactive widget callbacks.
-Frontend block drafts and displayed snapshots are session-local, not durable
-experiment history. Python source editing currently uses CodeMirror without a
-Python syntax extension. Native frontend code has been statically checked; its
-rendering is not covered by the earlier Marimo-frontend browser verification.
+Durable operations use the `/science/chats/:conversationId` suffix. App dataDir
+stores `science-chats.json` and `science-submissions.json`, qualified by store and
+conversation identity. Runnable notebooks remain in repository `.sane/science`.
+History reads do not require starting Python. Outputs are bounded immutable
+observations, explicitly unverified as source-to-output execution provenance.
+
+Share freezes a source or historical operation snapshot, stages its exact text,
+and lets the user add a comment before sending. Subsequent edits do not change
+that snapshot. Submitted cards use durable run-ID associations. Images and widgets
+are omitted from agent context; native cards can render supported captured images
+and static tables. Snapshot sends require an idle conversation. Unknown execution,
+cell-creation, and submission outcomes are fenced against automatic replay.
+
+Current limits include bounded inline history storage (16 MiB), no artifact garbage
+collection/export or fork-copy workflow, no manual unknown-outcome recovery UI,
+and no Python syntax extension. Marimo autosave remains unconfirmed; durable source
+mapping rejects ambiguous external edits. This increment has static review and
+typechecking only; earlier runtime/browser evidence does not verify these new
+persistence and sharing flows. Server restarts and browser verification remain
+user-controlled.
 
 ### Native SANE session ownership
 
