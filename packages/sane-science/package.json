@@ -3,7 +3,13 @@
   "version": "0.1.0",
   "private": true,
   "type": "module",
+  "exports": {
+    "./contracts": "./src/contracts.ts",
+    "./environment-paths": "./src/environment-paths.ts",
+    "./environments": "./src/environments.ts"
+  },
   "scripts": {
+    "typecheck": "tsc --noEmit -p tsconfig.json",
     "setup:python": "uv sync --locked",
     "lock:python": "uv lock"
   }
