@@ -1,4 +1,5 @@
 import type { MarimoRuntimeRef, MarimoRuntimeSnapshot } from "./marimo-runtime-contracts.ts"
+import type { MarimoNativeSessionStatus } from "./marimo-session-contracts.ts"
 
 export interface ScienceNotebookRef extends MarimoRuntimeRef {}
 export interface ScienceSessionRef extends ScienceNotebookRef { sessionId: string }
@@ -11,8 +12,10 @@ export interface ScienceNotebookStatus {
   serverReadiness: "unverified" | "ready"
   sessionIds: string[]
   selectedSession?: ScienceSessionRef
+  /** Present only for an explicitly backend-owned native session. */
+  nativeSession?: MarimoNativeSessionStatus
   observedAt?: string
-  issue?: "listing-unconfirmed" | "session-missing" | "session-inspection-failed"
+  issue?: "listing-unconfirmed" | "session-missing" | "session-inspection-failed" | "native-session-disconnected"
 }
 
 export interface OpenScienceNotebookOptions {

@@ -150,6 +150,33 @@ lock against subsequent browser configuration changes.
 
 ## Workspace coordinator (Bun API)
 
+### Native SANE session ownership
+
+`openNativeNotebook(options)` opens and selects a backend-owned session without
+the Marimo editor. It checks the authenticated version endpoint, attaches a
+Bearer-authenticated WebSocket consumer, validates editing capabilities, then
+inspects the exact session through pair. `status.nativeSession` exposes transport
+state without credentials. `reconnectNativeNotebook(ref, timeout?)` explicitly
+reattaches a disconnected owner with the same session ID and fresh inspection;
+already-ready owners refresh their listing. Mutations are never replayed.
+
+Disconnect invalidates native selection even if Marimo still lists the session.
+Stop/shutdown dispose the transport and stop the supervised server. Socket output
+events are drained; this increment obtains rendered results through pair snapshots.
+The protocol is pinned to Marimo 0.25.1 private interfaces, not a stable public
+frontend SDK. Opening uses individually bounded stages rather than one end-to-end
+deadline.
+
+Native ownership was verified on 2026-10-09: the gated
+`SCIENCE_RUN_NATIVE=1 bun test packages/sane-science/tests/native-session.integration.test.ts`
+passed 52 assertions in an isolated workspace, with no browser frontend. It
+covered text/table/PNG capture, stale source rejection, real WebSocket takeover,
+readiness invalidation, explicit same-ID reconnect, stop/reopen generation fencing,
+and observed process/token cleanup for both launches. Initial readiness took
+4.42 seconds; reconnect took 0.90 seconds in that run. Timeout expiry and concurrent
+source edits were not exercised. Raw local evidence is retained at
+`/private/var/folders/6v/wnsbl7cj5w96s83lszq3454w0000gn/T/opencode/science-native-evidence-ayLuIJ`.
+
 `sane-science/science-workspace` exports `ScienceWorkspaceService`; DTOs and typed
 errors are in `sane-science/science-workspace-contracts`. Use one service per
 canonical workspace in the supervising process. Construction and status never

@@ -6,6 +6,7 @@ import { admitMarimoConfiguration } from "./marimo-config.ts"
 import type { MarimoBinding } from "./marimo-contracts.ts"
 import { MarimoPair } from "./marimo-pair.ts"
 import { MarimoRuntimeService } from "./marimo-runtime.ts"
+import { MarimoNativeSession } from "./marimo-session.ts"
 import type { MarimoRuntimeStopOptions } from "./marimo-runtime-contracts.ts"
 import { ScienceWorkspaceError, type OpenScienceNotebookOptions, type ScienceBrowserConnection, type ScienceNotebookRef, type ScienceNotebookStatus, type ScienceSessionRef } from "./science-workspace-contracts.ts"
 
@@ -13,6 +14,7 @@ interface Notebook {
   status: ScienceNotebookStatus
   pair: MarimoPair
   probe: MarimoPair
+  native?: MarimoNativeSession
 }
 
 const blankNotebook = `import marimo
@@ -72,33 +74,108 @@ export class ScienceWorkspaceService {
 
   openNotebook(options: OpenScienceNotebookOptions): Promise<ScienceNotebookStatus> {
     const captured = { ...options }
-    const timeout = captured.readinessTimeoutMs ?? 15_000
-    if (!Number.isInteger(timeout) || timeout < 1 || timeout > 60_000) throw new ScienceWorkspaceError("INVALID_INPUT", "Readiness timeout must be between 1 and 60000 milliseconds.")
+    return this.serial(() => this.open(captured))
+  }
+
+  /** Creates and inspects an owned session without loading a browser frontend.
+   * Reopening a disconnected owner requires reconnectNativeNotebook explicitly.
+   */
+  openNativeNotebook(options: OpenScienceNotebookOptions): Promise<ScienceNotebookStatus> {
+    const captured = { ...options }
     return this.serial(async () => {
-      const environment = this.readyEnvironment()
-      const runtime = await this.runtime.start({ workspace: this.workspace, environment, notebookPath: captured.notebookPath, port: captured.port })
-      const ref = { notebookPath: runtime.notebookPath, generation: runtime.generation }
-      const previous = this.notebooks.get(ref.notebookPath)
-      if (previous?.status.ref.generation === ref.generation) return this.refresh(previous)
-      const status: ScienceNotebookStatus = { ref, runtime, state: "server-unverified", serverReadiness: "unverified", sessionIds: [] }
-      // A failed launch is still retained for cleanup and status inspection.
-      const tokenFile = runtime.state === "process-started" ? this.runtime.connection(ref).tokenFile : join(environment.paths.root, "unused-token")
-      const pairOptions = { python: environment.paths.python, cwd: environment.paths.root, tokenFile }
-      const notebook: Notebook = { status, pair: new MarimoPair(pairOptions), probe: new MarimoPair({ ...pairOptions, timeoutMs: 2_000 }) }
-      this.notebooks.set(ref.notebookPath, notebook)
-      const deadline = Date.now() + timeout
-      do {
-        await this.refresh(notebook)
-        if (notebook.status.serverReadiness === "ready" || notebook.status.state === "failed" || notebook.status.state === "stopped") break
-        const remaining = deadline - Date.now()
-        if (remaining <= 0) break
-        await new Promise(resolve => setTimeout(resolve, Math.min(150, remaining)))
-      } while (Date.now() < deadline)
-      return this.copy(notebook)
+      const status = await this.open(captured)
+      const notebook = this.entry(status.ref)
+      if (notebook.native) {
+        if (notebook.native.status().state !== "ready" || status.state !== "session-ready") throw new ScienceWorkspaceError("SESSION_NOT_READY", "Refresh or explicitly reconnect the existing native owner.")
+        return this.copy(notebook)
+      }
+      this.runtime.connection(status.ref)
+      admitMarimoConfiguration(this.workspace, status.ref.notebookPath)
+      // Do not silently convert an existing browser session into a native owner.
+      if (status.sessionIds.length || status.selectedSession) throw new ScienceWorkspaceError("BUSY", "Stop the existing notebook sessions before opening a native owner.")
+      notebook.native = new MarimoNativeSession(this.runtime, status.ref)
+      try { return await this.attachNative(notebook, captured.readinessTimeoutMs) }
+      catch (error) {
+        notebook.native.close()
+        try { await this.runtime.stop(status.ref) } finally { this.copy(notebook) }
+        throw error
+      }
     })
   }
 
+  /** Disconnected owners reattach with fresh inspection; ready owners refresh listing.
+   * Never replays mutations or assumes output replay. */
+  reconnectNativeNotebook(ref: ScienceNotebookRef, readinessTimeoutMs = 15_000): Promise<ScienceNotebookStatus> {
+    const captured = { ...ref }
+    return this.serial(async () => {
+      const notebook = this.entry(captured)
+      if (!notebook.native) throw new ScienceWorkspaceError("SESSION_NOT_READY", "This notebook has no native session owner.")
+      if (notebook.native.status().state === "ready") {
+        const status = await this.refresh(notebook)
+        if (status.state !== "session-ready") throw new ScienceWorkspaceError("SESSION_NOT_READY", "The native session listing is not currently confirmed.")
+        return status
+      }
+      admitMarimoConfiguration(this.workspace, captured.notebookPath)
+      return this.attachNative(notebook, readinessTimeoutMs)
+    })
+  }
+
+  private async attachNative(notebook: Notebook, timeout?: number): Promise<ScienceNotebookStatus> {
+    const native = notebook.native!
+    delete notebook.status.selectedSession
+    const attachment = await native.connect(timeout)
+    const ref = { ...notebook.status.ref, sessionId: attachment.sessionId }
+    try {
+      // The pair execute route registers cells with auto_run=False before inspection.
+      const environment = this.readyEnvironment(), connection = this.runtime.connection(ref)
+      const inspector = new MarimoPair({ python: environment.paths.python, cwd: environment.paths.root, tokenFile: connection.tokenFile, timeoutMs: timeout ?? 15_000 })
+      await inspector.inspectCells(this.binding(ref))
+      await this.refresh(notebook)
+      this.assertListed(notebook, ref)
+      native.confirmReady(attachment.revision)
+      notebook.status.selectedSession = ref
+      notebook.status.state = "session-ready"
+      delete notebook.status.issue
+      return this.copy(notebook)
+    } catch (error) {
+      native.inspectionFailed()
+      this.copy(notebook)
+      throw error
+    }
+  }
+
+  private async open(captured: OpenScienceNotebookOptions): Promise<ScienceNotebookStatus> {
+    const timeout = captured.readinessTimeoutMs ?? 15_000
+    if (!Number.isInteger(timeout) || timeout < 1 || timeout > 60_000) throw new ScienceWorkspaceError("INVALID_INPUT", "Readiness timeout must be between 1 and 60000 milliseconds.")
+    const environment = this.readyEnvironment()
+    const runtime = await this.runtime.start({ workspace: this.workspace, environment, notebookPath: captured.notebookPath, port: captured.port })
+    const ref = { notebookPath: runtime.notebookPath, generation: runtime.generation }
+    const previous = this.notebooks.get(ref.notebookPath)
+    if (previous?.status.ref.generation === ref.generation) return this.refresh(previous)
+    previous?.native?.close()
+    const status: ScienceNotebookStatus = { ref, runtime, state: "server-unverified", serverReadiness: "unverified", sessionIds: [] }
+    // A failed launch is still retained for cleanup and status inspection.
+    const tokenFile = runtime.state === "process-started" ? this.runtime.connection(ref).tokenFile : join(environment.paths.root, "unused-token")
+    const pairOptions = { python: environment.paths.python, cwd: environment.paths.root, tokenFile }
+    const notebook: Notebook = { status, pair: new MarimoPair(pairOptions), probe: new MarimoPair({ ...pairOptions, timeoutMs: 2_000 }) }
+    this.notebooks.set(ref.notebookPath, notebook)
+    const deadline = Date.now() + timeout
+    do {
+      await this.refresh(notebook)
+      if (notebook.status.serverReadiness === "ready" || notebook.status.state === "failed" || notebook.status.state === "stopped") break
+      const remaining = deadline - Date.now()
+      if (remaining <= 0) break
+      await new Promise(resolve => setTimeout(resolve, Math.min(150, remaining)))
+    } while (Date.now() < deadline)
+    return this.copy(notebook)
+  }
+
   /** Cached observation plus current process state; does not claim a fresh HTTP check. */
+  currentNotebook(notebookPath: string): ScienceNotebookStatus | undefined {
+    const notebook = this.notebooks.get(notebookPath)
+    return notebook ? this.copy(notebook) : undefined
+  }
+
   status(ref: ScienceNotebookRef): ScienceNotebookStatus { return this.copy(this.entry(ref)) }
 
   refreshNotebook(ref: ScienceNotebookRef): Promise<ScienceNotebookStatus> {
@@ -118,6 +195,7 @@ export class ScienceWorkspaceService {
     const captured = { ...ref }
     return this.serial(async () => {
       const notebook = this.entry(captured)
+      if (notebook.native) throw new ScienceWorkspaceError("SESSION_NOT_READY", "Native session selection is owned by openNativeNotebook and reconnectNativeNotebook.")
       await this.refresh(notebook)
       this.assertListed(notebook, captured)
       admitMarimoConfiguration(this.workspace, captured.notebookPath)
@@ -150,7 +228,10 @@ export class ScienceWorkspaceService {
     const captured = { ...ref }, bounds = { ...options }
     return this.serial(async () => {
       const notebook = this.entry(captured)
-      await this.runtime.stop(captured, bounds)
+      // stop validates bounds synchronously before transport ownership changes.
+      const stopping = this.runtime.stop(captured, bounds)
+      notebook.native?.close()
+      try { await stopping } finally { this.copy(notebook) }
       return this.copy(notebook)
     })
   }
@@ -159,7 +240,9 @@ export class ScienceWorkspaceService {
     const bounds = { ...options }
     return this.serial(async () => {
       return Promise.all([...this.notebooks.values()].map(async notebook => {
-        await this.runtime.stop(notebook.status.ref, bounds)
+        const stopping = this.runtime.stop(notebook.status.ref, bounds)
+        notebook.native?.close()
+        try { await stopping } finally { this.copy(notebook) }
         return this.copy(notebook)
       }))
     })
@@ -187,10 +270,19 @@ export class ScienceWorkspaceService {
     const status = notebook.status
     status.runtime = this.runtime.get(status.ref)
     if (status.runtime.state !== "process-started") {
+      notebook.native?.close()
       status.state = status.runtime.state === "stopped" ? "stopped" : "failed"
       status.serverReadiness = "unverified"
       status.sessionIds = []
       delete status.selectedSession
+    }
+    if (notebook.native) {
+      status.nativeSession = notebook.native.status()
+      if (status.runtime.state === "process-started" && status.nativeSession.state !== "ready") {
+        status.state = "session-lost"
+        status.issue = "native-session-disconnected"
+        delete status.selectedSession
+      }
     }
     return structuredClone(status)
   }

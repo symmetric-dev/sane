@@ -4,6 +4,8 @@
   "private": true,
   "type": "module",
   "exports": {
+    "./marimo-session": "./src/marimo-session.ts",
+    "./marimo-session-contracts": "./src/marimo-session-contracts.ts",
     "./science-workspace": "./src/science-workspace.ts",
     "./science-workspace-contracts": "./src/science-workspace-contracts.ts",
     "./contracts": "./src/contracts.ts",
