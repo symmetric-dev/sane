@@ -6,6 +6,7 @@ import { tmpdir } from "node:os"
 import { isAbsolute, join, resolve } from "node:path"
 import { EnvironmentFileSystem } from "./environment-paths.ts"
 import { getScienceEnvironmentStatus } from "./environments.ts"
+import { admitMarimoConfiguration, marimoProcessEnvironment } from "./marimo-config.ts"
 import { MarimoRuntimeError, type MarimoRuntimeConnection, type MarimoRuntimeRef, type MarimoRuntimeSnapshot, type MarimoRuntimeStartOptions, type MarimoRuntimeStopOptions } from "./marimo-runtime-contracts.ts"
 
 interface Entry {
@@ -34,20 +35,6 @@ function bounded(value: number | undefined, fallback: number): number {
 
 function snapshot(entry: Entry): MarimoRuntimeSnapshot {
   return { ...entry.snapshot, notebookIdentity: { ...entry.snapshot.notebookIdentity }, outputBytes: { ...entry.snapshot.outputBytes } }
-}
-
-function environment(): NodeJS.ProcessEnv {
-  // Deliberate allowlist: no inherited PYTHON*, UV_*, active venv, Marimo overrides,
-  // loader injection, or app credentials. Normal user/project Marimo files still apply.
-  const env: NodeJS.ProcessEnv = {}
-  for (const name of ["PATH", "HOME", "TMPDIR", "LANG", "LC_ALL", "LC_CTYPE", "TZ"]) {
-    if (process.env[name] !== undefined) env[name] = process.env[name]
-  }
-  // Verified in installed marimo 0.25.1: _config/manager.py EnvConfigManager
-  // explicitly supports this key; _utils/env.py parses "false" as boolean false.
-  // No supported env overrides exist there for on_cell_change, auto_reload,
-  // reactive_tests, or dotenv. Do not invent them or imply they are enforced.
-  return { ...env, PYTHONNOUSERSITE: "1", PYTHONSAFEPATH: "1", _MARIMO_CONFIG_OVERLOAD_RUNTIME_AUTO_INSTANTIATE: "false" }
 }
 
 function cleanup(entry: Entry): void {
@@ -118,8 +105,7 @@ function signal(entry: Entry, name: NodeJS.Signals): void {
 /** Explicit, local process supervision, with no app wiring or execution commands.
  * start resolves at OS spawn, NOT server readiness. Headless Marimo creates no
  * notebook kernel session until a client opens it. connection() also proves no readiness.
- * Auto-instantiation is disabled; user/project/script config (including dotenv,
- * reactive tests and on-cell-change behavior) otherwise remains Marimo-owned.
+ * Managed TOML policy disables automatic execution/reload, reactive tests and dotenv.
  * CLI server_startup_command is omitted (0.25.1 defaults to None); no shell is used.
  * Path admission is cooperative, not protection from concurrent hostile FS changes.
  * Call stop explicitly before disposing the service/process. No crash recovery exists.
@@ -134,6 +120,7 @@ export class MarimoRuntimeService {
     const timeout = bounded(options.spawnTimeoutMs, 10_000)
     if (!Number.isInteger(options.port) || options.port < 1 || options.port > 65535) throw new MarimoRuntimeError("INVALID_INPUT", "An explicit port between 1 and 65535 is required.")
     const admission = this.admit(options)
+    admitMarimoConfiguration(options.workspace, options.notebookPath, true)
     const existing = notebooks.get(options.notebookPath)
     if (existing) {
       if (this.entries.get(options.notebookPath) === existing && existing.snapshot.port === options.port && !existing.stopRequested
@@ -230,6 +217,7 @@ export class MarimoRuntimeService {
       await availablePort(options.port, timeout)
       if (entry.stopRequested) { finish(entry); return snapshot(entry) }
       const admitted = this.admit(options)
+      admitMarimoConfiguration(options.workspace, options.notebookPath)
       if (admitted.identity.device !== entry.snapshot.notebookIdentity.device || admitted.identity.inode !== entry.snapshot.notebookIdentity.inode) throw new Error("Notebook replaced")
       entry.privateDirectory = mkdtempSync(join(tmpdir(), "sane-marimo-"))
       chmodSync(entry.privateDirectory, 0o700)
@@ -241,7 +229,7 @@ export class MarimoRuntimeService {
       // a race after our bind probe fails in Marimo, never adopts an external server.
       const child = spawn(admitted.python, ["-m", "marimo", "edit", options.notebookPath, "--headless", "--host", "127.0.0.1",
         "--port", String(options.port), "--token", "--token-password-file", entry.tokenFile, "--no-sandbox", "--skip-update-check"],
-      { cwd: admitted.root, env: environment(), detached: true, stdio: ["ignore", "pipe", "pipe"] })
+      { cwd: admitted.root, env: marimoProcessEnvironment(), detached: true, stdio: ["ignore", "pipe", "pipe"] })
       entry.child = child
       entry.snapshot.pid = child.pid
       entry.snapshot.descendantCleanup = "unverified"

@@ -51,7 +51,7 @@ export interface MarimoRuntimeConnection {
   tokenFile: string
 }
 
-export type MarimoRuntimeErrorCode = "INVALID_INPUT" | "UNSAFE_NOTEBOOK" | "ENVIRONMENT_NOT_READY" | "BUSY" | "PORT_UNAVAILABLE" | "STALE_GENERATION" | "NOT_RUNNING" | "UNSUPPORTED_PLATFORM"
+export type MarimoRuntimeErrorCode = "INVALID_INPUT" | "UNSAFE_NOTEBOOK" | "CONFIGURATION_CONFLICT" | "ENVIRONMENT_NOT_READY" | "BUSY" | "PORT_UNAVAILABLE" | "STALE_GENERATION" | "NOT_RUNNING" | "UNSUPPORTED_PLATFORM"
 
 export class MarimoRuntimeError extends Error {
   constructor(readonly code: MarimoRuntimeErrorCode, message: string) {

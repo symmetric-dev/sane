@@ -4,6 +4,8 @@
   "private": true,
   "type": "module",
   "exports": {
+    "./science-workspace": "./src/science-workspace.ts",
+    "./science-workspace-contracts": "./src/science-workspace-contracts.ts",
     "./contracts": "./src/contracts.ts",
     "./environment-paths": "./src/environment-paths.ts",
     "./marimo-contracts": "./src/marimo-contracts.ts",

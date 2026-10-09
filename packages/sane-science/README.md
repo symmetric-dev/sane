@@ -68,9 +68,14 @@ Do not remove a lock merely because a request timed out. A `ready` status record
 successful provisioning and current filesystem evidence, not continuous package
 integrity verification. Filesystem confinement assumes cooperative local actors.
 
-The workspace provisioner has been statically checked, not exercised against a
-workspace. Installation and lifecycle verification remain part of the integration
-spike. Package-local development setup above has been executed successfully.
+The workspace provisioner has been exercised against an isolated initialized
+repository. Locked relocation, Python/Marimo/pandas/matplotlib imports, and
+non-mutating repeated scaffold/status calls passed. Package-local development
+setup has also been executed successfully. The gated provisioning check is:
+
+```sh
+SCIENCE_RUN_PROVISION=1 bun test packages/sane-science/tests/provision.integration.test.ts
+```
 
 ## Live cell adapter
 
@@ -99,8 +104,9 @@ after mutation/execution because Marimo freezes scratchpad output snapshots at
 request start. Rich data is not automatically a portable artifact: rendering,
 referenced assets, durable capture, and agent sharing remain integration work.
 
-Only static typechecking has been performed; live adapter interoperability has
-not been verified through notebook execution.
+Live adapter interoperability was verified on 2026-10-09 against the pinned
+runtime: source edits, execution, text/table/PNG capture, and stale-source rejection
+passed. See the integration evidence summary below.
 
 ## Runtime supervisor
 
@@ -122,11 +128,127 @@ separate kernel descendants may survive, so descendant cleanup remains unverifie
 Ownership is in-memory and does not provide crash recovery or coordination across
 multiple SANE installations. App integration must address these lifecycle limits.
 
-The pinned internal configuration override disables startup cell execution.
-Other Marimo project/user configuration, including dotenv and runtime settings,
-remains inherited. Configuration policy must be completed before presenting this
-supervisor as the managed workspace experience. No server has been launched to
-verify lifecycle behavior.
+Explicit start admits managed configuration before launching. It creates matching
+`.sane/science/.marimo.toml` and `notebooks/pyproject.toml` if absent; differing
+files are preserved and rejected. Notebooks must be direct `.py` children of
+`notebooks`, without PEP 723 inline metadata. This deliberately narrow policy
+avoids nested project and script overrides without changing the uv lock/template.
+
+The implementation follows installed Marimo 0.25.1 `_config/utils.py` (cwd user
+config discovery), `reader.py` (nearest project), and `manager.py` (layer merging).
+The project layer is necessary: an empty user-layer `runtime.dotenv` is discarded
+by Marimo. The managed project sets `dotenv = []`, lazy cell changes, no automatic
+reload/instantiation, no reactive tests, and no extra Python paths. User/ancestor
+Marimo settings are shadowed rather than edited. Server startup commands are not
+passed; the pinned CLI defaults to none. Sandbox mode is explicitly disabled.
+The configured pip manager's inherited `should_auto_install()` returns false in
+`_runtime/packages/package_manager.py`; no package manager is invoked by this API
+outside explicit provisioning. Browser-initiated installs or arbitrary notebook
+code are not blocked by this policy. Both server and pair receive an environment
+allowlist. These settings are predictable defaults, not a security sandbox or a
+lock against subsequent browser configuration changes.
+
+## Workspace coordinator (Bun API)
+
+`sane-science/science-workspace` exports `ScienceWorkspaceService`; DTOs and typed
+errors are in `sane-science/science-workspace-contracts`. Use one service per
+canonical workspace in the supervising process. Construction and status never
+install dependencies. `provision()` is the explicit installation boundary.
+
+For a **fresh disposable Git repository**, initialize sane-core first; do not
+fabricate a context from a path or pre-create a nonempty `.sane` directory:
+
+```ts
+import { discoverRepository, inspectRepositoryStore, initializeRepository } from "./packages/sane-core/src/repository.ts"
+import { ScienceWorkspaceService } from "./packages/sane-science/src/science-workspace.ts"
+
+const discovery = discoverRepository("/absolute/path/to/disposable-git-repository")
+const availability = inspectRepositoryStore(discovery)
+const context = availability.state === "ready" ? availability.context
+  : availability.state === "uninitialized" ? initializeRepository(discovery)
+  : (() => { throw new Error(availability.message) })()
+const science = new ScienceWorkspaceService(context)
+
+await science.provision() // explicit uv --locked install; needs uv >=0.12.5
+const notebookPath = await science.createNotebook("experiment.py")
+const opened = await science.openNotebook({ notebookPath, port: 28731 })
+const ref = opened.ref // exact notebook path + owned launch generation
+try {
+  // Hand this secret-bearing URL to the tester's browser; never ordinary logs.
+  const browser = science.browserConnection(ref)
+  // Open browser.url, then:
+  const observed = await science.refreshNotebook(ref)
+  // Explicitly choose an ID from observed.sessionIds; never choose implicitly.
+  const sessionId = observed.sessionIds[0]
+  if (!sessionId) throw new Error("Open the notebook in the browser first")
+  const session = { ...ref, sessionId } // caller's explicit selection
+  await science.selectSession(session)
+  const before = await science.inspectCells(session)
+  const added = await science.createCell(session, "value = 41", { run: false })
+  if (added.mutation !== "accepted") throw new Error("Inspect before retrying")
+  const snapshot = await science.inspectCells(session)
+  const cell = snapshot.cells.find(cell => cell.id === added.cellId)!
+  await science.editCell(session, cell.id, "value = 42", cell.sourceHash, false)
+  await science.runCell(session, cell.id)
+} finally {
+  await science.shutdown() // or stopNotebook(ref); inspect cleanup evidence
+}
+```
+
+Place the script at the implementation repository root and run `bun ./script.ts`.
+Initialize the disposable directory with `git init` before discovery. For an
+existing notebook, skip `createNotebook` and supply its exact admitted path.
+Keep the Bun process alive while a separate browser tester connects; shutdown
+must run in `finally` when that interaction finishes. The snippet illustrates
+sequential calls, not a browser-wait implementation.
+
+`openNotebook` polls authenticated pair listings. Only a warning-free listing
+establishes `serverReadiness: ready`; an empty listing means
+`awaiting-browser-session`, not kernel readiness. Sessions for other paths never
+qualify. Discovered sessions require explicit selection and successful live
+inspection before `session-ready`. Listing failures return `server-unverified`,
+with `listing-unconfirmed`; the owned process remains available for retry or stop.
+`status` is a cached observation with current process state; `refreshNotebook`
+performs a fresh probe. Probe subprocesses are bounded to two seconds each; total
+readiness polling may exceed its deadline by one in-flight probe/version check.
+
+Cell operations recheck exact notebook/session/generation and warning-free
+listing at admission. A missing selected session is `session-lost`, never silently
+rebound. Calls and shutdown serialize; shutdown waits for admitted bounded work.
+Restart invalidates old references. Process-level status still reports kernel
+and HTTP readiness as unverified: the coordinator owns the separate observations.
+Mutation/execution/durability retain the pair adapter's semantics: durability is
+unconfirmed, hashes are conflict checks rather than CAS, and mutations are never
+automatically retried. Shutdown does not prove all detached kernel descendants
+are gone. Ownership and operation serialization are process-local; callers must
+coordinate provisioning across service instances and processes themselves.
+
+### Integration evidence (2026-10-09)
+
+A disposable initialized workspace passed real locked provisioning and an
+authenticated browser-backed workflow with Python 3.12.14, Marimo 0.25.1,
+pandas 3.0.6, and matplotlib 3.11.2:
+
+- Launch reached server-ready / awaiting-browser-session, then explicit session
+  selection reached session-ready.
+- Create, edit, and run succeeded; captured stdout, a two-row dataframe HTML
+  output, and a valid 1069×826 PNG (39,294 bytes) in a Marimo MIME bundle.
+- Browser checks found expected text/table output and decoded the PNG.
+- A stale source hash rejected mutation without requesting execution.
+- Browser reload changed the session ID. The old reference was rejected as
+  session-lost; explicit reselection restored readiness.
+- Shutdown exited with code 0 and removed token files. The observed server,
+  resource tracker, and separately grouped kernel all exited without manual
+  termination. Both test ports closed, and the browser tab/workspace were removed.
+
+This is evidence for the observed run, not a guarantee that every possible user
+subprocess is collected. The API deliberately retains cleanup uncertainty.
+
+Reusable verification support lives in `tests/`: focused regression tests, an
+opt-in provisioning test, and `live-workspace-harness.ts` for browser-driven
+integration. Raw timestamped evidence from this run was retained locally at
+`/private/var/folders/6v/wnsbl7cj5w96s83lszq3454w0000gn/T/opencode/science-live-evidence-iv7_fzy0`.
+It is temporary machine-local evidence, not a packaged fixture.
 
 ## Bun / Python boundary
 
@@ -147,12 +269,12 @@ After setup, the supervisor should launch the environment's executable directly
 with argument arrays, without shell activation, dependency resolution, or
 installation on app startup. Runtime launch must bind loopback, configure
 authentication, and isolate notebook web content from the privileged App origin.
-The live pairing adapter must still be qualified through execution against the
-pinned version before it is wired into the App.
+The pinned adapter has passed the live spike above. App routing, embedding,
+durable history, and agent-tool registration remain subsequent work.
 
-This environment initially contains only Marimo and its dependencies. Add the
-dataframe, visualization, and SQL packages needed by the spike through this
-manifest and lockfile. Future per-analysis environments need their own managed
+This environment includes Marimo, pandas, and matplotlib for the integration
+spike. Add further visualization and SQL packages through this manifest and
+lockfile. Future per-analysis environments need their own managed
 policy and locks: this project's settings do not automatically govern arbitrary
 notebook sandboxes, inline script environments, or in-editor package installs.
 Do not enable automatic package installation in the integration by default.

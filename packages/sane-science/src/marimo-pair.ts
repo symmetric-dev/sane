@@ -3,6 +3,7 @@ import { createHash, randomUUID } from "node:crypto"
 import { isAbsolute } from "node:path"
 import { MarimoPairError, type MarimoBinding, type MarimoCell, type MarimoListing, type MarimoOperationResult, type MarimoOutput, type MarimoPairOptions, type MarimoSnapshot } from "./marimo-contracts.ts"
 import { inspectSnippet, operationSnippet, type CellOperation } from "./marimo-snippets.ts"
+import { marimoProcessEnvironment } from "./marimo-config.ts"
 
 type ObjectValue = Record<string, unknown>
 function object(value: unknown): ObjectValue {
@@ -116,8 +117,7 @@ export class MarimoPair {
   }
 
   private process(args: string[], stdin?: string): Promise<{ stdout: string; stderr: string; exitCode: number }> {
-    const env = { ...process.env }
-    for (const key of Object.keys(env)) if (/^(PYTHON|MARIMO_)/.test(key)) delete env[key]
+    const env = marimoProcessEnvironment()
     return new Promise((resolve, reject) => {
       const child = execFile(this.options.python, ["-I", ...args], {
         cwd: this.options.cwd, env, encoding: "utf8", timeout: this.options.timeoutMs,
@@ -136,7 +136,7 @@ export class MarimoPair {
   private version(): Promise<void> {
     return this.verified ??= this.process(["-c", "from importlib.metadata import version; print(version('marimo'))"]).then(result => {
       if (result.exitCode !== 0 || result.stdout.trim() !== "0.25.1") throw new MarimoPairError("VERSION_MISMATCH", "Pair requires provisioned marimo 0.25.1")
-    })
+    }).catch(error => { this.verified = undefined; throw error })
   }
 
   listSessions(url: string): Promise<MarimoListing> {
