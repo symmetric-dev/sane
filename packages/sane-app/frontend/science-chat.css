@@ -1,0 +1,7 @@
+.science-chat-blocks { display: grid; gap: 16px; margin-block: 20px; min-width: 0; }
+.science-composer { padding: 12px; display: grid; gap: 10px; min-width: 0; }
+.science-composer header, .science-controls { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; }
+.science-composer header { justify-content: space-between; }
+.science-composer label { display: inline-flex; gap: 8px; align-items: center; }
+.science-composer input, .science-composer select { max-width: 100%; min-width: 0; }
+.science-python-editor { height: 180px; overflow: auto; border: 1px solid var(--border); border-radius: 8px; }

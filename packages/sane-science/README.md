@@ -1,8 +1,9 @@
 # SANE Science runtime
 
 Python dependency foundation and explicit workspace environment provisioning for
-the Marimo integration spike, with a pinned live-cell adapter. App integration,
-agent tool registration, and UI are not implemented yet.
+the Marimo integration spike, with a pinned live-cell adapter and initial native
+App integration. Agent tool registration and durable experiment history remain
+subsequent work.
 
 ## Setup
 
@@ -150,6 +151,28 @@ lock against subsequent browser configuration changes.
 
 ## Workspace coordinator (Bun API)
 
+### Native App workflow
+
+The chat Composer's Python action opens the scientific workspace in the existing
+chat surface. Provisioning is explicit. Create a notebook, then open it to start
+its backend-owned session. Native output cards provide Edit, Run, and Share
+actions; selecting Edit moves source into a CodeMirror Composer with Run and
+Back controls. Ordinary chat draft text is retained separately.
+
+Authenticated App operations use
+`/api/workspaces/:workspaceId/worktrees/:worktreeId/science` with catalog binding
+revisions and App-owned generation IDs. Browser responses omit runtime tokens,
+server URLs, and managed filesystem paths.
+
+Share stages a fixed code/text/static-table excerpt into the chat draft rather
+than sending automatically. Images and interactive widgets are explicitly omitted
+from agent text context. Output cards can show inline PNG/JPEG and bounded static
+table previews, but do not implement Marimo's interactive widget callbacks.
+Frontend block drafts and displayed snapshots are session-local, not durable
+experiment history. Python source editing currently uses CodeMirror without a
+Python syntax extension. Native frontend code has been statically checked; its
+rendering is not covered by the earlier Marimo-frontend browser verification.
+
 ### Native SANE session ownership
 
 `openNativeNotebook(options)` opens and selects a backend-owned session without
@@ -296,8 +319,9 @@ After setup, the supervisor should launch the environment's executable directly
 with argument arrays, without shell activation, dependency resolution, or
 installation on app startup. Runtime launch must bind loopback, configure
 authentication, and isolate notebook web content from the privileged App origin.
-The pinned adapter has passed the live spike above. App routing, embedding,
-durable history, and agent-tool registration remain subsequent work.
+The pinned adapter has passed the live spike above. The native App surface uses
+backend-owned sessions rather than embedding Marimo's editor. Durable history,
+rich agent attachments, and agent-tool registration remain subsequent work.
 
 This environment includes Marimo, pandas, and matplotlib for the integration
 spike. Add further visualization and SQL packages through this manifest and

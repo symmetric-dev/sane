@@ -20,6 +20,7 @@ import { pendingInteractions } from "./interaction-presentation";
 import { active as runtimeActive } from "./types";
 import { PendingInputDetails } from "./pending-input-ui";
 import { pendingInputContextReady, pendingInputLid, pendingInputPrimaryAction, unresolvedOperations } from "./pending-input-primary-action";
+import { ScienceComposer, type ScienceChatController } from "./science-chat";
 
 function pendingScopeFor(state: State) {
   const conversation = state.conversations.find(item => item.id === state.selected);
@@ -53,7 +54,7 @@ function RetainedInputDetails({ state, disabled, operate }: { state: State; disa
 }
 
 /** Kept mounted with Thread: only the draft identity may replace the DOM input. */
-export function ChatComposer({ state, active = true, navigation, ack, onAckChange, send, sendDisabled, parentId, review, statusContext, statusActions }: {
+export function ChatComposer({ state, active = true, navigation, ack, onAckChange, send, sendDisabled, parentId, review, statusContext, statusActions, science }: {
   state: State;
   active?: boolean;
   navigation?: ReactNode;
@@ -65,6 +66,7 @@ export function ChatComposer({ state, active = true, navigation, ack, onAckChang
   review?: DocumentReviewController;
   statusContext?: ChatStatusContext;
   statusActions?: ReactNode;
+  science?: ScienceChatController;
 }) {
   const [helpOpen, setHelpOpen] = useState(false);
   const [pickerOpen, setPickerOpen] = useState(false);
@@ -121,7 +123,8 @@ export function ChatComposer({ state, active = true, navigation, ack, onAckChang
   const [status, setStatus] = useState<{ scope: string; identity: WorkstreamStatusStart } | null>(null);
   const statusFlow = status?.scope === flowScope && !review?.flow ? status : null;
   const hasRequests = pendingInteractions(state, store.capabilities()).length > 0;
-  const flowOpen = hasRequests || !!review?.flow || !!statusFlow;
+  const scienceFlow = science?.view.flow && !review?.flow && !statusFlow;
+  const flowOpen = hasRequests || !!review?.flow || !!statusFlow || !!scienceFlow;
   const wasFlowOpen = useRef(flowOpen);
   const hadRequests = useRef(hasRequests);
   useEffect(() => { setStatus(null); }, [flowScope]);
@@ -221,6 +224,7 @@ export function ChatComposer({ state, active = true, navigation, ack, onAckChang
     <div ref={flowComposer} className="composer-flow-slot" hidden={hasRequests} style={{ display: hasRequests ? "none" : "contents" }}>
       {!conversation?.replacedBy && review?.flow && <DocumentReviewComposer review={review} active={active && !hasRequests} disabled={reviewBlocked} navigation={navigation} />}
       {!conversation?.replacedBy && statusFlow && <WorkstreamStatusComposer key={JSON.stringify([statusFlow.scope, statusFlow.identity])} identity={statusFlow.identity} active={active && !hasRequests} close={() => setStatus(null)} navigation={navigation} />}
+      {!conversation?.replacedBy && scienceFlow && science && !hasRequests && <ScienceComposer key={science.scope} science={science} />}
     </div>
     {!conversation?.replacedBy ? <form ref={normalComposer} className="composer" hidden={flowOpen} style={flowOpen ? { display: "none" } : undefined} onCompositionStartCapture={() => { composingRef.current = true; setComposing(true); }} onCompositionEndCapture={() => { composingRef.current = false; setComposing(false); }} onSubmit={event => { event.preventDefault(); submit(); }}>
       <ChatInput key={draftIdentity} text={draft.text} save={text => store.setDraft({ text })} submit={submit} pathsActive={active && !flowOpen} className="composer-input pending-input-primary-input" placeholder={state.selected ? "Go on..." : "Ask SANE anything… (@ for paths)"} aria-label="Message" sendButton={<button type="submit" className="send pending-input-primary" data-mode={primary.mode} disabled={primary.disabled} aria-label={primary.mode === "send" ? "Send message" : primary.label} title={primary.reason ?? (primary.mode === "add-paused" ? "Add using saved settings; waiting messages remain paused." : "Queue this message using the conversation's saved settings.")}><Icon name="send" /><span>{primary.label}</span></button>} />
@@ -230,6 +234,7 @@ export function ChatComposer({ state, active = true, navigation, ack, onAckChang
           : <button ref={agentTrigger} type="button" className="agent-chip" aria-haspopup="dialog" disabled={state.sending || !active || chainLocked} title={chainLocked ? "Agent settings are fixed while the pending-input chain is active." : profile.label} aria-label={`${state.selected ? "Agent" : "Agent for new conversation"}: ${profile.label}${store.pendingUpgrade() ? " (pending)" : ""}`} onClick={() => { if (!store.pendingInputChainLocked()) setPickerOpen(true); }}><AgentAvatar profile={profile} size={20} /><span className="agent-chip-label">{profile.label}</span>{store.pendingUpgrade() && <span className="agent-chip-pending">pending</span>}<FiChevronDown size={12} aria-hidden="true" /></button>
           : <span className="agent-chip fixed" role="status" title={store.conversationProfileLabel(state.selected)}><span className="agent-chip-label">{store.conversationProfileLabel(state.selected)}</span></span>}
         <div className="composer-utilities">
+          {science?.available && <button type="button" className="text-button" disabled={science.disabled || chainLocked} onClick={science.start} aria-label="Open Python workspace">Python</button>}
           <WorkersButton key={state.selected} sessionId={state.selected} active={active && !flowOpen} />
           <ChatWorkstreamActions conversation={conversation} active={active && !flowOpen} onDocuments={review ? identity => { setStatus(null); void review.start(identity); } : undefined} onStatus={identity => setStatus({ scope: flowScope, identity })} />
         </div>

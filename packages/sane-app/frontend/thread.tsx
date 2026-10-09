@@ -47,6 +47,7 @@ import { NativeSubagentCard, NativeSubagentDiscovery, useNativeSubagents } from 
 import { claudeReplyPresentation } from "./claude-reply-presentation";
 import { ChatFileLink } from "./chat-file-link";
 import { pendingInputStopAction } from "./pending-input-ui";
+import { ScienceChatBlocks, useScienceChat } from "./science-chat";
 
 export { convertMessage } from "./transcript-runtime";
 
@@ -243,6 +244,7 @@ export function Thread({ state, active: isActive = true, navigation, reviewReque
   const sendDisabled = !isActive || hasRequests || chainLocked || !capabilities.prompt || running && !queueable || compactBlocked || state.actionBusy || state.loading || state.sending || !state.connected || !state.availability.canSend || modelUnavailable || !!store.executionUnavailable() || (needsAck && ack !== state.selected);
   const sendReview = (text: string) => { const stopped = ack === state.selected && !!ack; setAck(""); return store.send(text, stopped, { preserveDraft: true }); };
   const review = useDocumentReview(state, isActive && !hasRequests, sendDisabled, sendReview);
+  const science = useScienceChat(state, isActive, sendDisabled || !!review.flow);
   const reviewSidebar = useMemo(() => <DocumentToc review={review} />, [review]);
   useChatFlowSidebar(isActive && !hasRequests && review.flow ? {
     scope: { sessionId: review.flow.identity.sessionId, nativeSessionId: conversation?.nativeSessionId, harness: conversation?.harness, workspaceId: review.flow.identity.workspaceId, worktreeId: repository.navigation.worktreeId },
@@ -271,7 +273,7 @@ export function Thread({ state, active: isActive = true, navigation, reviewReque
   const statusActions = pendingInputStopAction({ chainLocked, appRunning, cancelRun: capabilities.cancelRun === true, nativeQueueWaiting,
     disabled: !isActive || state.actionBusy || state.sending || (chainLocked ? state.phase !== "ready" || state.config?.authenticated !== true : !state.connected),
     cancel: () => void store.cancel() });
-  const footer = <div className="thread-footer"><div className="thread-safety">{safety}</div><div className="thread-composer"><ChatComposer state={state} active={isActive} navigation={navigation} ack={ack} onAckChange={setAck} send={send} sendDisabled={sendDisabled} parentId={parentId} review={review} statusContext={{ workspaceReady: repository.ready, handoffLoading: handoffs.loading, handoffError: handoffs.error, workerError: projection.error, nativeSubagentLoading: nativeSubagents?.state.loading && !nativeSubagents.state.revision }} statusActions={statusActions} /></div></div>;
+  const footer = <div className="thread-footer"><div className="thread-safety">{safety}</div><div className="thread-composer"><ChatComposer state={state} active={isActive} navigation={navigation} ack={ack} onAckChange={setAck} send={send} sendDisabled={sendDisabled} parentId={parentId} review={review} science={science} statusContext={{ workspaceReady: repository.ready, handoffLoading: handoffs.loading, handoffError: handoffs.error, workerError: projection.error, nativeSubagentLoading: nativeSubagents?.state.loading && !nativeSubagents.state.revision }} statusActions={statusActions} /></div></div>;
    return <TranscriptContext.Provider value={{ sessionId: state.selected, harness, messages, ...transcriptIndex, runs: state.runs, workers, deliveries: projection.deliveries, handoffs: state.connected ? handoffs : { ...handoffs, error: "Connection unavailable" }, openWorker, pendingTurn, activities, activityScope: inspection.scope, inspectActivity: inspection.open, compactionPositions: positions, pageState: state, branchEnabled: !!capabilities.branch && state.connected && !state.loading && !state.sending && !state.actionBusy && !compactBlocked && !running && !parentId && !conversation?.worker && store.conversationKind() !== "worker" && !conversation?.replacedBy && !(conversation?.attachment && !capabilities.branchAttachedConversation) }}><AssistantRuntimeProvider runtime={runtime}><ThreadPrimitive.Root className={`thread${review.flow && !hasRequests ? " is-document-review" : ""}`}>
     <SessionSearch root={searchRoot} active={isActive && !(!hasRequests && review.flow?.path)} state={state} />
     <BranchLinks key={state.selected} conversation={conversation} />
@@ -281,6 +283,7 @@ export function Thread({ state, active: isActive = true, navigation, reviewReque
         <NativeSubagentDiscovery loaded={loadedNativeSubagents} />
         {!messages.length && (state.transcriptInitialLoading || state.loading || !repository.ready || (state.selected && state.connectionError) ? <ConversationLoading /> : !state.selected ? <div className="welcome framework-welcome"><span className="welcome-mark" aria-hidden="true"><FrameworkMark active={isActive} /></span>{/* <h1>SANE</h1> */}<p className="eyebrow">Design | Engineer | Plan | Execute</p></div> : <div className="chat-empty"><PenroseTriangle size={24} aria-hidden="true" /><p>No messages yet.</p><span>Send a message to begin.</span></div>)}
         <ThreadPrimitive.Messages components={{ Message: ChatMessage }} />
+        <ScienceChatBlocks science={science} />
         <SendTranscriptReady sessionId={state.selected} messages={messages} />
         <CompactionMarkers records={positions.get("")} />
       </div>
