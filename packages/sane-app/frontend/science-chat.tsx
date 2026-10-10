@@ -1,4 +1,5 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useRef, useState, type ReactNode } from "react";
+import { FiArrowLeft, FiCode, FiSettings } from "react-icons/fi";
 import { Annotation, Compartment, EditorState, Transaction } from "@codemirror/state";
 import { EditorView, keymap, lineNumbers } from "@codemirror/view";
 import { defaultKeymap, history, historyKeymap, indentWithTab } from "@codemirror/commands";
@@ -11,6 +12,7 @@ import { pendingInteractions } from "./interaction-presentation";
 import { ShellDialog } from "./shell-dialog";
 import { ScienceOutput, ScienceTextOutput } from "./science-output";
 import "./science-chat.css";
+import "./workstream-status.css";
 
 export interface ScienceChatIntegration {
   /** Stage the backend-frozen object in the conversation's attachment draft. Return false if scope changed. */
@@ -45,13 +47,17 @@ export function useScienceChat(state: State, active: boolean, blocked: boolean, 
   const v = view;
   const [, render] = useState(0);
   const live = useRef({ scope, active, blocked, epoch: 0, integration });
-  if (live.current.scope !== scope || live.current.active !== active || live.current.blocked !== blocked) live.current.epoch++;
+  if (live.current.scope !== scope || live.current.active !== active) live.current.epoch++;
   live.current = { ...live.current, scope, active, blocked, integration };
   useEffect(() => { live.current.active = active; return () => { live.current.active = false; live.current.epoch++; }; }, [active]);
   const valid = () => live.current.active && live.current.scope === scope && identity(store.snapshot()) === scope && catalog.snapshot().navigation.view === "chat";
-  const allowed = () => {
+  const editable = () => valid() && available && store.snapshot().config?.authenticated === true;
+  const draftAllowed = () => {
     const current = store.snapshot();
-    return valid() && available && !live.current.blocked && current.config?.authenticated === true && !current.loading && !current.sending && !current.actionBusy && !store.pendingInputChainLocked() && !pendingInteractions(current, store.capabilities()).length;
+    return editable() && !current.loading && !current.sending && !current.actionBusy && !store.pendingInputChainLocked() && !pendingInteractions(current, store.capabilities()).length;
+  };
+  const allowed = () => {
+    return draftAllowed() && !live.current.blocked;
   };
   const update = () => { if (valid()) render(n => n + 1); };
   const base = `/api/workspaces/${encodeURIComponent(workspaceId ?? "")}/worktrees/${encodeURIComponent(worktreeId ?? "")}/science`;
@@ -66,10 +72,12 @@ export function useScienceChat(state: State, active: boolean, blocked: boolean, 
     if (chat.conversationId !== conversationId || chat.workspaceId !== workspaceId || chat.worktreeId !== worktreeId) throw new Error("Science response belongs to another conversation.");
     v.chat = chat;
     if (!chat.blocks.some(block => block.id === v.selected)) v.selected = chat.blocks[0]?.id ?? "";
-    for (const block of chat.blocks) if (v.drafts[block.id]?.source === block.source) delete v.drafts[block.id];
   };
   async function perform(action?: ScienceChatRequest, after?: (chat: ScienceChatState, current: () => boolean) => Promise<void>) {
-    if (!available || !valid() || v.busy || action && !allowed()) return;
+    if (!available || !valid() || v.busy || action && !(action.action === "draft" ? draftAllowed() : allowed())) return;
+    // Draft objects are immutable local generations. Only this exact request's
+    // acknowledgment may clear one or advance a newer generation's CAS base.
+    const dispatchedDraft = action?.action === "draft" ? v.drafts[action.blockId] : undefined;
     const epoch = live.current.epoch;
     const current = () => valid() && live.current.epoch === epoch;
     v.busy = true; v.runningBlockId = action?.action === "run" ? action.blockId : undefined; v.error = ""; v.draftErrorBlockId = undefined; update();
@@ -77,6 +85,13 @@ export function useScienceChat(state: State, active: boolean, blocked: boolean, 
       const result = await request<ScienceChatResponse>(url, action);
       if (!current()) return;
       apply(result.chat);
+      if (action?.action === "draft" && dispatchedDraft) {
+        const acknowledged = result.chat.blocks.find(block => block.id === action.blockId);
+        if (!acknowledged || acknowledged.source !== action.source || acknowledged.revision !== action.expectedRevision + 1) throw new Error("Draft acknowledgment did not match the dispatched source and revision.");
+        const draft = v.drafts[action.blockId];
+        if (draft === dispatchedDraft) delete v.drafts[action.blockId];
+        else if (draft && draft.revision === action.expectedRevision) v.drafts[action.blockId] = { ...draft, revision: acknowledged.revision };
+      }
       if (after && allowed()) await after(result.chat, current);
       return result.chat;
     } catch (error) {
@@ -105,17 +120,18 @@ export function useScienceChat(state: State, active: boolean, blocked: boolean, 
   };
   const code = v.drafts[v.selected]?.source ?? v.chat?.blocks.find(block => block.id === v.selected)?.source ?? "";
   const dirtyDrafts = JSON.stringify(v.drafts);
+  const canSaveDraft = draftAllowed();
   // GET reads App history only: opening a conversation never starts a runtime.
   useEffect(() => { if (active && available && !v.loaded && !v.busy) void perform(); }, [scope, active, available, v.loaded, v.busy]);
   useEffect(() => {
-    if (blocked || !active || v.busy || v.error) return;
+    if (!canSaveDraft || v.busy || v.error) return;
     // Drain every dirty block, regardless of the editor selection. Each draft
-    // retains its original CAS revision; navigation still fences the scope.
+    // retains its CAS revision until its own exact acknowledgment advances it.
     const blockId = Object.keys(v.drafts).find(id => v.chat?.blocks.some(block => block.id === id));
     if (!blockId) return;
-    const timer = setTimeout(() => { if (allowed()) void saveDraft(blockId); }, 700);
+    const timer = setTimeout(() => { if (draftAllowed()) void saveDraft(blockId); }, 700);
     return () => clearTimeout(timer);
-  }, [scope, active, blocked, dirtyDrafts, v.busy, v.error]);
+  }, [scope, active, canSaveDraft, dirtyDrafts, v.busy, v.error]);
   const share = (blockId: string, operationId: string | null) => {
     const block = v.chat?.blocks.find(item => item.id === blockId);
     const operation = operationId ? v.chat?.operations.find(item => item.id === operationId && item.blockId === blockId) : undefined;
@@ -132,7 +148,7 @@ export function useScienceChat(state: State, active: boolean, blocked: boolean, 
     });
   };
   return {
-    view: v, scope, available, code, disabled: blocked || !active || v.busy, canShare: !!integration.stageShare,
+    view: v, scope, available, code, editorDisabled: !editable(), disabled: !allowed() || v.busy, canShare: !!integration.stageShare,
     hasAnchorMessage: !!lastCanonicalMessage(state),
     addBlock: (atStart = false) => {
       if (!allowed() || v.busy || !v.chat) return;
@@ -161,7 +177,7 @@ export function useScienceChat(state: State, active: boolean, blocked: boolean, 
     }),
     associate: (notebook: string) => { if (v.chat) void perform({ action: "associate-existing", expectedRevision: v.chat.revision, notebook }); },
     select: (id: string) => { if (!allowed() || v.busy) return; v.selected = id; v.flow = true; update(); },
-    save: (source: string) => { if (!allowed() || v.busy) return; const block = v.chat?.blocks.find(item => item.id === v.selected); if (!block) return; v.drafts[v.selected] = { source, revision: v.drafts[v.selected]?.revision ?? block.revision }; update(); },
+    save: (source: string) => { if (!editable()) return; const block = v.chat?.blocks.find(item => item.id === v.selected); if (!block) return; v.drafts[v.selected] = { source, revision: v.drafts[v.selected]?.revision ?? block.revision }; update(); },
     discardDraft: () => {
       if (!allowed() || v.busy) return;
       delete v.drafts[v.selected];
@@ -249,41 +265,50 @@ function PythonEditor({ science }: { science: ScienceChatController }) {
   const focusNewBlock = useRef(false);
   const latest = useRef(science); latest.current = science;
   useEffect(() => {
-    const view = new EditorView({ parent: root.current!, state: EditorState.create({ doc: latest.current.code, extensions: [workspaceEditorTheme, lineNumbers(), history(), keymap.of([...defaultKeymap, ...historyKeymap, indentWithTab, { key: "Mod-Enter", run: () => { if (!latest.current.disabled) latest.current.run(); return true; } }]), EditorView.contentAttributes.of({ "aria-label": "Python block source" }), editing.current.of([EditorState.readOnly.of(latest.current.disabled), EditorView.editable.of(!latest.current.disabled)]), EditorView.updateListener.of(update => { if (update.docChanged && update.transactions.some(transaction => transaction.docChanged && !transaction.annotation(savedSourceSync))) latest.current.save(update.state.doc.toString()); })] }) });
+    const view = new EditorView({ parent: root.current!, state: EditorState.create({ doc: latest.current.code, extensions: [workspaceEditorTheme, lineNumbers(), history(), keymap.of([...defaultKeymap, ...historyKeymap, indentWithTab, { key: "Mod-Enter", run: () => { if (!latest.current.disabled) latest.current.run(); return true; } }]), EditorView.contentAttributes.of({ "aria-label": "Python block source" }), editing.current.of([EditorState.readOnly.of(latest.current.editorDisabled), EditorView.editable.of(!latest.current.editorDisabled)]), EditorView.updateListener.of(update => { if (update.docChanged && update.transactions.some(transaction => transaction.docChanged && !transaction.annotation(savedSourceSync))) latest.current.save(update.state.doc.toString()); })] }) });
     editor.current = view;
     focusNewBlock.current = true;
     return () => { editor.current = null; view.destroy(); };
   }, [science.scope, science.view.selected]);
   useEffect(() => {
-    editor.current?.dispatch({ effects: editing.current.reconfigure([EditorState.readOnly.of(science.disabled), EditorView.editable.of(!science.disabled)]) });
-    if (!science.disabled && focusNewBlock.current) { editor.current?.focus(); focusNewBlock.current = false; }
-  }, [science.scope, science.view.selected, science.disabled]);
+    editor.current?.dispatch({ effects: editing.current.reconfigure([EditorState.readOnly.of(science.editorDisabled), EditorView.editable.of(!science.editorDisabled)]) });
+    if (!science.editorDisabled && focusNewBlock.current) { editor.current?.focus(); focusNewBlock.current = false; }
+  }, [science.scope, science.view.selected, science.editorDisabled]);
   useEffect(() => {
     const view = editor.current;
-    if (view && view.state.doc.toString() !== science.code) view.dispatch({ changes: { from: 0, to: view.state.doc.length, insert: science.code }, annotations: [savedSourceSync.of(true), Transaction.addToHistory.of(false)] });
+    if (view && view.state.doc.toString() !== science.code) view.dispatch({ changes: { from: 0, to: view.state.doc.length, insert: science.code }, selection: { anchor: Math.min(view.state.selection.main.anchor, science.code.length), head: Math.min(view.state.selection.main.head, science.code.length) }, annotations: [savedSourceSync.of(true), Transaction.addToHistory.of(false)] });
   }, [science.code]);
   return <div className="science-python-editor" ref={root} />;
 }
 
-export function ScienceComposer({ science }: { science: ScienceChatController }) {
+export function ScienceComposer({ science, navigation }: { science: ScienceChatController; navigation?: ReactNode }) {
   const { view: v } = science;
   const [note, setNote] = useState("");
   const dirty = v.drafts[v.selected] !== undefined;
-  return <section className="science-composer" aria-label="Local Python notebook" aria-busy={v.busy}>
-    <header><strong>Python</strong><div className="science-controls"><button type="button" disabled={science.disabled} onClick={science.manage}>Notebook settings</button><button type="button" className="text-button" onClick={science.back}>Back to chat</button></div></header>
-    {v.chat && <div className="science-controls">{!!v.chat.blocks.length && <label className="science-cell-picker"><span className="sr-only">Python cell</span><select value={v.selected} disabled={science.disabled} onChange={event => science.select(event.target.value)}>{v.chat.blocks.map((block, index) => <option key={block.id} value={block.id}>Cell {index + 1}</option>)}</select></label>}<button type="button" disabled={science.disabled} onClick={() => science.addBlock(!science.hasAnchorMessage)}>New cell</button></div>}
-    {v.chat?.blocks.length ? <><PythonEditor science={science} /><div className="science-controls"><button type="button" className="science-run-button" disabled={science.disabled || dirty} onClick={() => science.run()}>Run Python</button>{dirty && <><button type="button" disabled={science.disabled} onClick={() => void science.saveDraft()}>Save</button><span className="science-local-label" role="status">Unsaved changes</span></>}<span className="science-local-label">⌘ / Ctrl ↵ to run</span></div><details><summary>Add a local note</summary><textarea value={note} disabled={science.disabled} onChange={event => setNote(event.target.value)} aria-label="Local notebook note" /><button type="button" disabled={science.disabled || !note.trim()} onClick={async () => { if (await science.addEntry(note)) setNote(""); }}>Save note</button></details></> : <p className="muted">Create a cell to start. Notebook settings can help if your notebook is unavailable.</p>}
-    <button type="button" className="text-button" disabled={v.busy} onClick={science.refresh}>Refresh local history</button>
-    {dirty && <button type="button" className="text-button" disabled={science.disabled} onClick={science.discardDraft}>Discard unsaved changes and use saved source</button>}
-    {!science.canShare && <p className="muted">Snapshot sending is not connected yet. Nothing has been added to your chat draft.</p>}
-    {v.busy && <p role="status">Working…</p>}{v.error && <p role="alert" className="notice error">{v.error}</p>}{v.note && <p role="status">{v.note}</p>}
+  const status = v.runningBlockId ? "Running…" : v.busy ? dirty ? "Saving…" : "Working…" : v.error ? "Needs attention" : dirty ? "Unsaved" : v.chat?.blocks.length ? "Saved" : "No cells";
+  return <section className="workstream-status-composer science-composer" aria-label="Local Python notebook" aria-busy={v.busy}>
+    <header className="workstream-status-heading"><div><FiCode size={16} aria-hidden="true" /><strong>Python</strong></div><button type="button" className="text-button" disabled={science.disabled} onClick={science.manage} aria-label="Notebook settings" title="Notebook settings" aria-haspopup="dialog"><FiSettings size={14} aria-hidden="true" /></button></header>
+    <div className="workstream-status-body science-composer-body">
+      {v.chat && <div className="science-controls">{!!v.chat.blocks.length && <label className="science-cell-picker"><span className="sr-only">Python cell</span><select value={v.selected} disabled={science.disabled} onChange={event => science.select(event.target.value)}>{v.chat.blocks.map((block, index) => <option key={block.id} value={block.id}>Cell {index + 1}</option>)}</select></label>}<button type="button" disabled={science.disabled} onClick={() => science.addBlock(!science.hasAnchorMessage)}>New cell</button></div>}
+      {v.chat?.blocks.length ? <PythonEditor science={science} /> : <p className="muted">Create a cell to start.</p>}
+      {!v.loaded && !v.busy && v.note && <p role="status">Observation interrupted. <button type="button" className="text-button" onClick={science.refresh}>Refresh local history</button></p>}
+      {v.error && <div className="science-composer-error"><p role="alert" className="notice error">{v.error}</p><button type="button" className="text-button" disabled={v.busy} onClick={science.refresh}>Refresh local history</button>{dirty && <><button type="button" className="text-button" disabled={science.disabled} onClick={() => void science.saveDraft()}>Save draft</button><button type="button" className="text-button" disabled={science.disabled} onClick={science.discardDraft}>Discard unsaved changes</button></>}</div>}
+    </div>
+    <footer className="workstream-status-toolbar"><div><button type="button" className="text-button" onClick={science.back}><FiArrowLeft aria-hidden="true" />Back</button><span className="science-local-label" role="status">{status}</span></div><div><button type="button" disabled={science.disabled || dirty || !v.chat?.blocks.length} onClick={() => science.run()} title="Run Python (⌘ / Ctrl + Enter)">Run</button>{navigation}</div></footer>
     {v.management && <ShellDialog title="Notebook settings" close={science.dismissManagement}><div className="science-notebook-management">
       <p>{v.chat?.notebook ?? "No notebook associated"}</p><p className="muted">Environment: {v.status?.environment.state ?? "unknown"}</p>
       <button type="button" disabled={science.disabled} onClick={science.provision}>Provision chat notebook</button>
       {v.status && <label>Associate existing notebook <select defaultValue="" disabled={science.disabled || !v.chat} onChange={event => { if (event.target.value) science.associate(event.target.value); }}><option value="">Choose notebook…</option>{v.status.notebooks.map(notebook => <option key={notebook} value={notebook}>{notebook}</option>)}</select></label>}
       <button type="button" disabled={science.disabled} onClick={science.start}>Open chat notebook</button>
       <button type="button" disabled={science.disabled || !v.chat} onClick={science.close}>Close notebook runtime</button>
+      <button type="button" disabled={v.busy} onClick={science.refresh}>Refresh local history</button>
+      {dirty && <><button type="button" disabled={science.disabled} onClick={() => void science.saveDraft()}>Save draft</button><button type="button" disabled={science.disabled} onClick={science.discardDraft}>Discard unsaved changes and use saved source</button></>}
+      <details><summary>Add a local note</summary><textarea value={note} disabled={science.disabled} onChange={event => setNote(event.target.value)} aria-label="Local notebook note" /><button type="button" disabled={science.disabled || !v.chat || !note.trim()} onClick={async () => { if (await science.addEntry(note)) setNote(""); }}>Save note</button></details>
+      <p className="muted">Changes save automatically. ⌘ / Ctrl + Enter runs the saved cell.</p>
       <p className="muted">Local operation records remain separate from canonical chat messages and assistant context.</p>
+      {!science.canShare && <p className="muted">Snapshot sending is not connected yet. Nothing has been added to your chat draft.</p>}
+      {v.note && <p role="status">{v.note}</p>}
+      <details><summary>Notebook details</summary><pre>{JSON.stringify({ notebook: v.chat?.notebook, status: v.status }, null, 2)}</pre></details>
       {v.busy && <p role="status">Working…</p>}{v.error && <p role="alert" className="notice error">{v.error}</p>}
     </div></ShellDialog>}
   </section>;
