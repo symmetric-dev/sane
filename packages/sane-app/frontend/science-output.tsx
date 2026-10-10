@@ -1,5 +1,6 @@
 import { useMemo, useState } from "react";
 import type { MarimoCell, MarimoOutput } from "../../sane-science/src/marimo-contracts";
+import { ShellDialog } from "./shell-dialog";
 import "./science-output.css";
 
 export interface ScienceBlockDTO {
@@ -167,8 +168,8 @@ function displayOutput(output: MarimoOutput): Display {
 }
 
 export function ScienceTextOutput({ text, channel }: { text: string; channel?: string }) {
-  return <div className={`science-text-output${channel === "stderr" ? " science-output-stderr" : ""}`}>
-    {channel && <div className="science-output-label">{channel}</div>}
+  return <div className={`science-text-output${channel === "stderr" || channel?.endsWith(" error") ? " science-output-stderr" : ""}`}>
+    {channel && channel !== "stdout" && <div className="science-output-label">{channel}</div>}
     <pre>{text.slice(0, MAX_TEXT)}</pre>
     {text.length > MAX_TEXT && <p className="science-output-note">Output truncated to {MAX_TEXT.toLocaleString()} characters.</p>}
   </div>;
@@ -183,7 +184,7 @@ function RasterImage({ src, alt }: { src: string; alt: string }) {
 export function ScienceTableOutput({ table }: { table: ScienceTableData }) {
   const rows = table.rows.slice(0, MAX_TABLE_ROWS);
   return <div className="science-table-output">
-    <p className="science-output-note">Static table · {rows.length.toLocaleString()} of {table.totalRows.toLocaleString()} rows · {table.columns.length} columns. Interactive controls are unavailable.</p>
+    <p className="science-output-note">{rows.length.toLocaleString()} of {table.totalRows.toLocaleString()} rows</p>
     <div className="science-table-scroll" tabIndex={0} role="region" aria-label="Science table">
       <table><caption className="science-output-sr-only">Science output table</caption>
         <thead><tr>{table.columns.map(column => <th key={column} scope="col">{column}</th>)}</tr></thead>
@@ -206,15 +207,24 @@ export function ScienceOutput({ output, imageAlt = "Science output plot" }: { ou
 }
 
 export function ScienceBlockCard({ block, busy = false, actionError, onEdit, onRun, onShare }: ScienceBlockCardProps) {
+  const [info, setInfo] = useState(false);
   const { cell } = block;
   const running = busy || cell.status === "running" || cell.status === "queued";
-  const status = busy ? "Working" : cell.status ?? "Not run";
   const hasOutput = cell.consoleOutputs.length > 0 || cell.output !== null;
   return <section className="science-block-card" aria-label={block.title} aria-busy={running}>
     <header className="science-block-header">
-      <h3>{block.title}</h3><span className="science-block-badge">Science</span>
-      <span className="science-block-status" role="status">{status}{block.execution && block.execution !== "not-requested" ? ` · execution ${block.execution}` : ""}</span>
+      <h3>{block.title}</h3>
+      {running && <span className="science-block-status" role="status">Running…</span>}
+      <div className="science-block-actions">
+        {onEdit && <button type="button" disabled={running} onClick={() => onEdit(block)}>Edit</button>}
+        {onRun && <button type="button" disabled={running} onClick={() => onRun(block)}>Run</button>}
+        {onShare && <button type="button" disabled={running} onClick={() => onShare(block)}>Share</button>}
+        <button type="button" onClick={() => setInfo(true)}>Info</button>
+      </div>
     </header>
+    <pre className="science-block-source"><code>{cell.code || "# Empty cell"}</code></pre>
+    {block.execution === "failed" && <p className="science-block-error" role="status">Run failed.</p>}
+    {block.execution === "unknown" && <p className="science-block-error" role="status">Run outcome unconfirmed.</p>}
     {(block.outputStale || cell.status === "stale") && <p className="science-output-note">Output may be from an earlier run.</p>}
     <div className="science-block-output">
       {cell.consoleOutputs.map((output, index) => <ScienceOutput key={`${output.timestamp}-${index}`} output={output} />)}
@@ -222,12 +232,7 @@ export function ScienceBlockCard({ block, busy = false, actionError, onEdit, onR
       {!hasOutput && !cell.errors.length && <p className="science-output-note">{running ? "Waiting for output…" : "No output captured."}</p>}
       {cell.errors.map((error, index) => <ScienceTextOutput key={index} text={error.message} channel={`${error.kind} error`} />)}
     </div>
-    <details className="science-block-source"><summary>Python source</summary><ScienceTextOutput text={cell.code} /></details>
-    {(onEdit || onRun || onShare) && <footer className="science-block-actions">
-      {onEdit && <button type="button" className="text-button" disabled={running} onClick={() => onEdit(block)}>Edit</button>}
-      {onRun && <button type="button" className="text-button" disabled={running} onClick={() => onRun(block)}>{running ? "Running…" : "Run"}</button>}
-      {onShare && <button type="button" className="text-button" disabled={running} onClick={() => onShare(block)}>Share</button>}
-    </footer>}
     {actionError && <p className="science-block-error" role="alert">{actionError}</p>}
+    {info && <ShellDialog title="Python output info" close={() => setInfo(false)}><div className="science-output-info"><p>Output is a runtime observation; execution provenance is not asserted. Shared snapshots contain source and supported text only; images and interactive output are omitted.</p><pre>{JSON.stringify(block, null, 2)}</pre></div></ShellDialog>}
   </section>;
 }

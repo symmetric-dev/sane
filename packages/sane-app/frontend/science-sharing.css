@@ -1,7 +1,7 @@
 .science-sharing { display: grid; gap: 10px; min-width: 0; padding: 12px; border: 1px solid var(--border); border-radius: 10px; }
 .science-sharing header { display: flex; align-items: baseline; justify-content: space-between; gap: 8px; flex-wrap: wrap; }
 .science-sharing p { margin: 0; }
-.science-sharing-label, .science-sharing-note { color: var(--text-muted); font-size: 12px; overflow-wrap: anywhere; }
+.science-sharing-label, .science-sharing-note { color: var(--muted-foreground); font-size: 12px; overflow-wrap: anywhere; }
 .science-sharing-snapshot { display: grid; gap: 8px; min-width: 0; padding-block-start: 10px; border-block-start: 1px solid var(--border); }
 .science-sharing pre { margin-block: 8px; max-height: 320px; overflow: auto; white-space: pre-wrap; overflow-wrap: anywhere; font-size: 12px; }
 .science-sharing summary { cursor: pointer; font-size: 12px; }
@@ -9,3 +9,11 @@
 .science-sharing-pending { display: grid; gap: 8px; border-inline-start: 2px solid var(--border); padding-inline-start: 10px; }
 .science-sharing-error { font-size: 12px; overflow-wrap: anywhere; }
 .science-sharing-sent { margin-block: 12px; }
+.science-sharing { font-size:12px; }
+.science-sharing button { padding:4px 8px; border-radius:6px; }
+.science-sharing button:hover:not(:disabled) { background:var(--accent); }
+.science-sharing-snapshot > header > span { margin-right:auto; }
+.science-sharing-snapshot > header { justify-content:flex-start; }
+.science-sharing-info { font-size:13px; }
+.science-sharing-info pre { max-height:400px; overflow:auto; white-space:pre-wrap; overflow-wrap:anywhere; font:12px/1.7 var(--font-mono, monospace); }
+.science-sharing-info p { overflow-wrap:anywhere; }
