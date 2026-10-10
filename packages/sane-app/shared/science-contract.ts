@@ -50,5 +50,7 @@ export interface ScienceResponse {
     durability: "unconfirmed";
     /** Generic diagnostic only; backend stdout/stderr are never forwarded. */
     issue?: "operation-error" | "snapshot-unavailable";
+    /** Bounded notebook diagnostic for local chat history, not agent transport. */
+    error?: string;
   };
 }

@@ -3,6 +3,7 @@ import { FiArrowLeft, FiCode, FiSettings } from "react-icons/fi";
 import { Annotation, Compartment, EditorState, Transaction } from "@codemirror/state";
 import { EditorView, keymap, lineNumbers } from "@codemirror/view";
 import { defaultKeymap, history, historyKeymap, indentWithTab } from "@codemirror/commands";
+import { python } from "@codemirror/lang-python";
 import type { ScienceBlock, ScienceOperation, ScienceChatRequest, ScienceChatResponse, ScienceChatHistoryResponse, ScienceChatState, ScienceShareSnapshot, ScienceTranscriptAnchor } from "../shared/science-chat-contract";
 import type { ScienceResponse, ScienceStatus } from "../shared/science-contract";
 import { workspaceEditorTheme } from "./workspace-theme";
@@ -101,7 +102,7 @@ export function useScienceChat(state: State, active: boolean, blocked: boolean, 
       return result.chat;
     } catch (error) {
       if (current()) {
-        v.error = `${error instanceof Error ? error.message : "Science request failed."}${action ? " Outcome may be unknown. Refresh local history before retrying." : ""}`;
+        v.error = error instanceof Error ? error.message : "Science request failed.";
         v.draftErrorBlockId = action?.action === "draft" ? action.blockId : undefined;
       }
     } finally {
@@ -239,15 +240,25 @@ export function ScienceChatBlocks({ science, position = "unplaced", messageId, l
 }
 
 function OperationOutput({ operation }: { operation: ScienceOperation }) {
+  const [info, setInfo] = useState(false);
   const cell = operation.observation?.cell;
-  return <>{operation.state !== "succeeded" && <p role="status" className={operation.state === "failed" ? "science-block-error" : "muted"}>{operation.state === "failed" ? "Run failed." : "Run outcome unknown. Refresh history before retrying."}</p>}
-    {cell ? <>{cell.consoleOutputs.map((output, index) => <ScienceOutput key={`${output.timestamp}-${index}`} output={output} />)}{cell.output && <ScienceOutput output={cell.output} />}{cell.errors.map((error, index) => <ScienceTextOutput key={index} text={error.message} channel={`${error.kind} error`} />)}{!cell.output && !cell.consoleOutputs.length && !cell.errors.length && <p className="muted">No output.</p>}</> : operation.observation?.text ? <ScienceTextOutput text={operation.observation.text} /> : <p className="muted">No output captured.</p>}
+  const errors = [...(operation.error ? [operation.error] : []), ...(cell?.errors.map(error => error.message) ?? [])];
+  const fallback = operation.state === "not-executed" ? "Python was not run; source editing did not complete. You can retry." : operation.state === "failed" ? "Run failed." : "Execution outcome unknown; further runs are blocked.";
+  const hasError = operation.state !== "succeeded" || errors.length > 0;
+  const outputs = cell ? [...cell.consoleOutputs, ...(cell.output ? [cell.output] : [])] : [];
+  // Rich error payloads and stderr remain in the details rather than duplicating
+  // the concise error summary in the cell.
+  const visible = hasError ? outputs.filter(output => output.channel !== "stderr" && output.channel !== "marimo-error" && output.mimetype !== "application/x-sane-omitted") : outputs;
+  return <>{hasError && <div className="science-error-summary" role="status"><span>{(errors[0] || fallback).split("\n")[0]}</span><button type="button" aria-label="Error info" aria-haspopup="dialog" onClick={() => setInfo(true)}>Info</button></div>}
+    {cell ? <>{visible.map((output, index) => <ScienceOutput key={`${output.timestamp}-${index}`} output={output} />)}{!outputs.length && !hasError && <p className="muted">No output.</p>}</> : !hasError && (operation.observation?.text ? <ScienceTextOutput text={operation.observation.text} /> : <p className="muted">No output captured.</p>)}
+    {info && <ShellDialog title="Python error info" className="science-info-dialog" close={() => setInfo(false)}><div className="science-info-content"><p>{fallback}</p>{errors.map((error, index) => <ScienceTextOutput key={index} text={error} />)}{outputs.map((output, index) => <ScienceOutput key={index} output={output} />)}<details><summary>Run details</summary><pre>{JSON.stringify(operation, null, 2)}</pre></details></div></ShellDialog>}
   </>;
 }
 
 function PythonCell({ block, science }: { block: ScienceBlock; science: ScienceChatController }) {
   const { view: v } = science;
   const [info, setInfo] = useState(false);
+  const [showHistory, setShowHistory] = useState(false);
   const [historicalId, setHistoricalId] = useState("");
   const operations = chatIndex(v.chat!).operations.get(block.id) ?? [];
   const latest = operations.at(-1);
@@ -262,12 +273,13 @@ function PythonCell({ block, science }: { block: ScienceBlock; science: ScienceC
       <button type="button" disabled={science.disabled} onClick={() => science.select(block.id)}>Edit</button>
       <button type="button" disabled={science.disabled || dirty || historical} onClick={() => science.run(block.id)}>Run</button>
       <button type="button" title="Add source and supported text to your draft; images are omitted" disabled={science.disabled || !science.canShare || dirty && !historical} onClick={() => science.share(block.id, shareOperation?.id ?? null)}>Share</button>
+      <button type="button" disabled={!operations.length} aria-haspopup="dialog" onClick={() => setShowHistory(true)}>History{operations.length ? ` · ${operations.length}` : ""}</button>
       <button type="button" aria-label="Python cell info" onClick={() => setInfo(true)}>Info</button>
     </div></header>
     {block.creation && block.creation.state !== "created" && <p className="science-cell-notice" role="status">Cell creation unconfirmed. <button type="button" disabled={v.busy} onClick={science.refresh}>Refresh history</button></p>}
-    <pre className="science-cell-source" aria-label={historical ? "Historical Python source" : "Python source"}><code>{source || "# Empty cell"}</code></pre>
-    <div className="science-cell-output" aria-label="Python output">{operation ? <>{(historical || operation.source !== source) && <p className="science-local-label">{historical ? "Historical result" : "Output from earlier source"}</p>}<OperationOutput operation={operation} /></> : <p className="muted">Not run yet.</p>}</div>
-    {operations.length > 1 && <details className="science-cell-history"><summary>Run history · {operations.length}</summary><label>Show result <select value={operation?.id ?? ""} onChange={event => setHistoricalId(event.target.value === latest?.id ? "" : event.target.value)}>{operations.map((item, index) => <option key={item.id} value={item.id}>Run {index + 1}{item === latest ? " · latest" : ""}{item.state !== "succeeded" ? ` · ${item.state}` : ""}</option>)}</select></label>{historical && <button type="button" onClick={() => setHistoricalId("")}>Back to latest</button>}</details>}
+    <PythonSource source={source} historical={historical} />
+    <div className="science-cell-output" role="region" tabIndex={0} aria-label="Python output">{operation ? <>{(historical || operation.source !== source) && <p className="science-local-label">{historical ? "Historical result" : "Output from earlier source"}{historical && <button type="button" onClick={() => setHistoricalId("")}>Back to latest</button>}</p>}<OperationOutput key={operation.id} operation={operation} /></> : <p className="muted">Not run yet.</p>}</div>
+    {showHistory && <ShellDialog title="Python run history" className="science-info-dialog" close={() => setShowHistory(false)}><div className="science-run-history">{[...operations].reverse().map((item, index) => <button type="button" key={item.id} aria-pressed={operation?.id === item.id} onClick={() => { setHistoricalId(item === latest ? "" : item.id); setShowHistory(false); }}><strong>Run {operations.length - index}{item === latest ? " · latest" : ""}</strong><span>{item.state} · {new Date(item.createdAt).toLocaleString()}</span><code>{item.source.split("\n")[0] || "Empty cell"}</code></button>)}</div></ShellDialog>}
     {v.error && <p className="notice error science-cell-notice" role="alert">{v.error}</p>}
     {v.note && !v.flow && <p className="science-cell-notice" role="status">{v.note}</p>}
     {v.chat!.entries.filter(entry => entry.afterBlockId === block.id).map(entry => <aside key={entry.id} className="science-local-note"><strong>Local note</strong><pre>{entry.text}</pre></aside>)}
@@ -285,6 +297,21 @@ function PythonCell({ block, science }: { block: ScienceBlock; science: ScienceC
 
 const savedSourceSync = Annotation.define<boolean>();
 
+function PythonSource({ source, historical }: { source: string; historical: boolean }) {
+  const root = useRef<HTMLDivElement>(null);
+  const editor = useRef<EditorView | null>(null);
+  useEffect(() => {
+    const view = new EditorView({ parent: root.current!, state: EditorState.create({ extensions: [workspaceEditorTheme, python(), EditorState.readOnly.of(true), EditorView.editable.of(false)] }) });
+    editor.current = view;
+    return () => { editor.current = null; view.destroy(); };
+  }, []);
+  useEffect(() => {
+    const view = editor.current;
+    if (view) view.dispatch({ changes: { from: 0, to: view.state.doc.length, insert: source || "# Empty cell" } });
+  }, [source]);
+  return <div ref={root} className="science-cell-source" aria-label={historical ? "Historical Python source" : "Python source"} />;
+}
+
 function PythonEditor({ science }: { science: ScienceChatController }) {
   const root = useRef<HTMLDivElement>(null);
   const editor = useRef<EditorView | null>(null);
@@ -292,7 +319,7 @@ function PythonEditor({ science }: { science: ScienceChatController }) {
   const focusNewBlock = useRef(false);
   const latest = useRef(science); latest.current = science;
   useEffect(() => {
-    const view = new EditorView({ parent: root.current!, state: EditorState.create({ doc: latest.current.code, extensions: [workspaceEditorTheme, lineNumbers(), history(), keymap.of([...defaultKeymap, ...historyKeymap, indentWithTab, { key: "Mod-Enter", run: () => { if (!latest.current.disabled) latest.current.run(); return true; } }]), EditorView.contentAttributes.of({ "aria-label": "Python block source" }), editing.current.of([EditorState.readOnly.of(latest.current.editorDisabled), EditorView.editable.of(!latest.current.editorDisabled)]), EditorView.updateListener.of(update => { if (update.docChanged && update.transactions.some(transaction => transaction.docChanged && !transaction.annotation(savedSourceSync))) latest.current.save(update.state.doc.toString()); })] }) });
+    const view = new EditorView({ parent: root.current!, state: EditorState.create({ doc: latest.current.code, extensions: [workspaceEditorTheme, python(), lineNumbers(), history(), keymap.of([...defaultKeymap, ...historyKeymap, indentWithTab, { key: "Mod-Enter", run: () => { if (!latest.current.disabled) latest.current.run(); return true; } }]), EditorView.contentAttributes.of({ "aria-label": "Python block source" }), editing.current.of([EditorState.readOnly.of(latest.current.editorDisabled), EditorView.editable.of(!latest.current.editorDisabled)]), EditorView.updateListener.of(update => { if (update.docChanged && update.transactions.some(transaction => transaction.docChanged && !transaction.annotation(savedSourceSync))) latest.current.save(update.state.doc.toString()); })] }) });
     editor.current = view;
     focusNewBlock.current = true;
     return () => { editor.current = null; view.destroy(); };

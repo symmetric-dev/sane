@@ -10,7 +10,9 @@ export interface ScienceBlock {
 export interface ScienceLocalEntry { id: string; afterBlockId: string | null; text: string }
 export interface ScienceOperation {
   id: string; requestId: string; blockId: string; revision: number; source: string;
-  state: "unknown" | "succeeded" | "failed"; createdAt: string;
+  state: "not-executed" | "unknown" | "succeeded" | "failed"; createdAt: string;
+  /** Bounded native failure detail; source editing does not imply execution. */
+  error?: string;
   observation: { provenance: "observed-unverified"; text: string; cell: ScienceCell | null } | null;
 }
 export interface ScienceShareSnapshot {

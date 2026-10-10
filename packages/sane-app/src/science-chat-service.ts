@@ -39,11 +39,16 @@ function knownSource(id: string, sources: readonly string[], code: string) {
 }
 const markedSource = (id: string, source: string) => notebookSource(marker(id) + source);
 function observed(cell: ScienceCell | undefined): ScienceOperation["observation"] {
-  if (!cell || Buffer.byteLength(JSON.stringify(cell)) > 256 * 1024) return null;
-  // Capture bounded exact strings only. The shared serializer understands static
-  // inline tables and text; images/arbitrary HTML never become agent transport.
-  const captured = structuredClone(cell);
-  if (captured.output && typeof captured.output.data !== "string" || captured.consoleOutputs.some(o => typeof o.data !== "string")) return null;
+  if (!cell) return null;
+  // A structured rich output (including Marimo's error output) must not discard
+  // the independent cell.errors or text console output. Keep an unsupported MIME
+  // placeholder so the renderer and share serializer explicitly account for the
+  // omission, without persisting arbitrary structured data as agent transport.
+  const captureOutput = (output: NonNullable<ScienceCell["output"]>) => typeof output.data === "string"
+    ? output
+    : { ...output, mimetype: "application/x-sane-omitted", data: "" };
+  const captured = structuredClone({ ...cell, output: cell.output ? captureOutput(cell.output) : null, consoleOutputs: cell.consoleOutputs.map(captureOutput) });
+  if (Buffer.byteLength(JSON.stringify(captured)) > 256 * 1024) return null;
   return { provenance: "observed-unverified", text: serializeScienceCell(captured).agentText, cell: captured };
 }
 export class ScienceChatService {
@@ -221,20 +226,34 @@ export class ScienceChatService {
         const cell = mapped.get(block!.id)!, code = markedSource(block!.id, block!.source);
         if (!scienceText(code)) scienceFail(413, "Marked source exceeds limit");
         if (!block!.knownSources.includes(code)) block!.knownSources.push(code);
-        const operation: ScienceOperation = { id: crypto.randomUUID(), requestId: input.requestId, blockId: block!.id, revision: block!.revision, source: block!.source, state: "unknown", createdAt: new Date().toISOString(), observation: null };
+        const operation: ScienceOperation = { id: crypto.randomUUID(), requestId: input.requestId, blockId: block!.id, revision: block!.revision, source: block!.source, state: "not-executed", createdAt: new Date().toISOString(), observation: null };
         chat.operations.push(operation); chat.revision++; save(); // Intent AND source precede native mutation.
         const selected = { notebook: chat.notebook, generation: status.session.generation };
-        const edited = await call({ action: "edit", ...selected, cellId: cell.id, code, expectedSourceHash: cell.sourceHash } as ScienceRequest);
-        if (edited.operation?.mutation !== "accepted") { if (trace) trace.outcome = "edit-unconfirmed"; return { chat }; }
-        const verified = await scienceTimed("edit-verification", async () => {
+        const editFailure = (message: string) => { operation.error = message.slice(0, 8192); save(); if (trace) trace.outcome = "edit-unconfirmed"; return { chat }; };
+        let edited: ScienceResponse;
+        try { edited = await call({ action: "edit", ...selected, cellId: cell.id, code, expectedSourceHash: cell.sourceHash } as ScienceRequest); }
+        catch (error) { return editFailure(error instanceof Error ? error.message : "Source edit failed before execution"); }
+        if (edited.operation?.mutation !== "accepted") return editFailure(edited.operation?.error || "Source edit was not confirmed; Python execution was not requested.");
+        let verified: boolean;
+        try { verified = await scienceTimed("edit-verification", async () => {
           // Edit returns a fresh snapshot from a separate post-mutation pair request.
           const snapshot = edited.snapshot ?? (await call({ action: "inspect", ...selected } as ScienceRequest, "edit-verification-inspect")).snapshot;
           return snapshot?.cells.find(c => c.id === cell.id)?.code === code;
-        });
-        if (!verified) { if (trace) trace.outcome = "verification-unconfirmed"; return { chat }; }
-        const result: ScienceResponse = await call({ action: "run", ...selected, cellId: cell.id } as ScienceRequest);
+        }); } catch (error) { return editFailure(error instanceof Error ? error.message : "Source verification failed before execution"); }
+        if (!verified) return editFailure("Source edit verification failed; Python execution was not requested.");
+        // Fence only after the edit is verified, immediately before execution dispatch.
+        operation.state = "unknown"; save();
+        let result: ScienceResponse;
+        try { result = await call({ action: "run", ...selected, cellId: cell.id } as ScienceRequest); }
+        catch (error) {
+          operation.error = (error instanceof Error ? error.message : "Execution outcome unconfirmed").slice(0, 8192);
+          save();
+          if (trace) trace.outcome = "unknown";
+          return { chat };
+        }
         // Finalize once; observations explicitly have no causal source guarantee.
         operation.state = result.operation?.execution === "succeeded" ? "succeeded" : result.operation?.execution === "failed" ? "failed" : "unknown";
+        if (result.operation?.error) operation.error = result.operation.error.slice(0, 8192);
         const captured = scienceSpan("observation-capture");
         try { operation.observation = observed(result.snapshot?.cells.find(c => c.id === cell.id)); captured(operation.observation ? "captured" : "unavailable"); }
         catch (error) { captured("error"); throw error; }

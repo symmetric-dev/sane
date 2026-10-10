@@ -84,7 +84,7 @@ export class ScienceService {
           ownership();
           if (pending) fail(409, "science-busy", "A native step is already pending");
           if (input && "notebook" in input && input.notebook !== expected.notebook) fail(409, "science-chat-owned", "Native step differs from admitted notebook");
-          const step = this.performResolved(workspaceId, worktreeId, input, resolved, assertCurrent);
+          const step = this.performResolved(workspaceId, worktreeId, input, resolved, assertCurrent, true);
           pending = step;
           return step.finally(() => { pending = undefined; });
         }).finally(() => { live = false; }));
@@ -223,7 +223,7 @@ export class ScienceService {
       local();
     }), { check: local });
   }
-  private async performResolved(workspaceId: string, worktreeId: string, input: ScienceChatNativeRequest | undefined, resolved: Awaited<ReturnType<ScienceService["resolve"]>>, assertCurrent: ReturnType<ScienceService["currentGuard"]>): Promise<ScienceResponse> {
+  private async performResolved(workspaceId: string, worktreeId: string, input: ScienceChatNativeRequest | undefined, resolved: Awaited<ReturnType<ScienceService["resolve"]>>, assertCurrent: ReturnType<ScienceService["currentGuard"]>, chat = false): Promise<ScienceResponse> {
       const { r, binding } = resolved;
       await assertCurrent();
       assertCurrent.check();
@@ -277,7 +277,7 @@ export class ScienceService {
         }
         else {
           const result = await dispatch(() => input.action === "create-cell" ? r.service.createCell(s.ref, input.code, { after: input.after, run: false }) : input.action === "edit" ? r.service.editCell(s.ref, input.cellId, input.code, input.expectedSourceHash, false) : r.service.runCell(s.ref, input.cellId));
-          operation = { cellId: result.cellId, mutation: result.mutation, execution: result.execution, durability: result.durability, ...(result.error ? { issue: "operation-error" as const } : result.snapshotError ? { issue: "snapshot-unavailable" as const } : {}) };
+          operation = { cellId: result.cellId, mutation: result.mutation, execution: result.execution, durability: result.durability, ...(result.error ? { issue: "operation-error" as const } : result.snapshotError ? { issue: "snapshot-unavailable" as const } : {}), ...(chat && result.error ? { error: result.error.slice(0, 8192) } : {}) };
           if (result.snapshot) inspected = snapshot(result.snapshot);
         }
         selected ??= this.session(r, input.notebook, s);

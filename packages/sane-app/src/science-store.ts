@@ -64,8 +64,8 @@ function validate(v: unknown, storeId: string, trusted = new WeakSet<object>()):
     for (const b of chat.blocks) if (b.creation) { if (requests.has(b.creation.requestId)) scienceFail(503, "Duplicate addition request"); requests.add(b.creation.requestId); }
     for (const o of chat.operations) {
       if (trusted.has(o)) { id(o.id); if (requests.has(o.requestId)) scienceFail(503, "Duplicate operation request"); requests.add(o.requestId); continue; }
-      scienceExact(o, ["id", "requestId", "blockId", "revision", "source", "state", "createdAt", "observation"]); id(o.id);
-      if (!block(o.blockId) || !scienceId(o.requestId) || requests.has(o.requestId) || !scienceRevision(o.revision) || !scienceText(o.source) || !["unknown", "succeeded", "failed"].includes(o.state) || !time(o.createdAt)) scienceFail(503, "Invalid science operation");
+      scienceExact(o, ["id", "requestId", "blockId", "revision", "source", "state", "createdAt", "observation", ...("error" in o ? ["error"] : [])]); id(o.id);
+      if (!block(o.blockId) || !scienceId(o.requestId) || requests.has(o.requestId) || !scienceRevision(o.revision) || !scienceText(o.source) || !["not-executed", "unknown", "succeeded", "failed"].includes(o.state) || !time(o.createdAt) || ("error" in o && !scienceText(o.error)) || o.state === "not-executed" && o.observation !== null) scienceFail(503, "Invalid science operation");
       requests.add(o.requestId);
       if (o.revision > chat.blocks.find(b => b.id === o.blockId)!.revision) scienceFail(503, "Invalid operation revision");
       if (o.observation !== null) {
@@ -87,24 +87,6 @@ function validate(v: unknown, storeId: string, trusted = new WeakSet<object>()):
 
 /** V1 had no transcript placement or native addition intents. Preserve those
  * blocks at the explicit start, never infer placement from times/array indices. */
-function upgrade(value: unknown): unknown {
-  if (!value || typeof value !== "object" || (value as { version?: unknown }).version !== 1) return value;
-  scienceExact(value, ["version", "storeId", "chats"]);
-  if (!Array.isArray(value.chats)) scienceFail(503, "Invalid legacy science store");
-  for (const chat of value.chats) {
-    if (!chat || !Array.isArray(chat.blocks) || !Array.isArray(chat.operations)) scienceFail(503, "Invalid legacy science chat");
-    for (const block of chat.blocks) {
-      scienceExact(block, ["id", "revision", "source", "knownSources"]);
-      block.anchor = { kind: "start" }; block.creation = null;
-    }
-    for (const op of chat.operations) if (op.observation !== null) {
-      scienceExact(op.observation, ["provenance", "text"]); op.observation.cell = null;
-    }
-  }
-  value.version = 2;
-  return value;
-}
-
 /** Single bridge writer, atomic publication; uncertain writes poison this instance. */
 export class ScienceStore {
   private value: RecordValue;
@@ -119,8 +101,6 @@ export class ScienceStore {
       if (chats) {
         const value = { version: 2, storeId, chats }; validate(value, storeId); this.value = value; this.remember(); return;
       }
-      const legacy = this.storage.readLegacy();
-      if (legacy !== undefined) { const value: unknown = upgrade(legacy); validate(value, storeId); this.value = value; }
     } catch { this.failed = true; }
     if (!this.failed) {
       try { this.storage.migrate(this.value.chats); this.remember(); }
@@ -168,8 +148,9 @@ export class ScienceStore {
       for (let i = 0; i < prior.operations.length; i++) {
         const a = prior.operations[i]!, b = next.operations[i]!;
         if (a === b) continue;
-        const { state: as, observation: ao, ...af } = a, { state: _state, observation: _observation, ...bf } = b;
-        if (!isDeepStrictEqual(af, bf) || as !== "unknown" || ao !== null) scienceFail(409, "Science operation snapshot is immutable");
+        const { state: as, observation: ao, error: ae, ...af } = a, { state: bs, observation: _observation, error: _error, ...bf } = b;
+        const transition = as === "not-executed" && ae === undefined ? bs === "not-executed" || bs === "unknown" : as === "unknown" && bs !== "not-executed";
+        if (!isDeepStrictEqual(af, bf) || !transition || ao !== null) scienceFail(409, "Science operation snapshot is immutable");
       }
     }
     validate({ version: 2, storeId: this.storeId, chats: [next] }, this.storeId, this.trusted);

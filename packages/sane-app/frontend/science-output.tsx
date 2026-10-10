@@ -115,15 +115,24 @@ function staticMarimoTable(html: string): ScienceTableData | null {
     if (Number(attrs.get("data-total-columns")) !== columns.length) return null;
     const totalRows = Number(attrs.get("data-total-rows"));
     if (!Number.isSafeInteger(totalRows) || totalRows < rows.length) return null;
+    // Selectable mo.ui.table outputs carry an internal ID that is not a field
+    // or a visible column. Only accept that extra key with its explicit marker.
+    const stableRowId = attrs.get("data-has-stable-row-id") === "true" && !columns.includes("_marimo_row_id");
+    const rowIds = new Set<number>();
     const visible: Record<string, TableValue>[] = [];
     for (const row of rows) {
-      if (!record(row) || Object.keys(row).length !== columns.length) return null;
+      if (!record(row) || Object.keys(row).length !== columns.length + (stableRowId ? 1 : 0)) return null;
+      if (stableRowId) {
+        const id = row._marimo_row_id;
+        if (typeof id !== "number" || !Number.isSafeInteger(id) || id < 0 || rowIds.has(id)) return null;
+        rowIds.add(id);
+      }
       for (const column of columns) {
         if (!Object.hasOwn(row, column)) return null;
         const value = row[column];
         if (value !== null && typeof value !== "string" && typeof value !== "boolean" && !(typeof value === "number" && Number.isFinite(value))) return null;
       }
-      if (visible.length < MAX_TABLE_ROWS) visible.push(row as Record<string, TableValue>);
+      if (visible.length < MAX_TABLE_ROWS) visible.push(Object.fromEntries(columns.map(column => [column, row[column] as TableValue])));
     }
     return { columns, rows: visible, totalRows };
   } catch {
@@ -145,6 +154,7 @@ function representation(mimetype: string, data: unknown): Display | null {
 }
 
 function displayOutput(output: MarimoOutput): Display {
+  if (output.mimetype === "application/x-sane-omitted") return { kind: "unsupported", message: "Unsupported rich output omitted from saved history. Available text and error messages are retained." };
   if (output.mimetype === BUNDLE) {
     try {
       const bundle: unknown = typeof output.data === "string" ? JSON.parse(output.data) : output.data;
@@ -177,8 +187,10 @@ export function ScienceTextOutput({ text, channel }: { text: string; channel?: s
 
 function RasterImage({ src, alt }: { src: string; alt: string }) {
   const [failed, setFailed] = useState(false);
+  const [expanded, setExpanded] = useState(false);
   return failed ? <p className="science-output-note">The image could not be decoded.</p>
-    : <img className="science-output-image" src={src} alt={alt} loading="lazy" onError={() => setFailed(true)} />;
+    : <><button type="button" className="science-image-preview" aria-label={`Enlarge ${alt}`} aria-haspopup="dialog" title="Click to enlarge plot" onClick={() => setExpanded(true)}><img className="science-output-image" src={src} alt={alt} loading="lazy" onError={() => setFailed(true)} /></button>
+      {expanded && <ShellDialog title="Plot" className="science-image-dialog" close={() => setExpanded(false)}><div className="science-image-full" tabIndex={0} role="region" aria-label="Full-size plot"><img src={src} alt={alt} /></div></ShellDialog>}</>;
 }
 
 export function ScienceTableOutput({ table }: { table: ScienceTableData }) {

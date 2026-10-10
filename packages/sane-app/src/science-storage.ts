@@ -20,7 +20,7 @@ function bounded(value: unknown): string {
 
 /** App ownership locks provide the single writer. Bytes and containing directories
  * are fsynced before references. Unreferenced crash remnants are never collected.
- * Only science-storage.json selects an authoritative generation; legacy is read-only.
+ * Only science-storage.json selects an authoritative generation.
  */
 export class ScienceStorage {
   private marker: Marker | undefined;
@@ -28,10 +28,6 @@ export class ScienceStorage {
   private records = new WeakMap<object, { hash: string; bytes: number }>();
   private files: ScienceStorageFiles;
   constructor(private dataDir: string, private storeId: string) { this.files = new ScienceStorageFiles(dataDir); }
-  readLegacy(): unknown | undefined {
-    const text = this.files.read(join(this.dataDir, "science-chats.json"), LIMIT, true);
-    return text === undefined ? undefined : JSON.parse(text);
-  }
   load(): ScienceChatState[] | undefined {
     this.files.pin(this.dataDir);
     const path = join(this.dataDir, "science-storage.json");

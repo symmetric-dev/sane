@@ -10,6 +10,12 @@
 .science-output-stderr pre, .science-block-error { color: var(--error); }
 .science-output-note { margin: 6px 0; color: var(--muted-foreground); font-size: 11px; overflow-wrap: anywhere; }
 .science-output-image { display: block; max-width: 100%; height: auto; margin: 8px auto; border-radius: 4px; }
+.science-image-preview { display:block; width:100%; padding:0; cursor:zoom-in; }
+.science-image-preview .science-output-image { max-height:var(--science-output-height, 204px); width:auto; max-width:100%; object-fit:contain; margin:0 auto; }
+.science-image-preview:focus-visible { outline:2px solid var(--focus-ring); outline-offset:-2px; }
+.science-image-dialog { width:min(1100px, calc(100vw - 32px)); }
+.science-image-full { max-height:75vh; overflow:auto; }
+.science-image-full img { display:block; max-width:none; height:auto; margin:auto; }
 .science-table-scroll { max-width: 100%; max-height: 420px; overflow: auto; border: 1px solid var(--border); border-radius: 5px; }
 .science-table-output table { width: 100%; border-collapse: collapse; font-size: 12px; text-align: left; }
 .science-table-output th, .science-table-output td { padding: 6px 10px; border-bottom: 1px solid var(--border); vertical-align: top; white-space: pre-wrap; overflow-wrap: anywhere; min-width: 70px; max-width: 360px; }
