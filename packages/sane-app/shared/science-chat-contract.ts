@@ -30,9 +30,10 @@ export interface ScienceChatState {
   operations: ScienceOperation[]; shares: ScienceShareSnapshot[];
 }
 export type ScienceChatRequest =
-  | { action: "provision" }
+  | { action: "provision"; anchor?: ScienceTranscriptAnchor }
   | { action: "associate-existing"; expectedRevision: number; notebook: string }
-  | { action: "open" | "close" }
+  | { action: "open"; anchor?: ScienceTranscriptAnchor }
+  | { action: "close" }
   | { action: "draft"; blockId: string; expectedRevision: number; source: string }
   | { action: "add-block"; requestId: string; expectedRevision: number; source: string; anchor: ScienceTranscriptAnchor }
   | { action: "entry"; expectedRevision: number; afterBlockId: string | null; text: string }
@@ -40,6 +41,8 @@ export type ScienceChatRequest =
   | { action: "share"; requestId: string; blockId: string; expectedRevision: number; operationId: string | null; representation: "source" | "source-and-observed-text" };
 /** GET/POST /api/workspaces/:workspaceId/worktrees/:worktreeId/science/chats/:conversationId */
 export interface ScienceChatResponse { chat: ScienceChatState }
+/** Reading an untouched conversation never creates a science association. */
+export interface ScienceChatHistoryResponse { chat: ScienceChatState | null }
 
 /** Exact, intentionally narrow agent representation. No HTML/JSON/image coercion. */
 export function materializeScienceShare(source: string, observation?: string): string {

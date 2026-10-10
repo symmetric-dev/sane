@@ -3,7 +3,7 @@ import { FiArrowLeft, FiCode, FiSettings } from "react-icons/fi";
 import { Annotation, Compartment, EditorState, Transaction } from "@codemirror/state";
 import { EditorView, keymap, lineNumbers } from "@codemirror/view";
 import { defaultKeymap, history, historyKeymap, indentWithTab } from "@codemirror/commands";
-import type { ScienceBlock, ScienceOperation, ScienceChatRequest, ScienceChatResponse, ScienceChatState, ScienceShareSnapshot, ScienceTranscriptAnchor } from "../shared/science-chat-contract";
+import type { ScienceBlock, ScienceOperation, ScienceChatRequest, ScienceChatResponse, ScienceChatHistoryResponse, ScienceChatState, ScienceShareSnapshot, ScienceTranscriptAnchor } from "../shared/science-chat-contract";
 import type { ScienceResponse, ScienceStatus } from "../shared/science-contract";
 import { workspaceEditorTheme } from "./workspace-theme";
 import { store, type State } from "./store";
@@ -82,8 +82,13 @@ export function useScienceChat(state: State, active: boolean, blocked: boolean, 
     const current = () => valid() && live.current.epoch === epoch;
     v.busy = true; v.runningBlockId = action?.action === "run" ? action.blockId : undefined; v.error = ""; v.draftErrorBlockId = undefined; update();
     try {
-      const result = await request<ScienceChatResponse>(url, action);
+      const result = await request<ScienceChatHistoryResponse>(url, action);
       if (!current()) return;
+      if (!result.chat) {
+        if (action) throw new Error("Science action returned no association.");
+        v.chat = undefined; v.selected = "";
+        return;
+      }
       apply(result.chat);
       if (action?.action === "draft" && dispatchedDraft) {
         const acknowledged = result.chat.blocks.find(block => block.id === action.blockId);
@@ -121,7 +126,7 @@ export function useScienceChat(state: State, active: boolean, blocked: boolean, 
   const code = v.drafts[v.selected]?.source ?? v.chat?.blocks.find(block => block.id === v.selected)?.source ?? "";
   const dirtyDrafts = JSON.stringify(v.drafts);
   const canSaveDraft = draftAllowed();
-  // GET reads App history only: opening a conversation never starts a runtime.
+  // GET reads existing history only; Python activation creates the association.
   useEffect(() => { if (active && available && !v.loaded && !v.busy) void perform(); }, [scope, active, available, v.loaded, v.busy]);
   useEffect(() => {
     if (!canSaveDraft || v.busy || v.error) return;
@@ -147,6 +152,10 @@ export function useScienceChat(state: State, active: boolean, blocked: boolean, 
       if (staged) v.flow = false;
     });
   };
+  const activationAnchor = (): ScienceTranscriptAnchor => {
+    const last = lastCanonicalMessage(store.snapshot());
+    return last ? { kind: "after-message", messageId: last.id } : { kind: "start" };
+  };
   return {
     view: v, scope, available, code, editorDisabled: !editable(), disabled: !allowed() || v.busy, canShare: !!integration.stageShare,
     hasAnchorMessage: !!lastCanonicalMessage(state),
@@ -164,18 +173,18 @@ export function useScienceChat(state: State, active: boolean, blocked: boolean, 
         v.note = added.creation?.state === "created" ? "New local Python block created." : "Block creation is unconfirmed. Its durable record is retained; it has not been retried.";
       });
     },
-    start: () => { if (!allowed()) return; v.flow = true; update(); void perform({ action: "open" }); },
+    start: () => { if (!allowed()) return; v.flow = true; update(); void perform({ action: "open", anchor: activationAnchor() }); },
     back: () => { if (!valid()) return; v.flow = false; v.management = false; update(); },
     manage: () => { if (!allowed()) return; v.management = true; update(); void environment(); },
     dismissManagement: () => { v.management = false; update(); },
     refresh: () => void perform(),
     close: () => void perform({ action: "close" }, async (_chat, current) => { if (current()) v.note = "Notebook runtime closed. Local blocks, drafts and operation history are retained."; }),
-    provision: () => void perform({ action: "provision" }, async (_chat, current) => {
+    provision: () => void perform({ action: "provision", anchor: activationAnchor() }, async (_chat, current) => {
       if (!current() || !allowed()) return;
       const opened = await request<ScienceChatResponse>(url, { action: "open" } satisfies ScienceChatRequest);
       if (current()) apply(opened.chat);
     }),
-    associate: (notebook: string) => { if (v.chat) void perform({ action: "associate-existing", expectedRevision: v.chat.revision, notebook }); },
+    associate: (notebook: string) => { void perform({ action: "associate-existing", expectedRevision: v.chat?.revision ?? 0, notebook }); },
     select: (id: string) => { if (!allowed() || v.busy) return; v.selected = id; v.flow = true; update(); },
     save: (source: string) => { if (!editable()) return; const block = v.chat?.blocks.find(item => item.id === v.selected); if (!block) return; v.drafts[v.selected] = { source, revision: v.drafts[v.selected]?.revision ?? block.revision }; update(); },
     discardDraft: () => {
@@ -298,7 +307,7 @@ export function ScienceComposer({ science, navigation }: { science: ScienceChatC
     {v.management && <ShellDialog title="Notebook settings" close={science.dismissManagement}><div className="science-notebook-management">
       <p>{v.chat?.notebook ?? "No notebook associated"}</p><p className="muted">Environment: {v.status?.environment.state ?? "unknown"}</p>
       <button type="button" disabled={science.disabled} onClick={science.provision}>Provision chat notebook</button>
-      {v.status && <label>Associate existing notebook <select defaultValue="" disabled={science.disabled || !v.chat} onChange={event => { if (event.target.value) science.associate(event.target.value); }}><option value="">Choose notebook…</option>{v.status.notebooks.map(notebook => <option key={notebook} value={notebook}>{notebook}</option>)}</select></label>}
+      {v.status && <label>Associate existing notebook <select defaultValue="" disabled={science.disabled} onChange={event => { if (event.target.value) science.associate(event.target.value); }}><option value="">Choose notebook…</option>{v.status.notebooks.map(notebook => <option key={notebook} value={notebook}>{notebook}</option>)}</select></label>}
       <button type="button" disabled={science.disabled} onClick={science.start}>Open chat notebook</button>
       <button type="button" disabled={science.disabled || !v.chat} onClick={science.close}>Close notebook runtime</button>
       <button type="button" disabled={v.busy} onClick={science.refresh}>Refresh local history</button>

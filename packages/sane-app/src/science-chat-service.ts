@@ -17,9 +17,10 @@ type NativeInput<T = ScienceChatNativeRequest> = T extends ScienceChatNativeRequ
 function validate(input: unknown): ScienceChatRequest {
   if (!input || typeof input !== "object") scienceFail(400, "Expected science action");
   const action = (input as { action?: string }).action;
-  const fields: Record<string, string[]> = { provision: [], open: [], close: [], "associate-existing": ["expectedRevision", "notebook"], draft: ["blockId", "expectedRevision", "source"], "add-block": ["requestId", "expectedRevision", "source", "anchor"], entry: ["expectedRevision", "afterBlockId", "text"], run: ["requestId", "blockId", "expectedRevision"], share: ["requestId", "blockId", "expectedRevision", "operationId", "representation"] };
+  const fields: Record<string, string[]> = { provision: ["anchor"], open: ["anchor"], close: [], "associate-existing": ["expectedRevision", "notebook"], draft: ["blockId", "expectedRevision", "source"], "add-block": ["requestId", "expectedRevision", "source", "anchor"], entry: ["expectedRevision", "afterBlockId", "text"], run: ["requestId", "blockId", "expectedRevision"], share: ["requestId", "blockId", "expectedRevision", "operationId", "representation"] };
   if (!action || !Object.hasOwn(fields, action)) scienceFail(400, "Unknown science action");
-  scienceExact(input, ["action", ...fields[action]!]);
+  const keys = fields[action]!.filter(key => key !== "anchor" || action === "add-block" || "anchor" in input);
+  scienceExact(input, ["action", ...keys]);
   if ("anchor" in input) scienceAnchor(input.anchor);
   for (const key of ["blockId", "requestId"]) if (key in input && !scienceId(input[key])) scienceFail(400, "Invalid identity");
   if ("expectedRevision" in input && !scienceRevision(input.expectedRevision) || "source" in input && !scienceText(input.source) || "text" in input && !scienceText(input.text) || "afterBlockId" in input && input.afterBlockId !== null && !scienceId(input.afterBlockId) || "operationId" in input && input.operationId !== null && !scienceId(input.operationId) || "representation" in input && !["source", "source-and-observed-text"].includes(input.representation as string) || "notebook" in input && (typeof input.notebook !== "string" || !/^[A-Za-z0-9][A-Za-z0-9_-]{0,119}\.py$/.test(input.notebook))) scienceFail(400, "Invalid science action fields");
@@ -88,7 +89,12 @@ export class ScienceChatService {
       current();
       let chat = this.store.get(id);
       if (!chat) {
-        chat = { conversationId: id, workspaceId, worktreeId, admissionKey, notebook: `chat-${crypto.randomUUID()}.py`, notebookKind: "owned", notebookCreated: false, revision: 0, blocks: [{ id: crypto.randomUUID(), revision: 0, source: "", knownSources: [""], anchor: { kind: "start" }, creation: null }], entries: [], operations: [], shares: [] };
+        if (!input) return { chat: null };
+        if (input.action !== "open" && input.action !== "provision" && input.action !== "associate-existing") scienceFail(404, "Science chat not found");
+        const anchor = "anchor" in input && input.anchor ? input.anchor : { kind: "start" as const };
+        if (anchor.kind === "after-message" && !await this.ownsMessage(id, anchor.messageId)) scienceFail(409, "Anchor is not an exact canonical message in this conversation");
+        current();
+        chat = { conversationId: id, workspaceId, worktreeId, admissionKey, notebook: `chat-${crypto.randomUUID()}.py`, notebookKind: "owned", notebookCreated: false, revision: 0, blocks: [{ id: crypto.randomUUID(), revision: 0, source: "", knownSources: [""], anchor: structuredClone(anchor), creation: null }], entries: [], operations: [], shares: [] };
         this.science.claimChatNotebook(workspaceId, chat.notebook);
         this.store.put(chat);
       }
