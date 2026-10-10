@@ -9,6 +9,8 @@ import { serializeScienceCell } from "../shared/science-share";
 import { ScienceStore, scienceAnchor, scienceExact, scienceFail, scienceId, scienceRevision, scienceText } from "./science-store";
 import { body, json } from "./bridge-http";
 import { WorkspaceError } from "./workspace";
+import { scienceSpan, scienceTimed, scienceTiming } from "sane-science/timing";
+import { timeScienceRun } from "./science-timing";
 
 type AppIdentity = { sessionId: string; cwd: string; nativeSessionId?: string; authorityId?: string; harness?: string };
 type NativeInput<T = ScienceChatNativeRequest> = T extends ScienceChatNativeRequest ? Omit<T, "bindingRevision"> : never;
@@ -71,6 +73,12 @@ export class ScienceChatService {
   }
   async handle(workspaceId: string, worktreeId: string, id: string, input: ScienceChatRequest | undefined, authorized: () => boolean) {
     if (![workspaceId, worktreeId, id].every(scienceId)) scienceFail(400, "Invalid science identity");
+    if (input?.action === "run" && scienceId(input.requestId) && scienceId(input.blockId)) {
+      return timeScienceRun(this.store.dataDir, { requestId: input.requestId, blockId: input.blockId, conversationId: id }, () => this.perform(workspaceId, worktreeId, id, input, authorized));
+    }
+    return this.perform(workspaceId, worktreeId, id, input, authorized);
+  }
+  private async perform(workspaceId: string, worktreeId: string, id: string, input: ScienceChatRequest | undefined, authorized: () => boolean) {
     if (this.busy.has(id)) scienceFail(409, "Science chat operation pending");
     this.busy.add(id);
     try {
@@ -87,7 +95,7 @@ export class ScienceChatService {
       if (chat.workspaceId !== workspaceId || chat.worktreeId !== worktreeId || chat.admissionKey !== admissionKey) scienceFail(409, "Durable science association differs");
       this.science.claimChatNotebook(workspaceId, chat.notebook);
       if (!input) return { chat }; // Durable history remains readable without checkout or Python.
-      const save = () => { current(); this.store.put(chat!); };
+      const save = () => { const end = scienceSpan("persistence"); try { current(); this.store.put(chat!); end(); } catch (error) { end("error"); throw error; } };
       const cas = (revision: number) => { if (input && "expectedRevision" in input && input.expectedRevision !== revision) scienceFail(409, "Science revision conflict"); };
       const block = "blockId" in input ? chat.blocks.find(b => b.id === input.blockId) : undefined;
       if ("blockId" in input && !block) scienceFail(404, "Science block not found");
@@ -135,18 +143,18 @@ export class ScienceChatService {
       } else {
         if (input.action === "run") {
           const prior = chat.operations.find(o => o.requestId === input.requestId);
-          if (prior) { if (prior.blockId !== input.blockId || prior.revision !== input.expectedRevision) scienceFail(409, "Run request identity reused"); return { chat }; }
+           if (prior) { if (prior.blockId !== input.blockId || prior.revision !== input.expectedRevision) scienceFail(409, "Run request identity reused"); const trace = scienceTiming.getStore(); if (trace) trace.outcome = "reused-request"; return { chat }; }
           if (chat.shares.some(s => s.requestId === input.requestId)) scienceFail(409, "Request identity reused");
           cas(block!.revision);
           if (chat.operations.some(o => o.state === "unknown")) scienceFail(409, "An execution outcome is unknown; automatic replay is fenced");
         }
-        const binding = await this.catalog.binding(workspaceId, worktreeId); current();
+        const binding = await scienceTimed("binding", () => this.catalog.binding(workspaceId, worktreeId)); current();
         if (binding.cwd !== admission.binding.executionCheckout || binding.bindingRevision !== admission.binding.bindingRevision) scienceFail(409, "Science execution checkout changed");
         if (admission.binding.domain.mode !== "repository") scienceFail(409, "Science execution requires repository admission");
         const repositoryId = admission.binding.domain.repositoryId;
-        const call = async (request?: NativeInput) => {
+        const call = async (request?: NativeInput, stage: string = request?.action ?? "readiness-status") => {
           current();
-          const result = await this.science.handleChat(workspaceId, worktreeId, request ? { ...request, bindingRevision: binding.bindingRevision } as ScienceChatNativeRequest : undefined, () => { current(); return true; });
+          const result = await scienceTimed(stage, () => this.science.handleChat(workspaceId, worktreeId, request ? { ...request, bindingRevision: binding.bindingRevision } as ScienceChatNativeRequest : undefined, () => { current(); return true; }));
           current(); if (result.status.repositoryId !== repositoryId) scienceFail(409, "Admitted science repository differs");
           return result;
         };
@@ -165,6 +173,7 @@ export class ScienceChatService {
           await call({ action: "create", notebook: chat.notebook } as ScienceRequest);
         }
         const session = status.status.sessions.find(s => s.notebook === chat!.notebook);
+        const trace = scienceTiming.getStore(); if (trace) trace.sessionEvidence = session ? "existing-session" : "open-required";
         status = session ? await call({ action: "inspect", notebook: chat.notebook, generation: session.generation } as ScienceRequest) : await call({ action: "open", notebook: chat.notebook } as ScienceRequest);
         let cells = status.snapshot?.cells;
         if (!cells || !status.session) scienceFail(409, "Native notebook snapshot unavailable");
@@ -211,13 +220,17 @@ export class ScienceChatService {
         chat.operations.push(operation); chat.revision++; save(); // Intent AND source precede native mutation.
         const selected = { notebook: chat.notebook, generation: status.session.generation };
         const edited = await call({ action: "edit", ...selected, cellId: cell.id, code, expectedSourceHash: cell.sourceHash } as ScienceRequest);
-        if (edited.operation?.mutation !== "accepted") return { chat };
-        const checked = await call({ action: "inspect", ...selected } as ScienceRequest);
-        if (checked.snapshot?.cells.find(c => c.id === cell.id)?.code !== code) return { chat };
+        if (edited.operation?.mutation !== "accepted") { if (trace) trace.outcome = "edit-unconfirmed"; return { chat }; }
+        const checked = await call({ action: "inspect", ...selected } as ScienceRequest, "edit-verification");
+        if (checked.snapshot?.cells.find(c => c.id === cell.id)?.code !== code) { if (trace) trace.outcome = "verification-unconfirmed"; return { chat }; }
         const result: ScienceResponse = await call({ action: "run", ...selected, cellId: cell.id } as ScienceRequest);
         // Finalize once; observations explicitly have no causal source guarantee.
         operation.state = result.operation?.execution === "succeeded" ? "succeeded" : result.operation?.execution === "failed" ? "failed" : "unknown";
-        operation.observation = observed(result.snapshot?.cells.find(c => c.id === cell.id)); save();
+        const captured = scienceSpan("observation-capture");
+        try { operation.observation = observed(result.snapshot?.cells.find(c => c.id === cell.id)); captured(operation.observation ? "captured" : "unavailable"); }
+        catch (error) { captured("error"); throw error; }
+        save();
+        if (trace) trace.outcome = operation.state;
       }
       return { chat };
     } finally { this.busy.delete(id); }

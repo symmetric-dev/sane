@@ -4,6 +4,7 @@ import { isAbsolute } from "node:path"
 import { MarimoPairError, type MarimoBinding, type MarimoCell, type MarimoListing, type MarimoOperationResult, type MarimoOutput, type MarimoPairOptions, type MarimoSnapshot } from "./marimo-contracts.ts"
 import { inspectSnippet, operationSnippet, type CellOperation } from "./marimo-snippets.ts"
 import { marimoProcessEnvironment } from "./marimo-config.ts"
+import { scienceSpan, scienceTimed } from "./timing.ts"
 
 type ObjectValue = Record<string, unknown>
 function object(value: unknown): ObjectValue {
@@ -118,11 +119,13 @@ export class MarimoPair {
 
   private process(args: string[], stdin?: string): Promise<{ stdout: string; stderr: string; exitCode: number }> {
     const env = marimoProcessEnvironment()
+    const end = scienceSpan(args[0] === "-c" ? "pair-version-process-wall" : stdin === undefined ? "pair-list-process-wall" : "pair-execute-process-wall")
     return new Promise((resolve, reject) => {
       const child = execFile(this.options.python, ["-I", ...args], {
         cwd: this.options.cwd, env, encoding: "utf8", timeout: this.options.timeoutMs,
         maxBuffer: this.options.maxOutputBytes, killSignal: "SIGKILL",
       }, (error, stdout, stderr) => {
+        end(error ? "process-error" : "completed")
         // execFile drains both pipes concurrently and bounds each independently.
         if (error && (error.killed || typeof error.code !== "number")) {
           reject(new MarimoPairError("PROCESS_FAILED", "Pair process failed, exceeded its output limit, or timed out", stdin === undefined ? "not-started" : "unknown"))
@@ -220,7 +223,7 @@ export class MarimoPair {
       } catch { result.error ??= "Mutation acceptance unconfirmed; inspect before retrying" }
       // A separate request is necessary: outputs are frozen at scratchpad start.
       if (result.mutation === "accepted" || result.execution === "succeeded" || result.execution === "failed") {
-        try { result.snapshot = await this.inspect(target) }
+        try { result.snapshot = await scienceTimed("pair-post-operation-capture", () => this.inspect(target)) }
         catch (error) { result.snapshotError = error instanceof Error ? error.message : "Snapshot failed" }
       }
       return result

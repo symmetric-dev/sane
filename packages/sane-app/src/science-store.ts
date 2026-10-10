@@ -106,7 +106,7 @@ function upgrade(value: unknown): unknown {
 export class ScienceStore {
   private value: RecordValue;
   private failed = false;
-  constructor(private dataDir: string, private storeId: string) {
+  constructor(readonly dataDir: string, private storeId: string) {
     this.value = { version: 2, storeId, chats: [] };
     let found = false;
     try {

@@ -13,6 +13,53 @@ native conversation, default bridge capacity 24 (configurable 1–256 with
 
 ## Owner installation and launch
 
+### Science run timing diagnostics
+
+The bridge appends one metadata-only JSON record per validated chat **run attempt**
+to `<configured dataDir>/science-timing.jsonl` when the attempt finishes (including
+failures and request reuse). Draft edits, polling, and other standalone actions do
+not emit records. The previous file is retained as `science-timing.jsonl.1`;
+rotation occurs before exceeding 2 MiB per file. Newly created files use mode 0600.
+Appending is best effort, refuses symlink/non-regular/multiply-linked destinations,
+and cannot change the run result. A crash or unwritable destination can lose records.
+The sink assumes the App's single bridge writer for its data directory.
+
+Example (abbreviated spans):
+
+```json
+{"version":1,"timestamp":"2026-10-10T12:00:00.000Z","attemptId":"uuid","requestId":"uuid","blockId":"uuid","conversationId":"uuid","durationMs":2450.125,"outcome":"succeeded","sessionEvidence":"existing-session","spans":[{"stage":"pair-execute-process-wall","offsetMs":42.5,"durationMs":390.25,"outcome":"completed"}],"droppedSpans":0}
+```
+
+`timestamp` is UTC attempt start. `attemptId` distinguishes retries with the same
+request ID; the other IDs correlate the request, block and conversation. Durations
+and offsets use monotonic `performance.now()` in milliseconds (rounded to 0.001).
+Total duration covers backend chat handling, including persistence, but excludes
+HTTP parsing, browser/render/network time and the final timing-log append.
+Spans are appended in completion order, may nest/overlap, and **must not be summed**.
+At most 256 spans are retained; `droppedSpans` counts omitted spans.
+
+Stages cover binding/native resolution, readiness status, open/readiness or refresh,
+inspection, edit, explicit edit verification, run, pair post-operation snapshot
+capture, observation serialization and durable chat persistence. Repeated stage
+names identify repeated calls using their offsets. Pair `*-process-wall` spans
+cover a complete Python version/list/execute subprocess, including startup,
+imports, transport, native work and response collection. They do **not** isolate
+Python startup or kernel execution time. Post-operation capture is also included
+inside edit/run wall times. No kernel-only duration is claimed.
+
+`sessionEvidence` is `existing-session` when the App found a managed notebook
+session, `open-required` when it did not, or `unobserved` if that check was not
+reached. This is reuse evidence, not proof of a warm/cold kernel or cache.
+Top-level outcomes are `succeeded`, `failed`, `unknown`, `reused-request`,
+`edit-unconfirmed`, `verification-unconfirmed`, `error`, or `incomplete`.
+`error` means a thrown backend failure; native failures may instead yield
+`failed`/`unknown`. Span outcomes are fixed diagnostic codes, not error messages;
+`completed` means the call returned, not necessarily successful kernel execution.
+Logs contain no cell source, output, raw errors, command arguments, tokens,
+notebook names, native session IDs, URLs or filesystem paths. Correlation IDs
+are retained as identifiers. Read both files after the user's runs; no restart
+or execution is triggered by reading these logs.
+
 Use [HUMAN-OPERATOR-GUIDE.md](HUMAN-OPERATOR-GUIDE.md) for exact commands.
 There is no app-local lockfile; dependency versions follow the workspace root.
 The launch contract is loopback binding, an explicit independent scratch

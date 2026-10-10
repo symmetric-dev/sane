@@ -11,6 +11,7 @@ import type { CatalogService } from "./catalog";
 import { RepositoryRouter, WorkstreamAdapterError } from "./workstreams";
 import { WorkspaceError } from "./workspace";
 import { body, json } from "./bridge-http";
+import { scienceTimed } from "sane-science/timing";
 
 type Session = { generation: string; ref: ScienceSessionRef; port: number };
 export type ScienceChatNativeRequest = ScienceRequest | { action: "create-cell"; bindingRevision: string; notebook: string; generation: string; code: string; after?: string };
@@ -143,7 +144,7 @@ export class ScienceService {
     }
   }
   private async perform(workspaceId: string, worktreeId: string, input: ScienceChatNativeRequest | undefined, authorized: () => boolean, assertOwnership: () => void): Promise<ScienceResponse> {
-    const resolved = await this.resolve(workspaceId, worktreeId), { r, binding } = resolved;
+    const resolved = await scienceTimed("native-resolve", () => this.resolve(workspaceId, worktreeId)), { r, binding } = resolved;
     const assertCurrent = async () => {
       if (r.invalidated) fail(409, "science-binding", "Science runtime was invalidated; reload status");
       let current;
@@ -169,12 +170,12 @@ export class ScienceService {
         const port = await this.port(); r.ports.add(port);
         try {
           await assertCurrent();
-          const opened = await r.service.openNativeNotebook({ notebookPath, port });
+          const opened = await scienceTimed("native-open-readiness", () => r.service.openNativeNotebook({ notebookPath, port }));
           if (opened.state !== "session-ready" || !opened.selectedSession) {
             fail(503, "science-session", "Native notebook session did not become ready");
           }
           const s: Session = { generation: crypto.randomUUID(), ref: opened.selectedSession, port };
-          inspected = snapshot(await r.service.inspectCells(s.ref));
+           inspected = snapshot(await scienceTimed("native-initial-inspection", () => r.service.inspectCells(s.ref)));
           r.sessions.set(input.notebook, s); selected = this.session(r, input.notebook, s);
         } catch (error) {
           const current = r.service.currentNotebook(notebookPath);
@@ -194,7 +195,7 @@ export class ScienceService {
           if (!["stopped", "exited", "failed"].includes(stopped.runtime.state) || ["pending", "failed"].includes(stopped.runtime.tokenFileCleanup)) fail(503, "science-stop", "Notebook cleanup is incomplete");
           selected = this.session(r, input.notebook, s); r.sessions.delete(input.notebook);
           this.ports.delete(s.port); r.ports.delete(s.port);
-        } else if (input.action === "inspect") { await r.service.refreshNotebook(s.ref); inspected = snapshot(await r.service.inspectCells(s.ref)); }
+        } else if (input.action === "inspect") { await scienceTimed("native-refresh-readiness", () => r.service.refreshNotebook(s.ref)); inspected = snapshot(await scienceTimed("native-inspection", () => r.service.inspectCells(s.ref))); }
         else {
           const result = input.action === "create-cell" ? await r.service.createCell(s.ref, input.code, { after: input.after, run: false }) : input.action === "edit" ? await r.service.editCell(s.ref, input.cellId, input.code, input.expectedSourceHash, false) : await r.service.runCell(s.ref, input.cellId);
           operation = { cellId: result.cellId, mutation: result.mutation, execution: result.execution, durability: result.durability, ...(result.error ? { issue: "operation-error" as const } : result.snapshotError ? { issue: "snapshot-unavailable" as const } : {}) };
