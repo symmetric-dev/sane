@@ -221,8 +221,12 @@ export class ScienceChatService {
         const selected = { notebook: chat.notebook, generation: status.session.generation };
         const edited = await call({ action: "edit", ...selected, cellId: cell.id, code, expectedSourceHash: cell.sourceHash } as ScienceRequest);
         if (edited.operation?.mutation !== "accepted") { if (trace) trace.outcome = "edit-unconfirmed"; return { chat }; }
-        const checked = await call({ action: "inspect", ...selected } as ScienceRequest, "edit-verification");
-        if (checked.snapshot?.cells.find(c => c.id === cell.id)?.code !== code) { if (trace) trace.outcome = "verification-unconfirmed"; return { chat }; }
+        const verified = await scienceTimed("edit-verification", async () => {
+          // Edit returns a fresh snapshot from a separate post-mutation pair request.
+          const snapshot = edited.snapshot ?? (await call({ action: "inspect", ...selected } as ScienceRequest, "edit-verification-inspect")).snapshot;
+          return snapshot?.cells.find(c => c.id === cell.id)?.code === code;
+        });
+        if (!verified) { if (trace) trace.outcome = "verification-unconfirmed"; return { chat }; }
         const result: ScienceResponse = await call({ action: "run", ...selected, cellId: cell.id } as ScienceRequest);
         // Finalize once; observations explicitly have no causal source guarantee.
         operation.state = result.operation?.execution === "succeeded" ? "succeeded" : result.operation?.execution === "failed" ? "failed" : "unknown";
