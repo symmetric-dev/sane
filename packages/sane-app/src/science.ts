@@ -15,6 +15,7 @@ import { scienceTimed } from "sane-science/timing";
 
 type Session = { generation: string; ref: ScienceSessionRef; port: number };
 export type ScienceChatNativeRequest = ScienceRequest | { action: "create-cell"; bindingRevision: string; notebook: string; generation: string; code: string; after?: string };
+export type ScienceChatOperation = (input?: ScienceChatNativeRequest) => Promise<ScienceResponse>;
 type Runtime = { key: string; service: ScienceWorkspaceService; fs: EnvironmentFileSystem; bindings: Map<string, string>; sessions: Map<string, Session>; ports: Set<number>; invalidated?: boolean; stopping?: Promise<void> };
 const filename = /^[A-Za-z0-9][A-Za-z0-9_-]{0,119}\.py$/;
 function fail(status: number, code: string, message: string): never { throw new WorkspaceError(status, code, message); }
@@ -58,6 +59,49 @@ export class ScienceService {
   async handleChat(workspaceId: string, worktreeId: string, input: ScienceChatNativeRequest | undefined, authorized: () => boolean) {
     return this.handle(workspaceId, worktreeId, input, authorized, true);
   }
+  /** A single admitted chat action owns the runtime through status, mapping and
+   * mutation. The capability expires with the callback; it cannot be replayed. */
+  async withChatOperation<T>(workspaceId: string, worktreeId: string, expected: { cwd: string; bindingRevision: string; repositoryId: string; notebook: string }, authorized: () => boolean, use: (call: ScienceChatOperation) => Promise<T>): Promise<T> {
+    if (this.closing) fail(503, "science-shutdown", "Bridge is shutting down");
+    if (this.active.size >= 16) fail(429, "science-busy", "Too many science operations");
+    const task = (async () => {
+      if (!authorized()) fail(401, "science-auth", "Science authorization changed");
+      const resolved = await scienceTimed("native-resolve", () => this.resolve(workspaceId, worktreeId, true));
+      const { r, binding } = resolved;
+      if (binding.cwd !== expected.cwd || binding.bindingRevision !== expected.bindingRevision || resolved.repositoryId !== expected.repositoryId) fail(409, "science-binding", "Admitted science repository differs");
+      if (this.busy.has(r.key)) fail(409, "science-busy", "A science operation is already pending");
+      this.busy.add(r.key);
+      let live = true, pending: Promise<ScienceResponse> | undefined;
+      const ownership = () => {
+        if (!this.chatNotebooks.has(`${workspaceId}/${expected.notebook}`)) fail(409, "science-chat-owned", "Science notebook ownership changed");
+      };
+      const assertCurrent = this.currentGuard(workspaceId, worktreeId, resolved, authorized, ownership);
+      try {
+        await assertCurrent();
+        assertCurrent.check();
+        const result = await scienceTimed("native-operation", () => use(input => {
+          if (!live) fail(409, "science-operation", "Science operation has ended");
+          ownership();
+          if (pending) fail(409, "science-busy", "A native step is already pending");
+          if (input && "notebook" in input && input.notebook !== expected.notebook) fail(409, "science-chat-owned", "Native step differs from admitted notebook");
+          const step = this.performResolved(workspaceId, worktreeId, input, resolved, assertCurrent);
+          pending = step;
+          return step.finally(() => { pending = undefined; });
+        }).finally(() => { live = false; }));
+        await assertCurrent();
+        assertCurrent.check();
+        return result;
+      } finally {
+        live = false;
+        // Even a callback that abandons its promise cannot release runtime ownership
+        // while a dispatched native step is still running.
+        if (pending) await pending.catch(() => {});
+        this.busy.delete(r.key);
+      }
+    })();
+    this.active.add(task);
+    try { return await task; } finally { this.active.delete(task); }
+  }
 
   private stop(r: Runtime): Promise<void> {
     r.invalidated = true;
@@ -70,11 +114,12 @@ export class ScienceService {
     if (this.runtimes.get(r.key) === r) this.runtimes.delete(r.key);
     for (const [scope, runtime] of this.scopes) if (runtime === r) this.scopes.delete(scope);
   }
-  private async resolve(workspaceId: string, worktreeId: string) {
+  private async resolve(workspaceId: string, worktreeId: string, operation = false) {
     const scope = `${workspaceId}/${worktreeId}`;
     const previous = this.scopes.get(scope);
     try {
-      const binding = await this.catalog.binding(workspaceId, worktreeId);
+      const lease = operation ? await this.catalog.terminalLease(workspaceId, worktreeId) : undefined;
+      const binding = lease?.binding ?? await this.catalog.binding(workspaceId, worktreeId);
       const adapter = await this.router.forWorkspace(workspaceId);
       adapter.domain.validateExecutionCheckout(binding.cwd);
       const c = adapter.domain.context;
@@ -91,7 +136,10 @@ export class ScienceService {
         this.runtimes.set(key, r);
       }
       r.bindings.set(scope, proof); this.scopes.set(scope, r);
-      return { r, binding, repositoryId: c.repositoryId, validate: () => adapter.domain.validateHandle() };
+      // Science reads core identity; native writes go through ScienceWorkspaceService,
+      // never the core database. Its evidence-checked read guard is appropriate here.
+      // The operation-local catalog lease separately fences the execution checkout.
+      return { r, binding, repositoryId: c.repositoryId, lease, validate: () => lease ? adapter.domain.validateRead() : adapter.domain.validateHandle() };
     } catch (error) {
       // Lost catalog/domain evidence must not leave an adopted native session alive.
       if (previous && this.runtimes.has(previous.key)) await this.stop(previous);
@@ -144,24 +192,49 @@ export class ScienceService {
     }
   }
   private async perform(workspaceId: string, worktreeId: string, input: ScienceChatNativeRequest | undefined, authorized: () => boolean, assertOwnership: () => void): Promise<ScienceResponse> {
-    const resolved = await scienceTimed("native-resolve", () => this.resolve(workspaceId, worktreeId)), { r, binding } = resolved;
-    const assertCurrent = async () => {
+    const resolved = await scienceTimed("native-resolve", () => this.resolve(workspaceId, worktreeId)), { r } = resolved;
+    const assertCurrent = this.currentGuard(workspaceId, worktreeId, resolved, authorized, assertOwnership);
+    if (this.busy.has(r.key)) fail(409, "science-busy", "A science operation is already pending");
+    this.busy.add(r.key);
+    try { return await this.performResolved(workspaceId, worktreeId, input, resolved, assertCurrent); }
+    finally { this.busy.delete(r.key); }
+  }
+  private currentGuard(workspaceId: string, worktreeId: string, resolved: Awaited<ReturnType<ScienceService["resolve"]>>, authorized: () => boolean, assertOwnership: () => void) {
+    const { r, binding } = resolved;
+    const local = () => {
       if (r.invalidated) fail(409, "science-binding", "Science runtime was invalidated; reload status");
-      let current;
-      try { current = await this.catalog.binding(workspaceId, worktreeId); resolved.validate(); }
-      catch { await this.stop(r); fail(409, "science-binding", "Science repository binding is unavailable"); }
-      if (current.cwd !== binding.cwd || current.bindingRevision !== binding.bindingRevision) { await this.stop(r); fail(409, "science-binding", "Science worktree binding changed"); }
       if (this.closing || !authorized()) fail(401, "science-auth", "Science authorization changed");
       assertOwnership();
     };
-    if (this.busy.has(r.key)) fail(409, "science-busy", "A science operation is already pending");
-    this.busy.add(r.key);
-    try {
+    return Object.assign(() => scienceTimed("native-validation", async () => {
+      local();
+      try {
+        if (resolved.lease) await resolved.lease.validate();
+        else {
+          const current = await this.catalog.binding(workspaceId, worktreeId);
+          if (current.cwd !== binding.cwd || current.bindingRevision !== binding.bindingRevision) fail(409, "science-binding", "Science worktree binding changed");
+        }
+        resolved.validate();
+        this.catalog.assertBinding(workspaceId, worktreeId, binding.cwd, binding.bindingRevision);
+      } catch { await this.stop(r); fail(409, "science-binding", "Science repository binding is unavailable"); }
+      local();
+    }), { check: local });
+  }
+  private async performResolved(workspaceId: string, worktreeId: string, input: ScienceChatNativeRequest | undefined, resolved: Awaited<ReturnType<ScienceService["resolve"]>>, assertCurrent: ReturnType<ScienceService["currentGuard"]>): Promise<ScienceResponse> {
+      const { r, binding } = resolved;
       await assertCurrent();
+      assertCurrent.check();
+      // The synchronous check is adjacent to dispatch, after the awaited lease
+      // validation. Rejected native awaits also pass through the publication fence.
+      const dispatch = async <T>(send: () => Promise<T>): Promise<T> => {
+        assertCurrent.check();
+        try { return await send(); }
+        finally { await assertCurrent(); assertCurrent.check(); }
+      };
       if (input && input.bindingRevision !== binding.bindingRevision) fail(409, "science-binding", "Reload the worktree binding before changing science");
       let selected: ScienceSession | undefined, inspected: ScienceSnapshot | undefined, operation: ScienceResponse["operation"];
-      if (input?.action === "provision") await r.service.provision();
-      else if (input?.action === "create") await r.service.createNotebook(input.notebook);
+      if (input?.action === "provision") await dispatch(() => r.service.provision());
+      else if (input?.action === "create") await dispatch(() => r.service.createNotebook(input.notebook));
       else if (input?.action === "open") {
         if (r.sessions.has(input.notebook)) fail(409, "science-open", "Close the current notebook generation before opening another");
         if (r.sessions.size >= 16) fail(429, "science-limit", "Close a notebook before opening another");
@@ -170,12 +243,12 @@ export class ScienceService {
         const port = await this.port(); r.ports.add(port);
         try {
           await assertCurrent();
-          const opened = await scienceTimed("native-open-readiness", () => r.service.openNativeNotebook({ notebookPath, port }));
+          const opened = await dispatch(() => scienceTimed("native-open-readiness", () => r.service.openNativeNotebook({ notebookPath, port })));
           if (opened.state !== "session-ready" || !opened.selectedSession) {
             fail(503, "science-session", "Native notebook session did not become ready");
           }
           const s: Session = { generation: crypto.randomUUID(), ref: opened.selectedSession, port };
-           inspected = snapshot(await scienceTimed("native-initial-inspection", () => r.service.inspectCells(s.ref)));
+          inspected = snapshot(await dispatch(() => scienceTimed("native-initial-inspection", () => r.service.inspectCells(s.ref))));
           r.sessions.set(input.notebook, s); selected = this.session(r, input.notebook, s);
         } catch (error) {
           const current = r.service.currentNotebook(notebookPath);
@@ -191,24 +264,24 @@ export class ScienceService {
         const s = r.sessions.get(input.notebook);
         if (!s || s.generation !== input.generation) fail(409, "science-generation", "Notebook generation is stale; reload status");
         if (input.action === "close") {
-          const stopped = await r.service.stopNotebook(s.ref);
+          const stopped = await dispatch(() => r.service.stopNotebook(s.ref));
           if (!["stopped", "exited", "failed"].includes(stopped.runtime.state) || ["pending", "failed"].includes(stopped.runtime.tokenFileCleanup)) fail(503, "science-stop", "Notebook cleanup is incomplete");
           selected = this.session(r, input.notebook, s); r.sessions.delete(input.notebook);
           this.ports.delete(s.port); r.ports.delete(s.port);
         } else if (input.action === "inspect") {
           // inspectCells refreshes readiness and validates the exact selected session before inspection.
-          inspected = snapshot(await scienceTimed("native-inspection", () => r.service.inspectCells(s.ref)));
+          inspected = snapshot(await dispatch(() => scienceTimed("native-inspection", () => r.service.inspectCells(s.ref))));
         }
         else {
-          const result = input.action === "create-cell" ? await r.service.createCell(s.ref, input.code, { after: input.after, run: false }) : input.action === "edit" ? await r.service.editCell(s.ref, input.cellId, input.code, input.expectedSourceHash, false) : await r.service.runCell(s.ref, input.cellId);
+          const result = await dispatch(() => input.action === "create-cell" ? r.service.createCell(s.ref, input.code, { after: input.after, run: false }) : input.action === "edit" ? r.service.editCell(s.ref, input.cellId, input.code, input.expectedSourceHash, false) : r.service.runCell(s.ref, input.cellId));
           operation = { cellId: result.cellId, mutation: result.mutation, execution: result.execution, durability: result.durability, ...(result.error ? { issue: "operation-error" as const } : result.snapshotError ? { issue: "snapshot-unavailable" as const } : {}) };
           if (result.snapshot) inspected = snapshot(result.snapshot);
         }
         selected ??= this.session(r, input.notebook, s);
       }
       await assertCurrent();
+      assertCurrent.check();
       return { status: this.status(workspaceId, worktreeId, resolved), ...(selected ? { session: selected } : {}), ...(inspected ? { snapshot: inspected } : {}), ...(operation ? { operation } : {}) };
-    } finally { this.busy.delete(r.key); }
   }
   close(): Promise<void> {
     this.closing = true;

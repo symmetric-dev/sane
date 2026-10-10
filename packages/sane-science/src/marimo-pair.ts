@@ -1,10 +1,9 @@
-import { execFile } from "node:child_process"
 import { createHash, randomUUID } from "node:crypto"
 import { isAbsolute } from "node:path"
 import { MarimoPairError, type MarimoBinding, type MarimoCell, type MarimoListing, type MarimoOperationResult, type MarimoOutput, type MarimoPairOptions, type MarimoSnapshot } from "./marimo-contracts.ts"
 import { inspectSnippet, operationSnippet, type CellOperation } from "./marimo-snippets.ts"
-import { marimoProcessEnvironment } from "./marimo-config.ts"
-import { scienceSpan, scienceTimed } from "./timing.ts"
+import { scienceTimed } from "./timing.ts"
+import { MarimoHttp, marimoExecutionEvents } from "./marimo-http.ts"
 
 type ObjectValue = Record<string, unknown>
 function object(value: unknown): ObjectValue {
@@ -76,30 +75,22 @@ interface Envelope {
   error?: string
   session: { id: string | null }
 }
-function envelope(raw: string, target: MarimoBinding, exitCode: number): Envelope {
-  const e = object(JSON.parse(raw)), s = object(e.session)
-  if (typeof e.success !== "boolean" || nullableText(s.id) !== target.sessionId) throw new Error("Invalid execution session")
-  nullableText(e.stdout); nullableText(e.stderr)
-  if (e.error !== undefined) text(e.error)
-  if (e.next !== undefined) text(e.next)
-  if (e.output !== null) { const o = object(e.output); text(o.mimetype); text(o.data) }
-  if (e.success ? exitCode !== 0 || e.stdout === null || e.stderr === null || e.error !== undefined : ![1, 2].includes(exitCode)) throw new Error("Inconsistent execution envelope")
-  return e as unknown as Envelope
-}
 function record(stdout: string | null, marker: string): unknown {
   const matches = (stdout ?? "").split(/\r?\n/).filter(line => line.startsWith(marker))
   if (matches.length !== 1) throw new Error("Missing or ambiguous result record")
   return JSON.parse(matches[0]!.slice(marker.length))
 }
 
-/** Version-pinned CLI adapter. Serializes its own calls; does not lock browser edits.
+/** Version-pinned persistent HTTP adapter. Serializes its own calls; does not lock browser edits.
  * Source hashes are conflict checks, not atomic CAS. The caller must validate its
  * serverGeneration against its supervisor before admission; pair only pins sessionId.
- * No request is retried. Construct a new adapter after replacing its interpreter.
+ * No request is retried. Dispose on runtime stop; construct a new adapter for a new runtime.
+ * Construction is offline; the first explicitly requested operation opens HTTP.
  */
 export class MarimoPair {
   private readonly options: Required<MarimoPairOptions>
-  private verified?: Promise<void>
+  private readonly verified = new Map<string, Promise<void>>()
+  private readonly transport: MarimoHttp
   private tail: Promise<unknown> = Promise.resolve()
 
   constructor(options: MarimoPairOptions) {
@@ -109,7 +100,11 @@ export class MarimoPair {
     }
     this.options = { ...options, timeoutMs: options.timeoutMs ?? 60_000, maxOutputBytes: options.maxOutputBytes ?? 8 * 1024 * 1024 }
     for (const n of [this.options.timeoutMs, this.options.maxOutputBytes]) if (!Number.isSafeInteger(n) || n < 1 || n > 2_147_483_647) throw new MarimoPairError("INVALID_INPUT", "Invalid process limit")
+    this.transport = new MarimoHttp(this.options)
   }
+
+  /** Abort in-flight requests, reject queued/future work, and release pooled sockets. */
+  dispose(): void { this.transport.dispose(); this.verified.clear() }
 
   private serial<T>(work: () => Promise<T>): Promise<T> {
     const result = this.tail.then(work)
@@ -117,53 +112,53 @@ export class MarimoPair {
     return result
   }
 
-  private process(args: string[], stdin?: string): Promise<{ stdout: string; stderr: string; exitCode: number }> {
-    const env = marimoProcessEnvironment()
-    const end = scienceSpan(args[0] === "-c" ? "pair-version-process-wall" : stdin === undefined ? "pair-list-process-wall" : "pair-execute-process-wall")
-    return new Promise((resolve, reject) => {
-      const child = execFile(this.options.python, ["-I", ...args], {
-        cwd: this.options.cwd, env, encoding: "utf8", timeout: this.options.timeoutMs,
-        maxBuffer: this.options.maxOutputBytes, killSignal: "SIGKILL",
-      }, (error, stdout, stderr) => {
-        end(error ? "process-error" : "completed")
-        // execFile drains both pipes concurrently and bounds each independently.
-        if (error && (error.killed || typeof error.code !== "number")) {
-          reject(new MarimoPairError("PROCESS_FAILED", "Pair process failed, exceeded its output limit, or timed out", stdin === undefined ? "not-started" : "unknown"))
-        } else resolve({ stdout, stderr, exitCode: error ? Number(error.code) : 0 })
-      })
-      child.stdin?.on("error", () => { /* Completion callback owns process failure. */ })
-      child.stdin?.end(stdin)
-    })
-  }
-
-  private version(): Promise<void> {
-    return this.verified ??= this.process(["-c", "from importlib.metadata import version; print(version('marimo'))"]).then(result => {
-      if (result.exitCode !== 0 || result.stdout.trim() !== "0.25.1") throw new MarimoPairError("VERSION_MISMATCH", "Pair requires provisioned marimo 0.25.1")
-    }).catch(error => { this.verified = undefined; throw error })
+  private version(url: string): Promise<void> {
+    let verified = this.verified.get(url)
+    if (!verified) {
+      verified = this.transport.request(url, "/api/version").then(result => {
+        if (result.trim() !== "0.25.1") throw new MarimoPairError("VERSION_MISMATCH", "Pair requires authenticated marimo 0.25.1")
+      }).catch(error => { this.verified.delete(url); throw error })
+      this.verified.set(url, verified)
+    }
+    return verified
   }
 
   listSessions(url: string): Promise<MarimoListing> {
     const target = loopback(url)
     return this.serial(async () => {
-      await this.version()
-      const result = await this.process(["-m", "marimo", "pair", "notebook", "list", "--url", target, "--token-file", this.options.tokenFile])
+      await this.version(target)
+      const result = await this.transport.request(target, "/api/sessions")
       try {
-        if (result.exitCode !== 0) throw new Error("Listing failed")
-        const root = object(JSON.parse(result.stdout))
-        const notebooks = array(root.notebooks).map(value => {
-          const n = object(value), server = object(n.server)
-          if (loopback(text(server.url)) !== target) throw new Error("Unexpected server")
-          return { server: { url: target }, name: nullableText(n.name), path: nullableText(n.path), sessions: array(n.sessions).map(value => ({ id: text(object(value).id) })) }
-        })
-        return { notebooks, warnings: strings(root.warnings), ...(root.next === undefined ? {} : { next: text(root.next) }) }
+        const grouped = new Map<string | null, MarimoListing["notebooks"][number]>()
+        for (const [id, value] of Object.entries(object(JSON.parse(result)))) {
+          input(id, "session ID")
+          const session = object(value), name = nullableText(session.filename), path = nullableText(session.path)
+          const key = path || name
+          const notebook = grouped.get(key) ?? { server: { url: target }, name, path, sessions: [] }
+          notebook.sessions.push({ id })
+          grouped.set(key, notebook)
+        }
+        const notebooks = [...grouped.values()]
+        for (const notebook of notebooks) notebook.sessions.sort((a, b) => a.id.localeCompare(b.id))
+        notebooks.sort((a, b) => (a.name ?? "").localeCompare(b.name ?? "") || (a.path ?? "").localeCompare(b.path ?? ""))
+        return { notebooks, warnings: [] }
       } catch { throw new MarimoPairError("INVALID_RESPONSE", "Invalid pair session listing") }
     })
   }
 
   private async execute(target: MarimoBinding, code: string): Promise<Envelope> {
-    await this.version()
-    const result = await this.process(["-m", "marimo", "pair", "execute", "--url", target.url, "--token-file", this.options.tokenFile, "--session", target.sessionId, "--code-file", "-"], code)
-    try { return envelope(result.stdout, target, result.exitCode) }
+    await this.version(target.url)
+    // SessionManager.get_session also accepts consumer aliases. Require a literal
+    // /api/sessions key before admission so standalone callers cannot use aliases.
+    try {
+      const sessions = object(JSON.parse(await this.transport.request(target.url, "/api/sessions")))
+      if (!Object.hasOwn(sessions, target.sessionId)) throw new MarimoPairError("PAIR_FAILED", "Exact pair session is stale or missing; refresh session listing", "not-started")
+    } catch (error) {
+      if (error instanceof MarimoPairError) throw error
+      throw new MarimoPairError("INVALID_RESPONSE", "Exact pair session could not be confirmed: invalid session listing", "not-started")
+    }
+    const result = await this.transport.request(target.url, "/api/kernel/execute", target.sessionId, code)
+    try { return { ...marimoExecutionEvents(result), session: { id: target.sessionId } } }
     catch { throw new MarimoPairError("INVALID_RESPONSE", "Unconfirmed pair execution response; inspect before retrying", "unknown") }
   }
 
@@ -199,7 +194,7 @@ export class MarimoPair {
 
   private operation(target: MarimoBinding, operation: CellOperation): Promise<MarimoOperationResult> {
     return this.serial(async () => {
-      await this.version()
+      await this.version(target.url)
       const marker = `SANE_${randomUUID().replaceAll("-", "")}:`
       const result: MarimoOperationResult = {
         binding: target, cellId: operation.kind === "create" ? "" : operation.cellId,

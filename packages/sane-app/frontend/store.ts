@@ -669,6 +669,9 @@ export class ChatStore {
   snapshot = () => this.state;
   shellSnapshot = () => this.shellRevision;
   private update(patch: Partial<State>, publishShell = true) {
+    for (const key of ["scienceSubmissions", "sciencePending", "scienceRecoveries"] as const) {
+      if (Object.hasOwn(patch, key) && equalValue(this.state[key] ?? {}, patch[key] ?? {})) patch[key] = this.state[key] as never;
+    }
     // Stabilize lightweight API projections, never serialize or deep-walk the
     // loaded transcript parts or reducer diagnostics on idle polls.
     if (this.paged) for (const key of ["conversations", "availability", "compactState", "compactions", "contextUsage", "interactions", "pendingCompacts"] as const) {
@@ -744,10 +747,11 @@ export class ChatStore {
   private async refreshScienceSubmissions(id: string, current: () => boolean, signal: AbortSignal) {
     if (!this.client.scienceSubmissions || !this.state.config?.storeId) return;
     try {
-      const recoveries = this.readScienceRecoveries(id);
-      if (current()) this.update({ scienceRecoveries: { ...this.state.scienceRecoveries, [id]: recoveries } });
       const pending = this.readSciencePending(id), submissions = await this.client.scienceSubmissions(id, signal);
       if (!current()) return;
+      // Another tab can replace the durable marker while discovery is in flight.
+      // Leave that newer intent and its composer untouched until the next read.
+      if (this.readSciencePending(id)?.requestId !== pending?.requestId) return;
       if (!Array.isArray(submissions) || submissions.some(s => s.conversationId !== id || !["prepared", "unknown", "submitted", "not-submitted"].includes(s.state) || !Array.isArray(s.snapshots))) throw new Error("Science send evidence is unavailable");
       const resolved = pending && submissions.find(s => s.requestId === pending.requestId && ["submitted", "not-submitted"].includes(s.state));
       const draft = this.draft(id);
@@ -762,8 +766,9 @@ export class ChatStore {
       }
       if (consumed && pending && this.readSciencePending(id)?.requestId === pending.requestId) localStorage.removeItem(this.scienceStorageKey(id));
       if (resolved?.state === "submitted" && pending && draft.text === pending.text && equalValue(draft.scienceSnapshots ?? [], pending.snapshots)) this.setDraft({ text: "", scienceSnapshots: [] }, id);
-      this.update({ scienceSubmissions: { ...this.state.scienceSubmissions, [id]: submissions }, sciencePending: { ...this.state.sciencePending, [id]: consumed ? null : pending }, scienceSubmissionError: "" });
-    } catch (error) { if (current()) this.update({ scienceSubmissionError: error instanceof Error ? error.message : "Science submission evidence unavailable" }); }
+      const recoveries = this.readScienceRecoveries(id);
+      this.update({ scienceRecoveries: { ...this.state.scienceRecoveries, [id]: recoveries }, scienceSubmissions: { ...this.state.scienceSubmissions, [id]: submissions }, sciencePending: { ...this.state.sciencePending, [id]: consumed ? null : pending }, scienceSubmissionError: "" });
+    } catch (error) { if (current() && !this.expired(error)) this.update({ scienceSubmissionError: error instanceof Error ? error.message : "Science submission evidence unavailable" }); }
   }
   executionUnavailable = () => {
     if (this.state.selected) {
@@ -1109,6 +1114,8 @@ export class ChatStore {
     }
   };
   private stop() {
+    clearTimeout(this.scienceTimer); this.scienceTimer = undefined;
+    this.scienceController?.abort(); this.scienceController = undefined;
     this.generation++; clearTimeout(this.timer); this.controller?.abort();
     this.pageFence++; this.pageRequests.forEach(request => request.abort()); this.pageRequests.clear();
     if (this.paged) this.update({ pageBusy: "", transcriptRefreshing: false });
@@ -1463,9 +1470,28 @@ export class ChatStore {
     }
     await Promise.all([historyRead, eligibilityRead, workerRead]);
   }
+  private scienceTimer?: ReturnType<typeof setTimeout>;
+  private scienceController?: AbortController;
+  /** Independent single-flight discovery also covers sends made by other clients. */
+  private sciencePolling() {
+    if (this.state.phase !== "ready" || this.scienceTimer || this.scienceController || !this.client.scienceSubmissions || !this.state.selected || !this.state.config?.authenticated || !this.state.config.storeId) return;
+    const id = this.state.selected, auth = this.authEpoch, selection = this.selectionEpoch, generation = this.generation, storeId = this.state.config.storeId;
+    const controller = this.scienceController = new AbortController();
+    const current = () => !controller.signal.aborted && this.state.phase === "ready" && this.state.config?.authenticated === true && this.state.config.storeId === storeId && auth === this.authEpoch && selection === this.selectionEpoch && generation === this.generation && id === this.state.selected;
+    const deadline = setTimeout(() => controller.abort(), 25000);
+    void this.refreshScienceSubmissions(id, current, controller.signal).finally(() => {
+      clearTimeout(deadline);
+      if (this.scienceController !== controller) return;
+      this.scienceController = undefined;
+      if (auth !== this.authEpoch || selection !== this.selectionEpoch || generation !== this.generation || this.state.phase !== "ready") return;
+      const pending = this.state.sciencePending?.[id] || this.state.scienceSubmissions?.[id]?.some(item => item.state === "prepared" || item.state === "unknown");
+      this.scienceTimer = setTimeout(() => { this.scienceTimer = undefined; this.sciencePolling(); }, pending ? 3000 : 15000);
+    });
+  }
   private async poll() {
     if (this.state.phase !== "ready") return;
     this.pendingInputPolling();
+    this.sciencePolling();
     const generation = this.generation, auth = this.authEpoch, selected = this.state.selected, selection = this.selectionEpoch;
     const controller = this.controller = new AbortController();
     const deadline = setTimeout(() => controller.abort(), 25000);
@@ -1503,8 +1529,6 @@ export class ChatStore {
         return !conversation.title && title ? { ...conversation, title } : conversation;
       });
       this.update({ conversations: equalValue(this.state.conversations, conversations) ? this.state.conversations : conversations, conversationsReady: true });
-      if (!current()) return;
-      if (selected) await this.refreshScienceSubmissions(selected, current, controller.signal);
       if (!current()) return;
       if (this.paged) { await this.pollPaged(listing, current, controller.signal); return; }
       // Safe GET also notices reconciliation by another view/client. Reuse the

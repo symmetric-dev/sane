@@ -189,6 +189,15 @@ export class ScienceSubmissionStore {
   listConversation(conversationId: string): ScienceSubmissionReceipt[] {
     check(uuid(conversationId)); return clone(this.records.items.filter(item => item.intent.conversationId === conversationId));
   }
+  /** Discovery excludes frozen source, dispatch text and provenance entirely. */
+  listConversationViews(conversationId: string) {
+    check(uuid(conversationId));
+    return this.records.items.filter(item => item.intent.conversationId === conversationId).map(item => ({
+      requestId: item.intent.requestId, conversationId: item.intent.conversationId, state: item.state,
+      runId: item.association?.runId ?? null,
+      snapshots: item.intent.snapshots.map(({ snapshotId, blockId }) => ({ snapshotId, blockId })),
+    }));
+  }
   /** Same key + full canonical intent returns the original receipt, including
    * unknown outcomes. Same key + ANY changed field is rejected. */
   prepare(input: ScienceSubmissionIntent): ScienceSubmissionReceipt {

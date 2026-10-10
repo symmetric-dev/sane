@@ -154,13 +154,12 @@ export class ScienceChatService {
           cas(block!.revision);
           if (chat.operations.some(o => o.state === "unknown")) scienceFail(409, "An execution outcome is unknown; automatic replay is fenced");
         }
-        const binding = await scienceTimed("binding", () => this.catalog.binding(workspaceId, worktreeId)); current();
-        if (binding.cwd !== admission.binding.executionCheckout || binding.bindingRevision !== admission.binding.bindingRevision) scienceFail(409, "Science execution checkout changed");
         if (admission.binding.domain.mode !== "repository") scienceFail(409, "Science execution requires repository admission");
         const repositoryId = admission.binding.domain.repositoryId;
+        return await this.science.withChatOperation(workspaceId, worktreeId, { cwd: admission.binding.executionCheckout, bindingRevision: admission.binding.bindingRevision, repositoryId, notebook: chat.notebook }, () => { current(); return true; }, async native => {
         const call = async (request?: NativeInput, stage: string = request?.action ?? "readiness-status") => {
           current();
-          const result = await scienceTimed(stage, () => this.science.handleChat(workspaceId, worktreeId, request ? { ...request, bindingRevision: binding.bindingRevision } as ScienceChatNativeRequest : undefined, () => { current(); return true; }));
+          const result = await scienceTimed(stage, () => native(request ? { ...request, bindingRevision: admission.binding.bindingRevision } as ScienceChatNativeRequest : undefined));
           current(); if (result.status.repositoryId !== repositoryId) scienceFail(409, "Admitted science repository differs");
           return result;
         };
@@ -241,6 +240,8 @@ export class ScienceChatService {
         catch (error) { captured("error"); throw error; }
         save();
         if (trace) trace.outcome = operation.state;
+        return { chat };
+        });
       }
       return { chat };
     } finally { this.busy.delete(id); }

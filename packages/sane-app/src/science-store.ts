@@ -1,6 +1,5 @@
-import { lstatSync, readFileSync } from "node:fs";
-import { join } from "node:path";
-import { atomicAppRecord } from "./app-store";
+import { isDeepStrictEqual } from "node:util";
+import { ScienceStorage } from "./science-storage";
 import { WorkspaceError } from "./workspace";
 import { materializeScienceShare, type ScienceChatState } from "../shared/science-chat-contract";
 import type { ScienceCell } from "../shared/science-contract";
@@ -33,9 +32,9 @@ function validateCell(v: unknown): asserts v is ScienceCell {
 }
 type RecordValue = { version: 2; storeId: string; chats: ScienceChatState[] };
 function time(value: unknown): value is string { return typeof value === "string" && /^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d\.\d{3}Z$/.test(value) && Number.isFinite(Date.parse(value)); }
-function validate(v: unknown, storeId: string): asserts v is RecordValue {
+function validate(v: unknown, storeId: string, trusted = new WeakSet<object>()): asserts v is RecordValue {
   scienceExact(v, ["version", "storeId", "chats"]);
-  if (v.version !== 2 || v.storeId !== storeId || !Array.isArray(v.chats) || Buffer.byteLength(JSON.stringify(v)) > 16 * 1024 * 1024) scienceFail(503, "Invalid science store");
+  if (v.version !== 2 || v.storeId !== storeId || !Array.isArray(v.chats)) scienceFail(503, "Invalid science store");
   const chats = new Set<string>(), notebooks = new Set<string>();
   for (const c of v.chats) {
     scienceExact(c, ["conversationId", "workspaceId", "worktreeId", "admissionKey", "notebook", "notebookKind", "notebookCreated", "revision", "blocks", "entries", "operations", "shares"]);
@@ -47,6 +46,7 @@ function validate(v: unknown, storeId: string): asserts v is RecordValue {
     const ids = new Set<string>();
     const id = (value: unknown) => { if (!scienceId(value) || ids.has(value)) scienceFail(503, "Invalid science identity"); ids.add(value); };
     for (const b of chat.blocks) {
+      if (trusted.has(b)) { id(b.id); continue; }
       scienceExact(b, ["id", "revision", "source", "knownSources", "anchor", "creation"]); id(b.id); scienceAnchor(b.anchor);
       if (b.creation !== null) {
         scienceExact(b.creation, ["requestId", "initialSource", "expectedRevision", "state", "generation"]);
@@ -56,12 +56,14 @@ function validate(v: unknown, storeId: string): asserts v is RecordValue {
     }
     const block = (value: unknown) => chat.blocks.some(b => b.id === value);
     for (const e of chat.entries) {
+      if (trusted.has(e)) { id(e.id); continue; }
       scienceExact(e, ["id", "afterBlockId", "text"]); id(e.id);
       if (e.afterBlockId !== null && !block(e.afterBlockId) || !scienceText(e.text)) scienceFail(503, "Invalid science entry");
     }
     const requests = new Set<string>();
     for (const b of chat.blocks) if (b.creation) { if (requests.has(b.creation.requestId)) scienceFail(503, "Duplicate addition request"); requests.add(b.creation.requestId); }
     for (const o of chat.operations) {
+      if (trusted.has(o)) { id(o.id); if (requests.has(o.requestId)) scienceFail(503, "Duplicate operation request"); requests.add(o.requestId); continue; }
       scienceExact(o, ["id", "requestId", "blockId", "revision", "source", "state", "createdAt", "observation"]); id(o.id);
       if (!block(o.blockId) || !scienceId(o.requestId) || requests.has(o.requestId) || !scienceRevision(o.revision) || !scienceText(o.source) || !["unknown", "succeeded", "failed"].includes(o.state) || !time(o.createdAt)) scienceFail(503, "Invalid science operation");
       requests.add(o.requestId);
@@ -73,6 +75,7 @@ function validate(v: unknown, storeId: string): asserts v is RecordValue {
       }
     }
     for (const s of chat.shares) {
+      if (trusted.has(s)) { id(s.id); if (requests.has(s.requestId)) scienceFail(503, "Duplicate share request"); requests.add(s.requestId); continue; }
       scienceExact(s, ["id", "requestId", "blockId", "revision", "source", "operationId", "representation", "agentText", "createdAt"]); id(s.id);
       if (!block(s.blockId) || !scienceId(s.requestId) || requests.has(s.requestId) || !scienceRevision(s.revision) || !scienceText(s.source) || !scienceText(s.agentText) || !time(s.createdAt) || !["source", "source-and-observed-text"].includes(s.representation) || s.operationId !== null && !chat.operations.some(o => o.id === s.operationId && o.blockId === s.blockId && o.source === s.source && o.revision === s.revision)) scienceFail(503, "Invalid science share");
       requests.add(s.requestId);
@@ -105,26 +108,76 @@ function upgrade(value: unknown): unknown {
 /** Single bridge writer, atomic publication; uncertain writes poison this instance. */
 export class ScienceStore {
   private value: RecordValue;
+  private storage: ScienceStorage;
+  private trusted = new WeakSet<object>();
   private failed = false;
   constructor(readonly dataDir: string, private storeId: string) {
     this.value = { version: 2, storeId, chats: [] };
-    let found = false;
+    this.storage = new ScienceStorage(dataDir, storeId);
     try {
-      const path = join(dataDir, "science-chats.json"), stat = lstatSync(path);
-      found = true;
-      if (!stat.isFile() || stat.isSymbolicLink() || stat.size > 16 * 1024 * 1024) throw new Error("Invalid store file");
-      const value: unknown = upgrade(JSON.parse(readFileSync(path, "utf8"))); validate(value, storeId); this.value = value;
-    } catch (e) { if (found || (e as NodeJS.ErrnoException).code !== "ENOENT") this.failed = true; }
+      const chats = this.storage.load();
+      if (chats) {
+        const value = { version: 2, storeId, chats }; validate(value, storeId); this.value = value; this.remember(); return;
+      }
+      const legacy = this.storage.readLegacy();
+      if (legacy !== undefined) { const value: unknown = upgrade(legacy); validate(value, storeId); this.value = value; }
+    } catch { this.failed = true; }
+    if (!this.failed) {
+      try { this.storage.migrate(this.value.chats); this.remember(); }
+      catch { this.failed = true; }
+    }
   }
+  private remember() { for (const chat of this.value.chats) for (const kind of ["blocks", "entries", "operations", "shares"] as const) for (const record of chat[kind]) this.trusted.add(record); }
   get(id: string) { this.assert(); return structuredClone(this.value.chats.find(c => c.conversationId === id)); }
   associations() { this.assert(); return this.value.chats.map(c => ({ workspaceId: c.workspaceId, notebook: c.notebook })); }
   private assert() { if (this.failed) scienceFail(503, "Science storage is unavailable; repair the durable record before restarting"); }
   put(chat: ScienceChatState) {
-    this.assert(); const next = structuredClone(this.value), index = next.chats.findIndex(c => c.conversationId === chat.conversationId);
-    if (index < 0) next.chats.push(structuredClone(chat)); else next.chats[index] = structuredClone(chat);
-    validate(next, this.storeId);
-    try { atomicAppRecord(this.dataDir, "science-chats.json", next); } catch { this.failed = true; scienceFail(503, "Science persistence failed; native work is fenced"); }
-    this.value = next;
+    this.assert();
+    const index = this.value.chats.findIndex(c => c.conversationId === chat.conversationId), prior = this.value.chats[index];
+    const next = { ...chat };
+    // The compatible API accepts mutable, detached full-chat values. Compare
+    // records, then reuse owned immutable objects: unchanged payloads are neither
+    // cloned, serialized, hashed, revalidated nor rewritten on a draft save.
+    for (const kind of ["blocks", "entries", "operations", "shares"] as const) {
+      if (!Array.isArray(chat[kind])) scienceFail(503, "Invalid science collection");
+      const old = new Map<string, any>(prior?.[kind].map(record => [record.id, record]) ?? []);
+      (next[kind] as unknown[]) = chat[kind].map(record => {
+        const previous = old.get(record.id);
+        return previous && isDeepStrictEqual(previous, record) ? previous : structuredClone(record);
+      });
+    }
+    if (prior) {
+      if (next.revision < prior.revision || next.workspaceId !== prior.workspaceId || next.worktreeId !== prior.worktreeId || next.admissionKey !== prior.admissionKey) scienceFail(409, "Science durable identity or revision changed");
+      const reassociate = prior.revision === 0 && !prior.notebookCreated && !prior.entries.length && !prior.operations.length && !prior.shares.length && next.notebookKind === "existing" && next.notebookCreated && !next.blocks.length;
+      if (!reassociate && (next.notebook !== prior.notebook || next.notebookKind !== prior.notebookKind || prior.notebookCreated && !next.notebookCreated)) scienceFail(409, "Science notebook ownership changed");
+      for (const kind of ["blocks", "entries", "operations", "shares"] as const) {
+        if (kind === "blocks" && reassociate) continue;
+        if (next[kind].length < prior[kind].length) scienceFail(409, "Science history cannot be removed");
+        prior[kind].forEach((record, i) => {
+          const updated = next[kind][i]!;
+          if (record.id !== updated.id) scienceFail(409, "Science history cannot be reordered");
+          if (kind === "shares" || kind === "entries") { if (record !== updated) scienceFail(409, "Science snapshot is immutable"); }
+        });
+      }
+      for (let i = 0; i < prior.blocks.length && !reassociate; i++) {
+        const a = prior.blocks[i]!, b = next.blocks[i]!;
+        if (b.revision < a.revision || !isDeepStrictEqual(a.anchor, b.anchor) || a.knownSources.some(s => !b.knownSources.includes(s))) scienceFail(409, "Science block evidence cannot regress");
+        if (a.source !== b.source && (b.revision <= a.revision || next.revision <= prior.revision)) scienceFail(409, "Science draft revision must advance");
+        if (a.creation === null ? b.creation !== null : !b.creation || a.creation.requestId !== b.creation.requestId || a.creation.initialSource !== b.creation.initialSource || a.creation.expectedRevision !== b.creation.expectedRevision || a.creation.state !== "pending" && b.creation.state === "pending") scienceFail(409, "Science addition intent cannot change");
+      }
+      for (let i = 0; i < prior.operations.length; i++) {
+        const a = prior.operations[i]!, b = next.operations[i]!;
+        if (a === b) continue;
+        const { state: as, observation: ao, ...af } = a, { state: _state, observation: _observation, ...bf } = b;
+        if (!isDeepStrictEqual(af, bf) || as !== "unknown" || ao !== null) scienceFail(409, "Science operation snapshot is immutable");
+      }
+    }
+    validate({ version: 2, storeId: this.storeId, chats: [next] }, this.storeId, this.trusted);
+    if (this.value.chats.some(c => c.conversationId !== next.conversationId && c.workspaceId === next.workspaceId && c.notebook === next.notebook)) scienceFail(409, "Notebook is already associated with a chat");
+    try { this.storage.check(next); } catch (e) { scienceFail(413, e instanceof Error ? e.message : "Science storage capacity exceeded"); }
+    try { this.storage.put(next); } catch { this.failed = true; scienceFail(503, "Science persistence failed; native work is fenced"); }
+    if (index < 0) this.value.chats.push(next); else this.value.chats[index] = next;
+    for (const kind of ["blocks", "entries", "operations", "shares"] as const) for (const record of next[kind]) this.trusted.add(record);
   }
-  share(conversationId: string, snapshotId: string) { return this.get(conversationId)?.shares.find(s => s.id === snapshotId); }
+  share(conversationId: string, snapshotId: string) { this.assert(); return structuredClone(this.value.chats.find(c => c.conversationId === conversationId)?.shares.find(s => s.id === snapshotId)); }
 }

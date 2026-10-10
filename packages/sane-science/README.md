@@ -2,8 +2,8 @@
 
 Python dependency foundation and explicit workspace environment provisioning for
 the Marimo integration spike, with a pinned live-cell adapter and initial native
-App integration. Agent tool registration and durable experiment history remain
-subsequent work.
+App integration and incremental durable chat history. Agent tool registration
+remains subsequent work.
 
 ## Setup
 
@@ -86,14 +86,18 @@ Its public operations are `listSessions`, `inspectCells`, `createCell`,
 `editCell`, and `runCell`. DTOs are exported from `sane-science/marimo-contracts`.
 Edits require the SHA-256 source hash from the cell snapshot.
 
-The adapter targets Marimo 0.25.1 and its internal code-mode interface. The caller
+The adapter retains the public `MarimoPair` name and constructor contract, but uses
+a persistent, pooled authenticated HTTP transport (`src/marimo-http.ts`), with no
+pair CLI/helper subprocess per operation. It checks the authenticated version and
+targets Marimo 0.25.1's private code-mode endpoints. The caller
 must bind the selected notebook session to its current owned server generation;
 the adapter cannot establish that ownership from an arbitrary generation string.
-Session-list warnings must be handled even when the CLI exits successfully.
+Session-list warnings must still be handled through the public listing contract.
 A server needs a session consumer; the workspace coordinator supplies a backend-owned consumer without a browser.
 
-Operations are serialized per adapter instance. They have bounded subprocess
-output and duration, with no automatic retries. An unconfirmed outcome requires
+Operations are serialized per adapter instance. HTTP requests have bounded response
+bytes and duration, with no automatic retries. Disposing the adapter aborts requests
+and releases pooled sockets; a new runtime needs a new adapter. An unconfirmed outcome requires
 inspection before further action. Source hashes provide conflict detection, not
 atomic compare-and-swap against simultaneous browser edits. Mutation acceptance,
 execution outcome, and persistence are separate: Marimo's background autosave is
@@ -105,9 +109,10 @@ after mutation/execution because Marimo freezes scratchpad output snapshots at
 request start. Rich data is not automatically a portable artifact: rendering,
 referenced assets, durable capture, and agent sharing remain integration work.
 
-Live adapter interoperability was verified on 2026-10-09 against the pinned
+The earlier CLI-backed adapter's interoperability was verified on 2026-10-09 against the pinned
 runtime: source edits, execution, text/table/PNG capture, and stale-source rejection
-passed. See the integration evidence summary below.
+passed. See the integration evidence summary below. That evidence does not verify
+the new HTTP transport, which has source/static review only.
 
 ## Runtime supervisor
 
@@ -145,8 +150,9 @@ passed; the pinned CLI defaults to none. Sandbox mode is explicitly disabled.
 The configured pip manager's inherited `should_auto_install()` returns false in
 `_runtime/packages/package_manager.py`; no package manager is invoked by this API
 outside explicit provisioning. Browser-initiated installs or arbitrary notebook
-code are not blocked by this policy. Both server and pair receive an environment
-allowlist. These settings are predictable defaults, not a security sandbox or a
+code are not blocked by this policy. The server receives an environment
+allowlist; pair operations now use HTTP rather than a child environment.
+These settings are predictable defaults, not a security sandbox or a
 lock against subsequent browser configuration changes.
 
 ## Workspace coordinator (Bun API)
@@ -165,8 +171,10 @@ revisions and App-owned generation IDs. Browser responses omit runtime tokens,
 server URLs, and managed filesystem paths.
 
 Durable operations use the `/science/chats/:conversationId` suffix. App dataDir
-stores `science-chats.json` and `science-submissions.json`, qualified by store and
-conversation identity. Runnable notebooks remain in repository `.sane/science`.
+stores an authoritative `science-storage.json` generation selector and per-chat
+heads referencing hash-qualified records under `science-history-<generation>`;
+`science-submissions.json` is a separate receipt ledger. Data is qualified by store
+and conversation identity. Runnable notebooks remain in repository `.sane/science`.
 History reads do not require starting Python. Outputs are bounded immutable
 observations, explicitly unverified as source-to-output execution provenance.
 
@@ -177,13 +185,30 @@ are omitted from agent context; native cards can render supported captured image
 and static tables. Snapshot sends require an idle conversation. Unknown execution,
 cell-creation, and submission outcomes are fenced against automatic replay.
 
-Current limits include bounded inline history storage (16 MiB), no artifact garbage
+Incremental saves reuse unchanged records and publish the changed chat head.
+Encoded records, heads and the selector each have a 16 MiB cap; chat metadata plus
+encoded records has a 32 MiB aggregate read/write cap, not a total disk quota.
+At bridge startup, `ScienceStore` automatically migrates validated legacy
+`science-chats.json` when the selector is absent, preserving the legacy file and
+publishing the selector last. An existing selector is authoritative; corrupt or
+missing referenced data never falls back to legacy. Empty stores initialize then
+too. See [the App README](../sane-app/README.md#science-performance-architecture)
+for sources, submission caps and filesystem limits.
+
+Native chat actions use scoped validated leases across status, mapping and
+mutation. Submission discovery polls independently (15 seconds normally, 3 seconds
+pending, a 25-second timeout), rather than blocking conversation polling.
+
+Current limits include no artifact garbage
 collection/export or fork-copy workflow, no manual unknown-outcome recovery UI,
 and no Python syntax extension. Marimo autosave remains unconfirmed; durable source
 mapping rejects ambiguous external edits. This increment has static review and
 typechecking only; earlier runtime/browser evidence does not verify these new
-persistence and sharing flows. Server restarts and browser verification remain
-user-controlled.
+persistence and sharing flows. The performance increment has source/static review
+only; no runtime/browser verification or user-data migration was run for it. The
+user must restart the bridge and reload the frontend; migration occurs during
+startup. Bounded incremental writes assume one App-owned writer and cooperative
+filesystem actors, not a sandbox or protection against every external path race.
 
 ### Native SANE session ownership
 
@@ -202,7 +227,7 @@ The protocol is pinned to Marimo 0.25.1 private interfaces, not a stable public
 frontend SDK. Opening uses individually bounded stages rather than one end-to-end
 deadline.
 
-Native ownership was verified on 2026-10-09: the gated
+Native ownership with the earlier CLI-backed pair transport was verified on 2026-10-09: the gated
 `SCIENCE_RUN_NATIVE=1 bun test packages/sane-science/tests/native-session.integration.test.ts`
 passed 52 assertions in an isolated workspace, with no browser frontend. It
 covered text/table/PNG capture, stale source rejection, real WebSocket takeover,
@@ -271,7 +296,7 @@ qualify. Discovered sessions require explicit selection and successful live
 inspection before `session-ready`. Listing failures return `server-unverified`,
 with `listing-unconfirmed`; the owned process remains available for retry or stop.
 `status` is a cached observation with current process state; `refreshNotebook`
-performs a fresh probe. Probe subprocesses are bounded to two seconds each; total
+performs a fresh probe. Probe HTTP requests are bounded to two seconds each; total
 readiness polling may exceed its deadline by one in-flight probe/version check.
 
 Cell operations recheck exact notebook/session/generation and warning-free
@@ -286,6 +311,9 @@ are gone. Ownership and operation serialization are process-local; callers must
 coordinate provisioning across service instances and processes themselves.
 
 ### Integration evidence (2026-10-09)
+
+This historical run used the CLI-backed pair adapter; it does not establish
+runtime correctness or performance of the current persistent HTTP adapter.
 
 A disposable initialized workspace passed real locked provisioning and an
 authenticated browser-backed workflow with Python 3.12.14, Marimo 0.25.1,
@@ -318,7 +346,7 @@ It is temporary machine-local evidence, not a packaged fixture.
 SANE Bun bridge
   -> sane-science supervisor
        -> .venv/bin/marimo edit <notebook.py> (long-lived Python server)
-       -> .venv/bin/marimo pair ...          (bounded adapter operations)
+        -> authenticated pooled HTTP         (bounded adapter requests)
 Browser notebook surface <-> Marimo HTTP/WebSocket server
 ```
 
@@ -331,9 +359,10 @@ After setup, the supervisor should launch the environment's executable directly
 with argument arrays, without shell activation, dependency resolution, or
 installation on app startup. Runtime launch must bind loopback, configure
 authentication, and isolate notebook web content from the privileged App origin.
-The pinned adapter has passed the live spike above. The native App surface uses
-backend-owned sessions rather than embedding Marimo's editor. Durable history,
-rich agent attachments, and agent-tool registration remain subsequent work.
+The earlier CLI-backed adapter passed the live spike above; the HTTP replacement
+has static review only. The native App surface uses backend-owned sessions rather
+than embedding Marimo's editor. Durable history is implemented with the limits
+above; rich agent attachments and agent-tool registration remain subsequent work.
 
 This environment includes Marimo, pandas, and matplotlib for the integration
 spike. Add further visualization and SQL packages through this manifest and

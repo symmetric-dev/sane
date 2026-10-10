@@ -97,6 +97,8 @@ export class ScienceWorkspaceService {
       try { return await this.attachNative(notebook, captured.readinessTimeoutMs) }
       catch (error) {
         notebook.native.close()
+        notebook.pair.dispose()
+        notebook.probe.dispose()
         try { await this.runtime.stop(status.ref) } finally { this.copy(notebook) }
         throw error
       }
@@ -129,7 +131,8 @@ export class ScienceWorkspaceService {
       // The pair execute route registers cells with auto_run=False before inspection.
       const environment = this.readyEnvironment(), connection = this.runtime.connection(ref)
       const inspector = new MarimoPair({ python: environment.paths.python, cwd: environment.paths.root, tokenFile: connection.tokenFile, timeoutMs: timeout ?? 15_000 })
-      await inspector.inspectCells(this.binding(ref))
+      try { await inspector.inspectCells(this.binding(ref)) }
+      finally { inspector.dispose() }
       await this.refresh(notebook)
       this.assertListed(notebook, ref)
       native.confirmReady(attachment.revision)
@@ -153,6 +156,8 @@ export class ScienceWorkspaceService {
     const previous = this.notebooks.get(ref.notebookPath)
     if (previous?.status.ref.generation === ref.generation) return this.refresh(previous)
     previous?.native?.close()
+    previous?.pair.dispose()
+    previous?.probe.dispose()
     const status: ScienceNotebookStatus = { ref, runtime, state: "server-unverified", serverReadiness: "unverified", sessionIds: [] }
     // A failed launch is still retained for cleanup and status inspection.
     const tokenFile = runtime.state === "process-started" ? this.runtime.connection(ref).tokenFile : join(environment.paths.root, "unused-token")
@@ -231,6 +236,8 @@ export class ScienceWorkspaceService {
       // stop validates bounds synchronously before transport ownership changes.
       const stopping = this.runtime.stop(captured, bounds)
       notebook.native?.close()
+      notebook.pair.dispose()
+      notebook.probe.dispose()
       try { await stopping } finally { this.copy(notebook) }
       return this.copy(notebook)
     })
@@ -242,6 +249,8 @@ export class ScienceWorkspaceService {
       return Promise.all([...this.notebooks.values()].map(async notebook => {
         const stopping = this.runtime.stop(notebook.status.ref, bounds)
         notebook.native?.close()
+        notebook.pair.dispose()
+        notebook.probe.dispose()
         try { await stopping } finally { this.copy(notebook) }
         return this.copy(notebook)
       }))
@@ -271,6 +280,8 @@ export class ScienceWorkspaceService {
     status.runtime = this.runtime.get(status.ref)
     if (status.runtime.state !== "process-started") {
       notebook.native?.close()
+      notebook.pair.dispose()
+      notebook.probe.dispose()
       status.state = status.runtime.state === "stopped" ? "stopped" : "failed"
       status.serverReadiness = "unverified"
       status.sessionIds = []

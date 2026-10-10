@@ -3036,7 +3036,7 @@ async function startOwned(options: Options, assetsDir: string, packageDir: strin
           return json({ submission: { ...scienceView(receipt), text: receipt.intent.text,
             snapshots: receipt.intent.snapshots.map(({ snapshotId, blockId, source, agentText }) => ({ snapshotId, blockId, source, agentText })) } });
         }
-        return json({ submissions: scienceSubmissions.listConversation(id).map(scienceView) });
+        return json({ submissions: scienceSubmissions.listConversationViews(id) });
       }
       const nativeSubagent = /^\/api\/sessions\/([^/]+)\/native-subagents(?:\/([^/]+)\/([^/]+))?$/.exec(path);
       if (nativeSubagent) {

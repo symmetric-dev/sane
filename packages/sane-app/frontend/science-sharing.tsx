@@ -69,17 +69,35 @@ export function ScienceShareDraftPreview() {
 
 export interface ScienceSentSnapshotsProps { conversationId: string; runId: string }
 
+const emptyReceipts: ScienceSubmissionView[] = [];
+const receiptIndexes = new WeakMap<ScienceSubmissionView[], Map<string, ScienceSubmissionView[]>>();
+function receiptsForRun(receipts: ScienceSubmissionView[] | undefined, conversationId: string, runId: string) {
+  if (!receipts) return emptyReceipts;
+  let index = receiptIndexes.get(receipts);
+  if (!index) {
+    index = new Map();
+    for (const receipt of receipts) {
+      if (receipt.state !== "submitted") continue;
+      const key = JSON.stringify([receipt.conversationId, receipt.runId]);
+      const group = index.get(key) ?? [];
+      group.push(receipt); index.set(key, group);
+    }
+    receiptIndexes.set(receipts, index);
+  }
+  return index.get(JSON.stringify([conversationId, runId])) ?? emptyReceipts;
+}
+
 /** Mount once beside a canonical user turn for this run. Never match prompt text.
  * Receipt metadata comes from the store's independent durable run-ID map. */
 export function ScienceSentSnapshots({ conversationId, runId }: ScienceSentSnapshotsProps) {
-  const state = useStore(state => state);
-  if (state.phase !== "ready" || state.config?.authenticated !== true || !state.config.storeId || state.selected !== conversationId || !runId) return null;
-  const receipts = (state.scienceSubmissions?.[conversationId] ?? []).filter(receipt => receipt.state === "submitted" && receipt.conversationId === conversationId && receipt.runId === runId);
+  const storeId = useStore(state => state.phase === "ready" && state.config?.authenticated === true && state.selected === conversationId ? state.config.storeId : undefined);
+  const receipts = useStore(state => receiptsForRun(state.scienceSubmissions?.[conversationId], conversationId, runId));
+  if (!storeId || !runId) return null;
   if (!receipts.length) return null;
   if (receipts.length !== 1) return <p className="science-sharing-error" role="status">Science snapshot association is ambiguous. No snapshot is shown.</p>;
   const receipt = receipts[0];
-  const scope = JSON.stringify([state.config.storeId, conversationId, runId, receipt.requestId, receipt.snapshots]);
-  return <SentReceipt key={scope} scope={scope} storeId={state.config.storeId} receipt={receipt} />;
+  const scope = JSON.stringify([storeId, conversationId, runId, receipt.requestId, receipt.snapshots]);
+  return <SentReceipt key={scope} scope={scope} storeId={storeId} receipt={receipt} />;
 }
 
 type DetailState = { status: "loading" } | { status: "error"; message: string } | { status: "ready"; detail: ScienceSubmissionDetail };

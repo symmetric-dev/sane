@@ -201,17 +201,35 @@ export function useScienceChat(state: State, active: boolean, blocked: boolean, 
 }
 export type ScienceChatController = ReturnType<typeof useScienceChat>;
 
+const chatIndexes = new WeakMap<ScienceChatState, ReturnType<typeof indexChat>>();
+function indexChat(chat: ScienceChatState) {
+  const anchors = new Map<string, ScienceBlock[]>(), operations = new Map<string, ScienceOperation[]>();
+  const blockIds = new Set(chat.blocks.map(block => block.id));
+  for (const block of chat.blocks) {
+    const key = block.anchor?.kind === "after-message" ? `message:${block.anchor.messageId}` : block.anchor?.kind ?? "unplaced";
+    const group = anchors.get(key) ?? []; group.push(block); anchors.set(key, group);
+  }
+  for (const operation of chat.operations) {
+    const group = operations.get(operation.blockId) ?? []; group.push(operation); operations.set(operation.blockId, group);
+  }
+  return { anchors, operations, leadingEntries: chat.entries.filter(entry => entry.afterBlockId === null || !blockIds.has(entry.afterBlockId)) };
+}
+function chatIndex(chat: ScienceChatState) {
+  let index = chatIndexes.get(chat);
+  if (!index) { index = indexChat(chat); chatIndexes.set(chat, index); }
+  return index;
+}
+
 /** Local cards are never inserted into the assistant runtime's canonical messages. */
 export function ScienceChatBlocks({ science, position = "unplaced", messageId, loadedMessageIds = [], historyStartAvailable = false }: { science: ScienceChatController; position?: "start" | "after-message" | "unplaced"; messageId?: string; loadedMessageIds?: readonly string[]; historyStartAvailable?: boolean }) {
   const { view: v } = science;
-  const blocks = v.chat?.blocks.filter(block => {
+  const index = v.chat && chatIndex(v.chat);
+  const loaded = position === "unplaced" ? new Set(loadedMessageIds) : undefined;
+  const blocks = position === "unplaced" ? v.chat?.blocks.filter(block => {
     const placement = block.anchor;
-    if (position === "unplaced") return !placement || placement.kind === "start" && !historyStartAvailable || placement.kind === "after-message" && !loadedMessageIds.includes(placement.messageId);
-    if (!placement) return false;
-    if (position === "start" && !historyStartAvailable) return false;
-    return placement.kind === position && (placement.kind !== "after-message" || placement.messageId === messageId);
-  }) ?? [];
-  const leadingEntries = position === "unplaced" ? v.chat?.entries.filter(entry => entry.afterBlockId === null || !v.chat!.blocks.some(block => block.id === entry.afterBlockId)) ?? [] : [];
+    return !placement || placement.kind === "start" && !historyStartAvailable || placement.kind === "after-message" && !loaded!.has(placement.messageId);
+  }) ?? [] : position === "start" && !historyStartAvailable ? [] : index?.anchors.get(position === "start" ? "start" : `message:${messageId}`) ?? [];
+  const leadingEntries = position === "unplaced" ? index?.leadingEntries ?? [] : [];
   if (!blocks.length && !leadingEntries.length) return position === "unplaced" && v.error && !v.chat ? <section className="science-chat-blocks" aria-label="Local Python history unavailable"><p role="status">Local Python history unavailable: {v.error}</p><button type="button" disabled={v.busy} onClick={science.refresh}>Refresh local history</button></section> : null;
   return <section className="science-chat-blocks" aria-label={position === "unplaced" ? "Unplaced local Python history" : "Local Python history"}>
     {position === "unplaced" && <header><strong>Earlier Python cells</strong><p className="muted">Their conversation position is outside loaded history or unavailable.</p></header>}
@@ -231,7 +249,7 @@ function PythonCell({ block, science }: { block: ScienceBlock; science: ScienceC
   const { view: v } = science;
   const [info, setInfo] = useState(false);
   const [historicalId, setHistoricalId] = useState("");
-  const operations = v.chat!.operations.filter(operation => operation.blockId === block.id);
+  const operations = chatIndex(v.chat!).operations.get(block.id) ?? [];
   const latest = operations.at(-1);
   const operation = operations.find(item => item.id === historicalId) ?? latest;
   const historical = !!operation && operation !== latest;
