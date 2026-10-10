@@ -2,6 +2,7 @@ import { constants, lstatSync, fstatSync, type Stats } from "node:fs";
 import { open, lstat, realpath, opendir, access, unlink } from "node:fs/promises";
 import { resolve, join, relative, isAbsolute, sep, posix } from "node:path";
 import { createHash } from "node:crypto";
+import type { OperationTiming } from "./operation-timing";
 import type { WorkspaceSearchLeaseProvider, WorkspaceSearchLease } from "./workspace-search-scope";
 import { WorkspaceIgnoreEvaluator, WorkspaceIgnoreError, validateIgnoreSnapshot } from "./workspace-ignore";
 import { admitWorkspaceSearch } from "./workspace-search-admission";
@@ -44,7 +45,7 @@ type SessionLookup = (id: string, options?: WorkspaceOperationOptions) => Search
 type Bound = Workspace & { data: string; dev: number; ino: number; protectedPaths: string[]; operation?: WorkspaceOperationOptions };
 type GitRoot = { root: string; prefix: string };
 type Blob = { bytes: Buffer; mode: string | null; reason?: DiffReason };
-type GitOptions = { signal?: AbortSignal; timeoutMs?: number };
+type GitOptions = { signal?: AbortSignal; timeoutMs?: number; timing?: OperationTiming; timingStage?: string };
 function decode(bytes: Buffer): { text: string | null; reason?: "binary" | "invalid-utf8"; bom: boolean; eol: WorkspaceFile["eol"] } {
   const bom = bytes.length >= 3 && bytes[0] === 239 && bytes[1] === 187 && bytes[2] === 191;
   if (bytes.includes(0)) return { text: null, reason: "binary", bom, eol: "none" };
@@ -781,6 +782,9 @@ export class WorkspaceService {
   }
 
   async git(cwd: string, args: string[], limit = MAX_GIT_OUTPUT, options: GitOptions = {}): Promise<{ code: number; bytes: Buffer; stderr: string }> {
+    if (options.timing && options.timingStage) {
+      return options.timing.async(options.timingStage, () => this.git(cwd, args, limit, { ...options, timing: undefined, timingStage: undefined }));
+    }
     // Do not inherit GIT_DIR/WORK_TREE/INDEX_FILE, config injection, alternates,
     // pagers, credentials, or provider secrets. No shell, hooks, filters or textconv.
     const env: Record<string, string> = { PATH: process.env.PATH ?? "/usr/bin:/bin", LANG: "C", LC_ALL: "C", GIT_CONFIG_NOSYSTEM: "1", GIT_CONFIG_GLOBAL: "/dev/null", GIT_TERMINAL_PROMPT: "0", GIT_OPTIONAL_LOCKS: "0", GIT_NO_REPLACE_OBJECTS: "1", GIT_NO_LAZY_FETCH: "1", GIT_ALLOW_PROTOCOL: "", GIT_ATTR_NOSYSTEM: "1" };

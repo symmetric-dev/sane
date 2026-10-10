@@ -77,7 +77,35 @@ and offsets use monotonic `performance.now()` in milliseconds (rounded to 0.001)
 Total duration covers backend chat handling, including persistence, but excludes
 HTTP parsing, browser/render/network time and the final timing-log append.
 Spans are appended in completion order, may nest/overlap, and **must not be summed**.
-At most 256 spans are retained; `droppedSpans` counts omitted spans.
+At most 1024 spans are retained (enough for repeated lease fences without the old
+256-span truncation); `droppedSpans` counts omitted spans. `counters` is an
+independent, bounded map of at most 64 fixed labels to occurrence counts.
+
+Lease acquisition includes `catalog-mutation-queue-wait`, measured from admission
+until the existing catalog mutation tail settles. Lease internals expose
+`lease-capture`, `lease-check-pins`, `lease-check-mappings`, `lease-head-read`, `lease-rediscover`, and
+`lease-validation-queue-wait`. Discovery's three async Git calls have separate
+`catalog-git-toplevel`, `catalog-git-common-dir`, and `catalog-git-dir` spans;
+these include spawn, output collection, process exit, cleanup and scheduling.
+Git span `completed` means the wrapper returned, including nonzero exit codes;
+`error` means it threw. No command arguments or outputs are recorded. Counters distinguish
+`lease-acquired-{metadata,discovery}`, `lease-validation-{metadata,discovery}`,
+`lease-rediscover-acquisition`, `lease-repair-binding`, and refresh reasons
+`lease-refresh-config`, `lease-refresh-head-unsupported`, and
+`lease-refresh-unsupported-snapshot`. Config and HEAD reasons can both increment
+for one refresh; validation mode is sampled at entry, acquisition mode at return.
+
+`eventLoopDrift` uses one unreferenced 25 ms interval per active attempt, cleared
+before logging. It reports `intervalMs`, callback `samples`, `maxDriftMs`, and
+`totalDriftMs`: each callback's nonnegative lateness against the previous callback
+time plus the interval. `terminalOverdueMs` is lateness of the pending callback at
+attempt completion (kept separate from sampled totals). This is a sampled lower
+bound on observable timer lateness overlapping the attempt, **not a precise
+blocking or CPU measurement**. It includes OS/runtime scheduler delays, timer
+granularity, process suspension and unrelated work sharing the event loop. Short
+stalls between samples can be missed; zero samples does not establish no stall.
+Concurrent attempts observe the same loop and their drift must not be summed.
+The summary uses constant memory and adds no per-tick spans.
 
 `native-resolve` now contains sequential `native-resolve-catalog-lease` (or
 `native-resolve-catalog-binding`), `native-resolve-router`, and
@@ -106,7 +134,7 @@ include await/scheduling time; neither isolates CPU or Git subprocess runtime.
 Instrumentation is caller-scoped to science and records fixed stage labels and
 durations, never paths, config, source, tokens or raw errors.
 
-For comparison, run the same inexpensive cell several times with fresh request
+For comparison, run the same inexpensive cell at least four warm repeats with fresh request
 IDs in an already open notebook. Compare `existing-session` records, per-stage
 durations/counts and uncovered gaps; exclude reused requests and check
 `droppedSpans` is zero. Keep the first open-required run separate.

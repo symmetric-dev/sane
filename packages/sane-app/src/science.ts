@@ -11,7 +11,7 @@ import type { CatalogService } from "./catalog";
 import { RepositoryRouter, WorkstreamAdapterError } from "./workstreams";
 import { WorkspaceError } from "./workspace";
 import { body, json } from "./bridge-http";
-import { scienceTimed, scienceTimedSync } from "sane-science/timing";
+import { scienceTimed, scienceTimedSync, scienceSpan, scienceCount, scienceTiming } from "sane-science/timing";
 
 type Session = { generation: string; ref: ScienceSessionRef; port: number };
 export type ScienceChatNativeRequest = ScienceRequest | { action: "create-cell"; bindingRevision: string; notebook: string; generation: string; code: string; after?: string };
@@ -118,8 +118,9 @@ export class ScienceService {
     const scope = `${workspaceId}/${worktreeId}`;
     const previous = this.scopes.get(scope);
     try {
-      const lease = operation ? await scienceTimed("native-resolve-catalog-lease", () => this.catalog.terminalLease(workspaceId, worktreeId)) : undefined;
-      const binding = lease?.binding ?? await scienceTimed("native-resolve-catalog-binding", () => this.catalog.binding(workspaceId, worktreeId));
+      const timing = scienceTiming.getStore() ? { async: scienceTimed, span: scienceSpan, count: scienceCount } : undefined;
+      const lease = operation ? await scienceTimed("native-resolve-catalog-lease", () => this.catalog.terminalLease(workspaceId, worktreeId, timing)) : undefined;
+      const binding = lease?.binding ?? await scienceTimed("native-resolve-catalog-binding", () => this.catalog.binding(workspaceId, worktreeId, undefined, timing));
       // Borrow the evidence-validated read path only for core identity lookup.
       // Native mutations retain their Science service and operation-local guards.
       const adapter = await scienceTimed("native-resolve-router", () => this.router.forPolling(workspaceId, { async: scienceTimed, sync: scienceTimedSync }));

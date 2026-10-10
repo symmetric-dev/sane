@@ -6,6 +6,7 @@ import { uuid, type Session } from "./history";
 import type { Association, WorkspaceRecord, WorktreeRecord, NavigationBookmark, NavigationWrite } from "./catalog-contract";
 import { createWorkspaceSearchLease, type WorkspaceSearchLease } from "./workspace-search-scope";
 import { createTerminalBindingLease, type TerminalBindingLease } from "./terminal-binding";
+import type { OperationTiming } from "./operation-timing";
 
 type Identity = { dev: number; ino: number };
 type Tree = WorktreeRecord & { identity: Identity; gitIdentity: Identity | null };
@@ -76,7 +77,7 @@ export class CatalogService {
       this.validateNavigation(n.bookmark, false); this.navigation = n.bookmark;
     } catch { throw new Error("Missing or invalid fresh navigation record"); }
   }
-  async discover(cwd: string, operation?: WorkspaceOperationOptions): Promise<Discovery> {
+  async discover(cwd: string, operation?: WorkspaceOperationOptions, timing?: OperationTiming): Promise<Discovery> {
     workspaceOperationCheck(operation);
     if (!validPath(cwd)) error(400, "invalid-cwd", "cwd must be an absolute directory path");
     let path: string;
@@ -84,20 +85,20 @@ export class CatalogService {
     const data = await workspaceOperationWait(() => realpath(this.dataDir), operation);
     await workspaceOperationWait(() => identity(path), operation);
     if (inside(data, path) || path.split(sep).some(p => [".git", ".sane"].includes(p.toLowerCase()))) error(403, "workspace-forbidden", "Directory is protected");
-    const git = async (args: string[]) => {
+    const git = async (args: string[], timingStage: string) => {
       workspaceOperationCheck(operation);
-      const result = await this.git.git(path, args, undefined, { signal: operation?.signal, timeoutMs: operation?.deadline === undefined ? undefined : Math.max(1, operation.deadline - Date.now()) });
+      const result = await this.git.git(path, args, undefined, { signal: operation?.signal, timeoutMs: operation?.deadline === undefined ? undefined : Math.max(1, operation.deadline - Date.now()), timing, timingStage });
       workspaceOperationCheck(operation);
       return result;
     };
-    const top = await git(["rev-parse", "--show-toplevel"]);
+    const top = await git(["rev-parse", "--show-toplevel"], "catalog-git-toplevel");
     if (top.code) {
       if (!top.stderr.startsWith("fatal: not a git repository (or any of the parent directories): .git")) error(503, "git-discovery", "Git discovery failed");
       const id = await workspaceOperationWait(() => identity(path), operation); return { root: path, commonDir: null, gitDir: null, identity: id, gitIdentity: null, repoIdentity: id };
     }
     const root = await workspaceOperationWait(() => realpath(top.bytes.toString("utf8").replace(/\n$/, "")), operation);
-    const query = async (flag: string) => { const r = await git(["rev-parse", "--path-format=absolute", flag]); if (r.code) error(503, "git-discovery", "Git directory discovery failed"); return workspaceOperationWait(() => realpath(r.bytes.toString("utf8").replace(/\n$/, "")), operation); };
-    const commonDir = await query("--git-common-dir"), gitDir = await query("--git-dir");
+    const query = async (flag: string, stage: string) => { const r = await git(["rev-parse", "--path-format=absolute", flag], stage); if (r.code) error(503, "git-discovery", "Git directory discovery failed"); return workspaceOperationWait(() => realpath(r.bytes.toString("utf8").replace(/\n$/, "")), operation); };
+    const commonDir = await query("--git-common-dir", "catalog-git-common-dir"), gitDir = await query("--git-dir", "catalog-git-dir");
     if (!inside(root, path) || inside(data, root) || [commonDir, gitDir].some(p => inside(p, path) || inside(p, root))) error(403, "workspace-forbidden", "Git administration directory is protected");
     return { root, commonDir, gitDir, identity: await workspaceOperationWait(() => identity(root), operation), gitIdentity: await workspaceOperationWait(() => identity(gitDir), operation), repoIdentity: await workspaceOperationWait(() => identity(commonDir), operation) };
   }
@@ -147,11 +148,11 @@ export class CatalogService {
   }
   private find(id: string) { return this.catalog.workspaces.find(w => w.workspaceId === id) ?? error(404, "unknown-workspace", "Unknown workspace"); }
   private publicWorkspace(w: Repo): WorkspaceRecord { return { workspaceId: w.workspaceId, kind: w.kind, name: w.name, commonDir: w.commonDir, worktrees: w.worktrees.map(({ identity, gitIdentity, ...t }) => ({ ...t })) }; }
-  async binding(workspaceId: string, worktreeId: string, operation?: WorkspaceOperationOptions) {
+  async binding(workspaceId: string, worktreeId: string, operation?: WorkspaceOperationOptions, timing?: OperationTiming) {
     workspaceOperationCheck(operation);
     const w = this.find(workspaceId), t = w.worktrees.find(t => t.worktreeId === worktreeId) ?? error(404, "unknown-worktree", "Unknown worktree");
     try {
-      const d = await this.discover(t.root, operation);
+      const d = await this.discover(t.root, operation, timing);
       if (d.root !== t.root || d.gitDir !== t.gitDir || d.commonDir !== w.commonDir || !same(d.identity, t.identity) || !same(d.gitIdentity, t.gitIdentity) || !same(d.repoIdentity, w.identity)) error(409, "binding-invalid", "Pinned filesystem binding changed");
       workspaceOperationCheck(operation);
       t.state = "available"; delete t.reason;
@@ -183,13 +184,14 @@ export class CatalogService {
   /** Acquire once per terminal resource, after lifecycle discovery. Stable input
    * validation has no Git subprocesses; mapping/config changes remain fenced.
    * This is not a replacement for full binding checks at lifecycle boundaries. */
-  async terminalLease(workspaceId: string, worktreeId: string): Promise<TerminalBindingLease> {
-    await this.serial;
+  async terminalLease(workspaceId: string, worktreeId: string, timing?: OperationTiming): Promise<TerminalBindingLease> {
+    const endWait = timing?.span("catalog-mutation-queue-wait");
+    try { await this.serial; } finally { endWait?.(); }
     if (this.failed) error(503, "catalog-storage", "Catalog storage unavailable; restart required");
     const w = this.find(workspaceId), t = w.worktrees.find(t => t.worktreeId === worktreeId) ?? error(404, "unknown-worktree", "Unknown worktree");
     // Preserve explicit acquisition's repair check for an invalid catalog entry.
     // Available entries need just one discovery, fenced inside lease creation.
-    if (t.state !== "available") await this.binding(workspaceId, worktreeId);
+    if (t.state !== "available") { timing?.count("lease-repair-binding"); await this.binding(workspaceId, worktreeId, undefined, timing); }
     const binding = { cwd: t.root, bindingRevision: t.bindingRevision, protectedPaths: [w.commonDir, t.gitDir].filter((path): path is string => !!path) };
     const token = () => {
       if (this.failed) error(503, "catalog-storage", "Catalog storage unavailable; restart required");
@@ -202,7 +204,7 @@ export class CatalogService {
       return await createTerminalBindingLease({
         binding, dataDir: this.dataDir, rootIdentity: { ...t.identity }, gitDir: t.gitDir, gitIdentity: t.gitIdentity && { ...t.gitIdentity }, commonDir: w.commonDir, commonIdentity: { ...w.identity },
         validateBinding: () => { if (token() !== pinned) error(409, "binding-invalid", "Terminal worktree binding changed"); },
-        rediscover: () => this.binding(workspaceId, worktreeId),
+        rediscover: () => this.binding(workspaceId, worktreeId, undefined, timing), timing,
       });
     } catch (e) { throw e instanceof WorkspaceError ? e : new WorkspaceError(409, "binding-invalid", "Terminal worktree path unavailable"); }
   }

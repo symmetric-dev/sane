@@ -2,6 +2,7 @@ import { constants, type Stats } from "node:fs";
 import { lstat, open, realpath } from "node:fs/promises";
 import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { WorkspaceError } from "./workspace";
+import type { OperationTiming } from "./operation-timing";
 
 export type TerminalBinding = { cwd: string; bindingRevision: string; protectedPaths: string[] };
 export type TerminalBindingLease = {
@@ -12,6 +13,7 @@ export type TerminalBindingLease = {
 };
 type Identity = { dev: number; ino: number };
 type Input = {
+  timing?: OperationTiming;
   binding: TerminalBinding;
   dataDir: string;
   rootIdentity: Identity;
@@ -96,7 +98,7 @@ function simpleConfig(text: string): boolean {
   return true;
 }
 
-async function checkMappings(mappings: Mapping[]): Promise<boolean> {
+async function checkMappingsRaw(mappings: Mapping[]): Promise<boolean> {
   const matches = await Promise.all(mappings.map(async mapping => {
     const info = await optionalStat(mapping.path);
     if (mapping.signature === null) return !info;
@@ -110,6 +112,8 @@ async function checkMappings(mappings: Mapping[]): Promise<boolean> {
 }
 
 export async function createTerminalBindingLease(input: Input): Promise<TerminalBindingLease> {
+  const timed = <T>(stage: string, work: () => Promise<T>) => input.timing ? input.timing.async(stage, work) : work();
+  const checkMappings = (mappings: Mapping[]) => timed("lease-check-mappings", () => checkMappingsRaw(mappings));
   const binding = { ...input.binding, protectedPaths: [...input.binding.protectedPaths] };
   Object.freeze(binding.protectedPaths); Object.freeze(binding);
   const root = binding.cwd, data = await realpath(input.dataDir);
@@ -126,19 +130,19 @@ export async function createTerminalBindingLease(input: Input): Promise<Terminal
     await directory(input.gitDir, input.gitIdentity); await directory(input.commonDir, input.commonIdentity);
   } else if (input.gitDir || input.commonDir || input.gitIdentity) changed();
 
-  const checkPins = async () => {
+  const checkPins = () => timed("lease-check-pins", async () => {
     input.validateBinding();
     const [canonicalRoot, canonicalData, intact] = await Promise.all([realpath(root), realpath(input.dataDir), checkMappings(directories)]);
     if (canonicalRoot !== root || canonicalData !== data || !intact) changed();
     input.validateBinding();
-  };
-  const checkHead = async (path: string) => {
+  });
+  const checkHead = (path: string) => timed("lease-head-read", async () => {
     const text = await metadata(path, []);
     // Git's repository recognizer uses HEAD too. Accept normal branch/commit
     // updates without discovery; unsupported HEAD syntax/layout uses fallback.
     if (!/^(?:ref: refs\/[^\0\r\n]+|[a-fA-F0-9]{40}|[a-fA-F0-9]{64})\n?$/.test(text!)) unsupported();
-  };
-  const capture = async (): Promise<Snapshot> => {
+  });
+  const capture = (): Promise<Snapshot> => timed("lease-capture", async () => {
     const mappings: Mapping[] = [], configs: Mapping[] = [];
     const fences: Mapping[] = [];
     let head: string | null = null, supported = true;
@@ -209,31 +213,36 @@ export async function createTerminalBindingLease(input: Input): Promise<Terminal
     if (!await checkMappings([...fences, ...mappings, ...configs])) changed();
     await checkPins();
     return { mappings, configs, head, fences, supported };
-  };
-  const rediscover = async () => {
+  });
+  const rediscover = () => timed("lease-rediscover", async () => {
     await checkPins();
     const current = await input.rediscover();
     if (current.cwd !== binding.cwd || current.bindingRevision !== binding.bindingRevision || JSON.stringify(current.protectedPaths) !== JSON.stringify(binding.protectedPaths)) changed();
     await checkPins();
-  };
+  });
   // Catalog pins are only selectors until discovery confirms this exact local
   // metadata snapshot. This closes the discovery-before-capture startup race.
   let snapshot = await capture();
+  input.timing?.count("lease-rediscover-acquisition");
   await rediscover();
   if (!await checkMappings(snapshot.fences)) changed();
   await checkPins();
   let invalid = false, serial: Promise<void> = Promise.resolve();
   const validate = () => {
+    const endWait = input.timing?.span("lease-validation-queue-wait");
     const next = serial.then(async () => {
+      endWait?.();
+      input.timing?.count(snapshot.supported ? "lease-validation-metadata" : "lease-validation-discovery");
       if (invalid) changed();
       try {
         await checkPins();
         if (snapshot.supported) {
           if (!await checkMappings(snapshot.mappings)) changed();
           let refresh = !await checkMappings(snapshot.configs);
+          if (refresh) input.timing?.count("lease-refresh-config");
           if (snapshot.head) {
             try { await checkHead(snapshot.head); }
-            catch (error) { if (!(error instanceof UnsupportedMapping)) throw error; refresh = true; }
+            catch (error) { if (!(error instanceof UnsupportedMapping)) throw error; refresh = true; input.timing?.count("lease-refresh-head-unsupported"); }
           }
           if (refresh) {
             const refreshed = await capture();
@@ -248,6 +257,7 @@ export async function createTerminalBindingLease(input: Input): Promise<Terminal
           }
           if (snapshot.supported && !await checkMappings([...snapshot.mappings, ...snapshot.configs])) changed();
         } else {
+          input.timing?.count("lease-refresh-unsupported-snapshot");
           const refreshed = await capture();
           await rediscover();
           if (!await checkMappings(refreshed.fences)) changed();
@@ -262,5 +272,6 @@ export async function createTerminalBindingLease(input: Input): Promise<Terminal
     });
     serial = next.catch(() => {}); return next;
   };
+  input.timing?.count(snapshot.supported ? "lease-acquired-metadata" : "lease-acquired-discovery");
   return { binding, get mode() { return snapshot.supported ? "metadata" : "discovery"; }, validate };
 }
