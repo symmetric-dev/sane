@@ -24,6 +24,17 @@ function validate(input: unknown): ScienceChatRequest {
   return input as unknown as ScienceChatRequest;
 }
 const marker = (id: string) => `# sane-science-block:${id}\n`;
+// Marimo's notebook parser strips trailing whitespace on reload, including the
+// final newline of a marker-only cell. Accept that exact persisted spelling of
+// an already recorded, block-owned source; never infer ownership from a marker
+// alone or normalize arbitrary external cell contents.
+// Python 3.12 str.rstrip() whitespace differs from JavaScript trimEnd(): it
+// includes U+001C–001F/U+0085 and does not include U+FEFF.
+const notebookSource = (source: string) => source.replace(/[\u0009-\u000d\u001c-\u0020\u0085\u00a0\u1680\u2000-\u200a\u2028\u2029\u202f\u205f\u3000]+$/u, "");
+function knownSource(id: string, sources: readonly string[], code: string) {
+  return sources.some(source => source === code || source.startsWith(marker(id)) && notebookSource(source) === code);
+}
+const markedSource = (id: string, source: string) => notebookSource(marker(id) + source);
 function observed(cell: ScienceCell | undefined): ScienceOperation["observation"] {
   if (!cell || Buffer.byteLength(JSON.stringify(cell)) > 256 * 1024) return null;
   // Capture bounded exact strings only. The shared serializer understands static
@@ -92,7 +103,7 @@ export class ScienceChatService {
         if (chat.notebookKind === "existing" && !chat.blocks.some(b => b.creation === null)) scienceFail(409, "Open the existing notebook before adding blocks");
         if (input.anchor.kind === "after-message" && !await this.ownsMessage(id, input.anchor.messageId)) scienceFail(409, "Anchor is not an exact canonical message in this conversation");
         current();
-        const blockId = crypto.randomUUID(), code = marker(blockId) + input.source;
+        const blockId = crypto.randomUUID(), code = markedSource(blockId, input.source);
         if (!scienceText(code)) scienceFail(413, "Marked source exceeds limit");
         chat.blocks.push({ id: blockId, revision: 0, source: input.source, knownSources: [code], anchor: structuredClone(input.anchor), creation: { requestId: input.requestId, initialSource: input.source, expectedRevision: input.expectedRevision, state: "pending", generation: null } });
         chat.revision++; save();
@@ -166,7 +177,7 @@ export class ScienceChatService {
         for (const b of chat.blocks) {
           if (b.creation?.state === "unknown") scienceFail(409, "Native cell addition outcome is unknown; automatic replay is fenced");
           if (b.creation?.state === "pending") { materialize.push(b); continue; }
-          const matches = cells.filter(c => b.knownSources.includes(c.code));
+          const matches = cells.filter(c => knownSource(b.id, b.knownSources, c.code));
           // A confirmed, nonexecuting addition may be absent after restart because
           // native autosave was never acknowledged. Re-materialize from durable
           // source only in a different generation with an otherwise exact map.
@@ -178,7 +189,7 @@ export class ScienceChatService {
         if (claimed.size !== cells.length) scienceFail(409, "Notebook cell set changed externally");
         if (generationChanged) save();
         for (const b of materialize) {
-          const code = marker(b.id) + b.source;
+          const code = markedSource(b.id, b.source);
           if (!scienceText(code)) scienceFail(413, "Marked source exceeds limit");
           if (!b.knownSources.includes(code)) b.knownSources.push(code);
           b.creation!.state = "unknown"; b.creation!.generation = status.session.generation; save();
@@ -193,7 +204,7 @@ export class ScienceChatService {
         }
         if (input.action === "open") return { chat };
         if (input.action !== "run") scienceFail(400, "Unsupported science action");
-        const cell = mapped.get(block!.id)!, code = marker(block!.id) + block!.source;
+        const cell = mapped.get(block!.id)!, code = markedSource(block!.id, block!.source);
         if (!scienceText(code)) scienceFail(413, "Marked source exceeds limit");
         if (!block!.knownSources.includes(code)) block!.knownSources.push(code);
         const operation: ScienceOperation = { id: crypto.randomUUID(), requestId: input.requestId, blockId: block!.id, revision: block!.revision, source: block!.source, state: "unknown", createdAt: new Date().toISOString(), observation: null };
