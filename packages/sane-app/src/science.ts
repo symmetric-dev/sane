@@ -120,7 +120,9 @@ export class ScienceService {
     try {
       const lease = operation ? await scienceTimed("native-resolve-catalog-lease", () => this.catalog.terminalLease(workspaceId, worktreeId)) : undefined;
       const binding = lease?.binding ?? await scienceTimed("native-resolve-catalog-binding", () => this.catalog.binding(workspaceId, worktreeId));
-      const adapter = await scienceTimed("native-resolve-router", () => this.router.forWorkspace(workspaceId, undefined, { async: scienceTimed, sync: scienceTimedSync }));
+      // Borrow the evidence-validated read path only for core identity lookup.
+      // Native mutations retain their Science service and operation-local guards.
+      const adapter = await scienceTimed("native-resolve-router", () => this.router.forPolling(workspaceId, { async: scienceTimed, sync: scienceTimedSync }));
       scienceTimedSync("native-resolve-execution-checkout-sync", () => adapter.domain.validateExecutionCheckout(binding.cwd));
       const c = adapter.domain.context;
       const workspace: ScienceWorkspace = { repositoryId: c.repositoryId, primaryCheckout: c.primaryCheckout, stateRoot: c.stateRoot, primaryPin: c.primaryPin };

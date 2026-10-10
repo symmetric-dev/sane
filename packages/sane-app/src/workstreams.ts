@@ -216,21 +216,26 @@ export class RepositoryRouter {
     return this.ready(discovery, expectedRepositoryId, timing);
   }
   /** Read-only requests only. Cache misses retain full catalog/Git/SQLite discovery. */
-  async forPolling(workspaceId: string) {
+  async forPolling(workspaceId: string, timing?: ResolutionTiming) {
     if (!workspaceId) throw new WorkstreamAdapterError(400, "workspace-required", "Select a repository workspace");
     const entry = this.polls.get(workspaceId);
     if (entry) {
-      const workspace = await this.catalog.registered(workspaceId);
+      const registered = () => this.catalog.registered(workspaceId);
+      const workspace = await (timing ? timing.async("native-router-catalog-registered", registered) : registered()).catch(error => { this.polls.delete(workspaceId); throw error; });
       const tree = workspace.worktrees.find(tree => tree.state === "available");
       if (workspace.kind === "repository" && entry.commonDir === workspace.commonDir && entry.root === tree?.root && entry.worktreeId === tree.worktreeId && entry.bindingRevision === tree.bindingRevision && this.cache.get(this.key(entry.adapter.domain.context)) === entry.adapter) {
-        try { entry.adapter.domain.validatePolling(); }
+        try {
+          const validate = () => entry.adapter.domain.validatePolling();
+          if (timing) timing.sync("native-router-cache-validate-sync", validate); else validate();
+        }
         catch (error) { this.polls.delete(workspaceId); this.cache.delete(this.key(entry.adapter.domain.context)); entry.adapter.close(); throw error; }
         return entry.adapter;
       }
     }
     this.polls.delete(workspaceId);
-    const checkout = await this.checkout(workspaceId);
-    const adapter = this.ready(this.discover(checkout));
+    const checkout = await this.checkout(workspaceId, timing);
+    const discover = () => this.discover(checkout);
+    const adapter = this.ready(timing ? timing.sync("native-router-discovery-sync", discover) : discover(), undefined, timing);
     this.polls.set(workspaceId, { ...checkout, adapter });
     return adapter;
   }
