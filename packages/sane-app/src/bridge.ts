@@ -2931,7 +2931,9 @@ async function startOwned(options: Options, assetsDir: string, packageDir: strin
           ensureDirectory, validateOpenCodeModel: (model, effort) => oc.model(model, effort), resolveOpenCodeLaunch: (cwd, settings) => oc.resolveLaunch(cwd, settings) });
         const { conversationId, cwd } = prepared.binding;
         const oldOwner = owners.get(conversationId);
-        const admission = coordinator.reserveAdmission({ conversationIds: [conversationId], intent: { kind: "user-prompt" },
+        // Science dispatch carries this exact request identity through readiness
+        // and native evidence; the admission lease must reserve the same intent.
+        const admission = coordinator.reserveAdmission({ conversationIds: [conversationId], intent: { kind: "user-prompt", ...(scienceReceipt ? { requestId: scienceReceipt.intent.requestId } : {}) },
           ...(!scienceReceipt && oldOwner && claudeRuns.canQueueFollowup(oldOwner) ? { predecessor: oldOwner } : {}) });
         if (!admission.ready) return json({ error: admission.reason, code: admission.code }, admission.code === "capacity" ? 429 : 409);
         const lease = admission.lease;
