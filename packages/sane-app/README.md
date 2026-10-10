@@ -79,6 +79,38 @@ HTTP parsing, browser/render/network time and the final timing-log append.
 Spans are appended in completion order, may nest/overlap, and **must not be summed**.
 At most 256 spans are retained; `droppedSpans` counts omitted spans.
 
+`native-resolve` now contains sequential `native-resolve-catalog-lease` (or
+`native-resolve-catalog-binding`), `native-resolve-router`, and
+`native-resolve-execution-checkout-sync` spans. Inside the router, sequential
+`native-router-catalog-get` (refreshes all catalog worktrees),
+`native-router-catalog-binding` (selected checkout),
+`native-router-discovery-sync` (core Git discovery),
+`native-router-store-inspect-sync`, optional `native-router-domain-open-sync`
+(cache miss), and `native-router-domain-validate-sync` identify the expensive
+direct calls. Span occurrences count these calls, **not individual Git commands**.
+Execution-checkout and domain validation may also invoke synchronous Git.
+Optional `native-resolve-runtime-create-sync`, `native-resolve-invalidation-stop`
+and `native-resolve-error-stop` expose initialization/cleanup costs.
+
+`native-operation-pre-validation` and `native-operation-post-validation` bracket
+the admitted native operation. These and the repeated inner fences contain
+`native-validation`, whose sequential children are
+`native-validation-catalog-lease` (or `native-validation-catalog-binding`),
+`native-validation-domain-sync`, and `native-validation-publication-sync`.
+Use offsets to place repeated fences before/after native steps. Only subtract
+immediate, non-overlapping children from a parent to estimate its uncovered gap;
+do not also subtract grandchildren. Gaps include uninstrumented bookkeeping,
+timing overhead and scheduling. `-sync` measures elapsed blocking direct-call
+time (including filesystem/Git subprocess waits), not CPU time. Async spans
+include await/scheduling time; neither isolates CPU or Git subprocess runtime.
+Instrumentation is caller-scoped to science and records fixed stage labels and
+durations, never paths, config, source, tokens or raw errors.
+
+For comparison, run the same inexpensive cell several times with fresh request
+IDs in an already open notebook. Compare `existing-session` records, per-stage
+durations/counts and uncovered gaps; exclude reused requests and check
+`droppedSpans` is zero. Keep the first open-required run separate.
+
 Stages cover binding/native resolution, readiness status, open/readiness or refresh,
 inspection, edit, explicit edit verification, run, pair post-operation snapshot
 capture, observation serialization and durable chat persistence. Repeated stage

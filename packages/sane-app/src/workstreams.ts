@@ -143,19 +143,26 @@ export class WorkstreamAdapter {
   }
 }
 
+/** Optional caller-scoped diagnostics; ordinary router calls have no timing sink. */
+type ResolutionTiming = {
+  async<T>(stage: string, work: () => Promise<T>): Promise<T>;
+  sync<T>(stage: string, work: () => T): T;
+};
 /** Cache handles by immutable domain identity AND complete filesystem evidence. */
 export class RepositoryRouter {
   private cache = new Map<string, WorkstreamAdapter>();
   /** Read-only reuse of a fully opened adapter; filesystem evidence is checked on every access. */
   private polls = new Map<string, { root: string; commonDir: string; worktreeId: string; bindingRevision: string; adapter: WorkstreamAdapter }>();
   constructor(private catalog: CatalogService, private sources: SourceRecords, private readonly hooks: WorkstreamMutationHooks = {}) {}
-  private async checkout(workspaceId: string) {
+  private async checkout(workspaceId: string, timing?: ResolutionTiming) {
     if (!workspaceId) throw new WorkstreamAdapterError(400, "workspace-required", "Select a repository workspace");
-    const workspace = await this.catalog.get(workspaceId);
+    const get = () => this.catalog.get(workspaceId);
+    const workspace = await (timing ? timing.async("native-router-catalog-get", get) : get());
     if (workspace.kind !== "repository") throw new WorkstreamAdapterError(409, "not-repository", "Plain directory has no repository domain");
     for (const tree of workspace.worktrees) {
       if (tree.state !== "available") continue;
-      await this.catalog.binding(workspaceId, tree.worktreeId);
+      const bind = () => this.catalog.binding(workspaceId, tree.worktreeId);
+      await (timing ? timing.async("native-router-catalog-binding", bind) : bind());
       return { root: tree.root, commonDir: workspace.commonDir!, worktreeId: tree.worktreeId, bindingRevision: tree.bindingRevision };
     }
     throw new WorkstreamAdapterError(409, "unavailable", "No valid checkout is available");
@@ -178,23 +185,36 @@ export class RepositoryRouter {
     return this.inspect(workspaceId);
   }
   private key(context: RepositoryContext) { return JSON.stringify([context.repositoryId, context.schemaVersion, context.primaryPin, context.invocationCheckout, context.stateRoot]); }
-  private open(context: RepositoryContext) {
+  private open(context: RepositoryContext, timing?: ResolutionTiming) {
     // An explicit local upgrade invalidates old handles even when UUID/inode stay
     // stable. Evict them before reopening the freshly inspected capability.
     for (const [cachedKey, cached] of this.cache) if (cached.repositoryId === context.repositoryId && cached.domain.context.schemaVersion !== context.schemaVersion) { cached.close(); this.cache.delete(cachedKey); }
     const key = this.key(context);
     let adapter = this.cache.get(key);
-    if (!adapter) { adapter = new WorkstreamAdapter(openRepositoryDomain(context), this.sources, this.hooks); this.cache.set(key, adapter); }
-    try { adapter.domain.validateHandle(); return adapter; }
+    if (!adapter) {
+      const create = () => new WorkstreamAdapter(openRepositoryDomain(context), this.sources, this.hooks);
+      adapter = timing ? timing.sync("native-router-domain-open-sync", create) : create(); this.cache.set(key, adapter);
+    }
+    try {
+      const validate = () => adapter!.domain.validateHandle();
+      if (timing) timing.sync("native-router-domain-validate-sync", validate); else validate();
+      return adapter;
+    }
     catch (error) { adapter.close(); this.cache.delete(key); throw error; }
   }
-  private ready(discovery: RepositoryDiscovery, expectedRepositoryId?: string) {
-    const store = inspectRepositoryStore(discovery);
+  private ready(discovery: RepositoryDiscovery, expectedRepositoryId?: string, timing?: ResolutionTiming) {
+    const inspect = () => inspectRepositoryStore(discovery);
+    const store = timing ? timing.sync("native-router-store-inspect-sync", inspect) : inspect();
     if (store.state !== "ready") throw new RepositoryStoreError(store);
     if (expectedRepositoryId && store.context.repositoryId !== expectedRepositoryId) throw new WorkstreamAdapterError(409, "domain-mismatch", "The intended domain UUID changed");
-    return this.open(store.context);
+    return this.open(store.context, timing);
   }
-  async forWorkspace(workspaceId: string, expectedRepositoryId?: string) { return this.ready(await this.discovery(workspaceId), expectedRepositoryId); }
+  async forWorkspace(workspaceId: string, expectedRepositoryId?: string, timing?: ResolutionTiming) {
+    if (!timing) return this.ready(await this.discovery(workspaceId), expectedRepositoryId);
+    const checkout = await this.checkout(workspaceId, timing);
+    const discovery = timing.sync("native-router-discovery-sync", () => this.discover(checkout));
+    return this.ready(discovery, expectedRepositoryId, timing);
+  }
   /** Read-only requests only. Cache misses retain full catalog/Git/SQLite discovery. */
   async forPolling(workspaceId: string) {
     if (!workspaceId) throw new WorkstreamAdapterError(400, "workspace-required", "Select a repository workspace");

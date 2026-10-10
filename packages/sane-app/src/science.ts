@@ -11,7 +11,7 @@ import type { CatalogService } from "./catalog";
 import { RepositoryRouter, WorkstreamAdapterError } from "./workstreams";
 import { WorkspaceError } from "./workspace";
 import { body, json } from "./bridge-http";
-import { scienceTimed } from "sane-science/timing";
+import { scienceTimed, scienceTimedSync } from "sane-science/timing";
 
 type Session = { generation: string; ref: ScienceSessionRef; port: number };
 export type ScienceChatNativeRequest = ScienceRequest | { action: "create-cell"; bindingRevision: string; notebook: string; generation: string; code: string; after?: string };
@@ -77,7 +77,7 @@ export class ScienceService {
       };
       const assertCurrent = this.currentGuard(workspaceId, worktreeId, resolved, authorized, ownership);
       try {
-        await assertCurrent();
+        await scienceTimed("native-operation-pre-validation", assertCurrent);
         assertCurrent.check();
         const result = await scienceTimed("native-operation", () => use(input => {
           if (!live) fail(409, "science-operation", "Science operation has ended");
@@ -88,7 +88,7 @@ export class ScienceService {
           pending = step;
           return step.finally(() => { pending = undefined; });
         }).finally(() => { live = false; }));
-        await assertCurrent();
+        await scienceTimed("native-operation-post-validation", assertCurrent);
         assertCurrent.check();
         return result;
       } finally {
@@ -118,21 +118,21 @@ export class ScienceService {
     const scope = `${workspaceId}/${worktreeId}`;
     const previous = this.scopes.get(scope);
     try {
-      const lease = operation ? await this.catalog.terminalLease(workspaceId, worktreeId) : undefined;
-      const binding = lease?.binding ?? await this.catalog.binding(workspaceId, worktreeId);
-      const adapter = await this.router.forWorkspace(workspaceId);
-      adapter.domain.validateExecutionCheckout(binding.cwd);
+      const lease = operation ? await scienceTimed("native-resolve-catalog-lease", () => this.catalog.terminalLease(workspaceId, worktreeId)) : undefined;
+      const binding = lease?.binding ?? await scienceTimed("native-resolve-catalog-binding", () => this.catalog.binding(workspaceId, worktreeId));
+      const adapter = await scienceTimed("native-resolve-router", () => this.router.forWorkspace(workspaceId, undefined, { async: scienceTimed, sync: scienceTimedSync }));
+      scienceTimedSync("native-resolve-execution-checkout-sync", () => adapter.domain.validateExecutionCheckout(binding.cwd));
       const c = adapter.domain.context;
       const workspace: ScienceWorkspace = { repositoryId: c.repositoryId, primaryCheckout: c.primaryCheckout, stateRoot: c.stateRoot, primaryPin: c.primaryPin };
       const key = JSON.stringify(workspace), proof = JSON.stringify([binding.cwd, binding.bindingRevision]);
       if (previous && (previous.invalidated || previous.key !== key || previous.bindings.has(scope) && previous.bindings.get(scope) !== proof)) {
-        await this.stop(previous);
+        await scienceTimed("native-resolve-invalidation-stop", () => this.stop(previous));
         fail(409, "science-binding", "Science binding changed; reload status before opening a new session");
       }
       let r = this.runtimes.get(key);
       if (!r) {
         if (this.runtimes.size >= 16) fail(429, "science-limit", "Science workspace limit reached");
-        r = { key, service: new ScienceWorkspaceService(workspace), fs: new EnvironmentFileSystem(workspace), bindings: new Map(), sessions: new Map(), ports: new Set() };
+        r = scienceTimedSync("native-resolve-runtime-create-sync", () => ({ key, service: new ScienceWorkspaceService(workspace), fs: new EnvironmentFileSystem(workspace), bindings: new Map<string, string>(), sessions: new Map<string, Session>(), ports: new Set<number>() }));
         this.runtimes.set(key, r);
       }
       r.bindings.set(scope, proof); this.scopes.set(scope, r);
@@ -142,7 +142,7 @@ export class ScienceService {
       return { r, binding, repositoryId: c.repositoryId, lease, validate: () => lease ? adapter.domain.validateRead() : adapter.domain.validateHandle() };
     } catch (error) {
       // Lost catalog/domain evidence must not leave an adopted native session alive.
-      if (previous && this.runtimes.has(previous.key)) await this.stop(previous);
+      if (previous && this.runtimes.has(previous.key)) await scienceTimed("native-resolve-error-stop", () => this.stop(previous));
       throw error;
     }
   }
@@ -209,13 +209,13 @@ export class ScienceService {
     return Object.assign(() => scienceTimed("native-validation", async () => {
       local();
       try {
-        if (resolved.lease) await resolved.lease.validate();
+        if (resolved.lease) await scienceTimed("native-validation-catalog-lease", () => resolved.lease!.validate());
         else {
-          const current = await this.catalog.binding(workspaceId, worktreeId);
+          const current = await scienceTimed("native-validation-catalog-binding", () => this.catalog.binding(workspaceId, worktreeId));
           if (current.cwd !== binding.cwd || current.bindingRevision !== binding.bindingRevision) fail(409, "science-binding", "Science worktree binding changed");
         }
-        resolved.validate();
-        this.catalog.assertBinding(workspaceId, worktreeId, binding.cwd, binding.bindingRevision);
+        scienceTimedSync("native-validation-domain-sync", () => resolved.validate());
+        scienceTimedSync("native-validation-publication-sync", () => this.catalog.assertBinding(workspaceId, worktreeId, binding.cwd, binding.bindingRevision));
       } catch { await this.stop(r); fail(409, "science-binding", "Science repository binding is unavailable"); }
       local();
     }), { check: local });

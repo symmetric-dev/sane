@@ -17,3 +17,9 @@ export async function scienceTimed<T>(stage: string, work: () => Promise<T>): Pr
   try { const value = await work(); end(); return value; }
   catch (error) { end("error"); throw error; }
 }
+/** Preserve synchronous execution and exception propagation for blocking work. */
+export function scienceTimedSync<T>(stage: string, work: () => T): T {
+  const end = scienceSpan(stage);
+  try { const value = work(); end(); return value; }
+  catch (error) { end("error"); throw error; }
+}
