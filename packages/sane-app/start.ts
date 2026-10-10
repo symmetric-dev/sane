@@ -17,7 +17,8 @@ Run bun run setup:app first to save config and initialize fresh App state.
   --reconcile-interrupted   Explicitly reclaim proven-dead ownership
 CLI overrides saved settings; CLI paths are invocation-relative, saved paths
 are config-relative. No native services are installed or started.
-See packages/sane-app/HUMAN-OPERATOR-GUIDE.md.`;
+SANE_APP_PROFILE=1 captures 60 seconds of App CPU/event-loop diagnostics.
+See packages/sane-app/PROFILING.md and HUMAN-OPERATOR-GUIDE.md.`;
 
 export async function runStart(args: string[]) {
   if (args.length === 1 && args[0] === "--help") { console.log(help); return; }
