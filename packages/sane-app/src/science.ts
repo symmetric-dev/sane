@@ -195,7 +195,10 @@ export class ScienceService {
           if (!["stopped", "exited", "failed"].includes(stopped.runtime.state) || ["pending", "failed"].includes(stopped.runtime.tokenFileCleanup)) fail(503, "science-stop", "Notebook cleanup is incomplete");
           selected = this.session(r, input.notebook, s); r.sessions.delete(input.notebook);
           this.ports.delete(s.port); r.ports.delete(s.port);
-        } else if (input.action === "inspect") { await scienceTimed("native-refresh-readiness", () => r.service.refreshNotebook(s.ref)); inspected = snapshot(await scienceTimed("native-inspection", () => r.service.inspectCells(s.ref))); }
+        } else if (input.action === "inspect") {
+          // inspectCells refreshes readiness and validates the exact selected session before inspection.
+          inspected = snapshot(await scienceTimed("native-inspection", () => r.service.inspectCells(s.ref)));
+        }
         else {
           const result = input.action === "create-cell" ? await r.service.createCell(s.ref, input.code, { after: input.after, run: false }) : input.action === "edit" ? await r.service.editCell(s.ref, input.cellId, input.code, input.expectedSourceHash, false) : await r.service.runCell(s.ref, input.cellId);
           operation = { cellId: result.cellId, mutation: result.mutation, execution: result.execution, durability: result.durability, ...(result.error ? { issue: "operation-error" as const } : result.snapshotError ? { issue: "snapshot-unavailable" as const } : {}) };
