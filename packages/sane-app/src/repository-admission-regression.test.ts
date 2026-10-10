@@ -80,7 +80,11 @@ for (const boundary of ["get-internal-binding", "final-router-binding", "warm-po
         writeFileSync(marker, JSON.stringify({ ...JSON.parse(readFileSync(marker, "utf8")), repositoryId: crypto.randomUUID() }));
       }
       gate.resolve();
-      expect(await outcome).toMatchObject({ code: route === "forPolling" || boundary === "final-router-binding" && change === "checkout" ? "STALE_BINDING" : change === "checkout" ? "binding-invalid" : "CORRUPT_STORE" });
+      // Cold routes now fence catalog identity after asynchronous repository
+      // inspection. A replaced execution checkout is rejected there (409)
+      // before execution() reaches its additional persisted core-pin check.
+      const code = route === "forPolling" ? "STALE_BINDING" : change === "checkout" ? "binding-invalid" : "CORRUPT_STORE";
+      expect(await outcome).toMatchObject({ code, ...(code === "binding-invalid" ? { status: 409 } : {}) });
       expect(dispatch).not.toHaveBeenCalled();
     } finally {
       gate.resolve();

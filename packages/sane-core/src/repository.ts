@@ -4,6 +4,7 @@ import { randomUUID } from "node:crypto"
 import { accessSync, closeSync, constants, existsSync, fstatSync, fsyncSync, lstatSync, mkdirSync, mkdtempSync, openSync, readFileSync, readSync, readdirSync, realpathSync, renameSync, rmSync, statSync, unlinkSync, writeFileSync, type BigIntStats } from "node:fs"
 import { hostname, tmpdir } from "node:os"
 import { dirname, isAbsolute, join, resolve } from "node:path"
+import { isMainThread } from "node:worker_threads"
 import type { CheckoutPin, RepositoryContext, RepositoryDiscovery, StoreAvailability } from "./contracts.ts"
 import { DomainError, fail, storageError } from "./errors.ts"
 import { SCHEMA, SCHEMA_VERSION } from "./schema.ts"
@@ -11,7 +12,14 @@ import { assertSchemaCapabilities, assertStoreIntegrity, migrateV1ToV2, migrateT
 
 export function git(cwd: string, ...args: string[]): string {
   const env = Object.fromEntries(Object.entries(process.env).filter(([name]) => !name.startsWith("GIT_")))
-  return execFileSync("git", ["-C", cwd, ...args], { encoding: "utf8", env, stdio: ["ignore", "pipe", "pipe"] }).trim()
+  try {
+    // Evidence workers cannot leave an unbounded Git child behind on cancellation.
+    // Existing synchronous main-thread callers retain their original semantics.
+    return execFileSync("git", ["-C", cwd, ...args], { encoding: "utf8", env, stdio: ["ignore", "pipe", "pipe"], ...(!isMainThread ? { timeout: 5000, killSignal: "SIGKILL" as const } : {}) }).trim()
+  } catch (error) {
+    if (!isMainThread && (error as { signal?: string }).signal === "SIGKILL") fail("UNAVAILABLE", "Repository Git evidence deadline exceeded.")
+    throw error
+  }
 }
 export function pinCheckout(path: string, expectedCommon?: string): CheckoutPin {
   try {
@@ -24,7 +32,10 @@ export function pinCheckout(path: string, expectedCommon?: string): CheckoutPin 
     if (expectedCommon && commonDir !== expectedCommon) throw new Error("Checkout belongs to another repository.")
     const stat = statSync(canonical), common = statSync(commonDir), admin = statSync(gitDir)
     return { path: canonical, commonDir, gitDir, device: stat.dev, inode: stat.ino, commonDevice: common.dev, commonInode: common.ino, gitDevice: admin.dev, gitInode: admin.ino }
-  } catch (error) { return fail("INVALID_CHECKOUT", `Invalid checkout ${String(path)}: ${(error as Error).message}`) }
+  } catch (error) {
+    if (error instanceof DomainError && error.code === "UNAVAILABLE") throw error
+    return fail("INVALID_CHECKOUT", `Invalid checkout ${String(path)}: ${(error as Error).message}`)
+  }
 }
 export function samePin(a: CheckoutPin, b: CheckoutPin): boolean {
   return (["path", "commonDir", "gitDir", "device", "inode", "commonDevice", "commonInode", "gitDevice", "gitInode"] as const).every(k => a[k] === b[k])
@@ -48,7 +59,10 @@ export function discoverRepository(path: string): RepositoryDiscovery {
       : enumerated
     let primaryPin: CheckoutPin
     try { primaryPin = pinCheckout(primaryPath, invocationCheckout.commonDir) }
-    catch (error) { return fail("INVALID_CONTEXT", `Git cannot locate a valid primary checkout from ${path}; nonstandard Git administration requires unambiguous Git worktree/core.worktree evidence. ${(error as Error).message}`) }
+    catch (error) {
+      if (error instanceof DomainError && error.code === "UNAVAILABLE") throw error
+      return fail("INVALID_CONTEXT", `Git cannot locate a valid primary checkout from ${path}; nonstandard Git administration requires unambiguous Git worktree/core.worktree evidence. ${(error as Error).message}`)
+    }
     if (primaryPin.gitDir !== primaryPin.commonDir) fail("INVALID_CONTEXT", "Git primary checkout evidence is inconsistent.")
     const stateRoot = join(primaryPin.path, ".sane")
     return { primaryCheckout: primaryPin.path, commonDir: primaryPin.commonDir, stateRoot, databasePath: join(stateRoot, "sane.db"), primaryPin, invocationCheckout }
@@ -207,7 +221,7 @@ function captureCheckoutInputs(discovery: RepositoryDiscovery, filesystemOnly = 
       if (process.platform === "darwin" && executable === "/usr/bin/git") {
         nativeExecutable("/usr/bin/xcode-select"); nativeExecutable("/usr/bin/xcrun")
         const env = Object.fromEntries(Object.entries(process.env).filter(([name]) => !name.startsWith("GIT_")))
-        const tool = (path: string, args: string[]) => execFileSync(path, args, { cwd, env, encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] }).trim()
+        const tool = (path: string, args: string[]) => execFileSync(path, args, { cwd, env, encoding: "utf8", stdio: ["ignore", "pipe", "pipe"], ...(!isMainThread ? { timeout: 5000, killSignal: "SIGKILL" as const } : {}) }).trim()
         const developer = realpathSync(tool("/usr/bin/xcode-select", ["-p"]))
         const selection = process.env.DEVELOPER_DIR ?? "/private/var/db/xcode_select_link"
         // Implicit Apple fallback/search and app-bundle shorthand are not bounded.

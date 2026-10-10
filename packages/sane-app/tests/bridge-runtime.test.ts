@@ -14,6 +14,7 @@ import { OpenCodeAdapter, OpenCodeError, OpenCodeSourceMismatchError, OpenCodeUn
 import { ChromePushService } from "../src/chrome-push";
 import { capabilitiesFor, getHarnessDescriptor, type Harness } from "../shared/conversation/harness-capabilities";
 import { RepositoryRouter, WorkstreamAdapterError } from "../src/workstreams";
+import { RepositoryReader } from "sane-core/server";
 import { CatalogService } from "../src/catalog";
 import { OpenCodeRunService, type OpenCodeRunDependencies } from "../src/opencode-run-service";
 import { ClaudeRunService, type ClaudeRunDependencies } from "../src/claude-run-service";
@@ -3727,8 +3728,10 @@ describe.serial("bridge runtime (isolated offline HTTP native fixtures)", () => 
   }, TIMEOUT);
 
   for (const code of ["BUSY", "UNAVAILABLE"] as const) test(`Phase3 asynchronous repository ${code} is scoped 503 and permits a fresh queue retry`, async () => {
-    const f = await isolatedQueueSeed(`fifo-router-${code}`, true), inspect = repository.inspectRepositoryStore;
-    const unavailable = spyOn(repository, "inspectRepositoryStore").mockImplementation(discovery => discovery.stateRoot === f.discovery.stateRoot ? { state: "unavailable", code, message: "Offline local reader unavailable", path: discovery.databasePath } : inspect(discovery));
+    const f = await isolatedQueueSeed(`fifo-router-${code}`, true), inspect = RepositoryReader.prototype.inspect;
+    const unavailable = spyOn(RepositoryReader.prototype, "inspect").mockImplementation(async function(this: RepositoryReader, discovery, options) {
+      return discovery.stateRoot === f.discovery.stateRoot ? { state: "unavailable", code, message: "Offline local reader unavailable", path: discovery.databasePath } : inspect.call(this, discovery, options);
+    });
     try {
       const response = await isolatedApi(f.running, queuePath(f.session.sessionId), queueWire(f.session), f.token);
       expect(response.status).toBe(503); expect(response.body.code).toBe("pending-input-pin-unavailable"); expect(response.body.reconciliationRequired).not.toBe(true);
@@ -3752,11 +3755,13 @@ describe.serial("bridge runtime (isolated offline HTTP native fixtures)", () => 
 
   for (const initialized of [false, true]) for (const change of ["corrupt", "BUSY", "UNAVAILABLE"] as const) test(`Phase3 final synchronous ${initialized ? "repository" : "App-only"} fence classifies ${change} after successful preflight`, async () => {
     const f = await isolatedQueueSeed(`fifo-final-${initialized}-${change}`, initialized), assertBinding = CatalogService.prototype.assertBinding, inspect = repository.inspectRepositoryStore;
+    // Initialized admissions also cross two post-await router binding fences.
+    const commitFence = initialized ? 4 : 2;
     let fences = 0, armed = false;
     const inspection = spyOn(repository, "inspectRepositoryStore").mockImplementation(discovery => armed && change !== "corrupt" && discovery.stateRoot === f.discovery.stateRoot ? { state: "unavailable", code: change, message: "Offline final reader unavailable", path: discovery.databasePath } : inspect(discovery));
     const fence = spyOn(CatalogService.prototype, "assertBinding").mockImplementation(function(this: CatalogService, ...args) {
       assertBinding.apply(this, args);
-      if (args[2] !== f.session.cwd || ++fences !== 2) return;
+      if (args[2] !== f.session.cwd || ++fences !== commitFence) return;
       // First validate already succeeded; this is the real service commit fence.
       armed = true;
       if (change === "corrupt") writeFileSync(join(f.discovery.stateRoot, "complete.json"), "{broken");
@@ -3765,7 +3770,7 @@ describe.serial("bridge runtime (isolated offline HTTP native fixtures)", () => 
     const beforeNative = mutations().length, beforeCli = invocations().length;
     try {
       const response = await isolatedApi(f.running, queuePath(f.session.sessionId), queueWire(f.session), f.token);
-      expect(fences).toBe(2); expect(response.status).toBe(503);
+      expect(fences).toBe(commitFence); expect(response.status).toBe(503);
       expect(response.body.code).toBe(change === "corrupt" ? "pending-input-storage" : "pending-input-pin-unavailable");
       expect(response.body.reconciliationRequired).toBe(change === "corrupt" ? true : undefined);
       expect(f.running.pendingInputs.store.get(f.session.sessionId).items).toHaveLength(0);

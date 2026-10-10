@@ -25,6 +25,7 @@ import { assertSchemaCapabilities, assertStoreIntegrity } from "./schema-upgrade
 
 export type * from "./contracts.ts"
 export { DomainError } from "./errors.ts"
+export { RepositoryReader, type RepositoryReadOptions } from "./repository-reader.ts"
 export { discoverRepository, inspectRepositoryStore, initializeRepository, upgradeRepository, revalidateCheckout } from "./repository.ts"
 export { SLOT_REGISTRY, SLOT_PATTERN, STORED_SLOT_PATTERN, SUPPORT_TRACKS, isSlot, isStoredSlot, canonicalSlot, equivalentSlots, validateSlot, parseSlot } from "./slots.ts"
 export { normalizeNativeSource } from "./native-source.ts"

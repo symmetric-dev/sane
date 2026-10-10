@@ -1,4 +1,4 @@
-import { RepositoryDomain, DomainError, discoverRepository, inspectRepositoryStore, initializeRepository, openRepositoryDomain, normalizeNativeSource, revalidateCheckout } from "sane-core/server";
+import { RepositoryDomain, DomainError, RepositoryReader, type RepositoryReadOptions, initializeRepository, openRepositoryDomain, normalizeNativeSource, revalidateCheckout } from "sane-core/server";
 import type { ConversationRef, CreateWorkstreamInput, InvocationContext, Phase, MutationContext, RepositoryContext, RepositoryDiscovery, StoreAvailability } from "sane-core/contracts";
 import { uuid, type Session } from "./history";
 import type { WorkstreamOverview } from "./workstreams-contract";
@@ -150,6 +150,7 @@ type ResolutionTiming = {
 };
 /** Cache handles by immutable domain identity AND complete filesystem evidence. */
 export class RepositoryRouter {
+  private readonly reader = new RepositoryReader();
   private cache = new Map<string, WorkstreamAdapter>();
   /** Read-only reuse of a fully opened adapter; filesystem evidence is checked on every access. */
   private polls = new Map<string, { root: string; commonDir: string; worktreeId: string; bindingRevision: string; adapter: WorkstreamAdapter }>();
@@ -167,13 +168,13 @@ export class RepositoryRouter {
     }
     throw new WorkstreamAdapterError(409, "unavailable", "No valid checkout is available");
   }
-  private discover(checkout: { root: string; commonDir: string }) {
-    const discovered = discoverRepository(checkout.root);
+  private async discover(checkout: { root: string; commonDir: string }, options?: RepositoryReadOptions) {
+    const discovered = await this.reader.discover(checkout.root, options);
     if (discovered.commonDir !== checkout.commonDir) throw new WorkstreamAdapterError(409, "stale-binding", "Repository binding changed");
     return discovered;
   }
-  private async discovery(workspaceId: string) { return this.discover(await this.checkout(workspaceId)); }
-  async inspect(workspaceId: string) { return inspectRepositoryStore(await this.discovery(workspaceId)); }
+  private async discovery(workspaceId: string, options?: RepositoryReadOptions) { return this.discover(await this.checkout(workspaceId), options); }
+  async inspect(workspaceId: string, options?: RepositoryReadOptions) { return this.reader.inspect(await this.discovery(workspaceId, options), options); }
   async initialize(workspaceId: string) {
     const discovery = await this.discovery(workspaceId);
     synchronousMutationHook(() => this.hooks.beforeInitialize?.(workspaceId, discovery), this.hooks.mutationFailed);
@@ -202,18 +203,20 @@ export class RepositoryRouter {
     }
     catch (error) { adapter.close(); this.cache.delete(key); throw error; }
   }
-  private ready(discovery: RepositoryDiscovery, expectedRepositoryId?: string, timing?: ResolutionTiming) {
-    const inspect = () => inspectRepositoryStore(discovery);
-    const store = timing ? timing.sync("native-router-store-inspect-sync", inspect) : inspect();
+  private async ready(discovery: RepositoryDiscovery, expectedRepositoryId?: string, timing?: ResolutionTiming, options?: RepositoryReadOptions) {
+    const inspect = () => this.reader.inspect(discovery, options);
+    const store = await (timing ? timing.async("native-router-store-inspect-async", inspect) : inspect());
     if (store.state !== "ready") throw new RepositoryStoreError(store);
     if (expectedRepositoryId && store.context.repositoryId !== expectedRepositoryId) throw new WorkstreamAdapterError(409, "domain-mismatch", "The intended domain UUID changed");
     return this.open(store.context, timing);
   }
-  async forWorkspace(workspaceId: string, expectedRepositoryId?: string, timing?: ResolutionTiming) {
-    if (!timing) return this.ready(await this.discovery(workspaceId), expectedRepositoryId);
+  async forWorkspace(workspaceId: string, expectedRepositoryId?: string, timing?: ResolutionTiming, options?: RepositoryReadOptions) {
     const checkout = await this.checkout(workspaceId, timing);
-    const discovery = timing.sync("native-router-discovery-sync", () => this.discover(checkout));
-    return this.ready(discovery, expectedRepositoryId, timing);
+    const discover = () => this.discover(checkout, options);
+    const discovery = await (timing ? timing.async("native-router-discovery-async", discover) : discover());
+    const adapter = await this.ready(discovery, expectedRepositoryId, timing, options);
+    this.catalog.assertBinding(workspaceId, checkout.worktreeId, checkout.root, checkout.bindingRevision);
+    return adapter;
   }
   /** Read-only requests only. Cache misses retain full catalog/Git/SQLite discovery. */
   async forPolling(workspaceId: string, timing?: ResolutionTiming) {
@@ -235,24 +238,26 @@ export class RepositoryRouter {
     this.polls.delete(workspaceId);
     const checkout = await this.checkout(workspaceId, timing);
     const discover = () => this.discover(checkout);
-    const adapter = this.ready(timing ? timing.sync("native-router-discovery-sync", discover) : discover(), undefined, timing);
+    const discovery = await (timing ? timing.async("native-router-discovery-async", discover) : discover());
+    const adapter = await this.ready(discovery, undefined, timing);
+    this.catalog.assertBinding(workspaceId, checkout.worktreeId, checkout.root, checkout.bindingRevision);
     this.polls.set(workspaceId, { ...checkout, adapter });
     return adapter;
   }
-  async forAdmission(admission: Admission, suppliedWorkspaceId?: string) {
+  async forAdmission(admission: Admission, suppliedWorkspaceId?: string, options?: RepositoryReadOptions) {
     if (suppliedWorkspaceId && suppliedWorkspaceId !== admission.binding.workspaceId) throw new WorkstreamAdapterError(409, "repository-mismatch", "Conversation and requested workspace differ");
     if (admission.binding.domain.mode === "app-only") return null;
-    const adapter = await this.forWorkspace(admission.binding.workspaceId, admission.binding.domain.repositoryId);
+    const adapter = await this.forWorkspace(admission.binding.workspaceId, admission.binding.domain.repositoryId, undefined, options);
     if (adapter.domain.primaryCheckout !== admission.binding.domain.primaryCheckout) throw new WorkstreamAdapterError(409, "domain-mismatch", "The intended primary checkout changed");
     return adapter;
   }
   /** Current execution pin and membership; App-only domains have no workstream. */
-  async execution(admission: Admission): Promise<ExecutionContext> {
+  async execution(admission: Admission, options?: RepositoryReadOptions): Promise<ExecutionContext> {
     if (admission.state !== "ready" || !admission.nativeId) throw new WorkstreamAdapterError(409, "admission-pending", "Conversation admission is not ready");
     if (normalizeNativeSource(admission.source.descriptor).authorityId !== admission.source.authorityId) throw new WorkstreamAdapterError(409, "source-mismatch", "Source pin changed");
     const b = admission.binding, binding = await this.catalog.binding(b.workspaceId, b.worktreeId);
     if (binding.bindingRevision !== b.bindingRevision || binding.cwd !== b.executionCheckout) throw new WorkstreamAdapterError(409, "stale-binding", "Execution checkout binding changed");
-    const adapter = await this.forAdmission(admission);
+    const adapter = await this.forAdmission(admission, undefined, options);
     if (adapter) {
       revalidateCheckout(adapter.domain.context, b.checkoutPin!);
       const context = adapter.domain.resolveContext({ harness: admission.source.descriptor.harness, authorityId: admission.source.authorityId, nativeId: admission.nativeId });
@@ -260,7 +265,8 @@ export class RepositoryRouter {
     }
     return { executionCheckout: binding.cwd, workstreamId: null, artifactsRoot: null };
   }
-  close() { for (const adapter of this.cache.values()) adapter.close(); this.cache.clear(); this.polls.clear(); }
+  stopReads() { return this.reader.close(); }
+  close() { const drain = this.stopReads(); for (const adapter of this.cache.values()) adapter.close(); this.cache.clear(); this.polls.clear(); return drain; }
 }
 
 export type WorkstreamAuthorization = (request: Request) => Response | null | Promise<Response | null>;
@@ -315,7 +321,7 @@ export async function authenticatedWorkstreamRoute(request: Request, authorize: 
   try { return Response.json(await operation() ?? { ok: true }, { headers: { "cache-control": "no-store" } }); }
   catch (error) {
     if (!(error instanceof DomainError) && !(error instanceof WorkstreamAdapterError)) throw error;
-    const status = error instanceof WorkstreamAdapterError ? error.status : error.code === "NOT_FOUND" ? 404 : error.code === "INVALID_INPUT" || error.code === "INVALID_ARTIFACT" ? 400 : error.code === "STORAGE_ERROR" ? 500 : 409;
+    const status = error instanceof WorkstreamAdapterError ? error.status : error.code === "NOT_FOUND" ? 404 : error.code === "INVALID_INPUT" || error.code === "INVALID_ARTIFACT" ? 400 : error.code === "STORAGE_ERROR" ? 500 : error.code === "BUSY" || error.code === "UNAVAILABLE" ? 503 : 409;
     return Response.json({ error: error.message, code: error.code }, { status, headers: { "cache-control": "no-store" } });
   }
 }

@@ -277,6 +277,7 @@ async function startOwned(options: Options, assetsDir: string, packageDir: strin
   let workspaceCreations: WorkspaceCreationService | undefined;
   async function abortStartup() {
     closing = true;
+    const repositoryReadDrain = router?.stopReads();
     pendingInputWake?.close();
     pendingInputRecovery?.close();
     const queueDrain = pendingInputBridge?.close();
@@ -285,6 +286,7 @@ async function startOwned(options: Options, assetsDir: string, packageDir: strin
     // bounded and failures retain both locks; nothing may serve unlocked after
     // post-bind recovery, publication, or observer startup fails.
     await Promise.all(boundListenerStops.map(stop => boundedStartupCleanup(stop)));
+    await boundedStartupCleanup(() => repositoryReadDrain);
     await boundedStartupCleanup(() => drainStartupExecution?.());
     await boundedStartupCleanup(() => queueDrain);
     await Promise.all([
@@ -2166,14 +2168,14 @@ async function startOwned(options: Options, assetsDir: string, packageDir: strin
       basic();
       const a = admissions.get(id);
       if (!a || a.state !== "ready" || !a.nativeId) throw new PendingInputDomainError("pending-input-source-unready", "Established ready admission is required");
-      await router!.execution(a);
+      await router!.execution(a, { signal });
       basic();
-      const adapter = await router!.forAdmission(a);
+      const adapter = await router!.forAdmission(a, undefined, { signal });
       basic();
       // App-only repository admissions must be explicitly enrolled when a domain
       // appears; do not silently promote/rebind an immutable queue authority.
       if (!adapter && a.binding.checkoutPin) {
-        const inspected = await router!.inspect(a.binding.workspaceId);
+        const inspected = await router!.inspect(a.binding.workspaceId, { signal });
         basic();
         if (inspected.state !== "uninitialized" || inspected.code !== "NOT_INITIALIZED") {
           if (inspected.state === "ready") throw new PendingInputDomainError(enqueuePolicy ? "pending-input-domain-changed" : "context-changed", "Repository domain changed; explicitly enroll before queuing");
@@ -3629,6 +3631,7 @@ async function startOwned(options: Options, assetsDir: string, packageDir: strin
    return { origin, port: server.port, workers, workerOutbox, handoffs, prepareHandoffRecipient, preparedInput, pendingInputs, pendingInputConsumer, pendingInputWake, startPendingInputWake, failOwnershipPublication: failClosed, abortStartup, close() {
     if (closePromise) return closePromise;
     closing = true;
+    const repositoryReadDrain = router?.stopReads();
     pendingInputWake!.close();
     pendingInputRecovery!.close();
     const queueDrain = pendingInputBridge!.close();
@@ -3645,6 +3648,7 @@ async function startOwned(options: Options, assetsDir: string, packageDir: strin
     clearInterval(workerOutboxTimer);
     clearInterval(inputRecoveryTimer);
     closePromise = (async () => {
+    await boundedStartupCleanup(() => repositoryReadDrain);
     await boundedStartupCleanup(() => queueDrain);
     await boundedStartupCleanup(() => Promise.all([...queueServiceTasks]));
     await coordinatorDrain;
