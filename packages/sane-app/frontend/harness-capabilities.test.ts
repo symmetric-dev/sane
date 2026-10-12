@@ -12,7 +12,8 @@ import { catalog } from "./catalog";
 import { ChatComposer } from "./chat-composer";
 import { CompactControl, CompactDialog } from "./compaction-ui";
 import { BranchAction } from "./branch-ui";
-import { ConfigView, configSection } from "./config-view";
+let ConfigView: typeof import("./config-view").ConfigView;
+let configSection: typeof import("./config-view").configSection;
 import { Interactions } from "./interactions";
 import { AttachConversation } from "./attach-conversation";
 import { ChatMessage, convertMessage, Thread, TranscriptContext, type TranscriptContextValue } from "./thread";
@@ -230,9 +231,11 @@ async function withDom(run: (host: HTMLDivElement, root: Root, browser: Window, 
   const globals = { window: browser, self: browser, document: browser.document, navigator: browser.navigator, localStorage: browser.localStorage, HTMLElement: browser.HTMLElement, Event: browser.Event, MouseEvent: browser.MouseEvent, FormData: browser.FormData, ResizeObserver: browser.ResizeObserver, MutationObserver: browser.MutationObserver, requestAnimationFrame: browser.requestAnimationFrame.bind(browser), cancelAnimationFrame: browser.cancelAnimationFrame.bind(browser), IS_REACT_ACT_ENVIRONMENT: true,
     fetch: async (input: string | URL | Request) => { const url = String(input); requests.push(url); if (url.includes("/branch?")) return Response.json({ eligible: true }); if (url.endsWith("/handoffs")) return Response.json({ handoffs: [] }); throw new Error(`Unexpected mocked request: ${url}`); } };
   const prior = new Map(Object.keys(globals).map(key => [key, Object.getOwnPropertyDescriptor(globalThis, key)]));
-  const oldState = store.state, oldCatalog = catalog.state, oldSection = configSection.snapshot();
+  const oldState = store.state, oldCatalog = catalog.state;
   let root: Root | undefined;
   for (const [key, value] of Object.entries(globals)) Object.defineProperty(globalThis, key, { configurable: true, writable: true, value });
+  ({ ConfigView, configSection } = await import("./config-view"));
+  const oldSection = configSection.snapshot();
   try {
     catalog.state = { ...oldCatalog, ready: true, workspaces: [{ workspaceId: "workspace", kind: "directory", name: "Fixture", commonDir: null, worktrees: [{ worktreeId: "tree", root: "/fixture", gitDir: null, bindingRevision: "binding", state: "available" }] }], navigation: { ...oldCatalog.navigation, view: "config", workspaceId: "workspace", worktreeId: "tree" } };
     const f = fixture("claude-code"); store.state = { ...f.chat.state, modelsLoaded: true, modelsCwd: "/fixture", modelsError: "", drafts: {} }; f.close();

@@ -23,8 +23,9 @@
  *   reason when absent — never a silent pass.
  * - Evidence log per handoff, secrets redacted; flushed to NATIVE_EVIDENCE_DIR in afterAll.
  *
- * Implementation only: real OC/CC agents launch when this suite runs, not at
- * authoring time. Verify with typecheck only (`bunx tsc --noEmit`); do NOT run.
+ * Default discovery skips every live test, before ambient configuration lookup.
+ * Explicit live runs require SANE_RUN_LIVE_NATIVE_TESTS=I_ACCEPT_REAL_MODEL_CALLS,
+ * an absolute NATIVE_EVIDENCE_DIR, and NATIVE_CLEANUP=close-and-remove.
  */
 import { describe, test, expect, beforeEach, afterAll } from "bun:test";
 import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, rmSync, realpathSync } from "node:fs";
@@ -38,6 +39,11 @@ import { validateOwnershipPaths, acquireInstallation, acquireData, processEviden
 import { initializeAppStore } from "../src/app-store";
 import { OpenCodeAdapter } from "../src/opencode";
 import { classifyCaller } from "../../sane-cli/src/cli-arguments";
+import { nativeLiveGate } from "./native-live-gate";
+
+const LIVE_ARMED = nativeLiveGate();
+const fixtureRoots = new Set<string>();
+const fixtureClosers = new Set<() => Promise<void>>();
 
 const INTER_TEST_DELAY_MS = (() => {
   const v = Number(process.env.NATIVE_INTER_TEST_DELAY_MS ?? 45000);
@@ -66,6 +72,7 @@ const SHUTDOWN_FAULT = FAULT_NAMES.find((n) => /shutdown|drain|failed/i.test(n))
 const faultTest: typeof test = HAS_FAULT_HOOKS ? test : test.skip;
 const FAULT_SKIP_REASON = "SANE_TEST_FAULT hooks absent (Phase 1 parallel work has not landed them)";
 const ambient = (() => {
+  if (!LIVE_ARMED) return null;
   try {
     return resolveAppConfig([], { packageDir: PKG_DIR, invocationCwd: process.cwd() });
   } catch (error) {
@@ -106,7 +113,9 @@ async function api(origin: string, path: string, init: RequestInit = {}): Promis
 const appHeaders = (origin: string): Record<string, string> => ({ "content-type": "application/json", origin });
 
 async function bootApp(tag: string, workstreamId: string): Promise<{ app: TestApp; options: Options }> {
+  if (!LIVE_ARMED || !ambient) throw new Error("Live native tests are not armed");
   const root = realpathSync(mkdtempSync(join(tmpdir(), `itest--`)));
+  fixtureRoots.add(root);
   const repoDir = join(root, "repo");
   const dataDir = join(root, "appdata");
   mkdirSync(repoDir, { recursive: true });
@@ -130,6 +139,7 @@ async function bootApp(tag: string, workstreamId: string): Promise<{ app: TestAp
     initializeAppStore(paths.dataDir!, options.nativeSources);
   } finally { try { dataHandle?.release(); } finally { installation.release(); } }
   const handle = await start(options);
+  fixtureClosers.add(() => handle.close());
   const origin = handle.origin;
   const headers = appHeaders(origin);
   const reg = await api(origin, "/api/workspaces", { method: "POST", headers, body: JSON.stringify({ cwd: repoDir }) });
@@ -272,26 +282,25 @@ let sSelf = "";
 let hRestartId = "";
 let reqRestart = "";
 
-describe.serial("native recovery: restart, uncertainty, attachment, failed shutdown, child callers", () => {
+(LIVE_ARMED ? describe.serial : describe.skip)("native recovery: restart, uncertainty, attachment, failed shutdown, child callers [explicit live opt-in required]", () => {
   let seen = 0;
   beforeEach(async () => {
     if (seen++ > 0 && INTER_TEST_DELAY_MS > 0) await Bun.sleep(INTER_TEST_DELAY_MS);
   }, INTER_TEST_DELAY_MS + 30000);
   afterAll(async () => {
-    const root = ctx?.app.root;
     try {
-      const dir = process.env.NATIVE_EVIDENCE_DIR ?? (root ? join(root, "evidence") : null);
-      if (dir) {
-        const { mkdirSync: mkdir } = await import("node:fs");
-        mkdir(dir, { recursive: true });
-        writeFileSync(join(dir, "native-recovery.json"), `${JSON.stringify({ turns: chargedTurns, budget: TURN_BUDGET, faultHooks: HAS_FAULT_HOOKS, faultNames: FAULT_NAMES, evidence }, null, 2)}\n`);
-      }
-    } finally {
-      try { await ctx?.app.close(); } catch { /* close failure is evidence, not cleanup */ }
+      for (const close of fixtureClosers) await close();
+      await ctx?.app.close();
       ctx = undefined;
-      if (process.env.NATIVE_KEEP_FIXTURES !== "1" && root) {
-        try { rmSync(root, { recursive: true, force: true }); } catch { /* best effort */ }
-      }
+      for (const fixture of fixtureRoots) rmSync(fixture, { recursive: true, force: true });
+      record({ kind: "cleanup-completed", rootsRemoved: fixtureRoots.size });
+    } catch (error) {
+      record({ kind: "cleanup-failed", error: String(error), retainedRoots: [...fixtureRoots] });
+      throw error;
+    } finally {
+      const dir = process.env.NATIVE_EVIDENCE_DIR!;
+      mkdirSync(dir, { recursive: true });
+      writeFileSync(join(dir, "native-recovery.json"), `${JSON.stringify({ turns: chargedTurns, budget: TURN_BUDGET, faultHooks: HAS_FAULT_HOOKS, faultNames: FAULT_NAMES, evidence }, null, 2)}\n`);
     }
   }, QUICK_TIMEOUT_MS);
 

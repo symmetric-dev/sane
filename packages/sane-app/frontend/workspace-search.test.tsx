@@ -162,7 +162,7 @@ test("embedded search filters sidebar files, groups main previews, preserves res
     let controller: ReturnType<typeof useWorkspace>;
     function Probe() { controller = useWorkspace(); return <><WorkspaceSearchButton /><aside><FilesModeControl activeView="code" onNavigate={() => {}} /><WorkspaceSidebar /></aside><main><WorkspaceSearchPanel><div data-testid="existing-editor">Existing file view</div></WorkspaceSearchPanel></main></>; }
     await act(async () => root.render(<ApplicationCommandProvider><WorkspaceProvider view="code" navigate={() => { artifactOpen = false; }}><WorkspaceSearchFeature><Probe /></WorkspaceSearchFeature></WorkspaceProvider></ApplicationCommandProvider>));
-    await waitForElement(host.querySelector("aside")!, '[role="treeitem"][title="unmatched.txt"]');
+    await waitForElement(host.querySelector("aside")!, '[role="treeitem"][title^="unmatched.txt\n"]');
     const buffer = controller!.buffer!;
     await act(async () => { buffer.state = buffer.state.update({ changes: { from: buffer.state.doc.length, insert: "\nunsaved" } }).state; notifyWorkspace(); });
     await act(async () => host.querySelector<HTMLButtonElement>('[aria-label="Search saved files"]')!.click());
@@ -242,7 +242,7 @@ test("embedded search filters sidebar files, groups main previews, preserves res
     expect(buffer.state.selection.main.from).toBe(0); // Sidebar file opens its first match.
     const fileMode = sidebar.querySelector<HTMLButtonElement>('.workspace-search-modes button')!;
     await act(async () => fileMode.click());
-    await waitForElement(sidebar, '[role="treeitem"][title="unmatched.txt"]');
+    await waitForElement(sidebar, '[role="treeitem"][title^="unmatched.txt\n"]');
     expect(host.querySelector('input[type="search"]')).toBeNull(); expect(sidebar.textContent).toContain("unmatched.txt");
     expect(host.querySelector('[data-testid="existing-editor"]')).not.toBeNull();
     await act(async () => sidebar.querySelectorAll<HTMLButtonElement>('.workspace-search-modes button')[1]!.click());

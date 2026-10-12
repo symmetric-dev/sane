@@ -93,7 +93,20 @@ export function createPendingInputBridge(deps: PendingInputBridgeDependencies): 
     const resumed = resumeGrants.get(conversationId), originalResume = resumed?.predecessor;
     if (releasedQueueOwner && originalResume?.owner === releasedQueueOwner && !resumed!.consumed
       && originalResume === predecessors.get(conversationId) && !view.pause && !view.recoveryRequired
-      && intent.requestId === resumed!.evidence?.requestId && withheldArchive(originalResume, resumed!.commit.head.snapshot.prepared, resumed!.commit.preflight.pins)) return true;
+      && intent.requestId === resumed!.evidence?.requestId && head) {
+      try {
+        // This is only the original lifecycle's synchronous release inspection,
+        // not dispatch permission. Reuse live consent/release identity checks;
+        // the lifecycle still proves source installation and terminal processing.
+        resumeValid(resumed!, { item: store.lookup(conversationId, head.requestId)!.item,
+          revision: view.snapshot.revision, predecessor: originalResume, predecessorRunId: resumed!.predecessorRunId });
+        return withheldArchive(originalResume, resumed!.commit.head.snapshot.prepared, resumed!.commit.preflight.pins)
+          || submittedArchive(originalResume, resumed!.commit.preflight.pins);
+      } catch (error) {
+        if (!(error instanceof PendingInputDomainError)) throw error;
+        return false;
+      }
+    }
     // Settlement alone may inspect its retained ORIGINAL lease while paused.
     // No serialized request, waiter or foreign lease can enter this scope.
     if (releasedQueueOwner && !view.recoveryRequired && capability && capability.conversationId === conversationId
@@ -197,6 +210,16 @@ export function createPendingInputBridge(deps: PendingInputBridgeDependencies): 
       && local.evidence.runId === evidence.runId && local.evidence.sessionId === source.sessionId
       && local.evidence.nativeSessionId === source.nativeSessionId && local.evidence.cwd === source.cwd
       && local.evidence.terminal?.status === lifecycle.owner.run.status && lifecycle.owner.run.status !== "completed";
+  }
+  function submittedArchive(lifecycle: DispatchLifecycle<RunOwner>, captured: PendingInputPins): boolean {
+    const evidence = lifecycle.submissionEvidence();
+    if (evidence.submission !== "submitted" || !evidence.requestId) return false;
+    const item = store.lookup(evidence.source.sessionId, evidence.requestId)?.item, claim = item?.claim;
+    const { submission: _submission, nativeAcceptance: _acceptance, ...identity } = evidence;
+    return !!item && item.state === "settled" && item.history?.kind === "settled"
+      && item.history.status === lifecycle.owner.run.status
+      && !!claim && !claim.uncertain && equalPendingPin(claim.identity, identity)
+      && equalPendingPin(claim.evidence, evidence) && equalPendingPin(item.snapshot.pins, captured);
   }
   function resumeValid(grant: ResumeGrant, selection: PendingInputSelection<RunOwner>, identity?: DispatchIdentity) {
     const cid = selection.item.request.conversationId, view = store.inspect(cid);

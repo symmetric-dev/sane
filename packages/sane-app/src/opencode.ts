@@ -312,6 +312,32 @@ export class OpenCodeAdapter {
     const { data } = await this.request<{ data: NativeInput }>(this.path(id) + "/synthetic", "POST", { id: messageId, text, description: "SANE Session", metadata: { sane: "session" }, resume: false });
     if (data?.id !== messageId || data.sessionID !== id || data.type !== "synthetic") throw new OpenCodeError("OpenCode SANE Session acknowledgement mismatch; delivery unconfirmed");
   }
+  /** Storage acceptance only. Entries apply at native step boundaries, not to an
+   * already in-flight request. Queued dispatch may read matching bytes, not edit. */
+  async deliverContextEntry(id: string, text: string, allowMutation: boolean, guard: () => void) {
+    if (!/^ses[a-zA-Z0-9_-]+$/.test(id) || Buffer.byteLength(JSON.stringify(text), "utf8") > 256 * 1024) throw new OpenCodeError("Invalid or oversized canonical context entry", 400);
+    const path = `/api/experimental/session/${encodeURIComponent(id)}/instructions/entries`;
+    const read = async () => {
+      guard();
+      const result = await this.request<{ data: { key: string; value: unknown }[] }>(path);
+      guard();
+      if (!Array.isArray(result?.data) || result.data.some(entry => !entry || typeof entry.key !== "string" || !("value" in entry))) throw new OpenCodeError("Unsupported instruction-entry response");
+      const entries = result.data.filter(entry => entry.key === "sane.context");
+      if (entries.length > 1) throw new OpenCodeError("Duplicate canonical context entry");
+      return entries[0]?.value;
+    };
+    if (await read() === text) return;
+    if (!allowMutation) throw new OpenCodeError("Canonical context changed; wait for native idle before sending this prompt", 409);
+    guard();
+    await this.request(path + "/sane.context", "PUT", { value: text }, guard);
+    if (await read() !== text) throw new OpenCodeError("Canonical context readback differs; prompt withheld");
+  }
+  async configureCanonicalExecution(input: import("./canonical-agent-operations").OpenCodeExecutionConfiguration, guard: () => void, readOnly = false) {
+    const response = await this.request<{ output?: { sessionID: string; agent: string; nativeChildren: string[] } }>(`/api/rpc/sane-execution/configure?location%5Bdirectory%5D=${encodeURIComponent(input.directory)}`, "POST", { input: { ...input, ...(readOnly ? { readOnly: true } : {}) } }, guard);
+    guard();
+    if (response?.output?.sessionID !== input.sessionID || response.output.agent !== input.agent || JSON.stringify(response.output.nativeChildren) !== JSON.stringify(input.nativeChildren.map(child => child.id))) throw new OpenCodeError("Canonical execution acknowledgement mismatch; prompt withheld");
+    return response.output;
+  }
   /** Explicit user-requested, idle-only admission. Caller owns the idle gate and
    * persists request ID before this mutation and returned ID before observation.
    * Native may coalesce into a different pending ID; this is not rejection.

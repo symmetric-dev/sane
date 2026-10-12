@@ -21,8 +21,9 @@
  * - Unsupported directions: test.skip with reason (CC gate below). No silent passes.
  * - Evidence log per handoff, secrets redacted; flushed to NATIVE_EVIDENCE_DIR in afterAll.
  *
- * Implementation only: real OC/CC agents launch when this suite runs, not at
- * authoring time. Verify with typecheck only (`bunx tsc --noEmit`); do NOT run.
+ * Default discovery skips every live test, before ambient configuration lookup.
+ * Explicit live runs require SANE_RUN_LIVE_NATIVE_TESTS=I_ACCEPT_REAL_MODEL_CALLS,
+ * an absolute NATIVE_EVIDENCE_DIR, and NATIVE_CLEANUP=close-and-remove.
  */
 import { describe, test, expect, beforeEach, afterAll } from "bun:test";
 import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, rmSync, realpathSync } from "node:fs";
@@ -34,6 +35,11 @@ import { resolveAppConfig } from "../src/app-config";
 import { runtimeOptions, start } from "../src/bridge";
 import { validateOwnershipPaths, acquireInstallation, acquireData, type OwnershipHandle } from "../src/installation-ownership";
 import { initializeAppStore } from "../src/app-store";
+import { nativeLiveGate } from "./native-live-gate";
+
+const LIVE_ARMED = nativeLiveGate();
+const fixtureRoots = new Set<string>();
+const fixtureClosers = new Set<() => Promise<void>>();
 
 const INTER_TEST_DELAY_MS = (() => {
   const v = Number(process.env.NATIVE_INTER_TEST_DELAY_MS ?? 45000);
@@ -55,13 +61,14 @@ if (!bridgeSource.includes("consumeHandoffs") || !bridgeSource.includes("maxConc
   throw new Error("native-test: bridge handoff/scheduling implementation markers moved; update this suite");
 }
 const ambient = (() => {
+  if (!LIVE_ARMED) return null;
   try {
     return resolveAppConfig([], { packageDir: PKG_DIR, invocationCwd: process.cwd() });
   } catch (error) {
     throw new Error(`native-test: ambient App config unreadable, set NATIVE_CLAUDE_PROFILE/NATIVE_OPENCODE_REGISTRATION: ${error instanceof Error ? error.message : String(error)}`);
   }
 })();
-const CC_STATIC_AVAILABLE = ambient.sources.claude.state === "available";
+const CC_STATIC_AVAILABLE = ambient?.sources.claude.state === "available";
 const ccTest: typeof test = CC_STATIC_AVAILABLE
   ? test
   : test.skip;
@@ -99,7 +106,9 @@ async function api(origin: string, path: string, init: RequestInit = {}): Promis
 const appHeaders = (origin: string): Record<string, string> => ({ "content-type": "application/json", origin });
 
 async function bootApp(tag: string, maxConcurrentRuns: number, workstreamId: string): Promise<TestApp> {
+  if (!LIVE_ARMED || !ambient) throw new Error("Live native tests are not armed");
   const root = realpathSync(mkdtempSync(join(tmpdir(), `itest--`)));
+  fixtureRoots.add(root);
   const repoDir = join(root, "repo");
   const dataDir = join(root, "appdata");
   mkdirSync(repoDir, { recursive: true });
@@ -123,6 +132,7 @@ async function bootApp(tag: string, maxConcurrentRuns: number, workstreamId: str
     initializeAppStore(paths.dataDir!, options.nativeSources);
   } finally { try { dataHandle?.release(); } finally { installation.release(); } }
   const handle = await start(options);
+  fixtureClosers.add(() => handle.close());
   const origin = handle.origin;
   const headers = appHeaders(origin);
   const reg = await api(origin, "/api/workspaces", { method: "POST", headers, body: JSON.stringify({ cwd: repoDir }) });
@@ -294,26 +304,25 @@ let hOverlapId = "";
 let sCc = "";
 const CC_REASON = "no available CC native source in ambient config (SANE_TEST CC profile unavailable)";
 
-describe.serial("native handoff: baseline, targeting/idempotency, scheduling/cancellation", () => {
+(LIVE_ARMED ? describe.serial : describe.skip)("native handoff: baseline, targeting/idempotency, scheduling/cancellation [explicit live opt-in required]", () => {
   let seen = 0;
   beforeEach(async () => {
     if (seen++ > 0 && INTER_TEST_DELAY_MS > 0) await Bun.sleep(INTER_TEST_DELAY_MS);
   }, INTER_TEST_DELAY_MS + 30000);
   afterAll(async () => {
-    const root = app?.root;
     try {
-      const dir = process.env.NATIVE_EVIDENCE_DIR ?? (root ? join(root, "evidence") : null);
-      if (dir) {
-        const { mkdirSync: mkdir } = await import("node:fs");
-        mkdir(dir, { recursive: true });
-        writeFileSync(join(dir, "native-handoff.json"), `${JSON.stringify({ turns: chargedTurns, budget: TURN_BUDGET, evidence }, null, 2)}\n`);
-      }
-    } finally {
-      try { await app?.close(); } catch { /* close failure is evidence, not cleanup */ }
+      for (const close of fixtureClosers) await close();
+      await app?.close();
       app = undefined;
-      if (process.env.NATIVE_KEEP_FIXTURES !== "1" && root) {
-        try { rmSync(root, { recursive: true, force: true }); } catch { /* best effort */ }
-      }
+      for (const fixture of fixtureRoots) rmSync(fixture, { recursive: true, force: true });
+      record({ kind: "cleanup-completed", rootsRemoved: fixtureRoots.size });
+    } catch (error) {
+      record({ kind: "cleanup-failed", error: String(error), retainedRoots: [...fixtureRoots] });
+      throw error;
+    } finally {
+      const dir = process.env.NATIVE_EVIDENCE_DIR!;
+      mkdirSync(dir, { recursive: true });
+      writeFileSync(join(dir, "native-handoff.json"), `${JSON.stringify({ turns: chargedTurns, budget: TURN_BUDGET, evidence }, null, 2)}\n`);
     }
   }, QUICK_TIMEOUT_MS);
 

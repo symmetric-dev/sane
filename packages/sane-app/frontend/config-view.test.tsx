@@ -5,7 +5,9 @@ import type { Root } from "react-dom/client";
 import type { WorkspaceRecord } from "../src/catalog-contract";
 import type { WorkstreamOverview } from "../src/workstreams-contract";
 import { catalog } from "./catalog";
-import { ConfigMenu, ConfigView, configSection } from "./config-view";
+let ConfigMenu: typeof import("./config-view").ConfigMenu;
+let ConfigView: typeof import("./config-view").ConfigView;
+let configSection: typeof import("./config-view").configSection;
 import { store } from "./store";
 import type { ArtifactSelection } from "./workstreams";
 
@@ -22,11 +24,14 @@ async function withSettingsDom(fetcher: Fetcher, run: (host: HTMLDivElement, roo
     IS_REACT_ACT_ENVIRONMENT: true, fetch: fetcher,
   };
   const prior = new Map(Object.keys(globals).map(key => [key, Object.getOwnPropertyDescriptor(globalThis, key)]));
-  const previousCatalog = catalog.snapshot(), previousSection = configSection.snapshot();
+  const previousCatalog = catalog.snapshot(), previousState = store.state;
   for (const [key, value] of Object.entries(globals)) Object.defineProperty(globalThis, key, { configurable: true, writable: true, value });
+  ({ ConfigMenu, ConfigView, configSection } = await import("./config-view"));
+  const previousSection = configSection.snapshot();
   let root: Root | undefined;
   try {
     catalog.invalidate();
+    store.state = { ...previousState, phase: "ready", loading: false };
     catalog.state = { ...previousCatalog, ready: false, loading: false, workspaces: [workspace], navigation: { ...previousCatalog.navigation, workspaceId: "execution-workspace", view: "config" } };
     const { createRoot } = await import("react-dom/client");
     const host = document.createElement("div"); document.body.append(host);
@@ -35,7 +40,7 @@ async function withSettingsDom(fetcher: Fetcher, run: (host: HTMLDivElement, roo
   } finally {
     try { if (root) await act(async () => { root!.unmount(); }); }
     finally {
-      catalog.invalidate(); catalog.state = previousCatalog;
+      catalog.invalidate(); catalog.state = previousCatalog; store.state = previousState;
       configSection.set(previousSection);
       browser.close();
       for (const [key, descriptor] of prior) {
@@ -88,20 +93,27 @@ test("Settings menu orders Agents, Workstreams, Application, Shortcuts and prese
   });
 });
 
-test("Shortcuts settings statically documents Global and local Files bindings without requesting data", async () => {
+test("Shortcuts settings documents Global and local Files bindings in accessible tabs without requesting data", async () => {
   await withSettingsDom(unexpectedFetch, async (host, root) => {
     configSection.set("hotkeys");
     await act(async () => root.render(<ConfigView state={store.snapshot()} signOut={() => {}} />));
-    expect(host.querySelector("h2")?.textContent).toBe("Shortcuts");
     expect(host.querySelector('[aria-label="Shortcuts settings"]')).not.toBeNull();
-    expect([...host.querySelectorAll("h3")].map(heading => heading.textContent)).toEqual(["Global", "Local to a View"]);
+    expect([...host.querySelectorAll('[role="tab"]')].map(tab => tab.textContent)).toEqual(["Global", "Files View"]);
+    expect(host.querySelector('#hotkeys-tab-global')?.getAttribute("aria-selected")).toBe("true");
+    expect(host.querySelector<HTMLElement>('#hotkeys-panel-files')!.hidden).toBe(true);
+    expect([...host.querySelectorAll("h3")].map(heading => heading.textContent)).toEqual(["Navigation", "View-wide", "Sidebar", "Main Panel"]);
     const rows = (label: string) => [...host.querySelectorAll(`table[aria-labelledby="${label}"] tbody tr`)].map(row => [...row.children].map(cell => cell.textContent));
     for (const table of host.querySelectorAll("table")) expect([...table.querySelectorAll("thead th")].map(cell => cell.textContent)).toEqual(["Action", "Mac", "Windows / Linux"]);
     expect(rows("hotkeys-navigation")).toEqual([
       ["Chat", "Ctrl⌘C", "Ctrl+Alt+C"], ["Terminal", "Ctrl⌘T", "Ctrl+Alt+T"],
-      ["Files", "Ctrl⌘F", "Ctrl+Alt+F"], ["Settings", "Ctrl⌘S", "Ctrl+Alt+S"],
+      ["Files", "Ctrl⌘F", "Ctrl+Alt+F"], ["Browser", "Ctrl⌘B", "Ctrl+Alt+B"], ["Settings", "Ctrl⌘P", "Ctrl+Alt+P"],
+      ["Toggle workspace selection", "Ctrl⌘ArrowDown", "Ctrl+Alt+ArrowDown"], ["Toggle sidebar", "⌘B", "Ctrl+B"],
     ]);
-    expect(rows("hotkeys-files-view")).toEqual([["Search saved files", "⌘⇧F", "Ctrl+Shift+F"]]);
+    await act(async () => host.querySelector<HTMLButtonElement>("#hotkeys-tab-files")!.click());
+    expect(host.querySelector('#hotkeys-tab-files')?.getAttribute("aria-selected")).toBe("true");
+    expect(host.querySelector<HTMLElement>('#hotkeys-panel-files')!.hidden).toBe(false);
+    expect(host.querySelector<HTMLElement>('#hotkeys-panel-global')!.hidden).toBe(true);
+    expect(rows("hotkeys-files-view")).toEqual([["Quick Open", "⌘P", "Ctrl+P"], ["Search saved files", "⌘⇧F", "Ctrl+Shift+F"]]);
     expect(rows("hotkeys-files-sidebar")).toEqual([
       ["Rename", "⇧R", "Shift+R"], ["Delete", "Delete / ⌘Backspace", "Delete"],
       ["Copy file", "⌘C", "Ctrl+C"], ["Paste file", "⌘V", "Ctrl+V"],
@@ -166,7 +178,7 @@ test("Settings renders each leaf using the browsed workspace and forwards artifa
     const url = String(input); requests.push(url);
     if (url.startsWith("/api/workstreams/inspect?")) return Response.json({ state: "ready" });
     if (url.startsWith("/api/workstreams/overview?")) return Response.json(detail);
-    if (url.startsWith("/api/workstreams/artifacts/list?")) return Response.json(["README.md"]);
+    if (url.startsWith("/api/workstreams/artifacts/catalog?")) return Response.json({ repositoryId: "domain", workstreamId: "feature", documents: [{ path: "README.md", title: "Workstream overview", phase: "resources", kind: "resource", required: false, exists: true, revision: "r1" }] });
     throw new Error(`Unexpected request: ${url}`);
   }, async (host, root) => {
     configSection.set("application");
@@ -177,11 +189,11 @@ test("Settings renders each leaf using the browsed workspace and forwards artifa
     await act(async () => { catalog.navigate({ view: "workstreams" }); });
     expect(host.querySelector("h2")?.textContent).toBe("Workstreams");
     expect(requests.every(url => url.includes("workspaceId=browsed"))).toBe(true);
-    expect(requests).toHaveLength(2);
+    expect(requests).toEqual(["/api/workstreams/inspect?workspaceId=browsed", "/api/workstreams/overview?workspaceId=browsed", "/api/workstreams/overview?workspaceId=browsed"]);
     expect(host.querySelector('[aria-current="true"] .workstreams-list-title')?.textContent).toBe("Feature");
     const documents = host.querySelector<HTMLButtonElement>('[role="tab"]:last-child')!;
     await act(async () => { documents.click(); });
-    const artifactButton = host.querySelector<HTMLButtonElement>('[aria-label="Open Workstream overview in Files"]')!;
+    const artifactButton = host.querySelector<HTMLButtonElement>('[aria-label="Read Workstream overview"]')!;
     await act(async () => { artifactButton.click(); });
     expect(opened).toEqual([{ workspaceId: "browsed", workstreamId: "feature", path: "README.md", repositoryId: "domain" }]);
 

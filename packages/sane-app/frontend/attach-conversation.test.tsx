@@ -27,7 +27,7 @@ test("attachment UI submits explicit harness/ID/cwd, preserves failed input, and
     expect(host.querySelector('[role="alert"]')?.textContent).toContain("already attached"); expect(id.value).toBe("ses_existing"); expect(selected).toEqual([]);
     const harness = host.querySelector("select")!;
     await act(async () => { harness.value = "claude-code"; harness.dispatchEvent(new Event("change", { bubbles: true })); });
-    expect(host.textContent).toContain("Claude activity is unknown");
+    expect(host.textContent).toContain("External assistant activity is unknown: this harness cannot report running execution.");
     id.value = "a952cf6e-e26b-441d-aad4-a659042f81ea";
     await act(async () => { submit(); });
     expect(requests[1].harness).toBe("claude-code");

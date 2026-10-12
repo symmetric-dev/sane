@@ -1,4 +1,4 @@
-import { afterEach, expect, test } from "bun:test"
+import { afterEach, expect, spyOn, test } from "bun:test"
 import { Database } from "bun:sqlite"
 import { existsSync, rmSync, symlinkSync, writeFileSync } from "node:fs"
 import { join } from "node:path"
@@ -90,11 +90,25 @@ test("independent handles serialize artifact/approval operations; phase membersh
 })
 test("SQLite failure rolls approval/jobs/audit back, malformed/unknown reports and renamed specs reject",async()=>{
   const {domain,planning,write,stateRoot}=setup();planning();const before=domain.getLifecycleStatus("demo"),audit=domain.readAudit("demo")
-  const db=new Database(join(stateRoot,"sane.db"))
-  try{db.exec("CREATE TRIGGER refuse_approval BEFORE INSERT ON approvals BEGIN SELECT RAISE(ABORT,'injected failure'); END")
+  const history=domain.getApprovalHistory("demo"),query=Database.prototype.query
+  let pendingWrites:unknown
+  // Fail after all three writes, without adding schema objects that admission rejects.
+  const fault=spyOn(Database.prototype,"query").mockImplementation(function(this:Database,sql:string){
+    if(sql.startsWith("UPDATE phase_states SET status='approved'")){
+      pendingWrites={inTransaction:this.inTransaction,
+        approval:query.call(this,"SELECT COUNT(*) AS count FROM approvals WHERE workstream_id='demo'").get(),
+        job:query.call(this,"SELECT COUNT(*) AS count FROM jobs WHERE workstream_id='demo'").get(),
+        audit:query.call(this,"SELECT COUNT(*) AS count FROM audit_events WHERE workstream_id='demo' AND operation='phase_approved'").get()}
+      throw new Error("injected failure")
+    }
+    return query.call(this,sql)
+  } as typeof Database.prototype.query)
+  try{
     await expect(domain.approvePhase("demo","planning","owner",mutation)).rejects.toThrow("injected failure")
-    expect(domain.getLifecycleStatus("demo")).toEqual(before);expect(domain.readAudit("demo")).toEqual(audit);db.exec("DROP TRIGGER refuse_approval")
-  }finally{db.close()}
+    expect(pendingWrites).toEqual({inTransaction:true,approval:{count:1},job:{count:1},audit:{count:1}})
+  }finally{fault.mockRestore()}
+  expect(domain.getLifecycleStatus("demo")).toEqual(before);expect(domain.readAudit("demo")).toEqual(audit)
+  expect(domain.getApprovalHistory("demo")).toEqual(history)
   await domain.approvePhase("demo","planning","owner",mutation)
   write("execution/reports/01-first.md","# Wrong\n<!-- unresolved -->")
   expect((await domain.validatePhase("demo","execution",{reportId:"01"})).ok).toBe(false)

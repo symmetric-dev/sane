@@ -4,7 +4,7 @@ import { fileURLToPath } from "node:url"
 import { dirname, join, resolve } from "node:path"
 import { injectAgentModel, loadAgentModelConfig, validateAgentTaskPermissions } from "./agent-model-config.ts"
 import { ccAgentFilename, parseSaneAgent, serializeCcAgent, serializeCcSettings } from "./agent-serialization.ts"
-import { CLAUDE_PRE_TOOL_USE_MATCHER } from "./native-configuration.ts"
+import { CLAUDE_PRE_TOOL_USE_MATCHER, nativeIntegrationConfiguration } from "./native-configuration.ts"
 
 export const AGENT_FILENAMES = [
   "sane/assistant/curation.md",
@@ -66,6 +66,8 @@ export const PLUGIN_CORE_SRC_FILES: readonly string[] = ["agent-catalog.ts", "ar
 
 export const PLUGIN_FILENAMES = [
   "sane/index.ts",
+  "sane/execution.ts",
+  "sane/execution-rpc.ts",
   ...PLUGIN_SRC_FILES.map((filename) => `sane/runtime/packages/sane-cli/src/${filename}`),
   ...PLUGIN_CORE_SRC_FILES.map(filename => `sane/runtime/packages/sane-core/src/${filename}`),
 ] as const
@@ -107,6 +109,12 @@ export interface AgentContextPackageInstallationOptions {
   modelConfigPath?: string
   dryRun?: boolean
   overwrite?: boolean
+  /** Provision executable integrations without publishing or retiring native agents/skills. */
+  runtimeOnly?: boolean
+  registrationFile?: string
+  appConnectionFile?: string
+  bindingRoot?: string
+  bunExecutable?: string
   /** Install only this global support skill, leaving agents, plugins, and other skills untouched. */
   onlySkill?: (typeof GLOBAL_SUPPORT_SKILL_NAMES)[number]
   write?: (line: string) => void
@@ -163,8 +171,10 @@ function resolveHomeDirectory(configuredHome?: string): string {
 function installationEntries(
   sourceRoot: string,
   homeDirectory: string,
+  runtimeOnly = false,
 ): InstallationEntry[] {
   return [
+    ...runtimeOnly ? [] : [
     ...AGENT_FILENAMES.map((filename) => ({
       agentName: filename.slice(0, -3),
       source: join(sourceRoot, "opencode", "agents", filename),
@@ -186,11 +196,16 @@ function installationEntries(
       source: join(sourceRoot, ".opencode", "skills", skillName, "SKILL.md"),
       destination: join(homeDirectory, ".claude", "skills", skillName, "SKILL.md"),
     })),
+    ],
     {
       rewriteImports: true,
       source: join(sourceRoot, "opencode", "plugins", "sane", "index.ts"),
       destination: join(homeDirectory, ".config", "opencode", "plugins", "sane", "index.ts"),
     },
+    ...["execution.ts", "execution-rpc.ts"].map(filename => ({
+      source: join(sourceRoot, "opencode", "plugins", "sane", filename),
+      destination: join(homeDirectory, ".config", "opencode", "plugins", "sane", filename),
+    })),
     ...PLUGIN_SRC_FILES.map((filename) => ({
       rewriteImports: true,
       source: join(sourceRoot, "packages", "sane-cli", "src", filename),
@@ -388,6 +403,83 @@ function isPlainObject(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value)
 }
 
+function validateInstallationOptions(options: AgentContextPackageInstallationOptions): void {
+  if (options.runtimeOnly && (options.onlySkill !== undefined || options.modelConfigPath !== undefined)) {
+    throw new AgentContextPackageInstallationError("--runtime-only cannot be combined with --only or --model-config.")
+  }
+  if (options.onlySkill !== undefined && options.modelConfigPath !== undefined) {
+    throw new AgentContextPackageInstallationError("--only cannot be combined with --model-config.")
+  }
+  if (!options.runtimeOnly && [options.registrationFile, options.appConnectionFile, options.bindingRoot, options.bunExecutable].some(value => value !== undefined)) {
+    throw new AgentContextPackageInstallationError("Native integration path options require --runtime-only.")
+  }
+}
+
+/** Merge executable integration settings without publishing native role assets. */
+async function loadRuntimeConfigurationEntries(homeDirectory: string, sourceRoot: string, options: AgentContextPackageInstallationOptions): Promise<LoadedInstallationEntry[]> {
+  const configuration = nativeIntegrationConfiguration({
+    pluginDirectory: join(homeDirectory, ".config/opencode/plugins/sane"),
+    registrationFile: options.registrationFile ?? join(homeDirectory, ".local/state/opencode/service.json"),
+    profileRoot: join(homeDirectory, ".claude"),
+    bindingRoot: options.bindingRoot ?? join(homeDirectory, ".claude/sane-bindings"),
+    bunExecutable: options.bunExecutable ?? process.execPath,
+    appConnectionFile: options.appConnectionFile ?? join(sourceRoot, "packages/sane-app/.data/native-handoff.json"),
+  })
+  const objectField = (object: Record<string, unknown>, key: string): Record<string, unknown> => {
+    if (object[key] === undefined) return {}
+    if (!isPlainObject(object[key])) throw new AgentContextPackageInstallationError(`Native configuration ${key} must be an object.`)
+    return object[key]
+  }
+  const arrayField = (object: Record<string, unknown>, key: string): unknown[] => {
+    if (object[key] === undefined) return []
+    if (!Array.isArray(object[key])) throw new AgentContextPackageInstallationError(`Native configuration ${key} must be an array.`)
+    return object[key]
+  }
+  const entries: LoadedInstallationEntry[] = []
+  for (const [filename, merge] of [
+    [".config/opencode/opencode.json", (existing: Record<string, unknown>) => {
+      const plugin = configuration.opencode.plugins[0]!
+      const plugins = arrayField(existing, "plugins")
+      const index = plugins.findIndex(value => value === plugin.package || isPlainObject(value) && value.package === plugin.package)
+      const merged = [...plugins]
+      if (index < 0) merged.push(plugin)
+      else {
+        const previous = plugins[index]
+        merged[index] = isPlainObject(previous) ? { ...previous, ...plugin, options: { ...objectField(previous, "options"), ...plugin.options } } : plugin
+      }
+      return { ...existing, plugins: merged }
+    }],
+    [".claude.json", (existing: Record<string, unknown>) => ({ ...existing, mcpServers: { ...objectField(existing, "mcpServers"), ...configuration.claudeMcp.mcpServers } })],
+    [".claude/settings.json", (existing: Record<string, unknown>) => {
+      const hooks = objectField(existing, "hooks")
+      const preToolUse = arrayField(hooks, "PreToolUse")
+      const required = configuration.claudeSettings.hooks.PreToolUse[0]!
+      const command = required.hooks[0]!.command
+      // Replace only this installation's hook; keep unrelated commands/groups.
+      const retained = preToolUse.flatMap(entry => {
+        if (!isPlainObject(entry) || !Array.isArray(entry.hooks)) return [entry]
+        const remaining = entry.hooks.filter(hook => !isPlainObject(hook) || hook.command !== command)
+        return remaining.length === entry.hooks.length ? [entry] : remaining.length ? [{ ...entry, hooks: remaining }] : []
+      })
+      return { ...existing, hooks: { ...hooks, PreToolUse: [...retained, required] } }
+    }],
+  ] as const) {
+    const destination = join(homeDirectory, filename)
+    await validateDestinationParent(destination)
+    const stat = await lstatOrUndefined(destination)
+    if (stat && !stat.isFile()) throw new AgentContextPackageInstallationError(`Destination is not a regular file: ${destination}`)
+    const existing = stat ? await readFile(destination, "utf8") : undefined
+    let parsed: unknown = {}
+    try { if (existing !== undefined) parsed = JSON.parse(existing) } catch {
+      throw new AgentContextPackageInstallationError(`Existing native configuration is not valid JSON: ${destination}`)
+    }
+    if (!isPlainObject(parsed)) throw new AgentContextPackageInstallationError(`Existing native configuration is not a JSON object: ${destination}`)
+    const merged = merge(parsed)
+    entries.push({ source: "generated:native-integration", destination, content: existing !== undefined && JSON.stringify(parsed) === JSON.stringify(merged) ? existing : `${JSON.stringify(merged, null, 2)}\n` })
+  }
+  return entries
+}
+
 /** Upgrade only existing native SANE hooks, retaining their configured command paths. */
 async function loadClaudeHookSettingsEntries(homeDirectory: string): Promise<LoadedInstallationEntry[]> {
   const destination = join(homeDirectory, ".claude", "settings.json")
@@ -504,6 +596,7 @@ async function loadConfigPackageEntry(
 export async function installSaneAgentContextPackages(
   options: AgentContextPackageInstallationOptions = {},
 ): Promise<AgentContextPackageInstallationResult> {
+  validateInstallationOptions(options)
   const write = options.write ?? console.log
   const homeDirectory = resolveHomeDirectory(options.homeDirectory)
   const sourceRoot = resolve(options.sourceRoot ?? DEFAULT_SOURCE_ROOT)
@@ -522,7 +615,7 @@ export async function installSaneAgentContextPackages(
     throw new AgentContextPackageInstallationError(`Unknown global support skill: ${options.onlySkill}`)
   }
   const sourcedEntries = await validateSources(options.onlySkill === undefined
-    ? [...installationEntries(sourceRoot, homeDirectory), ...await resourceInstallationEntries(sourceRoot, homeDirectory)]
+    ? [...installationEntries(sourceRoot, homeDirectory, options.runtimeOnly), ...options.runtimeOnly ? [] : await resourceInstallationEntries(sourceRoot, homeDirectory)]
     : [{
         source: join(sourceRoot, ".opencode", "skills", options.onlySkill, "SKILL.md"),
         destination: join(homeDirectory, ".config", "opencode", "skills", options.onlySkill, "SKILL.md"),
@@ -566,12 +659,12 @@ export async function installSaneAgentContextPackages(
   const configPackageEntry = options.onlySkill === undefined
     ? [await loadConfigPackageEntry(homeDirectory, sourceRoot)] : []
   const claudeHookSettingsEntries = options.onlySkill === undefined
-    ? await loadClaudeHookSettingsEntries(homeDirectory) : []
+    ? options.runtimeOnly ? await loadRuntimeConfigurationEntries(homeDirectory, sourceRoot, options) : await loadClaudeHookSettingsEntries(homeDirectory) : []
   const plannedEntries = await planDestinations(
     [...configuredEntries, ...configPackageEntry, ...claudeHookSettingsEntries],
     options.overwrite === true,
   )
-  const removals = options.onlySkill === undefined ? await planRetiredSkillRemovals(homeDirectory) : []
+  const removals = options.onlySkill === undefined && !options.runtimeOnly ? await planRetiredSkillRemovals(homeDirectory) : []
   const result: AgentContextPackageInstallationResult = {
     homeDirectory,
     dryRun: options.dryRun === true,
@@ -609,11 +702,12 @@ export async function installSaneAgentContextPackages(
 }
 
 export const USAGE =
-  "Usage: sane install context-packages [--dry-run] [--overwrite] [--model-config <path>] [--only <global-support-skill>]"
+  "Usage: sane install context-packages [--dry-run] [--overwrite] [--model-config <path> | --only <global-support-skill> | --runtime-only [--registration-file <path>] [--app-connection-file <path>] [--binding-root <path>] [--bun-executable <path>]]"
 
-export function parseCliArguments(args: string[]): { dryRun: boolean; overwrite: boolean; modelConfigPath?: string; onlySkill?: (typeof GLOBAL_SUPPORT_SKILL_NAMES)[number] } {
+export function parseCliArguments(args: string[]): AgentContextPackageInstallationOptions & { dryRun: boolean; overwrite: boolean } {
   let dryRun = false
   let overwrite = false
+  const runtime: AgentContextPackageInstallationOptions = {}
   let modelConfigPath: string | undefined
   let onlySkill: (typeof GLOBAL_SUPPORT_SKILL_NAMES)[number] | undefined
   const positional: string[] = []
@@ -627,6 +721,14 @@ export function parseCliArguments(args: string[]): { dryRun: boolean; overwrite:
       dryRun = true
     } else if (parseOptions && argument === "--overwrite") {
       overwrite = true
+    } else if (parseOptions && argument === "--runtime-only") {
+      runtime.runtimeOnly = true
+    } else if (parseOptions && ["--registration-file", "--app-connection-file", "--binding-root", "--bun-executable"].includes(argument)) {
+      const key = { "--registration-file": "registrationFile", "--app-connection-file": "appConnectionFile", "--binding-root": "bindingRoot", "--bun-executable": "bunExecutable" }[argument] as "registrationFile" | "appConnectionFile" | "bindingRoot" | "bunExecutable"
+      const value = args[++index]
+      if (!value?.trim() || value.startsWith("-")) throw new AgentContextPackageInstallationError(`${argument} requires a path.`)
+      if (runtime[key] !== undefined) throw new AgentContextPackageInstallationError(`${argument} may only be specified once.`)
+      runtime[key] = resolve(value)
     } else if (parseOptions && argument === "--model-config") {
       const path = args[++index]
       if (!path?.trim() || path.startsWith("-")) {
@@ -656,7 +758,9 @@ export function parseCliArguments(args: string[]): { dryRun: boolean; overwrite:
   if (onlySkill !== undefined && modelConfigPath !== undefined) {
     throw new AgentContextPackageInstallationError("--only cannot be combined with --model-config.")
   }
-  return { dryRun, overwrite, ...(modelConfigPath === undefined ? {} : { modelConfigPath }), ...(onlySkill === undefined ? {} : { onlySkill }) }
+  const options = { dryRun, overwrite, ...runtime, ...(modelConfigPath === undefined ? {} : { modelConfigPath }), ...(onlySkill === undefined ? {} : { onlySkill }) }
+  validateInstallationOptions(options)
+  return options
 }
 
 export async function runCli(args: string[]): Promise<number> {

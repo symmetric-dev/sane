@@ -14,7 +14,9 @@ test("artifact reads exact selection into read-only editor, hides identities/pat
     }, async (host, _, render) => {
       const artifact = { workspaceId: "workspace", workstreamId: "alpha", path: "research/topic/REPORT.md", repositoryId };
       await render(<WorkstreamArtifact artifact={artifact} close={() => closes++} />);
-      expect(selections).toEqual([{ url: "/api/workstreams/artifacts/read?workspaceId=workspace", body: { id: "alpha", path: "research/topic/REPORT.md" } }]);
+      expect(selections).toEqual([{ url: "/api/workstreams/artifacts/read?workspaceId=workspace", body: { id: "alpha", path: "research/topic/REPORT.md", repositoryId } }]);
+      expect(host.querySelector("h1")?.firstChild?.textContent).toBe("Artifact text");
+      await click(button(host, "Source"));
       expect(readOnly).toHaveBeenCalled(); expect(host.querySelector('[aria-label="Mock read-only editor"]')?.textContent).toBe("# Artifact text");
       expect(host.querySelector("strong")?.textContent).toBe("REPORT.md"); expect(host.querySelector("details")!.open).toBe(false); expect(host.querySelector("details")!.textContent).toContain(repositoryId);
       const surface = [...host.querySelector(".artifact-context")!.children].filter(node => node.tagName !== "DETAILS").map(node => node.textContent).join("");
@@ -36,6 +38,7 @@ test("late artifact read never overwrites a different selected artifact", async 
       const artifact = { workspaceId: "workspace", workstreamId: "alpha", path: "README.md", repositoryId };
       await render(<WorkstreamArtifact artifact={artifact} close={() => {}} />);
       await render(<WorkstreamArtifact artifact={{ ...artifact, workstreamId: "beta" }} close={() => {}} />);
+      await click(button(host, "Source"));
       await act(async () => { pending.resolve(Response.json({ content: "Stale content" })); });
       expect(host.querySelector('[aria-label="Mock read-only editor"]')?.textContent).toBe("New content"); expect(host.textContent).not.toContain("Stale content");
     });

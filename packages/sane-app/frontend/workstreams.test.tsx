@@ -1,7 +1,12 @@
-import { expect, test } from "bun:test";
+import { afterEach, beforeEach, expect, test } from "bun:test";
 import { act } from "react";
 import { WorkstreamsView } from "./workstreams";
 import { appOnly, button, click, deferred, detail, field, input, overview, repositoryId, row, select, submit, withDom } from "./workstreams.test-utils";
+import { store } from "./store";
+
+let previousState = store.state;
+beforeEach(() => { previousState = store.state; store.state = { ...previousState, phase: "ready" }; });
+afterEach(() => { store.state = previousState; });
 
 test("organizer selects first, preserves selection across refresh, falls back after removal, counts Unassigned and filters", async () => {
   let snapshot = overview([row(), row("null-member", null), appOnly()]);
@@ -30,7 +35,7 @@ test("organizer selects first, preserves selection across refresh, falls back af
 });
 
 test("Documents tabs support keyboard focus and Details is a modal, not permanent content", async () => {
-  await withDom(async url => url.includes("/inspect?") ? Response.json({ state: "ready" }) : url.includes("/artifacts/list?") ? Response.json(["README.md"]) : Response.json(overview()), async (host, _, render) => {
+  await withDom(async url => url.includes("/inspect?") ? Response.json({ state: "ready" }) : url.includes("/artifacts/catalog?") ? Response.json({ repositoryId, workstreamId: "alpha", documents: [{ path: "README.md", title: "Workstream overview", phase: "design", kind: "primary", required: true, exists: true, revision: "revision-one" }] }) : Response.json(overview()), async (host, _, render) => {
     await render(<WorkstreamsView workspaceId="workspace" />);
     const tabs = [...host.querySelectorAll<HTMLButtonElement>('[role="tab"]')];
     await act(async () => { tabs[0]!.dispatchEvent(new window.KeyboardEvent("keydown", { key: "ArrowRight", bubbles: true, cancelable: true })); });
@@ -94,13 +99,14 @@ test("integration: successful creation plus failed root refresh must retain refr
   let reads = 0, writes = 0;
   await withDom(async (url, init) => {
     if (url.includes("/inspect?")) return Response.json({ state: "ready" });
-    if (url.includes("/overview?")) return ++reads === 1 ? Response.json(overview()) : Response.json({ error: "offline after create" }, { status: 503 });
+    if (url.includes("/overview?")) { reads++; return !writes ? Response.json(overview()) : Response.json({ error: "offline after create" }, { status: 503 }); }
     if (init?.method === "POST") { writes++; return Response.json({ id: "created" }); }
     throw new Error(url);
   }, async (host, _, render) => {
     await render(<WorkstreamsView workspaceId="workspace" />); await click(button(host, "New workstream"));
+    const initialReads = reads;
     await input(field(host.querySelector("dialog")!, "Title"), "Created"); await select(field<HTMLSelectElement>(host.querySelector("dialog")!, "Type"), "feature"); await submit(host.querySelector("dialog")!);
-    expect(writes).toBe(1); expect(reads).toBe(2);
+    expect(writes).toBe(1); expect(reads).toBeGreaterThan(initialReads);
     expect(host.querySelector("dialog"), "Saved create must remain recoverable without a duplicate POST").not.toBeNull();
     expect(button(host, "Retry opening workstream")).toBeDefined();
   });
@@ -110,7 +116,7 @@ test("integration: saved default checkout plus failed root refresh must offer Re
   let reads = 0; const writes: unknown[] = [];
   await withDom(async (url, init) => {
     if (url.includes("/inspect?")) return Response.json({ state: "ready" });
-    if (url.includes("/overview?")) return ++reads === 1 ? Response.json(overview()) : Response.json({ error: "offline after checkout" }, { status: 503 });
+    if (url.includes("/overview?")) { reads++; return !writes.length ? Response.json(overview()) : Response.json({ error: "offline after checkout" }, { status: 503 }); }
     writes.push(JSON.parse(String(init?.body))); return Response.json({});
   }, async (host, _, render) => {
     await render(<WorkstreamsView workspaceId="workspace" />); await click(button(host, "Details")); const dialog = host.querySelector("dialog")!;

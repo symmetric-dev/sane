@@ -4,6 +4,89 @@ import { OpenCodeAdapter, OpenCodeError, OpenCodeUnavailableError, normalizeMess
 import { OpenCodeRunService, type OpenCodeRunAdapter, type OpenCodeRunDependencies } from "./opencode-run-service";
 import type { RunOwner } from "./run-owner";
 import { createDispatchEvidence } from "./dispatch-evidence";
+import { canonicalFixture, canonicalProvider, canonicalSourceFixture, captureContextEvidence } from "../tests/canonical-fixture";
+
+test("canonical OC authored parent role occurs once in stored source context", async () => {
+  const f = fixture(), { delivery, role, execution } = canonicalSourceFixture(f.session);
+  Object.assign(f.run, { agent: "design", agentKind: "assistant" }); Object.assign(f.session, { agent: "design", agentKind: "assistant" });
+  f.deps.canonicalContext = canonicalProvider(delivery); f.deps.canonicalExecution = async () => execution;
+  let stored = "";
+  f.oc.deliverContextEntry = async (_id, text, _mutate, guard) => { guard(); stored = text; };
+  f.oc.configureCanonicalExecution = async (input, guard) => {
+    guard(); expect(input.sessionID).toBe(f.session.nativeSessionId!); expect(input.directory).toBe(f.run.cwd);
+    expect(JSON.stringify(input)).not.toContain(role.text);
+    return { sessionID: input.sessionID, agent: "build", nativeChildren: input.nativeChildren.map(c => c.id) };
+  };
+  await f.service.executeNative(f.owner, "source role fixture", false, f.accepted);
+  expect(f.run.status).toBe("completed"); expect(stored.split(role.text)).toHaveLength(2);
+  expect(delivery.segments.filter(s => s.id === role.id)).toMatchObject([{ source: role.source, channel: "standing", sha256: role.sha256 }]);
+  captureContextEvidence("oc-authored-parent-once", { delivery, records: f.records, trace: f.trace });
+});
+
+test("canonical OC cannot dispatch a provider missing trusted composition validation", async () => {
+  const f = fixture(), delivery = canonicalFixture(f.session);
+  f.deps.canonicalContext = async () => delivery;
+  f.oc.deliverContextEntry = async () => { throw new Error("Unvalidated context reached storage"); };
+  await f.service.executeNative(f.owner, "withhold unvalidated", true, f.accepted);
+  expect(f.run.status).toBe("failed"); expect(f.trace).not.toContain("prompt");
+  expect(f.statuses()).toContainEqual({ status: "failed", reason: "Trusted canonical context composition validator is unavailable" });
+});
+
+for (const kind of ["assistant", "worker"] as const) for (const mode of ["new", "resume", "compact"] as const) {
+  test(`canonical OC ${kind} ${mode} journals exact storage receipt before submission`, async () => {
+    const f = fixture(mode === "compact"), delivery = canonicalFixture(f.session, kind);
+    const identity = { agentKind: kind, agent: kind === "assistant" ? "design" as const : "implementer" as const };
+    Object.assign(f.session, identity); Object.assign(f.run, identity); f.state.worker = kind === "worker";
+    f.deps.canonicalContext = canonicalProvider(delivery);
+    let stored = "";
+    f.oc.deliverContextEntry = async (id, text, mutate, guard) => {
+      guard(); expect(id).toBe(f.session.nativeSessionId!); expect(mutate).toBe(true);
+      expect(f.records.some(e => (e.data as any)?.stage === "prepared")).toBe(true);
+      stored = text; f.trace.push("context-readback");
+    };
+    if (mode === "compact") await f.service.executeNativeCompact(f.owner);
+    else await f.service.executeNative(f.owner, "immutable user prompt", mode === "resume", f.accepted);
+    expect(f.run.status).toBe("completed");
+    expect(stored).toBe(`${delivery.standing}\n\n${delivery.dynamic}`);
+    const receipts = f.records.filter(e => (e.data as any)?.type === "canonical-context");
+    expect(receipts.map(e => (e.data as any).stage)).toEqual(["prepared", "stored-readback"]);
+    expect(receipts[1]!.data).toMatchObject({ binding: delivery.binding, payloadHash: delivery.payloadHash, packageRevision: delivery.packageRevision });
+    expect(f.trace.indexOf("context-readback")).toBeLessThan(f.trace.indexOf(mode === "compact" ? "compact" : "prompt"));
+    captureContextEvidence(`oc-${kind}-${mode}`, { delivery, receipts, trace: f.trace });
+  });
+}
+
+for (const fault of ["foreign-binding", "dynamic-change", "cancelled", "readback-mismatch", "lost-write-ack"] as const) {
+  test(`canonical OC ${fault} withholds prompt and never invents consumption`, async () => {
+    const f = fixture(), delivery = canonicalFixture(f.session);
+    let reads = 0;
+    f.deps.canonicalContext = canonicalProvider(delivery, async () => {
+      reads++;
+      if (fault === "foreign-binding") return { ...delivery, binding: { ...delivery.binding, nativeSessionId: "ses_foreign" } };
+      if (fault === "dynamic-change" && reads > 1) return canonicalFixture(f.session, "assistant", false, "# Session\nworkstream: changed");
+      return delivery;
+    });
+    f.oc.deliverContextEntry = async (_id, _text, _mutate, guard) => {
+      if (fault === "cancelled") f.owner.stopRequested = true;
+      guard();
+      if (fault === "readback-mismatch" || fault === "lost-write-ack") throw new Error(fault);
+    };
+    await f.service.executeNative(f.owner, "do not submit", true, f.accepted);
+    expect(f.trace).not.toContain("prompt"); expect(f.ready).not.toContain(true);
+    if (fault !== "dynamic-change") expect(f.records.some(e => (e.data as any)?.stage === "stored-readback")).toBe(false);
+    captureContextEvidence(`oc-${fault}`, { records: f.records, trace: f.trace, status: f.run.status });
+  });
+}
+
+test("ordinary Base OC never requests canonical content", async () => {
+  const f = fixture();
+  f.deps.canonicalContext = async () => { throw new Error("Base requested context"); };
+  f.oc.deliverContextEntry = async () => { throw new Error("Base mutated context"); };
+  await f.service.executeNative(f.owner, "base prompt", false, f.accepted);
+  expect(f.run.status).toBe("completed");
+  expect(f.records.some(e => (e.data as any)?.type === "canonical-context")).toBe(false);
+  captureContextEvidence("oc-base-no-injection", { records: f.records, trace: f.trace });
+});
 
 const message = (id: string, type = "user"): NativeMessage => ({ id, type, time: { created: 1 }, text: "fixture" });
 const completeCompact = (id: string): Awaited<ReturnType<OpenCodeRunAdapter["compactionSnapshot"]>> => ({

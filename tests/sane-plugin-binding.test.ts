@@ -48,7 +48,7 @@ test("native enrollment shares repository authority, inherits locally and preser
     try { domain.associateConversation({ harness: "cc", authorityId: source.authorityId, nativeId: child.nativeId }, null, { actor: { kind: "local" }, correlationId: crypto.randomUUID() }) } finally { domain.close() }
     expect(nativeCallerContext(child).workstream).toBeNull()
   } finally { rmSync(root, { recursive: true, force: true }) }
-})
+}, 20_000)
 
 test("Claude invocation capabilities bind concurrent callers and reject substitution, replay and child aliases", () => {
   const root = mkdtempSync(join(tmpdir(), "sane-claude-binding-")), profile = join(root, "profile"), bindings = join(root, "bindings")

@@ -4,6 +4,112 @@ import { ClaudeRunService, hookEvents, type ClaudeRunDependencies, type ClaudeRu
 import type { Event, Run, Session } from "./history";
 import type { RunOwner } from "./run-owner";
 import { createDispatchEvidence } from "./dispatch-evidence";
+import { canonicalFixture, canonicalProvider, canonicalSourceFixture, captureContextEvidence } from "../tests/canonical-fixture";
+
+test("canonical CC authored parent role is delivered exactly once without installed native definitions", async () => {
+  const f = fixture(), { delivery, role, execution } = canonicalSourceFixture(f.session);
+  Object.assign(f.run, { agent: "design", agentKind: "assistant" }); Object.assign(f.session, { agent: "design", agentKind: "assistant" });
+  f.deps.canonicalContext = canonicalProvider(delivery); f.deps.canonicalExecution = async () => execution;
+  f.runtime.agentSettings = async () => { throw new Error("Canonical execution read installed native definitions"); };
+  Object.assign(f.child, { stdout: bytes([wire({ type: "system", subtype: "hook_response", session_id: nativeId, hook_event: "UserPromptSubmit", outcome: "success", exit_code: 0,
+    stdout: JSON.stringify({ hookSpecificOutput: { hookEventName: "UserPromptSubmit", additionalContext: delivery.dynamic } }) }, success)]) });
+  await f.service().execute(f.owner, "source role fixture", false, f.accepted);
+  expect(f.run.status).toBe("completed");
+  const args = f.spawned()!.args, nativeDefinitions = JSON.parse(args[args.indexOf("--agents") + 1]!);
+  expect(nativeDefinitions[args[args.indexOf("--agent") + 1]!].prompt).toBe("");
+  const standing = f.writes.find(([path]) => path.endsWith(".canonical-context.md"))![1];
+  expect(standing.split(role.text)).toHaveLength(2);
+  expect(JSON.stringify(nativeDefinitions)).not.toContain(role.text);
+  expect(delivery.segments.filter(s => s.id === role.id)).toMatchObject([{ source: role.source, channel: "standing", sha256: role.sha256 }]);
+  captureContextEvidence("cc-authored-parent-once", { delivery, args, files: f.writes, records: f.records });
+});
+
+for (const kind of ["assistant", "worker"] as const) for (const mode of ["new", "resume", "upgrade", "compact"] as const) {
+  test(`canonical CC ${kind} ${mode} pins static bytes and distinguishes configuration from hook acceptance`, async () => {
+    const f = fixture(), delivery = canonicalFixture(f.session, kind, mode === "upgrade");
+    const identity = { agentKind: kind, agent: kind === "assistant" ? "design" as const : "implementer" as const };
+    Object.assign(f.session, identity); Object.assign(f.run, identity);
+    f.deps.canonicalContext = canonicalProvider(delivery);
+    if (mode !== "compact") Object.assign(f.child, { stdout: bytes([wire({ type: "system", subtype: "hook_response", session_id: nativeId, hook_event: "UserPromptSubmit", outcome: "success", exit_code: 0,
+      stdout: JSON.stringify({ hookSpecificOutput: { hookEventName: "UserPromptSubmit", additionalContext: delivery.dynamic } }) }, success)]) });
+    if (mode === "compact") f.run.operation = "compact";
+    await f.service().execute(f.owner, mode === "compact" ? "/compact" : "unchanged user prompt", mode !== "new", f.accepted);
+    expect(f.spawned()).toBeDefined();
+    const args = f.spawned()!.args, append = args[args.indexOf("--append-system-prompt-file") + 1];
+    expect(f.writes.find(([path]) => path === append)?.[1]).toBe(delivery.standing);
+    expect(args.includes("--system-prompt-snapshot")).toBe(mode === "upgrade");
+    const settings = JSON.parse(f.writes.find(([path]) => path.endsWith(".settings.json"))![1]);
+    expect(settings.hooks.UserPromptSubmit.some((entry: any) => entry.hooks.some((hook: any) => hook.command.includes("session-context.ts")))).toBe(mode !== "compact");
+    if (mode !== "compact") expect(f.writes.find(([path]) => path.endsWith(".sane-session.md"))?.[1]).toBe(delivery.dynamic);
+    const receipts = f.records.filter(e => (e.data as any)?.type === "canonical-context");
+    expect(receipts.map(e => (e.data as any).stage)).toEqual(mode === "compact" ? ["prepared", "configured"] : ["prepared", "configured", "hook-accepted"]);
+    expect(receipts[1]!.data).toMatchObject({ dynamicDelivered: false, payloadHash: delivery.payloadHash, binding: delivery.binding });
+    expect(f.run.status).toBe("completed");
+    if (mode !== "compact") expect(receipts[2]!.data).toMatchObject({ dynamicDelivered: true, dynamicHash: delivery.dynamicHash });
+    captureContextEvidence(`cc-${kind}-${mode}`, { delivery, receipts, args, files: f.writes });
+  });
+}
+
+for (const compact of [false, true]) test(`canonical CC persisted upgrade disables stale snapshots on later ${compact ? "compaction" : "resume"}`, async () => {
+  const f = fixture(), delivery = canonicalFixture(f.session, "assistant", true);
+  const restoredSession: Session = JSON.parse(JSON.stringify(f.session));
+  f.deps.session = id => id === restoredSession.sessionId ? restoredSession : undefined;
+  f.deps.canonicalContext = canonicalProvider(delivery);
+  if (compact) f.run.operation = "compact";
+  else Object.assign(f.child, { stdout: bytes([wire({ type: "system", subtype: "hook_response", session_id: nativeId, hook_event: "UserPromptSubmit", outcome: "success", exit_code: 0,
+    stdout: JSON.stringify({ hookSpecificOutput: { hookEventName: "UserPromptSubmit", additionalContext: delivery.dynamic } }) }, success)]) });
+  await f.service().execute(f.owner, compact ? "/compact" : "later turn", true, f.accepted);
+  const args = f.spawned()!.args;
+  expect(args[args.indexOf("--system-prompt-snapshot") + 1]).toBe("off");
+  expect(f.run.status).toBe("completed");
+});
+
+for (const fault of ["missing", "mismatched", "foreign-session"] as const) test(`canonical CC ${fault} hook never claims dynamic acceptance`, async () => {
+  const f = fixture(), delivery = canonicalFixture(f.session);
+  f.deps.canonicalContext = canonicalProvider(delivery);
+  if (fault !== "missing") Object.assign(f.child, { stdout: bytes([wire({ type: "system", subtype: "hook_response", session_id: fault === "foreign-session" ? "foreign" : nativeId, hook_event: "UserPromptSubmit", outcome: "success", exit_code: 0,
+    stdout: JSON.stringify({ hookSpecificOutput: { hookEventName: "UserPromptSubmit", additionalContext: fault === "mismatched" ? "wrong bytes" : delivery.dynamic } }) }, success)]) });
+  await f.service().execute(f.owner, "hook fidelity fixture", true, f.accepted);
+  expect(f.run.status).toBe("failed");
+  expect(f.records.some(e => (e.data as any)?.stage === "hook-accepted")).toBe(false);
+  captureContextEvidence(`cc-hook-${fault}`, { delivery, records: f.records });
+});
+
+for (const fault of ["foreign-binding", "dynamic-change", "cancelled"] as const) {
+  test(`canonical CC ${fault} cannot spawn or claim configured delivery`, async () => {
+    const f = fixture(), delivery = canonicalFixture(f.session);
+    let calls = 0;
+    f.deps.canonicalContext = canonicalProvider(delivery, async () => {
+      calls++;
+      if (fault === "cancelled") f.owner.stopRequested = true;
+      if (fault === "foreign-binding") return { ...delivery, binding: { ...delivery.binding, authorityId: "foreign" } };
+      return fault === "dynamic-change" && calls > 1 ? canonicalFixture(f.session, "assistant", false, "# Session\nworkstream: changed") : delivery;
+    });
+    await f.service().execute(f.owner, "withheld user prompt", true, f.accepted);
+    expect(f.spawned()).toBeUndefined(); expect(f.ready).not.toContain(true);
+    expect(f.records.some(e => (e.data as any)?.stage === "configured")).toBe(false);
+    captureContextEvidence(`cc-${fault}`, { records: f.records, calls: f.calls });
+  });
+}
+
+test("ordinary Base CC never consults canonical provider or adds standing files", async () => {
+  const f = fixture(); f.deps.canonicalContext = async () => { throw new Error("Base requested context"); };
+  f.runtime.agentSettings = async () => { throw new Error("Base requested a SANE native definition"); };
+  await f.service().execute(f.owner, "base prompt", false, f.accepted);
+  expect(f.run.status).toBe("completed");
+  expect(f.spawned()!.args).not.toContain("--append-system-prompt-file");
+  expect(f.spawned()!.args).not.toContain("--agents"); expect(f.spawned()!.args).not.toContain("--agent");
+  expect(f.writes).toHaveLength(1); // Ordinary settings only, no source/context files.
+  captureContextEvidence("cc-base-no-injection", { args: f.spawned()!.args, files: f.writes, records: f.records });
+});
+
+test("canonical CC cannot spawn without trusted provider validation", async () => {
+  const f = fixture(), delivery = canonicalFixture(f.session);
+  f.deps.canonicalContext = async () => delivery;
+  await f.service().execute(f.owner, "unvalidated provider", true, f.accepted);
+  expect(f.spawned()).toBeUndefined(); expect(f.run.status).toBe("failed");
+  expect(f.records.filter(e => e.kind === "status").at(-1)?.data).toMatchObject({ error: "Trusted canonical context composition validator is unavailable" });
+});
 
 const nativeId = "11111111-1111-4111-8111-111111111111";
 const success = { type: "result", session_id: nativeId, subtype: "success", is_error: false };
@@ -49,6 +155,7 @@ function fixture(stdout = bytes([wire(success)]), stderr = bytes()) {
     saneSession: async () => null,
   };
   const runtime: ClaudeRunRuntime = {
+    version: async () => "2.1.281 (fixture)",
     spawn: (args, options) => { calls.push("spawn"); spawned = { args, options }; return child; },
     kill: (pid, signal) => { signals.push([pid, signal]); gone(); },
     sleep: async ms => { sleeps.push(ms); if (ms === 2200) await drainTimeout.promise; },

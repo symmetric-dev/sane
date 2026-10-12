@@ -135,8 +135,8 @@ test("Files and Git controls navigate without requiring or mutating a file targe
 test("every shell view puts the catalog before sidebar content and never in the topbar", async () => {
   await withDom(async (host, root) => {
     for (const view of ["chat", "history", "terminal", "code", "git", "browser", "config", "workstreams"] as const) {
-      await act(async () => { root.render(<WorkspaceShell view={view} sidebar={<div data-testid="sidebar-content">Content</div>} header={<span>Heading</span>}
-        retryCatalog={() => {}} sidebarOpen={false} openSidebar={() => {}} closeSidebar={() => {}}><div>View</div></WorkspaceShell>); });
+      await act(async () => { root.render(<ApplicationCommandProvider><WorkspaceShell view={view} sidebar={<div data-testid="sidebar-content">Content</div>} header={<span>Heading</span>}
+        retryCatalog={() => {}} sidebarOpen={false} openSidebar={() => {}} closeSidebar={() => {}}><div>View</div></WorkspaceShell></ApplicationCommandProvider>); });
       const sidebar = host.querySelector("aside")!;
       expect(sidebar.firstElementChild?.className).toBe("shell-sidebar-header");
       expect(sidebar.firstElementChild?.querySelector(".workspace-opener")).not.toBeNull();
@@ -144,8 +144,9 @@ test("every shell view puts the catalog before sidebar content and never in the 
       expect(host.querySelector(".topbar .context-switcher")).toBeNull();
       expect(host.querySelector(".workspace-navigation")).toBeNull();
     }
-    await act(async () => { root.render(<WorkspaceShell view="config" sidebar={<div>Settings sections</div>} header={<span>Settings</span>}
-      retryCatalog={() => {}} sidebarOpen openSidebar={() => {}} closeSidebar={() => {}}><div>View</div></WorkspaceShell>); });
+    await act(async () => { (window as unknown as Window).happyDOM.setWindowSize({ width: 600, height: 800 }); });
+    await act(async () => { root.render(<ApplicationCommandProvider><WorkspaceShell view="config" sidebar={<div>Settings sections</div>} header={<span>Settings</span>}
+      retryCatalog={() => {}} sidebarOpen openSidebar={() => {}} closeSidebar={() => {}}><div>View</div></WorkspaceShell></ApplicationCommandProvider>); });
     const drawer = host.querySelector("dialog")!;
     expect(drawer.getAttribute("aria-labelledby")).toBeTruthy();
     expect(drawer.querySelector(".shell-sidebar-header .workspace-opener")).not.toBeNull();

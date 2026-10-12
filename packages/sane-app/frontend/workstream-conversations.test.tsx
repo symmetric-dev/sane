@@ -1,8 +1,19 @@
-import { expect, test } from "bun:test";
+import { afterEach, beforeEach, expect, test } from "bun:test";
 import { act } from "react";
 import { WorkstreamConversations } from "./workstream-conversations";
 import { WorkstreamsView } from "./workstreams";
-import { admission, appOnly, assignment, button, click, deferred, detail, field, input, overview, repositoryId, row, select, submit, withDom } from "./workstreams.test-utils";
+import { admission, appOnly, assignment, button, click, deferred, detail, field as fixtureField, input, overview, repositoryId, row, select, submit, withDom } from "./workstreams.test-utils";
+import { store } from "./store";
+
+let previousState = store.state;
+beforeEach(() => { previousState = store.state; store.state = { ...previousState, phase: "ready" }; });
+afterEach(() => { store.state = previousState; });
+
+function field<T extends HTMLInputElement | HTMLSelectElement = HTMLInputElement>(host: ParentNode, label: string): T {
+  if (label !== "Research topic (optional)") return fixtureField<T>(host, label);
+  const found = [...host.querySelectorAll("label")].find(node => [...node.childNodes].filter(child => child.nodeType === 3).map(child => child.textContent).join("") === label)?.querySelector("input");
+  expect(found, `Field ${label}`).toBeDefined(); return found as T;
+}
 
 test("conversation Open callback and sending/no App session guards; search and distinct phase filtering", async () => {
   const first = row(), native = row("native", "alpha", null), value = detail();
@@ -17,7 +28,7 @@ test("conversation Open callback and sending/no App session guards; search and d
     await click(openButtons[0]!); expect(opened).toEqual(["app-one"]);
     await render(<WorkstreamConversations {...props} disabled />); expect(openButtons[0]!.disabled).toBe(true); await click(openButtons[0]!); expect(opened).toHaveLength(1);
     expect(host.querySelector(".workstream-conversations-phases")?.textContent).toContain("DesignResearch · deployment");
-    await select(field<HTMLSelectElement>(host, "Active phase"), "execution"); expect(host.querySelectorAll(".workstream-conversations-row")).toHaveLength(1); expect(host.querySelector("h4")?.textContent).toBe("Conversation native");
+    await select(field<HTMLSelectElement>(host, "Active assignment"), "execution"); expect(host.querySelectorAll(".workstream-conversations-row")).toHaveLength(1); expect(host.querySelector("h4")?.textContent).toBe("Conversation native");
     await input(field(host, "Search conversations"), "no match"); expect(host.textContent).toContain("No conversations match these filters.");
   });
 });
@@ -53,7 +64,7 @@ test("already enrolled conversation skips enroll; picker confirms Move from anot
   }, async (host, _, render) => {
     await render(<WorkstreamConversations overview={overview([candidate])} workspaceId="workspace" workstreamId="alpha" onChanged={async () => {}} />);
     await click(button(host, "Add existing conversation")); const dialog = host.querySelector("dialog")!; await click(dialog.querySelector<HTMLInputElement>('input[type="radio"]')!);
-    expect(calls).toHaveLength(0); expect(dialog.textContent).toContain("Move from Beta to Alpha?"); expect(dialog.textContent).toContain("ends its current phase assignments and preserves its execution checkout");
+    expect(calls).toHaveLength(0); expect(dialog.textContent).toContain("Move from Beta to Alpha?"); expect(dialog.textContent).toContain("ends its current assignments and preserves its execution checkout");
     await click(button(dialog, "Move conversation"));
     expect(calls).toEqual([{ url: "/api/workstreams/manage?workspaceId=workspace", body: { operation: "associate", ref: candidate.ref, workstreamId: "alpha" } }]);
   });
@@ -78,7 +89,7 @@ test("Remove confirmation only clears membership, warns phases end, never delete
   }, async (host, _, render) => {
     await render(<WorkstreamConversations overview={overview([candidate])} workspaceId="workspace" workstreamId="alpha" onChanged={async () => {}} />);
     await click(button(host, "Remove from workstream")); const dialog = host.querySelector("dialog")!;
-    expect(calls).toHaveLength(0); expect(dialog.textContent).toContain("does not delete the conversation"); expect(dialog.textContent).toContain("ends current phase assignments"); expect(dialog.textContent).toContain("does not complete or approve lifecycle phases");
+    expect(calls).toHaveLength(0); expect(dialog.textContent).toContain("does not delete the conversation"); expect(dialog.textContent).toContain("ends current assignments"); expect(dialog.textContent).toContain("does not complete or approve lifecycle phases");
     await click(button(dialog, "Remove from workstream"));
     expect(calls).toEqual([{ url: "/api/workstreams/manage?workspaceId=workspace", method: "POST", body: { operation: "associate", ref: candidate.ref, workstreamId: null } }]);
   });
@@ -91,10 +102,10 @@ test("multiple phase assignments remain distinct, research topic validates, dupl
     if (url === "/api/sessions") return Response.json({ sessions: [] }); calls.push(JSON.parse(String(init?.body))); const pending = deferred(); responses.push(pending); return pending.promise;
   }, async (host, _, render) => {
     await render(<WorkstreamConversations overview={overview([candidate], [value])} workspaceId="workspace" workstreamId="alpha" onChanged={async () => {}} />);
-    await click(button(host, "Change phase")); const dialog = host.querySelector("dialog")!;
-    expect(dialog.querySelectorAll(".workstream-conversation-phase-list li")).toHaveLength(2); expect(button(dialog, "Add phase").disabled).toBe(true);
-    await select(field<HTMLSelectElement>(dialog, "Phase"), "research"); await input(field(dialog, "Research topic (optional)"), "NOT valid");
-    expect(button(dialog, "Add phase").disabled).toBe(true); await submit(dialog); expect(calls).toHaveLength(0);
+    await click(button(host, "Change assignments")); const dialog = host.querySelector("dialog")!;
+    expect(dialog.querySelectorAll(".workstream-conversation-phase-list li")).toHaveLength(2); expect(button(dialog, "Add assignment").disabled).toBe(true);
+    await select(field<HTMLSelectElement>(dialog, "Assignment"), "research"); await input(field(dialog, "Research topic (optional)"), "NOT valid");
+    expect(button(dialog, "Add assignment").disabled).toBe(true); await submit(dialog); expect(calls).toHaveLength(0);
     await input(field(dialog, "Research topic (optional)"), "deployment-options"); await submit(dialog, 2);
     expect(calls).toEqual([{ operation: "phase/assign", ref: candidate.ref, phase: "research:deployment-options" }]);
     await act(async () => { responses[0]!.resolve(Response.json({})); }); expect(host.querySelector("dialog")).toBe(dialog);
@@ -224,12 +235,12 @@ test("leaving a workstream then returning before old enrollment resolves does no
 });
 
 test("integration: conversation dialog survives root refresh and retains newer association error", async () => {
-  const candidate = row("unassigned", null), pending = deferred(); let reads = 0;
+  const candidate = row("unassigned", null), pending = deferred(); let refreshing = false;
   await withDom(async url => {
-    if (url.includes("/inspect?")) return Response.json({ state: "ready" }); if (url.includes("/overview?")) return ++reads === 1 ? Response.json(overview([candidate])) : pending.promise;
+    if (url.includes("/inspect?")) return Response.json({ state: "ready" }); if (url.includes("/overview?")) return refreshing ? pending.promise : Response.json(overview([candidate]));
     if (url === "/api/sessions") return Response.json({ sessions: [] }); return Response.json({ error: "assignment unavailable" }, { status: 503 });
   }, async (host, _, render) => {
-    await render(<WorkstreamsView workspaceId="workspace" />); await click(button(host, "Refresh")); await click(button(host, "Add existing conversation"));
+    await render(<WorkstreamsView workspaceId="workspace" />); refreshing = true; await click(button(host, "Refresh")); await click(button(host, "Add existing conversation"));
     const dialog = host.querySelector("dialog")!; await click(dialog.querySelector<HTMLInputElement>('input[type="radio"]')!); await click(button(dialog, "Add to workstream"));
     const issue = dialog.querySelector('[role="alert"]')?.textContent; expect(issue).toContain("Could not add this conversation");
     await act(async () => { pending.resolve(Response.json(overview([candidate]))); });

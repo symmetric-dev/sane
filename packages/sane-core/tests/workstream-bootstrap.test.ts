@@ -50,30 +50,72 @@ test("partial publication retains explicit orphan/audit evidence, never silently
   expect(()=>domain.createWorkstream({id:"new",title:"Retry",type:"foundation"},mutation)).toThrow("Orphan")
 })
 test("DB row failure preserves existing bytes and surfaces orphan instead of adopting it",()=>{
-  const {domain,stateRoot,destination}=setup();domain.createWorkstream({id:"existing",title:"Existing",type:"feature"},mutation)
+  const {domain,destination}=setup();domain.createWorkstream({id:"existing",title:"Existing",type:"feature"},mutation)
   domain.writeArtifact("existing","README.md","authored",mutation)
-  const db=new Database(join(stateRoot,"sane.db"))
-  try{db.exec("CREATE TRIGGER fixture_failure BEFORE INSERT ON workstreams BEGIN SELECT RAISE(ABORT,'fixture database failure'); END")
-    expect(()=>domain.createWorkstream({id:"new",title:"New",type:"issue"},mutation)).toThrow("fixture database failure")
-    expect(domain.listWorkstreams().map(w=>w.id)).toEqual(["existing"]);expect(existsSync(destination("new"))).toBe(true)
-    expect(domain.readArtifact("existing","README.md")).toBe("authored");expect(domain.unresolvedArtifactOperations("new")).toHaveLength(1)
-  }finally{db.close()}
+  const db=(domain as unknown as {db:Database}).db,query=db.query
+  let injected=false
+  const fault=spyOn(db,"query").mockImplementation(function(this:Database,sql:string){
+    if(sql.startsWith("INSERT INTO workstreams(")){
+      expect(this.inTransaction).toBe(true)
+      for(const entry of initialTemplateRegistry("issue")) expect(readFileSync(join(destination("new"),entry.destination))).toEqual(readFileSync(join(DEFAULT_TEMPLATE_ROOT,entry.source)))
+      injected=true
+      throw new Error("fixture database failure")
+    }
+    return query.call(this,sql)
+  } as typeof db.query)
+  try{
+     expect(()=>domain.createWorkstream({id:"new",title:"New",type:"issue"},mutation)).toThrow("fixture database failure")
+     expect(injected).toBe(true)
+  }finally{fault.mockRestore()}
+  expect(domain.listWorkstreams().map(w=>w.id)).toEqual(["existing"]);expect(existsSync(destination("new"))).toBe(true)
+  expect(domain.readArtifact("existing","README.md")).toBe("authored");expect(domain.unresolvedArtifactOperations("new")).toHaveLength(1)
+  expect(domain.readAudit("new").at(-1)!.operation).toBe("artifact_operation_failed")
+  expect(()=>domain.createWorkstream({id:"new",title:"Retry",type:"issue"},mutation)).toThrow("Orphan")
 })
 test("deferred COMMIT failure rolls back all domain rows; published bytes remain diagnosed",()=>{
   const {domain,destination}=setup();const db=(domain as unknown as {db:Database}).db
-  db.exec(`CREATE TABLE fixture_parent(id INTEGER PRIMARY KEY); CREATE TABLE fixture_child(id INTEGER REFERENCES fixture_parent(id) DEFERRABLE INITIALLY DEFERRED);
-    CREATE TRIGGER fixture_commit_failure AFTER INSERT ON workstreams BEGIN INSERT INTO fixture_child VALUES(1); END;`)
-  expect(()=>domain.createWorkstream({id:"new",title:"New",type:"issue"},mutation)).toThrow("FOREIGN KEY")
+  const query=db.query,preferences=db.query("SELECT * FROM cli_preferences").all()
+  let inserted=false,auditWrites=0
+  const fault=spyOn(db,"query").mockImplementation(function(this:Database,sql:string){
+    if(sql.startsWith("INSERT INTO workstreams(")){
+      expect(this.inTransaction).toBe(true)
+      // Defer an existing FK until the real COMMIT; leave schema admission intact.
+      this.exec("PRAGMA defer_foreign_keys=ON")
+      query.call(this,"UPDATE cli_preferences SET selected_workstream_id='missing' WHERE id=1").run()
+      inserted=true
+    }
+    if(inserted&&auditWrites<2&&sql.startsWith("INSERT INTO audit_events(")){
+      expect(query.call(this,"SELECT COUNT(*) AS count FROM phase_states WHERE workstream_id='new'").get()).toEqual({count:4})
+      auditWrites++
+    }
+    return query.call(this,sql)
+  } as typeof db.query)
+  try{expect(()=>domain.createWorkstream({id:"new",title:"New",type:"issue"},mutation)).toThrow("FOREIGN KEY")}
+  finally{fault.mockRestore()}
+  expect(inserted).toBe(true);expect(auditWrites).toBe(2)
+  expect(db.query("SELECT * FROM phase_states").all()).toEqual([])
+  expect(db.query("SELECT * FROM cli_preferences").all()).toEqual(preferences)
+  expect(domain.readAudit("new").some(e=>e.operation==="workstream_created"||e.operation==="artifact_operation_completed")).toBe(false)
+  expect(domain.readAudit("new").at(-1)!.operation).toBe("artifact_operation_failed")
   expect(domain.listWorkstreams()).toEqual([]);expect(existsSync(destination("new"))).toBe(true);expect(domain.unresolvedArtifactOperations("new")).toHaveLength(1)
 })
 test("template preflight failure publishes nothing; initial-audit failure publishes nothing",()=>{
-  const {domain,stateRoot,destination}=setup();const original=ConfinedLifecycleFileSystem.prototype.readBytes
+  const {domain,destination}=setup();const original=ConfinedLifecycleFileSystem.prototype.readBytes
   const spy=spyOn(ConfinedLifecycleFileSystem.prototype,"readBytes").mockImplementation(function(this: ConfinedLifecycleFileSystem,path){if(path.endsWith("shared/sdd/SDD.md"))throw new Error("unavailable template");return original.call(this,path)})
   try{expect(()=>domain.createWorkstream({id:"new",title:"New",type:"issue"},mutation)).toThrow("unavailable template")}finally{spy.mockRestore()}
   expect(existsSync(destination("new"))).toBe(false)
-  const db=new Database(join(stateRoot,"sane.db"));try{db.exec("CREATE TRIGGER no_audit BEFORE INSERT ON audit_events BEGIN SELECT RAISE(ABORT,'audit refused'); END")
-    expect(()=>domain.createWorkstream({id:"new",title:"New",type:"issue"},mutation)).toThrow("audit refused");expect(existsSync(destination("new"))).toBe(false)
-  }finally{db.close()}
+  const db=(domain as unknown as {db:Database}).db,query=db.query,audit=domain.readAudit()
+  const fault=spyOn(db,"query").mockImplementation(function(this:Database,sql:string){
+    if(sql.startsWith("INSERT INTO audit_events(")){
+      expect(this.inTransaction).toBe(true)
+      throw new Error("audit refused")
+    }
+    return query.call(this,sql)
+  } as typeof db.query)
+  try{
+     expect(()=>domain.createWorkstream({id:"new",title:"New",type:"issue"},mutation)).toThrow("audit refused");expect(existsSync(destination("new"))).toBe(false)
+  }finally{fault.mockRestore()}
+  expect(domain.listWorkstreams()).toEqual([]);expect(domain.readAudit()).toEqual(audit)
 })
 test("fresh schema independently rejects typeless records rather than default-filling old state",()=>{
   const {stateRoot,domain}=setup();const db=new Database(join(stateRoot,"sane.db"))
