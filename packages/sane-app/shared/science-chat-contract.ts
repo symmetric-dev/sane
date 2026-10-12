@@ -15,9 +15,10 @@ export interface ScienceOperation {
   error?: string;
   observation: { provenance: "observed-unverified"; text: string; cell: ScienceCell | null } | null;
 }
+export type ScienceShareRepresentation = "source" | "observed-text" | "source-and-observed-text";
 export interface ScienceShareSnapshot {
   id: string; requestId: string; blockId: string; revision: number; source: string;
-  operationId: string | null; representation: "source" | "source-and-observed-text";
+  operationId: string | null; representation: ScienceShareRepresentation;
   /** Frozen at creation; send integrations must use this, not live notebook state. */
   agentText: string; createdAt: string;
 }
@@ -40,14 +41,15 @@ export type ScienceChatRequest =
   | { action: "add-block"; requestId: string; expectedRevision: number; source: string; anchor: ScienceTranscriptAnchor }
   | { action: "entry"; expectedRevision: number; afterBlockId: string | null; text: string }
   | { action: "run"; requestId: string; blockId: string; expectedRevision: number }
-  | { action: "share"; requestId: string; blockId: string; expectedRevision: number; operationId: string | null; representation: "source" | "source-and-observed-text" };
+  | { action: "share"; requestId: string; blockId: string; expectedRevision: number; operationId: string | null; representation: ScienceShareRepresentation };
 /** GET/POST /api/workspaces/:workspaceId/worktrees/:worktreeId/science/chats/:conversationId */
 export interface ScienceChatResponse { chat: ScienceChatState }
 /** Reading an untouched conversation never creates a science association. */
 export interface ScienceChatHistoryResponse { chat: ScienceChatState | null }
 
 /** Exact, intentionally narrow agent representation. No HTML/JSON/image coercion. */
-export function materializeScienceShare(source: string, observation?: string): string {
+export function materializeScienceShare(source: string, observation?: string, representation?: ScienceShareRepresentation): string {
+  if (representation === "observed-text") return `Observed output (unverified; may be stale):\n${observation ?? ""}`;
   return `Science source (immutable; execution provenance not asserted):\n${source}`
     + (observation === undefined ? "" : `\n\nObserved output (unverified; may be stale):\n${observation}`);
 }

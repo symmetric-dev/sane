@@ -12,7 +12,7 @@ export const NativeSubagentContext = createContext<NativeSubagentFeature | null>
 export const useNativeSubagents = () => useContext(NativeSubagentContext);
 
 export function useNativeSubagentFeature(sessionId: string, enabled: boolean, visible: boolean, identity = sessionId) {
-  const { client, state } = useNativeSubagentClient(sessionId, enabled, identity);
+  const { client, state } = useNativeSubagentClient(sessionId, enabled && visible, identity);
   const [selection, setSelection] = useState<Selection | null>(null);
   const restore = useRef<Selection | null>(null);
   const active = selection?.client === client && selection.summary.parentSessionId === sessionId ? selection : null;

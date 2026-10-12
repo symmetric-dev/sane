@@ -14,7 +14,7 @@ const inputError = () => new NativeSubagentError(400, "native-subagent-input", "
 export class NativeSubagentService {
   private readonly secret = randomBytes(32);
   private readonly cache = new Map<string, CachedRun>();
-  private readonly lists = new Map<string, { signature: string; children: Projection; revision: string }>();
+  private readonly lists = new Map<string, { subagents: NativeSubagentList["subagents"]; revision: string }>();
   constructor(private readonly sessions: () => readonly Session[], private readonly runs: () => readonly Run[], private readonly events: (runId: string) => readonly Event[]) {}
 
   private session(id: string) {
@@ -61,22 +61,23 @@ export class NativeSubagentService {
     const session = this.session(parentSessionId);
     const { limit, cursor } = this.parameters(params);
     const projections = this.runs().filter(run => run.sessionId === parentSessionId).map(run => this.projection(session, run));
-    const signature = projections.map(children => children.map(child => child.revision).join(",")).join(";");
+    const summaries = projections.flat().reverse().map(child => child.summary);
+    // List cursors track only their ordered summaries, not streaming child history.
+    const revision = nativeSubagentRevision([parentSessionId, summaries]);
     let list = this.lists.get(parentSessionId);
-    if (!list || list.signature !== signature) {
-      const children = projections.flat().reverse();
-      list = { signature, children, revision: nativeSubagentRevision([parentSessionId, children.map(child => child.revision)]) };
+    if (!list || list.revision !== revision) {
+      list = { subagents: summaries, revision };
       this.lists.set(parentSessionId, list);
     }
     const scope = ["list", parentSessionId];
-    const start = this.offset(cursor, scope, list.revision, 0, list.children.length);
+    const start = this.offset(cursor, scope, list.revision, 0, list.subagents.length);
     const subagents: NativeSubagentList["subagents"] = [];
     const response: NativeSubagentList = { subagents, revision: list.revision, nextCursor: null, coverage: "recorded-only" };
     let end = start, bytes = Buffer.byteLength(JSON.stringify(response));
-    while (end < list.children.length && subagents.length < limit) {
-      const summary = list.children[end]!.summary;
+    while (end < list.subagents.length && subagents.length < limit) {
+      const summary = list.subagents[end]!;
       const size = Buffer.byteLength(JSON.stringify(summary)) + (subagents.length ? 1 : 0);
-      const nextCursor = end + 1 < list.children.length ? this.encode({ scope, revision: list.revision, offset: end + 1 }) : null;
+      const nextCursor = end + 1 < list.subagents.length ? this.encode({ scope, revision: list.revision, offset: end + 1 }) : null;
       const cursorBytes = Buffer.byteLength(JSON.stringify(nextCursor)) - 4;
       if (subagents.length && bytes + size + cursorBytes > NATIVE_SUBAGENT_PAGE_BYTES) break;
       subagents.push(summary); bytes += size; end++;

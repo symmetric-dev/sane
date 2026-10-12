@@ -1,5 +1,6 @@
 import { useEffect, useId, useRef, useState, type ReactNode } from "react";
-import { FiArrowLeft, FiGrid, FiRefreshCw, FiX } from "react-icons/fi";
+import { FiGrid, FiRefreshCw } from "react-icons/fi";
+import { FlowNavigation } from "./flow-navigation";
 import type { LifecyclePhase } from "sane-core/contracts";
 import type { WorkstreamAction, WorkstreamActionInput, WorkstreamActionResult, WorkstreamOverview } from "../src/workstreams-contract";
 import { assignmentClass, assignmentLabel, assignmentSemantics, supportAssignments } from "./assignment-semantics";
@@ -20,7 +21,7 @@ const sessionsFor = (detail: Detail, track: Track) => [...new Map(assignmentsFor
 const jobsFor = (detail: Detail, track: Track) => track === "planning" || track === "execution" ? detail.workstream.lifecycle.jobs : [];
 const statusFor = (detail: Detail, track: Track) => isPhase(track) ? label(detail.workstream.lifecycle.phases.find(row => row.phase === track)?.status ?? "unavailable") : assignmentsFor(detail, track).length ? "Active" : "Inactive";
 
-export function WorkstreamStatusComposer({ identity: start, active, close, navigation }: { identity: WorkstreamStatusStart; active: boolean; close: () => void; navigation?: ReactNode }) {
+export function WorkstreamStatusComposer({ identity: start, active, close, back, navigation }: { identity: WorkstreamStatusStart; active: boolean; close: () => void; back?: () => void; navigation?: ReactNode }) {
   const id = useId();
   const identity = useRef({ ...start }).current;
   const scope = JSON.stringify([identityKey(start), active]);
@@ -128,7 +129,12 @@ export function WorkstreamStatusComposer({ identity: start, active, close, navig
   const tile = (track: Track) => detail && <button type="button" key={track} ref={button => { if (button) tileButtons.current.set(track, button); else tileButtons.current.delete(track); }} className={`workstream-status-tile ${assignmentClass(track)}`} disabled={blocked} onClick={() => select(track)}><strong>{assignmentLabel(track)}</strong><span>{statusFor(detail, track)}</span><small>{counts(track)}</small></button>;
 
   return <section className="workstream-status-composer" aria-label="View Status">
-    <header className="workstream-status-heading"><div><FiGrid size={16} aria-hidden="true" /><strong>View Status</strong><span>{detail?.workstream.title ?? identity.workstreamId}</span></div><button ref={closeButton} type="button" className="text-button" disabled={busy} onClick={() => { if (!guard.current.locked) close(); }} aria-label="Close View Status"><FiX aria-hidden="true" />Close</button></header>
+    <header className="workstream-status-heading"><div><FiGrid size={16} aria-hidden="true" /><strong>View Status</strong><span>{detail?.workstream.title ?? identity.workstreamId}</span></div><FlowNavigation backRef={backButton} exitRef={closeButton} disabled={!active || busy} backLabel={selection !== null ? "Back to status overview" : "Back to Flows"} back={() => { if (!guard.current.locked) { if (selection !== null) select(null); else (back ?? close)(); } }} escape={() => {
+      if (guard.current.locked) return;
+      if (confirm) { setConfirm(false); setApprovalRef(""); backButton.current?.focus(); }
+      else if (selection !== null) select(null);
+      else close();
+    }} exit={() => { if (!guard.current.locked) close(); }} /></header>
     <div className="workstream-status-body" aria-busy={loading || busy}>
       {loading && <p className="muted" role="status">Loading workstream status…</p>}
       {(readFailed || refreshFailed) && <div className="workstream-status-notice" role="status"><span>{refreshFailed ? "Refresh failed; action was not retried." : outcome === "Action failed" ? "Refresh before trying another action." : "Couldn't load current state. Refresh to verify membership."}</span><button type="button" className="text-button" disabled={!available.current || busy} onClick={() => void refresh()}>Refresh</button></div>}
@@ -159,6 +165,6 @@ export function WorkstreamStatusComposer({ identity: start, active, close, navig
       </>)}
       {lifecycle && confirm && <div role="group" aria-label="Approval confirmation" className="workstream-status-confirm"><label htmlFor={`${id}-approval`}>Approval reference</label><input autoFocus id={`${id}-approval`} value={approvalRef} required disabled={blocked} placeholder="Approval reference" onChange={event => setApprovalRef(event.target.value)} onKeyDown={event => { if (event.key === "Enter") { event.preventDefault(); event.stopPropagation(); void act("approve"); } }} /><div><button type="button" disabled={blocked || !approvalRef.trim()} onClick={() => void act("approve")}>{confirmLabel}</button><button type="button" disabled={busy} onClick={() => { setConfirm(false); setApprovalRef(""); }}>Cancel</button></div></div>}
     </div>
-    <footer className="workstream-status-toolbar"><div>{selection !== null && <button ref={backButton} type="button" className="text-button" disabled={!available.current || busy} onClick={() => select(null)}><FiArrowLeft aria-hidden="true" />Back</button>}<button type="button" className="text-button" disabled={!available.current || loading || busy} aria-label="Refresh workstream status" title="Refresh workstream status" onClick={() => void refresh()}><FiRefreshCw aria-hidden="true" /></button></div><div>{lifecycle && <><button type="button" disabled={blocked || confirm} onClick={() => void act("validate")}>Validate</button><button type="button" disabled={blocked || confirm} onClick={() => setConfirm(true)}>Approve</button><button type="button" disabled={blocked || confirm} onClick={() => void act("provide")}>Provide</button></>}{navigation}</div></footer>
+    <footer className="workstream-status-toolbar"><div><button type="button" className="text-button" disabled={!available.current || loading || busy} aria-label="Refresh workstream status" title="Refresh workstream status" onClick={() => void refresh()}><FiRefreshCw aria-hidden="true" /></button></div><div>{lifecycle && <><button type="button" disabled={blocked || confirm} onClick={() => void act("validate")}>Validate</button><button type="button" disabled={blocked || confirm} onClick={() => setConfirm(true)}>Approve</button><button type="button" disabled={blocked || confirm} onClick={() => void act("provide")}>Provide</button></>}{navigation}</div></footer>
   </section>;
 }

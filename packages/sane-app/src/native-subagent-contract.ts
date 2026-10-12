@@ -13,6 +13,7 @@ export type NativeSubagentSummary = NativeSubagentKey & {
   toolName: "Agent" | "Task" | "subagent";
   harness?: "claude-code" | "opencode";
   nativeSessionId?: string;
+  recovery?: { attempts: number; state: "retrying" | "exhausted" };
   name?: string;
   assignment?: string;
   parentMessageId?: string;
@@ -28,6 +29,7 @@ export type NativeSubagentSummary = NativeSubagentKey & {
 /** Both endpoints are authenticated read-only journal projections. */
 export type NativeSubagentList = {
   subagents: NativeSubagentSummary[];
+  /** Tracks ordered summaries and membership, independently of child history. */
   revision: string;
   nextCursor: string | null;
   coverage: "recorded-only";
@@ -36,6 +38,7 @@ export type NativeSubagentList = {
 export type NativeSubagentPage = {
   subagent: NativeSubagentSummary;
   messages: Message[];
+  /** Tracks both the child summary and its complete recorded message history. */
   revision: string;
   /** Default is the latest slice. This cursor loads the preceding slice. */
   nextCursor: string | null;
@@ -56,3 +59,5 @@ export const NATIVE_SUBAGENT_PAGE_BYTES = 512 * 1024;
 
 // GET /api/sessions/:parentSessionId/native-subagents[?limit=...&cursor=...]
 // GET /api/sessions/:parentSessionId/native-subagents/:runId/:parentToolUseId[?limit=...&cursor=...]
+// POST /api/sessions/:parentSessionId/native-subagents/:runId/:parentToolUseId/refresh
+// Explicit native observation retry; GET polling never resets recovery or final captures.

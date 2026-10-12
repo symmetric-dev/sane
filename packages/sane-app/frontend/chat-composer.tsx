@@ -1,5 +1,9 @@
-import { useEffect, useRef, useState, useSyncExternalStore, type ReactNode } from "react";
-import { FiChevronDown, FiInfo } from "react-icons/fi";
+import { useEffect, useMemo, useRef, useState, useSyncExternalStore, type ReactNode } from "react";
+import { FiChevronDown, FiGrid, FiInfo } from "react-icons/fi";
+import { useRegisterCommand, isMacPlatform } from "./application-commands";
+import { FLOWS_SHORTCUT, shortcutHint } from "./shortcut-definitions";
+import { TerminalProvider, TerminalHeader, TerminalView } from "./terminal";
+import { FlowNavigation } from "./flow-navigation";
 import { AgentAvatar } from "./agent-visuals";
 import { AgentPicker } from "./agent-picker";
 import { ChatInput } from "./chat-input";
@@ -122,15 +126,27 @@ export function ChatComposer({ state, active = true, navigation, ack, onAckChang
   const workspace = workspaces.find(item => item.workspaceId === conversation?.workspaceId);
   const flowScope = JSON.stringify([pendingScope, conversation?.workspaceId, conversation?.worktreeId, conversation?.replacedBy, workspace?.commonDir, workspace?.kind]);
   const [status, setStatus] = useState<{ scope: string; identity: WorkstreamStatusStart } | null>(null);
+  const [localFlow, setLocalFlow] = useState<{ scope: string; page: "flows" | "terminal" } | null>(null);
+  const localPage = localFlow?.scope === flowScope ? localFlow.page : null;
   const statusFlow = status?.scope === flowScope && !review?.flow ? status : null;
   const hasRequests = pendingInteractions(state, store.capabilities()).length > 0;
   const scienceFlow = science?.view.flow && !review?.flow && !statusFlow;
-  const flowOpen = hasRequests || !!review?.flow || !!statusFlow || !!scienceFlow;
+  const flowOpen = hasRequests || !!review?.flow || !!statusFlow || !!scienceFlow || !!localPage;
+  useEffect(() => { setLocalFlow(null); }, [flowScope]);
+  useEffect(() => { if (active && !hasRequests && localPage === "terminal") flowComposer.current?.querySelector<HTMLButtonElement>(".terminal-composer button")?.focus({ preventScroll: true }); }, [active, hasRequests, localPage]);
+  useEffect(() => { if (review?.flow || statusFlow || scienceFlow) setLocalFlow(null); }, [!!review?.flow, !!statusFlow, !!scienceFlow]);
+  useRegisterCommand(useMemo(() => ({
+    ...FLOWS_SHORTCUT,
+    contexts: ["application", "input"] as const,
+    available: () => active && !conversation?.replacedBy && (!flowOpen || localPage === "flows") && !hasRequests,
+    action: () => setLocalFlow(localPage === "flows" ? null : { scope: flowScope, page: "flows" }),
+  }), [active, conversation?.replacedBy, flowOpen, localPage, hasRequests, flowScope]));
   const wasFlowOpen = useRef(flowOpen);
   const hadRequests = useRef(hasRequests);
   useEffect(() => { setStatus(null); }, [flowScope]);
   useEffect(() => { setDetails(null); }, [flowScope]);
   useEffect(() => { if (review?.flow) setStatus(null); }, [!!review?.flow]);
+  useEffect(() => { if (science?.view.flow) setStatus(null); }, [science?.view.flow]);
   // Dialog cleanup runs after a navigation render; consult the current activity,
   // not the value captured when the modal was opened. Body is an explicit safe
   // target because ShellDialog falls back to its old trigger for a null target.
@@ -235,9 +251,11 @@ export function ChatComposer({ state, active = true, navigation, ack, onAckChang
       restoreFocus={() => !flowOpen ? normalComposer.current?.querySelector("textarea") ?? document.body : document.body} />
     {hasRequests && <Interactions key={flowScope} state={state} active={active && !helpOpen && !pickerOpen} navigation={navigation} showNotice={false} />}
     <div ref={flowComposer} className="composer-flow-slot" hidden={hasRequests} style={{ display: hasRequests ? "none" : "contents" }}>
-      {!conversation?.replacedBy && review?.flow && <DocumentReviewComposer review={review} active={active && !hasRequests} disabled={reviewBlocked} navigation={navigation} />}
-      {!conversation?.replacedBy && statusFlow && <WorkstreamStatusComposer key={JSON.stringify([statusFlow.scope, statusFlow.identity])} identity={statusFlow.identity} active={active && !hasRequests} close={() => setStatus(null)} navigation={navigation} />}
-      {!conversation?.replacedBy && scienceFlow && science && active && !hasRequests && <ScienceComposer key={science.scope} science={science} navigation={navigation} />}
+      {localPage === "flows" && active && !hasRequests && <ChatWorkstreamActions key={flowScope} conversation={conversation} active={active} close={() => setLocalFlow(null)} onDocuments={review ? identity => { setStatus(null); void review.start(identity); } : undefined} onStatus={identity => setStatus({ scope: flowScope, identity })} onTerminal={() => setLocalFlow({ scope: flowScope, page: "terminal" })} onPython={() => { setLocalFlow(null); science?.start(); }} pythonUnavailable={!science?.available ? "Select a conversation to use Python" : science.disabled || chainLocked ? "Python is currently unavailable" : undefined} />}
+      {localPage === "terminal" && active && !hasRequests && <TerminalProvider view="terminal"><section className="workstream-status-composer terminal-composer" aria-label="Terminal flow"><header className="workstream-status-heading"><TerminalHeader /><FlowNavigation back={() => setLocalFlow({ scope: flowScope, page: "flows" })} exit={() => setLocalFlow(null)} /></header><TerminalView exit={() => setLocalFlow(null)} /></section></TerminalProvider>}
+      {!conversation?.replacedBy && review?.flow && <DocumentReviewComposer review={review} active={active && !hasRequests} disabled={reviewBlocked} back={() => setLocalFlow({ scope: flowScope, page: "flows" })} navigation={navigation} />}
+      {!conversation?.replacedBy && statusFlow && <WorkstreamStatusComposer key={JSON.stringify([statusFlow.scope, statusFlow.identity])} identity={statusFlow.identity} active={active && !hasRequests} close={() => setStatus(null)} back={() => { setStatus(null); setLocalFlow({ scope: flowScope, page: "flows" }); }} navigation={navigation} />}
+      {!conversation?.replacedBy && scienceFlow && science && active && !hasRequests && <ScienceComposer key={science.scope} science={science} back={() => setLocalFlow({ scope: flowScope, page: "flows" })} navigation={navigation} />}
     </div>
     {!conversation?.replacedBy ? <form ref={normalComposer} className="composer" hidden={flowOpen} style={flowOpen ? { display: "none" } : undefined} onCompositionStartCapture={() => { composingRef.current = true; setComposing(true); }} onCompositionEndCapture={() => { composingRef.current = false; setComposing(false); }} onSubmit={event => { event.preventDefault(); submit(); }}>
       <ScienceShareDraftPreview />
@@ -248,9 +266,8 @@ export function ChatComposer({ state, active = true, navigation, ack, onAckChang
           : <button ref={agentTrigger} type="button" className="agent-chip" aria-haspopup="dialog" disabled={state.sending || !active || chainLocked} title={chainLocked ? "Agent settings are fixed while the pending-input chain is active." : profile.label} aria-label={`${state.selected ? "Agent" : "Agent for new conversation"}: ${profile.label}${store.pendingUpgrade() ? " (pending)" : ""}`} onClick={() => { if (!store.pendingInputChainLocked()) setPickerOpen(true); }}><AgentAvatar profile={profile} size={20} /><span className="agent-chip-label">{profile.label}</span>{store.pendingUpgrade() && <span className="agent-chip-pending">pending</span>}<FiChevronDown size={12} aria-hidden="true" /></button>
           : <span className="agent-chip fixed" role="status" title={store.conversationProfileLabel(state.selected)}><span className="agent-chip-label">{store.conversationProfileLabel(state.selected)}</span></span>}
         <div className="composer-utilities">
-          {science?.available && <button type="button" className="text-button" disabled={science.disabled || chainLocked} onClick={science.start} aria-label="Open Python workspace">Python</button>}
           <WorkersButton key={state.selected} sessionId={state.selected} active={active && !flowOpen} />
-          <ChatWorkstreamActions conversation={conversation} active={active && !flowOpen} onDocuments={review ? identity => { setStatus(null); void review.start(identity); } : undefined} onStatus={identity => setStatus({ scope: flowScope, identity })} />
+          <button type="button" className="composer-flows" title={`Flows (${shortcutHint(FLOWS_SHORTCUT)})`} aria-keyshortcuts={`${isMacPlatform() ? "Meta" : "Control"}+p`} aria-expanded={localPage === "flows"} onClick={() => setLocalFlow({ scope: flowScope, page: "flows" })}><FiGrid size={14} aria-hidden="true" />Flows</button>
         </div>
       </div><div className="composer-actions">
         <button ref={helpTrigger} type="button" className={`composer-help${infoError ? " has-issue" : ""}`} disabled={!active} aria-label={infoText ? `Sending messages help: ${infoText}` : "Sending messages help"} title="Sending messages" onClick={() => setHelpOpen(true)}><FiInfo size={14} aria-hidden="true" />{infoError ? <span className="composer-help-dot" aria-hidden="true" /> : null}</button>

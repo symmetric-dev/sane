@@ -3040,9 +3040,11 @@ async function startOwned(options: Options, assetsDir: string, packageDir: strin
         }
         return json({ submissions: scienceSubmissions.listConversationViews(id) });
       }
-      const nativeSubagent = /^\/api\/sessions\/([^/]+)\/native-subagents(?:\/([^/]+)\/([^/]+))?$/.exec(path);
+      const nativeSubagent = /^\/api\/sessions\/([^/]+)\/native-subagents(?:\/([^/]+)\/([^/]+)(\/refresh)?)?$/.exec(path);
       if (nativeSubagent) {
-        if (req.method !== "GET") return json({ error: "Method not allowed" }, 405);
+        const force = nativeSubagent[4] === "/refresh";
+        if (req.method !== (force ? "POST" : "GET")) return json({ error: "Method not allowed" }, 405);
+        if (force && url.searchParams.size) return json({ error: "Refresh does not accept query selectors", code: "native-subagent-input" }, 400);
         try {
           const selectors = nativeSubagent.slice(1).map(value => value === undefined ? undefined : decodeURIComponent(value));
           const result = selectors[1] === undefined ? nativeSubagents.list(selectors[0]!, url.searchParams)
@@ -3051,7 +3053,7 @@ async function startOwned(options: Options, assetsDir: string, packageDir: strin
           const summaries = "subagents" in result ? result.subagents : [result.subagent];
           for (const summary of summaries) {
             const run = meta.runs.find(run => run.runId === summary.runId && run.sessionId === parent.sessionId);
-            if (run) nativeSubagentRecorder.refresh(parent, run, summary.parentToolUseId);
+            if (run) nativeSubagentRecorder.refresh(parent, run, summary.parentToolUseId, force);
           }
           return json(result);
         } catch (error) {

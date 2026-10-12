@@ -28,6 +28,13 @@ export const SIDEBAR_TOGGLE_SHORTCUT = {
   description: "Hide or show the desktop sidebar, or open or close the mobile navigation drawer. Focus a SANE control first when using an embedded preview.",
 } as const satisfies ShortcutDefinition;
 
+export const FLOWS_SHORTCUT = {
+  id: "chat.flows", label: "Flows (Chat)",
+  scope: { kind: "global" }, owner: "application",
+  binding: { key: "p", mod: true },
+  description: "Open or close Flows from the chat composer.",
+} as const satisfies ShortcutDefinition;
+
 export const GLOBAL_SHORTCUTS: readonly ShortcutDefinition[] = [...NAVIGATION_HOTKEYS.map<ShortcutDefinition>(item => ({
   id: `navigation.${item.id}`,
   label: item.label,
@@ -37,7 +44,7 @@ export const GLOBAL_SHORTCUTS: readonly ShortcutDefinition[] = [...NAVIGATION_HO
     { ...navigationBinding(item.key, true), platform: "mac" },
     { ...navigationBinding(item.key, false), platform: "windows-linux" },
   ],
-})), WORKSPACE_SELECTOR_SHORTCUT, SIDEBAR_TOGGLE_SHORTCUT];
+})), WORKSPACE_SELECTOR_SHORTCUT, SIDEBAR_TOGGLE_SHORTCUT, FLOWS_SHORTCUT];
 
 export const FILE_SHORTCUTS = {
   quickOpen: {

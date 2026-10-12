@@ -1,4 +1,16 @@
 /* === terminal === */
+.workstream-status-composer.terminal-composer { height:min(520px, 65dvh); max-height:65dvh; min-height:0; display:flex; flex-direction:column; }
+.terminal-composer > .workstream-status-heading { flex-shrink:0; }
+.terminal-composer > .terminal-view { overflow:auto; }
+.terminal-composer > .workstream-status-heading { flex-wrap:wrap; }
+.terminal-mode { display:inline-flex; align-items:center; gap:6px; }
+.terminal-local-footer .text-button, .terminal-interact { display:inline-flex; align-items:center; justify-content:center; gap:6px; font-size:12px; }
+.terminal-footer-actions .terminal-interact { border:1px solid var(--border); border-radius:9px; padding:8px 11px; background:var(--card); color:var(--foreground); }
+.terminal-interact kbd { font:10px var(--font-mono, monospace); color:var(--muted-foreground); border:1px solid var(--border); border-radius:4px; padding:1px 4px; }
+.terminal-view:focus-visible { outline:2px solid var(--focus-ring); outline-offset:-2px; }
+.terminal-info { display:grid; gap:12px; font-size:13px; }
+.terminal-info p { margin:0; overflow-wrap:anywhere; }
+.terminal-info .text-button { display:inline-flex; align-items:center; gap:6px; justify-self:start; }
 .terminal-view {
   position:relative;
   display:flex;

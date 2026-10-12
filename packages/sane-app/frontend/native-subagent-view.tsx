@@ -59,6 +59,7 @@ export function NativeSubagentView() {
         <div className="native-subagent-nav-heading"><h2>{name}</h2><span className="native-subagent-badge">Native</span><span className="native-subagent-badge">Read-only</span></div>
         <div className="native-subagent-nav-summary"><span className={`status ${summary.status}`} role="status">{summary.status === "unknown" ? "unconfirmed" : summary.status}</span><span aria-hidden="true">·</span><span className="native-subagent-count" aria-label={countLabel} title={countLabel}>{feature.summaryKnown ? `${summary.toolCallCount} call${summary.toolCallCount === 1 ? "" : "s"}` : "Calls unavailable"}</span></div>
         <button type="button" className="worker-action" aria-label={detailsLabel} title={detailsLabel} aria-expanded={detailsOpen} aria-controls={detailsId} onClick={() => setDetailsOpen(open => !open)}>Details{attention && <span className="native-subagent-attention" aria-hidden="true" />}</button>
+        {summary.harness === "opencode" && <button type="button" className="worker-action" disabled={feature.state.detailLoading} onClick={feature.client.retryDetail}>{summary.nativeSessionId ? "Refresh history" : "Retry history"}</button>}
       </nav>
       <div className="native-subagent-disclosure" id={detailsId} hidden={!detailsOpen}>
         <h4>Assignment</h4><p className="native-subagent-full-assignment">{summary.assignment || "No assignment recorded."}</p>
@@ -79,6 +80,7 @@ export function NativeSubagentView() {
         {snapshot?.nextCursor && <button type="button" className="text-button" disabled={feature.state.detailLoading} onClick={() => { pause(); feature.client.loadEarlier(); }}>Load earlier activity</button>}
         {feature.state.detailLoading && <p className="muted" role="status">{snapshot ? "Refreshing recorded activity…" : "Loading recorded activity…"}</p>}
         {!messages.length && snapshot && <p className="muted">No child messages have been recorded.{summary.returnedReport && " The returned report does not imply recorded child activity."}</p>}
+        {summary.recovery && <p className="muted" role="status">{summary.recovery.state === "exhausted" ? "Automatic child-link recovery stopped after six attempts. Use Retry history to try again." : "Recovering the native child link automatically…"}</p>}
         <AssistantRuntimeProvider runtime={runtime}><ThreadPrimitive.Root className="native-subagent-thread"><ThreadPrimitive.Messages components={{ Message: ChatMessage }} /></ThreadPrimitive.Root></AssistantRuntimeProvider>
         {summary.returnedReport && <details className="native-subagent-returned-report"><summary>Returned report</summary><pre>{summary.returnedReport}</pre></details>}
       </div>

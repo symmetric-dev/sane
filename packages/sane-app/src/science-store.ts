@@ -77,10 +77,16 @@ function validate(v: unknown, storeId: string, trusted = new WeakSet<object>()):
     for (const s of chat.shares) {
       if (trusted.has(s)) { id(s.id); if (requests.has(s.requestId)) scienceFail(503, "Duplicate share request"); requests.add(s.requestId); continue; }
       scienceExact(s, ["id", "requestId", "blockId", "revision", "source", "operationId", "representation", "agentText", "createdAt"]); id(s.id);
-      if (!block(s.blockId) || !scienceId(s.requestId) || requests.has(s.requestId) || !scienceRevision(s.revision) || !scienceText(s.source) || !scienceText(s.agentText) || !time(s.createdAt) || !["source", "source-and-observed-text"].includes(s.representation) || s.operationId !== null && !chat.operations.some(o => o.id === s.operationId && o.blockId === s.blockId && o.source === s.source && o.revision === s.revision)) scienceFail(503, "Invalid science share");
+      if (!block(s.blockId) || !scienceId(s.requestId) || requests.has(s.requestId) || !scienceRevision(s.revision) || !scienceText(s.source) || !scienceText(s.agentText) || !time(s.createdAt) || !["source", "observed-text", "source-and-observed-text"].includes(s.representation) || s.operationId !== null && !chat.operations.some(o => o.id === s.operationId && o.blockId === s.blockId && o.source === s.source && o.revision === s.revision)) scienceFail(503, "Invalid science share");
       requests.add(s.requestId);
       const operation = chat.operations.find(o => o.id === s.operationId);
-      if (s.revision > chat.blocks.find(b => b.id === s.blockId)!.revision || s.representation === "source-and-observed-text" && !operation?.observation || s.agentText !== materializeScienceShare(s.source, s.representation === "source-and-observed-text" ? operation!.observation!.text : undefined)) scienceFail(503, "Invalid frozen agent representation");
+      if (s.revision > chat.blocks.find(b => b.id === s.blockId)!.revision || s.representation !== "source" && !operation?.observation || s.representation === "observed-text" && !operation?.observation?.cell) scienceFail(503, "Invalid frozen agent representation");
+      const observation = operation?.observation;
+      const output = s.representation === "source" ? undefined : observation!.cell ? serializeScienceCell(observation!.cell, { includeSource: false }).agentText : observation!.text;
+      // Earlier combined snapshots included source inside the observed snapshot
+      // as well. Accept their exact frozen bytes without rewriting sent context.
+      const legacyCombined = s.representation === "source-and-observed-text" && s.agentText === materializeScienceShare(s.source, observation!.text, s.representation);
+      if (s.agentText !== materializeScienceShare(s.source, output, s.representation) && !legacyCombined) scienceFail(503, "Invalid frozen agent representation");
     }
   }
 }

@@ -1,5 +1,5 @@
 import { Fragment, useEffect, useId, useRef, useState, useSyncExternalStore } from "react";
-import { FiBookOpen, FiCopy, FiGlobe, FiGrid, FiHexagon, FiLayers, FiSettings, FiTool } from "react-icons/fi";
+import { FiBookOpen, FiCopy, FiGlobe, FiHexagon, FiLayers, FiSettings, FiTool } from "react-icons/fi";
 import type { LifecyclePhase } from "sane-core/contracts";
 import type { WorkstreamAction, WorkstreamActionInput, WorkstreamActionResult, WorkstreamOverview } from "../src/workstreams-contract";
 import { catalog } from "./catalog";
@@ -38,7 +38,7 @@ function useActionMembership(workspaceId: string | null, sessionId: string | nul
   return { overview: state.overview, loading: active && !state.overview && state.loading, failed: active && !!state.error, retry: () => { void refresh().catch(() => {}); }, refresh };
 }
 
-export function ChatWorkstreamActions({ conversation, active, onDocuments, onStatus }: { conversation?: Conversation; active: boolean; onDocuments?: (identity: DocumentReviewStart) => void; onStatus?: (identity: WorkstreamStatusStart) => void }) {
+export function ChatWorkstreamActions({ conversation, active, onDocuments, onStatus, close, onTerminal, onPython, pythonUnavailable }: { conversation?: Conversation; active: boolean; onDocuments?: (identity: DocumentReviewStart) => void; onStatus?: (identity: WorkstreamStatusStart) => void; close: () => void; onTerminal: () => void; onPython: () => void; pythonUnavailable?: string }) {
   const { workspaces } = useSyncExternalStore(catalog.subscribe, catalog.snapshot);
   // Chat association, never the workspace currently being browsed in Settings.
   const workspaceId = conversation?.workspaceId ?? null;
@@ -48,35 +48,27 @@ export function ChatWorkstreamActions({ conversation, active, onDocuments, onSta
   const rows = membership.overview?.conversations.filter(row => row.sessionId === conversation?.id) ?? [];
   const workstreamId = rows.length === 1 ? rows[0].conversation?.workstreamId : null;
   const detail = membership.overview?.workstreams.find(item => item.workstream.id === workstreamId);
-  const scope = JSON.stringify([workspaceId, conversation?.id, conversation?.replacedBy, active, eligible]);
   const reason = !active ? "Open this chat to use Flows" : !conversation ? "Select an existing conversation" : conversation.replacedBy ? "This chat was replaced" : !workspaceId ? "This chat has no workspace" : workspace?.kind === "directory" ? "Flows require a repository" : !workspace ? "Chat workspace is unavailable" : membership.loading ? "Loading workstream membership…" : membership.failed ? "Workstream membership unavailable; retry loading" : !rows.length || !rows[0].conversation ? "This chat is not enrolled" : !workstreamId ? "This chat is unassigned" : !detail ? "Workstream unavailable" : "Flows";
-  const flowsTrigger = useRef<HTMLButtonElement>(null);
   const membershipReady = eligible && !membership.loading && !membership.failed;
   const flowsAvailable = membershipReady && rows.length === 1 && !!detail && !!onDocuments && !!onStatus;
   const flowsReason = !active ? "Open this chat to use Flows"
-    : conversation && !conversation.replacedBy && workspace?.kind === "directory" ? "Flows require a repository"
+    : conversation && !conversation.replacedBy && workspace?.kind === "directory" ? "Requires a SANE repository"
     : membershipReady && rows.length > 1 ? "Chat workstream membership is ambiguous"
-    : membershipReady && (!rows.length || !rows[0].conversation) ? "Enroll this chat and assign a workstream to use Flows"
-    : membershipReady && !workstreamId ? "Assign this chat to a workstream to use Flows"
+    : membershipReady && (!rows.length || !rows[0].conversation) ? "Requires an enrolled chat with an assigned workstream"
+    : membershipReady && !workstreamId ? "Assign this chat to a workstream"
     : flowsAvailable ? "Flows" : reason;
-  const flowsScope = JSON.stringify([scope, conversation?.worktreeId, workspace?.commonDir, detail?.workstream.repositoryId, workstreamId, flowsAvailable]);
-  const currentFlowsScope = useRef(flowsScope); currentFlowsScope.current = flowsScope;
-  const [flowsOpened, setFlowsOpened] = useState<{ scope: string; identity: DocumentReviewStart; title: string } | null>(null);
-  useEffect(() => { setFlowsOpened(null); }, [flowsScope]);
-  function openFlows() {
-    if (!flowsAvailable || !workspaceId || !conversation || !detail) return;
-    // Pin the launch target now; choosing a card must never retarget another chat.
-    setFlowsOpened({ scope: flowsScope, identity: { sessionId: conversation.id, workspaceId, repositoryId: detail.workstream.repositoryId, workstreamId: detail.workstream.id }, title: detail.workstream.title });
-  }
   return <>
-    {onDocuments && <button ref={flowsTrigger} type="button" className="composer-flows" disabled={!flowsAvailable} title={flowsReason} aria-label={flowsAvailable ? "Flows" : `Flows: ${flowsReason}`} aria-haspopup="dialog" aria-expanded={flowsOpened?.scope === flowsScope} onClick={openFlows}><FiGrid size={14} aria-hidden="true" />Flows</button>}
+    <FlowLauncher subtitle={detail?.workstream.title} close={close} unavailable={{ "view-status": flowsAvailable ? undefined : flowsReason, "sane-review": flowsAvailable ? undefined : flowsReason, python: pythonUnavailable }} onSelect={flow => {
+      if (!active) return;
+      if (flow === "terminal") { onTerminal(); return; }
+      if (flow === "python") { if (!pythonUnavailable) onPython(); return; }
+      if (!flowsAvailable || !workspaceId || !conversation || !detail) return;
+      const identity = { sessionId: conversation.id, workspaceId, repositoryId: detail.workstream.repositoryId, workstreamId: detail.workstream.id };
+      close();
+      if (flow === "view-status") onStatus?.(identity);
+      else onDocuments?.(identity);
+    }} />
     {eligible && membership.failed && <button type="button" className="text-button composer-actions-retry" title="Retry workstream membership" aria-label="Retry workstream membership" onClick={membership.retry}>Retry</button>}
-    {flowsAvailable && flowsOpened?.scope === flowsScope && <FlowLauncher key={flowsScope} subtitle={flowsOpened.title} close={() => setFlowsOpened(null)} restoreFocus={() => currentFlowsScope.current === flowsScope && flowsTrigger.current?.isConnected && !flowsTrigger.current.disabled ? flowsTrigger.current : document.body} onSelect={flow => {
-      if (currentFlowsScope.current !== flowsOpened.scope || !flowsAvailable) return;
-      setFlowsOpened(null);
-      if (flow === "view-status") onStatus?.(flowsOpened.identity);
-      else onDocuments?.(flowsOpened.identity);
-    }} />}
   </>;
 }
 

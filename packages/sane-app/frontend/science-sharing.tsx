@@ -49,7 +49,7 @@ export function ScienceShareDraftPreview() {
     </div>}
     {snapshots.length > 0 && <>
       <header><strong>Python attachments</strong><span className="science-sharing-label">{snapshots.length} snapshot{snapshots.length === 1 ? "" : "s"}</span></header>
-      <p className="science-sharing-note">Source and text only · images omitted</p>
+      <p className="science-sharing-note">Selected source and/or output text · images omitted</p>
       {snapshots.map((snapshot, index) => <article className="science-sharing-snapshot" key={snapshot.snapshotId}>
         <header>
           <span>Snapshot {index + 1}</span>
@@ -60,7 +60,7 @@ export function ScienceShareDraftPreview() {
               if (current.selected === conversationId && current.config?.storeId === state.config?.storeId && current.phase === "ready" && !current.sending) store.removeScienceSnapshot(snapshot.snapshotId);
             }}>Remove</button>
         </header>
-        <details><summary>Preview source</summary><pre>{snapshot.source}</pre></details>
+        <details><summary>Preview shared content</summary><pre>{snapshot.agentText}</pre></details>
       </article>)}
     </>}
     {state.scienceSubmissionError && <p className="science-sharing-error" role="status">{state.scienceSubmissionError}</p>}
@@ -141,7 +141,7 @@ function SentReceipt({ scope, storeId, receipt }: { scope: string; storeId: stri
       <p className="science-sharing-note">Images omitted</p>
       {state.detail.snapshots.map((snapshot, index) => <article className="science-sharing-snapshot" key={snapshot.snapshotId}>
         <header><span>Snapshot {index + 1}</span><SnapshotInfo><p>Block {snapshot.blockId}</p><p>Snapshot {snapshot.snapshotId}</p><p>Submission is recorded for this run; this does not establish notebook execution success.</p><h3>Exact text sent to the agent</h3><pre>{snapshot.agentText}</pre><details><summary>Immutable source</summary><pre>{snapshot.source}</pre></details></SnapshotInfo></header>
-        <details><summary>View source</summary><pre>{snapshot.source}</pre></details>
+        <details><summary>View shared content</summary><pre>{snapshot.agentText}</pre></details>
       </article>)}
     </>}
   </section>;

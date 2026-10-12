@@ -182,7 +182,8 @@ export function projectNativeSubagents(session: Session, run: Run, events: reado
 
 /** Native child snapshots never enter the parent transcript reducer. */
 export type OpenCodeSubagentEvidence = {
-  parentNativeSessionId: string; parentToolUseId: string; nativeSessionId: string;
+  parentNativeSessionId: string; parentToolUseId: string; nativeSessionId?: string;
+  recovery?: NativeSubagentSummary["recovery"];
   messages?: MessageSnapshot[]; messageIds?: string[];
   status?: NativeSubagentStatus; warning?: string;
 };
@@ -213,10 +214,16 @@ function projectOpenCodeSubagents(session: Session, run: Run, events: readonly E
     if (event.kind !== "native-subagent" || !object(event.data)) continue;
     const data = event.data as OpenCodeSubagentEvidence, child = children.get(data.parentToolUseId);
     if (!child || data.parentNativeSessionId !== session.nativeSessionId || data.nativeSessionId !== child.summary.nativeSessionId) continue;
+    if (data.recovery && !child.summary.nativeSessionId) child.summary.recovery = data.recovery;
     if (data.warning) child.summary.warnings = [data.warning];
     if (data.status) {
+      // Evidence orders lifecycle transitions, not text-only history captures.
+      // Keep the first observation (including unknown) and every real transition;
+      // successful repeated observations still clear transient warnings below.
+      if (!child.summary.statusEvidence || child.summary.status !== data.status) {
+        child.summary.statusEvidence = { kind: "native-child-observation", seq: event.seq, time: event.time };
+      }
       child.summary.status = data.status;
-      child.summary.statusEvidence = { kind: "native-child-observation", seq: event.seq, time: event.time };
       child.summary.warnings = undefined;
     }
     let messages = snapshots.get(child);

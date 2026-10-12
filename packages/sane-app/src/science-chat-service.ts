@@ -23,7 +23,7 @@ function validate(input: unknown): ScienceChatRequest {
   scienceExact(input, ["action", ...keys]);
   if ("anchor" in input) scienceAnchor(input.anchor);
   for (const key of ["blockId", "requestId"]) if (key in input && !scienceId(input[key])) scienceFail(400, "Invalid identity");
-  if ("expectedRevision" in input && !scienceRevision(input.expectedRevision) || "source" in input && !scienceText(input.source) || "text" in input && !scienceText(input.text) || "afterBlockId" in input && input.afterBlockId !== null && !scienceId(input.afterBlockId) || "operationId" in input && input.operationId !== null && !scienceId(input.operationId) || "representation" in input && !["source", "source-and-observed-text"].includes(input.representation as string) || "notebook" in input && (typeof input.notebook !== "string" || !/^[A-Za-z0-9][A-Za-z0-9_-]{0,119}\.py$/.test(input.notebook))) scienceFail(400, "Invalid science action fields");
+  if ("expectedRevision" in input && !scienceRevision(input.expectedRevision) || "source" in input && !scienceText(input.source) || "text" in input && !scienceText(input.text) || "afterBlockId" in input && input.afterBlockId !== null && !scienceId(input.afterBlockId) || "operationId" in input && input.operationId !== null && !scienceId(input.operationId) || "representation" in input && !["source", "observed-text", "source-and-observed-text"].includes(input.representation as string) || "notebook" in input && (typeof input.notebook !== "string" || !/^[A-Za-z0-9][A-Za-z0-9_-]{0,119}\.py$/.test(input.notebook))) scienceFail(400, "Invalid science action fields");
   return input as unknown as ScienceChatRequest;
 }
 const marker = (id: string) => `# sane-science-block:${id}\n`;
@@ -146,9 +146,12 @@ export class ScienceChatService {
         if (chat.operations.some(o => o.requestId === input.requestId)) scienceFail(409, "Request identity reused");
         const op = input.operationId === null ? undefined : chat.operations.find(o => o.id === input.operationId && o.blockId === block!.id);
         cas(op?.revision ?? block!.revision);
-        if (input.operationId !== null && !op || input.representation === "source-and-observed-text" && !op?.observation) scienceFail(409, "Exact observed text representation unavailable; use source sharing");
+        if (input.operationId !== null && !op || input.representation !== "source" && !op?.observation) scienceFail(409, "Exact observed text representation unavailable; use source sharing");
+        if (input.representation === "observed-text" && !op?.observation?.cell) scienceFail(409, "Output-only snapshot unavailable for this run");
         const source = op?.source ?? block!.source, revision = op?.revision ?? block!.revision;
-        const agentText = materializeScienceShare(source, input.representation === "source-and-observed-text" ? op!.observation!.text : undefined);
+        const observation = op?.observation;
+        const output = input.representation === "source" ? undefined : observation!.cell ? serializeScienceCell(observation!.cell, { includeSource: false }).agentText : observation!.text;
+        const agentText = materializeScienceShare(source, output, input.representation);
         if (!scienceText(agentText)) scienceFail(413, "Share exceeds payload limit");
         chat.shares.push({ id: crypto.randomUUID(), requestId: input.requestId, blockId: block!.id, revision, source, operationId: input.operationId, representation: input.representation, agentText, createdAt: new Date().toISOString() }); chat.revision++; save();
       } else {

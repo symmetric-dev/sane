@@ -11,6 +11,7 @@ import { ChatFlowSidebarDismissContext, useChatFlowSidebarSlot } from "./chat-fl
 type ShellProps = {
   view: ActiveView;
   sidebar: ReactNode;
+  navigation?: ReactNode;
   header: ReactNode;
   notices?: ReactNode;
   children: ReactNode;
@@ -25,15 +26,16 @@ type ShellProps = {
 };
 
 /** One sidebar composition for both desktop and the mobile drawer. */
-export function ShellSidebar({ children, retryCatalog, workspaceSelection, onOpenNotification, onGo, close }: { children: ReactNode; retryCatalog: () => void; workspaceSelection?: WorkspaceSelectionModel; onOpenNotification: (id: string) => boolean; onGo?: () => void; close?: () => void }) {
+export function ShellSidebar({ children, navigation, retryCatalog, workspaceSelection, onOpenNotification, onGo, close }: { children: ReactNode; navigation?: ReactNode; retryCatalog: () => void; workspaceSelection?: WorkspaceSelectionModel; onOpenNotification: (id: string) => boolean; onGo?: () => void; close?: () => void }) {
   return <>
     <div className="shell-sidebar-header"><NotificationCenter size={28} className="shell-logo" onOpen={onOpenNotification} /><CatalogSelector retry={retryCatalog} selection={workspaceSelection} onGo={onGo} />{close && <button type="button" className="icon-button" aria-label="Close workspace navigation" onClick={close}><Icon name="close" /></button>}</div>
     <div className="sidebar-body">{children}</div>
+    {navigation && <footer className="sidebar-navigation">{navigation}</footer>}
   </>;
 }
 
 /** Feature providers and their state owners remain above these layout regions. */
-export function WorkspaceShell({ view, sidebar, header, notices, children, retryCatalog, workspaceSelection, sidebarOpen, sidebarHidden = false, toggleSidebar, openSidebar, closeSidebar, onOpenNotification = () => false }: ShellProps) {
+export function WorkspaceShell({ view, sidebar, navigation, header, notices, children, retryCatalog, workspaceSelection, sidebarOpen, sidebarHidden = false, toggleSidebar, openSidebar, closeSidebar, onOpenNotification = () => false }: ShellProps) {
   const group = viewGroup(view);
   const flowSidebar = useChatFlowSidebarSlot();
   const sidebarContent = flowSidebar ? flowSidebar.content : sidebar;
@@ -50,12 +52,12 @@ export function WorkspaceShell({ view, sidebar, header, notices, children, retry
   const expanded = mobile ? sidebarOpen : !sidebarHidden;
   const toggleLabel = mobile ? "Open workspace navigation" : sidebarHidden ? "Show sidebar" : "Hide sidebar";
   return <div className={`app-shell view-${view} group-${group}`}>
-    <aside id={sidebarId} className="sidebar" aria-label={flowSidebar?.title ?? "Workspace sidebar"} hidden={sidebarHidden} inert={sidebarHidden}><ShellSidebar retryCatalog={retryCatalog} workspaceSelection={workspaceSelection} onOpenNotification={onOpenNotification} onGo={closeSidebar}>{flowSidebar && mobile ? null : sidebarContent}</ShellSidebar></aside>
+    <aside id={sidebarId} className="sidebar" aria-label={flowSidebar?.title ?? "Workspace sidebar"} hidden={sidebarHidden} inert={sidebarHidden}><ShellSidebar navigation={navigation} retryCatalog={retryCatalog} workspaceSelection={workspaceSelection} onOpenNotification={onOpenNotification} onGo={closeSidebar}>{flowSidebar && mobile ? null : sidebarContent}</ShellSidebar></aside>
     <main className="main">
       <header className="topbar"><button type="button" className="icon-button sidebar-toggle" aria-label={toggleLabel} aria-expanded={expanded} aria-controls={mobile ? sidebarOpen ? drawerId : undefined : sidebarId} aria-haspopup={mobile ? "dialog" : undefined} aria-keyshortcuts={`${isMacPlatform() ? "Meta" : "Control"}+b`} title={`${toggleLabel} (${shortcutHint(SIDEBAR_TOGGLE_SHORTCUT)})`} onClick={toggleSidebar ?? (sidebarOpen ? closeSidebar : openSidebar)}><Icon name="menu" /></button><NotificationCenter size={24} className="mobile-shell-logo" onOpen={onOpenNotification} />{header}</header>
       {notices}
       {children}
     </main>
-    {mobile && sidebarOpen && <Drawer id={drawerId} className="workspace-sidebar-drawer" title={sidebarTitle} bare close={closeSidebar}><ShellSidebar retryCatalog={retryCatalog} workspaceSelection={workspaceSelection} onOpenNotification={onOpenNotification} onGo={closeSidebar} close={closeSidebar}><ChatFlowSidebarDismissContext.Provider value={closeSidebar}>{sidebarContent}</ChatFlowSidebarDismissContext.Provider></ShellSidebar></Drawer>}
+    {mobile && sidebarOpen && <Drawer id={drawerId} className="workspace-sidebar-drawer" title={sidebarTitle} bare close={closeSidebar}><ShellSidebar navigation={navigation} retryCatalog={retryCatalog} workspaceSelection={workspaceSelection} onOpenNotification={onOpenNotification} onGo={closeSidebar} close={closeSidebar}><ChatFlowSidebarDismissContext.Provider value={closeSidebar}>{sidebarContent}</ChatFlowSidebarDismissContext.Provider></ShellSidebar></Drawer>}
   </div>;
 }

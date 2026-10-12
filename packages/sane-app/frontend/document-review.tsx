@@ -1,5 +1,6 @@
 import { useEffect, useLayoutEffect, useRef, type ReactNode } from "react";
-import { FiArrowLeft, FiBookOpen, FiCheck, FiFileText, FiRefreshCw, FiX } from "react-icons/fi";
+import { FiBookOpen, FiCheck, FiFileText, FiRefreshCw } from "react-icons/fi";
+import { FlowNavigation } from "./flow-navigation";
 import { ChatInput } from "./chat-input";
 import { DocumentMarkdown } from "./document-markdown";
 import { reviewPhases, type DocumentReviewController } from "./document-review-model";
@@ -7,10 +8,12 @@ import "./document-review.css";
 
 const label = (value: string) => value.charAt(0).toUpperCase() + value.slice(1);
 
-export function DocumentReviewComposer({ review, disabled, active, navigation }: { review: DocumentReviewController; disabled: boolean; active: boolean; navigation?: ReactNode }) {
+export function DocumentReviewComposer({ review, disabled, active, back, navigation }: { review: DocumentReviewController; disabled: boolean; active: boolean; back?: () => void; navigation?: ReactNode }) {
   const flow = review.flow!;
   const cancelButton = useRef<HTMLButtonElement>(null);
-  const title = "Sane Review";
+  const cancelDestination = useRef<"flows" | "chat">("chat");
+  const cancel = (force = false) => { if (review.cancel(force) && cancelDestination.current === "flows") back?.(); };
+  const title = "Review Documents";
   const documents = review.filteredDocuments;
   const document = flow.documents.find(item => item.path === flow.path);
   const entry = document ? flow.entries[document.path] : undefined;
@@ -29,11 +32,16 @@ export function DocumentReviewComposer({ review, disabled, active, navigation }:
     return entry?.changed ? "Changed · review again" : entry?.decision === "accepted" ? "Accepted" : entry?.decision === "needs-changes" ? "Needs changes" : entry?.feedback.trim() ? "Unsaved feedback" : "Not reviewed";
   };
   return <section className="document-review-composer" aria-label={title}>
-    <header className="document-review-heading"><div><FiBookOpen size={16} aria-hidden="true" /><strong>{title}</strong></div><div>{!document && <button type="button" className="text-button" disabled={blocked || flow.loading} aria-label="Refresh documents" title="Refresh documents" onClick={() => void review.refresh()}><FiRefreshCw aria-hidden="true" /></button>}<button ref={cancelButton} type="button" className="text-button" disabled={blocked} onClick={() => review.cancel()} aria-label={`Cancel ${title}`}><FiX aria-hidden="true" />Cancel</button></div></header>
+    <header className="document-review-heading"><div><FiBookOpen size={16} aria-hidden="true" /><strong>{title}</strong></div><FlowNavigation exitRef={cancelButton} disabled={blocked} backLabel={document ? "Back to documents" : "Back to Flows"} back={() => { if (document) review.picker(); else { cancelDestination.current = "flows"; cancel(); } }} escapeRegion=".document-review-reader, .document-toc" escape={() => {
+      if (flow.confirmCancel) review.dismissCancel();
+      else if (document) review.picker();
+      else { cancelDestination.current = "chat"; cancel(); }
+      cancelButton.current?.focus({ preventScroll: true });
+    }} exit={() => { cancelDestination.current = "chat"; cancel(); }}>{!document && <button type="button" className="text-button" disabled={blocked || flow.loading} aria-label="Refresh documents" title="Refresh documents" onClick={() => void review.refresh()}><FiRefreshCw aria-hidden="true" /></button>}</FlowNavigation></header>
     <div className="document-review-body">
     {flow.error && <p className="document-review-notice error" role="alert">{flow.error} {!flow.unknown && <button type="button" className="text-button" disabled={blocked} onClick={() => document ? void review.open(document.path, flow.fragment) : void review.refresh()}>Retry</button>}</p>}
     {flow.unknown && <p className="document-review-notice"><button type="button" className="text-button" disabled={blocked} onClick={review.allowRetry}>I checked conversation history; allow retry</button></p>}
-    {flow.confirmCancel && <div className="document-review-confirm" role="alert"><span>Discard this review’s decisions and feedback? Your normal chat draft will remain.</span><button type="button" disabled={blocked} onClick={() => review.cancel(true)}>Discard review</button><button type="button" disabled={blocked} onClick={review.dismissCancel}>Keep reviewing</button></div>}
+    {flow.confirmCancel && <div className="document-review-confirm" role="alert"><span>Discard this review’s decisions and feedback? Your normal chat draft will remain.</span><button type="button" disabled={blocked} onClick={() => cancel(true)}>Discard review</button><button type="button" disabled={blocked} onClick={review.dismissCancel}>Keep reviewing</button></div>}
     {document ? <>
       {resource ? <p className="document-review-notice">Reference document · browse only. No review decision is required.</p> : <ChatInput key={`${flow.identity.sessionId}:${document.path}`} autoFocus text={entry?.feedback ?? ""} save={review.edit} submit={() => review.decide("needs-changes")} disabled={blocked} className="composer-input" aria-label={`Feedback for ${document.title}`} placeholder="What needs to change? Feedback stays with this document…" />}
     </> : <>
@@ -52,7 +60,7 @@ export function DocumentReviewComposer({ review, disabled, active, navigation }:
       </div>
     </>}
     </div>
-    {document ? <div className="document-review-toolbar"><div><button type="button" className="text-button" disabled={blocked} onClick={review.picker}><FiArrowLeft aria-hidden="true" />Documents</button><span className="document-review-status" role="status">{resource ? "Reference" : status(document.path)}</span></div><div>{!resource && <><button type="button" disabled={decisionBlocked} onClick={() => review.decide("accepted")}><FiCheck aria-hidden="true" />Accept document</button><button type="button" className="document-review-primary" disabled={decisionBlocked || !entry?.feedback.trim()} onClick={() => review.decide("needs-changes")}>Save feedback</button></>}{navigation}</div></div> : <div className="document-review-toolbar"><span className="document-review-status" role="status">{count} of {flow.selected.length} selected documents decided</span><div><button type="button" className="document-review-primary" disabled={blocked || disabled || !review.ready} onClick={() => void review.submit()}>{flow.busy ? "Sending review…" : "Send review"}</button>{navigation}</div></div>}
+    {document ? <div className="document-review-toolbar"><div><span className="document-review-status" role="status">{resource ? "Reference" : status(document.path)}</span></div><div>{!resource && <><button type="button" disabled={decisionBlocked} onClick={() => review.decide("accepted")}><FiCheck aria-hidden="true" />Accept document</button><button type="button" className="document-review-primary" disabled={decisionBlocked || !entry?.feedback.trim()} onClick={() => review.decide("needs-changes")}>Save feedback</button></>}{navigation}</div></div> : <div className="document-review-toolbar"><span className="document-review-status" role="status">{count} of {flow.selected.length} selected documents decided</span><div><button type="button" className="document-review-primary" disabled={blocked || disabled || !review.ready} onClick={() => void review.submit()}>{flow.busy ? "Sending review…" : "Send review"}</button>{navigation}</div></div>}
   </section>;
 }
 

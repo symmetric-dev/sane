@@ -1,5 +1,5 @@
 import { useEffect, useId, useMemo, useRef, type ReactNode } from "react";
-import { FiFileText, FiGitBranch, FiGlobe, FiMessageSquare, FiSearch, FiSettings, FiTerminal } from "react-icons/fi";
+import { FiFileText, FiGitBranch, FiGlobe, FiMessageSquare, FiSearch, FiSettings } from "react-icons/fi";
 import type { State } from "./store";
 import type { ActiveView } from "./workspace-controller";
 import { active } from "./types";
@@ -53,7 +53,7 @@ export function viewGroup(view: ActiveView): ViewGroup {
   }
 }
 
-const DESTINATION_ICONS = { chat: FiMessageSquare, terminal: FiTerminal, code: FiFileText, browser: FiGlobe, config: FiSettings };
+const DESTINATION_ICONS = { chat: FiMessageSquare, code: FiFileText, browser: FiGlobe, config: FiSettings };
 const DESTINATIONS = NAVIGATION_HOTKEYS.map(item => ({ ...item, Icon: DESTINATION_ICONS[item.id] }));
 
 /** Register once at the shell level, including destinations whose button is hidden. */

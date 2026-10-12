@@ -12,6 +12,9 @@
   border-right:1px solid var(--border);
 }
 .app-shell>.sidebar[hidden] { display:none; }
+.sidebar-navigation { flex-shrink:0; margin-top:auto; padding:12px 12px max(12px, env(safe-area-inset-bottom)); border-top:1px solid var(--border); }
+.sidebar-navigation .contextual-navigation { display:flex; width:100%; justify-content:space-around; }
+.sidebar-navigation .contextual-navigation button { flex:1; }
 .sidebar-toggle { flex-shrink:0; }
 .shell-sidebar-header {
   display:flex;

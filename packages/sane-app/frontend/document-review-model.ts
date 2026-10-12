@@ -169,6 +169,7 @@ export function useDocumentReview(state: State, active: boolean, sendDisabled: b
     const meaningful = Object.values(currentFlow.current?.entries ?? {}).some(entry => !!entry.feedback.trim() || !!entry.decision);
     if (meaningful && !force) { update({ confirmCancel: true }); return; }
     guard.current.epoch++; setFlow(null); currentFlow.current = null;
+    return true;
   }
   const ready = !!visible?.selected.length && !visible.loading && !visible.reading && !visible.busy && !visible.error && !visible.unknown && visible.selected.every(path => {
     const document = visible.documents.find(item => item.path === path), entry = visible.entries[path];

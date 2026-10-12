@@ -196,7 +196,7 @@ function ReadyWorkspace({ state, signOut, inbox, hydrationReady }: { state: Stat
     <ViewNavigationCommands onNavigate={navigate} />
     <SidebarToggleCommand onToggle={toggleSidebar} />
     <ChatFlowLayoutProvider scope={view === "chat" && !nativeSubagents.active ? { sessionId: state.selected, nativeSessionId: nativeParent?.nativeSessionId, harness: nativeParent?.harness, workspaceId, worktreeId } : null}>
-    <WorkspaceShell view={view} sidebar={sidebar}
+    <WorkspaceShell view={view} sidebar={sidebar} navigation={navigation}
       onOpenNotification={openNotification}
       workspaceSelection={workspaceSelection}
       retryCatalog={hydrateCatalog} sidebarOpen={drawer === "sidebar"}
@@ -206,7 +206,7 @@ function ReadyWorkspace({ state, signOut, inbox, hydrationReady }: { state: Stat
       notices={<ShellNotices state={state} view={view} openDetails={() => setDrawer("details")} />}
     >
       <ShellContent state={state} view={view} workspaceId={workspaceId} artifact={artifact} closeArtifact={() => setArtifact(null)} openArtifact={openArtifact}
-        historyPreview={historyPreview} choose={choose} signOut={signOut} navigation={navigation} startDocumentReview={startDocumentReview} reviewRequest={reviewRequest} reviewRequestHandled={reviewRequestHandled} />
+        historyPreview={historyPreview} choose={choose} signOut={signOut} navigation={null} startDocumentReview={startDocumentReview} reviewRequest={reviewRequest} reviewRequestHandled={reviewRequestHandled} />
     </WorkspaceShell>
     </ChatFlowLayoutProvider>
     {drawer === "application" && <ApplicationDialog state={state} signOut={signOut} close={() => setDrawer(null)} />}
@@ -274,7 +274,7 @@ function ShellContent({ state, view, workspaceId, artifact, closeArtifact, openA
     </div>}
     {view === "terminal" && <TerminalView navigation={navigation} />}
     <BrowserView key={workspaceId ?? "no-workspace"} active={view === "browser"} />
-    {view === "browser" ? <BrowserFooter navigation={navigation} /> : view !== "chat" && view !== "terminal" && <footer className="shell-content-footer">{navigation}</footer>}
+    {view === "browser" && <BrowserFooter navigation={navigation} />}
   </>;
 }
 

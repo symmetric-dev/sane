@@ -3,7 +3,6 @@ import { isMacPlatform, type CommandBinding } from "./application-commands";
 /** Shared by command registration, navigation hints, and Settings. */
 export const NAVIGATION_HOTKEYS = [
   { id: "chat", label: "Chat", key: "c" },
-  { id: "terminal", label: "Terminal", key: "t" },
   { id: "code", label: "Files", key: "f" },
   { id: "browser", label: "Browser", key: "b" },
   { id: "config", label: "Settings", key: "p" },

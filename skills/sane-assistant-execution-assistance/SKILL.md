@@ -62,7 +62,7 @@ Use `sane_worker_wait` for a bounded join when useful; use `sane_worker_acknowle
 
 Workers started with `sane_worker_start` receive the session roots, workstream identity, and the Job Spec, Job Report, and template paths of the jobs passed in `jobs`; do not restate them.
 
-- **Implementer:** Supply the job id via `jobs`; SANE provides its Job Spec, Job Report, and template paths. Keep Verification Specs out of its context.
+- **Implementer:** Pass the job id via `jobs` and set `prompt` to "Implement Job <id>." Keep Verification Specs out of its context.
 - **Tester:** Pass the checkpoint's job ids via `jobs`. Supply the checkpoint Verification Spec, implementation changes, test edit boundary, and `execution/test-reports/<checkpoint-id>.md` with its template.
 - **Reviewer:** Pass the checkpoint's job ids via `jobs`. Supply the change boundary including uncommitted work, Verification Spec, Test Report, relevant earlier integration context, and check limits. For re-review, add the findings and fix evidence.
 - **Fixer:** Pass the affected job ids via `jobs`; their Job Reports are its report assignment. Supply the findings, required outcome, allowed edits, non-test checks, and stop conditions.

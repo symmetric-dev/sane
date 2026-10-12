@@ -40,7 +40,8 @@ export function HotkeysSettings() {
         <p className="muted">Hold Cmd + Ctrl on Mac, or Ctrl + Alt on Windows and Linux, then press the view’s letter or Down Arrow to toggle workspace selection.</p>
         <p className="muted">Use the left Alt key. Right Alt (AltGr) stays available for typing special characters.</p>
         <ShortcutTable definitions={GLOBAL_SHORTCUTS} labelledBy="hotkeys-navigation" />
-        <p className="muted">These shortcuts work in chat inputs, file editors, and the terminal. They pause while a dialog is open, except workspace selection can be toggled closed with its shortcut. They never submit a message. Opening Terminal starts a shell if the selected worktree has none.</p>
+        <p className="muted">Navigation shortcuts work in chat inputs, file editors, and the terminal. Flows uses Cmd/Ctrl + P in the chat composer. Shortcuts pause while a dialog is open, except workspace selection can be toggled closed with its shortcut. They never submit a message. Opening the Terminal flow starts a shell if the selected worktree has none.</p>
+        <p className="muted">With the Flows launcher focused: S opens Status, R opens Review Documents, T opens Terminal, and P opens Python. Escape dismisses the innermost control, then returns from a nested flow screen, then exits to chat. In Terminal, i enters Interact mode; Escape releases control, and another Escape exits to chat.</p>
       </section>
     </div>
     <div role="tabpanel" id="hotkeys-panel-files" aria-labelledby="hotkeys-tab-files" hidden={tab !== "files"} tabIndex={0}>

@@ -3,6 +3,7 @@
 .science-composer-body { display:flex; flex-direction:column; gap:10px; }
 .science-composer-error { display:grid; gap:6px; }
 .science-controls { display:flex; gap:6px; align-items:center; flex-wrap:wrap; }
+.science-controls button { display:inline-flex; align-items:center; gap:5px; }
 .science-composer label { display:inline-flex; gap:8px; align-items:center; }
 .science-composer select, .science-notebook-management select { max-width:100%; min-width:0; padding:6px 10px; border:1px solid var(--border); border-radius:8px; background:var(--background); }
 .science-controls button, .science-info-content > button, .science-notebook-management > button, .science-notebook-management details button { padding:6px 10px; border-radius:6px; font-size:12px; }
@@ -16,12 +17,20 @@
 .science-cell-source .cm-editor { font-size:12px; background:var(--muted); }
 .science-cell-source .cm-content { padding:8px 0; }
 .science-cell-source .cm-line { padding-inline:12px; }
+.science-cell-source[aria-disabled="false"], .science-cell-source[aria-disabled="false"] .cm-content { cursor:pointer; }
+.science-cell-source[aria-disabled="false"]:hover { box-shadow:inset 3px 0 var(--primary); }
+.science-cell-source:focus-visible { outline:2px solid var(--focus-ring); outline-offset:-2px; }
+.science-composer > .workstream-status-heading { flex-wrap:wrap; }
+.science-heading-controls .text-button { padding:6px; border-radius:7px; }
+.science-heading-controls .text-button:hover:not(:disabled) { background:var(--accent); }
 .science-cell-output { --science-output-height:204px; padding:8px 12px; min-width:0; max-height:calc(var(--science-output-height) + 16px); box-sizing:border-box; overflow:auto; border-top:1px solid var(--border); }
 .science-cell-output > .science-text-output { margin:0; }
 .science-cell-output > .science-text-output pre, .science-cell-output > .science-table-output > .science-table-scroll { max-height:none; overflow:visible; }
 .science-cell-output > .science-table-output > .science-table-scroll { max-width:none; }
 .science-cell-output > .science-table-output th { position:sticky; top:-8px; background:var(--background); }
 .science-cell-output:focus-visible { outline:2px solid var(--focus-ring); outline-offset:-2px; }
+.science-cell-output[data-editable="true"] { cursor:pointer; }
+.science-cell-output[data-editable="true"]:hover { box-shadow:inset 3px 0 var(--primary); }
 .science-error-summary { display:flex; align-items:center; gap:8px; color:var(--error); font:12px/1.7 var(--font-mono, monospace); }
 .science-error-summary > span { flex:1; min-width:0; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
 .science-error-summary > button { flex-shrink:0; padding:2px 6px; color:var(--foreground); border:1px solid var(--border); border-radius:5px; font-size:11px; }

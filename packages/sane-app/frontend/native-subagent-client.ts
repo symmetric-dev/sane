@@ -52,15 +52,18 @@ export class NativeSubagentClient {
     if (this.running || !this.sessionId) return;
     this.running = true;
     void this.refreshList();
+    if (this.active) void this.refreshDetail();
   }
   stop() {
     this.running = false;
     this.listController?.abort(); this.detailController?.abort();
     clearTimeout(this.listTimer); clearTimeout(this.detailTimer);
+    this.publish({ loading: false, detailLoading: false });
   }
   loadMoreSummaries = () => { if (!this.state.loading && this.state.nextCursor) { this.listPages++; void this.refreshList(); } };
   retryList = () => { if (!this.state.loading) void this.refreshList(); };
   private async refreshList() {
+    if (!this.running) return;
     clearTimeout(this.listTimer);
     const controller = new AbortController();
     this.listController?.abort(); this.listController = controller;
@@ -109,10 +112,10 @@ export class NativeSubagentClient {
     if (!this.active || this.state.detailLoading || !this.state.details.get(nativeSubagentId(this.active))?.nextCursor) return;
     this.desiredPages++; void this.refreshDetail();
   };
-  retryDetail = () => { if (this.active && !this.state.detailLoading) void this.refreshDetail(); };
-  private async refreshDetail() {
+  retryDetail = () => { if (this.active && !this.state.detailLoading) void this.refreshDetail(true); };
+  private async refreshDetail(force = false) {
     const key = this.active;
-    if (!key) return;
+    if (!this.running || !key) return;
     clearTimeout(this.detailTimer);
     const controller = new AbortController();
     this.detailController?.abort(); this.detailController = controller;
@@ -120,6 +123,7 @@ export class NativeSubagentClient {
     const id = nativeSubagentId(key), previous = this.state.details.get(id);
     this.publish({ detailLoading: true });
     try {
+      if (force) await request(this.url(key).split("?")[0] + "/refresh", { method: "POST", signal: AbortSignal.any([controller.signal, AbortSignal.timeout(25000)]) });
       let complete: NativeSubagentSnapshot | undefined;
       for (let attempt = 0; attempt < 3; attempt++) {
         try {
@@ -157,6 +161,11 @@ export class NativeSubagentClient {
 export function useNativeSubagentClient(sessionId: string, enabled: boolean, identity: string) {
   const client = useMemo(() => new NativeSubagentClient(sessionId), [sessionId, identity]);
   const state = useSyncExternalStore(client.subscribe, client.snapshot);
-  useEffect(() => { if (enabled) client.start(); return () => client.stop(); }, [client, enabled]);
+  useEffect(() => {
+    const update = () => { if (enabled && document.visibilityState !== "hidden") client.start(); else client.stop(); };
+    document.addEventListener("visibilitychange", update);
+    update();
+    return () => { document.removeEventListener("visibilitychange", update); client.stop(); };
+  }, [client, enabled]);
   return { client, state };
 }
